@@ -13,15 +13,24 @@ import {
   assertStoredSecretsHaveNoEphemeralKeysForIdentityReplacement,
   createDaemonSecrets,
   createDaemonSecretsFromImport,
-  encodeDaemonSecretsForStorage,
+  initializeDaemonSecretsInDatabase,
   readSecrets,
 } from './secrets.ts'
 import {
   assertStoredDaemonStateIsEmptyForIdentityReplacement,
   emptyDaemonState,
-  encodeDaemonStateForStorage,
+  initializeDaemonStateInDatabase,
+  readStateScope,
 } from './state.ts'
 import type { DaemonDurableTradeRecoveryRunner } from './durableTradeRecovery.ts'
+import {
+  initializeDurableCustodyInDatabase,
+  SqliteDurableCustodyStore,
+} from './durableCustodySqliteStore.ts'
+import {
+  daemonWalletCustodyScope,
+  DaemonDurableCustodyLease,
+} from './durableCustodyLifecycle.ts'
 
 const [, , command = 'run', ...args] = process.argv
 
@@ -35,7 +44,9 @@ switch (command) {
       let secrets
       if (importedSecrets) {
         if ((await readSecrets()) && !initOptions.force) {
-          throw new Error('daemon secrets already exist; pass --force to replace them')
+          throw new Error(
+            'daemon secrets already exist; pass --force to replace them',
+          )
         }
         secrets = createDaemonSecretsFromImport({
           walletSeedHex: importedSecrets.walletSeedHex,
@@ -49,8 +60,17 @@ switch (command) {
           engineBaseUrl: initOptions.engineUrl,
           mintUrl: initOptions.mintUrl,
         }),
-        secretsPayload: encodeDaemonSecretsForStorage(secrets),
-        statePayload: encodeDaemonStateForStorage(emptyDaemonState()),
+        initializeSecrets: (database) => {
+          initializeDaemonSecretsInDatabase(database, secrets)
+        },
+        initializeCustody: (database) => {
+          initializeDurableCustodyInDatabase(database, {
+            ...daemonWalletCustodyScope(secrets.walletSeedHex),
+          })
+        },
+        initializeState: (database) => {
+          initializeDaemonStateInDatabase(database, emptyDaemonState())
+        },
         rpcToken: createRpcToken(),
         replaceExisting: Boolean(importedSecrets && initOptions.force),
         assertReplacementSafe: (database) => {
@@ -72,42 +92,77 @@ switch (command) {
       submitPendingEphemeralPubkeys,
       createAuthenticatedBitcasterEngineClient,
     } = await import('./server.ts')
-    const { CompositeTradeRuntimeConnection, DaemonTradeRuntime } = await import('./tradeRuntime.ts')
-    const { SignalRTradeHubConnection } = await import('./tradeHubConnection.ts')
-    const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
+    const { CompositeTradeRuntimeConnection, DaemonTradeRuntime } =
+      await import('./tradeRuntime.ts')
+    const { SignalRTradeHubConnection } =
+      await import('./tradeHubConnection.ts')
+    const { SignalRMarketHubConnection } =
+      await import('./marketHubConnection.ts')
     const { DaemonSwapExecutor } = await import('./swapExecutor.ts')
-    const { createDaemonDurableTradeRecoveryRunner } = await import('./durableTradeRecovery.ts')
+    const { createDaemonDurableTradeRecoveryRunner } =
+      await import('./durableTradeRecovery.ts')
     const { DaemonTakerFillRecovery } = await import('./takerFillRecovery.ts')
     const { createRealDaemonSwapOps } = await import('./swapProtocolAdapter.ts')
     const { readProfile } = await import('./profile.ts')
-    const { readSecrets } = await import('./secrets.ts')
+    const { assertDaemonStorageBindings, readIdentitySecrets } =
+      await import('./secrets.ts')
     const { recoverPreparedWalletSends } = await import('./walletOps.ts')
-    const { conditionIdFromMarketId } = await import('@bitcaster-market/client-sdk/tradeIgnition')
+    const { conditionIdFromMarketId } =
+      await import('@bitcaster-market/client-sdk/tradeIgnition')
     const {
-      ensureState,
+      assertDaemonStateStorageInitialized,
+      installDaemonProofOperationCoordinator,
       recordSwapMessage,
       recordTradeCreated,
       recordTradeStateChanged,
     } = await import('./state.ts')
     const runLock = await acquireDaemonRunLock()
     let listenerInstalled = false
+    let custodyLease: DaemonDurableCustodyLease | undefined
+    let leaseFailure: Error | undefined
+    let requestShutdown:
+      | ((reason: string, exitCode: number) => Promise<void>)
+      | undefined
     try {
       const [profile, secrets, rpcToken] = await Promise.all([
         readProfile(),
-        readSecrets(),
+        readIdentitySecrets(),
         readRpcToken(),
       ])
       // Decode every local custody authority before opening an RPC endpoint.
       // A malformed row is a startup failure, never a background recovery log.
-      await ensureState()
+      await assertDaemonStateStorageInitialized()
+      await assertDaemonStorageBindings()
       if (!profile || !secrets || !rpcToken) {
         throw new Error('daemon profile storage is incomplete')
       }
+      custodyLease = await DaemonDurableCustodyLease.claim({
+        store: new SqliteDurableCustodyStore(),
+        walletSeedHex: secrets.walletSeedHex,
+      })
+      const { DaemonProofOperationCoordinator } =
+        await import('./durableProofOperationCoordinator.ts')
+      installDaemonProofOperationCoordinator(
+        new DaemonProofOperationCoordinator({ authority: custodyLease }),
+      )
+      custodyLease.startRenewal((error) => {
+        leaseFailure = error
+        if (requestShutdown) {
+          void requestShutdown(
+            `custody lease lost: ${error.message}`,
+            1,
+          )
+        }
+      })
     let executor: InstanceType<typeof DaemonSwapExecutor> | undefined
     let runtime: InstanceType<typeof DaemonTradeRuntime> | undefined
     let runDurableRecovery: (() => Promise<void>) | undefined
-    let durableRecoveryRunner: ReturnType<typeof createDaemonDurableTradeRecoveryRunner> | undefined
-    let runDurableTradeEvent: DaemonDurableTradeRecoveryRunner['runTradeEvent'] | undefined
+      let durableRecoveryRunner:
+        | ReturnType<typeof createDaemonDurableTradeRecoveryRunner>
+        | undefined
+      let runDurableTradeEvent:
+        | DaemonDurableTradeRecoveryRunner['runTradeEvent']
+        | undefined
     const recoveryEngineClient =
       profile && secrets
         ? createAuthenticatedBitcasterEngineClient({
@@ -128,7 +183,7 @@ switch (command) {
               orderId,
               pendingPubkeySubmissions: response.pendingPubkeySubmissions,
             })
-            await runtime?.start(await ensureState())
+              await runtime?.start(await readTradeRuntimeState())
           },
         })
       : undefined
@@ -139,14 +194,20 @@ switch (command) {
             nostrSecretKeyHex: secrets.nostrSecretKeyHex,
             onTradeCreated: async (payload) => {
               if (!runDurableTradeEvent) {
-                throw new Error('durable recovery coordinator is not available')
+                  throw new Error(
+                    'durable recovery coordinator is not available',
+                  )
               }
-              await runDurableTradeEvent(payload.tradeId, () => recordTradeCreated(payload), async (swap) => {
+                await runDurableTradeEvent(
+                  payload.tradeId,
+                  () => recordTradeCreated(payload),
+                  async (swap) => {
                 if (swap) {
-                  await runtime?.start(await ensureState())
+                      await runtime?.start(await readTradeRuntimeState())
                 }
                 await executor?.onTradeCreated(swap)
-              })
+                  },
+                )
             },
             onSwapMessageReceived: async (
               tradeId,
@@ -154,7 +215,9 @@ switch (command) {
               ciphertext,
             ) => {
               if (!runDurableTradeEvent) {
-                throw new Error('durable recovery coordinator is not available')
+                  throw new Error(
+                    'durable recovery coordinator is not available',
+                  )
               }
               await runDurableTradeEvent(
                 tradeId,
@@ -166,22 +229,34 @@ switch (command) {
             },
             onTradeStateChanged: async (tradeId, newState, failureReason) => {
               if (!runDurableTradeEvent) {
-                throw new Error('durable recovery coordinator is not available')
+                  throw new Error(
+                    'durable recovery coordinator is not available',
+                  )
               }
-              await runDurableTradeEvent(tradeId, () => recordTradeStateChanged(
+                await runDurableTradeEvent(
                 tradeId,
-                newState,
-                failureReason,
-              ), async (swap) => {
+                  () =>
+                    recordTradeStateChanged(tradeId, newState, failureReason),
+                  async (swap) => {
                 await executor?.onTradeStateChanged(swap)
                 await takerFillRecovery?.recoverTrade(tradeId)
-              })
             },
-            onPendingPubkeyRequired: async (tradeId, orderId, _role, marketId, _deadline) => {
+                )
+              },
+              onPendingPubkeyRequired: async (
+                tradeId,
+                orderId,
+                _role,
+                marketId,
+                _deadline,
+              ) => {
               const { signNip98 } = await import('./nostrAuth.ts')
-              const { conditionIdFromMarketId } = await import('@bitcaster-market/client-sdk/tradeIgnition')
-              const { submitEphemeralPubkey: submitPubkey } = await import('@bitcaster-market/client-sdk/engineClient')
-              const { submitPersistedPendingPubkey } = await import('./pendingPubkey.ts')
+                const { conditionIdFromMarketId } =
+                  await import('@bitcaster-market/client-sdk/tradeIgnition')
+                const { submitEphemeralPubkey: submitPubkey } =
+                  await import('@bitcaster-market/client-sdk/engineClient')
+                const { submitPersistedPendingPubkey } =
+                  await import('./pendingPubkey.ts')
               type AuthorizationRequest = {
                 url: string
                 method: string
@@ -199,7 +274,12 @@ switch (command) {
                     publicKeyHex,
                     null,
                     fetch,
-                    async ({ url, method, bodyText, payloadHash }: AuthorizationRequest) =>
+                      async ({
+                        url,
+                        method,
+                        bodyText,
+                        payloadHash,
+                      }: AuthorizationRequest) =>
                       signNip98(
                         { privateKeyHex: secrets.nostrSecretKeyHex },
                         url,
@@ -235,7 +315,9 @@ switch (command) {
           connection: tradeHub,
           ops: createRealDaemonSwapOps(),
           scheduleRecovery: (tradeId) => {
-            void durableRecoveryRunner?.recoverTrade(tradeId).catch(() => undefined)
+              void durableRecoveryRunner
+                ?.recoverTrade(tradeId)
+                .catch(() => undefined)
           },
         })
       : undefined
@@ -246,18 +328,26 @@ switch (command) {
               void (async () => {
                 await runDurableRecovery?.()
               })().catch((err: unknown) => {
-                const message = err instanceof Error ? err.message : String(err)
-                process.stderr.write(`Swap recovery sweep failed: ${message}\n`)
+                  const message =
+                    err instanceof Error ? err.message : String(err)
+                  process.stderr.write(
+                    `Swap recovery sweep failed: ${message}\n`,
+                  )
               })
             }, delayMs)
           },
         })
       : undefined
-    durableRecoveryRunner = executor && tradeHub
-      ? createDaemonDurableTradeRecoveryRunner({ executor, connection: tradeHub })
+      durableRecoveryRunner =
+        executor && tradeHub
+          ? createDaemonDurableTradeRecoveryRunner({
+              executor,
+              connection: tradeHub,
+            })
       : undefined
     runDurableTradeEvent = durableRecoveryRunner
-      ? (tradeId, persist, action) => durableRecoveryRunner.runTradeEvent(tradeId, persist, action)
+        ? (tradeId, persist, action) =>
+            durableRecoveryRunner.runTradeEvent(tradeId, persist, action)
       : undefined
     runDurableRecovery = durableRecoveryRunner
       ? async () => {
@@ -272,53 +362,66 @@ switch (command) {
       }
       : undefined
     durableRecoveryRunner?.armBootstrap()
+    const walletRecovery = await recoverPreparedWalletSends(secrets)
+    custodyLease.assertActive()
+    if (walletRecovery.recoveredCount > 0) {
+      process.stderr.write(
+        `Recovered ${walletRecovery.recoveredCount} wallet operations: ${walletRecovery.recovered.join(', ')}\n`,
+      )
+    }
+    for (const pending of walletRecovery.pending) {
+      process.stderr.write(
+        `Wallet operation ${pending.operationId} remains pending: ${pending.error}\n`,
+      )
+    }
+    if (walletRecovery.summaryTruncated) {
+      process.stderr.write(
+        `Wallet recovery diagnostics were capped at ${walletRecovery.recovered.length + walletRecovery.pending.length} entries\n`,
+      )
+    }
+    if (walletRecovery.pendingCount > 0) {
+      throw new Error(
+        `wallet recovery remains unresolved for ${walletRecovery.pendingCount} operations`,
+      )
+    }
+    if (durableRecoveryRunner) {
+      const recovery = await durableRecoveryRunner.finishBootstrap()
+      for (const session of recovery.durableRecovery.sessions) {
+        if (session.kind === 'failed-closed') {
+          throw new Error(
+            `durable trade recovery failed closed for ${session.tradeId}: ${session.reason}`,
+          )
+        }
+      }
+      custodyLease.assertActive()
+    }
+    if (takerFillRecovery) {
+      await takerFillRecovery.resumePending(await readTradeRuntimeState())
+      custodyLease.assertActive()
+    }
     const server = await startDaemonServer({
       tradeRuntime: runtime,
       swapExecutor: executor,
       durableTradeRecovery: durableRecoveryRunner,
     })
-    installShutdownHandlers(server, runtime, runLock.release)
+    requestShutdown = installShutdownHandlers(
+      server,
+      runtime,
+      custodyLease,
+      runLock.release,
+    )
     listenerInstalled = true
-    void recoverPreparedWalletSends(secrets)
-        .then((result) => {
-          if (result.recovered.length > 0) {
-            process.stderr.write(
-              `Recovered wallet operations: ${result.recovered.join(', ')}\n`,
-            )
-          }
-          for (const pending of result.pending) {
-            process.stderr.write(
-              `Wallet operation ${pending.operationId} remains pending: ${pending.error}\n`,
-            )
-          }
-        })
-        .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err)
-          process.stderr.write(`Wallet recovery sweep failed: ${message}\n`)
-        })
-    if (durableRecoveryRunner) {
-      void (async () => {
-        const recovery = await durableRecoveryRunner.finishBootstrap()
-        for (const session of recovery.durableRecovery.sessions) {
-          if (session.kind === 'failed-closed') {
-            process.stderr.write(
-              `Durable trade recovery failed closed for ${session.tradeId}: ${session.reason}\n`,
-            )
-          }
-        }
-      })().catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err)
-        process.stderr.write(`Swap recovery sweep failed: ${message}\n`)
-      })
-    }
-    if (takerFillRecovery) {
-      void takerFillRecovery.resumePending(await ensureState()).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err)
-        process.stderr.write(`Taker fill recovery sweep failed: ${message}\n`)
-      })
+    if (leaseFailure) {
+      await requestShutdown(`custody lease lost: ${leaseFailure.message}`, 1)
     }
     } catch (error) {
-      if (!listenerInstalled) await runLock.release()
+      if (!listenerInstalled) {
+        try {
+          await custodyLease?.stopAndRelease()
+        } finally {
+          await runLock.release()
+        }
+      }
       throw error
     }
     break
@@ -333,6 +436,12 @@ switch (command) {
   bitcaster-daemon run
 `)
     process.exitCode = 1
+}
+
+async function readTradeRuntimeState() {
+  const state = await readStateScope({ orderIds: 'all', swapIds: 'all' })
+  if (!state) throw new Error('daemon SQLite state row is missing')
+  return state
 }
 
 function parseInitOptions(args: string[]): {
@@ -358,9 +467,15 @@ function parseInitOptions(args: string[]): {
     if (arg === '--wallet-seed-hex') {
       options.walletSeedHex = requiredArg(args[++i], '--wallet-seed-hex')
     } else if (arg === '--wallet-seed-hex-file') {
-      options.walletSeedHexFile = requiredArg(args[++i], '--wallet-seed-hex-file')
+      options.walletSeedHexFile = requiredArg(
+        args[++i],
+        '--wallet-seed-hex-file',
+      )
     } else if (arg === '--nostr-secret-key-hex') {
-      options.nostrSecretKeyHex = requiredArg(args[++i], '--nostr-secret-key-hex')
+      options.nostrSecretKeyHex = requiredArg(
+        args[++i],
+        '--nostr-secret-key-hex',
+      )
     } else if (arg === '--nostr-secret-key-hex-file') {
       options.nostrSecretKeyHexFile = requiredArg(
         args[++i],
@@ -398,7 +513,10 @@ async function resolveImportedSecrets(options: {
   const walletSeedHex =
     options.walletSeedHex ??
     (options.walletSeedHexFile
-      ? await readSecretHexFile(options.walletSeedHexFile, '--wallet-seed-hex-file')
+      ? await readSecretHexFile(
+          options.walletSeedHexFile,
+          '--wallet-seed-hex-file',
+        )
       : undefined)
   const nostrSecretKeyHex =
     options.nostrSecretKeyHex ??
@@ -417,7 +535,10 @@ async function resolveImportedSecrets(options: {
   return { walletSeedHex, nostrSecretKeyHex }
 }
 
-async function readSecretHexFile(path: string, option: string): Promise<string> {
+async function readSecretHexFile(
+  path: string,
+  option: string,
+): Promise<string> {
   const value = (await readFile(path, 'utf8')).trim()
   if (!value) throw new Error(`${option} was empty`)
   return value
@@ -431,26 +552,29 @@ function requiredArg(value: string | undefined, option: string): string {
 function installShutdownHandlers(
   server: Server,
   runtime: { stop(): Promise<void> } | undefined,
+  custodyLease: DaemonDurableCustodyLease,
   releaseRunLock: () => Promise<void>,
-): void {
+): (reason: string, exitCode: number) => Promise<void> {
   let shuttingDown = false
-  const shutdown = async (signal: NodeJS.Signals) => {
+  const shutdown = async (reason: string, exitCode: number) => {
     if (shuttingDown) return
     shuttingDown = true
-    process.stderr.write(`bitcaster-daemon received ${signal}, shutting down\n`)
+    process.stderr.write(`bitcaster-daemon ${reason}, shutting down\n`)
     try {
       await closeServer(server)
       await runtime?.stop()
+      await custodyLease.stopAndRelease()
       await releaseRunLock()
-      process.exit(0)
+      process.exit(exitCode)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       process.stderr.write(`bitcaster-daemon shutdown failed: ${message}\n`)
       process.exit(1)
     }
   }
-  process.once('SIGINT', () => void shutdown('SIGINT'))
-  process.once('SIGTERM', () => void shutdown('SIGTERM'))
+  process.once('SIGINT', () => void shutdown('received SIGINT', 0))
+  process.once('SIGTERM', () => void shutdown('received SIGTERM', 0))
+  return shutdown
 }
 
 function closeServer(server: Server): Promise<void> {

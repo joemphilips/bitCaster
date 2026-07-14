@@ -8,6 +8,10 @@ import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { DatabaseSync } from 'node:sqlite'
 import {
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from '@bitcaster-market/client-sdk/durableCustody'
+import {
   profileDatabasePath,
   readProfile,
   updateProfile,
@@ -17,6 +21,7 @@ import { ensureRpcToken, readRpcToken } from '../src/rpcAuth.ts'
 import { acquireDaemonRunLock, runLockPath } from '../src/runLock.ts'
 import { generateOrderEphemeralKeypair } from '../src/ephemeralKey.ts'
 import {
+  assertDaemonStorageBindings,
   createDaemonSecrets,
   createDaemonSecretsFromImport,
   getOrCreateOrderEphemeralKeypair,
@@ -25,7 +30,12 @@ import {
   updateSecrets,
   writeSecrets,
 } from '../src/secrets.ts'
-import { emptyDaemonState, initializeState, statePath, writeState } from '../src/state.ts'
+import {
+  emptyDaemonState,
+  initializeState,
+  statePath,
+  writeState,
+} from '../src/state.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -74,11 +84,62 @@ test('bitcaster-daemon init imports wallet seed and nostr key', async () => {
     assert.match(rpcToken ?? '', /^[A-Za-z0-9_-]{43}$/)
     const database = new DatabaseSync(profileDatabasePath())
     try {
-      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM daemon_profile').get().count, 1)
-      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM daemon_secrets').get().count, 1)
-      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM daemon_state').get().count, 1)
-      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM daemon_rpc_token').get().count, 1)
-      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM daemon_profile_initialization').get().count, 1)
+      assert.equal(
+        database.prepare('SELECT COUNT(*) AS count FROM daemon_profile').get()
+          .count,
+        1,
+      )
+      assert.equal(
+        database
+          .prepare('SELECT COUNT(*) AS count FROM daemon_identity_secrets')
+          .get().count,
+        1,
+      )
+      assert.equal(
+        database
+          .prepare('SELECT COUNT(*) AS count FROM daemon_order_ephemeral_keys')
+          .get().count,
+        0,
+      )
+      assert.equal(
+        database
+          .prepare('SELECT COUNT(*) AS count FROM daemon_state_metadata')
+          .get().count,
+        1,
+      )
+      const walletId = deriveDurableCustodyWalletId(
+        Uint8Array.from(Buffer.from(walletSeedHex, 'hex')),
+      )
+      const custodyScope = database
+        .prepare(
+          `SELECT scope_id, scope_kind, wallet_id
+             FROM custody_scopes`,
+        )
+        .get()
+      assert.equal(
+        database.prepare('SELECT COUNT(*) AS count FROM custody_scopes').get()
+          .count,
+        1,
+      )
+      assert.equal(
+        custodyScope.scope_id,
+        deriveDurableCustodyScopeId({ scopeKind: 'wallet', walletId }),
+      )
+      assert.equal(custodyScope.scope_kind, 'wallet')
+      assert.equal(custodyScope.wallet_id, walletId)
+      assert.equal(
+        database.prepare('SELECT COUNT(*) AS count FROM daemon_rpc_token').get()
+          .count,
+        1,
+      )
+      assert.equal(
+        database
+          .prepare(
+            'SELECT COUNT(*) AS count FROM daemon_profile_initialization',
+          )
+          .get().count,
+        1,
+      )
     } finally {
       database.close()
     }
@@ -88,7 +149,9 @@ test('bitcaster-daemon init imports wallet seed and nostr key', async () => {
       'daemon-state.json',
       'daemon-rpc-token',
     ]) {
-      await assert.rejects(() => stat(join(home, legacyName)), { code: 'ENOENT' })
+      await assert.rejects(() => stat(join(home, legacyName)), {
+        code: 'ENOENT',
+      })
     }
   } finally {
     if (previousHome === undefined) {
@@ -213,14 +276,16 @@ test('bitcaster-daemon init --force refuses to replace keys over non-empty state
     process.env.BITCASTER_DAEMON_HOME = home
     const state = emptyDaemonState()
     state.wallet.proofs.push({
-      mintUrl: 'mint-a',
+      mintUrl: 'https://mint-a.example',
       proof: {
+        id: 'keyset-1',
         amount: 1,
         secret: 'proof-secret',
         C: 'proof-c',
       },
+      unit: 'sat',
       state: 'available',
-      asset: { kind: 'sats' },
+      asset: { kind: 'sats', baseAsset: 'sat' },
       createdAt: '2026-05-22T00:00:00.000Z',
       updatedAt: '2026-05-22T00:00:00.000Z',
     })
@@ -246,7 +311,9 @@ test('bitcaster-daemon init --force refuses to replace keys over non-empty state
 })
 
 test('bitcaster-daemon init --force refuses to replace retained pending protocol keys', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-init-pending-key-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-init-pending-key-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
 
   try {
@@ -262,7 +329,8 @@ test('bitcaster-daemon init --force refuses to replace retained pending protocol
     })
 
     await assert.rejects(
-      () => runDaemonInit(home, {
+      () =>
+        runDaemonInit(home, {
         walletSeedHex: 'cd'.repeat(32),
         nostrSecretKeyHex: '02'.padStart(64, '0'),
         force: true,
@@ -300,7 +368,9 @@ test('bitcaster-daemon init preserves default engine and mint URLs when omitted'
 })
 
 test('an initialized daemon fails closed instead of recreating a missing state schema', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-init-missing-state-schema-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-init-missing-state-schema-'),
+  )
 
   try {
     await runDaemonInit(home, {
@@ -309,18 +379,19 @@ test('an initialized daemon fails closed instead of recreating a missing state s
     })
     const database = new DatabaseSync(join(home, 'daemon-state.sqlite'))
     try {
-      database.exec('DROP TABLE daemon_state')
+      database.exec('DROP TABLE daemon_state_metadata')
     } finally {
       database.close()
     }
 
     await assert.rejects(
-      () => runDaemonInit(home, {
+      () =>
+        runDaemonInit(home, {
         walletSeedHex: 'ab'.repeat(32),
         nostrSecretKeyHex: '01'.padStart(64, '0'),
         force: true,
       }),
-      /daemon profile initialization is missing daemon_state/,
+      /daemon profile initialization is missing daemon_state_metadata/,
     )
   } finally {
     await rm(home, { recursive: true, force: true })
@@ -329,33 +400,55 @@ test('an initialized daemon fails closed instead of recreating a missing state s
 
 test('an initialized daemon never repairs a removed mandatory table or singleton row', async () => {
   const mutations = [
-    ...['daemon_profile', 'daemon_secrets', 'daemon_state', 'daemon_rpc_token', 'daemon_profile_initialization']
-      .map((table) => ({
+    ...[
+      'daemon_profile',
+      'daemon_identity_secrets',
+      'daemon_order_ephemeral_keys',
+      'custody_schema_metadata',
+      'daemon_state_metadata',
+      'daemon_rpc_token',
+      'daemon_profile_initialization',
+    ].map((table) => ({
         name: `missing ${table} table`,
         remove(database: DatabaseSync) {
           database.exec(`DROP TABLE ${table}`)
         },
         remainsMissing(database: DatabaseSync) {
-          return database.prepare(
+        return (
+          database
+            .prepare(
             "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
-          ).get(table) === undefined
+            )
+            .get(table) === undefined
+        )
         },
       })),
-    ...['daemon_profile', 'daemon_secrets', 'daemon_state', 'daemon_rpc_token', 'daemon_profile_initialization']
-      .map((table) => ({
+    ...[
+      'daemon_profile',
+      'daemon_identity_secrets',
+      'custody_schema_metadata',
+      'daemon_state_metadata',
+      'daemon_rpc_token',
+      'daemon_profile_initialization',
+    ].map((table) => ({
         name: `missing ${table} row`,
         remove(database: DatabaseSync) {
           database.exec(`DELETE FROM ${table} WHERE singleton = 1`)
         },
         remainsMissing(database: DatabaseSync) {
-          return database.prepare(`SELECT 1 AS present FROM ${table} WHERE singleton = 1`).get()
-            === undefined
+        return (
+          database
+            .prepare(`SELECT 1 AS present FROM ${table} WHERE singleton = 1`)
+            .get() === undefined
+        )
         },
       })),
   ]
 
   for (const mutation of mutations) {
-    const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-init-incomplete-'))
+    const home = await mkdtemp(
+      join(tmpdir(), 'bitcaster-daemon-init-incomplete-'),
+    )
     try {
       await runDaemonInit(home, {
         walletSeedHex: 'ab'.repeat(32),
@@ -368,8 +461,8 @@ test('an initialized daemon never repairs a removed mandatory table or singleton
         database.close()
       }
 
-      await assert.rejects(
-        () => runDaemonInit(home, {
+      await assert.rejects(() =>
+        runDaemonInit(home, {
           walletSeedHex: 'cd'.repeat(32),
           nostrSecretKeyHex: '02'.padStart(64, '0'),
           force: true,
@@ -389,7 +482,9 @@ test('an initialized daemon never repairs a removed mandatory table or singleton
 })
 
 test('an existing database with every profile table removed is never treated as a new profile', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-init-wiped-schema-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-init-wiped-schema-'),
+  )
   try {
     await runDaemonInit(home, {
       walletSeedHex: 'ab'.repeat(32),
@@ -399,8 +494,18 @@ test('an existing database with every profile table removed is never treated as 
     try {
       for (const table of [
         'daemon_profile',
-        'daemon_secrets',
-        'daemon_state',
+        'daemon_identity_secrets',
+        'daemon_order_ephemeral_keys',
+        'custody_active_work',
+        'custody_verification_bindings',
+        'custody_proof_reservations',
+        'custody_session_links',
+        'custody_operation_inputs',
+        'custody_operations',
+        'custody_scope_state',
+        'custody_scopes',
+        'custody_schema_metadata',
+        'daemon_state_metadata',
         'daemon_rpc_token',
         'daemon_profile_initialization',
       ]) {
@@ -411,7 +516,8 @@ test('an existing database with every profile table removed is never treated as 
     }
 
     await assert.rejects(
-      () => execFileAsync(
+      () =>
+        execFileAsync(
         process.execPath,
         [
           '--experimental-strip-types',
@@ -431,9 +537,11 @@ test('an existing database with every profile table removed is never treated as 
     const verify = new DatabaseSync(join(home, 'daemon-state.sqlite'))
     try {
       assert.equal(
-        verify.prepare(
+        verify
+          .prepare(
           "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'daemon_profile'",
-        ).get(),
+          )
+          .get(),
         undefined,
       )
     } finally {
@@ -447,16 +555,33 @@ test('an existing database with every profile table removed is never treated as 
 test('daemon run fails closed before listening when decoded state or RPC authority is corrupt', async () => {
   const corruptions = [
     {
-      name: 'state payload',
+      name: 'state schema marker',
       apply(database: DatabaseSync) {
-        database.prepare('UPDATE daemon_state SET payload = ? WHERE singleton = 1').run('{')
+        database.exec('PRAGMA ignore_check_constraints = ON')
+        database
+          .prepare(
+            'UPDATE daemon_state_metadata SET schema_version = 2 WHERE singleton = 1',
+          )
+          .run()
       },
     },
     {
       name: 'RPC token',
       apply(database: DatabaseSync) {
-        database.prepare('UPDATE daemon_rpc_token SET token = ? WHERE singleton = 1')
+        database.exec('PRAGMA ignore_check_constraints = ON')
+        database
+          .prepare('UPDATE daemon_rpc_token SET token = ? WHERE singleton = 1')
           .run('not-a-valid-rpc-token')
+      },
+    },
+    {
+      name: 'profile identity binding',
+      apply(database: DatabaseSync) {
+        database
+          .prepare(
+            'UPDATE daemon_profile SET nostr_public_key = ? WHERE singleton = 1',
+          )
+          .run('ff'.repeat(32))
       },
     },
   ]
@@ -477,9 +602,237 @@ test('daemon run fails closed before listening when decoded state or RPC authori
 
       const result = await runDaemonUntilExit(home)
       assert.notEqual(result.code, 0, corruption.name)
-      assert.doesNotMatch(result.stdout, /bitcaster-daemon listening/, corruption.name)
-      await assert.rejects(() => stat(join(home, 'daemon-run.lock')), { code: 'ENOENT' })
+      assert.doesNotMatch(
+        result.stdout,
+        /bitcaster-daemon listening/,
+        corruption.name,
+      )
+      await assert.rejects(() => stat(join(home, 'daemon-run.lock')), {
+        code: 'ENOENT',
+      })
     } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  }
+})
+
+test('daemon restart fails closed on missing or substituted live protocol keys', async () => {
+  for (const corruption of ['missing', 'substituted'] as const) {
+    const home = await mkdtemp(
+      join(tmpdir(), `bitcaster-daemon-run-key-${corruption}-`),
+    )
+    const previousHome = process.env.BITCASTER_DAEMON_HOME
+    try {
+      await runDaemonInit(home, {
+        walletSeedHex: 'ab'.repeat(32),
+        nostrSecretKeyHex: '01'.padStart(64, '0'),
+      })
+      process.env.BITCASTER_DAEMON_HOME = home
+      const secrets = await readSecrets()
+      assert.ok(secrets)
+      const retained = generateOrderEphemeralKeypair()
+      secrets.orderEphemeralKeys['live-trade'] = {
+        orderId: 'live-order',
+        tradeId: 'live-trade',
+        marketId: 'cond-YES',
+        ...retained,
+        createdAt: '2026-07-14T00:00:00.000Z',
+      }
+      await writeSecrets(secrets)
+      const state = emptyDaemonState()
+      state.swaps['live-trade'] = {
+        tradeId: 'live-trade',
+        orderId: 'live-order',
+        marketId: 'cond-YES',
+        role: 'seller',
+        counterpartyPubkey: `03${'22'.repeat(32)}`,
+        sellerLocktime: 120,
+        buyerLocktime: 100,
+        messages: {},
+        step: 'opened',
+        createdAt: '2026-07-14T00:00:00.000Z',
+        updatedAt: '2026-07-14T00:00:00.000Z',
+      }
+      state.durableTradeSessions['live-trade'] = {
+        schemaVersion: 2,
+        revision: 0,
+        tradeId: 'live-trade',
+        role: 'seller',
+        localProtocolPubkey: retained.publicKeyHex,
+        counterpartyProtocolPubkey: `03${'22'.repeat(32)}`,
+        mintUrl: (await readProfile())!.mintUrl,
+        sellerLocktimeSecs: 120,
+        buyerLocktimeSecs: 100,
+        ephemeralKeyHandle: {
+          keyId: 'live-trade',
+          tradeId: 'live-trade',
+          role: 'seller',
+          localProtocolPubkey: retained.publicKeyHex,
+          counterpartyProtocolPubkey: `03${'22'.repeat(32)}`,
+          mintUrl: (await readProfile())!.mintUrl,
+          sellerLocktimeSecs: 120,
+          buyerLocktimeSecs: 100,
+        },
+        stage: 'intent',
+        proofOperations: [],
+        receivedCiphers: {},
+        outboundCiphers: {},
+      }
+      await writeState(state)
+
+      const database = new DatabaseSync(statePath())
+      try {
+        if (corruption === 'missing') {
+          database.exec('PRAGMA foreign_keys = OFF')
+          database
+            .prepare('DELETE FROM daemon_order_ephemeral_keys WHERE key_id = ?')
+            .run('live-trade')
+        } else {
+          const substituted = generateOrderEphemeralKeypair()
+          database
+            .prepare(
+              `UPDATE daemon_order_ephemeral_keys
+                SET private_key_hex = ?, public_key_hex = ?
+              WHERE key_id = ?`,
+            )
+            .run(
+              substituted.privateKeyHex,
+              substituted.publicKeyHex,
+              'live-trade',
+            )
+        }
+      } finally {
+        database.close()
+      }
+
+      const result = await runDaemonUntilExit(home)
+      assert.notEqual(result.code, 0, corruption)
+      assert.doesNotMatch(
+        result.stdout,
+        /bitcaster-daemon listening/,
+        corruption,
+      )
+      await assert.rejects(() => stat(join(home, 'daemon-run.lock')), {
+        code: 'ENOENT',
+      })
+    } finally {
+      if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+      else process.env.BITCASTER_DAEMON_HOME = previousHome
+      await rm(home, { recursive: true, force: true })
+    }
+  }
+})
+
+test('daemon startup rejects swap facts that conflict with retained session authority', async () => {
+  const corruptions = [
+    {
+      name: 'role',
+      mutate(swap: ReturnType<typeof emptyDaemonState>['swaps'][string]) {
+        swap.role = 'buyer'
+      },
+    },
+    {
+      name: 'counterparty',
+      mutate(swap: ReturnType<typeof emptyDaemonState>['swaps'][string]) {
+        swap.counterpartyPubkey = `03${'44'.repeat(32)}`
+      },
+    },
+    {
+      name: 'seller-locktime',
+      mutate(swap: ReturnType<typeof emptyDaemonState>['swaps'][string]) {
+        swap.sellerLocktime = (swap.sellerLocktime ?? 0) + 1
+      },
+    },
+    {
+      name: 'buyer-locktime',
+      mutate(swap: ReturnType<typeof emptyDaemonState>['swaps'][string]) {
+        swap.buyerLocktime = (swap.buyerLocktime ?? 0) + 1
+      },
+    },
+  ]
+
+  for (const corruption of corruptions) {
+    const home = await mkdtemp(
+      join(tmpdir(), `bitcaster-daemon-startup-authority-${corruption.name}-`),
+    )
+    const previousHome = process.env.BITCASTER_DAEMON_HOME
+    process.env.BITCASTER_DAEMON_HOME = home
+    try {
+      const tradeId = `trade-startup-authority-${corruption.name}`
+      const orderId = `order-startup-authority-${corruption.name}`
+      const mintUrl = 'https://mint.example'
+      const counterpartyPubkey = `03${'22'.repeat(32)}`
+      const sellerLocktimeSecs = 1_779_321_720
+      const buyerLocktimeSecs = 1_779_321_660
+      const retained = generateOrderEphemeralKeypair()
+      const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+      secrets.orderEphemeralKeys[tradeId] = {
+        orderId,
+        tradeId,
+        marketId: 'cond-YES',
+        ...retained,
+        createdAt: '2026-05-21T00:00:00.000Z',
+      }
+      await writeProfile({
+        engineBaseUrl: 'https://engine.example',
+        mintUrl,
+        nostrPublicKey: secrets.nostrPublicKeyHex,
+        initializedAt: '2026-05-21T00:00:00.000Z',
+      })
+      await writeSecrets(secrets)
+
+      const state = emptyDaemonState()
+      state.swaps[tradeId] = {
+        tradeId,
+        orderId,
+        marketId: 'cond-YES',
+        role: 'seller',
+        counterpartyPubkey,
+        sellerLocktime: sellerLocktimeSecs,
+        buyerLocktime: buyerLocktimeSecs,
+        messages: {},
+        step: 'opened',
+        createdAt: '2026-05-21T00:00:00.000Z',
+        updatedAt: '2026-05-21T00:00:00.000Z',
+      }
+      state.durableTradeSessions[tradeId] = {
+        schemaVersion: 2,
+        revision: 0,
+        tradeId,
+        role: 'seller',
+        localProtocolPubkey: retained.publicKeyHex,
+        counterpartyProtocolPubkey: counterpartyPubkey,
+        mintUrl,
+        sellerLocktimeSecs,
+        buyerLocktimeSecs,
+        ephemeralKeyHandle: {
+          keyId: tradeId,
+          tradeId,
+          role: 'seller',
+          localProtocolPubkey: retained.publicKeyHex,
+          counterpartyProtocolPubkey: counterpartyPubkey,
+          mintUrl,
+          sellerLocktimeSecs,
+          buyerLocktimeSecs,
+        },
+        stage: 'intent',
+        proofOperations: [],
+        receivedCiphers: {},
+        outboundCiphers: {},
+      }
+      await writeState(state)
+      await assert.doesNotReject(() => assertDaemonStorageBindings())
+
+      corruption.mutate(state.swaps[tradeId]!)
+      await writeState(state)
+      await assert.rejects(
+        () => assertDaemonStorageBindings(),
+        /protocol authority binding is invalid/,
+        corruption.name,
+      )
+    } finally {
+      if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+      else process.env.BITCASTER_DAEMON_HOME = previousHome
       await rm(home, { recursive: true, force: true })
     }
   }
@@ -530,7 +883,7 @@ test('daemon local storage repairs profile directory and file modes', async () =
       engineBaseUrl: 'http://localhost:5000',
       mintUrl: 'http://localhost:8085',
       initializedAt: '2026-05-22T00:00:00.000Z',
-      nostrPublicKey: 'npub-test',
+      nostrPublicKey: 'ab'.repeat(32),
     })
     await writeSecrets(createDaemonSecrets('2026-05-22T00:00:00.000Z'))
     await initializeState()
@@ -551,41 +904,55 @@ test('daemon local storage repairs profile directory and file modes', async () =
   }
 })
 
-test('daemon secrets are passphrase encrypted when configured', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-encrypted-'))
+test('daemon secrets use typed strict rows without a monolithic encrypted payload', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-typed-secrets-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
-  const previousPassphrase = process.env.BITCASTER_DAEMON_PASSPHRASE
   process.env.BITCASTER_DAEMON_HOME = home
-  process.env.BITCASTER_DAEMON_PASSPHRASE = 'correct horse battery staple'
 
   try {
     const secrets = createDaemonSecrets('2026-05-22T00:00:00.000Z')
     await writeSecrets(secrets)
 
     const database = new DatabaseSync(secretsPath())
-    const raw = database.prepare('SELECT payload FROM daemon_secrets WHERE singleton = 1').get()
-      .payload as string
+    try {
+      const row = database
+        .prepare(
+          `SELECT wallet_seed_hex, nostr_secret_key_hex
+         FROM daemon_identity_secrets WHERE singleton = 1`,
+        )
+        .get()
+      assert.equal(row.wallet_seed_hex, secrets.walletSeedHex)
+      assert.equal(row.nostr_secret_key_hex, secrets.nostrSecretKeyHex)
+      assert.equal(
+        database
+          .prepare(
+            "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'daemon_secrets'",
+          )
+          .get(),
+        undefined,
+      )
+      for (const table of [
+        'daemon_identity_secrets',
+        'daemon_order_ephemeral_keys',
+      ]) {
+        assert.match(
+          database
+            .prepare(
+              "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            )
+            .get(table).sql,
+          /STRICT/,
+        )
+      }
+    } finally {
     database.close()
-    assert.match(raw, /"protection":"passphrase-aes-256-gcm"/)
-    assert.doesNotMatch(raw, new RegExp(secrets.walletSeedHex))
-    assert.doesNotMatch(raw, new RegExp(secrets.nostrSecretKeyHex))
+    }
     assert.equal((await readSecrets())?.walletSeedHex, secrets.walletSeedHex)
-
-    delete process.env.BITCASTER_DAEMON_PASSPHRASE
-    await assert.rejects(
-      () => readSecrets(),
-      /BITCASTER_DAEMON_PASSPHRASE is required/,
-    )
   } finally {
     if (previousHome === undefined) {
       delete process.env.BITCASTER_DAEMON_HOME
     } else {
       process.env.BITCASTER_DAEMON_HOME = previousHome
-    }
-    if (previousPassphrase === undefined) {
-      delete process.env.BITCASTER_DAEMON_PASSPHRASE
-    } else {
-      process.env.BITCASTER_DAEMON_PASSPHRASE = previousPassphrase
     }
     await rm(home, { recursive: true, force: true })
   }
@@ -618,10 +985,11 @@ test('daemon secret updates preserve concurrent order ephemeral keys', async () 
     )
 
     const secrets = await readSecrets()
-    assert.deepEqual(
-      Object.keys(secrets?.orderEphemeralKeys ?? {}).sort(),
-      ['order-a', 'order-b', 'order-c'],
-    )
+    assert.deepEqual(Object.keys(secrets?.orderEphemeralKeys ?? {}).sort(), [
+      'order-a',
+      'order-b',
+      'order-c',
+    ])
   } finally {
     if (previousHome === undefined) {
       delete process.env.BITCASTER_DAEMON_HOME
@@ -647,56 +1015,129 @@ test('daemon secrets fail closed on missing or unknown private-key fields', asyn
     }
     await writeSecrets(secrets)
     const database = new DatabaseSync(secretsPath())
-    let originalPayload: string
     try {
-      originalPayload = database.prepare(
-        'SELECT payload FROM daemon_secrets WHERE singleton = 1',
-      ).get().payload as string
-
-      const missing = JSON.parse(originalPayload) as {
-        secrets: Record<string, unknown>
-      }
-      delete missing.secrets.orderEphemeralKeys
-      database.prepare('UPDATE daemon_secrets SET payload = ? WHERE singleton = 1')
-        .run(JSON.stringify(missing))
+      database.exec('PRAGMA ignore_check_constraints = ON')
+      database
+        .prepare(
+          `UPDATE daemon_identity_secrets SET wallet_seed_hex = ?
+         WHERE singleton = 1`,
+        )
+        .run('not-a-seed')
     } finally {
       database.close()
     }
-    await assert.rejects(() => readSecrets(), /daemon secrets payload is invalid/)
+    await assert.rejects(
+      () => readSecrets(),
+      /wallet seed must be a 32-byte hex string/,
+    )
 
-    const restore = new DatabaseSync(secretsPath())
+    await writeSecrets(secrets)
+
+    const unknownColumn = new DatabaseSync(secretsPath())
     try {
-      const unknown = JSON.parse(originalPayload) as {
-        secrets: Record<string, unknown>
-      }
-      unknown.secrets.unexpectedPrivateField = 'must-not-default'
-      restore.prepare('UPDATE daemon_secrets SET payload = ? WHERE singleton = 1')
-        .run(JSON.stringify(unknown))
+      unknownColumn.exec(
+        'ALTER TABLE daemon_identity_secrets ADD COLUMN unexpected_private_field TEXT',
+      )
     } finally {
-      restore.close()
-    }
-    await assert.rejects(() => readSecrets(), /daemon secrets payload is invalid/)
+      unknownColumn.close()
+      }
+    await assert.rejects(
+      () => readSecrets(),
+      /daemon secrets schema is unsupported/,
+    )
 
+    await rm(secretsPath(), { force: true })
+    await writeSecrets(secrets)
+    const unknownKeyVersion = new DatabaseSync(secretsPath())
+    try {
+      unknownKeyVersion.exec('PRAGMA ignore_check_constraints = ON')
+      unknownKeyVersion
+        .prepare(
+          `UPDATE daemon_order_ephemeral_keys SET schema_version = 2
+         WHERE key_id = ?`,
+        )
+        .run('order-1')
+    } finally {
+      unknownKeyVersion.close()
+    }
+    await assert.rejects(
+      () => readSecrets(),
+      /daemon secrets schema is unsupported/,
+    )
+
+    await rm(secretsPath(), { force: true })
+    await writeSecrets(secrets)
     const pairMismatch = new DatabaseSync(secretsPath())
     try {
-      const invalidPair = JSON.parse(originalPayload) as {
-        secrets: {
-          orderEphemeralKeys: Record<string, { publicKeyHex: string }>
-        }
-      }
-      invalidPair.secrets.orderEphemeralKeys['order-1'].publicKeyHex = `02${'00'.repeat(32)}`
-      pairMismatch.prepare('UPDATE daemon_secrets SET payload = ? WHERE singleton = 1')
-        .run(JSON.stringify(invalidPair))
+      pairMismatch
+        .prepare(
+          `UPDATE daemon_order_ephemeral_keys SET public_key_hex = ?
+         WHERE key_id = ?`,
+        )
+        .run(`02${'00'.repeat(32)}`, 'order-1')
     } finally {
       pairMismatch.close()
     }
-    await assert.rejects(() => readSecrets(), /daemon secrets payload is malformed/)
+    await assert.rejects(
+      () => readSecrets(),
+      /daemon secrets payload is malformed/,
+    )
   } finally {
     if (previousHome === undefined) {
       delete process.env.BITCASTER_DAEMON_HOME
     } else {
       process.env.BITCASTER_DAEMON_HOME = previousHome
     }
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('daemon secrets reject a same-column table with weaker constraints', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-secrets-schema-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const secrets = createDaemonSecrets('2026-07-12T00:00:00.000Z')
+    secrets.orderEphemeralKeys['order-1'] = {
+      orderId: 'order-1',
+      marketId: 'condition-YES',
+      ...generateOrderEphemeralKeypair(),
+      createdAt: '2026-07-12T00:00:00.000Z',
+    }
+    await writeSecrets(secrets)
+    const database = new DatabaseSync(secretsPath())
+    try {
+      database.exec(`
+        ALTER TABLE daemon_order_ephemeral_keys
+          RENAME TO daemon_order_ephemeral_keys_strict;
+        CREATE TABLE daemon_order_ephemeral_keys (
+          key_id TEXT,
+          schema_version INTEGER,
+          order_id TEXT,
+          trade_id TEXT,
+          market_id TEXT,
+          private_key_hex TEXT,
+          public_key_hex TEXT,
+          created_at TEXT
+        ) STRICT;
+        INSERT INTO daemon_order_ephemeral_keys
+          SELECT * FROM daemon_order_ephemeral_keys_strict;
+        INSERT INTO daemon_order_ephemeral_keys
+          SELECT key_id, schema_version, order_id, trade_id, market_id,
+                 private_key_hex, public_key_hex, created_at
+            FROM daemon_order_ephemeral_keys_strict;
+        DROP TABLE daemon_order_ephemeral_keys_strict;
+      `)
+    } finally {
+      database.close()
+    }
+    await assert.rejects(
+      () => readSecrets(),
+      /daemon secrets schema is unsupported/,
+    )
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -711,9 +1152,9 @@ test('bitcaster-daemon run exits cleanly on SIGTERM', async () => {
   const initialized = new DatabaseSync(join(home, 'daemon-state.sqlite'))
   let rpcToken: string
   try {
-    rpcToken = initialized.prepare(
-      'SELECT token FROM daemon_rpc_token WHERE singleton = 1',
-    ).get().token as string
+    rpcToken = initialized
+      .prepare('SELECT token FROM daemon_rpc_token WHERE singleton = 1')
+      .get().token as string
   } finally {
     initialized.close()
   }
@@ -763,10 +1204,15 @@ test('bitcaster-daemon run exits cleanly on SIGTERM', async () => {
         }
       })
     } catch (error) {
-      throw new Error(`${error instanceof Error ? error.message : String(error)}; stdout=${stdout}; stderr=${stderr}`)
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}; stdout=${stdout}; stderr=${stderr}`,
+      )
     }
     child.kill('SIGTERM')
-    const [code, signal] = (await once(child, 'exit')) as [number | null, string | null]
+    const [code, signal] = (await once(child, 'exit')) as [
+      number | null,
+      string | null,
+    ]
     assert.equal(code, 0)
     assert.equal(signal, null)
     assert.match(stderr, /received SIGTERM, shutting down/)
@@ -893,7 +1339,8 @@ test('init --force refuses while a daemon owns the profile lock', async () => {
   try {
     await waitFor(() => stdout.includes('bitcaster-daemon listening'))
     await assert.rejects(
-      () => runDaemonInit(home, {
+      () =>
+        runDaemonInit(home, {
         walletSeedHex: 'cd'.repeat(32),
         nostrSecretKeyHex: '02'.padStart(64, '0'),
         force: true,
@@ -965,7 +1412,9 @@ async function runDaemonInit(
   )
 }
 
-async function runDaemonUntilExit(home: string): Promise<{ code: number | null; stdout: string }> {
+async function runDaemonUntilExit(
+  home: string,
+): Promise<{ code: number | null; stdout: string }> {
   const child = spawn(
     process.execPath,
     [
@@ -977,7 +1426,9 @@ async function runDaemonUntilExit(home: string): Promise<{ code: number | null; 
       env: {
         ...process.env,
         BITCASTER_DAEMON_HOME: home,
-        BITCASTER_DAEMON_PORT: String(43_871 + Math.floor(Math.random() * 10_000)),
+        BITCASTER_DAEMON_PORT: String(
+          43_871 + Math.floor(Math.random() * 10_000),
+        ),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
@@ -1002,7 +1453,9 @@ async function runDaemonUntilExit(home: string): Promise<{ code: number | null; 
   return { code: result.code, stdout }
 }
 
-async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+): Promise<void> {
   const deadline = Date.now() + 5_000
   while (Date.now() < deadline) {
     if (await predicate()) return

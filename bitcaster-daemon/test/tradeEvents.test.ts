@@ -9,19 +9,61 @@ import {
   readState,
   recordSwapMessage,
   recordSubmittedOrder,
+  recordOrderStatus,
   recordTradeCreated,
   recordTradeStateChanged,
   writeState,
 } from '../src/state.ts'
+import { DatabaseSync } from 'node:sqlite'
+import { statePath } from '../src/state.ts'
 import { profileFromPublicKey, writeProfile } from '../src/profile.ts'
 import { createDaemonSecrets, writeSecrets } from '../src/secrets.ts'
 import { DURABLE_TRADE_SESSION_SCHEMA_VERSION } from '@bitcaster-market/client-sdk/durableTradeRecovery'
+import { generateOrderEphemeralKeypair } from '../src/ephemeralKey.ts'
+
+async function installProtocolKeys(
+  specs: Array<{
+    keyId: string
+    orderId: string
+    marketId: string
+    tradeId?: string
+  }>,
+): Promise<Record<string, ReturnType<typeof generateOrderEphemeralKeypair>>> {
+  const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+  const pairs: Record<
+    string,
+    ReturnType<typeof generateOrderEphemeralKeypair>
+  > = {}
+  for (const spec of specs) {
+    const pair = generateOrderEphemeralKeypair()
+    pairs[spec.keyId] = pair
+    secrets.orderEphemeralKeys[spec.keyId] = {
+      orderId: spec.orderId,
+      ...(spec.tradeId === undefined ? {} : { tradeId: spec.tradeId }),
+      marketId: spec.marketId,
+      ...pair,
+      createdAt: '2026-05-21T00:00:00.000Z',
+    }
+  }
+  await writeProfile(profileFromPublicKey(secrets.nostrPublicKeyHex))
+  await writeSecrets(secrets)
+  return pairs
+}
 
 test('TradeHub event records are durable swap state', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
+    const keys = await installProtocolKeys([
+      {
+        keyId: 'trade-1',
+        orderId: 'order-1',
+        marketId: 'cond-YES',
+        tradeId: 'trade-1',
+      },
+    ])
+    const localPubkey = keys['trade-1']!.publicKeyHex
     const state = emptyDaemonState()
     state.orders['order-1'] = {
       orderId: 'order-1',
@@ -31,7 +73,7 @@ test('TradeHub event records are durable swap state', async () => {
       priceSubunits: 42,
       amountSubunits: 100,
       status: 'resting',
-      ephemeralPubkey: `02${'11'.repeat(32)}`,
+      ephemeralPubkey: localPubkey,
       tradeIds: ['trade-1'],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -45,12 +87,16 @@ test('TradeHub event records are durable swap state', async () => {
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
-    state.durableTradeSessions['trade-1'] = durableSessionForEvent('trade-1', 'seller')
+    state.durableTradeSessions['trade-1'] = durableSessionForEvent(
+      'trade-1',
+      'seller',
+      { keyId: 'trade-1', localProtocolPubkey: localPubkey },
+    )
     await writeState(state)
 
     const created = await recordTradeCreated({
       tradeId: 'trade-1',
-      sellerPubkey: `02${'11'.repeat(32)}`,
+      sellerPubkey: localPubkey,
       buyerPubkey: `03${'22'.repeat(32)}`,
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
@@ -103,13 +149,375 @@ test('TradeHub event records are durable swap state', async () => {
   }
 })
 
+test('order refresh preserves private swaps linked only by persisted order history', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-order-refresh-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const state = emptyDaemonState()
+    state.orders['order-1'] = {
+      orderId: 'order-1',
+      marketId: 'condition-YES',
+      status: 'Open',
+      tradeIds: ['trade-existing'],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.swaps['trade-existing'] = {
+      tradeId: 'trade-existing',
+      marketId: 'condition-YES',
+      orderId: 'order-1',
+      messages: { adaptorPoint: 'retained-cipher' },
+      sellerAdaptorSecretHex: 'aa',
+      sellerAdaptorPointHex: '02aa',
+      step: 'seller-opened',
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeState(state)
+
+    await recordOrderStatus('condition-YES', 'order-1', {
+      status: 'PartiallyFilled',
+      fills: [{ tradeId: 'trade-new' }],
+    })
+
+    const persisted = await readState()
+    assert.equal(
+      persisted?.swaps['trade-existing']?.messages.adaptorPoint,
+      'retained-cipher',
+    )
+    assert.equal(
+      persisted?.swaps['trade-existing']?.sellerAdaptorSecretHex,
+      'aa',
+    )
+    assert.deepEqual(persisted?.orders['order-1']?.tradeIds, [
+      'trade-existing',
+      'trade-new',
+    ])
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('TradeCreated lookup never hydrates unrelated order or protocol-key history', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-trade-lookup-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    await writeProfile(profileFromPublicKey('a'.repeat(64)))
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    secrets.orderEphemeralKeys['unrelated-order'] = {
+      orderId: 'unrelated-order',
+      marketId: 'condition-YES',
+      ...generateOrderEphemeralKeypair(),
+      createdAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeSecrets(secrets)
+    const state = emptyDaemonState()
+    state.orders['unrelated-order'] = {
+      orderId: 'unrelated-order',
+      marketId: 'condition-YES',
+      status: 'Open',
+      ephemeralPubkey:
+        secrets.orderEphemeralKeys['unrelated-order'].publicKeyHex,
+      tradeIds: [],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeState(state)
+    const database = new DatabaseSync(statePath())
+    try {
+      database.exec('PRAGMA ignore_check_constraints = ON')
+      database
+        .prepare(
+          `UPDATE daemon_orders SET status = '' WHERE order_id = 'unrelated-order'`,
+        )
+        .run()
+      database
+        .prepare(
+          `UPDATE daemon_order_ephemeral_keys SET private_key_hex = 'bad'
+          WHERE key_id = 'unrelated-order'`,
+        )
+        .run()
+    } finally {
+      database.close()
+    }
+
+    assert.equal(
+      await recordTradeCreated({
+        tradeId: 'trade-new',
+        sellerPubkey: `02${'22'.repeat(32)}`,
+        buyerPubkey: `03${'33'.repeat(32)}`,
+        sellerLocktime: '2026-05-21T00:02:00.000Z',
+        buyerLocktime: '2026-05-21T00:01:00.000Z',
+        marketId: 'condition-NO',
+      }),
+      null,
+    )
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('TradeCreated exact trade history outranks an earlier pubkey fallback', async () => {
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-trade-exact-precedence-'),
+  )
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    const protocolKey = generateOrderEphemeralKeypair()
+    secrets.orderEphemeralKeys['z-exact-order'] = {
+      orderId: 'z-exact-order',
+      marketId: 'cond-YES',
+      ...protocolKey,
+      createdAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeSecrets(secrets)
+    await writeProfile(profileFromPublicKey(secrets.nostrPublicKeyHex))
+    const state = emptyDaemonState()
+    for (const [orderId, tradeIds] of [
+      ['a-fallback-order', []],
+      ['z-exact-order', ['trade-exact-precedence']],
+    ] as const) {
+      state.orders[orderId] = {
+        orderId,
+        marketId: 'cond-YES',
+        side: 'Sell',
+        tokenSide: 'Outcome',
+        priceSubunits: 42,
+        amountSubunits: 100,
+        status: 'resting',
+        ephemeralPubkey: protocolKey.publicKeyHex,
+        tradeIds: [...tradeIds],
+        createdAt: '2026-05-21T00:00:00.000Z',
+        updatedAt: '2026-05-21T00:00:00.000Z',
+      }
+    }
+    await writeState(state)
+
+    const created = await recordTradeCreated({
+      tradeId: 'trade-exact-precedence',
+      sellerPubkey: protocolKey.publicKeyHex,
+      buyerPubkey: `03${'22'.repeat(32)}`,
+      sellerLocktime: '2026-05-21T00:02:00.000Z',
+      buyerLocktime: '2026-05-21T00:01:00.000Z',
+      marketId: 'cond-YES',
+      fillAmountSubunits: 100,
+      outcomeFaceAmountSubunits: 100,
+      quotePaymentSubunits: 42,
+      settlementKind: 'DirectSwap',
+    })
+
+    assert.equal(created?.orderId, 'z-exact-order')
+    const persisted = await readState()
+    assert.deepEqual(persisted?.orders['a-fallback-order']?.tradeIds, [])
+    assert.deepEqual(persisted?.orders['z-exact-order']?.tradeIds, [
+      'trade-exact-precedence',
+    ])
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('TradeCreated exact history rejects wrong direct and mint market paths before mutation', async () => {
+  for (const settlementKind of ['DirectSwap', 'Mint'] as const) {
+    const home = await mkdtemp(
+      join(
+        tmpdir(),
+        `bitcaster-daemon-trade-exact-wrong-${settlementKind.toLowerCase()}-`,
+      ),
+    )
+    const previousHome = process.env.BITCASTER_DAEMON_HOME
+    process.env.BITCASTER_DAEMON_HOME = home
+    try {
+      const tradeId = `trade-exact-wrong-${settlementKind.toLowerCase()}`
+      const keys = await installProtocolKeys([
+        {
+          keyId: 'exact-order',
+          orderId: 'exact-order',
+          marketId: 'cond-YES',
+        },
+      ])
+      const publicKey = keys['exact-order']!.publicKeyHex
+      const state = emptyDaemonState()
+      state.orders['exact-order'] = {
+        orderId: 'exact-order',
+        marketId: 'cond-YES',
+        side: settlementKind === 'DirectSwap' ? 'Sell' : 'Buy',
+        tokenSide: 'Outcome',
+        priceSubunits: 42,
+        amountSubunits: 100,
+        status: 'matched',
+        ephemeralPubkey: publicKey,
+        tradeIds: [tradeId],
+        createdAt: '2026-05-21T00:00:00.000Z',
+        updatedAt: '2026-05-21T00:00:00.000Z',
+      }
+      await writeState(state)
+
+      await assert.rejects(
+        () =>
+          recordTradeCreated({
+            tradeId,
+            sellerPubkey:
+              settlementKind === 'DirectSwap'
+                ? publicKey
+                : `02${'33'.repeat(32)}`,
+            buyerPubkey:
+              settlementKind === 'Mint' ? publicKey : `03${'22'.repeat(32)}`,
+            sellerLocktime: '2026-05-21T00:02:00.000Z',
+            buyerLocktime: '2026-05-21T00:01:00.000Z',
+            marketId: 'cond-NO',
+            fillAmountSubunits: 100,
+            outcomeFaceAmountSubunits: 100,
+            quotePaymentSubunits: 42,
+            settlementKind,
+            ...(settlementKind === 'Mint'
+              ? {
+                  sellerKeepOutcomeSetId: 'YES',
+                  sellerLockOutcomeSetId: 'NO',
+                }
+              : {}),
+          }),
+        /exact local order has an invalid market path/,
+      )
+      const persisted = await readState()
+      assert.deepEqual(persisted?.orders['exact-order']?.tradeIds, [tradeId])
+      assert.equal(persisted?.swaps[tradeId], undefined)
+      assert.equal(persisted?.durableTradeSessions[tradeId], undefined)
+    } finally {
+      if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+      else process.env.BITCASTER_DAEMON_HOME = previousHome
+      await rm(home, { recursive: true, force: true })
+    }
+  }
+})
+
+test('TradeCreated cannot open a swap without its retained protocol key', async () => {
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-trade-missing-key-'),
+  )
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const publicKey = generateOrderEphemeralKeypair().publicKeyHex
+    const state = emptyDaemonState()
+    state.orders['missing-key-order'] = {
+      orderId: 'missing-key-order',
+      marketId: 'cond-YES',
+      side: 'Sell',
+      tokenSide: 'Outcome',
+      priceSubunits: 42,
+      amountSubunits: 100,
+      status: 'matched',
+      ephemeralPubkey: publicKey,
+      tradeIds: ['trade-missing-key'],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeState(state)
+
+    await assert.rejects(
+      () =>
+        recordTradeCreated({
+          tradeId: 'trade-missing-key',
+          sellerPubkey: publicKey,
+          buyerPubkey: `03${'22'.repeat(32)}`,
+          sellerLocktime: '2026-05-21T00:02:00.000Z',
+          buyerLocktime: '2026-05-21T00:01:00.000Z',
+          marketId: 'cond-YES',
+          fillAmountSubunits: 100,
+          outcomeFaceAmountSubunits: 100,
+          quotePaymentSubunits: 42,
+          settlementKind: 'DirectSwap',
+        }),
+      /protocol key is missing/,
+    )
+    const persisted = await readState()
+    assert.deepEqual(persisted?.orders['missing-key-order']?.tradeIds, [
+      'trade-missing-key',
+    ])
+    assert.equal(persisted?.swaps['trade-missing-key'], undefined)
+    assert.equal(
+      persisted?.durableTradeSessions['trade-missing-key'],
+      undefined,
+    )
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('TradeCreated rejects an ambiguous pubkey fallback without persisting a swap', async () => {
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-trade-ambiguous-fallback-'),
+  )
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const protocolKey = generateOrderEphemeralKeypair()
+    const state = emptyDaemonState()
+    for (const orderId of ['fallback-order-a', 'fallback-order-b']) {
+      state.orders[orderId] = {
+        orderId,
+        marketId: 'cond-YES',
+        side: 'Sell',
+        tokenSide: 'Outcome',
+        priceSubunits: 42,
+        amountSubunits: 100,
+        status: 'resting',
+        ephemeralPubkey: protocolKey.publicKeyHex,
+        tradeIds: [],
+        createdAt: '2026-05-21T00:00:00.000Z',
+        updatedAt: '2026-05-21T00:00:00.000Z',
+      }
+    }
+    await writeState(state)
+
+    await assert.rejects(
+      () =>
+        recordTradeCreated({
+          tradeId: 'ambiguous-trade',
+          sellerPubkey: protocolKey.publicKeyHex,
+          buyerPubkey: `03${'22'.repeat(32)}`,
+          sellerLocktime: '2026-05-21T00:02:00.000Z',
+          buyerLocktime: '2026-05-21T00:01:00.000Z',
+          marketId: 'cond-YES',
+          fillAmountSubunits: 100,
+          outcomeFaceAmountSubunits: 100,
+          quotePaymentSubunits: 42,
+          settlementKind: 'DirectSwap',
+        }),
+      /ambiguous local order fallback/,
+    )
+    const persisted = await readState()
+    assert.equal(persisted?.swaps['ambiguous-trade'], undefined)
+    assert.deepEqual(persisted?.orders['fallback-order-a']?.tradeIds, [])
+    assert.deepEqual(persisted?.orders['fallback-order-b']?.tradeIds, [])
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('TradeCreated promotes a local ephemeral key into an SDK durable session', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-durable-trade-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
-    const publicKeyHex = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
+    const publicKeyHex =
+      '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
     secrets.orderEphemeralKeys['trade-durable-1'] = {
       orderId: 'order-durable-1',
       tradeId: 'trade-durable-1',
@@ -206,7 +614,9 @@ test('submitted daemon taker fills retain recovery source metadata', async () =>
 })
 
 test('TradeCreated direct match must use the same local order market path', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-path-direct-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-events-path-direct-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
@@ -247,7 +657,9 @@ test('TradeCreated direct match must use the same local order market path', asyn
 })
 
 test('TradeCreated rejects unit metadata that does not match the local order', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-unit-mismatch-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-events-unit-mismatch-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
@@ -288,7 +700,10 @@ test('TradeCreated rejects unit metadata that does not match the local order', a
     assert.match(created?.error ?? '', /Trade unit mismatch/)
     const persisted = await readState()
     assert.equal(persisted?.swaps['trade-unit-mismatch'].step, 'Failed')
-    assert.match(persisted?.swaps['trade-unit-mismatch'].error ?? '', /Trade unit mismatch/)
+    assert.match(
+      persisted?.swaps['trade-unit-mismatch'].error ?? '',
+      /Trade unit mismatch/,
+    )
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -297,7 +712,9 @@ test('TradeCreated rejects unit metadata that does not match the local order', a
 })
 
 test('TradeCreated rejects quote payment that violates local submitted order economics', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-order-economics-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-events-order-economics-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
@@ -335,7 +752,10 @@ test('TradeCreated rejects quote payment that violates local submitted order eco
     })
 
     assert.equal(created?.step, 'Failed')
-    assert.match(created?.error ?? '', /does not satisfy the submitted order price/)
+    assert.match(
+      created?.error ?? '',
+      /does not satisfy the submitted order price/,
+    )
     const persisted = await readState()
     assert.equal(persisted?.swaps['trade-price-mismatch'].step, 'Failed')
   } finally {
@@ -346,7 +766,9 @@ test('TradeCreated rejects quote payment that violates local submitted order eco
 })
 
 test('TradeCreated rejects legacy local orders without submitted order economics', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-missing-economics-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-events-missing-economics-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
@@ -389,7 +811,9 @@ test('TradeCreated rejects legacy local orders without submitted order economics
 })
 
 test('TradeCreated rejects non-default rows without canonical settlement amounts', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-canonical-missing-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-events-canonical-missing-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
@@ -422,7 +846,10 @@ test('TradeCreated rejects non-default rows without canonical settlement amounts
     })
 
     assert.equal(created?.step, 'Failed')
-    assert.match(created?.error ?? '', /outcome face subunits must be a positive safe integer|missing outcome face subunits/)
+    assert.match(
+      created?.error ?? '',
+      /outcome face subunits must be a positive safe integer|missing outcome face subunits/,
+    )
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -431,16 +858,24 @@ test('TradeCreated rejects non-default rows without canonical settlement amounts
 })
 
 test('TradeCreated mint seller matches keep path and buyer matches lock path', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-path-complement-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-events-path-complement-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
+    const keys = await installProtocolKeys([
+      { keyId: 'seller-order', orderId: 'seller-order', marketId: 'cond-YES' },
+      { keyId: 'buyer-order', orderId: 'buyer-order', marketId: 'cond-NO' },
+    ])
+    const sellerPubkey = keys['seller-order']!.publicKeyHex
+    const buyerPubkey = keys['buyer-order']!.publicKeyHex
     const state = emptyDaemonState()
     state.orders['seller-order'] = {
       orderId: 'seller-order',
       marketId: 'cond-YES',
       status: 'resting',
-      ephemeralPubkey: `02${'11'.repeat(32)}`,
+      ephemeralPubkey: sellerPubkey,
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -453,7 +888,7 @@ test('TradeCreated mint seller matches keep path and buyer matches lock path', a
       priceSubunits: 42,
       amountSubunits: 100,
       status: 'matched',
-      ephemeralPubkey: `03${'22'.repeat(32)}`,
+      ephemeralPubkey: buyerPubkey,
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -462,7 +897,7 @@ test('TradeCreated mint seller matches keep path and buyer matches lock path', a
 
     const sellerCreated = await recordTradeCreated({
       tradeId: 'trade-seller',
-      sellerPubkey: `02${'11'.repeat(32)}`,
+      sellerPubkey,
       buyerPubkey: `03${'33'.repeat(32)}`,
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
@@ -477,7 +912,7 @@ test('TradeCreated mint seller matches keep path and buyer matches lock path', a
     const buyerCreated = await recordTradeCreated({
       tradeId: 'trade-buyer',
       sellerPubkey: `02${'33'.repeat(32)}`,
-      buyerPubkey: `03${'22'.repeat(32)}`,
+      buyerPubkey,
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-NO',
@@ -501,10 +936,20 @@ test('TradeCreated mint seller matches keep path and buyer matches lock path', a
 })
 
 test('TradeCreated binds known public complement order by submitted trade id', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-public-complement-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-events-public-complement-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
+    const keys = await installProtocolKeys([
+      {
+        keyId: 'buyer-order',
+        orderId: 'buyer-order',
+        marketId: 'cond-A',
+      },
+    ])
+    const buyerPubkey = keys['buyer-order']!.publicKeyHex
     const state = emptyDaemonState()
     state.orders['buyer-order'] = {
       orderId: 'buyer-order',
@@ -514,7 +959,7 @@ test('TradeCreated binds known public complement order by submitted trade id', a
       priceSubunits: 99,
       amountSubunits: 100,
       status: 'matched',
-      ephemeralPubkey: `03${'22'.repeat(32)}`,
+      ephemeralPubkey: buyerPubkey,
       tradeIds: ['trade-known-complement'],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -533,7 +978,7 @@ test('TradeCreated binds known public complement order by submitted trade id', a
     const created = await recordTradeCreated({
       tradeId: 'trade-known-complement',
       sellerPubkey: `02${'33'.repeat(32)}`,
-      buyerPubkey: `03${'22'.repeat(32)}`,
+      buyerPubkey,
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-B|C',
@@ -557,10 +1002,20 @@ test('TradeCreated binds known public complement order by submitted trade id', a
 })
 
 test('TradeCreated binds buyer complement order by settlement metadata', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-buyer-complement-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-events-buyer-complement-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
+    const keys = await installProtocolKeys([
+      {
+        keyId: 'buyer-order',
+        orderId: 'buyer-order',
+        marketId: 'cond-YES',
+      },
+    ])
+    const buyerPubkey = keys['buyer-order']!.publicKeyHex
     const state = emptyDaemonState()
     state.orders['buyer-order'] = {
       orderId: 'buyer-order',
@@ -570,7 +1025,7 @@ test('TradeCreated binds buyer complement order by settlement metadata', async (
       priceSubunits: 99,
       amountSubunits: 100,
       status: 'matched',
-      ephemeralPubkey: `03${'22'.repeat(32)}`,
+      ephemeralPubkey: buyerPubkey,
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -580,7 +1035,7 @@ test('TradeCreated binds buyer complement order by settlement metadata', async (
     const created = await recordTradeCreated({
       tradeId: 'trade-buyer-complement',
       sellerPubkey: `02${'33'.repeat(32)}`,
-      buyerPubkey: `03${'22'.repeat(32)}`,
+      buyerPubkey,
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-NO',
@@ -605,7 +1060,9 @@ test('TradeCreated binds buyer complement order by settlement metadata', async (
 })
 
 test('TradeCreated mint match rejects mismatched keep or lock paths', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-path-mismatch-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-events-path-mismatch-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
@@ -674,16 +1131,27 @@ test('TradeCreated mint match rejects mismatched keep or lock paths', async () =
 })
 
 test('concurrent TradeHub events serialize daemon state writes', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-concurrent-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-events-concurrent-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
+    const keys = await installProtocolKeys([
+      {
+        keyId: 'trade-1',
+        orderId: 'order-1',
+        marketId: 'cond-YES',
+        tradeId: 'trade-1',
+      },
+    ])
+    const localPubkey = keys['trade-1']!.publicKeyHex
     const state = emptyDaemonState()
     state.orders['order-1'] = {
       orderId: 'order-1',
       marketId: 'cond-YES',
       status: 'resting',
-      ephemeralPubkey: `02${'11'.repeat(32)}`,
+      ephemeralPubkey: localPubkey,
       tradeIds: ['trade-1'],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -701,7 +1169,11 @@ test('concurrent TradeHub events serialize daemon state writes', async () => {
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
-    state.durableTradeSessions['trade-1'] = durableSessionForEvent('trade-1', 'seller')
+    state.durableTradeSessions['trade-1'] = durableSessionForEvent(
+      'trade-1',
+      'seller',
+      { keyId: 'trade-1', localProtocolPubkey: localPubkey },
+    )
     await writeState(state)
 
     await Promise.all([
@@ -726,13 +1198,16 @@ test('concurrent TradeHub events serialize daemon state writes', async () => {
   }
 })
 
-function durableSessionForEvent(tradeId: string, role: 'seller' | 'buyer') {
-  const localProtocolPubkey = role === 'seller'
-    ? `02${'11'.repeat(32)}`
-    : `03${'22'.repeat(32)}`
-  const counterpartyProtocolPubkey = role === 'seller'
-    ? `03${'22'.repeat(32)}`
-    : `02${'11'.repeat(32)}`
+function durableSessionForEvent(
+  tradeId: string,
+  role: 'seller' | 'buyer',
+  overrides: Partial<{ keyId: string; localProtocolPubkey: string }> = {},
+) {
+  const localProtocolPubkey =
+    overrides.localProtocolPubkey ??
+    (role === 'seller' ? `02${'11'.repeat(32)}` : `03${'22'.repeat(32)}`)
+  const counterpartyProtocolPubkey =
+    role === 'seller' ? `03${'22'.repeat(32)}` : `02${'11'.repeat(32)}`
   return {
     schemaVersion: DURABLE_TRADE_SESSION_SCHEMA_VERSION,
     revision: 0,
@@ -744,7 +1219,7 @@ function durableSessionForEvent(tradeId: string, role: 'seller' | 'buyer') {
     sellerLocktimeSecs: 1_779_389_200,
     buyerLocktimeSecs: 1_779_385_600,
     ephemeralKeyHandle: {
-      keyId: `key-${tradeId}`,
+      keyId: overrides.keyId ?? `key-${tradeId}`,
       tradeId,
       role,
       localProtocolPubkey,

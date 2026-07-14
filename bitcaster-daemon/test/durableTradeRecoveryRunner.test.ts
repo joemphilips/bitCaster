@@ -13,9 +13,9 @@ import {
   emptyDaemonState,
   readState,
   recordSwapMessage,
-  writeState,
   type DaemonState,
 } from '../src/state.ts'
+import { writeStateWithDurableSessionKeys } from './durableSessionTestStore.ts'
 
 test('daemon recovery owner queues a runtime event behind bootstrap recovery', async () => {
   const calls: string[] = []
@@ -79,10 +79,59 @@ test('daemon recovery owner queues a runtime event behind bootstrap recovery', a
   ])
 })
 
+test('runtime recovery targets one trade without sweeping unrelated active work', async () => {
+  const state = eventState()
+  state.swaps['trade-event'] = {
+    tradeId: 'trade-event',
+    orderId: 'order-event',
+    marketId: 'condition-event-YES',
+    role: 'seller',
+    messages: {},
+    step: 'seller-opened',
+    createdAt: '2026-07-14T00:00:00.000Z',
+    updatedAt: '2026-07-14T00:00:00.000Z',
+  }
+  state.swaps['trade-other'] = {
+    tradeId: 'trade-other',
+    orderId: 'order-other',
+    marketId: 'condition-other-YES',
+    role: 'seller',
+    messages: {},
+    step: 'seller-opened',
+    createdAt: '2026-07-14T00:00:00.000Z',
+    updatedAt: '2026-07-14T00:00:00.000Z',
+  }
+  const recoveryTargets: Array<string | undefined> = []
+  const executorTargets: string[][] = []
+  const runner = createDaemonDurableTradeRecoveryRunner({
+    executor: {
+      async resumeActiveSwaps(selected: DaemonState) {
+        executorTargets.push(Object.keys(selected.swaps))
+        return { activeSwaps: Object.keys(selected.swaps).length }
+      },
+    } as never,
+    connection: {} as never,
+    loadState: async () => state,
+    recoverDurableSessions: async ({ tradeId }) => {
+      recoveryTargets.push(tradeId)
+      return { sessions: [], orphans: [] }
+    },
+  })
+
+  await runner.recoverTrade('trade-event')
+
+  assert.deepEqual(recoveryTargets, ['trade-event'])
+  assert.deepEqual(executorTargets, [['trade-event']])
+})
+
 test('daemon recovery retry is one-shot, coalesced, and does no work after locktime', async () => {
   let nowMs = 1_000
   const state = retryState()
-  const timers: Array<{ callback: () => void; delayMs: number; cleared: boolean }> = []
+  const timers: Array<{
+    callback: () => void
+    delayMs: number
+    cleared: boolean
+  }> = []
   let coordinatorRuns = 0
   let legacyRuns = 0
   const runner = createDaemonDurableTradeRecoveryRunner({
@@ -101,20 +150,24 @@ test('daemon recovery retry is one-shot, coalesced, and does no work after lockt
       return timer as never
     },
     clearTimer: (timer) => {
-      (timer as unknown as { cleared: boolean }).cleared = true
+      ;(timer as unknown as { cleared: boolean }).cleared = true
     },
     recoverDurableSessions: async ({ scheduleRetry }) => {
       coordinatorRuns += 1
       if (coordinatorRuns === 1) {
         await scheduleRetry({
           tradeId: 'trade-retry',
-          operationId: state.proofOperations['trade-retry/seller-lock']!.durableTradeRecovery!.operationId,
+          operationId:
+            state.proofOperations['trade-retry/seller-lock']!
+              .durableTradeRecovery!.operationId,
           delayMs: 25,
           reason: 'rate-limited',
         })
         await scheduleRetry({
           tradeId: 'trade-retry',
-          operationId: state.proofOperations['trade-retry/seller-lock']!.durableTradeRecovery!.operationId,
+          operationId:
+            state.proofOperations['trade-retry/seller-lock']!
+              .durableTradeRecovery!.operationId,
           delayMs: 50,
           reason: 'reservation-race',
         })
@@ -140,7 +193,11 @@ test('daemon recovery retry is one-shot, coalesced, and does no work after lockt
 
 test('daemon recovery retry fires one serialized owner pass while it remains before locktime', async () => {
   const state = retryState()
-  const timers: Array<{ callback: () => void; delayMs: number; unref(): void }> = []
+  const timers: Array<{
+    callback: () => void
+    delayMs: number
+    unref(): void
+  }> = []
   let coordinatorRuns = 0
   let legacyRuns = 0
   const runner = createDaemonDurableTradeRecoveryRunner({
@@ -163,7 +220,9 @@ test('daemon recovery retry fires one serialized owner pass while it remains bef
       if (coordinatorRuns === 1) {
         await scheduleRetry({
           tradeId: 'trade-retry',
-          operationId: state.proofOperations['trade-retry/seller-lock']!.durableTradeRecovery!.operationId,
+          operationId:
+            state.proofOperations['trade-retry/seller-lock']!
+              .durableTradeRecovery!.operationId,
           delayMs: 25,
           reason: 'rate-limited',
         })
@@ -184,7 +243,9 @@ test('daemon recovery retry fires one serialized owner pass while it remains bef
 })
 
 test('daemon recovery owner does not interleave an inbound cipher write with a paused session CAS', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-event-owner-cas-'))
+  const home = await mkdtemp(
+    join(tmpdir(), 'bitcaster-daemon-event-owner-cas-'),
+  )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
@@ -199,11 +260,15 @@ test('daemon recovery owner does not interleave an inbound cipher write with a p
       createdAt: '2026-07-11T00:00:00.000Z',
       updatedAt: '2026-07-11T00:00:00.000Z',
     }
-    await writeState(state)
+    await writeStateWithDurableSessionKeys(state)
     let beginRecovery: (() => void) | undefined
     let releaseRecovery: (() => void) | undefined
-    const recoveryStarted = new Promise<void>((resolve) => { beginRecovery = resolve })
-    const recoveryRelease = new Promise<void>((resolve) => { releaseRecovery = resolve })
+    const recoveryStarted = new Promise<void>((resolve) => {
+      beginRecovery = resolve
+    })
+    const recoveryRelease = new Promise<void>((resolve) => {
+      releaseRecovery = resolve
+    })
     let recoveryRuns = 0
     let eventActions = 0
     const runner = createDaemonDurableTradeRecoveryRunner({
@@ -216,7 +281,9 @@ test('daemon recovery owner does not interleave an inbound cipher write with a p
       loadState: async () => (await readState())!,
       recoverDurableSessions: async () => {
         recoveryRuns += 1
-        const revision = (await readState())!.durableTradeSessions['trade-event']!.revision
+        const revision = (await readState())!.durableTradeSessions[
+          'trade-event'
+        ]!.revision
         if (recoveryRuns === 1) {
           beginRecovery!()
           await recoveryRelease
@@ -241,7 +308,10 @@ test('daemon recovery owner does not interleave an inbound cipher write with a p
       },
     )
     await Promise.resolve()
-    assert.equal((await readState())!.durableTradeSessions['trade-event']!.revision, 0)
+    assert.equal(
+      (await readState())!.durableTradeSessions['trade-event']!.revision,
+      0,
+    )
 
     releaseRecovery!()
     await recovery
@@ -250,7 +320,9 @@ test('daemon recovery owner does not interleave an inbound cipher write with a p
     assert.equal(recoveryRuns, 2)
     assert.equal(eventActions, 1)
     assert.equal(
-      (await readState())!.durableTradeSessions['trade-event']!.receivedCiphers['adaptor-point']?.ciphertext,
+      (await readState())!.durableTradeSessions['trade-event']!.receivedCiphers[
+        'adaptor-point'
+      ]?.ciphertext,
       'inbound-cipher',
     )
   } finally {

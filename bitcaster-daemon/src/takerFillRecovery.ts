@@ -6,7 +6,7 @@ import {
 } from '@bitcaster-market/client-sdk/tradeRecovery'
 import type { SubmitOrderResponse } from '@bitcaster-market/client-sdk/engineClient'
 import {
-  readState,
+  readStateScope,
   recordSubmittedOrder,
   updateState,
   type DaemonState,
@@ -29,7 +29,17 @@ export interface DaemonTakerFillRecoveryOptions {
 
 type DaemonTakerFillRecoverySubmitOrderResponse =
   TakerFillRecoverySubmitOrderResponse &
-  Partial<Pick<SubmitOrderResponse, 'status' | 'remainingAmountSubunits' | 'fills' | 'baseAsset' | 'divisibility' | 'pendingPubkeySubmissions'>>
+    Partial<
+      Pick<
+        SubmitOrderResponse,
+        | 'status'
+        | 'remainingAmountSubunits'
+        | 'fills'
+        | 'baseAsset'
+        | 'divisibility'
+        | 'pendingPubkeySubmissions'
+      >
+    >
 
 /**
  * Daemon adapter for the SDK's maker-caused taker replacement policy. The
@@ -52,16 +62,23 @@ export class DaemonTakerFillRecovery {
     if (this.inFlightTradeIds.has(tradeId)) return
     this.inFlightTradeIds.add(tradeId)
     try {
-      const state = await readState()
-      const swap = state?.swaps[tradeId]
-      const order = swap?.orderId ? state?.orders[swap.orderId] : undefined
+      const snapshot = await readStateScope({
+        swapIds: [tradeId],
+        orderIdsFromSwapIds: [tradeId],
+      })
+      const swap = snapshot?.swaps[tradeId]
+      const order = swap?.orderId ? snapshot?.orders[swap.orderId] : undefined
       const input = buildRecoveryInput(swap, order)
       if (!input) return
 
-      const marked = await reserveRecoveryAttempt(tradeId, this.newClientOrderId)
+      const marked = await reserveRecoveryAttempt(
+        tradeId,
+        this.newClientOrderId,
+      )
       if (!marked) return
 
-      let submittedResponse: DaemonTakerFillRecoverySubmitOrderResponse | null = null
+      let submittedResponse: DaemonTakerFillRecoverySubmitOrderResponse | null =
+        null
       const result = await recoverFailedTakerFill({
         failureReason: marked.failureReason,
         isTaker: marked.isTaker === true,
@@ -80,7 +97,11 @@ export class DaemonTakerFillRecovery {
       await recordSubmittedOrder(
         input.sourceOrder.marketId,
         result.clientOrderId,
-        submittedResponse ?? { orderId: result.orderId, status: 'resting', fills: [] },
+        submittedResponse ?? {
+          orderId: result.orderId,
+          status: 'resting',
+          fills: [],
+        },
         null,
         input.sourceOrder.tokenSide,
         input.sourceOrder.side,
@@ -171,7 +192,7 @@ async function reserveRecoveryAttempt(
   tradeId: string,
   newClientOrderId: () => string,
 ): Promise<LocalSwapRecord | null> {
-  return updateState((state, now) => {
+  return updateState({ swapIds: [tradeId] }, (state, now) => {
     const swap = state.swaps[tradeId]
     if (!swap || swap.takerRecovery?.status === 'submitted') return null
     if (!swap.takerRecovery) {
@@ -189,7 +210,7 @@ async function markRecoverySubmitted(
   tradeId: string,
   replacementOrderId: string,
 ): Promise<void> {
-  await updateState((state, now) => {
+  await updateState({ swapIds: [tradeId] }, (state, now) => {
     const swap = state.swaps[tradeId]
     if (!swap?.takerRecovery) return
     swap.takerRecovery = {

@@ -30,9 +30,7 @@ import {
   type MarketThumbnailBytes,
 } from '@bitcaster-market/client-sdk'
 import { planParticipationScoreTopUp } from '@bitcaster-market/client-sdk/participationScore'
-import {
-  complementOutcomeSetId,
-} from '@bitcaster-market/client-sdk/outcomeSets'
+import { complementOutcomeSetId } from '@bitcaster-market/client-sdk/outcomeSets'
 import { validateOrderIntent } from '@bitcaster-market/client-sdk/orderValidation'
 import { checkOrderSettlementSupport } from '@bitcaster-market/client-sdk/settlementSupport'
 import {
@@ -51,18 +49,36 @@ import {
 import { prepareSwapInputsForTrade } from '@bitcaster-market/client-sdk/tradePreparation'
 import {
   DEFAULT_SAT_MARKET_DIVISIBILITY,
+  defaultCollateralUnit,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
   quotePaymentSubunits,
 } from '@bitcaster-market/client-sdk/marketUnits'
-import { canBackOrder, type TokenHoldings } from '@bitcaster-market/client-sdk/tradingClient'
+import {
+  canBackOrder,
+  type TokenHoldings,
+} from '@bitcaster-market/client-sdk/tradingClient'
 import { type generateOrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
 import type { DaemonCommand, DaemonHealth, DaemonResponse } from './protocol.ts'
-import { ensureProfileDir, normalizeEndpointUrl, readProfile, updateProfile } from './profile.ts'
-import { bearerToken, readRpcToken, rpcSocketPath, tokenMatches } from './rpcAuth.ts'
-import { getOrCreateOrderEphemeralKeypair, readSecrets } from './secrets.ts'
 import {
+  ensureProfileDir,
+  normalizeEndpointUrl,
+  readProfile,
+  updateProfile,
+} from './profile.ts'
+import {
+  bearerToken,
+  readRpcToken,
+  rpcSocketPath,
+  tokenMatches,
+} from './rpcAuth.ts'
+import {
+  getOrCreateOrderEphemeralKeypair,
+  readIdentitySecrets as readSecrets,
+} from './secrets.ts'
+import {
+  daemonStateStorageIsEmpty,
   ensureState,
   getProofOperation,
   listProofOperations,
@@ -71,11 +87,13 @@ import {
   markProofOperationMintSubmitted,
   markProofOperationCompleted,
   prepareProofOperation,
-  readState,
+  readDaemonStatusSnapshot,
+  readStateScope,
+  readWalletBalance,
+  readWalletHoldingTotals,
   recordSubmittedOrder,
   recordOrderStatus,
   releaseProofReservation,
-  summarizeWalletBalance,
   updateState,
   type CashuProofRecord,
 } from './state.ts'
@@ -91,8 +109,9 @@ import {
   splitAvailableSatProofsForCtfCollateral,
   type WalletOpsDependencies,
 } from './walletOps.ts'
-import { buildDaemonTokenHoldings } from './walletHoldings.ts'
+import { buildDaemonTokenHoldingsFromTotals } from './walletHoldings.ts'
 import type { DaemonDurableTradeRecoveryRunner } from './durableTradeRecovery.ts'
+import { deriveDaemonWalletProofIdFromProof } from './stateSqlite.ts'
 
 export interface DaemonServerOptions {
   host?: string
@@ -190,23 +209,45 @@ async function splitWalletCompleteSet(input: {
     makeOutputs: ({ amountSubunits, keyset }) =>
       OutputData.createRandomData(Amount.from(amountSubunits), keyset),
   })
-  await updateState((state, now) => {
+  await updateState(
+    {
+      walletProofs: walletProofMutationScope(input.mintUrl, [
+        ...collateral.spent,
+        ...collateral.inputs,
+        ...collateral.keep,
+        ...Object.values(proofsByCollection).flat(),
+      ]),
+    },
+    (state, now) => {
     removeProofsBySecretFromState(state, input.mintUrl, [
       ...collateral.spent,
       ...collateral.inputs,
     ])
-    addProofsToState(state, input.mintUrl, collateral.keep, 'available', { kind: 'sats', baseAsset: 'sat' }, now)
+      addProofsToState(
+        state,
+        input.mintUrl,
+        collateral.keep,
+        'available',
+        { kind: 'sats', baseAsset: 'sat' },
+        now,
+      )
     for (const [outcomeSetId, proofs] of Object.entries(proofsByCollection)) {
       addProofsToState(
         state,
         input.mintUrl,
         proofs,
         'available',
-        { kind: 'Outcome', conditionId: input.conditionId, outcomeSetId },
+        {
+          kind: 'Outcome',
+          conditionId: input.conditionId,
+          outcomeSetId,
+          baseAsset: 'sat',
+        },
         now,
       )
     }
-  })
+    },
+  )
   return {
     operationId: input.operationId,
     conditionId: input.conditionId,
@@ -251,7 +292,9 @@ const ctfProofOperationStore: CtfProofOperationStore = {
 export async function startDaemonServer(
   options: DaemonServerOptions = {},
 ): Promise<Server> {
-  const startRuntimeAfterListen = Boolean(options.tradeRuntime && (await readProfile()))
+  const startRuntimeAfterListen = Boolean(
+    options.tradeRuntime && (await readProfile()),
+  )
   const server = createServer((req, res) => {
     void handleRequest(req, res, {
       tradeRuntime: options.tradeRuntime,
@@ -260,7 +303,8 @@ export async function startDaemonServer(
     })
   })
   const socketPath =
-    options.socketPath ?? (options.host || options.port ? undefined : defaultRpcSocketPath())
+    options.socketPath ??
+    (options.host || options.port ? undefined : defaultRpcSocketPath())
   if (socketPath) {
     await ensureProfileDir()
     await unlinkStaleSocket(socketPath)
@@ -269,24 +313,30 @@ export async function startDaemonServer(
       void unlink(socketPath).catch(() => undefined)
     })
     process.stdout.write(`bitcaster-daemon listening on unix://${socketPath}\n`)
-    if (startRuntimeAfterListen) void startTradeRuntimeBestEffort(options.tradeRuntime)
+    if (startRuntimeAfterListen)
+      void startTradeRuntimeBestEffort(options.tradeRuntime)
     return server
   }
 
   const host = options.host ?? '127.0.0.1'
   if (!isLoopbackBindHost(host)) {
-    throw new Error(`bitcaster-daemon refuses to bind non-loopback host ${host}`)
+    throw new Error(
+      `bitcaster-daemon refuses to bind non-loopback host ${host}`,
+    )
   }
-  const port = options.port ?? Number(process.env.BITCASTER_DAEMON_PORT || 42871)
+  const port =
+    options.port ?? Number(process.env.BITCASTER_DAEMON_PORT || 42871)
   await new Promise<void>((resolve) => server.listen(port, host, resolve))
   const address = server.address()
-  const boundPort =
-    typeof address === 'object' && address ? address.port : port
-  process.stdout.write(`bitcaster-daemon listening on http://${host}:${boundPort}\n`)
+  const boundPort = typeof address === 'object' && address ? address.port : port
+  process.stdout.write(
+    `bitcaster-daemon listening on http://${host}:${boundPort}\n`,
+  )
   // A dead engine must not delay local health/status or make the daemon look
   // unavailable. Trade-runtime failure is already best-effort and bootstrap
   // recovery remains armed before this listener is exposed.
-  if (startRuntimeAfterListen) void startTradeRuntimeBestEffort(options.tradeRuntime)
+  if (startRuntimeAfterListen)
+    void startTradeRuntimeBestEffort(options.tradeRuntime)
   return server
 }
 
@@ -318,7 +368,10 @@ async function handleRequest(
     return writeJson(res, 401, { ok: false, error: 'unauthorized' })
   }
   if (!expectedToken && command.method !== 'health') {
-    return writeJson(res, 401, { ok: false, error: 'daemon RPC token is not initialized' })
+    return writeJson(res, 401, {
+      ok: false,
+      error: 'daemon RPC token is not initialized',
+    })
   }
 
   try {
@@ -363,18 +416,13 @@ export async function dispatch(
       if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
       }
-      const state = await ensureState()
+      const state = await readDaemonStatusSnapshot()
       return {
         ok: true,
         result: {
           profile,
-          counts: {
-            proofs: state.wallet.proofs.length,
-            proofOperations: Object.keys(state.proofOperations).length,
-            orders: Object.keys(state.orders).length,
-            swaps: Object.keys(state.swaps).length,
-          },
-          wallet: summarizeWalletBalance(state),
+          counts: state.counts,
+          wallet: state.wallet,
         },
       }
     }
@@ -395,9 +443,8 @@ export async function dispatch(
       const nextMintUrl = command.params.mintUrl
         ? normalizeEndpointUrl(command.params.mintUrl, 'mint URL')
         : currentProfile.mintUrl
-      const state = await ensureState()
       if (
-        !daemonStateIsEmpty(state) &&
+        !(await daemonStateStorageIsEmpty()) &&
         (nextEngineBaseUrl !== currentProfile.engineBaseUrl ||
           nextMintUrl !== currentProfile.mintUrl)
       ) {
@@ -411,7 +458,9 @@ export async function dispatch(
         ...(command.params.engineUrl !== undefined
           ? { engineBaseUrl: nextEngineBaseUrl }
           : {}),
-        ...(command.params.mintUrl !== undefined ? { mintUrl: nextMintUrl } : {}),
+        ...(command.params.mintUrl !== undefined
+          ? { mintUrl: nextMintUrl }
+          : {}),
       })
       return {
         ok: true,
@@ -460,7 +509,9 @@ export async function dispatch(
           ...(command.params.liquiditySats !== undefined
             ? { liquiditySats: command.params.liquiditySats }
             : {}),
-          ...(command.params.tags !== undefined ? { categoryTags: command.params.tags } : {}),
+          ...(command.params.tags !== undefined
+            ? { categoryTags: command.params.tags }
+            : {}),
         },
         thumbnailBytes,
       )
@@ -483,9 +534,14 @@ export async function dispatch(
         }
       }
       if (!isKind89NostrEvent(command.params.attestationEvent)) {
-        return { ok: false, error: 'attestationEvent must be a kind-89 Nostr event' }
+        return {
+          ok: false,
+          error: 'attestationEvent must be a kind-89 Nostr event',
       }
-      const client = new BitcasterEngineClient({ baseUrl: profile.engineBaseUrl })
+      }
+      const client = new BitcasterEngineClient({
+        baseUrl: profile.engineBaseUrl,
+      })
       const response = await submitOracleAttestationViaEngine(
         client,
         command.params.conditionId,
@@ -499,7 +555,7 @@ export async function dispatch(
       }
       return {
         ok: true,
-        result: summarizeWalletBalance(await ensureState()),
+        result: await readWalletBalance(),
       }
     case 'wallet.receive': {
       const profile = await readProfile()
@@ -642,13 +698,13 @@ export async function dispatch(
       const market =
         client.getMarket !== undefined
           ? await client.getMarket(command.params.conditionId)
-          : (
+          : ((
               await client.queryMarkets({
                 ids: [command.params.conditionId],
                 state: 'All',
                 limit: 1,
               })
-            ).markets[0] ?? null
+            ).markets[0] ?? null)
       return {
         ok: true,
         result: market,
@@ -659,11 +715,13 @@ export async function dispatch(
         tokenSide: 'Outcome' as const,
         ...command.params,
       }
-      const amountSubunits = orderParams.amountSubunits ?? orderParams.amountSats
+      const amountSubunits =
+        orderParams.amountSubunits ?? orderParams.amountSats
       const orderIntent = {
         ...orderParams,
         amountSubunits,
-        ...(orderParams.amountSubunits === undefined && orderParams.amountSats !== undefined
+        ...(orderParams.amountSubunits === undefined &&
+        orderParams.amountSats !== undefined
           ? { divisibility: 100 }
           : {}),
       }
@@ -671,7 +729,12 @@ export async function dispatch(
       let secrets: Awaited<ReturnType<typeof readSecrets>> | null = null
       let client: EngineClientLike | null = null
       const ensureOrderContext = async (): Promise<
-        | { ok: true; profile: NonNullable<typeof profile>; secrets: NonNullable<typeof secrets>; client: EngineClientLike }
+        | {
+            ok: true
+            profile: NonNullable<typeof profile>
+            secrets: NonNullable<typeof secrets>
+            client: EngineClientLike
+          }
         | { ok: false; error: string }
       > => {
         profile ??= await readProfile()
@@ -692,7 +755,10 @@ export async function dispatch(
       let requestValidation = validateOrderIntent(orderIntent)
       if (
         !requestValidation.valid &&
-        shouldRetryOrderValidationWithMarketUnit(orderIntent, requestValidation.message)
+        shouldRetryOrderValidationWithMarketUnit(
+          orderIntent,
+          requestValidation.message,
+        )
       ) {
         const context = await ensureOrderContext()
         if (!context.ok) return context
@@ -711,7 +777,8 @@ export async function dispatch(
       if (typeof amountSubunits !== 'number') {
         return {
           ok: false,
-          error: 'Order rejected: amountSubunits must be a positive integer in 100 sub-unit increments.',
+          error:
+            'Order rejected: amountSubunits must be a positive integer in 100 sub-unit increments.',
         }
       }
       const context = await ensureOrderContext()
@@ -724,12 +791,13 @@ export async function dispatch(
       }
       const conditionId = conditionIdFromMarketId(orderParams.marketId)
       const marketUnit = await loadMarketUnit(context.client, conditionId)
-      const currentState = await ensureState()
-      const holdings = buildDaemonTokenHoldings(currentState, {
+      const holdings = buildDaemonTokenHoldingsFromTotals(
+        await readWalletHoldingTotals({
         mintUrl: context.profile.mintUrl,
         conditionId,
         baseAsset: marketUnit.baseAsset,
-      })
+        }),
+      )
       const backingError = orderBackingError({
         side: orderParams.side,
         price: orderParams.price,
@@ -822,7 +890,7 @@ export async function dispatch(
       if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
       }
-      const state = await readState()
+      const state = await readStateScope({ swapIds: [command.params.tradeId] })
       return {
         ok: true,
         result: state?.swaps[command.params.tradeId] ?? null,
@@ -844,7 +912,10 @@ export async function dispatch(
         return { ok: false, error: 'daemon profile is not initialized' }
       }
       if (!deps.durableTradeRecovery) {
-        return { ok: false, error: 'daemon durable recovery coordinator is not available' }
+        return {
+          ok: false,
+          error: 'daemon durable recovery coordinator is not available',
+        }
       }
       await startTradeRuntimeBestEffort(deps.tradeRuntime)
       const recovery = await deps.durableTradeRecovery.recover()
@@ -1038,10 +1109,12 @@ async function consolidateMarket(input: {
       error: `market ${conditionId} does not include at least two outcomes`,
     }
   }
+  const marketUnit = await loadMarketUnit(input.client, conditionId)
 
   const proofsByCollection = await availableMarketProofs({
     mintUrl: input.mintUrl,
     conditionId,
+    baseAsset: marketUnit.baseAsset,
   })
   const inputFeePpkByKeyset = await resolveCtfConsolidationInputFees(
     input.mintUrl,
@@ -1072,8 +1145,12 @@ async function consolidateMarket(input: {
     outputKeysetByCollection,
     makeOutputs: ({ collection, amountSubunits, keysetId }) => {
       const keyset = outputKeysets[keysetId]
-      if (!keyset) throw new Error(`missing mint keys for output keyset ${keysetId}`)
-      const outputs = OutputData.createRandomData(Amount.from(amountSubunits), keyset)
+      if (!keyset)
+        throw new Error(`missing mint keys for output keyset ${keysetId}`)
+      const outputs = OutputData.createRandomData(
+        Amount.from(amountSubunits),
+        keyset,
+      )
       outputsByCollection[collection] = [
         ...(outputsByCollection[collection] ?? []),
         ...outputs,
@@ -1114,6 +1191,7 @@ async function consolidateMarket(input: {
         conditionId,
         type: input.type,
         mintUrl: input.mintUrl,
+        baseAsset: marketUnit.baseAsset,
         plan,
         outputsByCollection,
         secrets: input.secrets,
@@ -1126,11 +1204,40 @@ async function consolidateMarket(input: {
 async function availableMarketProofs(input: {
   mintUrl: string
   conditionId: string
+  baseAsset: string
 }): Promise<Record<string, Proof[]>> {
-  const state = await ensureState()
+  const unit = defaultCollateralUnit(input.baseAsset)
+  const state = await readStateScope({
+    walletProofs: [
+      {
+        mintUrl: input.mintUrl,
+        unit,
+        state: 'available',
+        assetKind: 'sats',
+        baseAsset: input.baseAsset,
+      },
+      {
+        mintUrl: input.mintUrl,
+        unit,
+        state: 'available',
+        assetKind: 'Outcome',
+        conditionId: input.conditionId,
+        baseAsset: input.baseAsset,
+      },
+    ],
+  })
+  if (!state) return {}
   const groups: Record<string, Proof[]> = {}
   for (const record of state.wallet.proofs) {
-    if (record.mintUrl !== input.mintUrl || record.state !== 'available') continue
+    if (
+      record.mintUrl !== input.mintUrl ||
+      record.unit !== unit ||
+      record.state !== 'available'
+    )
+      continue
+    if (normalizeMarketBaseAsset(record.asset.baseAsset) !== input.baseAsset) {
+      continue
+    }
     if (record.asset.kind === 'sats') {
       groups[COLLATERAL_COLLECTION] = [
         ...(groups[COLLATERAL_COLLECTION] ?? []),
@@ -1157,12 +1264,14 @@ async function loadMarket(
 ): Promise<unknown | null> {
   if (client.getMarket) return client.getMarket(conditionId)
   return (
+    (
     await client.queryMarkets({
       ids: [conditionId],
       state: 'All',
       limit: 1,
     })
   ).markets[0] ?? null
+  )
 }
 
 function extractMarketOutcomes(market: unknown): string[] {
@@ -1195,7 +1304,11 @@ function extractMarketStatus(market: unknown): string | null {
     state?: unknown
     attestation?: { status?: unknown }
   }
-  for (const value of [record.status, record.state, record.attestation?.status]) {
+  for (const value of [
+    record.status,
+    record.state,
+    record.attestation?.status,
+  ]) {
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
   return null
@@ -1207,7 +1320,10 @@ function extractParentCollectionId(market: unknown): string | undefined {
     parentCollectionId?: unknown
     parent_collection_id?: unknown
   }
-  for (const value of [record.parentCollectionId, record.parent_collection_id]) {
+  for (const value of [
+    record.parentCollectionId,
+    record.parent_collection_id,
+  ]) {
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
   return undefined
@@ -1222,15 +1338,25 @@ function shouldRetryOrderValidationWithMarketUnit(
   request: unknown,
   validationMessage: string,
 ): boolean {
-  if (!validationMessage.includes('price must be an integer') &&
-      !validationMessage.includes('amountSubunits must be a positive integer')) {
+  if (
+    !validationMessage.includes('price must be an integer') &&
+    !validationMessage.includes('amountSubunits must be a positive integer')
+  ) {
     return false
   }
-  if (typeof request !== 'object' || request === null || Array.isArray(request)) {
+  if (
+    typeof request !== 'object' ||
+    request === null ||
+    Array.isArray(request)
+  ) {
     return false
   }
 
-  const intent = request as { price?: unknown; amountSubunits?: unknown; amountSats?: unknown }
+  const intent = request as {
+    price?: unknown
+    amountSubunits?: unknown
+    amountSats?: unknown
+  }
   const price = intent.price
   const amountSubunits = intent.amountSubunits ?? intent.amountSats
   if (typeof price !== 'number' || typeof amountSubunits !== 'number') {
@@ -1242,12 +1368,18 @@ function shouldRetryOrderValidationWithMarketUnit(
   if (price <= 0 || amountSubunits <= 0) {
     return false
   }
-  if (intent.amountSubunits !== undefined && intent.amountSats === undefined &&
-      validationMessage.includes('amountSubunits must be a positive integer')) {
+  if (
+    intent.amountSubunits !== undefined &&
+    intent.amountSats === undefined &&
+    validationMessage.includes('amountSubunits must be a positive integer')
+  ) {
     return true
   }
 
-  return price >= DEFAULT_SAT_MARKET_DIVISIBILITY || amountSubunits >= DEFAULT_SAT_MARKET_DIVISIBILITY
+  return (
+    price >= DEFAULT_SAT_MARKET_DIVISIBILITY ||
+    amountSubunits >= DEFAULT_SAT_MARKET_DIVISIBILITY
+  )
 }
 
 export async function submitPendingEphemeralPubkeys(input: {
@@ -1260,7 +1392,9 @@ export async function submitPendingEphemeralPubkeys(input: {
 }): Promise<void> {
   for (const submission of input.pendingPubkeySubmissions ?? []) {
     if (!input.client.submitEphemeralPubkey) {
-      throw new Error('engine client does not support ephemeral pubkey submission')
+      throw new Error(
+        'engine client does not support ephemeral pubkey submission',
+      )
     }
     const ephemeral = await getOrCreateOrderEphemeralKeypair({
       tradeId: submission.tradeId,
@@ -1294,7 +1428,9 @@ async function maybePreparePreflightSplitForOrder(input: {
 
   const market = splitMarketId(input.marketId)
   if (!market) {
-    throw new Error(`cannot pre-flight split invalid market id ${input.marketId}`)
+    throw new Error(
+      `cannot pre-flight split invalid market id ${input.marketId}`,
+    )
   }
   if (input.outcomeId !== market.outcomeSetId) {
     throw new Error(
@@ -1311,7 +1447,9 @@ async function maybePreparePreflightSplitForOrder(input: {
   }
   const complement = complementOutcomeSetId(outcomeLabels, market.outcomeSetId)
   if (!complement) {
-    throw new Error('pre-flight split could not resolve a complementary outcome set')
+    throw new Error(
+      'pre-flight split could not resolve a complementary outcome set',
+    )
   }
   if (await wouldOrderCross(input.client, input.marketId, input.price)) {
     return null
@@ -1355,7 +1493,7 @@ async function maybePreparePreflightSplitForOrder(input: {
         if (collateral.spent.length > 0) {
           await replaceAvailableSatProofsWithPreparedCollateral({
             mintUrl: input.mintUrl,
-            spentSecrets: collateral.spent.map((proof) => proof.secret),
+            spentProofs: collateral.spent,
             keepProofs: collateral.keep,
             inputProofs: collateral.inputs,
             reservationId,
@@ -1385,7 +1523,7 @@ async function maybePreparePreflightSplitForOrder(input: {
         await replaceReservedSatProofsWithReservedOutcomes({
           mintUrl: input.mintUrl,
           reservationId,
-          spentSecrets: split.spentSatProofs.map((proof) => proof.secret),
+          spentProofs: split.spentSatProofs,
           conditionId: market.conditionId,
           proofsByCollection: split.proofsByCollection,
           baseAsset: marketUnit.baseAsset,
@@ -1513,7 +1651,9 @@ async function loadMintOutcomeLabels(
     )
     if (!condition?.keysets || typeof condition.keysets !== 'object') return []
     const labels = new Set<string>()
-    for (const collection of Object.keys(condition.keysets as Record<string, unknown>)) {
+    for (const collection of Object.keys(
+      condition.keysets as Record<string, unknown>,
+    )) {
       for (const label of collection.split('|')) {
         const trimmed = label.trim()
         if (trimmed) labels.add(trimmed)
@@ -1545,12 +1685,18 @@ async function reserveSelectedSatProofs(
   baseAssetInput?: string | null,
 ): Promise<void> {
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
+  const unit = defaultCollateralUnit(baseAsset)
   const secrets = new Set(proofs.map((proof) => proof.secret))
-  await updateState((state, now) => {
+  await updateState(
+    {
+      walletProofs: walletProofMutationScope(mintUrl, proofs, baseAsset),
+    },
+    (state, now) => {
     let reserved = 0
     for (const record of state.wallet.proofs) {
       if (
         record.mintUrl !== mintUrl ||
+        record.unit !== unit ||
         record.state !== 'available' ||
         record.asset.kind !== 'sats' ||
         normalizeMarketBaseAsset(record.asset.baseAsset) !== baseAsset ||
@@ -1566,7 +1712,8 @@ async function reserveSelectedSatProofs(
     if (reserved !== secrets.size) {
       throw new Error('pre-flight split collateral was no longer available')
     }
-  })
+    },
+  )
 }
 
 function addProofsToState(
@@ -1574,10 +1721,13 @@ function addProofsToState(
   mintUrl: string,
   proofs: CashuProofRecord[],
   proofState: 'available' | 'reserved' | 'locked',
-  asset: Awaited<ReturnType<typeof ensureState>>['wallet']['proofs'][number]['asset'],
+  asset: Awaited<
+    ReturnType<typeof ensureState>
+  >['wallet']['proofs'][number]['asset'],
   now: string,
   reservedBy?: string,
 ): void {
+  const unit = defaultCollateralUnit(asset.baseAsset)
   const existingSecrets = new Set(
     state.wallet.proofs
       .filter((record) => record.mintUrl === mintUrl)
@@ -1589,6 +1739,7 @@ function addProofsToState(
     state.wallet.proofs.push({
       proof: structuredClone(proof),
       mintUrl,
+      unit,
       state: proofState,
       reservedBy,
       asset,
@@ -1612,17 +1763,27 @@ function removeProofsBySecretFromState(
 
 async function replaceAvailableSatProofsWithPreparedCollateral(input: {
   mintUrl: string
-  spentSecrets: string[]
+  spentProofs: CashuProofRecord[]
   keepProofs: CashuProofRecord[]
   inputProofs: CashuProofRecord[]
   reservationId: string
   baseAsset?: string | null
 }): Promise<void> {
-  const spent = new Set(input.spentSecrets)
+  const spent = new Set(input.spentProofs.map((proof) => proof.secret))
   const baseAsset = normalizeMarketBaseAsset(input.baseAsset)
-  await updateState((state, now) => {
+  const unit = defaultCollateralUnit(baseAsset)
+  await updateState(
+    {
+      walletProofs: walletProofMutationScope(
+        input.mintUrl,
+        [...input.spentProofs, ...input.keepProofs, ...input.inputProofs],
+        baseAsset,
+      ),
+    },
+    (state, now) => {
     state.wallet.proofs = state.wallet.proofs.filter(
-      (record) => record.mintUrl !== input.mintUrl || !spent.has(record.proof.secret),
+        (record) =>
+          record.mintUrl !== input.mintUrl || !spent.has(record.proof.secret),
     )
     const existingSecrets = new Set(
       state.wallet.proofs
@@ -1635,6 +1796,7 @@ async function replaceAvailableSatProofsWithPreparedCollateral(input: {
       state.wallet.proofs.push({
         proof: structuredClone(proof),
         mintUrl: input.mintUrl,
+        unit,
         state: 'available',
         asset: { kind: 'sats', baseAsset },
         createdAt: now,
@@ -1647,6 +1809,7 @@ async function replaceAvailableSatProofsWithPreparedCollateral(input: {
       state.wallet.proofs.push({
         proof: structuredClone(proof),
         mintUrl: input.mintUrl,
+        unit,
         state: 'reserved',
         reservedBy: input.reservationId,
         asset: { kind: 'sats', baseAsset },
@@ -1654,20 +1817,33 @@ async function replaceAvailableSatProofsWithPreparedCollateral(input: {
         updatedAt: now,
       })
     }
-  })
+    },
+  )
 }
 
 async function replaceReservedSatProofsWithReservedOutcomes(input: {
   mintUrl: string
   reservationId: string
-  spentSecrets: string[]
+  spentProofs: CashuProofRecord[]
   conditionId: string
   proofsByCollection: Record<string, CashuProofRecord[]>
   baseAsset?: string | null
 }): Promise<void> {
-  const spent = new Set(input.spentSecrets)
+  const spent = new Set(input.spentProofs.map((proof) => proof.secret))
   const baseAsset = normalizeMarketBaseAsset(input.baseAsset)
-  await updateState((state, now) => {
+  const unit = defaultCollateralUnit(baseAsset)
+  await updateState(
+    {
+      walletProofs: walletProofMutationScope(
+        input.mintUrl,
+        [
+          ...input.spentProofs,
+          ...Object.values(input.proofsByCollection).flat(),
+        ],
+        baseAsset,
+      ),
+    },
+    (state, now) => {
     state.wallet.proofs = state.wallet.proofs.filter(
       (record) =>
         record.mintUrl !== input.mintUrl ||
@@ -1679,13 +1855,16 @@ async function replaceReservedSatProofsWithReservedOutcomes(input: {
         .filter((record) => record.mintUrl === input.mintUrl)
         .map((record) => record.proof.secret),
     )
-    for (const [outcomeSetId, proofs] of Object.entries(input.proofsByCollection)) {
+      for (const [outcomeSetId, proofs] of Object.entries(
+        input.proofsByCollection,
+      )) {
       for (const proof of proofs) {
         if (existingSecrets.has(proof.secret)) continue
         existingSecrets.add(proof.secret)
         state.wallet.proofs.push({
           proof: structuredClone(proof),
           mintUrl: input.mintUrl,
+          unit,
           state: 'reserved',
           reservedBy: input.reservationId,
           asset: {
@@ -1699,7 +1878,24 @@ async function replaceReservedSatProofsWithReservedOutcomes(input: {
         })
       }
     }
-  })
+    },
+  )
+}
+
+function walletProofMutationScope(
+  mintUrl: string,
+  proofs: readonly CashuProofRecord[],
+  baseAssetInput?: string | null,
+): Array<{ proofIds: string[] }> {
+  const unit = defaultCollateralUnit(baseAssetInput)
+  const proofIds = [
+    ...new Set(
+      proofs.map((proof) =>
+        deriveDaemonWalletProofIdFromProof(mintUrl, unit, proof),
+      ),
+    ),
+  ]
+  return proofIds.length === 0 ? [] : [{ proofIds }]
 }
 
 export function orderBackingError(input: {
@@ -1710,14 +1906,15 @@ export function orderBackingError(input: {
   holdings: TokenHoldings
 }): string | null {
   if (input.side === 'Buy') {
-    const requiredCollateral = input.amountSubunits % input.divisibility === 0
+    const requiredCollateral =
+      input.amountSubunits % input.divisibility === 0
       ? quotePaymentSubunits({
         faceAmountSubunits: input.amountSubunits,
         priceNumerator: input.price,
         divisibility: input.divisibility,
       })
-      // TODO: move arbitrary-size quote-payment rounding into the SDK helper.
-      : Math.ceil(input.amountSubunits * input.price / input.divisibility)
+        : // TODO: move arbitrary-size quote-payment rounding into the SDK helper.
+          Math.ceil((input.amountSubunits * input.price) / input.divisibility)
     if (input.holdings.baseUnitProofs >= requiredCollateral) return null
     return `insufficient backing: have ${input.holdings.baseUnitProofs} base subunits, need ${requiredCollateral}`
   }
@@ -1748,22 +1945,14 @@ function splitMarketId(
   }
 }
 
-function daemonStateIsEmpty(state: Awaited<ReturnType<typeof ensureState>>): boolean {
-  return (
-    state.wallet.proofs.length === 0 &&
-    Object.keys(state.wallet.keysetCounters).length === 0 &&
-    Object.keys(state.proofOperations).length === 0 &&
-    Object.keys(state.orders).length === 0 &&
-    Object.keys(state.swaps).length === 0
-  )
-}
-
 async function startTradeRuntimeBestEffort(
   tradeRuntime: TradeRuntime | undefined,
 ): Promise<void> {
   if (!tradeRuntime) return
   try {
-    await tradeRuntime.start(await ensureState())
+    const state = await readStateScope({ orderIds: 'all', swapIds: 'all' })
+    if (!state) throw new Error('daemon SQLite state row is missing')
+    await tradeRuntime.start(state)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     process.stderr.write(
@@ -1812,7 +2001,9 @@ function createMarketOutcomes(outcomes: string[]): CreateMarketOutcome[] {
   return outcomes.map((name) => ({ name, probability }))
 }
 
-async function readMarketThumbnail(path: string): Promise<MarketThumbnailBytes> {
+async function readMarketThumbnail(
+  path: string,
+): Promise<MarketThumbnailBytes> {
   const bytes = await readFile(path)
   return {
     data: bytes,
@@ -1828,7 +2019,11 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
-function writeJson(res: ServerResponse, status: number, body: DaemonResponse): void {
+function writeJson(
+  res: ServerResponse,
+  status: number,
+  body: DaemonResponse,
+): void {
   res.writeHead(status, { 'content-type': 'application/json' })
   res.end(JSON.stringify(body))
 }
@@ -1862,7 +2057,11 @@ async function unlinkStaleSocket(socketPath: string): Promise<void> {
     const socket = createConnection(socketPath)
     socket.once('connect', () => {
       socket.destroy()
-      reject(new Error(`bitcaster-daemon RPC socket is already in use: ${socketPath}`))
+      reject(
+        new Error(
+          `bitcaster-daemon RPC socket is already in use: ${socketPath}`,
+        ),
+      )
     })
     socket.once('error', (err) => {
       const code = (err as { code?: unknown }).code

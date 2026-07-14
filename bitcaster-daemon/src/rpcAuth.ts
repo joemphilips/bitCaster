@@ -12,7 +12,9 @@ import {
 } from './profile.ts'
 
 export function rpcSocketPath(): string {
-  return process.env.BITCASTER_DAEMON_SOCKET || join(profileDir(), 'daemon.sock')
+  return (
+    process.env.BITCASTER_DAEMON_SOCKET || join(profileDir(), 'daemon.sock')
+  )
 }
 
 /** Creates the bearer value inserted by the atomic profile bootstrap transaction. */
@@ -21,7 +23,7 @@ export function createRpcToken(): string {
 }
 
 export async function readRpcToken(): Promise<string | null> {
-  if (!await profileDatabaseExists()) return null
+  if (!(await profileDatabaseExists())) return null
   const database = openProfileDatabase()
   try {
     if (!tableExists(database, 'daemon_rpc_token')) {
@@ -30,16 +32,23 @@ export async function readRpcToken(): Promise<string | null> {
       }
       return null
     }
-    const row = database.prepare(
+    ensureDaemonRpcTokenTable(database)
+    const row = database
+      .prepare(
       'SELECT schema_version, token FROM daemon_rpc_token WHERE singleton = 1',
-    ).get() as { schema_version?: unknown; token?: unknown } | undefined
+      )
+      .get() as { schema_version?: unknown; token?: unknown } | undefined
     if (!row) {
       if (profileInitializationIsComplete(database)) {
         throw new Error('daemon RPC token row is missing')
       }
       return null
     }
-    if (row.schema_version !== 1 || typeof row.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(row.token)) {
+    if (
+      row.schema_version !== 1 ||
+      typeof row.token !== 'string' ||
+      !/^[A-Za-z0-9_-]{43}$/.test(row.token)
+    ) {
       throw new Error('daemon RPC token row is invalid')
     }
     return row.token
@@ -63,20 +72,27 @@ export async function ensureRpcToken(): Promise<string> {
     database.exec('BEGIN IMMEDIATE')
     try {
       ensureDaemonRpcTokenTable(database)
-      const current = database.prepare(
+      const current = database
+        .prepare(
         'SELECT schema_version, token FROM daemon_rpc_token WHERE singleton = 1',
-      ).get() as { schema_version?: unknown; token?: unknown } | undefined
+        )
+        .get() as { schema_version?: unknown; token?: unknown } | undefined
       if (current) {
-        if (current.schema_version !== 1 || typeof current.token !== 'string'
-          || !/^[A-Za-z0-9_-]{43}$/.test(current.token)) {
+        if (
+          current.schema_version !== 1 ||
+          typeof current.token !== 'string' ||
+          !/^[A-Za-z0-9_-]{43}$/.test(current.token)
+        ) {
           throw new Error('daemon RPC token row is invalid')
         }
         database.exec('COMMIT')
         return current.token
       }
-      database.prepare(
+      database
+        .prepare(
         'INSERT INTO daemon_rpc_token (singleton, schema_version, token) VALUES (1, 1, ?)',
-      ).run(token)
+        )
+        .run(token)
       database.exec('COMMIT')
       return token
     } catch (error) {
@@ -92,7 +108,9 @@ export async function ensureRpcToken(): Promise<string> {
   }
 }
 
-export function bearerToken(header: string | string[] | undefined): string | null {
+export function bearerToken(
+  header: string | string[] | undefined,
+): string | null {
   if (typeof header !== 'string') return null
   const match = /^Bearer\s+(.+)$/i.exec(header.trim())
   return match?.[1] ?? null

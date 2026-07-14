@@ -241,7 +241,17 @@ export async function recoverExactDaemonProofOperation(
       })
       return
     }
-    case 'swap-refund':
+    case 'swap-refund': {
+      const atomicSwap = await (
+        options.loadAtomicSwapModule ?? defaultAtomicSwapModuleLoader
+      )()
+      const result = action === 'resume'
+        ? await resumeExactRefund(atomicSwap, retained)
+        : await atomicSwap.restoreExactPreparedProofOperation(retained)
+      const refund = result.refund ?? result.keep ?? []
+      await markProofOperationCompleted(retained.operationId, { refund })
+      return
+    }
     case 'ctf-merge':
     case 'ctf-consolidation':
     case 'ctf-redeem':
@@ -249,6 +259,17 @@ export async function recoverExactDaemonProofOperation(
     case 'wallet-send':
       throw new Error(`Unsupported exact durable recovery operation ${retained.kind}`)
   }
+}
+
+async function resumeExactRefund(
+  atomicSwap: AtomicSwapModule,
+  retained: ProofOperationRecord,
+): Promise<Record<string, CashuProofRecord[]>> {
+  const wallet = new CashuWallet(new CashuMint(retained.mintUrl), {
+    unit: exactOperationUnit(retained),
+  })
+  await wallet.loadMint()
+  return atomicSwap.resumeExactPreparedProofOperation(wallet, retained)
 }
 
 const DEFAULT_NUT07_POLL_DEADLINE_MS = 60_000
@@ -467,7 +488,8 @@ export function createRealDaemonSwapOps(
         metadata: {
           tradeId: ctx.tradeId,
           role: ctx.role,
-          refundLocktime: ctx.sellerLocktime,
+          refundLocktime:
+            ctx.role === 'seller' ? ctx.sellerLocktime : ctx.buyerLocktime,
           amount: Amount.from(preview.amount).toNumber(),
           fees: Amount.from(preview.fees).toNumber(),
           keysetId: preview.keysetId,

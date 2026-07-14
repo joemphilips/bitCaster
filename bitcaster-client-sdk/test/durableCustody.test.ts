@@ -5,6 +5,7 @@ import {
   decodeDurableCustodyScopeState,
   applyDurableCustodyTransaction,
   claimDurableCustodyScope,
+  createDurableCustodyDispatchIntent,
   createDurableProofOperationFacts,
   deriveDurableCustodyArtifactFingerprint,
   decideDurableCustodyRecovery,
@@ -87,6 +88,76 @@ test('exact proof facts bind real public keys and explicit keyset usage', () => 
       unit: 'sat',
       curve: 'secp256k1',
       publicKeys: { '1': SECP_PUBLIC_KEY_A, '2': SECP_PUBLIC_KEY_B },
+    }),
+  )
+})
+
+test('dispatch intent binds the exact operation artifacts through SDK policy', () => {
+  const scope = profileScope()
+  const binding = {
+    kind: 'wallet' as const,
+    activityId: 'wallet-send-001',
+    stage: 'send' as const,
+  }
+  const facts = createDurableProofOperationFacts({
+    unit: 'sat',
+    binding,
+    horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
+    keysets: [{
+      keysetId: '0011223344556677',
+      unit: 'sat',
+      curve: 'secp256k1',
+      publicKeys: { '1': SECP_PUBLIC_KEY_A },
+      keysetExpiryMs: null,
+      requireDleq: false,
+      usedByInputs: true,
+      usedByOutputs: true,
+    }],
+  })
+  const record = createDurableCustodyDispatchIntent({
+    scope,
+    retainedOperationKey: 'wallet-send-001',
+    semanticKind: 'generic-send',
+    facts,
+    normalizedMint: 'https://mint.example',
+    inventoryAccountId: null,
+    reservation: {
+      reservationId: 'wallet-send-001',
+      inputs: [{
+        proofId: FINGERPRINT_A,
+        keysetId: '0011223344556677',
+        curve: 'secp256k1',
+      }],
+    },
+    exactRequest: {
+      requestId: 'wallet-send-001',
+      requestFingerprint: FINGERPRINT_A,
+      payloadHandle: 'wallet-send-request-001',
+      inputProofIds: [FINGERPRINT_A],
+      outputPlanFingerprint: FINGERPRINT_B,
+    },
+    outputPlan: {
+      outputPlanId: 'wallet-send-output-001',
+      outputPlanFingerprint: FINGERPRINT_B,
+      outputMaterialHandle: 'wallet-send-output-material-001',
+    },
+    privateMaterial: {
+      materialHandle: 'wallet-send-private-material-001',
+      useId: 'wallet-send-001/send',
+      publicFingerprint: FINGERPRINT_A,
+    },
+  })
+
+  assert.equal(record.operation.state, 'dispatch-intent')
+  assert.equal(record.operation.terminalReplayEvidenceRequired, false)
+  assert.deepEqual(record.operation.binding, binding)
+  assert.deepEqual(record.operation.exactRequest.inputProofIds, [FINGERPRINT_A])
+  assert.equal(record.operation.verification.outputPlanFingerprint, FINGERPRINT_B)
+  assert.equal(
+    record.operation.operationId,
+    deriveDurableCustodyOperationId(scope.scopeId, {
+      retainedOperationKey: 'wallet-send-001',
+      binding,
     }),
   )
 })
@@ -873,7 +944,7 @@ test('retry cursor is fenced, monotonic, and clears before a custody-changing tr
   })
 })
 
-test('post-handoff recovery never reissues an all-unspent exact operation', () => {
+test('post-handoff recovery reissues the same all-unspent operation inside its horizon', () => {
   const dispatched = reduceDurableCustodyState(custodyState(), {
     kind: 'transport-attempted',
     ...ownerAuthorization,
@@ -891,8 +962,8 @@ test('post-handoff recovery never reissues an all-unspent exact operation', () =
     outputPlanFingerprint: dispatched.operation.operation.outputPlan.outputPlanFingerprint,
   })
   assert.deepEqual(decision, {
-    kind: 'reconcile-exact-operation',
-    reason: 'transport-attempted',
+    kind: 'reissue-exact-operation',
+    effectiveNowMs: 1_500,
     exact: exactReference(dispatched.operation),
   })
   assert.throws(

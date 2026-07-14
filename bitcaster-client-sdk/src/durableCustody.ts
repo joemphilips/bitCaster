@@ -142,6 +142,19 @@ export interface DurableProofOperationFactsInput {
   keysets: readonly DurableProofOperationKeysetFactsInput[]
 }
 
+export interface DurableCustodyDispatchIntentInput {
+  scope: DurableCustodyScope
+  retainedOperationKey: string
+  semanticKind: DurableCustodySemanticKind
+  facts: DurableProofOperationFacts
+  normalizedMint: string
+  inventoryAccountId: string | null
+  reservation: DurableCustodyRecord['operation']['reservation']
+  exactRequest: DurableCustodyRecord['operation']['exactRequest']
+  outputPlan: DurableCustodyRecord['operation']['outputPlan']
+  privateMaterial: DurableCustodyRecord['operation']['privateMaterial']
+}
+
 export interface DurableCustodySemanticPolicy {
   stage: CustodyTradeStage | CustodyWalletStage
   bindingKind: DurableCustodyBinding['kind'] | 'either'
@@ -472,7 +485,10 @@ export interface DurableCustodyTransaction {
   putScopeState(state: DurableCustodyScopeState): void
   getOperation(operationId: string): DurableCustodyRecord | null
   putOperation(record: DurableCustodyRecord): void
-  getSessionLink(sessionId: string): Extract<DurableCustodyBinding, { kind: 'trade' }> | null
+  getSessionLink(
+    sessionId: string,
+    operationId: string,
+  ): Extract<DurableCustodyBinding, { kind: 'trade' }> | null
   putSessionLink(
     operationId: string,
     link: Extract<DurableCustodyBinding, { kind: 'trade' }>,
@@ -1051,6 +1067,61 @@ export function createDurableProofOperationFacts(
   }
 }
 
+/** Creates one canonical initial operation after a client resolves exact artifacts. */
+export function createDurableCustodyDispatchIntent(
+  input: DurableCustodyDispatchIntentInput,
+): DurableCustodyRecord {
+  const policy = durableCustodySemanticPolicy(input.semanticKind)
+  const operationId = deriveDurableCustodyOperationId(input.scope.scopeId, {
+    retainedOperationKey: input.retainedOperationKey,
+    binding: operationIdentityBinding(input.facts.binding),
+  })
+  return decodeDurableCustodyRecord({
+    schemaVersion: DURABLE_CUSTODY_SCHEMA_VERSION,
+    revision: 0,
+    scope: input.scope,
+    operation: {
+      operationId,
+      retainedOperationKey: input.retainedOperationKey,
+      binding: input.facts.binding,
+      semanticKind: input.semanticKind,
+      state: 'dispatch-intent',
+      terminalReplayEvidenceRequired: policy.terminalReplayEvidenceRequired,
+      custodyContext: {
+        normalizedMint: input.normalizedMint,
+        unit: input.facts.unit,
+        inventoryAccountId: input.inventoryAccountId,
+      },
+      reservation: input.reservation,
+      exactRequest: input.exactRequest,
+      outputPlan: input.outputPlan,
+      privateMaterial: input.privateMaterial,
+      result: {
+        state: 'none',
+        resultHandle: null,
+        resultFingerprint: null,
+        outputPlanFingerprint: null,
+      },
+      verification: {
+        outputPlanFingerprint: input.outputPlan.outputPlanFingerprint,
+        keysetBindings: input.facts.verification.keysetBindings,
+        outputKeysets: input.facts.verification.outputKeysets,
+      },
+      delivery: {
+        deliveryKind: 'none',
+        deliveryId: null,
+        payloadHandle: null,
+        payloadFingerprint: null,
+        expiresAtMs: null,
+        state: 'none',
+      },
+      retry: { attempt: 0, nextAttemptAtMs: null, reason: 'none' },
+      horizon: input.facts.horizon,
+    },
+    terminalTombstone: null,
+  })
+}
+
 function decodeProofOperationFactsHorizon(
   input: DurableProofOperationFactsInput['horizon'],
 ): DurableProofOperationFactsInput['horizon'] {
@@ -1399,11 +1470,17 @@ export function decideDurableCustodyRecovery(
       return { kind: 'reconcile-exact-operation', reason: 'unclassified', exact: exactOperationReference(record) }
     case 'all-inputs-unspent':
       if (record.operation.state === 'transport-attempted') {
-        return {
-          kind: 'reconcile-exact-operation',
-          reason: 'transport-attempted',
-          exact: exactOperationReference(record),
-        }
+        return isDispatchOpen(record.operation.horizon, effectiveNowMs)
+          ? {
+              kind: 'reissue-exact-operation',
+              effectiveNowMs,
+              exact: exactOperationReference(record),
+            }
+          : {
+              kind: 'reconcile-exact-operation',
+              reason: 'transport-attempted',
+              exact: exactOperationReference(record),
+            }
       }
       if (record.operation.state !== 'dispatch-intent') {
         return { kind: 'reconcile-exact-operation', reason: 'unclassified', exact: exactOperationReference(record) }

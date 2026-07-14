@@ -20,15 +20,24 @@ import {
   type DurableTradeSessionRepository,
 } from '@bitcaster-market/client-sdk/durableTradeRecovery'
 import {
+  assertProofOperationCustodyBound,
   ensureState,
-  readState,
+  markProofOperationMintSubmitted,
+  readCanonicalProofOperationRecoveryPage,
+  readActiveSwapIdsPage,
+  readStateScope,
   updateState,
   type DaemonState,
   type ProofOperationRecord,
 } from './state.ts'
 import type { TradeRuntimeConnection } from './tradeRuntime.ts'
 import type { DaemonSwapExecutor } from './swapExecutor.ts'
-import { validateDaemonDurableOperationBinding } from './durableTradeBinding.ts'
+import {
+  validateDaemonDurableOperationBinding,
+  validateDaemonTradeAuthorityBinding,
+} from './durableTradeBinding.ts'
+import { readProfile } from './profile.ts'
+import { readOrderEphemeralSecret } from './secrets.ts'
 import {
   recoverExactDaemonProofOperation,
   type ExactDaemonProofOperationAction,
@@ -38,16 +47,21 @@ export async function getDaemonProofOperationByDurableId(operationId: string) {
   return findOperationRecord(operationId)
 }
 
+const DAEMON_RECOVERY_PAGE_LIMIT = 64
+
 /**
- * Adapts the daemon's single atomically-renamed state file to the SDK recovery
- * repositories. Proof rows retain the concrete Cashu request while this layer
- * exposes only the SDK recovery identity.
+ * Adapts the daemon's normalized SQLite store to the SDK recovery repositories.
+ * Proof rows retain the concrete Cashu request while this layer exposes only
+ * the SDK recovery identity.
  */
-export function createDaemonDurableTradeRepositories(): {
+export function createDaemonDurableTradeRepositories(snapshot: DaemonState): {
   sessions: DurableTradeSessionRepository
   operations: DurableProofOperationRepository
 } {
-  return { sessions: daemonSessions, operations: daemonOperations }
+  return {
+    sessions: createDaemonSessionRepository(snapshot),
+    operations: createDaemonOperationRepository(snapshot),
+  }
 }
 
 export interface DaemonDurableTradeRecoveryRunner {
@@ -83,10 +97,14 @@ export interface DaemonDurableTradeRecoveryRunnerOptions {
   /** Test-only seam; production always uses the SDK coordinator below. */
   recoverDurableSessions?: (input: {
     scheduleRetry: (request: DurableTradeRetryRequest) => Promise<void>
+    tradeId?: string
   }) => Promise<DurableTradeRecoveryResult>
   loadState?: () => Promise<DaemonState>
   nowMs?: () => number
-  setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
+  setTimer?: (
+    callback: () => void,
+    delayMs: number,
+  ) => ReturnType<typeof setTimeout>
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void
 }
 
@@ -105,23 +123,162 @@ export function createDaemonDurableTradeRecoveryRunner(
 export async function recoverDaemonDurableTradeSessions(input: {
   executor: DaemonSwapExecutor
   connection: TradeRuntimeConnection
+  tradeId?: string
   scheduleRetry?: (request: DurableTradeRetryRequest) => Promise<void>
   /** Test seam; production always dispatches to the persisted-operation adapter. */
   exactOperationAdapter?: (
     record: ProofOperationRecord,
     action: ExactDaemonProofOperationAction,
   ) => Promise<void>
+  /** Test seam for SDK policy tests; production always validates local authority. */
+  authorityPreflight?: (
+    tradeId: string,
+    snapshot: DaemonState,
+  ) => Promise<void>
 }): Promise<DurableTradeRecoveryResult> {
-  const repositories = createDaemonDurableTradeRepositories()
-  const ports: DurableTradeRecoveryPorts = {
-    ...repositories,
+  if (input.tradeId !== undefined) {
+    return recoverDaemonDurableTrade(input.tradeId, input)
+  }
+  const combined: DurableTradeRecoveryResult = { sessions: [], orphans: [] }
+  let cursor: string | null = null
+  do {
+    const page = await readRecoveryStorage(() =>
+      readCanonicalProofOperationRecoveryPage({
+        cursor,
+        limit: DAEMON_RECOVERY_PAGE_LIMIT,
+      }),
+    )
+    const tradeWork = page.work.filter(
+      (work): work is typeof work & { binding: { kind: 'trade'; tradeId: string } } =>
+        work.binding.kind === 'trade',
+    )
+    if (tradeWork.length > 0) {
+      const tradeIds = [...new Set(
+        tradeWork.map((work) => work.binding.tradeId),
+      )]
+      const snapshot = await readRecoveryStorage(async () => {
+        const state = await readStateScope({ tradeIds, swapIds: tradeIds })
+        if (!state) throw new Error('daemon SQLite state row is missing')
+        return state
+      })
+      for (const tradeId of tradeIds) {
+        await (input.authorityPreflight ?? assertDaemonTradeRecoveryAuthority)(
+          tradeId,
+          snapshot,
+        )
+      }
+      for (const work of tradeWork) {
+        const operation = snapshot.proofOperations[work.retainedOperationKey]
+        if (operation === undefined) {
+          throw new Error('canonical trade work has no exact daemon operation')
+        }
+        if (
+          operation.state !== 'prepared' &&
+          operation.state !== 'mint-submitted'
+        ) {
+          throw new Error(
+            'canonical trade work has a terminal daemon projection',
+          )
+        }
+        if (operation.durableTradeRecovery?.tradeId !== work.binding.tradeId) {
+          throw new Error('canonical trade work has a foreign trade binding')
+        }
+        await assertProofOperationCustodyBound(operation)
+      }
+      const ports = createDaemonDurableTradeRecoveryPorts(snapshot, input)
+      const recovered = await recoverDurableTradeSessions(ports)
+      combined.sessions.push(...recovered.sessions)
+      combined.orphans.push(...recovered.orphans)
+      if (recovered.pendingIntents !== undefined) {
+        ;(combined.pendingIntents ??= []).push(...recovered.pendingIntents)
+      }
+    }
+    cursor = page.nextCursor
+  } while (cursor !== null)
+  return combined
+}
+
+async function recoverDaemonDurableTrade(
+  tradeId: string,
+  input: Parameters<typeof recoverDaemonDurableTradeSessions>[0],
+): Promise<DurableTradeRecoveryResult> {
+  const snapshot = await readRecoveryStorage(async () => {
+    const state = await readStateScope({
+      tradeIds: [tradeId],
+      swapIds: [tradeId],
+    })
+    if (!state) throw new Error('daemon SQLite state row is missing')
+    return state
+  })
+  if (snapshot.durableTradeSessions[tradeId] === undefined) {
+    return { sessions: [], orphans: [] }
+  }
+  await (input.authorityPreflight ?? assertDaemonTradeRecoveryAuthority)(
+    tradeId,
+    snapshot,
+  )
+  return recoverDurableTradeSessions(
+    createDaemonDurableTradeRecoveryPorts(snapshot, input),
+  )
+}
+
+async function assertDaemonTradeRecoveryAuthority(
+  tradeId: string,
+  snapshot: DaemonState,
+): Promise<void> {
+  const profile = await readProfile()
+  const session = snapshot.durableTradeSessions[tradeId]
+  const swap = snapshot.swaps[tradeId]
+  if (profile === null || session === undefined || swap === undefined) {
+    throw new Error('durable trade recovery authority is incomplete')
+  }
+  const retainedKeyId = session.ephemeralKeyHandle.keyId
+  const retainedKey = await readOrderEphemeralSecret(retainedKeyId)
+  if (retainedKey === null) {
+    throw new Error('durable trade recovery retained key is missing')
+  }
+  const bindingError = validateDaemonTradeAuthorityBinding({
+    tradeId,
+    session,
+    swap,
+    retainedKeyId,
+    retainedKey,
+    profileMintUrl: profile.mintUrl,
+  })
+  if (bindingError !== null) {
+    throw new Error(`durable trade recovery authority is invalid: ${bindingError}`)
+  }
+}
+
+async function readRecoveryStorage<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read()
+  } catch (cause) {
+    throw new Error('durable trade recovery storage is unavailable', { cause })
+  }
+}
+
+function createDaemonDurableTradeRecoveryPorts(
+  snapshot: DaemonState,
+  input: Parameters<typeof recoverDaemonDurableTradeSessions>[0],
+): DurableTradeRecoveryPorts {
+  return {
+    ...createDaemonDurableTradeRepositories(snapshot),
     mint: {
       inspect: inspectDaemonOperation,
       restoreExactPersistedOutputs: async (operation) => {
-        await dispatchBoundDaemonOperation(operation, 'restore', input.exactOperationAdapter)
+        await dispatchBoundDaemonOperation(
+          operation,
+          'restore',
+          input.exactOperationAdapter,
+        )
       },
       resumeExactPreparedOperation: async (operation) => {
-        await dispatchBoundDaemonOperation(operation, 'resume', input.exactOperationAdapter)
+        await dispatchBoundDaemonOperation(
+          operation,
+          'resume',
+          input.exactOperationAdapter,
+        )
       },
     },
     transport: {
@@ -138,40 +295,54 @@ export async function recoverDaemonDurableTradeSessions(input: {
     scheduleRetry: input.scheduleRetry,
     atomicTransition: daemonAtomicTransition,
   }
-  return recoverDurableTradeSessions(ports)
 }
 
 class DaemonDurableTradeRecoveryCoordinator implements DaemonDurableTradeRecoveryRunner {
   private tail: Promise<void> = Promise.resolve()
-  private bootstrap: Promise<{ durableRecovery: DurableTradeRecoveryResult; activeSwaps: number }> | null = null
+  private bootstrap: Promise<{
+    durableRecovery: DurableTradeRecoveryResult
+    activeSwaps: number
+  }> | null = null
   private bootstrapArmed = false
   private bootstrapGate: Promise<void> | null = null
   private releaseBootstrapGate: (() => void) | null = null
-  private readonly retryTimers = new Map<string, {
+  private readonly retryTimers = new Map<
+    string,
+    {
     request: DurableTradeRetryRequest
     dueMs: number
     timer: ReturnType<typeof setTimeout>
-  }>()
+    }
+  >()
   private readonly loadState: () => Promise<DaemonState>
   private readonly nowMs: () => number
-  private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
+  private readonly setTimer: (
+    callback: () => void,
+    delayMs: number,
+  ) => ReturnType<typeof setTimeout>
   private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void
   private readonly recoverDurableSessions: (input: {
     scheduleRetry: (request: DurableTradeRetryRequest) => Promise<void>
+    tradeId?: string
   }) => Promise<DurableTradeRecoveryResult>
   private readonly input: DaemonDurableTradeRecoveryRunnerOptions
+  private readonly usesInjectedStateLoader: boolean
 
   constructor(input: DaemonDurableTradeRecoveryRunnerOptions) {
     this.input = input
+    this.usesInjectedStateLoader = input.loadState !== undefined
     this.loadState = input.loadState ?? ensureState
     this.nowMs = input.nowMs ?? Date.now
     this.setTimer = input.setTimer ?? setTimeout
     this.clearTimer = input.clearTimer ?? clearTimeout
-    this.recoverDurableSessions = input.recoverDurableSessions ??
-      ((ports) => recoverDaemonDurableTradeSessions({
+    this.recoverDurableSessions =
+      input.recoverDurableSessions ??
+      ((ports) =>
+        recoverDaemonDurableTradeSessions({
         executor: input.executor,
         connection: input.connection,
         scheduleRetry: ports.scheduleRetry,
+        tradeId: ports.tradeId,
       }))
   }
 
@@ -183,7 +354,10 @@ class DaemonDurableTradeRecoveryCoordinator implements DaemonDurableTradeRecover
     })
   }
 
-  finishBootstrap(): Promise<{ durableRecovery: DurableTradeRecoveryResult; activeSwaps: number }> {
+  finishBootstrap(): Promise<{
+    durableRecovery: DurableTradeRecoveryResult
+    activeSwaps: number
+  }> {
     if (this.bootstrap) return this.bootstrap
     this.bootstrapArmed = true
     this.bootstrap = this.enqueue(() => this.runCoordinator())
@@ -194,7 +368,10 @@ class DaemonDurableTradeRecoveryCoordinator implements DaemonDurableTradeRecover
     return this.bootstrap
   }
 
-  async recover(): Promise<{ durableRecovery: DurableTradeRecoveryResult; activeSwaps: number }> {
+  async recover(): Promise<{
+    durableRecovery: DurableTradeRecoveryResult
+    activeSwaps: number
+  }> {
     await this.waitForBootstrap()
     return this.enqueue(() => this.runCoordinator())
   }
@@ -209,27 +386,33 @@ class DaemonDurableTradeRecoveryCoordinator implements DaemonDurableTradeRecover
       // Persist inbound protocol state before executor work, but keep that
       // write under the same owner as the SDK's session CAS transition.
       const persisted = await persist()
-      const recovery = await this.runCoordinator()
-      if (hasFailedClosedRecovery(recovery.durableRecovery, tradeId) ||
-        !await this.hasValidDurableSession(tradeId)) return
+      const recovery = await this.runCoordinator(tradeId)
+      if (
+        hasFailedClosedRecovery(recovery.durableRecovery, tradeId) ||
+        !(await this.hasValidDurableSession(tradeId))
+      )
+        return
       await action(persisted)
     })
   }
 
-  async recoverTradeOperation(tradeId: string, operationId: string): Promise<void> {
+  async recoverTradeOperation(
+    tradeId: string,
+    operationId: string,
+  ): Promise<void> {
     await this.waitForBootstrap()
     await this.enqueue(async () => {
-      if (!await this.isRetryEligible({ tradeId, operationId })) {
+      if (!(await this.isRetryEligible({ tradeId, operationId }))) {
         return
       }
-      await this.runCoordinator()
+      await this.runCoordinator(tradeId)
     })
   }
 
-  async recoverTrade(_tradeId: string): Promise<void> {
+  async recoverTrade(tradeId: string): Promise<void> {
     await this.waitForBootstrap()
     await this.enqueue(async () => {
-      await this.runCoordinator()
+      await this.runCoordinator(tradeId)
     })
   }
 
@@ -246,28 +429,47 @@ class DaemonDurableTradeRecoveryCoordinator implements DaemonDurableTradeRecover
 
   private enqueue<T>(action: () => Promise<T>): Promise<T> {
     const next = this.tail.then(action, action)
-    this.tail = next.then(() => undefined, () => undefined)
+    this.tail = next.then(
+      () => undefined,
+      () => undefined,
+    )
     return next
   }
 
-  private async runCoordinator(): Promise<{
+  private async runCoordinator(tradeId?: string): Promise<{
     durableRecovery: DurableTradeRecoveryResult
     activeSwaps: number
   }> {
     const durableRecovery = await this.recoverDurableSessions({
       scheduleRetry: async (request) => this.scheduleRetry(request),
+      ...(tradeId === undefined ? {} : { tradeId }),
     })
-    await this.clearTerminalRetries()
     if (hasFailedClosedRecovery(durableRecovery)) {
+      await this.clearTerminalRetries(tradeId)
       return { durableRecovery, activeSwaps: 0 }
     }
-    const { activeSwaps } = await this.input.executor.resumeActiveSwaps(await this.loadState())
-    await this.clearTerminalRetries()
+    const activeSwaps = await this.resumeActiveSwaps(tradeId)
+    await this.clearTerminalRetries(tradeId)
     return { durableRecovery, activeSwaps }
   }
 
-  private async scheduleRetry(request: DurableTradeRetryRequest): Promise<void> {
-    if (!await this.isRetryEligible(request)) return
+  private async resumeActiveSwaps(tradeId?: string): Promise<number> {
+    if (tradeId !== undefined) {
+      const state = this.usesInjectedStateLoader
+        ? selectTradeState(await this.loadState(), tradeId)
+        : await requireActiveTradeState(tradeId)
+      return (await this.input.executor.resumeActiveSwaps(state)).activeSwaps
+    }
+    return this.usesInjectedStateLoader
+      ? (await this.input.executor.resumeActiveSwaps(await this.loadState()))
+          .activeSwaps
+      : resumeActiveSwapsPaged(this.input.executor)
+  }
+
+  private async scheduleRetry(
+    request: DurableTradeRetryRequest,
+  ): Promise<void> {
+    if (!(await this.isRetryEligible(request))) return
     const key = retryTimerKey(request)
     const dueMs = this.nowMs() + request.delayMs
     const existing = this.retryTimers.get(key)
@@ -275,64 +477,139 @@ class DaemonDurableTradeRecoveryCoordinator implements DaemonDurableTradeRecover
     if (existing) this.clearTimer(existing.timer)
     const timer = this.setTimer(() => {
       this.retryTimers.delete(key)
-      void this.recoverTradeOperation(request.tradeId, request.operationId).catch(() => undefined)
+      void this.recoverTradeOperation(
+        request.tradeId,
+        request.operationId,
+      ).catch(() => undefined)
     }, request.delayMs)
     timer.unref?.()
     this.retryTimers.set(key, { request, dueMs, timer })
   }
 
-  private async clearTerminalRetries(): Promise<void> {
+  private async clearTerminalRetries(tradeId?: string): Promise<void> {
     for (const [key, entry] of this.retryTimers) {
+      if (tradeId !== undefined && entry.request.tradeId !== tradeId) continue
       if (await this.isRetryEligible(entry.request)) continue
       this.clearTimer(entry.timer)
       this.retryTimers.delete(key)
     }
   }
 
-  private async isRetryEligible(request: Pick<DurableTradeRetryRequest, 'tradeId' | 'operationId'>): Promise<boolean> {
-    const state = await this.loadState()
+  private async isRetryEligible(
+    request: Pick<DurableTradeRetryRequest, 'tradeId' | 'operationId'>,
+  ): Promise<boolean> {
+    const state = this.usesInjectedStateLoader
+      ? await this.loadState()
+      : await requireTradeRecoveryState(request.tradeId, request.operationId)
     const session = state.durableTradeSessions[request.tradeId]
     const record = Object.values(state.proofOperations).find(
-      (candidate) => candidate.durableTradeRecovery?.operationId === request.operationId,
+      (candidate) =>
+        candidate.durableTradeRecovery?.operationId === request.operationId,
     )
     const operation = record?.durableTradeRecovery
-    if (!session || !record || !operation || operation.state === 'reconciled' ||
-      validateDaemonDurableOperationBinding({ session, record, operation }) !== null) {
+    if (
+      !session ||
+      !record ||
+      !operation ||
+      operation.state === 'reconciled' ||
+      validateDaemonDurableOperationBinding({ session, record, operation }) !==
+        null
+    ) {
       return false
     }
-    const deadlineSecs = session.role === 'seller'
+    const deadlineSecs =
+      session.role === 'seller'
       ? session.sellerLocktimeSecs
       : session.buyerLocktimeSecs
     return this.nowMs() < deadlineSecs * 1_000
   }
 
   private async hasValidDurableSession(tradeId: string): Promise<boolean> {
-    const session = (await this.loadState()).durableTradeSessions[tradeId]
-    return session !== undefined && validateDurableTradeSession(session) === null
+    const state = this.usesInjectedStateLoader
+      ? await this.loadState()
+      : await requireTradeRecoveryState(tradeId)
+    const session = state.durableTradeSessions[tradeId]
+    return (
+      session !== undefined && validateDurableTradeSession(session) === null
+    )
   }
 }
 
-function hasFailedClosedRecovery(recovery: DurableTradeRecoveryResult, tradeId?: string): boolean {
-  return recovery.sessions.some((result) =>
-    result.kind === 'failed-closed' && (tradeId === undefined || result.tradeId === tradeId)) ||
-    recovery.orphans.some((result) => result.kind === 'failed-closed')
+async function requireActiveTradeState(tradeId: string): Promise<DaemonState> {
+  const state = await readStateScope({
+    tradeIds: [tradeId],
+    swapIds: [tradeId],
+    orderIdsFromSwapIds: [tradeId],
+    walletProofs: [{ reservedBy: tradeId }],
+  })
+  if (!state) throw new Error('daemon SQLite state row is missing')
+  return state
 }
 
-function retryTimerKey(request: Pick<DurableTradeRetryRequest, 'tradeId' | 'operationId'>): string {
+function selectTradeState(state: DaemonState, tradeId: string): DaemonState {
+  const selected = structuredClone(state)
+  selected.durableTradeSessions = selectKey(selected.durableTradeSessions, tradeId)
+  selected.swaps = selectKey(selected.swaps, tradeId)
+  selected.proofOperations = Object.fromEntries(
+    Object.entries(selected.proofOperations).filter(
+      ([, operation]) => operation.durableTradeRecovery?.tradeId === tradeId,
+    ),
+  )
+  selected.orders = Object.fromEntries(
+    Object.entries(selected.orders).filter(([, order]) =>
+      order.tradeIds.includes(tradeId),
+    ),
+  )
+  selected.wallet.proofs = selected.wallet.proofs.filter(
+    (proof) => proof.reservedBy === tradeId,
+  )
+  return selected
+}
+
+function selectKey<T>(values: Record<string, T>, key: string): Record<string, T> {
+  const value = values[key]
+  return value === undefined ? {} : { [key]: value }
+}
+
+function hasFailedClosedRecovery(
+  recovery: DurableTradeRecoveryResult,
+  tradeId?: string,
+): boolean {
+  return (
+    recovery.sessions.some(
+      (result) =>
+        result.kind === 'failed-closed' &&
+        (tradeId === undefined || result.tradeId === tradeId),
+    ) || recovery.orphans.some((result) => result.kind === 'failed-closed')
+  )
+}
+
+function retryTimerKey(
+  request: Pick<DurableTradeRetryRequest, 'tradeId' | 'operationId'>,
+): string {
   return `${request.tradeId}\u0000${request.operationId}`
 }
 
-const daemonSessions: DurableTradeSessionRepository = {
+function createDaemonSessionRepository(
+  snapshot: DaemonState,
+): DurableTradeSessionRepository {
+  return {
   async get(tradeId) {
-    return (await readState())?.durableTradeSessions[tradeId] ?? null
+      return (
+        (await readStateScope({ tradeIds: [tradeId] }))?.durableTradeSessions[
+          tradeId
+        ] ?? null
+      )
   },
   async listRecoverable() {
-    return Object.values((await readState())?.durableTradeSessions ?? {})
+      return Object.values(snapshot.durableTradeSessions).map((session) =>
+        structuredClone(session),
+      )
   },
   async create(session) {
     const error = validateDurableTradeSession(session)
     if (error) throw new Error(error)
-    return updateState((state) => {
+      return updateState({ tradeIds: [session.tradeId] }, (state) => {
       const existing = state.durableTradeSessions[session.tradeId]
       if (existing) return existing
       state.durableTradeSessions[session.tradeId] = structuredClone(session)
@@ -342,18 +619,23 @@ const daemonSessions: DurableTradeSessionRepository = {
   async compareAndSwap(tradeId, expectedRevision, next) {
     const error = validateDurableTradeSession(next)
     if (error) throw new Error(error)
-    return updateState((state) => {
+      return updateState({ tradeIds: [tradeId] }, (state) => {
       const existing = state.durableTradeSessions[tradeId]
       if (!existing || existing.revision !== expectedRevision) return null
-      if (next.tradeId !== tradeId || next.revision !== expectedRevision + 1) {
-        throw new Error('durable trade session compare-and-swap has an invalid revision')
+        if (
+          next.tradeId !== tradeId ||
+          next.revision !== expectedRevision + 1
+        ) {
+          throw new Error(
+            'durable trade session compare-and-swap has an invalid revision',
+          )
       }
       state.durableTradeSessions[tradeId] = structuredClone(next)
       return next
     })
   },
   async remove(tradeId, expectedRevision) {
-    return updateState((state) => {
+      return updateState({ tradeIds: [tradeId] }, (state) => {
       const existing = state.durableTradeSessions[tradeId]
       if (!existing || existing.revision !== expectedRevision) return false
       delete state.durableTradeSessions[tradeId]
@@ -361,104 +643,178 @@ const daemonSessions: DurableTradeSessionRepository = {
     })
   },
 }
+}
 
-const daemonOperations: DurableProofOperationRepository = {
+function createDaemonOperationRepository(
+  snapshot: DaemonState,
+): DurableProofOperationRepository {
+  return {
   async get(operationId) {
     return findOperation(operationId)
   },
   async listByTrade(tradeId) {
-    const state = await readState()
+      const state = await readStateScope({ tradeIds: [tradeId] })
     return Object.values(state?.proofOperations ?? {})
       .map((record) => record.durableTradeRecovery)
-      .filter((link): link is DurableTradeProofOperationLink =>
-        link !== undefined && link.tradeId === tradeId)
+        .filter(
+          (link): link is DurableTradeProofOperationLink =>
+            link !== undefined && link.tradeId === tradeId,
+        )
   },
   async listRecoverable() {
-    const state = await readState()
-    return Object.values(state?.proofOperations ?? {})
+      return Object.values(snapshot.proofOperations)
       .map((record) => record.durableTradeRecovery)
-      .filter((link): link is DurableTradeProofOperationLink =>
-        link !== undefined && link.state !== 'reconciled')
+        .filter(
+          (link): link is DurableTradeProofOperationLink =>
+            link !== undefined && link.state !== 'reconciled',
+        )
+        .map((link) => structuredClone(link))
   },
   async prepare() {
-    throw new Error('daemon durable proof operations are prepared with their concrete Cashu request')
+      throw new Error(
+        'daemon durable proof operations are prepared with their concrete Cashu request',
+      )
   },
   async markMintSubmitted(operationId) {
-    return advanceDaemonOperationFromCurrentState(operationId, 'mint-submitted')
+      return advanceDaemonOperationFromCurrentState(
+        operationId,
+        'mint-submitted',
+      )
   },
   async markReconciled(operationId) {
     return advanceDaemonOperationFromCurrentState(operationId, 'reconciled')
   },
 }
+}
+
+async function requireTradeRecoveryState(
+  tradeId: string,
+  durableOperationId?: string,
+): Promise<DaemonState> {
+  const state = await readStateScope({
+    tradeIds: [tradeId],
+    ...(durableOperationId === undefined
+      ? {}
+      : { durableOperationIds: [durableOperationId] }),
+  })
+  if (!state) throw new Error('daemon SQLite state row is missing')
+  return state
+}
+
+async function resumeActiveSwapsPaged(
+  executor: DaemonSwapExecutor,
+): Promise<number> {
+  let activeSwaps = 0
+  let cursor: string | null = null
+  do {
+    const page = await readActiveSwapIdsPage({
+      cursor,
+      limit: DAEMON_RECOVERY_PAGE_LIMIT,
+    })
+    if (page.ids.length > 0) {
+      const state = await readStateScope({
+        tradeIds: page.ids,
+        swapIds: page.ids,
+      })
+      if (!state) throw new Error('daemon SQLite state row is missing')
+      activeSwaps += (await executor.resumeActiveSwaps(state)).activeSwaps
+    }
+    cursor = page.nextCursor
+  } while (cursor !== null)
+  return activeSwaps
+}
 
 /**
- * The daemon stores sessions and proof-operation rows in one atomically
- * renamed file. Advancing only one of those projections opens a crash window
- * where the next recovery run can no longer prove which exact action is safe.
+ * The daemon stores sessions and proof-operation rows in one SQLite transaction.
+ * Advancing only one projection would open a crash window where the next
+ * recovery run could no longer prove which exact action is safe.
  */
 const daemonAtomicTransition: DurableTradeAtomicTransitionPort = {
   async advance(input) {
-    if (validateDurableTradeSession(input.session) !== null ||
-      validateDurableProofOperationLink(input.operation) !== null) {
+    if (
+      validateDurableTradeSession(input.session) !== null ||
+      validateDurableProofOperationLink(input.operation) !== null
+    ) {
       return null
     }
-    return updateState((state) => {
-      const storedSession = state.durableTradeSessions[input.session.tradeId]
-      const record = Object.values(state.proofOperations).find(
-        (candidate) => candidate.durableTradeRecovery?.operationId === input.operation.operationId,
-      )
-      const storedOperation = record?.durableTradeRecovery
-      if (!storedSession || !record || !storedOperation ||
-        validateDurableProofOperationLink(storedOperation) !== null ||
-        !sameDurableOperationIdentity(storedOperation, input.operation) ||
-        validateDaemonDurableOperationBinding({
-          session: storedSession,
-          record,
-          operation: input.operation,
-        }) !== null) {
-        return null
+    const expectedSession = expectedAtomicSession(input)
+    if (expectedSession === null) return null
+    let stored = await findAtomicTransitionState(input.operation)
+    if (stored === null) return null
+    if (isExpectedAtomicState(stored, expectedSession, input.state)) {
+      await assertProofOperationCustodyBound(stored.record)
+      return {
+        session: stored.session,
+        operation: stored.operation,
       }
-
-      let expectedSession
-      try {
-        expectedSession = reduceDurableTradeSession(
-          input.session,
-          input.state === 'mint-submitted'
-            ? { kind: 'mint-submitted', operationId: input.operation.operationId }
-            : { kind: 'proof-operation-reconciled', operationId: input.operation.operationId },
-        )
-      } catch {
-        return null
-      }
-      const nextOperation = expectedSession.proofOperations.find(
-        (candidate) => candidate.operationId === input.operation.operationId,
-      )
-      if (!nextOperation || nextOperation.state !== input.state ||
-        !sameDurableOperationIdentity(nextOperation, input.operation) ||
-        !proofRecordMayAdvance(record.state, input.state)) {
-        return null
-      }
-
-      // The normal daemon execution path may have completed the same atomic
-      // file transaction while the exact mint adapter was returning. Returning
-      // that precise already-advanced snapshot makes recovery idempotent
-      // without accepting a stale or differently-bound session.
-      if (sameDurableSessionSnapshot(storedSession, expectedSession) &&
-        storedOperation.state === input.state &&
-        proofRecordHasAdvanced(record.state, input.state)) {
-        return { session: storedSession, operation: storedOperation }
-      }
-      if (!sameDurableSessionSnapshot(storedSession, input.session)) return null
-
-      state.durableTradeSessions[expectedSession.tradeId] = expectedSession
-      record.durableTradeRecovery = nextOperation
-      if (input.state === 'mint-submitted') record.state = 'mint-submitted'
-      return { session: expectedSession, operation: nextOperation }
-    })
+    }
+    if (
+      input.state !== 'mint-submitted' ||
+      !sameDurableSessionSnapshot(stored.session, input.session) ||
+      stored.operation.state !== 'prepared' ||
+      stored.record.state !== 'prepared'
+    ) return null
+    await markProofOperationMintSubmitted(stored.record.operationId)
+    stored = await findAtomicTransitionState(input.operation)
+    if (stored === null || !isExpectedAtomicState(
+      stored,
+      expectedSession,
+      input.state,
+    )) return null
+    await assertProofOperationCustodyBound(stored.record)
+    return { session: stored.session, operation: stored.operation }
   },
 }
 
-async function findOperation(operationId: string): Promise<DurableTradeProofOperationLink | null> {
+function expectedAtomicSession(
+  input: Parameters<DurableTradeAtomicTransitionPort['advance']>[0],
+): DurableTradeSession | null {
+  try {
+    return reduceDurableTradeSession(
+      input.session,
+      input.state === 'mint-submitted'
+        ? { kind: 'mint-submitted', operationId: input.operation.operationId }
+        : {
+            kind: 'proof-operation-reconciled',
+            operationId: input.operation.operationId,
+          },
+    )
+  } catch {
+    return null
+  }
+}
+
+async function findAtomicTransitionState(
+  operation: DurableTradeProofOperationLink,
+): Promise<{
+  record: ProofOperationRecord
+  session: DurableTradeSession
+  operation: DurableTradeProofOperationLink
+} | null> {
+  const bound = await findBoundDaemonOperation(operation)
+  const storedOperation = bound?.record.durableTradeRecovery
+  if (bound === null || storedOperation === undefined) return null
+  if (!sameDurableOperationIdentity(storedOperation, operation)) return null
+  return { ...bound, operation: storedOperation }
+}
+
+function isExpectedAtomicState(
+  stored: {
+    record: ProofOperationRecord
+    session: DurableTradeSession
+    operation: DurableTradeProofOperationLink
+  },
+  expectedSession: DurableTradeSession,
+  expectedState: 'mint-submitted' | 'reconciled',
+): boolean {
+  return sameDurableSessionSnapshot(stored.session, expectedSession) &&
+    stored.operation.state === expectedState &&
+    proofRecordHasAdvanced(stored.record.state, expectedState)
+}
+
+async function findOperation(
+  operationId: string,
+): Promise<DurableTradeProofOperationLink | null> {
   const record = await findOperationRecord(operationId)
   if (!record?.durableTradeRecovery) return null
   return record.durableTradeRecovery
@@ -468,12 +824,14 @@ async function advanceDaemonOperationFromCurrentState(
   operationId: string,
   state: 'mint-submitted' | 'reconciled',
 ): Promise<DurableTradeProofOperationLink> {
-  const snapshot = await readState()
+  const snapshot = await readStateScope({ durableOperationIds: [operationId] })
   const record = Object.values(snapshot?.proofOperations ?? {}).find(
     (candidate) => candidate.durableTradeRecovery?.operationId === operationId,
   )
   const operation = record?.durableTradeRecovery
-  const session = operation ? snapshot?.durableTradeSessions[operation.tradeId] : undefined
+  const session = operation
+    ? snapshot?.durableTradeSessions[operation.tradeId]
+    : undefined
   if (!record || !operation || !session) {
     throw new Error(`Missing durable proof operation ${operationId}`)
   }
@@ -483,33 +841,52 @@ async function advanceDaemonOperationFromCurrentState(
     operation,
   })
   if (bindingError) {
-    throw new Error(`Durable proof operation ${operationId} has an invalid binding: ${bindingError}`)
+    throw new Error(
+      `Durable proof operation ${operationId} has an invalid binding: ${bindingError}`,
+    )
   }
-  const advanced = await daemonAtomicTransition.advance({ session, operation, state })
+  const advanced = await daemonAtomicTransition.advance({
+    session,
+    operation,
+    state,
+  })
   if (!advanced) {
-    throw new Error(`Durable proof operation ${operationId} could not advance atomically`)
+    throw new Error(
+      `Durable proof operation ${operationId} could not advance atomically`,
+    )
   }
   return advanced.operation
 }
 
 async function findOperationRecord(operationId: string) {
-  const state = await readState()
-  return Object.values(state?.proofOperations ?? {}).find(
+  const state = await readStateScope({ durableOperationIds: [operationId] })
+  return (
+    Object.values(state?.proofOperations ?? {}).find(
     (record) => record.durableTradeRecovery?.operationId === operationId,
   ) ?? null
+  )
 }
 
-async function inspectDaemonOperation(operation: DurableTradeProofOperationLink) {
+async function inspectDaemonOperation(
+  operation: DurableTradeProofOperationLink,
+) {
   const bound = await findBoundDaemonOperation(operation)
   if (!bound) return { kind: 'foreign' as const }
   const { record } = bound
-  if (record.state === 'completed') return { kind: 'prepared-spent-restorable' as const }
-  if (record.inputs.some((proof) => !proof.id)) return { kind: 'corrupt' as const }
+  await assertProofOperationCustodyBound(record)
+  if (record.state === 'completed')
+    return { kind: 'prepared-spent-restorable' as const }
+  if (record.inputs.some((proof) => !proof.id))
+    return { kind: 'corrupt' as const }
 
-  const unit = typeof record.metadata.unit === 'string' ? record.metadata.unit : 'sat'
+  const unit =
+    typeof record.metadata.unit === 'string' ? record.metadata.unit : 'sat'
   const wallet = new CashuWallet(new CashuMint(record.mintUrl), { unit })
   await wallet.loadMint()
-  if (!wallet.checkProofsStates) throw new Error('Cashu wallet adapter does not support proof-state recovery checks')
+  if (!wallet.checkProofsStates)
+    throw new Error(
+      'Cashu wallet adapter does not support proof-state recovery checks',
+    )
   const states = await wallet.checkProofsStates(
     record.inputs.map(({ id, secret }) => ({ id: id!, secret })),
   )
@@ -527,26 +904,45 @@ async function inspectDaemonOperation(operation: DurableTradeProofOperationLink)
 async function dispatchBoundDaemonOperation(
   operation: DurableTradeProofOperationLink,
   action: ExactDaemonProofOperationAction,
-  exactOperationAdapter: ((
+  exactOperationAdapter:
+    | ((
     record: ProofOperationRecord,
     action: ExactDaemonProofOperationAction,
-  ) => Promise<void>) | undefined,
+      ) => Promise<void>)
+    | undefined,
 ): Promise<void> {
   const bound = await findBoundDaemonOperation(operation)
-  if (!bound) throw new Error(`Durable proof operation ${operation.operationId} has an invalid binding`)
-  await (exactOperationAdapter ?? recoverExactDaemonProofOperation)(bound.record, action)
+  if (!bound)
+    throw new Error(
+      `Durable proof operation ${operation.operationId} has an invalid binding`,
+    )
+  await assertProofOperationCustodyBound(bound.record)
+  await (exactOperationAdapter ?? recoverExactDaemonProofOperation)(
+    bound.record,
+    action,
+  )
 }
 
 async function findBoundDaemonOperation(
   operation: DurableTradeProofOperationLink,
-): Promise<{ record: ProofOperationRecord; session: DurableTradeSession } | null> {
-  const snapshot = await readState()
+): Promise<{
+  record: ProofOperationRecord
+  session: DurableTradeSession
+} | null> {
+  const snapshot = await readStateScope({
+    durableOperationIds: [operation.operationId],
+  })
   const record = Object.values(snapshot?.proofOperations ?? {}).find(
-    (candidate) => candidate.durableTradeRecovery?.operationId === operation.operationId,
+    (candidate) =>
+      candidate.durableTradeRecovery?.operationId === operation.operationId,
   )
   if (!record) return null
   const session = snapshot?.durableTradeSessions[operation.tradeId]
-  if (!session || validateDaemonDurableOperationBinding({ session, record, operation }) !== null) {
+  if (
+    !session ||
+    validateDaemonDurableOperationBinding({ session, record, operation }) !==
+      null
+  ) {
     return null
   }
   return { record, session }
@@ -567,24 +963,14 @@ function sameDurableOperationIdentity(
   left: DurableTradeProofOperationLink,
   right: DurableTradeProofOperationLink,
 ): boolean {
-  return left.operationId === right.operationId &&
+  return (
+    left.operationId === right.operationId &&
     left.operationKey === right.operationKey &&
     left.tradeId === right.tradeId &&
     left.role === right.role &&
     left.stage === right.stage &&
     left.kind === right.kind
-}
-
-function proofRecordMayAdvance(
-  state: 'prepared' | 'mint-submitted' | 'completed' | 'Failed',
-  transition: 'mint-submitted' | 'reconciled',
-): boolean {
-  switch (transition) {
-    case 'mint-submitted':
-      return state === 'prepared' || state === 'mint-submitted'
-    case 'reconciled':
-      return state === 'completed'
-  }
+  )
 }
 
 function proofRecordHasAdvanced(

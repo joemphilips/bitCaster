@@ -4,10 +4,23 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { getEncodedToken, type Proof } from '@cashu/cashu-ts'
+import { getEncodedToken, type MintKeys, type Proof } from '@cashu/cashu-ts'
 import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
+import {
+  daemonWalletCustodyScope,
+  DaemonDurableCustodyLease,
+} from '../src/durableCustodyLifecycle.ts'
+import { SqliteDurableCustodyStore } from '../src/durableCustodySqliteStore.ts'
+import { DaemonProofOperationCoordinator } from '../src/durableProofOperationCoordinator.ts'
+import {
+  setDaemonCustodyUnitOfWorkFaultHookForTest,
+} from '../src/durableCustodyUnitOfWork.ts'
 import { dispatch, type EngineClientLike } from '../src/server.ts'
-import { profileFromPublicKey, readProfile, writeProfile } from '../src/profile.ts'
+import {
+  profileFromPublicKey,
+  readProfile,
+  writeProfile,
+} from '../src/profile.ts'
 import {
   createDaemonSecrets,
   readSecrets,
@@ -15,6 +28,7 @@ import {
 } from '../src/secrets.ts'
 import {
   emptyDaemonState,
+  installDaemonProofOperationCoordinator,
   readState,
   writeState,
   type DaemonState,
@@ -23,25 +37,49 @@ import {
   recoverPreparedWalletSends,
   splitAvailableSatProofsForCtfCollateral,
 } from '../src/walletOps.ts'
+import { writeStateWithDurableSessionKeys } from './durableSessionTestStore.ts'
 
 test('daemon dispatch persists wallet, order, and swap state', async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-test-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
+  let lease: DaemonDurableCustodyLease | undefined
+  let uninstallCoordinator: (() => void) | undefined
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    profile.mintUrl = 'mint-a'
+    profile.mintUrl = 'https://mint-a.example'
     await writeProfile(profile)
     await writeSecrets(secrets)
+    const custodyStore = new SqliteDurableCustodyStore()
+    await custodyStore.registerScope(
+      daemonWalletCustodyScope(secrets.walletSeedHex),
+    )
+    lease = await DaemonDurableCustodyLease.claim({
+      store: custodyStore,
+      walletSeedHex: secrets.walletSeedHex,
+    })
+    uninstallCoordinator = installDaemonProofOperationCoordinator(
+      new DaemonProofOperationCoordinator({
+        authority: lease,
+        resolveMintKeys: async (_mintUrl, keysetIds) => new Map(
+          keysetIds.map((keysetId) => [keysetId, fakeMintKeys(keysetId)]),
+        ),
+      }),
+    )
 
     await t.test('wallet.balance summarizes durable proof state', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 100, 'available', { kind: 'sats' }),
-        proofRecord('mint-a', 50, 'reserved', { kind: 'sats' }),
-        proofRecord('mint-a', 999, 'available', { kind: 'sats', baseAsset: 'usd' }),
-        proofRecord('mint-a', 25, 'locked', {
+        proofRecord('https://mint-a.example', 100, 'available', {
+          kind: 'sats',
+        }),
+        proofRecord('https://mint-a.example', 50, 'reserved', { kind: 'sats' }),
+        proofRecord('https://mint-a.example', 999, 'available', {
+          kind: 'sats',
+          baseAsset: 'usd',
+        }),
+        proofRecord('https://mint-a.example', 25, 'locked', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
@@ -58,7 +96,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         totalLockedSats: 25,
         byMint: [
           {
-            mintUrl: 'mint-a',
+            mintUrl: 'https://mint-a.example',
             availableSats: 100,
             reservedSats: 50,
             lockedSats: 25,
@@ -66,7 +104,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         ],
         outcomePositions: [
           {
-            mintUrl: 'mint-a',
+            mintUrl: 'https://mint-a.example',
             conditionId: 'cond',
             outcomeSetId: 'YES',
             availableSats: 0,
@@ -77,20 +115,29 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
     })
 
-    await t.test('preflight collateral preparation opens sat markets with msat wallet unit', async () => {
+    await t.test(
+      'preflight collateral preparation opens sat markets with msat wallet unit',
+      async () => {
       const priorState = await readState()
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 1_000, 'available', { kind: 'sats', baseAsset: 'sat' }, 'msat-proof'),
+          proofRecord(
+            'https://mint-a.example',
+            1_000,
+            'available',
+            { kind: 'sats', baseAsset: 'sat' },
+            'msat-proof',
+          ),
       )
       await writeState(state)
 
       const requestedUnits: Array<string | null | undefined> = []
       try {
         await assert.rejects(
-          () => splitAvailableSatProofsForCtfCollateral(
+            () =>
+              splitAvailableSatProofsForCtfCollateral(
             1_000,
-            'mint-a',
+                'https://mint-a.example',
             'preflight-msat-unit',
             secrets,
             {
@@ -120,19 +167,30 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           await writeState(emptyDaemonState())
         }
       }
-    })
+      },
+    )
 
-    await t.test('daemon.status returns redacted profile and state summary', async () => {
+    await t.test(
+      'daemon.status returns redacted profile and state summary',
+      async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 10, 'available', { kind: 'sats' }, 'status-secret'),
+          proofRecord(
+            'https://mint-a.example',
+            10,
+            'available',
+            { kind: 'sats' },
+            'status-secret',
+          ),
       )
       state.proofOperations['op-status'] = {
         operationId: 'op-status',
         kind: 'wallet-send',
         state: 'prepared',
-        mintUrl: 'mint-a',
-        inputs: [{ amount: 10, secret: 'operation-input-secret', C: 'C-status' }],
+          mintUrl: 'https://mint-a.example',
+          inputs: [
+            { amount: 10, secret: 'operation-input-secret', C: 'C-status' },
+          ],
         outputs: {},
         metadata: {},
         createdAt: 1,
@@ -174,7 +232,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           totalLockedSats: 0,
           byMint: [
             {
-              mintUrl: 'mint-a',
+                mintUrl: 'https://mint-a.example',
               availableSats: 10,
               reservedSats: 0,
               lockedSats: 0,
@@ -186,22 +244,34 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       const text = JSON.stringify(result.result)
       assert.doesNotMatch(text, /walletSeedHex|nostrSecretKeyHex/)
       assert.doesNotMatch(text, /status-secret|operation-input-secret/)
-    })
+      },
+    )
 
-    await t.test('daemon state serializes native CTF proof operation amounts as numbers', async () => {
+    await t.test(
+      'daemon state serializes native CTF proof operation amounts as numbers',
+      async () => {
       const state = emptyDaemonState()
       state.proofOperations['ctf-native-op'] = {
         operationId: 'ctf-native-op',
         kind: 'conditional-keyset-swap',
         state: 'completed',
-        mintUrl: 'mint-a',
+          mintUrl: 'https://mint-a.example',
         inputs: [
-          { id: 'ctf-keyset', amount: 136n as never, secret: 'ctf-input', C: 'C-in' },
+            {
+              id: 'ctf-keyset',
+              amount: 136n as never,
+              secret: 'ctf-input',
+              C: 'C-in',
+            },
         ],
         outputs: {
           lock: [
             {
-              blindedMessage: { amount: 100n as never, id: 'ctf-keyset', B_: 'B-lock' },
+                blindedMessage: {
+                  amount: 100n as never,
+                  id: 'ctf-keyset',
+                  B_: 'B-lock',
+                },
               blindingFactor: '01',
               secret: '02',
             },
@@ -210,7 +280,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         metadata: { fees: 0n },
         resultProofs: {
           lock: [
-            { id: 'ctf-keyset', amount: 100n as never, secret: 'ctf-lock', C: 'C-out' },
+              {
+                id: 'ctf-keyset',
+                amount: 100n as never,
+                secret: 'ctf-lock',
+                C: 'C-out',
+              },
           ],
         },
         createdAt: 1,
@@ -220,13 +295,30 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       await writeState(state)
       const restored = await readState()
 
-      assert.equal(restored?.proofOperations['ctf-native-op']?.kind, 'conditional-keyset-swap')
-      assert.equal(restored?.proofOperations['ctf-native-op']?.inputs[0].amount, 136)
-      assert.equal(restored?.proofOperations['ctf-native-op']?.outputs.lock[0].blindedMessage.amount, 100)
-      assert.equal(restored?.proofOperations['ctf-native-op']?.resultProofs?.lock[0].amount, 100)
-    })
+        assert.equal(
+          restored?.proofOperations['ctf-native-op']?.kind,
+          'conditional-keyset-swap',
+        )
+        assert.equal(
+          restored?.proofOperations['ctf-native-op']?.inputs[0].amount,
+          136,
+        )
+        assert.equal(
+          restored?.proofOperations['ctf-native-op']?.outputs.lock[0]
+            .blindedMessage.amount,
+          100,
+        )
+        assert.equal(
+          restored?.proofOperations['ctf-native-op']?.resultProofs?.lock[0]
+            .amount,
+          100,
+        )
+      },
+    )
 
-    await t.test('daemon.config updates engine and mint URLs without replacing identity', async () => {
+    await t.test(
+      'daemon.config updates engine and mint URLs without replacing identity',
+      async () => {
       await writeState(emptyDaemonState())
       const response = await dispatch({
         method: 'daemon.config',
@@ -261,14 +353,23 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         'http://engine.example',
       )
       await writeProfile(profile)
-    })
+      },
+    )
 
-    await t.test('daemon.config refuses endpoint changes after durable state exists', async () => {
+    await t.test(
+      'daemon.config refuses endpoint changes after durable state exists',
+      async () => {
       for (const buildState of [
         () => {
           const state = emptyDaemonState()
           state.wallet.proofs.push(
-            proofRecord('mint-a', 1, 'available', { kind: 'sats' }, 'config-proof'),
+              proofRecord(
+                'https://mint-a.example',
+                1,
+                'available',
+                { kind: 'sats' },
+                'config-proof',
+              ),
           )
           return state
         },
@@ -278,8 +379,10 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             operationId: 'config-op',
             kind: 'wallet-send',
             state: 'prepared',
-            mintUrl: 'mint-a',
-            inputs: [{ amount: 1, secret: 'config-op-secret', C: 'C-config' }],
+              mintUrl: 'https://mint-a.example',
+              inputs: [
+                { amount: 1, secret: 'config-op-secret', C: 'C-config' },
+              ],
             outputs: {},
             metadata: {},
             createdAt: 1,
@@ -311,8 +414,37 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           }
           return state
         },
+          () => {
+            const state = emptyDaemonState()
+            state.durableTradeSessions['config-session'] = {
+              schemaVersion: 2,
+              revision: 0,
+              tradeId: 'config-session',
+              role: 'seller',
+              localProtocolPubkey: 'a'.repeat(64),
+              counterpartyProtocolPubkey: 'b'.repeat(64),
+              mintUrl: 'https://mint-a.example',
+              sellerLocktimeSecs: 120,
+              buyerLocktimeSecs: 100,
+              ephemeralKeyHandle: {
+                keyId: 'config-session-key',
+                tradeId: 'config-session',
+                role: 'seller',
+                localProtocolPubkey: 'a'.repeat(64),
+                counterpartyProtocolPubkey: 'b'.repeat(64),
+                mintUrl: 'https://mint-a.example',
+                sellerLocktimeSecs: 120,
+                buyerLocktimeSecs: 100,
+              },
+              stage: 'intent',
+              proofOperations: [],
+              receivedCiphers: {},
+              outboundCiphers: {},
+            }
+            return state
+          },
       ]) {
-        await writeState(buildState())
+          await writeStateWithDurableSessionKeys(buildState())
         const response = await dispatch({
           method: 'daemon.config',
           params: { mintUrl: 'http://mint.example' },
@@ -325,9 +457,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         )
         assert.equal((await readProfile())?.mintUrl, profile.mintUrl)
       }
-    })
+      },
+    )
 
-    await t.test('daemon.config allows no-op endpoint updates with durable state', async () => {
+    await t.test(
+      'daemon.config allows no-op endpoint updates with durable state',
+      async () => {
       const state = emptyDaemonState()
       state.orders['config-noop-order'] = {
         orderId: 'config-noop-order',
@@ -351,12 +486,15 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         (response.result as { profile: typeof profile }).profile,
         profile,
       )
-    })
+      },
+    )
 
-    await t.test('wallet.receive redeems token proofs into daemon state', async () => {
+    await t.test(
+      'wallet.receive redeems token proofs into daemon state',
+      async () => {
       await writeState(emptyDaemonState())
       const token = getEncodedToken({
-        mint: 'mint-a',
+          mint: 'https://mint-a.example',
         unit: 'sat',
         proofs: [cashuProof(7, 'token-secret')],
       })
@@ -364,7 +502,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         { method: 'wallet.receive', params: { token } },
         {
           createCashuWallet(mintUrl) {
-            assert.equal(mintUrl, 'mint-a')
+              assert.equal(mintUrl, 'https://mint-a.example')
             return {
               async loadMint() {},
               async receive(receivedToken, config) {
@@ -382,7 +520,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
 
       assert.equal(response.ok, true)
       assert.deepEqual(response.result, {
-        mintUrl: 'mint-a',
+          mintUrl: 'https://mint-a.example',
         amountSats: 7,
         proofCount: 1,
         asset: { kind: 'sats', baseAsset: 'sat' },
@@ -390,13 +528,19 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       const state = await readState()
       assert.equal(state?.wallet.proofs[0]?.proof.secret, 'fresh-secret')
       assert.equal(state?.wallet.proofs[0]?.state, 'available')
-      assert.deepEqual(state?.wallet.proofs[0]?.asset, { kind: 'sats', baseAsset: 'sat' })
+        assert.deepEqual(state?.wallet.proofs[0]?.asset, {
+          kind: 'sats',
+          baseAsset: 'sat',
     })
+      },
+    )
 
-    await t.test('wallet.receive can classify imported proofs as outcome tokens', async () => {
+    await t.test(
+      'wallet.receive can classify imported proofs as outcome tokens',
+      async () => {
       await writeState(emptyDaemonState())
       const token = getEncodedToken({
-        mint: 'mint-a',
+          mint: 'https://mint-a.example',
         unit: 'sat',
         proofs: [cashuProof(11, 'outcome-token-secret')],
       })
@@ -411,7 +555,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         },
         {
           async resolveConditionKeysetIds(mintUrl, conditionId) {
-            assert.equal(mintUrl, 'mint-a')
+              assert.equal(mintUrl, 'https://mint-a.example')
             assert.equal(conditionId, 'cond')
             return ['009a1f293253e41e']
           },
@@ -443,7 +587,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
 
       assert.equal(response.ok, true)
       assert.deepEqual(response.result, {
-        mintUrl: 'mint-a',
+          mintUrl: 'https://mint-a.example',
         amountSats: 11,
         proofCount: 1,
         asset: {
@@ -460,13 +604,19 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         outcomeSetId: 'YES',
         baseAsset: 'sat',
       })
-      assert.equal(state?.wallet.proofs[0]?.proof.secret, 'outcome-token-secret')
-    })
+        assert.equal(
+          state?.wallet.proofs[0]?.proof.secret,
+          'outcome-token-secret',
+        )
+      },
+    )
 
-    await t.test('wallet.receive rejects spent outcome-token proofs before persistence', async () => {
+    await t.test(
+      'wallet.receive rejects spent outcome-token proofs before persistence',
+      async () => {
       await writeState(emptyDaemonState())
       const token = getEncodedToken({
-        mint: 'mint-a',
+          mint: 'https://mint-a.example',
         unit: 'sat',
         proofs: [cashuProof(11, 'spent-outcome-secret')],
       })
@@ -511,11 +661,14 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         /cashu outcome proof is not spendable: SPENT/,
       )
       assert.deepEqual((await readState())?.wallet.proofs, [])
-    })
+      },
+    )
 
-    await t.test('wallet.receive rejects partial outcome metadata', async () => {
+    await t.test(
+      'wallet.receive rejects partial outcome metadata',
+      async () => {
       const token = getEncodedToken({
-        mint: 'mint-a',
+          mint: 'https://mint-a.example',
         unit: 'sat',
         proofs: [cashuProof(7, 'partial-outcome-secret')],
       })
@@ -528,9 +681,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           }),
         /conditionId and outcomeSetId must be supplied together/,
       )
-    })
+      },
+    )
 
-    await t.test('wallet.receive rejects tokens for unexpected mints', async () => {
+    await t.test(
+      'wallet.receive rejects tokens for unexpected mints',
+      async () => {
       const token = getEncodedToken({
         mint: 'http://unexpected-mint.local',
         unit: 'sat',
@@ -541,20 +697,38 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         () => dispatch({ method: 'wallet.receive', params: { token } }),
         /mint does not match daemon profile mint/,
       )
-    })
+      },
+    )
 
-    await t.test('wallet.send spends stored proofs and returns an encoded token', async () => {
+    await t.test(
+      'wallet.send spends stored proofs and returns an encoded token',
+      async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'spend-secret-a'),
-        proofRecord('mint-a', 4, 'available', { kind: 'sats' }, 'spend-secret-b'),
+          proofRecord(
+            'https://mint-a.example',
+            8,
+            'available',
+            { kind: 'sats' },
+            'spend-secret-a',
+          ),
+          proofRecord(
+            'https://mint-a.example',
+            4,
+            'available',
+            { kind: 'sats' },
+            'spend-secret-b',
+          ),
       )
       await writeState(state)
       const response = await dispatch(
-        { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'mint-a' } },
+          {
+            method: 'wallet.send',
+            params: { amountSats: 5, mintUrl: 'https://mint-a.example' },
+          },
         {
           createCashuWallet(mintUrl) {
-            assert.equal(mintUrl, 'mint-a')
+              assert.equal(mintUrl, 'https://mint-a.example')
             return resumableSendWallet({
               onPrepare(amount, proofs) {
                 assert.equal(amount, 5)
@@ -592,48 +766,84 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         updated?.wallet.proofs.map((record) => record.proof.secret).sort(),
         ['change-secret', 'spend-secret-b'],
       )
-    })
+      },
+    )
 
-    await t.test('concurrent wallet.send calls reserve distinct proofs', async () => {
+    await t.test(
+      'concurrent wallet.send calls reserve distinct proofs',
+      async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'send-a'),
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'send-b'),
+          proofRecord(
+            'https://mint-a.example',
+            8,
+            'available',
+            { kind: 'sats' },
+            'send-a',
+          ),
+          proofRecord(
+            'https://mint-a.example',
+            8,
+            'available',
+            { kind: 'sats' },
+            'send-b',
+          ),
       )
       await writeState(state)
       const selectedSecrets: string[] = []
 
       const responses = await Promise.all([
         dispatch(
-          { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'mint-a' } },
+            {
+              method: 'wallet.send',
+              params: { amountSats: 5, mintUrl: 'https://mint-a.example' },
+            },
           { createCashuWallet: concurrentSendWallet(selectedSecrets) },
         ),
         dispatch(
-          { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'mint-a' } },
+            {
+              method: 'wallet.send',
+              params: { amountSats: 5, mintUrl: 'https://mint-a.example' },
+            },
           { createCashuWallet: concurrentSendWallet(selectedSecrets) },
         ),
       ])
 
-      assert.deepEqual(responses.map((response) => response.ok), [true, true])
+        assert.deepEqual(
+          responses.map((response) => response.ok),
+          [true, true],
+        )
       assert.deepEqual(selectedSecrets.sort(), ['send-a', 'send-b'])
       const updated = await readState()
       assert.deepEqual(
         updated?.wallet.proofs.map((record) => record.proof.secret).sort(),
         ['change-send-a', 'change-send-b'],
       )
-    })
+      },
+    )
 
-    await t.test('wallet.send releases reserved proofs when mint send fails', async () => {
+    await t.test(
+      'wallet.send leaves proofs available when preparation fails before reservation',
+      async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'send-fail'),
+          proofRecord(
+            'https://mint-a.example',
+            8,
+            'available',
+            { kind: 'sats' },
+            'send-fail',
+          ),
       )
       await writeState(state)
 
       await assert.rejects(
         () =>
           dispatch(
-            { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'mint-a' } },
+              {
+                method: 'wallet.send',
+                params: { amountSats: 5, mintUrl: 'https://mint-a.example' },
+              },
             {
               createCashuWallet() {
                 return {
@@ -661,12 +871,21 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       assert.equal(updated?.wallet.proofs[0]?.proof.secret, 'send-fail')
       assert.equal(updated?.wallet.proofs[0]?.state, 'available')
       assert.equal(updated?.wallet.proofs[0]?.reservedBy, undefined)
-    })
+      },
+    )
 
-    await t.test('wallet.send with operation id is idempotent after completion', async () => {
+    await t.test(
+      'wallet.send with operation id is idempotent after completion',
+      async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'send-op'),
+          proofRecord(
+            'https://mint-a.example',
+            8,
+            'available',
+            { kind: 'sats' },
+            'send-op',
+          ),
       )
       await writeState(state)
       let prepared = 0
@@ -677,7 +896,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           method: 'wallet.send',
           params: {
             amountSats: 5,
-            mintUrl: 'mint-a',
+              mintUrl: 'https://mint-a.example',
             operationId: 'wallet-send-op-1',
           },
         },
@@ -703,7 +922,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           method: 'wallet.send',
           params: {
             amountSats: 5,
-            mintUrl: 'mint-a',
+              mintUrl: 'https://mint-a.example',
             operationId: 'wallet-send-op-1',
           },
         },
@@ -711,10 +930,14 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           createCashuWallet() {
             return resumableSendWallet({
               onPrepare: () => {
-                throw new Error('prepare should not run for completed operation')
+                  throw new Error(
+                    'prepare should not run for completed operation',
+                  )
               },
               onComplete: () => {
-                throw new Error('complete should not run for completed operation')
+                  throw new Error(
+                    'complete should not run for completed operation',
+                  )
               },
             })
           },
@@ -723,21 +946,36 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
 
       assert.equal(first.ok, true)
       assert.equal(second.ok, true)
-      assert.equal((first.result as { token: string }).token, (second.result as { token: string }).token)
+        assert.equal(
+          (first.result as { token: string }).token,
+          (second.result as { token: string }).token,
+        )
       assert.equal(prepared, 1)
       assert.equal(completed, 1)
       const updated = await readState()
-      assert.equal(updated?.proofOperations['wallet-send-op-1']?.state, 'completed')
+        assert.equal(
+          updated?.proofOperations['wallet-send-op-1']?.state,
+          'completed',
+        )
       assert.deepEqual(
         updated?.wallet.proofs.map((record) => record.proof.secret),
         ['change-op'],
       )
-    })
+      },
+    )
 
-    await t.test('wallet.send with operation id restores spent prepared outputs', async () => {
+    await t.test(
+      'wallet.send with operation id restores spent prepared outputs',
+      async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'send-restore'),
+          proofRecord(
+            'https://mint-a.example',
+            8,
+            'available',
+            { kind: 'sats' },
+            'send-restore',
+          ),
       )
       await writeState(state)
 
@@ -748,7 +986,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               method: 'wallet.send',
               params: {
                 amountSats: 5,
-                mintUrl: 'mint-a',
+                  mintUrl: 'https://mint-a.example',
                 operationId: 'wallet-send-restore',
               },
             },
@@ -770,7 +1008,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           method: 'wallet.send',
           params: {
             amountSats: 5,
-            mintUrl: 'mint-a',
+              mintUrl: 'https://mint-a.example',
             operationId: 'wallet-send-restore',
           },
         },
@@ -782,7 +1020,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 throw new Error('prepare should not run during restore')
               },
               onComplete: () => {
-                throw new Error('complete should not run when inputs are spent')
+                  throw new Error(
+                    'complete should not run when inputs are spent',
+                  )
               },
             })
           },
@@ -799,17 +1039,29 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       assert.equal(retried.ok, true)
       assert.match((retried.result as { token: string }).token, /^cashu/)
       const updated = await readState()
-      assert.equal(updated?.proofOperations['wallet-send-restore']?.state, 'completed')
+        assert.equal(
+          updated?.proofOperations['wallet-send-restore']?.state,
+          'completed',
+        )
       assert.deepEqual(
         updated?.wallet.proofs.map((record) => record.proof.secret),
         ['restored-keep'],
       )
-    })
+      },
+    )
 
-    await t.test('wallet recovery sweep completes spent prepared sends', async () => {
+    await t.test(
+      'wallet recovery sweep completes spent prepared sends',
+      async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'recover-spent'),
+          proofRecord(
+            'https://mint-a.example',
+            8,
+            'available',
+            { kind: 'sats' },
+            'recover-spent',
+          ),
       )
       await writeState(state)
 
@@ -820,7 +1072,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               method: 'wallet.send',
               params: {
                 amountSats: 5,
-                mintUrl: 'mint-a',
+                  mintUrl: 'https://mint-a.example',
                 operationId: 'wallet-send-recover-spent',
               },
             },
@@ -859,21 +1111,148 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
 
       assert.deepEqual(recovery, {
+        recoveredCount: 1,
+        pendingCount: 0,
         recovered: ['wallet-send-recover-spent'],
         pending: [],
+        summaryTruncated: false,
       })
       const updated = await readState()
-      assert.equal(updated?.proofOperations['wallet-send-recover-spent']?.state, 'completed')
+        assert.equal(
+          updated?.proofOperations['wallet-send-recover-spent']?.state,
+          'completed',
+        )
       assert.deepEqual(
         updated?.wallet.proofs.map((record) => record.proof.secret),
         ['sweep-keep'],
       )
-    })
+      },
+    )
 
-    await t.test('wallet recovery sweep reports mint-pending sends without throwing', async () => {
+    await t.test(
+      'wallet send result and proof reconciliation share one crash boundary',
+      async () => {
+        for (const faultStage of ['before-commit', 'after-commit'] as const) {
+          const operationId = `wallet-send-atomic-${faultStage}`
+          const inputSecret = `atomic-input-${faultStage}`
+          const keepSecret = `atomic-keep-${faultStage}`
+          const state = emptyDaemonState()
+          state.wallet.proofs.push(
+            proofRecord(
+              'https://mint-a.example',
+              8,
+              'available',
+              { kind: 'sats' },
+              inputSecret,
+            ),
+          )
+          await writeState(state)
+
+          let faultArmed = false
+          try {
+            await assert.rejects(
+              () =>
+                dispatch(
+                  {
+                    method: 'wallet.send',
+                    params: {
+                      amountSats: 5,
+                      mintUrl: 'https://mint-a.example',
+                      operationId,
+                    },
+                  },
+                  {
+                    createCashuWallet() {
+                      return resumableSendWallet({
+                        onComplete: () => {
+                          faultArmed = true
+                          setDaemonCustodyUnitOfWorkFaultHookForTest((observed) => {
+                            if (observed !== faultStage) return
+                            setDaemonCustodyUnitOfWorkFaultHookForTest(undefined)
+                            throw new Error(
+                              `simulated ${faultStage} wallet finalization fault`,
+                            )
+    })
+                          return {
+                            send: [cashuProof(5, `atomic-send-${faultStage}`)],
+                            keep: [cashuProof(3, keepSecret)],
+                          }
+                        },
+                      })
+                    },
+                  },
+                ),
+              new RegExp(`simulated ${faultStage} wallet finalization fault`),
+            )
+          } finally {
+            setDaemonCustodyUnitOfWorkFaultHookForTest(undefined)
+          }
+          assert.equal(faultArmed, true)
+
+          const interrupted = await readState()
+          assert.ok(interrupted)
+          const interruptedOperation = interrupted.proofOperations[operationId]
+          if (faultStage === 'before-commit') {
+            assert.equal(interruptedOperation?.state, 'mint-submitted')
+            assert.equal(
+              interrupted.wallet.proofs.some(
+                (proof) =>
+                  proof.proof.secret === inputSecret &&
+                  proof.state === 'reserved',
+              ),
+              true,
+            )
+
+            const recovery = await recoverPreparedWalletSends(secrets, {
+              createCashuWallet() {
+                return resumableSendWallet({ proofState: 'SPENT' })
+              },
+              async restoreOutputGroups() {
+                return {
+                  send: [cashuProof(5, `atomic-send-${faultStage}`)],
+                  keep: [cashuProof(3, keepSecret)],
+                }
+              },
+            })
+            assert.deepEqual(recovery, {
+              recoveredCount: 1,
+              pendingCount: 0,
+              recovered: [operationId],
+              pending: [],
+              summaryTruncated: false,
+            })
+          }
+
+          const finalized = await readState()
+          assert.ok(finalized)
+          assert.equal(
+            finalized.proofOperations[operationId]?.state,
+            'completed',
+          )
+          assert.equal(
+            finalized.wallet.proofs.some((proof) => proof.state === 'reserved'),
+            false,
+          )
+          assert.deepEqual(
+            finalized.wallet.proofs.map((proof) => proof.proof.secret),
+            [keepSecret],
+          )
+        }
+      },
+    )
+
+    await t.test(
+      'wallet recovery sweep reports mint-pending sends without throwing',
+      async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'recover-pending'),
+          proofRecord(
+            'https://mint-a.example',
+            8,
+            'available',
+            { kind: 'sats' },
+            'recover-pending',
+          ),
       )
       await writeState(state)
 
@@ -884,7 +1263,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               method: 'wallet.send',
               params: {
                 amountSats: 5,
-                mintUrl: 'mint-a',
+                  mintUrl: 'https://mint-a.example',
                 operationId: 'wallet-send-recover-pending',
               },
             },
@@ -923,32 +1302,62 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
       assert.match(recovery.pending[0].error, /still pending at the mint/)
       const updated = await readState()
-      assert.equal(updated?.proofOperations['wallet-send-recover-pending']?.state, 'prepared')
+        assert.equal(
+          updated?.proofOperations['wallet-send-recover-pending']?.state,
+          'mint-submitted',
+        )
       assert.equal(updated?.wallet.proofs[0]?.state, 'reserved')
       assert.equal(
         updated?.wallet.proofs[0]?.reservedBy,
         'wallet-send:wallet-send-recover-pending',
       )
-    })
+      const cleanup = await recoverPreparedWalletSends(secrets, {
+        createCashuWallet: () => resumableSendWallet({
+          proofState: 'SPENT',
+          onComplete: () => {
+            throw new Error('complete should not run during cleanup restore')
+          },
+        }),
+        async restoreOutputGroups() {
+          return {
+            send: [cashuProof(5, 'pending-cleanup-send')],
+            keep: [cashuProof(3, 'pending-cleanup-keep')],
+          }
+        },
+      })
+      assert.equal(cleanup.recoveredCount, 1)
+      },
+    )
 
-    await t.test('wallet.recover delegates manual recovery to wallet operations', async () => {
+    await t.test(
+      'wallet.recover delegates manual recovery to wallet operations',
+      async () => {
       await writeState(emptyDaemonState())
 
       const response = await dispatch({ method: 'wallet.recover' })
 
       assert.deepEqual(response, {
         ok: true,
-        result: { recovered: [], pending: [] },
+        result: {
+          recoveredCount: 0,
+          pendingCount: 0,
+          recovered: [],
+          pending: [],
+          summaryTruncated: false,
+        },
       })
-    })
+      },
+    )
 
-    await t.test('wallet.operations lists redacted proof operation summaries', async () => {
+    await t.test(
+      'wallet.operations lists redacted proof operation summaries',
+      async () => {
       const state = emptyDaemonState()
       state.proofOperations['op-a'] = {
         operationId: 'op-a',
         kind: 'wallet-send',
         state: 'prepared',
-        mintUrl: 'mint-a',
+          mintUrl: 'https://mint-a.example',
         inputs: [
           { amount: 2, secret: 'input-secret-a', C: 'C-a' },
           { amount: 3, secret: 'input-secret-b', C: 'C-b' },
@@ -971,9 +1380,17 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         operationId: 'op-b',
         kind: 'ctf-split',
         state: 'completed',
-        mintUrl: 'mint-b',
+          mintUrl: 'https://mint-b.example',
         inputs: [{ amount: 8, secret: 'input-secret-c', C: 'C-c' }],
-        outputs: {},
+          outputs: {
+            YES: [
+              {
+                blindedMessage: { amount: 8, id: 'keyset-b', B_: 'B-b' },
+                blindingFactor: 'blind-b',
+                secret: 'output-b',
+              },
+            ],
+          },
         metadata: {},
         resultProofs: {
           YES: [{ amount: 8, secret: 'result-secret', C: 'C-result' }],
@@ -1004,7 +1421,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           operationId: 'op-a',
           kind: 'wallet-send',
           state: 'prepared',
-          mintUrl: 'mint-a',
+            mintUrl: 'https://mint-a.example',
           inputAmountSats: 5,
           inputCount: 2,
           outputCounts: { send: 1, keep: 0 },
@@ -1014,12 +1431,17 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           updatedAt: 20,
         },
       ])
-    })
+      },
+    )
 
-    await t.test('order.submit uses clientOrderId and submits pubkey only for pending matches', async () => {
+    await t.test(
+      'order.submit uses clientOrderId and submits pubkey only for pending matches',
+      async () => {
       await writeState(backedDaemonState('cond', 10_000))
-      let capturedOptions: { baseUrl: string; nostrSecretKeyHex: string } | null =
-        null
+        let capturedOptions: {
+          baseUrl: string
+          nostrSecretKeyHex: string
+        } | null = null
       let capturedRequest: unknown = null
       const submittedPubkeys: Array<{ tradeId: string; pubkey: string }> = []
       let runtimeStartOrderIds: string[] = []
@@ -1090,7 +1512,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             capturedOptions = options
             return engine
           },
-          generateEphemeralKeypair: () => testEphemeralKeypair('11'.repeat(32)),
+            generateEphemeralKeypair: () =>
+              testEphemeralKeypair('11'.repeat(32)),
           tradeRuntime: {
             async start(state) {
               runtimeStartOrderIds = Object.keys(state.orders)
@@ -1113,7 +1536,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         price: 42,
         amountSubunits: 100,
         timeInForce: 'GTC',
-        clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
+          clientOrderId: (capturedRequest as { clientOrderId?: unknown })
+            .clientOrderId,
       })
       assert.match(
         (capturedRequest as { clientOrderId: string }).clientOrderId,
@@ -1144,9 +1568,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         publicKeyHex: testEphemeralKeypair('11'.repeat(32)).publicKeyHex,
         createdAt: updatedSecrets.orderEphemeralKeys['trade-1'].createdAt,
       })
-    })
+      },
+    )
 
-    await t.test('order.submit validates D=1000 prices using engine market metadata', async () => {
+    await t.test(
+      'order.submit validates D=1000 prices using engine market metadata',
+      async () => {
       await writeState(backedDaemonState('cond', 10_000))
       let capturedRequest: unknown = null
       const engine: EngineClientLike = {
@@ -1173,7 +1600,11 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           return { markets: [], nextCursor: null }
         },
         async getMarket() {
-          return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000 }
+            return {
+              conditionId: 'cond',
+              baseAsset: 'sat',
+              divisibility: 1_000,
+            }
         },
       }
 
@@ -1193,7 +1624,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           createEngineClient() {
             return engine
           },
-          generateEphemeralKeypair: () => testEphemeralKeypair('55'.repeat(32)),
+            generateEphemeralKeypair: () =>
+              testEphemeralKeypair('55'.repeat(32)),
           tradeRuntime: {
             async start() {
               return { orders: [], trades: [] }
@@ -1211,15 +1643,19 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         price: 500,
         amountSubunits: 1_000,
         timeInForce: 'GTC',
-        clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
+          clientOrderId: (capturedRequest as { clientOrderId?: unknown })
+            .clientOrderId,
       })
       assert.match(
         (capturedRequest as { clientOrderId: string }).clientOrderId,
         /^[0-9a-f-]{36}$/i,
       )
-    })
+      },
+    )
 
-    await t.test('order.submit blocks before POST when local buy collateral is insufficient', async () => {
+    await t.test(
+      'order.submit blocks before POST when local buy collateral is insufficient',
+      async () => {
       await writeState(emptyDaemonState())
       let submitCalls = 0
       const engine: EngineClientLike = {
@@ -1241,7 +1677,11 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           return { markets: [], nextCursor: null }
         },
         async getMarket() {
-          return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000 }
+            return {
+              conditionId: 'cond',
+              baseAsset: 'sat',
+              divisibility: 1_000,
+            }
         },
       }
 
@@ -1261,21 +1701,33 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
 
       assert.equal(response.ok, false)
-      assert.equal(response.error, 'insufficient backing: have 0 base subunits, need 1000')
+        assert.equal(
+          response.error,
+          'insufficient backing: have 0 base subunits, need 1000',
+        )
       assert.equal(submitCalls, 0)
       assert.deepEqual((await readState())?.orders, {})
       // Bypass invariant: this client gate is UX-only. If bypassed, the engine
       // and Cashu/mint settlement path remain authoritative and must reject or
       // fail unbacked orders without spending proofs.
-    })
+      },
+    )
 
-    await t.test('order.submit allows POST when local buy collateral is sufficient', async () => {
+    await t.test(
+      'order.submit allows POST when local buy collateral is sufficient',
+      async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 1_000, 'available', {
+          proofRecord(
+            'https://mint-a.example',
+            1_000,
+            'available',
+            {
           kind: 'sats',
           baseAsset: 'sat',
-        }, 'base-collateral'),
+            },
+            'base-collateral',
+          ),
       )
       await writeState(state)
       let capturedRequest: unknown = null
@@ -1303,7 +1755,11 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           return { markets: [], nextCursor: null }
         },
         async getMarket() {
-          return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000 }
+            return {
+              conditionId: 'cond',
+              baseAsset: 'sat',
+              divisibility: 1_000,
+            }
         },
       }
 
@@ -1321,16 +1777,26 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         },
         {
           createEngineClient: () => engine,
-          generateEphemeralKeypair: () => testEphemeralKeypair('77'.repeat(32)),
+            generateEphemeralKeypair: () =>
+              testEphemeralKeypair('77'.repeat(32)),
         },
       )
 
       assert.equal(response.ok, true)
-      assert.equal((capturedRequest as { amountSubunits?: number }).amountSubunits, 2_000)
-      assert.equal((await readState())?.orders['order-backed']?.orderId, 'order-backed')
-    })
+        assert.equal(
+          (capturedRequest as { amountSubunits?: number }).amountSubunits,
+          2_000,
+        )
+        assert.equal(
+          (await readState())?.orders['order-backed']?.orderId,
+          'order-backed',
+        )
+      },
+    )
 
-    await t.test('order.submit starts runtime with complement order subscription state', async () => {
+    await t.test(
+      'order.submit starts runtime with complement order subscription state',
+      async () => {
       const priorState = await readState()
       await writeState(backedDaemonState())
       try {
@@ -1382,7 +1848,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             createEngineClient() {
               return engine
             },
-            generateEphemeralKeypair: () => testEphemeralKeypair('33'.repeat(32)),
+              generateEphemeralKeypair: () =>
+                testEphemeralKeypair('33'.repeat(32)),
             tradeRuntime: {
               async start(state) {
                 runtimeOrder = state.orders['order-complement']
@@ -1400,9 +1867,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       } finally {
         if (priorState) await writeState(priorState)
       }
-    })
+      },
+    )
 
-    await t.test('order.submit propagates engine machine-code rejections', async () => {
+    await t.test(
+      'order.submit propagates engine machine-code rejections',
+      async () => {
       const priorState = await readState()
       await writeState(backedDaemonState())
       const engine: EngineClientLike = {
@@ -1445,7 +1915,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           createEngineClient() {
             return engine
           },
-          generateEphemeralKeypair: () => testEphemeralKeypair('11'.repeat(32)),
+            generateEphemeralKeypair: () =>
+              testEphemeralKeypair('11'.repeat(32)),
         },
       )
 
@@ -1457,21 +1928,32 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
       assert.deepEqual((await readState())?.orders, {})
       if (priorState) await writeState(priorState)
-    })
+      },
+    )
 
-    await t.test('order.submit pays missing Participation Score from wallet sats before submitting', async () => {
+    await t.test(
+      'order.submit pays missing Participation Score from wallet sats before submitting',
+      async () => {
       const priorState = await readState()
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 100, 'available', { kind: 'sats', baseAsset: 'sat' }, 'score-proof'),
+          proofRecord(
+            'https://mint-a.example',
+            100,
+            'available',
+            { kind: 'sats', baseAsset: 'sat' },
+            'score-proof',
+          ),
       )
       await writeState(state)
 
       try {
         const calls: string[] = []
-        let capturedPayment:
-          | { amountSats: number; token: string; paymentId?: string }
-          | null = null
+          let capturedPayment: {
+            amountSats: number
+            token: string
+            paymentId?: string
+          } | null = null
         const engine: EngineClientLike = {
           async getParticipationScore() {
             calls.push('score')
@@ -1544,7 +2026,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 },
               })
             },
-            generateEphemeralKeypair: () => testEphemeralKeypair('55'.repeat(32)),
+              generateEphemeralKeypair: () =>
+                testEphemeralKeypair('55'.repeat(32)),
           },
         )
 
@@ -1578,9 +2061,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       } finally {
         if (priorState) await writeState(priorState)
       }
-    })
+      },
+    )
 
-    await t.test('order.submit rejects malformed order intent before side effects', async () => {
+    await t.test(
+      'order.submit rejects malformed order intent before side effects',
+      async () => {
       const priorState = await readState()
       await writeState(backedDaemonState())
 
@@ -1673,7 +2159,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       } finally {
         if (priorState) await writeState(priorState)
       }
-    })
+      },
+    )
 
     await t.test('trade.watch reads persisted swap state', async () => {
       const state = emptyDaemonState()
@@ -1703,7 +2190,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
     })
 
-    await t.test('trade.list reads filtered local daemon swap state', async () => {
+    await t.test(
+      'trade.list reads filtered local daemon swap state',
+      async () => {
       const state = emptyDaemonState()
       state.swaps['trade-a'] = {
         tradeId: 'trade-a',
@@ -1737,7 +2226,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       const all = await dispatch({ method: 'trade.list', params: {} })
       assert.equal(all.ok, true)
       assert.deepEqual(
-        (all.result as Array<{ tradeId: string }>).map((swap) => swap.tradeId),
+          (all.result as Array<{ tradeId: string }>).map(
+            (swap) => swap.tradeId,
+          ),
         ['trade-c', 'trade-b', 'trade-a'],
       )
 
@@ -1747,9 +2238,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
       assert.equal(filtered.ok, true)
       assert.deepEqual(filtered.result, [state.swaps['trade-a']])
-    })
+      },
+    )
 
-    await t.test('trade.recover runs the durable coordinator before legacy swap recovery', async () => {
+    await t.test(
+      'trade.recover runs the durable coordinator before legacy swap recovery',
+      async () => {
       const state = emptyDaemonState()
       state.swaps['trade-recover'] = {
         tradeId: 'trade-recover',
@@ -1801,9 +2295,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       assert.equal(runtimeStartSawTrade, true)
       assert.equal(legacyExecutorCalls, 0)
       assert.deepEqual(recoveryOrder, ['runtime', 'coordinator', 'executor'])
-    })
+      },
+    )
 
-    await t.test('order.list reads filtered local daemon order state', async () => {
+    await t.test(
+      'order.list reads filtered local daemon order state',
+      async () => {
       const state = emptyDaemonState()
       state.orders['order-a'] = {
         orderId: 'order-a',
@@ -1834,7 +2331,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       const all = await dispatch({ method: 'order.list', params: {} })
       assert.equal(all.ok, true)
       assert.deepEqual(
-        (all.result as Array<{ orderId: string }>).map((order) => order.orderId),
+          (all.result as Array<{ orderId: string }>).map(
+            (order) => order.orderId,
+          ),
         ['order-c', 'order-b', 'order-a'],
       )
 
@@ -1844,9 +2343,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
       assert.equal(filtered.ok, true)
       assert.deepEqual(filtered.result, [state.orders['order-a']])
-    })
+      },
+    )
 
-    await t.test('order.cancel delegates to engine and marks local order cancelled', async () => {
+    await t.test(
+      'order.cancel delegates to engine and marks local order cancelled',
+      async () => {
       await writeState(emptyDaemonState())
       let capturedCancel: unknown = null
 
@@ -1899,14 +2401,22 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             marketId: 'cond-YES',
             status: 'cancelled',
           },
-          createdAt: (response.result as { local: { createdAt: string } }).local.createdAt,
-          updatedAt: (response.result as { local: { updatedAt: string } }).local.updatedAt,
+            createdAt: (response.result as { local: { createdAt: string } })
+              .local.createdAt,
+            updatedAt: (response.result as { local: { updatedAt: string } })
+              .local.updatedAt,
         },
       })
-      assert.equal((await readState())?.orders['order-cancel']?.status, 'cancelled')
-    })
+        assert.equal(
+          (await readState())?.orders['order-cancel']?.status,
+          'cancelled',
+        )
+      },
+    )
 
-    await t.test('order.book delegates snapshot reads to engine client', async () => {
+    await t.test(
+      'order.book delegates snapshot reads to engine client',
+      async () => {
       let capturedMarketId: string | null = null
       const response = await dispatch(
         {
@@ -1950,9 +2460,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         asks: [],
         spread: null,
       })
-    })
+      },
+    )
 
-    await t.test('order.submit remains successful when trade runtime start fails after persistence', async () => {
+    await t.test(
+      'order.submit remains successful when trade runtime start fails after persistence',
+      async () => {
       await writeState(backedDaemonState())
       const engine: EngineClientLike = {
         ...scoreDisabledEngineMethods,
@@ -1994,7 +2507,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           createEngineClient() {
             return engine
           },
-          generateEphemeralKeypair: () => testEphemeralKeypair('33'.repeat(32)),
+            generateEphemeralKeypair: () =>
+              testEphemeralKeypair('33'.repeat(32)),
           tradeRuntime: {
             async start() {
               throw new Error('TradeHub unavailable')
@@ -2012,9 +2526,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         updatedSecrets?.orderEphemeralKeys['order-runtime-fail'],
         undefined,
       )
-    })
+      },
+    )
 
-    await t.test('order.submit accepts direct sell flow after same-outcome CTF swaps are supported', async () => {
+    await t.test(
+      'order.submit accepts direct sell flow after same-outcome CTF swaps are supported',
+      async () => {
       await writeState(backedDaemonState())
       let capturedRequest: unknown = null
 
@@ -2057,7 +2574,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               },
             }
           },
-          generateEphemeralKeypair: () => testEphemeralKeypair('44'.repeat(32)),
+            generateEphemeralKeypair: () =>
+              testEphemeralKeypair('44'.repeat(32)),
           tradeRuntime: {
             async start() {
               return { orders: [], trades: [] }
@@ -2075,20 +2593,27 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         price: 42,
         amountSubunits: 100,
         timeInForce: 'GTC',
-        clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
+          clientOrderId: (capturedRequest as { clientOrderId?: unknown })
+            .clientOrderId,
       })
       assert.match(
         (capturedRequest as { clientOrderId: string }).clientOrderId,
         /^[0-9a-f-]{36}$/i,
       )
-      assert.equal((await readState())?.orders['order-direct-sell']?.status, 'resting')
+        assert.equal(
+          (await readState())?.orders['order-direct-sell']?.status,
+          'resting',
+        )
       assert.equal(
         (await readSecrets())?.orderEphemeralKeys['order-direct-sell'],
         undefined,
       )
-    })
+      },
+    )
 
-    await t.test('markets.query delegates catalogue reads to engine client', async () => {
+    await t.test(
+      'markets.query delegates catalogue reads to engine client',
+      async () => {
       let capturedParams: unknown = null
       const response = await dispatch(
         {
@@ -2132,9 +2657,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         markets: [{ conditionId: 'cond', title: 'Weather' }],
         nextCursor: null,
       })
-    })
+      },
+    )
 
-    await t.test('markets.show delegates single-market reads to engine client', async () => {
+    await t.test(
+      'markets.show delegates single-market reads to engine client',
+      async () => {
       let capturedConditionId = ''
       const response = await dispatch(
         {
@@ -2174,13 +2702,31 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         conditionId: 'condition-1',
         title: 'Weather',
       })
-    })
+      },
+    )
   } finally {
+    uninstallCoordinator?.()
+    await lease?.stopAndRelease()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
   }
 })
+
+function fakeMintKeys(id: string): MintKeys {
+  return {
+    id,
+    unit: 'msat',
+    active: true,
+    input_fee_ppk: 0,
+    keys: {
+      '1': `02${'11'.repeat(32)}`,
+      '2': `02${'22'.repeat(32)}`,
+      '4': `02${'33'.repeat(32)}`,
+      '8': `02${'44'.repeat(32)}`,
+    },
+  } as MintKeys
+}
 
 function proofRecord(
   mintUrl: string,
@@ -2189,10 +2735,13 @@ function proofRecord(
   asset: DaemonState['wallet']['proofs'][number]['asset'],
   secret = `secret-${amount}`,
 ): DaemonState['wallet']['proofs'][number] {
+  const baseAsset = asset.baseAsset ?? 'sat'
   return {
     mintUrl,
+    unit: baseAsset === 'usd' ? 'usd' : 'msat',
     state,
-    asset,
+    ...(state === 'available' ? {} : { reservedBy: `test-${state}` }),
+    asset: { ...asset, baseAsset },
     proof: {
       id: `keyset-${amount}`,
       amount,
@@ -2207,22 +2756,40 @@ function proofRecord(
 function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
   const state = emptyDaemonState()
   state.wallet.proofs.push(
-    proofRecord('mint-a', amount, 'available', {
+    proofRecord(
+      'https://mint-a.example',
+      amount,
+      'available',
+      {
       kind: 'Outcome',
       conditionId,
       outcomeSetId: 'YES',
       baseAsset: 'sat',
-    }, `${conditionId}-yes-vcs`),
-    proofRecord('mint-a', amount, 'available', {
+      },
+      `${conditionId}-yes-vcs`,
+    ),
+    proofRecord(
+      'https://mint-a.example',
+      amount,
+      'available',
+      {
       kind: 'Outcome',
       conditionId,
       outcomeSetId: 'NO',
       baseAsset: 'sat',
-    }, `${conditionId}-no-vcs`),
-    proofRecord('mint-a', amount, 'available', {
+      },
+      `${conditionId}-no-vcs`,
+    ),
+    proofRecord(
+      'https://mint-a.example',
+      amount,
+      'available',
+      {
       kind: 'sats',
       baseAsset: 'sat',
-    }, `${conditionId}-base`),
+      },
+      `${conditionId}-base`,
+    ),
   )
   return state
 }
@@ -2240,7 +2807,9 @@ const scoreDisabledEngineMethods = {
 >
 
 function scoreResponse(
-  overrides: Partial<Awaited<ReturnType<EngineClientLike['getParticipationScore']>>> = {},
+  overrides: Partial<
+    Awaited<ReturnType<EngineClientLike['getParticipationScore']>>
+  > = {},
 ): Awaited<ReturnType<EngineClientLike['getParticipationScore']>> {
   return {
     pubkey: 'a'.repeat(64),
@@ -2275,7 +2844,6 @@ function concurrentSendWallet(selectedSecrets: string[]) {
     async prepareSwapToSend(amount: number, proofs: Proof[]) {
       assert.equal(amount, 5)
       assert.equal(proofs.length, 1)
-      selectedSecrets.push(proofs[0].secret)
       await new Promise((resolve) => setTimeout(resolve, 5))
       return {
         amount,
@@ -2289,6 +2857,7 @@ function concurrentSendWallet(selectedSecrets: string[]) {
     },
     async completeSwap(preview: { inputs: Proof[] }) {
       const secret = preview.inputs[0].secret
+      selectedSecrets.push(secret)
       return {
         send: [cashuProof(5, `sent-${secret}`)],
         keep: [cashuProof(3, `change-${secret}`)],
@@ -2323,10 +2892,12 @@ function resumableSendWallet(options: {
       }
     },
     async completeSwap() {
-      return options.onComplete?.() ?? {
+      return (
+        options.onComplete?.() ?? {
         send: [cashuProof(5, 'sent-default')],
         keep: [cashuProof(3, 'change-default')],
       }
+      )
     },
     async checkProofsStates(proofs: Array<Pick<Proof, 'secret'>>) {
       return proofs.map((proof) => ({

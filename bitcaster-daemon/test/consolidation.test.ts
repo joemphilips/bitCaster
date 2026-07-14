@@ -10,16 +10,25 @@ import { dispatch, type EngineClientLike } from '../src/server.ts'
 import { profileFromPublicKey, writeProfile } from '../src/profile.ts'
 import { createDaemonSecrets, writeSecrets } from '../src/secrets.ts'
 import { recoverPreparedWalletSends } from '../src/walletOps.ts'
+import { DaemonProofOperationCoordinator } from '../src/durableProofOperationCoordinator.ts'
+import {
+  daemonWalletCustodyScope,
+  DaemonDurableCustodyLease,
+} from '../src/durableCustodyLifecycle.ts'
+import { SqliteDurableCustodyStore } from '../src/durableCustodySqliteStore.ts'
+import {
+  setDaemonCustodyUnitOfWorkFaultHookForTest,
+} from '../src/durableCustodyUnitOfWork.ts'
 import {
   emptyDaemonState,
-  markProofOperationCompleted,
+  installDaemonProofOperationCoordinator,
   prepareProofOperation,
   readState,
   writeState,
   type StoredProofAsset,
 } from '../src/state.ts'
 
-const MINT_URL = 'mint-a'
+const MINT_URL = 'https://mint-a.example'
 
 test('wallet.consolidateMarket executes T2 Not-A + Not-B into residual C and base collateral', async () => {
   await withDaemonHome(async () => {
@@ -29,12 +38,18 @@ test('wallet.consolidateMarket executes T2 Not-A + Not-B into residual C and bas
     ])
 
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: 'cond2-A', type: 't2' },
+      },
       depsForMarket(market('cond2', 'pending')),
     )
 
     assert.equal(response.ok, true)
-    const result = response.result as { collateralReturnedSats: number; convertFeeSats: number }
+    const result = response.result as {
+      collateralReturnedSats: number
+      convertFeeSats: number
+    }
     assert.equal(result.convertFeeSats, 1)
     assert.equal(result.collateralReturnedSats, 1)
     assertWalletProofs(await readState(), {
@@ -55,12 +70,18 @@ test('wallet.consolidateMarket executes the existing T1 singleton-plus-top-up pa
     ])
 
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'cond1-A', type: 't1' } },
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: 'cond1-A', type: 't1' },
+      },
       depsForMarket(market('cond1', 'pending')),
     )
 
     assert.equal(response.ok, true)
-    const result = response.result as { collateralReturnedSats: number; convertFeeSats: number }
+    const result = response.result as {
+      collateralReturnedSats: number
+      convertFeeSats: number
+    }
     assert.equal(result.convertFeeSats, 1)
     assert.equal(result.collateralReturnedSats, 0)
     assertWalletProofs(await readState(), {
@@ -81,12 +102,18 @@ test('wallet.consolidateMarket executes T3 partial chain into intermediate and b
     ])
 
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'cond3-A', type: 't3' } },
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: 'cond3-A', type: 't3' },
+      },
       depsForMarket(market('cond3', 'pending')),
     )
 
     assert.equal(response.ok, true)
-    const result = response.result as { collateralReturnedSats: number; convertFeeSats: number }
+    const result = response.result as {
+      collateralReturnedSats: number
+      convertFeeSats: number
+    }
     assert.equal(result.convertFeeSats, 1)
     assert.equal(result.collateralReturnedSats, 1)
     assertWalletProofs(await readState(), {
@@ -103,7 +130,10 @@ test('wallet.consolidateMarket refuses non-pending markets with a typed error', 
     await seedWallet([proofRecord(2, 'B|C', 'not-a')])
 
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'closed-A', type: 't2' } },
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: 'closed-A', type: 't2' },
+      },
       depsForMarket(market('closed', 'closed')),
     )
 
@@ -124,7 +154,10 @@ test('wallet.consolidateMarket returns typed no-gain error without mutating proo
     ])
 
     const response = await dispatch(
-      { method: 'wallet.consolidateMarket', params: { marketId: 'nogain-A', type: 't2' } },
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: 'nogain-A', type: 't2' },
+      },
       depsForMarket(market('nogain', 'pending')),
     )
 
@@ -159,6 +192,8 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
       metadata: {
         marketId: 'cond2-A',
         conditionId: 'cond2',
+        baseAsset: 'sat',
+        unit: 'msat',
         type: 't2',
         inputCollections: ['B|C', 'A|C'],
         feeSats: 1,
@@ -184,7 +219,9 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
             'C',
           ])
           return {
-            [COLLATERAL_COLLECTION]: [cashuProof(1, 'recovered-base', 'ks-base')],
+            [COLLATERAL_COLLECTION]: [
+              cashuProof(1, 'recovered-base', 'ks-base'),
+            ],
             C: [cashuProof(2, 'recovered-C', 'ks-C')],
           }
         },
@@ -192,8 +229,11 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
     )
 
     assert.deepEqual(recovery, {
+      recoveredCount: 1,
+      pendingCount: 0,
       recovered: ['ctf-consolidation-recover'],
       pending: [],
+      summaryTruncated: false,
     })
     assert.equal(ctfConvertCalls, 1)
     const updated = await readState()
@@ -209,7 +249,50 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
   })
 })
 
-test('wallet recovery sweep finalizes completed CTF consolidation operations', async () => {
+test('wallet recovery rejects CTF consolidation without exact input collections', async () => {
+  await withDaemonHome(async () => {
+    const state = emptyDaemonState()
+    state.wallet.proofs.push(proofRecord(2, 'B|C', 'not-a'))
+    await writeState(state)
+    await prepareProofOperation({
+      operationId: 'ctf-consolidation-missing-collections',
+      kind: 'ctf-consolidation',
+      mintUrl: MINT_URL,
+      inputs: state.wallet.proofs.map((record) => record.proof),
+      outputs: { C: [storedOutput('ks-C', 2, 'C')] },
+      metadata: {
+        marketId: 'cond2-A',
+        conditionId: 'cond2',
+        baseAsset: 'sat',
+        unit: 'msat',
+        type: 't2',
+        feeSats: 0,
+        collateralOutputSats: 0,
+      },
+    })
+
+    let ctfConvertCalls = 0
+    const recovery = await recoverPreparedWalletSends(
+      { walletSeedHex: '00'.repeat(32) },
+      {
+        ctfConvert: async () => {
+          ctfConvertCalls += 1
+          return {}
+        },
+      },
+    )
+
+    assert.equal(ctfConvertCalls, 0)
+    assert.equal(recovery.recovered.length, 0)
+    assert.match(
+      recovery.pending[0]?.error ?? '',
+      /missing CTF consolidation input collection metadata/,
+    )
+  })
+})
+
+test('CTF consolidation completion and proof replacement share one crash boundary', async () => {
+  for (const faultPhase of ['before-commit', 'after-commit'] as const) {
   await withDaemonHome(async () => {
     const state = emptyDaemonState()
     state.wallet.proofs.push(
@@ -218,7 +301,7 @@ test('wallet recovery sweep finalizes completed CTF consolidation operations', a
     )
     await writeState(state)
     await prepareProofOperation({
-      operationId: 'ctf-consolidation-finalize',
+        operationId: 'ctf-consolidation-crash',
       kind: 'ctf-consolidation',
       mintUrl: MINT_URL,
       inputs: state.wallet.proofs.map((record) => record.proof),
@@ -229,36 +312,57 @@ test('wallet recovery sweep finalizes completed CTF consolidation operations', a
       metadata: {
         marketId: 'cond2-A',
         conditionId: 'cond2',
+        baseAsset: 'sat',
+        unit: 'msat',
         type: 't2',
         inputCollections: ['B|C', 'A|C'],
         feeSats: 1,
         collateralOutputSats: 1,
       },
     })
-    await markProofOperationCompleted('ctf-consolidation-finalize', {
-      [COLLATERAL_COLLECTION]: [cashuProof(1, 'finalized-base', 'ks-base')],
-      C: [cashuProof(2, 'finalized-C', 'ks-C')],
-    })
 
+      try {
     const recovery = await recoverPreparedWalletSends(
       { walletSeedHex: '00'.repeat(32) },
       {
         ctfConvert: async () => {
-          throw new Error('completed operation should not call ctfConvert')
+              setDaemonCustodyUnitOfWorkFaultHookForTest((phase) => {
+                if (phase === faultPhase) throw new Error(`fault ${phase}`)
+              })
+              return {
+                [COLLATERAL_COLLECTION]: [
+                  cashuProof(1, 'finalized-base', 'ks-base'),
+                ],
+                C: [cashuProof(2, 'finalized-C', 'ks-C')],
+              }
         },
       },
     )
+        assert.equal(recovery.pending.length, 1)
+      } finally {
+        setDaemonCustodyUnitOfWorkFaultHookForTest(undefined)
+      }
 
-    assert.deepEqual(recovery, {
-      recovered: ['ctf-consolidation-finalize'],
-      pending: [],
-    })
-    assertWalletProofs(await readState(), {
+      const persisted = await readState()
+      if (faultPhase === 'before-commit') {
+        assert.equal(
+          persisted?.proofOperations['ctf-consolidation-crash']?.state,
+          'mint-submitted',
+        )
+        assert.equal(persisted?.wallet.proofs.length, 2)
+      } else {
+        assert.equal(
+          persisted?.proofOperations['ctf-consolidation-crash']?.state,
+          'completed',
+        )
+        assertWalletProofs(persisted, {
       sats: 1,
       outcomes: { C: 2 },
       spent: ['secret-not-a', 'secret-not-b'],
     })
+      }
   })
+  }
 })
 
 async function withDaemonHome(run: () => Promise<void>): Promise<void> {
@@ -271,7 +375,26 @@ async function withDaemonHome(run: () => Promise<void>): Promise<void> {
     profile.mintUrl = MINT_URL
     await writeProfile(profile)
     await writeSecrets(secrets)
-    await run()
+    const store = new SqliteDurableCustodyStore()
+    await store.registerScope(daemonWalletCustodyScope(secrets.walletSeedHex))
+    const lease = await DaemonDurableCustodyLease.claim({
+      store,
+      walletSeedHex: secrets.walletSeedHex,
+    })
+    const uninstall = installDaemonProofOperationCoordinator(
+      new DaemonProofOperationCoordinator({
+        authority: lease,
+        resolveMintKeys: async (_mintUrl, keysetIds) => new Map(
+          keysetIds.map((keysetId) => [keysetId, fakeMintKeys(keysetId)]),
+        ),
+      }),
+    )
+    try {
+      await run()
+    } finally {
+      uninstall()
+      await lease.stopAndRelease()
+    }
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -279,7 +402,9 @@ async function withDaemonHome(run: () => Promise<void>): Promise<void> {
   }
 }
 
-async function seedWallet(records: ReturnType<typeof proofRecord>[]): Promise<void> {
+async function seedWallet(
+  records: ReturnType<typeof proofRecord>[],
+): Promise<void> {
   const state = emptyDaemonState()
   state.wallet.proofs.push(...records)
   await writeState(state)
@@ -358,7 +483,7 @@ function outputKeysets(): Record<string, string> {
 function fakeMintKeys(id: string): MintKeys {
   return {
     id,
-    unit: 'sat',
+    unit: 'msat',
     active: true,
     input_fee_ppk: 1,
     keys: {
@@ -392,7 +517,10 @@ function cashuProof(amount: number, label: string, id: string): Proof {
   } as Proof
 }
 
-function satRecord(amount: number, label: string): ReturnType<typeof proofRecord> {
+function satRecord(
+  amount: number,
+  label: string,
+): ReturnType<typeof proofRecord> {
   return proofRecord(amount, null, label)
 }
 
@@ -402,6 +530,7 @@ function proofRecord(
   label: string,
 ): {
   mintUrl: string
+  unit: 'msat'
   proof: Proof
   state: 'available'
   asset: StoredProofAsset
@@ -409,10 +538,16 @@ function proofRecord(
   updatedAt: string
 } {
   const asset: StoredProofAsset = outcomeSetId
-    ? { kind: 'Outcome', conditionId: conditionIdForLabel(label), outcomeSetId }
-    : { kind: 'sats' }
+    ? {
+        kind: 'Outcome',
+        conditionId: conditionIdForLabel(label),
+        outcomeSetId,
+        baseAsset: 'sat',
+      }
+    : { kind: 'sats', baseAsset: 'sat' }
   return {
     mintUrl: MINT_URL,
+    unit: 'msat',
     proof: {
       id: outcomeSetId ? outputKeysets()[outcomeSetId] : 'ks-base',
       amount,
@@ -465,5 +600,8 @@ function assertWalletProofs(
 
 function assertNoProofInternals(value: unknown): void {
   const text = JSON.stringify(value)
-  assert.doesNotMatch(text, /secret-|out-secret-|C-|out-C-|witness|mnemonic|nwc/i)
+  assert.doesNotMatch(
+    text,
+    /secret-|out-secret-|C-|out-C-|witness|mnemonic|nwc/i,
+  )
 }

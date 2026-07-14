@@ -12,8 +12,9 @@ export interface DaemonProfile {
 
 export interface DaemonProfileBootstrapInput {
   profile: DaemonProfile
-  secretsPayload: string
-  statePayload: string
+  initializeSecrets: (database: DatabaseSync) => void
+  initializeCustody: (database: DatabaseSync) => void
+  initializeState: (database: DatabaseSync) => void
   rpcToken: string
   /** Only `init --force` after an empty verified state may replace a complete profile. */
   replaceExisting?: boolean
@@ -23,9 +24,22 @@ export interface DaemonProfileBootstrapInput {
 
 const mandatoryProfileTables = [
   'daemon_profile',
-  'daemon_secrets',
-  'daemon_state',
+  'daemon_identity_secrets',
+  'custody_schema_metadata',
+  'daemon_state_metadata',
   'daemon_rpc_token',
+] as const
+
+const mandatoryProfileSchemaTables = [
+  'daemon_order_ephemeral_keys',
+  'custody_scopes',
+  'custody_scope_state',
+  'custody_operations',
+  'custody_operation_inputs',
+  'custody_session_links',
+  'custody_proof_reservations',
+  'custody_verification_bindings',
+  'custody_active_work',
 ] as const
 
 export function profileDir(): string {
@@ -47,7 +61,7 @@ export async function ensureProfileDir(): Promise<string> {
 }
 
 export async function readProfile(): Promise<DaemonProfile | null> {
-  if (!await profileDatabaseExists()) return null
+  if (!(await profileDatabaseExists())) return null
   const database = openProfileDatabase()
   try {
     const profile = readProfileFromDatabase(database)
@@ -107,48 +121,50 @@ export async function bootstrapDaemonProfile(
     }
     database.exec('BEGIN IMMEDIATE')
     try {
-      const hasProfileStorage = mandatoryProfileTables.some((table) => tableExists(database, table))
-        || tableExists(database, 'daemon_profile_initialization')
+      const hasProfileStorage =
+        mandatoryProfileTables.some((table) => tableExists(database, table)) ||
+        tableExists(database, 'daemon_profile_initialization')
       if (!hasProfileStorage && databaseExisted) {
-        throw new Error('daemon profile storage is incomplete; refusing bootstrap repair')
+        throw new Error(
+          'daemon profile storage is incomplete; refusing bootstrap repair',
+        )
       }
       if (hasProfileStorage) {
         assertCompleteProfileStorage(database)
         if (!input.replaceExisting) {
-          throw new Error('daemon profile is already initialized; use daemon.config to change endpoints')
+          throw new Error(
+            'daemon profile is already initialized; use daemon.config to change endpoints',
+          )
         }
         if (!input.assertReplacementSafe) {
-          throw new Error('daemon profile identity replacement safety check is missing')
+          throw new Error(
+            'daemon profile identity replacement safety check is missing',
+          )
         }
         input.assertReplacementSafe(database)
       }
 
       ensureProfileTable(database)
-      ensureDaemonSecretsTable(database)
-      ensureDaemonStateTable(database)
       ensureDaemonRpcTokenTable(database)
       ensureProfileInitializationTable(database)
       writeProfileToDatabase(database, profile)
-      database.prepare(
-        `INSERT INTO daemon_secrets (singleton, schema_version, payload)
-         VALUES (1, 1, ?)
-         ON CONFLICT(singleton) DO UPDATE SET schema_version = excluded.schema_version, payload = excluded.payload`,
-      ).run(input.secretsPayload)
-      database.prepare(
-        `INSERT INTO daemon_state (singleton, schema_version, payload)
-         VALUES (1, 1, ?)
-         ON CONFLICT(singleton) DO UPDATE SET schema_version = excluded.schema_version, payload = excluded.payload`,
-      ).run(input.statePayload)
-      database.prepare(
+      input.initializeSecrets(database)
+      input.initializeCustody(database)
+      input.initializeState(database)
+      database
+        .prepare(
         `INSERT INTO daemon_rpc_token (singleton, schema_version, token)
          VALUES (1, 1, ?)
          ON CONFLICT(singleton) DO UPDATE SET schema_version = excluded.schema_version, token = excluded.token`,
-      ).run(input.rpcToken)
-      database.prepare(
+        )
+        .run(input.rpcToken)
+      database
+        .prepare(
         `INSERT INTO daemon_profile_initialization (singleton, schema_version)
          VALUES (1, 1)
          ON CONFLICT(singleton) DO UPDATE SET schema_version = excluded.schema_version`,
-      ).run()
+        )
+        .run()
       database.exec('COMMIT')
     } catch (error) {
       try {
@@ -165,8 +181,10 @@ export async function bootstrapDaemonProfile(
 
 /** Runtime startup is never allowed to repair a partial custody profile. */
 export async function assertDaemonProfileStorageComplete(): Promise<void> {
-  if (!await profileDatabaseExists()) {
-    throw new Error('daemon profile is not initialized; run bitcaster-daemon init')
+  if (!(await profileDatabaseExists())) {
+    throw new Error(
+      'daemon profile is not initialized; run bitcaster-daemon init',
+    )
   }
   const database = openProfileDatabase()
   try {
@@ -191,7 +209,12 @@ export async function updateProfile(
         ...profile,
         ...(update.engineBaseUrl === undefined
           ? {}
-          : { engineBaseUrl: normalizeEndpointUrl(update.engineBaseUrl, 'engine URL') }),
+          : {
+              engineBaseUrl: normalizeEndpointUrl(
+                update.engineBaseUrl,
+                'engine URL',
+              ),
+            }),
         ...(update.mintUrl === undefined
           ? {}
           : { mintUrl: normalizeEndpointUrl(update.mintUrl, 'mint URL') }),
@@ -226,7 +249,10 @@ export function profileFromPublicKey(
 ): DaemonProfile {
   const profile = defaultProfile()
   if (overrides.engineBaseUrl !== undefined) {
-    profile.engineBaseUrl = normalizeEndpointUrl(overrides.engineBaseUrl, 'engine URL')
+    profile.engineBaseUrl = normalizeEndpointUrl(
+      overrides.engineBaseUrl,
+      'engine URL',
+    )
   }
   if (overrides.mintUrl !== undefined) {
     profile.mintUrl = normalizeEndpointUrl(overrides.mintUrl, 'mint URL')
@@ -274,13 +300,19 @@ export function profileTableExists(database: DatabaseSync): boolean {
 }
 
 /** A marker is written only after every mandatory profile row exists. */
-export function profileInitializationIsComplete(database: DatabaseSync): boolean {
+export function profileInitializationIsComplete(
+  database: DatabaseSync,
+): boolean {
   if (!tableExists(database, 'daemon_profile_initialization')) return false
-  const row = database.prepare(
+  ensureProfileInitializationTable(database)
+  const row = database
+    .prepare(
     'SELECT schema_version FROM daemon_profile_initialization WHERE singleton = 1',
-  ).get() as { schema_version?: unknown } | undefined
+    )
+    .get() as { schema_version?: unknown } | undefined
   if (!row) throw new Error('daemon profile initialization row is missing')
-  if (row.schema_version !== 1) throw new Error('daemon profile initialization schema is unsupported')
+  if (row.schema_version !== 1)
+    throw new Error('daemon profile initialization schema is unsupported')
   return true
 }
 
@@ -294,11 +326,13 @@ export async function markProfileInitializationComplete(): Promise<void> {
     try {
       assertMandatoryProfileRows(database)
       ensureProfileInitializationTable(database)
-      database.prepare(
+      database
+        .prepare(
         `INSERT INTO daemon_profile_initialization (singleton, schema_version)
          VALUES (1, 1)
          ON CONFLICT(singleton) DO UPDATE SET schema_version = excluded.schema_version`,
-      ).run()
+        )
+        .run()
       database.exec('COMMIT')
     } catch (error) {
       try {
@@ -313,102 +347,201 @@ export async function markProfileInitializationComplete(): Promise<void> {
   }
 }
 
-export function tableExists(database: DatabaseSync, tableName: string): boolean {
-  return database.prepare(
+export function tableExists(
+  database: DatabaseSync,
+  tableName: string,
+): boolean {
+  return (
+    database
+      .prepare(
     "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
-  ).get(tableName) !== undefined
+      )
+      .get(tableName) !== undefined
+  )
 }
 
 function ensureProfileTable(database: DatabaseSync): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS daemon_profile (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  ensureProfileOwnedTable(
+    database,
+    'daemon_profile',
+    `
+    CREATE TABLE daemon_profile (
+      singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
       schema_version INTEGER NOT NULL CHECK (schema_version = 1),
-      engine_base_url TEXT NOT NULL,
-      mint_url TEXT NOT NULL,
-      nostr_public_key TEXT,
-      initialized_at TEXT NOT NULL
+      engine_base_url TEXT NOT NULL CHECK (length(engine_base_url) > 0),
+      mint_url TEXT NOT NULL CHECK (length(mint_url) > 0),
+      nostr_public_key TEXT CHECK (nostr_public_key IS NULL OR (length(nostr_public_key) = 64 AND nostr_public_key NOT GLOB '*[^0-9a-f]*')),
+      initialized_at TEXT NOT NULL CHECK (length(initialized_at) = 24 AND initialized_at GLOB '????-??-??T??:??:??.???Z')
     ) STRICT;
-  `)
+  `,
+  )
 }
 
 function ensureProfileInitializationTable(database: DatabaseSync): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS daemon_profile_initialization (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  ensureProfileOwnedTable(
+    database,
+    'daemon_profile_initialization',
+    `
+    CREATE TABLE daemon_profile_initialization (
+      singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
       schema_version INTEGER NOT NULL CHECK (schema_version = 1)
     ) STRICT;
-  `)
-}
-
-/** Shared physical schema for the daemon secret singleton. */
-export function ensureDaemonSecretsTable(database: DatabaseSync): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS daemon_secrets (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
-      payload TEXT NOT NULL
-    ) STRICT;
-  `)
-}
-
-/** Shared physical schema for the daemon operational-state singleton. */
-export function ensureDaemonStateTable(database: DatabaseSync): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS daemon_state (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
-      payload TEXT NOT NULL
-    ) STRICT;
-  `)
+  `,
+  )
 }
 
 /** Shared physical schema for the daemon local-RPC bearer singleton. */
 export function ensureDaemonRpcTokenTable(database: DatabaseSync): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS daemon_rpc_token (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  ensureProfileOwnedTable(
+    database,
+    'daemon_rpc_token',
+    `
+    CREATE TABLE daemon_rpc_token (
+      singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
       schema_version INTEGER NOT NULL CHECK (schema_version = 1),
-      token TEXT NOT NULL
+      token TEXT NOT NULL CHECK (length(token) = 43 AND token NOT GLOB '*[^A-Za-z0-9_-]*')
     ) STRICT;
-  `)
+  `,
+  )
+}
+
+function ensureProfileOwnedTable(
+  database: DatabaseSync,
+  tableName: string,
+  schemaSql: string,
+): void {
+  if (!tableExists(database, tableName)) database.exec(schemaSql)
+  assertProfileOwnedTableSchema(database, tableName, schemaSql)
+}
+
+function assertProfileOwnedTableSchema(
+  database: DatabaseSync,
+  tableName: string,
+  schemaSql: string,
+): void {
+  const actual = database
+    .prepare(
+      `SELECT type, name, tbl_name, sql
+       FROM sqlite_schema
+      WHERE tbl_name = ? AND sql IS NOT NULL
+      ORDER BY type, name`,
+    )
+    .all(tableName) as Array<Record<string, unknown>>
+  const expected = expectedProfileSchemaObjects(tableName, schemaSql)
+  if (
+    JSON.stringify(normalizeSchemaObjects(actual)) !== JSON.stringify(expected)
+  ) {
+    throw new Error(`daemon ${tableName} schema is unsupported`)
+  }
+}
+
+const profileSchemaCache = new Map<string, Array<Record<string, string>>>()
+
+function expectedProfileSchemaObjects(
+  tableName: string,
+  schemaSql: string,
+): Array<Record<string, string>> {
+  const cached = profileSchemaCache.get(tableName)
+  if (cached !== undefined) return cached
+  const database = new DatabaseSync(':memory:')
+  try {
+    database.exec(schemaSql)
+    const rows = database
+      .prepare(
+        `SELECT type, name, tbl_name, sql
+         FROM sqlite_schema
+        WHERE tbl_name = ? AND sql IS NOT NULL
+        ORDER BY type, name`,
+      )
+      .all(tableName) as Array<Record<string, unknown>>
+    const expected = normalizeSchemaObjects(rows)
+    profileSchemaCache.set(tableName, expected)
+    return expected
+  } finally {
+    database.close()
+  }
+}
+
+function normalizeSchemaObjects(
+  rows: Array<Record<string, unknown>>,
+): Array<Record<string, string>> {
+  return rows.map((row) => {
+    if (
+      typeof row.type !== 'string' ||
+      typeof row.name !== 'string' ||
+      typeof row.tbl_name !== 'string' ||
+      typeof row.sql !== 'string'
+    ) {
+      throw new Error('daemon profile schema is invalid')
+    }
+    return {
+      type: row.type,
+      name: row.name,
+      table: row.tbl_name,
+      sql: row.sql.replace(/\s+/g, ' ').trim(),
+    }
+  })
 }
 
 function assertCompleteProfileStorage(database: DatabaseSync): void {
   if (!profileInitializationIsComplete(database)) {
-    throw new Error('daemon profile storage is incomplete; refusing bootstrap repair')
+    throw new Error(
+      'daemon profile storage is incomplete; refusing bootstrap repair',
+    )
   }
   assertMandatoryProfileRows(database)
 }
 
 function assertMandatoryProfileRows(database: DatabaseSync): void {
+  for (const table of mandatoryProfileSchemaTables) {
+    if (!tableExists(database, table)) {
+      throw new Error(`daemon profile initialization is missing ${table}`)
+    }
+  }
   for (const table of mandatoryProfileTables) {
     if (!tableExists(database, table)) {
       throw new Error(`daemon profile initialization is missing ${table}`)
     }
-    const row = database.prepare(`SELECT 1 AS present FROM ${table} WHERE singleton = 1`).get()
-    if (!row) throw new Error(`daemon profile initialization row is missing for ${table}`)
+    const row = database
+      .prepare(`SELECT 1 AS present FROM ${table} WHERE singleton = 1`)
+      .get()
+    if (!row)
+      throw new Error(
+        `daemon profile initialization row is missing for ${table}`,
+      )
   }
+  ensureProfileTable(database)
+  ensureProfileInitializationTable(database)
+  ensureDaemonRpcTokenTable(database)
 }
 
 function readProfileFromDatabase(database: DatabaseSync): DaemonProfile | null {
   if (!profileTableExists(database)) return null
-  const row = database.prepare(
+  ensureProfileTable(database)
+  const row = database
+    .prepare(
     `SELECT schema_version, engine_base_url, mint_url, nostr_public_key, initialized_at
      FROM daemon_profile WHERE singleton = 1`,
-  ).get() as {
+    )
+    .get() as
+    | {
     schema_version?: unknown
     engine_base_url?: unknown
     mint_url?: unknown
     nostr_public_key?: unknown
     initialized_at?: unknown
-  } | undefined
+      }
+    | undefined
   if (!row) return null
   return decodeProfileRow(row)
 }
 
-function writeProfileToDatabase(database: DatabaseSync, profile: DaemonProfile): void {
-  database.prepare(
+function writeProfileToDatabase(
+  database: DatabaseSync,
+  profile: DaemonProfile,
+): void {
+  database
+    .prepare(
     `INSERT INTO daemon_profile (
        singleton, schema_version, engine_base_url, mint_url, nostr_public_key, initialized_at
      ) VALUES (1, 1, ?, ?, ?, ?)
@@ -418,7 +551,8 @@ function writeProfileToDatabase(database: DatabaseSync, profile: DaemonProfile):
        mint_url = excluded.mint_url,
        nostr_public_key = excluded.nostr_public_key,
        initialized_at = excluded.initialized_at`,
-  ).run(
+    )
+    .run(
     profile.engineBaseUrl,
     profile.mintUrl,
     profile.nostrPublicKey ?? null,
@@ -427,14 +561,24 @@ function writeProfileToDatabase(database: DatabaseSync, profile: DaemonProfile):
 }
 
 function assertProfileDatabasePragmas(database: DatabaseSync): void {
-  const journalMode = database.prepare('PRAGMA journal_mode').get() as { journal_mode?: unknown } | undefined
-  const synchronous = database.prepare('PRAGMA synchronous').get() as { synchronous?: unknown } | undefined
-  const foreignKeys = database.prepare('PRAGMA foreign_keys').get() as { foreign_keys?: unknown } | undefined
-  const busyTimeout = database.prepare('PRAGMA busy_timeout').get() as { timeout?: unknown } | undefined
-  if (journalMode?.journal_mode !== 'wal'
-    || synchronous?.synchronous !== 2
-    || foreignKeys?.foreign_keys !== 1
-    || busyTimeout?.timeout !== 5_000) {
+  const journalMode = database.prepare('PRAGMA journal_mode').get() as
+    | { journal_mode?: unknown }
+    | undefined
+  const synchronous = database.prepare('PRAGMA synchronous').get() as
+    | { synchronous?: unknown }
+    | undefined
+  const foreignKeys = database.prepare('PRAGMA foreign_keys').get() as
+    | { foreign_keys?: unknown }
+    | undefined
+  const busyTimeout = database.prepare('PRAGMA busy_timeout').get() as
+    | { timeout?: unknown }
+    | undefined
+  if (
+    journalMode?.journal_mode !== 'wal' ||
+    synchronous?.synchronous !== 2 ||
+    foreignKeys?.foreign_keys !== 1 ||
+    busyTimeout?.timeout !== 5_000
+  ) {
     throw new Error('daemon SQLite durability settings are unavailable')
   }
 }
@@ -445,7 +589,8 @@ async function databaseExists(path: string): Promise<boolean> {
     await stat(path)
     return true
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
+      return false
     throw error
   }
 }
@@ -457,11 +602,13 @@ function decodeProfileRow(row: {
   nostr_public_key?: unknown
   initialized_at?: unknown
 }): DaemonProfile {
-  if (row.schema_version !== 1) throw new Error('daemon profile schema is unsupported')
+  if (row.schema_version !== 1)
+    throw new Error('daemon profile schema is unsupported')
   return normalizeProfile({
     engineBaseUrl: row.engine_base_url,
     mintUrl: row.mint_url,
-    nostrPublicKey: row.nostr_public_key === null ? undefined : row.nostr_public_key,
+    nostrPublicKey:
+      row.nostr_public_key === null ? undefined : row.nostr_public_key,
     initializedAt: row.initialized_at,
   })
 }
@@ -472,14 +619,23 @@ function normalizeProfile(value: {
   nostrPublicKey?: unknown
   initializedAt: unknown
 }): DaemonProfile {
-  if (typeof value.engineBaseUrl !== 'string' || typeof value.mintUrl !== 'string') {
+  if (
+    typeof value.engineBaseUrl !== 'string' ||
+    typeof value.mintUrl !== 'string'
+  ) {
     throw new Error('daemon profile row is invalid')
   }
-  if (typeof value.initializedAt !== 'string' || value.initializedAt.length === 0) {
+  if (
+    typeof value.initializedAt !== 'string' ||
+    value.initializedAt.length === 0
+  ) {
     throw new Error('daemon profile row is invalid')
   }
-  if (value.nostrPublicKey !== undefined
-    && (typeof value.nostrPublicKey !== 'string' || value.nostrPublicKey.length === 0)) {
+  if (
+    value.nostrPublicKey !== undefined &&
+    (typeof value.nostrPublicKey !== 'string' ||
+      value.nostrPublicKey.length === 0)
+  ) {
     throw new Error('daemon profile row is invalid')
   }
   return {
@@ -488,7 +644,9 @@ function normalizeProfile(value: {
     // do not silently rewrite an already durable configuration row here.
     engineBaseUrl: value.engineBaseUrl,
     mintUrl: value.mintUrl,
-    ...(value.nostrPublicKey === undefined ? {} : { nostrPublicKey: value.nostrPublicKey }),
+    ...(value.nostrPublicKey === undefined
+      ? {}
+      : { nostrPublicKey: value.nostrPublicKey }),
     initializedAt: value.initializedAt,
   }
 }

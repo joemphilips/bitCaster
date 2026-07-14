@@ -2,10 +2,14 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { test } from 'node:test'
+import { after, test } from 'node:test'
 import { createRealDaemonSwapOps } from '../src/swapProtocolAdapter.ts'
 import {
   emptyDaemonState,
+  installDaemonProofOperationCoordinator,
+  markProofOperationCompletedStateProjectionForTest,
+  markProofOperationMintSubmittedStateProjectionForTest,
+  prepareProofOperationStateProjectionForTest,
   readState,
   type CashuProofRecord,
 } from '../src/state.ts'
@@ -14,6 +18,25 @@ import {
   type DurableTradeSession,
 } from '@bitcaster-market/client-sdk/durableTradeRecovery'
 import { writeStateWithDurableSessionKeys } from './durableSessionTestStore.ts'
+
+// Adapter unit tests isolate request mapping. Canonical restart integration is
+// covered by durableProofOperationCoordinator.test.ts and swapExecutor.test.ts.
+const uninstallProjectionCoordinator = installDaemonProofOperationCoordinator({
+  prepare: prepareProofOperationStateProjectionForTest,
+  markMintSubmitted: markProofOperationMintSubmittedStateProjectionForTest,
+  complete: markProofOperationCompletedStateProjectionForTest,
+  async completeWithWalletUpdate() {
+    throw new Error('wallet completion is outside this adapter fixture')
+  },
+  async assertRecoveryBound() {},
+  async decideRecovery() {
+    throw new Error('wallet recovery is outside this adapter fixture')
+  },
+  async listRecoverablePage() {
+    throw new Error('canonical paging is outside this adapter fixture')
+  },
+})
+after(uninstallProjectionCoordinator)
 
 test('real daemon swap adapter maps SDK daemon context to atomic-swap operations', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-swap-adapter-'))
