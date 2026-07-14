@@ -5,6 +5,7 @@ import {
   DURABLE_TRADE_SESSION_SCHEMA_VERSION,
   canSalvageDurableRefund,
   classifyDurableTradeRecoveryDisposition,
+  createDurableTradeRecoveryResultAccumulator,
   createDurableTradeExpectedProofOperation,
   createDurableTradeProofOperationLink,
   deriveDurableProofOperationId,
@@ -32,6 +33,55 @@ const REFUND_PRIVATE_KEY = '01'.repeat(32)
 const REFUND_PROTOCOL_PUBKEY = Array.from(
   secp256k1.getPublicKey(new Uint8Array(32).fill(1), true),
 ).map((part) => part.toString(16).padStart(2, '0')).join('')
+
+test('bounded recovery diagnostics retain exact counts and late failures', () => {
+  const accumulator = createDurableTradeRecoveryResultAccumulator(2)
+  accumulator.append({
+    sessions: [
+      { kind: 'ready', tradeId: 'trade-a' },
+      { kind: 'ready', tradeId: 'trade-b' },
+      { kind: 'ready', tradeId: 'trade-c' },
+      {
+        kind: 'failed-closed',
+        tradeId: 'trade-d',
+        reason: 'invalid-session',
+      },
+    ],
+    orphans: [
+      { kind: 'relinked', operationId: 'operation-a', tradeId: 'trade-a' },
+      { kind: 'relinked', operationId: 'operation-b', tradeId: 'trade-b' },
+      {
+        kind: 'failed-closed',
+        operationId: 'operation-c',
+        reason: 'missing-session',
+      },
+    ],
+    pendingIntents: [
+      { tradeId: 'trade-a', kind: 'valid' },
+      { tradeId: 'trade-e', kind: 'failed-closed' },
+      { tradeId: 'trade-f', kind: 'valid' },
+    ],
+  })
+
+  const result = accumulator.finish()
+
+  assert.deepEqual(result.summary, {
+    sessionCount: 4,
+    orphanCount: 3,
+    pendingIntentCount: 3,
+    truncated: true,
+    failedClosed: true,
+  })
+  assert.equal(result.sessions.length, 2)
+  assert.equal(result.sessions.some((item) => item.kind === 'failed-closed'), true)
+  assert.equal(result.orphans.length, 2)
+  assert.equal(result.orphans.some((item) => item.kind === 'failed-closed'), true)
+  assert.equal(result.pendingIntents?.length, 2)
+  assert.equal(
+    result.pendingIntents?.some((item) => item.kind === 'failed-closed'),
+    true,
+  )
+})
 
 function session(
   overrides: Partial<DurableTradeSession> = {},

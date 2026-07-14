@@ -322,6 +322,127 @@ export interface DurableTradeRecoveryResult {
   sessions: DurableTradeSessionRecoveryResult[]
   orphans: DurableTradeOrphanRecoveryResult[]
   pendingIntents?: Array<{ tradeId: string; kind: 'valid' | 'failed-closed' }>
+  summary?: DurableTradeRecoverySummary
+}
+
+export interface DurableTradeRecoverySummary {
+  sessionCount: number
+  orphanCount: number
+  pendingIntentCount: number
+  truncated: boolean
+  failedClosed: boolean
+}
+
+export const DURABLE_TRADE_RECOVERY_DIAGNOSTIC_LIMIT_MAX = 256 as const
+
+interface DurableTradeRecoveryAccumulatorState {
+  sessions: DurableTradeSessionRecoveryResult[]
+  orphans: DurableTradeOrphanRecoveryResult[]
+  pendingIntents: NonNullable<DurableTradeRecoveryResult['pendingIntents']>
+  sessionCount: number
+  orphanCount: number
+  pendingIntentCount: number
+  nestedTruncation: boolean
+  failedClosed: boolean
+}
+
+export function createDurableTradeRecoveryResultAccumulator(
+  limit = DURABLE_TRADE_RECOVERY_DIAGNOSTIC_LIMIT_MAX,
+): {
+  append(result: DurableTradeRecoveryResult): void
+  finish(): DurableTradeRecoveryResult
+} {
+  if (
+    !Number.isSafeInteger(limit)
+    || limit < 1
+    || limit > DURABLE_TRADE_RECOVERY_DIAGNOSTIC_LIMIT_MAX
+  ) {
+    throw new Error('durable trade recovery diagnostic limit is invalid')
+  }
+  const state: DurableTradeRecoveryAccumulatorState = {
+    sessions: [],
+    orphans: [],
+    pendingIntents: [],
+    sessionCount: 0,
+    orphanCount: 0,
+    pendingIntentCount: 0,
+    nestedTruncation: false,
+    failedClosed: false,
+  }
+  return {
+    append: (result) => appendDurableTradeRecoveryResult(state, result, limit),
+    finish: () => finishDurableTradeRecoveryResult(state),
+  }
+}
+
+function appendDurableTradeRecoveryResult(
+  state: DurableTradeRecoveryAccumulatorState,
+  result: DurableTradeRecoveryResult,
+  limit: number,
+): void {
+  state.sessionCount += result.summary?.sessionCount ?? result.sessions.length
+  state.orphanCount += result.summary?.orphanCount ?? result.orphans.length
+  state.pendingIntentCount +=
+    result.summary?.pendingIntentCount ?? result.pendingIntents?.length ?? 0
+  state.nestedTruncation ||= result.summary?.truncated === true
+  state.failedClosed ||= result.summary?.failedClosed === true
+    || result.sessions.some(isFailedClosedRecoveryItem)
+    || result.orphans.some(isFailedClosedRecoveryItem)
+    || result.pendingIntents?.some(isFailedClosedRecoveryItem) === true
+  retainBoundedRecoveryItems(state.sessions, result.sessions, limit)
+  retainBoundedRecoveryItems(state.orphans, result.orphans, limit)
+  retainBoundedRecoveryItems(
+    state.pendingIntents,
+    result.pendingIntents ?? [],
+    limit,
+  )
+}
+
+function finishDurableTradeRecoveryResult(
+  state: DurableTradeRecoveryAccumulatorState,
+): DurableTradeRecoveryResult {
+  return {
+    sessions: [...state.sessions],
+    orphans: [...state.orphans],
+    ...(state.pendingIntentCount === 0
+      ? {}
+      : { pendingIntents: [...state.pendingIntents] }),
+    summary: {
+      sessionCount: state.sessionCount,
+      orphanCount: state.orphanCount,
+      pendingIntentCount: state.pendingIntentCount,
+      truncated: state.nestedTruncation
+        || state.sessionCount > state.sessions.length
+        || state.orphanCount > state.orphans.length
+        || state.pendingIntentCount > state.pendingIntents.length,
+      failedClosed: state.failedClosed,
+    },
+  }
+}
+
+function retainBoundedRecoveryItems<T extends { kind: string }>(
+  retained: T[],
+  additions: readonly T[],
+  limit: number,
+): void {
+  for (const addition of additions) {
+    if (retained.length < limit) {
+      retained.push(addition)
+      continue
+    }
+    if (
+      isFailedClosedRecoveryItem(addition)
+      && !retained.some(isFailedClosedRecoveryItem)
+    ) {
+      retained[retained.length - 1] = addition
+    }
+  }
+}
+
+function isFailedClosedRecoveryItem(
+  value: { kind: string },
+): boolean {
+  return value.kind === 'failed-closed'
 }
 
 export type DurableTradeSessionEvent =
