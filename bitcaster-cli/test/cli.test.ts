@@ -1,6 +1,18 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { once } from 'node:events'
 import { join } from 'node:path'
@@ -377,6 +389,70 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
     server.close()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli rejects an oversized private token file', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-token-size-'))
+  const tokenPath = join(home, 'oversized.cashu')
+  try {
+    const file = await open(tokenPath, 'w', 0o600)
+    await file.truncate(4 * 1_024 * 1_024 + 1)
+    await file.close()
+    await assertCliFailure(
+      ['wallet', 'receive', '--token-file', tokenPath],
+      /token-file exceeds 4194304 bytes/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli rejects a group-readable token file', async () => {
+  if (process.platform === 'win32') return
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-token-mode-'))
+  const tokenPath = join(home, 'readable.cashu')
+  try {
+    await writeFile(tokenPath, 'cashuBoGZha2U=', { mode: 0o600 })
+    await chmod(tokenPath, 0o640)
+    await assertCliFailure(
+      ['wallet', 'receive', '--token-file', tokenPath],
+      /must not be accessible by group or other users/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli rejects a symlinked token file', async () => {
+  if (process.platform === 'win32') return
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-token-link-'))
+  const targetPath = join(home, 'target.cashu')
+  const linkPath = join(home, 'link.cashu')
+  try {
+    await writeFile(targetPath, 'cashuBoGZha2U=', { mode: 0o600 })
+    await symlink(targetPath, linkPath)
+    await assertCliFailure(
+      ['wallet', 'receive', '--token-file', linkPath],
+      /ELOOP|symbolic link/i,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli requires exactly one token input', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-token-source-'))
+  const tokenPath = join(home, 'token.cashu')
+  try {
+    await writeFile(tokenPath, 'cashuBoGZha2U=', { mode: 0o600 })
+    await assertCliFailure(['wallet', 'receive'], /requires exactly one token or --token-file/)
+    await assertCliFailure(
+      ['wallet', 'receive', 'cashuBinline', '--token-file', tokenPath],
+      /requires exactly one token or --token-file/,
+    )
+  } finally {
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -2312,6 +2388,20 @@ async function runCliWithEnv(
       ...args,
     ],
     { env },
+  )
+}
+
+async function assertCliFailure(args: string[], expected: RegExp): Promise<void> {
+  await assert.rejects(
+    () => runCliWithEnv(args, {
+      ...process.env,
+      BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+      BITCASTER_DAEMON_URL: 'http://127.0.0.1:1',
+    }),
+    (err: unknown) => {
+      assert.match((err as { stderr?: string }).stderr ?? '', expected)
+      return true
+    },
   )
 }
 
