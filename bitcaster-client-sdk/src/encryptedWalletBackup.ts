@@ -5,6 +5,10 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { decode } from "cborg";
 import { deriveDurableCustodyProofId } from "./durableCustody.ts";
 import {
+  requireVerifiedCtfLosingOutcomeEvidence,
+  type VerifiedCtfLosingOutcomeEvidence,
+} from "./ctfRedeem.ts";
+import {
   encodeCanonicalBackupCbor as encodeCanonical,
   measureCanonicalBackupCbor as measureCanonicalCbor,
   preflightEncryptedBackupRequestProofCbor,
@@ -15,10 +19,15 @@ import {
   classifyDurableWalletStorage,
   decodeDurableWalletAcknowledgedBackupSnapshot,
   decodeDurableWalletEncryptedBackupReceipt,
+  decodeDurableWalletStorageClassification,
   deriveDurableWalletBackupSnapshotId,
+  verifyDurableWalletLosingCtfClassification,
   type DurableWalletAcknowledgedBackupSnapshotEvidence,
   type DurableWalletAuthenticatedBackupReceiptEvidence,
+  type DurableWalletStorageClassification,
+  type DurableWalletVerifiedLosingCtfClassification,
 } from "./recoverableWalletStorage.ts";
+import { issueDurableWalletVerifiedLosingCtfClassification } from "./walletStorageAuthority.ts";
 import {
   issueDurableWalletAcknowledgedBackupSnapshot,
   issueDurableWalletAuthenticatedBackupReceipt,
@@ -59,6 +68,10 @@ import {
   ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX,
   planEncryptedWalletBackupRetry,
 } from "./encryptedWalletBackupRetrySchedule.ts";
+import {
+  compareEncryptedWalletBackupRestoreTupleText,
+  groupEncryptedWalletBackupRestoreRecordsByMintUnit,
+} from "./encryptedWalletBackupRestore.ts";
 export { EncryptedWalletBackupDeadlineError } from "./encryptedWalletBackupDeadline.ts";
 export {
   ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
@@ -249,6 +262,35 @@ export interface EncryptedWalletBackupCtfMetadata {
   finalExpiryUnixSeconds: number;
 }
 
+export interface EncryptedWalletBackupCtfTerminalEvidence {
+  readonly reason: "verified-losing-outcome";
+  readonly operationIdDigest: string;
+  readonly requestDigest: string;
+  readonly failureCode: 13015;
+  readonly classifiedAt: number;
+}
+
+type EncryptedWalletBackupCtfTerminalSeal = [
+  1,
+  Uint8Array,
+  Uint8Array,
+  13015,
+  number,
+];
+
+type EncryptedWalletBackupCtfBase = [
+  Uint8Array,
+  string,
+  Uint8Array,
+  number,
+  number,
+];
+
+type EncryptedWalletBackupCtfWire = [
+  ...EncryptedWalletBackupCtfBase,
+  EncryptedWalletBackupCtfTerminalSeal | null,
+];
+
 export interface VerifiedEncryptedWalletBackupConditionalKeyset {
   readonly keysetId: string;
 }
@@ -278,6 +320,7 @@ export interface EncryptedWalletBackupCommittedProofSnapshot {
   readonly proofCommitment: string;
   readonly proofKind: EncryptedWalletBackupProofKind;
   readonly ctfMetadata: EncryptedWalletBackupCtfMetadata | null;
+  readonly terminalOperationId: string | null;
   readonly conditionalKeysetEvidence: VerifiedEncryptedWalletBackupConditionalKeyset | null;
   readonly provenance: "wallet-seed" | "external" | "unknown";
   readonly operationBinding: "terminally-unlinked" | "nonterminal" | "unknown";
@@ -289,8 +332,7 @@ export interface EncryptedWalletBackupCommittedProofSnapshot {
 
 type EncryptedWalletBackupProofKind =
   | "ordinary"
-  | "ctf-active"
-  | "ctf-expired"
+  | "ctf"
   | "p2pk"
   | "htlc"
   | "unknown";
@@ -356,6 +398,7 @@ export interface EncryptedWalletBackupProofInput {
   };
   proofKind: EncryptedWalletBackupProofKind;
   ctfMetadata: EncryptedWalletBackupCtfMetadata | null;
+  terminalEvidence: VerifiedCtfLosingOutcomeEvidence | null;
   effectiveNowUnixSeconds: number;
   createdAtUnixSeconds: number;
   updatedAtUnixSeconds: number;
@@ -377,7 +420,7 @@ interface PreparedProofAuthority {
   readonly unit: string;
   readonly amount: string;
   readonly proofKindCode: 0 | 1;
-  readonly ctfMetadata: null | [Uint8Array, string, Uint8Array, number, number];
+  readonly ctfMetadata: EncryptedWalletBackupCtfWire | null;
   readonly createdAtUnixSeconds: number;
   readonly updatedAtUnixSeconds: number;
   readonly recordBytes: Uint8Array;
@@ -448,8 +491,9 @@ export interface EncryptedWalletBackupManifestEntry {
   readonly mint: string;
   readonly unit: string;
   readonly amount: string;
-  readonly proofKind: "ordinary" | "ctf-active";
+  readonly proofKind: "ordinary" | "ctf";
   readonly ctfMetadata: EncryptedWalletBackupCtfMetadata | null;
+  readonly terminalEvidence: EncryptedWalletBackupCtfTerminalEvidence | null;
   readonly createdAtUnixSeconds: number;
   readonly updatedAtUnixSeconds: number;
 }
@@ -697,6 +741,30 @@ const DECRYPTED_MANIFEST_PAGE_AUTHORITIES = new WeakMap<
   DecryptedManifestPageAuthority
 >();
 
+export interface EncryptedWalletBackupManifestRestoreCursor {
+  readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION;
+  readonly generation: number;
+  readonly pageCount: number;
+  readonly nextPageIndex: number;
+  readonly restoredEntryCount: number;
+  readonly complete: boolean;
+}
+
+interface ManifestRestoreCursorAuthority {
+  readonly keyAuthority: KeyAuthority;
+  readonly head: EncryptedWalletBackupManifestHead;
+  readonly pageCount: number;
+  readonly nextPageIndex: number;
+  readonly restoredEntryCount: number;
+  readonly lastProofId: string | null;
+  consumed: boolean;
+}
+
+const MANIFEST_RESTORE_CURSOR_AUTHORITIES = new WeakMap<
+  object,
+  ManifestRestoreCursorAuthority
+>();
+
 export interface DecryptedEncryptedWalletBackupProofChunk {
   readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION;
   readonly kindCode: typeof ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND;
@@ -711,6 +779,7 @@ interface UnverifiedEncryptedWalletBackupProof {
   readonly counter: number;
   readonly encodedProofKind: 0 | 1;
   readonly ctfMetadata: EncryptedWalletBackupCtfMetadata | null;
+  readonly terminalEvidence: EncryptedWalletBackupCtfTerminalEvidence | null;
   readonly createdAtUnixSeconds: number;
   readonly updatedAtUnixSeconds: number;
   readonly proof: {
@@ -727,6 +796,10 @@ interface UnverifiedEncryptedWalletBackupProof {
 }
 
 interface DecryptedProofChunkAuthority {
+  readonly keyAuthority: KeyAuthority;
+  readonly objectId: string;
+  readonly objectDigest: string;
+  readonly generation: number;
   readonly records: readonly UnverifiedEncryptedWalletBackupProof[];
 }
 
@@ -734,6 +807,125 @@ const DECRYPTED_PROOF_CHUNK_AUTHORITIES = new WeakMap<
   object,
   DecryptedProofChunkAuthority
 >();
+
+export const ENCRYPTED_WALLET_BACKUP_RESTORE_PROOF_LIMIT_MAX = 64 as const;
+
+export interface EncryptedWalletBackupRestoreSelection {
+  readonly manifestPage: DecryptedEncryptedWalletBackupManifestPage;
+  readonly proofId: string;
+}
+
+export interface EncryptedWalletBackupRestoreKeysetPort {
+  resolveKeysets(
+    input: Readonly<{
+      requests: readonly Readonly<{
+        mint: string;
+        unit: string;
+        keysetId: string;
+      }>[];
+      signal: AbortSignal;
+    }>,
+  ): Promise<
+    readonly Readonly<{
+      mint: string;
+      unit: string;
+      keysetId: string;
+      mintKeys: unknown;
+    }>[]
+  >;
+}
+
+export interface EncryptedWalletBackupRestoreProofStatePort {
+  checkProofStates(
+    input: Readonly<{
+      proofs: readonly Readonly<{
+        proofId: string;
+        mint: string;
+        keysetId: string;
+        y: string;
+      }>[];
+      signal: AbortSignal;
+    }>,
+  ): Promise<
+    readonly Readonly<{
+      proofId: string;
+      y: string;
+      state: "UNSPENT" | "PENDING" | "SPENT";
+    }>[]
+  >;
+}
+
+export interface EncryptedWalletBackupRestoreProofRecord {
+  readonly schemaVersion: 1;
+  readonly realm: string;
+  readonly vaultId: string;
+  readonly generation: number;
+  readonly manifestDigest: string;
+  readonly parentGeneration: number | null;
+  readonly parentManifestDigest: string | null;
+  readonly chunkObjectId: string;
+  readonly chunkDigest: string;
+  readonly proofId: string;
+  readonly proofCommitment: string;
+  readonly mint: string;
+  readonly unit: string;
+  readonly counter: number;
+  readonly proofKind: "ordinary" | "ctf";
+  readonly ctfMetadata: EncryptedWalletBackupCtfMetadata | null;
+  readonly terminalEvidence: EncryptedWalletBackupCtfTerminalEvidence | null;
+  readonly createdAtUnixSeconds: number;
+  readonly updatedAtUnixSeconds: number;
+  readonly disposition: "selectable" | "user-retained-nonselectable";
+  readonly nonselectableReason:
+    | null
+    | "recorded-ctf-expiry-passed"
+    | "verified-losing-outcome";
+  readonly proof: Readonly<{
+    id: string;
+    amount: string;
+    secret: string;
+    C: string;
+    dleq?: Readonly<{ e: string; s: string; r: string }>;
+  }>;
+}
+
+export interface EncryptedWalletBackupRestoreProofRow {
+  readonly proofId: string;
+  readonly storageClassification: DurableWalletStorageClassification;
+  readonly proof: EncryptedWalletBackupRestoreProofRecord;
+}
+
+export interface EncryptedWalletBackupRestoreCurrentProofState {
+  readonly proofId: string;
+  /**
+   * Both nullable fields may be null only when this global proof identity is
+   * absent from every proof, reservation, operation-link, pin, and tombstone
+   * authority in the same physical transaction.
+   */
+  readonly storageClassification: DurableWalletStorageClassification | null;
+  readonly proof: EncryptedWalletBackupRestoreProofRecord | null;
+}
+
+export interface EncryptedWalletBackupRestoreStore {
+  commitRestoredProofs<T>(
+    input: Readonly<{
+      expected: readonly EncryptedWalletBackupRestoreProofRow[];
+      restoreMode: "complete-origin" | "hydrate-existing";
+      signal: AbortSignal;
+    }>,
+    commit: (
+      current: readonly EncryptedWalletBackupRestoreCurrentProofState[],
+    ) => T,
+  ): Promise<T>;
+}
+
+export interface EncryptedWalletBackupProofRestoreResult {
+  readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION;
+  readonly generation: number;
+  readonly manifestDigest: string;
+  readonly proofCount: number;
+  readonly proofIds: readonly string[];
+}
 
 export async function createEncryptedWalletBackupKeyHandle(input: {
   seed: Uint8Array;
@@ -1333,11 +1525,15 @@ export async function prepareEncryptedWalletBackupProof(
   );
   if (updatedAt < createdAt) throw new Error("proof timestamps are invalid");
   const proofKindCode = input.proofKind === "ordinary" ? 0 : 1;
-  const ctfMetadata = decodeCtfMetadata(
-    input.ctfMetadata,
-    proofKindCode,
-    effectiveNow,
+  const ctfBase = decodeCtfMetadata(input.ctfMetadata, proofKindCode);
+  const terminalSeal = prepareCtfTerminalSeal(
+    input,
+    mint,
+    keyset.text,
+    ctfBase,
   );
+  const ctfMetadata: EncryptedWalletBackupCtfWire | null =
+    ctfBase === null ? null : [...ctfBase, terminalSeal];
   const keysetWire = [keyset.kindCode, keyset.text];
   const commitmentPreimage = [
     1,
@@ -1364,6 +1560,7 @@ export async function prepareEncryptedWalletBackupProof(
     unit,
     keyset,
     ctfMetadata,
+    effectiveNow,
   );
   const record = [
     hexToBytes(proofId),
@@ -1406,11 +1603,12 @@ export async function prepareEncryptedWalletBackupProof(
   return handle;
 }
 
-function requireSoleMissingReceiptClassification(
+function requireBackupEligibleClassification(
   input: Pick<
     EncryptedWalletBackupCommittedProofSnapshot,
     | "provenance"
     | "proofKind"
+    | "ctfMetadata"
     | "operationBinding"
     | "reserved"
     | "ambiguousMintOperation"
@@ -1419,6 +1617,8 @@ function requireSoleMissingReceiptClassification(
   >,
   proofId: string,
   commitment: string,
+  effectiveNowUnixSeconds: number,
+  terminalEvidence: DurableWalletVerifiedLosingCtfClassification | null,
 ): void {
   const classification = classifyDurableWalletStorage({
     schemaVersion: 1,
@@ -1426,6 +1626,14 @@ function requireSoleMissingReceiptClassification(
     kind: "deterministic-proof",
     provenance: input.provenance,
     proofKind: input.proofKind,
+    ctfMetadata:
+      input.proofKind === "ctf"
+        ? {
+            finalExpiryUnixSeconds: input.ctfMetadata!.finalExpiryUnixSeconds,
+            terminalEvidence,
+          }
+        : null,
+    effectiveNowUnixSeconds,
     operationBinding: input.operationBinding,
     reserved: input.reserved,
     ambiguousMintOperation: input.ambiguousMintOperation,
@@ -1433,14 +1641,19 @@ function requireSoleMissingReceiptClassification(
     derivationLocator: input.derivationLocator,
     proofCommitment: { state: "verified", digest: commitment },
     backupReceiptEvidence: null,
-    expiredAuditPurgeAfterMs: null,
   });
+  const activeMissingReceipt =
+    classification.storageClass === "pinned-local-recovery-state" &&
+    classification.pinReasons.length === 1 &&
+    classification.pinReasons[0] === "missing-current-backup-receipt";
+  const retainedCtf =
+    classification.storageClass === "user-retained-nonselectable-ctf" &&
+    classification.pinReasons.length === 0;
   if (
-    classification.storageClass !== "pinned-local-recovery-state" ||
+    (!activeMissingReceipt && !retainedCtf) ||
     classification.recordId !== proofId ||
     classification.proofCommitment !== commitment ||
-    classification.pinReasons.length !== 1 ||
-    classification.pinReasons[0] !== "missing-current-backup-receipt"
+    classification.backupBinding !== null
   ) {
     throw new Error("proof is not backup eligible");
   }
@@ -1453,7 +1666,8 @@ async function requireAuthoritativeStorageSnapshot(
   mint: string,
   unit: string,
   keyset: KeysetId,
-  ctfTuple: null | [Uint8Array, string, Uint8Array, number, number],
+  ctfTuple: EncryptedWalletBackupCtfWire | null,
+  effectiveNowUnixSeconds: number,
 ): Promise<TransactionProofSnapshotAuthority> {
   const store = requireProofSnapshotStore(input.proofSnapshotStore);
   let callbackOpen = true;
@@ -1465,10 +1679,20 @@ async function requireAuthoritativeStorageSnapshot(
       if (!callbackOpen || callbackCalls++ !== 0)
         throw new Error("proof snapshot transaction callback is invalid");
       const row = decodeCommittedProofSnapshot(rawRow);
-      requireSoleMissingReceiptClassification(
+      const terminalClassification =
+        requireAuthoritativeTerminalClassification({
+          input,
+          row,
+          mint,
+          keysetId: keyset.text,
+          ctfTuple,
+        });
+      requireBackupEligibleClassification(
         row,
         row.proofId,
         row.proofCommitment,
+        effectiveNowUnixSeconds,
+        terminalClassification,
       );
       const conditionalKeyset =
         row.conditionalKeysetEvidence === null
@@ -1516,10 +1740,10 @@ async function requireAuthoritativeStorageSnapshot(
   if (row.proofKind !== input.proofKind)
     throw new Error("proof does not match authoritative storage snapshot");
   const metadata = ctfTuple === null ? null : ctfTupleToMetadata(ctfTuple);
-  if (JSON.stringify(row.ctfMetadata) !== JSON.stringify(metadata)) {
+  if (!equalCtfMetadata(row.ctfMetadata, metadata)) {
     throw new Error("proof does not match authoritative storage snapshot");
   }
-  if (input.proofKind === "ctf-active") {
+  if (input.proofKind === "ctf") {
     const conditional = snapshot.conditionalKeyset;
     if (
       conditional === null ||
@@ -1544,6 +1768,37 @@ async function requireAuthoritativeStorageSnapshot(
     throw new Error("ordinary proof cannot bind a conditional keyset");
   }
   return snapshot;
+}
+
+function requireAuthoritativeTerminalClassification(input: {
+  input: EncryptedWalletBackupProofInput;
+  row: EncryptedWalletBackupCommittedProofSnapshot;
+  mint: string;
+  keysetId: string;
+  ctfTuple: EncryptedWalletBackupCtfWire | null;
+}): DurableWalletVerifiedLosingCtfClassification | null {
+  if (
+    input.input.terminalEvidence === null &&
+    input.row.terminalOperationId === null
+  ) {
+    return null;
+  }
+  if (
+    input.input.terminalEvidence === null ||
+    input.row.terminalOperationId === null ||
+    input.ctfTuple === null
+  ) {
+    throw new Error("proof does not match authoritative terminal operation");
+  }
+  return verifyDurableWalletLosingCtfClassification({
+    evidence: input.input.terminalEvidence,
+    operationId: input.row.terminalOperationId,
+    mintUrl: input.mint,
+    conditionId: bytesToHex(input.ctfTuple[0]),
+    outcome: input.ctfTuple[1],
+    keysetId: input.keysetId,
+    proof: input.input.proof,
+  });
 }
 
 function requireProofSnapshotStore(
@@ -1658,6 +1913,7 @@ function decodeCommittedProofSnapshot(
     "proofCommitment",
     "proofKind",
     "ctfMetadata",
+    "terminalOperationId",
     "conditionalKeysetEvidence",
     "provenance",
     "operationBinding",
@@ -1672,7 +1928,6 @@ function decodeCommittedProofSnapshot(
   const ctf = decodeCtfMetadata(
     row.ctfMetadata as EncryptedWalletBackupCtfMetadata | null,
     proofKind === "ordinary" ? 0 : 1,
-    0,
   );
   return Object.freeze({
     schemaVersion: 1 as const,
@@ -1689,6 +1944,14 @@ function decodeCommittedProofSnapshot(
     ),
     proofKind,
     ctfMetadata: ctf === null ? null : ctfTupleToMetadata(ctf),
+    terminalOperationId:
+      row.terminalOperationId === null
+        ? null
+        : requireBoundedText(
+            row.terminalOperationId,
+            512,
+            "stored CTF terminal operation id",
+          ),
     conditionalKeysetEvidence:
       row.conditionalKeysetEvidence as VerifiedEncryptedWalletBackupConditionalKeyset | null,
     provenance: requireOneOfValue(
@@ -1717,14 +1980,7 @@ function decodeCommittedProofSnapshot(
 
 function requireProofKind(value: unknown): EncryptedWalletBackupProofKind {
   if (
-    ![
-      "ordinary",
-      "ctf-active",
-      "ctf-expired",
-      "p2pk",
-      "htlc",
-      "unknown",
-    ].includes(value as string)
+    !["ordinary", "ctf", "p2pk", "htlc", "unknown"].includes(value as string)
   ) {
     throw new Error("stored proof kind is invalid");
   }
@@ -3530,6 +3786,129 @@ export async function decryptEncryptedWalletBackupManifestPage(input: {
   }
 }
 
+export function beginEncryptedWalletBackupManifestRestore(input: {
+  headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence;
+}): EncryptedWalletBackupManifestRestoreCursor {
+  const observation =
+    typeof input.headEvidence === "object" && input.headEvidence !== null
+      ? AUTHENTICATED_HEAD_OBSERVATIONS.get(input.headEvidence)
+      : undefined;
+  const authenticated =
+    typeof input.headEvidence === "object" && input.headEvidence !== null
+      ? AUTHENTICATED_MANIFEST_HEADS.get(input.headEvidence)
+      : undefined;
+  if (
+    observation === undefined ||
+    observation.head === null ||
+    authenticated === undefined ||
+    authenticated.keyAuthority !== observation.keyAuthority ||
+    authenticated.head !== observation.head
+  ) {
+    throw new Error("backup manifest restore head is not authenticated");
+  }
+  const referenceSet = decode(authenticated.canonicalReferenceSet);
+  if (
+    !Array.isArray(referenceSet) ||
+    referenceSet.length !== 4 ||
+    !Array.isArray(referenceSet[2])
+  ) {
+    throw new Error("backup manifest restore reference set is invalid");
+  }
+  const pageCount = referenceSet[2].length;
+  if (
+    pageCount < 0 ||
+    pageCount > 1_024 ||
+    (observation.head.proofCount === 0) !== (pageCount === 0)
+  ) {
+    throw new Error("backup manifest restore page count is invalid");
+  }
+  return issueManifestRestoreCursor({
+    keyAuthority: observation.keyAuthority,
+    head: observation.head,
+    pageCount,
+    nextPageIndex: 0,
+    restoredEntryCount: 0,
+    lastProofId: null,
+    consumed: false,
+  });
+}
+
+export function advanceEncryptedWalletBackupManifestRestore(input: {
+  cursor: EncryptedWalletBackupManifestRestoreCursor;
+  manifestPage: DecryptedEncryptedWalletBackupManifestPage;
+}): EncryptedWalletBackupManifestRestoreCursor {
+  const cursorAuthority =
+    typeof input.cursor === "object" && input.cursor !== null
+      ? MANIFEST_RESTORE_CURSOR_AUTHORITIES.get(input.cursor)
+      : undefined;
+  if (cursorAuthority === undefined)
+    throw new Error("backup manifest restore cursor is invalid");
+  if (cursorAuthority.consumed)
+    throw new Error("backup manifest restore cursor is stale");
+  if (input.cursor.complete)
+    throw new Error("backup manifest restore is already complete");
+  const pageAuthority =
+    typeof input.manifestPage === "object" && input.manifestPage !== null
+      ? DECRYPTED_MANIFEST_PAGE_AUTHORITIES.get(input.manifestPage)
+      : undefined;
+  if (
+    pageAuthority === undefined ||
+    pageAuthority.keyAuthority !== cursorAuthority.keyAuthority ||
+    pageAuthority.head !== cursorAuthority.head ||
+    input.manifestPage.generation !== cursorAuthority.head.generation ||
+    input.manifestPage.pageCount !== cursorAuthority.pageCount ||
+    input.manifestPage.pageIndex !== cursorAuthority.nextPageIndex
+  ) {
+    throw new Error("backup manifest restore page is foreign or out of order");
+  }
+  const first = input.manifestPage.entries[0];
+  const last = input.manifestPage.entries.at(-1);
+  if (
+    first === undefined ||
+    last === undefined ||
+    (cursorAuthority.lastProofId !== null &&
+      compareHex(cursorAuthority.lastProofId, first.proofId) >= 0)
+  ) {
+    throw new Error("backup manifest restore proof order is invalid");
+  }
+  const restoredEntryCount =
+    cursorAuthority.restoredEntryCount + input.manifestPage.entries.length;
+  const nextPageIndex = cursorAuthority.nextPageIndex + 1;
+  const complete = nextPageIndex === cursorAuthority.pageCount;
+  if (
+    restoredEntryCount > cursorAuthority.head.proofCount ||
+    (complete && restoredEntryCount !== cursorAuthority.head.proofCount) ||
+    (!complete && restoredEntryCount >= cursorAuthority.head.proofCount)
+  ) {
+    throw new Error("backup manifest restore proof count is invalid");
+  }
+  cursorAuthority.consumed = true;
+  return issueManifestRestoreCursor({
+    keyAuthority: cursorAuthority.keyAuthority,
+    head: cursorAuthority.head,
+    pageCount: cursorAuthority.pageCount,
+    nextPageIndex,
+    restoredEntryCount,
+    lastProofId: last.proofId,
+    consumed: false,
+  });
+}
+
+function issueManifestRestoreCursor(
+  authority: ManifestRestoreCursorAuthority,
+): EncryptedWalletBackupManifestRestoreCursor {
+  const cursor = Object.freeze({
+    formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
+    generation: authority.head.generation,
+    pageCount: authority.pageCount,
+    nextPageIndex: authority.nextPageIndex,
+    restoredEntryCount: authority.restoredEntryCount,
+    complete: authority.nextPageIndex === authority.pageCount,
+  });
+  MANIFEST_RESTORE_CURSOR_AUTHORITIES.set(cursor, authority);
+  return cursor;
+}
+
 export function acknowledgeDurableWalletBackupSnapshot(input: {
   headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence;
 }): DurableWalletAcknowledgedBackupSnapshotEvidence {
@@ -3634,6 +4013,1210 @@ export function deriveDurableWalletEncryptedBackupReceipt(input: {
   return issueDurableWalletAuthenticatedBackupReceipt(receipt);
 }
 
+export async function restoreEncryptedWalletBackupProofs(input: {
+  keyHandle: EncryptedWalletBackupKeyHandle;
+  headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence;
+  proofChunk: DecryptedEncryptedWalletBackupProofChunk;
+  selections: readonly EncryptedWalletBackupRestoreSelection[];
+  restoreMode: "complete-origin" | "hydrate-existing";
+  effectiveNowUnixSeconds: number;
+  signal: AbortSignal;
+  keysetPort: EncryptedWalletBackupRestoreKeysetPort;
+  proofStatePort: EncryptedWalletBackupRestoreProofStatePort;
+  restoreStore: EncryptedWalletBackupRestoreStore;
+}): Promise<EncryptedWalletBackupProofRestoreResult> {
+  const keyAuthority = requireKeyAuthority(input.keyHandle);
+  const cycleSignal = requireEncryptedWalletBackupCycleSignal(input.signal);
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal);
+  const observation =
+    typeof input.headEvidence === "object" && input.headEvidence !== null
+      ? AUTHENTICATED_HEAD_OBSERVATIONS.get(input.headEvidence)
+      : undefined;
+  const chunkAuthority =
+    typeof input.proofChunk === "object" && input.proofChunk !== null
+      ? DECRYPTED_PROOF_CHUNK_AUTHORITIES.get(input.proofChunk)
+      : undefined;
+  if (
+    observation === undefined ||
+    observation.head === null ||
+    observation.keyAuthority !== keyAuthority ||
+    chunkAuthority === undefined ||
+    chunkAuthority.keyAuthority !== keyAuthority ||
+    chunkAuthority.generation > observation.head.generation
+  ) {
+    throw new Error("restored proof authority is invalid");
+  }
+  if (
+    !Array.isArray(input.selections) ||
+    input.selections.length < 1 ||
+    input.selections.length > ENCRYPTED_WALLET_BACKUP_RESTORE_PROOF_LIMIT_MAX
+  ) {
+    throw new Error("restored proof selection is invalid");
+  }
+  const effectiveNow = requireNonNegativeSafeInteger(
+    input.effectiveNowUnixSeconds,
+    "restore effective time",
+  );
+  const restoreMode = requireOneOfValue(
+    input.restoreMode,
+    ["complete-origin", "hydrate-existing"],
+    "restored proof mode",
+  );
+  const selected: Array<{
+    record: UnverifiedEncryptedWalletBackupProof;
+    entry: EncryptedWalletBackupManifestEntry;
+    page: DecryptedEncryptedWalletBackupManifestPage;
+  }> = [];
+  const selectedIds = new Set<string>();
+  const chunkRecordsById = new Map(
+    chunkAuthority.records.map((record) => [record.proofId, record]),
+  );
+  const pageEntriesById = new WeakMap<
+    object,
+    ReadonlyMap<string, EncryptedWalletBackupManifestEntry>
+  >();
+  for (const rawSelection of input.selections) {
+    const selection = requireRecord(rawSelection, "restored proof selection");
+    requireKnownFields(selection, ["manifestPage", "proofId"]);
+    const proofId = requireLowerHex(selection.proofId, 32, "restored proof id");
+    if (selectedIds.has(proofId))
+      throw new Error("restored proof selection is duplicated");
+    selectedIds.add(proofId);
+    const page =
+      selection.manifestPage as DecryptedEncryptedWalletBackupManifestPage | null;
+    const pageAuthority =
+      typeof page === "object" && page !== null
+        ? DECRYPTED_MANIFEST_PAGE_AUTHORITIES.get(page)
+        : undefined;
+    if (
+      pageAuthority === undefined ||
+      pageAuthority.keyAuthority !== keyAuthority ||
+      pageAuthority.head !== observation.head
+    ) {
+      throw new Error("restored proof membership is invalid");
+    }
+    let entriesById = pageEntriesById.get(page!);
+    if (entriesById === undefined) {
+      entriesById = new Map(
+        page!.entries.map((entry) => [entry.proofId, entry]),
+      );
+      pageEntriesById.set(page!, entriesById);
+    }
+    const entry = entriesById.get(proofId);
+    const record = chunkRecordsById.get(proofId);
+    if (
+      entry === undefined ||
+      record === undefined ||
+      entry.chunkObjectId !== chunkAuthority.objectId ||
+      entry.chunkDigest !== chunkAuthority.objectDigest ||
+      !restoreRecordMatchesManifestEntry(record, entry)
+    ) {
+      throw new Error("restored proof membership is invalid");
+    }
+    selected.push({ record, entry, page: page! });
+  }
+  selected.sort((left, right) =>
+    compareHex(left.record.proofId, right.record.proofId),
+  );
+  const activeSelected = selected.filter(
+    ({ record }) =>
+      record.encodedProofKind === 0 ||
+      (record.terminalEvidence === null &&
+        record.ctfMetadata!.finalExpiryUnixSeconds > effectiveNow),
+  );
+
+  const keysetRequestsByKey = new Map<
+    string,
+    Readonly<{ mint: string; unit: string; keysetId: string }>
+  >();
+  const selectedRecordsByKeyset = new Map<
+    string,
+    UnverifiedEncryptedWalletBackupProof[]
+  >();
+  for (const { record } of activeSelected) {
+    const request = Object.freeze({
+      mint: record.mint,
+      unit: record.unit,
+      keysetId: record.proof.id,
+    });
+    const lookupKey = restoreKeysetLookupKey(request);
+    keysetRequestsByKey.set(lookupKey, request);
+    const records = selectedRecordsByKeyset.get(lookupKey) ?? [];
+    records.push(record);
+    selectedRecordsByKeyset.set(lookupKey, records);
+  }
+  const keysetRequests = Object.freeze(
+    [...keysetRequestsByKey.values()].sort((left, right) =>
+      compareEncryptedWalletBackupRestoreTupleText(
+        restoreKeysetLookupKey(left),
+        restoreKeysetLookupKey(right),
+      ),
+    ),
+  );
+  const verifiedKeysets = new Map<string, Record<string, unknown>>();
+  if (activeSelected.length > 0) {
+    if (
+      typeof input.keysetPort !== "object" ||
+      input.keysetPort === null ||
+      typeof input.keysetPort.resolveKeysets !== "function"
+    ) {
+      throw new Error("restored proof keyset port is invalid");
+    }
+    const rawKeysets = await awaitEncryptedWalletBackupCycle(
+      input.keysetPort.resolveKeysets({
+        requests: keysetRequests,
+        signal: cycleSignal,
+      }),
+      cycleSignal,
+    );
+    throwIfEncryptedWalletBackupCycleAborted(cycleSignal);
+    if (
+      !Array.isArray(rawKeysets) ||
+      rawKeysets.length !== keysetRequests.length
+    ) {
+      throw new Error("restored proof keyset response is invalid");
+    }
+    for (const rawKeyset of rawKeysets) {
+      const response = requireRecord(
+        rawKeyset,
+        "restored proof keyset response",
+      );
+      requireKnownFields(response, ["mint", "unit", "keysetId", "mintKeys"]);
+      const identity = {
+        mint: requireNormalizedMint(response.mint),
+        unit: requireBoundedText(response.unit, 64, "restored keyset unit"),
+        keysetId: requireBoundedText(
+          response.keysetId,
+          128,
+          "restored keyset id",
+        ),
+      };
+      const lookupKey = restoreKeysetLookupKey(identity);
+      const request = keysetRequestsByKey.get(lookupKey);
+      if (request === undefined || verifiedKeysets.has(lookupKey))
+        throw new Error("restored proof keyset response is invalid");
+      const matchingRecords = selectedRecordsByKeyset.get(lookupKey);
+      if (matchingRecords === undefined)
+        throw new Error("restored proof keyset response is invalid");
+      verifiedKeysets.set(
+        lookupKey,
+        verifyRestoreMintKeys(response.mintKeys, matchingRecords, effectiveNow),
+      );
+    }
+    if (verifiedKeysets.size !== keysetRequests.length)
+      throw new Error("restored proof keyset response is incomplete");
+    const stateQueries =
+      await verifyRestoreProofSignaturesAndDeriveStateQueries(
+        activeSelected,
+        verifiedKeysets,
+        cycleSignal,
+        defaultCooperativeYield,
+      );
+    if (
+      typeof input.proofStatePort !== "object" ||
+      input.proofStatePort === null ||
+      typeof input.proofStatePort.checkProofStates !== "function"
+    ) {
+      throw new Error("restored proof state port is invalid");
+    }
+    const rawStates = await awaitEncryptedWalletBackupCycle(
+      input.proofStatePort.checkProofStates({
+        proofs: stateQueries,
+        signal: cycleSignal,
+      }),
+      cycleSignal,
+    );
+    throwIfEncryptedWalletBackupCycleAborted(cycleSignal);
+    requireEveryRestoreProofUnspent(rawStates, stateQueries);
+  }
+
+  const candidates = Object.freeze(
+    selected.map(({ record, page }) => {
+      const isVerifiedLosing = record.terminalEvidence !== null;
+      const isExpiredCtf =
+        record.encodedProofKind === 1 &&
+        record.ctfMetadata!.finalExpiryUnixSeconds <= effectiveNow;
+      const proof = freezeRestoreProofRecord({
+        schemaVersion: 1,
+        realm: observation.head!.realm,
+        vaultId: observation.head!.vaultId,
+        generation: observation.head!.generation,
+        manifestDigest: observation.head!.manifestDigest,
+        parentGeneration: observation.head!.parent?.generation ?? null,
+        parentManifestDigest:
+          observation.head!.parent?.manifestDigest ?? null,
+        chunkObjectId: chunkAuthority.objectId,
+        chunkDigest: chunkAuthority.objectDigest,
+        proofId: record.proofId,
+        proofCommitment: record.commitment,
+        mint: record.mint,
+        unit: record.unit,
+        counter: record.counter,
+        proofKind: record.encodedProofKind === 0 ? "ordinary" : "ctf",
+        ctfMetadata: record.ctfMetadata,
+        terminalEvidence: record.terminalEvidence,
+        createdAtUnixSeconds: record.createdAtUnixSeconds,
+        updatedAtUnixSeconds: record.updatedAtUnixSeconds,
+        disposition:
+          isExpiredCtf || isVerifiedLosing
+            ? "user-retained-nonselectable"
+            : "selectable",
+        nonselectableReason: isVerifiedLosing
+          ? "verified-losing-outcome"
+          : isExpiredCtf
+            ? "recorded-ctf-expiry-passed"
+            : null,
+        proof: record.proof,
+      });
+      const storageClassification = classifyEncryptedWalletBackupRestoreProof({
+        headEvidence: input.headEvidence,
+        manifestPage: page,
+        proof,
+        effectiveNowUnixSeconds: effectiveNow,
+      });
+      return Object.freeze({
+        proofId: proof.proofId,
+        storageClassification,
+        proof,
+      });
+    }),
+  );
+  await commitRestoreProofRecords(
+    input.restoreStore,
+    candidates,
+    restoreMode,
+    observation.head.backupPublicKey,
+    cycleSignal,
+  );
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal);
+  return Object.freeze({
+    formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
+    generation: observation.head.generation,
+    manifestDigest: observation.head.manifestDigest,
+    proofCount: candidates.length,
+    proofIds: Object.freeze(candidates.map((row) => row.proofId)),
+  });
+}
+
+function classifyEncryptedWalletBackupRestoreProof(input: {
+  headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence;
+  manifestPage: DecryptedEncryptedWalletBackupManifestPage;
+  proof: EncryptedWalletBackupRestoreProofRecord;
+  effectiveNowUnixSeconds: number;
+}): DurableWalletStorageClassification {
+  const evidence = deriveDurableWalletEncryptedBackupReceipt({
+    headEvidence: input.headEvidence,
+    manifestPage: input.manifestPage,
+    proofId: input.proof.proofId,
+    proofCommitment: input.proof.proofCommitment,
+  });
+  const classified = classifyDurableWalletStorage({
+    schemaVersion: 1,
+    recordId: input.proof.proofId,
+    kind: "deterministic-proof",
+    provenance: "wallet-seed",
+    proofKind: input.proof.proofKind,
+    ctfMetadata:
+      input.proof.ctfMetadata === null
+        ? null
+        : {
+            finalExpiryUnixSeconds:
+              input.proof.ctfMetadata.finalExpiryUnixSeconds,
+            terminalEvidence:
+              input.proof.nonselectableReason === "verified-losing-outcome"
+                ? issueDurableWalletVerifiedLosingCtfClassification()
+                : null,
+          },
+    effectiveNowUnixSeconds: input.effectiveNowUnixSeconds,
+    operationBinding: "terminally-unlinked",
+    reserved: false,
+    ambiguousMintOperation: false,
+    proofPins: {
+      openOrderCollateral: "absent",
+      outbox: "absent",
+      retryCursor: "absent",
+      replayTombstone: "absent",
+      dependentWork: "absent",
+    },
+    derivationLocator: "committed",
+    proofCommitment: {
+      state: "verified",
+      digest: input.proof.proofCommitment,
+    },
+    backupReceiptEvidence: evidence,
+  });
+  const expectedClass =
+    input.proof.disposition === "selectable"
+      ? "remotely-backed-deterministic-proof"
+      : "user-retained-nonselectable-ctf";
+  if (classified.storageClass !== expectedClass)
+    throw new Error("restored proof storage classification is invalid");
+  return freezeRestoreStorageClassification(classified);
+}
+
+function restoreRecordMatchesManifestEntry(
+  record: UnverifiedEncryptedWalletBackupProof,
+  entry: EncryptedWalletBackupManifestEntry,
+): boolean {
+  return (
+    record.proofId === entry.proofId &&
+    record.commitment === entry.commitment &&
+    record.mint === entry.mint &&
+    record.unit === entry.unit &&
+    record.proof.amount === entry.amount &&
+    (record.encodedProofKind === 0 ? "ordinary" : "ctf") === entry.proofKind &&
+    equalCtfMetadata(record.ctfMetadata, entry.ctfMetadata) &&
+    equalCtfTerminalEvidence(record.terminalEvidence, entry.terminalEvidence) &&
+    record.createdAtUnixSeconds === entry.createdAtUnixSeconds &&
+    record.updatedAtUnixSeconds === entry.updatedAtUnixSeconds
+  );
+}
+
+function restoreKeysetLookupKey(input: {
+  mint: string;
+  unit: string;
+  keysetId: string;
+}): string {
+  return `${input.mint}\0${input.unit}\0${input.keysetId}`;
+}
+
+function verifyRestoreMintKeys(
+  value: unknown,
+  records: readonly UnverifiedEncryptedWalletBackupProof[],
+  effectiveNowUnixSeconds: number,
+): Record<string, unknown> {
+  if (records.length < 1)
+    throw new Error("restored proof keyset is unreferenced");
+  const first = records[0]!;
+  const raw = requireRecord(value, "restored mint keys");
+  requireKnownFields(
+    raw,
+    ["id", "unit", "keys"],
+    ["active", "input_fee_ppk", "final_expiry", "conditional"],
+  );
+  if (raw.id !== first.proof.id || raw.unit !== first.unit)
+    throw new Error("restored proof keyset does not match proof");
+  const keyset = decodeKeysetId(raw.id);
+  const keys = requireRecord(raw.keys, "restored denomination keys");
+  const entries = Object.entries(keys);
+  if (entries.length < 1 || entries.length > 64)
+    throw new Error("restored proof keyset exceeds bounds");
+  const normalizedKeys: Record<string, string> = {};
+  for (const [amount, publicKey] of entries) {
+    if (
+      !/^[1-9][0-9]{0,19}$/.test(amount) ||
+      BigInt(amount) > UINT64_MAX ||
+      typeof publicKey !== "string" ||
+      (keyset.curve === "secp256k1"
+        ? !/^(?:02|03)[0-9a-f]{64}$/.test(publicKey)
+        : !/^[0-9a-f]{192}$/.test(publicKey))
+    ) {
+      throw new Error("restored denomination key is invalid");
+    }
+    normalizedKeys[amount] = publicKey;
+  }
+  const normalized: Record<string, unknown> = {
+    id: keyset.text,
+    unit: first.unit,
+    keys: normalizedKeys,
+  };
+  if (raw.active !== undefined)
+    normalized.active = requireBoolean(raw.active, "restored keyset active");
+  if (raw.input_fee_ppk !== undefined)
+    normalized.input_fee_ppk = requireInteger(
+      raw.input_fee_ppk,
+      0,
+      2_147_483_647,
+      "restored keyset input fee",
+    );
+  if (raw.final_expiry !== undefined)
+    normalized.final_expiry = requireNonNegativeSafeInteger(
+      raw.final_expiry,
+      "restored keyset final expiry",
+    );
+  const hasConditional = records.some(
+    (record) => record.encodedProofKind === 1,
+  );
+  if (
+    hasConditional !== records.every((record) => record.encodedProofKind === 1)
+  ) {
+    throw new Error("restored keyset mixes proof classes");
+  }
+  if (hasConditional) {
+    const metadata = first.ctfMetadata;
+    if (
+      metadata === null ||
+      metadata.finalExpiryUnixSeconds <= effectiveNowUnixSeconds
+    ) {
+      throw new Error("restored CTF proof is expired");
+    }
+    const evidence = verifyEncryptedWalletBackupConditionalKeyset({
+      mint: first.mint,
+      unit: first.unit,
+      outcomeLabel: metadata.outcomeLabel,
+      registeredAtUnixSeconds: metadata.registeredAtUnixSeconds,
+      mintKeys: raw,
+      conditionalMetadata: raw.conditional,
+    });
+    const conditional = VERIFIED_CONDITIONAL_KEYSETS.get(evidence);
+    if (
+      conditional === undefined ||
+      conditional.conditionId !== metadata.conditionId ||
+      conditional.outcomeCollectionId !== metadata.outcomeCollectionId ||
+      conditional.finalExpiryUnixSeconds !== metadata.finalExpiryUnixSeconds ||
+      records.some((record) => !equalCtfMetadata(record.ctfMetadata, metadata))
+    ) {
+      throw new Error("restored proof conditional keyset does not match");
+    }
+    normalized.conditional = raw.conditional;
+  } else {
+    if (raw.conditional !== undefined)
+      throw new Error("ordinary restored keyset cannot be conditional");
+    const api = (
+      Cashu as unknown as {
+        Keyset?: { verifyKeysetId(keys: unknown): boolean };
+      }
+    ).Keyset;
+    if (api === undefined || !api.verifyKeysetId(normalized))
+      throw new Error("restored proof keyset verification failed");
+  }
+  return Object.freeze(normalized);
+}
+
+async function verifyRestoreProofSignaturesAndDeriveStateQueries(
+  selected: readonly Readonly<{
+    record: UnverifiedEncryptedWalletBackupProof;
+  }>[],
+  keysets: ReadonlyMap<string, Record<string, unknown>>,
+  signal: AbortSignal,
+  cooperativeYield: () => void | Promise<void>,
+): Promise<
+  readonly Readonly<{
+    proofId: string;
+    mint: string;
+    keysetId: string;
+    y: string;
+  }>[]
+> {
+  const api = Cashu as unknown as {
+    verifyProofsForReceive?: (
+      proofs: readonly unknown[],
+      getKeyset: (id: string) => unknown,
+    ) => void;
+  };
+  if (typeof api.verifyProofsForReceive !== "function")
+    throw new Error("restored proof signature verifier is unavailable");
+  const stateQueries: Array<{
+    proofId: string;
+    mint: string;
+    keysetId: string;
+    y: string;
+  }> = [];
+  for (let offset = 0; offset < selected.length; offset += 4) {
+    throwIfEncryptedWalletBackupCycleAborted(signal);
+    const slice = selected.slice(offset, offset + 4);
+    const byMintUnit = groupEncryptedWalletBackupRestoreRecordsByMintUnit(
+      slice.map(({ record }) => record),
+    );
+    try {
+      for (const records of byMintUnit) {
+        const byKeyset = new Map(
+          records.map((record) => [record.proof.id, record]),
+        );
+        api.verifyProofsForReceive(
+          records.map((record) => record.proof),
+          (keysetId) => {
+            const matching = byKeyset.get(keysetId);
+            if (matching === undefined)
+              throw new Error("restored proof keyset is missing");
+            const keyset = keysets.get(
+              restoreKeysetLookupKey({
+                mint: matching.mint,
+                unit: matching.unit,
+                keysetId,
+              }),
+            );
+            if (keyset === undefined)
+              throw new Error("restored proof keyset is missing");
+            return keyset;
+          },
+        );
+      }
+    } catch {
+      throw new Error("restored proof signature verification failed");
+    }
+    throwIfEncryptedWalletBackupCycleAborted(signal);
+    for (const { record } of slice) {
+      stateQueries.push({
+        proofId: record.proofId,
+        mint: record.mint,
+        keysetId: record.proof.id,
+        y: deriveRestoreNut07Y(record.proof),
+      });
+    }
+    throwIfEncryptedWalletBackupCycleAborted(signal);
+    if (offset + slice.length < selected.length) {
+      await awaitEncryptedWalletBackupCycle(
+        Promise.resolve().then(cooperativeYield),
+        signal,
+      );
+    }
+  }
+  return Object.freeze(stateQueries.map((query) => Object.freeze(query)));
+}
+
+function deriveRestoreNut07Y(
+  proof: UnverifiedEncryptedWalletBackupProof["proof"],
+): string {
+  const api = Cashu as unknown as {
+    isBlsKeyset?: (keysetId: string) => boolean;
+    hashToCurve?: (secret: Uint8Array) => {
+      toHex(compressed: boolean): string;
+    };
+    hashToCurveBls?: (secret: Uint8Array) => {
+      toHex(compressed: boolean): string;
+    };
+  };
+  if (
+    typeof api.isBlsKeyset !== "function" ||
+    typeof api.hashToCurve !== "function" ||
+    typeof api.hashToCurveBls !== "function"
+  ) {
+    throw new Error("restored proof state derivation is unavailable");
+  }
+  const secret = new TextEncoder().encode(proof.secret);
+  return api.isBlsKeyset(proof.id)
+    ? api.hashToCurveBls(secret).toHex(true)
+    : api.hashToCurve(secret).toHex(true);
+}
+
+function requireEveryRestoreProofUnspent(
+  value: unknown,
+  expected: readonly Readonly<{ proofId: string; y: string }>[],
+): void {
+  if (!Array.isArray(value) || value.length !== expected.length)
+    throw new Error("restored proof state response is invalid");
+  const expectedById = new Map(expected.map((query) => [query.proofId, query]));
+  const observed = new Set<string>();
+  for (const raw of value) {
+    const state = requireRecord(raw, "restored proof state");
+    requireKnownFields(state, ["proofId", "y", "state"]);
+    const proofId = requireLowerHex(
+      state.proofId,
+      32,
+      "restored state proof id",
+    );
+    const query = expectedById.get(proofId);
+    if (
+      query === undefined ||
+      observed.has(proofId) ||
+      state.y !== query.y ||
+      (state.state !== "UNSPENT" &&
+        state.state !== "PENDING" &&
+        state.state !== "SPENT")
+    ) {
+      throw new Error("restored proof state response is invalid");
+    }
+    observed.add(proofId);
+    if (state.state !== "UNSPENT")
+      throw new Error("restored proof is not spendable");
+  }
+  if (observed.size !== expected.length)
+    throw new Error("restored proof state response is incomplete");
+}
+
+function freezeRestoreProofRecord(
+  value: EncryptedWalletBackupRestoreProofRecord,
+): EncryptedWalletBackupRestoreProofRecord {
+  const ctfMetadata =
+    value.ctfMetadata === null ? null : Object.freeze({ ...value.ctfMetadata });
+  const terminalEvidence =
+    value.terminalEvidence === null
+      ? null
+      : Object.freeze({ ...value.terminalEvidence });
+  const proof = Object.freeze({
+    ...value.proof,
+    ...(value.proof.dleq === undefined
+      ? {}
+      : { dleq: Object.freeze({ ...value.proof.dleq }) }),
+  });
+  return Object.freeze({ ...value, ctfMetadata, terminalEvidence, proof });
+}
+
+async function commitRestoreProofRecords(
+  store: EncryptedWalletBackupRestoreStore,
+  expected: readonly EncryptedWalletBackupRestoreProofRow[],
+  restoreMode: "complete-origin" | "hydrate-existing",
+  expectedBackupPublicKey: string,
+  signal: AbortSignal,
+): Promise<void> {
+  if (
+    typeof store !== "object" ||
+    store === null ||
+    typeof store.commitRestoredProofs !== "function"
+  ) {
+    throw new Error("restored proof store is invalid");
+  }
+  let open = true;
+  let calls = 0;
+  let marker: object | undefined;
+  let returned: unknown;
+  try {
+    returned = await awaitEncryptedWalletBackupCycle(
+      store.commitRestoredProofs({ expected, restoreMode, signal }, (raw) => {
+        if (!open || calls++ !== 0)
+          throw new Error("restored proof commit callback is invalid");
+        requireExactRestoreCurrentProofStates(
+          raw,
+          expected,
+          restoreMode,
+          expectedBackupPublicKey,
+        );
+        marker = Object.freeze({});
+        return marker;
+      }),
+      signal,
+    );
+  } finally {
+    open = false;
+  }
+  if (
+    isThenable(returned) ||
+    marker === undefined ||
+    returned !== marker ||
+    calls !== 1
+  ) {
+    throw new Error("restored proof commit must be synchronous and exact");
+  }
+}
+
+function requireExactRestoreCurrentProofStates(
+  value: unknown,
+  expected: readonly EncryptedWalletBackupRestoreProofRow[],
+  restoreMode: "complete-origin" | "hydrate-existing",
+  expectedBackupPublicKey: string,
+): void {
+  if (!Array.isArray(value) || value.length !== expected.length)
+    throw new Error("restored proof current state is invalid");
+  const expectedById = new Map(expected.map((row) => [row.proofId, row]));
+  const observed = new Set<string>();
+  for (const raw of value) {
+    const current = requireRecord(raw, "restored proof current state");
+    requireKnownFields(current, ["proofId", "storageClassification", "proof"]);
+    const proofId = requireLowerHex(
+      current.proofId,
+      32,
+      "restored current proof id",
+    );
+    const candidate = expectedById.get(proofId);
+    if (candidate === undefined || observed.has(proofId))
+      throw new Error("restored proof current state is invalid");
+    observed.add(proofId);
+    if (current.storageClassification === null && current.proof === null) {
+      if (restoreMode !== "complete-origin")
+        throw new Error("restored proof current state conflicts");
+      continue;
+    }
+    if (current.storageClassification === null)
+      throw new Error("restored proof current state conflicts");
+    const classification = decodeDurableWalletStorageClassification(
+      current.storageClassification,
+    );
+    const currentProof =
+      current.proof === null ? null : decodeRestoreProofRecord(current.proof);
+    const exactCurrent = equalRestoreStorageClassification(
+      classification,
+      candidate.storageClassification,
+    );
+    const exactPair =
+      exactCurrent &&
+      (currentProof === null ||
+        equalRestoreProofRecord(currentProof, candidate.proof));
+    const activeToRetained =
+      currentProof !== null &&
+      isExactActiveToRetainedCtfClassification(
+        classification,
+        currentProof,
+        candidate.storageClassification,
+        candidate.proof,
+      ) &&
+      isExactActiveToRetainedCtfProof(currentProof, candidate.proof);
+    const activeToVerifiedLosing =
+      currentProof !== null &&
+      isExactActiveToVerifiedLosingCtfClassification(
+        classification,
+        currentProof,
+        candidate.storageClassification,
+        candidate.proof,
+        expectedBackupPublicKey,
+      ) &&
+      isExactActiveToVerifiedLosingCtfProof(currentProof, candidate.proof);
+    if (!exactPair && !activeToRetained && !activeToVerifiedLosing) {
+      throw new Error("restored proof current state conflicts");
+    }
+  }
+  if (observed.size !== expected.length)
+    throw new Error("restored proof current state is incomplete");
+}
+
+function freezeRestoreStorageClassification(
+  value: DurableWalletStorageClassification,
+): DurableWalletStorageClassification {
+  return Object.freeze({
+    ...value,
+    pinReasons: Object.freeze([...value.pinReasons]) as typeof value.pinReasons,
+    backupBinding:
+      value.backupBinding === null
+        ? null
+        : Object.freeze({ ...value.backupBinding }),
+  });
+}
+
+function equalRestoreStorageClassification(
+  left: DurableWalletStorageClassification,
+  right: DurableWalletStorageClassification,
+): boolean {
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.recordId === right.recordId &&
+    left.recordKind === right.recordKind &&
+    left.storageClass === right.storageClass &&
+    left.pinReasons.length === right.pinReasons.length &&
+    left.pinReasons.every(
+      (reason, index) => reason === right.pinReasons[index],
+    ) &&
+    left.proofCommitment === right.proofCommitment &&
+    left.backupBinding?.snapshotId === right.backupBinding?.snapshotId &&
+    left.backupBinding?.chunkDigest === right.backupBinding?.chunkDigest &&
+    left.backupBinding?.proofCommitment ===
+      right.backupBinding?.proofCommitment &&
+    left.purgeAfterMs === right.purgeAfterMs
+  );
+}
+
+function isExactActiveToRetainedCtfClassification(
+  current: DurableWalletStorageClassification,
+  currentProof: EncryptedWalletBackupRestoreProofRecord,
+  candidate: DurableWalletStorageClassification,
+  candidateProof: EncryptedWalletBackupRestoreProofRecord,
+): boolean {
+  return (
+    current.storageClass === "remotely-backed-deterministic-proof" &&
+    candidate.storageClass === "user-retained-nonselectable-ctf" &&
+    current.schemaVersion === candidate.schemaVersion &&
+    current.recordId === candidate.recordId &&
+    current.recordKind === "deterministic-proof" &&
+    candidate.recordKind === "deterministic-proof" &&
+    current.pinReasons.length === 0 &&
+    candidate.pinReasons.length === 0 &&
+    current.proofCommitment === currentProof.proofCommitment &&
+    candidate.proofCommitment === candidateProof.proofCommitment &&
+    current.proofCommitment === candidate.proofCommitment &&
+    current.backupBinding?.snapshotId === candidate.backupBinding?.snapshotId &&
+    current.backupBinding?.chunkDigest === currentProof.chunkDigest &&
+    candidate.backupBinding?.chunkDigest === candidateProof.chunkDigest &&
+    current.backupBinding?.chunkDigest ===
+      candidate.backupBinding?.chunkDigest &&
+    current.backupBinding?.proofCommitment ===
+      candidate.backupBinding?.proofCommitment &&
+    current.purgeAfterMs === null &&
+    candidate.purgeAfterMs === null
+  );
+}
+
+function isExactActiveToVerifiedLosingCtfClassification(
+  current: DurableWalletStorageClassification,
+  currentProof: EncryptedWalletBackupRestoreProofRecord,
+  candidate: DurableWalletStorageClassification,
+  candidateProof: EncryptedWalletBackupRestoreProofRecord,
+  expectedBackupPublicKey: string,
+): boolean {
+  return (
+    candidateProof.proofKind === "ctf" &&
+    candidateProof.disposition === "user-retained-nonselectable" &&
+    candidateProof.nonselectableReason === "verified-losing-outcome" &&
+    candidateProof.terminalEvidence !== null &&
+    current.storageClass === "remotely-backed-deterministic-proof" &&
+    candidate.storageClass === "user-retained-nonselectable-ctf" &&
+    current.schemaVersion === candidate.schemaVersion &&
+    current.recordId === candidate.recordId &&
+    current.recordKind === "deterministic-proof" &&
+    candidate.recordKind === "deterministic-proof" &&
+    current.pinReasons.length === 0 &&
+    candidate.pinReasons.length === 0 &&
+    current.proofCommitment === currentProof.proofCommitment &&
+    candidate.proofCommitment === candidateProof.proofCommitment &&
+    current.backupBinding?.snapshotId ===
+      deriveDurableWalletBackupSnapshotId({
+        formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
+        realm: currentProof.realm,
+        backupPublicKey: expectedBackupPublicKey,
+        generation: currentProof.generation,
+        manifestDigest: currentProof.manifestDigest,
+      }) &&
+    current.backupBinding?.proofCommitment === current.proofCommitment &&
+    candidate.backupBinding?.proofCommitment === candidate.proofCommitment &&
+    current.backupBinding?.chunkDigest === currentProof.chunkDigest &&
+    candidate.backupBinding?.chunkDigest === candidateProof.chunkDigest &&
+    current.purgeAfterMs === null &&
+    candidate.purgeAfterMs === null
+  );
+}
+
+function decodeRestoreProofRecord(
+  value: unknown,
+): EncryptedWalletBackupRestoreProofRecord {
+  const record = requireRecord(value, "restored proof");
+  requireKnownFields(record, [
+    "schemaVersion",
+    "realm",
+    "vaultId",
+    "generation",
+    "manifestDigest",
+    "parentGeneration",
+    "parentManifestDigest",
+    "chunkObjectId",
+    "chunkDigest",
+    "proofId",
+    "proofCommitment",
+    "mint",
+    "unit",
+    "counter",
+    "proofKind",
+    "ctfMetadata",
+    "terminalEvidence",
+    "createdAtUnixSeconds",
+    "updatedAtUnixSeconds",
+    "disposition",
+    "nonselectableReason",
+    "proof",
+  ]);
+  if (record.schemaVersion !== 1)
+    throw new Error("restored proof version is invalid");
+  const disposition = requireOneOfValue(
+    record.disposition,
+    ["selectable", "user-retained-nonselectable"],
+    "restored proof disposition",
+  );
+  const nonselectableReason =
+    record.nonselectableReason === null
+      ? null
+      : requireOneOfValue(
+          record.nonselectableReason,
+          ["recorded-ctf-expiry-passed", "verified-losing-outcome"],
+          "restored proof nonselectable reason",
+        );
+  const proofKind = requireOneOfValue(
+    record.proofKind,
+    ["ordinary", "ctf"],
+    "restored proof kind",
+  );
+  const proof = requireRecord(record.proof, "restored proof body");
+  requireKnownFields(proof, ["id", "amount", "secret", "C"], ["dleq"]);
+  const keyset = decodeKeysetId(proof.id);
+  const dleq =
+    proof.dleq === undefined
+      ? undefined
+      : requireRecord(proof.dleq, "restored DLEQ");
+  if (dleq !== undefined) requireKnownFields(dleq, ["e", "s", "r"]);
+  const ctf = decodeCtfMetadata(
+    record.ctfMetadata as EncryptedWalletBackupCtfMetadata | null,
+    proofKind === "ordinary" ? 0 : 1,
+  );
+  const terminalEvidence =
+    record.terminalEvidence === null
+      ? null
+      : ctfTerminalSealToEvidence(
+          ctfTerminalEvidenceToSeal(
+            record.terminalEvidence as EncryptedWalletBackupCtfTerminalEvidence,
+          ),
+        );
+  if (
+    (disposition === "selectable" && nonselectableReason !== null) ||
+    (disposition === "user-retained-nonselectable" &&
+      (proofKind !== "ctf" ||
+        (nonselectableReason !== "recorded-ctf-expiry-passed" &&
+          nonselectableReason !== "verified-losing-outcome"))) ||
+    (nonselectableReason === "verified-losing-outcome") !==
+      (terminalEvidence !== null) ||
+    (nonselectableReason === "recorded-ctf-expiry-passed" &&
+      terminalEvidence !== null)
+  ) {
+    throw new Error("restored proof disposition is invalid");
+  }
+  const createdAtUnixSeconds = requireNonNegativeSafeInteger(
+    record.createdAtUnixSeconds,
+    "restored creation time",
+  );
+  const updatedAtUnixSeconds = requireNonNegativeSafeInteger(
+    record.updatedAtUnixSeconds,
+    "restored update time",
+  );
+  if (updatedAtUnixSeconds < createdAtUnixSeconds)
+    throw new Error("restored proof update time is invalid");
+  const parentGeneration =
+    record.parentGeneration === null
+      ? null
+      : requireInteger(
+          record.parentGeneration,
+          1,
+          Number.MAX_SAFE_INTEGER,
+          "restored parent generation",
+        );
+  const parentManifestDigest =
+    record.parentManifestDigest === null
+      ? null
+      : requireLowerHex(
+          record.parentManifestDigest,
+          32,
+          "restored parent manifest digest",
+        );
+  const generation = requireInteger(
+    record.generation,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    "restored generation",
+  );
+  if (
+    (parentGeneration === null) !== (parentManifestDigest === null) ||
+    (parentGeneration !== null && parentGeneration + 1 !== generation)
+  ) {
+    throw new Error("restored parent head is invalid");
+  }
+  return freezeRestoreProofRecord({
+    schemaVersion: 1,
+    realm: requireRealm(record.realm),
+    vaultId: requireLowerHex(record.vaultId, 32, "restored vault id"),
+    generation,
+    manifestDigest: requireLowerHex(
+      record.manifestDigest,
+      32,
+      "restored manifest digest",
+    ),
+    parentGeneration,
+    parentManifestDigest,
+    chunkObjectId: requireLowerHex(
+      record.chunkObjectId,
+      16,
+      "restored chunk id",
+    ),
+    chunkDigest: requireLowerHex(
+      record.chunkDigest,
+      32,
+      "restored chunk digest",
+    ),
+    proofId: requireLowerHex(record.proofId, 32, "restored proof id"),
+    proofCommitment: requireLowerHex(
+      record.proofCommitment,
+      32,
+      "restored proof commitment",
+    ),
+    mint: requireNormalizedMint(record.mint),
+    unit: requireBoundedText(record.unit, 64, "restored proof unit"),
+    counter: requireInteger(
+      record.counter,
+      0,
+      2_147_483_647,
+      "restored counter",
+    ),
+    proofKind,
+    ctfMetadata: ctf === null ? null : ctfTupleToMetadata(ctf),
+    terminalEvidence,
+    createdAtUnixSeconds,
+    updatedAtUnixSeconds,
+    disposition,
+    nonselectableReason,
+    proof: {
+      id: keyset.text,
+      amount: requireAmount(proof.amount),
+      secret: requireLowerHexSecret(proof.secret),
+      C: bytesToHex(requireSignature(proof.C, keyset.curve)),
+      ...(dleq === undefined
+        ? {}
+        : {
+            dleq: {
+              e: requireLowerHex(dleq.e, 32, "restored DLEQ e"),
+              s: requireLowerHex(dleq.s, 32, "restored DLEQ s"),
+              r: requireLowerHex(dleq.r, 32, "restored DLEQ r"),
+            },
+          }),
+    },
+  });
+}
+
+function equalRestoreProofRecord(
+  left: EncryptedWalletBackupRestoreProofRecord,
+  right: EncryptedWalletBackupRestoreProofRecord,
+): boolean {
+  return (
+    equalRestoreProofAuthority(left, right) &&
+    left.disposition === right.disposition &&
+    left.nonselectableReason === right.nonselectableReason
+  );
+}
+
+function isExactActiveToRetainedCtfProof(
+  current: EncryptedWalletBackupRestoreProofRecord,
+  candidate: EncryptedWalletBackupRestoreProofRecord,
+): boolean {
+  return (
+    current.proofKind === "ctf" &&
+    candidate.proofKind === "ctf" &&
+    current.disposition === "selectable" &&
+    current.nonselectableReason === null &&
+    candidate.disposition === "user-retained-nonselectable" &&
+    candidate.nonselectableReason === "recorded-ctf-expiry-passed" &&
+    equalRestoreProofAuthority(current, candidate)
+  );
+}
+
+function isExactActiveToVerifiedLosingCtfProof(
+  current: EncryptedWalletBackupRestoreProofRecord,
+  candidate: EncryptedWalletBackupRestoreProofRecord,
+): boolean {
+  return (
+    current.proofKind === "ctf" &&
+    candidate.proofKind === "ctf" &&
+    current.disposition === "selectable" &&
+    current.nonselectableReason === null &&
+    current.terminalEvidence === null &&
+    candidate.disposition === "user-retained-nonselectable" &&
+    candidate.nonselectableReason === "verified-losing-outcome" &&
+    candidate.terminalEvidence !== null &&
+    current.realm === candidate.realm &&
+    current.vaultId === candidate.vaultId &&
+    candidate.parentGeneration === current.generation &&
+    candidate.parentManifestDigest === current.manifestDigest &&
+    current.proofCommitment === deriveRestoreProofCommitment(current, null) &&
+    current.proofId === candidate.proofId &&
+    current.mint === candidate.mint &&
+    current.unit === candidate.unit &&
+    current.counter === candidate.counter &&
+    equalCtfMetadata(current.ctfMetadata, candidate.ctfMetadata) &&
+    current.createdAtUnixSeconds === candidate.createdAtUnixSeconds &&
+    current.updatedAtUnixSeconds <= candidate.updatedAtUnixSeconds &&
+    current.proof.id === candidate.proof.id &&
+    current.proof.amount === candidate.proof.amount &&
+    current.proof.secret === candidate.proof.secret &&
+    current.proof.C === candidate.proof.C &&
+    current.proof.dleq?.e === candidate.proof.dleq?.e &&
+    current.proof.dleq?.s === candidate.proof.dleq?.s &&
+    current.proof.dleq?.r === candidate.proof.dleq?.r
+  );
+}
+
+function deriveRestoreProofCommitment(
+  record: EncryptedWalletBackupRestoreProofRecord,
+  terminalEvidence: EncryptedWalletBackupCtfTerminalEvidence | null,
+): string {
+  const keyset = decodeKeysetId(record.proof.id);
+  const proofKindCode = record.proofKind === "ordinary" ? 0 : 1;
+  const ctfBase = decodeCtfMetadata(record.ctfMetadata, proofKindCode);
+  const ctf =
+    ctfBase === null
+      ? null
+      : [
+          ...ctfBase,
+          terminalEvidence === null
+            ? null
+            : ctfTerminalEvidenceToSeal(terminalEvidence),
+        ];
+  const dleq =
+    record.proof.dleq === undefined
+      ? null
+      : [
+          hexToBytes(record.proof.dleq.e),
+          hexToBytes(record.proof.dleq.s),
+          hexToBytes(record.proof.dleq.r),
+        ];
+  return bytesToHex(
+    sha256(
+      encodeCanonical([
+        1,
+        "proof-record-commitment",
+        record.mint,
+        record.unit,
+        [keyset.kindCode, keyset.text],
+        record.proof.amount,
+        new TextEncoder().encode(record.proof.secret),
+        requireSignature(record.proof.C, keyset.curve),
+        dleq,
+        record.counter,
+        proofKindCode,
+        ctf,
+        record.createdAtUnixSeconds,
+        record.updatedAtUnixSeconds,
+      ]),
+    ),
+  );
+}
+
+function equalRestoreProofAuthority(
+  left: EncryptedWalletBackupRestoreProofRecord,
+  right: EncryptedWalletBackupRestoreProofRecord,
+): boolean {
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.realm === right.realm &&
+    left.vaultId === right.vaultId &&
+    left.generation === right.generation &&
+    left.manifestDigest === right.manifestDigest &&
+    left.parentGeneration === right.parentGeneration &&
+    left.parentManifestDigest === right.parentManifestDigest &&
+    left.chunkObjectId === right.chunkObjectId &&
+    left.chunkDigest === right.chunkDigest &&
+    left.proofId === right.proofId &&
+    left.proofCommitment === right.proofCommitment &&
+    left.mint === right.mint &&
+    left.unit === right.unit &&
+    left.counter === right.counter &&
+    left.proofKind === right.proofKind &&
+    equalCtfMetadata(left.ctfMetadata, right.ctfMetadata) &&
+    equalCtfTerminalEvidence(left.terminalEvidence, right.terminalEvidence) &&
+    left.createdAtUnixSeconds === right.createdAtUnixSeconds &&
+    left.updatedAtUnixSeconds === right.updatedAtUnixSeconds &&
+    left.proof.id === right.proof.id &&
+    left.proof.amount === right.proof.amount &&
+    left.proof.secret === right.proof.secret &&
+    left.proof.C === right.proof.C &&
+    left.proof.dleq?.e === right.proof.dleq?.e &&
+    left.proof.dleq?.s === right.proof.dleq?.s &&
+    left.proof.dleq?.r === right.proof.dleq?.r
+  );
+}
+
+function equalCtfMetadata(
+  left: EncryptedWalletBackupCtfMetadata | null,
+  right: EncryptedWalletBackupCtfMetadata | null,
+): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.conditionId === right.conditionId &&
+      left.outcomeLabel === right.outcomeLabel &&
+      left.outcomeCollectionId === right.outcomeCollectionId &&
+      left.registeredAtUnixSeconds === right.registeredAtUnixSeconds &&
+      left.finalExpiryUnixSeconds === right.finalExpiryUnixSeconds)
+  );
+}
+
+function equalCtfTerminalEvidence(
+  left: EncryptedWalletBackupCtfTerminalEvidence | null,
+  right: EncryptedWalletBackupCtfTerminalEvidence | null,
+): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.reason === right.reason &&
+      left.operationIdDigest === right.operationIdDigest &&
+      left.requestDigest === right.requestDigest &&
+      left.failureCode === right.failureCode &&
+      left.classifiedAt === right.classifiedAt)
+  );
+}
+
 async function prepareManifestObject(input: {
   authority: KeyAuthority;
   generation: number;
@@ -3720,13 +5303,21 @@ export async function decryptEncryptedWalletBackupProofChunk(input: {
   cooperativeYield?: () => void | Promise<void>;
 }): Promise<DecryptedEncryptedWalletBackupProofChunk> {
   try {
-    const records = await decryptProofChunk(input);
+    const authority = requireKeyAuthority(input.keyHandle);
+    const object = requireWireObject(input.object, authority);
+    const records = await decryptProofChunk({ ...input, object });
     const handle = Object.freeze({
       formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
       kindCode: ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND,
       recordCount: records.length,
     });
-    DECRYPTED_PROOF_CHUNK_AUTHORITIES.set(handle, { records });
+    DECRYPTED_PROOF_CHUNK_AUTHORITIES.set(handle, {
+      keyAuthority: authority,
+      objectId: object.objectId,
+      objectDigest: object.digest,
+      generation: object.generation,
+      records,
+    });
     return handle;
   } catch {
     throw new Error("corrupt encrypted wallet backup object");
@@ -3961,6 +5552,7 @@ function decodeProofRecord(
             registeredAtUnixSeconds: ctf[3] as number,
             finalExpiryUnixSeconds: ctf[4] as number,
           },
+    terminalEvidence: ctf === null ? null : ctfTerminalSealToEvidence(ctf[5]),
     createdAtUnixSeconds: createdAt,
     updatedAtUnixSeconds: updatedAt,
     proof,
@@ -4235,8 +5827,9 @@ function decodeManifestEntry(
     mint,
     unit,
     amount,
-    proofKind: value[7] === 0 ? "ordinary" : "ctf-active",
+    proofKind: value[7] === 0 ? "ordinary" : "ctf",
     ctfMetadata: ctf === null ? null : ctfTupleToMetadata(ctf),
+    terminalEvidence: ctf === null ? null : ctfTerminalSealToEvidence(ctf[5]),
     createdAtUnixSeconds: createdAt,
     updatedAtUnixSeconds: updatedAt,
   });
@@ -4281,6 +5874,7 @@ function manifestEntryValue(
           hexToBytes(entry.ctfMetadata.outcomeCollectionId),
           entry.ctfMetadata.registeredAtUnixSeconds,
           entry.ctfMetadata.finalExpiryUnixSeconds,
+          ctfTerminalEvidenceToSeal(entry.terminalEvidence),
         ],
     entry.createdAtUnixSeconds,
     entry.updatedAtUnixSeconds,
@@ -4354,11 +5948,52 @@ function isCashuLegacyBase64(value: string): boolean {
   }
 }
 
+function prepareCtfTerminalSeal(
+  input: EncryptedWalletBackupProofInput,
+  mint: string,
+  keysetId: string,
+  ctf: EncryptedWalletBackupCtfBase | null,
+): EncryptedWalletBackupCtfTerminalSeal | null {
+  if (input.terminalEvidence === null) return null;
+  if (ctf === null) {
+    throw new Error("ordinary proof cannot contain CTF terminal evidence");
+  }
+  const evidence = requireVerifiedCtfLosingOutcomeEvidence({
+    evidence: input.terminalEvidence,
+    mintUrl: mint,
+    conditionId: bytesToHex(ctf[0]),
+    outcome: ctf[1],
+    keysetId,
+    proof: input.proof,
+  });
+  return [
+    1,
+    hexToBytes(
+      requireLowerHex(
+        evidence.operationIdDigest,
+        32,
+        "CTF terminal operation digest",
+      ),
+    ),
+    hexToBytes(
+      requireLowerHex(
+        evidence.requestDigest,
+        32,
+        "CTF terminal request digest",
+      ),
+    ),
+    13015,
+    requireNonNegativeSafeInteger(
+      evidence.classifiedAt,
+      "CTF terminal classification time",
+    ),
+  ];
+}
+
 function decodeCtfMetadata(
   value: EncryptedWalletBackupCtfMetadata | null,
   proofKindCode: number,
-  effectiveNow: number,
-): null | [Uint8Array, string, Uint8Array, number, number] {
+): EncryptedWalletBackupCtfBase | null {
   if (proofKindCode === 0) {
     if (value !== null)
       throw new Error("ordinary proof cannot contain CTF metadata");
@@ -4392,12 +6027,11 @@ function decodeCtfMetadata(
     record.finalExpiryUnixSeconds,
     "CTF final expiry",
   );
-  if (finalExpiry <= effectiveNow) throw new Error("CTF proof is expired");
   return [conditionId, outcomeLabel, collectionId, registeredAt, finalExpiry];
 }
 
 function ctfTupleToMetadata(
-  value: [Uint8Array, string, Uint8Array, number, number],
+  value: EncryptedWalletBackupCtfBase | EncryptedWalletBackupCtfWire,
 ): EncryptedWalletBackupCtfMetadata {
   return {
     conditionId: bytesToHex(value[0]),
@@ -4413,19 +6047,92 @@ function decodeCtfWire(
   proofKindCode: number,
   effectiveNow: number,
   enforceExpiry: boolean,
-): null | [Uint8Array, string, Uint8Array, number, number] {
+): EncryptedWalletBackupCtfWire | null {
   if (proofKindCode === 0) {
     if (value !== null) throw new Error("ctf wire");
     return null;
   }
-  if (!Array.isArray(value) || value.length !== 5) throw new Error("ctf wire");
+  if (!Array.isArray(value) || value.length !== 6) throw new Error("ctf wire");
   const conditionId = requireBytes(value[0], 32, "condition id");
   const label = requireBoundedText(value[1], 256, "outcome");
   const collectionId = requireBytes(value[2], 32, "collection id");
   const registered = requireNonNegativeSafeInteger(value[3], "registration");
   const expiry = requireNonNegativeSafeInteger(value[4], "expiry");
   if (enforceExpiry && expiry <= effectiveNow) throw new Error("expired");
-  return [conditionId, label, collectionId, registered, expiry];
+  const terminalSeal = decodeCtfTerminalSeal(value[5]);
+  return [conditionId, label, collectionId, registered, expiry, terminalSeal];
+}
+
+function decodeCtfTerminalSeal(
+  value: unknown,
+): EncryptedWalletBackupCtfTerminalSeal | null {
+  if (value === null) return null;
+  if (!Array.isArray(value) || value.length !== 5 || value[0] !== 1) {
+    throw new Error("CTF terminal evidence is invalid");
+  }
+  const operationIdDigest = requireBytes(
+    value[1],
+    32,
+    "CTF terminal operation digest",
+  );
+  const requestDigest = requireBytes(
+    value[2],
+    32,
+    "CTF terminal request digest",
+  );
+  if (value[3] !== 13015)
+    throw new Error("CTF terminal failure code is invalid");
+  return [
+    1,
+    operationIdDigest,
+    requestDigest,
+    13015,
+    requireNonNegativeSafeInteger(value[4], "CTF terminal classification time"),
+  ];
+}
+
+function ctfTerminalSealToEvidence(
+  value: EncryptedWalletBackupCtfTerminalSeal | null,
+): EncryptedWalletBackupCtfTerminalEvidence | null {
+  return value === null
+    ? null
+    : {
+        reason: "verified-losing-outcome",
+        operationIdDigest: bytesToHex(value[1]),
+        requestDigest: bytesToHex(value[2]),
+        failureCode: 13015,
+        classifiedAt: value[4],
+      };
+}
+
+function ctfTerminalEvidenceToSeal(
+  value: EncryptedWalletBackupCtfTerminalEvidence | null,
+): EncryptedWalletBackupCtfTerminalSeal | null {
+  if (value === null) return null;
+  if (
+    value.reason !== "verified-losing-outcome" ||
+    value.failureCode !== 13015
+  ) {
+    throw new Error("CTF terminal evidence is invalid");
+  }
+  return [
+    1,
+    hexToBytes(
+      requireLowerHex(
+        value.operationIdDigest,
+        32,
+        "CTF terminal operation digest",
+      ),
+    ),
+    hexToBytes(
+      requireLowerHex(value.requestDigest, 32, "CTF terminal request digest"),
+    ),
+    13015,
+    requireNonNegativeSafeInteger(
+      value.classifiedAt,
+      "CTF terminal classification time",
+    ),
+  ];
 }
 
 function requireDleq(

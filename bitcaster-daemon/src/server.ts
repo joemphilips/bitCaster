@@ -236,8 +236,11 @@ const ctfProofOperationStore: CtfProofOperationStore = {
     (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
   prepareProofOperation: async (input) =>
     (await prepareProofOperation(input)) as CtfProofOperationRecord,
-  markProofOperationMintSubmitted: async (operationId) =>
-    (await markProofOperationMintSubmitted(operationId)) as CtfProofOperationRecord,
+  markProofOperationMintSubmitted: async (operationId, redeemBinding) =>
+    (await markProofOperationMintSubmitted(
+      operationId,
+      redeemBinding,
+    )) as CtfProofOperationRecord,
   markProofOperationCompleted: async (operationId, resultProofs) =>
     (await markProofOperationCompleted(
       operationId,

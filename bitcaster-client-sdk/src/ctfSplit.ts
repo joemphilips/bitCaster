@@ -99,6 +99,11 @@ export interface CtfPrepareProofOperationInput {
   metadata?: Record<string, unknown>;
 }
 
+export interface CtfRedeemMintSubmissionBinding {
+  schemaVersion: 1;
+  requestDigest: string;
+}
+
 export interface CtfProofOperationStore {
   getProofOperation(
     operationId: string,
@@ -106,9 +111,14 @@ export interface CtfProofOperationStore {
   prepareProofOperation(
     input: CtfPrepareProofOperationInput,
   ): Promise<CtfProofOperationRecord>;
-  /** Records the write-ahead boundary immediately before a mint request. */
+  /**
+   * Records the write-ahead boundary immediately before a mint request.
+   * `ctf-redeem` callers always supply `redeemBinding`; adapters must persist
+   * it atomically and return it unchanged or the SDK refuses dispatch.
+   */
   markProofOperationMintSubmitted(
     operationId: string,
+    redeemBinding?: CtfRedeemMintSubmissionBinding,
   ): Promise<CtfProofOperationRecord>;
   markProofOperationCompleted(
     operationId: string,
@@ -119,6 +129,18 @@ export interface CtfProofOperationStore {
     message: string,
     failureCode?: number,
   ): Promise<CtfProofOperationRecord>;
+}
+
+/**
+ * Read-only authority used to reconstruct terminal CTF evidence after restart.
+ * The adapter must invoke the callback once, synchronously, inside the same
+ * transaction that reads the committed operation row.
+ */
+export interface CtfCommittedProofOperationStore {
+  withCommittedProofOperation<T>(
+    operationId: string,
+    read: (operation: CtfProofOperationRecord) => T,
+  ): Promise<T>;
 }
 
 export interface SplitCollateralSelection {

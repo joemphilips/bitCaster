@@ -64,7 +64,7 @@ const vector = JSON.parse(
   expected: { canonicalCborHex: string };
 };
 
-test("50k ordinary proofs plus 1k market CTF proofs fit the 64 MiB lifecycle ceiling", () => {
+test("50k ordinary proofs plus four CTF proofs in 1k markets fit the 64 MiB lifecycle ceiling", () => {
   const root = decode(fromHex(vector.expected.canonicalCborHex)) as unknown[];
   const template = structuredClone((root[2] as unknown[][])[0]!);
   const proofRootFixedBytes = encodeCanonical([1, 1, []]).byteLength - 1;
@@ -74,22 +74,31 @@ test("50k ordinary proofs plus 1k market CTF proofs fit the 64 MiB lifecycle cei
   let pageCount = 0;
   let pageEntryCount = 0;
   let pageEntryBytes = 0;
-  for (let index = 0; index < 51_000; index += 1) {
+  for (let index = 0; index < 54_000; index += 1) {
     const ctfIndex = index - 50_000;
     const proofId = indexedBytes(index, 32);
-    const commitment = indexedBytes(index + 51_000, 32);
+    const commitment = indexedBytes(index + 54_000, 32);
     const record = structuredClone(template);
     record[0] = proofId;
     record[1] = commitment;
     record[9] = index;
     if (ctfIndex >= 0) {
+      const marketIndex = Math.floor(ctfIndex / 4);
+      const outcomeIndex = ctfIndex % 4;
       record[10] = 1;
       record[11] = [
-        indexedBytes(ctfIndex + 1, 32),
-        `OUTCOME-${ctfIndex}`,
+        indexedBytes(marketIndex + 1, 32),
+        `OUTCOME-${outcomeIndex}`,
         indexedBytes(ctfIndex + 2_001, 32),
         1_700_000_000,
         1_800_000_000,
+        [
+          1,
+          indexedBytes(ctfIndex + 60_001, 32),
+          indexedBytes(ctfIndex + 64_001, 32),
+          13_015,
+          1_800_000_001,
+        ],
       ];
     }
     const recordBytes = encodeCanonical(record).byteLength;
@@ -185,13 +194,13 @@ test("50k ordinary proofs plus 1k market CTF proofs fit the 64 MiB lifecycle cei
       lifecyclePeakBytes,
     },
     {
-      chunks: 100,
-      pages: 126,
-      currentObjects: 226,
-      replacementObjects: 230,
-      referenceSetBytes: 11_772,
-      currentStoredBytes: 34_478_264,
-      lifecyclePeakBytes: 43_788_016,
+      chunks: 107,
+      pages: 142,
+      currentObjects: 249,
+      replacementObjects: 253,
+      referenceSetBytes: 12_968,
+      currentStoredBytes: 37_362_492,
+      lifecyclePeakBytes: 47_721_268,
     },
   );
   assert.ok(currentObjects <= ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX);
@@ -241,6 +250,7 @@ test("real prepared 255-chunk plus 3-page target is capability-planned below 64 
       proofCommitment: commitment,
       proofKind: "ordinary" as const,
       ctfMetadata: null,
+      terminalOperationId: null,
       conditionalKeysetEvidence: null,
       provenance: "wallet-seed" as const,
       operationBinding: "terminally-unlinked" as const,
@@ -271,6 +281,7 @@ test("real prepared 255-chunk plus 3-page target is capability-planned below 64 
         },
         proofKind: "ordinary",
         ctfMetadata: null,
+        terminalEvidence: null,
         effectiveNowUnixSeconds: proof.createdAtUnixSeconds,
         createdAtUnixSeconds: proof.createdAtUnixSeconds,
         updatedAtUnixSeconds: proof.updatedAtUnixSeconds,
@@ -511,6 +522,7 @@ test("real child replacement peak accepts 127 chunks and rejects 128 chunks", as
       proofCommitment,
       proofKind: "ordinary" as const,
       ctfMetadata: null,
+      terminalOperationId: null,
       conditionalKeysetEvidence: null,
       provenance: "wallet-seed" as const,
       operationBinding: "terminally-unlinked" as const,
@@ -541,6 +553,7 @@ test("real child replacement peak accepts 127 chunks and rejects 128 chunks", as
         },
         proofKind: "ordinary",
         ctfMetadata: null,
+        terminalEvidence: null,
         effectiveNowUnixSeconds: proof.createdAtUnixSeconds,
         createdAtUnixSeconds: proof.createdAtUnixSeconds,
         updatedAtUnixSeconds: proof.updatedAtUnixSeconds,

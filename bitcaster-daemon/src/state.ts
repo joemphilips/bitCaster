@@ -12,6 +12,7 @@ import {
   normalizeMarketBaseAsset,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import type { CtfRedeemMintSubmissionBinding } from '@bitcaster-market/client-sdk/ctfSplit'
 import type {
   DurableTradeProofOperationLink,
   DurableTradeSession,
@@ -758,6 +759,7 @@ export async function markProofOperationCompleted(
 /** Persists the recovery boundary immediately before a Cashu mint request. */
 export async function markProofOperationMintSubmitted(
   operationId: string,
+  redeemBinding?: CtfRedeemMintSubmissionBinding,
 ): Promise<ProofOperationRecord> {
   return updateState((state) => {
     const existing = state.proofOperations[operationId]
@@ -778,6 +780,13 @@ export async function markProofOperationMintSubmitted(
       ...existing,
       state: 'mint-submitted',
       durableTradeRecovery,
+      metadata: redeemBinding === undefined
+        ? existing.metadata
+        : {
+          ...existing.metadata,
+          redeemMintSubmissionVersion: redeemBinding.schemaVersion,
+          redeemMintSubmissionRequestDigest: redeemBinding.requestDigest,
+        },
       lastError: null,
       updatedAt: Date.now(),
     }

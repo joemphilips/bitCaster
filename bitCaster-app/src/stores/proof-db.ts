@@ -1,5 +1,6 @@
 import Dexie, { type Table } from "dexie";
 import type { Proof } from "@cashu/cashu-ts";
+import type { CtfRedeemMintSubmissionBinding } from "@bitcaster/client-sdk/ctfSplit";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   COLLATERAL_UNIT_REGISTRY,
@@ -686,6 +687,7 @@ export async function markProofOperationCompleted(
 /** Persists the recovery boundary immediately before a Cashu mint request. */
 export async function markProofOperationMintSubmitted(
   operationId: string,
+  redeemBinding?: CtfRedeemMintSubmissionBinding,
 ): Promise<ProofOperationRecord> {
   const existing = await getRequiredProofOperation(operationId);
   if (existing.state === "completed" || existing.state === "Failed") {
@@ -694,6 +696,14 @@ export async function markProofOperationMintSubmitted(
   const updated: ProofOperationRecord = {
     ...existing,
     state: "mint-submitted",
+    metadata:
+      redeemBinding === undefined
+        ? existing.metadata
+        : {
+            ...existing.metadata,
+            redeemMintSubmissionVersion: redeemBinding.schemaVersion,
+            redeemMintSubmissionRequestDigest: redeemBinding.requestDigest,
+          },
     lastError: null,
     failureCode: undefined,
     updatedAt: Date.now(),
