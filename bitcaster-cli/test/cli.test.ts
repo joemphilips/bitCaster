@@ -37,7 +37,7 @@ test('bitcaster-cli command help includes usage and subcommand summaries', async
   assert.match(result.stdout, /Usage:/)
   assert.match(result.stdout, /wallet balance/)
   assert.match(result.stdout, /Commands:/)
-  assert.match(result.stdout, /receive(?: \[options\])? <token>\s+Import a Cashu token/)
+  assert.match(result.stdout, /receive(?: \[options\])? \[token\]\s+Import a Cashu token/)
 })
 
 test('bitcaster-cli completion reports that shell completion is a stub', async () => {
@@ -73,6 +73,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
   assert.equal(typeof address, 'object')
   assert.ok(address)
   const daemonUrl = `http://127.0.0.1:${address.port}`
+  const receivedTokenFile = join(home, 'received-token.cashu')
+  await writeFile(receivedTokenFile, 'cashuBoGZha2U=', { mode: 0o600 })
 
   try {
     await runCli(daemonUrl, ['health'])
@@ -103,7 +105,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
     await runCli(daemonUrl, [
       'wallet',
       'receive',
-      'cashuBoGZha2U=',
+      '--token-file',
+      receivedTokenFile,
     ])
     await runCli(daemonUrl, [
       'wallet',
