@@ -16,6 +16,7 @@ import {
   issueDurableWalletAcknowledgedBackupSnapshot,
   issueDurableWalletAuthenticatedBackupReceipt,
 } from '../src/encryptedWalletBackupAuthority.ts'
+import { issueDurableWalletVerifiedLosingCtfClassification } from '../src/walletStorageAuthority.ts'
 
 const RECORD_ID = '01'.repeat(32)
 
@@ -24,7 +25,7 @@ test('wallet storage classes and pin reasons are exhaustive stable values', () =
     'pinned-local-recovery-state',
     'pinned-operation-bound-deterministic',
     'remotely-backed-deterministic-proof',
-    'audit-retained-expired-ctf',
+    'user-retained-nonselectable-ctf',
     'disposable-derived-data',
   ])
   assert.deepEqual(DURABLE_WALLET_STORAGE_PIN_REASONS, [
@@ -48,7 +49,6 @@ test('wallet storage classes and pin reasons are exhaustive stable values', () =
     'missing-derivation-locator',
     'unverified-proof-commitment',
     'missing-current-backup-receipt',
-    'expired-ctf-metadata',
     'unknown-ctf-metadata',
   ])
 })
@@ -172,7 +172,6 @@ test('only an exact supported receipt reachable from the current acknowledged sn
     [{ provenance: 'unknown' }, 'unknown-proof-provenance'],
     [{ derivationLocator: 'missing' }, 'missing-derivation-locator'],
     [{ proofCommitment: { state: 'unverified' } }, 'unverified-proof-commitment'],
-    [{ proofKind: 'ctf-expired' }, 'expired-ctf-metadata'],
     [{ proofKind: 'unknown' }, 'unknown-proof-condition'],
   ] as const
   for (const [override, expectedReason] of failClosedCases) {
@@ -226,7 +225,10 @@ test('receipt encodings are canonical and persisted commitment mismatch fails cl
     () =>
       classifyDurableWalletStorage({
         ...coldProofInput(),
-        backupReceiptEvidence: { state: 'authenticated', receipt: backupReceipt() },
+        backupReceiptEvidence: {
+          state: 'authenticated',
+          receipt: backupReceipt(),
+        },
       }),
     /receipt evidence is not authenticated/,
   )
@@ -255,7 +257,10 @@ test('receipt encodings are canonical and persisted commitment mismatch fails cl
     () =>
       decodeDurableWalletStorageClassification({
         ...valid,
-        backupBinding: { ...valid.backupBinding!, proofCommitment: '44'.repeat(32) },
+        backupBinding: {
+          ...valid.backupBinding!,
+          proofCommitment: '44'.repeat(32),
+        },
       }),
     /backup receipt proof commitment does not match/,
   )
@@ -264,7 +269,8 @@ test('receipt encodings are canonical and persisted commitment mismatch fails cl
 test('active CTF can be remotely backed and prepared snapshot state is count bounded', () => {
   const activeCtf = classifyDurableWalletStorage({
     ...coldProofInput(),
-    proofKind: 'ctf-active',
+    proofKind: 'ctf',
+    ctfMetadata: { finalExpiryUnixSeconds: 10_001, terminalEvidence: null },
     backupReceiptEvidence: authenticatedReceipt(),
   })
   assert.equal(activeCtf.storageClass, 'remotely-backed-deterministic-proof')
@@ -290,7 +296,11 @@ test('snapshot identity binds every canonical head field', () => {
     { manifestDigest: 'bb'.repeat(32) },
   ]) {
     assert.throws(
-      () => decodeDurableWalletAcknowledgedBackupSnapshot({ ...snapshot, ...override } as never),
+      () =>
+        decodeDurableWalletAcknowledgedBackupSnapshot({
+          ...snapshot,
+          ...override,
+        } as never),
       /snapshot id|format version/,
     )
   }
@@ -329,7 +339,10 @@ test('cloned or rewritten receipt and snapshot evidence has no authority', () =>
         ...coldProofInput(),
         backupReceiptEvidence: {
           ...receiptEvidence,
-          receipt: { ...receiptEvidence.receipt, proofCommitment: 'aa'.repeat(32) },
+          receipt: {
+            ...receiptEvidence.receipt,
+            proofCommitment: 'aa'.repeat(32),
+          },
         },
       }),
     /receipt evidence is not authenticated/,
@@ -344,49 +357,144 @@ test('cloned or rewritten receipt and snapshot evidence has no authority', () =>
     () =>
       prepareDurableWalletAcknowledgedBackupSnapshot({
         ...snapshotEvidence,
-        snapshot: { ...snapshotEvidence.snapshot, manifestDigest: 'aa'.repeat(32) },
+        snapshot: {
+          ...snapshotEvidence.snapshot,
+          manifestDigest: 'aa'.repeat(32),
+        },
       }),
     /snapshot evidence is not acknowledged/,
   )
 })
 
-test('expired CTF is audit-retained until its explicit purge boundary', () => {
-  const expired = classifyDurableWalletStorage({
-    ...coldProofInput(),
-    proofKind: 'ctf-expired',
-    expiredAuditPurgeAfterMs: 20_000,
-  } as never)
-  assert.deepEqual(
-    decideDurableWalletStoragePurge(expired, {
-      effectiveNowMs: 19_999,
-      encryptedProofEvictionEnabled: true,
-      preparedCurrentSnapshot: preparedSnapshot(),
-    } as never),
-    { kind: 'retain' },
+test('currently expired CTF remains complete and never purges or offloads automatically', () => {
+  for (const backupReceiptEvidence of [null, authenticatedReceipt()] as const) {
+    const retained = classifyDurableWalletStorage({
+      ...coldProofInput(),
+      proofKind: 'ctf',
+      ctfMetadata: { finalExpiryUnixSeconds: 10_000, terminalEvidence: null },
+      backupReceiptEvidence,
+    })
+    assert.equal(retained.storageClass, 'user-retained-nonselectable-ctf')
+    assert.equal(retained.purgeAfterMs, null)
+    assert.equal(retained.proofCommitment, '11'.repeat(32))
+    assert.equal(retained.backupBinding === null, backupReceiptEvidence === null)
+    for (const encryptedProofEvictionEnabled of [false, true]) {
+      assert.deepEqual(
+        decideDurableWalletStoragePurge(retained, {
+          effectiveNowMs: Number.MAX_SAFE_INTEGER,
+          encryptedProofEvictionEnabled,
+          preparedCurrentSnapshot: preparedSnapshot(),
+        }),
+        { kind: 'retain' },
+      )
+    }
+  }
+})
+
+test('CTF expiry is derived from committed metadata at the inclusive boundary', () => {
+  for (const [effectiveNowUnixSeconds, expectedClass] of [
+    [9_999, 'remotely-backed-deterministic-proof'],
+    [10_000, 'user-retained-nonselectable-ctf'],
+    [10_001, 'user-retained-nonselectable-ctf'],
+  ] as const) {
+    const classified = classifyDurableWalletStorage({
+      ...coldProofInput(),
+      proofKind: 'ctf',
+      ctfMetadata: { finalExpiryUnixSeconds: 10_000, terminalEvidence: null },
+      effectiveNowUnixSeconds,
+      backupReceiptEvidence: authenticatedReceipt(),
+    })
+    assert.equal(classified.storageClass, expectedClass)
+  }
+  assert.throws(
+    () =>
+      classifyDurableWalletStorage({
+        ...coldProofInput(),
+        proofKind: 'ctf',
+        ctfMetadata: null,
+      }),
+    /CTF metadata/,
   )
-  assert.deepEqual(
-    decideDurableWalletStoragePurge(expired, {
-      effectiveNowMs: 20_000,
-      encryptedProofEvictionEnabled: true,
-      preparedCurrentSnapshot: preparedSnapshot(),
-    } as never),
-    { kind: 'delete-record' },
+  assert.throws(
+    () =>
+      classifyDurableWalletStorage({
+        ...coldProofInput(),
+        expiredAuditPurgeAfterMs: 10_001,
+      } as never),
+    /unknown field 'expiredAuditPurgeAfterMs'/,
   )
 })
 
-test('authoritative expired CTF audit retention ignores legacy provenance and recovery metadata defects', () => {
-  for (const override of [
-    { provenance: 'external' as const },
-    { derivationLocator: 'missing' as const },
-    { proofCommitment: { state: 'unverified' as const } },
-  ]) {
-    const expired = classifyDurableWalletStorage({
+test('verified losing outcome is retained before expiry and cannot be evicted', () => {
+  const terminalEvidence = issueDurableWalletVerifiedLosingCtfClassification()
+  const classified = classifyDurableWalletStorage({
+    ...coldProofInput(),
+    proofKind: 'ctf',
+    ctfMetadata: {
+      finalExpiryUnixSeconds: 20_000,
+      terminalEvidence,
+    },
+    backupReceiptEvidence: authenticatedReceipt(),
+  })
+  assert.equal(classified.storageClass, 'user-retained-nonselectable-ctf')
+  assert.deepEqual(
+    decideDurableWalletStoragePurge(classified, {
+      effectiveNowMs: Number.MAX_SAFE_INTEGER,
+      encryptedProofEvictionEnabled: true,
+      preparedCurrentSnapshot: preparedSnapshot(),
+    }),
+    { kind: 'retain' },
+  )
+  assert.throws(
+    () =>
+      classifyDurableWalletStorage({
+        ...coldProofInput(),
+        proofKind: 'ctf',
+        ctfMetadata: {
+          finalExpiryUnixSeconds: 20_000,
+          terminalEvidence: { ...terminalEvidence },
+        },
+      }),
+    /terminal evidence is invalid/,
+  )
+})
+
+test('operation-bound expired CTF remains pinned and cannot purge', () => {
+  const classified = classifyDurableWalletStorage({
+    ...coldProofInput(),
+    proofKind: 'ctf',
+    ctfMetadata: { finalExpiryUnixSeconds: 10_000, terminalEvidence: null },
+    operationBinding: 'nonterminal',
+    backupReceiptEvidence: authenticatedReceipt(),
+  })
+  assert.equal(classified.storageClass, 'pinned-operation-bound-deterministic')
+  assert.deepEqual(classified.pinReasons, ['nonterminal-operation-link'])
+  assert.deepEqual(
+    decideDurableWalletStoragePurge(classified, {
+      effectiveNowMs: Number.MAX_SAFE_INTEGER,
+      encryptedProofEvictionEnabled: true,
+      preparedCurrentSnapshot: preparedSnapshot(),
+    }),
+    { kind: 'retain' },
+  )
+})
+
+test('retained CTF still requires exact provenance, derivation, and commitment authority', () => {
+  for (const [override, expectedReason] of [
+    [{ provenance: 'external' as const }, 'external-token-unrotated'],
+    [{ provenance: 'unknown' as const }, 'unknown-proof-provenance'],
+    [{ derivationLocator: 'missing' as const }, 'missing-derivation-locator'],
+    [{ proofCommitment: { state: 'unverified' as const } }, 'unverified-proof-commitment'],
+  ] as const) {
+    const retained = classifyDurableWalletStorage({
       ...coldProofInput(),
       ...override,
-      proofKind: 'ctf-expired',
-      expiredAuditPurgeAfterMs: 20_000,
+      proofKind: 'ctf',
+      ctfMetadata: { finalExpiryUnixSeconds: 10_000, terminalEvidence: null },
+      backupReceiptEvidence: authenticatedReceipt(),
     })
-    assert.equal(expired.storageClass, 'audit-retained-expired-ctf')
+    assert.equal(retained.storageClass, 'pinned-local-recovery-state')
+    assert.ok(retained.pinReasons.includes(expectedReason))
   }
 })
 
@@ -427,15 +535,27 @@ test('unknown storage schema, class, reason, or contradictory class fails closed
     backupReceiptEvidence: authenticatedReceipt(),
   })
   assert.throws(
-    () => decodeDurableWalletStorageClassification({ ...backed, recordId: 'AA'.repeat(32) }),
+    () =>
+      decodeDurableWalletStorageClassification({
+        ...backed,
+        recordId: 'AA'.repeat(32),
+      }),
     /wallet proof id is invalid/,
   )
   assert.throws(
-    () => decodeDurableWalletStorageClassification({ ...valid, storageClass: 'future-class' }),
+    () =>
+      decodeDurableWalletStorageClassification({
+        ...valid,
+        storageClass: 'future-class',
+      }),
     /storage class is invalid/,
   )
   assert.throws(
-    () => decodeDurableWalletStorageClassification({ ...valid, pinReasons: ['future-reason'] }),
+    () =>
+      decodeDurableWalletStorageClassification({
+        ...valid,
+        pinReasons: ['future-reason'],
+      }),
     /pin reason is invalid/,
   )
   assert.throws(
@@ -485,6 +605,8 @@ function coldProofInput() {
     kind: 'deterministic-proof' as const,
     provenance: 'wallet-seed' as const,
     proofKind: 'ordinary' as const,
+    ctfMetadata: null,
+    effectiveNowUnixSeconds: 10_000,
     operationBinding: 'terminally-unlinked' as const,
     reserved: false,
     ambiguousMintOperation: false,
@@ -492,7 +614,6 @@ function coldProofInput() {
     derivationLocator: 'committed' as const,
     proofCommitment: { state: 'verified' as const, digest: '11'.repeat(32) },
     backupReceiptEvidence: null,
-    expiredAuditPurgeAfterMs: null,
   }
 }
 

@@ -6,6 +6,15 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import {
+  ORACLE_NOT_ATTESTED_OUTCOME_CODE,
+  readAuthenticatedCtfRedeemTerminalEvidence,
+  type AuthenticatedCtfRedeemTerminalEvidence,
+} from './ctfRedeem.ts'
+import {
+  issueDurableWalletVerifiedLosingCtfClassification,
+  requireDurableWalletVerifiedLosingCtfClassification,
+} from './walletStorageAuthority.ts'
+import {
   requireDurableWalletAcknowledgedBackupSnapshot,
   requireDurableWalletAuthenticatedBackupReceipt,
 } from './encryptedWalletBackupAuthority.ts'
@@ -37,11 +46,35 @@ export function isDurableCustodySafeAbortEligible(
 
 export const DURABLE_WALLET_STORAGE_SCHEMA_VERSION = 1 as const
 
+export interface DurableWalletVerifiedLosingCtfClassification {
+  readonly schemaVersion: 1
+}
+
+export function verifyDurableWalletLosingCtfClassification(input: {
+  evidence: AuthenticatedCtfRedeemTerminalEvidence
+  operationId: string
+  mintUrl: string
+  conditionId: string
+  outcome: string
+  keysetId: string
+  proof: Readonly<{ id: string; secret: string }>
+}): DurableWalletVerifiedLosingCtfClassification {
+  const evidence = readAuthenticatedCtfRedeemTerminalEvidence(input.evidence)
+  if (
+    evidence.operationId !== input.operationId ||
+    evidence.normalizedMint !== input.mintUrl ||
+    evidence.rejectionBody.code !== ORACLE_NOT_ATTESTED_OUTCOME_CODE
+  ) {
+    throw new Error('CTF terminal evidence does not match proof operation')
+  }
+  return issueDurableWalletVerifiedLosingCtfClassification()
+}
+
 export const DURABLE_WALLET_STORAGE_CLASSES = [
   'pinned-local-recovery-state',
   'pinned-operation-bound-deterministic',
   'remotely-backed-deterministic-proof',
-  'audit-retained-expired-ctf',
+  'user-retained-nonselectable-ctf',
   'disposable-derived-data',
 ] as const
 
@@ -68,7 +101,6 @@ export const DURABLE_WALLET_STORAGE_PIN_REASONS = [
   'missing-derivation-locator',
   'unverified-proof-commitment',
   'missing-current-backup-receipt',
-  'expired-ctf-metadata',
   'unknown-ctf-metadata',
 ] as const
 
@@ -82,7 +114,7 @@ export interface DurableWalletStorageClassification {
   pinReasons: DurableWalletStoragePinReason[]
   proofCommitment: string | null
   backupBinding: DurableWalletProofBackupBinding | null
-  /** Disposable data and expired-CTF audit rows have an explicit deletion boundary. */
+  /** Only disposable derived data has an automatic deletion boundary. */
   purgeAfterMs: number | null
 }
 
@@ -275,7 +307,12 @@ export type DurableWalletStorageClassificationInput =
       recordId: string
       kind: 'deterministic-proof'
       provenance: 'wallet-seed' | 'external' | 'unknown'
-      proofKind: 'ordinary' | 'ctf-active' | 'ctf-expired' | 'p2pk' | 'htlc' | 'unknown'
+      proofKind: 'ordinary' | 'ctf' | 'p2pk' | 'htlc' | 'unknown'
+      ctfMetadata: {
+        finalExpiryUnixSeconds: number
+        terminalEvidence: DurableWalletVerifiedLosingCtfClassification | null
+      } | null
+      effectiveNowUnixSeconds: number
       operationBinding: 'terminally-unlinked' | 'nonterminal' | 'unknown'
       reserved: boolean
       ambiguousMintOperation: boolean
@@ -289,7 +326,6 @@ export type DurableWalletStorageClassificationInput =
       derivationLocator: 'committed' | 'missing'
       proofCommitment: { state: 'verified'; digest: string } | { state: 'unverified' }
       backupReceiptEvidence: DurableWalletAuthenticatedBackupReceiptEvidence | null
-      expiredAuditPurgeAfterMs: number | null
     }
   | {
       schemaVersion: typeof DURABLE_WALLET_STORAGE_SCHEMA_VERSION
@@ -341,7 +377,8 @@ export function classifyDurableWalletStorage(
         'derivationLocator',
         'proofCommitment',
         'backupReceiptEvidence',
-        'expiredAuditPurgeAfterMs',
+        'ctfMetadata',
+        'effectiveNowUnixSeconds',
       ])
       return classifyDeterministicProof(value, recordId)
     }
@@ -471,8 +508,9 @@ export function decideDurableWalletStoragePurge(
         isReceiptReachableFromCurrentSnapshot(record, currentSnapshot)
         ? { kind: 'evict-proof-body' }
         : { kind: 'retain' }
+    case 'user-retained-nonselectable-ctf':
+      return { kind: 'retain' }
     case 'disposable-derived-data':
-    case 'audit-retained-expired-ctf':
       return nowMs >= record.purgeAfterMs! ? { kind: 'delete-record' } : { kind: 'retain' }
   }
 }
@@ -506,9 +544,32 @@ function classifyDeterministicProof(
   )
   const proofKind = requireOneOf(
     value.proofKind,
-    ['ordinary', 'ctf-active', 'ctf-expired', 'p2pk', 'htlc', 'unknown'],
+    ['ordinary', 'ctf', 'p2pk', 'htlc', 'unknown'],
     'proof kind',
   )
+  const ctfMetadata =
+    value.ctfMetadata === null ? null : requireRecord(value.ctfMetadata, 'CTF metadata')
+  if (ctfMetadata !== null) {
+    requireKnownFields(ctfMetadata, ['finalExpiryUnixSeconds', 'terminalEvidence'])
+  }
+  if ((proofKind === 'ctf') !== (ctfMetadata !== null)) {
+    throw new Error('CTF metadata does not match proof kind')
+  }
+  const finalExpiryUnixSeconds =
+    ctfMetadata === null
+      ? null
+      : requireNonNegativeInteger(ctfMetadata.finalExpiryUnixSeconds, 'CTF final expiry')
+  const terminalEvidence = ctfMetadata === null ? null : ctfMetadata.terminalEvidence
+  if (terminalEvidence !== null) {
+    requireDurableWalletVerifiedLosingCtfClassification(terminalEvidence)
+  }
+  const effectiveNowUnixSeconds = requireNonNegativeInteger(
+    value.effectiveNowUnixSeconds,
+    'wallet storage effective time',
+  )
+  const isRetainedCtf =
+    terminalEvidence !== null ||
+    (finalExpiryUnixSeconds !== null && finalExpiryUnixSeconds <= effectiveNowUnixSeconds)
   const operationBinding = requireOneOf(
     value.operationBinding,
     ['terminally-unlinked', 'nonterminal', 'unknown'],
@@ -544,16 +605,6 @@ function classifyDeterministicProof(
       ? null
       : decodeAuthenticatedReceiptEvidence(value.backupReceiptEvidence)
   const backupReceipt = receiptEvidence?.receipt ?? null
-  const expiredAuditPurgeAfterMs =
-    value.expiredAuditPurgeAfterMs === null
-      ? null
-      : requireNonNegativeInteger(
-          value.expiredAuditPurgeAfterMs,
-          'expired CTF audit purge boundary',
-        )
-  if (proofKind !== 'ctf-expired' && expiredAuditPurgeAfterMs !== null) {
-    throw new Error('audit purge boundary is only valid for expired CTF')
-  }
   if (
     backupReceipt !== null &&
     proofCommitmentDigest !== null &&
@@ -584,18 +635,6 @@ function classifyDeterministicProof(
     )
   }
 
-  if (proofKind === 'ctf-expired' && expiredAuditPurgeAfterMs !== null) {
-    return classification(
-      recordId,
-      'deterministic-proof',
-      'audit-retained-expired-ctf',
-      [],
-      null,
-      null,
-      expiredAuditPurgeAfterMs,
-    )
-  }
-
   const reasons: DurableWalletStoragePinReason[] = []
   if (provenance === 'external') reasons.push('external-token-unrotated')
   if (provenance === 'unknown') reasons.push('unknown-proof-provenance')
@@ -603,36 +642,50 @@ function classifyDeterministicProof(
   if (proofKind === 'unknown') reasons.push('unknown-proof-condition')
   if (derivationLocator === 'missing') reasons.push('missing-derivation-locator')
   if (proofCommitment === 'unverified') reasons.push('unverified-proof-commitment')
-  if (proofKind === 'ctf-expired' && expiredAuditPurgeAfterMs === null) {
-    reasons.push('expired-ctf-metadata')
+  if (!isRetainedCtf && backupReceipt === null) reasons.push('missing-current-backup-receipt')
+  if (reasons.length > 0) {
+    return classification(
+      recordId,
+      'deterministic-proof',
+      'pinned-local-recovery-state',
+      canonicalizeReasons(reasons),
+      proofCommitmentDigest,
+      null,
+      null,
+    )
   }
-  if (proofKind !== 'ctf-expired' && backupReceipt === null)
-    reasons.push('missing-current-backup-receipt')
-  return reasons.length > 0
-    ? classification(
-        recordId,
-        'deterministic-proof',
-        'pinned-local-recovery-state',
-        canonicalizeReasons(reasons),
-        proofCommitmentDigest,
-        null,
-        null,
-      )
-    : classification(
-        recordId,
-        'deterministic-proof',
-        'remotely-backed-deterministic-proof',
-        [],
-        proofCommitmentDigest,
-        backupReceipt === null
-          ? null
-          : {
-              snapshotId: backupReceipt.snapshotId,
-              chunkDigest: backupReceipt.chunkDigest,
-              proofCommitment: backupReceipt.proofCommitment,
-            },
-        null,
-      )
+  if (isRetainedCtf) {
+    return classification(
+      recordId,
+      'deterministic-proof',
+      'user-retained-nonselectable-ctf',
+      [],
+      proofCommitmentDigest,
+      backupReceipt === null
+        ? null
+        : {
+            snapshotId: backupReceipt.snapshotId,
+            chunkDigest: backupReceipt.chunkDigest,
+            proofCommitment: backupReceipt.proofCommitment,
+          },
+      null,
+    )
+  }
+  return classification(
+    recordId,
+    'deterministic-proof',
+    'remotely-backed-deterministic-proof',
+    [],
+    proofCommitmentDigest,
+    backupReceipt === null
+      ? null
+      : {
+          snapshotId: backupReceipt.snapshotId,
+          chunkDigest: backupReceipt.chunkDigest,
+          proofCommitment: backupReceipt.proofCommitment,
+        },
+    null,
+  )
 }
 
 function classification(
@@ -698,7 +751,7 @@ function validateClassBindings(
     }
     return
   }
-  if (pinReasons.length !== 0) throw new Error('evictable storage cannot have pin reasons')
+  if (pinReasons.length !== 0) throw new Error('unpinned storage cannot have pin reasons')
   if (storageClass === 'remotely-backed-deterministic-proof') {
     if (purgeAfterMs !== null) throw new Error('remotely backed proof cannot have a purge boundary')
     if (
@@ -712,23 +765,25 @@ function validateClassBindings(
       throw new Error('backup receipt proof commitment does not match')
     }
   }
-  if (storageClass === 'audit-retained-expired-ctf') {
-    if (purgeAfterMs === null)
-      throw new Error('expired CTF audit storage requires a purge boundary')
-    if (recordKind !== 'deterministic-proof' || backupBinding !== null) {
-      throw new Error('expired CTF audit storage cannot carry an eviction receipt')
+  if (storageClass === 'user-retained-nonselectable-ctf') {
+    if (purgeAfterMs !== null) {
+      throw new Error('user-retained CTF storage cannot have a purge boundary')
+    }
+    if (recordKind !== 'deterministic-proof' || proofCommitment === null) {
+      throw new Error('user-retained CTF storage requires an exact proof commitment')
+    }
+    if (backupBinding !== null && backupBinding.proofCommitment !== proofCommitment) {
+      throw new Error('backup receipt proof commitment does not match')
     }
   }
   if (storageClass === 'disposable-derived-data' && purgeAfterMs === null) {
     throw new Error('disposable storage requires a purge boundary')
   }
   if (
-    (storageClass === 'disposable-derived-data' || storageClass === 'audit-retained-expired-ctf') &&
+    storageClass === 'disposable-derived-data' &&
     (proofCommitment !== null || backupBinding !== null)
   ) {
-    if (storageClass === 'disposable-derived-data') {
-      throw new Error('disposable storage cannot carry proof backup state')
-    }
+    throw new Error('disposable storage cannot carry proof backup state')
   }
 }
 

@@ -142,6 +142,13 @@ export interface CtfProofOperationStore {
   ): Promise<CtfProofOperationRecord>
 }
 
+export interface CtfCommittedProofOperationStore {
+  withCommittedProofOperation<T>(
+    operationId: string,
+    read: (operation: CtfProofOperationRecord) => T,
+  ): Promise<T>
+}
+
 export function prepareBoundedCtfProofOperation(
   store: CtfProofOperationStore,
   input: CtfPrepareProofOperationInput,

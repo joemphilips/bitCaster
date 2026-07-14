@@ -44,7 +44,12 @@ type UnboundProofInput = Omit<EncryptedWalletBackupProofInput, 'proofSnapshotSto
 
 declare global {
   var __encryptedWalletBackupVectorResult:
-    | { ok: true; legacyRestoreMs: number; modeledChunks: number; modeledWorkSlices: number }
+    | {
+        ok: true
+        legacyRestoreMs: number
+        modeledChunks: number
+        modeledWorkSlices: number
+      }
     | { ok: false; error: string }
 }
 
@@ -115,7 +120,11 @@ async function run(): Promise<{
   equal(toHex(await digest(wire.body)), expected.bodySha256Hex, 'bodySha256Hex')
   equal(toHex(wire.body.slice(-16)), expected.tagHex, 'tagHex')
   equal(wire.body.byteLength, expected.bodyLength, 'bodyLength')
-  const restored = await decryptEncryptedWalletBackupProofChunk({ keyHandle, seed, object: wire })
+  const restored = await decryptEncryptedWalletBackupProofChunk({
+    keyHandle,
+    seed,
+    object: wire,
+  })
   equal(restored.formatVersion, 1, 'decoded format')
   equal(restored.kindCode, 1, 'decoded kind')
   equal(restored.recordCount, 1, 'decoded record count')
@@ -175,7 +184,10 @@ async function exerciseManifestVector(
     keyHandle,
     generation: 1,
     snapshotNonce: new Uint8Array(16).fill(33),
-    chunks: chunks.map((chunk, index) => ({ chunk, object: chunkObjects[index]! })),
+    chunks: chunks.map((chunk, index) => ({
+      chunk,
+      object: chunkObjects[index]!,
+    })),
     snapshotStore: {
       async sealCommittedBackupSnapshot<T>(
         expected: unknown,
@@ -186,7 +198,11 @@ async function exerciseManifestVector(
     },
     runtime: deterministicRuntime([new Uint8Array(16).fill(21), new Uint8Array(12).fill(31)]),
   })
-  const head = prepareEncryptedWalletBackupManifestHead({ keyHandle, manifest, parent: null })
+  const head = prepareEncryptedWalletBackupManifestHead({
+    keyHandle,
+    manifest,
+    parent: null,
+  })
   const headWire = readPreparedEncryptedWalletBackupManifestHead(head)
   const pageWire = readPreparedEncryptedWalletBackupObject(manifest.pages[0]!)
   equal(toHex(headWire.canonicalHead), vector.expected.manifestCanonicalHeadHex, 'manifest head')
@@ -235,7 +251,7 @@ async function exerciseBlsAndCtf(
 
   const ctfInput = {
     ...proofInputForKeyset(seed, keyHandle, CTF_KEYSET_ID),
-    proofKind: 'ctf-active',
+    proofKind: 'ctf',
     ctfMetadata: {
       conditionId: CTF_METADATA.conditionId,
       outcomeLabel: CTF_METADATA.outcomeCollection,
@@ -296,7 +312,12 @@ async function exerciseFailureCases(
   )
   const noncanonical = await encryptRawFrame(Uint8Array.of(0x83, 0x18, 0x01, 0x01, 0x80))
   await rejects(
-    () => decryptEncryptedWalletBackupProofChunk({ keyHandle, seed, object: noncanonical }),
+    () =>
+      decryptEncryptedWalletBackupProofChunk({
+        keyHandle,
+        seed,
+        object: noncanonical,
+      }),
     'noncanonical CBOR',
   )
   await rejects(
@@ -330,7 +351,11 @@ async function exerciseFailureCases(
 async function exerciseMaxLegacyRestoreScheduling(
   seed: Uint8Array,
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
-): Promise<{ legacyRestoreMs: number; modeledChunks: number; modeledWorkSlices: number }> {
+): Promise<{
+  legacyRestoreMs: number
+  modeledChunks: number
+  modeledWorkSlices: number
+}> {
   const legacyKeyset = 'AQIDBA'
   const derive = (
     Cashu as unknown as {
@@ -346,7 +371,11 @@ async function exerciseMaxLegacyRestoreScheduling(
     const input = {
       ...base,
       counter,
-      proof: { ...base.proof, id: legacyKeyset, secret: toHex(derive(counter).secret) },
+      proof: {
+        ...base.proof,
+        id: legacyKeyset,
+        secret: toHex(derive(counter).secret),
+      },
     }
     preparedProofs.push(await prepareEncryptedWalletBackupProof(await bindProofStore(input)))
   }
@@ -383,7 +412,11 @@ async function exerciseMaxLegacyRestoreScheduling(
   equal(modeled, 50_000, 'modeled record count')
   equal(chunks, 98, 'modeled bounded chunk count')
   equal(workSlices, 12_500, 'modeled cooperative work slices')
-  return { legacyRestoreMs: elapsedMs, modeledChunks: chunks, modeledWorkSlices: workSlices }
+  return {
+    legacyRestoreMs: elapsedMs,
+    modeledChunks: chunks,
+    modeledWorkSlices: workSlices,
+  }
 }
 
 function baseProofInput(
@@ -406,6 +439,7 @@ function baseProofInput(
     },
     proofKind: 'ordinary' as const,
     ctfMetadata: null,
+    terminalEvidence: null,
     effectiveNowUnixSeconds: input.proof.createdAtUnixSeconds,
     createdAtUnixSeconds: input.proof.createdAtUnixSeconds,
     updatedAtUnixSeconds: input.proof.updatedAtUnixSeconds,
@@ -432,6 +466,7 @@ async function bindProofStore(
           fromHex(input.ctfMetadata.outcomeCollectionId),
           input.ctfMetadata.registeredAtUnixSeconds,
           input.ctfMetadata.finalExpiryUnixSeconds,
+          null,
         ]
   const dleq =
     input.proof.dleq === undefined
@@ -477,6 +512,7 @@ async function bindProofStore(
     proofCommitment: commitment,
     proofKind: input.proofKind,
     ctfMetadata: input.ctfMetadata,
+    terminalOperationId: null,
     conditionalKeysetEvidence,
     provenance: 'wallet-seed' as const,
     operationBinding: 'terminally-unlinked' as const,

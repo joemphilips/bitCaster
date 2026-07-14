@@ -110,17 +110,38 @@ Fields are:
    bytes for `02`.
 9. `dleq`: for secp256k1, `[e,s,r]` with three 32-byte values; for BLS, null.
 10. `counter`: unsigned integer `0..2147483647`.
-11. `proofKind`: `0` ordinary, `1` active CTF.
-12. `ctfMetadata`: null for ordinary. Active CTF uses the closed tuple
-    `[conditionId,outcomeLabel,outcomeCollectionId,registeredAt,finalExpiry]`:
+11. `proofKind`: `0` ordinary, `1` CTF. Activity is a temporal disposition,
+    not a structural proof kind and is not encoded here.
+12. `ctfMetadata`: null for ordinary. CTF uses the closed tuple
+    `[conditionId,outcomeLabel,outcomeCollectionId,registeredAt,finalExpiry,
+    terminalSeal]`:
     both IDs are 32 bytes; outcome label is UTF-8 text 1..256 bytes with no
     controls or lone surrogates; `registeredAt` is a nonnegative safe Unix
-    second; `finalExpiry` is a nonnegative safe Unix second strictly after
-    the preparation effective time. Expired CTF is forbidden.
+    second; `finalExpiry` is a nonnegative safe Unix second. The identical
+    committed record is valid on either side of that expiry boundary.
+    `terminalSeal` is null or
+    `[1,operationIdDigest32,requestDigest32,13015,classifiedAt]`.
+    The SDK accepts the seal only through a non-clonable capability issued from
+    an exact committed `ctf-redeem` operation linked to this proof. That
+    operation persists the bounded exact oracle witness, commits a canonical
+    digest over the exact mint, inputs, outputs, and witness before dispatch,
+    records a request-digest-bound mint-submitted marker, reuses those exact
+    bytes on restart, and records the authenticated mint's terminal code 13015.
+    Only the mint call's own response can supply that code; a local journal or
+    completion error with the same shape is not a mint verdict. Restart first
+    matches the caller and wallet transport to the persisted mint and replays a
+    completed or terminal-local result without requiring mint availability.
+    The non-clonable capability is reconstructed only through a one-use
+    synchronous callback over the committed operation row, and the proof
+    snapshot stores the exact terminal operation ID rather than process-local
+    object identity.
+    A caller-supplied losing flag, naked error code, changed witness, or cloned
+    capability has no authority. The compact seal can only make the proof
+    nonselectable; it cannot authorize deletion or spend.
 13. `createdAt`: nonnegative safe Unix seconds.
 14. `updatedAt`: nonnegative safe Unix seconds not before `createdAt`.
 
-Witness, `p2pk_e`, P2PK, HTLC, external/random/unverified proofs, expired CTF,
+Witness, `p2pk_e`, P2PK, HTLC, external/random/unverified proofs,
 unknown provenance/condition, active reservations, ambiguous mint work, and
 nonterminal proof links are forbidden.
 
@@ -133,7 +154,7 @@ return a thenable, or substitute foreign work. The row binds snapshot ID and
 revision, expected proof ID, expected committed record commitment, and all
 classifier facts. Callers cannot supply those facts directly.
 
-An active CTF row additionally contains opaque evidence minted only after the
+Each CTF row additionally contains opaque evidence minted only after the
 SDK bounds exact MintKeys and ConditionalKeysetMetadata and cashu-ts
 `Keyset.verifyConditionalKeysetId` succeeds. That evidence binds mint, unit,
 modern `01` keyset/curve, condition ID, outcome label/collection ID,
@@ -144,9 +165,11 @@ uses cashu-ts `createSecretAndBlindingFactorDeriver(seed,keysetText)` and
 requires the derived secret to equal the proof's exact lowercase-hex secret.
 The implementation derives `proofId` and commitment again and requires exact
 agreement with the authoritative snapshot; it never self-computes an expected
-value and then treats that value as stored authority. With no receipt, the
-classifier must return exactly the sole pin reason
-`missing-current-backup-receipt`.
+value and then treats that value as stored authority. With no receipt, an
+unexpired proof classifier must return exactly the sole pin reason
+`missing-current-backup-receipt`. A CTF at or after its recorded expiry instead
+classifies as complete `user-retained-nonselectable-ctf`; this permits backup
+preparation but never permits automatic deletion or local-body eviction.
 
 The commitment is:
 
@@ -244,7 +267,8 @@ Each entry is the closed 11-item tuple:
 ]
 ```
 
-`proofKind` is `0` for ordinary or `1` for active CTF. Its CTF tuple and all
+`proofKind` is `0` for ordinary or `1` for CTF. Its CTF tuple, optional compact
+terminal seal, and all
 mint/unit/amount/time bounds are identical to the proof record. Ordinary
 entries require null CTF metadata. These encrypted summaries rebuild ordinary
 mint/unit balances and CTF positions without loading every proof body; they do
@@ -262,6 +286,98 @@ zero-padded frame, and AAD:
 
 The digest algorithm is unchanged. A changed page receives a fresh object ID
 and nonce. The service sees only the encrypted object and public reference.
+
+## Bounded restore verification
+
+Restore begins from an authenticated current head. The SDK issues an opaque,
+one-use manifest cursor bound to that exact head and key capability. A copied,
+foreign, reused, skipped, or out-of-order cursor/page is invalid. Advancing the
+cursor requires contiguous page indexes, strict proof-ID order across page
+boundaries, and an exact final entry count equal to the head. An authenticated
+empty head produces an already-complete cursor. The cursor contains only the
+generation, page count, next page index, restored entry count, and completion
+flag; it does not materialize the complete manifest.
+
+Proof verification accepts 1..64 selections per call. Every selection binds
+an exact proof ID in an authenticated current-head page to the exact decrypted
+chunk object ID, digest, generation, commitment, metadata, timestamps, and
+private key capability. CTF expiry is derived inclusively from the committed
+`finalExpiry` and the validated restore effective time; adapters cannot supply
+an `expired` boolean.
+
+For ordinary and unexpired CTF proofs, the SDK deduplicates and sorts
+`(mint,unit,keysetId)` requests and calls one
+bounded keyset-resolution port with the caller's exact backup-cycle abort
+signal. Its closed response must contain every requested identity exactly once
+and no foreign identity. Ordinary keysets must pass cashu-ts keyset-ID
+verification. CTF keysets must additionally reproduce the condition ID,
+outcome collection ID, registration time, and final expiry committed by the
+proof and manifest. Mint keys contain 1..64 canonical positive denominations
+and curve-correct compressed public keys.
+
+The SDK then verifies each Cashu signature with cashu-ts in four-proof work
+slices, checks the cycle signal, and cooperatively yields between slices.
+secp256k1 proofs require and verify DLEQ; BLS proofs use BLS pairing verification
+and contain no DLEQ. In the same slices it derives the curve-appropriate NUT-07
+`Y` from the private proof secret and sends only
+`(proofId,mint,keysetId,Y)` through one bounded state port. The
+closed response must map every query exactly once. Only `UNSPENT` is accepted;
+`PENDING`, `SPENT`, missing, duplicate, foreign, or unknown responses fail
+before storage. A CTF at or after recorded expiry, or carrying a valid compact
+verified-losing seal, takes a separate integrity tier: authenticated
+current-head membership, AEAD/canonical decoding, exact
+record commitment, and seed-derived secret/proof identity are still required,
+but the SDK calls neither the live keyset port nor NUT-07. It commits the
+complete proof body with disposition `user-retained-nonselectable`, reason
+`recorded-ctf-expiry-passed` or `verified-losing-outcome`, and storage class
+`user-retained-nonselectable-ctf`. It cannot become selectable through this
+path. Mixed selections send only their ordinary/unexpired subset to the live
+ports.
+
+Finally, one asynchronous adapter transaction receives the same exact
+backup-cycle abort signal, receives the exact proposed proof/classification
+rows, and must synchronously invoke the SDK's one-use commit callback exactly
+once with the current state for every proof ID. In explicit `complete-origin`
+mode the SDK permits an absent row, an exact candidate classification with no
+local body, or that same classification plus the exact idempotent proof body;
+accepting the exact existing states makes a crashed progressive origin rebuild
+resumable. `hydrate-existing` permits only the two exact existing states and
+never turns a missing local classification into a new row. The sole monotonic
+exception is an exact same-head, same-binding, same-commitment and same-body CTF
+transition from remotely backed/selectable to user-retained/nonselectable when
+its recorded expiry is reached. A second enumerated monotonic transition accepts
+a newer authenticated current-head record whose exact parent is the correlated
+active record and that adds a valid verified-losing seal to the same stable
+proof ID and exact Cashu proof body; both classification/proof pairs, the
+no-seal predecessor commitment, chunk bindings, and parent generation/digest
+are checked together. The reverse
+transition and generic merge are forbidden. “Absent” means the global proof
+identity has no proof, classification,
+reservation, operation link, pin, spent marker, or tombstone in that same
+physical transaction; a missing body row alone is not absence. A reserved,
+ambiguous, operation-linked, pinned, stale-head, mismatched-commitment, spent,
+or otherwise conflicting row is never overwritten. The adapter applies the
+authorized rows in that same transaction; cancellation closes the callback
+before any late continuation.
+
+Each committed proof is bound to realm, vault, head generation and digest,
+exact parent generation and digest (or a null genesis parent),
+chunk object and digest, proof commitment, complete proof body and timestamps,
+and one closed disposition: `selectable` with null reason, or
+`user-retained-nonselectable` with the v1 reason
+`recorded-ctf-expiry-passed` or `verified-losing-outcome`. Its paired storage classification is respectively
+`remotely-backed-deterministic-proof` or
+`user-retained-nonselectable-ctf`, with the exact current snapshot, chunk, and
+commitment binding. Substitution, extra fields, reversed timestamps,
+repeated or escaped callbacks, thenables, or partial commits are invalid. The
+public result exposes only generation, manifest digest, proof IDs, and count;
+it never exposes proof secrets.
+
+The host's foreground deadline may win the API race after the local transaction
+commits. The SDK returns the deadline and does not infer absence. A retry repeats
+the exact operation and succeeds only against the byte-identical committed
+proof and classification; it never selects a fresh proof or creates a second
+row.
 
 ## Public reference set and head
 

@@ -103,7 +103,7 @@ export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
     }
     if (
       ctf === undefined ||
-      !((ctf.major === 7 && ctf.value === 22) || (ctf.major === 4 && ctf.value === 5))
+      !((ctf.major === 7 && ctf.value === 22) || (ctf.major === 4 && ctf.value === 6))
     )
       throw new Error('ctf shape')
     if (ctf.major === 4) {
@@ -112,6 +112,7 @@ export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
       requireBytes(ctf.children[2], 32, 32, 'outcome collection id')
       requireUnsigned(ctf.children[3], 'registration')
       requireUnsigned(ctf.children[4], 'expiry')
+      requireCtfTerminalEvidence(ctf.children[5])
     }
     requireUnsigned(record.children[12], 'created')
     requireUnsigned(record.children[13], 'updated')
@@ -167,7 +168,7 @@ export function preflightEncryptedManifestPageCbor(bytes: Uint8Array): void {
     const ctf = entry.children[8]
     if (
       ctf === undefined ||
-      !((ctf.major === 7 && ctf.value === 22) || (ctf.major === 4 && ctf.value === 5))
+      !((ctf.major === 7 && ctf.value === 22) || (ctf.major === 4 && ctf.value === 6))
     )
       throw new Error('ctf shape')
     if (ctf.major === 4) {
@@ -176,6 +177,7 @@ export function preflightEncryptedManifestPageCbor(bytes: Uint8Array): void {
       requireBytes(ctf.children[2], 32, 32, 'outcome collection id')
       requireUnsigned(ctf.children[3], 'registration')
       requireUnsigned(ctf.children[4], 'expiry')
+      requireCtfTerminalEvidence(ctf.children[5])
     }
     requireUnsigned(entry.children[9], 'created')
     requireUnsigned(entry.children[10], 'updated')
@@ -422,6 +424,22 @@ function requireText(shape: CborShape | undefined, min: number, max: number, nam
   }
 }
 
+function requireCtfTerminalEvidence(shape: CborShape | undefined): void {
+  if (shape?.major === 7 && shape.value === 22) return
+  if (shape?.major !== 4 || shape.value !== 5) {
+    throw new Error('CTF terminal evidence shape')
+  }
+  if (shape.children[0]?.major !== 0 || shape.children[0]?.value !== 1) {
+    throw new Error('CTF terminal evidence version')
+  }
+  requireBytes(shape.children[1], 32, 32, 'CTF terminal operation digest')
+  requireBytes(shape.children[2], 32, 32, 'CTF terminal request digest')
+  if (shape.children[3]?.major !== 0 || shape.children[3]?.value !== 13_015) {
+    throw new Error('CTF terminal failure code')
+  }
+  requireUnsigned(shape.children[4], 'CTF terminal classification time')
+}
+
 function requireUnsigned(shape: CborShape | undefined, name: string): void {
   if (shape?.major !== 0 || shape.value === null) throw new Error(`${name} shape`)
 }
@@ -444,7 +462,12 @@ function scanCbor(
   bytes: Uint8Array,
   state: { offset: number; tokens: number },
   depth: number,
-  limits: { depth: number; tokens: number; itemLength: number; arrayLength: number },
+  limits: {
+    depth: number
+    tokens: number
+    itemLength: number
+    arrayLength: number
+  },
 ): CborShape {
   if (depth > limits.depth || ++state.tokens > limits.tokens || state.offset >= bytes.length) {
     throw new Error('cbor bounds')
