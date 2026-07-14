@@ -239,6 +239,40 @@ test('write-ahead reducer retains the operation link through mint submission and
   assert.equal(isDurableTradeSessionPurgeEligible(reconciled), true)
 })
 
+test('a fully reconciled trade may journal its next exact operation', () => {
+  const first = preparedOperation()
+  const prepared = reduceDurableTradeSession(session(), {
+    kind: 'proof-operation-prepared',
+    operation: first,
+  })
+  const submitted = reduceDurableTradeSession(prepared, {
+    kind: 'mint-submitted',
+    operationId: first.operationId,
+  })
+  const reconciled = reduceDurableTradeSession(submitted, {
+    kind: 'proof-operation-reconciled',
+    operationId: first.operationId,
+  })
+  const next = createDurableTradeProofOperationLink({
+    tradeId: reconciled.tradeId,
+    role: reconciled.role,
+    stage: 'claim',
+    state: 'prepared',
+    operationKey: 'seller-claim-after-lock',
+    kind: 'cashu-atomic',
+  })
+
+  const nextPrepared = reduceDurableTradeSession(reconciled, {
+    kind: 'proof-operation-prepared',
+    operation: next,
+  })
+
+  assert.equal(nextPrepared.stage, 'proof-reserved')
+  assert.equal(nextPrepared.proofOperations.length, 2)
+  assert.equal(nextPrepared.proofOperations[0]?.state, 'reconciled')
+  assert.equal(nextPrepared.proofOperations[1]?.state, 'prepared')
+})
+
 test('v2 keeps a planned buyer lock waiting after merge reconciliation, then activates and completes it', async () => {
   const merge = createDurableTradeProofOperationLink({
     tradeId: 'trade-001',

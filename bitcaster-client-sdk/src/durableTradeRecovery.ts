@@ -1986,7 +1986,15 @@ function reducePreparedOperation(
 ): DurableTradeSession {
   const operationError = validateDurableProofOperationLink(operation)
   if (operationError) throw new Error(operationError)
-  if (session.stage !== 'intent' && session.stage !== 'proof-reserved') {
+  const resumesAfterReconciliation =
+    session.stage === 'reconciliation-complete' &&
+    session.proofOperations.every((item) => item.state === 'reconciled') &&
+    (session.plannedProofOperations?.length ?? 0) === 0
+  if (
+    session.stage !== 'intent' &&
+    session.stage !== 'proof-reserved' &&
+    !resumesAfterReconciliation
+  ) {
     throw new Error('proof operations may only be prepared before mint submission')
   }
   if (operation.tradeId !== session.tradeId || operation.role !== session.role) {
