@@ -53,7 +53,7 @@ export interface DurableOrderCollateralPin {
   remainingOrderAmount: number
   submissionRequest: DurableOrderSubmissionRequest
   preflightSplit: DurableOrderPreflightSplit | null
-  state: 'prepared' | 'active' | 'released'
+  state: 'preparing' | 'prepared' | 'active' | 'released'
   orderId: string | null
   releaseReason: DurableOrderCollateralReleaseReason | null
   proofs: DurableOrderCollateralProof[]
@@ -83,6 +83,10 @@ export type DurableOrderCollateralTransition =
       expectedRevision: number
       proofs: readonly DurableOrderCollateralProof[]
     }
+  | {
+      kind: 'finish-preparation'
+      expectedRevision: number
+    }
 
 export function durableOrderCollateralPinId(clientOrderId: string): string {
   return `order-collateral:${requireIdentifier(clientOrderId, 'client order id')}`
@@ -98,6 +102,7 @@ export function createDurableOrderCollateralPin(input: {
   requiredAmount: number
   submissionRequest: DurableOrderSubmissionRequest
   preflightSplit?: DurableOrderPreflightSplit | null
+  preparing?: boolean
   proofs: readonly DurableOrderCollateralProof[]
 }): DurableOrderCollateralPin {
   return decodeDurableOrderCollateralPin({
@@ -114,7 +119,7 @@ export function createDurableOrderCollateralPin(input: {
     remainingOrderAmount: input.orderAmount,
     submissionRequest: input.submissionRequest,
     preflightSplit: input.preflightSplit ?? null,
-    state: 'prepared',
+    state: input.preparing ? 'preparing' : 'prepared',
     orderId: null,
     releaseReason: null,
     proofs: input.proofs,
@@ -128,7 +133,8 @@ export function reduceDurableOrderCollateralPin(
   const pin = decodeDurableOrderCollateralPin(value)
   requireExpectedRevision(pin, transition.expectedRevision)
   if (transition.kind === 'release-before-submit') {
-    if (pin.state !== 'prepared' || pin.orderId !== null) {
+    if ((pin.state !== 'preparing' && pin.state !== 'prepared')
+      || pin.orderId !== null) {
       throw new Error('submitted order collateral cannot use pre-submit release')
     }
     return nextPin(pin, {
@@ -141,10 +147,16 @@ export function reduceDurableOrderCollateralPin(
     return recordFill(pin, transition)
   }
   if (transition.kind === 'replace-proofs') {
-    if (pin.state !== 'active') {
-      throw new Error('order collateral proof replacement requires an active pin')
+    if (pin.state !== 'preparing' && pin.state !== 'active') {
+      throw new Error('order collateral proof replacement requires retained authority')
     }
     return nextPin(pin, { proofs: requireProofs(transition.proofs, false) })
+  }
+  if (transition.kind === 'finish-preparation') {
+    if (pin.state !== 'preparing') {
+      throw new Error('order collateral is not preparing')
+    }
+    return nextPin(pin, { state: 'prepared' })
   }
   return applyEngineObservation(pin, transition)
 }
@@ -209,7 +221,9 @@ function applyEngineObservation(
   pin: DurableOrderCollateralPin,
   transition: Extract<DurableOrderCollateralTransition, { orderId: string }>,
 ): DurableOrderCollateralPin {
-  if (pin.state === 'released') throw new Error('order collateral is released')
+  if (pin.state !== 'prepared' && pin.state !== 'active') {
+    throw new Error('order collateral is not ready for engine observation')
+  }
   const orderId = requireIdentifier(transition.orderId, 'order id')
   if (pin.orderId !== null && pin.orderId !== orderId) {
     throw new Error('order collateral is bound to another order')
@@ -389,7 +403,10 @@ function validateLifecycle(pin: DurableOrderCollateralPin): void {
       || pin.submissionRequest.side !== 'Buy')) {
     throw new Error('order preflight split does not match collateral pin')
   }
-  if (pin.state === 'prepared'
+  if (pin.state === 'preparing' && pin.preflightSplit === null) {
+    throw new Error('preparing order collateral requires a preflight split')
+  }
+  if ((pin.state === 'preparing' || pin.state === 'prepared')
     && (pin.orderId !== null || pin.releaseReason !== null
       || pin.remainingOrderAmount !== pin.orderAmount)) {
     throw new Error('prepared order collateral lifecycle is invalid')
@@ -432,7 +449,8 @@ function requireReleaseReason(value: unknown): DurableOrderCollateralReleaseReas
 }
 
 function requireState(value: unknown): DurableOrderCollateralPin['state'] {
-  if (value !== 'prepared' && value !== 'active' && value !== 'released') {
+  if (value !== 'preparing' && value !== 'prepared'
+    && value !== 'active' && value !== 'released') {
     throw new Error('order collateral state is invalid')
   }
   return value

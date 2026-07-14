@@ -153,6 +153,22 @@ test('order collateral retains the exact GTC request and preflight authority', (
   assert.deepEqual(pin.submissionRequest, base.submissionRequest)
   assert.equal(pin.preflightSplit?.reservationId, pin.pinId)
 
+  const preparing = createDurableOrderCollateralPin({
+    ...base,
+    preparing: true,
+    preflightSplit: pin.preflightSplit,
+  })
+  const transformed = reduceDurableOrderCollateralPin(preparing, {
+    kind: 'replace-proofs',
+    expectedRevision: preparing.revision,
+    proofs: preparing.proofs,
+  })
+  const ready = reduceDurableOrderCollateralPin(transformed, {
+    kind: 'finish-preparation',
+    expectedRevision: transformed.revision,
+  })
+  assert.equal(ready.state, 'prepared')
+
   assert.throws(
     () => createDurableOrderCollateralPin({
       ...base,
