@@ -108,6 +108,10 @@
       "types": "./dist/durableStorageAdmission.d.ts",
       "import": "./dist/durableStorageAdmission.js"
     },
+    "./emergencySeedRecovery": {
+      "types": "./dist/emergencySeedRecovery.d.ts",
+      "import": "./dist/emergencySeedRecovery.js"
+    },
     "./encryptedWalletBackup": {
       "types": "./dist/encryptedWalletBackup.d.ts",
       "import": "./dist/encryptedWalletBackup.js"
