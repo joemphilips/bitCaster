@@ -3,7 +3,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { createRealDaemonSwapOps } from '../src/swapProtocolAdapter.ts'
+import {
+  createDaemonRecoveryWalletProvider,
+  createRealDaemonSwapOps,
+} from '../src/swapProtocolAdapter.ts'
 import {
   emptyDaemonState,
   installDaemonProofOperationCoordinator,
@@ -37,6 +40,34 @@ const uninstallProjectionCoordinator = installDaemonProofOperationCoordinator({
   },
 })
 after(uninstallProjectionCoordinator)
+
+test('recovery wallet provider loads each mint capability once per pass', async () => {
+  let created = 0
+  let loaded = 0
+  const provider = createDaemonRecoveryWalletProvider(() => {
+    created += 1
+    return {
+      async loadMint() {
+        loaded += 1
+      },
+    } as never
+  })
+
+  const [first, second] = await Promise.all([
+    provider.getWallet({ mintUrl: 'https://mint.example', unit: 'sat' }),
+    provider.getWallet({ mintUrl: 'https://mint.example', unit: 'sat' }),
+  ])
+  const ctf = await provider.getWallet({
+    mintUrl: 'https://mint.example',
+    unit: 'sat',
+    enableCtf: true,
+  })
+
+  assert.strictEqual(first, second)
+  assert.notStrictEqual(first, ctf)
+  assert.equal(created, 2)
+  assert.equal(loaded, 2)
+})
 
 test('real daemon swap adapter maps SDK daemon context to atomic-swap operations', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-swap-adapter-'))

@@ -193,6 +193,50 @@ type RefundWallet = Pick<
 
 export type ExactDaemonProofOperationAction = 'resume' | 'restore'
 
+export interface DaemonRecoveryWalletProvider {
+  getWallet(input: {
+    mintUrl: string
+    unit: string
+    enableCtf?: boolean
+  }): Promise<CashuWallet>
+}
+
+export function createDaemonRecoveryWalletProvider(
+  createWallet: (input: {
+    mintUrl: string
+    unit: string
+    enableCtf: boolean
+  }) => CashuWallet = ({ mintUrl, unit, enableCtf }) =>
+    new CashuWallet(new CashuMint(mintUrl), {
+      unit,
+      ...(enableCtf ? { enableCtf: true } : {}),
+    }),
+): DaemonRecoveryWalletProvider {
+  const loadedWallets = new Map<string, Promise<CashuWallet>>()
+  return {
+    getWallet(input) {
+      const enableCtf = input.enableCtf === true
+      const cacheKey = JSON.stringify([input.mintUrl, input.unit, enableCtf])
+      let loaded = loadedWallets.get(cacheKey)
+      if (loaded === undefined) {
+        loaded = loadRecoveryWallet(createWallet({ ...input, enableCtf }))
+        loadedWallets.set(cacheKey, loaded)
+      }
+      return loaded
+    },
+  }
+}
+
+async function loadRecoveryWallet(wallet: CashuWallet): Promise<CashuWallet> {
+  await wallet.loadMint()
+  return wallet
+}
+
+interface ExactDaemonProofRecoveryOptions {
+  loadAtomicSwapModule?: () => Promise<AtomicSwapModule>
+  recoveryWalletProvider?: DaemonRecoveryWalletProvider
+}
+
 /**
  * The durable coordinator reaches this adapter only after it has bound the
  * session link to this exact record. It deliberately has no swap context or
@@ -202,7 +246,7 @@ export type ExactDaemonProofOperationAction = 'resume' | 'restore'
 export async function recoverExactDaemonProofOperation(
   record: ProofOperationRecord,
   action: ExactDaemonProofOperationAction,
-  options: Pick<RealDaemonSwapOpsOptions, 'loadAtomicSwapModule'> = {},
+  options: ExactDaemonProofRecoveryOptions = {},
 ): Promise<void> {
   const retained = await getProofOperation(record.operationId)
   if (!retained || retained.operationId !== record.operationId) {
@@ -214,15 +258,16 @@ export async function recoverExactDaemonProofOperation(
     case 'conditional-keyset-swap':
     case 'proof-split': {
       const atomicSwap = await (options.loadAtomicSwapModule ?? defaultAtomicSwapModuleLoader)()
-      const unit = exactOperationUnit(retained)
-      const wallet = new CashuWallet(new CashuMint(retained.mintUrl), {
-        unit,
-        ...(retained.kind === 'conditional-keyset-swap' ? { enableCtf: true } : {}),
-      })
-      await wallet.loadMint()
-      const result = action === 'resume'
-        ? await atomicSwap.resumeExactPreparedProofOperation(wallet, retained)
-        : await atomicSwap.restoreExactPreparedProofOperation(retained)
+      const result = action === 'restore'
+        ? await atomicSwap.restoreExactPreparedProofOperation(retained)
+        : await atomicSwap.resumeExactPreparedProofOperation(
+          await recoveryWallet(options).getWallet({
+            mintUrl: retained.mintUrl,
+            unit: exactOperationUnit(retained),
+            enableCtf: retained.kind === 'conditional-keyset-swap',
+          }),
+          retained,
+        )
       await markProofOperationCompleted(retained.operationId, result)
       return
     }
@@ -243,8 +288,6 @@ export async function recoverExactDaemonProofOperation(
     case 'regular-split': {
       const unit = exactOperationUnit(retained)
       const amount = exactOperationAmount(retained)
-      const wallet = new CashuWallet(new CashuMint(retained.mintUrl), { unit })
-      await wallet.loadMint()
       await splitRegularProofsWithOperation({
         mintUrl: retained.mintUrl,
         baseAsset: normalizeMarketBaseAsset(
@@ -253,7 +296,10 @@ export async function recoverExactDaemonProofOperation(
             : null,
         ),
         operationId: retained.operationId,
-        wallet,
+        wallet: await recoveryWallet(options).getWallet({
+          mintUrl: retained.mintUrl,
+          unit,
+        }),
         proofs: [],
         amountSubunits: amount,
         proofOperationStore: DAEMON_PROOF_OPERATION_STORE as never,
@@ -265,7 +311,7 @@ export async function recoverExactDaemonProofOperation(
         options.loadAtomicSwapModule ?? defaultAtomicSwapModuleLoader
       )()
       const result = action === 'resume'
-        ? await resumeExactRefund(atomicSwap, retained)
+        ? await resumeExactRefund(atomicSwap, retained, recoveryWallet(options))
         : await atomicSwap.restoreExactPreparedProofOperation(retained)
       const refund = result.refund ?? result.keep ?? []
       await markProofOperationCompleted(retained.operationId, { refund })
@@ -282,12 +328,20 @@ export async function recoverExactDaemonProofOperation(
 async function resumeExactRefund(
   atomicSwap: AtomicSwapModule,
   retained: ProofOperationRecord,
+  walletProvider: DaemonRecoveryWalletProvider,
 ): Promise<Record<string, CashuProofRecord[]>> {
-  const wallet = new CashuWallet(new CashuMint(retained.mintUrl), {
+  const wallet = await walletProvider.getWallet({
+    mintUrl: retained.mintUrl,
     unit: exactOperationUnit(retained),
   })
-  await wallet.loadMint()
   return atomicSwap.resumeExactPreparedProofOperation(wallet, retained)
+}
+
+function recoveryWallet(
+  options: ExactDaemonProofRecoveryOptions,
+): DaemonRecoveryWalletProvider {
+  return options.recoveryWalletProvider
+    ?? createDaemonRecoveryWalletProvider()
 }
 
 const DEFAULT_NUT07_POLL_DEADLINE_MS = 60_000

@@ -1,7 +1,5 @@
 import {
   CheckStateEnum,
-  Mint as CashuMint,
-  Wallet as CashuWallet,
   type ProofState,
 } from '@cashu/cashu-ts'
 import { createHash } from 'node:crypto'
@@ -40,7 +38,9 @@ import {
 import { readProfile } from './profile.ts'
 import { readOrderEphemeralSecret } from './secrets.ts'
 import {
+  createDaemonRecoveryWalletProvider,
   recoverExactDaemonProofOperation,
+  type DaemonRecoveryWalletProvider,
   type ExactDaemonProofOperationAction,
 } from './swapProtocolAdapter.ts'
 
@@ -137,8 +137,13 @@ export async function recoverDaemonDurableTradeSessions(input: {
     snapshot: DaemonState,
   ) => Promise<void>
 }): Promise<DurableTradeRecoveryResult> {
+  const recoveryWalletProvider = createDaemonRecoveryWalletProvider()
   if (input.tradeId !== undefined) {
-    return recoverDaemonDurableTrade(input.tradeId, input)
+    return recoverDaemonDurableTrade(
+      input.tradeId,
+      input,
+      recoveryWalletProvider,
+    )
   }
   const combined = createDurableTradeRecoveryResultAccumulator()
   let cursor: string | null = null
@@ -186,7 +191,11 @@ export async function recoverDaemonDurableTradeSessions(input: {
         }
         await assertProofOperationCustodyBound(operation)
       }
-      const ports = createDaemonDurableTradeRecoveryPorts(snapshot, input)
+      const ports = createDaemonDurableTradeRecoveryPorts(
+        snapshot,
+        input,
+        recoveryWalletProvider,
+      )
       const recovered = await recoverDurableTradeSessions(ports)
       combined.append(recovered)
     }
@@ -198,6 +207,7 @@ export async function recoverDaemonDurableTradeSessions(input: {
 async function recoverDaemonDurableTrade(
   tradeId: string,
   input: Parameters<typeof recoverDaemonDurableTradeSessions>[0],
+  recoveryWalletProvider: DaemonRecoveryWalletProvider,
 ): Promise<DurableTradeRecoveryResult> {
   const snapshot = await readRecoveryStorage(async () => {
     const state = await readStateScope({
@@ -215,7 +225,11 @@ async function recoverDaemonDurableTrade(
     snapshot,
   )
   return recoverDurableTradeSessions(
-    createDaemonDurableTradeRecoveryPorts(snapshot, input),
+    createDaemonDurableTradeRecoveryPorts(
+      snapshot,
+      input,
+      recoveryWalletProvider,
+    ),
   )
 }
 
@@ -258,16 +272,19 @@ async function readRecoveryStorage<T>(read: () => Promise<T>): Promise<T> {
 function createDaemonDurableTradeRecoveryPorts(
   snapshot: DaemonState,
   input: Parameters<typeof recoverDaemonDurableTradeSessions>[0],
+  recoveryWalletProvider: DaemonRecoveryWalletProvider,
 ): DurableTradeRecoveryPorts {
   return {
     ...createDaemonDurableTradeRepositories(snapshot),
     mint: {
-      inspect: inspectDaemonOperation,
+      inspect: (operation) =>
+        inspectDaemonOperation(operation, recoveryWalletProvider),
       restoreExactPersistedOutputs: async (operation) => {
         await dispatchBoundDaemonOperation(
           operation,
           'restore',
           input.exactOperationAdapter,
+          recoveryWalletProvider,
         )
       },
       resumeExactPreparedOperation: async (operation) => {
@@ -275,6 +292,7 @@ function createDaemonDurableTradeRecoveryPorts(
           operation,
           'resume',
           input.exactOperationAdapter,
+          recoveryWalletProvider,
         )
       },
     },
@@ -875,6 +893,7 @@ async function findOperationRecord(operationId: string) {
 
 async function inspectDaemonOperation(
   operation: DurableTradeProofOperationLink,
+  recoveryWalletProvider: DaemonRecoveryWalletProvider,
 ) {
   const bound = await findBoundDaemonOperation(operation)
   if (!bound) return { kind: 'foreign' as const }
@@ -887,12 +906,16 @@ async function inspectDaemonOperation(
 
   const unit =
     typeof record.metadata.unit === 'string' ? record.metadata.unit : 'sat'
-  const wallet = new CashuWallet(new CashuMint(record.mintUrl), { unit })
-  await wallet.loadMint()
+  const wallet = await recoveryWalletProvider.getWallet({
+    mintUrl: record.mintUrl,
+    unit,
+  })
   if (!wallet.checkProofsStates)
     throw new Error(
       'Cashu wallet adapter does not support proof-state recovery checks',
     )
+  // Wallet metadata is reusable within this serialized pass, but proof states
+  // are not: an earlier exact recovery action may have changed the mint state.
   const states = await wallet.checkProofsStates(
     record.inputs.map(({ id, secret }) => ({ id: id!, secret })),
   )
@@ -916,6 +939,7 @@ async function dispatchBoundDaemonOperation(
     action: ExactDaemonProofOperationAction,
       ) => Promise<void>)
     | undefined,
+  recoveryWalletProvider: DaemonRecoveryWalletProvider,
 ): Promise<void> {
   const bound = await findBoundDaemonOperation(operation)
   if (!bound)
@@ -923,10 +947,13 @@ async function dispatchBoundDaemonOperation(
       `Durable proof operation ${operation.operationId} has an invalid binding`,
     )
   await assertProofOperationCustodyBound(bound.record)
-  await (exactOperationAdapter ?? recoverExactDaemonProofOperation)(
-    bound.record,
-    action,
-  )
+  if (exactOperationAdapter !== undefined) {
+    await exactOperationAdapter(bound.record, action)
+    return
+  }
+  await recoverExactDaemonProofOperation(bound.record, action, {
+    recoveryWalletProvider,
+  })
 }
 
 async function findBoundDaemonOperation(
