@@ -104,6 +104,10 @@
       "types": "./dist/durableCustodyProofOperationRecord.d.ts",
       "import": "./dist/durableCustodyProofOperationRecord.js"
     },
+    "./durableWalletProofTransition": {
+      "types": "./dist/durableWalletProofTransition.d.ts",
+      "import": "./dist/durableWalletProofTransition.js"
+    },
     "./durableOrderCollateral": {
       "types": "./dist/durableOrderCollateral.d.ts",
       "import": "./dist/durableOrderCollateral.js"

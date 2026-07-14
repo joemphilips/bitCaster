@@ -347,27 +347,31 @@ export async function splitAvailableSatProofsForCtfCollateral(
   const proofOperationStore =
     input.proofOperationStore ?? DAEMON_CTF_PROOF_OPERATION_STORE
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
-  const unit = defaultCollateralUnit(baseAsset)
-  const wallet = createWallet(mintUrl, secrets, deps, baseAsset)
-  await wallet.loadMint()
   const existing = await proofOperationStore.getProofOperation(operationId)
   if (existing) {
-    const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(
-      mintUrl,
-      wallet,
-      deps,
+    const persistedBaseAsset = normalizeMarketBaseAsset(
+      readStringMetadata(existing, 'baseAsset'),
     )
-    const grossCtfInputSats = computeGrossCtfInputAmountSats({
-      faceAmountSats: amountSats,
-      keyset: grossPlanningKeyset,
-    })
+    if (persistedBaseAsset !== baseAsset) {
+      throw new Error(
+        `Proof operation ${operationId} has a conflicting base asset`,
+      )
+    }
+    const unit = requireProofUnitMetadata(existing)
+    const persistedAmount = readPositiveNumberMetadata(existing, 'amount')
+    const wallet = existing.state === 'completed'
+      ? undefined
+      : createWallet(mintUrl, secrets, deps, baseAsset, unit)
+    if (wallet) await wallet.loadMint()
     const split = await splitRegularProofsWithOperation({
       mintUrl,
       baseAsset,
+      unit,
       operationId,
       wallet,
       proofs: [],
-      amountSats: grossCtfInputSats,
+      amountSubunits: persistedAmount,
+      resumeInputAuthority: 'persisted-operation',
       proofOperationStore,
     })
     const exact = await validateExactCtfCollateralFromProofs(
@@ -379,6 +383,9 @@ export async function splitAvailableSatProofsForCtfCollateral(
     return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
   }
 
+  const unit = defaultCollateralUnit(baseAsset)
+  const wallet = createWallet(mintUrl, secrets, deps, baseAsset)
+  await wallet.loadMint()
   const availableRows =
     (
       await readStateScope({
@@ -1549,7 +1556,23 @@ function readNumberMetadata(entry: ProofOperationRecord, key: string): number {
   return value
 }
 
-function readStringMetadata(entry: ProofOperationRecord, key: string): string {
+function readPositiveNumberMetadata(
+  entry: Pick<ProofOperationRecord, 'operationId' | 'metadata'>,
+  key: string,
+): number {
+  const value = entry.metadata[key]
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw new Error(
+      `Proof operation ${entry.operationId} has invalid numeric metadata ${key}`,
+    )
+  }
+  return value as number
+}
+
+function readStringMetadata(
+  entry: Pick<ProofOperationRecord, 'operationId' | 'metadata'>,
+  key: string,
+): string {
   const value = entry.metadata[key]
   if (typeof value !== 'string') {
     throw new Error(
@@ -1560,7 +1583,7 @@ function readStringMetadata(entry: ProofOperationRecord, key: string): string {
 }
 
 function requireProofUnitMetadata(
-  entry: ProofOperationRecord,
+  entry: Pick<ProofOperationRecord, 'operationId' | 'metadata'>,
 ): CashuProofUnit {
   const unit = parseCashuProofUnit(readStringMetadata(entry, 'unit'))
   if (unit === null) {

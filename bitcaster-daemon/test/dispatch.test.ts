@@ -6,6 +6,10 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { getEncodedToken, type MintKeys, type Proof } from '@cashu/cashu-ts'
 import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
+import type {
+  CtfProofOperationRecord,
+  CtfProofOperationStore,
+} from '@bitcaster-market/client-sdk/ctfSplit'
 import {
   daemonWalletCustodyScope,
   DaemonDurableCustodyLease,
@@ -222,6 +226,76 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         } finally {
           await writeState(priorState ?? emptyDaemonState())
         }
+      },
+    )
+
+    await t.test(
+      'completed collateral split resumes its persisted msat amount without current mint planning',
+      async () => {
+        const persisted: CtfProofOperationRecord = {
+          operationId: 'persisted-msat-collateral',
+          kind: 'regular-split',
+          state: 'completed',
+          mintUrl: 'https://mint-a.example',
+          inputs: [cashuProof(101, 'input')],
+          outputs: { send: [], keep: [] },
+          metadata: {
+            amount: 100,
+            baseAsset: 'sat',
+            unit: 'msat',
+            unselectedProofs: [],
+          },
+          resultProofs: {
+            send: [cashuProof(100, 'send')],
+            keep: [cashuProof(1, 'keep')],
+          },
+          createdAt: 1,
+          updatedAt: 2,
+        }
+        const store: CtfProofOperationStore = {
+          async getProofOperation() {
+            return structuredClone(persisted)
+          },
+          async prepareProofOperation() {
+            throw new Error('completed recovery must not prepare')
+          },
+          async markProofOperationMintSubmitted() {
+            throw new Error('completed recovery must not submit')
+          },
+          async markProofOperationCompleted() {
+            throw new Error('completed recovery must not complete again')
+          },
+        }
+        const requestedUnits: Array<string | null | undefined> = []
+        let loadMintCalls = 0
+
+        const result = await splitAvailableSatProofsForCtfCollateral({
+          amountSats: 100,
+          mintUrl: 'https://mint-a.example',
+          operationId: persisted.operationId,
+          secrets,
+          proofOperationStore: store,
+          deps: {
+            createCashuWallet(_mintUrl, unit) {
+              requestedUnits.push(unit)
+              return {
+                ...unusedWallet(),
+                async loadMint() {
+                  loadMintCalls += 1
+                },
+              }
+            },
+            async resolveInputFeePpkByKeyset() {
+              return { '009a1f293253e41e': 0 }
+            },
+          },
+          baseAsset: 'sat',
+        })
+
+        assert.deepEqual(requestedUnits, [])
+        assert.equal(loadMintCalls, 0)
+        assert.deepEqual(result.inputs, [cashuProof(100, 'send')])
+        assert.deepEqual(result.spent, [cashuProof(101, 'input')])
       },
     )
 

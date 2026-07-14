@@ -302,6 +302,7 @@ export async function recoverExactDaemonProofOperation(
         }),
         proofs: [],
         amountSubunits: amount,
+        resumeInputAuthority: 'persisted-operation',
         proofOperationStore: DAEMON_PROOF_OPERATION_STORE as never,
       })
       return

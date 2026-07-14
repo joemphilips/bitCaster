@@ -24,9 +24,19 @@ import {
 import {
   defaultCollateralUnit,
   isCollateralUnitOf,
+  parseCashuProofUnit,
   parseMarketBaseAsset,
+  type CashuProofUnit,
   type MarketBaseAsset,
 } from "./marketUnits.ts";
+import {
+  DURABLE_WALLET_PROOF_TRANSITION_METADATA_KEY,
+  addDurableWalletProofTransitionMetadata,
+  createDurableWalletProofTransition,
+  requireDurableWalletProofTransition,
+  type DurableWalletProofResultDisposition,
+  type DurableWalletProofTransition,
+} from "./durableWalletProofTransition.ts";
 
 export interface CtfConditionalKeysetInfo {
   id: string;
@@ -66,11 +76,18 @@ export type CtfProofOperationKind =
   | "ctf-redeem"
   | "regular-split";
 /** `failed` remains readable for records written by earlier client versions. */
-export type ProofOperationState = "prepared" | "mint-submitted" | "completed" | "Failed" | "failed";
+export type ProofOperationState =
+  | "prepared"
+  | "mint-submitted"
+  | "completed"
+  | "Failed"
+  | "failed";
 
 export class ProofOperationPendingError extends Error {
   constructor(operationId: string) {
-    super(`proof operation ${operationId} is still pending or partially spent at the mint`);
+    super(
+      `proof operation ${operationId} is still pending or partially spent at the mint`,
+    );
     this.name = "ProofOperationPendingError";
   }
 }
@@ -150,7 +167,11 @@ export interface SplitCollateralSelection {
   grossInputSats: number;
 }
 
-export type CtfCollateralBaseAsset = MarketBaseAsset | string | null | undefined;
+export type CtfCollateralBaseAsset =
+  | MarketBaseAsset
+  | string
+  | null
+  | undefined;
 
 export interface CtfGrossInputPlanningKeyset {
   id: string;
@@ -275,11 +296,16 @@ export interface CompleteSetMergeInputSelection {
 export async function splitRegularProofsWithOperation(params: {
   mintUrl: string;
   baseAsset?: CtfCollateralBaseAsset;
+  unit?: CashuProofUnit;
   operationId: string;
-  wallet: RegularSplitWallet;
+  wallet?: RegularSplitWallet;
   proofs: Proof[];
   amountSubunits?: number;
   amountSats?: number;
+  resumeInputAuthority?: "persisted-operation";
+  resultDispositions?: Readonly<
+    Record<"send" | "keep", DurableWalletProofResultDisposition>
+  >;
   proofOperationStore: CtfProofOperationStore;
   restoreOutputGroups?: (
     mintUrl: string,
@@ -290,22 +316,51 @@ export async function splitRegularProofsWithOperation(params: {
     params.amountSubunits ?? params.amountSats,
     "amountSubunits",
   );
+  const baseAsset = requireMarketBaseAsset(
+    params.baseAsset,
+    "regular split baseAsset",
+  );
+  const unit = requireRegularSplitUnit(params.unit, baseAsset);
+  const mintUrl = normalizeRegularSplitMintUrl(params.mintUrl);
 
   const normalizedProofs = params.proofs.map(normalizeProof);
+  const resumeInputAuthority = requireRegularSplitResumeInputAuthority(
+    params.resumeInputAuthority,
+  );
   const existing = await params.proofOperationStore.getProofOperation(
     params.operationId,
   );
   if (existing) {
+    if (
+      resumeInputAuthority === "persisted-operation" &&
+      normalizedProofs.length !== 0
+    ) {
+      throw new Error(
+        "persisted regular split resume cannot accept fresh proof authority",
+      );
+    }
+    assertRegularSplitReplayBinding(existing, {
+      mintUrl,
+      amountSubunits,
+      baseAsset,
+      unit,
+      proofs: normalizedProofs,
+      usePersistedProofAuthority:
+        resumeInputAuthority === "persisted-operation",
+    });
     return resumeRegularSplit(
-      params.mintUrl,
+      mintUrl,
       existing,
       params.wallet,
       params.proofOperationStore,
       params.restoreOutputGroups,
     );
   }
+  if (resumeInputAuthority === "persisted-operation") {
+    throw new Error("persisted regular split operation is missing");
+  }
 
-  if (!params.wallet.prepareSwapToSend || !params.wallet.completeSwap) {
+  if (!params.wallet?.prepareSwapToSend || !params.wallet.completeSwap) {
     throw new Error(
       "Cashu wallet adapter does not support resumable split preparation",
     );
@@ -317,26 +372,41 @@ export async function splitRegularProofsWithOperation(params: {
     undefined,
     { send: { type: "random" }, keep: { type: "random" } },
   );
+  const unselectedProofs = preview.unselectedProofs ?? [];
+  const walletProofTransition = createDurableWalletProofTransition({
+    inputSource: "wallet",
+    plannedOutputLabels: ["send", "keep"],
+    resultGroups:
+      params.resultDispositions ?? defaultRegularSplitResultDispositions(),
+    passthroughResultGroups:
+      unselectedProofs.length === 0 ? {} : { keep: unselectedProofs },
+  });
+  const metadata = addDurableWalletProofTransitionMetadata(
+    {
+      amount: amountToNumber(preview.amount),
+      fees: amountToNumber(preview.fees),
+      keysetId: preview.keysetId,
+      baseAsset,
+      unit,
+      unselectedProofs,
+    },
+    walletProofTransition,
+  );
   await params.proofOperationStore.prepareProofOperation({
     operationId: params.operationId,
     kind: "regular-split",
-    mintUrl: params.mintUrl,
+    mintUrl,
     inputs: preview.inputs.map(normalizeProof),
     outputs: {
       send: serializeOutputDataArray(preview.sendOutputs ?? []),
       keep: serializeOutputDataArray(preview.keepOutputs ?? []),
     },
-    metadata: {
-      amount: amountToNumber(preview.amount),
-      fees: amountToNumber(preview.fees),
-      keysetId: preview.keysetId,
-      baseAsset: requireMarketBaseAsset(params.baseAsset, "regular split baseAsset"),
-      unit: defaultCollateralUnit(params.baseAsset),
-      unselectedProofs: preview.unselectedProofs ?? [],
-    },
+    metadata,
   });
 
-  await params.proofOperationStore.markProofOperationMintSubmitted(params.operationId);
+  await params.proofOperationStore.markProofOperationMintSubmitted(
+    params.operationId,
+  );
   const result = await params.wallet.completeSwap(preview);
   const completed = {
     send: result.send.map(normalizeProof),
@@ -347,6 +417,15 @@ export async function splitRegularProofsWithOperation(params: {
     completed,
   );
   return { ...completed, spent: preview.inputs.map(normalizeProof) };
+}
+
+function defaultRegularSplitResultDispositions(): Readonly<
+  Record<"send" | "keep", DurableWalletProofResultDisposition>
+> {
+  return {
+    send: { kind: "wallet", asset: "regular", reservedBy: null },
+    keep: { kind: "wallet", asset: "regular", reservedBy: null },
+  };
 }
 
 export async function selectCollateralForCtfSplit(
@@ -426,7 +505,8 @@ export function computeGrossCtfInputAmountSubunits(params: {
   for (let attempt = 0; attempt < 32; attempt += 1) {
     const feeSats = ctfInputFeeForGrossAmount(keyset, grossAmountSubunits);
     const nextGrossAmountSubunits = faceAmountSubunits + feeSats;
-    if (nextGrossAmountSubunits === grossAmountSubunits) return grossAmountSubunits;
+    if (nextGrossAmountSubunits === grossAmountSubunits)
+      return grossAmountSubunits;
     grossAmountSubunits = nextGrossAmountSubunits;
   }
 
@@ -480,7 +560,19 @@ export async function splitRootCompleteSetForSwap(params: {
     params.amountSubunits ?? params.amountSats,
     "amountSubunits",
   );
-  const transport = params.transport ?? new CashuMintCtfSplitTransport(params.mintUrl);
+  const transport =
+    params.transport ?? new CashuMintCtfSplitTransport(params.mintUrl);
+  const existing = await params.proofOperationStore.getProofOperation(
+    params.operationId,
+  );
+  if (existing) {
+    return resumeRootCompleteSetForSwap(
+      params,
+      transport,
+      existing,
+      amountSubunits,
+    );
+  }
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
     {
@@ -496,6 +588,26 @@ export async function splitRootCompleteSetForSwap(params: {
   );
   const lockCollections = new Set(outcomeLegs.lockCollections);
   const keepCollections = new Set(outcomeLegs.keepCollections);
+  const walletProofTransition = createDurableWalletProofTransition({
+    inputSource: "wallet",
+    plannedOutputLabels: Object.keys(outcomeCollectionKeysets),
+    resultGroups: Object.fromEntries([
+      ...outcomeLegs.lockCollections.map(
+        (collection) => [collection, { kind: "operation" as const }] as const,
+      ),
+      ...outcomeLegs.keepCollections.map(
+        (collection) =>
+          [
+            collection,
+            {
+              kind: "wallet" as const,
+              asset: "conditional" as const,
+              reservedBy: null,
+            },
+          ] as const,
+      ),
+    ]),
+  });
   const normalizedCollateral = params.collateralProofs.map(normalizeProof);
   const proofsByCollection = await splitCompleteSetWithOperation({
     mintUrl: params.mintUrl,
@@ -509,6 +621,7 @@ export async function splitRootCompleteSetForSwap(params: {
     proofOperationStore: params.proofOperationStore,
     proofStateChecker: params.proofStateChecker,
     restoreOutputGroups: params.restoreOutputGroups,
+    walletProofTransition,
     makeOutputs: ({ collection, amountSubunits, keyset }) => {
       if (lockCollections.has(collection)) {
         return RegularOutputData.createP2PKData(
@@ -528,25 +641,154 @@ export async function splitRootCompleteSetForSwap(params: {
       );
     },
   });
+  const committed = await params.proofOperationStore.getProofOperation(
+    params.operationId,
+  );
+  if (!committed) {
+    throw new Error(`proof operation ${params.operationId} was not retained`);
+  }
+  const replay = requireRootSplitReplayBinding(
+    params,
+    committed,
+    amountSubunits,
+  );
+  return rootCompleteSetSwapResult(
+    params.operationId,
+    committed,
+    replay,
+    proofsByCollection,
+  );
+}
 
+async function resumeRootCompleteSetForSwap(
+  params: Parameters<typeof splitRootCompleteSetForSwap>[0],
+  transport: CtfSplitTransport,
+  entry: CtfProofOperationRecord,
+  amountSubunits: number,
+): Promise<MintSplitForSwapResult> {
+  const replay = requireRootSplitReplayBinding(params, entry, amountSubunits);
+  const proofsByCollection = await resumeCtfSplit(
+    params.mintUrl,
+    entry,
+    transport,
+    params.proofOperationStore,
+    params.proofStateChecker,
+    params.restoreOutputGroups,
+  );
+  return rootCompleteSetSwapResult(
+    params.operationId,
+    entry,
+    replay,
+    proofsByCollection,
+  );
+}
+
+function rootCompleteSetSwapResult(
+  operationId: string,
+  entry: CtfProofOperationRecord,
+  replay: { outcomeLegs: ComplementaryOutcomeLegResolution },
+  proofsByCollection: Record<string, Proof[]>,
+): MintSplitForSwapResult {
   return {
-    resolvedLockOutcomeSetId: outcomeLegs.resolvedLockOutcomeSetId,
-    resolvedKeepOutcomeSetId: outcomeLegs.resolvedKeepOutcomeSetId,
-    lockCollections: outcomeLegs.lockCollections,
-    keepCollections: outcomeLegs.keepCollections,
+    resolvedLockOutcomeSetId: replay.outcomeLegs.resolvedLockOutcomeSetId,
+    resolvedKeepOutcomeSetId: replay.outcomeLegs.resolvedKeepOutcomeSetId,
+    lockCollections: replay.outcomeLegs.lockCollections,
+    keepCollections: replay.outcomeLegs.keepCollections,
     lockedProofs: requireOutcomeProofsForCollections(
       proofsByCollection,
-      outcomeLegs.lockCollections,
-      params.operationId,
+      replay.outcomeLegs.lockCollections,
+      operationId,
     ),
     keepProofs: requireOutcomeProofsForCollections(
       proofsByCollection,
-      outcomeLegs.keepCollections,
-      params.operationId,
+      replay.outcomeLegs.keepCollections,
+      operationId,
     ),
     proofsByCollection,
-    spentSatProofs: normalizedCollateral,
+    spentSatProofs: entry.inputs.map(normalizeProof),
   };
+}
+
+function requireRootSplitReplayBinding(
+  params: Parameters<typeof splitRootCompleteSetForSwap>[0],
+  entry: CtfProofOperationRecord,
+  amountSubunits: number,
+): {
+  outcomeLegs: ComplementaryOutcomeLegResolution;
+} {
+  const metadata = entry.metadata as {
+    conditionId?: unknown;
+    amountSubunits?: unknown;
+    baseAsset?: unknown;
+    unit?: unknown;
+    outcomeCollectionKeysets?: unknown;
+  };
+  const baseAsset = requireMarketBaseAsset(
+    params.baseAsset,
+    "CTF split baseAsset",
+  );
+  const outcomeCollectionKeysets = requireOutcomeCollectionKeysets(
+    metadata.outcomeCollectionKeysets,
+  );
+  if (
+    entry.kind !== "ctf-split" ||
+    entry.mintUrl !== params.mintUrl ||
+    metadata.conditionId !== params.conditionId ||
+    metadata.amountSubunits !== amountSubunits ||
+    metadata.baseAsset !== baseAsset ||
+    metadata.unit !== defaultCollateralUnit(baseAsset) ||
+    !hasExactObjectKeys(entry.outputs, Object.keys(outcomeCollectionKeysets))
+  ) {
+    throw new Error(
+      `proof operation ${entry.operationId} conflicts with the requested CTF split`,
+    );
+  }
+  const outcomeLegs = resolveComplementaryOutcomeLegs(
+    params.lockOutcomeSetId,
+    params.keepOutcomeSetId,
+    outcomeCollectionKeysets,
+  );
+  const policy = requireDurableWalletProofTransition(
+    entry.metadata,
+    Object.keys(entry.outputs),
+  );
+  const lockCollections = new Set(outcomeLegs.lockCollections);
+  const keepCollections = new Set(outcomeLegs.keepCollections);
+  for (const [collection, disposition] of Object.entries(policy.resultGroups)) {
+    if (
+      (lockCollections.has(collection) && disposition.kind !== "operation") ||
+      (keepCollections.has(collection) && disposition.kind !== "wallet") ||
+      (!lockCollections.has(collection) && !keepCollections.has(collection))
+    ) {
+      throw new Error(
+        `proof operation ${entry.operationId} has a conflicting CTF split disposition`,
+      );
+    }
+  }
+  return { outcomeLegs };
+}
+
+function requireOutcomeCollectionKeysets(
+  value: unknown,
+): Record<string, string> {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length < 2
+  ) {
+    throw new Error("persisted CTF split keysets are invalid");
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (
+    entries.some(
+      ([collection, keyset]) =>
+        !collection || typeof keyset !== "string" || !keyset,
+    )
+  ) {
+    throw new Error("persisted CTF split keysets are invalid");
+  }
+  return Object.fromEntries(entries) as Record<string, string>;
 }
 
 /**
@@ -686,7 +928,8 @@ export async function resolveRootPreflightOutputAmountSubunits(params: {
   return preflightOutputAmountSubunits;
 }
 
-export const resolveRootPreflightOutputAmountSats = resolveRootPreflightOutputAmountSubunits;
+export const resolveRootPreflightOutputAmountSats =
+  resolveRootPreflightOutputAmountSubunits;
 
 export async function resolveRootDirectLockOutputAmountSubunits(params: {
   mintUrl: string;
@@ -740,7 +983,8 @@ export async function resolveRootDirectLockOutputAmountSubunits(params: {
   return outputAmountSubunits;
 }
 
-export const resolveRootDirectLockOutputAmountSats = resolveRootDirectLockOutputAmountSubunits;
+export const resolveRootDirectLockOutputAmountSats =
+  resolveRootDirectLockOutputAmountSubunits;
 
 export async function splitRootCompleteSet(
   transport: CtfSplitTransport,
@@ -924,11 +1168,7 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
     } catch {
       conditionalKeysets = [];
     }
-    return selectRootPartitionKeysets(
-      condition,
-      selection,
-      conditionalKeysets,
-    );
+    return selectRootPartitionKeysets(condition, selection, conditionalKeysets);
   }
 
   async getConditionalKeysets(query?: {
@@ -973,6 +1213,7 @@ export async function splitCompleteSetWithOperation(params: {
     mintUrl: string,
     outputs: Record<string, StoredOutputData[]>,
   ) => Promise<Record<string, Proof[]>>;
+  walletProofTransition?: DurableWalletProofTransition;
   makeOutputs: (input: {
     collection: string;
     amountSubunits: number;
@@ -1020,14 +1261,37 @@ export async function splitCompleteSetWithOperation(params: {
           metadata: {
             conditionId: params.conditionId,
             amountSubunits: params.amountSubunits,
-            baseAsset: requireMarketBaseAsset(params.baseAsset, "CTF split baseAsset"),
+            baseAsset: requireMarketBaseAsset(
+              params.baseAsset,
+              "CTF split baseAsset",
+            ),
             unit: defaultCollateralUnit(params.baseAsset),
             outcomeCollectionKeysets: params.outcomeCollectionKeysets,
+            outcomeByKeyset: Object.fromEntries(
+              Object.entries(params.outcomeCollectionKeysets).map(
+                ([outcomeCollection, keysetId]) => [
+                  keysetId,
+                  {
+                    conditionId: params.conditionId,
+                    outcomeCollection,
+                    marketId: `${params.conditionId}-${outcomeCollection}`,
+                  },
+                ],
+              ),
+            ),
+            ...(params.walletProofTransition
+              ? {
+                  [DURABLE_WALLET_PROOF_TRANSITION_METADATA_KEY]:
+                    params.walletProofTransition,
+                }
+              : {}),
           },
         });
       },
       onMintSubmitted: async () => {
-        await params.proofOperationStore.markProofOperationMintSubmitted(params.operationId);
+        await params.proofOperationStore.markProofOperationMintSubmitted(
+          params.operationId,
+        );
       },
     },
   );
@@ -1058,7 +1322,10 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     keyset: MintKeys;
   }) => CtfSplitOutputData[];
 }): Promise<MergeCompleteSetToRegularResult> {
-  if (!Number.isSafeInteger(params.outputAmountSubunits) || params.outputAmountSubunits <= 0) {
+  if (
+    !Number.isSafeInteger(params.outputAmountSubunits) ||
+    params.outputAmountSubunits <= 0
+  ) {
     throw new Error("outputAmountSubunits must be a positive safe integer");
   }
   if (!params.transport.postConvert) {
@@ -1107,13 +1374,18 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     metadata: {
       conditionId: params.conditionId,
       outputAmountSubunits: params.outputAmountSubunits,
-      baseAsset: requireMarketBaseAsset(params.baseAsset, "CTF merge baseAsset"),
+      baseAsset: requireMarketBaseAsset(
+        params.baseAsset,
+        "CTF merge baseAsset",
+      ),
       unit: defaultCollateralUnit(params.baseAsset),
       inputsByCollection: normalizedInputsByCollection,
     },
   });
 
-  await params.proofOperationStore.markProofOperationMintSubmitted(params.operationId);
+  await params.proofOperationStore.markProofOperationMintSubmitted(
+    params.operationId,
+  );
   const regularProofs = await executeCtfMergeToRegular({
     transport: params.transport,
     conditionId: params.conditionId,
@@ -1138,7 +1410,10 @@ export function selectCompleteSetMergeInputs(params: {
   inputFeePpkByKeyset: Record<string, number>;
   maxScanExtraSats?: number;
 }): CompleteSetMergeInputSelection | null {
-  if (!Number.isSafeInteger(params.desiredOutputSats) || params.desiredOutputSats <= 0) {
+  if (
+    !Number.isSafeInteger(params.desiredOutputSats) ||
+    params.desiredOutputSats <= 0
+  ) {
     throw new Error("desiredOutputSats must be a positive safe integer");
   }
   const normalized = normalizeProofGroups(params.conditionalProofsByCollection);
@@ -1236,12 +1511,19 @@ async function resumeCtfMergeToRegular(
       );
     }
     const outputDataByCollection = deserializeCtfOutputGroups(entry.outputs);
-    const outputData = outputDataByCollection["*"] ?? outputDataByCollection.regular ?? [];
+    const outputData =
+      outputDataByCollection["*"] ?? outputDataByCollection.regular ?? [];
     if (outputData.length === 0) {
-      throw new Error(`proof operation ${entry.operationId} has no regular merge outputs`);
+      throw new Error(
+        `proof operation ${entry.operationId} has no regular merge outputs`,
+      );
     }
-    const regularKeyset = await transport.getKeys(outputData[0].blindedMessage.id);
-    await proofOperationStore.markProofOperationMintSubmitted(entry.operationId);
+    const regularKeyset = await transport.getKeys(
+      outputData[0].blindedMessage.id,
+    );
+    await proofOperationStore.markProofOperationMintSubmitted(
+      entry.operationId,
+    );
     completed = await executeCtfMergeToRegular({
       transport,
       conditionId: metadata.conditionId,
@@ -1253,10 +1535,9 @@ async function resumeCtfMergeToRegular(
     throw new ProofOperationPendingError(entry.operationId);
   }
 
-  await proofOperationStore.markProofOperationCompleted(
-    entry.operationId,
-    { regular: completed },
-  );
+  await proofOperationStore.markProofOperationCompleted(entry.operationId, {
+    regular: completed,
+  });
   return completed;
 }
 
@@ -1293,7 +1574,9 @@ async function executeCtfMergeToRegular(params: {
   });
   const signatures = response.signatures["*"];
   if (!signatures) {
-    throw new Error("Mint did not return merge signatures for regular collateral");
+    throw new Error(
+      "Mint did not return merge signatures for regular collateral",
+    );
   }
   if (signatures.length !== params.outputData.length) {
     throw new Error(
@@ -1350,7 +1633,10 @@ async function resumeCtfSplit(
     entry.inputs.map(({ id, secret }) => ({ id, secret })),
   );
   if (allStates(states, CheckStateEnum.SPENT)) {
-    const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(mintUrl, entry.outputs);
+    const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(
+      mintUrl,
+      entry.outputs,
+    );
     await proofOperationStore.markProofOperationCompleted(
       entry.operationId,
       restored,
@@ -1386,7 +1672,9 @@ async function resumeCtfSplit(
         makeOutputs: ({ collection }) =>
           outputDataByCollection[collection] ?? [],
         onMintSubmitted: async () => {
-          await proofOperationStore.markProofOperationMintSubmitted(entry.operationId);
+          await proofOperationStore.markProofOperationMintSubmitted(
+            entry.operationId,
+          );
         },
       },
     );
@@ -1400,17 +1688,114 @@ async function resumeCtfSplit(
   throw new ProofOperationPendingError(entry.operationId);
 }
 
-function readOperationBaseAsset(metadata: Record<string, unknown>): MarketBaseAsset {
+function readOperationBaseAsset(
+  metadata: Record<string, unknown>,
+): MarketBaseAsset {
   return requireMarketBaseAsset(
     typeof metadata.baseAsset === "string" ? metadata.baseAsset : undefined,
     "proof operation baseAsset",
   );
 }
 
+function assertRegularSplitReplayBinding(
+  entry: CtfProofOperationRecord,
+  requested: {
+    mintUrl: string;
+    amountSubunits: number;
+    baseAsset: MarketBaseAsset;
+    unit: CashuProofUnit;
+    proofs: Proof[];
+    usePersistedProofAuthority: boolean;
+  },
+): void {
+  const storedBaseAsset =
+    typeof entry.metadata.baseAsset === "string"
+      ? parseMarketBaseAsset(entry.metadata.baseAsset)
+      : null;
+  const storedUnit =
+    typeof entry.metadata.unit === "string"
+      ? parseCashuProofUnit(entry.metadata.unit)
+      : null;
+  const storedCandidates = [...entry.inputs, ...readUnselectedProofs(entry)];
+  if (
+    entry.kind !== "regular-split" ||
+    normalizeRegularSplitMintUrl(entry.mintUrl) !== requested.mintUrl ||
+    entry.metadata.amount !== requested.amountSubunits ||
+    storedBaseAsset !== requested.baseAsset ||
+    storedUnit !== requested.unit ||
+    !hasExactObjectKeys(entry.outputs, ["send", "keep"]) ||
+    (!requested.usePersistedProofAuthority &&
+      !sameRegularProofAuthority(storedCandidates, requested.proofs))
+  ) {
+    throw new Error(
+      `proof operation ${entry.operationId} conflicts with the requested regular split`,
+    );
+  }
+}
+
+function requireRegularSplitResumeInputAuthority(
+  value: unknown,
+): "persisted-operation" | undefined {
+  if (value === undefined || value === "persisted-operation") return value;
+  throw new Error("regular split resume input authority is invalid");
+}
+
+function sameRegularProofAuthority(
+  stored: readonly Proof[],
+  requested: readonly Proof[],
+): boolean {
+  if (stored.length !== requested.length) return false;
+  const requestedByIdentity = new Map(
+    requested.map((proof) => [regularProofAuthorityIdentity(proof), proof]),
+  );
+  if (requestedByIdentity.size !== requested.length) return false;
+  return stored.every((proof) => {
+    const candidate = requestedByIdentity.get(
+      regularProofAuthorityIdentity(proof),
+    );
+    return candidate !== undefined && proof.C === candidate.C;
+  });
+}
+
+function regularProofAuthorityIdentity(proof: Proof): string {
+  return JSON.stringify([proof.id, amountToNumber(proof.amount), proof.secret]);
+}
+
+function hasExactObjectKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return (
+    actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index])
+  );
+}
+
+function normalizeRegularSplitMintUrl(value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("regular split mint URL is invalid");
+  }
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.search !== "" ||
+    parsed.hash !== ""
+  ) {
+    throw new Error("regular split mint URL is invalid");
+  }
+  return parsed.toString().replace(/\/+$/, "");
+}
+
 async function resumeRegularSplit(
   mintUrl: string,
   entry: CtfProofOperationRecord,
-  wallet: RegularSplitWallet,
+  wallet: RegularSplitWallet | undefined,
   proofOperationStore: CtfProofOperationStore,
   restoreOutputGroupsOverride?: (
     mintUrl: string,
@@ -1434,7 +1819,7 @@ async function resumeRegularSplit(
       `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
     );
   }
-  if (!wallet.checkProofsStates) {
+  if (!wallet?.checkProofsStates) {
     throw new Error(
       "Cashu wallet adapter does not support proof-state recovery checks",
     );
@@ -1445,7 +1830,10 @@ async function resumeRegularSplit(
   );
   let completed: { send: Proof[]; keep: Proof[] };
   if (allStates(states, CheckStateEnum.SPENT)) {
-    const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(mintUrl, entry.outputs);
+    const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(
+      mintUrl,
+      entry.outputs,
+    );
     completed = {
       send: (restored.send ?? []).map(normalizeProof),
       keep: [...(restored.keep ?? []), ...readUnselectedProofs(entry)].map(
@@ -1458,7 +1846,9 @@ async function resumeRegularSplit(
         "Cashu wallet adapter does not support prepared split completion",
       );
     }
-    await proofOperationStore.markProofOperationMintSubmitted(entry.operationId);
+    await proofOperationStore.markProofOperationMintSubmitted(
+      entry.operationId,
+    );
     const result = await wallet.completeSwap(entryToSwapPreview(entry));
     completed = {
       send: result.send.map(normalizeProof),
@@ -1694,7 +2084,9 @@ function selectKeysetsMatchingSelection(
     for (const outcome of collectionSet) covered.add(outcome);
   }
 
-  return outcomeSetsEqual(covered, targetSet) ? Object.fromEntries(expanded) : exact;
+  return outcomeSetsEqual(covered, targetSet)
+    ? Object.fromEntries(expanded)
+    : exact;
 }
 
 function normalizeRootConditionKeysets(
@@ -1791,6 +2183,21 @@ function requireMarketBaseAsset(
   return parsed;
 }
 
+function requireRegularSplitUnit(
+  value: CashuProofUnit | undefined,
+  baseAsset: MarketBaseAsset,
+): CashuProofUnit {
+  const unit =
+    value === undefined
+      ? defaultCollateralUnit(baseAsset)
+      : parseCashuProofUnit(value);
+  if (!unit) throw new Error("regular split unit is invalid");
+  if (!isCollateralUnitOf(unit, baseAsset)) {
+    throw new Error("regular split unit does not match base asset");
+  }
+  return unit;
+}
+
 function requirePositiveSafeInteger(value: unknown, name: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive safe integer`);
@@ -1805,14 +2212,18 @@ function validateKeysetUnit(
 ): void {
   if (keyset.unit == null) {
     if (expectedBaseAsset === "sat") return;
-    throw new Error(`${context} is missing unit metadata for ${expectedBaseAsset}`);
+    throw new Error(
+      `${context} is missing unit metadata for ${expectedBaseAsset}`,
+    );
   }
   if (!isCollateralUnitOf(keyset.unit, expectedBaseAsset)) {
     const parsed = parseMarketBaseAsset(keyset.unit);
     if (!parsed) {
       throw new Error(`${context} has unsupported unit ${keyset.unit}`);
     }
-    throw new Error(`${context} unit mismatch: expected ${expectedBaseAsset}, got ${parsed}`);
+    throw new Error(
+      `${context} unit mismatch: expected ${expectedBaseAsset}, got ${parsed}`,
+    );
   }
 }
 
@@ -1977,7 +2388,9 @@ function validateSignature(
 }
 
 export function serializeOutputDataArray(
-  outputs: Array<Pick<CtfSplitOutputData, "blindedMessage" | "blindingFactor" | "secret">>,
+  outputs: Array<
+    Pick<CtfSplitOutputData, "blindedMessage" | "blindingFactor" | "secret">
+  >,
 ): StoredOutputData[] {
   return outputs.map((output) => ({
     blindedMessage: {
@@ -2067,7 +2480,9 @@ export function deserializeOutputGroups(
   );
 }
 
-export function entryToSwapPreview(entry: CtfProofOperationRecord): SwapPreview {
+export function entryToSwapPreview(
+  entry: CtfProofOperationRecord,
+): SwapPreview {
   const metadata = entry.metadata as {
     amount?: unknown;
     fees?: unknown;

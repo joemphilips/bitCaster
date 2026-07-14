@@ -23,6 +23,10 @@ import {
   type CtfProofOperationStore,
 } from "./ctfSplit.ts";
 import { amountToNumber } from "./proofSelection.ts";
+import {
+  addDurableWalletProofTransitionMetadata,
+  createDurableWalletProofTransition,
+} from "./durableWalletProofTransition.ts";
 
 /**
  * Shared NUT-CTF redeem helpers.
@@ -166,24 +170,34 @@ export async function redeemOutcomeLegWithOperation(params: {
     oracleWitness,
   });
 
+  const walletProofTransition = createDurableWalletProofTransition({
+    inputSource: "wallet",
+    plannedOutputLabels: ["regular"],
+    resultGroups: {
+      regular: { kind: "wallet", asset: "regular", reservedBy: null },
+    },
+  });
   await params.proofOperationStore.prepareProofOperation({
     operationId: params.operationId,
     kind: "ctf-redeem",
     mintUrl,
     inputs,
     outputs: { regular: serializedOutputs },
-    metadata: {
-      conditionId: params.conditionId,
-      outcome: params.outcome,
-      amountSats: amountSubunits,
-      amountSubunits,
-      keysetId: outcomeKeysetId,
-      regularKeysetId: regularKeyset.id,
-      unit: params.unit,
-      redeemRequestVersion: CTF_REDEEM_REQUEST_VERSION,
-      oracleWitness,
-      redeemRequestDigest,
-    },
+    metadata: addDurableWalletProofTransitionMetadata(
+      {
+        conditionId: params.conditionId,
+        outcome: params.outcome,
+        amountSats: amountSubunits,
+        amountSubunits,
+        keysetId: outcomeKeysetId,
+        regularKeysetId: regularKeyset.id,
+        unit: params.unit,
+        redeemRequestVersion: CTF_REDEEM_REQUEST_VERSION,
+        oracleWitness,
+        redeemRequestDigest,
+      },
+      walletProofTransition,
+    ),
   });
 
   return executeCtfRedeem({
@@ -284,7 +298,9 @@ export async function readVerifiedCtfLosingOutcomeEvidence(input: {
     returned !== issued ||
     callbackCalls !== 1
   ) {
-    throw new Error("committed CTF operation read must be synchronous and exact");
+    throw new Error(
+      "committed CTF operation read must be synchronous and exact",
+    );
   }
   return issued;
 }
@@ -457,10 +473,11 @@ async function resumeCtfRedeem(params: {
       entry.outputs,
     );
     const final = normalizeProofArray(restored.regular ?? []);
-    const completed = await params.proofOperationStore.markProofOperationCompleted(
-      entry.operationId,
-      { regular: final },
-    );
+    const completed =
+      await params.proofOperationStore.markProofOperationCompleted(
+        entry.operationId,
+        { regular: final },
+      );
     requireCommittedCtfRedeemCompletion(
       completed,
       entry.operationId,
@@ -503,13 +520,14 @@ async function executeCtfRedeem(params: {
   requestDigest: string;
   onLosingLeg?: (inputs: Proof[]) => Promise<void>;
 }): Promise<RedeemOutcomeLegResult> {
-  const submitted = await params.proofOperationStore.markProofOperationMintSubmitted(
-    params.operationId,
-    {
-      schemaVersion: 1,
-      requestDigest: params.requestDigest,
-    },
-  );
+  const submitted =
+    await params.proofOperationStore.markProofOperationMintSubmitted(
+      params.operationId,
+      {
+        schemaVersion: 1,
+        requestDigest: params.requestDigest,
+      },
+    );
   requireCommittedCtfRedeemMintSubmission(
     submitted,
     params.operationId,
@@ -546,10 +564,11 @@ async function executeCtfRedeem(params: {
   }
 
   const final = normalizeProofArray(settled);
-  const completed = await params.proofOperationStore.markProofOperationCompleted(
-    params.operationId,
-    { regular: final },
-  );
+  const completed =
+    await params.proofOperationStore.markProofOperationCompleted(
+      params.operationId,
+      { regular: final },
+    );
   requireCommittedCtfRedeemCompletion(
     completed,
     params.operationId,
@@ -622,7 +641,9 @@ function requireCommittedCtfRedeemCompletion(
     requestDigest,
     "completion",
   );
-  const actualProofs = normalizeProofArray(operation.resultProofs.regular ?? []);
+  const actualProofs = normalizeProofArray(
+    operation.resultProofs.regular ?? [],
+  );
   if (
     canonicalRedeemJson(actualProofs) !==
     canonicalRedeemJson(normalizeProofArray(expectedProofs))

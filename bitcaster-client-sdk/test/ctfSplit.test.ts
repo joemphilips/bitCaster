@@ -15,12 +15,14 @@ import {
   splitCompleteSetWithOperation,
   mergeCompleteSetToRegularWithOperation,
   selectCompleteSetMergeInputs,
+  splitRootCompleteSetForSwap,
   type CtfPrepareProofOperationInput,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
   type CtfSplitOutputData,
   type CtfSplitTransport,
 } from "../src/ctfSplit.ts";
+import { createDurableWalletProofTransition } from "../src/durableWalletProofTransition.ts";
 import type {
   MintKeys,
   Proof,
@@ -49,7 +51,12 @@ test("computeGrossCtfInputAmountSats is the exported sat alias for gross CTF pla
 });
 
 test("proof normalization helpers are exported for wallet-service sharing", () => {
-  const proof = { id: "k", amount: Amount.from(2), secret: "s", C: "c" } as unknown as Proof;
+  const proof = {
+    id: "k",
+    amount: Amount.from(2),
+    secret: "s",
+    C: "c",
+  } as unknown as Proof;
 
   assert.deepEqual(normalizeProof(proof), { ...proof, amount: 2 });
   assert.deepEqual(normalizeProofArray([proof]), [{ ...proof, amount: 2 }]);
@@ -458,6 +465,74 @@ test("splitCompleteSetWithOperation replays completed operations without mint ca
   assert.equal(transport.posted.length, 0);
 });
 
+test("splitRootCompleteSetForSwap resumes exact persisted metadata without loading current keysets", async () => {
+  const store = new MemoryProofOperationStore();
+  store.records.set("root-swap-replay", {
+    operationId: "root-swap-replay",
+    kind: "ctf-split",
+    state: "completed",
+    mintUrl: "https://mint.example",
+    inputs: [proof("input-keyset", 100, "persisted-input")],
+    outputs: { YES: [], NO: [] },
+    metadata: {
+      conditionId: CONDITION_ID,
+      amountSubunits: 100,
+      baseAsset: "sat",
+      unit: "msat",
+      outcomeCollectionKeysets: {
+        YES: "persisted-keyset-yes",
+        NO: "persisted-keyset-no",
+      },
+      durableWalletProofTransition: createDurableWalletProofTransition({
+        inputSource: "wallet",
+        plannedOutputLabels: ["YES", "NO"],
+        resultGroups: {
+          YES: { kind: "operation" },
+          NO: { kind: "wallet", asset: "conditional", reservedBy: null },
+        },
+      }),
+    },
+    resultProofs: {
+      YES: [proof("persisted-keyset-yes", 100, "locked")],
+      NO: [proof("persisted-keyset-no", 100, "keep")],
+    },
+    createdAt: 1,
+    updatedAt: 2,
+  });
+  const transport = new FakeSplitTransport();
+  transport.getRootPartitionKeysets = async () => {
+    throw new Error("current mint metadata must not be consulted");
+  };
+
+  const result = await splitRootCompleteSetForSwap({
+    mintUrl: "https://mint.example",
+    baseAsset: "sat",
+    conditionId: CONDITION_ID,
+    collateralProofs: [proof("fresh-keyset", 100, "fresh-input")],
+    amountSubunits: 100,
+    lockOutcomeSetId: "YES",
+    keepOutcomeSetId: "NO",
+    p2pk: {
+      pubkey: "02" + "1".repeat(64),
+      locktime: 1,
+      refundKeys: ["02" + "2".repeat(64)],
+    },
+    operationId: "root-swap-replay",
+    proofOperationStore: store,
+    transport,
+  });
+
+  assert.deepEqual(result.lockedProofs, [
+    proof("persisted-keyset-yes", 100, "locked"),
+  ]);
+  assert.deepEqual(result.keepProofs, [
+    proof("persisted-keyset-no", 100, "keep"),
+  ]);
+  assert.deepEqual(result.spentSatProofs, [
+    proof("input-keyset", 100, "persisted-input"),
+  ]);
+});
+
 test("splitCompleteSetWithOperation fails closed for failed existing operations", async () => {
   const failed = new MemoryProofOperationStore();
   failed.records.set("op-failed", {
@@ -518,11 +593,10 @@ test("mergeCompleteSetToRegularWithOperation prepares conditional inputs and reg
   });
 
   assert.equal(result.regularProofs[0].secret, "proof-*");
-  assert.deepEqual(Object.keys(result.spentConditionalProofsByCollection).sort(), [
-    "Alpha",
-    "Beta",
-    "Gamma",
-  ]);
+  assert.deepEqual(
+    Object.keys(result.spentConditionalProofsByCollection).sort(),
+    ["Alpha", "Beta", "Gamma"],
+  );
   assert.equal(result.outputAmountSubunits, 9);
   assert.equal(transport.converted.length, 1);
   assert.deepEqual(Object.keys(transport.converted[0].inputs).sort(), [
@@ -594,11 +668,10 @@ test("selectCompleteSetMergeInputs selects equal gross inputs across a complete 
     },
   });
 
-  assert.deepEqual(Object.keys(selection?.selectedProofsByCollection ?? {}).sort(), [
-    "Alpha",
-    "Beta",
-    "Gamma",
-  ]);
+  assert.deepEqual(
+    Object.keys(selection?.selectedProofsByCollection ?? {}).sort(),
+    ["Alpha", "Beta", "Gamma"],
+  );
   assert.equal(selection?.grossInputSats, 11);
   assert.equal(selection?.convertFeeSats, 3);
   assert.equal(selection?.outputAmountSubunits, 8);
@@ -670,6 +743,18 @@ test("splitRegularProofsWithOperation turns a larger regular proof into an exact
   assert.equal(wallet.completeCalls, 1);
   assert.equal(store.records.get("regular-op-210")?.state, "completed");
   assert.equal(store.records.get("regular-op-210")?.metadata.baseAsset, "usd");
+  assert.deepEqual(
+    store.records.get("regular-op-210")?.metadata.durableWalletProofTransition,
+    {
+      schemaVersion: 1,
+      inputSource: "wallet",
+      resultGroups: {
+        send: { kind: "wallet", asset: "regular", reservedBy: null },
+        keep: { kind: "wallet", asset: "regular", reservedBy: null },
+      },
+      passthroughResultGroups: {},
+    },
+  );
 });
 
 test("splitRegularProofsWithOperation replays completed regular splits without mint calls", async () => {
@@ -680,8 +765,13 @@ test("splitRegularProofsWithOperation replays completed regular splits without m
     state: "completed",
     mintUrl: "https://mint.example",
     inputs: [proof("regular-keyset", 210, "input-210")],
-    outputs: {},
-    metadata: {},
+    outputs: { send: [], keep: [] },
+    metadata: {
+      amount: 100,
+      baseAsset: "sat",
+      unit: "sat",
+      unselectedProofs: [],
+    },
     resultProofs: {
       send: [proof("regular-keyset", 100, "send-100")],
       keep: [proof("regular-keyset", 110, "keep-110")],
@@ -693,9 +783,11 @@ test("splitRegularProofsWithOperation replays completed regular splits without m
 
   const split = await splitRegularProofsWithOperation({
     mintUrl: "https://mint.example",
+    baseAsset: "sat",
+    unit: "sat",
     operationId: "regular-op-completed",
     wallet,
-    proofs: [],
+    proofs: [proof("regular-keyset", 210, "input-210")],
     amountSubunits: 100,
     proofOperationStore: store,
   });
@@ -703,6 +795,212 @@ test("splitRegularProofsWithOperation replays completed regular splits without m
   assert.deepEqual(split.send, [proof("regular-keyset", 100, "send-100")]);
   assert.equal(wallet.prepareCalls, 0);
   assert.equal(wallet.completeCalls, 0);
+});
+
+test("completed regular split replay does not require a live mint wallet", async () => {
+  const operationId = "regular-op-offline-completed";
+  const split = await splitRegularProofsWithOperation({
+    mintUrl: "https://mint.example",
+    baseAsset: "sat",
+    unit: "sat",
+    operationId,
+    proofs: [],
+    amountSubunits: 100,
+    resumeInputAuthority: "persisted-operation",
+    proofOperationStore: regularSplitReplayStore(operationId),
+  });
+
+  assert.deepEqual(split.send, [proof("regular-keyset", 100, "send-100")]);
+  assert.deepEqual(split.spent, [proof("regular-keyset", 210, "input-210")]);
+});
+
+test("splitRegularProofsWithOperation rejects conflicting replay bindings", async () => {
+  const cases = [
+    {
+      name: "mint",
+      mintUrl: "https://other-mint.example",
+      amountSubunits: 100,
+      unit: "sat" as const,
+    },
+    {
+      name: "amount",
+      mintUrl: "https://mint.example",
+      amountSubunits: 101,
+      unit: "sat" as const,
+    },
+    {
+      name: "unit",
+      mintUrl: "https://mint.example",
+      amountSubunits: 100,
+      unit: "msat" as const,
+    },
+  ];
+  for (const mismatch of cases) {
+    const store = regularSplitReplayStore(
+      `regular-op-conflict-${mismatch.name}`,
+    );
+    const wallet = new FakeRegularSplitWallet();
+
+    await assert.rejects(
+      () =>
+        splitRegularProofsWithOperation({
+          mintUrl: mismatch.mintUrl,
+          baseAsset: "sat",
+          unit: mismatch.unit,
+          operationId: `regular-op-conflict-${mismatch.name}`,
+          wallet,
+          proofs: [proof("regular-keyset", 210, "input-210")],
+          amountSubunits: mismatch.amountSubunits,
+          proofOperationStore: store,
+        }),
+      /conflicts with the requested regular split/,
+    );
+    assert.equal(wallet.prepareCalls, 0);
+    assert.equal(wallet.completeCalls, 0);
+  }
+});
+
+test("splitRegularProofsWithOperation rejects conflicting replay input authority", async () => {
+  const store = regularSplitReplayStore("regular-op-conflict-input");
+
+  await assert.rejects(
+    () =>
+      splitRegularProofsWithOperation({
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "sat",
+        operationId: "regular-op-conflict-input",
+        wallet: new FakeRegularSplitWallet(),
+        proofs: [proof("regular-keyset", 210, "different-input")],
+        amountSubunits: 100,
+        proofOperationStore: store,
+      }),
+    /conflicts with the requested regular split/,
+  );
+});
+
+test("splitRegularProofsWithOperation resumes only explicit persisted input authority without fresh proofs", async () => {
+  const operationId = "regular-op-persisted-inputs";
+  const store = regularSplitReplayStore(operationId);
+  const wallet = new FakeRegularSplitWallet();
+
+  const split = await splitRegularProofsWithOperation({
+    mintUrl: "https://mint.example",
+    baseAsset: "sat",
+    unit: "sat",
+    operationId,
+    wallet,
+    proofs: [],
+    amountSubunits: 100,
+    resumeInputAuthority: "persisted-operation",
+    proofOperationStore: store,
+  });
+
+  assert.deepEqual(split.send, [proof("regular-keyset", 100, "send-100")]);
+  assert.equal(wallet.prepareCalls, 0);
+  assert.equal(wallet.completeCalls, 0);
+});
+
+test("splitRegularProofsWithOperation rejects invalid persisted-input resume requests", async () => {
+  await assert.rejects(
+    () =>
+      splitRegularProofsWithOperation({
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "sat",
+        operationId: "regular-op-missing-persisted-inputs",
+        wallet: new FakeRegularSplitWallet(),
+        proofs: [],
+        amountSubunits: 100,
+        resumeInputAuthority: "persisted-operation",
+        proofOperationStore: new MemoryProofOperationStore(),
+      }),
+    /persisted regular split operation is missing/,
+  );
+
+  await assert.rejects(
+    () =>
+      splitRegularProofsWithOperation({
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "sat",
+        operationId: "regular-op-persisted-with-fresh-input",
+        wallet: new FakeRegularSplitWallet(),
+        proofs: [proof("regular-keyset", 210, "input-210")],
+        amountSubunits: 100,
+        resumeInputAuthority: "persisted-operation",
+        proofOperationStore: regularSplitReplayStore(
+          "regular-op-persisted-with-fresh-input",
+        ),
+      }),
+    /cannot accept fresh proof authority/,
+  );
+});
+
+test("splitRegularProofsWithOperation persists the caller's exact sat or msat unit", async () => {
+  for (const unit of ["sat", "msat"] as const) {
+    const store = new MemoryProofOperationStore();
+    const wallet = new FakeRegularSplitWallet({
+      preview: {
+        amount: 1,
+        fees: 0,
+        keysetId: `regular-${unit}`,
+        inputs: [proof(`regular-${unit}`, 2, `input-${unit}`)],
+        sendOutputs: [
+          new OutputData(
+            { amount: 1, id: `regular-${unit}`, B_: `B-send-${unit}` },
+            1n,
+            new Uint8Array([1]),
+          ),
+        ],
+        keepOutputs: [
+          new OutputData(
+            { amount: 1, id: `regular-${unit}`, B_: `B-keep-${unit}` },
+            2n,
+            new Uint8Array([2]),
+          ),
+        ],
+        unselectedProofs: [],
+      },
+      result: {
+        send: [proof(`regular-${unit}`, 1, `send-${unit}`)],
+        keep: [proof(`regular-${unit}`, 1, `keep-${unit}`)],
+      },
+    });
+
+    await splitRegularProofsWithOperation({
+      mintUrl: "https://mint.example",
+      baseAsset: "sat",
+      unit,
+      operationId: `regular-op-${unit}`,
+      wallet,
+      proofs: [proof(`regular-${unit}`, 2, `input-${unit}`)],
+      amountSubunits: 1,
+      proofOperationStore: store,
+    });
+
+    assert.equal(store.records.get(`regular-op-${unit}`)?.metadata.unit, unit);
+  }
+});
+
+test("splitRegularProofsWithOperation rejects a unit from another base asset", async () => {
+  const wallet = new FakeRegularSplitWallet();
+
+  await assert.rejects(
+    () =>
+      splitRegularProofsWithOperation({
+        mintUrl: "https://mint.example",
+        baseAsset: "usd",
+        unit: "sat",
+        operationId: "regular-op-invalid-unit",
+        wallet,
+        proofs: [],
+        amountSubunits: 1,
+        proofOperationStore: new MemoryProofOperationStore(),
+      }),
+    /unit does not match base asset/,
+  );
+  assert.equal(wallet.prepareCalls, 0);
 });
 
 test("splitRegularProofsWithOperation throws typed pending error and checks proof ids", async () => {
@@ -713,8 +1011,13 @@ test("splitRegularProofsWithOperation throws typed pending error and checks proo
     state: "prepared",
     mintUrl: "https://mint.example",
     inputs: [proof("regular-keyset", 210, "input-210")],
-    outputs: {},
-    metadata: {},
+    outputs: { send: [], keep: [] },
+    metadata: {
+      amount: 100,
+      baseAsset: "sat",
+      unit: "sat",
+      unselectedProofs: [],
+    },
     createdAt: 1,
     updatedAt: 2,
   });
@@ -725,24 +1028,33 @@ test("splitRegularProofsWithOperation throws typed pending error and checks proo
   ];
 
   await assert.rejects(
-    () => splitRegularProofsWithOperation({
-      mintUrl: "https://mint.example",
-      operationId: "regular-op-pending",
-      wallet,
-      proofs: [],
-      amountSubunits: 100,
-      proofOperationStore: store,
-    }),
+    () =>
+      splitRegularProofsWithOperation({
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "sat",
+        operationId: "regular-op-pending",
+        wallet,
+        proofs: [proof("regular-keyset", 210, "input-210")],
+        amountSubunits: 100,
+        proofOperationStore: store,
+      }),
     ProofOperationPendingError,
   );
-  assert.deepEqual(wallet.checkProofCalls, [[{ id: "regular-keyset", secret: "input-210" }]]);
+  assert.deepEqual(wallet.checkProofCalls, [
+    [{ id: "regular-keyset", secret: "input-210" }],
+  ]);
 });
 
 test("resolveInputFeePpkByProofKeyset throws when mint omits a proof keyset", async () => {
   await assert.rejects(
-    () => resolveInputFeePpkByProofKeyset({
-      getKeys: async () => ({ keysets: [] }),
-    }, [proof("missing-keyset", 1, "secret")]),
+    () =>
+      resolveInputFeePpkByProofKeyset(
+        {
+          getKeys: async () => ({ keysets: [] }),
+        },
+        [proof("missing-keyset", 1, "secret")],
+      ),
     /Mint did not return keys for keyset missing-keyset/,
   );
 });
@@ -911,12 +1223,41 @@ class FakeRegularSplitWallet {
     return this.script.result;
   }
 
-  async checkProofsStates(proofs: Array<Pick<Proof, "id" | "secret">>): Promise<ProofState[]> {
+  async checkProofsStates(
+    proofs: Array<Pick<Proof, "id" | "secret">>,
+  ): Promise<ProofState[]> {
     this.checkProofCalls.push(proofs);
     return this.proofStates.length > 0
       ? this.proofStates
       : [{ Y: "Y-input", state: CheckStateEnum.UNSPENT }];
   }
+}
+
+function regularSplitReplayStore(
+  operationId: string,
+): MemoryProofOperationStore {
+  const store = new MemoryProofOperationStore();
+  store.records.set(operationId, {
+    operationId,
+    kind: "regular-split",
+    state: "completed",
+    mintUrl: "https://mint.example",
+    inputs: [proof("regular-keyset", 210, "input-210")],
+    outputs: { send: [], keep: [] },
+    metadata: {
+      amount: 100,
+      baseAsset: "sat",
+      unit: "sat",
+      unselectedProofs: [],
+    },
+    resultProofs: {
+      send: [proof("regular-keyset", 100, "send-100")],
+      keep: [proof("regular-keyset", 110, "keep-110")],
+    },
+    createdAt: 1,
+    updatedAt: 2,
+  });
+  return store;
 }
 
 function proof(id: string, amount: number, secret: string): Proof {
@@ -951,10 +1292,7 @@ function signature(
   };
 }
 
-function feePlanningKeyset(
-  inputFeePpk: number,
-  keys: Record<number, string>,
-) {
+function feePlanningKeyset(inputFeePpk: number, keys: Record<number, string>) {
   return {
     id: "regular-keyset",
     keys,
