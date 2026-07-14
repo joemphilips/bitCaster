@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { CtfRedeemMintSubmissionBinding } from '@bitcaster-market/client-sdk/ctfSplit'
 import {
-  createDurableCustodyDispatchIntent,
   decideDurableCustodyRecovery,
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyOperationId,
@@ -12,8 +11,12 @@ import {
   type DurableCustodyRecoveryClassification,
   type DurableCustodyRecoveryDecision,
   type DurableCustodyStore,
-  type DurableProofOperationFacts,
 } from '@bitcaster-market/client-sdk/durableCustody'
+import {
+  bindDurableCustodyProofOperation,
+  createDurableCustodyProofOperation,
+  deriveDurableCustodyProofOperationFingerprints,
+} from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
   reduceDurableTradeSession,
   validateDurableProofOperationLink,
@@ -119,11 +122,13 @@ export class DaemonProofOperationCoordinator
       input,
       this.resolveMintKeys,
     )
-    const custodyRecord = createCustodyRecord(
-      this.authority.scope,
-      input,
+    const custodyRecord = createDurableCustodyProofOperation({
+      scope: this.authority.scope,
+      operation: input,
       facts,
-    )
+      inventoryAccountId: null,
+      reservationId: input.walletProofReservation?.reservationId,
+    })
     return this.unitOfWork.transact(
       this.transactionInput(
         stateScopeFor(input),
@@ -149,7 +154,7 @@ export class DaemonProofOperationCoordinator
           if (existing.state === 'prepared' || existing.state === 'mint-submitted') {
             state.reserveWalletProofs(input, now)
           }
-          commitCustodyPrepare(custody, custodyRecord)
+          bindDurableCustodyProofOperation(custody, custodyRecord)
           bindParentOrderCollateral(
             database,
             parentPinId,
@@ -158,7 +163,7 @@ export class DaemonProofOperationCoordinator
           return existing
         }
         state.reserveWalletProofs(input, now)
-        commitCustodyPrepare(custody, custodyRecord)
+        bindDurableCustodyProofOperation(custody, custodyRecord)
         bindParentOrderCollateral(database, parentPinId, custodyRecord)
         const prepared = createPreparedStateRecord(input, Date.parse(now))
         state.putProofOperation(prepared)
@@ -340,135 +345,6 @@ function bindParentOrderCollateral(
     operationId: record.operation.operationId,
     proofIds: record.operation.reservation.inputs.map(({ proofId }) => proofId),
   })
-}
-
-function createCustodyRecord(
-  scope: DaemonDurableCustodyLease['scope'],
-  input: PrepareProofOperationInput,
-  facts: DurableProofOperationFacts,
-): DurableCustodyRecord {
-  const semanticKind = daemonCustodySemanticKind(input.kind)
-  const artifact = exactRequestArtifact(input)
-  const requestFingerprint = deriveDurableCustodyArtifactFingerprint(artifact)
-  const outputPlanFingerprint = deriveDurableCustodyArtifactFingerprint(
-    artifact.outputs,
-  )
-  const inputProofs = exactInputProofs(input, facts)
-  const handle = (kind: string, fingerprint: string) => `${kind}:${fingerprint}`
-  return createDurableCustodyDispatchIntent({
-    scope,
-    retainedOperationKey: input.operationId,
-    semanticKind,
-    facts,
-    normalizedMint: input.mintUrl,
-    inventoryAccountId: null,
-    reservation: {
-      reservationId: input.walletProofReservation?.reservationId
-        ?? handle('reservation', requestFingerprint),
-      inputs: inputProofs,
-    },
-    exactRequest: {
-      requestId: handle('request', requestFingerprint),
-      requestFingerprint,
-      payloadHandle: handle('request-payload', requestFingerprint),
-      inputProofIds: inputProofs.map(({ proofId }) => proofId),
-      outputPlanFingerprint,
-    },
-    outputPlan: {
-      outputPlanId: handle('output-plan', outputPlanFingerprint),
-      outputPlanFingerprint,
-      outputMaterialHandle: handle('output-material', outputPlanFingerprint),
-    },
-    privateMaterial: {
-      materialHandle: handle('private-material', requestFingerprint),
-      useId: handle('private-use', requestFingerprint),
-      publicFingerprint: requestFingerprint,
-    },
-  })
-}
-
-function exactRequestArtifact(input: PrepareProofOperationInput) {
-  return {
-    kind: input.kind,
-    mintUrl: input.mintUrl,
-    inputs: input.inputs.map(normalizeCashuProofRecord),
-    outputs: structuredClone(input.outputs),
-    metadata: structuredClone(input.metadata ?? {}),
-    durableTradeRecovery: operationLinkIdentity(input.durableTradeRecovery) ?? null,
-  }
-}
-
-function exactInputProofs(
-  input: PrepareProofOperationInput,
-  facts: DurableProofOperationFacts,
-) {
-  const curveByKeyset = new Map(
-    facts.verification.inputKeysets.map((keyset) => [keyset.keysetId, keyset.curve]),
-  )
-  return input.inputs.map((proof) => {
-    if (!proof.id) throw new Error('custody input proof has no keyset id')
-    const curve = curveByKeyset.get(proof.id)
-    if (curve === undefined) throw new Error('custody input keyset is unverified')
-    return {
-      proofId: deriveDurableCustodyProofId({
-        normalizedMint: input.mintUrl,
-        unit: facts.unit,
-        keysetId: proof.id,
-        secret: proof.secret,
-      }),
-      keysetId: proof.id,
-      curve,
-    }
-  })
-}
-
-
-function commitCustodyPrepare(
-  custody: CustodyTransaction,
-  expected: DurableCustodyRecord,
-): void {
-  const existing = custody.getOperation(expected.operation.operationId)
-  if (existing === null) custody.putOperation(expected)
-  else assertSameCustodyAuthority(existing, expected)
-  if (expected.operation.binding.kind === 'trade') {
-    custody.putSessionLink(
-      expected.operation.operationId,
-      expected.operation.binding,
-    )
-  }
-  custody.reserveExactInputs({
-    operationId: expected.operation.operationId,
-    reservationId: expected.operation.reservation.reservationId,
-    proofIds: expected.operation.reservation.inputs.map(({ proofId }) => proofId),
-  })
-  custody.rebuildActiveWorkIndex()
-}
-
-function assertSameCustodyAuthority(
-  existing: DurableCustodyRecord,
-  expected: DurableCustodyRecord,
-): void {
-  if (!isDeepStrictEqual(immutableCustodyAuthority(existing), immutableCustodyAuthority(expected))) {
-    throw new Error('existing custody operation has foreign immutable authority')
-  }
-}
-
-function immutableCustodyAuthority(record: DurableCustodyRecord) {
-  const operation = record.operation
-  return {
-    scope: record.scope,
-    retainedOperationKey: operation.retainedOperationKey,
-    binding: operation.binding,
-    semanticKind: operation.semanticKind,
-    terminalReplayEvidenceRequired: operation.terminalReplayEvidenceRequired,
-    custodyContext: operation.custodyContext,
-    reservation: operation.reservation,
-    exactRequest: operation.exactRequest,
-    outputPlan: operation.outputPlan,
-    privateMaterial: operation.privateMaterial,
-    verification: operation.verification,
-    horizon: operation.horizon,
-  }
 }
 
 function createPreparedStateRecord(
@@ -776,12 +652,8 @@ function assertRecoveryAuthority(
   if (typeof unit !== 'string' || unit.length === 0) {
     throw new Error('proof operation recovery unit is invalid')
   }
-  const requestFingerprint = deriveDurableCustodyArtifactFingerprint(
-    exactRequestArtifact(operation),
-  )
-  const outputPlanFingerprint = deriveDurableCustodyArtifactFingerprint(
-    operation.outputs,
-  )
+  const { requestFingerprint, outputPlanFingerprint } =
+    deriveDurableCustodyProofOperationFingerprints(operation)
   const proofIds = operation.inputs.map((proof) => {
     if (!proof.id) throw new Error('proof operation input keyset is missing')
     return deriveDurableCustodyProofId({

@@ -6,6 +6,7 @@ import {
   decodeDurableCustodyRecord,
   decodeDurableCustodyScopeState,
   decodeDurableCustodyTransactionOperationIds,
+  isDurableCustodyActiveRecoveryRecord,
   releaseDurableCustodyScope,
   reduceDurableCustodyState,
   renewDurableCustodyScope,
@@ -2174,7 +2175,7 @@ function synchronizeActiveWorkIndexForOperation(
     .get(scope.scopeId, operationId) as Record<string, unknown> | undefined
   if (row === undefined) throw new Error('custody operation is missing')
   const record = decodeOperationRow(database, row, scope)
-  if (isRecoverable(record)) {
+  if (isDurableCustodyActiveRecoveryRecord(record)) {
     database
       .prepare(
         `INSERT INTO custody_active_work (scope_id, operation_id)
@@ -2268,7 +2269,7 @@ function assertOperationIntegrity(
        WHERE scope_id = ? AND operation_id = ?`,
     )
     .get(scope.scopeId, operationId) as { operation_id?: unknown } | undefined
-  if ((activeRow !== undefined) !== isRecoverable(record)) {
+  if ((activeRow !== undefined) !== isDurableCustodyActiveRecoveryRecord(record)) {
     throw new Error('custody active-work index is missing or stale')
   }
 }
@@ -2288,7 +2289,7 @@ function rebuildActiveWorkIndex(
     .all(scope.scopeId) as Array<Record<string, unknown>>
   for (const row of rows) {
     const record = decodeOperationRow(database, row, scope)
-    if (!isRecoverable(record)) continue
+    if (!isDurableCustodyActiveRecoveryRecord(record)) continue
     database
       .prepare(
         `INSERT INTO custody_active_work (scope_id, operation_id) VALUES (?, ?)`,
@@ -2442,7 +2443,7 @@ function assertScopeIntegrity(
         throw new Error('custody operation reservation is missing or foreign')
       }
     }
-    if (indexed.has(operationId) !== isRecoverable(record)) {
+    if (indexed.has(operationId) !== isDurableCustodyActiveRecoveryRecord(record)) {
       throw new Error('custody active-work index is missing or stale')
     }
     indexed.delete(operationId)
@@ -2571,21 +2572,6 @@ function assertOperationTransition(
       return
     default:
       throw new Error('durable custody operation transition is invalid')
-  }
-}
-
-function isRecoverable(record: DurableCustodyRecord): boolean {
-  switch (record.operation.state) {
-    case 'dispatch-intent':
-    case 'transport-attempted':
-      return true
-    case 'reconciled':
-      return (
-        record.operation.delivery.deliveryKind === 'outbox' &&
-        record.operation.delivery.state === 'pending'
-      )
-    case 'aborted':
-      return false
   }
 }
 

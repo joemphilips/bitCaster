@@ -4,6 +4,11 @@ import {
   durableCustodyProofOperationSemanticKind,
   resolveDurableCustodyProofOperationFacts,
 } from '../src/durableCustodyProofOperation.ts'
+import { createDurableCustodyProofOperation } from '../src/durableCustodyProofOperationRecord.ts'
+import {
+  deriveDurableCustodyScopeId,
+  type DurableCustodyScope,
+} from '../src/durableCustody.ts'
 import {
   DURABLE_TRADE_SESSION_SCHEMA_VERSION,
   createDurableTradeProofOperationLink,
@@ -64,17 +69,61 @@ test('shared proof operation facts derive the exact role-specific trade horizon'
   assert.equal(facts.verification.keysetBindings[0]?.requireDleq, true)
 })
 
+test('shared operation builder binds exact proof and request authority', async () => {
+  const proofOperation = operation('regular-split')
+  const facts = await resolveDurableCustodyProofOperationFacts({
+    operation: proofOperation,
+    session: null,
+    resolveMintKeys,
+    requireDleq: false,
+  })
+  const scope = walletScope()
+  const record = createDurableCustodyProofOperation({
+    scope,
+    operation: proofOperation,
+    facts,
+    inventoryAccountId: null,
+  })
+
+  assert.equal(record.scope.scopeId, scope.scopeId)
+  assert.equal(record.operation.retainedOperationKey, 'operation-001')
+  assert.equal(record.operation.reservation.inputs.length, 1)
+  assert.match(record.operation.reservation.inputs[0]!.proofId, /^[0-9a-f]{64}$/)
+  assert.deepEqual(
+    record.operation.exactRequest.inputProofIds,
+    record.operation.reservation.inputs.map(({ proofId }) => proofId),
+  )
+})
+
 function operation(kind: 'regular-split' | 'swap-lock') {
   return {
     operationId: 'operation-001',
     kind,
     mintUrl: 'https://mint.example',
-    inputs: [{ id: KEYSET_ID }],
+    inputs: [{
+      id: KEYSET_ID,
+      amount: 1,
+      secret: '11'.repeat(32),
+      C: PUBLIC_KEY,
+    }],
     outputs: {
-      keep: [{ blindedMessage: { id: KEYSET_ID } }],
+      keep: [{
+        blindedMessage: {
+          amount: 1,
+          id: KEYSET_ID,
+          B_: PUBLIC_KEY,
+        },
+        blindingFactor: '44'.repeat(32),
+        secret: '55'.repeat(32),
+      }],
     },
     metadata: { unit: 'sat' },
   }
+}
+
+function walletScope(): DurableCustodyScope {
+  const input = { scopeKind: 'wallet' as const, walletId: 'aa'.repeat(32) }
+  return { ...input, scopeId: deriveDurableCustodyScopeId(input) }
 }
 
 function tradeSession(): DurableTradeSession {

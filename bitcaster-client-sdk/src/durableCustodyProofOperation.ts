@@ -34,10 +34,28 @@ export interface DurableCustodyProofOperationInput {
   operationId: string
   kind: DurableCustodyProofOperationKind
   mintUrl: string
-  inputs: readonly { id?: string }[]
+  inputs: readonly {
+    id?: string
+    amount: unknown
+    secret: string
+    C: string
+    dleq?: unknown
+    p2pk_e?: string
+    witness?: unknown
+    conditionId?: string
+    outcomeCollection?: string
+  }[]
   outputs: Readonly<Record<
     string,
-    readonly { blindedMessage: { id: string } }[]
+    readonly {
+      blindedMessage: {
+        amount: unknown
+        id: string
+        B_: string
+      }
+      blindingFactor: string
+      secret: string
+    }[]
   >>
   metadata?: Readonly<Record<string, unknown>>
   durableTradeRecovery?: DurableTradeProofOperationLink
