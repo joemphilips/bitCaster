@@ -1216,8 +1216,9 @@ function requiredArg(value: string | undefined, name: string): string {
 }
 
 function parseSide(value: string): 'Buy' | 'Sell' {
-  if (value === 'Buy') return 'Buy'
-  if (value === 'Sell') return 'Sell'
+  const lower = value.toLowerCase()
+  if (lower === 'buy') return 'Buy'
+  if (lower === 'sell') return 'Sell'
   throwUsage(`Invalid side: ${value}`)
 }
 

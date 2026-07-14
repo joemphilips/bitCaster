@@ -944,13 +944,7 @@ test('bitcaster-cli auto-starts default local daemon when RPC is unavailable', a
     ).pid as number
     assert.equal(Number.isSafeInteger(daemonPid), true)
   } finally {
-    if (daemonPid) {
-      try {
-        process.kill(daemonPid, 'SIGTERM')
-      } catch {
-        // Process may have exited during test teardown.
-      }
-    }
+    if (daemonPid) await terminateProcess(daemonPid)
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -1243,13 +1237,7 @@ test('bitcaster-cli config set does not auto-start the daemon when autostart is 
     } catch {
       // No auto-start PID was written.
     }
-    if (daemonPid) {
-      try {
-        process.kill(daemonPid, 'SIGTERM')
-      } catch {
-        // Process may have exited during test teardown.
-      }
-    }
+    if (daemonPid) await terminateProcess(daemonPid)
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -2387,7 +2375,7 @@ async function runCliWithEnv(
       join(import.meta.dirname, '..', 'src', 'main.ts'),
       ...args,
     ],
-    { env },
+    { env: { ...env, NODE_NO_WARNINGS: '1' } },
   )
 }
 
@@ -2458,6 +2446,30 @@ async function waitForProcessStartTime(pid: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
   throw new Error(`process ${pid} did not expose start time`)
+}
+
+async function terminateProcess(pid: number): Promise<void> {
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch (err) {
+    if (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'ESRCH') {
+      return
+    }
+    throw err
+  }
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0)
+    } catch (err) {
+      if (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'ESRCH') {
+        return
+      }
+      throw err
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`process ${pid} did not exit after SIGTERM`)
 }
 
 async function processStartTime(pid: number): Promise<string | null> {
