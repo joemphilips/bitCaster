@@ -96,6 +96,10 @@
       "types": "./dist/durableCustody.d.ts",
       "import": "./dist/durableCustody.js"
     },
+    "./durableOrderCollateral": {
+      "types": "./dist/durableOrderCollateral.d.ts",
+      "import": "./dist/durableOrderCollateral.js"
+    },
     "./recoverableWalletStorage": {
       "types": "./dist/recoverableWalletStorage.d.ts",
       "import": "./dist/recoverableWalletStorage.js"
