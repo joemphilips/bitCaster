@@ -105,6 +105,43 @@ export type DurableCustodyBinding =
       stage: CustodyWalletStage
     }
 
+export interface DurableProofOperationKeysetFactsInput {
+  keysetId: string
+  unit: string
+  curve: DurableCustodyCurve
+  publicKeys: Readonly<Record<string, string>>
+  keysetExpiryMs: number | null
+  requireDleq: boolean
+  usedByInputs: boolean
+  usedByOutputs: boolean
+}
+
+/**
+ * Exact verification and authority facts prepared by code that has the real
+ * mint keys. Persistence adapters consume this value; they must never infer a
+ * curve, hash a keyset id in place of the public keys, or choose a DLEQ policy.
+ */
+export interface DurableProofOperationFacts {
+  unit: string
+  binding: DurableCustodyBinding
+  horizon: DurableCustodyRecord['operation']['horizon']
+  verification: {
+    keysetBindings: DurableCustodyRecord['operation']['verification']['keysetBindings']
+    inputKeysets: Array<{
+      keysetId: string
+      curve: DurableCustodyCurve
+    }>
+    outputKeysets: DurableCustodyRecord['operation']['verification']['outputKeysets']
+  }
+}
+
+export interface DurableProofOperationFactsInput {
+  unit: string
+  binding: DurableCustodyBinding
+  horizon: Omit<DurableCustodyRecord['operation']['horizon'], 'keysetExpiryMs'>
+  keysets: readonly DurableProofOperationKeysetFactsInput[]
+}
+
 /** Input to the global active-proof identity; the secret is never persisted in this record. */
 export interface DurableCustodyProofIdentityInput {
   normalizedMint: string
@@ -899,6 +936,144 @@ export function canonicalDurableCustodyKeysetIdentity(keysetId: string): string 
   } catch {
     return keysetId
   }
+}
+
+/** Hashes the canonical public-key table, not the forgeable keyset label. */
+export function deriveDurableCustodyKeysetFingerprint(input: {
+  keysetId: string
+  unit: string
+  curve: DurableCustodyCurve
+  publicKeys: Readonly<Record<string, string>>
+}): string {
+  const keysetId = canonicalDurableCustodyKeysetIdentity(
+    requireIdentifier(input.keysetId, 'keyset id'),
+  )
+  const unit = requireIdentifier(input.unit, 'keyset unit')
+  requireOneOf(input.curve, CURVES, 'keyset curve')
+  const entries = Object.entries(input.publicKeys)
+  if (entries.length === 0 || entries.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
+    throw new Error('keyset public keys are invalid')
+  }
+  const expectedHexLength = input.curve === 'bls12-381' ? 192 : 66
+  const canonicalEntries = entries.map(([amount, publicKey]) => {
+    const amountValue = Number(amount)
+    if (!/^[1-9][0-9]*$/.test(amount)
+      || !Number.isSafeInteger(amountValue)
+      || amountValue <= 0) {
+      throw new Error('keyset amount is invalid')
+    }
+    const key = requireString(publicKey, 'keyset public key').toLowerCase()
+    if (key.length !== expectedHexLength || !/^[a-f0-9]+$/.test(key)) {
+      throw new Error('keyset public key is invalid')
+    }
+    return { amount: amountValue, amountText: amount, publicKey: key }
+  })
+  canonicalEntries.sort((left, right) => left.amount - right.amount)
+  return bytesToHex(sha256(encodeProofIdentity([
+    'bitcaster/custody-keyset-fingerprint/v1',
+    keysetId,
+    unit,
+    input.curve,
+    ...canonicalEntries.flatMap(({ amountText, publicKey }) => [amountText, publicKey]),
+  ])))
+}
+
+/**
+ * Constructs the complete operation facts without semantic defaults. Every
+ * referenced input and output keyset must be backed by the exact public keys.
+ */
+export function createDurableProofOperationFacts(
+  input: DurableProofOperationFactsInput,
+): DurableProofOperationFacts {
+  const unit = requireIdentifier(input.unit, 'proof operation unit')
+  const binding = decodeBinding(input.binding)
+  const horizon = decodeProofOperationFactsHorizon(input.horizon)
+  if (input.keysets.length === 0
+    || input.keysets.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
+    throw new Error('proof operation keysets are invalid')
+  }
+  const verification = decodeProofOperationKeysetFacts(input.keysets, unit)
+  return {
+    unit,
+    binding,
+    horizon: { ...horizon, keysetExpiryMs: minimumKnownKeysetExpiry(input.keysets) },
+    verification,
+  }
+}
+
+function decodeProofOperationFactsHorizon(
+  input: DurableProofOperationFactsInput['horizon'],
+): DurableProofOperationFactsInput['horizon'] {
+  const notBeforeMs = input.notBeforeMs === null
+    ? null
+    : requireNonNegativeInteger(input.notBeforeMs, 'not-before horizon')
+  const notAfterMs = input.notAfterMs === null
+    ? null
+    : requireNonNegativeInteger(input.notAfterMs, 'not-after horizon')
+  if (notBeforeMs !== null && notAfterMs !== null && notBeforeMs > notAfterMs) {
+    throw new Error('horizon window is invalid')
+  }
+  return {
+    notBeforeMs,
+    notAfterMs,
+    safetyMarginMs: requireNonNegativeInteger(input.safetyMarginMs, 'safety margin'),
+  }
+}
+
+function decodeProofOperationKeysetFacts(
+  keysets: readonly DurableProofOperationKeysetFactsInput[],
+  unit: string,
+): DurableProofOperationFacts['verification'] {
+  const seen = new Set<string>()
+  const inputKeysets: DurableProofOperationFacts['verification']['inputKeysets'] = []
+  const outputKeysets: DurableProofOperationFacts['verification']['outputKeysets'] = []
+  const keysetBindings = keysets.map((keyset) => {
+    const usage = decodeProofOperationKeysetUsage(keyset, unit, seen)
+    if (keyset.usedByInputs) inputKeysets.push(usage)
+    if (keyset.usedByOutputs) outputKeysets.push(usage)
+    return {
+      ...usage,
+      keysetFingerprint: deriveDurableCustodyKeysetFingerprint(keyset),
+      requireDleq: keyset.requireDleq,
+    }
+  })
+  if (inputKeysets.length === 0) throw new Error('input keysets must not be empty')
+  if (outputKeysets.length === 0) throw new Error('output keysets must not be empty')
+  return { keysetBindings, inputKeysets, outputKeysets }
+}
+
+function decodeProofOperationKeysetUsage(
+  keyset: DurableProofOperationKeysetFactsInput,
+  unit: string,
+  seen: Set<string>,
+): { keysetId: string; curve: DurableCustodyCurve } {
+  const keysetId = requireIdentifier(keyset.keysetId, 'keyset id')
+  requireOneOf(keyset.curve, CURVES, 'keyset curve')
+  if (requireIdentifier(keyset.unit, 'keyset unit') !== unit) {
+    throw new Error('keyset unit does not match proof operation unit')
+  }
+  if (typeof keyset.requireDleq !== 'boolean'
+    || typeof keyset.usedByInputs !== 'boolean'
+    || typeof keyset.usedByOutputs !== 'boolean'
+    || (!keyset.usedByInputs && !keyset.usedByOutputs)) {
+    throw new Error('keyset verification policy is incomplete')
+  }
+  const identity = `${canonicalDurableCustodyKeysetIdentity(keysetId)}:${keyset.curve}`
+  if (seen.has(identity)) throw new Error('proof operation keyset is duplicated')
+  seen.add(identity)
+  return { keysetId, curve: keyset.curve }
+}
+
+function minimumKnownKeysetExpiry(
+  keysets: readonly DurableProofOperationKeysetFactsInput[],
+): number | null {
+  const expiries = keysets.map((keyset) => keyset.keysetExpiryMs)
+  for (const expiry of expiries) {
+    if (expiry !== null) requireNonNegativeInteger(expiry, 'keyset expiry')
+  }
+  return expiries.some((expiry) => expiry === null)
+    ? null
+    : Math.min(...expiries as number[])
 }
 
 /** Decodes the complete persisted record and rejects any ambiguous data. */

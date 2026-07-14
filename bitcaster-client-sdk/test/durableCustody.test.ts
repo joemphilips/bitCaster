@@ -5,11 +5,13 @@ import {
   decodeDurableCustodyScopeState,
   applyDurableCustodyTransaction,
   claimDurableCustodyScope,
+  createDurableProofOperationFacts,
   decideDurableCustodyRecovery,
   decideTerminalTombstoneDrain,
   isDurableCustodyActiveRecoveryRecord,
   readDurableCustodyRecoveryPage,
   deriveDurableCustodyOperationId,
+  deriveDurableCustodyKeysetFingerprint,
   deriveDurableCustodyProofId,
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
@@ -24,6 +26,8 @@ import {
 
 const FINGERPRINT_A = 'a'.repeat(64)
 const FINGERPRINT_B = 'b'.repeat(64)
+const SECP_PUBLIC_KEY_A = `02${'11'.repeat(32)}`
+const SECP_PUBLIC_KEY_B = `03${'22'.repeat(32)}`
 
 function profileScope() {
   const scope = {
@@ -43,6 +47,94 @@ function marketScope() {
   }
   return { ...scope, scopeId: deriveDurableCustodyScopeId(scope) }
 }
+
+test('exact proof facts bind real public keys and explicit keyset usage', () => {
+  const binding = {
+    kind: 'wallet' as const,
+    activityId: 'wallet-send-001',
+    stage: 'send' as const,
+  }
+  const facts = createDurableProofOperationFacts({
+    unit: 'sat',
+    binding,
+    horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 250 },
+    keysets: [
+      {
+        keysetId: '0011223344556677',
+        unit: 'sat',
+        curve: 'secp256k1',
+        publicKeys: { '2': SECP_PUBLIC_KEY_B, '1': SECP_PUBLIC_KEY_A },
+        keysetExpiryMs: 20_000,
+        requireDleq: false,
+        usedByInputs: true,
+        usedByOutputs: true,
+      },
+    ],
+  })
+
+  assert.deepEqual(facts.binding, binding)
+  assert.equal(facts.horizon.keysetExpiryMs, 20_000)
+  assert.deepEqual(facts.verification.inputKeysets, [
+    { keysetId: '0011223344556677', curve: 'secp256k1' },
+  ])
+  assert.deepEqual(facts.verification.outputKeysets, facts.verification.inputKeysets)
+  assert.equal(facts.verification.keysetBindings[0]?.requireDleq, false)
+  assert.equal(
+    facts.verification.keysetBindings[0]?.keysetFingerprint,
+    deriveDurableCustodyKeysetFingerprint({
+      keysetId: '0011223344556677',
+      unit: 'sat',
+      curve: 'secp256k1',
+      publicKeys: { '1': SECP_PUBLIC_KEY_A, '2': SECP_PUBLIC_KEY_B },
+    }),
+  )
+})
+
+test('exact proof facts reject missing authority and verification policy', () => {
+  const base = {
+    unit: 'sat',
+    binding: {
+      kind: 'wallet' as const,
+      activityId: 'wallet-send-001',
+      stage: 'send' as const,
+    },
+    horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
+    keysets: [
+      {
+        keysetId: '0011223344556677',
+        unit: 'sat',
+        curve: 'secp256k1' as const,
+        publicKeys: { '1': SECP_PUBLIC_KEY_A },
+        keysetExpiryMs: null,
+        requireDleq: true,
+        usedByInputs: true,
+        usedByOutputs: false,
+      },
+    ],
+  }
+  assert.throws(
+    () => createDurableProofOperationFacts(base),
+    /output keysets must not be empty/,
+  )
+  assert.throws(
+    () => createDurableProofOperationFacts({
+      ...base,
+      keysets: [{ ...base.keysets[0]!, unit: 'usd', usedByOutputs: true }],
+    }),
+    /keyset unit does not match/,
+  )
+  assert.throws(
+    () => createDurableProofOperationFacts({
+      ...base,
+      keysets: [{
+        ...base.keysets[0]!,
+        publicKeys: { '1': 'keyset-id-is-not-a-public-key' },
+        usedByOutputs: true,
+      }],
+    }),
+    /keyset public key is invalid/,
+  )
+})
 
 function custodyRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const scope = profileScope()
