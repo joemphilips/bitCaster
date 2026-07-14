@@ -1355,7 +1355,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         recovery.pending[0].operationId,
         'wallet-send-recover-pending',
       )
-      assert.match(recovery.pending[0].error, /still pending at the mint/)
+      assert.equal(recovery.pending[0].reason, 'mint-response-unknown')
       const updated = await readState()
         assert.equal(
           updated?.proofOperations['wallet-send-recover-pending']?.state,

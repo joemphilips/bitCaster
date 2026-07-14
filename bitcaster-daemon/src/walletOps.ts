@@ -180,9 +180,19 @@ export interface WalletSendRecoveryResult {
   recoveredCount: number
   pendingCount: number
   recovered: string[]
-  pending: Array<{ operationId: string; error: string }>
+  pending: Array<{
+    operationId: string
+    reason: WalletRecoveryFailureReason
+  }>
   summaryTruncated: boolean
 }
+
+export type WalletRecoveryFailureReason =
+  | 'mint-response-unknown'
+  | 'rate-limited'
+  | 'transport-failure'
+  | 'local-authority-invalid'
+  | 'internal-failure'
 
 export interface PreparedCtfCollateralResult {
   inputs: Proof[]
@@ -1028,7 +1038,7 @@ export async function recoverPreparedWalletSends(
       if (result.pending.length < WALLET_RECOVERY_SUMMARY_LIMIT_MAX) {
         result.pending.push({
           operationId,
-          error: errorMessage(err).slice(0, WALLET_RECOVERY_ERROR_LENGTH_MAX),
+          reason: classifyWalletRecoveryFailure(err),
         })
       }
     }
@@ -1041,7 +1051,27 @@ export async function recoverPreparedWalletSends(
 }
 
 const WALLET_RECOVERY_SUMMARY_LIMIT_MAX = 64
-const WALLET_RECOVERY_ERROR_LENGTH_MAX = 512
+
+function classifyWalletRecoveryFailure(
+  error: unknown,
+): WalletRecoveryFailureReason {
+  const message = errorMessage(error)
+  if (/still pending at the mint|mint response.*unknown/i.test(message)) {
+    return 'mint-response-unknown'
+  }
+  if (/\b429\b|rate.?limit/i.test(message)) return 'rate-limited'
+  if (/network|timeout|timed out|econn|fetch failed/i.test(message)) {
+    return 'transport-failure'
+  }
+  if (
+    /canonical wallet|custody|foreign|missing .*metadata|invalid persisted/i.test(
+      message,
+    )
+  ) {
+    return 'local-authority-invalid'
+  }
+  return 'internal-failure'
+}
 
 async function resumeCtfConsolidationOperation(
   entry: ProofOperationRecord,

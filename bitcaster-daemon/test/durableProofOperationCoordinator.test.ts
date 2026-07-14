@@ -366,9 +366,9 @@ test('canonical active work is not hidden by a stale terminal daemon projection'
       assert.equal(recovery.recoveredCount, 0)
       assert.equal(recovery.pendingCount, 1)
       assert.equal(recovery.pending[0]?.operationId, prepared.operationId)
-      assert.match(
-        recovery.pending[0]?.error ?? '',
-        /canonical wallet work has a terminal daemon projection/,
+      assert.equal(
+        recovery.pending[0]?.reason,
+        'local-authority-invalid',
       )
     } finally {
       uninstall()

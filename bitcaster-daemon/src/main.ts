@@ -393,7 +393,7 @@ switch (command) {
     }
     for (const pending of walletRecovery.pending) {
       process.stderr.write(
-        `Wallet operation ${pending.operationId} remains pending: ${pending.error}\n`,
+        `Wallet operation ${pending.operationId} remains pending: ${pending.reason}\n`,
       )
     }
     if (walletRecovery.summaryTruncated) {

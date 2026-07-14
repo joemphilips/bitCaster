@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import type { DurableCustodyStore } from '@bitcaster-market/client-sdk/durableCustody'
 import {
@@ -9,6 +10,7 @@ import {
   DaemonDurableCustodyLease,
 } from '../src/durableCustodyLifecycle.ts'
 import { SqliteDurableCustodyStore } from '../src/durableCustodySqliteStore.ts'
+import { profileDatabasePath } from '../src/profile.ts'
 
 const WALLET_SEED_HEX = '07'.repeat(32)
 
@@ -81,6 +83,24 @@ test('daemon startup waits fail-closed for a crashed owner lease before takeover
 test('daemon takeover never recreates missing seed-scoped fencing authority', async () => {
   await withDaemonHome(async () => {
     const store = new SqliteDurableCustodyStore()
+    const scope = daemonWalletCustodyScope(WALLET_SEED_HEX)
+    await store.registerScope(scope)
+    const first = await DaemonDurableCustodyLease.claim({
+      store,
+      walletSeedHex: WALLET_SEED_HEX,
+    })
+    assert.equal(first.authorization().fencingEpoch, 1)
+    await first.stopAndRelease()
+    const database = new DatabaseSync(profileDatabasePath())
+    database.exec('PRAGMA foreign_keys = ON')
+    database.prepare('DELETE FROM custody_scope_state WHERE scope_id = ?').run(
+      scope.scopeId,
+    )
+    database.prepare('DELETE FROM custody_scopes WHERE scope_id = ?').run(
+      scope.scopeId,
+    )
+    database.close()
+
     await assert.rejects(
       DaemonDurableCustodyLease.claimAfterPreviousLease({
         store,
@@ -88,10 +108,7 @@ test('daemon takeover never recreates missing seed-scoped fencing authority', as
       }),
       /custody scope is missing/,
     )
-    assert.equal(
-      await store.readScope(daemonWalletCustodyScope(WALLET_SEED_HEX)),
-      null,
-    )
+    assert.equal(await store.readScope(scope), null)
   })
 })
 
@@ -128,6 +145,7 @@ test('daemon custody effects fail closed after lease renewal is lost', async () 
     const lease = await DaemonDurableCustodyLease.claim({
       store,
       walletSeedHex: WALLET_SEED_HEX,
+      nowMs: () => 1_000,
       leaseDurationMs: 100,
       renewAfterMs: 5,
     })

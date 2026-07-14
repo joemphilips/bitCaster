@@ -284,10 +284,7 @@ test('wallet recovery rejects CTF consolidation without exact input collections'
 
     assert.equal(ctfConvertCalls, 0)
     assert.equal(recovery.recovered.length, 0)
-    assert.match(
-      recovery.pending[0]?.error ?? '',
-      /missing CTF consolidation input collection metadata/,
-    )
+    assert.equal(recovery.pending[0]?.reason, 'local-authority-invalid')
   })
 })
 
