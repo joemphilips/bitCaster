@@ -362,8 +362,8 @@ test('decideTradeCreated accepts default usd units with legacy-compatible amount
   assert.equal(decision.accepted, true)
 })
 
-test('decideTradeCreated rejects unsupported explicit unit metadata', () => {
-  for (const baseAsset of ['btc', ' sats ']) {
+test('decideTradeCreated rejects unsupported or non-canonical explicit unit metadata', () => {
+  for (const baseAsset of ['', 'btc', ' sats ', 'msat', ' SAT ']) {
     const decision = decideTradeCreated({
       ownEphemeralPubkey: 'def',
       sellerPubkey: 'abc',
@@ -380,6 +380,28 @@ test('decideTradeCreated rejects unsupported explicit unit metadata', () => {
       assert.equal(decision.reason, 'invalid-protocol')
       assert.match(decision.error, /unit is unsupported/i)
     }
+  }
+})
+
+test('decideTradeCreated rejects a non-canonical local expected unit', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'def',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    expectedBaseAsset: 'msat',
+    expectedDivisibility: 1_000,
+    outcomeFaceAmountSubunits: 100,
+    quotePaymentSubunits: 40,
+  })
+
+  assert.equal(decision.accepted, false)
+  if (!decision.accepted) {
+    assert.equal(decision.reason, 'invalid-protocol')
+    assert.match(decision.error, /expected trade unit is unsupported/i)
   }
 })
 
