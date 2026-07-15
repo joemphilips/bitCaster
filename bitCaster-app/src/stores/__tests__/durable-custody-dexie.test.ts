@@ -239,6 +239,7 @@ describe("Dexie durable custody store", () => {
       operationId: operation.operation.operationId,
       scopeId: scope.scopeId,
       active: 1,
+      bindingKind: operation.operation.binding.kind,
       record: operation,
     });
     await expect(

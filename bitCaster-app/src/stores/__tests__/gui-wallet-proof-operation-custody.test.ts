@@ -28,6 +28,16 @@ import {
   withGuiCustodyProfileLock,
 } from "../gui-custody-authority";
 import {
+  guiDurableStorageAdmissionTables,
+  initializeGuiDurableStorageAdmission,
+  releaseGuiDurableStorageHeadroomInCurrentTransaction,
+} from "../gui-durable-storage-admission-dexie";
+import { withGuiOriginStorageAdmissionLock } from "../gui-origin-storage-admission-lock";
+import {
+  GuiDurableStorageHeadroomUnavailable,
+  requireGuiNewEffectHeadroomForWallet,
+} from "../gui-durable-storage-headroom-custody-unit-of-work";
+import {
   commitPreparedGuiCustodyUnitOfWorkInCurrentTransaction,
   guiCustodyUnitOfWorkTables,
   prepareGuiCustodyUnitOfWork,
@@ -162,6 +172,8 @@ describe("GUI wallet custody coordinator", () => {
     const custodyOperationId = prepared.custodyOperationId;
     expect(custodyOperationId).toBeDefined();
     expect(await db.custodySessionLinks.count()).toBe(0);
+    expect(await db.durableStorageAccounting.count()).toBe(1);
+    expect(await db.durableStorageHeadroom.count()).toBe(1);
     expect((await storedRow("11".repeat(32)))?.reservedBy).toBe(
       "wallet-operation-001",
     );
@@ -189,6 +201,61 @@ describe("GUI wallet custody coordinator", () => {
       unit: "sat",
       baseAsset: "sat",
     });
+  });
+
+  it("blocks new effects after headroom release but permits exact reconciliation", async () => {
+    const prepared = await prepareProofOperation(operationInput());
+    await markProofOperationMintSubmitted(prepared.operationId);
+    await releaseHeadroom();
+
+    await expect(
+      requireGuiNewEffectHeadroomForWallet(currentGuiWalletId()),
+    ).rejects.toBeInstanceOf(GuiDurableStorageHeadroomUnavailable);
+
+    await expect(
+      prepareProofOperation({
+        ...ordinaryExternalOperationInput("wallet-mint"),
+        operationId: "wallet-mint-headroom-blocked",
+      }),
+    ).rejects.toThrow("emergency headroom is unavailable");
+    expect(
+      await db.proofOperations.get(
+        proofOperationPrimaryKey(
+          currentGuiWalletId(),
+          "wallet-mint-headroom-blocked",
+        ),
+      ),
+    ).toBeUndefined();
+
+    await markProofOperationCompleted(
+      prepared.operationId,
+      resultProofs(),
+    );
+    expect(await storedOperation(prepared.operationId)).toMatchObject({
+      state: "completed",
+    });
+    expect(await db.durableStorageHeadroom.count()).toBe(0);
+  });
+
+  it("initializes accounting over valid pre-existing ordinary custody", async () => {
+    const prepared = await prepareProofOperation(operationInput());
+    const operationCount = await db.proofOperations.count();
+    const custodyCount = await db.custodyOperations.count();
+    await db.durableStorageAccounting.clear();
+    await db.durableStorageHeadroom.clear();
+
+    await withGuiCustodyProfileLock(async (_context, walletLock) =>
+      withGuiOriginStorageAdmissionLock(
+        walletLock,
+        currentGuiWalletId,
+        (originLock) => initializeGuiDurableStorageAdmission(originLock),
+      ),
+    );
+
+    expect(await storedOperation(prepared.operationId)).toBeDefined();
+    expect(await db.proofOperations.count()).toBe(operationCount);
+    expect(await db.custodyOperations.count()).toBe(custodyCount);
+    expect(await db.durableStorageHeadroom.count()).toBe(1);
   });
 
   it("commits an opaque prepared unit only inside its caller-owned write transaction", async () => {
@@ -734,7 +801,7 @@ describe("GUI wallet custody coordinator", () => {
     });
   });
 
-  it("keeps the Dexie transaction active through snapshot validation and rolls back a native write fault", async () => {
+  it("keeps the Dexie transaction active and rolls back a quota failure after mint response", async () => {
     const prepared = await prepareProofOperation(operationInput());
     await markProofOperationMintSubmitted(prepared.operationId);
     let observedActiveTransaction = false;
@@ -742,12 +809,15 @@ describe("GUI wallet custody coordinator", () => {
       .spyOn(db.proofOperations, "put")
       .mockImplementation((() => {
         observedActiveTransaction = Dexie.currentTransaction !== null;
-        throw new Error("injected native write failure");
+        throw new DOMException(
+          "injected native write failure",
+          "QuotaExceededError",
+        );
       }) as never);
 
     await expect(
       markProofOperationCompleted(prepared.operationId, resultProofs()),
-    ).rejects.toThrow(/injected native write failure/);
+    ).rejects.toMatchObject({ name: "QuotaExceededError" });
     operationPut.mockRestore();
 
     expect(observedActiveTransaction).toBe(true);
@@ -898,6 +968,22 @@ describe("GUI wallet custody coordinator", () => {
     expect(await db.custodyProofReservations.count()).toBe(0);
   });
 });
+
+async function releaseHeadroom(): Promise<void> {
+  await withGuiCustodyProfileLock(async (_context, walletLock) =>
+    withGuiOriginStorageAdmissionLock(
+      walletLock,
+      currentGuiWalletId,
+      (originLock) =>
+        db.transaction(
+          "rw",
+          guiDurableStorageAdmissionTables(db),
+          () =>
+            releaseGuiDurableStorageHeadroomInCurrentTransaction(originLock),
+        ),
+    ),
+  );
+}
 
 function installWebLocks(): void {
   const tails = new Map<string, Promise<void>>();

@@ -1,4 +1,5 @@
 import Dexie from "dexie";
+import type { DurableCustodyWalletStorageBoundary } from "@bitcaster/client-sdk/durableCustody";
 import {
   advanceDurableStorageReservationArtifacts,
   advanceDurablePreTradeSession,
@@ -47,25 +48,73 @@ import {
 } from "./pendingTrades";
 import { decodeGuiPendingSwapIntentRecord } from "./pending-swap-intent-db";
 
+const initializedAdmissionBackends = new WeakSet<IDBDatabase>();
+
 export function initializeGuiDurableStorageAdmission(
   originLock: GuiOriginStorageAdmissionLockContext,
   database: BitcasterDB = db,
 ): Promise<DurableStorageAccountingState> {
   walletIdFromHeldGuiOriginStorageAdmissionLock(originLock);
-  return database.transaction(
-    "rw",
-    [
-      database.durableStorageAccounting,
-      database.durableStorageHeadroom,
-      database.proofOperations,
-      database.custodyOperations,
-      database.custodySessionLinks,
-      database.custodyProofReservations,
-      database.swapSessions,
-      database.swapIntents,
-    ],
-    () => initializeInCurrentTransaction(database),
-  );
+  return database
+    .transaction(
+      "rw",
+      guiDurableStorageAdmissionInitializationTables(database),
+      () => initializeInCurrentTransaction(database),
+    )
+    .then((state) => {
+      const backend = database.backendDB();
+      if (!backend) {
+        throw new Error("GUI durable storage database is not open");
+      }
+      initializedAdmissionBackends.add(backend);
+      return state;
+    });
+}
+
+export function ensureGuiDurableStorageAdmissionInitialized(
+  originLock: GuiOriginStorageAdmissionLockContext,
+  database: BitcasterDB = db,
+): Promise<void> {
+  walletIdFromHeldGuiOriginStorageAdmissionLock(originLock);
+  const backend = database.backendDB();
+  return backend && initializedAdmissionBackends.has(backend)
+    ? Dexie.Promise.resolve(undefined)
+    : initializeGuiDurableStorageAdmission(originLock, database).then(
+        () => undefined,
+      );
+}
+
+export function ensureGuiDurableStorageHeadroomInCurrentTransaction(input: {
+  originLock: GuiOriginStorageAdmissionLockContext;
+  boundary: DurableCustodyWalletStorageBoundary;
+  database?: BitcasterDB;
+}): Promise<DurableStorageAccountingState> {
+  try {
+    const database = input.database ?? db;
+    walletIdFromHeldGuiOriginStorageAdmissionLock(input.originLock);
+    requireCurrentWriteTransaction(database);
+    return readStoredAccountingPresence(database).then((state) =>
+      requireHeadroomForBoundary(state, input.boundary),
+    );
+  } catch (error) {
+    return Dexie.Promise.reject(error);
+  }
+}
+
+function requireHeadroomForBoundary(
+  state: DurableStorageAccountingState,
+  boundary: DurableCustodyWalletStorageBoundary,
+): DurableStorageAccountingState {
+  if (
+    boundary === "new-effect" &&
+    state.emergencyHeadroom.state !== "ready"
+  ) {
+    throw new Error("GUI durable storage emergency headroom is unavailable");
+  }
+  if (boundary === "reconciliation-only" || boundary === "new-effect") {
+    return state;
+  }
+  throw new Error("GUI durable storage headroom boundary is invalid");
 }
 
 export function commitGuiPreTradeStorageAdmissionInCurrentTransaction(input: {
@@ -1004,36 +1053,65 @@ export function guiDurableStorageAdmissionTables(database: BitcasterDB) {
   ] as const;
 }
 
-async function initializeInCurrentTransaction(
+export function guiDurableStorageAdmissionInitializationTables(
+  database: BitcasterDB,
+) {
+  return [
+    ...guiDurableStorageAdmissionTables(database),
+    database.proofOperations,
+    database.custodyOperations,
+    database.custodySessionLinks,
+    database.swapSessions,
+    database.swapIntents,
+  ] as const;
+}
+
+function initializeInCurrentTransaction(
   database: BitcasterDB,
 ): Promise<DurableStorageAccountingState> {
-  const accountingRows = await database.durableStorageAccounting
-    .limit(2)
-    .toArray();
-  requireCurrentWriteTransaction(database);
-  const headroomRows = await database.durableStorageHeadroom.limit(2).toArray();
-  requireCurrentWriteTransaction(database);
-  if (accountingRows.length > 1 || headroomRows.length > 1) {
-    throw new Error("GUI durable storage singleton rows are corrupt");
-  }
-  if (accountingRows.length === 1) {
-    return validateStoredAdmissionRows(accountingRows[0], headroomRows[0]);
-  }
-  if (headroomRows.length !== 0) {
-    throw new Error("GUI durable storage headroom has no accounting authority");
-  }
-  await assertNoUnaccountedCustody(database);
-  requireCurrentWriteTransaction(database);
+  return Dexie.Promise.all([
+    database.durableStorageAccounting.limit(2).toArray(),
+    database.durableStorageHeadroom.limit(2).toArray(),
+  ]).then(([accountingRows, headroomRows]) => {
+    requireCurrentWriteTransaction(database);
+    if (accountingRows.length > 1 || headroomRows.length > 1) {
+      throw new Error("GUI durable storage singleton rows are corrupt");
+    }
+    if (accountingRows.length === 1) {
+      return validateStoredAdmissionRows(accountingRows[0], headroomRows[0]);
+    }
+    if (headroomRows.length !== 0) {
+      throw new Error(
+        "GUI durable storage headroom has no accounting authority",
+      );
+    }
+    return createInitialAdmissionRows(database);
+  });
+}
+
+function createInitialAdmissionRows(
+  database: BitcasterDB,
+): Promise<DurableStorageAccountingState> {
   const state = createDurableStorageAccountingState({
     accountingLimitBytes: GUI_DURABLE_STORAGE_ACCOUNTING_LIMIT_BYTES,
   });
-  await database.durableStorageAccounting.add(
-    durableStorageAccountingRow(state),
-  );
-  requireCurrentWriteTransaction(database);
-  await database.durableStorageHeadroom.add(createDurableStorageHeadroomRow());
-  requireCurrentWriteTransaction(database);
-  return state;
+  return assertNoUnaccountedCustody(database)
+    .then(() => {
+      requireCurrentWriteTransaction(database);
+      return database.durableStorageAccounting.add(
+        durableStorageAccountingRow(state),
+      );
+    })
+    .then(() => {
+      requireCurrentWriteTransaction(database);
+      return database.durableStorageHeadroom.add(
+        createDurableStorageHeadroomRow(),
+      );
+    })
+    .then(() => {
+      requireCurrentWriteTransaction(database);
+      return state;
+    });
 }
 
 function readReadyAccounting(
@@ -1061,6 +1139,26 @@ function readStoredAccounting(
   });
 }
 
+function readStoredAccountingPresence(
+  database: BitcasterDB,
+): Promise<DurableStorageAccountingState> {
+  return Dexie.Promise.all([
+    database.durableStorageAccounting.limit(2).toArray(),
+    database.durableStorageHeadroom.limit(2).count(),
+  ]).then(([accountingRows, headroomCount]) => {
+    if (accountingRows.length !== 1 || headroomCount > 1) {
+      throw new Error("GUI durable storage singleton rows are corrupt");
+    }
+    const accounting = decodeDurableStorageAccountingRow(accountingRows[0]);
+    const expectedHeadroomCount =
+      accounting.state.emergencyHeadroom.state === "ready" ? 1 : 0;
+    if (headroomCount !== expectedHeadroomCount) {
+      throw new Error("GUI durable storage headroom state is inconsistent");
+    }
+    return accounting.state;
+  });
+}
+
 function validateStoredAdmissionRows(
   accountingValue: unknown,
   headroomValue: unknown,
@@ -1082,10 +1180,16 @@ function validateStoredAdmissionRows(
 
 function assertNoUnaccountedCustody(database: BitcasterDB): Promise<void> {
   return Dexie.Promise.all([
-    database.proofOperations.limit(1).count(),
-    database.custodyOperations.limit(1).count(),
+    database.proofOperations
+      .orderBy("[walletId+durableTradeId]")
+      .limit(1)
+      .count(),
+    database.custodyOperations
+      .where("bindingKind")
+      .equals("trade")
+      .limit(1)
+      .count(),
     database.custodySessionLinks.limit(1).count(),
-    database.custodyProofReservations.limit(1).count(),
     database.swapSessions.limit(1).count(),
     database.swapIntents.limit(1).count(),
   ]).then((counts) => {

@@ -1,5 +1,9 @@
 import Dexie from "dexie";
 import type { Proof } from "@cashu/cashu-ts";
+import {
+  classifyDurableCustodyWalletStorageBoundary,
+  type DurableCustodyWalletStorageBoundary,
+} from "@bitcaster/client-sdk/durableCustody";
 import type { DurableStoragePlannedArtifact } from "@bitcaster/client-sdk/durableStorageAdmission";
 import type { DexieDurableCustodyPlan } from "./durable-custody-transaction-plan";
 import { sameValue, scopeRow } from "./durable-custody-dexie-model";
@@ -75,6 +79,12 @@ export interface PreparedGuiCustodyArtifactWriteSet {
   readonly database: BitcasterDB;
 }
 
+export interface PreparedGuiCustodyHeadroomWriteSet {
+  readonly walletId: string;
+  readonly boundary: DurableCustodyWalletStorageBoundary;
+  readonly database: BitcasterDB;
+}
+
 interface PreparedGuiCustodyState<T> {
   authority: GuiCustodyAuthority;
   plan: DexieDurableCustodyPlan<T>;
@@ -93,6 +103,7 @@ const preparedGuiCustodyUnits = new WeakMap<
   PreparedGuiCustodyState<unknown>
 >();
 const preparedGuiCustodyArtifactWriteSets = new WeakSet<object>();
+const preparedGuiCustodyHeadroomWriteSets = new WeakSet<object>();
 
 export async function readGuiCustodyNativeSnapshot(
   operationId: string | null,
@@ -316,6 +327,56 @@ export function requirePreparedGuiCustodyArtifactWriteSet(
 ): PreparedGuiCustodyArtifactWriteSet {
   if (!preparedGuiCustodyArtifactWriteSets.has(value)) {
     throw new Error("GUI custody artifact write set was not prepared");
+  }
+  return value;
+}
+
+export function describePreparedGuiCustodyHeadroomWriteSet<T>(
+  prepared: PreparedGuiCustodyUnitOfWork<T>,
+): PreparedGuiCustodyHeadroomWriteSet {
+  const state = requirePreparedGuiCustodyState(prepared);
+  if (state.snapshot.tradeId !== null) {
+    throw new Error("GUI wallet headroom write cannot adopt a trade");
+  }
+  const { previous, next } = walletStorageBoundaryRecords(state);
+  const writeSet = Object.freeze({
+    walletId: prepared.walletId,
+    boundary: classifyDurableCustodyWalletStorageBoundary({
+      previous,
+      next,
+    }),
+    database: state.database,
+  });
+  preparedGuiCustodyHeadroomWriteSets.add(writeSet);
+  return writeSet;
+}
+
+function walletStorageBoundaryRecords(
+  state: PreparedGuiCustodyState<unknown>,
+) {
+  const rows = state.plan.transaction.operationRows();
+  if (rows.length === 1) {
+    const next = rows[0]!;
+    return {
+      previous:
+        state.plan.snapshot.operationRows.get(next.operationId)?.record ?? null,
+      next: next.record,
+    };
+  }
+  const snapshots = [...state.plan.snapshot.operationRows.values()].filter(
+    (row) => row !== undefined,
+  );
+  if (rows.length !== 0 || snapshots.length !== 1) {
+    throw new Error("GUI wallet headroom write requires one exact operation");
+  }
+  return { previous: snapshots[0]!.record, next: snapshots[0]!.record };
+}
+
+export function requirePreparedGuiCustodyHeadroomWriteSet(
+  value: PreparedGuiCustodyHeadroomWriteSet,
+): PreparedGuiCustodyHeadroomWriteSet {
+  if (!preparedGuiCustodyHeadroomWriteSets.has(value)) {
+    throw new Error("GUI custody headroom write set was not prepared");
   }
   return value;
 }

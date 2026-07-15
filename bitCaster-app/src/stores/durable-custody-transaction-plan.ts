@@ -290,6 +290,7 @@ export class PlannedCustodyTransaction implements DurableCustodyTransaction {
       operationId,
       scopeId: this.scope.scopeId,
       active: this.active.get(operationId)!,
+      bindingKind: this.requireOperation(operationId).operation.binding.kind,
       record: this.requireOperation(operationId),
     }));
   }

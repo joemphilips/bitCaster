@@ -247,7 +247,7 @@ export interface DurableCustodyRecord {
     retry: {
       attempt: number
       nextAttemptAtMs: number | null
-      reason: 'none' | 'pending-or-mixed' | 'mint-response-unknown' | 'rate-limited' | 'reservation-race'
+      reason: 'none' | 'pending-or-mixed' | 'mint-response-unknown' | 'rate-limited' | 'reservation-race' | 'storage-unavailable'
     }
     horizon: {
       notBeforeMs: number | null
@@ -328,6 +328,7 @@ export type DurableCustodyRetryReason =
   | 'mint-response-unknown'
   | 'rate-limited'
   | 'reservation-race'
+  | 'storage-unavailable'
 
 export interface DurableCustodyOwnerAuthorization {
   incarnationId: string
@@ -633,6 +634,101 @@ export interface DurableCustodyExactOperationReference {
   }
 }
 
+/**
+ * Browser adapters use this classification to protect bounded wallet-bound
+ * custody writes without inventing a trade reservation. A new effect requires
+ * intact emergency headroom; an exact post-effect reconciliation may consume
+ * released headroom to make already-submitted funds usable again.
+ */
+export type DurableCustodyWalletStorageBoundary =
+  | 'new-effect'
+  | 'reconciliation-only'
+
+export function classifyDurableCustodyWalletStorageBoundary(input: {
+  previous: DurableCustodyRecord | null
+  next: DurableCustodyRecord
+}): DurableCustodyWalletStorageBoundary {
+  const next = decodeDurableCustodyRecord(input.next)
+  if (next.operation.binding.kind !== 'wallet') {
+    throw new Error('wallet storage boundary cannot adopt trade custody')
+  }
+  if (input.previous === null) {
+    if (next.operation.state !== 'dispatch-intent') {
+      throw new Error('wallet storage boundary has no initial dispatch intent')
+    }
+    return 'new-effect'
+  }
+
+  const previous = decodeDurableCustodyRecord(input.previous, next.scope)
+  assertSameWalletStorageAuthority(previous, next)
+  switch (previous.operation.state) {
+    case 'dispatch-intent':
+      if (
+        next.operation.state === 'dispatch-intent' ||
+        next.operation.state === 'transport-attempted' ||
+        next.operation.state === 'aborted'
+      ) {
+        return 'new-effect'
+      }
+      if (next.operation.state === 'reconciled') {
+        return 'reconciliation-only'
+      }
+      break
+    case 'transport-attempted':
+      if (
+        next.operation.state === 'transport-attempted' ||
+        next.operation.state === 'reconciled'
+      ) {
+        return 'reconciliation-only'
+      }
+      break
+    case 'reconciled':
+    case 'aborted':
+      if (next.operation.state === previous.operation.state) {
+        return 'reconciliation-only'
+      }
+      break
+  }
+  throw new Error('wallet storage boundary transition is invalid')
+}
+
+function assertSameWalletStorageAuthority(
+  previous: DurableCustodyRecord,
+  next: DurableCustodyRecord,
+): void {
+  if (
+    previous.operation.binding.kind !== 'wallet' ||
+    deriveDurableCustodyArtifactFingerprint(
+      walletStorageAuthority(previous),
+    ) !==
+      deriveDurableCustodyArtifactFingerprint(walletStorageAuthority(next))
+  ) {
+    throw new Error('wallet storage boundary has foreign exact authority')
+  }
+}
+
+function walletStorageAuthority(record: DurableCustodyRecord): unknown {
+  const operation = record.operation
+  return {
+    scope: record.scope,
+    operationId: operation.operationId,
+    retainedOperationKey: operation.retainedOperationKey,
+    binding: operation.binding,
+    semanticKind: operation.semanticKind,
+    terminalReplayEvidenceRequired:
+      operation.terminalReplayEvidenceRequired,
+    custodyContext: operation.custodyContext,
+    reservation: operation.reservation,
+    exactRequest: operation.exactRequest,
+    outputPlan: operation.outputPlan,
+    privateMaterial: operation.privateMaterial,
+    verification: operation.verification,
+    delivery: operation.delivery,
+    horizon: operation.horizon,
+    terminalTombstone: record.terminalTombstone,
+  }
+}
+
 export type DurableCustodyTransition =
   | ({
     kind: 'owner-claimed'
@@ -745,6 +841,7 @@ const STATES: readonly DurableCustodyOperationState[] = [
 const CURVES: readonly DurableCustodyCurve[] = ['secp256k1', 'bls12-381']
 const RETRY_REASONS: readonly DurableCustodyRetryReason[] = [
   'pending-or-mixed', 'mint-response-unknown', 'rate-limited', 'reservation-race',
+  'storage-unavailable',
 ]
 
 const SEMANTIC_STAGE_BINDINGS: Readonly<Record<
@@ -1921,7 +2018,10 @@ function decodeRetry(value: unknown): DurableCustodyRecord['operation']['retry']
   const retry = requireRecord(value, 'retry')
   requireKnownFields(retry, ['attempt', 'nextAttemptAtMs', 'reason'])
   const reason = requireString(retry.reason, 'retry reason') as DurableCustodyRecord['operation']['retry']['reason']
-  requireOneOf(reason, ['none', 'pending-or-mixed', 'mint-response-unknown', 'rate-limited', 'reservation-race'], 'retry reason')
+  requireOneOf(reason, [
+    'none', 'pending-or-mixed', 'mint-response-unknown', 'rate-limited',
+    'reservation-race', 'storage-unavailable',
+  ], 'retry reason')
   return {
     attempt: requireNonNegativeInteger(retry.attempt, 'retry attempt'),
     nextAttemptAtMs: retry.nextAttemptAtMs === null ? null : requireNonNegativeInteger(retry.nextAttemptAtMs, 'next retry time'),

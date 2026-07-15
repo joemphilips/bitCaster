@@ -5,6 +5,7 @@ import {
   decodeDurableCustodyScopeState,
   decodeDurableCustodyTransactionOperationIds,
   applyDurableCustodyTransaction,
+  classifyDurableCustodyWalletStorageBoundary,
   claimDurableCustodyScope,
   createDurableCustodyDispatchIntent,
   createDurableProofOperationFacts,
@@ -364,6 +365,26 @@ function decodedRecord(overrides: Record<string, unknown> = {}): DurableCustodyR
   return decodeDurableCustodyRecord(custodyRecord(overrides))
 }
 
+function decodedWalletRecord(): DurableCustodyRecord {
+  const raw = custodyRecord()
+  const operation = raw.operation as Record<string, unknown>
+  operation.binding = {
+    kind: 'wallet',
+    activityId: 'wallet-send-001',
+    stage: 'send',
+  }
+  operation.semanticKind = 'generic-send'
+  operation.horizon = {
+    notBeforeMs: null,
+    notAfterMs: null,
+    safetyMarginMs: 0,
+    keysetExpiryMs: null,
+  }
+  operation.terminalReplayEvidenceRequired = false
+  operation.operationId = operationIdFor(profileScope().scopeId, operation)
+  return decodeDurableCustodyRecord(raw)
+}
+
 function operationIdFor(
   scopeId: string,
   operation: Record<string, unknown>,
@@ -470,6 +491,85 @@ test('canonical custody decoder rejects unknown versions, fields, and foreign sc
   assert.throws(
     () => decodeDurableCustodyRecord(nestedUnknown),
     /unknown field 'future'/,
+  )
+})
+
+test('wallet storage boundaries distinguish new effects from reconciliation', () => {
+  const prepared = decodedWalletRecord()
+  assert.equal(
+    classifyDurableCustodyWalletStorageBoundary({
+      previous: null,
+      next: prepared,
+    }),
+    'new-effect',
+  )
+
+  const submitted = reduceDurableCustodyState(
+    custodyState(prepared),
+    { kind: 'transport-attempted', ...ownerAuthorization },
+  ).operation
+  assert.equal(
+    classifyDurableCustodyWalletStorageBoundary({
+      previous: prepared,
+      next: submitted,
+    }),
+    'new-effect',
+  )
+
+  const staged = reduceDurableCustodyState(
+    custodyState(submitted),
+    {
+      kind: 'verified-result-staged',
+      resultHandle: 'result-001',
+      resultFingerprint: FINGERPRINT_A,
+      outputPlanFingerprint:
+        submitted.operation.outputPlan.outputPlanFingerprint,
+      ...ownerAuthorization,
+    },
+  )
+  const reconciled = reduceDurableCustodyState(staged, {
+    kind: 'reconciled',
+    recoverySource: 'transport-attempted',
+    ...ownerAuthorization,
+  }).operation
+  assert.equal(
+    classifyDurableCustodyWalletStorageBoundary({
+      previous: submitted,
+      next: reconciled,
+    }),
+    'reconciliation-only',
+  )
+})
+
+test('wallet storage boundaries reject trade and foreign exact authority', () => {
+  const wallet = decodedWalletRecord()
+  assert.throws(
+    () =>
+      classifyDurableCustodyWalletStorageBoundary({
+        previous: null,
+        next: decodedRecord(),
+      }),
+    /cannot adopt trade custody/,
+  )
+  const foreign = structuredClone(wallet)
+  foreign.operation.exactRequest.requestFingerprint = FINGERPRINT_B
+  assert.throws(
+    () =>
+      classifyDurableCustodyWalletStorageBoundary({
+        previous: wallet,
+        next: foreign,
+      }),
+    /foreign exact authority/,
+  )
+  const foreignHorizon = structuredClone(wallet)
+  foreignHorizon.operation.horizon.safetyMarginMs = 1
+  assert.throws(
+    () =>
+      classifyDurableCustodyWalletStorageBoundary({
+        previous: wallet,
+        next: foreignHorizon,
+      }),
+    /foreign exact authority/,
   )
 })
 

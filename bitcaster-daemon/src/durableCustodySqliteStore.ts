@@ -1273,7 +1273,10 @@ function createSchema(database: DatabaseSync): void {
         (retry_attempt = 0 AND retry_next_attempt_at_ms IS NULL AND retry_reason = 'none')
         OR
         (retry_attempt > 0 AND retry_next_attempt_at_ms IS NOT NULL
-          AND retry_reason IN ('pending-or-mixed', 'mint-response-unknown', 'rate-limited', 'reservation-race'))
+          AND retry_reason IN (
+            'pending-or-mixed', 'mint-response-unknown', 'rate-limited',
+            'reservation-race', 'storage-unavailable'
+          ))
       ),
       CHECK (not_before_ms IS NULL OR not_after_ms IS NULL OR not_before_ms <= not_after_ms),
       CHECK (

@@ -463,6 +463,36 @@ export class BitcasterDB extends Dexie {
       durableStorageAccounting: "recordId",
       durableStorageHeadroom: "recordId",
     });
+    // This custody schema remains undeployed. Version 15 deliberately drops
+    // the incompatible development wallet state instead of inferring the new
+    // indexed wallet/trade binding authority from nested records.
+    this.version(15)
+      .stores({
+        custodyOperations:
+          "operationId, scopeId, active, bindingKind, [scopeId+operationId], [scopeId+active+operationId]",
+      })
+      .upgrade(async (transaction) => {
+        await Promise.all(
+          [
+            "proofs",
+            "proofOperations",
+            "swapSessions",
+            "swapIntents",
+            "custodyScopes",
+            "custodyScopeStates",
+            "custodyOperations",
+            "custodySessionLinks",
+            "custodyProofReservations",
+            "partialLockFailures",
+            "walletCounters",
+            "pendingLocalWalletPayments",
+            "pendingTrades",
+            "walletActivities",
+            "durableStorageAccounting",
+            "durableStorageHeadroom",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
     this.on("blocked", () => {
       durableSwapStorageBlockedReason =
         "Durable swap storage upgrade is blocked by another open tab";

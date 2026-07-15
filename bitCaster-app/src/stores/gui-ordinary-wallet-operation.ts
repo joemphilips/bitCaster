@@ -44,6 +44,10 @@ import {
 } from "./gui-wallet-proof-operation-custody";
 import { GuiCustodyMintKeysUnavailable } from "./gui-custody-authority";
 import {
+  GuiDurableStorageHeadroomUnavailable,
+  requireGuiNewEffectHeadroomForWallet,
+} from "./gui-durable-storage-headroom-custody-unit-of-work";
+import {
   GUI_DEPOSIT_ACTIVITY_METADATA_KEY,
   guiDepositActivityMetadata,
   readGuiDepositActivityMetadata,
@@ -238,6 +242,7 @@ export async function recoverGuiOrdinaryWalletOperation(
       return { kind: "settled" };
     case "reissue-exact-operation":
       try {
+        await requireGuiNewEffectHeadroomForWallet(record.walletId);
         await dispatchExactOperation(
           record.walletId,
           decision.operation,
@@ -245,6 +250,9 @@ export async function recoverGuiOrdinaryWalletOperation(
           "recovery",
         );
       } catch (error) {
+        if (error instanceof GuiDurableStorageHeadroomUnavailable) {
+          return { kind: "retry-later", reason: "storage-unavailable" };
+        }
         if (error instanceof RetryableGuiWalletOperationFailure) {
           return { kind: "retry-later", reason: "mint-response-unknown" };
         }
@@ -369,11 +377,24 @@ async function recoverSubmittedOperation(
       return completed.receive ?? [];
     }
     case "reissue-exact-operation":
+      await requireReissueHeadroom(walletId);
       return transportExactOperation(walletId, wallet, decision.operation);
     case "retry-later":
       return pendingRecovery();
     case "fail-closed":
       throw new Error(`GUI wallet recovery failed closed: ${decision.reason}`);
+  }
+}
+
+async function requireReissueHeadroom(walletId: string): Promise<void> {
+  try {
+    await requireGuiNewEffectHeadroomForWallet(walletId);
+  } catch (error) {
+    if (!(error instanceof GuiDurableStorageHeadroomUnavailable)) throw error;
+    throw retryableWalletFailure(
+      "GUI wallet storage headroom is unavailable",
+      error,
+    );
   }
 }
 

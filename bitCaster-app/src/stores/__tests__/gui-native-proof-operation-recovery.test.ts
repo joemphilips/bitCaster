@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DexieDurableCustodyStore } from "../durable-custody-dexie";
 import {
   __resetGuiNativeProofOperationRecoverySchedulerForTests,
+  __setGuiNativeProofOperationRecoveryPageSizeForTests,
   __setGuiNativeProofOperationRecoveryTimerForTests,
+  GUI_NATIVE_PROOF_RECOVERY_PAGE_SIZE,
   recoverGuiNativeProofOperations,
   requestGuiNativeProofOperationRecovery,
 } from "../gui-native-proof-operation-recovery";
@@ -131,7 +133,9 @@ describe("GUI native proof-operation startup recovery", () => {
   });
 
   it("pages canonical active work in bounded groups of sixteen", async () => {
-    for (let index = 0; index < 17; index += 1) {
+    expect(GUI_NATIVE_PROOF_RECOVERY_PAGE_SIZE).toBe(16);
+    __setGuiNativeProofOperationRecoveryPageSizeForTests(1);
+    for (let index = 0; index < 2; index += 1) {
       await prepareNativeOperation("ctf-redeem", index);
     }
     const listPage = vi.spyOn(
@@ -141,13 +145,13 @@ describe("GUI native proof-operation startup recovery", () => {
 
     await expect(recoverGuiNativeProofOperations()).resolves.toBe("clear");
 
-    expect(recoveryMocks.ctfRedeem).toHaveBeenCalledTimes(17);
+    expect(recoveryMocks.ctfRedeem).toHaveBeenCalledTimes(2);
     expect(listPage).toHaveBeenCalledTimes(2);
     expect(listPage.mock.calls[0]![0]).toMatchObject({
       cursor: null,
-      limit: 16,
+      limit: 1,
     });
-    expect(listPage.mock.calls[1]![0]).toMatchObject({ limit: 16 });
+    expect(listPage.mock.calls[1]![0]).toMatchObject({ limit: 1 });
     expect(listPage.mock.calls[1]![0].cursor).not.toBeNull();
   });
 
@@ -885,7 +889,7 @@ class FakeRecoveryClock {
 }
 
 class NonWaitingWebLocks {
-  #busy = false;
+  readonly #busy = new Set<string>();
   #hold?: ReturnType<NonWaitingWebLocks["holdNextExclusiveRequest"]>;
 
   holdNextExclusiveRequest() {
@@ -899,18 +903,20 @@ class NonWaitingWebLocks {
   }
 
   async request<T>(
-    _name: string,
+    name: string,
     options: LockOptions,
     callback: (lock: Lock | null) => Promise<T>,
   ): Promise<T> {
-    if (options.ifAvailable && this.#busy) return callback(null);
-    while (this.#busy) await new Promise((resolve) => setTimeout(resolve, 0));
-    this.#busy = true;
+    if (options.ifAvailable && this.#busy.has(name)) return callback(null);
+    while (this.#busy.has(name)) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    this.#busy.add(name);
     this.#hold?.markAcquired();
     try {
-      return await callback({} as Lock);
+      return await callback({ name, mode: "exclusive" } as Lock);
     } finally {
-      this.#busy = false;
+      this.#busy.delete(name);
       this.#hold = undefined;
     }
   }

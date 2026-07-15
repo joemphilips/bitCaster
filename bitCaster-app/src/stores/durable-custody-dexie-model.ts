@@ -35,6 +35,7 @@ export interface DexieCustodyOperationRow {
   operationId: string;
   scopeId: string;
   active: ActiveMarker;
+  bindingKind: DurableCustodyBinding["kind"];
   record: DurableCustodyRecord;
 }
 
@@ -177,7 +178,8 @@ export function decodeOperationRow(
   if (
     row.operationId !== record.operation.operationId ||
     row.scopeId !== scope.scopeId ||
-    row.active !== activeMarker(record)
+    row.active !== activeMarker(record) ||
+    row.bindingKind !== record.operation.binding.kind
   ) {
     throw new Error("custody operation row is corrupt");
   }
@@ -238,6 +240,7 @@ function decodeOperationStorageRow(
     operationId: record.operation.operationId,
     scopeId: scope.scopeId,
     active: activeMarker(record),
+    bindingKind: record.operation.binding.kind,
     record,
   };
 }

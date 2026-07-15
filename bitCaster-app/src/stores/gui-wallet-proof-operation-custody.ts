@@ -46,10 +46,11 @@ import {
   reserveGuiNativeInputProofs,
 } from "./gui-native-proof-custody";
 import {
-  commitGuiCustodyUnitOfWork,
+  prepareGuiCustodyUnitOfWork,
   readGuiCustodyOperationSnapshot,
   readGuiCustodyNativeSnapshot,
 } from "./gui-custody-unit-of-work";
+import { commitGuiHeadroomCustodyUnitOfWork } from "./gui-durable-storage-headroom-custody-unit-of-work";
 import {
   currentGuiWalletId,
   db,
@@ -584,13 +585,14 @@ async function commitResolvedWalletOperation(
     context.walletId,
   );
   const nextProofs = reserveNativeInputProofs(nextOperation, snapshot.proofs);
-  await commitGuiCustodyUnitOfWork({
+  const prepared = await prepareGuiCustodyUnitOfWork({
     authority,
     plan,
     snapshot,
     nextOperation,
     nextProofs,
   });
+  await commitGuiHeadroomCustodyUnitOfWork({ walletLock: lock, prepared });
   return nextOperation;
 }
 
@@ -837,7 +839,7 @@ async function advanceWalletOperationOwned(
   const proofDelta =
     options.nativeProofDelta?.(operation, snapshot.proofs) ?? {};
   const nextActivity = options.nextActivity?.(nextOperation) ?? undefined;
-  await commitGuiCustodyUnitOfWork({
+  const prepared = await prepareGuiCustodyUnitOfWork({
     authority,
     plan,
     snapshot,
@@ -845,6 +847,7 @@ async function advanceWalletOperationOwned(
     nextActivity,
     ...proofDelta,
   });
+  await commitGuiHeadroomCustodyUnitOfWork({ walletLock: lock, prepared });
   return nextOperation;
 }
 

@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   switchSeedAfterPersistResult: false,
   walletBootstrapError: null as Error | null,
   persistPlanError: null as Error | null,
+  headroomReady: true,
   recoveryWake: vi.fn(),
   wallet: {} as Record<string, unknown>,
 }));
@@ -25,6 +26,21 @@ vi.mock("@/lib/cashu", () => ({
 vi.mock("../gui-native-proof-operation-recovery", () => ({
   requestGuiNativeProofOperationRecovery: state.recoveryWake,
 }));
+
+vi.mock("../gui-durable-storage-headroom-custody-unit-of-work", () => {
+  class TestHeadroomUnavailable extends Error {}
+  return {
+    GuiDurableStorageHeadroomUnavailable: TestHeadroomUnavailable,
+    requireGuiNewEffectHeadroomForWallet: vi.fn(async () => {
+      state.trace.push("require-headroom");
+      if (!state.headroomReady) {
+        throw new TestHeadroomUnavailable(
+          "GUI durable storage emergency headroom is unavailable",
+        );
+      }
+    }),
+  };
+});
 
 vi.mock("@/lib/conditionalKeysetMetadata", () => ({
   proofsWithOptionalConditionalMetadata: vi.fn(
@@ -148,6 +164,7 @@ describe("GUI ordinary wallet coordinator", () => {
     state.switchSeedAfterPersistResult = false;
     state.walletBootstrapError = null;
     state.persistPlanError = null;
+    state.headroomReady = true;
     state.recoveryWake.mockReset().mockResolvedValue("pending");
     state.wallet = walletFixture();
   });
@@ -581,6 +598,41 @@ describe("GUI ordinary wallet coordinator", () => {
     expect(Array.from(reissue.outputData[0].secret)).toEqual(
       Array.from(initial.outputData[0].secret),
     );
+    expect(state.record?.state).toBe("mint-submitted");
+  });
+
+  it("defers an exact recovery reissue before mint transport when headroom is unavailable", async () => {
+    const plan = await prepareGuiLightningMint({
+      amount: 3,
+      quote: QUOTE,
+      mintUrl: MINT_URL,
+      unit: "sat",
+    });
+    walletMethod("completeMint").mockRejectedValueOnce(
+      new Error("initial response lost"),
+    );
+    await expect(completeGuiLightningMint(plan)).rejects.toThrow(
+      "initial response lost",
+    );
+    walletMethod("checkMintQuote").mockResolvedValue({
+      ...QUOTE,
+      state: "PAID",
+    });
+    state.headroomReady = false;
+
+    await expect(completeGuiLightningMint(plan)).rejects.toThrow(
+      "emergency headroom is unavailable",
+    );
+    expect(walletMethod("completeMint")).toHaveBeenCalledOnce();
+
+    await expect(
+      recoverGuiOrdinaryWalletOperation(state.record as never),
+    ).resolves.toEqual({
+      kind: "retry-later",
+      reason: "storage-unavailable",
+    });
+
+    expect(walletMethod("completeMint")).toHaveBeenCalledOnce();
     expect(state.record?.state).toBe("mint-submitted");
   });
 

@@ -573,6 +573,24 @@ test('SQLite custody transaction commits canonical operation, session, reservati
       (await store.listRecoverable(scope))[0]?.operation.operationId,
       operation.operation.operationId,
     )
+    await store.transact(
+      custodyTransactionInput(scope, { ...owner, observedAtMs: 3 }, operation),
+      (transaction) => {
+        transaction.transitionOperation({
+          operationId: operation.operation.operationId,
+          transition: {
+            kind: 'retry-scheduled',
+            reason: 'storage-unavailable',
+            nextAttemptAtMs: 5_000,
+          },
+        })
+        transaction.rebuildActiveWorkIndex()
+      },
+    )
+    assert.equal(
+      (await store.listRecoverable(scope))[0]?.operation.retry.reason,
+      'storage-unavailable',
+    )
     const database = openProfileDatabase()
     try {
       assert.throws(

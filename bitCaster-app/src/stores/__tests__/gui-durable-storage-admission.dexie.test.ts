@@ -80,7 +80,7 @@ describe("GUI durable-storage Dexie admission", () => {
     });
   });
 
-  it("fails closed for corrupt, unpaired, rogue, or pre-existing custody rows", async () => {
+  it("fails closed for corrupt, unpaired, rogue, or unaccounted trade rows", async () => {
     await withAdmissionLock(async (originLock) => {
       await initializeGuiDurableStorageAdmission(originLock);
       const headroom = await db.durableStorageHeadroom.get(
@@ -111,6 +111,31 @@ describe("GUI durable-storage Dexie admission", () => {
       await db.durableStorageAccounting.clear();
       await db.durableStorageHeadroom.clear();
       await db.swapSessions.put({ tradeId: "unaccounted" } as never);
+      await expect(
+        initializeGuiDurableStorageAdmission(originLock),
+      ).rejects.toThrow("cannot adopt existing custody");
+
+      await db.swapSessions.clear();
+      await db.proofOperations.put({
+        walletId: WALLET_ID,
+        operationId: "orphan-trade-operation",
+        durableTradeId: "orphan-trade",
+      } as never);
+      await expect(
+        initializeGuiDurableStorageAdmission(originLock),
+      ).rejects.toThrow("cannot adopt existing custody");
+
+      await db.proofOperations.clear();
+      await db.custodyOperations.put({
+        operationId: "orphan-canonical-trade-operation",
+        scopeId: deriveDurableCustodyScopeId({
+          scopeKind: "wallet",
+          walletId: WALLET_ID,
+        }),
+        active: 1,
+        bindingKind: "trade",
+        record: {},
+      } as never);
       await expect(
         initializeGuiDurableStorageAdmission(originLock),
       ).rejects.toThrow("cannot adopt existing custody");

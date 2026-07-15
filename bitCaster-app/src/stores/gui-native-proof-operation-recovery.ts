@@ -43,7 +43,7 @@ import {
 
 export type GuiNativeProofRecoveryStatus = "clear" | "pending" | "blocked";
 
-const NATIVE_RECOVERY_PAGE_SIZE = 16;
+export const GUI_NATIVE_PROOF_RECOVERY_PAGE_SIZE = 16;
 const NATIVE_RECOVERY_RETRY_BASE_MS = 1_000;
 const NATIVE_RECOVERY_RETRY_MAX_MS = 60_000;
 const NATIVE_RECOVERY_TIMER_MAX_MS = 2_147_483_647;
@@ -52,6 +52,7 @@ const activeRecoveryByWallet = new Map<
   Promise<GuiNativeProofRecoveryStatus>
 >();
 let scheduledRecovery: ScheduledNativeRecovery | null = null;
+let nativeRecoveryPageSize = GUI_NATIVE_PROOF_RECOVERY_PAGE_SIZE;
 let nativeRecoveryTimer: NativeRecoveryTimer = {
   schedule: (callback, delayMs) => setTimeout(callback, delayMs),
   cancel: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
@@ -97,10 +98,24 @@ export async function recoverGuiNativeProofOperations(): Promise<GuiNativeProofR
 export function __resetGuiNativeProofOperationRecoverySchedulerForTests(): void {
   clearScheduledNativeRecovery();
   activeRecoveryByWallet.clear();
+  nativeRecoveryPageSize = GUI_NATIVE_PROOF_RECOVERY_PAGE_SIZE;
   nativeRecoveryTimer = {
     schedule: (callback, delayMs) => setTimeout(callback, delayMs),
     cancel: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
   };
+}
+
+export function __setGuiNativeProofOperationRecoveryPageSizeForTests(
+  pageSize: number,
+): void {
+  if (
+    !Number.isSafeInteger(pageSize) ||
+    pageSize < 1 ||
+    pageSize > GUI_NATIVE_PROOF_RECOVERY_PAGE_SIZE
+  ) {
+    throw new Error("GUI native recovery test page size is invalid");
+  }
+  nativeRecoveryPageSize = pageSize;
 }
 
 export function __setGuiNativeProofOperationRecoveryTimerForTests(
@@ -131,7 +146,7 @@ async function recoverGuiNativeProofOperationsForWallet(
       page = await readDurableCustodyRecoveryPage(store, {
         scope: context.scope,
         cursor,
-        limit: NATIVE_RECOVERY_PAGE_SIZE,
+        limit: nativeRecoveryPageSize,
       });
     } catch {
       return blockedCycle();
