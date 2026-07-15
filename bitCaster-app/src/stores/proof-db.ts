@@ -1,21 +1,50 @@
 import Dexie, { type Table } from "dexie";
 import type { Proof } from "@cashu/cashu-ts";
-import type { CtfRedeemMintSubmissionBinding } from "@bitcaster/client-sdk/ctfSplit";
-import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { isStrictCashuProofArtifact } from "@bitcaster/client-sdk/cashuProofArtifact";
+import {
+  deriveDurableCustodyProofId,
+  DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+} from "@bitcaster/client-sdk/durableCustody";
+import {
+  amountToNumber,
+  sameCashuProofArtifact,
+} from "@bitcaster/client-sdk/proofSelection";
 import {
   COLLATERAL_UNIT_REGISTRY,
   normalizeMarketBaseAsset,
+  parseMarketBaseAsset,
   parseCashuProofUnit,
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
 import { normalizeUrl } from "../lib/url";
-import type {
-  DurableTradePendingIntent,
-  DurableTradeProofOperationLink,
-  DurableTradeSession,
+import {
+  validateDurableProofOperationLink,
+  type DurableTradePendingIntent,
+  type DurableTradeProofOperationLink,
+  type DurableTradeSession,
 } from "@bitcaster/client-sdk/durableTradeRecovery";
+import type {
+  DexieCustodyOperationRow,
+  DexieCustodyProofReservationRow,
+  DexieCustodyScopeRow,
+  DexieCustodyScopeStateRow,
+  DexieCustodySessionLinkRow,
+} from "./durable-custody-dexie";
+import type { GuiPartialLockFailureRecord } from "./partial-lock-failure-model";
+import type { PendingLocalWalletPaymentRow } from "./pending-local-wallet-payment-model";
+import type { PendingTradeRecord } from "./pendingTrades";
+import type { WalletActivityRow } from "./wallet-activity-projection";
+import {
+  walletIdFromHeldGuiWalletLock,
+  withGuiWalletLock,
+  type GuiWalletLockContext,
+} from "./gui-wallet-lock";
 
 export interface StoredProof extends Proof {
+  /** Derived physical identity. Present only after durable preparation/read. */
+  proofId?: string;
+  /** Seed-derived wallet identity. Required on every physical Dexie row. */
+  walletId?: string;
   mintUrl: string;
   /** Local-only reservation owner. Reserved proofs are hidden from spendable balances. */
   reservedBy?: string;
@@ -31,7 +60,24 @@ export interface StoredProof extends Proof {
   unit?: CashuProofUnit;
   /** Timestamp (ms since epoch) when this proof was added to the wallet */
   receivedAt?: number;
+  /** Derived physical classification. Callers must not choose this value. */
+  proofClass?: StoredProofClass;
+  /** Derived physical reservation state. Callers must not choose this value. */
+  selectability?: StoredProofSelectability;
 }
+
+export type StoredProofClass = "regular" | "ctf";
+export type StoredProofSelectability = "spendable" | "reserved";
+
+export type StoredProofRow = StoredProof & {
+  proofId: string;
+  walletId: string;
+  baseAsset: string;
+  unit: CashuProofUnit;
+  receivedAt: number;
+  proofClass: StoredProofClass;
+  selectability: StoredProofSelectability;
+};
 
 export interface StoredOutputData {
   blindedMessage: {
@@ -41,6 +87,7 @@ export interface StoredOutputData {
   };
   blindingFactor: string;
   secret: string;
+  ephemeralE?: string;
 }
 
 export type ProofOperationKind =
@@ -53,19 +100,26 @@ export type ProofOperationKind =
   | "ctf-redeem"
   | "ctf-condition-registration"
   | "regular-split"
-  | "proof-split";
+  | "proof-split"
+  | "wallet-mint"
+  | "wallet-receive";
 export type ProofOperationState =
   | "prepared"
   | "mint-submitted"
   | "completed"
   | "Failed";
 
+export type ProofOperationPrimaryKey = [walletId: string, operationId: string];
+
 export interface ProofOperationRecord {
+  walletId: string;
   operationId: string;
   /** SDK recovery identity for a swap-owned operation. */
   durableTradeRecovery?: DurableTradeProofOperationLink;
   /** Indexed mirror of the SDK semantic operation id for exact recovery. */
   durableOperationId?: string;
+  /** Indexed canonical custody-row identity; distinct from the trade-link id. */
+  custodyOperationId: string;
   /** Indexed mirror that bounds recovery scans to one durable trade. */
   durableTradeId?: string;
   kind: ProofOperationKind;
@@ -75,7 +129,7 @@ export interface ProofOperationRecord {
   outputs: Record<string, StoredOutputData[]>;
   metadata: Record<string, unknown> & { unit?: CashuProofUnit };
   resultProofs?: Record<string, Proof[]>;
-  lastError?: string | null;
+  lastError: string | null;
   /** Structured mint error code for failed operations, when available. */
   failureCode?: number | undefined;
   createdAt: number;
@@ -96,7 +150,10 @@ export interface PrepareProofOperationInput {
  * session schema is owned by bitcaster-client-sdk.
  */
 export interface SwapSessionRecord {
+  adapterSchemaVersion: number;
+  walletId: string;
   tradeId: string;
+  active: 0 | 1;
   session: DurableTradeSession;
   adapterState: unknown;
   updatedAt: number;
@@ -104,6 +161,7 @@ export interface SwapSessionRecord {
 
 /** Adapter-owned private key material for an SDK-defined pre-session intent. */
 export interface SwapIntentRecord {
+  walletId: string;
   tradeId: string;
   intent: DurableTradePendingIntent;
   ephemeralPrivkeyHex: string;
@@ -111,10 +169,54 @@ export interface SwapIntentRecord {
   updatedAt: number;
 }
 
+export interface GuiWalletCounterRow {
+  walletId: string;
+  keysetId: string;
+  nextCounter: number;
+  updatedAt: number;
+}
+
 let durableSwapStorageBlockedReason: string | null = null;
 let rejectDurableSwapStorageOpen: ((error: Error) => void) | null = null;
 let durableSwapStorageOpenInFlight: Promise<void> | null = null;
+let durableSwapStorageOpenWalletId: string | null = null;
 const DURABLE_SWAP_STORAGE_OPEN_TIMEOUT_MS = 5_000;
+let guiWalletIdProvider: (() => string) | null = null;
+
+export function configureGuiWalletIdProvider(provider: () => string): void {
+  guiWalletIdProvider = provider;
+}
+
+export function currentGuiWalletId(): string {
+  return requireGuiWalletId(guiWalletIdProvider?.());
+}
+
+async function withGuiProofWriterLock<T>(
+  action: (walletId: string) => Promise<T>,
+): Promise<T> {
+  const walletId = currentGuiWalletId();
+  return withGuiWalletLock(walletId, currentGuiWalletId, (lock) =>
+    withHeldGuiProofWriterLock(lock, action),
+  );
+}
+
+async function withHeldGuiProofWriterLock<T>(
+  lock: GuiWalletLockContext,
+  action: (walletId: string) => Promise<T>,
+): Promise<T> {
+  const walletId = walletIdFromHeldGuiWalletLock(lock);
+  await ensureDurableSwapStorage(walletId);
+  return action(walletId);
+}
+
+export function requireGuiWalletId(walletId: unknown): string {
+  if (typeof walletId !== "string" || !/^[0-9a-f]{64}$/.test(walletId)) {
+    throw new Error(
+      "GUI proof storage requires a valid seed-derived wallet id",
+    );
+  }
+  return walletId;
+}
 
 export function isCtfProof(proof: StoredProof | Proof): boolean {
   const candidate = proof as Proof & {
@@ -132,10 +234,26 @@ export function isCtfProof(proof: StoredProof | Proof): boolean {
 }
 
 export class BitcasterDB extends Dexie {
-  proofs!: Table<StoredProof>;
-  proofOperations!: Table<ProofOperationRecord>;
+  proofs!: Table<StoredProofRow, string>;
+  proofOperations!: Table<ProofOperationRecord, ProofOperationPrimaryKey>;
   swapSessions!: Table<SwapSessionRecord>;
   swapIntents!: Table<SwapIntentRecord>;
+  custodyScopes!: Table<DexieCustodyScopeRow, string>;
+  custodyScopeStates!: Table<DexieCustodyScopeStateRow, string>;
+  custodyOperations!: Table<DexieCustodyOperationRow, string>;
+  custodySessionLinks!: Table<DexieCustodySessionLinkRow, string>;
+  custodyProofReservations!: Table<DexieCustodyProofReservationRow, string>;
+  partialLockFailures!: Table<
+    GuiPartialLockFailureRecord & { walletId: string },
+    [string, string]
+  >;
+  walletCounters!: Table<GuiWalletCounterRow, [string, string]>;
+  pendingLocalWalletPayments!: Table<
+    PendingLocalWalletPaymentRow,
+    [string, string]
+  >;
+  pendingTrades!: Table<PendingTradeRecord, [string, string]>;
+  walletActivities!: Table<WalletActivityRow, [string, string]>;
 
   constructor() {
     super("bitcaster");
@@ -179,9 +297,135 @@ export class BitcasterDB extends Dexie {
       proofs:
         "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+conditionId+outcomeCollection]",
       proofOperations:
-        "operationId, state, kind, mintUrl, updatedAt, durableOperationId, durableTradeId",
+        "operationId, state, kind, mintUrl, updatedAt, durableOperationId, durableTradeId, custodyOperationId",
       swapSessions: "tradeId, updatedAt",
       swapIntents: "tradeId, updatedAt, submitted",
+    });
+    // The feature was not deployed. Version 9 is intentionally a tombstone:
+    // ownership and proof identities cannot be inferred safely from v1-v8.
+    this.version(9).stores({
+      proofs: null,
+      proofOperations: null,
+      swapSessions: null,
+      swapIntents: null,
+    });
+    this.version(10)
+      .stores({
+        proofs:
+          "proofId, walletId, [walletId+mintUrl], [walletId+mintUrl+unit+proofClass+selectability+amount], [walletId+conditionId+outcomeCollection], [walletId+mintUrl+conditionId+outcomeCollection], [walletId+reservedBy]",
+        proofOperations:
+          "operationId, walletId, [walletId+state], [walletId+kind], [walletId+mintUrl], [walletId+durableOperationId], [walletId+durableTradeId], updatedAt, custodyOperationId",
+        swapSessions:
+          "tradeId, walletId, [walletId+active], [walletId+updatedAt]",
+        swapIntents:
+          "tradeId, walletId, [walletId+updatedAt], [walletId+submitted]",
+        custodyScopes: "scopeId, scopeKind, &marketId, &inventoryKey",
+        custodyScopeStates: "scopeId",
+        custodyOperations:
+          "operationId, scopeId, active, [scopeId+operationId], [scopeId+active+operationId]",
+        custodySessionLinks:
+          "operationId, scopeId, sessionId, &[scopeId+sessionId+operationId]",
+        custodyProofReservations:
+          "proofId, scopeId, operationId, [scopeId+operationId]",
+        partialLockFailures:
+          "[walletId+tradeId], walletId, [walletId+refundLocktime], [walletId+createdAt]",
+        walletCounters: "[walletId+keysetId], walletId",
+        pendingLocalWalletPayments:
+          "[walletId+depositId], walletId, [walletId+phase], &[walletId+splitOperationId], [walletId+nextAttemptAt+createdAt+depositId]",
+        pendingTrades:
+          "[walletId+orderId], walletId, &[walletId+clientOrderId], [walletId+submittedAt]",
+      })
+      .upgrade(async (transaction) => {
+        // Also erase any locally-created development v9 database. There is no
+        // production compatibility contract for this pre-release schema.
+        await Promise.all(
+          [
+            "proofs",
+            "proofOperations",
+            "swapSessions",
+            "swapIntents",
+            "custodyScopes",
+            "custodyScopeStates",
+            "custodyOperations",
+            "custodySessionLinks",
+            "custodyProofReservations",
+            "partialLockFailures",
+            "walletCounters",
+            "pendingLocalWalletPayments",
+            "pendingTrades",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
+    // Version 10 used operationId alone as the proof-operation primary key,
+    // so two seed-derived wallets could overwrite each other. This feature is
+    // undeployed: discard that incompatible development schema rather than
+    // infer or partially preserve cross-table recovery authority.
+    this.version(11).stores({
+      proofs: null,
+      proofOperations: null,
+      swapSessions: null,
+      swapIntents: null,
+      custodyScopes: null,
+      custodyScopeStates: null,
+      custodyOperations: null,
+      custodySessionLinks: null,
+      custodyProofReservations: null,
+      partialLockFailures: null,
+      walletCounters: null,
+      pendingLocalWalletPayments: null,
+      pendingTrades: null,
+    });
+    this.version(12).stores({
+      proofs:
+        "proofId, walletId, [walletId+mintUrl], [walletId+mintUrl+unit+proofClass+selectability+amount], [walletId+conditionId+outcomeCollection], [walletId+mintUrl+conditionId+outcomeCollection], [walletId+reservedBy]",
+      proofOperations:
+        "[walletId+operationId], walletId, [walletId+state], [walletId+kind], [walletId+mintUrl], [walletId+durableOperationId], [walletId+durableTradeId], updatedAt, custodyOperationId",
+      swapSessions:
+        "tradeId, walletId, [walletId+active], [walletId+updatedAt]",
+      swapIntents:
+        "tradeId, walletId, [walletId+updatedAt], [walletId+submitted]",
+      custodyScopes: "scopeId, scopeKind, &marketId, &inventoryKey",
+      custodyScopeStates: "scopeId",
+      custodyOperations:
+        "operationId, scopeId, active, [scopeId+operationId], [scopeId+active+operationId]",
+      custodySessionLinks:
+        "operationId, scopeId, sessionId, &[scopeId+sessionId+operationId]",
+      custodyProofReservations:
+        "proofId, scopeId, operationId, [scopeId+operationId]",
+      partialLockFailures:
+        "[walletId+tradeId], walletId, [walletId+refundLocktime], [walletId+createdAt]",
+      walletCounters: "[walletId+keysetId], walletId",
+      pendingLocalWalletPayments:
+        "[walletId+depositId], walletId, [walletId+phase], &[walletId+splitOperationId], [walletId+nextAttemptAt+createdAt+depositId]",
+      pendingTrades:
+        "[walletId+orderId], walletId, &[walletId+clientOrderId], [walletId+submittedAt]",
+    });
+    this.version(13).stores({
+      proofs:
+        "proofId, walletId, [walletId+mintUrl], [walletId+mintUrl+unit+proofClass+selectability+amount], [walletId+conditionId+outcomeCollection], [walletId+mintUrl+conditionId+outcomeCollection], [walletId+reservedBy]",
+      proofOperations:
+        "[walletId+operationId], walletId, [walletId+state], [walletId+kind], [walletId+mintUrl], [walletId+durableOperationId], [walletId+durableTradeId], updatedAt, custodyOperationId",
+      swapSessions:
+        "tradeId, walletId, [walletId+active], [walletId+updatedAt]",
+      swapIntents:
+        "tradeId, walletId, [walletId+updatedAt], [walletId+submitted]",
+      custodyScopes: "scopeId, scopeKind, &marketId, &inventoryKey",
+      custodyScopeStates: "scopeId",
+      custodyOperations:
+        "operationId, scopeId, active, [scopeId+operationId], [scopeId+active+operationId]",
+      custodySessionLinks:
+        "operationId, scopeId, sessionId, &[scopeId+sessionId+operationId]",
+      custodyProofReservations:
+        "proofId, scopeId, operationId, [scopeId+operationId]",
+      partialLockFailures:
+        "[walletId+tradeId], walletId, [walletId+refundLocktime], [walletId+createdAt]",
+      walletCounters: "[walletId+keysetId], walletId",
+      pendingLocalWalletPayments:
+        "[walletId+depositId], walletId, [walletId+phase], &[walletId+splitOperationId], [walletId+nextAttemptAt+createdAt+depositId]",
+      pendingTrades:
+        "[walletId+orderId], walletId, &[walletId+clientOrderId], [walletId+submittedAt]",
+      walletActivities:
+        "[walletId+id], walletId, [walletId+date], [walletId+type]",
     });
     this.on("blocked", () => {
       durableSwapStorageBlockedReason =
@@ -200,11 +444,21 @@ export const db = new BitcasterDB();
  * writable. A blocked schema upgrade or open failure is therefore surfaced
  * before a proof reservation or mint operation can be prepared.
  */
-export async function ensureDurableSwapStorage(): Promise<void> {
+export async function ensureDurableSwapStorage(
+  walletId = currentGuiWalletId(),
+): Promise<void> {
+  requireGuiWalletId(walletId);
   if (durableSwapStorageBlockedReason) {
     throw new Error(durableSwapStorageBlockedReason);
   }
+  if (
+    durableSwapStorageOpenInFlight &&
+    durableSwapStorageOpenWalletId !== walletId
+  ) {
+    throw new Error("Durable swap storage is opening for another wallet scope");
+  }
   if (!durableSwapStorageOpenInFlight) {
+    durableSwapStorageOpenWalletId = walletId;
     durableSwapStorageOpenInFlight = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error("Timed out opening durable swap storage"));
@@ -223,6 +477,7 @@ export async function ensureDurableSwapStorage(): Promise<void> {
         });
     }).finally(() => {
       durableSwapStorageOpenInFlight = null;
+      durableSwapStorageOpenWalletId = null;
     });
   }
   try {
@@ -240,18 +495,32 @@ export async function getProofs(
   mintUrl?: string,
   options: { includeReserved?: boolean } = {},
 ): Promise<StoredProof[]> {
+  const walletId = currentGuiWalletId();
+  return getProofsForWallet(walletId, mintUrl, options);
+}
+
+async function getProofsForWallet(
+  walletId: string,
+  mintUrl?: string,
+  options: { includeReserved?: boolean } = {},
+): Promise<StoredProof[]> {
+  await ensureDurableSwapStorage(walletId);
   if (mintUrl) {
     const rows = await db.proofs
-      .where("mintUrl")
-      .equals(normalizeUrl(mintUrl))
+      .where("[walletId+mintUrl]")
+      .equals([walletId, normalizeUrl(mintUrl)])
       .toArray();
-    const normalized = rows.map(normalizeStoredProof);
+    const normalized = rows.map((row) =>
+      normalizeStoredProofForStorage(row, walletId),
+    );
     return options.includeReserved
       ? normalized
       : normalized.filter((p) => !p.reservedBy);
   }
-  const rows = await db.proofs.toArray();
-  const normalized = rows.map(normalizeStoredProof);
+  const rows = await db.proofs.where("walletId").equals(walletId).toArray();
+  const normalized = rows.map((row) =>
+    normalizeStoredProofForStorage(row, walletId),
+  );
   return options.includeReserved
     ? normalized
     : normalized.filter((p) => !p.reservedBy);
@@ -293,64 +562,62 @@ export async function getUnitProofs(
   );
 }
 
-export async function selectAndReserveUnitProofs(
+export async function getUnitProofsUnderLock(
+  lock: GuiWalletLockContext,
   mintUrl: string | undefined,
-  options: { unit: CashuProofUnit | string; minimumAmount?: number },
-  reservedBy: string,
+  options: { includeReserved?: boolean; unit: CashuProofUnit | string },
 ): Promise<StoredProof[]> {
   const unit = parseCashuProofUnit(options.unit);
   if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
-  const normalizedMintUrl = mintUrl ? normalizeUrl(mintUrl) : undefined;
-  const minimumAmount = options.minimumAmount ?? 0;
-  let selected: StoredProof[] = [];
+  const proofs = await getProofsForWallet(
+    walletIdFromHeldGuiWalletLock(lock),
+    mintUrl,
+    { includeReserved: options.includeReserved },
+  );
+  return proofs.filter(
+    (proof) => !isCtfProof(proof) && normalizeStoredProofUnit(proof) === unit,
+  );
+}
 
-  await db.transaction("rw", db.proofs, async () => {
-    const rows = normalizedMintUrl
-      ? await db.proofs.where("mintUrl").equals(normalizedMintUrl).toArray()
-      : await db.proofs.toArray();
-    const spendable = rows
-      .map(normalizeStoredProof)
-      .filter(
-        (proof) =>
-          !proof.reservedBy &&
-          !isCtfProof(proof) &&
-          normalizeStoredProofUnit(proof) === unit,
-      );
-
-    const picked: StoredProof[] = [];
-    let pickedAmount = 0;
-    for (const proof of spendable) {
-      picked.push(proof);
-      pickedAmount += amountToNumber(proof.amount);
-      if (minimumAmount > 0 && pickedAmount >= minimumAmount) break;
-    }
-    if (minimumAmount > 0 && pickedAmount < minimumAmount) {
-      throw new Error("Insufficient spendable proofs for requested amount");
-    }
-
-    const currentRows = await db.proofs.bulkGet(
-      picked.map((proof) => proof.secret),
-    );
-    if (currentRows.length !== picked.length) {
-      throw new Error("Selected proof reservation failed: proof set changed");
-    }
-    const current = currentRows.map((row) =>
-      row ? normalizeStoredProof(row) : undefined,
-    );
-    if (current.some((row) => !row || row.reservedBy)) {
-      throw new Error(
-        "Selected proof reservation failed: proof already reserved or missing",
-      );
-    }
-
-    selected = current.filter((row): row is StoredProof => !!row);
-    if (selected.length > 0) {
-      await db.proofs.bulkPut(
-        selected.map((proof) => normalizeStoredProof({ ...proof, reservedBy })),
-      );
-    }
-  });
-
+/**
+ * Select a bounded regular-proof input set for a new operation. The compound
+ * index keeps the scan within one wallet, mint, and Cashu unit; descending
+ * denomination order minimizes input count without materializing the wallet's
+ * complete proof inventory.
+ */
+export async function getBoundedUnitProofsForAmountUnderLock(
+  lock: GuiWalletLockContext,
+  mintUrl: string,
+  options: { unit: CashuProofUnit | string; minimumAmount: number },
+): Promise<StoredProof[]> {
+  const walletId = walletIdFromHeldGuiWalletLock(lock);
+  await ensureDurableSwapStorage(walletId);
+  const unit = parseCashuProofUnit(options.unit);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
+  if (
+    !Number.isSafeInteger(options.minimumAmount) ||
+    options.minimumAmount < 1
+  ) {
+    throw new Error("Proof selection amount is invalid");
+  }
+  const normalizedMintUrl = normalizeUrl(mintUrl);
+  const rows = await db.proofs
+    .where("[walletId+mintUrl+unit+proofClass+selectability+amount]")
+    .between(
+      [walletId, normalizedMintUrl, unit, "regular", "spendable", Dexie.minKey],
+      [walletId, normalizedMintUrl, unit, "regular", "spendable", Dexie.maxKey],
+    )
+    .reverse()
+    .limit(DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX)
+    .toArray();
+  const selected: StoredProof[] = [];
+  let amount = 0;
+  for (const row of rows) {
+    const proof = normalizeStoredProofForStorage(row, walletId);
+    selected.push(proof);
+    amount += amountToNumber(proof.amount);
+    if (amount >= options.minimumAmount) break;
+  }
   return selected;
 }
 
@@ -360,22 +627,55 @@ export async function getOutcomeProofs(
   outcomeCollection: string,
   options: { includeReserved?: boolean; baseAsset?: string | null } = {},
 ): Promise<StoredProof[]> {
+  return getOutcomeProofsForWallet(
+    currentGuiWalletId(),
+    mintUrl,
+    conditionId,
+    outcomeCollection,
+    options,
+  );
+}
+
+export async function getOutcomeProofsUnderLock(
+  lock: GuiWalletLockContext,
+  mintUrl: string,
+  conditionId: string,
+  outcomeCollection: string,
+  options: { includeReserved?: boolean; baseAsset?: string | null } = {},
+): Promise<StoredProof[]> {
+  return getOutcomeProofsForWallet(
+    walletIdFromHeldGuiWalletLock(lock),
+    mintUrl,
+    conditionId,
+    outcomeCollection,
+    options,
+  );
+}
+
+async function getOutcomeProofsForWallet(
+  walletId: string,
+  mintUrl: string,
+  conditionId: string,
+  outcomeCollection: string,
+  options: { includeReserved?: boolean; baseAsset?: string | null },
+): Promise<StoredProof[]> {
   const normalizedMintUrl = normalizeUrl(mintUrl);
+  await ensureDurableSwapStorage(walletId);
   const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
   const indexed = await db.proofs
-    .where("[mintUrl+conditionId+outcomeCollection]")
-    .equals([normalizedMintUrl, conditionId, outcomeCollection])
+    .where("[walletId+mintUrl+conditionId+outcomeCollection]")
+    .equals([walletId, normalizedMintUrl, conditionId, outcomeCollection])
     .toArray();
   if (indexed.length > 0) {
     const normalized = indexed
-      .map(normalizeStoredProof)
+      .map((row) => normalizeStoredProofForStorage(row, walletId))
       .filter((proof) => normalizeStoredProofBaseAsset(proof) === baseAsset);
     return options.includeReserved
       ? normalized
       : normalized.filter((proof) => !proof.reservedBy);
   }
 
-  const proofs = await getProofs(normalizedMintUrl, options);
+  const proofs = await getProofsForWallet(walletId, normalizedMintUrl, options);
   return proofs.filter((p) => {
     const candidate = p as StoredProof & {
       condition_id?: string;
@@ -428,53 +728,121 @@ export async function getConditionCtfProofs(
 // the balance query (`getProofs(activeMintUrl)`) never has to worry about
 // trailing-slash / protocol-case drift.
 export async function addProofs(proofs: StoredProof[]): Promise<void> {
-  const now = Date.now();
-  const stamped = proofs.map((p) =>
-    normalizeStoredProof({
-      ...validateStoredProofUnitInvariant(p),
-      receivedAt: p.receivedAt ?? now,
-    }),
+  return withGuiProofWriterLock((walletId) =>
+    addProofsForWallet(walletId, proofs),
   );
-  await db.proofs.bulkPut(stamped);
 }
 
-export async function removeProofs(secrets: string[]): Promise<void> {
-  await db.proofs.bulkDelete(secrets);
+async function addProofsForWallet(
+  walletId: string,
+  proofs: StoredProof[],
+): Promise<void> {
+  const now = Date.now();
+  const stamped = proofs.map((proof) =>
+    prepareStoredProofForWrite(proof, now, walletId),
+  );
+  await db.transaction("rw", db.proofs, async () => {
+    const existing = await db.proofs.bulkGet(storedProofIds(stamped));
+    assertRowsInWallet(existing, walletId);
+    const next = stamped.map((proof, index) => {
+      const current = existing[index];
+      if (!current) return proof;
+      assertSameStoredProofValue(current, proof);
+      return requireStoredProofRow(current, walletId);
+    });
+    await db.proofs.bulkPut(next);
+  });
+}
+
+export async function removeProofs(
+  proofs: readonly StoredProof[],
+): Promise<void> {
+  return withGuiProofWriterLock((walletId) =>
+    removeProofsForWallet(walletId, proofs),
+  );
+}
+
+async function removeProofsForWallet(
+  walletId: string,
+  proofs: readonly StoredProof[],
+): Promise<void> {
+  const proofIds = storedProofIds(proofs);
+  await db.transaction("rw", db.proofs, async () => {
+    const rows = await db.proofs.bulkGet(proofIds);
+    assertRowsMatchProofs(rows, proofs, walletId);
+    await db.proofs.bulkDelete(proofIds);
+  });
 }
 
 export async function replaceProofs(
-  spentSecrets: string[],
+  spentProofs: readonly StoredProof[],
   freshProofs: StoredProof[],
 ): Promise<void> {
-  const uniqueSpentSecrets = [...new Set(spentSecrets)];
-  const now = Date.now();
-  const stamped = freshProofs.map((p) =>
-    normalizeStoredProof({
-      ...validateStoredProofUnitInvariant(p),
-      receivedAt: p.receivedAt ?? now,
-    }),
+  return withGuiProofWriterLock((walletId) =>
+    replaceProofsForWallet(walletId, spentProofs, freshProofs),
   );
+}
+
+async function replaceProofsForWallet(
+  walletId: string,
+  spentProofs: readonly StoredProof[],
+  freshProofs: StoredProof[],
+): Promise<void> {
+  const spentProofIds = storedProofIds(spentProofs);
+  const now = Date.now();
+  const stamped = freshProofs.map((proof) =>
+    prepareStoredProofForWrite(proof, now, walletId),
+  );
+  const freshProofIds = storedProofIds(stamped);
+  if (freshProofIds.some((proofId) => spentProofIds.includes(proofId))) {
+    throw new Error("Stored proof replacement reuses spent authority");
+  }
   await db.transaction("rw", db.proofs, async () => {
-    if (uniqueSpentSecrets.length > 0) {
-      await db.proofs.bulkDelete(uniqueSpentSecrets);
+    const currentSpent = await db.proofs.bulkGet(spentProofIds);
+    const currentFresh = await db.proofs.bulkGet(freshProofIds);
+    assertRowsMatchProofs(currentSpent, spentProofs, walletId);
+    assertRowsInWallet(currentFresh, walletId);
+    currentFresh.forEach((row, index) => {
+      if (row) assertSameStoredProofValue(row, stamped[index]!);
+    });
+    if (spentProofIds.length > 0) {
+      await db.proofs.bulkDelete(spentProofIds);
     }
     if (stamped.length > 0) {
-      await db.proofs.bulkPut(stamped);
+      await db.proofs.bulkPut(
+        stamped.map((proof, index) => currentFresh[index] ?? proof),
+      );
     }
   });
 }
 
 export async function reserveProofs(
-  secrets: string[],
+  proofs: readonly StoredProof[],
   reservedBy: string,
 ): Promise<void> {
-  const secretSet = new Set(secrets);
+  return withGuiProofWriterLock((walletId) =>
+    reserveProofsForWallet(walletId, proofs, reservedBy),
+  );
+}
+
+async function reserveProofsForWallet(
+  walletId: string,
+  proofs: readonly StoredProof[],
+  reservedBy: string,
+): Promise<void> {
+  const proofIds = storedProofIds(proofs);
   await db.transaction("rw", db.proofs, async () => {
-    const rows = await db.proofs.bulkGet(secrets);
+    const rows = await db.proofs.bulkGet(proofIds);
+    assertRowsMatchProofs(rows, proofs, walletId);
     await db.proofs.bulkPut(
       rows
-        .filter((row): row is StoredProof => !!row && secretSet.has(row.secret))
-        .map((row) => normalizeStoredProof({ ...row, reservedBy })),
+        .filter((row): row is StoredProofRow => !!row)
+        .map((row) =>
+          normalizeStoredProofForStorage(
+            withoutDerivedProofFields({ ...row, reservedBy }),
+            walletId,
+          ),
+        ),
     );
   });
 }
@@ -485,15 +853,36 @@ export async function reserveProofs(
  * concurrent swap flows from spending the same IndexedDB proof pool.
  */
 export async function tryReserveProofs(
-  secrets: string[],
+  proofs: readonly StoredProof[],
   reservedBy: string,
 ): Promise<boolean> {
-  const uniqueSecrets = [...new Set(secrets)];
-  if (uniqueSecrets.length === 0) return true;
+  return withGuiProofWriterLock((walletId) =>
+    tryReserveProofsForWallet(walletId, proofs, reservedBy),
+  );
+}
+
+export async function tryReserveProofsUnderLock(
+  lock: GuiWalletLockContext,
+  proofs: readonly StoredProof[],
+  reservedBy: string,
+): Promise<boolean> {
+  return withHeldGuiProofWriterLock(lock, (walletId) =>
+    tryReserveProofsForWallet(walletId, proofs, reservedBy),
+  );
+}
+
+async function tryReserveProofsForWallet(
+  walletId: string,
+  proofs: readonly StoredProof[],
+  reservedBy: string,
+): Promise<boolean> {
+  const proofIds = storedProofIds(proofs);
+  if (proofIds.length === 0) return true;
 
   let reserved = false;
   await db.transaction("rw", db.proofs, async () => {
-    const rows = await db.proofs.bulkGet(uniqueSecrets);
+    const rows = await db.proofs.bulkGet(proofIds);
+    assertRowsMatchProofs(rows, proofs, walletId, true);
     if (
       rows.some(
         (row) => !row || (row.reservedBy && row.reservedBy !== reservedBy),
@@ -503,7 +892,12 @@ export async function tryReserveProofs(
     }
 
     await db.proofs.bulkPut(
-      rows.map((row) => normalizeStoredProof({ ...row!, reservedBy })),
+      rows.map((row) =>
+        normalizeStoredProofForStorage(
+          withoutDerivedProofFields({ ...row!, reservedBy }),
+          walletId,
+        ),
+      ),
     );
     reserved = true;
   });
@@ -514,24 +908,61 @@ export async function tryReserveProofs(
 export async function releaseProofReservation(
   reservedBy: string,
 ): Promise<void> {
+  return withGuiProofWriterLock((walletId) =>
+    releaseProofReservationForWallet(walletId, reservedBy),
+  );
+}
+
+export async function releaseProofReservationUnderLock(
+  lock: GuiWalletLockContext,
+  reservedBy: string,
+): Promise<void> {
+  return withHeldGuiProofWriterLock(lock, (walletId) =>
+    releaseProofReservationForWallet(walletId, reservedBy),
+  );
+}
+
+async function releaseProofReservationForWallet(
+  walletId: string,
+  reservedBy: string,
+): Promise<void> {
   const rows = await db.proofs
-    .filter((proof) => proof.reservedBy === reservedBy)
+    .where("[walletId+reservedBy]")
+    .equals([walletId, reservedBy])
     .toArray();
   if (rows.length === 0) return;
   await db.proofs.bulkPut(
-    rows.map(({ reservedBy: _reservedBy, ...row }) =>
-      normalizeStoredProof(row),
+    rows.map((row) =>
+      normalizeStoredProofForStorage(
+        withoutDerivedProofFields({ ...row, reservedBy: undefined }),
+        walletId,
+      ),
     ),
   );
 }
 
-export async function releaseProofReservationsBySecret(
-  secrets: string[],
+export async function releaseProofReservations(
+  proofs: readonly StoredProof[],
 ): Promise<void> {
-  const rows = await db.proofs.bulkGet(secrets);
+  return withGuiProofWriterLock((walletId) =>
+    releaseProofReservationsForWallet(walletId, proofs),
+  );
+}
+
+async function releaseProofReservationsForWallet(
+  walletId: string,
+  proofs: readonly StoredProof[],
+): Promise<void> {
+  const rows = await db.proofs.bulkGet(storedProofIds(proofs));
+  assertRowsMatchProofs(rows, proofs, walletId);
   const changed = rows
-    .filter((row): row is StoredProof => !!row)
-    .map(({ reservedBy: _reservedBy, ...row }) => normalizeStoredProof(row));
+    .filter((row): row is StoredProofRow => !!row)
+    .map((row) =>
+      normalizeStoredProofForStorage(
+        withoutDerivedProofFields({ ...row, reservedBy: undefined }),
+        walletId,
+      ),
+    );
   if (changed.length === 0) return;
   await db.proofs.bulkPut(changed);
 }
@@ -539,44 +970,277 @@ export async function releaseProofReservationsBySecret(
 export async function getReservedProofs(
   reservedBy: string,
 ): Promise<StoredProof[]> {
+  const walletId = currentGuiWalletId();
+  return getReservedProofsForWallet(walletId, reservedBy);
+}
+
+export async function getReservedProofsUnderLock(
+  lock: GuiWalletLockContext,
+  reservedBy: string,
+): Promise<StoredProof[]> {
+  const walletId = walletIdFromHeldGuiWalletLock(lock);
+  return getReservedProofsForWallet(walletId, reservedBy);
+}
+
+async function getReservedProofsForWallet(
+  walletId: string,
+  reservedBy: string,
+): Promise<StoredProof[]> {
+  await ensureDurableSwapStorage(walletId);
   const rows = await db.proofs
-    .filter((proof) => proof.reservedBy === reservedBy)
+    .where("[walletId+reservedBy]")
+    .equals([walletId, reservedBy])
     .toArray();
-  return rows.map(normalizeStoredProof);
+  return rows.map((row) => normalizeStoredProofForStorage(row, walletId));
 }
 
-// One-shot migration: existing rows may have un-normalized mintUrl values
-// stored before addProofs normalized on write. Callers should gate this on
-// a persisted flag so it runs once per device.
-export async function normalizeStoredMintUrls(): Promise<number> {
-  const rows = await db.proofs.toArray();
-  let changed = 0;
-  await db.transaction("rw", db.proofs, async () => {
-    for (const row of rows) {
-      const normalized = normalizeUrl(row.mintUrl);
-      if (normalized !== row.mintUrl) {
-        await db.proofs.put({ ...row, mintUrl: normalized });
-        changed++;
-      }
+function assertRowsInWallet(
+  rows: readonly (StoredProofRow | undefined)[],
+  walletId: string,
+): void {
+  for (const row of rows) {
+    if (row !== undefined) requireStoredProofRow(row, walletId);
+  }
+}
+
+function assertRowsMatchProofs(
+  rows: readonly (StoredProofRow | undefined)[],
+  proofs: readonly StoredProof[],
+  walletId: string,
+  allowMissing = false,
+): void {
+  assertRowsInWallet(rows, walletId);
+  rows.forEach((row, index) => {
+    if (!row) {
+      if (!allowMissing) throw new Error("Stored proof authority is missing");
+      return;
     }
+    assertSameStoredProofValue(row, proofs[index]!);
   });
-  return changed;
 }
 
-function normalizeStoredProof(proof: StoredProof): StoredProof {
+function assertSameStoredProofValue(
+  actual: StoredProofRow,
+  expected: StoredProof,
+): void {
+  if (
+    actual.proofId !== deriveStoredProofId(expected) ||
+    !sameCashuProofArtifact(actual, expected) ||
+    actual.mintUrl !== normalizeUrl(expected.mintUrl) ||
+    actual.unit !== parseCashuProofUnit(expected.unit) ||
+    actual.baseAsset !== normalizeStoredProofBaseAsset(expected) ||
+    actual.conditionId !== expected.conditionId ||
+    actual.outcomeCollection !== expected.outcomeCollection ||
+    actual.marketId !== expected.marketId
+  ) {
+    throw new Error("Stored proof conflicts with existing authority");
+  }
+}
+
+export function deriveStoredProofId(
+  proof: Pick<StoredProof, "id" | "mintUrl" | "secret" | "unit">,
+): string {
+  const unit = parseCashuProofUnit(proof.unit);
+  if (
+    !unit ||
+    typeof proof.id !== "string" ||
+    proof.id.length === 0 ||
+    typeof proof.secret !== "string" ||
+    proof.secret.length === 0
+  ) {
+    throw new Error("Stored proof identity is invalid");
+  }
+  try {
+    return deriveDurableCustodyProofId({
+      normalizedMint: normalizeUrl(proof.mintUrl),
+      unit,
+      keysetId: proof.id,
+      secret: proof.secret,
+    });
+  } catch {
+    throw new Error("Stored proof identity is invalid");
+  }
+}
+
+export function storedProofIds(
+  proofs: readonly Pick<StoredProof, "id" | "mintUrl" | "secret" | "unit">[],
+): string[] {
+  const ids = proofs.map(deriveStoredProofId);
+  if (new Set(ids).size !== ids.length) {
+    throw new Error("Stored proof set contains duplicate authority");
+  }
+  return ids;
+}
+
+export function locateStoredProofs(
+  proofs: readonly {
+    id?: string;
+    amount: unknown;
+    secret: string;
+    C: string;
+  }[],
+  mintUrl: string,
+  unitValue: CashuProofUnit | string | undefined,
+): StoredProof[] {
+  const unit = parseCashuProofUnit(unitValue);
+  if (!unit) throw new Error("Stored proof set has no supported Cashu unit");
+  const normalizedMint = normalizeUrl(mintUrl);
+  return proofs.map((proof) => {
+    if (!proof.id) throw new Error("Stored proof identity is invalid");
+    return {
+      ...proof,
+      id: proof.id,
+      amount: proof.amount as Proof["amount"],
+      mintUrl: normalizedMint,
+      unit,
+    };
+  });
+}
+
+export function requireStoredProofRow(
+  proof: StoredProofRow,
+  walletId = currentGuiWalletId(),
+): StoredProofRow {
+  requireGuiWalletId(walletId);
+  if (proof.walletId !== walletId) {
+    throw new Error("Stored proof belongs to another wallet scope");
+  }
+  if (!isProof(proof, walletId, proof.mintUrl)) {
+    throw new Error("Stored proof identity is invalid");
+  }
+  const unit = parseCashuProofUnit(proof.unit);
+  const amount = amountToNumber(proof.amount);
+  const expectedProofId = deriveStoredProofId(proof);
+  const expectedProofClass = deriveStoredProofClass(proof);
+  const expectedSelectability = deriveStoredProofSelectability(proof);
+  if (
+    proof.proofId !== expectedProofId ||
+    !unit ||
+    typeof proof.baseAsset !== "string" ||
+    proof.baseAsset.length === 0 ||
+    typeof proof.receivedAt !== "number" ||
+    !Number.isSafeInteger(proof.receivedAt) ||
+    proof.receivedAt < 0 ||
+    typeof proof.C !== "string" ||
+    proof.C.length === 0 ||
+    !Number.isSafeInteger(amount) ||
+    amount <= 0 ||
+    proof.mintUrl !== normalizeUrl(proof.mintUrl) ||
+    parseMarketBaseAsset(proof.baseAsset) !== proof.baseAsset ||
+    COLLATERAL_UNIT_REGISTRY[unit].baseAsset !== proof.baseAsset ||
+    !hasValidProofClassificationAuthority(proof) ||
+    (proof.reservedBy !== undefined &&
+      (typeof proof.reservedBy !== "string" ||
+        proof.reservedBy.length === 0 ||
+        proof.reservedBy.length > 512)) ||
+    proof.proofClass !== expectedProofClass ||
+    proof.selectability !== expectedSelectability
+  ) {
+    throw new Error("Stored proof identity is invalid");
+  }
   return {
     ...proof,
+    amount: amount as never,
+    unit,
+  };
+}
+
+export function normalizeStoredProofForStorage(
+  proof: StoredProof,
+  walletId = currentGuiWalletId(),
+): StoredProofRow {
+  requireGuiWalletId(walletId);
+  if (proof.walletId !== undefined && proof.walletId !== walletId) {
+    throw new Error("Stored proof belongs to another wallet scope");
+  }
+  const unit = normalizeStoredProofUnit(proof);
+  const proofClass = deriveStoredProofClass(proof);
+  const selectability = deriveStoredProofSelectability(proof);
+  assertSuppliedDerivedProofFields(proof, proofClass, selectability);
+  if (
+    !unit ||
+    proof.receivedAt === undefined ||
+    !Number.isSafeInteger(proof.receivedAt) ||
+    proof.receivedAt < 0
+  ) {
+    throw new Error("Stored proof identity is invalid");
+  }
+  const normalized: StoredProofRow = {
+    ...proof,
+    proofId: deriveStoredProofId({ ...proof, unit }),
+    walletId,
     amount: amountToNumber(proof.amount) as never,
     mintUrl: normalizeUrl(proof.mintUrl),
-    baseAsset: normalizeStoredProofBaseAsset(proof),
-    unit: normalizeStoredProofUnit(proof),
+    baseAsset: normalizeStoredProofBaseAsset({ ...proof, unit }),
+    unit,
+    receivedAt: proof.receivedAt,
+    proofClass,
+    selectability,
   };
+  if (proof.proofId !== undefined && proof.proofId !== normalized.proofId) {
+    throw new Error("Stored proof identity is invalid");
+  }
+  return requireStoredProofRow(normalized, walletId);
+}
+
+function deriveStoredProofClass(proof: StoredProof): StoredProofClass {
+  return isCtfProof(proof) ? "ctf" : "regular";
+}
+
+function hasValidProofClassificationAuthority(proof: StoredProof): boolean {
+  return hasValidCtfMetadataRelation(
+    proof as unknown as Record<string, unknown>,
+  );
+}
+
+function deriveStoredProofSelectability(
+  proof: StoredProof,
+): StoredProofSelectability {
+  return proof.reservedBy === undefined ? "spendable" : "reserved";
+}
+
+function assertSuppliedDerivedProofFields(
+  proof: StoredProof,
+  proofClass: StoredProofClass,
+  selectability: StoredProofSelectability,
+): void {
+  if (
+    (proof.proofClass !== undefined && proof.proofClass !== proofClass) ||
+    (proof.selectability !== undefined && proof.selectability !== selectability)
+  ) {
+    throw new Error("Stored proof classification is invalid");
+  }
+}
+
+function withoutDerivedProofFields(proof: StoredProof): StoredProof {
+  const {
+    proofClass: _proofClass,
+    selectability: _selectability,
+    ...authority
+  } = proof;
+  return authority;
+}
+
+export function prepareStoredProofForWrite(
+  proof: StoredProof,
+  now = Date.now(),
+  walletId = currentGuiWalletId(),
+): StoredProofRow {
+  return normalizeStoredProofForStorage(
+    withoutDerivedProofFields({
+      ...validateStoredProofUnitInvariant(proof),
+      receivedAt: proof.receivedAt ?? now,
+    }),
+    walletId,
+  );
 }
 
 function normalizeStoredProofBaseAsset(proof: StoredProof): string {
   const unit = parseCashuProofUnit(proof.unit);
   if (unit && !proof.baseAsset) return COLLATERAL_UNIT_REGISTRY[unit].baseAsset;
-  return normalizeMarketBaseAsset(proof.baseAsset);
+  const baseAsset = parseMarketBaseAsset(proof.baseAsset);
+  if (!baseAsset) throw new Error("Stored proof base asset is invalid");
+  return baseAsset;
 }
 
 export function normalizeStoredProofUnit(
@@ -586,17 +1250,14 @@ export function normalizeStoredProofUnit(
 }
 
 function validateStoredProofUnitInvariant(proof: StoredProof): StoredProof {
-  if (!proof.unit) return proof;
   const unit = parseCashuProofUnit(proof.unit);
-  if (!unit) throw new Error(`Unsupported Cashu proof unit '${proof.unit}'`);
+  if (!unit) throw new Error("Stored proof has no supported Cashu unit");
   const unitInfo = COLLATERAL_UNIT_REGISTRY[unit];
   const baseAsset = proof.baseAsset
-    ? normalizeMarketBaseAsset(proof.baseAsset)
+    ? parseMarketBaseAsset(proof.baseAsset)
     : unitInfo.baseAsset;
   if (unitInfo.baseAsset !== baseAsset) {
-    throw new Error(
-      `Stored proof unit '${proof.unit}' is not compatible with base asset '${proof.baseAsset}'`,
-    );
+    throw new Error("Stored proof unit is incompatible with its base asset");
   }
   return proof;
 }
@@ -604,157 +1265,625 @@ function validateStoredProofUnitInvariant(proof: StoredProof): StoredProof {
 export async function getProofOperation(
   operationId: string,
 ): Promise<ProofOperationRecord | null> {
-  return (await db.proofOperations.get(operationId)) ?? null;
+  const walletId = currentGuiWalletId();
+  return getProofOperationForWallet(walletId, operationId);
 }
 
-export async function getProofOperations(
-  input: {
-    mintUrl?: string;
-    states?: ProofOperationState[];
-    kinds?: ProofOperationKind[];
-    operationIdPrefix?: string;
-  } = {},
-): Promise<ProofOperationRecord[]> {
-  const mintUrl = input.mintUrl ? normalizeUrl(input.mintUrl) : undefined;
-  const stateSet = input.states ? new Set(input.states) : null;
-  const kindSet = input.kinds ? new Set(input.kinds) : null;
-  return (
-    await db.proofOperations
-      .filter((operation) => {
-        if (mintUrl && operation.mintUrl !== mintUrl) return false;
-        if (stateSet && !stateSet.has(operation.state)) return false;
-        if (kindSet && !kindSet.has(operation.kind)) return false;
-        if (
-          input.operationIdPrefix &&
-          !operation.operationId.startsWith(input.operationIdPrefix)
-        ) {
-          return false;
-        }
-        return true;
-      })
-      .toArray()
-  ).map((operation) => ({
-    ...operation,
-    mintUrl: normalizeUrl(operation.mintUrl),
-  }));
+export async function getProofOperationUnderLock(
+  lock: GuiWalletLockContext,
+  operationId: string,
+): Promise<ProofOperationRecord | null> {
+  return getProofOperationForWallet(
+    walletIdFromHeldGuiWalletLock(lock),
+    operationId,
+  );
 }
 
-export async function prepareProofOperation(
-  input: PrepareProofOperationInput,
-): Promise<ProofOperationRecord> {
-  const existing = await getProofOperation(input.operationId);
-  if (existing) {
-    assertCompatibleProofOperation(existing, input);
-    return existing;
+export async function getProofOperationForWallet(
+  walletId: string,
+  operationId: string,
+): Promise<ProofOperationRecord | null> {
+  await ensureDurableSwapStorage(walletId);
+  const row = await db.proofOperations.get(
+    proofOperationPrimaryKey(walletId, operationId),
+  );
+  if (!row) return null;
+  return requireProofOperationRecord(row, walletId, operationId);
+}
+
+export function proofOperationPrimaryKey(
+  walletId: unknown,
+  operationId: unknown,
+): ProofOperationPrimaryKey {
+  return [requireGuiWalletId(walletId), requireProofOperationId(operationId)];
+}
+
+export function requireProofOperationRecord(
+  value: unknown,
+  expectedWalletId?: string,
+  expectedOperationId?: string,
+): ProofOperationRecord {
+  if (!isRecord(value)) throw new Error("Stored proof operation is invalid");
+  if (!hasProofOperationRecordFields(value)) {
+    throw new Error("Stored proof operation is invalid");
   }
-
-  const now = Date.now();
-  const record: ProofOperationRecord = {
-    operationId: input.operationId,
-    kind: input.kind,
-    state: "prepared",
-    mintUrl: normalizeUrl(input.mintUrl),
-    inputs: structuredClone(input.inputs),
-    outputs: structuredClone(input.outputs),
-    metadata: structuredClone(input.metadata ?? {}),
-    resultProofs: undefined,
-    lastError: null,
-    failureCode: undefined,
-    createdAt: now,
-    updatedAt: now,
-  };
-  await db.proofOperations.put(record);
-  return record;
-}
-
-export async function markProofOperationCompleted(
-  operationId: string,
-  resultProofs: Record<string, Proof[]>,
-): Promise<ProofOperationRecord> {
-  const existing = await getRequiredProofOperation(operationId);
-  const updated: ProofOperationRecord = {
-    ...existing,
-    state: "completed",
-    resultProofs: structuredClone(resultProofs),
-    lastError: null,
-    failureCode: undefined,
-    updatedAt: Date.now(),
-  };
-  await db.proofOperations.put(updated);
-  return updated;
-}
-
-/** Persists the recovery boundary immediately before a Cashu mint request. */
-export async function markProofOperationMintSubmitted(
-  operationId: string,
-  redeemBinding?: CtfRedeemMintSubmissionBinding,
-): Promise<ProofOperationRecord> {
-  const existing = await getRequiredProofOperation(operationId);
-  if (existing.state === "completed" || existing.state === "Failed") {
-    throw new Error(`Cannot submit terminal proof operation ${operationId}`);
-  }
-  const updated: ProofOperationRecord = {
-    ...existing,
-    state: "mint-submitted",
-    metadata:
-      redeemBinding === undefined
-        ? existing.metadata
-        : {
-            ...existing.metadata,
-            redeemMintSubmissionVersion: redeemBinding.schemaVersion,
-            redeemMintSubmissionRequestDigest: redeemBinding.requestDigest,
-          },
-    lastError: null,
-    failureCode: undefined,
-    updatedAt: Date.now(),
-  };
-  await db.proofOperations.put(updated);
-  return updated;
-}
-
-export async function markProofOperationFailed(
-  operationId: string,
-  error: unknown,
-): Promise<ProofOperationRecord> {
-  const existing = await getRequiredProofOperation(operationId);
-  const updated: ProofOperationRecord = {
-    ...existing,
-    state: "Failed",
-    lastError: error instanceof Error ? error.message : String(error),
-    failureCode: mintErrorCode(error),
-    updatedAt: Date.now(),
-  };
-  await db.proofOperations.put(updated);
-  return updated;
-}
-
-function mintErrorCode(error: unknown): number | undefined {
-  if (typeof error !== "object" || error === null || !("code" in error)) {
-    return undefined;
-  }
-  const code = (error as { code?: unknown }).code;
-  return typeof code === "number" ? code : undefined;
-}
-
-async function getRequiredProofOperation(
-  operationId: string,
-): Promise<ProofOperationRecord> {
-  const existing = await getProofOperation(operationId);
-  if (!existing) throw new Error(`Missing proof operation ${operationId}`);
-  return existing;
-}
-
-function assertCompatibleProofOperation(
-  existing: ProofOperationRecord,
-  input: PrepareProofOperationInput,
-): void {
+  const walletId = requireGuiWalletId(value.walletId);
+  const operationId = requireProofOperationId(value.operationId);
   if (
-    existing.kind !== input.kind ||
-    existing.mintUrl !== normalizeUrl(input.mintUrl) ||
-    JSON.stringify(existing.inputs) !== JSON.stringify(input.inputs)
+    (expectedWalletId !== undefined && walletId !== expectedWalletId) ||
+    (expectedOperationId !== undefined && operationId !== expectedOperationId)
   ) {
-    throw new Error(
-      `Proof operation ${input.operationId} already exists with different inputs`,
+    throw new Error("Proof operation belongs to another wallet scope");
+  }
+  requireProofOperationScalarFields(value);
+  requireProofOperationArtifacts(value, walletId);
+  if (!hasValidProofOperationLifecycle(value)) {
+    throw invalidProofOperation("lifecycle");
+  }
+  const durableLink = value.durableTradeRecovery;
+  if (!hasValidProofOperationLink(value, durableLink, operationId)) {
+    throw new Error("Stored proof operation recovery binding is invalid");
+  }
+  return value as unknown as ProofOperationRecord;
+}
+
+function requireProofOperationScalarFields(
+  value: Record<string, unknown>,
+): void {
+  if (!isProofOperationKind(value.kind)) throw invalidProofOperation("kind");
+  if (!isProofOperationState(value.state)) throw invalidProofOperation("state");
+  if (!isNormalizedMintUrl(value.mintUrl))
+    throw invalidProofOperation("mint URL");
+  if (!isOptionalNonNegativeInteger(value.failureCode)) {
+    throw invalidProofOperation("failure code");
+  }
+  if (
+    !isTimestamp(value.createdAt) ||
+    !isTimestamp(value.updatedAt) ||
+    value.updatedAt < value.createdAt
+  ) {
+    throw invalidProofOperation("timestamps");
+  }
+  if (
+    !isOptionalIdentifier(value.durableOperationId) ||
+    !isOptionalIdentifier(value.durableTradeId) ||
+    !isIdentifier(value.custodyOperationId)
+  ) {
+    throw invalidProofOperation("operation identity");
+  }
+}
+
+function requireProofOperationArtifacts(
+  value: Record<string, unknown>,
+  walletId: string,
+): void {
+  if (!isProofArray(value.inputs, walletId, value.mintUrl as string)) {
+    throw invalidProofOperation("inputs");
+  }
+  if (!isOutputGroups(value.outputs)) throw invalidProofOperation("outputs");
+  if (!isRecord(value.metadata) || !isMetadataUnitValid(value.metadata)) {
+    throw invalidProofOperation("metadata");
+  }
+  if (
+    value.resultProofs !== undefined &&
+    !isProofGroups(value.resultProofs, walletId, value.mintUrl as string)
+  ) {
+    throw invalidProofOperation("result proofs");
+  }
+  if (value.lastError !== null && typeof value.lastError !== "string") {
+    throw invalidProofOperation("last error");
+  }
+}
+
+function invalidProofOperation(reason: string): Error {
+  return new Error(`Stored proof operation is invalid: ${reason}`);
+}
+
+const PROOF_OPERATION_RECORD_FIELDS = [
+  "walletId",
+  "operationId",
+  "durableTradeRecovery",
+  "durableOperationId",
+  "custodyOperationId",
+  "durableTradeId",
+  "kind",
+  "state",
+  "mintUrl",
+  "inputs",
+  "outputs",
+  "metadata",
+  "resultProofs",
+  "lastError",
+  "failureCode",
+  "createdAt",
+  "updatedAt",
+] as const;
+
+const REQUIRED_PROOF_OPERATION_RECORD_FIELDS = [
+  "walletId",
+  "operationId",
+  "custodyOperationId",
+  "kind",
+  "state",
+  "mintUrl",
+  "inputs",
+  "outputs",
+  "metadata",
+  "lastError",
+  "createdAt",
+  "updatedAt",
+] as const;
+
+function hasProofOperationRecordFields(
+  value: Record<string, unknown>,
+): boolean {
+  return (
+    hasOnlyKnownFields(value, PROOF_OPERATION_RECORD_FIELDS) &&
+    REQUIRED_PROOF_OPERATION_RECORD_FIELDS.every((field) => field in value)
+  );
+}
+
+function hasValidProofOperationLifecycle(
+  value: Record<string, unknown>,
+): boolean {
+  switch (value.state) {
+    case "prepared":
+    case "mint-submitted":
+      return (
+        value.lastError === null &&
+        value.failureCode === undefined
+      );
+    case "completed":
+      return (
+        value.resultProofs !== undefined &&
+        value.lastError === null &&
+        value.failureCode === undefined
+      );
+    case "Failed":
+      return (
+        value.resultProofs === undefined &&
+        typeof value.lastError === "string" &&
+        isNonNegativeInteger(value.failureCode)
+      );
+    default:
+      return false;
+  }
+}
+
+function hasValidProofOperationLink(
+  value: Record<string, unknown>,
+  link: unknown,
+  operationId: string,
+): boolean {
+  if (link === undefined) {
+    return (
+      value.durableOperationId === undefined &&
+      value.durableTradeId === undefined
     );
+  }
+  const durableLink = link as DurableTradeProofOperationLink;
+  return (
+    validateDurableProofOperationLink(durableLink) === null &&
+    durableLink.operationKey === operationId &&
+    value.durableOperationId === durableLink.operationId &&
+    value.durableTradeId === durableLink.tradeId &&
+    durableLink.state === durableLinkState(value.state)
+  );
+}
+
+function durableLinkState(value: unknown): string | null {
+  switch (value) {
+    case "prepared":
+      return "prepared";
+    case "mint-submitted":
+      return "mint-submitted";
+    case "completed":
+      return "reconciled";
+    case "Failed":
+    default:
+      return null;
+  }
+}
+
+function requireProofOperationId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 512) {
+    throw new Error("Stored proof operation id is invalid");
+  }
+  return value;
+}
+
+function isProofOperationKind(value: unknown): value is ProofOperationKind {
+  return (
+    value === "swap-lock" ||
+    value === "swap-claim" ||
+    value === "conditional-keyset-swap" ||
+    value === "swap-refund" ||
+    value === "ctf-split" ||
+    value === "ctf-merge" ||
+    value === "ctf-redeem" ||
+    value === "ctf-condition-registration" ||
+    value === "regular-split" ||
+    value === "proof-split" ||
+    value === "wallet-mint" ||
+    value === "wallet-receive"
+  );
+}
+
+function isProofOperationState(value: unknown): value is ProofOperationState {
+  return (
+    value === "prepared" ||
+    value === "mint-submitted" ||
+    value === "completed" ||
+    value === "Failed"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const PROOF_FIELDS = [
+  "id",
+  "amount",
+  "secret",
+  "C",
+  "dleq",
+  "p2pk_e",
+  "witness",
+  "proofId",
+  "walletId",
+  "mintUrl",
+  "reservedBy",
+  "conditionId",
+  "condition_id",
+  "outcomeCollection",
+  "outcome_collection",
+  "marketId",
+  "baseAsset",
+  "unit",
+  "receivedAt",
+  "proofClass",
+  "selectability",
+] as const;
+
+function isProofArray(
+  value: unknown,
+  walletId: string,
+  mintUrl: string,
+): boolean {
+  if (!Array.isArray(value)) return false;
+  const proofs = value.filter((proof) => isProof(proof, walletId, mintUrl));
+  return (
+    proofs.length === value.length &&
+    new Set(proofs.map((proof) => proof.secret)).size === proofs.length
+  );
+}
+
+function isProofGroups(
+  value: unknown,
+  walletId: string,
+  mintUrl: string,
+): boolean {
+  if (!isRecord(value)) return false;
+  const groups = Object.entries(value);
+  if (
+    !groups.every(
+      ([label, proofs]) => isGroupLabel(label) && Array.isArray(proofs),
+    )
+  ) {
+    return false;
+  }
+  const proofs = groups.flatMap(([, items]) => items as unknown[]);
+  return (
+    proofs.every((proof) => isProof(proof, walletId, mintUrl)) &&
+    new Set(proofs.map((proof) => (proof as Record<string, unknown>).secret))
+      .size === proofs.length
+  );
+}
+
+function isProof(
+  value: unknown,
+  walletId?: string,
+  mintUrl?: string,
+): value is Record<string, unknown> {
+  if (!isRecord(value) || !hasOnlyKnownFields(value, PROOF_FIELDS))
+    return false;
+  return (
+    isStrictCashuProofArtifact(projectCashuProofArtifact(value)) &&
+    hasValidStoredProofExtensions(value, walletId, mintUrl)
+  );
+}
+
+function projectCashuProofArtifact(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    id: value.id,
+    amount: value.amount,
+    secret: value.secret,
+    C: value.C,
+    ...(Object.hasOwn(value, "dleq") ? { dleq: value.dleq } : {}),
+    ...(Object.hasOwn(value, "p2pk_e") ? { p2pk_e: value.p2pk_e } : {}),
+    ...(Object.hasOwn(value, "witness") ? { witness: value.witness } : {}),
+  };
+}
+
+function hasValidStoredProofExtensions(
+  proof: Record<string, unknown>,
+  walletId?: string,
+  mintUrl?: string,
+): boolean {
+  if (
+    !isOptionalIdentifier(proof.reservedBy) ||
+    !isOptionalIdentifier(proof.conditionId) ||
+    !isOptionalIdentifier(proof.condition_id) ||
+    !isOptionalIdentifier(proof.outcomeCollection) ||
+    !isOptionalIdentifier(proof.outcome_collection) ||
+    !isOptionalIdentifier(proof.marketId) ||
+    !isOptionalTimestamp(proof.receivedAt)
+  ) {
+    return false;
+  }
+  if (!hasValidStoredProofIdentityFields(proof, walletId, mintUrl))
+    return false;
+  return hasValidStoredProofClassification(proof);
+}
+
+function hasValidStoredProofIdentityFields(
+  proof: Record<string, unknown>,
+  walletId?: string,
+  mintUrl?: string,
+): boolean {
+  const unit =
+    proof.unit === undefined || typeof proof.unit !== "string"
+      ? undefined
+      : (parseCashuProofUnit(proof.unit) ?? undefined);
+  const baseAsset =
+    proof.baseAsset === undefined || typeof proof.baseAsset !== "string"
+      ? undefined
+      : (parseMarketBaseAsset(proof.baseAsset) ?? undefined);
+  if (
+    (proof.walletId !== undefined && proof.walletId !== walletId) ||
+    (proof.mintUrl !== undefined &&
+      (!isNormalizedMintUrl(proof.mintUrl) || proof.mintUrl !== mintUrl)) ||
+    (proof.unit !== undefined && unit !== proof.unit) ||
+    (proof.baseAsset !== undefined && baseAsset !== proof.baseAsset) ||
+    (unit !== undefined &&
+      baseAsset !== undefined &&
+      COLLATERAL_UNIT_REGISTRY[unit].baseAsset !== baseAsset)
+  ) {
+    return false;
+  }
+  return proof.proofId === undefined || hasValidStoredProofId(proof, unit);
+}
+
+function hasValidStoredProofId(
+  proof: Record<string, unknown>,
+  unit: CashuProofUnit | undefined,
+): boolean {
+  if (
+    !isLowerHex(proof.proofId, 64) ||
+    !unit ||
+    typeof proof.mintUrl !== "string"
+  ) {
+    return false;
+  }
+  try {
+    return (
+      proof.proofId ===
+      deriveStoredProofId({
+        id: proof.id as string,
+        secret: proof.secret as string,
+        mintUrl: proof.mintUrl,
+        unit,
+      })
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasValidStoredProofClassification(
+  proof: Record<string, unknown>,
+): boolean {
+  if (!hasValidCtfMetadataRelation(proof)) return false;
+  const conditionId = proof.conditionId ?? proof.condition_id;
+  const outcomeCollection = proof.outcomeCollection ?? proof.outcome_collection;
+  const expectedClass =
+    conditionId !== undefined || outcomeCollection !== undefined
+      ? "ctf"
+      : "regular";
+  const expectedSelectability =
+    proof.reservedBy === undefined ? "spendable" : "reserved";
+  return (
+    (proof.proofClass === undefined || proof.proofClass === expectedClass) &&
+    (proof.selectability === undefined ||
+      proof.selectability === expectedSelectability)
+  );
+}
+
+function hasValidCtfMetadataRelation(
+  proof: Record<string, unknown>,
+): boolean {
+  const fields = [
+    "conditionId",
+    "condition_id",
+    "outcomeCollection",
+    "outcome_collection",
+    "marketId",
+  ] as const;
+  const present = fields.filter((field) => Object.hasOwn(proof, field));
+  if (present.length === 0) return true;
+  if (present.some((field) => !isIdentifier(proof[field]))) return false;
+  if (
+    (Object.hasOwn(proof, "conditionId") &&
+      Object.hasOwn(proof, "condition_id") &&
+      proof.conditionId !== proof.condition_id) ||
+    (Object.hasOwn(proof, "outcomeCollection") &&
+      Object.hasOwn(proof, "outcome_collection") &&
+      proof.outcomeCollection !== proof.outcome_collection)
+  ) {
+    return false;
+  }
+  const conditionId = proof.conditionId ?? proof.condition_id;
+  const outcomeCollection = proof.outcomeCollection ?? proof.outcome_collection;
+  return (
+    isIdentifier(conditionId) &&
+    isIdentifier(outcomeCollection) &&
+    isIdentifier(proof.marketId) &&
+    proof.marketId === `${conditionId}-${outcomeCollection}`
+  );
+}
+
+const OUTPUT_FIELDS = [
+  "blindedMessage",
+  "blindingFactor",
+  "secret",
+  "ephemeralE",
+] as const;
+
+function isOutputGroups(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const groups = Object.entries(value);
+  if (
+    !groups.every(
+      ([label, outputs]) => isGroupLabel(label) && Array.isArray(outputs),
+    )
+  ) {
+    return false;
+  }
+  const outputs = groups.flatMap(([, items]) => items as unknown[]);
+  return (
+    outputs.every(isStoredOutput) &&
+    new Set(outputs.map((output) => (output as Record<string, unknown>).secret))
+      .size === outputs.length
+  );
+}
+
+function isStoredOutput(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKnownFields(value, OUTPUT_FIELDS) &&
+    hasRequiredFields(value, ["blindedMessage", "blindingFactor", "secret"]) &&
+    isBlindedMessage(value.blindedMessage) &&
+    isLowerHexText(value.blindingFactor, 512) &&
+    isLowerHexText(value.secret, 2_048) &&
+    isOptionalPoint(value.ephemeralE, [66])
+  );
+}
+
+function isBlindedMessage(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactFields(value, ["amount", "id", "B_"]) &&
+    isNonNegativeInteger(value.amount) &&
+    isIdentifier(value.id) &&
+    isPoint(value.B_, [66, 96])
+  );
+}
+
+function isMetadataUnitValid(metadata: Record<string, unknown>): boolean {
+  return (
+    metadata.unit === undefined ||
+    (typeof metadata.unit === "string" &&
+      parseCashuProofUnit(metadata.unit) === metadata.unit)
+  );
+}
+
+function isGroupLabel(value: string): boolean {
+  return value.length > 0 && value.length <= 512;
+}
+
+function hasOnlyKnownFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+): boolean {
+  return Object.keys(value).every((field) => fields.includes(field));
+}
+
+function hasRequiredFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+): boolean {
+  return fields.every((field) => field in value);
+}
+
+function hasExactFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+): boolean {
+  return (
+    Object.keys(value).length === fields.length &&
+    hasRequiredFields(value, fields)
+  );
+}
+
+function isIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 512;
+}
+
+function isLowerHexText(value: unknown, maximumLength: number): boolean {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= maximumLength &&
+    value.length % 2 === 0 &&
+    /^[a-f0-9]+$/.test(value)
+  );
+}
+
+function isLowerHex(value: unknown, length: number): boolean {
+  return (
+    typeof value === "string" &&
+    value.length === length &&
+    /^[a-f0-9]+$/.test(value)
+  );
+}
+
+function isPoint(value: unknown, lengths: readonly number[]): boolean {
+  return (
+    typeof value === "string" &&
+    lengths.includes(value.length) &&
+    /^[a-f0-9]+$/.test(value)
+  );
+}
+
+function isOptionalPoint(value: unknown, lengths: readonly number[]): boolean {
+  return value === undefined || isPoint(value, lengths);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isOptionalTimestamp(value: unknown): boolean {
+  return value === undefined || isTimestamp(value);
+}
+
+function isOptionalIdentifier(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === "string" && value.length > 0 && value.length <= 512)
+  );
+}
+
+function isTimestamp(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isOptionalNonNegativeInteger(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+  );
+}
+
+function isNormalizedMintUrl(value: unknown): value is string {
+  if (typeof value !== "string" || normalizeUrl(value) !== value) return false;
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
   }
 }

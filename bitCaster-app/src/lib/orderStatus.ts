@@ -1,6 +1,11 @@
 import { useEffect, useRef } from 'react'
 import type { components } from '@/generated/api'
-import { usePendingTradesStore } from '@/stores/pendingTrades'
+import {
+  getCurrentGuiPendingTrades,
+  isCurrentGuiPendingTrade,
+  removeGuiPendingTrade,
+  type PendingTradeRecord,
+} from '@/stores/pendingTrades'
 import {
   type Notification,
   type NotificationKind,
@@ -85,7 +90,7 @@ function assertNever(value: never): never {
   throw new Error(`Unhandled FillStatus: ${value}`)
 }
 
-type PendingTradeForPromotion = {
+type PendingTradeDetails = {
   orderId: string
   clientOrderId?: string
   marketId: string
@@ -141,7 +146,7 @@ const POLL_INTERVAL_MS = 5_000
  */
 export function promoteNewFillsToActiveSwaps(
   status: OrderStatusResponse,
-  trade: PendingTradeForPromotion,
+  trade: PendingTradeRecord,
   lastFillCount: number,
 ): number {
   return promoteFillsToActiveSwaps(status.fills, trade, lastFillCount)
@@ -149,9 +154,10 @@ export function promoteNewFillsToActiveSwaps(
 
 export function promoteFillsToActiveSwaps(
   fills: readonly FillLike[],
-  trade: PendingTradeForPromotion,
+  trade: PendingTradeRecord,
   lastFillCount = 0,
 ): number {
+  if (!isCurrentGuiPendingTrade(trade)) return 0
   if (fills.length <= lastFillCount) return 0
 
   const promote = useActiveSwapsStore.getState().promote
@@ -163,7 +169,7 @@ export function promoteFillsToActiveSwaps(
     if (!pendingKey) {
       void getGuiPendingSwapIntent(tradeId)
         .then((intent) => {
-          if (!intent) return
+          if (!intent || !isCurrentGuiPendingTrade(trade)) return
           usePendingPubkeySubmissionsStore.getState().addPendingPubkey(intent)
           promoteSwapFill(promote, fill, trade, intent)
         })
@@ -181,9 +187,10 @@ export function promoteFillsToActiveSwaps(
 function promoteSwapFill(
   promote: ReturnType<typeof useActiveSwapsStore.getState>['promote'],
   fill: FillLike,
-  trade: PendingTradeForPromotion,
+  trade: PendingTradeRecord,
   pendingKey: { pubkey: string; privkey: string },
 ): void {
+  if (!isCurrentGuiPendingTrade(trade)) return
   const tradeId = fill.tradeId
   if (!tradeId) return
   promote({
@@ -208,7 +215,7 @@ function promoteSwapFill(
 
 export function buildOrderStatusNotifications(
   status: OrderStatusResponse,
-  trade: PendingTradeForPromotion,
+  trade: PendingTradeDetails,
   lastFillCount: number,
   now = Date.now(),
 ): Notification[] {
@@ -313,15 +320,13 @@ export function usePendingTradesPoller(): void {
 
       inFlight = true
       try {
-        const trades = Object.values(usePendingTradesStore.getState().byOrderId)
+        const trades = getCurrentGuiPendingTrades()
         if (trades.length === 0) {
           scheduleNext()
           return
         }
 
         const addNotification = useNotificationsStore.getState().add
-        const removePendingTrade = usePendingTradesStore.getState().remove
-
         await Promise.allSettled(
           trades.map(async (trade) => {
             let status: OrderStatusResponse | null
@@ -332,7 +337,7 @@ export function usePendingTradesPoller(): void {
               // here keeps a dead engine from spamming console.error every 5s.
               return
             }
-            if (!status || cancelled) return
+            if (!status || cancelled || !isCurrentGuiPendingTrade(trade)) return
 
             const current = normalizeOrderStatus(String(status.status))
             const isTerminal = TERMINAL_STATUSES.has(current)
@@ -370,7 +375,7 @@ export function usePendingTradesPoller(): void {
                   message: `All your amount for order ${shortOrderId(trade.orderId)} has been filled. 0 sats remaining.`,
                 })
               }
-              removePendingTrade(trade.orderId)
+              await removeGuiPendingTrade(trade)
               lastFillCountRef.current.delete(trade.orderId)
 
               // Per P08, the server is not the source of truth for user

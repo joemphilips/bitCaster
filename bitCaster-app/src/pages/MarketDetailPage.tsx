@@ -80,7 +80,12 @@ import {
   useWalletStore,
 } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
-import { usePendingTradesStore } from "@/stores/pendingTrades";
+import {
+  getCurrentGuiPendingTrade,
+  isCurrentGuiPendingTrade,
+  persistGuiPendingTrade,
+  type PendingTradeRecord,
+} from "@/stores/pendingTrades";
 import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
 import {
   markGuiPendingSwapIntentSubmitted,
@@ -94,6 +99,7 @@ import {
   formatMarketSubunits,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
+  parseMarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import { buildIndexedDbTokenHoldings } from "@/lib/walletHoldings";
 import type {
@@ -119,6 +125,32 @@ export function shouldPromptForFundedActionBackup(
   walletBackupState: SecretBackupState,
 ): boolean {
   return walletBackupState === "needs_backup";
+}
+
+export function requireAcceptedOrderMarketAuthority(input: {
+  marketBaseAsset: unknown;
+  marketDivisibility: unknown;
+  responseBaseAsset: unknown;
+  responseDivisibility: unknown;
+}): { baseAsset: "sat" | "usd" | "jpy"; divisibility: number } {
+  const marketBaseAsset =
+    typeof input.marketBaseAsset === "string"
+      ? parseMarketBaseAsset(input.marketBaseAsset)
+      : null;
+  if (
+    marketBaseAsset === null ||
+    input.marketBaseAsset !== marketBaseAsset ||
+    input.responseBaseAsset !== marketBaseAsset ||
+    !Number.isSafeInteger(input.marketDivisibility) ||
+    (input.marketDivisibility as number) <= 0 ||
+    input.responseDivisibility !== input.marketDivisibility
+  ) {
+    throw new Error("Accepted order market authority is invalid");
+  }
+  return {
+    baseAsset: marketBaseAsset,
+    divisibility: input.marketDivisibility as number,
+  };
 }
 
 type TopUpStage = "closed" | "modal" | "overlay";
@@ -974,7 +1006,6 @@ export function MarketDetailPage() {
   const setupComplete = useWalletStore((s) => s.setupComplete);
   const walletBackupState = useWalletStore((s) => s.walletBackupState);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
-  const addPendingTrade = usePendingTradesStore((s) => s.add);
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const signerBackupState = useSettingsStore((s) => s.signerBackupState);
   // Display-only mint fee for the trade cost preview. Read from the
@@ -1159,7 +1190,7 @@ export function MarketDetailPage() {
           if (cancelled) return;
           refreshLiveOrderBook();
           reconcileOwnOrders();
-          void submitMakerEphemeralPubkeyFromMatch(liveMarketId, match).catch((err) => {
+          void submitMakerEphemeralPubkeyFromMatch(match).catch((err) => {
             console.warn("[MarketDetailPage] maker pubkey submission failed:", err);
           });
         }),
@@ -1693,21 +1724,20 @@ export function MarketDetailPage() {
           clientOrderId,
           ...(signedComment ? { comment: signedComment } : {}),
         });
-        const acceptedBaseAsset = normalizeMarketBaseAsset(
-          response.baseAsset ?? latestMarket.baseAsset,
-        );
-        const acceptedDivisibility = normalizeMarketDivisibility(
-          response.divisibility ?? latestMarket.divisibility,
-          acceptedBaseAsset,
-        );
+        const acceptedAuthority = requireAcceptedOrderMarketAuthority({
+          marketBaseAsset: latestMarket.baseAsset,
+          marketDivisibility: latestMarket.divisibility,
+          responseBaseAsset: response.baseAsset,
+          responseDivisibility: response.divisibility,
+        });
         // Only persist the privkey once the engine has accepted the order.
         // Otherwise we accumulate orphaned keys on every failed submission.
-        addPendingTrade({
+        const pendingTrade = await persistGuiPendingTrade({
           orderId: response.orderId,
           marketId: ticket.marketId,
           clientOrderId,
-          baseAsset: acceptedBaseAsset,
-          divisibility: acceptedDivisibility,
+          baseAsset: acceptedAuthority.baseAsset,
+          divisibility: acceptedAuthority.divisibility,
           side: ticket.request.side,
           tokenSide: ticket.request.tokenSide,
           priceSubunits: ticket.request.price,
@@ -1721,20 +1751,9 @@ export function MarketDetailPage() {
             orderId: response.orderId,
             marketId: ticket.marketId,
             deadline: pending.deadline,
-          });
+          }, pendingTrade);
         }
-        promoteFillsToActiveSwaps(response.fills ?? [], {
-          orderId: response.orderId,
-          clientOrderId,
-          marketId: ticket.marketId,
-          baseAsset: acceptedBaseAsset,
-          divisibility: acceptedDivisibility,
-          side: ticket.request.side,
-          tokenSide: ticket.request.tokenSide,
-          priceSubunits: ticket.request.price,
-          amountSubunits: ticket.request.amountSubunits,
-          timeInForce: ticket.request.timeInForce,
-        });
+        promoteFillsToActiveSwaps(response.fills ?? [], pendingTrade);
         addOrderSubmitNotifications({
           add: useNotificationsStore.getState().add,
           orderId: response.orderId,
@@ -1785,7 +1804,6 @@ export function MarketDetailPage() {
       orderType,
       limitPrice,
       loadMarket,
-      addPendingTrade,
     ],
   );
 
@@ -2255,30 +2273,31 @@ export function MarketDetailPage() {
   );
 }
 
-async function submitMakerEphemeralPubkeyFromMatch(
-  marketId: string,
-  match: Matched,
-): Promise<void> {
+async function submitMakerEphemeralPubkeyFromMatch(match: Matched): Promise<void> {
   const pendingState = usePendingPubkeySubmissionsStore.getState();
   if (pendingState.byTradeId[match.tradeId]) return;
 
-  const restingMaker = usePendingTradesStore.getState().byOrderId[match.makerOrderId];
+  const restingMaker = getCurrentGuiPendingTrade(match.makerOrderId);
   if (!restingMaker) return;
 
   await submitPendingEphemeralPubkey({
     tradeId: match.tradeId,
     orderId: match.makerOrderId,
-    marketId,
+    marketId: restingMaker.marketId,
     deadline: match.deadline,
-  });
+  }, restingMaker);
 }
 
-async function submitPendingEphemeralPubkey(input: {
-  tradeId: string;
-  orderId: string;
-  marketId: string;
-  deadline: string;
-}): Promise<void> {
+async function submitPendingEphemeralPubkey(
+  input: {
+    tradeId: string;
+    orderId: string;
+    marketId: string;
+    deadline: string;
+  },
+  pendingTrade: PendingTradeRecord,
+): Promise<void> {
+  requireCurrentPendingTrade(input, pendingTrade);
   const store = usePendingPubkeySubmissionsStore.getState();
   const migrated = await migrateLegacyGuiPendingSwapIntents();
   if (migrated.length > 0) store.hydratePendingPubkeys(migrated);
@@ -2306,6 +2325,7 @@ async function submitPendingEphemeralPubkey(input: {
   }
   if (entry.submitted) return;
 
+  requireCurrentPendingTrade(input, pendingTrade);
   await submitEphemeralPubkey(
     input.tradeId,
     entry.pubkey,
@@ -2313,6 +2333,19 @@ async function submitPendingEphemeralPubkey(input: {
   );
   await markGuiPendingSwapIntentSubmitted(input.tradeId);
   usePendingPubkeySubmissionsStore.getState().markSubmitted(input.tradeId);
+}
+
+function requireCurrentPendingTrade(
+  input: { orderId: string; marketId: string },
+  pendingTrade: PendingTradeRecord,
+): void {
+  if (
+    pendingTrade.orderId !== input.orderId ||
+    pendingTrade.marketId !== input.marketId ||
+    !isCurrentGuiPendingTrade(pendingTrade)
+  ) {
+    throw new Error("Pending order belongs to another wallet scope");
+  }
 }
 
 function conditionIdFromMarketId(marketId: string): string {

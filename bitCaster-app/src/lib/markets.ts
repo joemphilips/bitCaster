@@ -1061,18 +1061,26 @@ export interface MarketFundingDepositOptions {
   divisibility?: number;
 }
 
+const DEPOSIT_HTTP_TIMEOUT_MS = 15_000;
+
+export class EcashDepositRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`Matching Engine ecash deposit request failed (${status})`);
+    this.name = "EcashDepositRequestError";
+    this.status = status;
+  }
+}
+
 function normalizeDepositState(state: unknown): DepositState {
   switch (state) {
-    case "Requested":
     case "requested":
       return "requested";
-    case "Paid":
     case "paid":
       return "paid";
-    case "Credited":
     case "credited":
       return "credited";
-    case "Failed":
     case "failed":
       return "failed";
     default:
@@ -1081,16 +1089,8 @@ function normalizeDepositState(state: unknown): DepositState {
 }
 
 function normalizeDepositMethod(method: unknown): DepositMethod {
-  switch (method) {
-    case "LightningInvoice":
-    case "lightningInvoice":
-      return "lightningInvoice";
-    case "Ecash":
-    case "ecash":
-      return "ecash";
-    default:
-      throw new Error(`Unknown deposit method: ${String(method)}`);
-  }
+  if (method === "ecash") return method;
+  throw new Error(`Unknown deposit method: ${String(method)}`);
 }
 
 /**
@@ -1101,12 +1101,14 @@ function normalizeDepositMethod(method: unknown): DepositMethod {
  */
 export async function requestEcashDeposit(
   conditionId: string,
+  depositId: string,
   amountSubunits: number,
   proofsToken: string,
   options: MarketFundingDepositOptions = {},
 ): Promise<RequestEcashDepositResponse> {
   const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ecash`;
   const body: RequestEcashDepositRequest = {
+    depositId,
     amountSubunits,
     proofsToken,
     fundAmm: false,
@@ -1123,13 +1125,15 @@ export async function requestEcashDeposit(
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: authHeader },
     body: bodyText,
+    signal: AbortSignal.timeout(DEPOSIT_HTTP_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new Error(
-      `[Matching Engine] Failed to submit ecash deposit: ${response.status} ${await response.text()}`,
-    );
+    throw new EcashDepositRequestError(response.status);
   }
   const result = (await response.json()) as RequestEcashDepositResponse;
+  if (result.depositId !== depositId) {
+    throw new Error("Matching Engine returned a conflicting deposit identity");
+  }
   return { ...result, state: normalizeDepositState(result.state) };
 }
 
@@ -1144,7 +1148,9 @@ export async function getDepositStatus(
   depositId: string,
 ): Promise<GetDepositResponseDto | null> {
   const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/${depositId}`;
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(DEPOSIT_HTTP_TIMEOUT_MS),
+  });
   if (response.status === 404) return null;
   if (!response.ok) {
     throw new Error(`Failed to read deposit status: ${response.status}`);

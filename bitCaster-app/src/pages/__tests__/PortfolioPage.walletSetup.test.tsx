@@ -23,7 +23,7 @@ vi.mock('@/stores/settings', () => ({
 
 vi.mock('@/stores/activity-log', () => ({
   useActivityLogStore: (selector: (s: unknown) => unknown) =>
-    selector({ addActivity: vi.fn() }),
+    selector({ addActivityForWallet: vi.fn() }),
 }))
 
 vi.mock('@/stores/proof-db', () => ({

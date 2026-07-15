@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { getMarketThumbnail } from '@/lib/markets'
 import { useBookmarkStore } from '@/stores/bookmarks'
 import { formatMarketSubunits, formatPricePercentage } from '@bitcaster/client-sdk/marketUnits'
+import { assertNever } from '@/lib/enumDiscipline'
 import type {
   Market,
   YesNoMarket,
@@ -286,7 +287,14 @@ export function MarketCard({
   }
 
   const renderNormalView = () => {
-    if (market.state === 'closed') return renderClosedView()
+    switch (market.state) {
+      case 'closed':
+        return renderClosedView()
+      case 'open':
+        break
+      default:
+        return assertNever(market.state)
+    }
 
     if (market.type === 'yesno') {
       const yesNoMarket = market as YesNoMarket

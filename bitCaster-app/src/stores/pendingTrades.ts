@@ -1,76 +1,225 @@
-import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { create } from "zustand";
+import { parseMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { sameValue } from "./durable-custody-dexie-model";
+import { currentGuiWalletId, db, ensureDurableSwapStorage } from "./proof-db";
+import { withGuiWalletLock } from "./gui-wallet-lock";
 
-/**
- * TTL for persisted entries. A pending trade older than this is assumed to be
- * abandoned (tab closed, app uninstalled, etc.).
- */
-const PENDING_TRADE_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
-
-/**
- * Per-order metadata retained after submission. Ephemeral keypairs are now
- * generated per trade at match time and live in pendingPubkeySubmissions.
- */
 export interface PendingTrade {
-  orderId: string
-  marketId: string
-  clientOrderId?: string
-  /** Unix ms when the order was submitted — useful for TTL/expiry handling. */
-  submittedAt: number
-  /** Market base asset and denominator captured from the accepted order. */
-  baseAsset?: string | null
-  divisibility?: number | null
-  side?: 'Buy' | 'Sell'
-  tokenSide?: 'Outcome' | 'Complement'
-  priceSubunits?: number | null
-  amountSubunits?: number | null
-  timeInForce?: 'FAK' | 'FOK' | 'GTC'
-  /** Number of prior replacement orders for a maker-caused failed fill. */
-  recoveryAttempt?: number
+  orderId: string;
+  marketId: string;
+  clientOrderId: string;
+  submittedAt: number;
+  baseAsset: string;
+  divisibility: number;
+  side: "Buy" | "Sell";
+  tokenSide: "Outcome" | "Complement";
+  priceSubunits: number;
+  amountSubunits: number;
+  timeInForce: "FAK" | "FOK" | "GTC";
+  recoveryAttempt?: number;
 }
+
+export type PendingTradeRecord = Omit<PendingTrade, "recoveryAttempt"> & {
+  walletId: string;
+  recoveryAttempt: number;
+};
 
 interface PendingTradeState {
-  byOrderId: Record<string, PendingTrade>
-  add: (trade: PendingTrade) => void
-  remove: (orderId: string) => void
-  get: (orderId: string) => PendingTrade | undefined
+  walletId: string | null;
+  byOrderId: Record<string, PendingTradeRecord>;
 }
 
-/**
- * Persisted store keyed by orderId. Outlives page reloads so the swap can
- * resume if the user refreshes mid-trade.
- */
-export const usePendingTradesStore = create<PendingTradeState>()(
-  persist(
-    (set, get) => ({
-      byOrderId: {},
-      add: (trade) => {
-        set((s) => ({
-          byOrderId: { ...s.byOrderId, [trade.orderId]: trade },
-        }))
-      },
-      remove: (orderId) => {
-        set((s) => {
-          if (!(orderId in s.byOrderId)) return s
-          const next = { ...s.byOrderId }
-          delete next[orderId]
-          return { byOrderId: next }
-        })
-      },
-      get: (orderId) => get().byOrderId[orderId],
+export const usePendingTradesStore = create<PendingTradeState>()(() => ({
+  walletId: null,
+  byOrderId: {},
+}));
+
+export function clearGuiPendingTradeCache(): void {
+  usePendingTradesStore.setState({ walletId: null, byOrderId: {} });
+}
+
+export function replaceGuiPendingTradeCache(
+  walletId: string,
+  records: readonly PendingTradeRecord[],
+): void {
+  if (currentGuiWalletId() !== walletId) {
+    throw new Error("Pending trade cache belongs to another wallet scope");
+  }
+  const byOrderId = Object.fromEntries(
+    records.map((record) => {
+      const current = requirePendingTradeRecord(record, walletId);
+      return [current.orderId, current];
     }),
-    {
-      name: 'bitcaster-pending-trades',
-      // Purge expired order metadata on hydrate.
-      onRehydrateStorage: () => (state) => {
-        if (!state) return
-        const cutoff = Date.now() - PENDING_TRADE_TTL_MS
-        const entries = Object.entries(state.byOrderId)
-        const fresh = entries.filter(([, t]) => t.submittedAt >= cutoff)
-        if (fresh.length !== entries.length) {
-          state.byOrderId = Object.fromEntries(fresh)
-        }
-      },
-    },
-  ),
-)
+  );
+  usePendingTradesStore.setState({ walletId, byOrderId });
+}
+
+export function getCurrentGuiPendingTrade(
+  orderId: string,
+): PendingTradeRecord | undefined {
+  const walletId = currentGuiWalletId();
+  const state = usePendingTradesStore.getState();
+  if (state.walletId !== walletId) return undefined;
+  const record = state.byOrderId[orderId];
+  return record ? requirePendingTradeRecord(record, walletId) : undefined;
+}
+
+export function getCurrentGuiPendingTrades(): PendingTradeRecord[] {
+  const walletId = currentGuiWalletId();
+  const state = usePendingTradesStore.getState();
+  if (state.walletId !== walletId) return [];
+  return Object.values(state.byOrderId).map((record) =>
+    requirePendingTradeRecord(record, walletId),
+  );
+}
+
+export function isCurrentGuiPendingTrade(record: PendingTradeRecord): boolean {
+  try {
+    return sameValue(getCurrentGuiPendingTrade(record.orderId), record);
+  } catch {
+    return false;
+  }
+}
+
+export async function loadGuiPendingTrades(
+  walletId = currentGuiWalletId(),
+): Promise<PendingTradeRecord[]> {
+  await ensureDurableSwapStorage(walletId);
+  return (
+    await db.pendingTrades.where("walletId").equals(walletId).toArray()
+  ).map((record) => requirePendingTradeRecord(record, walletId));
+}
+
+export async function persistGuiPendingTrade(
+  trade: PendingTrade,
+): Promise<PendingTradeRecord> {
+  const walletId = currentGuiWalletId();
+  return withGuiWalletLock(walletId, currentGuiWalletId, async () => {
+    await ensureDurableSwapStorage(walletId);
+    const candidate = requirePendingTradeRecord(
+      { ...trade, walletId, recoveryAttempt: trade.recoveryAttempt ?? 0 },
+      walletId,
+    );
+    const key: [string, string] = [walletId, candidate.orderId];
+    const committed = await db.transaction("rw", db.pendingTrades, async () => {
+      const existing = await db.pendingTrades.get(key);
+      if (!existing) {
+        await db.pendingTrades.put(candidate);
+        return candidate;
+      }
+      const current = requirePendingTradeRecord(existing, walletId);
+      if (!sameValue(current, candidate)) {
+        throw new Error("Pending trade conflicts with existing authority");
+      }
+      return current;
+    });
+    publishPendingTradeIfCurrent(committed);
+    return committed;
+  });
+}
+
+export async function removeGuiPendingTrade(
+  expected: PendingTradeRecord,
+): Promise<void> {
+  const walletId = expected.walletId;
+  await withGuiWalletLock(walletId, currentGuiWalletId, async () => {
+    await ensureDurableSwapStorage(walletId);
+    const key: [string, string] = [walletId, expected.orderId];
+    await db.transaction("rw", db.pendingTrades, async () => {
+      const existing = await db.pendingTrades.get(key);
+      if (!existing) return;
+      const current = requirePendingTradeRecord(existing, walletId);
+      if (!sameValue(current, expected)) {
+        throw new Error("Pending trade conflicts with existing authority");
+      }
+      await db.pendingTrades.delete(key);
+    });
+    const state = usePendingTradesStore.getState();
+    if (state.walletId !== walletId) return;
+    const byOrderId = { ...state.byOrderId };
+    delete byOrderId[expected.orderId];
+    usePendingTradesStore.setState({ walletId, byOrderId });
+  });
+}
+
+function publishPendingTradeIfCurrent(record: PendingTradeRecord): void {
+  if (currentGuiWalletId() !== record.walletId) return;
+  const state = usePendingTradesStore.getState();
+  const byOrderId = state.walletId === record.walletId ? state.byOrderId : {};
+  usePendingTradesStore.setState({
+    walletId: record.walletId,
+    byOrderId: { ...byOrderId, [record.orderId]: record },
+  });
+}
+
+function requirePendingTradeRecord(
+  value: unknown,
+  walletId: string,
+): PendingTradeRecord {
+  if (!isRecord(value) || !hasOnlyPendingTradeFields(value)) {
+    throw new Error("Pending trade authority is invalid");
+  }
+  const record = value as Partial<PendingTradeRecord>;
+  if (
+    record.walletId !== walletId ||
+    !/^[0-9a-f]{64}$/.test(walletId) ||
+    !isNonEmptyString(record.orderId) ||
+    !isNonEmptyString(record.marketId) ||
+    !isNonEmptyString(record.clientOrderId) ||
+    !isNonNegativeSafeInteger(record.submittedAt) ||
+    parseMarketBaseAsset(record.baseAsset) !== record.baseAsset ||
+    !isPositiveSafeInteger(record.divisibility) ||
+    !isClosedValue(record.side, ["Buy", "Sell"]) ||
+    !isClosedValue(record.tokenSide, ["Outcome", "Complement"]) ||
+    !isPositiveSafeInteger(record.priceSubunits) ||
+    !isPositiveSafeInteger(record.amountSubunits) ||
+    !isClosedValue(record.timeInForce, ["FAK", "FOK", "GTC"]) ||
+    !isNonNegativeSafeInteger(record.recoveryAttempt)
+  ) {
+    throw new Error("Pending trade authority is invalid");
+  }
+  return structuredClone(record as PendingTradeRecord);
+}
+
+const PENDING_TRADE_FIELDS = new Set([
+  "walletId",
+  "orderId",
+  "marketId",
+  "clientOrderId",
+  "submittedAt",
+  "baseAsset",
+  "divisibility",
+  "side",
+  "tokenSide",
+  "priceSubunits",
+  "amountSubunits",
+  "timeInForce",
+  "recoveryAttempt",
+]);
+
+function hasOnlyPendingTradeFields(value: Record<string, unknown>): boolean {
+  return Object.keys(value).every((key) => PENDING_TRADE_FIELDS.has(key));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+function isClosedValue<T extends string>(
+  value: unknown,
+  values: readonly T[],
+): value is T {
+  return values.includes(value as T);
+}

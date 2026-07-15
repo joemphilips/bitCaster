@@ -39,7 +39,7 @@ export type TopUpPasteValidationResult =
   | TopUpPasteValidationSuccess
   | TopUpPasteValidationError
 
-export type DecodeCashuToken = (token: string) => Promise<Token>
+export type DecodeTopUpCashuToken = (token: string) => Promise<Token>
 
 export async function validateTopUpEcashToken(
   tokenText: string,
@@ -48,7 +48,7 @@ export async function validateTopUpEcashToken(
     baseAsset: MarketBaseAsset | string | null | undefined
     proofUnit?: CashuProofUnit | null
     deficit: number
-    decodeToken: DecodeCashuToken
+    decode: DecodeTopUpCashuToken
   },
 ): Promise<TopUpPasteValidationResult> {
   const trimmed = tokenText.trim()
@@ -62,7 +62,7 @@ export async function validateTopUpEcashToken(
 
   let token: Token
   try {
-    token = await params.decodeToken(trimmed)
+    token = await params.decode(trimmed)
   } catch {
     return { ok: false, code: 'decode_failed' }
   }

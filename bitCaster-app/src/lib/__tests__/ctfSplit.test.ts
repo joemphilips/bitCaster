@@ -190,46 +190,55 @@ const inputProof = {
 } as unknown as Proof;
 
 function proofOperationStore(): CtfProofOperationStore {
+  const operations = new Map<string, CtfProofOperationRecord>();
+  const requireOperation = (operationId: string): CtfProofOperationRecord => {
+    const operation = operations.get(operationId);
+    if (!operation) throw new Error(`missing proof operation ${operationId}`);
+    return operation;
+  };
   return {
-    getProofOperation: vi.fn(async () => null),
+    getProofOperation: vi.fn(async (operationId) =>
+      operations.get(operationId) ?? null,
+    ),
     prepareProofOperation: vi.fn(
-      async (input): Promise<CtfProofOperationRecord> => ({
-        ...input,
-        state: "prepared",
-        resultProofs: undefined,
-        lastError: null,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      }),
+      async (input): Promise<CtfProofOperationRecord> => {
+        const existing = operations.get(input.operationId);
+        if (existing) return existing;
+        const now = Date.now();
+        const prepared = {
+          ...input,
+          state: "prepared" as const,
+          resultProofs: undefined,
+          lastError: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        operations.set(input.operationId, prepared);
+        return prepared;
+      },
     ),
     markProofOperationMintSubmitted: vi.fn(
-      async (operationId): Promise<CtfProofOperationRecord> => ({
-        operationId,
-        kind: "ctf-split",
-        state: "mint-submitted",
-        mintUrl: "https://mint.example",
-        inputs: [inputProof],
-        outputs: {},
-        metadata: {},
-        lastError: null,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      }),
+      async (operationId): Promise<CtfProofOperationRecord> => {
+        const submitted = {
+          ...requireOperation(operationId),
+          state: "mint-submitted" as const,
+          updatedAt: Date.now(),
+        };
+        operations.set(operationId, submitted);
+        return submitted;
+      },
     ),
     markProofOperationCompleted: vi.fn(
-      async (operationId, resultProofs): Promise<CtfProofOperationRecord> => ({
-        operationId,
-        kind: "ctf-split",
-        state: "completed",
-        mintUrl: "https://mint.example",
-        inputs: [inputProof],
-        outputs: {},
-        metadata: {},
-        resultProofs,
-        lastError: null,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      }),
+      async (operationId, resultProofs): Promise<CtfProofOperationRecord> => {
+        const completed = {
+          ...requireOperation(operationId),
+          state: "completed" as const,
+          resultProofs,
+          updatedAt: Date.now(),
+        };
+        operations.set(operationId, completed);
+        return completed;
+      },
     ),
   };
 }

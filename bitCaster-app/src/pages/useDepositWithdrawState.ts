@@ -1,18 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import type {
-  DepositWithdrawMode,
-  DepositWithdrawView,
-  MethodType,
-  MintInfo,
-} from '@/types/deposit-withdraw'
+import type { DepositWithdrawMode, DepositWithdrawView, MethodType, MintInfo } from '@/types/deposit-withdraw'
 import type { MeltQuoteResponse, MintQuoteResponse } from '@cashu/cashu-ts'
 import { useWalletStore } from '@/stores/wallet'
 import { useActivityLogStore } from '@/stores/activity-log'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '@/stores/proof-db'
 import {
   createMintQuote,
-  mintProofs,
   createMeltQuote,
   meltProofs,
   spendRegularSatsAsToken,
@@ -25,13 +18,7 @@ import {
   type IngressReceiveCashuTokenResult,
 } from '@/lib/walletOps'
 import { useToastStore } from '@/stores/toast'
-import {
-  getUnitProofs,
-  addProofs,
-  removeProofs,
-  isCtfProof,
-  type StoredProof,
-} from '@/stores/proof-db'
+import { currentGuiWalletId, getUnitProofs, getProofs, addProofs, removeProofs, isCtfProof, type StoredProof } from '@/stores/proof-db'
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 import { safeHostname } from '@/lib/url'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
@@ -47,6 +34,11 @@ import { diagnoseProofStates } from '@/lib/proofDiagnostics'
 import { formatAmount } from '@/lib/formatAmount'
 import { formatBtc } from '@/lib/format'
 import { getMintQuoteRateInfo, type MintQuoteRateInfo } from '@/lib/mintQuoteRate'
+import {
+  completeGuiLightningMint,
+  prepareGuiLightningMint,
+  type GuiLightningMintPlan,
+} from '@/stores/gui-ordinary-wallet-operation'
 
 export type ExtendedView =
   | DepositWithdrawView
@@ -63,10 +55,7 @@ function assertNeverWaitResult(r: never): never {
   throw new Error(`unhandled MintQuoteWaitResult: ${JSON.stringify(r)}`)
 }
 
-function depositInputAmountToActivitySubunits(
-  amount: number,
-  baseAsset: MarketBaseAsset,
-): number {
+function depositInputAmountToActivitySubunits(amount: number, baseAsset: MarketBaseAsset): number {
   const unit = defaultCollateralUnit(baseAsset)
   const amountSubunits = amount * collateralScaleForUnit(unit)
   if (!Number.isSafeInteger(amountSubunits)) {
@@ -147,41 +136,47 @@ function toastNewMintIfAdded(result: IngressReceiveCashuTokenResult): void {
   })
 }
 
-export function useDepositWithdrawState(
-  mode: DepositWithdrawMode,
-  onDismiss: () => void
-): DepositWithdrawState {
+export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: () => void): DepositWithdrawState {
   const storeMints = useWalletStore((s) => s.mints)
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
+  const mnemonic = useWalletStore((s) => s.mnemonic)
 
   // Reactive balances for all mints via a single live query
   const mintUrls = storeMints.map((m) => m.url)
-  const balancesByMint = useLiveQuery(async () => {
-    const proofs = await db.proofs.toArray()
-    const map: Record<string, Partial<Record<MarketBaseAsset, number>>> = {}
-    for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
-      const baseAsset = normalizeMarketBaseAsset(p.baseAsset)
-      const mintBalances = map[p.mintUrl] ?? {}
-      mintBalances[baseAsset] = (mintBalances[baseAsset] ?? 0) + amountToNumber(p.amount)
-      map[p.mintUrl] = mintBalances
-    }
-    return map
-  }, [mintUrls.join(',')], {} as Record<string, Partial<Record<MarketBaseAsset, number>>>)
+  const balancesByMint = useLiveQuery(
+    async () => {
+      if (!mnemonic) return {}
+      const proofs = await getProofs()
+      const map: Record<string, Partial<Record<MarketBaseAsset, number>>> = {}
+      for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
+        const baseAsset = normalizeMarketBaseAsset(p.baseAsset)
+        const mintBalances = map[p.mintUrl] ?? {}
+        mintBalances[baseAsset] = (mintBalances[baseAsset] ?? 0) + amountToNumber(p.amount)
+        map[p.mintUrl] = mintBalances
+      }
+      return map
+    },
+    [mintUrls.join(','), mnemonic],
+    {} as Record<string, Partial<Record<MarketBaseAsset, number>>>,
+  )
 
-  const unitsForMint = useCallback((mintUrl: string): MarketBaseAsset[] => {
-    const mint = storeMints.find((m) => m.url === mintUrl)
-    const units = new Set<MarketBaseAsset>()
-    for (const keyset of mint?.keysets ?? []) {
-      if (keyset.active === false) continue
-      units.add(normalizeMarketBaseAsset(keyset.unit))
-    }
-    return units.size > 0 ? Array.from(units) : ['sat']
-  }, [storeMints])
+  const unitsForMint = useCallback(
+    (mintUrl: string): MarketBaseAsset[] => {
+      const mint = storeMints.find((m) => m.url === mintUrl)
+      const units = new Set<MarketBaseAsset>()
+      for (const keyset of mint?.keysets ?? []) {
+        if (keyset.active === false) continue
+        units.add(normalizeMarketBaseAsset(keyset.unit))
+      }
+      return units.size > 0 ? Array.from(units) : ['sat']
+    },
+    [storeMints],
+  )
 
   // Build MintInfo[] from store mints with live balances
   const mintsWithBalance: MintInfo[] = storeMints.map((m) => ({
     id: m.url,
-    name: (m.info as Record<string, unknown>)?.name as string ?? safeHostname(m.url),
+    name: ((m.info as Record<string, unknown>)?.name as string) ?? safeHostname(m.url),
     url: m.url,
     balanceSats: balancesByMint[m.url]?.sat ?? 0,
     balancesByUnit: balancesByMint[m.url] ?? {},
@@ -234,9 +229,7 @@ export function useDepositWithdrawState(
   // global inbox store so we react the moment a matching DM is redeemed —
   // even if the DM arrives before this hook mounted.
   const [pendingRequestId, setPendingRequestId] = useState<string | null>(null)
-  const inboxEntry = usePaymentRequestInbox((s) =>
-    pendingRequestId ? s.entries[pendingRequestId] : undefined
-  )
+  const inboxEntry = usePaymentRequestInbox((s) => (pendingRequestId ? s.entries[pendingRequestId] : undefined))
 
   // Cleanup WebSocket/polling on unmount. The NIP-17 listener is
   // global (see App.tsx::startNip17Listener) so we do NOT stop it here.
@@ -249,8 +242,7 @@ export function useDepositWithdrawState(
   useEffect(() => {
     if (!activeMintUrl) return
     const userChoseMint = userSelectedMintRef.current
-    const selectedMintStillExists =
-      !!selectedMintId && storeMints.some((mint) => mint.url === selectedMintId)
+    const selectedMintStillExists = !!selectedMintId && storeMints.some((mint) => mint.url === selectedMintId)
     if (!userChoseMint || !selectedMintStillExists) {
       userSelectedMintRef.current = false
       if (selectedMintId !== activeMintUrl) {
@@ -292,7 +284,7 @@ export function useDepositWithdrawState(
         setCurrentView(method === 'ecash' ? 'send-ecash' : 'pay-lightning')
       }
     },
-    [mode]
+    [mode],
   )
 
   const onNumpadPress = useCallback((key: string) => {
@@ -306,11 +298,14 @@ export function useDepositWithdrawState(
     })
   }, [])
 
-  const onMintChange = useCallback((mintId: string) => {
-    userSelectedMintRef.current = true
-    setSelectedMintId(mintId)
-    setSelectedUnit(unitsForMint(mintId)[0] ?? 'sat')
-  }, [unitsForMint])
+  const onMintChange = useCallback(
+    (mintId: string) => {
+      userSelectedMintRef.current = true
+      setSelectedMintId(mintId)
+      setSelectedUnit(unitsForMint(mintId)[0] ?? 'sat')
+    },
+    [unitsForMint],
+  )
 
   const onUnitChange = useCallback((unit: MarketBaseAsset) => {
     setSelectedUnit(normalizeMarketBaseAsset(unit))
@@ -331,35 +326,21 @@ export function useDepositWithdrawState(
 
   const handlePaidInvoice = useCallback(
     async (
-      quote: MintQuoteResponse,
+      plan: GuiLightningMintPlan,
       mintUrl: string,
       requested: number,
       baseAsset: MarketBaseAsset,
     ) => {
       try {
-        const proofs = await mintProofs(requested, quote, mintUrl, baseAsset)
+        const proofs = await completeGuiLightningMint(plan)
         await diagnoseProofStates({
           label: 'top-up:minted-proofs',
           mintUrl,
           proofs,
           extra: { requested, baseAsset },
         })
-        const stored: StoredProof[] = proofs.map((p) => ({
-          ...p,
-          mintUrl,
-          baseAsset,
-          unit: defaultCollateralUnit(baseAsset),
-        }))
-        await addProofs(stored)
         setInvoiceStatus('paid')
         const requestedSubunits = depositInputAmountToActivitySubunits(requested, baseAsset)
-        useActivityLogStore.getState().addActivity({
-          type: 'deposit',
-          baseAsset,
-          amountSats: requestedSubunits,
-          status: 'completed',
-          lightningInvoice: quote.request,
-        })
         setSuccessAmount(requestedSubunits)
         setSuccessUnit(baseAsset)
         setCurrentView('success')
@@ -368,20 +349,20 @@ export function useDepositWithdrawState(
         setError((e as Error).message)
       }
     },
-    []
+    [],
   )
 
   const handleInvoiceWaitResult = useCallback(
     (
       r: MintQuoteWaitResult,
-      quote: MintQuoteResponse,
+      plan: GuiLightningMintPlan,
       mintUrl: string,
       requested: number,
       baseAsset: MarketBaseAsset,
     ) => {
       switch (r.status) {
         case 'PAID':
-          handlePaidInvoice(quote, mintUrl, requested, baseAsset)
+          handlePaidInvoice(plan, mintUrl, requested, baseAsset)
           return
         case 'EXPIRED':
           setInvoiceStatus('expired')
@@ -395,7 +376,7 @@ export function useDepositWithdrawState(
           return assertNeverWaitResult(r)
       }
     },
-    [handlePaidInvoice]
+    [handlePaidInvoice],
   )
 
   const onCreateInvoice = useCallback(async () => {
@@ -412,8 +393,16 @@ export function useDepositWithdrawState(
       await useWalletStore.getState().ensureImplicitWallet()
       // Re-mount idempotency: reuse the active quote if one exists, otherwise
       // request a fresh one. Prevents the duplicate-quote LNBits snackbar.
-      const quote = mintQuoteRef.current ?? await createMintQuote(requested, mintUrl, baseAsset)
+      const quote = mintQuoteRef.current ?? (await createMintQuote(requested, mintUrl, baseAsset))
       mintQuoteRef.current = quote
+      const unit = defaultCollateralUnit(baseAsset)
+      const amount = requested * collateralScaleForUnit(unit)
+      const plan = await prepareGuiLightningMint({
+        amount,
+        quote,
+        mintUrl,
+        unit,
+      })
       setBolt11(quote.request)
       setInvoiceExpiresAtSec(quote.expiry ?? undefined)
       setInvoiceRateInfo(baseAsset === 'usd' ? getMintQuoteRateInfo(quote, requested) : null)
@@ -421,7 +410,7 @@ export function useDepositWithdrawState(
 
       const unsub = await waitForMintQuotePaid(
         quote,
-        (r) => handleInvoiceWaitResult(r, quote, mintUrl, requested, baseAsset),
+        (r) => handleInvoiceWaitResult(r, plan, mintUrl, requested, baseAsset),
         { onTransientError: (e) => setError(e.message) },
         mintUrl,
         baseAsset,
@@ -465,19 +454,6 @@ export function useDepositWithdrawState(
         toastNewMintIfAdded(received)
         const receivedUnit = requireCashuProofUnit(received.unit)
         const receivedBaseAsset = normalizeMarketBaseAsset(receivedUnit)
-        const stored: StoredProof[] = received.proofs.map((p) => ({
-          ...p,
-          mintUrl: received.mintUrl,
-          baseAsset: receivedBaseAsset,
-          unit: receivedUnit,
-        }))
-        await addProofs(stored)
-        useActivityLogStore.getState().addActivity({
-          type: 'deposit',
-          baseAsset: receivedBaseAsset,
-          amountSats: received.amountSats,
-          status: 'completed',
-        })
         setIsLoading(false)
         setSuccessAmount(received.amountSats)
         setSuccessUnit(receivedBaseAsset)
@@ -514,27 +490,31 @@ export function useDepositWithdrawState(
     }
   }, [amountSats, selectedMintId])
 
-  const onLightningInputChange = useCallback(async (value: string) => {
-    setLightningInput(value)
-    // Auto-create melt quote when a bolt11 invoice is detected
-    const trimmed = value.trim().toLowerCase()
-    if (trimmed.startsWith('lnbc') || trimmed.startsWith('lntb')) {
-      setIsLoading(true)
-      setError(null)
-      try {
-        const quote = await createMeltQuote(value.trim(), selectedMintId)
-        setMeltQuote(quote)
-        setCurrentView('melt-confirm')
-      } catch (e) {
-        setError((e as Error).message)
-      } finally {
-        setIsLoading(false)
+  const onLightningInputChange = useCallback(
+    async (value: string) => {
+      setLightningInput(value)
+      // Auto-create melt quote when a bolt11 invoice is detected
+      const trimmed = value.trim().toLowerCase()
+      if (trimmed.startsWith('lnbc') || trimmed.startsWith('lntb')) {
+        setIsLoading(true)
+        setError(null)
+        try {
+          const quote = await createMeltQuote(value.trim(), selectedMintId)
+          setMeltQuote(quote)
+          setCurrentView('melt-confirm')
+        } catch (e) {
+          setError((e as Error).message)
+        } finally {
+          setIsLoading(false)
+        }
       }
-    }
-  }, [selectedMintId])
+    },
+    [selectedMintId],
+  )
 
   const onConfirmMelt = useCallback(async () => {
     if (!meltQuote) return
+    const walletId = currentGuiWalletId()
     setMeltIsPaying(true)
     setError(null)
     try {
@@ -547,7 +527,7 @@ export function useDepositWithdrawState(
       }
 
       // Remove spent proofs, add change
-      await removeProofs(proofs.map((p) => p.secret))
+      await removeProofs(proofs)
       if (change.length > 0) {
         const changeStored: StoredProof[] = change.map((p) => ({
           ...p,
@@ -558,7 +538,7 @@ export function useDepositWithdrawState(
         await addProofs(changeStored)
       }
 
-      useActivityLogStore.getState().addActivity({
+      useActivityLogStore.getState().addActivityForWallet(walletId, {
         type: 'withdrawal',
         baseAsset: 'sat',
         amountSats: amountToNumber(meltQuote.amount),
@@ -580,72 +560,62 @@ export function useDepositWithdrawState(
     setCurrentView('scanner')
   }, [currentView])
 
-  const onScanResult = useCallback(async (data: string) => {
-    setError(null)
-    const trimmed = data.trim()
+  const onScanResult = useCallback(
+    async (data: string) => {
+      setError(null)
+      const trimmed = data.trim()
 
-    // Detect cashu token
-    if (trimmed.toLowerCase().startsWith('cashu')) {
-      setIsLoading(true)
-      try {
-        const received = await ingressReceiveCashuToken(trimmed, 'scan')
-        toastNewMintIfAdded(received)
-        const receivedUnit = requireCashuProofUnit(received.unit)
-        const receivedBaseAsset = normalizeMarketBaseAsset(receivedUnit)
-        const stored: StoredProof[] = received.proofs.map((p) => ({
-          ...p,
-          mintUrl: received.mintUrl,
-          baseAsset: receivedBaseAsset,
-          unit: receivedUnit,
-        }))
-        await addProofs(stored)
-        useActivityLogStore.getState().addActivity({
-          type: 'deposit',
-          baseAsset: receivedBaseAsset,
-          amountSats: received.amountSats,
-          status: 'completed',
-        })
-        setSuccessAmount(received.amountSats)
-        setSuccessUnit(receivedBaseAsset)
-        setCurrentView('success')
-      } catch (e) {
-        setError((e as Error).message)
-        setCurrentView(scanReturnViewRef.current)
-      } finally {
-        setIsLoading(false)
+      // Detect cashu token
+      if (trimmed.toLowerCase().startsWith('cashu')) {
+        setIsLoading(true)
+        try {
+          const received = await ingressReceiveCashuToken(trimmed, 'scan')
+          toastNewMintIfAdded(received)
+          const receivedUnit = requireCashuProofUnit(received.unit)
+          const receivedBaseAsset = normalizeMarketBaseAsset(receivedUnit)
+          setSuccessAmount(received.amountSats)
+          setSuccessUnit(receivedBaseAsset)
+          setCurrentView('success')
+        } catch (e) {
+          setError((e as Error).message)
+          setCurrentView(scanReturnViewRef.current)
+        } finally {
+          setIsLoading(false)
+        }
+        return
       }
-      return
-    }
 
-    // Detect bolt11 invoice
-    if (trimmed.toLowerCase().startsWith('lnbc') || trimmed.toLowerCase().startsWith('lntb')) {
-      setIsLoading(true)
-      try {
-        const quote = await createMeltQuote(trimmed, selectedMintId)
-        setMeltQuote(quote)
-        setLightningInput(trimmed)
-        setCurrentView('melt-confirm')
-      } catch (e) {
-        setError((e as Error).message)
-        setCurrentView(scanReturnViewRef.current)
-      } finally {
-        setIsLoading(false)
+      // Detect bolt11 invoice
+      if (trimmed.toLowerCase().startsWith('lnbc') || trimmed.toLowerCase().startsWith('lntb')) {
+        setIsLoading(true)
+        try {
+          const quote = await createMeltQuote(trimmed, selectedMintId)
+          setMeltQuote(quote)
+          setLightningInput(trimmed)
+          setCurrentView('melt-confirm')
+        } catch (e) {
+          setError((e as Error).message)
+          setCurrentView(scanReturnViewRef.current)
+        } finally {
+          setIsLoading(false)
+        }
+        return
       }
-      return
-    }
 
-    // Detect payment request
-    if (trimmed.toLowerCase().startsWith('creq')) {
-      // TODO: handle paying a scanned payment request
-      setError('Paying payment requests from scan is not yet supported')
+      // Detect payment request
+      if (trimmed.toLowerCase().startsWith('creq')) {
+        // TODO: handle paying a scanned payment request
+        setError('Paying payment requests from scan is not yet supported')
+        setCurrentView(scanReturnViewRef.current)
+        return
+      }
+
+      // Unknown format
+      setError('Unrecognized QR code format')
       setCurrentView(scanReturnViewRef.current)
-      return
-    }
-
-    // Unknown format
-    setError('Unrecognized QR code format')
-    setCurrentView(scanReturnViewRef.current)
-  }, [selectedMintId])
+    },
+    [selectedMintId],
+  )
 
   const onRequest = useCallback(async () => {
     setError(null)

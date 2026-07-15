@@ -116,7 +116,7 @@ import {
   loadGuiSwapSessionStateUnderLock,
   persistGuiSwapSessionUnderLock,
   recordGuiRecoveredProofOperationOutputsUnderLock,
-  recoverGuiDurableTradeSessionUnderLock,
+  recoverGuiDurableTradeSession,
   removeGuiSwapSessionUnderLock,
   withGuiSwapSessionOwnership,
   type GuiDurableTradeRecoveryInput,
@@ -158,17 +158,17 @@ import { storedConditionalProofsFromMintMetadata } from "@/lib/conditionalKeyset
 import { resolveGrossCtfInputPlanningKeyset } from "@/lib/ctfGrossInputPlanning";
 import { normalizeUrl } from "@/lib/url";
 import {
-  ctfGuiProofOperationStoreUnderLock,
-  externalClaimGuiProofOperationStoreUnderLock,
-  localLockGuiProofOperationStoreUnderLock,
-  regularSplitGuiProofOperationStoreUnderLock,
+  ctfGuiProofOperationStore,
+  externalClaimGuiProofOperationStore,
+  localLockGuiProofOperationStore,
+  regularSplitGuiProofOperationStore,
 } from "@/stores/gui-trade-proof-operation-store";
 import {
   guiTradeRefundDueAtMs,
   guiTradeRefundEvidenceUnderLock,
   isGuiTradeRefundLink,
-  prepareGuiTradeRefundUnderLock,
-  salvageGuiTradeRefundUnderLock,
+  prepareGuiTradeRefund,
+  salvageGuiTradeRefund,
 } from "@/stores/gui-trade-refund-recovery";
 import {
   releaseGuiCustodyAuthority,
@@ -184,14 +184,45 @@ type ExactGuiRecoveryOperation = {
   wallet: CashuWallet;
 };
 
-async function loadExactGuiRecoveryOperation(
-  lock: GuiWalletLockContext,
+async function loadExactGuiRecoveryOperationUnlocked(
+  input: OwnedGuiSwapRecovery,
   operation: {
     operationId: string;
     operationKey?: string;
     tradeId: string;
   },
 ): Promise<ExactGuiRecoveryOperation> {
+  const { entry } = await withGuiSwapSessionOwnership(
+    input.tradeId,
+    async (lock) => {
+      const exact = await loadExactGuiRecoveryOperationEntry(lock, operation);
+      return { entry: exact };
+    },
+    input.expectedWalletId,
+  );
+  const unit = entry.metadata.unit;
+  if (typeof unit !== "string" || !unit) {
+    throw new Error(
+      `Durable operation ${operation.operationId} has no exact Cashu unit`,
+    );
+  }
+  const wallet = await useWalletStore
+    .getState()
+    .getWalletForUnit(entry.mintUrl, unit, {
+      enableCtf: entry.kind === "conditional-keyset-swap",
+      expectedWalletId: input.expectedWalletId,
+    });
+  return { entry, wallet };
+}
+
+async function loadExactGuiRecoveryOperationEntry(
+  lock: GuiWalletLockContext,
+  operation: {
+    operationId: string;
+    operationKey?: string;
+    tradeId: string;
+  },
+): Promise<SwapProofOperationRecord> {
   if (!operation.operationKey) {
     throw new Error(
       `Durable operation ${operation.operationId} has no local key`,
@@ -208,22 +239,7 @@ async function loadExactGuiRecoveryOperation(
       `Durable operation ${operation.operationId} is not bound to its proof ledger row`,
     );
   }
-  const unit = entry.metadata.unit;
-  if (typeof unit !== "string" || !unit) {
-    throw new Error(
-      `Durable operation ${operation.operationId} has no exact Cashu unit`,
-    );
-  }
-  const wallet = await useWalletStore
-    .getState()
-    .getWalletForUnit(entry.mintUrl, unit, {
-      enableCtf: entry.kind === "conditional-keyset-swap",
-      expectedWalletId: walletIdFromHeldGuiWalletLock(lock),
-    });
-  return {
-    entry: entry as SwapProofOperationRecord,
-    wallet,
-  };
+  return entry as SwapProofOperationRecord;
 }
 
 async function applyExactGuiRecoveryOutputs(
@@ -240,6 +256,24 @@ async function applyExactGuiRecoveryOutputs(
   );
 }
 
+function applyExactGuiRecoveryOutputsUnlocked(
+  input: OwnedGuiSwapRecovery,
+  operation: { operationId: string; operationKey?: string },
+  resultProofs: Record<string, Proof[]>,
+): Promise<void> {
+  return withGuiSwapSessionOwnership(
+    input.tradeId,
+    (lock) =>
+      applyExactGuiRecoveryOutputs(
+        lock,
+        input.tradeId,
+        operation,
+        resultProofs,
+      ),
+    input.expectedWalletId,
+  );
+}
+
 async function recoverGuiSwapBeforeResume(
   tradeId: string,
   joinTrade: (tradeId: string) => Promise<void>,
@@ -248,20 +282,14 @@ async function recoverGuiSwapBeforeResume(
   wakeRecovery: () => void,
 ): Promise<"continue" | "blocked" | "retained"> {
   const transport = createGuiRecoveryTransportPlan();
-  const disposition = await withGuiSwapSessionOwnership(
+  const disposition = await recoverOwnedGuiSwap({
     tradeId,
-    async (lock) =>
-      recoverOwnedGuiSwap({
-        lock,
-        tradeId,
-        expectedWalletId,
-        joinTrade,
-        sendSwapMessage,
-        wakeRecovery,
-        transport,
-      }),
     expectedWalletId,
-  );
+    joinTrade,
+    sendSwapMessage,
+    wakeRecovery,
+    transport,
+  });
   try {
     return (await deliverGuiRecoveryTransportPlan(
       transport,
@@ -286,7 +314,6 @@ function createGuiRecoveryTransportPlan(): GuiRecoveryTransportPlan {
 }
 
 interface OwnedGuiSwapRecovery {
-  lock: GuiWalletLockContext;
   tradeId: string;
   expectedWalletId: string;
   joinTrade: (tradeId: string) => Promise<void>;
@@ -303,7 +330,7 @@ async function recoverOwnedGuiSwap(
   if (firstDisposition !== "ready") {
     return retainOrBlockGuiRecovery(input, firstDisposition);
   }
-  const exact = await loadExactGuiSwapForEffect(input.lock, input.tradeId);
+  const exact = await loadExactGuiSwapForRecovery(input);
   if (!exact) return "blocked";
   if (exact.step !== "awaiting-refund") {
     clearGuiTradeRecoveryWakeup(input.expectedWalletId, input.tradeId);
@@ -317,10 +344,10 @@ async function recoverOwnedGuiRefund(
   input: OwnedGuiSwapRecovery,
   swap: ActiveSwap,
 ): Promise<"blocked" | "retained"> {
-  const preparation = await prepareGuiTradeRefundUnderLock(
-    input.lock,
+  const preparation = await prepareGuiTradeRefund(
     swap,
     Date.now(),
+    input.expectedWalletId,
   );
   if (preparation.kind === "not-due") {
     scheduleGuiRefundWakeup(input, preparation.retryAtMs - Date.now());
@@ -336,7 +363,7 @@ async function recoverOwnedGuiRefund(
   const recovered = await runGuiDurableRecovery(input);
   const disposition = requireGuiRecoveryDisposition(recovered, input.tradeId);
   if (disposition === "ready") {
-    const exact = await loadExactGuiSwapForEffect(input.lock, input.tradeId);
+    const exact = await loadExactGuiSwapForRecovery(input);
     if (!exact) return "blocked";
     await finishRecoveredGuiRefund(input, exact);
     return "retained";
@@ -352,11 +379,16 @@ async function finishRecoveredGuiRefund(
   input: OwnedGuiSwapRecovery,
   swap: ActiveSwap,
 ): Promise<void> {
-  await commitGuiSwapCandidate(input.lock, {
-    ...swap,
-    step: "Failed",
-    inFlightSteps: {},
-  });
+  await withGuiSwapSessionOwnership(
+    input.tradeId,
+    (lock) =>
+      commitGuiSwapCandidate(lock, {
+        ...swap,
+        step: "Failed",
+        inFlightSteps: {},
+      }),
+    input.expectedWalletId,
+  );
   clearGuiTradeRecoveryWakeup(input.expectedWalletId, input.tradeId);
 }
 
@@ -373,10 +405,10 @@ function scheduleGuiRefundWakeup(
 }
 
 async function runGuiDurableRecovery(input: OwnedGuiSwapRecovery) {
-  return recoverGuiDurableTradeSessionUnderLock(
-    input.lock,
+  return recoverGuiDurableTradeSession(
     input.tradeId,
     createGuiRecoveryInput(input),
+    input.expectedWalletId,
   );
 }
 
@@ -411,7 +443,7 @@ async function retainOrBlockGuiRecovery(
   disposition: GuiRecoveryDisposition,
 ): Promise<"blocked" | "retained"> {
   if (disposition === "retained") {
-    const exact = await loadExactGuiSwapForEffect(input.lock, input.tradeId);
+    const exact = await loadExactGuiSwapForRecovery(input);
     if (exact?.step === "awaiting-refund") {
       scheduleGuiRefundWakeup(
         input,
@@ -442,50 +474,41 @@ function createGuiRecoveryMintPort(
   return {
     inspect: (operation) => inspectGuiRecoveryOperation(input, operation),
     restoreExactPersistedOutputs: async (operation) => {
-      const { entry } = await loadExactGuiRecoveryOperation(
-        input.lock,
+      const { entry } = await loadExactGuiRecoveryOperationUnlocked(
+        input,
         operation,
       );
       const result = await restoreExactPreparedProofOperation(entry);
-      await applyExactGuiRecoveryOutputs(
-        input.lock,
-        input.tradeId,
-        operation,
-        result,
-      );
+      await applyExactGuiRecoveryOutputsUnlocked(input, operation, result);
     },
     resumeExactPreparedOperation: async (operation) => {
-      const { entry, wallet } = await loadExactGuiRecoveryOperation(
-        input.lock,
+      const { entry, wallet } = await loadExactGuiRecoveryOperationUnlocked(
+        input,
         operation,
       );
       const result = await resumeExactPreparedProofOperation(wallet, entry);
-      await applyExactGuiRecoveryOutputs(
-        input.lock,
-        input.tradeId,
-        operation,
-        result,
-      );
+      await applyExactGuiRecoveryOutputsUnlocked(input, operation, result);
     },
     salvageExpiredRefund: async (operation) => {
       const exact = await requireExactGuiSwapForRecovery(input);
-      const result = await salvageGuiTradeRefundUnderLock(
-        input.lock,
+      const result = await salvageGuiTradeRefund(
         exact,
         operation,
+        input.expectedWalletId,
       );
-      await applyExactGuiRecoveryOutputs(
-        input.lock,
-        input.tradeId,
-        operation,
-        result,
-      );
+      await applyExactGuiRecoveryOutputsUnlocked(input, operation, result);
     },
     getRefundSalvageEvidence: async (operation) => {
-      const exact = await loadExactGuiSwapForEffect(input.lock, input.tradeId);
-      return exact
-        ? guiTradeRefundEvidenceUnderLock(input.lock, exact, operation)
-        : null;
+      return withGuiSwapSessionOwnership(
+        input.tradeId,
+        async (lock) => {
+          const exact = await loadExactGuiSwapForEffect(lock, input.tradeId);
+          return exact
+            ? guiTradeRefundEvidenceUnderLock(lock, exact, operation)
+            : null;
+        },
+        input.expectedWalletId,
+      );
     },
   };
 }
@@ -503,8 +526,8 @@ async function inspectGuiRecoveryOperation(
           : "engine-terminal",
     };
   }
-  const { entry, wallet } = await loadExactGuiRecoveryOperation(
-    input.lock,
+  const { entry, wallet } = await loadExactGuiRecoveryOperationUnlocked(
+    input,
     operation,
   );
   const state = await inspectExactPreparedProofOperation(wallet, entry);
@@ -583,9 +606,20 @@ async function requireExactGuiSwapForRecovery(
   input: OwnedGuiSwapRecovery,
   tradeId = input.tradeId,
 ): Promise<ActiveSwap> {
-  const exact = await loadExactGuiSwapForEffect(input.lock, tradeId);
+  const exact = await loadExactGuiSwapForRecovery(input, tradeId);
   if (!exact) throw new Error("GUI wallet changed before durable recovery");
   return exact;
+}
+
+function loadExactGuiSwapForRecovery(
+  input: OwnedGuiSwapRecovery,
+  tradeId = input.tradeId,
+): Promise<ActiveSwap | null> {
+  return withGuiSwapSessionOwnership(
+    tradeId,
+    (lock) => loadExactGuiSwapForEffect(lock, tradeId),
+    input.expectedWalletId,
+  );
 }
 
 async function hashGuiRecoveryCiphertext(ciphertext: string): Promise<string> {
@@ -645,13 +679,14 @@ async function prepareRegularCollateralForCtfSplit(input: {
   baseAsset?: string | null;
   reservationId: string;
   operationId: string;
-  lock: GuiWalletLockContext;
+  walletId: string;
   swap: ActiveSwap;
 }): Promise<Proof[]> {
   const baseAsset = normalizeMarketBaseAsset(input.baseAsset);
-  const existingRegularSplit = await getProofOperationUnderLock(
-    input.lock,
-    input.operationId,
+  const existingRegularSplit = await withGuiSwapSessionOwnership(
+    input.swap.tradeId,
+    (lock) => getProofOperationUnderLock(lock, input.operationId),
+    input.walletId,
   );
   if (existingRegularSplit) {
     const unit = existingRegularSplit.metadata.unit;
@@ -677,7 +712,7 @@ async function prepareRegularCollateralForCtfSplit(input: {
         : await useWalletStore
             .getState()
             .getWalletForUnit(input.mintUrl, unit, {
-              expectedWalletId: walletIdFromHeldGuiWalletLock(input.lock),
+              expectedWalletId: input.walletId,
             });
     const regularSplit = await splitRegularProofsWithOperation({
       mintUrl: input.mintUrl,
@@ -689,8 +724,8 @@ async function prepareRegularCollateralForCtfSplit(input: {
       amountSubunits: amount as number,
       resumeInputAuthority: "persisted-operation",
       resultDispositions: regularSplitResultDispositions(input.reservationId),
-      proofOperationStore: regularSplitGuiProofOperationStoreUnderLock(
-        input.lock,
+      proofOperationStore: regularSplitGuiProofOperationStore(
+        input.walletId,
         input.swap,
       ),
     });
@@ -719,7 +754,7 @@ async function prepareRegularCollateralForCtfSplit(input: {
   const wallet = await useWalletStore
     .getState()
     .getWallet(input.mintUrl, baseAsset, {
-      expectedWalletId: walletIdFromHeldGuiWalletLock(input.lock),
+      expectedWalletId: input.walletId,
     });
   if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
     throw new Error(
@@ -759,8 +794,8 @@ async function prepareRegularCollateralForCtfSplit(input: {
     proofs: selected.send,
     amountSats: grossCtfInputSats,
     resultDispositions: regularSplitResultDispositions(input.reservationId),
-    proofOperationStore: regularSplitGuiProofOperationStoreUnderLock(
-      input.lock,
+    proofOperationStore: regularSplitGuiProofOperationStore(
+      input.walletId,
       input.swap,
     ),
   });
@@ -1804,11 +1839,7 @@ async function runSellerSendOpening(
   wakeRecovery: () => void,
 ): Promise<void> {
   const walletId = currentGuiWalletId();
-  const shouldDeliver = await withGuiSwapSessionOwnership(
-    tradeId,
-    (lock) => prepareAndJournalSellerOpeningUnderLock(tradeId, lock),
-    walletId,
-  );
+  const shouldDeliver = await prepareAndJournalSellerOpening(tradeId, walletId);
   if (!shouldDeliver) return;
   try {
     const adaptorDelivery = await deliverPersistedGuiSwapCipher(
@@ -1850,25 +1881,33 @@ async function runSellerSendOpening(
   }
 }
 
-async function prepareAndJournalSellerOpeningUnderLock(
+async function prepareAndJournalSellerOpening(
   tradeId: string,
-  lock: GuiWalletLockContext,
+  walletId: string,
 ): Promise<boolean> {
   try {
-    const prepared = await prepareSellerOpeningUnderLock(lock, tradeId);
-    if (!prepared) return false;
-    await journalSellerOpening(lock, tradeId, prepared);
-    return true;
+    const authority = await withGuiSwapSessionOwnership(
+      tradeId,
+      (lock) => prepareSellerOpeningAuthorityUnderLock(lock, tradeId),
+      walletId,
+    );
+    if (!authority) return false;
+    const prepared = await prepareSellerOpening(authority, walletId);
+    return withGuiSwapSessionOwnership(
+      tradeId,
+      (lock) => journalSellerOpening(lock, tradeId, prepared),
+      walletId,
+    );
   } catch (err) {
     failSwap(tradeId, err);
     return false;
   }
 }
 
-async function prepareSellerOpeningUnderLock(
+async function prepareSellerOpeningAuthorityUnderLock(
   lock: GuiWalletLockContext,
   tradeId: string,
-): Promise<{ opening: SellerOpening; mintUrl: string } | null> {
+): Promise<ActiveSwap | null> {
   const swap = await loadExactGuiSwapForEffect(lock, tradeId);
   if (!swap || swap.role !== "seller") return null;
   if (
@@ -1878,12 +1917,19 @@ async function prepareSellerOpeningUnderLock(
   ) {
     return null;
   }
-  const exactMintUrl = requireDurableGuiSwapMint(swap);
   const driving =
     swap.step === "driving"
       ? swap
       : await commitGuiSwapCandidate(lock, { ...swap, step: "driving" });
   const preparedSwap = await ensureDurableSellerAdaptor(lock, driving);
+  return preparedSwap;
+}
+
+async function prepareSellerOpening(
+  preparedSwap: ActiveSwap,
+  walletId: string,
+): Promise<{ opening: SellerOpening; mintUrl: string }> {
+  const exactMintUrl = requireDurableGuiSwapMint(preparedSwap);
   const ctx = buildSwapContext(preparedSwap, exactMintUrl);
   const adaptorPoint = preparedSwap.sellerState?.adaptorPoint;
   if (!ctx || !adaptorPoint) {
@@ -1897,14 +1943,14 @@ async function prepareSellerOpeningUnderLock(
         exactMintUrl,
         split,
         adaptorPoint,
-        lock,
+        walletId,
       )
     : await prepareDirectSellerOpening(
         preparedSwap,
         ctx,
         exactMintUrl,
         adaptorPoint,
-        lock,
+        walletId,
       );
   return { opening, mintUrl: exactMintUrl };
 }
@@ -1913,10 +1959,17 @@ async function journalSellerOpening(
   lock: GuiWalletLockContext,
   tradeId: string,
   prepared: { opening: SellerOpening; mintUrl: string },
-): Promise<void> {
+): Promise<boolean> {
   const { opening } = prepared;
   const exact = await loadExactGuiSwapForEffect(lock, tradeId);
-  if (!exact?.sellerState) return;
+  if (
+    !exact?.sellerState ||
+    exact.step === "awaiting-refund" ||
+    exact.step === "completed" ||
+    exact.step === "Failed"
+  ) {
+    return false;
+  }
   await commitGuiSwapCandidate(lock, {
     ...exact,
     sellerState: {
@@ -1926,6 +1979,7 @@ async function journalSellerOpening(
       lockedProofsCipher: opening.lockedProofsCipher,
     },
   });
+  return true;
 }
 
 async function ensureDurableSellerAdaptor(
@@ -1966,13 +2020,17 @@ async function prepareDirectSellerOpening(
   ctx: SwapCtx,
   mintUrl: string,
   adaptorPoint: NonNullable<ActiveSwap["sellerState"]>["adaptorPoint"],
-  lock: GuiWalletLockContext,
+  walletId: string,
 ): Promise<SellerOpening> {
   const operationId = proofOperationId(
     swap.tradeId,
     "seller-complementary-lock",
   );
-  const existingOperation = await getProofOperationUnderLock(lock, operationId);
+  const existingOperation = await withGuiSwapSessionOwnership(
+    swap.tradeId,
+    (lock) => getProofOperationUnderLock(lock, operationId),
+    walletId,
+  );
   const proofs =
     existingOperation?.kind === "conditional-keyset-swap"
       ? existingOperation.inputs
@@ -1984,7 +2042,7 @@ async function prepareDirectSellerOpening(
           swap.marketId,
           swap.baseAsset,
           operationId,
-          lock,
+          walletId,
         );
   const amountSats =
     swap.outcomeFaceAmountSubunits ??
@@ -1992,7 +2050,7 @@ async function prepareDirectSellerOpening(
     proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
   const locked = await sellerLockOutcomeProofs(ctx, proofs, amountSats, {
     operationId,
-    proofOperationStore: localLockGuiProofOperationStoreUnderLock(lock, swap),
+    proofOperationStore: localLockGuiProofOperationStore(walletId, swap),
   });
   return sellerPreparePersistedPrelockedSwap(
     ctx,
@@ -2007,7 +2065,7 @@ async function prepareMintSellerOpening(
   mintUrl: string,
   split: MintSellerSplit,
   adaptorPoint: NonNullable<ActiveSwap["sellerState"]>["adaptorPoint"],
-  lock: GuiWalletLockContext,
+  walletId: string,
 ): Promise<SellerOpening> {
   const amountSats =
     swap.outcomeFaceAmountSubunits ?? swap.outcomeFaceAmountSats;
@@ -2021,7 +2079,8 @@ async function prepareMintSellerOpening(
 
   const operationId = proofOperationId(swap.tradeId, "seller-mint-ctf-split");
   const selectedOutcomeGroups = await selectOutcomeProofGroups(
-    lock,
+    walletId,
+    swap.tradeId,
     mintUrl,
     split.conditionId,
     split.lockOutcomeSetId,
@@ -2037,7 +2096,7 @@ async function prepareMintSellerOpening(
       groups: selectedOutcomeGroups,
       amountSats,
       operationStep: "seller-inventory-lock",
-      lock,
+      walletId,
     });
     return sellerPreparePersistedPrelockedSwap(
       ctx,
@@ -2054,19 +2113,28 @@ async function prepareMintSellerOpening(
     lockOutcomeSetId: split.lockOutcomeSetId,
     keepOutcomeSetId: split.keepOutcomeSetId,
   });
-  const existingOperation = await getProofOperationUnderLock(lock, operationId);
+  const existingOperation = await withGuiSwapSessionOwnership(
+    swap.tradeId,
+    (lock) => getProofOperationUnderLock(lock, operationId),
+    walletId,
+  );
   const collateralProofs = existingOperation
     ? existingOperation.inputs
     : await prepareRegularCollateralForCtfSplit({
         mintUrl,
-        available: await getUnitProofsUnderLock(lock, mintUrl, {
-          unit: defaultCollateralUnit(swap.baseAsset),
-        }),
+        available: await withGuiSwapSessionOwnership(
+          swap.tradeId,
+          (lock) =>
+            getUnitProofsUnderLock(lock, mintUrl, {
+              unit: defaultCollateralUnit(swap.baseAsset),
+            }),
+          walletId,
+        ),
         faceAmountSats: splitOutputAmountSats,
         baseAsset: swap.baseAsset,
         reservationId: swap.tradeId,
         operationId: proofOperationId(swap.tradeId, "seller-regular-ctf-input"),
-        lock,
+        walletId,
         swap,
       });
 
@@ -2086,7 +2154,7 @@ async function prepareMintSellerOpening(
       sigFlag: "SIG_INPUTS",
     },
     operationId,
-    proofOperationStore: ctfGuiProofOperationStoreUnderLock(lock, swap),
+    proofOperationStore: ctfGuiProofOperationStore(walletId, swap),
   });
 
   return sellerPreparePersistedPrelockedSwap(
@@ -2097,19 +2165,21 @@ async function prepareMintSellerOpening(
 }
 
 async function selectOutcomeProofs(
-  lock: GuiWalletLockContext,
+  walletId: string,
+  tradeId: string,
   mintUrl: string,
   conditionId: string,
   outcomeSetId: string,
   amountSats: number,
   baseAsset?: string | null,
 ): Promise<StoredProof[] | null> {
-  const available = await getOutcomeProofsUnderLock(
-    lock,
-    mintUrl,
-    conditionId,
-    outcomeSetId,
-    { baseAsset },
+  const available = await withGuiSwapSessionOwnership(
+    tradeId,
+    (lock) =>
+      getOutcomeProofsUnderLock(lock, mintUrl, conditionId, outcomeSetId, {
+        baseAsset,
+      }),
+    walletId,
   );
   return takeProofsForLock(
     available,
@@ -2119,7 +2189,8 @@ async function selectOutcomeProofs(
 }
 
 async function selectOutcomeProofGroups(
-  lock: GuiWalletLockContext,
+  walletId: string,
+  tradeId: string,
   mintUrl: string,
   conditionId: string,
   outcomeSetId: string,
@@ -2127,7 +2198,8 @@ async function selectOutcomeProofGroups(
   baseAsset?: string | null,
 ): Promise<SelectedOutcomeProofGroup[] | null> {
   const exact = await selectOutcomeProofs(
-    lock,
+    walletId,
+    tradeId,
     mintUrl,
     conditionId,
     outcomeSetId,
@@ -2142,7 +2214,8 @@ async function selectOutcomeProofGroups(
   const groups: SelectedOutcomeProofGroup[] = [];
   for (const primitiveOutcomeSetId of primitiveOutcomeSetIds) {
     const proofs = await selectOutcomeProofs(
-      lock,
+      walletId,
+      tradeId,
       mintUrl,
       conditionId,
       primitiveOutcomeSetId,
@@ -2163,7 +2236,7 @@ async function lockSelectedOutcomeProofGroups(input: {
   groups: SelectedOutcomeProofGroup[];
   amountSats: number;
   operationStep: string;
-  lock: GuiWalletLockContext;
+  walletId: string;
 }): Promise<{
   spentProofs: Proof[];
   lockedProofs: Proof[];
@@ -2187,8 +2260,8 @@ async function lockSelectedOutcomeProofGroups(input: {
               ? input.operationStep
               : `${input.operationStep}/${encodeURIComponent(group.outcomeSetId)}`,
           ),
-          proofOperationStore: localLockGuiProofOperationStoreUnderLock(
-            input.lock,
+          proofOperationStore: localLockGuiProofOperationStore(
+            input.walletId,
             input.swap,
           ),
         },
@@ -2212,7 +2285,7 @@ async function lockSelectedOutcomeProofGroups(input: {
       ];
       if (combinedLockedProofs.length > 0) {
         await persistPartialLockParts({
-          lock: input.lock,
+          walletId: input.walletId,
           swap: input.swap,
           mintUrl: input.mintUrl,
           conditionId: input.conditionId,
@@ -2409,11 +2482,7 @@ async function runBuyerRespond(
   wakeRecovery: () => void,
 ): Promise<void> {
   const walletId = currentGuiWalletId();
-  const shouldDeliver = await withGuiSwapSessionOwnership(
-    tradeId,
-    (lock) => prepareAndJournalBuyerResponseUnderLock(tradeId, lock),
-    walletId,
-  );
+  const shouldDeliver = await prepareAndJournalBuyerResponse(tradeId, walletId);
   if (!shouldDeliver) return;
   try {
     const result = await deliverPersistedGuiSwapCipher(
@@ -2431,24 +2500,52 @@ async function runBuyerRespond(
   }
 }
 
-async function prepareAndJournalBuyerResponseUnderLock(
+async function prepareAndJournalBuyerResponse(
   tradeId: string,
-  lock: GuiWalletLockContext,
+  walletId: string,
 ): Promise<boolean> {
   let buyerLockOperationId: string | null = null;
   try {
-    const swap = await loadExactGuiSwapForEffect(lock, tradeId);
+    const swap = await withGuiSwapSessionOwnership(
+      tradeId,
+      async (lock) => {
+        const exact = await loadExactGuiSwapForEffect(lock, tradeId);
+        if (!exact || exact.role !== "buyer") return null;
+        if (
+          exact.step === "awaiting-confirmation" ||
+          exact.step === "awaiting-refund" ||
+          exact.step === "completed" ||
+          exact.step === "Failed"
+        ) {
+          return null;
+        }
+        if (
+          !exact.messages.adaptorPoint ||
+          !exact.messages.lockedProofsSeller
+        ) {
+          return null;
+        }
+        const replayCipher =
+          exact.messages.lockedProofsBuyer ??
+          exact.buyerState?.lockedProofsCipher;
+        if (replayCipher && exact.buyerState) return exact;
+        if (exact.buyerState) {
+          throw new Error(
+            "Buyer response already prepared but ciphertext is missing",
+          );
+        }
+        const driving =
+          exact.step === "driving"
+            ? exact
+            : await commitGuiSwapCandidate(lock, {
+                ...exact,
+                step: "driving",
+              });
+        return ensureDurableBuyerPreparation(lock, driving);
+      },
+      walletId,
+    );
     if (!swap || swap.role !== "buyer") return false;
-    if (
-      swap.step === "awaiting-confirmation" ||
-      swap.step === "awaiting-refund" ||
-      swap.step === "completed" ||
-      swap.step === "Failed"
-    ) {
-      return false;
-    }
-    if (!swap.messages.adaptorPoint || !swap.messages.lockedProofsSeller)
-      return false;
     const replayCipher =
       swap.messages.lockedProofsBuyer ?? swap.buyerState?.lockedProofsCipher;
     if (replayCipher && swap.buyerState) {
@@ -2461,17 +2558,33 @@ async function prepareAndJournalBuyerResponseUnderLock(
     }
     const operationId = proofOperationId(tradeId, "buyer-lock");
     buyerLockOperationId = operationId;
-    const prepared = await prepareBuyerResponseUnderLock(
-      lock,
-      swap,
-      operationId,
-    );
+    const prepared = await prepareBuyerResponse(swap, operationId, walletId);
     if (!prepared) return false;
-    await journalBuyerResponse(lock, tradeId, prepared);
-    return true;
+    return withGuiSwapSessionOwnership(
+      tradeId,
+      async (lock) => {
+        const current = await loadExactGuiSwapForEffect(lock, tradeId);
+        if (
+          !current ||
+          current.step === "awaiting-refund" ||
+          current.step === "completed" ||
+          current.step === "Failed"
+        ) {
+          return false;
+        }
+        await journalBuyerResponse(lock, tradeId, prepared);
+        return true;
+      },
+      walletId,
+    );
   } catch (err) {
     if (buyerLockOperationId) {
-      await releaseBuyerReservationBeforeMint(buyerLockOperationId, lock);
+      await withGuiSwapSessionOwnership(
+        tradeId,
+        (lock) =>
+          releaseBuyerReservationBeforeMint(buyerLockOperationId!, lock),
+        walletId,
+      );
     }
     failSwap(tradeId, err);
     return false;
@@ -2480,21 +2593,20 @@ async function prepareAndJournalBuyerResponseUnderLock(
 
 type BuyerResponse = Awaited<ReturnType<typeof buyerPrepareSwap>>;
 
-async function prepareBuyerResponseUnderLock(
-  lock: GuiWalletLockContext,
+async function prepareBuyerResponse(
   swap: ActiveSwap,
   operationId: string,
+  walletId: string,
 ): Promise<{ response: BuyerResponse; mintUrl: string } | null> {
   const amountSats = positiveBuyerAmount(swap);
   const exactMintUrl = requireDurableGuiSwapMint(swap);
-  const driving =
-    swap.step === "driving"
-      ? swap
-      : await commitGuiSwapCandidate(lock, { ...swap, step: "driving" });
-  const preparedSwap = await ensureDurableBuyerPreparation(lock, driving);
-  const ctx = buildSwapContext(preparedSwap, exactMintUrl);
+  const ctx = buildSwapContext(swap, exactMintUrl);
   if (!ctx) throw new Error("Durable buyer context is unavailable");
-  const existing = await getProofOperationUnderLock(lock, operationId);
+  const existing = await withGuiSwapSessionOwnership(
+    swap.tradeId,
+    (lock) => getProofOperationUnderLock(lock, operationId),
+    walletId,
+  );
   const proofs =
     existing?.kind === "swap-lock"
       ? existing.inputs
@@ -2502,23 +2614,21 @@ async function prepareBuyerResponseUnderLock(
           exactMintUrl,
           amountSats,
           undefined,
-          preparedSwap.baseAsset,
+          swap.baseAsset,
           operationId,
-          lock,
+          walletId,
+          swap.tradeId,
         );
   const response = await buyerPrepareSwap(
     ctx,
-    preparedSwap.messages.adaptorPoint!,
-    preparedSwap.messages.lockedProofsSeller!,
+    swap.messages.adaptorPoint!,
+    swap.messages.lockedProofsSeller!,
     proofs,
     amountSats,
     {
       operationId,
-      proofOperationStore: localLockGuiProofOperationStoreUnderLock(
-        lock,
-        preparedSwap,
-      ),
-      lockedProofsCipherIv: preparedSwap.buyerPreparation!.lockedProofsCipherIv,
+      proofOperationStore: localLockGuiProofOperationStore(walletId, swap),
+      lockedProofsCipherIv: swap.buyerPreparation!.lockedProofsCipherIv,
     },
   );
   return { response, mintUrl: exactMintUrl };
@@ -3263,9 +3373,8 @@ async function runSettlementClaim(
   wakeRecovery: () => void,
 ): Promise<void> {
   const walletId = currentGuiWalletId();
-  const deliveryPending = await withGuiSwapSessionOwnership(
+  const deliveryPending = await runSettlementClaimWithShortLocks(
     tradeId,
-    (lock) => runSettlementClaimOwned(tradeId, lock),
     walletId,
   );
   if (!deliveryPending) return;
@@ -3284,13 +3393,17 @@ async function runSettlementClaim(
   }
 }
 
-async function runSettlementClaimOwned(
+async function runSettlementClaimWithShortLocks(
   tradeId: string,
-  lock: GuiWalletLockContext,
+  walletId: string,
 ): Promise<boolean> {
   let deliveryPending = false;
   try {
-    const swap = await loadExactGuiSwapForEffect(lock, tradeId);
+    const swap = await withGuiSwapSessionOwnership(
+      tradeId,
+      (lock) => loadExactGuiSwapForEffect(lock, tradeId),
+      walletId,
+    );
     if (!swap || !swap.role) return false;
     if (
       swap.step === "awaiting-confirmation" ||
@@ -3304,18 +3417,30 @@ async function runSettlementClaimOwned(
     const mintUrl = requireDurableGuiSwapMint(swap);
     const ctx = buildSwapContext(swap, mintUrl);
     if (!ctx) return false;
-    if (swap.role === "seller") await runSellerClaim(swap, ctx, lock);
-    else await runBuyerClaim(swap, ctx, lock);
-    const exact = await loadGuiSwapSessionStateUnderLock(lock, tradeId);
-    if (!exact)
-      throw new Error("Claim completed without a durable GUI session");
-    await commitGuiSwapCandidate(lock, {
-      ...exact,
-      step: "awaiting-confirmation",
-      settlementCompleteDelivery: "pending",
-    });
-    deliveryPending = true;
-    return true;
+    if (swap.role === "seller") await runSellerClaim(swap, ctx, walletId);
+    else await runBuyerClaim(swap, ctx, walletId);
+    return withGuiSwapSessionOwnership(
+      tradeId,
+      async (lock) => {
+        const exact = await loadGuiSwapSessionStateUnderLock(lock, tradeId);
+        if (
+          !exact ||
+          exact.step === "awaiting-refund" ||
+          exact.step === "completed" ||
+          exact.step === "Failed"
+        ) {
+          return false;
+        }
+        await commitGuiSwapCandidate(lock, {
+          ...exact,
+          step: "awaiting-confirmation",
+          settlementCompleteDelivery: "pending",
+        });
+        deliveryPending = true;
+        return true;
+      },
+      walletId,
+    );
   } catch (err) {
     if (!deliveryPending) failSwap(tradeId, err);
     return deliveryPending;
@@ -3385,7 +3510,7 @@ async function deliverSettlementComplete(
 async function runSellerClaim(
   swap: ActiveSwap,
   ctx: SwapCtx,
-  lock: GuiWalletLockContext,
+  walletId: string,
 ): Promise<Proof[]> {
   if (!swap.sellerState) throw new Error("Missing seller adaptor state");
   if (!swap.messages.lockedProofsBuyer)
@@ -3396,10 +3521,7 @@ async function runSellerClaim(
     swap.messages.lockedProofsBuyer,
     {
       operationId: proofOperationId(swap.tradeId, "seller-claim"),
-      proofOperationStore: externalClaimGuiProofOperationStoreUnderLock(
-        lock,
-        swap,
-      ),
+      proofOperationStore: externalClaimGuiProofOperationStore(walletId, swap),
     },
   );
 }
@@ -3407,7 +3529,7 @@ async function runSellerClaim(
 async function runBuyerClaim(
   swap: ActiveSwap,
   ctx: SwapCtx,
-  lock: GuiWalletLockContext,
+  walletId: string,
 ): Promise<Proof[]> {
   if (!swap.buyerState) throw new Error("Missing buyer pre-sig state");
   if (!swap.messages.lockedProofsSeller)
@@ -3424,10 +3546,7 @@ async function runBuyerClaim(
     swap.buyerState.sellerPreSigsHex,
     {
       operationId: proofOperationId(swap.tradeId, "buyer-claim"),
-      proofOperationStore: externalClaimGuiProofOperationStoreUnderLock(
-        lock,
-        swap,
-      ),
+      proofOperationStore: externalClaimGuiProofOperationStore(walletId, swap),
     },
   );
 }
@@ -3452,23 +3571,29 @@ async function loadProofsForLock(
   sellerMarketId: string | undefined,
   baseAsset: string | null | undefined,
   reservationId: string | undefined,
-  lock: GuiWalletLockContext,
+  walletId: string,
+  tradeId: string = reservationId ?? "",
 ): Promise<Proof[]> {
   const outcome = sellerMarketId
     ? outcomeMetadataForMarket(sellerMarketId)
     : null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const proofs = outcome
-      ? await getOutcomeProofsUnderLock(
-          lock,
-          mintUrl,
-          outcome.conditionId,
-          outcome.outcomeCollection,
-          { baseAsset },
-        )
-      : await getUnitProofsUnderLock(lock, mintUrl, {
-          unit: defaultCollateralUnit(baseAsset),
-        });
+    const proofs = await withGuiSwapSessionOwnership(
+      tradeId,
+      (lock) =>
+        outcome
+          ? getOutcomeProofsUnderLock(
+              lock,
+              mintUrl,
+              outcome.conditionId,
+              outcome.outcomeCollection,
+              { baseAsset },
+            )
+          : getUnitProofsUnderLock(lock, mintUrl, {
+              unit: defaultCollateralUnit(baseAsset),
+            }),
+      walletId,
+    );
     if (proofs.length === 0) {
       throw new Error(
         outcome
@@ -3493,7 +3618,11 @@ async function loadProofsForLock(
     }
     if (
       !reservationId ||
-      (await tryReserveProofsUnderLock(lock, selected, reservationId))
+      (await withGuiSwapSessionOwnership(
+        tradeId,
+        (lock) => tryReserveProofsUnderLock(lock, selected, reservationId),
+        walletId,
+      ))
     ) {
       return selected;
     }
@@ -3503,7 +3632,7 @@ async function loadProofsForLock(
 }
 
 async function persistPartialLockParts(input: {
-  lock: GuiWalletLockContext;
+  walletId: string;
   swap: ActiveSwap;
   mintUrl: string;
   conditionId: string;
@@ -3544,22 +3673,27 @@ async function persistPartialLockParts(input: {
     };
   }
 
-  await commitGuiPartialLockFailureUnderLock(input.lock, {
-    spentProofs: input.spentProofs,
-    replacementProofs,
-    record: {
-      kind: "PartialLockHeld",
-      tradeId: input.swap.tradeId,
-      orderId: input.swap.orderId,
-      mintUrl: input.mintUrl,
-      refundLocktime: input.refundLocktime,
-      affectedKeysets,
-      detail: input.detail,
-      outcomeByKeyset,
-      lockedProofs: input.lockedProofs,
-      createdAt: Date.now(),
-    },
-  });
+  await withGuiSwapSessionOwnership(
+    input.swap.tradeId,
+    (lock) =>
+      commitGuiPartialLockFailureUnderLock(lock, {
+        spentProofs: input.spentProofs,
+        replacementProofs,
+        record: {
+          kind: "PartialLockHeld",
+          tradeId: input.swap.tradeId,
+          orderId: input.swap.orderId,
+          mintUrl: input.mintUrl,
+          refundLocktime: input.refundLocktime,
+          affectedKeysets,
+          detail: input.detail,
+          outcomeByKeyset,
+          lockedProofs: input.lockedProofs,
+          createdAt: Date.now(),
+        },
+      }),
+    input.walletId,
+  );
 }
 
 function partialLockFromError(err: unknown): {

@@ -13,6 +13,9 @@ const mintProofsForUnit = vi.fn()
 const decodeToken = vi.fn()
 const getWalletForUnit = vi.fn()
 const addProofs = vi.fn()
+const prepareGuiLightningMint = vi.fn()
+const completeGuiLightningMint = vi.fn()
+const ingressReceiveCashuToken = vi.fn()
 const ensureImplicitWallet = vi.fn()
 const navigate = vi.fn()
 let walletBackupState: 'none' | 'needs_backup' | 'confirmed' = 'none'
@@ -38,12 +41,36 @@ vi.mock('@/stores/proof-db', async (importOriginal) => ({
   addProofs: (...args: unknown[]) => addProofs(...args),
 }))
 
+vi.mock('@/stores/gui-ordinary-wallet-operation', () => ({
+  prepareGuiLightningMint: (...args: unknown[]) => prepareGuiLightningMint(...args),
+  completeGuiLightningMint: (...args: unknown[]) => completeGuiLightningMint(...args),
+}))
+
+vi.mock('@/lib/walletOps', () => ({
+  decodeWalletCashuToken: (...args: unknown[]) => decodeToken(...args),
+  ingressReceiveCashuToken: (...args: unknown[]) => ingressReceiveCashuToken(...args),
+}))
+
 vi.mock('@/stores/wallet', () => ({
   useWalletStore: Object.assign(
-    (selector: (state: { activeMintUrl: string; ensureImplicitWallet: typeof ensureImplicitWallet; walletBackupState: typeof walletBackupState }) => unknown) =>
-      selector({ activeMintUrl: 'https://mint.example', ensureImplicitWallet, walletBackupState }),
+    (
+      selector: (state: {
+        activeMintUrl: string
+        ensureImplicitWallet: typeof ensureImplicitWallet
+        walletBackupState: typeof walletBackupState
+      }) => unknown,
+    ) =>
+      selector({
+        activeMintUrl: 'https://mint.example',
+        ensureImplicitWallet,
+        walletBackupState,
+      }),
     {
-      getState: () => ({ activeMintUrl: 'https://mint.example', ensureImplicitWallet, walletBackupState }),
+      getState: () => ({
+        activeMintUrl: 'https://mint.example',
+        ensureImplicitWallet,
+        walletBackupState,
+      }),
     },
   ),
 }))
@@ -54,7 +81,10 @@ describe('TopUpOverlay', () => {
     createMintQuote.mockReset()
     createMintQuote.mockResolvedValue({ request: 'lnbc1example', expiry: 123 })
     createMintQuoteForUnit.mockReset()
-    createMintQuoteForUnit.mockResolvedValue({ request: 'lnbc1score', expiry: 123 })
+    createMintQuoteForUnit.mockResolvedValue({
+      request: 'lnbc1score',
+      expiry: 123,
+    })
     waitForMintQuotePaid.mockReset()
     waitForMintQuotePaid.mockResolvedValue(() => undefined)
     waitForMintQuotePaidForUnit.mockReset()
@@ -65,13 +95,52 @@ describe('TopUpOverlay', () => {
     decodeToken.mockResolvedValue({
       mint: 'https://mint.example',
       unit: 'msat',
-      proofs: [{ id: 'keyset-msat', amount: 15_000, secret: 'incoming', C: 'incoming-c' }],
+      proofs: [
+        {
+          id: 'keyset-msat',
+          amount: 15_000,
+          secret: 'incoming',
+          C: 'incoming-c',
+        },
+      ],
     })
     getWalletForUnit.mockReset()
     getWalletForUnit.mockResolvedValue({
-      receive: vi.fn().mockResolvedValue([{ id: 'keyset-msat', amount: 15_000, secret: 'received', C: 'received-c' }]),
+      receive: vi.fn().mockResolvedValue([
+        {
+          id: 'keyset-msat',
+          amount: 15_000,
+          secret: 'received',
+          C: 'received-c',
+        },
+      ]),
     })
     addProofs.mockReset()
+    prepareGuiLightningMint.mockReset()
+    prepareGuiLightningMint.mockResolvedValue({
+      walletId: '0'.repeat(64),
+      operationId: 'wallet-mint:test',
+      mintUrl: 'https://mint.example',
+      unit: 'msat',
+    })
+    completeGuiLightningMint.mockReset()
+    completeGuiLightningMint.mockResolvedValue([])
+    ingressReceiveCashuToken.mockReset()
+    ingressReceiveCashuToken.mockResolvedValue({
+      added: false,
+      mintUrl: 'https://mint.example',
+      source: 'paste',
+      unit: 'msat',
+      amountSats: 15_000,
+      proofs: [
+        {
+          id: 'keyset-msat',
+          amount: 15_000,
+          secret: 'received',
+          C: 'received-c',
+        },
+      ],
+    })
     ensureImplicitWallet.mockReset()
     ensureImplicitWallet.mockResolvedValue(undefined)
     navigate.mockReset()
@@ -81,14 +150,7 @@ describe('TopUpOverlay', () => {
   it('shows a dismissible backup warning while still allowing top-up deposits', async () => {
     walletBackupState = 'needs_backup'
 
-    render(
-      <TopUpOverlay
-        deficit={10_000}
-        baseAsset="sat"
-        onCancel={vi.fn()}
-        onSuccess={vi.fn()}
-      />,
-    )
+    render(<TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />)
 
     expect(screen.getByText('You must back up your wallet to protect your funds')).toBeInTheDocument()
     expect(screen.getByTestId('top-up-continue')).toBeEnabled()
@@ -104,14 +166,7 @@ describe('TopUpOverlay', () => {
   it('shows USD top-up inputs in dollars while requesting cent subunits', async () => {
     const user = userEvent.setup()
 
-    render(
-      <TopUpOverlay
-        deficit={1_500}
-        baseAsset="usd"
-        onCancel={vi.fn()}
-        onSuccess={vi.fn()}
-      />,
-    )
+    render(<TopUpOverlay deficit={1_500} baseAsset="usd" onCancel={vi.fn()} onSuccess={vi.fn()} />)
 
     expect(screen.getByText(/Minimum \$15\.00 to cover the trade/)).toBeInTheDocument()
     expect(screen.getByText('Amount (USD)')).toBeInTheDocument()
@@ -151,14 +206,7 @@ describe('TopUpOverlay', () => {
   it('adds the unit-aware top-up buffer and converts sat-market subunits to sats for the invoice', async () => {
     const user = userEvent.setup()
 
-    render(
-      <TopUpOverlay
-        deficit={10_000}
-        baseAsset="sat"
-        onCancel={vi.fn()}
-        onSuccess={vi.fn()}
-      />,
-    )
+    render(<TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />)
 
     expect(screen.getByText(/Minimum 10 sats to cover the trade/)).toBeInTheDocument()
     expect(screen.getByTestId('top-up-amount-input')).toHaveValue(20)
@@ -199,14 +247,7 @@ describe('TopUpOverlay', () => {
     const user = userEvent.setup()
     const onSuccess = vi.fn()
 
-    render(
-      <TopUpOverlay
-        deficit={10_000}
-        baseAsset="sat"
-        onCancel={vi.fn()}
-        onSuccess={onSuccess}
-      />,
-    )
+    render(<TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={onSuccess} />)
 
     await user.click(screen.getByTestId('top-up-method-ecash'))
     await user.type(screen.getByTestId('top-up-ecash-input'), 'cashuB-token')
@@ -215,31 +256,22 @@ describe('TopUpOverlay', () => {
     await waitFor(() => {
       expect(decodeToken).toHaveBeenCalledWith('cashuB-token')
     })
-    expect(getWalletForUnit).toHaveBeenCalledWith('https://mint.example', 'msat')
     await waitFor(() => {
-      expect(addProofs).toHaveBeenCalledWith([
-        {
-          id: 'keyset-msat',
-          amount: 15_000,
-          secret: 'received',
-          C: 'received-c',
+      expect(ingressReceiveCashuToken).toHaveBeenCalledWith(
+        'cashuB-token',
+        'paste',
+        expect.objectContaining({
           mintUrl: 'https://mint.example',
-          baseAsset: 'sat',
-          unit: 'msat',
-        },
-      ])
+          decodedToken: expect.objectContaining({ unit: 'msat' }),
+        }),
+      )
       expect(onSuccess).toHaveBeenCalledTimes(1)
     })
   })
 
   it('fails fast for unsupported top-up base assets', () => {
-    expect(() => render(
-      <TopUpOverlay
-        deficit={1_500}
-        baseAsset="jpy"
-        onCancel={vi.fn()}
-        onSuccess={vi.fn()}
-      />,
-    )).toThrow(/unsupported base asset: jpy/)
+    expect(() =>
+      render(<TopUpOverlay deficit={1_500} baseAsset="jpy" onCancel={vi.fn()} onSuccess={vi.fn()} />),
+    ).toThrow(/unsupported base asset: jpy/)
   })
 })

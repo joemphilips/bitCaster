@@ -10,6 +10,7 @@ import { useActivityLogStore } from "@/stores/activity-log";
 import { useWalletStore } from "@/stores/wallet";
 import {
   getConditionCtfProofs,
+  currentGuiWalletId,
   getOutcomeProofs,
   removeProofs,
 } from "@/stores/proof-db";
@@ -44,7 +45,9 @@ export function PortfolioPage() {
   const [showWalletSetup, setShowWalletSetup] = useState(false);
   const [walletSetupCreating, setWalletSetupCreating] = useState(false);
   const [walletSetupError, setWalletSetupError] = useState<string | null>(null);
-  const addActivity = useActivityLogStore((s) => s.addActivity);
+  const addActivityForWallet = useActivityLogStore(
+    (s) => s.addActivityForWallet,
+  );
 
   const handleGetStarted = useCallback(() => {
     setWalletSetupError(null);
@@ -156,6 +159,7 @@ export function PortfolioPage() {
       }
 
       setClaimingPositionId(positionId);
+      const walletId = currentGuiWalletId();
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId);
         const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
@@ -183,7 +187,7 @@ export function PortfolioPage() {
           outcomeCollection,
           baseAsset: position.baseAsset,
         });
-        addActivity({
+        addActivityForWallet(walletId, {
           type: "payout_claimed",
           baseAsset: position.baseAsset,
           amountSats: regularProofs.reduce(
@@ -203,7 +207,7 @@ export function PortfolioPage() {
         setClaimingPositionId(null);
       }
     },
-    [addActivity, claimingPositionId, state.positions],
+    [addActivityForWallet, claimingPositionId, state.positions],
   );
 
   const handleDiscardLostPosition = useCallback(
@@ -255,7 +259,7 @@ export function PortfolioPage() {
           );
         });
         if (safeToDelete.length > 0) {
-          await removeProofs(safeToDelete.map((proof) => proof.secret));
+          await removeProofs(safeToDelete);
         }
       } catch (error) {
         console.error("[portfolio] failed to remove lost position", error);

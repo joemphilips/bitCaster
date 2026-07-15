@@ -6,29 +6,28 @@ import { InvoiceDisplay } from '@/components/deposit-withdraw/InvoiceDisplay'
 import {
   createMintQuote,
   createMintQuoteForUnit,
-  decodeToken,
-  getWalletForUnit,
-  mintProofs,
-  mintProofsForUnit,
   waitForMintQuotePaid,
   waitForMintQuotePaidForUnit,
   type MintQuoteWaitResult,
 } from '@/lib/cashu'
-import { addProofs, type StoredProof } from '@/stores/proof-db'
 import { useWalletStore } from '@/stores/wallet'
-import type { MintQuoteResponse, OutputType } from '@cashu/cashu-ts'
+import type { MintQuoteResponse } from '@cashu/cashu-ts'
 import {
   formatAmount,
   bufferSubunits,
+  collateralScaleForUnit,
   defaultCollateralUnit,
   marketUnitLabel,
   normalizeMarketBaseAsset,
   type CashuProofUnit,
 } from '@bitcaster/client-sdk/marketUnits'
+import { validateTopUpEcashToken, type TopUpPasteValidationError } from './topUpPasteValidation'
 import {
-  validateTopUpEcashToken,
-  type TopUpPasteValidationError,
-} from './topUpPasteValidation'
+  completeGuiLightningMint,
+  prepareGuiLightningMint,
+  type GuiLightningMintPlan,
+} from '@/stores/gui-ordinary-wallet-operation'
+import { decodeWalletCashuToken, ingressReceiveCashuToken } from '@/lib/walletOps'
 
 type View = 'amount' | 'invoice'
 type InvoiceStatus = 'pending' | 'paid' | 'expired' | 'error'
@@ -198,48 +197,44 @@ export function TopUpOverlay({
     }
   }, [])
 
-  const handlePaidQuote = useCallback(async (quote: MintQuoteResponse, requested: number) => {
+  const handlePaidQuote = useCallback(async (plan: GuiLightningMintPlan) => {
     try {
-      const proofs = proofUnitInput
-        ? await mintProofsForUnit(requested, quote, activeMintUrl, proofUnit)
-        : await mintProofs(requested, quote, activeMintUrl, baseAsset)
-      const stored: StoredProof[] = proofs.map((p) => ({
-        ...p,
-        mintUrl: activeMintUrl,
-        baseAsset,
-        unit: proofUnit,
-      }))
-      await addProofs(stored)
+      await completeGuiLightningMint(plan)
       if (cancelledRef.current) return
       setStatus('paid')
       // Small delay so the user sees "Payment received!" before the overlay vanishes.
-      setTimeout(() => { if (!cancelledRef.current) onSuccessRef.current() }, 800)
+      setTimeout(() => {
+        if (!cancelledRef.current) onSuccessRef.current()
+      }, 800)
     } catch (e) {
       if (!cancelledRef.current) {
         setStatus('error')
         setError((e as Error).message)
       }
     }
-  }, [activeMintUrl, baseAsset, proofUnit, proofUnitInput])
+  }, [])
 
-  const handleWaitResult = useCallback((result: MintQuoteWaitResult, quote: MintQuoteResponse, requested: number) => {
-    if (cancelledRef.current) return
-    switch (result.status) {
-      case 'PAID':
-        handlePaidQuote(quote, requested)
-        return
-      case 'EXPIRED':
-        setStatus('expired')
-        setError('The Lightning invoice expired before payment arrived.')
-        return
-      case 'ERROR':
-        setStatus('error')
-        setError(result.error.message)
-        return
-      default:
-        return assertNeverWaitResult(result)
-    }
-  }, [handlePaidQuote])
+  const handleWaitResult = useCallback(
+    (result: MintQuoteWaitResult, plan: GuiLightningMintPlan) => {
+      if (cancelledRef.current) return
+      switch (result.status) {
+        case 'PAID':
+          handlePaidQuote(plan)
+          return
+        case 'EXPIRED':
+          setStatus('expired')
+          setError('The Lightning invoice expired before payment arrived.')
+          return
+        case 'ERROR':
+          setStatus('error')
+          setError(result.error.message)
+          return
+        default:
+          return assertNeverWaitResult(result)
+      }
+    },
+    [handlePaidQuote],
+  )
 
   const startInvoice = useCallback(async () => {
     if (inflightRef.current) return
@@ -261,28 +256,37 @@ export function TopUpOverlay({
       // Otherwise StrictMode (or a parent re-render) would issue a second quote
       // against the same mint state — LNBits then returns "Invoice already paid
       // or pending" verbatim, which the user sees as the P8 snackbar.
-      const quote = activeQuoteRef.current ?? (
-        proofUnitInput
+      const quote =
+        activeQuoteRef.current ??
+        (proofUnitInput
           ? await createMintQuoteForUnit(requested, activeMintUrl, proofUnit)
-          : await createMintQuote(requested, activeMintUrl, baseAsset)
-      )
+          : await createMintQuote(requested, activeMintUrl, baseAsset))
       activeQuoteRef.current = quote
+      const exactAmount = proofUnitInput ? requested : requested * collateralScaleForUnit(proofUnit)
+      const plan = await prepareGuiLightningMint({
+        amount: exactAmount,
+        quote,
+        mintUrl: activeMintUrl,
+        unit: proofUnit,
+      })
       setBolt11(quote.request)
       setExpiresAtSec(quote.expiry ?? undefined)
       setView('invoice')
 
-      const onTransientError = (e: Error) => { if (!cancelledRef.current) setError(e.message) }
+      const onTransientError = (e: Error) => {
+        if (!cancelledRef.current) setError(e.message)
+      }
       const unsub = proofUnitInput
         ? await waitForMintQuotePaidForUnit(
             quote,
-            (r) => handleWaitResult(r, quote, requested),
+            (r) => handleWaitResult(r, plan),
             { onTransientError },
             activeMintUrl,
             proofUnit,
           )
         : await waitForMintQuotePaid(
             quote,
-            (r) => handleWaitResult(r, quote, requested),
+            (r) => handleWaitResult(r, plan),
             { onTransientError },
             activeMintUrl,
             baseAsset,
@@ -317,23 +321,17 @@ export function TopUpOverlay({
         baseAsset,
         proofUnit: proofUnitInput ?? undefined,
         deficit,
-        decodeToken,
+        decode: decodeWalletCashuToken,
       })
       if (!validation.ok) {
         setError(topUpPasteValidationErrorMessage(validation, t))
         return
       }
 
-      const wallet = await getWalletForUnit(activeMintUrl, validation.unit)
-      const receiveOutput: OutputType = { type: 'random' }
-      const proofs = await wallet.receive(trimmed, undefined, receiveOutput)
-      const stored: StoredProof[] = proofs.map((p) => ({
-        ...p,
+      await ingressReceiveCashuToken(trimmed, 'paste', {
         mintUrl: validation.mintUrl,
-        baseAsset: validation.baseAsset,
-        unit: validation.unit,
-      }))
-      await addProofs(stored)
+        decodedToken: validation.token,
+      })
       if (!cancelledRef.current) onSuccessRef.current()
     } catch (e) {
       if (!cancelledRef.current) setError((e as Error).message)
@@ -376,9 +374,7 @@ export function TopUpOverlay({
 
       <div className="relative bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 max-w-sm w-full mx-4">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-            {t('topUp.title')}
-          </h2>
+          <h2 className="text-lg font-bold text-slate-900 dark:text-white">{t('topUp.title')}</h2>
           <button
             data-testid="top-up-close"
             onClick={onCancel}
@@ -433,9 +429,7 @@ export function TopUpOverlay({
             </div>
             <div className="mt-2 flex items-center justify-between gap-3 border-t border-slate-200 dark:border-slate-700 pt-2">
               <dt className="font-medium text-slate-700 dark:text-slate-200">{t('topUp.topUpNeeded')}</dt>
-              <dd className="font-mono font-semibold text-[#f7931a]">
-                {formatAmount(deficit, baseAsset)}
-              </dd>
+              <dd className="font-mono font-semibold text-[#f7931a]">{formatAmount(deficit, baseAsset)}</dd>
             </div>
           </dl>
         )}
@@ -444,7 +438,10 @@ export function TopUpOverlay({
           <button
             type="button"
             data-testid="top-up-method-lightning"
-            onClick={() => { setMethod('lightning'); setError(null) }}
+            onClick={() => {
+              setMethod('lightning')
+              setError(null)
+            }}
             className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${method === 'lightning' ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'}`}
           >
             {t('topUp.methodLightning')}
@@ -452,7 +449,10 @@ export function TopUpOverlay({
           <button
             type="button"
             data-testid="top-up-method-ecash"
-            onClick={() => { setMethod('ecash'); setError(null) }}
+            onClick={() => {
+              setMethod('ecash')
+              setError(null)
+            }}
             className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${method === 'ecash' ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'}`}
           >
             {t('topUp.methodEcash')}
@@ -494,9 +494,7 @@ export function TopUpOverlay({
           </>
         )}
 
-        {error && (
-          <div className="mt-3 text-xs text-red-500 dark:text-red-400">{error}</div>
-        )}
+        {error && <div className="mt-3 text-xs text-red-500 dark:text-red-400">{error}</div>}
 
         {method === 'lightning' ? (
           <button

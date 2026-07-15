@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, isCtfProof } from '@/stores/proof-db'
+import { currentGuiWalletId, getProofs, isCtfProof } from '@/stores/proof-db'
 import { useWalletStore } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
 import { useActivityLogStore } from '@/stores/activity-log'
@@ -49,6 +49,8 @@ const TIME_RANGE_MS: Record<PLTimeSelector, number> = {
   '1M': 30 * 24 * 60 * 60 * 1000,
   ALL: Infinity,
 }
+
+const EMPTY_ACTIVITY: ActivityItem[] = []
 
 /** Build P/L chart data from activity history. Sat-market amounts are collateral subunits (msat). */
 export function buildPLChartData(items: ActivityItem[]): PLChartData {
@@ -168,6 +170,7 @@ export function usePortfolioState(): PortfolioState & {
   saveProfile: (profile: UserProfile) => void
 } {
   const walletSetupComplete = useWalletStore((s) => s.setupComplete)
+  const mnemonic = useWalletStore((s) => s.mnemonic)
   const walletState: WalletState = walletSetupComplete ? 'ready' : 'none'
   const [baseCurrency] = useState<BaseCurrency>('BTC')
   const [selectedTimeRange, setSelectedTimeRange] = useState<PLTimeSelector>('ALL')
@@ -185,7 +188,12 @@ export function usePortfolioState(): PortfolioState & {
     }
   }, [localProfile, nostrProfile])
 
-  const activity = useActivityLogStore((s) => s.items)
+  const activityWalletId = mnemonic ? currentGuiWalletId() : null
+  const activity = useActivityLogStore((state) =>
+    activityWalletId === null
+      ? EMPTY_ACTIVITY
+      : (state.itemsByWalletId[activityWalletId] ?? EMPTY_ACTIVITY),
+  )
   const [createdMarkets] = useState<CreatedMarket[]>([])
   const plChartData = useMemo(() => buildPLChartData(activity), [activity])
 
@@ -193,7 +201,8 @@ export function usePortfolioState(): PortfolioState & {
   // positions; base proofs are spendable ecash funds.
   const storeMints = useWalletStore((s) => s.mints)
   const positionsFromDb = useLiveQuery(async () => {
-    const proofs = await db.proofs.toArray()
+    if (!mnemonic) return []
+    const proofs = await getProofs()
     const byOutcome = new Map<
       string,
       {
@@ -313,10 +322,11 @@ export function usePortfolioState(): PortfolioState & {
         mintUrl: entry.mintUrl,
       }
     })
-  }, [], [] as Position[])
+  }, [mnemonic], [] as Position[])
   const positions: Position[] = positionsFromDb ?? []
   const fundsFromDb = useLiveQuery(async () => {
-    const proofs = await db.proofs.toArray()
+    if (!mnemonic) return []
+    const proofs = await getProofs()
     const balanceByMintAndUnit: Record<string, { mintUrl: string; baseAsset: MarketBaseAsset; amount: number }> = {}
     for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
       const baseAsset = normalizeMarketBaseAsset(p.baseAsset)
@@ -339,7 +349,7 @@ export function usePortfolioState(): PortfolioState & {
         mintName: name ?? safeHostname(mintUrl),
       }
     })
-  }, [storeMints], [] as (Fund & { mintName: string })[])
+  }, [storeMints, mnemonic], [] as (Fund & { mintName: string })[])
   const funds: Fund[] = fundsFromDb
   const stats = useMemo(() => computeStats(positions, funds), [positions, funds])
 

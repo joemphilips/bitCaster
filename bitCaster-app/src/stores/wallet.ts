@@ -5,21 +5,27 @@ import {
   Wallet as CashuWallet,
   type MintKeys,
   type MintKeyset,
-  type CounterSource,
-  type CounterRange,
 } from '@cashu/cashu-ts'
 import { useLiveQuery } from 'dexie-react-hooks'
 import * as bip39 from '@/lib/bip39'
 import { normalizeUrl } from '@/lib/url'
-import { db, getUnitProofs, isCtfProof, type StoredProof } from './proof-db'
+import {
+  configureGuiWalletIdProvider,
+  getProofs,
+  getUnitProofs,
+  isCtfProof,
+  type StoredProof,
+} from './proof-db'
 import type { MintConnectionTestStatus } from '@/types/wallet'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
+import { deriveDurableCustodyWalletId } from '@bitcaster/client-sdk/durableCustody'
 import {
   defaultCollateralUnit,
   normalizeMarketBaseAsset,
   type MarketBaseAsset,
 } from '@bitcaster/client-sdk/marketUnits'
 import type { SecretBackupState } from '@/types/settings'
+import { DexieCounterSource } from './gui-counter-source'
 
 export interface StoredMint {
   url: string
@@ -34,22 +40,6 @@ interface WalletState {
   walletBackupState: SecretBackupState
   mints: StoredMint[]
   activeMintUrl: string
-  keysetCounters: Record<string, number>
-  /**
-   * Per-keyset flag indicating that the deterministic-output recovery scan
-   * (`batchRestore`) has been run against the mint at least once for this
-   * keyset. Without recovery, a wallet whose `keysetCounters` entry is
-   * missing or stale (e.g. because the wallet existed before the
-   * `ZustandCounterSource` landed in submodule commit `8711c73`, or proofs
-   * were minted from a different device with the same seed) re-uses
-   * deterministic blinded outputs starting at counter 0. CDK responds to
-   * the duplicate with the **misleadingly-named** error
-   * `"Invoice already paid or pending"` (per
-   * `cdk-common/src/error.rs:1017`, `Database(Duplicate)` →
-   * `ErrorCode::InvoiceAlreadyPaid`) — see
-   * `docs/TODO.md` "P8 follow-up: counter recovery".
-   */
-  keysetCountersRecovered: Record<string, boolean>
   mintConnectionStatuses: Record<string, MintConnectionTestStatus>
 
   generateMnemonic: () => void
@@ -67,18 +57,22 @@ interface WalletState {
    * `activeMintUrl`. Application ingress must call `ingressRegisterMint` or
    * `ingressReceiveCashuToken` instead.
    */
-  _addMintWithoutActivating: (url: string) => Promise<void>
+  _addMintWithoutActivating: (
+    url: string,
+    options?: { expectedWalletId?: string },
+  ) => Promise<void>
   _removeMint: (url: string) => void
   _setActiveMint: (url: string) => void
   completeSetup: () => Promise<void>
   getWallet: (
     mintUrl?: string,
     baseAsset?: MarketBaseAsset | string | null,
+    options?: { expectedWalletId?: string },
   ) => Promise<CashuWallet>
   getWalletForUnit: (
     mintUrl: string | undefined,
     unit: string,
-    options?: { enableCtf?: boolean },
+    options?: { enableCtf?: boolean; expectedWalletId?: string },
   ) => Promise<CashuWallet>
 }
 
@@ -89,18 +83,20 @@ export const DEFAULT_MINT_URL = normalizeUrl(
 let _walletCache: Map<string, CashuWallet> = new Map()
 
 function walletCacheKey(
+  walletId: string,
   mintUrl: string,
   baseAsset?: MarketBaseAsset | string | null,
 ): string {
-  return `${mintUrl}::${defaultCollateralUnit(baseAsset)}`
+  return `${walletId}::${mintUrl}::${defaultCollateralUnit(baseAsset)}`
 }
 
 function walletUnitCacheKey(
+  walletId: string,
   mintUrl: string,
   unit: string,
   enableCtf = false,
 ): string {
-  return `${mintUrl}::unit:${unit}::ctf:${enableCtf}`
+  return `${walletId}::${mintUrl}::unit:${unit}::ctf:${enableCtf}`
 }
 
 function getSeedBytes(mnemonic: string): Uint8Array | undefined {
@@ -111,62 +107,43 @@ function getSeedBytes(mnemonic: string): Uint8Array | undefined {
 async function createWallet(
   url: string,
   unit: string,
-  mnemonic: string,
+  seedBytes: Uint8Array | undefined,
+  walletId: string,
   enableCtf = false,
 ): Promise<CashuWallet> {
-  const seedBytes = getSeedBytes(mnemonic)
   const mint = new CashuMint(url)
   const wallet = new CashuWallet(mint, {
     unit,
     ...(enableCtf ? { enableCtf: true } : {}),
     ...(seedBytes
-      ? { bip39seed: seedBytes, counterSource: _counterSource }
+      ? {
+          bip39seed: seedBytes,
+          counterSource: new DexieCounterSource(walletId),
+        }
       : {}),
   })
   await wallet.loadMint()
   return wallet
 }
 
-/**
- * CounterSource backed by the Zustand wallet store's keysetCounters.
- * Persists deterministic output counters to localStorage so they survive
- * page reloads and prevent "Blinded Message already signed" collisions.
- */
-class ZustandCounterSource implements CounterSource {
-  async reserve(keysetId: string, n: number): Promise<CounterRange> {
-    if (n === 0) {
-      const current = useWalletStore.getState().keysetCounters[keysetId] ?? 0
-      return { start: current, count: 0 }
-    }
-    let start = 0
-    useWalletStore.setState((s) => {
-      start = s.keysetCounters[keysetId] ?? 0
-      return { keysetCounters: { ...s.keysetCounters, [keysetId]: start + n } }
-    })
-    return { start, count: n }
-  }
-
-  async advanceToAtLeast(keysetId: string, minNext: number): Promise<void> {
-    useWalletStore.setState((s) => {
-      const current = s.keysetCounters[keysetId] ?? 0
-      if (minNext <= current) return s
-      return { keysetCounters: { ...s.keysetCounters, [keysetId]: minNext } }
-    })
-  }
-
-  async setNext(keysetId: string, next: number): Promise<void> {
-    useWalletStore.setState((s) => {
-      if ((s.keysetCounters[keysetId] ?? 0) === next) return s
-      return { keysetCounters: { ...s.keysetCounters, [keysetId]: next } }
-    })
-  }
-
-  async snapshot(): Promise<Record<string, number>> {
-    return { ...useWalletStore.getState().keysetCounters }
-  }
+interface CapturedWalletIdentity {
+  seedBytes: Uint8Array | undefined
+  walletId: string
 }
 
-const _counterSource = new ZustandCounterSource()
+function captureWalletIdentity(
+  mnemonic: string,
+  expectedWalletId?: string,
+): CapturedWalletIdentity {
+  const seedBytes = getSeedBytes(mnemonic)
+  const walletId = seedBytes
+    ? deriveDurableCustodyWalletId(seedBytes)
+    : 'anonymous'
+  if (expectedWalletId !== undefined && expectedWalletId !== walletId) {
+    throw new Error('Active wallet seed does not match the held wallet lock')
+  }
+  return { seedBytes, walletId }
+}
 
 /**
  * Shared body of `_addMint` and `_addMintWithoutActivating`. The `activate`
@@ -177,8 +154,13 @@ const _counterSource = new ZustandCounterSource()
 async function addOrUpdateMint(
   url: string,
   set: (update: (s: WalletState) => Partial<WalletState> | WalletState) => void,
+  get: () => WalletState,
   activate: boolean,
+  expectedWalletId?: string,
 ): Promise<void> {
+  if (expectedWalletId !== undefined) {
+    captureWalletIdentity(get().mnemonic, expectedWalletId)
+  }
   const normalized = normalizeUrl(url)
   const mint = new CashuMint(normalized)
   const [info, { keysets }, keys] = await Promise.all([
@@ -193,6 +175,9 @@ async function addOrUpdateMint(
     keys: keys.keysets[0],
   }
   set((s) => {
+    if (expectedWalletId !== undefined) {
+      captureWalletIdentity(s.mnemonic, expectedWalletId)
+    }
     const exists = s.mints.some((m) => m.url === normalized)
     return {
       mints: exists
@@ -215,23 +200,14 @@ export const useWalletStore = create<WalletState>()(
       walletBackupState: 'none',
       mints: [],
       activeMintUrl: DEFAULT_MINT_URL,
-      keysetCounters: {},
-      keysetCountersRecovered: {},
       mintConnectionStatuses: {},
 
       generateMnemonic: () => {
         const words = bip39.generate()
         _walletCache = new Map()
-        // Clear deterministic counter state — the new seed has its own
-        // counter space; reusing the previous wallet's counters or
-        // recovered-flags would either skip required recovery for the new
-        // seed or apply a stale counter to the wrong keyset (P8 codex
-        // adversarial review #6).
         set({
           mnemonic: words.join(' '),
           walletBackupState: 'needs_backup',
-          keysetCounters: {},
-          keysetCountersRecovered: {},
         })
       },
 
@@ -267,14 +243,9 @@ export const useWalletStore = create<WalletState>()(
           return { valid: false, error: 'Invalid seed phrase' }
         }
         _walletCache = new Map()
-        // See generateMnemonic — clear counter state on seed change so the
-        // recovered-flag idempotency doesn't suppress a needed scan for the
-        // new seed.
         set({
           mnemonic: words.join(' '),
           walletBackupState: 'confirmed',
-          keysetCounters: {},
-          keysetCountersRecovered: {},
         })
         return { valid: true }
       },
@@ -323,11 +294,20 @@ export const useWalletStore = create<WalletState>()(
       },
 
       _addMint: async (url: string) => {
-        await addOrUpdateMint(url, set, /* activate */ true)
+        await addOrUpdateMint(url, set, get, /* activate */ true)
       },
 
-      _addMintWithoutActivating: async (url: string) => {
-        await addOrUpdateMint(url, set, /* activate */ false)
+      _addMintWithoutActivating: async (
+        url: string,
+        options?: { expectedWalletId?: string },
+      ) => {
+        await addOrUpdateMint(
+          url,
+          set,
+          get,
+          /* activate */ false,
+          options?.expectedWalletId,
+        )
       },
 
       _setActiveMint: (url: string) => {
@@ -372,14 +352,24 @@ export const useWalletStore = create<WalletState>()(
       getWallet: async (
         mintUrl?: string,
         baseAsset?: MarketBaseAsset | string | null,
+        options?: { expectedWalletId?: string },
       ): Promise<CashuWallet> => {
+        const identity = captureWalletIdentity(
+          get().mnemonic,
+          options?.expectedWalletId,
+        )
         const url = normalizeUrl(mintUrl ?? get().activeMintUrl)
-        const cacheKey = walletCacheKey(url, baseAsset)
+        const cacheKey = walletCacheKey(identity.walletId, url, baseAsset)
         const cached = _walletCache.get(cacheKey)
         if (cached) return cached
 
         const unit = defaultCollateralUnit(baseAsset)
-        const wallet = await createWallet(url, unit, get().mnemonic)
+        const wallet = await createWallet(
+          url,
+          unit,
+          identity.seedBytes,
+          identity.walletId,
+        )
         _walletCache.set(cacheKey, wallet)
         return wallet
       },
@@ -387,15 +377,30 @@ export const useWalletStore = create<WalletState>()(
       getWalletForUnit: async (
         mintUrl: string | undefined,
         unit: string,
-        options?: { enableCtf?: boolean },
+        options?: { enableCtf?: boolean; expectedWalletId?: string },
       ): Promise<CashuWallet> => {
+        const identity = captureWalletIdentity(
+          get().mnemonic,
+          options?.expectedWalletId,
+        )
         const url = normalizeUrl(mintUrl ?? get().activeMintUrl)
         const enableCtf = options?.enableCtf === true
-        const cacheKey = walletUnitCacheKey(url, unit, enableCtf)
+        const cacheKey = walletUnitCacheKey(
+          identity.walletId,
+          url,
+          unit,
+          enableCtf,
+        )
         const cached = _walletCache.get(cacheKey)
         if (cached) return cached
 
-        const wallet = await createWallet(url, unit, get().mnemonic, enableCtf)
+        const wallet = await createWallet(
+          url,
+          unit,
+          identity.seedBytes,
+          identity.walletId,
+          enableCtf,
+        )
         _walletCache.set(cacheKey, wallet)
         return wallet
       },
@@ -408,8 +413,6 @@ export const useWalletStore = create<WalletState>()(
         walletBackupState: state.walletBackupState,
         mints: state.mints,
         activeMintUrl: state.activeMintUrl,
-        keysetCounters: state.keysetCounters,
-        keysetCountersRecovered: state.keysetCountersRecovered,
         // Persist connection statuses so the Settings green/grey indicator
         // doesn't reset to grey on every reload. A background refetch in
         // App.tsx will correct any stale value on the next app load.
@@ -419,17 +422,23 @@ export const useWalletStore = create<WalletState>()(
   ),
 )
 
+configureGuiWalletIdProvider(() => {
+  const seed = getSeedBytes(useWalletStore.getState().mnemonic)
+  if (!seed) throw new Error('Funded browser work requires a wallet seed')
+  return deriveDurableCustodyWalletId(seed)
+})
+
 export function useBalance(
   mintUrl?: string,
   options: { baseAsset?: MarketBaseAsset | string | null } = {},
 ): number {
   const normalized = mintUrl ? normalizeUrl(mintUrl) : undefined
   const baseAsset = normalizeMarketBaseAsset(options.baseAsset)
+  const mnemonic = useWalletStore((state) => state.mnemonic)
   const balance = useLiveQuery(
     async () => {
-      const proofs = normalized
-        ? await db.proofs.where('mintUrl').equals(normalized).toArray()
-        : await db.proofs.toArray()
+      if (!mnemonic) return 0
+      const proofs = await getProofs(normalized)
       return proofs
         .filter(
           (p) =>
@@ -438,7 +447,7 @@ export function useBalance(
         )
         .reduce((sum, p) => sum + amountToNumber(p.amount), 0)
     },
-    [normalized, baseAsset],
+    [normalized, baseAsset, mnemonic],
     0,
   )
   return balance ?? 0

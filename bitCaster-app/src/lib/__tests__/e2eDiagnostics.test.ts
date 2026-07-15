@@ -1,17 +1,51 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { getSwapDiagnostics, installE2EDiagnostics } from "../e2eDiagnostics";
 import { useActiveSwapsStore } from "@/stores/activeSwaps";
-import { usePendingTradesStore } from "@/stores/pendingTrades";
+import {
+  usePendingTradesStore,
+  type PendingTrade,
+} from "@/stores/pendingTrades";
+
+const TEST_WALLET_ID = "aa".repeat(32);
 
 beforeEach(() => {
   useActiveSwapsStore.setState({ byTradeId: {} });
-  usePendingTradesStore.setState({ byOrderId: {} });
+  usePendingTradesStore.setState({ walletId: TEST_WALLET_ID, byOrderId: {} });
   delete window.__BITCASTER_E2E__;
 });
 
+type PendingTradeSeed = Pick<
+  PendingTrade,
+  "orderId" | "marketId" | "submittedAt"
+> &
+  Partial<PendingTrade>;
+
+function seedPendingTrade(trade: PendingTradeSeed): void {
+  const record = {
+    clientOrderId: `client-${trade.orderId}`,
+    baseAsset: "sat",
+    divisibility: 1_000,
+    side: "Buy" as const,
+    tokenSide: "Outcome" as const,
+    priceSubunits: 500,
+    amountSubunits: 1_000,
+    timeInForce: "GTC" as const,
+    recoveryAttempt: 0,
+    ...trade,
+    walletId: TEST_WALLET_ID,
+  };
+  usePendingTradesStore.setState({
+    walletId: TEST_WALLET_ID,
+    byOrderId: {
+      ...usePendingTradesStore.getState().byOrderId,
+      [trade.orderId]: record,
+    },
+  });
+}
+
 describe("e2e diagnostics", () => {
   it("exposes bundled sanitized swap diagnostics", () => {
-    usePendingTradesStore.getState().add({
+    seedPendingTrade({
       orderId: "order-1",
       clientOrderId: "client-order-1",
       marketId: "cond-A",

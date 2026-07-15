@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Amount } from '@cashu/cashu-ts'
 import { useWalletStore } from '@/stores/wallet'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 
@@ -97,5 +98,28 @@ describe('decodeToken real v4 fixture', () => {
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).toContain(
       'https://testnut.cashu.space/v1/keysets',
     )
+  })
+})
+
+describe('encodeToken unit preservation', () => {
+  it('round-trips a non-sat unit through the real cashu-ts v4 codec', async () => {
+    const { getDecodedToken } = await import('@cashu/cashu-ts')
+    const { encodeToken } = await import('@/lib/cashu')
+    const keysetId = '0011223344556677'
+
+    const encoded = encodeToken(
+      [
+        {
+          id: keysetId,
+          amount: Amount.from(1),
+          secret: 'unit-preservation-secret',
+          C: '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+        },
+      ],
+      'https://usd.mint',
+      'usd',
+    )
+
+    expect(getDecodedToken(encoded, [keysetId]).unit).toBe('usd')
   })
 })

@@ -48,24 +48,26 @@ describe('useActiveSwapsStore', () => {
     )
   })
 
-  it('clears protocol state without removing the visible swap row', () => {
+  it('pins one immutable mint transport per active swap', () => {
     promote('trade-1')
-    useActiveSwapsStore.getState().claimStep('trade-1', 'seller-open')
-    useActiveSwapsStore.getState().setSellerState('trade-1', {
-      adaptorPoint: {
-        secret: new Uint8Array([1]),
-        point: new Uint8Array([2]),
-      },
-    })
 
-    useActiveSwapsStore.getState().clearProtocolState('trade-1')
+    useActiveSwapsStore
+      .getState()
+      .pinMintUrl('trade-1', 'https://mint.example')
+    useActiveSwapsStore
+      .getState()
+      .pinMintUrl('trade-1', 'https://mint.example')
 
-    const swap = useActiveSwapsStore.getState().byTradeId['trade-1']
-    expect(swap).toBeDefined()
-    expect(swap.sellerState).toBeNull()
-    expect(swap.buyerState).toBeNull()
-    expect(swap.inFlightSteps).toEqual({})
+    expect(
+      useActiveSwapsStore.getState().byTradeId['trade-1'].mintUrl,
+    ).toBe('https://mint.example')
+    expect(() =>
+      useActiveSwapsStore
+        .getState()
+        .pinMintUrl('trade-1', 'https://other-mint.example'),
+    ).toThrow(/cannot be changed/)
   })
+
 })
 
 function promote(tradeId: string) {

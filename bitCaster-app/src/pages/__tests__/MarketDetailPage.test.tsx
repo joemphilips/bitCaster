@@ -12,6 +12,7 @@ import {
   liveTradeChartUpdate,
   marketDetailDataReducer,
   pendingTopUpOrderIntentMatches,
+  requireAcceptedOrderMarketAuthority,
   resolveTradeOrderBooks,
   shouldPromptForFundedActionBackup,
 } from "@/pages/MarketDetailPage";
@@ -313,6 +314,40 @@ function categoricalMarket(): MarketDetail {
     outcomeOrderBooks: {},
   };
 }
+
+describe("accepted order market authority", () => {
+  it("accepts only the exact canonical market economics returned by the engine", () => {
+    expect(
+      requireAcceptedOrderMarketAuthority({
+        marketBaseAsset: "sat",
+        marketDivisibility: 1_000,
+        responseBaseAsset: "sat",
+        responseDivisibility: 1_000,
+      }),
+    ).toEqual({ baseAsset: "sat", divisibility: 1_000 });
+  });
+
+  it.each([
+    ["usd", 1_000],
+    ["msat", 1_000],
+    [undefined, 1_000],
+    ["sat", 100],
+    ["sat", undefined],
+    ["sat", 1.5],
+  ])(
+    "rejects mismatched response authority %s/%s",
+    (responseBaseAsset, responseDivisibility) => {
+      expect(() =>
+        requireAcceptedOrderMarketAuthority({
+          marketBaseAsset: "sat",
+          marketDivisibility: 1_000,
+          responseBaseAsset,
+          responseDivisibility,
+        }),
+      ).toThrow(/order market authority/i);
+    },
+  );
+});
 
 describe("fetchMarketDetailWithBooks", () => {
   beforeEach(() => {

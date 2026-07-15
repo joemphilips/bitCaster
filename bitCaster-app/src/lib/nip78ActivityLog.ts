@@ -6,63 +6,31 @@
  * self-encryption so it can be restored on a fresh browser profile.
  */
 
-import type {
-  ActivityItem,
-  ActivityStatus,
-  ActivityType,
-} from "@/types/portfolio";
+import type { ActivityItem } from "@/types/portfolio";
+import { decodeActivityItems } from "./activityLogCodec";
 import { fetchPrivateNip78Content, publishPrivateNip78 } from "./nip78Private";
 
-export const ACTIVITY_LOG_D_TAG = "bitcaster:activity-log" as const;
+export const ACTIVITY_LOG_D_TAG_PREFIX = "bitcaster:activity-log" as const;
+
+export function activityLogDTag(walletId: string): string {
+  if (!/^[0-9a-f]{64}$/.test(walletId)) {
+    throw new Error("Activity sync requires a seed-derived wallet id");
+  }
+  return `${ACTIVITY_LOG_D_TAG_PREFIX}:${walletId}`;
+}
 
 interface ActivityLogPayload {
   items: ActivityItem[];
 }
 
-const ACTIVITY_TYPES = new Set<ActivityType>([
-  "deposit",
-  "withdrawal",
-  "Buy",
-  "Sell",
-  "payout_claimed",
-  "creator_fee_claimed",
-]);
-
-const ACTIVITY_STATUSES = new Set<ActivityStatus>([
-  "pending",
-  "completed",
-  "Failed",
-]);
-
-function isActivityItem(value: unknown): value is ActivityItem {
-  if (typeof value !== "object" || value === null) return false;
-  const item = value as Record<string, unknown>;
-  return (
-    typeof item.id === "string" &&
-    typeof item.type === "string" &&
-    ACTIVITY_TYPES.has(item.type as ActivityType) &&
-    typeof item.amountSats === "number" &&
-    typeof item.date === "string" &&
-    typeof item.status === "string" &&
-    ACTIVITY_STATUSES.has(item.status as ActivityStatus) &&
-    (item.txId === null || typeof item.txId === "string") &&
-    (item.lightningInvoice === null ||
-      typeof item.lightningInvoice === "string") &&
-    (item.failureReason === undefined ||
-      typeof item.failureReason === "string") &&
-    (item.marketId === undefined || typeof item.marketId === "string") &&
-    (item.marketTitle === undefined || typeof item.marketTitle === "string") &&
-    (item.positionId === undefined || typeof item.positionId === "string")
-  );
-}
-
 export async function publishNip78ActivityLog(
   privateKeyHex: string,
+  walletId: string,
   items: ActivityItem[],
 ): Promise<void> {
   await publishPrivateNip78(
     privateKeyHex,
-    ACTIVITY_LOG_D_TAG,
+    activityLogDTag(walletId),
     JSON.stringify({ items } satisfies ActivityLogPayload),
   );
 }
@@ -70,18 +38,27 @@ export async function publishNip78ActivityLog(
 export async function fetchNip78ActivityLog(
   pubkey: string,
   privateKeyHex: string,
+  walletId: string,
 ): Promise<ActivityItem[] | null> {
   const content = await fetchPrivateNip78Content(
     pubkey,
-    ACTIVITY_LOG_D_TAG,
+    activityLogDTag(walletId),
     privateKeyHex,
   );
   if (!content) return null;
 
   try {
-    const parsed = JSON.parse(content) as Partial<ActivityLogPayload>;
-    if (!Array.isArray(parsed.items)) return null;
-    return parsed.items.filter(isActivityItem);
+    const parsed = JSON.parse(content) as unknown;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed) ||
+      Object.keys(parsed).length !== 1 ||
+      !("items" in parsed)
+    ) {
+      return null;
+    }
+    return decodeActivityItems((parsed as ActivityLogPayload).items);
   } catch {
     return null;
   }

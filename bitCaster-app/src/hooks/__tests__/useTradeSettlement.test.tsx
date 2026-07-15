@@ -51,7 +51,6 @@ const {
   mockRecoverGuiDurableTradeSession,
   mockRecordGuiRecoveredProofOperationOutputs,
   mockRemoveGuiSwapSession,
-  mockResumeGuiSwapSession,
   mockWithGuiSwapSessionOwnership,
 } = vi.hoisted(() => ({
   mockCompleteGuiProofOperationWithSession: vi.fn(),
@@ -63,7 +62,6 @@ const {
   mockRecoverGuiDurableTradeSession: vi.fn(),
   mockRecordGuiRecoveredProofOperationOutputs: vi.fn(),
   mockRemoveGuiSwapSession: vi.fn(),
-  mockResumeGuiSwapSession: vi.fn(),
   mockWithGuiSwapSessionOwnership: vi.fn(),
 }));
 
@@ -202,11 +200,8 @@ vi.mock("@/stores/swap-session-db", () => ({
     mintUrl: string,
   ) => mockPersistGuiSwapSession(active, mintUrl),
   prepareGuiProofOperationWithSession: mockPrepareGuiProofOperationWithSession,
-  recoverGuiDurableTradeSessionUnderLock: (
-    _lock: unknown,
-    tradeId: string,
-    input: unknown,
-  ) => mockRecoverGuiDurableTradeSession(tradeId, input),
+  recoverGuiDurableTradeSession: (tradeId: string, input: unknown) =>
+    mockRecoverGuiDurableTradeSession(tradeId, input),
   recordGuiRecoveredProofOperationOutputsUnderLock: (
     _lock: unknown,
     tradeId: string,
@@ -222,7 +217,6 @@ vi.mock("@/stores/swap-session-db", () => ({
     mockCompleteGuiProofOperationWithSession,
   removeGuiSwapSessionUnderLock: (_lock: unknown, tradeId: string) =>
     mockRemoveGuiSwapSession(tradeId),
-  resumeGuiSwapSession: mockResumeGuiSwapSession,
   withGuiSwapSessionOwnership: mockWithGuiSwapSessionOwnership,
 }));
 
@@ -231,8 +225,8 @@ vi.mock("@/stores/gui-trade-refund-recovery", () => ({
   guiTradeRefundEvidenceUnderLock: mockGuiTradeRefundEvidenceUnderLock,
   isGuiTradeRefundLink: (operation: { stage?: string }) =>
     operation.stage === "refund",
-  prepareGuiTradeRefundUnderLock: mockPrepareGuiTradeRefundUnderLock,
-  salvageGuiTradeRefundUnderLock: mockSalvageGuiTradeRefundUnderLock,
+  prepareGuiTradeRefund: mockPrepareGuiTradeRefundUnderLock,
+  salvageGuiTradeRefund: mockSalvageGuiTradeRefundUnderLock,
 }));
 
 vi.mock("@/stores/gui-wallet-lock", () => ({
@@ -500,7 +494,6 @@ beforeEach(() => {
     }),
   );
   mockRemoveGuiSwapSession.mockResolvedValue(undefined);
-  mockResumeGuiSwapSession.mockResolvedValue(null);
   mockRecoverGuiDurableTradeSession.mockImplementation(
     async (
       tradeId: string,
@@ -740,7 +733,6 @@ describe("useTradeSettlement", () => {
         }),
       ),
     );
-    expect(mockResumeGuiSwapSession).not.toHaveBeenCalled();
   });
 
   it("pages past native wallet work and fails closed an orphaned trade operation", async () => {
@@ -1464,6 +1456,7 @@ describe("useTradeSettlement", () => {
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
     expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
+    expect(mockRemoveGuiPendingSwapIntent).not.toHaveBeenCalled();
 
     await waitFor(() => expect(mockJoinTrade).toHaveBeenCalledWith(tradeId));
 
@@ -1474,9 +1467,17 @@ describe("useTradeSettlement", () => {
       ),
     );
     await waitFor(() => expect(mockJoinTrade).toHaveBeenCalledWith(tradeId));
+    await waitFor(() =>
+      expect(mockRemoveGuiPendingSwapIntent).toHaveBeenCalledWith(tradeId),
+    );
     expect(
       mockPersistGuiSwapSession.mock.invocationCallOrder.at(-1),
     ).toBeLessThan(mockJoinTrade.mock.invocationCallOrder.at(-1)!);
+    expect(
+      mockPersistGuiSwapSession.mock.invocationCallOrder.at(-1),
+    ).toBeLessThan(
+      mockRemoveGuiPendingSwapIntent.mock.invocationCallOrder.at(-1)!,
+    );
   });
 
   it("publishes an inbound cipher only after commit and accepts its replay", async () => {
@@ -1739,9 +1740,9 @@ describe("useTradeSettlement", () => {
       refundOperation,
     );
     expect(mockSalvageGuiTradeRefundUnderLock).toHaveBeenCalledWith(
-      expect.anything(),
       expect.objectContaining({ tradeId, step: "awaiting-refund" }),
       refundOperation,
+      "aa".repeat(32),
     );
     expect(mockRecordGuiRecoveredProofOperationOutputs).toHaveBeenCalledWith(
       tradeId,

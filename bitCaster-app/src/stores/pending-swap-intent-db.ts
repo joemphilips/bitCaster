@@ -6,9 +6,14 @@ import {
 } from '@bitcaster/client-sdk/durableTradeRecovery'
 import {
   db,
+  currentGuiWalletId,
   ensureDurableSwapStorage,
   type SwapIntentRecord,
 } from './proof-db'
+import {
+  withGuiCustodyProfileLock,
+  type GuiWalletContext,
+} from './gui-custody-authority'
 
 export interface GuiPendingSwapIntent {
   tradeId: string
@@ -20,14 +25,21 @@ export interface GuiPendingSwapIntent {
   submitted: boolean
 }
 
-const pendingIntentCreations = new Map<string, Promise<GuiPendingSwapIntent>>()
-
 /**
  * Writes the pre-TradeCreated private key binding before the client submits
  * its public key. Zustand consumes a hydrated projection of these records.
  */
 export async function persistGuiPendingSwapIntent(
   input: GuiPendingSwapIntent,
+): Promise<void> {
+  await withRequiredPendingIntentLock(({ walletId }) =>
+    persistGuiPendingSwapIntentForWallet(input, walletId),
+  )
+}
+
+async function persistGuiPendingSwapIntentForWallet(
+  input: GuiPendingSwapIntent,
+  walletId: string,
 ): Promise<void> {
   const intent = durableIntentFromGui(input)
   const validationError = validateDurableTradePendingIntent(intent)
@@ -39,99 +51,106 @@ export async function persistGuiPendingSwapIntent(
   if (keyBindingError) {
     throw new Error(`durable pending swap intent ${keyBindingError}`)
   }
-  await ensureDurableSwapStorage()
-  await db.swapIntents.put({
+  const next = {
+    walletId,
     tradeId: input.tradeId,
     intent,
     ephemeralPrivkeyHex: input.privkey.toLowerCase(),
     submitted: input.submitted,
     updatedAt: Date.now(),
-  } satisfies SwapIntentRecord)
+  } satisfies SwapIntentRecord
+  await ensureDurableSwapStorage(walletId)
+  await db.transaction('rw', db.swapIntents, async () => {
+    const current = await db.swapIntents.get(input.tradeId)
+    if (!current) {
+      await db.swapIntents.put(next)
+      return
+    }
+    const existing = guiIntentFromRecord(current, walletId, input.tradeId)
+    assertExactImmutableIntentBinding(existing, input)
+    if (!existing.submitted && input.submitted) {
+      await db.swapIntents.put({ ...current, submitted: true, updatedAt: next.updatedAt })
+    }
+  })
 }
 
 export async function loadGuiPendingSwapIntents(): Promise<GuiPendingSwapIntent[]> {
-  await ensureDurableSwapStorage()
-  const rows = await db.swapIntents.toArray()
-  const now = Date.now()
-  const active: GuiPendingSwapIntent[] = []
-  for (const row of rows) {
-    const entry = guiIntentFromRecord(row)
-    if (!entry || Date.parse(entry.deadline) < now) {
-      await db.swapIntents.delete(row.tradeId)
-      continue
-    }
-    active.push(entry)
-  }
-  return active
+  return withRequiredPendingIntentLock(({ walletId }) =>
+    loadGuiPendingSwapIntentsForWallet(walletId),
+  )
+}
+
+async function loadGuiPendingSwapIntentsForWallet(
+  walletId: string,
+): Promise<GuiPendingSwapIntent[]> {
+  await ensureDurableSwapStorage(walletId)
+  const rows = await db.swapIntents
+    .where('walletId')
+    .equals(walletId)
+    .toArray()
+  return rows.map((row) => guiIntentFromRecord(row, walletId, row.tradeId))
 }
 
 export async function getGuiPendingSwapIntent(
   tradeId: string,
 ): Promise<GuiPendingSwapIntent | null> {
-  await ensureDurableSwapStorage()
-  const row = await db.swapIntents.get(tradeId)
-  const entry = row ? guiIntentFromRecord(row) : null
-  if (!entry || Date.parse(entry.deadline) < Date.now()) return null
-  return entry
+  return getGuiPendingSwapIntentForWallet(tradeId, currentGuiWalletId())
 }
 
-/**
- * Serializes creation in this browser context so concurrent market/order
- * callbacks bind a trade to one key before either can submit it to the engine.
- */
-export function getOrCreateGuiPendingSwapIntent(input: {
+async function getGuiPendingSwapIntentForWallet(
+  tradeId: string,
+  walletId: string,
+): Promise<GuiPendingSwapIntent | null> {
+  await ensureDurableSwapStorage(walletId)
+  const row = await db.swapIntents.get(tradeId)
+  if (!row) return null
+  return guiIntentFromRecord(row, walletId, tradeId)
+}
+
+export async function getOrCreateGuiPendingSwapIntent(input: {
   tradeId: string
   orderId: string
   marketId: string
   deadline: string
   create: () => GuiPendingSwapIntent
 }): Promise<GuiPendingSwapIntent> {
-  const prior = pendingIntentCreations.get(input.tradeId) ?? Promise.resolve()
-  const next = prior.then(async () => {
-    const existing = await getGuiPendingSwapIntent(input.tradeId)
+  return withRequiredPendingIntentLock(async ({ walletId }) => {
+    const existing = await getGuiPendingSwapIntentForWallet(input.tradeId, walletId)
     if (existing) {
-      if (
-        existing.orderId !== input.orderId ||
-        existing.marketId !== input.marketId ||
-        existing.deadline !== input.deadline
-      ) {
-        throw new Error('durable pending swap intent conflicts with the existing trade binding')
-      }
+      assertMatchingIntentBinding(existing, input)
       return existing
     }
     const created = input.create()
-    if (
-      created.tradeId !== input.tradeId ||
-      created.orderId !== input.orderId ||
-      created.marketId !== input.marketId ||
-      created.deadline !== input.deadline
-    ) {
-      throw new Error('durable pending swap intent creation returned a mismatched binding')
-    }
-    await persistGuiPendingSwapIntent(created)
+    assertCreatedIntentBinding(created, input)
+    await persistGuiPendingSwapIntentForWallet(created, walletId)
     return created
   })
-  pendingIntentCreations.set(input.tradeId, next)
-  void next.finally(() => {
-    if (pendingIntentCreations.get(input.tradeId) === next) {
-      pendingIntentCreations.delete(input.tradeId)
-    }
-  }).catch(() => {})
-  return next
 }
 
 export async function markGuiPendingSwapIntentSubmitted(tradeId: string): Promise<void> {
-  await ensureDurableSwapStorage()
-  await db.transaction('rw', db.swapIntents, async () => {
-    const current = await db.swapIntents.get(tradeId)
-    if (!current) return
-    await db.swapIntents.put({ ...current, submitted: true, updatedAt: Date.now() })
+  await withRequiredPendingIntentLock(async ({ walletId }) => {
+    await ensureDurableSwapStorage(walletId)
+    await db.transaction('rw', db.swapIntents, async () => {
+      const current = await db.swapIntents.get(tradeId)
+      if (!current) {
+        throw new Error('durable pending swap intent is missing')
+      }
+      guiIntentFromRecord(current, walletId, tradeId)
+      await db.swapIntents.put({ ...current, submitted: true, updatedAt: Date.now() })
+    })
   })
 }
 
 export async function removeGuiPendingSwapIntent(tradeId: string): Promise<void> {
-  await ensureDurableSwapStorage()
-  await db.swapIntents.delete(tradeId)
+  await withRequiredPendingIntentLock(async ({ walletId }) => {
+    await ensureDurableSwapStorage(walletId)
+    await db.transaction('rw', db.swapIntents, async () => {
+      const current = await db.swapIntents.get(tradeId)
+      if (!current) return
+      guiIntentFromRecord(current, walletId, tradeId)
+      await db.swapIntents.delete(tradeId)
+    })
+  })
 }
 
 /** Parses the pre-ADR local-storage shape without treating it as authoritative. */
@@ -174,16 +193,68 @@ export function parseLegacyPendingSwapIntents(serialized: string): GuiPendingSwa
  */
 export async function migrateLegacyGuiPendingSwapIntents(): Promise<GuiPendingSwapIntent[]> {
   if (typeof window === 'undefined') return []
-  const serialized = window.localStorage.getItem('bitcaster-pending-pubkeys')
-  if (!serialized) return []
-  const intents = parseLegacyPendingSwapIntents(serialized)
-  for (const intent of intents) {
-    if (!await getGuiPendingSwapIntent(intent.tradeId)) {
-      await persistGuiPendingSwapIntent(intent)
+  return withRequiredPendingIntentLock(async ({ walletId }) => {
+    const serialized = window.localStorage.getItem('bitcaster-pending-pubkeys')
+    if (!serialized) return []
+    const intents = parseLegacyPendingSwapIntents(serialized)
+    for (const intent of intents) {
+      if (!await getGuiPendingSwapIntentForWallet(intent.tradeId, walletId)) {
+        await persistGuiPendingSwapIntentForWallet(intent, walletId)
+      }
     }
+    window.localStorage.removeItem('bitcaster-pending-pubkeys')
+    return intents
+  })
+}
+
+function assertMatchingIntentBinding(
+  existing: GuiPendingSwapIntent,
+  input: Pick<GuiPendingSwapIntent, 'tradeId' | 'orderId' | 'marketId' | 'deadline'>,
+): void {
+  if (
+    existing.tradeId !== input.tradeId ||
+    existing.orderId !== input.orderId ||
+    existing.marketId !== input.marketId ||
+    existing.deadline !== input.deadline
+  ) {
+    throw new Error('durable pending swap intent conflicts with the existing trade binding')
   }
-  window.localStorage.removeItem('bitcaster-pending-pubkeys')
-  return intents
+}
+
+function assertCreatedIntentBinding(
+  created: GuiPendingSwapIntent,
+  input: Pick<GuiPendingSwapIntent, 'tradeId' | 'orderId' | 'marketId' | 'deadline'>,
+): void {
+  if (
+    created.tradeId !== input.tradeId ||
+    created.orderId !== input.orderId ||
+    created.marketId !== input.marketId ||
+    created.deadline !== input.deadline
+  ) {
+    throw new Error('durable pending swap intent creation returned a mismatched binding')
+  }
+}
+
+function assertExactImmutableIntentBinding(
+  existing: GuiPendingSwapIntent,
+  input: GuiPendingSwapIntent,
+): void {
+  if (
+    existing.tradeId !== input.tradeId ||
+    existing.orderId !== input.orderId ||
+    existing.marketId !== input.marketId ||
+    existing.pubkey !== input.pubkey.toLowerCase() ||
+    existing.privkey !== input.privkey.toLowerCase() ||
+    existing.deadline !== input.deadline
+  ) {
+    throw new Error('durable pending swap intent conflicts with the existing trade binding')
+  }
+}
+
+async function withRequiredPendingIntentLock<T>(
+  action: (context: GuiWalletContext) => Promise<T>,
+): Promise<T> {
+  return withGuiCustodyProfileLock(action)
 }
 
 function durableIntentFromGui(input: GuiPendingSwapIntent): DurableTradePendingIntent {
@@ -197,21 +268,102 @@ function durableIntentFromGui(input: GuiPendingSwapIntent): DurableTradePendingI
   }
 }
 
-function guiIntentFromRecord(record: SwapIntentRecord): GuiPendingSwapIntent | null {
-  if (validateDurableTradePendingIntent(record.intent) !== null) return null
-  if (validateDurableTradePrivateKeyBinding(
-    record.ephemeralPrivkeyHex,
-    record.intent.localProtocolPubkey,
-  ) !== null) return null
+const SWAP_INTENT_RECORD_FIELDS = [
+  'walletId',
+  'tradeId',
+  'intent',
+  'ephemeralPrivkeyHex',
+  'submitted',
+  'updatedAt',
+] as const
+
+const DURABLE_INTENT_FIELDS = [
+  'schemaVersion',
+  'tradeId',
+  'orderId',
+  'marketId',
+  'localProtocolPubkey',
+  'deadline',
+] as const
+
+function guiIntentFromRecord(
+  record: unknown,
+  walletId: string,
+  expectedTradeId: string,
+): GuiPendingSwapIntent {
+  const stored = validatedSwapIntentRecord(record, walletId, expectedTradeId)
   return {
-    tradeId: record.intent.tradeId,
-    orderId: record.intent.orderId,
-    marketId: record.intent.marketId,
-    pubkey: record.intent.localProtocolPubkey,
-    privkey: record.ephemeralPrivkeyHex,
-    deadline: record.intent.deadline,
-    submitted: record.submitted,
+    tradeId: stored.intent.tradeId,
+    orderId: stored.intent.orderId,
+    marketId: stored.intent.marketId,
+    pubkey: stored.intent.localProtocolPubkey,
+    privkey: stored.ephemeralPrivkeyHex,
+    deadline: stored.intent.deadline,
+    submitted: stored.submitted,
   }
+}
+
+function validatedSwapIntentRecord(
+  record: unknown,
+  walletId: string,
+  expectedTradeId: string,
+): SwapIntentRecord {
+  if (typeof record === 'object' && record !== null &&
+    'walletId' in record && typeof record.walletId === 'string' &&
+    /^[a-f0-9]{64}$/.test(record.walletId) && record.walletId !== walletId) {
+    throw new Error('Pending swap intent belongs to another wallet scope')
+  }
+  if (!hasExactFields(record, SWAP_INTENT_RECORD_FIELDS)) {
+    throw corruptPendingIntent('record fields are invalid')
+  }
+  if (typeof record.walletId !== 'string' || !/^[a-f0-9]{64}$/.test(record.walletId)) {
+    throw corruptPendingIntent('wallet id is invalid')
+  }
+  if (record.walletId !== walletId) {
+    throw new Error('Pending swap intent belongs to another wallet scope')
+  }
+  if (typeof record.tradeId !== 'string' || record.tradeId !== expectedTradeId) {
+    throw corruptPendingIntent('physical trade id mismatch')
+  }
+  if (!hasExactFields(record.intent, DURABLE_INTENT_FIELDS)) {
+    throw corruptPendingIntent('intent fields are invalid')
+  }
+  const intent = record.intent as unknown as DurableTradePendingIntent
+  const intentError = validateDurableTradePendingIntent(intent)
+  if (intentError) throw corruptPendingIntent(intentError)
+  if (record.tradeId !== intent.tradeId) {
+    throw corruptPendingIntent('physical and internal trade id mismatch')
+  }
+  if (typeof record.ephemeralPrivkeyHex !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(record.ephemeralPrivkeyHex)) {
+    throw corruptPendingIntent('private key is invalid')
+  }
+  const keyBindingError = validateDurableTradePrivateKeyBinding(
+    record.ephemeralPrivkeyHex,
+    intent.localProtocolPubkey,
+  )
+  if (keyBindingError) throw corruptPendingIntent(keyBindingError)
+  if (typeof record.submitted !== 'boolean') {
+    throw corruptPendingIntent('submitted state is invalid')
+  }
+  if (typeof record.updatedAt !== 'number' ||
+    !Number.isSafeInteger(record.updatedAt) || record.updatedAt < 0) {
+    throw corruptPendingIntent('updated timestamp is invalid')
+  }
+  return record as unknown as SwapIntentRecord
+}
+
+function hasExactFields<const TFields extends readonly string[]>(
+  value: unknown,
+  fields: TFields,
+): value is Record<TFields[number], unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const actual = Object.keys(value)
+  return actual.length === fields.length && fields.every((field) => actual.includes(field))
+}
+
+function corruptPendingIntent(reason: string): Error {
+  return new Error(`corrupt durable pending swap intent: ${reason}`)
 }
 
 function isPrivateKey(value: string): boolean {

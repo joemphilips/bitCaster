@@ -25,20 +25,72 @@ import { useLikedMarketCloseReconcile } from "@/hooks/useLikedMarketCloseReconci
 import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
-import { normalizeStoredMintUrls } from "@/stores/proof-db";
-import { recoverKeysetCountersForMint } from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import {
   refreshMintInfoWithoutActivating,
   userAddAndSelectMint,
 } from "@/lib/walletOps";
-import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
+import {
+  rehydratePersistedNostrIdentity,
+  resolveCreatorPubkey,
+} from "@/lib/identityOps";
 import { sweepElapsedPartialLockFailures } from "@/lib/partialLockRecovery";
 import { installE2EDiagnostics } from "@/lib/e2eDiagnostics";
-import { reconcileAcceptedLocalWalletPayments } from "@/lib/pendingLocalWalletPayments";
+import {
+  reconcileGuiEcashDeposits,
+  type GuiEcashDepositRemote,
+} from "@/lib/guiLocalWalletPayment";
+import type { PendingEcashDepositRecoveryCursor } from "@/lib/pendingLocalWalletPayments";
+import { getDepositStatus, requestEcashDeposit } from "@/lib/markets";
+import {
+  requestGuiNativeProofOperationRecovery,
+  type GuiNativeProofRecoveryStatus,
+} from "@/stores/gui-native-proof-operation-recovery";
 
 installE2EDiagnostics();
+
+const GUI_DEPOSIT_RETRY_BASE_MS = 1_000;
+const GUI_DEPOSIT_RETRY_MAX_MS = 60_000;
+
+function guiDepositRetryDelay(failureCount: number): number {
+  return Math.min(
+    GUI_DEPOSIT_RETRY_BASE_MS * 2 ** Math.max(0, failureCount - 1),
+    GUI_DEPOSIT_RETRY_MAX_MS,
+  );
+}
+
+function currentGuiFundingIdentity(): string {
+  const settings = useSettingsStore.getState();
+  const identity = resolveCreatorPubkey({
+    nostrSignerMode: settings.nostrSignerMode,
+    nsecSecret: settings.nsecSecret,
+    nostrProfilePubkey: settings.nostrProfile?.pubkey,
+  });
+  if (!identity) throw new Error("Ecash deposit authentication is unavailable");
+  return identity;
+}
+
+function guiEcashDepositRemote(): GuiEcashDepositRemote {
+  return {
+    currentFundingIdentity: currentGuiFundingIdentity,
+    getStatus: async ({ depositId, request }) =>
+      await getDepositStatus(request.conditionId, depositId),
+    submit: async ({ depositId, request, token }) =>
+      await requestEcashDeposit(
+        request.conditionId,
+        depositId,
+        request.amountSubunits,
+        token,
+        {
+          creatorPubkey: request.creatorPubkey,
+          fundAmm: request.fundAmm,
+          unit: request.unit,
+          divisibility: request.divisibility,
+        },
+      ),
+  };
+}
 
 /**
  * Paths that render full-window wizards without the app shell. Keeping
@@ -131,12 +183,17 @@ function titleForPath(pathname: string): string {
 function AppRoutes() {
   const location = useLocation();
   const [pendingWalletWarning, setPendingWalletWarning] = useState(false);
+  const [blockedWalletDepositWarning, setBlockedWalletDepositWarning] =
+    useState(false);
+  const [nativeRecoveryStatus, setNativeRecoveryStatus] =
+    useState<GuiNativeProofRecoveryStatus>("clear");
   useBookmarkSync();
   useCreatorSync();
   useActivityLogSync();
   usePendingTradesPoller();
   useLikedMarketCloseReconcile();
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
+  const mnemonic = useWalletStore((s) => s.mnemonic);
   const [nostrSignerReady, setNostrSignerReady] = useState(false);
   useTradeSettlement(nostrSignerReady && nostrSignerMode !== "none");
 
@@ -152,98 +209,139 @@ function AppRoutes() {
       .finally(() => setNostrSignerReady(true));
   }, []);
 
-  // One-shot migration: pre-fix proofs stored their mintUrl verbatim from
-  // the decoded token / NIP-17 payload, which could differ from the
-  // normalized `activeMintUrl` by a trailing slash. That mismatch made
-  // `getBalance(activeMintUrl)` return 0 even with proofs in IndexedDB —
-  // breaking the buy gate on market detail.
-  const proofMigrationAttempted = useRef(false);
   useEffect(() => {
-    if (proofMigrationAttempted.current) return;
-    proofMigrationAttempted.current = true;
-    normalizeStoredMintUrls().catch(() => {});
-  }, []);
+    if (!mnemonic) return;
+    sweepElapsedPartialLockFailures().catch(() => {});
+  }, [mnemonic]);
 
-  // P8 follow-up: cashu-ts deterministic counter recovery.
-  //
-  // CDK rejects re-used deterministic blinded outputs as a database duplicate
-  // and reports the misleadingly-named error "Invoice already paid or
-  // pending" (`cdk-common/src/error.rs:1017`). For wallets that existed
-  // before `ZustandCounterSource` (submodule commit `8711c73`, Apr 8) — or
-  // that were minted from a different device with the same seed — the local
-  // `keysetCounters` are missing or stale and the next `mintProofs` call
-  // collides at counter 0.
-  //
-  // Recovery walks `wallet.batchRestore(...)` for default sat keysets and
-  // advances `keysetCounters[keysetId]` past the highest signed output.
-  // Non-default units recover on the duplicate-output repair path with an
-  // explicit unit, so startup does not fan out across every mint unit.
-  // Idempotent via `keysetCountersRecovered`. Runs ONCE per (mint, keyset)
-  // at startup, gated on persist hydration so the mints / mnemonic are loaded.
-  const counterRecoveryAttempted = useRef(false);
   useEffect(() => {
-    if (counterRecoveryAttempted.current) return;
-    const runRecovery = () => {
-      if (counterRecoveryAttempted.current) return;
-      counterRecoveryAttempted.current = true;
-      const { mints, mnemonic } = useWalletStore.getState();
-      if (!mnemonic || mints.length === 0) return;
-      for (const m of mints) {
-        recoverKeysetCountersForMint(m.url, { baseAsset: "sat" }).catch(() => {});
+    if (!mnemonic || !nostrSignerReady) return;
+    let active = true;
+    let running = false;
+    let rerunRequested = false;
+    let failureCount = 0;
+    let retryNotBefore = 0;
+    let timer: number | undefined;
+    const remote = guiEcashDepositRemote();
+
+    const schedule = (
+      cursor: PendingEcashDepositRecoveryCursor | null,
+      delay: number,
+    ) => {
+      if (!active) return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(
+        () => runPage(cursor),
+        Math.min(Math.max(0, delay), 2_147_483_647),
+      );
+    };
+    const requestCycle = () => {
+      if (running) {
+        rerunRequested = true;
+        return;
+      }
+      schedule(null, Math.max(0, retryNotBefore - Date.now()));
+    };
+    const runPage = async (
+      cursor: PendingEcashDepositRecoveryCursor | null,
+    ) => {
+      timer = undefined;
+      if (!active || running) return;
+      running = true;
+      try {
+        const result = await reconcileGuiEcashDeposits(remote, cursor);
+        if (!active) return;
+        failureCount = 0;
+        retryNotBefore = 0;
+        setPendingWalletWarning(
+          result.hasMore ||
+            result.remaining.length > 0 ||
+            result.nextAttemptAt !== null,
+        );
+        setBlockedWalletDepositWarning(result.blocked.length > 0);
+        if (rerunRequested) {
+          rerunRequested = false;
+          schedule(null, 0);
+        } else if (result.hasMore && result.nextCursor) {
+          schedule(result.nextCursor, 0);
+        } else if (result.nextAttemptAt !== null) {
+          schedule(null, result.nextAttemptAt - Date.now());
+        }
+      } catch (error) {
+        if (!active) return;
+        failureCount = Math.min(failureCount + 1, 16);
+        const delay = guiDepositRetryDelay(failureCount);
+        retryNotBefore = Date.now() + delay;
+        rerunRequested = false;
+        console.warn(
+          "[wallet] pending local-wallet payment reconciliation failed",
+          error,
+        );
+        setPendingWalletWarning(true);
+        schedule(null, delay);
+      } finally {
+        running = false;
       }
     };
-    if (useWalletStore.persist.hasHydrated()) runRecovery();
-    else {
-      const unsub = useWalletStore.persist.onFinishHydration(() => {
-        runRecovery();
-        unsub();
-      });
-    }
-  }, []);
-
-  const partialLockSweepAttempted = useRef(false);
-  useEffect(() => {
-    if (partialLockSweepAttempted.current) return;
-    const runSweep = () => {
-      if (partialLockSweepAttempted.current) return;
-      partialLockSweepAttempted.current = true;
-      sweepElapsedPartialLockFailures().catch(() => {});
+    const requestCycleWhenVisible = () => {
+      if (document.visibilityState === "visible") requestCycle();
     };
-    if (useWalletStore.persist.hasHydrated()) runSweep();
-    else {
-      const unsub = useWalletStore.persist.onFinishHydration(() => {
-        runSweep();
-        unsub();
-      });
-    }
-  }, []);
 
-  const pendingWalletPaymentReconcileAttempted = useRef(false);
+    requestCycle();
+    window.addEventListener("online", requestCycle);
+    document.addEventListener("visibilitychange", requestCycleWhenVisible);
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener("online", requestCycle);
+      document.removeEventListener("visibilitychange", requestCycleWhenVisible);
+    };
+  }, [mnemonic, nostrSignerReady]);
+
   useEffect(() => {
-    if (pendingWalletPaymentReconcileAttempted.current) return;
-    pendingWalletPaymentReconcileAttempted.current = true;
-    reconcileAcceptedLocalWalletPayments()
-      .then((remaining) => setPendingWalletWarning(remaining.length > 0))
-      .catch((error) => {
-        console.warn("[wallet] pending local-wallet payment reconciliation failed", error);
-        setPendingWalletWarning(true);
-      });
-  }, []);
+    if (!mnemonic) {
+      setNativeRecoveryStatus("clear");
+      return;
+    }
+    let active = true;
+    const recover = () => {
+      setNativeRecoveryStatus((current) =>
+        current === "blocked" ? current : "pending",
+      );
+      requestGuiNativeProofOperationRecovery()
+        .then((status) => {
+          if (active) setNativeRecoveryStatus(status);
+        })
+        .catch(() => {
+          if (active) setNativeRecoveryStatus("blocked");
+        });
+    };
+    const recoverWhenVisible = () => {
+      if (document.visibilityState === "visible") recover();
+    };
+    recover();
+    window.addEventListener("online", recover);
+    document.addEventListener("visibilitychange", recoverWhenVisible);
+    return () => {
+      active = false;
+      window.removeEventListener("online", recover);
+      document.removeEventListener("visibilitychange", recoverWhenVisible);
+    };
+  }, [mnemonic]);
 
   // Continuous NIP-17 listener so inbound payment-request DMs are
   // processed regardless of which route is mounted. The per-view
   // subscription inside `useDepositWithdrawState` was lost on reload and
   // missed payments that arrived while the user wasn't on the Receive
   // view — P5 item 5 regression.
-  const mnemonic = useWalletStore((s) => s.mnemonic);
   const relayUrlsKey = useSettingsStore((s) =>
     s.relays.map((r) => r.url).join("|"),
   );
   useEffect(() => {
     if (!mnemonic) return;
     const relays = effectiveRelayUrls(useSettingsStore.getState().relays);
-    startNip17Listener(mnemonic, relays).catch((e) => {
-      console.warn("[app] startNip17Listener failed:", e);
+    startNip17Listener(mnemonic, relays).catch(() => {
+      console.warn("[app] NIP-17 listener startup failed");
     });
     // No cleanup — the listener is module-scoped and intentionally
     // outlives React's mount/unmount dance (StrictMode, HMR).
@@ -311,7 +409,26 @@ function AppRoutes() {
     <>
       {pendingWalletWarning && (
         <div className="border-b border-amber-400/40 bg-amber-500/15 px-4 py-3 text-sm text-amber-100">
-          Payment was sent but local wallet state may be inconsistent. Please restart the app to reconcile.
+          Wallet payment recovery is continuing automatically. Submitted funds
+          remain reserved until the deposit is confirmed.
+        </div>
+      )}
+      {blockedWalletDepositWarning && (
+        <div className="border-b border-red-400/40 bg-red-500/15 px-4 py-3 text-sm text-red-100">
+          Wallet deposit recovery found inconsistent durable state. Its funds
+          remain reserved to prevent unsafe spending.
+        </div>
+      )}
+      {nativeRecoveryStatus === "pending" && (
+        <div className="border-b border-amber-400/40 bg-amber-500/15 px-4 py-3 text-sm text-amber-100">
+          Wallet recovery is continuing automatically. Funds in unfinished
+          operations remain reserved.
+        </div>
+      )}
+      {nativeRecoveryStatus === "blocked" && (
+        <div className="border-b border-red-400/40 bg-red-500/15 px-4 py-3 text-sm text-red-100">
+          Wallet recovery found an inconsistent or unsupported unfinished
+          operation. Its funds remain reserved to prevent unsafe spending.
         </div>
       )}
       {isWizard ? <WizardRoutes /> : <ShellRoutes />}

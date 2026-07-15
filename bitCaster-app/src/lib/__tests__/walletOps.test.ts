@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useSettingsStore } from '@/stores/settings'
 import { useWalletStore } from '@/stores/wallet'
+import { currentGuiWalletId } from '@/stores/proof-db'
 import * as cashu from '@/lib/cashu'
+import * as ordinaryWallet from '@/stores/gui-ordinary-wallet-operation'
 import {
   getKnownMints,
   getRelayUrlValidationError,
@@ -19,7 +21,10 @@ import {
 
 vi.mock('@/lib/cashu', () => ({
   decodeToken: vi.fn(),
-  receiveToken: vi.fn(),
+}))
+
+vi.mock('@/stores/gui-ordinary-wallet-operation', () => ({
+  receiveGuiCashuToken: vi.fn(),
 }))
 
 vi.mock('@/lib/nip17', () => ({
@@ -44,8 +49,8 @@ describe('walletOps facade', () => {
     removeMint = vi.fn()
     setActiveMint = vi.fn()
     vi.mocked(cashu.decodeToken).mockReset()
-    vi.mocked(cashu.receiveToken).mockReset()
-    vi.mocked(cashu.receiveToken).mockResolvedValue([
+    vi.mocked(ordinaryWallet.receiveGuiCashuToken).mockReset()
+    vi.mocked(ordinaryWallet.receiveGuiCashuToken).mockResolvedValue([
       { secret: 's1', amount: 21, id: 'kid', C: 'C1' },
       { secret: 's2', amount: 34, id: 'kid', C: 'C2' },
     ] as never)
@@ -85,6 +90,7 @@ describe('walletOps facade', () => {
   })
 
   it('registers unknown ingress mints without changing the active mint', async () => {
+    const expectedWalletId = currentGuiWalletId()
     const result = await ingressRegisterMint('https://unknown.mint/', 'paste')
 
     expect(result).toEqual({
@@ -92,12 +98,16 @@ describe('walletOps facade', () => {
       mintUrl: 'https://unknown.mint',
       source: 'paste',
     })
-    expect(addMintWithoutActivating).toHaveBeenCalledWith('https://unknown.mint')
+    expect(addMintWithoutActivating).toHaveBeenCalledWith(
+      'https://unknown.mint',
+      { expectedWalletId },
+    )
     expect(addMint).not.toHaveBeenCalled()
     expect(setActiveMint).not.toHaveBeenCalled()
   })
 
   it('redeems ingress tokens under the issuing mint and reports the received amount', async () => {
+    const expectedWalletId = currentGuiWalletId()
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
       mint: 'https://unknown.mint/',
       proofs: [],
@@ -105,8 +115,16 @@ describe('walletOps facade', () => {
 
     const result = await ingressReceiveCashuToken('cashuB-token', 'scan')
 
-    expect(cashu.receiveToken).toHaveBeenCalledWith('cashuB-token', 'https://unknown.mint', 'sat')
-    expect(addMintWithoutActivating).toHaveBeenCalledWith('https://unknown.mint')
+    expect(ordinaryWallet.receiveGuiCashuToken).toHaveBeenCalledWith({
+      token: expect.objectContaining({ mint: 'https://unknown.mint/' }),
+      mintUrl: 'https://unknown.mint',
+      unit: 'sat',
+      expectedWalletId,
+    })
+    expect(addMintWithoutActivating).toHaveBeenCalledWith(
+      'https://unknown.mint',
+      { expectedWalletId },
+    )
     expect(result).toMatchObject({
       added: true,
       amountSats: 55,
@@ -117,6 +135,7 @@ describe('walletOps facade', () => {
   })
 
   it('preserves the token unit for non-sat tokens', async () => {
+    const expectedWalletId = currentGuiWalletId()
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
       mint: 'https://usd.mint/',
       unit: 'usd',
@@ -125,37 +144,62 @@ describe('walletOps facade', () => {
 
     const result = await ingressReceiveCashuToken('cashuB-usd-token', 'paste')
 
-    expect(cashu.receiveToken).toHaveBeenCalledWith('cashuB-usd-token', 'https://usd.mint', 'usd')
+    expect(ordinaryWallet.receiveGuiCashuToken).toHaveBeenCalledWith({
+      token: expect.objectContaining({ unit: 'usd' }),
+      mintUrl: 'https://usd.mint',
+      unit: 'usd',
+      expectedWalletId,
+    })
     expect(result).toMatchObject({
       unit: 'usd',
       mintUrl: 'https://usd.mint',
     })
   })
 
-  it('stamps received conditional proofs from the mint keyset registry', async () => {
+  it('rejects an explicitly unsupported token unit instead of defaulting to sat', async () => {
+    vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+      mint: 'https://unknown-unit.mint/',
+      unit: 'private-bearer-unit',
+      proofs: [],
+    } as never)
+
+    await expect(
+      ingressReceiveCashuToken('cashuB-unknown-unit', 'paste'),
+    ).rejects.toThrow('Unsupported Cashu token unit')
+
+    expect(addMintWithoutActivating).not.toHaveBeenCalled()
+    expect(ordinaryWallet.receiveGuiCashuToken).not.toHaveBeenCalled()
+  })
+
+  it('preserves conditional metadata returned by the durable coordinator', async () => {
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
       mint: 'https://conditional.mint/',
       unit: 'sat',
       proofs: [],
     } as never)
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          keysets: [{
-            id: 'kid',
-            condition_id: 'condition-1',
-            outcome_collection: 'B',
-            outcome_collection_id: 'B',
-          }],
-        }),
-      }),
-    )
+    vi.mocked(ordinaryWallet.receiveGuiCashuToken).mockResolvedValueOnce([
+      {
+        secret: 's1',
+        amount: 21,
+        id: 'kid',
+        C: 'C1',
+        conditionId: 'condition-1',
+        outcomeCollection: 'B',
+        marketId: 'condition-1-B',
+      },
+      {
+        secret: 's2',
+        amount: 34,
+        id: 'kid',
+        C: 'C2',
+        conditionId: 'condition-1',
+        outcomeCollection: 'B',
+        marketId: 'condition-1-B',
+      },
+    ] as never)
 
     const result = await ingressReceiveCashuToken('cashuB-conditional-token', 'paste')
 
-    expect(fetch).toHaveBeenCalledWith('https://conditional.mint/v1/conditional_keysets')
     expect(result.proofs).toEqual([
       expect.objectContaining({
         secret: 's1',
@@ -173,6 +217,7 @@ describe('walletOps facade', () => {
   })
 
   it('does not re-register known ingress mints', async () => {
+    const expectedWalletId = currentGuiWalletId()
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
       mint: 'https://active.mint/',
       proofs: [],
@@ -186,7 +231,67 @@ describe('walletOps facade', () => {
     expect(addMintWithoutActivating).not.toHaveBeenCalled()
     // decodeToken is always called to read the token's unit (NUT-00)
     expect(cashu.decodeToken).toHaveBeenCalledWith('token')
-    expect(cashu.receiveToken).toHaveBeenCalledWith('token', 'https://active.mint', 'sat')
+    expect(ordinaryWallet.receiveGuiCashuToken).toHaveBeenCalledWith({
+      token: expect.any(Object),
+      mintUrl: 'https://active.mint',
+      unit: 'sat',
+      expectedWalletId,
+    })
+  })
+
+  it('does not start a receive operation after the seed changes during mint registration', async () => {
+    const delayedRegistration = deferred<void>()
+    addMintWithoutActivating.mockReturnValueOnce(delayedRegistration.promise)
+    vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+      mint: 'https://delayed.mint/',
+      proofs: [],
+    } as never)
+    const expectedWalletId = currentGuiWalletId()
+
+    const receive = ingressReceiveCashuToken('cashuB-delayed', 'paste')
+    void receive.catch(() => undefined)
+    await vi.waitFor(() =>
+      expect(addMintWithoutActivating).toHaveBeenCalledWith(
+        'https://delayed.mint',
+        { expectedWalletId },
+      ),
+    )
+    useWalletStore.setState({
+      mnemonic:
+        'legal winner thank year wave sausage worth useful legal winner thank yellow',
+    })
+    delayedRegistration.resolve()
+
+    await expect(receive).rejects.toThrow('wallet seed changed')
+    expect(ordinaryWallet.receiveGuiCashuToken).not.toHaveBeenCalled()
+  })
+
+  it('captures the wallet identity before awaiting token decoding', async () => {
+    const delayedDecode = deferred<{
+      mint: string
+      proofs: never[]
+    }>()
+    vi.mocked(cashu.decodeToken).mockReturnValueOnce(delayedDecode.promise as never)
+
+    const receive = ingressReceiveCashuToken('cashuB-delayed-decode', 'scan')
+    void receive.catch(() => undefined)
+    await vi.waitFor(() =>
+      expect(cashu.decodeToken).toHaveBeenCalledWith(
+        'cashuB-delayed-decode',
+      ),
+    )
+    useWalletStore.setState({
+      mnemonic:
+        'legal winner thank year wave sausage worth useful legal winner thank yellow',
+    })
+    delayedDecode.resolve({
+      mint: 'https://delayed-decode.mint',
+      proofs: [],
+    })
+
+    await expect(receive).rejects.toThrow('wallet seed changed')
+    expect(addMintWithoutActivating).not.toHaveBeenCalled()
+    expect(ordinaryWallet.receiveGuiCashuToken).not.toHaveBeenCalled()
   })
 
   it('keeps read-only mint snapshots detached from store mutation', () => {
@@ -207,18 +312,14 @@ describe('walletOps facade', () => {
 
   it('keeps relay URL validation in the facade', () => {
     expect(normalizeRelayUrl(' ws://localhost:7778/ ')).toBe('ws://localhost:7778')
-    expect(getRelayUrlValidationError('https://relay.example')).toBe(
-      'Relay URL must start with wss:// or local ws://',
-    )
+    expect(getRelayUrlValidationError('https://relay.example')).toBe('Relay URL must start with wss:// or local ws://')
     expect(getRelayUrlValidationError('wss://relay.example')).toBe(
       'Relay URL must be the configured bitCaster relay or a local relay.',
     )
     expect(getRelayUrlValidationError('wss://relay.damus.io')).toBe(
       'Public Nostr relays are not supported. Use a bitCaster-owned relay.',
     )
-    expect(() => userAddRelay('https://relay.example')).toThrow(
-      'Relay URL must start with wss:// or local ws://',
-    )
+    expect(() => userAddRelay('https://relay.example')).toThrow('Relay URL must start with wss:// or local ws://')
     expect(() => userAddRelay('wss://nos.lol')).toThrow(
       'Public Nostr relays are not supported. Use a bitCaster-owned relay.',
     )
@@ -241,3 +342,14 @@ describe('walletOps facade', () => {
     expect(() => userCreatePaymentRequest('https://active.mint')).toThrow('Wallet not set up')
   })
 })
+
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}

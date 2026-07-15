@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   TOP_UP_ECASH_MAX_BYTES,
   validateTopUpEcashToken,
-  type DecodeCashuToken,
+  type DecodeTopUpCashuToken,
 } from '../topUpPasteValidation'
 
 function token(overrides: Partial<Token> = {}): Token {
@@ -17,17 +17,17 @@ function token(overrides: Partial<Token> = {}): Token {
 
 describe('validateTopUpEcashToken', () => {
   it('rejects tokens over the 100KB paste limit before decoding', async () => {
-    const decodeToken = vi.fn<DecodeCashuToken>()
+    const decode = vi.fn<DecodeTopUpCashuToken>()
 
     const result = await validateTopUpEcashToken('x'.repeat(TOP_UP_ECASH_MAX_BYTES + 1), {
       activeMintUrl: 'https://mint.example',
       baseAsset: 'sat',
       deficit: 1,
-      decodeToken,
+      decode,
     })
 
     expect(result).toMatchObject({ ok: false, code: 'too_large' })
-    expect(decodeToken).not.toHaveBeenCalled()
+    expect(decode).not.toHaveBeenCalled()
   })
 
   it('returns a decode error for invalid Cashu tokens', async () => {
@@ -35,7 +35,7 @@ describe('validateTopUpEcashToken', () => {
       activeMintUrl: 'https://mint.example',
       baseAsset: 'sat',
       deficit: 1,
-      decodeToken: vi.fn<DecodeCashuToken>().mockRejectedValue(new Error('invalid')),
+      decode: vi.fn<DecodeTopUpCashuToken>().mockRejectedValue(new Error('invalid')),
     })
 
     expect(result).toEqual({ ok: false, code: 'decode_failed' })
@@ -46,7 +46,7 @@ describe('validateTopUpEcashToken', () => {
       activeMintUrl: 'https://mint.example',
       baseAsset: 'sat',
       deficit: 1,
-      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({ mint: 'https://other.example/' })),
+      decode: vi.fn<DecodeTopUpCashuToken>().mockResolvedValue(token({ mint: 'https://other.example/' })),
     })
 
     expect(result).toMatchObject({
@@ -61,7 +61,7 @@ describe('validateTopUpEcashToken', () => {
       activeMintUrl: 'https://mint.example',
       baseAsset: 'usd',
       deficit: 1,
-      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({ unit: 'sat' })),
+      decode: vi.fn<DecodeTopUpCashuToken>().mockResolvedValue(token({ unit: 'sat' })),
     })
 
     expect(result).toMatchObject({
@@ -76,7 +76,7 @@ describe('validateTopUpEcashToken', () => {
       activeMintUrl: 'https://mint.example',
       baseAsset: 'usd',
       deficit: 1,
-      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({
+      decode: vi.fn<DecodeTopUpCashuToken>().mockResolvedValue(token({
         unit: 'msat',
         proofs: [{ id: 'keyset-msat', amount: 1_000_000 as never, secret: 's', C: 'c' }],
       })),
@@ -94,7 +94,7 @@ describe('validateTopUpEcashToken', () => {
       activeMintUrl: 'https://mint.example',
       baseAsset: 'sat',
       deficit: 1,
-      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({ unit: 'usd' })),
+      decode: vi.fn<DecodeTopUpCashuToken>().mockResolvedValue(token({ unit: 'usd' })),
     })
 
     expect(result).toMatchObject({
@@ -109,7 +109,7 @@ describe('validateTopUpEcashToken', () => {
       activeMintUrl: 'https://mint.example',
       baseAsset: 'sat',
       deficit: 1,
-      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({ unit: 'btc' as never })),
+      decode: vi.fn<DecodeTopUpCashuToken>().mockResolvedValue(token({ unit: 'btc' as never })),
     })
 
     expect(result).toMatchObject({
@@ -124,7 +124,7 @@ describe('validateTopUpEcashToken', () => {
       activeMintUrl: 'https://mint.example',
       baseAsset: 'sat',
       deficit: 10_000,
-      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({
+      decode: vi.fn<DecodeTopUpCashuToken>().mockResolvedValue(token({
         unit: '' as never,
         proofs: [{ id: 'keyset-default', amount: 10 as never, secret: 's', C: 'c' }],
       })),
@@ -138,7 +138,7 @@ describe('validateTopUpEcashToken', () => {
       activeMintUrl: 'https://mint.example',
       baseAsset: 'usd',
       deficit: 1_500,
-      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({
+      decode: vi.fn<DecodeTopUpCashuToken>().mockResolvedValue(token({
         unit: 'usd',
         proofs: [{ id: 'keyset-usd', amount: 1_000 as never, secret: 's', C: 'c' }],
       })),
@@ -156,7 +156,7 @@ describe('validateTopUpEcashToken', () => {
       activeMintUrl: 'https://mint.example/',
       baseAsset: 'sat',
       deficit: 10_000,
-      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({
+      decode: vi.fn<DecodeTopUpCashuToken>().mockResolvedValue(token({
         mint: 'https://mint.example',
         unit: 'msat',
         proofs: [{ id: 'keyset-msat', amount: 10_000 as never, secret: 's', C: 'c' }],
@@ -177,7 +177,7 @@ describe('validateTopUpEcashToken', () => {
       activeMintUrl: 'https://mint.example',
       baseAsset: 'sat',
       deficit: 10_000,
-      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({
+      decode: vi.fn<DecodeTopUpCashuToken>().mockResolvedValue(token({
         unit: 'sat',
         proofs: [{ id: 'keyset-sat', amount: 10 as never, secret: 's', C: 'c' }],
       })),

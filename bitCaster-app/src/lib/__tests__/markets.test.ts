@@ -426,12 +426,12 @@ describe("deposit API normalization", () => {
         JSON.stringify({
           depositId: "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
           conditionId: "deadbeef",
-          state: "Credited",
-          method: "LightningInvoice",
-          amountSats: 1000,
+          state: "credited",
+          method: "ecash",
+          amountSubunits: 1000,
+          creditedAmountSubunits: 999,
           requestedAt: "2026-05-17T06:05:06.200Z",
           updatedAt: "2026-05-17T06:05:10.660Z",
-          expiresAt: "2026-05-17T06:20:06.200Z",
           failureReason: null,
         }),
         { status: 200 },
@@ -442,7 +442,8 @@ describe("deposit API normalization", () => {
       getDepositStatus("deadbeef", "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a"),
     ).resolves.toMatchObject({
       state: "credited",
-      method: "lightningInvoice",
+      method: "ecash",
+      creditedAmountSubunits: 999,
     });
   });
 
@@ -458,8 +459,39 @@ describe("deposit API normalization", () => {
     );
 
     await expect(
-      requestEcashDeposit("deadbeef", 1000, "cashu-token"),
+      requestEcashDeposit(
+        "deadbeef",
+        "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
+        1000,
+        "cashu-token",
+      ),
     ).resolves.toMatchObject({ state: "requested" });
+    const body = JSON.parse(
+      ((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string),
+    );
+    expect(body).toMatchObject({
+      depositId: "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
+      amountSubunits: 1000,
+      proofsToken: "cashu-token",
+    });
+  });
+
+  it("does not copy a rejected deposit response body into the error", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response("server echoed cashuBsecret-token", { status: 409 }),
+    );
+
+    const failure = requestEcashDeposit(
+      "deadbeef",
+      "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
+      1000,
+      "cashuBsecret-token",
+    );
+
+    const error = await failure.catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("ecash deposit request failed (409)");
+    expect((error as Error).message).not.toContain("cashuBsecret-token");
   });
 });
 

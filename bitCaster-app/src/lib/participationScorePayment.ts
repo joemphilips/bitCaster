@@ -87,7 +87,7 @@ async function spendParticipationScoreSatsAsToken(
 
   const wallet = await getWalletForUnit(mintUrl, "sat");
   const { keep, send } = await wallet.send(amountSats, proofs);
-  await removeProofs(proofs.map((proof) => proof.secret));
+  await removeProofs(proofs);
   if (keep.length > 0) {
     await addProofs(
       keep.map((proof) => ({

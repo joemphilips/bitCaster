@@ -5,6 +5,20 @@ import { useDepositWithdrawState } from '../useDepositWithdrawState'
 import { useWalletStore } from '@/stores/wallet'
 import { useActivityLogStore } from '@/stores/activity-log'
 
+const prepareGuiLightningMint = vi.fn().mockResolvedValue({
+  walletId: '0'.repeat(64),
+  operationId: 'wallet-mint:test',
+  mintUrl: 'http://localhost:8085',
+  unit: 'sat',
+})
+const completeGuiLightningMint = vi.fn().mockResolvedValue([])
+const addProofs = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+
+vi.mock('@/stores/gui-ordinary-wallet-operation', () => ({
+  prepareGuiLightningMint: (...args: unknown[]) => prepareGuiLightningMint(...args),
+  completeGuiLightningMint: (...args: unknown[]) => completeGuiLightningMint(...args),
+}))
+
 // Mock cashu.ts — we don't want real mint calls
 vi.mock('@/lib/cashu', () => ({
   createMintQuote: vi.fn(),
@@ -35,11 +49,35 @@ vi.mock('@/lib/walletOps', () => ({
 
 // Mock proof-db
 vi.mock('@/stores/proof-db', () => ({
-  db: { proofs: { toArray: vi.fn().mockResolvedValue([]), where: vi.fn().mockReturnThis(), equals: vi.fn().mockReturnThis() } },
-  getProofs: vi.fn().mockResolvedValue([{ secret: 's1', amount: 100, mintUrl: 'http://localhost:8085', id: 'id1', C: 'C1' }]),
-  getUnitProofs: vi.fn().mockResolvedValue([{ secret: 's1', amount: 100, mintUrl: 'http://localhost:8085', id: 'id1', C: 'C1' }]),
+  configureGuiWalletIdProvider: vi.fn(),
+  currentGuiWalletId: vi.fn(() => '0'.repeat(64)),
+  db: {
+    proofs: {
+      toArray: vi.fn().mockResolvedValue([]),
+      where: vi.fn().mockReturnThis(),
+      equals: vi.fn().mockReturnThis(),
+    },
+  },
+  getProofs: vi.fn().mockResolvedValue([
+    {
+      secret: 's1',
+      amount: 100,
+      mintUrl: 'http://localhost:8085',
+      id: 'id1',
+      C: 'C1',
+    },
+  ]),
+  getUnitProofs: vi.fn().mockResolvedValue([
+    {
+      secret: 's1',
+      amount: 100,
+      mintUrl: 'http://localhost:8085',
+      id: 'id1',
+      C: 'C1',
+    },
+  ]),
   isCtfProof: vi.fn().mockReturnValue(false),
-  addProofs: vi.fn().mockResolvedValue(undefined),
+  addProofs,
   removeProofs: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -60,13 +98,15 @@ vi.mock('@/lib/nip17', () => ({
 }))
 
 beforeEach(() => {
+  prepareGuiLightningMint.mockClear()
+  completeGuiLightningMint.mockClear()
+  addProofs.mockClear()
   useActivityLogStore.getState().clear()
   useWalletStore.setState({
     mnemonic: 'test words here abandon abandon abandon abandon abandon abandon abandon abandon abandon',
     setupComplete: true,
     mints: [{ url: 'http://localhost:8085', info: { name: 'Test Mint' } }],
     activeMintUrl: 'http://localhost:8085',
-    keysetCounters: {},
     mintConnectionStatuses: {},
   })
 })
@@ -194,7 +234,9 @@ describe('useDepositWithdrawState', () => {
     it('returns from payment request to deposit-ecash', async () => {
       const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
       act(() => result.current.onSelectMethod('ecash'))
-      await act(async () => { await result.current.onRequest() })
+      await act(async () => {
+        await result.current.onRequest()
+      })
       expect(result.current.currentView).toBe('payment-request-display')
       act(() => result.current.onBack())
       expect(result.current.currentView).toBe('deposit-ecash')
@@ -229,7 +271,9 @@ describe('useDepositWithdrawState', () => {
       const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
       act(() => result.current.onSelectMethod('ecash'))
       act(() => result.current.onScan())
-      await act(async () => { await result.current.onScanResult('random-text') })
+      await act(async () => {
+        await result.current.onScanResult('random-text')
+      })
       expect(result.current.error).toMatch(/unrecognized/i)
     })
   })
@@ -237,7 +281,9 @@ describe('useDepositWithdrawState', () => {
   describe('request feature', () => {
     it('onRequest creates payment request and shows display', async () => {
       const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
-      await act(async () => { await result.current.onRequest() })
+      await act(async () => {
+        await result.current.onRequest()
+      })
       expect(result.current.currentView).toBe('payment-request-display')
       expect(result.current.paymentRequestEncoded).toBeTruthy()
       expect(result.current.paymentRequestStatus).toBe('waiting')
@@ -309,19 +355,64 @@ describe('useDepositWithdrawState', () => {
       expect(result.current.invoiceExpiresAtSec).toBe(quote.expiry)
     })
 
+    it('does not expose the invoice before the exact mint plan commits', async () => {
+      const cashu = await import('@/lib/cashu')
+      const quote = {
+        quote: 'q-before-display',
+        request: 'lnbc1hidden',
+        amount: 1,
+        state: 'UNPAID',
+      }
+      vi.mocked(cashu.createMintQuote).mockResolvedValueOnce(quote as never)
+      vi.mocked(cashu.waitForMintQuotePaid).mockResolvedValueOnce(() => {})
+      let releasePlan!: (plan: unknown) => void
+      prepareGuiLightningMint.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releasePlan = resolve
+          }),
+      )
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', vi.fn()))
+      act(() => result.current.onSelectMethod('lightning'))
+      act(() => result.current.onNumpadPress('1'))
+
+      act(() => {
+        result.current.onCreateInvoice()
+      })
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(result.current.currentView).toBe('deposit-lightning')
+      expect(result.current.bolt11).toBeNull()
+
+      await act(async () => {
+        releasePlan({
+          walletId: '0'.repeat(64),
+          operationId: 'wallet-mint:q-before-display',
+          mintUrl: 'http://localhost:8085',
+          unit: 'sat',
+        })
+        await Promise.resolve()
+      })
+      expect(result.current.currentView).toBe('invoice-display')
+      expect(result.current.bolt11).toBe('lnbc1hidden')
+    })
+
     it('uses the selected advertised unit for Lightning deposit quotes', async () => {
       const cashu = await import('@/lib/cashu')
       vi.mocked(cashu.createMintQuote).mockClear()
       vi.mocked(cashu.waitForMintQuotePaid).mockClear()
       useWalletStore.setState({
-        mints: [{
-          url: 'http://localhost:8085',
-          info: { name: 'Test Mint' },
-          keysets: [
-            { id: 'sat-keyset', unit: 'sat', active: true },
-            { id: 'usd-keyset', unit: 'usd', active: true },
-          ] as never,
-        }],
+        mints: [
+          {
+            url: 'http://localhost:8085',
+            info: { name: 'Test Mint' },
+            keysets: [
+              { id: 'sat-keyset', unit: 'sat', active: true },
+              { id: 'usd-keyset', unit: 'usd', active: true },
+            ] as never,
+          },
+        ],
       })
       const quote = {
         quote: 'q-usd',
@@ -339,7 +430,9 @@ describe('useDepositWithdrawState', () => {
       act(() => result.current.onNumpadPress('1'))
       act(() => result.current.onNumpadPress('0'))
       act(() => result.current.onNumpadPress('0'))
-      await act(async () => { await result.current.onCreateInvoice() })
+      await act(async () => {
+        await result.current.onCreateInvoice()
+      })
 
       expect(cashu.createMintQuote).toHaveBeenCalledWith(100, 'http://localhost:8085', 'usd')
       expect(cashu.waitForMintQuotePaid).toHaveBeenCalledWith(
@@ -356,11 +449,11 @@ describe('useDepositWithdrawState', () => {
       })
     })
 
-    it('stores paid sat deposits in activity-log subunits while the input label remains sats', async () => {
+    it('leaves paid deposit activity to the durable operation projection', async () => {
       const cashu = await import('@/lib/cashu')
       vi.mocked(cashu.createMintQuote).mockClear()
       vi.mocked(cashu.waitForMintQuotePaid).mockClear()
-      vi.mocked(cashu.mintProofs).mockResolvedValueOnce([])
+      completeGuiLightningMint.mockResolvedValueOnce([])
       const quote = {
         quote: 'q-sat',
         request: 'lnbc1000n1example',
@@ -378,17 +471,18 @@ describe('useDepositWithdrawState', () => {
       act(() => result.current.onNumpadPress('0'))
 
       expect(result.current.amountLabel).toBe('₿10')
-      await act(async () => { await result.current.onCreateInvoice() })
+      await act(async () => {
+        await result.current.onCreateInvoice()
+      })
       const paidCallback = vi.mocked(cashu.waitForMintQuotePaid).mock.calls[0][1]
-      await act(async () => { paidCallback({ status: 'PAID', quote: { ...quote, state: 'PAID' } }) })
+      await act(async () => {
+        paidCallback({ status: 'PAID', quote: { ...quote, state: 'PAID' } })
+      })
 
-      expect(useActivityLogStore.getState().items[0]).toEqual(expect.objectContaining({
-        type: 'deposit',
-        baseAsset: 'sat',
-        amountSats: 10_000,
-        status: 'completed',
-      }))
+      expect(completeGuiLightningMint).toHaveBeenCalledOnce()
+      expect(useActivityLogStore.getState().items).toEqual([])
       expect(result.current.successAmount).toBe(10_000)
+      expect(addProofs).not.toHaveBeenCalled()
     })
 
     it('regenerate discards the cached quote and one-click requests a fresh one', async () => {
@@ -412,72 +506,66 @@ describe('useDepositWithdrawState', () => {
       act(() => result.current.onNumpadPress('0'))
       act(() => result.current.onNumpadPress('0'))
 
-      await act(async () => { await result.current.onCreateInvoice() })
+      await act(async () => {
+        await result.current.onCreateInvoice()
+      })
       expect(cashu.createMintQuote).toHaveBeenCalledTimes(1)
 
       // One-click re-quote: regenerate discards the cached quote and
       // immediately requests a fresh one — no extra Create Invoice click.
-      await act(async () => { result.current.onRegenerateInvoice() })
+      await act(async () => {
+        result.current.onRegenerateInvoice()
+      })
       expect(cashu.createMintQuote).toHaveBeenCalledTimes(2)
       expect(result.current.currentView).toBe('invoice-display')
     })
   })
 
   describe('onPaste — ecash from unknown mint', () => {
-    it('routes redemption through walletOps and stores the returned proofs', async () => {
+    it('routes redemption through walletOps whose coordinator stores the proofs', async () => {
       const walletOps = await import('@/lib/walletOps')
-      const proofDb = await import('@/stores/proof-db')
-      vi.mocked(proofDb.addProofs).mockClear()
       vi.mocked(walletOps.ingressReceiveCashuToken).mockResolvedValueOnce({
         added: true,
         mintUrl: 'https://testnut.cashu.space',
         source: 'paste',
         unit: 'sat',
         amountSats: 50,
-        proofs: [{
-          secret: 's-new',
-          amount: 50,
-          id: 'kid-B',
-          C: 'C',
-          conditionId: 'condition-1',
-          outcomeCollection: 'B',
-          marketId: 'condition-1-B',
-        } as never],
+        proofs: [
+          {
+            secret: 's-new',
+            amount: 50,
+            id: 'kid-B',
+            C: 'C',
+            conditionId: 'condition-1',
+            outcomeCollection: 'B',
+            marketId: 'condition-1-B',
+          } as never,
+        ],
       })
       // navigator.clipboard isn't in jsdom by default — install a stub.
       Object.defineProperty(navigator, 'clipboard', {
         configurable: true,
-        value: { readText: vi.fn().mockResolvedValue('cashuB-token-from-unknown-mint') },
+        value: {
+          readText: vi.fn().mockResolvedValue('cashuB-token-from-unknown-mint'),
+        },
       })
 
       const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
       act(() => result.current.onSelectMethod('ecash'))
       expect(result.current.currentView).toBe('deposit-ecash')
 
-      await act(async () => { await result.current.onPaste() })
+      await act(async () => {
+        await result.current.onPaste()
+      })
 
-      expect(walletOps.ingressReceiveCashuToken).toHaveBeenCalledWith(
-        'cashuB-token-from-unknown-mint',
-        'paste'
-      )
+      expect(walletOps.ingressReceiveCashuToken).toHaveBeenCalledWith('cashuB-token-from-unknown-mint', 'paste')
       expect(result.current.currentView).toBe('success')
       expect(result.current.successAmount).toBe(50)
       expect(result.current.error).toBeNull()
-      expect(proofDb.addProofs).toHaveBeenCalledWith([
-        expect.objectContaining({
-          mintUrl: 'https://testnut.cashu.space',
-          baseAsset: 'sat',
-          conditionId: 'condition-1',
-          outcomeCollection: 'B',
-          marketId: 'condition-1-B',
-        }),
-      ])
     })
 
     it('stores a USD token under the usd asset silo and records activity as usd', async () => {
       const walletOps = await import('@/lib/walletOps')
-      const proofDb = await import('@/stores/proof-db')
-      vi.mocked(proofDb.addProofs).mockClear()
       vi.mocked(walletOps.ingressReceiveCashuToken).mockResolvedValueOnce({
         added: false,
         mintUrl: 'https://usd.mint',
@@ -493,21 +581,17 @@ describe('useDepositWithdrawState', () => {
 
       const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
       act(() => result.current.onSelectMethod('ecash'))
-      await act(async () => { await result.current.onPaste() })
+      await act(async () => {
+        await result.current.onPaste()
+      })
 
-      // The proof must land in the usd silo, not sat
-      expect(proofDb.addProofs).toHaveBeenCalledWith([
-        expect.objectContaining({ baseAsset: 'usd' }),
-      ])
       // Success state must reflect the token's unit
       expect(result.current.successUnit).toBe('usd')
     })
 
     it('surfaces walletOps receive errors to the red banner without swallowing', async () => {
       const walletOps = await import('@/lib/walletOps')
-      vi.mocked(walletOps.ingressReceiveCashuToken).mockRejectedValueOnce(
-        new Error('Token already spent')
-      )
+      vi.mocked(walletOps.ingressReceiveCashuToken).mockRejectedValueOnce(new Error('Token already spent'))
       Object.defineProperty(navigator, 'clipboard', {
         configurable: true,
         value: { readText: vi.fn().mockResolvedValue('cashuB-spent') },
@@ -515,7 +599,9 @@ describe('useDepositWithdrawState', () => {
 
       const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
       act(() => result.current.onSelectMethod('ecash'))
-      await act(async () => { await result.current.onPaste() })
+      await act(async () => {
+        await result.current.onPaste()
+      })
 
       expect(result.current.error).toBe('Token already spent')
     })
@@ -532,7 +618,14 @@ describe('useDepositWithdrawState', () => {
 
     it('auto-creates melt quote when bolt11 invoice is entered', async () => {
       const cashu = await import('@/lib/cashu')
-      const mockQuote = { quote: 'q1', amount: 1000, fee_reserve: 10, state: 'UNPAID', expiry: 0, payment_preimage: null }
+      const mockQuote = {
+        quote: 'q1',
+        amount: 1000,
+        fee_reserve: 10,
+        state: 'UNPAID',
+        expiry: 0,
+        payment_preimage: null,
+      }
       vi.mocked(cashu.createMeltQuote).mockResolvedValueOnce(mockQuote as never)
 
       const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))
@@ -559,12 +652,11 @@ describe('useDepositWithdrawState', () => {
       act(() => result.current.onNumpadPress('5'))
       act(() => result.current.onNumpadPress('0'))
 
-      await act(async () => { await result.current.onSendEcash() })
+      await act(async () => {
+        await result.current.onSendEcash()
+      })
 
-      expect(cashu.spendRegularSatsAsToken).toHaveBeenCalledWith(
-        50,
-        'http://localhost:8085',
-      )
+      expect(cashu.spendRegularSatsAsToken).toHaveBeenCalledWith(50, 'http://localhost:8085')
     })
 
     it('selects sat base proofs when paying lightning', async () => {
@@ -579,24 +671,22 @@ describe('useDepositWithdrawState', () => {
         expiry: 0,
         payment_preimage: null,
       } as never)
-      vi.mocked(cashu.meltProofs).mockResolvedValueOnce({ paid: true, change: [] } as never)
+      vi.mocked(cashu.meltProofs).mockResolvedValueOnce({
+        paid: true,
+        change: [],
+      } as never)
 
       const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))
       act(() => result.current.onSelectMethod('lightning'))
       await act(async () => {
         await result.current.onLightningInputChange('lnbc100n1pexample')
       })
-      await act(async () => { await result.current.onConfirmMelt() })
+      await act(async () => {
+        await result.current.onConfirmMelt()
+      })
 
-      expect(proofDb.getUnitProofs).toHaveBeenCalledWith(
-        'http://localhost:8085',
-        { unit: 'sat' },
-      )
-      expect(cashu.meltProofs).toHaveBeenCalledWith(
-        expect.any(Object),
-        expect.any(Array),
-        'http://localhost:8085',
-      )
+      expect(proofDb.getUnitProofs).toHaveBeenCalledWith('http://localhost:8085', { unit: 'sat' })
+      expect(cashu.meltProofs).toHaveBeenCalledWith(expect.any(Object), expect.any(Array), 'http://localhost:8085')
     })
   })
 })

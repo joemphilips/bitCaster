@@ -12,7 +12,13 @@
 
 import React from 'react'
 import { useTranslation } from 'react-i18next'
-import type { TradeLifecycleState } from '@/stores/tradeStore'
+
+export type TradeLifecycleState =
+  | 'Matched'
+  | 'settling'
+  | 'confirmed'
+  | 'retrying'
+  | 'Failed'
 
 // ---------------------------------------------------------------------------
 // Icons (inline SVG to avoid an extra dependency)

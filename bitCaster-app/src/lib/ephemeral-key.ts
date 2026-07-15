@@ -6,7 +6,8 @@ import { bytesToHex } from 'nostr-tools/utils'
  * matching engine so the eventual counterparty can encrypt atomic-swap
  * messages to it; the privkey stays in the browser.
  *
- * Both halves are hex so the store serialises cleanly to localStorage.
+ * Both halves are hex so the durable pending-intent adapter can serialize the
+ * keypair without changing its exact bytes.
  */
 export interface EphemeralKeyPair {
   /** 32-byte scalar, hex (64 chars). */

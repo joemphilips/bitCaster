@@ -10,6 +10,7 @@ const getConditionCtfProofs = vi.fn().mockResolvedValue([])
 const removeProofs = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('@/stores/proof-db', () => ({
+  configureGuiWalletIdProvider: vi.fn(),
   getOutcomeProofs: (...args: unknown[]) => getOutcomeProofs(...args),
   getConditionCtfProofs: (...args: unknown[]) => getConditionCtfProofs(...args),
   removeProofs: (...args: unknown[]) => removeProofs(...args),
@@ -34,7 +35,7 @@ vi.mock('@/stores/settings', () => ({
 
 vi.mock('@/stores/activity-log', () => ({
   useActivityLogStore: (selector: (s: unknown) => unknown) =>
-    selector({ items: [], addActivity: vi.fn() }),
+    selector({ items: [], addActivityForWallet: vi.fn() }),
 }))
 
 // usePortfolioState is heavy (Dexie live queries + fetch); supply fixed state.
@@ -115,7 +116,10 @@ describe('PortfolioPage — Remove lost position (P22 F2)', () => {
       'A|B',
       { includeReserved: true },
     )
-    expect(removeProofs).toHaveBeenCalledWith(['s-lost-1', 's-lost-2'])
+    expect(removeProofs).toHaveBeenCalledWith([
+      expect.objectContaining({ secret: 's-lost-1' }),
+      expect.objectContaining({ secret: 's-lost-2' }),
+    ])
     // No mint redeem path for a losing leg.
     const { settleCtfPosition } = await import('@/lib/cashu')
     expect(settleCtfPosition).not.toHaveBeenCalled()
@@ -151,7 +155,9 @@ describe('PortfolioPage — Remove lost position (P22 F2)', () => {
 
     // Only the losing-keyset proof is deleted; the winning-keyset proof is
     // never touched.
-    expect(removeProofs).toHaveBeenCalledWith(['s-lose'])
+    expect(removeProofs).toHaveBeenCalledWith([
+      expect.objectContaining({ secret: 's-lose' }),
+    ])
     confirmSpy.mockRestore()
   })
 
@@ -222,7 +228,9 @@ describe('PortfolioPage — Remove lost position (P22 F2)', () => {
       'B',
       { includeReserved: true },
     )
-    expect(removeProofs).toHaveBeenCalledWith(['s-lost'])
+    expect(removeProofs).toHaveBeenCalledWith([
+      expect.objectContaining({ secret: 's-lost' }),
+    ])
     confirmSpy.mockRestore()
   })
 

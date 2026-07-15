@@ -1,8 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useWalletStore } from '../wallet'
 import * as bip39 from '@/lib/bip39'
+import { DexieCounterSource } from '../gui-counter-source'
+import { deriveDurableCustodyWalletId } from '@bitcaster/client-sdk/durableCustody'
 
 const cashuMocks = vi.hoisted(() => ({
+  getInfo: vi.fn().mockResolvedValue({
+    name: 'test mint',
+    pubkey: 'abc',
+    version: 'test',
+    nuts: {
+      4: { methods: [] },
+      5: { methods: [] },
+    },
+  }),
   loadMint: vi.fn().mockResolvedValue(undefined),
   walletConstructor: vi.fn(),
 }))
@@ -12,15 +23,7 @@ vi.mock('@cashu/cashu-ts', () => {
     constructor(public readonly url: string) {}
 
     async getInfo() {
-      return {
-        name: 'test mint',
-        pubkey: 'abc',
-        version: 'test',
-        nuts: {
-          4: { methods: [] },
-          5: { methods: [] },
-        },
-      }
+      return cashuMocks.getInfo()
     }
 
     async getKeySets() {
@@ -35,7 +38,11 @@ vi.mock('@cashu/cashu-ts', () => {
   const MockWallet = vi.fn(function MockWallet(
     this: unknown,
     mint: MockMint,
-    options?: { unit?: string },
+    options?: {
+      unit?: string
+      bip39seed?: Uint8Array
+      counterSource?: unknown
+    },
   ) {
     const wallet = { mint, options, loadMint: cashuMocks.loadMint }
     cashuMocks.walletConstructor(mint, options, wallet)
@@ -57,8 +64,6 @@ beforeEach(() => {
     walletBackupState: 'none',
     mints: [],
     activeMintUrl: 'http://localhost:8085',
-    keysetCounters: {},
-    keysetCountersRecovered: {},
     mintConnectionStatuses: {},
     _addMint: initialAddMint,
     _addMintWithoutActivating: initialAddMintWithoutActivating,
@@ -100,39 +105,6 @@ describe('useWalletStore', () => {
       expect(result.error).toContain('12 words')
     })
 
-    it('clears keysetCounters and keysetCountersRecovered when seed changes (codex review #6)', () => {
-      // Pre-existing wallet had counters and a recovery flag. Switching to
-      // a new seed via recoverFromMnemonic must NOT carry those over —
-      // otherwise the new seed is treated as already-recovered against the
-      // mint and counter collisions are not caught.
-      useWalletStore.setState({
-        mnemonic: 'old seed words placeholder',
-        keysetCounters: { k1: 42 },
-        keysetCountersRecovered: { k1: true },
-      })
-      const words = bip39.generate()
-      useWalletStore.getState().recoverFromMnemonic(words)
-
-      const state = useWalletStore.getState()
-      expect(state.mnemonic).toBe(words.join(' '))
-      expect(state.keysetCounters).toEqual({})
-      expect(state.keysetCountersRecovered).toEqual({})
-    })
-  })
-
-  describe('generateMnemonic — also clears counter state (codex review #6)', () => {
-    it('resets keysetCounters and keysetCountersRecovered on new mnemonic', () => {
-      useWalletStore.setState({
-        keysetCounters: { k1: 99 },
-        keysetCountersRecovered: { k1: true },
-      })
-      useWalletStore.getState().generateMnemonic()
-
-      const state = useWalletStore.getState()
-      expect(state.mnemonic.split(' ')).toHaveLength(12)
-      expect(state.keysetCounters).toEqual({})
-      expect(state.keysetCountersRecovered).toEqual({})
-    })
   })
 
   describe('testMintConnection', () => {
@@ -168,6 +140,68 @@ describe('useWalletStore', () => {
         'msat',
         'sat',
       ])
+    })
+  })
+
+  describe('getWallet deterministic counter authority', () => {
+    it('injects a new seed-bound Dexie source after a seed switch', async () => {
+      useWalletStore.getState().recoverFromMnemonic(bip39.generate())
+      await useWalletStore.getState().getWallet('https://mint.example', 'sat')
+      const firstOptions = cashuMocks.walletConstructor.mock.calls.at(-1)?.[1]
+
+      useWalletStore.getState().recoverFromMnemonic(bip39.generate())
+      await useWalletStore.getState().getWallet('https://mint.example', 'sat')
+      const secondOptions = cashuMocks.walletConstructor.mock.calls.at(-1)?.[1]
+
+      expect(firstOptions?.counterSource).toBeInstanceOf(DexieCounterSource)
+      expect(secondOptions?.counterSource).toBeInstanceOf(DexieCounterSource)
+      expect(secondOptions?.counterSource).not.toBe(firstOptions?.counterSource)
+    })
+
+    it('cannot return a late old-seed wallet from the new seed cache', async () => {
+      const oldWords = bip39.generate()
+      const newWords = bip39.generate()
+      useWalletStore.getState().recoverFromMnemonic(oldWords)
+      let finishOldLoad: (() => void) | undefined
+      cashuMocks.loadMint.mockImplementationOnce(
+        () => new Promise<void>((resolve) => (finishOldLoad = resolve)),
+      )
+
+      const oldWalletPromise = useWalletStore
+        .getState()
+        .getWalletForUnit('https://mint.example', 'sat')
+      expect(finishOldLoad).toBeDefined()
+      useWalletStore.getState().recoverFromMnemonic(newWords)
+      const newWallet = await useWalletStore
+        .getState()
+        .getWalletForUnit('https://mint.example', 'sat')
+
+      finishOldLoad?.()
+      const oldWallet = await oldWalletPromise
+      const cachedNewWallet = await useWalletStore
+        .getState()
+        .getWalletForUnit('https://mint.example', 'sat')
+
+      expect(oldWallet).not.toBe(newWallet)
+      expect(cachedNewWallet).toBe(newWallet)
+    })
+
+    it('rejects a held old-wallet identity before loading after a seed switch', async () => {
+      const oldWords = bip39.generate()
+      useWalletStore.getState().recoverFromMnemonic(oldWords)
+      const oldWalletId = deriveDurableCustodyWalletId(
+        bip39.toSeed(oldWords),
+      )
+      useWalletStore.getState().recoverFromMnemonic(bip39.generate())
+
+      await expect(
+        useWalletStore.getState().getWalletForUnit(
+          'https://mint.example',
+          'sat',
+          { expectedWalletId: oldWalletId },
+        ),
+      ).rejects.toThrow('held wallet lock')
+      expect(cashuMocks.loadMint).not.toHaveBeenCalled()
     })
   })
 
@@ -333,6 +367,45 @@ describe('useWalletStore', () => {
       expect(state.activeMintUrl).toBe('http://staging.example')
     })
 
+    it('does not register an ingress mint under a replacement seed after delayed discovery', async () => {
+      const oldWords = bip39.generate()
+      useWalletStore.getState().recoverFromMnemonic(oldWords)
+      const oldWalletId = deriveDurableCustodyWalletId(bip39.toSeed(oldWords))
+      const delayedInfo = deferred<{
+        name: string
+        pubkey: string
+        version: string
+        nuts: Record<number, { methods: never[] }>
+      }>()
+      cashuMocks.getInfo.mockReturnValueOnce(delayedInfo.promise)
+
+      const registration = useWalletStore
+        .getState()
+        ._addMintWithoutActivating('https://delayed.example', {
+          expectedWalletId: oldWalletId,
+        })
+      void registration.catch(() => undefined)
+      await vi.waitFor(() => expect(cashuMocks.getInfo).toHaveBeenCalledOnce())
+
+      useWalletStore.getState().recoverFromMnemonic(bip39.generate())
+      delayedInfo.resolve({
+        name: 'delayed mint',
+        pubkey: 'abc',
+        version: 'test',
+        nuts: {
+          4: { methods: [] },
+          5: { methods: [] },
+        },
+      })
+
+      await expect(registration).rejects.toThrow('held wallet lock')
+      const state = useWalletStore.getState()
+      expect(state.mints.map((mint) => mint.url)).not.toContain(
+        'https://delayed.example',
+      )
+      expect(state.activeMintUrl).toBe('http://staging.example')
+    })
+
     it('_setActiveMint switches activeMintUrl only when the target is already a registered mint', () => {
       useWalletStore.setState({
         mints: [
@@ -351,3 +424,14 @@ describe('useWalletStore', () => {
     })
   })
 })
+
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
