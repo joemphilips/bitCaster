@@ -998,6 +998,47 @@ export function promoteDurablePreTradeSession(inputValue: {
   })
 }
 
+/** CAS-replaces the truthful session before its first custody operation exists. */
+export function advanceDurablePreTradeSession(inputValue: {
+  state: DurableStorageAccountingState
+  scopeId: string
+  reservationId: string
+  previousSession: DurableStoragePlannedArtifact
+  nextSession: DurableStoragePlannedArtifact
+}): DurableStorageAccountingState {
+  const input = requireRecord(inputValue, 'pre-trade session advance input')
+  requireKnownFields(input, [
+    'state',
+    'scopeId',
+    'reservationId',
+    'previousSession',
+    'nextSession',
+  ])
+  const state = decodeDurableStorageAccountingState(input.state)
+  const context = findPreTradeReservation(state, input.scopeId, input.reservationId)
+  if (context.reservation.stage !== 'session-bound' || context.reservation.session === null) {
+    throw new Error('pre-trade reservation is not session-bound')
+  }
+  verifyComponentArtifact(
+    context.reservation.session,
+    input.previousSession,
+    'previous trade session',
+  )
+  const session = measureComponent([input.nextSession], 'session', {
+    exactCount: 1,
+    artifactRoles: ['trade-session'],
+  })
+  requireSameComponentIdentity(context.reservation.session, session, 'trade session')
+  requireCapacityContains(session, context.reservation.capacityProfile.session, 'session')
+  if (sameArtifactCommitmentSets(session.artifacts, context.reservation.session.artifacts)) {
+    return state
+  }
+  return replacePreTradeReservation(state, context, {
+    ...context.reservation,
+    session,
+  })
+}
+
 /**
  * Introduces role-bound custody operation ids only when their exact rows exist.
  * The original worst-case capacity remains charged until terminal release.

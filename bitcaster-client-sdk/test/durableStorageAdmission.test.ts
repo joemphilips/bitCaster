@@ -19,8 +19,9 @@ import {
   DURABLE_STORAGE_OPERATION_LIMIT_MAX,
   DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX,
   DURABLE_STORAGE_SWAP_ARTIFACT_LIMIT_MAX,
-  advanceDurableStorageReservationArtifacts,
   advanceDurablePreTradePubkeyAttempt,
+  advanceDurablePreTradeSession,
+  advanceDurableStorageReservationArtifacts,
   applyDurablePreTradeStorageAdmissionBatch,
   applyDurableStorageAdmissionBatch,
   bindDurablePreTradeStorageReservation,
@@ -662,6 +663,29 @@ test('advances one truthful pre-trade intent into a session and exact custody re
   })
   assert.equal(replayedPromotion.revision, sessionBound.revision)
 
+  const advancedSessionArtifact = artifact(
+    activeInput.session.artifactId,
+    499,
+    'trade-session',
+  )
+  const advancedSession = advanceDurablePreTradeSession({
+    state: sessionBound,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    previousSession: activeInput.session,
+    nextSession: advancedSessionArtifact,
+  })
+  assert.equal(advancedSession.revision, sessionBound.revision + 1)
+  const replayedAdvance = advanceDurablePreTradeSession({
+    state: advancedSession,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    previousSession: advancedSessionArtifact,
+    nextSession: advancedSessionArtifact,
+  })
+  assert.equal(replayedAdvance.revision, advancedSession.revision)
+  activeInput.session = advancedSessionArtifact
+
   const active = createDurableStorageReservationPlan({
     reservationId: preTrade.reservationId,
     budget: calculateDurableSwapStorageBudget(activeInput),
@@ -676,7 +700,7 @@ test('advances one truthful pre-trade intent into a session and exact custody re
     transactionOnlyArtifacts: [custodyScope],
   })
   const bound = bindDurablePreTradeStorageReservation({
-    state: sessionBound,
+    state: advancedSession,
     scopeId: SCOPE.scopeId,
     reservationId: preTrade.reservationId,
     artifactPlan,
@@ -955,6 +979,62 @@ test('pre-trade transitions reject mutation, substitution, foreign identity, and
           'swap-intent:trade-001',
           profile.tradeIntent.bytes + 1,
           'trade-intent',
+        ),
+      }),
+    /exceeds the reserved capacity/,
+  )
+  const session = artifact('swap-session:trade-001', 100, 'trade-session')
+  const sessionBound = promoteDurablePreTradeSession({
+    state: prepared,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    previousIntent: intent,
+    session,
+  })
+  assert.throws(
+    () =>
+      advanceDurablePreTradeSession({
+        state: prepared,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousSession: session,
+        nextSession: session,
+      }),
+    /not session-bound/,
+  )
+  assert.throws(
+    () =>
+      advanceDurablePreTradeSession({
+        state: sessionBound,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousSession: artifact('swap-session:trade-001', 99, 'trade-session'),
+        nextSession: session,
+      }),
+    /do not match the committed plan/,
+  )
+  assert.throws(
+    () =>
+      advanceDurablePreTradeSession({
+        state: sessionBound,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousSession: session,
+        nextSession: artifact('swap-session:foreign', 100, 'trade-session'),
+      }),
+    /identity changed/,
+  )
+  assert.throws(
+    () =>
+      advanceDurablePreTradeSession({
+        state: sessionBound,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousSession: session,
+        nextSession: artifact(
+          'swap-session:trade-001',
+          profile.session.bytes + 1,
+          'trade-session',
         ),
       }),
     /exceeds the reserved capacity/,
