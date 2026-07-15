@@ -83,6 +83,7 @@ test('exact proof facts bind real public keys and explicit keyset usage', () => 
     binding,
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 250 },
     hasOutputs: true,
+    inputKeysetRequirement: 'required',
     keysets: [
       {
         keysetId: '0011223344556677',
@@ -127,6 +128,7 @@ test('dispatch intent binds the exact operation artifacts through SDK policy', (
     binding,
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
     hasOutputs: true,
+    inputKeysetRequirement: 'required',
     keysets: [{
       keysetId: '0011223344556677',
       unit: 'sat',
@@ -197,6 +199,7 @@ test('exact proof facts reject missing authority and verification policy', () =>
     },
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
     hasOutputs: true,
+    inputKeysetRequirement: 'required' as const,
     keysets: [
       {
         keysetId: '0011223344556677',
@@ -220,6 +223,13 @@ test('exact proof facts reject missing authority and verification policy', () =>
   })
   assert.equal(zeroOutput.verification.hasOutputs, false)
   assert.deepEqual(zeroOutput.verification.outputKeysets, [])
+  assert.throws(
+    () => createDurableProofOperationFacts({
+      ...base,
+      inputKeysetRequirement: 'none',
+    }),
+    /input keysets do not match/,
+  )
   assert.throws(
     () => createDurableProofOperationFacts({
       ...base,

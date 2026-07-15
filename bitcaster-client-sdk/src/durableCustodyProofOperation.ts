@@ -100,6 +100,8 @@ export async function resolveDurableCustodyProofOperationFacts(
     binding,
     horizon: operationHorizon(semanticKind, input.session),
     hasOutputs,
+    inputKeysetRequirement:
+      input.operation.kind === 'wallet-mint' ? 'none' : 'required',
     keysets: createKeysetFacts(unit, usage, mintKeys, input.requireDleq),
   })
 }

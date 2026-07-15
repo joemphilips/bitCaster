@@ -141,6 +141,7 @@ export interface DurableProofOperationFactsInput {
   binding: DurableCustodyBinding
   horizon: Omit<DurableCustodyRecord['operation']['horizon'], 'keysetExpiryMs'>
   hasOutputs: boolean
+  inputKeysetRequirement: 'required' | 'none'
   keysets: readonly DurableProofOperationKeysetFactsInput[]
 }
 
@@ -1103,10 +1104,17 @@ export function createDurableProofOperationFacts(
     || input.keysets.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
     throw new Error('proof operation keysets are invalid')
   }
+  const inputKeysetRequirement = input.inputKeysetRequirement
+  requireOneOf(
+    inputKeysetRequirement,
+    ['required', 'none'] as const,
+    'input keyset requirement',
+  )
   const verification = decodeProofOperationKeysetFacts(
     input.keysets,
     unit,
     requireBoolean(input.hasOutputs, 'proof operation output marker'),
+    inputKeysetRequirement,
   )
   return {
     unit,
@@ -1195,6 +1203,7 @@ function decodeProofOperationKeysetFacts(
   keysets: readonly DurableProofOperationKeysetFactsInput[],
   unit: string,
   hasOutputs: boolean,
+  inputKeysetRequirement: DurableProofOperationFactsInput['inputKeysetRequirement'],
 ): DurableProofOperationFacts['verification'] {
   const seen = new Set<string>()
   const inputKeysets: DurableProofOperationFacts['verification']['inputKeysets'] = []
@@ -1209,7 +1218,12 @@ function decodeProofOperationKeysetFacts(
       requireDleq: keyset.requireDleq,
     }
   })
-  if (inputKeysets.length === 0) throw new Error('input keysets must not be empty')
+  if (
+    (inputKeysetRequirement === 'required' && inputKeysets.length === 0) ||
+    (inputKeysetRequirement === 'none' && inputKeysets.length !== 0)
+  ) {
+    throw new Error('input keysets do not match the declared requirement')
+  }
   assertOutputKeysetAuthority(hasOutputs, outputKeysets)
   return { hasOutputs, keysetBindings, inputKeysets, outputKeysets }
 }
@@ -1607,6 +1621,7 @@ function decodeOperation(value: unknown): DurableCustodyRecord['operation'] {
   const retainedOperationKey = requireIdentifier(operation.retainedOperationKey, 'retained operation key')
   const semanticKind = requireString(operation.semanticKind, 'semantic kind') as DurableCustodySemanticKind
   requireOneOf(semanticKind, SEMANTIC_KINDS, 'semantic kind')
+  const allowsEmptyInputs = semanticKind === 'generic-receive'
   const state = requireString(operation.state, 'operation state') as DurableCustodyOperationState
   requireOneOf(state, STATES, 'operation state')
   const decoded = {
@@ -1620,8 +1635,8 @@ function decodeOperation(value: unknown): DurableCustodyRecord['operation'] {
       'terminal replay evidence requirement',
     ),
     custodyContext: decodeCustodyContext(operation.custodyContext),
-    reservation: decodeReservation(operation.reservation),
-    exactRequest: decodeExactRequest(operation.exactRequest),
+    reservation: decodeReservation(operation.reservation, allowsEmptyInputs),
+    exactRequest: decodeExactRequest(operation.exactRequest, allowsEmptyInputs),
     outputPlan: decodeOutputPlan(operation.outputPlan),
     privateMaterial: decodePrivateMaterial(operation.privateMaterial),
     result: decodeResult(operation.result),
@@ -1712,7 +1727,10 @@ function decodeCustodyContext(value: unknown): DurableCustodyRecord['operation']
   }
 }
 
-function decodeReservation(value: unknown): DurableCustodyRecord['operation']['reservation'] {
+function decodeReservation(
+  value: unknown,
+  allowsEmptyInputs: boolean,
+): DurableCustodyRecord['operation']['reservation'] {
   const reservation = requireRecord(value, 'reservation')
   requireKnownFields(reservation, ['reservationId', 'parentReservationId', 'inputs'])
   const rawInputs = requireArray(reservation.inputs, 'reservation inputs')
@@ -1730,7 +1748,9 @@ function decodeReservation(value: unknown): DurableCustodyRecord['operation']['r
       curve,
     }
   })
-  if (inputs.length === 0) throw new Error('reservation inputs must not be empty')
+  if (!allowsEmptyInputs && inputs.length === 0) {
+    throw new Error('reservation inputs must not be empty')
+  }
   return {
     reservationId: requireIdentifier(reservation.reservationId, 'reservation id'),
     parentReservationId: reservation.parentReservationId === null
@@ -1740,7 +1760,10 @@ function decodeReservation(value: unknown): DurableCustodyRecord['operation']['r
   }
 }
 
-function decodeExactRequest(value: unknown): DurableCustodyRecord['operation']['exactRequest'] {
+function decodeExactRequest(
+  value: unknown,
+  allowsEmptyInputs: boolean,
+): DurableCustodyRecord['operation']['exactRequest'] {
   const request = requireRecord(value, 'exact request')
   requireKnownFields(request, ['requestId', 'requestFingerprint', 'payloadHandle', 'inputProofIds', 'outputPlanFingerprint'])
   const rawInputProofIds = requireArray(request.inputProofIds, 'request input proof ids')
@@ -1749,7 +1772,9 @@ function decodeExactRequest(value: unknown): DurableCustodyRecord['operation']['
   }
   const inputProofIds = rawInputProofIds
     .map((proofId) => requireFingerprint(proofId, 'request input proof id'))
-  if (inputProofIds.length === 0) throw new Error('request input proof ids must not be empty')
+  if (!allowsEmptyInputs && inputProofIds.length === 0) {
+    throw new Error('request input proof ids must not be empty')
+  }
   return {
     requestId: requireIdentifier(request.requestId, 'request id'),
     requestFingerprint: requireFingerprint(request.requestFingerprint, 'request fingerprint'),
@@ -2002,6 +2027,14 @@ function validateRecordBindings(record: DurableCustodyRecord): void {
   }
   const reservationProofs = new Set(record.operation.reservation.inputs.map((input) => input.proofId))
   const requestProofs = new Set(record.operation.exactRequest.inputProofIds)
+  if (
+    reservationProofs.size === 0 &&
+    (record.operation.semanticKind !== 'generic-receive' ||
+      !record.operation.verification.hasOutputs ||
+      record.operation.verification.outputKeysets.length === 0)
+  ) {
+    throw new Error('inputless custody operation is invalid')
+  }
   if (reservationProofs.size !== record.operation.reservation.inputs.length
     || requestProofs.size !== record.operation.exactRequest.inputProofIds.length
     || reservationProofs.size !== requestProofs.size

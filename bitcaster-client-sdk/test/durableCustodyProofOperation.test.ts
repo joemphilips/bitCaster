@@ -9,7 +9,12 @@ import {
   deriveDurableCustodyProofResultFingerprint,
 } from '../src/durableCustodyProofOperationRecord.ts'
 import {
+  decodeDurableCustodyRecord,
+  decodeDurableCustodyScopeState,
+  decideDurableCustodyRecovery,
   deriveDurableCustodyScopeId,
+  type DurableCustodyRecord,
+  type DurableCustodyRecoveryClassification,
   type DurableCustodyScope,
 } from '../src/durableCustody.ts'
 import {
@@ -48,6 +53,200 @@ test('shared proof operation facts bind wallet semantics and exact mint keys', a
     keysetExpiryMs: null,
   })
   assert.equal(facts.verification.keysetBindings[0]?.keysetId, KEYSET_ID)
+})
+
+test('wallet mint facts require output authority without inventing proof inputs', async () => {
+  const mint = operation('wallet-mint')
+  const operationWithoutInputs = { ...mint, inputs: [] }
+  const facts = await resolveDurableCustodyProofOperationFacts({
+    operation: operationWithoutInputs,
+    session: null,
+    resolveMintKeys,
+    requireDleq: false,
+  })
+
+  assert.deepEqual(facts.verification.inputKeysets, [])
+  assert.deepEqual(facts.verification.outputKeysets, [
+    { keysetId: KEYSET_ID, curve: 'secp256k1' },
+  ])
+  const record = createDurableCustodyProofOperation({
+    scope: walletScope(),
+    operation: operationWithoutInputs,
+    facts,
+    inventoryAccountId: null,
+  })
+  assert.deepEqual(record.operation.reservation.inputs, [])
+  assert.deepEqual(record.operation.exactRequest.inputProofIds, [])
+})
+
+test('only wallet mint may resolve without input proof authority', async () => {
+  await assert.rejects(
+    resolveDurableCustodyProofOperationFacts({
+      operation: { ...operation('wallet-receive'), inputs: [] },
+      session: null,
+      resolveMintKeys,
+      requireDleq: false,
+    }),
+    /input keysets do not match/,
+  )
+  await assert.rejects(
+    resolveDurableCustodyProofOperationFacts({
+      operation: { ...operation('wallet-send'), inputs: [] },
+      session: null,
+      resolveMintKeys,
+      requireDleq: false,
+    }),
+    /input keysets do not match/,
+  )
+  await assert.rejects(
+    resolveDurableCustodyProofOperationFacts({
+      operation: { ...operation('regular-split'), inputs: [] },
+      session: null,
+      resolveMintKeys,
+      requireDleq: false,
+    }),
+    /input keysets do not match/,
+  )
+
+  const session = tradeSession()
+  const link = createDurableTradeProofOperationLink({
+    tradeId: session.tradeId,
+    role: session.role,
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'operation-001',
+  })
+  await assert.rejects(
+    resolveDurableCustodyProofOperationFacts({
+      operation: {
+        ...operation('swap-lock'),
+        inputs: [],
+        durableTradeRecovery: link,
+      },
+      session,
+      resolveMintKeys,
+      requireDleq: true,
+    }),
+    /input keysets do not match/,
+  )
+})
+
+test('wallet mint rejects input proofs and missing output authority', async () => {
+  await assert.rejects(
+    resolveDurableCustodyProofOperationFacts({
+      operation: operation('wallet-mint'),
+      session: null,
+      resolveMintKeys,
+      requireDleq: false,
+    }),
+    /input keysets do not match/,
+  )
+  await assert.rejects(
+    resolveDurableCustodyProofOperationFacts({
+      operation: { ...operation('wallet-mint'), inputs: [], outputs: {} },
+      session: null,
+      resolveMintKeys,
+      requireDleq: false,
+    }),
+    /custody operation has no keysets/,
+  )
+  await assert.rejects(
+    resolveDurableCustodyProofOperationFacts({
+      operation: { ...operation('wallet-mint'), inputs: [] },
+      session: null,
+      resolveMintKeys: async () => new Map(),
+      requireDleq: false,
+    }),
+    /mint keyset does not match/,
+  )
+})
+
+test('inputless persisted receive rejects broadened or mismatched authority', async () => {
+  const record = await inputlessMintRecord()
+
+  for (const semanticKind of ['generic-send', 'swap-lock']) {
+    assertInputlessRecordRejected(
+      record,
+      (operation) => (operation.semanticKind = semanticKind),
+      /reservation inputs must not be empty/,
+    )
+  }
+  assertInputlessRecordRejected(
+    record,
+    (operation) => (operation.exactRequest.inputProofIds = ['a'.repeat(64)]),
+    /exact request input binding is invalid/,
+  )
+  assertInputlessRecordRejected(
+    record,
+    (operation) =>
+      (operation.reservation.inputs = [
+        {
+          proofId: 'a'.repeat(64),
+          keysetId: KEYSET_ID,
+          curve: 'secp256k1',
+        },
+      ]),
+    /exact request input binding is invalid/,
+  )
+  assertInputlessRecordRejected(
+    record,
+    (operation) => (operation.verification.outputKeysets = []),
+    /output keysets must not be empty/,
+  )
+  assertInputlessRecordRejected(
+    record,
+    (operation) => {
+      operation.verification.hasOutputs = false
+      operation.verification.outputKeysets = []
+    },
+    /inputless custody operation is invalid/,
+  )
+  assertInputlessRecordRejected(
+    record,
+    (operation) =>
+      (operation.verification.outputKeysets = [
+        { keysetId: 'foreign-keyset', curve: 'secp256k1' },
+      ]),
+    /output keyset verification binding is invalid/,
+  )
+})
+
+test('inputless persisted receive round-trips into bounded retry recovery', async () => {
+  const record = decodeDurableCustodyRecord(
+    structuredClone(await inputlessMintRecord()),
+  )
+  const scopeState = decodeDurableCustodyScopeState({
+    schemaVersion: 1,
+    scope: record.scope,
+    fencingEpoch: 1,
+    owner: { incarnationId: 'worker-001', leaseExpiresAtMs: 10_000 },
+    effectiveClock: { highWaterMarkMs: 1_000 },
+  })
+  const decision = decideDurableCustodyRecovery(
+    record,
+    scopeState,
+    recoveryEvidence(record, 'mint-response-unknown', 'unknown'),
+  )
+
+  assert.deepEqual(decision, {
+    kind: 'retry-later',
+    effectiveNowMs: 1_500,
+  })
+
+  const reissue = decideDurableCustodyRecovery(
+    record,
+    scopeState,
+    recoveryEvidence(
+      record,
+      'all-inputs-unspent',
+      'deterministically-rejected',
+    ),
+  )
+  assert.deepEqual(reissue, {
+    kind: 'reissue-exact-operation',
+    effectiveNowMs: 1_500,
+    exact: exactReference(record),
+  })
 })
 
 test('shared proof operation facts derive the exact role-specific trade horizon', async () => {
@@ -147,7 +346,83 @@ test('shared result fingerprint binds exact normalized proof artifacts', () => {
   )
 })
 
-function operation(kind: 'regular-split' | 'swap-lock') {
+async function inputlessMintRecord() {
+  const mint = { ...operation('wallet-mint'), inputs: [] }
+  const facts = await resolveDurableCustodyProofOperationFacts({
+    operation: mint,
+    session: null,
+    resolveMintKeys,
+    requireDleq: false,
+  })
+  return createDurableCustodyProofOperation({
+    scope: walletScope(),
+    operation: mint,
+    facts,
+    inventoryAccountId: null,
+  })
+}
+
+type MutableInputlessOperation = {
+  semanticKind: unknown
+  exactRequest: Record<string, unknown>
+  reservation: Record<string, unknown>
+  verification: Record<string, unknown>
+}
+
+function assertInputlessRecordRejected(
+  record: DurableCustodyRecord,
+  mutate: (operation: MutableInputlessOperation) => void,
+  expected: RegExp,
+): void {
+  const malformed = structuredClone(record) as unknown as {
+    operation: MutableInputlessOperation
+  }
+  mutate(malformed.operation)
+  assert.throws(() => decodeDurableCustodyRecord(malformed), expected)
+}
+
+function recoveryEvidence(
+  record: DurableCustodyRecord,
+  classification: DurableCustodyRecoveryClassification,
+  exactRequestDisposition:
+    | 'not-rejected'
+    | 'deterministically-rejected'
+    | 'unknown',
+) {
+  return {
+    incarnationId: 'worker-001',
+    fencingEpoch: 1,
+    observedAtMs: 1_500,
+    classification,
+    exactRequestDisposition,
+    scopeId: record.scope.scopeId,
+    operationId: record.operation.operationId,
+    requestFingerprint: record.operation.exactRequest.requestFingerprint,
+    outputPlanFingerprint: record.operation.outputPlan.outputPlanFingerprint,
+  }
+}
+
+function exactReference(record: DurableCustodyRecord) {
+  return {
+    scopeId: record.scope.scopeId,
+    operationId: record.operation.operationId,
+    requestFingerprint: record.operation.exactRequest.requestFingerprint,
+    requestPayloadHandle: record.operation.exactRequest.payloadHandle,
+    outputPlanFingerprint: record.operation.outputPlan.outputPlanFingerprint,
+    outputMaterialHandle: record.operation.outputPlan.outputMaterialHandle,
+    privateMaterial: record.operation.privateMaterial,
+    stagedResult: null,
+  }
+}
+
+function operation(
+  kind:
+    | 'regular-split'
+    | 'swap-lock'
+    | 'wallet-mint'
+    | 'wallet-receive'
+    | 'wallet-send',
+) {
   return {
     operationId: 'operation-001',
     kind,
