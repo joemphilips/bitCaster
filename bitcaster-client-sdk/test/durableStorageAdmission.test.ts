@@ -19,18 +19,30 @@ import {
   DURABLE_STORAGE_OPERATION_LIMIT_MAX,
   DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX,
   DURABLE_STORAGE_SWAP_ARTIFACT_LIMIT_MAX,
+  advanceDurableStorageReservationArtifacts,
+  advanceDurablePreTradePubkeyAttempt,
+  applyDurablePreTradeStorageAdmissionBatch,
   applyDurableStorageAdmissionBatch,
+  bindDurablePreTradeStorageReservation,
   calculateDurableSwapStorageBudget,
+  classifyDurablePreTradeTerminalEvidence,
   createDurableStorageAccountingState,
   createDurableStorageAdmissionBatchPlan,
+  createDurablePreTradeStorageAdmissionBatchPlan,
+  createDurablePreTradeStorageCapacityProfile,
+  createDurablePreTradeStorageReservationPlan,
   createDurableStorageJsonArtifact,
+  createDurableStorageReservationArtifactPlan,
   createDurableStorageReservationPlan,
   decodeDurableStorageAccountingState,
   decodeDurableStorageMaintenanceCursor,
+  promoteDurablePreTradeSession,
+  releaseTerminalDurablePreTradeIntent,
   releaseCommittedDurableStorageOperation,
   reduceDurableStorageAccountingState,
   verifyDurableStorageReservationArtifacts,
   type DurableStorageAccountingState,
+  type DurablePreTradeStorageCapacityProfile,
   type DurableStorageReleaseStore,
   type DurableStorageReservationPlan,
 } from '../src/durableStorageAdmission.ts'
@@ -69,7 +81,10 @@ test('calculates one exact versioned worst-case budget from canonical custody id
   )
   assert.equal(budget.totalArtifactCount, 17)
   assert.equal(budget.totalBytes, 2_740)
-  assert.deepEqual(budget.session.artifacts.map((artifact) => artifact.artifactId), ['session'])
+  assert.deepEqual(
+    budget.session.artifacts.map((artifact) => artifact.artifactId),
+    ['session'],
+  )
   assert.match(budget.session.artifacts[0]!.sha256, /^[0-9a-f]{64}$/)
   assert.equal(budget.isBrowserQuotaGuarantee, false)
   assert.equal(budget.requiresAtomicAdapterTransaction, true)
@@ -180,7 +195,10 @@ test('accepts canonical wallet and market custody identifiers', () => {
     binding: tradeIdentity(maxRecord),
   })
   assert.equal(decodeDurableCustodyRecord(maxRecord).scope.scopeId, maxScope.scopeId)
-  assert.throws(() => decodeDurableCustodyScopeId('custody:wallet:%'), /custody scope id is invalid/)
+  assert.throws(
+    () => decodeDurableCustodyScopeId('custody:wallet:%'),
+    /custody scope id is invalid/,
+  )
 })
 
 test('derives logical bytes from closed exact encodings instead of caller-declared totals', () => {
@@ -212,20 +230,31 @@ test('binds a reservation to the exact artifact encodings written by its adapter
   })
   const artifacts = plannedArtifacts(input)
   assert.doesNotThrow(() => verifyDurableStorageReservationArtifacts({ reservation, artifacts }))
-  assert.doesNotThrow(() => verifyDurableStorageReservationArtifacts({
-    reservation,
-    artifacts: [...artifacts].reverse(),
-  }))
+  assert.doesNotThrow(() =>
+    verifyDurableStorageReservationArtifacts({
+      reservation,
+      artifacts: [...artifacts].reverse(),
+    }),
+  )
 
   const substituted = structuredClone(artifacts)
-  const bytes = substituted[1]!.encoding === 'binary' ? substituted[1]!.bytes : assert.fail('expected binary')
+  const bytes =
+    substituted[1]!.encoding === 'binary' ? substituted[1]!.bytes : assert.fail('expected binary')
   bytes.fill(1)
   assert.throws(
-    () => verifyDurableStorageReservationArtifacts({ reservation, artifacts: substituted }),
+    () =>
+      verifyDurableStorageReservationArtifacts({
+        reservation,
+        artifacts: substituted,
+      }),
     /do not match the committed plan/,
   )
   assert.throws(
-    () => verifyDurableStorageReservationArtifacts({ reservation, artifacts: artifacts.slice(0, -1) }),
+    () =>
+      verifyDurableStorageReservationArtifacts({
+        reservation,
+        artifacts: artifacts.slice(0, -1),
+      }),
     /do not match the committed plan/,
   )
 })
@@ -246,7 +275,10 @@ test('reservation creation rejects cloned or mutated logical-byte budgets', () =
   )
 
   budget.operations[0]!.exactOperation.bytes = 1
-  assert.throws(() => createDurableStorageReservationPlan({ reservationId: 'mutated', budget }), /not SDK-issued/)
+  assert.throws(
+    () => createDurableStorageReservationPlan({ reservationId: 'mutated', budget }),
+    /not SDK-issued/,
+  )
 })
 
 test('rejects duplicate artifact identities within and across exact operation components', () => {
@@ -255,18 +287,24 @@ test('rejects duplicate artifact identities within and across exact operation co
     artifact('duplicate', 10, 'cipher'),
     artifact('duplicate', 10, 'cipher'),
   ]
-  assert.throws(() => calculateDurableSwapStorageBudget(duplicateWithin), /artifact id is duplicated/)
+  assert.throws(
+    () => calculateDurableSwapStorageBudget(duplicateWithin),
+    /artifact id is duplicated/,
+  )
 
   const duplicateAcross = budgetInput()
-  duplicateAcross.operations[1]!.privateMaterial = [
-    artifact('session', 10, 'private-material'),
-  ]
-  assert.throws(() => calculateDurableSwapStorageBudget(duplicateAcross), /artifact id is duplicated/)
+  duplicateAcross.operations[1]!.privateMaterial = [artifact('session', 10, 'private-material')]
+  assert.throws(
+    () => calculateDurableSwapStorageBudget(duplicateAcross),
+    /artifact id is duplicated/,
+  )
 })
 
 test('reserves, consumes, and releases exact custody operations without dropping shared bytes early', async () => {
   const reservation = reservationPlan()
-  const initial = accountingState(reservation.totalBytes + DURABLE_STORAGE_EMERGENCY_HEADROOM_TARGET_BYTES)
+  const initial = accountingState(
+    reservation.totalBytes + DURABLE_STORAGE_EMERGENCY_HEADROOM_TARGET_BYTES,
+  )
   const reserved = reserve(initial, reservation)
   assert.equal(reserved.accountedBytes, reservation.totalBytes)
 
@@ -301,7 +339,7 @@ test('commits release classification and accounting in one adapter transaction',
       observedQuery = query
       assert.equal(Object.isFrozen(query), true)
       assert.throws(() => {
-        (query as unknown as { scopeId: string }).scopeId = walletScope('f'.repeat(64)).scopeId
+        ;(query as unknown as { scopeId: string }).scopeId = walletScope('f'.repeat(64)).scopeId
       }, /read only|object is not extensible|Cannot assign/)
       const result = apply({
         accounting: committed,
@@ -348,11 +386,7 @@ test('last-operation release deletes owned rows and retains shared or proof post
     reservationId: 'storage-reservation-final-actions',
     budget: calculateDurableSwapStorageBudget(budget),
   })
-  const consumed = consume(
-    reserve(accountingState(), reservation),
-    reservation,
-    OPERATION_A,
-  )
+  const consumed = consume(reserve(accountingState(), reservation), reservation, OPERATION_A)
   const result = await releaseCommittedDurableStorageOperation({
     store: {
       async commitRelease(_query, apply) {
@@ -382,7 +416,11 @@ test('last-operation release deletes owned rows and retains shared or proof post
 test('committed release rejects missing, repeated, cloned, late, and failed adapter callbacks', async () => {
   const reservation = reservationPlan()
   const accounting = reserve(accountingState(), reservation)
-  const rows = { accounting, custodyRecord: abortedRecord('a'), scopeState: null }
+  const rows = {
+    accounting,
+    custodyRecord: abortedRecord('a'),
+    scopeState: null,
+  }
   const input = {
     expectedAccountingRevision: accounting.revision,
     scopeId: SCOPE.scopeId,
@@ -391,73 +429,82 @@ test('committed release rejects missing, repeated, cloned, late, and failed adap
   }
 
   await assert.rejects(
-    () => releaseCommittedDurableStorageOperation({
-      ...input,
-      store: { async commitRelease() { return {} as never } },
-    }),
+    () =>
+      releaseCommittedDurableStorageOperation({
+        ...input,
+        store: {
+          async commitRelease() {
+            return {} as never
+          },
+        },
+      }),
     /result is invalid/,
   )
   await assert.rejects(
-    () => releaseCommittedDurableStorageOperation({
-      ...input,
-      store: {
-        async commitRelease(_query, apply) {
-          const result = apply(rows)
-          assert.throws(() => apply(rows), /callback is invalid/)
-          return result
+    () =>
+      releaseCommittedDurableStorageOperation({
+        ...input,
+        store: {
+          async commitRelease(_query, apply) {
+            const result = apply(rows)
+            assert.throws(() => apply(rows), /callback is invalid/)
+            return result
+          },
         },
-      },
-    }),
+      }),
     /result is invalid/,
   )
   await assert.rejects(
-    () => releaseCommittedDurableStorageOperation({
-      ...input,
-      store: {
-        async commitRelease(_query, apply) {
-          return structuredClone(apply(rows))
+    () =>
+      releaseCommittedDurableStorageOperation({
+        ...input,
+        store: {
+          async commitRelease(_query, apply) {
+            return structuredClone(apply(rows))
+          },
         },
-      },
-    }),
+      }),
     /result is invalid/,
   )
 
   const asynchronouslyRead = await releaseCommittedDurableStorageOperation({
-      ...input,
-      store: {
-        async commitRelease(_query, apply) {
-          await Promise.resolve()
-          return apply(rows)
-        },
+    ...input,
+    store: {
+      async commitRelease(_query, apply) {
+        await Promise.resolve()
+        return apply(rows)
       },
-    })
+    },
+  })
   assert.equal(asynchronouslyRead.nextAccounting.revision, accounting.revision + 1)
 
   let late: Parameters<DurableStorageReleaseStore['commitRelease']>[1] | undefined
   await assert.rejects(
-    () => releaseCommittedDurableStorageOperation({
-      ...input,
-      store: {
-        async commitRelease(_query, apply) {
-          late = apply
-          return {} as never
+    () =>
+      releaseCommittedDurableStorageOperation({
+        ...input,
+        store: {
+          async commitRelease(_query, apply) {
+            late = apply
+            return {} as never
+          },
         },
-      },
-    }),
+      }),
     /result is invalid/,
   )
   assert.throws(() => late!(rows), /callback is invalid/)
 
   await assert.rejects(
-    () => releaseCommittedDurableStorageOperation({
-      ...input,
-      store: {
-        async commitRelease(_query, apply) {
-          apply(rows)
-          throw new Error('adapter rollback')
+    () =>
+      releaseCommittedDurableStorageOperation({
+        ...input,
+        store: {
+          async commitRelease(_query, apply) {
+            apply(rows)
+            throw new Error('adapter rollback')
+          },
         },
-      },
-    }),
+      }),
     /adapter rollback/,
   )
 })
@@ -479,36 +526,45 @@ test('adapter query mutation cannot substitute foreign committed rows', async ()
   })
   const foreignAccounting = reserve(accountingState(), foreignReservation)
   await assert.rejects(
-    () => releaseCommittedDurableStorageOperation({
-      store: {
-        async commitRelease(query, apply) {
-          const mutations: Array<[keyof typeof query, unknown]> = [
-            ['recordId', 'foreign-accounting'],
-            ['expectedAccountingRevision', foreignAccounting.revision],
-            ['scopeId', foreignScope.scopeId],
-            ['reservationId', foreignReservation.reservationId],
-            ['semanticOperationId', foreignRecord.operation.operationId],
-          ]
-          for (const [field, value] of mutations) {
-            assert.equal(Reflect.set(query, field, value), false)
-          }
-          return apply({ accounting: foreignAccounting, custodyRecord: foreignRecord, scopeState: null })
+    () =>
+      releaseCommittedDurableStorageOperation({
+        store: {
+          async commitRelease(query, apply) {
+            const mutations: Array<[keyof typeof query, unknown]> = [
+              ['recordId', 'foreign-accounting'],
+              ['expectedAccountingRevision', foreignAccounting.revision],
+              ['scopeId', foreignScope.scopeId],
+              ['reservationId', foreignReservation.reservationId],
+              ['semanticOperationId', foreignRecord.operation.operationId],
+            ]
+            for (const [field, value] of mutations) {
+              assert.equal(Reflect.set(query, field, value), false)
+            }
+            return apply({
+              accounting: foreignAccounting,
+              custodyRecord: foreignRecord,
+              scopeState: null,
+            })
+          },
         },
-      },
-      expectedAccountingRevision: accounting.revision,
-      scopeId: reservation.scopeId,
-      reservationId: reservation.reservationId,
-      semanticOperationId: OPERATION_A,
-    }),
+        expectedAccountingRevision: accounting.revision,
+        scopeId: reservation.scopeId,
+        reservationId: reservation.reservationId,
+        semanticOperationId: OPERATION_A,
+      }),
     /storage reservation is missing|custody operation id is invalid|semantic operation reservation is missing/,
   )
 })
 
 test('capacity equality admits exactly the reservation plus emergency headroom', () => {
   const reservation = reservationPlan()
-  const exact = accountingState(reservation.totalBytes + DURABLE_STORAGE_EMERGENCY_HEADROOM_TARGET_BYTES)
+  const exact = accountingState(
+    reservation.totalBytes + DURABLE_STORAGE_EMERGENCY_HEADROOM_TARGET_BYTES,
+  )
   assert.equal(reserve(exact, reservation).accountedBytes, reservation.totalBytes)
-  const short = accountingState(reservation.totalBytes + DURABLE_STORAGE_EMERGENCY_HEADROOM_TARGET_BYTES - 1)
+  const short = accountingState(
+    reservation.totalBytes + DURABLE_STORAGE_EMERGENCY_HEADROOM_TARGET_BYTES - 1,
+  )
   assert.throws(() => reserve(short, reservation), /capacity is insufficient/)
 })
 
@@ -535,6 +591,517 @@ test('reserves a same-scope multi-fill batch atomically in one origin-global rev
   assert.deepEqual(initial.reservations, [])
 })
 
+test('advances one truthful pre-trade intent into a session and exact custody reservation', () => {
+  const profile = preTradeCapacityProfile()
+  const intent = artifact('swap-intent:trade-001', 100, 'trade-intent')
+  const retainedOrder = artifact('pending-trades:order-001', 80, 'transaction-only-retained')
+  const preTrade = createDurablePreTradeStorageReservationPlan({
+    scopeId: SCOPE.scopeId,
+    reservationId: 'storage-reservation-pre-trade',
+    swapId: 'trade-001',
+    orderId: 'order-001',
+    marketId: 'condition-001-yes',
+    deadlineMs: 10_000,
+    intent,
+    capacityProfile: profile,
+  })
+  const batch = createDurablePreTradeStorageAdmissionBatchPlan({
+    batchId: 'pre-trade-batch-001',
+    reservations: [preTrade],
+    transactionOnlyArtifacts: [retainedOrder],
+  })
+  const prepared = applyDurablePreTradeStorageAdmissionBatch({
+    state: accountingState(),
+    batch,
+    artifacts: [intent, retainedOrder],
+  })
+  assert.equal(prepared.preTradeReservations[0]!.stage, 'pubkey-prepared')
+  assert.equal(prepared.accountedBytes, profile.totalBytes)
+  const replayedPrepared = applyDurablePreTradeStorageAdmissionBatch({
+    state: prepared,
+    batch,
+    artifacts: [intent, retainedOrder],
+  })
+  assert.equal(replayedPrepared.revision, prepared.revision)
+
+  const activeInput = reservationBudgetInput('trade-001', 'default', SCOPE, 'pre-trade')
+  const attemptedIntent = artifact('swap-intent:trade-001', 120, 'trade-intent')
+  const attempted = advanceDurablePreTradePubkeyAttempt({
+    state: prepared,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    previousIntent: intent,
+    nextIntent: attemptedIntent,
+  })
+  assert.equal(attempted.preTradeReservations[0]!.stage, 'pubkey-attempted')
+  assert.equal(attempted.accountedBytes, profile.totalBytes)
+  const exactRetry = advanceDurablePreTradePubkeyAttempt({
+    state: attempted,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    previousIntent: attemptedIntent,
+    nextIntent: attemptedIntent,
+  })
+  assert.equal(exactRetry.revision, attempted.revision)
+
+  const sessionBound = promoteDurablePreTradeSession({
+    state: attempted,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    previousIntent: attemptedIntent,
+    session: activeInput.session,
+  })
+  assert.equal(sessionBound.preTradeReservations[0]!.stage, 'session-bound')
+  assert.equal(sessionBound.preTradeReservations[0]!.intent, null)
+  const replayedPromotion = promoteDurablePreTradeSession({
+    state: sessionBound,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    previousIntent: null,
+    session: activeInput.session,
+  })
+  assert.equal(replayedPromotion.revision, sessionBound.revision)
+
+  const active = createDurableStorageReservationPlan({
+    reservationId: preTrade.reservationId,
+    budget: calculateDurableSwapStorageBudget(activeInput),
+  })
+  const custodyScope = artifact(
+    'custody-scope:wallet-primary',
+    80,
+    'transaction-only-retained',
+  )
+  const artifactPlan = createDurableStorageReservationArtifactPlan({
+    reservation: active,
+    transactionOnlyArtifacts: [custodyScope],
+  })
+  const bound = bindDurablePreTradeStorageReservation({
+    state: sessionBound,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    artifactPlan,
+    artifacts: [...plannedArtifacts(activeInput), custodyScope],
+  })
+  assert.equal(bound.preTradeReservations.length, 0)
+  assert.equal(bound.reservations.length, 1)
+  assert.equal(bound.reservations[0]!.capacityRetention, 'retain-until-terminal')
+  assert.equal(bound.reservations[0]!.capacityProfile?.profileId, profile.profileId)
+  assert.equal(bound.reservations[0]!.reservedBytes, profile.totalBytes)
+  assert.equal(bound.accountedBytes, profile.totalBytes)
+  const replayedBinding = bindDurablePreTradeStorageReservation({
+    state: bound,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    artifactPlan,
+    artifacts: [...plannedArtifacts(activeInput), custodyScope],
+  })
+  assert.equal(replayedBinding.revision, bound.revision)
+})
+
+test('advances bound artifacts by exact CAS while retaining fixed capacity', () => {
+  const profile = preTradeCapacityProfile()
+  const intent = artifact('swap-intent:trade-advance', 100, 'trade-intent')
+  const preTrade = createDurablePreTradeStorageReservationPlan({
+    scopeId: SCOPE.scopeId,
+    reservationId: 'storage-reservation-advance',
+    swapId: 'trade-advance',
+    orderId: 'order-advance',
+    marketId: 'condition-001-yes',
+    deadlineMs: 10_000,
+    intent,
+    capacityProfile: profile,
+  })
+  const prepared = applyDurablePreTradeStorageAdmissionBatch({
+    state: accountingState(),
+    batch: createDurablePreTradeStorageAdmissionBatchPlan({
+      batchId: 'pre-trade-batch-advance',
+      reservations: [preTrade],
+      transactionOnlyArtifacts: [],
+    }),
+    artifacts: [intent],
+  })
+  const initialInput = reservationBudgetInput('trade-advance', 'advance')
+  const sessionBound = promoteDurablePreTradeSession({
+    state: prepared,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    previousIntent: intent,
+    session: initialInput.session,
+  })
+  const initialReservation = createDurableStorageReservationPlan({
+    reservationId: preTrade.reservationId,
+    budget: calculateDurableSwapStorageBudget(initialInput),
+  })
+  const custodyScope = artifact(
+    'custody-scope:wallet-advance',
+    80,
+    'transaction-only-retained',
+  )
+  const initialArtifactPlan = createDurableStorageReservationArtifactPlan({
+    reservation: initialReservation,
+    transactionOnlyArtifacts: [custodyScope],
+  })
+  const bound = bindDurablePreTradeStorageReservation({
+    state: sessionBound,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    artifactPlan: initialArtifactPlan,
+    artifacts: [...plannedArtifacts(initialInput), custodyScope],
+  })
+  const nextInput = reservationBudgetInput('trade-advance', 'advance')
+  nextInput.session = artifact('advance:session', 499, 'trade-session')
+  nextInput.operations[0]!.exactOperation = artifact(
+    'advance:operation-a:exact-operation',
+    899,
+    'exact-operation',
+  )
+  const nextReservation = createDurableStorageReservationPlan({
+    reservationId: preTrade.reservationId,
+    budget: calculateDurableSwapStorageBudget(nextInput),
+  })
+  const nextArtifactPlan = createDurableStorageReservationArtifactPlan({
+    reservation: nextReservation,
+    transactionOnlyArtifacts: [custodyScope],
+  })
+  const advanced = advanceDurableStorageReservationArtifacts({
+    state: bound,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    previousArtifacts: plannedArtifacts(initialInput),
+    nextArtifactPlan,
+    nextArtifacts: [...plannedArtifacts(nextInput), custodyScope],
+  })
+  assert.equal(advanced.revision, bound.revision + 1)
+  assert.equal(advanced.accountedBytes, profile.totalBytes)
+  assert.equal(advanced.reservations[0]!.reservedBytes, profile.totalBytes)
+  assert.equal(advanced.reservations[0]!.sharedBytes, 499)
+
+  const replayed = advanceDurableStorageReservationArtifacts({
+    state: advanced,
+    scopeId: SCOPE.scopeId,
+    reservationId: preTrade.reservationId,
+    previousArtifacts: plannedArtifacts(nextInput),
+    nextArtifactPlan,
+    nextArtifacts: [...plannedArtifacts(nextInput), custodyScope],
+  })
+  assert.equal(replayed.revision, advanced.revision)
+
+  const omittedOperationInput = {
+    ...nextInput,
+    operations: [nextInput.operations[0]!],
+  }
+  const omittedOperationReservation = createDurableStorageReservationPlan({
+    reservationId: preTrade.reservationId,
+    budget: calculateDurableSwapStorageBudget(omittedOperationInput),
+  })
+  const omittedOperationPlan = createDurableStorageReservationArtifactPlan({
+    reservation: omittedOperationReservation,
+    transactionOnlyArtifacts: [custodyScope],
+  })
+  assert.throws(
+    () =>
+      advanceDurableStorageReservationArtifacts({
+        state: advanced,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousArtifacts: plannedArtifacts(nextInput),
+        nextArtifactPlan: omittedOperationPlan,
+        nextArtifacts: [...plannedArtifacts(omittedOperationInput), custodyScope],
+      }),
+    /omits an active operation/,
+  )
+  const oversizedInput = reservationBudgetInput('trade-advance', 'advance')
+  oversizedInput.operations[0]!.ciphers[0] = artifact(
+    'advance:operation-a:cipher:0',
+    65,
+    'cipher',
+  )
+  const oversizedReservation = createDurableStorageReservationPlan({
+    reservationId: preTrade.reservationId,
+    budget: calculateDurableSwapStorageBudget(oversizedInput),
+  })
+  const oversizedPlan = createDurableStorageReservationArtifactPlan({
+    reservation: oversizedReservation,
+    transactionOnlyArtifacts: [custodyScope],
+  })
+  assert.throws(
+    () =>
+      advanceDurableStorageReservationArtifacts({
+        state: advanced,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousArtifacts: plannedArtifacts(nextInput),
+        nextArtifactPlan: oversizedPlan,
+        nextArtifacts: [...plannedArtifacts(oversizedInput), custodyScope],
+      }),
+    /ciphers exceeds the reserved capacity/,
+  )
+  assert.throws(
+    () =>
+      advanceDurableStorageReservationArtifacts({
+        state: advanced,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousArtifacts: plannedArtifacts(initialInput),
+        nextArtifactPlan,
+        nextArtifacts: [...plannedArtifacts(nextInput), custodyScope],
+      }),
+    /do not match the committed plan/,
+  )
+  const foreign = createDurableStorageReservationPlan({
+    reservationId: preTrade.reservationId,
+    budget: calculateDurableSwapStorageBudget(
+      reservationBudgetInput('trade-foreign', 'advance'),
+    ),
+  })
+  const foreignPlan = createDurableStorageReservationArtifactPlan({
+    reservation: foreign,
+    transactionOnlyArtifacts: [custodyScope],
+  })
+  assert.throws(
+    () =>
+      advanceDurableStorageReservationArtifacts({
+        state: advanced,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousArtifacts: plannedArtifacts(nextInput),
+        nextArtifactPlan: foreignPlan,
+        nextArtifacts: [
+          ...plannedArtifacts(reservationBudgetInput('trade-foreign', 'advance')),
+          custodyScope,
+        ],
+      }),
+    /identity is foreign/,
+  )
+  assert.throws(
+    () =>
+      advanceDurableStorageReservationArtifacts({
+        state: advanced,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousArtifacts: plannedArtifacts(nextInput),
+        nextArtifactPlan,
+        nextArtifacts: plannedArtifacts(nextInput),
+      }),
+    /do not match the committed plan/,
+  )
+  assert.throws(
+    () =>
+      advanceDurableStorageReservationArtifacts({
+        state: advanced,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousArtifacts: plannedArtifacts(nextInput),
+        nextArtifactPlan: structuredClone(nextArtifactPlan),
+        nextArtifacts: [...plannedArtifacts(nextInput), custodyScope],
+      }),
+    /not SDK-issued/,
+  )
+})
+
+test('pre-trade transitions reject mutation, substitution, foreign identity, and capacity overflow', () => {
+  const profile = preTradeCapacityProfile()
+  const intent = artifact('swap-intent:trade-001', 100, 'trade-intent')
+  const preTrade = createDurablePreTradeStorageReservationPlan({
+    scopeId: SCOPE.scopeId,
+    reservationId: 'storage-reservation-pre-trade',
+    swapId: 'trade-001',
+    orderId: 'order-001',
+    marketId: 'condition-001-yes',
+    deadlineMs: 10_000,
+    intent,
+    capacityProfile: profile,
+  })
+  const batch = createDurablePreTradeStorageAdmissionBatchPlan({
+    batchId: 'pre-trade-batch-001',
+    reservations: [preTrade],
+    transactionOnlyArtifacts: [],
+  })
+  const prepared = applyDurablePreTradeStorageAdmissionBatch({
+    state: accountingState(),
+    batch,
+    artifacts: [intent],
+  })
+  assert.throws(
+    () =>
+      advanceDurablePreTradePubkeyAttempt({
+        state: prepared,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousIntent: artifact('swap-intent:trade-001', 99, 'trade-intent'),
+        nextIntent: intent,
+      }),
+    /do not match the committed plan/,
+  )
+  assert.throws(
+    () =>
+      advanceDurablePreTradePubkeyAttempt({
+        state: prepared,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousIntent: intent,
+        nextIntent: artifact('swap-intent:foreign', 100, 'trade-intent'),
+      }),
+    /identity changed/,
+  )
+  assert.throws(
+    () =>
+      advanceDurablePreTradePubkeyAttempt({
+        state: prepared,
+        scopeId: SCOPE.scopeId,
+        reservationId: preTrade.reservationId,
+        previousIntent: intent,
+        nextIntent: artifact(
+          'swap-intent:trade-001',
+          profile.tradeIntent.bytes + 1,
+          'trade-intent',
+        ),
+      }),
+    /exceeds the reserved capacity/,
+  )
+  assert.throws(
+    () =>
+      createDurablePreTradeStorageAdmissionBatchPlan({
+        batchId: 'pre-trade-batch-clone',
+        reservations: [structuredClone(preTrade)],
+        transactionOnlyArtifacts: [],
+      }),
+    /not SDK-issued/,
+  )
+})
+
+test('prepared and attempted intents release only after SDK classification of the exact failed fill', () => {
+  const profile = preTradeCapacityProfile()
+  const intent = artifact('swap-intent:terminal', 100, 'trade-intent')
+  const reservation = createDurablePreTradeStorageReservationPlan({
+    scopeId: SCOPE.scopeId,
+    reservationId: 'storage-reservation-terminal',
+    swapId: 'trade-terminal',
+    orderId: 'order-terminal',
+    marketId: 'condition-001-yes',
+    deadlineMs: 10_000,
+    intent,
+    capacityProfile: profile,
+  })
+  const batch = createDurablePreTradeStorageAdmissionBatchPlan({
+    batchId: 'pre-trade-batch-terminal',
+    reservations: [reservation],
+    transactionOnlyArtifacts: [],
+  })
+  const prepared = applyDurablePreTradeStorageAdmissionBatch({
+    state: accountingState(),
+    batch,
+    artifacts: [intent],
+  })
+  const liveFillArtifact = terminalOrderStatusArtifact(reservation, {
+    orderStatus: 'cancelled',
+    fillStatus: 'Matched',
+  })
+  assert.throws(
+    () =>
+      classifyDurablePreTradeTerminalEvidence({
+        state: prepared,
+        scopeId: reservation.scopeId,
+        reservationId: reservation.reservationId,
+        evidenceArtifact: liveFillArtifact,
+      }),
+    /fill is not failed/,
+  )
+  const foreignArtifact = terminalOrderStatusArtifact(reservation, {
+    orderId: 'order-foreign',
+  })
+  assert.throws(
+    () =>
+      classifyDurablePreTradeTerminalEvidence({
+        state: prepared,
+        scopeId: reservation.scopeId,
+        reservationId: reservation.reservationId,
+        evidenceArtifact: foreignArtifact,
+      }),
+    /identity is foreign/,
+  )
+  const pendingArtifact = terminalOrderStatusArtifact(reservation, {
+    pendingTradeId: reservation.swapId,
+  })
+  assert.throws(
+    () =>
+      classifyDurablePreTradeTerminalEvidence({
+        state: prepared,
+        scopeId: reservation.scopeId,
+        reservationId: reservation.reservationId,
+        evidenceArtifact: pendingArtifact,
+      }),
+    /still exposes a pending trade/,
+  )
+  const terminalArtifact = terminalOrderStatusArtifact(reservation)
+  const evidence = classifyDurablePreTradeTerminalEvidence({
+    state: prepared,
+    scopeId: reservation.scopeId,
+    reservationId: reservation.reservationId,
+    evidenceArtifact: terminalArtifact,
+  })
+  assert.equal(evidence.terminalKind, 'trade-failed')
+  assert.throws(
+    () =>
+      releaseTerminalDurablePreTradeIntent({
+        state: prepared,
+        scopeId: SCOPE.scopeId,
+        reservationId: reservation.reservationId,
+        currentIntent: intent,
+        terminalEvidence: structuredClone(evidence),
+        evidenceArtifact: terminalArtifact,
+      }),
+    /not SDK-issued/,
+  )
+  assert.throws(
+    () =>
+      releaseTerminalDurablePreTradeIntent({
+        state: prepared,
+        scopeId: SCOPE.scopeId,
+        reservationId: reservation.reservationId,
+        currentIntent: intent,
+        terminalEvidence: evidence,
+        evidenceArtifact: terminalOrderStatusArtifact(reservation, {
+          fillStatus: 'Filled',
+        }),
+      }),
+    /do not match the committed plan/,
+  )
+  const releasedPrepared = releaseTerminalDurablePreTradeIntent({
+    state: prepared,
+    scopeId: SCOPE.scopeId,
+    reservationId: reservation.reservationId,
+    currentIntent: intent,
+    terminalEvidence: evidence,
+    evidenceArtifact: terminalArtifact,
+  })
+  assert.equal(releasedPrepared.nextAccounting.preTradeReservations.length, 0)
+  assert.equal(releasedPrepared.nextAccounting.accountedBytes, 0)
+  assert.deepEqual(releasedPrepared.artifactAction, {
+    artifactId: 'swap-intent:terminal',
+    artifactRole: 'trade-intent',
+    action: 'delete',
+  })
+
+  const attempted = advanceDurablePreTradePubkeyAttempt({
+    state: prepared,
+    scopeId: SCOPE.scopeId,
+    reservationId: reservation.reservationId,
+    previousIntent: intent,
+    nextIntent: intent,
+  })
+  const releasedAttempted = releaseTerminalDurablePreTradeIntent({
+    state: attempted,
+    scopeId: SCOPE.scopeId,
+    reservationId: reservation.reservationId,
+    currentIntent: intent,
+    terminalEvidence: evidence,
+    evidenceArtifact: terminalArtifact,
+  })
+  assert.equal(releasedAttempted.nextAccounting.preTradeReservations.length, 0)
+  assert.equal(releasedAttempted.nextAccounting.accountedBytes, 0)
+})
+
 test('admission batch verifies one exact retained post-image without charging or duplicating it', () => {
   const firstInput = reservationBudgetInput('trade-batch-1', 'batch-1')
   const secondInput = reservationBudgetInput('trade-batch-2', 'batch-2')
@@ -546,11 +1113,7 @@ test('admission batch verifies one exact retained post-image without charging or
     reservationId: 'reservation-batch-2',
     budget: calculateDurableSwapStorageBudget(secondInput),
   })
-  const scopeState = artifact(
-    'dexie:scope-state',
-    64,
-    'transaction-only-retained',
-  )
+  const scopeState = artifact('dexie:scope-state', 64, 'transaction-only-retained')
   const batch = createDurableStorageAdmissionBatchPlan({
     batchId: 'admission-batch-001',
     reservations: [first, second],
@@ -559,19 +1122,12 @@ test('admission batch verifies one exact retained post-image without charging or
   const next = applyDurableStorageAdmissionBatch({
     state: accountingState(),
     batch,
-    artifacts: [
-      ...plannedArtifacts(firstInput),
-      ...plannedArtifacts(secondInput),
-      scopeState,
-    ],
+    artifacts: [...plannedArtifacts(firstInput), ...plannedArtifacts(secondInput), scopeState],
   })
   assert.equal(next.revision, 1)
   assert.equal(next.reservations.length, 2)
   assert.equal(next.accountedBytes, first.totalBytes + second.totalBytes)
-  assert.equal(
-    batch.totalBytes,
-    first.totalBytes + second.totalBytes + scopeState.bytes.byteLength,
-  )
+  assert.equal(batch.totalBytes, first.totalBytes + second.totalBytes + scopeState.bytes.byteLength)
 })
 
 test('admission batch rejects omitted, substituted, wrong-role, cloned, and foreign rows', () => {
@@ -580,11 +1136,7 @@ test('admission batch rejects omitted, substituted, wrong-role, cloned, and fore
     reservationId: 'reservation-batch-fault',
     budget: calculateDurableSwapStorageBudget(input),
   })
-  const scopeState = artifact(
-    'dexie:scope-state',
-    64,
-    'transaction-only-retained',
-  )
+  const scopeState = artifact('dexie:scope-state', 64, 'transaction-only-retained')
   const batch = createDurableStorageAdmissionBatchPlan({
     batchId: 'admission-batch-fault',
     reservations: [reservation],
@@ -592,39 +1144,41 @@ test('admission batch rejects omitted, substituted, wrong-role, cloned, and fore
   })
   const artifacts = [...plannedArtifacts(input), scopeState]
   assert.throws(
-    () => applyDurableStorageAdmissionBatch({
-      state: accountingState(),
-      batch,
-      artifacts: artifacts.slice(0, -1),
-    }),
+    () =>
+      applyDurableStorageAdmissionBatch({
+        state: accountingState(),
+        batch,
+        artifacts: artifacts.slice(0, -1),
+      }),
     /do not match the committed plan/,
   )
   const substituted = structuredClone(artifacts)
   substituted.at(-1)!.bytes.fill(1)
   assert.throws(
-    () => applyDurableStorageAdmissionBatch({
-      state: accountingState(),
-      batch,
-      artifacts: substituted,
-    }),
+    () =>
+      applyDurableStorageAdmissionBatch({
+        state: accountingState(),
+        batch,
+        artifacts: substituted,
+      }),
     /do not match the committed plan/,
   )
   assert.throws(
-    () => createDurableStorageAdmissionBatchPlan({
-      batchId: 'admission-batch-wrong-role',
-      reservations: [reservation],
-      transactionOnlyArtifacts: [
-        artifact('dexie:scope-state-foreign', 64, 'operation-overhead'),
-      ],
-    }),
+    () =>
+      createDurableStorageAdmissionBatchPlan({
+        batchId: 'admission-batch-wrong-role',
+        reservations: [reservation],
+        transactionOnlyArtifacts: [artifact('dexie:scope-state-foreign', 64, 'operation-overhead')],
+      }),
     /transaction-only artifact role is invalid/,
   )
   assert.throws(
-    () => applyDurableStorageAdmissionBatch({
-      state: accountingState(),
-      batch: structuredClone(batch),
-      artifacts,
-    }),
+    () =>
+      applyDurableStorageAdmissionBatch({
+        state: accountingState(),
+        batch: structuredClone(batch),
+        artifacts,
+      }),
     /not SDK-issued/,
   )
   const foreign = reservationPlan(
@@ -634,11 +1188,12 @@ test('admission batch rejects omitted, substituted, wrong-role, cloned, and fore
     walletScope('f'.repeat(64)),
   )
   assert.throws(
-    () => createDurableStorageAdmissionBatchPlan({
-      batchId: 'admission-batch-foreign',
-      reservations: [reservation, foreign],
-      transactionOnlyArtifacts: [],
-    }),
+    () =>
+      createDurableStorageAdmissionBatchPlan({
+        batchId: 'admission-batch-foreign',
+        reservations: [reservation, foreign],
+        transactionOnlyArtifacts: [],
+      }),
     /batch scope is foreign/,
   )
 })
@@ -646,7 +1201,10 @@ test('admission batch rejects omitted, substituted, wrong-role, cloned, and fore
 test('batch reservation rejects duplicate swap and artifact identities before accounting', () => {
   const first = reservationPlan('storage-reservation-001', 'trade-001')
   const duplicateSwap = reservationPlan('storage-reservation-002', 'trade-001', 'fill-2')
-  assert.throws(() => reserveBatch(accountingState(), [first, duplicateSwap]), /swap id is duplicated/)
+  assert.throws(
+    () => reserveBatch(accountingState(), [first, duplicateSwap]),
+    /swap id is duplicated/,
+  )
 
   const duplicateArtifact = reservationPlan(
     'storage-reservation-002',
@@ -655,7 +1213,10 @@ test('batch reservation rejects duplicate swap and artifact identities before ac
     SCOPE,
     'default',
   )
-  assert.throws(() => reserveBatch(accountingState(), [first, duplicateArtifact]), /artifact id is duplicated/)
+  assert.throws(
+    () => reserveBatch(accountingState(), [first, duplicateArtifact]),
+    /artifact id is duplicated/,
+  )
 })
 
 test('batch reservation rejects cloned and self-consistently undercounted plans', () => {
@@ -696,8 +1257,9 @@ test('origin-global accounting accepts separate wallet reservations in separate 
 })
 
 test('batch reservation rejects aggregate operation overflow and stale revisions', () => {
-  const reservations = Array.from({ length: DURABLE_STORAGE_OPERATION_LIMIT_MAX / 2 + 1 }, (_, index) =>
-    reservationPlan(`reservation-${index}`, `trade-${index}`, `limit-${index}`),
+  const reservations = Array.from(
+    { length: DURABLE_STORAGE_OPERATION_LIMIT_MAX / 2 + 1 },
+    (_, index) => reservationPlan(`reservation-${index}`, `trade-${index}`, `limit-${index}`),
   )
   assert.throws(
     () => reserveBatch(accountingState(Number.MAX_SAFE_INTEGER), reservations),
@@ -735,11 +1297,12 @@ test('persisted reservations reject omitted artifact identities', () => {
     DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX + 1,
   ).fill(oversized.operations[0]!.transitionOverhead.artifacts[0]!)
   assert.throws(
-    () => decodeDurableStorageAccountingState({
-      ...accountingState(),
-      accountedBytes: oversized.totalBytes,
-      reservations: [oversized],
-    }),
+    () =>
+      decodeDurableStorageAccountingState({
+        ...accountingState(),
+        accountedBytes: oversized.totalBytes,
+        reservations: [oversized],
+      }),
     /transition overhead artifacts count exceeds the limit/,
   )
 })
@@ -747,14 +1310,14 @@ test('persisted reservations reject omitted artifact identities', () => {
 test('persisted component roles cannot turn proof post-images into deletion authority', () => {
   const reservation = reservationPlan()
   const corrupted = structuredClone(reservation)
-  corrupted.operations[0]!.proofReferences.artifacts[0]!.artifactRole =
-    'operation-overhead'
+  corrupted.operations[0]!.proofReferences.artifacts[0]!.artifactRole = 'operation-overhead'
   assert.throws(
-    () => decodeDurableStorageAccountingState({
-      ...accountingState(),
-      accountedBytes: corrupted.totalBytes,
-      reservations: [corrupted],
-    }),
+    () =>
+      decodeDurableStorageAccountingState({
+        ...accountingState(),
+        accountedBytes: corrupted.totalBytes,
+        reservations: [corrupted],
+      }),
     /proof references artifact role is invalid/,
   )
 })
@@ -763,8 +1326,8 @@ test('committed release accepts only exact custody state and terminal drain auth
   const reservation = reservationPlan()
   const reserved = reserve(accountingState(), reservation)
   assert.equal(
-    (await commitRelease(reserved, reservation, abortedRecord('a'), null))
-      .reservations[0]!.operations.length,
+    (await commitRelease(reserved, reservation, abortedRecord('a'), null)).reservations[0]!
+      .operations.length,
     1,
   )
   await assert.rejects(
@@ -780,22 +1343,19 @@ test('committed release accepts only exact custody state and terminal drain auth
     /terminal custody must be retained/,
   )
   await assert.rejects(
-    () => commitRelease(
-      reserved,
-      reservation,
-      terminalRecord('a'),
-      decodedScopeState({ scope: walletScope('f'.repeat(64)) }),
-    ),
+    () =>
+      commitRelease(
+        reserved,
+        reservation,
+        terminalRecord('a'),
+        decodedScopeState({ scope: walletScope('f'.repeat(64)) }),
+      ),
     /foreign custody scope/,
   )
   const consumed = consume(reserved, reservation, OPERATION_A)
   assert.equal(
-    (await commitRelease(
-      consumed,
-      reservation,
-      terminalRecord('a'),
-      decodedScopeState(),
-    )).reservations[0]!.operations.length,
+    (await commitRelease(consumed, reservation, terminalRecord('a'), decodedScopeState()))
+      .reservations[0]!.operations.length,
     1,
   )
 })
@@ -856,16 +1416,25 @@ test('persisted accounting rejects malformed scope and duplicate reservation or 
   const state = reserve(accountingState(), reservation)
   const foreign = structuredClone(state)
   foreign.reservations[0]!.scopeId = walletScope('f'.repeat(64)).scopeId
-  assert.throws(() => decodeDurableStorageAccountingState(foreign), /custody operation id is invalid/)
+  assert.throws(
+    () => decodeDurableStorageAccountingState(foreign),
+    /custody operation id is invalid/,
+  )
 
   const duplicateReservation = structuredClone(state)
   duplicateReservation.reservations.push(structuredClone(duplicateReservation.reservations[0]!))
   duplicateReservation.accountedBytes *= 2
-  assert.throws(() => decodeDurableStorageAccountingState(duplicateReservation), /reservation id is duplicated/)
+  assert.throws(
+    () => decodeDurableStorageAccountingState(duplicateReservation),
+    /reservation id is duplicated/,
+  )
 
   const duplicateOperation = structuredClone(state)
   duplicateOperation.reservations[0]!.operations[1]!.semanticOperationId = OPERATION_A
-  assert.throws(() => decodeDurableStorageAccountingState(duplicateOperation), /semantic operation id is duplicated/)
+  assert.throws(
+    () => decodeDurableStorageAccountingState(duplicateOperation),
+    /semantic operation id is duplicated/,
+  )
 })
 
 test('persisted accounting requires current schema and own known fields', () => {
@@ -902,11 +1471,12 @@ test('persisted and reducer inputs reject positive artifact counts with zero byt
   undercounted.operations[0]!.bytes = 0
   undercounted.totalBytes -= reservation.operations[0]!.bytes
   assert.throws(
-    () => decodeDurableStorageAccountingState({
-      ...accountingState(),
-      accountedBytes: undercounted.totalBytes,
-      reservations: [undercounted],
-    }),
+    () =>
+      decodeDurableStorageAccountingState({
+        ...accountingState(),
+        accountedBytes: undercounted.totalBytes,
+        reservations: [undercounted],
+      }),
     /storage reservation operation totals are inconsistent/,
   )
 
@@ -916,40 +1486,46 @@ test('persisted and reducer inputs reject positive artifact counts with zero byt
     oversized.sharedArtifactCount +
     oversized.operations.reduce((total, operation) => total + operation.artifactCount, 0)
   assert.throws(
-    () => decodeDurableStorageAccountingState({
-      ...accountingState(),
-      accountedBytes: oversized.totalBytes,
-      reservations: [oversized],
-    }),
+    () =>
+      decodeDurableStorageAccountingState({
+        ...accountingState(),
+        accountedBytes: oversized.totalBytes,
+        reservations: [oversized],
+      }),
     /storage reservation operation totals are inconsistent/,
   )
 })
 
 test('preflights artifact sizes and collection counts before hashing or decoding', () => {
   assert.throws(
-    () => calculateDurableSwapStorageBudget({
-      ...budgetInput(),
-      operations: Array(DURABLE_STORAGE_OPERATION_LIMIT_MAX + 1).fill(budgetInput().operations[0]!),
-    }),
+    () =>
+      calculateDurableSwapStorageBudget({
+        ...budgetInput(),
+        operations: Array(DURABLE_STORAGE_OPERATION_LIMIT_MAX + 1).fill(
+          budgetInput().operations[0]!,
+        ),
+      }),
     /operation.*count exceeds the limit/,
   )
   assert.throws(
-    () => calculateDurableSwapStorageBudget({
-      ...budgetInput(),
-      session: artifact(
-        'oversized-binary',
-        DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX + 1,
-        'trade-session',
-      ),
-    }),
+    () =>
+      calculateDurableSwapStorageBudget({
+        ...budgetInput(),
+        session: artifact(
+          'oversized-binary',
+          DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX + 1,
+          'trade-session',
+        ),
+      }),
     /binary storage artifact exceeds the byte limit/,
   )
   assert.throws(
-    () => createDurableStorageJsonArtifact({
-      artifactId: 'oversized-json',
-      artifactRole: 'trade-session',
-      value: 'x'.repeat(DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX + 1),
-    }),
+    () =>
+      createDurableStorageJsonArtifact({
+        artifactId: 'oversized-json',
+        artifactRole: 'trade-session',
+        value: 'x'.repeat(DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX + 1),
+      }),
     /JSON storage artifact exceeds the byte limit/,
   )
 })
@@ -966,10 +1542,11 @@ test('aggregate limits stop operation decoding before a later sentinel is inspec
   assert.equal(1 + operations.length * DURABLE_STORAGE_OPERATION_ARTIFACT_LIMIT_MAX, 4_101)
   assert.equal(DURABLE_STORAGE_SWAP_ARTIFACT_LIMIT_MAX, 4_096)
   assert.throws(
-    () => calculateDurableSwapStorageBudget({
-      ...budgetInput(),
-      operations: [...operations, sentinel as never],
-    }),
+    () =>
+      calculateDurableSwapStorageBudget({
+        ...budgetInput(),
+        operations: [...operations, sentinel as never],
+      }),
     /storage artifact count exceeds the limit/,
   )
   assert.equal(sentinelInspected, false)
@@ -992,74 +1569,84 @@ test('component byte limits stop hashing before a later artifact is inspected', 
   ]
 
   assert.throws(
-    () => calculateDurableSwapStorageBudget({
-      ...budgetInput(),
-      operations: [operation],
-    }),
+    () =>
+      calculateDurableSwapStorageBudget({
+        ...budgetInput(),
+        operations: [operation],
+      }),
     /private material bytes exceed the limit/,
   )
   assert.equal(sentinelInspected, false)
 })
 
 test('planned artifact decoding is strict and JSON encodings are canonical', () => {
-  const withSession = (session: unknown) => calculateDurableSwapStorageBudget({
-    ...budgetInput(),
-    session: session as ReturnType<typeof artifact>,
-  })
+  const withSession = (session: unknown) =>
+    calculateDurableSwapStorageBudget({
+      ...budgetInput(),
+      session: session as ReturnType<typeof artifact>,
+    })
   assert.throws(
-    () => withSession({
-      artifactId: 'unknown',
-      encoding: 'text',
-      artifactRole: 'trade-session',
-      bytes: new Uint8Array([1]),
-    }),
+    () =>
+      withSession({
+        artifactId: 'unknown',
+        encoding: 'text',
+        artifactRole: 'trade-session',
+        bytes: new Uint8Array([1]),
+      }),
     /encoding is invalid/,
   )
   assert.throws(
-    () => withSession({
-      artifactId: 'missing',
-      encoding: 'binary',
-      artifactRole: 'trade-session',
-    }),
+    () =>
+      withSession({
+        artifactId: 'missing',
+        encoding: 'binary',
+        artifactRole: 'trade-session',
+      }),
     /missing required field 'bytes'/,
   )
   assert.throws(
-    () => withSession({
-      artifactId: 'extra',
-      encoding: 'binary',
-      artifactRole: 'trade-session',
-      bytes: new Uint8Array([1]),
-      extra: true,
-    }),
+    () =>
+      withSession({
+        artifactId: 'extra',
+        encoding: 'binary',
+        artifactRole: 'trade-session',
+        bytes: new Uint8Array([1]),
+        extra: true,
+      }),
     /unknown field 'extra'/,
   )
   assert.throws(
-    () => withSession({
-      artifactId: 'json',
-      encoding: 'json-utf8',
-      artifactRole: 'trade-session',
-      encodedJson: '{ "a": 1 }',
-    }),
+    () =>
+      withSession({
+        artifactId: 'json',
+        encoding: 'json-utf8',
+        artifactRole: 'trade-session',
+        encodedJson: '{ "a": 1 }',
+      }),
     /not canonical/,
   )
 })
 
 test('enforces artifact lifecycles before unsafe adapter deletion is possible', () => {
   assert.throws(
-    () => calculateDurableSwapStorageBudget({
-      ...budgetInput(),
-      session: artifact('unsafe-session', 1, 'exact-operation'),
-    }),
+    () =>
+      calculateDurableSwapStorageBudget({
+        ...budgetInput(),
+        session: artifact('unsafe-session', 1, 'exact-operation'),
+      }),
     /session artifact role is invalid/,
   )
   assert.throws(
-    () => calculateDurableSwapStorageBudget({
-      ...budgetInput(),
-      operations: [{
-        ...budgetInput().operations[0]!,
-        proofReferences: [artifact('unsafe-proof-row', 1, 'operation-overhead')],
-      }],
-    }),
+    () =>
+      calculateDurableSwapStorageBudget({
+        ...budgetInput(),
+        operations: [
+          {
+            ...budgetInput().operations[0]!,
+            proofReferences: [artifact('unsafe-proof-row', 1, 'operation-overhead')],
+          },
+        ],
+      }),
     /proof references artifact role is invalid/,
   )
 })
@@ -1086,17 +1673,18 @@ test('proof-operation pins release only with the same committed custody row', as
   })
   assert.equal(crossScopePins.pinReferences.length, 2)
   assert.throws(
-    () => reduceDurableStorageAccountingState(state, {
-      kind: 'add-pin-reference',
-      expectedRevision: state.revision,
-      pin: {
-        scopeId: foreignScope.scopeId,
-        pinId: 'foreign-pin-duplicate-proof',
-        proofId: FINGERPRINT_A,
-        reason: 'open-order-collateral',
-        referenceId: 'foreign-order-001',
-      },
-    }),
+    () =>
+      reduceDurableStorageAccountingState(state, {
+        kind: 'add-pin-reference',
+        expectedRevision: state.revision,
+        pin: {
+          scopeId: foreignScope.scopeId,
+          pinId: 'foreign-pin-duplicate-proof',
+          proofId: FINGERPRINT_A,
+          reason: 'open-order-collateral',
+          referenceId: 'foreign-order-001',
+        },
+      }),
     /proof already has an active storage pin/,
   )
   await assert.rejects(
@@ -1107,12 +1695,7 @@ test('proof-operation pins release only with the same committed custody row', as
   wrongProofRecord.operation.reservation.inputs[0]!.proofId = PROOF_ID
   wrongProofRecord.operation.exactRequest.inputProofIds[0] = PROOF_ID
   await assert.rejects(
-    () => commitRelease(
-      state,
-      reservation,
-      decodeDurableCustodyRecord(wrongProofRecord),
-      null,
-    ),
+    () => commitRelease(state, reservation, decodeDurableCustodyRecord(wrongProofRecord), null),
     /proof pin is foreign/,
   )
   state = await commitRelease(state, reservation, abortedRecord('a'), null)
@@ -1123,14 +1706,7 @@ test('proof-operation pins release only with the same committed custody row', as
 test('custody release does not interpret or release open-order collateral', async () => {
   const reservation = reservationPlan()
   const reserved = reserve(accountingState(), reservation)
-  const state = addPin(
-    reserved,
-    0,
-    PROOF_ID,
-    'order-pin',
-    'order-001',
-    'open-order-collateral',
-  )
+  const state = addPin(reserved, 0, PROOF_ID, 'order-pin', 'order-001', 'open-order-collateral')
   const released = await commitRelease(state, reservation, abortedRecord('a'), null)
   assert.deepEqual(released.pinReferences, state.pinReferences)
 })
@@ -1150,7 +1726,13 @@ test('proof pin references enforce canonical operation identity and the 256 limi
 
   let state = accountingState()
   for (let index = 0; index < DURABLE_STORAGE_OPERATION_LIMIT_MAX; index += 1) {
-    state = addPin(state, index, index.toString(16).padStart(64, '0'), `pin-${index}`, pinOperationId(index))
+    state = addPin(
+      state,
+      index,
+      index.toString(16).padStart(64, '0'),
+      `pin-${index}`,
+      pinOperationId(index),
+    )
   }
   assert.equal(state.pinReferences.length, 256)
   assert.throws(
@@ -1160,7 +1742,10 @@ test('proof pin references enforce canonical operation identity and the 256 limi
 
   const duplicateProof = structuredClone(state)
   duplicateProof.pinReferences[1]!.proofId = duplicateProof.pinReferences[0]!.proofId
-  assert.throws(() => decodeDurableStorageAccountingState(duplicateProof), /proof already has an active storage pin/)
+  assert.throws(
+    () => decodeDurableStorageAccountingState(duplicateProof),
+    /proof already has an active storage pin/,
+  )
 })
 
 test('maintenance cursor rejects zero progress and non-advancing continuations', () => {
@@ -1219,7 +1804,10 @@ test('persisted accounting enforces the encoded record byte limit', () => {
     ),
   }
   assert.ok(JSON.stringify(oversized).length > DURABLE_STORAGE_ADMISSION_RECORD_BYTES_LIMIT_MAX)
-  assert.throws(() => decodeDurableStorageAccountingState(oversized), /exceeds the encoded byte limit/)
+  assert.throws(
+    () => decodeDurableStorageAccountingState(oversized),
+    /exceeds the encoded byte limit/,
+  )
 })
 
 test('persisted accounting rejects any browser-quota guarantee claim', () => {
@@ -1406,18 +1994,21 @@ function budgetInput() {
     scopeId: SCOPE.scopeId,
     swapId: 'trade-001',
     session: artifact('session', 500, 'trade-session'),
-    operations: [operationBudget(OPERATION_A, 900, 'operation-a'), operationBudget(OPERATION_B, 700, 'operation-b')],
+    operations: [
+      operationBudget(OPERATION_A, 900, 'operation-a'),
+      operationBudget(OPERATION_B, 700, 'operation-b'),
+    ],
   }
 }
 
-function operationBudget(semanticOperationId: string, exactOperationBytes: number, prefix = semanticOperationId) {
+function operationBudget(
+  semanticOperationId: string,
+  exactOperationBytes: number,
+  prefix = semanticOperationId,
+) {
   return {
     semanticOperationId,
-    exactOperation: artifact(
-      `${prefix}:exact-operation`,
-      exactOperationBytes,
-      'exact-operation',
-    ),
+    exactOperation: artifact(`${prefix}:exact-operation`, exactOperationBytes, 'exact-operation'),
     proofReferences: [
       artifact(`${prefix}:proof:0`, 32, 'proof-post-image'),
       artifact(`${prefix}:proof:1`, 32, 'proof-post-image'),
@@ -1428,9 +2019,7 @@ function operationBudget(semanticOperationId: string, exactOperationBytes: numbe
       artifact(`${prefix}:cipher:0`, 64, 'cipher'),
       artifact(`${prefix}:cipher:1`, 64, 'cipher'),
     ],
-    transitionOverhead: [
-      artifact(`${prefix}:transition`, 64, 'operation-overhead'),
-    ],
+    transitionOverhead: [artifact(`${prefix}:transition`, 64, 'operation-overhead')],
   }
 }
 
@@ -1444,17 +2033,10 @@ function maximumArtifactOperation(index: number) {
       stage: 'lock',
     },
   })
-  const component = (
-    name: string,
-    artifactRole: Parameters<typeof artifact>[2],
-  ) => Array.from(
-    { length: DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX },
-    (_, artifactIndex) => artifact(
-      `aggregate-${index}:${name}:${artifactIndex}`,
-      1,
-      artifactRole,
-    ),
-  )
+  const component = (name: string, artifactRole: Parameters<typeof artifact>[2]) =>
+    Array.from({ length: DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX }, (_, artifactIndex) =>
+      artifact(`aggregate-${index}:${name}:${artifactIndex}`, 1, artifactRole),
+    )
   return {
     semanticOperationId: operationId,
     exactOperation: artifact(`aggregate-${index}:exact`, 1, 'exact-operation'),
@@ -1499,6 +2081,7 @@ function artifact(
   bytes: number,
   artifactRole:
     | 'trade-session'
+    | 'trade-intent'
     | 'exact-operation'
     | 'proof-post-image'
     | 'private-material'
@@ -1570,6 +2153,55 @@ function reservationBudgetInput(
   }
 }
 
+function preTradeCapacityProfile(): DurablePreTradeStorageCapacityProfile {
+  return createDurablePreTradeStorageCapacityProfile({
+    profileId: 'gui-trade-v1',
+    tradeIntent: { artifactCount: 1, bytes: 256 },
+    session: { artifactCount: 1, bytes: 500 },
+    exactOperations: { artifactCount: 2, bytes: 1_600 },
+    proofReferences: { artifactCount: 6, bytes: 192 },
+    privateMaterial: { artifactCount: 2, bytes: 64 },
+    ciphers: { artifactCount: 4, bytes: 256 },
+    transitionOverhead: { artifactCount: 2, bytes: 128 },
+  })
+}
+
+function terminalOrderStatusArtifact(
+  reservation: ReturnType<typeof createDurablePreTradeStorageReservationPlan>,
+  options: {
+    orderId?: string
+    orderStatus?: string
+    fillStatus?: 'Matched' | 'Filled' | 'Failed'
+    pendingTradeId?: string | null
+  } = {},
+) {
+  return createDurableStorageJsonArtifact({
+    artifactId: `order-status:${reservation.swapId}`,
+    artifactRole: 'transaction-only-retained',
+    value: {
+      orderId: options.orderId ?? reservation.orderId,
+      marketId: reservation.marketId,
+      status: options.orderStatus ?? 'failed',
+      remainingAmountSubunits: 0,
+      filledAmountSubunits: 10,
+      fills: [
+        {
+          tradeId: reservation.swapId,
+          makerOrderId: reservation.orderId,
+          takerOrderId: 'counterparty-order',
+          status: options.fillStatus ?? 'Failed',
+        },
+      ],
+      tokenSide: 'Outcome',
+      baseAsset: 'sat',
+      divisibility: 10_000,
+      ...(options.pendingTradeId === undefined
+        ? {}
+        : { tradeId: options.pendingTradeId }),
+    },
+  })
+}
+
 function accountingState(
   accountingLimitBytes = DURABLE_STORAGE_EMERGENCY_HEADROOM_TARGET_BYTES + 100_000,
 ): DurableStorageAccountingState {
@@ -1580,7 +2212,10 @@ function reserve(state: DurableStorageAccountingState, reservation: DurableStora
   return reserveBatch(state, [reservation])
 }
 
-function reserveBatch(state: DurableStorageAccountingState, reservations: DurableStorageReservationPlan[]) {
+function reserveBatch(
+  state: DurableStorageAccountingState,
+  reservations: DurableStorageReservationPlan[],
+) {
   return reduceDurableStorageAccountingState(state, {
     kind: 'reserve-batch',
     expectedRevision: state.revision,
