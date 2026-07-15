@@ -23,6 +23,7 @@ export async function withGuiWalletLock<T>(
   walletId: string,
   currentWalletId: () => string,
   action: (context: GuiWalletLockContext) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   const capturedWalletId = requireWalletId(walletId);
   const lockManager =
@@ -33,8 +34,9 @@ export async function withGuiWalletLock<T>(
 
   return lockManager.request(
     guiWalletLockName(capturedWalletId),
-    { mode: "exclusive" },
-    async () => runWithHeldGuiWalletLock(capturedWalletId, currentWalletId, action),
+    { mode: "exclusive", signal },
+    async () =>
+      runWithHeldGuiWalletLock(capturedWalletId, currentWalletId, action),
   );
 }
 

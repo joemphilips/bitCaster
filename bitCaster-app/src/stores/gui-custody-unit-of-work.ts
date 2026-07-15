@@ -284,23 +284,27 @@ async function assertNativeSnapshot(
   snapshot: GuiCustodyNativeSnapshot,
   walletId: string,
 ): Promise<void> {
-  const [operation, proofs, session] = await Promise.all([
+  const operation =
     snapshot.operationId === null
-      ? Promise.resolve(undefined)
-      : database.proofOperations
-          .get(proofOperationPrimaryKey(walletId, snapshot.operationId))
-          .then((row) =>
-            requireScopedOperation(row, walletId, snapshot.operationId!),
+      ? undefined
+      : requireScopedOperation(
+          await database.proofOperations.get(
+            proofOperationPrimaryKey(walletId, snapshot.operationId),
           ),
-    database.proofs
-      .bulkGet(snapshot.proofIds)
-      .then((rows) => requireScopedProofs(rows, walletId)),
+          walletId,
+          snapshot.operationId,
+        );
+  const proofs = requireScopedProofs(
+    await database.proofs.bulkGet(snapshot.proofIds),
+    walletId,
+  );
+  const session =
     snapshot.tradeId === null
-      ? Promise.resolve(undefined)
-      : database.swapSessions
-          .get(snapshot.tradeId)
-          .then((row) => requireScopedSession(row, walletId)),
-  ]);
+      ? undefined
+      : requireScopedSession(
+          await database.swapSessions.get(snapshot.tradeId),
+          walletId,
+        );
   if (
     !sameValue(operation, snapshot.operation) ||
     !sameValue(proofs, snapshot.proofs) ||

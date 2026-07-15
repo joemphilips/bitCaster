@@ -41,24 +41,7 @@ async function persistGuiPendingSwapIntentForWallet(
   input: GuiPendingSwapIntent,
   walletId: string,
 ): Promise<void> {
-  const intent = durableIntentFromGui(input)
-  const validationError = validateDurableTradePendingIntent(intent)
-  if (validationError) throw new Error(validationError)
-  if (!isPrivateKey(input.privkey)) {
-    throw new Error('durable pending swap intent private key is invalid')
-  }
-  const keyBindingError = validateDurableTradePrivateKeyBinding(input.privkey, input.pubkey)
-  if (keyBindingError) {
-    throw new Error(`durable pending swap intent ${keyBindingError}`)
-  }
-  const next = {
-    walletId,
-    tradeId: input.tradeId,
-    intent,
-    ephemeralPrivkeyHex: input.privkey.toLowerCase(),
-    submitted: input.submitted,
-    updatedAt: Date.now(),
-  } satisfies SwapIntentRecord
+  const next = createGuiPendingSwapIntentRecord(input, walletId, Date.now())
   await ensureDurableSwapStorage(walletId)
   await db.transaction('rw', db.swapIntents, async () => {
     const current = await db.swapIntents.get(input.tradeId)
@@ -69,12 +52,18 @@ async function persistGuiPendingSwapIntentForWallet(
     const existing = guiIntentFromRecord(current, walletId, input.tradeId)
     assertExactImmutableIntentBinding(existing, input)
     if (!existing.submitted && input.submitted) {
-      await db.swapIntents.put({ ...current, submitted: true, updatedAt: next.updatedAt })
+      await db.swapIntents.put({
+        ...current,
+        submitted: true,
+        updatedAt: next.updatedAt,
+      })
     }
   })
 }
 
-export async function loadGuiPendingSwapIntents(): Promise<GuiPendingSwapIntent[]> {
+export async function loadGuiPendingSwapIntents(): Promise<
+  GuiPendingSwapIntent[]
+> {
   return withRequiredPendingIntentLock(({ walletId }) =>
     loadGuiPendingSwapIntentsForWallet(walletId),
   )
@@ -84,10 +73,7 @@ async function loadGuiPendingSwapIntentsForWallet(
   walletId: string,
 ): Promise<GuiPendingSwapIntent[]> {
   await ensureDurableSwapStorage(walletId)
-  const rows = await db.swapIntents
-    .where('walletId')
-    .equals(walletId)
-    .toArray()
+  const rows = await db.swapIntents.where('walletId').equals(walletId).toArray()
   return rows.map((row) => guiIntentFromRecord(row, walletId, row.tradeId))
 }
 
@@ -115,7 +101,10 @@ export async function getOrCreateGuiPendingSwapIntent(input: {
   create: () => GuiPendingSwapIntent
 }): Promise<GuiPendingSwapIntent> {
   return withRequiredPendingIntentLock(async ({ walletId }) => {
-    const existing = await getGuiPendingSwapIntentForWallet(input.tradeId, walletId)
+    const existing = await getGuiPendingSwapIntentForWallet(
+      input.tradeId,
+      walletId,
+    )
     if (existing) {
       assertMatchingIntentBinding(existing, input)
       return existing
@@ -127,7 +116,9 @@ export async function getOrCreateGuiPendingSwapIntent(input: {
   })
 }
 
-export async function markGuiPendingSwapIntentSubmitted(tradeId: string): Promise<void> {
+export async function markGuiPendingSwapIntentSubmitted(
+  tradeId: string,
+): Promise<void> {
   await withRequiredPendingIntentLock(async ({ walletId }) => {
     await ensureDurableSwapStorage(walletId)
     await db.transaction('rw', db.swapIntents, async () => {
@@ -136,12 +127,18 @@ export async function markGuiPendingSwapIntentSubmitted(tradeId: string): Promis
         throw new Error('durable pending swap intent is missing')
       }
       guiIntentFromRecord(current, walletId, tradeId)
-      await db.swapIntents.put({ ...current, submitted: true, updatedAt: Date.now() })
+      await db.swapIntents.put({
+        ...current,
+        submitted: true,
+        updatedAt: Date.now(),
+      })
     })
   })
 }
 
-export async function removeGuiPendingSwapIntent(tradeId: string): Promise<void> {
+export async function removeGuiPendingSwapIntent(
+  tradeId: string,
+): Promise<void> {
   await withRequiredPendingIntentLock(async ({ walletId }) => {
     await ensureDurableSwapStorage(walletId)
     await db.transaction('rw', db.swapIntents, async () => {
@@ -154,9 +151,13 @@ export async function removeGuiPendingSwapIntent(tradeId: string): Promise<void>
 }
 
 /** Parses the pre-ADR local-storage shape without treating it as authoritative. */
-export function parseLegacyPendingSwapIntents(serialized: string): GuiPendingSwapIntent[] {
+export function parseLegacyPendingSwapIntents(
+  serialized: string,
+): GuiPendingSwapIntent[] {
   try {
-    const parsed = JSON.parse(serialized) as { state?: { byTradeId?: unknown } }
+    const parsed = JSON.parse(serialized) as {
+      state?: { byTradeId?: unknown }
+    }
     const entries = parsed.state?.byTradeId
     if (!entries || typeof entries !== 'object') return []
     return Object.values(entries).flatMap((entry) => {
@@ -169,7 +170,8 @@ export function parseLegacyPendingSwapIntents(serialized: string): GuiPendingSwa
         typeof candidate.privkey !== 'string' ||
         typeof candidate.deadline !== 'string' ||
         typeof candidate.submitted !== 'boolean'
-      ) return []
+      )
+        return []
       const intent: GuiPendingSwapIntent = {
         tradeId: candidate.tradeId,
         orderId: candidate.orderId,
@@ -191,14 +193,16 @@ export function parseLegacyPendingSwapIntents(serialized: string): GuiPendingSwa
  * replacement key. It is idempotent so the root recovery hook and an order
  * recovery callback may safely race during application startup.
  */
-export async function migrateLegacyGuiPendingSwapIntents(): Promise<GuiPendingSwapIntent[]> {
+export async function migrateLegacyGuiPendingSwapIntents(): Promise<
+  GuiPendingSwapIntent[]
+> {
   if (typeof window === 'undefined') return []
   return withRequiredPendingIntentLock(async ({ walletId }) => {
     const serialized = window.localStorage.getItem('bitcaster-pending-pubkeys')
     if (!serialized) return []
     const intents = parseLegacyPendingSwapIntents(serialized)
     for (const intent of intents) {
-      if (!await getGuiPendingSwapIntentForWallet(intent.tradeId, walletId)) {
+      if (!(await getGuiPendingSwapIntentForWallet(intent.tradeId, walletId))) {
         await persistGuiPendingSwapIntentForWallet(intent, walletId)
       }
     }
@@ -209,7 +213,10 @@ export async function migrateLegacyGuiPendingSwapIntents(): Promise<GuiPendingSw
 
 function assertMatchingIntentBinding(
   existing: GuiPendingSwapIntent,
-  input: Pick<GuiPendingSwapIntent, 'tradeId' | 'orderId' | 'marketId' | 'deadline'>,
+  input: Pick<
+    GuiPendingSwapIntent,
+    'tradeId' | 'orderId' | 'marketId' | 'deadline'
+  >,
 ): void {
   if (
     existing.tradeId !== input.tradeId ||
@@ -217,13 +224,18 @@ function assertMatchingIntentBinding(
     existing.marketId !== input.marketId ||
     existing.deadline !== input.deadline
   ) {
-    throw new Error('durable pending swap intent conflicts with the existing trade binding')
+    throw new Error(
+      'durable pending swap intent conflicts with the existing trade binding',
+    )
   }
 }
 
 function assertCreatedIntentBinding(
   created: GuiPendingSwapIntent,
-  input: Pick<GuiPendingSwapIntent, 'tradeId' | 'orderId' | 'marketId' | 'deadline'>,
+  input: Pick<
+    GuiPendingSwapIntent,
+    'tradeId' | 'orderId' | 'marketId' | 'deadline'
+  >,
 ): void {
   if (
     created.tradeId !== input.tradeId ||
@@ -231,7 +243,9 @@ function assertCreatedIntentBinding(
     created.marketId !== input.marketId ||
     created.deadline !== input.deadline
   ) {
-    throw new Error('durable pending swap intent creation returned a mismatched binding')
+    throw new Error(
+      'durable pending swap intent creation returned a mismatched binding',
+    )
   }
 }
 
@@ -247,7 +261,9 @@ function assertExactImmutableIntentBinding(
     existing.privkey !== input.privkey.toLowerCase() ||
     existing.deadline !== input.deadline
   ) {
-    throw new Error('durable pending swap intent conflicts with the existing trade binding')
+    throw new Error(
+      'durable pending swap intent conflicts with the existing trade binding',
+    )
   }
 }
 
@@ -257,7 +273,9 @@ async function withRequiredPendingIntentLock<T>(
   return withGuiCustodyProfileLock(action)
 }
 
-function durableIntentFromGui(input: GuiPendingSwapIntent): DurableTradePendingIntent {
+function durableIntentFromGui(
+  input: GuiPendingSwapIntent,
+): DurableTradePendingIntent {
   return {
     schemaVersion: DURABLE_TRADE_SESSION_SCHEMA_VERSION,
     tradeId: input.tradeId,
@@ -303,26 +321,77 @@ function guiIntentFromRecord(
   }
 }
 
+export function decodeGuiPendingSwapIntent(
+  record: unknown,
+  walletId: string,
+  expectedTradeId: string,
+): GuiPendingSwapIntent {
+  return guiIntentFromRecord(record, walletId, expectedTradeId)
+}
+
+export function createGuiPendingSwapIntentRecord(
+  input: GuiPendingSwapIntent,
+  walletId: string,
+  updatedAt: number,
+): SwapIntentRecord {
+  const intent = durableIntentFromGui(input)
+  const validationError = validateDurableTradePendingIntent(intent)
+  if (validationError) throw new Error(validationError)
+  if (!isPrivateKey(input.privkey)) {
+    throw new Error('durable pending swap intent private key is invalid')
+  }
+  const keyBindingError = validateDurableTradePrivateKeyBinding(
+    input.privkey,
+    input.pubkey,
+  )
+  if (keyBindingError) {
+    throw new Error(`durable pending swap intent ${keyBindingError}`)
+  }
+  return decodeGuiPendingSwapIntentRecord(
+    {
+      walletId,
+      tradeId: input.tradeId,
+      intent,
+      ephemeralPrivkeyHex: input.privkey.toLowerCase(),
+      submitted: input.submitted,
+      updatedAt,
+    },
+    walletId,
+    input.tradeId,
+  )
+}
+
 function validatedSwapIntentRecord(
   record: unknown,
   walletId: string,
   expectedTradeId: string,
 ): SwapIntentRecord {
-  if (typeof record === 'object' && record !== null &&
-    'walletId' in record && typeof record.walletId === 'string' &&
-    /^[a-f0-9]{64}$/.test(record.walletId) && record.walletId !== walletId) {
+  if (
+    typeof record === 'object' &&
+    record !== null &&
+    'walletId' in record &&
+    typeof record.walletId === 'string' &&
+    /^[a-f0-9]{64}$/.test(record.walletId) &&
+    record.walletId !== walletId
+  ) {
     throw new Error('Pending swap intent belongs to another wallet scope')
   }
   if (!hasExactFields(record, SWAP_INTENT_RECORD_FIELDS)) {
     throw corruptPendingIntent('record fields are invalid')
   }
-  if (typeof record.walletId !== 'string' || !/^[a-f0-9]{64}$/.test(record.walletId)) {
+  if (
+    typeof record.walletId !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(record.walletId)
+  ) {
     throw corruptPendingIntent('wallet id is invalid')
   }
   if (record.walletId !== walletId) {
     throw new Error('Pending swap intent belongs to another wallet scope')
   }
-  if (typeof record.tradeId !== 'string' || record.tradeId !== expectedTradeId) {
+  if (
+    typeof record.tradeId !== 'string' ||
+    record.tradeId !== expectedTradeId
+  ) {
     throw corruptPendingIntent('physical trade id mismatch')
   }
   if (!hasExactFields(record.intent, DURABLE_INTENT_FIELDS)) {
@@ -334,8 +403,10 @@ function validatedSwapIntentRecord(
   if (record.tradeId !== intent.tradeId) {
     throw corruptPendingIntent('physical and internal trade id mismatch')
   }
-  if (typeof record.ephemeralPrivkeyHex !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(record.ephemeralPrivkeyHex)) {
+  if (
+    typeof record.ephemeralPrivkeyHex !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(record.ephemeralPrivkeyHex)
+  ) {
     throw corruptPendingIntent('private key is invalid')
   }
   const keyBindingError = validateDurableTradePrivateKeyBinding(
@@ -346,20 +417,37 @@ function validatedSwapIntentRecord(
   if (typeof record.submitted !== 'boolean') {
     throw corruptPendingIntent('submitted state is invalid')
   }
-  if (typeof record.updatedAt !== 'number' ||
-    !Number.isSafeInteger(record.updatedAt) || record.updatedAt < 0) {
+  if (
+    typeof record.updatedAt !== 'number' ||
+    !Number.isSafeInteger(record.updatedAt) ||
+    record.updatedAt < 0
+  ) {
     throw corruptPendingIntent('updated timestamp is invalid')
   }
   return record as unknown as SwapIntentRecord
+}
+
+export function decodeGuiPendingSwapIntentRecord(
+  value: unknown,
+  walletId: string,
+  expectedTradeId: string,
+): SwapIntentRecord {
+  return structuredClone(
+    validatedSwapIntentRecord(value, walletId, expectedTradeId),
+  )
 }
 
 function hasExactFields<const TFields extends readonly string[]>(
   value: unknown,
   fields: TFields,
 ): value is Record<TFields[number], unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return false
   const actual = Object.keys(value)
-  return actual.length === fields.length && fields.every((field) => actual.includes(field))
+  return (
+    actual.length === fields.length &&
+    fields.every((field) => actual.includes(field))
+  )
 }
 
 function corruptPendingIntent(reason: string): Error {
@@ -371,6 +459,9 @@ function isPrivateKey(value: string): boolean {
 }
 
 function validateLegacyGuiIntent(input: GuiPendingSwapIntent): boolean {
-  return validateDurableTradePrivateKeyBinding(input.privkey, input.pubkey) === null &&
+  return (
+    validateDurableTradePrivateKeyBinding(input.privkey, input.pubkey) ===
+      null &&
     validateDurableTradePendingIntent(durableIntentFromGui(input)) === null
+  )
 }

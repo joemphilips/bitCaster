@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Amount, Mint as CashuMint } from "@cashu/cashu-ts";
+import Dexie from "dexie";
 import { createDurableWalletProofTransition } from "@bitcaster/client-sdk/durableWalletProofTransition";
 import {
   abortPreparedGuiWalletMintForWallet,
@@ -681,12 +682,14 @@ describe("GUI wallet custody coordinator", () => {
     });
   });
 
-  it("rolls back canonical completion when the native operation write fails", async () => {
+  it("keeps the Dexie transaction active through snapshot validation and rolls back a native write fault", async () => {
     const prepared = await prepareProofOperation(operationInput());
     await markProofOperationMintSubmitted(prepared.operationId);
+    let observedActiveTransaction = false;
     const operationPut = vi
       .spyOn(db.proofOperations, "put")
       .mockImplementation((() => {
+        observedActiveTransaction = Dexie.currentTransaction !== null;
         throw new Error("injected native write failure");
       }) as never);
 
@@ -695,6 +698,7 @@ describe("GUI wallet custody coordinator", () => {
     ).rejects.toThrow(/injected native write failure/);
     operationPut.mockRestore();
 
+    expect(observedActiveTransaction).toBe(true);
     expect((await storedOperation(prepared.operationId))?.state).toBe(
       "mint-submitted",
     );

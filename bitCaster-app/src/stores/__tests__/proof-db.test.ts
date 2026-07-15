@@ -7,6 +7,7 @@ import {
   canonicalKeysetId as keysetId,
   canonicalSecpPoint as secpPoint,
 } from "../../test/cashu-proof-fixtures";
+import { GUI_DURABLE_STORAGE_ARTIFACT_BYTES_LIMITS } from "../gui-durable-storage-artifacts";
 
 // Mock Dexie before importing the module under test — we don't need a real
 // IndexedDB (no polyfill installed in the jsdom harness), just an object
@@ -163,6 +164,7 @@ import {
   getUnitProofs,
   getReservedProofs,
   removeProofs,
+  prepareStoredProofForWrite,
   requireProofOperationRecord,
   releaseProofReservation,
   releaseProofReservations,
@@ -794,6 +796,35 @@ describe("proof operation record decoder", () => {
     expect(requireProofOperationRecord(record)).toBe(record);
   });
 
+  it("rejects proof and operation rows beyond the reviewed physical maxima", () => {
+    expect(() =>
+      prepareStoredProofForWrite(
+        {
+          ...validProof(),
+          secret: "x".repeat(GUI_DURABLE_STORAGE_ARTIFACT_BYTES_LIMITS.proofs),
+          mintUrl: "https://mint.example",
+          baseAsset: "sat",
+          unit: "sat",
+          receivedAt: 1,
+        } as never,
+        1,
+        TEST_WALLET_ID,
+      ),
+    ).toThrow("exceeds its physical row limit");
+    expect(() =>
+      requireProofOperationRecord(
+        validProofOperation({
+          metadata: {
+            unit: "sat",
+            payload: "x".repeat(
+              GUI_DURABLE_STORAGE_ARTIFACT_BYTES_LIMITS.proofOperations,
+            ),
+          },
+        }),
+      ),
+    ).toThrow("exceeds its physical row limit");
+  });
+
   it("accepts canonical secp256k1 and BLS proofs in inputs and completed results", () => {
     const secpProof = validProof();
     const blsProof = validBlsProof();
@@ -827,7 +858,9 @@ describe("proof operation record decoder", () => {
 
   it("rejects a present-but-undefined last error", () => {
     expect(() =>
-      requireProofOperationRecord(validProofOperation({ lastError: undefined })),
+      requireProofOperationRecord(
+        validProofOperation({ lastError: undefined }),
+      ),
     ).toThrow(/Stored proof operation is invalid/);
   });
 

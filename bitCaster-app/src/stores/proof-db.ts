@@ -34,6 +34,11 @@ import type { GuiPartialLockFailureRecord } from "./partial-lock-failure-model";
 import type { PendingLocalWalletPaymentRow } from "./pending-local-wallet-payment-model";
 import type { PendingTradeRecord } from "./pendingTrades";
 import type { WalletActivityRow } from "./wallet-activity-projection";
+import type {
+  GuiDurableStorageAccountingRow,
+  GuiDurableStorageHeadroomRow,
+} from "./gui-durable-storage-admission-model";
+import { createGuiDurableStorageRowArtifact } from "./gui-durable-storage-artifacts";
 import {
   walletIdFromHeldGuiWalletLock,
   withGuiWalletLock,
@@ -254,6 +259,8 @@ export class BitcasterDB extends Dexie {
   >;
   pendingTrades!: Table<PendingTradeRecord, [string, string]>;
   walletActivities!: Table<WalletActivityRow, [string, string]>;
+  durableStorageAccounting!: Table<GuiDurableStorageAccountingRow, string>;
+  durableStorageHeadroom!: Table<GuiDurableStorageHeadroomRow, string>;
 
   constructor() {
     super("bitcaster");
@@ -426,6 +433,35 @@ export class BitcasterDB extends Dexie {
         "[walletId+orderId], walletId, &[walletId+clientOrderId], [walletId+submittedAt]",
       walletActivities:
         "[walletId+id], walletId, [walletId+date], [walletId+type]",
+    });
+    this.version(14).stores({
+      proofs:
+        "proofId, walletId, [walletId+mintUrl], [walletId+mintUrl+unit+proofClass+selectability+amount], [walletId+conditionId+outcomeCollection], [walletId+mintUrl+conditionId+outcomeCollection], [walletId+reservedBy]",
+      proofOperations:
+        "[walletId+operationId], walletId, [walletId+state], [walletId+kind], [walletId+mintUrl], [walletId+durableOperationId], [walletId+durableTradeId], updatedAt, custodyOperationId",
+      swapSessions:
+        "tradeId, walletId, [walletId+active], [walletId+updatedAt]",
+      swapIntents:
+        "tradeId, walletId, [walletId+updatedAt], [walletId+submitted]",
+      custodyScopes: "scopeId, scopeKind, &marketId, &inventoryKey",
+      custodyScopeStates: "scopeId",
+      custodyOperations:
+        "operationId, scopeId, active, [scopeId+operationId], [scopeId+active+operationId]",
+      custodySessionLinks:
+        "operationId, scopeId, sessionId, &[scopeId+sessionId+operationId]",
+      custodyProofReservations:
+        "proofId, scopeId, operationId, [scopeId+operationId]",
+      partialLockFailures:
+        "[walletId+tradeId], walletId, [walletId+refundLocktime], [walletId+createdAt]",
+      walletCounters: "[walletId+keysetId], walletId",
+      pendingLocalWalletPayments:
+        "[walletId+depositId], walletId, [walletId+phase], &[walletId+splitOperationId], [walletId+nextAttemptAt+createdAt+depositId]",
+      pendingTrades:
+        "[walletId+orderId], walletId, &[walletId+clientOrderId], [walletId+submittedAt]",
+      walletActivities:
+        "[walletId+id], walletId, [walletId+date], [walletId+type]",
+      durableStorageAccounting: "recordId",
+      durableStorageHeadroom: "recordId",
     });
     this.on("blocked", () => {
       durableSwapStorageBlockedReason =
@@ -1138,11 +1174,18 @@ export function requireStoredProofRow(
   ) {
     throw new Error("Stored proof identity is invalid");
   }
-  return {
+  const result: StoredProofRow = {
     ...proof,
     amount: amount as never,
     unit,
   };
+  createGuiDurableStorageRowArtifact({
+    table: "proofs",
+    key: result.proofId,
+    artifactRole: "proof-post-image",
+    row: result,
+  });
+  return result;
 }
 
 export function normalizeStoredProofForStorage(
@@ -1324,7 +1367,14 @@ export function requireProofOperationRecord(
   if (!hasValidProofOperationLink(value, durableLink, operationId)) {
     throw new Error("Stored proof operation recovery binding is invalid");
   }
-  return value as unknown as ProofOperationRecord;
+  const result = value as unknown as ProofOperationRecord;
+  createGuiDurableStorageRowArtifact({
+    table: "proofOperations",
+    key: [walletId, operationId],
+    artifactRole: "exact-operation",
+    row: result,
+  });
+  return result;
 }
 
 function requireProofOperationScalarFields(
@@ -1429,10 +1479,7 @@ function hasValidProofOperationLifecycle(
   switch (value.state) {
     case "prepared":
     case "mint-submitted":
-      return (
-        value.lastError === null &&
-        value.failureCode === undefined
-      );
+      return value.lastError === null && value.failureCode === undefined;
     case "completed":
       return (
         value.resultProofs !== undefined &&
@@ -1702,9 +1749,7 @@ function hasValidStoredProofClassification(
   );
 }
 
-function hasValidCtfMetadataRelation(
-  proof: Record<string, unknown>,
-): boolean {
+function hasValidCtfMetadataRelation(proof: Record<string, unknown>): boolean {
   const fields = [
     "conditionId",
     "condition_id",

@@ -181,7 +181,14 @@ function requirePendingTradeRecord(
   return structuredClone(record as PendingTradeRecord);
 }
 
-const PENDING_TRADE_FIELDS = new Set([
+export function decodeGuiPendingTradeRecord(
+  value: unknown,
+  walletId: string,
+): PendingTradeRecord {
+  return requirePendingTradeRecord(value, walletId);
+}
+
+const PENDING_TRADE_FIELDS = [
   "walletId",
   "orderId",
   "marketId",
@@ -195,10 +202,23 @@ const PENDING_TRADE_FIELDS = new Set([
   "amountSubunits",
   "timeInForce",
   "recoveryAttempt",
-]);
+] as const;
 
 function hasOnlyPendingTradeFields(value: Record<string, unknown>): boolean {
-  return Object.keys(value).every((key) => PENDING_TRADE_FIELDS.has(key));
+  if (Object.getOwnPropertySymbols(value).length !== 0) return false;
+  const keys = Object.keys(value);
+  if (
+    keys.length !== PENDING_TRADE_FIELDS.length ||
+    Object.getOwnPropertyNames(value).length !== keys.length
+  ) {
+    return false;
+  }
+  return PENDING_TRADE_FIELDS.every((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return (
+      descriptor !== undefined && descriptor.enumerable && "value" in descriptor
+    );
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
