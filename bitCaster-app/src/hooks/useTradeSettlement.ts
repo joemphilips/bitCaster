@@ -42,30 +42,44 @@ import {
   type SwapMessage,
 } from "@/hooks/useTradeHub";
 import {
+  createActiveSwap,
   useActiveSwapsStore,
   type ActiveSwap,
   type SwapRole,
-  type SwapWorkKey,
 } from "@/stores/activeSwaps";
 import {
+  classifyDurableTradeRecoveryDisposition,
+  type DurableTradeMintRecoveryState,
+} from "@bitcaster/client-sdk/durableTradeRecovery";
+import {
+  clearGuiPendingTradeCache,
+  getCurrentGuiPendingTrade,
+  getCurrentGuiPendingTrades,
+  isCurrentGuiPendingTrade,
+  loadGuiPendingTrades,
+  persistGuiPendingTrade,
+  removeGuiPendingTrade,
+  replaceGuiPendingTradeCache,
   usePendingTradesStore,
-  type PendingTrade,
+  type PendingTradeRecord,
 } from "@/stores/pendingTrades";
 import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
 import { emitTradeTerminal } from "@/lib/tradeTerminalEvents";
 import { useWalletStore } from "@/stores/wallet";
 import { Mint as CashuMint } from "@cashu/cashu-ts";
 import {
-  addProofs,
-  getUnitProofs,
-  getOutcomeProofs,
-  getProofOperation,
-  releaseProofReservation,
-  removeProofs,
-  replaceProofs,
-  tryReserveProofs,
+  currentGuiWalletId,
+  getUnitProofsUnderLock,
+  getOutcomeProofsUnderLock,
+  getProofOperationUnderLock,
+  releaseProofReservationUnderLock,
+  tryReserveProofsUnderLock,
   type StoredProof,
 } from "@/stores/proof-db";
+import {
+  walletIdFromHeldGuiWalletLock,
+  type GuiWalletLockContext,
+} from "@/stores/gui-wallet-lock";
 import {
   fetchOrderStatus,
   promoteFillsToActiveSwaps,
@@ -78,15 +92,14 @@ import {
   buyerClaimSwap,
   buyerExtractSecret,
   buyerPrepareSwap,
+  generateAdaptorPoint,
   inspectExactPreparedProofOperation,
   restoreExactPreparedProofOperation,
   resumeExactPreparedProofOperation,
   sellerClaimSwap,
   sellerLockOutcomeProofs,
-  sellerPreparePrelockedSwap,
-  sellerPrepareSwap,
+  sellerPreparePersistedPrelockedSwap,
   type ProofOperationRecord as SwapProofOperationRecord,
-  type ProofOperationStore,
 } from "@bitcaster/swap-protocol/atomicSwap";
 import {
   computeGrossCtfInputAmountSats,
@@ -94,21 +107,19 @@ import {
   selectCollateralForCtfSplit,
   splitRegularProofsWithOperation,
   splitRootCompleteSetForSwap,
-  type CtfProofOperationRecord,
-  type CtfProofOperationStore,
 } from "@/lib/ctfSplit";
 import { useToastStore } from "@/stores/toast";
-import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
+import { commitGuiPartialLockFailureUnderLock } from "@/stores/partial-lock-failure-db";
 import {
   loadRecoverableGuiSwapSessions,
-  persistGuiSwapSession,
-  prepareGuiProofOperationWithSession,
-  completeGuiProofOperationWithSession,
-  markGuiProofOperationMintSubmittedWithSession,
-  recordGuiRecoveredProofOperationOutputs,
-  recoverGuiDurableTradeSession,
-  removeGuiSwapSession,
+  loadRecoverableGuiTradeOperationPage,
+  loadGuiSwapSessionStateUnderLock,
+  persistGuiSwapSessionUnderLock,
+  recordGuiRecoveredProofOperationOutputsUnderLock,
+  recoverGuiDurableTradeSessionUnderLock,
+  removeGuiSwapSessionUnderLock,
   withGuiSwapSessionOwnership,
+  type GuiDurableTradeRecoveryInput,
 } from "@/stores/swap-session-db";
 import {
   loadGuiPendingSwapIntents,
@@ -118,12 +129,10 @@ import {
   migrateLegacyGuiPendingSwapIntents,
   removeGuiPendingSwapIntent,
 } from "@/stores/pending-swap-intent-db";
-import type {
-  OutcomeMetadata,
-  PartialLockHeldRecord,
-} from "@bitcaster/client-sdk/swapFailure";
+import type { PartialLockHeldRecord } from "@bitcaster/client-sdk/swapFailure";
 import {
   TRADE_MESSAGE_TYPES,
+  type SwapCipherMessageType,
   type TradeMessageType,
 } from "@/lib/tradeMessageTypes";
 import {
@@ -143,115 +152,52 @@ import {
 import {
   defaultCollateralUnit,
   normalizeMarketBaseAsset,
-  normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
-import {
-  resolveConditionalProofMetadata,
-  storedConditionalProofsFromMintMetadata,
-} from "@/lib/conditionalKeysetMetadata";
+import { storedConditionalProofsFromMintMetadata } from "@/lib/conditionalKeysetMetadata";
 import { resolveGrossCtfInputPlanningKeyset } from "@/lib/ctfGrossInputPlanning";
+import { normalizeUrl } from "@/lib/url";
+import {
+  ctfGuiProofOperationStoreUnderLock,
+  externalClaimGuiProofOperationStoreUnderLock,
+  localLockGuiProofOperationStoreUnderLock,
+  regularSplitGuiProofOperationStoreUnderLock,
+} from "@/stores/gui-trade-proof-operation-store";
+import {
+  guiTradeRefundDueAtMs,
+  guiTradeRefundEvidenceUnderLock,
+  isGuiTradeRefundLink,
+  prepareGuiTradeRefundUnderLock,
+  salvageGuiTradeRefundUnderLock,
+} from "@/stores/gui-trade-refund-recovery";
+import {
+  releaseGuiCustodyAuthority,
+  tryWithGuiCustodyProfileLock,
+} from "@/stores/gui-custody-authority";
 
 // ---------------------------------------------------------------------------
 // Public hook
 // ---------------------------------------------------------------------------
-
-const proofOperationStore: ProofOperationStore = {
-  getProofOperation: async (operationId) =>
-    (await getProofOperation(operationId)) as SwapProofOperationRecord | null,
-  prepareProofOperation: async (input) => {
-    const swap =
-      useActiveSwapsStore.getState().byTradeId[
-        input.operationId.split("/browser/")[0] ?? ""
-      ];
-    if (!swap)
-      throw new Error("Proof operation has no active durable GUI swap");
-    return (await prepareGuiProofOperationWithSession(
-      input,
-      swap,
-    )) as SwapProofOperationRecord;
-  },
-  markProofOperationMintSubmitted: async (operationId) =>
-    (await markGuiProofOperationForCurrentSwap(
-      operationId,
-    )) as SwapProofOperationRecord,
-  markProofOperationCompleted: async (operationId, resultProofs) =>
-    (await completeGuiProofOperationForCurrentSwap(
-      operationId,
-      resultProofs,
-    )) as SwapProofOperationRecord,
-};
-
-const ctfProofOperationStore: CtfProofOperationStore = {
-  getProofOperation: async (operationId) =>
-    (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
-  prepareProofOperation: async (input) => {
-    const swap =
-      useActiveSwapsStore.getState().byTradeId[
-        input.operationId.split("/browser/")[0] ?? ""
-      ];
-    if (!swap)
-      throw new Error("Proof operation has no active durable GUI swap");
-    return (await prepareGuiProofOperationWithSession(
-      input,
-      swap,
-    )) as CtfProofOperationRecord;
-  },
-  markProofOperationMintSubmitted: async (operationId) =>
-    (await markGuiProofOperationForCurrentSwap(
-      operationId,
-    )) as CtfProofOperationRecord,
-  markProofOperationCompleted: async (operationId, resultProofs) =>
-    (await completeGuiProofOperationForCurrentSwap(
-      operationId,
-      resultProofs,
-    )) as CtfProofOperationRecord,
-};
-
-async function markGuiProofOperationForCurrentSwap(operationId: string) {
-  const tradeId = operationId.split("/browser/")[0] ?? "";
-  const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
-  if (!swap) throw new Error("Proof operation has no active durable GUI swap");
-  const mintUrl = useWalletStore.getState().activeMintUrl;
-  return markGuiProofOperationMintSubmittedWithSession(
-    operationId,
-    swap,
-    mintUrl,
-  );
-}
-
-async function completeGuiProofOperationForCurrentSwap(
-  operationId: string,
-  resultProofs: Record<string, Proof[]>,
-) {
-  const tradeId = operationId.split("/browser/")[0] ?? "";
-  const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
-  if (!swap) throw new Error("Proof operation has no active durable GUI swap");
-  const mintUrl = useWalletStore.getState().activeMintUrl;
-  return completeGuiProofOperationWithSession(
-    operationId,
-    resultProofs,
-    swap,
-    mintUrl,
-  );
-}
 
 type ExactGuiRecoveryOperation = {
   entry: SwapProofOperationRecord;
   wallet: CashuWallet;
 };
 
-async function loadExactGuiRecoveryOperation(operation: {
-  operationId: string;
-  operationKey?: string;
-  tradeId: string;
-}): Promise<ExactGuiRecoveryOperation> {
+async function loadExactGuiRecoveryOperation(
+  lock: GuiWalletLockContext,
+  operation: {
+    operationId: string;
+    operationKey?: string;
+    tradeId: string;
+  },
+): Promise<ExactGuiRecoveryOperation> {
   if (!operation.operationKey) {
     throw new Error(
       `Durable operation ${operation.operationId} has no local key`,
     );
   }
-  const entry = await getProofOperation(operation.operationKey);
+  const entry = await getProofOperationUnderLock(lock, operation.operationKey);
   if (
     !entry ||
     entry.durableTradeRecovery?.operationId !== operation.operationId ||
@@ -272,109 +218,175 @@ async function loadExactGuiRecoveryOperation(operation: {
     .getState()
     .getWalletForUnit(entry.mintUrl, unit, {
       enableCtf: entry.kind === "conditional-keyset-swap",
+      expectedWalletId: walletIdFromHeldGuiWalletLock(lock),
     });
-  return { entry: entry as SwapProofOperationRecord, wallet };
+  return {
+    entry: entry as SwapProofOperationRecord,
+    wallet,
+  };
 }
 
 async function applyExactGuiRecoveryOutputs(
+  lock: GuiWalletLockContext,
   tradeId: string,
   operation: { operationId: string; operationKey?: string },
-  entry: SwapProofOperationRecord,
   resultProofs: Record<string, Proof[]>,
 ): Promise<void> {
-  const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
-  if (!swap)
-    throw new Error(
-      `Durable operation ${operation.operationId} has no active swap projection`,
-    );
-  await recordGuiRecoveredProofOperationOutputs(
+  await recordGuiRecoveredProofOperationOutputsUnderLock(
+    lock,
     tradeId,
     operation.operationId,
     resultProofs,
   );
-  if (entry.kind === "conditional-keyset-swap") {
-    const outcome = outcomeMetadataForMarket(swap.marketId);
-    if (!outcome) throw new Error(`Invalid market id ${swap.marketId}`);
-    const spendable = [
-      ...(resultProofs.keep ?? []),
-      ...(resultProofs.change ?? []),
-    ];
-    await persistFreshConditionalProofs(
-      spendable,
-      entry.mintUrl,
-      outcome.conditionId,
-      swap.baseAsset,
-    );
-  } else if (entry.kind === "swap-lock" || entry.kind === "proof-split") {
-    await persistLockChange(
-      entry.inputs,
-      resultProofs.keep ?? [],
-      entry.mintUrl,
-    );
-  } else if (entry.kind === "swap-claim") {
-    await persistFreshProofs(
-      resultProofs.keep ?? [],
-      entry.mintUrl,
-      null,
-      swap.baseAsset,
-    );
-  } else {
-    throw new Error(
-      `Unsupported exact GUI recovery operation kind ${entry.kind}`,
-    );
-  }
 }
 
 async function recoverGuiSwapBeforeResume(
   tradeId: string,
   joinTrade: (tradeId: string) => Promise<void>,
   sendSwapMessage: SendSwapMessageFn,
-): Promise<"continue" | "replayed" | "blocked"> {
-  const recovery = await recoverGuiDurableTradeSession(tradeId, {
-    mint: {
-      inspect: async (operation) => {
-        const { entry, wallet } =
-          await loadExactGuiRecoveryOperation(operation);
-        const state = await inspectExactPreparedProofOperation(wallet, entry);
-        return {
-          kind:
-            state === "all-unspent"
-              ? "prepared-unspent"
-              : state === "all-spent"
-                ? "prepared-spent-restorable"
-                : "pending-or-mixed",
-        };
-      },
-      restoreExactPersistedOutputs: async (operation) => {
-        const { entry } = await loadExactGuiRecoveryOperation(operation);
-        const result = await restoreExactPreparedProofOperation(entry);
-        await applyExactGuiRecoveryOutputs(tradeId, operation, entry, result);
-      },
-      resumeExactPreparedOperation: async (operation) => {
-        const { entry, wallet } =
-          await loadExactGuiRecoveryOperation(operation);
-        const result = await resumeExactPreparedProofOperation(wallet, entry);
-        await applyExactGuiRecoveryOutputs(tradeId, operation, entry, result);
-      },
-    },
-    transport: {
+  expectedWalletId: string,
+  wakeRecovery: () => void,
+): Promise<"continue" | "blocked" | "retained"> {
+  const transport = createGuiRecoveryTransportPlan();
+  const disposition = await withGuiSwapSessionOwnership(
+    tradeId,
+    async (lock) =>
+      recoverOwnedGuiSwap({
+        lock,
+        tradeId,
+        expectedWalletId,
+        joinTrade,
+        sendSwapMessage,
+        wakeRecovery,
+        transport,
+      }),
+    expectedWalletId,
+  );
+  try {
+    return (await deliverGuiRecoveryTransportPlan(
+      transport,
+      expectedWalletId,
       joinTrade,
-      sendCipher: (id, messageType, ciphertext) =>
-        sendSwapMessageWithRetry(sendSwapMessage, id, messageType, ciphertext),
-    },
-    clock: { nowMs: () => Date.now() },
-    hashCiphertext: async (ciphertext) => {
-      const digest = await crypto.subtle.digest(
-        "SHA-256",
-        new TextEncoder().encode(ciphertext),
-      );
-      return Array.from(new Uint8Array(digest), (part) =>
-        part.toString(16).padStart(2, "0"),
-      ).join("");
-    },
+      sendSwapMessage,
+    ))
+      ? disposition
+      : "blocked";
+  } catch {
+    return "blocked";
+  }
+}
+
+interface GuiRecoveryTransportPlan {
+  join: GuiTradeJoinDelivery | null;
+  ciphers: GuiSwapCipherDelivery[];
+}
+
+function createGuiRecoveryTransportPlan(): GuiRecoveryTransportPlan {
+  return { join: null, ciphers: [] };
+}
+
+interface OwnedGuiSwapRecovery {
+  lock: GuiWalletLockContext;
+  tradeId: string;
+  expectedWalletId: string;
+  joinTrade: (tradeId: string) => Promise<void>;
+  sendSwapMessage: SendSwapMessageFn;
+  wakeRecovery: () => void;
+  transport: GuiRecoveryTransportPlan;
+}
+
+async function recoverOwnedGuiSwap(
+  input: OwnedGuiSwapRecovery,
+): Promise<"continue" | "blocked" | "retained"> {
+  const first = await runGuiDurableRecovery(input);
+  const firstDisposition = requireGuiRecoveryDisposition(first, input.tradeId);
+  if (firstDisposition !== "ready") {
+    return retainOrBlockGuiRecovery(input, firstDisposition);
+  }
+  const exact = await loadExactGuiSwapForEffect(input.lock, input.tradeId);
+  if (!exact) return "blocked";
+  if (exact.step !== "awaiting-refund") {
+    clearGuiTradeRecoveryWakeup(input.expectedWalletId, input.tradeId);
+    replaceActiveSwap(exact);
+    return "continue";
+  }
+  return recoverOwnedGuiRefund(input, exact);
+}
+
+async function recoverOwnedGuiRefund(
+  input: OwnedGuiSwapRecovery,
+  swap: ActiveSwap,
+): Promise<"blocked" | "retained"> {
+  const preparation = await prepareGuiTradeRefundUnderLock(
+    input.lock,
+    swap,
+    Date.now(),
+  );
+  if (preparation.kind === "not-due") {
+    scheduleGuiRefundWakeup(input, preparation.retryAtMs - Date.now());
+    return "retained";
+  }
+  if (
+    preparation.kind === "no-locked-value" ||
+    preparation.kind === "completed"
+  ) {
+    await finishRecoveredGuiRefund(input, swap);
+    return "retained";
+  }
+  const recovered = await runGuiDurableRecovery(input);
+  const disposition = requireGuiRecoveryDisposition(recovered, input.tradeId);
+  if (disposition === "ready") {
+    const exact = await loadExactGuiSwapForEffect(input.lock, input.tradeId);
+    if (!exact) return "blocked";
+    await finishRecoveredGuiRefund(input, exact);
+    return "retained";
+  }
+  if (disposition === "retained") {
+    scheduleGuiRefundWakeup(input, 1_000);
+    return "retained";
+  }
+  return "blocked";
+}
+
+async function finishRecoveredGuiRefund(
+  input: OwnedGuiSwapRecovery,
+  swap: ActiveSwap,
+): Promise<void> {
+  await commitGuiSwapCandidate(input.lock, {
+    ...swap,
+    step: "Failed",
+    inFlightSteps: {},
   });
-  if (!recovery) return "blocked";
-  const session = recovery.sessions.find(
+  clearGuiTradeRecoveryWakeup(input.expectedWalletId, input.tradeId);
+}
+
+function scheduleGuiRefundWakeup(
+  input: OwnedGuiSwapRecovery,
+  delayMs: number,
+): void {
+  scheduleGuiTradeRecoveryWakeup(
+    input.expectedWalletId,
+    input.tradeId,
+    delayMs,
+    input.wakeRecovery,
+  );
+}
+
+async function runGuiDurableRecovery(input: OwnedGuiSwapRecovery) {
+  return recoverGuiDurableTradeSessionUnderLock(
+    input.lock,
+    input.tradeId,
+    createGuiRecoveryInput(input),
+  );
+}
+
+type GuiRecoveryDisposition = "ready" | "retained" | "blocked";
+
+function requireGuiRecoveryDisposition(
+  recovery: Awaited<ReturnType<typeof runGuiDurableRecovery>>,
+  tradeId: string,
+): GuiRecoveryDisposition {
+  const session = recovery?.sessions.find(
     (candidate) => candidate.tradeId === tradeId,
   );
   if (!session) return "blocked";
@@ -383,8 +395,247 @@ async function recoverGuiSwapBeforeResume(
       `Durable GUI swap recovery failed closed: ${session.reason}`,
     );
   }
-  if (session.kind === "replayed") return "replayed";
-  return session.kind === "ready" ? "continue" : "blocked";
+  if (
+    session.kind === "awaiting-refund-salvage" ||
+    session.kind === "retry-scheduled"
+  ) {
+    return "retained";
+  }
+  return session.kind === "ready" || session.kind === "replayed"
+    ? "ready"
+    : "blocked";
+}
+
+async function retainOrBlockGuiRecovery(
+  input: OwnedGuiSwapRecovery,
+  disposition: GuiRecoveryDisposition,
+): Promise<"blocked" | "retained"> {
+  if (disposition === "retained") {
+    const exact = await loadExactGuiSwapForEffect(input.lock, input.tradeId);
+    if (exact?.step === "awaiting-refund") {
+      scheduleGuiRefundWakeup(
+        input,
+        Math.max(1_000, guiTradeRefundDueAtMs(exact) - Date.now()),
+      );
+    }
+    return "retained";
+  }
+  return "blocked";
+}
+
+function createGuiRecoveryInput(
+  input: OwnedGuiSwapRecovery,
+): GuiDurableTradeRecoveryInput {
+  return {
+    mint: createGuiRecoveryMintPort(input),
+    transport: createGuiRecoveryTransportPort(input),
+    clock: { nowMs: () => Date.now() },
+    scheduleRetry: async ({ delayMs }) =>
+      scheduleGuiRefundWakeup(input, delayMs),
+    hashCiphertext: hashGuiRecoveryCiphertext,
+  };
+}
+
+function createGuiRecoveryMintPort(
+  input: OwnedGuiSwapRecovery,
+): GuiDurableTradeRecoveryInput["mint"] {
+  return {
+    inspect: (operation) => inspectGuiRecoveryOperation(input, operation),
+    restoreExactPersistedOutputs: async (operation) => {
+      const { entry } = await loadExactGuiRecoveryOperation(
+        input.lock,
+        operation,
+      );
+      const result = await restoreExactPreparedProofOperation(entry);
+      await applyExactGuiRecoveryOutputs(
+        input.lock,
+        input.tradeId,
+        operation,
+        result,
+      );
+    },
+    resumeExactPreparedOperation: async (operation) => {
+      const { entry, wallet } = await loadExactGuiRecoveryOperation(
+        input.lock,
+        operation,
+      );
+      const result = await resumeExactPreparedProofOperation(wallet, entry);
+      await applyExactGuiRecoveryOutputs(
+        input.lock,
+        input.tradeId,
+        operation,
+        result,
+      );
+    },
+    salvageExpiredRefund: async (operation) => {
+      const exact = await requireExactGuiSwapForRecovery(input);
+      const result = await salvageGuiTradeRefundUnderLock(
+        input.lock,
+        exact,
+        operation,
+      );
+      await applyExactGuiRecoveryOutputs(
+        input.lock,
+        input.tradeId,
+        operation,
+        result,
+      );
+    },
+    getRefundSalvageEvidence: async (operation) => {
+      const exact = await loadExactGuiSwapForEffect(input.lock, input.tradeId);
+      return exact
+        ? guiTradeRefundEvidenceUnderLock(input.lock, exact, operation)
+        : null;
+    },
+  };
+}
+
+async function inspectGuiRecoveryOperation(
+  input: OwnedGuiSwapRecovery,
+  operation: Parameters<GuiDurableTradeRecoveryInput["mint"]["inspect"]>[0],
+): Promise<{ kind: DurableTradeMintRecoveryState }> {
+  const adapterState = await requireExactGuiSwapForRecovery(input);
+  if (isGuiTradeRefundLink(operation)) {
+    return {
+      kind:
+        Date.now() >= guiTradeRefundDueAtMs(adapterState)
+          ? "expired-refund-salvage"
+          : "engine-terminal",
+    };
+  }
+  const { entry, wallet } = await loadExactGuiRecoveryOperation(
+    input.lock,
+    operation,
+  );
+  const state = await inspectExactPreparedProofOperation(wallet, entry);
+  return {
+    kind:
+      state === "all-unspent"
+        ? "prepared-unspent"
+        : state === "all-spent"
+          ? "prepared-spent-restorable"
+          : "pending-or-mixed",
+  };
+}
+
+function createGuiRecoveryTransportPort(
+  input: OwnedGuiSwapRecovery,
+): GuiDurableTradeRecoveryInput["transport"] {
+  return {
+    joinTrade: async (tradeId) => {
+      const exact = await requireExactGuiSwapForRecovery(input, tradeId);
+      queueGuiRecoveryJoin(
+        input.transport,
+        guiTradeJoinDelivery(input.expectedWalletId, exact),
+      );
+    },
+    sendCipher: async (tradeId, messageType, ciphertext) => {
+      const exact = await requireExactGuiSwapForRecovery(input, tradeId);
+      const persisted = persistedGuiSwapCipher(exact, messageType);
+      if (persisted !== ciphertext) {
+        throw new Error(
+          "Durable GUI recovery cipher authority was substituted",
+        );
+      }
+      queueGuiRecoveryJoin(
+        input.transport,
+        guiTradeJoinDelivery(input.expectedWalletId, exact),
+      );
+      queueGuiRecoveryCipher(input.transport, {
+        ...guiSwapTransportAuthority(input.expectedWalletId, exact),
+        messageType,
+        ciphertext,
+      });
+    },
+  };
+}
+
+function queueGuiRecoveryJoin(
+  plan: GuiRecoveryTransportPlan,
+  join: GuiTradeJoinDelivery,
+): void {
+  if (plan.join && !sameGuiTradeJoinDelivery(plan.join, join)) {
+    throw new Error("Durable GUI recovery mixed trade transport authority");
+  }
+  plan.join = join;
+}
+
+function queueGuiRecoveryCipher(
+  plan: GuiRecoveryTransportPlan,
+  delivery: GuiSwapCipherDelivery,
+): void {
+  if (plan.join && plan.join.tradeId !== delivery.tradeId) {
+    throw new Error("Durable GUI recovery mixed trade transport authority");
+  }
+  const existing = plan.ciphers.find(
+    (candidate) => candidate.messageType === delivery.messageType,
+  );
+  if (existing) {
+    if (existing.ciphertext !== delivery.ciphertext) {
+      throw new Error("Durable GUI recovery queued conflicting ciphertext");
+    }
+    return;
+  }
+  plan.ciphers.push(delivery);
+}
+
+async function requireExactGuiSwapForRecovery(
+  input: OwnedGuiSwapRecovery,
+  tradeId = input.tradeId,
+): Promise<ActiveSwap> {
+  const exact = await loadExactGuiSwapForEffect(input.lock, tradeId);
+  if (!exact) throw new Error("GUI wallet changed before durable recovery");
+  return exact;
+}
+
+async function hashGuiRecoveryCiphertext(ciphertext: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(ciphertext),
+  );
+  return Array.from(new Uint8Array(digest), (part) =>
+    part.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+function replaceActiveSwap(swap: ActiveSwap): void {
+  useActiveSwapsStore.setState((state) => ({
+    byTradeId: { ...state.byTradeId, [swap.tradeId]: swap },
+  }));
+}
+
+async function loadExactGuiSwapForEffect(
+  lock: GuiWalletLockContext,
+  tradeId: string,
+): Promise<ActiveSwap | null> {
+  if (!heldGuiWalletIsCurrent(lock)) return null;
+  const exact = await loadGuiSwapSessionStateUnderLock(lock, tradeId);
+  if (!exact || !heldGuiWalletIsCurrent(lock)) return null;
+  return exact;
+}
+
+async function commitGuiSwapCandidate(
+  lock: GuiWalletLockContext,
+  candidate: ActiveSwap,
+): Promise<ActiveSwap> {
+  const mintUrl = requireDurableGuiSwapMint(candidate);
+  await persistGuiSwapSessionUnderLock(lock, candidate, mintUrl);
+  if (heldGuiWalletIsCurrent(lock)) replaceActiveSwap(candidate);
+  return candidate;
+}
+
+function requireDurableGuiSwapMint(swap: ActiveSwap): string {
+  if (!swap.mintUrl) {
+    throw new Error("Durable GUI swap is missing its exact mint authority");
+  }
+  return normalizeUrl(swap.mintUrl);
+}
+
+function requireDurableGuiSwapOrderId(swap: ActiveSwap): string {
+  if (!swap.orderId) {
+    throw new Error("Durable GUI swap is missing its exact order authority");
+  }
+  return swap.orderId;
 }
 
 async function prepareRegularCollateralForCtfSplit(input: {
@@ -394,28 +645,54 @@ async function prepareRegularCollateralForCtfSplit(input: {
   baseAsset?: string | null;
   reservationId: string;
   operationId: string;
+  lock: GuiWalletLockContext;
+  swap: ActiveSwap;
 }): Promise<Proof[]> {
   const baseAsset = normalizeMarketBaseAsset(input.baseAsset);
-  const unit = defaultCollateralUnit(baseAsset);
-  const existingRegularSplit = await getProofOperation(input.operationId);
+  const existingRegularSplit = await getProofOperationUnderLock(
+    input.lock,
+    input.operationId,
+  );
   if (existingRegularSplit) {
-    const wallet = await useWalletStore
-      .getState()
-      .getWallet(input.mintUrl, baseAsset);
-    const grossPlanningKeyset =
-      await resolveGrossCtfInputPlanningKeyset(wallet);
-    const grossCtfInputSats = computeGrossCtfInputAmountSats({
-      faceAmountSats: input.faceAmountSats,
-      keyset: grossPlanningKeyset,
-    });
+    const unit = existingRegularSplit.metadata.unit;
+    const amount = existingRegularSplit.metadata.amount;
+    const persistedBaseAsset = normalizeMarketBaseAsset(
+      typeof existingRegularSplit.metadata.baseAsset === "string"
+        ? existingRegularSplit.metadata.baseAsset
+        : null,
+    );
+    if (
+      typeof unit !== "string" ||
+      !Number.isSafeInteger(amount) ||
+      (amount as number) <= 0 ||
+      persistedBaseAsset !== baseAsset
+    ) {
+      throw new Error(
+        `Durable regular split ${input.operationId} has invalid exact metadata`,
+      );
+    }
+    const wallet =
+      existingRegularSplit.state === "completed"
+        ? undefined
+        : await useWalletStore
+            .getState()
+            .getWalletForUnit(input.mintUrl, unit, {
+              expectedWalletId: walletIdFromHeldGuiWalletLock(input.lock),
+            });
     const regularSplit = await splitRegularProofsWithOperation({
       mintUrl: input.mintUrl,
       baseAsset,
+      unit,
       operationId: input.operationId,
       wallet,
       proofs: [],
-      amountSats: grossCtfInputSats,
-      proofOperationStore: ctfProofOperationStore,
+      amountSubunits: amount as number,
+      resumeInputAuthority: "persisted-operation",
+      resultDispositions: regularSplitResultDispositions(input.reservationId),
+      proofOperationStore: regularSplitGuiProofOperationStoreUnderLock(
+        input.lock,
+        input.swap,
+      ),
     });
     const exact = await selectCollateralForCtfSplit(
       input.mintUrl,
@@ -423,22 +700,6 @@ async function prepareRegularCollateralForCtfSplit(input: {
       input.faceAmountSats,
       baseAsset,
     );
-    await removeProofs(regularSplit.spent.map((proof) => proof.secret));
-    await addProofs([
-      ...regularSplit.keep.map((proof) => ({
-        ...proof,
-        mintUrl: input.mintUrl,
-        baseAsset,
-        unit,
-      })),
-      ...exact.inputs.map((proof) => ({
-        ...proof,
-        mintUrl: input.mintUrl,
-        baseAsset,
-        unit,
-        reservedBy: input.reservationId,
-      })),
-    ]);
     return exact.inputs;
   }
 
@@ -457,7 +718,9 @@ async function prepareRegularCollateralForCtfSplit(input: {
 
   const wallet = await useWalletStore
     .getState()
-    .getWallet(input.mintUrl, baseAsset);
+    .getWallet(input.mintUrl, baseAsset, {
+      expectedWalletId: walletIdFromHeldGuiWalletLock(input.lock),
+    });
   if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
     throw new Error(
       "Cashu wallet adapter does not support fee-aware proof selection.",
@@ -495,7 +758,11 @@ async function prepareRegularCollateralForCtfSplit(input: {
     wallet,
     proofs: selected.send,
     amountSats: grossCtfInputSats,
-    proofOperationStore: ctfProofOperationStore,
+    resultDispositions: regularSplitResultDispositions(input.reservationId),
+    proofOperationStore: regularSplitGuiProofOperationStoreUnderLock(
+      input.lock,
+      input.swap,
+    ),
   });
   const exact = await selectCollateralForCtfSplit(
     input.mintUrl,
@@ -503,28 +770,36 @@ async function prepareRegularCollateralForCtfSplit(input: {
     input.faceAmountSats,
     baseAsset,
   );
-  await removeProofs(regularSplit.spent.map((proof) => proof.secret));
-  await addProofs([
-    ...regularSplit.keep.map((proof) => ({
-      ...proof,
-      mintUrl: input.mintUrl,
-      baseAsset,
-      unit,
-    })),
-    ...exact.inputs.map((proof) => ({
-      ...proof,
-      mintUrl: input.mintUrl,
-      baseAsset,
-      unit,
-      reservedBy: input.reservationId,
-    })),
-  ]);
   return exact.inputs;
+}
+
+function regularSplitResultDispositions(reservationId: string) {
+  return {
+    send: {
+      kind: "wallet" as const,
+      asset: "regular" as const,
+      reservedBy: reservationId,
+    },
+    keep: {
+      kind: "wallet" as const,
+      asset: "regular" as const,
+      reservedBy: null,
+    },
+  };
 }
 
 const tradeCreatedInFlight = new Set<string>();
 const tradeCreatedFingerprints = new Map<string, string>();
 const joinedTradeIds = new Set<string>();
+const inboundReplayByWalletAndTrade = new Map<
+  string,
+  { attempt: number; timer: ReturnType<typeof setTimeout> }
+>();
+const recoveryWakeupByWalletAndTrade = new Map<
+  string,
+  ReturnType<typeof setTimeout>
+>();
+const deliveryRecoveryAttemptsByWalletAndTrade = new Map<string, number>();
 const JOIN_ORDER_RETRY_MS = 1_000;
 const JOIN_TRADE_RETRY_MS = 1_000;
 const MAX_JOIN_TRADE_RETRIES = 45;
@@ -535,6 +810,141 @@ const MAX_JOIN_ORDER_STATUS_MISSES = 12;
 // the trade id and join the durable trade group.
 const ORDER_STATUS_RECOVERY_MS = 2_000;
 const MAX_ORDER_STATUS_RECOVERY_ATTEMPTS = 45;
+const MAX_INBOUND_REPLAY_ATTEMPTS = 5;
+const INBOUND_REPLAY_DELAYS_MS = [50, 250, 1_000, 2_000, 5_000] as const;
+const GUI_DELIVERY_RECOVERY_DELAYS_MS = [
+  1_000, 2_000, 5_000, 10_000, 30_000,
+] as const;
+
+interface InboundReplayRequest {
+  walletId: string;
+  tradeId: string;
+  joinTrade: (tradeId: string) => Promise<void>;
+  joinOrder?: () => Promise<void>;
+}
+
+function scheduleInboundReplay(request: InboundReplayRequest): void {
+  const key = `${request.walletId}:${request.tradeId}`;
+  if (inboundReplayByWalletAndTrade.has(key)) return;
+  scheduleInboundReplayAttempt(request, key, 0);
+}
+
+function scheduleInboundReplayAttempt(
+  request: InboundReplayRequest,
+  key: string,
+  attempt: number,
+): void {
+  if (attempt >= MAX_INBOUND_REPLAY_ATTEMPTS) return;
+  const timer = setTimeout(() => {
+    inboundReplayByWalletAndTrade.delete(key);
+    if (currentGuiWalletId() !== request.walletId) return;
+    void replayInboundTrade(request).catch(() =>
+      scheduleInboundReplayAttempt(request, key, attempt + 1),
+    );
+  }, INBOUND_REPLAY_DELAYS_MS[attempt]);
+  inboundReplayByWalletAndTrade.set(key, { attempt, timer });
+}
+
+async function replayInboundTrade(
+  request: InboundReplayRequest,
+): Promise<void> {
+  await request.joinOrder?.();
+  await request.joinTrade(request.tradeId);
+}
+
+function clearInboundReplay(walletId: string, tradeId: string): void {
+  const key = `${walletId}:${tradeId}`;
+  const pending = inboundReplayByWalletAndTrade.get(key);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  inboundReplayByWalletAndTrade.delete(key);
+}
+
+function scheduleGuiTradeRecoveryWakeup(
+  walletId: string,
+  tradeId: string,
+  delayMs: number,
+  wake: () => void,
+): void {
+  const key = `${walletId}:${tradeId}`;
+  const prior = recoveryWakeupByWalletAndTrade.get(key);
+  if (prior) clearTimeout(prior);
+  const boundedDelay = Math.max(0, Math.min(delayMs, 2_147_000_000));
+  const timer = setTimeout(() => {
+    recoveryWakeupByWalletAndTrade.delete(key);
+    if (currentGuiWalletId() !== walletId) return;
+    joinedTradeIds.delete(tradeId);
+    wake();
+  }, boundedDelay);
+  recoveryWakeupByWalletAndTrade.set(key, timer);
+}
+
+function clearGuiTradeRecoveryWakeup(walletId: string, tradeId: string): void {
+  const key = `${walletId}:${tradeId}`;
+  const timer = recoveryWakeupByWalletAndTrade.get(key);
+  if (!timer) return;
+  clearTimeout(timer);
+  recoveryWakeupByWalletAndTrade.delete(key);
+}
+
+function handleDeferredGuiDelivery(
+  walletId: string,
+  tradeId: string,
+  result: "busy" | "blocked",
+  wakeRecovery: () => void,
+): void {
+  if (result === "blocked") {
+    deferSwapRecovery(tradeId, "corrupt");
+  }
+  scheduleGuiDeliveryRecovery(walletId, tradeId, wakeRecovery);
+}
+
+function scheduleGuiDeliveryRecovery(
+  walletId: string,
+  tradeId: string,
+  wakeRecovery: () => void,
+): void {
+  const key = `${walletId}:${tradeId}`;
+  const attempt = deliveryRecoveryAttemptsByWalletAndTrade.get(key) ?? 0;
+  if (attempt >= GUI_DELIVERY_RECOVERY_DELAYS_MS.length) {
+    deferSwapRecovery(tradeId);
+    return;
+  }
+  deliveryRecoveryAttemptsByWalletAndTrade.set(key, attempt + 1);
+  scheduleGuiTradeRecoveryWakeup(
+    walletId,
+    tradeId,
+    GUI_DELIVERY_RECOVERY_DELAYS_MS[attempt],
+    wakeRecovery,
+  );
+}
+
+function clearGuiDeliveryRecovery(walletId: string, tradeId: string): void {
+  deliveryRecoveryAttemptsByWalletAndTrade.delete(`${walletId}:${tradeId}`);
+  clearGuiTradeRecoveryWakeup(walletId, tradeId);
+}
+
+interface GuiTradeRecoveryWorkPage {
+  walletId: string;
+  tradeIds: string[];
+  nextCursor: string | null;
+}
+
+async function loadNextGuiTradeRecoveryWorkPage(
+  walletId: string,
+  cursor: string | null,
+): Promise<GuiTradeRecoveryWorkPage | null> {
+  let nextCursor = cursor;
+  do {
+    const page = await loadRecoverableGuiTradeOperationPage(
+      walletId,
+      nextCursor,
+    );
+    if (page.tradeIds.length > 0) return { walletId, ...page };
+    nextCursor = page.nextCursor;
+  } while (nextCursor !== null);
+  return null;
+}
 
 /**
  * Mount once near the app root. The hook owns no DOM and renders nothing.
@@ -546,7 +956,7 @@ const MAX_ORDER_STATUS_RECOVERY_ATTEMPTS = 45;
  */
 export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
   const swapsByTradeId = useActiveSwapsStore((s) => s.byTradeId);
-  const pendingTradesByOrderId = usePendingTradesStore((s) => s.byOrderId);
+  const pendingTradeState = usePendingTradesStore((s) => s);
   const joinedOrderKeysRef = useRef<Set<string>>(new Set());
   const orderJoinRetryTimersRef = useRef<
     Map<string, ReturnType<typeof setTimeout>>
@@ -560,15 +970,28 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     Map<string, ReturnType<typeof setTimeout>>
   >(new Map());
   const tradeJoinAttemptsRef = useRef<Map<string, number>>(new Map());
+  const recoveryMnemonicRef = useRef<string | null>(null);
   const [recoveryEpoch, setRecoveryEpoch] = useState(0);
-  const [durableSessionsHydrated, setDurableSessionsHydrated] = useState(false);
+  const [hydratedMnemonic, setHydratedMnemonic] = useState<string | null>(null);
+  const [tradeRecoveryWork, setTradeRecoveryWork] =
+    useState<GuiTradeRecoveryWorkPage | null>(null);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
+  const mnemonic = useWalletStore((s) => s.mnemonic);
+  const walletId = mnemonic.length > 0 ? currentGuiWalletId() : null;
+  const pendingTradesByOrderId =
+    pendingTradeState.walletId === walletId ? pendingTradeState.byOrderId : {};
+  const durableSessionsHydrated =
+    mnemonic.length > 0 && hydratedMnemonic === mnemonic;
   const hasActiveSwapWork = Object.values(swapsByTradeId).some(
     (swap) => swap.step !== "completed" && swap.step !== "Failed",
   );
   const pendingTrades = Object.values(pendingTradesByOrderId);
   const tradeHubEnabled =
-    canAuthenticateTradeHub && (hasActiveSwapWork || pendingTrades.length > 0);
+    durableSessionsHydrated &&
+    canAuthenticateTradeHub &&
+    (hasActiveSwapWork ||
+      pendingTrades.length > 0 ||
+      tradeRecoveryWork?.walletId === walletId);
 
   const requestRecovery = () => {
     joinedTradeIds.clear();
@@ -579,55 +1002,106 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
   const { joinOrder, joinTrade, sendSwapMessage } = useTradeHub(
     tradeHubEnabled,
     {
-      onTradeCreated: (payload) =>
+      onTradeCreated: (payload) => {
+        const walletId = currentGuiWalletId();
         void handleTradeCreated(
           payload,
           joinTrade,
           sendSwapMessage,
           activeMintUrl,
-        ),
-      onSwapMessageReceived: (msg) =>
-        void handleSwapMessage(msg, sendSwapMessage, activeMintUrl).catch(
-          (error) => failSwap(msg.tradeId, error),
-        ),
+          walletId,
+          requestRecovery,
+        ).catch(() => {
+          deferSwapRecovery(payload.tradeId);
+          const pending = getPendingPubkeyForTrade(payload.tradeId);
+          scheduleInboundReplay({
+            walletId,
+            tradeId: payload.tradeId,
+            joinTrade,
+            joinOrder: pending
+              ? () => joinOrder(pending.marketId, pending.orderId)
+              : undefined,
+          });
+        });
+      },
+      onSwapMessageReceived: (msg) => {
+        const walletId = currentGuiWalletId();
+        void handleSwapMessage(
+          msg,
+          sendSwapMessage,
+          walletId,
+          requestRecovery,
+        ).catch(() => {
+          deferSwapRecovery(msg.tradeId);
+          scheduleInboundReplay({ walletId, tradeId: msg.tradeId, joinTrade });
+        });
+      },
       onTradeStateChanged: (tradeId, newState, failureReason) =>
         void handleTradeStateChanged(
           tradeId,
           newState,
           sendSwapMessage,
           failureReason,
-        ),
+          requestRecovery,
+        ).catch(() => deferSwapRecovery(tradeId)),
       onReconnected: requestRecovery,
     },
   );
 
   useEffect(() => {
     let cancelled = false;
+    const previousMnemonic = recoveryMnemonicRef.current;
+    const seedChanged =
+      previousMnemonic !== null && previousMnemonic !== mnemonic;
+    recoveryMnemonicRef.current = mnemonic || null;
+    setHydratedMnemonic(null);
+    setTradeRecoveryWork(null);
+    clearGuiPendingTradeCache();
+    if (seedChanged) {
+      useActiveSwapsStore.setState({ byTradeId: {} });
+      usePendingPubkeySubmissionsStore.setState({ byTradeId: {} });
+    }
+    if (!mnemonic) return () => undefined;
+    const recoveryWalletId = currentGuiWalletId();
     void migrateLegacyGuiPendingSwapIntents()
       .then(() =>
         Promise.all([
           loadRecoverableGuiSwapSessions(),
           loadGuiPendingSwapIntents(),
+          loadGuiPendingTrades(recoveryWalletId),
+          loadNextGuiTradeRecoveryWorkPage(recoveryWalletId, null),
         ] as const),
       )
-      .then(([swaps, intents]) => {
-        if (!cancelled) useActiveSwapsStore.getState().hydrate(swaps);
-        if (!cancelled) {
+      .then(([swaps, intents, pendingTradeRecords, recoveryWork]) => {
+        if (cancelled) return;
+        replaceGuiPendingTradeCache(recoveryWalletId, pendingTradeRecords);
+        if (seedChanged) {
+          useActiveSwapsStore.setState({
+            byTradeId: Object.fromEntries(
+              swaps.map((swap) => [swap.tradeId, swap]),
+            ),
+          });
+          usePendingPubkeySubmissionsStore.setState({
+            byTradeId: Object.fromEntries(
+              intents.map((intent) => [intent.tradeId, intent]),
+            ),
+          });
+        } else {
+          useActiveSwapsStore.getState().hydrate(swaps);
           usePendingPubkeySubmissionsStore
             .getState()
             .hydratePendingPubkeys(intents);
         }
+        setTradeRecoveryWork(recoveryWork);
+        setHydratedMnemonic(mnemonic);
       })
       .catch((error) => {
         console.warn("Could not restore durable swap sessions", error);
-      })
-      .finally(() => {
-        if (!cancelled) setDurableSessionsHydrated(true);
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [mnemonic]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -639,7 +1113,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
   }, []);
 
   useEffect(() => {
-    if (!durableSessionsHydrated || !tradeHubEnabled) return;
+    if (!durableSessionsHydrated || !tradeHubEnabled || !walletId) return;
     const scheduleTradeJoinRetry = (tradeId: string) => {
       if (tradeJoinRetryTimersRef.current.has(tradeId)) return;
       const timer = setTimeout(() => {
@@ -664,24 +1138,31 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
           swap.tradeId,
           joinTrade,
           sendSwapMessage,
+          walletId,
+          requestRecovery,
         );
+        if (recovery === "retained") {
+          tradeJoinAttemptsRef.current.delete(swap.tradeId);
+          joinedTradeIds.add(swap.tradeId);
+          return false;
+        }
         if (recovery === "blocked") {
           throw new Error(
             "Durable GUI swap recovery is unavailable or pending",
           );
         }
-        return recovery === "replayed";
+        return true;
       })()
-        .then((replayed) => {
+        .then((shouldResume) => {
+          if (!shouldResume) return;
           tradeJoinAttemptsRef.current.delete(swap.tradeId);
-          if (replayed) return;
           void resumeHydratedGuiSwap(
             swap.tradeId,
             sendSwapMessage,
-            activeMintUrl,
+            requestRecovery,
           );
         })
-        .catch((err) => {
+        .catch(() => {
           joinedTradeIds.delete(swap.tradeId);
           const latest = useActiveSwapsStore.getState().byTradeId[swap.tradeId];
           if (!isRecoverableGuiSwap(latest)) {
@@ -693,11 +1174,9 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
             (tradeJoinAttemptsRef.current.get(swap.tradeId) ?? 0) + 1;
           tradeJoinAttemptsRef.current.set(swap.tradeId, attempts);
           if (attempts >= MAX_JOIN_TRADE_RETRIES) {
-            const message = err instanceof Error ? err.message : String(err);
-            useActiveSwapsStore
-              .getState()
-              .setStep(swap.tradeId, "Failed", message);
             tradeJoinAttemptsRef.current.delete(swap.tradeId);
+            joinedTradeIds.add(swap.tradeId);
+            deferSwapRecovery(swap.tradeId);
             return;
           }
           scheduleTradeJoinRetry(swap.tradeId);
@@ -718,11 +1197,63 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
   ]);
 
   useEffect(() => {
+    if (!durableSessionsHydrated || !tradeHubEnabled || !tradeRecoveryWork)
+      return;
+    if (tradeRecoveryWork.walletId !== walletId) return;
+    let cancelled = false;
+    void (async () => {
+      for (const tradeId of tradeRecoveryWork.tradeIds) {
+        if (swapsByTradeId[tradeId]) continue;
+        const recovery = await recoverGuiSwapBeforeResume(
+          tradeId,
+          joinTrade,
+          sendSwapMessage,
+          tradeRecoveryWork.walletId,
+          requestRecovery,
+        );
+        if (recovery === "continue") {
+          await resumeHydratedGuiSwap(
+            tradeId,
+            sendSwapMessage,
+            requestRecovery,
+          );
+        } else if (recovery === "blocked") {
+          deferSwapRecovery(tradeId, "corrupt");
+        }
+      }
+      const next =
+        tradeRecoveryWork.nextCursor === null
+          ? null
+          : await loadNextGuiTradeRecoveryWorkPage(
+              tradeRecoveryWork.walletId,
+              tradeRecoveryWork.nextCursor,
+            );
+      if (!cancelled && currentGuiWalletId() === tradeRecoveryWork.walletId) {
+        setTradeRecoveryWork(next);
+      }
+    })().catch(() => {
+      if (!cancelled) {
+        console.warn("Could not recover orphaned GUI trade operations");
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    durableSessionsHydrated,
+    tradeHubEnabled,
+    tradeRecoveryWork,
+    walletId,
+    swapsByTradeId,
+    joinTrade,
+    sendSwapMessage,
+    recoveryEpoch,
+  ]);
+
+  useEffect(() => {
     if (!tradeHubEnabled) return;
 
-    const liveKeys = new Set(
-      pendingTrades.map((trade) => `${trade.marketId}:${trade.orderId}`),
-    );
+    const liveKeys = new Set(pendingTrades.map(pendingTradeRecoveryKey));
     for (const key of joinedOrderKeysRef.current) {
       if (!liveKeys.has(key)) joinedOrderKeysRef.current.delete(key);
     }
@@ -741,15 +1272,14 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
       }
     }
 
-    const scheduleOrderStatusRecovery = (trade: PendingTrade) => {
-      const key = `${trade.marketId}:${trade.orderId}`;
+    const scheduleOrderStatusRecovery = (trade: PendingTradeRecord) => {
+      const key = pendingTradeRecoveryKey(trade);
       if (orderStatusRecoveryTimersRef.current.has(key)) return;
 
       const timer = setTimeout(() => {
         orderStatusRecoveryTimersRef.current.delete(key);
-        const latest =
-          usePendingTradesStore.getState().byOrderId[trade.orderId];
-        if (!latest) {
+        const latest = getCurrentGuiPendingTrade(trade.orderId);
+        if (!latest || !isCurrentGuiPendingTrade(trade)) {
           orderStatusRecoveryAttemptsRef.current.delete(key);
           return;
         }
@@ -759,6 +1289,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
         orderStatusRecoveryAttemptsRef.current.set(key, attempts);
 
         void (async () => {
+          if (!isCurrentGuiPendingTrade(latest)) return null;
           try {
             await joinOrder(latest.marketId, latest.orderId);
           } catch {
@@ -767,10 +1298,11 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
             // retries the hub replay path.
           }
 
+          if (!isCurrentGuiPendingTrade(latest)) return null;
           return fetchOrderStatus(latest.marketId, latest.orderId);
         })()
           .then(async (status) => {
-            if (!status) return;
+            if (!status || !isCurrentGuiPendingTrade(latest)) return;
             const pendingTradeId =
               typeof status.tradeId === "string" ? status.tradeId : null;
             const pendingDeadline =
@@ -782,11 +1314,13 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
                 pendingDeadline,
               );
             }
+            if (!isCurrentGuiPendingTrade(latest)) return;
             const tradeIds = status.fills
               .map((fill) => fill.tradeId)
               .filter((tradeId): tradeId is string => Boolean(tradeId));
             if (tradeIds.length > 0) {
               promoteFillsToActiveSwaps(status.fills, latest, 0);
+              if (!isCurrentGuiPendingTrade(latest)) return;
               try {
                 await Promise.all(
                   tradeIds.map((tradeId) => joinTrade(tradeId)),
@@ -794,18 +1328,27 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
                 orderStatusRecoveryAttemptsRef.current.delete(key);
                 return;
               } catch {
-                if (attempts < MAX_ORDER_STATUS_RECOVERY_ATTEMPTS) {
+                if (
+                  attempts < MAX_ORDER_STATUS_RECOVERY_ATTEMPTS &&
+                  isCurrentGuiPendingTrade(latest)
+                ) {
                   scheduleOrderStatusRecovery(latest);
                 }
                 return;
               }
             }
-            if (attempts < MAX_ORDER_STATUS_RECOVERY_ATTEMPTS) {
+            if (
+              attempts < MAX_ORDER_STATUS_RECOVERY_ATTEMPTS &&
+              isCurrentGuiPendingTrade(latest)
+            ) {
               scheduleOrderStatusRecovery(latest);
             }
           })
           .catch(() => {
-            if (attempts < MAX_ORDER_STATUS_RECOVERY_ATTEMPTS) {
+            if (
+              attempts < MAX_ORDER_STATUS_RECOVERY_ATTEMPTS &&
+              isCurrentGuiPendingTrade(latest)
+            ) {
               scheduleOrderStatusRecovery(latest);
             }
           });
@@ -816,26 +1359,27 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
 
     const scheduleOrderJoinRetry = (
       key: string,
-      orderId: string,
-      attemptJoinOrder: (trade: PendingTrade) => void,
+      expected: PendingTradeRecord,
+      attemptJoinOrder: (trade: PendingTradeRecord) => void,
     ) => {
       const retry = setTimeout(() => {
         orderJoinRetryTimersRef.current.delete(key);
-        const latest = usePendingTradesStore.getState().byOrderId[orderId];
-        if (!latest) return;
-        attemptJoinOrder(latest);
+        if (!isCurrentGuiPendingTrade(expected)) return;
+        attemptJoinOrder(expected);
       }, JOIN_ORDER_RETRY_MS);
       orderJoinRetryTimersRef.current.set(key, retry);
     };
 
-    const attemptJoinOrder = (trade: PendingTrade) => {
-      const key = `${trade.marketId}:${trade.orderId}`;
+    const attemptJoinOrder = (trade: PendingTradeRecord) => {
+      if (!isCurrentGuiPendingTrade(trade)) return;
+      const key = pendingTradeRecoveryKey(trade);
       if (joinedOrderKeysRef.current.has(key)) return;
       if (orderJoinRetryTimersRef.current.has(key)) return;
 
       joinedOrderKeysRef.current.add(key);
       void fetchOrderStatus(trade.marketId, trade.orderId)
         .then(async (status) => {
+          if (!isCurrentGuiPendingTrade(trade)) return;
           if (!status) {
             try {
               await joinOrder(trade.marketId, trade.orderId);
@@ -847,10 +1391,10 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
               orderJoinMissCountsRef.current.set(key, misses);
               joinedOrderKeysRef.current.delete(key);
               if (misses >= MAX_JOIN_ORDER_STATUS_MISSES) {
-                usePendingTradesStore.getState().remove(trade.orderId);
+                await removeGuiPendingTrade(trade);
                 return;
               }
-              scheduleOrderJoinRetry(key, trade.orderId, attemptJoinOrder);
+              scheduleOrderJoinRetry(key, trade, attemptJoinOrder);
               return;
             }
           }
@@ -861,9 +1405,8 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
         })
         .catch(() => {
           joinedOrderKeysRef.current.delete(key);
-          if (!usePendingTradesStore.getState().byOrderId[trade.orderId])
-            return;
-          scheduleOrderJoinRetry(key, trade.orderId, attemptJoinOrder);
+          if (!isCurrentGuiPendingTrade(trade)) return;
+          scheduleOrderJoinRetry(key, trade, attemptJoinOrder);
         });
     };
 
@@ -893,6 +1436,10 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
   }, [tradeHubEnabled]);
 }
 
+function pendingTradeRecoveryKey(trade: PendingTradeRecord): string {
+  return `${trade.walletId}:${trade.marketId}:${trade.orderId}`;
+}
+
 // ---------------------------------------------------------------------------
 // TradeCreated → assign role + drive seller's first messages
 // ---------------------------------------------------------------------------
@@ -902,24 +1449,27 @@ async function handleTradeCreated(
   joinTrade: (tradeId: string) => Promise<void>,
   sendSwapMessage: SendSwapMessageFn,
   mintUrl: string,
+  expectedWalletId: string,
+  wakeRecovery: () => void,
 ): Promise<void> {
   const fingerprint = tradeCreatedFingerprint(payload);
   const existingFingerprint = tradeCreatedFingerprints.get(payload.tradeId);
   if (existingFingerprint && existingFingerprint !== fingerprint) {
-    useActiveSwapsStore
-      .getState()
-      .setStep(
-        payload.tradeId,
-        "Failed",
-        "TradeCreated payload changed for an existing trade.",
-      );
+    deferSwapRecovery(payload.tradeId, "corrupt");
     return;
   }
-  tradeCreatedFingerprints.set(payload.tradeId, fingerprint);
   if (tradeCreatedInFlight.has(payload.tradeId)) return;
   tradeCreatedInFlight.add(payload.tradeId);
   try {
-    await handleTradeCreatedOnce(payload, joinTrade, sendSwapMessage, mintUrl);
+    const committed = await handleTradeCreatedOnce(
+      payload,
+      joinTrade,
+      sendSwapMessage,
+      mintUrl,
+      expectedWalletId,
+      wakeRecovery,
+    );
+    if (committed) tradeCreatedFingerprints.set(payload.tradeId, fingerprint);
   } finally {
     tradeCreatedInFlight.delete(payload.tradeId);
   }
@@ -930,26 +1480,24 @@ async function handleTradeCreatedOnce(
   joinTrade: (tradeId: string) => Promise<void>,
   sendSwapMessage: SendSwapMessageFn,
   mintUrl: string,
-): Promise<void> {
-  await hydratePendingPubkeyForTrade(payload.tradeId);
+  expectedWalletId: string,
+  wakeRecovery: () => void,
+): Promise<boolean> {
   let swap: ActiveSwap | null =
     useActiveSwapsStore.getState().byTradeId[payload.tradeId] ?? null;
-  if (swap?.role) return;
+  if (swap?.role) return true;
   const promotedFromPending = !swap;
+  const pendingPubkey = await loadPendingPubkeyForTrade(payload.tradeId);
   if (!swap) {
-    swap = promotePendingTradeFromTradeCreated(payload);
+    swap = pendingPubkey
+      ? pendingTradeCandidateFromTradeCreated(payload, pendingPubkey)
+      : null;
   }
-  if (!swap) return;
-  const ownEphemeralPubkey = getPendingPubkeyForTrade(payload.tradeId)?.pubkey;
+  if (!swap) return false;
+  const ownEphemeralPubkey = swap.ephemeralPubkeyHex || pendingPubkey?.pubkey;
   if (!ownEphemeralPubkey) {
-    useActiveSwapsStore
-      .getState()
-      .setStep(
-        payload.tradeId,
-        "Failed",
-        "Missing match-time ephemeral pubkey.",
-      );
-    return;
+    deferSwapRecovery(payload.tradeId);
+    return false;
   }
 
   const decision = decideTradeCreated({
@@ -979,55 +1527,104 @@ async function handleTradeCreatedOnce(
     quotePaymentSubunits: payload.quotePaymentSubunits,
   });
   if (!decision.accepted) {
-    useActiveSwapsStore
-      .getState()
-      .setStep(payload.tradeId, "Failed", decision.error);
-    return;
+    deferSwapRecovery(
+      payload.tradeId,
+      decision.reason === "foreign" ? "foreign" : "corrupt",
+    );
+    return false;
   }
 
-  if (promotedFromPending) {
-    if (joinedTradeIds.has(payload.tradeId)) return;
-    joinedTradeIds.add(payload.tradeId);
+  const committed = await withGuiSwapSessionOwnership(
+    payload.tradeId,
+    async (lock) => {
+      const exact = await loadGuiSwapSessionStateUnderLock(
+        lock,
+        payload.tradeId,
+      );
+      if (exact?.role) {
+        if (!heldGuiWalletIsCurrent(lock)) return null;
+        replaceActiveSwap(exact);
+        return exact;
+      }
+      const candidate = bindAcceptedTradeCreated(swap!, payload, decision);
+      const exactMintUrl = swapMintUrl(candidate, mintUrl);
+      const pinned = { ...candidate, mintUrl: exactMintUrl };
+      return commitGuiSwapCandidate(lock, pinned);
+    },
+    expectedWalletId,
+  );
+  if (!committed) return false;
+  if (currentGuiWalletId() !== expectedWalletId) return true;
+  tradeCreatedFingerprints.set(
+    payload.tradeId,
+    tradeCreatedFingerprint(payload),
+  );
+  clearInboundReplay(expectedWalletId, payload.tradeId);
+
+  if (pendingPubkey) {
     try {
-      await joinTrade(payload.tradeId);
-    } catch (err) {
-      joinedTradeIds.delete(payload.tradeId);
-      return;
+      await removeGuiPendingSwapIntent(payload.tradeId);
+      usePendingPubkeySubmissionsStore
+        .getState()
+        .removePendingPubkey(payload.tradeId);
+    } catch {
+      // The committed session is authoritative; retain the intent for replay.
     }
   }
 
-  const latest = useActiveSwapsStore.getState().byTradeId[payload.tradeId];
-  if (!latest || latest.role || latest.step === "Failed") return;
-  swap = latest;
+  if (currentGuiWalletId() !== expectedWalletId) return true;
 
-  useActiveSwapsStore.getState().setRoleAndCounterparty(
-    payload.tradeId,
-    decision.role,
-    decision.counterpartyPubkey,
-    {
-      sellerLocktime: decision.sellerLocktime,
-      buyerLocktime: decision.buyerLocktime,
-    },
-    {
-      outcomeFaceAmountSats: undefined,
-      outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits ?? undefined,
-      quotePaymentSats: undefined,
-      baseAsset: payload.baseAsset,
-      divisibility: payload.divisibility,
-      quotePaymentSubunits: payload.quotePaymentSubunits,
-      settlementKind: payload.settlementKind,
-      sellerKeepOutcomeSetId: payload.sellerKeepOutcomeSetId,
-      sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId,
-    },
-  );
-  await persistCurrentGuiSwap(payload.tradeId, mintUrl);
-  await removeGuiPendingSwapIntent(payload.tradeId);
-  usePendingPubkeySubmissionsStore
-    .getState()
-    .removePendingPubkey(payload.tradeId);
+  if (promotedFromPending) {
+    if (joinedTradeIds.has(payload.tradeId)) return true;
+    joinedTradeIds.add(payload.tradeId);
+    try {
+      await joinTrade(payload.tradeId);
+    } catch {
+      joinedTradeIds.delete(payload.tradeId);
+      return true;
+    }
+  }
 
   if (decision.role === "seller") {
-    void runSellerSendOpening(payload.tradeId, sendSwapMessage, mintUrl);
+    void runSellerSendOpening(payload.tradeId, sendSwapMessage, wakeRecovery);
+  }
+  return true;
+}
+
+function bindAcceptedTradeCreated(
+  swap: ActiveSwap,
+  payload: TradeCreatedPayload,
+  decision: Extract<ReturnType<typeof decideTradeCreated>, { accepted: true }>,
+): ActiveSwap {
+  return {
+    ...swap,
+    role: decision.role,
+    counterpartyPubkey: decision.counterpartyPubkey,
+    sellerLocktime: decision.sellerLocktime,
+    buyerLocktime: decision.buyerLocktime,
+    outcomeFaceAmountSubunits:
+      payload.outcomeFaceAmountSubunits ?? swap.outcomeFaceAmountSubunits,
+    baseAsset: swap.baseAsset,
+    divisibility: swap.divisibility,
+    quotePaymentSubunits:
+      payload.quotePaymentSubunits ?? swap.quotePaymentSubunits,
+    settlementKind: payload.settlementKind ?? swap.settlementKind,
+    sellerKeepOutcomeSetId:
+      payload.sellerKeepOutcomeSetId ?? swap.sellerKeepOutcomeSetId,
+    sellerLockOutcomeSetId:
+      payload.sellerLockOutcomeSetId ?? swap.sellerLockOutcomeSetId,
+    step:
+      swap.step === "awaiting-trade-created"
+        ? "awaiting-counterparty"
+        : swap.step,
+  };
+}
+
+function heldGuiWalletIsCurrent(lock: GuiWalletLockContext): boolean {
+  try {
+    return walletIdFromHeldGuiWalletLock(lock) === currentGuiWalletId();
+  } catch {
+    return false;
   }
 }
 
@@ -1044,22 +1641,20 @@ function tradeCreatedFingerprint(payload: TradeCreatedPayload): string {
     sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId ?? null,
     outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits ?? null,
     quotePaymentSubunits: payload.quotePaymentSubunits ?? null,
-    baseAsset: normalizeMarketBaseAsset(payload.baseAsset),
-    divisibility: normalizeMarketDivisibility(payload.divisibility),
+    baseAsset: payload.baseAsset ?? null,
+    divisibility: payload.divisibility ?? null,
     tokenSide: payload.tokenSide ?? null,
   });
 }
 
-function promotePendingTradeFromTradeCreated(
+function pendingTradeCandidateFromTradeCreated(
   payload: TradeCreatedPayload,
+  pendingPubkey: NonNullable<ReturnType<typeof getPendingPubkeyForTrade>>,
 ): ActiveSwap | null {
-  const match = findPendingTradeForTradeCreated(payload);
+  const match = findPendingTradeForTradeCreated(payload, pendingPubkey);
   if (!match) return null;
   const { pendingTrade } = match;
-  const pendingPubkey = getPendingPubkeyForTrade(payload.tradeId);
-  if (!pendingPubkey) return null;
-
-  useActiveSwapsStore.getState().promote({
+  return createActiveSwap({
     tradeId: payload.tradeId,
     orderId: pendingTrade.orderId,
     clientOrderId: pendingTrade.clientOrderId,
@@ -1072,22 +1667,20 @@ function promotePendingTradeFromTradeCreated(
     tokenSide: pendingTrade.tokenSide,
     priceSubunits: pendingTrade.priceSubunits,
     amountSubunits: pendingTrade.amountSubunits,
+    timeInForce: pendingTrade.timeInForce,
+    recoveryAttempt: pendingTrade.recoveryAttempt,
   });
-
-  return useActiveSwapsStore.getState().byTradeId[payload.tradeId] ?? null;
 }
 
 function findPendingTradeForTradeCreated(
   payload: TradeCreatedPayload,
-): { pendingTrade: PendingTrade; role: SwapRole } | null {
-  for (const pendingTrade of Object.values(
-    usePendingTradesStore.getState().byOrderId,
-  )) {
-    const pendingPubkey = getPendingPubkeyForTrade(payload.tradeId);
+  pendingPubkey: NonNullable<ReturnType<typeof getPendingPubkeyForTrade>>,
+): { pendingTrade: PendingTradeRecord; role: SwapRole } | null {
+  for (const pendingTrade of getCurrentGuiPendingTrades()) {
     const role =
-      pendingPubkey?.pubkey.toLowerCase() === payload.sellerPubkey.toLowerCase()
+      pendingPubkey.pubkey.toLowerCase() === payload.sellerPubkey.toLowerCase()
         ? "seller"
-        : pendingPubkey?.pubkey.toLowerCase() ===
+        : pendingPubkey.pubkey.toLowerCase() ===
             payload.buyerPubkey.toLowerCase()
           ? "buyer"
           : null;
@@ -1105,18 +1698,24 @@ function getPendingPubkeyForTrade(tradeId: string) {
   return usePendingPubkeySubmissionsStore.getState().byTradeId[tradeId];
 }
 
-async function hydratePendingPubkeyForTrade(tradeId: string): Promise<void> {
-  if (getPendingPubkeyForTrade(tradeId)) return;
-  const intent = await getGuiPendingSwapIntent(tradeId);
-  if (intent)
-    usePendingPubkeySubmissionsStore.getState().addPendingPubkey(intent);
+async function loadPendingPubkeyForTrade(
+  tradeId: string,
+): Promise<ReturnType<typeof getPendingPubkeyForTrade>> {
+  return (
+    getPendingPubkeyForTrade(tradeId) ??
+    (await getGuiPendingSwapIntent(tradeId)) ??
+    undefined
+  );
 }
 
 async function submitPendingPubkeyFromRecovery(
-  pendingTrade: PendingTrade,
+  pendingTrade: PendingTradeRecord,
   tradeId: string,
   deadline: string,
 ): Promise<void> {
+  if (!isCurrentGuiPendingTrade(pendingTrade)) {
+    throw new Error("Pending order belongs to another wallet scope");
+  }
   const store = usePendingPubkeySubmissionsStore.getState();
   const migrated = await migrateLegacyGuiPendingSwapIntents();
   if (migrated.length > 0) store.hydratePendingPubkeys(migrated);
@@ -1144,6 +1743,9 @@ async function submitPendingPubkeyFromRecovery(
   }
   if (entry.submitted) return;
 
+  if (!isCurrentGuiPendingTrade(pendingTrade)) {
+    throw new Error("Pending order belongs to another wallet scope");
+  }
   await submitEphemeralPubkey(
     tradeId,
     entry.pubkey,
@@ -1159,7 +1761,7 @@ function conditionIdFromMarketId(marketId: string): string {
 }
 
 function tradeCreatedMatchesPendingOrderPath(
-  pendingTrade: PendingTrade,
+  pendingTrade: PendingTradeRecord,
   payload: TradeCreatedPayload,
   role: SwapRole,
 ): boolean {
@@ -1199,56 +1801,154 @@ function tradeCreatedMatchesPendingOrderPath(
 async function runSellerSendOpening(
   tradeId: string,
   sendSwapMessage: SendSwapMessageFn,
-  mintUrl: string,
+  wakeRecovery: () => void,
 ): Promise<void> {
-  await withGuiSwapSessionOwnership(tradeId, () =>
-    runSellerSendOpeningOwned(tradeId, sendSwapMessage, mintUrl),
+  const walletId = currentGuiWalletId();
+  const shouldDeliver = await withGuiSwapSessionOwnership(
+    tradeId,
+    (lock) => prepareAndJournalSellerOpeningUnderLock(tradeId, lock),
+    walletId,
   );
-}
-
-async function runSellerSendOpeningOwned(
-  tradeId: string,
-  sendSwapMessage: SendSwapMessageFn,
-  mintUrl: string,
-): Promise<void> {
-  if (!claimStep(tradeId, "seller-open")) return;
+  if (!shouldDeliver) return;
   try {
-    const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
-    if (!swap || swap.role !== "seller") return;
-    useActiveSwapsStore.getState().setStep(tradeId, "driving");
-    await persistCurrentGuiSwap(tradeId, mintUrl);
-    const ctx = buildSwapContext(swap, mintUrl);
-    if (!ctx) return;
-    const mintSplit = mintSellerSplit(swap, ctx);
-    const out = mintSplit
-      ? await prepareMintSellerOpening(swap, ctx, mintUrl, mintSplit)
-      : await prepareDirectSellerOpening(swap, ctx, mintUrl);
-    useActiveSwapsStore.getState().setSellerState(tradeId, {
-      adaptorPoint: out.adaptorPoint,
-      adaptorPointCipher: out.adaptorPointCipher,
-      lockedProofsCipher: out.lockedProofsCipher,
-    });
-    await persistCurrentGuiSwap(tradeId, mintUrl);
-    await sendSwapMessageWithRetry(
-      sendSwapMessage,
+    const adaptorDelivery = await deliverPersistedGuiSwapCipher(
+      walletId,
       tradeId,
+      sendSwapMessage,
       TRADE_MESSAGE_TYPES.adaptorPoint,
-      out.adaptorPointCipher,
     );
-    await sendSwapMessageWithRetry(
-      sendSwapMessage,
+    if (adaptorDelivery === "terminal") return;
+    if (adaptorDelivery !== "sent") {
+      handleDeferredGuiDelivery(
+        walletId,
+        tradeId,
+        adaptorDelivery,
+        wakeRecovery,
+      );
+      return;
+    }
+    const lockedProofsDelivery = await deliverPersistedGuiSwapCipher(
+      walletId,
       tradeId,
+      sendSwapMessage,
       TRADE_MESSAGE_TYPES.lockedProofsSeller,
-      out.lockedProofsCipher,
     );
-  } catch (err) {
-    failSwap(tradeId, err);
-  } finally {
-    releaseStep(tradeId, "seller-open");
+    if (
+      lockedProofsDelivery !== "sent" &&
+      lockedProofsDelivery !== "terminal"
+    ) {
+      handleDeferredGuiDelivery(
+        walletId,
+        tradeId,
+        lockedProofsDelivery,
+        wakeRecovery,
+      );
+    }
+  } catch {
+    deferSwapRecovery(tradeId);
+    scheduleGuiDeliveryRecovery(walletId, tradeId, wakeRecovery);
   }
 }
 
-type SellerOpening = Awaited<ReturnType<typeof sellerPrepareSwap>>;
+async function prepareAndJournalSellerOpeningUnderLock(
+  tradeId: string,
+  lock: GuiWalletLockContext,
+): Promise<boolean> {
+  try {
+    const prepared = await prepareSellerOpeningUnderLock(lock, tradeId);
+    if (!prepared) return false;
+    await journalSellerOpening(lock, tradeId, prepared);
+    return true;
+  } catch (err) {
+    failSwap(tradeId, err);
+    return false;
+  }
+}
+
+async function prepareSellerOpeningUnderLock(
+  lock: GuiWalletLockContext,
+  tradeId: string,
+): Promise<{ opening: SellerOpening; mintUrl: string } | null> {
+  const swap = await loadExactGuiSwapForEffect(lock, tradeId);
+  if (!swap || swap.role !== "seller") return null;
+  if (
+    swap.step === "awaiting-refund" ||
+    swap.step === "completed" ||
+    swap.step === "Failed"
+  ) {
+    return null;
+  }
+  const exactMintUrl = requireDurableGuiSwapMint(swap);
+  const driving =
+    swap.step === "driving"
+      ? swap
+      : await commitGuiSwapCandidate(lock, { ...swap, step: "driving" });
+  const preparedSwap = await ensureDurableSellerAdaptor(lock, driving);
+  const ctx = buildSwapContext(preparedSwap, exactMintUrl);
+  const adaptorPoint = preparedSwap.sellerState?.adaptorPoint;
+  if (!ctx || !adaptorPoint) {
+    throw new Error("Durable seller preparation is unavailable");
+  }
+  const split = mintSellerSplit(preparedSwap, ctx);
+  const opening = split
+    ? await prepareMintSellerOpening(
+        preparedSwap,
+        ctx,
+        exactMintUrl,
+        split,
+        adaptorPoint,
+        lock,
+      )
+    : await prepareDirectSellerOpening(
+        preparedSwap,
+        ctx,
+        exactMintUrl,
+        adaptorPoint,
+        lock,
+      );
+  return { opening, mintUrl: exactMintUrl };
+}
+
+async function journalSellerOpening(
+  lock: GuiWalletLockContext,
+  tradeId: string,
+  prepared: { opening: SellerOpening; mintUrl: string },
+): Promise<void> {
+  const { opening } = prepared;
+  const exact = await loadExactGuiSwapForEffect(lock, tradeId);
+  if (!exact?.sellerState) return;
+  await commitGuiSwapCandidate(lock, {
+    ...exact,
+    sellerState: {
+      ...exact.sellerState,
+      adaptorPoint: opening.adaptorPoint,
+      adaptorPointCipher: opening.adaptorPointCipher,
+      lockedProofsCipher: opening.lockedProofsCipher,
+    },
+  });
+}
+
+async function ensureDurableSellerAdaptor(
+  lock: GuiWalletLockContext,
+  swap: ActiveSwap,
+): Promise<ActiveSwap> {
+  if (swap.role !== "seller") {
+    throw new Error("Seller swap state is unavailable");
+  }
+  if (!swap.sellerState) {
+    return commitGuiSwapCandidate(lock, {
+      ...swap,
+      sellerState: {
+        adaptorPoint: generateAdaptorPoint(),
+      },
+    });
+  }
+  return swap;
+}
+
+type SellerOpening = Awaited<
+  ReturnType<typeof sellerPreparePersistedPrelockedSwap>
+>;
 
 interface MintSellerSplit {
   conditionId: string;
@@ -1265,12 +1965,14 @@ async function prepareDirectSellerOpening(
   swap: ActiveSwap,
   ctx: SwapCtx,
   mintUrl: string,
+  adaptorPoint: NonNullable<ActiveSwap["sellerState"]>["adaptorPoint"],
+  lock: GuiWalletLockContext,
 ): Promise<SellerOpening> {
   const operationId = proofOperationId(
     swap.tradeId,
     "seller-complementary-lock",
   );
-  const existingOperation = await getProofOperation(operationId);
+  const existingOperation = await getProofOperationUnderLock(lock, operationId);
   const proofs =
     existingOperation?.kind === "conditional-keyset-swap"
       ? existingOperation.inputs
@@ -1282,25 +1984,21 @@ async function prepareDirectSellerOpening(
           swap.marketId,
           swap.baseAsset,
           operationId,
+          lock,
         );
   const amountSats =
     swap.outcomeFaceAmountSubunits ??
     swap.outcomeFaceAmountSats ??
     proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
-  const outcome = outcomeMetadataForMarket(swap.marketId);
-  if (!outcome) throw new Error(`Invalid market id ${swap.marketId}`);
   const locked = await sellerLockOutcomeProofs(ctx, proofs, amountSats, {
     operationId,
-    proofOperationStore,
+    proofOperationStore: localLockGuiProofOperationStoreUnderLock(lock, swap),
   });
-  await persistConditionalLockChange({
-    spentProofs: proofs,
-    changeProofs: locked.changeProofs,
-    mintUrl,
-    conditionId: outcome.conditionId,
-    baseAsset: swap.baseAsset,
-  });
-  return sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
+  return sellerPreparePersistedPrelockedSwap(
+    ctx,
+    locked.lockedProofs,
+    adaptorPoint,
+  );
 }
 
 async function prepareMintSellerOpening(
@@ -1308,6 +2006,8 @@ async function prepareMintSellerOpening(
   ctx: SwapCtx,
   mintUrl: string,
   split: MintSellerSplit,
+  adaptorPoint: NonNullable<ActiveSwap["sellerState"]>["adaptorPoint"],
+  lock: GuiWalletLockContext,
 ): Promise<SellerOpening> {
   const amountSats =
     swap.outcomeFaceAmountSubunits ?? swap.outcomeFaceAmountSats;
@@ -1321,6 +2021,7 @@ async function prepareMintSellerOpening(
 
   const operationId = proofOperationId(swap.tradeId, "seller-mint-ctf-split");
   const selectedOutcomeGroups = await selectOutcomeProofGroups(
+    lock,
     mintUrl,
     split.conditionId,
     split.lockOutcomeSetId,
@@ -1336,15 +2037,13 @@ async function prepareMintSellerOpening(
       groups: selectedOutcomeGroups,
       amountSats,
       operationStep: "seller-inventory-lock",
+      lock,
     });
-    await persistConditionalLockChange({
-      spentProofs: locked.spentProofs,
-      changeProofs: locked.changeProofs,
-      mintUrl,
-      conditionId: split.conditionId,
-      baseAsset: swap.baseAsset,
-    });
-    return sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
+    return sellerPreparePersistedPrelockedSwap(
+      ctx,
+      locked.lockedProofs,
+      adaptorPoint,
+    );
   }
 
   const splitOutputAmountSats = await resolveRootDirectLockOutputAmountSats({
@@ -1355,18 +2054,20 @@ async function prepareMintSellerOpening(
     lockOutcomeSetId: split.lockOutcomeSetId,
     keepOutcomeSetId: split.keepOutcomeSetId,
   });
-  const existingOperation = await getProofOperation(operationId);
+  const existingOperation = await getProofOperationUnderLock(lock, operationId);
   const collateralProofs = existingOperation
     ? existingOperation.inputs
     : await prepareRegularCollateralForCtfSplit({
         mintUrl,
-        available: await getUnitProofs(mintUrl, {
+        available: await getUnitProofsUnderLock(lock, mintUrl, {
           unit: defaultCollateralUnit(swap.baseAsset),
         }),
         faceAmountSats: splitOutputAmountSats,
         baseAsset: swap.baseAsset,
-        reservationId: `trade-collateral:${swap.tradeId}`,
+        reservationId: swap.tradeId,
         operationId: proofOperationId(swap.tradeId, "seller-regular-ctf-input"),
+        lock,
+        swap,
       });
 
   const splitResult = await splitRootCompleteSetForSwap({
@@ -1385,34 +2086,31 @@ async function prepareMintSellerOpening(
       sigFlag: "SIG_INPUTS",
     },
     operationId,
-    proofOperationStore: ctfProofOperationStore,
+    proofOperationStore: ctfGuiProofOperationStoreUnderLock(lock, swap),
   });
 
-  await replaceProofs(
-    splitResult.spentSatProofs.map((proof) => proof.secret),
-    await storedConditionalProofsFromMintMetadata({
-      mintUrl,
-      proofs: splitResult.keepCollections.flatMap(
-        (collection) => splitResult.proofsByCollection[collection] ?? [],
-      ),
-      expectedConditionId: split.conditionId,
-      baseAsset: swap.baseAsset,
-    }),
+  return sellerPreparePersistedPrelockedSwap(
+    ctx,
+    splitResult.lockedProofs,
+    adaptorPoint,
   );
-
-  return sellerPreparePrelockedSwap(ctx, splitResult.lockedProofs);
 }
 
 async function selectOutcomeProofs(
+  lock: GuiWalletLockContext,
   mintUrl: string,
   conditionId: string,
   outcomeSetId: string,
   amountSats: number,
   baseAsset?: string | null,
 ): Promise<StoredProof[] | null> {
-  const available = await getOutcomeProofs(mintUrl, conditionId, outcomeSetId, {
-    baseAsset,
-  });
+  const available = await getOutcomeProofsUnderLock(
+    lock,
+    mintUrl,
+    conditionId,
+    outcomeSetId,
+    { baseAsset },
+  );
   return takeProofsForLock(
     available,
     amountSats,
@@ -1421,6 +2119,7 @@ async function selectOutcomeProofs(
 }
 
 async function selectOutcomeProofGroups(
+  lock: GuiWalletLockContext,
   mintUrl: string,
   conditionId: string,
   outcomeSetId: string,
@@ -1428,6 +2127,7 @@ async function selectOutcomeProofGroups(
   baseAsset?: string | null,
 ): Promise<SelectedOutcomeProofGroup[] | null> {
   const exact = await selectOutcomeProofs(
+    lock,
     mintUrl,
     conditionId,
     outcomeSetId,
@@ -1442,6 +2142,7 @@ async function selectOutcomeProofGroups(
   const groups: SelectedOutcomeProofGroup[] = [];
   for (const primitiveOutcomeSetId of primitiveOutcomeSetIds) {
     const proofs = await selectOutcomeProofs(
+      lock,
       mintUrl,
       conditionId,
       primitiveOutcomeSetId,
@@ -1462,6 +2163,7 @@ async function lockSelectedOutcomeProofGroups(input: {
   groups: SelectedOutcomeProofGroup[];
   amountSats: number;
   operationStep: string;
+  lock: GuiWalletLockContext;
 }): Promise<{
   spentProofs: Proof[];
   lockedProofs: Proof[];
@@ -1485,7 +2187,10 @@ async function lockSelectedOutcomeProofGroups(input: {
               ? input.operationStep
               : `${input.operationStep}/${encodeURIComponent(group.outcomeSetId)}`,
           ),
-          proofOperationStore,
+          proofOperationStore: localLockGuiProofOperationStoreUnderLock(
+            input.lock,
+            input.swap,
+          ),
         },
       );
       spentProofs.push(...group.proofs);
@@ -1507,6 +2212,7 @@ async function lockSelectedOutcomeProofGroups(input: {
       ];
       if (combinedLockedProofs.length > 0) {
         await persistPartialLockParts({
+          lock: input.lock,
           swap: input.swap,
           mintUrl: input.mintUrl,
           conditionId: input.conditionId,
@@ -1516,9 +2222,6 @@ async function lockSelectedOutcomeProofGroups(input: {
           changeProofs: combinedChangeProofs,
           refundLocktime:
             partial?.failure.refundLocktime ?? input.ctx.sellerLocktime,
-          affectedKeysets: partial?.failure.affectedKeysets.length
-            ? partial.failure.affectedKeysets
-            : uniqueProofKeysets(combinedLockedProofs),
           detail: partial?.failure.detail ?? errorMessage(err),
         });
       }
@@ -1604,26 +2307,42 @@ function mintSellerSplit(
 async function handleSwapMessage(
   msg: SwapMessage,
   sendSwapMessage: SendSwapMessageFn,
-  mintUrl: string,
+  expectedWalletId: string,
+  wakeRecovery: () => void,
 ): Promise<void> {
-  const swap = useActiveSwapsStore.getState().byTradeId[msg.tradeId];
-  if (!swap) return;
-  const decision = decideSwapMessage({
-    role: swap.role,
-    messages: swap.messages,
-    messageType: msg.messageType,
-    ciphertext: msg.ciphertext,
-  });
-  if (!decision.messageKey) return;
-  useActiveSwapsStore
-    .getState()
-    .recordMessage(msg.tradeId, decision.messageKey, msg.ciphertext);
-  await persistCurrentGuiSwap(msg.tradeId, mintUrl);
+  const committed = await withGuiSwapSessionOwnership(
+    msg.tradeId,
+    async (lock) => {
+      const swap = await loadExactGuiSwapForEffect(lock, msg.tradeId);
+      if (!swap || swap.step === "awaiting-refund") return null;
+      const decision = decideSwapMessage({
+        role: swap.role,
+        messages: swap.messages,
+        messageType: msg.messageType,
+        ciphertext: msg.ciphertext,
+      });
+      if (!decision.messageKey) return null;
+      if (swap.messages[decision.messageKey] === msg.ciphertext) return null;
+      const exactMintUrl = requireDurableGuiSwapMint(swap);
+      const candidate: ActiveSwap = {
+        ...swap,
+        mintUrl: exactMintUrl,
+        messages: decision.messages,
+      };
+      await commitGuiSwapCandidate(lock, candidate);
+      return { decision, candidate };
+    },
+    expectedWalletId,
+  );
+  if (!committed) return;
+  if (currentGuiWalletId() !== expectedWalletId) return;
+  clearInboundReplay(expectedWalletId, msg.tradeId);
+  const { decision } = committed;
 
   if (decision.action === "settlement-claim") {
-    void runSettlementClaim(msg.tradeId, sendSwapMessage);
+    void runSettlementClaim(msg.tradeId, sendSwapMessage, wakeRecovery);
   }
-  const latest = useActiveSwapsStore.getState().byTradeId[msg.tradeId];
+  const latest = committed.candidate;
   const shouldDriveBuyerResponse =
     decision.action === "buyer-respond" ||
     (latest?.role === "buyer" &&
@@ -1631,7 +2350,7 @@ async function handleSwapMessage(
       Boolean(latest.messages.lockedProofsSeller) &&
       !latest.messages.lockedProofsBuyer);
   if (shouldDriveBuyerResponse) {
-    void runBuyerRespond(msg.tradeId, sendSwapMessage, mintUrl);
+    void runBuyerRespond(msg.tradeId, sendSwapMessage, wakeRecovery);
   }
 }
 
@@ -1644,45 +2363,39 @@ function isRecoverableGuiSwap(
 async function resumeHydratedGuiSwap(
   tradeId: string,
   sendSwapMessage: SendSwapMessageFn,
-  mintUrl: string,
+  wakeRecovery: () => void,
 ): Promise<void> {
   const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
   if (!isRecoverableGuiSwap(swap) || !swap.role) return;
+  if (swap.step === "awaiting-refund") return;
+  if (
+    swap.step === "awaiting-confirmation" &&
+    swap.settlementCompleteDelivery === "pending"
+  ) {
+    await resumeSettlementCompleteDelivery(
+      tradeId,
+      sendSwapMessage,
+      wakeRecovery,
+    );
+    return;
+  }
 
   if (swap.role === "seller") {
     if (
       swap.sellerState?.adaptorPointCipher &&
       swap.sellerState.lockedProofsCipher
     ) {
-      await sendSwapMessageWithRetry(
-        sendSwapMessage,
-        tradeId,
-        TRADE_MESSAGE_TYPES.adaptorPoint,
-        swap.sellerState.adaptorPointCipher,
-      );
-      await sendSwapMessageWithRetry(
-        sendSwapMessage,
-        tradeId,
-        TRADE_MESSAGE_TYPES.lockedProofsSeller,
-        swap.sellerState.lockedProofsCipher,
-      );
       return;
     }
-    await runSellerSendOpening(tradeId, sendSwapMessage, mintUrl);
+    await runSellerSendOpening(tradeId, sendSwapMessage, wakeRecovery);
     return;
   }
 
   if (swap.buyerState?.lockedProofsCipher) {
-    await sendSwapMessageWithRetry(
-      sendSwapMessage,
-      tradeId,
-      TRADE_MESSAGE_TYPES.lockedProofsBuyer,
-      swap.buyerState.lockedProofsCipher,
-    );
     return;
   }
   if (swap.messages.adaptorPoint && swap.messages.lockedProofsSeller) {
-    await runBuyerRespond(tradeId, sendSwapMessage, mintUrl);
+    await runBuyerRespond(tradeId, sendSwapMessage, wakeRecovery);
   }
 }
 
@@ -1693,109 +2406,175 @@ async function resumeHydratedGuiSwap(
 async function runBuyerRespond(
   tradeId: string,
   sendSwapMessage: SendSwapMessageFn,
-  mintUrl: string,
+  wakeRecovery: () => void,
 ): Promise<void> {
-  await withGuiSwapSessionOwnership(tradeId, () =>
-    runBuyerRespondOwned(tradeId, sendSwapMessage, mintUrl),
+  const walletId = currentGuiWalletId();
+  const shouldDeliver = await withGuiSwapSessionOwnership(
+    tradeId,
+    (lock) => prepareAndJournalBuyerResponseUnderLock(tradeId, lock),
+    walletId,
   );
+  if (!shouldDeliver) return;
+  try {
+    const result = await deliverPersistedGuiSwapCipher(
+      walletId,
+      tradeId,
+      sendSwapMessage,
+      TRADE_MESSAGE_TYPES.lockedProofsBuyer,
+    );
+    if (result !== "sent" && result !== "terminal") {
+      handleDeferredGuiDelivery(walletId, tradeId, result, wakeRecovery);
+    }
+  } catch {
+    deferSwapRecovery(tradeId);
+    scheduleGuiDeliveryRecovery(walletId, tradeId, wakeRecovery);
+  }
 }
 
-async function runBuyerRespondOwned(
+async function prepareAndJournalBuyerResponseUnderLock(
   tradeId: string,
-  sendSwapMessage: SendSwapMessageFn,
-  mintUrl: string,
-): Promise<void> {
-  if (!claimStep(tradeId, "buyer-respond")) return;
+  lock: GuiWalletLockContext,
+): Promise<boolean> {
   let buyerLockOperationId: string | null = null;
   try {
-    const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
-    if (!swap || swap.role !== "buyer") return;
+    const swap = await loadExactGuiSwapForEffect(lock, tradeId);
+    if (!swap || swap.role !== "buyer") return false;
     if (
       swap.step === "awaiting-confirmation" ||
+      swap.step === "awaiting-refund" ||
       swap.step === "completed" ||
       swap.step === "Failed"
     ) {
-      return;
+      return false;
     }
     if (!swap.messages.adaptorPoint || !swap.messages.lockedProofsSeller)
-      return;
+      return false;
     const replayCipher =
       swap.messages.lockedProofsBuyer ?? swap.buyerState?.lockedProofsCipher;
     if (replayCipher && swap.buyerState) {
-      await sendSwapMessageWithRetry(
-        sendSwapMessage,
-        tradeId,
-        TRADE_MESSAGE_TYPES.lockedProofsBuyer,
-        replayCipher,
-      );
-      return;
+      return true;
     }
     if (swap.buyerState) {
       throw new Error(
         "Buyer response already prepared but ciphertext is missing",
       );
     }
-    const amountSats = swap.quotePaymentSubunits ?? swap.quotePaymentSats;
-    if (
-      typeof amountSats !== "number" ||
-      !Number.isSafeInteger(amountSats) ||
-      amountSats <= 0
-    ) {
-      throw new Error("Swap is missing a positive quote payment amount");
-    }
-    useActiveSwapsStore.getState().setStep(tradeId, "driving");
-    await persistCurrentGuiSwap(tradeId, mintUrl);
-    const ctx = buildSwapContext(swap, mintUrl);
-    if (!ctx) return;
     const operationId = proofOperationId(tradeId, "buyer-lock");
     buyerLockOperationId = operationId;
-    const existingOperation = await getProofOperation(operationId);
-    const proofs =
-      existingOperation?.kind === "swap-lock"
-        ? existingOperation.inputs
-        : await loadProofsForLock(
-            mintUrl,
-            amountSats,
-            undefined,
-            swap.baseAsset,
-            operationId,
-          );
-    const out = await buyerPrepareSwap(
-      ctx,
-      swap.messages.adaptorPoint,
-      swap.messages.lockedProofsSeller,
-      proofs,
-      amountSats,
-      {
-        operationId,
-        proofOperationStore,
-      },
+    const prepared = await prepareBuyerResponseUnderLock(
+      lock,
+      swap,
+      operationId,
     );
-    await persistLockChange(proofs, out.changeProofs, mintUrl);
-    useActiveSwapsStore
-      .getState()
-      .recordMessage(tradeId, "lockedProofsBuyer", out.lockedProofsCipher);
-    useActiveSwapsStore.getState().setBuyerState(tradeId, {
-      ownPreSigsHex: out.preSigsHex,
-      lockedSatProofs: out.lockedProofs,
-      lockedProofsCipher: out.lockedProofsCipher,
-      sellerPreSigsHex: out.sellerPreSigsHex,
-    });
-    await persistCurrentGuiSwap(tradeId, mintUrl);
-    await sendSwapMessageWithRetry(
-      sendSwapMessage,
-      tradeId,
-      TRADE_MESSAGE_TYPES.lockedProofsBuyer,
-      out.lockedProofsCipher,
-    );
+    if (!prepared) return false;
+    await journalBuyerResponse(lock, tradeId, prepared);
+    return true;
   } catch (err) {
     if (buyerLockOperationId) {
-      await releaseBuyerReservationBeforeMint(buyerLockOperationId);
+      await releaseBuyerReservationBeforeMint(buyerLockOperationId, lock);
     }
     failSwap(tradeId, err);
-  } finally {
-    releaseStep(tradeId, "buyer-respond");
+    return false;
   }
+}
+
+type BuyerResponse = Awaited<ReturnType<typeof buyerPrepareSwap>>;
+
+async function prepareBuyerResponseUnderLock(
+  lock: GuiWalletLockContext,
+  swap: ActiveSwap,
+  operationId: string,
+): Promise<{ response: BuyerResponse; mintUrl: string } | null> {
+  const amountSats = positiveBuyerAmount(swap);
+  const exactMintUrl = requireDurableGuiSwapMint(swap);
+  const driving =
+    swap.step === "driving"
+      ? swap
+      : await commitGuiSwapCandidate(lock, { ...swap, step: "driving" });
+  const preparedSwap = await ensureDurableBuyerPreparation(lock, driving);
+  const ctx = buildSwapContext(preparedSwap, exactMintUrl);
+  if (!ctx) throw new Error("Durable buyer context is unavailable");
+  const existing = await getProofOperationUnderLock(lock, operationId);
+  const proofs =
+    existing?.kind === "swap-lock"
+      ? existing.inputs
+      : await loadProofsForLock(
+          exactMintUrl,
+          amountSats,
+          undefined,
+          preparedSwap.baseAsset,
+          operationId,
+          lock,
+        );
+  const response = await buyerPrepareSwap(
+    ctx,
+    preparedSwap.messages.adaptorPoint!,
+    preparedSwap.messages.lockedProofsSeller!,
+    proofs,
+    amountSats,
+    {
+      operationId,
+      proofOperationStore: localLockGuiProofOperationStoreUnderLock(
+        lock,
+        preparedSwap,
+      ),
+      lockedProofsCipherIv: preparedSwap.buyerPreparation!.lockedProofsCipherIv,
+    },
+  );
+  return { response, mintUrl: exactMintUrl };
+}
+
+function positiveBuyerAmount(swap: ActiveSwap): number {
+  const amount = swap.quotePaymentSubunits ?? swap.quotePaymentSats;
+  if (
+    typeof amount !== "number" ||
+    !Number.isSafeInteger(amount) ||
+    amount <= 0
+  ) {
+    throw new Error("Swap is missing a positive quote payment amount");
+  }
+  return amount;
+}
+
+async function journalBuyerResponse(
+  lock: GuiWalletLockContext,
+  tradeId: string,
+  prepared: { response: BuyerResponse; mintUrl: string },
+): Promise<void> {
+  const { response } = prepared;
+  const exact = await loadExactGuiSwapForEffect(lock, tradeId);
+  if (!exact) return;
+  await commitGuiSwapCandidate(lock, {
+    ...exact,
+    messages: {
+      ...exact.messages,
+      lockedProofsBuyer: response.lockedProofsCipher,
+    },
+    buyerState: {
+      ownPreSigsHex: response.preSigsHex,
+      lockedSatProofs: response.lockedProofs,
+      lockedProofsCipher: response.lockedProofsCipher,
+      sellerPreSigsHex: response.sellerPreSigsHex,
+    },
+  });
+}
+
+async function ensureDurableBuyerPreparation(
+  lock: GuiWalletLockContext,
+  swap: ActiveSwap,
+): Promise<ActiveSwap> {
+  if (swap.role !== "buyer") {
+    throw new Error("Buyer swap state is unavailable");
+  }
+  if (!swap.buyerPreparation) {
+    return commitGuiSwapCandidate(lock, {
+      ...swap,
+      buyerPreparation: {
+        lockedProofsCipherIv: crypto.getRandomValues(new Uint8Array(12)),
+      },
+    });
+  }
+  return swap;
 }
 
 /**
@@ -1805,17 +2584,15 @@ async function runBuyerRespondOwned(
  */
 async function releaseBuyerReservationBeforeMint(
   operationId: string,
+  lock: GuiWalletLockContext,
 ): Promise<void> {
   try {
-    if (await getProofOperation(operationId)) return;
-    await releaseProofReservation(operationId);
-  } catch (cleanupError) {
+    if (await getProofOperationUnderLock(lock, operationId)) return;
+    await releaseProofReservationUnderLock(lock, operationId);
+  } catch {
     // Failing closed retains the reservation rather than making a possibly
     // submitted mint operation spendable by another swap.
-    console.warn(
-      "Could not release pre-mint buyer proof reservation",
-      cleanupError,
-    );
+    console.warn("[swap.buyer-reservation]", { code: "release-deferred" });
   }
 }
 
@@ -1828,27 +2605,58 @@ async function handleTradeStateChanged(
   newState: string,
   sendSwapMessage: SendSwapMessageFn,
   failureReason?: string,
+  wakeRecovery: () => void = () => undefined,
 ): Promise<void> {
   const action = decideTradeStateChanged(newState);
-  if (action === "finish-confirmed") return finishSwap(tradeId, "success");
+  if (action === "finish-confirmed") {
+    await finishSwap(tradeId);
+    return;
+  }
   if (action === "finish-failed" || action === "finish-refunded") {
     const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
-    if (swap?.step === "completed") return finishSwap(tradeId, "Failed");
-    if (swap) void resubmitMakerCausedTakerFailure(swap, failureReason);
-    if (swap && !swap.error) {
-      useActiveSwapsStore
-        .getState()
-        .setStep(
-          tradeId,
-          "Failed",
-          "settlement timed out before both parties confirmed",
-        );
+    if (swap?.step === "completed") return;
+    const expectedWalletId = currentGuiWalletId();
+    const retained = await retainEngineTerminalSwap(
+      tradeId,
+      "Settlement ended before both parties confirmed.",
+      expectedWalletId,
+    );
+    if (retained && currentGuiWalletId() === expectedWalletId) {
+      void resubmitMakerCausedTakerFailure(retained, failureReason);
     }
-    return finishSwap(tradeId, "Failed");
+    return;
   }
   if (action === "settlement-claim") {
-    void runSettlementClaim(tradeId, sendSwapMessage);
+    void runSettlementClaim(tradeId, sendSwapMessage, wakeRecovery);
   }
+}
+
+async function retainEngineTerminalSwap(
+  tradeId: string,
+  failureMessage: string,
+  expectedWalletId: string,
+): Promise<ActiveSwap | null> {
+  const disposition =
+    classifyDurableTradeRecoveryDisposition("engine-terminal");
+  if (disposition.action !== "await-refund-salvage") {
+    throw new Error("SDK engine-terminal recovery disposition changed");
+  }
+  return withGuiSwapSessionOwnership(
+    tradeId,
+    async (lock) => {
+      const swap = await loadExactGuiSwapForEffect(lock, tradeId);
+      if (!swap || swap.step === "completed") return null;
+      if (swap.step === "awaiting-refund") return swap;
+      const retained: ActiveSwap = {
+        ...swap,
+        step: "awaiting-refund",
+        error: failureMessage,
+        inFlightSteps: {},
+      };
+      return commitGuiSwapCandidate(lock, retained);
+    },
+    expectedWalletId,
+  );
 }
 
 async function resubmitMakerCausedTakerFailure(
@@ -1860,6 +2668,11 @@ async function resubmitMakerCausedTakerFailure(
   if (
     !sourceOrder ||
     swap.buyerLocktime === null ||
+    typeof swap.baseAsset !== "string" ||
+    swap.baseAsset.length === 0 ||
+    typeof swap.divisibility !== "number" ||
+    !Number.isSafeInteger(swap.divisibility) ||
+    swap.divisibility <= 0 ||
     typeof failedFillAmountSubunits !== "number" ||
     !Number.isSafeInteger(failedFillAmountSubunits) ||
     failedFillAmountSubunits <= 0
@@ -1897,7 +2710,7 @@ async function resubmitMakerCausedTakerFailure(
       .getState()
       .markTakerRecoverySubmitted(swap.tradeId, result.orderId);
 
-    usePendingTradesStore.getState().add({
+    await persistGuiPendingTrade({
       orderId: result.orderId,
       marketId: sourceOrder.marketId,
       clientOrderId: result.clientOrderId,
@@ -1955,9 +2768,9 @@ async function sendSwapMessageWithRetry(
   tradeId: string,
   messageType: TradeMessageType,
   ciphertext: string,
-): Promise<void> {
-  const deadlineSeconds =
-    useActiveSwapsStore.getState().byTradeId[tradeId]?.buyerLocktime;
+  deadlineSeconds: number,
+  authorize: () => Promise<GuiDeliveryAuthorization>,
+): Promise<GuiDeliveryAttempt> {
   if (
     typeof deadlineSeconds !== "number" ||
     !Number.isSafeInteger(deadlineSeconds)
@@ -1966,75 +2779,613 @@ async function sendSwapMessageWithRetry(
   }
   const result = await retryTransientTradeOperation({
     deadlineMs: deadlineSeconds * 1_000,
-    operation: () => sendSwapMessage(tradeId, messageType, ciphertext),
+    operation: async () => {
+      const authorization = await authorize();
+      if (authorization !== "replay") return authorization;
+      await sendSwapMessage(tradeId, messageType, ciphertext);
+      return "sent" as const;
+    },
   });
   if (result.kind === "deadline-expired") {
     throw new Error("Swap message retry deadline expired before delivery");
   }
+  return result.value;
+}
+
+interface GuiSwapTransportAuthority {
+  walletId: string;
+  tradeId: string;
+  orderId: string;
+  marketId: string;
+  role: SwapRole;
+  localProtocolPubkey: string;
+  counterpartyProtocolPubkey: string;
+  mintUrl: string;
+  sellerLocktimeSeconds: number;
+  deadlineSeconds: number;
+}
+
+interface GuiTradeJoinDelivery {
+  walletId: string;
+  tradeId: string;
+  orderId: string;
+  marketId: string;
+  localProtocolPubkey: string;
+}
+
+interface GuiSwapCipherDelivery extends GuiSwapTransportAuthority {
+  messageType: SwapCipherMessageType;
+  ciphertext: string;
+}
+
+type GuiSettlementCompleteDelivery = GuiSwapTransportAuthority;
+
+type GuiDeliveryAuthorization = "replay" | "terminal" | "busy";
+type GuiDeliveryAttempt = "sent" | "terminal" | "busy";
+
+type GuiExactSwapRead<T> =
+  | { kind: "ready"; value: T }
+  | { kind: "missing" }
+  | { kind: "busy" };
+
+async function deliverGuiRecoveryTransportPlan(
+  plan: GuiRecoveryTransportPlan,
+  walletId: string,
+  joinTrade: (tradeId: string) => Promise<void>,
+  sendSwapMessage: SendSwapMessageFn,
+): Promise<boolean> {
+  if (!plan.join) return plan.ciphers.length === 0;
+  if (
+    plan.ciphers.some((candidate) => candidate.tradeId !== plan.join!.tradeId)
+  ) {
+    throw new Error("Durable GUI recovery mixed trade transport authority");
+  }
+  if (plan.join.walletId !== walletId) {
+    throw new Error("Durable GUI recovery mixed wallet transport authority");
+  }
+  await requireExactGuiTradeJoinDelivery(plan.join);
+  await joinTrade(plan.join.tradeId);
+  await requireExactGuiTradeJoinDelivery(plan.join);
+  for (const delivery of plan.ciphers) {
+    const result = await deliverPersistedGuiSwapCipher(
+      walletId,
+      delivery.tradeId,
+      sendSwapMessage,
+      delivery.messageType,
+      delivery.ciphertext,
+    );
+    if (result === "terminal") return true;
+    if (result !== "sent") return false;
+  }
+  return true;
+}
+
+async function deliverPersistedGuiSwapCipher(
+  walletId: string,
+  tradeId: string,
+  sendSwapMessage: SendSwapMessageFn,
+  messageType: SwapCipherMessageType,
+  expectedCiphertext?: string,
+): Promise<GuiDeliveryAttempt | "blocked"> {
+  const read = await tryReadGuiSwapCipherDelivery(
+    walletId,
+    tradeId,
+    messageType,
+  );
+  if (read.kind === "busy") return "busy";
+  if (read.kind === "missing") return "blocked";
+  const delivery = read.value;
+  if (
+    expectedCiphertext !== undefined &&
+    delivery.ciphertext !== expectedCiphertext
+  ) {
+    throw new Error("Durable GUI swap cipher authority was substituted");
+  }
+  const attempt = await sendSwapMessageWithRetry(
+    sendSwapMessage,
+    tradeId,
+    messageType,
+    delivery.ciphertext,
+    delivery.deadlineSeconds,
+    () =>
+      authorizeGuiSwapDelivery(delivery, () =>
+        requireExactGuiSwapCipherDelivery(delivery),
+      ),
+  );
+  if (attempt === "terminal") {
+    clearGuiDeliveryRecovery(walletId, tradeId);
+    return attempt;
+  }
+  if (attempt === "busy") return attempt;
+  const exact = await requireExactGuiSwapCipherDelivery(delivery);
+  if (exact === "busy") return "busy";
+  clearGuiDeliveryRecovery(walletId, tradeId);
+  return "sent";
+}
+
+async function tryReadGuiSwapCipherDelivery(
+  walletId: string,
+  tradeId: string,
+  messageType: SwapCipherMessageType,
+): Promise<GuiExactSwapRead<GuiSwapCipherDelivery>> {
+  return tryReadExactGuiSwap(walletId, tradeId, (swap) => {
+    const ciphertext = persistedGuiSwapCipher(swap, messageType);
+    if (!ciphertext) throw new Error("Durable GUI swap cipher is missing");
+    return {
+      ...guiSwapTransportAuthority(walletId, swap),
+      messageType,
+      ciphertext,
+    };
+  });
+}
+
+async function requireExactGuiSwapCipherDelivery(
+  expected: GuiSwapCipherDelivery,
+): Promise<"exact" | "busy"> {
+  const read = await tryReadGuiSwapCipherDelivery(
+    expected.walletId,
+    expected.tradeId,
+    expected.messageType,
+  );
+  if (read.kind === "busy") return "busy";
+  if (read.kind === "missing") {
+    throw new Error("GUI swap message authority is missing");
+  }
+  const current = read.value;
+  if (
+    !sameGuiSwapTransportAuthority(expected, current) ||
+    current.ciphertext !== expected.ciphertext
+  ) {
+    throw new Error("GUI wallet changed before swap message replay");
+  }
+  return "exact";
+}
+
+function guiTradeJoinDelivery(
+  walletId: string,
+  swap: ActiveSwap,
+): GuiTradeJoinDelivery {
+  if (!swap.orderId || !swap.marketId || !swap.ephemeralPubkeyHex) {
+    throw new Error("Durable GUI trade join authority is incomplete");
+  }
+  return {
+    walletId,
+    tradeId: swap.tradeId,
+    orderId: swap.orderId,
+    marketId: swap.marketId,
+    localProtocolPubkey: swap.ephemeralPubkeyHex,
+  };
+}
+
+function sameGuiTradeJoinDelivery(
+  expected: GuiTradeJoinDelivery,
+  current: GuiTradeJoinDelivery,
+): boolean {
+  return (
+    current.walletId === expected.walletId &&
+    current.tradeId === expected.tradeId &&
+    current.orderId === expected.orderId &&
+    current.marketId === expected.marketId &&
+    current.localProtocolPubkey === expected.localProtocolPubkey
+  );
+}
+
+async function requireExactGuiTradeJoinDelivery(
+  expected: GuiTradeJoinDelivery,
+): Promise<void> {
+  const read = await tryReadExactGuiSwap(
+    expected.walletId,
+    expected.tradeId,
+    (swap) => guiTradeJoinDelivery(expected.walletId, swap),
+  );
+  if (
+    read.kind !== "ready" ||
+    !sameGuiTradeJoinDelivery(expected, read.value)
+  ) {
+    throw new Error("GUI wallet changed before trade join replay");
+  }
+}
+
+async function tryReadExactGuiSwap<T>(
+  walletId: string,
+  tradeId: string,
+  select: (swap: ActiveSwap) => T,
+): Promise<GuiExactSwapRead<T>> {
+  const attempt = await tryWithGuiCustodyProfileLock(async (context, lock) => {
+    try {
+      const exact = await loadExactGuiSwapForEffect(lock, tradeId);
+      return exact ? select(exact) : null;
+    } finally {
+      await releaseGuiCustodyAuthority(lock, context.scope);
+    }
+  }, walletId);
+  if (!attempt.acquired) return { kind: "busy" };
+  if (attempt.value === null) return { kind: "missing" };
+  return { kind: "ready", value: attempt.value };
+}
+
+function guiSwapTransportAuthority(
+  walletId: string,
+  swap: ActiveSwap,
+): GuiSwapTransportAuthority {
+  if (!swap.role || !swap.counterpartyPubkey || swap.sellerLocktime === null) {
+    throw new Error("Durable GUI swap transport authority is incomplete");
+  }
+  return {
+    walletId,
+    tradeId: swap.tradeId,
+    orderId: requireDurableGuiSwapOrderId(swap),
+    marketId: swap.marketId,
+    role: swap.role,
+    localProtocolPubkey: swap.ephemeralPubkeyHex,
+    counterpartyProtocolPubkey: swap.counterpartyPubkey,
+    mintUrl: requireDurableGuiSwapMint(swap),
+    sellerLocktimeSeconds: swap.sellerLocktime,
+    deadlineSeconds: requireGuiSwapSendDeadline(swap),
+  };
+}
+
+function sameGuiSwapTransportAuthority(
+  expected: GuiSwapTransportAuthority,
+  current: GuiSwapTransportAuthority,
+): boolean {
+  return (
+    current.walletId === expected.walletId &&
+    current.tradeId === expected.tradeId &&
+    current.orderId === expected.orderId &&
+    current.marketId === expected.marketId &&
+    current.role === expected.role &&
+    current.localProtocolPubkey === expected.localProtocolPubkey &&
+    current.counterpartyProtocolPubkey ===
+      expected.counterpartyProtocolPubkey &&
+    current.mintUrl === expected.mintUrl &&
+    current.sellerLocktimeSeconds === expected.sellerLocktimeSeconds &&
+    current.deadlineSeconds === expected.deadlineSeconds
+  );
+}
+
+async function authorizeGuiSwapDelivery(
+  expected: GuiSwapTransportAuthority,
+  requireExactDelivery: () => Promise<"exact" | "busy">,
+): Promise<GuiDeliveryAuthorization> {
+  const status = await fetchOrderStatus(expected.marketId, expected.orderId);
+  if (!status) {
+    throw new Error("Authorized order status is unavailable for swap replay");
+  }
+  if (
+    status.marketId !== expected.marketId ||
+    status.orderId !== expected.orderId
+  ) {
+    throw new Error("Authorized order status does not match swap authority");
+  }
+  const exactFills = status.fills.filter(
+    (fill) => fill.tradeId === expected.tradeId,
+  );
+  if (exactFills.length !== 1) {
+    throw new Error("Authorized order status has no unique exact swap fill");
+  }
+  const fill = exactFills[0];
+  if (
+    fill.makerOrderId !== expected.orderId &&
+    fill.takerOrderId !== expected.orderId
+  ) {
+    throw new Error("Authorized swap fill is not owned by the exact order");
+  }
+
+  switch (fill.status) {
+    case "Matched":
+      return (await requireExactDelivery()) === "exact" ? "replay" : "busy";
+    case "Filled":
+      return reconcileFilledGuiSwapDelivery(expected);
+    case "Failed":
+      return reconcileFailedGuiSwapDelivery(expected);
+    default:
+      return assertNeverValue(fill.status);
+  }
+}
+
+async function reconcileFilledGuiSwapDelivery(
+  expected: GuiSwapTransportAuthority,
+): Promise<"terminal" | "busy"> {
+  const attempt = await tryWithGuiCustodyProfileLock(async (context, lock) => {
+    try {
+      const current = await loadExactGuiSwapForEffect(lock, expected.tradeId);
+      if (
+        !current ||
+        !sameGuiSwapTransportAuthority(
+          expected,
+          guiSwapTransportAuthority(expected.walletId, current),
+        )
+      ) {
+        throw new Error(
+          "GUI swap authority changed before fill reconciliation",
+        );
+      }
+      if (current.step === "completed") {
+        return { terminal: current, changed: false };
+      }
+      const terminal = await commitGuiSwapCandidate(lock, {
+        ...current,
+        step: "completed",
+        settlementCompleteDelivery: "delivered",
+        inFlightSteps: {},
+      });
+      return { terminal, changed: true };
+    } finally {
+      await releaseGuiCustodyAuthority(lock, context.scope);
+    }
+  }, expected.walletId);
+  if (!attempt.acquired) return "busy";
+  if (attempt.value.changed) {
+    publishGuiSwapCompletion(expected.walletId, attempt.value.terminal);
+  }
+  return "terminal";
+}
+
+async function reconcileFailedGuiSwapDelivery(
+  expected: GuiSwapTransportAuthority,
+): Promise<"terminal" | "busy"> {
+  const disposition =
+    classifyDurableTradeRecoveryDisposition("engine-terminal");
+  if (disposition.action !== "await-refund-salvage") {
+    throw new Error("SDK engine-terminal recovery disposition changed");
+  }
+  const attempt = await tryWithGuiCustodyProfileLock(async (context, lock) => {
+    try {
+      const current = await loadExactGuiSwapForEffect(lock, expected.tradeId);
+      if (
+        !current ||
+        !sameGuiSwapTransportAuthority(
+          expected,
+          guiSwapTransportAuthority(expected.walletId, current),
+        )
+      ) {
+        throw new Error(
+          "GUI swap authority changed before failure reconciliation",
+        );
+      }
+      if (current.step === "completed" || current.step === "awaiting-refund") {
+        return;
+      }
+      await commitGuiSwapCandidate(lock, {
+        ...current,
+        step: "awaiting-refund",
+        error: "Settlement ended before both parties confirmed.",
+        inFlightSteps: {},
+      });
+    } finally {
+      await releaseGuiCustodyAuthority(lock, context.scope);
+    }
+  }, expected.walletId);
+  return attempt.acquired ? "terminal" : "busy";
+}
+
+function assertNeverValue(value: never): never {
+  throw new Error(`Unhandled closed value: ${JSON.stringify(value)}`);
+}
+
+function requireGuiSwapSendDeadline(swap: ActiveSwap): number {
+  if (swap.buyerLocktime === null) {
+    throw new Error("Durable GUI swap deadline is missing");
+  }
+  return swap.buyerLocktime;
+}
+
+function persistedGuiSwapCipher(
+  swap: ActiveSwap,
+  messageType: SwapCipherMessageType,
+): string | undefined {
+  switch (messageType) {
+    case TRADE_MESSAGE_TYPES.adaptorPoint:
+      return swap.sellerState?.adaptorPointCipher;
+    case TRADE_MESSAGE_TYPES.lockedProofsSeller:
+      return swap.sellerState?.lockedProofsCipher;
+    case TRADE_MESSAGE_TYPES.lockedProofsBuyer: {
+      const stateCipher = swap.buyerState?.lockedProofsCipher;
+      const messageCipher = swap.messages.lockedProofsBuyer;
+      if (stateCipher && messageCipher && stateCipher !== messageCipher) {
+        throw new Error("Durable GUI buyer cipher authority conflicts");
+      }
+      return stateCipher ?? messageCipher;
+    }
+  }
+}
+
+async function tryReadSettlementCompleteDelivery(
+  walletId: string,
+  tradeId: string,
+): Promise<GuiExactSwapRead<GuiSettlementCompleteDelivery>> {
+  const read = await tryReadExactGuiSwap(walletId, tradeId, (swap) => {
+    if (
+      swap.step !== "awaiting-confirmation" ||
+      swap.settlementCompleteDelivery !== "pending"
+    ) {
+      return null;
+    }
+    return guiSwapTransportAuthority(walletId, swap);
+  });
+  if (read.kind !== "ready") return read;
+  return read.value === null
+    ? { kind: "missing" }
+    : { kind: "ready", value: read.value };
+}
+
+async function requireExactSettlementCompleteDelivery(
+  expected: GuiSettlementCompleteDelivery,
+): Promise<"exact" | "busy"> {
+  const read = await tryReadSettlementCompleteDelivery(
+    expected.walletId,
+    expected.tradeId,
+  );
+  if (read.kind === "busy") return "busy";
+  if (
+    read.kind === "missing" ||
+    !sameGuiSwapTransportAuthority(expected, read.value)
+  ) {
+    throw new Error("GUI wallet changed before settlement delivery");
+  }
+  return "exact";
+}
+
+async function commitDeliveredSettlementComplete(
+  expected: GuiSettlementCompleteDelivery,
+): Promise<"committed" | "busy" | "stale"> {
+  const attempt = await tryWithGuiCustodyProfileLock(async (context, lock) => {
+    try {
+      const current = await loadExactGuiSwapForEffect(lock, expected.tradeId);
+      if (
+        !current ||
+        current.step !== "awaiting-confirmation" ||
+        current.settlementCompleteDelivery !== "pending" ||
+        !sameGuiSwapTransportAuthority(
+          expected,
+          guiSwapTransportAuthority(expected.walletId, current),
+        )
+      ) {
+        return false;
+      }
+      await commitGuiSwapCandidate(lock, {
+        ...current,
+        settlementCompleteDelivery: "delivered",
+      });
+      return true;
+    } finally {
+      await releaseGuiCustodyAuthority(lock, context.scope);
+    }
+  }, expected.walletId);
+  if (!attempt.acquired) return "busy";
+  return attempt.value ? "committed" : "stale";
 }
 
 async function runSettlementClaim(
   tradeId: string,
   sendSwapMessage: SendSwapMessageFn,
+  wakeRecovery: () => void,
 ): Promise<void> {
-  await withGuiSwapSessionOwnership(tradeId, () =>
-    runSettlementClaimOwned(tradeId, sendSwapMessage),
+  const walletId = currentGuiWalletId();
+  const deliveryPending = await withGuiSwapSessionOwnership(
+    tradeId,
+    (lock) => runSettlementClaimOwned(tradeId, lock),
+    walletId,
   );
+  if (!deliveryPending) return;
+  try {
+    const result = await deliverSettlementComplete(
+      walletId,
+      tradeId,
+      sendSwapMessage,
+    );
+    if (result !== "sent" && result !== "terminal") {
+      handleDeferredGuiDelivery(walletId, tradeId, result, wakeRecovery);
+    }
+  } catch {
+    // The pending delivery intent remains durable and will replay on recovery.
+    scheduleGuiDeliveryRecovery(walletId, tradeId, wakeRecovery);
+  }
 }
 
 async function runSettlementClaimOwned(
   tradeId: string,
-  sendSwapMessage: SendSwapMessageFn,
-): Promise<void> {
-  if (!claimStep(tradeId, "settle")) return;
+  lock: GuiWalletLockContext,
+): Promise<boolean> {
+  let deliveryPending = false;
   try {
-    const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
-    if (!swap || !swap.role) return;
+    const swap = await loadExactGuiSwapForEffect(lock, tradeId);
+    if (!swap || !swap.role) return false;
     if (
       swap.step === "awaiting-confirmation" ||
+      swap.step === "awaiting-refund" ||
       swap.step === "completed" ||
       swap.step === "Failed"
     )
-      return;
-    if (swap.role === "seller" && !swap.messages.lockedProofsBuyer) return;
-    const mintUrl = useWalletStore.getState().activeMintUrl;
+      return false;
+    if (swap.role === "seller" && !swap.messages.lockedProofsBuyer)
+      return false;
+    const mintUrl = requireDurableGuiSwapMint(swap);
     const ctx = buildSwapContext(swap, mintUrl);
-    if (!ctx) return;
-    await persistCurrentGuiSwap(tradeId, mintUrl);
-    const fresh =
-      swap.role === "seller"
-        ? await runSellerClaim(swap, ctx)
-        : await runBuyerClaim(swap, ctx);
-    if (swap.role === "buyer") {
-      const market = splitMarketId(swap.marketId);
-      if (!market) throw new Error(`Invalid market id ${swap.marketId}`);
-      await persistFreshConditionalProofs(
-        fresh,
-        mintUrl,
-        market.conditionId,
-        swap.baseAsset,
-      );
-    } else {
-      await persistFreshProofs(fresh, mintUrl, null, swap.baseAsset);
-    }
-    useActiveSwapsStore.getState().setStep(tradeId, "awaiting-confirmation");
-    await persistCurrentGuiSwap(tradeId, mintUrl);
-    await sendSwapMessageWithRetry(
-      sendSwapMessage,
-      tradeId,
-      TRADE_MESSAGE_TYPES.settlementComplete,
-      "",
-    );
+    if (!ctx) return false;
+    if (swap.role === "seller") await runSellerClaim(swap, ctx, lock);
+    else await runBuyerClaim(swap, ctx, lock);
+    const exact = await loadGuiSwapSessionStateUnderLock(lock, tradeId);
+    if (!exact)
+      throw new Error("Claim completed without a durable GUI session");
+    await commitGuiSwapCandidate(lock, {
+      ...exact,
+      step: "awaiting-confirmation",
+      settlementCompleteDelivery: "pending",
+    });
+    deliveryPending = true;
+    return true;
   } catch (err) {
-    failSwap(tradeId, err);
-  } finally {
-    releaseStep(tradeId, "settle");
+    if (!deliveryPending) failSwap(tradeId, err);
+    return deliveryPending;
+  }
+}
+
+async function resumeSettlementCompleteDelivery(
+  tradeId: string,
+  sendSwapMessage: SendSwapMessageFn,
+  wakeRecovery: () => void,
+): Promise<void> {
+  const walletId = currentGuiWalletId();
+  try {
+    const result = await deliverSettlementComplete(
+      walletId,
+      tradeId,
+      sendSwapMessage,
+    );
+    if (result !== "sent" && result !== "terminal") {
+      handleDeferredGuiDelivery(walletId, tradeId, result, wakeRecovery);
+    }
+  } catch {
+    // Keep the durable pending intent for an exact later replay.
+    scheduleGuiDeliveryRecovery(walletId, tradeId, wakeRecovery);
+  }
+}
+
+async function deliverSettlementComplete(
+  walletId: string,
+  tradeId: string,
+  sendSwapMessage: SendSwapMessageFn,
+): Promise<GuiDeliveryAttempt | "blocked"> {
+  const read = await tryReadSettlementCompleteDelivery(walletId, tradeId);
+  if (read.kind === "busy") return "busy";
+  if (read.kind === "missing") return "blocked";
+  const snapshot = read.value;
+  const attempt = await sendSwapMessageWithRetry(
+    sendSwapMessage,
+    tradeId,
+    TRADE_MESSAGE_TYPES.settlementComplete,
+    "",
+    snapshot.deadlineSeconds,
+    () =>
+      authorizeGuiSwapDelivery(snapshot, () =>
+        requireExactSettlementCompleteDelivery(snapshot),
+      ),
+  );
+  if (attempt === "terminal") {
+    clearGuiDeliveryRecovery(walletId, tradeId);
+    return attempt;
+  }
+  if (attempt === "busy") return attempt;
+  const committed = await commitDeliveredSettlementComplete(snapshot);
+  switch (committed) {
+    case "committed":
+      clearGuiDeliveryRecovery(walletId, tradeId);
+      return "sent";
+    case "busy":
+      return "busy";
+    case "stale":
+      return "blocked";
+    default:
+      return assertNeverValue(committed);
   }
 }
 
 async function runSellerClaim(
   swap: ActiveSwap,
   ctx: SwapCtx,
+  lock: GuiWalletLockContext,
 ): Promise<Proof[]> {
   if (!swap.sellerState) throw new Error("Missing seller adaptor state");
   if (!swap.messages.lockedProofsBuyer)
@@ -2045,12 +3396,19 @@ async function runSellerClaim(
     swap.messages.lockedProofsBuyer,
     {
       operationId: proofOperationId(swap.tradeId, "seller-claim"),
-      proofOperationStore,
+      proofOperationStore: externalClaimGuiProofOperationStoreUnderLock(
+        lock,
+        swap,
+      ),
     },
   );
 }
 
-async function runBuyerClaim(swap: ActiveSwap, ctx: SwapCtx): Promise<Proof[]> {
+async function runBuyerClaim(
+  swap: ActiveSwap,
+  ctx: SwapCtx,
+  lock: GuiWalletLockContext,
+): Promise<Proof[]> {
   if (!swap.buyerState) throw new Error("Missing buyer pre-sig state");
   if (!swap.messages.lockedProofsSeller)
     throw new Error("Missing locked-proofs-seller cipher");
@@ -2066,7 +3424,10 @@ async function runBuyerClaim(swap: ActiveSwap, ctx: SwapCtx): Promise<Proof[]> {
     swap.buyerState.sellerPreSigsHex,
     {
       operationId: proofOperationId(swap.tradeId, "buyer-claim"),
-      proofOperationStore,
+      proofOperationStore: externalClaimGuiProofOperationStoreUnderLock(
+        lock,
+        swap,
+      ),
     },
   );
 }
@@ -2087,23 +3448,25 @@ async function pollForAdaptorSecret(
 
 async function loadProofsForLock(
   mintUrl: string,
-  targetSats?: number,
-  sellerMarketId?: string,
-  baseAsset?: string | null,
-  reservationId?: string,
+  targetSats: number | undefined,
+  sellerMarketId: string | undefined,
+  baseAsset: string | null | undefined,
+  reservationId: string | undefined,
+  lock: GuiWalletLockContext,
 ): Promise<Proof[]> {
   const outcome = sellerMarketId
     ? outcomeMetadataForMarket(sellerMarketId)
     : null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const proofs = outcome
-      ? await getOutcomeProofs(
+      ? await getOutcomeProofsUnderLock(
+          lock,
           mintUrl,
           outcome.conditionId,
           outcome.outcomeCollection,
           { baseAsset },
         )
-      : await getUnitProofs(mintUrl, {
+      : await getUnitProofsUnderLock(lock, mintUrl, {
           unit: defaultCollateralUnit(baseAsset),
         });
     if (proofs.length === 0) {
@@ -2130,10 +3493,7 @@ async function loadProofsForLock(
     }
     if (
       !reservationId ||
-      (await tryReserveProofs(
-        selected.map((proof) => proof.secret),
-        reservationId,
-      ))
+      (await tryReserveProofsUnderLock(lock, selected, reservationId))
     ) {
       return selected;
     }
@@ -2142,125 +3502,8 @@ async function loadProofsForLock(
   throw new Error("Proofs were reserved by a concurrent atomic swap");
 }
 
-async function persistLockChange(
-  spentProofs: Proof[],
-  changeProofs: Proof[],
-  mintUrl: string,
-  metadata?: OutcomeProofMetadata | null,
-): Promise<void> {
-  await replaceProofs(
-    spentProofs.map((proof) => proof.secret),
-    changeProofs.map((proof) => ({
-      ...proof,
-      ...(metadata ?? {}),
-      mintUrl,
-    })),
-  );
-}
-
-async function persistFreshProofs(
-  proofs: Proof[],
-  mintUrl: string,
-  metadata?: OutcomeProofMetadata | null,
-  baseAsset?: string | null,
-): Promise<void> {
-  if (proofs.length === 0) return;
-  const normalizedBaseAsset = normalizeMarketBaseAsset(baseAsset);
-  const fresh: StoredProof[] = proofs.map((p) => ({
-    ...p,
-    ...(metadata ?? {}),
-    mintUrl,
-    baseAsset: normalizedBaseAsset,
-    unit: defaultCollateralUnit(normalizedBaseAsset),
-  }));
-  await addProofs(fresh);
-}
-
-async function persistConditionalLockChange(input: {
-  spentProofs: Proof[];
-  changeProofs: Proof[];
-  mintUrl: string;
-  conditionId: string;
-  reservedBy?: string;
-  baseAsset?: string | null;
-}): Promise<void> {
-  await replaceProofs(
-    input.spentProofs.map((proof) => proof.secret),
-    await storedConditionalProofsFromMintMetadata({
-      mintUrl: input.mintUrl,
-      proofs: input.changeProofs,
-      expectedConditionId: input.conditionId,
-      reservedBy: input.reservedBy,
-      baseAsset: input.baseAsset,
-    }),
-  );
-}
-
-async function persistFreshConditionalProofs(
-  proofs: Proof[],
-  mintUrl: string,
-  conditionId: string,
-  baseAsset?: string | null,
-): Promise<void> {
-  if (proofs.length === 0) return;
-  await addProofs(
-    await storedConditionalProofsFromMintMetadata({
-      mintUrl,
-      proofs,
-      expectedConditionId: conditionId,
-      baseAsset,
-      unit: defaultCollateralUnit(baseAsset),
-    }),
-  );
-}
-
-export async function persistPartialLockFromError(input: {
-  err: unknown;
-  swap: ActiveSwap;
-  mintUrl: string;
-  conditionId: string;
-  collectionByKeyset: Map<string, string>;
-}): Promise<void> {
-  const partial = partialLockFromError(input.err);
-  if (!partial) return;
-  await replaceProofs(
-    partial.spentProofs.map((proof) => proof.secret),
-    [
-      ...(await storedConditionalProofsFromMintMetadata({
-        mintUrl: input.mintUrl,
-        proofs: partial.lockedProofs,
-        expectedConditionId: input.conditionId,
-        reservedBy: input.swap.tradeId,
-        baseAsset: input.swap.baseAsset,
-      })),
-      ...(await storedConditionalProofsFromMintMetadata({
-        mintUrl: input.mintUrl,
-        proofs: partial.changeProofs,
-        expectedConditionId: input.conditionId,
-        baseAsset: input.swap.baseAsset,
-      })),
-    ],
-  );
-  usePartialLockFailuresStore.getState().upsert({
-    kind: "PartialLockHeld",
-    tradeId: input.swap.tradeId,
-    orderId: input.swap.orderId,
-    mintUrl: input.mintUrl,
-    refundLocktime: partial.failure.refundLocktime,
-    affectedKeysets: partial.failure.affectedKeysets,
-    detail: partial.failure.detail,
-    outcomeByKeyset: await outcomeMetadataByKeyset(
-      input.mintUrl,
-      input.conditionId,
-      partial.failure.affectedKeysets,
-      [...partial.lockedProofs, ...partial.changeProofs],
-    ),
-    lockedProofs: partial.lockedProofs,
-    createdAt: Date.now(),
-  });
-}
-
 async function persistPartialLockParts(input: {
+  lock: GuiWalletLockContext;
   swap: ActiveSwap;
   mintUrl: string;
   conditionId: string;
@@ -2269,31 +3512,24 @@ async function persistPartialLockParts(input: {
   lockedProofs: Proof[];
   changeProofs: Proof[];
   refundLocktime: number;
-  affectedKeysets: string[];
   detail: string;
 }): Promise<void> {
-  const affectedKeysets =
-    input.affectedKeysets.length > 0
-      ? input.affectedKeysets
-      : uniqueProofKeysets(input.lockedProofs);
-  await replaceProofs(
-    input.spentProofs.map((proof) => proof.secret),
-    [
-      ...(await storedConditionalProofsFromMintMetadata({
-        mintUrl: input.mintUrl,
-        proofs: input.lockedProofs,
-        expectedConditionId: input.conditionId,
-        reservedBy: input.swap.tradeId,
-        baseAsset: input.swap.baseAsset,
-      })),
-      ...(await storedConditionalProofsFromMintMetadata({
-        mintUrl: input.mintUrl,
-        proofs: input.changeProofs,
-        expectedConditionId: input.conditionId,
-        baseAsset: input.swap.baseAsset,
-      })),
-    ],
-  );
+  const affectedKeysets = uniqueProofKeysets(input.lockedProofs);
+  const replacementProofs = [
+    ...(await storedConditionalProofsFromMintMetadata({
+      mintUrl: input.mintUrl,
+      proofs: input.lockedProofs,
+      expectedConditionId: input.conditionId,
+      reservedBy: input.swap.tradeId,
+      baseAsset: input.swap.baseAsset,
+    })),
+    ...(await storedConditionalProofsFromMintMetadata({
+      mintUrl: input.mintUrl,
+      proofs: input.changeProofs,
+      expectedConditionId: input.conditionId,
+      baseAsset: input.swap.baseAsset,
+    })),
+  ];
 
   const outcomeByKeyset: PartialLockHeldRecord["outcomeByKeyset"] = {};
   for (const keysetId of affectedKeysets) {
@@ -2308,42 +3544,22 @@ async function persistPartialLockParts(input: {
     };
   }
 
-  usePartialLockFailuresStore.getState().upsert({
-    kind: "PartialLockHeld",
-    tradeId: input.swap.tradeId,
-    orderId: input.swap.orderId,
-    mintUrl: input.mintUrl,
-    refundLocktime: input.refundLocktime,
-    affectedKeysets,
-    detail: input.detail,
-    outcomeByKeyset,
-    lockedProofs: input.lockedProofs,
-    createdAt: Date.now(),
+  await commitGuiPartialLockFailureUnderLock(input.lock, {
+    spentProofs: input.spentProofs,
+    replacementProofs,
+    record: {
+      kind: "PartialLockHeld",
+      tradeId: input.swap.tradeId,
+      orderId: input.swap.orderId,
+      mintUrl: input.mintUrl,
+      refundLocktime: input.refundLocktime,
+      affectedKeysets,
+      detail: input.detail,
+      outcomeByKeyset,
+      lockedProofs: input.lockedProofs,
+      createdAt: Date.now(),
+    },
   });
-}
-
-async function outcomeMetadataByKeyset(
-  mintUrl: string,
-  conditionId: string,
-  affectedKeysets: string[],
-  proofs: Proof[],
-): Promise<PartialLockHeldRecord["outcomeByKeyset"]> {
-  const byKeyset: Record<string, OutcomeMetadata> = {};
-  const proofByKeyset = new Map(
-    proofs
-      .filter((proof) => typeof proof.id === "string")
-      .map((proof) => [proof.id as string, proof]),
-  );
-  for (const keysetId of affectedKeysets) {
-    const proof = proofByKeyset.get(keysetId);
-    if (!proof) throw new Error(`No locked proof for keyset ${keysetId}`);
-    byKeyset[keysetId] = await resolveOutcomeMetadataForProof(
-      mintUrl,
-      conditionId,
-      proof,
-    );
-  }
-  return byKeyset;
 }
 
 function partialLockFromError(err: unknown): {
@@ -2406,23 +3622,6 @@ function isProofLike(value: unknown): value is Proof {
   );
 }
 
-async function resolveOutcomeMetadataForProof(
-  mintUrl: string,
-  conditionId: string,
-  proof: Proof,
-): Promise<OutcomeMetadata> {
-  const metadata = await resolveConditionalProofMetadata(
-    mintUrl,
-    proof,
-    conditionId,
-  );
-  return {
-    conditionId: metadata.conditionId,
-    outcomeCollection: metadata.outcomeCollection,
-    marketId: metadata.marketId,
-  };
-}
-
 function proofOperationId(tradeId: string, step: string): string {
   return `${tradeId}/browser/${step}`;
 }
@@ -2456,73 +3655,80 @@ function outcomeMetadataForCondition(
 // Cleanup helpers
 // ---------------------------------------------------------------------------
 
-function finishSwap(tradeId: string, outcome: "success" | "Failed"): void {
-  const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
-  if (!swap) return;
-  if (outcome === "Failed" && swap.step === "completed") return;
-  const shouldNotify =
-    outcome === "success" || isLocalTradeParticipant(swap, tradeId);
-  emitTradeTerminal({
+async function finishSwap(tradeId: string): Promise<void> {
+  const walletId = currentGuiWalletId();
+  const committed = await withGuiSwapSessionOwnership(
     tradeId,
-    marketId: swap.marketId,
-    state: outcome === "success" ? "Confirmed" : "Failed",
+    async (lock) => {
+      const durable = await loadExactGuiSwapForEffect(lock, tradeId);
+      const swap =
+        durable ?? useActiveSwapsStore.getState().byTradeId[tradeId] ?? null;
+      if (!heldGuiWalletIsCurrent(lock)) return null;
+      if (!swap || swap.step === "completed") return null;
+      const terminal: ActiveSwap = {
+        ...swap,
+        step: "completed",
+      };
+      if (canPersistGuiSwapSession(terminal)) {
+        await commitGuiSwapCandidate(lock, terminal);
+      } else {
+        replaceActiveSwap(terminal);
+      }
+      return terminal;
+    },
+    walletId,
+  );
+  if (!committed) return;
+  publishGuiSwapCompletion(walletId, committed);
+}
+
+function publishGuiSwapCompletion(
+  walletId: string,
+  terminal: ActiveSwap,
+): void {
+  if (currentGuiWalletId() !== walletId) return;
+  emitTradeTerminal({
+    tradeId: terminal.tradeId,
+    marketId: terminal.marketId,
+    state: "Confirmed",
   });
-  useActiveSwapsStore
-    .getState()
-    .setStep(tradeId, outcome === "success" ? "completed" : "Failed");
-  if (outcome === "success")
-    useActiveSwapsStore.getState().clearProtocolState(tradeId);
-  const mintUrl = useWalletStore.getState().activeMintUrl;
-  void persistCurrentGuiSwap(tradeId, mintUrl).catch((error) => {
-    console.warn("Could not persist terminal GUI swap session", error);
+  const toast = useToastStore.getState().addToast;
+  toast({
+    type: "success",
+    message: `Trade complete: ${terminal.marketId}`,
   });
-  if (shouldNotify) {
-    const toast = useToastStore.getState().addToast;
-    toast({
-      type: outcome === "success" ? "success" : "error",
-      message:
-        outcome === "success"
-          ? `Trade complete: ${swap.marketId}`
-          : `Trade failed: ${swap.error ?? "unknown error"}`,
-    });
-  }
-  // Keep the entry around briefly so any UI subscriber gets a final
-  // snapshot before the row vanishes.
+  // Keep the terminal authority and retire only its active-session index.
   setTimeout(() => {
-    if (outcome === "success") void removeGuiSwapSession(tradeId);
-    useActiveSwapsStore.getState().remove(tradeId);
+    if (currentGuiWalletId() !== walletId) return;
+    void withGuiSwapSessionOwnership(
+      terminal.tradeId,
+      async (lock) => {
+        await removeGuiSwapSessionUnderLock(lock, terminal.tradeId);
+      },
+      walletId,
+    )
+      .then(() => {
+        if (currentGuiWalletId() === walletId) {
+          useActiveSwapsStore.getState().remove(terminal.tradeId);
+        }
+      })
+      .catch(() => undefined);
   }, 5_000);
 }
 
-function isLocalTradeParticipant(swap: ActiveSwap, tradeId: string): boolean {
-  if (swap.tradeId !== tradeId) return false;
-  if (!swap.role || !swap.counterpartyPubkey) return false;
-  return Boolean(swap.ephemeralPubkeyHex);
+function failSwap(tradeId: string, _err: unknown): void {
+  deferSwapRecovery(tradeId);
 }
 
-function failSwap(tradeId: string, err: unknown): void {
-  const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
-  if (!swap || swap.step === "completed") return;
-  const message = err instanceof Error ? err.message : String(err);
-  useActiveSwapsStore.getState().setStep(tradeId, "Failed", message);
-  finishSwap(tradeId, "Failed");
-}
-
-function claimStep(tradeId: string, key: SwapWorkKey): boolean {
-  return useActiveSwapsStore.getState().claimStep(tradeId, key);
-}
-
-function releaseStep(tradeId: string, key: SwapWorkKey): void {
-  useActiveSwapsStore.getState().releaseStep(tradeId, key);
-}
-
-async function persistCurrentGuiSwap(
+function deferSwapRecovery(
   tradeId: string,
-  mintUrl: string,
-): Promise<void> {
-  const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
-  if (!swap) return;
-  await persistGuiSwapSession(swap, mintUrl);
+  state: DurableTradeMintRecoveryState = "mint-response-unknown",
+): void {
+  const disposition = classifyDurableTradeRecoveryDisposition(state);
+  console.warn("[swap.recovery-retained]", {
+    tradeId,
+    action: disposition.action,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2539,7 +3745,7 @@ interface SwapCtx {
   mintUrl: string;
 }
 
-function buildSwapContext(swap: ActiveSwap, mintUrl: string): SwapCtx | null {
+function buildSwapContext(swap: ActiveSwap, _mintUrl?: string): SwapCtx | null {
   if (
     !swap.role ||
     !swap.counterpartyPubkey ||
@@ -2558,8 +3764,21 @@ function buildSwapContext(swap: ActiveSwap, mintUrl: string): SwapCtx | null {
     counterpartyPubkey: swap.counterpartyPubkey,
     sellerLocktime: swap.sellerLocktime,
     buyerLocktime: swap.buyerLocktime,
-    mintUrl,
+    mintUrl: requireDurableGuiSwapMint(swap),
   };
+}
+
+function swapMintUrl(swap: ActiveSwap, fallback: string): string {
+  return normalizeUrl(swap.mintUrl ?? fallback);
+}
+
+function canPersistGuiSwapSession(swap: ActiveSwap): boolean {
+  return Boolean(
+    swap.role &&
+    swap.counterpartyPubkey &&
+    swap.sellerLocktime !== null &&
+    swap.buyerLocktime !== null,
+  );
 }
 
 type SendSwapMessageFn = (
