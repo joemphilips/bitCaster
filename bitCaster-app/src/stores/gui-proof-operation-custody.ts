@@ -43,11 +43,12 @@ import {
   reserveGuiNativeInputProofs,
 } from "./gui-native-proof-custody";
 import {
-  commitGuiCustodyUnitOfWork,
+  prepareGuiCustodyUnitOfWork,
   readGuiCustodyOperationSnapshot,
   readGuiCustodyNativeSnapshot,
   type GuiCustodyNativeSnapshot,
 } from "./gui-custody-unit-of-work";
+import { commitGuiDurableStorageCustodyUnitOfWork } from "./gui-durable-storage-custody-unit-of-work";
 import {
   ensureDurableSwapStorage,
   locateStoredProofs,
@@ -145,7 +146,7 @@ export async function prepareGuiProofOperationWithSessionUnderLock(
           swap.tradeId,
         )
       : undefined;
-  await commitGuiCustodyUnitOfWork({
+  const prepared = await prepareGuiCustodyUnitOfWork({
     authority,
     plan,
     snapshot,
@@ -159,6 +160,11 @@ export async function prepareGuiProofOperationWithSessionUnderLock(
       durableTradeRecovery,
     ),
     activeSessionLimit: MAX_ACTIVE_GUI_SWAP_SESSIONS,
+  });
+  await commitGuiDurableStorageCustodyUnitOfWork({
+    walletLock: lock,
+    tradeId: swap.tradeId,
+    prepared,
   });
   return nextOperation;
 }
@@ -295,7 +301,7 @@ export async function completeGuiProofOperationWithSessionUnderLock(
     resultProofs,
     durableTradeRecovery,
   );
-  await commitGuiCustodyUnitOfWork({
+  const prepared = await prepareGuiCustodyUnitOfWork({
     authority,
     plan,
     snapshot,
@@ -309,6 +315,11 @@ export async function completeGuiProofOperationWithSessionUnderLock(
       snapshot.session,
       durableTradeRecovery,
     ),
+  });
+  await commitGuiDurableStorageCustodyUnitOfWork({
+    walletLock: lock,
+    tradeId: swap.tradeId,
+    prepared,
   });
   return nextOperation;
 }
@@ -374,7 +385,7 @@ export async function markGuiProofOperationMintSubmittedWithSessionUnderLock(
     failureCode: undefined,
     updatedAt: Date.now(),
   };
-  await commitGuiCustodyUnitOfWork({
+  const prepared = await prepareGuiCustodyUnitOfWork({
     authority,
     plan,
     snapshot,
@@ -386,6 +397,11 @@ export async function markGuiProofOperationMintSubmittedWithSessionUnderLock(
       snapshot.session,
       durableTradeRecovery,
     ),
+  });
+  await commitGuiDurableStorageCustodyUnitOfWork({
+    walletLock: lock,
+    tradeId: swap.tradeId,
+    prepared,
   });
   return nextOperation;
 }

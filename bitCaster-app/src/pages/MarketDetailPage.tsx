@@ -87,11 +87,7 @@ import {
   type PendingTradeRecord,
 } from "@/stores/pendingTrades";
 import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
-import {
-  markGuiPendingSwapIntentSubmitted,
-  migrateLegacyGuiPendingSwapIntents,
-  getOrCreateGuiPendingSwapIntent,
-} from "@/stores/pending-swap-intent-db";
+import { submitAdmittedGuiPendingSwapIntents } from "@/stores/gui-pretrade-storage";
 import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import { canBackOrder } from "@bitcaster/client-sdk/tradingClient";
@@ -243,7 +239,8 @@ export function buildPendingTopUpOrderIntent(input: {
   baseAsset: string | null | undefined;
   required: number;
 }): PendingTopUpOrderIntent | null {
-  if (!input.market || !input.tradeSelection || input.tradeAmount <= 0) return null;
+  if (!input.market || !input.tradeSelection || input.tradeAmount <= 0)
+    return null;
   if (!Number.isFinite(input.required) || input.required <= 0) return null;
   return {
     marketId: input.market.id,
@@ -553,7 +550,9 @@ function applyLatestHistoryOdds(
 ): MarketDetailCore {
   if (market.type === "yesno") {
     const primary = primaryOutcomeSetId(market);
-    const yes = latestHistoryPrice(primary ? historiesByOutcomeSetId[primary] : undefined);
+    const yes = latestHistoryPrice(
+      primary ? historiesByOutcomeSetId[primary] : undefined,
+    );
     if (yes == null) return market;
     return {
       ...market,
@@ -586,7 +585,10 @@ export function liveTradeChartUpdate(
   outcomeSetId: string,
   trade: { timestamp: string; executionPrice: number; amountSubunits: number },
 ): { outcomeSetId: string; point: PricePoint } {
-  const divisibility = normalizeMarketDivisibility(market.divisibility, market.baseAsset);
+  const divisibility = normalizeMarketDivisibility(
+    market.divisibility,
+    market.baseAsset,
+  );
   const pricePercent = priceNumeratorToPercent(
     trade.executionPrice,
     divisibility,
@@ -763,9 +765,11 @@ export function marketDetailDataReducer(
         "rest",
       );
       const timeframe = action.detail.priceHistory.timeframe;
-      const historiesForMarket = next.historiesByMarketId[action.detail.id] ?? {};
+      const historiesForMarket =
+        next.historiesByMarketId[action.detail.id] ?? {};
       const historiesForTimeframe = historiesForMarket[timeframe] ?? {};
-      const sourcesForMarket = next.historySourcesByMarketId[action.detail.id] ?? {};
+      const sourcesForMarket =
+        next.historySourcesByMarketId[action.detail.id] ?? {};
       const sourcesForTimeframe = sourcesForMarket[timeframe] ?? {};
       const historyMerged = mergeHistoryUpdates(
         historiesForTimeframe,
@@ -1071,9 +1075,8 @@ export function MarketDetailPage() {
   const [pendingTopUpComment, setPendingTopUpComment] = useState<
     string | undefined
   >();
-  const [pendingTopUpIntent, setPendingTopUpIntent] = useState<
-    PendingTopUpOrderIntent | null
-  >(null);
+  const [pendingTopUpIntent, setPendingTopUpIntent] =
+    useState<PendingTopUpOrderIntent | null>(null);
   const [lazySetupComment, setLazySetupComment] = useState<
     string | undefined
   >();
@@ -1146,9 +1149,14 @@ export function MarketDetailPage() {
       void new BitcasterEngineClient({
         baseUrl: window.location.origin,
         authorization: ({ url, method }) => generateNip98Header(url, method),
-      }).listMyOrders(id).catch((err) => {
-        console.warn("[MarketDetailPage] own-order reconciliation failed:", err);
-      });
+      })
+        .listMyOrders(id)
+        .catch((err) => {
+          console.warn(
+            "[MarketDetailPage] own-order reconciliation failed:",
+            err,
+          );
+        });
     }, 200);
     reconcileOwnOrders();
     cleanups.push(reconcileOwnOrders.cancel);
@@ -1191,7 +1199,10 @@ export function MarketDetailPage() {
           refreshLiveOrderBook();
           reconcileOwnOrders();
           void submitMakerEphemeralPubkeyFromMatch(match).catch((err) => {
-            console.warn("[MarketDetailPage] maker pubkey submission failed:", err);
+            console.warn(
+              "[MarketDetailPage] maker pubkey submission failed:",
+              err,
+            );
           });
         }),
       );
@@ -1216,10 +1227,12 @@ export function MarketDetailPage() {
           refreshLiveOrderBook();
         }),
       );
-      cleanups.push(onMarketRejoined(liveMarketId, () => {
-        refreshLiveOrderBook();
-        reconcileOwnOrders();
-      }));
+      cleanups.push(
+        onMarketRejoined(liveMarketId, () => {
+          refreshLiveOrderBook();
+          reconcileOwnOrders();
+        }),
+      );
       void joinMarket(liveMarketId).catch((err) => {
         console.warn("[MarketDetailPage] joinMarket failed:", err);
       });
@@ -1373,7 +1386,10 @@ export function MarketDetailPage() {
     };
   }, [walletReady]);
 
-  const marketDivisibility = normalizeMarketDivisibility(market?.divisibility, marketBaseAsset);
+  const marketDivisibility = normalizeMarketDivisibility(
+    market?.divisibility,
+    marketBaseAsset,
+  );
   const priceOutcomeSetId = useMemo(() => {
     if (!market) return null;
     if (tradeSelection) {
@@ -1394,7 +1410,10 @@ export function MarketDetailPage() {
   }, [market, priceOutcomeSetId]);
   const marketPrice = useMarketPrice({
     market,
-    marketId: market && priceOutcomeSetId ? outcomeSetMarketId(market.id, priceOutcomeSetId) : null,
+    marketId:
+      market && priceOutcomeSetId
+        ? outcomeSetMarketId(market.id, priceOutcomeSetId)
+        : null,
     outcomeSetId: priceOutcomeSetId,
     orderBook: priceOrderBook,
   });
@@ -1537,7 +1556,13 @@ export function MarketDetailPage() {
   ]);
 
   useEffect(() => {
-    if (!walletReady || !activeMintUrl || !market || !tradeSelection || tradeAmount <= 0) {
+    if (
+      !walletReady ||
+      !activeMintUrl ||
+      !market ||
+      !tradeSelection ||
+      tradeAmount <= 0
+    ) {
       setTradeFeasibility(null);
       return;
     }
@@ -1566,17 +1591,16 @@ export function MarketDetailPage() {
           baseAsset: market.baseAsset,
         });
         if (cancelled) return;
-        const canBack =
-          canBackOrder(
-            {
-              side: tradeSide === "Buy" ? "bid" : "ask",
-              sizeSubunits: ticket.request.amountSubunits,
-              shareFaceSubunits: marketDivisibility,
-            },
-            holdings,
-            {},
-            marketDivisibility,
-          ).canBack;
+        const canBack = canBackOrder(
+          {
+            side: tradeSide === "Buy" ? "bid" : "ask",
+            sizeSubunits: ticket.request.amountSubunits,
+            shareFaceSubunits: marketDivisibility,
+          },
+          holdings,
+          {},
+          marketDivisibility,
+        ).canBack;
         if (canBack) {
           setTradeFeasibility({ canBack: true });
           return;
@@ -1695,7 +1719,10 @@ export function MarketDetailPage() {
           amountSubunits: displaySharesToFaceSubunits(
             tradeAmount,
             latestMarket.baseAsset,
-            normalizeMarketDivisibility(latestMarket.divisibility, latestMarket.baseAsset),
+            normalizeMarketDivisibility(
+              latestMarket.divisibility,
+              latestMarket.baseAsset,
+            ),
           ),
           side: tradeSide,
           orderType,
@@ -1745,14 +1772,15 @@ export function MarketDetailPage() {
           timeInForce: ticket.request.timeInForce,
           submittedAt: Date.now(),
         });
-        for (const pending of response.pendingPubkeySubmissions ?? []) {
-          await submitPendingEphemeralPubkey({
+        await submitPendingEphemeralPubkeys(
+          (response.pendingPubkeySubmissions ?? []).map((pending) => ({
             tradeId: pending.tradeId,
             orderId: response.orderId,
             marketId: ticket.marketId,
             deadline: pending.deadline,
-          }, pendingTrade);
-        }
+          })),
+          pendingTrade,
+        );
         promoteFillsToActiveSwaps(response.fills ?? [], pendingTrade);
         addOrderSubmitNotifications({
           add: useNotificationsStore.getState().add,
@@ -2049,7 +2077,9 @@ export function MarketDetailPage() {
       });
       return;
     }
-    const balance = await getBalance(activeMintUrl, { baseAsset: intent.baseAsset });
+    const balance = await getBalance(activeMintUrl, {
+      baseAsset: intent.baseAsset,
+    });
     if (balance < intent.required) {
       setTradeSubmitStatus({
         kind: "error",
@@ -2076,41 +2106,44 @@ export function MarketDetailPage() {
     setTopUpStage("overlay");
   }, []);
 
-  const handleTradingPanelTopUp = useCallback((comment?: string) => {
-    if (!market || !tradeSelection || tradeAmount <= 0) return;
-    setBalanceAtCheck(0);
-    const required = tradeFaceAmountSubunits;
-    const baseAsset = marketBaseAsset;
-    setPendingTopUpComment(comment?.trim() || undefined);
-    setPendingTopUpIntent(
-      buildPendingTopUpOrderIntent({
-        market,
-        tradeSelection,
-        tradeAmount,
-        tradeSide,
-        orderType,
-        limitPrice,
-        comment,
-        baseAsset,
+  const handleTradingPanelTopUp = useCallback(
+    (comment?: string) => {
+      if (!market || !tradeSelection || tradeAmount <= 0) return;
+      setBalanceAtCheck(0);
+      const required = tradeFaceAmountSubunits;
+      const baseAsset = marketBaseAsset;
+      setPendingTopUpComment(comment?.trim() || undefined);
+      setPendingTopUpIntent(
+        buildPendingTopUpOrderIntent({
+          market,
+          tradeSelection,
+          tradeAmount,
+          tradeSide,
+          orderType,
+          limitPrice,
+          comment,
+          baseAsset,
+          required: Math.max(required, 1),
+        }),
+      );
+      setTopUpReason({
+        kind: "collateral",
         required: Math.max(required, 1),
-      }),
-    );
-    setTopUpReason({
-      kind: "collateral",
-      required: Math.max(required, 1),
-      baseAsset,
-    });
-    setTopUpStage("overlay");
-  }, [
-    limitPrice,
-    market,
-    marketBaseAsset,
-    orderType,
-    tradeAmount,
-    tradeFaceAmountSubunits,
-    tradeSelection,
-    tradeSide,
-  ]);
+        baseAsset,
+      });
+      setTopUpStage("overlay");
+    },
+    [
+      limitPrice,
+      market,
+      marketBaseAsset,
+      orderType,
+      tradeAmount,
+      tradeFaceAmountSubunits,
+      tradeSelection,
+      tradeSide,
+    ],
+  );
 
   const handleRelatedMarketClick = useCallback(
     (marketId: string) => {
@@ -2273,43 +2306,45 @@ export function MarketDetailPage() {
   );
 }
 
-async function submitMakerEphemeralPubkeyFromMatch(match: Matched): Promise<void> {
+async function submitMakerEphemeralPubkeyFromMatch(
+  match: Matched,
+): Promise<void> {
   const pendingState = usePendingPubkeySubmissionsStore.getState();
   if (pendingState.byTradeId[match.tradeId]) return;
 
   const restingMaker = getCurrentGuiPendingTrade(match.makerOrderId);
   if (!restingMaker) return;
 
-  await submitPendingEphemeralPubkey({
-    tradeId: match.tradeId,
-    orderId: match.makerOrderId,
-    marketId: restingMaker.marketId,
-    deadline: match.deadline,
-  }, restingMaker);
+  await submitPendingEphemeralPubkeys(
+    [
+      {
+        tradeId: match.tradeId,
+        orderId: match.makerOrderId,
+        marketId: restingMaker.marketId,
+        deadline: match.deadline,
+      },
+    ],
+    restingMaker,
+  );
 }
 
-async function submitPendingEphemeralPubkey(
-  input: {
+async function submitPendingEphemeralPubkeys(
+  inputs: readonly {
     tradeId: string;
     orderId: string;
     marketId: string;
     deadline: string;
-  },
+  }[],
   pendingTrade: PendingTradeRecord,
 ): Promise<void> {
-  requireCurrentPendingTrade(input, pendingTrade);
+  for (const input of inputs) requireCurrentPendingTrade(input, pendingTrade);
+  if (inputs.length === 0) return;
   const store = usePendingPubkeySubmissionsStore.getState();
-  const migrated = await migrateLegacyGuiPendingSwapIntents();
-  if (migrated.length > 0) store.hydratePendingPubkeys(migrated);
-  let entry = store.byTradeId[input.tradeId];
-  if (!entry) {
-    entry = await getOrCreateGuiPendingSwapIntent({
-      tradeId: input.tradeId,
-      orderId: input.orderId,
-      marketId: input.marketId,
-      deadline: input.deadline,
+  const entries = await submitAdmittedGuiPendingSwapIntents(
+    inputs.map((input) => ({
+      ...input,
       create: () => {
-        const key = generateEphemeralKeyPair()
+        const key = generateEphemeralKeyPair();
         return {
           tradeId: input.tradeId,
           orderId: input.orderId,
@@ -2318,21 +2353,19 @@ async function submitPendingEphemeralPubkey(
           privkey: key.privkey,
           deadline: input.deadline,
           submitted: false,
-        }
+        };
       },
-    })
-    store.addPendingPubkey(entry);
-  }
-  if (entry.submitted) return;
-
-  requireCurrentPendingTrade(input, pendingTrade);
-  await submitEphemeralPubkey(
-    input.tradeId,
-    entry.pubkey,
-    conditionIdFromMarketId(input.marketId),
+    })),
+    async (entry) => {
+      requireCurrentPendingTrade(entry, pendingTrade);
+      await submitEphemeralPubkey(
+        entry.tradeId,
+        entry.pubkey,
+        conditionIdFromMarketId(entry.marketId),
+      );
+    },
   );
-  await markGuiPendingSwapIntentSubmitted(input.tradeId);
-  usePendingPubkeySubmissionsStore.getState().markSubmitted(input.tradeId);
+  for (const entry of entries) store.addPendingPubkey(entry);
 }
 
 function requireCurrentPendingTrade(

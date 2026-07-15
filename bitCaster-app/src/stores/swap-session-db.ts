@@ -12,9 +12,10 @@ import {
   MAX_ACTIVE_GUI_SWAP_SESSIONS,
 } from "./gui-swap-session-record";
 import {
-  commitGuiCustodyUnitOfWork,
+  prepareGuiCustodyUnitOfWork,
   readGuiCustodyNativeSnapshot,
 } from "./gui-custody-unit-of-work";
+import { commitGuiDurableStorageCustodyUnitOfWork } from "./gui-durable-storage-custody-unit-of-work";
 import { ensureDurableSwapStorage } from "./proof-db";
 import type { GuiWalletLockContext } from "./gui-wallet-lock";
 
@@ -31,7 +32,6 @@ export {
   loadGuiDurableTradeSessionUnderLock,
   recordGuiRecoveredProofOperationOutputsUnderLock,
   recoverGuiDurableTradeSession,
-  removeGuiSwapSessionUnderLock,
   type GuiDurableRecoveryDatabase,
   type GuiDurableTradeRecoveryInput,
 } from "./gui-durable-trade-recovery";
@@ -68,17 +68,23 @@ export async function persistGuiSwapSessionUnderLock(
     { scope: authority.scope, owner: authority.owner, operationIds: [] },
     () => undefined,
   );
-  await commitGuiCustodyUnitOfWork({
+  const nextSession = createGuiSwapSessionRecord(
+    swap,
+    session,
+    context.walletId,
+    snapshot.session,
+  );
+  const prepared = await prepareGuiCustodyUnitOfWork({
     authority,
     plan,
     snapshot,
-    nextSession: createGuiSwapSessionRecord(
-      swap,
-      session,
-      context.walletId,
-      snapshot.session,
-    ),
+    nextSession,
     activeSessionLimit: MAX_ACTIVE_GUI_SWAP_SESSIONS,
+  });
+  await commitGuiDurableStorageCustodyUnitOfWork({
+    walletLock: lock,
+    tradeId: swap.tradeId,
+    prepared,
   });
 }
 

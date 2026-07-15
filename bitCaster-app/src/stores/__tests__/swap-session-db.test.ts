@@ -46,6 +46,57 @@ function cloneSwapSessionRow(
   return clone;
 }
 
+interface MockGuiCustodyUnitOfWork {
+  plan: { result: unknown };
+  snapshot: { session?: unknown };
+  nextOperation?: { operationId: string };
+  deleteProofs?: Array<{ secret: string }>;
+  nextProofs?: Array<{ secret: string }>;
+  nextSession?: { tradeId: string; active: number };
+  activeSessionLimit?: number;
+}
+
+async function commitMockGuiCustodyUnitOfWork(
+  input: MockGuiCustodyUnitOfWork,
+): Promise<unknown> {
+  if (
+    input.activeSessionLimit !== undefined &&
+    input.snapshot.session === undefined &&
+    input.nextSession?.active === 1 &&
+    [...rows.values()].filter((row) => row.active !== 0).length >=
+      input.activeSessionLimit
+  ) {
+    throw new Error("Durable swap session capacity is exhausted");
+  }
+  if (input.nextOperation) {
+    proofOperations.set(
+      input.nextOperation.operationId,
+      structuredClone(input.nextOperation) as Record<string, unknown>,
+    );
+  }
+  for (const proof of input.deleteProofs ?? []) {
+    nativeProofs.delete(proof.secret);
+  }
+  for (const proof of input.nextProofs ?? []) {
+    nativeProofs.set(
+      proof.secret,
+      structuredClone(proof) as Record<string, unknown>,
+    );
+  }
+  if (input.nextSession) {
+    rows.set(
+      input.nextSession.tradeId,
+      cloneSwapSessionRow(
+        input.nextSession as { adapterState?: ActiveSwap } & Record<
+          string,
+          unknown
+        >,
+      ),
+    );
+  }
+  return input.plan.result;
+}
+
 vi.mock("../gui-custody-authority", () => {
   const transaction = () => ({
     getOperation: (operationId: string) =>
@@ -221,52 +272,14 @@ vi.mock("../gui-custody-unit-of-work", () => ({
       session: tradeId === null ? undefined : rows.get(tradeId),
     };
   },
-  commitGuiCustodyUnitOfWork: async (input: {
-    plan: { result: unknown };
-    snapshot: { session?: unknown };
-    nextOperation?: { operationId: string };
-    deleteProofs?: Array<{ secret: string }>;
-    nextProofs?: Array<{ secret: string }>;
-    nextSession?: { tradeId: string; active: number };
-    activeSessionLimit?: number;
-  }) => {
-    if (
-      input.activeSessionLimit !== undefined &&
-      input.snapshot.session === undefined &&
-      input.nextSession?.active === 1 &&
-      [...rows.values()].filter((row) => row.active !== 0).length >=
-        input.activeSessionLimit
-    ) {
-      throw new Error("Durable swap session capacity is exhausted");
-    }
-    if (input.nextOperation) {
-      proofOperations.set(
-        input.nextOperation.operationId,
-        structuredClone(input.nextOperation) as Record<string, unknown>,
-      );
-    }
-    for (const proof of input.deleteProofs ?? []) {
-      nativeProofs.delete(proof.secret);
-    }
-    for (const proof of input.nextProofs ?? []) {
-      nativeProofs.set(
-        proof.secret,
-        structuredClone(proof) as Record<string, unknown>,
-      );
-    }
-    if (input.nextSession) {
-      rows.set(
-        input.nextSession.tradeId,
-        cloneSwapSessionRow(
-          input.nextSession as { adapterState?: ActiveSwap } & Record<
-            string,
-            unknown
-          >,
-        ),
-      );
-    }
-    return input.plan.result;
-  },
+  prepareGuiCustodyUnitOfWork: async (input: MockGuiCustodyUnitOfWork) => input,
+  commitGuiCustodyUnitOfWork: commitMockGuiCustodyUnitOfWork,
+}));
+
+vi.mock("../gui-durable-storage-custody-unit-of-work", () => ({
+  commitGuiDurableStorageCustodyUnitOfWork: async (input: {
+    prepared: MockGuiCustodyUnitOfWork;
+  }) => commitMockGuiCustodyUnitOfWork(input.prepared),
 }));
 
 vi.mock("../proof-db", () => ({
@@ -381,7 +394,6 @@ import {
   recoverGuiDurableTradeSession as recoverGuiDurableTradeSessionUnlocked,
   recordGuiRecoveredProofOperationOutputsUnderLock,
   persistGuiSwapSessionUnderLock,
-  removeGuiSwapSessionUnderLock,
   withGuiSwapSessionOwnership,
   type GuiDurableTradeRecoveryInput,
 } from "../swap-session-db";
@@ -493,12 +505,6 @@ async function persistGuiSwapSession(
 ): Promise<void> {
   await withGuiSwapSessionOwnership(active.tradeId, (lock) =>
     persistGuiSwapSessionUnderLock(lock, active, mintUrl),
-  );
-}
-
-async function removeGuiSwapSession(tradeId: string): Promise<void> {
-  await withGuiSwapSessionOwnership(tradeId, (lock) =>
-    removeGuiSwapSessionUnderLock(lock, tradeId),
   );
 }
 
@@ -990,7 +996,6 @@ describe("GUI durable swap session repository", () => {
       "https://mint.example",
     );
     await expect(loadRecoverableGuiSwapSessions()).resolves.toEqual([]);
-    await removeGuiSwapSession("trade-001");
     expect(rows.get("trade-001")).toMatchObject({ active: 0 });
   });
 

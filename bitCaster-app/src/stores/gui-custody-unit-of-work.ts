@@ -1,7 +1,8 @@
 import Dexie from "dexie";
 import type { Proof } from "@cashu/cashu-ts";
+import type { DurableStoragePlannedArtifact } from "@bitcaster/client-sdk/durableStorageAdmission";
 import type { DexieDurableCustodyPlan } from "./durable-custody-transaction-plan";
-import { sameValue } from "./durable-custody-dexie-model";
+import { sameValue, scopeRow } from "./durable-custody-dexie-model";
 import type { GuiCustodyAuthority } from "./gui-custody-authority";
 import {
   guiSwapSessionIntegrityError,
@@ -25,6 +26,12 @@ import {
   requireWalletActivityRow,
   type WalletActivityRow,
 } from "./wallet-activity-projection";
+import {
+  assertGuiDurableStoragePlannedArtifact,
+  createGuiDurableStorageRowArtifact,
+  guiDurableStorageArtifactId,
+} from "./gui-durable-storage-artifacts";
+import { requireGuiDexieWriteTransaction } from "./gui-dexie-transaction";
 
 export interface GuiCustodyNativeSnapshot {
   walletId: string;
@@ -57,6 +64,17 @@ export interface PreparedGuiCustodyUnitOfWork<T> {
   readonly [PREPARED_GUI_CUSTODY_RESULT]: T;
 }
 
+export interface PreparedGuiCustodyArtifactWriteSet {
+  readonly walletId: string;
+  readonly tradeId: string;
+  readonly previousSession: SwapSessionRecord | undefined;
+  readonly nextSession: SwapSessionRecord | undefined;
+  readonly retainedContextArtifacts: readonly DurableStoragePlannedArtifact[];
+  readonly postImageArtifacts: readonly DurableStoragePlannedArtifact[];
+  readonly deletedArtifactIds: readonly string[];
+  readonly database: BitcasterDB;
+}
+
 interface PreparedGuiCustodyState<T> {
   authority: GuiCustodyAuthority;
   plan: DexieDurableCustodyPlan<T>;
@@ -74,6 +92,7 @@ const preparedGuiCustodyUnits = new WeakMap<
   object,
   PreparedGuiCustodyState<unknown>
 >();
+const preparedGuiCustodyArtifactWriteSets = new WeakSet<object>();
 
 export async function readGuiCustodyNativeSnapshot(
   operationId: string | null,
@@ -254,28 +273,240 @@ export function guiCustodyUnitOfWorkTables(
   ] as const;
 }
 
-export async function commitPreparedGuiCustodyUnitOfWorkInCurrentTransaction<T>(
+export function preparedGuiCustodyUnitOfWorkTables<T>(
+  prepared: PreparedGuiCustodyUnitOfWork<T>,
+) {
+  const state = requirePreparedGuiCustodyState(prepared);
+  return guiCustodyUnitOfWorkTables(state.authority, state.database);
+}
+
+export function describePreparedGuiCustodyArtifactWriteSet<T>(
+  prepared: PreparedGuiCustodyUnitOfWork<T>,
+): PreparedGuiCustodyArtifactWriteSet {
+  const state = requirePreparedGuiCustodyState(prepared);
+  if (state.snapshot.tradeId === null) {
+    throw new Error("GUI storage custody unit of work requires a trade");
+  }
+  if (state.nextActivity) {
+    throw new Error("GUI trade storage accounting cannot adopt activity rows");
+  }
+  const writeSet = Object.freeze({
+    walletId: prepared.walletId,
+    tradeId: state.snapshot.tradeId,
+    previousSession: cloneOptionalSession(state.snapshot.session),
+    nextSession: cloneOptionalSession(state.nextSession),
+    retainedContextArtifacts: freezeArtifacts([
+      createGuiDurableStorageRowArtifact({
+        table: "custodyScopes",
+        key: state.plan.snapshot.scope.scopeId,
+        artifactRole: "transaction-only-retained",
+        row: scopeRow(state.plan.snapshot.scope),
+      }),
+    ]),
+    postImageArtifacts: freezeArtifacts(preparedPostImageArtifacts(state)),
+    deletedArtifactIds: freezeIds(preparedDeletedArtifactIds(state)),
+    database: state.database,
+  });
+  preparedGuiCustodyArtifactWriteSets.add(writeSet);
+  return writeSet;
+}
+
+export function requirePreparedGuiCustodyArtifactWriteSet(
+  value: PreparedGuiCustodyArtifactWriteSet,
+): PreparedGuiCustodyArtifactWriteSet {
+  if (!preparedGuiCustodyArtifactWriteSets.has(value)) {
+    throw new Error("GUI custody artifact write set was not prepared");
+  }
+  return value;
+}
+
+export function commitPreparedGuiCustodyUnitOfWorkInCurrentTransaction<T>(
   prepared: PreparedGuiCustodyUnitOfWork<T>,
 ): Promise<T> {
+  try {
+    return commitPreparedState(prepared);
+  } catch (error) {
+    return Dexie.Promise.reject(error);
+  }
+}
+
+function commitPreparedState<T>(
+  prepared: PreparedGuiCustodyUnitOfWork<T>,
+): Promise<T> {
+  const state = requirePreparedGuiCustodyState(prepared);
+  const { database } = state;
+  requireCurrentWriteTransaction(database);
+  return Dexie.Promise.resolve(
+    assertNativeSnapshot(database, state.snapshot, prepared.walletId),
+  )
+    .then(() => {
+      requireCurrentWriteTransaction(database);
+      return assertSessionCapacity(database, state, prepared.walletId);
+    })
+    .then(() => {
+      requireCurrentWriteTransaction(database);
+      return state.authority.store.commitPreparedTransactionInCurrentTransaction(
+        state.plan,
+      );
+    })
+    .then(() => {
+      requireCurrentWriteTransaction(database);
+      return writePreparedNativeRows(state);
+    })
+    .then(() => {
+      requireCurrentWriteTransaction(database);
+      return state.plan.result;
+    });
+}
+
+function requirePreparedGuiCustodyState<T>(
+  prepared: PreparedGuiCustodyUnitOfWork<T>,
+): PreparedGuiCustodyState<T> {
   const state = preparedGuiCustodyUnits.get(prepared) as
     | PreparedGuiCustodyState<T>
     | undefined;
   if (!state || state.authority.scope.walletId !== prepared.walletId) {
     throw new Error("GUI custody unit of work was not prepared");
   }
-  const { database } = state;
-  requireCurrentWriteTransaction(database);
-  await assertNativeSnapshot(database, state.snapshot, prepared.walletId);
-  requireCurrentWriteTransaction(database);
-  await assertSessionCapacity(database, state, prepared.walletId);
-  requireCurrentWriteTransaction(database);
-  await state.authority.store.commitPreparedTransactionInCurrentTransaction(
-    state.plan,
+  return state;
+}
+
+function preparedPostImageArtifacts(
+  state: PreparedGuiCustodyState<unknown>,
+): DurableStoragePlannedArtifact[] {
+  return [
+    ...preparedCustodyPostImageArtifacts(state),
+    ...preparedNativePostImageArtifacts(state),
+  ];
+}
+
+function preparedCustodyPostImageArtifacts(
+  state: PreparedGuiCustodyState<unknown>,
+): DurableStoragePlannedArtifact[] {
+  const transaction = state.plan.transaction;
+  const scopeId = state.plan.snapshot.scope.scopeId;
+  return [
+    createGuiDurableStorageRowArtifact({
+      table: "custodyScopeStates",
+      key: scopeId,
+      artifactRole: "transaction-only-retained",
+      row: { scopeId, state: transaction.scopeState() },
+    }),
+    ...transaction.operationRows().map((row) =>
+      createGuiDurableStorageRowArtifact({
+        table: "custodyOperations",
+        key: row.operationId,
+        artifactRole: "operation-overhead",
+        row,
+      }),
+    ),
+    ...transaction.linkRows().map((row) =>
+      createGuiDurableStorageRowArtifact({
+        table: "custodySessionLinks",
+        key: row.operationId,
+        artifactRole: "operation-overhead",
+        row,
+      }),
+    ),
+    ...transaction.reservationRows().map((row) =>
+      createGuiDurableStorageRowArtifact({
+        table: "custodyProofReservations",
+        key: row.proofId,
+        artifactRole: "operation-overhead",
+        row,
+      }),
+    ),
+  ];
+}
+
+function preparedNativePostImageArtifacts(
+  state: PreparedGuiCustodyState<unknown>,
+): DurableStoragePlannedArtifact[] {
+  return [
+    ...(state.nextOperation
+      ? [
+          createGuiDurableStorageRowArtifact({
+            table: "proofOperations",
+            key: [
+              state.nextOperation.walletId,
+              state.nextOperation.operationId,
+            ],
+            artifactRole: "exact-operation",
+            row: state.nextOperation,
+          }),
+        ]
+      : []),
+    ...(state.nextProofs ?? []).map((row) =>
+      createGuiDurableStorageRowArtifact({
+        table: "proofs",
+        key: row.proofId,
+        artifactRole: "proof-post-image",
+        row,
+      }),
+    ),
+    ...(state.nextSession
+      ? [
+          createGuiDurableStorageRowArtifact({
+            table: "swapSessions",
+            key: state.nextSession.tradeId,
+            artifactRole: "trade-session",
+            row: state.nextSession,
+          }),
+        ]
+      : []),
+  ];
+}
+
+function preparedDeletedArtifactIds(
+  state: PreparedGuiCustodyState<unknown>,
+): string[] {
+  const transaction = state.plan.transaction;
+  const nextReservations = new Set(
+    transaction.reservationRows().map(({ proofId }) => proofId),
   );
-  requireCurrentWriteTransaction(database);
-  await writePreparedNativeRows(state);
-  requireCurrentWriteTransaction(database);
-  return state.plan.result;
+  const deletedReservations = transaction
+    .reservationOperationIds()
+    .flatMap(
+      (operationId) =>
+        state.plan.snapshot.reservationsByOperation.get(operationId) ?? [],
+    )
+    .filter(({ proofId }) => !nextReservations.has(proofId))
+    .map(({ proofId }) =>
+      guiDurableStorageArtifactId("custodyProofReservations", proofId),
+    );
+  return [
+    ...deletedReservations,
+    ...state.deleteProofIds.map((proofId) =>
+      guiDurableStorageArtifactId("proofs", proofId),
+    ),
+  ];
+}
+
+function freezeIds(values: readonly string[]): readonly string[] {
+  return Object.freeze([...new Set(values)].sort());
+}
+
+function freezeArtifacts(
+  values: readonly DurableStoragePlannedArtifact[],
+): readonly DurableStoragePlannedArtifact[] {
+  const ids = values.map(({ artifactId }) => artifactId);
+  if (new Set(ids).size !== ids.length) {
+    throw new Error("GUI custody artifact write set contains duplicates");
+  }
+  return Object.freeze(
+    values
+      .map((artifact) => {
+        assertGuiDurableStoragePlannedArtifact(artifact);
+        return Object.freeze({ ...artifact });
+      })
+      .sort((left, right) => left.artifactId.localeCompare(right.artifactId)),
+  );
+}
+
+function cloneOptionalSession(
+  value: SwapSessionRecord | undefined,
+): SwapSessionRecord | undefined {
+  return value ? structuredClone(value) : undefined;
 }
 
 export async function commitGuiCustodyUnitOfWork<T>(
@@ -318,14 +549,10 @@ async function writePreparedNativeRows<T>(
 }
 
 function requireCurrentWriteTransaction(database: BitcasterDB): void {
-  const transaction = Dexie.currentTransaction;
-  if (
-    !transaction ||
-    transaction.db !== database ||
-    transaction.mode !== "readwrite"
-  ) {
-    throw new Error("GUI custody commit requires an active write transaction");
-  }
+  requireGuiDexieWriteTransaction(
+    database,
+    "GUI custody commit requires an active write transaction",
+  );
 }
 
 async function requireSnapshotSessionIntegrity(

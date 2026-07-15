@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import {
   assertMarketAcceptsOrders,
   booksByOutcomeSetFromDetail,
@@ -17,9 +23,19 @@ import {
   shouldPromptForFundedActionBackup,
 } from "@/pages/MarketDetailPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
-import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
+import {
+  fetchMarketDetail,
+  fetchOrderBook,
+  submitEphemeralPubkey,
+  submitOrder,
+} from "@/lib/markets";
 import { onOrderBookUpdated, onTradeExecuted } from "@/lib/marketHub";
-import type { MarketStatusChanged, Matched, OrderBookSnapshot, TradeExecuted } from "@/lib/marketHub";
+import type {
+  MarketStatusChanged,
+  Matched,
+  OrderBookSnapshot,
+  TradeExecuted,
+} from "@/lib/marketHub";
 import type {
   CategoricalMarketDetail,
   Comment,
@@ -52,6 +68,8 @@ const mocks = vi.hoisted(() => ({
       data: history.data.slice(-1000),
     }),
   ),
+  submitAdmittedGuiPendingSwapIntents: vi.fn(),
+  pendingTrades: new Map<string, Record<string, unknown>>(),
 }));
 
 vi.mock("react-router", () => ({
@@ -64,7 +82,13 @@ vi.mock("@/components/market-detail/PriceChart", () => ({
 }));
 
 vi.mock("@/components/market-detail/TopUpOverlay", () => ({
-  TopUpOverlay: ({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) => (
+  TopUpOverlay: ({
+    onSuccess,
+    onCancel,
+  }: {
+    onSuccess: () => void;
+    onCancel: () => void;
+  }) => (
     <div role="dialog" aria-label="Top Up Wallet">
       <h2>Top Up Wallet</h2>
       <input data-testid="top-up-amount-input" />
@@ -91,19 +115,23 @@ vi.mock("@/lib/marketHub", () => ({
   joinMarket: vi.fn().mockResolvedValue(undefined),
   leaveMarket: vi.fn().mockResolvedValue(undefined),
   onMarketRejoined: vi.fn(() => () => {}),
-  onOrderBookUpdated: vi.fn((marketId: string, handler: (snapshot: OrderBookSnapshot) => void) => {
-    mocks.orderBookHandlers.set(marketId, handler);
-    return () => mocks.orderBookHandlers.delete(marketId);
-  }),
+  onOrderBookUpdated: vi.fn(
+    (marketId: string, handler: (snapshot: OrderBookSnapshot) => void) => {
+      mocks.orderBookHandlers.set(marketId, handler);
+      return () => mocks.orderBookHandlers.delete(marketId);
+    },
+  ),
   onMatched: vi.fn((marketId: string, handler: (match: Matched) => void) => {
     mocks.matchedHandlers.set(marketId, handler);
     return () => mocks.matchedHandlers.delete(marketId);
   }),
   onOrderCancelled: vi.fn(() => () => {}),
-  onTradeExecuted: vi.fn((marketId: string, handler: (trade: TradeExecuted) => void) => {
-    mocks.tradeExecutedHandlers.set(marketId, handler);
-    return () => mocks.tradeExecutedHandlers.delete(marketId);
-  }),
+  onTradeExecuted: vi.fn(
+    (marketId: string, handler: (trade: TradeExecuted) => void) => {
+      mocks.tradeExecutedHandlers.set(marketId, handler);
+      return () => mocks.tradeExecutedHandlers.delete(marketId);
+    },
+  ),
 }));
 
 vi.mock("@/lib/markets", () => ({
@@ -116,10 +144,14 @@ vi.mock("@/lib/markets", () => ({
   }),
   fetchMarketDetail: vi.fn(),
   fetchMarketComments: vi.fn().mockResolvedValue({ comments: [] }),
-  fetchMarketPriceHistory: vi.fn().mockResolvedValue({ data: [], timeframe: "7d" }),
+  fetchMarketPriceHistory: vi
+    .fn()
+    .mockResolvedValue({ data: [], timeframe: "7d" }),
   fetchOrderBook: vi.fn(),
   generateNip98Header: vi.fn(),
-  getParticipationScore: vi.fn().mockResolvedValue({ enabled: false, matchDebitScore: 0 }),
+  getParticipationScore: vi
+    .fn()
+    .mockResolvedValue({ enabled: false, matchDebitScore: 0 }),
   mapSnapshotToOrderBook: (snapshot: OrderBookSnapshot) => ({
     bids: snapshot.bids.map((level) => ({
       price: level.price,
@@ -154,9 +186,31 @@ vi.mock("@/lib/walletHoldings", () => ({
   buildIndexedDbTokenHoldings: mocks.buildIndexedDbTokenHoldings,
 }));
 
+vi.mock("@/stores/gui-pretrade-storage", () => ({
+  submitAdmittedGuiPendingSwapIntents:
+    mocks.submitAdmittedGuiPendingSwapIntents,
+}));
+
+vi.mock("@/stores/pendingTrades", () => ({
+  getCurrentGuiPendingTrade: (orderId: string) =>
+    mocks.pendingTrades.get(orderId),
+  isCurrentGuiPendingTrade: (record: { orderId: string }) =>
+    mocks.pendingTrades.get(record.orderId) === record,
+  persistGuiPendingTrade: async (trade: { orderId: string }) => {
+    const record = {
+      ...trade,
+      walletId: "aa".repeat(32),
+      recoveryAttempt: 0,
+    };
+    mocks.pendingTrades.set(trade.orderId, record);
+    return record;
+  },
+}));
+
 vi.mock("@/stores/wallet", () => {
-  const useWalletStore = (selector: (state: typeof mocks.walletState) => unknown) =>
-    selector(mocks.walletState);
+  const useWalletStore = (
+    selector: (state: typeof mocks.walletState) => unknown,
+  ) => selector(mocks.walletState);
   useWalletStore.getState = () => mocks.walletState;
   return {
     getBalance: mocks.getBalance,
@@ -166,8 +220,9 @@ vi.mock("@/stores/wallet", () => {
 });
 
 vi.mock("@/stores/settings", () => ({
-  useSettingsStore: (selector: (state: typeof mocks.settingsState) => unknown) =>
-    selector(mocks.settingsState),
+  useSettingsStore: (
+    selector: (state: typeof mocks.settingsState) => unknown,
+  ) => selector(mocks.settingsState),
 }));
 
 const emptyBook: OrderBook = { bids: [], asks: [], spread: 0 };
@@ -394,10 +449,24 @@ describe("MarketDetailPage live market status", () => {
     mocks.walletState.mints = [];
     mocks.settingsState.nostrSignerMode = "none";
     mocks.settingsState.signerBackupState = "confirmed";
+    mocks.submitAdmittedGuiPendingSwapIntents.mockReset();
+    mocks.pendingTrades.clear();
+    mocks.submitAdmittedGuiPendingSwapIntents.mockImplementation(
+      async (
+        requests: Array<{ create: () => Record<string, unknown> }>,
+        submit: (intent: Record<string, unknown>) => Promise<void>,
+      ) => {
+        const intents = requests.map((request) => request.create());
+        for (const intent of intents) await submit(intent);
+        return intents.map((intent) => ({ ...intent, submitted: true }));
+      },
+    );
   });
 
   it("applies a MarketStatusChanged close push to the detail page and disables trading", async () => {
-    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
+    vi.mocked(fetchMarketDetail).mockResolvedValue(
+      yesNoMarket({ state: "open" }),
+    );
     vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
 
     render(<MarketDetailPage />);
@@ -408,8 +477,12 @@ describe("MarketDetailPage live market status", () => {
       target: { value: "1" },
     });
 
-    await waitFor(() => expect(mocks.liveStatusHandlers.length).toBeGreaterThan(0));
-    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "closed" }));
+    await waitFor(() =>
+      expect(mocks.liveStatusHandlers.length).toBeGreaterThan(0),
+    );
+    vi.mocked(fetchMarketDetail).mockResolvedValue(
+      yesNoMarket({ state: "closed" }),
+    );
     act(() => {
       mocks.liveStatusHandlers.at(-1)?.({
         conditionId: "condition-yesno",
@@ -451,8 +524,14 @@ describe("MarketDetailPage live market status", () => {
 
     await screen.findByRole("heading", { name: "Will it happen?" });
     await waitFor(() => {
-      expect(onTradeExecuted).toHaveBeenCalledWith("condition-yesno-Yes", expect.any(Function));
-      expect(onOrderBookUpdated).toHaveBeenCalledWith("condition-yesno-Yes", expect.any(Function));
+      expect(onTradeExecuted).toHaveBeenCalledWith(
+        "condition-yesno-Yes",
+        expect.any(Function),
+      );
+      expect(onOrderBookUpdated).toHaveBeenCalledWith(
+        "condition-yesno-Yes",
+        expect.any(Function),
+      );
     });
     vi.mocked(fetchOrderBook).mockClear();
 
@@ -493,7 +572,9 @@ describe("MarketDetailPage live market status", () => {
       baseUnitProofs: 500,
       outcomeProofsByOutcomeSetId: {},
     });
-    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
+    vi.mocked(fetchMarketDetail).mockResolvedValue(
+      yesNoMarket({ state: "open" }),
+    );
     vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
 
     render(<MarketDetailPage />);
@@ -526,7 +607,9 @@ describe("MarketDetailPage live market status", () => {
       baseUnitProofs: 100,
       outcomeProofsByOutcomeSetId: {},
     });
-    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
+    vi.mocked(fetchMarketDetail).mockResolvedValue(
+      yesNoMarket({ state: "open" }),
+    );
     vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
 
     render(<MarketDetailPage />);
@@ -549,7 +632,9 @@ describe("MarketDetailPage live market status", () => {
     expect(panelTopUpButton).toBeDefined();
     fireEvent.click(panelTopUpButton!);
 
-    expect(await screen.findByRole("heading", { name: "Top Up Wallet" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Top Up Wallet" }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("top-up-amount-input")).toBeInTheDocument();
   });
 
@@ -593,6 +678,66 @@ describe("MarketDetailPage live market status", () => {
         timeInForce: "FAK",
       }),
     );
+  });
+
+  it("admits every returned fill in one batch before pubkey submission", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+      baseUnitProofs: 100,
+      outcomeProofsByOutcomeSetId: {},
+    });
+    const market = usdYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(40) : emptyBook,
+    );
+    vi.mocked(submitOrder).mockResolvedValue({
+      orderId: "order-batch",
+      status: "Filled",
+      remainingAmountSubunits: 0,
+      fills: [],
+      pendingPubkeySubmissions: [
+        {
+          tradeId: "trade-batch-1",
+          role: "taker",
+          fillAmount: 50,
+          deadline: "2099-01-01T00:00:00Z",
+        },
+        {
+          tradeId: "trade-batch-2",
+          role: "taker",
+          fillAmount: 50,
+          deadline: "2099-01-01T00:00:01Z",
+        },
+      ],
+      baseAsset: "usd",
+      divisibility: 100,
+    });
+    vi.mocked(submitEphemeralPubkey).mockResolvedValue(undefined);
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+    await waitFor(() =>
+      expect(mocks.submitAdmittedGuiPendingSwapIntents).toHaveBeenCalledTimes(
+        1,
+      ),
+    );
+    const requests =
+      mocks.submitAdmittedGuiPendingSwapIntents.mock.calls[0]?.[0];
+    expect(requests).toHaveLength(2);
+    expect(requests.map(({ tradeId }: { tradeId: string }) => tradeId)).toEqual(
+      ["trade-batch-1", "trade-batch-2"],
+    );
+    await waitFor(() => expect(submitEphemeralPubkey).toHaveBeenCalledTimes(2));
   });
 
   it("does not auto-execute a USD market order when post-top-up balance is still insufficient", async () => {
@@ -728,7 +873,10 @@ describe("marketDetailDataReducer", () => {
       },
     });
 
-    const view = composeMarketDetail(createMarketDetailDataState(initial), "7d");
+    const view = composeMarketDetail(
+      createMarketDetailDataState(initial),
+      "7d",
+    );
 
     expect(view?.type).toBe("yesno");
     if (view?.type === "yesno") {
@@ -770,7 +918,10 @@ describe("marketDetailDataReducer", () => {
       },
     };
 
-    const view = composeMarketDetail(createMarketDetailDataState(initial), "7d");
+    const view = composeMarketDetail(
+      createMarketDetailDataState(initial),
+      "7d",
+    );
 
     expect(view?.type).toBe("categorical");
     if (view?.type === "categorical") {

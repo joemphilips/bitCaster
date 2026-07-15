@@ -14,6 +14,7 @@ import {
   addDurableWalletProofTransitionMetadata,
   createDurableWalletProofTransition,
 } from "@bitcaster/client-sdk/durableWalletProofTransition";
+import type { DurableStorageAccountingState } from "@bitcaster/client-sdk/durableStorageAdmission";
 import {
   BitcasterDB,
   currentGuiWalletId,
@@ -44,6 +45,18 @@ import {
   salvageGuiTradeRefund,
 } from "../gui-trade-refund-recovery";
 import { canonicalSecpPoint } from "../../test/cashu-proof-fixtures";
+import { persistGuiPendingTrade } from "../pendingTrades";
+import { getOrCreateAdmittedGuiPendingSwapIntents } from "../gui-pretrade-storage";
+import { acquireGuiCustodyAuthority } from "../gui-custody-authority";
+import {
+  describePreparedGuiCustodyArtifactWriteSet,
+  prepareGuiCustodyUnitOfWork,
+  readGuiCustodyNativeSnapshot,
+} from "../gui-custody-unit-of-work";
+import {
+  createGuiSwapSessionRecord,
+  durableSessionFromActiveSwap,
+} from "../gui-swap-session-record";
 
 const KEYSET_ID = `00${"22".repeat(7)}`;
 const PUBLIC_KEY = canonicalSecpPoint(1);
@@ -151,6 +164,62 @@ function swap(): ActiveSwap {
     error: null,
     startedAt: 1,
   };
+}
+
+async function admitSwap(active: ActiveSwap): Promise<void> {
+  await persistGuiPendingTrade({
+    orderId: active.orderId!,
+    marketId: active.marketId,
+    clientOrderId: `client-${active.orderId}`,
+    submittedAt: 1,
+    baseAsset: active.baseAsset ?? "sat",
+    divisibility: active.divisibility ?? 10_000,
+    side: active.side ?? "Sell",
+    tokenSide: active.tokenSide ?? "Outcome",
+    priceSubunits: active.priceSubunits ?? 5_000,
+    amountSubunits: active.amountSubunits ?? 10_000,
+    timeInForce: active.timeInForce ?? "GTC",
+  });
+  await getOrCreateAdmittedGuiPendingSwapIntents([
+    {
+      tradeId: active.tradeId,
+      orderId: active.orderId!,
+      marketId: active.marketId,
+      deadline: new Date(2_000_000_000_000).toISOString(),
+      create: () => ({
+        tradeId: active.tradeId,
+        orderId: active.orderId!,
+        marketId: active.marketId,
+        pubkey: active.ephemeralPubkeyHex,
+        privkey: active.ephemeralPrivkeyHex,
+        deadline: new Date(2_000_000_000_000).toISOString(),
+        submitted: false,
+      }),
+    },
+  ]);
+}
+
+async function storedDurableStorageAccounting(): Promise<DurableStorageAccountingState> {
+  const row = await db.durableStorageAccounting.toCollection().first();
+  if (!row) throw new Error("Test durable storage accounting is missing");
+  return structuredClone(row.state);
+}
+
+function tradeSessionCommitment(
+  state: DurableStorageAccountingState,
+  tradeId: string,
+): string {
+  const reservation = state.reservations.find(
+    ({ reservationId }) => reservationId === tradeId,
+  );
+  const preTradeReservation = state.preTradeReservations.find(
+    ({ reservationId }) => reservationId === tradeId,
+  );
+  const artifact = (
+    reservation?.sharedArtifacts ?? preTradeReservation?.session?.artifacts
+  )?.find(({ artifactRole }) => artifactRole === "trade-session");
+  if (!artifact) throw new Error("Test trade-session commitment is missing");
+  return artifact.sha256;
 }
 
 function installImmediateWebLocks(): void {
@@ -353,9 +422,11 @@ describe("GUI durable recovery Dexie transaction", () => {
 
   it("globally discovers a trade operation whose session link was lost", async () => {
     const operationId = "trade-dexie/browser/orphan-lock";
+    const active = swap();
+    await admitSwap(active);
     await prepareGuiProofOperationWithSession(
       operationInput(operationId),
-      swap(),
+      active,
     );
     await db.swapSessions.delete("trade-dexie");
 
@@ -389,6 +460,234 @@ describe("GUI durable recovery Dexie transaction", () => {
     expect((await storedProofOperation(operationId))?.state).toBe("prepared");
   });
 
+  it("rolls back the first operation when reservation binding cannot commit", async () => {
+    const active = swap();
+    const operationId = `${active.tradeId}/browser/first-binding-fault`;
+    await admitSwap(active);
+    vi.spyOn(db.durableStorageAccounting, "put").mockRejectedValue(
+      new DOMException("injected quota failure", "QuotaExceededError"),
+    );
+
+    await expect(
+      prepareGuiProofOperationWithSession(operationInput(operationId), active),
+    ).rejects.toMatchObject({ name: "QuotaExceededError" });
+
+    expect(await storedProofOperation(operationId)).toBeUndefined();
+    expect(await db.swapSessions.get(active.tradeId)).toBeUndefined();
+    expect(await db.custodyOperations.count()).toBe(0);
+    expect(await db.custodySessionLinks.count()).toBe(0);
+    expect(await db.custodyProofReservations.count()).toBe(0);
+    expect((await db.swapIntents.get(active.tradeId))?.tradeId).toBe(
+      active.tradeId,
+    );
+    const accounting = await db.durableStorageAccounting.toCollection().first();
+    expect(accounting?.state.preTradeReservations).toHaveLength(1);
+    expect(accounting?.state.reservations).toHaveLength(0);
+  });
+
+  it("co-commits terminal session retirement with its storage accounting", async () => {
+    const active = swap();
+    await admitSwap(active);
+    await withGuiSwapSessionOwnership(active.tradeId, (lock) =>
+      persistGuiSwapSessionUnderLock(lock, active, "https://mint.example"),
+    );
+    const before = await storedDurableStorageAccounting();
+
+    await withGuiSwapSessionOwnership(active.tradeId, (lock) =>
+      persistGuiSwapSessionUnderLock(
+        lock,
+        { ...active, step: "completed" },
+        "https://mint.example",
+      ),
+    );
+
+    const terminal = await db.swapSessions.get(active.tradeId);
+    const after = await storedDurableStorageAccounting();
+    expect(terminal).toMatchObject({
+      active: 0,
+      adapterState: { step: "completed" },
+    });
+    expect(after.revision).toBe(before.revision + 1);
+    expect(tradeSessionCommitment(after, active.tradeId)).not.toBe(
+      tradeSessionCommitment(before, active.tradeId),
+    );
+  });
+
+  it("rolls back terminal session retirement when accounting cannot commit", async () => {
+    const active = swap();
+    await admitSwap(active);
+    await withGuiSwapSessionOwnership(active.tradeId, (lock) =>
+      persistGuiSwapSessionUnderLock(lock, active, "https://mint.example"),
+    );
+    const beforeSession = await db.swapSessions.get(active.tradeId);
+    const beforeAccounting = await storedDurableStorageAccounting();
+    vi.spyOn(db.durableStorageAccounting, "put").mockRejectedValue(
+      new DOMException("injected quota failure", "QuotaExceededError"),
+    );
+
+    await expect(
+      withGuiSwapSessionOwnership(active.tradeId, (lock) =>
+        persistGuiSwapSessionUnderLock(
+          lock,
+          { ...active, step: "completed" },
+          "https://mint.example",
+        ),
+      ),
+    ).rejects.toMatchObject({ name: "QuotaExceededError" });
+
+    expect(await db.swapSessions.get(active.tradeId)).toEqual(beforeSession);
+    expect(await storedDurableStorageAccounting()).toEqual(beforeAccounting);
+  });
+
+  it("rejects a same-key proof-operation post-image substitution", async () => {
+    const active = swap();
+    const operationId = `${active.tradeId}/browser/substituted-first-binding`;
+    await admitSwap(active);
+    const put = db.proofOperations.put.bind(db.proofOperations);
+    vi.spyOn(db.proofOperations, "put").mockImplementation((row) =>
+      put({ ...row, updatedAt: row.updatedAt + 1 }),
+    );
+
+    await expect(
+      prepareGuiProofOperationWithSession(operationInput(operationId), active),
+    ).rejects.toThrow("prepared write set");
+
+    expect(await storedProofOperation(operationId)).toBeUndefined();
+    expect(await db.swapSessions.get(active.tradeId)).toBeUndefined();
+    expect(await db.custodyOperations.count()).toBe(0);
+    expect((await db.swapIntents.get(active.tradeId))?.tradeId).toBe(
+      active.tradeId,
+    );
+  });
+
+  it("freezes every prepared physical artifact capability", async () => {
+    const active = swap();
+    await withGuiSwapSessionOwnership(active.tradeId, async (lock) => {
+      const authority = await acquireGuiCustodyAuthority(lock);
+      const walletId = currentGuiWalletId();
+      const snapshot = await readGuiCustodyNativeSnapshot(
+        null,
+        active.tradeId,
+        walletId,
+      );
+      const plan = await authority.store.prepareTransaction(
+        { scope: authority.scope, owner: authority.owner, operationIds: [] },
+        () => undefined,
+      );
+      const session = durableSessionFromActiveSwap(
+        active,
+        "https://mint.example",
+      );
+      if (!session) throw new Error("test durable session is incomplete");
+      const prepared = await prepareGuiCustodyUnitOfWork({
+        authority,
+        plan,
+        snapshot,
+        nextSession: createGuiSwapSessionRecord(
+          active,
+          session,
+          walletId,
+          undefined,
+        ),
+      });
+      const writeSet = describePreparedGuiCustodyArtifactWriteSet(prepared);
+      const artifact = writeSet.postImageArtifacts[0] as {
+        encodedJson: string;
+      };
+
+      expect(Object.isFrozen(artifact)).toBe(true);
+      expect(() => {
+        artifact.encodedJson = "substituted";
+      }).toThrow(TypeError);
+    });
+  });
+
+  it("rejects two completed operations that claim the same result proof", async () => {
+    const active = swap();
+    await admitSwap(active);
+    const firstId = `${active.tradeId}/browser/result-producer-one`;
+    await prepareGuiProofOperationWithSession(operationInput(firstId), active);
+    await completeGuiProofOperationWithSession(
+      firstId,
+      operationResult(),
+      active,
+      "https://mint.example",
+    );
+
+    const secondId = `${active.tradeId}/browser/result-producer-two`;
+    const second = operationInput(secondId);
+    second.inputs[0]!.secret = "66".repeat(32);
+    second.inputs[0]!.C = canonicalSecpPoint(4);
+    await db.proofs.put(
+      prepareStoredProofForWrite(
+        {
+          ...second.inputs[0]!,
+          mintUrl: second.mintUrl,
+          unit: "sat",
+        },
+        1,
+        currentGuiWalletId(),
+      ),
+    );
+    await prepareGuiProofOperationWithSession(second, active);
+
+    await expect(
+      completeGuiProofOperationWithSession(
+        secondId,
+        operationResult(),
+        active,
+        second.mintUrl,
+      ),
+    ).rejects.toThrow("produced by multiple operations");
+
+    expect((await storedProofOperation(secondId))?.state).toBe("prepared");
+    expect(await storedRow(second.inputs[0]!.secret)).toBeDefined();
+  });
+
+  it("accepts a proof produced by one operation as the next operation input", async () => {
+    const active = swap();
+    await admitSwap(active);
+    const producerId = `${active.tradeId}/browser/producer`;
+    await prepareGuiProofOperationWithSession(
+      operationInput(producerId),
+      active,
+    );
+    await completeGuiProofOperationWithSession(
+      producerId,
+      operationResult(),
+      active,
+      "https://mint.example",
+    );
+
+    const consumerId = `${active.tradeId}/browser/consumer`;
+    const consumer = operationInput(consumerId);
+    consumer.inputs = structuredClone(operationResult().keep);
+    consumer.outputs.keep![0]!.secret = "77".repeat(32);
+    await prepareGuiProofOperationWithSession(consumer, active);
+    expect((await storedRow("55".repeat(32)))?.reservedBy).toBe(consumerId);
+
+    await completeGuiProofOperationWithSession(
+      consumerId,
+      {
+        send: [],
+        keep: [
+          {
+            id: KEYSET_ID,
+            amount: Amount.from(1),
+            secret: "77".repeat(32),
+            C: canonicalSecpPoint(3),
+          },
+        ],
+      },
+      active,
+      consumer.mintUrl,
+    );
+
+    expect(await storedRow("55".repeat(32))).toBeUndefined();
+    expect(await storedRow("77".repeat(32))).toBeDefined();
+    expect((await storedProofOperation(consumerId))?.state).toBe("completed");
+  });
+
   it("does not hold the profile lock while mint authority is unresolved", async () => {
     await withSerializedWebLocks(async () => {
       let announceStarted!: () => void;
@@ -408,6 +707,7 @@ describe("GUI durable recovery Dexie transaction", () => {
         return unresolved;
       });
       const active = swap();
+      await admitSwap(active);
       useActiveSwapsStore.setState({
         byTradeId: { [active.tradeId]: active },
       });
@@ -427,6 +727,7 @@ describe("GUI durable recovery Dexie transaction", () => {
         tradeId: "trade-other",
         orderId: "order-other",
       };
+      await admitSwap(other);
       let otherCommitted = false;
       let announceOtherLock!: () => void;
       const otherLockEntered = new Promise<boolean>((resolve) => {
@@ -462,6 +763,7 @@ describe("GUI durable recovery Dexie transaction", () => {
   it("rejects a late mint-authority response after its session changed", async () => {
     await withSerializedWebLocks(async () => {
       const active = swap();
+      await admitSwap(active);
       useActiveSwapsStore.setState({
         byTradeId: { [active.tradeId]: active },
       });
@@ -527,6 +829,7 @@ describe("GUI durable recovery Dexie transaction", () => {
       sellerLocktime: locktime,
       buyerLocktime: locktime - 1,
     };
+    await admitSwap(refundSwap);
     const lockedInput = operationInput(lockedOperationId);
     lockedInput.kind = "conditional-keyset-swap";
     lockedInput.outputs = {
@@ -569,6 +872,12 @@ describe("GUI durable recovery Dexie transaction", () => {
       }),
     );
     await prepareGuiProofOperationWithSession(lockedInput, refundSwap);
+    const boundAccounting = await db.durableStorageAccounting
+      .toCollection()
+      .first();
+    expect(boundAccounting?.state.preTradeReservations).toHaveLength(0);
+    expect(boundAccounting?.state.reservations).toHaveLength(1);
+    expect(await db.swapIntents.get(refundSwap.tradeId)).toBeUndefined();
     const lockedProof: Proof = {
       id: KEYSET_ID,
       amount: Amount.from(1),
@@ -694,9 +1003,11 @@ describe("GUI durable recovery Dexie transaction", () => {
 
   it("rolls back both rows when the session half of reconciliation fails", async () => {
     const nativeOperationId = "trade-dexie/browser/seller-lock";
+    const active = swap();
+    await admitSwap(active);
     await prepareGuiProofOperationWithSession(
       operationInput(nativeOperationId),
-      swap(),
+      active,
     );
     const custodyOperationId = (await storedProofOperation(nativeOperationId))
       ?.custodyOperationId;
@@ -752,6 +1063,7 @@ describe("GUI durable recovery Dexie transaction", () => {
 
   it("binds the local-lock policy and uses the persisted mint after wallet retargeting", async () => {
     const currentSwap = swap();
+    await admitSwap(currentSwap);
     useActiveSwapsStore.setState({
       byTradeId: { [currentSwap.tradeId]: currentSwap },
     });
@@ -784,9 +1096,11 @@ describe("GUI durable recovery Dexie transaction", () => {
 
   it("co-commits exact proof replacement with operation and session reconciliation", async () => {
     const operationId = "trade-dexie/browser/seller-lock";
+    const active = swap();
+    await admitSwap(active);
     await prepareGuiProofOperationWithSession(
       operationInput(operationId),
-      swap(),
+      active,
     );
     const freshProof = {
       id: KEYSET_ID,
@@ -801,7 +1115,7 @@ describe("GUI durable recovery Dexie transaction", () => {
     await completeGuiProofOperationWithSession(
       operationId,
       { send: [], keep: [freshProof] },
-      swap(),
+      active,
       "https://mint.example",
     );
 
@@ -864,9 +1178,11 @@ describe("GUI durable recovery Dexie transaction", () => {
 
   it("rejects recovery commit when the active seed changes", async () => {
     const operationId = "trade-dexie/browser/pinned-recovery";
+    const active = swap();
+    await admitSwap(active);
     await prepareGuiProofOperationWithSession(
       operationInput(operationId),
-      swap(),
+      active,
     );
     const originalWalletId = currentGuiWalletId();
 
@@ -968,20 +1284,24 @@ describe("GUI durable recovery Dexie transaction", () => {
     }
   });
 
-  it("keeps a session write pinned when the seed changes under the held lock", async () => {
+  it("rejects a session write when the seed changes under the held lock", async () => {
     const originalWalletId = currentGuiWalletId();
     const active = swap();
+    await admitSwap(active);
 
-    await withGuiSwapSessionOwnership(active.tradeId, async (lock) => {
-      useWalletStore.setState({ mnemonic: OTHER_MNEMONIC });
-      await persistGuiSwapSessionUnderLock(
-        lock,
-        active,
-        "https://mint.example",
-      );
-    });
+    await expect(
+      withGuiSwapSessionOwnership(active.tradeId, async (lock) => {
+        useWalletStore.setState({ mnemonic: OTHER_MNEMONIC });
+        await persistGuiSwapSessionUnderLock(
+          lock,
+          active,
+          "https://mint.example",
+        );
+      }),
+    ).rejects.toThrow("wallet ownership changed");
 
-    expect((await db.swapSessions.get(active.tradeId))?.walletId).toBe(
+    expect(await db.swapSessions.get(active.tradeId)).toBeUndefined();
+    expect((await db.swapIntents.get(active.tradeId))?.walletId).toBe(
       originalWalletId,
     );
   });
@@ -1011,9 +1331,11 @@ describe("GUI durable recovery Dexie transaction", () => {
     expect(await db.swapSessions.get(active.tradeId)).toBeUndefined();
   });
 
-  it("uses one non-reentrant wallet lock for the complete proof operation", async () => {
+  it("acquires each required proof-operation lock once", async () => {
     const acquired: string[] = [];
     const held = new Set<string>();
+    const active = swap();
+    await admitSwap(active);
     Object.defineProperty(navigator, "locks", {
       configurable: true,
       value: {
@@ -1033,7 +1355,6 @@ describe("GUI durable recovery Dexie transaction", () => {
         },
       },
     });
-    const active = swap();
     useActiveSwapsStore.setState({
       byTradeId: { [active.tradeId]: active },
     });
@@ -1046,11 +1367,16 @@ describe("GUI durable recovery Dexie transaction", () => {
       active,
     ).prepareProofOperation(input as SwapPrepareProofOperationInput);
 
-    expect(acquired).toEqual([`bitcaster-custody:${currentGuiWalletId()}`]);
+    expect(acquired).toEqual([
+      `bitcaster-custody:${currentGuiWalletId()}`,
+      "bitcaster-origin-storage-admission",
+    ]);
   });
 
   it("keeps the same native operation id independent across wallets", async () => {
     const originalWalletId = currentGuiWalletId();
+    const active = swap();
+    await admitSwap(active);
     useWalletStore.setState({ mnemonic: OTHER_MNEMONIC });
     const otherWalletId = currentGuiWalletId();
     const input = operationInput("trade-dexie/browser/colliding-operation");
@@ -1073,7 +1399,7 @@ describe("GUI durable recovery Dexie transaction", () => {
     expect(currentGuiWalletId()).toBe(originalWalletId);
 
     await expect(
-      prepareGuiProofOperationWithSession(input, swap()),
+      prepareGuiProofOperationWithSession(input, active),
     ).resolves.toMatchObject({ walletId: originalWalletId });
     expect(
       (await storedProofOperation(input.operationId, otherWalletId))?.walletId,
@@ -1087,6 +1413,7 @@ describe("GUI durable recovery Dexie transaction", () => {
 
   it("retains and releases exact cashu-ts unselected proofs across restart", async () => {
     const currentSwap = swap();
+    await admitSwap(currentSwap);
     useActiveSwapsStore.setState({
       byTradeId: { [currentSwap.tradeId]: currentSwap },
     });
@@ -1138,6 +1465,8 @@ describe("GUI durable recovery Dexie transaction", () => {
 
   it("accepts counterparty claim inputs without reserving a nonexistent local proof", async () => {
     const operationId = "trade-dexie/browser/seller-claim";
+    const active = swap();
+    await admitSwap(active);
     const input = operationInput(operationId, "swap-claim");
     input.inputs[0]!.secret = "66".repeat(32);
     input.outputs = { keep: input.outputs.keep };
@@ -1159,12 +1488,12 @@ describe("GUI durable recovery Dexie transaction", () => {
       C: canonicalSecpPoint(3),
     };
 
-    await prepareGuiProofOperationWithSession(input, swap());
+    await prepareGuiProofOperationWithSession(input, active);
     expect(await storedRow(input.inputs[0]!.secret)).toBeUndefined();
     await completeGuiProofOperationWithSession(
       operationId,
       { keep: [freshProof] },
-      swap(),
+      active,
       input.mintUrl,
     );
 
@@ -1178,6 +1507,8 @@ describe("GUI durable recovery Dexie transaction", () => {
 
   it("atomically retains only spendable conditional change from a local lock", async () => {
     const operationId = "trade-dexie/browser/seller-conditional-lock";
+    const active = swap();
+    await admitSwap(active);
     const input = operationInput(operationId);
     input.kind = "conditional-keyset-swap";
     input.outputs = {
@@ -1225,11 +1556,11 @@ describe("GUI durable recovery Dexie transaction", () => {
       C: canonicalSecpPoint(4),
     };
 
-    await prepareGuiProofOperationWithSession(input, swap());
+    await prepareGuiProofOperationWithSession(input, active);
     await completeGuiProofOperationWithSession(
       operationId,
       { lock: [locked], change: [change] },
-      swap(),
+      active,
       input.mintUrl,
     );
 
@@ -1245,9 +1576,11 @@ describe("GUI durable recovery Dexie transaction", () => {
 
   it("serializes two reopened-tab recoveries and reconciles the exact retained operation once", async () => {
     const nativeOperationId = "trade-dexie/browser/seller-lock";
+    const active = swap();
+    await admitSwap(active);
     await prepareGuiProofOperationWithSession(
       operationInput(nativeOperationId),
-      swap(),
+      active,
     );
 
     // Simulate the persisted view a new browser context sees after a reload.

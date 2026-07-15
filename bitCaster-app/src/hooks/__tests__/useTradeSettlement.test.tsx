@@ -50,7 +50,6 @@ const {
   mockPrepareGuiProofOperationWithSession,
   mockRecoverGuiDurableTradeSession,
   mockRecordGuiRecoveredProofOperationOutputs,
-  mockRemoveGuiSwapSession,
   mockWithGuiSwapSessionOwnership,
 } = vi.hoisted(() => ({
   mockCompleteGuiProofOperationWithSession: vi.fn(),
@@ -61,7 +60,6 @@ const {
   mockPrepareGuiProofOperationWithSession: vi.fn(),
   mockRecoverGuiDurableTradeSession: vi.fn(),
   mockRecordGuiRecoveredProofOperationOutputs: vi.fn(),
-  mockRemoveGuiSwapSession: vi.fn(),
   mockWithGuiSwapSessionOwnership: vi.fn(),
 }));
 
@@ -77,25 +75,19 @@ const {
   mockSalvageGuiTradeRefundUnderLock: vi.fn(),
 }));
 
-const {
-  mockGetGuiPendingSwapIntent,
-  mockGetOrCreateGuiPendingSwapIntent,
-  mockLoadGuiPendingSwapIntents,
-  mockMarkGuiPendingSwapIntentSubmitted,
-  mockMigrateLegacyGuiPendingSwapIntents,
-  mockRemoveGuiPendingSwapIntent,
-} = vi.hoisted(() => ({
-  mockGetGuiPendingSwapIntent: vi.fn(),
-  mockGetOrCreateGuiPendingSwapIntent: vi.fn(),
-  mockLoadGuiPendingSwapIntents: vi.fn(),
-  mockMarkGuiPendingSwapIntentSubmitted: vi.fn(),
-  mockMigrateLegacyGuiPendingSwapIntents: vi.fn(),
-  mockRemoveGuiPendingSwapIntent: vi.fn(),
-}));
+const { mockGetGuiPendingSwapIntent, mockLoadGuiPendingSwapIntents } =
+  vi.hoisted(() => ({
+    mockGetGuiPendingSwapIntent: vi.fn(),
+    mockLoadGuiPendingSwapIntents: vi.fn(),
+  }));
 
 const { mockSubmitOrder, mockSubmitEphemeralPubkey } = vi.hoisted(() => ({
   mockSubmitOrder: vi.fn(),
   mockSubmitEphemeralPubkey: vi.fn(),
+}));
+
+const { mockSubmitAdmittedGuiPendingSwapIntents } = vi.hoisted(() => ({
+  mockSubmitAdmittedGuiPendingSwapIntents: vi.fn(),
 }));
 
 const {
@@ -215,8 +207,6 @@ vi.mock("@/stores/swap-session-db", () => ({
     ),
   completeGuiProofOperationWithSession:
     mockCompleteGuiProofOperationWithSession,
-  removeGuiSwapSessionUnderLock: (_lock: unknown, tradeId: string) =>
-    mockRemoveGuiSwapSession(tradeId),
   withGuiSwapSessionOwnership: mockWithGuiSwapSessionOwnership,
 }));
 
@@ -246,11 +236,11 @@ vi.mock("@/stores/gui-custody-authority", () => ({
 
 vi.mock("@/stores/pending-swap-intent-db", () => ({
   getGuiPendingSwapIntent: mockGetGuiPendingSwapIntent,
-  getOrCreateGuiPendingSwapIntent: mockGetOrCreateGuiPendingSwapIntent,
   loadGuiPendingSwapIntents: mockLoadGuiPendingSwapIntents,
-  markGuiPendingSwapIntentSubmitted: mockMarkGuiPendingSwapIntentSubmitted,
-  migrateLegacyGuiPendingSwapIntents: mockMigrateLegacyGuiPendingSwapIntents,
-  removeGuiPendingSwapIntent: mockRemoveGuiPendingSwapIntent,
+}));
+
+vi.mock("@/stores/gui-pretrade-storage", () => ({
+  submitAdmittedGuiPendingSwapIntents: mockSubmitAdmittedGuiPendingSwapIntents,
 }));
 
 const { mockCommitGuiPartialLockFailure } = vi.hoisted(() => ({
@@ -493,7 +483,6 @@ beforeEach(() => {
       resultProofs,
     }),
   );
-  mockRemoveGuiSwapSession.mockResolvedValue(undefined);
   mockRecoverGuiDurableTradeSession.mockImplementation(
     async (
       tradeId: string,
@@ -546,13 +535,20 @@ beforeEach(() => {
   );
   mockReleaseGuiCustodyAuthority.mockResolvedValue(undefined);
   mockGetGuiPendingSwapIntent.mockResolvedValue(null);
-  mockGetOrCreateGuiPendingSwapIntent.mockImplementation(async (input) =>
-    input.create(),
-  );
   mockLoadGuiPendingSwapIntents.mockResolvedValue([]);
-  mockMarkGuiPendingSwapIntentSubmitted.mockResolvedValue(undefined);
-  mockMigrateLegacyGuiPendingSwapIntents.mockResolvedValue([]);
-  mockRemoveGuiPendingSwapIntent.mockResolvedValue(undefined);
+  mockSubmitAdmittedGuiPendingSwapIntents.mockImplementation(
+    async (
+      requests: Array<{ create: () => Record<string, unknown> }>,
+      submit: (intent: Record<string, unknown>) => Promise<void>,
+    ) => {
+      const intents = requests.map((request) => request.create());
+      for (const intent of intents) await submit(intent);
+      return intents.map((intent: object) => ({
+        ...intent,
+        submitted: true,
+      }));
+    },
+  );
   mockSubmitOrder.mockResolvedValue({ orderId: "recovery-order" });
   mockSubmitEphemeralPubkey.mockResolvedValue(undefined);
   mockUseTradeHub.mockReturnValue({
@@ -1370,7 +1366,7 @@ describe("useTradeSettlement", () => {
 
     expect(mockJoinOrder).not.toHaveBeenCalled();
     expect(mockJoinTrade).not.toHaveBeenCalled();
-    expect(mockGetOrCreateGuiPendingSwapIntent).not.toHaveBeenCalled();
+    expect(mockSubmitAdmittedGuiPendingSwapIntents).not.toHaveBeenCalled();
     expect(mockSubmitEphemeralPubkey).not.toHaveBeenCalled();
     expect(mockGetUnitProofs).not.toHaveBeenCalled();
     expect(mockGetOutcomeProofs).not.toHaveBeenCalled();
@@ -1456,7 +1452,6 @@ describe("useTradeSettlement", () => {
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
     expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
-    expect(mockRemoveGuiPendingSwapIntent).not.toHaveBeenCalled();
 
     await waitFor(() => expect(mockJoinTrade).toHaveBeenCalledWith(tradeId));
 
@@ -1467,17 +1462,12 @@ describe("useTradeSettlement", () => {
       ),
     );
     await waitFor(() => expect(mockJoinTrade).toHaveBeenCalledWith(tradeId));
-    await waitFor(() =>
-      expect(mockRemoveGuiPendingSwapIntent).toHaveBeenCalledWith(tradeId),
-    );
+    expect(
+      usePendingPubkeySubmissionsStore.getState().byTradeId[tradeId],
+    ).toBeUndefined();
     expect(
       mockPersistGuiSwapSession.mock.invocationCallOrder.at(-1),
     ).toBeLessThan(mockJoinTrade.mock.invocationCallOrder.at(-1)!);
-    expect(
-      mockPersistGuiSwapSession.mock.invocationCallOrder.at(-1),
-    ).toBeLessThan(
-      mockRemoveGuiPendingSwapIntent.mock.invocationCallOrder.at(-1)!,
-    );
   });
 
   it("publishes an inbound cipher only after commit and accepts its replay", async () => {

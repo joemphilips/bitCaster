@@ -117,18 +117,14 @@ import {
   persistGuiSwapSessionUnderLock,
   recordGuiRecoveredProofOperationOutputsUnderLock,
   recoverGuiDurableTradeSession,
-  removeGuiSwapSessionUnderLock,
   withGuiSwapSessionOwnership,
   type GuiDurableTradeRecoveryInput,
 } from "@/stores/swap-session-db";
 import {
   loadGuiPendingSwapIntents,
   getGuiPendingSwapIntent,
-  getOrCreateGuiPendingSwapIntent,
-  markGuiPendingSwapIntentSubmitted,
-  migrateLegacyGuiPendingSwapIntents,
-  removeGuiPendingSwapIntent,
 } from "@/stores/pending-swap-intent-db";
+import { submitAdmittedGuiPendingSwapIntents } from "@/stores/gui-pretrade-storage";
 import type { PartialLockHeldRecord } from "@bitcaster/client-sdk/swapFailure";
 import {
   TRADE_MESSAGE_TYPES,
@@ -1098,15 +1094,12 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     }
     if (!mnemonic) return () => undefined;
     const recoveryWalletId = currentGuiWalletId();
-    void migrateLegacyGuiPendingSwapIntents()
-      .then(() =>
-        Promise.all([
-          loadRecoverableGuiSwapSessions(),
-          loadGuiPendingSwapIntents(),
-          loadGuiPendingTrades(recoveryWalletId),
-          loadNextGuiTradeRecoveryWorkPage(recoveryWalletId, null),
-        ] as const),
-      )
+    void Promise.all([
+      loadRecoverableGuiSwapSessions(),
+      loadGuiPendingSwapIntents(),
+      loadGuiPendingTrades(recoveryWalletId),
+      loadNextGuiTradeRecoveryWorkPage(recoveryWalletId, null),
+    ] as const)
       .then(([swaps, intents, pendingTradeRecords, recoveryWork]) => {
         if (cancelled) return;
         replaceGuiPendingTradeCache(recoveryWalletId, pendingTradeRecords);
@@ -1597,14 +1590,9 @@ async function handleTradeCreatedOnce(
   clearInboundReplay(expectedWalletId, payload.tradeId);
 
   if (pendingPubkey) {
-    try {
-      await removeGuiPendingSwapIntent(payload.tradeId);
-      usePendingPubkeySubmissionsStore
-        .getState()
-        .removePendingPubkey(payload.tradeId);
-    } catch {
-      // The committed session is authoritative; retain the intent for replay.
-    }
+    usePendingPubkeySubmissionsStore
+      .getState()
+      .removePendingPubkey(payload.tradeId);
   }
 
   if (currentGuiWalletId() !== expectedWalletId) return true;
@@ -1752,42 +1740,40 @@ async function submitPendingPubkeyFromRecovery(
     throw new Error("Pending order belongs to another wallet scope");
   }
   const store = usePendingPubkeySubmissionsStore.getState();
-  const migrated = await migrateLegacyGuiPendingSwapIntents();
-  if (migrated.length > 0) store.hydratePendingPubkeys(migrated);
-  let entry = store.byTradeId[tradeId];
-  if (!entry) {
-    entry = await getOrCreateGuiPendingSwapIntent({
-      tradeId,
-      orderId: pendingTrade.orderId,
-      marketId: pendingTrade.marketId,
-      deadline,
-      create: () => {
-        const key = generateEphemeralKeyPair();
-        return {
-          tradeId,
-          orderId: pendingTrade.orderId,
-          marketId: pendingTrade.marketId,
-          pubkey: key.pubkey,
-          privkey: key.privkey,
-          deadline,
-          submitted: false,
-        };
+  const [entry] = await submitAdmittedGuiPendingSwapIntents(
+    [
+      {
+        tradeId,
+        orderId: pendingTrade.orderId,
+        marketId: pendingTrade.marketId,
+        deadline,
+        create: () => {
+          const key = generateEphemeralKeyPair();
+          return {
+            tradeId,
+            orderId: pendingTrade.orderId,
+            marketId: pendingTrade.marketId,
+            pubkey: key.pubkey,
+            privkey: key.privkey,
+            deadline,
+            submitted: false,
+          };
+        },
       },
-    });
-    store.addPendingPubkey(entry);
-  }
-  if (entry.submitted) return;
-
-  if (!isCurrentGuiPendingTrade(pendingTrade)) {
-    throw new Error("Pending order belongs to another wallet scope");
-  }
-  await submitEphemeralPubkey(
-    tradeId,
-    entry.pubkey,
-    conditionIdFromMarketId(pendingTrade.marketId),
+    ],
+    async (intent) => {
+      if (!isCurrentGuiPendingTrade(pendingTrade)) {
+        throw new Error("Pending order belongs to another wallet scope");
+      }
+      await submitEphemeralPubkey(
+        tradeId,
+        intent.pubkey,
+        conditionIdFromMarketId(pendingTrade.marketId),
+      );
+    },
   );
-  await markGuiPendingSwapIntentSubmitted(tradeId);
-  usePendingPubkeySubmissionsStore.getState().markSubmitted(tradeId);
+  if (!entry) throw new Error("GUI pre-trade admission returned no intent");
+  store.addPendingPubkey(entry);
 }
 
 function conditionIdFromMarketId(marketId: string): string {
@@ -3831,22 +3817,12 @@ function publishGuiSwapCompletion(
     type: "success",
     message: `Trade complete: ${terminal.marketId}`,
   });
-  // Keep the terminal authority and retire only its active-session index.
+  // The terminal commit already retired the durable active-session index.
+  // This timer removes only the transient UI projection; custody remains
+  // charged until authenticated replay-cutoff evidence permits SDK release.
   setTimeout(() => {
     if (currentGuiWalletId() !== walletId) return;
-    void withGuiSwapSessionOwnership(
-      terminal.tradeId,
-      async (lock) => {
-        await removeGuiSwapSessionUnderLock(lock, terminal.tradeId);
-      },
-      walletId,
-    )
-      .then(() => {
-        if (currentGuiWalletId() === walletId) {
-          useActiveSwapsStore.getState().remove(terminal.tradeId);
-        }
-      })
-      .catch(() => undefined);
+    useActiveSwapsStore.getState().remove(terminal.tradeId);
   }, 5_000);
 }
 

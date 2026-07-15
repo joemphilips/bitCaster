@@ -39,10 +39,11 @@ import {
   type GuiSwapSessionRecord,
 } from "./gui-swap-session-record";
 import {
-  commitGuiCustodyUnitOfWork,
+  prepareGuiCustodyUnitOfWork,
   readGuiCustodyOperationSnapshot,
   readGuiCustodyNativeSnapshot,
 } from "./gui-custody-unit-of-work";
+import { commitGuiDurableStorageCustodyUnitOfWork } from "./gui-durable-storage-custody-unit-of-work";
 import {
   db,
   currentGuiWalletId,
@@ -185,12 +186,13 @@ export async function recoverGuiDurableTradeSession(
     ),
     atomicTransition: {
       advance: ({ session, operation, state }) =>
-        withGuiRecoveryAuthority(walletId, database, (authority) =>
+        withGuiRecoveryAuthority(walletId, database, (authority, lock) =>
           advanceGuiDurableTradeAtomically(
             session,
             operation,
             state,
             authority,
+            lock,
             database,
           ),
         ),
@@ -224,13 +226,14 @@ function unlockedGuiDurableTradeSessionRepository(
       );
     },
     compareAndSwap: (requestedTradeId, expectedRevision, next) =>
-      withGuiRecoveryAuthority(walletId, database, async (authority) => {
+      withGuiRecoveryAuthority(walletId, database, async (authority, lock) => {
         if (requestedTradeId !== tradeId || next.tradeId !== tradeId) {
           return null;
         }
         const repository = guiDurableTradeSessionRepository(
           tradeId,
           authority,
+          lock,
           database,
         );
         return repository.compareAndSwap(
@@ -291,14 +294,17 @@ function withGuiRecoveryLock<T>(
 function withGuiRecoveryAuthority<T>(
   walletId: string,
   database: GuiDurableRecoveryDatabase,
-  action: (authority: GuiCustodyAuthority) => Promise<T>,
+  action: (
+    authority: GuiCustodyAuthority,
+    lock: GuiWalletLockContext,
+  ) => Promise<T>,
 ): Promise<T> {
   return withGuiCustodyProfileLockForWallet(
     walletId,
     async (_context, lock) => {
       const authority = await acquireGuiCustodyAuthority(lock, database);
       try {
-        return await action(authority);
+        return await action(authority, lock);
       } finally {
         await releaseGuiCustodyAuthority(lock, authority);
       }
@@ -313,73 +319,64 @@ export async function recordGuiRecoveredProofOperationOutputsUnderLock(
   durableOperationId: string,
   resultProofs: Record<string, Proof[]>,
 ): Promise<void> {
-  return recordGuiRecoveredProofOperationOutputsForWallet(
-    walletIdFromHeldGuiWalletLock(lock),
-    tradeId,
-    durableOperationId,
-    resultProofs,
-  );
-}
-
-async function recordGuiRecoveredProofOperationOutputsForWallet(
-  walletId: string,
-  tradeId: string,
-  durableOperationId: string,
-  resultProofs: Record<string, Proof[]>,
-): Promise<void> {
+  const walletId = walletIdFromHeldGuiWalletLock(lock);
   await ensureDurableSwapStorage(walletId);
-  await db.transaction("rw", db.proofOperations, async () => {
-    const operation = await findGuiProofOperationByDurableId(
-      durableOperationId,
-      walletId,
+  const operation = await findGuiProofOperationByDurableId(
+    durableOperationId,
+    walletId,
+  );
+  if (operation?.durableTradeRecovery?.tradeId !== tradeId) {
+    throw new Error(
+      `GUI durable proof operation ${durableOperationId} is missing`,
     );
-    if (operation?.durableTradeRecovery?.tradeId !== tradeId) {
-      throw new Error(
-        `GUI durable proof operation ${durableOperationId} is missing`,
-      );
-    }
-    if (
-      operation.resultProofs &&
-      !sameValue(operation.resultProofs, resultProofs)
-    ) {
+  }
+  if (operation.resultProofs) {
+    if (!sameValue(operation.resultProofs, resultProofs)) {
       throw new Error(
         `GUI durable proof operation ${durableOperationId} has conflicting recovered outputs`,
       );
     }
-    await db.proofOperations.put(
-      requireProofOperationRecord(
-        {
-          ...operation,
-          resultProofs: structuredClone(resultProofs),
-          updatedAt: Date.now(),
-        },
-        walletId,
-        operation.operationId,
-      ),
-    );
+    return;
+  }
+  const snapshot = await readGuiCustodyOperationSnapshot(
+    operation.operationId,
+    walletId,
+    [],
+    tradeId,
+  );
+  if (!sameValue(snapshot.operation, operation)) {
+    throw new Error("GUI recovered proof operation changed before staging");
+  }
+  const authority = await acquireGuiCustodyAuthority(lock);
+  const plan = await authority.store.prepareTransaction(
+    {
+      scope: authority.scope,
+      owner: authority.owner,
+      operationIds: [operation.custodyOperationId],
+    },
+    () => undefined,
+  );
+  const prepared = await prepareGuiCustodyUnitOfWork({
+    authority,
+    plan,
+    snapshot,
+    nextOperation: {
+      ...operation,
+      resultProofs: structuredClone(resultProofs),
+      updatedAt: Date.now(),
+    },
   });
-}
-
-export async function removeGuiSwapSessionUnderLock(
-  lock: GuiWalletLockContext,
-  tradeId: string,
-): Promise<void> {
-  const walletId = walletIdFromHeldGuiWalletLock(lock);
-  await ensureDurableSwapStorage(walletId);
-  await db.transaction("rw", db.swapSessions, async () => {
-    const row = await db.swapSessions.get(tradeId);
-    const current = requireCurrentGuiSwapSessionRecord(row, walletId);
-    if (!current) return;
-    if (current.adapterState.step !== "completed") {
-      throw new Error("Cannot retire a nonterminal GUI swap session");
-    }
-    await db.swapSessions.put({ ...current, active: 0, updatedAt: Date.now() });
+  await commitGuiDurableStorageCustodyUnitOfWork({
+    walletLock: lock,
+    tradeId,
+    prepared,
   });
 }
 
 function guiDurableTradeSessionRepository(
   tradeId: string,
   authority: GuiCustodyAuthority,
+  walletLock: GuiWalletLockContext,
   database: GuiDurableRecoveryDatabase,
 ): DurableTradeSessionRepository {
   return {
@@ -424,7 +421,7 @@ function guiDurableTradeSessionRepository(
         { scope: authority.scope, owner: authority.owner, operationIds: [] },
         () => undefined,
       );
-      await commitGuiCustodyUnitOfWork({
+      const prepared = await prepareGuiCustodyUnitOfWork({
         authority,
         plan,
         snapshot,
@@ -434,6 +431,11 @@ function guiDurableTradeSessionRepository(
           session: structuredClone(next),
           updatedAt: Date.now(),
         },
+      });
+      await commitGuiDurableStorageCustodyUnitOfWork({
+        walletLock,
+        tradeId,
+        prepared,
       });
       return structuredClone(next);
     },
@@ -500,11 +502,49 @@ async function advanceGuiDurableTradeAtomically(
   operation: DurableTradeProofOperationLink,
   state: "mint-submitted" | "reconciled",
   authority: GuiCustodyAuthority,
+  walletLock: GuiWalletLockContext,
   database: GuiDurableRecoveryDatabase,
 ): Promise<{
   session: DurableTradeSession;
   operation: DurableTradeProofOperationLink;
 } | null> {
+  const snapshot = await readGuiDurableTradeAdvanceSnapshot(
+    session,
+    operation,
+    state,
+    authority,
+    database,
+  );
+  if (!snapshot) return null;
+  return commitGuiDurableTradeAdvance(
+    session,
+    operation,
+    state,
+    authority,
+    walletLock,
+    database,
+    snapshot,
+  );
+}
+
+interface GuiDurableTradeAdvanceSnapshot {
+  nativeOperation: ProofOperationRecord;
+  nativeSnapshot: Awaited<ReturnType<typeof readGuiCustodyOperationSnapshot>>;
+  sessionRow: NonNullable<
+    ReturnType<typeof requireCurrentGuiSwapSessionRecord>
+  >;
+  draftProofDelta: Awaited<
+    ReturnType<typeof prepareRecoveredGuiNativeProofDelta>
+  > | null;
+}
+
+async function readGuiDurableTradeAdvanceSnapshot(
+  session: DurableTradeSession,
+  operation: DurableTradeProofOperationLink,
+  state: "mint-submitted" | "reconciled",
+  authority: GuiCustodyAuthority,
+  database: GuiDurableRecoveryDatabase,
+): Promise<GuiDurableTradeAdvanceSnapshot | null> {
   const nativeOperation = await findGuiProofOperationByDurableId(
     operation.operationId,
     authority.scope.walletId,
@@ -549,12 +589,82 @@ async function advanceGuiDurableTradeAtomically(
   ) {
     return null;
   }
+  return {
+    nativeOperation,
+    nativeSnapshot: snapshot,
+    sessionRow: snapshotSession,
+    draftProofDelta,
+  };
+}
+
+async function commitGuiDurableTradeAdvance(
+  session: DurableTradeSession,
+  operation: DurableTradeProofOperationLink,
+  state: "mint-submitted" | "reconciled",
+  authority: GuiCustodyAuthority,
+  walletLock: GuiWalletLockContext,
+  database: GuiDurableRecoveryDatabase,
+  snapshot: GuiDurableTradeAdvanceSnapshot,
+): Promise<{
+  session: DurableTradeSession;
+  operation: DurableTradeProofOperationLink;
+}> {
+  const { nativeOperation, nativeSnapshot, sessionRow, draftProofDelta } =
+    snapshot;
   const plan = await prepareGuiCustodyTransition(
     authority,
     nativeOperation,
     (record, transaction) =>
       advanceCanonicalRecovery(record, transaction, state, nativeOperation),
   );
+  const next = createGuiDurableTradeAdvance(
+    session,
+    operation,
+    state,
+    nativeOperation,
+    nativeSnapshot.proofs,
+    draftProofDelta,
+  );
+  const prepared = await prepareGuiCustodyUnitOfWork({
+    authority,
+    plan,
+    snapshot: nativeSnapshot,
+    database,
+    nextOperation: {
+      ...nativeOperation,
+      state: next.operationState,
+      durableTradeRecovery: next.link,
+      durableOperationId: next.link.operationId,
+      durableTradeId: next.link.tradeId,
+      updatedAt: Date.now(),
+    },
+    deleteProofs: next.proofDelta?.deleteProofs,
+    nextProofs: next.proofDelta?.nextProofs,
+    nextSession: {
+      ...sessionRow,
+      session: next.session,
+      updatedAt: Date.now(),
+    },
+  });
+  await commitGuiDurableStorageCustodyUnitOfWork({
+    walletLock,
+    tradeId: session.tradeId,
+    prepared,
+  });
+  return {
+    session: structuredClone(next.session),
+    operation: structuredClone(next.link),
+  };
+}
+
+function createGuiDurableTradeAdvance(
+  session: DurableTradeSession,
+  operation: DurableTradeProofOperationLink,
+  state: "mint-submitted" | "reconciled",
+  nativeOperation: ProofOperationRecord,
+  snapshotProofs: Parameters<typeof finalizeGuiNativeProofDelta>[1],
+  draftProofDelta: GuiDurableTradeAdvanceSnapshot["draftProofDelta"],
+) {
   const nextSession = reduceDurableTradeSession(
     session,
     state === "mint-submitted"
@@ -564,40 +674,19 @@ async function advanceGuiDurableTradeAtomically(
           operationId: operation.operationId,
         },
   );
-  const nextLink = { ...operation, state };
-  const operationState: ProofOperationState =
-    state === "mint-submitted" ? "mint-submitted" : "completed";
-  const proofDelta = draftProofDelta
-    ? finalizeRecoveredGuiNativeProofDelta(
-        nativeOperation,
-        snapshot.proofs,
-        draftProofDelta,
-      )
-    : null;
-  await commitGuiCustodyUnitOfWork({
-    authority,
-    plan,
-    snapshot,
-    database,
-    nextOperation: {
-      ...nativeOperation,
-      state: operationState,
-      durableTradeRecovery: nextLink,
-      durableOperationId: nextLink.operationId,
-      durableTradeId: nextLink.tradeId,
-      updatedAt: Date.now(),
-    },
-    deleteProofs: proofDelta?.deleteProofs,
-    nextProofs: proofDelta?.nextProofs,
-    nextSession: {
-      ...snapshotSession,
-      session: nextSession,
-      updatedAt: Date.now(),
-    },
-  });
   return {
-    session: structuredClone(nextSession),
-    operation: structuredClone(nextLink),
+    session: nextSession,
+    link: { ...operation, state },
+    operationState: (state === "mint-submitted"
+      ? "mint-submitted"
+      : "completed") as ProofOperationState,
+    proofDelta: draftProofDelta
+      ? finalizeRecoveredGuiNativeProofDelta(
+          nativeOperation,
+          snapshotProofs,
+          draftProofDelta,
+        )
+      : null,
   };
 }
 
