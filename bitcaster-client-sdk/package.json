@@ -108,6 +108,10 @@
       "types": "./dist/durableWalletProofTransition.d.ts",
       "import": "./dist/durableWalletProofTransition.js"
     },
+    "./durableWalletOperation": {
+      "types": "./dist/durableWalletOperation.d.ts",
+      "import": "./dist/durableWalletOperation.js"
+    },
     "./durableOrderCollateral": {
       "types": "./dist/durableOrderCollateral.d.ts",
       "import": "./dist/durableOrderCollateral.js"

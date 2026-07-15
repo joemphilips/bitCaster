@@ -25,8 +25,7 @@ test('wallet proof transition binds exact input authority and output groups', ()
 
   assert.equal(metadata.unit, 'sat')
   assert.equal(
-    requireDurableWalletProofTransition(metadata, ['keep', 'send'])
-      .inputSource,
+    requireDurableWalletProofTransition(metadata, ['keep', 'send']).inputSource,
     'wallet',
   )
   assert.doesNotThrow(() =>
@@ -118,5 +117,57 @@ test('wallet proof transition rejects missing, foreign, and overwritten policy',
   assert.throws(
     () => assertDurableWalletProofResultGroups(policy, ['keep', 'send']),
     /result labels are invalid/,
+  )
+})
+
+test('prefix cardinality accepts only the ordered melt-change prefix', () => {
+  const policy = createDurableWalletProofTransition({
+    inputSource: 'wallet',
+    plannedOutputLabels: ['change'],
+    resultGroups: {
+      change: { kind: 'wallet', asset: 'regular', reservedBy: null },
+    },
+    resultCardinality: { change: 'prefix' },
+  })
+  const outputs = {
+    change: [
+      { secret: 'change-1', blindedMessage: { id: 'keyset-1', amount: 0 } },
+      { secret: 'change-2', blindedMessage: { id: 'keyset-1', amount: 0 } },
+    ],
+  }
+
+  assert.doesNotThrow(() =>
+    assertDurableWalletProofResultMatchesPlan(policy, outputs, { change: [] }),
+  )
+  assert.doesNotThrow(() =>
+    assertDurableWalletProofResultMatchesPlan(policy, outputs, {
+      change: [
+        { id: 'keyset-1', amount: 1, secret: 'change-1', C: 'change-C-1' },
+      ],
+    }),
+  )
+  assert.throws(
+    () =>
+      assertDurableWalletProofResultMatchesPlan(policy, outputs, {
+        change: [
+          { id: 'keyset-1', amount: 1, secret: 'change-2', C: 'change-C-2' },
+        ],
+      }),
+    /prefix does not match/,
+  )
+  assert.throws(
+    () =>
+      createDurableWalletProofTransition({
+        inputSource: 'wallet',
+        plannedOutputLabels: ['change'],
+        resultGroups: {
+          change: { kind: 'wallet', asset: 'regular', reservedBy: null },
+        },
+        resultCardinality: { change: 'prefix' },
+        passthroughResultGroups: {
+          change: [{ id: 'keyset-1', amount: 1, secret: 'old', C: 'old-C' }],
+        },
+      }),
+    /prefix.*passthrough/,
   )
 })

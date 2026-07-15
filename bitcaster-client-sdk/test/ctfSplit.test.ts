@@ -753,6 +753,10 @@ test("splitRegularProofsWithOperation turns a larger regular proof into an exact
         keep: { kind: "wallet", asset: "regular", reservedBy: null },
       },
       passthroughResultGroups: {},
+      resultCardinality: {
+        send: "exact",
+        keep: "exact",
+      },
     },
   );
 });

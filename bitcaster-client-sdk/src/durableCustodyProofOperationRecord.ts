@@ -122,7 +122,9 @@ export function bindDurableCustodyProofOperation(
     transaction.reserveExactInputs({
       operationId,
       reservationId: expected.operation.reservation.reservationId,
-      proofIds: expected.operation.reservation.inputs.map(({ proofId }) => proofId),
+      proofIds: expected.operation.reservation.inputs.map(
+        ({ proofId }) => proofId,
+      ),
     })
   }
   transaction.rebuildActiveWorkIndex()
@@ -169,7 +171,7 @@ function canonicalProofArtifact(
 function canonicalOutputArtifact(
   output: DurableCustodyProofOperationInput['outputs'][string][number],
 ) {
-  return {
+  return omitUndefined({
     blindedMessage: {
       amount: amountToNumber(output.blindedMessage.amount),
       id: output.blindedMessage.id,
@@ -177,7 +179,8 @@ function canonicalOutputArtifact(
     },
     blindingFactor: output.blindingFactor,
     secret: output.secret,
-  }
+    ephemeralE: output.ephemeralE,
+  })
 }
 
 function exactInputProofs(
@@ -225,7 +228,9 @@ function assertSameCustodyAuthority(
     immutableCustodyAuthority(expected),
   )
   if (existingFingerprint !== expectedFingerprint) {
-    throw new Error('existing custody operation has foreign immutable authority')
+    throw new Error(
+      'existing custody operation has foreign immutable authority',
+    )
   }
 }
 

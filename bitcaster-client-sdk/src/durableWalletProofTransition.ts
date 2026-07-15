@@ -16,12 +16,11 @@ export type DurableWalletProofResultDisposition =
 export interface DurableWalletProofTransition {
   schemaVersion: 1
   inputSource: DurableWalletProofInputSource
-  resultGroups: Readonly<
-    Record<string, DurableWalletProofResultDisposition>
-  >
+  resultGroups: Readonly<Record<string, DurableWalletProofResultDisposition>>
   passthroughResultGroups: Readonly<
     Record<string, readonly DurableWalletProofIdentity[]>
   >
+  resultCardinality: Readonly<Record<string, 'exact' | 'prefix'>>
 }
 
 export interface DurableWalletProofIdentity {
@@ -47,12 +46,11 @@ export interface DurableWalletResultProof {
 export function createDurableWalletProofTransition(input: {
   inputSource: DurableWalletProofInputSource
   plannedOutputLabels: readonly string[]
-  resultGroups: Readonly<
-    Record<string, DurableWalletProofResultDisposition>
-  >
+  resultGroups: Readonly<Record<string, DurableWalletProofResultDisposition>>
   passthroughResultGroups?: Readonly<
     Record<string, readonly DurableWalletResultProof[]>
   >
+  resultCardinality?: Readonly<Record<string, 'exact' | 'prefix'>>
 }): DurableWalletProofTransition {
   const policy: DurableWalletProofTransition = {
     schemaVersion: 1,
@@ -60,6 +58,12 @@ export function createDurableWalletProofTransition(input: {
     resultGroups: structuredClone(input.resultGroups),
     passthroughResultGroups: normalizePassthroughResultGroups(
       input.passthroughResultGroups ?? {},
+    ),
+    resultCardinality: Object.fromEntries(
+      input.plannedOutputLabels.map((label) => [
+        label,
+        input.resultCardinality?.[label] ?? 'exact',
+      ]),
     ),
   }
   assertDurableWalletProofTransition(policy, input.plannedOutputLabels)
@@ -121,6 +125,7 @@ export function assertDurableWalletProofResultMatchesPlan(
       outputs[label] ?? [],
       policy.passthroughResultGroups[label] ?? [],
       results[label] ?? [],
+      policy.resultCardinality[label]!,
       expectedSecrets,
       actualSecrets,
     )
@@ -147,14 +152,18 @@ function assertDurableWalletProofTransition(
   if (!isRecord(value.passthroughResultGroups)) {
     throw new Error('wallet proof passthrough groups are invalid')
   }
+  if (!isRecord(value.resultCardinality)) {
+    throw new Error('wallet proof result cardinality is invalid')
+  }
   if (
-    Object.keys(value).length !== 4 ||
+    Object.keys(value).length !== 5 ||
     Object.keys(value).some(
       (key) =>
         key !== 'schemaVersion' &&
         key !== 'inputSource' &&
         key !== 'resultGroups' &&
-        key !== 'passthroughResultGroups',
+        key !== 'passthroughResultGroups' &&
+        key !== 'resultCardinality',
     )
   ) {
     throw new Error('wallet proof transition contains foreign fields')
@@ -164,7 +173,42 @@ function assertDurableWalletProofTransition(
     assertResultDisposition(disposition)
   }
   assertSameLabels(Object.keys(value.resultGroups), plannedOutputLabels)
-  assertPassthroughResultGroups(value.resultGroups, value.passthroughResultGroups)
+  assertResultCardinality(value.resultCardinality, plannedOutputLabels)
+  assertPassthroughResultGroups(
+    value.resultGroups,
+    value.passthroughResultGroups,
+  )
+  assertPrefixHasNoPassthrough(
+    value.resultCardinality,
+    value.passthroughResultGroups,
+  )
+}
+
+function assertResultCardinality(
+  cardinality: Record<string, unknown>,
+  plannedOutputLabels: readonly string[],
+): void {
+  assertSameLabels(Object.keys(cardinality), plannedOutputLabels)
+  for (const value of Object.values(cardinality)) {
+    if (value !== 'exact' && value !== 'prefix') {
+      throw new Error('wallet proof result cardinality is invalid')
+    }
+  }
+}
+
+function assertPrefixHasNoPassthrough(
+  cardinality: Record<string, unknown>,
+  passthroughs: Record<string, unknown>,
+): void {
+  for (const [label, value] of Object.entries(cardinality)) {
+    if (
+      value === 'prefix' &&
+      Array.isArray(passthroughs[label]) &&
+      passthroughs[label].length > 0
+    ) {
+      throw new Error('prefix proof result cannot contain passthrough proofs')
+    }
+  }
 }
 
 function assertPassthroughResultGroups(
@@ -235,9 +279,14 @@ function assertResultGroupMatchesPlan(
   outputs: readonly DurableWalletPlannedOutput[],
   passthroughs: readonly DurableWalletProofIdentity[],
   results: readonly DurableWalletResultProof[],
+  cardinality: 'exact' | 'prefix',
   expectedSecrets: Set<string>,
   actualSecrets: Set<string>,
 ): void {
+  if (cardinality === 'prefix') {
+    assertPrefixResultGroup(outputs, results, expectedSecrets, actualSecrets)
+    return
+  }
   if (results.length !== outputs.length + passthroughs.length) {
     throw new Error('wallet proof result count does not match its exact plan')
   }
@@ -246,16 +295,53 @@ function assertResultGroupMatchesPlan(
     throw new Error('wallet proof result contains duplicate proofs')
   }
   outputs.forEach((output) =>
-    assertPlannedOutputResult(output, bySecret, expectedSecrets, actualSecrets),
+    assertPlannedOutputResult(
+      output,
+      bySecret,
+      false,
+      expectedSecrets,
+      actualSecrets,
+    ),
   )
   passthroughs.forEach((proof) =>
     assertPassthroughResult(proof, bySecret, expectedSecrets, actualSecrets),
   )
 }
 
+function assertPrefixResultGroup(
+  outputs: readonly DurableWalletPlannedOutput[],
+  results: readonly DurableWalletResultProof[],
+  expectedSecrets: Set<string>,
+  actualSecrets: Set<string>,
+): void {
+  if (results.length > outputs.length) {
+    throw new Error('wallet proof result exceeds its planned prefix')
+  }
+  const bySecret = new Map(results.map((proof) => [proof.secret, proof]))
+  if (bySecret.size !== results.length) {
+    throw new Error('wallet proof result contains duplicate proofs')
+  }
+  for (let index = 0; index < results.length; index += 1) {
+    const output = outputs[index]!
+    if (results[index]!.secret !== output.secret) {
+      throw new Error(
+        'wallet proof result prefix does not match its exact plan',
+      )
+    }
+    assertPlannedOutputResult(
+      output,
+      bySecret,
+      true,
+      expectedSecrets,
+      actualSecrets,
+    )
+  }
+}
+
 function assertPlannedOutputResult(
   output: DurableWalletPlannedOutput,
   results: ReadonlyMap<string, DurableWalletResultProof>,
+  allowBlankAmount: boolean,
   expectedSecrets: Set<string>,
   actualSecrets: Set<string>,
 ): void {
@@ -263,7 +349,10 @@ function assertPlannedOutputResult(
   if (
     !proof ||
     proof.id !== output.blindedMessage.id ||
-    amountToNumber(proof.amount) !== amountToNumber(output.blindedMessage.amount)
+    ((!allowBlankAmount ||
+      amountToNumber(output.blindedMessage.amount) !== 0) &&
+      amountToNumber(proof.amount) !==
+        amountToNumber(output.blindedMessage.amount))
   ) {
     throw new Error('wallet proof result does not match a planned output')
   }
@@ -315,7 +404,8 @@ function assertResultDisposition(value: unknown): void {
         Object.keys(value).length !== 3 ||
         (value.asset !== 'regular' && value.asset !== 'conditional') ||
         (value.reservedBy !== null &&
-          (typeof value.reservedBy !== 'string' || value.reservedBy.length === 0))
+          (typeof value.reservedBy !== 'string' ||
+            value.reservedBy.length === 0))
       ) {
         throw new Error('wallet proof result reservation is invalid')
       }

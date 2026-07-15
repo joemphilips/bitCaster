@@ -21,7 +21,10 @@ export type DurableCustodyProofOperationKind =
   | 'ctf-condition-registration'
   | 'regular-split'
   | 'proof-split'
+  | 'wallet-mint'
+  | 'wallet-receive'
   | 'wallet-send'
+  | 'wallet-melt'
 
 export interface DurableCustodyMintKeys {
   id: string
@@ -45,18 +48,21 @@ export interface DurableCustodyProofOperationInput {
     conditionId?: string
     outcomeCollection?: string
   }[]
-  outputs: Readonly<Record<
-    string,
-    readonly {
-      blindedMessage: {
-        amount: unknown
-        id: string
-        B_: string
-      }
-      blindingFactor: string
-      secret: string
-    }[]
-  >>
+  outputs: Readonly<
+    Record<
+      string,
+      readonly {
+        blindedMessage: {
+          amount: unknown
+          id: string
+          B_: string
+        }
+        blindingFactor: string
+        secret: string
+        ephemeralE?: string
+      }[]
+    >
+  >
   metadata?: Readonly<Record<string, unknown>>
   durableTradeRecovery?: DurableTradeProofOperationLink
 }
@@ -86,21 +92,15 @@ export async function resolveDurableCustodyProofOperationFacts(
   const hasOutputs = Object.values(input.operation.outputs).some(
     (outputs) => outputs.length > 0,
   )
-  const mintKeys = await input.resolveMintKeys(
-    input.operation.mintUrl,
-    [...usage.keys()],
-  )
+  const mintKeys = await input.resolveMintKeys(input.operation.mintUrl, [
+    ...usage.keys(),
+  ])
   return createDurableProofOperationFacts({
     unit,
     binding,
     horizon: operationHorizon(semanticKind, input.session),
     hasOutputs,
-    keysets: createKeysetFacts(
-      unit,
-      usage,
-      mintKeys,
-      input.requireDleq,
-    ),
+    keysets: createKeysetFacts(unit, usage, mintKeys, input.requireDleq),
   })
 }
 
@@ -122,7 +122,11 @@ export function durableCustodyProofOperationSemanticKind(
     case 'regular-split':
     case 'proof-split':
     case 'wallet-send':
+    case 'wallet-melt':
       return 'generic-send'
+    case 'wallet-mint':
+    case 'wallet-receive':
+      return 'generic-receive'
     case 'generic-receive':
     case 'generic-send':
       return kind
@@ -179,7 +183,9 @@ function assertSessionBinding(
     ? validateDurableProofOperationLink(link)
     : 'durable proof operation link is missing'
   if (sessionError !== null || linkError !== null) {
-    throw new Error(sessionError ?? linkError ?? 'invalid durable trade binding')
+    throw new Error(
+      sessionError ?? linkError ?? 'invalid durable trade binding',
+    )
   }
   if (
     link!.tradeId !== session.tradeId ||
@@ -210,9 +216,11 @@ function hasDependentOperation(
   session: DurableTradeSession,
 ): boolean {
   const operationId = operation.durableTradeRecovery?.operationId
-  return session.plannedProofOperations?.some(
-    (plan) => plan.dependsOnOperationId === operationId,
-  ) ?? false
+  return (
+    session.plannedProofOperations?.some(
+      (plan) => plan.dependsOnOperationId === operationId,
+    ) ?? false
+  )
 }
 
 function operationHorizon(
@@ -310,7 +318,11 @@ function createKeysetFacts(
 ): DurableProofOperationKeysetFactsInput[] {
   return [...usage].map(([keysetId, directions]) => {
     const keyset = mintKeys.get(keysetId)
-    if (keyset === undefined || keyset.id !== keysetId || keyset.unit !== unit) {
+    if (
+      keyset === undefined ||
+      keyset.id !== keysetId ||
+      keyset.unit !== unit
+    ) {
       throw new Error('mint keyset does not match the custody operation')
     }
     return {
@@ -318,9 +330,10 @@ function createKeysetFacts(
       unit,
       curve: isBlsKeyset(keysetId) ? 'bls12-381' : 'secp256k1',
       publicKeys: keyset.keys,
-      keysetExpiryMs: keyset.final_expiry === undefined
-        ? null
-        : secondsToMilliseconds(keyset.final_expiry),
+      keysetExpiryMs:
+        keyset.final_expiry === undefined
+          ? null
+          : secondsToMilliseconds(keyset.final_expiry),
       requireDleq,
       usedByInputs: directions.inputs,
       usedByOutputs: directions.outputs,
