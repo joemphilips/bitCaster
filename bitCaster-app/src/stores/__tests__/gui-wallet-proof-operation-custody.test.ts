@@ -22,6 +22,17 @@ import { useWalletStore } from "../wallet";
 import { guiWalletLockName } from "../gui-wallet-lock";
 import { createCapturedGuiWalletProofOperationStore } from "../gui-wallet-proof-operation-store";
 import { listWalletActivities } from "../wallet-activity-projection";
+import {
+  acquireGuiCustodyAuthority,
+  releaseGuiCustodyAuthority,
+  withGuiCustodyProfileLock,
+} from "../gui-custody-authority";
+import {
+  commitPreparedGuiCustodyUnitOfWorkInCurrentTransaction,
+  guiCustodyUnitOfWorkTables,
+  prepareGuiCustodyUnitOfWork,
+  readGuiCustodyNativeSnapshot,
+} from "../gui-custody-unit-of-work";
 
 const KEYSET_ID = `00${"22".repeat(7)}`;
 const PUBLIC_KEY = `02${"33".repeat(32)}`;
@@ -177,6 +188,47 @@ describe("GUI wallet custody coordinator", () => {
       mintUrl: "https://mint.example",
       unit: "sat",
       baseAsset: "sat",
+    });
+  });
+
+  it("commits an opaque prepared unit only inside its caller-owned write transaction", async () => {
+    await withGuiCustodyProfileLock(async ({ walletId }, lock) => {
+      const authority = await acquireGuiCustodyAuthority(lock);
+      try {
+        const snapshot = await readGuiCustodyNativeSnapshot(
+          null,
+          null,
+          walletId,
+        );
+        const plan = await authority.store.prepareTransaction(
+          { scope: authority.scope, owner: authority.owner, operationIds: [] },
+          () => "committed" as const,
+        );
+        const prepared = await prepareGuiCustodyUnitOfWork({
+          authority,
+          plan,
+          snapshot,
+        });
+
+        await expect(
+          commitPreparedGuiCustodyUnitOfWorkInCurrentTransaction(prepared),
+        ).rejects.toThrow("active write transaction");
+        await expect(
+          commitPreparedGuiCustodyUnitOfWorkInCurrentTransaction({
+            walletId,
+          } as never),
+        ).rejects.toThrow("was not prepared");
+
+        const result = await db.transaction(
+          "rw",
+          guiCustodyUnitOfWorkTables(authority),
+          async () =>
+            commitPreparedGuiCustodyUnitOfWorkInCurrentTransaction(prepared),
+        );
+        expect(result).toBe("committed");
+      } finally {
+        await releaseGuiCustodyAuthority(lock, authority);
+      }
     });
   });
 

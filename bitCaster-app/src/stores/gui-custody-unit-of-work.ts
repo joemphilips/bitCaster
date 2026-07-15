@@ -1,3 +1,4 @@
+import Dexie from "dexie";
 import type { Proof } from "@cashu/cashu-ts";
 import type { DexieDurableCustodyPlan } from "./durable-custody-transaction-plan";
 import { sameValue } from "./durable-custody-dexie-model";
@@ -35,6 +36,44 @@ export interface GuiCustodyNativeSnapshot {
   tradeId: string | null;
   session: SwapSessionRecord | undefined;
 }
+
+export interface GuiCustodyUnitOfWorkInput<T> {
+  authority: GuiCustodyAuthority;
+  plan: DexieDurableCustodyPlan<T>;
+  snapshot: GuiCustodyNativeSnapshot;
+  nextOperation?: ProofOperationRecord;
+  deleteProofs?: StoredProof[];
+  nextProofs?: StoredProof[];
+  nextSession?: SwapSessionRecord;
+  nextActivity?: WalletActivityRow;
+  activeSessionLimit?: number;
+  database?: BitcasterDB;
+}
+
+declare const PREPARED_GUI_CUSTODY_RESULT: unique symbol;
+
+export interface PreparedGuiCustodyUnitOfWork<T> {
+  readonly walletId: string;
+  readonly [PREPARED_GUI_CUSTODY_RESULT]: T;
+}
+
+interface PreparedGuiCustodyState<T> {
+  authority: GuiCustodyAuthority;
+  plan: DexieDurableCustodyPlan<T>;
+  snapshot: GuiCustodyNativeSnapshot;
+  nextOperation?: ProofOperationRecord;
+  deleteProofIds: string[];
+  nextProofs?: StoredProofRow[];
+  nextSession?: SwapSessionRecord;
+  nextActivity?: WalletActivityRow;
+  activeSessionLimit?: number;
+  database: BitcasterDB;
+}
+
+const preparedGuiCustodyUnits = new WeakMap<
+  object,
+  PreparedGuiCustodyState<unknown>
+>();
 
 export async function readGuiCustodyNativeSnapshot(
   operationId: string | null,
@@ -141,27 +180,16 @@ export async function readGuiCustodyOperationSnapshot(
   return snapshot;
 }
 
-export async function commitGuiCustodyUnitOfWork<T>(input: {
-  authority: GuiCustodyAuthority;
-  plan: DexieDurableCustodyPlan<T>;
-  snapshot: GuiCustodyNativeSnapshot;
-  nextOperation?: ProofOperationRecord;
-  deleteProofs?: StoredProof[];
-  nextProofs?: StoredProof[];
-  nextSession?: SwapSessionRecord;
-  nextActivity?: WalletActivityRow;
-  activeSessionLimit?: number;
-  database?: BitcasterDB;
-}): Promise<T> {
-  const { store } = input.authority;
+export async function prepareGuiCustodyUnitOfWork<T>(
+  input: GuiCustodyUnitOfWorkInput<T>,
+): Promise<PreparedGuiCustodyUnitOfWork<T>> {
   const database = input.database ?? db;
   const walletId = input.authority.scope.walletId;
   if (input.snapshot.walletId !== walletId) {
     throw new Error("GUI custody snapshot belongs to another wallet scope");
   }
-  await requireSnapshotSessionIntegrity(input.snapshot, walletId);
-  assertProofDeltaSelected(input);
-  assertNativeWriteScope(input, walletId);
+  const snapshot = structuredClone(input.snapshot);
+  await requireSnapshotSessionIntegrity(snapshot, walletId);
   const now = Date.now();
   const nextSession = input.nextSession
     ? structuredClone(input.nextSession)
@@ -175,49 +203,129 @@ export async function commitGuiCustodyUnitOfWork<T>(input: {
   const nextProofs = input.nextProofs?.map((proof) =>
     prepareStoredProofForWrite(proof, now, walletId),
   );
+  const nextOperation = input.nextOperation
+    ? requireProofOperationRecord(
+        structuredClone(input.nextOperation),
+        walletId,
+        input.nextOperation.operationId,
+      )
+    : undefined;
+  const nextActivity = input.nextActivity
+    ? requireWalletActivityRow(structuredClone(input.nextActivity), walletId)
+    : undefined;
+  const deleteProofIds = storedProofIds(input.deleteProofs ?? []);
+  assertProofDeltaSelected(
+    snapshot,
+    deleteProofIds,
+    storedProofIds(nextProofs ?? []),
+  );
+  assertNativeWriteScope(
+    { nextOperation, nextSession, nextActivity },
+    walletId,
+  );
+  const prepared = Object.freeze({
+    walletId,
+  }) as PreparedGuiCustodyUnitOfWork<T>;
+  preparedGuiCustodyUnits.set(prepared, {
+    authority: input.authority,
+    plan: input.plan,
+    snapshot,
+    nextOperation,
+    deleteProofIds,
+    nextProofs,
+    nextSession,
+    nextActivity,
+    activeSessionLimit: input.activeSessionLimit,
+    database,
+  });
+  return prepared;
+}
+
+export function guiCustodyUnitOfWorkTables(
+  authority: GuiCustodyAuthority,
+  database: BitcasterDB = db,
+) {
+  return [
+    ...authority.store.transactionTables(),
+    database.proofOperations,
+    database.proofs,
+    database.swapSessions,
+    database.walletActivities,
+  ] as const;
+}
+
+export async function commitPreparedGuiCustodyUnitOfWorkInCurrentTransaction<T>(
+  prepared: PreparedGuiCustodyUnitOfWork<T>,
+): Promise<T> {
+  const state = preparedGuiCustodyUnits.get(prepared) as
+    | PreparedGuiCustodyState<T>
+    | undefined;
+  if (!state || state.authority.scope.walletId !== prepared.walletId) {
+    throw new Error("GUI custody unit of work was not prepared");
+  }
+  const { database } = state;
+  requireCurrentWriteTransaction(database);
+  await assertNativeSnapshot(database, state.snapshot, prepared.walletId);
+  requireCurrentWriteTransaction(database);
+  await assertSessionCapacity(database, state, prepared.walletId);
+  requireCurrentWriteTransaction(database);
+  await state.authority.store.commitPreparedTransactionInCurrentTransaction(
+    state.plan,
+  );
+  requireCurrentWriteTransaction(database);
+  await writePreparedNativeRows(state);
+  requireCurrentWriteTransaction(database);
+  return state.plan.result;
+}
+
+export async function commitGuiCustodyUnitOfWork<T>(
+  input: GuiCustodyUnitOfWorkInput<T>,
+): Promise<T> {
+  const prepared = await prepareGuiCustodyUnitOfWork(input);
+  const database = input.database ?? db;
   return database.transaction(
     "rw",
-    [
-      ...store.transactionTables(),
-      database.proofOperations,
-      database.proofs,
-      database.swapSessions,
-      database.walletActivities,
-    ],
-    async () => {
-      await assertNativeSnapshot(database, input.snapshot, walletId);
-      await assertSessionCapacity(
-        database,
-        { ...input, nextSession },
-        walletId,
-      );
-      await store.commitPreparedTransactionInCurrentTransaction(input.plan);
-      if (input.nextOperation) {
-        await database.proofOperations.put(
-          requireProofOperationRecord(
-            input.nextOperation,
-            walletId,
-            input.nextOperation.operationId,
-          ),
-        );
-      }
-      if (input.deleteProofs && input.deleteProofs.length > 0) {
-        await database.proofs.bulkDelete(storedProofIds(input.deleteProofs));
-      }
-      if (nextProofs) {
-        await database.proofs.bulkPut(nextProofs);
-      }
-      if (nextSession) {
-        await database.swapSessions.put(nextSession);
-      }
-      if (input.nextActivity) {
-        await database.walletActivities.put(
-          requireWalletActivityRow(input.nextActivity, walletId),
-        );
-      }
-      return input.plan.result;
-    },
+    guiCustodyUnitOfWorkTables(input.authority, database),
+    async () =>
+      commitPreparedGuiCustodyUnitOfWorkInCurrentTransaction(prepared),
   );
+}
+
+async function writePreparedNativeRows<T>(
+  state: PreparedGuiCustodyState<T>,
+): Promise<void> {
+  const { database } = state;
+  if (state.nextOperation) {
+    await database.proofOperations.put(state.nextOperation);
+    requireCurrentWriteTransaction(database);
+  }
+  if (state.deleteProofIds.length > 0) {
+    await database.proofs.bulkDelete(state.deleteProofIds);
+    requireCurrentWriteTransaction(database);
+  }
+  if (state.nextProofs) {
+    await database.proofs.bulkPut(state.nextProofs);
+    requireCurrentWriteTransaction(database);
+  }
+  if (state.nextSession) {
+    await database.swapSessions.put(state.nextSession);
+    requireCurrentWriteTransaction(database);
+  }
+  if (state.nextActivity) {
+    await database.walletActivities.put(state.nextActivity);
+    requireCurrentWriteTransaction(database);
+  }
+}
+
+function requireCurrentWriteTransaction(database: BitcasterDB): void {
+  const transaction = Dexie.currentTransaction;
+  if (
+    !transaction ||
+    transaction.db !== database ||
+    transaction.mode !== "readwrite"
+  ) {
+    throw new Error("GUI custody commit requires an active write transaction");
+  }
 }
 
 async function requireSnapshotSessionIntegrity(
@@ -232,14 +340,12 @@ async function requireSnapshotSessionIntegrity(
   }
 }
 
-function assertProofDeltaSelected(input: {
-  snapshot: GuiCustodyNativeSnapshot;
-  deleteProofs?: StoredProof[];
-  nextProofs?: StoredProof[];
-}): void {
-  const selected = new Set(input.snapshot.proofIds);
-  const deleted = storedProofIds(input.deleteProofs ?? []);
-  const written = storedProofIds(input.nextProofs ?? []);
+function assertProofDeltaSelected(
+  snapshot: GuiCustodyNativeSnapshot,
+  deleted: string[],
+  written: string[],
+): void {
+  const selected = new Set(snapshot.proofIds);
   if (
     new Set(deleted).size !== deleted.length ||
     new Set(written).size !== written.length ||
