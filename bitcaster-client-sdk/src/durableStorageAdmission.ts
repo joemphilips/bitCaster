@@ -15,10 +15,10 @@ import {
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-export const DURABLE_STORAGE_ADMISSION_SCHEMA_VERSION = 1 as const
+export const DURABLE_STORAGE_ADMISSION_SCHEMA_VERSION = 2 as const
 export const DURABLE_STORAGE_OPERATION_LIMIT_MAX = 256 as const
 export const DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX = 256 as const
-export const DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX = 64 * 1_024
+export const DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX = 1 * 1_024 * 1_024
 export const DURABLE_STORAGE_SWAP_ARTIFACT_LIMIT_MAX = 4_096
 export const DURABLE_STORAGE_SWAP_BYTES_LIMIT_MAX = 16 * 1_024 * 1_024
 export const DURABLE_STORAGE_OPERATION_ARTIFACT_LIMIT_MAX = 1 + 4 * DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX
@@ -38,19 +38,31 @@ export interface DurableStorageComponentBudget {
 export interface DurableStorageArtifactCommitment {
   artifactId: string
   encoding: DurableStoragePlannedArtifact['encoding']
+  artifactRole: DurableStorageArtifactRole
   byteLength: number
   sha256: string
 }
+
+export type DurableStorageArtifactRole =
+  | 'trade-session'
+  | 'exact-operation'
+  | 'proof-post-image'
+  | 'private-material'
+  | 'cipher'
+  | 'operation-overhead'
+  | 'transaction-only-retained'
 
 export type DurableStoragePlannedArtifact =
   | {
       artifactId: string
       encoding: 'json-utf8'
+      artifactRole: DurableStorageArtifactRole
       encodedJson: string
     }
   | {
       artifactId: string
       encoding: 'binary'
+      artifactRole: DurableStorageArtifactRole
       bytes: Uint8Array
     }
 
@@ -105,11 +117,27 @@ export interface DurableStorageReservationPlan {
   totalBytes: number
   operations: Array<{
     semanticOperationId: string
-    artifacts: DurableStorageArtifactCommitment[]
+    exactOperation: DurableStorageComponentBudget
+    proofReferences: DurableStorageComponentBudget
+    privateMaterial: DurableStorageComponentBudget
+    ciphers: DurableStorageComponentBudget
+    transitionOverhead: DurableStorageComponentBudget
     artifactCount: number
     bytes: number
     state: 'reserved' | 'consumed'
   }>
+  requiresAtomicAdapterTransaction: true
+  isBrowserQuotaGuarantee: false
+}
+
+export interface DurableStorageAdmissionBatchPlan {
+  schemaVersion: typeof DURABLE_STORAGE_ADMISSION_SCHEMA_VERSION
+  scopeId: string
+  batchId: string
+  reservations: DurableStorageReservationPlan[]
+  transactionOnlyArtifacts: DurableStorageArtifactCommitment[]
+  totalArtifactCount: number
+  totalBytes: number
   requiresAtomicAdapterTransaction: true
   isBrowserQuotaGuarantee: false
 }
@@ -129,10 +157,11 @@ export interface DurableStoragePinReference {
   referenceId: string
 }
 
-type DurableStorageReleaseDisposition = 'safe-abort' | 'terminal-purge'
+export type DurableStorageReleaseDisposition = 'safe-abort' | 'terminal-purge'
 
 const durableStorageBudgetAuthorities = new WeakMap<object, string>()
 const durableStorageReservationAuthorities = new WeakMap<object, string>()
+const durableStorageAdmissionBatchAuthorities = new WeakMap<object, string>()
 
 export interface DurableStorageAccountingState {
   schemaVersion: typeof DURABLE_STORAGE_ADMISSION_SCHEMA_VERSION
@@ -168,17 +197,25 @@ export interface DurableStorageCommittedReleaseRows {
 
 export interface DurableStorageCommittedReleaseResult {
   readonly nextAccounting: DurableStorageAccountingState
-  readonly releasedArtifactIds: readonly string[]
+  readonly releaseDisposition: DurableStorageReleaseDisposition
+  readonly artifactActions: readonly DurableStorageArtifactReleaseAction[]
+}
+
+export interface DurableStorageArtifactReleaseAction {
+  readonly artifactId: string
+  readonly artifactRole: DurableStorageArtifactRole
+  readonly action: 'delete' | 'retain'
 }
 
 export interface DurableStorageReleaseStore {
   /**
    * In one physical transaction, CAS-read the exact query rows, invoke `apply`
    * once as a synchronous function while that transaction is active, persist
-   * its identical `nextAccounting`, delete only
-   * `(query.scopeId, releasedArtifactIds)`, and commit the revision CAS. Any
-   * exception, thenable callback, mismatch, or quota failure must roll back all
-   * reads and writes.
+   * its identical `nextAccounting`, apply only the returned `artifactActions`
+   * within `query.scopeId`, and commit the revision CAS. `delete` removes the
+   * exact operation-owned row; `retain` must never delete its CAS-validated
+   * post-image. Any exception, thenable callback, mismatch, or quota failure
+   * must roll back all reads and writes.
    */
   commitRelease(
     query: DurableStorageReleaseQuery,
@@ -218,10 +255,11 @@ export type DurableStorageAccountingTransition =
 
 export function createDurableStorageJsonArtifact(inputValue: {
   artifactId: string
+  artifactRole: DurableStorageArtifactRole
   value: unknown
 }): Extract<DurableStoragePlannedArtifact, { encoding: 'json-utf8' }> {
   const input = requireRecord(inputValue, 'planned JSON storage artifact input')
-  requireKnownFields(input, ['artifactId', 'value'])
+  requireKnownFields(input, ['artifactId', 'artifactRole', 'value'])
   preflightPlannedJsonValue(input.value)
   let encodedJson: string | undefined
   try {
@@ -233,6 +271,7 @@ export function createDurableStorageJsonArtifact(inputValue: {
   const artifact = decodePlannedArtifact({
     artifactId: input.artifactId,
     encoding: 'json-utf8',
+    artifactRole: input.artifactRole,
     encodedJson,
   })
   if (artifact.encoding !== 'json-utf8') throw new Error('planned JSON storage artifact is invalid')
@@ -313,7 +352,7 @@ function reduceCommittedRelease(
   }
   const disposition = classifyCommittedRelease(record, rows.scopeState)
   requireReleaseDisposition(context.operation.state, disposition)
-  return buildCommittedReleaseResult(state, context, record)
+  return buildCommittedReleaseResult(state, context, record, disposition)
 }
 
 function classifyCommittedRelease(
@@ -334,6 +373,7 @@ function buildCommittedReleaseResult(
   state: DurableStorageAccountingState,
   context: ReturnType<typeof findReservedOperation>,
   record: DurableCustodyRecord,
+  releaseDisposition: DurableStorageReleaseDisposition,
 ): DurableStorageCommittedReleaseResult {
   const operations = context.reservation.operations.filter(
     (_, index) => index !== context.operationIndex,
@@ -360,18 +400,34 @@ function buildCommittedReleaseResult(
       pinReferences,
       accountedBytes: state.accountedBytes - context.operation.bytes - sharedBytes,
     }),
-    releasedArtifactIds: [
-      ...context.operation.artifacts.map((artifact) => artifact.artifactId),
-      ...sharedArtifacts.map((artifact) => artifact.artifactId),
-    ],
+    releaseDisposition,
+    artifactActions: releaseArtifactActions([
+      ...reservationOperationArtifacts(context.operation),
+      ...sharedArtifacts,
+    ]),
   }
+}
+
+function releaseArtifactActions(
+  artifacts: DurableStorageArtifactCommitment[],
+): DurableStorageArtifactReleaseAction[] {
+  return artifacts.map((artifact) => ({
+    artifactId: artifact.artifactId,
+    artifactRole: artifact.artifactRole,
+    action: isRetainedArtifactRole(artifact.artifactRole) ? 'retain' : 'delete',
+  }))
+}
+
+function isRetainedArtifactRole(role: DurableStorageArtifactRole): boolean {
+  return role === 'proof-post-image' || role === 'transaction-only-retained'
 }
 
 function freezeCommittedRelease(
   result: DurableStorageCommittedReleaseResult,
 ): DurableStorageCommittedReleaseResult {
   freezeRecursively(result.nextAccounting)
-  Object.freeze(result.releasedArtifactIds)
+  for (const action of result.artifactActions) Object.freeze(action)
+  Object.freeze(result.artifactActions)
   return Object.freeze(result)
 }
 
@@ -422,12 +478,19 @@ function requireReleaseStore(value: unknown): DurableStorageReleaseStore {
 
 export function calculateDurableSwapStorageBudget(inputValue: DurableSwapStorageBudgetInput): DurableSwapStorageBudget {
   const input = requireRecord(inputValue, 'durable swap storage budget input')
-  requireKnownFields(input, ['schemaVersion', 'scopeId', 'swapId', 'session', 'operations'])
+  requireKnownFields(input, [
+    'schemaVersion',
+    'scopeId',
+    'swapId',
+    'session',
+    'operations',
+  ])
   requireSchemaVersion(input.schemaVersion)
   const scopeId = decodeDurableCustodyScopeId(input.scopeId)
   const swapId = requireIdentifier(input.swapId, 'swap id')
   const session = measureComponent([input.session], 'session', {
     exactCount: 1,
+    artifactRoles: ['trade-session'],
   })
   const { operations, totalArtifactCount, totalBytes } = decodePlannedOperations(
     input.operations,
@@ -453,15 +516,15 @@ export function calculateDurableSwapStorageBudget(inputValue: DurableSwapStorage
 function decodePlannedOperations(
   value: unknown,
   scopeId: string,
-  session: DurableStorageComponentBudget,
+  shared: DurableStorageComponentBudget,
 ): Pick<DurableSwapStorageBudget, 'operations' | 'totalArtifactCount' | 'totalBytes'> {
   const raw = requireBoundedArray(value, 'storage budget operations', DURABLE_STORAGE_OPERATION_LIMIT_MAX)
   requireOperationCount(raw.length, 'storage budget operation count')
   const operations: DurableSwapStorageBudget['operations'] = []
   const operationIds = new Set<string>()
-  const artifactIds = new Set(session.artifacts.map((artifact) => artifact.artifactId))
-  let totalArtifactCount = session.count
-  let totalBytes = session.bytes
+  const artifactIds = new Set(shared.artifacts.map((artifact) => artifact.artifactId))
+  let totalArtifactCount = shared.count
+  let totalBytes = shared.bytes
   for (const item of raw) {
     const operation = decodeOperationBudget(item, scopeId)
     if (operationIds.has(operation.semanticOperationId)) throw new Error('semantic operation id is duplicated')
@@ -494,7 +557,11 @@ export function createDurableStorageReservationPlan(inputValue: {
     totalBytes: budget.totalBytes,
     operations: budget.operations.map((operation) => ({
       semanticOperationId: operation.semanticOperationId,
-      artifacts: operation.artifacts.map(copyArtifactCommitment),
+      exactOperation: copyComponentBudget(operation.exactOperation),
+      proofReferences: copyComponentBudget(operation.proofReferences),
+      privateMaterial: copyComponentBudget(operation.privateMaterial),
+      ciphers: copyComponentBudget(operation.ciphers),
+      transitionOverhead: copyComponentBudget(operation.transitionOverhead),
       artifactCount: operation.artifactCount,
       bytes: operation.bytes,
       state: 'reserved',
@@ -511,6 +578,106 @@ export function createDurableStorageReservationPlan(inputValue: {
 }
 
 /**
+ * Binds one real adapter transaction across one or more reservations. A
+ * transaction-only artifact must be the exact post-image of a pre-existing
+ * row that the adapter CAS-read in the same transaction. It is verified but
+ * is neither persistently charged nor granted any later deletion authority.
+ */
+export function createDurableStorageAdmissionBatchPlan(inputValue: {
+  batchId: string
+  reservations: DurableStorageReservationPlan[]
+  transactionOnlyArtifacts: DurableStoragePlannedArtifact[]
+}): DurableStorageAdmissionBatchPlan {
+  const input = requireRecord(inputValue, 'storage admission batch input')
+  requireKnownFields(input, ['batchId', 'reservations', 'transactionOnlyArtifacts'])
+  const rawReservations = requireBoundedArray(
+    input.reservations,
+    'storage admission batch reservations',
+    DURABLE_STORAGE_OPERATION_LIMIT_MAX,
+  )
+  if (rawReservations.length === 0) throw new Error('storage admission batch is empty')
+  const decodedReservations = rawReservations.map(
+    requireIssuedDurableStorageReservationPlan,
+  )
+  const scopeId = requireSameBatchScope(decodedReservations)
+  validateReservationIdentities(decodedReservations)
+  const transactionOnly = measureComponent(
+    input.transactionOnlyArtifacts,
+    'transaction-only',
+    {
+      maxCount: DURABLE_STORAGE_SWAP_ARTIFACT_LIMIT_MAX,
+      artifactRoles: ['transaction-only-retained'],
+    },
+  )
+  const committedReservationArtifacts = decodedReservations.flatMap(reservationArtifacts)
+  requireUniqueArtifacts([...committedReservationArtifacts, ...transactionOnly.artifacts])
+  return issueDurableStorageAdmissionBatch({
+    batchId: input.batchId,
+    scopeId,
+    reservations: rawReservations as DurableStorageReservationPlan[],
+    reservationArtifacts: committedReservationArtifacts,
+    transactionOnly,
+  })
+}
+
+function issueDurableStorageAdmissionBatch(input: {
+  batchId: unknown
+  scopeId: string
+  reservations: DurableStorageReservationPlan[]
+  reservationArtifacts: DurableStorageArtifactCommitment[]
+  transactionOnly: DurableStorageComponentBudget
+}): DurableStorageAdmissionBatchPlan {
+  const totalArtifactCount = safeAdd(
+    input.reservationArtifacts.length,
+    input.transactionOnly.count,
+    'storage admission batch artifact count',
+  )
+  const totalBytes = artifactCommitmentBytes(
+    [...input.reservationArtifacts, ...input.transactionOnly.artifacts],
+    'storage admission batch bytes',
+  )
+  requireSwapTotals(totalArtifactCount, totalBytes)
+  const batch: DurableStorageAdmissionBatchPlan = {
+    schemaVersion: DURABLE_STORAGE_ADMISSION_SCHEMA_VERSION,
+    scopeId: input.scopeId,
+    batchId: requireIdentifier(input.batchId, 'storage admission batch id'),
+    reservations: input.reservations,
+    transactionOnlyArtifacts: input.transactionOnly.artifacts,
+    totalArtifactCount,
+    totalBytes,
+    requiresAtomicAdapterTransaction: true,
+    isBrowserQuotaGuarantee: false,
+  }
+  durableStorageAdmissionBatchAuthorities.set(
+    batch,
+    encodeRecord(batch, 'storage admission batch'),
+  )
+  return batch
+}
+
+/** Verifies the physical post-images and returns the one accounting revision. */
+export function applyDurableStorageAdmissionBatch(inputValue: {
+  state: DurableStorageAccountingState
+  batch: DurableStorageAdmissionBatchPlan
+  artifacts: DurableStoragePlannedArtifact[]
+}): DurableStorageAccountingState {
+  const input = requireRecord(inputValue, 'storage admission batch apply input')
+  requireKnownFields(input, ['state', 'batch', 'artifacts'])
+  const state = decodeDurableStorageAccountingState(input.state)
+  const batch = requireIssuedDurableStorageAdmissionBatchPlan(input.batch)
+  verifyDurableStorageArtifactSet(
+    input.artifacts,
+    batchArtifacts(batch),
+    batch.totalBytes,
+  )
+  return reduceDurableStorageAccountingState(state, {
+    kind: 'reserve-batch',
+    expectedRevision: state.revision,
+    reservations: batch.reservations,
+  })
+}
+
+/**
  * Recomputes the exact reservation artifact set immediately before an adapter
  * writes it. Adapters must call this inside the same transaction that persists
  * the artifacts, reservation, and origin-global accounting revision.
@@ -522,20 +689,11 @@ export function verifyDurableStorageReservationArtifacts(inputValue: {
   const input = requireRecord(inputValue, 'storage reservation artifact verification input')
   requireKnownFields(input, ['reservation', 'artifacts'])
   const reservation = requireIssuedDurableStorageReservationPlan(input.reservation)
-  const rawArtifacts = requireBoundedArray(
+  verifyDurableStorageArtifactSet(
     input.artifacts,
-    'storage reservation transaction artifacts',
-    DURABLE_STORAGE_SWAP_ARTIFACT_LIMIT_MAX,
+    reservationArtifacts(reservation),
+    reservation.totalBytes,
   )
-  const actual = rawArtifacts.map(decodePlannedArtifact).map(commitPlannedArtifact)
-  requireUniqueArtifacts(actual)
-  const expected = reservationArtifacts(reservation)
-  if (!sameArtifactCommitmentSets(actual, expected)) {
-    throw new Error('storage reservation transaction artifacts do not match the committed plan')
-  }
-  if (artifactCommitmentBytes(actual, 'storage reservation transaction bytes') !== reservation.totalBytes) {
-    throw new Error('storage reservation transaction bytes do not match the committed plan')
-  }
 }
 
 export function createDurableStorageAccountingState(inputValue: {
@@ -819,8 +977,74 @@ function reservationArtifactIds(reservation: DurableStorageReservationPlan): str
 function reservationArtifacts(reservation: DurableStorageReservationPlan): DurableStorageArtifactCommitment[] {
   return [
     ...reservation.sharedArtifacts,
-    ...reservation.operations.flatMap((operation) => operation.artifacts),
+    ...reservation.operations.flatMap(reservationOperationArtifacts),
   ]
+}
+
+function reservationOperationArtifacts(
+  operation: DurableStorageReservationPlan['operations'][number],
+): DurableStorageArtifactCommitment[] {
+  return [
+    ...operation.exactOperation.artifacts,
+    ...operation.proofReferences.artifacts,
+    ...operation.privateMaterial.artifacts,
+    ...operation.ciphers.artifacts,
+    ...operation.transitionOverhead.artifacts,
+  ]
+}
+
+function batchArtifacts(
+  batch: DurableStorageAdmissionBatchPlan,
+): DurableStorageArtifactCommitment[] {
+  return [
+    ...batch.reservations.flatMap(reservationArtifacts),
+    ...batch.transactionOnlyArtifacts,
+  ]
+}
+
+function verifyDurableStorageArtifactSet(
+  artifactsValue: unknown,
+  expected: DurableStorageArtifactCommitment[],
+  expectedBytes: number,
+): void {
+  const actual = requireBoundedArray(
+    artifactsValue,
+    'storage transaction artifacts',
+    DURABLE_STORAGE_SWAP_ARTIFACT_LIMIT_MAX,
+  ).map(decodePlannedArtifact).map(commitPlannedArtifact)
+  requireUniqueArtifacts(actual)
+  if (!sameArtifactCommitmentSets(actual, expected)) {
+    throw new Error('storage transaction artifacts do not match the committed plan')
+  }
+  if (artifactCommitmentBytes(actual, 'storage transaction bytes') !== expectedBytes) {
+    throw new Error('storage transaction bytes do not match the committed plan')
+  }
+}
+
+function requireSameBatchScope(
+  reservations: DurableStorageReservationPlan[],
+): string {
+  const scopeId = reservations[0]!.scopeId
+  if (reservations.some((reservation) => reservation.scopeId !== scopeId)) {
+    throw new Error('storage admission batch scope is foreign')
+  }
+  return scopeId
+}
+
+function requireIssuedDurableStorageAdmissionBatchPlan(
+  value: unknown,
+): DurableStorageAdmissionBatchPlan {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('storage admission batch is not SDK-issued')
+  }
+  const issuedEncoding = durableStorageAdmissionBatchAuthorities.get(value)
+  if (
+    issuedEncoding === undefined ||
+    issuedEncoding !== encodeRecord(value, 'storage admission batch')
+  ) {
+    throw new Error('storage admission batch is not SDK-issued')
+  }
+  return value as DurableStorageAdmissionBatchPlan
 }
 
 export function decodeDurableStorageMaintenanceCursor(
@@ -969,6 +1193,7 @@ function decodeDurableSwapStorageBudget(value: unknown): DurableSwapStorageBudge
   const scopeId = decodeDurableCustodyScopeId(budget.scopeId)
   const session = decodeMeasuredComponent(budget.session, 'session', {
     exactCount: 1,
+    artifactRoles: ['trade-session'],
   })
   const operations = decodePersistedOperations(budget.operations, scopeId)
   requireOperationCount(operations.length, 'storage budget operation count')
@@ -1062,7 +1287,10 @@ function decodeDurableStorageReservationPlan(value: unknown): DurableStorageRese
     throw new Error('storage reservation totals are inconsistent')
   }
   requireSwapTotals(totalArtifactCount, totalBytes)
-  requireUniqueArtifacts([...shared.artifacts, ...operations.flatMap((operation) => operation.artifacts)])
+  requireUniqueArtifacts([
+    ...shared.artifacts,
+    ...operations.flatMap(reservationOperationArtifacts),
+  ])
   requireEncodedRecordLimit(value, 'storage reservation')
   return {
     schemaVersion: DURABLE_STORAGE_ADMISSION_SCHEMA_VERSION,
@@ -1117,31 +1345,75 @@ function decodeReservationOperation(
   scopeId: string,
 ): DurableStorageReservationPlan['operations'][number] {
   const operation = requireRecord(value, 'storage reservation operation')
-  requireKnownFields(operation, ['semanticOperationId', 'artifacts', 'artifactCount', 'bytes', 'state'])
+  requireKnownFields(operation, [
+    'semanticOperationId',
+    'exactOperation',
+    'proofReferences',
+    'privateMaterial',
+    'ciphers',
+    'transitionOverhead',
+    'artifactCount',
+    'bytes',
+    'state',
+  ])
   if (operation.state !== 'reserved' && operation.state !== 'consumed') {
     throw new Error('storage reservation operation state is invalid')
   }
-  const artifacts = decodeArtifactCommitments(
-    operation.artifacts,
-    'reserved artifacts',
-    DURABLE_STORAGE_OPERATION_ARTIFACT_LIMIT_MAX,
-  )
-  const artifactCount = requirePositiveInteger(operation.artifactCount, 'reserved artifact count')
-  if (artifactCount !== artifacts.length) throw new Error('reserved artifact count is inconsistent')
-  const bytes = requirePositiveInteger(operation.bytes, 'reserved bytes')
-  if (bytes !== artifactCommitmentBytes(artifacts, 'reserved bytes')) {
-    throw new Error('reserved bytes are inconsistent')
-  }
-  if (artifactCount > DURABLE_STORAGE_OPERATION_ARTIFACT_LIMIT_MAX
-    || bytes > DURABLE_STORAGE_OPERATION_BYTES_LIMIT_MAX) {
-    throw new Error('storage reservation operation exceeds the limit')
+  const components = decodeReservationOperationComponents(operation)
+  const summary = summarizeOperationComponents(Object.values(components))
+  if (
+    operation.artifactCount !== summary.artifactCount ||
+    operation.bytes !== summary.bytes
+  ) {
+    throw new Error('storage reservation operation totals are inconsistent')
   }
   return {
     semanticOperationId: decodeDurableCustodyOperationId(operation.semanticOperationId, scopeId),
-    artifacts,
-    artifactCount,
-    bytes,
+    ...components,
+    artifactCount: summary.artifactCount,
+    bytes: summary.bytes,
     state: operation.state,
+  }
+}
+
+function decodeReservationOperationComponents(
+  operation: Record<string, unknown>,
+): Pick<
+  DurableStorageReservationPlan['operations'][number],
+  'exactOperation' | 'proofReferences' | 'privateMaterial' | 'ciphers' | 'transitionOverhead'
+> {
+  const exactOperation = decodeMeasuredComponent(
+    operation.exactOperation,
+    'exact operation',
+    { exactCount: 1, artifactRoles: ['exact-operation'] },
+  )
+  const proofReferences = decodeMeasuredComponent(
+    operation.proofReferences,
+    'proof references',
+    {
+      maxCount: DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX,
+      artifactRoles: ['proof-post-image'],
+    },
+  )
+  const privateMaterial = decodeMeasuredComponent(
+    operation.privateMaterial,
+    'private material',
+    { artifactRoles: ['private-material'] },
+  )
+  const ciphers = decodeMeasuredComponent(operation.ciphers, 'ciphers', {
+    artifactRoles: ['cipher'],
+  })
+  const transitionOverhead = decodeMeasuredComponent(
+    operation.transitionOverhead,
+    'transition overhead',
+    { artifactRoles: ['operation-overhead'] },
+  )
+  return {
+    exactOperation,
+    proofReferences,
+    privateMaterial,
+    ciphers,
+    transitionOverhead,
   }
 }
 
@@ -1149,6 +1421,9 @@ function decodeSharedReservationBudget(
   reservation: Record<string, unknown>,
 ): DurableStorageComponentBudget {
   const artifacts = decodeArtifactCommitments(reservation.sharedArtifacts, 'shared artifacts', 1)
+  requireCommitmentArtifactRoles(artifacts, 'shared', [
+    'trade-session',
+  ])
   const count = requirePositiveInteger(reservation.sharedArtifactCount, 'shared reserved artifact count')
   if (count !== artifacts.length) throw new Error('shared reserved artifact count is inconsistent')
   const bytes = requirePositiveInteger(reservation.sharedBytes, 'shared reserved bytes')
@@ -1190,17 +1465,8 @@ function decodePersistedOperationBudget(
     'artifactCount',
     'bytes',
   ])
-  const exactOperation = decodeMeasuredComponent(operation.exactOperation, 'exact operation', {
-    exactCount: 1,
-  })
-  const proofReferences = decodeMeasuredComponent(operation.proofReferences, 'proof references', {
-    maxCount: DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX,
-  })
-  const privateMaterial = decodeMeasuredComponent(operation.privateMaterial, 'private material')
-  const ciphers = decodeMeasuredComponent(operation.ciphers, 'ciphers')
-  const transitionOverhead = decodeMeasuredComponent(operation.transitionOverhead, 'transition overhead')
-  const components = [exactOperation, proofReferences, privateMaterial, ciphers, transitionOverhead]
-  const summary = summarizeOperationComponents(components)
+  const components = decodeReservationOperationComponents(operation)
+  const summary = summarizeOperationComponents(Object.values(components))
   if (!sameArtifactCommitments(
     decodeArtifactCommitments(
       operation.artifacts,
@@ -1216,11 +1482,7 @@ function decodePersistedOperationBudget(
   }
   return {
     semanticOperationId: decodeDurableCustodyOperationId(operation.semanticOperationId, scopeId),
-    exactOperation,
-    proofReferences,
-    privateMaterial,
-    ciphers,
-    transitionOverhead,
+    ...components,
     ...summary,
   }
 }
@@ -1228,7 +1490,11 @@ function decodePersistedOperationBudget(
 function decodeMeasuredComponent(
   value: unknown,
   name: string,
-  bounds: { exactCount?: number; maxCount?: number } = {},
+  bounds: {
+    exactCount?: number
+    maxCount?: number
+    artifactRoles?: DurableStorageArtifactRole[]
+  } = {},
 ): DurableStorageComponentBudget {
   const component = requireRecord(value, `${name} storage component`)
   requireKnownFields(component, ['artifacts', 'count', 'bytes'])
@@ -1244,6 +1510,7 @@ function decodeMeasuredComponent(
     throw new Error(`${name} bytes are inconsistent`)
   }
   requireComponentBounds(name, count, bytes, bounds)
+  requireCommitmentArtifactRoles(artifacts, name, bounds.artifactRoles)
   return { artifacts, count, bytes }
 }
 
@@ -1259,13 +1526,21 @@ function decodeOperationBudget(value: unknown, scopeId: string): DurableSwapStor
   ])
   const exactOperation = measureComponent([operation.exactOperation], 'exact operation', {
     exactCount: 1,
+    artifactRoles: ['exact-operation'],
   })
   const proofReferences = measureComponent(operation.proofReferences, 'proof references', {
     maxCount: DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX,
+    artifactRoles: ['proof-post-image'],
   })
-  const privateMaterial = measureComponent(operation.privateMaterial, 'private material')
-  const ciphers = measureComponent(operation.ciphers, 'ciphers')
-  const transitionOverhead = measureComponent(operation.transitionOverhead, 'transition overhead')
+  const privateMaterial = measureComponent(operation.privateMaterial, 'private material', {
+    artifactRoles: ['private-material'],
+  })
+  const ciphers = measureComponent(operation.ciphers, 'ciphers', {
+    artifactRoles: ['cipher'],
+  })
+  const transitionOverhead = measureComponent(operation.transitionOverhead, 'transition overhead', {
+    artifactRoles: ['operation-overhead'],
+  })
   const components = [exactOperation, proofReferences, privateMaterial, ciphers, transitionOverhead]
   const summary = summarizeOperationComponents(components)
   return {
@@ -1303,28 +1578,39 @@ function summarizeOperationComponents(components: DurableStorageComponentBudget[
 function measureComponent(
   value: unknown,
   name: string,
-  bounds: { exactCount?: number; maxCount?: number } = {},
+  bounds: {
+    exactCount?: number
+    maxCount?: number
+    artifactRoles?: DurableStorageArtifactRole[]
+  } = {},
 ): DurableStorageComponentBudget {
-  const artifacts = requireBoundedArray(
+  const rawArtifacts = requireBoundedArray(
     value,
     `${name} planned storage artifacts`,
     bounds.maxCount ?? DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX,
-  ).map(decodePlannedArtifact)
-  const count = artifacts.length
-  const commitments = artifacts.map(commitPlannedArtifact)
-  const bytes = commitments.reduce(
-    (total, artifact) => safeAdd(total, artifact.byteLength, `${name} bytes`),
-    0,
   )
+  const count = rawArtifacts.length
+  requireComponentCountBounds(name, count, bounds)
+  const commitments: DurableStorageArtifactCommitment[] = []
+  let bytes = 0
+  for (const rawArtifact of rawArtifacts) {
+    const artifact = decodePlannedArtifact(rawArtifact)
+    requireArtifactRoles([artifact], name, bounds.artifactRoles)
+    const commitment = commitPlannedArtifact(artifact)
+    bytes = safeAdd(bytes, commitment.byteLength, `${name} bytes`)
+    if (bytes > DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX) {
+      throw new Error(`${name} bytes exceed the limit`)
+    }
+    commitments.push(commitment)
+  }
   requireComponentBounds(name, count, bytes, bounds)
   requireUniqueArtifacts(commitments)
   return { artifacts: commitments, count, bytes }
 }
 
-function requireComponentBounds(
+function requireComponentCountBounds(
   name: string,
   count: number,
-  bytes: number,
   bounds: { exactCount?: number; maxCount?: number },
 ): void {
   if (bounds.exactCount !== undefined && count !== bounds.exactCount) {
@@ -1333,6 +1619,15 @@ function requireComponentBounds(
   if (count > (bounds.maxCount ?? DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX)) {
     throw new Error(`${name} count exceeds the limit`)
   }
+}
+
+function requireComponentBounds(
+  name: string,
+  count: number,
+  bytes: number,
+  bounds: { exactCount?: number; maxCount?: number },
+): void {
+  requireComponentCountBounds(name, count, bounds)
   if (bytes > DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX) {
     throw new Error(`${name} bytes exceed the limit`)
   }
@@ -1340,11 +1635,34 @@ function requireComponentBounds(
   if (count === 0 && bytes !== 0) throw new Error(`${name} count and bytes are inconsistent`)
 }
 
+function requireArtifactRoles(
+  artifacts: DurableStoragePlannedArtifact[],
+  name: string,
+  allowed: DurableStorageArtifactRole[] | undefined,
+): void {
+  if (allowed === undefined) return
+  if (artifacts.some((artifact) => !allowed.includes(artifact.artifactRole))) {
+    throw new Error(`${name} artifact role is invalid`)
+  }
+}
+
+function requireCommitmentArtifactRoles(
+  artifacts: DurableStorageArtifactCommitment[],
+  name: string,
+  allowed: DurableStorageArtifactRole[] | undefined,
+): void {
+  if (allowed === undefined) return
+  if (artifacts.some((artifact) => !allowed.includes(artifact.artifactRole))) {
+    throw new Error(`${name} artifact role is invalid`)
+  }
+}
+
 function decodePlannedArtifact(value: unknown): DurableStoragePlannedArtifact {
   const artifact = requireRecord(value, 'planned storage artifact')
   const artifactId = requireIdentifier(artifact.artifactId, 'planned storage artifact id')
+  const artifactRole = decodeArtifactRole(artifact.artifactRole)
   if (artifact.encoding === 'json-utf8') {
-    requireKnownFields(artifact, ['artifactId', 'encoding', 'encodedJson'])
+    requireKnownFields(artifact, ['artifactId', 'encoding', 'artifactRole', 'encodedJson'])
     const encodedJson = requireNonEmptyString(artifact.encodedJson, 'planned JSON storage artifact')
     if (encodedJson.length > DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX) {
       throw new Error('planned JSON storage artifact exceeds the byte limit')
@@ -1356,16 +1674,33 @@ function decodePlannedArtifact(value: unknown): DurableStoragePlannedArtifact {
       throw new Error('planned JSON storage artifact is invalid')
     }
     if (canonical !== encodedJson) throw new Error('planned JSON storage artifact is not canonical')
-    return { artifactId, encoding: 'json-utf8', encodedJson }
+    return { artifactId, encoding: 'json-utf8', artifactRole, encodedJson }
   }
-  requireKnownFields(artifact, ['artifactId', 'encoding', 'bytes'])
+  requireKnownFields(artifact, ['artifactId', 'encoding', 'artifactRole', 'bytes'])
   if (artifact.encoding !== 'binary' || !(artifact.bytes instanceof Uint8Array)) {
     throw new Error('planned storage artifact encoding is invalid')
   }
   if (artifact.bytes.byteLength === 0 || artifact.bytes.byteLength > DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX) {
     throw new Error('planned binary storage artifact exceeds the byte limit')
   }
-  return { artifactId, encoding: 'binary', bytes: artifact.bytes }
+  return { artifactId, encoding: 'binary', artifactRole, bytes: artifact.bytes }
+}
+
+function decodeArtifactRole(
+  value: unknown,
+): DurableStorageArtifactRole {
+  if (
+    value !== 'trade-session' &&
+    value !== 'exact-operation' &&
+    value !== 'proof-post-image' &&
+    value !== 'private-material' &&
+    value !== 'cipher' &&
+    value !== 'operation-overhead' &&
+    value !== 'transaction-only-retained'
+  ) {
+    throw new Error('planned storage artifact role is invalid')
+  }
+  return value
 }
 
 function commitPlannedArtifact(artifact: DurableStoragePlannedArtifact): DurableStorageArtifactCommitment {
@@ -1378,6 +1713,7 @@ function commitPlannedArtifact(artifact: DurableStoragePlannedArtifact): Durable
   return {
     artifactId: artifact.artifactId,
     encoding: artifact.encoding,
+    artifactRole: artifact.artifactRole,
     byteLength: bytes.byteLength,
     sha256: bytesToHex(sha256(bytes)),
   }
@@ -1391,7 +1727,7 @@ function decodeArtifactCommitments(
   const raw = requireBoundedArray(value, name, maximum)
   const artifacts = raw.map((item): DurableStorageArtifactCommitment => {
     const artifact = requireRecord(item, 'storage artifact commitment')
-    requireKnownFields(artifact, ['artifactId', 'encoding', 'byteLength', 'sha256'])
+    requireKnownFields(artifact, ['artifactId', 'encoding', 'artifactRole', 'byteLength', 'sha256'])
     const encoding = artifact.encoding
     if (encoding !== 'json-utf8' && encoding !== 'binary') {
       throw new Error('storage artifact commitment encoding is invalid')
@@ -1403,6 +1739,7 @@ function decodeArtifactCommitments(
     return {
       artifactId: requireIdentifier(artifact.artifactId, 'storage artifact id'),
       encoding,
+      artifactRole: decodeArtifactRole(artifact.artifactRole),
       byteLength,
       sha256: requireLowerHex32(artifact.sha256, 'storage artifact commitment digest'),
     }
@@ -1433,6 +1770,16 @@ function copyArtifactCommitment(artifact: DurableStorageArtifactCommitment): Dur
   return { ...artifact }
 }
 
+function copyComponentBudget(
+  component: DurableStorageComponentBudget,
+): DurableStorageComponentBudget {
+  return {
+    artifacts: component.artifacts.map(copyArtifactCommitment),
+    count: component.count,
+    bytes: component.bytes,
+  }
+}
+
 function requireUniqueValues(values: string[], message: string): void {
   if (new Set(values).size !== values.length) throw new Error(message)
 }
@@ -1446,6 +1793,7 @@ function sameArtifactCommitments(
     return expected !== undefined
       && value.artifactId === expected.artifactId
       && value.encoding === expected.encoding
+      && value.artifactRole === expected.artifactRole
       && value.byteLength === expected.byteLength
       && value.sha256 === expected.sha256
   })
@@ -1461,6 +1809,7 @@ function sameArtifactCommitmentSets(
     const match = expected.get(artifact.artifactId)
     return match !== undefined
       && artifact.encoding === match.encoding
+      && artifact.artifactRole === match.artifactRole
       && artifact.byteLength === match.byteLength
       && artifact.sha256 === match.sha256
   })
@@ -1560,7 +1909,9 @@ function requireKnownFields(record: Record<string, unknown>, expected: readonly 
     if (!expected.includes(key)) throw new Error(`unknown field '${key}'`)
   }
   for (const key of expected) {
-    if (!(key in record)) throw new Error(`missing required field '${key}'`)
+    if (!Object.prototype.hasOwnProperty.call(record, key)) {
+      throw new Error(`missing required field '${key}'`)
+    }
   }
 }
 
