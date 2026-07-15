@@ -5,6 +5,63 @@ export interface AmountProofLike {
   C?: string
 }
 
+export interface CashuProofArtifactLike extends AmountProofLike {
+  secret: string
+  C: string
+  dleq?: unknown
+  p2pk_e?: string
+  witness?: unknown
+}
+
+/** Compare only the exact Cashu bearer artifact, never client-local metadata. */
+export function sameCashuProofArtifact(
+  left: CashuProofArtifactLike,
+  right: CashuProofArtifactLike | undefined,
+): boolean {
+  return Boolean(
+    right &&
+    left.id === right.id &&
+    amountToNumber(left.amount) === amountToNumber(right.amount) &&
+    left.secret === right.secret &&
+    left.C === right.C &&
+    sameArtifactValue(left.dleq, right.dleq) &&
+    left.p2pk_e === right.p2pk_e &&
+    sameArtifactValue(left.witness, right.witness),
+  )
+}
+
+function sameArtifactValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameArtifactValue(value, right[index]))
+    )
+  }
+  if (
+    left === null ||
+    right === null ||
+    typeof left !== 'object' ||
+    typeof right !== 'object'
+  ) {
+    return false
+  }
+  const leftRecord = left as Record<string, unknown>
+  const rightRecord = right as Record<string, unknown>
+  const leftKeys = Object.keys(leftRecord).sort()
+  const rightKeys = Object.keys(rightRecord).sort()
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) =>
+        key === rightKeys[index] &&
+        sameArtifactValue(leftRecord[key], rightRecord[key]),
+    )
+  )
+}
+
 export function sumProofs(proofs: readonly AmountProofLike[]): number {
   let total = 0
   for (const p of proofs) total += amountToNumber(p.amount)

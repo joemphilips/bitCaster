@@ -56,6 +56,10 @@
       "types": "./dist/proofSelection.d.ts",
       "import": "./dist/proofSelection.js"
     },
+    "./cashuProofArtifact": {
+      "types": "./dist/cashuProofArtifact.d.ts",
+      "import": "./dist/cashuProofArtifact.js"
+    },
     "./proofUnit": {
       "types": "./dist/proofUnit.d.ts",
       "import": "./dist/proofUnit.js"

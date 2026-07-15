@@ -33,6 +33,7 @@ import { requireDurableWalletProofTransition } from '../src/durableWalletProofTr
 
 const KEYSET_ID = `00${'22'.repeat(7)}`
 const MINT_URL = 'https://mint.example'
+const MINT_QUOTE_EXPIRY = 2_000
 const OUTPUT_PLAN_FINGERPRINT = /^[a-f0-9]{64}$/
 const RESULT_FINGERPRINT = deriveDurableCustodyProofResultFingerprint({
   receive: [proof(1, '77')],
@@ -82,6 +83,7 @@ test('rehydration uses only exact persisted outputs and request authority', () =
     operationId: 'mint-001',
     mintUrl: MINT_URL,
     unit: 'sat',
+    quoteExpiryUnixSeconds: MINT_QUOTE_EXPIRY,
     preview,
   })
   preview.outputData[0]!.secret.fill(0xff)
@@ -176,6 +178,7 @@ test('strict codec rejects unknown fields, noncanonical values, and mixed varian
     operationId: 'mint-001',
     mintUrl: MINT_URL,
     unit: 'sat',
+    quoteExpiryUnixSeconds: MINT_QUOTE_EXPIRY,
     preview: mintPreview(),
   })
   const unknown = structuredClone(mint) as unknown as Record<string, unknown>
@@ -192,6 +195,22 @@ test('strict codec rejects unknown fields, noncanonical values, and mixed varian
     /output amount is invalid/,
   )
 
+  const invalidExpiry = structuredClone(mint)
+  invalidExpiry.preview.quoteExpiryUnixSeconds = -1
+  assert.throws(
+    () => decodeDurableWalletOperation(invalidExpiry),
+    /mint quote expiry is invalid/,
+  )
+
+  const missingExpiry = structuredClone(mint) as unknown as {
+    preview: Record<string, unknown>
+  }
+  delete missingExpiry.preview.quoteExpiryUnixSeconds
+  assert.throws(
+    () => decodeDurableWalletOperation(missingExpiry),
+    /missing required field 'quoteExpiryUnixSeconds'/,
+  )
+
   const mismatchedPayload = structuredClone(mint)
   mismatchedPayload.preview.payload.outputs[0]!.B_ = `02${'99'.repeat(32)}`
   assert.throws(
@@ -206,7 +225,7 @@ test('strict codec rejects unknown fields, noncanonical values, and mixed varian
   mixed.kind = 'wallet-melt'
   assert.throws(
     () => decodeDurableWalletOperation(mixed),
-    /unknown field 'payload'/,
+    /unknown field/,
   )
 
   const oversizedOperationId = structuredClone(mint)
@@ -228,6 +247,19 @@ test('strict codec rejects unknown fields, noncanonical values, and mixed varian
       classification: 'corrupt',
       reason: 'corrupt-evidence',
     },
+  )
+
+  const invalidObservation = recoveryEvidence(mint, {
+    quoteState: 'UNPAID',
+    restore: 'none',
+  })
+  if (invalidObservation.quote?.kind !== 'mint') {
+    throw new Error('missing mint quote fixture')
+  }
+  invalidObservation.quote.observedAtUnixSeconds = -1
+  assert.equal(
+    decideDurableWalletOperationRecovery(mint, invalidObservation).kind,
+    'fail-closed',
   )
 })
 
@@ -274,6 +306,75 @@ test('mint recovery is quote-bound and never reissues an issued quote without ex
   if (foreignMethod.quote !== null) foreignMethod.quote.method = 'bolt12'
   assert.deepEqual(
     decideDurableWalletOperationRecovery(operation, foreignMethod),
+    {
+      kind: 'fail-closed',
+      classification: 'foreign',
+      reason: 'quote-authority',
+    },
+  )
+})
+
+test('only an exact unsubmitted unpaid mint quote at its persisted expiry can abort', () => {
+  const operation = operationByKind('wallet-mint')
+
+  assert.deepEqual(
+    decide(operation, {
+      quoteState: 'UNPAID',
+      submissionState: 'not-submitted',
+      observedAtUnixSeconds: MINT_QUOTE_EXPIRY,
+      restore: 'none',
+    }),
+    {
+      kind: 'abort-no-transport',
+      classification: 'all-inputs-unspent',
+      reason: 'mint-quote-expired',
+    },
+  )
+  assert.equal(
+    decide(operation, {
+      quoteState: 'UNPAID',
+      submissionState: 'not-submitted',
+      observedAtUnixSeconds: MINT_QUOTE_EXPIRY - 1,
+      restore: 'none',
+    }).kind,
+    'retry-later',
+  )
+  assert.equal(
+    decide(operation, {
+      quoteState: 'UNPAID',
+      submissionState: 'submitted',
+      observedAtUnixSeconds: MINT_QUOTE_EXPIRY,
+      restore: 'none',
+    }).kind,
+    'retry-later',
+  )
+
+  const noExpiry = {
+    ...operation,
+    preview: { ...operation.preview, quoteExpiryUnixSeconds: null },
+  }
+  assert.equal(
+    decide(noExpiry, {
+      quoteState: 'UNPAID',
+      submissionState: 'not-submitted',
+      observedAtUnixSeconds: MINT_QUOTE_EXPIRY,
+      restore: 'none',
+    }).kind,
+    'retry-later',
+  )
+
+  const foreignExpiry = recoveryEvidence(operation, {
+    quoteState: 'UNPAID',
+    submissionState: 'not-submitted',
+    observedAtUnixSeconds: MINT_QUOTE_EXPIRY,
+    restore: 'none',
+  })
+  if (foreignExpiry.quote?.kind !== 'mint') {
+    throw new Error('missing mint quote fixture')
+  }
+  foreignExpiry.quote.expiryUnixSeconds += 1
+  assert.deepEqual(
+    decideDurableWalletOperationRecovery(operation, foreignExpiry),
     {
       kind: 'fail-closed',
       classification: 'foreign',
@@ -353,6 +454,7 @@ test('exact restore handle is bound to one operation and output plan', async () 
     operationId: 'mint-foreign',
     mintUrl: MINT_URL,
     unit: 'sat',
+    quoteExpiryUnixSeconds: MINT_QUOTE_EXPIRY,
     preview: mintPreview(),
   })
   const foreignOperationRestore = await verifiedExactRestore(foreignOperation)
@@ -373,6 +475,7 @@ test('exact restore handle is bound to one operation and output plan', async () 
     operationId: operation.operationId,
     mintUrl: MINT_URL,
     unit: 'sat',
+    quoteExpiryUnixSeconds: MINT_QUOTE_EXPIRY,
     preview: changedPreview,
   })
   const foreignPlanRestore = await verifiedExactRestore(foreignPlan)
@@ -673,6 +776,7 @@ function operationFixtures(): DurableWalletOperation[] {
       operationId: 'mint-001',
       mintUrl: MINT_URL,
       unit: 'sat',
+      quoteExpiryUnixSeconds: MINT_QUOTE_EXPIRY,
       preview: mintPreview(),
     }),
     createDurableWalletReceiveOperation({
@@ -794,6 +898,8 @@ function decide(
     inputStates?: Array<'UNSPENT' | 'PENDING' | 'SPENT'>
     restore: 'none' | 'partial' | DurableWalletVerifiedExactOutputRestore
     meltChange?: ReturnType<typeof meltChange>
+    submissionState?: 'not-submitted' | 'submitted'
+    observedAtUnixSeconds?: number
   },
 ) {
   return decideDurableWalletOperationRecovery(
@@ -809,6 +915,8 @@ function recoveryEvidence(
     inputStates?: Array<'UNSPENT' | 'PENDING' | 'SPENT'>
     restore: 'none' | 'partial' | DurableWalletVerifiedExactOutputRestore
     meltChange?: ReturnType<typeof meltChange>
+    submissionState?: 'not-submitted' | 'submitted'
+    observedAtUnixSeconds?: number
   },
 ): DurableWalletOperationRecoveryEvidence {
   const authority = deriveDurableWalletOperationAuthority(operation)
@@ -817,6 +925,7 @@ function recoveryEvidence(
     schemaVersion: 1,
     operationId: operation.operationId,
     requestFingerprint: authority.requestFingerprint,
+    submissionState: input.submissionState ?? 'submitted',
     quote:
       operation.kind === 'wallet-mint' || operation.kind === 'wallet-melt'
         ? operation.kind === 'wallet-mint'
@@ -825,6 +934,8 @@ function recoveryEvidence(
               method: operation.preview.method,
               quoteId: operation.preview.payload.quote,
               state: input.quoteState as 'UNPAID' | 'PAID' | 'ISSUED',
+              expiryUnixSeconds: operation.preview.quoteExpiryUnixSeconds,
+              observedAtUnixSeconds: input.observedAtUnixSeconds ?? 1_000,
             }
           : {
               kind: 'melt' as const,

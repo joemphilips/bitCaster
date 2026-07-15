@@ -316,7 +316,6 @@ export function isDurableCustodySafeAbortEligible(
 ): boolean {
   return evidence.operationState === 'dispatch-intent'
     && evidence.submissionState === 'not-submitted'
-    && evidence.exactInputStates.length > 0
     && evidence.exactInputStates.every((state) => state === 'unspent')
     && evidence.exactRequestDisposition === 'deterministically-rejected'
     && evidence.hasDependentJournaledIntent === false

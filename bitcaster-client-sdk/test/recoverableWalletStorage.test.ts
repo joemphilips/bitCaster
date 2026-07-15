@@ -608,7 +608,6 @@ test("safe abort requires all-unspent deterministic rejection before submission 
     { submissionState: "submitted" as const },
     { submissionState: "unknown" as const },
     { exactInputStates: ["unspent", "spent"] as const },
-    { exactInputStates: [] as const },
     { exactRequestDisposition: "unknown" as const },
     { hasDependentJournaledIntent: true },
     { hasStagedResult: true },
@@ -620,6 +619,13 @@ test("safe abort requires all-unspent deterministic rejection before submission 
       false,
     );
   }
+  assert.equal(
+    isDurableCustodySafeAbortEligible({
+      ...eligible,
+      exactInputStates: [],
+    }),
+    true,
+  );
   assert.equal(isDurableCustodySafeAbortEligible({} as never), false);
 });
 

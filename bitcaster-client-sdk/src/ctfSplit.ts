@@ -18,6 +18,7 @@ import {
 import {
   amountToNumber,
   computeInputFeeSatsForProofs,
+  sameCashuProofArtifact,
   sumProofs,
   takeProofsForLock,
 } from "./proofSelection.ts";
@@ -1754,7 +1755,7 @@ function sameRegularProofAuthority(
     const candidate = requestedByIdentity.get(
       regularProofAuthorityIdentity(proof),
     );
-    return candidate !== undefined && proof.C === candidate.C;
+    return sameCashuProofArtifact(proof, candidate);
   });
 }
 

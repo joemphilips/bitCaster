@@ -161,7 +161,7 @@ test('wallet mint rejects input proofs and missing output authority', async () =
   )
 })
 
-test('inputless persisted receive rejects broadened or mismatched authority', async () => {
+test('inputless persisted mint rejects broadened or mismatched authority', async () => {
   const record = await inputlessMintRecord()
 
   for (const semanticKind of ['generic-send', 'swap-lock']) {
@@ -211,7 +211,7 @@ test('inputless persisted receive rejects broadened or mismatched authority', as
   )
 })
 
-test('inputless persisted receive round-trips into bounded retry recovery', async () => {
+test('inputless persisted mint retries unknown responses and aborts exact rejection', async () => {
   const record = decodeDurableCustodyRecord(
     structuredClone(await inputlessMintRecord()),
   )
@@ -243,9 +243,8 @@ test('inputless persisted receive round-trips into bounded retry recovery', asyn
     ),
   )
   assert.deepEqual(reissue, {
-    kind: 'reissue-exact-operation',
+    kind: 'abort-no-transport',
     effectiveNowMs: 1_500,
-    exact: exactReference(record),
   })
 })
 

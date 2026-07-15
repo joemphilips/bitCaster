@@ -514,6 +514,7 @@ function custodyRecord(suffix: string): DurableCustodyRecord {
       custodyContext: { normalizedMint: 'https://mint.example', unit: 'sat', inventoryAccountId: null },
       reservation: {
         reservationId: `reservation-${suffix}`,
+        parentReservationId: null,
         inputs: [{ proofId: FINGERPRINT_A, keysetId: 'keyset-001', curve: 'secp256k1' }],
       },
       exactRequest: {

@@ -883,6 +883,31 @@ test("splitRegularProofsWithOperation rejects conflicting replay input authority
   );
 });
 
+test("splitRegularProofsWithOperation rejects conflicting optional replay proof authority", async () => {
+  const operationId = "regular-op-conflict-optional-input";
+  const store = regularSplitReplayStore(operationId);
+
+  await assert.rejects(
+    () =>
+      splitRegularProofsWithOperation({
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "sat",
+        operationId,
+        wallet: new FakeRegularSplitWallet(),
+        proofs: [
+          {
+            ...proof("regular-keyset", 210, "input-210"),
+            dleq: { e: "11", s: "22", r: "33" },
+          },
+        ],
+        amountSubunits: 100,
+        proofOperationStore: store,
+      }),
+    /conflicts with the requested regular split/,
+  );
+});
+
 test("splitRegularProofsWithOperation resumes only explicit persisted input authority without fresh proofs", async () => {
   const operationId = "regular-op-persisted-inputs";
   const store = regularSplitReplayStore(operationId);

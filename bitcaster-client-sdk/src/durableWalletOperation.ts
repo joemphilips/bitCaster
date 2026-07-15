@@ -85,6 +85,7 @@ export type DurableWalletMintOperation = DurableWalletOperationCommon & {
   kind: 'wallet-mint'
   preview: {
     method: string
+    quoteExpiryUnixSeconds: number | null
     payload: {
       quote: string
       outputs: DurableWalletBlindedMessage[]
@@ -186,6 +187,7 @@ export type DurableWalletOperationRecoveryEvidence = {
   schemaVersion: 1
   operationId: string
   requestFingerprint: string
+  submissionState: 'not-submitted' | 'submitted'
   quote:
     | null
     | {
@@ -193,6 +195,8 @@ export type DurableWalletOperationRecoveryEvidence = {
         method: string
         quoteId: string
         state: 'UNPAID' | 'PAID' | 'ISSUED'
+        expiryUnixSeconds: number | null
+        observedAtUnixSeconds: number
       }
     | {
         kind: 'melt'
@@ -225,6 +229,14 @@ const exactRestoreAuthorities = new WeakMap<
 >()
 
 export type DurableWalletOperationRecoveryDecision =
+  | {
+      kind: 'abort-no-transport'
+      classification: Extract<
+        DurableCustodyRecoveryClassification,
+        'all-inputs-unspent'
+      >
+      reason: 'mint-quote-expired'
+    }
   | {
       kind: 'reissue-exact-operation'
       classification: Extract<
@@ -268,12 +280,14 @@ export function createDurableWalletMintOperation(input: {
   operationId: string
   mintUrl: string
   unit: string
+  quoteExpiryUnixSeconds: number | null
   preview: MintPreview<Pick<{ quote: string }, 'quote'>>
 }): DurableWalletMintOperation {
   return decodeDurableWalletOperation({
     ...commonOperation(input, 'wallet-mint'),
     preview: {
       method: input.preview.method,
+      quoteExpiryUnixSeconds: input.quoteExpiryUnixSeconds,
       payload: {
         quote: input.preview.payload.quote,
         outputs: input.preview.payload.outputs.map(serializeBlindedMessage),
@@ -713,11 +727,21 @@ function decodeMintPreview(
   value: unknown,
 ): DurableWalletMintOperation['preview'] {
   const preview = requireRecord(value, 'wallet mint preview')
-  requireFields(preview, ['method', 'payload', 'outputData', 'keysetId'])
+  requireFields(preview, [
+    'method',
+    'quoteExpiryUnixSeconds',
+    'payload',
+    'outputData',
+    'keysetId',
+  ])
   const payload = requireRecord(preview.payload, 'wallet mint payload')
   requireFields(payload, ['quote', 'outputs', 'signature'])
   const decoded = {
     method: requireIdentifier(preview.method, 'mint method'),
+    quoteExpiryUnixSeconds: requireOptionalUnixSeconds(
+      preview.quoteExpiryUnixSeconds,
+      'mint quote expiry',
+    ),
     payload: {
       quote: requireIdentifier(payload.quote, 'mint quote id'),
       outputs: requireArray(payload.outputs, 'mint payload outputs').map(
@@ -1108,9 +1132,21 @@ function decideMintRecovery(
       : failClosed('corrupt', 'corrupt-evidence')
   }
   if (quote.state === 'UNPAID') {
-    return evidence.restore.kind === 'none'
-      ? retry('quote-pending', 'pending-or-mixed')
-      : failClosed('corrupt', 'corrupt-evidence')
+    if (evidence.restore.kind !== 'none') {
+      return failClosed('corrupt', 'corrupt-evidence')
+    }
+    if (
+      evidence.submissionState === 'not-submitted' &&
+      operation.preview.quoteExpiryUnixSeconds !== null &&
+      quote.observedAtUnixSeconds >= operation.preview.quoteExpiryUnixSeconds
+    ) {
+      return {
+        kind: 'abort-no-transport',
+        classification: 'all-inputs-unspent',
+        reason: 'mint-quote-expired',
+      }
+    }
+    return retry('quote-pending', 'pending-or-mixed')
   }
   return failClosed('corrupt', 'corrupt-evidence')
 }
@@ -1276,6 +1312,8 @@ function matchesQuoteAuthority(
         quote.kind === 'mint' &&
         quote.method === operation.preview.method &&
         quote.quoteId === operation.preview.payload.quote &&
+        quote.expiryUnixSeconds ===
+          operation.preview.quoteExpiryUnixSeconds &&
         (quote.state === 'UNPAID' ||
           quote.state === 'PAID' ||
           quote.state === 'ISSUED')
@@ -1314,12 +1352,19 @@ function decodeRecoveryEvidence(
     'schemaVersion',
     'operationId',
     'requestFingerprint',
+    'submissionState',
     'quote',
     'inputStates',
     'restore',
   ])
   if (evidence.schemaVersion !== 1)
     throw new Error('recovery evidence version is invalid')
+  if (
+    evidence.submissionState !== 'not-submitted' &&
+    evidence.submissionState !== 'submitted'
+  ) {
+    throw new Error('recovery submission state is invalid')
+  }
   return {
     schemaVersion: 1,
     operationId: requireIdentifier(
@@ -1331,6 +1376,7 @@ function decodeRecoveryEvidence(
       evidence.requestFingerprint,
       'recovery request fingerprint',
     ),
+    submissionState: evidence.submissionState,
     quote: decodeRecoveryQuote(evidence.quote),
     inputStates: requireArray(
       evidence.inputStates,
@@ -1346,7 +1392,14 @@ function decodeRecoveryQuote(
   if (value === null) return null
   const quote = requireRecord(value, 'recovery quote')
   if (quote.kind === 'mint') {
-    requireFields(quote, ['kind', 'method', 'quoteId', 'state'])
+    requireFields(quote, [
+      'kind',
+      'method',
+      'quoteId',
+      'state',
+      'expiryUnixSeconds',
+      'observedAtUnixSeconds',
+    ])
     if (
       quote.state !== 'UNPAID' &&
       quote.state !== 'PAID' &&
@@ -1359,6 +1412,14 @@ function decodeRecoveryQuote(
       method: requireIdentifier(quote.method, 'recovery quote method'),
       quoteId: requireIdentifier(quote.quoteId, 'recovery quote id'),
       state: quote.state,
+      expiryUnixSeconds: requireOptionalUnixSeconds(
+        quote.expiryUnixSeconds,
+        'recovery quote expiry',
+      ),
+      observedAtUnixSeconds: requireUnixSeconds(
+        quote.observedAtUnixSeconds,
+        'recovery quote observation time',
+      ),
     }
   }
   if (quote.kind === 'melt') {
@@ -1835,6 +1896,20 @@ function requireText(value: unknown, name: string, maxLength: number): string {
 function requireBoolean(value: unknown, name: string): boolean {
   if (typeof value !== 'boolean') throw new Error(`${name} is invalid`)
   return value
+}
+
+function requireUnixSeconds(value: unknown, name: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`${name} is invalid`)
+  }
+  return value as number
+}
+
+function requireOptionalUnixSeconds(
+  value: unknown,
+  name: string,
+): number | null {
+  return value === null ? null : requireUnixSeconds(value, name)
 }
 
 function requireRecord(value: unknown, name: string): Record<string, unknown> {
