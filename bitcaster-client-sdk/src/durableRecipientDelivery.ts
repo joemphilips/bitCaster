@@ -1,5 +1,6 @@
 import { normalizeDurableWalletMintUrl } from "./durableWalletMintUrl.ts";
 import { describeDurableWalletSendToken } from "./durableWalletSendDelivery.ts";
+import { requireDurableRecipientProductBinding } from "./durableRecipientProductBinding.ts";
 import { createStrictCodec } from "./strictCodec.ts";
 
 export const DURABLE_RECIPIENT_DELIVERY_SCHEMA_VERSION = 1 as const;
@@ -33,6 +34,7 @@ export interface DurableRecipientDeliveryRequest {
   recipientKind: string;
   purpose: string;
   destinationId: string;
+  productBinding: string;
   mintUrl: string;
   unit: string;
   requestedAmount: string;
@@ -89,6 +91,7 @@ export function createDurableRecipientDeliveryRecord(input: {
   recipientKind: string;
   purpose: string;
   destinationId: string;
+  productBinding: string;
   mintUrl: string;
   unit: string;
   requestedAmount: string;
@@ -105,6 +108,7 @@ export function createDurableRecipientDeliveryRecord(input: {
       recipientKind: input.recipientKind,
       purpose: input.purpose,
       destinationId: input.destinationId,
+      productBinding: input.productBinding,
       mintUrl: input.mintUrl,
       unit: input.unit,
       requestedAmount: input.requestedAmount,
@@ -196,6 +200,7 @@ function decodeRequest(value: unknown): DurableRecipientDeliveryRequest {
     "recipientKind",
     "purpose",
     "destinationId",
+    "productBinding",
     "mintUrl",
     "unit",
     "requestedAmount",
@@ -213,6 +218,7 @@ function decodeRequest(value: unknown): DurableRecipientDeliveryRequest {
     recipientKind: requireText(raw.recipientKind, "recipient kind", 128),
     purpose: requireText(raw.purpose, "purpose", 128),
     destinationId: requireText(raw.destinationId, "destination id", 512),
+    productBinding: requireDurableRecipientProductBinding(raw.productBinding),
     mintUrl: normalizeDurableWalletMintUrl(
       requireText(raw.mintUrl, "mint URL", 2_048),
     ),

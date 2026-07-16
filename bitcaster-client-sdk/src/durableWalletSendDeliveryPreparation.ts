@@ -16,6 +16,7 @@ import {
   type DurableWalletSendDeliveryAdmission,
 } from "./durableWalletSendDelivery.ts";
 import { normalizeDurableWalletMintUrl } from "./durableWalletMintUrl.ts";
+import { requireDurableRecipientProductBinding } from "./durableRecipientProductBinding.ts";
 import {
   issueDurableWalletSendDeliveryPreparationCapability,
   type DurableWalletSendDeliveryPolicyKind,
@@ -39,6 +40,7 @@ export interface DurableRecipientDeliveryIntent {
   recipientKind: string;
   purpose: string;
   destinationId: string;
+  productBinding: string;
   mintUrl: string;
   unit: string;
   requestedAmount: string;
@@ -174,6 +176,12 @@ export function requireDurableWalletSendDeliveryPreparationForOperation(
   return preparation;
 }
 
+export function decodeDurableRecipientDeliveryIntent(
+  value: unknown,
+): DurableRecipientDeliveryIntent {
+  return decodeRecipientIntent(value);
+}
+
 function canonicalAdmission(
   operation: DurableWalletSendOperation,
   value: unknown,
@@ -246,6 +254,7 @@ function decodeRecipientIntent(value: unknown): DurableRecipientDeliveryIntent {
     "recipientKind",
     "purpose",
     "destinationId",
+    "productBinding",
     "mintUrl",
     "unit",
     "requestedAmount",
@@ -257,6 +266,9 @@ function decodeRecipientIntent(value: unknown): DurableRecipientDeliveryIntent {
     recipientKind: requireText(intent.recipientKind, "recipient kind", 128),
     purpose: requireText(intent.purpose, "purpose", 128),
     destinationId: requireText(intent.destinationId, "destination id", 512),
+    productBinding: requireDurableRecipientProductBinding(
+      intent.productBinding,
+    ),
     mintUrl: normalizeDurableWalletMintUrl(
       requireText(intent.mintUrl, "mint URL", 2_048),
     ),

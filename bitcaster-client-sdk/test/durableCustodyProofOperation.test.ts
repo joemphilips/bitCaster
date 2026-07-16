@@ -22,6 +22,8 @@ import {
   createDurableTradeProofOperationLink,
   type DurableTradeSession,
 } from '../src/durableTradeRecovery.ts'
+import { toDurableCustodyProofOperationInput } from '../src/durableWalletOperation.ts'
+import { createRecipientDeliveryFixture } from './durableRecipientDeliveryFixture.ts'
 
 const KEYSET_ID = `00${'22'.repeat(7)}`
 const PUBLIC_KEY = `02${'33'.repeat(32)}`
@@ -53,6 +55,29 @@ test('shared proof operation facts bind wallet semantics and exact mint keys', a
     keysetExpiryMs: null,
   })
   assert.equal(facts.verification.keysetBindings[0]?.keysetId, KEYSET_ID)
+})
+
+test('wallet-send facts bind the approved durable recipient activity id', async () => {
+  const fixture = createRecipientDeliveryFixture()
+  const facts = await resolveDurableCustodyProofOperationFacts({
+    operation: toDurableCustodyProofOperationInput(fixture.walletOperation),
+    session: null,
+    resolveMintKeys: async (_mintUrl, keysetIds) =>
+      new Map(
+        keysetIds.map((id) => [
+          id,
+          { id, unit: 'sat', keys: { '1': PUBLIC_KEY } },
+        ]),
+      ),
+    requireDleq: false,
+    walletSendDeliveryPreparation: fixture.preparation,
+  })
+
+  assert.deepEqual(facts.binding, {
+    kind: 'wallet',
+    activityId: 'payment-1',
+    stage: 'send',
+  })
 })
 
 test('wallet mint facts require output authority without inventing proof inputs', async () => {

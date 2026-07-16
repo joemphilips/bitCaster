@@ -128,6 +128,12 @@ test('custody conversion is self-contained and emits strict wallet delta policie
     }
     if (operation.kind === 'wallet-send') {
       assert.equal(policy.passthroughResultGroups.keep?.length, 1)
+      const runtime = rehydrateDurableWalletOperation(operation)
+      assert.equal(runtime.kind, 'wallet-send')
+      assert.equal(
+        custody.outputs.send![0]!.secret,
+        new TextDecoder().decode(runtime.preview.sendOutputs[0]!.secret),
+      )
     }
   }
 

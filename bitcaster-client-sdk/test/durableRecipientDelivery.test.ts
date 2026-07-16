@@ -22,8 +22,13 @@ import {
   createRecipientDeliveryFixture,
 } from "./durableRecipientDeliveryFixture.ts";
 import {
+  decodeDurableRecipientDeliveryIntent,
   decodeDurableWalletSendDeliveryPreparation,
 } from "../src/durableWalletSendDeliveryPreparation.ts";
+import {
+  marketFundingRecipientProductBinding,
+  participationScoreRecipientProductBinding,
+} from "../src/durableRecipientProductBinding.ts";
 
 function pending(): DurableRecipientDeliveryRecord {
   const fixture = createRecipientDeliveryFixture();
@@ -33,6 +38,7 @@ function pending(): DurableRecipientDeliveryRecord {
     recipientKind: "matching-engine",
     purpose: "participation-score",
     destinationId: "participation-score",
+    productBinding: participationScoreRecipientProductBinding(),
     mintUrl: "https://mint.example",
     unit: "sat",
     requestedAmount: "1",
@@ -135,6 +141,7 @@ test("pre-mint preparation binds the delivery policy and full recipient tuple", 
     ["recipientKind", "other-service"],
     ["purpose", "market-funding"],
     ["destinationId", "market-2"],
+    ["productBinding", "ab".repeat(32)],
     ["mintUrl", "https://other-mint.example"],
     ["unit", "usd"],
     ["requestedAmount", "2"],
@@ -151,6 +158,28 @@ test("pre-mint preparation binds the delivery policy and full recipient tuple", 
       field,
     );
   }
+});
+
+test("recipient intent codec is strict and canonicalizes the mint URL", () => {
+  const fixture = createRecipientDeliveryFixture();
+  if (fixture.preparation.policy.kind !== "durable-recipient-ack") {
+    throw new Error("missing recipient policy");
+  }
+  assert.deepEqual(
+    decodeDurableRecipientDeliveryIntent({
+      ...fixture.preparation.policy.recipient,
+      mintUrl: "https://mint.example/",
+    }),
+    fixture.preparation.policy.recipient,
+  );
+  assert.throws(
+    () =>
+      decodeDurableRecipientDeliveryIntent({
+        ...fixture.preparation.policy.recipient,
+        extra: true,
+      }),
+    /fields are invalid/,
+  );
 });
 
 test("server recipient record contains no sender-local wallet authority", () => {
@@ -247,6 +276,11 @@ test("net-of-receive-fee accepts only exact fee arithmetic", () => {
         recipientKind: "matching-engine",
         purpose: "market-funding",
         destinationId: "market-1",
+        productBinding: marketFundingRecipientProductBinding({
+          divisibility: 10_000,
+          fundAmm: false,
+          creatorPubkey: null,
+        }),
         mintUrl: "https://mint.example",
         unit: "sat",
         requestedAmount: "5",
@@ -422,6 +456,11 @@ test("codecs reject unknown fields and impossible timestamps", () => {
         recipientKind: "matching-engine",
         purpose: "market-funding",
         destinationId: "market-1",
+        productBinding: marketFundingRecipientProductBinding({
+          divisibility: 10_000,
+          fundAmm: false,
+          creatorPubkey: null,
+        }),
         mintUrl: "https://mint.example",
         unit: "sat",
         requestedAmount: "5",

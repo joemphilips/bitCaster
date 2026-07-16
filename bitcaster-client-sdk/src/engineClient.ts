@@ -3,6 +3,11 @@ import {
   decodeDurableRecipientDeliveryEvidence,
   type DurableRecipientDeliveryEvidence,
 } from './durableRecipientDelivery.ts'
+import {
+  participationScoreRecipientProductBinding,
+  requireDurableRecipientProductBinding,
+} from './durableRecipientProductBinding.ts'
+import { normalizeDurableWalletMintUrl } from './durableWalletMintUrl.ts'
 
 export type EngineFetch = typeof fetch
 
@@ -261,6 +266,325 @@ export interface ParticipationScoreResponse {
   enabled: boolean
 }
 
+export interface MarketFundingPaymentStatusResponse {
+  schemaVersion: 1
+  depositId: string
+  conditionId: string
+  accountSubject: string
+  recipientKind: 'matching-engine'
+  purpose: 'market-funding'
+  destinationId: string
+  productBinding: string
+  mintUrl: string
+  unit: 'sat' | 'msat' | 'usd'
+  creditPolicy: 'net-of-receive-fee'
+  tokenDigest: string
+  encodedTokenBytes: number
+  receiptOperationId: string | null
+  receivedAt: string | null
+  state: 'requested' | 'paid' | 'credited' | 'failed'
+  method: 'ecash'
+  amountSubunits: number
+  creditedAmountSubunits: number | null
+  receiveFeeAmountSubunits: number | null
+  businessEventId: string | null
+  creditedAt: string | null
+  requestedAt: string
+  updatedAt: string
+  failureReason: string | null
+}
+
+export interface SubmitMarketFundingEcashRequest {
+  accountSubject: string
+  conditionId: string
+  depositId: string
+  amountSubunits: number
+  proofsToken: string
+  mintUrl: string
+  unit: 'sat' | 'msat' | 'usd'
+  divisibility: number
+  creatorPubkey?: string | null
+  fundAmm?: boolean
+}
+
+export interface SubmitMarketFundingEcashResponse {
+  depositId: string
+  state: 'requested' | 'paid' | 'credited' | 'failed'
+}
+
+export function marketFundingStatusToDeliveryEvidence(
+  value: unknown,
+): DurableRecipientDeliveryEvidence {
+  const status = decodeMarketFundingPaymentStatus(value)
+  const request = {
+    schemaVersion: status.schemaVersion,
+    deliveryId: status.depositId,
+    accountSubject: status.accountSubject,
+    recipientKind: status.recipientKind,
+    purpose: status.purpose,
+    destinationId: status.destinationId,
+    productBinding: status.productBinding,
+    mintUrl: status.mintUrl,
+    unit: status.unit,
+    requestedAmount: String(status.amountSubunits),
+    creditPolicy: { kind: 'net-of-receive-fee' as const },
+    tokenDigest: status.tokenDigest,
+    encodedTokenBytes: status.encodedTokenBytes,
+  }
+  if (
+    status.state === 'requested' ||
+    (status.state === 'failed' && status.receiptOperationId === null)
+  ) {
+    return { kind: 'not-found' }
+  }
+  const receipt = requireMarketFundingReceipt(status)
+  if (status.state === 'paid' || status.state === 'failed') {
+    return decodeDurableRecipientDeliveryEvidence({
+      kind: 'received',
+      request,
+      receiptOperationId: receipt.receiptOperationId,
+      receivedAtMs: Date.parse(receipt.receivedAt),
+    })
+  }
+  return decodeDurableRecipientDeliveryEvidence({
+    kind: 'credited',
+    request,
+    receiptOperationId: receipt.receiptOperationId,
+    receivedAtMs: Date.parse(receipt.receivedAt),
+    creditedAmount: String(status.creditedAmountSubunits),
+    creditVerification: {
+      kind: 'net-of-receive-fee',
+      receiveFeeAmount: String(status.receiveFeeAmountSubunits),
+    },
+    businessEventId: status.businessEventId,
+    creditedAtMs: Date.parse(status.creditedAt!),
+  })
+}
+
+export function decodeMarketFundingPaymentStatus(
+  value: unknown,
+): MarketFundingPaymentStatusResponse {
+  const status = requireExactObject(
+    value,
+    MARKET_FUNDING_STATUS_FIELDS,
+    'Market funding payment status',
+  )
+  if (
+    status.schemaVersion !== 1 ||
+    status.recipientKind !== 'matching-engine' ||
+    status.purpose !== 'market-funding' ||
+    status.creditPolicy !== 'net-of-receive-fee' ||
+    status.method !== 'ecash'
+  ) {
+    throw new Error('Market funding payment route is invalid')
+  }
+  const depositId = requireUuid(status.depositId, 'deposit id')
+  const conditionId = requireBoundedText(status.conditionId, 'condition id', 512)
+  const destinationId = requireBoundedText(status.destinationId, 'destination id', 512)
+  if (destinationId !== conditionId) {
+    throw new Error('Market funding payment destination is invalid')
+  }
+  const state = requireMarketFundingState(status.state)
+  const receivedAt = requireNullableTimestampText(
+    status.receivedAt,
+    'received time',
+  )
+  const requestedAt = requireTimestampText(status.requestedAt, 'requested time')
+  const updatedAt = requireTimestampText(status.updatedAt, 'updated time')
+  const result: MarketFundingPaymentStatusResponse = {
+    schemaVersion: 1,
+    depositId,
+    conditionId,
+    accountSubject: requireBoundedText(status.accountSubject, 'account subject', 512),
+    recipientKind: 'matching-engine',
+    purpose: 'market-funding',
+    destinationId,
+    productBinding: requireDurableRecipientProductBinding(status.productBinding),
+    mintUrl: normalizeDurableWalletMintUrl(status.mintUrl),
+    unit: requireMarketFundingUnit(status.unit),
+    creditPolicy: 'net-of-receive-fee',
+    tokenDigest: requireLowerHexDigest(status.tokenDigest),
+    encodedTokenBytes: requireBoundedPositiveInteger(
+      status.encodedTokenBytes,
+      'encoded token bytes',
+      65_536,
+    ),
+    receiptOperationId: requireNullableBoundedText(
+      status.receiptOperationId,
+      'receipt operation id',
+      512,
+    ),
+    receivedAt,
+    state,
+    method: 'ecash',
+    amountSubunits: requirePositiveSafeInteger(status.amountSubunits, 'deposit amount'),
+    creditedAmountSubunits: requireNullablePositiveSafeInteger(
+      status.creditedAmountSubunits,
+      'credited amount',
+    ),
+    receiveFeeAmountSubunits: requireNullableNonNegativeSafeInteger(
+      status.receiveFeeAmountSubunits,
+      'receive fee',
+    ),
+    businessEventId: requireNullableBoundedText(
+      status.businessEventId,
+      'business event id',
+      512,
+    ),
+    creditedAt: requireNullableTimestampText(status.creditedAt, 'credited time'),
+    requestedAt,
+    updatedAt,
+    failureReason: requireNullableBoundedText(
+      status.failureReason,
+      'failure reason',
+      2_048,
+    ),
+  }
+  assertMarketFundingPaymentResult(result)
+  return result
+}
+
+const MARKET_FUNDING_STATUS_FIELDS = [
+  'schemaVersion',
+  'depositId',
+  'conditionId',
+  'accountSubject',
+  'recipientKind',
+  'purpose',
+  'destinationId',
+  'productBinding',
+  'mintUrl',
+  'unit',
+  'creditPolicy',
+  'tokenDigest',
+  'encodedTokenBytes',
+  'receiptOperationId',
+  'receivedAt',
+  'state',
+  'method',
+  'amountSubunits',
+  'creditedAmountSubunits',
+  'receiveFeeAmountSubunits',
+  'businessEventId',
+  'creditedAt',
+  'requestedAt',
+  'updatedAt',
+  'failureReason',
+] as const
+
+function assertMarketFundingPaymentResult(
+  status: MarketFundingPaymentStatusResponse,
+): void {
+  const expectedReceiptOperationId =
+    `${status.conditionId}/${status.depositId}/ecash-receive`
+  if (Date.parse(status.updatedAt) < Date.parse(status.requestedAt)) {
+    throw new Error('Market funding update precedes its request')
+  }
+  const hasReceipt =
+    status.receiptOperationId !== null || status.receivedAt !== null
+  if (hasReceipt) {
+    if (
+      status.receiptOperationId !== expectedReceiptOperationId ||
+      status.receivedAt === null ||
+      Date.parse(status.receivedAt) < Date.parse(status.requestedAt) ||
+      Date.parse(status.receivedAt) > Date.parse(status.updatedAt)
+    ) {
+      throw new Error('Market funding receipt is misbound')
+    }
+  }
+  if (
+    (status.state === 'paid' || status.state === 'credited') &&
+    !hasReceipt
+  ) {
+    throw new Error('Market funding receipt is missing')
+  }
+  if (status.state === 'requested' && hasReceipt) {
+    throw new Error('Market funding requested result has receipt authority')
+  }
+  if (status.state === 'requested' || status.state === 'paid') {
+    if (
+      status.creditedAmountSubunits !== null ||
+      status.receiveFeeAmountSubunits !== null ||
+      status.businessEventId !== null ||
+      status.creditedAt !== null ||
+      status.failureReason !== null
+    ) {
+      throw new Error('Market funding nonterminal result is invalid')
+    }
+    return
+  }
+  if (status.state === 'failed') {
+    if (
+      status.creditedAmountSubunits !== null ||
+      status.receiveFeeAmountSubunits !== null ||
+      status.businessEventId !== null ||
+      status.creditedAt !== null ||
+      status.failureReason === null
+    ) {
+      throw new Error('Market funding failure result is invalid')
+    }
+    return
+  }
+  const receipt = requireMarketFundingReceipt(status)
+  if (
+    status.creditedAmountSubunits === null ||
+    status.receiveFeeAmountSubunits === null ||
+    status.businessEventId !==
+      `market-deposit-credit/${status.conditionId}/${status.depositId}` ||
+    status.creditedAt === null ||
+    status.failureReason !== null ||
+    status.creditedAmountSubunits + status.receiveFeeAmountSubunits !==
+      status.amountSubunits ||
+    Date.parse(status.creditedAt) < Date.parse(receipt.receivedAt)
+  ) {
+    throw new Error('Market funding credit result is invalid')
+  }
+}
+
+function requireMarketFundingReceipt(
+  status: MarketFundingPaymentStatusResponse,
+): { receiptOperationId: string; receivedAt: string } {
+  if (status.receiptOperationId === null || status.receivedAt === null) {
+    throw new Error('Market funding receipt is missing')
+  }
+  return {
+    receiptOperationId: status.receiptOperationId,
+    receivedAt: status.receivedAt,
+  }
+}
+
+function requireMarketFundingState(
+  value: unknown,
+): MarketFundingPaymentStatusResponse['state'] {
+  if (
+    value === 'requested' ||
+    value === 'paid' ||
+    value === 'credited' ||
+    value === 'failed'
+  ) {
+    return value
+  }
+  throw new Error('Market funding payment state is invalid')
+}
+
+function requireMarketFundingUnit(
+  value: unknown,
+): MarketFundingPaymentStatusResponse['unit'] {
+  if (value === 'sat' || value === 'msat' || value === 'usd') return value
+  throw new Error('Market funding payment unit is invalid')
+}
+
+function requireMarketFundingDivisibility(value: unknown): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    (value as number) < 2 ||
+    (value as number) > 2_147_483_647
+  ) {
+    throw new Error('Market funding divisibility is invalid')
+  }
+  return value as number
+}
+
 export interface ParticipationScorePaymentStatusResponse {
   schemaVersion: 1
   paymentId: string
@@ -313,6 +637,7 @@ export function scorePaymentStatusToDeliveryEvidence(
       recipientKind: status.recipientKind,
       purpose: status.purpose,
       destinationId: status.destinationId,
+      productBinding: participationScoreRecipientProductBinding(),
       mintUrl: status.mintUrl,
       unit: status.unit,
       requestedAmount: String(status.amountSats),
@@ -442,6 +767,7 @@ function assertScorePaymentEvidence(
       recipientKind: request.recipientKind,
       purpose: request.purpose,
       destinationId: request.destinationId,
+      productBinding: participationScoreRecipientProductBinding(),
       mintUrl: request.mintUrl,
       unit: request.unit,
       requestedAmount: String(request.amountSats),
@@ -605,6 +931,79 @@ export class BitcasterEngineClient {
     return (await response.json()) as MarketCommentsResponse
   }
 
+  async getMarketFundingPayment(
+    conditionId: string,
+    depositId: string,
+  ): Promise<MarketFundingPaymentStatusResponse | null> {
+    const expectedConditionId = requireBoundedText(conditionId, 'condition id', 512)
+    const expectedDepositId = requireUuid(depositId, 'deposit id')
+    const response = await this.request(
+      `/api/v1/markets/${encodePathSegment(expectedConditionId)}/deposit/${encodePathSegment(expectedDepositId)}`,
+    )
+    if (response.status === 404) return null
+    const status = decodeMarketFundingPaymentStatus(await response.json())
+    if (
+      status.depositId !== expectedDepositId ||
+      status.conditionId !== expectedConditionId
+    ) {
+      throw new Error('Market funding payment status does not match its request')
+    }
+    return status
+  }
+
+  async submitMarketFundingEcash(
+    request: SubmitMarketFundingEcashRequest,
+  ): Promise<SubmitMarketFundingEcashResponse> {
+    const accountSubject = requireBoundedText(
+      request.accountSubject,
+      'account subject',
+      512,
+    )
+    const conditionId = requireBoundedText(request.conditionId, 'condition id', 512)
+    const depositId = requireUuid(request.depositId, 'deposit id')
+    const amountSubunits = requirePositiveSafeInteger(
+      request.amountSubunits,
+      'deposit amount',
+    )
+    const mintUrl = normalizeDurableWalletMintUrl(request.mintUrl)
+    const unit = requireMarketFundingUnit(request.unit)
+    const divisibility = requireMarketFundingDivisibility(request.divisibility)
+    const proofsToken = requireBoundedText(request.proofsToken, 'proofs token', 65_536)
+    const bodyText = JSON.stringify({
+      accountSubject,
+      depositId,
+      amountSubunits,
+      proofsToken,
+      mintUrl,
+      unit,
+      divisibility,
+      ...(request.creatorPubkey ? { creatorPubkey: request.creatorPubkey } : {}),
+      fundAmm: request.fundAmm ?? false,
+    })
+    const response = await this.request(
+      `/api/v1/markets/${encodePathSegment(conditionId)}/deposit/ecash`,
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+      },
+      bodyText,
+    )
+    const result = requireExactObject(
+      await response.json(),
+      ['depositId', 'state'],
+      'Market funding payment response',
+    )
+    const responseDepositId = requireUuid(result.depositId, 'deposit id')
+    if (responseDepositId !== depositId) {
+      throw new Error('Market funding payment response does not match its request')
+    }
+    return {
+      depositId: responseDepositId,
+      state: requireMarketFundingState(result.state),
+    }
+  }
+
   async getParticipationScore(): Promise<ParticipationScoreResponse> {
     const response = await this.request('/api/v1/participation-score')
     return (await response.json()) as ParticipationScoreResponse
@@ -625,11 +1024,18 @@ export class BitcasterEngineClient {
   }
 
   async payParticipationScoreEcash(
+    accountSubject: string,
     amountSats: number,
     proofsToken: string,
     paymentId?: string,
   ): Promise<PayParticipationScoreEcashResponse> {
+    const expectedAccountSubject = requireBoundedText(
+      accountSubject,
+      'account subject',
+      512,
+    )
     const bodyText = JSON.stringify({
+      accountSubject: expectedAccountSubject,
       amountSats,
       proofsToken,
       ...(paymentId ? { paymentId } : {}),
@@ -946,11 +1352,37 @@ function requireBoundedPositiveInteger(value: unknown, name: string, maximum: nu
   return value as number
 }
 
+function requireNullablePositiveSafeInteger(
+  value: unknown,
+  name: string,
+): number | null {
+  return value === null ? null : requirePositiveSafeInteger(value, name)
+}
+
+function requireNullableNonNegativeSafeInteger(
+  value: unknown,
+  name: string,
+): number | null {
+  if (value === null) return null
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`Engine ${name} is invalid`)
+  }
+  return value as number
+}
+
 function requireLowerHexDigest(value: unknown): string {
   if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
     throw new Error('Participation Score token digest is invalid')
   }
   return value
+}
+
+function requireNullableBoundedText(
+  value: unknown,
+  name: string,
+  maxLength: number,
+): string | null {
+  return value === null ? null : requireBoundedText(value, name, maxLength)
 }
 
 function requireTimestampText(value: unknown, name: string): string {
@@ -959,4 +1391,11 @@ function requireTimestampText(value: unknown, name: string): string {
     throw new Error(`Participation Score ${name} is invalid`)
   }
   return text
+}
+
+function requireNullableTimestampText(
+  value: unknown,
+  name: string,
+): string | null {
+  return value === null ? null : requireTimestampText(value, name)
 }

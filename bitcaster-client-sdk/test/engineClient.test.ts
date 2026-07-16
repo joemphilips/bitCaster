@@ -3,10 +3,53 @@ import { test } from 'node:test'
 import {
   BitcasterEngineClient,
   EngineClientError,
+  marketFundingStatusToDeliveryEvidence,
   scorePaymentStatusToDeliveryEvidence,
   submitEphemeralPubkey,
 } from '../src/engineClient.ts'
+import { marketFundingRecipientProductBinding } from '../src/durableRecipientProductBinding.ts'
 import { isKind89NostrEvent } from '../src/marketLifecycle.ts'
+
+function marketFundingStatusFixture(
+  overrides: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  const conditionId = String(overrides.conditionId ?? 'deadbeef')
+  const depositId = String(
+    overrides.depositId ?? 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+  )
+  return {
+    schemaVersion: 1,
+    depositId,
+    conditionId,
+    accountSubject: 'account_primary',
+    recipientKind: 'matching-engine',
+    purpose: 'market-funding',
+    destinationId: conditionId,
+    productBinding: marketFundingRecipientProductBinding({
+      divisibility: 10_000,
+      fundAmm: true,
+      creatorPubkey: 'ab'.repeat(32),
+    }),
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    creditPolicy: 'net-of-receive-fee',
+    tokenDigest: 'ab'.repeat(32),
+    encodedTokenBytes: 123,
+    receiptOperationId: `${conditionId}/${depositId}/ecash-receive`,
+    receivedAt: '2026-07-16T00:00:00Z',
+    state: 'credited',
+    method: 'ecash',
+    amountSubunits: 10_000,
+    creditedAmountSubunits: 9_998,
+    receiveFeeAmountSubunits: 2,
+    businessEventId: `market-deposit-credit/${conditionId}/${depositId}`,
+    creditedAt: '2026-07-16T00:00:01Z',
+    requestedAt: '2026-07-16T00:00:00Z',
+    updatedAt: '2026-07-16T00:00:01Z',
+    failureReason: null,
+    ...overrides,
+  }
+}
 
 test('BitcasterEngineClient.getMarket reads one catalogue row through query ids', async () => {
   const requests: string[] = []
@@ -273,6 +316,150 @@ test('BitcasterEngineClient.getParticipationScore reads authenticated Score stat
   ])
 })
 
+test('BitcasterEngineClient reads exact owner-scoped market funding credit evidence', async () => {
+  const conditionId = 'deadbeef'
+  const depositId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d'
+  const status = marketFundingStatusFixture({ conditionId, depositId })
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: async ({ url, method }) => {
+      assert.equal(
+        url,
+        `https://engine.example/api/v1/markets/${conditionId}/deposit/${depositId}`,
+      )
+      assert.equal(method, 'GET')
+      return 'Nostr auth'
+    },
+    fetchImpl: async (_input, init) => {
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Nostr auth')
+      return Response.json(status)
+    },
+  })
+
+  const result = await client.getMarketFundingPayment(conditionId, depositId)
+  const evidence = marketFundingStatusToDeliveryEvidence(result)
+
+  assert.equal(evidence.kind, 'credited')
+  if (evidence.kind !== 'credited') assert.fail('expected credited evidence')
+  assert.equal(evidence.request.destinationId, conditionId)
+  assert.equal(evidence.creditedAmount, '9998')
+  assert.deepEqual(evidence.creditVerification, {
+    kind: 'net-of-receive-fee',
+    receiveFeeAmount: '2',
+  })
+})
+
+test('market funding status exposes only persisted durable receipt authority', () => {
+  const paid = marketFundingStatusFixture({
+    state: 'paid',
+    creditedAmountSubunits: null,
+    receiveFeeAmountSubunits: null,
+    businessEventId: null,
+    creditedAt: null,
+  })
+  const requested = {
+    ...paid,
+    state: 'requested',
+    receiptOperationId: null,
+    receivedAt: null,
+  }
+  const failedBeforeReceipt = {
+    ...paid,
+    state: 'failed',
+    receiptOperationId: null,
+    receivedAt: null,
+    failureReason: 'temporary receiver failure',
+  }
+  const failedAfterReceipt = {
+    ...paid,
+    state: 'failed',
+    failureReason: 'temporary engine callback failure',
+  }
+
+  assert.equal(marketFundingStatusToDeliveryEvidence(paid).kind, 'received')
+  assert.equal(marketFundingStatusToDeliveryEvidence(requested).kind, 'not-found')
+  assert.equal(
+    marketFundingStatusToDeliveryEvidence(failedBeforeReceipt).kind,
+    'not-found',
+  )
+  assert.equal(
+    marketFundingStatusToDeliveryEvidence(failedAfterReceipt).kind,
+    'received',
+  )
+})
+
+test('BitcasterEngineClient rejects malformed or misbound market funding status', async () => {
+  const conditionId = 'deadbeef'
+  const depositId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d'
+  const valid = marketFundingStatusFixture({ conditionId, depositId })
+  for (const body of [
+    { ...valid, accountSubject: '' },
+    { ...valid, destinationId: 'feedface' },
+    { ...valid, productBinding: 'CD'.repeat(32) },
+    { ...valid, mintUrl: 'https://mint.example?secret=value' },
+    { ...valid, receiveFeeAmountSubunits: 3 },
+    { ...valid, receiptOperationId: 'market-deposit-receipt/foreign' },
+    { ...valid, receiptOperationId: null },
+    { ...valid, receivedAt: null },
+    { ...valid, businessEventId: 'market-deposit-credit/foreign' },
+    { ...valid, unexpected: true },
+  ]) {
+    const client = new BitcasterEngineClient({
+      baseUrl: 'https://engine.example',
+      fetchImpl: async () => Response.json(body),
+    })
+    await assert.rejects(() =>
+      client.getMarketFundingPayment(conditionId, depositId),
+    )
+  }
+})
+
+test('BitcasterEngineClient submits the exact market funding tuple', async () => {
+  const conditionId = 'deadbeef'
+  const depositId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d'
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: async ({ bodyText }) => {
+      assert.deepEqual(JSON.parse(bodyText!), {
+        accountSubject: 'account_primary',
+        depositId,
+        amountSubunits: 10_000,
+        proofsToken: 'cashuB-token',
+        mintUrl: 'https://mint.example',
+        unit: 'msat',
+        divisibility: 10_000,
+        creatorPubkey: 'ab'.repeat(32),
+        fundAmm: true,
+      })
+      return 'Nostr auth'
+    },
+    fetchImpl: async (input, init) => {
+      assert.equal(
+        String(input),
+        `https://engine.example/api/v1/markets/${conditionId}/deposit/ecash`,
+      )
+      assert.equal(init?.method, 'POST')
+      return Response.json({ depositId, state: 'requested' })
+    },
+  })
+
+  assert.deepEqual(
+    await client.submitMarketFundingEcash({
+      accountSubject: 'account_primary',
+      conditionId,
+      depositId,
+      amountSubunits: 10_000,
+      proofsToken: 'cashuB-token',
+      mintUrl: 'https://mint.example/',
+      unit: 'msat',
+      divisibility: 10_000,
+      creatorPubkey: 'ab'.repeat(32),
+      fundAmm: true,
+    }),
+    { depositId, state: 'requested' },
+  )
+})
+
 test('BitcasterEngineClient.getParticipationScorePayment reads owner-scoped status', async () => {
   const paymentId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d'
   const client = new BitcasterEngineClient({
@@ -410,6 +597,7 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
       assert.equal(
         bodyText,
         JSON.stringify({
+          accountSubject: 'account_primary',
           amountSats: 2,
           proofsToken: 'cashuB-token',
           paymentId,
@@ -440,7 +628,12 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
     },
   })
 
-  const result = await client.payParticipationScoreEcash(2, 'cashuB-token', paymentId)
+  const result = await client.payParticipationScoreEcash(
+    'account_primary',
+    2,
+    'cashuB-token',
+    paymentId,
+  )
 
   assert.equal(result.status, 'credited')
   assert.deepEqual(requests, [
@@ -448,6 +641,7 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
       url: 'https://engine.example/api/v1/participation-score/ecash',
       method: 'POST',
       body: JSON.stringify({
+        accountSubject: 'account_primary',
         amountSats: 2,
         proofsToken: 'cashuB-token',
         paymentId,
@@ -481,7 +675,13 @@ test('BitcasterEngineClient rejects an unknown or inconsistent Score payment res
         }),
     })
 
-    await assert.rejects(() => client.payParticipationScoreEcash(2, 'cashuB-token'))
+    await assert.rejects(() =>
+      client.payParticipationScoreEcash(
+        'account_primary',
+        2,
+        'cashuB-token',
+      ),
+    )
   }
 })
 
@@ -508,7 +708,14 @@ test('BitcasterEngineClient binds immediate Score responses to the request tuple
         }),
     })
 
-    await assert.rejects(() => client.payParticipationScoreEcash(2, 'cashuB-token', paymentId))
+    await assert.rejects(() =>
+      client.payParticipationScoreEcash(
+        'account_primary',
+        2,
+        'cashuB-token',
+        paymentId,
+      ),
+    )
   }
 })
 

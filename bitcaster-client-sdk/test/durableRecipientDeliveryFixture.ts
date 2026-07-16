@@ -29,6 +29,9 @@ import {
 import {
   planDurableWalletSendExactPayload,
 } from "../src/durableWalletSendExactPayload.ts";
+import {
+  participationScoreRecipientProductBinding,
+} from "../src/durableRecipientProductBinding.ts";
 
 const KEYSET_ID = "0011223344556677";
 const SECP_PUBLIC_KEY = `02${"11".repeat(32)}`;
@@ -60,6 +63,7 @@ export function createRecipientDeliveryFixture(input?: {
         recipientKind: "matching-engine",
         purpose: "participation-score",
         destinationId: "participation-score",
+        productBinding: participationScoreRecipientProductBinding(),
         mintUrl: "https://mint.example",
         unit: "sat",
         requestedAmount: String(amount),

@@ -494,7 +494,7 @@ export function toDurableCustodyProofOperationInput(
         outputs.map((output) => ({
           blindedMessage: { ...output.blindedMessage },
           blindingFactor: output.blindingFactor,
-          secret: output.secret,
+          secret: new TextDecoder().decode(rehydrateOutput(output).secret),
           ...(output.ephemeralE === null
             ? {}
             : { ephemeralE: output.ephemeralE }),

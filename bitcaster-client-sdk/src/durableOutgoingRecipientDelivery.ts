@@ -201,6 +201,7 @@ function assertDeliveryMatchesExactPayload(
     request.recipientKind !== policy.recipient.recipientKind ||
     request.purpose !== policy.recipient.purpose ||
     request.destinationId !== policy.recipient.destinationId ||
+    request.productBinding !== policy.recipient.productBinding ||
     request.mintUrl !== policy.recipient.mintUrl ||
     request.unit !== policy.recipient.unit ||
     request.requestedAmount !== policy.recipient.requestedAmount ||

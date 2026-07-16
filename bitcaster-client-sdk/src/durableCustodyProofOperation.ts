@@ -14,6 +14,10 @@ import {
   type DurableTradeProofOperationLink,
   type DurableTradeSession,
 } from './durableTradeRecovery.ts'
+import {
+  requireDurableWalletSendDeliveryPreparationForOperation,
+  type DurableWalletSendDeliveryPreparation,
+} from './durableWalletSendDeliveryPreparation.ts'
 
 export type DurableCustodyProofOperationKind =
   | DurableCustodySemanticKind
@@ -77,6 +81,7 @@ export interface ResolveDurableCustodyProofOperationFactsInput {
   session: DurableTradeSession | null
   resolveMintKeys: DurableCustodyMintKeyResolver
   requireDleq: boolean
+  walletSendDeliveryPreparation?: DurableWalletSendDeliveryPreparation
 }
 
 /** Resolves the shared semantic, trade, horizon, and mint-key authority. */
@@ -87,7 +92,12 @@ export async function resolveDurableCustodyProofOperationFacts(
   const semanticKind = durableCustodyProofOperationSemanticKind(
     input.operation.kind,
   )
-  const binding = createBinding(input.operation, semanticKind, input.session)
+  const binding = createBinding(
+    input.operation,
+    semanticKind,
+    input.session,
+    input.walletSendDeliveryPreparation,
+  )
   const usage = keysetUsage(input.operation)
   const hasOutputs = Object.values(input.operation.outputs).some(
     (outputs) => outputs.length > 0,
@@ -140,6 +150,7 @@ function createBinding(
   operation: DurableCustodyProofOperationInput,
   semanticKind: DurableCustodySemanticKind,
   session: DurableTradeSession | null,
+  walletSendDeliveryPreparation: DurableWalletSendDeliveryPreparation | undefined,
 ): DurableCustodyBinding {
   const policy = durableCustodySemanticPolicy(semanticKind)
   if (session === null) {
@@ -149,9 +160,13 @@ function createBinding(
     if (policy.bindingKind === 'trade') {
       throw new Error('custody operation requires a trade binding')
     }
+    const activityId = walletSendActivityId(
+      operation,
+      walletSendDeliveryPreparation,
+    )
     return {
       kind: 'wallet',
-      activityId: operation.operationId,
+      activityId,
       stage: policy.stage as Extract<
         DurableCustodyBinding,
         { kind: 'wallet' }
@@ -174,6 +189,25 @@ function createBinding(
     immutableTradeFingerprint: immutableTradeFingerprint(session),
     hasDependentOperation: hasDependentOperation(operation, session),
   }
+}
+
+function walletSendActivityId(
+  operation: DurableCustodyProofOperationInput,
+  preparation: DurableWalletSendDeliveryPreparation | undefined,
+): string {
+  if (operation.kind !== 'wallet-send') {
+    if (preparation !== undefined) {
+      throw new Error('wallet-send delivery preparation is foreign')
+    }
+    return operation.operationId
+  }
+  if (preparation === undefined) {
+    return operation.operationId
+  }
+  return requireDurableWalletSendDeliveryPreparationForOperation(
+    preparation,
+    operation.metadata?.durableWalletOperation,
+  ).activityId
 }
 
 function assertSessionBinding(

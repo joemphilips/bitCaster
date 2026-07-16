@@ -58,6 +58,9 @@ import {
   createRecipientCustodyState,
   createRecipientDeliveryFixture,
 } from './durableRecipientDeliveryFixture.ts'
+import {
+  marketFundingRecipientProductBinding,
+} from '../src/durableRecipientProductBinding.ts'
 
 const FINGERPRINT_A = 'a'.repeat(64)
 const FINGERPRINT_B = 'b'.repeat(64)
@@ -842,6 +845,11 @@ test('recipient handoff accepts only verified net-of-receive-fee credit', () => 
         recipientKind: 'matching-engine',
         purpose: 'market-funding',
         destinationId: 'market-1',
+        productBinding: marketFundingRecipientProductBinding({
+          divisibility: 10_000,
+          fundAmm: false,
+          creatorPubkey: null,
+        }),
         mintUrl: 'https://mint.example',
         unit: 'sat',
         requestedAmount: '5',

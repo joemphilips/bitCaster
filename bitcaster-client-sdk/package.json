@@ -116,6 +116,10 @@
       "types": "./dist/durableWalletOperation.d.ts",
       "import": "./dist/durableWalletOperation.js"
     },
+    "./durableWalletMintUrl": {
+      "types": "./dist/durableWalletMintUrl.d.ts",
+      "import": "./dist/durableWalletMintUrl.js"
+    },
     "./durableWalletSendDelivery": {
       "types": "./dist/durableWalletSendDelivery.d.ts",
       "import": "./dist/durableWalletSendDelivery.js"
@@ -131,6 +135,10 @@
     "./durableRecipientDelivery": {
       "types": "./dist/durableRecipientDelivery.d.ts",
       "import": "./dist/durableRecipientDelivery.js"
+    },
+    "./durableRecipientProductBinding": {
+      "types": "./dist/durableRecipientProductBinding.d.ts",
+      "import": "./dist/durableRecipientProductBinding.js"
     },
     "./durableOutgoingRecipientDelivery": {
       "types": "./dist/durableOutgoingRecipientDelivery.d.ts",
