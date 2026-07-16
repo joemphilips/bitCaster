@@ -50,7 +50,7 @@ const { ensureParticipationScoreForNextMatch } = await import(
 );
 
 const baseScore = {
-  pubkey: "a".repeat(64),
+  accountSubject: "account_primary",
   balance: 0,
   purchasedTotal: 0,
   consumedTotal: 0,

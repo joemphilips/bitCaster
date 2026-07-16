@@ -2381,15 +2381,29 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class ParticipationScorePaymentStatusResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public ParticipationScorePaymentStatusResponse(string @accountSubject, long @amountSats, long @creditedScore, System.DateTimeOffset @paidAt, System.Guid @paymentId, ParticipationScorePaymentStatusResponseStatus @status)
+        public ParticipationScorePaymentStatusResponse(string @accountSubject, long @amountSats, System.Guid @businessEventId, System.DateTimeOffset @creditedAt, long @creditedScore, ParticipationScorePaymentStatusResponseDestinationId @destinationId, long @encodedTokenBytes, System.Uri @mintUrl, System.Guid @paymentId, ParticipationScorePaymentStatusResponsePurpose @purpose, string @receiptOperationId, System.DateTimeOffset @receivedAt, ParticipationScorePaymentStatusResponseRecipientKind @recipientKind, ParticipationScorePaymentStatusResponseSchemaVersion @schemaVersion, ParticipationScorePaymentStatusResponseStatus @status, string @tokenDigest, ParticipationScorePaymentStatusResponseUnit @unit)
         {
+            this.SchemaVersion = @schemaVersion;
             this.PaymentId = @paymentId;
             this.Status = @status;
             this.AccountSubject = @accountSubject;
+            this.RecipientKind = @recipientKind;
+            this.Purpose = @purpose;
+            this.DestinationId = @destinationId;
+            this.MintUrl = @mintUrl;
+            this.Unit = @unit;
             this.AmountSats = @amountSats;
             this.CreditedScore = @creditedScore;
-            this.PaidAt = @paidAt;
+            this.TokenDigest = @tokenDigest;
+            this.EncodedTokenBytes = @encodedTokenBytes;
+            this.ReceiptOperationId = @receiptOperationId;
+            this.ReceivedAt = @receivedAt;
+            this.BusinessEventId = @businessEventId;
+            this.CreditedAt = @creditedAt;
         }
+
+        [System.Text.Json.Serialization.JsonPropertyName("schemaVersion")]
+        public ParticipationScorePaymentStatusResponseSchemaVersion SchemaVersion { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("paymentId")]
         public System.Guid PaymentId { get; }
@@ -2401,14 +2415,48 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("accountSubject")]
         public string AccountSubject { get; }
 
+        [System.Text.Json.Serialization.JsonPropertyName("recipientKind")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<ParticipationScorePaymentStatusResponseRecipientKind>))]
+        public ParticipationScorePaymentStatusResponseRecipientKind RecipientKind { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("purpose")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<ParticipationScorePaymentStatusResponsePurpose>))]
+        public ParticipationScorePaymentStatusResponsePurpose Purpose { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("destinationId")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<ParticipationScorePaymentStatusResponseDestinationId>))]
+        public ParticipationScorePaymentStatusResponseDestinationId DestinationId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("mintUrl")]
+        public System.Uri MintUrl { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("unit")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<ParticipationScorePaymentStatusResponseUnit>))]
+        public ParticipationScorePaymentStatusResponseUnit Unit { get; }
+
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
         public long AmountSats { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("creditedScore")]
         public long CreditedScore { get; }
 
-        [System.Text.Json.Serialization.JsonPropertyName("paidAt")]
-        public System.DateTimeOffset PaidAt { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("tokenDigest")]
+        public string TokenDigest { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("encodedTokenBytes")]
+        public long EncodedTokenBytes { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("receiptOperationId")]
+        public string ReceiptOperationId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("receivedAt")]
+        public System.DateTimeOffset ReceivedAt { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("businessEventId")]
+        public System.Guid BusinessEventId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("creditedAt")]
+        public System.DateTimeOffset CreditedAt { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -2465,7 +2513,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class PayParticipationScoreEcashResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public PayParticipationScoreEcashResponse(long @amountSats, System.DateTimeOffset @creditedAt, long @creditedScore, System.Guid @paymentId, PayParticipationScoreEcashResponseStatus @status)
+        public PayParticipationScoreEcashResponse(long @amountSats, System.DateTimeOffset? @creditedAt, long? @creditedScore, System.Guid @paymentId, PayParticipationScoreEcashResponseStatus @status)
         {
             this.PaymentId = @paymentId;
             this.Status = @status;
@@ -2481,7 +2529,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid PaymentId { get; }
 
         /// <summary>
-        /// Terminal success state for the synchronous ecash payment flow.
+        /// Durable payment state.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("status")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<PayParticipationScoreEcashResponseStatus>))]
@@ -2497,13 +2545,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// Score credited for this payment.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("creditedScore")]
-        public long CreditedScore { get; }
+        public long? CreditedScore { get; }
 
         /// <summary>
         /// Time wallet-service accepted and credited the engine-fee payment.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("creditedAt")]
-        public System.DateTimeOffset CreditedAt { get; }
+        public System.DateTimeOffset? CreditedAt { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -3107,6 +3155,41 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum ParticipationScorePaymentStatusResponseDestinationId
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"participation-score")]
+        ParticipationScore = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum ParticipationScorePaymentStatusResponsePurpose
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"participation-score")]
+        ParticipationScore = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum ParticipationScorePaymentStatusResponseRecipientKind
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"matching-engine")]
+        MatchingEngine = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum ParticipationScorePaymentStatusResponseSchemaVersion
+    {
+
+        _1 = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum ParticipationScorePaymentStatusResponseStatus
     {
 
@@ -3116,11 +3199,23 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum ParticipationScorePaymentStatusResponseUnit
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"sat")]
+        Sat = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum PayParticipationScoreEcashResponseStatus
     {
 
+        [System.Runtime.Serialization.EnumMember(Value = @"pending")]
+        Pending = 0,
+
         [System.Runtime.Serialization.EnumMember(Value = @"credited")]
-        Credited = 0,
+        Credited = 1,
 
     }
 

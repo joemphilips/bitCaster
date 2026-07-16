@@ -1124,17 +1124,37 @@ export interface components {
             enabled: boolean;
         };
         ParticipationScorePaymentStatusResponse: {
+            /** @enum {integer} */
+            schemaVersion: 1;
             /** Format: uuid */
             paymentId: string;
             /** @enum {string} */
             status: "credited";
             accountSubject: string;
+            /** @enum {string} */
+            recipientKind: "matching-engine";
+            /** @enum {string} */
+            purpose: "participation-score";
+            /** @enum {string} */
+            destinationId: "participation-score";
+            /** Format: uri */
+            mintUrl: string;
+            /** @enum {string} */
+            unit: "sat";
             /** Format: int64 */
             amountSats: number;
             /** Format: int64 */
             creditedScore: number;
+            tokenDigest: string;
+            /** Format: int64 */
+            encodedTokenBytes: number;
+            receiptOperationId: string;
             /** Format: date-time */
-            paidAt: string;
+            receivedAt: string;
+            /** Format: uuid */
+            businessEventId: string;
+            /** Format: date-time */
+            creditedAt: string;
         };
         PayParticipationScoreEcashRequest: {
             /** @description Exact sat amount carried by the supplied regular ecash token. */
@@ -1154,22 +1174,22 @@ export interface components {
              */
             paymentId: string;
             /**
-             * @description Terminal success state for the synchronous ecash payment flow.
+             * @description Durable payment state.
              * @enum {string}
              */
-            status: "credited";
+            status: "pending" | "credited";
             /** @description Ecash amount accepted as engine fee. */
             amountSats: components["schemas"]["Sats"];
             /**
              * Format: int64
              * @description Score credited for this payment.
              */
-            creditedScore: number;
+            creditedScore?: number;
             /**
              * Format: date-time
              * @description Time wallet-service accepted and credited the engine-fee payment.
              */
-            creditedAt: string;
+            creditedAt?: string;
         };
         GetDepositResponseDto: {
             /** Format: uuid */
@@ -2171,6 +2191,15 @@ export interface operations {
         responses: {
             /** @description Ecash accepted and Score credited */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayParticipationScoreEcashResponse"];
+                };
+            };
+            /** @description Exact payment is durably pending; query its owner-scoped status */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

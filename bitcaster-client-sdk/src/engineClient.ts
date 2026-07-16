@@ -1,13 +1,15 @@
 import type { MarketBaseAsset } from './marketUnits.ts'
+import {
+  decodeDurableRecipientDeliveryEvidence,
+  type DurableRecipientDeliveryEvidence,
+} from './durableRecipientDelivery.ts'
 
 export type EngineFetch = typeof fetch
 
 export interface EngineClientOptions {
   baseUrl: string
   fetchImpl?: EngineFetch
-  authorization?: (
-    request: EngineAuthorizationRequest,
-  ) => string | Promise<string>
+  authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>
 }
 
 export interface EngineAuthorizationRequest {
@@ -78,8 +80,7 @@ export interface BatchSubmitOrdersRequest {
   orders: BatchSubmitOrderRequestItem[]
 }
 
-export interface BatchSubmitOrderRequestItem
-  extends Omit<SubmitOrderRequest, 'comment'> {
+export interface BatchSubmitOrderRequestItem extends Omit<SubmitOrderRequest, 'comment'> {
   marketId: string
   expiresAt?: string | null
 }
@@ -251,7 +252,7 @@ export interface MarketCommentsResponse {
 }
 
 export interface ParticipationScoreResponse {
-  pubkey: string
+  accountSubject: string
   balance: number
   purchasedTotal: number
   consumedTotal: number
@@ -260,32 +261,230 @@ export interface ParticipationScoreResponse {
   enabled: boolean
 }
 
-export interface PayParticipationScoreEcashResponse {
+export interface ParticipationScorePaymentStatusResponse {
+  schemaVersion: 1
   paymentId: string
   status: 'credited'
+  accountSubject: string
+  recipientKind: 'matching-engine'
+  purpose: 'participation-score'
+  destinationId: 'participation-score'
+  mintUrl: string
+  unit: 'sat'
   amountSats: number
+  tokenDigest: string
+  encodedTokenBytes: number
+  receiptOperationId: string
+  receivedAt: string
   creditedScore: number
+  businessEventId: string
   creditedAt: string
 }
+
+type ParticipationScorePaymentRequestFields = Pick<
+  ParticipationScorePaymentStatusResponse,
+  | 'paymentId'
+  | 'accountSubject'
+  | 'recipientKind'
+  | 'purpose'
+  | 'destinationId'
+  | 'mintUrl'
+  | 'unit'
+  | 'amountSats'
+  | 'tokenDigest'
+  | 'encodedTokenBytes'
+>
+
+type ParticipationScorePaymentResultFields = Pick<
+  ParticipationScorePaymentStatusResponse,
+  'receiptOperationId' | 'receivedAt' | 'creditedScore' | 'businessEventId' | 'creditedAt'
+>
+
+export function scorePaymentStatusToDeliveryEvidence(
+  value: unknown,
+): DurableRecipientDeliveryEvidence {
+  const status = decodeParticipationScorePaymentStatus(value)
+  return decodeDurableRecipientDeliveryEvidence({
+    kind: 'credited',
+    request: {
+      schemaVersion: status.schemaVersion,
+      deliveryId: status.paymentId,
+      accountSubject: status.accountSubject,
+      recipientKind: status.recipientKind,
+      purpose: status.purpose,
+      destinationId: status.destinationId,
+      mintUrl: status.mintUrl,
+      unit: status.unit,
+      requestedAmount: status.amountSats,
+      tokenDigest: status.tokenDigest,
+      encodedTokenBytes: status.encodedTokenBytes,
+    },
+    receiptOperationId: status.receiptOperationId,
+    receivedAtMs: Date.parse(status.receivedAt),
+    creditedAmount: status.creditedScore,
+    businessEventId: status.businessEventId,
+    creditedAtMs: Date.parse(status.creditedAt),
+  })
+}
+
+export function decodeParticipationScorePaymentStatus(
+  value: unknown,
+): ParticipationScorePaymentStatusResponse {
+  const status = requireExactObject(
+    value,
+    SCORE_STATUS_FIELDS,
+    'Participation Score payment status',
+  )
+  if (status.schemaVersion !== 1 || status.status !== 'credited') {
+    throw new Error('Participation Score payment status version or state is invalid')
+  }
+  const request = decodeScorePaymentRequest(status)
+  const result = decodeScorePaymentResult(status, request)
+  assertScorePaymentEvidence(request, result)
+  return { schemaVersion: 1, status: 'credited', ...request, ...result }
+}
+
+const SCORE_STATUS_FIELDS = [
+  'schemaVersion',
+  'paymentId',
+  'status',
+  'accountSubject',
+  'recipientKind',
+  'purpose',
+  'destinationId',
+  'mintUrl',
+  'unit',
+  'amountSats',
+  'tokenDigest',
+  'encodedTokenBytes',
+  'receiptOperationId',
+  'receivedAt',
+  'creditedScore',
+  'businessEventId',
+  'creditedAt',
+] as const
+
+function decodeScorePaymentRequest(
+  status: Record<string, unknown>,
+): ParticipationScorePaymentRequestFields {
+  if (
+    status.recipientKind !== 'matching-engine' ||
+    status.purpose !== 'participation-score' ||
+    status.destinationId !== 'participation-score' ||
+    status.unit !== 'sat'
+  ) {
+    throw new Error('Participation Score payment route is invalid')
+  }
+  return {
+    paymentId: requireUuid(status.paymentId, 'payment id'),
+    accountSubject: requireBoundedText(status.accountSubject, 'account subject', 512),
+    recipientKind: status.recipientKind,
+    purpose: status.purpose,
+    destinationId: status.destinationId,
+    mintUrl: requireBoundedText(status.mintUrl, 'mint URL', 2_048),
+    unit: status.unit,
+    amountSats: requirePositiveSafeInteger(status.amountSats, 'payment amount'),
+    tokenDigest: requireLowerHexDigest(status.tokenDigest),
+    encodedTokenBytes: requireBoundedPositiveInteger(
+      status.encodedTokenBytes,
+      'encoded token bytes',
+      65_536,
+    ),
+  }
+}
+
+function decodeScorePaymentResult(
+  status: Record<string, unknown>,
+  request: ParticipationScorePaymentRequestFields,
+): ParticipationScorePaymentResultFields {
+  const creditedScore = requirePositiveSafeInteger(status.creditedScore, 'credited Score')
+  if (creditedScore !== request.amountSats) {
+    throw new Error('Participation Score credit does not match its payment amount')
+  }
+  const receiptOperationId = requireBoundedText(
+    status.receiptOperationId,
+    'receipt operation id',
+    512,
+  )
+  const businessEventId = requireUuid(status.businessEventId, 'business event id')
+  if (
+    receiptOperationId !== `score-receipt/${request.paymentId}` ||
+    businessEventId !== request.paymentId
+  ) {
+    throw new Error('Participation Score payment result is misbound')
+  }
+  const receivedAt = requireTimestampText(status.receivedAt, 'received time')
+  const creditedAt = requireTimestampText(status.creditedAt, 'credited time')
+  if (Date.parse(creditedAt) < Date.parse(receivedAt)) {
+    throw new Error('Participation Score credit precedes its receipt')
+  }
+  return {
+    receiptOperationId,
+    receivedAt,
+    creditedScore,
+    businessEventId,
+    creditedAt,
+  }
+}
+
+function assertScorePaymentEvidence(
+  request: ParticipationScorePaymentRequestFields,
+  result: ParticipationScorePaymentResultFields,
+): void {
+  const evidence = decodeDurableRecipientDeliveryEvidence({
+    kind: 'credited',
+    request: {
+      schemaVersion: 1,
+      deliveryId: request.paymentId,
+      accountSubject: request.accountSubject,
+      recipientKind: request.recipientKind,
+      purpose: request.purpose,
+      destinationId: request.destinationId,
+      mintUrl: request.mintUrl,
+      unit: request.unit,
+      requestedAmount: request.amountSats,
+      tokenDigest: request.tokenDigest,
+      encodedTokenBytes: request.encodedTokenBytes,
+    },
+    receiptOperationId: result.receiptOperationId,
+    receivedAtMs: Date.parse(result.receivedAt),
+    creditedAmount: result.creditedScore,
+    businessEventId: result.businessEventId,
+    creditedAtMs: Date.parse(result.creditedAt),
+  })
+  if (evidence.kind !== 'credited') {
+    throw new Error('Participation Score delivery evidence is invalid')
+  }
+}
+
+export type PayParticipationScoreEcashResponse =
+  | {
+      paymentId: string
+      status: 'pending'
+      amountSats: number
+      creditedScore?: never
+      creditedAt?: never
+    }
+  | {
+      paymentId: string
+      status: 'credited'
+      amountSats: number
+      creditedScore: number
+      creditedAt: string
+    }
 
 export class BitcasterEngineClient {
   private readonly baseUrl: string
   private readonly fetchImpl: EngineFetch
-  private readonly authorization?: (
-    request: EngineAuthorizationRequest,
-  ) => string | Promise<string>
+  private readonly authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>
 
   constructor(options: EngineClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '')
-    this.fetchImpl =
-      options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init))
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init))
     this.authorization = options.authorization
   }
 
-  async submitOrder(
-    marketId: string,
-    request: SubmitOrderRequest,
-  ): Promise<SubmitOrderResponse> {
+  async submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse> {
     const bodyText = JSON.stringify(request)
     const response = await this.request(
       `/api/v1/${encodePathSegment(marketId)}/orders`,
@@ -299,10 +498,7 @@ export class BitcasterEngineClient {
     return (await response.json()) as SubmitOrderResponse
   }
 
-  async getOrderStatus(
-    marketId: string,
-    orderId: string,
-  ): Promise<OrderStatusResponse | null> {
+  async getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null> {
     const response = await this.request(
       `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
     )
@@ -310,17 +506,8 @@ export class BitcasterEngineClient {
     return (await response.json()) as OrderStatusResponse
   }
 
-  async listMyOrders(
-    conditionId: string,
-    cursor?: string,
-  ): Promise<ListMyOrdersResponse> {
-    return listMyOrders(
-      this.baseUrl,
-      conditionId,
-      cursor,
-      this.fetchImpl,
-      this.authorization,
-    )
+  async listMyOrders(conditionId: string, cursor?: string): Promise<ListMyOrdersResponse> {
+    return listMyOrders(this.baseUrl, conditionId, cursor, this.fetchImpl, this.authorization)
   }
 
   async batchSubmitOrders(
@@ -363,12 +550,10 @@ export class BitcasterEngineClient {
     conditionIdOrNostrEvent?: string | NostrKind1Event | null,
     nostrEvent?: NostrKind1Event | null,
   ): Promise<SubmitEphemeralPubkeyResponse> {
-    const conditionId = typeof conditionIdOrNostrEvent === 'string'
-      ? conditionIdOrNostrEvent
-      : undefined
-    const comment = typeof conditionIdOrNostrEvent === 'string'
-      ? nostrEvent
-      : conditionIdOrNostrEvent
+    const conditionId =
+      typeof conditionIdOrNostrEvent === 'string' ? conditionIdOrNostrEvent : undefined
+    const comment =
+      typeof conditionIdOrNostrEvent === 'string' ? nostrEvent : conditionIdOrNostrEvent
     return submitEphemeralPubkey(
       this.baseUrl,
       tradeId,
@@ -389,18 +574,12 @@ export class BitcasterEngineClient {
   }
 
   async getOrderBook(marketId: string): Promise<OrderBookSnapshot> {
-    const response = await this.request(
-      `/api/v1/${encodePathSegment(marketId)}/orderbook`,
-    )
+    const response = await this.request(`/api/v1/${encodePathSegment(marketId)}/orderbook`)
     return (await response.json()) as OrderBookSnapshot
   }
 
-  async queryMarkets(
-    params: QueryMarketsParams = {},
-  ): Promise<QueryMarketsResponse> {
-    const response = await this.request(
-      `/api/v1/markets/query${buildMarketsQueryString(params)}`,
-    )
+  async queryMarkets(params: QueryMarketsParams = {}): Promise<QueryMarketsResponse> {
+    const response = await this.request(`/api/v1/markets/query${buildMarketsQueryString(params)}`)
     return (await response.json()) as QueryMarketsResponse
   }
 
@@ -427,6 +606,20 @@ export class BitcasterEngineClient {
     return (await response.json()) as ParticipationScoreResponse
   }
 
+  async getParticipationScorePayment(
+    paymentId: string,
+  ): Promise<ParticipationScorePaymentStatusResponse | null> {
+    const response = await this.request(
+      `/api/v1/participation-score/payments/${encodePathSegment(paymentId)}`,
+    )
+    if (response.status === 404) return null
+    const status = decodeParticipationScorePaymentStatus(await response.json())
+    if (status.paymentId !== paymentId) {
+      throw new Error('Participation Score payment status does not match its request')
+    }
+    return status
+  }
+
   async payParticipationScoreEcash(
     amountSats: number,
     proofsToken: string,
@@ -446,7 +639,14 @@ export class BitcasterEngineClient {
       },
       bodyText,
     )
-    return (await response.json()) as PayParticipationScoreEcashResponse
+    const result = decodePayParticipationScoreEcashResponse(await response.json())
+    if (
+      result.amountSats !== amountSats ||
+      (paymentId !== undefined && result.paymentId !== paymentId)
+    ) {
+      throw new Error('Participation Score payment response does not match its request')
+    }
+    return result
   }
 
   async getMarket(conditionId: string): Promise<unknown | null> {
@@ -476,12 +676,7 @@ export class BitcasterEngineClient {
     if (!response.ok && response.status !== 404) {
       const detail = await response.text().catch(() => '')
       const problem = parseEngineProblem(detail)
-      throw new EngineClientError(
-        response.status,
-        detail,
-        problem?.code,
-        problem?.detail,
-      )
+      throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)
     }
     return response
   }
@@ -498,7 +693,9 @@ export async function submitEphemeralPubkey(
 ): Promise<SubmitEphemeralPubkeyResponse> {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
   const path = `/api/v1/trades/${encodePathSegment(tradeId)}/ephemeral-pubkey`
-  const body: SubmitEphemeralPubkeyRequest & { comment?: NostrKind1Event | null } = {
+  const body: SubmitEphemeralPubkeyRequest & {
+    comment?: NostrKind1Event | null
+  } = {
     ephemeralPubkey: pubkey,
     ...(nostrEvent ? { comment: nostrEvent } : {}),
   }
@@ -507,7 +704,11 @@ export async function submitEphemeralPubkey(
   const url = `${normalizedBaseUrl}${path}${query}`
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (authorization) {
-    headers.Authorization = await authorization({ url, method: 'POST', bodyText })
+    headers.Authorization = await authorization({
+      url,
+      method: 'POST',
+      bodyText,
+    })
   }
   const response = await fetchImpl(url, {
     method: 'POST',
@@ -574,12 +775,7 @@ export class EngineClientError extends Error {
   public readonly code?: string
   public readonly problemDetail?: string
 
-  constructor(
-    status: number,
-    detail: string,
-    code?: string,
-    problemDetail?: string,
-  ) {
+  constructor(status: number, detail: string, code?: string, problemDetail?: string) {
     super(formatEngineClientError(status, detail, code, problemDetail))
     this.name = 'EngineClientError'
     this.status = status
@@ -649,4 +845,114 @@ function normalizeHeaders(headers: HeadersInit | undefined): Record<string, stri
   }
   if (Array.isArray(headers)) return Object.fromEntries(headers)
   return { ...headers }
+}
+
+function decodePayParticipationScoreEcashResponse(
+  value: unknown,
+): PayParticipationScoreEcashResponse {
+  const response = requireObject(value, 'Participation Score payment response')
+  if (response.status === 'pending') {
+    requireExactFields(response, ['paymentId', 'status', 'amountSats'])
+    return {
+      paymentId: requireUuid(response.paymentId, 'payment id'),
+      status: 'pending',
+      amountSats: requirePositiveSafeInteger(response.amountSats, 'payment amount'),
+    }
+  }
+  if (response.status === 'credited') {
+    requireExactFields(response, [
+      'paymentId',
+      'status',
+      'amountSats',
+      'creditedScore',
+      'creditedAt',
+    ])
+    const amountSats = requirePositiveSafeInteger(response.amountSats, 'payment amount')
+    const creditedScore = requirePositiveSafeInteger(response.creditedScore, 'credited Score')
+    if (creditedScore !== amountSats) {
+      throw new Error('Participation Score credit does not match its payment amount')
+    }
+    return {
+      paymentId: requireUuid(response.paymentId, 'payment id'),
+      status: 'credited',
+      amountSats,
+      creditedScore,
+      creditedAt: requireTimestampText(response.creditedAt, 'credited time'),
+    }
+  }
+  throw new Error('Participation Score payment response state is invalid')
+}
+
+function requireExactObject(
+  value: unknown,
+  fields: readonly string[],
+  name: string,
+): Record<string, unknown> {
+  const record = requireObject(value, name)
+  requireExactFields(record, fields)
+  return record
+}
+
+function requireObject(value: unknown, name: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${name} is invalid`)
+  }
+  return value as Record<string, unknown>
+}
+
+function requireExactFields(value: Record<string, unknown>, fields: readonly string[]): void {
+  const actual = Object.keys(value).sort()
+  const expected = [...fields].sort()
+  if (
+    actual.length !== expected.length ||
+    actual.some((field, index) => field !== expected[index])
+  ) {
+    throw new Error('Participation Score response fields are invalid')
+  }
+}
+
+function requireUuid(value: unknown, name: string): string {
+  const text = requireBoundedText(value, name, 36)
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)) {
+    throw new Error(`Participation Score ${name} is invalid`)
+  }
+  return text.toLowerCase()
+}
+
+function requireBoundedText(value: unknown, name: string, maxLength: number): string {
+  if (
+    typeof value !== 'string' ||
+    value.length < 1 ||
+    value.length > maxLength ||
+    /[\u0000-\u001f\u007f-\u009f]/.test(value)
+  ) {
+    throw new Error(`Participation Score ${name} is invalid`)
+  }
+  return value
+}
+
+function requirePositiveSafeInteger(value: unknown, name: string): number {
+  return requireBoundedPositiveInteger(value, name, Number.MAX_SAFE_INTEGER)
+}
+
+function requireBoundedPositiveInteger(value: unknown, name: string, maximum: number): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > maximum) {
+    throw new Error(`Participation Score ${name} is invalid`)
+  }
+  return value as number
+}
+
+function requireLowerHexDigest(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error('Participation Score token digest is invalid')
+  }
+  return value
+}
+
+function requireTimestampText(value: unknown, name: string): string {
+  const text = requireBoundedText(value, name, 64)
+  if (!Number.isFinite(Date.parse(text))) {
+    throw new Error(`Participation Score ${name} is invalid`)
+  }
+  return text
 }

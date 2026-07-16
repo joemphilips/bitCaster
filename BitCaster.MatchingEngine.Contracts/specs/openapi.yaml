@@ -662,6 +662,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PayParticipationScoreEcashResponse'
+        '202':
+          description: Exact payment is durably pending; query its owner-scoped status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayParticipationScoreEcashResponse'
         '400':
           description: Validation error (e.g. malformed token or non-positive amount)
         '401':
@@ -2348,13 +2354,27 @@ components:
     ParticipationScorePaymentStatusResponse:
       type: object
       required:
+        - schemaVersion
         - paymentId
         - status
         - accountSubject
+        - recipientKind
+        - purpose
+        - destinationId
+        - mintUrl
+        - unit
         - amountSats
+        - tokenDigest
+        - encodedTokenBytes
+        - receiptOperationId
+        - receivedAt
         - creditedScore
-        - paidAt
+        - businessEventId
+        - creditedAt
       properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
         paymentId:
           type: string
           format: uuid
@@ -2365,6 +2385,21 @@ components:
           type: string
           minLength: 1
           maxLength: 512
+        recipientKind:
+          type: string
+          enum: [matching-engine]
+        purpose:
+          type: string
+          enum: [participation-score]
+        destinationId:
+          type: string
+          enum: [participation-score]
+        mintUrl:
+          type: string
+          format: uri
+        unit:
+          type: string
+          enum: [sat]
         amountSats:
           type: integer
           format: int64
@@ -2373,7 +2408,26 @@ components:
           type: integer
           format: int64
           minimum: 1
-        paidAt:
+        tokenDigest:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        encodedTokenBytes:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 65536
+        receiptOperationId:
+          type: string
+          minLength: 50
+          maxLength: 50
+          pattern: '^score-receipt/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        receivedAt:
+          type: string
+          format: date-time
+        businessEventId:
+          type: string
+          format: uuid
+        creditedAt:
           type: string
           format: date-time
 
@@ -2402,8 +2456,6 @@ components:
         - paymentId
         - status
         - amountSats
-        - creditedScore
-        - creditedAt
       properties:
         paymentId:
           type: string
@@ -2412,8 +2464,9 @@ components:
         status:
           type: string
           enum:
+            - pending
             - credited
-          description: Terminal success state for the synchronous ecash payment flow.
+          description: Durable payment state.
         amountSats:
           allOf:
             - $ref: '#/components/schemas/Sats'
