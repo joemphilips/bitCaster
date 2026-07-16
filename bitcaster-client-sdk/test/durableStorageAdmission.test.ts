@@ -14,6 +14,7 @@ import {
   DURABLE_STORAGE_ADMISSION_RECORD_BYTES_LIMIT_MAX,
   DURABLE_STORAGE_ADMISSION_SCHEMA_VERSION,
   DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX,
+  DURABLE_STORAGE_JSON_TRAVERSAL_NODE_LIMIT_MAX,
   DURABLE_STORAGE_EMERGENCY_HEADROOM_TARGET_BYTES,
   DURABLE_STORAGE_OPERATION_ARTIFACT_LIMIT_MAX,
   DURABLE_STORAGE_OPERATION_LIMIT_MAX,
@@ -1607,6 +1608,43 @@ test('preflights artifact sizes and collection counts before hashing or decoding
         value: 'x'.repeat(DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX + 1),
       }),
     /JSON storage artifact exceeds the byte limit/,
+  )
+})
+
+test('bounds planned JSON traversal independently from collection size', () => {
+  assert.equal(DURABLE_STORAGE_JSON_TRAVERSAL_NODE_LIMIT_MAX, 32_768)
+  const oversizedStructure = Array.from(
+    { length: DURABLE_STORAGE_SWAP_ARTIFACT_LIMIT_MAX },
+    (_, value) => ({
+      a: value,
+      b: value,
+      c: value,
+      d: value,
+      e: value,
+      f: value,
+      g: value,
+    }),
+  )
+  assert.throws(
+    () =>
+      createDurableStorageJsonArtifact({
+        artifactId: 'oversized-structure',
+        artifactRole: 'trade-session',
+        value: oversizedStructure,
+      }),
+    /structure exceeds the limit/,
+  )
+
+  const cyclic: { self?: unknown } = {}
+  cyclic.self = cyclic
+  assert.throws(
+    () =>
+      createDurableStorageJsonArtifact({
+        artifactId: 'cyclic-structure',
+        artifactRole: 'trade-session',
+        value: cyclic,
+      }),
+    /artifact is invalid/,
   )
 })
 

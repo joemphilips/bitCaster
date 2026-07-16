@@ -1,4 +1,4 @@
-import { CheckStateEnum, type Proof } from "@cashu/cashu-ts";
+import { Amount, CheckStateEnum, type Proof } from "@cashu/cashu-ts";
 import {
   issueDurableBearerCustodyHandoffCapability,
   type DurableBearerCustodyHandoffCapability,
@@ -37,6 +37,7 @@ import type {
 } from "./durableBearerSpendDeliveryTypes.ts";
 import { requireExactDurableWalletSendToken } from "./durableWalletSendDelivery.ts";
 import { normalizeDurableWalletMintUrl } from "./durableWalletMintUrl.ts";
+import { sameCashuProofArtifact } from "./proofSelection.ts";
 
 export type {
   DurableBearerSpendClassification,
@@ -281,6 +282,42 @@ export function isDurableBearerSpendTokenPresentable(
     record.state.kind === "pending" &&
     record.reclaim.kind === "none" &&
     !record.state.proofStates?.includes(CheckStateEnum.SPENT)
+  );
+}
+
+/**
+ * Proves that every compacted or active entry still occupies the exact
+ * position of the original bearer token proof vector.
+ */
+export function requireDurableBearerSpendOriginalProofLineage(
+  value: DurableBearerSpendDeliveryRecord,
+  originalProofs: readonly Proof[],
+): DurableBearerSpendDeliveryRecord {
+  const record = decodeDurableBearerSpendDeliveryRecord(value);
+  const originals = decodeExactBearerProofVector(originalProofs);
+  if (
+    record.proofEntries.length !== originals.length ||
+    record.proofEntries.some(
+      (entry, index) => !entryMatchesOriginalProof(entry, originals[index]),
+    )
+  ) {
+    throw new Error("durable bearer original proof lineage is invalid");
+  }
+  return record;
+}
+
+function entryMatchesOriginalProof(
+  entry: DurableBearerSpendProofEntry,
+  original: Proof | undefined,
+): boolean {
+  if (!original) return false;
+  if (entry.kind === "active") {
+    return sameCashuProofArtifact(entry.proof, original);
+  }
+  return (
+    entry.Y === expectedProofYs([original])[0] &&
+    entry.keysetId === original.id &&
+    entry.amount === Amount.from(original.amount).toBigInt().toString()
   );
 }
 

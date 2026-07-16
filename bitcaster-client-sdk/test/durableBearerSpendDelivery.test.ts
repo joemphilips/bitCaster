@@ -17,6 +17,7 @@ import {
   isDurableBearerSpendTokenPresentable,
   reconcileDurableBearerSpendDelivery,
   reduceDurableBearerSpendReclaimLineage,
+  requireDurableBearerSpendOriginalProofLineage,
   selectDurableBearerSpendUnspentProofs,
   type DurableBearerSpendDeliveryRecord,
 } from "../src/durableBearerSpendDelivery.ts";
@@ -293,6 +294,71 @@ test("BLS proof vectors preserve exact ordering and closed classification", asyn
       assert.equal(blocked.state.classification, "blocked");
     }
   }
+});
+
+test("original proof lineage remains exact across secp and BLS compaction", async () => {
+  const secpMixed = await reconcileWithStates(
+    createRecord(),
+    states(CheckStateEnum.SPENT, CheckStateEnum.UNSPENT, CheckStateEnum.SPENT),
+  );
+  const secpTerminal = await reconcileWithStates(
+    createRecord(),
+    states(CheckStateEnum.SPENT, CheckStateEnum.SPENT, CheckStateEnum.SPENT),
+  );
+  assert.doesNotThrow(() =>
+    requireDurableBearerSpendOriginalProofLineage(secpMixed, PROOFS),
+  );
+  assert.doesNotThrow(() =>
+    requireDurableBearerSpendOriginalProofLineage(secpTerminal, PROOFS),
+  );
+
+  const blsProofs: readonly Proof[] = [
+    {
+      id: BLS_KEYSET_ID,
+      amount: 1,
+      secret: "31".repeat(32),
+      C: VALID_BLS_POINT,
+    },
+    {
+      id: BLS_KEYSET_ID,
+      amount: 2,
+      secret: "32".repeat(32),
+      C: VALID_BLS_POINT,
+    },
+  ];
+  const blsStates = (...values: ProofState["state"][]) =>
+    values.map((state, index) => stateFor(blsProofs[index]!, state));
+  const blsMixed = await reconcileWithStates(
+    createRecordForProofs(blsProofs),
+    blsStates(CheckStateEnum.SPENT, CheckStateEnum.UNSPENT),
+  );
+  const blsTerminal = await reconcileWithStates(
+    createRecordForProofs(blsProofs),
+    blsStates(CheckStateEnum.SPENT, CheckStateEnum.SPENT),
+  );
+  assert.doesNotThrow(() =>
+    requireDurableBearerSpendOriginalProofLineage(blsMixed, blsProofs),
+  );
+  assert.doesNotThrow(() =>
+    requireDurableBearerSpendOriginalProofLineage(blsTerminal, blsProofs),
+  );
+  assert.throws(
+    () =>
+      requireDurableBearerSpendOriginalProofLineage(secpMixed, [
+        PROOFS[1]!,
+        PROOFS[0]!,
+        PROOFS[2]!,
+      ]),
+    /original proof lineage is invalid/,
+  );
+  assert.throws(
+    () =>
+      requireDurableBearerSpendOriginalProofLineage(blsMixed, [
+        { ...blsProofs[0]!, amount: 2 },
+        blsProofs[1]!,
+      ]),
+    /original proof lineage is invalid/,
+  );
 });
 
 test("persisted and runtime clocks cannot regress", async () => {

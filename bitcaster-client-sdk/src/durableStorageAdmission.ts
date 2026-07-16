@@ -20,6 +20,7 @@ export const DURABLE_STORAGE_OPERATION_LIMIT_MAX = 256 as const
 export const DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX = 256 as const
 export const DURABLE_STORAGE_COMPONENT_BYTES_LIMIT_MAX = 2 * 1_024 * 1_024
 export const DURABLE_STORAGE_SWAP_ARTIFACT_LIMIT_MAX = 4_096
+export const DURABLE_STORAGE_JSON_TRAVERSAL_NODE_LIMIT_MAX = 32_768
 export const DURABLE_STORAGE_SWAP_BYTES_LIMIT_MAX = 16 * 1_024 * 1_024
 export const DURABLE_STORAGE_OPERATION_ARTIFACT_LIMIT_MAX =
   1 + 4 * DURABLE_STORAGE_PROOF_REFERENCE_LIMIT_MAX
@@ -3676,7 +3677,7 @@ function preflightPlannedJsonValue(value: unknown): void {
   while (pending.length > 0) {
     const item = pending.pop()
     nodes += 1
-    if (nodes > DURABLE_STORAGE_SWAP_ARTIFACT_LIMIT_MAX) {
+    if (nodes > DURABLE_STORAGE_JSON_TRAVERSAL_NODE_LIMIT_MAX) {
       throw new Error('planned JSON storage artifact structure exceeds the limit')
     }
     if (typeof item === 'string') {
