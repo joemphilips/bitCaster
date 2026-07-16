@@ -27,6 +27,8 @@ import {
   type DurableCustodyRetryReason,
 } from "@bitcaster/client-sdk/durableCustody";
 import { deriveDurableCustodyProofOperationFingerprints } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
+import type { DurableRecipientDeliveryIntent } from "@bitcaster/client-sdk/durableWalletSendDeliveryPreparation";
+import type { GuiOutgoingRecipientAdapter } from "./gui-outgoing-recipient-adapter";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import type { CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
 import { proofsWithOptionalConditionalMetadata } from "@/lib/conditionalKeysetMetadata";
@@ -35,6 +37,7 @@ import { useWalletStore } from "./wallet";
 import {
   currentGuiWalletId,
   getProofOperationForWallet,
+  rehydrateStoredProofGroups,
   type PrepareProofOperationInput,
   type ProofOperationRecord,
 } from "./proof-db";
@@ -45,6 +48,7 @@ import {
   markProofOperationCompletedForWallet,
   prepareProofOperationForWallet,
   requireCompletedGuiWalletProofOperationAuthorityForWallet,
+  requireGuiWalletSendTokenForWallet,
   requirePendingGuiWalletSendTokenForWallet,
 } from "./gui-wallet-proof-operation-custody";
 import { GuiCustodyMintKeysUnavailable } from "./gui-custody-authority";
@@ -204,16 +208,76 @@ export async function sendGuiCashuToken(input: {
   send: Proof[];
   encodedUserExportToken: string;
 }> {
+  const result = await executeGuiWalletSend({
+    ...input,
+    operationId: sendOperationId(
+      normalizeUrl(input.mintUrl),
+      input.unit,
+      input.amount,
+      input.proofs,
+    ),
+    policy: { kind: "user-export" },
+  });
+  return {
+    ...result,
+    encodedUserExportToken: result.encodedToken,
+  };
+}
+
+export async function sendGuiCashuToDurableRecipient(input: {
+  expectedWalletId: string;
+  amount: number;
+  proofs: readonly Proof[];
+  mintUrl: string;
+  unit: CashuProofUnit;
+  recipient: DurableRecipientDeliveryIntent;
+  adapter: GuiOutgoingRecipientAdapter;
+}): Promise<{
+  operationId: string;
+  keep: Proof[];
+  send: Proof[];
+}> {
+  const result = await executeGuiWalletSend({
+    ...input,
+    operationId: recipientSendOperationId(input.recipient.deliveryId),
+    policy: {
+      kind: "durable-recipient-ack",
+      recipient: input.recipient,
+      adapter: input.adapter,
+    },
+  });
+  return {
+    operationId: result.operationId,
+    keep: result.keep,
+    send: result.send,
+  };
+}
+
+async function executeGuiWalletSend(input: {
+  expectedWalletId: string;
+  amount: number;
+  proofs: readonly Proof[];
+  mintUrl: string;
+  unit: CashuProofUnit;
+  operationId: string;
+  policy:
+    | { kind: "user-export" }
+    | {
+        kind: "durable-recipient-ack";
+        recipient: DurableRecipientDeliveryIntent;
+        adapter: GuiOutgoingRecipientAdapter;
+      };
+}): Promise<{
+  operationId: string;
+  keep: Proof[];
+  send: Proof[];
+  encodedToken: string;
+}> {
   const walletId = input.expectedWalletId;
   assertCapturedWallet(walletId);
   requirePositiveAmount(input.amount, "GUI wallet send amount");
   const mintUrl = normalizeUrl(input.mintUrl);
-  const operationId = sendOperationId(
-    mintUrl,
-    input.unit,
-    input.amount,
-    input.proofs,
-  );
+  const operationId = input.operationId;
   let operation = await loadExactOperation(walletId, operationId);
   if (!operation) {
     const wallet = await walletForCapturedSeed(walletId, mintUrl, input.unit);
@@ -233,6 +297,11 @@ export async function sendGuiCashuToken(input: {
       keepOutputs: operation.preview.keepOutputs,
       passthroughProofs: operation.preview.unselectedProofs,
       inputProofs: operation.preview.inputs,
+      policy: input.policy,
+      adapter:
+        input.policy.kind === "durable-recipient-ack"
+          ? input.policy.adapter
+          : undefined,
     });
     await persistOperation(walletId, operation, null, delivery);
     assertCapturedWallet(walletId);
@@ -241,12 +310,48 @@ export async function sendGuiCashuToken(input: {
   if (amountToNumber(operation.preview.amount) !== input.amount) {
     throw new Error("GUI wallet send amount conflicts with durable authority");
   }
+  await requireExpectedWalletSendPolicy(walletId, operation, input.policy);
   const result = requireSendResult(
     await dispatchForegroundExactOperationGroups(walletId, operation),
   );
-  const encodedUserExportToken =
-    await requirePendingGuiWalletSendTokenForWallet(walletId, operationId);
-  return { operationId, ...result, encodedUserExportToken };
+  const encodedToken = await requireGuiWalletSendTokenForWallet(
+    walletId,
+    operationId,
+  );
+  return { operationId, ...result, encodedToken };
+}
+
+export async function loadGuiDurableRecipientExactPayload(
+  walletId: string,
+  operationId: string,
+): Promise<{
+  walletOperation: DurableWalletOperation;
+  resultGroups: Record<string, Proof[]>;
+  encodedToken: string;
+}> {
+  const record =
+    await requireCompletedGuiWalletProofOperationAuthorityForWallet(
+      walletId,
+      operationId,
+    );
+  const operation = decodeExactOperationRecord(record);
+  if (
+    operation.kind !== "wallet-send" ||
+    readGuiWalletSendDeliveryMetadata(record)?.mode !==
+      "durable-recipient-ack" ||
+    !record.resultProofs
+  ) {
+    throw new Error("GUI wallet send has no durable recipient payload");
+  }
+  const encodedToken = await requireGuiWalletSendTokenForWallet(
+    walletId,
+    operationId,
+  );
+  return {
+    walletOperation: operation,
+    resultGroups: rehydrateStoredProofGroups(record.resultProofs),
+    encodedToken,
+  };
 }
 
 export interface PendingGuiCashuTokenDelivery {
@@ -634,8 +739,8 @@ async function completeOperation(
   );
   if (!record) throw new Error("GUI wallet operation is missing");
   const delivery = readGuiWalletSendDeliveryMetadata(record);
-  const encodedUserExportToken =
-    operation.kind === "wallet-send" && delivery?.mode === "user-export"
+  const encodedWalletSendToken =
+    operation.kind === "wallet-send" && delivery !== null
       ? getEncodedTokenV4({
           mint: operation.mintUrl,
           unit: requireUnit(operation.unit),
@@ -646,7 +751,7 @@ async function completeOperation(
     walletId,
     operation.operationId,
     groups,
-    encodedUserExportToken,
+    encodedWalletSendToken,
   );
   assertCapturedWallet(walletId);
   return groups;
@@ -1005,11 +1110,17 @@ function normalizeGuiOperationInput(
             ...output.blindedMessage,
             amount: amountToNumber(output.blindedMessage.amount),
           },
+          blindingFactor: guiStoredBlindingFactor(output.blindingFactor),
         })),
       ]),
     ),
     metadata: structuredClone(input.metadata ?? {}),
   };
+}
+
+function guiStoredBlindingFactor(value: string): string {
+  const hex = BigInt(value).toString(16);
+  return hex.length % 2 === 0 ? hex : `0${hex}`;
 }
 
 function mintOperationId(
@@ -1041,6 +1152,53 @@ function sendOperationId(
     amount,
     proofs: proofSetAuthority(proofs),
   })}`;
+}
+
+function recipientSendOperationId(deliveryId: string): string {
+  return `wallet-send-recipient:${deriveDurableCustodyArtifactFingerprint({
+    deliveryId,
+  })}`;
+}
+
+async function requireExpectedWalletSendPolicy(
+  walletId: string,
+  operation: Extract<DurableWalletOperation, { kind: "wallet-send" }>,
+  policy:
+    | { kind: "user-export" }
+    | {
+        kind: "durable-recipient-ack";
+        recipient: DurableRecipientDeliveryIntent;
+        adapter: GuiOutgoingRecipientAdapter;
+      },
+): Promise<void> {
+  const record = await getProofOperationForWallet(
+    walletId,
+    operation.operationId,
+  );
+  if (!record) {
+    throw new Error("GUI wallet send delivery policy is missing");
+  }
+  const stored = readGuiWalletSendDeliveryMetadata(record);
+  const expected = guiWalletSendDeliveryMetadata({
+    mintUrl: operation.mintUrl,
+    unit: operation.unit,
+    sendOutputs: operation.preview.sendOutputs,
+    keepOutputs: operation.preview.keepOutputs,
+    passthroughProofs: operation.preview.unselectedProofs,
+    inputProofs: operation.preview.inputs,
+    policy,
+    adapter:
+      policy.kind === "durable-recipient-ack"
+        ? policy.adapter
+        : undefined,
+  });
+  if (
+    stored === null ||
+    deriveDurableCustodyArtifactFingerprint(stored) !==
+      deriveDurableCustodyArtifactFingerprint(expected)
+  ) {
+    throw new Error("GUI wallet send delivery policy conflicts");
+  }
 }
 
 function proofSetAuthority(proofs: readonly Proof[]) {
@@ -1192,7 +1350,7 @@ function exactCompletedResultGroups(
   if (record.state !== "completed" || !record.resultProofs) {
     throw new Error("GUI wallet operation is not completed");
   }
-  return structuredClone(record.resultProofs);
+  return rehydrateStoredProofGroups(record.resultProofs);
 }
 
 function requireReceiveResult(groups: Record<string, Proof[]>): Proof[] {

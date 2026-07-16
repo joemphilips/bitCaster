@@ -174,6 +174,13 @@ vi.mock("@/lib/markets", () => ({
   windowPriceHistory: mocks.windowPriceHistory,
 }));
 
+vi.mock("@/lib/participationScorePayment", () => ({
+  ensureParticipationScoreForNextMatch: vi.fn().mockResolvedValue({
+    kind: "disabled",
+    score: { enabled: false, matchDebitScore: 0 },
+  }),
+}));
+
 vi.mock("@bitcaster/client-sdk/engineClient", () => ({
   BitcasterEngineClient: vi.fn().mockImplementation(function () {
     return {

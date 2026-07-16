@@ -9,6 +9,10 @@ import {
   classifyDurableBearerSpendCustodyHandoffPlan,
   type DurableBearerSpendCustodyHandoffPlan,
 } from "@bitcaster/client-sdk/durableBearerSpendDelivery";
+import {
+  classifyDurableRecipientDeliveryCustodyHandoffPlan,
+  type DurableRecipientDeliveryCustodyHandoffPlan,
+} from "@bitcaster/client-sdk/durableRecipientDeliveryHandoff";
 import type { DurableCustodyState } from "@bitcaster/client-sdk/durableCustody";
 import type { DexieDurableCustodyPlan } from "./durable-custody-transaction-plan";
 import { sameValue, scopeRow } from "./durable-custody-dexie-model";
@@ -57,11 +61,20 @@ import {
   requireGuiBearerSpendDeliveryRowWithinByteBound,
   type GuiBearerSpendDeliveryRow,
 } from "./gui-bearer-spend-delivery";
+import {
+  requireGuiOutgoingRecipientDeliveryRow,
+  type GuiOutgoingRecipientDeliveryRow,
+} from "./gui-outgoing-recipient-delivery";
 
 export interface GuiBearerSpendCustodyHandoff {
   readonly previousCustodyState: DurableCustodyState;
   readonly plan: DurableBearerSpendCustodyHandoffPlan;
   readonly row: GuiBearerSpendDeliveryRow;
+}
+
+export interface GuiRecipientDeliveryCustodyHandoff {
+  readonly previousCustodyState: DurableCustodyState;
+  readonly plan: DurableRecipientDeliveryCustodyHandoffPlan;
 }
 
 export interface GuiCustodyNativeSnapshot {
@@ -71,6 +84,7 @@ export interface GuiCustodyNativeSnapshot {
   walletSendDeliveryPayload?: GuiWalletSendDeliveryPayloadSnapshot;
   walletSendDeliveryReservation?: GuiWalletSendDeliveryReservationSnapshot;
   bearerSpendDelivery?: GuiBearerSpendDeliveryRow;
+  outgoingRecipientDelivery?: GuiOutgoingRecipientDeliveryRow;
   proofSecrets: string[];
   proofIds: string[];
   proofs: StoredProof[];
@@ -88,6 +102,8 @@ export interface GuiCustodyUnitOfWorkInput<T> {
   /** undefined leaves the reservation unchanged; null atomically consumes it. */
   nextWalletSendDeliveryReservation?: GuiWalletSendDeliveryReservationRow | null;
   bearerSpendHandoff?: GuiBearerSpendCustodyHandoff;
+  recipientDeliveryHandoff?: GuiRecipientDeliveryCustodyHandoff;
+  nextOutgoingRecipientDelivery?: GuiOutgoingRecipientDeliveryRow;
   deleteProofs?: StoredProof[];
   nextProofs?: StoredProof[];
   nextSession?: SwapSessionRecord;
@@ -128,6 +144,8 @@ interface PreparedGuiCustodyState<T> {
   nextWalletSendDeliveryPayload?: GuiWalletSendDeliveryPayloadRow | null;
   nextWalletSendDeliveryReservation?: GuiWalletSendDeliveryReservationRow | null;
   bearerSpendHandoff?: GuiBearerSpendCustodyHandoff;
+  recipientDeliveryHandoff?: GuiRecipientDeliveryCustodyHandoff;
+  nextOutgoingRecipientDelivery?: GuiOutgoingRecipientDeliveryRow;
   deleteProofIds: string[];
   nextProofs?: StoredProofRow[];
   nextSession?: SwapSessionRecord;
@@ -162,6 +180,7 @@ export async function readGuiCustodyNativeSnapshot(
       database.walletSendDeliveryPayloads,
       database.walletSendDeliveryReservations,
       database.bearerSpendDeliveries,
+      database.outgoingRecipientDeliveries,
       database.proofs,
       database.swapSessions,
     ],
@@ -205,6 +224,14 @@ export async function readGuiCustodyNativeSnapshot(
                 walletId,
                 operation.custodyOperationId,
               ),
+        outgoingRecipientDelivery:
+          operationId === null
+            ? undefined
+            : await readOutgoingRecipientDeliverySnapshot(
+                database,
+                walletId,
+                operationId,
+              ),
         proofSecrets: [...proofSecrets],
         proofIds,
         proofs: requireScopedProofs(
@@ -240,6 +267,7 @@ export async function readGuiCustodyOperationSnapshot(
       database.walletSendDeliveryPayloads,
       database.walletSendDeliveryReservations,
       database.bearerSpendDeliveries,
+      database.outgoingRecipientDeliveries,
       database.proofs,
       database.swapSessions,
     ],
@@ -285,6 +313,11 @@ export async function readGuiCustodyOperationSnapshot(
                 walletId,
                 operation.custodyOperationId,
               ),
+        outgoingRecipientDelivery: await readOutgoingRecipientDeliverySnapshot(
+          database,
+          walletId,
+          operationId,
+        ),
         proofSecrets,
         proofIds,
         proofs: requireScopedProofs(
@@ -368,6 +401,25 @@ export async function prepareGuiCustodyUnitOfWork<T>(
         nextWalletSendDeliveryPayload,
       )
     : undefined;
+  const recipientDeliveryHandoff = input.recipientDeliveryHandoff
+    ? requireGuiRecipientDeliveryCustodyHandoff(
+        input.recipientDeliveryHandoff,
+        input.plan,
+        snapshot,
+        nextWalletSendDeliveryPayload,
+      )
+    : undefined;
+  if (bearerSpendHandoff && recipientDeliveryHandoff) {
+    throw new Error("GUI wallet-send custody handoff is ambiguous");
+  }
+  const nextOutgoingRecipientDelivery = input.nextOutgoingRecipientDelivery
+    ? requireGuiOutgoingRecipientDeliveryRow(
+        structuredClone(input.nextOutgoingRecipientDelivery),
+        walletId,
+        input.nextOutgoingRecipientDelivery.deliveryId,
+        input.nextOutgoingRecipientDelivery.operationId,
+      )
+    : undefined;
   if (
     nextWalletSendDeliveryPayload &&
     nextOperation?.operationId !== nextWalletSendDeliveryPayload.operationId
@@ -389,6 +441,8 @@ export async function prepareGuiCustodyUnitOfWork<T>(
       nextWalletSendDeliveryPayload,
       nextWalletSendDeliveryReservation,
       bearerSpendHandoff,
+      recipientDeliveryHandoff,
+      nextOutgoingRecipientDelivery,
       nextSession,
       nextActivity,
     },
@@ -405,6 +459,8 @@ export async function prepareGuiCustodyUnitOfWork<T>(
     nextWalletSendDeliveryPayload,
     nextWalletSendDeliveryReservation,
     bearerSpendHandoff,
+    recipientDeliveryHandoff,
+    nextOutgoingRecipientDelivery,
     deleteProofIds,
     nextProofs,
     nextSession,
@@ -425,6 +481,7 @@ export function guiCustodyUnitOfWorkTables(
     database.walletSendDeliveryPayloads,
     database.walletSendDeliveryReservations,
     database.bearerSpendDeliveries,
+    database.outgoingRecipientDeliveries,
     database.proofs,
     database.swapSessions,
     database.walletActivities,
@@ -493,6 +550,12 @@ export function describePreparedGuiCustodyHeadroomWriteSet<T>(
           previousCustodyState: state.bearerSpendHandoff.previousCustodyState,
           plan: state.bearerSpendHandoff.plan,
         })
+      : state.recipientDeliveryHandoff
+        ? classifyDurableRecipientDeliveryCustodyHandoffPlan({
+            previousCustodyState:
+              state.recipientDeliveryHandoff.previousCustodyState,
+            plan: state.recipientDeliveryHandoff.plan,
+          })
       : classifyDurableCustodyWalletStorageBoundary({ previous, next }),
     database: state.database,
   });
@@ -559,6 +622,14 @@ function commitPreparedState<T>(
           state.plan,
           state.snapshot,
           state.nextOperation,
+          state.nextWalletSendDeliveryPayload,
+        );
+      }
+      if (state.recipientDeliveryHandoff) {
+        requireGuiRecipientDeliveryCustodyHandoff(
+          state.recipientDeliveryHandoff,
+          state.plan,
+          state.snapshot,
           state.nextWalletSendDeliveryPayload,
         );
       }
@@ -679,6 +750,19 @@ function preparedNativePostImageArtifacts(
             ],
             artifactRole: "private-material",
             row: state.bearerSpendHandoff.row,
+          }),
+        ]
+      : []),
+    ...(state.nextOutgoingRecipientDelivery
+      ? [
+          createGuiDurableStorageRowArtifact({
+            table: "outgoingRecipientDeliveries",
+            key: [
+              state.nextOutgoingRecipientDelivery.walletId,
+              state.nextOutgoingRecipientDelivery.deliveryId,
+            ],
+            artifactRole: "operation-overhead",
+            row: state.nextOutgoingRecipientDelivery,
           }),
         ]
       : []),
@@ -819,6 +903,12 @@ async function writePreparedNativeRows<T>(
     await database.bearerSpendDeliveries.put(state.bearerSpendHandoff.row);
     requireCurrentWriteTransaction(database);
   }
+  if (state.nextOutgoingRecipientDelivery) {
+    await database.outgoingRecipientDeliveries.put(
+      state.nextOutgoingRecipientDelivery,
+    );
+    requireCurrentWriteTransaction(database);
+  }
   if (state.deleteProofIds.length > 0) {
     await database.proofs.bulkDelete(state.deleteProofIds);
     requireCurrentWriteTransaction(database);
@@ -941,6 +1031,14 @@ async function assertNativeSnapshot(
           walletId,
           snapshot.operation.custodyOperationId,
         );
+  const outgoingRecipientDelivery =
+    snapshot.operationId === null
+      ? undefined
+      : await readOutgoingRecipientDeliverySnapshot(
+          database,
+          walletId,
+          snapshot.operationId,
+        );
   const proofs = requireScopedProofs(
     await database.proofs.bulkGet(snapshot.proofIds),
     walletId,
@@ -960,6 +1058,10 @@ async function assertNativeSnapshot(
       snapshot.walletSendDeliveryReservation,
     ) ||
     !sameValue(bearerSpendDelivery, snapshot.bearerSpendDelivery) ||
+    !sameValue(
+      outgoingRecipientDelivery,
+      snapshot.outgoingRecipientDelivery,
+    ) ||
     !sameValue(proofs, snapshot.proofs) ||
     !sameValue(session, snapshot.session)
   ) {
@@ -973,6 +1075,8 @@ function assertNativeWriteScope(
     nextWalletSendDeliveryPayload?: GuiWalletSendDeliveryPayloadRow | null;
     nextWalletSendDeliveryReservation?: GuiWalletSendDeliveryReservationRow | null;
     bearerSpendHandoff?: GuiBearerSpendCustodyHandoff;
+    recipientDeliveryHandoff?: GuiRecipientDeliveryCustodyHandoff;
+    nextOutgoingRecipientDelivery?: GuiOutgoingRecipientDeliveryRow;
     nextSession?: SwapSessionRecord;
     nextActivity?: WalletActivityRow;
   },
@@ -986,6 +1090,8 @@ function assertNativeWriteScope(
       input.nextWalletSendDeliveryReservation.walletId !== walletId) ||
     (input.bearerSpendHandoff &&
       input.bearerSpendHandoff.row.walletId !== walletId) ||
+    (input.nextOutgoingRecipientDelivery &&
+      input.nextOutgoingRecipientDelivery.walletId !== walletId) ||
     (input.nextSession && input.nextSession.walletId !== walletId) ||
     (input.nextActivity && input.nextActivity.walletId !== walletId)
   ) {
@@ -1047,6 +1153,25 @@ async function readBearerSpendDeliverySnapshot(
     : undefined;
 }
 
+async function readOutgoingRecipientDeliverySnapshot(
+  database: BitcasterDB,
+  walletId: string,
+  operationId: string,
+): Promise<GuiOutgoingRecipientDeliveryRow | undefined> {
+  const row = await database.outgoingRecipientDeliveries
+    .where("[walletId+operationId]")
+    .equals([walletId, operationId])
+    .first();
+  return row
+    ? requireGuiOutgoingRecipientDeliveryRow(
+        row,
+        walletId,
+        undefined,
+        operationId,
+      )
+    : undefined;
+}
+
 function requireGuiBearerSpendCustodyHandoff(
   value: GuiBearerSpendCustodyHandoff,
   custodyPlan: DexieDurableCustodyPlan<unknown>,
@@ -1082,6 +1207,42 @@ function requireGuiBearerSpendCustodyHandoff(
     )
   ) {
     throw new Error("GUI bearer spend custody handoff is invalid");
+  }
+  return value;
+}
+
+function requireGuiRecipientDeliveryCustodyHandoff(
+  value: GuiRecipientDeliveryCustodyHandoff,
+  custodyPlan: DexieDurableCustodyPlan<unknown>,
+  snapshot: GuiCustodyNativeSnapshot,
+  nextPayload: GuiWalletSendDeliveryPayloadRow | null | undefined,
+): GuiRecipientDeliveryCustodyHandoff {
+  classifyDurableRecipientDeliveryCustodyHandoffPlan({
+    previousCustodyState: value.previousCustodyState,
+    plan: value.plan,
+  });
+  const outgoing = snapshot.outgoingRecipientDelivery;
+  const payload = snapshot.walletSendDeliveryPayload;
+  const custodyPostImage = requireBearerCustodyPostImage(custodyPlan);
+  if (
+    nextPayload !== null ||
+    outgoing?.delivery.kind !== "active" ||
+    outgoing.delivery.record.delivery.state.kind !== "credited" ||
+    outgoing.active !== 0 ||
+    !payload ||
+    payload.operationId !== outgoing.operationId ||
+    payload.tokenDigest !== outgoing.delivery.record.delivery.request.tokenDigest ||
+    !sameValue(
+      outgoing.delivery.record.delivery,
+      value.plan.recipientRecord,
+    ) ||
+    !sameValue(custodyPostImage, value.plan.custodyState.operation) ||
+    !sameValue(
+      custodyPlan.transaction.scopeState(),
+      value.plan.custodyState.scopeState,
+    )
+  ) {
+    throw new Error("GUI recipient delivery custody handoff is invalid");
   }
   return value;
 }

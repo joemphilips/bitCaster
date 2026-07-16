@@ -19,6 +19,10 @@ import {
   type DurableBearerSpendCustodyHandoffPlan,
 } from "@bitcaster/client-sdk/durableBearerSpendDelivery";
 import {
+  classifyDurableRecipientDeliveryCustodyHandoffPlan,
+  type DurableRecipientDeliveryCustodyHandoffPlan,
+} from "@bitcaster/client-sdk/durableRecipientDeliveryHandoff";
+import {
   activeMarker,
   sameValue,
   type ActiveMarker,
@@ -307,6 +311,31 @@ export class PlannedCustodyTransaction implements DurableCustodyTransaction {
       operation: this.requireOperation(operationId),
     };
     classifyDurableBearerSpendCustodyHandoffPlan({
+      previousCustodyState,
+      plan,
+    });
+    this.state = decodeDurableCustodyScopeState(
+      plan.custodyState.scopeState,
+      this.scope,
+    );
+    this.operations.set(
+      operationId,
+      decodeDurableCustodyRecord(plan.custodyState.operation, this.scope),
+    );
+    this.touched.add(operationId);
+    this.rebuildActiveWorkIndex();
+    this.assertIntegrity();
+  }
+
+  adoptRecipientDeliveryCustodyHandoff(
+    plan: DurableRecipientDeliveryCustodyHandoffPlan,
+  ): void {
+    const operationId = plan.custodyState.operation.operation.operationId;
+    const previousCustodyState = {
+      scopeState: this.getScopeState(),
+      operation: this.requireOperation(operationId),
+    };
+    classifyDurableRecipientDeliveryCustodyHandoffPlan({
       previousCustodyState,
       plan,
     });

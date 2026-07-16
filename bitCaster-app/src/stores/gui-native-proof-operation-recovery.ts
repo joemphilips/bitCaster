@@ -11,7 +11,6 @@ import {
 import type { CtfProofOperationRecord } from "@bitcaster/client-sdk/ctfSplit";
 import { recoverGuiCtfRedeemOperation } from "@/lib/cashu";
 import { recoverGuiConditionRegistrationOperation } from "@/lib/marketRegistrationFee";
-import { recoverGuiEcashDepositSplit } from "@/lib/guiLocalWalletPayment";
 import { assertNever } from "@/lib/enumDiscipline";
 import {
   recoverGuiOrdinaryWalletOperation,
@@ -641,7 +640,7 @@ function immutableNativeMetadata(
 type SupportedNativeOperation =
   | (ProofOperationRecord &
       CtfProofOperationRecord & {
-        kind: "ctf-redeem" | "ctf-condition-registration" | "regular-split";
+        kind: "ctf-redeem" | "ctf-condition-registration";
       })
   | (ProofOperationRecord & {
       kind: "wallet-mint" | "wallet-receive" | "wallet-send";
@@ -653,7 +652,6 @@ function isSupportedNativeOperation(
   return (
     operation.kind === "ctf-redeem" ||
     operation.kind === "ctf-condition-registration" ||
-    operation.kind === "regular-split" ||
     operation.kind === "wallet-mint" ||
     operation.kind === "wallet-receive" ||
     operation.kind === "wallet-send"
@@ -685,12 +683,6 @@ async function dispatchNativeRecovery(
       return { kind: "settled" };
     case "ctf-condition-registration":
       await recoverGuiConditionRegistrationOperation(operation);
-      return { kind: "settled" };
-    case "regular-split":
-      await recoverGuiEcashDepositSplit(
-        operation.walletId,
-        operation.operationId,
-      );
       return { kind: "settled" };
     case "wallet-mint":
     case "wallet-receive":

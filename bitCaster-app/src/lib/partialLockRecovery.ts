@@ -43,7 +43,7 @@ import {
   removeGuiPartialLockFailureUnderLock,
 } from "@/stores/partial-lock-failure-db";
 import type { GuiPartialLockFailureRecord } from "@/stores/partial-lock-failure-model";
-import { samePaymentProofSet } from "@/stores/pending-local-wallet-payment-model";
+import { sameCashuProofSet } from "@/stores/cashu-proof-model";
 import type { CashuProofArtifactLike } from "@bitcaster/client-sdk/proofSelection";
 import type { ActiveSwap } from "@/stores/activeSwaps";
 import { useWalletStore } from "@/stores/wallet";
@@ -189,7 +189,7 @@ function requireExactCompletedRefundCleanupAuthority(
     operation.mintUrl !== record.mintUrl ||
     operation.metadata.tradeId !== record.tradeId ||
     operation.metadata.refundLocktime !== record.refundLocktime ||
-    !samePaymentProofSet(
+    !sameCashuProofSet(
       operation.inputs,
       exactLockedProofIdentities(record),
     ) ||

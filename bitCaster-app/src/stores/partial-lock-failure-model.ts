@@ -6,7 +6,7 @@ import type {
   PartialLockProofRecord,
 } from "@bitcaster/client-sdk/swapFailure";
 import { normalizeUrl } from "@/lib/url";
-import { normalizePendingPaymentProofs } from "./pending-local-wallet-payment-model";
+import { normalizeCashuProofs } from "./cashu-proof-model";
 
 const IDENTIFIER_MAX_LENGTH = 256;
 const DETAIL_MAX_LENGTH = 1_024;
@@ -78,7 +78,7 @@ function requireLockedProofs(value: unknown): PartialLockProofRecord[] {
   ) {
     throw new Error("Partial-lock failure lockedProofs must not be empty");
   }
-  const proofs = normalizePendingPaymentProofs(
+  const proofs = normalizeCashuProofs(
     value,
     "partial-lock proofs",
   ).map((proof) => ({ ...proof, amount: amountToNumber(proof.amount) }));

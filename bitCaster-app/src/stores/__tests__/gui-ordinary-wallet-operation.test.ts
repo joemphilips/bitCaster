@@ -58,6 +58,27 @@ vi.mock("../proof-db", () => ({
   getProofOperationForWallet: vi.fn(async () =>
     state.record ? structuredClone(state.record) : null,
   ),
+  rehydrateStoredProofGroups: (
+    groups: Record<string, Proof[]>,
+  ): Record<string, Proof[]> =>
+    Object.fromEntries(
+      Object.entries(groups).map(([label, proofs]) => [
+        label,
+        proofs.map((proof) => {
+          const amount = proof.amount as unknown;
+          return {
+            ...proof,
+            amount: Amount.from(
+              typeof amount === "object" &&
+                amount !== null &&
+                "value" in amount
+                ? (amount as { value: bigint }).value
+                : (amount as number | bigint | string | Amount),
+            ),
+          };
+        }),
+      ]),
+    ),
 }));
 
 vi.mock("../gui-wallet-proof-operation-custody", () => ({
@@ -145,6 +166,12 @@ vi.mock("../gui-wallet-proof-operation-custody", () => ({
     return structuredClone(state.record);
   }),
   requirePendingGuiWalletSendTokenForWallet: vi.fn(async () => {
+    if (!state.encodedUserExportToken) {
+      throw new Error("GUI wallet send pending payload is missing");
+    }
+    return state.encodedUserExportToken;
+  }),
+  requireGuiWalletSendTokenForWallet: vi.fn(async () => {
     if (!state.encodedUserExportToken) {
       throw new Error("GUI wallet send pending payload is missing");
     }

@@ -11,7 +11,7 @@ import {
   type GuiEcashDepositStatusReader,
   type GuiEcashDepositSubmission,
   type GuiLocalWalletPaymentResult,
-} from "@/lib/guiLocalWalletPayment";
+} from "@/lib/guiMarketFundingPayment";
 import {
   formatMarketSubunits,
   marketUnitLabel,

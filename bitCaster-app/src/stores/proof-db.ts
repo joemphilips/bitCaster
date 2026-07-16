@@ -1,5 +1,5 @@
 import Dexie, { type Table } from "dexie";
-import type { Proof } from "@cashu/cashu-ts";
+import { Amount, type Proof } from "@cashu/cashu-ts";
 import { isStrictCashuProofArtifact } from "@bitcaster/client-sdk/cashuProofArtifact";
 import {
   DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
@@ -34,7 +34,6 @@ import type {
   DexieCustodySessionLinkRow,
 } from "./durable-custody-dexie";
 import type { GuiPartialLockFailureRecord } from "./partial-lock-failure-model";
-import type { PendingLocalWalletPaymentRow } from "./pending-local-wallet-payment-model";
 import type { PendingTradeRecord } from "./pendingTrades";
 import type { WalletActivityRow } from "./wallet-activity-projection";
 import type {
@@ -46,6 +45,7 @@ import type {
   GuiWalletSendDeliveryReservationRow,
 } from "./gui-wallet-send-delivery";
 import type { GuiBearerSpendDeliveryRow } from "./gui-bearer-spend-delivery";
+import type { GuiOutgoingRecipientDeliveryRow } from "./gui-outgoing-recipient-delivery";
 import { createGuiDurableStorageRowArtifact } from "./gui-durable-storage-artifacts";
 import {
   walletIdFromHeldGuiWalletLock,
@@ -159,6 +159,42 @@ export interface PrepareProofOperationInput {
   metadata?: Record<string, unknown>;
 }
 
+export function rehydrateStoredProofGroups(
+  groups: Readonly<Record<string, readonly Proof[]>>,
+): Record<string, Proof[]> {
+  return Object.fromEntries(
+    Object.entries(groups).map(([label, proofs]) => [
+      label,
+      proofs.map((proof) => ({
+        ...structuredClone(proof),
+        amount: rehydrateStoredAmount(proof.amount),
+      })),
+    ]),
+  );
+}
+
+function rehydrateStoredAmount(value: unknown): Amount {
+  if (
+    typeof value === "number" ||
+    typeof value === "bigint" ||
+    typeof value === "string" ||
+    value instanceof Amount
+  ) {
+    return Amount.from(value);
+  }
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 1 &&
+    "value" in value &&
+    typeof value.value === "bigint"
+  ) {
+    return Amount.from(value.value);
+  }
+  throw new Error("Stored proof amount is invalid");
+}
+
 /**
  * The opaque GUI payload is owned by the swap-session adapter; the common
  * session schema is owned by bitcaster-client-sdk.
@@ -262,10 +298,6 @@ export class BitcasterDB extends Dexie {
     [string, string]
   >;
   walletCounters!: Table<GuiWalletCounterRow, [string, string]>;
-  pendingLocalWalletPayments!: Table<
-    PendingLocalWalletPaymentRow,
-    [string, string]
-  >;
   pendingTrades!: Table<PendingTradeRecord, [string, string]>;
   walletActivities!: Table<WalletActivityRow, [string, string]>;
   durableStorageAccounting!: Table<GuiDurableStorageAccountingRow, string>;
@@ -279,6 +311,10 @@ export class BitcasterDB extends Dexie {
     [string, string]
   >;
   bearerSpendDeliveries!: Table<GuiBearerSpendDeliveryRow, [string, string]>;
+  outgoingRecipientDeliveries!: Table<
+    GuiOutgoingRecipientDeliveryRow,
+    [string, string]
+  >;
 
   constructor() {
     super("bitcaster");
@@ -605,6 +641,42 @@ export class BitcasterDB extends Dexie {
           ].map((tableName) => transaction.table(tableName).clear()),
         );
       });
+    // The wallet schema remains undeployed. Version 19 adds the indexed
+    // durable-recipient outbox and starts from an empty development wallet.
+    this.version(19)
+      .stores({
+        outgoingRecipientDeliveries:
+          "[walletId+deliveryId], walletId, &[walletId+operationId], [walletId+active+nextAttemptAtMs+deliveryId]",
+      })
+      .upgrade(async (transaction) => {
+        await Promise.all(
+          [
+            "proofs",
+            "proofOperations",
+            "swapSessions",
+            "swapIntents",
+            "custodyScopes",
+            "custodyScopeStates",
+            "custodyOperations",
+            "custodySessionLinks",
+            "custodyProofReservations",
+            "partialLockFailures",
+            "walletCounters",
+            "pendingLocalWalletPayments",
+            "pendingTrades",
+            "walletActivities",
+            "durableStorageAccounting",
+            "durableStorageHeadroom",
+            "walletSendDeliveryPayloads",
+            "walletSendDeliveryReservations",
+            "bearerSpendDeliveries",
+            "outgoingRecipientDeliveries",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
+    this.version(20).stores({
+      pendingLocalWalletPayments: null,
+    });
     this.on("blocked", () => {
       durableSwapStorageBlockedReason =
         "Durable swap storage upgrade is blocked by another open tab";

@@ -32,7 +32,6 @@ import { useWalletStore } from "../wallet";
 const recoveryMocks = vi.hoisted(() => ({
   ctfRedeem: vi.fn(),
   conditionRegistration: vi.fn(),
-  ecashDepositSplit: vi.fn(),
   ordinaryWallet: vi.fn(),
 }));
 
@@ -66,16 +65,6 @@ vi.mock("@/lib/marketRegistrationFee", async () => {
   };
 });
 
-vi.mock("@/lib/guiLocalWalletPayment", async () => {
-  const actual = await vi.importActual<
-    typeof import("@/lib/guiLocalWalletPayment")
-  >("@/lib/guiLocalWalletPayment");
-  return {
-    ...actual,
-    recoverGuiEcashDepositSplit: recoveryMocks.ecashDepositSplit,
-  };
-});
-
 const KEYSET_ID = `00${"22".repeat(7)}`;
 const PUBLIC_KEY = `02${"33".repeat(32)}`;
 const MNEMONIC = `${"abandon ".repeat(11)}about`;
@@ -92,16 +81,6 @@ describe("GUI native proof-operation startup recovery", () => {
     recoveryMocks.conditionRegistration
       .mockReset()
       .mockImplementation(completeOperationUnlocked);
-    recoveryMocks.ecashDepositSplit
-      .mockReset()
-      .mockImplementation(async (walletId: string, operationId: string) => {
-        await requireWalletLockAvailable(walletId);
-        const operation = await db.proofOperations.get(
-          proofOperationPrimaryKey(walletId, operationId),
-        );
-        if (!operation) throw new Error("missing regular split fixture");
-        await completeOperationUnlocked(operation);
-      });
     recoveryMocks.ordinaryWallet
       .mockReset()
       .mockImplementation(async (operation: ProofOperationRecord) => {
@@ -523,24 +502,20 @@ describe("GUI native proof-operation startup recovery", () => {
     },
   );
 
-  it("delegates deposit-owned regular splits to exact pending-deposit recovery", async () => {
+  it("fails closed on an orphan regular split without a linked trade coordinator", async () => {
     const prepared = await prepareNativeOperation("regular-split", 5);
 
-    await expect(recoverGuiNativeProofOperations()).resolves.toBe("clear");
+    await expect(recoverGuiNativeProofOperations()).resolves.toBe("blocked");
 
     expect(recoveryMocks.ctfRedeem).not.toHaveBeenCalled();
     expect(recoveryMocks.conditionRegistration).not.toHaveBeenCalled();
-    expect(recoveryMocks.ecashDepositSplit).toHaveBeenCalledWith(
-      currentGuiWalletId(),
-      prepared.operationId,
-    );
     expect(
       await db.proofOperations.get(operationKey(prepared.operationId)),
     ).toMatchObject({
-      state: "completed",
+      state: "prepared",
       custodyOperationId: prepared.custodyOperationId,
     });
-    expect(await db.custodyProofReservations.count()).toBe(0);
+    expect(await db.custodyProofReservations.count()).toBe(1);
   });
 
   it("does not return terminal rows from the canonical active index", async () => {

@@ -8,7 +8,7 @@ import {
   type GuiEcashDepositStatusReader,
   type GuiEcashDepositSubmission,
   type GuiLocalWalletPaymentResult,
-} from "@/lib/guiLocalWalletPayment";
+} from "@/lib/guiMarketFundingPayment";
 import { resolveCreatorPubkey } from "@/lib/identityOps";
 import {
   BINARY_AMM_FUNDING_TIERS,
@@ -193,6 +193,8 @@ export function DepositStep({
         request.amountSubunits,
         token,
         {
+          accountSubject: request.fundingIdentity,
+          mintUrl: request.mintUrl,
           creatorPubkey: request.creatorPubkey,
           fundAmm: request.fundAmm,
           unit: request.unit,

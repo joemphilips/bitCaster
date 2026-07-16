@@ -16,6 +16,7 @@ import type { components } from "@/generated/api";
 import {
   BitcasterEngineClient,
   createMarketViaEngine,
+  EngineClientError,
   submitEphemeralPubkey as sdkSubmitEphemeralPubkey,
   submitOracleAttestationViaEngine,
   type SubmitOrderRequest as SdkSubmitOrderRequest,
@@ -829,9 +830,25 @@ export async function signTradeComment(
   };
 }
 
-export function createAuthenticatedBrowserEngineClient(): BitcasterEngineClient {
+export function createAuthenticatedBrowserEngineClient(options?: {
+  timeoutMs?: number;
+}): BitcasterEngineClient {
+  const timeoutMs = options?.timeoutMs;
   return new BitcasterEngineClient({
     baseUrl: window.location.origin,
+    ...(timeoutMs === undefined
+      ? {}
+      : {
+          fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => {
+            const timeoutSignal = AbortSignal.timeout(timeoutMs);
+            return fetch(input, {
+              ...init,
+              signal: init?.signal
+                ? AbortSignal.any([init.signal, timeoutSignal])
+                : timeoutSignal,
+            });
+          },
+        }),
     authorization: async ({ url, method, bodyText, payloadHash }) =>
       generateNip98Header(
         resolveApiSigningUrl(url),
@@ -1055,10 +1072,12 @@ export type DepositState = components["schemas"]["DepositState"];
 export type DepositMethod = components["schemas"]["DepositMethod"];
 
 export interface MarketFundingDepositOptions {
+  accountSubject: string;
+  mintUrl: string;
+  unit: "sat" | "msat" | "usd";
+  divisibility: number;
   creatorPubkey?: string | null;
   fundAmm?: boolean;
-  unit?: string;
-  divisibility?: number;
 }
 
 const DEPOSIT_HTTP_TIMEOUT_MS = 15_000;
@@ -1073,26 +1092,6 @@ export class EcashDepositRequestError extends Error {
   }
 }
 
-function normalizeDepositState(state: unknown): DepositState {
-  switch (state) {
-    case "requested":
-      return "requested";
-    case "paid":
-      return "paid";
-    case "credited":
-      return "credited";
-    case "failed":
-      return "failed";
-    default:
-      throw new Error(`Unknown deposit state: ${String(state)}`);
-  }
-}
-
-function normalizeDepositMethod(method: unknown): DepositMethod {
-  if (method === "ecash") return method;
-  throw new Error(`Unknown deposit method: ${String(method)}`);
-}
-
 /**
  * Submit ecash proofs as a market's AMM bot deposit. Phase 1 of the engine
  * records the request and defers proof verification to the wallet-service;
@@ -1104,41 +1103,33 @@ export async function requestEcashDeposit(
   depositId: string,
   amountSubunits: number,
   proofsToken: string,
-  options: MarketFundingDepositOptions = {},
+  options: MarketFundingDepositOptions,
 ): Promise<RequestEcashDepositResponse> {
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ecash`;
-  const body: RequestEcashDepositRequest = {
-    depositId,
-    amountSubunits,
-    proofsToken,
-    fundAmm: false,
-  };
-  if (options.creatorPubkey) body.creatorPubkey = options.creatorPubkey;
-  if (options.fundAmm !== undefined) body.fundAmm = options.fundAmm;
-  if (options.unit) body.unit = options.unit;
-  if (options.divisibility !== undefined) body.divisibility = options.divisibility;
-  const bodyText = JSON.stringify(body);
-  const bodyBytes = new TextEncoder().encode(bodyText);
-  const payloadHash = await sha256Hex(bodyBytes);
-  const authHeader = await generateNip98Header(url, "POST", payloadHash);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: authHeader },
-    body: bodyText,
-    signal: AbortSignal.timeout(DEPOSIT_HTTP_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw new EcashDepositRequestError(response.status);
+  try {
+    return await createAuthenticatedBrowserEngineClient({
+      timeoutMs: DEPOSIT_HTTP_TIMEOUT_MS,
+    }).submitMarketFundingEcash({
+      accountSubject: options.accountSubject,
+      conditionId,
+      depositId,
+      amountSubunits,
+      proofsToken,
+      mintUrl: options.mintUrl,
+      unit: options.unit,
+      divisibility: options.divisibility,
+      creatorPubkey: options.creatorPubkey,
+      fundAmm: options.fundAmm,
+    });
+  } catch (error) {
+    if (error instanceof EngineClientError) {
+      throw new EcashDepositRequestError(error.status);
+    }
+    throw error;
   }
-  const result = (await response.json()) as RequestEcashDepositResponse;
-  if (result.depositId !== depositId) {
-    throw new Error("Matching Engine returned a conflicting deposit identity");
-  }
-  return { ...result, state: normalizeDepositState(result.state) };
 }
 
 /**
- * Polling read of a deposit's current lifecycle state. Public — no auth.
+ * Authenticated owner-scoped read of a deposit's current lifecycle state.
  * Returns `null` when the engine has no record of `depositId` for this
  * `conditionId` (404). Bearer payment instruments (bolt11) and proof
  * material are deliberately excluded from this shape by the engine.
@@ -1147,32 +1138,34 @@ export async function getDepositStatus(
   conditionId: string,
   depositId: string,
 ): Promise<GetDepositResponseDto | null> {
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/${depositId}`;
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(DEPOSIT_HTTP_TIMEOUT_MS),
-  });
-  if (response.status === 404) return null;
-  if (!response.ok) {
-    throw new Error(`Failed to read deposit status: ${response.status}`);
-  }
-  const result = (await response.json()) as GetDepositResponseDto;
-  return {
-    ...result,
-    state: normalizeDepositState(result.state),
-    method: normalizeDepositMethod(result.method),
-  };
+  const result =
+    await createAuthenticatedBrowserEngineClient().getMarketFundingPayment(
+      conditionId,
+      depositId,
+    );
+  return result as GetDepositResponseDto | null;
 }
 
 export async function getParticipationScore(): Promise<ParticipationScoreResponse> {
   return createAuthenticatedBrowserEngineClient().getParticipationScore();
 }
 
+export async function getParticipationScorePayment(
+  paymentId: string,
+) {
+  return createAuthenticatedBrowserEngineClient().getParticipationScorePayment(
+    paymentId,
+  );
+}
+
 export async function payParticipationScoreEcash(
+  accountSubject: string,
   amountSats: number,
   proofsToken: string,
   paymentId?: string,
 ): Promise<PayParticipationScoreEcashResponse> {
   return createAuthenticatedBrowserEngineClient().payParticipationScoreEcash(
+    accountSubject,
     amountSats,
     proofsToken,
     paymentId,

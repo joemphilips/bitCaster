@@ -36,7 +36,7 @@ const mocks = vi.hoisted(() => {
     normalizeStoredMintUrls: vi.fn().mockResolvedValue(undefined),
     requestGuiNativeProofOperationRecovery: vi.fn().mockResolvedValue("clear"),
     requestGuiBearerSpendRecovery: vi.fn().mockResolvedValue("clear"),
-    reconcileGuiEcashDeposits: vi.fn().mockResolvedValue({
+    reconcileGuiOutgoingPayments: vi.fn().mockResolvedValue({
       remaining: [],
       hasMore: false,
       nextCursor: null,
@@ -141,8 +141,8 @@ vi.mock("@/lib/identityOps", () => ({
   resolveCreatorPubkey: vi.fn(() => "aa".repeat(32)),
 }));
 
-vi.mock("@/lib/guiLocalWalletPayment", () => ({
-  reconcileGuiEcashDeposits: mocks.reconcileGuiEcashDeposits,
+vi.mock("@/lib/guiOutgoingPaymentRecovery", () => ({
+  reconcileGuiOutgoingPayments: mocks.reconcileGuiOutgoingPayments,
 }));
 
 vi.mock("@/lib/markets", () => ({
@@ -167,7 +167,7 @@ describe("App partial-lock recovery sweep", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.reset();
-    mocks.reconcileGuiEcashDeposits.mockReset().mockResolvedValue({
+    mocks.reconcileGuiOutgoingPayments.mockReset().mockResolvedValue({
       remaining: [],
       hasMore: false,
       nextCursor: null,
@@ -198,7 +198,7 @@ describe("App partial-lock recovery sweep", () => {
 
     await waitFor(() => {
       expect(mocks.sweepElapsedPartialLockFailures).toHaveBeenCalledOnce();
-      expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledOnce();
+      expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledOnce();
     });
   });
 
@@ -254,7 +254,7 @@ describe("App partial-lock recovery sweep", () => {
 
   it("shows a fixed fail-closed warning for a blocked wallet deposit", async () => {
     mocks.walletState.mnemonic = `${"abandon ".repeat(11)}about`;
-    mocks.reconcileGuiEcashDeposits.mockResolvedValueOnce({
+    mocks.reconcileGuiOutgoingPayments.mockResolvedValueOnce({
       remaining: [],
       hasMore: false,
       nextCursor: null,
@@ -280,7 +280,7 @@ describe("App partial-lock recovery sweep", () => {
       createdAt: 1,
       depositId: "00000000-0000-4000-8000-000000000016",
     };
-    mocks.reconcileGuiEcashDeposits
+    mocks.reconcileGuiOutgoingPayments
       .mockResolvedValueOnce({
         remaining: [{}],
         hasMore: true,
@@ -300,10 +300,14 @@ describe("App partial-lock recovery sweep", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledTimes(2);
+      expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledTimes(2);
     });
-    expect(mocks.reconcileGuiEcashDeposits.mock.calls[0]?.[1]).toBeNull();
-    expect(mocks.reconcileGuiEcashDeposits.mock.calls[1]?.[1]).toEqual(cursor);
+    expect(
+      mocks.reconcileGuiOutgoingPayments.mock.calls[0]?.[0]?.cursor,
+    ).toBeNull();
+    expect(
+      mocks.reconcileGuiOutgoingPayments.mock.calls[1]?.[0]?.cursor,
+    ).toEqual(cursor);
   });
 
   it("restarts deposit recovery on online and visible events", async () => {
@@ -316,17 +320,17 @@ describe("App partial-lock recovery sweep", () => {
 
     render(<App />);
     await waitFor(() => {
-      expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledOnce();
+      expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledOnce();
     });
 
     window.dispatchEvent(new Event("online"));
     await waitFor(() => {
-      expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledTimes(2);
+      expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledTimes(2);
     });
 
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(() => {
-      expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledTimes(3);
+      expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -339,16 +343,16 @@ describe("App partial-lock recovery sweep", () => {
       nextAttemptAt: null;
       blocked: unknown[];
     }>();
-    mocks.reconcileGuiEcashDeposits.mockReturnValueOnce(page.promise);
+    mocks.reconcileGuiOutgoingPayments.mockReturnValueOnce(page.promise);
     const { default: App } = await import("../App");
 
     render(<App />);
     await waitFor(() => {
-      expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledOnce();
+      expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledOnce();
     });
     window.dispatchEvent(new Event("online"));
     window.dispatchEvent(new Event("online"));
-    expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledOnce();
+    expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledOnce();
 
     page.resolve({
       remaining: [],
@@ -358,14 +362,14 @@ describe("App partial-lock recovery sweep", () => {
       blocked: [],
     });
     await waitFor(() => {
-      expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledTimes(2);
+      expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledTimes(2);
     });
   });
 
   it("keeps online triggers inside bounded in-memory exponential backoff", async () => {
     vi.useFakeTimers();
     mocks.walletState.mnemonic = `${"abandon ".repeat(11)}about`;
-    mocks.reconcileGuiEcashDeposits.mockRejectedValue(
+    mocks.reconcileGuiOutgoingPayments.mockRejectedValue(
       new DOMException("quota exhausted", "QuotaExceededError"),
     );
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -378,30 +382,30 @@ describe("App partial-lock recovery sweep", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledOnce();
+    expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledOnce();
 
     await act(async () => {
       window.dispatchEvent(new Event("online"));
       window.dispatchEvent(new Event("online"));
       await vi.advanceTimersByTimeAsync(999);
     });
-    expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledOnce();
+    expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledOnce();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
-    expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledTimes(2);
+    expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       window.dispatchEvent(new Event("online"));
       await vi.advanceTimersByTimeAsync(1_999);
     });
-    expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledTimes(2);
+    expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
-    expect(mocks.reconcileGuiEcashDeposits).toHaveBeenCalledTimes(3);
+    expect(mocks.reconcileGuiOutgoingPayments).toHaveBeenCalledTimes(3);
     warning.mockRestore();
   });
 

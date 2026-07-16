@@ -6,12 +6,21 @@ import {
   requireExactDurableWalletSendToken,
   type DurableWalletSendDeliveryAdmission,
 } from "@bitcaster/client-sdk/durableWalletSendDelivery";
+import {
+  decodeDurableRecipientDeliveryIntent,
+  type DurableRecipientDeliveryIntent,
+  type DurableWalletSendDeliveryPolicy,
+} from "@bitcaster/client-sdk/durableWalletSendDeliveryPreparation";
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { ProofOperationRecord } from "./proof-db";
 import { requireFixedFullSpanUint8Array } from "./gui-durable-storage-binary";
 import { GUI_DURABLE_STORAGE_ARTIFACT_BYTES_LIMITS } from "./gui-durable-storage-artifacts";
+import {
+  requireGuiOutgoingRecipientAdapter,
+  type GuiOutgoingRecipientAdapter,
+} from "./gui-outgoing-recipient-adapter";
 
 export const GUI_WALLET_SEND_DELIVERY_METADATA_KEY =
   "guiWalletSendDelivery" as const;
@@ -21,11 +30,20 @@ export const GUI_WALLET_SEND_PROOF_COUNT_LIMIT_MAX = 256;
 export const GUI_WALLET_SEND_STORAGE_BYTES_LIMIT_MAX = 8 * 1_024 * 1_024;
 const RANDOM_FILL_CHUNK_BYTES = 65_536;
 
-export interface GuiWalletSendDeliveryMetadata {
+interface GuiWalletSendDeliveryMetadataBase {
   schemaVersion: 1;
-  mode: "user-export";
   admission: DurableWalletSendDeliveryAdmission;
 }
+
+export type GuiWalletSendDeliveryMetadata =
+  | (GuiWalletSendDeliveryMetadataBase & {
+      mode: "user-export";
+    })
+  | (GuiWalletSendDeliveryMetadataBase & {
+      mode: "durable-recipient-ack";
+      recipient: DurableRecipientDeliveryIntent;
+      adapter: GuiOutgoingRecipientAdapter;
+    });
 
 export interface GuiWalletSendDeliveryPayloadRow {
   walletId: string;
@@ -68,20 +86,41 @@ export function guiWalletSendDeliveryMetadata(input: {
   keepOutputs?: readonly { secret: string; blindedMessage: { id: string } }[];
   passthroughProofs?: readonly { secret: string; id: string }[];
   inputProofs?: readonly { secret: string; id: string }[];
+  policy?: DurableWalletSendDeliveryPolicy;
+  adapter?: GuiOutgoingRecipientAdapter;
 }): GuiWalletSendDeliveryMetadata {
+  const admission = planDurableWalletSendDeliveryAdmission({
+    outputPlan: input,
+    limits: {
+      encodedTokenBytes:
+        input.policy?.kind === "durable-recipient-ack"
+          ? 64 * 1_024
+          : GUI_WALLET_SEND_TOKEN_BYTES_LIMIT_MAX,
+      proofCount: GUI_WALLET_SEND_PROOF_COUNT_LIMIT_MAX,
+      durableStorageBytes: GUI_WALLET_SEND_STORAGE_BYTES_LIMIT_MAX,
+      nativeOperationRowBytes:
+        GUI_DURABLE_STORAGE_ARTIFACT_BYTES_LIMITS.proofOperations,
+    },
+  });
+  if (input.policy?.kind === "durable-recipient-ack") {
+    const adapter = requireGuiOutgoingRecipientAdapter(input.adapter);
+    return {
+      schemaVersion: 1,
+      mode: input.policy.kind,
+      recipient: decodeDurableRecipientDeliveryIntent(
+        input.policy.recipient,
+      ),
+      adapter,
+      admission,
+    };
+  }
+  if (input.adapter !== undefined) {
+    throw new Error("GUI bearer send cannot have a recipient adapter");
+  }
   return {
     schemaVersion: 1,
     mode: "user-export",
-    admission: planDurableWalletSendDeliveryAdmission({
-      outputPlan: input,
-      limits: {
-        encodedTokenBytes: GUI_WALLET_SEND_TOKEN_BYTES_LIMIT_MAX,
-        proofCount: GUI_WALLET_SEND_PROOF_COUNT_LIMIT_MAX,
-        durableStorageBytes: GUI_WALLET_SEND_STORAGE_BYTES_LIMIT_MAX,
-        nativeOperationRowBytes:
-          GUI_DURABLE_STORAGE_ARTIFACT_BYTES_LIMITS.proofOperations,
-      },
-    }),
+    admission,
   };
 }
 
@@ -89,8 +128,8 @@ export function createGuiWalletSendDeliveryReservationRow(
   operation: ProofOperationRecord,
 ): GuiWalletSendDeliveryReservationRow {
   const metadata = readGuiWalletSendDeliveryMetadata(operation);
-  if (operation.kind !== "wallet-send" || metadata?.mode !== "user-export") {
-    throw new Error("GUI wallet-send reservation has no user-export operation");
+  if (operation.kind !== "wallet-send" || metadata === null) {
+    throw new Error("GUI wallet-send reservation has no delivery operation");
   }
   const padding = new Uint8Array(
     metadata.admission.durableStorageBytesRequired,
@@ -155,7 +194,7 @@ export function requireGuiWalletSendDeliveryReservationRow(
   if (
     Object.keys(row).length !== 8 ||
     operation.kind !== "wallet-send" ||
-    metadata?.mode !== "user-export" ||
+    metadata === null ||
     typeof operation.walletId !== "string" ||
     !/^[0-9a-f]{64}$/.test(operation.walletId) ||
     typeof operation.operationId !== "string" ||
@@ -202,21 +241,31 @@ export function readGuiWalletSendDeliveryMetadata(
     throw new Error("GUI wallet send delivery metadata is invalid");
   }
   const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).length !== 3 ||
-    record.schemaVersion !== 1 ||
-    record.mode !== "user-export"
-  ) {
+  if (record.schemaVersion !== 1) {
     throw new Error("GUI wallet send delivery metadata is invalid");
   }
-  return {
-    schemaVersion: 1,
-    mode: record.mode,
-    admission: requireDurableWalletSendDeliveryAdmission(record.admission),
-  };
+  const admission = requireDurableWalletSendDeliveryAdmission(
+    record.admission,
+  );
+  if (record.mode === "user-export" && Object.keys(record).length === 3) {
+    return { schemaVersion: 1, mode: record.mode, admission };
+  }
+  if (
+    record.mode === "durable-recipient-ack" &&
+    Object.keys(record).length === 5
+  ) {
+    return {
+      schemaVersion: 1,
+      mode: record.mode,
+      recipient: decodeDurableRecipientDeliveryIntent(record.recipient),
+      adapter: requireGuiOutgoingRecipientAdapter(record.adapter),
+      admission,
+    };
+  }
+  throw new Error("GUI wallet send delivery metadata is invalid");
 }
 
-export function requireExactGuiWalletSendUserExportToken(
+export function requireExactGuiWalletSendToken(
   operation: Pick<
     ProofOperationRecord,
     | "walletId"
@@ -234,10 +283,10 @@ export function requireExactGuiWalletSendUserExportToken(
   if (
     operation.kind !== "wallet-send" ||
     operation.state !== "completed" ||
-    readGuiWalletSendDeliveryMetadata(operation)?.mode !== "user-export" ||
+    readGuiWalletSendDeliveryMetadata(operation) === null ||
     !operation.resultProofs
   ) {
-    throw new Error("GUI wallet send has no completed user-export result");
+    throw new Error("GUI wallet send has no completed delivery result");
   }
   const row = requireGuiWalletSendDeliveryPayloadRow(
     payload,
@@ -275,6 +324,17 @@ export function requireExactGuiWalletSendUserExportToken(
   return token;
 }
 
+export function requireExactGuiWalletSendUserExportToken(
+  operation: Parameters<typeof requireExactGuiWalletSendToken>[0],
+  payload: GuiWalletSendDeliveryPayloadRow,
+  expectedToken?: string,
+): string {
+  if (readGuiWalletSendDeliveryMetadata(operation)?.mode !== "user-export") {
+    throw new Error("GUI wallet send has no completed user-export result");
+  }
+  return requireExactGuiWalletSendToken(operation, payload, expectedToken);
+}
+
 export function guiWalletSendTokenFingerprint(encodedToken: string): string {
   return describeDurableWalletSendToken(encodedToken).tokenDigest;
 }
@@ -293,7 +353,7 @@ export function createGuiWalletSendDeliveryPayloadRow(
     tokenByteLength: descriptor.byteLength,
     createdAt: operation.createdAt,
   } satisfies GuiWalletSendDeliveryPayloadRow;
-  requireExactGuiWalletSendUserExportToken(operation, row, encodedToken);
+  requireExactGuiWalletSendToken(operation, row, encodedToken);
   return row;
 }
 

@@ -15,11 +15,17 @@ import { createDurableWalletProofTransition } from "@bitcaster/client-sdk/durabl
 import {
   createDurableWalletSendOperation,
   decodeDurableWalletOperation,
+  toDurableCustodyProofOperationInput,
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import { prepareDurableWalletSendDelivery } from "@bitcaster/client-sdk/durableWalletSendDeliveryPreparation";
 import { planDurableWalletSendExactPayload } from "@bitcaster/client-sdk/durableWalletSendExactPayload";
+import {
+  readDurableRecipientSubmissionAuthority,
+  type DurableRecipientSubmissionAuthority,
+} from "@bitcaster/client-sdk/durableRecipientSubmission";
 import { deriveDurableCustodyProofResultFingerprint } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import { participationScoreRecipientProductBinding } from "@bitcaster/client-sdk/durableRecipientProductBinding";
 import {
   createDurableBearerSpendDeliveryRecord,
   decodeDurableBearerSpendDeliveryRecord,
@@ -38,6 +44,7 @@ import {
   markProofOperationMintSubmitted,
   prepareProofOperation,
   requireCompletedGuiWalletProofOperationAuthorityForWallet,
+  requireGuiWalletSendTokenForWallet,
 } from "../gui-wallet-proof-operation-custody";
 import {
   currentGuiWalletId,
@@ -92,6 +99,20 @@ import {
   __setGuiBearerSpendRecoveryTimerForTests,
   requestGuiBearerSpendRecovery,
 } from "../gui-bearer-spend-recovery";
+import { advanceGuiOutgoingRecipientDeliveryOnce } from "../gui-outgoing-recipient-coordinator";
+import { advanceGuiParticipationScoreDelivery } from "../../lib/participationScorePayment";
+
+const scoreRemoteMocks = vi.hoisted(() => ({
+  getParticipationScore: vi.fn(),
+  getParticipationScorePayment: vi.fn(),
+  payParticipationScoreEcash: vi.fn(),
+}));
+
+vi.mock("@/lib/markets", () => ({
+  getParticipationScore: scoreRemoteMocks.getParticipationScore,
+  getParticipationScorePayment: scoreRemoteMocks.getParticipationScorePayment,
+  payParticipationScoreEcash: scoreRemoteMocks.payParticipationScoreEcash,
+}));
 
 const KEYSET_ID = `00${"22".repeat(7)}`;
 const PUBLIC_KEY = `02${"33".repeat(32)}`;
@@ -300,6 +321,76 @@ function walletSendDeliveryMetadata(
   });
 }
 
+function ordinaryRecipientSendOperationInput() {
+  const { passthrough, ...base } = ordinarySendOperationInput();
+  const durableWalletOperation = createDurableWalletSendOperation({
+    operationId: "wallet-send-recipient-operation-001",
+    mintUrl: base.mintUrl,
+    unit: "sat",
+    preview: {
+      amount: Amount.from(1),
+      fees: Amount.from(0),
+      keysetId: KEYSET_ID,
+      inputs: base.inputs,
+      keepOutputs: base.outputs.keep.map(durableOutputData),
+      sendOutputs: base.outputs.send.map(durableOutputData),
+      unselectedProofs: [passthrough],
+    },
+  });
+  const durableInput = toDurableCustodyProofOperationInput(
+    durableWalletOperation,
+  );
+  return {
+    ...durableInput,
+    kind: "wallet-send" as const,
+    inputs: durableInput.inputs.map((proof) => ({
+      ...proof,
+      amount: Amount.from(Number(proof.amount)),
+    })) as Proof[],
+    outputs: Object.fromEntries(
+      Object.entries(durableInput.outputs).map(([label, outputs]) => [
+        label,
+        outputs.map((output) => ({
+          ...output,
+          blindedMessage: {
+            ...output.blindedMessage,
+            amount: Number(output.blindedMessage.amount),
+          },
+          blindingFactor: durableBlindingFactorHex(output.blindingFactor),
+        })),
+      ]),
+    ),
+    metadata: {
+      ...durableInput.metadata,
+      guiWalletSendDelivery: guiWalletSendDeliveryMetadata({
+        mintUrl: durableWalletOperation.mintUrl,
+        unit: durableWalletOperation.unit,
+        sendOutputs: durableWalletOperation.preview.sendOutputs,
+        keepOutputs: durableWalletOperation.preview.keepOutputs,
+        passthroughProofs: durableWalletOperation.preview.unselectedProofs,
+        inputProofs: durableWalletOperation.preview.inputs,
+        policy: {
+          kind: "durable-recipient-ack",
+          recipient: {
+            deliveryId: "00000000-0000-4000-8000-000000000001",
+            accountSubject: "account:alice",
+            recipientKind: "matching-engine",
+            purpose: "participation-score",
+            destinationId: "participation-score",
+            productBinding: participationScoreRecipientProductBinding(),
+            mintUrl: durableWalletOperation.mintUrl,
+            unit: durableWalletOperation.unit,
+            requestedAmount: "1",
+            creditPolicy: { kind: "exact-amount" },
+          },
+        },
+        adapter: { kind: "participation-score" },
+      }),
+    },
+    passthrough,
+  };
+}
+
 function independentOrdinarySendProofPlan(index: number) {
   const secret = (offset: number) =>
     (index * 8 + offset).toString(16).padStart(2, "0").repeat(32);
@@ -460,6 +551,18 @@ function ordinaryMultiSendEncodedToken(): string {
 
 describe("GUI wallet custody coordinator", () => {
   beforeEach(async () => {
+    scoreRemoteMocks.getParticipationScore.mockReset();
+    scoreRemoteMocks.getParticipationScorePayment.mockReset();
+    scoreRemoteMocks.payParticipationScoreEcash.mockReset();
+    scoreRemoteMocks.getParticipationScore.mockResolvedValue({
+      accountSubject: "account:alice",
+      balance: 0,
+      purchasedTotal: 0,
+      consumedTotal: 0,
+      penaltyTotal: 0,
+      matchDebitScore: 1,
+      enabled: true,
+    });
     useWalletStore.setState({ mnemonic: MNEMONIC });
     vi.spyOn(CashuMint.prototype, "getKeys").mockResolvedValue({
       keysets: [{ id: KEYSET_ID, unit: "sat", keys: { "1": PUBLIC_KEY } }],
@@ -1206,6 +1309,287 @@ describe("GUI wallet custody coordinator", () => {
       );
       return prepared;
     }
+
+    it("atomically advances a durable recipient pre-intent with its exact token", async () => {
+      const { passthrough, ...input } =
+        ordinaryRecipientSendOperationInput();
+      await db.proofs.put(
+        prepareStoredProofForWrite(
+          { ...passthrough, mintUrl: input.mintUrl, unit: "sat" },
+          2,
+          currentGuiWalletId(),
+        ),
+      );
+      const prepared = await prepareProofOperation(input);
+      const preparedDelivery = await db.outgoingRecipientDeliveries.get([
+        currentGuiWalletId(),
+        "00000000-0000-4000-8000-000000000001",
+      ]);
+      expect(preparedDelivery).toMatchObject({
+        operationId: prepared.operationId,
+        adapter: { kind: "participation-score" },
+        revision: 0,
+        active: 1,
+        delivery: { kind: "prepared" },
+      });
+
+      await markProofOperationMintSubmitted(prepared.operationId);
+      await markProofOperationCompleted(
+        prepared.operationId,
+        ordinarySendResultProofs(),
+        ordinarySendEncodedToken(),
+      );
+
+      expect(
+        await requireGuiWalletSendTokenForWallet(
+          currentGuiWalletId(),
+          prepared.operationId,
+        ),
+      ).toBe(ordinarySendEncodedToken());
+      expect(
+        await db.outgoingRecipientDeliveries.get([
+          currentGuiWalletId(),
+          "00000000-0000-4000-8000-000000000001",
+        ]),
+      ).toMatchObject({
+        operationId: prepared.operationId,
+        adapter: { kind: "participation-score" },
+        revision: 1,
+        active: 1,
+        delivery: {
+          kind: "active",
+          record: {
+            delivery: {
+              request: {
+                purpose: "participation-score",
+                tokenDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+              },
+              state: { kind: "pending" },
+            },
+          },
+        },
+      });
+      expect(await db.bearerSpendDeliveries.count()).toBe(0);
+
+      let submittedRequest:
+        | ReturnType<typeof readDurableRecipientSubmissionAuthority>["request"]
+        | undefined;
+      let statusReads = 0;
+      const transport = {
+        readStatus: vi.fn(async () => {
+          statusReads += 1;
+          if (statusReads === 1) return { kind: "not-found" as const };
+          if (!submittedRequest) {
+            throw new Error("recipient request was not submitted");
+          }
+          return {
+            kind: "credited" as const,
+            request: submittedRequest,
+            receiptOperationId: `score-receipt/${submittedRequest.deliveryId}`,
+            receivedAtMs: 100,
+            creditedAmount: submittedRequest.requestedAmount,
+            creditVerification: { kind: "exact-amount" as const },
+            businessEventId: submittedRequest.deliveryId,
+            creditedAtMs: 200,
+          };
+        }),
+        submitExact: vi.fn(
+          async (authority: DurableRecipientSubmissionAuthority) => {
+            submittedRequest =
+              readDurableRecipientSubmissionAuthority(authority).request;
+            return { kind: "accepted" as const };
+          },
+        ),
+      };
+      await expect(
+        advanceGuiOutgoingRecipientDeliveryOnce({
+          walletId: currentGuiWalletId(),
+          deliveryId: "00000000-0000-4000-8000-000000000001",
+          transport,
+          nowMs: 300,
+        }),
+      ).resolves.toMatchObject({ kind: "pending" });
+      const payloadDelete = vi
+        .spyOn(db.walletSendDeliveryPayloads, "delete")
+        .mockRejectedValueOnce(new Error("crash-before-recipient-handoff"));
+      await expect(
+        advanceGuiOutgoingRecipientDeliveryOnce({
+          walletId: currentGuiWalletId(),
+          deliveryId: "00000000-0000-4000-8000-000000000001",
+          transport,
+          nowMs: 400,
+        }),
+      ).rejects.toThrow("crash-before-recipient-handoff");
+      expect(
+        await db.outgoingRecipientDeliveries.get([
+          currentGuiWalletId(),
+          "00000000-0000-4000-8000-000000000001",
+        ]),
+      ).toMatchObject({
+        revision: 3,
+        active: 0,
+        delivery: {
+          kind: "active",
+          record: { delivery: { state: { kind: "credited" } } },
+        },
+      });
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeDefined();
+      expect(
+        (
+          await db.custodyOperations.get(prepared.custodyOperationId)
+        )?.record.operation.delivery.state,
+      ).toBe("pending");
+      payloadDelete.mockRestore();
+
+      db.close();
+      await db.open();
+      const recoveryTransport = {
+        readStatus: vi.fn(async () => {
+          throw new Error("credited recovery must not read recipient status");
+        }),
+        submitExact: vi.fn(async () => {
+          throw new Error("credited recovery must not resubmit");
+        }),
+      };
+      await expect(
+        advanceGuiOutgoingRecipientDeliveryOnce({
+          walletId: currentGuiWalletId(),
+          deliveryId: "00000000-0000-4000-8000-000000000001",
+          transport: recoveryTransport,
+          nowMs: 500,
+        }),
+      ).resolves.toMatchObject({
+        kind: "credited",
+        row: { revision: 3, active: 0 },
+      });
+      expect(transport.submitExact).toHaveBeenCalledTimes(1);
+      expect(recoveryTransport.readStatus).not.toHaveBeenCalled();
+      expect(recoveryTransport.submitExact).not.toHaveBeenCalled();
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+      expect(
+        (
+          await db.custodyOperations.get(prepared.custodyOperationId)
+        )?.record.operation.delivery.state,
+      ).toBe("acknowledged");
+    });
+
+    it("restarts the real Score adapter after a lost credited response without resubmitting its token", async () => {
+      const { passthrough, ...input } =
+        ordinaryRecipientSendOperationInput();
+      await db.proofs.put(
+        prepareStoredProofForWrite(
+          { ...passthrough, mintUrl: input.mintUrl, unit: "sat" },
+          2,
+          currentGuiWalletId(),
+        ),
+      );
+      const prepared = await prepareProofOperation(input);
+      await markProofOperationMintSubmitted(prepared.operationId);
+      await markProofOperationCompleted(
+        prepared.operationId,
+        ordinarySendResultProofs(),
+        ordinarySendEncodedToken(),
+      );
+
+      const active = await db.outgoingRecipientDeliveries.get([
+        currentGuiWalletId(),
+        "00000000-0000-4000-8000-000000000001",
+      ]);
+      if (!active || active.delivery.kind !== "active") {
+        throw new Error("Score delivery fixture is not active");
+      }
+      const request = active.delivery.record.delivery.request;
+      const creditedStatus = {
+        schemaVersion: 1,
+        paymentId: request.deliveryId,
+        status: "credited",
+        accountSubject: request.accountSubject,
+        recipientKind: request.recipientKind,
+        purpose: request.purpose,
+        destinationId: request.destinationId,
+        mintUrl: request.mintUrl,
+        unit: request.unit,
+        amountSats: Number(request.requestedAmount),
+        tokenDigest: request.tokenDigest,
+        encodedTokenBytes: request.encodedTokenBytes,
+        receiptOperationId: `score-receipt/${request.deliveryId}`,
+        receivedAt: "2026-07-16T00:00:00.000Z",
+        creditedScore: Number(request.requestedAmount),
+        businessEventId: request.deliveryId,
+        creditedAt: "2026-07-16T00:00:01.000Z",
+      } as const;
+      let remoteStatus: typeof creditedStatus | null = null;
+      scoreRemoteMocks.getParticipationScorePayment.mockImplementation(
+        async () => remoteStatus,
+      );
+      scoreRemoteMocks.payParticipationScoreEcash.mockImplementation(
+        async () => {
+          remoteStatus = creditedStatus;
+          throw new Error("lost-response-after-Score-credit");
+        },
+      );
+
+      await expect(
+        advanceGuiParticipationScoreDelivery(
+          currentGuiWalletId(),
+          request.deliveryId,
+        ),
+      ).rejects.toThrow("lost-response-after-Score-credit");
+      expect(scoreRemoteMocks.payParticipationScoreEcash).toHaveBeenCalledOnce();
+      expect(scoreRemoteMocks.payParticipationScoreEcash).toHaveBeenCalledWith(
+        request.accountSubject,
+        Number(request.requestedAmount),
+        ordinarySendEncodedToken(),
+        request.deliveryId,
+      );
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeDefined();
+
+      db.close();
+      await db.open();
+
+      await expect(
+        advanceGuiParticipationScoreDelivery(
+          currentGuiWalletId(),
+          request.deliveryId,
+        ),
+      ).resolves.toMatchObject({
+        kind: "credited",
+        row: {
+          active: 0,
+          delivery: {
+            kind: "active",
+            record: { delivery: { state: { kind: "credited" } } },
+          },
+        },
+      });
+      expect(scoreRemoteMocks.payParticipationScoreEcash).toHaveBeenCalledOnce();
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+      expect(
+        (
+          await db.custodyOperations.get(prepared.custodyOperationId)
+        )?.record.operation.delivery.state,
+      ).toBe("acknowledged");
+    });
 
     it("atomically replaces a wallet send while retaining exact passthrough proofs", async () => {
       const { input, passthrough, prepared } =
@@ -2820,6 +3204,11 @@ async function releaseHeadroom(): Promise<void> {
         ),
     ),
   );
+}
+
+function durableBlindingFactorHex(value: string): string {
+  const hex = BigInt(value).toString(16);
+  return hex.length % 2 === 0 ? hex : `0${hex}`;
 }
 
 function installWebLocks(): void {

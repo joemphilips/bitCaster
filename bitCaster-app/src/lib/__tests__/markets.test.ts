@@ -18,6 +18,7 @@ import {
 import type { MarketCatalogueEntry } from "../markets";
 import type { FilterState, Market } from "@/types/market";
 import type { MarketDetail } from "@/types/market-detail";
+import { marketFundingRecipientProductBinding } from "@bitcaster/client-sdk/durableRecipientProductBinding";
 
 vi.mock("@/lib/nostr", () => ({
   getNdk: () => ({
@@ -424,12 +425,34 @@ describe("deposit API normalization", () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
+          schemaVersion: 1,
           depositId: "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
           conditionId: "deadbeef",
+          accountSubject: "account-primary",
+          recipientKind: "matching-engine",
+          purpose: "market-funding",
+          destinationId: "deadbeef",
+          productBinding: marketFundingRecipientProductBinding({
+            divisibility: 10_000,
+            fundAmm: false,
+            creatorPubkey: null,
+          }),
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          creditPolicy: "net-of-receive-fee",
+          tokenDigest: "ab".repeat(32),
+          encodedTokenBytes: 123,
+          receiptOperationId:
+            "deadbeef/7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a/ecash-receive",
+          receivedAt: "2026-05-17T06:05:06.200Z",
           state: "credited",
           method: "ecash",
           amountSubunits: 1000,
           creditedAmountSubunits: 999,
+          receiveFeeAmountSubunits: 1,
+          businessEventId:
+            "market-deposit-credit/deadbeef/7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
+          creditedAt: "2026-05-17T06:05:10.660Z",
           requestedAt: "2026-05-17T06:05:06.200Z",
           updatedAt: "2026-05-17T06:05:10.660Z",
           failureReason: null,
@@ -464,15 +487,25 @@ describe("deposit API normalization", () => {
         "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
         1000,
         "cashu-token",
+        {
+          accountSubject: "account-primary",
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          divisibility: 10_000,
+        },
       ),
     ).resolves.toMatchObject({ state: "requested" });
     const body = JSON.parse(
       ((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string),
     );
     expect(body).toMatchObject({
+      accountSubject: "account-primary",
       depositId: "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
       amountSubunits: 1000,
       proofsToken: "cashu-token",
+      mintUrl: "https://mint.example",
+      unit: "msat",
+      divisibility: 10_000,
     });
   });
 
@@ -486,6 +519,12 @@ describe("deposit API normalization", () => {
       "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
       1000,
       "cashuBsecret-token",
+      {
+        accountSubject: "account-primary",
+        mintUrl: "https://mint.example",
+        unit: "msat",
+        divisibility: 10_000,
+      },
     );
 
     const error = await failure.catch((value: unknown) => value);

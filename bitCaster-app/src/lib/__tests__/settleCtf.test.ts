@@ -271,6 +271,11 @@ vi.mock("@cashu/cashu-ts", async (importOriginal) => {
       assertMintIoRunsWithoutWalletLock();
       return { name: "mock", nuts: {} };
     }
+    createRequestWithOptions() {
+      return async () => {
+        throw new Error("unexpected raw mint request");
+      };
+    }
     async restore({ outputs }: { outputs: Array<Record<string, unknown>> }) {
       assertMintIoRunsWithoutWalletLock();
       cashuState.restoreCalls += 1;

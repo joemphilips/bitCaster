@@ -21,8 +21,8 @@ vi.mock("@/lib/markets", async (importOriginal) => ({
   getDepositStatus: (...args: unknown[]) => getDepositStatus(...args),
 }));
 
-vi.mock("@/lib/guiLocalWalletPayment", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/guiLocalWalletPayment")>()),
+vi.mock("@/lib/guiMarketFundingPayment", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/guiMarketFundingPayment")>()),
   executeGuiLocalWalletPayment: (...args: unknown[]) =>
     executeGuiLocalWalletPayment(...args),
   observeGuiEcashDeposit: (...args: unknown[]) =>

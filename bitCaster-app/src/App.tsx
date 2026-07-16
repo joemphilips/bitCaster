@@ -38,10 +38,10 @@ import {
 import { sweepElapsedPartialLockFailures } from "@/lib/partialLockRecovery";
 import { installE2EDiagnostics } from "@/lib/e2eDiagnostics";
 import {
-  reconcileGuiEcashDeposits,
   type GuiEcashDepositRemote,
-} from "@/lib/guiLocalWalletPayment";
-import type { PendingEcashDepositRecoveryCursor } from "@/lib/pendingLocalWalletPayments";
+  type GuiEcashDepositRecoveryCursor,
+} from "@/lib/guiMarketFundingPayment";
+import { reconcileGuiOutgoingPayments } from "@/lib/guiOutgoingPaymentRecovery";
 import { getDepositStatus, requestEcashDeposit } from "@/lib/markets";
 import {
   requestGuiNativeProofOperationRecovery,
@@ -86,6 +86,8 @@ function guiEcashDepositRemote(): GuiEcashDepositRemote {
         request.amountSubunits,
         token,
         {
+          accountSubject: request.fundingIdentity,
+          mintUrl: request.mintUrl,
           creatorPubkey: request.creatorPubkey,
           fundAmm: request.fundAmm,
           unit: request.unit,
@@ -230,7 +232,7 @@ function AppRoutes() {
     const remote = guiEcashDepositRemote();
 
     const schedule = (
-      cursor: PendingEcashDepositRecoveryCursor | null,
+      cursor: GuiEcashDepositRecoveryCursor | null,
       delay: number,
     ) => {
       if (!active) return;
@@ -248,13 +250,16 @@ function AppRoutes() {
       schedule(null, Math.max(0, retryNotBefore - Date.now()));
     };
     const runPage = async (
-      cursor: PendingEcashDepositRecoveryCursor | null,
+      cursor: GuiEcashDepositRecoveryCursor | null,
     ) => {
       timer = undefined;
       if (!active || running) return;
       running = true;
       try {
-        const result = await reconcileGuiEcashDeposits(remote, cursor);
+        const result = await reconcileGuiOutgoingPayments({
+          marketFundingRemote: remote,
+          cursor,
+        });
         if (!active) return;
         failureCount = 0;
         retryNotBefore = 0;

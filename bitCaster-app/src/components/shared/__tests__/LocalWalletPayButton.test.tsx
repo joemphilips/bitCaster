@@ -8,7 +8,7 @@ const executeGuiLocalWalletPayment = vi.fn();
 const retryGuiEcashDeposit = vi.fn();
 let walletBalance = 200;
 
-vi.mock("@/lib/guiLocalWalletPayment", () => ({
+vi.mock("@/lib/guiMarketFundingPayment", () => ({
   executeGuiLocalWalletPayment: (...args: unknown[]) =>
     executeGuiLocalWalletPayment(...args),
   retryGuiEcashDeposit: (...args: unknown[]) => retryGuiEcashDeposit(...args),
