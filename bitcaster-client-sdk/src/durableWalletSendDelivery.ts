@@ -2,6 +2,7 @@ import { Amount, getDecodedToken, type Proof } from "@cashu/cashu-ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, concatBytes } from "@noble/hashes/utils.js";
 import { sameCashuProofArtifact } from "./proofSelection.ts";
+import { normalizeDurableWalletMintUrl } from "./durableWalletMintUrl.ts";
 
 export const DURABLE_WALLET_SEND_TOKEN_BYTES_LIMIT_MAX = 8 * 1_024 * 1_024;
 export const DURABLE_WALLET_SEND_PROOF_COUNT_LIMIT_MAX = 256;
@@ -20,6 +21,8 @@ const DURABLE_WALLET_SEND_CANONICAL_JSON_EXPANSION = 4;
 const DURABLE_WALLET_SEND_CUSTODY_ROWS_BYTES_UPPER_BOUND = 64 * 1_024;
 const DURABLE_WALLET_SEND_INDEX_OVERHEAD_BYTES_UPPER_BOUND = 64 * 1_024;
 const DURABLE_WALLET_SEND_RESULT_PROOF_COUNT_LIMIT_MAX = 512;
+export const DURABLE_BEARER_SPEND_POLICY_BASE_BYTES_UPPER_BOUND = 32 * 1_024;
+export const DURABLE_BEARER_SPEND_POLICY_PROOF_BYTES_UPPER_BOUND = 24 * 1_024;
 
 const WALLET_SEND_TOKEN_DIGEST_DOMAIN = new TextEncoder().encode(
   "bitcaster/durable-wallet-send-token/v1\0",
@@ -48,6 +51,7 @@ export interface DurableWalletSendDeliveryAdmission {
   resultProofCount: number;
   encodedTokenBytesUpperBound: number;
   nativeOperationRowBytesUpperBound: number;
+  bearerPolicyRowBytesUpperBound: number;
   durableStorageBytesRequired: number;
 }
 
@@ -93,7 +97,7 @@ export function planDurableWalletSendDeliveryAdmission(input: {
   outputPlan: DurableWalletSendOutputPlan;
   limits: DurableWalletSendDeliveryLimits;
 }): DurableWalletSendDeliveryAdmission {
-  const mintUrl = normalizeMintUrl(input.outputPlan.mintUrl);
+  const mintUrl = normalizeDurableWalletMintUrl(input.outputPlan.mintUrl);
   const unit = requireBoundedText(input.outputPlan.unit, "unit", 64);
   const limits = requireDeliveryLimits(input.limits);
   const outputs = input.outputPlan.sendOutputs;
@@ -155,11 +159,14 @@ export function planDurableWalletSendDeliveryAdmission(input: {
       "durable wallet-send output plan exceeds its native operation row limit",
     );
   }
+  const bearerPolicyRowBytesUpperBound =
+    planDurableBearerSpendPolicyRowBytes(outputs.length);
   const durableStorageBytesRequired =
     encodedTokenBytesUpperBound +
     DURABLE_WALLET_SEND_STORAGE_ROW_BYTES_UPPER_BOUND +
     resultProofCount * DURABLE_WALLET_SEND_RESULT_PROOF_ROW_BYTES_UPPER_BOUND +
     nativeOperationRowBytesUpperBound +
+    bearerPolicyRowBytesUpperBound +
     DURABLE_WALLET_SEND_CUSTODY_ROWS_BYTES_UPPER_BOUND +
     DURABLE_WALLET_SEND_INDEX_OVERHEAD_BYTES_UPPER_BOUND;
   if (encodedTokenBytesUpperBound > limits.encodedTokenBytes) {
@@ -182,6 +189,7 @@ export function planDurableWalletSendDeliveryAdmission(input: {
     resultProofCount,
     encodedTokenBytesUpperBound,
     nativeOperationRowBytesUpperBound,
+    bearerPolicyRowBytesUpperBound,
     durableStorageBytesRequired,
   };
 }
@@ -203,6 +211,7 @@ export function requireDurableWalletSendDeliveryAdmission(
     "resultProofCount",
     "encodedTokenBytesUpperBound",
     "nativeOperationRowBytesUpperBound",
+    "bearerPolicyRowBytesUpperBound",
     "durableStorageBytesRequired",
   ];
   if (
@@ -238,12 +247,18 @@ export function requireDurableWalletSendDeliveryAdmission(
     record.nativeOperationRowBytesUpperBound,
     "native operation row byte upper bound",
   );
+  const bearerPolicyRowBytesUpperBound = requirePositiveSafeInteger(
+    record.bearerPolicyRowBytesUpperBound,
+    "bearer policy row byte upper bound",
+  );
   if (
     sendProofCount > limits.proofCount ||
     resultProofCount < sendProofCount ||
     resultProofCount > DURABLE_WALLET_SEND_RESULT_PROOF_COUNT_LIMIT_MAX ||
     encodedTokenBytesUpperBound > limits.encodedTokenBytes ||
     nativeOperationRowBytesUpperBound > limits.nativeOperationRowBytes ||
+    bearerPolicyRowBytesUpperBound !==
+      planDurableBearerSpendPolicyRowBytes(sendProofCount) ||
     nativeOperationRowBytesUpperBound <
       DURABLE_WALLET_SEND_NATIVE_OPERATION_BASE_BYTES_UPPER_BOUND +
         resultProofCount *
@@ -256,6 +271,7 @@ export function requireDurableWalletSendDeliveryAdmission(
         resultProofCount *
           DURABLE_WALLET_SEND_RESULT_PROOF_ROW_BYTES_UPPER_BOUND +
         nativeOperationRowBytesUpperBound +
+        bearerPolicyRowBytesUpperBound +
         DURABLE_WALLET_SEND_CUSTODY_ROWS_BYTES_UPPER_BOUND +
         DURABLE_WALLET_SEND_INDEX_OVERHEAD_BYTES_UPPER_BOUND
   ) {
@@ -271,6 +287,7 @@ export function requireDurableWalletSendDeliveryAdmission(
     resultProofCount,
     encodedTokenBytesUpperBound,
     nativeOperationRowBytesUpperBound,
+    bearerPolicyRowBytesUpperBound,
     durableStorageBytesRequired,
   };
 }
@@ -286,12 +303,27 @@ export function requireDurableWalletSendResultWithinAdmission(input: {
   if (
     input.sendProofCount !== admission.sendProofCount ||
     input.resultProofCount !== admission.resultProofCount ||
+    admission.bearerPolicyRowBytesUpperBound !==
+      planDurableBearerSpendPolicyRowBytes(input.sendProofCount) ||
     descriptor.byteLength > admission.encodedTokenBytesUpperBound ||
     descriptor.byteLength > admission.encodedTokenBytesLimit
   ) {
     throw new Error("durable wallet-send result exceeds its admitted envelope");
   }
   return descriptor;
+}
+
+export function planDurableBearerSpendPolicyRowBytes(
+  proofCount: number,
+): number {
+  const count = requirePositiveSafeInteger(proofCount, "proof count");
+  if (count > DURABLE_WALLET_SEND_PROOF_COUNT_LIMIT_MAX) {
+    throw new Error("durable wallet-send proof count is invalid");
+  }
+  return (
+    DURABLE_BEARER_SPEND_POLICY_BASE_BYTES_UPPER_BOUND +
+    count * DURABLE_BEARER_SPEND_POLICY_PROOF_BYTES_UPPER_BOUND
+  );
 }
 
 export function describeDurableWalletSendToken(
@@ -336,7 +368,8 @@ export function requireExactDurableWalletSendToken(input: {
     throw new Error("durable wallet-send token is invalid", { cause: error });
   }
   if (
-    normalizeMintUrl(decoded.mint) !== normalizeMintUrl(input.mintUrl) ||
+    normalizeDurableWalletMintUrl(decoded.mint) !==
+      normalizeDurableWalletMintUrl(input.mintUrl) ||
     decoded.unit !== input.unit ||
     decoded.proofs.length !== input.sendProofs.length ||
     decoded.proofs.some((proof, index) => {
@@ -347,28 +380,6 @@ export function requireExactDurableWalletSendToken(input: {
     throw new Error("durable wallet-send token conflicts with its result");
   }
   return descriptor;
-}
-
-function normalizeMintUrl(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > 2_048) {
-    throw new Error("durable wallet-send mint is invalid");
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error("durable wallet-send mint is invalid");
-  }
-  if (
-    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-    parsed.username !== "" ||
-    parsed.password !== "" ||
-    parsed.search !== "" ||
-    parsed.hash !== ""
-  ) {
-    throw new Error("durable wallet-send mint is invalid");
-  }
-  return parsed.href.replace(/\/+$/, "");
 }
 
 function requireDeliveryLimits(

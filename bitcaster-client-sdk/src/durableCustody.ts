@@ -6,6 +6,10 @@
 
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
+import {
+  requireDurableBearerCustodyHandoffCapability,
+  type DurableBearerCustodyHandoffCapability,
+} from './durableBearerHandoffAuthority.ts'
 
 export const DURABLE_CUSTODY_SCHEMA_VERSION = 1 as const
 export const DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX = 16 * 1_024
@@ -652,6 +656,27 @@ export function classifyDurableCustodyWalletStorageBoundary(input: {
   previous: DurableCustodyRecord | null
   next: DurableCustodyRecord
 }): DurableCustodyWalletStorageBoundary {
+  return classifyDurableCustodyWalletStorageBoundaryWithHandoff(input, null)
+}
+
+export function classifyDurableCustodyWalletSendHandoffBoundary(input: {
+  previous: DurableCustodyRecord
+  next: DurableCustodyRecord
+  capability: DurableBearerCustodyHandoffCapability
+}): DurableCustodyWalletStorageBoundary {
+  return classifyDurableCustodyWalletStorageBoundaryWithHandoff(
+    input,
+    input.capability,
+  )
+}
+
+function classifyDurableCustodyWalletStorageBoundaryWithHandoff(
+  input: {
+    previous: DurableCustodyRecord | null
+    next: DurableCustodyRecord
+  },
+  bearerHandoff: DurableBearerCustodyHandoffCapability | null,
+): DurableCustodyWalletStorageBoundary {
   const next = decodeDurableCustodyRecord(input.next)
   if (next.operation.binding.kind !== 'wallet') {
     throw new Error('wallet storage boundary cannot adopt trade custody')
@@ -665,7 +690,7 @@ export function classifyDurableCustodyWalletStorageBoundary(input: {
 
   const previous = decodeDurableCustodyRecord(input.previous, next.scope)
   assertSameWalletStorageAuthority(previous, next)
-  assertWalletStorageDeliveryTransition(previous, next)
+  assertWalletStorageDeliveryTransition(previous, next, bearerHandoff)
   switch (previous.operation.state) {
     case 'dispatch-intent':
       if (
@@ -747,6 +772,7 @@ function walletStorageAuthority(
 function assertWalletStorageDeliveryTransition(
   previous: DurableCustodyRecord,
   next: DurableCustodyRecord,
+  bearerHandoff: DurableBearerCustodyHandoffCapability | null,
 ): void {
   const before = previous.operation.delivery
   const after = next.operation.delivery
@@ -769,12 +795,16 @@ function assertWalletStorageDeliveryTransition(
     before.deliveryKind === 'outbox' &&
     after.deliveryKind === 'outbox' &&
     before.state === 'pending' &&
-    (after.state === 'acknowledged' || after.state === 'expired') &&
+    after.state === 'acknowledged' &&
     isWalletSendDelivery(previous, before) &&
     isWalletSendDelivery(next, after) &&
     deriveDurableCustodyArtifactFingerprint({ ...before, state: null }) ===
       deriveDurableCustodyArtifactFingerprint({ ...after, state: null })
   ) {
+    if (bearerHandoff === null) {
+      throw new Error('wallet-send handoff requires composite authority')
+    }
+    requireWalletSendHandoffCapability(previous, before, bearerHandoff)
     return
   }
   throw new Error('wallet storage boundary has foreign delivery authority')
@@ -1482,6 +1512,37 @@ export function reduceDurableCustodyState(
   state: DurableCustodyState,
   transition: DurableCustodyTransition,
 ): DurableCustodyState {
+  return reduceDurableCustodyStateWithHandoff(state, transition, null)
+}
+
+/**
+ * Atomically acknowledges only the generic outbox handoff to an SDK bearer
+ * policy row. It does not assert recipient redemption or token completion.
+ */
+export function acknowledgeDurableCustodyWalletSendHandoff(
+  state: DurableCustodyState,
+  input: DurableCustodyOwnerAuthorization & {
+    capability: DurableBearerCustodyHandoffCapability
+  },
+): DurableCustodyState {
+  return reduceDurableCustodyStateWithHandoff(
+    state,
+    {
+      kind: 'delivery-resolved',
+      deliveryState: 'acknowledged',
+      incarnationId: input.incarnationId,
+      fencingEpoch: input.fencingEpoch,
+      observedAtMs: input.observedAtMs,
+    },
+    input.capability,
+  )
+}
+
+function reduceDurableCustodyStateWithHandoff(
+  state: DurableCustodyState,
+  transition: DurableCustodyTransition,
+  bearerHandoff: DurableBearerCustodyHandoffCapability | null,
+): DurableCustodyState {
   const { operation: record, scopeState } = state
   validateRecordBindings(record)
   validateScopeState(scopeState, record.scope)
@@ -1605,7 +1666,14 @@ export function reduceDurableCustodyState(
         throw new Error('delivery resolution requires pending outbox')
       }
       if (isWalletSendDelivery(record, record.operation.delivery)) {
-        throw new Error('wallet-send delivery requires a closed terminal decision')
+        if (bearerHandoff === null || transition.deliveryState !== 'acknowledged') {
+          throw new Error('wallet-send delivery requires a closed terminal decision')
+        }
+        requireWalletSendHandoffCapability(
+          record,
+          record.operation.delivery,
+          bearerHandoff,
+        )
       }
       if (transition.deliveryState === 'expired') {
         if (record.operation.delivery.expiresAtMs === null) {
@@ -1651,6 +1719,31 @@ export function reduceDurableCustodyState(
       }
       return { operation: nextOperation, scopeState: nextScopeState }
   }
+}
+
+function requireWalletSendHandoffCapability(
+  record: DurableCustodyRecord,
+  delivery: DurableCustodyRecord['operation']['delivery'],
+  capability: DurableBearerCustodyHandoffCapability,
+): void {
+  if (
+    record.scope.scopeKind !== 'wallet' ||
+    delivery.deliveryKind !== 'outbox' ||
+    delivery.deliveryId === null ||
+    delivery.payloadHandle === null ||
+    delivery.payloadFingerprint === null
+  ) {
+    throw new Error('wallet-send delivery requires wallet custody scope')
+  }
+  requireDurableBearerCustodyHandoffCapability(capability, {
+    walletId: record.scope.walletId,
+    operationId: record.operation.operationId,
+    deliveryId: delivery.deliveryId,
+    payloadHandle: delivery.payloadHandle,
+    payloadFingerprint: delivery.payloadFingerprint,
+    mintUrl: record.operation.custodyContext.normalizedMint,
+    unit: record.operation.custodyContext.unit,
+  })
 }
 
 /** Decides recovery without selecting proofs, outputs, or fresh protocol material. */

@@ -3,6 +3,7 @@ import test from "node:test";
 import { getEncodedTokenV4, type Proof } from "@cashu/cashu-ts";
 import {
   planDurableWalletSendDeliveryAdmission,
+  planDurableBearerSpendPolicyRowBytes,
   describeDurableWalletSendToken,
   requireDurableWalletSendResultWithinAdmission,
   requireExactDurableWalletSendToken,
@@ -98,6 +99,10 @@ test("wallet-send delivery admission binds a conservative pre-transport envelope
   });
   assert.equal(admission.sendProofCount, 1);
   assert.equal(admission.resultProofCount, 3);
+  assert.equal(
+    admission.bearerPolicyRowBytesUpperBound,
+    planDurableBearerSpendPolicyRowBytes(1),
+  );
   assert.ok(
     admission.durableStorageBytesRequired >
       admission.encodedTokenBytesUpperBound,
@@ -120,6 +125,20 @@ test("wallet-send delivery admission binds a conservative pre-transport envelope
         resultProofCount: 2,
       }),
     /exceeds its admitted envelope/,
+  );
+  assert.throws(
+    () =>
+      requireDurableWalletSendResultWithinAdmission({
+        admission: {
+          ...admission,
+          bearerPolicyRowBytesUpperBound:
+            admission.bearerPolicyRowBytesUpperBound + 1,
+        },
+        encodedToken: token,
+        sendProofCount: 1,
+        resultProofCount: 3,
+      }),
+    /delivery admission is invalid/,
   );
 });
 

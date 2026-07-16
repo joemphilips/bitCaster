@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { getEncodedTokenV4, type Proof } from '@cashu/cashu-ts'
 import {
+  acknowledgeDurableCustodyWalletSendHandoff,
   decodeDurableCustodyRecord,
   decodeDurableCustodyScopeState,
   decodeDurableCustodyTransactionOperationIds,
@@ -29,6 +31,11 @@ import {
   type DurableCustodyState,
   DURABLE_CUSTODY_TRANSACTION_OPERATION_LIMIT_MAX,
 } from '../src/durableCustody.ts'
+import {
+  classifyDurableBearerSpendCustodyHandoffPlan,
+  createDurableBearerSpendDeliveryRecord,
+  planDurableBearerSpendCustodyHandoff,
+} from '../src/durableBearerSpendDelivery.ts'
 
 const FINGERPRINT_A = 'a'.repeat(64)
 const FINGERPRINT_B = 'b'.repeat(64)
@@ -558,12 +565,13 @@ test('wallet storage boundaries distinguish new effects from reconciliation', ()
   )
   const acknowledgedDelivery = structuredClone(pendingDelivery)
   acknowledgedDelivery.operation.delivery.state = 'acknowledged'
-  assert.equal(
-    classifyDurableCustodyWalletStorageBoundary({
-      previous: pendingDelivery,
-      next: acknowledgedDelivery,
-    }),
-    'reconciliation-only',
+  assert.throws(
+    () =>
+      classifyDurableCustodyWalletStorageBoundary({
+        previous: pendingDelivery,
+        next: acknowledgedDelivery,
+      }),
+    /composite authority/,
   )
 })
 
@@ -620,6 +628,80 @@ test('only wallet-send delivery may be non-expiring and it can never expire', ()
       ...ownerAuthorization,
     }),
     /closed terminal decision/,
+  )
+
+  const proof: Proof = {
+    id: '0011223344556677',
+    amount: 1,
+    secret: '11'.repeat(32),
+    C: '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+  }
+  const bearer = createDurableBearerSpendDeliveryRecord({
+    deliveryId: pending.operation.delivery.deliveryId!,
+    walletId: profileScope().walletId,
+    parentOperationId: pending.operation.operationId,
+    payloadHandle: pending.operation.delivery.payloadHandle!,
+    mintUrl: 'https://mint.example',
+    unit: 'sat',
+    encodedToken: getEncodedTokenV4({
+      mint: 'https://mint.example',
+      unit: 'sat',
+      proofs: [proof],
+    }),
+    proofs: [proof],
+    origin: 'local',
+    createdAtMs: 1_000,
+  })
+  pending.operation.delivery.payloadFingerprint = bearer.tokenDigest
+  const previousCustodyState = custodyState(pending)
+  const handoff = planDurableBearerSpendCustodyHandoff({
+    bearerRecord: bearer,
+    custodyState: previousCustodyState,
+    authorization: ownerAuthorization,
+  })
+  assert.equal(
+    handoff.custodyState.operation.operation.delivery.state,
+    'acknowledged',
+  )
+  assert.equal(handoff.bearerRecord.walletId, profileScope().walletId)
+  assert.equal(
+    classifyDurableBearerSpendCustodyHandoffPlan({
+      previousCustodyState,
+      plan: handoff,
+    }),
+    'reconciliation-only',
+  )
+  assert.throws(
+    () =>
+      classifyDurableBearerSpendCustodyHandoffPlan({
+        previousCustodyState,
+        plan: structuredClone(handoff),
+      }),
+    /handoff plan is invalid/,
+  )
+  for (const bearerRecord of [
+    { ...bearer, walletId: 'wallet-foreign' },
+    { ...bearer, mintUrl: 'https://foreign-mint.example' },
+    { ...bearer, unit: 'usd' },
+  ]) {
+    assert.throws(
+      () =>
+        planDurableBearerSpendCustodyHandoff({
+          bearerRecord,
+          custodyState: custodyState(pending),
+          authorization: ownerAuthorization,
+        }),
+      /handoff authority is invalid/,
+    )
+  }
+  assert.throws(
+    () => acknowledgeDurableCustodyWalletSendHandoff(custodyState(pending), {
+      capability: {
+        kind: 'durable-bearer-custody-handoff',
+      },
+      ...ownerAuthorization,
+    }),
+    /handoff authority is invalid/,
   )
 
   const foreignPolicy = structuredClone(pending)
