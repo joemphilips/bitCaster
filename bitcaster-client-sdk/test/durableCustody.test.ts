@@ -373,7 +373,7 @@ function decodedWalletRecord(): DurableCustodyRecord {
     activityId: 'wallet-send-001',
     stage: 'send',
   }
-  operation.semanticKind = 'generic-send'
+  operation.semanticKind = 'wallet-send'
   operation.horizon = {
     notBeforeMs: null,
     notAfterMs: null,
@@ -539,6 +539,119 @@ test('wallet storage boundaries distinguish new effects from reconciliation', ()
     }),
     'reconciliation-only',
   )
+
+  const pendingDelivery = structuredClone(reconciled)
+  pendingDelivery.operation.delivery = {
+    deliveryKind: 'outbox',
+    deliveryId: `delivery:${reconciled.operation.operationId}:wallet-send`,
+    payloadHandle: 'wallet-send-001',
+    payloadFingerprint: FINGERPRINT_A,
+    expiresAtMs: null,
+    state: 'pending',
+  }
+  assert.equal(
+    classifyDurableCustodyWalletStorageBoundary({
+      previous: submitted,
+      next: pendingDelivery,
+    }),
+    'reconciliation-only',
+  )
+  const acknowledgedDelivery = structuredClone(pendingDelivery)
+  acknowledgedDelivery.operation.delivery.state = 'acknowledged'
+  assert.equal(
+    classifyDurableCustodyWalletStorageBoundary({
+      previous: pendingDelivery,
+      next: acknowledgedDelivery,
+    }),
+    'reconciliation-only',
+  )
+})
+
+test('only wallet-send delivery may be non-expiring and it can never expire', () => {
+  const walletSend = decodedWalletRecord()
+  const submitted = reduceDurableCustodyState(custodyState(walletSend), {
+    kind: 'transport-attempted',
+    ...ownerAuthorization,
+  }).operation
+  const staged = reduceDurableCustodyState(custodyState(submitted), {
+    kind: 'verified-result-staged',
+    resultHandle: 'result-001',
+    resultFingerprint: FINGERPRINT_A,
+    outputPlanFingerprint: submitted.operation.outputPlan.outputPlanFingerprint,
+    ...ownerAuthorization,
+  })
+  const reconciled = reduceDurableCustodyState(staged, {
+    kind: 'reconciled',
+    recoverySource: 'transport-attempted',
+    ...ownerAuthorization,
+  }).operation
+  const pending = structuredClone(reconciled)
+  pending.operation.delivery = {
+    deliveryKind: 'outbox',
+    deliveryId: `delivery:${pending.operation.operationId}:wallet-send`,
+    payloadHandle: 'wallet-send-001',
+    payloadFingerprint: FINGERPRINT_A,
+    expiresAtMs: null,
+    state: 'pending',
+  }
+  assert.equal(
+    decodeDurableCustodyRecord(pending).operation.delivery.expiresAtMs,
+    null,
+  )
+
+  const expired = structuredClone(pending)
+  expired.operation.delivery.state = 'expired'
+  assert.throws(
+    () => decodeDurableCustodyRecord(expired),
+    /non-expiring delivery cannot be expired/,
+  )
+  assert.throws(
+    () => reduceDurableCustodyState(custodyState(pending), {
+      kind: 'delivery-resolved',
+      deliveryState: 'expired',
+      ...ownerAuthorization,
+    }),
+    /closed terminal decision/,
+  )
+  assert.throws(
+    () => reduceDurableCustodyState(custodyState(pending), {
+      kind: 'delivery-resolved',
+      deliveryState: 'acknowledged',
+      ...ownerAuthorization,
+    }),
+    /closed terminal decision/,
+  )
+
+  const foreignPolicy = structuredClone(pending)
+  foreignPolicy.operation.delivery.deliveryId =
+    `delivery:${pending.operation.operationId}:settlement`
+  assert.throws(
+    () => decodeDurableCustodyRecord(foreignPolicy),
+    /non-expiring delivery policy is invalid/,
+  )
+
+  const expiringWalletSend = structuredClone(pending)
+  expiringWalletSend.operation.delivery.expiresAtMs = 5_000
+  assert.throws(
+    () => decodeDurableCustodyRecord(expiringWalletSend),
+    /wallet-send delivery must be non-expiring/,
+  )
+
+  const unknownDelivery = structuredClone(pending)
+  unknownDelivery.operation.delivery.deliveryId =
+    `delivery:${pending.operation.operationId}:unknown`
+  unknownDelivery.operation.delivery.expiresAtMs = 5_000
+  assert.throws(
+    () => decodeDurableCustodyRecord(unknownDelivery),
+    /delivery identity is invalid/,
+  )
+
+  const foreignSemantic = structuredClone(pending)
+  foreignSemantic.operation.semanticKind = 'generic-send'
+  assert.throws(
+    () => decodeDurableCustodyRecord(foreignSemantic),
+    /wallet-send delivery authority is invalid/,
+  )
 })
 
 test('wallet storage boundaries reject trade and foreign exact authority', () => {
@@ -570,6 +683,44 @@ test('wallet storage boundaries reject trade and foreign exact authority', () =>
         next: foreignHorizon,
       }),
     /foreign exact authority/,
+  )
+  const pendingDelivery = structuredClone(wallet)
+  pendingDelivery.operation.delivery = {
+    deliveryKind: 'outbox',
+    deliveryId: `delivery:${wallet.operation.operationId}:wallet-send`,
+    payloadHandle: 'wallet-send-001',
+    payloadFingerprint: FINGERPRINT_A,
+    expiresAtMs: null,
+    state: 'pending',
+  }
+  const foreignDelivery = structuredClone(pendingDelivery)
+  foreignDelivery.operation.delivery.payloadFingerprint = FINGERPRINT_B
+  foreignDelivery.operation.delivery.state = 'acknowledged'
+  assert.throws(
+    () =>
+      classifyDurableCustodyWalletStorageBoundary({
+        previous: pendingDelivery,
+        next: foreignDelivery,
+      }),
+    /foreign delivery authority/,
+  )
+
+  const foreignPendingDelivery = structuredClone(wallet)
+  foreignPendingDelivery.operation.delivery = {
+    deliveryKind: 'outbox',
+    deliveryId: `delivery:${wallet.operation.operationId}:settlement`,
+    payloadHandle: 'settlement-001',
+    payloadFingerprint: FINGERPRINT_A,
+    expiresAtMs: 5_000,
+    state: 'pending',
+  }
+  assert.throws(
+    () =>
+      classifyDurableCustodyWalletStorageBoundary({
+        previous: wallet,
+        next: foreignPendingDelivery,
+      }),
+    /foreign delivery authority/,
   )
 })
 
@@ -1230,7 +1381,7 @@ test('safe abort transition requires deterministic rejection without dependency 
   const outboxed = structuredClone(record)
   outboxed.operation.delivery = {
     deliveryKind: 'outbox',
-    deliveryId: 'delivery-001',
+    deliveryId: `delivery:${record.operation.operationId}:settlement`,
     payloadHandle: 'delivery-payload-001',
     payloadFingerprint: FINGERPRINT_A,
     expiresAtMs: 5_000,
@@ -1266,7 +1417,7 @@ test('terminal tombstones retain until terminal status and replay cutoff are aut
   const pendingDelivery = structuredClone(reconciled)
   pendingDelivery.operation.operation.delivery = {
     deliveryKind: 'outbox',
-    deliveryId: 'delivery-001',
+    deliveryId: `delivery:${reconciled.operation.operation.operationId}:settlement`,
     payloadHandle: 'delivery-payload-001',
     payloadFingerprint: FINGERPRINT_A,
     expiresAtMs: 5_000,
@@ -1283,7 +1434,7 @@ test('terminal tombstones retain until terminal status and replay cutoff are aut
   const prematurelyExpiredDelivery = structuredClone(reconciled)
   prematurelyExpiredDelivery.operation.operation.delivery = {
     deliveryKind: 'outbox',
-    deliveryId: 'delivery-002',
+    deliveryId: `delivery:${reconciled.operation.operation.operationId}:settlement`,
     payloadHandle: 'delivery-payload-002',
     payloadFingerprint: FINGERPRINT_A,
     expiresAtMs: 5_000,

@@ -1486,7 +1486,7 @@ test('corrupted aborted custody cannot authorize storage release', async () => {
     corrupt(record)
     await assert.rejects(
       () => commitRelease(reserved, reservation, record, null),
-      /aborted operation|terminal tombstone lifecycle/,
+      /aborted operation|terminal tombstone lifecycle|delivery identity/,
     )
   }
 })

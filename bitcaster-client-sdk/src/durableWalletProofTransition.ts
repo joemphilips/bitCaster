@@ -1,4 +1,7 @@
-import { amountToNumber } from './proofSelection.ts'
+import {
+  amountToNumber,
+  sameCashuProofArtifact,
+} from './proofSelection.ts'
 
 export const DURABLE_WALLET_PROOF_TRANSITION_METADATA_KEY =
   'durableWalletProofTransition'
@@ -28,6 +31,9 @@ export interface DurableWalletProofIdentity {
   amount: number
   secret: string
   C: string
+  dleq?: unknown
+  p2pk_e?: string
+  witness?: unknown
 }
 
 export interface DurableWalletPlannedOutput {
@@ -40,6 +46,9 @@ export interface DurableWalletResultProof {
   amount: unknown
   secret: string
   C: string
+  dleq?: unknown
+  p2pk_e?: string
+  witness?: unknown
 }
 
 /** Builds the exact native-wallet delta policy persisted with one mint request. */
@@ -251,6 +260,13 @@ function normalizeProofIdentity(
     amount: amountToNumber(proof.amount),
     secret: proof.secret,
     C: proof.C,
+    ...(proof.dleq === undefined
+      ? {}
+      : { dleq: structuredClone(proof.dleq) }),
+    ...(proof.p2pk_e === undefined ? {} : { p2pk_e: proof.p2pk_e }),
+    ...(proof.witness === undefined
+      ? {}
+      : { witness: structuredClone(proof.witness) }),
   }
   assertProofIdentity(normalized)
   return normalized
@@ -261,7 +277,16 @@ function assertProofIdentity(
 ): asserts value is DurableWalletProofIdentity {
   if (
     !isRecord(value) ||
-    Object.keys(value).length !== 4 ||
+    Object.keys(value).some(
+      (key) =>
+        key !== 'id' &&
+        key !== 'amount' &&
+        key !== 'secret' &&
+        key !== 'C' &&
+        key !== 'dleq' &&
+        key !== 'p2pk_e' &&
+        key !== 'witness',
+    ) ||
     typeof value.id !== 'string' ||
     value.id.length === 0 ||
     !Number.isSafeInteger(value.amount) ||
@@ -269,7 +294,8 @@ function assertProofIdentity(
     typeof value.secret !== 'string' ||
     value.secret.length === 0 ||
     typeof value.C !== 'string' ||
-    value.C.length === 0
+    value.C.length === 0 ||
+    (value.p2pk_e !== undefined && typeof value.p2pk_e !== 'string')
   ) {
     throw new Error('wallet proof passthrough identity is invalid')
   }
@@ -367,10 +393,7 @@ function assertPassthroughResult(
 ): void {
   const proof = results.get(expected.secret)
   if (
-    !proof ||
-    proof.id !== expected.id ||
-    proof.C !== expected.C ||
-    amountToNumber(proof.amount) !== expected.amount
+    !proof || !sameCashuProofArtifact(expected, proof)
   ) {
     throw new Error('wallet proof passthrough result is not exact')
   }

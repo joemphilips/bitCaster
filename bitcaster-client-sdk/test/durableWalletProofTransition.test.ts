@@ -40,6 +40,9 @@ test('wallet proof transition validates blinded outputs and exact passthroughs',
     amount: 4,
     secret: 'unselected-secret',
     C: 'unselected-C',
+    dleq: { e: 'dleq-e', s: 'dleq-s', r: 'dleq-r' },
+    p2pk_e: 'p2pk-ephemeral-key',
+    witness: { signatures: ['exact-signature'] },
   }
   const policy = createDurableWalletProofTransition({
     inputSource: 'wallet',
@@ -81,6 +84,20 @@ test('wallet proof transition validates blinded outputs and exact passthroughs',
       }),
     /passthrough result is not exact/,
   )
+  for (const mutated of [
+    { ...passthrough, dleq: { ...passthrough.dleq, e: 'foreign-e' } },
+    { ...passthrough, p2pk_e: 'foreign-p2pk-key' },
+    { ...passthrough, witness: { signatures: ['foreign-signature'] } },
+  ]) {
+    assert.throws(
+      () =>
+        assertDurableWalletProofResultMatchesPlan(policy, outputs, {
+          keep: [exact.keep[0], mutated],
+        }),
+      /passthrough result is not exact/,
+    )
+  }
+  assert.deepEqual(policy.passthroughResultGroups.keep, [passthrough])
 })
 
 test('wallet proof transition rejects missing, foreign, and overwritten policy', () => {

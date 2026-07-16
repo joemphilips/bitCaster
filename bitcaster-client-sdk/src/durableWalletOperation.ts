@@ -920,7 +920,9 @@ function walletProofTransition(
           keep: { kind: 'wallet', asset: 'regular', reservedBy: null },
           send: { kind: 'operation' },
         },
-        passthroughResultGroups: { keep: operation.preview.unselectedProofs },
+        passthroughResultGroups: {
+          keep: operation.preview.unselectedProofs.map(rehydrateProof),
+        },
       })
     case 'wallet-melt':
       return createDurableWalletProofTransition({

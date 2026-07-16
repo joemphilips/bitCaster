@@ -69,7 +69,7 @@ test('all ordinary wallet previews have one strict persisted round trip', () => 
   )
   assert.equal(
     durableCustodyProofOperationSemanticKind('wallet-send'),
-    'generic-send',
+    'wallet-send',
   )
   assert.equal(
     durableCustodyProofOperationSemanticKind('wallet-melt'),

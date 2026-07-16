@@ -123,9 +123,10 @@ export function durableCustodyProofOperationSemanticKind(
     case 'ctf-condition-registration':
     case 'regular-split':
     case 'proof-split':
-    case 'wallet-send':
     case 'wallet-melt':
       return 'generic-send'
+    case 'wallet-send':
+      return 'wallet-send'
     case 'wallet-mint':
     case 'wallet-receive':
       return 'generic-receive'

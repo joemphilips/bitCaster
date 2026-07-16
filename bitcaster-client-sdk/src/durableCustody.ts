@@ -36,6 +36,7 @@ export type DurableCustodySemanticKind =
   | 'conditional-keyset-swap'
   | 'generic-receive'
   | 'generic-send'
+  | 'wallet-send'
   | 'ctf-split'
   | 'ctf-merge'
   | 'ctf-redeem'
@@ -376,6 +377,9 @@ export const DURABLE_CUSTODY_RECORD_MAX_BYTES = 64 * 1_024
 export const DURABLE_CUSTODY_RECOVERY_PAGE_MAX_BYTES = 4 * 1_024 * 1_024
 export const DURABLE_CUSTODY_TRANSACTION_OPERATION_LIMIT_MAX = 256 as const
 export const DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX = 256 as const
+export const DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX = 256 as const
+export const DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX = 512 as const
+export const DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX = 16 as const
 export const DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX = 256 as const
 
 export interface DurableCustodyRecoveryPageInput {
@@ -661,6 +665,7 @@ export function classifyDurableCustodyWalletStorageBoundary(input: {
 
   const previous = decodeDurableCustodyRecord(input.previous, next.scope)
   assertSameWalletStorageAuthority(previous, next)
+  assertWalletStorageDeliveryTransition(previous, next)
   switch (previous.operation.state) {
     case 'dispatch-intent':
       if (
@@ -696,18 +701,29 @@ function assertSameWalletStorageAuthority(
   previous: DurableCustodyRecord,
   next: DurableCustodyRecord,
 ): void {
+  const previousAuthority = walletStorageAuthority(previous)
+  const nextAuthority = walletStorageAuthority(next)
   if (
     previous.operation.binding.kind !== 'wallet' ||
     deriveDurableCustodyArtifactFingerprint(
-      walletStorageAuthority(previous),
+      previousAuthority,
     ) !==
-      deriveDurableCustodyArtifactFingerprint(walletStorageAuthority(next))
+      deriveDurableCustodyArtifactFingerprint(nextAuthority)
   ) {
-    throw new Error('wallet storage boundary has foreign exact authority')
+    const changed = Object.keys(previousAuthority).filter(
+      (field) =>
+        deriveDurableCustodyArtifactFingerprint(previousAuthority[field]) !==
+        deriveDurableCustodyArtifactFingerprint(nextAuthority[field]),
+    )
+    throw new Error(
+      `wallet storage boundary has foreign exact authority: ${changed.join(',')}`,
+    )
   }
 }
 
-function walletStorageAuthority(record: DurableCustodyRecord): unknown {
+function walletStorageAuthority(
+  record: DurableCustodyRecord,
+): Record<string, unknown> {
   const operation = record.operation
   return {
     scope: record.scope,
@@ -723,10 +739,45 @@ function walletStorageAuthority(record: DurableCustodyRecord): unknown {
     outputPlan: operation.outputPlan,
     privateMaterial: operation.privateMaterial,
     verification: operation.verification,
-    delivery: operation.delivery,
     horizon: operation.horizon,
     terminalTombstone: record.terminalTombstone,
   }
+}
+
+function assertWalletStorageDeliveryTransition(
+  previous: DurableCustodyRecord,
+  next: DurableCustodyRecord,
+): void {
+  const before = previous.operation.delivery
+  const after = next.operation.delivery
+  if (
+    deriveDurableCustodyArtifactFingerprint(before) ===
+    deriveDurableCustodyArtifactFingerprint(after)
+  ) {
+    return
+  }
+  if (
+    before.deliveryKind === 'none' &&
+    after.deliveryKind === 'outbox' &&
+    after.state === 'pending' &&
+    next.operation.state === 'reconciled' &&
+    isWalletSendDelivery(next, after)
+  ) {
+    return
+  }
+  if (
+    before.deliveryKind === 'outbox' &&
+    after.deliveryKind === 'outbox' &&
+    before.state === 'pending' &&
+    (after.state === 'acknowledged' || after.state === 'expired') &&
+    isWalletSendDelivery(previous, before) &&
+    isWalletSendDelivery(next, after) &&
+    deriveDurableCustodyArtifactFingerprint({ ...before, state: null }) ===
+      deriveDurableCustodyArtifactFingerprint({ ...after, state: null })
+  ) {
+    return
+  }
+  throw new Error('wallet storage boundary has foreign delivery authority')
 }
 
 export type DurableCustodyTransition =
@@ -833,7 +884,7 @@ const WALLET_STAGES: readonly CustodyWalletStage[] = [
 ]
 const SEMANTIC_KINDS: readonly DurableCustodySemanticKind[] = [
   'swap-lock', 'swap-claim', 'swap-refund', 'generic-receive', 'generic-send',
-  'conditional-keyset-swap', 'ctf-split', 'ctf-merge', 'ctf-redeem',
+  'wallet-send', 'conditional-keyset-swap', 'ctf-split', 'ctf-merge', 'ctf-redeem',
 ]
 const STATES: readonly DurableCustodyOperationState[] = [
   'dispatch-intent', 'transport-attempted', 'reconciled', 'aborted',
@@ -854,6 +905,7 @@ const SEMANTIC_STAGE_BINDINGS: Readonly<Record<
   'conditional-keyset-swap': 'lock',
   'generic-receive': 'receive',
   'generic-send': 'send',
+  'wallet-send': 'send',
   'ctf-split': 'ctf-split',
   'ctf-merge': 'ctf-merge',
   'ctf-redeem': 'ctf-redeem',
@@ -866,6 +918,7 @@ const SEMANTIC_TERMINAL_REPLAY_REQUIREMENTS: Readonly<Record<DurableCustodySeman
   'conditional-keyset-swap': true,
   'generic-receive': false,
   'generic-send': false,
+  'wallet-send': false,
   'ctf-split': false,
   'ctf-merge': false,
   'ctf-redeem': false,
@@ -881,6 +934,7 @@ const SEMANTIC_BINDING_KINDS: Readonly<Record<
   'conditional-keyset-swap': 'trade',
   'generic-receive': 'wallet',
   'generic-send': 'either',
+  'wallet-send': 'wallet',
   'ctf-split': 'either',
   'ctf-merge': 'either',
   'ctf-redeem': 'wallet',
@@ -896,6 +950,7 @@ const SEMANTIC_HORIZON_RULES: Readonly<Record<DurableCustodySemanticKind, {
   'conditional-keyset-swap': { requireNotBefore: false, requireNotAfter: true },
   'generic-receive': { requireNotBefore: false, requireNotAfter: false },
   'generic-send': { requireNotBefore: false, requireNotAfter: false },
+  'wallet-send': { requireNotBefore: false, requireNotAfter: false },
   'ctf-split': { requireNotBefore: false, requireNotAfter: false },
   'ctf-merge': { requireNotBefore: false, requireNotAfter: false },
   'ctf-redeem': { requireNotBefore: false, requireNotAfter: false },
@@ -1549,10 +1604,16 @@ export function reduceDurableCustodyState(
       if (record.operation.delivery.deliveryKind !== 'outbox' || record.operation.delivery.state !== 'pending') {
         throw new Error('delivery resolution requires pending outbox')
       }
-      if (transition.deliveryState === 'expired'
-        && record.operation.delivery.expiresAtMs !== null
-        && effectiveNowMs < record.operation.delivery.expiresAtMs) {
-        throw new Error('delivery expiry is premature')
+      if (isWalletSendDelivery(record, record.operation.delivery)) {
+        throw new Error('wallet-send delivery requires a closed terminal decision')
+      }
+      if (transition.deliveryState === 'expired') {
+        if (record.operation.delivery.expiresAtMs === null) {
+          throw new Error('non-expiring delivery cannot expire')
+        }
+        if (effectiveNowMs < record.operation.delivery.expiresAtMs) {
+          throw new Error('delivery expiry is premature')
+        }
       }
       nextOperation.operation.delivery = {
         ...record.operation.delivery,
@@ -2009,7 +2070,9 @@ function decodeDelivery(value: unknown): DurableCustodyRecord['operation']['deli
     deliveryId: requireIdentifier(delivery.deliveryId, 'delivery id'),
     payloadHandle: requireIdentifier(delivery.payloadHandle, 'delivery payload handle'),
     payloadFingerprint: requireFingerprint(delivery.payloadFingerprint, 'delivery payload fingerprint'),
-    expiresAtMs: requireNonNegativeInteger(delivery.expiresAtMs, 'delivery expiry'),
+    expiresAtMs: delivery.expiresAtMs === null
+      ? null
+      : requireNonNegativeInteger(delivery.expiresAtMs, 'delivery expiry'),
     state,
   }
 }
@@ -2095,6 +2158,7 @@ function validateRecordBindings(record: DurableCustodyRecord): void {
   if (!record.operation.terminalReplayEvidenceRequired && record.terminalTombstone !== null) {
     throw new Error('terminal tombstone is not permitted')
   }
+  validateDeliveryPolicy(record)
   validateCustodyContext(record)
   validateSemanticHorizon(record.operation.semanticKind, record.operation.horizon)
   if (record.operation.exactRequest.outputPlanFingerprint !== record.operation.outputPlan.outputPlanFingerprint
@@ -2170,6 +2234,56 @@ function validateRecordBindings(record: DurableCustodyRecord): void {
     && (record.operation.state !== 'reconciled' || record.operation.result.state !== 'applied')) {
     throw new Error('terminal tombstone lifecycle is invalid')
   }
+}
+
+function validateDeliveryPolicy(record: DurableCustodyRecord): void {
+  const delivery = record.operation.delivery
+  if (delivery.deliveryKind !== 'outbox') return
+  if (delivery.deliveryId === null) {
+    throw new Error('delivery identity is invalid')
+  }
+  const deliveryPrefix = `delivery:${record.operation.operationId}:`
+  const deliveryType = delivery.deliveryId.startsWith(deliveryPrefix)
+    ? delivery.deliveryId.slice(deliveryPrefix.length)
+    : null
+  if (
+    deliveryType !== 'cipher' &&
+    deliveryType !== 'settlement' &&
+    deliveryType !== 'wallet-send'
+  ) {
+    throw new Error('delivery identity is invalid')
+  }
+  if (deliveryType === 'wallet-send') {
+    if (
+      record.operation.binding.kind !== 'wallet' ||
+      record.operation.semanticKind !== 'wallet-send'
+    ) {
+      throw new Error('wallet-send delivery authority is invalid')
+    }
+    if (delivery.expiresAtMs !== null) {
+      throw new Error('wallet-send delivery must be non-expiring')
+    }
+    if (delivery.state === 'expired') {
+      throw new Error('non-expiring delivery cannot be expired')
+    }
+    return
+  }
+  if (delivery.expiresAtMs === null) {
+    throw new Error('non-expiring delivery policy is invalid')
+  }
+}
+
+function isWalletSendDelivery(
+  record: DurableCustodyRecord,
+  delivery: DurableCustodyRecord['operation']['delivery'],
+): boolean {
+  return (
+    delivery.deliveryKind === 'outbox' &&
+    delivery.deliveryId ===
+      `delivery:${record.operation.operationId}:wallet-send` &&
+    delivery.expiresAtMs === null &&
+    delivery.state !== 'expired'
+  )
 }
 
 function validateCustodyContext(record: DurableCustodyRecord): void {
@@ -2391,9 +2505,13 @@ function validateDeliveryExpiry(
   delivery: DurableCustodyRecord['operation']['delivery'],
   effectiveNowMs: number,
 ): void {
-  if (delivery.deliveryKind === 'outbox' && delivery.state === 'expired'
-    && delivery.expiresAtMs !== null && effectiveNowMs < delivery.expiresAtMs) {
-    throw new Error('delivery expiry is premature')
+  if (delivery.deliveryKind === 'outbox' && delivery.state === 'expired') {
+    if (delivery.expiresAtMs === null) {
+      throw new Error('non-expiring delivery cannot be expired')
+    }
+    if (effectiveNowMs < delivery.expiresAtMs) {
+      throw new Error('delivery expiry is premature')
+    }
   }
 }
 
