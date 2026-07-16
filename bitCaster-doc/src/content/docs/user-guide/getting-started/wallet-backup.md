@@ -45,10 +45,14 @@ The service retains one current snapshot for each vault, not a history of old
 wallet states. Old snapshots could contain proofs that have since been spent,
 so they are not presented as recoverable wallet versions.
 
-The initial encrypted-storage allowance is shared by all vaults under the same
-authenticated account. If a recovery phrase is permanently lost, its encrypted
-vault cannot be identified or deleted in this release and continues to use part
-of that allowance. Keep every phrase for a wallet you may want to reopen.
+The initial 64 MiB encrypted-storage allowance is shared by all vaults under
+the same authenticated account. An account may create at most 256 distinct
+seed-derived vault identities over its lifetime. Reopening a previously used
+seed does not consume another identity, but revoking or deleting a vault does
+not return its identity slot. If a recovery phrase is permanently lost, its
+encrypted vault cannot be identified or deleted in this release and continues
+to use part of the storage allowance. Keep every phrase for a wallet you may
+want to reopen.
 
 ## Keep your recovery phrase
 
