@@ -677,6 +677,38 @@ export class BitcasterDB extends Dexie {
     this.version(20).stores({
       pendingLocalWalletPayments: null,
     });
+    // The wallet schema remains undeployed. Version 21 indexes explicit
+    // bearer-reclaim reapproval and discards incompatible development rows.
+    this.version(21)
+      .stores({
+        bearerSpendDeliveries:
+          "[walletId+deliveryId], walletId, &[walletId+parentOperationId], &[walletId+payloadHandle], [walletId+active+nextAttemptAtMs+deliveryId], [walletId+presentable+createdAtMs+deliveryId], [walletId+active+createdAtMs+deliveryId], [walletId+active+reclaimPrepared+updatedAtMs+deliveryId]",
+      })
+      .upgrade(async (transaction) => {
+        await Promise.all(
+          [
+            "proofs",
+            "proofOperations",
+            "swapSessions",
+            "swapIntents",
+            "custodyScopes",
+            "custodyScopeStates",
+            "custodyOperations",
+            "custodySessionLinks",
+            "custodyProofReservations",
+            "partialLockFailures",
+            "walletCounters",
+            "pendingTrades",
+            "walletActivities",
+            "durableStorageAccounting",
+            "durableStorageHeadroom",
+            "walletSendDeliveryPayloads",
+            "walletSendDeliveryReservations",
+            "bearerSpendDeliveries",
+            "outgoingRecipientDeliveries",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
     this.on("blocked", () => {
       durableSwapStorageBlockedReason =
         "Durable swap storage upgrade is blocked by another open tab";

@@ -15,6 +15,7 @@ export interface GuiBearerSpendDeliveryRow {
   payloadHandle: string;
   active: 0 | 1;
   presentable: 0 | 1;
+  reclaimPrepared: 0 | 1;
   createdAtMs: number;
   nextAttemptAtMs: number | null;
   record: DurableBearerSpendDeliveryRecord;
@@ -33,6 +34,7 @@ export function createGuiBearerSpendDeliveryRow(
     payloadHandle: record.payloadHandle,
     active: record.state.kind === "pending" ? 1 : 0,
     presentable: isDurableBearerSpendTokenPresentable(record) ? 1 : 0,
+    reclaimPrepared: record.reclaim.kind === "prepared" ? 1 : 0,
     createdAtMs: record.createdAtMs,
     nextAttemptAtMs:
       record.state.kind === "pending" ? record.state.nextAttemptAtMs : null,
@@ -55,7 +57,7 @@ export function requireGuiBearerSpendDeliveryRow(
   }
   const row = value as Record<string, unknown>;
   if (
-    Object.keys(row).length !== 11 ||
+    Object.keys(row).length !== 12 ||
     row.adapterSchemaVersion !==
       GUI_BEARER_SPEND_DELIVERY_ADAPTER_SCHEMA_VERSION
   ) {
@@ -64,6 +66,7 @@ export function requireGuiBearerSpendDeliveryRow(
   const record = decodeDurableBearerSpendDeliveryRecord(row.record);
   const active = record.state.kind === "pending" ? 1 : 0;
   const presentable = isDurableBearerSpendTokenPresentable(record) ? 1 : 0;
+  const reclaimPrepared = record.reclaim.kind === "prepared" ? 1 : 0;
   const nextAttemptAtMs =
     record.state.kind === "pending" ? record.state.nextAttemptAtMs : null;
   const updatedAtMs =
@@ -77,6 +80,7 @@ export function requireGuiBearerSpendDeliveryRow(
     row.payloadHandle !== record.payloadHandle ||
     row.active !== active ||
     row.presentable !== presentable ||
+    row.reclaimPrepared !== reclaimPrepared ||
     row.createdAtMs !== record.createdAtMs ||
     row.nextAttemptAtMs !== nextAttemptAtMs ||
     row.updatedAtMs !== updatedAtMs ||
@@ -96,6 +100,7 @@ export function requireGuiBearerSpendDeliveryRow(
     payloadHandle: record.payloadHandle,
     active,
     presentable,
+    reclaimPrepared,
     createdAtMs: record.createdAtMs,
     nextAttemptAtMs,
     record,

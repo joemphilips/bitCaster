@@ -26,13 +26,10 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
   const navigate = useNavigate()
   const state = useDepositWithdrawState(mode, onClose)
   const walletBackupState = useWalletStore((s) => s.walletBackupState)
-  const [backupWarningDismissed, setBackupWarningDismissed] = useState(() =>
-    window.localStorage.getItem(DEPOSIT_BACKUP_WARNING_DISMISSED_KEY) === 'true',
+  const [backupWarningDismissed, setBackupWarningDismissed] = useState(
+    () => window.localStorage.getItem(DEPOSIT_BACKUP_WARNING_DISMISSED_KEY) === 'true',
   )
-  const showBackupWarning =
-    mode === 'deposit' &&
-    walletBackupState === 'needs_backup' &&
-    !backupWarningDismissed
+  const showBackupWarning = mode === 'deposit' && walletBackupState === 'needs_backup' && !backupWarningDismissed
 
   useEffect(() => {
     if (mode !== 'deposit' || walletBackupState !== 'needs_backup') return
@@ -89,10 +86,7 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
       <>
         {backupWarningBanner}
         {errorBanner}
-        <QrScannerView
-          onDecode={state.onScanResult}
-          onClose={state.onBack}
-        />
+        <QrScannerView onDecode={state.onScanResult} onClose={state.onBack} progress={state.scanProgress} />
       </>
     )
   }
@@ -132,7 +126,7 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
     )
   }
 
-  if (state.currentView === 'token-display' && state.ecashToken) {
+  if (state.currentView === 'token-display' && (state.ecashToken || state.ecashCancellationPreview)) {
     return (
       <>
         {backupWarningBanner}
@@ -141,6 +135,13 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
           token={state.ecashToken}
           amountSats={state.amountSats}
           onClose={state.onClose}
+          cancellationPreview={state.ecashCancellationPreview}
+          cancellationPending={state.ecashCancellationPending}
+          authorizePresentation={state.onAuthorizeEcashPresentation}
+          onPresentationRevoked={state.onEcashPresentationRevoked}
+          onInspectCancellation={state.onInspectEcashCancellation}
+          onConfirmCancellation={state.onConfirmEcashCancellation}
+          onDismissCancellation={state.onDismissEcashCancellation}
         />
       </>
     )

@@ -38,12 +38,14 @@ import type {
 import { requireExactDurableWalletSendToken } from "./durableWalletSendDelivery.ts";
 import { normalizeDurableWalletMintUrl } from "./durableWalletMintUrl.ts";
 import { sameCashuProofArtifact } from "./proofSelection.ts";
+import { type DurableWalletSendExactPayload } from "./durableWalletSendExactPayload.ts";
+import { requireDurableWalletSendExactPayloadCapability } from "./durableWalletSendExactPayloadAuthority.ts";
 import {
-  type DurableWalletSendExactPayload,
-} from "./durableWalletSendExactPayload.ts";
-import {
-  requireDurableWalletSendExactPayloadCapability,
-} from "./durableWalletSendExactPayloadAuthority.ts";
+  decodeDurableWalletOperation,
+  requireDurableWalletReceiveExactResultCapability,
+  requireExactDurableWalletReceiveResult,
+  type DurableWalletProof,
+} from "./durableWalletOperation.ts";
 
 export type {
   DurableBearerSpendClassification,
@@ -70,6 +72,32 @@ interface DurableBearerSpendCustodyHandoffPlanAuthority {
   nextCustodyFingerprint: string;
   bearerRecordFingerprint: string;
 }
+
+export interface DurableBearerSpendReclaimCompletionCapability {
+  readonly operationId: string;
+  readonly requestFingerprint: string;
+  readonly approvedInputFingerprint: string;
+  readonly approvedInputAmount: string;
+  readonly approvedFee: string;
+  readonly approvedReturnAmount: string;
+  readonly childResultFingerprint: string;
+}
+
+interface DurableBearerSpendReclaimCompletionAuthority {
+  recordFingerprint: string;
+  operationId: string;
+  requestFingerprint: string;
+  approvedInputFingerprint: string;
+  approvedInputAmount: string;
+  approvedFee: string;
+  approvedReturnAmount: string;
+  childResultFingerprint: string;
+}
+
+const reclaimCompletionAuthorities = new WeakMap<
+  DurableBearerSpendReclaimCompletionCapability,
+  DurableBearerSpendReclaimCompletionAuthority
+>();
 
 const custodyHandoffPlanAuthorities = new WeakMap<
   DurableBearerSpendCustodyHandoffPlan,
@@ -241,6 +269,22 @@ export function reduceDurableBearerSpendReclaimLineage(
       transition.requestFingerprint,
       "reclaim request fingerprint",
     ),
+    approvedInputFingerprint: requireFingerprint(
+      transition.approvedInputFingerprint,
+      "reclaim approved input fingerprint",
+    ),
+    approvedInputAmount: requirePositiveAmount(
+      transition.approvedInputAmount,
+      "reclaim approved input amount",
+    ),
+    approvedFee: requireNonnegativeAmount(
+      transition.approvedFee,
+      "reclaim approved fee",
+    ),
+    approvedReturnAmount: requirePositiveAmount(
+      transition.approvedReturnAmount,
+      "reclaim approved return amount",
+    ),
   } as Exclude<DurableBearerSpendReclaimLineage, { kind: "none" }>;
   requireReclaimTransition(record, next);
   const state =
@@ -255,6 +299,301 @@ export function reduceDurableBearerSpendReclaimLineage(
     state,
   };
   return decodeDurableBearerSpendDeliveryRecord(updated);
+}
+
+export interface DurableBearerSpendReclaimIntent {
+  operationId: string;
+  requestFingerprint: string;
+  approvedInputFingerprint: string;
+  approvedInputAmount: string;
+  approvedFee: string;
+  approvedReturnAmount: string;
+}
+
+export function planDurableBearerSpendReclaimIntent(
+  value: DurableBearerSpendDeliveryRecord,
+  approval?: {
+    requestFingerprint: string;
+    approvedFee: string;
+    approvedReturnAmount: string;
+  },
+): DurableBearerSpendReclaimIntent {
+  const record = decodeDurableBearerSpendDeliveryRecord(value);
+  if (
+    record.state.kind !== "pending" ||
+    (record.reclaim.kind !== "none" && record.reclaim.kind !== "prepared")
+  ) {
+    throw new Error("durable bearer delivery is not cancellable");
+  }
+  const parentFingerprint = deriveDurableCustodyArtifactFingerprint({
+    domain: "durable-bearer-reclaim-intent/v1",
+    deliveryId: record.deliveryId,
+    walletId: record.walletId,
+    parentOperationId: record.parentOperationId,
+    mintUrl: record.mintUrl,
+    unit: record.unit,
+    tokenDigest: record.tokenDigest,
+    tokenByteLength: record.tokenByteLength,
+    originalProofs: record.proofEntries.map((entry) =>
+      entry.kind === "active"
+        ? {
+            kind: "active",
+            Y: expectedProofYs([entry.proof])[0],
+            keysetId: entry.proof.id,
+            amount: Amount.from(entry.proof.amount).toBigInt().toString(),
+          }
+        : entry,
+    ),
+  });
+  const requestFingerprint =
+    approval === undefined
+      ? parentFingerprint
+      : requireFingerprint(
+          approval.requestFingerprint,
+          "reclaim approval fingerprint",
+        );
+  const selectedProofs = selectDurableBearerSpendUnspentProofs(record);
+  const approvedInputFingerprint = reclaimInputFingerprint(selectedProofs);
+  const approvedInputAmount = proofAmount(selectedProofs);
+  const approvedFee =
+    approval === undefined
+      ? "0"
+      : requireNonnegativeAmount(approval.approvedFee, "reclaim approved fee");
+  const approvedReturnAmount =
+    approval === undefined
+      ? approvedInputAmount
+      : requirePositiveAmount(
+          approval.approvedReturnAmount,
+          "reclaim approved return amount",
+        );
+  if (
+    BigInt(approvedFee) + BigInt(approvedReturnAmount) !==
+    BigInt(approvedInputAmount)
+  ) {
+    throw new Error("durable bearer reclaim approved amounts are invalid");
+  }
+  return {
+    operationId: `bearer-reclaim:${deriveDurableCustodyArtifactFingerprint({
+      domain: "durable-bearer-reclaim-operation/v1",
+      parentFingerprint,
+      requestFingerprint,
+      approvedInputFingerprint,
+      approvedInputAmount,
+      approvedFee,
+      approvedReturnAmount,
+    })}`,
+    requestFingerprint,
+    approvedInputFingerprint,
+    approvedInputAmount,
+    approvedFee,
+    approvedReturnAmount,
+  };
+}
+
+export function replaceDurableBearerSpendReclaimIntent(
+  value: DurableBearerSpendDeliveryRecord,
+  intent: DurableBearerSpendReclaimIntent,
+): DurableBearerSpendDeliveryRecord {
+  const record = decodeDurableBearerSpendDeliveryRecord(value);
+  if (record.state.kind !== "pending" || record.reclaim.kind !== "prepared") {
+    throw new Error("durable bearer reclaim intent is not replaceable");
+  }
+  const operationId = requireIdentifier(
+    intent.operationId,
+    "reclaim operation id",
+  );
+  const requestFingerprint = requireFingerprint(
+    intent.requestFingerprint,
+    "reclaim request fingerprint",
+  );
+  const approvedInputFingerprint = requireFingerprint(
+    intent.approvedInputFingerprint,
+    "reclaim approved input fingerprint",
+  );
+  const approvedInputAmount = requirePositiveAmount(
+    intent.approvedInputAmount,
+    "reclaim approved input amount",
+  );
+  const approvedFee = requireNonnegativeAmount(
+    intent.approvedFee,
+    "reclaim approved fee",
+  );
+  const approvedReturnAmount = requirePositiveAmount(
+    intent.approvedReturnAmount,
+    "reclaim approved return amount",
+  );
+  requireApprovedAmountEquation({
+    approvedInputAmount,
+    approvedFee,
+    approvedReturnAmount,
+  });
+  return decodeDurableBearerSpendDeliveryRecord({
+    ...record,
+    reclaim: {
+      kind: "prepared",
+      operationId,
+      parentDeliveryId: record.deliveryId,
+      requestFingerprint,
+      approvedInputFingerprint,
+      approvedInputAmount,
+      approvedFee,
+      approvedReturnAmount,
+    },
+    state: {
+      ...record.state,
+      classification: "recheck-required",
+    },
+  });
+}
+
+export function completeDurableBearerSpendReclaim(input: {
+  record: DurableBearerSpendDeliveryRecord;
+  capability: DurableBearerSpendReclaimCompletionCapability;
+  completedAtMs: number;
+}): DurableBearerSpendDeliveryRecord {
+  const record = decodeDurableBearerSpendDeliveryRecord(input.record);
+  const authority = requireReclaimCompletionCapability(
+    input.capability,
+    record,
+  );
+  const {
+    operationId,
+    requestFingerprint,
+    approvedInputFingerprint,
+    approvedInputAmount,
+    approvedFee,
+    approvedReturnAmount,
+  } = authority;
+  const completedAtMs = requireTimestamp(
+    input.completedAtMs,
+    "reclaim completion time",
+  );
+  if (
+    record.reclaim.kind === "completed" &&
+    record.reclaim.operationId === operationId &&
+    record.reclaim.requestFingerprint === requestFingerprint &&
+    record.reclaim.approvedInputFingerprint === approvedInputFingerprint &&
+    record.reclaim.approvedInputAmount === approvedInputAmount &&
+    record.reclaim.approvedFee === approvedFee &&
+    record.reclaim.approvedReturnAmount === approvedReturnAmount &&
+    record.state.kind === "consumed" &&
+    record.state.actor === "sender-reclaim"
+  ) {
+    return record;
+  }
+  if (
+    record.reclaim.kind !== "submitted" ||
+    record.reclaim.operationId !== operationId ||
+    record.reclaim.requestFingerprint !== requestFingerprint ||
+    record.reclaim.approvedInputFingerprint !== approvedInputFingerprint ||
+    record.reclaim.approvedInputAmount !== approvedInputAmount ||
+    record.reclaim.approvedFee !== approvedFee ||
+    record.reclaim.approvedReturnAmount !== approvedReturnAmount ||
+    completedAtMs < record.createdAtMs ||
+    (record.state.kind === "consumed" && record.state.actor !== "unknown")
+  ) {
+    throw new Error("durable bearer reclaim completion is invalid");
+  }
+  const proofStates: "SPENT"[] = record.proofEntries.map(
+    () => CheckStateEnum.SPENT,
+  );
+  return decodeDurableBearerSpendDeliveryRecord({
+    ...record,
+    proofEntries: compactSpentProofEntries(record.proofEntries, proofStates),
+    reclaim: {
+      kind: "completed",
+      operationId,
+      parentDeliveryId: record.deliveryId,
+      requestFingerprint,
+      approvedInputFingerprint,
+      approvedInputAmount,
+      approvedFee,
+      approvedReturnAmount,
+    },
+    state: {
+      kind: "consumed",
+      actor: "sender-reclaim",
+      proofStates,
+      completedAtMs,
+    },
+  });
+}
+
+export function issueDurableBearerSpendReclaimCompletionCapability(input: {
+  record: DurableBearerSpendDeliveryRecord;
+  intent: DurableBearerSpendReclaimIntent;
+  walletOperation: unknown;
+  resultGroups: unknown;
+}): DurableBearerSpendReclaimCompletionCapability {
+  const record = decodeDurableBearerSpendDeliveryRecord(input.record);
+  const intent = requireReclaimIntent(input.intent);
+  if (
+    (record.reclaim.kind !== "submitted" &&
+      record.reclaim.kind !== "completed") ||
+    record.reclaim.operationId !== intent.operationId ||
+    record.reclaim.requestFingerprint !== intent.requestFingerprint ||
+    record.reclaim.approvedInputFingerprint !==
+      intent.approvedInputFingerprint ||
+    record.reclaim.approvedInputAmount !== intent.approvedInputAmount ||
+    record.reclaim.approvedFee !== intent.approvedFee ||
+    record.reclaim.approvedReturnAmount !== intent.approvedReturnAmount
+  ) {
+    throw new Error("durable bearer reclaim completion authority is invalid");
+  }
+  const operation = requireDurableBearerSpendReclaimChildPlan({
+    record,
+    intent,
+    walletOperation: input.walletOperation,
+  });
+  const exactResult = requireExactDurableWalletReceiveResult({
+    walletOperation: operation,
+    resultGroups: input.resultGroups,
+  });
+  requireDurableWalletReceiveExactResultCapability(exactResult);
+  if (exactResult.amount !== intent.approvedReturnAmount) {
+    throw new Error("durable bearer reclaim child result amount is invalid");
+  }
+  const capability = Object.freeze({
+    operationId: intent.operationId,
+    requestFingerprint: intent.requestFingerprint,
+    approvedInputFingerprint: intent.approvedInputFingerprint,
+    approvedInputAmount: intent.approvedInputAmount,
+    approvedFee: intent.approvedFee,
+    approvedReturnAmount: intent.approvedReturnAmount,
+    childResultFingerprint: exactResult.resultFingerprint,
+  });
+  reclaimCompletionAuthorities.set(capability, {
+    recordFingerprint: reclaimAuthorityFingerprint(record),
+    ...capability,
+  });
+  return capability;
+}
+
+export function requireDurableBearerSpendReclaimChildPlan(input: {
+  record: DurableBearerSpendDeliveryRecord;
+  intent: DurableBearerSpendReclaimIntent;
+  walletOperation: unknown;
+}) {
+  const record = decodeDurableBearerSpendDeliveryRecord(input.record);
+  const intent = requireReclaimIntent(input.intent);
+  const operation = decodeDurableWalletOperation(input.walletOperation);
+  if (
+    operation.kind !== "wallet-receive" ||
+    operation.operationId !== intent.operationId ||
+    operation.mintUrl !== record.mintUrl ||
+    operation.unit !== record.unit ||
+    operation.preview.amount !== intent.approvedReturnAmount ||
+    operation.preview.fees !== intent.approvedFee ||
+    proofAmountFromDurable(operation.preview.inputs) !==
+      intent.approvedInputAmount ||
+    reclaimInputFingerprintFromDurable(operation.preview.inputs) !==
+      intent.approvedInputFingerprint ||
+    !isOrderedParentProofSubset(record, operation.preview.inputs) ||
+    outputAmount(operation.preview.keepOutputs) !== intent.approvedReturnAmount
+  ) {
+    throw new Error("durable bearer reclaim child plan is invalid");
+  }
+  return operation;
 }
 
 /** Exact authority available to an explicit reclaim after a fresh allowed check. */
@@ -346,8 +685,9 @@ export function planDurableBearerSpendCustodyHandoff(input: {
   if (record.state.kind !== "pending") {
     throw new Error("durable bearer delivery cannot be handed off");
   }
-  const exactPayload =
-    requireDurableWalletSendExactPayloadCapability(input.exactPayload);
+  const exactPayload = requireDurableWalletSendExactPayloadCapability(
+    input.exactPayload,
+  );
   if (
     exactPayload.policyKind !== "user-export" ||
     exactPayload.walletOperationId !==
@@ -368,8 +708,7 @@ export function planDurableBearerSpendCustodyHandoff(input: {
   const capability: DurableBearerCustodyHandoffCapability =
     issueDurableBearerCustodyHandoffCapability({
       policyKind: "user-export",
-      deliveryIntentFingerprint:
-        exactPayload.deliveryIntentFingerprint,
+      deliveryIntentFingerprint: exactPayload.deliveryIntentFingerprint,
       walletId: record.walletId,
       operationId: record.parentOperationId,
       deliveryId: record.deliveryId,
@@ -536,6 +875,7 @@ function requireReclaimTransition(
   record: DurableBearerSpendDeliveryRecord,
   next: Exclude<DurableBearerSpendReclaimLineage, { kind: "none" }>,
 ): void {
+  requireApprovedAmountEquation(next);
   const before = record.reclaim;
   if (before.kind === next.kind && sameReclaimIdentity(before, next)) return;
   const legal =
@@ -555,6 +895,13 @@ function requireReclaimTransition(
   ) {
     throw new Error("durable bearer reclaim transition is invalid");
   }
+  const selectedProofs = selectDurableBearerSpendUnspentProofs(record);
+  if (
+    reclaimInputFingerprint(selectedProofs) !== next.approvedInputFingerprint ||
+    proofAmount(selectedProofs) !== next.approvedInputAmount
+  ) {
+    throw new Error("durable bearer reclaim transition is invalid");
+  }
 }
 
 function sameReclaimIdentity(
@@ -564,8 +911,188 @@ function sameReclaimIdentity(
   return (
     left.operationId === right.operationId &&
     left.parentDeliveryId === right.parentDeliveryId &&
-    left.requestFingerprint === right.requestFingerprint
+    left.requestFingerprint === right.requestFingerprint &&
+    left.approvedInputFingerprint === right.approvedInputFingerprint &&
+    left.approvedInputAmount === right.approvedInputAmount &&
+    left.approvedFee === right.approvedFee &&
+    left.approvedReturnAmount === right.approvedReturnAmount
   );
+}
+
+function proofAmount(proofs: readonly Proof[]): string {
+  return proofs
+    .reduce((sum, proof) => sum + Amount.from(proof.amount).toBigInt(), 0n)
+    .toString();
+}
+
+function proofAmountFromDurable(proofs: readonly DurableWalletProof[]): string {
+  return proofs
+    .reduce((sum, proof) => sum + BigInt(proof.amount), 0n)
+    .toString();
+}
+
+function outputAmount(
+  outputs: readonly { blindedMessage: { amount: string } }[],
+): string {
+  return outputs
+    .reduce((sum, output) => sum + BigInt(output.blindedMessage.amount), 0n)
+    .toString();
+}
+
+function reclaimInputFingerprint(proofs: readonly Proof[]): string {
+  return deriveDurableCustodyArtifactFingerprint({
+    domain: "durable-bearer-reclaim-inputs/v1",
+    inputs: proofs.map((proof) => ({
+      Y: expectedProofYs([proof])[0],
+      keysetId: proof.id,
+      amount: Amount.from(proof.amount).toBigInt().toString(),
+    })),
+  });
+}
+
+function reclaimInputFingerprintFromDurable(
+  proofs: readonly DurableWalletProof[],
+): string {
+  return deriveDurableCustodyArtifactFingerprint({
+    domain: "durable-bearer-reclaim-inputs/v1",
+    inputs: proofs.map((proof) => ({
+      Y: expectedProofYs([{ id: proof.id, secret: proof.secret }])[0],
+      keysetId: proof.id,
+      amount: proof.amount,
+    })),
+  });
+}
+
+function isOrderedParentProofSubset(
+  record: DurableBearerSpendDeliveryRecord,
+  inputs: readonly DurableWalletProof[],
+): boolean {
+  let parentIndex = 0;
+  for (const input of inputs) {
+    let matched = false;
+    while (parentIndex < record.proofEntries.length) {
+      const entry = record.proofEntries[parentIndex];
+      parentIndex += 1;
+      if (entry && durableInputMatchesParentEntry(input, entry)) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) return false;
+  }
+  return true;
+}
+
+function durableInputMatchesParentEntry(
+  input: DurableWalletProof,
+  entry: DurableBearerSpendProofEntry,
+): boolean {
+  return (
+    expectedProofYs([{ id: input.id, secret: input.secret }])[0] ===
+      (entry.kind === "active" ? expectedProofYs([entry.proof])[0] : entry.Y) &&
+    input.id === (entry.kind === "active" ? entry.proof.id : entry.keysetId) &&
+    input.amount ===
+      (entry.kind === "active"
+        ? Amount.from(entry.proof.amount).toBigInt().toString()
+        : entry.amount)
+  );
+}
+
+function requirePositiveAmount(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value;
+}
+
+function requireNonnegativeAmount(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value;
+}
+
+function requireApprovedAmountEquation(input: {
+  approvedInputAmount: string;
+  approvedFee: string;
+  approvedReturnAmount: string;
+}): void {
+  if (
+    BigInt(input.approvedFee) + BigInt(input.approvedReturnAmount) !==
+    BigInt(input.approvedInputAmount)
+  ) {
+    throw new Error("durable bearer reclaim approved amounts are invalid");
+  }
+}
+
+function requireReclaimIntent(
+  value: DurableBearerSpendReclaimIntent,
+): DurableBearerSpendReclaimIntent {
+  const intent = {
+    operationId: requireIdentifier(value.operationId, "reclaim operation id"),
+    requestFingerprint: requireFingerprint(
+      value.requestFingerprint,
+      "reclaim request fingerprint",
+    ),
+    approvedInputFingerprint: requireFingerprint(
+      value.approvedInputFingerprint,
+      "reclaim approved input fingerprint",
+    ),
+    approvedInputAmount: requirePositiveAmount(
+      value.approvedInputAmount,
+      "reclaim approved input amount",
+    ),
+    approvedFee: requireNonnegativeAmount(
+      value.approvedFee,
+      "reclaim approved fee",
+    ),
+    approvedReturnAmount: requirePositiveAmount(
+      value.approvedReturnAmount,
+      "reclaim approved return amount",
+    ),
+  };
+  requireApprovedAmountEquation(intent);
+  return intent;
+}
+
+function requireReclaimCompletionCapability(
+  capability: DurableBearerSpendReclaimCompletionCapability,
+  record: DurableBearerSpendDeliveryRecord,
+): DurableBearerSpendReclaimCompletionAuthority {
+  const authority = reclaimCompletionAuthorities.get(capability);
+  if (
+    !authority ||
+    authority.recordFingerprint !== reclaimAuthorityFingerprint(record) ||
+    authority.operationId !== capability.operationId ||
+    authority.requestFingerprint !== capability.requestFingerprint ||
+    authority.approvedInputFingerprint !==
+      capability.approvedInputFingerprint ||
+    authority.approvedInputAmount !== capability.approvedInputAmount ||
+    authority.approvedFee !== capability.approvedFee ||
+    authority.approvedReturnAmount !== capability.approvedReturnAmount ||
+    authority.childResultFingerprint !== capability.childResultFingerprint
+  ) {
+    throw new Error("durable bearer reclaim completion capability is invalid");
+  }
+  return authority;
+}
+
+function reclaimAuthorityFingerprint(
+  record: DurableBearerSpendDeliveryRecord,
+): string {
+  return deriveDurableCustodyArtifactFingerprint({
+    domain: "durable-bearer-reclaim-parent/v1",
+    deliveryId: record.deliveryId,
+    walletId: record.walletId,
+    parentOperationId: record.parentOperationId,
+    payloadHandle: record.payloadHandle,
+    mintUrl: record.mintUrl,
+    unit: record.unit,
+    tokenDigest: record.tokenDigest,
+    tokenByteLength: record.tokenByteLength,
+    origin: record.origin,
+    createdAtMs: record.createdAtMs,
+  });
 }
 
 function incrementAttemptCount(value: number): number {

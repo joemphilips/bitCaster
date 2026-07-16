@@ -98,9 +98,7 @@ function requireProofEntryStateConsistency(
     record.state.kind === "pending" && record.reclaim.kind === "completed";
   const pendingAllSpent =
     record.state.kind === "pending" &&
-    record.state.proofStates?.every(
-      (state) => state === CheckStateEnum.SPENT,
-    );
+    record.state.proofStates?.every((state) => state === CheckStateEnum.SPENT);
   const recheckWithoutPreparedLineage =
     record.state.kind === "pending" &&
     record.state.classification === "recheck-required" &&
@@ -317,8 +315,7 @@ function requireLegalPendingState(
     !classificationLegal ||
     !canonicalAttemptState ||
     state.nextAttemptAtMs < createdAtMs ||
-    (state.lastObservedAtMs !== null &&
-      state.lastObservedAtMs < createdAtMs) ||
+    (state.lastObservedAtMs !== null && state.lastObservedAtMs < createdAtMs) ||
     (state.classification === "unverified") !==
       (state.lastObservedAtMs === null) ||
     (state.lastObservedAtMs !== null &&
@@ -349,11 +346,18 @@ function decodeReclaimLineage(
     "operationId",
     "parentDeliveryId",
     "requestFingerprint",
+    "approvedInputFingerprint",
+    "approvedInputAmount",
+    "approvedFee",
+    "approvedReturnAmount",
   ]);
   if (lineage.parentDeliveryId !== deliveryId) {
     throw new Error("durable bearer reclaim lineage is invalid");
   }
-  return {
+  const decoded: Exclude<
+    DurableBearerSpendReclaimLineage,
+    { kind: "none" }
+  > = {
     kind: lineage.kind,
     operationId: requireIdentifier(lineage.operationId, "reclaim operation id"),
     parentDeliveryId: deliveryId,
@@ -361,7 +365,44 @@ function decodeReclaimLineage(
       lineage.requestFingerprint,
       "reclaim request fingerprint",
     ),
+    approvedInputFingerprint: requireFingerprint(
+      lineage.approvedInputFingerprint,
+      "reclaim approved input fingerprint",
+    ),
+    approvedInputAmount: requirePositiveAmount(
+      lineage.approvedInputAmount,
+      "reclaim approved input amount",
+    ),
+    approvedFee: requireNonnegativeAmount(
+      lineage.approvedFee,
+      "reclaim approved fee",
+    ),
+    approvedReturnAmount: requirePositiveAmount(
+      lineage.approvedReturnAmount,
+      "reclaim approved return amount",
+    ),
   };
+  if (
+    BigInt(decoded.approvedFee) + BigInt(decoded.approvedReturnAmount) !==
+    BigInt(decoded.approvedInputAmount)
+  ) {
+    throw new Error("durable bearer reclaim approved amounts are invalid");
+  }
+  return decoded;
+}
+
+function requirePositiveAmount(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value;
+}
+
+function requireNonnegativeAmount(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value;
 }
 
 function decodeProofEntries(value: unknown): DurableBearerSpendProofEntry[] {

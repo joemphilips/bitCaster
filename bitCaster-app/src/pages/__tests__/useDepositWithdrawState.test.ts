@@ -1,6 +1,7 @@
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { Amount } from '@cashu/cashu-ts'
+import { Amount, getEncodedTokenV4 } from '@cashu/cashu-ts'
+import { createCashuNut16Encoder } from '@bitcaster/client-sdk/cashuNut16'
 import { useDepositWithdrawState } from '../useDepositWithdrawState'
 import { useWalletStore } from '@/stores/wallet'
 import { useActivityLogStore } from '@/stores/activity-log'
@@ -13,10 +14,21 @@ const prepareGuiLightningMint = vi.fn().mockResolvedValue({
 })
 const completeGuiLightningMint = vi.fn().mockResolvedValue([])
 const addProofs = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+const cancellationMocks = vi.hoisted(() => ({
+  inspect: vi.fn(),
+  cancel: vi.fn(),
+  findPendingReapproval: vi.fn(),
+}))
 
 vi.mock('@/stores/gui-ordinary-wallet-operation', () => ({
   prepareGuiLightningMint: (...args: unknown[]) => prepareGuiLightningMint(...args),
   completeGuiLightningMint: (...args: unknown[]) => completeGuiLightningMint(...args),
+}))
+
+vi.mock('@/stores/gui-bearer-spend-cancellation', () => ({
+  inspectGuiBearerSpendCancellation: cancellationMocks.inspect,
+  cancelGuiBearerSpend: cancellationMocks.cancel,
+  findPendingGuiBearerSpendReapproval: cancellationMocks.findPendingReapproval,
 }))
 
 // Mock cashu.ts — we don't want real mint calls
@@ -86,7 +98,9 @@ vi.mock('@/stores/proof-db', () => ({
 
 // Mock dexie-react-hooks — useLiveQuery returns balances keyed by mint URL
 vi.mock('dexie-react-hooks', () => ({
-  useLiveQuery: vi.fn().mockReturnValue({ 'http://localhost:8085': 5000 }),
+  useLiveQuery: vi.fn((_query: unknown, _dependencies: unknown, defaultResult: unknown) =>
+    defaultResult === null ? true : { 'http://localhost:8085': 5000 },
+  ),
 }))
 
 // Mock nip17 — we don't want real Nostr calls
@@ -104,6 +118,9 @@ beforeEach(() => {
   prepareGuiLightningMint.mockClear()
   completeGuiLightningMint.mockClear()
   addProofs.mockClear()
+  cancellationMocks.inspect.mockReset()
+  cancellationMocks.cancel.mockReset()
+  cancellationMocks.findPendingReapproval.mockReset().mockResolvedValue(null)
   useActivityLogStore.getState().clear()
   useWalletStore.setState({
     mnemonic: 'test words here abandon abandon abandon abandon abandon abandon abandon abandon abandon',
@@ -278,6 +295,170 @@ describe('useDepositWithdrawState', () => {
         await result.current.onScanResult('random-text')
       })
       expect(result.current.error).toMatch(/unrecognized/i)
+    })
+
+    it('keeps scanning NUT-16 fragments and imports only the complete token', async () => {
+      const walletOps = await import('@/lib/walletOps')
+      const receive = vi.mocked(walletOps.ingressReceiveCashuToken)
+      receive.mockClear()
+      receive.mockResolvedValueOnce({
+        added: false,
+        mintUrl: 'https://mint.example',
+        source: 'scan',
+        unit: 'sat',
+        amountSats: 8,
+        proofs: [],
+      })
+      const token = getEncodedTokenV4({
+        mint: 'https://mint.example',
+        unit: 'sat',
+        proofs: Array.from({ length: 8 }, (_, index) => ({
+          id: '0011223344556677',
+          amount: Amount.from(1),
+          secret: index.toString(16).padStart(64, '0'),
+          C: `02${(index + 1).toString(16).padStart(64, '0')}`,
+        })),
+      })
+      const encoder = createCashuNut16Encoder(token)
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
+      act(() => result.current.onSelectMethod('ecash'))
+      act(() => result.current.onScan())
+
+      for (let index = 0; index < encoder.fragmentCount; index += 1) {
+        let disposition: 'continue' | 'complete' | undefined
+        await act(async () => {
+          disposition = await result.current.onScanResult(encoder.nextPart())
+        })
+        expect(disposition, result.current.error ?? undefined).toBe(
+          index === encoder.fragmentCount - 1 ? 'complete' : 'continue',
+        )
+        expect(receive).toHaveBeenCalledTimes(index === encoder.fragmentCount - 1 ? 1 : 0)
+      }
+      expect(receive).toHaveBeenCalledWith(token, 'scan')
+      expect(result.current.currentView).toBe('success')
+      expect(result.current.scanProgress).toBeNull()
+    })
+  })
+
+  describe('bearer cancellation', () => {
+    it('requires a disclosed preview before reclaiming the exact operation', async () => {
+      const preview = {
+        operationId: 'wallet-send:test',
+        deliveryId: 'delivery:test',
+        mintUrl: 'http://localhost:8085',
+        amount: 10,
+        fee: 1,
+        returnedAmount: 9,
+        proofCount: 1,
+        partial: false,
+        fingerprint: 'ab'.repeat(32),
+      }
+      cancellationMocks.inspect.mockResolvedValueOnce(preview)
+      cancellationMocks.cancel.mockResolvedValueOnce({
+        kind: 'completed',
+        preview,
+        returnedProofs: [],
+      })
+      const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))
+      act(() => result.current.onSelectMethod('ecash'))
+      act(() => result.current.onNumpadPress('1'))
+      act(() => result.current.onNumpadPress('0'))
+      await act(async () => {
+        await result.current.onSendEcash()
+      })
+
+      await act(async () => {
+        await result.current.onInspectEcashCancellation()
+      })
+      expect(cancellationMocks.inspect).toHaveBeenCalledWith('wallet-send:test')
+      expect(result.current.ecashCancellationPreview).toEqual(preview)
+
+      await act(async () => {
+        await result.current.onConfirmEcashCancellation()
+      })
+      expect(cancellationMocks.cancel).toHaveBeenCalledWith('wallet-send:test', preview.fingerprint)
+      expect(result.current.currentView).toBe('success')
+      expect(result.current.successAmount).toBe(9)
+      expect(result.current.ecashToken).toBeNull()
+    })
+
+    it('requires reapproval when the exact proof subset or fee changes', async () => {
+      const first = {
+        operationId: 'wallet-send:test',
+        deliveryId: 'delivery:test',
+        mintUrl: 'http://localhost:8085',
+        amount: 10,
+        fee: 1,
+        returnedAmount: 9,
+        proofCount: 1,
+        partial: false,
+        fingerprint: 'ab'.repeat(32),
+      }
+      const changed = {
+        ...first,
+        amount: 8,
+        returnedAmount: 7,
+        partial: true,
+        fingerprint: 'cd'.repeat(32),
+      }
+      cancellationMocks.inspect.mockResolvedValueOnce(first)
+      cancellationMocks.cancel.mockResolvedValueOnce({
+        kind: 'changed',
+        preview: changed,
+      })
+      const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))
+      act(() => result.current.onSelectMethod('ecash'))
+      act(() => result.current.onNumpadPress('1'))
+      await act(async () => {
+        await result.current.onSendEcash()
+      })
+      await act(async () => {
+        await result.current.onInspectEcashCancellation()
+      })
+      await act(async () => {
+        await result.current.onConfirmEcashCancellation()
+      })
+
+      expect(result.current.currentView).toBe('token-display')
+      expect(result.current.ecashCancellationPreview).toEqual(changed)
+      expect(result.current.ecashToken).toBeNull()
+      expect(result.current.error).toMatch(/review the updated return amount/i)
+    })
+
+    it('hides the cached token when inspection finds a partial spend', async () => {
+      cancellationMocks.inspect.mockResolvedValueOnce({
+        operationId: 'wallet-send:test',
+        deliveryId: 'delivery:test',
+        mintUrl: 'http://localhost:8085',
+        amount: 8,
+        fee: 1,
+        returnedAmount: 7,
+        proofCount: 1,
+        partial: true,
+        fingerprint: 'cd'.repeat(32),
+      })
+      const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))
+      act(() => result.current.onSelectMethod('ecash'))
+      act(() => result.current.onNumpadPress('1'))
+      await act(async () => result.current.onSendEcash())
+      expect(result.current.ecashToken).toBe('cashuAtoken123')
+
+      await act(async () => result.current.onInspectEcashCancellation())
+
+      expect(result.current.ecashToken).toBeNull()
+    })
+
+    it('fails closed in memory when cancellation inspection is indeterminate', async () => {
+      cancellationMocks.inspect.mockRejectedValueOnce(new Error('mint unavailable'))
+      const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))
+      act(() => result.current.onSelectMethod('ecash'))
+      act(() => result.current.onNumpadPress('1'))
+      await act(async () => result.current.onSendEcash())
+
+      await act(async () => result.current.onInspectEcashCancellation())
+
+      expect(result.current.ecashToken).toBeNull()
+      expect(result.current.error).toMatch(/mint unavailable/)
     })
   })
 
@@ -661,6 +842,31 @@ describe('useDepositWithdrawState', () => {
       expect(result.current.ecashToken).toBe('cashuApending')
       expect(result.current.amountSats).toBe(21)
       expect(result.current).not.toHaveProperty('onEcashTokenSavedOrShared')
+    })
+
+    it('restores pending reclaim reapproval without redisplaying the token', async () => {
+      const preview = {
+        operationId: 'wallet-send:reapproval',
+        deliveryId: 'delivery:reapproval',
+        mintUrl: 'http://localhost:8085',
+        amount: 18,
+        fee: 1,
+        returnedAmount: 17,
+        proofCount: 2,
+        partial: true,
+        fingerprint: 'ef'.repeat(32),
+      }
+      cancellationMocks.findPendingReapproval.mockResolvedValueOnce({
+        operationId: preview.operationId,
+        preview,
+      })
+
+      const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))
+      await waitFor(() => expect(result.current.currentView).toBe('token-display'))
+
+      expect(result.current.ecashToken).toBeNull()
+      expect(result.current.ecashCancellationPreview).toEqual(preview)
+      expect(result.current.amountSats).toBe(18)
     })
 
     it('selects sat base proofs when sending ecash', async () => {

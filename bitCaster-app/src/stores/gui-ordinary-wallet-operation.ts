@@ -29,7 +29,15 @@ import {
 import { deriveDurableCustodyProofOperationFingerprints } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import type { DurableRecipientDeliveryIntent } from "@bitcaster/client-sdk/durableWalletSendDeliveryPreparation";
 import type { GuiOutgoingRecipientAdapter } from "./gui-outgoing-recipient-adapter";
-import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import {
+  amountToNumber,
+  sameCashuProofArtifact,
+} from "@bitcaster/client-sdk/proofSelection";
+import {
+  requireDurableBearerSpendReclaimChildPlan,
+  type DurableBearerSpendDeliveryRecord,
+  type DurableBearerSpendReclaimIntent,
+} from "@bitcaster/client-sdk/durableBearerSpendDelivery";
 import type { CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
 import { proofsWithOptionalConditionalMetadata } from "@/lib/conditionalKeysetMetadata";
 import { normalizeUrl } from "@/lib/url";
@@ -68,6 +76,13 @@ import {
   readGuiWalletSendDeliveryMetadata,
   type GuiWalletSendDeliveryMetadata,
 } from "./gui-wallet-send-delivery";
+import {
+  GUI_BEARER_SPEND_RECLAIM_METADATA_KEY,
+  createGuiBearerSpendReclaimBinding,
+  readGuiBearerSpendReclaimBinding,
+  sameGuiBearerSpendReclaimBinding,
+  type GuiBearerSpendReclaimBinding,
+} from "./gui-bearer-spend-reclaim-binding";
 
 export interface GuiLightningMintPlan {
   walletId: string;
@@ -193,6 +208,112 @@ export async function receiveGuiCashuToken(input: {
   requireOperationIdentity(operation, "wallet-receive", mintUrl, input.unit);
   return requireReceiveResult(
     await dispatchForegroundExactOperationGroups(walletId, operation),
+  );
+}
+
+export interface GuiBearerReclaimOperationPlan {
+  walletId: string;
+  operationId: string;
+  mintUrl: string;
+  unit: CashuProofUnit;
+  binding: GuiBearerSpendReclaimBinding;
+  record: DurableBearerSpendDeliveryRecord;
+  intent: DurableBearerSpendReclaimIntent;
+}
+
+export async function prepareGuiBearerReclaimOperation(input: {
+  expectedWalletId: string;
+  record: DurableBearerSpendDeliveryRecord;
+  intent: DurableBearerSpendReclaimIntent;
+  proofs: readonly Proof[];
+}): Promise<GuiBearerReclaimOperationPlan> {
+  const walletId = input.expectedWalletId;
+  assertCapturedWallet(walletId);
+  const binding = createGuiBearerSpendReclaimBinding(input);
+  const mintUrl = normalizeUrl(input.record.mintUrl);
+  const unit = requireUnit(input.record.unit);
+  let operation = await loadExactOperation(walletId, input.intent.operationId);
+  if (!operation) {
+    const wallet = await walletForCapturedSeed(walletId, mintUrl, unit);
+    const token = { mint: mintUrl, unit, proofs: [...input.proofs] };
+    const preview = await fencedWalletCall(walletId, () =>
+      wallet.prepareSwapToReceive(token, undefined, { type: "random" }),
+    );
+    operation = createDurableWalletReceiveOperation({
+      operationId: input.intent.operationId,
+      mintUrl,
+      unit,
+      preview,
+    });
+    requireExactGuiBearerReclaimPlan(operation, input);
+    await persistOperation(walletId, operation, null, null, {
+      [GUI_BEARER_SPEND_RECLAIM_METADATA_KEY]: binding,
+    });
+    assertCapturedWallet(walletId);
+  } else {
+    requireExactGuiBearerReclaimPlan(operation, input);
+  }
+  const record = await getProofOperationForWallet(
+    walletId,
+    input.intent.operationId,
+  );
+  if (!record) throw new Error("GUI bearer reclaim operation is missing");
+  const storedBinding = readGuiBearerSpendReclaimBinding(record);
+  if (
+    storedBinding === null ||
+    !sameGuiBearerSpendReclaimBinding(storedBinding, binding)
+  ) {
+    throw new Error("GUI bearer reclaim binding conflicts");
+  }
+  return {
+    walletId,
+    operationId: operation.operationId,
+    mintUrl,
+    unit,
+    binding,
+    record: input.record,
+    intent: input.intent,
+  };
+}
+
+export async function dispatchGuiBearerReclaimOperation(
+  plan: GuiBearerReclaimOperationPlan,
+): Promise<Proof[]> {
+  assertCapturedWallet(plan.walletId);
+  const operation = await requireExactOperation(
+    plan.walletId,
+    plan.operationId,
+  );
+  requireOperationIdentity(
+    operation,
+    "wallet-receive",
+    plan.mintUrl,
+    plan.unit,
+  );
+  requireDurableBearerSpendReclaimChildPlan({
+    record: plan.record,
+    intent: plan.intent,
+    walletOperation: operation,
+  });
+  const record = await getProofOperationForWallet(
+    plan.walletId,
+    plan.operationId,
+  );
+  if (!record) throw new Error("GUI bearer reclaim operation is missing");
+  const binding = readGuiBearerSpendReclaimBinding(record);
+  if (
+    binding === null ||
+    !sameGuiBearerSpendReclaimBinding(binding, plan.binding)
+  ) {
+    throw new Error("GUI bearer reclaim binding conflicts");
+  }
+  return requireReceiveResult(
+    await dispatchExactOperation(
+      plan.walletId,
+      operation,
+      undefined,
+      "recovery",
+    ),
   );
 }
 
@@ -400,6 +521,15 @@ export async function recoverGuiOrdinaryWalletOperation(
   );
   if (operationStep.outcome) return operationStep.outcome;
   const operation = requireRecoverableOrdinaryOperation(operationStep.value);
+  const reclaimBinding = readGuiBearerSpendReclaimBinding(record);
+  if (reclaimBinding !== null) {
+    const { requireGuiBearerReclaimTransportReady } =
+      await import("./gui-bearer-spend-cancellation");
+    await requireGuiBearerReclaimTransportReady(
+      record.walletId,
+      reclaimBinding,
+    );
+  }
   if (await recoverPendingUserExport(record, operation)) {
     return { kind: "settled" };
   }
@@ -753,6 +883,12 @@ async function completeOperation(
     groups,
     encodedWalletSendToken,
   );
+  const reclaimBinding = readGuiBearerSpendReclaimBinding(record);
+  if (reclaimBinding !== null) {
+    const { finalizeGuiBearerReclaimFromCompletedChild } =
+      await import("./gui-bearer-spend-cancellation");
+    await finalizeGuiBearerReclaimFromCompletedChild(walletId, reclaimBinding);
+  }
   assertCapturedWallet(walletId);
   return groups;
 }
@@ -969,10 +1105,11 @@ async function persistOperation(
   operation: DurableWalletOperation,
   activity: GuiDepositActivityMetadata | null,
   sendDelivery: GuiWalletSendDeliveryMetadata | null = null,
+  additionalMetadata: Record<string, unknown> | null = null,
 ): Promise<void> {
   await prepareProofOperationForWallet(
     walletId,
-    guiOperationInput(operation, activity, sendDelivery),
+    guiOperationInput(operation, activity, sendDelivery, additionalMetadata),
   );
 }
 
@@ -985,8 +1122,19 @@ async function loadExactOperation(
   const operation = decodeExactOperationRecord(record);
   const activity = readGuiDepositActivityMetadata(record);
   const sendDelivery = readGuiWalletSendDeliveryMetadata(record);
+  const reclaim = readGuiBearerSpendReclaimBinding(record);
+  const additionalMetadata =
+    reclaim === null
+      ? null
+      : { [GUI_BEARER_SPEND_RECLAIM_METADATA_KEY]: reclaim };
   try {
-    await persistOperation(walletId, operation, activity, sendDelivery);
+    await persistOperation(
+      walletId,
+      operation,
+      activity,
+      sendDelivery,
+      additionalMetadata,
+    );
   } catch (error) {
     if (error instanceof GuiCustodyMintKeysUnavailable) {
       throw retryableWalletFailure(
@@ -1008,6 +1156,7 @@ function decodeExactOperationRecord(
   );
   const activity = readGuiDepositActivityMetadata(record);
   const sendDelivery = readGuiWalletSendDeliveryMetadata(record);
+  const reclaim = readGuiBearerSpendReclaimBinding(record);
   const expectedSendDelivery =
     operation.kind === "wallet-send" && sendDelivery?.mode === "user-export"
       ? guiWalletSendDeliveryMetadata({
@@ -1023,7 +1172,14 @@ function decodeExactOperationRecord(
     operationInputFromRecord(record),
   );
   const expected = deriveDurableCustodyProofOperationFingerprints(
-    guiOperationInput(operation, activity, expectedSendDelivery),
+    guiOperationInput(
+      operation,
+      activity,
+      expectedSendDelivery,
+      reclaim === null
+        ? null
+        : { [GUI_BEARER_SPEND_RECLAIM_METADATA_KEY]: reclaim },
+    ),
   );
   if (
     operation.operationId !== record.operationId ||
@@ -1048,6 +1204,7 @@ function guiOperationInput(
   operation: DurableWalletOperation,
   activity: GuiDepositActivityMetadata | null,
   sendDelivery: GuiWalletSendDeliveryMetadata | null = null,
+  additionalMetadata: Record<string, unknown> | null = null,
 ): PrepareProofOperationInput {
   const input = normalizeGuiOperationInput(
     toDurableCustodyProofOperationInput(operation),
@@ -1066,8 +1223,49 @@ function guiOperationInput(
           [GUI_WALLET_SEND_DELIVERY_METADATA_KEY]:
             structuredClone(sendDelivery),
         }),
+    ...(additionalMetadata === null ? {} : structuredClone(additionalMetadata)),
   };
   return { ...input, metadata };
+}
+
+function requireExactReclaimInputs(
+  operation: DurableWalletOperation,
+  proofs: readonly Proof[],
+): void {
+  const runtime = rehydrateDurableWalletOperation(operation);
+  if (
+    runtime.kind !== "wallet-receive" ||
+    runtime.preview.inputs.length !== proofs.length ||
+    runtime.preview.inputs.some(
+      (proof, index) =>
+        proofs[index] === undefined ||
+        !sameCashuProofArtifact(proof, proofs[index]),
+    )
+  ) {
+    throw new Error("GUI bearer reclaim inputs conflict");
+  }
+}
+
+function requireExactGuiBearerReclaimPlan(
+  operation: DurableWalletOperation,
+  input: {
+    record: DurableBearerSpendDeliveryRecord;
+    intent: DurableBearerSpendReclaimIntent;
+    proofs: readonly Proof[];
+  },
+): void {
+  requireOperationIdentity(
+    operation,
+    "wallet-receive",
+    normalizeUrl(input.record.mintUrl),
+    requireUnit(input.record.unit),
+  );
+  requireExactReclaimInputs(operation, input.proofs);
+  requireDurableBearerSpendReclaimChildPlan({
+    record: input.record,
+    intent: input.intent,
+    walletOperation: operation,
+  });
 }
 
 function operationInputFromRecord(
@@ -1188,9 +1386,7 @@ async function requireExpectedWalletSendPolicy(
     inputProofs: operation.preview.inputs,
     policy,
     adapter:
-      policy.kind === "durable-recipient-ack"
-        ? policy.adapter
-        : undefined,
+      policy.kind === "durable-recipient-ack" ? policy.adapter : undefined,
   });
   if (
     stored === null ||

@@ -166,6 +166,28 @@ export interface DurableWalletSendExactResult {
   sendProofs: Proof[]
 }
 
+export interface DurableWalletReceiveExactResult {
+  readonly walletOperationId: string
+  readonly requestFingerprint: string
+  readonly outputPlanFingerprint: string
+  readonly resultFingerprint: string
+  readonly amount: string
+  readonly resultGroups: Record<string, Proof[]>
+  readonly receiveProofs: Proof[]
+}
+
+interface DurableWalletReceiveExactResultAuthority {
+  walletOperationId: string
+  requestFingerprint: string
+  outputPlanFingerprint: string
+  resultFingerprint: string
+}
+
+const durableWalletReceiveExactResultAuthorities = new WeakMap<
+  DurableWalletReceiveExactResult,
+  DurableWalletReceiveExactResultAuthority
+>()
+
 export interface DurableWalletExactOutputRestorePort {
   /**
    * Performs NUT-09 restore, verifies NUT-12 DLEQ proofs when present, and
@@ -580,12 +602,68 @@ export function requireExactDurableWalletSendResult(input: {
     walletOperationId: operation.operationId,
     requestFingerprint: authority.requestFingerprint,
     outputPlanFingerprint: authority.outputPlanFingerprint,
-    resultFingerprint:
-      deriveDurableCustodyProofResultFingerprint(resultGroups),
+    resultFingerprint: deriveDurableCustodyProofResultFingerprint(resultGroups),
     amount,
     resultGroups,
     sendProofs,
   }
+}
+
+/** Validates and brands a complete wallet-receive result against its exact plan. */
+export function requireExactDurableWalletReceiveResult(input: {
+  walletOperation: unknown
+  resultGroups: unknown
+}): DurableWalletReceiveExactResult {
+  const operation = decodeDurableWalletOperation(input.walletOperation)
+  if (operation.kind !== 'wallet-receive') {
+    throw new Error('exact wallet-receive result requires wallet-receive')
+  }
+  const resultGroups = normalizeExactRuntimeResultGroups(
+    operation,
+    input.resultGroups,
+  )
+  const receiveProofs = resultGroups.receive ?? []
+  const amount = receiveProofs
+    .reduce((sum, proof) => sum + Amount.from(proof.amount).toBigInt(), 0n)
+    .toString()
+  if (receiveProofs.length === 0 || amount !== operation.preview.amount) {
+    throw new Error('exact wallet-receive result amount is invalid')
+  }
+  const authority = deriveDurableWalletOperationAuthority(operation)
+  const resultFingerprint =
+    deriveDurableCustodyProofResultFingerprint(resultGroups)
+  const exact = Object.freeze({
+    walletOperationId: operation.operationId,
+    requestFingerprint: authority.requestFingerprint,
+    outputPlanFingerprint: authority.outputPlanFingerprint,
+    resultFingerprint,
+    amount,
+    resultGroups,
+    receiveProofs,
+  })
+  durableWalletReceiveExactResultAuthorities.set(exact, {
+    walletOperationId: exact.walletOperationId,
+    requestFingerprint: exact.requestFingerprint,
+    outputPlanFingerprint: exact.outputPlanFingerprint,
+    resultFingerprint: exact.resultFingerprint,
+  })
+  return exact
+}
+
+export function requireDurableWalletReceiveExactResultCapability(
+  value: DurableWalletReceiveExactResult,
+): DurableWalletReceiveExactResult {
+  const authority = durableWalletReceiveExactResultAuthorities.get(value)
+  if (
+    !authority ||
+    authority.walletOperationId !== value.walletOperationId ||
+    authority.requestFingerprint !== value.requestFingerprint ||
+    authority.outputPlanFingerprint !== value.outputPlanFingerprint ||
+    authority.resultFingerprint !== value.resultFingerprint
+  ) {
+    throw new Error('exact wallet-receive result capability is invalid')
+  }
+  return value
 }
 
 /** Canonicalizes the exact NUT-05 quote change returned by cashu-ts. */
@@ -1357,8 +1435,7 @@ function matchesQuoteAuthority(
         quote.kind === 'mint' &&
         quote.method === operation.preview.method &&
         quote.quoteId === operation.preview.payload.quote &&
-        quote.expiryUnixSeconds ===
-          operation.preview.quoteExpiryUnixSeconds &&
+        quote.expiryUnixSeconds === operation.preview.quoteExpiryUnixSeconds &&
         (quote.state === 'UNPAID' ||
           quote.state === 'PAID' ||
           quote.state === 'ISSUED')

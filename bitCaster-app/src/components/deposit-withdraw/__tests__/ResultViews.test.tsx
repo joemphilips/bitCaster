@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, it, expect, vi } from 'vitest'
 import { Amount, getEncodedTokenV4, type Proof } from '@cashu/cashu-ts'
@@ -6,6 +6,7 @@ import { InvoiceDisplay } from '../InvoiceDisplay'
 import { TokenDisplay } from '../TokenDisplay'
 import { MeltConfirmation } from '../MeltConfirmation'
 import { SuccessView } from '../SuccessView'
+import { GuiBearerSpendTokenPresentationRevoked } from '@/stores/gui-bearer-spend-presentation'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -31,14 +32,7 @@ describe('InvoiceDisplay', () => {
 
   it('shows the live countdown when expiresAtSec is in the future', () => {
     const expiresAtSec = Math.floor(Date.now() / 1000) + 5 * 60 + 32
-    render(
-      <InvoiceDisplay
-        bolt11={bolt11}
-        amountSats={1000}
-        status="pending"
-        expiresAtSec={expiresAtSec}
-      />,
-    )
+    render(<InvoiceDisplay bolt11={bolt11} amountSats={1000} status="pending" expiresAtSec={expiresAtSec} />)
     // "Awaiting payment (expires in 5m XXs)" — XXs may be 31 or 32 depending on
     // the millisecond round-down inside formatRemaining; both are correct.
     expect(screen.getByText(/Awaiting payment \(expires in 5m \d+s\)/)).toBeInTheDocument()
@@ -46,14 +40,7 @@ describe('InvoiceDisplay', () => {
 
   it('renders an onRegenerate button when status is expired', async () => {
     const onRegenerate = vi.fn()
-    render(
-      <InvoiceDisplay
-        bolt11={bolt11}
-        amountSats={1000}
-        status="expired"
-        onRegenerate={onRegenerate}
-      />,
-    )
+    render(<InvoiceDisplay bolt11={bolt11} amountSats={1000} status="expired" onRegenerate={onRegenerate} />)
     const regen = screen.getByRole('button', { name: /re-quote/i })
     await userEvent.click(regen)
     expect(onRegenerate).toHaveBeenCalledOnce()
@@ -68,9 +55,7 @@ describe('InvoiceDisplay', () => {
         errorMessage="The Lightning invoice expired before payment arrived."
       />,
     )
-    expect(
-      screen.getByText('The Lightning invoice expired before payment arrived.'),
-    ).toBeInTheDocument()
+    expect(screen.getByText('The Lightning invoice expired before payment arrived.')).toBeInTheDocument()
   })
 
   it('shows USD quote rate details', () => {
@@ -154,21 +139,34 @@ describe('TokenDisplay', () => {
     expect(writeText).toHaveBeenCalledWith(token)
   })
 
-  it('does not acknowledge display or dialog closure', async () => {
-    const onClose = vi.fn()
+  it('does not expose a token after durable presentation authority is revoked', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const onPresentationRevoked = vi.fn()
+    Object.assign(navigator, { clipboard: { writeText } })
+
     render(
       <TokenDisplay
         token={token}
         amountSats={500}
-        onClose={onClose}
+        authorizePresentation={vi.fn().mockRejectedValue(new GuiBearerSpendTokenPresentationRevoked())}
+        onPresentationRevoked={onPresentationRevoked}
       />,
     )
+    await userEvent.click(screen.getByRole('button', { name: /copy cashu token/i }))
+
+    expect(writeText).not.toHaveBeenCalled()
+    expect(onPresentationRevoked).toHaveBeenCalledOnce()
+  })
+
+  it('does not acknowledge display or dialog closure', async () => {
+    const onClose = vi.fn()
+    render(<TokenDisplay token={token} amountSats={500} onClose={onClose} />)
 
     await userEvent.click(screen.getAllByRole('button')[0])
     expect(onClose).toHaveBeenCalledOnce()
   })
 
-  it('falls back to exact-token copy when a valid fragmented token exceeds QR capacity', async () => {
+  it('animates a valid multipart token and retains exact-token copy', async () => {
     const proofs: Proof[] = Array.from({ length: 32 }, (_, index) => ({
       id: '0011223344556677',
       amount: Amount.from(1),
@@ -183,14 +181,43 @@ describe('TokenDisplay', () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
 
-    const { container } = render(
-      <TokenDisplay token={largeToken} amountSats={32} />,
-    )
+    const { container } = render(<TokenDisplay token={largeToken} amountSats={32} />)
 
-    expect(screen.getByText(/too large for a QR code/i)).toBeInTheDocument()
-    expect(container.querySelector('svg[width="256"]')).toBeNull()
+    expect(await screen.findByLabelText('Animated Cashu QR')).toBeInTheDocument()
+    await waitFor(() => expect(container.querySelector('svg[width="256"]')).not.toBeNull())
     await userEvent.click(screen.getAllByRole('button')[1])
     expect(writeText).toHaveBeenCalledWith(largeToken)
+  })
+
+  it('requires explicit confirmation and discloses the reclaim fee', async () => {
+    const onConfirmCancellation = vi.fn()
+    const onDismissCancellation = vi.fn()
+    render(
+      <TokenDisplay
+        token={token}
+        amountSats={500}
+        cancellationPreview={{
+          operationId: 'wallet-send:test',
+          deliveryId: 'delivery:test',
+          mintUrl: 'https://mint.example',
+          amount: 500,
+          fee: 2,
+          returnedAmount: 498,
+          proofCount: 2,
+          partial: true,
+          fingerprint: 'ab'.repeat(32),
+        }}
+        onConfirmCancellation={onConfirmCancellation}
+        onDismissCancellation={onDismissCancellation}
+      />,
+    )
+
+    expect(screen.getByText(/mint fee: 2 sat/i)).toBeInTheDocument()
+    expect(screen.getByText(/some proofs were already spent/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /confirm return/i }))
+    expect(onConfirmCancellation).toHaveBeenCalledOnce()
+    await userEvent.click(screen.getByRole('button', { name: /back/i }))
+    expect(onDismissCancellation).toHaveBeenCalledOnce()
   })
 })
 
@@ -198,64 +225,29 @@ describe('MeltConfirmation', () => {
   const invoice = 'lnbc10u1pjexample...'
 
   it('shows the amount breakdown', () => {
-    render(
-      <MeltConfirmation
-        amountSats={1000}
-        feeSats={10}
-        invoice={invoice}
-        isPaying={false}
-      />
-    )
+    render(<MeltConfirmation amountSats={1000} feeSats={10} invoice={invoice} isPaying={false} />)
     expect(screen.getByText('Invoice amount')).toBeInTheDocument()
     expect(screen.getByText('Network fee (estimate)')).toBeInTheDocument()
     expect(screen.getByText('Total')).toBeInTheDocument()
   })
 
   it('shows correct total (amount + fees)', () => {
-    render(
-      <MeltConfirmation
-        amountSats={1000}
-        feeSats={10}
-        invoice={invoice}
-        isPaying={false}
-      />
-    )
+    render(<MeltConfirmation amountSats={1000} feeSats={10} invoice={invoice} isPaying={false} />)
     expect(screen.getByText(/1,010/)).toBeInTheDocument()
   })
 
   it('shows PAY button when not paying', () => {
-    render(
-      <MeltConfirmation
-        amountSats={1000}
-        feeSats={10}
-        invoice={invoice}
-        isPaying={false}
-      />
-    )
+    render(<MeltConfirmation amountSats={1000} feeSats={10} invoice={invoice} isPaying={false} />)
     expect(screen.getByRole('button', { name: /pay/i })).not.toBeDisabled()
   })
 
   it('shows Paying... when isPaying is true', () => {
-    render(
-      <MeltConfirmation
-        amountSats={1000}
-        feeSats={10}
-        invoice={invoice}
-        isPaying={true}
-      />
-    )
+    render(<MeltConfirmation amountSats={1000} feeSats={10} invoice={invoice} isPaying={true} />)
     expect(screen.getByText(/paying/i)).toBeInTheDocument()
   })
 
   it('disables PAY and close buttons when isPaying', () => {
-    render(
-      <MeltConfirmation
-        amountSats={1000}
-        feeSats={10}
-        invoice={invoice}
-        isPaying={true}
-      />
-    )
+    render(<MeltConfirmation amountSats={1000} feeSats={10} invoice={invoice} isPaying={true} />)
     const buttons = screen.getAllByRole('button')
     // Close button (first) should be disabled
     expect(buttons[0]).toBeDisabled()
@@ -265,30 +257,14 @@ describe('MeltConfirmation', () => {
 
   it('calls onConfirm when PAY is clicked', async () => {
     const onConfirm = vi.fn()
-    render(
-      <MeltConfirmation
-        amountSats={1000}
-        feeSats={10}
-        invoice={invoice}
-        isPaying={false}
-        onConfirm={onConfirm}
-      />
-    )
+    render(<MeltConfirmation amountSats={1000} feeSats={10} invoice={invoice} isPaying={false} onConfirm={onConfirm} />)
     await userEvent.click(screen.getByRole('button', { name: /pay/i }))
     expect(onConfirm).toHaveBeenCalledOnce()
   })
 
   it('calls onClose when X is clicked', async () => {
     const onClose = vi.fn()
-    render(
-      <MeltConfirmation
-        amountSats={1000}
-        feeSats={10}
-        invoice={invoice}
-        isPaying={false}
-        onClose={onClose}
-      />
-    )
+    render(<MeltConfirmation amountSats={1000} feeSats={10} invoice={invoice} isPaying={false} onClose={onClose} />)
     const buttons = screen.getAllByRole('button')
     await userEvent.click(buttons[0])
     expect(onClose).toHaveBeenCalledOnce()
@@ -303,7 +279,9 @@ describe('SuccessView', () => {
     render(<SuccessView amountSats={1000} onClose={onClose} />)
 
     expect(screen.getByRole('progressbar', { name: 'Auto-advance countdown' })).toBeInTheDocument()
-    expect(screen.getByTestId('auto-advance-progress')).toHaveStyle({ width: '100%' })
+    expect(screen.getByTestId('auto-advance-progress')).toHaveStyle({
+      width: '100%',
+    })
 
     act(() => {
       vi.advanceTimersByTime(1500)

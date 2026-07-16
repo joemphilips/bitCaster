@@ -156,6 +156,10 @@
       "types": "./dist/durableBearerSpendDelivery.d.ts",
       "import": "./dist/durableBearerSpendDelivery.js"
     },
+    "./cashuNut16": {
+      "types": "./dist/cashuNut16.d.ts",
+      "import": "./dist/cashuNut16.js"
+    },
     "./durableOrderCollateral": {
       "types": "./dist/durableOrderCollateral.d.ts",
       "import": "./dist/durableOrderCollateral.js"
@@ -229,6 +233,7 @@
     "@cashu/cashu-ts": "file:../cashu-ts",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
+    "@qrkit/bc-ur-web": "2.0.1",
     "cborg": "5.1.7"
   },
   "devDependencies": {

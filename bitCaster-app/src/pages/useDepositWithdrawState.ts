@@ -19,7 +19,15 @@ import {
   type IngressReceiveCashuTokenResult,
 } from '@/lib/walletOps'
 import { useToastStore } from '@/stores/toast'
-import { currentGuiWalletId, getUnitProofs, getProofs, addProofs, removeProofs, isCtfProof, type StoredProof } from '@/stores/proof-db'
+import {
+  currentGuiWalletId,
+  getUnitProofs,
+  getProofs,
+  addProofs,
+  removeProofs,
+  isCtfProof,
+  type StoredProof,
+} from '@/stores/proof-db'
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 import { safeHostname } from '@/lib/url'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
@@ -40,6 +48,13 @@ import {
   prepareGuiLightningMint,
   type GuiLightningMintPlan,
 } from '@/stores/gui-ordinary-wallet-operation'
+import {
+  findPendingGuiBearerSpendReapproval,
+  type GuiBearerSpendCancellationPreview,
+} from '@/stores/gui-bearer-spend-cancellation'
+import { useBearerSpendCancellation } from './useBearerSpendCancellation'
+import { useBearerSpendPresentation } from './useBearerSpendPresentation'
+import { useCashuQrScanner } from './useCashuQrScanner'
 
 export type ExtendedView =
   | DepositWithdrawView
@@ -88,12 +103,15 @@ export interface DepositWithdrawState {
   invoiceExpiresAtSec: number | undefined
   invoiceRateInfo: MintQuoteRateInfo | null
   ecashToken: string | null
+  ecashCancellationPreview: GuiBearerSpendCancellationPreview | null
+  ecashCancellationPending: boolean
   meltQuote: MeltQuoteResponse | null
   meltIsPaying: boolean
 
   // Payment request state
   paymentRequestEncoded: string | null
   paymentRequestStatus: 'waiting' | 'received'
+  scanProgress: string | null
 
   // Success state
   successAmount: number
@@ -117,9 +135,14 @@ export interface DepositWithdrawState {
   onScan: () => void
   onRequest: () => void
   onScanQR: () => void
-  onScanResult: (data: string) => void
+  onScanResult: (data: string) => Promise<'continue' | 'complete'>
   onLightningInputChange: (value: string) => void
   onConfirmMelt: () => void
+  onInspectEcashCancellation: () => void
+  onConfirmEcashCancellation: () => void
+  onDismissEcashCancellation: () => void
+  onAuthorizeEcashPresentation: (present: (token: string) => Promise<void>) => Promise<void>
+  onEcashPresentationRevoked: () => void
   onBack: () => void
   onClose: () => void
 }
@@ -199,8 +222,19 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
   const [invoiceExpiresAtSec, setInvoiceExpiresAtSec] = useState<number | undefined>()
   const [invoiceRateInfo, setInvoiceRateInfo] = useState<MintQuoteRateInfo | null>(null)
   const [ecashToken, setEcashToken] = useState<string | null>(null)
+  const [ecashOperationId, setEcashOperationId] = useState<string | null>(null)
   const [meltQuote, setMeltQuote] = useState<MeltQuoteResponse | null>(null)
   const [meltIsPaying, setMeltIsPaying] = useState(false)
+  const revokeEcashPresentation = useCallback(() => {
+    setEcashToken(null)
+    setCurrentView('chooser')
+  }, [])
+  const ecashPresentation = useBearerSpendPresentation({
+    token: ecashToken,
+    operationId: ecashOperationId,
+    walletAvailable: Boolean(mnemonic),
+    revoke: revokeEcashPresentation,
+  })
 
   // Payment request state
   const [paymentRequestEncoded, setPaymentRequestEncoded] = useState<string | null>(null)
@@ -209,6 +243,24 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
   // Success state
   const [successAmount, setSuccessAmount] = useState(0)
   const [successUnit, setSuccessUnit] = useState<MarketBaseAsset>('sat')
+  const {
+    preview: ecashCancellationPreview,
+    pending: ecashCancellationPending,
+    inspect: onInspectEcashCancellation,
+    confirm: onConfirmEcashCancellation,
+    dismiss: onDismissEcashCancellation,
+    restorePreview: restoreEcashCancellationPreview,
+  } = useBearerSpendCancellation({
+    operationId: ecashOperationId,
+    clearOperation: () => setEcashOperationId(null),
+    hideToken: () => setEcashToken(null),
+    reportError: setError,
+    complete: (returnedAmount) => {
+      setSuccessAmount(returnedAmount)
+      setSuccessUnit('sat')
+      setCurrentView('success')
+    },
+  })
 
   // Track which view opened the scanner so we can process results correctly
   const scanReturnViewRef = useRef<ExtendedView>('deposit-ecash')
@@ -255,13 +307,15 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
   useEffect(() => {
     if (mode !== 'withdraw' || !mnemonic || currentView !== 'chooser') return
     let cancelled = false
-    void getPendingRegularSatsToken()
-      .then((delivery) => {
-        if (cancelled || !delivery) return
-        setSelectedMintId(delivery.mintUrl)
+    void loadPendingBearerUi()
+      .then((pending) => {
+        if (cancelled || !pending) return
+        setSelectedMintId(pending.mintUrl)
         setSelectedUnit('sat')
-        setAmountString(String(delivery.amountSats))
-        setEcashToken(delivery.token)
+        setAmountString(String(pending.amountSats))
+        setEcashToken(pending.token)
+        setEcashOperationId(pending.operationId)
+        restoreEcashCancellationPreview(pending.cancellationPreview)
         setCurrentView('token-display')
       })
       .catch((reason) => {
@@ -270,7 +324,7 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
     return () => {
       cancelled = true
     }
-  }, [currentView, mnemonic, mode])
+  }, [currentView, mnemonic, mode, restoreEcashCancellationPreview])
 
   useEffect(() => {
     const units = unitsForMint(selectedMintId)
@@ -346,12 +400,7 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
   }, [])
 
   const handlePaidInvoice = useCallback(
-    async (
-      plan: GuiLightningMintPlan,
-      mintUrl: string,
-      requested: number,
-      baseAsset: MarketBaseAsset,
-    ) => {
+    async (plan: GuiLightningMintPlan, mintUrl: string, requested: number, baseAsset: MarketBaseAsset) => {
       try {
         const proofs = await completeGuiLightningMint(plan)
         await diagnoseProofStates({
@@ -502,6 +551,7 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
     setError(null)
     try {
       const delivery = await spendRegularSatsAsToken(amountSats, selectedMintId)
+      setEcashOperationId(delivery.operationId)
       setEcashToken(delivery.token)
       setCurrentView('token-display')
     } catch (e) {
@@ -576,34 +626,43 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
     }
   }, [meltQuote, selectedMintId])
 
+  const receiveScannedCashuToken = useCallback(async (token: string) => {
+    setIsLoading(true)
+    try {
+      const received = await ingressReceiveCashuToken(token, 'scan')
+      toastNewMintIfAdded(received)
+      const receivedUnit = requireCashuProofUnit(received.unit)
+      const receivedBaseAsset = normalizeMarketBaseAsset(receivedUnit)
+      setSuccessAmount(received.amountSats)
+      setSuccessUnit(receivedBaseAsset)
+      setCurrentView('success')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
+  const { scanProgress, resetCashuScanner, scanCashuPayload } = useCashuQrScanner({
+    receiveToken: receiveScannedCashuToken,
+    reportError: setError,
+  })
+
   const onScan = useCallback(() => {
     scanReturnViewRef.current = currentView
+    resetCashuScanner()
     setCurrentView('scanner')
-  }, [currentView])
+  }, [currentView, resetCashuScanner])
 
   const onScanResult = useCallback(
-    async (data: string) => {
+    async (data: string): Promise<'continue' | 'complete'> => {
       setError(null)
       const trimmed = data.trim()
-
-      // Detect cashu token
-      if (trimmed.toLowerCase().startsWith('cashu')) {
-        setIsLoading(true)
-        try {
-          const received = await ingressReceiveCashuToken(trimmed, 'scan')
-          toastNewMintIfAdded(received)
-          const receivedUnit = requireCashuProofUnit(received.unit)
-          const receivedBaseAsset = normalizeMarketBaseAsset(receivedUnit)
-          setSuccessAmount(received.amountSats)
-          setSuccessUnit(receivedBaseAsset)
-          setCurrentView('success')
-        } catch (e) {
-          setError((e as Error).message)
+      const cashuResult = await scanCashuPayload(trimmed)
+      if (cashuResult !== 'not-cashu') {
+        if (cashuResult === 'cashu-error') {
           setCurrentView(scanReturnViewRef.current)
-        } finally {
-          setIsLoading(false)
+          return 'complete'
         }
-        return
+        return cashuResult
       }
 
       // Detect bolt11 invoice
@@ -620,7 +679,7 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
         } finally {
           setIsLoading(false)
         }
-        return
+        return 'complete'
       }
 
       // Detect payment request
@@ -628,14 +687,15 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
         // TODO: handle paying a scanned payment request
         setError('Paying payment requests from scan is not yet supported')
         setCurrentView(scanReturnViewRef.current)
-        return
+        return 'complete'
       }
 
       // Unknown format
       setError('Unrecognized QR code format')
       setCurrentView(scanReturnViewRef.current)
+      return 'complete'
     },
-    [selectedMintId],
+    [scanCashuPayload, selectedMintId],
   )
 
   const onRequest = useCallback(async () => {
@@ -658,6 +718,7 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
 
   const onBack = useCallback(() => {
     if (currentView === 'scanner') {
+      resetCashuScanner()
       setCurrentView(scanReturnViewRef.current)
     } else if (currentView === 'payment-request-display') {
       setPendingRequestId(null)
@@ -666,13 +727,14 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
       setCurrentView('chooser')
     }
     setError(null)
-  }, [currentView])
+  }, [currentView, resetCashuScanner])
 
   const onClose = useCallback(() => {
     unsubRef.current?.()
+    resetCashuScanner()
     setPendingRequestId(null)
     onDismiss()
-  }, [onDismiss])
+  }, [onDismiss, resetCashuScanner])
 
   return {
     mode,
@@ -693,11 +755,14 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
     invoiceStatus,
     invoiceExpiresAtSec,
     invoiceRateInfo,
-    ecashToken,
+    ecashToken: ecashPresentation.token,
+    ecashCancellationPreview,
+    ecashCancellationPending,
     meltQuote,
     meltIsPaying,
     paymentRequestEncoded,
     paymentRequestStatus,
+    scanProgress,
     successAmount,
     successUnit,
     onSelectMethod,
@@ -715,6 +780,11 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
     onScanResult,
     onLightningInputChange,
     onConfirmMelt,
+    onInspectEcashCancellation,
+    onConfirmEcashCancellation,
+    onDismissEcashCancellation,
+    onAuthorizeEcashPresentation: ecashPresentation.authorize,
+    onEcashPresentationRevoked: revokeEcashPresentation,
     onBack,
     onClose,
   }
@@ -724,4 +794,29 @@ function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit
   const unit = parseCashuProofUnit(value)
   if (!unit) throw new Error(`Unsupported Cashu proof unit '${value ?? ''}'`)
   return unit
+}
+
+async function loadPendingBearerUi(): Promise<{
+  operationId: string
+  amountSats: number
+  mintUrl: string
+  token: string | null
+  cancellationPreview: GuiBearerSpendCancellationPreview | null
+} | null> {
+  const delivery = await getPendingRegularSatsToken()
+  if (delivery) {
+    return {
+      ...delivery,
+      cancellationPreview: null,
+    }
+  }
+  const reapproval = await findPendingGuiBearerSpendReapproval()
+  if (!reapproval) return null
+  return {
+    operationId: reapproval.operationId,
+    amountSats: reapproval.preview.amount,
+    mintUrl: reapproval.preview.mintUrl,
+    token: null,
+    cancellationPreview: reapproval.preview,
+  }
 }

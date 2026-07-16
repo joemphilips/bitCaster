@@ -29,6 +29,7 @@ import {
   type GuiWalletSendDeliveryPayloadRow,
 } from "./gui-wallet-send-delivery";
 import { requireGuiWalletSendBearerAuthority } from "./gui-wallet-proof-operation-custody";
+import { readGuiBearerSpendReclaimBinding } from "./gui-bearer-spend-reclaim-binding";
 import { tryWithGuiWalletBearerRecoveryLock } from "./gui-wallet-lock";
 import {
   currentGuiWalletId,
@@ -161,6 +162,22 @@ export function requestGuiBearerSpendRecovery(): Promise<GuiBearerSpendRecoveryS
   return recovery;
 }
 
+export async function reconcileGuiBearerSpendDeliveryNow(
+  walletId: string,
+  operationId: string,
+): Promise<DurableBearerSpendDeliveryRecord> {
+  await ensureDurableSwapStorage(walletId);
+  const attempt = await tryWithGuiWalletBearerRecoveryLock(
+    walletId,
+    currentGuiWalletId,
+    () => reconcileTargetBearerSpend(walletId, operationId),
+  );
+  if (!attempt.acquired) {
+    throw new Error("GUI bearer reconciliation is already running");
+  }
+  return attempt.value;
+}
+
 export function __resetGuiBearerSpendRecoveryForTests(): void {
   clearRecoveryWake();
   activeRecoveryByWallet.clear();
@@ -207,13 +224,37 @@ async function recoverOwnedBearerSpends(
   walletId: string,
 ): Promise<GuiBearerSpendRecoveryCycle> {
   const page = await readDueBearerPage(walletId, Date.now());
-  const reconciled = await reconcileBearerSnapshots(walletId, page.snapshots);
-  let blocked = page.blocked;
+  const healed = await finalizeCompletedBearerReclaims(
+    walletId,
+    page.snapshots,
+  );
+  const reconciled = await reconcileBearerSnapshots(walletId, healed.remaining);
+  let blocked = page.blocked || healed.blocked;
   for (const item of reconciled) {
     try {
       await commitBearerReconciliation(item.snapshot, item.next);
     } catch (error) {
       if (!(error instanceof GuiBearerSpendAuthorityChanged)) blocked = true;
+    }
+  }
+  const preparedReclaim = reconciled.find(
+    ({ next }) =>
+      next.reclaim.kind === "prepared" &&
+      next.state.kind === "pending" &&
+      (next.state.classification === "all-unspent" ||
+        next.state.classification === "mixed"),
+  );
+  if (preparedReclaim) {
+    try {
+      const { resumeGuiBearerSpendCancellation } =
+        await import("./gui-bearer-spend-cancellation");
+      await resumeGuiBearerSpendCancellation(
+        walletId,
+        preparedReclaim.snapshot.operation.operationId,
+        preparedReclaim.next,
+      );
+    } catch {
+      blocked = true;
     }
   }
   const nextAttemptAtMs = await readNextBearerAttempt(
@@ -229,6 +270,104 @@ async function recoverOwnedBearerSpends(
   return nextAttemptAtMs === null
     ? clearCycle()
     : pendingCycle(nextAttemptAtMs);
+}
+
+async function finalizeCompletedBearerReclaims(
+  walletId: string,
+  snapshots: GuiBearerSpendSnapshot[],
+): Promise<{ remaining: GuiBearerSpendSnapshot[]; blocked: boolean }> {
+  const remaining: GuiBearerSpendSnapshot[] = [];
+  let blocked = false;
+  for (const snapshot of snapshots) {
+    const reclaim = snapshot.row.record.reclaim;
+    if (reclaim.kind === "none") {
+      remaining.push(snapshot);
+      continue;
+    }
+    const childValue = await db.proofOperations.get(
+      proofOperationPrimaryKey(walletId, reclaim.operationId),
+    );
+    if (!childValue) {
+      remaining.push(snapshot);
+      continue;
+    }
+    let child: ProofOperationRecord;
+    try {
+      child = requireProofOperationRecord(
+        childValue,
+        walletId,
+        reclaim.operationId,
+      );
+    } catch {
+      blocked = true;
+      continue;
+    }
+    if (child.state !== "completed") {
+      remaining.push(snapshot);
+      continue;
+    }
+    const binding = readGuiBearerSpendReclaimBinding(child);
+    if (binding === null) {
+      blocked = true;
+      continue;
+    }
+    try {
+      const { finalizeGuiBearerReclaimFromCompletedChild } =
+        await import("./gui-bearer-spend-cancellation");
+      await finalizeGuiBearerReclaimFromCompletedChild(walletId, binding);
+    } catch {
+      blocked = true;
+    }
+  }
+  return { remaining, blocked };
+}
+
+async function reconcileTargetBearerSpend(
+  walletId: string,
+  operationId: string,
+): Promise<DurableBearerSpendDeliveryRecord> {
+  const rawOperation = await db.proofOperations.get(
+    proofOperationPrimaryKey(walletId, operationId),
+  );
+  const operation = requireProofOperationRecord(
+    rawOperation,
+    walletId,
+    operationId,
+  );
+  const deliveryId = `delivery:${operation.custodyOperationId}:wallet-send`;
+  const rawRow = await db.bearerSpendDeliveries.get([walletId, deliveryId]);
+  const row = requireGuiBearerSpendDeliveryRow(
+    rawRow,
+    walletId,
+    deliveryId,
+    operation.custodyOperationId,
+  );
+  const lookup: BearerLookup = {
+    walletId,
+    deliveryId,
+    operationId,
+    parentOperationId: operation.custodyOperationId,
+    cursor: [
+      walletId,
+      1,
+      row.nextAttemptAtMs ?? Number.MAX_SAFE_INTEGER,
+      deliveryId,
+    ],
+  };
+  const raw = await readRawBearerSnapshotByLookup(lookup);
+  const snapshot = validateRawBearerSnapshot(raw, walletId);
+  const batch = createMintBatch(row.record.mintUrl, row.record.unit);
+  const proofs = activeProofReferences(row.record);
+  batch.items.push({ snapshot, proofs });
+  batch.proofCount = proofs.length;
+  const evidence = await readMintBatchEvidence(walletId, batch);
+  const next = await reconcileDurableBearerSpendDelivery({
+    record: row.record,
+    checker: checkerForEvidence(evidence, proofs, 0),
+    observedAtMs: monotonicObservationTime(row.record),
+  });
+  await commitBearerReconciliation(snapshot, next);
+  return next;
 }
 
 async function readDueBearerPage(

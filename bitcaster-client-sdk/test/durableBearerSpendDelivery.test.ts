@@ -3,7 +3,9 @@ import test from "node:test";
 import { bls12_381 } from "@noble/curves/bls12-381.js";
 import { bytesToHex } from "@noble/curves/utils.js";
 import {
+  Amount,
   CheckStateEnum,
+  OutputData,
   getEncodedTokenV4,
   hashToCurve,
   hashToCurveBls,
@@ -12,15 +14,20 @@ import {
   type ProofState,
 } from "@cashu/cashu-ts";
 import {
+  completeDurableBearerSpendReclaim,
   createDurableBearerSpendDeliveryRecord,
   decodeDurableBearerSpendDeliveryRecord,
+  issueDurableBearerSpendReclaimCompletionCapability,
   isDurableBearerSpendTokenPresentable,
+  planDurableBearerSpendReclaimIntent,
   reconcileDurableBearerSpendDelivery,
   reduceDurableBearerSpendReclaimLineage,
+  requireDurableBearerSpendReclaimChildPlan,
   requireDurableBearerSpendOriginalProofLineage,
   selectDurableBearerSpendUnspentProofs,
   type DurableBearerSpendDeliveryRecord,
 } from "../src/durableBearerSpendDelivery.ts";
+import { createDurableWalletReceiveOperation } from "../src/durableWalletOperation.ts";
 import { sameCashuProofArtifact } from "../src/proofSelection.ts";
 import * as BearerDeliveryModule from "../src/durableBearerSpendDelivery.ts";
 
@@ -111,7 +118,10 @@ async function reconcileWithStates(
 }
 
 test("bearer policy record binds the exact token and rejects foreign persisted shape", () => {
-  assert.equal("reduceDurableBearerSpendDelivery" in BearerDeliveryModule, false);
+  assert.equal(
+    "reduceDurableBearerSpendDelivery" in BearerDeliveryModule,
+    false,
+  );
   assert.equal(
     "authorizeDurableBearerSpendCustodyHandoff" in BearerDeliveryModule,
     false,
@@ -389,11 +399,15 @@ test("persisted and runtime clocks cannot regress", async () => {
     2_000,
   );
   await assert.rejects(
-    reconcileWithStates(observed, states(
-      CheckStateEnum.UNSPENT,
-      CheckStateEnum.UNSPENT,
-      CheckStateEnum.UNSPENT,
-    ), 1_999),
+    reconcileWithStates(
+      observed,
+      states(
+        CheckStateEnum.UNSPENT,
+        CheckStateEnum.UNSPENT,
+        CheckStateEnum.UNSPENT,
+      ),
+      1_999,
+    ),
     /observation time is invalid/,
   );
   assert.throws(
@@ -434,11 +448,7 @@ test("persisted pending lifecycle accepts only reducer-reachable states", async 
   );
   const consumed = await reconcileWithStates(
     record,
-    states(
-      CheckStateEnum.SPENT,
-      CheckStateEnum.SPENT,
-      CheckStateEnum.SPENT,
-    ),
+    states(CheckStateEnum.SPENT, CheckStateEnum.SPENT, CheckStateEnum.SPENT),
   );
   assert.throws(
     () =>
@@ -479,6 +489,7 @@ test("persisted pending lifecycle accepts only reducer-reachable states", async 
           operationId: "reclaim-unobserved",
           parentDeliveryId: record.deliveryId,
           requestFingerprint: "ab".repeat(32),
+          approvedReturnAmount: "7",
         },
       }),
     /delivery record is invalid/,
@@ -488,11 +499,7 @@ test("persisted pending lifecycle accepts only reducer-reachable states", async 
 test("mixed spent and unspent hides the full token and retains only exact unspent authority", async () => {
   const next = await reconcileWithStates(
     createRecord(),
-    states(
-      CheckStateEnum.SPENT,
-      CheckStateEnum.UNSPENT,
-      CheckStateEnum.SPENT,
-    ),
+    states(CheckStateEnum.SPENT, CheckStateEnum.UNSPENT, CheckStateEnum.SPENT),
   );
   assert.equal(next.state.kind, "pending");
   if (next.state.kind !== "pending") return;
@@ -541,19 +548,31 @@ test("all-spent actor comes only from persisted linked reclaim lineage", async (
     ),
   );
 
-  const restored = await reconcileWithStates(createRecord("restored"), allSpent);
+  const restored = await reconcileWithStates(
+    createRecord("restored"),
+    allSpent,
+  );
   assert.equal(restored.state.kind, "consumed");
   if (restored.state.kind === "consumed") {
     assert.equal(restored.state.actor, "unknown");
   }
 
+  const senderIntent = planDurableBearerSpendReclaimIntent(
+    await reconcileWithStates(
+      createRecord(),
+      states(
+        CheckStateEnum.UNSPENT,
+        CheckStateEnum.UNSPENT,
+        CheckStateEnum.UNSPENT,
+      ),
+    ),
+  );
   const sender = decodeDurableBearerSpendDeliveryRecord({
     ...recipient,
     reclaim: {
       kind: "completed",
-      operationId: "reclaim-001",
       parentDeliveryId: "delivery-001",
-      requestFingerprint: "ab".repeat(32),
+      ...senderIntent,
     },
     state: {
       ...recipient.state,
@@ -581,10 +600,14 @@ test("all-spent actor comes only from persisted linked reclaim lineage", async (
       CheckStateEnum.UNSPENT,
     ),
   );
+  const intent = planDurableBearerSpendReclaimIntent(cancellable, {
+    requestFingerprint: "ab".repeat(32),
+    approvedFee: "0",
+    approvedReturnAmount: "7",
+  });
   const prepared = reduceDurableBearerSpendReclaimLineage(cancellable, {
     kind: "prepared",
-    operationId: "reclaim-001",
-    requestFingerprint: "ab".repeat(32),
+    ...intent,
   });
   const rechecked = await reconcileWithStates(
     prepared,
@@ -597,8 +620,7 @@ test("all-spent actor comes only from persisted linked reclaim lineage", async (
   );
   const submittedReclaim = reduceDurableBearerSpendReclaimLineage(rechecked, {
     kind: "submitted",
-    operationId: "reclaim-001",
-    requestFingerprint: "ab".repeat(32),
+    ...intent,
   });
   const raced = await reconcileWithStates(submittedReclaim, allSpent, 3_000);
   assert.equal(raced.state.kind, "consumed");
@@ -616,10 +638,11 @@ test("reclaim lineage freezes recipient completion and hides cancellation", asyn
       CheckStateEnum.UNSPENT,
     ),
   );
-  const transition = {
-    operationId: "reclaim-001",
+  const transition = planDurableBearerSpendReclaimIntent(cancellable, {
     requestFingerprint: "ab".repeat(32),
-  };
+    approvedFee: "0",
+    approvedReturnAmount: "7",
+  });
   const prepared = reduceDurableBearerSpendReclaimLineage(cancellable, {
     kind: "prepared",
     ...transition,
@@ -636,9 +659,8 @@ test("reclaim lineage freezes recipient completion and hides cancellation", asyn
         ...cancellable,
         reclaim: {
           kind: "completed",
-          operationId: transition.operationId,
           parentDeliveryId: cancellable.deliveryId,
-          requestFingerprint: transition.requestFingerprint,
+          ...transition,
         },
       }),
     /delivery record is invalid/,
@@ -673,11 +695,7 @@ test("reclaim lineage freezes recipient completion and hides cancellation", asyn
   );
   const raced = await reconcileWithStates(
     submitted,
-    states(
-      CheckStateEnum.SPENT,
-      CheckStateEnum.SPENT,
-      CheckStateEnum.SPENT,
-    ),
+    states(CheckStateEnum.SPENT, CheckStateEnum.SPENT, CheckStateEnum.SPENT),
     4_000,
   );
   assert.equal(raced.state.kind, "consumed");
@@ -693,11 +711,7 @@ test("reclaim lineage freezes recipient completion and hides cancellation", asyn
 
   const recipientAfterIntent = await reconcileWithStates(
     prepared,
-    states(
-      CheckStateEnum.SPENT,
-      CheckStateEnum.SPENT,
-      CheckStateEnum.SPENT,
-    ),
+    states(CheckStateEnum.SPENT, CheckStateEnum.SPENT, CheckStateEnum.SPENT),
     3_000,
   );
   assert.equal(recipientAfterIntent.state.kind, "consumed");
@@ -713,3 +727,307 @@ test("reclaim lineage freezes recipient completion and hides cancellation", asyn
     /reclaim transition is invalid/,
   );
 });
+
+test("reclaim intent is deterministic and exact child completion is terminal", async () => {
+  const cancellable = await reconcileWithStates(
+    createRecord(),
+    states(
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+    ),
+  );
+  const intent = planDurableBearerSpendReclaimIntent(cancellable);
+  assert.deepEqual(planDurableBearerSpendReclaimIntent(cancellable), intent);
+  const prepared = reduceDurableBearerSpendReclaimLineage(cancellable, {
+    kind: "prepared",
+    ...intent,
+  });
+  assert.throws(
+    () =>
+      completeDurableBearerSpendReclaim({
+        record: prepared,
+        capability: {
+          operationId: intent.operationId,
+          requestFingerprint: intent.requestFingerprint,
+          approvedReturnAmount: intent.approvedReturnAmount,
+          childResultFingerprint: "ab".repeat(32),
+        },
+        completedAtMs: 4_000,
+      }),
+    /capability is invalid/,
+  );
+  const rechecked = await reconcileWithStates(
+    prepared,
+    states(
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+    ),
+    2_500,
+  );
+  const submitted = reduceDurableBearerSpendReclaimLineage(rechecked, {
+    kind: "submitted",
+    ...intent,
+  });
+  const capability = reclaimCompletionCapability(submitted, intent);
+  const completed = completeDurableBearerSpendReclaim({
+    record: submitted,
+    capability,
+    completedAtMs: 4_000,
+  });
+  assert.equal(completed.reclaim.kind, "completed");
+  assert.equal(completed.state.kind, "consumed");
+  if (completed.state.kind === "consumed") {
+    assert.equal(completed.state.actor, "sender-reclaim");
+  }
+  assert.equal(isDurableBearerSpendTokenPresentable(completed), false);
+  assert.deepEqual(
+    completeDurableBearerSpendReclaim({
+      record: completed,
+      capability,
+      completedAtMs: 5_000,
+    }),
+    completed,
+  );
+});
+
+test("reclaim child plan rejects an omitted approved input proof", async () => {
+  const record = await reconcileWithStates(
+    createRecord(),
+    states(
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+    ),
+  );
+  const intent = planDurableBearerSpendReclaimIntent(record);
+  const output = new OutputData(
+    {
+      amount: Amount.from(intent.approvedReturnAmount),
+      id: PROOFS[0]!.id,
+      B_: VALID_SECP_POINT,
+    },
+    2n,
+    new TextEncoder().encode("45".repeat(32)),
+    VALID_SECP_POINT,
+  );
+  const operation = createDurableWalletReceiveOperation({
+    operationId: intent.operationId,
+    mintUrl: record.mintUrl,
+    unit: record.unit,
+    preview: {
+      amount: Amount.from(intent.approvedReturnAmount),
+      fees: Amount.from(intent.approvedFee),
+      keysetId: PROOFS[0]!.id,
+      inputs: PROOFS.slice(0, 2),
+      keepOutputs: [output],
+    },
+  });
+
+  assert.throws(
+    () =>
+      requireDurableBearerSpendReclaimChildPlan({
+        record,
+        intent,
+        walletOperation: operation,
+      }),
+    /child plan is invalid/,
+  );
+});
+
+test("reclaim rejects inputs from a foreign bearer parent", async () => {
+  const parent = await reconcileWithStates(
+    createRecord(),
+    states(
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+    ),
+  );
+  const foreignProofs = PROOFS.map((proof, index) => ({
+    ...proof,
+    secret: `${index + 21}`.repeat(32),
+  }));
+  const foreignRecord = await reconcileDurableBearerSpendDelivery({
+    record: createRecordForProofs(foreignProofs),
+    observedAtMs: 2_000,
+    checker: {
+      async checkProofsStates() {
+        return foreignProofs.map((proof) =>
+          stateFor(proof, CheckStateEnum.UNSPENT),
+        );
+      },
+    },
+  });
+  const foreignIntent = planDurableBearerSpendReclaimIntent(foreignRecord);
+  assert.throws(
+    () =>
+      reduceDurableBearerSpendReclaimLineage(parent, {
+        kind: "prepared",
+        ...foreignIntent,
+      }),
+    /reclaim transition is invalid/,
+  );
+  const output = new OutputData(
+    {
+      amount: Amount.from(foreignIntent.approvedReturnAmount),
+      id: foreignProofs[0]!.id,
+      B_: VALID_SECP_POINT,
+    },
+    2n,
+    new TextEncoder().encode("46".repeat(32)),
+    VALID_SECP_POINT,
+  );
+  const operation = createDurableWalletReceiveOperation({
+    operationId: foreignIntent.operationId,
+    mintUrl: parent.mintUrl,
+    unit: parent.unit,
+    preview: {
+      amount: Amount.from(foreignIntent.approvedReturnAmount),
+      fees: Amount.from(foreignIntent.approvedFee),
+      keysetId: foreignProofs[0]!.id,
+      inputs: foreignProofs,
+      keepOutputs: [output],
+    },
+  });
+
+  assert.throws(
+    () =>
+      requireDurableBearerSpendReclaimChildPlan({
+        record: parent,
+        intent: foreignIntent,
+        walletOperation: operation,
+      }),
+    /child plan is invalid/,
+  );
+});
+
+test("persisted reclaim lineage rejects an inconsistent fee equation", async () => {
+  const cancellable = await reconcileWithStates(
+    createRecord(),
+    states(
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+    ),
+  );
+  const intent = planDurableBearerSpendReclaimIntent(cancellable);
+  const prepared = reduceDurableBearerSpendReclaimLineage(cancellable, {
+    kind: "prepared",
+    ...intent,
+  });
+
+  assert.throws(
+    () =>
+      decodeDurableBearerSpendDeliveryRecord({
+        ...prepared,
+        reclaim: {
+          ...prepared.reclaim,
+          approvedFee: "1",
+        },
+      }),
+    /reclaim approved amounts are invalid/,
+  );
+});
+
+test("completed child may resolve unknown disposition but cannot replace recipient authority", async () => {
+  const cancellable = await reconcileWithStates(
+    createRecord(),
+    states(
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+      CheckStateEnum.UNSPENT,
+    ),
+  );
+  const intent = planDurableBearerSpendReclaimIntent(cancellable);
+  const prepared = reduceDurableBearerSpendReclaimLineage(cancellable, {
+    kind: "prepared",
+    ...intent,
+  });
+  const submitted = reduceDurableBearerSpendReclaimLineage(
+    await reconcileWithStates(
+      prepared,
+      states(
+        CheckStateEnum.UNSPENT,
+        CheckStateEnum.UNSPENT,
+        CheckStateEnum.UNSPENT,
+      ),
+      2_500,
+    ),
+    { kind: "submitted", ...intent },
+  );
+  const unknown = await reconcileWithStates(
+    submitted,
+    states(CheckStateEnum.SPENT, CheckStateEnum.SPENT, CheckStateEnum.SPENT),
+    3_000,
+  );
+  const capability = reclaimCompletionCapability(unknown, intent);
+  const sender = completeDurableBearerSpendReclaim({
+    record: unknown,
+    capability,
+    completedAtMs: 4_000,
+  });
+  assert.equal(sender.state.kind, "consumed");
+  if (sender.state.kind === "consumed") {
+    assert.equal(sender.state.actor, "sender-reclaim");
+  }
+
+  const recipient = await reconcileWithStates(
+    prepared,
+    states(CheckStateEnum.SPENT, CheckStateEnum.SPENT, CheckStateEnum.SPENT),
+    3_000,
+  );
+  assert.throws(
+    () => reclaimCompletionCapability(recipient, intent),
+    /completion authority is invalid/,
+  );
+});
+
+function reclaimCompletionCapability(
+  record: DurableBearerSpendDeliveryRecord,
+  intent: ReturnType<typeof planDurableBearerSpendReclaimIntent>,
+) {
+  const output = new OutputData(
+    {
+      amount: Amount.from(intent.approvedReturnAmount),
+      id: PROOFS[0]!.id,
+      B_: VALID_SECP_POINT,
+    },
+    2n,
+    new TextEncoder().encode("44".repeat(32)),
+    VALID_SECP_POINT,
+  );
+  const operation = createDurableWalletReceiveOperation({
+    operationId: intent.operationId,
+    mintUrl: record.mintUrl,
+    unit: record.unit,
+    preview: {
+      amount: Amount.from(intent.approvedReturnAmount),
+      fees: Amount.from(
+        PROOFS.reduce(
+          (sum, proof) => sum + Amount.from(proof.amount).toBigInt(),
+          0n,
+        ) - BigInt(intent.approvedReturnAmount),
+      ),
+      keysetId: PROOFS[0]!.id,
+      inputs: [...PROOFS],
+      keepOutputs: [output],
+    },
+  });
+  return issueDurableBearerSpendReclaimCompletionCapability({
+    record,
+    intent,
+    walletOperation: operation,
+    resultGroups: {
+      receive: [
+        {
+          id: PROOFS[0]!.id,
+          amount: Amount.from(intent.approvedReturnAmount),
+          secret: new TextDecoder().decode(output.secret),
+          C: VALID_SECP_POINT,
+        },
+      ],
+    },
+  });
+}

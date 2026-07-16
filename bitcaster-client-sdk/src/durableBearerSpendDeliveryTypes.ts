@@ -22,6 +22,10 @@ export type DurableBearerSpendReclaimLineage =
       operationId: string;
       parentDeliveryId: string;
       requestFingerprint: string;
+      approvedInputFingerprint: string;
+      approvedInputAmount: string;
+      approvedFee: string;
+      approvedReturnAmount: string;
     };
 
 export type DurableBearerSpendProofEntry =
@@ -74,6 +78,10 @@ export type DurableBearerSpendReclaimTransition = {
   kind: "prepared" | "submitted";
   operationId: string;
   requestFingerprint: string;
+  approvedInputFingerprint: string;
+  approvedInputAmount: string;
+  approvedFee: string;
+  approvedReturnAmount: string;
 };
 
 export interface DurableBearerSpendProofStateChecker {

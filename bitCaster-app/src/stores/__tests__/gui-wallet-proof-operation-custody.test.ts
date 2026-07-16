@@ -30,9 +30,11 @@ import {
   createDurableBearerSpendDeliveryRecord,
   decodeDurableBearerSpendDeliveryRecord,
   isDurableBearerSpendTokenPresentable,
+  planDurableBearerSpendReclaimIntent,
   planDurableBearerSpendCustodyHandoff,
   reconcileDurableBearerSpendDelivery,
   reduceDurableBearerSpendReclaimLineage,
+  selectDurableBearerSpendUnspentProofs,
   type DurableBearerSpendDeliveryRecord,
 } from "@bitcaster/client-sdk/durableBearerSpendDelivery";
 import {
@@ -99,6 +101,16 @@ import {
   __setGuiBearerSpendRecoveryTimerForTests,
   requestGuiBearerSpendRecovery,
 } from "../gui-bearer-spend-recovery";
+import {
+  cancelGuiBearerSpend,
+  findPendingGuiBearerSpendReapproval,
+  inspectGuiBearerSpendCancellation,
+} from "../gui-bearer-spend-cancellation";
+import {
+  readGuiBearerSpendTokenPresentable,
+  withGuiBearerSpendTokenPresentation,
+} from "../gui-bearer-spend-presentation";
+import { prepareGuiBearerReclaimOperation } from "../gui-ordinary-wallet-operation";
 import { advanceGuiOutgoingRecipientDeliveryOnce } from "../gui-outgoing-recipient-coordinator";
 import { advanceGuiParticipationScoreDelivery } from "../../lib/participationScorePayment";
 
@@ -251,9 +263,7 @@ function ordinarySendOperationInput() {
     metadata: {
       unit: "sat",
       durableWalletOperation,
-      guiWalletSendDelivery: walletSendDeliveryMetadata(
-        durableWalletOperation,
-      ),
+      guiWalletSendDelivery: walletSendDeliveryMetadata(durableWalletOperation),
       durableWalletProofTransition: createDurableWalletProofTransition({
         inputSource: "wallet",
         plannedOutputLabels: ["keep", "send"],
@@ -445,9 +455,7 @@ function independentOrdinarySendFixture(index: number, mintUrl: string) {
     metadata: {
       unit: "sat",
       durableWalletOperation,
-      guiWalletSendDelivery: walletSendDeliveryMetadata(
-        durableWalletOperation,
-      ),
+      guiWalletSendDelivery: walletSendDeliveryMetadata(durableWalletOperation),
       durableWalletProofTransition: createDurableWalletProofTransition({
         inputSource: "wallet",
         plannedOutputLabels: ["keep", "send"],
@@ -517,9 +525,7 @@ function ordinaryMultiSendOperationInput() {
     metadata: {
       ...single.metadata,
       durableWalletOperation,
-      guiWalletSendDelivery: walletSendDeliveryMetadata(
-        durableWalletOperation,
-      ),
+      guiWalletSendDelivery: walletSendDeliveryMetadata(durableWalletOperation),
       durableWalletProofTransition: createDurableWalletProofTransition({
         inputSource: "wallet",
         plannedOutputLabels: ["keep", "send"],
@@ -1286,6 +1292,25 @@ describe("GUI wallet custody coordinator", () => {
       return fixture;
     }
 
+    async function completeOrdinaryMultiSendFixture() {
+      const { passthrough, ...input } = ordinaryMultiSendOperationInput();
+      await db.proofs.put(
+        prepareStoredProofForWrite(
+          { ...passthrough, mintUrl: input.mintUrl, unit: "sat" },
+          2,
+          currentGuiWalletId(),
+        ),
+      );
+      const prepared = await prepareProofOperation(input);
+      await markProofOperationMintSubmitted(prepared.operationId);
+      await markProofOperationCompleted(
+        prepared.operationId,
+        ordinaryMultiSendResultProofs(),
+        ordinaryMultiSendEncodedToken(),
+      );
+      return { input, passthrough, prepared };
+    }
+
     async function completeIndependentOrdinarySend(
       index: number,
       mintUrl: string,
@@ -1311,8 +1336,7 @@ describe("GUI wallet custody coordinator", () => {
     }
 
     it("atomically advances a durable recipient pre-intent with its exact token", async () => {
-      const { passthrough, ...input } =
-        ordinaryRecipientSendOperationInput();
+      const { passthrough, ...input } = ordinaryRecipientSendOperationInput();
       await db.proofs.put(
         prepareStoredProofForWrite(
           { ...passthrough, mintUrl: input.mintUrl, unit: "sat" },
@@ -1440,9 +1464,8 @@ describe("GUI wallet custody coordinator", () => {
         ]),
       ).toBeDefined();
       expect(
-        (
-          await db.custodyOperations.get(prepared.custodyOperationId)
-        )?.record.operation.delivery.state,
+        (await db.custodyOperations.get(prepared.custodyOperationId))?.record
+          .operation.delivery.state,
       ).toBe("pending");
       payloadDelete.mockRestore();
 
@@ -1477,15 +1500,13 @@ describe("GUI wallet custody coordinator", () => {
         ]),
       ).toBeUndefined();
       expect(
-        (
-          await db.custodyOperations.get(prepared.custodyOperationId)
-        )?.record.operation.delivery.state,
+        (await db.custodyOperations.get(prepared.custodyOperationId))?.record
+          .operation.delivery.state,
       ).toBe("acknowledged");
     });
 
     it("restarts the real Score adapter after a lost credited response without resubmitting its token", async () => {
-      const { passthrough, ...input } =
-        ordinaryRecipientSendOperationInput();
+      const { passthrough, ...input } = ordinaryRecipientSendOperationInput();
       await db.proofs.put(
         prepareStoredProofForWrite(
           { ...passthrough, mintUrl: input.mintUrl, unit: "sat" },
@@ -1545,7 +1566,9 @@ describe("GUI wallet custody coordinator", () => {
           request.deliveryId,
         ),
       ).rejects.toThrow("lost-response-after-Score-credit");
-      expect(scoreRemoteMocks.payParticipationScoreEcash).toHaveBeenCalledOnce();
+      expect(
+        scoreRemoteMocks.payParticipationScoreEcash,
+      ).toHaveBeenCalledOnce();
       expect(scoreRemoteMocks.payParticipationScoreEcash).toHaveBeenCalledWith(
         request.accountSubject,
         Number(request.requestedAmount),
@@ -1577,7 +1600,9 @@ describe("GUI wallet custody coordinator", () => {
           },
         },
       });
-      expect(scoreRemoteMocks.payParticipationScoreEcash).toHaveBeenCalledOnce();
+      expect(
+        scoreRemoteMocks.payParticipationScoreEcash,
+      ).toHaveBeenCalledOnce();
       expect(
         await db.walletSendDeliveryPayloads.get([
           currentGuiWalletId(),
@@ -1585,9 +1610,8 @@ describe("GUI wallet custody coordinator", () => {
         ]),
       ).toBeUndefined();
       expect(
-        (
-          await db.custodyOperations.get(prepared.custodyOperationId)
-        )?.record.operation.delivery.state,
+        (await db.custodyOperations.get(prepared.custodyOperationId))?.record
+          .operation.delivery.state,
       ).toBe("acknowledged");
     });
 
@@ -1783,8 +1807,7 @@ describe("GUI wallet custody coordinator", () => {
           const walletOperation = decodeDurableWalletOperation(
             operation.metadata.durableWalletOperation,
           );
-          const deliveryMetadata =
-            readGuiWalletSendDeliveryMetadata(operation);
+          const deliveryMetadata = readGuiWalletSendDeliveryMetadata(operation);
           if (
             walletOperation.kind !== "wallet-send" ||
             deliveryMetadata?.mode !== "user-export"
@@ -1923,12 +1946,16 @@ describe("GUI wallet custody coordinator", () => {
           [CheckStateEnum.UNSPENT],
           observedAtMs,
         );
+        const reclaimIntent = planDurableBearerSpendReclaimIntent(unspent, {
+          requestFingerprint: "ab".repeat(32),
+          approvedFee: "0",
+          approvedReturnAmount: "1",
+        });
         const preparedReclaim = reduceDurableBearerSpendReclaimLineage(
           unspent,
           {
             kind: "prepared",
-            operationId: "reclaim-operation-001",
-            requestFingerprint: "ab".repeat(32),
+            ...reclaimIntent,
           },
         );
         const rechecked = await observeBearerStates(
@@ -1941,8 +1968,7 @@ describe("GUI wallet custody coordinator", () => {
           rechecked,
           {
             kind: "submitted",
-            operationId: "reclaim-operation-001",
-            requestFingerprint: "ab".repeat(32),
+            ...reclaimIntent,
           },
         );
         const recipient = await observeBearerStates(
@@ -1961,9 +1987,13 @@ describe("GUI wallet custody coordinator", () => {
           ...recipient,
           reclaim: {
             kind: "completed",
-            operationId: "reclaim-operation-001",
+            operationId: reclaimIntent.operationId,
             parentDeliveryId: recipient.deliveryId,
-            requestFingerprint: "ab".repeat(32),
+            requestFingerprint: reclaimIntent.requestFingerprint,
+            approvedInputFingerprint: reclaimIntent.approvedInputFingerprint,
+            approvedInputAmount: reclaimIntent.approvedInputAmount,
+            approvedFee: reclaimIntent.approvedFee,
+            approvedReturnAmount: reclaimIntent.approvedReturnAmount,
           },
           state: { ...recipient.state, actor: "sender-reclaim" },
         });
@@ -3056,6 +3086,528 @@ describe("GUI wallet custody coordinator", () => {
         ]),
       ).toBeDefined();
     });
+
+    it("revokes stale token presentation after another writer consumes the bearer proof", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const walletId = currentGuiWalletId();
+      expect(
+        await readGuiBearerSpendTokenPresentable(
+          walletId,
+          prepared.operationId,
+        ),
+      ).toBe(true);
+
+      const initial = (await bearerForOperation(prepared.operationId)).record;
+      const consumed = await observeBearerStates(
+        initial,
+        ordinarySendResultProofs().send,
+        [CheckStateEnum.SPENT],
+        initial.createdAtMs + 1_000,
+      );
+      await persistBearerLifecycle(prepared, consumed);
+
+      expect(
+        await readGuiBearerSpendTokenPresentable(
+          walletId,
+          prepared.operationId,
+        ),
+      ).toBe(false);
+      await expect(
+        withGuiBearerSpendTokenPresentation(
+          walletId,
+          prepared.operationId,
+          vi.fn(),
+        ),
+      ).rejects.toThrow(/no longer authorized/);
+    });
+
+    it("reclaims an explicit bearer cancellation through one exact linked child", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const returnedProof = bearerReclaimResultProof();
+      const wallet = bearerReclaimWallet(returnedProof);
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => wallet) as never,
+      });
+      try {
+        const preview = await inspectGuiBearerSpendCancellation(
+          prepared.operationId,
+        );
+        expect(preview).toMatchObject({
+          amount: 1,
+          fee: 0,
+          returnedAmount: 1,
+          proofCount: 1,
+          partial: false,
+        });
+
+        await expect(
+          cancelGuiBearerSpend(prepared.operationId, preview.fingerprint),
+        ).resolves.toMatchObject({
+          kind: "completed",
+          returnedProofs: [returnedProof],
+        });
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+
+      const bearer = await bearerForOperation(prepared.operationId);
+      expect(bearer).toMatchObject({
+        active: 0,
+        presentable: 0,
+        record: {
+          reclaim: { kind: "completed" },
+          state: { kind: "consumed", actor: "sender-reclaim" },
+        },
+      });
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+      expect(await storedRow(returnedProof.secret)).toMatchObject({
+        selectability: "spendable",
+      });
+      expect(wallet.completeSwap).toHaveBeenCalledOnce();
+    });
+
+    it("rejects changed mint fees before persisting or dispatching the reclaim child", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const returnedProof = bearerReclaimResultProof("af");
+      const wallet = bearerReclaimWallet(returnedProof);
+      wallet.prepareSwapToReceive.mockImplementationOnce(
+        async (token: { proofs: Proof[] }) => ({
+          amount: Amount.from(1),
+          fees: Amount.from(1),
+          keysetId: KEYSET_ID,
+          inputs: token.proofs,
+          keepOutputs: [
+            durableOutputData({
+              blindedMessage: {
+                amount: 1,
+                id: KEYSET_ID,
+                B_: PUBLIC_KEY,
+              },
+              blindingFactor: "44".repeat(32),
+              secret: returnedProof.secret,
+            }),
+          ],
+        }),
+      );
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => wallet) as never,
+      });
+      try {
+        const preview = await inspectGuiBearerSpendCancellation(
+          prepared.operationId,
+        );
+        await expect(
+          cancelGuiBearerSpend(prepared.operationId, preview.fingerprint),
+        ).rejects.toThrow(/child plan is invalid/);
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+
+      const bearer = await bearerForOperation(prepared.operationId);
+      expect(bearer.record.reclaim.kind).toBe("prepared");
+      if (bearer.record.reclaim.kind !== "prepared") return;
+      expect(
+        await db.proofOperations.get(
+          proofOperationPrimaryKey(
+            currentGuiWalletId(),
+            bearer.record.reclaim.operationId,
+          ),
+        ),
+      ).toBeUndefined();
+      expect(wallet.completeSwap).not.toHaveBeenCalled();
+    });
+
+    it("reclaims only the exact unspent subset after a partial recipient spend", async () => {
+      const { prepared } = await completeOrdinaryMultiSendFixture();
+      const [spentProof, unspentProof] = ordinaryMultiSendResultProofs().send;
+      const returnedProof = bearerReclaimResultProof("ba");
+      const wallet = bearerReclaimWallet(returnedProof);
+      wallet.checkProofsStates.mockImplementation(async (proofs: Proof[]) =>
+        proofs.map((proof) =>
+          bearerProofState(
+            proof,
+            proof.secret === spentProof!.secret
+              ? CheckStateEnum.SPENT
+              : CheckStateEnum.UNSPENT,
+          ),
+        ),
+      );
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => wallet) as never,
+      });
+      try {
+        const preview = await inspectGuiBearerSpendCancellation(
+          prepared.operationId,
+        );
+        expect(preview).toMatchObject({
+          amount: 1,
+          returnedAmount: 1,
+          proofCount: 1,
+          partial: true,
+        });
+        expect(
+          await db.walletSendDeliveryPayloads.get([
+            currentGuiWalletId(),
+            prepared.operationId,
+          ]),
+        ).toBeUndefined();
+
+        await expect(
+          cancelGuiBearerSpend(prepared.operationId, preview.fingerprint),
+        ).resolves.toMatchObject({ kind: "completed" });
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+
+      expect(wallet.prepareSwapToReceive.mock.calls[0]?.[0].proofs).toEqual([
+        unspentProof,
+      ]);
+      expect(await bearerForOperation(prepared.operationId)).toMatchObject({
+        active: 0,
+        presentable: 0,
+        record: {
+          reclaim: { kind: "completed" },
+          state: { kind: "consumed", actor: "sender-reclaim" },
+        },
+      });
+      expect(await storedRow(returnedProof.secret)).toBeDefined();
+    });
+
+    it("restarts from a journaled reclaim intent without selecting fresh proofs", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const returnedProof = bearerReclaimResultProof("bb");
+      const wallet = bearerReclaimWallet(returnedProof);
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => wallet) as never,
+      });
+      try {
+        const preview = await inspectGuiBearerSpendCancellation(
+          prepared.operationId,
+        );
+        const observed = (await bearerForOperation(prepared.operationId))
+          .record;
+        const intent = planDurableBearerSpendReclaimIntent(observed, {
+          requestFingerprint: preview.fingerprint,
+          approvedFee: preview.fee.toString(),
+          approvedReturnAmount: preview.returnedAmount.toString(),
+        });
+        await persistBearerLifecycle(
+          prepared,
+          reduceDurableBearerSpendReclaimLineage(observed, {
+            kind: "prepared",
+            ...intent,
+          }),
+        );
+
+        db.close();
+        await db.open();
+        vi.spyOn(Date, "now").mockReturnValue(
+          Math.max(Date.now(), observed.createdAtMs + 60_000),
+        );
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("clear");
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+
+      expect(wallet.prepareSwapToReceive).toHaveBeenCalledOnce();
+      expect(wallet.completeSwap).toHaveBeenCalledOnce();
+      expect(wallet.prepareSwapToReceive.mock.calls[0]?.[0].proofs).toEqual(
+        ordinarySendResultProofs().send,
+      );
+      expect(await bearerForOperation(prepared.operationId)).toMatchObject({
+        active: 0,
+        record: {
+          reclaim: { kind: "completed" },
+          state: { kind: "consumed", actor: "sender-reclaim" },
+        },
+      });
+      expect(await storedRow(returnedProof.secret)).toBeDefined();
+    });
+
+    it("lets the recipient win after a prepared intent and before child submission", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const wallet = bearerReclaimWallet(bearerReclaimResultProof("bc"));
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => wallet) as never,
+      });
+      try {
+        const preview = await inspectGuiBearerSpendCancellation(
+          prepared.operationId,
+        );
+        const observed = (await bearerForOperation(prepared.operationId))
+          .record;
+        const intent = planDurableBearerSpendReclaimIntent(observed, {
+          requestFingerprint: preview.fingerprint,
+          approvedFee: preview.fee.toString(),
+          approvedReturnAmount: preview.returnedAmount.toString(),
+        });
+        await persistBearerLifecycle(
+          prepared,
+          reduceDurableBearerSpendReclaimLineage(observed, {
+            kind: "prepared",
+            ...intent,
+          }),
+        );
+        wallet.checkProofsStates.mockImplementation(async (proofs: Proof[]) =>
+          proofs.map((proof) => bearerProofState(proof, CheckStateEnum.SPENT)),
+        );
+
+        db.close();
+        await db.open();
+        vi.spyOn(Date, "now").mockReturnValue(
+          Math.max(Date.now(), observed.createdAtMs + 60_000),
+        );
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("clear");
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+
+      expect(wallet.prepareSwapToReceive).not.toHaveBeenCalled();
+      expect(wallet.completeSwap).not.toHaveBeenCalled();
+      expect(await bearerForOperation(prepared.operationId)).toMatchObject({
+        active: 0,
+        presentable: 0,
+        record: {
+          reclaim: { kind: "prepared" },
+          state: { kind: "consumed", actor: "recipient" },
+        },
+      });
+    });
+
+    it("restores changed reclaim terms as explicit restart reapproval", async () => {
+      const { prepared } = await completeOrdinaryMultiSendFixture();
+      const wallet = bearerReclaimWallet(bearerReclaimResultProof("be"));
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => wallet) as never,
+      });
+      try {
+        const preview = await inspectGuiBearerSpendCancellation(
+          prepared.operationId,
+        );
+        const observed = (await bearerForOperation(prepared.operationId))
+          .record;
+        const intent = planDurableBearerSpendReclaimIntent(observed, {
+          requestFingerprint: preview.fingerprint,
+          approvedFee: preview.fee.toString(),
+          approvedReturnAmount: preview.returnedAmount.toString(),
+        });
+        await persistBearerLifecycle(
+          prepared,
+          reduceDurableBearerSpendReclaimLineage(observed, {
+            kind: "prepared",
+            ...intent,
+          }),
+        );
+        wallet.getFeesForProofs.mockReturnValue(Amount.from(1));
+
+        db.close();
+        await db.open();
+        const pending = await findPendingGuiBearerSpendReapproval();
+
+        expect(pending).toMatchObject({
+          operationId: prepared.operationId,
+          preview: {
+            amount: 2,
+            fee: 1,
+            returnedAmount: 1,
+            partial: false,
+          },
+        });
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+
+      expect(wallet.prepareSwapToReceive).not.toHaveBeenCalled();
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+      expect(await bearerForOperation(prepared.operationId)).toMatchObject({
+        active: 1,
+        presentable: 0,
+        reclaimPrepared: 1,
+        record: { reclaim: { kind: "prepared" } },
+      });
+    });
+
+    it("rolls back reclaim journaling when payload deletion fails", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const returnedProof = bearerReclaimResultProof("bd");
+      const wallet = bearerReclaimWallet(returnedProof);
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => wallet) as never,
+      });
+      const payloadDelete = vi
+        .spyOn(db.walletSendDeliveryPayloads, "delete")
+        .mockRejectedValueOnce(
+          new DOMException("injected payload deletion", "QuotaExceededError"),
+        );
+      try {
+        const preview = await inspectGuiBearerSpendCancellation(
+          prepared.operationId,
+        );
+        await expect(
+          cancelGuiBearerSpend(prepared.operationId, preview.fingerprint),
+        ).rejects.toThrow(/injected payload deletion/);
+        payloadDelete.mockRestore();
+
+        expect(await bearerForOperation(prepared.operationId)).toMatchObject({
+          active: 1,
+          presentable: 1,
+          record: { reclaim: { kind: "none" } },
+        });
+        expect(
+          await db.walletSendDeliveryPayloads.get([
+            currentGuiWalletId(),
+            prepared.operationId,
+          ]),
+        ).toBeDefined();
+        expect(await storedRow(returnedProof.secret)).toBeUndefined();
+        expect(wallet.completeSwap).not.toHaveBeenCalled();
+
+        await expect(
+          cancelGuiBearerSpend(prepared.operationId, preview.fingerprint),
+        ).resolves.toMatchObject({ kind: "completed" });
+      } finally {
+        payloadDelete.mockRestore();
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+
+      expect(wallet.completeSwap).toHaveBeenCalledOnce();
+      expect(await bearerForOperation(prepared.operationId)).toMatchObject({
+        active: 0,
+        presentable: 0,
+        record: {
+          reclaim: { kind: "completed" },
+          state: { kind: "consumed", actor: "sender-reclaim" },
+        },
+      });
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+    });
+
+    it("finalizes the exact parent after restart when its reclaim child committed first", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const returnedProof = bearerReclaimResultProof("cc");
+      const wallet = bearerReclaimWallet(returnedProof);
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => wallet) as never,
+      });
+      try {
+        const preview = await inspectGuiBearerSpendCancellation(
+          prepared.operationId,
+        );
+        const observed = (await bearerForOperation(prepared.operationId))
+          .record;
+        const intent = planDurableBearerSpendReclaimIntent(observed, {
+          requestFingerprint: preview.fingerprint,
+          approvedFee: preview.fee.toString(),
+          approvedReturnAmount: preview.returnedAmount.toString(),
+        });
+        const preparedParent = reduceDurableBearerSpendReclaimLineage(
+          observed,
+          { kind: "prepared", ...intent },
+        );
+        const recheckedParent = await observeBearerStates(
+          preparedParent,
+          ordinarySendResultProofs().send,
+          [CheckStateEnum.UNSPENT],
+          (preparedParent.state.kind === "pending"
+            ? (preparedParent.state.lastObservedAtMs ??
+              preparedParent.createdAtMs)
+            : preparedParent.createdAtMs) + 1,
+        );
+        await persistBearerLifecycle(prepared, recheckedParent);
+        const child = await prepareGuiBearerReclaimOperation({
+          expectedWalletId: currentGuiWalletId(),
+          record: recheckedParent,
+          intent,
+          proofs: selectDurableBearerSpendUnspentProofs(observed),
+        });
+        await persistBearerLifecycle(
+          prepared,
+          reduceDurableBearerSpendReclaimLineage(recheckedParent, {
+            kind: "submitted",
+            ...intent,
+          }),
+        );
+        await markProofOperationMintSubmitted(child.operationId);
+        await markProofOperationCompleted(child.operationId, {
+          receive: [returnedProof],
+        });
+        expect(
+          (await bearerForOperation(prepared.operationId)).record.reclaim.kind,
+        ).toBe("submitted");
+
+        db.close();
+        await db.open();
+        vi.spyOn(Date, "now").mockReturnValue(
+          Math.max(
+            Date.now(),
+            recheckedParent.state.kind === "pending"
+              ? recheckedParent.state.nextAttemptAtMs + 1
+              : recheckedParent.createdAtMs + 60_000,
+          ),
+        );
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("clear");
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+
+      expect(wallet.completeSwap).not.toHaveBeenCalled();
+      expect(await bearerForOperation(prepared.operationId)).toMatchObject({
+        active: 0,
+        presentable: 0,
+        record: {
+          reclaim: { kind: "completed" },
+          state: { kind: "consumed", actor: "sender-reclaim" },
+        },
+      });
+      expect(await storedRow(returnedProof.secret)).toBeDefined();
+    });
   });
 
   it("rejects native mint results that do not match the persisted output plan", async () => {
@@ -3407,5 +3959,46 @@ function bearerProofState(
     Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
     state,
     witness: null,
+  };
+}
+
+function bearerReclaimResultProof(secretByte = "aa"): Proof {
+  return {
+    id: KEYSET_ID,
+    amount: Amount.from(1),
+    secret: secretByte.repeat(32),
+    C: PUBLIC_KEY,
+  };
+}
+
+function bearerReclaimWallet(returnedProof: Proof) {
+  const prepareSwapToReceive = vi.fn(async (token: { proofs: Proof[] }) => ({
+    amount: Amount.from(1),
+    fees: Amount.from(0),
+    keysetId: KEYSET_ID,
+    inputs: token.proofs,
+    keepOutputs: [
+      durableOutputData({
+        blindedMessage: {
+          amount: 1,
+          id: KEYSET_ID,
+          B_: PUBLIC_KEY,
+        },
+        blindingFactor: "44".repeat(32),
+        secret: returnedProof.secret,
+      }),
+    ],
+  }));
+  const completeSwap = vi.fn(async () => ({
+    keep: [returnedProof],
+    send: [],
+  }));
+  return {
+    checkProofsStates: vi.fn(async (proofs: Proof[]) =>
+      proofs.map((proof) => bearerProofState(proof, CheckStateEnum.UNSPENT)),
+    ),
+    getFeesForProofs: vi.fn(() => Amount.from(0)),
+    prepareSwapToReceive,
+    completeSwap,
   };
 }

@@ -3,11 +3,12 @@ import { X } from 'lucide-react'
 import QrScanner from 'qr-scanner'
 
 interface QrScannerProps {
-  onDecode: (data: string) => void
+  onDecode: (data: string) => Promise<'continue' | 'complete'>
   onClose: () => void
+  progress?: string | null
 }
 
-export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
+export function QrScannerView({ onDecode, onClose, progress }: QrScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const scannerRef = useRef<QrScanner | null>(null)
   const onDecodeRef = useRef(onDecode)
@@ -24,14 +25,25 @@ export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
       video,
       (result: QrScanner.ScanResult) => {
         scanner.stop()
-        onDecodeRef.current(result.data)
+        void onDecodeRef
+          .current(result.data)
+          .then((disposition) => {
+            if (disposition === 'continue' && scannerRef.current === scanner) {
+              void scanner.start()
+            }
+          })
+          .catch(() => {
+            if (scannerRef.current === scanner) {
+              void scanner.start()
+            }
+          })
       },
       {
         returnDetailedScanResult: true,
         highlightScanRegion: true,
         highlightCodeOutline: true,
         onDecodeError: () => {},
-      }
+      },
     )
 
     scannerRef.current = scanner
@@ -59,8 +71,11 @@ export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
 
       {/* Camera viewfinder */}
       <div className="flex-1 flex items-center justify-center px-5">
-        <div className="w-full max-w-md rounded-2xl overflow-hidden bg-black">
-          <video ref={videoRef} className="w-full" />
+        <div className="w-full max-w-md">
+          <div className="rounded-2xl overflow-hidden bg-black">
+            <video ref={videoRef} className="w-full" />
+          </div>
+          {progress ? <p className="mt-3 text-center text-sm text-slate-300">{progress}</p> : null}
         </div>
       </div>
     </div>
