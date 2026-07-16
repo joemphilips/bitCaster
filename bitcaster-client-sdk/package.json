@@ -192,9 +192,17 @@
       "types": "./dist/encryptedWalletBackupHttpAdapter.d.ts",
       "import": "./dist/encryptedWalletBackupHttpAdapter.js"
     },
+    "./encryptedWalletBackupNip98AccountAuthorization": {
+      "types": "./dist/encryptedWalletBackupNip98AccountAuthorization.d.ts",
+      "import": "./dist/encryptedWalletBackupNip98AccountAuthorization.js"
+    },
     "./encryptedWalletBackupRetrySchedule": {
       "types": "./dist/encryptedWalletBackupRetrySchedule.d.ts",
       "import": "./dist/encryptedWalletBackupRetrySchedule.js"
+    },
+    "./encryptedWalletBackupServerCodec": {
+      "types": "./dist/encryptedWalletBackupServerCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupServerCodec.js"
     },
     "./encryptedWalletBackupSync": {
       "types": "./dist/encryptedWalletBackupSync.d.ts",
