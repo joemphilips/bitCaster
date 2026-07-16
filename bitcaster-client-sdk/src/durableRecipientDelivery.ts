@@ -1,7 +1,30 @@
 import { normalizeDurableWalletMintUrl } from "./durableWalletMintUrl.ts";
 import { describeDurableWalletSendToken } from "./durableWalletSendDelivery.ts";
+import { createStrictCodec } from "./strictCodec.ts";
 
 export const DURABLE_RECIPIENT_DELIVERY_SCHEMA_VERSION = 1 as const;
+
+const {
+  requireExactFields,
+  requireNonNegativeDecimal,
+  requirePositiveDecimal,
+  requireRecord,
+  requireText,
+} = createStrictCodec({
+  errorPrefix: "durable recipient delivery",
+  exactFieldsError: "durable recipient delivery fields are invalid",
+});
+
+export type DurableRecipientCreditPolicy =
+  | { kind: "exact-amount" }
+  | { kind: "net-of-receive-fee" };
+
+export type DurableRecipientCreditVerification =
+  | { kind: "exact-amount" }
+  | {
+      kind: "net-of-receive-fee";
+      receiveFeeAmount: string;
+    };
 
 export interface DurableRecipientDeliveryRequest {
   schemaVersion: 1;
@@ -12,7 +35,8 @@ export interface DurableRecipientDeliveryRequest {
   destinationId: string;
   mintUrl: string;
   unit: string;
-  requestedAmount: number;
+  requestedAmount: string;
+  creditPolicy: DurableRecipientCreditPolicy;
   tokenDigest: string;
   encodedTokenBytes: number;
 }
@@ -28,7 +52,8 @@ export type DurableRecipientDeliveryState =
       kind: "credited";
       receiptOperationId: string;
       receivedAtMs: number;
-      creditedAmount: number;
+      creditedAmount: string;
+      creditVerification: DurableRecipientCreditVerification;
       businessEventId: string;
       creditedAtMs: number;
     };
@@ -52,7 +77,8 @@ export type DurableRecipientDeliveryEvidence =
       request: DurableRecipientDeliveryRequest;
       receiptOperationId: string;
       receivedAtMs: number;
-      creditedAmount: number;
+      creditedAmount: string;
+      creditVerification: DurableRecipientCreditVerification;
       businessEventId: string;
       creditedAtMs: number;
     };
@@ -65,10 +91,11 @@ export function createDurableRecipientDeliveryRecord(input: {
   destinationId: string;
   mintUrl: string;
   unit: string;
-  requestedAmount: number;
+  requestedAmount: string;
+  creditPolicy: DurableRecipientCreditPolicy;
   encodedToken: string;
 }): DurableRecipientDeliveryRecord {
-  const descriptor = describeDurableWalletSendToken(input.encodedToken);
+  const token = describeDurableWalletSendToken(input.encodedToken);
   return decodeDurableRecipientDeliveryRecord({
     schemaVersion: DURABLE_RECIPIENT_DELIVERY_SCHEMA_VERSION,
     request: {
@@ -81,8 +108,9 @@ export function createDurableRecipientDeliveryRecord(input: {
       mintUrl: input.mintUrl,
       unit: input.unit,
       requestedAmount: input.requestedAmount,
-      tokenDigest: descriptor.tokenDigest,
-      encodedTokenBytes: descriptor.byteLength,
+      creditPolicy: input.creditPolicy,
+      tokenDigest: token.tokenDigest,
+      encodedTokenBytes: token.byteLength,
     },
     state: { kind: "pending" },
   });
@@ -110,10 +138,19 @@ export function decodeDurableRecipientDeliveryRecord(
   if (record.schemaVersion !== DURABLE_RECIPIENT_DELIVERY_SCHEMA_VERSION) {
     throw new Error("unsupported durable recipient delivery schema version");
   }
+  const request = decodeRequest(record.request);
+  const state = decodeState(record.state);
+  if (state.kind === "credited") {
+    verifyDurableRecipientCredit({
+      request,
+      creditedAmount: state.creditedAmount,
+      creditVerification: state.creditVerification,
+    });
+  }
   return {
     schemaVersion: DURABLE_RECIPIENT_DELIVERY_SCHEMA_VERSION,
-    request: decodeRequest(record.request),
-    state: decodeState(record.state),
+    request,
+    state,
   };
 }
 
@@ -141,6 +178,7 @@ export function decodeDurableRecipientDeliveryEvidence(
       "receiptOperationId",
       "receivedAtMs",
       "creditedAmount",
+      "creditVerification",
       "businessEventId",
       "creditedAtMs",
     ]);
@@ -150,8 +188,8 @@ export function decodeDurableRecipientDeliveryEvidence(
 }
 
 function decodeRequest(value: unknown): DurableRecipientDeliveryRequest {
-  const request = requireRecord(value, "durable recipient delivery request");
-  requireExactFields(request, [
+  const raw = requireRecord(value, "durable recipient delivery request");
+  requireExactFields(raw, [
     "schemaVersion",
     "deliveryId",
     "accountSubject",
@@ -161,33 +199,36 @@ function decodeRequest(value: unknown): DurableRecipientDeliveryRequest {
     "mintUrl",
     "unit",
     "requestedAmount",
+    "creditPolicy",
     "tokenDigest",
     "encodedTokenBytes",
   ]);
-  if (request.schemaVersion !== DURABLE_RECIPIENT_DELIVERY_SCHEMA_VERSION) {
+  if (raw.schemaVersion !== DURABLE_RECIPIENT_DELIVERY_SCHEMA_VERSION) {
     throw new Error("unsupported durable recipient delivery request version");
   }
-  return {
+  const request = {
     schemaVersion: DURABLE_RECIPIENT_DELIVERY_SCHEMA_VERSION,
-    deliveryId: requireText(request.deliveryId, "delivery id", 256),
-    accountSubject: requireText(request.accountSubject, "account subject", 512),
-    recipientKind: requireText(request.recipientKind, "recipient kind", 128),
-    purpose: requireText(request.purpose, "purpose", 128),
-    destinationId: requireText(request.destinationId, "destination id", 512),
+    deliveryId: requireText(raw.deliveryId, "delivery id", 256),
+    accountSubject: requireText(raw.accountSubject, "account subject", 512),
+    recipientKind: requireText(raw.recipientKind, "recipient kind", 128),
+    purpose: requireText(raw.purpose, "purpose", 128),
+    destinationId: requireText(raw.destinationId, "destination id", 512),
     mintUrl: normalizeDurableWalletMintUrl(
-      requireText(request.mintUrl, "mint URL", 2_048),
+      requireText(raw.mintUrl, "mint URL", 2_048),
     ),
-    unit: requireText(request.unit, "unit", 64),
-    requestedAmount: requirePositiveInteger(
-      request.requestedAmount,
+    unit: requireText(raw.unit, "unit", 64),
+    requestedAmount: requirePositiveDecimal(
+      raw.requestedAmount,
       "requested amount",
     ),
-    tokenDigest: requireDigest(request.tokenDigest),
+    creditPolicy: decodeDurableRecipientCreditPolicy(raw.creditPolicy),
+    tokenDigest: requireDigest(raw.tokenDigest),
     encodedTokenBytes: requirePositiveInteger(
-      request.encodedTokenBytes,
+      raw.encodedTokenBytes,
       "encoded token bytes",
     ),
   };
+  return request;
 }
 
 function decodeState(value: unknown): DurableRecipientDeliveryState {
@@ -206,6 +247,7 @@ function decodeState(value: unknown): DurableRecipientDeliveryState {
       "receiptOperationId",
       "receivedAtMs",
       "creditedAmount",
+      "creditVerification",
       "businessEventId",
       "creditedAtMs",
     ]);
@@ -226,9 +268,16 @@ function decodeReceivedEvidence(
 function decodeCreditedEvidence(
   value: Record<string, unknown>,
 ): Extract<DurableRecipientDeliveryEvidence, { kind: "credited" }> {
+  const request = decodeRequest(value.request);
+  const fields = decodeCreditedFields(value);
+  verifyDurableRecipientCredit({
+    request,
+    creditedAmount: fields.creditedAmount,
+    creditVerification: fields.creditVerification,
+  });
   return {
-    request: decodeRequest(value.request),
-    ...decodeCreditedFields(value),
+    request,
+    ...fields,
   };
 }
 
@@ -252,7 +301,8 @@ function decodeCreditedFields(value: Record<string, unknown>): {
   kind: "credited";
   receiptOperationId: string;
   receivedAtMs: number;
-  creditedAmount: number;
+  creditedAmount: string;
+  creditVerification: DurableRecipientCreditVerification;
   businessEventId: string;
   creditedAtMs: number;
 } {
@@ -269,9 +319,12 @@ function decodeCreditedFields(value: Record<string, unknown>): {
       512,
     ),
     receivedAtMs,
-    creditedAmount: requirePositiveInteger(
+    creditedAmount: requirePositiveDecimal(
       value.creditedAmount,
       "credited amount",
+    ),
+    creditVerification: decodeDurableRecipientCreditVerification(
+      value.creditVerification,
     ),
     businessEventId: requireText(
       value.businessEventId,
@@ -324,9 +377,85 @@ function creditedState(
     receiptOperationId: evidence.receiptOperationId,
     receivedAtMs: evidence.receivedAtMs,
     creditedAmount: evidence.creditedAmount,
+    creditVerification: evidence.creditVerification,
     businessEventId: evidence.businessEventId,
     creditedAtMs: evidence.creditedAtMs,
   };
+}
+
+export function decodeDurableRecipientCreditPolicy(
+  value: unknown,
+): DurableRecipientCreditPolicy {
+  const policy = requireRecord(value, "durable recipient credit policy");
+  requireExactFields(policy, ["kind"]);
+  switch (policy.kind) {
+    case "exact-amount":
+      return { kind: "exact-amount" };
+    case "net-of-receive-fee":
+      return { kind: "net-of-receive-fee" };
+    default:
+      throw new Error("durable recipient credit policy is invalid");
+  }
+}
+
+export function decodeDurableRecipientCreditVerification(
+  value: unknown,
+): DurableRecipientCreditVerification {
+  const verification = requireRecord(
+    value,
+    "durable recipient credit verification",
+  );
+  switch (verification.kind) {
+    case "exact-amount":
+      requireExactFields(verification, ["kind"]);
+      return { kind: "exact-amount" };
+    case "net-of-receive-fee":
+      requireExactFields(verification, ["kind", "receiveFeeAmount"]);
+      return {
+        kind: "net-of-receive-fee",
+        receiveFeeAmount: requireNonNegativeDecimal(
+          verification.receiveFeeAmount,
+          "receive fee amount",
+        ),
+      };
+    default:
+      throw new Error("durable recipient credit verification is invalid");
+  }
+}
+
+export function verifyDurableRecipientCredit(input: {
+  request: DurableRecipientDeliveryRequest;
+  creditedAmount: string;
+  creditVerification: DurableRecipientCreditVerification;
+}): void {
+  const creditedAmount = requirePositiveDecimal(
+    input.creditedAmount,
+    "credited amount",
+  );
+  const verification = decodeDurableRecipientCreditVerification(
+    input.creditVerification,
+  );
+  switch (input.request.creditPolicy.kind) {
+    case "exact-amount":
+      if (
+        verification.kind !== "exact-amount" ||
+        creditedAmount !== input.request.requestedAmount
+      ) {
+        throw new Error("exact recipient credit verification is invalid");
+      }
+      return;
+    case "net-of-receive-fee":
+      if (
+        verification.kind !== "net-of-receive-fee" ||
+        BigInt(creditedAmount) + BigInt(verification.receiveFeeAmount) !==
+          BigInt(input.request.requestedAmount)
+      ) {
+        throw new Error("net recipient credit verification is invalid");
+      }
+      return;
+    default:
+      return assertNever(input.request.creditPolicy);
+  }
 }
 
 function assertSameRequest(
@@ -336,6 +465,14 @@ function assertSameRequest(
   for (const key of Object.keys(
     actual,
   ) as (keyof DurableRecipientDeliveryRequest)[]) {
+    if (key === "creditPolicy") {
+      if (actual.creditPolicy.kind !== expected.creditPolicy.kind) {
+        throw new Error(
+          "durable recipient delivery request creditPolicy conflicts",
+        );
+      }
+      continue;
+    }
     if (actual[key] !== expected[key]) {
       throw new Error(`durable recipient delivery request ${key} conflicts`);
     }
@@ -349,32 +486,6 @@ function assertSameState(
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error("durable recipient delivery result conflicts");
   }
-}
-
-function requireRecord(value: unknown, name: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`${name} is invalid`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function requireExactFields(
-  value: Record<string, unknown>,
-  fields: readonly string[],
-): void {
-  if (
-    Object.keys(value).length !== fields.length ||
-    fields.some((field) => !Object.hasOwn(value, field))
-  ) {
-    throw new Error("durable recipient delivery fields are invalid");
-  }
-}
-
-function requireText(value: unknown, name: string, limit: number): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > limit) {
-    throw new Error(`durable recipient delivery ${name} is invalid`);
-  }
-  return value;
 }
 
 function requirePositiveInteger(value: unknown, name: string): number {
@@ -396,4 +507,8 @@ function requireDigest(value: unknown): string {
     throw new Error("durable recipient delivery token digest is invalid");
   }
   return value;
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled durable recipient credit variant: ${value}`);
 }

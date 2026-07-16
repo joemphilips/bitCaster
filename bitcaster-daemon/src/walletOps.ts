@@ -71,6 +71,9 @@ import {
   DAEMON_WALLET_PROOF_CANDIDATE_LIMIT_MAX,
   deriveDaemonWalletProofIdFromProof,
 } from './stateSqlite.ts'
+import {
+  addDaemonUserExportWalletSendPreparation,
+} from './durableWalletSendPreparation.ts'
 
 export interface CashuWalletLike {
   loadMint(): Promise<void>
@@ -944,7 +947,7 @@ async function prepareWalletSendOperation(input: {
       { send: { type: 'random' }, keep: { type: 'random' } },
     )
     try {
-      await prepareProofOperation({
+      await prepareProofOperation(addDaemonUserExportWalletSendPreparation({
         operationId: input.operationId,
         kind: 'wallet-send',
         mintUrl: input.mintUrl,
@@ -952,7 +955,7 @@ async function prepareWalletSendOperation(input: {
         outputs: walletSendOutputPlan(preview),
         metadata: walletSendMetadata(preview, reservationId, input),
         walletProofReservation: { reservationId, unit: input.unit },
-      })
+      }))
       return preview
     } catch (error) {
       if (!(error instanceof WalletProofReservationConflictError)) throw error

@@ -156,6 +156,16 @@ export interface DurableWalletOperationAuthority {
   outputPlanFingerprint: string
 }
 
+export interface DurableWalletSendExactResult {
+  walletOperationId: string
+  requestFingerprint: string
+  outputPlanFingerprint: string
+  resultFingerprint: string
+  amount: string
+  resultGroups: Record<string, Proof[]>
+  sendProofs: Proof[]
+}
+
 export interface DurableWalletExactOutputRestorePort {
   /**
    * Performs NUT-09 restore, verifies NUT-12 DLEQ proofs when present, and
@@ -542,6 +552,39 @@ export function deriveDurableWalletOperationAuthority(
     outputPlanFingerprint: deriveDurableCustodyArtifactFingerprint(
       exact.outputs,
     ),
+  }
+}
+
+/** Validates a complete wallet-send result against the persisted exact plan. */
+export function requireExactDurableWalletSendResult(input: {
+  walletOperation: unknown
+  resultGroups: unknown
+}): DurableWalletSendExactResult {
+  const operation = decodeDurableWalletOperation(input.walletOperation)
+  if (operation.kind !== 'wallet-send') {
+    throw new Error('exact wallet-send result requires wallet-send')
+  }
+  const resultGroups = normalizeExactRuntimeResultGroups(
+    operation,
+    input.resultGroups,
+  )
+  const sendProofs = resultGroups.send ?? []
+  const amount = sendProofs
+    .reduce((sum, proof) => sum + Amount.from(proof.amount).toBigInt(), 0n)
+    .toString()
+  if (sendProofs.length === 0 || amount !== operation.preview.amount) {
+    throw new Error('exact wallet-send result amount is invalid')
+  }
+  const authority = deriveDurableWalletOperationAuthority(operation)
+  return {
+    walletOperationId: operation.operationId,
+    requestFingerprint: authority.requestFingerprint,
+    outputPlanFingerprint: authority.outputPlanFingerprint,
+    resultFingerprint:
+      deriveDurableCustodyProofResultFingerprint(resultGroups),
+    amount,
+    resultGroups,
+    sendProofs,
   }
 }
 

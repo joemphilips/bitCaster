@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { getEncodedTokenV4, type Proof } from '@cashu/cashu-ts'
 import {
   acknowledgeDurableCustodyWalletSendHandoff,
   decodeDurableCustodyRecord,
@@ -36,6 +35,29 @@ import {
   createDurableBearerSpendDeliveryRecord,
   planDurableBearerSpendCustodyHandoff,
 } from '../src/durableBearerSpendDelivery.ts'
+import {
+  classifyDurableRecipientDeliveryCustodyHandoffPlan,
+  planDurableRecipientDeliveryCustodyHandoff,
+} from '../src/durableRecipientDeliveryHandoff.ts'
+import {
+  createDurableRecipientDeliveryRecord,
+  decodeDurableRecipientDeliveryRecord,
+  reduceDurableRecipientDelivery,
+} from '../src/durableRecipientDelivery.ts'
+import {
+  createDurableOutgoingRecipientDeliveryRecord,
+  decodeDurableOutgoingRecipientDeliveryRecord,
+} from '../src/durableOutgoingRecipientDelivery.ts'
+import {
+  prepareDurableWalletSendDelivery,
+} from '../src/durableWalletSendDeliveryPreparation.ts'
+import {
+  planDurableWalletSendExactPayload,
+} from '../src/durableWalletSendExactPayload.ts'
+import {
+  createRecipientCustodyState,
+  createRecipientDeliveryFixture,
+} from './durableRecipientDeliveryFixture.ts'
 
 const FINGERPRINT_A = 'a'.repeat(64)
 const FINGERPRINT_B = 'b'.repeat(64)
@@ -440,6 +462,37 @@ function custodyState(
   return { operation, scopeState }
 }
 
+function recipientDeliveryFixture() {
+  const exact = createRecipientDeliveryFixture()
+  const pendingCustody = createRecipientCustodyState(exact)
+  const outgoingRecipient = createDurableOutgoingRecipientDeliveryRecord({
+    exactPayload: exact.exactPayload,
+  })
+  const pendingRecipient = outgoingRecipient.delivery
+  const creditedEvidence = {
+    kind: 'credited' as const,
+    request: pendingRecipient.request,
+    receiptOperationId:
+      `score-receipt/${pendingRecipient.request.deliveryId}`,
+    receivedAtMs: 2_000,
+    creditedAmount: '1',
+    creditVerification: { kind: 'exact-amount' as const },
+    businessEventId: pendingRecipient.request.deliveryId,
+    creditedAtMs: 2_000,
+  }
+  return {
+    custodyState: pendingCustody,
+    ...exact,
+    outgoingRecipient,
+    pendingRecipient,
+    creditedEvidence,
+    creditedRecipient: reduceDurableRecipientDelivery(
+      pendingRecipient,
+      creditedEvidence,
+    ),
+  }
+}
+
 function exactReference(record: DurableCustodyRecord) {
   return {
     scopeId: record.scope.scopeId,
@@ -630,33 +683,36 @@ test('only wallet-send delivery may be non-expiring and it can never expire', ()
     /closed terminal decision/,
   )
 
-  const proof: Proof = {
-    id: '0011223344556677',
-    amount: 1,
-    secret: '11'.repeat(32),
-    C: '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+  const userExport = createRecipientDeliveryFixture({
+    policy: { kind: 'user-export' },
+  })
+  const userExportCustody = createRecipientCustodyState(userExport)
+  const delivery = userExportCustody.operation.operation.delivery
+  if (
+    delivery.deliveryKind !== 'outbox' ||
+    delivery.deliveryId === null ||
+    delivery.payloadHandle === null
+  ) {
+    throw new Error('missing exact user-export delivery')
   }
+  const proof = userExport.resultGroups.send[0]!
   const bearer = createDurableBearerSpendDeliveryRecord({
-    deliveryId: pending.operation.delivery.deliveryId!,
+    deliveryId: delivery.deliveryId,
     walletId: profileScope().walletId,
-    parentOperationId: pending.operation.operationId,
-    payloadHandle: pending.operation.delivery.payloadHandle!,
+    parentOperationId: userExportCustody.operation.operation.operationId,
+    payloadHandle: delivery.payloadHandle,
     mintUrl: 'https://mint.example',
     unit: 'sat',
-    encodedToken: getEncodedTokenV4({
-      mint: 'https://mint.example',
-      unit: 'sat',
-      proofs: [proof],
-    }),
+    encodedToken: userExport.encodedToken,
     proofs: [proof],
     origin: 'local',
     createdAtMs: 1_000,
   })
-  pending.operation.delivery.payloadFingerprint = bearer.tokenDigest
-  const previousCustodyState = custodyState(pending)
+  const previousCustodyState = userExportCustody
   const handoff = planDurableBearerSpendCustodyHandoff({
     bearerRecord: bearer,
     custodyState: previousCustodyState,
+    exactPayload: userExport.exactPayload,
     authorization: ownerAuthorization,
   })
   assert.equal(
@@ -688,14 +744,15 @@ test('only wallet-send delivery may be non-expiring and it can never expire', ()
       () =>
         planDurableBearerSpendCustodyHandoff({
           bearerRecord,
-          custodyState: custodyState(pending),
+          custodyState: userExportCustody,
+          exactPayload: userExport.exactPayload,
           authorization: ownerAuthorization,
         }),
-      /handoff authority is invalid/,
+      /handoff authority is invalid|custody policy is invalid/,
     )
   }
   assert.throws(
-    () => acknowledgeDurableCustodyWalletSendHandoff(custodyState(pending), {
+    () => acknowledgeDurableCustodyWalletSendHandoff(userExportCustody, {
       capability: {
         kind: 'durable-bearer-custody-handoff',
       },
@@ -734,6 +791,262 @@ test('only wallet-send delivery may be non-expiring and it can never expire', ()
     () => decodeDurableCustodyRecord(foreignSemantic),
     /wallet-send delivery authority is invalid/,
   )
+})
+
+test('terminal recipient evidence closes only the exact durable wallet-send authority', () => {
+  const fixture = recipientDeliveryFixture()
+  const plan = planDurableRecipientDeliveryCustodyHandoff({
+    exactPayload: fixture.exactPayload,
+    custodyState: fixture.custodyState,
+    outgoingRecipient: fixture.outgoingRecipient,
+    evidence: fixture.creditedEvidence,
+    authorization: ownerAuthorization,
+  })
+
+  assert.equal(
+    plan.custodyState.operation.operation.delivery.state,
+    'acknowledged',
+  )
+  assert.equal(plan.recipientRecord.state.kind, 'credited')
+  assert.equal(
+    classifyDurableRecipientDeliveryCustodyHandoffPlan({
+      previousCustodyState: fixture.custodyState,
+      plan,
+    }),
+    'reconciliation-only',
+  )
+
+  const terminalRecordPlan = planDurableRecipientDeliveryCustodyHandoff({
+    exactPayload: fixture.exactPayload,
+    custodyState: fixture.custodyState,
+    outgoingRecipient: {
+      ...fixture.outgoingRecipient,
+      delivery: fixture.creditedRecipient,
+    },
+    authorization: ownerAuthorization,
+  })
+  assert.equal(
+    terminalRecordPlan.custodyState.operation.operation.delivery.state,
+    'acknowledged',
+  )
+})
+
+test('recipient handoff accepts only verified net-of-receive-fee credit', () => {
+  const exact = createRecipientDeliveryFixture({
+    amount: 5,
+    policy: {
+      kind: 'durable-recipient-ack',
+      recipient: {
+        deliveryId: 'deposit-1',
+        accountSubject: 'account:alice',
+        recipientKind: 'matching-engine',
+        purpose: 'market-funding',
+        destinationId: 'market-1',
+        mintUrl: 'https://mint.example',
+        unit: 'sat',
+        requestedAmount: '5',
+        creditPolicy: {
+          kind: 'net-of-receive-fee',
+        },
+      },
+    },
+  })
+  const outgoingRecipient = createDurableOutgoingRecipientDeliveryRecord({
+    exactPayload: exact.exactPayload,
+  })
+  const evidence = {
+    kind: 'credited' as const,
+    request: outgoingRecipient.delivery.request,
+    receiptOperationId: 'market-receipt/deposit-1',
+    receivedAtMs: 2_000,
+    creditedAmount: '4',
+    creditVerification: {
+      kind: 'net-of-receive-fee' as const,
+      receiveFeeAmount: '1',
+    },
+    businessEventId: 'deposit-1',
+    creditedAtMs: 2_000,
+  }
+  const custodyState = createRecipientCustodyState(exact)
+
+  const plan = planDurableRecipientDeliveryCustodyHandoff({
+    exactPayload: exact.exactPayload,
+    custodyState,
+    outgoingRecipient,
+    evidence,
+    authorization: ownerAuthorization,
+  })
+  assert.equal(
+    plan.custodyState.operation.operation.delivery.state,
+    'acknowledged',
+  )
+
+  assert.throws(
+    () =>
+      planDurableRecipientDeliveryCustodyHandoff({
+        exactPayload: exact.exactPayload,
+        custodyState,
+        outgoingRecipient,
+        evidence: {
+          ...evidence,
+          creditVerification: {
+            kind: 'net-of-receive-fee',
+            receiveFeeAmount: '2',
+          },
+        },
+        authorization: ownerAuthorization,
+      }),
+    /net recipient credit verification is invalid/,
+  )
+})
+
+test('recipient custody restart preserves canonical wallet and delivery identity', () => {
+  const fixture = recipientDeliveryFixture()
+  assert.equal(
+    fixture.walletOperation.operationId,
+    fixture.custodyState.operation.operation.retainedOperationKey,
+  )
+  assert.notEqual(
+    fixture.walletOperation.operationId,
+    fixture.custodyState.operation.operation.operationId,
+  )
+
+  const walletOperation = structuredClone(fixture.walletOperation)
+  const preparation = prepareDurableWalletSendDelivery({
+    walletOperation,
+    policy: structuredClone(fixture.preparation.policy),
+    admission: structuredClone(fixture.preparation.admission),
+  })
+  const exactPayload = planDurableWalletSendExactPayload({
+    preparation,
+    walletOperation,
+    resultGroups: fixture.resultGroups,
+    payloadHandle: fixture.exactPayload.payloadHandle,
+    encodedToken: fixture.encodedToken,
+  })
+  const custodyState = {
+    operation: decodeDurableCustodyRecord(
+      structuredClone(fixture.custodyState.operation),
+    ),
+    scopeState: decodeDurableCustodyScopeState(
+      structuredClone(fixture.custodyState.scopeState),
+    ),
+  }
+  const recipientRecord = decodeDurableRecipientDeliveryRecord(
+    structuredClone(fixture.creditedRecipient),
+  )
+  const outgoingRecipient =
+    decodeDurableOutgoingRecipientDeliveryRecord({
+      ...structuredClone(fixture.outgoingRecipient),
+      delivery: recipientRecord,
+    })
+  const plan = planDurableRecipientDeliveryCustodyHandoff({
+    exactPayload,
+    custodyState,
+    outgoingRecipient,
+    authorization: ownerAuthorization,
+  })
+  assert.equal(
+    plan.custodyState.operation.operation.delivery.state,
+    'acknowledged',
+  )
+})
+
+test('wallet-send custody handoff capabilities cannot cross delivery policies', () => {
+  const recipient = recipientDeliveryFixture()
+  const userExport = createRecipientDeliveryFixture({
+    policy: { kind: 'user-export' },
+  })
+  const userExportCustody = createRecipientCustodyState(userExport)
+  const delivery = userExportCustody.operation.operation.delivery
+  if (
+    delivery.deliveryKind !== 'outbox' ||
+    delivery.deliveryId === null ||
+    delivery.payloadHandle === null
+  ) {
+    throw new Error('missing exact user-export delivery')
+  }
+  const bearer = createDurableBearerSpendDeliveryRecord({
+    deliveryId: delivery.deliveryId,
+    walletId: profileScope().walletId,
+    parentOperationId: userExportCustody.operation.operation.operationId,
+    payloadHandle: delivery.payloadHandle,
+    mintUrl: userExport.exactPayload.mintUrl,
+    unit: userExport.exactPayload.unit,
+    encodedToken: userExport.encodedToken,
+    proofs: userExport.resultGroups.send,
+    origin: 'local',
+    createdAtMs: 1_000,
+  })
+  assert.throws(
+    () =>
+      planDurableBearerSpendCustodyHandoff({
+        bearerRecord: bearer,
+        custodyState: userExportCustody,
+        exactPayload: recipient.exactPayload,
+        authorization: ownerAuthorization,
+      }),
+    /custody policy is invalid/,
+  )
+  assert.throws(
+    () =>
+      planDurableRecipientDeliveryCustodyHandoff({
+        exactPayload: userExport.exactPayload,
+        custodyState: recipient.custodyState,
+        outgoingRecipient: {
+          ...recipient.outgoingRecipient,
+          delivery: recipient.creditedRecipient,
+        },
+        authorization: ownerAuthorization,
+      }),
+    /policy|conflicts/,
+  )
+})
+
+test('recipient custody closure rejects delivery, token, mint, unit, and amount substitution', () => {
+  const fixture = recipientDeliveryFixture()
+  for (const [field, replacement] of [
+    ['deliveryId', 'payment-foreign'],
+    ['tokenDigest', FINGERPRINT_B],
+    ['mintUrl', 'https://foreign-mint.example'],
+    ['unit', 'usd'],
+    ['requestedAmount', '2'],
+    ['accountSubject', 'account:bob'],
+    ['recipientKind', 'other-service'],
+    ['purpose', 'market-funding'],
+    ['destinationId', 'market-2'],
+    ['encodedTokenBytes', 999],
+  ] as const) {
+    const request = {
+      ...fixture.pendingRecipient.request,
+      [field]: replacement,
+    }
+    assert.throws(
+      () =>
+        planDurableRecipientDeliveryCustodyHandoff({
+          exactPayload: fixture.exactPayload,
+          custodyState: fixture.custodyState,
+          outgoingRecipient: {
+            ...fixture.outgoingRecipient,
+            delivery: {
+              ...fixture.pendingRecipient,
+              request,
+            },
+          },
+          evidence: {
+            ...fixture.creditedEvidence,
+            request,
+            creditedAmount:
+              field === 'requestedAmount'
+                ? replacement
+                : fixture.creditedEvidence.creditedAmount,
+          },
+          authorization: ownerAuthorization,
+        }),
+      /authority|conflicts|amount/,
+      field,
+    )
+  }
 })
 
 test('wallet storage boundaries reject trade and foreign exact authority', () => {

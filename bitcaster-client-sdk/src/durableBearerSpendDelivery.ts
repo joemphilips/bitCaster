@@ -38,6 +38,12 @@ import type {
 import { requireExactDurableWalletSendToken } from "./durableWalletSendDelivery.ts";
 import { normalizeDurableWalletMintUrl } from "./durableWalletMintUrl.ts";
 import { sameCashuProofArtifact } from "./proofSelection.ts";
+import {
+  type DurableWalletSendExactPayload,
+} from "./durableWalletSendExactPayload.ts";
+import {
+  requireDurableWalletSendExactPayloadCapability,
+} from "./durableWalletSendExactPayloadAuthority.ts";
 
 export type {
   DurableBearerSpendClassification,
@@ -333,14 +339,37 @@ export interface DurableBearerSpendCustodyHandoffPlan {
 export function planDurableBearerSpendCustodyHandoff(input: {
   bearerRecord: DurableBearerSpendDeliveryRecord;
   custodyState: DurableCustodyState;
+  exactPayload: DurableWalletSendExactPayload;
   authorization: DurableCustodyOwnerAuthorization;
 }): DurableBearerSpendCustodyHandoffPlan {
   const record = decodeDurableBearerSpendDeliveryRecord(input.bearerRecord);
   if (record.state.kind !== "pending") {
     throw new Error("durable bearer delivery cannot be handed off");
   }
+  const exactPayload =
+    requireDurableWalletSendExactPayloadCapability(input.exactPayload);
+  if (
+    exactPayload.policyKind !== "user-export" ||
+    exactPayload.walletOperationId !==
+      input.custodyState.operation.operation.retainedOperationKey ||
+    exactPayload.deliveryIntentFingerprint !==
+      input.custodyState.operation.operation.privateMaterial
+        .publicFingerprint ||
+    exactPayload.resultFingerprint !==
+      input.custodyState.operation.operation.result.resultFingerprint ||
+    exactPayload.payloadHandle !== record.payloadHandle ||
+    exactPayload.tokenDigest !== record.tokenDigest ||
+    exactPayload.encodedTokenBytes !== record.tokenByteLength ||
+    exactPayload.mintUrl !== record.mintUrl ||
+    exactPayload.unit !== record.unit
+  ) {
+    throw new Error("durable bearer custody policy is invalid");
+  }
   const capability: DurableBearerCustodyHandoffCapability =
     issueDurableBearerCustodyHandoffCapability({
+      policyKind: "user-export",
+      deliveryIntentFingerprint:
+        exactPayload.deliveryIntentFingerprint,
       walletId: record.walletId,
       operationId: record.parentOperationId,
       deliveryId: record.deliveryId,

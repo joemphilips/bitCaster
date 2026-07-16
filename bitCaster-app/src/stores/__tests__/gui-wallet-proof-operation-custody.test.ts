@@ -6,11 +6,18 @@ import {
   getEncodedTokenV4,
   hashToCurve,
   Mint as CashuMint,
+  OutputData,
   type Proof,
   type ProofState,
 } from "@cashu/cashu-ts";
 import Dexie from "dexie";
 import { createDurableWalletProofTransition } from "@bitcaster/client-sdk/durableWalletProofTransition";
+import {
+  createDurableWalletSendOperation,
+  decodeDurableWalletOperation,
+} from "@bitcaster/client-sdk/durableWalletOperation";
+import { prepareDurableWalletSendDelivery } from "@bitcaster/client-sdk/durableWalletSendDeliveryPreparation";
+import { planDurableWalletSendExactPayload } from "@bitcaster/client-sdk/durableWalletSendExactPayload";
 import { deriveDurableCustodyProofResultFingerprint } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
 import {
@@ -75,7 +82,6 @@ import {
 import {
   guiWalletSendDeliveryMetadata,
   createGuiWalletSendDeliveryPayloadRow,
-  guiWalletSendTokenFingerprint,
   readGuiWalletSendDeliveryMetadata,
 } from "../gui-wallet-send-delivery";
 import { createGuiBearerSpendDeliveryRow } from "../gui-bearer-spend-delivery";
@@ -199,6 +205,20 @@ function ordinarySendOperationInput() {
       secret: "77".repeat(32),
     },
   ];
+  const durableWalletOperation = createDurableWalletSendOperation({
+    operationId: "wallet-send-operation-001",
+    mintUrl: input.mintUrl,
+    unit: "sat",
+    preview: {
+      amount: Amount.from(1),
+      fees: Amount.from(0),
+      keysetId: KEYSET_ID,
+      inputs: input.inputs,
+      keepOutputs: input.outputs.change.map(durableOutputData),
+      sendOutputs: sendOutputs.map(durableOutputData),
+      unselectedProofs: [passthrough],
+    },
+  });
   return {
     ...input,
     operationId: "wallet-send-operation-001",
@@ -209,13 +229,10 @@ function ordinarySendOperationInput() {
     },
     metadata: {
       unit: "sat",
-      guiWalletSendDelivery: guiWalletSendDeliveryMetadata({
-        mintUrl: input.mintUrl,
-        unit: "sat",
-        sendOutputs,
-        keepOutputs: input.outputs.change,
-        passthroughProofs: [passthrough],
-      }),
+      durableWalletOperation,
+      guiWalletSendDelivery: walletSendDeliveryMetadata(
+        durableWalletOperation,
+      ),
       durableWalletProofTransition: createDurableWalletProofTransition({
         inputSource: "wallet",
         plannedOutputLabels: ["keep", "send"],
@@ -253,6 +270,36 @@ function ordinarySendEncodedToken(): string {
   });
 }
 
+function durableOutputData(output: {
+  blindedMessage: { amount: number; id: string; B_: string };
+  blindingFactor: string;
+  secret: string;
+  ephemeralE?: string;
+}): OutputData {
+  return new OutputData(
+    {
+      ...output.blindedMessage,
+      amount: Amount.from(output.blindedMessage.amount),
+    },
+    BigInt(`0x${output.blindingFactor}`),
+    new TextEncoder().encode(output.secret),
+    output.ephemeralE,
+  );
+}
+
+function walletSendDeliveryMetadata(
+  operation: ReturnType<typeof createDurableWalletSendOperation>,
+) {
+  return guiWalletSendDeliveryMetadata({
+    mintUrl: operation.mintUrl,
+    unit: operation.unit,
+    sendOutputs: operation.preview.sendOutputs,
+    keepOutputs: operation.preview.keepOutputs,
+    passthroughProofs: operation.preview.unselectedProofs,
+    inputProofs: operation.preview.inputs,
+  });
+}
+
 function independentOrdinarySendProofPlan(index: number) {
   const secret = (offset: number) =>
     (index * 8 + offset).toString(16).padStart(2, "0").repeat(32);
@@ -284,6 +331,20 @@ function independentOrdinarySendProofPlan(index: number) {
 function independentOrdinarySendFixture(index: number, mintUrl: string) {
   const { inputProof, passthrough, keepOutput, sendOutput } =
     independentOrdinarySendProofPlan(index);
+  const durableWalletOperation = createDurableWalletSendOperation({
+    operationId: `independent-wallet-send-${index}`,
+    mintUrl,
+    unit: "sat",
+    preview: {
+      amount: Amount.from(1),
+      fees: Amount.from(0),
+      keysetId: KEYSET_ID,
+      inputs: [inputProof],
+      keepOutputs: [durableOutputData(keepOutput)],
+      sendOutputs: [durableOutputData(sendOutput)],
+      unselectedProofs: [passthrough],
+    },
+  });
   const input = {
     operationId: `independent-wallet-send-${index}`,
     kind: "wallet-send" as const,
@@ -292,13 +353,10 @@ function independentOrdinarySendFixture(index: number, mintUrl: string) {
     outputs: { keep: [keepOutput], send: [sendOutput] },
     metadata: {
       unit: "sat",
-      guiWalletSendDelivery: guiWalletSendDeliveryMetadata({
-        mintUrl,
-        unit: "sat",
-        sendOutputs: [sendOutput],
-        keepOutputs: [keepOutput],
-        passthroughProofs: [passthrough],
-      }),
+      durableWalletOperation,
+      guiWalletSendDelivery: walletSendDeliveryMetadata(
+        durableWalletOperation,
+      ),
       durableWalletProofTransition: createDurableWalletProofTransition({
         inputSource: "wallet",
         plannedOutputLabels: ["keep", "send"],
@@ -347,19 +405,30 @@ function ordinaryMultiSendOperationInput() {
     secret: "99".repeat(32),
   };
   const sendOutputs = [...single.outputs.send, secondOutput];
+  const durableWalletOperation = createDurableWalletSendOperation({
+    operationId: "wallet-multi-send-operation-001",
+    mintUrl: single.mintUrl,
+    unit: "sat",
+    preview: {
+      amount: Amount.from(2),
+      fees: Amount.from(0),
+      keysetId: KEYSET_ID,
+      inputs: single.inputs,
+      keepOutputs: single.outputs.keep.map(durableOutputData),
+      sendOutputs: sendOutputs.map(durableOutputData),
+      unselectedProofs: [single.passthrough],
+    },
+  });
   return {
     ...single,
     operationId: "wallet-multi-send-operation-001",
     outputs: { ...single.outputs, send: sendOutputs },
     metadata: {
       ...single.metadata,
-      guiWalletSendDelivery: guiWalletSendDeliveryMetadata({
-        mintUrl: single.mintUrl,
-        unit: "sat",
-        sendOutputs,
-        keepOutputs: single.outputs.keep,
-        passthroughProofs: [single.passthrough],
-      }),
+      durableWalletOperation,
+      guiWalletSendDelivery: walletSendDeliveryMetadata(
+        durableWalletOperation,
+      ),
       durableWalletProofTransition: createDurableWalletProofTransition({
         inputSource: "wallet",
         plannedOutputLabels: ["keep", "send"],
@@ -1325,15 +1394,33 @@ describe("GUI wallet custody coordinator", () => {
                 resultHandle,
                 resultFingerprint,
               });
-              transaction.putDelivery({
-                operationId: record.operation.operationId,
-                deliveryKind: "wallet-send",
-                payloadHandle: `wallet-send:${operation.operationId}`,
-                payloadFingerprint: guiWalletSendTokenFingerprint(encodedToken),
-                expiresAtMs: null,
-                state: "pending",
-              });
             },
+          );
+          const walletOperation = decodeDurableWalletOperation(
+            operation.metadata.durableWalletOperation,
+          );
+          const deliveryMetadata =
+            readGuiWalletSendDeliveryMetadata(operation);
+          if (
+            walletOperation.kind !== "wallet-send" ||
+            deliveryMetadata?.mode !== "user-export"
+          ) {
+            throw new Error("missing exact wallet-send preparation");
+          }
+          const exactPayload = planDurableWalletSendExactPayload({
+            preparation: prepareDurableWalletSendDelivery({
+              walletOperation,
+              policy: { kind: "user-export" },
+              admission: deliveryMetadata.admission,
+            }),
+            walletOperation,
+            resultGroups: resultProofs,
+            payloadHandle: `wallet-send:${operation.operationId}`,
+            encodedToken,
+          });
+          custodyPlan.transaction.stageWalletSendExactPayload(
+            operation.custodyOperationId,
+            exactPayload,
           );
           const pendingRows = custodyPlan.transaction.operationRows();
           if (pendingRows.length !== 1) {
@@ -1374,6 +1461,7 @@ describe("GUI wallet custody coordinator", () => {
           const handoffPlan = planDurableBearerSpendCustodyHandoff({
             bearerRecord,
             custodyState: pendingState,
+            exactPayload,
             authorization: authority.owner,
           });
           custodyPlan.transaction.adoptBearerSpendCustodyHandoff(handoffPlan);

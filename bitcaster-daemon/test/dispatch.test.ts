@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { createECDH } from 'node:crypto'
+import { createECDH, createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -3014,7 +3014,7 @@ function proofRecord(
       id: `keyset-${amount}`,
       amount,
       secret,
-      C: `c-${amount}`,
+      C: `02${createHash('sha256').update(secret).digest('hex')}`,
     },
     createdAt: '2026-05-21T00:00:00.000Z',
     updatedAt: '2026-05-21T00:00:00.000Z',
@@ -3129,8 +3129,12 @@ function concurrentSendWallet(selectedSecrets: string[]) {
         fees: 0,
         keysetId: proofs[0].id,
         inputs: proofs,
-        sendOutputs: [preparedOutput(`send-${proofs[0].secret}`)],
-        keepOutputs: [preparedOutput(`keep-${proofs[0].secret}`)],
+        sendOutputs: [
+          preparedOutput(`send-${proofs[0].secret}`, proofs[0].id),
+        ],
+        keepOutputs: [
+          preparedOutput(`keep-${proofs[0].secret}`, proofs[0].id),
+        ],
         unselectedProofs: [],
       }
     },
@@ -3165,8 +3169,8 @@ function resumableSendWallet(options: {
         fees: 0,
         keysetId: proofs[0].id,
         inputs: proofs,
-        sendOutputs: [preparedOutput('send-output')],
-        keepOutputs: [preparedOutput('keep-output')],
+        sendOutputs: [preparedOutput('send-output', proofs[0].id)],
+        keepOutputs: [preparedOutput('keep-output', proofs[0].id)],
         unselectedProofs: [],
       }
     },
@@ -3188,15 +3192,16 @@ function resumableSendWallet(options: {
   }
 }
 
-function preparedOutput(secret: string) {
+function preparedOutput(secret: string, keysetId: string) {
+  const digest = createHash('sha256').update(secret).digest('hex')
   return {
     blindedMessage: {
       amount: 5,
-      id: '009a1f293253e41e',
-      B_: `blinded-${secret}`,
+      id: keysetId,
+      B_: `02${digest}`,
     },
     blindingFactor: 1n,
-    secret: new Uint8Array([secret.length]),
+    secret: new TextEncoder().encode(secret),
   }
 }
 

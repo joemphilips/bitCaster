@@ -4,6 +4,7 @@ import {
   decodeDurableCustodyScopeState,
   isDurableCustodyProofReservationActive,
   reduceDurableCustodyState,
+  stageDurableCustodyWalletSendExactPayload,
   type DurableCustodyOperationTransition,
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyRecord,
@@ -12,6 +13,7 @@ import {
   type DurableCustodyTransaction,
   type DurableCustodyTransactionWork,
 } from "@bitcaster/client-sdk/durableCustody";
+import type { DurableWalletSendExactPayload } from "@bitcaster/client-sdk/durableWalletSendExactPayload";
 import {
   classifyDurableBearerSpendCustodyHandoffPlan,
   type DurableBearerSpendCustodyHandoffPlan,
@@ -315,6 +317,27 @@ export class PlannedCustodyTransaction implements DurableCustodyTransaction {
     this.operations.set(
       operationId,
       decodeDurableCustodyRecord(plan.custodyState.operation, this.scope),
+    );
+    this.touched.add(operationId);
+    this.rebuildActiveWorkIndex();
+    this.assertIntegrity();
+  }
+
+  stageWalletSendExactPayload(
+    operationId: string,
+    exactPayload: DurableWalletSendExactPayload,
+  ): void {
+    const next = stageDurableCustodyWalletSendExactPayload(
+      {
+        scopeState: this.getScopeState(),
+        operation: this.requireOperation(operationId),
+      },
+      { ...this.owner, exactPayload },
+    );
+    this.state = decodeDurableCustodyScopeState(next.scopeState, this.scope);
+    this.operations.set(
+      operationId,
+      decodeDurableCustodyRecord(next.operation, this.scope),
     );
     this.touched.add(operationId);
     this.rebuildActiveWorkIndex();

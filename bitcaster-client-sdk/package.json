@@ -120,6 +120,30 @@
       "types": "./dist/durableWalletSendDelivery.d.ts",
       "import": "./dist/durableWalletSendDelivery.js"
     },
+    "./durableWalletSendDeliveryPreparation": {
+      "types": "./dist/durableWalletSendDeliveryPreparation.d.ts",
+      "import": "./dist/durableWalletSendDeliveryPreparation.js"
+    },
+    "./durableWalletSendExactPayload": {
+      "types": "./dist/durableWalletSendExactPayload.d.ts",
+      "import": "./dist/durableWalletSendExactPayload.js"
+    },
+    "./durableRecipientDelivery": {
+      "types": "./dist/durableRecipientDelivery.d.ts",
+      "import": "./dist/durableRecipientDelivery.js"
+    },
+    "./durableOutgoingRecipientDelivery": {
+      "types": "./dist/durableOutgoingRecipientDelivery.d.ts",
+      "import": "./dist/durableOutgoingRecipientDelivery.js"
+    },
+    "./durableRecipientSubmission": {
+      "types": "./dist/durableRecipientSubmission.d.ts",
+      "import": "./dist/durableRecipientSubmission.js"
+    },
+    "./durableRecipientDeliveryHandoff": {
+      "types": "./dist/durableRecipientDeliveryHandoff.d.ts",
+      "import": "./dist/durableRecipientDeliveryHandoff.js"
+    },
     "./durableBearerSpendDelivery": {
       "types": "./dist/durableBearerSpendDelivery.d.ts",
       "import": "./dist/durableBearerSpendDelivery.js"

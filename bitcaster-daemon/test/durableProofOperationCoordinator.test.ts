@@ -28,6 +28,11 @@ import { openProfileDatabase } from '../src/profile.ts'
 import {
   setDaemonCustodyUnitOfWorkFaultHookForTest,
 } from '../src/durableCustodyUnitOfWork.ts'
+import {
+  DAEMON_WALLET_SEND_DELIVERY_PREPARATION_METADATA_KEY,
+  addDaemonUserExportWalletSendPreparation,
+  readDaemonWalletSendDeliveryPreparation,
+} from '../src/durableWalletSendPreparation.ts'
 import { recoverPreparedWalletSends } from '../src/walletOps.ts'
 import {
   addAvailableSatProofs,
@@ -106,12 +111,12 @@ function preparedWalletSend() {
     inputs: [{
       id: KEYSET_ID,
       amount: 2,
-      secret: 'input-secret',
+      secret: '66'.repeat(32),
       C: PUBLIC_KEY,
     }],
     outputs: {
-      send: [storedOutput('send-secret', '44')],
-      keep: [storedOutput('keep-secret', '55')],
+      send: [storedOutput('44'.repeat(32), '44')],
+      keep: [storedOutput('55'.repeat(32), '55')],
     },
     metadata: {
       amount: 1,
@@ -127,23 +132,26 @@ function preparedWalletSend() {
 function reservingWalletSend() {
   const prepared = preparedWalletSend()
   const reservationId = `wallet-send:${prepared.operationId}`
-  return {
+  return addDaemonUserExportWalletSendPreparation({
     ...prepared,
     metadata: { ...prepared.metadata, reservationId },
     walletProofReservation: { reservationId, unit: 'sat' as const },
-  }
+  })
 }
 
 function reservingWalletSendFor(operationId: string, inputSecret: string) {
-  const prepared = reservingWalletSend()
+  const prepared = preparedWalletSend()
   const reservationId = `wallet-send:${operationId}`
-  return {
+  return addDaemonUserExportWalletSendPreparation({
     ...prepared,
     operationId,
-    inputs: [{ ...prepared.inputs[0]!, secret: inputSecret }],
+    inputs: [{
+      ...prepared.inputs[0]!,
+      secret: canonicalTestSecret(inputSecret),
+    }],
     metadata: { ...prepared.metadata, reservationId },
     walletProofReservation: { reservationId, unit: 'sat' as const },
-  }
+  })
 }
 
 function storedOutput(secret: string, byte: string) {
@@ -158,6 +166,13 @@ function storedOutputAmount(secret: string, byte: string, amount: number) {
   }
 }
 
+function canonicalTestSecret(label: string): string {
+  return Buffer.from(label, 'utf8')
+    .toString('hex')
+    .padEnd(64, '0')
+    .slice(0, 64)
+}
+
 test('installed daemon coordinator commits custody, operation, and wallet proof lifecycle together', async () => {
   await withDaemonHome(async () => {
     const { store, scope, lease, uninstall } = await installedCoordinator()
@@ -165,6 +180,12 @@ test('installed daemon coordinator commits custody, operation, and wallet proof 
       const prepared = reservingWalletSend()
       await addAvailableSatProofs(prepared.mintUrl, prepared.inputs)
       await prepareProofOperation(prepared)
+      const persisted = await getProofOperation(prepared.operationId)
+      const delivery = readDaemonWalletSendDeliveryPreparation(
+        persisted ?? prepared,
+      )
+      assert.equal(delivery?.policyKind, 'user-export')
+      assert.equal(delivery?.walletOperationId, prepared.operationId)
       const reserved = (await readState()).wallet.proofs[0]
       assert.equal(reserved?.state, 'reserved')
       assert.equal(reserved?.reservedBy, prepared.walletProofReservation.reservationId)
@@ -252,6 +273,32 @@ test('installed daemon coordinator commits custody, operation, and wallet proof 
       } finally {
         database.close()
       }
+    } finally {
+      uninstall()
+      await lease.stopAndRelease()
+    }
+  })
+})
+
+test('daemon coordinator rejects substituted wallet-send delivery authority before persistence', async () => {
+  await withDaemonHome(async () => {
+    const { lease, uninstall } = await installedCoordinator()
+    try {
+      const prepared = reservingWalletSend()
+      const substituted = structuredClone(prepared)
+      const delivery = substituted.metadata[
+        DAEMON_WALLET_SEND_DELIVERY_PREPARATION_METADATA_KEY
+      ] as { walletOperationId: string }
+      delivery.walletOperationId = 'foreign-wallet-operation'
+      await addAvailableSatProofs(substituted.mintUrl, substituted.inputs)
+
+      await assert.rejects(
+        () => prepareProofOperation(substituted),
+        /preparation fingerprint is invalid|does not match its exact operation/,
+      )
+
+      assert.equal(await getProofOperation(substituted.operationId), null)
+      assert.equal((await readState()).wallet.proofs[0]?.state, 'available')
     } finally {
       uninstall()
       await lease.stopAndRelease()
@@ -472,7 +519,7 @@ async function prepareSafeAbortScenario(
   }
   return {
     input,
-    inputSecret,
+    inputSecret: input.inputs[0]!.secret,
     record,
     evidence: {
       classification: 'all-inputs-unspent' as const,

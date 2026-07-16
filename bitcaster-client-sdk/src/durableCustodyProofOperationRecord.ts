@@ -14,6 +14,10 @@ import {
 } from './durableCustodyProofOperation.ts'
 import type { DurableTradeProofOperationLink } from './durableTradeRecovery.ts'
 import { amountToNumber } from './proofSelection.ts'
+import {
+  requireDurableWalletSendDeliveryPreparationCapability,
+  type DurableWalletSendDeliveryPreparationCapability,
+} from './durableWalletSendPreparationAuthority.ts'
 
 export interface CreateDurableCustodyProofOperationInput {
   scope: DurableCustodyScope
@@ -22,6 +26,7 @@ export interface CreateDurableCustodyProofOperationInput {
   inventoryAccountId: string | null
   reservationId?: string
   parentReservationId?: string
+  walletSendDeliveryPreparation?: DurableWalletSendDeliveryPreparationCapability
 }
 
 /** Builds one exact canonical custody intent from a persisted Cashu operation. */
@@ -40,6 +45,7 @@ export function createDurableCustodyProofOperation(
     throw new Error('custody output verification authority is invalid')
   }
   const inputProofs = exactInputProofs(input.operation, input.facts)
+  const deliveryIntentFingerprint = walletSendDeliveryIntentFingerprint(input)
   const handle = (kind: string, fingerprint: string) => `${kind}:${fingerprint}`
   return createDurableCustodyDispatchIntent({
     scope: input.scope,
@@ -69,9 +75,41 @@ export function createDurableCustodyProofOperation(
     privateMaterial: {
       materialHandle: handle('private-material', requestFingerprint),
       useId: handle('private-use', requestFingerprint),
-      publicFingerprint: requestFingerprint,
+      publicFingerprint: deliveryIntentFingerprint ?? requestFingerprint,
     },
   })
+}
+
+function walletSendDeliveryIntentFingerprint(
+  input: CreateDurableCustodyProofOperationInput,
+): string | null {
+  const preparation = input.walletSendDeliveryPreparation
+  if (input.operation.kind !== 'wallet-send') {
+    if (preparation !== undefined) {
+      throw new Error(
+        'wallet-send delivery preparation is foreign to proof operation',
+      )
+    }
+    return null
+  }
+  if (preparation === undefined) {
+    throw new Error('wallet-send delivery preparation is required')
+  }
+  requireDurableWalletSendDeliveryPreparationCapability(preparation, {
+    policyKind: preparation.policyKind,
+    walletOperationId: input.operation.operationId,
+    activityId: preparation.activityId,
+    intentFingerprint: preparation.intentFingerprint,
+  })
+  if (input.facts.binding.kind !== 'wallet') {
+    throw new Error('wallet-send delivery preparation requires wallet binding')
+  }
+  if (
+    input.facts.binding.activityId !== preparation.activityId
+  ) {
+    throw new Error('wallet-send delivery binding is invalid')
+  }
+  return preparation.intentFingerprint
 }
 
 /** Re-derives the exact immutable request identities used during recovery. */

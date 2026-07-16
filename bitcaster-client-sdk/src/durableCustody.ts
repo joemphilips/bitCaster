@@ -10,6 +10,17 @@ import {
   requireDurableBearerCustodyHandoffCapability,
   type DurableBearerCustodyHandoffCapability,
 } from './durableBearerHandoffAuthority.ts'
+import {
+  requireDurableRecipientCustodyHandoffCapability,
+  type DurableRecipientCustodyHandoffCapability,
+} from './durableRecipientHandoffAuthority.ts'
+import {
+  requireDurableWalletSendExactPayloadCapability,
+  type DurableWalletSendExactPayloadCapability,
+} from './durableWalletSendExactPayloadAuthority.ts'
+import type {
+  DurableWalletSendDeliveryPolicyKind,
+} from './durableWalletSendPreparationAuthority.ts'
 
 export const DURABLE_CUSTODY_SCHEMA_VERSION = 1 as const
 export const DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX = 16 * 1_024
@@ -89,6 +100,10 @@ export interface DurableCustodyOperationIdentity {
       }
     | {
         kind: 'wallet'
+        /**
+         * Durable-recipient sends use the external delivery/payment id here.
+         * Local bearer exports continue to use their wallet operation id.
+         */
         activityId: string
         stage: CustodyWalletStage
       }
@@ -106,6 +121,7 @@ export type DurableCustodyBinding =
     }
   | {
       kind: 'wallet'
+      /** See DurableCustodyOperationIdentity.binding.activityId. */
       activityId: string
       stage: CustodyWalletStage
     }
@@ -656,7 +672,11 @@ export function classifyDurableCustodyWalletStorageBoundary(input: {
   previous: DurableCustodyRecord | null
   next: DurableCustodyRecord
 }): DurableCustodyWalletStorageBoundary {
-  return classifyDurableCustodyWalletStorageBoundaryWithHandoff(input, null)
+  return classifyDurableCustodyWalletStorageBoundaryWithHandoff(
+    input,
+    null,
+    null,
+  )
 }
 
 export function classifyDurableCustodyWalletSendHandoffBoundary(input: {
@@ -667,15 +687,33 @@ export function classifyDurableCustodyWalletSendHandoffBoundary(input: {
   return classifyDurableCustodyWalletStorageBoundaryWithHandoff(
     input,
     input.capability,
+    'user-export',
   )
 }
+
+export function classifyDurableCustodyWalletSendRecipientBoundary(input: {
+  previous: DurableCustodyRecord
+  next: DurableCustodyRecord
+  capability: DurableRecipientCustodyHandoffCapability
+}): DurableCustodyWalletStorageBoundary {
+  return classifyDurableCustodyWalletStorageBoundaryWithHandoff(
+    input,
+    input.capability,
+    'durable-recipient-ack',
+  )
+}
+
+type DurableCustodyWalletSendHandoffAuthority =
+  | DurableBearerCustodyHandoffCapability
+  | DurableRecipientCustodyHandoffCapability
 
 function classifyDurableCustodyWalletStorageBoundaryWithHandoff(
   input: {
     previous: DurableCustodyRecord | null
     next: DurableCustodyRecord
   },
-  bearerHandoff: DurableBearerCustodyHandoffCapability | null,
+  handoff: DurableCustodyWalletSendHandoffAuthority | null,
+  handoffPolicy: DurableWalletSendDeliveryPolicyKind | null,
 ): DurableCustodyWalletStorageBoundary {
   const next = decodeDurableCustodyRecord(input.next)
   if (next.operation.binding.kind !== 'wallet') {
@@ -690,7 +728,12 @@ function classifyDurableCustodyWalletStorageBoundaryWithHandoff(
 
   const previous = decodeDurableCustodyRecord(input.previous, next.scope)
   assertSameWalletStorageAuthority(previous, next)
-  assertWalletStorageDeliveryTransition(previous, next, bearerHandoff)
+  assertWalletStorageDeliveryTransition(
+    previous,
+    next,
+    handoff,
+    handoffPolicy,
+  )
   switch (previous.operation.state) {
     case 'dispatch-intent':
       if (
@@ -772,7 +815,8 @@ function walletStorageAuthority(
 function assertWalletStorageDeliveryTransition(
   previous: DurableCustodyRecord,
   next: DurableCustodyRecord,
-  bearerHandoff: DurableBearerCustodyHandoffCapability | null,
+  handoff: DurableCustodyWalletSendHandoffAuthority | null,
+  handoffPolicy: DurableWalletSendDeliveryPolicyKind | null,
 ): void {
   const before = previous.operation.delivery
   const after = next.operation.delivery
@@ -801,10 +845,18 @@ function assertWalletStorageDeliveryTransition(
     deriveDurableCustodyArtifactFingerprint({ ...before, state: null }) ===
       deriveDurableCustodyArtifactFingerprint({ ...after, state: null })
   ) {
-    if (bearerHandoff === null) {
+    if (handoff === null) {
       throw new Error('wallet-send handoff requires composite authority')
     }
-    requireWalletSendHandoffCapability(previous, before, bearerHandoff)
+    if (handoffPolicy === null) {
+      throw new Error('wallet-send handoff policy is missing')
+    }
+    requireWalletSendHandoffCapability(
+      previous,
+      before,
+      handoff,
+      handoffPolicy,
+    )
     return
   }
   throw new Error('wallet storage boundary has foreign delivery authority')
@@ -1512,7 +1564,60 @@ export function reduceDurableCustodyState(
   state: DurableCustodyState,
   transition: DurableCustodyTransition,
 ): DurableCustodyState {
-  return reduceDurableCustodyStateWithHandoff(state, transition, null)
+  return reduceDurableCustodyStateWithHandoff(state, transition, null, null)
+}
+
+/**
+ * Advances an applied wallet-send result to one exact pending payload under
+ * the immutable pre-mint delivery policy.
+ */
+export function stageDurableCustodyWalletSendExactPayload(
+  state: DurableCustodyState,
+  input: DurableCustodyOwnerAuthorization & {
+    exactPayload: DurableWalletSendExactPayloadCapability
+  },
+): DurableCustodyState {
+  const record = decodeDurableCustodyRecord(state.operation)
+  const scopeState = decodeDurableCustodyScopeState(
+    state.scopeState,
+    record.scope,
+  )
+  const effectiveNowMs = authorizeOwner(scopeState, input)
+  const payload = requireDurableWalletSendExactPayloadCapability(
+    input.exactPayload,
+  )
+  if (
+    record.scope.scopeKind !== 'wallet' ||
+    record.operation.semanticKind !== 'wallet-send' ||
+    record.operation.binding.kind !== 'wallet' ||
+    record.operation.binding.activityId !== payload.activityId ||
+    record.operation.retainedOperationKey !== payload.walletOperationId ||
+    record.operation.privateMaterial.publicFingerprint !==
+      payload.deliveryIntentFingerprint ||
+    record.operation.result.state !== 'applied' ||
+    record.operation.result.resultFingerprint !== payload.resultFingerprint ||
+    record.operation.custodyContext.normalizedMint !== payload.mintUrl ||
+    record.operation.custodyContext.unit !== payload.unit ||
+    record.operation.delivery.deliveryKind !== 'none'
+  ) {
+    throw new Error('wallet-send exact payload custody authority is invalid')
+  }
+  const operation = structuredClone(record)
+  const nextScopeState = structuredClone(scopeState)
+  operation.revision += 1
+  operation.operation.delivery = {
+    deliveryKind: 'outbox',
+    deliveryId: `delivery:${operation.operation.operationId}:wallet-send`,
+    payloadHandle: payload.payloadHandle,
+    payloadFingerprint: payload.tokenDigest,
+    expiresAtMs: null,
+    state: 'pending',
+  }
+  nextScopeState.effectiveClock.highWaterMarkMs = effectiveNowMs
+  return {
+    operation: decodeDurableCustodyRecord(operation),
+    scopeState: nextScopeState,
+  }
 }
 
 /**
@@ -1535,13 +1640,36 @@ export function acknowledgeDurableCustodyWalletSendHandoff(
       observedAtMs: input.observedAtMs,
     },
     input.capability,
+    'user-export',
+  )
+}
+
+/** Closes a wallet-send outbox only through SDK-issued recipient authority. */
+export function acknowledgeDurableCustodyWalletSendRecipient(
+  state: DurableCustodyState,
+  input: DurableCustodyOwnerAuthorization & {
+    capability: DurableRecipientCustodyHandoffCapability
+  },
+): DurableCustodyState {
+  return reduceDurableCustodyStateWithHandoff(
+    state,
+    {
+      kind: 'delivery-resolved',
+      deliveryState: 'acknowledged',
+      incarnationId: input.incarnationId,
+      fencingEpoch: input.fencingEpoch,
+      observedAtMs: input.observedAtMs,
+    },
+    input.capability,
+    'durable-recipient-ack',
   )
 }
 
 function reduceDurableCustodyStateWithHandoff(
   state: DurableCustodyState,
   transition: DurableCustodyTransition,
-  bearerHandoff: DurableBearerCustodyHandoffCapability | null,
+  handoff: DurableCustodyWalletSendHandoffAuthority | null,
+  handoffPolicy: DurableWalletSendDeliveryPolicyKind | null,
 ): DurableCustodyState {
   const { operation: record, scopeState } = state
   validateRecordBindings(record)
@@ -1666,13 +1794,14 @@ function reduceDurableCustodyStateWithHandoff(
         throw new Error('delivery resolution requires pending outbox')
       }
       if (isWalletSendDelivery(record, record.operation.delivery)) {
-        if (bearerHandoff === null || transition.deliveryState !== 'acknowledged') {
+        if (handoff === null || transition.deliveryState !== 'acknowledged') {
           throw new Error('wallet-send delivery requires a closed terminal decision')
         }
         requireWalletSendHandoffCapability(
           record,
           record.operation.delivery,
-          bearerHandoff,
+          handoff,
+          handoffPolicy,
         )
       }
       if (transition.deliveryState === 'expired') {
@@ -1724,7 +1853,8 @@ function reduceDurableCustodyStateWithHandoff(
 function requireWalletSendHandoffCapability(
   record: DurableCustodyRecord,
   delivery: DurableCustodyRecord['operation']['delivery'],
-  capability: DurableBearerCustodyHandoffCapability,
+  capability: DurableCustodyWalletSendHandoffAuthority,
+  expectedPolicy: DurableWalletSendDeliveryPolicyKind | null,
 ): void {
   if (
     record.scope.scopeKind !== 'wallet' ||
@@ -1735,15 +1865,43 @@ function requireWalletSendHandoffCapability(
   ) {
     throw new Error('wallet-send delivery requires wallet custody scope')
   }
-  requireDurableBearerCustodyHandoffCapability(capability, {
+  const binding = {
     walletId: record.scope.walletId,
     operationId: record.operation.operationId,
-    deliveryId: delivery.deliveryId,
     payloadHandle: delivery.payloadHandle,
     payloadFingerprint: delivery.payloadFingerprint,
     mintUrl: record.operation.custodyContext.normalizedMint,
     unit: record.operation.custodyContext.unit,
-  })
+    deliveryIntentFingerprint:
+      record.operation.privateMaterial.publicFingerprint,
+  }
+  if (expectedPolicy === null) {
+    throw new Error('wallet-send handoff policy is missing')
+  }
+  switch (capability.kind) {
+    case 'durable-bearer-custody-handoff':
+      if (expectedPolicy !== 'user-export') {
+        throw new Error('wallet-send handoff policy is foreign')
+      }
+      requireDurableBearerCustodyHandoffCapability(capability, {
+        ...binding,
+        policyKind: 'user-export',
+        deliveryId: delivery.deliveryId,
+      })
+      return
+    case 'durable-recipient-custody-handoff':
+      if (expectedPolicy !== 'durable-recipient-ack') {
+        throw new Error('wallet-send handoff policy is foreign')
+      }
+      requireDurableRecipientCustodyHandoffCapability(capability, {
+        ...binding,
+        policyKind: 'durable-recipient-ack',
+        custodyDeliveryId: delivery.deliveryId,
+      })
+      return
+    default:
+      return assertNever(capability)
+  }
 }
 
 /** Decides recovery without selecting proofs, outputs, or fresh protocol material. */
@@ -2744,4 +2902,8 @@ function encodeProofIdentity(parts: readonly string[]): Uint8Array {
     offset += bytes.length
   }
   return output
+}
+
+function assertNever(_value: never): never {
+  throw new Error('unhandled durable custody variant')
 }

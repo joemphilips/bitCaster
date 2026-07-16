@@ -61,6 +61,9 @@ import {
   bindOrderCollateralOperationInDatabase,
   releaseOrderCollateralOperationAllocationInDatabase,
 } from './durableOrderCollateralSqlite.ts'
+import {
+  requireDaemonWalletSendDeliveryPreparation,
+} from './durableWalletSendPreparation.ts'
 
 interface DaemonCustodyAuthority {
   readonly scope: DaemonDurableCustodyLease['scope']
@@ -135,6 +138,8 @@ export class DaemonProofOperationCoordinator
       reservationId: input.walletProofReservation?.reservationId,
       parentReservationId:
         input.walletProofReservation?.parentOrderCollateralPinId,
+      walletSendDeliveryPreparation:
+        requireDaemonWalletSendDeliveryPreparation(input),
     })
     return this.unitOfWork.transact(
       this.transactionInput(

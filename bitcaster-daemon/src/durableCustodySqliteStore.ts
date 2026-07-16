@@ -1176,7 +1176,8 @@ function createSchema(database: DatabaseSync): void {
       wallet_stage TEXT,
       semantic_kind TEXT NOT NULL CHECK (semantic_kind IN (
         'swap-lock', 'swap-claim', 'swap-refund', 'conditional-keyset-swap',
-        'generic-receive', 'generic-send', 'ctf-split', 'ctf-merge', 'ctf-redeem'
+        'generic-receive', 'generic-send', 'wallet-send',
+        'ctf-split', 'ctf-merge', 'ctf-redeem'
       )),
       operation_state TEXT NOT NULL CHECK (operation_state IN ('dispatch-intent', 'transport-attempted', 'reconciled', 'aborted')),
       terminal_replay_evidence_required INTEGER NOT NULL CHECK (terminal_replay_evidence_required IN (0, 1)),

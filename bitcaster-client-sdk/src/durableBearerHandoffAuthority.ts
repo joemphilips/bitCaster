@@ -3,6 +3,8 @@ export interface DurableBearerCustodyHandoffCapability {
 }
 
 interface DurableBearerCustodyHandoffBinding {
+  policyKind: "user-export";
+  deliveryIntentFingerprint: string;
   walletId: string;
   operationId: string;
   deliveryId: string;
@@ -34,6 +36,9 @@ export function requireDurableBearerCustodyHandoffCapability(
   const binding = handoffAuthority.get(capability);
   if (
     binding?.walletId !== expected.walletId ||
+    binding.policyKind !== expected.policyKind ||
+    binding.deliveryIntentFingerprint !==
+      expected.deliveryIntentFingerprint ||
     binding.operationId !== expected.operationId ||
     binding.deliveryId !== expected.deliveryId ||
     binding.payloadHandle !== expected.payloadHandle ||

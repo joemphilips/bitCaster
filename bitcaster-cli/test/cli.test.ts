@@ -458,6 +458,10 @@ test('bitcaster-cli requires exactly one token input', async () => {
 })
 
 test('bitcaster-cli exits non-zero when daemon returns ok false', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-daemon-error-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
   const server = createServer(async (_req, res) => {
     writeJson(res, 200, { ok: false, error: 'daemon rejected command' })
   })
@@ -482,6 +486,9 @@ test('bitcaster-cli exits non-zero when daemon returns ok false', async () => {
     )
   } finally {
     server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
   }
 })
 
