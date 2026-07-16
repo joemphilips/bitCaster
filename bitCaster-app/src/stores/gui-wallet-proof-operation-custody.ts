@@ -97,6 +97,7 @@ import {
   requireGuiBearerSpendDeliveryRow,
   type GuiBearerSpendDeliveryRow,
 } from "./gui-bearer-spend-delivery";
+import { notifyGuiBearerSpendRecoveryRequested } from "./gui-bearer-spend-recovery-trigger";
 
 const ORACLE_NOT_ATTESTED_OUTCOME_CODE = 13015;
 const REGISTRATION_FEE_REJECTION_CODES = new Set([13044, 13047]);
@@ -261,7 +262,12 @@ export async function requireCompletedGuiWalletProofOperationAuthorityUnderLock(
               canonical.operation.operationId,
             )
           : undefined;
-        requireWalletSendPayloadPolicy(canonical, operation, payload, bearer);
+        requireGuiWalletSendBearerAuthority(
+          canonical,
+          operation,
+          payload,
+          bearer,
+        );
       }
       await requireCompletedResultProofsStored(operation);
       return operation;
@@ -597,14 +603,20 @@ export async function markProofOperationCompletedForWallet(
   resultProofs: Record<string, Proof[]>,
   encodedUserExportToken?: string,
 ): Promise<ProofOperationRecord> {
-  return withRequiredGuiCustodyLockForWallet(walletId, (_context, lock) =>
-    markProofOperationCompletedUnderLock(
-      lock,
-      operationId,
-      resultProofs,
-      encodedUserExportToken,
-    ),
+  const completed = await withRequiredGuiCustodyLockForWallet(
+    walletId,
+    (_context, lock) =>
+      markProofOperationCompletedUnderLock(
+        lock,
+        operationId,
+        resultProofs,
+        encodedUserExportToken,
+      ),
   );
+  if (readGuiWalletSendDeliveryMetadata(completed)?.mode === "user-export") {
+    notifyGuiBearerSpendRecoveryRequested();
+  }
+  return completed;
 }
 
 async function markProofOperationCompletedUnderLock(
@@ -628,7 +640,7 @@ async function markProofOperationCompletedUnderLock(
         readGuiWalletSendDeliveryMetadata(operation)?.mode === "user-export"
       ) {
         if (operation.state === "completed") {
-          requireWalletSendPayloadPolicy(
+          requireGuiWalletSendBearerAuthority(
             record,
             operation,
             existingPayload,
@@ -1501,7 +1513,7 @@ function requireWalletSendPresentation(
   state: "pending";
   encodedToken: string;
 } {
-  const encodedToken = requireWalletSendPayloadPolicy(
+  const { encodedToken } = requireGuiWalletSendBearerAuthority(
     custody,
     operation,
     payload,
@@ -1513,12 +1525,15 @@ function requireWalletSendPresentation(
   return { state: "pending", encodedToken };
 }
 
-function requireWalletSendPayloadPolicy(
+export function requireGuiWalletSendBearerAuthority(
   custody: DurableCustodyRecord,
   operation: ProofOperationRecord,
   payload: GuiWalletSendDeliveryPayloadRow | undefined,
   bearer: GuiBearerSpendDeliveryRow | undefined,
-): string | null {
+): {
+  record: GuiBearerSpendDeliveryRow["record"];
+  encodedToken: string | null;
+} {
   const authority = requireWalletSendBearerAuthority(
     custody,
     operation,
@@ -1528,7 +1543,7 @@ function requireWalletSendPayloadPolicy(
     if (payload !== undefined) {
       throw new Error("GUI non-presentable bearer payload must be absent");
     }
-    return null;
+    return { record: authority.record, encodedToken: null };
   }
   if (payload === undefined) {
     throw new Error("GUI wallet send pending payload is missing");
@@ -1543,7 +1558,7 @@ function requireWalletSendPayloadPolicy(
   ) {
     throw new Error("GUI wallet send payload conflicts with bearer authority");
   }
-  return encodedToken;
+  return { record: authority.record, encodedToken };
 }
 
 function requireWalletSendBearerAuthority(

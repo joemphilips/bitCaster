@@ -5,6 +5,7 @@ import {
   Wallet as CashuWallet,
   type MintKeys,
   type MintKeyset,
+  type RequestOptions,
 } from '@cashu/cashu-ts'
 import { useLiveQuery } from 'dexie-react-hooks'
 import * as bip39 from '@/lib/bip39'
@@ -32,6 +33,16 @@ export interface StoredMint {
   keys?: MintKeys
   keysets?: MintKeyset[]
   info?: Record<string, unknown>
+}
+
+type WalletTransportBounds = Pick<
+  RequestOptions,
+  'requestTimeout' | 'responseBodyBytesLimit' | 'signal'
+>
+
+interface WalletForUnitOptions extends WalletTransportBounds {
+  enableCtf?: boolean
+  expectedWalletId?: string
 }
 
 interface WalletState {
@@ -72,7 +83,7 @@ interface WalletState {
   getWalletForUnit: (
     mintUrl: string | undefined,
     unit: string,
-    options?: { enableCtf?: boolean; expectedWalletId?: string },
+    options?: WalletForUnitOptions,
   ) => Promise<CashuWallet>
 }
 
@@ -110,6 +121,7 @@ async function createWallet(
   seedBytes: Uint8Array | undefined,
   walletId: string,
   enableCtf = false,
+  requestOptions?: WalletTransportBounds,
 ): Promise<CashuWallet> {
   const mint = new CashuMint(url)
   const wallet = new CashuWallet(mint, {
@@ -122,7 +134,7 @@ async function createWallet(
         }
       : {}),
   })
-  await wallet.loadMint()
+  await wallet.loadMint(undefined, requestOptions)
   return wallet
 }
 
@@ -377,7 +389,7 @@ export const useWalletStore = create<WalletState>()(
       getWalletForUnit: async (
         mintUrl: string | undefined,
         unit: string,
-        options?: { enableCtf?: boolean; expectedWalletId?: string },
+        options?: WalletForUnitOptions,
       ): Promise<CashuWallet> => {
         const identity = captureWalletIdentity(
           get().mnemonic,
@@ -400,6 +412,7 @@ export const useWalletStore = create<WalletState>()(
           identity.seedBytes,
           identity.walletId,
           enableCtf,
+          options,
         )
         _walletCache.set(cacheKey, wallet)
         return wallet

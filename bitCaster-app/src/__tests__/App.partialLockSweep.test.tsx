@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => {
     rehydratePersistedNostrIdentity: vi.fn().mockResolvedValue(undefined),
     normalizeStoredMintUrls: vi.fn().mockResolvedValue(undefined),
     requestGuiNativeProofOperationRecovery: vi.fn().mockResolvedValue("clear"),
+    requestGuiBearerSpendRecovery: vi.fn().mockResolvedValue("clear"),
     reconcileGuiEcashDeposits: vi.fn().mockResolvedValue({
       remaining: [],
       hasMore: false,
@@ -158,6 +159,10 @@ vi.mock("@/stores/gui-native-proof-operation-recovery", () => ({
     mocks.requestGuiNativeProofOperationRecovery,
 }));
 
+vi.mock("@/stores/gui-bearer-spend-recovery", () => ({
+  requestGuiBearerSpendRecovery: mocks.requestGuiBearerSpendRecovery,
+}));
+
 describe("App partial-lock recovery sweep", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -197,6 +202,26 @@ describe("App partial-lock recovery sweep", () => {
     });
   });
 
+  it("requests bearer reconciliation at startup and on wallet activity", async () => {
+    mocks.walletState.mnemonic = `${"abandon ".repeat(11)}about`;
+    const { default: App } = await import("../App");
+    const rendered = render(<App />);
+
+    await waitFor(() => {
+      expect(mocks.requestGuiBearerSpendRecovery).toHaveBeenCalledTimes(1);
+    });
+    act(() => {
+      window.dispatchEvent(
+        new Event("bitcaster:wallet-bearer-recovery-request"),
+      );
+    });
+    await waitFor(() => {
+      expect(mocks.requestGuiBearerSpendRecovery).toHaveBeenCalledTimes(2);
+    });
+
+    rendered.unmount();
+  });
+
   it("shows a fixed fail-closed warning for blocked native recovery", async () => {
     mocks.walletState.mnemonic = `${"abandon ".repeat(11)}about`;
     mocks.requestGuiNativeProofOperationRecovery.mockResolvedValueOnce(
@@ -209,6 +234,20 @@ describe("App partial-lock recovery sweep", () => {
     await waitFor(() => {
       expect(document.body).toHaveTextContent(
         "Wallet recovery found an inconsistent or unsupported unfinished operation.",
+      );
+    });
+  });
+
+  it("shows a fixed fail-closed warning for blocked bearer recovery", async () => {
+    mocks.walletState.mnemonic = `${"abandon ".repeat(11)}about`;
+    mocks.requestGuiBearerSpendRecovery.mockResolvedValueOnce("blocked");
+    const { default: App } = await import("../App");
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(document.body).toHaveTextContent(
+        "Token-payment recovery found inconsistent local state.",
       );
     });
   });

@@ -19,6 +19,33 @@ export function guiWalletCounterLockName(walletId: unknown): string {
   return `bitcaster-custody-counter:${requireWalletId(walletId)}`;
 }
 
+export function guiWalletBearerRecoveryLockName(walletId: unknown): string {
+  return `bitcaster-bearer-recovery:${requireWalletId(walletId)}`;
+}
+
+/** Serializes read-network-CAS recovery across tabs without holding the custody mutation lock. */
+export async function tryWithGuiWalletBearerRecoveryLock<T>(
+  walletId: string,
+  currentWalletId: () => string,
+  action: () => Promise<T>,
+): Promise<GuiWalletLockAttempt<T>> {
+  const capturedWalletId = requireWalletId(walletId);
+  const lockManager =
+    typeof navigator === "undefined" ? undefined : navigator.locks;
+  if (!lockManager) throw new Error("Browser recovery locking is unavailable");
+  return lockManager.request(
+    guiWalletBearerRecoveryLockName(capturedWalletId),
+    { mode: "exclusive", ifAvailable: true },
+    async (lock) => {
+      if (lock === null) return { acquired: false };
+      if (requireWalletId(currentWalletId()) !== capturedWalletId) {
+        throw new Error("GUI wallet changed before bearer recovery");
+      }
+      return { acquired: true, value: await action() };
+    },
+  );
+}
+
 export async function withGuiWalletLock<T>(
   walletId: string,
   currentWalletId: () => string,

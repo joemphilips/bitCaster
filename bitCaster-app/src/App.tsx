@@ -47,6 +47,9 @@ import {
   requestGuiNativeProofOperationRecovery,
   type GuiNativeProofRecoveryStatus,
 } from "@/stores/gui-native-proof-operation-recovery";
+import { requestGuiBearerSpendRecovery } from "@/stores/gui-bearer-spend-recovery";
+import type { GuiBearerSpendRecoveryStatus } from "@/stores/gui-bearer-spend-recovery";
+import { GUI_BEARER_SPEND_RECOVERY_REQUEST_EVENT } from "@/stores/gui-bearer-spend-recovery-trigger";
 
 installE2EDiagnostics();
 
@@ -187,6 +190,8 @@ function AppRoutes() {
     useState(false);
   const [nativeRecoveryStatus, setNativeRecoveryStatus] =
     useState<GuiNativeProofRecoveryStatus>("clear");
+  const [bearerRecoveryStatus, setBearerRecoveryStatus] =
+    useState<GuiBearerSpendRecoveryStatus>("clear");
   useBookmarkSync();
   useCreatorSync();
   useActivityLogSync();
@@ -329,6 +334,42 @@ function AppRoutes() {
     };
   }, [mnemonic]);
 
+  useEffect(() => {
+    if (!mnemonic) {
+      setBearerRecoveryStatus("clear");
+      return;
+    }
+    let active = true;
+    const recover = () => {
+      setBearerRecoveryStatus((current) =>
+        current === "blocked" ? current : "pending",
+      );
+      void requestGuiBearerSpendRecovery()
+        .then((status) => {
+          if (active) setBearerRecoveryStatus(status);
+        })
+        .catch(() => {
+          if (active) setBearerRecoveryStatus("blocked");
+        });
+    };
+    const recoverWhenVisible = () => {
+      if (document.visibilityState === "visible") recover();
+    };
+    recover();
+    window.addEventListener("online", recover);
+    window.addEventListener(GUI_BEARER_SPEND_RECOVERY_REQUEST_EVENT, recover);
+    document.addEventListener("visibilitychange", recoverWhenVisible);
+    return () => {
+      active = false;
+      window.removeEventListener("online", recover);
+      window.removeEventListener(
+        GUI_BEARER_SPEND_RECOVERY_REQUEST_EVENT,
+        recover,
+      );
+      document.removeEventListener("visibilitychange", recoverWhenVisible);
+    };
+  }, [mnemonic]);
+
   // Continuous NIP-17 listener so inbound payment-request DMs are
   // processed regardless of which route is mounted. The per-view
   // subscription inside `useDepositWithdrawState` was lost on reload and
@@ -429,6 +470,18 @@ function AppRoutes() {
         <div className="border-b border-red-400/40 bg-red-500/15 px-4 py-3 text-sm text-red-100">
           Wallet recovery found an inconsistent or unsupported unfinished
           operation. Its funds remain reserved to prevent unsafe spending.
+        </div>
+      )}
+      {bearerRecoveryStatus === "pending" && (
+        <div className="border-b border-amber-400/40 bg-amber-500/15 px-4 py-3 text-sm text-amber-100">
+          Pending token payments are being checked automatically. Their exact
+          proofs remain unavailable for new spending.
+        </div>
+      )}
+      {bearerRecoveryStatus === "blocked" && (
+        <div className="border-b border-red-400/40 bg-red-500/15 px-4 py-3 text-sm text-red-100">
+          Token-payment recovery found inconsistent local state. The affected
+          proofs remain unavailable to prevent unsafe spending.
         </div>
       )}
       {isWizard ? <WizardRoutes /> : <ShellRoutes />}

@@ -141,6 +141,27 @@ describe('useWalletStore', () => {
         'sat',
       ])
     })
+
+    it('forwards recovery transport bounds into cold mint bootstrap', async () => {
+      useWalletStore.getState().generateMnemonic()
+      const controller = new AbortController()
+
+      await useWalletStore.getState().getWalletForUnit(
+        'https://bounded-mint.example',
+        'sat',
+        {
+          requestTimeout: 10_000,
+          responseBodyBytesLimit: 256 * 1_024,
+          signal: controller.signal,
+        },
+      )
+
+      expect(cashuMocks.loadMint).toHaveBeenCalledWith(undefined, {
+        requestTimeout: 10_000,
+        responseBodyBytesLimit: 256 * 1_024,
+        signal: controller.signal,
+      })
+    })
   })
 
   describe('getWallet deterministic counter authority', () => {

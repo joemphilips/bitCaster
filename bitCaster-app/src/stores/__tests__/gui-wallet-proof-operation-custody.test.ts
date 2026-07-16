@@ -39,7 +39,10 @@ import {
   proofOperationPrimaryKey,
 } from "../proof-db";
 import { useWalletStore } from "../wallet";
-import { guiWalletLockName } from "../gui-wallet-lock";
+import {
+  guiWalletLockName,
+  tryWithGuiWalletBearerRecoveryLock,
+} from "../gui-wallet-lock";
 import { createCapturedGuiWalletProofOperationStore } from "../gui-wallet-proof-operation-store";
 import { listWalletActivities } from "../wallet-activity-projection";
 import {
@@ -76,6 +79,13 @@ import {
   readGuiWalletSendDeliveryMetadata,
 } from "../gui-wallet-send-delivery";
 import { createGuiBearerSpendDeliveryRow } from "../gui-bearer-spend-delivery";
+import {
+  __resetGuiBearerSpendRecoveryForTests,
+  __setGuiBearerSpendRecoveryMintTimeoutForTests,
+  __scheduleGuiBearerSpendRecoveryWakeForTests,
+  __setGuiBearerSpendRecoveryTimerForTests,
+  requestGuiBearerSpendRecovery,
+} from "../gui-bearer-spend-recovery";
 
 const KEYSET_ID = `00${"22".repeat(7)}`;
 const PUBLIC_KEY = `02${"33".repeat(32)}`;
@@ -243,6 +253,84 @@ function ordinarySendEncodedToken(): string {
   });
 }
 
+function independentOrdinarySendProofPlan(index: number) {
+  const secret = (offset: number) =>
+    (index * 8 + offset).toString(16).padStart(2, "0").repeat(32);
+  const inputProof = {
+    id: KEYSET_ID,
+    amount: Amount.from(2),
+    secret: secret(1),
+    C: PUBLIC_KEY,
+  };
+  const passthrough = {
+    id: KEYSET_ID,
+    amount: Amount.from(2),
+    secret: secret(2),
+    C: PUBLIC_KEY,
+  };
+  const keepOutput = {
+    blindedMessage: { amount: 1, id: KEYSET_ID, B_: PUBLIC_KEY },
+    blindingFactor: secret(3),
+    secret: secret(4),
+  };
+  const sendOutput = {
+    blindedMessage: { amount: 1, id: KEYSET_ID, B_: PUBLIC_KEY },
+    blindingFactor: secret(5),
+    secret: secret(6),
+  };
+  return { inputProof, passthrough, keepOutput, sendOutput };
+}
+
+function independentOrdinarySendFixture(index: number, mintUrl: string) {
+  const { inputProof, passthrough, keepOutput, sendOutput } =
+    independentOrdinarySendProofPlan(index);
+  const input = {
+    operationId: `independent-wallet-send-${index}`,
+    kind: "wallet-send" as const,
+    mintUrl,
+    inputs: [inputProof],
+    outputs: { keep: [keepOutput], send: [sendOutput] },
+    metadata: {
+      unit: "sat",
+      guiWalletSendDelivery: guiWalletSendDeliveryMetadata({
+        mintUrl,
+        unit: "sat",
+        sendOutputs: [sendOutput],
+        keepOutputs: [keepOutput],
+        passthroughProofs: [passthrough],
+      }),
+      durableWalletProofTransition: createDurableWalletProofTransition({
+        inputSource: "wallet",
+        plannedOutputLabels: ["keep", "send"],
+        resultGroups: {
+          keep: { kind: "wallet", asset: "regular", reservedBy: null },
+          send: { kind: "operation" },
+        },
+        passthroughResultGroups: { keep: [passthrough] },
+      }),
+    },
+  };
+  const result = {
+    keep: [
+      { ...inputProof, amount: Amount.from(1), secret: keepOutput.secret },
+      passthrough,
+    ],
+    send: [
+      { ...inputProof, amount: Amount.from(1), secret: sendOutput.secret },
+    ],
+  };
+  return {
+    input,
+    passthrough,
+    result,
+    encodedToken: getEncodedTokenV4({
+      mint: mintUrl,
+      unit: "sat",
+      proofs: result.send,
+    }),
+  };
+}
+
 function ordinarySendAlternateEncodedToken(): string {
   return getEncodedTokenV4({
     mint: ordinarySendOperationInput().mintUrl,
@@ -325,6 +413,7 @@ describe("GUI wallet custody coordinator", () => {
   });
 
   afterEach(async () => {
+    __resetGuiBearerSpendRecoveryForTests();
     vi.restoreAllMocks();
     delete (navigator as { locks?: LockManager }).locks;
     db.close();
@@ -1012,6 +1101,41 @@ describe("GUI wallet custody coordinator", () => {
         passthrough,
         prepared: await prepareProofOperation(input),
       };
+    }
+
+    async function completeOrdinarySendFixture() {
+      const fixture = await prepareOrdinarySendFixture();
+      await markProofOperationMintSubmitted(fixture.prepared.operationId);
+      await markProofOperationCompleted(
+        fixture.prepared.operationId,
+        ordinarySendResultProofs(),
+        ordinarySendEncodedToken(),
+      );
+      return fixture;
+    }
+
+    async function completeIndependentOrdinarySend(
+      index: number,
+      mintUrl: string,
+    ) {
+      const fixture = independentOrdinarySendFixture(index, mintUrl);
+      await db.proofs.bulkPut(
+        [fixture.input.inputs[0]!, fixture.passthrough].map((proof) =>
+          prepareStoredProofForWrite(
+            { ...proof, mintUrl, unit: "sat" },
+            2,
+            currentGuiWalletId(),
+          ),
+        ),
+      );
+      const prepared = await prepareProofOperation(fixture.input);
+      await markProofOperationMintSubmitted(prepared.operationId);
+      await markProofOperationCompleted(
+        prepared.operationId,
+        fixture.result,
+        fixture.encodedToken,
+      );
+      return prepared;
     }
 
     it("atomically replaces a wallet send while retaining exact passthrough proofs", async () => {
@@ -1860,6 +1984,606 @@ describe("GUI wallet custody coordinator", () => {
         ]),
       ).toBeDefined();
     });
+
+    it("coalesces indexed recovery and retains an all-unspent token", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const { delays: scheduledDelays } = captureBearerRecoveryWakes();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      let releaseCheck!: () => void;
+      const checkGate = new Promise<void>((resolve) => {
+        releaseCheck = resolve;
+      });
+      const checkProofsStates = vi.fn(async (proofs: Proof[]) => {
+        expect(Dexie.currentTransaction).toBeNull();
+        await checkGate;
+        return proofs.map((proof) =>
+          bearerProofState(proof, CheckStateEnum.UNSPENT),
+        );
+      });
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => ({ checkProofsStates })) as never,
+      });
+      try {
+        const first = requestGuiBearerSpendRecovery();
+        const duplicate = requestGuiBearerSpendRecovery();
+        expect(duplicate).toBe(first);
+        releaseCheck();
+        await expect(first).resolves.toBe("pending");
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      expect(checkProofsStates).toHaveBeenCalledTimes(1);
+      expect(scheduledDelays).toHaveLength(1);
+      expect(scheduledDelays[0]).toBeGreaterThan(0);
+      expect(scheduledDelays[0]).toBeLessThanOrEqual(5_000);
+      const bearer = await bearerForOperation(prepared.operationId);
+      expect(bearer.record.state).toMatchObject({
+        kind: "pending",
+        classification: "all-unspent",
+        attemptCount: 1,
+      });
+      expect(bearer.presentable).toBe(1);
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeDefined();
+    });
+
+    it("compacts a mixed vector and atomically removes its full token", async () => {
+      const { passthrough, ...input } = ordinaryMultiSendOperationInput();
+      await db.proofs.put(
+        prepareStoredProofForWrite(
+          { ...passthrough, mintUrl: input.mintUrl, unit: "sat" },
+          2,
+          currentGuiWalletId(),
+        ),
+      );
+      const prepared = await prepareProofOperation(input);
+      await markProofOperationMintSubmitted(prepared.operationId);
+      await markProofOperationCompleted(
+        prepared.operationId,
+        ordinaryMultiSendResultProofs(),
+        ordinaryMultiSendEncodedToken(),
+      );
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => ({
+          checkProofsStates: async (proofs: Proof[]) =>
+            proofs.map((proof, index) =>
+              bearerProofState(
+                proof,
+                index === 0 ? CheckStateEnum.SPENT : CheckStateEnum.UNSPENT,
+              ),
+            ),
+        })) as never,
+      });
+      try {
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("pending");
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      const bearer = await bearerForOperation(prepared.operationId);
+      expect(bearer.record.state).toMatchObject({
+        kind: "pending",
+        classification: "mixed",
+      });
+      expect(bearer.record.proofEntries.map(({ kind }) => kind)).toEqual([
+        "spent",
+        "active",
+      ]);
+      expect(bearer.presentable).toBe(0);
+      expect(bearer.active).toBe(1);
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+    });
+
+    it("rolls back an all-spent transition when payload deletion fails", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const { callbacks: scheduledCallbacks, delays: scheduledDelays } =
+        captureBearerRecoveryWakes();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => ({
+          checkProofsStates: async (proofs: Proof[]) =>
+            proofs.map((proof) =>
+              bearerProofState(proof, CheckStateEnum.SPENT),
+            ),
+        })) as never,
+      });
+      const payloadDelete = vi
+        .spyOn(db.walletSendDeliveryPayloads, "delete")
+        .mockRejectedValueOnce(
+          new DOMException("injected payload deletion", "QuotaExceededError"),
+        );
+      try {
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("blocked");
+        expect((await bearerForOperation(prepared.operationId)).active).toBe(1);
+        expect(
+          await db.walletSendDeliveryPayloads.get([
+            currentGuiWalletId(),
+            prepared.operationId,
+          ]),
+        ).toBeDefined();
+        payloadDelete.mockRestore();
+        expect(scheduledDelays[0]).toBeGreaterThanOrEqual(1_000);
+        scheduledCallbacks[0]!();
+        await vi.waitFor(async () => {
+          expect((await bearerForOperation(prepared.operationId)).active).toBe(
+            0,
+          );
+        });
+      } finally {
+        payloadDelete.mockRestore();
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      expect(await bearerForOperation(prepared.operationId)).toMatchObject({
+        active: 0,
+        presentable: 0,
+        record: { state: { kind: "consumed", actor: "recipient" } },
+      });
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+    });
+
+    it("bounds a never-settling mint check and releases recovery for retry", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      const checkStarted = deferred<void>();
+      let expireMintCheck!: () => void;
+      const neverSettles = new Promise<ProofState[]>(() => undefined);
+      const checkProofsStates = vi.fn((_proofs: Proof[], _options: unknown) => {
+        checkStarted.resolve(undefined);
+        return neverSettles;
+      });
+      __setGuiBearerSpendRecoveryTimerForTests({
+        schedule: () => Symbol("bearer-recovery-timeout"),
+        cancel: vi.fn(),
+      });
+      __setGuiBearerSpendRecoveryMintTimeoutForTests({
+        schedule: (callback, delayMs) => {
+          expect(delayMs).toBe(10_000);
+          expireMintCheck = callback;
+          return Symbol("mint-check-timeout");
+        },
+        cancel: vi.fn(),
+      });
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => ({ checkProofsStates })) as never,
+      });
+      try {
+        const recovery = requestGuiBearerSpendRecovery();
+        await checkStarted.wait;
+        expect(checkProofsStates).toHaveBeenCalledWith(
+          expect.any(Array),
+          expect.objectContaining({
+            requestTimeout: 10_000,
+            responseBodyBytesLimit: 256 * 1_024,
+            signal: expect.any(AbortSignal),
+          }),
+        );
+        expireMintCheck();
+        await expect(recovery).resolves.toBe("pending");
+        const indeterminate = await bearerForOperation(prepared.operationId);
+        expect(indeterminate.record.state).toMatchObject({
+          classification: "indeterminate",
+          attemptCount: 1,
+        });
+
+        checkProofsStates.mockImplementation(async (proofs: Proof[]) =>
+          proofs.map((proof) =>
+            bearerProofState(proof, CheckStateEnum.UNSPENT),
+          ),
+        );
+        vi.spyOn(Date, "now").mockReturnValue(
+          (indeterminate.nextAttemptAtMs ?? 0) + 1,
+        );
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("pending");
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      expect(checkProofsStates).toHaveBeenCalledTimes(2);
+      expect(
+        (await bearerForOperation(prepared.operationId)).record.state,
+      ).toMatchObject({ classification: "all-unspent", attemptCount: 2 });
+    });
+
+    it("bounds a never-settling cold wallet bootstrap", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      const bootstrapStarted = deferred<void>();
+      let expireMintBootstrap!: () => void;
+      const getWalletForUnit = vi.fn(
+        (_mintUrl: string, _unit: string, _options: unknown) => {
+          bootstrapStarted.resolve(undefined);
+          return new Promise<never>(() => undefined);
+        },
+      );
+      __setGuiBearerSpendRecoveryTimerForTests({
+        schedule: () => Symbol("bearer-recovery-bootstrap-timeout"),
+        cancel: vi.fn(),
+      });
+      __setGuiBearerSpendRecoveryMintTimeoutForTests({
+        schedule: (callback, delayMs) => {
+          expect(delayMs).toBe(10_000);
+          expireMintBootstrap = callback;
+          return Symbol("mint-bootstrap-timeout");
+        },
+        cancel: vi.fn(),
+      });
+      useWalletStore.setState({ getWalletForUnit: getWalletForUnit as never });
+      try {
+        const recovery = requestGuiBearerSpendRecovery();
+        await bootstrapStarted.wait;
+        expect(getWalletForUnit).toHaveBeenCalledWith(
+          ordinarySendOperationInput().mintUrl,
+          "sat",
+          expect.objectContaining({
+            expectedWalletId: currentGuiWalletId(),
+            requestTimeout: 10_000,
+            responseBodyBytesLimit: 256 * 1_024,
+            signal: expect.any(AbortSignal),
+          }),
+        );
+        expireMintBootstrap();
+        await expect(recovery).resolves.toBe("pending");
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      expect(
+        (await bearerForOperation(prepared.operationId)).record.state,
+      ).toMatchObject({ classification: "indeterminate", attemptCount: 1 });
+    });
+
+    it("defers without mint transport while another tab owns recovery", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const walletId = currentGuiWalletId();
+      const lockStarted = deferred<void>();
+      const releaseLock = deferred<void>();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      const checkProofsStates = vi.fn(async (proofs: Proof[]) =>
+        proofs.map((proof) => bearerProofState(proof, CheckStateEnum.UNSPENT)),
+      );
+      __setGuiBearerSpendRecoveryTimerForTests({
+        schedule: () => Symbol("bearer-recovery-lock-retry"),
+        cancel: vi.fn(),
+      });
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => ({ checkProofsStates })) as never,
+      });
+      const owner = tryWithGuiWalletBearerRecoveryLock(
+        walletId,
+        currentGuiWalletId,
+        async () => {
+          lockStarted.resolve(undefined);
+          await releaseLock.wait;
+        },
+      );
+      await lockStarted.wait;
+      try {
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("pending");
+        expect(checkProofsStates).not.toHaveBeenCalled();
+        releaseLock.resolve(undefined);
+        await owner;
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("pending");
+      } finally {
+        releaseLock.resolve(undefined);
+        await owner;
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      expect(checkProofsStates).toHaveBeenCalledTimes(1);
+      expect(
+        (await bearerForOperation(prepared.operationId)).record.state,
+      ).toMatchObject({ classification: "all-unspent", attemptCount: 1 });
+    });
+
+    it("isolates a malformed indexed lookup while reconciling healthy authority", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const healthy = await bearerForOperation(prepared.operationId);
+      await db.bearerSpendDeliveries.put({
+        ...structuredClone(healthy),
+        deliveryId: "corrupt-delivery-001",
+        parentOperationId: "corrupt-parent-001",
+        payloadHandle: 7,
+        nextAttemptAtMs: 0,
+      } as never);
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      const checkProofsStates = vi.fn(async (proofs: Proof[]) =>
+        proofs.map((proof) => bearerProofState(proof, CheckStateEnum.UNSPENT)),
+      );
+      __setGuiBearerSpendRecoveryTimerForTests({
+        schedule: () => Symbol("bearer-recovery-corrupt-retry"),
+        cancel: vi.fn(),
+      });
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => ({ checkProofsStates })) as never,
+      });
+      try {
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("blocked");
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      expect(checkProofsStates).toHaveBeenCalledTimes(1);
+      expect(
+        (await bearerForOperation(prepared.operationId)).record.state,
+      ).toMatchObject({ classification: "all-unspent", attemptCount: 1 });
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeDefined();
+    });
+
+    it("defers a third mint group and drains it on the scheduled wake", async () => {
+      const prepared = await Promise.all(
+        [1, 2, 3].map((index) =>
+          completeIndependentOrdinarySend(
+            index,
+            `https://mint-${index}.example`,
+          ),
+        ),
+      );
+      const { callbacks: scheduledCallbacks, delays: scheduledDelays } =
+        captureBearerRecoveryWakes();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      const getWalletForUnit = vi.fn(async () => ({
+        checkProofsStates: async (proofs: Proof[]) =>
+          proofs.map((proof) =>
+            bearerProofState(proof, CheckStateEnum.UNSPENT),
+          ),
+      }));
+      useWalletStore.setState({ getWalletForUnit: getWalletForUnit as never });
+      try {
+        const firstCycleStartedAtMs = Date.now();
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("pending");
+        expect(getWalletForUnit).toHaveBeenCalledTimes(2);
+        expect(
+          scheduledDelays[0]! + Date.now() - firstCycleStartedAtMs,
+        ).toBeGreaterThanOrEqual(1_000);
+        const firstAttempts = await Promise.all(
+          prepared.map(
+            async ({ operationId }) =>
+              (await bearerForOperation(operationId)).record.state,
+          ),
+        );
+        expect(
+          firstAttempts.filter(
+            (state) => state.kind === "pending" && state.attemptCount === 1,
+          ),
+        ).toHaveLength(2);
+
+        scheduledCallbacks[0]!();
+        await vi.waitFor(async () => {
+          const attempts = await Promise.all(
+            prepared.map(
+              async ({ operationId }) =>
+                (await bearerForOperation(operationId)).record.state,
+            ),
+          );
+          expect(
+            attempts.every(
+              (state) => state.kind === "pending" && state.attemptCount === 1,
+            ),
+          ).toBe(true);
+        });
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      expect(getWalletForUnit).toHaveBeenCalledTimes(3);
+    });
+
+    it("stops at one backlog page and resumes from its stable cursor", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const healthy = await bearerForOperation(prepared.operationId);
+      await db.bearerSpendDeliveries.bulkPut(
+        Array.from({ length: 9 }, (_, index) => {
+          const suffix = index.toString().padStart(2, "0");
+          return {
+            ...structuredClone(healthy),
+            deliveryId: `corrupt-backlog-${suffix}`,
+            parentOperationId: `corrupt-parent-${suffix}`,
+            payloadHandle: `wallet-send:corrupt-operation-${suffix}`,
+            nextAttemptAtMs: 0,
+          };
+        }),
+      );
+      const { callbacks: scheduledCallbacks, delays: scheduledDelays } =
+        captureBearerRecoveryWakes();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      const getWalletForUnit = vi.fn();
+      useWalletStore.setState({ getWalletForUnit: getWalletForUnit as never });
+      try {
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("blocked");
+        expect(getWalletForUnit).not.toHaveBeenCalled();
+        expect(scheduledDelays).toHaveLength(1);
+        expect(scheduledDelays[0]).toBeGreaterThanOrEqual(1_000);
+
+        getWalletForUnit.mockImplementation(async () => ({
+          checkProofsStates: async (proofs: Proof[]) =>
+            proofs.map((proof) =>
+              bearerProofState(proof, CheckStateEnum.UNSPENT),
+            ),
+        }));
+        scheduledCallbacks[0]!();
+        await vi.waitFor(async () => {
+          expect(
+            (await bearerForOperation(prepared.operationId)).record.state,
+          ).toMatchObject({ classification: "all-unspent", attemptCount: 1 });
+        });
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      expect(getWalletForUnit).toHaveBeenCalledTimes(1);
+      expect(scheduledCallbacks.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("persists transport-indeterminate backoff without deleting authority", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => ({
+          checkProofsStates: async () => {
+            throw new Error("secret-bearing transport error must not escape");
+          },
+        })) as never,
+      });
+      try {
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("pending");
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      const bearer = await bearerForOperation(prepared.operationId);
+      expect(bearer.record.state).toMatchObject({
+        kind: "pending",
+        classification: "indeterminate",
+        attemptCount: 1,
+      });
+      expect(bearer.nextAttemptAtMs).toBeGreaterThan(bearer.record.createdAtMs);
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeDefined();
+    });
+
+    it("rejects stale NUT-07 evidence with an exact delivery CAS", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      let releaseCheck!: () => void;
+      let markCheckStarted!: () => void;
+      const checkStarted = new Promise<void>((resolve) => {
+        markCheckStarted = resolve;
+      });
+      const checkGate = new Promise<void>((resolve) => {
+        releaseCheck = resolve;
+      });
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => ({
+          checkProofsStates: async (proofs: Proof[]) => {
+            markCheckStarted();
+            await checkGate;
+            return proofs.map((proof) =>
+              bearerProofState(proof, CheckStateEnum.SPENT),
+            );
+          },
+        })) as never,
+      });
+      try {
+        const recovery = requestGuiBearerSpendRecovery();
+        await checkStarted;
+        const before = await bearerForOperation(prepared.operationId);
+        const concurrent = await observeBearerStates(
+          before.record,
+          ordinarySendResultProofs().send,
+          [CheckStateEnum.UNSPENT],
+          Math.max(Date.now(), before.record.createdAtMs + 1),
+        );
+        await persistBearerLifecycle(prepared, concurrent);
+        releaseCheck();
+        await expect(recovery).resolves.toBe("pending");
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      expect(
+        (await bearerForOperation(prepared.operationId)).record.state,
+      ).toMatchObject({ classification: "all-unspent", attemptCount: 1 });
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeDefined();
+    });
+
+    it("does not let a stale wallet cycle cancel the current wallet wake", () => {
+      const walletA = currentGuiWalletId();
+      useWalletStore.setState({ mnemonic: OTHER_MNEMONIC });
+      const walletB = currentGuiWalletId();
+      const cancelledTimers: unknown[] = [];
+      __setGuiBearerSpendRecoveryTimerForTests({
+        schedule: () => Symbol("scheduled-wallet-wake"),
+        cancel: (timer) => cancelledTimers.push(timer),
+      });
+      __scheduleGuiBearerSpendRecoveryWakeForTests(walletB, Date.now() + 5_000);
+      __scheduleGuiBearerSpendRecoveryWakeForTests(walletA, null);
+      expect(cancelledTimers).toEqual([]);
+      useWalletStore.setState({ mnemonic: MNEMONIC });
+    });
+
+    it("fails closed on a malformed mint vector without deleting payload authority", async () => {
+      const { prepared } = await completeOrdinarySendFixture();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      useWalletStore.setState({
+        getWalletForUnit: vi.fn(async () => ({
+          checkProofsStates: async () => [],
+        })) as never,
+      });
+      try {
+        await expect(requestGuiBearerSpendRecovery()).resolves.toBe("pending");
+      } finally {
+        useWalletStore.setState({
+          getWalletForUnit: originalGetWalletForUnit,
+        });
+      }
+      const bearer = await bearerForOperation(prepared.operationId);
+      expect(bearer.record.state).toMatchObject({
+        kind: "pending",
+        classification: "blocked",
+        attemptCount: 1,
+      });
+      expect(bearer.presentable).toBe(1);
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeDefined();
+    });
   });
 
   it("rejects native mint results that do not match the persisted output plan", async () => {
@@ -2047,6 +2771,23 @@ function mintKeysResponse() {
   };
 }
 
+function captureBearerRecoveryWakes(): {
+  callbacks: Array<() => void>;
+  delays: number[];
+} {
+  const callbacks: Array<() => void> = [];
+  const delays: number[] = [];
+  __setGuiBearerSpendRecoveryTimerForTests({
+    schedule: (callback, delayMs) => {
+      callbacks.push(callback);
+      delays.push(delayMs);
+      return Symbol("captured-bearer-recovery-wake");
+    },
+    cancel: vi.fn(),
+  });
+  return { callbacks, delays };
+}
+
 function deferred<T>(): {
   wait: Promise<T>;
   resolve: (value: T) => void;
@@ -2165,6 +2906,20 @@ async function observeBearerStates(
       },
     },
   });
+}
+
+async function bearerForOperation(
+  operationId: string,
+): Promise<ReturnType<typeof createGuiBearerSpendDeliveryRow>> {
+  const row = await db.bearerSpendDeliveries
+    .where("[walletId+parentOperationId]")
+    .equals([
+      currentGuiWalletId(),
+      (await storedOperation(operationId))?.custodyOperationId ?? "",
+    ])
+    .first();
+  if (!row) throw new Error("missing test bearer delivery");
+  return row;
 }
 
 function bearerProofState(
