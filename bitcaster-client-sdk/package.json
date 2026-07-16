@@ -204,6 +204,10 @@
       "types": "./dist/encryptedWalletBackupServerCodec.d.ts",
       "import": "./dist/encryptedWalletBackupServerCodec.js"
     },
+    "./encryptedWalletBackupDelegatedServerCodec": {
+      "types": "./dist/encryptedWalletBackupDelegatedServerCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupDelegatedServerCodec.js"
+    },
     "./encryptedWalletBackupSync": {
       "types": "./dist/encryptedWalletBackupSync.d.ts",
       "import": "./dist/encryptedWalletBackupSync.js"
