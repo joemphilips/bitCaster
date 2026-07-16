@@ -363,6 +363,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/participation-score/payments/{paymentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one durable participation Score payment */
+        get: operations["getParticipationScorePayment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/participation-score/ecash": {
         parameters: {
             query?: never;
@@ -374,7 +391,7 @@ export interface paths {
         put?: never;
         /**
          * Pay ecash to top up participation Score
-         * @description Pays a regular sat ecash token into the global Engine fee account. The fee is non-refundable and credits participation Score for the authenticated Nostr pubkey. The supplied token amount must exactly match `amountSats`; this endpoint never credits a market account.
+         * @description Pays a regular sat ecash token into the global Engine fee account. The fee is non-refundable and credits participation Score for the authenticated account. The supplied token amount must exactly match `amountSats`; this endpoint never credits a market account.
          */
         post: operations["payParticipationScoreEcash"];
         delete?: never;
@@ -1076,8 +1093,8 @@ export interface components {
             state: components["schemas"]["DepositState"];
         };
         ParticipationScoreResponse: {
-            /** @description Authenticated Nostr pubkey whose Score is returned. */
-            pubkey: string;
+            /** @description Scheme-agnostic authenticated account identifier whose Score is returned. */
+            accountSubject: string;
             /**
              * Format: int64
              * @description Current participation Score balance. May be negative after soft match/penalty debits.
@@ -1085,7 +1102,7 @@ export interface components {
             balance: number;
             /**
              * Format: int64
-             * @description Total Score purchased by this pubkey.
+             * @description Total Score purchased by this account.
              */
             purchasedTotal: number;
             /**
@@ -1105,6 +1122,19 @@ export interface components {
             matchDebitScore: number;
             /** @description Whether match-time Score debit is enabled by the engine. */
             enabled: boolean;
+        };
+        ParticipationScorePaymentStatusResponse: {
+            /** Format: uuid */
+            paymentId: string;
+            /** @enum {string} */
+            status: "credited";
+            accountSubject: string;
+            /** Format: int64 */
+            amountSats: number;
+            /** Format: int64 */
+            creditedScore: number;
+            /** Format: date-time */
+            paidAt: string;
         };
         PayParticipationScoreEcashRequest: {
             /** @description Exact sat amount carried by the supplied regular ecash token. */
@@ -2072,7 +2102,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Participation Score state for the authenticated pubkey */
+            /** @description Participation Score state for the authenticated account */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2083,6 +2113,42 @@ export interface operations {
             };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getParticipationScorePayment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                paymentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact credited payment tuple owned by the authenticated account */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParticipationScorePaymentStatusResponse"];
+                };
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Payment not found or owned by another account */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

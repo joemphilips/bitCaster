@@ -605,13 +605,38 @@ paths:
         balance, separate from market collateral units.
       responses:
         '200':
-          description: Participation Score state for the authenticated pubkey
+          description: Participation Score state for the authenticated account
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ParticipationScoreResponse'
         '401':
           description: Missing or invalid NIP-98 authentication
+
+  /api/v1/participation-score/payments/{paymentId}:
+    get:
+      operationId: getParticipationScorePayment
+      summary: Read one durable participation Score payment
+      security:
+        - nip98: []
+      parameters:
+        - name: paymentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Exact credited payment tuple owned by the authenticated account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParticipationScorePaymentStatusResponse'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '404':
+          description: Payment not found or owned by another account
 
   /api/v1/participation-score/ecash:
     post:
@@ -622,7 +647,7 @@ paths:
       description: >
         Pays a regular sat ecash token into the global Engine fee account.
         The fee is non-refundable and credits participation Score for the
-        authenticated Nostr pubkey. The supplied token amount must exactly
+        authenticated account. The supplied token amount must exactly
         match `amountSats`; this endpoint never credits a market account.
       requestBody:
         required: true
@@ -2279,7 +2304,7 @@ components:
     ParticipationScoreResponse:
       type: object
       required:
-        - pubkey
+        - accountSubject
         - balance
         - purchasedTotal
         - consumedTotal
@@ -2287,10 +2312,11 @@ components:
         - matchDebitScore
         - enabled
       properties:
-        pubkey:
+        accountSubject:
           type: string
-          pattern: '^[0-9a-f]{64}$'
-          description: Authenticated Nostr pubkey whose Score is returned.
+          minLength: 1
+          maxLength: 512
+          description: Scheme-agnostic authenticated account identifier whose Score is returned.
         balance:
           type: integer
           format: int64
@@ -2299,7 +2325,7 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Total Score purchased by this pubkey.
+          description: Total Score purchased by this account.
         consumedTotal:
           type: integer
           format: int64
@@ -2318,6 +2344,38 @@ components:
         enabled:
           type: boolean
           description: Whether match-time Score debit is enabled by the engine.
+
+    ParticipationScorePaymentStatusResponse:
+      type: object
+      required:
+        - paymentId
+        - status
+        - accountSubject
+        - amountSats
+        - creditedScore
+        - paidAt
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [credited]
+        accountSubject:
+          type: string
+          minLength: 1
+          maxLength: 512
+        amountSats:
+          type: integer
+          format: int64
+          minimum: 1
+        creditedScore:
+          type: integer
+          format: int64
+          minimum: 1
+        paidAt:
+          type: string
+          format: date-time
 
     PayParticipationScoreEcashRequest:
       type: object

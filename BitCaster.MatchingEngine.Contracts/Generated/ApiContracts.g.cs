@@ -2313,9 +2313,9 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class ParticipationScoreResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public ParticipationScoreResponse(long @balance, long @consumedTotal, bool @enabled, long @matchDebitScore, long @penaltyTotal, string @pubkey, long @purchasedTotal)
+        public ParticipationScoreResponse(string @accountSubject, long @balance, long @consumedTotal, bool @enabled, long @matchDebitScore, long @penaltyTotal, long @purchasedTotal)
         {
-            this.Pubkey = @pubkey;
+            this.AccountSubject = @accountSubject;
             this.Balance = @balance;
             this.PurchasedTotal = @purchasedTotal;
             this.ConsumedTotal = @consumedTotal;
@@ -2325,10 +2325,10 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// Authenticated Nostr pubkey whose Score is returned.
+        /// Scheme-agnostic authenticated account identifier whose Score is returned.
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("pubkey")]
-        public string Pubkey { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("accountSubject")]
+        public string AccountSubject { get; }
 
         /// <summary>
         /// Current participation Score balance. May be negative after soft match/penalty debits.
@@ -2337,7 +2337,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long Balance { get; }
 
         /// <summary>
-        /// Total Score purchased by this pubkey.
+        /// Total Score purchased by this account.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("purchasedTotal")]
         public long PurchasedTotal { get; }
@@ -2365,6 +2365,50 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("enabled")]
         public bool Enabled { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ParticipationScorePaymentStatusResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ParticipationScorePaymentStatusResponse(string @accountSubject, long @amountSats, long @creditedScore, System.DateTimeOffset @paidAt, System.Guid @paymentId, ParticipationScorePaymentStatusResponseStatus @status)
+        {
+            this.PaymentId = @paymentId;
+            this.Status = @status;
+            this.AccountSubject = @accountSubject;
+            this.AmountSats = @amountSats;
+            this.CreditedScore = @creditedScore;
+            this.PaidAt = @paidAt;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("paymentId")]
+        public System.Guid PaymentId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<ParticipationScorePaymentStatusResponseStatus>))]
+        public ParticipationScorePaymentStatusResponseStatus Status { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("accountSubject")]
+        public string AccountSubject { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("creditedScore")]
+        public long CreditedScore { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("paidAt")]
+        public System.DateTimeOffset PaidAt { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -3059,6 +3103,15 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"closed")]
         Closed = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum ParticipationScorePaymentStatusResponseStatus
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"credited")]
+        Credited = 0,
 
     }
 
