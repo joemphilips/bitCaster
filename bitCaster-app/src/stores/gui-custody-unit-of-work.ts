@@ -36,11 +36,23 @@ import {
   guiDurableStorageArtifactId,
 } from "./gui-durable-storage-artifacts";
 import { requireGuiDexieWriteTransaction } from "./gui-dexie-transaction";
+import {
+  guiWalletSendDeliveryReservationSnapshot,
+  guiWalletSendDeliveryPayloadSnapshot,
+  requireGuiWalletSendDeliveryReservationRow,
+  requireGuiWalletSendDeliveryPayloadRow,
+  type GuiWalletSendDeliveryPayloadRow,
+  type GuiWalletSendDeliveryPayloadSnapshot,
+  type GuiWalletSendDeliveryReservationRow,
+  type GuiWalletSendDeliveryReservationSnapshot,
+} from "./gui-wallet-send-delivery";
 
 export interface GuiCustodyNativeSnapshot {
   walletId: string;
   operationId: string | null;
   operation: ProofOperationRecord | undefined;
+  walletSendDeliveryPayload?: GuiWalletSendDeliveryPayloadSnapshot;
+  walletSendDeliveryReservation?: GuiWalletSendDeliveryReservationSnapshot;
   proofSecrets: string[];
   proofIds: string[];
   proofs: StoredProof[];
@@ -53,6 +65,10 @@ export interface GuiCustodyUnitOfWorkInput<T> {
   plan: DexieDurableCustodyPlan<T>;
   snapshot: GuiCustodyNativeSnapshot;
   nextOperation?: ProofOperationRecord;
+  /** undefined leaves the payload unchanged; null atomically deletes it. */
+  nextWalletSendDeliveryPayload?: GuiWalletSendDeliveryPayloadRow | null;
+  /** undefined leaves the reservation unchanged; null atomically consumes it. */
+  nextWalletSendDeliveryReservation?: GuiWalletSendDeliveryReservationRow | null;
   deleteProofs?: StoredProof[];
   nextProofs?: StoredProof[];
   nextSession?: SwapSessionRecord;
@@ -90,6 +106,8 @@ interface PreparedGuiCustodyState<T> {
   plan: DexieDurableCustodyPlan<T>;
   snapshot: GuiCustodyNativeSnapshot;
   nextOperation?: ProofOperationRecord;
+  nextWalletSendDeliveryPayload?: GuiWalletSendDeliveryPayloadRow | null;
+  nextWalletSendDeliveryReservation?: GuiWalletSendDeliveryReservationRow | null;
   deleteProofIds: string[];
   nextProofs?: StoredProofRow[];
   nextSession?: SwapSessionRecord;
@@ -120,12 +138,12 @@ export async function readGuiCustodyNativeSnapshot(
   const snapshot = await database.transaction(
     "r",
     database.proofOperations,
+    database.walletSendDeliveryPayloads,
+    database.walletSendDeliveryReservations,
     database.proofs,
     database.swapSessions,
-    async () => ({
-      walletId,
-      operationId,
-      operation:
+    async () => {
+      const operation =
         operationId === null
           ? undefined
           : requireScopedOperation(
@@ -134,22 +152,44 @@ export async function readGuiCustodyNativeSnapshot(
               ),
               walletId,
               operationId,
-            ),
-      proofSecrets: [...proofSecrets],
-      proofIds,
-      proofs: requireScopedProofs(
-        await database.proofs.bulkGet(proofIds),
+            );
+      return {
         walletId,
-      ),
-      tradeId,
-      session:
-        tradeId === null
-          ? undefined
-          : requireScopedSession(
-              await database.swapSessions.get(tradeId),
-              walletId,
-            ),
-    }),
+        operationId,
+        operation,
+        walletSendDeliveryPayload:
+          operationId === null
+            ? undefined
+            : await readWalletSendDeliveryPayloadSnapshot(
+                database,
+                walletId,
+                operationId,
+              ),
+        walletSendDeliveryReservation:
+          operationId === null
+            ? undefined
+            : await readWalletSendDeliveryReservationSnapshot(
+                database,
+                walletId,
+                operationId,
+                operation,
+              ),
+        proofSecrets: [...proofSecrets],
+        proofIds,
+        proofs: requireScopedProofs(
+          await database.proofs.bulkGet(proofIds),
+          walletId,
+        ),
+        tradeId,
+        session:
+          tradeId === null
+            ? undefined
+            : requireScopedSession(
+                await database.swapSessions.get(tradeId),
+                walletId,
+              ),
+      };
+    },
   );
   await requireSnapshotSessionIntegrity(snapshot, walletId);
   return snapshot;
@@ -165,6 +205,8 @@ export async function readGuiCustodyOperationSnapshot(
   const snapshot = await database.transaction(
     "r",
     database.proofOperations,
+    database.walletSendDeliveryPayloads,
+    database.walletSendDeliveryReservations,
     database.proofs,
     database.swapSessions,
     async () => {
@@ -189,6 +231,18 @@ export async function readGuiCustodyOperationSnapshot(
         walletId,
         operationId,
         operation,
+        walletSendDeliveryPayload: await readWalletSendDeliveryPayloadSnapshot(
+          database,
+          walletId,
+          operationId,
+        ),
+        walletSendDeliveryReservation:
+          await readWalletSendDeliveryReservationSnapshot(
+            database,
+            walletId,
+            operationId,
+            operation,
+          ),
         proofSecrets,
         proofIds,
         proofs: requireScopedProofs(
@@ -240,6 +294,35 @@ export async function prepareGuiCustodyUnitOfWork<T>(
         input.nextOperation.operationId,
       )
     : undefined;
+  const nextWalletSendDeliveryPayload =
+    input.nextWalletSendDeliveryPayload === undefined ||
+    input.nextWalletSendDeliveryPayload === null
+      ? input.nextWalletSendDeliveryPayload
+      : requireGuiWalletSendDeliveryPayloadRow(
+          input.nextWalletSendDeliveryPayload,
+          walletId,
+          input.nextWalletSendDeliveryPayload.operationId,
+          input.nextWalletSendDeliveryPayload.custodyOperationId,
+        );
+  const nextWalletSendDeliveryReservation =
+    input.nextWalletSendDeliveryReservation === undefined ||
+    input.nextWalletSendDeliveryReservation === null
+      ? input.nextWalletSendDeliveryReservation
+      : requireGuiWalletSendDeliveryReservationRow(
+          input.nextWalletSendDeliveryReservation,
+          nextOperation ??
+            (() => {
+              throw new Error(
+                "GUI wallet-send reservation has no next operation",
+              );
+            })(),
+        );
+  if (
+    nextWalletSendDeliveryPayload &&
+    nextOperation?.operationId !== nextWalletSendDeliveryPayload.operationId
+  ) {
+    throw new Error("GUI wallet-send payload has no exact next operation");
+  }
   const nextActivity = input.nextActivity
     ? requireWalletActivityRow(structuredClone(input.nextActivity), walletId)
     : undefined;
@@ -250,7 +333,13 @@ export async function prepareGuiCustodyUnitOfWork<T>(
     storedProofIds(nextProofs ?? []),
   );
   assertNativeWriteScope(
-    { nextOperation, nextSession, nextActivity },
+    {
+      nextOperation,
+      nextWalletSendDeliveryPayload,
+      nextWalletSendDeliveryReservation,
+      nextSession,
+      nextActivity,
+    },
     walletId,
   );
   const prepared = Object.freeze({
@@ -261,6 +350,8 @@ export async function prepareGuiCustodyUnitOfWork<T>(
     plan: input.plan,
     snapshot,
     nextOperation,
+    nextWalletSendDeliveryPayload,
+    nextWalletSendDeliveryReservation,
     deleteProofIds,
     nextProofs,
     nextSession,
@@ -278,6 +369,8 @@ export function guiCustodyUnitOfWorkTables(
   return [
     ...authority.store.transactionTables(),
     database.proofOperations,
+    database.walletSendDeliveryPayloads,
+    database.walletSendDeliveryReservations,
     database.proofs,
     database.swapSessions,
     database.walletActivities,
@@ -351,9 +444,7 @@ export function describePreparedGuiCustodyHeadroomWriteSet<T>(
   return writeSet;
 }
 
-function walletStorageBoundaryRecords(
-  state: PreparedGuiCustodyState<unknown>,
-) {
+function walletStorageBoundaryRecords(state: PreparedGuiCustodyState<unknown>) {
   const rows = state.plan.transaction.operationRows();
   if (rows.length === 1) {
     const next = rows[0]!;
@@ -497,6 +588,19 @@ function preparedNativePostImageArtifacts(
           }),
         ]
       : []),
+    ...(state.nextWalletSendDeliveryPayload
+      ? [
+          createGuiDurableStorageRowArtifact({
+            table: "walletSendDeliveryPayloads",
+            key: [
+              state.nextWalletSendDeliveryPayload.walletId,
+              state.nextWalletSendDeliveryPayload.operationId,
+            ],
+            artifactRole: "private-material",
+            row: state.nextWalletSendDeliveryPayload,
+          }),
+        ]
+      : []),
     ...(state.nextProofs ?? []).map((row) =>
       createGuiDurableStorageRowArtifact({
         table: "proofs",
@@ -537,6 +641,15 @@ function preparedDeletedArtifactIds(
     );
   return [
     ...deletedReservations,
+    ...(state.nextWalletSendDeliveryPayload === null &&
+    state.snapshot.walletSendDeliveryPayload
+      ? [
+          guiDurableStorageArtifactId("walletSendDeliveryPayloads", [
+            state.snapshot.walletId,
+            state.snapshot.walletSendDeliveryPayload.operationId,
+          ]),
+        ]
+      : []),
     ...state.deleteProofIds.map((proofId) =>
       guiDurableStorageArtifactId("proofs", proofId),
     ),
@@ -587,8 +700,38 @@ async function writePreparedNativeRows<T>(
   state: PreparedGuiCustodyState<T>,
 ): Promise<void> {
   const { database } = state;
+  if (state.nextWalletSendDeliveryReservation === null) {
+    if (state.snapshot.operationId === null) {
+      throw new Error("GUI wallet-send reservation deletion has no operation");
+    }
+    await database.walletSendDeliveryReservations.delete([
+      state.snapshot.walletId,
+      state.snapshot.operationId,
+    ]);
+    requireCurrentWriteTransaction(database);
+  } else if (state.nextWalletSendDeliveryReservation !== undefined) {
+    await database.walletSendDeliveryReservations.put(
+      state.nextWalletSendDeliveryReservation,
+    );
+    requireCurrentWriteTransaction(database);
+  }
   if (state.nextOperation) {
     await database.proofOperations.put(state.nextOperation);
+    requireCurrentWriteTransaction(database);
+  }
+  if (state.nextWalletSendDeliveryPayload === null) {
+    if (state.snapshot.operationId === null) {
+      throw new Error("GUI wallet-send payload deletion has no operation");
+    }
+    await database.walletSendDeliveryPayloads.delete([
+      state.snapshot.walletId,
+      state.snapshot.operationId,
+    ]);
+    requireCurrentWriteTransaction(database);
+  } else if (state.nextWalletSendDeliveryPayload !== undefined) {
+    await database.walletSendDeliveryPayloads.put(
+      state.nextWalletSendDeliveryPayload,
+    );
     requireCurrentWriteTransaction(database);
   }
   if (state.deleteProofIds.length > 0) {
@@ -688,6 +831,23 @@ async function assertNativeSnapshot(
           walletId,
           snapshot.operationId,
         );
+  const walletSendDeliveryPayload =
+    snapshot.operationId === null
+      ? undefined
+      : await readWalletSendDeliveryPayloadSnapshot(
+          database,
+          walletId,
+          snapshot.operationId,
+        );
+  const walletSendDeliveryReservation =
+    snapshot.operationId === null
+      ? undefined
+      : await readWalletSendDeliveryReservationSnapshot(
+          database,
+          walletId,
+          snapshot.operationId,
+          operation,
+        );
   const proofs = requireScopedProofs(
     await database.proofs.bulkGet(snapshot.proofIds),
     walletId,
@@ -701,6 +861,11 @@ async function assertNativeSnapshot(
         );
   if (
     !sameValue(operation, snapshot.operation) ||
+    !sameValue(walletSendDeliveryPayload, snapshot.walletSendDeliveryPayload) ||
+    !sameValue(
+      walletSendDeliveryReservation,
+      snapshot.walletSendDeliveryReservation,
+    ) ||
     !sameValue(proofs, snapshot.proofs) ||
     !sameValue(session, snapshot.session)
   ) {
@@ -711,6 +876,8 @@ async function assertNativeSnapshot(
 function assertNativeWriteScope(
   input: {
     nextOperation?: ProofOperationRecord;
+    nextWalletSendDeliveryPayload?: GuiWalletSendDeliveryPayloadRow | null;
+    nextWalletSendDeliveryReservation?: GuiWalletSendDeliveryReservationRow | null;
     nextSession?: SwapSessionRecord;
     nextActivity?: WalletActivityRow;
   },
@@ -718,11 +885,50 @@ function assertNativeWriteScope(
 ): void {
   if (
     (input.nextOperation && input.nextOperation.walletId !== walletId) ||
+    (input.nextWalletSendDeliveryPayload &&
+      input.nextWalletSendDeliveryPayload.walletId !== walletId) ||
+    (input.nextWalletSendDeliveryReservation &&
+      input.nextWalletSendDeliveryReservation.walletId !== walletId) ||
     (input.nextSession && input.nextSession.walletId !== walletId) ||
     (input.nextActivity && input.nextActivity.walletId !== walletId)
   ) {
     throw new Error("GUI custody write belongs to another wallet scope");
   }
+}
+
+async function readWalletSendDeliveryPayloadSnapshot(
+  database: BitcasterDB,
+  walletId: string,
+  operationId: string,
+): Promise<GuiWalletSendDeliveryPayloadSnapshot | undefined> {
+  const row = await database.walletSendDeliveryPayloads.get([
+    walletId,
+    operationId,
+  ]);
+  return row
+    ? guiWalletSendDeliveryPayloadSnapshot(
+        requireGuiWalletSendDeliveryPayloadRow(row, walletId, operationId),
+      )
+    : undefined;
+}
+
+async function readWalletSendDeliveryReservationSnapshot(
+  database: BitcasterDB,
+  walletId: string,
+  operationId: string,
+  operation: ProofOperationRecord | undefined,
+): Promise<GuiWalletSendDeliveryReservationSnapshot | undefined> {
+  const row = await database.walletSendDeliveryReservations.get([
+    walletId,
+    operationId,
+  ]);
+  if (!row) return undefined;
+  if (!operation) {
+    throw new Error("GUI wallet-send reservation has no operation");
+  }
+  return guiWalletSendDeliveryReservationSnapshot(
+    requireGuiWalletSendDeliveryReservationRow(row, operation),
+  );
 }
 
 function requireScopedOperation(

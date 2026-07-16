@@ -417,6 +417,7 @@
     "impliedRateSource": "(implied)",
     "ecashTokenReady": "Ecash token ready",
     "ecashTokenReadyHint": "Share this token with the recipient. It is a bearer Cashu token and may be redeemed in any Cashu wallet.",
+    "ecashTokenTooLargeForQr": "This token is too large for a QR code. Copy it instead.",
     "confirmPayment": "Confirm Payment",
     "invoiceAmount": "Invoice amount",
     "networkFee": "Network fee (estimate)",

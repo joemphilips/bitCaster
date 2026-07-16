@@ -417,6 +417,7 @@
     "impliedRateSource": "(推定)",
     "ecashTokenReady": "Ecashトークンを作成しました",
     "ecashTokenReadyHint": "このトークンを受取人に共有してください。これはBearer型のCashuトークンで、任意のCashuウォレットで受け取れます。",
+    "ecashTokenTooLargeForQr": "このトークンはQRコードには大きすぎます。コピーして共有してください。",
     "confirmPayment": "支払いを確認",
     "invoiceAmount": "インボイス金額",
     "networkFee": "ネットワーク手数料 (概算)",

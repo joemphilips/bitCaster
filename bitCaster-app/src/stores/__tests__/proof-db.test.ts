@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Amount } from "@cashu/cashu-ts";
 import { createDurableTradeProofOperationLink } from "@bitcaster/client-sdk/durableTradeRecovery";
 import {
+  DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+  DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX,
+  DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX,
+} from "@bitcaster/client-sdk/durableCustody";
+import {
   BLS_G1_GENERATOR,
   CANONICAL_BLS_KEYSET_ID,
   canonicalKeysetId as keysetId,
@@ -823,6 +828,51 @@ describe("proof operation record decoder", () => {
         }),
       ),
     ).toThrow("exceeds its physical row limit");
+  });
+
+  it("rejects oversized proof collections before inspecting their entries", () => {
+    const oversizedInputs = new Array(
+      DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX + 1,
+    );
+    Object.defineProperty(oversizedInputs, 0, {
+      get: () => {
+        throw new Error("oversized input was inspected");
+      },
+    });
+    expect(() =>
+      requireProofOperationRecord(
+        validProofOperation({ inputs: oversizedInputs }),
+      ),
+    ).toThrow("Stored proof operation is invalid: inputs");
+
+    const oversizedResults = new Array(
+      DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX + 1,
+    );
+    Object.defineProperty(oversizedResults, 0, {
+      get: () => {
+        throw new Error("oversized result was inspected");
+      },
+    });
+    expect(() =>
+      requireProofOperationRecord(
+        validProofOperation({
+          state: "completed",
+          resultProofs: { send: oversizedResults },
+        }),
+      ),
+    ).toThrow("Stored proof operation is invalid: result proofs");
+
+    const excessiveGroups = Object.fromEntries(
+      Array.from(
+        { length: DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX + 1 },
+        (_, index) => [`group-${index}`, []],
+      ),
+    );
+    expect(() =>
+      requireProofOperationRecord(
+        validProofOperation({ outputs: excessiveGroups }),
+      ),
+    ).toThrow("Stored proof operation is invalid: outputs");
   });
 
   it("accepts canonical secp256k1 and BLS proofs in inputs and completed results", () => {

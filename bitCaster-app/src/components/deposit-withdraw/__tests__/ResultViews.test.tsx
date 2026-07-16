@@ -1,6 +1,7 @@
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, it, expect, vi } from 'vitest'
+import { Amount, getEncodedTokenV4, type Proof } from '@cashu/cashu-ts'
 import { InvoiceDisplay } from '../InvoiceDisplay'
 import { TokenDisplay } from '../TokenDisplay'
 import { MeltConfirmation } from '../MeltConfirmation'
@@ -110,7 +111,7 @@ describe('InvoiceDisplay', () => {
     render(<InvoiceDisplay bolt11={bolt11} amountSats={1000} status="pending" />)
     // Find the copy button (last button, not the X)
     const buttons = screen.getAllByRole('button')
-    const copyButton = buttons[buttons.length - 1]
+    const copyButton = buttons[1]
     await userEvent.click(copyButton)
     expect(writeText).toHaveBeenCalledWith(bolt11)
   })
@@ -142,15 +143,54 @@ describe('TokenDisplay', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
-  it('copies token to clipboard when copy button is clicked', async () => {
+  it('copies the token without treating presentation as delivery authority', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
 
     render(<TokenDisplay token={token} amountSats={500} />)
     const buttons = screen.getAllByRole('button')
-    const copyButton = buttons[buttons.length - 1]
+    const copyButton = buttons[1]
     await userEvent.click(copyButton)
     expect(writeText).toHaveBeenCalledWith(token)
+  })
+
+  it('does not acknowledge display or dialog closure', async () => {
+    const onClose = vi.fn()
+    render(
+      <TokenDisplay
+        token={token}
+        amountSats={500}
+        onClose={onClose}
+      />,
+    )
+
+    await userEvent.click(screen.getAllByRole('button')[0])
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('falls back to exact-token copy when a valid fragmented token exceeds QR capacity', async () => {
+    const proofs: Proof[] = Array.from({ length: 32 }, (_, index) => ({
+      id: '0011223344556677',
+      amount: Amount.from(1),
+      secret: index.toString(16).padStart(64, '0'),
+      C: `02${(index + 1).toString(16).padStart(64, '0')}`,
+    }))
+    const largeToken = getEncodedTokenV4({
+      mint: 'https://mint.example',
+      unit: 'sat',
+      proofs,
+    })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+
+    const { container } = render(
+      <TokenDisplay token={largeToken} amountSats={32} />,
+    )
+
+    expect(screen.getByText(/too large for a QR code/i)).toBeInTheDocument()
+    expect(container.querySelector('svg[width="256"]')).toBeNull()
+    await userEvent.click(screen.getAllByRole('button')[1])
+    expect(writeText).toHaveBeenCalledWith(largeToken)
   })
 })
 

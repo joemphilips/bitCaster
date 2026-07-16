@@ -240,8 +240,14 @@ export class PlannedCustodyTransaction implements DurableCustodyTransaction {
   }
 
   putDelivery(input: PutDeliveryInput): void {
-    if (input.expiresAtMs === null) {
-      throw new Error("outbox delivery expiry is required");
+    const validWalletSend =
+      input.deliveryKind === "wallet-send" &&
+      input.expiresAtMs === null &&
+      input.state !== "expired";
+    const validExpiringDelivery =
+      input.deliveryKind !== "wallet-send" && input.expiresAtMs !== null;
+    if (!validWalletSend && !validExpiringDelivery) {
+      throw new Error("non-expiring outbox delivery policy is invalid");
     }
     const current = this.requireOperation(input.operationId);
     const deliveryId = `delivery:${input.operationId}:${input.deliveryKind}`;
@@ -255,6 +261,11 @@ export class PlannedCustodyTransaction implements DurableCustodyTransaction {
         throw new Error("outbox delivery cannot return to pending");
       }
       return;
+    }
+    if (input.deliveryKind === "wallet-send") {
+      throw new Error(
+        "wallet-send delivery requires a closed terminal decision",
+      );
     }
     this.transitionOperation({
       operationId: input.operationId,

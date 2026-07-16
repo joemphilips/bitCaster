@@ -11,7 +11,6 @@ const mocks = vi.hoisted(() => {
   const wallet = {
     createMintQuote: vi.fn(),
     mintProofs: vi.fn(),
-    send: vi.fn(),
     batchRestore: vi.fn(),
     getKeyset: vi.fn(() => ({ id: "k1" })),
     counters,
@@ -97,22 +96,6 @@ describe("mintProofs deterministic counter handling", () => {
 
     expect(mocks.wallet.mintProofs).toHaveBeenCalledWith(13_000, "q1");
     expect(mocks.counters.advanceToAtLeast).not.toHaveBeenCalled();
-  });
-
-  it("scales sat-market sends into msat collateral subunits", async () => {
-    const proofs = [
-      { id: "k1", amount: 20_000, secret: "s1", C: "C1" },
-    ] as never;
-    const split = { keep: [], send: proofs };
-    mocks.wallet.send.mockResolvedValueOnce(split);
-
-    const result = await cashu.sendProofs(13, proofs, {
-      mintUrl: "https://mint.test",
-      baseAsset: "sat",
-    });
-
-    expect(result).toBe(split);
-    expect(mocks.wallet.send).toHaveBeenCalledWith(13_000, proofs);
   });
 
   it.each([

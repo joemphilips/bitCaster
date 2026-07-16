@@ -7,6 +7,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import {
   createMintQuote,
   createMeltQuote,
+  getPendingRegularSatsToken,
   meltProofs,
   spendRegularSatsAsToken,
   waitForMintQuotePaid,
@@ -252,6 +253,26 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
   }, [activeMintUrl, selectedMintId, storeMints])
 
   useEffect(() => {
+    if (mode !== 'withdraw' || !mnemonic || currentView !== 'chooser') return
+    let cancelled = false
+    void getPendingRegularSatsToken()
+      .then((delivery) => {
+        if (cancelled || !delivery) return
+        setSelectedMintId(delivery.mintUrl)
+        setSelectedUnit('sat')
+        setAmountString(String(delivery.amountSats))
+        setEcashToken(delivery.token)
+        setCurrentView('token-display')
+      })
+      .catch((reason) => {
+        if (!cancelled) setError((reason as Error).message)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentView, mnemonic, mode])
+
+  useEffect(() => {
     const units = unitsForMint(selectedMintId)
     if (!units.includes(selectedUnit)) {
       setSelectedUnit(units[0] ?? 'sat')
@@ -480,8 +501,8 @@ export function useDepositWithdrawState(mode: DepositWithdrawMode, onDismiss: ()
     setIsLoading(true)
     setError(null)
     try {
-      const token = await spendRegularSatsAsToken(amountSats, selectedMintId)
-      setEcashToken(token)
+      const delivery = await spendRegularSatsAsToken(amountSats, selectedMintId)
+      setEcashToken(delivery.token)
       setCurrentView('token-display')
     } catch (e) {
       setError((e as Error).message)

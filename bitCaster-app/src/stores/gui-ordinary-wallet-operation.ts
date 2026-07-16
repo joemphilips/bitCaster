@@ -1,6 +1,7 @@
 import {
   Amount,
   CheckStateEnum,
+  getEncodedTokenV4,
   type MintQuoteResponse,
   type OutputDataLike,
   type Proof,
@@ -10,6 +11,7 @@ import {
 import {
   createDurableWalletMintOperation,
   createDurableWalletReceiveOperation,
+  createDurableWalletSendOperation,
   decodeDurableWalletOperation,
   decideDurableWalletOperationRecovery,
   deriveDurableWalletOperationAuthority,
@@ -18,6 +20,7 @@ import {
   toDurableCustodyProofOperationInput,
   type DurableWalletOperation,
   type DurableWalletOperationRecoveryEvidence,
+  type DurableWalletOperationRecoveryDecision,
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import {
   deriveDurableCustodyArtifactFingerprint,
@@ -26,9 +29,9 @@ import {
 import { deriveDurableCustodyProofOperationFingerprints } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import type { CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
-import { getWalletForUnit } from "@/lib/cashu";
 import { proofsWithOptionalConditionalMetadata } from "@/lib/conditionalKeysetMetadata";
 import { normalizeUrl } from "@/lib/url";
+import { useWalletStore } from "./wallet";
 import {
   currentGuiWalletId,
   getProofOperationForWallet,
@@ -38,9 +41,11 @@ import {
 import {
   abortPreparedGuiWalletMintForWallet,
   claimPreparedProofOperationMintSubmissionForWallet,
+  getPendingGuiWalletSendDeliveryForWallet,
   markProofOperationCompletedForWallet,
   prepareProofOperationForWallet,
   requireCompletedGuiWalletProofOperationAuthorityForWallet,
+  requirePendingGuiWalletSendTokenForWallet,
 } from "./gui-wallet-proof-operation-custody";
 import { GuiCustodyMintKeysUnavailable } from "./gui-custody-authority";
 import {
@@ -53,6 +58,12 @@ import {
   readGuiDepositActivityMetadata,
   type GuiDepositActivityMetadata,
 } from "./wallet-activity-projection";
+import {
+  GUI_WALLET_SEND_DELIVERY_METADATA_KEY,
+  guiWalletSendDeliveryMetadata,
+  readGuiWalletSendDeliveryMetadata,
+  type GuiWalletSendDeliveryMetadata,
+} from "./gui-wallet-send-delivery";
 
 export interface GuiLightningMintPlan {
   walletId: string;
@@ -136,7 +147,9 @@ export async function completeGuiLightningMint(
     plan.operationId,
   );
   requireOperationIdentity(operation, "wallet-mint", plan.mintUrl, plan.unit);
-  return dispatchForegroundExactOperation(plan.walletId, operation);
+  return requireReceiveResult(
+    await dispatchForegroundExactOperationGroups(plan.walletId, operation),
+  );
 }
 
 export async function receiveGuiCashuToken(input: {
@@ -174,7 +187,97 @@ export async function receiveGuiCashuToken(input: {
     assertCapturedWallet(walletId);
   }
   requireOperationIdentity(operation, "wallet-receive", mintUrl, input.unit);
-  return dispatchForegroundExactOperation(walletId, operation);
+  return requireReceiveResult(
+    await dispatchForegroundExactOperationGroups(walletId, operation),
+  );
+}
+
+export async function sendGuiCashuToken(input: {
+  expectedWalletId: string;
+  amount: number;
+  proofs: readonly Proof[];
+  mintUrl: string;
+  unit: CashuProofUnit;
+}): Promise<{
+  operationId: string;
+  keep: Proof[];
+  send: Proof[];
+  encodedUserExportToken: string;
+}> {
+  const walletId = input.expectedWalletId;
+  assertCapturedWallet(walletId);
+  requirePositiveAmount(input.amount, "GUI wallet send amount");
+  const mintUrl = normalizeUrl(input.mintUrl);
+  const operationId = sendOperationId(
+    mintUrl,
+    input.unit,
+    input.amount,
+    input.proofs,
+  );
+  let operation = await loadExactOperation(walletId, operationId);
+  if (!operation) {
+    const wallet = await walletForCapturedSeed(walletId, mintUrl, input.unit);
+    const preview = await fencedWalletCall(walletId, () =>
+      wallet.prepareSwapToSend(input.amount, [...input.proofs]),
+    );
+    operation = createDurableWalletSendOperation({
+      operationId,
+      mintUrl,
+      unit: input.unit,
+      preview,
+    });
+    const delivery = guiWalletSendDeliveryMetadata({
+      mintUrl: operation.mintUrl,
+      unit: operation.unit,
+      sendOutputs: operation.preview.sendOutputs,
+      keepOutputs: operation.preview.keepOutputs,
+      passthroughProofs: operation.preview.unselectedProofs,
+      inputProofs: operation.preview.inputs,
+    });
+    await persistOperation(walletId, operation, null, delivery);
+    assertCapturedWallet(walletId);
+  }
+  requireOperationIdentity(operation, "wallet-send", mintUrl, input.unit);
+  if (amountToNumber(operation.preview.amount) !== input.amount) {
+    throw new Error("GUI wallet send amount conflicts with durable authority");
+  }
+  const result = requireSendResult(
+    await dispatchForegroundExactOperationGroups(walletId, operation),
+  );
+  const encodedUserExportToken =
+    await requirePendingGuiWalletSendTokenForWallet(walletId, operationId);
+  return { operationId, ...result, encodedUserExportToken };
+}
+
+export interface PendingGuiCashuTokenDelivery {
+  operationId: string;
+  amount: number;
+  mintUrl: string;
+  unit: CashuProofUnit;
+  send: Proof[];
+  encodedUserExportToken: string;
+}
+
+export async function getPendingGuiCashuTokenDelivery(
+  expectedWalletId: string,
+): Promise<PendingGuiCashuTokenDelivery | null> {
+  assertCapturedWallet(expectedWalletId);
+  const record =
+    await getPendingGuiWalletSendDeliveryForWallet(expectedWalletId);
+  if (!record) return null;
+  const operation = decodeExactOperationRecord(record);
+  const unit = requireUnit(operation.unit);
+  requireOperationIdentity(operation, "wallet-send", record.mintUrl, unit);
+  const result = requireSendResult(record.resultProofs ?? {});
+  assertCapturedWallet(expectedWalletId);
+  return {
+    operationId: operation.operationId,
+    amount: amountToNumber(operation.preview.amount),
+    mintUrl: operation.mintUrl,
+    unit,
+    send: result.send,
+    encodedUserExportToken: record.encodedUserExportToken,
+  };
 }
 
 /** Runs one exact ordinary-wallet recovery attempt outside the startup scan lock. */
@@ -186,52 +289,109 @@ export type GuiOrdinaryWalletRecoveryOutcome =
 export async function recoverGuiOrdinaryWalletOperation(
   record: ProofOperationRecord,
 ): Promise<GuiOrdinaryWalletRecoveryOutcome> {
-  let operation: DurableWalletOperation;
-  try {
-    operation = await requireExactOperation(
-      record.walletId,
-      record.operationId,
-    );
-  } catch (error) {
-    if (error instanceof RetryableGuiWalletOperationFailure) {
-      return { kind: "retry-later", reason: "mint-response-unknown" };
-    }
-    throw error;
+  const operationStep = await recoveryStep(
+    () => requireExactOperation(record.walletId, record.operationId),
+    (error) => error instanceof RetryableGuiWalletOperationFailure,
+  );
+  if (operationStep.outcome) return operationStep.outcome;
+  const operation = requireRecoverableOrdinaryOperation(operationStep.value);
+  if (await recoverPendingUserExport(record, operation)) {
+    return { kind: "settled" };
   }
-  if (operation.kind !== "wallet-mint" && operation.kind !== "wallet-receive") {
-    throw new Error("Unsupported GUI ordinary wallet recovery operation");
-  }
-  let wallet: Wallet;
-  try {
-    wallet = await walletForPersistedOperation(
-      record.walletId,
-      operation.mintUrl,
-      requireUnit(operation.unit),
-    );
-  } catch (error) {
-    if (error instanceof RetryableGuiWalletOperationFailure) {
-      return { kind: "retry-later", reason: "mint-response-unknown" };
-    }
-    throw error;
-  }
-  let assessment: RecoveryAssessment;
-  try {
-    assessment = await collectRecoveryEvidence(
-      record.walletId,
-      wallet,
-      operation,
-      submissionState(record),
-    );
-  } catch (error) {
-    if (error instanceof ExternalRecoveryEvidenceUnavailable) {
-      return { kind: "retry-later", reason: "mint-response-unknown" };
-    }
-    throw error;
-  }
+  const walletStep = await recoveryStep(
+    () =>
+      walletForPersistedOperation(
+        record.walletId,
+        operation.mintUrl,
+        requireUnit(operation.unit),
+      ),
+    (error) => error instanceof RetryableGuiWalletOperationFailure,
+  );
+  if (walletStep.outcome) return walletStep.outcome;
+  const assessmentStep = await recoveryStep(
+    () =>
+      collectRecoveryEvidence(
+        record.walletId,
+        walletStep.value,
+        operation,
+        submissionState(record),
+      ),
+    (error) => error instanceof ExternalRecoveryEvidenceUnavailable,
+  );
+  if (assessmentStep.outcome) return assessmentStep.outcome;
+  const assessment = assessmentStep.value;
   const decision = decideDurableWalletOperationRecovery(
     operation,
     assessment.evidence,
   );
+  return applyOrdinaryWalletRecoveryDecision(
+    record,
+    operation,
+    walletStep.value,
+    assessment,
+    decision,
+  );
+}
+
+type RecoverableOrdinaryWalletOperation = Extract<
+  DurableWalletOperation,
+  { kind: "wallet-mint" | "wallet-receive" | "wallet-send" }
+>;
+
+type RecoveryStep<T> =
+  | { value: T; outcome?: never }
+  | { value?: never; outcome: GuiOrdinaryWalletRecoveryOutcome };
+
+async function recoveryStep<T>(
+  action: () => Promise<T>,
+  retryable: (error: unknown) => boolean,
+): Promise<RecoveryStep<T>> {
+  try {
+    return { value: await action() };
+  } catch (error) {
+    if (retryable(error)) {
+      return {
+        outcome: { kind: "retry-later", reason: "mint-response-unknown" },
+      };
+    }
+    throw error;
+  }
+}
+
+function requireRecoverableOrdinaryOperation(
+  operation: DurableWalletOperation,
+): RecoverableOrdinaryWalletOperation {
+  if (operation.kind === "wallet-melt") {
+    throw new Error("Unsupported GUI ordinary wallet recovery operation");
+  }
+  return operation;
+}
+
+async function recoverPendingUserExport(
+  record: ProofOperationRecord,
+  operation: RecoverableOrdinaryWalletOperation,
+): Promise<boolean> {
+  if (
+    operation.kind !== "wallet-send" ||
+    record.state !== "completed" ||
+    readGuiWalletSendDeliveryMetadata(record)?.mode !== "user-export"
+  ) {
+    return false;
+  }
+  await requirePendingGuiWalletSendTokenForWallet(
+    record.walletId,
+    operation.operationId,
+  );
+  return true;
+}
+
+async function applyOrdinaryWalletRecoveryDecision(
+  record: ProofOperationRecord,
+  operation: RecoverableOrdinaryWalletOperation,
+  wallet: Wallet,
+  assessment: RecoveryAssessment,
+  decision: DurableWalletOperationRecoveryDecision,
+): Promise<GuiOrdinaryWalletRecoveryOutcome> {
   switch (decision.kind) {
     case "abort-no-transport":
       await abortPreparedGuiWalletMintForWallet(
@@ -241,43 +401,14 @@ export async function recoverGuiOrdinaryWalletOperation(
       );
       return { kind: "settled" };
     case "reissue-exact-operation":
-      try {
-        await requireGuiNewEffectHeadroomForWallet(record.walletId);
-        await dispatchExactOperation(
-          record.walletId,
-          decision.operation,
-          wallet,
-          "recovery",
-        );
-      } catch (error) {
-        if (error instanceof GuiDurableStorageHeadroomUnavailable) {
-          return { kind: "retry-later", reason: "storage-unavailable" };
-        }
-        if (error instanceof RetryableGuiWalletOperationFailure) {
-          return { kind: "retry-later", reason: "mint-response-unknown" };
-        }
-        throw error;
-      }
-      return { kind: "settled" };
-    case "reconcile-exact-operation": {
-      const restored = assessment.restored;
-      if (
-        !restored ||
-        restored.kind !== "exact" ||
-        decision.result.kind !== "restored-proofs" ||
-        restored.resultFingerprint !== decision.result.resultFingerprint
-      ) {
-        throw new Error(
-          "GUI wallet restore result changed after classification",
-        );
-      }
-      await completeOperation(
-        record.walletId,
+      return reissueOrdinaryWalletOperation(record, wallet, decision.operation);
+    case "reconcile-exact-operation":
+      return reconcileOrdinaryWalletOperation(
+        record,
         operation,
-        restored.resultGroups,
+        assessment,
+        decision,
       );
-      return { kind: "settled" };
-    }
     case "retry-later":
       return { kind: "retry-later", reason: decision.classification };
     case "fail-closed":
@@ -285,12 +416,59 @@ export async function recoverGuiOrdinaryWalletOperation(
   }
 }
 
+async function reissueOrdinaryWalletOperation(
+  record: ProofOperationRecord,
+  wallet: Wallet,
+  operation: DurableWalletOperation,
+): Promise<GuiOrdinaryWalletRecoveryOutcome> {
+  try {
+    await requireGuiNewEffectHeadroomForWallet(record.walletId);
+    await dispatchExactOperation(
+      record.walletId,
+      operation,
+      wallet,
+      "recovery",
+    );
+    return { kind: "settled" };
+  } catch (error) {
+    if (error instanceof GuiDurableStorageHeadroomUnavailable) {
+      return { kind: "retry-later", reason: "storage-unavailable" };
+    }
+    if (error instanceof RetryableGuiWalletOperationFailure) {
+      return { kind: "retry-later", reason: "mint-response-unknown" };
+    }
+    throw error;
+  }
+}
+
+async function reconcileOrdinaryWalletOperation(
+  record: ProofOperationRecord,
+  operation: RecoverableOrdinaryWalletOperation,
+  assessment: RecoveryAssessment,
+  decision: Extract<
+    DurableWalletOperationRecoveryDecision,
+    { kind: "reconcile-exact-operation" }
+  >,
+): Promise<GuiOrdinaryWalletRecoveryOutcome> {
+  const restored = assessment.restored;
+  if (
+    !restored ||
+    restored.kind !== "exact" ||
+    decision.result.kind !== "restored-proofs" ||
+    restored.resultFingerprint !== decision.result.resultFingerprint
+  ) {
+    throw new Error("GUI wallet restore result changed after classification");
+  }
+  await completeOperation(record.walletId, operation, restored.resultGroups);
+  return { kind: "settled" };
+}
+
 async function dispatchExactOperation(
   walletId: string,
   operation: DurableWalletOperation,
   loadedWallet?: Wallet,
   authority: "direct" | "recovery" = "direct",
-): Promise<Proof[]> {
+): Promise<Record<string, Proof[]>> {
   const row = await getProofOperationForWallet(walletId, operation.operationId);
   if (!row) throw new Error("GUI wallet operation is missing");
   if (row.state === "completed") {
@@ -300,7 +478,7 @@ async function dispatchExactOperation(
         operation.operationId,
       );
     assertCapturedWallet(walletId);
-    return exactCompletedProofs(completed);
+    return exactCompletedResultGroups(completed);
   }
   if (row.state === "Failed") {
     throw new Error("GUI wallet operation is terminally failed");
@@ -335,7 +513,7 @@ async function recoverSubmittedOperation(
   walletId: string,
   wallet: Wallet,
   operation: DurableWalletOperation,
-): Promise<Proof[]> {
+): Promise<Record<string, Proof[]>> {
   let assessment: RecoveryAssessment;
   try {
     assessment = await collectRecoveryEvidence(
@@ -369,12 +547,7 @@ async function recoverSubmittedOperation(
           "GUI wallet restore result changed after classification",
         );
       }
-      const completed = await completeOperation(
-        walletId,
-        operation,
-        restored.resultGroups,
-      );
-      return completed.receive ?? [];
+      return completeOperation(walletId, operation, restored.resultGroups);
     }
     case "reissue-exact-operation":
       await requireReissueHeadroom(walletId);
@@ -408,30 +581,35 @@ async function transportExactOperation(
   walletId: string,
   wallet: Wallet,
   operation: DurableWalletOperation,
-): Promise<Proof[]> {
+): Promise<Record<string, Proof[]>> {
   const runtime = rehydrateDurableWalletOperation(operation);
-  let proofs: Proof[];
+  let groups: Record<string, Proof[]>;
   switch (runtime.kind) {
     case "wallet-mint":
-      proofs = await exactTransportPortCall(walletId, () =>
-        wallet.completeMint(runtime.preview),
-      );
+      groups = {
+        receive: await exactTransportPortCall(walletId, () =>
+          wallet.completeMint(runtime.preview),
+        ),
+      };
       break;
     case "wallet-receive": {
       const result = await exactTransportPortCall(walletId, () =>
         wallet.completeSwap(runtime.preview),
       );
-      proofs = result.keep;
+      groups = { receive: result.keep };
       break;
     }
-    case "wallet-send":
+    case "wallet-send": {
+      const result = await exactTransportPortCall(walletId, () =>
+        wallet.completeSwap(runtime.preview),
+      );
+      groups = { keep: result.keep, send: result.send };
+      break;
+    }
     case "wallet-melt":
       throw new Error("Unsupported GUI ordinary wallet dispatch operation");
   }
-  const completed = await completeOperation(walletId, operation, {
-    receive: proofs,
-  });
-  return completed.receive ?? [];
+  return completeOperation(walletId, operation, groups);
 }
 
 async function completeOperation(
@@ -450,10 +628,25 @@ async function completeOperation(
           ),
         }
       : resultGroups;
+  const record = await getProofOperationForWallet(
+    walletId,
+    operation.operationId,
+  );
+  if (!record) throw new Error("GUI wallet operation is missing");
+  const delivery = readGuiWalletSendDeliveryMetadata(record);
+  const encodedUserExportToken =
+    operation.kind === "wallet-send" && delivery?.mode === "user-export"
+      ? getEncodedTokenV4({
+          mint: operation.mintUrl,
+          unit: requireUnit(operation.unit),
+          proofs: requireSendResult(groups).send,
+        })
+      : undefined;
   await markProofOperationCompletedForWallet(
     walletId,
     operation.operationId,
     groups,
+    encodedUserExportToken,
   );
   assertCapturedWallet(walletId);
   return groups;
@@ -474,13 +667,13 @@ async function collectRecoveryEvidence(
         submission,
       );
     case "wallet-receive":
-      return collectReceiveRecoveryEvidence(
+    case "wallet-send":
+      return collectSwapRecoveryEvidence(
         walletId,
         wallet,
         operation,
         submission,
       );
-    case "wallet-send":
     case "wallet-melt":
       throw new Error("Unsupported GUI ordinary wallet recovery operation");
   }
@@ -536,10 +729,13 @@ async function collectMintRecoveryEvidence(
   };
 }
 
-async function collectReceiveRecoveryEvidence(
+async function collectSwapRecoveryEvidence(
   walletId: string,
   wallet: Wallet,
-  operation: Extract<DurableWalletOperation, { kind: "wallet-receive" }>,
+  operation: Extract<
+    DurableWalletOperation,
+    { kind: "wallet-receive" | "wallet-send" }
+  >,
   submission: RecoverySubmissionState,
 ): Promise<RecoveryAssessment> {
   const authority = deriveDurableWalletOperationAuthority(operation);
@@ -667,10 +863,11 @@ async function persistOperation(
   walletId: string,
   operation: DurableWalletOperation,
   activity: GuiDepositActivityMetadata | null,
+  sendDelivery: GuiWalletSendDeliveryMetadata | null = null,
 ): Promise<void> {
   await prepareProofOperationForWallet(
     walletId,
-    guiOperationInput(operation, activity),
+    guiOperationInput(operation, activity, sendDelivery),
   );
 }
 
@@ -680,25 +877,11 @@ async function loadExactOperation(
 ): Promise<DurableWalletOperation | null> {
   const record = await getProofOperationForWallet(walletId, operationId);
   if (!record) return null;
-  const operation = decodeDurableWalletOperation(
-    record.metadata.durableWalletOperation,
-  );
+  const operation = decodeExactOperationRecord(record);
   const activity = readGuiDepositActivityMetadata(record);
-  const actual = deriveDurableCustodyProofOperationFingerprints(
-    operationInputFromRecord(record),
-  );
-  const expected = deriveDurableCustodyProofOperationFingerprints(
-    guiOperationInput(operation, activity),
-  );
-  if (
-    operation.operationId !== operationId ||
-    actual.requestFingerprint !== expected.requestFingerprint ||
-    actual.outputPlanFingerprint !== expected.outputPlanFingerprint
-  ) {
-    throw new Error("GUI wallet operation identity is corrupt");
-  }
+  const sendDelivery = readGuiWalletSendDeliveryMetadata(record);
   try {
-    await persistOperation(walletId, operation, activity);
+    await persistOperation(walletId, operation, activity, sendDelivery);
   } catch (error) {
     if (error instanceof GuiCustodyMintKeysUnavailable) {
       throw retryableWalletFailure(
@@ -709,6 +892,41 @@ async function loadExactOperation(
     throw error;
   }
   assertCapturedWallet(walletId);
+  return operation;
+}
+
+function decodeExactOperationRecord(
+  record: ProofOperationRecord,
+): DurableWalletOperation {
+  const operation = decodeDurableWalletOperation(
+    record.metadata.durableWalletOperation,
+  );
+  const activity = readGuiDepositActivityMetadata(record);
+  const sendDelivery = readGuiWalletSendDeliveryMetadata(record);
+  const expectedSendDelivery =
+    operation.kind === "wallet-send" && sendDelivery?.mode === "user-export"
+      ? guiWalletSendDeliveryMetadata({
+          mintUrl: operation.mintUrl,
+          unit: operation.unit,
+          sendOutputs: operation.preview.sendOutputs,
+          keepOutputs: operation.preview.keepOutputs,
+          passthroughProofs: operation.preview.unselectedProofs,
+          inputProofs: operation.preview.inputs,
+        })
+      : sendDelivery;
+  const actual = deriveDurableCustodyProofOperationFingerprints(
+    operationInputFromRecord(record),
+  );
+  const expected = deriveDurableCustodyProofOperationFingerprints(
+    guiOperationInput(operation, activity, expectedSendDelivery),
+  );
+  if (
+    operation.operationId !== record.operationId ||
+    actual.requestFingerprint !== expected.requestFingerprint ||
+    actual.outputPlanFingerprint !== expected.outputPlanFingerprint
+  ) {
+    throw new Error("GUI wallet operation identity is corrupt");
+  }
   return operation;
 }
 
@@ -724,19 +942,27 @@ async function requireExactOperation(
 function guiOperationInput(
   operation: DurableWalletOperation,
   activity: GuiDepositActivityMetadata | null,
+  sendDelivery: GuiWalletSendDeliveryMetadata | null = null,
 ): PrepareProofOperationInput {
   const input = normalizeGuiOperationInput(
     toDurableCustodyProofOperationInput(operation),
   );
-  return activity === null
-    ? input
-    : {
-        ...input,
-        metadata: {
-          ...input.metadata,
-          [GUI_DEPOSIT_ACTIVITY_METADATA_KEY]: structuredClone(activity),
-        },
-      };
+  if (sendDelivery !== null && operation.kind !== "wallet-send") {
+    throw new Error("GUI wallet send delivery metadata is foreign");
+  }
+  const metadata = {
+    ...input.metadata,
+    ...(activity === null
+      ? {}
+      : { [GUI_DEPOSIT_ACTIVITY_METADATA_KEY]: structuredClone(activity) }),
+    ...(sendDelivery === null
+      ? {}
+      : {
+          [GUI_WALLET_SEND_DELIVERY_METADATA_KEY]:
+            structuredClone(sendDelivery),
+        }),
+  };
+  return { ...input, metadata };
 }
 
 function operationInputFromRecord(
@@ -755,7 +981,11 @@ function operationInputFromRecord(
 function normalizeGuiOperationInput(
   input: ReturnType<typeof toDurableCustodyProofOperationInput>,
 ): PrepareProofOperationInput {
-  if (input.kind !== "wallet-mint" && input.kind !== "wallet-receive") {
+  if (
+    input.kind !== "wallet-mint" &&
+    input.kind !== "wallet-receive" &&
+    input.kind !== "wallet-send"
+  ) {
     throw new Error("Unsupported GUI ordinary wallet operation");
   }
   return {
@@ -795,7 +1025,26 @@ function receiveOperationId(
   unit: CashuProofUnit,
   proofs: readonly Proof[],
 ): string {
-  const authority = proofs
+  const authority = proofSetAuthority(proofs);
+  return `wallet-receive:${deriveDurableCustodyArtifactFingerprint({ mintUrl, unit, proofs: authority })}`;
+}
+
+function sendOperationId(
+  mintUrl: string,
+  unit: CashuProofUnit,
+  amount: number,
+  proofs: readonly Proof[],
+): string {
+  return `wallet-send:${deriveDurableCustodyArtifactFingerprint({
+    mintUrl,
+    unit,
+    amount,
+    proofs: proofSetAuthority(proofs),
+  })}`;
+}
+
+function proofSetAuthority(proofs: readonly Proof[]) {
+  return proofs
     .map((proof) => ({
       id: proof.id,
       amount: amountToNumber(proof.amount),
@@ -808,7 +1057,6 @@ function receiveOperationId(
     .sort((left, right) =>
       `${left.id}:${left.secret}`.localeCompare(`${right.id}:${right.secret}`),
     );
-  return `wallet-receive:${deriveDurableCustodyArtifactFingerprint({ mintUrl, unit, proofs: authority })}`;
 }
 
 async function walletForCapturedSeed(
@@ -817,7 +1065,9 @@ async function walletForCapturedSeed(
   unit: CashuProofUnit,
 ): Promise<Wallet> {
   return fencedWalletCall(walletId, () =>
-    getWalletForUnit(mintUrl, unit, { expectedWalletId: walletId }),
+    useWalletStore
+      .getState()
+      .getWalletForUnit(mintUrl, unit, { expectedWalletId: walletId }),
   );
 }
 
@@ -834,10 +1084,10 @@ async function walletForPersistedOperation(
   }
 }
 
-async function dispatchForegroundExactOperation(
+async function dispatchForegroundExactOperationGroups(
   walletId: string,
   operation: DurableWalletOperation,
-): Promise<Proof[]> {
+): Promise<Record<string, Proof[]>> {
   try {
     return await dispatchExactOperation(walletId, operation);
   } catch (error) {
@@ -921,7 +1171,7 @@ function assertCapturedWallet(walletId: string): void {
   }
 }
 
-function requireOperationIdentity<K extends "wallet-mint" | "wallet-receive">(
+function requireOperationIdentity<K extends DurableWalletOperation["kind"]>(
   operation: DurableWalletOperation,
   kind: K,
   mintUrl: string,
@@ -936,15 +1186,46 @@ function requireOperationIdentity<K extends "wallet-mint" | "wallet-receive">(
   }
 }
 
-function exactCompletedProofs(record: ProofOperationRecord): Proof[] {
+function exactCompletedResultGroups(
+  record: ProofOperationRecord,
+): Record<string, Proof[]> {
   if (record.state !== "completed" || !record.resultProofs) {
     throw new Error("GUI wallet operation is not completed");
   }
-  const labels = Object.keys(record.resultProofs);
-  if (labels.length !== 1 || labels[0] !== "receive") {
+  return structuredClone(record.resultProofs);
+}
+
+function requireReceiveResult(groups: Record<string, Proof[]>): Proof[] {
+  requireExactResultLabels(groups, ["receive"]);
+  return groups.receive ?? [];
+}
+
+function requireSendResult(groups: Record<string, Proof[]>): {
+  keep: Proof[];
+  send: Proof[];
+} {
+  requireExactResultLabels(groups, ["keep", "send"]);
+  return { keep: groups.keep ?? [], send: groups.send ?? [] };
+}
+
+function requireExactResultLabels(
+  groups: Record<string, Proof[]>,
+  expected: readonly string[],
+): void {
+  const labels = Object.keys(groups);
+  if (
+    labels.length !== expected.length ||
+    expected.some((label) => !Object.hasOwn(groups, label))
+  ) {
     throw new Error("GUI wallet completed result is corrupt");
   }
-  return structuredClone(record.resultProofs.receive ?? []);
+}
+
+function requirePositiveAmount(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value;
 }
 
 function requireMintQuoteState(value: unknown): "UNPAID" | "PAID" | "ISSUED" {

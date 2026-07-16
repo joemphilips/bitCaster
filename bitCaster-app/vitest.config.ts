@@ -1,14 +1,23 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import path from "path";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
+const capacityTests = process.env.BITCASTER_CAPACITY_TESTS === "1";
 
 export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
     globals: true,
+    include: capacityTests
+      ? ["src/**/*.capacity.dexie.test.ts"]
+      : [...configDefaults.include],
+    exclude: capacityTests
+      ? [...configDefaults.exclude]
+      : [...configDefaults.exclude, "src/**/*.capacity.dexie.test.ts"],
+    fileParallelism: capacityTests ? false : undefined,
+    maxWorkers: capacityTests ? 1 : undefined,
     server: {
       deps: {
         // Force ndk-wallet and cashu-ts through Vite's transform pipeline so

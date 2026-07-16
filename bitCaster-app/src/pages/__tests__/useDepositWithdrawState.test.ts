@@ -1,4 +1,4 @@
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Amount } from '@cashu/cashu-ts'
 import { useDepositWithdrawState } from '../useDepositWithdrawState'
@@ -24,10 +24,13 @@ vi.mock('@/lib/cashu', () => ({
   createMintQuote: vi.fn(),
   mintProofs: vi.fn(),
   encodeToken: vi.fn().mockReturnValue('cashuAtoken123'),
-  sendProofs: vi.fn().mockResolvedValue({ keep: [], send: [{ secret: 's1', amount: 100 }] }),
   createMeltQuote: vi.fn(),
   meltProofs: vi.fn(),
-  spendRegularSatsAsToken: vi.fn().mockResolvedValue('cashuAtoken123'),
+  spendRegularSatsAsToken: vi.fn().mockResolvedValue({
+    operationId: 'wallet-send:test',
+    token: 'cashuAtoken123',
+  }),
+  getPendingRegularSatsToken: vi.fn().mockResolvedValue(null),
   waitForMintQuotePaid: vi.fn(),
 }))
 
@@ -643,6 +646,23 @@ describe('useDepositWithdrawState', () => {
   })
 
   describe('sat-only withdraw paths', () => {
+    it('restores a pending exported token without treating presentation as completion', async () => {
+      const cashu = await import('@/lib/cashu')
+      vi.mocked(cashu.getPendingRegularSatsToken).mockResolvedValueOnce({
+        operationId: 'wallet-send:pending',
+        amountSats: 21,
+        mintUrl: 'http://localhost:8085',
+        token: 'cashuApending',
+      })
+
+      const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))
+      await waitFor(() => expect(result.current.currentView).toBe('token-display'))
+
+      expect(result.current.ecashToken).toBe('cashuApending')
+      expect(result.current.amountSats).toBe(21)
+      expect(result.current).not.toHaveProperty('onEcashTokenSavedOrShared')
+    })
+
     it('selects sat base proofs when sending ecash', async () => {
       const cashu = await import('@/lib/cashu')
       vi.mocked(cashu.spendRegularSatsAsToken).mockClear()

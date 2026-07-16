@@ -26,9 +26,6 @@ const mocks = vi.hoisted(() => {
       (proofs: unknown[], mintUrl: string, _unit?: string) =>
         `token:${mintUrl}:${(proofs as { amount: number }[]).reduce((s, p) => s + p.amount, 0)}`,
     ),
-    receiveToken: vi.fn(async (_token: string, _mintUrl: string) => [
-      { secret: "rotated-1", amount: 42, id: "kid", C: "C" },
-    ]),
     ingressReceiveCashuToken: vi.fn(
       async (
         _token: string,
@@ -95,7 +92,6 @@ beforeEach(() => {
   // still wired to the listener module's imports.
   mocks.markReceivedSpy.mockClear();
   mocks.encodeToken.mockClear();
-  mocks.receiveToken.mockClear();
   mocks.ingressReceiveCashuToken.mockClear();
   mocks.subscribeNip17DMs.mockReset();
   mocks.subscribeNip17DMs.mockResolvedValue(() => {});
@@ -285,9 +281,7 @@ describe("nip17-listener", () => {
       JSON.stringify({
         id: "req-redacted-error",
         mint: "http://mint.example",
-        proofs: [
-          { secret: "redacted-secret", amount: 5, id: "kid", C: "C" },
-        ],
+        proofs: [{ secret: "redacted-secret", amount: 5, id: "kid", C: "C" }],
       }),
     );
 

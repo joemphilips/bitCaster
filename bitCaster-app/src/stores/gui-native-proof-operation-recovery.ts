@@ -34,6 +34,13 @@ import {
 } from "./gui-custody-authority";
 import type { GuiWalletLockContext } from "./gui-wallet-lock";
 import {
+  guiWalletSendTokenFingerprint,
+  readGuiWalletSendDeliveryMetadata,
+  requireGuiWalletSendDeliveryPayloadRow,
+  requireExactGuiWalletSendUserExportToken,
+  type GuiWalletSendDeliveryPayloadRow,
+} from "./gui-wallet-send-delivery";
+import {
   db,
   ensureDurableSwapStorage,
   proofOperationPrimaryKey,
@@ -365,6 +372,7 @@ interface ExactNativeOperation {
   canonical: DurableCustodyRecord;
   active: 0 | 1;
   native: ProofOperationRecord;
+  walletSendDeliveryPayload: GuiWalletSendDeliveryPayloadRow | null;
 }
 
 async function tryReadExactNativeOperation(
@@ -390,6 +398,7 @@ async function readExactNativeOperation(
     "r",
     db.custodyOperations,
     db.proofOperations,
+    db.walletSendDeliveryPayloads,
     async () => {
       const row = await db.custodyOperations.get(custodyOperationId);
       if (!row) return null;
@@ -404,10 +413,23 @@ async function readExactNativeOperation(
         context.walletId,
         retainedOperationKey,
       );
+      const rawPayload = await db.walletSendDeliveryPayloads.get([
+        context.walletId,
+        retainedOperationKey,
+      ]);
+      const walletSendDeliveryPayload = rawPayload
+        ? requireGuiWalletSendDeliveryPayloadRow(
+            rawPayload,
+            context.walletId,
+            retainedOperationKey,
+            canonical.operation.operationId,
+          )
+        : null;
       return {
         canonical: structuredClone(canonical),
         active: row.active,
         native: structuredClone(native),
+        walletSendDeliveryPayload,
       };
     },
   );
@@ -444,12 +466,43 @@ function validateNativePair(
       ? "clear"
       : "blocked";
   }
+  if (isPendingUserExportDeliveryPair(pair)) return "clear";
   const exactActiveState =
     (canonical.operation.state === "dispatch-intent" &&
       native.state === "prepared") ||
     (canonical.operation.state === "transport-attempted" &&
       native.state === "mint-submitted");
   return exactActiveState ? "active" : "blocked";
+}
+
+function isPendingUserExportDeliveryPair(pair: ExactNativeOperation): boolean {
+  const { canonical, native, walletSendDeliveryPayload } = pair;
+  if (!walletSendDeliveryPayload) return false;
+  const delivery = canonical.operation.delivery;
+  let tokenFingerprint: string;
+  try {
+    tokenFingerprint = guiWalletSendTokenFingerprint(
+      requireExactGuiWalletSendUserExportToken(
+        native,
+        walletSendDeliveryPayload,
+      ),
+    );
+  } catch {
+    return false;
+  }
+  return (
+    native.kind === "wallet-send" &&
+    native.state === "completed" &&
+    readGuiWalletSendDeliveryMetadata(native)?.mode === "user-export" &&
+    inactiveNativePairHasExactResult(canonical, native) &&
+    delivery.deliveryKind === "outbox" &&
+    delivery.deliveryId ===
+      `delivery:${canonical.operation.operationId}:wallet-send` &&
+    delivery.payloadHandle === `wallet-send:${native.operationId}` &&
+    delivery.payloadFingerprint === tokenFingerprint &&
+    delivery.expiresAtMs === null &&
+    delivery.state === "pending"
+  );
 }
 
 function inactiveNativePairHasExactResult(
@@ -507,8 +560,27 @@ function sameNativeRecoveryAuthority(
     sameValue(
       immutableNativeAuthority(before.native),
       immutableNativeAuthority(after.native),
+    ) &&
+    sameValue(
+      compactWalletSendDeliveryPayload(before.walletSendDeliveryPayload),
+      compactWalletSendDeliveryPayload(after.walletSendDeliveryPayload),
     )
   );
+}
+
+function compactWalletSendDeliveryPayload(
+  payload: GuiWalletSendDeliveryPayloadRow | null,
+) {
+  return payload === null
+    ? null
+    : {
+        walletId: payload.walletId,
+        operationId: payload.operationId,
+        custodyOperationId: payload.custodyOperationId,
+        tokenDigest: payload.tokenDigest,
+        tokenByteLength: payload.tokenByteLength,
+        createdAt: payload.createdAt,
+      };
 }
 
 function immutableCanonicalAuthority(record: DurableCustodyRecord) {
@@ -571,7 +643,9 @@ type SupportedNativeOperation =
       CtfProofOperationRecord & {
         kind: "ctf-redeem" | "ctf-condition-registration" | "regular-split";
       })
-  | (ProofOperationRecord & { kind: "wallet-mint" | "wallet-receive" });
+  | (ProofOperationRecord & {
+      kind: "wallet-mint" | "wallet-receive" | "wallet-send";
+    });
 
 function isSupportedNativeOperation(
   operation: ProofOperationRecord,
@@ -581,17 +655,20 @@ function isSupportedNativeOperation(
     operation.kind === "ctf-condition-registration" ||
     operation.kind === "regular-split" ||
     operation.kind === "wallet-mint" ||
-    operation.kind === "wallet-receive"
+    operation.kind === "wallet-receive" ||
+    operation.kind === "wallet-send"
   );
 }
 
 function isOrdinaryWalletOperation(
   operation: ProofOperationRecord,
 ): operation is ProofOperationRecord & {
-  kind: "wallet-mint" | "wallet-receive";
+  kind: "wallet-mint" | "wallet-receive" | "wallet-send";
 } {
   return (
-    operation.kind === "wallet-mint" || operation.kind === "wallet-receive"
+    operation.kind === "wallet-mint" ||
+    operation.kind === "wallet-receive" ||
+    operation.kind === "wallet-send"
   );
 }
 
@@ -617,6 +694,7 @@ async function dispatchNativeRecovery(
       return { kind: "settled" };
     case "wallet-mint":
     case "wallet-receive":
+    case "wallet-send":
       return recoverGuiOrdinaryWalletOperation(operation);
     default:
       throw new Error("Unsupported native proof operation");

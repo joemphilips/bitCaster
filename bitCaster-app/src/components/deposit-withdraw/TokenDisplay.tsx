@@ -9,6 +9,9 @@ interface TokenDisplayProps {
   onClose?: () => void
 }
 
+export const CASHU_TOKEN_QR_BYTES_LIMIT_MAX = 2_048
+const CASHU_TOKEN_PREVIEW_CODE_UNITS_MAX = 512
+
 export function TokenDisplay({
   token,
   amountSats,
@@ -16,6 +19,13 @@ export function TokenDisplay({
 }: TokenDisplayProps) {
   const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
+  const canRenderQr =
+    token.length <= CASHU_TOKEN_QR_BYTES_LIMIT_MAX &&
+    new TextEncoder().encode(token).byteLength <= CASHU_TOKEN_QR_BYTES_LIMIT_MAX
+  const tokenPreview =
+    token.length <= CASHU_TOKEN_PREVIEW_CODE_UNITS_MAX
+      ? token
+      : `${token.slice(0, 384)}…${token.slice(-64)}`
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(token)
@@ -45,13 +55,15 @@ export function TokenDisplay({
         </div>
 
         {/* QR Code */}
-        <div className="bg-white p-4 rounded-2xl">
-          <QRCodeSVG
-            value={token}
-            size={256}
-            level="L"
-          />
-        </div>
+        {canRenderQr ? (
+          <div className="bg-white p-4 rounded-2xl">
+            <QRCodeSVG value={token} size={256} level="L" />
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-slate-700 bg-slate-800 p-6 text-center text-sm text-slate-300">
+            {t('deposit.ecashTokenTooLargeForQr')}
+          </div>
+        )}
 
         {/* Amount */}
         <div className="mt-6 text-2xl font-bold text-white font-mono">
@@ -62,7 +74,7 @@ export function TokenDisplay({
         <div className="mt-4 w-full">
           <div className="bg-slate-800 border border-slate-700 rounded-xl p-3 flex items-center gap-2">
             <span className="flex-1 text-xs text-slate-400 font-mono truncate">
-              {token}
+              {tokenPreview}
             </span>
             <button
               onClick={handleCopy}

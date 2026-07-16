@@ -108,25 +108,6 @@ describe("derived GUI proof identity schema", () => {
     expect(selected).toHaveLength(256);
   });
 
-  it("uses the exact physical index despite a large incompatible inventory", async () => {
-    const incompatible = Array.from({ length: 10_000 }, (_, index) => {
-      const candidate = proofWith(`incompatible-${index}`, 1_024);
-      return index % 2 === 0
-        ? withCtfMetadata(candidate)
-        : { ...candidate, reservedBy: "another-operation" };
-    });
-    await addProofs([...incompatible, proofWith("only-spendable", 64)]);
-
-    const selected = await withLock((lock) =>
-      getBoundedUnitProofsForAmountUnderLock(lock, "https://mint.example", {
-        unit: "sat",
-        minimumAmount: 64,
-      }),
-    );
-
-    expect(selected.map(({ secret }) => secret)).toEqual(["only-spendable"]);
-  }, 20_000);
-
   it("keeps derived selectability exact across reservation mutations", async () => {
     await addProofs([PROOF]);
     const [stored] = await getProofs();

@@ -2,8 +2,11 @@ import Dexie, { type Table } from "dexie";
 import type { Proof } from "@cashu/cashu-ts";
 import { isStrictCashuProofArtifact } from "@bitcaster/client-sdk/cashuProofArtifact";
 import {
+  DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   deriveDurableCustodyProofId,
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+  DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX,
+  DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX,
 } from "@bitcaster/client-sdk/durableCustody";
 import {
   amountToNumber,
@@ -38,6 +41,10 @@ import type {
   GuiDurableStorageAccountingRow,
   GuiDurableStorageHeadroomRow,
 } from "./gui-durable-storage-admission-model";
+import type {
+  GuiWalletSendDeliveryPayloadRow,
+  GuiWalletSendDeliveryReservationRow,
+} from "./gui-wallet-send-delivery";
 import { createGuiDurableStorageRowArtifact } from "./gui-durable-storage-artifacts";
 import {
   walletIdFromHeldGuiWalletLock,
@@ -107,7 +114,8 @@ export type ProofOperationKind =
   | "regular-split"
   | "proof-split"
   | "wallet-mint"
-  | "wallet-receive";
+  | "wallet-receive"
+  | "wallet-send";
 export type ProofOperationState =
   | "prepared"
   | "mint-submitted"
@@ -261,6 +269,14 @@ export class BitcasterDB extends Dexie {
   walletActivities!: Table<WalletActivityRow, [string, string]>;
   durableStorageAccounting!: Table<GuiDurableStorageAccountingRow, string>;
   durableStorageHeadroom!: Table<GuiDurableStorageHeadroomRow, string>;
+  walletSendDeliveryPayloads!: Table<
+    GuiWalletSendDeliveryPayloadRow,
+    [string, string]
+  >;
+  walletSendDeliveryReservations!: Table<
+    GuiWalletSendDeliveryReservationRow,
+    [string, string]
+  >;
 
   constructor() {
     super("bitcaster");
@@ -493,6 +509,68 @@ export class BitcasterDB extends Dexie {
           ].map((tableName) => transaction.table(tableName).clear()),
         );
       });
+    // The custody schema is undeployed. Version 16 discards incompatible
+    // development rows and moves large exact wallet-send bearer payloads out
+    // of the bounded proof-operation row into their own indexed table.
+    this.version(16)
+      .stores({
+        walletSendDeliveryPayloads:
+          "[walletId+operationId], walletId, custodyOperationId, &[walletId+custodyOperationId], [walletId+createdAt+operationId]",
+      })
+      .upgrade(async (transaction) => {
+        await Promise.all(
+          [
+            "proofs",
+            "proofOperations",
+            "swapSessions",
+            "swapIntents",
+            "custodyScopes",
+            "custodyScopeStates",
+            "custodyOperations",
+            "custodySessionLinks",
+            "custodyProofReservations",
+            "partialLockFailures",
+            "walletCounters",
+            "pendingLocalWalletPayments",
+            "pendingTrades",
+            "walletActivities",
+            "durableStorageAccounting",
+            "durableStorageHeadroom",
+            "walletSendDeliveryPayloads",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
+    // The custody schema remains undeployed. Version 17 adds an exact,
+    // operation-bound physical reservation that is consumed by completion.
+    this.version(17)
+      .stores({
+        walletSendDeliveryReservations:
+          "[walletId+operationId], walletId, custodyOperationId, &[walletId+custodyOperationId]",
+      })
+      .upgrade(async (transaction) => {
+        await Promise.all(
+          [
+            "proofs",
+            "proofOperations",
+            "swapSessions",
+            "swapIntents",
+            "custodyScopes",
+            "custodyScopeStates",
+            "custodyOperations",
+            "custodySessionLinks",
+            "custodyProofReservations",
+            "partialLockFailures",
+            "walletCounters",
+            "pendingLocalWalletPayments",
+            "pendingTrades",
+            "walletActivities",
+            "durableStorageAccounting",
+            "durableStorageHeadroom",
+            "walletSendDeliveryPayloads",
+            "walletSendDeliveryReservations",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
     this.on("blocked", () => {
       durableSwapStorageBlockedReason =
         "Durable swap storage upgrade is blocked by another open tab";
@@ -685,6 +763,16 @@ export async function getBoundedUnitProofsForAmountUnderLock(
     if (amount >= options.minimumAmount) break;
   }
   return selected;
+}
+
+export async function getBoundedUnitProofsForAmount(
+  mintUrl: string,
+  options: { unit: CashuProofUnit | string; minimumAmount: number },
+): Promise<StoredProof[]> {
+  const walletId = currentGuiWalletId();
+  return withGuiWalletLock(walletId, currentGuiWalletId, (lock) =>
+    getBoundedUnitProofsForAmountUnderLock(lock, mintUrl, options),
+  );
 }
 
 export async function getOutcomeProofs(
@@ -1582,7 +1670,8 @@ function isProofOperationKind(value: unknown): value is ProofOperationKind {
     value === "regular-split" ||
     value === "proof-split" ||
     value === "wallet-mint" ||
-    value === "wallet-receive"
+    value === "wallet-receive" ||
+    value === "wallet-send"
   );
 }
 
@@ -1628,12 +1717,13 @@ function isProofArray(
   walletId: string,
   mintUrl: string,
 ): boolean {
-  if (!Array.isArray(value)) return false;
-  const proofs = value.filter((proof) => isProof(proof, walletId, mintUrl));
-  return (
-    proofs.length === value.length &&
-    new Set(proofs.map((proof) => proof.secret)).size === proofs.length
-  );
+  if (
+    !Array.isArray(value) ||
+    value.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX
+  ) {
+    return false;
+  }
+  return hasDistinctProofs(value, walletId, mintUrl);
 }
 
 function isProofGroups(
@@ -1641,28 +1731,43 @@ function isProofGroups(
   walletId: string,
   mintUrl: string,
 ): boolean {
-  if (!isRecord(value)) return false;
-  const groups = Object.entries(value);
-  if (
-    !groups.every(
-      ([label, proofs]) => isGroupLabel(label) && Array.isArray(proofs),
-    )
-  ) {
-    return false;
-  }
-  const proofs = groups.flatMap(([, items]) => items as unknown[]);
-  return (
-    proofs.every((proof) => isProof(proof, walletId, mintUrl)) &&
-    new Set(proofs.map((proof) => (proof as Record<string, unknown>).secret))
-      .size === proofs.length
+  const groups = boundedArtifactGroups(
+    value,
+    DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX,
   );
+  if (groups === null) return false;
+  const secrets = new Set<string>();
+  for (const [, proofs] of groups) {
+    for (const proof of proofs) {
+      if (!isProof(proof, walletId, mintUrl) || secrets.has(proof.secret)) {
+        return false;
+      }
+      secrets.add(proof.secret);
+    }
+  }
+  return true;
+}
+
+function hasDistinctProofs(
+  proofs: readonly unknown[],
+  walletId: string,
+  mintUrl: string,
+): boolean {
+  const secrets = new Set<string>();
+  for (const proof of proofs) {
+    if (!isProof(proof, walletId, mintUrl) || secrets.has(proof.secret)) {
+      return false;
+    }
+    secrets.add(proof.secret);
+  }
+  return true;
 }
 
 function isProof(
   value: unknown,
   walletId?: string,
   mintUrl?: string,
-): value is Record<string, unknown> {
+): value is Record<string, unknown> & { secret: string } {
   if (!isRecord(value) || !hasOnlyKnownFields(value, PROOF_FIELDS))
     return false;
   return (
@@ -1818,24 +1923,42 @@ const OUTPUT_FIELDS = [
 ] as const;
 
 function isOutputGroups(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  const groups = Object.entries(value);
-  if (
-    !groups.every(
-      ([label, outputs]) => isGroupLabel(label) && Array.isArray(outputs),
-    )
-  ) {
-    return false;
-  }
-  const outputs = groups.flatMap(([, items]) => items as unknown[]);
-  return (
-    outputs.every(isStoredOutput) &&
-    new Set(outputs.map((output) => (output as Record<string, unknown>).secret))
-      .size === outputs.length
+  const groups = boundedArtifactGroups(
+    value,
+    DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   );
+  if (groups === null) return false;
+  const secrets = new Set<string>();
+  for (const [, outputs] of groups) {
+    for (const output of outputs) {
+      if (!isStoredOutput(output) || secrets.has(output.secret)) {
+        return false;
+      }
+      secrets.add(output.secret);
+    }
+  }
+  return true;
 }
 
-function isStoredOutput(value: unknown): boolean {
+function boundedArtifactGroups(
+  value: unknown,
+  itemLimit: number,
+): Array<[string, unknown[]]> | null {
+  if (!isRecord(value)) return null;
+  const groups = Object.entries(value);
+  if (groups.length > DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX) return null;
+  let itemCount = 0;
+  for (const [label, items] of groups) {
+    if (!isGroupLabel(label) || !Array.isArray(items)) return null;
+    itemCount += items.length;
+    if (itemCount > itemLimit) return null;
+  }
+  return groups as Array<[string, unknown[]]>;
+}
+
+function isStoredOutput(
+  value: unknown,
+): value is Record<string, unknown> & { secret: string } {
   return (
     isRecord(value) &&
     hasOnlyKnownFields(value, OUTPUT_FIELDS) &&

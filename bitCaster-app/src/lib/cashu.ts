@@ -19,13 +19,12 @@ import {
   type MeltQuoteResponse,
   type PartialMintQuoteResponse,
   type Token,
-  type OutputType,
 } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
 import { normalizeUrl } from "@/lib/url";
 import {
-  addProofs,
-  getUnitProofs,
+  currentGuiWalletId,
+  getBoundedUnitProofsForAmount,
   removeProofs,
   type ProofOperationRecord,
   type StoredProof,
@@ -49,6 +48,10 @@ import {
 } from "@bitcaster/client-sdk/marketUnits";
 import { withGuiCustodyProfileLock } from "@/stores/gui-custody-authority";
 import { createCapturedGuiWalletProofOperationStore } from "@/stores/gui-wallet-proof-operation-store";
+import {
+  getPendingGuiCashuTokenDelivery,
+  sendGuiCashuToken,
+} from "@/stores/gui-ordinary-wallet-operation";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -402,66 +405,56 @@ function skipValue(b: Uint8Array, i: number): number {
   throw new Error("CBOR major " + major);
 }
 
-/** Receive a cashu token string and return the redeemed proofs. */
-export async function receiveToken(
-  tokenStr: string,
-  mintUrl?: string,
-  baseAsset?: MarketBaseAsset | string | null,
-): Promise<Proof[]> {
-  const wallet = await getWallet(mintUrl, baseAsset);
-  // Token ingress is a one-way receive from another wallet. Use random receive
-  // outputs so pasted tokens do not collide with deterministic counters already
-  // reserved for the browser wallet's own mint/deposit operations.
-  const receiveOutput: OutputType = { type: "random" };
-  return wallet.receive(tokenStr, undefined, receiveOutput);
-}
-
-/**
- * Send `amountSats` using the provided proofs.
- * Returns `{ keep, send }` — store `keep` proofs, share `send` proofs.
- */
-export async function sendProofs(
-  amountSats: number,
-  proofs: Proof[],
-  options: {
-    mintUrl?: string;
-    baseAsset?: MarketBaseAsset | string | null;
-  } = {},
-): Promise<{ keep: Proof[]; send: Proof[] }> {
-  const wallet = await getWallet(options.mintUrl, options.baseAsset);
-  const amountSubunits = collateralSubunitsFromBaseAmount(
-    amountSats,
-    options.baseAsset,
-  );
-  return wallet.send(amountSubunits, proofs);
-}
-
 /** Spend regular sat proofs into a Cashu token and persist local change. */
 export async function spendRegularSatsAsToken(
   amountSats: number,
   mintUrl: string,
-): Promise<string> {
+): Promise<{ operationId: string; token: string }> {
   if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
     throw new Error("Amount must be a positive integer number of sats.");
   }
   const unit = defaultCollateralUnit("sat");
-  const proofs = await getUnitProofs(mintUrl, { unit });
-  const { keep, send } = await sendProofs(amountSats, proofs, {
-    mintUrl,
-    baseAsset: "sat",
+  const proofs = await getBoundedUnitProofsForAmount(mintUrl, {
+    unit,
+    minimumAmount: amountSats,
   });
-  await removeProofs(proofs);
-  if (keep.length > 0) {
-    await addProofs(
-      keep.map((proof) => ({
-        ...proof,
-        mintUrl,
-        baseAsset: "sat",
-        unit,
-      })),
-    );
+  if (
+    proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0) <
+    amountSats
+  ) {
+    throw new Error("Insufficient regular sat balance.");
   }
-  return encodeToken(send, mintUrl);
+  const { operationId, encodedUserExportToken } = await sendGuiCashuToken({
+    expectedWalletId: currentGuiWalletId(),
+    amount: amountSats,
+    proofs,
+    mintUrl,
+    unit,
+  });
+  return {
+    operationId,
+    token: encodedUserExportToken,
+  };
+}
+
+export async function getPendingRegularSatsToken(): Promise<{
+  operationId: string;
+  amountSats: number;
+  mintUrl: string;
+  token: string;
+} | null> {
+  const walletId = currentGuiWalletId();
+  const delivery = await getPendingGuiCashuTokenDelivery(walletId);
+  if (!delivery) return null;
+  if (delivery.unit !== "sat") {
+    throw new Error("Pending GUI ecash delivery is not sat-denominated");
+  }
+  return {
+    operationId: delivery.operationId,
+    amountSats: delivery.amount,
+    mintUrl: delivery.mintUrl,
+    token: delivery.encodedUserExportToken,
+  };
 }
 
 /** Create a melt quote for a Lightning invoice. */

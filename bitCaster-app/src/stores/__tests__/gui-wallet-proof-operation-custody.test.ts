@@ -1,11 +1,12 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Amount, Mint as CashuMint } from "@cashu/cashu-ts";
+import { Amount, getEncodedTokenV4, Mint as CashuMint } from "@cashu/cashu-ts";
 import Dexie from "dexie";
 import { createDurableWalletProofTransition } from "@bitcaster/client-sdk/durableWalletProofTransition";
 import {
   abortPreparedGuiWalletMintForWallet,
   claimPreparedProofOperationMintSubmissionForWallet,
+  getPendingGuiWalletSendDeliveryForWallet,
   markProofOperationCompleted,
   markProofOperationFailed,
   markProofOperationMintSubmitted,
@@ -43,6 +44,14 @@ import {
   prepareGuiCustodyUnitOfWork,
   readGuiCustodyNativeSnapshot,
 } from "../gui-custody-unit-of-work";
+import {
+  __resetGuiNativeProofOperationRecoverySchedulerForTests,
+  recoverGuiNativeProofOperations,
+} from "../gui-native-proof-operation-recovery";
+import {
+  guiWalletSendDeliveryMetadata,
+  readGuiWalletSendDeliveryMetadata,
+} from "../gui-wallet-send-delivery";
 
 const KEYSET_ID = `00${"22".repeat(7)}`;
 const PUBLIC_KEY = `02${"33".repeat(32)}`;
@@ -137,6 +146,79 @@ function ordinaryExternalResultProofs() {
   return { receive: resultProofs().change };
 }
 
+function ordinarySendOperationInput() {
+  const input = operationInput();
+  const passthrough = {
+    id: KEYSET_ID,
+    amount: Amount.from(2),
+    secret: "88".repeat(32),
+    C: PUBLIC_KEY,
+  };
+  const sendOutputs = [
+    {
+      blindedMessage: {
+        amount: 1,
+        id: KEYSET_ID,
+        B_: PUBLIC_KEY,
+      },
+      blindingFactor: "66".repeat(32),
+      secret: "77".repeat(32),
+    },
+  ];
+  return {
+    ...input,
+    operationId: "wallet-send-operation-001",
+    kind: "wallet-send" as const,
+    outputs: {
+      keep: input.outputs.change,
+      send: sendOutputs,
+    },
+    metadata: {
+      unit: "sat",
+      guiWalletSendDelivery: guiWalletSendDeliveryMetadata({
+        mintUrl: input.mintUrl,
+        unit: "sat",
+        sendOutputs,
+        keepOutputs: input.outputs.change,
+        passthroughProofs: [passthrough],
+      }),
+      durableWalletProofTransition: createDurableWalletProofTransition({
+        inputSource: "wallet",
+        plannedOutputLabels: ["keep", "send"],
+        resultGroups: {
+          keep: { kind: "wallet", asset: "regular", reservedBy: null },
+          send: { kind: "operation" },
+        },
+        passthroughResultGroups: { keep: [passthrough] },
+      }),
+    },
+    passthrough,
+  };
+}
+
+function ordinarySendResultProofs() {
+  const input = ordinarySendOperationInput();
+  return {
+    keep: [...resultProofs().change, input.passthrough],
+    send: [
+      {
+        id: KEYSET_ID,
+        amount: Amount.from(1),
+        secret: "77".repeat(32),
+        C: PUBLIC_KEY,
+      },
+    ],
+  };
+}
+
+function ordinarySendEncodedToken(): string {
+  return getEncodedTokenV4({
+    mint: ordinarySendOperationInput().mintUrl,
+    unit: "sat",
+    proofs: ordinarySendResultProofs().send,
+  });
+}
+
 describe("GUI wallet custody coordinator", () => {
   beforeEach(async () => {
     useWalletStore.setState({ mnemonic: MNEMONIC });
@@ -227,10 +309,7 @@ describe("GUI wallet custody coordinator", () => {
       ),
     ).toBeUndefined();
 
-    await markProofOperationCompleted(
-      prepared.operationId,
-      resultProofs(),
-    );
+    await markProofOperationCompleted(prepared.operationId, resultProofs());
     expect(await storedOperation(prepared.operationId)).toMatchObject({
       state: "completed",
     });
@@ -387,9 +466,11 @@ describe("GUI wallet custody coordinator", () => {
     const input = ordinaryExternalOperationInput();
     const prepared = await prepareProofOperation(input);
     expect(await storedRow("11".repeat(32))).toBeUndefined();
+    const custodyOperationId = prepared.custodyOperationId;
+    if (!custodyOperationId) throw new Error("missing custody operation id");
     expect(
-      (await db.custodyOperations.get(prepared.custodyOperationId!))?.record
-        .operation.verification.keysetBindings,
+      (await db.custodyOperations.get(custodyOperationId))?.record.operation
+        .verification.keysetBindings,
     ).toEqual([
       expect.objectContaining({ keysetId: KEYSET_ID, requireDleq: false }),
     ]);
@@ -834,6 +915,446 @@ describe("GUI wallet custody coordinator", () => {
     expect(await storedRow("55".repeat(32))).toBeUndefined();
   });
 
+  describe("wallet-send custody", () => {
+    async function prepareOrdinarySendFixture() {
+      const { passthrough, ...input } = ordinarySendOperationInput();
+      await db.proofs.put(
+        prepareStoredProofForWrite(
+          { ...passthrough, mintUrl: input.mintUrl, unit: "sat" },
+          2,
+          currentGuiWalletId(),
+        ),
+      );
+      return {
+        input,
+        passthrough,
+        prepared: await prepareProofOperation(input),
+      };
+    }
+
+    it("atomically replaces a wallet send while retaining exact passthrough proofs", async () => {
+      const { input, passthrough, prepared } =
+        await prepareOrdinarySendFixture();
+      expect((await storedRow(passthrough.secret))?.reservedBy).toBe(
+        prepared.operationId,
+      );
+      await markProofOperationMintSubmitted(prepared.operationId);
+      await markProofOperationCompleted(
+        prepared.operationId,
+        ordinarySendResultProofs(),
+        ordinarySendEncodedToken(),
+      );
+      expect(
+        await db.walletSendDeliveryReservations.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+
+      expect(await storedRow(input.inputs[0]!.secret)).toBeUndefined();
+      expect(await storedRow("55".repeat(32))).toMatchObject({ amount: 1 });
+      const retained = await storedRow(passthrough.secret);
+      expect(retained).toMatchObject({ amount: 2 });
+      expect(retained?.reservedBy).toBeUndefined();
+      expect(await storedRow("77".repeat(32))).toBeUndefined();
+      expect(
+        (
+          await db.walletSendDeliveryPayloads.get([
+            currentGuiWalletId(),
+            prepared.operationId,
+          ])
+        )?.encodedToken,
+      ).toBe(ordinarySendEncodedToken());
+
+      db.close();
+      await db.open();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      const mintBootstrap = vi.fn(async () => {
+        throw new Error("delivery-only recovery must not load mint transport");
+      });
+      useWalletStore.setState({ getWalletForUnit: mintBootstrap as never });
+      try {
+        await expect(recoverGuiNativeProofOperations()).resolves.toBe("clear");
+      } finally {
+        useWalletStore.setState({ getWalletForUnit: originalGetWalletForUnit });
+        __resetGuiNativeProofOperationRecoverySchedulerForTests();
+      }
+      expect(mintBootstrap).not.toHaveBeenCalled();
+      const canonical = await db.custodyOperations.get(
+        prepared.custodyOperationId!,
+      );
+      if (!canonical) throw new Error("missing canonical wallet-send row");
+      await db.custodyOperations.bulkPut(
+        Array.from({ length: 256 }, (_, index) => ({
+          ...structuredClone(canonical),
+          operationId: `unrelated-active-${index}`,
+        })),
+      );
+      const custodyScan = vi.spyOn(db.custodyOperations, "toArray");
+      const proofOperationBatchRead = vi.spyOn(db.proofOperations, "bulkGet");
+      await expect(
+        getPendingGuiWalletSendDeliveryForWallet(currentGuiWalletId()),
+      ).resolves.toMatchObject({ operationId: prepared.operationId });
+      expect(custodyScan).not.toHaveBeenCalled();
+      expect(proofOperationBatchRead).not.toHaveBeenCalled();
+      await expect(
+        getPendingGuiWalletSendDeliveryForWallet(currentGuiWalletId()),
+      ).resolves.toMatchObject({ operationId: prepared.operationId });
+      const custodyOperationId = prepared.custodyOperationId;
+      if (!custodyOperationId)
+        throw new Error("missing wallet-send custody id");
+      expect(
+        (await db.custodyOperations.get(custodyOperationId))?.record.operation
+          .delivery,
+      ).toMatchObject({ state: "pending", expiresAtMs: null });
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toMatchObject({ encodedToken: ordinarySendEncodedToken() });
+
+      await markProofOperationCompleted(
+        prepared.operationId,
+        ordinarySendResultProofs(),
+        ordinarySendEncodedToken(),
+      );
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toMatchObject({ encodedToken: ordinarySendEncodedToken() });
+    });
+
+    it("restarts a mint-submitted wallet-send and completes its exact result", async () => {
+      const { prepared } = await prepareOrdinarySendFixture();
+      const reservation = await db.walletSendDeliveryReservations.get([
+        currentGuiWalletId(),
+        prepared.operationId,
+      ]);
+      if (!reservation) throw new Error("missing wallet-send reservation");
+      expect(reservation.custodyOperationId).toBe(prepared.custodyOperationId);
+      expect(reservation.reservedBytes).toBe(
+        readGuiWalletSendDeliveryMetadata(prepared)?.admission
+          .durableStorageBytesRequired,
+      );
+      expect(reservation.padding.byteLength).toBe(reservation.reservedBytes);
+      expect(reservation.paddingDigest).toMatch(/^[0-9a-f]{64}$/);
+      await claimPreparedProofOperationMintSubmissionForWallet(
+        currentGuiWalletId(),
+        prepared.operationId,
+      );
+
+      db.close();
+      await db.open();
+      await markProofOperationCompleted(
+        prepared.operationId,
+        ordinarySendResultProofs(),
+        ordinarySendEncodedToken(),
+      );
+      expect((await storedOperation(prepared.operationId))?.state).toBe(
+        "completed",
+      );
+      expect(
+        await db.walletSendDeliveryReservations.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+    });
+
+    it("rolls back preparation when the physical reservation cannot be written", async () => {
+      const { passthrough, ...input } = ordinarySendOperationInput();
+      await db.proofs.put(
+        prepareStoredProofForWrite(
+          { ...passthrough, mintUrl: input.mintUrl, unit: "sat" },
+          2,
+          currentGuiWalletId(),
+        ),
+      );
+      const reservationPut = vi
+        .spyOn(db.walletSendDeliveryReservations, "put")
+        .mockImplementation((() => {
+          throw new DOMException(
+            "injected reservation quota",
+            "QuotaExceededError",
+          );
+        }) as never);
+      await expect(prepareProofOperation(input)).rejects.toMatchObject({
+        name: "QuotaExceededError",
+      });
+      reservationPut.mockRestore();
+
+      expect(await storedOperation(input.operationId)).toBeUndefined();
+      expect(await db.custodyOperations.count()).toBe(0);
+      expect(
+        (await storedRow(input.inputs[0]!.secret))?.reservedBy,
+      ).toBeUndefined();
+      expect((await storedRow(passthrough.secret))?.reservedBy).toBeUndefined();
+    });
+
+    it("prevents mint transport when a prepared reservation is missing", async () => {
+      const { prepared } = await prepareOrdinarySendFixture();
+      await db.walletSendDeliveryReservations.delete([
+        currentGuiWalletId(),
+        prepared.operationId,
+      ]);
+
+      await expect(
+        claimPreparedProofOperationMintSubmissionForWallet(
+          currentGuiWalletId(),
+          prepared.operationId,
+        ),
+      ).rejects.toThrow(/physical reservation is missing/);
+      expect(
+        (await db.custodyOperations.get(prepared.custodyOperationId!))?.record
+          .operation.state,
+      ).toBe("dispatch-intent");
+    });
+
+    it.each(["missing", "corrupt"] as const)(
+      "fails closed on a %s mint-submitted reservation after restart",
+      async (fault) => {
+        const { prepared } = await prepareOrdinarySendFixture();
+        await claimPreparedProofOperationMintSubmissionForWallet(
+          currentGuiWalletId(),
+          prepared.operationId,
+        );
+        const key: [string, string] = [
+          currentGuiWalletId(),
+          prepared.operationId,
+        ];
+        if (fault === "missing") {
+          await db.walletSendDeliveryReservations.delete(key);
+        } else {
+          const reservation = await db.walletSendDeliveryReservations.get(key);
+          if (!reservation) throw new Error("missing wallet-send reservation");
+          await db.walletSendDeliveryReservations.put({
+            ...reservation,
+            paddingDigest: "00".repeat(32),
+          });
+        }
+
+        db.close();
+        await db.open();
+        await expect(
+          markProofOperationCompleted(
+            prepared.operationId,
+            ordinarySendResultProofs(),
+            ordinarySendEncodedToken(),
+          ),
+        ).rejects.toThrow(/reservation|invalid|corrupt/i);
+        expect((await storedOperation(prepared.operationId))?.state).toBe(
+          "mint-submitted",
+        );
+      },
+    );
+
+    it("rejects a user-export token that does not encode the exact completed send result", async () => {
+      const { input, prepared } = await prepareOrdinarySendFixture();
+      await markProofOperationMintSubmitted(prepared.operationId);
+      const foreignToken = getEncodedTokenV4({
+        mint: input.mintUrl,
+        unit: "sat",
+        proofs: [
+          { ...ordinarySendResultProofs().send[0]!, secret: "99".repeat(32) },
+        ],
+      });
+
+      await expect(
+        markProofOperationCompleted(
+          prepared.operationId,
+          ordinarySendResultProofs(),
+          foreignToken,
+        ),
+      ).rejects.toThrow(/token conflicts|token is invalid/i);
+      expect((await storedOperation(prepared.operationId))?.state).toBe(
+        "mint-submitted",
+      );
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+    });
+
+    it("blocks a restarted delivery-only row with a corrupt exact-token fingerprint", async () => {
+      const { prepared } = await prepareOrdinarySendFixture();
+      await markProofOperationMintSubmitted(prepared.operationId);
+      await markProofOperationCompleted(
+        prepared.operationId,
+        ordinarySendResultProofs(),
+        ordinarySendEncodedToken(),
+      );
+      const custodyOperationId = prepared.custodyOperationId;
+      if (!custodyOperationId)
+        throw new Error("missing wallet-send custody id");
+      const custodyRow = await db.custodyOperations.get(custodyOperationId);
+      if (!custodyRow) throw new Error("missing wallet-send custody fixture");
+      await db.custodyOperations.put({
+        ...custodyRow,
+        record: {
+          ...custodyRow.record,
+          operation: {
+            ...custodyRow.record.operation,
+            delivery: {
+              ...custodyRow.record.operation.delivery,
+              payloadFingerprint: "00".repeat(32),
+            },
+          },
+        },
+      });
+      db.close();
+      await db.open();
+      const originalGetWalletForUnit =
+        useWalletStore.getState().getWalletForUnit;
+      const mintBootstrap = vi.fn(async () => {
+        throw new Error("corrupt delivery must not load mint transport");
+      });
+      useWalletStore.setState({ getWalletForUnit: mintBootstrap as never });
+      try {
+        await expect(recoverGuiNativeProofOperations()).resolves.toBe(
+          "blocked",
+        );
+      } finally {
+        useWalletStore.setState({ getWalletForUnit: originalGetWalletForUnit });
+        __resetGuiNativeProofOperationRecoverySchedulerForTests();
+      }
+      expect(mintBootstrap).not.toHaveBeenCalled();
+    });
+
+    it("rolls back wallet-send input and passthrough changes on quota failure", async () => {
+      const { input, passthrough, prepared } =
+        await prepareOrdinarySendFixture();
+      await markProofOperationMintSubmitted(prepared.operationId);
+      const operationPut = vi
+        .spyOn(db.proofOperations, "put")
+        .mockImplementation((() => {
+          throw new DOMException(
+            "injected send write failure",
+            "QuotaExceededError",
+          );
+        }) as never);
+
+      await expect(
+        markProofOperationCompleted(
+          prepared.operationId,
+          ordinarySendResultProofs(),
+          ordinarySendEncodedToken(),
+        ),
+      ).rejects.toMatchObject({ name: "QuotaExceededError" });
+      operationPut.mockRestore();
+
+      expect((await storedOperation(prepared.operationId))?.state).toBe(
+        "mint-submitted",
+      );
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+      expect((await storedRow(input.inputs[0]!.secret))?.reservedBy).toBe(
+        prepared.operationId,
+      );
+      expect((await storedRow(passthrough.secret))?.reservedBy).toBe(
+        prepared.operationId,
+      );
+      expect(await storedRow("55".repeat(32))).toBeUndefined();
+      expect(await storedRow("77".repeat(32))).toBeUndefined();
+    });
+
+    it("rolls back canonical, native, proof, and token writes when payload insertion fails", async () => {
+      const { input, passthrough, prepared } =
+        await prepareOrdinarySendFixture();
+      await markProofOperationMintSubmitted(prepared.operationId);
+      const payloadPut = vi
+        .spyOn(db.walletSendDeliveryPayloads, "put")
+        .mockImplementation((() => {
+          throw new DOMException(
+            "injected delivery payload failure",
+            "QuotaExceededError",
+          );
+        }) as never);
+
+      await expect(
+        markProofOperationCompleted(
+          prepared.operationId,
+          ordinarySendResultProofs(),
+          ordinarySendEncodedToken(),
+        ),
+      ).rejects.toMatchObject({ name: "QuotaExceededError" });
+      payloadPut.mockRestore();
+
+      expect((await storedOperation(prepared.operationId))?.state).toBe(
+        "mint-submitted",
+      );
+      expect(
+        (await db.custodyOperations.get(prepared.custodyOperationId!))?.record
+          .operation.state,
+      ).toBe("transport-attempted");
+      expect((await storedRow(input.inputs[0]!.secret))?.reservedBy).toBe(
+        prepared.operationId,
+      );
+      expect((await storedRow(passthrough.secret))?.reservedBy).toBe(
+        prepared.operationId,
+      );
+      expect(await storedRow("55".repeat(32))).toBeUndefined();
+      expect(await storedRow("77".repeat(32))).toBeUndefined();
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+    });
+
+    it("rolls back completion when physical reservation deletion fails", async () => {
+      const { prepared } = await prepareOrdinarySendFixture();
+      await markProofOperationMintSubmitted(prepared.operationId);
+      const reservationDelete = vi
+        .spyOn(db.walletSendDeliveryReservations, "delete")
+        .mockImplementation((() => {
+          throw new DOMException(
+            "injected delivery reservation deletion failure",
+            "QuotaExceededError",
+          );
+        }) as never);
+
+      await expect(
+        markProofOperationCompleted(
+          prepared.operationId,
+          ordinarySendResultProofs(),
+          ordinarySendEncodedToken(),
+        ),
+      ).rejects.toMatchObject({ name: "QuotaExceededError" });
+      reservationDelete.mockRestore();
+
+      expect((await storedOperation(prepared.operationId))?.state).toBe(
+        "mint-submitted",
+      );
+      expect(
+        (await db.custodyOperations.get(prepared.custodyOperationId!))?.record
+          .operation.state,
+      ).toBe("transport-attempted");
+      expect(
+        await db.walletSendDeliveryPayloads.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeUndefined();
+      expect(
+        await db.walletSendDeliveryReservations.get([
+          currentGuiWalletId(),
+          prepared.operationId,
+        ]),
+      ).toBeDefined();
+    });
+  });
+
   it("rejects native mint results that do not match the persisted output plan", async () => {
     const prepared = await prepareProofOperation(operationInput());
     await markProofOperationMintSubmitted(prepared.operationId);
@@ -975,11 +1496,8 @@ async function releaseHeadroom(): Promise<void> {
       walletLock,
       currentGuiWalletId,
       (originLock) =>
-        db.transaction(
-          "rw",
-          guiDurableStorageAdmissionTables(db),
-          () =>
-            releaseGuiDurableStorageHeadroomInCurrentTransaction(originLock),
+        db.transaction("rw", guiDurableStorageAdmissionTables(db), () =>
+          releaseGuiDurableStorageHeadroomInCurrentTransaction(originLock),
         ),
     ),
   );

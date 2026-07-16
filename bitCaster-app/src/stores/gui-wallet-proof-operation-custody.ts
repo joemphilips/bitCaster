@@ -1,4 +1,5 @@
 import type { Proof } from "@cashu/cashu-ts";
+import Dexie from "dexie";
 import type { CtfRedeemMintSubmissionBinding } from "@bitcaster/client-sdk/ctfSplit";
 import {
   deriveDurableCustodyArtifactFingerprint,
@@ -23,6 +24,7 @@ import {
 } from "@bitcaster/client-sdk/marketUnits";
 import {
   assertDurableWalletProofResultMatchesPlan,
+  durableWalletPassthroughProofs,
   requireDurableWalletProofTransition,
 } from "@bitcaster/client-sdk/durableWalletProofTransition";
 import type { DurableWalletOperationRecoveryDecision } from "@bitcaster/client-sdk/durableWalletOperation";
@@ -49,6 +51,7 @@ import {
   prepareGuiCustodyUnitOfWork,
   readGuiCustodyOperationSnapshot,
   readGuiCustodyNativeSnapshot,
+  type GuiCustodyNativeSnapshot,
 } from "./gui-custody-unit-of-work";
 import { commitGuiHeadroomCustodyUnitOfWork } from "./gui-durable-storage-headroom-custody-unit-of-work";
 import {
@@ -69,6 +72,16 @@ import {
   projectCompletedGuiDepositActivity,
   type WalletActivityRow,
 } from "./wallet-activity-projection";
+import {
+  readGuiWalletSendDeliveryMetadata,
+  createGuiWalletSendDeliveryReservationRow,
+  createGuiWalletSendDeliveryPayloadRow,
+  guiWalletSendTokenFingerprint,
+  requireGuiWalletSendDeliveryPayloadRow,
+  requireExactGuiWalletSendUserExportToken,
+  type GuiWalletSendDeliveryPayloadRow,
+  type GuiWalletSendDeliveryReservationRow,
+} from "./gui-wallet-send-delivery";
 
 const ORACLE_NOT_ATTESTED_OUTCOME_CODE = 13015;
 const REGISTRATION_FEE_REJECTION_CODES = new Set([13044, 13047]);
@@ -94,6 +107,46 @@ export interface GuiProofOperationMintSubmissionClaim {
   claimed: boolean;
 }
 
+export async function getPendingGuiWalletSendDeliveryForWallet(
+  walletId: string,
+): Promise<(ProofOperationRecord & { encodedUserExportToken: string }) | null> {
+  return withRequiredGuiCustodyLockForWallet(walletId, async (context) => {
+    await ensureDurableSwapStorage(walletId);
+    const rawPayload = await db.walletSendDeliveryPayloads
+      .where("[walletId+createdAt+operationId]")
+      .between(
+        [walletId, 0, Dexie.minKey],
+        [walletId, Number.MAX_SAFE_INTEGER, Dexie.maxKey],
+      )
+      .first();
+    if (!rawPayload) return null;
+    const payload = requireGuiWalletSendDeliveryPayloadRow(
+      rawPayload,
+      walletId,
+    );
+    const [canonicalRow, operationRow] = await Promise.all([
+      db.custodyOperations.get(payload.custodyOperationId),
+      db.proofOperations.get(
+        proofOperationPrimaryKey(walletId, payload.operationId),
+      ),
+    ]);
+    if (!canonicalRow) {
+      throw new Error("GUI wallet send canonical delivery is missing");
+    }
+    const custody = decodeOperationRow(canonicalRow, context.scope);
+    const operation = requireProofOperationRecord(
+      operationRow,
+      walletId,
+      payload.operationId,
+    );
+    const delivery = requireWalletSendDelivery(custody, operation, payload);
+    return {
+      ...operation,
+      encodedUserExportToken: delivery.encodedToken,
+    };
+  });
+}
+
 /**
  * Reads both physical representations of one native wallet operation under the
  * captured-wallet lock and proves that their exact completed result agrees.
@@ -108,6 +161,7 @@ export async function requireCompletedGuiWalletProofOperationAuthorityUnderLock(
     "r",
     db.proofOperations,
     db.custodyOperations,
+    db.walletSendDeliveryPayloads,
     db.proofs,
     async () => {
       const operationRow = await db.proofOperations.get(
@@ -150,6 +204,24 @@ export async function requireCompletedGuiWalletProofOperationAuthorityUnderLock(
           "GUI wallet completed result conflicts with canonical custody",
         );
       }
+      if (
+        operation.kind === "wallet-send" &&
+        readGuiWalletSendDeliveryMetadata(operation)?.mode === "user-export"
+      ) {
+        const rawPayload = await db.walletSendDeliveryPayloads.get([
+          context.walletId,
+          operation.operationId,
+        ]);
+        const payload = rawPayload
+          ? requireGuiWalletSendDeliveryPayloadRow(
+              rawPayload,
+              context.walletId,
+              operation.operationId,
+              canonical.operation.operationId,
+            )
+          : undefined;
+        requireWalletSendDelivery(canonical, operation, payload);
+      }
       await requireCompletedResultProofsStored(operation);
       return operation;
     },
@@ -183,6 +255,36 @@ export async function requireCompletedGuiWalletProofOperationAuthorityForWallet(
       lock,
       operationId,
     ),
+  );
+}
+
+export async function requirePendingGuiWalletSendTokenForWallet(
+  walletId: string,
+  operationId: string,
+): Promise<string> {
+  return withRequiredGuiCustodyLockForWallet(
+    walletId,
+    async (_context, lock) => {
+      const operation =
+        await requireCompletedGuiWalletProofOperationAuthorityUnderLock(
+          lock,
+          operationId,
+        );
+      const rawPayload = await db.walletSendDeliveryPayloads.get([
+        walletId,
+        operationId,
+      ]);
+      if (!rawPayload) {
+        throw new Error("GUI wallet send pending payload is missing");
+      }
+      const payload = requireGuiWalletSendDeliveryPayloadRow(
+        rawPayload,
+        walletId,
+        operationId,
+        operation.custodyOperationId,
+      );
+      return requireExactGuiWalletSendUserExportToken(operation, payload);
+    },
   );
 }
 
@@ -438,11 +540,13 @@ async function markProofOperationMintSubmittedUnderLock(
 export async function markProofOperationCompleted(
   operationId: string,
   resultProofs: Record<string, Proof[]>,
+  encodedUserExportToken?: string,
 ): Promise<ProofOperationRecord> {
   return markProofOperationCompletedForWallet(
     currentGuiWalletId(),
     operationId,
     resultProofs,
+    encodedUserExportToken,
   );
 }
 
@@ -450,9 +554,15 @@ export async function markProofOperationCompletedForWallet(
   walletId: string,
   operationId: string,
   resultProofs: Record<string, Proof[]>,
+  encodedUserExportToken?: string,
 ): Promise<ProofOperationRecord> {
   return withRequiredGuiCustodyLockForWallet(walletId, (_context, lock) =>
-    markProofOperationCompletedUnderLock(lock, operationId, resultProofs),
+    markProofOperationCompletedUnderLock(
+      lock,
+      operationId,
+      resultProofs,
+      encodedUserExportToken,
+    ),
   );
 }
 
@@ -460,16 +570,34 @@ async function markProofOperationCompletedUnderLock(
   lock: GuiWalletLockContext,
   operationId: string,
   resultProofs: Record<string, Proof[]>,
+  encodedUserExportToken?: string,
 ): Promise<ProofOperationRecord> {
   const resultFingerprint =
     deriveDurableCustodyProofResultFingerprint(resultProofs);
   const resultProofSet = Object.values(resultProofs).flat();
+  let consumeWalletSendReservation = false;
   return advanceWalletOperationOwned(
     operationId,
     guiWalletContextFromHeldLock(lock),
     lock,
-    (record, transaction) =>
-      applyCanonicalResult(record, transaction, resultFingerprint),
+    (record, transaction, operation) => {
+      applyCanonicalResult(record, transaction, resultFingerprint);
+      if (
+        operation.kind === "wallet-send" &&
+        readGuiWalletSendDeliveryMetadata(operation)?.mode === "user-export"
+      ) {
+        if (!encodedUserExportToken) {
+          throw new Error("GUI wallet send exact token is required");
+        }
+        putWalletSendDelivery(
+          transaction,
+          record.operation.operationId,
+          operation.operationId,
+          guiWalletSendTokenFingerprint(encodedUserExportToken),
+        );
+        consumeWalletSendReservation = operation.state !== "completed";
+      }
+    },
     (operation) => {
       if (operation.state === "Failed") {
         throw new Error(
@@ -484,20 +612,35 @@ async function markProofOperationCompletedUnderLock(
           `Proof operation ${operationId} has conflicting results`,
         );
       }
-      return {
+      const next = {
         ...operation,
         state: "completed",
         resultProofs: structuredClone(resultProofs),
         lastError: null,
         failureCode: undefined,
         updatedAt: Date.now(),
-      };
+      } satisfies ProofOperationRecord;
+      const delivery = readGuiWalletSendDeliveryMetadata(next);
+      if (delivery?.mode === "user-export") {
+        if (!encodedUserExportToken) {
+          throw new Error("GUI wallet send exact token is required");
+        }
+      } else if (encodedUserExportToken !== undefined) {
+        throw new Error("GUI wallet send token has no user-export delivery");
+      }
+      return next;
     },
     {
       additionalProofs: resultProofSet,
       nativeProofDelta: (operation, proofs) =>
         completedNativeProofDelta(operation, resultProofs, proofs),
       nextActivity: projectCompletedGuiDepositActivity,
+      nextWalletSendDeliveryPayload: (_previous, next) =>
+        encodedUserExportToken === undefined
+          ? undefined
+          : createGuiWalletSendDeliveryPayloadRow(next, encodedUserExportToken),
+      nextWalletSendDeliveryReservation: () =>
+        consumeWalletSendReservation ? null : undefined,
     },
   );
 }
@@ -585,15 +728,68 @@ async function commitResolvedWalletOperation(
     context.walletId,
   );
   const nextProofs = reserveNativeInputProofs(nextOperation, snapshot.proofs);
+  const nextWalletSendDeliveryReservation = reservationForPreparedWalletSend(
+    nextOperation,
+    snapshot,
+  );
   const prepared = await prepareGuiCustodyUnitOfWork({
     authority,
     plan,
     snapshot,
     nextOperation,
+    nextWalletSendDeliveryReservation,
     nextProofs,
   });
   await commitGuiHeadroomCustodyUnitOfWork({ walletLock: lock, prepared });
   return nextOperation;
+}
+
+function reservationForPreparedWalletSend(
+  nextOperation: ProofOperationRecord,
+  snapshot: GuiCustodyNativeSnapshot,
+): GuiWalletSendDeliveryReservationRow | undefined {
+  if (!readGuiWalletSendDeliveryMetadata(nextOperation)) return undefined;
+  const previous = snapshot.operation;
+  if (!previous) {
+    return createGuiWalletSendDeliveryReservationRow(nextOperation);
+  }
+  if (previous.state === "prepared") {
+    return snapshot.walletSendDeliveryReservation
+      ? undefined
+      : createGuiWalletSendDeliveryReservationRow(nextOperation);
+  }
+  if (
+    previous.state === "mint-submitted" &&
+    !snapshot.walletSendDeliveryReservation
+  ) {
+    throw new Error("GUI wallet-send physical reservation is missing");
+  }
+  return undefined;
+}
+
+function requireWalletSendReservationBeforeTransport(
+  operation: ProofOperationRecord,
+  snapshot: GuiCustodyNativeSnapshot,
+): void {
+  const metadata = readGuiWalletSendDeliveryMetadata(operation);
+  if (
+    metadata?.mode !== "user-export" ||
+    (operation.state !== "prepared" && operation.state !== "mint-submitted")
+  ) {
+    return;
+  }
+  const reservation = snapshot.walletSendDeliveryReservation;
+  if (
+    !reservation ||
+    reservation.walletId !== operation.walletId ||
+    reservation.operationId !== operation.operationId ||
+    reservation.custodyOperationId !== operation.custodyOperationId ||
+    reservation.admissionFingerprint !==
+      deriveDurableCustodyArtifactFingerprint(metadata.admission) ||
+    reservation.reservedBytes !== metadata.admission.durableStorageBytesRequired
+  ) {
+    throw new Error("GUI wallet-send physical reservation is missing or stale");
+  }
 }
 
 async function readResolvedWalletOperationSnapshot(
@@ -601,13 +797,17 @@ async function readResolvedWalletOperationSnapshot(
   walletId: string,
 ) {
   await ensureDurableSwapStorage(walletId);
+  const policy = requireDurableWalletProofTransition(
+    input.metadata ?? {},
+    Object.keys(input.outputs),
+  );
   return readGuiCustodyNativeSnapshot(
     input.operationId,
     null,
     walletId,
     undefined,
     locateStoredProofs(
-      input.inputs,
+      [...input.inputs, ...durableWalletPassthroughProofs(policy)],
       input.mintUrl,
       input.metadata?.unit as string | undefined,
     ),
@@ -657,7 +857,7 @@ function reserveNativeInputProofs(
   storedProofs: StoredProof[],
 ): StoredProof[] {
   const policy = walletProofTransition(operation);
-  const inputs = requireGuiNativeProofInputAuthority(
+  const authority = requireGuiNativeProofInputAuthority(
     operation,
     storedProofs,
     policy,
@@ -667,8 +867,8 @@ function reserveNativeInputProofs(
   return reserveGuiNativeInputProofs(
     operation.operationId,
     operation.mintUrl,
-    operation.inputs,
-    inputs,
+    authority,
+    authority,
     operation.walletId,
   );
 }
@@ -687,16 +887,26 @@ function completedNativeProofDelta(
     "owned",
   );
   const nextProofs = storedResultProofs(operation, resultProofs);
-  const inputSecrets = new Set(inputs.map(({ secret }) => secret));
-  const storedSecrets = new Set(storedProofs.map(({ secret }) => secret));
+  const spentInputSecrets = new Set(
+    operation.inputs.map(({ secret }) => secret),
+  );
+  const spentInputs = inputs.filter(({ secret }) =>
+    spentInputSecrets.has(secret),
+  );
+  const replacedAuthoritySecrets = new Set(inputs.map(({ secret }) => secret));
+  const unrelatedStoredSecrets = new Set(
+    storedProofs
+      .filter(({ secret }) => !replacedAuthoritySecrets.has(secret))
+      .map(({ secret }) => secret),
+  );
   if (
-    nextProofs.some(({ secret }) => inputSecrets.has(secret)) ||
-    nextProofs.some(({ secret }) => storedSecrets.has(secret))
+    nextProofs.some(({ secret }) => spentInputSecrets.has(secret)) ||
+    nextProofs.some(({ secret }) => unrelatedStoredSecrets.has(secret))
   ) {
     throw new Error("GUI wallet result proof conflicts with local proof state");
   }
   return {
-    deleteProofs: policy.inputSource === "wallet" ? inputs : [],
+    deleteProofs: policy.inputSource === "wallet" ? spentInputs : [],
     nextProofs,
   };
 }
@@ -732,7 +942,11 @@ function walletProofTransition(
 }
 
 function requireOrdinaryWalletOperation(operation: ProofOperationRecord): void {
-  if (operation.kind !== "wallet-mint" && operation.kind !== "wallet-receive") {
+  if (
+    operation.kind !== "wallet-mint" &&
+    operation.kind !== "wallet-receive" &&
+    operation.kind !== "wallet-send"
+  ) {
     throw new Error(
       "GUI submission claim requires an ordinary wallet operation",
     );
@@ -811,6 +1025,14 @@ async function advanceWalletOperationOwned(
     nextActivity?: (
       operation: ProofOperationRecord,
     ) => WalletActivityRow | null;
+    nextWalletSendDeliveryPayload?: (
+      previous: ProofOperationRecord,
+      next: ProofOperationRecord,
+    ) => GuiWalletSendDeliveryPayloadRow | null | undefined;
+    nextWalletSendDeliveryReservation?: (
+      previous: ProofOperationRecord,
+      next: ProofOperationRecord,
+    ) => GuiWalletSendDeliveryReservationRow | null | undefined;
   } = {},
 ): Promise<ProofOperationRecord> {
   await ensureDurableSwapStorage(context.walletId);
@@ -826,6 +1048,7 @@ async function advanceWalletOperationOwned(
       "Trade-bound proof operation requires its swap coordinator",
     );
   }
+  requireWalletSendReservationBeforeTransport(operation, snapshot);
   const authority = await acquireGuiCustodyAuthority(lock);
   const plan = await prepareGuiCustodyTransition(
     authority,
@@ -839,12 +1062,20 @@ async function advanceWalletOperationOwned(
   const proofDelta =
     options.nativeProofDelta?.(operation, snapshot.proofs) ?? {};
   const nextActivity = options.nextActivity?.(nextOperation) ?? undefined;
+  const nextWalletSendDeliveryPayload = options.nextWalletSendDeliveryPayload?.(
+    operation,
+    nextOperation,
+  );
+  const nextWalletSendDeliveryReservation =
+    options.nextWalletSendDeliveryReservation?.(operation, nextOperation);
   const prepared = await prepareGuiCustodyUnitOfWork({
     authority,
     plan,
     snapshot,
     nextOperation,
     nextActivity,
+    nextWalletSendDeliveryPayload,
+    nextWalletSendDeliveryReservation,
     ...proofDelta,
   });
   await commitGuiHeadroomCustodyUnitOfWork({ walletLock: lock, prepared });
@@ -1043,6 +1274,81 @@ function applyCanonicalResult(
     resultHandle,
     resultFingerprint,
   });
+}
+
+function putWalletSendDelivery(
+  transaction: DurableCustodyTransaction,
+  custodyOperationId: string,
+  retainedOperationKey: string,
+  resultFingerprint: string,
+): void {
+  const current = transaction.getOperation(custodyOperationId);
+  if (!current) throw new Error("GUI wallet send custody is missing");
+  const delivery = current.operation.delivery;
+  const payloadHandle = `wallet-send:${retainedOperationKey}`;
+  if (
+    delivery.deliveryKind === "outbox" &&
+    delivery.deliveryId === `delivery:${custodyOperationId}:wallet-send` &&
+    delivery.payloadHandle === payloadHandle &&
+    delivery.payloadFingerprint === resultFingerprint &&
+    delivery.expiresAtMs === null &&
+    delivery.state === "pending"
+  ) {
+    return;
+  }
+  transaction.putDelivery({
+    operationId: custodyOperationId,
+    deliveryKind: "wallet-send",
+    payloadHandle,
+    payloadFingerprint: resultFingerprint,
+    expiresAtMs: null,
+    state: "pending",
+  });
+}
+
+function requireWalletSendDelivery(
+  custody: DurableCustodyRecord,
+  operation: ProofOperationRecord,
+  payload: GuiWalletSendDeliveryPayloadRow | undefined,
+): {
+  state: "pending";
+  encodedToken: string;
+} {
+  if (
+    operation.kind !== "wallet-send" ||
+    operation.state !== "completed" ||
+    !operation.resultProofs ||
+    readGuiWalletSendDeliveryMetadata(operation)?.mode !== "user-export"
+  ) {
+    throw new Error("GUI wallet send delivery has no completed operation");
+  }
+  assertWalletOperationMatchesCustody(custody, operation);
+  const delivery = custody.operation.delivery;
+  if (payload === undefined) {
+    throw new Error("GUI wallet send pending payload is missing");
+  }
+  const encodedToken = requireExactGuiWalletSendUserExportToken(
+    operation,
+    payload,
+  );
+  const tokenFingerprint = guiWalletSendTokenFingerprint(encodedToken);
+  const resultFingerprint = deriveDurableCustodyProofResultFingerprint(
+    operation.resultProofs,
+  );
+  if (
+    custody.operation.result.state !== "applied" ||
+    custody.operation.result.resultFingerprint !== resultFingerprint ||
+    delivery.deliveryKind !== "outbox" ||
+    delivery.deliveryId !==
+      `delivery:${custody.operation.operationId}:wallet-send` ||
+    delivery.payloadHandle !== `wallet-send:${operation.operationId}` ||
+    delivery.payloadFingerprint !== tokenFingerprint ||
+    delivery.expiresAtMs !== null ||
+    delivery.state !== "pending"
+  ) {
+    throw new Error("GUI wallet send delivery authority is inconsistent");
+  }
+  return { state: "pending", encodedToken };
 }
 
 interface TerminalProofOperationFailure {

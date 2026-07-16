@@ -21,7 +21,7 @@ const PROOF_SERIALIZED_MAX_BYTES = 16_384;
 const WITNESS_SIGNATURE_LIMIT = 64;
 const ERROR_MAX_LENGTH = 1_024;
 const RETRY_COUNT_MAX = 16;
-export const PENDING_ECASH_DEPOSIT_TOKEN_MAX_BYTES = 8 * 1024 * 1024;
+export const LOCAL_CASHU_TOKEN_MAX_BYTES = 8 * 1024 * 1024;
 const DEPOSIT_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -288,7 +288,7 @@ export function normalizePendingEcashDepositSerializedToken(
     artifact.encoding !== "utf-8" ||
     !isUint8Array(artifact.bytes) ||
     artifact.bytes.byteLength === 0 ||
-    artifact.bytes.byteLength > PENDING_ECASH_DEPOSIT_TOKEN_MAX_BYTES
+    artifact.bytes.byteLength > LOCAL_CASHU_TOKEN_MAX_BYTES
   ) {
     throw new Error("Pending ecash deposit serialized token is invalid");
   }

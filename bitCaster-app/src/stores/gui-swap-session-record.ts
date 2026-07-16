@@ -284,6 +284,7 @@ export function durableStageForGuiProofOperation(
       return "mint-submission";
     case "wallet-mint":
     case "wallet-receive":
+    case "wallet-send":
       throw new Error("Ordinary wallet operation cannot bind to a trade stage");
   }
 }

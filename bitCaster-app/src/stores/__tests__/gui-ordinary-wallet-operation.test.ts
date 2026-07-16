@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   walletId: "a".repeat(64),
   record: null as null | Record<string, unknown>,
+  encodedUserExportToken: null as string | null,
   trace: [] as string[],
   rejectCompletion: false,
   switchSeedAfterPersistPlan: false,
@@ -16,11 +17,15 @@ const state = vi.hoisted(() => ({
   wallet: {} as Record<string, unknown>,
 }));
 
-vi.mock("@/lib/cashu", () => ({
-  getWalletForUnit: vi.fn(async () => {
-    if (state.walletBootstrapError) throw state.walletBootstrapError;
-    return state.wallet;
-  }),
+vi.mock("../wallet", () => ({
+  useWalletStore: {
+    getState: () => ({
+      getWalletForUnit: vi.fn(async () => {
+        if (state.walletBootstrapError) throw state.walletBootstrapError;
+        return state.wallet;
+      }),
+    }),
+  },
 }));
 
 vi.mock("../gui-native-proof-operation-recovery", () => ({
@@ -108,7 +113,12 @@ vi.mock("../gui-wallet-proof-operation-custody", () => ({
     throw new Error("terminal proof operation");
   }),
   markProofOperationCompletedForWallet: vi.fn(
-    async (_walletId: string, _operationId: string, resultProofs: unknown) => {
+    async (
+      _walletId: string,
+      _operationId: string,
+      resultProofs: unknown,
+      encodedUserExportToken?: string,
+    ) => {
       state.trace.push("persist-result");
       if (state.rejectCompletion) {
         state.rejectCompletion = false;
@@ -117,6 +127,9 @@ vi.mock("../gui-wallet-proof-operation-custody", () => ({
       if (!state.record) throw new Error("missing operation");
       state.record.state = "completed";
       state.record.resultProofs = structuredClone(resultProofs);
+      if (encodedUserExportToken !== undefined) {
+        state.encodedUserExportToken = encodedUserExportToken;
+      }
       state.record.updatedAt = Date.now();
       if (state.switchSeedAfterPersistResult) {
         state.switchSeedAfterPersistResult = false;
@@ -131,6 +144,12 @@ vi.mock("../gui-wallet-proof-operation-custody", () => ({
     }
     return structuredClone(state.record);
   }),
+  requirePendingGuiWalletSendTokenForWallet: vi.fn(async () => {
+    if (!state.encodedUserExportToken) {
+      throw new Error("GUI wallet send pending payload is missing");
+    }
+    return state.encodedUserExportToken;
+  }),
 }));
 
 import {
@@ -138,6 +157,7 @@ import {
   prepareGuiLightningMint,
   receiveGuiCashuToken,
   recoverGuiOrdinaryWalletOperation,
+  sendGuiCashuToken,
 } from "../gui-ordinary-wallet-operation";
 import { GuiCustodyMintKeysUnavailable } from "../gui-custody-authority";
 import { durableStageForGuiProofOperation } from "../gui-swap-session-record";
@@ -157,6 +177,7 @@ describe("GUI ordinary wallet coordinator", () => {
   beforeEach(() => {
     state.walletId = "a".repeat(64);
     state.record = null;
+    state.encodedUserExportToken = null;
     state.trace = [];
     state.rejectCompletion = false;
     state.switchSeedAfterPersistPlan = false;
@@ -300,6 +321,154 @@ describe("GUI ordinary wallet coordinator", () => {
     expect(walletMethod("completeSwap")).toHaveBeenCalledOnce();
     expect(String(state.record?.operationId)).toBe(operationId);
     expect(first[0]?.secret).toBe(second[0]?.secret);
+  });
+
+  it("persists an exact send before mint transport and returns stable token proofs", async () => {
+    const selected = incomingProof(5, "51");
+    const unselected = incomingProof(2, "52");
+
+    const first = await sendGuiCashuToken({
+      expectedWalletId: state.walletId,
+      amount: 3,
+      proofs: [selected, unselected],
+      mintUrl: MINT_URL,
+      unit: "sat",
+    });
+    const second = await sendGuiCashuToken({
+      expectedWalletId: state.walletId,
+      amount: 3,
+      proofs: [unselected, selected],
+      mintUrl: MINT_URL,
+      unit: "sat",
+    });
+
+    expect(walletMethod("prepareSwapToSend")).toHaveBeenCalledOnce();
+    expect(walletMethod("completeSwap")).toHaveBeenCalledOnce();
+    expect(first).toEqual(second);
+    expect(first.keep).toHaveLength(2);
+    expect(first.send).toHaveLength(1);
+    expect(state.record?.metadata).toMatchObject({
+      guiWalletSendDelivery: {
+        schemaVersion: 1,
+        mode: "user-export",
+        admission: {
+          sendProofCount: 1,
+          resultProofCount: 3,
+          encodedTokenBytesLimit: 1 * 1_024 * 1_024,
+          proofCountLimit: 256,
+          durableStorageBytesLimit: 8 * 1_024 * 1_024,
+          nativeOperationRowBytesLimit: 256 * 1_024,
+        },
+      },
+    });
+    expect(state.trace).toEqual([
+      "prepare-send",
+      "persist-plan",
+      "persist-submit",
+      "dispatch-swap",
+      "persist-result",
+      "persist-plan",
+    ]);
+  });
+
+  it("rejects an oversized bearer output plan before persistence or mint transport", async () => {
+    const selected = incomingProof(5, "57");
+    walletMethod("prepareSwapToSend").mockResolvedValueOnce({
+      amount: Amount.from(3),
+      fees: Amount.from(1),
+      keysetId: KEYSET_ID,
+      inputs: [selected],
+      keepOutputs: [],
+      sendOutputs: Array.from({ length: 257 }, (_, index) =>
+        indexedOutput(index),
+      ),
+      unselectedProofs: [],
+    });
+
+    await expect(
+      sendGuiCashuToken({
+        expectedWalletId: state.walletId,
+        amount: 3,
+        proofs: [selected],
+        mintUrl: MINT_URL,
+        unit: "sat",
+      }),
+    ).rejects.toThrow("proof count limit");
+
+    expect(state.record).toBeNull();
+    expect(walletMethod("completeSwap")).not.toHaveBeenCalled();
+  });
+
+  it("rejects a native-row oversized send before mint transport", async () => {
+    const selected = incomingProof(5, "58");
+    walletMethod("prepareSwapToSend").mockResolvedValueOnce({
+      amount: Amount.from(3),
+      fees: Amount.from(1),
+      keysetId: KEYSET_ID,
+      inputs: [selected],
+      keepOutputs: [],
+      sendOutputs: Array.from({ length: 64 }, (_, index) =>
+        indexedOutput(index),
+      ),
+      unselectedProofs: [],
+    });
+
+    await expect(
+      sendGuiCashuToken({
+        expectedWalletId: state.walletId,
+        amount: 3,
+        proofs: [selected],
+        mintUrl: MINT_URL,
+        unit: "sat",
+      }),
+    ).rejects.toThrow("native operation row limit");
+
+    expect(state.record).toBeNull();
+    expect(walletMethod("completeSwap")).not.toHaveBeenCalled();
+  });
+
+  it("restores only the persisted send outputs after response loss", async () => {
+    const selected = incomingProof(5, "53");
+    const unselected = incomingProof(2, "54");
+    walletMethod("completeSwap").mockRejectedValueOnce(
+      new Error("send response lost"),
+    );
+
+    await expect(
+      sendGuiCashuToken({
+        expectedWalletId: state.walletId,
+        amount: 3,
+        proofs: [selected, unselected],
+        mintUrl: MINT_URL,
+        unit: "sat",
+      }),
+    ).rejects.toThrow("send response lost");
+    walletMethod("checkProofsStates").mockResolvedValue([
+      { Y: "ignored", state: "SPENT", witness: null },
+    ]);
+    installExactMintRestore();
+    const toProof = vi
+      .spyOn(OutputData.prototype, "toProof")
+      .mockImplementation(function (this: OutputData) {
+        return proofForOutput(this);
+      });
+
+    await expect(
+      recoverGuiOrdinaryWalletOperation(state.record as never),
+    ).resolves.toEqual({ kind: "settled" });
+
+    expect(walletMethod("prepareSwapToSend")).toHaveBeenCalledOnce();
+    expect(walletMethod("completeSwap")).toHaveBeenCalledOnce();
+    expect(walletMethod("restore")).toHaveBeenCalledOnce();
+    expect(toProof).toHaveBeenCalledTimes(2);
+    expect(state.record?.resultProofs).toMatchObject({
+      keep: expect.any(Array),
+      send: expect.any(Array),
+    });
+    expect((state.record?.resultProofs as { keep: Proof[] }).keep).toHaveLength(
+      2,
+    );
+    toProof.mockRestore();
   });
 
   it("rejects an explicitly captured old wallet before token preparation", async () => {
@@ -918,10 +1087,34 @@ function walletFixture(): Record<string, unknown> {
       inputs: token.proofs,
       keepOutputs: [output(4, 0x44)],
     })),
-    completeSwap: vi.fn(async (preview: { keepOutputs: OutputData[] }) => ({
-      keep: [proofForOutput(preview.keepOutputs[0]!)],
-      send: [],
-    })),
+    prepareSwapToSend: vi.fn(async (amount: number, proofs: Proof[]) => {
+      state.trace.push("prepare-send");
+      return {
+        amount: Amount.from(amount),
+        fees: Amount.from(1),
+        keysetId: KEYSET_ID,
+        inputs: proofs.slice(0, 1),
+        keepOutputs: [output(1, 0x45)],
+        sendOutputs: [output(amount, 0x46)],
+        unselectedProofs: proofs.slice(1),
+      };
+    }),
+    completeSwap: vi.fn(
+      async (preview: {
+        keepOutputs: OutputData[];
+        sendOutputs?: OutputData[];
+        unselectedProofs?: Proof[];
+      }) => {
+        state.trace.push("dispatch-swap");
+        return {
+          keep: [
+            ...preview.keepOutputs.map(proofForOutput),
+            ...(preview.unselectedProofs ?? []),
+          ],
+          send: (preview.sendOutputs ?? []).map(proofForOutput),
+        };
+      },
+    ),
     checkMintQuote: vi.fn(async () => ({ ...QUOTE, state: "PAID" as const })),
     checkProofsStates: vi.fn(),
     keyChain: { ensureKeysetKeys: vi.fn(async () => undefined) },
@@ -985,6 +1178,20 @@ function output(amount: number, secretByte = 0x33): OutputData {
     },
     2n,
     new Uint8Array(32).fill(secretByte),
+  );
+}
+
+function indexedOutput(index: number): OutputData {
+  const secret = new Uint8Array(32);
+  new DataView(secret.buffer).setUint32(28, index + 1);
+  return new OutputData(
+    {
+      id: KEYSET_ID,
+      amount: Amount.from(1),
+      B_: `02${(index + 1).toString(16).padStart(64, "0")}`,
+    },
+    BigInt(index + 1),
+    secret,
   );
 }
 
