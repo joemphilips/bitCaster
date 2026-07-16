@@ -161,6 +161,7 @@ export interface EngineClientLike {
   queryMarkets(params: QueryMarketsParams): Promise<QueryMarketsResponse>
   getParticipationScore(): Promise<ParticipationScoreResponse>
   payParticipationScoreEcash(
+    accountSubject: string,
     amountSats: number,
     proofsToken: string,
     paymentId?: string,
@@ -1177,6 +1178,7 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
   )
   const payment = await payParticipationScoreEcashWithRetry(
     input.client,
+    score.accountSubject,
     plan.deficitScore,
     token.token,
     paymentId,
@@ -1186,6 +1188,7 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
 
 async function payParticipationScoreEcashWithRetry(
   client: EngineClientLike,
+  accountSubject: string,
   amountSats: number,
   token: string,
   paymentId: string,
@@ -1194,6 +1197,7 @@ async function payParticipationScoreEcashWithRetry(
   for (let attempt = 0; attempt < SCORE_PAYMENT_ATTEMPTS; attempt += 1) {
     try {
       return await client.payParticipationScoreEcash(
+        accountSubject,
         amountSats,
         token,
         paymentId,

@@ -2151,8 +2151,14 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             calls.push('score')
             return scoreResponse({ balance: -1, matchDebitScore: 1 })
           },
-          async payParticipationScoreEcash(amountSats, token, paymentId) {
+          async payParticipationScoreEcash(
+            accountSubject,
+            amountSats,
+            token,
+            paymentId,
+          ) {
             calls.push('pay-score')
+            assert.equal(accountSubject, 'account-primary')
             capturedPayment = { amountSats, token, paymentId }
             return {
               paymentId: paymentId ?? 'missing-payment-id',
@@ -3084,7 +3090,7 @@ function scoreResponse(
   > = {},
 ): Awaited<ReturnType<EngineClientLike['getParticipationScore']>> {
   return {
-    pubkey: 'a'.repeat(64),
+    accountSubject: 'account-primary',
     balance: 0,
     purchasedTotal: 0,
     consumedTotal: 0,
