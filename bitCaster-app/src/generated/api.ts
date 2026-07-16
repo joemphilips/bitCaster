@@ -332,7 +332,7 @@ export interface paths {
         };
         /**
          * Read the current state of a deposit
-         * @description Polling-friendly read of a single deposit's lifecycle state. Bearer proof material is deliberately excluded from the response. Public; no authentication required.
+         * @description Owner-scoped read of a single deposit's lifecycle and immutable durable-recipient tuple. Bearer proof material is deliberately excluded. A caller that does not own the deposit receives 404.
          */
         get: operations["getDepositStatus"];
         put?: never;
@@ -1060,6 +1060,8 @@ export interface components {
          */
         DepositMethod: "ecash";
         RequestEcashDepositRequest: {
+            /** @description Scheme-neutral authenticated account subject bound to this exact deposit. */
+            accountSubject: string;
             /**
              * Format: uuid
              * @description Client-generated idempotency identifier. Retries must reuse this identifier with the exact same normalized request and ecash token.
@@ -1067,15 +1069,23 @@ export interface components {
             depositId: string;
             /** @description Asserted value of the supplied ecash proofs in market-collateral base subunits. The engine derives the unit from the registered market. */
             amountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @description Cashu token unit expected for the supplied proofs. When supplied, it must match the registered market's canonical collateral unit. */
-            unit?: string;
+            /**
+             * @description Canonical Cashu token unit bound to the supplied proofs.
+             * @enum {string}
+             */
+            unit: "sat" | "msat" | "usd";
             /**
              * Format: int32
-             * @description Market price divisibility associated with the supplied unit. When supplied, it must match the registered market's effective divisibility.
+             * @description Exact market price divisibility associated with the supplied unit. It must match the registered market's effective divisibility.
              */
-            divisibility?: number;
+            divisibility: number;
             /** @description Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting. */
             proofsToken: string;
+            /**
+             * Format: uri
+             * @description Canonical HTTPS Cashu mint URL bound to the supplied proofs.
+             */
+            mintUrl: string;
             /** @description Nostr public key (hex) of the market creator */
             creatorPubkey?: string;
             /**
@@ -1157,6 +1167,8 @@ export interface components {
             creditedAt: string;
         };
         PayParticipationScoreEcashRequest: {
+            /** @description Scheme-neutral authenticated account subject bound to this exact payment. */
+            accountSubject: string;
             /** @description Exact sat amount carried by the supplied regular ecash token. */
             amountSats: components["schemas"]["Sats"];
             /** @description Opaque Cashu token paid as a non-refundable Engine fee. */
@@ -1192,16 +1204,44 @@ export interface components {
             creditedAt?: string;
         };
         GetDepositResponseDto: {
+            /** @enum {integer} */
+            schemaVersion: 1;
             /** Format: uuid */
             depositId: string;
             /** @description Condition the deposit funds. */
             conditionId: string;
+            accountSubject: string;
+            /** @enum {string} */
+            recipientKind: "matching-engine";
+            /** @enum {string} */
+            purpose: "market-funding";
+            /** @description Exact condition id receiving this market funding. */
+            destinationId: string;
+            /** Format: uri */
+            mintUrl: string;
+            /** @enum {string} */
+            unit: "sat" | "msat" | "usd";
+            /** @enum {string} */
+            creditPolicy: "net-of-receive-fee";
+            /** @description SHA-256 binding of the destination-specific market-funding product fields. */
+            productBinding: string;
+            tokenDigest: string;
+            /** Format: int32 */
+            encodedTokenBytes: number;
+            receiptOperationId: string | null;
+            /** Format: date-time */
+            receivedAt: string | null;
             state: components["schemas"]["DepositState"];
             method: components["schemas"]["DepositMethod"];
             /** @description Immutable gross amount asserted by the original request. */
             amountSubunits: components["schemas"]["CollateralSubunits"];
             /** @description Actual redeemed proof value credited after mint input fees. Null until the deposit reaches credited state and never greater than amountSubunits. */
-            creditedAmountSubunits?: components["schemas"]["CollateralSubunits"] | null;
+            creditedAmountSubunits: components["schemas"]["CollateralSubunits"] | null;
+            /** @description Requested amount minus credited amount after mint fees. */
+            receiveFeeAmountSubunits: components["schemas"]["CollateralSubunits"] | null;
+            businessEventId: string | null;
+            /** Format: date-time */
+            creditedAt: string | null;
             /** Format: date-time */
             requestedAt: string;
             /**
@@ -1210,7 +1250,7 @@ export interface components {
              */
             updatedAt: string;
             /** @description Populated only when `state == Failed`. */
-            failureReason?: string | null;
+            failureReason: string | null;
         };
         MarketCatalogueEntry: {
             /** @description The condition identifier (hex string derived from the oracle announcement). Stable identifier for the market. */
@@ -2104,7 +2144,14 @@ export interface operations {
                     "application/json": components["schemas"]["GetDepositResponseDto"];
                 };
             };
-            /** @description No deposit with this id for this condition */
+            /** @description Missing or invalid authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No deposit with this id for this condition and owner */
             404: {
                 headers: {
                     [name: string]: unknown;

@@ -2209,16 +2209,24 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RequestEcashDepositRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RequestEcashDepositRequest(long @amountSubunits, string @creatorPubkey, System.Guid @depositId, int? @divisibility, bool? @fundAmm, string @proofsToken, string @unit)
+        public RequestEcashDepositRequest(string @accountSubject, long @amountSubunits, string @creatorPubkey, System.Guid @depositId, int @divisibility, bool? @fundAmm, System.Uri @mintUrl, string @proofsToken, RequestEcashDepositRequestUnit @unit)
         {
+            this.AccountSubject = @accountSubject;
             this.DepositId = @depositId;
             this.AmountSubunits = @amountSubunits;
             this.Unit = @unit;
             this.Divisibility = @divisibility;
             this.ProofsToken = @proofsToken;
+            this.MintUrl = @mintUrl;
             this.CreatorPubkey = @creatorPubkey;
             this.FundAmm = @fundAmm;
         }
+
+        /// <summary>
+        /// Scheme-neutral authenticated account subject bound to this exact deposit.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("accountSubject")]
+        public string AccountSubject { get; }
 
         /// <summary>
         /// Client-generated idempotency identifier. Retries must reuse this identifier with the exact same normalized request and ecash token.
@@ -2235,18 +2243,18 @@ namespace BitCaster.MatchingEngine.Contracts
         public long AmountSubunits { get; }
 
         /// <summary>
-        /// Cashu token unit expected for the supplied proofs. When supplied, it must match the registered market's canonical collateral unit.
-        /// <br/>
+        /// Canonical Cashu token unit bound to the supplied proofs.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("unit")]
-        public string Unit { get; }
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<RequestEcashDepositRequestUnit>))]
+        public RequestEcashDepositRequestUnit Unit { get; }
 
         /// <summary>
-        /// Market price divisibility associated with the supplied unit. When supplied, it must match the registered market's effective divisibility.
+        /// Exact market price divisibility associated with the supplied unit. It must match the registered market's effective divisibility.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int? Divisibility { get; }
+        public int Divisibility { get; }
 
         /// <summary>
         /// Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting.
@@ -2254,6 +2262,12 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("proofsToken")]
         public string ProofsToken { get; }
+
+        /// <summary>
+        /// Canonical HTTPS Cashu mint URL bound to the supplied proofs.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("mintUrl")]
+        public System.Uri MintUrl { get; }
 
         /// <summary>
         /// Nostr public key (hex) of the market creator
@@ -2473,12 +2487,19 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class PayParticipationScoreEcashRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public PayParticipationScoreEcashRequest(long @amountSats, System.Guid? @paymentId, string @proofsToken)
+        public PayParticipationScoreEcashRequest(string @accountSubject, long @amountSats, System.Guid? @paymentId, string @proofsToken)
         {
+            this.AccountSubject = @accountSubject;
             this.AmountSats = @amountSats;
             this.ProofsToken = @proofsToken;
             this.PaymentId = @paymentId;
         }
+
+        /// <summary>
+        /// Scheme-neutral authenticated account subject bound to this exact payment.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("accountSubject")]
+        public string AccountSubject { get; }
 
         /// <summary>
         /// Exact sat amount carried by the supplied regular ecash token.
@@ -2568,18 +2589,37 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class GetDepositResponseDto
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public GetDepositResponseDto(long @amountSubunits, string @conditionId, long? @creditedAmountSubunits, System.Guid @depositId, string @failureReason, DepositMethod @method, System.DateTimeOffset @requestedAt, DepositState @state, System.DateTimeOffset @updatedAt)
+        public GetDepositResponseDto(string @accountSubject, long @amountSubunits, string @businessEventId, string @conditionId, long? @creditedAmountSubunits, System.DateTimeOffset? @creditedAt, GetDepositResponseDtoCreditPolicy @creditPolicy, System.Guid @depositId, string @destinationId, int @encodedTokenBytes, string @failureReason, DepositMethod @method, System.Uri @mintUrl, string @productBinding, GetDepositResponseDtoPurpose @purpose, string @receiptOperationId, System.DateTimeOffset? @receivedAt, long? @receiveFeeAmountSubunits, GetDepositResponseDtoRecipientKind @recipientKind, System.DateTimeOffset @requestedAt, GetDepositResponseDtoSchemaVersion @schemaVersion, DepositState @state, string @tokenDigest, GetDepositResponseDtoUnit @unit, System.DateTimeOffset @updatedAt)
         {
+            this.SchemaVersion = @schemaVersion;
             this.DepositId = @depositId;
             this.ConditionId = @conditionId;
+            this.AccountSubject = @accountSubject;
+            this.RecipientKind = @recipientKind;
+            this.Purpose = @purpose;
+            this.DestinationId = @destinationId;
+            this.MintUrl = @mintUrl;
+            this.Unit = @unit;
+            this.CreditPolicy = @creditPolicy;
+            this.ProductBinding = @productBinding;
+            this.TokenDigest = @tokenDigest;
+            this.EncodedTokenBytes = @encodedTokenBytes;
+            this.ReceiptOperationId = @receiptOperationId;
+            this.ReceivedAt = @receivedAt;
             this.State = @state;
             this.Method = @method;
             this.AmountSubunits = @amountSubunits;
             this.CreditedAmountSubunits = @creditedAmountSubunits;
+            this.ReceiveFeeAmountSubunits = @receiveFeeAmountSubunits;
+            this.BusinessEventId = @businessEventId;
+            this.CreditedAt = @creditedAt;
             this.RequestedAt = @requestedAt;
             this.UpdatedAt = @updatedAt;
             this.FailureReason = @failureReason;
         }
+
+        [System.Text.Json.Serialization.JsonPropertyName("schemaVersion")]
+        public GetDepositResponseDtoSchemaVersion SchemaVersion { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("depositId")]
         public System.Guid DepositId { get; }
@@ -2589,6 +2629,52 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
         public string ConditionId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("accountSubject")]
+        public string AccountSubject { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("recipientKind")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<GetDepositResponseDtoRecipientKind>))]
+        public GetDepositResponseDtoRecipientKind RecipientKind { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("purpose")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<GetDepositResponseDtoPurpose>))]
+        public GetDepositResponseDtoPurpose Purpose { get; }
+
+        /// <summary>
+        /// Exact condition id receiving this market funding.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("destinationId")]
+        public string DestinationId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("mintUrl")]
+        public System.Uri MintUrl { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("unit")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<GetDepositResponseDtoUnit>))]
+        public GetDepositResponseDtoUnit Unit { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("creditPolicy")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<GetDepositResponseDtoCreditPolicy>))]
+        public GetDepositResponseDtoCreditPolicy CreditPolicy { get; }
+
+        /// <summary>
+        /// SHA-256 binding of the destination-specific market-funding product fields.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("productBinding")]
+        public string ProductBinding { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenDigest")]
+        public string TokenDigest { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("encodedTokenBytes")]
+        public int EncodedTokenBytes { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("receiptOperationId")]
+        public string ReceiptOperationId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("receivedAt")]
+        public System.DateTimeOffset? ReceivedAt { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("state")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DepositState>))]
@@ -2610,6 +2696,18 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("creditedAmountSubunits")]
         public long? CreditedAmountSubunits { get; }
+
+        /// <summary>
+        /// Requested amount minus credited amount after mint fees.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("receiveFeeAmountSubunits")]
+        public long? ReceiveFeeAmountSubunits { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("businessEventId")]
+        public string BusinessEventId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("creditedAt")]
+        public System.DateTimeOffset? CreditedAt { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("requestedAt")]
         public System.DateTimeOffset RequestedAt { get; }
@@ -3155,6 +3253,21 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum RequestEcashDepositRequestUnit
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"sat")]
+        Sat = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"msat")]
+        Msat = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"usd")]
+        Usd = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum ParticipationScorePaymentStatusResponseDestinationId
     {
 
@@ -3216,6 +3329,56 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"credited")]
         Credited = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum GetDepositResponseDtoCreditPolicy
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"net-of-receive-fee")]
+        NetOfReceiveFee = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum GetDepositResponseDtoPurpose
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"market-funding")]
+        MarketFunding = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum GetDepositResponseDtoRecipientKind
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"matching-engine")]
+        MatchingEngine = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum GetDepositResponseDtoSchemaVersion
+    {
+
+        _1 = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum GetDepositResponseDtoUnit
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"sat")]
+        Sat = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"msat")]
+        Msat = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"usd")]
+        Usd = 2,
 
     }
 

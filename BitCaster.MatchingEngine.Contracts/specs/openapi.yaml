@@ -570,10 +570,12 @@ paths:
     get:
       operationId: getDepositStatus
       summary: Read the current state of a deposit
+      security:
+        - nip98: []
       description: >
-        Polling-friendly read of a single deposit's lifecycle state. Bearer
-        proof material is deliberately excluded from the response. Public; no
-        authentication required.
+        Owner-scoped read of a single deposit's lifecycle and immutable
+        durable-recipient tuple. Bearer proof material is deliberately
+        excluded. A caller that does not own the deposit receives 404.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
         - name: depositId
@@ -591,7 +593,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/GetDepositResponseDto'
         '404':
-          description: No deposit with this id for this condition
+          description: No deposit with this id for this condition and owner
+        '401':
+          description: Missing or invalid authentication
 
   /api/v1/participation-score:
     get:
@@ -2251,9 +2255,18 @@ components:
       type: object
       required:
         - depositId
+        - accountSubject
         - amountSubunits
         - proofsToken
+        - mintUrl
+        - unit
+        - divisibility
       properties:
+        accountSubject:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: Scheme-neutral authenticated account subject bound to this exact deposit.
         depositId:
           type: string
           format: uuid
@@ -2269,22 +2282,28 @@ components:
             the registered market.
         unit:
           type: string
-          minLength: 1
-          description: >
-            Cashu token unit expected for the supplied proofs. When supplied,
-            it must match the registered market's canonical collateral unit.
+          enum:
+            - sat
+            - msat
+            - usd
+          description: Canonical Cashu token unit bound to the supplied proofs.
         divisibility:
           type: integer
           format: int32
-          minimum: 1
+          minimum: 2
           description: >
-            Market price divisibility associated with the supplied unit. When
-            supplied, it must match the registered market's effective divisibility.
+            Exact market price divisibility associated with the supplied unit.
+            It must match the registered market's effective divisibility.
         proofsToken:
           type: string
           description: >
             Opaque ecash token (Cashu V4 token blob). Proofs and amount are
             verified before crediting.
+        mintUrl:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Canonical HTTPS Cashu mint URL bound to the supplied proofs.
         creatorPubkey:
           type: string
           pattern: '^[0-9a-f]{64}$'
@@ -2434,9 +2453,15 @@ components:
     PayParticipationScoreEcashRequest:
       type: object
       required:
+        - accountSubject
         - amountSats
         - proofsToken
       properties:
+        accountSubject:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: Scheme-neutral authenticated account subject bound to this exact payment.
         amountSats:
           allOf:
             - $ref: '#/components/schemas/Sats'
@@ -2485,20 +2510,92 @@ components:
     GetDepositResponseDto:
       type: object
       required:
+        - schemaVersion
         - depositId
         - conditionId
+        - accountSubject
+        - recipientKind
+        - purpose
+        - destinationId
+        - mintUrl
+        - unit
+        - creditPolicy
+        - productBinding
+        - tokenDigest
+        - encodedTokenBytes
+        - receiptOperationId
+        - receivedAt
         - state
         - method
         - amountSubunits
+        - creditedAmountSubunits
+        - receiveFeeAmountSubunits
+        - businessEventId
+        - creditedAt
         - requestedAt
         - updatedAt
+        - failureReason
       properties:
+        schemaVersion:
+          type: integer
+          enum:
+            - 1
         depositId:
           type: string
           format: uuid
         conditionId:
           type: string
           description: Condition the deposit funds.
+        accountSubject:
+          type: string
+          minLength: 1
+          maxLength: 512
+        recipientKind:
+          type: string
+          enum:
+            - matching-engine
+        purpose:
+          type: string
+          enum:
+            - market-funding
+        destinationId:
+          type: string
+          description: Exact condition id receiving this market funding.
+        mintUrl:
+          type: string
+          format: uri
+          maxLength: 2048
+        unit:
+          type: string
+          enum:
+            - sat
+            - msat
+            - usd
+        creditPolicy:
+          type: string
+          enum:
+            - net-of-receive-fee
+        productBinding:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 binding of the destination-specific market-funding product fields.
+        tokenDigest:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        encodedTokenBytes:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 65536
+        receiptOperationId:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 512
+        receivedAt:
+          type: string
+          format: date-time
+          nullable: true
         state:
           $ref: '#/components/schemas/DepositState'
         method:
@@ -2514,6 +2611,19 @@ components:
             Actual redeemed proof value credited after mint input fees. Null
             until the deposit reaches credited state and never greater than
             amountSubunits.
+        receiveFeeAmountSubunits:
+          allOf:
+            - $ref: '#/components/schemas/CollateralSubunits'
+          nullable: true
+          description: Requested amount minus credited amount after mint fees.
+        businessEventId:
+          type: string
+          nullable: true
+          maxLength: 512
+        creditedAt:
+          type: string
+          format: date-time
+          nullable: true
         requestedAt:
           type: string
           format: date-time
