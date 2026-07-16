@@ -1,4 +1,3 @@
-import { schnorr } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { decode } from 'cborg'
@@ -7,6 +6,16 @@ import {
   preflightEncryptedBackupAccountIntentCbor,
   structurallyPreflightEncryptedBackupAccountRequestCbor,
 } from './encryptedWalletBackupCbor.ts'
+import {
+  equalBytes,
+  requireBytes,
+  requireExactHttpsUrl,
+  requireInteger,
+  requireRealm,
+  requireValidXOnlyPublicKey,
+} from './encryptedWalletBackupServerValidation.ts'
+
+export * from './encryptedWalletBackupDelegatedServerCodec.ts'
 
 const ACCOUNT_REQUEST_MAX_BYTES = 20 * 1_024
 const ACCOUNT_AUTHORIZATION_MAX_BYTES = 16 * 1_024
@@ -104,7 +113,9 @@ export function decodeEncryptedWalletBackupAccountIntent(
     url: requireExactHttpsUrl(decoded[4]),
     realm: requireRealm(decoded[5]),
     vaultId: bytesToHex(requireBytes(decoded[6], 32, 32, 'account vault id')),
-    requestAuthPublicKey: bytesToHex(requireValidXOnlyPublicKey(decoded[7])),
+    requestAuthPublicKey: bytesToHex(
+      requireValidXOnlyPublicKey(decoded[7], 'account request public key'),
+    ),
     expectedEnrollmentEpoch,
     operationId: bytesToHex(requireBytes(decoded[9], 16, 16, 'account operation id')),
   })
@@ -129,75 +140,4 @@ export function requireEncryptedWalletBackupAuthorizationScheme(value: unknown):
     throw new Error('encrypted backup account authorization scheme is invalid')
   }
   return value
-}
-
-function requireValidXOnlyPublicKey(value: unknown): Uint8Array {
-  const bytes = requireBytes(value, 32, 32, 'account request public key')
-  try {
-    schnorr.utils.lift_x(BigInt(`0x${bytesToHex(bytes)}`))
-    return bytes
-  } catch {
-    throw new Error('encrypted backup account request public key is invalid')
-  }
-}
-
-function requireRealm(value: unknown): string {
-  if (typeof value !== 'string' || !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(value)) {
-    throw new Error('encrypted backup realm is invalid')
-  }
-  return value
-}
-
-function requireExactHttpsUrl(value: unknown): string {
-  if (
-    typeof value !== 'string' ||
-    value.length < 1 ||
-    value.length > 2_048 ||
-    /[^\x21-\x7e]/.test(value)
-  ) {
-    throw new Error('encrypted backup account URL is invalid')
-  }
-  let parsed: URL
-  try {
-    parsed = new URL(value)
-  } catch {
-    throw new Error('encrypted backup account URL is invalid')
-  }
-  if (
-    parsed.protocol !== 'https:' ||
-    parsed.username !== '' ||
-    parsed.password !== '' ||
-    parsed.hash !== '' ||
-    parsed.href !== value
-  ) {
-    throw new Error('encrypted backup account URL is invalid')
-  }
-  return value
-}
-
-function requireInteger(value: unknown, minimum: number, name: string): number {
-  if (
-    !Number.isSafeInteger(value) ||
-    (value as number) < minimum ||
-    (value as number) > Number.MAX_SAFE_INTEGER
-  ) {
-    throw new Error(`${name} is invalid`)
-  }
-  return value as number
-}
-
-function requireBytes(value: unknown, minimum: number, maximum: number, name: string): Uint8Array {
-  if (!(value instanceof Uint8Array) || value.byteLength < minimum || value.byteLength > maximum) {
-    throw new Error(`encrypted backup ${name} is invalid`)
-  }
-  return value
-}
-
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false
-  let difference = 0
-  for (let index = 0; index < left.byteLength; index += 1) {
-    difference |= left[index]! ^ right[index]!
-  }
-  return difference === 0
 }

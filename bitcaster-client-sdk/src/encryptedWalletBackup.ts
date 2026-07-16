@@ -218,7 +218,35 @@ export interface AuthenticatedEncryptedWalletBackupRequestEvidence {
   readonly replayNonce: string
 }
 
+export interface VerifiedEncryptedWalletBackupRequestProofEvidence {
+  readonly state: 'verified'
+  readonly claims: EncryptedWalletBackupRequestProof
+}
+
+/** Typed nonce-reuse rejection; preserves the legacy error message. */
+export class EncryptedWalletBackupReplayRejectedError extends Error {
+  constructor() {
+    super('encrypted backup request replayed')
+    this.name = 'EncryptedWalletBackupReplayRejectedError'
+  }
+}
+
+/** Redacted replay-store outage for server adapters to map to HTTP 503. */
+export class EncryptedWalletBackupReplayStoreUnavailableError extends Error {
+  constructor() {
+    super('encrypted backup replay store unavailable')
+    this.name = 'EncryptedWalletBackupReplayStoreUnavailableError'
+  }
+}
+
 const AUTHENTICATED_BACKUP_REQUESTS = new WeakMap<object, EncryptedWalletBackupRequestProof>()
+const VERIFIED_BACKUP_REQUEST_PROOFS = new WeakMap<
+  object,
+  Readonly<{
+    proof: EncryptedWalletBackupRequestProof
+    requestDigest: string
+  }>
+>()
 const PREPARED_BACKUP_REQUESTS = new WeakMap<object, KeyAuthority>()
 const PREPARED_BACKUP_REQUEST_SIGNALS = new WeakMap<object, AbortSignal>()
 
@@ -1017,57 +1045,91 @@ export function verifyEncryptedWalletBackupRequestProof(input: {
   serverNowUnixSeconds: number
 }): boolean {
   try {
-    const proof = decodeBackupRequestProof(input.proof)
-    const payload = requireBytesRange(
-      input.payload,
-      0,
-      ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
-      'request payload',
-    )
-    const now = requireNonNegativeSafeInteger(input.serverNowUnixSeconds, 'server time')
-    if (
-      proof.realm !== requireRealm(input.expectedRealm) ||
-      proof.vaultId !== requireLowerHex(input.expectedVaultId, 32, 'expected vault id') ||
-      proof.requestAuthPublicKey !==
-        requireLowerHex(input.expectedPublicKey, 32, 'expected public key') ||
-      proof.enrollmentEpoch !==
-        requireInteger(
-          input.expectedEnrollmentEpoch,
-          0,
-          Number.MAX_SAFE_INTEGER,
-          'expected enrollment epoch',
-        ) ||
-      proof.method !== requireRequestMethod(input.expectedMethod) ||
-      proof.url !== requireExactHttpsUrl(input.expectedUrl) ||
-      proof.expiresAtUnixSeconds <= proof.issuedAtUnixSeconds ||
-      proof.expiresAtUnixSeconds - proof.issuedAtUnixSeconds > 60 ||
-      proof.issuedAtUnixSeconds > now + 30 ||
-      now > proof.expiresAtUnixSeconds ||
-      proof.payloadLength !== payload.byteLength ||
-      proof.payloadDigest !== bytesToHex(sha256(payload))
-    )
-      return false
-    const preimage = encodeBackupRequestPreimage({
-      realm: proof.realm,
-      vaultId: hexToBytes(proof.vaultId),
-      requestAuthPublicKey: hexToBytes(proof.requestAuthPublicKey),
-      enrollmentEpoch: proof.enrollmentEpoch,
-      method: proof.method,
-      url: proof.url,
-      issuedAtUnixSeconds: proof.issuedAtUnixSeconds,
-      expiresAtUnixSeconds: proof.expiresAtUnixSeconds,
-      replayNonce: hexToBytes(proof.replayNonce),
-      payloadLength: proof.payloadLength,
-      payloadDigest: hexToBytes(proof.payloadDigest),
+    const verified = verifyEncryptedWalletBackupRequestProofEvidence({
+      proof: input.proof,
+      expectedMethod: input.expectedMethod,
+      expectedUrl: input.expectedUrl,
+      payload: input.payload,
+      serverNowUnixSeconds: input.serverNowUnixSeconds,
     })
-    return schnorr.verify(
-      hexToBytes(proof.signature),
-      sha256(preimage),
-      hexToBytes(proof.requestAuthPublicKey),
+    return verifiedRequestProofMatchesIdentity(
+      verified.claims,
+      input.expectedRealm,
+      input.expectedVaultId,
+      input.expectedPublicKey,
+      input.expectedEnrollmentEpoch,
     )
   } catch {
     return false
   }
+}
+
+/**
+ * Verifies one self-signed proof exactly once and issues replay-consumption
+ * authority retained only in an internal WeakMap.
+ */
+export function verifyEncryptedWalletBackupRequestProofEvidence(input: {
+  proof: unknown
+  expectedMethod: EncryptedWalletBackupRequestMethod
+  expectedUrl: string
+  payload: Uint8Array
+  serverNowUnixSeconds: number
+}): VerifiedEncryptedWalletBackupRequestProofEvidence {
+  const proof = decodeBackupRequestProof(input.proof)
+  const payload = requireBytesRange(
+    input.payload,
+    0,
+    ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
+    'request payload',
+  )
+  const now = requireNonNegativeSafeInteger(input.serverNowUnixSeconds, 'server time')
+  if (
+    proof.method !== requireRequestMethod(input.expectedMethod) ||
+    proof.url !== requireExactHttpsUrl(input.expectedUrl) ||
+    proof.expiresAtUnixSeconds <= proof.issuedAtUnixSeconds ||
+    proof.expiresAtUnixSeconds - proof.issuedAtUnixSeconds > 60 ||
+    proof.issuedAtUnixSeconds > now + 30 ||
+    now > proof.expiresAtUnixSeconds ||
+    proof.payloadLength !== payload.byteLength ||
+    proof.payloadDigest !== bytesToHex(sha256(payload))
+  ) {
+    throw new Error('encrypted backup request authentication failed')
+  }
+  const preimage = encodeBackupRequestPreimage({
+    realm: proof.realm,
+    vaultId: hexToBytes(proof.vaultId),
+    requestAuthPublicKey: hexToBytes(proof.requestAuthPublicKey),
+    enrollmentEpoch: proof.enrollmentEpoch,
+    method: proof.method,
+    url: proof.url,
+    issuedAtUnixSeconds: proof.issuedAtUnixSeconds,
+    expiresAtUnixSeconds: proof.expiresAtUnixSeconds,
+    replayNonce: hexToBytes(proof.replayNonce),
+    payloadLength: proof.payloadLength,
+    payloadDigest: hexToBytes(proof.payloadDigest),
+  })
+  const requestDigestBytes = sha256(preimage)
+  if (
+    !schnorr.verify(
+      hexToBytes(proof.signature),
+      requestDigestBytes,
+      hexToBytes(proof.requestAuthPublicKey),
+    )
+  ) {
+    throw new Error('encrypted backup request authentication failed')
+  }
+  const evidence = Object.freeze({
+    state: 'verified' as const,
+    claims: proof,
+  })
+  VERIFIED_BACKUP_REQUEST_PROOFS.set(
+    evidence,
+    Object.freeze({
+      proof,
+      requestDigest: bytesToHex(requestDigestBytes),
+    }),
+  )
+  return evidence
 }
 
 export function encodeEncryptedWalletBackupRequestProof(
@@ -1132,10 +1194,39 @@ export async function authenticateEncryptedWalletBackupRequest(input: {
   serverNowUnixSeconds: number
   replayStore: EncryptedWalletBackupReplayStore
 }): Promise<AuthenticatedEncryptedWalletBackupRequestEvidence> {
-  if (!verifyEncryptedWalletBackupRequestProof(input)) {
+  let verified: VerifiedEncryptedWalletBackupRequestProofEvidence
+  try {
+    verified = verifyEncryptedWalletBackupRequestProofEvidence({
+      proof: input.proof,
+      expectedMethod: input.expectedMethod,
+      expectedUrl: input.expectedUrl,
+      payload: input.payload,
+      serverNowUnixSeconds: input.serverNowUnixSeconds,
+    })
+    if (
+      !verifiedRequestProofMatchesIdentity(
+        verified.claims,
+        input.expectedRealm,
+        input.expectedVaultId,
+        input.expectedPublicKey,
+        input.expectedEnrollmentEpoch,
+      )
+    ) {
+      throw new Error()
+    }
+  } catch {
     throw new Error('encrypted backup request authentication failed')
   }
-  const proof = decodeBackupRequestProof(input.proof)
+  return consumeEncryptedWalletBackupVerifiedRequestReplay({
+    verifiedProof: verified,
+    replayStore: input.replayStore,
+  })
+}
+
+export async function consumeEncryptedWalletBackupVerifiedRequestReplay(input: {
+  verifiedProof: VerifiedEncryptedWalletBackupRequestProofEvidence
+  replayStore: EncryptedWalletBackupReplayStore
+}): Promise<AuthenticatedEncryptedWalletBackupRequestEvidence> {
   if (
     typeof input.replayStore !== 'object' ||
     input.replayStore === null ||
@@ -1143,30 +1234,31 @@ export async function authenticateEncryptedWalletBackupRequest(input: {
   ) {
     throw new Error('encrypted backup replay store is invalid')
   }
-  const preimage = encodeBackupRequestPreimage({
-    realm: proof.realm,
-    vaultId: hexToBytes(proof.vaultId),
-    requestAuthPublicKey: hexToBytes(proof.requestAuthPublicKey),
-    enrollmentEpoch: proof.enrollmentEpoch,
-    method: proof.method,
-    url: proof.url,
-    issuedAtUnixSeconds: proof.issuedAtUnixSeconds,
-    expiresAtUnixSeconds: proof.expiresAtUnixSeconds,
-    replayNonce: hexToBytes(proof.replayNonce),
-    payloadLength: proof.payloadLength,
-    payloadDigest: hexToBytes(proof.payloadDigest),
-  })
-  const requestDigest = bytesToHex(sha256(preimage))
-  const consumed = await input.replayStore.consumeReplayNonce({
-    realm: proof.realm,
-    vaultId: proof.vaultId,
-    requestAuthPublicKey: proof.requestAuthPublicKey,
-    enrollmentEpoch: proof.enrollmentEpoch,
-    replayNonce: proof.replayNonce,
-    expiresAtUnixSeconds: proof.expiresAtUnixSeconds,
-    requestDigest,
-  })
-  if (consumed !== 'consumed') throw new Error('encrypted backup request replayed')
+  const authority = VERIFIED_BACKUP_REQUEST_PROOFS.get(input.verifiedProof)
+  if (authority === undefined) {
+    throw new Error('encrypted backup verified request proof is invalid')
+  }
+  const { proof, requestDigest } = authority
+  let consumed: 'consumed' | 'replayed'
+  try {
+    consumed = await input.replayStore.consumeReplayNonce({
+      realm: proof.realm,
+      vaultId: proof.vaultId,
+      requestAuthPublicKey: proof.requestAuthPublicKey,
+      enrollmentEpoch: proof.enrollmentEpoch,
+      replayNonce: proof.replayNonce,
+      expiresAtUnixSeconds: proof.expiresAtUnixSeconds,
+      requestDigest,
+    })
+  } catch {
+    throw new EncryptedWalletBackupReplayStoreUnavailableError()
+  }
+  if (consumed === 'replayed') {
+    throw new EncryptedWalletBackupReplayRejectedError()
+  }
+  if (consumed !== 'consumed') {
+    throw new EncryptedWalletBackupReplayStoreUnavailableError()
+  }
   const evidence = Object.freeze({
     state: 'authenticated' as const,
     requestDigest,
@@ -1174,6 +1266,27 @@ export async function authenticateEncryptedWalletBackupRequest(input: {
   })
   AUTHENTICATED_BACKUP_REQUESTS.set(evidence, proof)
   return evidence
+}
+
+function verifiedRequestProofMatchesIdentity(
+  proof: EncryptedWalletBackupRequestProof,
+  expectedRealm: unknown,
+  expectedVaultId: unknown,
+  expectedPublicKey: unknown,
+  expectedEnrollmentEpoch: unknown,
+): boolean {
+  return (
+    proof.realm === requireRealm(expectedRealm) &&
+    proof.vaultId === requireLowerHex(expectedVaultId, 32, 'expected vault id') &&
+    proof.requestAuthPublicKey === requireLowerHex(expectedPublicKey, 32, 'expected public key') &&
+    proof.enrollmentEpoch ===
+      requireInteger(
+        expectedEnrollmentEpoch,
+        0,
+        Number.MAX_SAFE_INTEGER,
+        'expected enrollment epoch',
+      )
+  )
 }
 
 export function verifyEncryptedWalletBackupConditionalKeyset(input: {
