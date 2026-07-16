@@ -9,6 +9,7 @@ import {
   encodeCanonicalBackupCbor as encodeCanonical,
   structurallyPreflightEncryptedBackupAccountRequestCbor,
 } from './encryptedWalletBackupCbor.ts'
+import { requireEncryptedWalletBackupAuthorizationScheme } from './encryptedWalletBackupServerCodec.ts'
 import {
   awaitEncryptedWalletBackupCycle,
   requireEncryptedWalletBackupCycleSignal,
@@ -128,7 +129,7 @@ export async function prepareEncryptedWalletBackupAccountOperation(input: {
   if (typeof authorized !== 'object' || authorized === null) {
     throw new Error('backup account authorization is invalid')
   }
-  const authorizationScheme = requireScheme(authorized.scheme)
+  const authorizationScheme = requireEncryptedWalletBackupAuthorizationScheme(authorized.scheme)
   const authorization = requireBytesRange(
     authorized.authorization,
     1,
@@ -423,13 +424,6 @@ function requireKeyHandle(value: unknown): EncryptedWalletBackupKeyHandle {
 function requireAction(value: unknown): EncryptedWalletBackupAccountOperationAction {
   if (value !== 'enroll' && value !== 'revoke' && value !== 'delete') {
     throw new Error('backup account operation action is invalid')
-  }
-  return value
-}
-
-function requireScheme(value: unknown): string {
-  if (typeof value !== 'string' || !/^[a-z][a-z0-9._-]{0,63}$/.test(value)) {
-    throw new Error('backup account authorization scheme is invalid')
   }
   return value
 }

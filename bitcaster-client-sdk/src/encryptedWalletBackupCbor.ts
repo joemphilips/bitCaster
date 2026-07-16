@@ -322,6 +322,27 @@ export function structurallyPreflightEncryptedBackupAccountRequestCbor(bytes: Ui
   }
 }
 
+export function preflightEncryptedBackupAccountIntentCbor(bytes: Uint8Array): void {
+  const root = scanBoundedEnvelope(bytes, 4_096, 1, 16, 10)
+  if (
+    root.major !== 4 ||
+    root.value !== 10 ||
+    root.children[0]?.major !== 0 ||
+    root.children[0]?.value !== 1
+  ) {
+    throw new Error('account intent shape')
+  }
+  requireText(root.children[1], 24, 24, 'account intent discriminator')
+  requireText(root.children[2], 6, 6, 'account action')
+  requireText(root.children[3], 4, 6, 'account method')
+  requireText(root.children[4], 1, 2_048, 'account URL')
+  requireText(root.children[5], 1, 64, 'account realm')
+  requireBytes(root.children[6], 32, 32, 'account vault id')
+  requireBytes(root.children[7], 32, 32, 'account request public key')
+  requireUnsigned(root.children[8], 'account enrollment epoch')
+  requireBytes(root.children[9], 16, 16, 'account operation id')
+}
+
 /** Allocation-bounded structural scan; the abort builder owns semantic validation. */
 export function structurallyPreflightEncryptedBackupAttemptAbortCbor(bytes: Uint8Array): void {
   const root = scanBoundedEnvelope(bytes, ATTEMPT_ABORT_MAX_BYTES, 1, 8, 4)

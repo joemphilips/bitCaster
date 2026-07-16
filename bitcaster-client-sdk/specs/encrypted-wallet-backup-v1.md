@@ -588,6 +588,32 @@ transport body is:
 ]
 ```
 
+The initial account-authorization profile is
+`nip98-backup-intent-v1`. Its opaque authorization is the exact UTF-8 encoding
+of one minified JSON object whose fields appear in this order:
+
+```text
+{"id":eventId,"pubkey":ownerPubkey,"created_at":issuedAt,"kind":27235,
+ "tags":[["u",exactHttpsUrl],["method",exactMethod],
+         ["backup-intent",lowerHexSha256CanonicalIntent]],
+ "content":"","sig":signature}
+```
+
+The displayed whitespace is explanatory only; the encoded object contains no
+optional whitespace. The event uses the ordinary NIP-01 event-id preimage and
+BIP-340 signature rules. It has exactly the three two-element tags shown, in
+that order, and empty content. Unknown, duplicate, reordered, or additional
+tags and fields fail closed. In particular, this profile does not use the
+standard NIP-98 `payload` tag: the signed object is embedded inside the outer
+account request, so signing that complete body would be circular. Instead, the
+versioned `backup-intent` extension binds the already frozen canonical intent.
+The service verifies the exact configured public HTTPS URL, exact method,
+lowercase event/public-key/signature encodings, event id, signature, and a
+maximum absolute clock difference of 60 seconds. The verified event pubkey is
+the scheme-specific account subject; generic backup domain and persistence
+store the scheme and opaque subject without treating Nostr as the universal
+application identity.
+
 An enroll at expected epoch zero creates an absent vault at epoch one. An exact
 retry is idempotent. An already-active identical vault is reopened without
 mutation through epoch discovery. Revoke/delete require a positive exact epoch
