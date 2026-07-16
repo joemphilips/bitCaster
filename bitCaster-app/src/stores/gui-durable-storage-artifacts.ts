@@ -27,6 +27,7 @@ export type GuiDurableStorageArtifactTable =
   | "pendingTrades"
   | "proofOperations"
   | "walletSendDeliveryPayloads"
+  | "bearerSpendDeliveries"
   | "proofs"
   | "custodyScopes"
   | "custodyScopeStates"
@@ -43,6 +44,7 @@ export const GUI_DURABLE_STORAGE_ARTIFACT_BYTES_LIMITS = {
   pendingTrades: 1 * 1_024 * 1_024,
   proofOperations: 256 * 1_024,
   walletSendDeliveryPayloads: 2 * 1_024 * 1_024,
+  bearerSpendDeliveries: 8 * 1_024 * 1_024,
   proofs: 8 * 1_024,
   custodyScopes: 4 * 1_024,
   custodyScopeStates: 16 * 1_024,
@@ -154,6 +156,7 @@ function assertTableKey(
   const requiresTuple =
     table === "proofOperations" ||
     table === "walletSendDeliveryPayloads" ||
+    table === "bearerSpendDeliveries" ||
     table === "walletCounters" ||
     table === "pendingTrades";
   const validTuple =
@@ -178,6 +181,7 @@ const TABLE_ROLES: Record<
   pendingTrades: ["transaction-only-retained"],
   proofOperations: ["exact-operation"],
   walletSendDeliveryPayloads: ["private-material"],
+  bearerSpendDeliveries: ["private-material"],
   proofs: ["proof-post-image", "transaction-only-retained"],
   custodyScopes: ["transaction-only-retained"],
   custodyScopeStates: ["transaction-only-retained"],

@@ -1,5 +1,5 @@
 import "fake-indexeddb/auto";
-import { Amount } from "@cashu/cashu-ts";
+import { Amount, getEncodedTokenV4 } from "@cashu/cashu-ts";
 import Dexie from "dexie";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -16,6 +16,8 @@ import {
 } from "../proof-db";
 import { withGuiCustodyProfileLock } from "../gui-custody-authority";
 import type { GuiWalletLockContext } from "../gui-wallet-lock";
+import { createDurableBearerSpendDeliveryRecord } from "@bitcaster/client-sdk/durableBearerSpendDelivery";
+import { createGuiBearerSpendDeliveryRow } from "../gui-bearer-spend-delivery";
 import {
   canonicalKeysetId,
   canonicalSecpPoint,
@@ -71,6 +73,20 @@ describe("derived GUI proof identity schema", () => {
       "walletId",
       "operationId",
     ]);
+    expect(db.bearerSpendDeliveries.schema.primKey.keyPath).toEqual([
+      "walletId",
+      "deliveryId",
+    ]);
+    expect(
+      db.bearerSpendDeliveries.schema.indexes.map(({ name }) => name),
+    ).toEqual(
+      expect.arrayContaining([
+        "[walletId+parentOperationId]",
+        "[walletId+active+nextAttemptAtMs+deliveryId]",
+        "[walletId+presentable+createdAtMs+deliveryId]",
+        "[walletId+active+createdAtMs+deliveryId]",
+      ]),
+    );
   });
 
   it("selects high denominations through the bounded unit-and-amount index", async () => {
@@ -215,7 +231,55 @@ describe("derived GUI proof identity schema", () => {
     ).toBe(canonical);
     expect(canonical).not.toContain(PROOF.secret);
   });
+
+  it("enforces unique wallet-scoped bearer parent and payload authority", async () => {
+    const first = bearerRow("delivery-a", "parent-a", "payload-a");
+    await db.bearerSpendDeliveries.put(first);
+
+    await expect(
+      db.bearerSpendDeliveries.put(
+        bearerRow("delivery-b", "parent-a", "payload-b"),
+      ),
+    ).rejects.toMatchObject({ name: "ConstraintError" });
+    await expect(
+      db.bearerSpendDeliveries.put(
+        bearerRow("delivery-c", "parent-c", "payload-a"),
+      ),
+    ).rejects.toMatchObject({ name: "ConstraintError" });
+    expect(await db.bearerSpendDeliveries.count()).toBe(1);
+  });
 });
+
+function bearerRow(
+  deliveryId: string,
+  parentOperationId: string,
+  payloadHandle: string,
+) {
+  const proof = {
+    id: canonicalKeysetId(1),
+    amount: Amount.from(1),
+    secret: `${deliveryId}-secret`,
+    C: canonicalSecpPoint(1),
+  };
+  return createGuiBearerSpendDeliveryRow(
+    createDurableBearerSpendDeliveryRecord({
+      deliveryId,
+      walletId: WALLET_A,
+      parentOperationId,
+      payloadHandle,
+      mintUrl: "https://mint.example",
+      unit: "sat",
+      encodedToken: getEncodedTokenV4({
+        mint: "https://mint.example",
+        unit: "sat",
+        proofs: [proof],
+      }),
+      proofs: [proof],
+      origin: "local",
+      createdAtMs: 1_000,
+    }),
+  );
+}
 
 function proofWith(secret: string, amount: number) {
   return {

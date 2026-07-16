@@ -13,6 +13,10 @@ import {
   type DurableCustodyTransactionWork,
 } from "@bitcaster/client-sdk/durableCustody";
 import {
+  classifyDurableBearerSpendCustodyHandoffPlan,
+  type DurableBearerSpendCustodyHandoffPlan,
+} from "@bitcaster/client-sdk/durableBearerSpendDelivery";
+import {
   activeMarker,
   sameValue,
   type ActiveMarker,
@@ -290,6 +294,31 @@ export class PlannedCustodyTransaction implements DurableCustodyTransaction {
         throw new Error("custody active-work index is missing or stale");
       }
     }
+  }
+
+  adoptBearerSpendCustodyHandoff(
+    plan: DurableBearerSpendCustodyHandoffPlan,
+  ): void {
+    const operationId = plan.custodyState.operation.operation.operationId;
+    const previousCustodyState = {
+      scopeState: this.getScopeState(),
+      operation: this.requireOperation(operationId),
+    };
+    classifyDurableBearerSpendCustodyHandoffPlan({
+      previousCustodyState,
+      plan,
+    });
+    this.state = decodeDurableCustodyScopeState(
+      plan.custodyState.scopeState,
+      this.scope,
+    );
+    this.operations.set(
+      operationId,
+      decodeDurableCustodyRecord(plan.custodyState.operation, this.scope),
+    );
+    this.touched.add(operationId);
+    this.rebuildActiveWorkIndex();
+    this.assertIntegrity();
   }
 
   scopeState(): DurableCustodyScopeState {

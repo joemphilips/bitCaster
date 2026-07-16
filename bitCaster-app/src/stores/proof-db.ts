@@ -45,6 +45,7 @@ import type {
   GuiWalletSendDeliveryPayloadRow,
   GuiWalletSendDeliveryReservationRow,
 } from "./gui-wallet-send-delivery";
+import type { GuiBearerSpendDeliveryRow } from "./gui-bearer-spend-delivery";
 import { createGuiDurableStorageRowArtifact } from "./gui-durable-storage-artifacts";
 import {
   walletIdFromHeldGuiWalletLock,
@@ -277,6 +278,7 @@ export class BitcasterDB extends Dexie {
     GuiWalletSendDeliveryReservationRow,
     [string, string]
   >;
+  bearerSpendDeliveries!: Table<GuiBearerSpendDeliveryRow, [string, string]>;
 
   constructor() {
     super("bitcaster");
@@ -568,6 +570,38 @@ export class BitcasterDB extends Dexie {
             "durableStorageHeadroom",
             "walletSendDeliveryPayloads",
             "walletSendDeliveryReservations",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
+    // The custody schema remains undeployed. Version 18 introduces the
+    // SDK-defined bearer policy handoff and discards incompatible dev rows.
+    this.version(18)
+      .stores({
+        bearerSpendDeliveries:
+          "[walletId+deliveryId], walletId, &[walletId+parentOperationId], &[walletId+payloadHandle], [walletId+active+nextAttemptAtMs+deliveryId], [walletId+presentable+createdAtMs+deliveryId], [walletId+active+createdAtMs+deliveryId]",
+      })
+      .upgrade(async (transaction) => {
+        await Promise.all(
+          [
+            "proofs",
+            "proofOperations",
+            "swapSessions",
+            "swapIntents",
+            "custodyScopes",
+            "custodyScopeStates",
+            "custodyOperations",
+            "custodySessionLinks",
+            "custodyProofReservations",
+            "partialLockFailures",
+            "walletCounters",
+            "pendingLocalWalletPayments",
+            "pendingTrades",
+            "walletActivities",
+            "durableStorageAccounting",
+            "durableStorageHeadroom",
+            "walletSendDeliveryPayloads",
+            "walletSendDeliveryReservations",
+            "bearerSpendDeliveries",
           ].map((tableName) => transaction.table(tableName).clear()),
         );
       });

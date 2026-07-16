@@ -5,6 +5,11 @@ import {
   type DurableCustodyWalletStorageBoundary,
 } from "@bitcaster/client-sdk/durableCustody";
 import type { DurableStoragePlannedArtifact } from "@bitcaster/client-sdk/durableStorageAdmission";
+import {
+  classifyDurableBearerSpendCustodyHandoffPlan,
+  type DurableBearerSpendCustodyHandoffPlan,
+} from "@bitcaster/client-sdk/durableBearerSpendDelivery";
+import type { DurableCustodyState } from "@bitcaster/client-sdk/durableCustody";
 import type { DexieDurableCustodyPlan } from "./durable-custody-transaction-plan";
 import { sameValue, scopeRow } from "./durable-custody-dexie-model";
 import type { GuiCustodyAuthority } from "./gui-custody-authority";
@@ -41,11 +46,23 @@ import {
   guiWalletSendDeliveryPayloadSnapshot,
   requireGuiWalletSendDeliveryReservationRow,
   requireGuiWalletSendDeliveryPayloadRow,
+  readGuiWalletSendDeliveryMetadata,
   type GuiWalletSendDeliveryPayloadRow,
   type GuiWalletSendDeliveryPayloadSnapshot,
   type GuiWalletSendDeliveryReservationRow,
   type GuiWalletSendDeliveryReservationSnapshot,
 } from "./gui-wallet-send-delivery";
+import {
+  requireGuiBearerSpendDeliveryRow,
+  requireGuiBearerSpendDeliveryRowWithinByteBound,
+  type GuiBearerSpendDeliveryRow,
+} from "./gui-bearer-spend-delivery";
+
+export interface GuiBearerSpendCustodyHandoff {
+  readonly previousCustodyState: DurableCustodyState;
+  readonly plan: DurableBearerSpendCustodyHandoffPlan;
+  readonly row: GuiBearerSpendDeliveryRow;
+}
 
 export interface GuiCustodyNativeSnapshot {
   walletId: string;
@@ -53,6 +70,7 @@ export interface GuiCustodyNativeSnapshot {
   operation: ProofOperationRecord | undefined;
   walletSendDeliveryPayload?: GuiWalletSendDeliveryPayloadSnapshot;
   walletSendDeliveryReservation?: GuiWalletSendDeliveryReservationSnapshot;
+  bearerSpendDelivery?: GuiBearerSpendDeliveryRow;
   proofSecrets: string[];
   proofIds: string[];
   proofs: StoredProof[];
@@ -69,6 +87,7 @@ export interface GuiCustodyUnitOfWorkInput<T> {
   nextWalletSendDeliveryPayload?: GuiWalletSendDeliveryPayloadRow | null;
   /** undefined leaves the reservation unchanged; null atomically consumes it. */
   nextWalletSendDeliveryReservation?: GuiWalletSendDeliveryReservationRow | null;
+  bearerSpendHandoff?: GuiBearerSpendCustodyHandoff;
   deleteProofs?: StoredProof[];
   nextProofs?: StoredProof[];
   nextSession?: SwapSessionRecord;
@@ -108,6 +127,7 @@ interface PreparedGuiCustodyState<T> {
   nextOperation?: ProofOperationRecord;
   nextWalletSendDeliveryPayload?: GuiWalletSendDeliveryPayloadRow | null;
   nextWalletSendDeliveryReservation?: GuiWalletSendDeliveryReservationRow | null;
+  bearerSpendHandoff?: GuiBearerSpendCustodyHandoff;
   deleteProofIds: string[];
   nextProofs?: StoredProofRow[];
   nextSession?: SwapSessionRecord;
@@ -137,11 +157,14 @@ export async function readGuiCustodyNativeSnapshot(
   }
   const snapshot = await database.transaction(
     "r",
-    database.proofOperations,
-    database.walletSendDeliveryPayloads,
-    database.walletSendDeliveryReservations,
-    database.proofs,
-    database.swapSessions,
+    [
+      database.proofOperations,
+      database.walletSendDeliveryPayloads,
+      database.walletSendDeliveryReservations,
+      database.bearerSpendDeliveries,
+      database.proofs,
+      database.swapSessions,
+    ],
     async () => {
       const operation =
         operationId === null
@@ -174,6 +197,14 @@ export async function readGuiCustodyNativeSnapshot(
                 operationId,
                 operation,
               ),
+        bearerSpendDelivery:
+          operation === undefined
+            ? undefined
+            : await readBearerSpendDeliverySnapshot(
+                database,
+                walletId,
+                operation.custodyOperationId,
+              ),
         proofSecrets: [...proofSecrets],
         proofIds,
         proofs: requireScopedProofs(
@@ -204,11 +235,14 @@ export async function readGuiCustodyOperationSnapshot(
 ): Promise<GuiCustodyNativeSnapshot> {
   const snapshot = await database.transaction(
     "r",
-    database.proofOperations,
-    database.walletSendDeliveryPayloads,
-    database.walletSendDeliveryReservations,
-    database.proofs,
-    database.swapSessions,
+    [
+      database.proofOperations,
+      database.walletSendDeliveryPayloads,
+      database.walletSendDeliveryReservations,
+      database.bearerSpendDeliveries,
+      database.proofs,
+      database.swapSessions,
+    ],
     async () => {
       const operation = requireScopedOperation(
         await database.proofOperations.get(
@@ -243,6 +277,14 @@ export async function readGuiCustodyOperationSnapshot(
             operationId,
             operation,
           ),
+        bearerSpendDelivery:
+          operation === undefined
+            ? undefined
+            : await readBearerSpendDeliverySnapshot(
+                database,
+                walletId,
+                operation.custodyOperationId,
+              ),
         proofSecrets,
         proofIds,
         proofs: requireScopedProofs(
@@ -317,6 +359,15 @@ export async function prepareGuiCustodyUnitOfWork<T>(
               );
             })(),
         );
+  const bearerSpendHandoff = input.bearerSpendHandoff
+    ? requireGuiBearerSpendCustodyHandoff(
+        input.bearerSpendHandoff,
+        input.plan,
+        snapshot,
+        nextOperation,
+        nextWalletSendDeliveryPayload,
+      )
+    : undefined;
   if (
     nextWalletSendDeliveryPayload &&
     nextOperation?.operationId !== nextWalletSendDeliveryPayload.operationId
@@ -337,6 +388,7 @@ export async function prepareGuiCustodyUnitOfWork<T>(
       nextOperation,
       nextWalletSendDeliveryPayload,
       nextWalletSendDeliveryReservation,
+      bearerSpendHandoff,
       nextSession,
       nextActivity,
     },
@@ -352,6 +404,7 @@ export async function prepareGuiCustodyUnitOfWork<T>(
     nextOperation,
     nextWalletSendDeliveryPayload,
     nextWalletSendDeliveryReservation,
+    bearerSpendHandoff,
     deleteProofIds,
     nextProofs,
     nextSession,
@@ -371,6 +424,7 @@ export function guiCustodyUnitOfWorkTables(
     database.proofOperations,
     database.walletSendDeliveryPayloads,
     database.walletSendDeliveryReservations,
+    database.bearerSpendDeliveries,
     database.proofs,
     database.swapSessions,
     database.walletActivities,
@@ -434,10 +488,12 @@ export function describePreparedGuiCustodyHeadroomWriteSet<T>(
   const { previous, next } = walletStorageBoundaryRecords(state);
   const writeSet = Object.freeze({
     walletId: prepared.walletId,
-    boundary: classifyDurableCustodyWalletStorageBoundary({
-      previous,
-      next,
-    }),
+    boundary: state.bearerSpendHandoff
+      ? classifyDurableBearerSpendCustodyHandoffPlan({
+          previousCustodyState: state.bearerSpendHandoff.previousCustodyState,
+          plan: state.bearerSpendHandoff.plan,
+        })
+      : classifyDurableCustodyWalletStorageBoundary({ previous, next }),
     database: state.database,
   });
   preparedGuiCustodyHeadroomWriteSets.add(writeSet);
@@ -494,6 +550,18 @@ function commitPreparedState<T>(
     .then(() => {
       requireCurrentWriteTransaction(database);
       return assertSessionCapacity(database, state, prepared.walletId);
+    })
+    .then(() => {
+      requireCurrentWriteTransaction(database);
+      if (state.bearerSpendHandoff) {
+        requireGuiBearerSpendCustodyHandoff(
+          state.bearerSpendHandoff,
+          state.plan,
+          state.snapshot,
+          state.nextOperation,
+          state.nextWalletSendDeliveryPayload,
+        );
+      }
     })
     .then(() => {
       requireCurrentWriteTransaction(database);
@@ -598,6 +666,19 @@ function preparedNativePostImageArtifacts(
             ],
             artifactRole: "private-material",
             row: state.nextWalletSendDeliveryPayload,
+          }),
+        ]
+      : []),
+    ...(state.bearerSpendHandoff
+      ? [
+          createGuiDurableStorageRowArtifact({
+            table: "bearerSpendDeliveries",
+            key: [
+              state.bearerSpendHandoff.row.walletId,
+              state.bearerSpendHandoff.row.deliveryId,
+            ],
+            artifactRole: "private-material",
+            row: state.bearerSpendHandoff.row,
           }),
         ]
       : []),
@@ -734,6 +815,10 @@ async function writePreparedNativeRows<T>(
     );
     requireCurrentWriteTransaction(database);
   }
+  if (state.bearerSpendHandoff) {
+    await database.bearerSpendDeliveries.put(state.bearerSpendHandoff.row);
+    requireCurrentWriteTransaction(database);
+  }
   if (state.deleteProofIds.length > 0) {
     await database.proofs.bulkDelete(state.deleteProofIds);
     requireCurrentWriteTransaction(database);
@@ -848,6 +933,14 @@ async function assertNativeSnapshot(
           snapshot.operationId,
           operation,
         );
+  const bearerSpendDelivery =
+    snapshot.operation === undefined
+      ? undefined
+      : await readBearerSpendDeliverySnapshot(
+          database,
+          walletId,
+          snapshot.operation.custodyOperationId,
+        );
   const proofs = requireScopedProofs(
     await database.proofs.bulkGet(snapshot.proofIds),
     walletId,
@@ -866,6 +959,7 @@ async function assertNativeSnapshot(
       walletSendDeliveryReservation,
       snapshot.walletSendDeliveryReservation,
     ) ||
+    !sameValue(bearerSpendDelivery, snapshot.bearerSpendDelivery) ||
     !sameValue(proofs, snapshot.proofs) ||
     !sameValue(session, snapshot.session)
   ) {
@@ -878,6 +972,7 @@ function assertNativeWriteScope(
     nextOperation?: ProofOperationRecord;
     nextWalletSendDeliveryPayload?: GuiWalletSendDeliveryPayloadRow | null;
     nextWalletSendDeliveryReservation?: GuiWalletSendDeliveryReservationRow | null;
+    bearerSpendHandoff?: GuiBearerSpendCustodyHandoff;
     nextSession?: SwapSessionRecord;
     nextActivity?: WalletActivityRow;
   },
@@ -889,6 +984,8 @@ function assertNativeWriteScope(
       input.nextWalletSendDeliveryPayload.walletId !== walletId) ||
     (input.nextWalletSendDeliveryReservation &&
       input.nextWalletSendDeliveryReservation.walletId !== walletId) ||
+    (input.bearerSpendHandoff &&
+      input.bearerSpendHandoff.row.walletId !== walletId) ||
     (input.nextSession && input.nextSession.walletId !== walletId) ||
     (input.nextActivity && input.nextActivity.walletId !== walletId)
   ) {
@@ -929,6 +1026,105 @@ async function readWalletSendDeliveryReservationSnapshot(
   return guiWalletSendDeliveryReservationSnapshot(
     requireGuiWalletSendDeliveryReservationRow(row, operation),
   );
+}
+
+async function readBearerSpendDeliverySnapshot(
+  database: BitcasterDB,
+  walletId: string,
+  parentOperationId: string,
+): Promise<GuiBearerSpendDeliveryRow | undefined> {
+  const row = await database.bearerSpendDeliveries
+    .where("[walletId+parentOperationId]")
+    .equals([walletId, parentOperationId])
+    .first();
+  return row
+    ? requireGuiBearerSpendDeliveryRow(
+        row,
+        walletId,
+        undefined,
+        parentOperationId,
+      )
+    : undefined;
+}
+
+function requireGuiBearerSpendCustodyHandoff(
+  value: GuiBearerSpendCustodyHandoff,
+  custodyPlan: DexieDurableCustodyPlan<unknown>,
+  snapshot: GuiCustodyNativeSnapshot,
+  nextOperation: ProofOperationRecord | undefined,
+  nextPayload: GuiWalletSendDeliveryPayloadRow | null | undefined,
+): GuiBearerSpendCustodyHandoff {
+  const row = requireGuiBearerSpendDeliveryRow(value.row);
+  classifyDurableBearerSpendCustodyHandoffPlan({
+    previousCustodyState: value.previousCustodyState,
+    plan: value.plan,
+  });
+  const custodyPostImage = requireBearerCustodyPostImage(custodyPlan);
+  const native = requireBearerNativePostImage(nextOperation, nextPayload);
+  requireBearerRowWithinAdmission(row, native.operation);
+  const activeProofs = row.record.proofEntries.flatMap((entry) =>
+    entry.kind === "active" ? [entry.proof] : [],
+  );
+  if (
+    snapshot.bearerSpendDelivery !== undefined ||
+    native.operation.custodyOperationId !== row.parentOperationId ||
+    native.payload.walletId !== row.walletId ||
+    native.payload.operationId !== native.operation.operationId ||
+    native.payload.custodyOperationId !== row.parentOperationId ||
+    native.payload.tokenDigest !== row.record.tokenDigest ||
+    row.payloadHandle !== `wallet-send:${native.operation.operationId}` ||
+    !sameValue(activeProofs, native.sendProofs) ||
+    !sameValue(row.record, value.plan.bearerRecord) ||
+    !sameValue(custodyPostImage, value.plan.custodyState.operation) ||
+    !sameValue(
+      custodyPlan.transaction.scopeState(),
+      value.plan.custodyState.scopeState,
+    )
+  ) {
+    throw new Error("GUI bearer spend custody handoff is invalid");
+  }
+  return value;
+}
+
+function requireBearerRowWithinAdmission(
+  row: GuiBearerSpendDeliveryRow,
+  operation: ProofOperationRecord,
+): void {
+  const metadata = readGuiWalletSendDeliveryMetadata(operation);
+  if (!metadata) {
+    throw new Error("GUI bearer spend custody handoff is invalid");
+  }
+  requireGuiBearerSpendDeliveryRowWithinByteBound(
+    row,
+    metadata.admission.bearerPolicyRowBytesUpperBound,
+  );
+}
+
+function requireBearerCustodyPostImage(
+  custodyPlan: DexieDurableCustodyPlan<unknown>,
+) {
+  const rows = custodyPlan.transaction.operationRows();
+  if (rows.length !== 1 || rows[0] === undefined) {
+    throw new Error("GUI bearer spend custody handoff is invalid");
+  }
+  return rows[0].record;
+}
+
+function requireBearerNativePostImage(
+  operation: ProofOperationRecord | undefined,
+  payload: GuiWalletSendDeliveryPayloadRow | null | undefined,
+) {
+  const sendProofs = operation?.resultProofs?.send;
+  if (
+    operation?.kind !== "wallet-send" ||
+    operation.state !== "completed" ||
+    payload === undefined ||
+    payload === null ||
+    !sendProofs
+  ) {
+    throw new Error("GUI bearer spend custody handoff is invalid");
+  }
+  return { operation, payload, sendProofs };
 }
 
 function requireScopedOperation(
