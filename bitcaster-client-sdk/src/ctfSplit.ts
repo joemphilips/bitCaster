@@ -13,6 +13,7 @@ import {
   type SerializedBlindedMessage,
   type SerializedBlindedSignature,
   type SwapPreview,
+  type RequestFn,
   splitAmount,
 } from "@cashu/cashu-ts";
 import {
@@ -1871,63 +1872,167 @@ export async function restoreOutputGroups(
   mintUrl: string,
   outputs: Record<string, StoredOutputData[]>,
 ): Promise<Record<string, Proof[]>> {
-  const mint = new CashuMint(mintUrl);
-  const rows = Object.entries(deserializeCtfOutputGroups(outputs)).flatMap(
-    ([group, groupOutputs]) =>
-      groupOutputs.map((output, index) => ({ group, index, output })),
-  );
-  if (rows.length === 0) return {};
-
-  const response = await mint.restore({
-    outputs: rows.map((row) => toWireBlindedMessage(row.output.blindedMessage)),
+  const result = await probeExactOutputRestore(mintUrl, outputs, {
+    requestTimeoutMs: 10_000,
+    responseBodyBytesLimit: 1024 * 1024,
+    signal: AbortSignal.timeout(10_000),
   });
-  if (response.signatures.length !== response.outputs.length) {
-    throw new Error(
-      "Mint restore response had mismatched output/signature counts",
+  if (result.kind === "restored") return result.proofs;
+  throw new Error(
+    result.kind === "definitely-absent"
+      ? "Mint restore returned no signatures for the exact output plan"
+      : "Mint restore response was unavailable or did not match the exact output plan",
+  );
+}
+
+export type ExactOutputRestoreProbeResult =
+  | { kind: "restored"; proofs: Record<string, Proof[]> }
+  | { kind: "definitely-absent" }
+  | { kind: "unavailable-or-corrupt" };
+
+export async function probeExactOutputRestore(
+  mintUrl: string,
+  outputs: Record<string, StoredOutputData[]>,
+  options: {
+    requestTimeoutMs: number;
+    responseBodyBytesLimit: number;
+    signal: AbortSignal;
+  },
+): Promise<ExactOutputRestoreProbeResult> {
+  requireExactRestoreProbeOptions(options);
+  const rows = exactRestoreRows(outputs);
+  if (rows.length === 0) return { kind: "unavailable-or-corrupt" };
+
+  try {
+    const mint = new CashuMint(mintUrl);
+    const request = mint.createRequestWithOptions({
+      requestTimeout: options.requestTimeoutMs,
+      responseBodyBytesLimit: options.responseBodyBytesLimit,
+      signal: options.signal,
+    });
+    const expectedKeys = rows.map((row) => row.outputKey);
+    if (new Set(expectedKeys).size !== expectedKeys.length) {
+      return { kind: "unavailable-or-corrupt" };
+    }
+    const response = await mint.restore(
+      {
+        outputs: rows.map((row) =>
+          toWireBlindedMessage(row.output.blindedMessage),
+        ),
+      },
+      request,
     );
+    if (response.outputs.length === 0 && response.signatures.length === 0) {
+      return { kind: "definitely-absent" };
+    }
+    if (
+      response.signatures.length !== response.outputs.length ||
+      response.outputs.length !== rows.length
+    ) {
+      return { kind: "unavailable-or-corrupt" };
+    }
+    const responseKeys = response.outputs.map(exactRestoreOutputKey);
+    if (
+      new Set(responseKeys).size !== responseKeys.length ||
+      responseKeys.some((key) => !expectedKeys.includes(key)) ||
+      response.signatures.some(
+        (signature, index) =>
+          signature.id.toLowerCase() !==
+            response.outputs[index]?.id.toLowerCase() ||
+          amountToNumber(signature.amount) !==
+            amountToNumber(response.outputs[index]?.amount),
+      )
+    ) {
+      return { kind: "unavailable-or-corrupt" };
+    }
+    return await restoreExactOutputRows(mint, request, rows, response);
+  } catch {
+    return { kind: "unavailable-or-corrupt" };
   }
+}
+
+interface ExactRestoreRow {
+  group: string;
+  output: RegularOutputData;
+  outputKey: string;
+}
+
+function exactRestoreRows(
+  outputs: Record<string, StoredOutputData[]>,
+): ExactRestoreRow[] {
+  return Object.entries(deserializeCtfOutputGroups(outputs)).flatMap(
+    ([group, groupOutputs]) =>
+      groupOutputs.map((output) => ({
+        group,
+        output,
+        outputKey: exactRestoreOutputKey(output.blindedMessage),
+      })),
+  );
+}
+
+async function restoreExactOutputRows(
+  mint: CashuMint,
+  request: RequestFn,
+  rows: ExactRestoreRow[],
+  response: Awaited<ReturnType<CashuMint["restore"]>>,
+): Promise<ExactOutputRestoreProbeResult> {
   const signaturesByOutput = new Map<string, SerializedBlindedSignature>();
   response.outputs.forEach((output, index) => {
-    signaturesByOutput.set(
-      blindedMessageKey(output),
-      response.signatures[index],
-    );
+    const signature = response.signatures[index];
+    if (signature) signaturesByOutput.set(exactRestoreOutputKey(output), signature);
   });
-
   const keysets = new Map<string, MintKeys>();
-  const getKeyset = async (keysetId: string): Promise<MintKeys> => {
-    const cached = keysets.get(keysetId);
-    if (cached) return cached;
-    const keysetResponse = await mint.getKeys(keysetId);
-    const keyset = keysetResponse.keysets.find(
-      (candidate) => candidate.id === keysetId,
-    );
-    if (!keyset)
-      throw new Error(`Mint did not return keys for keyset ${keysetId}`);
-    keysets.set(keysetId, keyset);
-    return keyset;
-  };
-
   const restored: Record<string, Proof[]> = {};
   for (const row of rows) {
-    const signature = signaturesByOutput.get(
-      blindedMessageKey(row.output.blindedMessage),
+    const signature = signaturesByOutput.get(row.outputKey);
+    if (!signature) return { kind: "unavailable-or-corrupt" };
+    const keyset = await exactRestoreKeyset(
+      mint,
+      request,
+      keysets,
+      row.output.blindedMessage.id,
     );
-    if (!signature) {
-      throw new Error(
-        `Mint restore did not return signature for output ${row.group}[${row.index}]`,
-      );
-    }
-    const keyset = await getKeyset(row.output.blindedMessage.id);
     const proof = normalizeProof(
-      row.output.toProof(
-        { ...signature, amount: row.output.blindedMessage.amount },
-        keyset,
-      ),
+      row.output.toProof(signature, keyset),
     );
     restored[row.group] = [...(restored[row.group] ?? []), proof];
   }
-  return normalizeProofGroups(restored);
+  return { kind: "restored", proofs: normalizeProofGroups(restored) };
+}
+
+async function exactRestoreKeyset(
+  mint: CashuMint,
+  request: RequestFn,
+  keysets: Map<string, MintKeys>,
+  keysetId: string,
+): Promise<MintKeys> {
+  const cached = keysets.get(keysetId);
+  if (cached) return cached;
+  const response = await mint.getKeys(keysetId, undefined, request);
+  const keyset = response.keysets.find((candidate) => candidate.id === keysetId);
+  if (!keyset) throw new Error("Mint did not return the exact restore keyset");
+  keysets.set(keysetId, keyset);
+  return keyset;
+}
+
+function exactRestoreOutputKey(output: SerializedBlindedMessage): string {
+  return `${output.id.toLowerCase()}:${amountToNumber(output.amount)}:${output.B_}`;
+}
+
+function requireExactRestoreProbeOptions(options: {
+  requestTimeoutMs: number;
+  responseBodyBytesLimit: number;
+  signal: AbortSignal;
+}): void {
+  if (
+    !Number.isSafeInteger(options.requestTimeoutMs) ||
+    options.requestTimeoutMs < 1 ||
+    !Number.isSafeInteger(options.responseBodyBytesLimit) ||
+    options.responseBodyBytesLimit < 1 ||
+    !(options.signal instanceof AbortSignal)
+  ) {
+    throw new Error("Exact output restore probe bounds are invalid");
+  }
 }
 
 export function resolveMintOutcomeSetKey(
