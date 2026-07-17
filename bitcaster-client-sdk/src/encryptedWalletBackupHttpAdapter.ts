@@ -934,9 +934,15 @@ function mapCasError(
 function mapAccountError(
   decoded: Extract<DecodedEncryptedWalletBackupHttpResponse, { result: 'error' }>,
 ): Readonly<{
-  status: 'unauthorized' | 'rate-limited' | 'overloaded' | 'unavailable'
+  status: 'quota-exceeded' | 'unauthorized' | 'rate-limited' | 'overloaded' | 'unavailable'
   retryAfterSeconds: number | null
 }> {
+  if (decoded.code === 'quota-exceeded') {
+    return {
+      status: decoded.code,
+      retryAfterSeconds: decoded.retryAfterSeconds,
+    }
+  }
   return mapReadError(decoded)
 }
 

@@ -9,7 +9,7 @@ const MANIFEST_CBOR_MAX_BYTES = 65_532
 const PUBLIC_METADATA_MAX_BYTES = 65_536
 const REQUEST_PROOF_MAX_BYTES = 4_096
 const PUT_PAYLOAD_MAX_BYTES = 4 * 1_024 * 1_024
-const ACCOUNT_REQUEST_MAX_BYTES = 20 * 1_024
+export const ENCRYPTED_WALLET_BACKUP_ACCOUNT_REQUEST_MAX_BYTES = 20 * 1_024
 const ATTEMPT_ABORT_MAX_BYTES = 128
 
 export function encodeCanonicalBackupCbor(value: unknown): Uint8Array {
@@ -302,7 +302,13 @@ export function preflightEncryptedBackupPutCbor(bytes: Uint8Array): void {
 
 /** Allocation-bounded structural scan; the account builder owns semantic validation. */
 export function structurallyPreflightEncryptedBackupAccountRequestCbor(bytes: Uint8Array): void {
-  const root = scanBoundedEnvelope(bytes, ACCOUNT_REQUEST_MAX_BYTES, 2, 16, 6)
+  const root = scanBoundedEnvelope(
+    bytes,
+    ENCRYPTED_WALLET_BACKUP_ACCOUNT_REQUEST_MAX_BYTES,
+    2,
+    16,
+    6,
+  )
   if (
     root.major !== 4 ||
     root.value !== 6 ||

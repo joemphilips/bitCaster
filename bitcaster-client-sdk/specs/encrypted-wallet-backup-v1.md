@@ -969,7 +969,7 @@ The HTTP status, error code, and operation matrix is closed:
 | 404 | `not-found` | all operations; always fatal/non-authoritative |
 | 409 | `conflict`, `replay-rejected` | all operations |
 | 429 | `rate-limited` | all operations |
-| 429 | `quota-exceeded` | object PUT and head CAS only |
+| 429 | `quota-exceeded` | account enrollment, object PUT, and head CAS only |
 | 503 | `overloaded`, `unavailable` | all operations |
 
 No other operation/status/code combination is valid. `retryAfterSecondsOrNull`
@@ -979,6 +979,11 @@ must be null for `invalid-request`, `unauthorized`, `not-found`, `conflict`,
 adapter must reject redirects, content encoding, a missing or parameterized
 `application/cbor` response media type, or any response that is not
 `Cache-Control: no-store`; those transport checks precede this codec.
+An account-enrollment `quota-exceeded` response is a terminal refusal for a new
+lifetime-distinct vault identity and is not scheduled as storage-byte
+backpressure. Object PUT and head CAS retain their existing quota-backoff
+behavior.
+
 Each adapter request has a 15-second fail-safe. SDK coordinators require a
 host-supplied absolute cycle signal and do not impose the browser foreground
 quota-recovery deadline on background or native-client work. Every adopting

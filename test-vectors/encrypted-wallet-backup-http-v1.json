@@ -170,6 +170,13 @@
       "expectedResult": "error"
     },
     {
+      "name": "error account quota-exceeded",
+      "operation": "account-enroll",
+      "httpStatus": 429,
+      "cborHex": "8401656572726f726e71756f74612d6578636565646564f6",
+      "expectedResult": "error"
+    },
+    {
       "name": "error rate-limited",
       "operation": "account-enroll",
       "httpStatus": 429,

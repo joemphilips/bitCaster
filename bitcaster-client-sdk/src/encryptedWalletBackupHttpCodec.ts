@@ -741,10 +741,10 @@ function isAllowedError(
       if (code === 'rate-limited') return true
       if (code !== 'quota-exceeded') return false
       switch (operation) {
+        case 'account-enroll':
         case 'object-put':
         case 'head-cas':
           return true
-        case 'account-enroll':
         case 'account-revoke':
         case 'account-delete':
         case 'enrollment-epoch':

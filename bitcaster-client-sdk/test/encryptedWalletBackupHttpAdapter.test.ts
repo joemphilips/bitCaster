@@ -203,6 +203,72 @@ test('account revoke and delete bind their exact vault endpoints and methods', a
   }
 })
 
+test('account enrollment exposes lifetime quota refusal while revoke and delete reject it', async () => {
+  const keyHandle = await createEncryptedWalletBackupKeyHandle({
+    seed: new Uint8Array(64).fill(10),
+    realm: REALM,
+  })
+  for (const action of ['enroll', 'revoke', 'delete'] as const) {
+    const suffix =
+      action === 'enroll'
+        ? '/vaults:enroll'
+        : action === 'revoke'
+          ? `/vaults/${keyHandle.vaultId}:revoke`
+          : `/vaults/${keyHandle.vaultId}`
+    const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}${suffix}`
+    const operation = await prepareEncryptedWalletBackupAccountOperation({
+      keyHandle,
+      action,
+      url,
+      operationId:
+        action === 'enroll'
+          ? '21'.repeat(16)
+          : action === 'revoke'
+            ? '22'.repeat(16)
+            : '23'.repeat(16),
+      expectedEnrollmentEpoch: action === 'enroll' ? 0 : 3,
+      signal: AbortSignal.timeout(60_000),
+      authorizationPort: {
+        async authorizeBackupAccountOperation() {
+          return { scheme: 'test', authorization: Uint8Array.of(1) }
+        },
+      },
+    })
+    const adapter = new EncryptedWalletBackupHttpAdapter({
+      origin: ORIGIN,
+      fetch: async () =>
+        response(
+          url,
+          429,
+          encodeEncryptedWalletBackupHttpResponse({
+            kind: 'error',
+            code: 'quota-exceeded',
+            retryAfterSeconds: null,
+          }),
+        ),
+    })
+    const execute = () =>
+      adapter.executeAccountOperation({
+        operation,
+        canonicalRequest: operation.canonicalRequest,
+      })
+    if (action === 'enroll') {
+      assert.deepEqual(await execute(), {
+        status: 'quota-exceeded',
+        retryAfterSeconds: null,
+      })
+    } else {
+      await assert.rejects(
+        execute,
+        (error) =>
+          error instanceof EncryptedWalletBackupHttpTransportError &&
+          error.code === 'invalid-response' &&
+          error.dispatchState === 'uncertain',
+      )
+    }
+  }
+})
+
 test('fifth concurrent operation fails before inspecting proof or calling fetch', async () => {
   const releases: (() => void)[] = []
   let fetchCalls = 0

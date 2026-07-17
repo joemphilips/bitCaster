@@ -18,6 +18,17 @@ import {
 
 export const ENCRYPTED_WALLET_BACKUP_ACCOUNT_AUTHORIZATION_MAX_BYTES = 16 * 1_024
 
+/** Terminal, redacted refusal for a new lifetime-distinct vault identity. */
+export class EncryptedWalletBackupAccountQuotaExceededError extends Error {
+  readonly status = 'quota-exceeded' as const
+  readonly retryable = false as const
+
+  constructor() {
+    super('encrypted backup account quota exceeded')
+    this.name = 'EncryptedWalletBackupAccountQuotaExceededError'
+  }
+}
+
 export type EncryptedWalletBackupAccountOperationAction = 'enroll' | 'revoke' | 'delete'
 
 export interface EncryptedWalletBackupAccountAuthorizationPort {
@@ -221,7 +232,7 @@ export interface EncryptedWalletBackupAccountOperationRemotePort {
         lifecycle: EncryptedWalletBackupEnrollmentLifecycle
       }>
     | Readonly<{
-        status: 'unauthorized' | 'rate-limited' | 'overloaded' | 'unavailable'
+        status: 'quota-exceeded' | 'unauthorized' | 'rate-limited' | 'overloaded' | 'unavailable'
         retryAfterSeconds?: number | null
       }>
   >
@@ -281,6 +292,12 @@ export async function executeEncryptedWalletBackupAccountOperation(input: {
     response.status === 'unavailable'
   ) {
     throw new EncryptedWalletBackupRemoteBackoffError(response.status, response.retryAfterSeconds)
+  }
+  if (response.status === 'quota-exceeded') {
+    if (authority.action !== 'enroll' || response.retryAfterSeconds != null) {
+      throw new Error('backup account operation response is invalid')
+    }
+    throw new EncryptedWalletBackupAccountQuotaExceededError()
   }
   if (response.status === 'unauthorized') {
     throw new Error(`backup account operation failed: ${response.status}`)

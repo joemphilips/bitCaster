@@ -72,6 +72,7 @@ import type {
   CtfProofOperationStore,
 } from '../src/ctfSplit.ts'
 import {
+  EncryptedWalletBackupAccountQuotaExceededError,
   executeEncryptedWalletBackupAccountOperation,
   prepareEncryptedWalletBackupAccountOperation as sdkPrepareEncryptedWalletBackupAccountOperation,
   readPreparedEncryptedWalletBackupAccountOperation,
@@ -340,6 +341,35 @@ test('account lifecycle authorization is scheme-neutral and exact-vault scoped',
       error.retryAfterSeconds === 23,
   )
   assert.equal(backoffStoreCalls, 0)
+  let quotaStoreCalls = 0
+  await assert.rejects(
+    () =>
+      executeEncryptedWalletBackupAccountOperation({
+        operation: enrolled,
+        remote: {
+          async executeAccountOperation() {
+            return {
+              status: 'quota-exceeded' as const,
+              retryAfterSeconds: null,
+            }
+          },
+        },
+        store: {
+          async commitAccountOperationResult<T>(): Promise<T> {
+            quotaStoreCalls += 1
+            throw new Error('quota refusal must not commit an account result')
+          },
+        },
+      }),
+    (error) =>
+      error instanceof EncryptedWalletBackupAccountQuotaExceededError &&
+      !(error instanceof EncryptedWalletBackupRemoteBackoffError) &&
+      error.status === 'quota-exceeded' &&
+      error.retryable === false &&
+      error.message === 'encrypted backup account quota exceeded' &&
+      !error.message.includes(enrolled.vaultId),
+  )
+  assert.equal(quotaStoreCalls, 0)
   await assert.rejects(
     () =>
       prepareEncryptedWalletBackupAccountOperation({
