@@ -58,6 +58,7 @@ import {
   ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
   validateEncryptedWalletBackupManifestHeadUnit,
 } from './encryptedWalletBackupManifestHead.ts'
+import { ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES } from './encryptedWalletBackupLimits.ts'
 import {
   awaitEncryptedWalletBackupCycle,
   EncryptedWalletBackupDeadlineError,
@@ -88,6 +89,7 @@ export {
   ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
 } from './encryptedWalletBackupManifestHead.ts'
+export { ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES } from './encryptedWalletBackupLimits.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION = 1 as const
 export const ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND = 1 as const
@@ -249,8 +251,6 @@ const VERIFIED_BACKUP_REQUEST_PROOFS = new WeakMap<
 >()
 const PREPARED_BACKUP_REQUESTS = new WeakMap<object, KeyAuthority>()
 const PREPARED_BACKUP_REQUEST_SIGNALS = new WeakMap<object, AbortSignal>()
-
-export const ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES = 4 * 1_024 * 1_024
 
 interface KeyAuthority {
   readonly realm: string

@@ -32,6 +32,7 @@ import {
   structurallyPreflightEncryptedBackupAttemptAbortCbor,
 } from './encryptedWalletBackupCbor.ts'
 import { requireEncryptedWalletBackupAbortSignal } from './encryptedWalletBackupDeadline.ts'
+import { ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES } from './encryptedWalletBackupLimits.ts'
 
 const MEDIA_TYPE = 'application/cbor'
 const AUTHORIZATION_PREFIX = 'BackupV1 '
@@ -604,7 +605,7 @@ function requireDelegatedRequest(input: {
 }): DelegatedRequest {
   try {
     const canonicalProof = encodeEncryptedWalletBackupRequestProof(input.proof)
-    const body = requireBytes(input.payload, 0, 4 * 1_024 * 1_024)
+    const body = requireBytes(input.payload, 0, ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES)
     if (
       input.proof.method !== input.method ||
       input.proof.payloadLength !== body.byteLength ||
