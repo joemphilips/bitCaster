@@ -109,6 +109,21 @@ export interface EncryptedWalletBackupDelegatedServerRequestInput {
   readonly replayStore: EncryptedWalletBackupReplayStore;
 }
 
+export type EncryptedWalletBackupDelegatedRequestErrorCode =
+  | "invalid-request"
+  | "unauthorized"
+  | "replay-rejected";
+
+export class EncryptedWalletBackupDelegatedRequestError extends Error {
+  readonly code: EncryptedWalletBackupDelegatedRequestErrorCode;
+
+  constructor(code: EncryptedWalletBackupDelegatedRequestErrorCode) {
+    super(`delegated request rejected: ${code}`);
+    this.name = "EncryptedWalletBackupDelegatedRequestError";
+    this.code = code;
+  }
+}
+
 interface ValidatedDelegatedRequestContext {
   readonly proofBytes: Uint8Array;
   readonly route: ValidatedServerRoute;
@@ -525,7 +540,7 @@ function discoverEnrollment(
 }
 
 function delegatedRequestError(
-  code: "invalid-request" | "unauthorized" | "replay-rejected",
-): Error {
-  return new Error(`delegated request rejected: ${code}`);
+  code: EncryptedWalletBackupDelegatedRequestErrorCode,
+): EncryptedWalletBackupDelegatedRequestError {
+  return new EncryptedWalletBackupDelegatedRequestError(code);
 }

@@ -23,6 +23,7 @@ import {
   ENCRYPTED_WALLET_BACKUP_OBJECT_PUT_REQUEST_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_REQUEST_PROOF_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_UPLOAD_ATTEMPT_ABORT_REQUEST_MAX_BYTES,
+  EncryptedWalletBackupDelegatedRequestError,
   authenticateAndDecodeEncryptedWalletBackupDelegatedServerRequest,
   authenticateEncryptedWalletBackupDelegatedServerRequest,
   decodeEncryptedWalletBackupAuthorizationHeader,
@@ -278,6 +279,30 @@ test("legacy authentication cannot authenticate a malformed head CAS", async () 
     /delegated request rejected: invalid-request/,
   );
   assert.equal(replay.calls(), 0);
+});
+
+test("delegated request rejection exposes a closed server error code", async () => {
+  const fixture = await delegatedFixture({
+    operation: "head-get",
+    method: "GET",
+    payload: EMPTY,
+  });
+  await assert.rejects(
+    authenticateEncryptedWalletBackupDelegatedServerRequest({
+      rawAuthorizationHeaderValues: fixture.headerValues,
+      configuredOrigin: ORIGIN,
+      rawTarget: `${fixture.rawTarget}/other`,
+      method: "GET",
+      route: fixture.route,
+      payload: EMPTY,
+      serverNowUnixSeconds: NOW,
+      enrollment: activeEnrollment(fixture.keyHandle, 3),
+      replayStore: replayStore().store,
+    }),
+    (error: unknown) =>
+      error instanceof EncryptedWalletBackupDelegatedRequestError
+      && error.code === "invalid-request",
+  );
 });
 
 test("route, origin, URL, method, and payload confusion fail closed", async () => {
