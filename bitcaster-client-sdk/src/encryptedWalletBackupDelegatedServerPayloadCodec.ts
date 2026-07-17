@@ -1,6 +1,7 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { decode } from "cborg";
 import { ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES } from "./encryptedWalletBackupCasState.ts";
+import { ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES } from "./encryptedWalletBackupLimits.ts";
 import {
   encodeCanonicalBackupCbor,
   preflightEncryptedBackupCasCbor,
@@ -23,7 +24,7 @@ import {
 } from "./encryptedWalletBackupServerValidation.ts";
 
 export const ENCRYPTED_WALLET_BACKUP_OBJECT_PUT_REQUEST_MAX_BYTES =
-  4 * 1_024 * 1_024;
+  ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES;
 export const ENCRYPTED_WALLET_BACKUP_HEAD_CAS_REQUEST_MAX_BYTES =
   ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES;
 export const ENCRYPTED_WALLET_BACKUP_UPLOAD_ATTEMPT_ABORT_REQUEST_MAX_BYTES =

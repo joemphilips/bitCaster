@@ -39,6 +39,7 @@ import {
   encryptedWalletBackupDelegatedPayloadMaximumBytes,
   type DecodedEncryptedWalletBackupDelegatedOperationPayload,
 } from "./encryptedWalletBackupDelegatedServerPayloadCodec.ts";
+import { ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES } from "./encryptedWalletBackupLimits.ts";
 
 export * from "./encryptedWalletBackupDelegatedServerPayloadCodec.ts";
 
@@ -278,7 +279,7 @@ function decodeRequestProofClaimsUnchecked(
     payloadLength: requireBoundedInteger(
       decoded[11],
       0,
-      4 * 1_024 * 1_024,
+      ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
       "request payload length",
     ),
     payloadDigest: bytesToHex(

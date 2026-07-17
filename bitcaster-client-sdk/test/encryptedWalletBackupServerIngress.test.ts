@@ -808,6 +808,7 @@ test("upload-attempt abort decoder binds the exact route attempt", () => {
 
 test("operation request maxima reject max plus one without unbounded decoding", () => {
   assert.equal(ENCRYPTED_WALLET_BACKUP_ACCOUNT_REQUEST_MAX_BYTES, 20 * 1_024);
+  assert.equal(ENCRYPTED_WALLET_BACKUP_OBJECT_PUT_REQUEST_MAX_BYTES, 272 * 1_024);
   assert.equal(
     encryptedWalletBackupDelegatedPayloadMaximumBytes("object-put"),
     ENCRYPTED_WALLET_BACKUP_OBJECT_PUT_REQUEST_MAX_BYTES,
