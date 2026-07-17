@@ -294,10 +294,7 @@ export function authorizeVerifiedEncryptedWalletBackupDelegatedServerRequest(
   const authorizedRequest = Object.freeze({
     state: "enrollment-authorized" as const,
     operation: authority.context.route.operation,
-    accountAdmission:
-      discovery?.status === "not-enrolled"
-        ? ("not-applicable" as const)
-        : ("enrolled-account" as const),
+    accountAdmission: accountAdmissionForDiscovery(discovery),
   });
   ENROLLMENT_AUTHORIZED_DELEGATED_REQUESTS.set(
     authorizedRequest,
@@ -332,6 +329,21 @@ export async function authenticateEnrollmentAuthorizedEncryptedWalletBackupDeleg
     discovery,
   });
   return Object.freeze({ authentication, decodedPayload });
+}
+
+function accountAdmissionForDiscovery(
+  discovery: EnrollmentAuthorizedDelegatedRequestAuthority["discovery"],
+): EnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest["accountAdmission"] {
+  const status = discovery?.status;
+  switch (status) {
+    case undefined:
+    case "active":
+      return "enrolled-account";
+    case "not-enrolled":
+      return "not-applicable";
+    default:
+      return assertNever(status);
+  }
 }
 
 function decodeAuthorizationHeaderUnchecked(
