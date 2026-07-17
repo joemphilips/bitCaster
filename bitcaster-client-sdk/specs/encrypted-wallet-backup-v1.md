@@ -615,8 +615,14 @@ store the scheme and opaque subject without treating Nostr as the universal
 application identity.
 
 An enroll at expected epoch zero creates an absent vault at epoch one. An exact
-retry is idempotent. An already-active identical vault is reopened without
-mutation through epoch discovery. Revoke/delete require a positive exact epoch
+retry of the latest successfully applied lifecycle operation is idempotent. The
+service retains exactly one applied lifecycle receipt per vault. A later
+successful lifecycle mutation atomically replaces that receipt; retrying an
+older superseded operation then returns the authenticated current-state
+`conflict`, while rejected and conflicting attempts create no receipt. This
+bounds lifecycle idempotency state to O(1) per vault. An already-active
+identical vault is reopened without mutation through epoch discovery.
+Revoke/delete require a positive exact epoch
 and advance the monotonic tombstone epoch; an old delegated key fails
 immediately. The closed TLS-authenticated response is either
 `[1,"account-result",operationId16,intentDigest32,"committed",epoch,lifecycle]`,
@@ -633,6 +639,19 @@ implicit key replacement. A different seed produces a different vault
 ID and key and starts an independent empty vault. One account may own multiple
 vaults; quota is aggregated by authenticated account, not preallocated per
 vault.
+
+Revocation invalidates the old delegated epoch immediately. Re-enrollment and
+deletion also make the old head logically unreachable immediately, but reserved
+bytes remain charged until physical cleanup is safe. The service fully buffers
+and verifies each bounded object body before it obtains a database-clock PUT
+claim immediately before the conditional blob write. The claim has a 15-second
+deadline, binds the reservation's exact database-authoritative digest and body
+length, and the exact claim identifier returned by the write is required for
+object finalization. The blob request is capped by the claim's remaining
+database lifetime. Cleanup waits until an unclaimed reservation's expiry plus
+15 seconds, or a claimed PUT's deadline plus 15 seconds. Old-epoch finalization
+fails; therefore an upload that completes late remains covered by the same
+deletion claim instead of becoming an unaccounted blob.
 
 ## Object PUT and bounded client cycles
 
