@@ -2,6 +2,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { decode } from "cborg";
 import {
+  ENCRYPTED_WALLET_BACKUP_ACCOUNT_REQUEST_MAX_BYTES,
   encodeCanonicalBackupCbor,
   preflightEncryptedBackupAccountIntentCbor,
   structurallyPreflightEncryptedBackupAccountRequestCbor,
@@ -16,8 +17,10 @@ import {
 } from "./encryptedWalletBackupServerValidation.ts";
 
 export * from "./encryptedWalletBackupDelegatedServerCodec.ts";
+export {
+  ENCRYPTED_WALLET_BACKUP_ACCOUNT_REQUEST_MAX_BYTES,
+} from "./encryptedWalletBackupCbor.ts";
 
-const ACCOUNT_REQUEST_MAX_BYTES = 20 * 1_024;
 const ACCOUNT_AUTHORIZATION_MAX_BYTES = 16 * 1_024;
 
 export type DecodedEncryptedWalletBackupAccountAction =
@@ -53,7 +56,7 @@ export function decodeEncryptedWalletBackupAccountRequest(
   const requestBytes = requireBytes(
     bytes,
     1,
-    ACCOUNT_REQUEST_MAX_BYTES,
+    ENCRYPTED_WALLET_BACKUP_ACCOUNT_REQUEST_MAX_BYTES,
     "account request",
   );
   structurallyPreflightEncryptedBackupAccountRequestCbor(requestBytes);

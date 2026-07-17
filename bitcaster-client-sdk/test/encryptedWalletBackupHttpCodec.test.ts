@@ -56,6 +56,7 @@ const EXPECTED_PUBLIC_VECTOR_CASES = new Set([
   "error conflict",
   "error replay-rejected",
   "error quota-exceeded",
+  "error account quota-exceeded",
   "error rate-limited",
   "error overloaded",
   "error unavailable",
@@ -509,6 +510,7 @@ test("the operation, HTTP status, error code, and retry-after matrix is closed",
       for (const code of errorCodes) {
         const quotaAllowed =
           code !== "quota-exceeded" ||
+          operation === "account-enroll" ||
           operation === "object-put" ||
           operation === "head-cas";
         const allowed =
