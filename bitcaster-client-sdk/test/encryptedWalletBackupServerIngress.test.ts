@@ -24,6 +24,7 @@ import {
   ENCRYPTED_WALLET_BACKUP_REQUEST_PROOF_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_UPLOAD_ATTEMPT_ABORT_REQUEST_MAX_BYTES,
   EncryptedWalletBackupDelegatedRequestError,
+  authenticateEnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest,
   authenticateAndDecodeEncryptedWalletBackupDelegatedServerRequest,
   authenticateEncryptedWalletBackupDelegatedServerRequest,
   decodeEncryptedWalletBackupAuthorizationHeader,
@@ -32,6 +33,8 @@ import {
   decodeEncryptedWalletBackupRequestProofClaims,
   decodeEncryptedWalletBackupUploadAttemptAbortRequest,
   encryptedWalletBackupDelegatedPayloadMaximumBytes,
+  authorizeVerifiedEncryptedWalletBackupDelegatedServerRequest,
+  verifyAndDecodeEncryptedWalletBackupDelegatedServerRequest,
   type EncryptedWalletBackupServerEnrollment,
   type EncryptedWalletBackupServerRoute,
 } from '../src/encryptedWalletBackupServerCodec.ts'
@@ -161,6 +164,81 @@ test('delegated authentication binds configured origin, raw route, method, paylo
   assert.equal(result.authentication.operation, 'head-cas')
   assert.equal(result.authentication.claims.enrollmentEpoch, 3)
   assert.equal(result.decodedPayload.kind, 'head-cas')
+  assert.equal(replay.calls(), 1)
+})
+
+test('staged delegated verification is non-substitutable and defers replay persistence', async () => {
+  const fixture = await delegatedFixture({
+    operation: 'head-get',
+    method: 'GET',
+    payload: EMPTY,
+  })
+  const verified = verifyAndDecodeEncryptedWalletBackupDelegatedServerRequest({
+    rawAuthorizationHeaderValues: fixture.headerValues,
+    configuredOrigin: ORIGIN,
+    rawTarget: fixture.rawTarget,
+    method: 'GET',
+    route: fixture.route,
+    payload: EMPTY,
+    serverNowUnixSeconds: NOW,
+  })
+  const replay = replayStore()
+  assert.equal(verified.state, 'verified')
+  assert.equal(verified.operation, 'head-get')
+  assert.equal(replay.calls(), 0)
+
+  await assert.rejects(async () => {
+    const authorized = authorizeVerifiedEncryptedWalletBackupDelegatedServerRequest({
+      verifiedRequest: Object.freeze({ ...verified }),
+      enrollment: activeEnrollment(fixture.keyHandle, 3),
+    })
+    await authenticateEnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest({
+      authorizedRequest: authorized,
+      replayStore: replay.store,
+    })
+  }, /verified delegated request is invalid/)
+  assert.equal(replay.calls(), 0)
+
+  const authorized = authorizeVerifiedEncryptedWalletBackupDelegatedServerRequest({
+    verifiedRequest: verified,
+    enrollment: activeEnrollment(fixture.keyHandle, 3),
+  })
+  assert.equal(authorized.accountAdmission, 'enrolled-account')
+  assert.equal(replay.calls(), 0)
+  assert.throws(
+    () =>
+      authorizeVerifiedEncryptedWalletBackupDelegatedServerRequest({
+        verifiedRequest: verified,
+        enrollment: activeEnrollment(fixture.keyHandle, 3),
+      }),
+    /verified delegated request is invalid/,
+  )
+  assert.equal(replay.calls(), 0)
+  await assert.rejects(
+    () =>
+      authenticateEnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest({
+        authorizedRequest: Object.freeze({ ...authorized }),
+        replayStore: replay.store,
+      }),
+    /enrollment-authorized delegated request is invalid/,
+  )
+  assert.equal(replay.calls(), 0)
+  const authenticated =
+    await authenticateEnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest({
+      authorizedRequest: authorized,
+      replayStore: replay.store,
+    })
+  assert.equal(authenticated.authentication.kind, 'authenticated')
+  assert.equal(authenticated.decodedPayload.kind, 'no-body')
+  assert.equal(replay.calls(), 1)
+  await assert.rejects(
+    () =>
+      authenticateEnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest({
+        authorizedRequest: authorized,
+        replayStore: replay.store,
+      }),
+    /enrollment-authorized delegated request is invalid/,
+  )
   assert.equal(replay.calls(), 1)
 })
 
@@ -535,6 +613,23 @@ test('epoch discovery is self-authenticated and does not enumerate foreign enrol
     runtime: deterministicRuntime(),
   })
   const headerValues = [`BackupV1 ${base64Url(encodeProof(proof))}`]
+  const verified = verifyAndDecodeEncryptedWalletBackupDelegatedServerRequest({
+    rawAuthorizationHeaderValues: headerValues,
+    configuredOrigin: ORIGIN,
+    rawTarget,
+    method: 'GET',
+    route,
+    payload: EMPTY,
+    serverNowUnixSeconds: NOW,
+  })
+  const foreignAuthorized = authorizeVerifiedEncryptedWalletBackupDelegatedServerRequest({
+    verifiedRequest: verified,
+    enrollment: {
+      ...activeEnrollment(keyHandle, 9),
+      requestAuthPublicKey: '77'.repeat(32),
+    },
+  })
+  assert.equal(foreignAuthorized.accountAdmission, 'not-applicable')
 
   const active = await authenticateEncryptedWalletBackupDelegatedServerRequest({
     rawAuthorizationHeaderValues: headerValues,

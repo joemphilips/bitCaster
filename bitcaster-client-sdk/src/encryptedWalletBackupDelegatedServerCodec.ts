@@ -108,6 +108,32 @@ export interface EncryptedWalletBackupDelegatedServerRequestInput {
   readonly replayStore: EncryptedWalletBackupReplayStore
 }
 
+export type EncryptedWalletBackupDelegatedServerRequestVerificationInput = Omit<
+  EncryptedWalletBackupDelegatedServerRequestInput,
+  'enrollment' | 'replayStore'
+>
+
+export interface VerifiedEncryptedWalletBackupDelegatedServerRequest {
+  readonly state: 'verified'
+  readonly operation: EncryptedWalletBackupServerRoute['operation']
+}
+
+export interface EncryptedWalletBackupVerifiedDelegatedServerRequestInput {
+  readonly verifiedRequest: VerifiedEncryptedWalletBackupDelegatedServerRequest
+  readonly enrollment: EncryptedWalletBackupServerEnrollment
+}
+
+export interface EnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest {
+  readonly state: 'enrollment-authorized'
+  readonly operation: EncryptedWalletBackupServerRoute['operation']
+  readonly accountAdmission: 'enrolled-account' | 'not-applicable'
+}
+
+export interface EncryptedWalletBackupEnrollmentAuthorizedDelegatedServerRequestInput {
+  readonly authorizedRequest: EnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest
+  readonly replayStore: EncryptedWalletBackupReplayStore
+}
+
 export type EncryptedWalletBackupDelegatedRequestErrorCode =
   | 'invalid-request'
   | 'unauthorized'
@@ -135,6 +161,28 @@ interface VerifiedDelegatedRequestContext extends ValidatedDelegatedRequestConte
   readonly verifiedProof: VerifiedEncryptedWalletBackupRequestProofEvidence
   readonly claims: DecodedEncryptedWalletBackupRequestProofClaims
 }
+
+interface VerifiedAndDecodedDelegatedRequestAuthority {
+  readonly context: VerifiedDelegatedRequestContext
+  readonly decodedPayload: DecodedEncryptedWalletBackupDelegatedOperationPayload
+}
+
+interface EnrollmentAuthorizedDelegatedRequestAuthority extends VerifiedAndDecodedDelegatedRequestAuthority {
+  readonly discovery:
+    | Readonly<{ status: 'active'; enrollmentEpoch: number }>
+    | Readonly<{ status: 'not-enrolled' }>
+    | undefined
+}
+
+const VERIFIED_DELEGATED_REQUESTS = new WeakMap<
+  VerifiedEncryptedWalletBackupDelegatedServerRequest,
+  VerifiedAndDecodedDelegatedRequestAuthority
+>()
+
+const ENROLLMENT_AUTHORIZED_DELEGATED_REQUESTS = new WeakMap<
+  EnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest,
+  EnrollmentAuthorizedDelegatedRequestAuthority
+>()
 
 interface ValidatedServerRoute {
   readonly source: EncryptedWalletBackupServerRoute
@@ -184,18 +232,78 @@ export async function authenticateEncryptedWalletBackupDelegatedServerRequest(
 export async function authenticateAndDecodeEncryptedWalletBackupDelegatedServerRequest(
   input: Readonly<EncryptedWalletBackupDelegatedServerRequestInput>,
 ): Promise<AuthenticatedAndDecodedEncryptedWalletBackupDelegatedServerRequest> {
+  const verifiedRequest = verifyAndDecodeEncryptedWalletBackupDelegatedServerRequest(input)
+  const authorizedRequest = authorizeVerifiedEncryptedWalletBackupDelegatedServerRequest({
+    verifiedRequest,
+    enrollment: input.enrollment,
+  })
+  return authenticateEnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest({
+    authorizedRequest,
+    replayStore: input.replayStore,
+  })
+}
+
+/**
+ * Verifies the request signature, exact route and body binding, and semantic
+ * payload entirely in memory. The returned value is an SDK-issued capability;
+ * copying its visible fields does not grant continuation authority.
+ */
+export function verifyAndDecodeEncryptedWalletBackupDelegatedServerRequest(
+  input: Readonly<EncryptedWalletBackupDelegatedServerRequestVerificationInput>,
+): VerifiedEncryptedWalletBackupDelegatedServerRequest {
   const context = requireSelfAuthenticatedProof(input, requireDelegatedRequestContext(input))
   const decodedPayload = requireDecodedOperationPayload(context)
-  const discovery = context.route.operation === 'enrollment-epoch'
-  requireEnrollmentBeforeReplay(input.enrollment, context.claims, discovery)
-  const evidence = await authenticateDelegatedProof(input, context)
+  const verifiedRequest = Object.freeze({
+    state: 'verified' as const,
+    operation: context.route.operation,
+  })
+  VERIFIED_DELEGATED_REQUESTS.set(verifiedRequest, Object.freeze({ context, decodedPayload }))
+  return verifiedRequest
+}
+
+/** Checks current enrollment without consuming replay or other durable state. */
+export function authorizeVerifiedEncryptedWalletBackupDelegatedServerRequest(
+  input: Readonly<EncryptedWalletBackupVerifiedDelegatedServerRequestInput>,
+): EnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest {
+  const authority = VERIFIED_DELEGATED_REQUESTS.get(input.verifiedRequest)
+  if (authority === undefined) {
+    throw new Error('encrypted backup verified delegated request is invalid')
+  }
+  VERIFIED_DELEGATED_REQUESTS.delete(input.verifiedRequest)
+  const discovery = authorizeEnrollment(input.enrollment, authority.context)
+  const authorizedRequest = Object.freeze({
+    state: 'enrollment-authorized' as const,
+    operation: authority.context.route.operation,
+    accountAdmission:
+      discovery?.status === 'not-enrolled'
+        ? ('not-applicable' as const)
+        : ('enrolled-account' as const),
+  })
+  ENROLLMENT_AUTHORIZED_DELEGATED_REQUESTS.set(
+    authorizedRequest,
+    Object.freeze({ ...authority, discovery }),
+  )
+  return authorizedRequest
+}
+
+/** Consumes replay only after the host has acquired required admission. */
+export async function authenticateEnrollmentAuthorizedEncryptedWalletBackupDelegatedServerRequest(
+  input: Readonly<EncryptedWalletBackupEnrollmentAuthorizedDelegatedServerRequestInput>,
+): Promise<AuthenticatedAndDecodedEncryptedWalletBackupDelegatedServerRequest> {
+  const authority = ENROLLMENT_AUTHORIZED_DELEGATED_REQUESTS.get(input.authorizedRequest)
+  if (authority === undefined) {
+    throw new Error('encrypted backup enrollment-authorized delegated request is invalid')
+  }
+  ENROLLMENT_AUTHORIZED_DELEGATED_REQUESTS.delete(input.authorizedRequest)
+  const { context, decodedPayload, discovery } = authority
+  const evidence = await authenticateDelegatedProof(input.replayStore, context)
   const authentication = Object.freeze({
     kind: 'authenticated',
     operation: context.route.operation,
     claims: context.claims,
     requestDigest: evidence.requestDigest,
     replayNonce: evidence.replayNonce,
-    discovery: discovery ? discoverEnrollment(input.enrollment, context.claims) : undefined,
+    discovery,
   })
   return Object.freeze({ authentication, decodedPayload })
 }
@@ -262,7 +370,7 @@ function decodeRequestProofClaimsUnchecked(
 }
 
 function requireDelegatedRequestContext(
-  input: Readonly<EncryptedWalletBackupDelegatedServerRequestInput>,
+  input: Readonly<EncryptedWalletBackupDelegatedServerRequestVerificationInput>,
 ): ValidatedDelegatedRequestContext {
   try {
     const proofBytes = decodeEncryptedWalletBackupAuthorizationHeader(
@@ -281,7 +389,6 @@ function requireDelegatedRequestContext(
       maximumPayloadBytes,
       'request payload',
     ).slice()
-    requireReplayStore(input.replayStore)
     requireInteger(input.serverNowUnixSeconds, 0, 'server time')
     return { proofBytes, route, method, expectedUrl, payload }
   } catch {
@@ -290,7 +397,7 @@ function requireDelegatedRequestContext(
 }
 
 function requireSelfAuthenticatedProof(
-  input: Readonly<EncryptedWalletBackupDelegatedServerRequestInput>,
+  input: Readonly<EncryptedWalletBackupDelegatedServerRequestVerificationInput>,
   context: ValidatedDelegatedRequestContext,
 ): VerifiedDelegatedRequestContext {
   let verifiedProof: VerifiedEncryptedWalletBackupRequestProofEvidence
@@ -331,30 +438,31 @@ function requireDecodedOperationPayload(
   }
 }
 
-function requireEnrollmentBeforeReplay(
+function authorizeEnrollment(
   enrollment: EncryptedWalletBackupServerEnrollment,
-  claims: DecodedEncryptedWalletBackupRequestProofClaims,
-  discovery: boolean,
-): void {
-  if (discovery) {
-    if (claims.enrollmentEpoch !== 0) {
+  context: VerifiedDelegatedRequestContext,
+): EnrollmentAuthorizedDelegatedRequestAuthority['discovery'] {
+  if (context.route.operation === 'enrollment-epoch') {
+    if (context.claims.enrollmentEpoch !== 0) {
       throw delegatedRequestError('unauthorized')
     }
-    return
+    return discoverEnrollment(enrollment, context.claims)
   }
-  if (!enrollmentMatches(enrollment, claims)) {
+  if (!enrollmentMatches(enrollment, context.claims)) {
     throw delegatedRequestError('unauthorized')
   }
+  return undefined
 }
 
 async function authenticateDelegatedProof(
-  input: Readonly<EncryptedWalletBackupDelegatedServerRequestInput>,
+  replayStore: EncryptedWalletBackupReplayStore,
   context: VerifiedDelegatedRequestContext,
 ): Promise<Awaited<ReturnType<typeof consumeEncryptedWalletBackupVerifiedRequestReplay>>> {
   try {
+    requireReplayStore(replayStore)
     return await consumeEncryptedWalletBackupVerifiedRequestReplay({
       verifiedProof: context.verifiedProof,
-      replayStore: input.replayStore,
+      replayStore,
     })
   } catch (error) {
     if (error instanceof EncryptedWalletBackupReplayRejectedError) {
