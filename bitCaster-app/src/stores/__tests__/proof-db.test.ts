@@ -142,14 +142,17 @@ vi.mock("dexie", () => {
     async open(): Promise<void> {
       if (dbOpenError) throw dbOpenError;
     }
-    async transaction(
+    async transaction<T>(
       _mode: string,
-      _table: unknown,
-      cb: () => Promise<void>,
-    ): Promise<void> {
+      ...tablesAndCallback: [...unknown[], () => Promise<T>]
+    ): Promise<T> {
+      const cb = tablesAndCallback.at(-1) as () => Promise<T>;
       const run = transactionTail.then(cb);
-      transactionTail = run.catch(() => undefined);
-      await run;
+      transactionTail = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return await run;
     }
   }
 

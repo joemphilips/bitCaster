@@ -86,6 +86,7 @@ import {
   normalizeStoredProofForStorage,
   proofOperationPrimaryKey,
   rehydrateStoredProofGroups,
+  requireUngovernedGuiProofIds,
   requireProofOperationRecord,
   requireStoredProofRow,
   storedProofIds,
@@ -210,11 +211,14 @@ export async function requireCompletedGuiWalletProofOperationAuthorityUnderLock(
   await ensureDurableSwapStorage(context.walletId);
   return db.transaction(
     "r",
-    db.proofOperations,
-    db.custodyOperations,
-    db.walletSendDeliveryPayloads,
-    db.bearerSpendDeliveries,
-    db.proofs,
+    [
+      db.proofOperations,
+      db.custodyOperations,
+      db.walletSendDeliveryPayloads,
+      db.bearerSpendDeliveries,
+      db.proofs,
+      db.proofBackupAuthorities,
+    ],
     async () => {
       const operationRow = await db.proofOperations.get(
         proofOperationPrimaryKey(context.walletId, operationId),
@@ -310,7 +314,9 @@ async function requireCompletedResultProofsStored(
     throw new Error("GUI wallet completed result is missing");
   }
   const expectedProofs = storedResultProofs(operation, operation.resultProofs);
-  const rows = await db.proofs.bulkGet(storedProofIds(expectedProofs));
+  const proofIds = storedProofIds(expectedProofs);
+  await requireUngovernedGuiProofIds(db, operation.walletId, proofIds);
+  const rows = await db.proofs.bulkGet(proofIds);
   rows.forEach((row, index) => {
     if (!row) {
       throw new Error("GUI wallet completed result proof is missing");
@@ -446,9 +452,7 @@ export async function finalizeGuiOutgoingRecipientCustodyHandoff(
         outgoingRecipient: outgoing.delivery.record,
         authorization: authority.owner,
       });
-      custodyPlan.transaction.adoptRecipientDeliveryCustodyHandoff(
-        handoffPlan,
-      );
+      custodyPlan.transaction.adoptRecipientDeliveryCustodyHandoff(handoffPlan);
       const recipientDeliveryHandoff: GuiRecipientDeliveryCustodyHandoff = {
         previousCustodyState,
         plan: handoffPlan,
@@ -505,7 +509,6 @@ async function requireGuiWalletSendToken(
     },
   );
 }
-
 
 export async function prepareProofOperation(
   input: PrepareProofOperationInput,
@@ -1021,8 +1024,10 @@ async function commitResolvedWalletOperation(
     nextOperation,
     snapshot,
   );
-  const nextOutgoingRecipientDelivery =
-    preparedOutgoingRecipientDelivery(nextOperation, snapshot);
+  const nextOutgoingRecipientDelivery = preparedOutgoingRecipientDelivery(
+    nextOperation,
+    snapshot,
+  );
   const prepared = await prepareGuiCustodyUnitOfWork({
     authority,
     plan,
@@ -1140,8 +1145,9 @@ function revalidatedCustodyRecord(
     operation: resolved.operationInput,
     facts: resolved.facts,
     inventoryAccountId: null,
-    walletSendDeliveryPreparation:
-      resolveGuiWalletSendDeliveryPreparation(resolved.operationInput),
+    walletSendDeliveryPreparation: resolveGuiWalletSendDeliveryPreparation(
+      resolved.operationInput,
+    ),
   });
   if (
     deriveDurableCustodyArtifactFingerprint(record) !==
@@ -1424,12 +1430,11 @@ async function advanceWalletOperationOwned(
   );
   const nextWalletSendDeliveryReservation =
     options.nextWalletSendDeliveryReservation?.(operation, nextOperation);
-  const nextOutgoingRecipientDelivery =
-    options.nextOutgoingRecipientDelivery?.(
-      operation,
-      nextOperation,
-      snapshot.outgoingRecipientDelivery,
-    );
+  const nextOutgoingRecipientDelivery = options.nextOutgoingRecipientDelivery?.(
+    operation,
+    nextOperation,
+    snapshot.outgoingRecipientDelivery,
+  );
   const prepared = await prepareGuiCustodyUnitOfWork({
     authority,
     plan,

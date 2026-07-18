@@ -26,6 +26,7 @@ import {
   locateStoredProofs,
   prepareStoredProofForWrite,
   proofOperationPrimaryKey,
+  requireUngovernedGuiProofIds,
   requireProofOperationRecord,
   requireStoredProofRow,
   storedProofIds,
@@ -182,6 +183,7 @@ export async function readGuiCustodyNativeSnapshot(
       database.bearerSpendDeliveries,
       database.outgoingRecipientDeliveries,
       database.proofs,
+      database.proofBackupAuthorities,
       database.swapSessions,
     ],
     async () => {
@@ -234,10 +236,7 @@ export async function readGuiCustodyNativeSnapshot(
               ),
         proofSecrets: [...proofSecrets],
         proofIds,
-        proofs: requireScopedProofs(
-          await database.proofs.bulkGet(proofIds),
-          walletId,
-        ),
+        proofs: await readUngovernedScopedProofs(database, walletId, proofIds),
         tradeId,
         session:
           tradeId === null
@@ -269,6 +268,7 @@ export async function readGuiCustodyOperationSnapshot(
       database.bearerSpendDeliveries,
       database.outgoingRecipientDeliveries,
       database.proofs,
+      database.proofBackupAuthorities,
       database.swapSessions,
     ],
     async () => {
@@ -320,10 +320,7 @@ export async function readGuiCustodyOperationSnapshot(
         ),
         proofSecrets,
         proofIds,
-        proofs: requireScopedProofs(
-          await database.proofs.bulkGet(proofIds),
-          walletId,
-        ),
+        proofs: await readUngovernedScopedProofs(database, walletId, proofIds),
         tradeId,
         session:
           tradeId === null
@@ -483,6 +480,7 @@ export function guiCustodyUnitOfWorkTables(
     database.bearerSpendDeliveries,
     database.outgoingRecipientDeliveries,
     database.proofs,
+    database.proofBackupAuthorities,
     database.swapSessions,
     database.walletActivities,
   ] as const;
@@ -556,7 +554,7 @@ export function describePreparedGuiCustodyHeadroomWriteSet<T>(
               state.recipientDeliveryHandoff.previousCustodyState,
             plan: state.recipientDeliveryHandoff.plan,
           })
-      : classifyDurableCustodyWalletStorageBoundary({ previous, next }),
+        : classifyDurableCustodyWalletStorageBoundary({ previous, next }),
     database: state.database,
   });
   preparedGuiCustodyHeadroomWriteSets.add(writeSet);
@@ -861,7 +859,29 @@ export async function commitGuiCustodyUnitOfWork<T>(
   );
 }
 
-async function writePreparedNativeRows<T>(
+function writePreparedNativeRows<T>(
+  state: PreparedGuiCustodyState<T>,
+): Promise<void> {
+  const proofIds = [
+    ...state.deleteProofIds,
+    ...(state.nextProofs?.map(({ proofId }) => proofId) ?? []),
+  ];
+  const keys = proofIds.map(
+    (proofId) => [state.snapshot.walletId, proofId] as [string, string],
+  );
+  return Dexie.Promise.resolve(
+    state.database.proofBackupAuthorities.bulkGet(keys),
+  ).then((authorities) => {
+    if (authorities.some((authority) => authority !== undefined)) {
+      throw new Error(
+        "GUI proof has backup authority and requires an atomic authority transition",
+      );
+    }
+    return writePreparedNativeRowsAfterAuthority(state);
+  });
+}
+
+async function writePreparedNativeRowsAfterAuthority<T>(
   state: PreparedGuiCustodyState<T>,
 ): Promise<void> {
   const { database } = state;
@@ -1058,10 +1078,7 @@ async function assertNativeSnapshot(
       snapshot.walletSendDeliveryReservation,
     ) ||
     !sameValue(bearerSpendDelivery, snapshot.bearerSpendDelivery) ||
-    !sameValue(
-      outgoingRecipientDelivery,
-      snapshot.outgoingRecipientDelivery,
-    ) ||
+    !sameValue(outgoingRecipientDelivery, snapshot.outgoingRecipientDelivery) ||
     !sameValue(proofs, snapshot.proofs) ||
     !sameValue(session, snapshot.session)
   ) {
@@ -1231,11 +1248,9 @@ function requireGuiRecipientDeliveryCustodyHandoff(
     outgoing.active !== 0 ||
     !payload ||
     payload.operationId !== outgoing.operationId ||
-    payload.tokenDigest !== outgoing.delivery.record.delivery.request.tokenDigest ||
-    !sameValue(
-      outgoing.delivery.record.delivery,
-      value.plan.recipientRecord,
-    ) ||
+    payload.tokenDigest !==
+      outgoing.delivery.record.delivery.request.tokenDigest ||
+    !sameValue(outgoing.delivery.record.delivery, value.plan.recipientRecord) ||
     !sameValue(custodyPostImage, value.plan.custodyState.operation) ||
     !sameValue(
       custodyPlan.transaction.scopeState(),
@@ -1306,6 +1321,20 @@ function requireScopedSession(
     throw new Error("GUI custody session is invalid");
   }
   return row;
+}
+
+async function readUngovernedScopedProofs(
+  database: BitcasterDB,
+  walletId: string,
+  proofIds: readonly string[],
+): Promise<StoredProof[]> {
+  if (proofIds.length > 0) {
+    await requireUngovernedGuiProofIds(database, walletId, proofIds);
+  }
+  return requireScopedProofs(
+    await database.proofs.bulkGet([...proofIds]),
+    walletId,
+  );
 }
 
 function requireScopedProofs(

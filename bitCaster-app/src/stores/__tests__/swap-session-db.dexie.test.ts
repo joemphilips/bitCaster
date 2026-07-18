@@ -602,6 +602,20 @@ describe("GUI durable recovery Dexie transaction", () => {
     });
   });
 
+  it("rejects direct custody reads for a proof governed by backup authority", async () => {
+    const proof = (await db.proofs.toArray())[0]!;
+    await db.proofBackupAuthorities.put({
+      walletId: currentGuiWalletId(),
+      proofId: proof.proofId,
+    } as never);
+
+    await expect(
+      readGuiCustodyNativeSnapshot(null, null, currentGuiWalletId(), db, [
+        proof,
+      ]),
+    ).rejects.toThrow(/requires an atomic authority transition/i);
+  });
+
   it("rejects two completed operations that claim the same result proof", async () => {
     const active = swap();
     await admitSwap(active);

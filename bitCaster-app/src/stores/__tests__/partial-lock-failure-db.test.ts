@@ -206,6 +206,22 @@ describe("partial-lock Dexie authority", () => {
       await db.partialLockFailures.get([WALLET_ID, TRADE_ID]),
     ).toBeUndefined();
   });
+
+  it("rejects direct proof mutation once backup authority governs an input", async () => {
+    const input = fixture();
+    await db.proofs.bulkPut(input.storedInputs);
+    const governed = input.storedInputs[0]!;
+    await db.proofBackupAuthorities.put({
+      walletId: WALLET_ID,
+      proofId: governed.proofId,
+    } as never);
+
+    await expect(commitPartialLock(input)).rejects.toThrow(
+      /requires an atomic authority transition/i,
+    );
+    expect(await storedRow("spent-B")).toBeDefined();
+    expect(await storedRow("locked-B")).toBeUndefined();
+  });
 });
 
 async function commitPartialLock(

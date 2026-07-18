@@ -1028,6 +1028,30 @@ describe("GUI wallet custody coordinator", () => {
     ).rejects.toThrow(/result proof is missing/i);
   });
 
+  it("rejects completed result proofs governed by dormant backup authority", async () => {
+    await db.proofs.clear();
+    const prepared = await prepareProofOperation(
+      ordinaryExternalOperationInput(),
+    );
+    await markProofOperationMintSubmitted(prepared.operationId);
+    await markProofOperationCompleted(
+      prepared.operationId,
+      ordinaryExternalResultProofs(),
+    );
+    const proof = (await db.proofs.toArray())[0]!;
+    await db.proofBackupAuthorities.put({
+      walletId: currentGuiWalletId(),
+      proofId: proof.proofId,
+    } as never);
+
+    await expect(
+      requireCompletedGuiWalletProofOperationAuthorityForWallet(
+        currentGuiWalletId(),
+        prepared.operationId,
+      ),
+    ).rejects.toThrow(/requires an atomic authority transition/i);
+  });
+
   it.each([
     { name: "C", conflict: { C: `03${"44".repeat(32)}` } },
     {

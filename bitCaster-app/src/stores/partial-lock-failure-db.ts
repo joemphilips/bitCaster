@@ -12,6 +12,7 @@ import {
   db,
   locateStoredProofs,
   prepareStoredProofForWrite,
+  requireUngovernedGuiProofIds,
   requireStoredProofRow,
   storedProofIds,
   type StoredProof,
@@ -50,6 +51,7 @@ export async function commitGuiPartialLockFailureUnderLock(
   return database.transaction(
     "rw",
     database.proofs,
+    database.proofBackupAuthorities,
     database.partialLockFailures,
     async () =>
       commitPartialLockTransaction(
@@ -146,6 +148,10 @@ async function commitPartialLockTransaction(
   );
   const spentProofIds = storedProofIds(spentIdentities);
   const replacementProofIds = storedProofIds(replacementProofs);
+  await requireUngovernedGuiProofIds(database, walletId, [
+    ...spentProofIds,
+    ...replacementProofIds,
+  ]);
   const [currentInputs, currentOutputs, existingRecord] = await Promise.all([
     database.proofs.bulkGet(spentProofIds),
     database.proofs.bulkGet(replacementProofIds),
