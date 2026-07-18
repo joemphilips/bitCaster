@@ -16,6 +16,10 @@ import {
 } from "./encryptedWalletBackup.ts";
 import { encodeCanonicalBackupCbor as encodeCanonical } from "./encryptedWalletBackupCbor.ts";
 import {
+  consumeFreshEncryptedWalletBackupPreparedRecordBatch,
+  type FreshEncryptedWalletBackupPreparedRecordBatch,
+} from "./encryptedWalletBackupFreshPreparedRecordBatch.ts";
+import {
   rehydratePreparedEncryptedWalletBackupRecordBatch,
   type EncryptedWalletBackupPreparedRecordSnapshotBatchStore,
   type PersistedPreparedEncryptedWalletBackupRecord,
@@ -196,6 +200,21 @@ export interface FrozenEncryptedWalletBackupPack {
   readonly membershipDigest: string;
 }
 
+export interface PreparedEncryptedWalletBackupPackAppend {
+  readonly buildId: string;
+  readonly packId: string;
+  readonly recordCount: number;
+}
+
+interface PreparedPackAppendAuthority extends ExactVersionExpectation {
+  readonly records: readonly PersistedEncryptedWalletBackupPreparedBuildRecord[];
+}
+
+const preparedPackAppendAuthorities = new WeakMap<
+  object,
+  PreparedPackAppendAuthority
+>();
+
 interface FrozenPackAuthority extends PreparedPackObjectAuthority {
   readonly keyHandle: EncryptedWalletBackupKeyHandle;
   readonly chunk: PreparedEncryptedWalletBackupDataChunk;
@@ -304,6 +323,63 @@ export async function appendEncryptedWalletBackupPreparedRecordPage(input: {
     transactionBytes: number;
   }>
 > {
+  const prepared = await prepareEncryptedWalletBackupPackAppend(input);
+  const authority = requirePreparedPackAppend(prepared);
+  return exactVersionTransaction(input.store, authority, (transaction) =>
+    commitPreparedEncryptedWalletBackupPackAppend({ transaction, prepared }),
+  );
+}
+
+export async function prepareEncryptedWalletBackupPackAppend(input: {
+  readonly keyHandle: EncryptedWalletBackupKeyHandle;
+  readonly seed: Uint8Array;
+  readonly snapshotStore: EncryptedWalletBackupPreparedRecordSnapshotBatchStore;
+  readonly buildId: string;
+  readonly packId: string;
+  readonly snapshotId: string;
+  readonly snapshotRevision: number;
+  readonly expectedBuildVersion: number;
+  readonly expectedPackVersion: number;
+  readonly records: readonly PersistedPreparedEncryptedWalletBackupRecord[];
+}): Promise<PreparedEncryptedWalletBackupPackAppend> {
+  const records = await rehydrateAppendRecords(input);
+  return issuePreparedPackAppend(input, records);
+}
+
+/** Internal immediate-use path; the fresh batch is non-clonable and one-shot. */
+export function prepareEncryptedWalletBackupPackAppendFromFreshBatch(input: {
+  readonly keyHandle: EncryptedWalletBackupKeyHandle;
+  readonly batch: FreshEncryptedWalletBackupPreparedRecordBatch;
+  readonly buildId: string;
+  readonly packId: string;
+  readonly snapshotId: string;
+  readonly snapshotRevision: number;
+  readonly expectedBuildVersion: number;
+  readonly expectedPackVersion: number;
+}): PreparedEncryptedWalletBackupPackAppend {
+  const records = snapshotAppendRecords({
+    buildId: input.buildId,
+    packId: input.packId,
+    records: consumeFreshEncryptedWalletBackupPreparedRecordBatch(
+      input.batch,
+      input.keyHandle,
+    ),
+  });
+  return issuePreparedPackAppend(input, records);
+}
+
+function issuePreparedPackAppend(
+  input: {
+    readonly keyHandle: EncryptedWalletBackupKeyHandle;
+    readonly buildId: string;
+    readonly packId: string;
+    readonly snapshotId: string;
+    readonly snapshotRevision: number;
+    readonly expectedBuildVersion: number;
+    readonly expectedPackVersion: number;
+  },
+  records: readonly PersistedEncryptedWalletBackupPreparedBuildRecord[],
+): PreparedEncryptedWalletBackupPackAppend {
   const buildId = requireIdentifier(input.buildId, "build id");
   const packId = requireIdentifier(input.packId, "pack id");
   const expectedBuildVersion = requireVersion(
@@ -315,36 +391,190 @@ export async function appendEncryptedWalletBackupPreparedRecordPage(input: {
     "pack version",
   );
   if (
-    !Array.isArray(input.records) ||
-    input.records.length === 0 ||
-    input.records.length > ENCRYPTED_WALLET_BACKUP_PACK_APPEND_RECORD_MAX
+    records.length < 1 ||
+    records.length > ENCRYPTED_WALLET_BACKUP_PACK_APPEND_RECORD_MAX
   )
     throw new Error("backup pack append record count is invalid");
-
-  const records = await rehydrateAppendRecords(input);
   requireStrictlyIncreasingRecordIds(records.map((row) => row.recordId));
   requireOneSnapshot(records);
   const scope = requireRecordScope(records[0]!.prepared, input);
-  return exactVersionTransaction(
-    input.store,
-    expectation({
-      ...input,
-      ...scope,
-      buildId,
-      packId,
-      expectedBuildVersion,
-      expectedPackVersion,
-    }),
-    (transaction) =>
-      commitAppend(transaction, {
-        buildId,
-        packId,
-        ...scope,
-        expectedBuildVersion,
-        expectedPackVersion,
-        records,
-      }),
+  const authority = Object.freeze({
+    buildId,
+    packId,
+    ...scope,
+    buildVersion: expectedBuildVersion,
+    packVersion: expectedPackVersion,
+    records: Object.freeze([...records]),
+  });
+  const prepared = Object.freeze({
+    buildId,
+    packId,
+    recordCount: records.length,
+  });
+  preparedPackAppendAuthorities.set(prepared, authority);
+  return prepared;
+}
+
+export function commitPreparedEncryptedWalletBackupPackAppend(input: {
+  readonly transaction: EncryptedWalletBackupPackPersistenceTransaction;
+  readonly prepared: PreparedEncryptedWalletBackupPackAppend;
+}) {
+  const authority = requirePreparedPackAppend(input.prepared);
+  return commitAppend(input.transaction, {
+    buildId: authority.buildId,
+    packId: authority.packId,
+    realm: authority.realm,
+    vaultId: authority.vaultId,
+    snapshotId: authority.snapshotId,
+    snapshotRevision: authority.snapshotRevision,
+    expectedBuildVersion: authority.buildVersion,
+    expectedPackVersion: authority.packVersion,
+    records: authority.records,
+  });
+}
+
+/** Internal byte-aware planner used by same-transaction repacking. */
+export function planEncryptedWalletBackupPackAppendPrefix(input: {
+  readonly transaction: EncryptedWalletBackupPackPersistenceTransaction;
+  readonly buildId: string;
+  readonly packId: string;
+  readonly realm: string;
+  readonly vaultId: string;
+  readonly snapshotId: string;
+  readonly snapshotRevision: number;
+  readonly expectedBuildVersion: number;
+  readonly expectedPackVersion: number;
+  readonly records: readonly PersistedPreparedEncryptedWalletBackupRecord[];
+}): Readonly<{
+  records: readonly PersistedPreparedEncryptedWalletBackupRecord[];
+  packRecordCount: number;
+}> {
+  if (
+    !Array.isArray(input.records) ||
+    input.records.length < 1 ||
+    input.records.length > ENCRYPTED_WALLET_BACKUP_PACK_APPEND_RECORD_MAX
+  )
+    throw new Error("backup pack append record count is invalid");
+  const buildId = requireIdentifier(input.buildId, "build id");
+  const packId = requireIdentifier(input.packId, "pack id");
+  const scope = scopeFromInput(input);
+  requireExpectedBuild(
+    input.transaction.readBuildCursor(buildId),
+    buildId,
+    packId,
+    requireVersion(input.expectedBuildVersion, "build version"),
+    scope,
   );
+  const first = clonePrepared(input.records[0]!);
+  const pack = requireExpectedOpenPack(
+    input.transaction.readPackControl(buildId, packId),
+    buildId,
+    packId,
+    requireVersion(input.expectedPackVersion, "pack version"),
+    first,
+    scope,
+  );
+  const accepted: PersistedPreparedEncryptedWalletBackupRecord[] = [];
+  let recordCanonicalBytes = pack.recordCanonicalBytes;
+  let persistedRowBytes = pack.persistedRowBytes;
+  let previousRecordId = pack.lastRecordId;
+  for (const raw of input.records) {
+    const prepared = clonePrepared(raw);
+    const row = preparedBuildRecord(buildId, prepared);
+    const nextOrdinal = pack.recordCount + accepted.length;
+    const rowBytes = persistedAppendRowBytes(row, packId, nextOrdinal);
+    if (
+      prepared.realm !== scope.realm ||
+      prepared.vaultId !== scope.vaultId ||
+      prepared.snapshotId !== scope.snapshotId ||
+      prepared.snapshotRevision !== scope.snapshotRevision
+    )
+      throw new Error("backup pack record scope changed");
+    if (previousRecordId !== null && prepared.recordId <= previousRecordId)
+      throw new Error("backup pack append order is invalid");
+    const nextCount = nextOrdinal + 1;
+    const nextCanonicalBytes =
+      recordCanonicalBytes + prepared.canonicalRecord.byteLength;
+    if (
+      nextCount > ENCRYPTED_WALLET_BACKUP_RECORD_COUNT_MAX ||
+      canonicalChunkBytes(nextCount, nextCanonicalBytes) >
+        ENCRYPTED_WALLET_BACKUP_DATA_CBOR_MAX_BYTES ||
+      persistedRowBytes + rowBytes >
+        ENCRYPTED_WALLET_BACKUP_PACK_PERSISTED_ROW_MAX_BYTES
+    )
+      break;
+    accepted.push(prepared);
+    recordCanonicalBytes = nextCanonicalBytes;
+    persistedRowBytes += rowBytes;
+    previousRecordId = prepared.recordId;
+  }
+  if (accepted.length === 0 && pack.recordCount === 0)
+    throw new Error("backup record cannot fit an empty pack");
+  return Object.freeze({
+    records: Object.freeze(accepted),
+    packRecordCount: pack.recordCount,
+  });
+}
+
+/** Internal bounded restart evidence reader used by authenticated repacking. */
+export function readEncryptedWalletBackupPackEvidencePage(input: {
+  readonly transaction: EncryptedWalletBackupPackPersistenceTransaction;
+  readonly keyHandle: EncryptedWalletBackupKeyHandle;
+  readonly buildId: string;
+  readonly packId: string;
+  readonly snapshotId: string;
+  readonly snapshotRevision: number;
+  readonly requiredRecordCount: number;
+  readonly recordsRead: number;
+  readonly afterRecordId: string | null;
+}) {
+  const transaction = new AccountedTransaction(input.transaction);
+  const rawPackControl = transaction.readPackControl(
+    input.buildId,
+    input.packId,
+  );
+  if (rawPackControl === null)
+    throw new Error("backup pack evidence control is missing");
+  const packControl = requirePackControl(
+    rawPackControl,
+    input.buildId,
+    input.packId,
+    scopeFromInput(input),
+  );
+  if (
+    !Number.isSafeInteger(input.requiredRecordCount) ||
+    input.requiredRecordCount < 1 ||
+    input.requiredRecordCount > packControl.recordCount ||
+    input.recordsRead < 0 ||
+    input.recordsRead >= input.requiredRecordCount ||
+    !Number.isSafeInteger(input.recordsRead)
+  )
+    throw new Error("backup pack evidence cursor is invalid");
+  const count = Math.min(
+    ENCRYPTED_WALLET_BACKUP_PACK_READ_RECORD_MAX,
+    input.requiredRecordCount - input.recordsRead,
+  );
+  const rows = transaction.readPackRecordPage(
+    input.buildId,
+    input.packId,
+    input.afterRecordId,
+    count,
+  );
+  if (rows.length !== count)
+    throw new Error("backup pack evidence page is short");
+  let previousRecordId = input.afterRecordId;
+  const exactRows = rows.map((row, index) => {
+    const exact = requirePageRow(row, input, input.recordsRead + index);
+    if (previousRecordId !== null && exact.binding.recordId <= previousRecordId)
+      throw new Error("backup pack record order or uniqueness is invalid");
+    previousRecordId = exact.binding.recordId;
+    return exact;
+  });
+  return Object.freeze({
+    packControl,
+    rows: Object.freeze(exactRows),
+    transactionBytes: transaction.totalBytes,
+  });
 }
 
 export async function freezeEncryptedWalletBackupPack(input: {
@@ -934,7 +1164,7 @@ class AccountedTransaction {
 }
 
 async function rehydrateAppendRecords(
-  input: Parameters<typeof appendEncryptedWalletBackupPreparedRecordPage>[0],
+  input: Parameters<typeof prepareEncryptedWalletBackupPackAppend>[0],
 ): Promise<PersistedEncryptedWalletBackupPreparedBuildRecord[]> {
   const records = snapshotAppendRecords(input);
   await rehydratePreparedEncryptedWalletBackupRecordBatch({
@@ -947,7 +1177,11 @@ async function rehydrateAppendRecords(
 }
 
 function snapshotAppendRecords(
-  input: Parameters<typeof appendEncryptedWalletBackupPreparedRecordPage>[0],
+  input: Readonly<{
+    buildId: string;
+    packId: string;
+    records: readonly PersistedPreparedEncryptedWalletBackupRecord[];
+  }>,
 ): PersistedEncryptedWalletBackupPreparedBuildRecord[] {
   const source = Array.from(input.records);
   if (
@@ -1577,6 +1811,18 @@ function requirePreparedPackObject(
       : undefined;
   if (authority === undefined)
     throw new Error("prepared backup pack object is invalid");
+  return authority;
+}
+
+function requirePreparedPackAppend(
+  value: PreparedEncryptedWalletBackupPackAppend,
+): PreparedPackAppendAuthority {
+  const authority =
+    typeof value === "object" && value !== null
+      ? preparedPackAppendAuthorities.get(value)
+      : undefined;
+  if (authority === undefined)
+    throw new Error("prepared backup pack append is invalid");
   return authority;
 }
 

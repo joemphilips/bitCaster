@@ -58,6 +58,11 @@ import {
 } from "../src/recoverableWalletStorage.ts";
 import { planEncryptedWalletBackupRetry } from "../src/encryptedWalletBackupRetrySchedule.ts";
 import {
+  readAuthenticatedEncryptedWalletBackupRepackDataChunkAuthority,
+  readAuthenticatedEncryptedWalletBackupRepackHeadAuthority,
+  readAuthenticatedEncryptedWalletBackupRepackManifestPageAuthority,
+} from "../src/encryptedWalletBackupRepackAuthority.ts";
+import {
   compareEncryptedWalletBackupRestoreTupleText,
   groupEncryptedWalletBackupRestoreRecordsByMintUnit,
 } from "../src/encryptedWalletBackupRestore.ts";
@@ -910,6 +915,200 @@ test("manifest pages flatten interleaved immutable chunks into one sorted privat
   assert.deepEqual(
     new Set(page.entries.map((entry) => entry.dataDigest)),
     new Set(chunkObjects.map((object) => object.digest)),
+  );
+});
+
+test("authenticated repack authority exposes exact copied source evidence", async () => {
+  const fixture = await createManifestUploadFixtureForTest();
+  const head = fixture.authenticated.head!;
+  const chunk = await decryptEncryptedWalletBackupDataChunk({
+    keyHandle: fixture.keyHandle,
+    seed: SEED,
+    object: readPreparedEncryptedWalletBackupObject(fixture.chunkObjects[0]!),
+  });
+
+  const headAuthority =
+    readAuthenticatedEncryptedWalletBackupRepackHeadAuthority(
+      fixture.authenticated,
+      fixture.keyHandle,
+      head,
+    );
+  const pageAuthority =
+    readAuthenticatedEncryptedWalletBackupRepackManifestPageAuthority(
+      fixture.page,
+      fixture.keyHandle,
+      fixture.authenticated,
+      head,
+    );
+  const chunkAuthority =
+    readAuthenticatedEncryptedWalletBackupRepackDataChunkAuthority(
+      chunk,
+      fixture.keyHandle,
+      fixture.authenticated,
+      head,
+    );
+
+  assert.equal(headAuthority.enrollmentEpoch, 1);
+  assert.equal(headAuthority.head, head);
+  assert.equal(
+    headAuthority.chunkReferences.some(
+      (reference) =>
+        reference.objectId === chunkAuthority.objectId &&
+        reference.digest === chunkAuthority.objectDigest,
+    ),
+    true,
+  );
+  assert.equal(pageAuthority.head, head);
+  assert.equal(pageAuthority.pageIndex, fixture.page.pageIndex);
+  assert.equal(pageAuthority.entries.length, fixture.page.entries.length);
+  assert.equal(chunkAuthority.head, head);
+  assert.equal(chunkAuthority.records.length, chunk.recordCount);
+  assert.equal(chunkAuthority.records[0]!.recordId.length, 64);
+  assert.equal(chunkAuthority.records[0]!.commitment.length, 64);
+
+  const originalHeadByte = headAuthority.canonicalHead[0]!;
+  const originalReferenceByte = headAuthority.canonicalChunkReferences[0]!;
+  const originalPageByte = pageAuthority.canonicalPage[0]!;
+  const originalRecordByte = chunkAuthority.records[0]!.canonicalRecord[0]!;
+  const originalEntryByte =
+    chunkAuthority.records[0]!.canonicalManifestEntry[0]!;
+  headAuthority.canonicalHead[0] ^= 0xff;
+  headAuthority.canonicalChunkReferences[0] ^= 0xff;
+  pageAuthority.canonicalPage[0] ^= 0xff;
+  chunkAuthority.records[0]!.canonicalRecord[0] ^= 0xff;
+  chunkAuthority.records[0]!.canonicalManifestEntry[0] ^= 0xff;
+
+  const rereadHead = readAuthenticatedEncryptedWalletBackupRepackHeadAuthority(
+    fixture.authenticated,
+    fixture.keyHandle,
+    head,
+  );
+  const rereadPage =
+    readAuthenticatedEncryptedWalletBackupRepackManifestPageAuthority(
+      fixture.page,
+      fixture.keyHandle,
+      fixture.authenticated,
+      head,
+    );
+  const rereadChunk =
+    readAuthenticatedEncryptedWalletBackupRepackDataChunkAuthority(
+      chunk,
+      fixture.keyHandle,
+      fixture.authenticated,
+      head,
+    );
+  assert.equal(rereadHead.canonicalHead[0], originalHeadByte);
+  assert.equal(rereadHead.canonicalChunkReferences[0], originalReferenceByte);
+  assert.equal(rereadPage.canonicalPage[0], originalPageByte);
+  assert.equal(rereadChunk.records[0]!.canonicalRecord[0], originalRecordByte);
+  assert.equal(
+    rereadChunk.records[0]!.canonicalManifestEntry[0],
+    originalEntryByte,
+  );
+});
+
+test("authenticated repack authority rejects substituted capabilities and unreachable chunks", async () => {
+  const fixture = await createManifestUploadFixtureForTest();
+  const head = fixture.authenticated.head!;
+  const chunk = await decryptEncryptedWalletBackupDataChunk({
+    keyHandle: fixture.keyHandle,
+    seed: SEED,
+    object: readPreparedEncryptedWalletBackupObject(fixture.chunkObjects[0]!),
+  });
+  const foreignKey = await createEncryptedWalletBackupKeyHandle({
+    seed: new Uint8Array(SEED).fill(201),
+    realm: vector.inputs.realm,
+  });
+
+  assert.throws(
+    () =>
+      readAuthenticatedEncryptedWalletBackupRepackHeadAuthority(
+        fixture.authenticated,
+        foreignKey,
+        head,
+      ),
+    /repack head is invalid/,
+  );
+  assert.throws(
+    () =>
+      readAuthenticatedEncryptedWalletBackupRepackHeadAuthority(
+        structuredClone(fixture.authenticated),
+        fixture.keyHandle,
+        head,
+      ),
+    /repack head is invalid/,
+  );
+  assert.throws(
+    () =>
+      readAuthenticatedEncryptedWalletBackupRepackHeadAuthority(
+        fixture.authenticated,
+        fixture.keyHandle,
+        structuredClone(head),
+      ),
+    /repack head is invalid/,
+  );
+  assert.throws(
+    () =>
+      readAuthenticatedEncryptedWalletBackupRepackManifestPageAuthority(
+        structuredClone(fixture.page),
+        fixture.keyHandle,
+        fixture.authenticated,
+        head,
+      ),
+    /repack manifest page is invalid/,
+  );
+  assert.throws(
+    () =>
+      readAuthenticatedEncryptedWalletBackupRepackDataChunkAuthority(
+        structuredClone(chunk),
+        fixture.keyHandle,
+        fixture.authenticated,
+        head,
+      ),
+    /repack data chunk is invalid/,
+  );
+
+  const unreachableObject = await prepareEncryptedWalletBackupObject({
+    keyHandle: fixture.keyHandle,
+    chunk: fixture.chunks[0]!,
+    generation: 1,
+    runtime: deterministicRuntime([
+      new Uint8Array(16).fill(240),
+      new Uint8Array(12).fill(241),
+    ]),
+  });
+  const unreachableChunk = await decryptEncryptedWalletBackupDataChunk({
+    keyHandle: fixture.keyHandle,
+    seed: SEED,
+    object: readPreparedEncryptedWalletBackupObject(unreachableObject),
+  });
+  assert.throws(
+    () =>
+      readAuthenticatedEncryptedWalletBackupRepackDataChunkAuthority(
+        unreachableChunk,
+        fixture.keyHandle,
+        fixture.authenticated,
+        head,
+      ),
+    /repack data chunk is unreachable/,
+  );
+});
+
+test("repack authority remains outside public SDK entry points", async () => {
+  const [indexSource, packageSource] = await Promise.all([
+    readFile(new URL("../src/index.ts", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ]);
+  const packageJson = JSON.parse(packageSource) as {
+    exports: Record<string, unknown>;
+  };
+  assert.equal(
+    indexSource.includes("encryptedWalletBackupRepackAuthority"),
+    false,
+  );
+  assert.equal(
+    packageJson.exports["./encryptedWalletBackupRepackAuthority"],
+    undefined,
   );
 });
 
@@ -9218,9 +9417,8 @@ async function createVerifiableRestoreFixtureForTest(
   let manifest;
   let head;
   if (options.generationTwoFromActive) {
-    const activeChunk = packEncryptedWalletBackupDataChunk(
-      activePreparedProofs,
-    );
+    const activeChunk =
+      packEncryptedWalletBackupDataChunk(activePreparedProofs);
     const activeChunkObject = await prepareEncryptedWalletBackupObject({
       keyHandle,
       chunk: activeChunk,
@@ -9246,9 +9444,8 @@ async function createVerifiableRestoreFixtureForTest(
       manifest: activeManifest,
       parent: null,
     });
-    const activeHeadWire = readPreparedEncryptedWalletBackupManifestHead(
-      activeHead,
-    );
+    const activeHeadWire =
+      readPreparedEncryptedWalletBackupManifestHead(activeHead);
     const activeAuthenticated =
       await readAuthenticatedEncryptedWalletBackupHead({
         keyHandle,

@@ -75,6 +75,12 @@ import {
   requireIssuedEncryptedWalletBackupKeyHandle,
 } from "./encryptedWalletBackupKeyAuthority.ts";
 import { issuePreparedEncryptedWalletBackupUploadAuthority } from "./encryptedWalletBackupPlanningAuthority.ts";
+import {
+  issueAuthenticatedEncryptedWalletBackupRepackDataChunkAuthority,
+  issueAuthenticatedEncryptedWalletBackupRepackHeadAuthority,
+  issueAuthenticatedEncryptedWalletBackupRepackManifestPageAuthority,
+  type AuthenticatedEncryptedWalletBackupRepackRecordAuthority,
+} from "./encryptedWalletBackupRepackAuthority.ts";
 import { registerEncryptedWalletBackupPreparedRecordValidator } from "./encryptedWalletBackupPreparedRecordValidation.ts";
 import {
   issueCoordinatedEncryptedWalletBackupCasAttempt,
@@ -689,7 +695,13 @@ const AUTHENTICATED_HEAD_OBSERVATIONS = new WeakMap<
   AuthenticatedHeadObservationAuthority
 >();
 
-interface AuthenticatedHeadAuthority extends PreparedManifestHeadAuthority {}
+interface AuthenticatedHeadAuthority extends PreparedManifestHeadAuthority {
+  readonly canonicalChunkReferences: Uint8Array;
+  readonly chunkReferences: readonly Readonly<{
+    objectId: string;
+    digest: string;
+  }>[];
+}
 
 const AUTHENTICATED_MANIFEST_HEADS = new WeakMap<
   object,
@@ -927,6 +939,11 @@ interface DecryptedDataChunkAuthority {
   readonly objectDigest: string;
   readonly generation: number;
   readonly records: readonly UnverifiedEncryptedWalletBackupRecord[];
+}
+
+interface DecryptedDataChunkRecords {
+  readonly records: readonly UnverifiedEncryptedWalletBackupRecord[];
+  readonly repackRecords: readonly AuthenticatedEncryptedWalletBackupRepackRecordAuthority[];
 }
 
 const DECRYPTED_DATA_CHUNK_AUTHORITIES = new WeakMap<
@@ -3952,6 +3969,8 @@ export async function readAuthenticatedEncryptedWalletBackupHead(input: {
         head: decoded.head,
         canonicalHead: decoded.canonicalHead,
         canonicalReferenceSet: decoded.canonicalReferenceSet,
+        canonicalChunkReferences: decoded.canonicalChunkReferences,
+        chunkReferences: decoded.chunkReferences,
         canonicalParentHead: null,
         canonicalInheritedReferenceSet: encodeCanonical([
           1,
@@ -3968,6 +3987,14 @@ export async function readAuthenticatedEncryptedWalletBackupHead(input: {
         keyAuthority,
         head: decoded.head,
         requestIssuedAtUnixSeconds: input.requestProof.issuedAtUnixSeconds,
+      });
+      issueAuthenticatedEncryptedWalletBackupRepackHeadAuthority(evidence, {
+        keyHandle: input.keyHandle,
+        head: decoded.head,
+        enrollmentEpoch: epoch,
+        canonicalHead: decoded.canonicalHead,
+        canonicalChunkReferences: decoded.canonicalChunkReferences,
+        chunkReferences: decoded.chunkReferences,
       });
       return evidence;
     }
@@ -4103,6 +4130,12 @@ export async function decryptEncryptedWalletBackupManifestPage(input: {
     DECRYPTED_MANIFEST_PAGE_AUTHORITIES.set(page, {
       keyAuthority: authority,
       head: observation.head,
+    });
+    issueAuthenticatedEncryptedWalletBackupRepackManifestPageAuthority(page, {
+      keyHandle: input.keyHandle,
+      headEvidence: input.headEvidence,
+      head: observation.head,
+      canonicalPage: canonical,
     });
     return page;
   } catch {
@@ -5661,18 +5694,25 @@ export async function decryptEncryptedWalletBackupDataChunk(input: {
   try {
     const authority = requireKeyAuthority(input.keyHandle);
     const object = requireWireObject(input.object, authority);
-    const records = await decryptDataChunkRecords({ ...input, object });
+    const decoded = await decryptDataChunkRecords({ ...input, object });
     const handle = Object.freeze({
       formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
       kindCode: ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND,
-      recordCount: records.length,
+      recordCount: decoded.records.length,
     });
     DECRYPTED_DATA_CHUNK_AUTHORITIES.set(handle, {
       keyAuthority: authority,
       objectId: object.objectId,
       objectDigest: object.digest,
       generation: object.generation,
-      records,
+      records: decoded.records,
+    });
+    issueAuthenticatedEncryptedWalletBackupRepackDataChunkAuthority(handle, {
+      keyHandle: input.keyHandle,
+      objectId: object.objectId,
+      objectDigest: object.digest,
+      generation: object.generation,
+      records: decoded.repackRecords,
     });
     return handle;
   } catch {
@@ -5903,7 +5943,7 @@ async function decryptDataChunkRecords(input: {
   seed: Uint8Array;
   object: EncryptedWalletBackupWireObject;
   cooperativeYield?: () => void | Promise<void>;
-}): Promise<UnverifiedEncryptedWalletBackupRecord[]> {
+}): Promise<DecryptedDataChunkRecords> {
   const authority = requireKeyAuthority(input.keyHandle);
   const seed = requireSeed(input.seed);
   if (!equalBytes(authority.seedDigest, sha256(seed)))
@@ -5985,7 +6025,7 @@ async function decodeDataChunkRecords(
   value: unknown,
   seed: Uint8Array,
   cooperativeYield: (() => void | Promise<void>) | undefined,
-): Promise<UnverifiedEncryptedWalletBackupRecord[]> {
+): Promise<DecryptedDataChunkRecords> {
   if (
     !Array.isArray(value) ||
     value.length !== 3 ||
@@ -5999,9 +6039,24 @@ async function decodeDataChunkRecords(
   const records = value[2];
   const derivers = new Map<string, SecretDeriver>();
   const restored: UnverifiedEncryptedWalletBackupRecord[] = [];
+  const repackRecords: AuthenticatedEncryptedWalletBackupRepackRecordAuthority[] =
+    [];
   const yieldToHost = cooperativeYield ?? defaultCooperativeYield;
   for (let index = 0; index < records.length; index += 1) {
-    restored.push(decodeDataRecord(records[index], seed, derivers));
+    const rawRecord = records[index];
+    const record = decodeDataRecord(rawRecord, seed, derivers);
+    restored.push(record);
+    repackRecords.push(
+      Object.freeze({
+        recordKindCode: record.recordKindCode,
+        recordId: recordIdOf(record),
+        commitment: preparedRecordCommitment(record),
+        canonicalRecord: encodeCanonical(rawRecord),
+        canonicalManifestEntry: encodeCanonical(
+          preparedRecordManifestMetadata(rawRecord, record),
+        ),
+      }),
+    );
     // Four-record work slices keep legacy BIP-32 derivation comfortably below
     // a browser long-task budget on the measured corpus; this is a work bound,
     // not a latency guarantee.
@@ -6018,7 +6073,10 @@ async function decodeDataChunkRecords(
       throw new Error("proof order");
     }
   }
-  return restored;
+  return Object.freeze({
+    records: Object.freeze(restored),
+    repackRecords: Object.freeze(repackRecords),
+  });
 }
 
 function decodeDataRecord(
@@ -7474,6 +7532,12 @@ function decodeManifestHeadWire(
     storedBytes,
     recordCount,
   });
+  const canonicalChunkReferences = encodeCanonical(
+    chunkReferences.map((reference) => [
+      hexToBytes(reference.objectId),
+      hexToBytes(reference.digest),
+    ]),
+  );
   return {
     keyAuthority,
     localSnapshotId: null,
@@ -7481,6 +7545,8 @@ function decodeManifestHeadWire(
     head,
     canonicalHead,
     canonicalReferenceSet,
+    canonicalChunkReferences,
+    chunkReferences,
     canonicalParentHead: null,
     canonicalInheritedReferenceSet: encodeCanonical([
       1,

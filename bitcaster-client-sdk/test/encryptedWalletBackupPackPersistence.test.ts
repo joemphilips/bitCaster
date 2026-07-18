@@ -18,6 +18,7 @@ import {
 } from "../src/encryptedWalletBackup.ts";
 import {
   sealPreparedEncryptedWalletBackupRecord,
+  sealPreparedEncryptedWalletBackupRecordBatch,
   type EncryptedWalletBackupPreparedRecordSnapshot,
   type EncryptedWalletBackupPreparedRecordSnapshotBatchStore,
   type EncryptedWalletBackupPreparedRecordSnapshotStore,
@@ -27,10 +28,12 @@ import {
   ENCRYPTED_WALLET_BACKUP_PACK_TRANSACTION_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_PACK_PERSISTED_ROW_MAX_BYTES,
   appendEncryptedWalletBackupPreparedRecordPage,
+  commitPreparedEncryptedWalletBackupPackAppend,
   freezeEncryptedWalletBackupPack,
   measureEncryptedWalletBackupPackTransaction,
   prepareEncryptedWalletBackupFrozenPackObject,
   prepareEncryptedWalletBackupFrozenPackObjectImmediately,
+  prepareEncryptedWalletBackupPackAppend,
   rehydrateEncryptedWalletBackupStagedPackObject,
   stageEncryptedWalletBackupPackObject,
   validateEncryptedWalletBackupPackSerializedPageByteEvidence,
@@ -47,6 +50,7 @@ import {
   type PersistedEncryptedWalletBackupPreparedBuildRecord,
   type PersistedEncryptedWalletBackupStagedObject,
 } from "../src/encryptedWalletBackupPackPersistence.ts";
+import * as PublicPackPersistence from "../src/encryptedWalletBackupPackPersistencePublic.ts";
 
 const vector = JSON.parse(
   await readFile(
@@ -205,6 +209,46 @@ test("append authenticates and persists one synchronous caller-owned snapshot", 
   );
 });
 
+test("batch sealing snapshots caller-owned records and seed before host yields", async () => {
+  const keyHandle = await createEncryptedWalletBackupKeyHandle({
+    seed: SEED,
+    realm: "pack-yield-snapshot-test",
+  });
+  const snapshots = new Map<
+    string,
+    EncryptedWalletBackupPreparedRecordSnapshot
+  >();
+  const prepared: Awaited<ReturnType<typeof prepareProof>>[] = [];
+  for (let index = 0; index < 6; index += 1)
+    prepared.push(
+      await prepareProof(
+        keyHandle,
+        vector.inputs.proof.counter + 100 + index,
+        snapshots,
+      ),
+    );
+  const records = prepared.slice(0, 5);
+  const expectedRecordIds = records.map(({ proofId }) => proofId);
+  const seed = SEED.slice();
+  let yields = 0;
+  const sealed = await sealPreparedEncryptedWalletBackupRecordBatch({
+    keyHandle,
+    seed,
+    records,
+    snapshotStore: exactSnapshotStore(snapshots),
+    cooperativeYield() {
+      yields += 1;
+      records.push(prepared[5]!);
+      seed.fill(0);
+    },
+  });
+  assert.ok(yields > 0);
+  assert.deepEqual(
+    sealed.map(({ recordId }) => recordId),
+    expectedRecordIds,
+  );
+});
+
 test("one key handle imports its preparation HMAC key once", async () => {
   const counter = { hmacImports: 0, hmacVerifications: 0 };
   const fixture = await preparedFixture(3, 0, countingHmacRuntime(counter));
@@ -321,6 +365,39 @@ test("append stores normalized rows once and exact-CAS advances compact controls
     /unique build\/pack\/record/,
   );
   assert.equal(duplicateBindingStore.prepared.size, 0);
+});
+
+test("opaque prepared append commits exact rows inside a caller-owned transaction", async () => {
+  const fixture = await preparedFixture(1);
+  const store = new MemoryPackStore();
+  const prepared = await prepareEncryptedWalletBackupPackAppend({
+    ...packInput(fixture, store, fixture.keyHandle, 0, 0),
+    records: fixture.records,
+  });
+  assert.throws(
+    () =>
+      commitPreparedEncryptedWalletBackupPackAppend({
+        transaction: {} as EncryptedWalletBackupPackPersistenceTransaction,
+        prepared: structuredClone(prepared),
+      }),
+    /prepared backup pack append is invalid/,
+  );
+  const committed = (await store.withExactVersionTransaction(
+    {
+      buildId: "build-a",
+      buildVersion: 0,
+      packId: "pack-a",
+      packVersion: 0,
+      realm: fixture.realm,
+      vaultId: fixture.keyHandle.vaultId,
+      snapshotId: "pack-snapshot",
+      snapshotRevision: 1,
+    },
+    (transaction) =>
+      commitPreparedEncryptedWalletBackupPackAppend({ transaction, prepared }),
+  )) as { packControl: PersistedEncryptedWalletBackupPackControl };
+  assert.equal(committed.packControl.recordCount, 1);
+  assert.equal(store.prepared.size, 1);
 });
 
 test("fake adapter stops canonical row acquisition at maxBytes before decoding", async () => {
@@ -689,6 +766,30 @@ test("pack persistence source has no upload, restore, manifest, or network surfa
     /\b(?:fetch|XMLHttpRequest|WebSocket|upload|restore|manifest)\b/i.test(
       source,
     ),
+    false,
+  );
+});
+
+test("pack persistence public surface hides same-transaction append authority", () => {
+  assert.equal(
+    "prepareEncryptedWalletBackupPackAppend" in PublicPackPersistence,
+    false,
+  );
+  assert.equal(
+    "commitPreparedEncryptedWalletBackupPackAppend" in PublicPackPersistence,
+    false,
+  );
+  assert.equal(
+    "prepareEncryptedWalletBackupPackAppendFromFreshBatch" in
+      PublicPackPersistence,
+    false,
+  );
+  assert.equal(
+    "planEncryptedWalletBackupPackAppendPrefix" in PublicPackPersistence,
+    false,
+  );
+  assert.equal(
+    "readEncryptedWalletBackupPackEvidencePage" in PublicPackPersistence,
     false,
   );
 });

@@ -217,8 +217,16 @@
       "import": "./dist/encryptedWalletBackupPreparedRecordPersistence.js"
     },
     "./encryptedWalletBackupPackPersistence": {
-      "types": "./dist/encryptedWalletBackupPackPersistence.d.ts",
-      "import": "./dist/encryptedWalletBackupPackPersistence.js"
+      "types": "./dist/encryptedWalletBackupPackPersistencePublic.d.ts",
+      "import": "./dist/encryptedWalletBackupPackPersistencePublic.js"
+    },
+    "./encryptedWalletBackupRepackPersistence": {
+      "types": "./dist/encryptedWalletBackupRepackPersistence.d.ts",
+      "import": "./dist/encryptedWalletBackupRepackPersistence.js"
+    },
+    "./encryptedWalletBackupRepackOmission": {
+      "types": "./dist/encryptedWalletBackupRepackOmission.d.ts",
+      "import": "./dist/encryptedWalletBackupRepackOmission.js"
     },
     "./tradeSession": {
       "types": "./dist/tradeSession.d.ts",

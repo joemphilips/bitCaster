@@ -76,13 +76,70 @@ export async function sealPreparedEncryptedWalletBackupRecord(input: {
     throw new Error("prepared backup record belongs to a foreign key");
   const candidate = candidateFromAuthority(keyHandle, authority);
   validateCandidate(candidate, input.seed);
-  await requireCommittedSnapshot(input.snapshotStore, snapshotOf(candidate));
   const authenticationTag =
     await signEncryptedWalletBackupPreparationCapability(
       keyHandle,
       capabilityPayload(candidate),
     );
+  await requireCommittedSnapshot(input.snapshotStore, snapshotOf(candidate));
   return Object.freeze({ ...candidate, authenticationTag });
+}
+
+export async function sealPreparedEncryptedWalletBackupRecordBatch(input: {
+  readonly keyHandle: EncryptedWalletBackupKeyHandle;
+  readonly seed: Uint8Array;
+  readonly records: readonly PreparedEncryptedWalletBackupRecord[];
+  readonly snapshotStore: EncryptedWalletBackupPreparedRecordSnapshotBatchStore;
+  readonly cooperativeYield?: () => void | Promise<void>;
+}): Promise<readonly PersistedPreparedEncryptedWalletBackupRecord[]> {
+  if (
+    !Array.isArray(input.records) ||
+    input.records.length < 1 ||
+    input.records.length >
+      ENCRYPTED_WALLET_BACKUP_PREPARED_RECORD_SNAPSHOT_BATCH_MAX
+  )
+    throw new Error("prepared backup seal batch count is invalid");
+  const records = Object.freeze([...input.records]);
+  const seed =
+    input.seed instanceof Uint8Array ? input.seed.slice() : input.seed;
+  const snapshotStore = input.snapshotStore;
+  const keyHandle = requireMatchingKeyHandle(input.keyHandle, seed);
+  const yieldToHost = input.cooperativeYield ?? defaultCooperativeYield;
+  const candidates: CapabilityCandidate[] = [];
+  for (let index = 0; index < records.length; index += 1) {
+    if (index > 0 && index % 4 === 0) await yieldToHost();
+    const record = records[index]!;
+    const authority = requirePreparedEncryptedWalletBackupRecord(record);
+    if (authority.keyHandle !== keyHandle)
+      throw new Error("prepared backup record belongs to a foreign key");
+    const candidate = candidateFromAuthority(keyHandle, authority);
+    validateCandidate(candidate, seed);
+    candidates.push(candidate);
+  }
+  const sealed: PersistedPreparedEncryptedWalletBackupRecord[] = [];
+  for (let offset = 0; offset < candidates.length; offset += 4) {
+    const slice = candidates.slice(offset, offset + 4);
+    sealed.push(
+      ...(await Promise.all(
+        slice.map(async (candidate) =>
+          Object.freeze({
+            ...candidate,
+            authenticationTag:
+              await signEncryptedWalletBackupPreparationCapability(
+                keyHandle,
+                capabilityPayload(candidate),
+              ),
+          }),
+        ),
+      )),
+    );
+    if (offset + slice.length < candidates.length) await yieldToHost();
+  }
+  await requireCommittedSnapshotBatch(
+    snapshotStore,
+    candidates.map(snapshotOf),
+  );
+  return Object.freeze(sealed);
 }
 
 export async function rehydratePreparedEncryptedWalletBackupRecord(input: {
@@ -440,6 +497,10 @@ function requireKeyBinding(
     throw new Error(
       "persisted prepared backup record belongs to a foreign vault",
     );
+}
+
+function defaultCooperativeYield(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function requireText(value: unknown, maximum: number, name: string): string {
