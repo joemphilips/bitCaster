@@ -212,6 +212,10 @@
       "types": "./dist/encryptedWalletBackupSync.d.ts",
       "import": "./dist/encryptedWalletBackupSync.js"
     },
+    "./encryptedWalletBackupPreparedRecordPersistence": {
+      "types": "./dist/encryptedWalletBackupPreparedRecordPersistence.d.ts",
+      "import": "./dist/encryptedWalletBackupPreparedRecordPersistence.js"
+    },
     "./tradeSession": {
       "types": "./dist/tradeSession.d.ts",
       "import": "./dist/tradeSession.js"

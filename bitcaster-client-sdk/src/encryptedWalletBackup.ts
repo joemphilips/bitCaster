@@ -75,6 +75,7 @@ import {
   requireIssuedEncryptedWalletBackupKeyHandle,
 } from "./encryptedWalletBackupKeyAuthority.ts";
 import { issuePreparedEncryptedWalletBackupUploadAuthority } from "./encryptedWalletBackupPlanningAuthority.ts";
+import { registerEncryptedWalletBackupPreparedRecordValidator } from "./encryptedWalletBackupPreparedRecordValidation.ts";
 import {
   issueCoordinatedEncryptedWalletBackupCasAttempt,
   readCoordinatedEncryptedWalletBackupCasAuthority,
@@ -1072,6 +1073,12 @@ export async function createEncryptedWalletBackupKeyHandle(input: {
     ROOT_SALT,
     encodeCanonical([1, "request-auth-root", realm]),
   );
+  const preparationPersistenceKey = await hkdf(
+    runtime.subtle,
+    encryptionRoot,
+    ROOT_SALT,
+    encodeCanonical([1, "preparation-persistence", realm]),
+  );
   const vaultIdBytes = await hkdf(
     runtime.subtle,
     encryptionRoot,
@@ -1094,6 +1101,8 @@ export async function createEncryptedWalletBackupKeyHandle(input: {
   });
   registerEncryptedWalletBackupKeyHandle(handle, {
     walletId: deriveDurableCustodyWalletId(seed),
+    preparationPersistenceKey,
+    subtle: runtime.subtle,
   });
   KEY_AUTHORITIES.set(handle, {
     realm,
@@ -5644,7 +5653,9 @@ export function restoreEncryptedWalletBackupPendingSendParent(input: {
     input.fragments.length >
       ENCRYPTED_WALLET_BACKUP_PENDING_SEND_MAX_FRAGMENT_COUNT
   ) {
-    throw new Error("restored pending-send parent fragment selection count is invalid");
+    throw new Error(
+      "restored pending-send parent fragment selection count is invalid",
+    );
   }
   const fragments = input.fragments.map((selection) =>
     selectPendingSendParentFragment(selection, keyAuthority, observation.head!),
@@ -5798,7 +5809,9 @@ function selectPendingSendProgressionFragment(
     > => record.recordKindCode === 2 && record.fragment.recordId === recordId,
   );
   const entries = selection.manifestPage.entries.filter(
-    (entry): entry is EncryptedWalletBackupPendingSendProgressionManifestEntry =>
+    (
+      entry,
+    ): entry is EncryptedWalletBackupPendingSendProgressionManifestEntry =>
       entry.recordKindCode === 2 && entry.recordId === recordId,
   );
   if (records.length !== 1 || entries.length !== 1) {
@@ -6119,6 +6132,95 @@ function decodeProofRecord(
     updatedAtUnixSeconds: updatedAt,
     proof,
   };
+}
+
+registerEncryptedWalletBackupPreparedRecordValidator({
+  validate: validatePreparedRecordPersistence,
+});
+
+function validatePreparedRecordPersistence(input: {
+  readonly seed: Uint8Array;
+  readonly canonicalRecord: Uint8Array;
+  readonly canonicalManifestEntry: Uint8Array;
+}) {
+  const seed = requireSeed(input.seed);
+  const canonicalRecord = requireBytesRange(
+    input.canonicalRecord,
+    1,
+    ENCRYPTED_WALLET_BACKUP_DATA_CBOR_MAX_BYTES,
+    "prepared record",
+  );
+  const rawRecord = decode(canonicalRecord);
+  if (!equalBytes(canonicalRecord, encodeCanonical(rawRecord)))
+    throw new Error("prepared backup record is not canonical CBOR");
+  const record = decodeDataRecord(rawRecord, seed, new Map());
+  const expectedManifest = preparedRecordManifestMetadata(rawRecord, record);
+  const manifest = requireBytesRange(
+    input.canonicalManifestEntry,
+    1,
+    ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES,
+    "prepared manifest entry",
+  );
+  if (!equalBytes(manifest, encodeCanonical(expectedManifest)))
+    throw new Error("prepared backup manifest metadata changed");
+  return Object.freeze({
+    recordId: recordIdOf(record),
+    commitment: preparedRecordCommitment(record),
+    recordKindCode: record.recordKindCode,
+  });
+}
+
+function preparedRecordManifestMetadata(
+  raw: unknown,
+  record: UnverifiedEncryptedWalletBackupRecord,
+): readonly unknown[] {
+  if (!Array.isArray(raw)) throw new Error("prepared backup record is invalid");
+  switch (record.recordKindCode) {
+    case 0:
+      return [
+        0,
+        raw[2],
+        raw[3],
+        raw[4],
+        raw[5],
+        raw[7],
+        raw[12],
+        raw[13],
+        raw[14],
+        raw[15],
+      ];
+    case 1:
+      return [1, raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]];
+    case 2:
+      return [
+        2,
+        raw[2],
+        raw[3],
+        raw[4],
+        raw[5],
+        raw[6],
+        raw[7],
+        raw[8],
+        raw[9],
+      ];
+    default:
+      return assertNever(record);
+  }
+}
+
+function preparedRecordCommitment(
+  record: UnverifiedEncryptedWalletBackupRecord,
+): string {
+  switch (record.recordKindCode) {
+    case 0:
+      return record.proof.commitment;
+    case 1:
+      return record.fragment.commitment;
+    case 2:
+      return record.fragment.commitment;
+    default:
+      return assertNever(record);
+  }
 }
 
 function defaultCooperativeYield(): Promise<void> {
