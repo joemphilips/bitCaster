@@ -1,7 +1,7 @@
 # Encrypted Wallet Backup Object Format v1
 
 This document freezes the byte-level format implemented by
-`@bitcaster-market/client-sdk`. It defines encrypted proof objects, private
+`@bitcaster-market/client-sdk`. It defines encrypted wallet records, private
 manifest pages, public head/reference metadata, request authentication,
 account-authorized enrollment lifecycle, bounded object transfer, and head CAS.
 
@@ -13,13 +13,13 @@ account-authorized enrollment lifecycle, bounded object transfer, and head CAS.
 - Seed: exactly 64 bytes.
 - HKDF: SHA-256.
 - Root HKDF salt: UTF-8 `bitcaster/encrypted-wallet-backup/hkdf-salt/v1`.
-- Proof chunk kind code: `1`.
+- Data chunk kind code: `1`.
 - Manifest-page kind code: `2`.
-- Proof plaintext frame: exactly 262144 bytes; canonical CBOR at most 245760
+- Data plaintext frame: exactly 262144 bytes; canonical CBOR at most 245760
   bytes; encrypted body exactly 262172 bytes.
 - Manifest plaintext frame: exactly 65536 bytes; canonical CBOR at most 65532
   bytes; encrypted body exactly 65564 bytes.
-- Maximum records per proof chunk: 512.
+- Maximum records per data chunk: 512.
 - Object identifier: 16 random bytes; retry a collision at most eight times.
 - AES key: 32 bytes. Nonce: 12 random bytes. GCM tag: 128 bits.
 - Manifest entries per page: at most 512. Manifest pages and total referenced
@@ -64,23 +64,29 @@ A public key handle exposes only version, realm, lowercase-hex vault ID, and
 lowercase-hex request-authentication public key. Seed and derived roots remain
 private capability state and are never serializable.
 
-## Proof chunk plaintext
+## Data chunk plaintext
 
-The only production plaintext in this version is the positional array:
+The production plaintext is the positional array:
 
 ```text
 [1, 1, records]
 ```
 
 The first item is format version and the second is object kind. `records` is a
-definite array of 1 through 512 records, sorted strictly by `proofId` bytes.
-Duplicate proof IDs are forbidden.
+definite array of 1 through 512 closed records, sorted strictly by the record's
+32-byte `recordId`. Duplicate record IDs or commitments are forbidden. Every
+record begins `[1,recordKind,...]`; the discriminator is commitment-bound and
+the v1 set is exhaustive:
 
-Each record is a closed 14-item positional array:
+- `0`: deterministic ordinary/CTF proof;
+- `1`: exact pending-send parent fragment;
+- `2`: exact pending-send progression child fragment.
+
+The deterministic-proof record is the closed 16-item positional array:
 
 ```text
 [
-  proofId, commitment, mint, unit, keyset, amount, secret, signature,
+  1, 0, proofId, commitment, mint, unit, keyset, amount, secret, signature,
   dleq, counter, proofKind, ctfOutcome, createdAt, updatedAt
 ]
 ```
@@ -174,18 +180,98 @@ preparation but never permits automatic deletion or local-body eviction.
 The commitment is:
 
 ```text
-SHA256(CBOR([1,"proof-record-commitment",mint,unit,keyset,amount,secret,
+SHA256(CBOR([1,"wallet-record-commitment",0,mint,unit,keyset,amount,secret,
              signature,dleq,counter,proofKind,ctfMetadata,createdAt,updatedAt]))
 ```
 
-The record codec is secret-bearing. Preparation returns an opaque frozen
-handle whose public fields contain only lowercase-hex proof ID and commitment;
+An ADR-036 parent is encoded as one or more closed records:
+
+```text
+[
+  1, 1, fragmentRecordId32, fragmentCommitment32,
+  logicalRecordId32, parentCommitment32,
+  fragmentIndex, fragmentCount, totalParentBytes, fragmentBytes
+]
+```
+
+Its canonical private payload binds the stable pending-send record ID, projected
+wallet-send operation, exact-payload metadata, canonical bearer-delivery row,
+exact encoded token, and ordered original proof lineage. `fragmentBytes` is
+1..16384 bytes; every non-final fragment is exactly 16384 bytes. The payload is
+at most 16777216 bytes and at most 1024 fragments. Fragment IDs bind logical
+identity and index. Fragment commitments bind record kind, logical identity,
+index/count, total bytes, and exact bytes. `parentCommitment` binds the ordered
+complete vector of fragment commitments.
+
+A progression child has the closed record:
+
+```text
+[
+  1, 2, fragmentRecordId32, fragmentCommitment32,
+  logicalRecordId32, parentCommitment32, progression,
+  childCommitment32, fragmentIndex, fragmentCount,
+  totalChildBytes, fragmentBytes
+]
+```
+
+`progression` is `0` cancellation intent, `1` partial delivery, `2` recipient
+finalization, or `3` reclaim completion. Its private payload binds the same
+stable record ID and the canonical reducer-produced bearer-delivery row.
+Fragment limits are identical to the parent. Every child fragment commitment
+binds discriminator `2`, progression, exact parent commitment, total bytes, and
+fragment position. `childCommitment` binds the ordered complete fragment
+commitment vector. A current manifest accepts exactly one complete parent and
+at most one complete child for a logical record. It rejects child-only,
+multiple/conflicting children, different parent commitments, missing,
+duplicate, reordered, foreign, or non-contiguous fragments.
+
+The exact pending-send identifiers and commitments are:
+
+```text
+logicalRecordId =
+  SHA256(CBOR([1,"pending-send-logical-record-id",recordIdText]))
+
+parentFragmentRecordId =
+  SHA256(CBOR([1,"pending-send-parent-fragment-record-id",
+               logicalRecordId32,fragmentIndex]))
+
+parentFragmentCommitment =
+  SHA256(CBOR([1,"wallet-record-commitment",1,logicalRecordId32,
+               fragmentIndex,fragmentCount,totalParentBytes,fragmentBytes]))
+
+parentCommitment =
+  SHA256(CBOR([1,"pending-send-parent",logicalRecordId32,
+               orderedParentFragmentCommitments32]))
+
+childFragmentRecordId =
+  SHA256(CBOR([1,"pending-send-progression-fragment-record-id",2,
+               logicalRecordId32,parentCommitment32,progression,
+               fragmentIndex]))
+
+childFragmentCommitment =
+  SHA256(CBOR([1,"wallet-record-commitment",2,logicalRecordId32,
+               parentCommitment32,progression,fragmentIndex,fragmentCount,
+               totalChildBytes,fragmentBytes]))
+
+childCommitment =
+  SHA256(CBOR([1,"pending-send-progression",2,logicalRecordId32,
+               parentCommitment32,progression,
+               orderedChildFragmentCommitments32]))
+```
+
+All `*32` values above are 32-byte byte strings, not hexadecimal text;
+`recordIdText` is the stable durable record identifier as CBOR text, and
+`progression` is its closed integer code. The ordered vectors are definite CBOR
+arrays in fragment-index order.
+
+The record codecs are secret-bearing. Preparation returns an opaque frozen
+handle whose public fields contain only lowercase-hex record ID and commitment;
 the exact record bytes are held in private capability state. Packing accepts
-only exact handles. Decryption recomputes both identities but returns only an
-opaque frozen decoded-chunk capability and record count. It exposes no proof
-body or active/selectable disposition. The later verification phase alone may
-open that capability after keyset, curve, condition, signature/DLEQ, and NUT-07
-checks.
+only exact handles. Decryption recomputes every variant identity and commitment
+but returns only an opaque frozen generic data-chunk capability and record
+count. It exposes no proof body, token, operation, or disposition. Later
+variant-specific verification alone may open that capability after exact
+authenticated-manifest membership and semantic validation.
 
 ## Bounded decoding
 
@@ -244,19 +330,27 @@ A manifest page is the closed tuple:
 `generation` is positive. `snapshotNonce` is random and shared by every page in
 one snapshot. Page indexes start at zero and are contiguous; `pageCount` is
 `1..1024`. Each page contains 1..512 entries, and the complete manifest
-contains at most 524288 entries. Entries are strictly ordered by proof ID within
+contains at most 524288 entries. Entries are strictly ordered by record ID within
 each page; the bounded restore coordinator additionally rejects gaps, overlap,
 duplicate IDs/commitments, noncontiguous page indexes, mixed nonce/generation,
 or a total inconsistent with the authenticated head.
 
-Each entry is the closed 11-item tuple:
+Each entry begins with its closed record discriminator and common membership
+binding:
+
+```text
+[recordKind,recordId32,recordCommitment32,dataObjectId16,dataDigest32,...]
+```
+
+A deterministic-proof entry is the closed 12-item tuple:
 
 ```text
 [
+  0,
   proofId32,
   proofCommitment32,
-  chunkObjectId16,
-  chunkDigest32,
+  dataObjectId16,
+  dataDigest32,
   mint,
   unit,
   amount,
@@ -273,9 +367,35 @@ mint/unit/amount/time bounds are identical to the proof record. Ordinary
 entries require null CTF metadata. These encrypted summaries rebuild ordinary
 mint/unit balances and CTF positions without loading every proof body; they do
 not establish spendability. Each entry binds exactly one proof commitment to
-one immutable chunk. Independently packed chunks may interleave; pages flatten
-all bindings into proof-ID order and may refer to the same chunk from different
-pages.
+one immutable data chunk. Independently packed data chunks may interleave;
+pages flatten all bindings into record-ID order and may refer to the same data
+chunk from different pages.
+
+A pending-send parent entry is the closed 9-item tuple:
+
+```text
+[
+  1, fragmentRecordId32, fragmentCommitment32,
+  dataObjectId16, dataDigest32,
+  logicalRecordId32, parentCommitment32, fragmentIndex, fragmentCount
+]
+```
+
+A progression child entry is the closed 11-item tuple:
+
+```text
+[
+  2, fragmentRecordId32, fragmentCommitment32,
+  dataObjectId16, dataDigest32,
+  logicalRecordId32, parentCommitment32, progression,
+  childCommitment32, fragmentIndex, fragmentCount
+]
+```
+
+The SDK validates complete fragment cardinality and contiguity across the whole
+manifest before encryption. It groups by logical record ID, rejects conflicting
+parent commitments and multiple children, and requires every child to bind the
+sole exact parent. The opaque service does not interpret these private fields.
 
 Manifest pages use the same object-key derivation with kind `2`, a 65536-byte
 zero-padded frame, and AAD:
@@ -292,7 +412,7 @@ and nonce. The service sees only the encrypted object and public reference.
 Restore begins from an authenticated current head. The SDK issues an opaque,
 one-use manifest cursor bound to that exact head and key capability. A copied,
 foreign, reused, skipped, or out-of-order cursor/page is invalid. Advancing the
-cursor requires contiguous page indexes, strict proof-ID order across page
+cursor requires contiguous page indexes, strict record-ID order across page
 boundaries, and an exact final entry count equal to the head. An authenticated
 empty head produces an already-complete cursor. The cursor contains only the
 generation, page count, next page index, restored entry count, and completion
@@ -385,7 +505,7 @@ A public object reference is `[objectId16, objectDigest32]`. The reference set
 is:
 
 ```text
-[1,"reference-set",manifestPageReferences,proofChunkReferences]
+[1,"reference-set",manifestPageReferences,dataChunkReferences]
 ```
 
 Page references remain in page-index order. Chunk references are sorted by
@@ -407,8 +527,8 @@ The canonical head is the closed tuple:
   null | [parentGeneration,parentManifestDigest32],
   snapshotNonce16,
   manifestPageReferences,
-  proofChunkReferences,
-  proofCount,
+  dataChunkReferences,
+  recordCount,
   storedBytes,
   referenceSetDigest32
 ]
@@ -423,7 +543,7 @@ digest as specified by the SDK storage contract.
 
 The complete target is rejected when this exact stored-byte total exceeds 64
 MiB. A non-empty target has at least one page and chunk, page/chunk counts obey
-their 512-entry bounds against `proofCount`, and the empty target has no
+their 512-entry bounds against `recordCount`, and the empty target has no
 references. These relationships are checked independently while preparing a
 head and whenever an attempt, batch, finalized partition, or restored head is
 decoded.
@@ -435,7 +555,7 @@ child upload is sealed:
 parentReachableStoredBytes + nonInheritedTargetDeltaStoredBytes <= 67108864
 ```
 
-The delta contains every new child manifest page plus every target proof chunk
+The delta contains every new child manifest page plus every target data chunk
 whose exact `(objectId,digest)` is not inherited from the exact parent. Genesis
 uses zero parent bytes; an empty child has a zero delta. No caller-provided peak
 or delta scalar is authoritative. The service's authenticated-account-wide
@@ -447,19 +567,19 @@ The parentless manifest builder is a generation-one-only capability. Every
 later generation, including a full one-for-one replacement, must be constructed
 through the authenticated-parent incremental builder, and the resulting head
 accepts only the exact authenticated parent captured by that builder.
-Proof-chunk generation may be less than or equal to the child generation. An
+Data-chunk generation may be less than or equal to the child generation. An
 exact `(objectId,digest)` found in the authenticated exact parent is inherited;
 every other chunk is part of the current attempt's uploaded delta. The child
 reference set is the union of its new pages, newly packed chunks, and the
 selected intersection with the exact parent chunk references. Removed or
-repacked proofs remove their old chunk reference when no retained entry uses it. The final transactional
-snapshot seal authenticates the exact union of new prepared proof bindings and
-selected inherited `(proofId,commitment)` stubs; inherited metadata never creates
-a spendable or selectable proof capability.
+repacked records remove their old chunk reference when no retained entry uses
+it. The final transactional snapshot seal authenticates the exact union of new
+prepared record bindings and selected inherited `(recordId,commitment)` stubs;
+inherited metadata never creates a spendable or selectable proof capability.
 
-An empty wallet is a canonical head with zero proofs, pages, chunks, objects,
+An empty backup is a canonical head with zero records, pages, chunks, objects,
 and stored bytes. It is valid both at generation one and as the exact child that
-removes the last proof. The empty child pins nothing, so every object reachable
+removes the last record. The empty child pins nothing, so every object reachable
 only from its parent becomes eligible for bounded garbage collection after the
 head transition and retention rules permit it.
 
@@ -702,7 +822,7 @@ owner, increments the epoch and replaces prior authority. Batch IDs are
 insert-only or exact-idempotent. Object IDs and object digests are each
 independently unique across the complete attempt partition. Every batch carries
 byte-exact copies of the aggregate target and inherited reference sets;
-inherited references contain proof chunks only, never manifest pages.
+inherited references contain data chunks only, never manifest pages.
 
 Every mutation port is a database transaction: it invokes its SDK validation
 callback synchronously exactly once, returns the callback's exact value, and
@@ -736,20 +856,20 @@ all of these independently:
 - at most four concurrent requests;
 - at most four distinct parent chunks used as repack sources.
 
-Fifteen maximum proof-chunk PUTs fit the byte budget; the request-count limit
+Fifteen maximum data-chunk PUTs fit the byte budget; the request-count limit
 does not weaken the byte limit. These are per-cycle limits, not cumulative
 limits for the target. Planning consumes an SDK-issued prepared-head
 capability, not caller-provided object descriptors, byte counts, target totals,
 or repack flags. The capability contains the real prepared page/chunk objects
 and exact non-inherited delta. For each newly prepared chunk, incremental
 manifest construction records the distinct exact-parent chunk IDs from which
-retained proofs moved; genesis and wholly new proofs have no repack source. A
+retained records moved; genesis and wholly new records have no repack source. A
 cycle's repack count is the union of those source IDs across its selected
 chunks. The stable planner greedily fills every nonfinal cycle until no
 remaining prepared object can fit its request, byte, and source-union
 capacities, and creates at most 64 cycles. The 64-cycle ledger limit is defense
-in depth: 256 maximum proof chunks already exceed the 64 MiB stored-object
-ceiling, while 255 proof chunks plus three manifest pages fit. The planner
+in depth: 256 maximum data chunks already exceed the 64 MiB stored-object
+ceiling, while 255 data chunks plus three manifest pages fit. The planner
 rejects a target whose exact head `storedBytes` (including inherited objects)
 exceeds that ceiling, whose parent-plus-new-delta lower bound exceeds that
 ceiling, or whose capability omits the new-object delta;
@@ -957,10 +1077,10 @@ object id, object digest, kind, and current authenticated head generation. The
 response and strictly decoded AAD must bind all of those object identity fields,
 and the client recomputes
 `SHA256(uint32be(aadLength) || aad || encryptedBody)` before accepting the
-object. Padded length is 262144 for a proof chunk and 65536 for a manifest page;
+object. Padded length is 262144 for a data chunk and 65536 for a manifest page;
 the encrypted body is exactly padded length plus the 12-byte nonce and 16-byte
 tag. Generation is positive. A manifest page must equal the current head
-generation. An inherited proof chunk may be older, but must be at most the
+generation. An inherited data chunk may be older, but must be at most the
 current head generation. Future-generation objects, old manifest pages, or any
 response/AAD mismatch fail closed. This rule does not expand the public
 reference format.

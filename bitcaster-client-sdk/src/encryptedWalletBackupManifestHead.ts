@@ -7,7 +7,7 @@ import {
   preflightEncryptedBackupReferenceSetCbor,
 } from "./encryptedWalletBackupCbor.ts";
 
-export const ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX = 512 as const;
+export const ENCRYPTED_WALLET_BACKUP_RECORD_COUNT_MAX = 512 as const;
 export const ENCRYPTED_WALLET_BACKUP_BODY_BYTES = 262_172 as const;
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES = 65_564 as const;
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX = 512 as const;
@@ -31,7 +31,7 @@ export interface ValidatedEncryptedWalletBackupManifestHeadUnit {
   readonly snapshotNonce: string;
   readonly pageReferences: readonly EncryptedWalletBackupObjectReference[];
   readonly chunkReferences: readonly EncryptedWalletBackupObjectReference[];
-  readonly proofCount: number;
+  readonly recordCount: number;
   readonly storedBytes: number;
   readonly referenceSetDigest: string;
   readonly manifestDigest: string;
@@ -149,26 +149,26 @@ export function validateEncryptedWalletBackupManifestHeadUnit(
   ) {
     throw new Error("manifest references are duplicated");
   }
-  const proofCount = requireInteger(
+  const recordCount = requireInteger(
     head[10],
     0,
     ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX,
-    "manifest proof count",
+    "manifest record count",
   );
   if (
-    (proofCount === 0 && allReferences.length !== 0) ||
-    (proofCount > 0 &&
+    (recordCount === 0 && allReferences.length !== 0) ||
+    (recordCount > 0 &&
       (pageReferences.length === 0 || chunkReferences.length === 0)) ||
     chunkReferences.length <
-      Math.ceil(proofCount / ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX) ||
-    chunkReferences.length > proofCount ||
+      Math.ceil(recordCount / ENCRYPTED_WALLET_BACKUP_RECORD_COUNT_MAX) ||
+    chunkReferences.length > recordCount ||
     pageReferences.length <
       Math.ceil(
-        proofCount / ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX,
+        recordCount / ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX,
       ) ||
-    pageReferences.length > proofCount
+    pageReferences.length > recordCount
   ) {
-    throw new Error("manifest proof count does not match reference bounds");
+    throw new Error("manifest record count does not match reference bounds");
   }
   const storedBytes = requireInteger(
     head[11],
@@ -211,7 +211,7 @@ export function validateEncryptedWalletBackupManifestHeadUnit(
     snapshotNonce,
     pageReferences: Object.freeze(pageReferences),
     chunkReferences: Object.freeze(chunkReferences),
-    proofCount,
+    recordCount,
     storedBytes,
     referenceSetDigest,
     manifestDigest: bytesToHex(sha256(input.canonicalHead)),

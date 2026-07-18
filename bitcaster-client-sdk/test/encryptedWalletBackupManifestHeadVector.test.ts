@@ -22,7 +22,7 @@ interface ManifestHeadInput {
   readonly snapshotNonceHex: string;
   readonly pageReferences: readonly ReferenceInput[];
   readonly chunkReferences: readonly ReferenceInput[];
-  readonly proofCount: number;
+  readonly recordCount: number;
   readonly storedBytes: number;
 }
 
@@ -74,7 +74,7 @@ test("SDK owns and exactly regenerates canonical manifest-head vectors", () => {
       fromHex(unit.inputs.snapshotNonceHex),
       pageReferences,
       chunkReferences,
-      unit.inputs.proofCount,
+      unit.inputs.recordCount,
       unit.inputs.storedBytes,
       fromHex(unit.referenceSetDigestHex),
     ]);

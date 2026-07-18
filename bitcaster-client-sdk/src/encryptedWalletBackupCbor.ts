@@ -2,8 +2,8 @@ import { decode, encode, rfc8949EncodeOptions } from "cborg";
 import { ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES } from "./encryptedWalletBackupCasState.ts";
 import { ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES } from "./encryptedWalletBackupLimits.ts";
 
-const PROOF_CBOR_MAX_BYTES = 245_760;
-const PROOF_COUNT_MAX = 512;
+const DATA_CBOR_MAX_BYTES = 245_760;
+const RECORD_COUNT_MAX = 512;
 const TOKEN_LIMIT = 16_384;
 const DEPTH_LIMIT = 6;
 const MANIFEST_CBOR_MAX_BYTES = 65_532;
@@ -38,15 +38,15 @@ export function measureCanonicalBackupCbor(value: unknown): number {
   throw new Error("canonical CBOR value is invalid");
 }
 
-export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
-  if (bytes.byteLength < 1 || bytes.byteLength > PROOF_CBOR_MAX_BYTES)
+export function preflightEncryptedDataChunkCbor(bytes: Uint8Array): void {
+  if (bytes.byteLength < 1 || bytes.byteLength > DATA_CBOR_MAX_BYTES)
     throw new Error("cbor input");
   const state = { offset: 0, tokens: 0 };
   const root = scanCbor(bytes, state, 0, {
     depth: DEPTH_LIMIT,
     tokens: TOKEN_LIMIT,
-    itemLength: PROOF_CBOR_MAX_BYTES,
-    arrayLength: PROOF_COUNT_MAX,
+    itemLength: DATA_CBOR_MAX_BYTES,
+    arrayLength: RECORD_COUNT_MAX,
   });
   if (state.offset !== bytes.byteLength) throw new Error("trailing cbor");
   if (
@@ -63,19 +63,39 @@ export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
     records?.major !== 4 ||
     records.value === null ||
     records.value < 1 ||
-    records.value > PROOF_COUNT_MAX
+    records.value > RECORD_COUNT_MAX
   )
     throw new Error("record count");
   for (const record of records.children) {
-    if (record.major !== 4 || record.value !== 14)
+    if (record.major !== 4 || record.children[0]?.major !== 0 || record.children[0]?.value !== 1)
       throw new Error("record shape");
-    requireBytes(record.children[0], 32, 32, "proof id");
-    requireBytes(record.children[1], 32, 32, "commitment");
-    requireText(record.children[2], 1, 2_048, "mint");
-    requireText(record.children[3], 1, 64, "unit");
-    const keyset = record.children[4];
-    const dleq = record.children[8];
-    const ctf = record.children[11];
+    const kind = record.children[1];
+    if (kind?.major !== 0 || kind.value === null) throw new Error("record kind");
+    switch (kind.value) {
+      case 0:
+        preflightProofRecord(record);
+        break;
+      case 1:
+        preflightPendingSendParentFragment(record);
+        break;
+      case 2:
+        preflightPendingSendProgressionFragment(record);
+        break;
+      default:
+        throw new Error("record kind");
+    }
+  }
+}
+
+function preflightProofRecord(record: CborShape): void {
+    if (record.value !== 16) throw new Error("proof record shape");
+    requireBytes(record.children[2], 32, 32, "proof id");
+    requireBytes(record.children[3], 32, 32, "commitment");
+    requireText(record.children[4], 1, 2_048, "mint");
+    requireText(record.children[5], 1, 64, "unit");
+    const keyset = record.children[6];
+    const dleq = record.children[10];
+    const ctf = record.children[13];
     if (keyset?.major !== 4 || keyset.value !== 2)
       throw new Error("keyset shape");
     const keysetKind = keyset.children[0];
@@ -87,10 +107,10 @@ export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
     )
       throw new Error("keyset kind");
     requireText(keyset.children[1], 1, 128, "keyset text");
-    requireText(record.children[5], 1, 20, "amount");
-    requireBytes(record.children[6], 64, 64, "secret");
+    requireText(record.children[7], 1, 20, "amount");
+    requireBytes(record.children[8], 64, 64, "secret");
     requireBytes(
-      record.children[7],
+      record.children[9],
       keysetKind.value === 2 ? 33 : 33,
       keysetKind.value === 2 ? 48 : 33,
       "signature",
@@ -106,8 +126,8 @@ export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
     if (dleq.major === 4)
       for (const item of dleq.children)
         requireBytes(item, 32, 32, "dleq value");
-    requireUnsigned(record.children[9], "counter");
-    const proofKind = record.children[10];
+    requireUnsigned(record.children[11], "counter");
+    const proofKind = record.children[12];
     if (
       proofKind?.major !== 0 ||
       (proofKind.value !== 0 && proofKind.value !== 1)
@@ -130,9 +150,43 @@ export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
       requireUnsigned(ctf.children[4], "expiry");
       requireCtfTerminalEvidence(ctf.children[5]);
     }
-    requireUnsigned(record.children[12], "created");
-    requireUnsigned(record.children[13], "updated");
-  }
+    requireUnsigned(record.children[14], "created");
+    requireUnsigned(record.children[15], "updated");
+}
+
+function preflightPendingSendProgressionFragment(record: CborShape): void {
+  if (record.value !== 12)
+    throw new Error("pending-send progression fragment shape");
+  requireBytes(record.children[2], 32, 32, "progression fragment record id");
+  requireBytes(record.children[3], 32, 32, "progression fragment commitment");
+  requireBytes(record.children[4], 32, 32, "pending-send logical record id");
+  requireBytes(record.children[5], 32, 32, "pending-send parent commitment");
+  requireUnsignedRange(record.children[6], 0, 3, "pending-send progression");
+  requireBytes(record.children[7], 32, 32, "pending-send child commitment");
+  requireFragmentPosition(record.children[8], record.children[9], "progression");
+  requireUnsignedRange(
+    record.children[10],
+    1,
+    16 * 1_024 * 1_024,
+    "pending-send progression bytes",
+  );
+  requireBytes(record.children[11], 1, 16 * 1_024, "progression fragment");
+}
+
+function preflightPendingSendParentFragment(record: CborShape): void {
+  if (record.value !== 10) throw new Error("pending-send parent fragment shape");
+  requireBytes(record.children[2], 32, 32, "pending-send fragment record id");
+  requireBytes(record.children[3], 32, 32, "pending-send fragment commitment");
+  requireBytes(record.children[4], 32, 32, "pending-send logical record id");
+  requireBytes(record.children[5], 32, 32, "pending-send parent commitment");
+  requireFragmentPosition(record.children[6], record.children[7], "pending-send");
+  requireUnsignedRange(
+    record.children[8],
+    1,
+    16 * 1_024 * 1_024,
+    "pending-send parent bytes",
+  );
+  requireBytes(record.children[9], 1, 16 * 1_024, "pending-send fragment");
 }
 
 export function preflightEncryptedManifestPageCbor(bytes: Uint8Array): void {
@@ -143,7 +197,7 @@ export function preflightEncryptedManifestPageCbor(bytes: Uint8Array): void {
     depth: 6,
     tokens: TOKEN_LIMIT,
     itemLength: MANIFEST_CBOR_MAX_BYTES,
-    arrayLength: PROOF_COUNT_MAX,
+    arrayLength: RECORD_COUNT_MAX,
   });
   if (state.offset !== bytes.byteLength) throw new Error("trailing cbor");
   if (
@@ -164,28 +218,61 @@ export function preflightEncryptedManifestPageCbor(bytes: Uint8Array): void {
     entries?.major !== 4 ||
     entries.value === null ||
     entries.value < 1 ||
-    entries.value > PROOF_COUNT_MAX
+    entries.value > RECORD_COUNT_MAX
   ) {
     throw new Error("manifest entry count");
   }
   for (const entry of entries.children) {
-    if (entry.major !== 4 || entry.value !== 11)
+    if (entry.major !== 4)
       throw new Error("manifest entry shape");
-    requireBytes(entry.children[0], 32, 32, "proof id");
-    requireBytes(entry.children[1], 32, 32, "commitment");
-    requireBytes(entry.children[2], 16, 16, "chunk object id");
-    requireBytes(entry.children[3], 32, 32, "chunk digest");
-    requireText(entry.children[4], 1, 2_048, "mint");
-    requireText(entry.children[5], 1, 64, "unit");
-    requireText(entry.children[6], 1, 20, "amount");
-    const proofKind = entry.children[7];
+    const kind = entry.children[0];
+    if (kind?.major !== 0 || kind.value === null) throw new Error("manifest record kind");
+    requireBytes(entry.children[1], 32, 32, "record id");
+    requireBytes(entry.children[2], 32, 32, "commitment");
+    requireBytes(entry.children[3], 16, 16, "data object id");
+    requireBytes(entry.children[4], 32, 32, "data digest");
+    if (kind.value === 1) {
+      if (entry.value !== 9) throw new Error("manifest parent entry shape");
+      requireBytes(entry.children[5], 32, 32, "pending-send logical record id");
+      requireBytes(entry.children[6], 32, 32, "pending-send parent commitment");
+      requireFragmentPosition(
+        entry.children[7],
+        entry.children[8],
+        "manifest pending-send",
+      );
+      continue;
+    }
+    if (kind.value === 2) {
+      if (entry.value !== 11)
+        throw new Error("manifest progression entry shape");
+      requireBytes(entry.children[5], 32, 32, "pending-send logical record id");
+      requireBytes(entry.children[6], 32, 32, "pending-send parent commitment");
+      requireUnsignedRange(
+        entry.children[7],
+        0,
+        3,
+        "pending-send progression",
+      );
+      requireBytes(entry.children[8], 32, 32, "pending-send child commitment");
+      requireFragmentPosition(
+        entry.children[9],
+        entry.children[10],
+        "manifest progression",
+      );
+      continue;
+    }
+    if (kind.value !== 0 || entry.value !== 12) throw new Error("manifest entry shape");
+    requireText(entry.children[5], 1, 2_048, "mint");
+    requireText(entry.children[6], 1, 64, "unit");
+    requireText(entry.children[7], 1, 20, "amount");
+    const proofKind = entry.children[8];
     if (
       proofKind?.major !== 0 ||
       (proofKind.value !== 0 && proofKind.value !== 1)
     ) {
       throw new Error("proof kind");
     }
-    const ctf = entry.children[8];
+    const ctf = entry.children[9];
     if (
       ctf === undefined ||
       !(
@@ -202,8 +289,8 @@ export function preflightEncryptedManifestPageCbor(bytes: Uint8Array): void {
       requireUnsigned(ctf.children[4], "expiry");
       requireCtfTerminalEvidence(ctf.children[5]);
     }
-    requireUnsigned(entry.children[9], "created");
-    requireUnsigned(entry.children[10], "updated");
+    requireUnsigned(entry.children[10], "created");
+    requireUnsigned(entry.children[11], "updated");
   }
 }
 
@@ -267,7 +354,7 @@ export function preflightEncryptedBackupHeadCbor(bytes: Uint8Array): void {
   requireBytes(root.children[7], 16, 16, "head snapshot nonce");
   requireObjectReferenceArray(root.children[8], "head page references");
   requireObjectReferenceArray(root.children[9], "head chunk references");
-  requireUnsigned(root.children[10], "head proof count");
+  requireUnsigned(root.children[10], "head record count");
   requireUnsigned(root.children[11], "head stored bytes");
   requireBytes(root.children[12], 32, 32, "head reference digest");
 }
@@ -563,6 +650,30 @@ function requireCtfTerminalEvidence(shape: CborShape | undefined): void {
 function requireUnsigned(shape: CborShape | undefined, name: string): void {
   if (shape?.major !== 0 || shape.value === null)
     throw new Error(`${name} shape`);
+}
+
+function requireUnsignedRange(
+  shape: CborShape | undefined,
+  minimum: number,
+  maximum: number,
+  name: string,
+): void {
+  requireUnsigned(shape, name);
+  if (shape!.value! < minimum || shape!.value! > maximum) {
+    throw new Error(`${name} shape`);
+  }
+}
+
+function requireFragmentPosition(
+  index: CborShape | undefined,
+  count: CborShape | undefined,
+  name: string,
+): void {
+  requireUnsignedRange(index, 0, 1_023, `${name} fragment index`);
+  requireUnsignedRange(count, 1, 1_024, `${name} fragment count`);
+  if (index!.value! >= count!.value!) {
+    throw new Error(`${name} fragment position shape`);
+  }
 }
 
 function headerLength(value: number): number {

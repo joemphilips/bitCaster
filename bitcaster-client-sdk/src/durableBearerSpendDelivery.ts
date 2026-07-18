@@ -18,7 +18,10 @@ import {
 import {
   acknowledgeDurableCustodyWalletSendHandoff,
   classifyDurableCustodyWalletSendHandoffBoundary,
+  decodeDurableCustodyRecord,
+  decodeDurableCustodyScopeState,
   deriveDurableCustodyArtifactFingerprint,
+  encodeBoundedDurableArtifact,
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyState,
   type DurableCustodyWalletStorageBoundary,
@@ -158,6 +161,25 @@ export function createDurableBearerSpendDeliveryRecord(input: {
       nextAttemptAtMs: input.createdAtMs,
     },
   });
+}
+
+/** Canonical fingerprint for an exact persisted bearer-delivery record. */
+export function deriveDurableBearerSpendDeliveryRecordFingerprint(
+  value: unknown,
+): string {
+  return handoffPlanFingerprint(decodeDurableBearerSpendDeliveryRecord(value));
+}
+
+/** Canonical bytes for a decoded persisted bearer-delivery record. */
+export function encodeDurableBearerSpendDeliveryRecord(
+  value: unknown,
+  maximumBytes: number,
+): Uint8Array {
+  const decoded = decodeDurableBearerSpendDeliveryRecord(value);
+  return encodeBoundedDurableArtifact(
+    JSON.parse(JSON.stringify(decoded)) as unknown,
+    maximumBytes,
+  );
 }
 
 /**
@@ -757,6 +779,78 @@ export function classifyDurableBearerSpendCustodyHandoffPlan(input: {
     throw new Error("durable bearer custody handoff plan is invalid");
   }
   return "reconciliation-only";
+}
+
+/** Rebuilds and checks one exact handoff capability after structured cloning. */
+export function rehydrateDurableBearerSpendCustodyHandoffPlan(input: {
+  readonly bearerRecord: unknown;
+  readonly previousCustodyState: DurableCustodyState;
+  readonly exactPayload: DurableWalletSendExactPayload;
+  readonly persistedPlan: unknown;
+}): DurableBearerSpendCustodyHandoffPlan {
+  const persisted = decodePersistedHandoffPlan(input.persistedPlan);
+  const previous = decodeCustodyState(input.previousCustodyState);
+  const owner = previous.scopeState.owner;
+  if (owner === null) {
+    throw new Error("durable bearer custody handoff owner is missing");
+  }
+  const rebuilt = planDurableBearerSpendCustodyHandoff({
+    bearerRecord: decodeDurableBearerSpendDeliveryRecord(input.bearerRecord),
+    custodyState: previous,
+    exactPayload: input.exactPayload,
+    authorization: {
+      incarnationId: owner.incarnationId,
+      fencingEpoch: previous.scopeState.fencingEpoch,
+      observedAtMs:
+        persisted.custodyState.scopeState.effectiveClock.highWaterMarkMs,
+    },
+  });
+  if (handoffPlanFingerprint(rebuilt) !== handoffPlanFingerprint(persisted)) {
+    throw new Error("durable bearer custody handoff plan conflicts");
+  }
+  return rebuilt;
+}
+
+function decodePersistedHandoffPlan(
+  value: unknown,
+): DurableBearerSpendCustodyHandoffPlan {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("durable bearer custody handoff plan is invalid");
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 2 ||
+    !("bearerRecord" in record) ||
+    !("custodyState" in record)
+  ) {
+    throw new Error("durable bearer custody handoff plan is invalid");
+  }
+  return {
+    bearerRecord: decodeDurableBearerSpendDeliveryRecord(record.bearerRecord),
+    custodyState: decodeCustodyState(record.custodyState),
+  };
+}
+
+function decodeCustodyState(value: unknown): DurableCustodyState {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("durable bearer custody state is invalid");
+  }
+  const state = value as Record<string, unknown>;
+  if (
+    Object.keys(state).length !== 2 ||
+    !("operation" in state) ||
+    !("scopeState" in state)
+  ) {
+    throw new Error("durable bearer custody state is invalid");
+  }
+  const operation = decodeDurableCustodyRecord(state.operation);
+  return {
+    operation,
+    scopeState: decodeDurableCustodyScopeState(
+      state.scopeState,
+      operation.scope,
+    ),
+  };
 }
 
 function handoffPlanFingerprint(value: unknown): string {

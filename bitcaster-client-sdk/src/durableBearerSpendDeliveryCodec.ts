@@ -196,7 +196,7 @@ export function completionActorFor(
     case "submitted":
       return "unknown";
     case "prepared":
-      return "recipient";
+      return origin === "local" ? "recipient" : "unknown";
     case "none":
       return origin === "local" ? "recipient" : "unknown";
   }

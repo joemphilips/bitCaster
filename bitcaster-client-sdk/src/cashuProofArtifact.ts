@@ -1,5 +1,6 @@
 import {
   Amount,
+  parseSecret,
   pointFromHex,
   pointFromHexG1,
   type Proof,
@@ -13,6 +14,8 @@ const WITNESS_SIGNATURE_LIMIT = 64
 type CashuProofCurve = 'secp256k1' | 'bls12-381'
 type P2pkSigFlag = 'SIG_INPUTS' | 'SIG_ALL'
 type P2pkTag = readonly string[]
+
+export type CashuSecretClassification = 'ordinary' | 'conditional'
 
 const P2PK_TAG_KEYS = new Set([
   'locktime',
@@ -39,6 +42,34 @@ export interface AtomicSwapP2pkProofBinding {
   locktime: number
 }
 
+/**
+ * Classifies bearer-secret authority using cashu-ts' NUT-10 decoder. Every
+ * parsed NUT-10 envelope is non-ordinary. A plausible kind marker remains
+ * conditional even when its remaining fields are malformed, so callers never
+ * downgrade damaged or future lock data to ordinary bearer authority.
+ */
+export function classifyCashuSecret(secret: string): CashuSecretClassification {
+  try {
+    parseSecret(secret)
+    return 'conditional'
+  } catch {
+    return hasConditionalNut10Marker(secret) ? 'conditional' : 'ordinary'
+  }
+}
+
+function hasConditionalNut10Marker(secret: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(secret)
+    return (
+      Array.isArray(parsed) &&
+      typeof parsed[0] === 'string' &&
+      parsed[0].trim().length > 0
+    )
+  } catch {
+    return false
+  }
+}
+
 /** Decode one exact runtime Cashu bearer artifact with no client-local fields. */
 export function decodeStrictCashuProofArtifact(value: unknown): Proof {
   const proof = requireRecord(value, 'Cashu proof')
@@ -59,11 +90,7 @@ export function decodeStrictCashuProofArtifact(value: unknown): Proof {
     ...(proof.p2pk_e === undefined
       ? {}
       : {
-          p2pk_e: requireCurvePoint(
-            proof.p2pk_e,
-            'secp256k1',
-            'proof P2PK E',
-          ),
+          p2pk_e: requireCurvePoint(proof.p2pk_e, 'secp256k1', 'proof P2PK E'),
         }),
     ...(proof.witness === undefined
       ? {}
@@ -270,8 +297,9 @@ function requireUniqueP2pkPubkeys(
 function requireP2pkPubkey(value: unknown, label: string): string {
   if (typeof value !== 'string') throw new Error(`${label} are invalid`)
   const normalized = value.toLowerCase()
-  const compressed =
-    /^[0-9a-f]{64}$/.test(normalized) ? `02${normalized}` : normalized
+  const compressed = /^[0-9a-f]{64}$/.test(normalized)
+    ? `02${normalized}`
+    : normalized
   if (!/^(?:02|03)[0-9a-f]{64}$/.test(compressed)) {
     throw new Error(`${label} are invalid`)
   }
@@ -330,7 +358,10 @@ function requirePositiveSafeInteger(value: unknown, label: string): number {
   return value as number
 }
 
-function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+function sameStrings(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
   return (
     left.length === right.length &&
     left.every((value, index) => value === right[index])
@@ -506,10 +537,7 @@ function requireText(value: unknown, label: string, maxLength: number): string {
   return value
 }
 
-function requireRecord(
-  value: unknown,
-  label: string,
-): Record<string, unknown> {
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`${label} is invalid`)
   }

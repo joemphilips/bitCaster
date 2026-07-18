@@ -745,7 +745,7 @@ test("object PUT decoder binds route, fixed lengths, AAD, and framed digest", ()
   }
 });
 
-test("object PUT accepts the fixed proof-chunk kind-one shape", () => {
+test("object PUT accepts the fixed data-chunk kind-one shape", () => {
   const valid = objectPutPayload({ kindCode: 1 });
   const decoded = decodeEncryptedWalletBackupObjectPutRequest({
     canonicalPayload: valid.payload,

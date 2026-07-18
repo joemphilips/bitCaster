@@ -1,9 +1,5 @@
-import {
-  deriveDurableCustodyArtifactFingerprint,
-} from "./durableCustody.ts";
-import {
-  requireExactDurableWalletSendResult,
-} from "./durableWalletOperation.ts";
+import { deriveDurableCustodyArtifactFingerprint } from "./durableCustody.ts";
+import { requireExactDurableWalletSendResult } from "./durableWalletOperation.ts";
 import {
   requireDurableWalletSendResultWithinAdmission,
   requireExactDurableWalletSendToken,
@@ -30,8 +26,7 @@ const {
   exactFieldsError: "durable wallet-send exact payload fields are invalid",
 });
 
-export interface DurableWalletSendExactPayload
-  extends DurableWalletSendExactPayloadCapability {
+export interface DurableWalletSendExactPayload extends DurableWalletSendExactPayloadCapability {
   readonly preparation: DurableWalletSendDeliveryPreparation;
   readonly walletOperationId: string;
   readonly walletRequestFingerprint: string;
@@ -157,8 +152,7 @@ function assertMetadataMatchesPreparation(
   const preparation = decoded.preparation;
   if (
     decoded.walletOperationId !== preparation.walletOperationId ||
-    decoded.walletRequestFingerprint !==
-      preparation.walletRequestFingerprint ||
+    decoded.walletRequestFingerprint !== preparation.walletRequestFingerprint ||
     decoded.walletOutputPlanFingerprint !==
       preparation.walletOutputPlanFingerprint ||
     decoded.encodedTokenBytes >
@@ -175,8 +169,7 @@ function assertMetadataMatchesPreparation(
 export function describeDurableWalletSendExactPayload(
   exactPayload: DurableWalletSendExactPayload,
 ): Omit<DurableWalletSendExactPayload, "kind"> {
-  const binding =
-    requireDurableWalletSendExactPayloadCapability(exactPayload);
+  const binding = requireDurableWalletSendExactPayloadCapability(exactPayload);
   return decodeDurableWalletSendExactPayloadMetadata({
     preparation: exactPayload.preparation,
     walletOperationId: binding.walletOperationId,
@@ -190,6 +183,33 @@ export function describeDurableWalletSendExactPayload(
     unit: binding.unit,
     amount: binding.amount,
   });
+}
+
+/**
+ * Rebuilds the non-clonable exact-payload capability from one committed row.
+ * It reuses the exact persisted operation and result groups; it never plans
+ * outputs or selects proofs.
+ */
+export function rehydrateDurableWalletSendExactPayload(input: {
+  readonly metadata: unknown;
+  readonly walletOperation: unknown;
+  readonly resultGroups: unknown;
+  readonly encodedToken: string;
+}): DurableWalletSendExactPayload {
+  const metadata = decodeDurableWalletSendExactPayloadMetadata(input.metadata);
+  const preparation = requireDurableWalletSendDeliveryPreparationForOperation(
+    metadata.preparation,
+    input.walletOperation,
+  );
+  const exactPayload = planDurableWalletSendExactPayload({
+    preparation,
+    walletOperation: input.walletOperation,
+    resultGroups: input.resultGroups,
+    payloadHandle: metadata.payloadHandle,
+    encodedToken: input.encodedToken,
+  });
+  requireSameDurableWalletSendExactPayload(metadata, exactPayload);
+  return exactPayload;
 }
 
 export function requireSameDurableWalletSendExactPayload(
@@ -225,11 +245,10 @@ function resolveExactPayloadPlan(input: {
   resultGroups: unknown;
   encodedToken: string;
 }) {
-  const preparation =
-    requireDurableWalletSendDeliveryPreparationForOperation(
-      input.preparation,
-      input.walletOperation,
-    );
+  const preparation = requireDurableWalletSendDeliveryPreparationForOperation(
+    input.preparation,
+    input.walletOperation,
+  );
   const result = requireExactDurableWalletSendResult({
     walletOperation: input.walletOperation,
     resultGroups: input.resultGroups,

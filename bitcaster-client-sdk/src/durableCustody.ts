@@ -401,6 +401,7 @@ export const DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX = 256 as const
 export const DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX = 512 as const
 export const DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX = 16 as const
 export const DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX = 256 as const
+export const DURABLE_ARTIFACT_BYTES_LIMIT_MAX = 16 * 1_024 * 1_024
 
 export interface DurableCustodyRecoveryPageInput {
   scope: DurableCustodyScope
@@ -1297,12 +1298,36 @@ export function deriveDurableCustodyKeysetFingerprint(input: {
 
 /** Canonical bounded JSON digest used to bind exact opaque artifact handles. */
 export function deriveDurableCustodyArtifactFingerprint(value: unknown): string {
+  const bytes = encodeDurableCustodyArtifact(value)
+  return bytesToHex(sha256(bytes))
+}
+
+/** Canonical bounded bytes for durable artifacts that must survive restart. */
+export function encodeDurableCustodyArtifact(value: unknown): Uint8Array {
+  return encodeBoundedDurableArtifact(
+    value,
+    DURABLE_CUSTODY_RECOVERY_PAGE_MAX_BYTES,
+  )
+}
+
+/** Canonical durable-artifact bytes under an explicit caller-owned limit. */
+export function encodeBoundedDurableArtifact(
+  value: unknown,
+  maximumBytes: number,
+): Uint8Array {
+  if (
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    maximumBytes > DURABLE_ARTIFACT_BYTES_LIMIT_MAX
+  ) {
+    throw new Error('custody artifact byte limit is invalid')
+  }
   const canonical = canonicalCustodyArtifactJson(value)
   const bytes = new TextEncoder().encode(canonical)
-  if (bytes.length === 0 || bytes.length > DURABLE_CUSTODY_RECOVERY_PAGE_MAX_BYTES) {
+  if (bytes.length === 0 || bytes.length > maximumBytes) {
     throw new Error('custody artifact exceeds the byte limit')
   }
-  return bytesToHex(sha256(bytes))
+  return bytes
 }
 
 function canonicalCustodyArtifactJson(value: unknown): string {

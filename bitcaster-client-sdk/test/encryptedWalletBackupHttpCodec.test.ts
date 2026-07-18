@@ -60,10 +60,10 @@ const EXPECTED_PUBLIC_VECTOR_CASES = new Set([
   "error rate-limited",
   "error overloaded",
   "error unavailable",
-  "inherited generation-1 proof chunk under head generation 2",
-  "current generation-2 proof chunk under head generation 2",
+  "inherited generation-1 data chunk under head generation 2",
+  "current generation-2 data chunk under head generation 2",
   "current generation-2 manifest under head generation 2",
-  "future generation-3 proof chunk under head generation 2",
+  "future generation-3 data chunk under head generation 2",
   "stale generation-1 manifest under head generation 2",
   "indefinite array",
   "unknown discriminator",
@@ -231,7 +231,7 @@ test("backup HTTP codec accepts every closed success tuple", () => {
         assert.equal(
           result.generation,
           1,
-          "inherited proof chunks may predate the head",
+          "inherited data chunks may predate the head",
         );
         assert.equal(result.encryptedBody.byteLength, 262_172);
       },

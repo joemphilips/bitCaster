@@ -5,9 +5,7 @@ import {
   type Proof,
   type SwapPreview,
 } from "@cashu/cashu-ts";
-import {
-  createDurableCustodyProofOperation,
-} from "../src/durableCustodyProofOperationRecord.ts";
+import { createDurableCustodyProofOperation } from "../src/durableCustodyProofOperationRecord.ts";
 import {
   createDurableProofOperationFacts,
   deriveDurableCustodyScopeId,
@@ -19,19 +17,13 @@ import {
   createDurableWalletSendOperation,
   toDurableCustodyProofOperationInput,
 } from "../src/durableWalletOperation.ts";
-import {
-  planDurableWalletSendDeliveryAdmission,
-} from "../src/durableWalletSendDelivery.ts";
+import { planDurableWalletSendDeliveryAdmission } from "../src/durableWalletSendDelivery.ts";
 import {
   prepareDurableWalletSendDelivery,
   type DurableWalletSendDeliveryPolicy,
 } from "../src/durableWalletSendDeliveryPreparation.ts";
-import {
-  planDurableWalletSendExactPayload,
-} from "../src/durableWalletSendExactPayload.ts";
-import {
-  participationScoreRecipientProductBinding,
-} from "../src/durableRecipientProductBinding.ts";
+import { planDurableWalletSendExactPayload } from "../src/durableWalletSendExactPayload.ts";
+import { participationScoreRecipientProductBinding } from "../src/durableRecipientProductBinding.ts";
 
 const KEYSET_ID = "0011223344556677";
 const SECP_PUBLIC_KEY = `02${"11".repeat(32)}`;
@@ -128,10 +120,11 @@ function hexToBytes(value: string): Uint8Array {
 
 export function createRecipientCustodyState(
   fixture: ReturnType<typeof createRecipientDeliveryFixture>,
+  walletId = "a".repeat(64),
 ): DurableCustodyState {
   const scopeInput = {
     scopeKind: "wallet" as const,
-    walletId: "a".repeat(64),
+    walletId,
   };
   const scope = {
     ...scopeInput,
@@ -195,8 +188,8 @@ export function createRecipientCustodyState(
     kind: "verified-result-staged",
     resultHandle: "wallet-send-result-001",
     resultFingerprint: fixture.exactPayload.resultFingerprint,
-    outputPlanFingerprint: state.operation.operation.outputPlan
-      .outputPlanFingerprint,
+    outputPlanFingerprint:
+      state.operation.operation.outputPlan.outputPlanFingerprint,
     ...recipientOwnerAuthorization,
   });
   state = reduceDurableCustodyState(state, {

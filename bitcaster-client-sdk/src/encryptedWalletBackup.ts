@@ -3,7 +3,10 @@ import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { decode } from "cborg";
-import { deriveDurableCustodyProofId } from "./durableCustody.ts";
+import {
+  deriveDurableCustodyProofId,
+  deriveDurableCustodyWalletId,
+} from "./durableCustody.ts";
 import {
   requireVerifiedCtfLosingOutcomeEvidence,
   type VerifiedCtfLosingOutcomeEvidence,
@@ -13,7 +16,7 @@ import {
   measureCanonicalBackupCbor as measureCanonicalCbor,
   preflightEncryptedBackupRequestProofCbor,
   preflightEncryptedManifestPageCbor as preflightManifestPage,
-  preflightEncryptedProofChunkCbor as preflightProofChunk,
+  preflightEncryptedDataChunkCbor as preflightDataChunk,
 } from "./encryptedWalletBackupCbor.ts";
 import {
   classifyDurableWalletStorage,
@@ -27,6 +30,41 @@ import {
   type DurableWalletStorageClassification,
   type DurableWalletVerifiedLosingCtfClassification,
 } from "./recoverableWalletStorage.ts";
+export {
+  ENCRYPTED_WALLET_BACKUP_PENDING_SEND_FRAGMENT_BYTES,
+  ENCRYPTED_WALLET_BACKUP_PENDING_SEND_MAX_FRAGMENT_COUNT,
+  deriveEncryptedWalletBackupPendingSendRecordId,
+  ENCRYPTED_WALLET_BACKUP_PENDING_SEND_PARENT_BYTES_MAX,
+  prepareEncryptedWalletBackupPendingSendParent,
+  prepareEncryptedWalletBackupPendingSendProgression,
+  type EncryptedWalletBackupCommittedPendingSendSnapshot,
+  type EncryptedWalletBackupPendingSendProgression,
+  type EncryptedWalletBackupPendingSendSnapshotStore,
+  type PreparedEncryptedWalletBackupPendingSendParent,
+  type PreparedEncryptedWalletBackupPendingSendParentFragment,
+  type PreparedEncryptedWalletBackupPendingSendProgression,
+  type PreparedEncryptedWalletBackupPendingSendProgressionFragment,
+  type RestoredEncryptedWalletBackupPendingSend,
+  type RestoredEncryptedWalletBackupPendingSendParent,
+} from "./encryptedWalletBackupPendingSend.ts";
+import {
+  aggregateEncryptedWalletBackupPendingSendParentFragments,
+  aggregateEncryptedWalletBackupPendingSendProgressionFragments,
+  bindEncryptedWalletBackupPendingSendRestore,
+  decodeEncryptedWalletBackupPendingSendParentFragment,
+  decodeEncryptedWalletBackupPendingSendProgressionFragment,
+  ENCRYPTED_WALLET_BACKUP_PENDING_SEND_MAX_FRAGMENT_COUNT,
+  type DecodedEncryptedWalletBackupPendingSendParentFragment,
+  type DecodedEncryptedWalletBackupPendingSendProgressionFragment,
+  type RestoredEncryptedWalletBackupPendingSend,
+  type RestoredEncryptedWalletBackupPendingSendParent,
+  type RestoredEncryptedWalletBackupPendingSendProgression,
+} from "./encryptedWalletBackupPendingSend.ts";
+import {
+  decodePendingSendProgressionCode,
+  encodePendingSendProgressionCode,
+  type EncryptedWalletBackupPendingSendChildProgression,
+} from "./encryptedWalletBackupPendingSendProgressionCodec.ts";
 import { issueDurableWalletVerifiedLosingCtfClassification } from "./walletStorageAuthority.ts";
 import {
   issueDurableWalletAcknowledgedBackupSnapshot,
@@ -51,7 +89,7 @@ import {
   ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES,
   ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX,
   ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX,
-  ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_RECORD_COUNT_MAX,
   ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX,
   ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
@@ -73,6 +111,19 @@ import {
   compareEncryptedWalletBackupRestoreTupleText,
   groupEncryptedWalletBackupRestoreRecordsByMintUnit,
 } from "./encryptedWalletBackupRestore.ts";
+import {
+  ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+  issuePreparedEncryptedWalletBackupRecord,
+  requirePreparedEncryptedWalletBackupRecord,
+  type PreparedEncryptedWalletBackupRecord,
+} from "./encryptedWalletBackupRecord.ts";
+export {
+  ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+  ENCRYPTED_WALLET_BACKUP_PENDING_SEND_PARENT_FRAGMENT_RECORD,
+  ENCRYPTED_WALLET_BACKUP_PENDING_SEND_PROGRESSION_RECORD,
+  type EncryptedWalletBackupRecordKindCode,
+  type PreparedEncryptedWalletBackupRecord,
+} from "./encryptedWalletBackupRecord.ts";
 export { EncryptedWalletBackupDeadlineError } from "./encryptedWalletBackupDeadline.ts";
 export {
   ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
@@ -83,7 +134,7 @@ export {
   ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES,
   ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX,
   ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX,
-  ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_RECORD_COUNT_MAX,
   ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX,
   ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
@@ -91,15 +142,15 @@ export {
 export { ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES } from "./encryptedWalletBackupLimits.ts";
 
 export const ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION = 1 as const;
-export const ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND = 1 as const;
+export const ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND = 1 as const;
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND = 2 as const;
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND_RESERVED =
   ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND;
-export const ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES = 262_144 as const;
+export const ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES = 262_144 as const;
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_FRAME_BYTES = 65_536 as const;
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_FRAME_BYTES_RESERVED =
   ENCRYPTED_WALLET_BACKUP_MANIFEST_FRAME_BYTES;
-export const ENCRYPTED_WALLET_BACKUP_PROOF_CBOR_MAX_BYTES = 245_760 as const;
+export const ENCRYPTED_WALLET_BACKUP_DATA_CBOR_MAX_BYTES = 245_760 as const;
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES = 65_532 as const;
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES_RESERVED =
   ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES;
@@ -382,8 +433,8 @@ export interface EncryptedWalletBackupCommittedSnapshotSeal {
   readonly schemaVersion: 1;
   readonly snapshotId: string;
   readonly snapshotRevision: number;
-  readonly proofCount: number;
-  readonly proofSetDigest: string;
+  readonly recordCount: number;
+  readonly recordSetDigest: string;
 }
 
 export interface EncryptedWalletBackupSnapshotSealStore {
@@ -432,9 +483,8 @@ export interface EncryptedWalletBackupProofInput {
   proofSnapshotStore: EncryptedWalletBackupProofSnapshotStore;
 }
 
-export interface PreparedEncryptedWalletBackupProof {
+export interface PreparedEncryptedWalletBackupProof extends PreparedEncryptedWalletBackupRecord {
   readonly proofId: string;
-  readonly commitment: string;
 }
 
 interface PreparedProofAuthority {
@@ -458,18 +508,24 @@ const PREPARED_PROOF_AUTHORITIES = new WeakMap<
   PreparedProofAuthority
 >();
 
-export interface PreparedEncryptedWalletBackupProofChunk {
-  readonly kindCode: typeof ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND;
-  readonly bindings: readonly Readonly<{
-    proofId: string;
-    commitment: string;
-  }>[];
+export interface PreparedEncryptedWalletBackupDataChunk {
+  readonly kindCode: typeof ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND;
+  readonly bindings: readonly (
+    | Readonly<{ proofId: string; commitment: string }>
+    | Readonly<{
+        recordId: string;
+        commitment: string;
+        recordKindCode: 1 | 2;
+      }>
+  )[];
 }
 
 interface PreparedChunkAuthority {
   readonly keyAuthority: KeyAuthority;
   readonly canonical: Uint8Array;
-  readonly proofs: readonly PreparedProofAuthority[];
+  readonly records: readonly ReturnType<
+    typeof requirePreparedEncryptedWalletBackupRecord
+  >[];
   readonly snapshotId: string;
   readonly snapshotRevision: number;
 }
@@ -482,14 +538,14 @@ const PREPARED_CHUNK_AUTHORITIES = new WeakMap<
 export interface PreparedEncryptedWalletBackupObject {
   readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION;
   readonly kindCode:
-    | typeof ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND
+    | typeof ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND
     | typeof ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND;
   readonly realm: string;
   readonly vaultId: string;
   readonly objectId: string;
   readonly generation: number;
   readonly paddedLength:
-    | typeof ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES
+    | typeof ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES
     | typeof ENCRYPTED_WALLET_BACKUP_MANIFEST_FRAME_BYTES;
   readonly digest: string;
 }
@@ -502,7 +558,7 @@ export interface EncryptedWalletBackupWireObject extends PreparedEncryptedWallet
 interface PreparedObjectAuthority {
   readonly aad: Uint8Array;
   readonly body: Uint8Array;
-  readonly sourceChunk: PreparedEncryptedWalletBackupProofChunk | null;
+  readonly sourceChunk: PreparedEncryptedWalletBackupDataChunk | null;
 }
 
 const PREPARED_OBJECT_AUTHORITIES = new WeakMap<
@@ -510,11 +566,16 @@ const PREPARED_OBJECT_AUTHORITIES = new WeakMap<
   PreparedObjectAuthority
 >();
 
-export interface EncryptedWalletBackupManifestEntry {
-  readonly proofId: string;
+interface EncryptedWalletBackupManifestEntryBase {
+  readonly recordId: string;
   readonly commitment: string;
-  readonly chunkObjectId: string;
-  readonly chunkDigest: string;
+  readonly dataObjectId: string;
+  readonly dataDigest: string;
+}
+
+export interface EncryptedWalletBackupProofManifestEntry extends EncryptedWalletBackupManifestEntryBase {
+  readonly recordKindCode: typeof ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD;
+  readonly proofId: string;
   readonly mint: string;
   readonly unit: string;
   readonly amount: string;
@@ -525,13 +586,36 @@ export interface EncryptedWalletBackupManifestEntry {
   readonly updatedAtUnixSeconds: number;
 }
 
+export interface EncryptedWalletBackupPendingSendParentManifestEntry extends EncryptedWalletBackupManifestEntryBase {
+  readonly recordKindCode: 1;
+  readonly logicalRecordId: string;
+  readonly parentCommitment: string;
+  readonly fragmentIndex: number;
+  readonly fragmentCount: number;
+}
+
+export interface EncryptedWalletBackupPendingSendProgressionManifestEntry extends EncryptedWalletBackupManifestEntryBase {
+  readonly recordKindCode: 2;
+  readonly logicalRecordId: string;
+  readonly parentCommitment: string;
+  readonly progression: EncryptedWalletBackupPendingSendChildProgression;
+  readonly childCommitment: string;
+  readonly fragmentIndex: number;
+  readonly fragmentCount: number;
+}
+
+export type EncryptedWalletBackupManifestEntry =
+  | EncryptedWalletBackupProofManifestEntry
+  | EncryptedWalletBackupPendingSendParentManifestEntry
+  | EncryptedWalletBackupPendingSendProgressionManifestEntry;
+
 export interface PreparedEncryptedWalletBackupManifest {
   readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION;
   readonly generation: number;
   readonly snapshotNonce: string;
   readonly snapshotId: string;
   readonly snapshotRevision: number;
-  readonly proofCount: number;
+  readonly recordCount: number;
   readonly pageCount: number;
   readonly pages: readonly PreparedEncryptedWalletBackupObject[];
   readonly chunkObjects: readonly PreparedEncryptedWalletBackupObject[];
@@ -570,7 +654,7 @@ export interface EncryptedWalletBackupManifestHead {
   readonly referenceSetDigest: string;
   readonly objectCount: number;
   readonly storedBytes: number;
-  readonly proofCount: number;
+  readonly recordCount: number;
 }
 
 export interface EncryptedWalletBackupManifestHeadWire {
@@ -783,7 +867,7 @@ interface ManifestRestoreCursorAuthority {
   readonly pageCount: number;
   readonly nextPageIndex: number;
   readonly restoredEntryCount: number;
-  readonly lastProofId: string | null;
+  readonly lastRecordId: string | null;
   consumed: boolean;
 }
 
@@ -792,11 +876,25 @@ const MANIFEST_RESTORE_CURSOR_AUTHORITIES = new WeakMap<
   ManifestRestoreCursorAuthority
 >();
 
-export interface DecryptedEncryptedWalletBackupProofChunk {
+export interface DecryptedEncryptedWalletBackupDataChunk {
   readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION;
-  readonly kindCode: typeof ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND;
+  readonly kindCode: typeof ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND;
   readonly recordCount: number;
 }
+
+type UnverifiedEncryptedWalletBackupRecord =
+  | Readonly<{
+      recordKindCode: typeof ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD;
+      proof: UnverifiedEncryptedWalletBackupProof;
+    }>
+  | Readonly<{
+      recordKindCode: 1;
+      fragment: DecodedEncryptedWalletBackupPendingSendParentFragment;
+    }>
+  | Readonly<{
+      recordKindCode: 2;
+      fragment: DecodedEncryptedWalletBackupPendingSendProgressionFragment;
+    }>;
 
 interface UnverifiedEncryptedWalletBackupProof {
   readonly proofId: string;
@@ -822,17 +920,17 @@ interface UnverifiedEncryptedWalletBackupProof {
   };
 }
 
-interface DecryptedProofChunkAuthority {
+interface DecryptedDataChunkAuthority {
   readonly keyAuthority: KeyAuthority;
   readonly objectId: string;
   readonly objectDigest: string;
   readonly generation: number;
-  readonly records: readonly UnverifiedEncryptedWalletBackupProof[];
+  readonly records: readonly UnverifiedEncryptedWalletBackupRecord[];
 }
 
-const DECRYPTED_PROOF_CHUNK_AUTHORITIES = new WeakMap<
+const DECRYPTED_DATA_CHUNK_AUTHORITIES = new WeakMap<
   object,
-  DecryptedProofChunkAuthority
+  DecryptedDataChunkAuthority
 >();
 
 export const ENCRYPTED_WALLET_BACKUP_RESTORE_PROOF_LIMIT_MAX = 64 as const;
@@ -994,7 +1092,9 @@ export async function createEncryptedWalletBackupKeyHandle(input: {
     vaultId: bytesToHex(vaultIdBytes),
     requestAuthPublicKey,
   });
-  registerEncryptedWalletBackupKeyHandle(handle);
+  registerEncryptedWalletBackupKeyHandle(handle, {
+    walletId: deriveDurableCustodyWalletId(seed),
+  });
   KEY_AUTHORITIES.set(handle, {
     realm,
     seedDigest: sha256(seed),
@@ -1649,7 +1749,8 @@ export async function prepareEncryptedWalletBackupProof(
   const keysetWire = [keyset.kindCode, keyset.text];
   const commitmentPreimage = [
     1,
-    "proof-record-commitment",
+    "wallet-record-commitment",
+    ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
     mint,
     unit,
     keysetWire,
@@ -1674,9 +1775,8 @@ export async function prepareEncryptedWalletBackupProof(
     ctfMetadata,
     effectiveNow,
   );
-  const record = [
+  const recordBody = [
     hexToBytes(proofId),
-    hexToBytes(commitment),
     mint,
     unit,
     keysetWire,
@@ -1690,13 +1790,23 @@ export async function prepareEncryptedWalletBackupProof(
     createdAt,
     updatedAt,
   ];
+  const record = [
+    1,
+    ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+    hexToBytes(proofId),
+    hexToBytes(commitment),
+    ...recordBody.slice(1),
+  ];
   if (
-    measureCanonicalCbor(record) > ENCRYPTED_WALLET_BACKUP_PROOF_CBOR_MAX_BYTES
+    measureCanonicalCbor(record) > ENCRYPTED_WALLET_BACKUP_DATA_CBOR_MAX_BYTES
   ) {
     throw new Error("backup proof record exceeds the encoded size limit");
   }
   const recordBytes = encodeCanonical(record);
-  const handle = Object.freeze({ proofId, commitment });
+  const handle = Object.freeze({
+    proofId,
+    commitment,
+  });
   PREPARED_PROOF_AUTHORITIES.set(handle, {
     keyAuthority: authority,
     proofId,
@@ -1712,7 +1822,27 @@ export async function prepareEncryptedWalletBackupProof(
     updatedAtUnixSeconds: updatedAt,
     recordBytes,
   });
-  return handle;
+  return issuePreparedEncryptedWalletBackupRecord(handle, {
+    recordId: proofId,
+    commitment,
+    recordKindCode: ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+    keyHandle: input.keyHandle,
+    canonicalRecord: recordBytes,
+    snapshotId: committedSnapshot.row.snapshotId,
+    snapshotRevision: committedSnapshot.row.revision,
+    manifestEntry: [
+      ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+      hexToBytes(proofId),
+      hexToBytes(commitment),
+      mint,
+      unit,
+      amount,
+      proofKindCode,
+      ctfMetadata,
+      createdAt,
+      updatedAt,
+    ],
+  });
 }
 
 function requireBackupEligibleClassification(
@@ -1791,14 +1921,15 @@ async function requireAuthoritativeStorageSnapshot(
       if (!callbackOpen || callbackCalls++ !== 0)
         throw new Error("proof snapshot transaction callback is invalid");
       const row = decodeCommittedProofSnapshot(rawRow);
-      const terminalClassification =
-        requireAuthoritativeTerminalClassification({
+      const terminalClassification = requireAuthoritativeTerminalClassification(
+        {
           input,
           row,
           mint,
           keysetId: keyset.text,
           ctfTuple,
-        });
+        },
+      );
       requireBackupEligibleClassification(
         row,
         row.proofId,
@@ -1952,8 +2083,8 @@ async function requireCommittedSnapshotSeal(
       if (
         seal.snapshotId !== expected.snapshotId ||
         seal.snapshotRevision !== expected.snapshotRevision ||
-        seal.proofCount !== expected.proofCount ||
-        seal.proofSetDigest !== expected.proofSetDigest
+        seal.recordCount !== expected.recordCount ||
+        seal.recordSetDigest !== expected.recordSetDigest
       ) {
         throw new Error("committed wallet snapshot changed");
       }
@@ -1987,8 +2118,8 @@ function decodeCommittedSnapshotSeal(
     "schemaVersion",
     "snapshotId",
     "snapshotRevision",
-    "proofCount",
-    "proofSetDigest",
+    "recordCount",
+    "recordSetDigest",
   ]);
   if (seal.schemaVersion !== 1)
     throw new Error("unsupported backup snapshot seal version");
@@ -1999,16 +2130,16 @@ function decodeCommittedSnapshotSeal(
       seal.snapshotRevision,
       "sealed snapshot revision",
     ),
-    proofCount: requireInteger(
-      seal.proofCount,
+    recordCount: requireInteger(
+      seal.recordCount,
       0,
       ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX,
-      "sealed proof count",
+      "sealed record count",
     ),
-    proofSetDigest: requireLowerHex(
-      seal.proofSetDigest,
+    recordSetDigest: requireLowerHex(
+      seal.recordSetDigest,
       32,
-      "sealed proof-set digest",
+      "sealed record-set digest",
     ),
   });
 }
@@ -2110,7 +2241,7 @@ export async function prepareEncryptedWalletBackupProofs(input: {
   if (
     !Array.isArray(input.records) ||
     input.records.length === 0 ||
-    input.records.length > ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX
+    input.records.length > ENCRYPTED_WALLET_BACKUP_RECORD_COUNT_MAX
   ) {
     throw new Error("backup proof count is invalid");
   }
@@ -2135,51 +2266,66 @@ export async function prepareEncryptedWalletBackupProofs(input: {
   return result;
 }
 
-export function packEncryptedWalletBackupProofChunk(
-  handles: readonly PreparedEncryptedWalletBackupProof[],
-): PreparedEncryptedWalletBackupProofChunk {
+export function packEncryptedWalletBackupDataChunk(
+  handles: readonly PreparedEncryptedWalletBackupRecord[],
+): PreparedEncryptedWalletBackupDataChunk {
   if (
     !Array.isArray(handles) ||
     handles.length === 0 ||
-    handles.length > ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX
+    handles.length > ENCRYPTED_WALLET_BACKUP_RECORD_COUNT_MAX
   ) {
-    throw new Error("backup proof count is invalid");
+    throw new Error("backup record count is invalid");
   }
   const authorities = handles
-    .map((handle) => requireProofAuthority(handle))
-    .sort((left, right) => compareHex(left.proofId, right.proofId));
+    .map((handle) => requirePreparedEncryptedWalletBackupRecord(handle))
+    .sort((left, right) => compareHex(left.recordId, right.recordId));
   if (
-    new Set(authorities.map((authority) => authority.proofId)).size !==
+    new Set(authorities.map((authority) => authority.recordId)).size !==
     authorities.length
   ) {
-    throw new Error("backup proof id is duplicated");
+    throw new Error("backup record id is duplicated");
   }
-  const records = authorities.map((authority) => decode(authority.recordBytes));
-  const root = [1, ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND, records];
+  const records = authorities.map((authority) =>
+    decode(authority.canonicalRecord),
+  );
+  const root = [1, ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND, records];
   const measured = measureCanonicalCbor(root);
-  if (measured > ENCRYPTED_WALLET_BACKUP_PROOF_CBOR_MAX_BYTES) {
-    throw new Error("backup proof chunk exceeds the canonical CBOR limit");
+  if (measured > ENCRYPTED_WALLET_BACKUP_DATA_CBOR_MAX_BYTES) {
+    throw new Error("backup data chunk exceeds the canonical CBOR limit");
   }
   const canonical = encodeCanonical(root);
   const bindings = Object.freeze(
-    authorities.map((authority) =>
-      Object.freeze({
-        proofId: authority.proofId,
-        commitment: authority.commitment,
-      }),
-    ),
+    authorities.map((authority) => {
+      switch (authority.recordKindCode) {
+        case ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD:
+          return Object.freeze({
+            proofId: authority.recordId,
+            commitment: authority.commitment,
+          });
+        case 1:
+        case 2:
+          return Object.freeze({
+            recordId: authority.recordId,
+            commitment: authority.commitment,
+            recordKindCode: authority.recordKindCode,
+          });
+        default:
+          return assertNever(authority.recordKindCode);
+      }
+    }),
   );
   const chunk = Object.freeze({
-    kindCode: ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND,
+    kindCode: ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND,
     bindings,
   });
   const snapshotId = authorities[0]!.snapshotId;
   const snapshotRevision = authorities[0]!.snapshotRevision;
-  const keyAuthority = authorities[0]!.keyAuthority;
+  const keyHandle = authorities[0]!.keyHandle as EncryptedWalletBackupKeyHandle;
+  const keyAuthority = requireKeyAuthority(keyHandle);
   if (
     authorities.some(
       (authority) =>
-        authority.keyAuthority !== keyAuthority ||
+        authority.keyHandle !== keyHandle ||
         authority.snapshotId !== snapshotId ||
         authority.snapshotRevision !== snapshotRevision,
     )
@@ -2189,7 +2335,7 @@ export function packEncryptedWalletBackupProofChunk(
   PREPARED_CHUNK_AUTHORITIES.set(chunk, {
     keyAuthority,
     canonical,
-    proofs: Object.freeze([...authorities]),
+    records: Object.freeze([...authorities]),
     snapshotId,
     snapshotRevision,
   });
@@ -2198,7 +2344,7 @@ export function packEncryptedWalletBackupProofChunk(
 
 export async function prepareEncryptedWalletBackupObject(input: {
   keyHandle: EncryptedWalletBackupKeyHandle;
-  chunk: PreparedEncryptedWalletBackupProofChunk;
+  chunk: PreparedEncryptedWalletBackupDataChunk;
   generation: number;
   runtime?: EncryptedWalletBackupRuntime;
   objectIdExists?: (objectId: string) => boolean | Promise<boolean>;
@@ -2206,7 +2352,7 @@ export async function prepareEncryptedWalletBackupObject(input: {
   const authority = requireKeyAuthority(input.keyHandle);
   const chunkAuthority = requireChunkAuthority(input.chunk);
   if (chunkAuthority.keyAuthority !== authority)
-    throw new Error("proof chunk belongs to a different backup key");
+    throw new Error("data chunk belongs to a different backup key");
   const generation = requireInteger(
     input.generation,
     1,
@@ -2247,12 +2393,12 @@ export async function prepareEncryptedWalletBackupObject(input: {
     const nonce = randomBytes(runtime, 12);
     const aad = encodeCanonical([
       1,
-      ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND,
+      ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND,
       authority.realm,
       authority.vaultIdBytes,
       objectIdBytes,
       generation,
-      ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES,
+      ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES,
     ]);
     const objectKey = await hkdf(
       runtime.subtle,
@@ -2263,10 +2409,10 @@ export async function prepareEncryptedWalletBackupObject(input: {
         "object-key",
         authority.realm,
         authority.vaultIdBytes,
-        ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND,
+        ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND,
       ]),
     );
-    const frame = new Uint8Array(ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES);
+    const frame = new Uint8Array(ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES);
     writeUint32(frame, 0, chunkAuthority.canonical.byteLength);
     frame.set(chunkAuthority.canonical, 4);
     const key = await runtime.subtle.importKey(
@@ -2294,12 +2440,12 @@ export async function prepareEncryptedWalletBackupObject(input: {
     );
     const prepared = Object.freeze({
       formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
-      kindCode: ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND,
+      kindCode: ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND,
       realm: authority.realm,
       vaultId: bytesToHex(authority.vaultIdBytes),
       objectId,
       generation,
-      paddedLength: ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES,
+      paddedLength: ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES,
       digest,
     });
     PREPARED_OBJECT_AUTHORITIES.set(prepared, {
@@ -2335,7 +2481,7 @@ export async function prepareEncryptedWalletBackupManifest(input: {
   generation: number;
   snapshotNonce: Uint8Array;
   chunks: readonly Readonly<{
-    chunk: PreparedEncryptedWalletBackupProofChunk;
+    chunk: PreparedEncryptedWalletBackupDataChunk;
     object: PreparedEncryptedWalletBackupObject;
   }>[];
   emptySnapshot?: Readonly<{ snapshotId: string; snapshotRevision: number }>;
@@ -2369,7 +2515,7 @@ export async function prepareEncryptedWalletBackupManifest(input: {
   const seenObjectIds = new Set<string>();
   const seenDigests = new Set<string>();
   const bindings: Array<{
-    proof: PreparedProofAuthority;
+    record: ReturnType<typeof requirePreparedEncryptedWalletBackupRecord>;
     object: PreparedEncryptedWalletBackupObject;
   }> = [];
   let snapshotId: string | undefined;
@@ -2380,11 +2526,11 @@ export async function prepareEncryptedWalletBackupManifest(input: {
     if (
       objectAuthority.sourceChunk !== binding.chunk ||
       chunkAuthority.keyAuthority !== authority ||
-      binding.object.kindCode !== ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND ||
+      binding.object.kindCode !== ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND ||
       binding.object.realm !== authority.realm ||
       binding.object.vaultId !== bytesToHex(authority.vaultIdBytes) ||
       binding.object.paddedLength !==
-        ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES ||
+        ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES ||
       binding.object.generation > generation
     ) {
       throw new Error("manifest chunk binding is invalid");
@@ -2405,23 +2551,25 @@ export async function prepareEncryptedWalletBackupManifest(input: {
     ) {
       throw new Error("committed wallet snapshot changed");
     }
-    for (const proof of chunkAuthority.proofs)
-      bindings.push({ proof, object: binding.object });
+    for (const record of chunkAuthority.records)
+      bindings.push({ record, object: binding.object });
   }
   bindings.sort((left, right) =>
-    compareHex(left.proof.proofId, right.proof.proofId),
+    compareHex(left.record.recordId, right.record.recordId),
   );
   const seenCommitments = new Set<string>();
   for (let index = 1; index < bindings.length; index += 1) {
-    if (bindings[index - 1]!.proof.proofId === bindings[index]!.proof.proofId) {
-      throw new Error("manifest proof binding is duplicated");
+    if (
+      bindings[index - 1]!.record.recordId === bindings[index]!.record.recordId
+    ) {
+      throw new Error("manifest record binding is duplicated");
     }
   }
   for (const binding of bindings) {
-    if (seenCommitments.has(binding.proof.commitment)) {
-      throw new Error("manifest proof binding is duplicated");
+    if (seenCommitments.has(binding.record.commitment)) {
+      throw new Error("manifest record binding is duplicated");
     }
-    seenCommitments.add(binding.proof.commitment);
+    seenCommitments.add(binding.record.commitment);
   }
   if (input.emptySnapshot !== undefined) {
     snapshotId = requireBoundedText(
@@ -2434,14 +2582,15 @@ export async function prepareEncryptedWalletBackupManifest(input: {
       "empty snapshot revision",
     );
   }
-  const proofSetDigest = bytesToHex(
+  const recordSetDigest = bytesToHex(
     sha256(
       encodeCanonical([
         1,
-        "eligible-proof-set",
+        "eligible-record-set",
         bindings.map((binding) => [
-          hexToBytes(binding.proof.proofId),
-          hexToBytes(binding.proof.commitment),
+          binding.record.recordKindCode,
+          hexToBytes(binding.record.recordId),
+          hexToBytes(binding.record.commitment),
         ]),
       ]),
     ),
@@ -2450,12 +2599,13 @@ export async function prepareEncryptedWalletBackupManifest(input: {
     schemaVersion: 1,
     snapshotId: snapshotId!,
     snapshotRevision: snapshotRevision!,
-    proofCount: bindings.length,
-    proofSetDigest,
+    recordCount: bindings.length,
+    recordSetDigest,
   });
-  const wireEntries = bindings.map(({ proof, object }) =>
-    manifestEntryWire(proof, object),
+  const wireEntries = bindings.map(({ record, object }) =>
+    manifestEntryWire(record, object),
   );
+  validatePendingSendManifestEntries(wireEntries.map(decodeManifestEntry));
   const pageEntries: unknown[][][] = [];
   let current: unknown[][] = [];
   for (const entry of wireEntries) {
@@ -2522,7 +2672,7 @@ export async function prepareEncryptedWalletBackupManifest(input: {
     snapshotNonce: bytesToHex(snapshotNonce),
     snapshotId: snapshotId!,
     snapshotRevision: snapshotRevision!,
-    proofCount: bindings.length,
+    recordCount: bindings.length,
     pageCount: pages.length,
     pages: Object.freeze(pages),
     chunkObjects: Object.freeze(input.chunks.map((binding) => binding.object)),
@@ -2540,7 +2690,7 @@ export async function prepareEncryptedWalletBackupManifest(input: {
 
 /**
  * Builds an exact child from authenticated parent metadata plus newly prepared
- * proofs. Inherited entries remain opaque manifest metadata and never become
+ * records. Inherited entries remain opaque manifest metadata and never become
  * proof-selection authority.
  */
 export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
@@ -2550,10 +2700,10 @@ export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
   parentEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence;
   parentPages: readonly DecryptedEncryptedWalletBackupManifestPage[];
   chunks: readonly Readonly<{
-    chunk: PreparedEncryptedWalletBackupProofChunk;
+    chunk: PreparedEncryptedWalletBackupDataChunk;
     object: PreparedEncryptedWalletBackupObject;
   }>[];
-  removedProofIds: readonly string[];
+  removedRecordIds: readonly string[];
   snapshot: Readonly<{ snapshotId: string; snapshotRevision: number }>;
   snapshotStore: EncryptedWalletBackupSnapshotSealStore;
   runtime?: EncryptedWalletBackupRuntime;
@@ -2598,8 +2748,8 @@ export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
     !Array.isArray(input.parentPages) ||
     !Array.isArray(input.chunks) ||
     input.chunks.length > 1_024 ||
-    !Array.isArray(input.removedProofIds) ||
-    input.removedProofIds.length >
+    !Array.isArray(input.removedRecordIds) ||
+    input.removedRecordIds.length >
       ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX
   ) {
     throw new Error("incremental manifest input is invalid");
@@ -2609,7 +2759,7 @@ export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
   );
   if (
     parentPages.length === 0
-      ? observation.head.proofCount !== 0
+      ? observation.head.recordCount !== 0
       : parentPages.some((page, index) => {
           const pageAuthority = DECRYPTED_MANIFEST_PAGE_AUTHORITIES.get(page);
           return (
@@ -2625,27 +2775,27 @@ export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
       "incremental manifest parent pages are incomplete or foreign",
     );
   const parentEntries = parentPages.flatMap((page) => page.entries);
-  if (parentEntries.length !== observation.head.proofCount) {
-    throw new Error("incremental manifest parent proof count changed");
+  if (parentEntries.length !== observation.head.recordCount) {
+    throw new Error("incremental manifest parent record count changed");
   }
   const removed = new Set(
-    input.removedProofIds.map((proofId) =>
-      requireLowerHex(proofId, 32, "removed backup proof id"),
+    input.removedRecordIds.map((recordId) =>
+      requireLowerHex(recordId, 32, "removed backup record id"),
     ),
   );
-  if (removed.size !== input.removedProofIds.length)
-    throw new Error("removed backup proof id is duplicated");
+  if (removed.size !== input.removedRecordIds.length)
+    throw new Error("removed backup record id is duplicated");
 
   const entries = new Map<string, EncryptedWalletBackupManifestEntry>();
-  const parentEntryByProofId = new Map(
-    parentEntries.map((entry) => [entry.proofId, entry]),
+  const parentEntryByRecordId = new Map(
+    parentEntries.map((entry) => [entry.recordId, entry]),
   );
   for (const entry of parentEntries) {
-    if (removed.has(entry.proofId)) removed.delete(entry.proofId);
-    else entries.set(entry.proofId, entry);
+    if (removed.has(entry.recordId)) removed.delete(entry.recordId);
+    else entries.set(entry.recordId, entry);
   }
   const newChunkObjects: PreparedEncryptedWalletBackupObject[] = [];
-  const newProofIds = new Set<string>();
+  const newRecordIds = new Set<string>();
   const newObjectIds = new Set<string>();
   const newObjectDigests = new Set<string>();
   const repackedSourceObjectIdsByObjectId = new Map<
@@ -2658,7 +2808,7 @@ export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
     if (
       objectAuthority.sourceChunk !== binding.chunk ||
       chunkAuthority.keyAuthority !== authority ||
-      binding.object.kindCode !== ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND ||
+      binding.object.kindCode !== ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND ||
       binding.object.generation > generation ||
       chunkAuthority.snapshotId !== snapshotId ||
       chunkAuthority.snapshotRevision !== snapshotRevision
@@ -2675,23 +2825,23 @@ export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
     newObjectDigests.add(binding.object.digest);
     newChunkObjects.push(binding.object);
     const repackedSources = new Set<string>();
-    for (const proof of chunkAuthority.proofs) {
-      if (newProofIds.has(proof.proofId)) {
-        throw new Error("incremental manifest new proof id is duplicated");
+    for (const record of chunkAuthority.records) {
+      if (newRecordIds.has(record.recordId)) {
+        throw new Error("incremental manifest new record id is duplicated");
       }
-      newProofIds.add(proof.proofId);
-      const parentEntry = parentEntryByProofId.get(proof.proofId);
+      newRecordIds.add(record.recordId);
+      const parentEntry = parentEntryByRecordId.get(record.recordId);
       if (
         parentEntry !== undefined &&
-        parentEntry.chunkObjectId !== binding.object.objectId
+        parentEntry.dataObjectId !== binding.object.objectId
       ) {
-        repackedSources.add(parentEntry.chunkObjectId);
+        repackedSources.add(parentEntry.dataObjectId);
       }
       entries.set(
-        proof.proofId,
-        decodeManifestEntry(manifestEntryWire(proof, binding.object)),
+        record.recordId,
+        decodeManifestEntry(manifestEntryWire(record, binding.object)),
       );
-      removed.delete(proof.proofId);
+      removed.delete(record.recordId);
     }
     repackedSourceObjectIdsByObjectId.set(
       binding.object.objectId,
@@ -2700,17 +2850,18 @@ export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
   }
   if (removed.size !== 0)
     throw new Error(
-      "removed backup proof is not present in parent or replacement",
+      "removed backup record is not present in parent or replacement",
     );
   const sortedEntries = [...entries.values()].sort((left, right) =>
-    compareHex(left.proofId, right.proofId),
+    compareHex(left.recordId, right.recordId),
   );
+  validatePendingSendManifestEntries(sortedEntries);
   for (const object of newChunkObjects) {
     if (
       !sortedEntries.some(
         (entry) =>
-          entry.chunkObjectId === object.objectId &&
-          entry.chunkDigest === object.digest,
+          entry.dataObjectId === object.objectId &&
+          entry.dataDigest === object.digest,
       )
     ) {
       throw new Error("incremental manifest chunk contributes no final entry");
@@ -2720,15 +2871,16 @@ export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
     new Set(sortedEntries.map((entry) => entry.commitment)).size !==
     sortedEntries.length
   ) {
-    throw new Error("incremental manifest proof binding is duplicated");
+    throw new Error("incremental manifest record binding is duplicated");
   }
-  const proofSetDigest = bytesToHex(
+  const recordSetDigest = bytesToHex(
     sha256(
       encodeCanonical([
         1,
-        "eligible-proof-set",
+        "eligible-record-set",
         sortedEntries.map((entry) => [
-          hexToBytes(entry.proofId),
+          entry.recordKindCode,
+          hexToBytes(entry.recordId),
           hexToBytes(entry.commitment),
         ]),
       ]),
@@ -2738,15 +2890,15 @@ export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
     schemaVersion: 1,
     snapshotId,
     snapshotRevision,
-    proofCount: sortedEntries.length,
-    proofSetDigest,
+    recordCount: sortedEntries.length,
+    recordSetDigest,
   });
 
   const newChunkIds = new Set(newChunkObjects.map((object) => object.objectId));
   const inheritedChunkReferences = new Map<string, string>();
   for (const entry of sortedEntries) {
-    if (!newChunkIds.has(entry.chunkObjectId)) {
-      inheritedChunkReferences.set(entry.chunkObjectId, entry.chunkDigest);
+    if (!newChunkIds.has(entry.dataObjectId)) {
+      inheritedChunkReferences.set(entry.dataObjectId, entry.dataDigest);
     }
   }
   const parentAuthority = AUTHENTICATED_MANIFEST_HEAD_VALUES.get(
@@ -2827,7 +2979,7 @@ export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
     snapshotNonce: bytesToHex(snapshotNonce),
     snapshotId,
     snapshotRevision,
-    proofCount: sortedEntries.length,
+    recordCount: sortedEntries.length,
     pageCount: pages.length,
     pages: Object.freeze(pages),
     chunkObjects: Object.freeze(newChunkObjects),
@@ -2930,21 +3082,21 @@ export function prepareEncryptedWalletBackupManifestHead(input: {
     throw new Error("manifest object digest is duplicated");
   }
   if (
-    (manifest.proofCount === 0 && allObjectIds.length !== 0) ||
-    (manifest.proofCount > 0 &&
+    (manifest.recordCount === 0 && allObjectIds.length !== 0) ||
+    (manifest.recordCount > 0 &&
       (manifest.pages.length === 0 || chunkReferenceRecords.length === 0)) ||
     chunkReferenceRecords.length <
       Math.ceil(
-        manifest.proofCount / ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX,
+        manifest.recordCount / ENCRYPTED_WALLET_BACKUP_RECORD_COUNT_MAX,
       ) ||
-    chunkReferenceRecords.length > manifest.proofCount ||
+    chunkReferenceRecords.length > manifest.recordCount ||
     manifest.pages.length <
       Math.ceil(
-        manifest.proofCount / ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX,
+        manifest.recordCount / ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX,
       ) ||
-    manifest.pages.length > manifest.proofCount
+    manifest.pages.length > manifest.recordCount
   ) {
-    throw new Error("manifest proof count does not match reference bounds");
+    throw new Error("manifest record count does not match reference bounds");
   }
   const referenceSet = [1, "reference-set", pageReferences, chunkReferences];
   const canonicalReferenceSet = encodeCanonical(referenceSet);
@@ -3007,7 +3159,7 @@ export function prepareEncryptedWalletBackupManifestHead(input: {
     hexToBytes(manifest.snapshotNonce),
     pageReferences,
     chunkReferences,
-    manifest.proofCount,
+    manifest.recordCount,
     storedBytes,
     referenceSetDigest,
   ];
@@ -3044,7 +3196,7 @@ export function prepareEncryptedWalletBackupManifestHead(input: {
     referenceSetDigest: bytesToHex(referenceSetDigest),
     objectCount: allObjectIds.length,
     storedBytes,
-    proofCount: manifest.proofCount,
+    recordCount: manifest.recordCount,
   });
   PREPARED_MANIFEST_HEADS.set(head, {
     head,
@@ -3884,8 +4036,8 @@ export async function decryptEncryptedWalletBackupManifestPage(input: {
     for (const entry of page.entries) {
       requireAuthenticatedChunkReference(
         observation.head,
-        entry.chunkObjectId,
-        entry.chunkDigest,
+        entry.dataObjectId,
+        entry.dataDigest,
       );
     }
     DECRYPTED_MANIFEST_PAGE_AUTHORITIES.set(page, {
@@ -3930,7 +4082,7 @@ export function beginEncryptedWalletBackupManifestRestore(input: {
   if (
     pageCount < 0 ||
     pageCount > 1_024 ||
-    (observation.head.proofCount === 0) !== (pageCount === 0)
+    (observation.head.recordCount === 0) !== (pageCount === 0)
   ) {
     throw new Error("backup manifest restore page count is invalid");
   }
@@ -3940,7 +4092,7 @@ export function beginEncryptedWalletBackupManifestRestore(input: {
     pageCount,
     nextPageIndex: 0,
     restoredEntryCount: 0,
-    lastProofId: null,
+    lastRecordId: null,
     consumed: false,
   });
 }
@@ -3978,21 +4130,21 @@ export function advanceEncryptedWalletBackupManifestRestore(input: {
   if (
     first === undefined ||
     last === undefined ||
-    (cursorAuthority.lastProofId !== null &&
-      compareHex(cursorAuthority.lastProofId, first.proofId) >= 0)
+    (cursorAuthority.lastRecordId !== null &&
+      compareHex(cursorAuthority.lastRecordId, first.recordId) >= 0)
   ) {
-    throw new Error("backup manifest restore proof order is invalid");
+    throw new Error("backup manifest restore record order is invalid");
   }
   const restoredEntryCount =
     cursorAuthority.restoredEntryCount + input.manifestPage.entries.length;
   const nextPageIndex = cursorAuthority.nextPageIndex + 1;
   const complete = nextPageIndex === cursorAuthority.pageCount;
   if (
-    restoredEntryCount > cursorAuthority.head.proofCount ||
-    (complete && restoredEntryCount !== cursorAuthority.head.proofCount) ||
-    (!complete && restoredEntryCount >= cursorAuthority.head.proofCount)
+    restoredEntryCount > cursorAuthority.head.recordCount ||
+    (complete && restoredEntryCount !== cursorAuthority.head.recordCount) ||
+    (!complete && restoredEntryCount >= cursorAuthority.head.recordCount)
   ) {
-    throw new Error("backup manifest restore proof count is invalid");
+    throw new Error("backup manifest restore record count is invalid");
   }
   cursorAuthority.consumed = true;
   return issueManifestRestoreCursor({
@@ -4001,7 +4153,7 @@ export function advanceEncryptedWalletBackupManifestRestore(input: {
     pageCount: cursorAuthority.pageCount,
     nextPageIndex,
     restoredEntryCount,
-    lastProofId: last.proofId,
+    lastRecordId: last.recordId,
     consumed: false,
   });
 }
@@ -4099,7 +4251,10 @@ export function deriveDurableWalletEncryptedBackupReceipt(input: {
     "backup proof commitment",
   );
   const matches = input.manifestPage.entries.filter(
-    (entry) => entry.proofId === proofId,
+    (entry): entry is EncryptedWalletBackupProofManifestEntry =>
+      entry.recordKindCode ===
+        ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD &&
+      entry.proofId === proofId,
   );
   if (matches.length !== 1 || matches[0]!.commitment !== proofCommitment) {
     throw new Error("proof is not a member of the authenticated backup head");
@@ -4107,8 +4262,8 @@ export function deriveDurableWalletEncryptedBackupReceipt(input: {
   const entry = matches[0]!;
   requireAuthenticatedChunkReference(
     observation.head,
-    entry.chunkObjectId,
-    entry.chunkDigest,
+    entry.dataObjectId,
+    entry.dataDigest,
   );
   const receipt = Object.freeze(
     decodeDurableWalletEncryptedBackupReceipt({
@@ -4118,7 +4273,7 @@ export function deriveDurableWalletEncryptedBackupReceipt(input: {
       generation: observation.head.generation,
       snapshotId: observation.head.snapshotId,
       manifestDigest: observation.head.manifestDigest,
-      chunkDigest: entry.chunkDigest,
+      chunkDigest: entry.dataDigest,
       proofCommitment,
     }),
   );
@@ -4128,7 +4283,7 @@ export function deriveDurableWalletEncryptedBackupReceipt(input: {
 export async function restoreEncryptedWalletBackupProofs(input: {
   keyHandle: EncryptedWalletBackupKeyHandle;
   headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence;
-  proofChunk: DecryptedEncryptedWalletBackupProofChunk;
+  dataChunk: DecryptedEncryptedWalletBackupDataChunk;
   selections: readonly EncryptedWalletBackupRestoreSelection[];
   restoreMode: "complete-origin" | "hydrate-existing";
   effectiveNowUnixSeconds: number;
@@ -4145,8 +4300,8 @@ export async function restoreEncryptedWalletBackupProofs(input: {
       ? AUTHENTICATED_HEAD_OBSERVATIONS.get(input.headEvidence)
       : undefined;
   const chunkAuthority =
-    typeof input.proofChunk === "object" && input.proofChunk !== null
-      ? DECRYPTED_PROOF_CHUNK_AUTHORITIES.get(input.proofChunk)
+    typeof input.dataChunk === "object" && input.dataChunk !== null
+      ? DECRYPTED_DATA_CHUNK_AUTHORITIES.get(input.dataChunk)
       : undefined;
   if (
     observation === undefined ||
@@ -4176,16 +4331,19 @@ export async function restoreEncryptedWalletBackupProofs(input: {
   );
   const selected: Array<{
     record: UnverifiedEncryptedWalletBackupProof;
-    entry: EncryptedWalletBackupManifestEntry;
+    entry: EncryptedWalletBackupProofManifestEntry;
     page: DecryptedEncryptedWalletBackupManifestPage;
   }> = [];
   const selectedIds = new Set<string>();
   const chunkRecordsById = new Map(
-    chunkAuthority.records.map((record) => [record.proofId, record]),
+    proofRecordsFromDataChunk(chunkAuthority.records).map((record) => [
+      record.proofId,
+      record,
+    ]),
   );
   const pageEntriesById = new WeakMap<
     object,
-    ReadonlyMap<string, EncryptedWalletBackupManifestEntry>
+    ReadonlyMap<string, EncryptedWalletBackupProofManifestEntry>
   >();
   for (const rawSelection of input.selections) {
     const selection = requireRecord(rawSelection, "restored proof selection");
@@ -4210,7 +4368,13 @@ export async function restoreEncryptedWalletBackupProofs(input: {
     let entriesById = pageEntriesById.get(page!);
     if (entriesById === undefined) {
       entriesById = new Map(
-        page!.entries.map((entry) => [entry.proofId, entry]),
+        page!.entries
+          .filter(
+            (entry): entry is EncryptedWalletBackupProofManifestEntry =>
+              entry.recordKindCode ===
+              ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+          )
+          .map((entry) => [entry.proofId, entry]),
       );
       pageEntriesById.set(page!, entriesById);
     }
@@ -4219,8 +4383,8 @@ export async function restoreEncryptedWalletBackupProofs(input: {
     if (
       entry === undefined ||
       record === undefined ||
-      entry.chunkObjectId !== chunkAuthority.objectId ||
-      entry.chunkDigest !== chunkAuthority.objectDigest ||
+      entry.dataObjectId !== chunkAuthority.objectId ||
+      entry.dataDigest !== chunkAuthority.objectDigest ||
       !restoreRecordMatchesManifestEntry(record, entry)
     ) {
       throw new Error("restored proof membership is invalid");
@@ -4355,8 +4519,7 @@ export async function restoreEncryptedWalletBackupProofs(input: {
         generation: observation.head!.generation,
         manifestDigest: observation.head!.manifestDigest,
         parentGeneration: observation.head!.parent?.generation ?? null,
-        parentManifestDigest:
-          observation.head!.parent?.manifestDigest ?? null,
+        parentManifestDigest: observation.head!.parent?.manifestDigest ?? null,
         chunkObjectId: chunkAuthority.objectId,
         chunkDigest: chunkAuthority.objectDigest,
         proofId: record.proofId,
@@ -4407,6 +4570,22 @@ export async function restoreEncryptedWalletBackupProofs(input: {
     manifestDigest: observation.head.manifestDigest,
     proofCount: candidates.length,
     proofIds: Object.freeze(candidates.map((row) => row.proofId)),
+  });
+}
+
+function proofRecordsFromDataChunk(
+  records: readonly UnverifiedEncryptedWalletBackupRecord[],
+): readonly UnverifiedEncryptedWalletBackupProof[] {
+  return records.flatMap((record) => {
+    switch (record.recordKindCode) {
+      case ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD:
+        return [record.proof];
+      case 1:
+      case 2:
+        return [];
+      default:
+        return assertNever(record);
+    }
   });
 }
 
@@ -4468,7 +4647,7 @@ function classifyEncryptedWalletBackupRestoreProof(input: {
 
 function restoreRecordMatchesManifestEntry(
   record: UnverifiedEncryptedWalletBackupProof,
-  entry: EncryptedWalletBackupManifestEntry,
+  entry: EncryptedWalletBackupProofManifestEntry,
 ): boolean {
   return (
     record.proofId === entry.proofId &&
@@ -5245,7 +5424,8 @@ function deriveRestoreProofCommitment(
     sha256(
       encodeCanonical([
         1,
-        "proof-record-commitment",
+        "wallet-record-commitment",
+        ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
         record.mint,
         record.unit,
         [keyset.kindCode, keyset.text],
@@ -5408,22 +5588,22 @@ async function prepareManifestObject(input: {
   }
 }
 
-export async function decryptEncryptedWalletBackupProofChunk(input: {
+export async function decryptEncryptedWalletBackupDataChunk(input: {
   keyHandle: EncryptedWalletBackupKeyHandle;
   seed: Uint8Array;
   object: EncryptedWalletBackupWireObject;
   cooperativeYield?: () => void | Promise<void>;
-}): Promise<DecryptedEncryptedWalletBackupProofChunk> {
+}): Promise<DecryptedEncryptedWalletBackupDataChunk> {
   try {
     const authority = requireKeyAuthority(input.keyHandle);
     const object = requireWireObject(input.object, authority);
-    const records = await decryptProofChunk({ ...input, object });
+    const records = await decryptDataChunkRecords({ ...input, object });
     const handle = Object.freeze({
       formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
-      kindCode: ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND,
+      kindCode: ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND,
       recordCount: records.length,
     });
-    DECRYPTED_PROOF_CHUNK_AUTHORITIES.set(handle, {
+    DECRYPTED_DATA_CHUNK_AUTHORITIES.set(handle, {
       keyAuthority: authority,
       objectId: object.objectId,
       objectDigest: object.digest,
@@ -5436,12 +5616,226 @@ export async function decryptEncryptedWalletBackupProofChunk(input: {
   }
 }
 
-async function decryptProofChunk(input: {
+export interface EncryptedWalletBackupPendingSendParentFragmentSelection {
+  readonly dataChunk: DecryptedEncryptedWalletBackupDataChunk;
+  readonly manifestPage: DecryptedEncryptedWalletBackupManifestPage;
+  readonly recordId: string;
+}
+
+export interface EncryptedWalletBackupPendingSendProgressionFragmentSelection {
+  readonly dataChunk: DecryptedEncryptedWalletBackupDataChunk;
+  readonly manifestPage: DecryptedEncryptedWalletBackupManifestPage;
+  readonly recordId: string;
+}
+
+export function restoreEncryptedWalletBackupPendingSendParent(input: {
+  keyHandle: EncryptedWalletBackupKeyHandle;
+  headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence;
+  fragments: readonly EncryptedWalletBackupPendingSendParentFragmentSelection[];
+}): RestoredEncryptedWalletBackupPendingSendParent {
+  const keyAuthority = requireKeyAuthority(input.keyHandle);
+  const observation = AUTHENTICATED_HEAD_OBSERVATIONS.get(input.headEvidence);
+  if (
+    observation === undefined ||
+    observation.head === null ||
+    observation.keyAuthority !== keyAuthority ||
+    !Array.isArray(input.fragments) ||
+    input.fragments.length < 1 ||
+    input.fragments.length >
+      ENCRYPTED_WALLET_BACKUP_PENDING_SEND_MAX_FRAGMENT_COUNT
+  ) {
+    throw new Error("restored pending-send parent fragment selection count is invalid");
+  }
+  const fragments = input.fragments.map((selection) =>
+    selectPendingSendParentFragment(selection, keyAuthority, observation.head!),
+  );
+  return aggregateEncryptedWalletBackupPendingSendParentFragments(fragments);
+}
+
+function restoreEncryptedWalletBackupPendingSendProgression(input: {
+  keyHandle: EncryptedWalletBackupKeyHandle;
+  headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence;
+  fragments: readonly EncryptedWalletBackupPendingSendProgressionFragmentSelection[];
+}): RestoredEncryptedWalletBackupPendingSendProgression {
+  const keyAuthority = requireKeyAuthority(input.keyHandle);
+  const observation = AUTHENTICATED_HEAD_OBSERVATIONS.get(input.headEvidence);
+  if (
+    observation === undefined ||
+    observation.head === null ||
+    observation.keyAuthority !== keyAuthority ||
+    !Array.isArray(input.fragments) ||
+    input.fragments.length < 1 ||
+    input.fragments.length >
+      ENCRYPTED_WALLET_BACKUP_PENDING_SEND_MAX_FRAGMENT_COUNT
+  ) {
+    throw new Error(
+      "restored pending-send progression fragment selection count is invalid",
+    );
+  }
+  const fragments = input.fragments.map((selection) =>
+    selectPendingSendProgressionFragment(
+      selection,
+      keyAuthority,
+      observation.head!,
+    ),
+  );
+  return aggregateEncryptedWalletBackupPendingSendProgressionFragments(
+    fragments,
+  );
+}
+
+export function restoreEncryptedWalletBackupPendingSend(input: {
+  keyHandle: EncryptedWalletBackupKeyHandle;
+  headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence;
+  parentFragments: readonly EncryptedWalletBackupPendingSendParentFragmentSelection[];
+  progressionFragments: readonly EncryptedWalletBackupPendingSendProgressionFragmentSelection[];
+}): RestoredEncryptedWalletBackupPendingSend {
+  const parent = restoreEncryptedWalletBackupPendingSendParent({
+    keyHandle: input.keyHandle,
+    headEvidence: input.headEvidence,
+    fragments: input.parentFragments,
+  });
+  const progression =
+    input.progressionFragments.length === 0
+      ? null
+      : restoreEncryptedWalletBackupPendingSendProgression({
+          keyHandle: input.keyHandle,
+          headEvidence: input.headEvidence,
+          fragments: input.progressionFragments,
+        });
+  return bindEncryptedWalletBackupPendingSendRestore({ parent, progression });
+}
+
+function selectPendingSendParentFragment(
+  selection: EncryptedWalletBackupPendingSendParentFragmentSelection,
+  keyAuthority: KeyAuthority,
+  head: EncryptedWalletBackupManifestHead,
+): DecodedEncryptedWalletBackupPendingSendParentFragment {
+  const chunkAuthority = DECRYPTED_DATA_CHUNK_AUTHORITIES.get(
+    selection.dataChunk,
+  );
+  const pageAuthority = DECRYPTED_MANIFEST_PAGE_AUTHORITIES.get(
+    selection.manifestPage,
+  );
+  const recordId = requireLowerHex(
+    selection.recordId,
+    32,
+    "pending-send fragment record id",
+  );
+  if (
+    chunkAuthority === undefined ||
+    chunkAuthority.keyAuthority !== keyAuthority ||
+    chunkAuthority.generation > head.generation ||
+    pageAuthority === undefined ||
+    pageAuthority.keyAuthority !== keyAuthority ||
+    pageAuthority.head !== head
+  ) {
+    throw new Error("restored pending-send parent membership is invalid");
+  }
+  const records = chunkAuthority.records.filter(
+    (
+      record,
+    ): record is Extract<
+      UnverifiedEncryptedWalletBackupRecord,
+      { recordKindCode: 1 }
+    > => record.recordKindCode === 1 && record.fragment.recordId === recordId,
+  );
+  const entries = selection.manifestPage.entries.filter(
+    (entry): entry is EncryptedWalletBackupPendingSendParentManifestEntry =>
+      entry.recordKindCode === 1 && entry.recordId === recordId,
+  );
+  if (records.length !== 1 || entries.length !== 1) {
+    throw new Error("restored pending-send parent membership is invalid");
+  }
+  const record = records[0]!.fragment;
+  const entry = entries[0]!;
+  if (
+    entry.dataObjectId !== chunkAuthority.objectId ||
+    entry.dataDigest !== chunkAuthority.objectDigest ||
+    entry.commitment !== record.commitment ||
+    entry.logicalRecordId !== record.logicalRecordId ||
+    entry.parentCommitment !== record.parentCommitment ||
+    entry.fragmentIndex !== record.fragmentIndex ||
+    entry.fragmentCount !== record.fragmentCount
+  ) {
+    throw new Error("restored pending-send parent membership is invalid");
+  }
+  return record;
+}
+
+function selectPendingSendProgressionFragment(
+  selection: EncryptedWalletBackupPendingSendProgressionFragmentSelection,
+  keyAuthority: KeyAuthority,
+  head: EncryptedWalletBackupManifestHead,
+): DecodedEncryptedWalletBackupPendingSendProgressionFragment {
+  const chunkAuthority = DECRYPTED_DATA_CHUNK_AUTHORITIES.get(
+    selection.dataChunk,
+  );
+  const pageAuthority = DECRYPTED_MANIFEST_PAGE_AUTHORITIES.get(
+    selection.manifestPage,
+  );
+  const recordId = requireLowerHex(
+    selection.recordId,
+    32,
+    "pending-send progression fragment record id",
+  );
+  if (
+    chunkAuthority === undefined ||
+    chunkAuthority.keyAuthority !== keyAuthority ||
+    chunkAuthority.generation > head.generation ||
+    pageAuthority === undefined ||
+    pageAuthority.keyAuthority !== keyAuthority ||
+    pageAuthority.head !== head
+  ) {
+    throw new Error("restored pending-send progression membership is invalid");
+  }
+  const records = chunkAuthority.records.filter(
+    (
+      record,
+    ): record is Extract<
+      UnverifiedEncryptedWalletBackupRecord,
+      { recordKindCode: 2 }
+    > => record.recordKindCode === 2 && record.fragment.recordId === recordId,
+  );
+  const entries = selection.manifestPage.entries.filter(
+    (entry): entry is EncryptedWalletBackupPendingSendProgressionManifestEntry =>
+      entry.recordKindCode === 2 && entry.recordId === recordId,
+  );
+  if (records.length !== 1 || entries.length !== 1) {
+    throw new Error("restored pending-send progression membership is invalid");
+  }
+  const record = records[0]!.fragment;
+  const entry = entries[0]!;
+  if (!progressionManifestEntryMatchesRecord(entry, record, chunkAuthority)) {
+    throw new Error("restored pending-send progression membership is invalid");
+  }
+  return record;
+}
+
+function progressionManifestEntryMatchesRecord(
+  entry: EncryptedWalletBackupPendingSendProgressionManifestEntry,
+  record: DecodedEncryptedWalletBackupPendingSendProgressionFragment,
+  chunk: DecryptedDataChunkAuthority,
+): boolean {
+  return (
+    entry.dataObjectId === chunk.objectId &&
+    entry.dataDigest === chunk.objectDigest &&
+    entry.commitment === record.commitment &&
+    entry.logicalRecordId === record.logicalRecordId &&
+    entry.parentCommitment === record.parentCommitment &&
+    entry.progression === record.progression &&
+    entry.childCommitment === record.childCommitment &&
+    entry.fragmentIndex === record.fragmentIndex &&
+    entry.fragmentCount === record.fragmentCount
+  );
+}
+
+async function decryptDataChunkRecords(input: {
   keyHandle: EncryptedWalletBackupKeyHandle;
   seed: Uint8Array;
   object: EncryptedWalletBackupWireObject;
   cooperativeYield?: () => void | Promise<void>;
-}): Promise<UnverifiedEncryptedWalletBackupProof[]> {
+}): Promise<UnverifiedEncryptedWalletBackupRecord[]> {
   const authority = requireKeyAuthority(input.keyHandle);
   const seed = requireSeed(input.seed);
   if (!equalBytes(authority.seedDigest, sha256(seed)))
@@ -5455,7 +5849,7 @@ async function decryptProofChunk(input: {
     authority.vaultIdBytes,
     objectId,
     object.generation,
-    ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES,
+    ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES,
   ]);
   if (!equalBytes(expectedAad, object.aad)) throw new Error("foreign aad");
   const expectedDigest = bytesToHex(
@@ -5495,7 +5889,7 @@ async function decryptProofChunk(input: {
       asArrayBuffer(object.body.slice(12)),
     ),
   );
-  if (frame.byteLength !== ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES)
+  if (frame.byteLength !== ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES)
     throw new Error("frame length");
   const cborLength = new DataView(
     frame.buffer,
@@ -5504,7 +5898,7 @@ async function decryptProofChunk(input: {
   ).getUint32(0, false);
   if (
     cborLength < 1 ||
-    cborLength > ENCRYPTED_WALLET_BACKUP_PROOF_CBOR_MAX_BYTES ||
+    cborLength > ENCRYPTED_WALLET_BACKUP_DATA_CBOR_MAX_BYTES ||
     cborLength > frame.byteLength - 4
   )
     throw new Error("cbor length");
@@ -5512,18 +5906,18 @@ async function decryptProofChunk(input: {
     if (frame[index] !== 0) throw new Error("padding");
   }
   const canonical = frame.slice(4, 4 + cborLength);
-  preflightProofChunk(canonical);
+  preflightDataChunk(canonical);
   const decoded = decode(canonical);
   const reencoded = encodeCanonical(decoded);
   if (!equalBytes(canonical, reencoded)) throw new Error("noncanonical cbor");
-  return decodeProofChunkRecords(decoded, seed, input.cooperativeYield);
+  return decodeDataChunkRecords(decoded, seed, input.cooperativeYield);
 }
 
-async function decodeProofChunkRecords(
+async function decodeDataChunkRecords(
   value: unknown,
   seed: Uint8Array,
   cooperativeYield: (() => void | Promise<void>) | undefined,
-): Promise<UnverifiedEncryptedWalletBackupProof[]> {
+): Promise<UnverifiedEncryptedWalletBackupRecord[]> {
   if (
     !Array.isArray(value) ||
     value.length !== 3 ||
@@ -5531,15 +5925,15 @@ async function decodeProofChunkRecords(
     value[1] !== 1 ||
     !Array.isArray(value[2]) ||
     value[2].length < 1 ||
-    value[2].length > ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX
+    value[2].length > ENCRYPTED_WALLET_BACKUP_RECORD_COUNT_MAX
   )
     throw new Error("root");
   const records = value[2];
   const derivers = new Map<string, SecretDeriver>();
-  const restored: UnverifiedEncryptedWalletBackupProof[] = [];
+  const restored: UnverifiedEncryptedWalletBackupRecord[] = [];
   const yieldToHost = cooperativeYield ?? defaultCooperativeYield;
   for (let index = 0; index < records.length; index += 1) {
-    restored.push(decodeProofRecord(records[index], seed, derivers));
+    restored.push(decodeDataRecord(records[index], seed, derivers));
     // Four-record work slices keep legacy BIP-32 derivation comfortably below
     // a browser long-task budget on the measured corpus; this is a work bound,
     // not a latency guarantee.
@@ -5548,7 +5942,10 @@ async function decodeProofChunkRecords(
   }
   for (let index = 1; index < restored.length; index += 1) {
     if (
-      compareHex(restored[index - 1]!.proofId, restored[index]!.proofId) >= 0
+      compareHex(
+        recordIdOf(restored[index - 1]!),
+        recordIdOf(restored[index]!),
+      ) >= 0
     ) {
       throw new Error("proof order");
     }
@@ -5556,13 +5953,65 @@ async function decodeProofChunkRecords(
   return restored;
 }
 
+function decodeDataRecord(
+  value: unknown,
+  seed: Uint8Array,
+  derivers: Map<string, SecretDeriver>,
+): UnverifiedEncryptedWalletBackupRecord {
+  if (!Array.isArray(value) || value.length < 2 || value[0] !== 1) {
+    throw new Error("record");
+  }
+  switch (value[1]) {
+    case ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD:
+      return Object.freeze({
+        recordKindCode: ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+        proof: decodeProofRecord(value, seed, derivers),
+      });
+    case 1:
+      return Object.freeze({
+        recordKindCode: 1 as const,
+        fragment: decodeEncryptedWalletBackupPendingSendParentFragment(value),
+      });
+    case 2:
+      return Object.freeze({
+        recordKindCode: 2 as const,
+        fragment:
+          decodeEncryptedWalletBackupPendingSendProgressionFragment(value),
+      });
+    default:
+      throw new Error("record kind");
+  }
+}
+
+function recordIdOf(record: UnverifiedEncryptedWalletBackupRecord): string {
+  switch (record.recordKindCode) {
+    case 0:
+      return record.proof.proofId;
+    case 1:
+      return record.fragment.recordId;
+    case 2:
+      return record.fragment.recordId;
+    default:
+      return assertNever(record);
+  }
+}
+
 function decodeProofRecord(
   value: unknown,
   seed: Uint8Array,
   derivers: Map<string, SecretDeriver>,
 ): UnverifiedEncryptedWalletBackupProof {
-  if (!Array.isArray(value) || value.length !== 14) throw new Error("record");
+  if (
+    !Array.isArray(value) ||
+    value.length !== 16 ||
+    value[0] !== ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION ||
+    value[1] !== ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD
+  ) {
+    throw new Error("record");
+  }
   const [
+    ,
+    ,
     proofIdRaw,
     commitmentRaw,
     mintRaw,
@@ -5613,7 +6062,8 @@ function decodeProofRecord(
   const keysetWire = [keyset.kindCode, keyset.text];
   const commitmentPreimage = [
     1,
-    "proof-record-commitment",
+    "wallet-record-commitment",
+    ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
     mint,
     unit,
     keysetWire,
@@ -5697,7 +6147,7 @@ function requireWireObject(
     object.kindCode !== 1 ||
     object.realm !== authority.realm ||
     object.vaultId !== bytesToHex(authority.vaultIdBytes) ||
-    object.paddedLength !== ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES
+    object.paddedLength !== ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES
   )
     throw new Error("metadata");
   const objectId = requireLowerHex(object.objectId, 16, "object id");
@@ -5721,7 +6171,7 @@ function requireWireObject(
     vaultId: bytesToHex(authority.vaultIdBytes),
     objectId,
     generation,
-    paddedLength: ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES,
+    paddedLength: ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES,
     digest,
     aad,
     body,
@@ -5887,8 +6337,10 @@ function decodeManifestPage(
   }
   const entries = (value[6] as unknown[]).map(decodeManifestEntry);
   for (let index = 1; index < entries.length; index += 1) {
-    if (compareHex(entries[index - 1]!.proofId, entries[index]!.proofId) >= 0) {
-      throw new Error("manifest proof order");
+    if (
+      compareHex(entries[index - 1]!.recordId, entries[index]!.recordId) >= 0
+    ) {
+      throw new Error("manifest record order");
     }
   }
   return Object.freeze({
@@ -5905,41 +6357,118 @@ function decodeManifestPage(
 function decodeManifestEntry(
   value: unknown,
 ): EncryptedWalletBackupManifestEntry {
-  if (!Array.isArray(value) || value.length !== 11)
+  if (!Array.isArray(value) || value.length < 8)
     throw new Error("manifest entry");
-  const proofId = bytesToHex(requireBytes(value[0], 32, "manifest proof id"));
+  const recordKindCode = decodeEncryptedWalletBackupRecordKind(value[0]);
+  const recordId = bytesToHex(requireBytes(value[1], 32, "manifest record id"));
   const commitment = bytesToHex(
-    requireBytes(value[1], 32, "manifest proof commitment"),
+    requireBytes(value[2], 32, "manifest record commitment"),
   );
-  const chunkObjectId = bytesToHex(
-    requireBytes(value[2], 16, "manifest chunk object id"),
+  const dataObjectId = bytesToHex(
+    requireBytes(value[3], 16, "manifest data object id"),
   );
-  const chunkDigest = bytesToHex(
-    requireBytes(value[3], 32, "manifest chunk digest"),
+  const dataDigest = bytesToHex(
+    requireBytes(value[4], 32, "manifest data digest"),
   );
-  const mint = requireNormalizedMint(value[4]);
-  const unit = requireBoundedText(value[5], 64, "manifest unit");
-  const amount = requireAmount(value[6]);
-  if (value[7] !== 0 && value[7] !== 1) throw new Error("manifest proof kind");
-  const ctf = decodeCtfWire(value[8], value[7], 0, false);
+  const common = { recordId, commitment, dataObjectId, dataDigest };
+  switch (recordKindCode) {
+    case 0:
+      return decodeProofManifestEntry(value, common);
+    case 1:
+      if (value.length !== 9) throw new Error("manifest parent entry");
+      return Object.freeze({
+        ...common,
+        recordKindCode,
+        logicalRecordId: bytesToHex(
+          requireBytes(value[5], 32, "pending-send logical record id"),
+        ),
+        parentCommitment: bytesToHex(
+          requireBytes(value[6], 32, "pending-send parent commitment"),
+        ),
+        fragmentIndex: requireInteger(
+          value[7],
+          0,
+          1_023,
+          "pending-send fragment index",
+        ),
+        fragmentCount: requireInteger(
+          value[8],
+          1,
+          1_024,
+          "pending-send fragment count",
+        ),
+      });
+    case 2:
+      if (value.length !== 11) throw new Error("manifest progression entry");
+      return Object.freeze({
+        ...common,
+        recordKindCode,
+        logicalRecordId: bytesToHex(
+          requireBytes(value[5], 32, "pending-send logical record id"),
+        ),
+        parentCommitment: bytesToHex(
+          requireBytes(value[6], 32, "pending-send parent commitment"),
+        ),
+        progression: decodePendingSendProgressionCode(value[7]),
+        childCommitment: bytesToHex(
+          requireBytes(value[8], 32, "pending-send child commitment"),
+        ),
+        fragmentIndex: requireInteger(
+          value[9],
+          0,
+          1_023,
+          "pending-send progression fragment index",
+        ),
+        fragmentCount: requireInteger(
+          value[10],
+          1,
+          1_024,
+          "pending-send progression fragment count",
+        ),
+      });
+    default:
+      return assertNever(recordKindCode);
+  }
+}
+
+function decodeEncryptedWalletBackupRecordKind(value: unknown): 0 | 1 | 2 {
+  switch (value) {
+    case 0:
+    case 1:
+    case 2:
+      return value;
+    default:
+      throw new Error("manifest record kind is invalid");
+  }
+}
+
+function decodeProofManifestEntry(
+  value: readonly unknown[],
+  common: EncryptedWalletBackupManifestEntryBase,
+): EncryptedWalletBackupProofManifestEntry {
+  if (value.length !== 12) throw new Error("manifest proof entry");
+  const mint = requireNormalizedMint(value[5]);
+  const unit = requireBoundedText(value[6], 64, "manifest unit");
+  const amount = requireAmount(value[7]);
+  if (value[8] !== 0 && value[8] !== 1) throw new Error("manifest proof kind");
+  const ctf = decodeCtfWire(value[9], value[8], 0, false);
   const createdAt = requireNonNegativeSafeInteger(
-    value[9],
+    value[10],
     "manifest creation time",
   );
   const updatedAt = requireNonNegativeSafeInteger(
-    value[10],
+    value[11],
     "manifest update time",
   );
   if (updatedAt < createdAt) throw new Error("manifest timestamps");
   return Object.freeze({
-    proofId,
-    commitment,
-    chunkObjectId,
-    chunkDigest,
+    ...common,
+    recordKindCode: ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+    proofId: common.recordId,
     mint,
     unit,
     amount,
-    proofKind: value[7] === 0 ? "ordinary" : "ctf",
+    proofKind: value[8] === 0 ? "ordinary" : "ctf",
     ctfMetadata: ctf === null ? null : ctfTupleToMetadata(ctf),
     terminalEvidence: ctf === null ? null : ctfTerminalSealToEvidence(ctf[5]),
     createdAtUnixSeconds: createdAt,
@@ -5948,49 +6477,138 @@ function decodeManifestEntry(
 }
 
 function manifestEntryWire(
-  proof: PreparedProofAuthority,
+  record: ReturnType<typeof requirePreparedEncryptedWalletBackupRecord>,
   object: PreparedEncryptedWalletBackupObject,
 ): unknown[] {
   return [
-    hexToBytes(proof.proofId),
-    hexToBytes(proof.commitment),
+    ...record.manifestEntry.slice(0, 3),
     hexToBytes(object.objectId),
     hexToBytes(object.digest),
-    proof.mint,
-    proof.unit,
-    proof.amount,
-    proof.proofKindCode,
-    proof.ctfMetadata,
-    proof.createdAtUnixSeconds,
-    proof.updatedAtUnixSeconds,
+    ...record.manifestEntry.slice(3),
   ];
+}
+
+function validatePendingSendManifestEntries(
+  entries: readonly EncryptedWalletBackupManifestEntry[],
+): void {
+  const parents = new Map<
+    string,
+    EncryptedWalletBackupPendingSendParentManifestEntry[]
+  >();
+  const children = new Map<
+    string,
+    EncryptedWalletBackupPendingSendProgressionManifestEntry[]
+  >();
+  for (const entry of entries) {
+    if (entry.recordKindCode === 0) continue;
+    const groups = entry.recordKindCode === 1 ? parents : children;
+    const group = groups.get(entry.logicalRecordId) ?? [];
+    group.push(entry as never);
+    groups.set(entry.logicalRecordId, group as never);
+  }
+  for (const group of parents.values()) {
+    requireCompletePendingSendManifestFragmentGroup(group);
+  }
+  for (const [logicalRecordId, group] of children) {
+    requireCompletePendingSendManifestFragmentGroup(group);
+    const first = group[0]!;
+    const parent = parents.get(logicalRecordId)?.[0];
+    if (
+      parent === undefined ||
+      parent.parentCommitment !== first.parentCommitment
+    ) {
+      throw new Error("pending-send progression manifest is invalid");
+    }
+  }
+}
+
+function requireCompletePendingSendManifestFragmentGroup(
+  group: readonly (
+    | EncryptedWalletBackupPendingSendParentManifestEntry
+    | EncryptedWalletBackupPendingSendProgressionManifestEntry
+  )[],
+): void {
+  const first = group[0];
+  if (
+    first === undefined ||
+    group.length !== first.fragmentCount ||
+    group.some(
+      (entry) =>
+        entry.recordKindCode !== first.recordKindCode ||
+        entry.logicalRecordId !== first.logicalRecordId ||
+        entry.parentCommitment !== first.parentCommitment ||
+        entry.fragmentCount !== first.fragmentCount ||
+        entry.fragmentIndex >= entry.fragmentCount ||
+        (entry.recordKindCode === 2 &&
+          first.recordKindCode === 2 &&
+          (entry.progression !== first.progression ||
+            entry.childCommitment !== first.childCommitment)),
+    ) ||
+    new Set(group.map(({ fragmentIndex }) => fragmentIndex)).size !==
+      group.length
+  ) {
+    throw new Error("pending-send fragmented manifest is invalid");
+  }
 }
 
 function manifestEntryValue(
   entry: EncryptedWalletBackupManifestEntry,
 ): unknown[] {
-  return [
-    hexToBytes(entry.proofId),
+  const common = [
+    entry.recordKindCode,
+    hexToBytes(entry.recordId),
     hexToBytes(entry.commitment),
-    hexToBytes(entry.chunkObjectId),
-    hexToBytes(entry.chunkDigest),
-    entry.mint,
-    entry.unit,
-    entry.amount,
-    entry.proofKind === "ordinary" ? 0 : 1,
-    entry.ctfMetadata === null
-      ? null
-      : [
-          hexToBytes(entry.ctfMetadata.conditionId),
-          entry.ctfMetadata.outcomeLabel,
-          hexToBytes(entry.ctfMetadata.outcomeCollectionId),
-          entry.ctfMetadata.registeredAtUnixSeconds,
-          entry.ctfMetadata.finalExpiryUnixSeconds,
-          ctfTerminalEvidenceToSeal(entry.terminalEvidence),
-        ],
-    entry.createdAtUnixSeconds,
-    entry.updatedAtUnixSeconds,
+    hexToBytes(entry.dataObjectId),
+    hexToBytes(entry.dataDigest),
   ];
+  switch (entry.recordKindCode) {
+    case 0:
+      return [
+        ...common,
+        entry.mint,
+        entry.unit,
+        entry.amount,
+        entry.proofKind === "ordinary" ? 0 : 1,
+        entry.ctfMetadata === null
+          ? null
+          : [
+              hexToBytes(entry.ctfMetadata.conditionId),
+              entry.ctfMetadata.outcomeLabel,
+              hexToBytes(entry.ctfMetadata.outcomeCollectionId),
+              entry.ctfMetadata.registeredAtUnixSeconds,
+              entry.ctfMetadata.finalExpiryUnixSeconds,
+              ctfTerminalEvidenceToSeal(entry.terminalEvidence),
+            ],
+        entry.createdAtUnixSeconds,
+        entry.updatedAtUnixSeconds,
+      ];
+    case 1:
+      return [
+        ...common,
+        hexToBytes(entry.logicalRecordId),
+        hexToBytes(entry.parentCommitment),
+        entry.fragmentIndex,
+        entry.fragmentCount,
+      ];
+    case 2:
+      return [
+        ...common,
+        hexToBytes(entry.logicalRecordId),
+        hexToBytes(entry.parentCommitment),
+        encodePendingSendProgressionCode(entry.progression),
+        hexToBytes(entry.childCommitment),
+        entry.fragmentIndex,
+        entry.fragmentCount,
+      ];
+    default:
+      return assertNever(entry);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(
+    `unhandled encrypted wallet backup variant: ${String(value)}`,
+  );
 }
 
 interface KeysetId {
@@ -6571,20 +7189,11 @@ function requireKeyAuthority(value: unknown): KeyAuthority {
   return authority;
 }
 
-function requireProofAuthority(value: unknown): PreparedProofAuthority {
-  if (typeof value !== "object" || value === null)
-    throw new Error("prepared backup proof handle is invalid");
-  const authority = PREPARED_PROOF_AUTHORITIES.get(value);
-  if (authority === undefined)
-    throw new Error("prepared backup proof handle is invalid");
-  return authority;
-}
-
 function requireChunkAuthority(value: unknown): PreparedChunkAuthority {
   if (typeof value !== "object" || value === null)
-    throw new Error("proof chunk handle is invalid");
+    throw new Error("data chunk handle is invalid");
   const authority = PREPARED_CHUNK_AUTHORITIES.get(value);
-  if (authority === undefined) throw new Error("proof chunk handle is invalid");
+  if (authority === undefined) throw new Error("data chunk handle is invalid");
   return authority;
 }
 
@@ -6674,7 +7283,7 @@ function decodeManifestHeadWire(
     snapshotNonce,
     pageReferences,
     chunkReferences,
-    proofCount,
+    recordCount,
     storedBytes,
     referenceSetDigest,
     manifestDigest,
@@ -6706,7 +7315,7 @@ function decodeManifestHeadWire(
     referenceSetDigest,
     objectCount: pageReferences.length + chunkReferences.length,
     storedBytes,
-    proofCount,
+    recordCount,
   });
   return {
     keyAuthority,
@@ -6954,7 +7563,7 @@ function decodePersistedManifestHeadSummary(
     "referenceSetDigest",
     "objectCount",
     "storedBytes",
-    "proofCount",
+    "recordCount",
   ]);
   if (head.formatVersion !== ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION) {
     throw new Error("unsupported persisted manifest head version");
@@ -7038,11 +7647,11 @@ function decodePersistedManifestHeadSummary(
       head.storedBytes,
       "stored bytes",
     ),
-    proofCount: requireInteger(
-      head.proofCount,
+    recordCount: requireInteger(
+      head.recordCount,
       0,
       ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX,
-      "proof count",
+      "record count",
     ),
   });
 }

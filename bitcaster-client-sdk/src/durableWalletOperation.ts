@@ -24,6 +24,7 @@ import {
 } from './durableWalletProofTransition.ts'
 
 export const DURABLE_WALLET_OPERATION_SCHEMA_VERSION = 1 as const
+export const DURABLE_WALLET_OPERATION_ARRAY_LENGTH_MAX = 10_000 as const
 export const DURABLE_WALLET_OPERATION_METADATA_KEY = 'durableWalletOperation'
 
 export type DurableWalletOperationKind =
@@ -2042,7 +2043,10 @@ function requireRecord(value: unknown, name: string): Record<string, unknown> {
 }
 
 function requireArray(value: unknown, name: string): unknown[] {
-  if (!Array.isArray(value) || value.length > 10_000) {
+  if (
+    !Array.isArray(value) ||
+    value.length > DURABLE_WALLET_OPERATION_ARRAY_LENGTH_MAX
+  ) {
     throw new Error(`${name} must be a bounded array`)
   }
   return value

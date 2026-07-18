@@ -2,9 +2,9 @@ import vector from "../../../test-vectors/encrypted-wallet-backup-v1.json";
 import * as Cashu from "@cashu/cashu-ts";
 import {
   createEncryptedWalletBackupKeyHandle,
-  decryptEncryptedWalletBackupProofChunk,
+  decryptEncryptedWalletBackupDataChunk,
   encodeEncryptedWalletBackupRequestProof,
-  packEncryptedWalletBackupProofChunk,
+  packEncryptedWalletBackupDataChunk,
   prepareEncryptedWalletBackupManifest,
   prepareEncryptedWalletBackupManifestHead,
   prepareEncryptedWalletBackupObject,
@@ -17,6 +17,7 @@ import {
   type EncryptedWalletBackupRuntime,
 } from "../../src/encryptedWalletBackup.ts";
 import { encodeCanonicalBackupCbor } from "../../src/encryptedWalletBackupCbor.ts";
+import { generateFragmentedPendingSendGolden } from "../encryptedWalletBackupPendingSendGolden.ts";
 
 const CTF_KEYSET_ID =
   "0170110f06b9bb85565a6746ca5715f877b99db14d87219f6e9030cb529f61e6ea";
@@ -127,7 +128,7 @@ async function run(): Promise<{
   equal(proofHandle.commitment, expected.commitmentHex, "commitmentHex");
   const prepared = await prepareEncryptedWalletBackupObject({
     keyHandle,
-    chunk: packEncryptedWalletBackupProofChunk([proofHandle]),
+    chunk: packEncryptedWalletBackupDataChunk([proofHandle]),
     generation: input.generation,
     runtime,
   });
@@ -142,7 +143,7 @@ async function run(): Promise<{
   );
   equal(toHex(wire.body.slice(-16)), expected.tagHex, "tagHex");
   equal(wire.body.byteLength, expected.bodyLength, "bodyLength");
-  const restored = await decryptEncryptedWalletBackupProofChunk({
+  const restored = await decryptEncryptedWalletBackupDataChunk({
     keyHandle,
     seed,
     object: wire,
@@ -157,9 +158,20 @@ async function run(): Promise<{
   );
 
   await exerciseManifestVector(seed, keyHandle);
+  equalSummary(
+    await generateFragmentedPendingSendGolden(),
+    expected.fragmentedPendingSend,
+    "fragmented pending-send golden",
+  );
   await exerciseBlsAndCtf(seed, keyHandle);
   await exerciseFailureCases(seed, keyHandle, prepared, wire);
   return exerciseMaxLegacyRestoreScheduling(seed, keyHandle);
+}
+
+function equalSummary(actual: unknown, expected: unknown, label: string): void {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${label} changed`);
+  }
 }
 
 async function exerciseManifestVector(
@@ -190,8 +202,8 @@ async function exerciseManifestVector(
   }
   proofs.sort((left, right) => left.proofId.localeCompare(right.proofId));
   const chunks = [
-    packEncryptedWalletBackupProofChunk([proofs[0]!, proofs[2]!]),
-    packEncryptedWalletBackupProofChunk([proofs[1]!, proofs[3]!]),
+    packEncryptedWalletBackupDataChunk([proofs[0]!, proofs[2]!]),
+    packEncryptedWalletBackupDataChunk([proofs[1]!, proofs[3]!]),
   ];
   const chunkObjects = await Promise.all(
     chunks.map((chunk, index) =>
@@ -283,14 +295,14 @@ async function exerciseBlsAndCtf(
   );
   const blsObject = await prepareEncryptedWalletBackupObject({
     keyHandle,
-    chunk: packEncryptedWalletBackupProofChunk([blsProof]),
+    chunk: packEncryptedWalletBackupDataChunk([blsProof]),
     generation: 2,
     runtime: deterministicRuntime([
       new Uint8Array(16).fill(31),
       new Uint8Array(12).fill(32),
     ]),
   });
-  const blsDecoded = await decryptEncryptedWalletBackupProofChunk({
+  const blsDecoded = await decryptEncryptedWalletBackupDataChunk({
     keyHandle,
     seed,
     object: readPreparedEncryptedWalletBackupObject(blsObject),
@@ -321,14 +333,14 @@ async function exerciseBlsAndCtf(
   );
   const ctfObject = await prepareEncryptedWalletBackupObject({
     keyHandle,
-    chunk: packEncryptedWalletBackupProofChunk([ctfProof]),
+    chunk: packEncryptedWalletBackupDataChunk([ctfProof]),
     generation: 3,
     runtime: deterministicRuntime([
       new Uint8Array(16).fill(33),
       new Uint8Array(12).fill(34),
     ]),
   });
-  const ctfDecoded = await decryptEncryptedWalletBackupProofChunk({
+  const ctfDecoded = await decryptEncryptedWalletBackupDataChunk({
     keyHandle,
     seed,
     object: readPreparedEncryptedWalletBackupObject(ctfObject),
@@ -345,7 +357,7 @@ async function exerciseFailureCases(
 ): Promise<void> {
   await rejects(
     () =>
-      decryptEncryptedWalletBackupProofChunk({
+      decryptEncryptedWalletBackupDataChunk({
         keyHandle,
         seed,
         object: { ...wire, body: mutate(wire.body, 100) },
@@ -354,7 +366,7 @@ async function exerciseFailureCases(
   );
   await rejects(
     () =>
-      decryptEncryptedWalletBackupProofChunk({
+      decryptEncryptedWalletBackupDataChunk({
         keyHandle,
         seed,
         object: { ...wire, body: wire.body.slice(1) },
@@ -366,7 +378,7 @@ async function exerciseFailureCases(
   );
   await rejects(
     () =>
-      decryptEncryptedWalletBackupProofChunk({
+      decryptEncryptedWalletBackupDataChunk({
         keyHandle,
         seed,
         object: noncanonical,
@@ -392,7 +404,7 @@ async function exerciseFailureCases(
     () =>
       prepareEncryptedWalletBackupObject({
         keyHandle,
-        chunk: packEncryptedWalletBackupProofChunk([collisionProof]),
+        chunk: packEncryptedWalletBackupDataChunk([collisionProof]),
         generation: 4,
         runtime: deterministicRuntime(
           new Array(8).fill(new Uint8Array(16).fill(35)),
@@ -438,7 +450,7 @@ async function exerciseMaxLegacyRestoreScheduling(
   }
   const object = await prepareEncryptedWalletBackupObject({
     keyHandle,
-    chunk: packEncryptedWalletBackupProofChunk(preparedProofs),
+    chunk: packEncryptedWalletBackupDataChunk(preparedProofs),
     generation: 4,
     runtime: deterministicRuntime([
       new Uint8Array(16).fill(41),
@@ -450,7 +462,7 @@ async function exerciseMaxLegacyRestoreScheduling(
     timerRan = true;
   }, 0);
   const started = performance.now();
-  const decoded = await decryptEncryptedWalletBackupProofChunk({
+  const decoded = await decryptEncryptedWalletBackupDataChunk({
     keyHandle,
     seed,
     object: readPreparedEncryptedWalletBackupObject(object),
@@ -541,7 +553,8 @@ async function bindProofStore(
     await digest(
       encodeCanonicalBackupCbor([
         1,
-        "proof-record-commitment",
+        "wallet-record-commitment",
+        0,
         input.mint,
         input.unit,
         [keysetKind, input.proof.id],

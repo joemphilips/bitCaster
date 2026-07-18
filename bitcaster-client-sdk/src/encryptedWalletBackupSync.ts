@@ -51,7 +51,7 @@ export const ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX = 4 * 1_024 * 1_024;
 export const ENCRYPTED_WALLET_BACKUP_CYCLE_PARALLEL_MAX = 4 as const;
 export const ENCRYPTED_WALLET_BACKUP_CYCLE_REPACK_MAX = 4 as const;
 export const ENCRYPTED_WALLET_BACKUP_ATTEMPT_BATCH_MAX = 64 as const;
-export const ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_STORED_BYTES =
+export const ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_STORED_BYTES =
   ENCRYPTED_WALLET_BACKUP_BODY_BYTES;
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_PAGE_STORED_BYTES =
   ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES;
@@ -124,7 +124,7 @@ export function prepareEncryptedWalletBackupUploadPlan(input: {
       );
     }
     if (object.kindCode === 1 && object.generation > target.head.generation) {
-      throw new Error("backup proof chunk generation exceeds target head");
+      throw new Error("backup data chunk generation exceeds target head");
     }
     const referenceKey = `${object.objectId}:${object.digest}`;
     if (!expectedDelta.delete(referenceKey)) {
@@ -1772,7 +1772,7 @@ function decodeCoordinatorCasRecord(
     "referenceSetDigest",
     "objectCount",
     "storedBytes",
-    "proofCount",
+    "recordCount",
   ]);
   const targetParentRaw =
     targetHeadRaw.parent === null
@@ -1896,11 +1896,11 @@ function decodeCoordinatorCasRecord(
         ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
         "target stored bytes",
       ),
-      proofCount: requireInteger(
-        targetHeadRaw.proofCount,
+      recordCount: requireInteger(
+        targetHeadRaw.recordCount,
         0,
         512 * 1_024,
-        "target proof count",
+        "target record count",
       ),
     }),
     canonicalCasPayload,
@@ -2402,7 +2402,7 @@ function validateTargetHead(
   generation: number;
   objectCount: number;
   storedBytes: number;
-  proofCount: number;
+  recordCount: number;
   manifestHead: EncryptedWalletBackupManifestHead;
 }> {
   preflightEncryptedBackupHeadCbor(canonicalHead);
@@ -2472,7 +2472,7 @@ function validateTargetHead(
   );
   const chunkReferences = decodeTargetReferenceArray(
     head[9],
-    "target proof chunk references",
+    "target data chunk references",
   );
   if (
     pageReferences.length + chunkReferences.length >
@@ -2500,22 +2500,22 @@ function validateTargetHead(
   ) {
     throw new Error("persisted backup target object digest is duplicated");
   }
-  const proofCount = requireInteger(
+  const recordCount = requireInteger(
     head[10],
     0,
     512 * 1_024,
-    "target proof count",
+    "target record count",
   );
   if (
-    (proofCount === 0 && allReferences.length !== 0) ||
-    (proofCount > 0 &&
+    (recordCount === 0 && allReferences.length !== 0) ||
+    (recordCount > 0 &&
       (pageReferences.length === 0 || chunkReferences.length === 0)) ||
-    chunkReferences.length < Math.ceil(proofCount / 512) ||
-    chunkReferences.length > proofCount ||
-    pageReferences.length < Math.ceil(proofCount / 512) ||
-    pageReferences.length > proofCount
+    chunkReferences.length < Math.ceil(recordCount / 512) ||
+    chunkReferences.length > recordCount ||
+    pageReferences.length < Math.ceil(recordCount / 512) ||
+    pageReferences.length > recordCount
   ) {
-    throw new Error("persisted backup proof count does not match references");
+    throw new Error("persisted backup record count does not match references");
   }
   const storedBytes = requireInteger(
     head[11],
@@ -2525,7 +2525,7 @@ function validateTargetHead(
   );
   const expectedStoredBytes =
     pageReferences.length * ENCRYPTED_WALLET_BACKUP_MANIFEST_PAGE_STORED_BYTES +
-    chunkReferences.length * ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_STORED_BYTES;
+    chunkReferences.length * ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_STORED_BYTES;
   if (storedBytes !== expectedStoredBytes) {
     throw new Error("persisted backup stored bytes do not match references");
   }
@@ -2551,7 +2551,7 @@ function validateTargetHead(
     referenceSetDigest,
     objectCount: allReferences.length,
     storedBytes,
-    proofCount,
+    recordCount,
   });
   return Object.freeze({
     references: decodeReferenceSet(canonicalReferenceSet),
@@ -2563,7 +2563,7 @@ function validateTargetHead(
     generation,
     objectCount: allReferences.length,
     storedBytes,
-    proofCount,
+    recordCount,
     manifestHead,
   });
 }
@@ -2673,7 +2673,7 @@ function validatePutPayload(
     );
   }
   if (kind === 1 && generation > expected.generation) {
-    throw new Error("backup proof chunk generation exceeds target head");
+    throw new Error("backup data chunk generation exceeds target head");
   }
   const paddedLength = requireInteger(
     value[8],
@@ -3098,7 +3098,7 @@ function decodeActiveUploadAttemptRecord(
   const nonInheritedTargetDeltaStoredBytes =
     target.pageReferences.length *
       ENCRYPTED_WALLET_BACKUP_MANIFEST_PAGE_STORED_BYTES +
-    nonInheritedChunkCount * ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_STORED_BYTES;
+    nonInheritedChunkCount * ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_STORED_BYTES;
   if (
     (parent?.storedBytes ?? 0) + nonInheritedTargetDeltaStoredBytes >
     ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX

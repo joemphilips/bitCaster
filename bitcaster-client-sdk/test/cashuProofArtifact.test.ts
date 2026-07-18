@@ -5,6 +5,7 @@ import { bls12_381 } from '@noble/curves/bls12-381.js'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { bytesToHex } from '@noble/curves/utils.js'
 import {
+  classifyCashuSecret,
   decodeStrictCashuProofArtifact,
   decodeStrictP2pkCondition,
   isStrictAtomicSwapP2pkProofArtifact,
@@ -73,6 +74,22 @@ const binding = {
   counterpartyPubkey: COUNTERPARTY_PUBKEY,
   locktime: LOCKTIME,
 }
+
+test('secret classifier treats current, future, and damaged NUT-10 envelopes as conditional', () => {
+  for (const secret of [
+    p2pkSecret(),
+    JSON.stringify(['HTLC', { nonce: '11', data: '22' }]),
+    JSON.stringify(['FUTURE_LOCK', { nonce: '11', data: '22' }]),
+    JSON.stringify(['FUTURE_LOCK', null]),
+    JSON.stringify(['P2PK']),
+    JSON.stringify(['HTLC', null, 'extra']),
+  ]) {
+    assert.equal(classifyCashuSecret(secret), 'conditional')
+  }
+  for (const secret of ['ordinary-secret', '[]', JSON.stringify([1, null])]) {
+    assert.equal(classifyCashuSecret(secret), 'ordinary')
+  }
+})
 
 test('strict decoder accepts canonical legacy and NUT-02 V1/V2/V3 keysets', () => {
   const cases = [

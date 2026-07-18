@@ -200,7 +200,7 @@
   ],
   "constructed": [
     {
-      "name": "inherited generation-1 proof chunk under head generation 2",
+      "name": "inherited generation-1 data chunk under head generation 2",
       "operation": "object-get",
       "httpStatus": 200,
       "expectedResult": "found",
@@ -219,7 +219,7 @@
       "cborSha256": "329dc9f98f97e4b586dd9b5194fc81b3a7df408ae3999f8f9c145cb806da6eb8"
     },
     {
-      "name": "current generation-2 proof chunk under head generation 2",
+      "name": "current generation-2 data chunk under head generation 2",
       "operation": "object-get",
       "httpStatus": 200,
       "expectedResult": "found",
@@ -259,7 +259,7 @@
   ],
   "hostileConstructed": [
     {
-      "name": "future generation-3 proof chunk under head generation 2",
+      "name": "future generation-3 data chunk under head generation 2",
       "operation": "object-get",
       "httpStatus": 200,
       "expectedResult": "reject",

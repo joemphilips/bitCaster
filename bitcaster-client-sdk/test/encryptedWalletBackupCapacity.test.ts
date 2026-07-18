@@ -12,24 +12,27 @@ import {
   ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES,
   ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX,
-  ENCRYPTED_WALLET_BACKUP_PROOF_CBOR_MAX_BYTES,
-  ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_DATA_CBOR_MAX_BYTES,
+  ENCRYPTED_WALLET_BACKUP_RECORD_COUNT_MAX,
   ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX,
   ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
   decryptEncryptedWalletBackupManifestPage,
-  packEncryptedWalletBackupProofChunk,
+  packEncryptedWalletBackupDataChunk,
   prepareEncryptedWalletBackupRequestProof,
   prepareIncrementalEncryptedWalletBackupManifest,
   prepareEncryptedWalletBackupManifest,
   prepareEncryptedWalletBackupManifestHead,
   prepareEncryptedWalletBackupObject,
   prepareEncryptedWalletBackupProof,
+  prepareEncryptedWalletBackupPendingSendParent,
+  prepareEncryptedWalletBackupPendingSendProgression,
   readAuthenticatedEncryptedWalletBackupHead,
   readPreparedEncryptedWalletBackupManifestHead,
   readPreparedEncryptedWalletBackupObject,
   type EncryptedWalletBackupRuntime,
   type EncryptedWalletBackupWireObject,
+  type PreparedEncryptedWalletBackupRecord,
 } from "../src/encryptedWalletBackup.ts";
 import {
   ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX,
@@ -38,6 +41,14 @@ import {
 } from "../src/encryptedWalletBackupSync.ts";
 import { deriveDurableCustodyProofId } from "../src/durableCustody.ts";
 import { encodeCanonicalBackupCbor as encodeCanonical } from "../src/encryptedWalletBackupCbor.ts";
+import {
+  PENDING_SEND_FIXTURE_SEED,
+  createMaximumPlannerPendingSendFixture,
+  createPartialPendingSendDeliveryRecord,
+  exactPendingSendSnapshotStore,
+  pendingSendProof,
+  planPendingSendEnvelope,
+} from "./encryptedWalletBackupPendingSendFixture.ts";
 
 const vector = JSON.parse(
   await readFile(
@@ -64,9 +75,12 @@ const vector = JSON.parse(
   expected: { canonicalCborHex: string };
 };
 
-test("50k ordinary proofs plus four CTF proofs in 1k markets fit the 64 MiB lifecycle ceiling", () => {
+test("54k-proof inventory, maximum pending send, and one real repack fit 64 MiB", async () => {
   const root = decode(fromHex(vector.expected.canonicalCborHex)) as unknown[];
   const template = structuredClone((root[2] as unknown[][])[0]!);
+  assert.equal(template.length, 16);
+  assert.equal(template[0], 1);
+  assert.equal(template[1], 0);
   const proofRootFixedBytes = encodeCanonical([1, 1, []]).byteLength - 1;
   let chunkCount = 0;
   let chunkRecordCount = 0;
@@ -79,14 +93,14 @@ test("50k ordinary proofs plus four CTF proofs in 1k markets fit the 64 MiB life
     const proofId = indexedBytes(index, 32);
     const commitment = indexedBytes(index + 54_000, 32);
     const record = structuredClone(template);
-    record[0] = proofId;
-    record[1] = commitment;
-    record[9] = index;
+    record[2] = proofId;
+    record[3] = commitment;
+    record[11] = index;
     if (ctfIndex >= 0) {
       const marketIndex = Math.floor(ctfIndex / 4);
       const outcomeIndex = ctfIndex % 4;
-      record[10] = 1;
-      record[11] = [
+      record[12] = 1;
+      record[13] = [
         indexedBytes(marketIndex + 1, 32),
         `OUTCOME-${outcomeIndex}`,
         indexedBytes(ctfIndex + 2_001, 32),
@@ -109,8 +123,8 @@ test("50k ordinary proofs plus four CTF proofs in 1k markets fit the 64 MiB life
       chunkRecordBytes +
       recordBytes;
     if (
-      candidateRecordCount > ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX ||
-      candidateChunkBytes > ENCRYPTED_WALLET_BACKUP_PROOF_CBOR_MAX_BYTES
+      candidateRecordCount > ENCRYPTED_WALLET_BACKUP_RECORD_COUNT_MAX ||
+      candidateChunkBytes > ENCRYPTED_WALLET_BACKUP_DATA_CBOR_MAX_BYTES
     ) {
       assert.ok(chunkRecordCount > 0);
       chunkCount += 1;
@@ -122,17 +136,18 @@ test("50k ordinary proofs plus four CTF proofs in 1k markets fit the 64 MiB life
     }
     const chunkIndex = chunkCount;
     const entry = [
-      record[0],
       record[1],
-      indexedBytes(chunkIndex + 1, 16),
-      indexedBytes(chunkIndex + 10_001, 32),
       record[2],
       record[3],
+      indexedBytes(chunkIndex + 1, 16),
+      indexedBytes(chunkIndex + 10_001, 32),
+      record[4],
       record[5],
-      record[10],
-      record[11],
+      record[7],
       record[12],
       record[13],
+      record[14],
+      record[15],
     ];
     const entryBytes = encodeCanonical(entry).byteLength;
     const candidateEntryCount = pageEntryCount + 1;
@@ -175,13 +190,13 @@ test("50k ordinary proofs plus four CTF proofs in 1k markets fit the 64 MiB life
   const currentStoredBytes =
     pageCount * ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES +
     chunkCount * ENCRYPTED_WALLET_BACKUP_BODY_BYTES;
-  // One current head plus one staged/replacement manifest, at most four
-  // repacked chunks, and the former manifest pages awaiting bounded GC.
-  const lifecyclePeakBytes =
+  const pending = await prepareMaximumPendingSendRepackProfile();
+  const proofInventoryPeakBytes =
     chunkCount * ENCRYPTED_WALLET_BACKUP_BODY_BYTES +
-    4 * ENCRYPTED_WALLET_BACKUP_BODY_BYTES +
     2 * pageCount * ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES;
-  const replacementObjects = chunkCount + 4 + pageCount;
+  const lifecyclePeakBytes = proofInventoryPeakBytes + pending.lifecycleBytes;
+  const replacementObjects =
+    chunkCount + pageCount + pending.replacementObjectCount;
 
   assert.deepEqual(
     {
@@ -190,17 +205,38 @@ test("50k ordinary proofs plus four CTF proofs in 1k markets fit the 64 MiB life
       currentObjects,
       replacementObjects,
       referenceSetBytes,
-      currentStoredBytes,
+      proofInventoryStoredBytes: currentStoredBytes,
+      totalCurrentStoredBytes: currentStoredBytes + pending.currentStoredBytes,
       lifecyclePeakBytes,
+      pending,
     },
     {
       chunks: 107,
-      pages: 142,
-      currentObjects: 249,
+      pages: 143,
+      currentObjects: 250,
       replacementObjects: 253,
-      referenceSetBytes: 12_968,
-      currentStoredBytes: 37_362_492,
-      lifecyclePeakBytes: 47_721_268,
+      referenceSetBytes: 13_020,
+      proofInventoryStoredBytes: 37_428_056,
+      totalCurrentStoredBytes: 38_017_964,
+      lifecyclePeakBytes: 47_983_524,
+      pending: {
+        sendProofs: 256,
+        unselectedProofs: 144,
+        outputSecretPaddingBytes: 2,
+        parentFragments: 12,
+        childFragments: 4,
+        recordCount: 16,
+        currentChunks: 2,
+        currentPages: 1,
+        repackedChunks: 2,
+        repackedPages: 1,
+        repackBatchObjects: 3,
+        repackBatchChunks: 2,
+        currentStoredBytes: 589_908,
+        replacementStoredBytes: 589_908,
+        lifecycleBytes: 1_179_816,
+        replacementObjectCount: 3,
+      },
     },
   );
   assert.ok(currentObjects <= ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX);
@@ -298,12 +334,12 @@ test("real prepared 255-chunk plus 3-page target is capability-planned below 64 
     );
   }
 
-  const chunks: ReturnType<typeof packEncryptedWalletBackupProofChunk>[] = [];
+  const chunks: ReturnType<typeof packEncryptedWalletBackupDataChunk>[] = [];
   let proofOffset = 0;
   for (let index = 0; index < 255; index += 1) {
     const chunkProofCount = index < 5 ? 5 : 4;
     chunks.push(
-      packEncryptedWalletBackupProofChunk(
+      packEncryptedWalletBackupDataChunk(
         preparedProofs.slice(
           proofOffset,
           Math.min(proofOffset + chunkProofCount, 1_025),
@@ -359,14 +395,14 @@ test("real prepared 255-chunk plus 3-page target is capability-planned below 64 
   });
   assert.deepEqual(
     {
-      proofCount: head.proofCount,
+      recordCount: head.recordCount,
       chunkCount: manifest.chunkObjects.length,
       pageCount: manifest.pages.length,
       objectCount: head.objectCount,
       storedBytes: head.storedBytes,
     },
     {
-      proofCount: 1_025,
+      recordCount: 1_025,
       chunkCount: 255,
       pageCount: 3,
       objectCount: 258,
@@ -424,13 +460,13 @@ test("real prepared 255-chunk plus 3-page target is capability-planned below 64 
   );
 
   const overQuotaChunks: ReturnType<
-    typeof packEncryptedWalletBackupProofChunk
+    typeof packEncryptedWalletBackupDataChunk
   >[] = [];
   proofOffset = 0;
   for (let index = 0; index < 255; index += 1) {
     const chunkProofCount = index < 7 ? 7 : 6;
     overQuotaChunks.push(
-      packEncryptedWalletBackupProofChunk(
+      packEncryptedWalletBackupDataChunk(
         preparedProofs.slice(proofOffset, proofOffset + chunkProofCount),
       ),
     );
@@ -570,7 +606,7 @@ test("real child replacement peak accepts 127 chunks and rejects 128 chunks", as
     );
   }
   const chunks = preparedProofs.map((prepared) =>
-    packEncryptedWalletBackupProofChunk([prepared]),
+    packEncryptedWalletBackupDataChunk([prepared]),
   );
   const parentObjects: Awaited<
     ReturnType<typeof prepareEncryptedWalletBackupObject>
@@ -678,7 +714,7 @@ test("real child replacement peak accepts 127 chunks and rejects 128 chunks", as
         chunk,
         object: childObjects[index]!,
       })),
-      removedProofIds: [],
+      removedRecordIds: [],
       snapshot: {
         snapshotId: "child-capacity-snapshot",
         snapshotRevision: 1,
@@ -769,6 +805,264 @@ test("real child replacement peak accepts 127 chunks and rejects 128 chunks", as
   );
 });
 
+async function prepareMaximumPendingSendRepackProfile() {
+  const pending = await prepareMaximumPendingRecords();
+  const current = await prepareCapacityParentGeneration(
+    pending.keyHandle,
+    pending.records,
+  );
+  const replacement = await prepareCapacityRepackGeneration(
+    pending.keyHandle,
+    pending.records,
+    current,
+  );
+  return {
+    sendProofs: 256,
+    unselectedProofs: pending.unselectedProofCount,
+    outputSecretPaddingBytes: pending.outputSecretPaddingBytes,
+    parentFragments: pending.parentFragmentCount,
+    childFragments: pending.childFragmentCount,
+    recordCount: pending.records.length,
+    currentChunks: current.chunks.length,
+    currentPages: current.manifest.pages.length,
+    repackedChunks: replacement.chunks.length,
+    repackedPages: replacement.manifest.pages.length,
+    repackBatchObjects: replacement.batch.objectCount,
+    repackBatchChunks: replacement.batch.repackedChunkCount,
+    currentStoredBytes: current.head.storedBytes,
+    replacementStoredBytes: replacement.head.storedBytes,
+    lifecycleBytes: current.head.storedBytes + replacement.head.storedBytes,
+    replacementObjectCount: replacement.head.objectCount,
+  };
+}
+
+async function prepareMaximumPendingRecords() {
+  const maximum = createMaximumPlannerPendingSendFixture();
+  assert.equal(maximum.unselectedProofCount, 144);
+  assert.equal(maximum.outputSecretPaddingBytes, 2);
+  assert.throws(
+    () =>
+      planPendingSendEnvelope(
+        256,
+        Array.from({ length: 144 }, (_, index) => pendingSendProof(4_000 + index)),
+        3,
+      ),
+    /storage limit/,
+  );
+  const keyHandle = await createEncryptedWalletBackupKeyHandle({
+    seed: PENDING_SEND_FIXTURE_SEED,
+    realm: "capacity-maximum-pending-send",
+  });
+  const parent = await prepareEncryptedWalletBackupPendingSendParent({
+    keyHandle,
+    recordId: maximum.fixture.snapshot.recordId,
+    snapshotStore: exactPendingSendSnapshotStore(maximum.fixture.snapshot),
+  });
+  const partialRecord = await createPartialPendingSendDeliveryRecord(
+    maximum.fixture.deliveryRecord,
+  );
+  const childSnapshot = {
+    ...maximum.fixture.snapshot,
+    progression: "partial" as const,
+    parentCommitment: parent.parentCommitment,
+    deliveryRecord: partialRecord,
+  };
+  const child = await prepareEncryptedWalletBackupPendingSendProgression({
+    keyHandle,
+    recordId: childSnapshot.recordId,
+    snapshotStore: exactPendingSendSnapshotStore(childSnapshot),
+  });
+  return {
+    keyHandle,
+    unselectedProofCount: maximum.unselectedProofCount,
+    outputSecretPaddingBytes: maximum.outputSecretPaddingBytes,
+    parentFragmentCount: parent.fragmentCount,
+    childFragmentCount: child.fragmentCount,
+    records: [...parent.records, ...child.records],
+  };
+}
+
+async function prepareCapacityParentGeneration(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  records: readonly PreparedEncryptedWalletBackupRecord[],
+) {
+  const chunks = packCapacityRecords(records);
+  const objects = await prepareCapacityChunkObjects(keyHandle, chunks, 1, 40);
+  const manifest = await prepareEncryptedWalletBackupManifest({
+    keyHandle,
+    generation: 1,
+    snapshotNonce: indexedDomainBytes(41, 1, 16),
+    chunks: chunks.map((chunk, index) => ({ chunk, object: objects[index]! })),
+    snapshotStore: acceptingCapacitySnapshotStore(),
+    runtime: deterministicCapacityRuntime(capacityRandomness(42, 32)),
+  });
+  const head = prepareEncryptedWalletBackupManifestHead({
+    keyHandle,
+    manifest,
+    parent: null,
+  });
+  const authenticated = await authenticateCapacityHead(keyHandle, head);
+  const parentPages = await Promise.all(
+    manifest.pages.map((page) =>
+      decryptEncryptedWalletBackupManifestPage({
+        keyHandle,
+        seed: PENDING_SEND_FIXTURE_SEED,
+        object: readPreparedEncryptedWalletBackupObject(page),
+        headEvidence: authenticated,
+      }),
+    ),
+  );
+  return { chunks, manifest, head, authenticated, parentPages };
+}
+
+async function prepareCapacityRepackGeneration(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  records: readonly PreparedEncryptedWalletBackupRecord[],
+  current: Awaited<ReturnType<typeof prepareCapacityParentGeneration>>,
+) {
+  const chunks = repackCapacityRecords(records, current.chunks.length);
+  const objects = await prepareCapacityChunkObjects(
+    keyHandle,
+    chunks,
+    2,
+    50,
+  );
+  const manifest = await prepareIncrementalEncryptedWalletBackupManifest({
+    keyHandle,
+    generation: 2,
+    snapshotNonce: indexedDomainBytes(51, 1, 16),
+    parentEvidence: current.authenticated,
+    parentPages: current.parentPages,
+    chunks: chunks.map((chunk, index) => ({
+      chunk,
+      object: objects[index]!,
+    })),
+    removedRecordIds: [],
+    snapshot: { snapshotId: "snapshot-1", snapshotRevision: 1 },
+    snapshotStore: acceptingCapacitySnapshotStore(),
+    runtime: deterministicCapacityRuntime(capacityRandomness(52, 32)),
+  });
+  const head = prepareEncryptedWalletBackupManifestHead({
+    keyHandle,
+    manifest,
+    parent: current.authenticated.head,
+  });
+  const uploadPlan = prepareEncryptedWalletBackupUploadPlan({
+    attemptId: "53".repeat(16),
+    keyHandle,
+    targetHead: head,
+  });
+  const batch = uploadPlan.batches.find(
+    ({ repackedChunkCount }) => repackedChunkCount > 0,
+  );
+  assert.ok(batch, "expected one real pending-send repack batch");
+  return { chunks, manifest, head, batch };
+}
+
+function packCapacityRecords(
+  records: readonly PreparedEncryptedWalletBackupRecord[],
+) {
+  const chunks: ReturnType<typeof packEncryptedWalletBackupDataChunk>[] = [];
+  let pending: PreparedEncryptedWalletBackupRecord[] = [];
+  for (const record of records) {
+    try {
+      packEncryptedWalletBackupDataChunk([...pending, record]);
+      pending.push(record);
+    } catch (error) {
+      assert.match(String(error), /canonical CBOR limit/);
+      chunks.push(packEncryptedWalletBackupDataChunk(pending));
+      pending = [record];
+    }
+  }
+  if (pending.length > 0) chunks.push(packEncryptedWalletBackupDataChunk(pending));
+  return chunks;
+}
+
+function repackCapacityRecords(
+  records: readonly PreparedEncryptedWalletBackupRecord[],
+  chunkCount: number,
+) {
+  const groups = Array.from(
+    { length: chunkCount },
+    () => [] as PreparedEncryptedWalletBackupRecord[],
+  );
+  records.forEach((record, index) => groups[index % chunkCount]!.push(record));
+  return groups.filter(({ length }) => length > 0).map(packEncryptedWalletBackupDataChunk);
+}
+
+async function prepareCapacityChunkObjects(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  chunks: readonly ReturnType<typeof packEncryptedWalletBackupDataChunk>[],
+  generation: number,
+  domain: number,
+) {
+  return Promise.all(
+    chunks.map((chunk, index) =>
+      prepareEncryptedWalletBackupObject({
+        keyHandle,
+        chunk,
+        generation,
+        runtime: deterministicCapacityRuntime([
+          indexedDomainBytes(domain, index + 1, 16),
+          indexedDomainBytes(domain + 1, index + 1, 12),
+        ]),
+      }),
+    ),
+  );
+}
+
+async function authenticateCapacityHead(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  head: ReturnType<typeof prepareEncryptedWalletBackupManifestHead>,
+) {
+  const requestProof = await prepareEncryptedWalletBackupRequestProof({
+    keyHandle,
+    enrollmentEpoch: 1,
+    method: "GET",
+    url: "https://backup.example.test/capacity-maximum-pending-send",
+    issuedAtUnixSeconds: 1_700_000_000,
+    expiresAtUnixSeconds: 1_700_000_030,
+    payload: new Uint8Array(),
+    signal: AbortSignal.timeout(60_000),
+    runtime: deterministicCapacityRuntime([
+      indexedDomainBytes(60, 1, 16),
+      indexedDomainBytes(61, 1, 32),
+    ]),
+  });
+  return readAuthenticatedEncryptedWalletBackupHead({
+    keyHandle,
+    enrollmentEpoch: 1,
+    requestProof,
+    remote: {
+      async readCurrentHead() {
+        return {
+          status: "found" as const,
+          enrollmentEpoch: 1,
+          head: readPreparedEncryptedWalletBackupManifestHead(head),
+        };
+      },
+    },
+  });
+}
+
+function acceptingCapacitySnapshotStore() {
+  return {
+    async sealCommittedBackupSnapshot<T>(
+      expected: unknown,
+      seal: (value: never) => T,
+    ): Promise<T> {
+      return seal(expected as never);
+    },
+  };
+}
+
+function capacityRandomness(domain: number, count: number): Uint8Array[] {
+  return Array.from({ length: count }, (_, index) => [
+    indexedDomainBytes(domain, index + 1, 16),
+    indexedDomainBytes(domain + 1, index + 1, 12),
+  ]).flat();
+}
+
 function capacityProofCommitment(input: {
   counter: number;
   secret: string;
@@ -787,7 +1081,8 @@ function capacityProofCommitment(input: {
     sha256(
       encodeCanonical([
         1,
-        "proof-record-commitment",
+        "wallet-record-commitment",
+        0,
         input.proof.mint,
         input.proof.unit,
         [2, input.proof.keysetId],

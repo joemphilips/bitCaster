@@ -6,9 +6,9 @@ import { normalizeDurableWalletMintUrl } from "./durableWalletMintUrl.ts";
 
 export const DURABLE_WALLET_SEND_TOKEN_BYTES_LIMIT_MAX = 8 * 1_024 * 1_024;
 export const DURABLE_WALLET_SEND_PROOF_COUNT_LIMIT_MAX = 256;
-export const DURABLE_WALLET_SEND_STORAGE_BYTES_LIMIT_MAX = 10 * 1_024 * 1_024;
+export const DURABLE_WALLET_SEND_STORAGE_BYTES_LIMIT_MAX = 16 * 1_024 * 1_024;
 export const DURABLE_WALLET_SEND_NATIVE_OPERATION_BYTES_LIMIT_MAX =
-  1 * 1_024 * 1_024;
+  8 * 1_024 * 1_024;
 
 const DURABLE_WALLET_SEND_TOKEN_BASE_BYTES_UPPER_BOUND = 4 * 1_024;
 const DURABLE_WALLET_SEND_TOKEN_PROOF_BYTES_UPPER_BOUND = 1 * 1_024;
@@ -159,8 +159,9 @@ export function planDurableWalletSendDeliveryAdmission(input: {
       "durable wallet-send output plan exceeds its native operation row limit",
     );
   }
-  const bearerPolicyRowBytesUpperBound =
-    planDurableBearerSpendPolicyRowBytes(outputs.length);
+  const bearerPolicyRowBytesUpperBound = planDurableBearerSpendPolicyRowBytes(
+    outputs.length,
+  );
   const durableStorageBytesRequired =
     encodedTokenBytesUpperBound +
     DURABLE_WALLET_SEND_STORAGE_ROW_BYTES_UPPER_BOUND +
