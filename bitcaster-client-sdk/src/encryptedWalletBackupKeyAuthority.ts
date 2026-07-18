@@ -1,15 +1,16 @@
-import type { EncryptedWalletBackupKeyHandle } from './encryptedWalletBackup.ts'
+import type { EncryptedWalletBackupKeyHandle } from "./encryptedWalletBackup.ts";
 
 interface EncryptedWalletBackupKeyBinding {
-  readonly walletId: string
-  readonly preparationPersistenceKey: Uint8Array
-  readonly subtle: SubtleCrypto
+  readonly walletId: string;
+  readonly preparationPersistenceKey: Uint8Array;
+  readonly subtle: SubtleCrypto;
 }
 
 const ISSUED_BACKUP_KEY_HANDLES = new WeakMap<
   object,
   EncryptedWalletBackupKeyBinding
->()
+>();
+const IMPORTED_PREPARATION_KEYS = new WeakMap<object, Promise<CryptoKey>>();
 
 /** Internal capability registry; deliberately absent from package exports. */
 export function registerEncryptedWalletBackupKeyHandle(
@@ -22,18 +23,19 @@ export function registerEncryptedWalletBackupKeyHandle(
       ...binding,
       preparationPersistenceKey: binding.preparationPersistenceKey.slice(),
     }),
-  )
+  );
+  IMPORTED_PREPARATION_KEYS.delete(handle);
 }
 
 export async function signEncryptedWalletBackupPreparationCapability(
   handle: EncryptedWalletBackupKeyHandle,
   payload: Uint8Array,
 ): Promise<Uint8Array> {
-  const binding = requireKeyBinding(handle)
-  const key = await importHmacKey(binding)
+  const binding = requireKeyBinding(handle);
+  const key = await importHmacKey(handle, binding);
   return new Uint8Array(
-    await binding.subtle.sign('HMAC', key, asArrayBuffer(payload)),
-  )
+    await binding.subtle.sign("HMAC", key, asArrayBuffer(payload)),
+  );
 }
 
 export async function verifyEncryptedWalletBackupPreparationCapability(
@@ -41,62 +43,67 @@ export async function verifyEncryptedWalletBackupPreparationCapability(
   payload: Uint8Array,
   authenticationTag: Uint8Array,
 ): Promise<void> {
-  const binding = requireKeyBinding(handle)
+  const binding = requireKeyBinding(handle);
   if (authenticationTag.byteLength !== 32) {
-    throw new Error('backup preparation capability authentication failed')
+    throw new Error("backup preparation capability authentication failed");
   }
-  const key = await importHmacKey(binding)
+  const key = await importHmacKey(handle, binding);
   if (
     !(await binding.subtle.verify(
-      'HMAC',
+      "HMAC",
       key,
       asArrayBuffer(authenticationTag),
       asArrayBuffer(payload),
     ))
   ) {
-    throw new Error('backup preparation capability authentication failed')
+    throw new Error("backup preparation capability authentication failed");
   }
 }
 
 function requireKeyBinding(value: unknown): EncryptedWalletBackupKeyBinding {
-  const handle = requireIssuedEncryptedWalletBackupKeyHandle(value)
-  return ISSUED_BACKUP_KEY_HANDLES.get(handle)!
+  const handle = requireIssuedEncryptedWalletBackupKeyHandle(value);
+  return ISSUED_BACKUP_KEY_HANDLES.get(handle)!;
 }
 
 async function importHmacKey(
+  handle: EncryptedWalletBackupKeyHandle,
   binding: EncryptedWalletBackupKeyBinding,
 ): Promise<CryptoKey> {
-  return binding.subtle.importKey(
-    'raw',
+  const cached = IMPORTED_PREPARATION_KEYS.get(handle);
+  if (cached !== undefined) return cached;
+  const imported = binding.subtle.importKey(
+    "raw",
     asArrayBuffer(binding.preparationPersistenceKey),
-    { name: 'HMAC', hash: 'SHA-256' },
+    { name: "HMAC", hash: "SHA-256" },
     false,
-    ['sign', 'verify'],
-  )
+    ["sign", "verify"],
+  );
+  IMPORTED_PREPARATION_KEYS.set(handle, imported);
+  return imported;
 }
 
 function asArrayBuffer(value: Uint8Array): ArrayBuffer {
-  const copy = new Uint8Array(value.byteLength)
-  copy.set(value)
-  return copy.buffer
+  const copy = new Uint8Array(value.byteLength);
+  copy.set(value);
+  return copy.buffer;
 }
 
 export function requireIssuedEncryptedWalletBackupKeyHandle(
   value: unknown,
 ): EncryptedWalletBackupKeyHandle {
   if (
-    typeof value !== 'object' ||
+    typeof value !== "object" ||
     value === null ||
     !ISSUED_BACKUP_KEY_HANDLES.has(value)
   ) {
-    throw new Error('backup key handle is invalid')
+    throw new Error("backup key handle is invalid");
   }
-  return value as EncryptedWalletBackupKeyHandle
+  return value as EncryptedWalletBackupKeyHandle;
 }
 
 export function requireEncryptedWalletBackupKeyWalletId(
   value: unknown,
 ): string {
-  const handle = requireIssuedEncryptedWalletBackupKeyHandle(value)
-  return ISSUED_BACKUP_KEY_HANDLES.get(handle)!.walletId
+  const handle = requireIssuedEncryptedWalletBackupKeyHandle(value);
+  return ISSUED_BACKUP_KEY_HANDLES.get(handle)!.walletId;
 }

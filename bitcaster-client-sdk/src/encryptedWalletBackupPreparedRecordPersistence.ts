@@ -50,6 +50,20 @@ export interface EncryptedWalletBackupPreparedRecordSnapshotStore {
   ): Promise<T>;
 }
 
+export const ENCRYPTED_WALLET_BACKUP_PREPARED_RECORD_SNAPSHOT_BATCH_MAX =
+  256 as const;
+
+export interface EncryptedWalletBackupPreparedRecordSnapshotBatchStore {
+  /**
+   * Invokes `read` synchronously exactly once with the ordered exact rows and
+   * returns the exact callback value.
+   */
+  withCommittedPreparedRecordSnapshotBatch<T>(
+    recordIds: readonly string[],
+    read: (rows: readonly EncryptedWalletBackupPreparedRecordSnapshot[]) => T,
+  ): Promise<T>;
+}
+
 export async function sealPreparedEncryptedWalletBackupRecord(input: {
   readonly keyHandle: EncryptedWalletBackupKeyHandle;
   readonly seed: Uint8Array;
@@ -88,6 +102,42 @@ export async function rehydratePreparedEncryptedWalletBackupRecord(input: {
   validateCandidate(persisted, input.seed);
   await requireCommittedSnapshot(input.snapshotStore, snapshotOf(persisted));
   return issueRehydratedRecord(keyHandle, persisted);
+}
+
+export async function rehydratePreparedEncryptedWalletBackupRecordBatch(input: {
+  readonly keyHandle: EncryptedWalletBackupKeyHandle;
+  readonly seed: Uint8Array;
+  readonly persisted: readonly PersistedPreparedEncryptedWalletBackupRecord[];
+  readonly snapshotStore: EncryptedWalletBackupPreparedRecordSnapshotBatchStore;
+}): Promise<readonly PreparedEncryptedWalletBackupRecord[]> {
+  if (
+    !Array.isArray(input.persisted) ||
+    input.persisted.length < 1 ||
+    input.persisted.length >
+      ENCRYPTED_WALLET_BACKUP_PREPARED_RECORD_SNAPSHOT_BATCH_MAX
+  )
+    throw new Error("prepared backup snapshot batch count is invalid");
+  const keyHandle = requireMatchingKeyHandle(input.keyHandle, input.seed);
+  const persisted = await Promise.all(
+    input.persisted.map(async (raw) => {
+      const exact = requirePersistedRecord(raw);
+      requireKeyBinding(keyHandle, exact);
+      await verifyEncryptedWalletBackupPreparationCapability(
+        keyHandle,
+        capabilityPayload(exact),
+        exact.authenticationTag,
+      );
+      validateCandidate(exact, input.seed);
+      return exact;
+    }),
+  );
+  await requireCommittedSnapshotBatch(
+    input.snapshotStore,
+    persisted.map(snapshotOf),
+  );
+  return Object.freeze(
+    persisted.map((record) => issueRehydratedRecord(keyHandle, record)),
+  );
 }
 
 type CapabilityCandidate = Omit<
@@ -251,6 +301,39 @@ async function requireCommittedSnapshot(
   if (calls !== 1 || returned !== sentinel)
     throw new Error(
       "prepared backup snapshot callback must be synchronous and exact",
+    );
+}
+
+async function requireCommittedSnapshotBatch(
+  store: EncryptedWalletBackupPreparedRecordSnapshotBatchStore,
+  expected: readonly EncryptedWalletBackupPreparedRecordSnapshot[],
+): Promise<void> {
+  if (
+    !store ||
+    typeof store.withCommittedPreparedRecordSnapshotBatch !== "function"
+  )
+    throw new Error("prepared backup snapshot batch store is invalid");
+  const recordIds = Object.freeze(expected.map(({ recordId }) => recordId));
+  const sentinel = Object.freeze({ committed: true });
+  let calls = 0;
+  let synchronous = true;
+  const pending = store.withCommittedPreparedRecordSnapshotBatch(
+    recordIds,
+    (rows) => {
+      if (!synchronous || calls++ !== 0)
+        throw new Error("prepared backup snapshot batch callback is invalid");
+      if (!Array.isArray(rows) || rows.length !== expected.length)
+        throw new Error("committed prepared backup snapshot batch changed");
+      for (let index = 0; index < expected.length; index += 1)
+        requireExactSnapshot(expected[index]!, rows[index]!);
+      return sentinel;
+    },
+  );
+  synchronous = false;
+  const returned = await pending;
+  if (calls !== 1 || returned !== sentinel)
+    throw new Error(
+      "prepared backup snapshot batch callback must be synchronous and exact",
     );
 }
 

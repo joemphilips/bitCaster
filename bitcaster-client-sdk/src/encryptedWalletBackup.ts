@@ -2458,8 +2458,8 @@ export async function prepareEncryptedWalletBackupObject(input: {
       digest,
     });
     PREPARED_OBJECT_AUTHORITIES.set(prepared, {
-      aad,
-      body,
+      aad: aad.slice(),
+      body: body.slice(),
       sourceChunk: input.chunk,
     });
     return prepared;
@@ -2483,6 +2483,57 @@ export function readPreparedEncryptedWalletBackupObject(
     aad: authority.aad.slice(),
     body: authority.body.slice(),
   };
+}
+
+export async function rehydratePreparedEncryptedWalletBackupDataObject(input: {
+  keyHandle: EncryptedWalletBackupKeyHandle;
+  seed: Uint8Array;
+  chunk: PreparedEncryptedWalletBackupDataChunk;
+  object: EncryptedWalletBackupWireObject;
+}): Promise<PreparedEncryptedWalletBackupObject> {
+  try {
+    const authority = requireKeyAuthority(input.keyHandle);
+    const chunkAuthority = requireChunkAuthority(input.chunk);
+    if (chunkAuthority.keyAuthority !== authority)
+      throw new Error("foreign chunk");
+    const seed = requireSeed(input.seed);
+    if (!equalBytes(authority.seedDigest, sha256(seed)))
+      throw new Error("foreign seed");
+    const object = requireWireObject(input.object, authority);
+    if (object.kindCode !== ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND)
+      throw new Error("foreign object kind");
+    const canonical = await decryptObjectFrame({
+      authority,
+      object,
+      kindCode: ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND,
+      frameBytes: ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES,
+      cborMaxBytes: ENCRYPTED_WALLET_BACKUP_DATA_CBOR_MAX_BYTES,
+    });
+    preflightDataChunk(canonical);
+    if (
+      !equalBytes(canonical, encodeCanonical(decode(canonical))) ||
+      !equalBytes(canonical, chunkAuthority.canonical)
+    )
+      throw new Error("foreign canonical chunk");
+    const prepared = Object.freeze({
+      formatVersion: object.formatVersion,
+      kindCode: ENCRYPTED_WALLET_BACKUP_DATA_CHUNK_KIND,
+      realm: object.realm,
+      vaultId: object.vaultId,
+      objectId: object.objectId,
+      generation: object.generation,
+      paddedLength: ENCRYPTED_WALLET_BACKUP_DATA_FRAME_BYTES,
+      digest: object.digest,
+    });
+    PREPARED_OBJECT_AUTHORITIES.set(prepared, {
+      aad: object.aad.slice(),
+      body: object.body.slice(),
+      sourceChunk: input.chunk,
+    });
+    return prepared;
+  } catch {
+    throw new Error("persisted encrypted wallet backup data object is invalid");
+  }
 }
 
 export async function prepareEncryptedWalletBackupManifest(input: {
@@ -5589,7 +5640,11 @@ async function prepareManifestObject(input: {
       paddedLength: ENCRYPTED_WALLET_BACKUP_MANIFEST_FRAME_BYTES,
       digest,
     });
-    PREPARED_OBJECT_AUTHORITIES.set(prepared, { aad, body, sourceChunk: null });
+    PREPARED_OBJECT_AUTHORITIES.set(prepared, {
+      aad: aad.slice(),
+      body: body.slice(),
+      sourceChunk: null,
+    });
     return prepared;
   } catch (error) {
     input.authority.preparedObjectIds.delete(objectId);
