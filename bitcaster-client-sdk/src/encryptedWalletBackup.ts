@@ -2682,7 +2682,9 @@ export async function prepareEncryptedWalletBackupManifest(input: {
   const wireEntries = bindings.map(({ record, object }) =>
     manifestEntryWire(record, object),
   );
-  validatePendingSendManifestEntries(wireEntries.map(decodeManifestEntry));
+  validatePendingSendManifestEntries(
+    wireEntries.map(decodeEncryptedWalletBackupManifestEntry),
+  );
   const pageEntries: unknown[][][] = [];
   let current: unknown[][] = [];
   for (const entry of wireEntries) {
@@ -2916,7 +2918,9 @@ export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
       }
       entries.set(
         record.recordId,
-        decodeManifestEntry(manifestEntryWire(record, binding.object)),
+        decodeEncryptedWalletBackupManifestEntry(
+          manifestEntryWire(record, binding.object),
+        ),
       );
       removed.delete(record.recordId);
     }
@@ -6550,7 +6554,9 @@ function decodeManifestPage(
   ) {
     throw new Error("manifest page shape");
   }
-  const entries = (value[6] as unknown[]).map(decodeManifestEntry);
+  const entries = (value[6] as unknown[]).map(
+    decodeEncryptedWalletBackupManifestEntry,
+  );
   for (let index = 1; index < entries.length; index += 1) {
     if (
       compareHex(entries[index - 1]!.recordId, entries[index]!.recordId) >= 0
@@ -6569,7 +6575,8 @@ function decodeManifestPage(
   });
 }
 
-function decodeManifestEntry(
+/** Strictly decodes one canonical manifest entry; decoding alone is not authority. */
+export function decodeEncryptedWalletBackupManifestEntry(
   value: unknown,
 ): EncryptedWalletBackupManifestEntry {
   if (!Array.isArray(value) || value.length < 8)
