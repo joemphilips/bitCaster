@@ -5,6 +5,7 @@ import {
   createConditionalRecoveryWalletScope,
   decodeConditionalRecoverySession,
   encodeConditionalRecoverySession,
+  rehydrateConditionalRecoverySessionCapabilities,
   validateConditionalRecoverySessionSuccessor,
 } from "../src/emergencyConditionalSeedRecovery.ts";
 import { freezeSession } from "../src/emergencyConditionalRecoveryCatalogue.ts";
@@ -114,6 +115,22 @@ function successor(
     ...overrides,
   });
 }
+
+test("direct rehydration rejects both terminal session variants", async () => {
+  for (const transition of [
+    "recovery-completed",
+    "recovery-failed-closed",
+  ] as const) {
+    await assert.rejects(
+      Reflect.apply(
+        rehydrateConditionalRecoverySessionCapabilities,
+        undefined,
+        [session(transition), {}, {}],
+      ),
+      /terminal session has no rehydratable capabilities/i,
+    );
+  }
+});
 
 test("session-v2 codec is canonical, scope-bound, bounded, and fails closed on v1", () => {
   assert.equal(CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION, 2);

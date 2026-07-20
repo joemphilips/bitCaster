@@ -37,6 +37,7 @@ import {
   resumeConditionalRecoverySession,
   rehydrateConditionalRecoverySessionCapabilities,
   skipFreshlyIneligibleConditionalRecoveryKeyset,
+  skipExpiredConditionalRecoveryKeyset,
   retainExpiredConditionalRecoveryKeyset,
   snapshotConditionalCatalogueCheckpoint,
   validateConditionalCataloguePage,
@@ -1136,6 +1137,27 @@ test("proof-verification reopen rederives exact batch and requires fresh NUT-07"
       ),
     /request replay changed bytes/i,
   );
+  const alteredResponseBytes = new Uint8Array(responseBytes);
+  alteredResponseBytes[alteredResponseBytes.byteLength - 1] = 0x09;
+  await assert.rejects(
+    () =>
+      rehydrateConditionalRecoverySessionCapabilities(
+        reopened,
+        {
+          stage: "proof-verification",
+          catalogue: source.catalogue,
+          keysResponse: keysResponse(),
+          derivationPort: {
+            deriveSeedOutputs: () => source.derivedOutputs,
+          },
+          requestBytes: source.request.requestBytes,
+          responseBytes: alteredResponseBytes,
+          stagedProofRows: source.stagedProofRows,
+        },
+        sessionPort,
+      ),
+    /staged response does not match session bindings/i,
+  );
   const capabilities =
     await rehydrateConditionalRecoverySessionCapabilities(
       reopened,
@@ -1373,6 +1395,112 @@ test("fresh-process reopen accepts an exact empty NUT-09 response", async () => 
     port,
   );
   assert.equal(capabilities.proofBatch?.proofCount, 0);
+});
+
+test("nut09-request reopen requires byte-identical dispatch replay before expiry handling", async () => {
+  const catalogue = await completedCatalogue();
+  const target = await targetFor(catalogue, 70);
+  const fixture = restoreFixture("lost-dispatch", 70);
+  const derivedOutputs = [{
+    counter: fixture.counter,
+    ...fixture.output,
+    Y: hashToCurve(new TextEncoder().encode(fixture.proof.secret)).toHex(true),
+    unblind: fixture.unblind,
+  }];
+  const plan = await createSeedDerivedConditionalRecoveryPlan({
+    catalogue,
+    target,
+    walletScope: catalogue.walletScope,
+    startCounter: 70,
+    count: 1,
+    derivationPort: { deriveSeedOutputs: () => derivedOutputs },
+    session: target.session,
+  });
+  const request = authorizeConditionalRecoveryNut09Request({
+    catalogue,
+    target,
+    plan,
+    walletScope: catalogue.walletScope,
+    authority: await observation(catalogue),
+  });
+  const reopened = decodeConditionalRecoverySession(
+    encodeConditionalRecoverySession(request.session, catalogue.walletScope),
+    catalogue.walletScope,
+  );
+  const port: ConditionalRecoverySessionCasPort = {
+    readCurrentDigest: () => reopened.digest,
+    compareAndSwap: () => false,
+    compareAndSwapStageNut09Response: async () => false,
+    compareAndSwapRetainExpiredKeyset: () => false,
+    compareAndSwapInsertUnique: () => false,
+  };
+  const changedRequest = new Uint8Array(request.requestBytes);
+  changedRequest[changedRequest.byteLength - 1] ^= 1;
+  await assert.rejects(
+    () =>
+      rehydrateConditionalRecoverySessionCapabilities(
+        reopened,
+        {
+          stage: "nut09-request",
+          catalogue,
+          keysResponse: keysResponse(),
+          derivationPort: { deriveSeedOutputs: () => derivedOutputs },
+          requestBytes: changedRequest,
+        },
+        port,
+      ),
+    /request replay changed bytes/i,
+  );
+  await assert.rejects(
+    Reflect.apply(rehydrateConditionalRecoverySessionCapabilities, undefined, [
+      reopened,
+      {
+        stage: "nut09-request",
+        catalogue,
+        keysResponse: keysResponse(),
+        derivationPort: { deriveSeedOutputs: () => derivedOutputs },
+        requestBytes: request.requestBytes,
+        responseBytes: new Uint8Array(),
+      },
+      port,
+    ]),
+    /unknown field/i,
+  );
+  const capabilities = await rehydrateConditionalRecoverySessionCapabilities(
+    reopened,
+    {
+      stage: "nut09-request",
+      catalogue,
+      keysResponse: keysResponse(),
+      derivationPort: { deriveSeedOutputs: () => derivedOutputs },
+      requestBytes: request.requestBytes,
+    },
+    port,
+  );
+  assert.equal(
+    capabilities.request!.requestBytes.byteLength,
+    request.requestBytes.byteLength,
+  );
+  assert.equal(
+    capabilities.request!.requestBytes.every(
+      (value, index) => value === request.requestBytes[index],
+    ),
+    true,
+  );
+  const expiryAuthority = issueConditionalRecoveryFreshExpiryEvidence({
+    catalogue,
+    target: capabilities.target!,
+    authority: await observation(catalogue, 2_000_000_000),
+  });
+  assert.throws(
+    () =>
+      skipExpiredConditionalRecoveryKeyset({
+        session: reopened,
+        expiryAuthority,
+        sessionPort: port,
+      }),
+    /must replay before expiry handling/i,
+  );
 });
 
 test("shared mint-state dispositions drive every conditional admission bucket", async () => {
