@@ -43,7 +43,6 @@ export {
   snapshotConditionalCatalogueCheckpoint,
   validateConditionalCataloguePage,
   validateConditionalRecoveryKeys,
-  rehydrateConditionalRecoverySessionCapabilities,
 } from "./emergencyConditionalRecoveryCatalogue.ts";
 
 export {
@@ -55,6 +54,7 @@ export {
   issueConditionalRecoveryFreshExpiryEvidence,
   retainExpiredConditionalRecoveryKeyset,
   skipExpiredConditionalRecoveryKeyset,
+  rehydrateConditionalRecoverySessionCapabilities,
   verifyConditionalRecoveryProofs,
 } from "./emergencyConditionalRecoveryProofAdmission.ts";
 
@@ -97,4 +97,8 @@ export type {
   ConditionalRecoverySkipReason,
   ConditionalRecoveryTerminalEvidence,
 } from "./emergencyConditionalRecoverySession.ts";
+export type {
+  ConditionalRecoverySessionCapabilities,
+  ConditionalRecoverySessionRehydrationEvidence,
+} from "./emergencyConditionalRecoveryProofAdmission.ts";
 export type { EncodedConditionalCatalogueCheckpoint } from "./emergencyConditionalRecoveryCheckpointCodec.ts";

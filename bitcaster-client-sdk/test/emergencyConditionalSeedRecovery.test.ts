@@ -30,6 +30,7 @@ import {
   encodeConditionalCatalogueCheckpoint,
   encodeConditionalRecoverySession,
   finalizeConditionalRecoveryCatalogue,
+  failConditionalRecoverySessionClosed,
   issueConditionalRecoveryFreshExpiryEvidence,
   issueConditionalRecoveryAuthorityObservation,
   resumeConditionalCatalogueProgress,
@@ -78,11 +79,12 @@ function mintInfo(maxPageSize = 2): unknown {
 function scope(
   unit = "sat",
   mintUrl = "https://mint.example/",
+  walletId = "22".repeat(32),
 ): ConditionalRecoveryWalletScope {
   return createConditionalRecoveryWalletScope({
     scopeId: deriveDurableCustodyScopeId({
       scopeKind: "wallet",
-      walletId: "22".repeat(32),
+      walletId,
     }),
     mintUrl,
     unit,
@@ -195,6 +197,7 @@ async function targetFor(
     cas: ports.cas,
     startCounter,
   });
+  targetInitialSessions.set(session.walletScope.scopeId + ":" + startCounter, session);
   const target = validateConditionalRecoveryKeys({
     catalogue,
     walletScope: catalogue.walletScope,
@@ -210,6 +213,8 @@ async function targetFor(
   targetPorts.set(target!, ports);
   return target!;
 }
+
+const targetInitialSessions = new Map<string, ConditionalRecoverySession>();
 
 const targetPorts = new WeakMap<
   ValidatedConditionalRecoveryTarget,
@@ -770,12 +775,12 @@ test("key authority is fresh and one-use, and cross-mint scope substitution fail
     /foreign/i,
   );
 });
-
 async function proofHarness(
   rawMetadata: Record<string, unknown> = metadata(),
   finishProofChecks = true,
+  walletScope = scope(),
 ) {
-  const catalogue = await completedCatalogue(scope(), rawMetadata);
+  const catalogue = await completedCatalogue(walletScope, rawMetadata);
   const target = await targetFor(catalogue, 40);
   const fixtures = [
     restoreFixture("secret-one", 40),
@@ -837,6 +842,14 @@ async function proofHarness(
     return {
       catalogue,
       target,
+      plan,
+      request,
+      fixtures,
+      derivedOutputs,
+      ports,
+      initialSession: targetInitialSessions.get(
+        catalogue.walletScope.scopeId + ":40",
+      )!,
       proofs,
       charged,
       states,
@@ -864,10 +877,353 @@ async function proofHarness(
     proofs,
     charged,
     verified,
+    plan,
+    request,
+    fixtures,
+    derivedOutputs,
+    states,
+    ports,
+    initialSession: targetInitialSessions.get(
+      catalogue.walletScope.scopeId + ":40",
+    )!,
     nut07,
     admissionPort: ports.admissionPort,
   };
 }
+
+test("session-v2 rehydrates every interruptible stage only through fresh SDK rederivation", async () => {
+  const stages = [
+    "completed-catalogue",
+    "selected-target",
+    "nut13-plan",
+    "nut09-request",
+    "staged-response",
+    "proof-verification",
+    "nut07-classification",
+  ] as const;
+  for (const [stageIndex, stage] of stages.entries()) {
+    const walletScope = scope(
+      "sat",
+      "https://mint.example/",
+      (30 + stageIndex).toString(16).padStart(2, "0").repeat(32),
+    );
+    const source = await proofHarness(metadata(), true, walletScope);
+    const sourceLineage = [
+      source.initialSession,
+      source.target.session,
+      source.plan.session,
+      source.request.session,
+      source.charged.session,
+      source.verified.session,
+      source.nut07.session,
+    ];
+    const lineage = sourceLineage.slice(0, stageIndex + 1).map((value) =>
+      decodeConditionalRecoverySession(
+        encodeConditionalRecoverySession(value, walletScope),
+        walletScope,
+      ),
+    );
+    const finalSession = lineage[lineage.length - 1]!;
+    const replayPort: ConditionalRecoverySessionCasPort = {
+      readCurrentDigest: () => finalSession.digest,
+      compareAndSwap: () => {
+        throw new Error("rehydration attempted a storage CAS");
+      },
+      compareAndSwapInsertUnique: async () => {
+        throw new Error("rehydration attempted admission");
+      },
+      compareAndSwapRetainExpiredKeyset: async () => {
+        throw new Error("rehydration attempted retention");
+      },
+    };
+    const rederiveCatalogue = () => completedCatalogue(walletScope);
+    const rederiveTarget = async ({
+      catalogue,
+      session,
+    }: {
+      catalogue: CompletedConditionalRecoveryCatalogue;
+      session: ConditionalRecoverySession;
+    }) => {
+      const target = validateConditionalRecoveryKeys({
+        catalogue,
+        walletScope,
+        keysetId: KEYSET_ID,
+        response: keysResponse(),
+        responseBytes: 1_024,
+        authority: await observation(catalogue),
+        session,
+      });
+      assert.notEqual(target, null);
+      return target!;
+    };
+    const rederivePlan = ({
+      catalogue,
+      target,
+      session,
+    }: {
+      catalogue: CompletedConditionalRecoveryCatalogue;
+      target: ValidatedConditionalRecoveryTarget;
+      session: ConditionalRecoverySession;
+    }) =>
+      createSeedDerivedConditionalRecoveryPlan({
+        catalogue,
+        target,
+        walletScope,
+        startCounter: 40,
+        count: source.derivedOutputs.length,
+        derivationPort: {
+          deriveSeedOutputs: () => source.derivedOutputs,
+        },
+        session,
+      });
+    const rederiveRequest = async ({
+      catalogue,
+      target,
+      plan,
+    }: {
+      catalogue: CompletedConditionalRecoveryCatalogue;
+      target: ValidatedConditionalRecoveryTarget;
+      plan: typeof source.plan;
+    }) =>
+      authorizeConditionalRecoveryNut09Request({
+        catalogue,
+        target,
+        plan,
+        walletScope,
+        authority: await observation(catalogue),
+      });
+    const rederiveBatch = async ({
+      catalogue,
+      request,
+    }: {
+      catalogue: CompletedConditionalRecoveryCatalogue;
+      request: typeof source.request;
+    }) =>
+      acceptConditionalRecoveryNut09Response({
+        request,
+        response: {
+          outputs: source.fixtures.map((fixture) => fixture.output),
+          signatures: source.fixtures.map((fixture) => fixture.signature),
+        },
+        responseBytes: 2_048,
+        authority: await observation(catalogue),
+      });
+    const reverifyProofs = async ({
+      catalogue,
+      target,
+      proofBatch,
+    }: {
+      catalogue: CompletedConditionalRecoveryCatalogue;
+      target: ValidatedConditionalRecoveryTarget;
+      proofBatch: typeof source.charged;
+    }) =>
+      verifyConditionalRecoveryProofs({
+        catalogue,
+        target,
+        walletScope,
+        proofBatch,
+        authority: await observation(catalogue),
+      });
+    const reclassifyFreshNut07 = ({
+      catalogue,
+      target,
+      proofBatch,
+    }: {
+      catalogue: CompletedConditionalRecoveryCatalogue;
+      target: ValidatedConditionalRecoveryTarget;
+      proofBatch: typeof source.charged;
+    }) =>
+      classifyConditionalRecoveryNut07({
+        catalogue,
+        target,
+        walletScope,
+        proofBatch,
+        response: { states: [...source.states] },
+        responseBytes: 1_024,
+      });
+    const common = { stage, lineage, rederiveCatalogue };
+    const evidence =
+      stage === "completed-catalogue"
+        ? common
+        : stage === "selected-target"
+          ? { ...common, rederiveTarget }
+          : stage === "nut13-plan"
+            ? { ...common, rederiveTarget, rederivePlan }
+            : stage === "nut09-request"
+              ? {
+                  ...common,
+                  rederiveTarget,
+                  rederivePlan,
+                  rederiveRequest,
+                  dispatchedRequestBytes: new Uint8Array(
+                    source.request.requestBytes,
+                  ),
+                }
+              : stage === "staged-response"
+                ? {
+                    ...common,
+                    rederiveTarget,
+                    rederivePlan,
+                    rederiveRequest,
+                    rederiveBatch,
+                    dispatchedRequestBytes: new Uint8Array(
+                      source.request.requestBytes,
+                    ),
+                    stagedBatchId: source.charged.stagedBatchId,
+                  }
+                : stage === "proof-verification"
+                  ? {
+                      ...common,
+                      rederiveTarget,
+                      rederivePlan,
+                      rederiveRequest,
+                      rederiveBatch,
+                      reverifyProofs,
+                      dispatchedRequestBytes: new Uint8Array(
+                        source.request.requestBytes,
+                      ),
+                      stagedBatchId: source.charged.stagedBatchId!,
+                    }
+                  : {
+                      ...common,
+                      rederiveTarget,
+                      rederivePlan,
+                      rederiveRequest,
+                      rederiveBatch,
+                      reverifyProofs,
+                      reclassifyFreshNut07,
+                      dispatchedRequestBytes: new Uint8Array(
+                        source.request.requestBytes,
+                      ),
+                      stagedBatchId: source.charged.stagedBatchId!,
+                    };
+    const capabilities = await rehydrateConditionalRecoverySessionCapabilities(
+      finalSession,
+      evidence,
+      replayPort,
+    );
+    assert.equal(capabilities.session, finalSession);
+    assert.equal(capabilities.catalogue.walletScope.scopeId, walletScope.scopeId);
+    assert.equal(capabilities.target !== null, stageIndex >= 1);
+    assert.equal(capabilities.plan !== null, stageIndex >= 2);
+    assert.equal(capabilities.request !== null, stageIndex >= 3);
+    assert.equal(capabilities.proofBatch !== null, stageIndex >= 4);
+    assert.equal(capabilities.verifiedProofs !== null, stageIndex >= 5);
+    assert.equal(capabilities.classification !== null, stageIndex >= 6);
+    if (stage === "nut09-request") {
+      await assert.rejects(
+        () =>
+          rehydrateConditionalRecoverySessionCapabilities(
+            finalSession,
+            { ...evidence, unexpected: true } as never,
+            replayPort,
+          ),
+        /keys|evidence/i,
+      );
+      const { rederiveRequest: _missing, ...missing } = evidence;
+      await assert.rejects(
+        () =>
+          rehydrateConditionalRecoverySessionCapabilities(
+            finalSession,
+            missing as never,
+            replayPort,
+          ),
+        /keys|evidence/i,
+      );
+      await assert.rejects(
+        () =>
+          rehydrateConditionalRecoverySessionCapabilities(
+            finalSession,
+            {
+              stage: "selected-target",
+              lineage,
+              rederiveCatalogue,
+              rederiveTarget,
+            },
+            replayPort,
+          ),
+        /wrong stage/i,
+      );
+      const wrongLineage = [...lineage];
+      wrongLineage[1] = wrongLineage[0]!;
+      await assert.rejects(
+        () =>
+          rehydrateConditionalRecoverySessionCapabilities(
+            finalSession,
+            { ...evidence, lineage: wrongLineage },
+            replayPort,
+          ),
+        /sequence|successor|predecessor|digest/i,
+      );
+      const mutatedRequest = new Uint8Array(source.request.requestBytes);
+      mutatedRequest[0] ^= 1;
+      await assert.rejects(
+        () =>
+          rehydrateConditionalRecoverySessionCapabilities(
+            finalSession,
+            { ...evidence, dispatchedRequestBytes: mutatedRequest },
+            replayPort,
+          ),
+        /changed bytes/i,
+      );
+      await assert.rejects(
+        () =>
+          rehydrateConditionalRecoverySessionCapabilities(
+            finalSession,
+            {
+              ...evidence,
+              rederiveCatalogue: () =>
+                completedCatalogue(
+                  scope(
+                    "sat",
+                    "https://foreign.example/",
+                    "ee".repeat(32),
+                  ),
+                ),
+            },
+            replayPort,
+          ),
+        /foreign|scope|wallet/i,
+      );
+    }
+    if (stage === "nut07-classification") {
+      const terminal = failConditionalRecoverySessionClosed({
+        session: source.nut07.session,
+        sessionPort: source.ports.cas,
+        reasonDigest: "ef".repeat(32),
+      });
+      const decodedTerminal = decodeConditionalRecoverySession(
+        encodeConditionalRecoverySession(terminal, walletScope),
+        walletScope,
+      );
+      await assert.rejects(
+        () =>
+          rehydrateConditionalRecoverySessionCapabilities(
+            decodedTerminal,
+            {
+              stage: "completed-catalogue",
+              lineage: [decodedTerminal],
+              rederiveCatalogue,
+            },
+            {
+              ...replayPort,
+              readCurrentDigest: () => decodedTerminal.digest,
+            },
+          ),
+        /terminal/i,
+      );
+    }
+    await assert.rejects(
+      () =>
+        rehydrateConditionalRecoverySessionCapabilities(
+          finalSession,
+          evidence,
+          { ...replayPort },
+        ),
+      /port|adapter/i,
+    );
+  }
+});
 
 test("shared mint-state dispositions drive every conditional admission bucket", async () => {
   const harness = await proofHarness();
@@ -1260,13 +1616,7 @@ test("two-batch scan advances across empty windows and resets the trailing gap o
     encoded,
     catalogue.walletScope,
   );
-  const resumed = rehydrateConditionalRecoverySessionCapabilities(
-    decoded,
-    { predecessor: secondRequest.session },
-    targetPorts.get(target)!.cas,
-  ).session;
-  assert.deepEqual(resumed.budget, secondBatch.session.budget);
-  assert.deepEqual(resumed.scan, secondBatch.session.scan);
+  assert.equal(decoded.digest, secondBatch.session.digest);
   assert.throws(
     () => resumeConditionalRecoverySession(),
     /unsupported|decode and rehydrate/i,

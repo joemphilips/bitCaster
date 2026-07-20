@@ -5,14 +5,12 @@ import {
   createConditionalRecoveryWalletScope,
   decodeConditionalRecoverySession,
   encodeConditionalRecoverySession,
-  rehydrateConditionalRecoverySessionCapabilities,
   validateConditionalRecoverySessionSuccessor,
 } from "../src/emergencyConditionalSeedRecovery.ts";
 import { freezeSession } from "../src/emergencyConditionalRecoveryCatalogue.ts";
 import { deriveDurableCustodyScopeId } from "../src/durableCustody.ts";
 import type {
   ConditionalRecoverySession,
-  ConditionalRecoverySessionCasPort,
   ConditionalRecoveryWalletScope,
 } from "../src/emergencyConditionalRecoveryTypes.ts";
 
@@ -411,35 +409,3 @@ test("skip and terminal evidence are exact and terminal states have no successor
   );
 });
 
-test("rehydration binds the exact supplied port and does not revive terminal sessions", () => {
-  let current: string | null = null;
-  const port: ConditionalRecoverySessionCasPort = {
-    readCurrentDigest: () => current,
-    compareAndSwap: () => false,
-    compareAndSwapInsertUnique: () => false,
-    compareAndSwapRetainExpiredKeyset: async () => false,
-  };
-  const persisted = session("completed-catalogue");
-  current = persisted.digest;
-  const capabilities = rehydrateConditionalRecoverySessionCapabilities(
-    persisted,
-    { predecessor: null },
-    port,
-  );
-  assert.equal(capabilities.session, persisted);
-  assert.throws(
-    () =>
-      rehydrateConditionalRecoverySessionCapabilities(
-        persisted,
-        { predecessor: null },
-        { ...port },
-      ),
-    /port|adapter|latest/i,
-  );
-  const terminal = session("recovery-completed");
-  current = terminal.digest;
-  assert.throws(
-    () => rehydrateConditionalRecoverySessionCapabilities(terminal, { predecessor: null }, port),
-    /terminal/i,
-  );
-});

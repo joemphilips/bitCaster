@@ -39,6 +39,8 @@ import {
 } from "./emergencyConditionalRecoveryTypes.ts";
 import {
   advanceSession,
+  adoptConditionalRecoveryReplaySuccessor,
+  beginConditionalRecoverySessionCapabilityReplay,
   adoptExternallyCommittedConditionalRecoverySession,
   assertConditionalRecoveryBudgetDoesNotRegress,
   assertConditionalRecoveryWalletScopeMatches,
@@ -61,6 +63,7 @@ import {
   requireCompressedSecpPublicKey,
   requireExactKeys,
   requireLiveSession,
+  replayConditionalRecoverySessionSuccessor,
   requireLowerHex32,
   requireNonEmptyBoundedString,
   requireObject,
@@ -854,25 +857,34 @@ export async function acceptConditionalRecoveryNut09Response(input: {
       terminalEvidence: null,
     });
     validateConditionalRecoverySessionSuccessor(input.request.session, session);
-    if (
-      (await sessionPort.compareAndSwapStageNut09Response({
-        expectedSessionDigest: input.request.session.digest,
-        successor: session,
-        stagedBatchId,
-        requestBytes: new Uint8Array(input.request.requestBytes),
-        responseBytes: new Uint8Array(input.responseBody),
-        rows: snapshot.canonical,
-      })) !== true
-    ) {
-      throw new Error(
-        "conditional recovery NUT-09 response atomic staging CAS failed",
-      );
-    }
-    adoptExternallyCommittedConditionalRecoverySession(
+    const replayed = adoptConditionalRecoveryReplaySuccessor(
       input.request.session,
       session,
       sessionPort,
     );
+    if (replayed !== null) {
+      session = replayed;
+    } else {
+      if (
+        (await sessionPort.compareAndSwapStageNut09Response({
+          expectedSessionDigest: input.request.session.digest,
+          successor: session,
+          stagedBatchId,
+          requestBytes: new Uint8Array(input.request.requestBytes),
+          responseBytes: new Uint8Array(input.responseBody),
+          rows: snapshot.canonical,
+        })) !== true
+      ) {
+        throw new Error(
+          "conditional recovery NUT-09 response atomic staging CAS failed",
+        );
+      }
+      adoptExternallyCommittedConditionalRecoverySession(
+        input.request.session,
+        session,
+        sessionPort,
+      );
+    }
   }
   const proofIdentities = Object.freeze(
     snapshot.ys.map((y) =>
@@ -1714,4 +1726,432 @@ function requireNut07Classification(
     );
   }
   return state;
+}
+
+type MaybePromise<T> = T | Promise<T>;
+
+interface ConditionalRecoveryRehydrationContext {
+  readonly catalogue: CompletedConditionalRecoveryCatalogue;
+  readonly session: ConditionalRecoverySession;
+  readonly sessionPort: ConditionalRecoverySessionCasPort;
+}
+
+type CatalogueRehydrationPort = () => MaybePromise<CompletedConditionalRecoveryCatalogue>;
+type TargetRehydrationPort = (
+  context: ConditionalRecoveryRehydrationContext,
+) => MaybePromise<ValidatedConditionalRecoveryTarget>;
+type PlanRehydrationPort = (
+  context: ConditionalRecoveryRehydrationContext & {
+    readonly target: ValidatedConditionalRecoveryTarget;
+  },
+) => MaybePromise<SeedDerivedConditionalRecoveryPlan>;
+type RequestRehydrationPort = (
+  context: ConditionalRecoveryRehydrationContext & {
+    readonly target: ValidatedConditionalRecoveryTarget;
+    readonly plan: SeedDerivedConditionalRecoveryPlan;
+  },
+) => MaybePromise<ConditionalRecoveryNut09RequestAuthorization>;
+type BatchRehydrationPort = (
+  context: ConditionalRecoveryRehydrationContext & {
+    readonly target: ValidatedConditionalRecoveryTarget;
+    readonly plan: SeedDerivedConditionalRecoveryPlan;
+    readonly request: ConditionalRecoveryNut09RequestAuthorization;
+  },
+) => MaybePromise<ChargedConditionalRecoveryProofBatch>;
+type VerificationRehydrationPort = (
+  context: ConditionalRecoveryRehydrationContext & {
+    readonly target: ValidatedConditionalRecoveryTarget;
+    readonly proofBatch: ChargedConditionalRecoveryProofBatch;
+  },
+) => MaybePromise<VerifiedConditionalRecoveryProofBatch>;
+type ClassificationRehydrationPort = (
+  context: ConditionalRecoveryRehydrationContext & {
+    readonly target: ValidatedConditionalRecoveryTarget;
+    readonly proofBatch: ChargedConditionalRecoveryProofBatch;
+    readonly verifiedProofs: VerifiedConditionalRecoveryProofBatch;
+  },
+) => MaybePromise<ConditionalRecoveryNut07Classification>;
+
+interface ConditionalRecoveryRehydrationCommon {
+  readonly lineage: readonly ConditionalRecoverySession[];
+  readonly rederiveCatalogue: CatalogueRehydrationPort;
+}
+
+export type ConditionalRecoverySessionRehydrationEvidence =
+  | (ConditionalRecoveryRehydrationCommon & {
+      readonly stage: "completed-catalogue";
+    })
+  | (ConditionalRecoveryRehydrationCommon & {
+      readonly stage: "selected-target";
+      readonly rederiveTarget: TargetRehydrationPort;
+    })
+  | (ConditionalRecoveryRehydrationCommon & {
+      readonly stage: "nut13-plan";
+      readonly rederiveTarget: TargetRehydrationPort;
+      readonly rederivePlan: PlanRehydrationPort;
+    })
+  | (ConditionalRecoveryRehydrationCommon & {
+      readonly stage: "nut09-request";
+      readonly dispatchedRequestBytes: Uint8Array;
+      readonly rederiveTarget: TargetRehydrationPort;
+      readonly rederivePlan: PlanRehydrationPort;
+      readonly rederiveRequest: RequestRehydrationPort;
+    })
+  | (ConditionalRecoveryRehydrationCommon & {
+      readonly stage: "staged-response";
+      readonly dispatchedRequestBytes: Uint8Array;
+      readonly stagedBatchId: string | null;
+      readonly rederiveTarget: TargetRehydrationPort;
+      readonly rederivePlan: PlanRehydrationPort;
+      readonly rederiveRequest: RequestRehydrationPort;
+      readonly rederiveBatch: BatchRehydrationPort;
+    })
+  | (ConditionalRecoveryRehydrationCommon & {
+      readonly stage: "proof-verification";
+      readonly dispatchedRequestBytes: Uint8Array;
+      readonly stagedBatchId: string;
+      readonly rederiveTarget: TargetRehydrationPort;
+      readonly rederivePlan: PlanRehydrationPort;
+      readonly rederiveRequest: RequestRehydrationPort;
+      readonly rederiveBatch: BatchRehydrationPort;
+      readonly reverifyProofs: VerificationRehydrationPort;
+    })
+  | (ConditionalRecoveryRehydrationCommon & {
+      readonly stage: "nut07-classification";
+      readonly dispatchedRequestBytes: Uint8Array;
+      readonly stagedBatchId: string;
+      readonly rederiveTarget: TargetRehydrationPort;
+      readonly rederivePlan: PlanRehydrationPort;
+      readonly rederiveRequest: RequestRehydrationPort;
+      readonly rederiveBatch: BatchRehydrationPort;
+      readonly reverifyProofs: VerificationRehydrationPort;
+      readonly reclassifyFreshNut07: ClassificationRehydrationPort;
+    });
+
+export interface ConditionalRecoverySessionCapabilities {
+  readonly session: ConditionalRecoverySession;
+  readonly catalogue: CompletedConditionalRecoveryCatalogue;
+  readonly target: ValidatedConditionalRecoveryTarget | null;
+  readonly plan: SeedDerivedConditionalRecoveryPlan | null;
+  readonly request: ConditionalRecoveryNut09RequestAuthorization | null;
+  readonly proofBatch: ChargedConditionalRecoveryProofBatch | null;
+  readonly verifiedProofs: VerifiedConditionalRecoveryProofBatch | null;
+  readonly classification: ConditionalRecoveryNut07Classification | null;
+}
+
+export async function rehydrateConditionalRecoverySessionCapabilities(
+  session: ConditionalRecoverySession,
+  evidence: ConditionalRecoverySessionRehydrationEvidence,
+  sessionPort: ConditionalRecoverySessionCasPort,
+): Promise<ConditionalRecoverySessionCapabilities> {
+  const row = requireObject(
+    evidence,
+    "conditional recovery session rehydration evidence",
+  );
+  const keysByStage: Record<
+    ConditionalRecoverySessionRehydrationEvidence["stage"],
+    readonly string[]
+  > = {
+    "completed-catalogue": ["stage", "lineage", "rederiveCatalogue"],
+    "selected-target": [
+      "stage",
+      "lineage",
+      "rederiveCatalogue",
+      "rederiveTarget",
+    ],
+    "nut13-plan": [
+      "stage",
+      "lineage",
+      "rederiveCatalogue",
+      "rederiveTarget",
+      "rederivePlan",
+    ],
+    "nut09-request": [
+      "stage",
+      "lineage",
+      "rederiveCatalogue",
+      "rederiveTarget",
+      "rederivePlan",
+      "rederiveRequest",
+      "dispatchedRequestBytes",
+    ],
+    "staged-response": [
+      "stage",
+      "lineage",
+      "rederiveCatalogue",
+      "rederiveTarget",
+      "rederivePlan",
+      "rederiveRequest",
+      "rederiveBatch",
+      "dispatchedRequestBytes",
+      "stagedBatchId",
+    ],
+    "proof-verification": [
+      "stage",
+      "lineage",
+      "rederiveCatalogue",
+      "rederiveTarget",
+      "rederivePlan",
+      "rederiveRequest",
+      "rederiveBatch",
+      "reverifyProofs",
+      "dispatchedRequestBytes",
+      "stagedBatchId",
+    ],
+    "nut07-classification": [
+      "stage",
+      "lineage",
+      "rederiveCatalogue",
+      "rederiveTarget",
+      "rederivePlan",
+      "rederiveRequest",
+      "rederiveBatch",
+      "reverifyProofs",
+      "reclassifyFreshNut07",
+      "dispatchedRequestBytes",
+      "stagedBatchId",
+    ],
+  };
+  const expectedKeys = keysByStage[evidence.stage];
+  if (expectedKeys === undefined) {
+    throw new Error("conditional recovery rehydration stage is unsupported");
+  }
+  requireExactKeys(
+    row,
+    expectedKeys,
+    "conditional recovery session rehydration evidence",
+  );
+  if (
+    session.transition === "recovery-completed" ||
+    session.transition === "recovery-failed-closed"
+  ) {
+    throw new Error(
+      "conditional recovery terminal session has no rehydratable capabilities",
+    );
+  }
+  const finalLineageSession = evidence.lineage[evidence.lineage.length - 1];
+  if (finalLineageSession !== session) {
+    throw new Error(
+      "conditional recovery rehydration lineage does not end at the supplied session",
+    );
+  }
+  const expectedTransitionByStage: Record<
+    ConditionalRecoverySessionRehydrationEvidence["stage"],
+    ConditionalRecoverySession["transition"]
+  > = {
+    "completed-catalogue": "completed-catalogue",
+    "selected-target": "conditional-keys",
+    "nut13-plan": "nut13-plan",
+    "nut09-request": "nut09-request",
+    "staged-response": "nut09-response",
+    "proof-verification": "proof-verification",
+    "nut07-classification": "nut07-classification",
+  };
+  if (session.transition !== expectedTransitionByStage[evidence.stage]) {
+    throw new Error(
+      "conditional recovery rehydration evidence is for the wrong stage",
+    );
+  }
+  let current = beginConditionalRecoverySessionCapabilityReplay({
+    lineage: evidence.lineage,
+    sessionPort,
+  });
+  const catalogue = requireCompletedCatalogue(await evidence.rederiveCatalogue());
+  assertConditionalRecoveryWalletScopeMatches(
+    catalogue.walletScope,
+    session.walletScope,
+  );
+  if (
+    current.evidenceDigest !==
+      digestValue([catalogue.capability, catalogue.keysets]) ||
+    digestValue(current.budget) !== digestValue(catalogue.budget)
+  ) {
+    throw new Error(
+      "conditional recovery rehydrated catalogue does not match the session",
+    );
+  }
+  let target: ValidatedConditionalRecoveryTarget | null = null;
+  let plan: SeedDerivedConditionalRecoveryPlan | null = null;
+  let request: ConditionalRecoveryNut09RequestAuthorization | null = null;
+  let proofBatch: ChargedConditionalRecoveryProofBatch | null = null;
+  let verifiedProofs: VerifiedConditionalRecoveryProofBatch | null = null;
+  let classification: ConditionalRecoveryNut07Classification | null = null;
+  let lineageIndex = 1;
+  const nextSession = (): ConditionalRecoverySession => {
+    const next = evidence.lineage[lineageIndex];
+    if (next === undefined) {
+      throw new Error(
+        "conditional recovery rehydration lineage ended before its evidence",
+      );
+    }
+    lineageIndex += 1;
+    return next;
+  };
+  if (evidence.stage !== "completed-catalogue") {
+    const successor = nextSession();
+    target = await replayConditionalRecoverySessionSuccessor({
+      current,
+      successor,
+      sessionPort,
+      rederive: () =>
+        evidence.rederiveTarget({ catalogue, session: current, sessionPort }),
+      readSession: (value) => value.session,
+    });
+    requireValidatedTarget(target, catalogue);
+    current = successor;
+  }
+  if (
+    evidence.stage !== "completed-catalogue" &&
+    evidence.stage !== "selected-target"
+  ) {
+    const successor = nextSession();
+    plan = await replayConditionalRecoverySessionSuccessor({
+      current,
+      successor,
+      sessionPort,
+      rederive: () =>
+        evidence.rederivePlan({
+          catalogue,
+          target: target!,
+          session: current,
+          sessionPort,
+        }),
+      readSession: (value) => value.session,
+    });
+    const planState = seedPlans.get(plan);
+    if (planState === undefined || planState.target !== target) {
+      throw new Error(
+        "conditional recovery rehydrated NUT-13 plan is unverified",
+      );
+    }
+    current = successor;
+  }
+  if (
+    evidence.stage === "nut09-request" ||
+    evidence.stage === "staged-response" ||
+    evidence.stage === "proof-verification" ||
+    evidence.stage === "nut07-classification"
+  ) {
+    const successor = nextSession();
+    request = await replayConditionalRecoverySessionSuccessor({
+      current,
+      successor,
+      sessionPort,
+      rederive: () =>
+        evidence.rederiveRequest({
+          catalogue,
+          target: target!,
+          plan: plan!,
+          session: current,
+          sessionPort,
+        }),
+      readSession: (value) => value.session,
+    });
+    if (
+      nut09Requests.get(request)?.plan !== plan ||
+      !equalBytes(request.requestBytes, evidence.dispatchedRequestBytes)
+    ) {
+      throw new Error(
+        "conditional recovery dispatched NUT-09 request replay changed bytes",
+      );
+    }
+    current = successor;
+  }
+  if (
+    evidence.stage === "staged-response" ||
+    evidence.stage === "proof-verification" ||
+    evidence.stage === "nut07-classification"
+  ) {
+    const successor = nextSession();
+    proofBatch = await replayConditionalRecoverySessionSuccessor({
+      current,
+      successor,
+      sessionPort,
+      rederive: () =>
+        evidence.rederiveBatch({
+          catalogue,
+          target: target!,
+          plan: plan!,
+          request: request!,
+          session: current,
+          sessionPort,
+        }),
+      readSession: (value) => value.session,
+    });
+    requireChargedProofBatch(proofBatch, catalogue, target!);
+    if (proofBatch.stagedBatchId !== evidence.stagedBatchId) {
+      throw new Error(
+        "conditional recovery rehydrated staged batch id changed",
+      );
+    }
+    current = successor;
+  }
+  if (
+    evidence.stage === "proof-verification" ||
+    evidence.stage === "nut07-classification"
+  ) {
+    const successor = nextSession();
+    verifiedProofs = await replayConditionalRecoverySessionSuccessor({
+      current,
+      successor,
+      sessionPort,
+      rederive: () =>
+        evidence.reverifyProofs({
+          catalogue,
+          target: target!,
+          proofBatch: proofBatch!,
+          session: current,
+          sessionPort,
+        }),
+      readSession: (value) => value.session,
+    });
+    requireVerifiedProofBatch(verifiedProofs, catalogue, target!);
+    current = successor;
+  }
+  if (evidence.stage === "nut07-classification") {
+    const successor = nextSession();
+    classification = await replayConditionalRecoverySessionSuccessor({
+      current,
+      successor,
+      sessionPort,
+      rederive: () =>
+        evidence.reclassifyFreshNut07({
+          catalogue,
+          target: target!,
+          proofBatch: proofBatch!,
+          verifiedProofs: verifiedProofs!,
+          session: current,
+          sessionPort,
+        }),
+      readSession: (value) => value.session,
+    });
+    requireNut07Classification(classification, catalogue, target!);
+    current = successor;
+  }
+  if (lineageIndex !== evidence.lineage.length || current !== session) {
+    throw new Error(
+      "conditional recovery rehydration evidence did not consume the exact lineage",
+    );
+  }
+  return Object.freeze({
+    session,
+    catalogue,
+    target,
+    plan,
+    request,
+    proofBatch,
+    verifiedProofs,
+    classification,
+  });
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array)) {
+    return false;
+  }
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }

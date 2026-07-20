@@ -104,6 +104,13 @@ const authorityObservations = new WeakMap<
 const consumedAuthorityObservations = new WeakSet<object>();
 const liveSessions = new WeakMap<object, ConditionalRecoverySessionCasPort>();
 const rehydratedSessionPorts = new Map<string, ConditionalRecoverySessionCasPort>();
+const replaySuccessors = new WeakMap<
+  object,
+  Readonly<{
+    successor: ConditionalRecoverySession;
+    port: ConditionalRecoverySessionCasPort;
+  }>
+>();
 
 export function decodeConditionalRecoveryCapability(
   mintInfo: unknown,
@@ -1769,50 +1776,97 @@ export function requireLiveSession(
   );
   return port;
 }
-export function rehydrateConditionalRecoverySessionCapabilities(
-  session: ConditionalRecoverySession,
-  evidence: { readonly predecessor: ConditionalRecoverySession | null },
-  sessionPort: ConditionalRecoverySessionCasPort,
-): Readonly<{ session: ConditionalRecoverySession }> {
+
+export function beginConditionalRecoverySessionCapabilityReplay(input: {
+  readonly lineage: readonly ConditionalRecoverySession[];
+  readonly sessionPort: ConditionalRecoverySessionCasPort;
+}): ConditionalRecoverySession {
+  if (!Array.isArray(input.lineage) || input.lineage.length === 0) {
+    throw new Error("conditional recovery rehydration lineage is missing");
+  }
+  const [initial, ...successors] = input.lineage;
+  if (initial === undefined || initial.sequence !== 0) {
+    throw new Error("conditional recovery rehydration initial session is invalid");
+  }
+  if (initial.transition !== "completed-catalogue") {
+    throw new Error("conditional recovery rehydration lineage starts at the wrong stage");
+  }
+  if (initial.digest !== computeConditionalRecoverySessionDigest(initial)) {
+    throw new Error("conditional recovery rehydration initial digest is invalid");
+  }
+  let predecessor = initial;
+  for (const successor of successors) {
+    validateConditionalRecoverySessionSuccessor(predecessor, successor);
+    predecessor = successor;
+  }
   if (
-    session.transition === "recovery-completed" ||
-    session.transition === "recovery-failed-closed"
+    input.sessionPort.readCurrentDigest(predecessor.walletScope) !==
+    predecessor.digest
   ) {
-    throw new Error(
-      "conditional recovery terminal session has no rehydratable capabilities",
-    );
-  }
-  if (session.digest !== computeConditionalRecoverySessionDigest(session)) {
-    throw new Error("conditional recovery rehydration session digest is invalid");
-  }
-  if (session.sequence === 0) {
-    if (evidence.predecessor !== null) {
-      throw new Error(
-        "conditional recovery initial session has foreign predecessor evidence",
-      );
-    }
-  } else {
-    if (evidence.predecessor === null) {
-      throw new Error(
-        "conditional recovery rehydration predecessor evidence is missing",
-      );
-    }
-    validateConditionalRecoverySessionSuccessor(evidence.predecessor, session);
-  }
-  if (sessionPort.readCurrentDigest(session.walletScope) !== session.digest) {
     throw new Error(
       "conditional recovery rehydration session is not the adapter latest",
     );
   }
-  const boundPort = rehydratedSessionPorts.get(session.walletScope.scopeId);
-  if (boundPort !== undefined && boundPort !== sessionPort) {
+  const boundPort = rehydratedSessionPorts.get(predecessor.walletScope.scopeId);
+  if (boundPort !== undefined && boundPort !== input.sessionPort) {
     throw new Error(
       "conditional recovery rehydration cannot substitute a different session port",
     );
   }
-  rehydratedSessionPorts.set(session.walletScope.scopeId, sessionPort);
-  liveSessions.set(session, sessionPort);
-  return Object.freeze({ session });
+  rehydratedSessionPorts.set(predecessor.walletScope.scopeId, input.sessionPort);
+  liveSessions.set(initial, input.sessionPort);
+  return initial;
+}
+
+export async function replayConditionalRecoverySessionSuccessor<T>(input: {
+  readonly current: ConditionalRecoverySession;
+  readonly successor: ConditionalRecoverySession;
+  readonly sessionPort: ConditionalRecoverySessionCasPort;
+  readonly rederive: () => T | Promise<T>;
+  readonly readSession: (value: T) => ConditionalRecoverySession;
+}): Promise<T> {
+  if (liveSessions.get(input.current) !== input.sessionPort) {
+    throw new Error(
+      "conditional recovery rehydration uses a stale or foreign session",
+    );
+  }
+  validateConditionalRecoverySessionSuccessor(input.current, input.successor);
+  replaySuccessors.set(
+    input.current,
+    Object.freeze({
+      successor: input.successor,
+      port: input.sessionPort,
+    }),
+  );
+  try {
+    const value = await input.rederive();
+    if (input.readSession(value) !== input.successor) {
+      throw new Error(
+        "conditional recovery rehydration produced a foreign successor",
+      );
+    }
+    return value;
+  } finally {
+    replaySuccessors.delete(input.current);
+  }
+}
+
+export function adoptConditionalRecoveryReplaySuccessor(
+  current: ConditionalRecoverySession,
+  candidate: ConditionalRecoverySession,
+  port: ConditionalRecoverySessionCasPort,
+): ConditionalRecoverySession | null {
+  const replay = replaySuccessors.get(current);
+  if (replay === undefined) return null;
+  if (replay.port !== port || replay.successor.digest !== candidate.digest) {
+    throw new Error(
+      "conditional recovery rehydration successor does not match persisted evidence",
+    );
+  }
+  liveSessions.delete(current);
+  liveSessions.set(replay.successor, port);
+  replaySuccessors.delete(current);
+  return replay.successor;
 }
 
 export function advanceSession(
@@ -1879,6 +1933,12 @@ export function advanceSession(
         : patch.terminalEvidence,
   });
   validateConditionalRecoverySessionSuccessor(current, successor);
+  const replayed = adoptConditionalRecoveryReplaySuccessor(
+    current,
+    successor,
+    port,
+  );
+  if (replayed !== null) return replayed;
   if (
     port.compareAndSwap({
       walletScope: current.walletScope,
