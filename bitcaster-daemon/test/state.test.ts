@@ -177,7 +177,7 @@ test('a fresh daemon profile creates only a durable SQLite state database', asyn
         tables.some((table) => table.name === 'daemon_state'),
         false,
       )
-      assert.equal(tables.length, 17)
+      assert.equal(tables.length, 21)
       assert.equal(
         tables.some((table) => table.name === 'daemon_seed_recovery_jobs'),
         true,
@@ -188,6 +188,17 @@ test('a fresh daemon profile creates only a durable SQLite state database', asyn
         ),
         true,
       )
+      for (const recoveryTable of [
+        'daemon_seed_recovery_clocks',
+        'daemon_seed_recovery_catalogue',
+        'daemon_seed_recovery_cursor_history',
+        'daemon_seed_recovery_proof_retention',
+      ]) {
+        assert.equal(
+          tables.some((table) => table.name === recoveryTable),
+          true,
+        )
+      }
       assert.equal(
         tables.some(
           (table) => table.name === 'daemon_proof_operation_group_counts',
@@ -244,6 +255,7 @@ test('a fresh daemon profile creates only a durable SQLite state database', asyn
         'engine_status_json',
         'failure_json',
         'inputs_json',
+        'keys_json',
         'metadata_json',
         'outputs_json',
         'result_proofs_json',

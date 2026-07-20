@@ -46,6 +46,10 @@ import {
   readProfile,
 } from './profile.ts'
 import { readOrderEphemeralSecret } from './secrets.ts'
+import {
+  assertDaemonRunLockHeld,
+  type DaemonRunLock,
+} from './runLock.ts'
 import { validateDaemonDurableOperationBinding } from './durableTradeBinding.ts'
 import {
   DAEMON_PROOF_OPERATION_KINDS,
@@ -79,6 +83,7 @@ import {
   readDaemonWalletBalance,
   readDaemonWalletHoldingTotals,
   readDaemonWalletProofAmountSample,
+  migrateDaemonStateSchemaV1ToV2,
   writeDaemonStateRows,
   type DaemonIdPage,
   type DaemonIdPageInput,
@@ -547,9 +552,28 @@ export async function assertDaemonStateStorageInitialized(): Promise<void> {
         'SELECT schema_version FROM daemon_state_metadata WHERE singleton = 1',
       )
       .get() as { schema_version?: unknown } | undefined
-    if (marker?.schema_version !== 1) {
+    if (marker?.schema_version !== 2) {
       throw new Error('daemon SQLite state row is missing or unsupported')
     }
+  } finally {
+    database.close()
+  }
+}
+
+/** Runs only after the caller has acquired the profile-wide daemon run lock. */
+export async function migrateDaemonStateStorageV1ToV2(
+  runLock: DaemonRunLock,
+): Promise<boolean> {
+  await assertDaemonRunLockHeld(runLock)
+  if (!(await profileDatabaseExists())) return false
+  const database = openStateDatabase()
+  try {
+    if (!stateTableExists(database)) return false
+    if (process.platform !== 'win32') await chmod(statePath(), 0o600)
+    // No await may separate this ownership check from the synchronous SQLite
+    // writer transaction below.
+    await assertDaemonRunLockHeld(runLock)
+    return migrateDaemonStateSchemaV1ToV2(database)
   } finally {
     database.close()
   }
@@ -567,7 +591,7 @@ export async function initializeState(): Promise<DaemonState> {
         throw new Error('daemon SQLite state schema is missing')
       }
       ensureDaemonStateSchema(database)
-      const existing = readStoredStateFromDatabase(database)
+      const existing = hadStateTable ? readStoredStateFromDatabase(database) : null
       if (existing) return existing
       if (hadStateTable) {
         throw new Error('daemon SQLite state row is missing')

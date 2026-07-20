@@ -33,9 +33,14 @@ import {
 import {
   emptyDaemonState,
   initializeState,
+  migrateDaemonStateStorageV1ToV2,
   statePath,
   writeState,
 } from '../src/state.ts'
+import {
+  initializeDaemonStateV1MigrationFixtureForTest,
+  replaceDaemonStateV2RecoveryWithV1FixtureForTest,
+} from '../src/stateSqlite.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -592,7 +597,7 @@ test('daemon run fails closed before listening when decoded state or RPC authori
         database.exec('PRAGMA ignore_check_constraints = ON')
         database
           .prepare(
-            'UPDATE daemon_state_metadata SET schema_version = 2 WHERE singleton = 1',
+            'UPDATE daemon_state_metadata SET schema_version = 99 WHERE singleton = 1',
           )
           .run()
       },
@@ -1411,6 +1416,135 @@ test('daemon run lock reclaims stale lock files', async () => {
   }
 })
 
+test('daemon run migrates a shipped v1 profile and preserves non-recovery rows', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-v1-run-'))
+  await runDaemonInit(home, {
+    walletSeedHex: 'ab'.repeat(32),
+    nostrSecretKeyHex: '01'.padStart(64, '0'),
+  })
+  const database = new DatabaseSync(join(home, 'daemon-state.sqlite'))
+  try {
+    database.exec('PRAGMA foreign_keys = ON')
+    database
+      .prepare(
+        `INSERT INTO daemon_keyset_counters (counter_key, counter_value)
+         VALUES ('preserved-v1-counter', 41)`,
+      )
+      .run()
+    replaceDaemonStateV2RecoveryWithV1FixtureForTest(database)
+  } finally {
+    database.close()
+  }
+
+  const daemon = spawn(
+    process.execPath,
+    [
+      '--experimental-strip-types',
+      join(import.meta.dirname, '..', 'src', 'main.ts'),
+      'run',
+    ],
+    {
+      env: {
+        ...process.env,
+        BITCASTER_DAEMON_HOME: home,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  )
+  let stdout = ''
+  let stderr = ''
+  daemon.stdout.setEncoding('utf8')
+  daemon.stdout.on('data', (chunk) => {
+    stdout += chunk
+  })
+  daemon.stderr.setEncoding('utf8')
+  daemon.stderr.on('data', (chunk) => {
+    stderr += chunk
+  })
+  const exited = once(daemon, 'exit')
+  try {
+    await Promise.race([
+      waitFor(() => stdout.includes('bitcaster-daemon listening')),
+      exited.then(() => {
+        throw new Error(`migrating daemon exited before listening: ${stderr}`)
+      }),
+    ])
+    const migrated = new DatabaseSync(join(home, 'daemon-state.sqlite'))
+    try {
+      assert.equal(
+        migrated
+          .prepare(
+            'SELECT schema_version FROM daemon_state_metadata WHERE singleton = 1',
+          )
+          .get()?.schema_version,
+        2,
+      )
+      assert.equal(
+        migrated
+          .prepare(
+            `SELECT counter_value FROM daemon_keyset_counters
+              WHERE counter_key = 'preserved-v1-counter'`,
+          )
+          .get()?.counter_value,
+        41,
+      )
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    if (daemon.exitCode === null) daemon.kill('SIGTERM')
+    await exited
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('an obsolete run-lock handle cannot authorize migration or release a successor owner', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-lock-owner-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const database = new DatabaseSync(profileDatabasePath())
+    try {
+      database.exec('PRAGMA foreign_keys = ON')
+      initializeDaemonStateV1MigrationFixtureForTest(database)
+    } finally {
+      database.close()
+    }
+
+    const obsolete = await acquireDaemonRunLock()
+    await rm(obsolete.path, { recursive: true, force: true })
+    const successor = await acquireDaemonRunLock()
+    await assert.rejects(
+      () => migrateDaemonStateStorageV1ToV2(obsolete),
+      /daemon profile run lock is not held/,
+    )
+
+    const unchanged = new DatabaseSync(profileDatabasePath())
+    try {
+      assert.equal(
+        unchanged
+          .prepare(
+            'SELECT schema_version FROM daemon_state_metadata WHERE singleton = 1',
+          )
+          .get()?.schema_version,
+        1,
+      )
+    } finally {
+      unchanged.close()
+    }
+    await obsolete.release()
+    await assert.rejects(
+      () => acquireDaemonRunLock(),
+      /bitcaster-daemon is already running for profile/,
+    )
+    await successor.release()
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 async function runDaemonInit(
   home: string,
   options: {
@@ -1480,7 +1614,7 @@ async function runDaemonUntilExit(
   const result = await Promise.race([
     exited.then(([code]) => ({ code, timedOut: false })),
     new Promise<{ code: null; timedOut: true }>((resolve) => {
-      setTimeout(() => resolve({ code: null, timedOut: true }), 1_000)
+      setTimeout(() => resolve({ code: null, timedOut: true }), 5_000)
     }),
   ])
   if (result.timedOut) {

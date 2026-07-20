@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import {
+  Amount,
   CheckStateEnum,
   Mint as CashuMint,
   Wallet as CashuWallet,
+  decodeKeysetCurve,
+  hashToCurve,
+  hashToCurveBls,
   type Proof,
   type ProofState,
 } from '@cashu/cashu-ts'
@@ -11,6 +15,13 @@ import {
   advanceEmergencySeedRecoveryCursor,
   classifyEmergencySeedRecoveryProof,
 } from '@bitcaster-market/client-sdk/emergencySeedRecovery'
+import {
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from '@bitcaster-market/client-sdk/durableCustody'
+import {
+  normalizeDurableWalletMintUrl,
+} from '@bitcaster-market/client-sdk/durableWalletMintUrl'
 import {
   normalizeMarketBaseAsset,
   parseCashuProofUnit,
@@ -28,6 +39,8 @@ import {
   ensureDaemonSeedRecoveryJob,
   readDaemonSeedRecoveryProgress,
   readNextDaemonSeedRecoveryCursor,
+  reconcileDaemonSeedRecoveryRetainedProofs,
+  retainPendingDaemonSeedRecoveryProofs,
 } from './seedRecoverySqlite.ts'
 import type { DaemonEmergencySeedRecoveryResult } from './protocol.ts'
 
@@ -84,8 +97,13 @@ async function openSeedRecovery(
   const unit = parseCashuProofUnit(input.unit ?? 'sat')
   if (unit === null) throw new Error('seed recovery mint unit is invalid')
   const walletSeed = decodeWalletSeed(input.walletSeedHex)
+  const walletScopeId = deriveDurableCustodyScopeId({
+    scopeKind: 'wallet',
+    walletId: deriveDurableCustodyWalletId(walletSeed),
+  })
+  const mintUrl = normalizeDurableWalletMintUrl(input.mintUrl)
   const wallet = (deps.createWallet ?? createEmergencySeedRecoveryWallet)(
-    input.mintUrl,
+    mintUrl,
     unit,
     Uint8Array.from(walletSeed),
   )
@@ -96,7 +114,8 @@ async function openSeedRecovery(
   const job = await transactDaemonState((database) =>
     ensureDaemonSeedRecoveryJob(database, {
       proposedRecoveryId: (deps.createRecoveryId ?? randomUUID)(),
-      mintUrl: input.mintUrl,
+      walletScopeId,
+      mintUrl,
       unit,
       keysetIds,
       disclosureAcknowledged: true,
@@ -106,7 +125,7 @@ async function openSeedRecovery(
     wallet,
     recoveryId: job.recoveryId,
     initialJobState: job.state,
-    mintUrl: input.mintUrl,
+    mintUrl,
     unit,
     nowMs,
   }
@@ -159,19 +178,33 @@ async function recoverSeedBatch(
   if (classified.failedClosed) {
     throw new Error('seed recovery mint proof state is invalid')
   }
-  if (classified.pending.length > 0) return classified.pending.length
+  if (classified.pending.length > 0) {
+    await transactDaemonState((database) => {
+      retainPendingRecoveredProofs(database, {
+        recoveryId: context.recoveryId,
+        mintUrl: context.mintUrl,
+        unit: context.unit,
+        proofs: classified.pending,
+        nowMs: context.nowMs(),
+      })
+    })
+    return classified.pending.length
+  }
   const next = advanceEmergencySeedRecoveryCursor(cursor, {
     startCounter: cursor.nextCounter,
     requestedCount: EMERGENCY_SEED_RECOVERY_BATCH_SIZE,
     lastCounterWithSignature: restored.lastCounterWithSignature ?? null,
   })
   await transactDaemonState((database) => {
-    const importedProofs = insertRecoveredProofs(database, {
+    const importedProofs = reconcileRecoveredProofs(database, {
+      recoveryId: context.recoveryId,
       mintUrl: context.mintUrl,
       unit: context.unit,
       keysetId: cursor.keysetId,
       nextCounter: next.nextCounter,
-      proofs: classified.unspent,
+      unspentProofs: classified.unspent,
+      spentProofs: classified.spent,
+      nowMs: context.nowMs(),
     })
     advanceDaemonSeedRecoveryCursor(database, {
       expected: cursor,
@@ -236,45 +269,169 @@ async function classifyRestoredProofs(
   return classified
 }
 
-function insertRecoveredProofs(
+function retainPendingRecoveredProofs(
   database: Parameters<typeof applyDaemonStateWorkInDatabase>[0],
   input: {
+    recoveryId: string
     mintUrl: string
     unit: NonNullable<ReturnType<typeof parseCashuProofUnit>>
-    keysetId: string
-    nextCounter: number
     proofs: Proof[]
+    nowMs: number
   },
-): number {
+): void {
   const proofIds = input.proofs.map((proof) =>
     deriveDaemonWalletProofIdFromProof(input.mintUrl, input.unit, proof))
-  return applyDaemonStateWorkInDatabase(
+  applyDaemonStateWorkInDatabase(
     database,
     {
-      walletProofs: [{
-        mintUrl: input.mintUrl,
-        unit: input.unit,
-        proofIds,
-      }],
-      keysetCounterKeys: [input.keysetId],
+      walletProofs: [{ mintUrl: input.mintUrl, unit: input.unit, proofIds }],
     },
     (state, now) => {
-      const existing = new Set(state.wallet.proofs.map((record) =>
-        deriveDaemonWalletProofIdFromProof(
-          record.mintUrl,
-          record.unit,
-          record.proof,
-        )))
-      let inserted = 0
+      const existing = new Map(
+        state.wallet.proofs.map((record) => [
+          deriveDaemonWalletProofIdFromProof(
+            record.mintUrl,
+            record.unit,
+            record.proof,
+          ),
+          record,
+        ]),
+      )
       for (const proof of input.proofs) {
         const proofId = deriveDaemonWalletProofIdFromProof(
           input.mintUrl,
           input.unit,
           proof,
         )
-        if (existing.has(proofId)) continue
-        existing.add(proofId)
-        state.wallet.proofs.push(recoveredStoredProof(input, proof, now))
+        const retained = existing.get(proofId)
+        if (retained !== undefined) {
+          if (
+            retained.state !== 'locked' ||
+            retained.reservedBy !== `seed-recovery:${input.recoveryId}`
+          ) {
+            throw new Error('seed recovery proof is owned by another operation')
+          }
+          continue
+        }
+        state.wallet.proofs.push(
+          recoveredStoredProof(input, proof, now, {
+            state: 'locked',
+            reservedBy: `seed-recovery:${input.recoveryId}`,
+          }),
+        )
+      }
+    },
+  )
+  const encoder = new TextEncoder()
+  retainPendingDaemonSeedRecoveryProofs(
+    database,
+    input.recoveryId,
+    input.proofs.map((proof, index) => {
+      const walletProofId = proofIds[index]
+      if (walletProofId === undefined) {
+        throw new Error('seed recovery retained proof identity is missing')
+      }
+      const secret = encoder.encode(proof.secret)
+      return {
+        keysetId: proof.id,
+        walletProofId,
+        proofDigest: walletProofId,
+        proofY: hashRecoveredProofToCurve(proof.id, secret),
+      }
+    }),
+    input.nowMs,
+  )
+}
+
+function hashRecoveredProofToCurve(
+  keysetId: string,
+  secret: Uint8Array,
+): string {
+  switch (decodeKeysetCurve(keysetId)) {
+    case 'secp256k1':
+      return hashToCurve(secret).toHex(true)
+    case 'bls12-381':
+      return hashToCurveBls(secret).toHex(true)
+  }
+}
+
+function reconcileRecoveredProofs(
+  database: Parameters<typeof applyDaemonStateWorkInDatabase>[0],
+  input: {
+    recoveryId: string
+    mintUrl: string
+    unit: NonNullable<ReturnType<typeof parseCashuProofUnit>>
+    keysetId: string
+    nextCounter: number
+    unspentProofs: Proof[]
+    spentProofs: Proof[]
+    nowMs: number
+  },
+): number {
+  const unspentProofIds = input.unspentProofs.map((proof) =>
+    deriveDaemonWalletProofIdFromProof(input.mintUrl, input.unit, proof))
+  const spentProofIds = input.spentProofs.map((proof) =>
+    deriveDaemonWalletProofIdFromProof(input.mintUrl, input.unit, proof))
+  reconcileDaemonSeedRecoveryRetainedProofs(database, input.recoveryId, {
+    unspentProofIds,
+    spentProofIds,
+    observedAt: input.nowMs,
+  })
+  return applyDaemonStateWorkInDatabase(
+    database,
+    {
+      walletProofs: [{
+        mintUrl: input.mintUrl,
+        unit: input.unit,
+        proofIds: [...unspentProofIds, ...spentProofIds],
+      }],
+      keysetCounterKeys: [input.keysetId],
+    },
+    (state, now) => {
+      const existing = new Map(state.wallet.proofs.map((record) => [
+        deriveDaemonWalletProofIdFromProof(
+          record.mintUrl,
+          record.unit,
+          record.proof,
+        ),
+        record,
+      ]))
+      const spent = new Set(spentProofIds)
+      state.wallet.proofs = state.wallet.proofs.filter((record) => {
+        const proofId = deriveDaemonWalletProofIdFromProof(
+          record.mintUrl,
+          record.unit,
+          record.proof,
+        )
+        if (!spent.has(proofId)) return true
+        return !(
+          record.state === 'locked' &&
+          record.reservedBy === `seed-recovery:${input.recoveryId}`
+        )
+      })
+      let inserted = 0
+      for (const proof of input.unspentProofs) {
+        const proofId = deriveDaemonWalletProofIdFromProof(
+          input.mintUrl,
+          input.unit,
+          proof,
+        )
+        const retained = existing.get(proofId)
+        if (retained !== undefined) {
+          if (
+            retained.state === 'locked' &&
+            retained.reservedBy === `seed-recovery:${input.recoveryId}`
+          ) {
+            retained.state = 'available'
+            delete retained.reservedBy
+            retained.updatedAt = now
+            inserted += 1
+          }
+          continue
+        }
+        state.wallet.proofs.push(
+          recoveredStoredProof(input, proof, now, { state: 'available' }),
+        )
         inserted += 1
       }
       state.wallet.keysetCounters[input.keysetId] = Math.max(
@@ -293,12 +450,16 @@ function recoveredStoredProof(
   },
   proof: Proof,
   now: string,
+  authority: Pick<StoredProofRecord, 'state' | 'reservedBy'>,
 ): StoredProofRecord {
   return {
     mintUrl: input.mintUrl,
     unit: input.unit,
-    proof: proof as CashuProofRecord,
-    state: 'available',
+    proof: {
+      ...proof,
+      amount: Amount.from(proof.amount).toBigInt(),
+    } as CashuProofRecord,
+    ...authority,
     asset: {
       kind: 'sats',
       baseAsset: normalizeMarketBaseAsset(input.unit),

@@ -3,9 +3,20 @@ import {
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
   deriveDurableCustodyProofId,
 } from '@bitcaster-market/client-sdk/durableCustody'
+import { DURABLE_STORAGE_OPERATION_ARTIFACT_LIMIT_MAX } from '@bitcaster-market/client-sdk/durableStorageAdmission'
 import {
-  DURABLE_STORAGE_OPERATION_ARTIFACT_LIMIT_MAX,
-} from '@bitcaster-market/client-sdk/durableStorageAdmission'
+  CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES,
+  CONDITIONAL_RECOVERY_MAX_CURSOR_BYTES,
+  CONDITIONAL_RECOVERY_MAX_KEYSETS,
+  CONDITIONAL_RECOVERY_MAX_KEYS_PER_KEYSET,
+  CONDITIONAL_RECOVERY_MAX_OUTCOME_COLLECTION_BYTES,
+  CONDITIONAL_RECOVERY_MAX_PAGES,
+  CONDITIONAL_RECOVERY_MAX_PAGE_BYTES,
+  CONDITIONAL_RECOVERY_MAX_PAGE_SIZE,
+  CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS,
+  CONDITIONAL_RECOVERY_MAX_WORK_UNITS,
+} from '@bitcaster-market/client-sdk/emergencyConditionalSeedRecovery'
+import { EMERGENCY_SEED_RECOVERY_GAP_LIMIT } from '@bitcaster-market/client-sdk/emergencySeedRecovery'
 import {
   isCollateralUnitOf,
   parseCashuProofUnit,
@@ -26,7 +37,8 @@ import type {
   WalletBalance,
 } from './state.ts'
 
-const STATE_SCHEMA_VERSION = 1
+const LEGACY_STATE_SCHEMA_VERSION = 1
+const STATE_SCHEMA_VERSION = 2
 const OPAQUE_ARTIFACT_MAX_BYTES = 4 * 1_024 * 1_024
 const SQLITE_IDENTIFIER_MAX_BYTES = 512
 const SQLITE_URL_MAX_BYTES = 2_048
@@ -44,7 +56,7 @@ export const DAEMON_PROOF_OPERATION_INPUT_LIMIT_MAX =
 export const DAEMON_PROOF_OPERATION_GROUP_PROOF_COUNT_MAX =
   DURABLE_STORAGE_OPERATION_ARTIFACT_LIMIT_MAX
 
-const STATE_TABLES = [
+const LEGACY_STATE_TABLES = [
   'daemon_state_metadata',
   'daemon_wallet_proofs',
   'daemon_keyset_counters',
@@ -61,6 +73,33 @@ const STATE_TABLES = [
   'daemon_order_trades',
   'daemon_swaps',
 ] as const
+
+const STATE_TABLES = [
+  'daemon_state_metadata',
+  'daemon_wallet_proofs',
+  'daemon_keyset_counters',
+  'daemon_seed_recovery_clocks',
+  'daemon_seed_recovery_jobs',
+  'daemon_seed_recovery_catalogue',
+  'daemon_seed_recovery_cursor_history',
+  'daemon_seed_recovery_keysets',
+  'daemon_seed_recovery_proof_retention',
+  'daemon_trade_sessions',
+  'daemon_trade_expected_operations',
+  'daemon_trade_planned_operations',
+  'daemon_proof_operations',
+  'daemon_proof_operation_group_counts',
+  'daemon_trade_proof_links',
+  'daemon_trade_ciphers',
+  'daemon_orders',
+  'daemon_order_trades',
+  'daemon_swaps',
+] as const
+
+type StateMigrationFaultStage = 'after-v1-recovery-drop'
+let stateMigrationFaultHookForTest:
+  | ((stage: StateMigrationFaultStage) => void)
+  | undefined
 
 export interface DaemonStateRowScope {
   wallet?: boolean
@@ -124,9 +163,7 @@ export interface DaemonStateCounts {
 }
 
 const DAEMON_ID_PAGE_LIMIT_MAX = 256
-const SQL_PROOF_OPERATION_KINDS = sqliteEnumValues(
-  DAEMON_PROOF_OPERATION_KINDS,
-)
+const SQL_PROOF_OPERATION_KINDS = sqliteEnumValues(DAEMON_PROOF_OPERATION_KINDS)
 const SQL_PROOF_OPERATION_STATES = sqliteEnumValues(
   DAEMON_PROOF_OPERATION_STATES,
 )
@@ -153,7 +190,8 @@ export function daemonStateSchemaExists(database: DatabaseSync): boolean {
 
 export function ensureDaemonStateSchema(database: DatabaseSync): void {
   ensureDaemonSecretsSchema(database)
-  const present = STATE_TABLES.filter((table) => tableExists(database, table))
+  const knownTables = [...new Set([...LEGACY_STATE_TABLES, ...STATE_TABLES])]
+  const present = knownTables.filter((table) => tableExists(database, table))
   if (present.length === 0) {
     if (tableExists(database, 'daemon_state')) {
       throw new Error('legacy daemon SQLite state schema is unsupported')
@@ -161,41 +199,234 @@ export function ensureDaemonStateSchema(database: DatabaseSync): void {
     createStateSchema(database)
     return
   }
-  if (present.length !== STATE_TABLES.length) {
+  if (!tableExists(database, 'daemon_state_metadata')) {
+    throw new Error('daemon SQLite state schema is incomplete')
+  }
+  const version = readStateSchemaVersion(database)
+  if (version === LEGACY_STATE_SCHEMA_VERSION) {
+    assertLegacyDaemonStateSchema(database)
+    throw new Error('daemon SQLite state schema requires v1 to v2 migration')
+  }
+  if (version !== STATE_SCHEMA_VERSION) {
+    throw new Error('daemon SQLite state schema is unsupported')
+  }
+  if (STATE_TABLES.some((table) => !tableExists(database, table))) {
     throw new Error('daemon SQLite state schema is incomplete')
   }
   assertDaemonStateSchema(database)
+}
+
+/**
+ * Performs the only supported state migration. The caller must already own the
+ * daemon profile run lock; this function owns the SQLite writer transaction.
+ */
+export function migrateDaemonStateSchemaV1ToV2(
+  database: DatabaseSync,
+): boolean {
+  const version = readStateSchemaVersion(database)
+  if (version === STATE_SCHEMA_VERSION) {
+    assertDaemonStateSchema(database)
+    return false
+  }
+  if (version !== LEGACY_STATE_SCHEMA_VERSION) {
+    throw new Error('daemon SQLite state schema is unsupported')
+  }
+
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    assertLegacyDaemonStateSchema(database)
+    assertStateForeignKeys(database)
+    database.exec(`
+      DROP TABLE daemon_seed_recovery_keysets;
+      DROP TABLE daemon_seed_recovery_jobs;
+      DROP TABLE daemon_state_metadata;
+    `)
+    stateMigrationFaultHookForTest?.('after-v1-recovery-drop')
+    database.exec(STATE_SCHEMA_V2_RECOVERY_SQL)
+    database
+      .prepare(
+        `INSERT INTO daemon_state_metadata (singleton, schema_version)
+       VALUES (1, ${STATE_SCHEMA_VERSION})`,
+      )
+      .run()
+    assertDaemonStateSchema(database)
+    assertStateForeignKeys(database)
+    database.exec('COMMIT')
+    return true
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK')
+    } catch {
+      // The transaction may already have completed while reporting corruption.
+    }
+    throw error
+  }
+}
+
+/** Test-only crash seam for proving that SQLite rolls back migration DDL. */
+export function setDaemonStateMigrationFaultHookForTest(
+  hook: ((stage: StateMigrationFaultStage) => void) | undefined,
+): void {
+  stateMigrationFaultHookForTest = hook
+}
+
+/** Creates the exact formerly-shipped v1 schema for migration fixtures only. */
+export function initializeDaemonStateV1MigrationFixtureForTest(
+  database: DatabaseSync,
+): void {
+  ensureDaemonSecretsSchema(database)
+  createLegacyStateSchema(database)
+  database
+    .prepare(
+      `INSERT INTO daemon_state_metadata (singleton, schema_version)
+     VALUES (1, ${LEGACY_STATE_SCHEMA_VERSION})`,
+    )
+    .run()
+}
+
+/** Replaces only v2 recovery authority with the exact shipped v1 fixture. */
+export function replaceDaemonStateV2RecoveryWithV1FixtureForTest(
+  database: DatabaseSync,
+): void {
+  assertDaemonStateSchema(database)
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database.exec(`
+      DROP TRIGGER daemon_seed_recovery_wallet_proof_update_guard;
+      DROP INDEX daemon_wallet_proofs_recovery_scope_idx;
+      DROP TABLE daemon_seed_recovery_proof_retention;
+      DROP TABLE daemon_seed_recovery_cursor_history;
+      DROP TABLE daemon_seed_recovery_keysets;
+      DROP TABLE daemon_seed_recovery_catalogue;
+      DROP TABLE daemon_seed_recovery_jobs;
+      DROP TABLE daemon_seed_recovery_clocks;
+      DROP TABLE daemon_state_metadata;
+      ${LEGACY_STATE_METADATA_SCHEMA_SQL}
+      ${LEGACY_SEED_RECOVERY_SCHEMA_SQL}
+      ${LEGACY_SEED_RECOVERY_INDEX_SQL}
+    `)
+    database
+      .prepare(
+        `INSERT INTO daemon_state_metadata (singleton, schema_version)
+         VALUES (1, ${LEGACY_STATE_SCHEMA_VERSION})`,
+      )
+      .run()
+    assertLegacyDaemonStateSchema(database)
+    database.exec('COMMIT')
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK')
+    } catch {
+      // The transaction may already have ended while reporting fixture corruption.
+    }
+    throw error
+  }
 }
 
 export function assertDaemonStateSchema(
   database: DatabaseSync,
   verifyForeignKeys = true,
 ): void {
+  assertExactRecoveryTableNames(database, STATE_TABLES)
   if (
-    JSON.stringify(readStateSchemaObjects(database)) !==
+    JSON.stringify(readStateSchemaObjects(database, STATE_TABLES)) !==
     JSON.stringify(expectedStateSchemaObjects())
   ) {
     throw new Error('daemon SQLite state schema is unsupported')
   }
   if (verifyForeignKeys) {
-    const foreignKeyFailures = database
-      .prepare('PRAGMA foreign_key_check')
-      .all() as Array<Record<string, unknown>>
-    if (foreignKeyFailures.length > 0) {
-      throw new Error('daemon SQLite state foreign keys are corrupt')
-    }
+    assertStateForeignKeys(database)
   }
   const marker = database
     .prepare(
       'SELECT schema_version FROM daemon_state_metadata WHERE singleton = 1',
     )
     .get() as { schema_version?: unknown } | undefined
-  if (marker !== undefined && marker.schema_version !== STATE_SCHEMA_VERSION) {
+  if (marker === undefined) {
+    throw new Error('daemon SQLite state row is missing')
+  }
+  if (marker.schema_version !== STATE_SCHEMA_VERSION) {
     throw new Error('daemon SQLite state schema is unsupported')
   }
 }
 
+function assertLegacyDaemonStateSchema(database: DatabaseSync): void {
+  const present = LEGACY_STATE_TABLES.filter((table) =>
+    tableExists(database, table),
+  )
+  if (present.length !== LEGACY_STATE_TABLES.length) {
+    throw new Error('daemon SQLite state schema is incomplete')
+  }
+  assertExactRecoveryTableNames(database, LEGACY_STATE_TABLES)
+  if (
+    JSON.stringify(readStateSchemaObjects(database, LEGACY_STATE_TABLES)) !==
+    JSON.stringify(expectedLegacyStateSchemaObjects())
+  ) {
+    throw new Error('daemon SQLite state schema is unsupported')
+  }
+  if (readStateSchemaVersion(database) !== LEGACY_STATE_SCHEMA_VERSION) {
+    throw new Error('daemon SQLite state schema is unsupported')
+  }
+}
+
+function assertExactRecoveryTableNames(
+  database: DatabaseSync,
+  expectedStateTables: readonly string[],
+): void {
+  const expected = expectedStateTables
+    .filter((table) => table.startsWith('daemon_seed_recovery_'))
+    .sort()
+  const actual = (
+    database
+      .prepare(
+        `SELECT name FROM sqlite_schema
+      WHERE type = 'table' AND name GLOB 'daemon_seed_recovery_*'
+      ORDER BY name`,
+      )
+      .all() as Array<{ name?: unknown }>
+  ).map((row) => row.name)
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error('daemon SQLite state schema is unsupported')
+  }
+}
+
+function readStateSchemaVersion(database: DatabaseSync): unknown {
+  if (!tableExists(database, 'daemon_state_metadata')) {
+    throw new Error('daemon SQLite state schema is incomplete')
+  }
+  try {
+    const marker = database
+      .prepare(
+        'SELECT schema_version FROM daemon_state_metadata WHERE singleton = 1',
+      )
+      .get() as { schema_version?: unknown } | undefined
+    if (marker === undefined) {
+      throw new Error('daemon SQLite state row is missing')
+    }
+    return marker.schema_version
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('daemon SQLite')) {
+      throw error
+    }
+    throw new Error('daemon SQLite state schema is unsupported', {
+      cause: error,
+    })
+  }
+}
+
+function assertStateForeignKeys(database: DatabaseSync): void {
+  const foreignKeyFailures = database
+    .prepare('PRAGMA foreign_key_check')
+    .all() as Array<Record<string, unknown>>
+  if (foreignKeyFailures.length > 0) {
+    throw new Error('daemon SQLite state foreign keys are corrupt')
+  }
+}
+
 let cachedExpectedStateSchemaObjects: Array<Record<string, string>> | undefined
+let cachedExpectedLegacyStateSchemaObjects:
+  | Array<Record<string, string>>
+  | undefined
 
 function expectedStateSchemaObjects(): Array<Record<string, string>> {
   if (cachedExpectedStateSchemaObjects !== undefined) {
@@ -204,8 +435,29 @@ function expectedStateSchemaObjects(): Array<Record<string, string>> {
   const reference = new DatabaseSync(':memory:')
   try {
     createStateSchema(reference)
-    cachedExpectedStateSchemaObjects = readStateSchemaObjects(reference)
+    cachedExpectedStateSchemaObjects = readStateSchemaObjects(
+      reference,
+      STATE_TABLES,
+    )
     return cachedExpectedStateSchemaObjects
+  } finally {
+    reference.close()
+  }
+}
+
+function expectedLegacyStateSchemaObjects(): Array<Record<string, string>> {
+  if (cachedExpectedLegacyStateSchemaObjects !== undefined) {
+    return cachedExpectedLegacyStateSchemaObjects
+  }
+  const reference = new DatabaseSync(':memory:')
+  try {
+    ensureDaemonSecretsSchema(reference)
+    createLegacyStateSchema(reference)
+    cachedExpectedLegacyStateSchemaObjects = readStateSchemaObjects(
+      reference,
+      LEGACY_STATE_TABLES,
+    )
+    return cachedExpectedLegacyStateSchemaObjects
   } finally {
     reference.close()
   }
@@ -213,8 +465,9 @@ function expectedStateSchemaObjects(): Array<Record<string, string>> {
 
 function readStateSchemaObjects(
   database: DatabaseSync,
+  tables: readonly string[],
 ): Array<Record<string, string>> {
-  const placeholders = STATE_TABLES.map(() => '?').join(', ')
+  const placeholders = tables.map(() => '?').join(', ')
   return (
     database
       .prepare(
@@ -224,7 +477,7 @@ function readStateSchemaObjects(
             AND sql IS NOT NULL
           ORDER BY type, name`,
       )
-      .all(...STATE_TABLES) as Array<Record<string, unknown>>
+      .all(...tables) as Array<Record<string, unknown>>
   ).map((row) => ({
     type: requireText(row.type, 'state schema object type'),
     name: requireText(row.name, 'state schema object name'),
@@ -825,6 +1078,7 @@ export function readDaemonStateIsEmpty(database: DatabaseSync): boolean {
       `SELECT
         NOT EXISTS (SELECT 1 FROM daemon_wallet_proofs LIMIT 1)
         AND NOT EXISTS (SELECT 1 FROM daemon_keyset_counters LIMIT 1)
+        AND NOT EXISTS (SELECT 1 FROM daemon_seed_recovery_clocks LIMIT 1)
         AND NOT EXISTS (SELECT 1 FROM daemon_seed_recovery_jobs LIMIT 1)
         AND NOT EXISTS (SELECT 1 FROM daemon_proof_operations LIMIT 1)
         AND NOT EXISTS (SELECT 1 FROM daemon_trade_sessions LIMIT 1)
@@ -846,7 +1100,8 @@ export function writeDaemonStateRows(
     clearStateRows(database)
     database
       .prepare(
-        'INSERT INTO daemon_state_metadata (singleton, schema_version) VALUES (1, 1)',
+        `INSERT INTO daemon_state_metadata (singleton, schema_version)
+         VALUES (1, ${STATE_SCHEMA_VERSION})`,
       )
       .run()
   } else {
@@ -897,11 +1152,425 @@ export function writeDaemonStateRows(
   }
 }
 
-const STATE_SCHEMA_SQL = `
+const LEGACY_STATE_METADATA_SCHEMA_SQL = `
     CREATE TABLE daemon_state_metadata (
       singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
       schema_version INTEGER NOT NULL CHECK (schema_version = 1)
     ) STRICT;
+`
+
+const LEGACY_SEED_RECOVERY_SCHEMA_SQL = `
+    CREATE TABLE daemon_seed_recovery_jobs (
+      recovery_id TEXT PRIMARY KEY NOT NULL CHECK (length(recovery_id) > 0),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      mint_url TEXT NOT NULL CHECK (length(mint_url) > 0),
+      unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat', 'usd')),
+      disclosure_acknowledged INTEGER NOT NULL CHECK (disclosure_acknowledged = 1),
+      state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
+      imported_proofs INTEGER NOT NULL CHECK (imported_proofs >= 0),
+      ignored_spent_proofs INTEGER NOT NULL CHECK (ignored_spent_proofs >= 0),
+      created_at INTEGER NOT NULL CHECK (created_at >= 0),
+      updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
+      UNIQUE (mint_url, unit)
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_keysets (
+      recovery_id TEXT NOT NULL REFERENCES daemon_seed_recovery_jobs(recovery_id) ON DELETE RESTRICT,
+      keyset_id TEXT NOT NULL CHECK (length(keyset_id) > 0),
+      ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+      next_counter INTEGER NOT NULL CHECK (next_counter >= 0),
+      trailing_empty_counters INTEGER NOT NULL CHECK (trailing_empty_counters >= 0),
+      revision INTEGER NOT NULL CHECK (revision >= 0),
+      state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
+      PRIMARY KEY (recovery_id, keyset_id),
+      UNIQUE (recovery_id, ordinal),
+      CHECK (
+        (state = 'active' AND trailing_empty_counters < 300)
+        OR (state = 'completed' AND trailing_empty_counters >= 300)
+      )
+    ) STRICT;
+`
+
+const LEGACY_SEED_RECOVERY_INDEX_SQL = `
+    CREATE INDEX daemon_seed_recovery_active_keyset_idx
+      ON daemon_seed_recovery_keysets (recovery_id, ordinal)
+      WHERE state = 'active';
+`
+
+const SHIPPED_V1_SCHEMA = Object.freeze({
+  opaqueArtifactMaxBytes: 4_194_304,
+  identifierMaxBytes: 512,
+  urlMaxBytes: 2_048,
+  shortTextMaxBytes: 256,
+  proofOperationInputLimit: 256,
+  proofOperationGroupLimit: 256,
+  proofOperationGroupLabelBytes: 256,
+  proofOperationGroupProofCount: 1_025,
+  maximumSafeInteger: 9_007_199_254_740_991,
+  proofOperationKindsSql:
+    "'swap-lock', 'swap-claim', 'conditional-keyset-swap', 'ctf-split', 'ctf-merge', 'ctf-consolidation', 'ctf-redeem', 'ctf-condition-registration', 'regular-split', 'wallet-send', 'proof-split', 'swap-refund'",
+  proofOperationStatesSql: "'prepared', 'mint-submitted', 'completed', 'Failed'",
+  swapStepsSql:
+    "'awaiting-trade-created', 'opened', 'seller-opened', 'buyer-responded', 'settling', 'awaiting-confirmation', 'confirmed', 'refunded', 'Failed'",
+})
+
+const SHIPPED_STATE_SCHEMA_V1_SQL = `
+${LEGACY_STATE_METADATA_SCHEMA_SQL}
+
+    CREATE TABLE daemon_wallet_proofs (
+      proof_id TEXT PRIMARY KEY NOT NULL CHECK (length(proof_id) = 64 AND proof_id NOT GLOB '*[^0-9a-f]*'),
+      mint_url TEXT NOT NULL CHECK (length(mint_url) > 0),
+      unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat', 'usd')),
+      proof_secret TEXT NOT NULL CHECK (length(proof_secret) > 0),
+      keyset_id TEXT NOT NULL CHECK (length(keyset_id) > 0),
+      amount INTEGER NOT NULL CHECK (amount >= 0),
+      signature TEXT NOT NULL CHECK (length(signature) > 0),
+      witness_present INTEGER NOT NULL CHECK (witness_present IN (0, 1)),
+      witness_json TEXT CHECK (witness_json IS NULL OR (json_valid(witness_json) AND length(CAST(witness_json AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes})),
+      dleq_present INTEGER NOT NULL CHECK (dleq_present IN (0, 1)),
+      dleq_json TEXT CHECK (dleq_json IS NULL OR (json_valid(dleq_json) AND length(CAST(dleq_json AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes})),
+      p2pk_e TEXT CHECK (
+        p2pk_e IS NULL
+        OR (length(p2pk_e) = 66
+          AND substr(p2pk_e, 1, 2) IN ('02', '03')
+          AND p2pk_e NOT GLOB '*[^0-9a-f]*')
+      ),
+      proof_condition_id TEXT CHECK (proof_condition_id IS NULL OR length(proof_condition_id) > 0),
+      proof_outcome_collection TEXT CHECK (proof_outcome_collection IS NULL OR length(proof_outcome_collection) > 0),
+      state TEXT NOT NULL CHECK (state IN ('available', 'reserved', 'locked')),
+      reserved_by TEXT CHECK (reserved_by IS NULL OR length(reserved_by) > 0),
+      asset_kind TEXT NOT NULL CHECK (asset_kind IN ('sats', 'Outcome')),
+      asset_condition_id TEXT CHECK (asset_condition_id IS NULL OR length(asset_condition_id) > 0),
+      asset_outcome_set_id TEXT CHECK (asset_outcome_set_id IS NULL OR length(asset_outcome_set_id) > 0),
+      base_asset TEXT NOT NULL CHECK (length(base_asset) > 0),
+      created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND created_at GLOB '????-??-??T??:??:??.???Z'),
+      updated_at TEXT NOT NULL CHECK (length(updated_at) = 24 AND updated_at GLOB '????-??-??T??:??:??.???Z'),
+      CHECK ((witness_present = 0 AND witness_json IS NULL) OR (witness_present = 1 AND witness_json IS NOT NULL)),
+      CHECK ((dleq_present = 0 AND dleq_json IS NULL) OR (dleq_present = 1 AND dleq_json IS NOT NULL)),
+      CHECK (length(CAST(COALESCE(witness_json, '') AS BLOB)) + length(CAST(COALESCE(dleq_json, '') AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes}),
+      CHECK ((proof_condition_id IS NULL AND proof_outcome_collection IS NULL) OR (proof_condition_id IS NOT NULL AND proof_outcome_collection IS NOT NULL)),
+      CHECK ((state = 'available' AND reserved_by IS NULL) OR (state IN ('reserved', 'locked') AND reserved_by IS NOT NULL)),
+      CHECK (
+        (unit IN ('sat', 'msat') AND base_asset = 'sat')
+        OR (unit = 'usd' AND base_asset = 'usd')
+      ),
+      CHECK (
+        (asset_kind = 'sats' AND asset_condition_id IS NULL AND asset_outcome_set_id IS NULL)
+        OR
+        (asset_kind = 'Outcome' AND asset_condition_id IS NOT NULL AND asset_outcome_set_id IS NOT NULL)
+      )
+    ) STRICT;
+
+    CREATE TABLE daemon_keyset_counters (
+      counter_key TEXT PRIMARY KEY NOT NULL CHECK (length(counter_key) > 0),
+      counter_value INTEGER NOT NULL CHECK (counter_value >= 0)
+    ) STRICT;
+
+${LEGACY_SEED_RECOVERY_SCHEMA_SQL}
+
+    CREATE TABLE daemon_trade_sessions (
+      trade_id TEXT PRIMARY KEY NOT NULL CHECK (length(trade_id) > 0),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+      revision INTEGER NOT NULL CHECK (revision >= 0),
+      role TEXT NOT NULL CHECK (role IN ('seller', 'buyer')),
+      local_protocol_pubkey TEXT NOT NULL CHECK (length(local_protocol_pubkey) > 0),
+      counterparty_protocol_pubkey TEXT NOT NULL CHECK (length(counterparty_protocol_pubkey) > 0),
+      mint_url TEXT NOT NULL CHECK (length(mint_url) > 0),
+      seller_locktime_secs INTEGER NOT NULL CHECK (seller_locktime_secs >= 0),
+      buyer_locktime_secs INTEGER NOT NULL CHECK (buyer_locktime_secs >= 0),
+      key_id TEXT NOT NULL REFERENCES daemon_order_ephemeral_keys(key_id) ON DELETE RESTRICT CHECK (length(key_id) > 0),
+      key_trade_id TEXT NOT NULL CHECK (length(key_trade_id) > 0),
+      key_role TEXT NOT NULL CHECK (key_role IN ('seller', 'buyer')),
+      key_local_protocol_pubkey TEXT NOT NULL CHECK (length(key_local_protocol_pubkey) > 0),
+      key_counterparty_protocol_pubkey TEXT NOT NULL CHECK (length(key_counterparty_protocol_pubkey) > 0),
+      key_mint_url TEXT NOT NULL CHECK (length(key_mint_url) > 0),
+      key_seller_locktime_secs INTEGER NOT NULL CHECK (key_seller_locktime_secs >= 0),
+      key_buyer_locktime_secs INTEGER NOT NULL CHECK (key_buyer_locktime_secs >= 0),
+      stage TEXT NOT NULL CHECK (stage IN ('intent', 'proof-reserved', 'mint-submitted', 'awaiting-dependent-operation', 'reconciliation-complete')),
+      has_expected_operations INTEGER NOT NULL CHECK (has_expected_operations IN (0, 1)),
+      has_planned_operations INTEGER NOT NULL CHECK (has_planned_operations IN (0, 1)),
+      CHECK (key_trade_id = trade_id),
+      CHECK (key_role = role),
+      CHECK (key_local_protocol_pubkey = local_protocol_pubkey),
+      CHECK (key_counterparty_protocol_pubkey = counterparty_protocol_pubkey),
+      CHECK (key_mint_url = mint_url),
+      CHECK (key_seller_locktime_secs = seller_locktime_secs),
+      CHECK (key_buyer_locktime_secs = buyer_locktime_secs)
+    ) STRICT;
+
+    CREATE TABLE daemon_trade_expected_operations (
+      trade_id TEXT NOT NULL REFERENCES daemon_trade_sessions(trade_id) ON DELETE RESTRICT,
+      position INTEGER NOT NULL CHECK (position >= 0),
+      operation_id TEXT NOT NULL CHECK (length(operation_id) > 0),
+      operation_key TEXT NOT NULL CHECK (length(operation_key) > 0),
+      stage TEXT NOT NULL CHECK (stage IN ('proof-reservation', 'mint-submission', 'claim', 'refund')),
+      kind TEXT CHECK (kind IN ('cashu-atomic', 'condition-ctf-merge')),
+      PRIMARY KEY (trade_id, position),
+      UNIQUE (trade_id, operation_id)
+    ) STRICT;
+
+    CREATE TABLE daemon_trade_planned_operations (
+      trade_id TEXT NOT NULL REFERENCES daemon_trade_sessions(trade_id) ON DELETE RESTRICT,
+      position INTEGER NOT NULL CHECK (position >= 0),
+      operation_id TEXT NOT NULL CHECK (length(operation_id) > 0),
+      operation_key TEXT NOT NULL CHECK (length(operation_key) > 0),
+      kind TEXT NOT NULL CHECK (kind IN ('cashu-atomic', 'condition-ctf-merge')),
+      stage TEXT NOT NULL CHECK (stage IN ('proof-reservation', 'mint-submission', 'claim', 'refund')),
+      depends_on_operation_id TEXT NOT NULL CHECK (length(depends_on_operation_id) > 0),
+      context_version INTEGER NOT NULL CHECK (context_version = 1),
+      context_role TEXT NOT NULL CHECK (context_role IN ('seller', 'buyer')),
+      local_protocol_pubkey TEXT NOT NULL CHECK (length(local_protocol_pubkey) > 0),
+      counterparty_protocol_pubkey TEXT NOT NULL CHECK (length(counterparty_protocol_pubkey) > 0),
+      mint_url TEXT NOT NULL CHECK (length(mint_url) > 0),
+      seller_locktime_secs INTEGER NOT NULL CHECK (seller_locktime_secs >= 0),
+      buyer_locktime_secs INTEGER NOT NULL CHECK (buyer_locktime_secs >= 0),
+      condition_id TEXT NOT NULL CHECK (length(condition_id) > 0),
+      amm_scope_id TEXT NOT NULL CHECK (length(amm_scope_id) > 0),
+      inventory_account_id TEXT NOT NULL CHECK (length(inventory_account_id) > 0),
+      base_asset TEXT NOT NULL CHECK (length(base_asset) > 0),
+      unit TEXT NOT NULL CHECK (length(unit) > 0),
+      outcome_set_commitment TEXT NOT NULL CHECK (length(outcome_set_commitment) > 0),
+      keyset_commitment TEXT NOT NULL CHECK (length(keyset_commitment) > 0),
+      fee_commitment TEXT NOT NULL CHECK (length(fee_commitment) > 0),
+      merge_input_commitment TEXT NOT NULL CHECK (length(merge_input_commitment) > 0),
+      expected_output_commitment TEXT NOT NULL CHECK (length(expected_output_commitment) > 0),
+      merge_operation_key TEXT NOT NULL CHECK (length(merge_operation_key) > 0),
+      lock_operation_key TEXT NOT NULL CHECK (length(lock_operation_key) > 0),
+      PRIMARY KEY (trade_id, position),
+      UNIQUE (trade_id, operation_id)
+    ) STRICT;
+
+    CREATE TABLE daemon_proof_operations (
+      operation_id TEXT PRIMARY KEY NOT NULL CHECK (length(operation_id) > 0 AND length(CAST(operation_id AS BLOB)) <= ${SHIPPED_V1_SCHEMA.identifierMaxBytes}),
+      kind TEXT NOT NULL CHECK (kind IN (${SHIPPED_V1_SCHEMA.proofOperationKindsSql})),
+      state TEXT NOT NULL CHECK (state IN (${SHIPPED_V1_SCHEMA.proofOperationStatesSql})),
+      mint_url TEXT NOT NULL CHECK (length(mint_url) > 0 AND length(CAST(mint_url AS BLOB)) <= ${SHIPPED_V1_SCHEMA.urlMaxBytes}),
+      durable_trade_id TEXT REFERENCES daemon_trade_sessions(trade_id) ON DELETE RESTRICT CHECK (durable_trade_id IS NULL OR length(durable_trade_id) > 0),
+      durable_operation_id TEXT CHECK (durable_operation_id IS NULL OR length(durable_operation_id) > 0),
+      durable_operation_key TEXT CHECK (durable_operation_key IS NULL OR length(durable_operation_key) > 0),
+      durable_kind TEXT CHECK (durable_kind IN ('cashu-atomic', 'condition-ctf-merge')),
+      durable_role TEXT CHECK (durable_role IN ('seller', 'buyer')),
+      durable_stage TEXT CHECK (durable_stage IN ('proof-reservation', 'mint-submission', 'claim', 'refund')),
+      durable_state TEXT CHECK (durable_state IN ('prepared', 'mint-submitted', 'reconciled')),
+      inputs_json TEXT NOT NULL CHECK (json_valid(inputs_json) AND json_type(inputs_json) = 'array' AND length(CAST(inputs_json AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes}),
+      input_count INTEGER NOT NULL CHECK (input_count >= 0 AND input_count <= ${SHIPPED_V1_SCHEMA.proofOperationInputLimit}),
+      input_amount_sats INTEGER NOT NULL CHECK (input_amount_sats >= 0 AND input_amount_sats <= ${SHIPPED_V1_SCHEMA.maximumSafeInteger}),
+      outputs_json TEXT NOT NULL CHECK (json_valid(outputs_json) AND json_type(outputs_json) = 'object' AND length(CAST(outputs_json AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes}),
+      metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json) AND json_type(metadata_json) = 'object' AND length(CAST(metadata_json AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes}),
+      has_result_proofs INTEGER NOT NULL CHECK (has_result_proofs IN (0, 1)),
+      result_proofs_json TEXT CHECK (result_proofs_json IS NULL OR (json_valid(result_proofs_json) AND json_type(result_proofs_json) = 'object' AND length(CAST(result_proofs_json AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes})),
+      last_error TEXT CHECK (last_error IS NULL OR length(last_error) > 0),
+      failure_code INTEGER CHECK (failure_code >= 0),
+      created_at INTEGER NOT NULL CHECK (created_at >= 0),
+      updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+      CHECK (
+        (durable_trade_id IS NULL AND durable_operation_id IS NULL AND durable_operation_key IS NULL AND durable_kind IS NULL AND durable_role IS NULL AND durable_stage IS NULL AND durable_state IS NULL)
+        OR
+        (durable_trade_id IS NOT NULL AND durable_operation_id IS NOT NULL AND durable_operation_key IS NOT NULL AND durable_role IS NOT NULL AND durable_stage IS NOT NULL AND durable_state IS NOT NULL)
+      ),
+      CHECK ((has_result_proofs = 0 AND result_proofs_json IS NULL) OR (has_result_proofs = 1 AND result_proofs_json IS NOT NULL)),
+      CHECK ((state = 'completed' AND has_result_proofs = 1) OR (state <> 'completed' AND has_result_proofs = 0)),
+      CHECK (failure_code IS NULL OR state = 'Failed'),
+      CHECK (
+        length(CAST(inputs_json AS BLOB)) +
+        length(CAST(outputs_json AS BLOB)) +
+        length(CAST(metadata_json AS BLOB)) +
+        length(CAST(COALESCE(result_proofs_json, '') AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes}
+      ),
+      UNIQUE (durable_operation_id)
+    ) STRICT;
+
+    CREATE TABLE daemon_proof_operation_group_counts (
+      operation_id TEXT NOT NULL REFERENCES daemon_proof_operations(operation_id) ON DELETE CASCADE,
+      group_kind TEXT NOT NULL CHECK (group_kind IN ('planned-output', 'result-proof')),
+      position INTEGER NOT NULL CHECK (position >= 0 AND position < ${SHIPPED_V1_SCHEMA.proofOperationGroupLimit}),
+      group_label TEXT NOT NULL CHECK (length(group_label) > 0 AND length(CAST(group_label AS BLOB)) <= ${SHIPPED_V1_SCHEMA.proofOperationGroupLabelBytes}),
+      proof_count INTEGER NOT NULL CHECK (proof_count >= 0 AND proof_count <= ${SHIPPED_V1_SCHEMA.proofOperationGroupProofCount}),
+      PRIMARY KEY (operation_id, group_kind, position),
+      UNIQUE (operation_id, group_kind, group_label)
+    ) STRICT;
+
+    CREATE TABLE daemon_trade_proof_links (
+      trade_id TEXT NOT NULL REFERENCES daemon_trade_sessions(trade_id) ON DELETE RESTRICT,
+      position INTEGER NOT NULL CHECK (position >= 0),
+      operation_id TEXT NOT NULL REFERENCES daemon_proof_operations(durable_operation_id) ON DELETE RESTRICT,
+      operation_key TEXT NOT NULL CHECK (length(operation_key) > 0),
+      kind TEXT CHECK (kind IN ('cashu-atomic', 'condition-ctf-merge')),
+      role TEXT NOT NULL CHECK (role IN ('seller', 'buyer')),
+      stage TEXT NOT NULL CHECK (stage IN ('proof-reservation', 'mint-submission', 'claim', 'refund')),
+      state TEXT NOT NULL CHECK (state IN ('prepared', 'mint-submitted', 'reconciled')),
+      PRIMARY KEY (trade_id, position),
+      UNIQUE (trade_id, operation_id)
+    ) STRICT;
+
+    CREATE TABLE daemon_trade_ciphers (
+      trade_id TEXT NOT NULL REFERENCES daemon_trade_sessions(trade_id) ON DELETE RESTRICT,
+      direction TEXT NOT NULL CHECK (direction IN ('received', 'outbound')),
+      message_type TEXT NOT NULL CHECK (message_type IN ('adaptor-point', 'locked-proofs-seller', 'locked-proofs-buyer')),
+      ciphertext TEXT NOT NULL CHECK (length(ciphertext) > 0 AND length(CAST(ciphertext AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes}),
+      sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+      PRIMARY KEY (trade_id, direction, message_type)
+    ) STRICT;
+
+    CREATE TABLE daemon_orders (
+      order_id TEXT PRIMARY KEY NOT NULL CHECK (length(order_id) > 0 AND length(CAST(order_id AS BLOB)) <= ${SHIPPED_V1_SCHEMA.identifierMaxBytes}),
+      market_id TEXT NOT NULL CHECK (length(market_id) > 0 AND length(CAST(market_id AS BLOB)) <= ${SHIPPED_V1_SCHEMA.identifierMaxBytes}),
+      token_side TEXT CHECK (token_side IN ('Outcome', 'Complement')),
+      side TEXT CHECK (side IN ('Buy', 'Sell')),
+      price_subunits INTEGER CHECK (price_subunits >= 0),
+      amount_subunits INTEGER CHECK (amount_subunits >= 0),
+      time_in_force TEXT CHECK (time_in_force IN ('FAK', 'FOK', 'GTC')),
+      recovery_attempt INTEGER CHECK (recovery_attempt >= 0),
+      status TEXT NOT NULL CHECK (length(status) > 0 AND length(CAST(status AS BLOB)) <= ${SHIPPED_V1_SCHEMA.shortTextMaxBytes}),
+      ephemeral_pubkey TEXT CHECK (ephemeral_pubkey IS NULL OR (length(ephemeral_pubkey) > 0 AND length(CAST(ephemeral_pubkey AS BLOB)) <= ${SHIPPED_V1_SCHEMA.shortTextMaxBytes})),
+      client_order_id TEXT CHECK (client_order_id IS NULL OR (length(client_order_id) > 0 AND length(CAST(client_order_id AS BLOB)) <= ${SHIPPED_V1_SCHEMA.identifierMaxBytes})),
+      preflight_reservation_id TEXT CHECK (preflight_reservation_id IS NULL OR length(preflight_reservation_id) > 0),
+      preflight_condition_id TEXT CHECK (preflight_condition_id IS NULL OR length(preflight_condition_id) > 0),
+      preflight_keep_outcome_set_id TEXT CHECK (preflight_keep_outcome_set_id IS NULL OR length(preflight_keep_outcome_set_id) > 0),
+      preflight_lock_outcome_set_id TEXT CHECK (preflight_lock_outcome_set_id IS NULL OR length(preflight_lock_outcome_set_id) > 0),
+      preflight_amount_sats INTEGER CHECK (preflight_amount_sats > 0),
+      base_asset TEXT CHECK (base_asset IS NULL OR (length(base_asset) > 0 AND length(CAST(base_asset AS BLOB)) <= ${SHIPPED_V1_SCHEMA.shortTextMaxBytes})),
+      divisibility INTEGER CHECK (divisibility > 0),
+      engine_status_present INTEGER NOT NULL CHECK (engine_status_present IN (0, 1)),
+      engine_status_json TEXT CHECK (engine_status_json IS NULL OR (json_valid(engine_status_json) AND length(CAST(engine_status_json AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes})),
+      created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND created_at GLOB '????-??-??T??:??:??.???Z'),
+      updated_at TEXT NOT NULL CHECK (length(updated_at) = 24 AND updated_at GLOB '????-??-??T??:??:??.???Z'),
+      CHECK (
+        (preflight_reservation_id IS NULL AND preflight_condition_id IS NULL AND preflight_keep_outcome_set_id IS NULL AND preflight_lock_outcome_set_id IS NULL AND preflight_amount_sats IS NULL)
+        OR
+        (preflight_reservation_id IS NOT NULL AND preflight_condition_id IS NOT NULL AND preflight_keep_outcome_set_id IS NOT NULL AND preflight_lock_outcome_set_id IS NOT NULL AND preflight_amount_sats IS NOT NULL)
+      ),
+      CHECK ((engine_status_present = 0 AND engine_status_json IS NULL) OR (engine_status_present = 1 AND engine_status_json IS NOT NULL))
+    ) STRICT;
+
+    CREATE TABLE daemon_order_trades (
+      order_id TEXT NOT NULL REFERENCES daemon_orders(order_id) ON DELETE RESTRICT,
+      position INTEGER NOT NULL CHECK (position >= 0),
+      trade_id TEXT NOT NULL CHECK (length(trade_id) > 0),
+      PRIMARY KEY (order_id, position),
+      UNIQUE (order_id, trade_id)
+    ) STRICT;
+
+    CREATE TABLE daemon_swaps (
+      trade_id TEXT PRIMARY KEY NOT NULL CHECK (length(trade_id) > 0 AND length(CAST(trade_id AS BLOB)) <= ${SHIPPED_V1_SCHEMA.identifierMaxBytes}),
+      market_id TEXT CHECK (market_id IS NULL OR (length(market_id) > 0 AND length(CAST(market_id AS BLOB)) <= ${SHIPPED_V1_SCHEMA.identifierMaxBytes})),
+      order_id TEXT CHECK (order_id IS NULL OR (length(order_id) > 0 AND length(CAST(order_id AS BLOB)) <= ${SHIPPED_V1_SCHEMA.identifierMaxBytes})),
+      role TEXT CHECK (role IN ('seller', 'buyer')),
+      counterparty_pubkey TEXT CHECK (counterparty_pubkey IS NULL OR length(counterparty_pubkey) > 0),
+      seller_locktime INTEGER CHECK (seller_locktime >= 0),
+      buyer_locktime INTEGER CHECK (buyer_locktime >= 0),
+      fill_amount_sats INTEGER CHECK (fill_amount_sats >= 0),
+      fill_amount_subunits INTEGER CHECK (fill_amount_subunits >= 0),
+      outcome_face_amount_sats INTEGER CHECK (outcome_face_amount_sats >= 0),
+      outcome_face_amount_subunits INTEGER CHECK (outcome_face_amount_subunits >= 0),
+      quote_payment_sats INTEGER CHECK (quote_payment_sats >= 0),
+      base_asset TEXT CHECK (base_asset IS NULL OR length(base_asset) > 0),
+      divisibility INTEGER CHECK (divisibility > 0),
+      quote_payment_subunits INTEGER CHECK (quote_payment_subunits >= 0),
+      settlement_kind TEXT CHECK (settlement_kind IN ('Mint', 'DirectSwap')),
+      seller_keep_outcome_set_id TEXT CHECK (seller_keep_outcome_set_id IS NULL OR length(seller_keep_outcome_set_id) > 0),
+      seller_lock_outcome_set_id TEXT CHECK (seller_lock_outcome_set_id IS NULL OR length(seller_lock_outcome_set_id) > 0),
+      is_taker INTEGER CHECK (is_taker IN (0, 1)),
+      adaptor_point_cipher TEXT CHECK (adaptor_point_cipher IS NULL OR length(CAST(adaptor_point_cipher AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes}),
+      locked_proofs_seller_cipher TEXT CHECK (locked_proofs_seller_cipher IS NULL OR length(CAST(locked_proofs_seller_cipher AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes}),
+      locked_proofs_buyer_cipher TEXT CHECK (locked_proofs_buyer_cipher IS NULL OR length(CAST(locked_proofs_buyer_cipher AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes}),
+      seller_adaptor_secret_hex TEXT CHECK (seller_adaptor_secret_hex IS NULL OR (length(seller_adaptor_secret_hex) > 0 AND seller_adaptor_secret_hex NOT GLOB '*[^0-9a-fA-F]*')),
+      seller_adaptor_point_hex TEXT CHECK (seller_adaptor_point_hex IS NULL OR (length(seller_adaptor_point_hex) > 0 AND seller_adaptor_point_hex NOT GLOB '*[^0-9a-fA-F]*')),
+      buyer_pre_sigs_json TEXT CHECK (buyer_pre_sigs_json IS NULL OR (json_valid(buyer_pre_sigs_json) AND length(CAST(buyer_pre_sigs_json AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes})),
+      buyer_locked_proofs_json TEXT CHECK (buyer_locked_proofs_json IS NULL OR (json_valid(buyer_locked_proofs_json) AND length(CAST(buyer_locked_proofs_json AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes})),
+      seller_pre_sigs_json TEXT CHECK (seller_pre_sigs_json IS NULL OR (json_valid(seller_pre_sigs_json) AND length(CAST(seller_pre_sigs_json AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes})),
+      engine_state TEXT CHECK (engine_state IS NULL OR length(engine_state) > 0),
+      failure_reason TEXT CHECK (failure_reason IS NULL OR (length(failure_reason) > 0 AND length(CAST(failure_reason AS BLOB)) <= ${SHIPPED_V1_SCHEMA.shortTextMaxBytes})),
+      taker_client_order_id TEXT CHECK (taker_client_order_id IS NULL OR (length(taker_client_order_id) > 0 AND length(CAST(taker_client_order_id AS BLOB)) <= ${SHIPPED_V1_SCHEMA.identifierMaxBytes})),
+      taker_recovery_status TEXT CHECK (taker_recovery_status IN ('pending', 'submitted')),
+      taker_replacement_order_id TEXT CHECK (taker_replacement_order_id IS NULL OR (length(taker_replacement_order_id) > 0 AND length(CAST(taker_replacement_order_id AS BLOB)) <= ${SHIPPED_V1_SCHEMA.identifierMaxBytes})),
+      step TEXT NOT NULL CHECK (step IN (${SHIPPED_V1_SCHEMA.swapStepsSql})),
+      error TEXT CHECK (error IS NULL OR length(error) > 0),
+      failure_json TEXT CHECK (failure_json IS NULL OR (json_valid(failure_json) AND length(CAST(failure_json AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes})),
+      created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND created_at GLOB '????-??-??T??:??:??.???Z'),
+      updated_at TEXT NOT NULL CHECK (length(updated_at) = 24 AND updated_at GLOB '????-??-??T??:??:??.???Z'),
+      CHECK ((seller_adaptor_secret_hex IS NULL AND seller_adaptor_point_hex IS NULL) OR (seller_adaptor_secret_hex IS NOT NULL AND seller_adaptor_point_hex IS NOT NULL)),
+      CHECK (
+        (taker_client_order_id IS NULL AND taker_recovery_status IS NULL AND taker_replacement_order_id IS NULL)
+        OR
+        (taker_client_order_id IS NOT NULL AND taker_recovery_status = 'pending' AND taker_replacement_order_id IS NULL)
+        OR
+        (taker_client_order_id IS NOT NULL AND taker_recovery_status = 'submitted' AND taker_replacement_order_id IS NOT NULL)
+      ),
+      CHECK (
+        (buyer_pre_sigs_json IS NULL AND buyer_locked_proofs_json IS NULL AND seller_pre_sigs_json IS NULL)
+        OR
+        (buyer_pre_sigs_json IS NOT NULL AND buyer_locked_proofs_json IS NOT NULL AND seller_pre_sigs_json IS NOT NULL)
+      ),
+      CHECK (
+        length(CAST(COALESCE(adaptor_point_cipher, '') AS BLOB)) +
+        length(CAST(COALESCE(locked_proofs_seller_cipher, '') AS BLOB)) +
+        length(CAST(COALESCE(locked_proofs_buyer_cipher, '') AS BLOB)) +
+        length(CAST(COALESCE(buyer_pre_sigs_json, '') AS BLOB)) +
+        length(CAST(COALESCE(buyer_locked_proofs_json, '') AS BLOB)) +
+        length(CAST(COALESCE(seller_pre_sigs_json, '') AS BLOB)) +
+        length(CAST(COALESCE(failure_json, '') AS BLOB)) <= ${SHIPPED_V1_SCHEMA.opaqueArtifactMaxBytes}
+      )
+    ) STRICT;
+
+    CREATE INDEX daemon_wallet_proofs_selection_idx
+      ON daemon_wallet_proofs (
+        mint_url, unit, state, asset_kind, base_asset, asset_condition_id,
+        asset_outcome_set_id, amount DESC, proof_id
+      );
+
+    CREATE INDEX daemon_wallet_proofs_denomination_idx
+      ON daemon_wallet_proofs (mint_url, unit, amount);
+
+    CREATE INDEX daemon_proof_operations_recovery_idx
+      ON daemon_proof_operations (durable_trade_id, state, operation_id);
+
+    CREATE INDEX daemon_proof_operations_history_idx
+      ON daemon_proof_operations (updated_at DESC, operation_id DESC);
+
+    CREATE INDEX daemon_orders_listing_idx
+      ON daemon_orders (market_id, status, updated_at DESC, order_id);
+
+    CREATE INDEX daemon_orders_history_idx
+      ON daemon_orders (updated_at DESC, order_id DESC);
+
+    CREATE INDEX daemon_orders_ephemeral_pubkey_idx
+      ON daemon_orders (ephemeral_pubkey, order_id);
+
+    CREATE INDEX daemon_orders_active_runtime_idx
+      ON daemon_orders (order_id)
+      WHERE status NOT IN ('Filled', 'filled', 'cancelled', 'Failed', 'failed');
+
+${LEGACY_SEED_RECOVERY_INDEX_SQL}
+
+    CREATE INDEX daemon_order_trades_trade_idx
+      ON daemon_order_trades (trade_id, order_id);
+
+    CREATE INDEX daemon_swaps_listing_idx
+      ON daemon_swaps (market_id, step, updated_at DESC, trade_id);
+
+    CREATE INDEX daemon_swaps_history_idx
+      ON daemon_swaps (updated_at DESC, trade_id DESC);
+
+    CREATE INDEX daemon_swaps_order_idx
+      ON daemon_swaps (order_id, updated_at DESC, trade_id);
+
+    CREATE INDEX daemon_swaps_active_recovery_idx
+      ON daemon_swaps (trade_id)
+      WHERE step IN ('awaiting-trade-created', 'opened', 'seller-opened', 'buyer-responded', 'settling', 'awaiting-confirmation');
+
+    CREATE INDEX daemon_swaps_taker_recovery_idx
+      ON daemon_swaps (trade_id)
+      WHERE is_taker = 1
+        AND failure_reason = 'maker-collateral-failure'
+        AND (taker_recovery_status IS NULL OR taker_recovery_status = 'pending');
+
+    CREATE INDEX daemon_wallet_proofs_reservation_idx
+      ON daemon_wallet_proofs (reserved_by, state, mint_url, proof_id);
+  `
+
+const STATE_SCHEMA_COMMON_SQL = `
+
 
     CREATE TABLE daemon_wallet_proofs (
       proof_id TEXT PRIMARY KEY NOT NULL CHECK (length(proof_id) = 64 AND proof_id NOT GLOB '*[^0-9a-f]*'),
@@ -952,35 +1621,6 @@ const STATE_SCHEMA_SQL = `
       counter_value INTEGER NOT NULL CHECK (counter_value >= 0)
     ) STRICT;
 
-    CREATE TABLE daemon_seed_recovery_jobs (
-      recovery_id TEXT PRIMARY KEY NOT NULL CHECK (length(recovery_id) > 0),
-      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
-      mint_url TEXT NOT NULL CHECK (length(mint_url) > 0),
-      unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat', 'usd')),
-      disclosure_acknowledged INTEGER NOT NULL CHECK (disclosure_acknowledged = 1),
-      state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
-      imported_proofs INTEGER NOT NULL CHECK (imported_proofs >= 0),
-      ignored_spent_proofs INTEGER NOT NULL CHECK (ignored_spent_proofs >= 0),
-      created_at INTEGER NOT NULL CHECK (created_at >= 0),
-      updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
-      UNIQUE (mint_url, unit)
-    ) STRICT;
-
-    CREATE TABLE daemon_seed_recovery_keysets (
-      recovery_id TEXT NOT NULL REFERENCES daemon_seed_recovery_jobs(recovery_id) ON DELETE RESTRICT,
-      keyset_id TEXT NOT NULL CHECK (length(keyset_id) > 0),
-      ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-      next_counter INTEGER NOT NULL CHECK (next_counter >= 0),
-      trailing_empty_counters INTEGER NOT NULL CHECK (trailing_empty_counters >= 0),
-      revision INTEGER NOT NULL CHECK (revision >= 0),
-      state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
-      PRIMARY KEY (recovery_id, keyset_id),
-      UNIQUE (recovery_id, ordinal),
-      CHECK (
-        (state = 'active' AND trailing_empty_counters < 300)
-        OR (state = 'completed' AND trailing_empty_counters >= 300)
-      )
-    ) STRICT;
 
     CREATE TABLE daemon_trade_sessions (
       trade_id TEXT PRIMARY KEY NOT NULL CHECK (length(trade_id) > 0),
@@ -1255,9 +1895,6 @@ const STATE_SCHEMA_SQL = `
       ON daemon_orders (order_id)
       WHERE status NOT IN ('Filled', 'filled', 'cancelled', 'Failed', 'failed');
 
-    CREATE INDEX daemon_seed_recovery_active_keyset_idx
-      ON daemon_seed_recovery_keysets (recovery_id, ordinal)
-      WHERE state = 'active';
 
     CREATE INDEX daemon_order_trades_trade_idx
       ON daemon_order_trades (trade_id, order_id);
@@ -1285,15 +1922,309 @@ const STATE_SCHEMA_SQL = `
       ON daemon_wallet_proofs (reserved_by, state, mint_url, proof_id);
   `
 
+const STATE_SCHEMA_V2_RECOVERY_SQL = `
+    CREATE TABLE daemon_state_metadata (
+      singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+      schema_version INTEGER NOT NULL CHECK (schema_version = ${STATE_SCHEMA_VERSION})
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_clocks (
+      wallet_scope_id TEXT NOT NULL CHECK (length(wallet_scope_id) BETWEEN 1 AND 1024),
+      mint_url TEXT NOT NULL CHECK (length(CAST(mint_url AS BLOB)) BETWEEN 1 AND ${SQLITE_URL_MAX_BYTES}),
+      unit TEXT NOT NULL CHECK (length(CAST(unit AS BLOB)) BETWEEN 1 AND 64),
+      high_water_unix_seconds INTEGER NOT NULL CHECK (high_water_unix_seconds BETWEEN 0 AND ${Number.MAX_SAFE_INTEGER}),
+      revision INTEGER NOT NULL CHECK (revision BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_WORK_UNITS}),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit)
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_jobs (
+      wallet_scope_id TEXT NOT NULL CHECK (length(wallet_scope_id) BETWEEN 1 AND 1024),
+      mint_url TEXT NOT NULL CHECK (length(CAST(mint_url AS BLOB)) BETWEEN 1 AND ${SQLITE_URL_MAX_BYTES}),
+      unit TEXT NOT NULL CHECK (length(CAST(unit AS BLOB)) BETWEEN 1 AND 64),
+      recovery_id TEXT NOT NULL CHECK (length(CAST(recovery_id AS BLOB)) BETWEEN 1 AND ${SQLITE_IDENTIFIER_MAX_BYTES}),
+      schema_version INTEGER NOT NULL CHECK (schema_version = ${STATE_SCHEMA_VERSION}),
+      disclosure_acknowledged INTEGER NOT NULL CHECK (disclosure_acknowledged = 1),
+      state TEXT NOT NULL CHECK (state IN ('active', 'completed', 'failed-closed')),
+      phase TEXT NOT NULL CHECK (phase IN ('catalogue', 'keys', 'restore', 'finalize', 'completed', 'failed-closed')),
+      revision INTEGER NOT NULL CHECK (revision BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_WORK_UNITS}),
+      current_cursor TEXT CHECK (current_cursor IS NULL OR length(CAST(current_cursor AS BLOB)) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_CURSOR_BYTES}),
+      current_cursor_digest TEXT CHECK (current_cursor_digest IS NULL OR (length(current_cursor_digest) = 64 AND current_cursor_digest NOT GLOB '*[^0-9a-f]*')),
+      capability_version INTEGER CHECK (capability_version = 1),
+      capability_max_page_size INTEGER CHECK (capability_max_page_size BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_PAGE_SIZE}),
+      page_count INTEGER NOT NULL CHECK (page_count BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_PAGES}),
+      keyset_count INTEGER NOT NULL CHECK (keyset_count BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_KEYSETS}),
+      transport_bytes INTEGER NOT NULL CHECK (transport_bytes BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES}),
+      serialized_bytes INTEGER NOT NULL CHECK (serialized_bytes BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES}),
+      work_units INTEGER NOT NULL CHECK (work_units BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_WORK_UNITS}),
+      proof_count INTEGER NOT NULL CHECK (proof_count BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS}),
+      imported_proofs INTEGER NOT NULL CHECK (imported_proofs BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS}),
+      ignored_spent_proofs INTEGER NOT NULL CHECK (ignored_spent_proofs BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS}),
+      retained_pending_proofs INTEGER NOT NULL CHECK (retained_pending_proofs BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS}),
+      created_at INTEGER NOT NULL CHECK (created_at BETWEEN 0 AND ${Number.MAX_SAFE_INTEGER}),
+      updated_at INTEGER NOT NULL CHECK (updated_at BETWEEN created_at AND ${Number.MAX_SAFE_INTEGER}),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id),
+      UNIQUE (recovery_id),
+      UNIQUE (wallet_scope_id, mint_url, unit),
+      CHECK ((current_cursor IS NULL) = (current_cursor_digest IS NULL)),
+      CHECK ((capability_version IS NULL) = (capability_max_page_size IS NULL)),
+      CHECK ((state = 'completed') = (phase = 'completed')),
+      CHECK ((state = 'failed-closed') = (phase = 'failed-closed'))
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_catalogue (
+      wallet_scope_id TEXT NOT NULL,
+      mint_url TEXT NOT NULL,
+      unit TEXT NOT NULL CHECK (length(CAST(unit AS BLOB)) BETWEEN 1 AND 64),
+      recovery_id TEXT NOT NULL,
+      ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_KEYSETS - 1}),
+      keyset_id TEXT NOT NULL CHECK (length(keyset_id) = 66 AND substr(keyset_id, 1, 2) = '01' AND keyset_id NOT GLOB '*[^0-9a-f]*'),
+      active INTEGER NOT NULL CHECK (active IN (0, 1)),
+      input_fee_ppk INTEGER CHECK (input_fee_ppk BETWEEN 0 AND ${Number.MAX_SAFE_INTEGER}),
+      final_expiry INTEGER CHECK (final_expiry BETWEEN 0 AND ${Number.MAX_SAFE_INTEGER}),
+      condition_id TEXT NOT NULL CHECK (length(condition_id) = 64 AND condition_id NOT GLOB '*[^0-9a-f]*'),
+      outcome_collection TEXT NOT NULL CHECK (length(CAST(outcome_collection AS BLOB)) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_OUTCOME_COLLECTION_BYTES}),
+      outcome_collection_id TEXT NOT NULL CHECK (length(outcome_collection_id) = 64 AND outcome_collection_id NOT GLOB '*[^0-9a-f]*'),
+      registered_at INTEGER NOT NULL CHECK (registered_at BETWEEN 0 AND ${Number.MAX_SAFE_INTEGER}),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id, ordinal),
+      UNIQUE (wallet_scope_id, mint_url, unit, recovery_id, keyset_id),
+      UNIQUE (wallet_scope_id, mint_url, unit, recovery_id, ordinal, keyset_id),
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id)
+        REFERENCES daemon_seed_recovery_jobs(wallet_scope_id, mint_url, unit, recovery_id)
+        ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_cursor_history (
+      wallet_scope_id TEXT NOT NULL,
+      mint_url TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      recovery_id TEXT NOT NULL,
+      page_ordinal INTEGER NOT NULL CHECK (page_ordinal BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_PAGES - 1}),
+      request_cursor_digest TEXT NOT NULL CHECK (length(request_cursor_digest) = 64 AND request_cursor_digest NOT GLOB '*[^0-9a-f]*'),
+      next_cursor_digest TEXT NOT NULL CHECK (length(next_cursor_digest) = 64 AND next_cursor_digest NOT GLOB '*[^0-9a-f]*'),
+      page_digest TEXT NOT NULL CHECK (length(page_digest) = 64 AND page_digest NOT GLOB '*[^0-9a-f]*'),
+      terminal_complete INTEGER NOT NULL CHECK (terminal_complete IN (0, 1)),
+      keyset_count INTEGER NOT NULL CHECK (keyset_count BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_KEYSETS}),
+      transport_bytes INTEGER NOT NULL CHECK (transport_bytes BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_PAGE_BYTES}),
+      serialized_bytes INTEGER NOT NULL CHECK (serialized_bytes BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_PAGE_BYTES}),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id, page_ordinal),
+      UNIQUE (wallet_scope_id, mint_url, unit, recovery_id, request_cursor_digest),
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id)
+        REFERENCES daemon_seed_recovery_jobs(wallet_scope_id, mint_url, unit, recovery_id)
+        ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_keysets (
+      wallet_scope_id TEXT NOT NULL,
+      mint_url TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      recovery_id TEXT NOT NULL,
+      keyset_id TEXT NOT NULL CHECK (length(CAST(keyset_id AS BLOB)) BETWEEN 1 AND 256),
+      ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_KEYSETS - 1}),
+      keyset_kind TEXT NOT NULL CHECK (keyset_kind IN ('ordinary', 'conditional')),
+      curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
+      catalogue_ordinal INTEGER CHECK (catalogue_ordinal BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_KEYSETS - 1}),
+      state TEXT NOT NULL CHECK (state IN ('pending-keys', 'ready', 'active', 'completed', 'skipped-expired', 'failed-closed')),
+      next_counter INTEGER NOT NULL CHECK (next_counter BETWEEN 0 AND ${Number.MAX_SAFE_INTEGER}),
+      trailing_empty_counters INTEGER NOT NULL CHECK (trailing_empty_counters BETWEEN 0 AND ${2 * EMERGENCY_SEED_RECOVERY_GAP_LIMIT - 1}),
+      revision INTEGER NOT NULL CHECK (revision BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_WORK_UNITS}),
+      batch_count INTEGER NOT NULL CHECK (batch_count BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_WORK_UNITS}),
+      imported_proofs INTEGER NOT NULL CHECK (imported_proofs BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS}),
+      ignored_spent_proofs INTEGER NOT NULL CHECK (ignored_spent_proofs BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS}),
+      retained_pending_proofs INTEGER NOT NULL CHECK (retained_pending_proofs BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS}),
+      key_count INTEGER NOT NULL CHECK (key_count BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_KEYS_PER_KEYSET}),
+      keys_json TEXT CHECK (keys_json IS NULL OR (json_valid(keys_json) AND json_type(keys_json) = 'object' AND length(CAST(keys_json AS BLOB)) BETWEEN 2 AND ${CONDITIONAL_RECOVERY_MAX_PAGE_BYTES})),
+      keys_digest TEXT CHECK (keys_digest IS NULL OR (length(keys_digest) = 64 AND keys_digest NOT GLOB '*[^0-9a-f]*')),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id, keyset_id),
+      UNIQUE (wallet_scope_id, mint_url, unit, recovery_id, ordinal),
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id)
+        REFERENCES daemon_seed_recovery_jobs(wallet_scope_id, mint_url, unit, recovery_id)
+        ON DELETE RESTRICT,
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id, catalogue_ordinal, keyset_id)
+        REFERENCES daemon_seed_recovery_catalogue(wallet_scope_id, mint_url, unit, recovery_id, ordinal, keyset_id)
+        ON DELETE RESTRICT,
+      CHECK (
+        (keyset_kind = 'ordinary' AND catalogue_ordinal IS NULL)
+        OR (keyset_kind = 'conditional' AND catalogue_ordinal IS NOT NULL AND curve = 'secp256k1')
+      ),
+      CHECK ((keys_json IS NULL) = (keys_digest IS NULL)),
+      CHECK ((keys_json IS NULL AND key_count = 0) OR (keys_json IS NOT NULL AND key_count > 0)),
+      CHECK (
+        state NOT IN ('active', 'completed')
+        OR (state = 'active' AND trailing_empty_counters < ${EMERGENCY_SEED_RECOVERY_GAP_LIMIT})
+        OR (state = 'completed' AND trailing_empty_counters >= ${EMERGENCY_SEED_RECOVERY_GAP_LIMIT})
+      )
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_proof_retention (
+      wallet_scope_id TEXT NOT NULL,
+      mint_url TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      recovery_id TEXT NOT NULL,
+      keyset_id TEXT NOT NULL,
+      retention_id TEXT NOT NULL CHECK (length(CAST(retention_id AS BLOB)) BETWEEN 1 AND ${SQLITE_IDENTIFIER_MAX_BYTES}),
+      wallet_proof_id TEXT,
+      proof_digest TEXT NOT NULL CHECK (length(proof_digest) = 64 AND proof_digest NOT GLOB '*[^0-9a-f]*'),
+      proof_y TEXT NOT NULL CHECK (length(CAST(proof_y AS BLOB)) BETWEEN 1 AND 256),
+      mint_state TEXT NOT NULL CHECK (mint_state IN ('UNSPENT', 'PENDING', 'SPENT', 'UNKNOWN')),
+      reason TEXT NOT NULL CHECK (reason IN ('pending-mint-state', 'expired-keyset', 'spent-audit', 'failed-verification')),
+      asset_kind TEXT NOT NULL CHECK (asset_kind IN ('ordinary', 'Outcome')),
+      condition_id TEXT,
+      outcome_collection TEXT,
+      outcome_collection_id TEXT,
+      observed_at INTEGER NOT NULL CHECK (observed_at BETWEEN 0 AND ${Number.MAX_SAFE_INTEGER}),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id, retention_id),
+      UNIQUE (wallet_scope_id, mint_url, unit, recovery_id, proof_digest),
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id, keyset_id)
+        REFERENCES daemon_seed_recovery_keysets(wallet_scope_id, mint_url, unit, recovery_id, keyset_id)
+        ON DELETE RESTRICT,
+      FOREIGN KEY (wallet_proof_id, mint_url, unit)
+        REFERENCES daemon_wallet_proofs(proof_id, mint_url, unit)
+        ON DELETE RESTRICT,
+      CHECK (
+        (reason = 'pending-mint-state' AND mint_state = 'PENDING' AND wallet_proof_id IS NOT NULL)
+        OR (reason = 'expired-keyset' AND mint_state = 'UNSPENT' AND wallet_proof_id IS NOT NULL)
+        OR (reason = 'spent-audit' AND mint_state = 'SPENT' AND wallet_proof_id IS NULL)
+        OR (reason = 'failed-verification' AND mint_state = 'UNKNOWN' AND wallet_proof_id IS NULL)
+      ),
+      CHECK (
+        (asset_kind = 'ordinary' AND condition_id IS NULL AND outcome_collection IS NULL AND outcome_collection_id IS NULL)
+        OR (asset_kind = 'Outcome'
+          AND condition_id IS NOT NULL AND length(condition_id) = 64 AND condition_id NOT GLOB '*[^0-9a-f]*'
+          AND outcome_collection IS NOT NULL AND length(CAST(outcome_collection AS BLOB)) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_OUTCOME_COLLECTION_BYTES}
+          AND outcome_collection_id IS NOT NULL AND length(outcome_collection_id) = 64 AND outcome_collection_id NOT GLOB '*[^0-9a-f]*')
+      )
+    ) STRICT;
+
+    CREATE UNIQUE INDEX daemon_wallet_proofs_recovery_scope_idx
+      ON daemon_wallet_proofs (proof_id, mint_url, unit);
+
+    CREATE INDEX daemon_seed_recovery_active_keyset_idx
+      ON daemon_seed_recovery_keysets (
+        wallet_scope_id, mint_url, unit, recovery_id, ordinal
+      ) WHERE state = 'active';
+
+    CREATE INDEX daemon_seed_recovery_retention_proof_idx
+      ON daemon_seed_recovery_proof_retention (wallet_proof_id)
+      WHERE wallet_proof_id IS NOT NULL;
+
+    CREATE TRIGGER daemon_seed_recovery_retention_insert_guard
+      BEFORE INSERT ON daemon_seed_recovery_proof_retention
+      WHEN NEW.wallet_proof_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM daemon_wallet_proofs AS proof
+         WHERE proof.proof_id = NEW.wallet_proof_id
+           AND proof.mint_url = NEW.mint_url
+           AND proof.unit = NEW.unit
+           AND proof.keyset_id = NEW.keyset_id
+           AND proof.state = 'locked'
+           AND proof.reserved_by = 'seed-recovery:' || NEW.recovery_id
+           AND (
+             (NEW.asset_kind = 'ordinary'
+               AND proof.asset_kind = 'sats'
+               AND proof.proof_condition_id IS NULL
+               AND proof.proof_outcome_collection IS NULL)
+             OR
+             (NEW.asset_kind = 'Outcome'
+               AND proof.asset_kind = 'Outcome'
+               AND proof.proof_condition_id = NEW.condition_id
+               AND proof.proof_outcome_collection = NEW.outcome_collection
+               AND proof.asset_condition_id = NEW.condition_id
+               AND proof.asset_outcome_set_id = NEW.outcome_collection_id)
+           )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'seed recovery retained proof authority is invalid');
+      END;
+
+    CREATE TRIGGER daemon_seed_recovery_retention_update_guard
+      BEFORE UPDATE ON daemon_seed_recovery_proof_retention
+      WHEN NEW.wallet_proof_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM daemon_wallet_proofs AS proof
+         WHERE proof.proof_id = NEW.wallet_proof_id
+           AND proof.mint_url = NEW.mint_url
+           AND proof.unit = NEW.unit
+           AND proof.keyset_id = NEW.keyset_id
+           AND proof.state = 'locked'
+           AND proof.reserved_by = 'seed-recovery:' || NEW.recovery_id
+           AND (
+             (NEW.asset_kind = 'ordinary'
+               AND proof.asset_kind = 'sats'
+               AND proof.proof_condition_id IS NULL
+               AND proof.proof_outcome_collection IS NULL)
+             OR
+             (NEW.asset_kind = 'Outcome'
+               AND proof.asset_kind = 'Outcome'
+               AND proof.proof_condition_id = NEW.condition_id
+               AND proof.proof_outcome_collection = NEW.outcome_collection
+               AND proof.asset_condition_id = NEW.condition_id
+               AND proof.asset_outcome_set_id = NEW.outcome_collection_id)
+           )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'seed recovery retained proof authority is invalid');
+      END;
+
+    CREATE TRIGGER daemon_seed_recovery_wallet_proof_update_guard
+      BEFORE UPDATE ON daemon_wallet_proofs
+      WHEN EXISTS (
+        SELECT 1 FROM daemon_seed_recovery_proof_retention AS retained
+         WHERE retained.wallet_proof_id = OLD.proof_id
+           AND NOT (
+             NEW.mint_url = retained.mint_url
+             AND NEW.unit = retained.unit
+             AND NEW.keyset_id = retained.keyset_id
+             AND NEW.state = 'locked'
+             AND NEW.reserved_by = 'seed-recovery:' || retained.recovery_id
+             AND NEW.proof_secret = OLD.proof_secret
+             AND NEW.amount = OLD.amount
+             AND NEW.signature = OLD.signature
+             AND NEW.witness_present = OLD.witness_present
+             AND NEW.witness_json IS OLD.witness_json
+             AND NEW.dleq_present = OLD.dleq_present
+             AND NEW.dleq_json IS OLD.dleq_json
+             AND NEW.p2pk_e IS OLD.p2pk_e
+             AND NEW.created_at = OLD.created_at
+             AND (
+               (retained.asset_kind = 'ordinary'
+                 AND NEW.asset_kind = 'sats'
+                 AND NEW.proof_condition_id IS NULL
+                 AND NEW.proof_outcome_collection IS NULL)
+               OR
+               (retained.asset_kind = 'Outcome'
+                 AND NEW.asset_kind = 'Outcome'
+                 AND NEW.proof_condition_id = retained.condition_id
+                 AND NEW.proof_outcome_collection = retained.outcome_collection
+                 AND NEW.asset_condition_id = retained.condition_id
+                 AND NEW.asset_outcome_set_id = retained.outcome_collection_id)
+             )
+           )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'seed recovery retained proof cannot become selectable');
+      END;
+`
+
+const STATE_SCHEMA_SQL = STATE_SCHEMA_COMMON_SQL + STATE_SCHEMA_V2_RECOVERY_SQL
+
 function createStateSchema(database: DatabaseSync): void {
   database.exec(STATE_SCHEMA_SQL)
 }
 
+function createLegacyStateSchema(database: DatabaseSync): void {
+  database.exec(SHIPPED_STATE_SCHEMA_V1_SQL)
+}
+
 function clearStateRows(database: DatabaseSync): void {
   if (
-    database.prepare(
-      'SELECT 1 FROM daemon_seed_recovery_jobs LIMIT 1',
-    ).get() !== undefined
+    database
+      .prepare(
+        `SELECT 1
+         FROM daemon_seed_recovery_clocks
+        UNION ALL
+       SELECT 1
+         FROM daemon_seed_recovery_jobs
+        LIMIT 1`,
+      )
+      .get() !== undefined
   ) {
     throw new Error(
       'full daemon state replacement cannot overwrite seed recovery state',
@@ -2172,9 +3103,7 @@ function decodeWalletProofRow(row: Record<string, unknown>): StoredProofRecord {
     ...(dleqPresent
       ? { dleq: decodeArtifact(row.dleq_json, 'proof DLEQ') }
       : {}),
-    ...(row.p2pk_e === null
-      ? {}
-      : { p2pk_e: requireP2pkE(row.p2pk_e) }),
+    ...(row.p2pk_e === null ? {} : { p2pk_e: requireP2pkE(row.p2pk_e) }),
     ...(row.proof_condition_id === null
       ? {}
       : { conditionId: row.proof_condition_id }),
