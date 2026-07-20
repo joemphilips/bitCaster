@@ -219,6 +219,12 @@ export interface ConditionalRecoverySessionCasPort {
     readonly expectedDigest: string | null;
     readonly successor: ConditionalRecoverySession;
   }) => boolean;
+  readonly compareAndSwapStageNut09Request: (input: {
+    readonly walletScope: ConditionalRecoveryWalletScope;
+    readonly expectedDigest: string;
+    readonly successor: ConditionalRecoverySession;
+    readonly requestBytes: Uint8Array;
+  }) => Promise<boolean>;
   readonly compareAndSwapStageNut09Response: (input: {
     readonly expectedSessionDigest: string;
     readonly successor: ConditionalRecoverySession;

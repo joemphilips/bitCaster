@@ -8,7 +8,10 @@ import {
   rehydrateConditionalRecoverySessionCapabilities,
   validateConditionalRecoverySessionSuccessor,
 } from "../src/emergencyConditionalSeedRecovery.ts";
-import { freezeSession } from "../src/emergencyConditionalRecoveryCatalogue.ts";
+import {
+  advanceSession,
+  freezeSession,
+} from "../src/emergencyConditionalRecoveryCatalogue.ts";
 import { deriveDurableCustodyScopeId } from "../src/durableCustody.ts";
 import type {
   ConditionalRecoverySession,
@@ -130,6 +133,36 @@ test("direct rehydration rejects both terminal session variants", async () => {
       /terminal session has no rehydratable capabilities/i,
     );
   }
+});
+
+test("generic session CAS cannot produce either NUT-09 staged transition", () => {
+  let genericCasCalls = 0;
+  const port = {
+    compareAndSwap: () => {
+      genericCasCalls += 1;
+      return true;
+    },
+  };
+  for (const transition of ["nut09-request", "nut09-response"] as const) {
+    assert.throws(
+      () =>
+        advanceSession(
+          session("completed-catalogue"),
+          port as never,
+          transition,
+          HEX_A,
+          {
+            transportBytes: 0,
+            serializedBytes: 0,
+            workUnits: 0,
+            proofCount: 0,
+          },
+          scan(),
+        ),
+      /requires its atomic staging CAS/i,
+    );
+  }
+  assert.equal(genericCasCalls, 0);
 });
 
 test("session-v2 codec is canonical, scope-bound, bounded, and fails closed on v1", () => {

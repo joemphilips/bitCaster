@@ -2035,6 +2035,11 @@ export function advanceSession(
     >
   > = {},
 ): ConditionalRecoverySession {
+  if (transition === "nut09-request" || transition === "nut09-response") {
+    throw new Error(
+      `conditional recovery ${transition} requires its atomic staging CAS`,
+    );
+  }
   if (liveSessions.get(current) !== port) {
     throw new Error(
       "conditional recovery session is stale or already consumed",

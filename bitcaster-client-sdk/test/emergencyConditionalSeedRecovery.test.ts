@@ -336,6 +336,13 @@ function linearPorts() {
   let latest: string | null = null;
   let stagedRows: readonly CanonicalConditionalRecoveryProof[] = [];
   let stagedSession: ConditionalRecoverySession | null = null;
+  let stagedRequestBytes = new Uint8Array();
+  let stagedResponseBytes = new Uint8Array();
+  let throwAfterRequestStageCommit = false;
+  let throwAfterResponseStageCommit = false;
+  let rejectNextRequestStage = false;
+  let rejectNextResponseStage = false;
+  let genericCasCount = 0;
   const port = {
     readCurrentDigest: () => latest,
     compareAndSwap: ({
@@ -345,23 +352,58 @@ function linearPorts() {
       expectedDigest: string | null;
       successor: { digest: string };
     }) => {
+      genericCasCount += 1;
       if (latest !== expectedDigest) return false;
       latest = successor.digest;
+      return true;
+    },
+    compareAndSwapStageNut09Request: async ({
+      expectedDigest,
+      successor,
+      requestBytes,
+    }: {
+      expectedDigest: string;
+      successor: ConditionalRecoverySession;
+      requestBytes: Uint8Array;
+    }) => {
+      if (rejectNextRequestStage) {
+        rejectNextRequestStage = false;
+        return false;
+      }
+      if (latest !== expectedDigest) return false;
+      stagedRequestBytes = new Uint8Array(requestBytes);
+      stagedSession = successor;
+      latest = successor.digest;
+      if (throwAfterRequestStageCommit) {
+        throwAfterRequestStageCommit = false;
+        throw new Error("simulated crash after request stage commit");
+      }
       return true;
     },
     compareAndSwapStageNut09Response: async ({
       expectedSessionDigest,
       successor,
+      responseBytes,
       rows,
     }: {
       expectedSessionDigest: string;
       successor: ConditionalRecoverySession;
+      responseBytes: Uint8Array;
       rows: readonly CanonicalConditionalRecoveryProof[];
     }) => {
+      if (rejectNextResponseStage) {
+        rejectNextResponseStage = false;
+        return false;
+      }
       if (latest !== expectedSessionDigest) return false;
+      stagedResponseBytes = new Uint8Array(responseBytes);
       stagedRows = rows;
       stagedSession = successor;
       latest = successor.digest;
+      if (throwAfterResponseStageCommit) {
+        throwAfterResponseStageCommit = false;
+        throw new Error("simulated crash after response stage commit");
+      }
       return true;
     },
     compareAndSwapInsertUnique: ({
@@ -406,6 +448,21 @@ function linearPorts() {
     admissionPort: port,
     readStagedRows: () => stagedRows,
     readStagedSession: () => stagedSession,
+    readStagedRequestBytes: () => new Uint8Array(stagedRequestBytes),
+    readGenericCasCount: () => genericCasCount,
+    readStagedResponseBytes: () => new Uint8Array(stagedResponseBytes),
+    throwAfterNextRequestStageCommit: () => {
+      throwAfterRequestStageCommit = true;
+    },
+    throwAfterNextResponseStageCommit: () => {
+      throwAfterResponseStageCommit = true;
+    },
+    rejectNextRequestStage: () => {
+      rejectNextRequestStage = true;
+    },
+    rejectNextResponseStage: () => {
+      rejectNextResponseStage = true;
+    },
   };
 }
 async function acceptConditionalRecoveryNut09Response(input: {
@@ -701,6 +758,7 @@ test("direct-current rehydration binds the supplied port without caller lineage"
       current = successor.digest;
       return true;
     },
+    compareAndSwapStageNut09Request: async () => false,
     compareAndSwapStageNut09Response: async () => false,
     compareAndSwapRetainExpiredKeyset: () => false,
     compareAndSwapInsertUnique: () => false,
@@ -978,7 +1036,7 @@ async function proofHarness(
     session: target.session,
   });
   const ports = targetPorts.get(target)!;
-  const request = authorizeConditionalRecoveryNut09Request({
+  const request = await authorizeConditionalRecoveryNut09Request({
     catalogue,
     target,
     plan,
@@ -986,7 +1044,7 @@ async function proofHarness(
     authority: await observation(catalogue),
   });
   const staleAuthority = await observation(catalogue);
-  assert.throws(
+  await assert.rejects(
     () =>
       authorizeConditionalRecoveryNut09Request({
         catalogue,
@@ -1053,6 +1111,7 @@ async function proofHarness(
     target,
     proofs,
     charged,
+
     verified,
     plan,
     request,
@@ -1069,6 +1128,194 @@ async function proofHarness(
     admissionPort: ports.admissionPort,
   };
 }
+
+test("request staging survives commit-before-return crash without generic CAS", async () => {
+  const catalogue = await completedCatalogue();
+  const target = await targetFor(catalogue, 75);
+  const fixture = restoreFixture("request-stage-crash", 75);
+  const derivedOutputs = [{
+    counter: fixture.counter,
+    ...fixture.output,
+    Y: hashToCurve(new TextEncoder().encode(fixture.proof.secret)).toHex(true),
+    unblind: fixture.unblind,
+  }];
+  const plan = await createSeedDerivedConditionalRecoveryPlan({
+    catalogue,
+    target,
+    walletScope: catalogue.walletScope,
+    startCounter: 75,
+    count: 1,
+    derivationPort: { deriveSeedOutputs: () => derivedOutputs },
+    session: target.session,
+  });
+  const ports = targetPorts.get(target)!;
+  const genericBefore = ports.readGenericCasCount();
+  ports.rejectNextRequestStage();
+  const rejectedRequestAuthority = await observation(catalogue);
+  await assert.rejects(
+    () =>
+      authorizeConditionalRecoveryNut09Request({
+        catalogue,
+        target,
+        plan,
+        walletScope: catalogue.walletScope,
+        authority: rejectedRequestAuthority,
+      }),
+    /request atomic staging CAS failed/i,
+  );
+  assert.equal(ports.readStagedRequestBytes().byteLength, 0);
+  ports.throwAfterNextRequestStageCommit();
+  const requestAuthority = await observation(catalogue);
+  await assert.rejects(
+    () =>
+      authorizeConditionalRecoveryNut09Request({
+        catalogue,
+        target,
+        plan,
+        walletScope: catalogue.walletScope,
+        authority: requestAuthority,
+      }),
+    /simulated crash after request stage commit/i,
+  );
+  assert.equal(ports.readGenericCasCount(), genericBefore);
+  const stagedSession = ports.readStagedSession()!;
+  assert.equal(stagedSession.transition, "nut09-request");
+  const reopened = decodeConditionalRecoverySession(
+    encodeConditionalRecoverySession(stagedSession, catalogue.walletScope),
+    catalogue.walletScope,
+  );
+  const capabilities = await rehydrateConditionalRecoverySessionCapabilities(
+    reopened,
+    {
+      stage: "nut09-request",
+      catalogue,
+      keysResponse: keysResponse(),
+      derivationPort: { deriveSeedOutputs: () => derivedOutputs },
+      requestBytes: ports.readStagedRequestBytes(),
+    },
+    ports.cas,
+  );
+  const authoritativeBytes = ports.readStagedRequestBytes();
+  capabilities.request!.requestBytes.fill(0);
+  let replayedBytes: Uint8Array | null = null;
+  const replayAuthority = await observation(catalogue);
+  await assert.rejects(
+    () =>
+      acceptConditionalRecoveryNut09ResponseRaw({
+        request: capabilities.request!,
+        authority: replayAuthority,
+        transport: {
+          fetchNut09Entity: ({ requestBytes }) => {
+            replayedBytes = new Uint8Array(requestBytes);
+            throw new Error("stop after replay capture");
+          },
+        },
+      }),
+    /stop after replay capture/i,
+  );
+  assert.equal(
+    replayedBytes?.every(
+      (value, index) => value === authoritativeBytes[index],
+    ),
+    true,
+  );
+});
+
+test("empty response staging survives commit-before-return crash and rehydrates", async () => {
+  const catalogue = await completedCatalogue(
+    scope(),
+    metadata({ final_expiry: 2_000_000_000 }),
+  );
+  const target = await targetFor(catalogue, 76);
+  const fixture = restoreFixture("empty-response-stage-crash", 76);
+  const derivedOutputs = [{
+    counter: fixture.counter,
+    ...fixture.output,
+    Y: hashToCurve(new TextEncoder().encode(fixture.proof.secret)).toHex(true),
+    unblind: fixture.unblind,
+  }];
+  const plan = await createSeedDerivedConditionalRecoveryPlan({
+    catalogue,
+    target,
+    walletScope: catalogue.walletScope,
+    startCounter: 76,
+    count: 1,
+    derivationPort: { deriveSeedOutputs: () => derivedOutputs },
+    session: target.session,
+  });
+  const ports = targetPorts.get(target)!;
+  const request = await authorizeConditionalRecoveryNut09Request({
+    catalogue,
+    target,
+    plan,
+    walletScope: catalogue.walletScope,
+    authority: await observation(catalogue),
+  });
+  const genericBefore = ports.readGenericCasCount();
+  ports.throwAfterNextResponseStageCommit();
+  const responseBytes = new TextEncoder().encode(
+    JSON.stringify({ outputs: [], signatures: [] }),
+  );
+  ports.rejectNextResponseStage();
+  const rejectedResponseAuthority = await observation(catalogue);
+  await assert.rejects(
+    () =>
+      acceptConditionalRecoveryNut09ResponseRaw({
+        request,
+        authority: rejectedResponseAuthority,
+        transport: {
+          fetchNut09Entity: () => responseBytes,
+        },
+      }),
+    /response atomic staging CAS failed/i,
+  );
+  assert.equal(ports.readStagedResponseBytes().byteLength, 0);
+  const responseAuthority = await observation(catalogue);
+  await assert.rejects(
+    () =>
+      acceptConditionalRecoveryNut09ResponseRaw({
+        request,
+        authority: responseAuthority,
+        transport: {
+          fetchNut09Entity: () => responseBytes,
+        },
+      }),
+    /simulated crash after response stage commit/i,
+  );
+  assert.equal(ports.readGenericCasCount(), genericBefore);
+  assert.equal(ports.readStagedRows().length, 0);
+  const stagedSession = ports.readStagedSession()!;
+  assert.equal(stagedSession.transition, "nut09-response");
+  const reopened = decodeConditionalRecoverySession(
+    encodeConditionalRecoverySession(stagedSession, catalogue.walletScope),
+    catalogue.walletScope,
+  );
+  const capabilities = await rehydrateConditionalRecoverySessionCapabilities(
+    reopened,
+    {
+      stage: "nut09-response",
+      catalogue,
+      keysResponse: keysResponse(),
+      derivationPort: { deriveSeedOutputs: () => derivedOutputs },
+      requestBytes: ports.readStagedRequestBytes(),
+      responseBytes: ports.readStagedResponseBytes(),
+      stagedProofRows: [],
+    },
+    ports.cas,
+  );
+  assert.equal(capabilities.proofBatch?.proofCount, 0);
+  const expiryAuthority = issueConditionalRecoveryFreshExpiryEvidence({
+    catalogue,
+    target: capabilities.target!,
+    authority: await observation(catalogue, 2_000_000_000),
+  });
+  const skipped = skipExpiredConditionalRecoveryKeyset({
+    session: capabilities.session,
+    expiryAuthority,
+    sessionPort: ports.cas,
+  });
+  assert.equal(skipped.transition, "keyset-skipped");
+});
 
 test("proof-verification reopen rederives exact batch and requires fresh NUT-07", async () => {
   const source = await proofHarness(metadata(), false);
@@ -1094,6 +1341,7 @@ test("proof-verification reopen rederives exact batch and requires fresh NUT-07"
       current = successor.digest;
       return true;
     },
+    compareAndSwapStageNut09Request: async () => false,
     compareAndSwapStageNut09Response: async () => false,
     compareAndSwapInsertUnique: ({
       expectedSessionDigest,
@@ -1276,6 +1524,7 @@ test("fresh-process reopen reconstructs each proof pipeline stage from exact evi
     const port: ConditionalRecoverySessionCasPort = {
       readCurrentDigest: () => reopened.digest,
       compareAndSwap: () => false,
+      compareAndSwapStageNut09Request: async () => false,
       compareAndSwapStageNut09Response: async () => false,
       compareAndSwapRetainExpiredKeyset: () => false,
       compareAndSwapInsertUnique: () => false,
@@ -1316,6 +1565,7 @@ test("fresh-process reopen reconstructs each proof pipeline stage from exact evi
   const admissionPort: ConditionalRecoverySessionCasPort = {
     readCurrentDigest: () => reopenedAdmission.digest,
     compareAndSwap: () => false,
+    compareAndSwapStageNut09Request: async () => false,
     compareAndSwapStageNut09Response: async () => false,
     compareAndSwapRetainExpiredKeyset: () => false,
     compareAndSwapInsertUnique: () => false,
@@ -1351,7 +1601,7 @@ test("fresh-process reopen accepts an exact empty NUT-09 response", async () => 
     derivationPort: { deriveSeedOutputs: () => derivedOutputs },
     session: target.session,
   });
-  const request = authorizeConditionalRecoveryNut09Request({
+  const request = await authorizeConditionalRecoveryNut09Request({
     catalogue,
     target,
     plan,
@@ -1377,6 +1627,7 @@ test("fresh-process reopen accepts an exact empty NUT-09 response", async () => 
   const port: ConditionalRecoverySessionCasPort = {
     readCurrentDigest: () => reopened.digest,
     compareAndSwap: () => false,
+    compareAndSwapStageNut09Request: async () => false,
     compareAndSwapStageNut09Response: async () => false,
     compareAndSwapRetainExpiredKeyset: () => false,
     compareAndSwapInsertUnique: () => false,
@@ -1416,7 +1667,7 @@ test("nut09-request reopen requires byte-identical dispatch replay before expiry
     derivationPort: { deriveSeedOutputs: () => derivedOutputs },
     session: target.session,
   });
-  const request = authorizeConditionalRecoveryNut09Request({
+  const request = await authorizeConditionalRecoveryNut09Request({
     catalogue,
     target,
     plan,
@@ -1430,6 +1681,7 @@ test("nut09-request reopen requires byte-identical dispatch replay before expiry
   const port: ConditionalRecoverySessionCasPort = {
     readCurrentDigest: () => reopened.digest,
     compareAndSwap: () => false,
+    compareAndSwapStageNut09Request: async () => false,
     compareAndSwapStageNut09Response: async () => false,
     compareAndSwapRetainExpiredKeyset: () => false,
     compareAndSwapInsertUnique: () => false,
@@ -1944,7 +2196,7 @@ test("NUT-09 charges canonical proof bytes and exact transport cumulatively", as
     derivationPort: { deriveSeedOutputs: () => [budgetOutput] },
     session: target.session,
   });
-  const request = authorizeConditionalRecoveryNut09Request({
+  const request = await authorizeConditionalRecoveryNut09Request({
     catalogue,
     target,
     plan,
@@ -1991,7 +2243,7 @@ test("zero-hit windows consume the same cumulative session transport budget", as
       },
       session,
     });
-    const request = authorizeConditionalRecoveryNut09Request({
+    const request = await authorizeConditionalRecoveryNut09Request({
       catalogue,
       target,
       plan,
@@ -2044,7 +2296,7 @@ test("two-batch scan advances across empty windows and resets the trailing gap o
     derivationPort: { deriveSeedOutputs: () => rows.slice(0, 2) },
     session: target.session,
   });
-  const firstRequest = authorizeConditionalRecoveryNut09Request({
+  const firstRequest = await authorizeConditionalRecoveryNut09Request({
     catalogue,
     target,
     plan: firstPlan,
@@ -2080,7 +2332,7 @@ test("two-batch scan advances across empty windows and resets the trailing gap o
     derivationPort: { deriveSeedOutputs: () => rows.slice(2) },
     session: firstBatch.session,
   });
-  const secondRequest = authorizeConditionalRecoveryNut09Request({
+  const secondRequest = await authorizeConditionalRecoveryNut09Request({
     catalogue,
     target,
     plan: secondPlan,
@@ -2169,26 +2421,41 @@ test("NUT-13/NUT-09 reject oversized plans, foreign outputs, and request replay"
     derivationPort: { deriveSeedOutputs: () => [planRow] },
     session: target.session,
   });
-  const request = authorizeConditionalRecoveryNut09Request({
+  const request = await authorizeConditionalRecoveryNut09Request({
     catalogue,
     target,
     plan,
     walletScope: catalogue.walletScope,
     authority: await observation(catalogue),
   });
+  const authoritativeRequestBytes = new Uint8Array(request.requestBytes);
   request.requestBytes[0] ^= 1;
+  let dispatchedRequestBytes: Uint8Array | null = null;
   const replayAuthority = await observation(catalogue);
   await assert.rejects(
     () =>
-      acceptConditionalRecoveryNut09Response({
+      acceptConditionalRecoveryNut09ResponseRaw({
         request,
-        response: { outputs: [], signatures: [] },
-        responseBytes: 1,
         authority: replayAuthority,
+        transport: {
+          fetchNut09Entity: ({ requestBytes }) => {
+            dispatchedRequestBytes = new Uint8Array(requestBytes);
+            throw new Error("stop after dispatch capture");
+          },
+        },
       }),
-    /dispatched request bytes changed/i,
+    /stop after dispatch capture/i,
   );
-  request.requestBytes[0] ^= 1;
+  assert.equal(
+    dispatchedRequestBytes?.byteLength,
+    authoritativeRequestBytes.byteLength,
+  );
+  assert.equal(
+    dispatchedRequestBytes?.every(
+      (value, index) => value === authoritativeRequestBytes[index],
+    ),
+    true,
+  );
   const foreign = restoreFixture("foreign-output", 121);
   const foreignAuthority = await observation(catalogue);
   await assert.rejects(
@@ -2276,7 +2543,7 @@ for (const [field, mutateSignature] of [
       },
       session: target.session,
     });
-    const request = authorizeConditionalRecoveryNut09Request({
+    const request = await authorizeConditionalRecoveryNut09Request({
       catalogue,
       target,
       plan,

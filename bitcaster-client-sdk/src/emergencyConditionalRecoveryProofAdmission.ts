@@ -81,6 +81,17 @@ const MAX_PROOF_FIELD_BYTES = 64 * 1_024;
 const UINT64_MAX = (1n << 64n) - 1n;
 const LOWER_HEX_64 = /^[0-9a-f]{128}$/;
 const encoder = new TextEncoder();
+function digestNut09Request(
+  walletScope: ConditionalRecoveryWalletScope,
+  requestBytes: Uint8Array,
+): string {
+  return digestValue([
+    "conditional-recovery-nut09-request-v2",
+    walletScope.mintUrl,
+    walletScope.unit,
+    bytesToHex(requestBytes),
+  ]);
+}
 
 interface ProofBatchState {
   readonly catalogue: CompletedConditionalRecoveryCatalogue;
@@ -109,15 +120,14 @@ const seedPlans = new WeakMap<
     }[];
   }
 >();
-const nut09Requests = new WeakMap<
-  object,
-  {
-    readonly catalogue: CompletedConditionalRecoveryCatalogue;
-    readonly target: ValidatedConditionalRecoveryTarget;
-    readonly plan: SeedDerivedConditionalRecoveryPlan;
-    readonly sessionPort: ConditionalRecoverySessionCasPort;
-  }
->();
+interface Nut09RequestState {
+  readonly catalogue: CompletedConditionalRecoveryCatalogue;
+  readonly target: ValidatedConditionalRecoveryTarget;
+  readonly plan: SeedDerivedConditionalRecoveryPlan;
+  readonly sessionPort: ConditionalRecoverySessionCasPort;
+  readonly privateRequestBytes: Uint8Array;
+}
+const nut09Requests = new WeakMap<object, Nut09RequestState>();
 const consumedNut09Requests = new WeakSet<object>();
 const consumedVerifiedProofBatches = new WeakSet<object>();
 const freshExpiryEvidence = new WeakSet<object>();
@@ -456,13 +466,13 @@ export async function createSeedDerivedConditionalRecoveryPlan(input: {
   return plan;
 }
 
-export function authorizeConditionalRecoveryNut09Request(input: {
+export async function authorizeConditionalRecoveryNut09Request(input: {
   catalogue: CompletedConditionalRecoveryCatalogue;
   target: ValidatedConditionalRecoveryTarget;
   plan: SeedDerivedConditionalRecoveryPlan;
   walletScope: ConditionalRecoveryWalletScope;
   authority: ConditionalRecoveryAuthorityObservation;
-}): ConditionalRecoveryNut09RequestAuthorization {
+}): Promise<ConditionalRecoveryNut09RequestAuthorization> {
   const catalogue = requireCompletedCatalogue(input.catalogue);
   const target = requireValidatedTarget(input.target, catalogue);
   const authority = consumeAuthority(input.authority, catalogue);
@@ -500,13 +510,9 @@ export function authorizeConditionalRecoveryNut09Request(input: {
       Object.freeze({ id, amount, B_ }),
     ),
   );
-  const requestBytes = encoder.encode(JSON.stringify({ outputs }));
-  const requestDigest = digestValue([
-    "conditional-recovery-nut09-request-v2",
-    walletScope.mintUrl,
-    walletScope.unit,
-    bytesToHex(requestBytes),
-  ]);
+  const privateRequestBytes = encoder.encode(JSON.stringify({ outputs }));
+  requireBoundedPageBytes(privateRequestBytes.byteLength);
+  const requestDigest = digestNut09Request(walletScope, privateRequestBytes);
   const budget = chargeConditionalRecoveryBudget(input.plan.session.budget, {
     serializedBytes: boundedJsonBytes(
       { outputs },
@@ -515,25 +521,55 @@ export function authorizeConditionalRecoveryNut09Request(input: {
     ),
     workUnits: checkedSafeAdd(outputs.length, 1, "NUT-09 request work"),
   });
-  const session = advanceSession(
-    input.plan.session,
-    sessionPort,
-    "nut09-request",
-    digestValue([input.plan.digest, requestDigest, budget]),
+  const session = freezeSession({
+    walletScope: input.plan.session.walletScope,
+    sequence: checkedSafeAdd(
+      input.plan.session.sequence,
+      1,
+      "session sequence",
+    ),
+    predecessorDigest: input.plan.session.digest,
+    transition: "nut09-request",
+    evidenceDigest: digestValue([input.plan.digest, requestDigest, budget]),
     budget,
-    input.plan.session.scan,
-    {
-      currentBatch: {
-        ...input.plan.session.currentBatch!,
-        requestDigest,
-      },
+    catalogueDigest: input.plan.session.catalogueDigest,
+    completedKeysetProofCount:
+      input.plan.session.completedKeysetProofCount,
+    catalogueOrdinal: input.plan.session.catalogueOrdinal,
+    activeKeysetId: input.plan.session.activeKeysetId,
+    keysetMetadataDigest: input.plan.session.keysetMetadataDigest,
+    scan: input.plan.session.scan,
+    currentBatch: {
+      ...input.plan.session.currentBatch!,
+      requestDigest,
     },
+    keysetTerminalEvidence: null,
+    skipEvidence: null,
+    terminalEvidence: null,
+  });
+  validateConditionalRecoverySessionSuccessor(input.plan.session, session);
+  if (
+    (await sessionPort.compareAndSwapStageNut09Request({
+      walletScope,
+      expectedDigest: input.plan.session.digest,
+      successor: session,
+      requestBytes: new Uint8Array(privateRequestBytes),
+    })) !== true
+  ) {
+    throw new Error(
+      "conditional recovery NUT-09 request atomic staging CAS failed",
+    );
+  }
+  adoptExternallyCommittedConditionalRecoverySession(
+    input.plan.session,
+    session,
+    sessionPort,
   );
   const request = Object.freeze({
     walletScope,
     keysetId: target.metadata.id,
     outputs,
-    requestBytes,
+    requestBytes: new Uint8Array(privateRequestBytes),
     requestDigest,
     planDigest: input.plan.digest,
     session,
@@ -543,17 +579,43 @@ export function authorizeConditionalRecoveryNut09Request(input: {
     target,
     plan: input.plan,
     sessionPort,
+    privateRequestBytes: new Uint8Array(privateRequestBytes),
   });
   return request;
 }
+
+function requireNut09RequestState(
+  request: ConditionalRecoveryNut09RequestAuthorization,
+): Nut09RequestState {
+  if (!isObject(request)) {
+    throw new Error("conditional recovery NUT-09 request evidence is invalid");
+  }
+  const state = nut09Requests.get(request);
+  if (state === undefined || consumedNut09Requests.has(request)) {
+    throw new Error(
+      "conditional recovery NUT-09 request evidence is invalid or already used",
+    );
+  }
+  const binding = request.session.currentBatch;
+  if (
+    binding === null ||
+    digestNut09Request(request.walletScope, state.privateRequestBytes) !==
+      request.requestDigest ||
+    binding.requestDigest !== request.requestDigest
+  ) {
+    throw new Error(
+      "conditional recovery NUT-09 dispatched request bytes changed before replay",
+    );
+  }
+  return state;
+}
+
 export async function acceptConditionalRecoveryNut09Response(input: {
   readonly request: ConditionalRecoveryNut09RequestAuthorization;
   readonly transport: ConditionalRecoveryNut09TransportPort;
   readonly authority: ConditionalRecoveryAuthorityObservation;
 }): Promise<ChargedConditionalRecoveryProofBatch> {
-  if (!isObject(input.request)) {
-    throw new Error("conditional recovery NUT-09 request evidence is invalid");
-  }
+  const requestState = requireNut09RequestState(input.request);
   const remaining = checkedSafeAdd(
     CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES,
     -input.request.session.budget.transportBytes,
@@ -569,7 +631,7 @@ export async function acceptConditionalRecoveryNut09Response(input: {
       "/v1/restore",
       input.request.walletScope.mintUrl,
     ).toString(),
-    requestBytes: new Uint8Array(input.request.requestBytes),
+    requestBytes: new Uint8Array(requestState.privateRequestBytes),
     maxEntityBytes,
   });
   if (
@@ -582,7 +644,7 @@ export async function acceptConditionalRecoveryNut09Response(input: {
   }
   return acceptConditionalRecoveryNut09ResponseBytes({
     request: input.request,
-    responseBody,
+    responseBody: new Uint8Array(responseBody),
     authority: input.authority,
   });
 }
@@ -592,28 +654,8 @@ async function acceptConditionalRecoveryNut09ResponseBytes(input: {
   responseBody: Uint8Array;
   authority: ConditionalRecoveryAuthorityObservation;
 }): Promise<ChargedConditionalRecoveryProofBatch> {
-  if (!isObject(input.request)) {
-    throw new Error("conditional recovery NUT-09 request evidence is invalid");
-  }
-  const requestState = nut09Requests.get(input.request);
-  if (requestState === undefined || consumedNut09Requests.has(input.request)) {
-    throw new Error(
-      "conditional recovery NUT-09 request evidence is invalid or already used",
-    );
-  }
+  const requestState = requireNut09RequestState(input.request);
   const { catalogue, target, plan, sessionPort } = requestState;
-  if (
-    digestValue([
-      "conditional-recovery-nut09-request-v2",
-      input.request.walletScope.mintUrl,
-      input.request.walletScope.unit,
-      bytesToHex(input.request.requestBytes),
-    ]) !== input.request.requestDigest
-  ) {
-    throw new Error(
-      "conditional recovery NUT-09 dispatched request bytes changed before replay",
-    );
-  }
   if (
     !(input.responseBody instanceof Uint8Array) ||
     input.responseBody.byteLength > CONDITIONAL_RECOVERY_MAX_PAGE_BYTES
@@ -743,62 +785,56 @@ async function acceptConditionalRecoveryNut09ResponseBytes(input: {
     budget,
     digestCanonicalProofs(snapshot.canonical),
   ]);
-  let session: ConditionalRecoverySession;
-  if (stagedBatchId === null) {
-    session = advanceSession(
-      input.request.session,
-      sessionPort,
-      "nut09-response",
-      evidenceDigest,
-      budget,
-      scan,
-      { currentBatch },
-    );
-  } else {
-    session = freezeSession({
-      walletScope: input.request.session.walletScope,
-      sequence: checkedSafeAdd(
-        input.request.session.sequence,
-        1,
-        "session sequence",
-      ),
-      predecessorDigest: input.request.session.digest,
-      transition: "nut09-response",
-      evidenceDigest,
-      budget,
-      catalogueDigest: input.request.session.catalogueDigest,
-      completedKeysetProofCount:
-        input.request.session.completedKeysetProofCount,
-      catalogueOrdinal: input.request.session.catalogueOrdinal,
-      activeKeysetId: input.request.session.activeKeysetId,
-      keysetMetadataDigest: input.request.session.keysetMetadataDigest,
-      scan,
-      currentBatch,
-      keysetTerminalEvidence: null,
-      skipEvidence: null,
-      terminalEvidence: null,
-    });
-    validateConditionalRecoverySessionSuccessor(input.request.session, session);
-    if (
-      (await sessionPort.compareAndSwapStageNut09Response({
-        expectedSessionDigest: input.request.session.digest,
-        successor: session,
-        stagedBatchId,
-        requestBytes: new Uint8Array(input.request.requestBytes),
-        responseBytes: new Uint8Array(input.responseBody),
-        rows: snapshot.canonical,
-      })) !== true
-    ) {
-      throw new Error(
-        "conditional recovery NUT-09 response atomic staging CAS failed",
-      );
-    }
-    adoptExternallyCommittedConditionalRecoverySession(
-      input.request.session,
-      session,
-      sessionPort,
+  const session = freezeSession({
+    walletScope: input.request.session.walletScope,
+    sequence: checkedSafeAdd(
+      input.request.session.sequence,
+      1,
+      "session sequence",
+    ),
+    predecessorDigest: input.request.session.digest,
+    transition: "nut09-response",
+    evidenceDigest,
+    budget,
+    catalogueDigest: input.request.session.catalogueDigest,
+    completedKeysetProofCount:
+      input.request.session.completedKeysetProofCount,
+    catalogueOrdinal: input.request.session.catalogueOrdinal,
+    activeKeysetId: input.request.session.activeKeysetId,
+    keysetMetadataDigest: input.request.session.keysetMetadataDigest,
+    scan,
+    currentBatch,
+    keysetTerminalEvidence: null,
+    skipEvidence: null,
+    terminalEvidence: null,
+  });
+  validateConditionalRecoverySessionSuccessor(input.request.session, session);
+  const durableBatchId =
+    stagedBatchId ??
+    digestValue([
+      "conditional-recovery-empty-response-record-v1",
+      input.request.requestDigest,
+      responseDigest,
+    ]);
+  if (
+    (await sessionPort.compareAndSwapStageNut09Response({
+      expectedSessionDigest: input.request.session.digest,
+      successor: session,
+      stagedBatchId: durableBatchId,
+      requestBytes: new Uint8Array(requestState.privateRequestBytes),
+      responseBytes: new Uint8Array(input.responseBody),
+      rows: snapshot.canonical,
+    })) !== true
+  ) {
+    throw new Error(
+      "conditional recovery NUT-09 response atomic staging CAS failed",
     );
   }
+  adoptExternallyCommittedConditionalRecoverySession(
+    input.request.session,
+    session,
+    sessionPort,
+  );
   const proofIdentities = Object.freeze(
     snapshot.ys.map((y) =>
       digestValue([
@@ -2333,13 +2369,12 @@ function rehydratePersistedConditionalRecoveryRequest(input: {
     );
   }
   requireBoundedPageBytes(input.requestBytes.byteLength);
+  const privateRequestBytes = new Uint8Array(input.requestBytes);
   const binding = input.session.currentBatch!;
-  const requestDigest = digestValue([
-    "conditional-recovery-nut09-request-v2",
-    input.session.walletScope.mintUrl,
-    input.session.walletScope.unit,
-    bytesToHex(input.requestBytes),
-  ]);
+  const requestDigest = digestNut09Request(
+    input.session.walletScope,
+    privateRequestBytes,
+  );
   if (requestDigest !== binding.requestDigest) {
     throw new Error(
       "conditional recovery dispatched NUT-09 request replay changed bytes",
@@ -2349,7 +2384,7 @@ function rehydratePersistedConditionalRecoveryRequest(input: {
     walletScope: input.session.walletScope,
     keysetId: input.target.metadata.id,
     outputs: input.plan.outputs,
-    requestBytes: new Uint8Array(input.requestBytes),
+    requestBytes: new Uint8Array(privateRequestBytes),
     requestDigest,
     planDigest: input.plan.digest,
     session: input.session,
@@ -2359,6 +2394,7 @@ function rehydratePersistedConditionalRecoveryRequest(input: {
     target: input.target,
     plan: input.plan,
     sessionPort: input.sessionPort,
+    privateRequestBytes,
   });
   return request;
 }
