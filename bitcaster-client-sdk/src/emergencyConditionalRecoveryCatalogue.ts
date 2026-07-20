@@ -16,11 +16,17 @@ import { decodeDurableCustodyScopeId } from "./durableCustody.ts";
 import { normalizeDurableWalletMintUrl } from "./durableWalletMintUrl.ts";
 import {
   CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION,
+  computeConditionalRecoverySessionDigest,
   decodeConditionalRecoveryScan,
   decodeConditionalRecoverySessionTransition,
   initialConditionalRecoveryScan,
   validateConditionalRecoverySessionState,
+  validateConditionalRecoverySessionSuccessor,
+  type ConditionalRecoveryBatchBinding,
+  type ConditionalRecoveryKeysetTerminalEvidence,
   type ConditionalRecoverySessionTransition,
+  type ConditionalRecoverySkipEvidence,
+  type ConditionalRecoveryTerminalEvidence,
 } from "./emergencyConditionalRecoverySession.ts";
 import {
   encodeBoundedConditionalCheckpoint,
@@ -97,6 +103,7 @@ const authorityObservations = new WeakMap<
 >();
 const consumedAuthorityObservations = new WeakSet<object>();
 const liveSessions = new WeakMap<object, ConditionalRecoverySessionCasPort>();
+const rehydratedSessionPorts = new Map<string, ConditionalRecoverySessionCasPort>();
 
 export function decodeConditionalRecoveryCapability(
   mintInfo: unknown,
@@ -809,6 +816,9 @@ export function validateConditionalRecoveryKeys(input: {
   ) {
     return null;
   }
+  const catalogueOrdinal = catalogue.keysets.findIndex(
+    (candidate) => candidate.id === metadata.id,
+  );
   const session = advanceSession(
     input.session,
     sessionPort,
@@ -816,6 +826,15 @@ export function validateConditionalRecoveryKeys(input: {
     digestValue([metadata.id, keys, authority.effectiveTime, budget]),
     budget,
     input.session.scan,
+    {
+      catalogueOrdinal,
+      activeKeysetId: metadata.id,
+      keysetMetadataDigest: metadataFingerprint(metadata),
+      currentBatch: null,
+      keysetTerminalEvidence: null,
+      skipEvidence: null,
+      terminalEvidence: null,
+    },
   );
   const target = Object.freeze({
     walletScope,
@@ -880,7 +899,15 @@ export function createConditionalRecoverySession(input: {
     transition: "completed-catalogue",
     evidenceDigest: digestValue([catalogue.capability, catalogue.keysets]),
     budget: catalogue.budget,
+    completedKeysetProofCount: 0,
+    catalogueOrdinal: null,
+    activeKeysetId: null,
+    keysetMetadataDigest: null,
     scan: initialConditionalRecoveryScan(startCounter),
+    currentBatch: null,
+    keysetTerminalEvidence: null,
+    skipEvidence: null,
+    terminalEvidence: null,
   });
   if (
     input.cas.compareAndSwap({
@@ -895,75 +922,10 @@ export function createConditionalRecoverySession(input: {
   return session;
 }
 
-export function resumeConditionalRecoverySession(input: {
-  persisted: unknown;
-  catalogue: CompletedConditionalRecoveryCatalogue;
-  walletScope: ConditionalRecoveryWalletScope;
-  cas: ConditionalRecoverySessionCasPort;
-}): ConditionalRecoverySession {
-  const catalogue = requireCompletedCatalogue(input.catalogue);
-  const walletScope = decodeConditionalRecoveryWalletScope(input.walletScope);
-  assertConditionalRecoveryWalletScopeMatches(
-    catalogue.walletScope,
-    walletScope,
+export function resumeConditionalRecoverySession(): never {
+  throw new Error(
+    "conditional recovery session row resume is unsupported; decode and rehydrate session-v2 bytes",
   );
-  const row = requireObject(
-    input.persisted,
-    "conditional recovery persisted session",
-  );
-  requireExactKeys(
-    row,
-    [
-      "schemaVersion",
-      "walletScope",
-      "sequence",
-      "predecessorDigest",
-      "transition",
-      "evidenceDigest",
-      "budget",
-      "scan",
-      "digest",
-    ],
-    "conditional recovery persisted session",
-  );
-  if (row.schemaVersion !== CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION) {
-    throw new Error("conditional recovery session schema is unsupported");
-  }
-  const session = freezeSession({
-    walletScope: decodeConditionalRecoveryWalletScope(row.walletScope),
-    sequence: requireSafeInteger(
-      row.sequence,
-      "conditional recovery session sequence",
-    ),
-    predecessorDigest:
-      row.predecessorDigest === null
-        ? null
-        : requireLowerHex32(
-            row.predecessorDigest,
-            "session predecessor digest",
-          ),
-    transition: decodeConditionalRecoverySessionTransition(row.transition),
-    evidenceDigest: requireLowerHex32(
-      row.evidenceDigest,
-      "session evidence digest",
-    ),
-    budget: decodeConditionalRecoveryBudget(row.budget),
-    scan: decodeConditionalRecoveryScan(row.scan, {
-      maxBatchSize: CONDITIONAL_RECOVERY_MAX_PROOFS,
-      maxTotalOutputs: CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS,
-    }),
-  });
-  if (session.digest !== row.digest) {
-    throw new Error("conditional recovery persisted session digest is invalid");
-  }
-  assertConditionalRecoveryWalletScopeMatches(session.walletScope, walletScope);
-  if (input.cas.readCurrentDigest(walletScope) !== session.digest) {
-    throw new Error(
-      "conditional recovery persisted session is not the adapter latest",
-    );
-  }
-  liveSessions.set(session, input.cas);
-  return session;
 }
 
 function requireAuthoritySubject(
@@ -1725,7 +1687,15 @@ export function freezeSession(input: {
   transition: ConditionalRecoverySessionTransition;
   evidenceDigest: string;
   budget: ConditionalRecoveryBudget;
+  completedKeysetProofCount: number;
+  catalogueOrdinal: number | null;
+  activeKeysetId: string | null;
+  keysetMetadataDigest: string | null;
   scan: ConditionalRecoverySession["scan"];
+  currentBatch: ConditionalRecoveryBatchBinding | null;
+  keysetTerminalEvidence: ConditionalRecoveryKeysetTerminalEvidence | null;
+  skipEvidence: ConditionalRecoverySkipEvidence | null;
+  terminalEvidence: ConditionalRecoveryTerminalEvidence | null;
 }): ConditionalRecoverySession {
   const walletScope = decodeConditionalRecoveryWalletScope(input.walletScope);
   const sequence = requireSafeInteger(
@@ -1753,26 +1723,11 @@ export function freezeSession(input: {
     maxBatchSize: CONDITIONAL_RECOVERY_MAX_PROOFS,
     maxTotalOutputs: CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS,
   });
-  validateConditionalRecoverySessionState({
-    sequence,
-    predecessorDigest,
-    transition,
-    evidenceDigest,
-    proofCount: budget.proofCount,
-    scan,
-  });
-  const digest = digestValue([
-    "conditional-recovery-session-v1",
-    CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION,
-    walletScope,
-    sequence,
-    predecessorDigest,
-    transition,
-    evidenceDigest,
-    budget,
-    scan,
-  ]);
-  return Object.freeze({
+  const completedKeysetProofCount = requireSafeInteger(
+    input.completedKeysetProofCount,
+    "conditional recovery completed-keyset proof count",
+  );
+  const candidate = {
     schemaVersion: CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION,
     walletScope,
     sequence,
@@ -1780,9 +1735,19 @@ export function freezeSession(input: {
     transition,
     evidenceDigest,
     budget,
+    completedKeysetProofCount,
+    catalogueOrdinal: input.catalogueOrdinal,
+    activeKeysetId: input.activeKeysetId,
+    keysetMetadataDigest: input.keysetMetadataDigest,
     scan,
-    digest,
-  });
+    currentBatch: input.currentBatch,
+    keysetTerminalEvidence: input.keysetTerminalEvidence,
+    skipEvidence: input.skipEvidence,
+    terminalEvidence: input.terminalEvidence,
+  } as const;
+  validateConditionalRecoverySessionState(candidate);
+  const digest = computeConditionalRecoverySessionDigest(candidate);
+  return Object.freeze({ ...candidate, digest });
 }
 
 export function requireLiveSession(
@@ -1804,6 +1769,51 @@ export function requireLiveSession(
   );
   return port;
 }
+export function rehydrateConditionalRecoverySessionCapabilities(
+  session: ConditionalRecoverySession,
+  evidence: { readonly predecessor: ConditionalRecoverySession | null },
+  sessionPort: ConditionalRecoverySessionCasPort,
+): Readonly<{ session: ConditionalRecoverySession }> {
+  if (
+    session.transition === "recovery-completed" ||
+    session.transition === "recovery-failed-closed"
+  ) {
+    throw new Error(
+      "conditional recovery terminal session has no rehydratable capabilities",
+    );
+  }
+  if (session.digest !== computeConditionalRecoverySessionDigest(session)) {
+    throw new Error("conditional recovery rehydration session digest is invalid");
+  }
+  if (session.sequence === 0) {
+    if (evidence.predecessor !== null) {
+      throw new Error(
+        "conditional recovery initial session has foreign predecessor evidence",
+      );
+    }
+  } else {
+    if (evidence.predecessor === null) {
+      throw new Error(
+        "conditional recovery rehydration predecessor evidence is missing",
+      );
+    }
+    validateConditionalRecoverySessionSuccessor(evidence.predecessor, session);
+  }
+  if (sessionPort.readCurrentDigest(session.walletScope) !== session.digest) {
+    throw new Error(
+      "conditional recovery rehydration session is not the adapter latest",
+    );
+  }
+  const boundPort = rehydratedSessionPorts.get(session.walletScope.scopeId);
+  if (boundPort !== undefined && boundPort !== sessionPort) {
+    throw new Error(
+      "conditional recovery rehydration cannot substitute a different session port",
+    );
+  }
+  rehydratedSessionPorts.set(session.walletScope.scopeId, sessionPort);
+  liveSessions.set(session, sessionPort);
+  return Object.freeze({ session });
+}
 
 export function advanceSession(
   current: ConditionalRecoverySession,
@@ -1812,6 +1822,19 @@ export function advanceSession(
   evidenceDigest: string,
   budget: ConditionalRecoveryBudget,
   scan: ConditionalRecoverySession["scan"],
+  patch: Partial<
+    Pick<
+      ConditionalRecoverySession,
+      | "completedKeysetProofCount"
+      | "catalogueOrdinal"
+      | "activeKeysetId"
+      | "keysetMetadataDigest"
+      | "currentBatch"
+      | "keysetTerminalEvidence"
+      | "skipEvidence"
+      | "terminalEvidence"
+    >
+  > = {},
 ): ConditionalRecoverySession {
   if (liveSessions.get(current) !== port) {
     throw new Error(
@@ -1825,8 +1848,37 @@ export function advanceSession(
     transition,
     evidenceDigest,
     budget,
+    completedKeysetProofCount:
+      patch.completedKeysetProofCount === undefined
+        ? current.completedKeysetProofCount
+        : patch.completedKeysetProofCount,
+    catalogueOrdinal:
+      patch.catalogueOrdinal === undefined
+        ? current.catalogueOrdinal
+        : patch.catalogueOrdinal,
+    activeKeysetId:
+      patch.activeKeysetId === undefined
+        ? current.activeKeysetId
+        : patch.activeKeysetId,
+    keysetMetadataDigest:
+      patch.keysetMetadataDigest === undefined
+        ? current.keysetMetadataDigest
+        : patch.keysetMetadataDigest,
     scan,
+    currentBatch:
+      patch.currentBatch === undefined ? current.currentBatch : patch.currentBatch,
+    keysetTerminalEvidence:
+      patch.keysetTerminalEvidence === undefined
+        ? current.keysetTerminalEvidence
+        : patch.keysetTerminalEvidence,
+    skipEvidence:
+      patch.skipEvidence === undefined ? current.skipEvidence : patch.skipEvidence,
+    terminalEvidence:
+      patch.terminalEvidence === undefined
+        ? current.terminalEvidence
+        : patch.terminalEvidence,
   });
+  validateConditionalRecoverySessionSuccessor(current, successor);
   if (
     port.compareAndSwap({
       walletScope: current.walletScope,
@@ -1839,6 +1891,163 @@ export function advanceSession(
   liveSessions.delete(current);
   liveSessions.set(successor, port);
   return successor;
+}
+export function adoptExternallyCommittedConditionalRecoverySession(
+  current: ConditionalRecoverySession,
+  successor: ConditionalRecoverySession,
+  port: ConditionalRecoverySessionCasPort,
+): void {
+  if (liveSessions.get(current) !== port) {
+    throw new Error(
+      "conditional recovery externally committed session uses a foreign port",
+    );
+  }
+  validateConditionalRecoverySessionSuccessor(current, successor);
+  liveSessions.delete(current);
+  liveSessions.set(successor, port);
+}
+
+
+export function completeConditionalRecoveryKeyset(input: {
+  session: ConditionalRecoverySession;
+  sessionPort: ConditionalRecoverySessionCasPort;
+  gapLimit?: number;
+  evidenceDigest: string;
+}): ConditionalRecoverySession {
+  const keysetId = requireV2KeysetId(input.session.activeKeysetId);
+  const evidenceDigest = requireLowerHex32(
+    input.evidenceDigest,
+    "keyset completion evidence digest",
+  );
+  let keysetTerminalEvidence: ConditionalRecoveryKeysetTerminalEvidence;
+  switch (input.session.transition) {
+    case "nut09-response": {
+      const gapLimit = requireSafeInteger(
+        input.gapLimit,
+        "conditional recovery gap limit",
+      );
+      if (gapLimit < 1) {
+        throw new Error("conditional recovery gap limit is invalid");
+      }
+      keysetTerminalEvidence = {
+        kind: "gap-limit",
+        keysetId,
+        gapLimit,
+        digest: evidenceDigest,
+      };
+      break;
+    }
+    case "expired-keyset-retention": {
+      const stagedBatchId = input.session.currentBatch?.stagedBatchId;
+      if (stagedBatchId === null || stagedBatchId === undefined) {
+        throw new Error(
+          "conditional recovery retained keyset has no staged batch",
+        );
+      }
+      keysetTerminalEvidence = {
+        kind: "expired-retention",
+        keysetId,
+        stagedBatchId,
+        digest: evidenceDigest,
+      };
+      break;
+    }
+    default:
+      throw new Error(
+        "conditional recovery keyset cannot complete from this transition",
+      );
+  }
+  return advanceSession(
+    input.session,
+    input.sessionPort,
+    "keyset-completed",
+    evidenceDigest,
+    input.session.budget,
+    initialConditionalRecoveryScan(input.session.scan.nextCounter),
+    {
+      completedKeysetProofCount: input.session.budget.proofCount,
+      activeKeysetId: null,
+      keysetMetadataDigest: null,
+      currentBatch: null,
+      keysetTerminalEvidence,
+      skipEvidence: null,
+      terminalEvidence: null,
+    },
+  );
+}
+
+export function completeConditionalRecoverySession(input: {
+  session: ConditionalRecoverySession;
+  sessionPort: ConditionalRecoverySessionCasPort;
+  catalogueLength: number;
+  evidenceDigest: string;
+}): ConditionalRecoverySession {
+  const catalogueLength = requireSafeInteger(
+    input.catalogueLength,
+    "conditional recovery catalogue length",
+  );
+  if (
+    catalogueLength < 0 ||
+    (input.session.catalogueOrdinal === null
+      ? catalogueLength !== 0
+      : input.session.catalogueOrdinal + 1 !== catalogueLength)
+  ) {
+    throw new Error(
+      "conditional recovery completion catalogue length is inconsistent",
+    );
+  }
+  const evidenceDigest = requireLowerHex32(
+    input.evidenceDigest,
+    "recovery completion evidence digest",
+  );
+  return advanceSession(
+    input.session,
+    input.sessionPort,
+    "recovery-completed",
+    evidenceDigest,
+    input.session.budget,
+    initialConditionalRecoveryScan(input.session.scan.nextCounter),
+    {
+      completedKeysetProofCount: input.session.budget.proofCount,
+      activeKeysetId: null,
+      keysetMetadataDigest: null,
+      currentBatch: null,
+      keysetTerminalEvidence: null,
+      skipEvidence: null,
+      terminalEvidence: {
+        kind: "completed",
+        catalogueLength,
+        digest: evidenceDigest,
+      },
+    },
+  );
+}
+
+export function failConditionalRecoverySessionClosed(input: {
+  session: ConditionalRecoverySession;
+  sessionPort: ConditionalRecoverySessionCasPort;
+  reasonDigest: string;
+}): ConditionalRecoverySession {
+  const reasonDigest = requireLowerHex32(
+    input.reasonDigest,
+    "failed-closed reason digest",
+  );
+  return advanceSession(
+    input.session,
+    input.sessionPort,
+    "recovery-failed-closed",
+    reasonDigest,
+    input.session.budget,
+    input.session.scan,
+    {
+      terminalEvidence: {
+        kind: "failed-closed",
+        reasonDigest,
+      },
+      skipEvidence: null,
+      keysetTerminalEvidence: null,
+    },
+  );
 }
 
 export function retireConditionalRecoverySession(

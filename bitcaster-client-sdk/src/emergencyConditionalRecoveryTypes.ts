@@ -1,8 +1,12 @@
 import type { ProofLike } from "@cashu/cashu-ts";
 import {
   CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION,
+  type ConditionalRecoveryBatchBinding,
+  type ConditionalRecoveryKeysetTerminalEvidence,
   type ConditionalRecoverySessionScan,
   type ConditionalRecoverySessionTransition,
+  type ConditionalRecoverySkipEvidence,
+  type ConditionalRecoveryTerminalEvidence,
 } from "./emergencyConditionalRecoverySession.ts";
 
 export const CONDITIONAL_RECOVERY_CATALOGUE_VERSION = 1 as const;
@@ -120,8 +124,32 @@ export interface ConditionalRecoverySession {
   readonly transition: ConditionalRecoverySessionTransition;
   readonly evidenceDigest: string;
   readonly budget: ConditionalRecoveryBudget;
+  readonly completedKeysetProofCount: number;
+  readonly catalogueOrdinal: number | null;
+  readonly activeKeysetId: string | null;
+  readonly keysetMetadataDigest: string | null;
   readonly scan: ConditionalRecoverySessionScan;
+  readonly currentBatch: ConditionalRecoveryBatchBinding | null;
+  readonly keysetTerminalEvidence: ConditionalRecoveryKeysetTerminalEvidence | null;
+  readonly skipEvidence: ConditionalRecoverySkipEvidence | null;
+  readonly terminalEvidence: ConditionalRecoveryTerminalEvidence | null;
   readonly digest: string;
+}
+
+export interface ConditionalRecoveryFreshExpiryEvidence {
+  readonly catalogueOrdinal: number;
+  readonly keysetId: string;
+  readonly conditionId: string;
+  readonly finalExpiry: number;
+  readonly observedAt: number;
+  readonly keysetMetadataDigest: string;
+  readonly authorityDigest: string;
+}
+
+export interface ConditionalRecoveryStagedProofRow {
+  readonly proofIdentity: string;
+  readonly state: ConditionalRecoveryNut07State;
+  readonly proof: CanonicalConditionalRecoveryProof;
 }
 
 export interface ConditionalRecoverySessionCasPort {
@@ -133,7 +161,22 @@ export interface ConditionalRecoverySessionCasPort {
     readonly expectedDigest: string | null;
     readonly successor: ConditionalRecoverySession;
   }) => boolean;
+  readonly compareAndSwapStageNut09Response: (input: {
+    readonly expectedSessionDigest: string;
+    readonly successor: ConditionalRecoverySession;
+    readonly stagedBatchId: string;
+    readonly requestBytes: Uint8Array;
+    readonly responseBytes: Uint8Array;
+    readonly rows: readonly CanonicalConditionalRecoveryProof[];
+  }) => Promise<boolean>;
   readonly compareAndSwapInsertUnique: ConditionalRecoveryAdmissionPort["compareAndSwapInsertUnique"];
+  readonly compareAndSwapRetainExpiredKeyset: (input: {
+    readonly expectedSessionDigest: string;
+    readonly successor: ConditionalRecoverySession;
+    readonly stagedBatchId: string;
+    readonly expiryAuthority: ConditionalRecoveryFreshExpiryEvidence;
+    readonly rows: readonly ConditionalRecoveryStagedProofRow[];
+  }) => Promise<boolean>;
 }
 
 export interface SeedDerivedConditionalRecoveryOutput {
@@ -187,6 +230,7 @@ export interface ConditionalRecoveryNut09RequestAuthorization {
     amount: string;
     B_: string;
   }>[];
+  readonly requestBytes: Uint8Array;
   readonly requestDigest: string;
   readonly planDigest: string;
   readonly session: ConditionalRecoverySession;
@@ -234,6 +278,7 @@ export interface ChargedConditionalRecoveryProofBatch {
   readonly requestDigest: string;
   readonly responseDigest: string;
   readonly planDigest: string;
+  readonly stagedBatchId: string | null;
   readonly proofIdentities: readonly string[];
   readonly proofs: readonly ProofLike[];
   readonly session: ConditionalRecoverySession;
@@ -281,6 +326,7 @@ export interface ConditionalRecoveryAdmissionAuthorization {
   readonly walletScope: ConditionalRecoveryWalletScope;
   readonly keysetId: string;
   readonly authorizedAt: number;
+  readonly session: ConditionalRecoverySession;
   readonly selectableProofs: readonly CanonicalConditionalRecoveryProof[];
   readonly pendingProofs: readonly CanonicalConditionalRecoveryProof[];
   readonly spentProofs: readonly CanonicalConditionalRecoveryProof[];

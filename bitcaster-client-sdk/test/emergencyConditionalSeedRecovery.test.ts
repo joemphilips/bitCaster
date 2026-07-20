@@ -16,19 +16,26 @@ import {
   CONDITIONAL_RECOVERY_MAX_PAGE_BYTES,
   advanceConditionalRecoveryHighWater,
   authorizeConditionalRecoveryAdmission,
-  acceptConditionalRecoveryNut09Response,
+  acceptConditionalRecoveryNut09Response as acceptConditionalRecoveryNut09ResponseRaw,
   authorizeConditionalRecoveryNut09Request,
   classifyConditionalRecoveryNut07,
   createConditionalCatalogueProgress,
+  completeConditionalRecoveryKeyset,
+  completeConditionalRecoverySession,
   createConditionalRecoverySession,
   createConditionalRecoveryWalletScope,
   createSeedDerivedConditionalRecoveryPlan,
   decodeConditionalRecoveryCapability,
+  decodeConditionalRecoverySession,
   encodeConditionalCatalogueCheckpoint,
+  encodeConditionalRecoverySession,
   finalizeConditionalRecoveryCatalogue,
+  issueConditionalRecoveryFreshExpiryEvidence,
   issueConditionalRecoveryAuthorityObservation,
   resumeConditionalCatalogueProgress,
   resumeConditionalRecoverySession,
+  rehydrateConditionalRecoverySessionCapabilities,
+  retainExpiredConditionalRecoveryKeyset,
   snapshotConditionalCatalogueCheckpoint,
   validateConditionalCataloguePage,
   validateConditionalRecoveryKeys,
@@ -192,7 +199,9 @@ async function targetFor(
     catalogue,
     walletScope: catalogue.walletScope,
     keysetId: KEYSET_ID,
-    response: keysResponse(),
+    response: keysResponse({
+      final_expiry: catalogue.keysets[0]!.finalExpiry,
+    }),
     responseBytes: 1_024,
     authority: await observation(catalogue),
     session,
@@ -329,6 +338,17 @@ function linearPorts() {
       latest = successor.digest;
       return true;
     },
+    compareAndSwapStageNut09Response: async ({
+      expectedSessionDigest,
+      successor,
+    }: {
+      expectedSessionDigest: string;
+      successor: { digest: string };
+    }) => {
+      if (latest !== expectedSessionDigest) return false;
+      latest = successor.digest;
+      return true;
+    },
     compareAndSwapInsertUnique: ({
       expectedSessionDigest,
       successorSession,
@@ -348,8 +368,30 @@ function linearPorts() {
       latest = successorSession.digest;
       return true;
     },
+    compareAndSwapRetainExpiredKeyset: async ({
+      expectedSessionDigest,
+      successor,
+    }: {
+      expectedSessionDigest: string;
+      successor: { digest: string };
+    }) => {
+      if (latest !== expectedSessionDigest) return false;
+      latest = successor.digest;
+      return true;
+    },
   };
   return { cas: port, admissionPort: port };
+}
+async function acceptConditionalRecoveryNut09Response(
+  input: Omit<
+    Parameters<typeof acceptConditionalRecoveryNut09ResponseRaw>[0],
+    "responseBody"
+  >,
+) {
+  return acceptConditionalRecoveryNut09ResponseRaw({
+    ...input,
+    responseBody: new TextEncoder().encode(JSON.stringify(input.response)),
+  });
 }
 
 test("capability remains exact and ordinary mints are skipped", () => {
@@ -729,8 +771,11 @@ test("key authority is fresh and one-use, and cross-mint scope substitution fail
   );
 });
 
-async function proofHarness() {
-  const catalogue = await completedCatalogue();
+async function proofHarness(
+  rawMetadata: Record<string, unknown> = metadata(),
+  finishProofChecks = true,
+) {
+  const catalogue = await completedCatalogue(scope(), rawMetadata);
   const target = await targetFor(catalogue, 40);
   const fixtures = [
     restoreFixture("secret-one", 40),
@@ -772,7 +817,7 @@ async function proofHarness() {
       }),
     /stale|consumed/i,
   );
-  const charged = acceptConditionalRecoveryNut09Response({
+  const charged = await acceptConditionalRecoveryNut09Response({
     request,
     response: {
       outputs: fixtures.map((fixture) => fixture.output),
@@ -782,6 +827,22 @@ async function proofHarness() {
     authority: await observation(catalogue),
   });
   const proofs = charged.proofs as ReturnType<typeof verifiableProof>[];
+  const stateCorpus = ["UNSPENT", "PENDING", "SPENT"] as const;
+  const states = proofs.map((proof, index) => ({
+    Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+    state: stateCorpus[index]!,
+    witness: null,
+  }));
+  if (!finishProofChecks) {
+    return {
+      catalogue,
+      target,
+      proofs,
+      charged,
+      states,
+      admissionPort: ports.admissionPort,
+    };
+  }
   const verified = verifyConditionalRecoveryProofs({
     catalogue,
     target,
@@ -789,12 +850,6 @@ async function proofHarness() {
     proofBatch: charged,
     authority: await observation(catalogue),
   });
-  const stateCorpus = ["UNSPENT", "PENDING", "SPENT"] as const;
-  const states = proofs.map((proof, index) => ({
-    Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
-    state: stateCorpus[index]!,
-    witness: null,
-  }));
   const nut07 = classifyConditionalRecoveryNut07({
     catalogue,
     target,
@@ -830,6 +885,32 @@ test("shared mint-state dispositions drive every conditional admission bucket", 
   assert.equal(result.spentProofs.length, 1);
   assert.equal(Object.isFrozen(result.selectableProofs[0]!), true);
   assert.equal("selectableProofIndexes" in result, false);
+  assert.equal(result.session.transition, "atomic-admission");
+  const continuationFixture = restoreFixture(
+    "post-admission-continuation",
+    result.session.scan.nextCounter,
+  );
+  const continuation = await createSeedDerivedConditionalRecoveryPlan({
+    catalogue: harness.catalogue,
+    target: harness.target,
+    walletScope: harness.catalogue.walletScope,
+    startCounter: result.session.scan.nextCounter,
+    count: 1,
+    derivationPort: {
+      deriveSeedOutputs: () => [
+        {
+          counter: result.session.scan.nextCounter,
+          ...continuationFixture.output,
+          Y: hashToCurve(
+            new TextEncoder().encode(continuationFixture.proof.secret),
+          ).toHex(true),
+          unblind: continuationFixture.unblind,
+        },
+      ],
+    },
+    session: result.session,
+  });
+  assert.equal(continuation.session.transition, "nut13-plan");
   const replayAuthority = await observation(harness.catalogue);
   assert.throws(
     () =>
@@ -842,6 +923,67 @@ test("shared mint-state dispositions drive every conditional admission bucket", 
     /already consumed/i,
   );
 });
+test("fresh SDK expiry evidence selects the distinct locked retention CAS", async () => {
+  const harness = await proofHarness(metadata(), false);
+  const expiryAuthority = issueConditionalRecoveryFreshExpiryEvidence({
+    catalogue: harness.catalogue,
+    target: harness.target,
+    authority: await observation(harness.catalogue, 2_000_000_000),
+  });
+  const verified = verifyConditionalRecoveryProofs({
+    catalogue: harness.catalogue,
+    target: harness.target,
+    walletScope: harness.catalogue.walletScope,
+    proofBatch: harness.charged,
+    authority: await observation(harness.catalogue, 2_000_000_000),
+    expiryEvidence: expiryAuthority,
+  });
+  const nut07 = classifyConditionalRecoveryNut07({
+    catalogue: harness.catalogue,
+    target: harness.target,
+    walletScope: harness.catalogue.walletScope,
+    proofBatch: harness.charged,
+    response: { states: [...harness.states].reverse() },
+    responseBytes: 1_024,
+  });
+  const ports = targetPorts.get(harness.target)!;
+  const successor = await retainExpiredConditionalRecoveryKeyset({
+    catalogue: harness.catalogue,
+    target: harness.target,
+    verifiedProofs: verified,
+    nut07,
+    walletScope: harness.catalogue.walletScope,
+    proofs: harness.proofs,
+    expiryAuthority,
+    sessionPort: ports.cas,
+  });
+  assert.equal(successor.transition, "expired-keyset-retention");
+  assert.equal(successor.currentBatch?.stagedBatchId, harness.charged.stagedBatchId);
+  const completedKeyset = completeConditionalRecoveryKeyset({
+    session: successor,
+    sessionPort: ports.cas,
+    evidenceDigest: "ef".repeat(32),
+  });
+  assert.equal(completedKeyset.transition, "keyset-completed");
+  const completedRecovery = completeConditionalRecoverySession({
+    session: completedKeyset,
+    sessionPort: ports.cas,
+    catalogueLength: 1,
+    evidenceDigest: "fe".repeat(32),
+  });
+  assert.equal(completedRecovery.transition, "recovery-completed");
+  assert.throws(
+    () =>
+      authorizeConditionalRecoveryAdmission({
+        ...harness,
+        walletScope: harness.catalogue.walletScope,
+        authority: {} as ConditionalRecoveryAuthorityObservation,
+        admissionPort: ports.admissionPort,
+      }),
+    /consumed|stale|invalid|foreign/i,
+  );
+});
+
 
 test("conditional recovery keeps UNKNOWN mint state fail closed", async () => {
   const harness = await proofHarness();
@@ -951,7 +1093,7 @@ test("NUT-09 charges canonical proof bytes and exact transport cumulatively", as
     walletScope: catalogue.walletScope,
     authority: await observation(catalogue),
   });
-  const charged = acceptConditionalRecoveryNut09Response({
+  const charged = await acceptConditionalRecoveryNut09Response({
     request,
     response: { outputs: [fixture.output], signatures: [fixture.signature] },
     responseBytes: 7_777,
@@ -1000,7 +1142,7 @@ test("zero-hit windows consume the same cumulative session transport budget", as
     });
     const responseAuthority = await observation(catalogue);
     if (counter === 3) {
-      assert.throws(
+      await assert.rejects(
         () =>
           acceptConditionalRecoveryNut09Response({
             request,
@@ -1012,7 +1154,7 @@ test("zero-hit windows consume the same cumulative session transport budget", as
       );
       break;
     }
-    const batch = acceptConditionalRecoveryNut09Response({
+    const batch = await acceptConditionalRecoveryNut09Response({
       request,
       response: { outputs: [], signatures: [] },
       responseBytes: CONDITIONAL_RECOVERY_MAX_PAGE_BYTES,
@@ -1051,7 +1193,7 @@ test("two-batch scan advances across empty windows and resets the trailing gap o
     walletScope: catalogue.walletScope,
     authority: await observation(catalogue),
   });
-  const firstBatch = acceptConditionalRecoveryNut09Response({
+  const firstBatch = await acceptConditionalRecoveryNut09Response({
     request: firstRequest,
     response: { outputs: [], signatures: [] },
     responseBytes: 32,
@@ -1087,7 +1229,7 @@ test("two-batch scan advances across empty windows and resets the trailing gap o
     walletScope: catalogue.walletScope,
     authority: await observation(catalogue),
   });
-  const secondBatch = acceptConditionalRecoveryNut09Response({
+  const secondBatch = await acceptConditionalRecoveryNut09Response({
     request: secondRequest,
     response: {
       outputs: [fixtures[2]!.output],
@@ -1110,228 +1252,31 @@ test("two-batch scan advances across empty windows and resets the trailing gap o
     secondBatch.session.budget.transportBytes >
       firstBatch.session.budget.transportBytes,
   );
-  const persisted = JSON.parse(JSON.stringify(secondBatch.session)) as Record<
-    string,
-    unknown
-  >;
-  const resumed = resumeConditionalRecoverySession({
-    persisted,
-    catalogue,
-    walletScope: catalogue.walletScope,
-    cas: targetPorts.get(target)!.cas,
-  });
+  const encoded = encodeConditionalRecoverySession(
+    secondBatch.session,
+    catalogue.walletScope,
+  );
+  const decoded = decodeConditionalRecoverySession(
+    encoded,
+    catalogue.walletScope,
+  );
+  const resumed = rehydrateConditionalRecoverySessionCapabilities(
+    decoded,
+    { predecessor: secondRequest.session },
+    targetPorts.get(target)!.cas,
+  ).session;
   assert.deepEqual(resumed.budget, secondBatch.session.budget);
   assert.deepEqual(resumed.scan, secondBatch.session.scan);
   assert.throws(
-    () =>
-      resumeConditionalRecoverySession({
-        persisted: {
-          ...persisted,
-          budget: {
-            ...resumed.budget,
-            workUnits: resumed.budget.workUnits - 1,
-          },
-        },
-        catalogue,
-        walletScope: catalogue.walletScope,
-        cas: targetPorts.get(target)!.cas,
-      }),
-    /digest/i,
+    () => resumeConditionalRecoverySession(),
+    /unsupported|decode and rehydrate/i,
   );
-  const persistedScan = persisted.scan as Record<string, unknown>;
-  for (const [name, mutation, expected] of [
-    ["schema", { ...persisted, schemaVersion: 2 }, /schema/i],
-    ["predecessor", { ...persisted, predecessorDigest: null }, /predecessor/i],
-    ["transition", { ...persisted, transition: "future" }, /transition/i],
-    ["evidence", { ...persisted, evidenceDigest: null }, /evidence/i],
-    [
-      "scan total",
-      {
-        ...persisted,
-        scan: { ...persistedScan, nextCounter: 13 },
-      },
-      /scan state/i,
-    ],
-    [
-      "planned scan",
-      {
-        ...persisted,
-        scan: { ...persistedScan, plannedStart: 14, plannedCount: 1 },
-      },
-      /planned scan/i,
-    ],
-    [
-      "proof budget",
-      {
-        ...persisted,
-        scan: { ...persistedScan, totalReturnedProofs: 2 },
-      },
-      /proof budget/i,
-    ],
-  ] as const) {
-    assert.throws(
-      () =>
-        resumeConditionalRecoverySession({
-          persisted: mutation,
-          catalogue,
-          walletScope: catalogue.walletScope,
-          cas: targetPorts.get(target)!.cas,
-        }),
-      expected,
-      name,
-    );
-  }
-  const emptyScan = {
-    startCounter: 10,
-    nextCounter: 10,
-    plannedStart: null,
-    plannedCount: 0,
-    totalRequestedOutputs: 0,
-    totalReturnedProofs: 0,
-    consecutiveEmptyOutputs: 0,
-  };
-  const emptyBudget = {
-    ...(persisted.budget as Record<string, unknown>),
-    proofCount: 0,
-  };
-  const noProofCompletedScan = {
-    ...emptyScan,
-    nextCounter: 12,
-    totalRequestedOutputs: 2,
-    consecutiveEmptyOutputs: 2,
-  };
-  for (const [name, mutation, expected] of [
-    [
-      "completed catalogue cannot replace a later stage",
-      {
-        ...persisted,
-        transition: "completed-catalogue",
-      },
-      /completed catalogue sequence/i,
-    ],
-    [
-      "conditional keys exact sequence",
-      {
-        ...persisted,
-        sequence: 2,
-        transition: "conditional-keys",
-        budget: emptyBudget,
-        scan: emptyScan,
-      },
-      /conditional keys sequence/i,
-    ],
-    [
-      "NUT-13 requires a plan",
-      {
-        ...persisted,
-        sequence: 2,
-        transition: "nut13-plan",
-        budget: emptyBudget,
-        scan: emptyScan,
-      },
-      /NUT-13 plan planned scan/i,
-    ],
-    [
-      "NUT-09 request requires a plan",
-      {
-        ...persisted,
-        sequence: 3,
-        transition: "nut09-request",
-        budget: emptyBudget,
-        scan: emptyScan,
-      },
-      /NUT-09 request planned scan/i,
-    ],
-    [
-      "NUT-09 response requires completed scan work",
-      {
-        ...persisted,
-        sequence: 4,
-        transition: "nut09-response",
-        budget: emptyBudget,
-        scan: emptyScan,
-      },
-      /NUT-09 response scan/i,
-    ],
-    [
-      "proof verification rejects sequence one initial state",
-      {
-        ...persisted,
-        sequence: 1,
-        transition: "proof-verification",
-        budget: emptyBudget,
-        scan: emptyScan,
-      },
-      /proof verification sequence/i,
-    ],
-    [
-      "NUT-07 rejects sequence one initial state",
-      {
-        ...persisted,
-        sequence: 1,
-        transition: "nut07-classification",
-        budget: emptyBudget,
-        scan: emptyScan,
-      },
-      /NUT-07 classification sequence/i,
-    ],
-    [
-      "atomic admission rejects sequence one initial state",
-      {
-        ...persisted,
-        sequence: 1,
-        transition: "atomic-admission",
-        budget: emptyBudget,
-        scan: emptyScan,
-      },
-      /atomic admission sequence/i,
-    ],
-    [
-      "proof verification requires proofs",
-      {
-        ...persisted,
-        sequence: 5,
-        transition: "proof-verification",
-        budget: emptyBudget,
-        scan: noProofCompletedScan,
-      },
-      /proof verification proof state/i,
-    ],
-    [
-      "NUT-07 classification requires its canonical predecessor progress",
-      {
-        ...persisted,
-        sequence: 5,
-        transition: "nut07-classification",
-        budget: emptyBudget,
-        scan: noProofCompletedScan,
-      },
-      /NUT-07 classification sequence/i,
-    ],
-    [
-      "atomic admission requires proofs",
-      {
-        ...persisted,
-        sequence: 7,
-        transition: "atomic-admission",
-        budget: emptyBudget,
-        scan: noProofCompletedScan,
-      },
-      /atomic admission proof state/i,
-    ],
-  ] as const) {
-    assert.throws(
-      () =>
-        resumeConditionalRecoverySession({
-          persisted: mutation,
-          catalogue,
-          walletScope: catalogue.walletScope,
-          cas: targetPorts.get(target)!.cas,
-        }),
-      expected,
-      name,
-    );
-  }
+  const tampered = new Uint8Array(encoded);
+  tampered[tampered.length - 2] ^= 1;
+  assert.throws(
+    () => decodeConditionalRecoverySession(tampered, catalogue.walletScope),
+    /digest|JSON|canonical/i,
+  );
 });
 
 test("NUT-13/NUT-09 reject oversized plans, foreign outputs, and request replay", async () => {
@@ -1379,9 +1324,22 @@ test("NUT-13/NUT-09 reject oversized plans, foreign outputs, and request replay"
     walletScope: catalogue.walletScope,
     authority: await observation(catalogue),
   });
+  request.requestBytes[0] ^= 1;
+  const replayAuthority = await observation(catalogue);
+  await assert.rejects(
+    () =>
+      acceptConditionalRecoveryNut09Response({
+        request,
+        response: { outputs: [], signatures: [] },
+        responseBytes: 1,
+        authority: replayAuthority,
+      }),
+    /dispatched request bytes changed/i,
+  );
+  request.requestBytes[0] ^= 1;
   const foreign = restoreFixture("foreign-output", 121);
   const foreignAuthority = await observation(catalogue);
-  assert.throws(
+  await assert.rejects(
     () =>
       acceptConditionalRecoveryNut09Response({
         request,
@@ -1394,7 +1352,7 @@ test("NUT-13/NUT-09 reject oversized plans, foreign outputs, and request replay"
       }),
     /uniquely requested/i,
   );
-  const accepted = acceptConditionalRecoveryNut09Response({
+  const accepted = await acceptConditionalRecoveryNut09Response({
     request,
     response: {
       outputs: [fixture.output],
@@ -1404,7 +1362,7 @@ test("NUT-13/NUT-09 reject oversized plans, foreign outputs, and request replay"
     authority: await observation(catalogue),
   });
   assert.equal(accepted.proofCount, 1);
-  assert.throws(
+  await assert.rejects(
     () =>
       acceptConditionalRecoveryNut09Response({
         request,
@@ -1474,7 +1432,7 @@ for (const [field, mutateSignature] of [
       authority: await observation(catalogue),
     });
     const responseAuthority = await observation(catalogue);
-    assert.throws(
+    await assert.rejects(
       () =>
         acceptConditionalRecoveryNut09Response({
           request,

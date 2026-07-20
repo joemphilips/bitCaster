@@ -12,6 +12,10 @@ import {
   type SeedRecoveryDisposition,
 } from "./seedRecoveryCore.ts";
 import {
+  initialConditionalRecoveryScan,
+  validateConditionalRecoverySessionSuccessor,
+} from "./emergencyConditionalRecoverySession.ts";
+import {
   CONDITIONAL_RECOVERY_MAX_PAGE_BYTES,
   CONDITIONAL_RECOVERY_MAX_PROOFS,
   CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS,
@@ -22,6 +26,7 @@ import {
   type ConditionalRecoveryAdmissionPort,
   type ConditionalRecoveryAuthorityObservation,
   type ConditionalRecoveryNut07Classification,
+  type ConditionalRecoveryFreshExpiryEvidence,
   type ConditionalRecoveryNut07State,
   type ConditionalRecoveryNut09RequestAuthorization,
   type ConditionalRecoveryNut13DerivationPort,
@@ -34,6 +39,7 @@ import {
 } from "./emergencyConditionalRecoveryTypes.ts";
 import {
   advanceSession,
+  adoptExternallyCommittedConditionalRecoverySession,
   assertConditionalRecoveryBudgetDoesNotRegress,
   assertConditionalRecoveryWalletScopeMatches,
   boundedJsonBytes,
@@ -61,7 +67,6 @@ import {
   requireSafeInteger,
   requireV2KeysetId,
   requireValidatedTarget,
-  retireConditionalRecoverySession,
 } from "./emergencyConditionalRecoveryCatalogue.ts";
 
 const MAX_PROOF_FIELD_BYTES = 64 * 1_024;
@@ -109,6 +114,129 @@ const nut09Requests = new WeakMap<
 const consumedNut09Requests = new WeakSet<object>();
 const consumedVerifiedProofBatches = new WeakSet<object>();
 const consumedNut07Classifications = new WeakSet<object>();
+const freshExpiryEvidence = new WeakSet<object>();
+export function issueConditionalRecoveryFreshExpiryEvidence(input: {
+  catalogue: CompletedConditionalRecoveryCatalogue;
+  target: ValidatedConditionalRecoveryTarget;
+  authority: ConditionalRecoveryAuthorityObservation;
+}): ConditionalRecoveryFreshExpiryEvidence {
+  const catalogue = requireCompletedCatalogue(input.catalogue);
+  const target = requireValidatedTarget(input.target, catalogue);
+  const authority = consumeAuthority(input.authority, catalogue);
+  if (
+    target.metadata.finalExpiry === null ||
+    isConditionalRecoveryKeysetRecoverable(
+      target.metadata,
+      authority.effectiveTime,
+    )
+  ) {
+    throw new Error(
+      "conditional recovery expiry evidence does not prove a fresh expiry",
+    );
+  }
+  const catalogueOrdinal = catalogue.keysets.findIndex(
+    (candidate) => candidate.id === target.metadata.id,
+  );
+  if (
+    catalogueOrdinal !== target.session.catalogueOrdinal ||
+    target.session.activeKeysetId !== target.metadata.id ||
+    target.session.keysetMetadataDigest === null
+  ) {
+    throw new Error(
+      "conditional recovery expiry evidence does not match the active keyset",
+    );
+  }
+  const evidence = Object.freeze({
+    catalogueOrdinal,
+    keysetId: target.metadata.id,
+    conditionId: target.metadata.conditionId,
+    finalExpiry: target.metadata.finalExpiry,
+    observedAt: authority.effectiveTime,
+    keysetMetadataDigest: target.session.keysetMetadataDigest,
+    authorityDigest: digestValue([
+      "conditional-recovery-fresh-expiry-v1",
+      catalogueOrdinal,
+      target.metadata.id,
+      target.metadata.conditionId,
+      target.metadata.finalExpiry,
+      authority.effectiveTime,
+      target.session.keysetMetadataDigest,
+    ]),
+  });
+  freshExpiryEvidence.add(evidence);
+  return evidence;
+}
+export function skipExpiredConditionalRecoveryKeyset(input: {
+  session: ConditionalRecoverySession;
+  expiryAuthority: ConditionalRecoveryFreshExpiryEvidence;
+  sessionPort: ConditionalRecoverySessionCasPort;
+}): ConditionalRecoverySession {
+  const authority = input.expiryAuthority;
+  if (
+    !freshExpiryEvidence.has(authority) ||
+    input.session.activeKeysetId !== authority.keysetId ||
+    input.session.catalogueOrdinal !== authority.catalogueOrdinal ||
+    input.session.keysetMetadataDigest !== authority.keysetMetadataDigest ||
+    authority.observedAt < authority.finalExpiry ||
+    requireLiveSession(input.session, input.session.walletScope) !==
+      input.sessionPort
+  ) {
+    throw new Error(
+      "conditional recovery expired-keyset skip authority is invalid",
+    );
+  }
+  let reason:
+    | "expired-before-request"
+    | "expired-empty-response";
+  switch (input.session.transition) {
+    case "conditional-keys":
+    case "nut13-plan":
+      reason = "expired-before-request";
+      break;
+    case "nut09-response":
+      if (input.session.currentBatch?.returnedCount !== 0) {
+        throw new Error(
+          "conditional recovery proof-bearing response cannot be skipped",
+        );
+      }
+      reason = "expired-empty-response";
+      break;
+    case "nut09-request":
+      throw new Error(
+        "conditional recovery dispatched request must replay before expiry handling",
+      );
+    default:
+      throw new Error(
+        "conditional recovery expiry skip is invalid from this transition",
+      );
+  }
+  const successor = advanceSession(
+    input.session,
+    input.sessionPort,
+    "keyset-skipped",
+    authority.authorityDigest,
+    input.session.budget,
+    initialConditionalRecoveryScan(input.session.scan.nextCounter),
+    {
+      completedKeysetProofCount: input.session.budget.proofCount,
+      activeKeysetId: null,
+      keysetMetadataDigest: null,
+      currentBatch: null,
+      keysetTerminalEvidence: null,
+      skipEvidence: {
+        catalogueOrdinal: authority.catalogueOrdinal,
+        keysetId: authority.keysetId,
+        reason,
+        authorityDigest: authority.authorityDigest,
+      },
+      terminalEvidence: null,
+    },
+  );
+  freshExpiryEvidence.delete(authority);
+  return successor;
+}
+
+
 
 export async function createSeedDerivedConditionalRecoveryPlan(input: {
   catalogue: CompletedConditionalRecoveryCatalogue;
@@ -276,6 +404,15 @@ export async function createSeedDerivedConditionalRecoveryPlan(input: {
       plannedStart: startCounter,
       plannedCount: count,
     },
+    {
+      currentBatch: {
+        planDigest: digest,
+        requestDigest: null,
+        batchDigest: null,
+        stagedBatchId: null,
+        returnedCount: null,
+      },
+    },
   );
   const plan = Object.freeze({
     walletScope,
@@ -339,11 +476,12 @@ export function authorizeConditionalRecoveryNut09Request(input: {
       Object.freeze({ id, amount, B_ }),
     ),
   );
+  const requestBytes = encoder.encode(JSON.stringify({ outputs }));
   const requestDigest = digestValue([
-    "conditional-recovery-nut09-request-v1",
+    "conditional-recovery-nut09-request-v2",
     walletScope.mintUrl,
     walletScope.unit,
-    outputs,
+    bytesToHex(requestBytes),
   ]);
   const budget = chargeConditionalRecoveryBudget(input.plan.session.budget, {
     serializedBytes: boundedJsonBytes(
@@ -360,11 +498,18 @@ export function authorizeConditionalRecoveryNut09Request(input: {
     digestValue([input.plan.digest, requestDigest, budget]),
     budget,
     input.plan.session.scan,
+    {
+      currentBatch: {
+        ...input.plan.session.currentBatch!,
+        requestDigest,
+      },
+    },
   );
   const request = Object.freeze({
     walletScope,
     keysetId: target.metadata.id,
     outputs,
+    requestBytes,
     requestDigest,
     planDigest: input.plan.digest,
     session,
@@ -378,12 +523,13 @@ export function authorizeConditionalRecoveryNut09Request(input: {
   return request;
 }
 
-export function acceptConditionalRecoveryNut09Response(input: {
+export async function acceptConditionalRecoveryNut09Response(input: {
   request: ConditionalRecoveryNut09RequestAuthorization;
   response: unknown;
+  responseBody: Uint8Array;
   responseBytes: number;
   authority: ConditionalRecoveryAuthorityObservation;
-}): ChargedConditionalRecoveryProofBatch {
+}): Promise<ChargedConditionalRecoveryProofBatch> {
   if (!isObject(input.request)) {
     throw new Error("conditional recovery NUT-09 request evidence is invalid");
   }
@@ -394,6 +540,41 @@ export function acceptConditionalRecoveryNut09Response(input: {
     );
   }
   const { catalogue, target, plan, sessionPort } = requestState;
+  if (
+    digestValue([
+      "conditional-recovery-nut09-request-v2",
+      input.request.walletScope.mintUrl,
+      input.request.walletScope.unit,
+      bytesToHex(input.request.requestBytes),
+    ]) !== input.request.requestDigest
+  ) {
+    throw new Error(
+      "conditional recovery NUT-09 dispatched request bytes changed before replay",
+    );
+  }
+  if (
+    !(input.responseBody instanceof Uint8Array) ||
+    input.responseBody.byteLength > CONDITIONAL_RECOVERY_MAX_PAGE_BYTES
+  ) {
+    throw new Error(
+      "conditional recovery NUT-09 response body exceeded its byte bound",
+    );
+  }
+  let parsedResponseBody: unknown;
+  try {
+    parsedResponseBody = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(input.responseBody),
+    ) as unknown;
+  } catch {
+    throw new Error(
+      "conditional recovery NUT-09 response body is not exact valid JSON",
+    );
+  }
+  if (digestValue(parsedResponseBody) !== digestValue(input.response)) {
+    throw new Error(
+      "conditional recovery NUT-09 response body does not match parsed response",
+    );
+  }
   const planState = seedPlans.get(plan);
   if (planState === undefined || planState.target !== target) {
     throw new Error("conditional recovery NUT-13 plan evidence is invalid");
@@ -403,16 +584,6 @@ export function acceptConditionalRecoveryNut09Response(input: {
     authority.walletScope,
     input.request.walletScope,
   );
-  if (
-    !isConditionalRecoveryKeysetRecoverable(
-      target.metadata,
-      authority.effectiveTime,
-    )
-  ) {
-    throw new Error(
-      "conditional recovery target expired before NUT-09 response acceptance",
-    );
-  }
   const response = requireObject(
     input.response,
     "conditional recovery NUT-09 response",
@@ -628,18 +799,81 @@ export function acceptConditionalRecoveryNut09Response(input: {
     plannedStart: null,
     plannedCount: 0,
   });
-  const session = advanceSession(
-    input.request.session,
-    sessionPort,
-    "nut09-response",
-    digestValue([
-      responseDigest,
-      budget,
-      digestCanonicalProofs(snapshot.canonical),
-    ]),
+  const stagedBatchId =
+    snapshot.canonical.length === 0
+      ? null
+      : digestValue([
+          "conditional-recovery-staged-batch-v1",
+          input.request.requestDigest,
+          responseDigest,
+          digestCanonicalProofs(snapshot.canonical),
+        ]);
+  const currentBatch = {
+    ...input.request.session.currentBatch!,
+    batchDigest: responseDigest,
+    stagedBatchId,
+    returnedCount: snapshot.canonical.length,
+  };
+  const evidenceDigest = digestValue([
+    responseDigest,
     budget,
-    scan,
-  );
+    digestCanonicalProofs(snapshot.canonical),
+  ]);
+  let session: ConditionalRecoverySession;
+  if (stagedBatchId === null) {
+    session = advanceSession(
+      input.request.session,
+      sessionPort,
+      "nut09-response",
+      evidenceDigest,
+      budget,
+      scan,
+      { currentBatch },
+    );
+  } else {
+    session = freezeSession({
+      walletScope: input.request.session.walletScope,
+      sequence: checkedSafeAdd(
+        input.request.session.sequence,
+        1,
+        "session sequence",
+      ),
+      predecessorDigest: input.request.session.digest,
+      transition: "nut09-response",
+      evidenceDigest,
+      budget,
+      completedKeysetProofCount:
+        input.request.session.completedKeysetProofCount,
+      catalogueOrdinal: input.request.session.catalogueOrdinal,
+      activeKeysetId: input.request.session.activeKeysetId,
+      keysetMetadataDigest: input.request.session.keysetMetadataDigest,
+      scan,
+      currentBatch,
+      keysetTerminalEvidence: null,
+      skipEvidence: null,
+      terminalEvidence: null,
+    });
+    validateConditionalRecoverySessionSuccessor(input.request.session, session);
+    if (
+      (await sessionPort.compareAndSwapStageNut09Response({
+        expectedSessionDigest: input.request.session.digest,
+        successor: session,
+        stagedBatchId,
+        requestBytes: new Uint8Array(input.request.requestBytes),
+        responseBytes: new Uint8Array(input.responseBody),
+        rows: snapshot.canonical,
+      })) !== true
+    ) {
+      throw new Error(
+        "conditional recovery NUT-09 response atomic staging CAS failed",
+      );
+    }
+    adoptExternallyCommittedConditionalRecoverySession(
+      input.request.session,
+      session,
+      sessionPort,
+    );
+  }
   const proofIdentities = Object.freeze(
     snapshot.ys.map((y) =>
       digestValue([
@@ -662,6 +896,7 @@ export function acceptConditionalRecoveryNut09Response(input: {
     responseDigest,
     planDigest: input.request.planDigest,
     proofIdentities,
+    stagedBatchId,
     proofs: admittedProofs,
     session,
     budget,
@@ -686,6 +921,7 @@ export function verifyConditionalRecoveryProofs(input: {
   walletScope: ConditionalRecoveryWalletScope;
   proofBatch: ChargedConditionalRecoveryProofBatch;
   authority: ConditionalRecoveryAuthorityObservation;
+  expiryEvidence?: ConditionalRecoveryFreshExpiryEvidence;
 }): VerifiedConditionalRecoveryProofBatch {
   const catalogue = requireCompletedCatalogue(input.catalogue);
   const target = requireValidatedTarget(input.target, catalogue);
@@ -706,9 +942,22 @@ export function verifyConditionalRecoveryProofs(input: {
       authority.effectiveTime,
     )
   ) {
-    throw new Error(
-      "conditional recovery target expired before proof verification",
-    );
+    const expiryEvidence = input.expiryEvidence;
+    if (
+      expiryEvidence === undefined ||
+      !freshExpiryEvidence.has(expiryEvidence) ||
+      expiryEvidence.keysetId !== target.metadata.id ||
+      expiryEvidence.catalogueOrdinal !== target.session.catalogueOrdinal ||
+      expiryEvidence.conditionId !== target.metadata.conditionId ||
+      expiryEvidence.finalExpiry !== target.metadata.finalExpiry ||
+      expiryEvidence.observedAt !== authority.effectiveTime ||
+      expiryEvidence.keysetMetadataDigest !==
+        target.session.keysetMetadataDigest
+    ) {
+      throw new Error(
+        "conditional recovery target expired without fresh retention authority",
+      );
+    }
   }
   const { batch, state } = requireChargedProofBatch(
     input.proofBatch,
@@ -753,6 +1002,7 @@ export function verifyConditionalRecoveryProofs(input: {
     digestValue([batch.proofBodyDigest, budget]),
     budget,
     state.session.scan,
+    { currentBatch: state.session.currentBatch },
   );
   state.session = session;
   const verified = Object.freeze({
@@ -873,6 +1123,7 @@ export function classifyConditionalRecoveryNut07(input: {
     digestValue([batch.proofYDigest, results, budget]),
     budget,
     state.session.scan,
+    { currentBatch: state.session.currentBatch },
   );
   state.session = session;
   const classification = Object.freeze({
@@ -1027,8 +1278,17 @@ export function authorizeConditionalRecoveryAdmission(input: {
     transition: "atomic-admission",
     evidenceDigest: authorizationDigest,
     budget: currentSession.budget,
+    completedKeysetProofCount: currentSession.completedKeysetProofCount,
+    catalogueOrdinal: currentSession.catalogueOrdinal,
+    activeKeysetId: currentSession.activeKeysetId,
+    keysetMetadataDigest: currentSession.keysetMetadataDigest,
     scan: currentSession.scan,
+    currentBatch: currentSession.currentBatch,
+    keysetTerminalEvidence: null,
+    skipEvidence: null,
+    terminalEvidence: null,
   });
+  validateConditionalRecoverySessionSuccessor(currentSession, successorSession);
   if (
     input.admissionPort.compareAndSwapInsertUnique({
       walletScope,
@@ -1042,17 +1302,141 @@ export function authorizeConditionalRecoveryAdmission(input: {
       "conditional recovery atomic admission CAS or global proof uniqueness failed",
     );
   }
-  retireConditionalRecoverySession(currentSession);
+  adoptExternallyCommittedConditionalRecoverySession(
+    currentSession,
+    successorSession,
+    verifiedState.sessionPort,
+  );
+
   consumedVerifiedProofBatches.add(input.verifiedProofs);
   consumedNut07Classifications.add(input.nut07);
   return Object.freeze({
     walletScope,
     keysetId: target.metadata.id,
     authorizedAt: authority.effectiveTime,
+    session: successorSession,
     selectableProofs: Object.freeze(selectableProofs),
     pendingProofs: Object.freeze(pendingProofs),
     spentProofs: Object.freeze(spentProofs),
   });
+}
+
+export async function retainExpiredConditionalRecoveryKeyset(input: {
+  catalogue: CompletedConditionalRecoveryCatalogue;
+  target: ValidatedConditionalRecoveryTarget;
+  verifiedProofs: VerifiedConditionalRecoveryProofBatch;
+  nut07: ConditionalRecoveryNut07Classification;
+  walletScope: ConditionalRecoveryWalletScope;
+  proofs: readonly ProofLike[];
+  expiryAuthority: ConditionalRecoveryFreshExpiryEvidence;
+  sessionPort: ConditionalRecoverySessionCasPort;
+}): Promise<ConditionalRecoverySession> {
+  const catalogue = requireCompletedCatalogue(input.catalogue);
+  const target = requireValidatedTarget(input.target, catalogue);
+  const walletScope = decodeConditionalRecoveryWalletScope(input.walletScope);
+  assertConditionalRecoveryWalletScopeMatches(target.walletScope, walletScope);
+  const verifiedState = requireVerifiedProofBatch(
+    input.verifiedProofs,
+    catalogue,
+    target,
+  );
+  const classifiedState = requireNut07Classification(
+    input.nut07,
+    catalogue,
+    target,
+  );
+  if (
+    verifiedState !== classifiedState ||
+    input.sessionPort !== verifiedState.sessionPort ||
+    !freshExpiryEvidence.has(input.expiryAuthority)
+  ) {
+    throw new Error(
+      "conditional recovery expired-keyset retention authority is invalid",
+    );
+  }
+  const authority = input.expiryAuthority;
+  if (
+    authority.catalogueOrdinal !== target.session.catalogueOrdinal ||
+    authority.keysetId !== target.metadata.id ||
+    authority.conditionId !== target.metadata.conditionId ||
+    authority.finalExpiry !== target.metadata.finalExpiry ||
+    authority.keysetMetadataDigest !== target.session.keysetMetadataDigest ||
+    authority.observedAt < authority.finalExpiry ||
+    input.verifiedProofs.verifiedAt !== authority.observedAt
+  ) {
+    throw new Error(
+      "conditional recovery expired-keyset retention authority mismatched the session",
+    );
+  }
+  assertExactProofBatchUnchanged(
+    {
+      proofBodyDigest: input.verifiedProofs.proofBodyDigest,
+      proofYDigest: input.verifiedProofs.proofYDigest,
+    },
+    verifiedState,
+    input.proofs,
+  );
+  const currentSession = verifiedState.session;
+  const stagedBatchId = currentSession.currentBatch?.stagedBatchId;
+  if (stagedBatchId === null || stagedBatchId === undefined) {
+    throw new Error(
+      "conditional recovery expired-keyset retention has no staged batch",
+    );
+  }
+  const rows = Object.freeze(
+    input.nut07.results.map((result) =>
+      Object.freeze({
+        proofIdentity: input.verifiedProofs.proofIdentities[result.proofIndex]!,
+        state: result.state,
+        proof: verifiedState.canonical[result.proofIndex]!,
+      }),
+    ),
+  );
+  const successor = freezeSession({
+    walletScope,
+    sequence: checkedSafeAdd(currentSession.sequence, 1, "session sequence"),
+    predecessorDigest: currentSession.digest,
+    transition: "expired-keyset-retention",
+    evidenceDigest: digestValue([
+      "conditional-recovery-expired-retention-v1",
+      authority,
+      stagedBatchId,
+      rows.map(({ proofIdentity, state }) => ({ proofIdentity, state })),
+    ]),
+    budget: currentSession.budget,
+    completedKeysetProofCount: currentSession.completedKeysetProofCount,
+    catalogueOrdinal: currentSession.catalogueOrdinal,
+    activeKeysetId: currentSession.activeKeysetId,
+    keysetMetadataDigest: currentSession.keysetMetadataDigest,
+    scan: currentSession.scan,
+    currentBatch: currentSession.currentBatch,
+    keysetTerminalEvidence: null,
+    skipEvidence: null,
+    terminalEvidence: null,
+  });
+  validateConditionalRecoverySessionSuccessor(currentSession, successor);
+  if (
+    (await input.sessionPort.compareAndSwapRetainExpiredKeyset({
+      expectedSessionDigest: currentSession.digest,
+      successor,
+      stagedBatchId,
+      expiryAuthority: authority,
+      rows,
+    })) !== true
+  ) {
+    throw new Error(
+      "conditional recovery expired-keyset retention CAS failed",
+    );
+  }
+  adoptExternallyCommittedConditionalRecoverySession(
+    currentSession,
+    successor,
+    verifiedState.sessionPort,
+  );
+  consumedVerifiedProofBatches.add(input.verifiedProofs);
+  consumedNut07Classifications.add(input.nut07);
+  freshExpiryEvidence.delete(authority);
+  return successor;
 }
 
 function canonicalizeProofBatch(

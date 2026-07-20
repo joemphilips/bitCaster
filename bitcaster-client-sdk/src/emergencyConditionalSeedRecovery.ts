@@ -16,17 +16,26 @@ export {
   CONDITIONAL_RECOVERY_MAX_WORK_UNITS,
   CONDITIONAL_RECOVERY_WALLET_SCOPE_SCHEMA_VERSION,
 } from "./emergencyConditionalRecoveryTypes.ts";
-export { CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION } from "./emergencyConditionalRecoverySession.ts";
+export {
+  CONDITIONAL_RECOVERY_MAX_SESSION_BYTES,
+  CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION,
+  decodeConditionalRecoverySession,
+  encodeConditionalRecoverySession,
+  validateConditionalRecoverySessionSuccessor,
+} from "./emergencyConditionalRecoverySession.ts";
 
 export {
   advanceConditionalRecoveryHighWater,
   createConditionalCatalogueProgress,
+  completeConditionalRecoveryKeyset,
+  completeConditionalRecoverySession,
   createConditionalRecoverySession,
   createConditionalRecoveryWalletScope,
   decodeConditionalRecoveryCapability,
   decodeConditionalRecoveryWalletScope,
   encodeConditionalCatalogueCheckpoint,
   finalizeConditionalRecoveryCatalogue,
+  failConditionalRecoverySessionClosed,
   isConditionalRecoveryKeysetRecoverable,
   issueConditionalRecoveryAuthorityObservation,
   resumeConditionalCatalogueProgress,
@@ -34,6 +43,7 @@ export {
   snapshotConditionalCatalogueCheckpoint,
   validateConditionalCataloguePage,
   validateConditionalRecoveryKeys,
+  rehydrateConditionalRecoverySessionCapabilities,
 } from "./emergencyConditionalRecoveryCatalogue.ts";
 
 export {
@@ -42,6 +52,9 @@ export {
   authorizeConditionalRecoveryNut09Request,
   classifyConditionalRecoveryNut07,
   createSeedDerivedConditionalRecoveryPlan,
+  issueConditionalRecoveryFreshExpiryEvidence,
+  retainExpiredConditionalRecoveryKeyset,
+  skipExpiredConditionalRecoveryKeyset,
   verifyConditionalRecoveryProofs,
 } from "./emergencyConditionalRecoveryProofAdmission.ts";
 
@@ -58,6 +71,7 @@ export type {
   ConditionalRecoveryAuthorityPort,
   ConditionalRecoveryBudget,
   ConditionalRecoveryCapability,
+  ConditionalRecoveryFreshExpiryEvidence,
   ConditionalRecoveryKeysetMetadata,
   ConditionalRecoveryNut07Classification,
   ConditionalRecoveryNut07Result,
@@ -66,6 +80,7 @@ export type {
   ConditionalRecoveryNut13DerivationPort,
   ConditionalRecoverySession,
   ConditionalRecoverySessionCasPort,
+  ConditionalRecoveryStagedProofRow,
   ConditionalRecoveryWalletScope,
   SeedDerivedConditionalRecoveryOutput,
   SeedDerivedConditionalRecoveryPlan,
@@ -74,7 +89,12 @@ export type {
   VerifiedConditionalRecoveryProofBatch,
 } from "./emergencyConditionalRecoveryTypes.ts";
 export type {
+  ConditionalRecoveryBatchBinding,
+  ConditionalRecoveryKeysetTerminalEvidence,
   ConditionalRecoverySessionScan,
   ConditionalRecoverySessionTransition,
+  ConditionalRecoverySkipEvidence,
+  ConditionalRecoverySkipReason,
+  ConditionalRecoveryTerminalEvidence,
 } from "./emergencyConditionalRecoverySession.ts";
 export type { EncodedConditionalCatalogueCheckpoint } from "./emergencyConditionalRecoveryCheckpointCodec.ts";
