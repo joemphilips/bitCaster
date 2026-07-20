@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION,
+  CONDITIONAL_RECOVERY_MAX_NUT07_AUDIT_BYTES,
   createConditionalRecoveryWalletScope,
   decodeConditionalRecoverySession,
   encodeConditionalRecoverySession,
@@ -61,18 +62,29 @@ function session(
       workUnits: 0,
       proofCount: 0,
     },
+    nut07AuditBytes: 0,
     catalogueDigest: HEX_A,
     completedKeysetProofCount: 0,
     catalogueOrdinal: transition === "completed-catalogue" ? null : 0,
     activeKeysetId:
       transition === "completed-catalogue" ||
+      transition === "keyset-completed" ||
       transition === "keyset-skipped" ||
       transition === "recovery-completed" ||
       transition === "recovery-failed-closed"
         ? null
         : KEYSET_A,
+    keysDigest:
+      transition === "completed-catalogue" ||
+      transition === "keyset-completed" ||
+      transition === "keyset-skipped" ||
+      transition === "recovery-completed" ||
+      transition === "recovery-failed-closed"
+        ? null
+        : HEX_B,
     keysetMetadataDigest:
       transition === "completed-catalogue" ||
+      transition === "keyset-completed" ||
       transition === "keyset-skipped" ||
       transition === "recovery-completed" ||
       transition === "recovery-failed-closed"
@@ -496,3 +508,108 @@ test("skip and terminal evidence are exact and terminal states have no successor
   );
 });
 
+
+test("keys bytes stay immutable and gap completion requires exact equality", () => {
+  const selected = successor(
+    session("completed-catalogue"),
+    "conditional-keys",
+    {
+      catalogueOrdinal: 0,
+      activeKeysetId: KEYSET_A,
+      keysetMetadataDigest: HEX_A,
+      keysDigest: HEX_B,
+      evidenceDigest: HEX_B,
+    },
+  );
+  validateConditionalRecoverySessionSuccessor(
+    session("completed-catalogue"),
+    selected,
+  );
+  assert.throws(
+    () =>
+      validateConditionalRecoverySessionSuccessor(
+        selected,
+        successor(selected, "nut13-plan", {
+          keysDigest: HEX_A,
+          currentBatch: {
+            planDigest: HEX_A,
+            planStart: 0,
+            planCount: 1,
+            requestDigest: null,
+            batchDigest: null,
+            stagedBatchId: null,
+            returnedCount: null,
+          },
+          scan: scan({ plannedStart: 0, plannedCount: 1 }),
+        }),
+      ),
+    /immutable|keys/i,
+  );
+
+  const emptyResponse = session("nut09-response", {
+    scan: scan({
+      nextCounter: 13,
+      totalRequestedOutputs: 3,
+      consecutiveEmptyOutputs: 3,
+    }),
+    currentBatch: {
+      planDigest: HEX_A,
+      planStart: 0,
+      planCount: 1,
+      requestDigest: HEX_B,
+      batchDigest: HEX_A,
+      stagedBatchId: null,
+      returnedCount: 0,
+    },
+  });
+  assert.throws(
+    () =>
+      validateConditionalRecoverySessionSuccessor(
+        emptyResponse,
+        successor(emptyResponse, "keyset-completed", {
+          activeKeysetId: null,
+          keysetMetadataDigest: null,
+          currentBatch: null,
+          scan: scan({ startCounter: 13, nextCounter: 13 }),
+          keysDigest: null,
+          completedKeysetProofCount: 0,
+          keysetTerminalEvidence: {
+            kind: "gap-limit",
+            keysetId: KEYSET_A,
+            gapLimit: 2,
+            digest: HEX_A,
+          },
+        }),
+      ),
+    /gap-limit/i,
+  );
+});
+
+test("reaching an SDK budget maximum permits only failed-closed successor", () => {
+  const exhausted = session("keyset-skipped", {
+    nut07AuditBytes: CONDITIONAL_RECOVERY_MAX_NUT07_AUDIT_BYTES,
+  });
+  const failed = successor(exhausted, "recovery-failed-closed", {
+    activeKeysetId: null,
+    keysetMetadataDigest: null,
+    keysDigest: null,
+    currentBatch: null,
+    terminalEvidence: { kind: "failed-closed", reasonDigest: HEX_A },
+  });
+  validateConditionalRecoverySessionSuccessor(exhausted, failed);
+  assert.throws(
+    () =>
+      validateConditionalRecoverySessionSuccessor(
+        exhausted,
+        successor(exhausted, "recovery-completed", {
+          terminalEvidence: {
+            kind: "completed",
+            catalogueLength: 1,
+            digest: HEX_A,
+          },
+          skipEvidence: null,
+        }),
+      ),
+    /edge/i,
+  );
+});

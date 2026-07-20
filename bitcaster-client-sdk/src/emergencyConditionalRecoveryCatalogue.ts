@@ -46,7 +46,7 @@ import {
   CONDITIONAL_RECOVERY_MAX_PAGES,
   CONDITIONAL_RECOVERY_MAX_PAGE_BYTES,
   CONDITIONAL_RECOVERY_MAX_PAGE_SIZE,
-  CONDITIONAL_RECOVERY_MAX_PROOFS,
+  CONDITIONAL_RECOVERY_MAX_DERIVATION_BATCH_SIZE,
   CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS,
   CONDITIONAL_RECOVERY_MAX_UNIT_BYTES,
   CONDITIONAL_RECOVERY_MAX_WORK_UNITS,
@@ -60,6 +60,7 @@ import {
   type ConditionalRecoveryBudget,
   type ConditionalRecoveryCapability,
   type ConditionalRecoveryKeysetMetadata,
+  type ConditionalRecoveryKeysTransportPort,
   type ConditionalRecoverySession,
   type ConditionalRecoverySessionCasPort,
   type ConditionalRecoveryFreshIneligibleSkip,
@@ -76,6 +77,21 @@ const CANONICAL_UINT = /^(0|[1-9][0-9]*)$/;
 const OUTCOME_ID_TAG = utf8ToBytes("Cashu_outcome_collection_id");
 const OUTCOME_ID_TAG_HASH = sha256(OUTCOME_ID_TAG);
 const encoder = new TextEncoder();
+function digestConditionalKeysBytes(
+  walletScope: ConditionalRecoveryWalletScope,
+  keysetId: string,
+  catalogueOrdinal: number,
+  keysBytes: Uint8Array,
+): string {
+  return digestValue([
+    "conditional-recovery-keys-entity-v1",
+    walletScope.mintUrl,
+    walletScope.unit,
+    keysetId,
+    catalogueOrdinal,
+    bytesToHex(keysBytes),
+  ]);
+}
 
 interface LiveProgressState {
   readonly keysets: ReadonlyMap<string, ConditionalRecoveryKeysetMetadata>;
@@ -98,6 +114,7 @@ const freshIneligibleSkips = new WeakMap<
   {
     readonly sessionPort: ConditionalRecoverySessionCasPort;
     readonly metadataDigest: string;
+    readonly keysBytes: Uint8Array;
     consumed: boolean;
   }
 >();
@@ -692,16 +709,16 @@ export function computeRootOutcomeCollectionId(
   );
   return bytesToHex(hashToCurve(tagged).toBytes(true).slice(1));
 }
-
-export function validateConditionalRecoveryKeys(input: {
+export async function validateConditionalRecoveryKeys(input: {
   catalogue: CompletedConditionalRecoveryCatalogue;
   walletScope: ConditionalRecoveryWalletScope;
   keysetId: string;
-  response: unknown;
-  responseBytes: number;
+  transport: ConditionalRecoveryKeysTransportPort;
   authority: ConditionalRecoveryAuthorityObservation;
   session: ConditionalRecoverySession;
-}): ValidatedConditionalRecoveryTarget | ConditionalRecoveryFreshIneligibleSkip {
+}): Promise<
+  ValidatedConditionalRecoveryTarget | ConditionalRecoveryFreshIneligibleSkip
+> {
   const catalogue = requireCompletedCatalogue(input.catalogue);
   const authority = consumeAuthority(input.authority, catalogue);
   const walletScope = decodeConditionalRecoveryWalletScope(input.walletScope);
@@ -726,8 +743,43 @@ export function validateConditionalRecoveryKeys(input: {
     );
   }
   const sessionPort = requireLiveSession(input.session, walletScope);
+  const remaining = checkedSafeAdd(
+    CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES,
+    -input.session.budget.transportBytes,
+    "remaining conditional keys transport budget",
+  );
+  const maxEntityBytes = Math.min(
+    CONDITIONAL_RECOVERY_MAX_PAGE_BYTES,
+    remaining,
+  );
+  const fetchedBytes = await input.transport.fetchConditionalKeysEntity({
+    walletScope,
+    endpoint: new URL(
+      `/v1/keys/${encodeURIComponent(keysetId)}`,
+      walletScope.mintUrl,
+    ).toString(),
+    keysetId,
+    maxEntityBytes,
+  });
+  if (
+    !(fetchedBytes instanceof Uint8Array) ||
+    fetchedBytes.byteLength > maxEntityBytes
+  ) {
+    throw new Error(
+      "conditional recovery keys transport exceeded its exact entity bound",
+    );
+  }
+  const keysBytes = new Uint8Array(fetchedBytes);
+  let parsedResponse: unknown;
+  try {
+    parsedResponse = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(keysBytes),
+    );
+  } catch {
+    throw new Error("conditional recovery keys entity is not exact valid JSON");
+  }
   const response = requireObject(
-    input.response,
+    parsedResponse,
     "conditional recovery keys response",
   );
   requireExactKeys(response, ["keysets"], "conditional recovery keys response");
@@ -773,7 +825,7 @@ export function validateConditionalRecoveryKeys(input: {
   }
   const keys = decodeAmountKeys(raw.keys);
   const budget = chargeConditionalRecoveryBudget(input.session.budget, {
-    transportBytes: requireBoundedPageBytes(input.responseBytes),
+    transportBytes: requireBoundedKeysBytes(keysBytes.byteLength),
     serializedBytes: boundedJsonBytes(
       response,
       CONDITIONAL_RECOVERY_MAX_PAGE_BYTES,
@@ -845,6 +897,7 @@ export function validateConditionalRecoveryKeys(input: {
     freshIneligibleSkips.set(skip, {
       sessionPort,
       metadataDigest: metadataFingerprint(metadata),
+      keysBytes: new Uint8Array(keysBytes),
       consumed: false,
     });
     return skip;
@@ -852,22 +905,51 @@ export function validateConditionalRecoveryKeys(input: {
   const catalogueOrdinal = catalogue.keysets.findIndex(
     (candidate) => candidate.id === metadata.id,
   );
-  const session = advanceSession(
-    input.session,
-    sessionPort,
-    "conditional-keys",
-    digestValue([metadata.id, keys, authority.effectiveTime, budget]),
+  const keysDigest = digestConditionalKeysBytes(
+    walletScope,
+    metadata.id,
+    catalogueOrdinal,
+    keysBytes,
+  );
+  const session = freezeSession({
+    walletScope: input.session.walletScope,
+    sequence: checkedSafeAdd(input.session.sequence, 1, "session sequence"),
+    predecessorDigest: input.session.digest,
+    transition: "conditional-keys",
+    evidenceDigest: keysDigest,
     budget,
-    input.session.scan,
-    {
+    nut07AuditBytes: input.session.nut07AuditBytes,
+    catalogueDigest: input.session.catalogueDigest,
+    completedKeysetProofCount: input.session.completedKeysetProofCount,
+    catalogueOrdinal,
+    activeKeysetId: metadata.id,
+    keysetMetadataDigest: metadataFingerprint(metadata),
+    keysDigest,
+    scan: input.session.scan,
+    currentBatch: null,
+    keysetTerminalEvidence: null,
+    skipEvidence: null,
+    terminalEvidence: null,
+  });
+  validateConditionalRecoverySessionSuccessor(input.session, session);
+  if (
+    (await sessionPort.compareAndSwapStageConditionalKeys({
+      walletScope,
+      expectedDigest: input.session.digest,
+      successor: session,
+      keysetId: metadata.id,
       catalogueOrdinal,
-      activeKeysetId: metadata.id,
-      keysetMetadataDigest: metadataFingerprint(metadata),
-      currentBatch: null,
-      keysetTerminalEvidence: null,
-      skipEvidence: null,
-      terminalEvidence: null,
-    },
+      keysBytes: new Uint8Array(keysBytes),
+    })) !== true
+  ) {
+    throw new Error(
+      "conditional recovery keys atomic staging CAS failed",
+    );
+  }
+  adoptExternallyCommittedConditionalRecoverySession(
+    input.session,
+    session,
+    sessionPort,
   );
   const target = Object.freeze({
     walletScope,
@@ -883,9 +965,9 @@ export function validateConditionalRecoveryKeys(input: {
   return target;
 }
 
-export function skipFreshlyIneligibleConditionalRecoveryKeyset(
+export async function skipFreshlyIneligibleConditionalRecoveryKeyset(
   skip: ConditionalRecoveryFreshIneligibleSkip,
-): ConditionalRecoverySession {
+): Promise<ConditionalRecoverySession> {
   const state = freshIneligibleSkips.get(skip);
   if (state === undefined || state.consumed) {
     throw new Error(
@@ -905,6 +987,12 @@ export function skipFreshlyIneligibleConditionalRecoveryKeyset(
       "conditional recovery freshly-ineligible skip ordinal is invalid",
     );
   }
+  const keysDigest = digestConditionalKeysBytes(
+    skip.walletScope,
+    skip.keysetId,
+    skip.catalogueOrdinal,
+    state.keysBytes,
+  );
   const skipDigest = digestValue([
     "conditional-recovery-freshly-ineligible-skip-v1",
     skip.authorityDigest,
@@ -913,35 +1001,59 @@ export function skipFreshlyIneligibleConditionalRecoveryKeyset(
     skip.keysetId,
     skip.budget,
   ]);
-  state.consumed = true;
-  return advanceSession(
-    skip.session,
-    state.sessionPort,
-    "keyset-skipped",
-    skipDigest,
-    skip.budget,
-    initialConditionalRecoveryScan(skip.session.scan.nextCounter),
-    {
+  const successor = freezeSession({
+    walletScope: skip.session.walletScope,
+    sequence: checkedSafeAdd(skip.session.sequence, 1, "session sequence"),
+    predecessorDigest: skip.session.digest,
+    transition: "keyset-skipped",
+    evidenceDigest: keysDigest,
+    budget: skip.budget,
+    nut07AuditBytes: skip.session.nut07AuditBytes,
+    catalogueDigest: skip.session.catalogueDigest,
+    completedKeysetProofCount: skip.session.budget.proofCount,
+    catalogueOrdinal: skip.catalogueOrdinal,
+    activeKeysetId: null,
+    keysetMetadataDigest: null,
+    keysDigest: null,
+    scan: initialConditionalRecoveryScan(skip.session.scan.nextCounter),
+    currentBatch: null,
+    keysetTerminalEvidence: null,
+    skipEvidence: {
       catalogueOrdinal: skip.catalogueOrdinal,
-      activeKeysetId: null,
-      keysetMetadataDigest: null,
-      currentBatch: null,
-      keysetTerminalEvidence: null,
-      skipEvidence: {
-        catalogueOrdinal: skip.catalogueOrdinal,
-        keysetId: skip.keysetId,
-        reason: "freshly-proven-ineligible",
-        authorityDigest: skipDigest,
-      },
-      terminalEvidence: null,
+      keysetId: skip.keysetId,
+      reason: "freshly-proven-ineligible",
+      authorityDigest: skipDigest,
     },
+    terminalEvidence: null,
+  });
+  validateConditionalRecoverySessionSuccessor(skip.session, successor);
+  state.consumed = true;
+  if (
+    (await state.sessionPort.compareAndSwapStageConditionalKeys({
+      walletScope: skip.walletScope,
+      expectedDigest: skip.session.digest,
+      successor,
+      keysetId: skip.keysetId,
+      catalogueOrdinal: skip.catalogueOrdinal,
+      keysBytes: new Uint8Array(state.keysBytes),
+    })) !== true
+  ) {
+    throw new Error(
+      "conditional recovery freshly-ineligible keys atomic staging CAS failed",
+    );
+  }
+  adoptExternallyCommittedConditionalRecoverySession(
+    skip.session,
+    successor,
+    state.sessionPort,
   );
+  return successor;
 }
 
 export function rehydrateConditionalRecoveryTarget(input: {
   readonly catalogue: CompletedConditionalRecoveryCatalogue;
   readonly session: ConditionalRecoverySession;
-  readonly keysResponse: unknown;
+  readonly keysBytes: Uint8Array;
   readonly sessionPort: ConditionalRecoverySessionCasPort;
 }): ValidatedConditionalRecoveryTarget {
   const catalogue = requireCompletedCatalogue(input.catalogue);
@@ -965,8 +1077,36 @@ export function rehydrateConditionalRecoveryTarget(input: {
       "conditional recovery persisted target metadata does not match the session",
     );
   }
+  if (!(input.keysBytes instanceof Uint8Array)) {
+    throw new Error("conditional recovery rehydration keys bytes are invalid");
+  }
+  requireBoundedKeysBytes(input.keysBytes.byteLength);
+  const keysBytes = new Uint8Array(input.keysBytes);
+  if (
+    session.keysDigest !==
+    digestConditionalKeysBytes(
+      session.walletScope,
+      session.activeKeysetId,
+      session.catalogueOrdinal,
+      keysBytes,
+    )
+  ) {
+    throw new Error(
+      "conditional recovery rehydration keys bytes do not match the session",
+    );
+  }
+  let parsedResponse: unknown;
+  try {
+    parsedResponse = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(keysBytes),
+    );
+  } catch {
+    throw new Error(
+      "conditional recovery rehydration keys entity is not exact valid JSON",
+    );
+  }
   const response = requireObject(
-    input.keysResponse,
+    parsedResponse,
     "conditional recovery rehydration keys response",
   );
   requireExactKeys(
@@ -1114,12 +1254,14 @@ export function createConditionalRecoverySession(input: {
     transition: "completed-catalogue",
     evidenceDigest: digestValue([catalogue.capability, catalogue.keysets]),
     budget: catalogue.budget,
+    nut07AuditBytes: 0,
     catalogueDigest: digestValue([catalogue.capability, catalogue.keysets]),
     completedKeysetProofCount: 0,
     catalogueOrdinal: null,
     activeKeysetId: null,
     keysetMetadataDigest: null,
     scan: initialConditionalRecoveryScan(startCounter),
+    keysDigest: null,
     currentBatch: null,
     keysetTerminalEvidence: null,
     skipEvidence: null,
@@ -1781,6 +1923,17 @@ export function requireBoundedPageBytes(value: unknown): number {
   return bytes;
 }
 
+function requireBoundedKeysBytes(value: unknown): number {
+  const bytes = requireSafeInteger(
+    value,
+    "conditional recovery keys byte count",
+  );
+  if (bytes < 0 || bytes > CONDITIONAL_RECOVERY_MAX_PAGE_BYTES) {
+    throw new Error("conditional recovery keys byte bound was exceeded");
+  }
+  return bytes;
+}
+
 export function checkedSafeAdd(
   left: number,
   right: number,
@@ -1903,11 +2056,13 @@ export function freezeSession(input: {
   transition: ConditionalRecoverySessionTransition;
   evidenceDigest: string;
   budget: ConditionalRecoveryBudget;
+  nut07AuditBytes: number;
   catalogueDigest: string;
   completedKeysetProofCount: number;
   catalogueOrdinal: number | null;
   activeKeysetId: string | null;
   keysetMetadataDigest: string | null;
+  keysDigest: string | null;
   scan: ConditionalRecoverySession["scan"];
   currentBatch: ConditionalRecoveryBatchBinding | null;
   keysetTerminalEvidence: ConditionalRecoveryKeysetTerminalEvidence | null;
@@ -1937,7 +2092,7 @@ export function freezeSession(input: {
   );
   const budget = decodeConditionalRecoveryBudget(input.budget);
   const scan = decodeConditionalRecoveryScan(input.scan, {
-    maxBatchSize: CONDITIONAL_RECOVERY_MAX_PROOFS,
+    maxBatchSize: CONDITIONAL_RECOVERY_MAX_DERIVATION_BATCH_SIZE,
     maxTotalOutputs: CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS,
   });
   const completedKeysetProofCount = requireSafeInteger(
@@ -1952,6 +2107,10 @@ export function freezeSession(input: {
     transition,
     evidenceDigest,
     budget,
+    nut07AuditBytes: requireSafeInteger(
+      input.nut07AuditBytes,
+      "conditional recovery NUT-07 audit bytes",
+    ),
     catalogueDigest: requireLowerHex32(
       input.catalogueDigest,
       "session catalogue digest",
@@ -1960,6 +2119,7 @@ export function freezeSession(input: {
     catalogueOrdinal: input.catalogueOrdinal,
     activeKeysetId: input.activeKeysetId,
     keysetMetadataDigest: input.keysetMetadataDigest,
+    keysDigest: input.keysDigest,
     scan,
     currentBatch: input.currentBatch,
     keysetTerminalEvidence: input.keysetTerminalEvidence,
@@ -2028,6 +2188,7 @@ export function advanceSession(
       | "catalogueOrdinal"
       | "activeKeysetId"
       | "keysetMetadataDigest"
+      | "keysDigest"
       | "currentBatch"
       | "keysetTerminalEvidence"
       | "skipEvidence"
@@ -2035,7 +2196,12 @@ export function advanceSession(
     >
   > = {},
 ): ConditionalRecoverySession {
-  if (transition === "nut09-request" || transition === "nut09-response") {
+  if (
+    transition === "conditional-keys" ||
+    transition === "nut09-request" ||
+    transition === "nut09-response" ||
+    (transition === "keyset-skipped" && current.activeKeysetId === null)
+  ) {
     throw new Error(
       `conditional recovery ${transition} requires its atomic staging CAS`,
     );
@@ -2052,6 +2218,7 @@ export function advanceSession(
     transition,
     evidenceDigest,
     budget,
+    nut07AuditBytes: current.nut07AuditBytes,
     catalogueDigest: current.catalogueDigest,
     completedKeysetProofCount:
       patch.completedKeysetProofCount === undefined
@@ -2069,6 +2236,8 @@ export function advanceSession(
       patch.keysetMetadataDigest === undefined
         ? current.keysetMetadataDigest
         : patch.keysetMetadataDigest,
+    keysDigest:
+      patch.keysDigest === undefined ? current.keysDigest : patch.keysDigest,
     scan,
     currentBatch:
       patch.currentBatch === undefined ? current.currentBatch : patch.currentBatch,
@@ -2173,6 +2342,7 @@ export function completeConditionalRecoveryKeyset(input: {
       completedKeysetProofCount: input.session.budget.proofCount,
       activeKeysetId: null,
       keysetMetadataDigest: null,
+      keysDigest: null,
       currentBatch: null,
       keysetTerminalEvidence,
       skipEvidence: null,
@@ -2232,6 +2402,7 @@ export function completeConditionalRecoverySession(input: {
       completedKeysetProofCount: input.session.budget.proofCount,
       activeKeysetId: null,
       keysetMetadataDigest: null,
+      keysDigest: null,
       currentBatch: null,
       keysetTerminalEvidence: null,
       skipEvidence: null,

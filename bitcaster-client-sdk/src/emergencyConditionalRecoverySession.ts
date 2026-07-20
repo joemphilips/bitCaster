@@ -3,10 +3,14 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { decodeDurableCustodyScopeId } from "./durableCustody.ts";
 import { normalizeDurableWalletMintUrl } from "./durableWalletMintUrl.ts";
 import { validateSeedScanState } from "./seedRecoveryCore.ts";
-import type {
-  ConditionalRecoveryBudget,
-  ConditionalRecoverySession,
-  ConditionalRecoveryWalletScope,
+import {
+  CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES,
+  CONDITIONAL_RECOVERY_MAX_NUT07_AUDIT_BYTES,
+  CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS,
+  CONDITIONAL_RECOVERY_MAX_WORK_UNITS,
+  type ConditionalRecoveryBudget,
+  type ConditionalRecoverySession,
+  type ConditionalRecoveryWalletScope,
 } from "./emergencyConditionalRecoveryTypes.ts";
 
 export const CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION = 2 as const;
@@ -177,11 +181,13 @@ export function validateConditionalRecoverySessionState(input: {
   readonly transition: ConditionalRecoverySessionTransition;
   readonly evidenceDigest: string;
   readonly budget: ConditionalRecoveryBudget;
+  readonly nut07AuditBytes: number;
   readonly catalogueDigest: string;
   readonly completedKeysetProofCount: number;
   readonly catalogueOrdinal: number | null;
   readonly activeKeysetId: string | null;
   readonly keysetMetadataDigest: string | null;
+  readonly keysDigest: string | null;
   readonly scan: ConditionalRecoverySessionScan;
   readonly currentBatch: ConditionalRecoveryBatchBinding | null;
   readonly keysetTerminalEvidence: ConditionalRecoveryKeysetTerminalEvidence | null;
@@ -196,6 +202,11 @@ export function validateConditionalRecoverySessionState(input: {
   if (input.budget.proofCount !== inputProofs) {
     throw new Error("conditional recovery session proof budget is inconsistent");
   }
+  requireBoundedCounter(
+    input.nut07AuditBytes,
+    CONDITIONAL_RECOVERY_MAX_NUT07_AUDIT_BYTES,
+    "NUT-07 audit bytes",
+  );
   requireDigest(input.evidenceDigest, "evidence");
   requireDigest(input.catalogueDigest, "catalogue");
   if (input.sequence === 0) {
@@ -233,6 +244,13 @@ export function validateConditionalRecoverySessionState(input: {
     requireDigest(input.keysetMetadataDigest, "keyset metadata");
     requireNonNegativeSafeInteger(input.catalogueOrdinal, "catalogue ordinal");
   }
+  if (input.activeKeysetId === null) {
+    if (input.keysDigest !== null) {
+      throw new Error("conditional recovery inactive state retained keys evidence");
+    }
+  } else {
+    requireDigest(input.keysDigest, "keys evidence");
+  }
   validateEvidenceShape(input);
 }
 
@@ -248,11 +266,13 @@ export function computeConditionalRecoverySessionDigest(
     input.transition,
     input.evidenceDigest,
     input.budget,
+    input.nut07AuditBytes,
     input.catalogueDigest,
     input.completedKeysetProofCount,
     input.catalogueOrdinal,
     input.activeKeysetId,
     input.keysetMetadataDigest,
+    input.keysDigest,
     input.scan,
     input.currentBatch,
     input.keysetTerminalEvidence,
@@ -339,6 +359,18 @@ export function validateConditionalRecoverySessionSuccessor(
 function allowedSuccessors(
   predecessor: ConditionalRecoverySession,
 ): readonly ConditionalRecoverySessionTransition[] {
+  if (
+    predecessor.budget.transportBytes ===
+      CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES ||
+    predecessor.budget.serializedBytes ===
+      CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES ||
+    predecessor.budget.workUnits === CONDITIONAL_RECOVERY_MAX_WORK_UNITS ||
+    predecessor.budget.proofCount === CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS ||
+    predecessor.nut07AuditBytes ===
+      CONDITIONAL_RECOVERY_MAX_NUT07_AUDIT_BYTES
+  ) {
+    return ["recovery-failed-closed"];
+  }
   switch (predecessor.transition) {
     case "completed-catalogue":
     case "keyset-completed":
@@ -396,6 +428,14 @@ function validateEdgeFields(
     if (successor.activeKeysetId === priorKeysetId) {
       throw new Error("conditional recovery keyset ordinal revisited a keyset");
     }
+    if (
+      successor.keysDigest === null ||
+      successor.evidenceDigest !== successor.keysDigest
+    ) {
+      throw new Error(
+        "conditional recovery exact keys entity binding is invalid",
+      );
+    }
     requireResetScan(successor.scan);
   } else if (successor.transition === "keyset-skipped") {
     const skip = successor.skipEvidence!;
@@ -449,6 +489,18 @@ function validateEdgeFields(
   ) {
     throw new Error("conditional recovery same-keyset edge changed keyset");
   }
+  if (
+    predecessor.activeKeysetId !== null &&
+    !["keyset-completed", "keyset-skipped", "recovery-completed"].includes(
+      successor.transition,
+    ) &&
+    (successor.keysetMetadataDigest !== predecessor.keysetMetadataDigest ||
+      successor.keysDigest !== predecessor.keysDigest)
+  ) {
+    throw new Error(
+      "conditional recovery same-keyset immutable metadata or keys binding changed",
+    );
+  }
   if (predecessor.currentBatch !== null && successor.currentBatch !== null) {
     if (successor.transition !== "nut13-plan" && successor.currentBatch.planDigest !== predecessor.currentBatch.planDigest) {
       throw new Error("conditional recovery deterministic plan binding changed");
@@ -489,7 +541,7 @@ function validateEdgeFields(
       if (
         evidence?.kind !== "gap-limit" ||
         evidence.keysetId !== predecessor.activeKeysetId ||
-        predecessor.scan.consecutiveEmptyOutputs < evidence.gapLimit
+        predecessor.scan.consecutiveEmptyOutputs !== evidence.gapLimit
       ) {
         throw new Error("conditional recovery gap-limit evidence is invalid");
       }
@@ -651,11 +703,13 @@ function boundPayload(session: ConditionalRecoverySession): Record<string, unkno
     transition: session.transition,
     evidenceDigest: session.evidenceDigest,
     budget: session.budget,
+    nut07AuditBytes: session.nut07AuditBytes,
     catalogueDigest: session.catalogueDigest,
     completedKeysetProofCount: session.completedKeysetProofCount,
     catalogueOrdinal: session.catalogueOrdinal,
     activeKeysetId: session.activeKeysetId,
     keysetMetadataDigest: session.keysetMetadataDigest,
+    keysDigest: session.keysDigest,
     scan: session.scan,
     currentBatch: session.currentBatch,
     keysetTerminalEvidence: session.keysetTerminalEvidence,
@@ -682,11 +736,18 @@ function decodeBoundPayload(
     transition: decodeConditionalRecoverySessionTransition(row.transition),
     evidenceDigest: requireDigest(row.evidenceDigest, "evidence"),
     budget: decodeBudget(row.budget),
+    nut07AuditBytes: requireBoundedCounter(
+      row.nut07AuditBytes,
+      CONDITIONAL_RECOVERY_MAX_NUT07_AUDIT_BYTES,
+      "NUT-07 audit bytes",
+    ),
     catalogueDigest: requireDigest(row.catalogueDigest, "catalogue"),
     completedKeysetProofCount: requireNonNegativeSafeInteger(row.completedKeysetProofCount, "completed proof baseline"),
     catalogueOrdinal: row.catalogueOrdinal === null ? null : requireNonNegativeSafeInteger(row.catalogueOrdinal, "catalogue ordinal"),
     activeKeysetId: row.activeKeysetId === null ? null : requireKeysetId(row.activeKeysetId, "active keyset"),
     keysetMetadataDigest: row.keysetMetadataDigest === null ? null : requireDigest(row.keysetMetadataDigest, "keyset metadata"),
+    keysDigest:
+      row.keysDigest === null ? null : requireDigest(row.keysDigest, "keys evidence"),
     scan: decodeConditionalRecoveryScan(row.scan, { maxBatchSize: 100, maxTotalOutputs: 100_000 }),
     currentBatch: decodeBatchBinding(row.currentBatch),
     keysetTerminalEvidence: decodeKeysetTerminalEvidence(row.keysetTerminalEvidence),

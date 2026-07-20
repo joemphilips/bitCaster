@@ -19,7 +19,8 @@ import {
 import {
   CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES,
   CONDITIONAL_RECOVERY_MAX_PAGE_BYTES,
-  CONDITIONAL_RECOVERY_MAX_PROOFS,
+  CONDITIONAL_RECOVERY_MAX_DERIVATION_BATCH_SIZE,
+  CONDITIONAL_RECOVERY_MAX_NUT07_AUDIT_BYTES,
   CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS,
   type CanonicalConditionalRecoveryProof,
   type ChargedConditionalRecoveryProofBatch,
@@ -139,6 +140,7 @@ interface Nut07CommitAuthorityState {
   readonly deadline: number;
   readonly audit: ConditionalRecoveryNut07AuditPayload;
   readonly auditDigest: string;
+  readonly auditBytes: number;
   valid: boolean;
   consumed: boolean;
 }
@@ -253,6 +255,7 @@ export function skipExpiredConditionalRecoveryKeyset(input: {
       completedKeysetProofCount: input.session.budget.proofCount,
       activeKeysetId: null,
       keysetMetadataDigest: null,
+      keysDigest: null,
       currentBatch: null,
       keysetTerminalEvidence: null,
       skipEvidence: {
@@ -304,7 +307,7 @@ export async function createSeedDerivedConditionalRecoveryPlan(input: {
   if (
     startCounter < 0 ||
     count < 1 ||
-    count > CONDITIONAL_RECOVERY_MAX_PROOFS
+    count > CONDITIONAL_RECOVERY_MAX_DERIVATION_BATCH_SIZE
   ) {
     throw new Error("conditional recovery NUT-13 output plan size is invalid");
   }
@@ -535,9 +538,11 @@ export async function authorizeConditionalRecoveryNut09Request(input: {
     catalogueDigest: input.plan.session.catalogueDigest,
     completedKeysetProofCount:
       input.plan.session.completedKeysetProofCount,
+    nut07AuditBytes: input.plan.session.nut07AuditBytes,
     catalogueOrdinal: input.plan.session.catalogueOrdinal,
     activeKeysetId: input.plan.session.activeKeysetId,
     keysetMetadataDigest: input.plan.session.keysetMetadataDigest,
+    keysDigest: input.plan.session.keysDigest,
     scan: input.plan.session.scan,
     currentBatch: {
       ...input.plan.session.currentBatch!,
@@ -693,7 +698,7 @@ async function acceptConditionalRecoveryNut09ResponseBytes(input: {
     !Array.isArray(responseObject.outputs) ||
     !Array.isArray(responseObject.signatures) ||
     responseObject.outputs.length !== responseObject.signatures.length ||
-    responseObject.outputs.length > CONDITIONAL_RECOVERY_MAX_PROOFS
+    responseObject.outputs.length > CONDITIONAL_RECOVERY_MAX_DERIVATION_BATCH_SIZE
   ) {
     throw new Error(
       "conditional recovery NUT-09 response output/signature count is invalid",
@@ -756,7 +761,7 @@ async function acceptConditionalRecoveryNut09ResponseBytes(input: {
       }),
     },
     {
-      maxBatchSize: CONDITIONAL_RECOVERY_MAX_PROOFS,
+      maxBatchSize: CONDITIONAL_RECOVERY_MAX_DERIVATION_BATCH_SIZE,
       maxTotalOutputs: CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS,
     },
   );
@@ -801,7 +806,9 @@ async function acceptConditionalRecoveryNut09ResponseBytes(input: {
       input.request.session.completedKeysetProofCount,
     catalogueOrdinal: input.request.session.catalogueOrdinal,
     activeKeysetId: input.request.session.activeKeysetId,
+    nut07AuditBytes: input.request.session.nut07AuditBytes,
     keysetMetadataDigest: input.request.session.keysetMetadataDigest,
+    keysDigest: input.request.session.keysDigest,
     scan,
     currentBatch,
     keysetTerminalEvidence: null,
@@ -1030,9 +1037,20 @@ export async function fetchConditionalRecoveryNut07CommitAuthority(input: {
     -state.session.budget.transportBytes,
     "remaining NUT-07 transport budget",
   );
+  const remainingAuditBytes = checkedSafeAdd(
+    CONDITIONAL_RECOVERY_MAX_NUT07_AUDIT_BYTES,
+    -state.session.nut07AuditBytes,
+    "remaining NUT-07 audit budget",
+  );
+  if (requestBytes.byteLength > remainingAuditBytes) {
+    throw new Error(
+      "conditional recovery NUT-07 request exceeded its cumulative audit bound",
+    );
+  }
   const maxEntityBytes = Math.min(
     CONDITIONAL_RECOVERY_MAX_PAGE_BYTES,
     remaining,
+    remainingAuditBytes - requestBytes.byteLength,
   );
   const responseBytes = await input.transport.fetchNut07Entity({
     walletScope,
@@ -1119,6 +1137,15 @@ export async function fetchConditionalRecoveryNut07CommitAuthority(input: {
     ),
     workUnits: checkedSafeAdd(response.states.length, 1, "NUT-07 work"),
   });
+  const nut07AuditBytes = checkedSafeAdd(
+    state.session.nut07AuditBytes,
+    checkedSafeAdd(
+      requestBytes.byteLength,
+      responseBytes.byteLength,
+      "NUT-07 audit payload bytes",
+    ),
+    "cumulative NUT-07 audit payload bytes",
+  );
   const responseDigest = digestTaggedRawBytes(
     "conditional-recovery-nut07-response-v2",
     responseBytes,
@@ -1137,6 +1164,7 @@ export async function fetchConditionalRecoveryNut07CommitAuthority(input: {
     issuedAt,
     deadline,
     budget,
+    nut07AuditBytes,
   ]);
   const classification = Object.freeze({
     walletScope,
@@ -1207,6 +1235,7 @@ export async function fetchConditionalRecoveryNut07CommitAuthority(input: {
     authorityDigest,
     issuedAt,
     deadline,
+    auditBytes: nut07AuditBytes,
     valid: true,
     consumed: false,
     audit,
@@ -1348,10 +1377,12 @@ export function authorizeConditionalRecoveryAdmission(input: {
     evidenceDigest,
     budget: nut07State.classification.budget,
     catalogueDigest: currentSession.catalogueDigest,
+    nut07AuditBytes: nut07State.auditBytes,
     completedKeysetProofCount: currentSession.completedKeysetProofCount,
     catalogueOrdinal: currentSession.catalogueOrdinal,
     activeKeysetId: currentSession.activeKeysetId,
     keysetMetadataDigest: currentSession.keysetMetadataDigest,
+    keysDigest: currentSession.keysDigest,
     scan: currentSession.scan,
     currentBatch: currentSession.currentBatch,
     keysetTerminalEvidence: null,
@@ -1399,7 +1430,7 @@ export function authorizeConditionalRecoveryAdmission(input: {
   });
 }
 
-export function retainExpiredConditionalRecoveryKeyset(input: {
+export async function retainExpiredConditionalRecoveryKeyset(input: {
   catalogue: CompletedConditionalRecoveryCatalogue;
   target: ValidatedConditionalRecoveryTarget;
   verifiedProofs: VerifiedConditionalRecoveryProofBatch;
@@ -1408,7 +1439,7 @@ export function retainExpiredConditionalRecoveryKeyset(input: {
   proofs: readonly ProofLike[];
   expiryAuthority: ConditionalRecoveryFreshExpiryEvidence;
   sessionPort: ConditionalRecoverySessionCasPort;
-}): ConditionalRecoverySession {
+}): Promise<ConditionalRecoverySession> {
   const catalogue = requireCompletedCatalogue(input.catalogue);
   const target = requireValidatedTarget(input.target, catalogue);
   const walletScope = decodeConditionalRecoveryWalletScope(input.walletScope);
@@ -1495,11 +1526,13 @@ export function retainExpiredConditionalRecoveryKeyset(input: {
       nut07State.classification.budget,
     ]),
     budget: nut07State.classification.budget,
+    nut07AuditBytes: nut07State.auditBytes,
     catalogueDigest: currentSession.catalogueDigest,
     completedKeysetProofCount: currentSession.completedKeysetProofCount,
     catalogueOrdinal: currentSession.catalogueOrdinal,
     activeKeysetId: currentSession.activeKeysetId,
     keysetMetadataDigest: currentSession.keysetMetadataDigest,
+    keysDigest: currentSession.keysDigest,
     scan: currentSession.scan,
     currentBatch: currentSession.currentBatch,
     keysetTerminalEvidence: null,
@@ -1509,30 +1542,26 @@ export function retainExpiredConditionalRecoveryKeyset(input: {
   validateConditionalRecoverySessionSuccessor(currentSession, successor);
   let committed: boolean;
   try {
-    committed = input.sessionPort.compareAndSwapRetainExpiredKeyset({
-      walletScope,
+    committed = await input.sessionPort.compareAndSwapRetainExpiredKeyset({
       expectedSessionDigest: currentSession.digest,
-      successorSession: successor,
+      successor,
       stagedBatchId,
       expiryAuthority: authority,
       rows,
-      nut07Authority: input.nut07Authority,
-      nut07Audit: nut07State.audit,
     });
   } catch (error) {
     nut07State.valid = false;
     freshExpiryEvidence.delete(authority);
     throw error;
   }
-  if (committed !== true || !nut07State.consumed) {
+  if (committed !== true) {
     nut07State.valid = false;
     freshExpiryEvidence.delete(authority);
     throw new Error(
-      committed === true
-        ? "conditional recovery retention port omitted NUT-07 commit consumption"
-        : "conditional recovery expired-keyset retention CAS failed",
+      "conditional recovery expired-keyset retention CAS failed",
     );
   }
+  nut07State.consumed = true;
   adoptExternallyCommittedConditionalRecoverySession(
     currentSession,
     successor,
@@ -1554,7 +1583,7 @@ function canonicalizeProofBatch(
   if (
     !Array.isArray(proofs) ||
     (!allowEmpty && proofs.length < 1) ||
-    proofs.length > CONDITIONAL_RECOVERY_MAX_PROOFS
+    proofs.length > CONDITIONAL_RECOVERY_MAX_DERIVATION_BATCH_SIZE
   ) {
     throw new Error("conditional recovery proof batch size is invalid");
   }
@@ -1641,7 +1670,7 @@ function deriveNut09ResponseProofs(
     !Array.isArray(response.outputs) ||
     !Array.isArray(response.signatures) ||
     response.outputs.length !== response.signatures.length ||
-    response.outputs.length > CONDITIONAL_RECOVERY_MAX_PROOFS
+    response.outputs.length > CONDITIONAL_RECOVERY_MAX_DERIVATION_BATCH_SIZE
   ) {
     throw new Error(
       "conditional recovery NUT-09 response output/signature count is invalid",
@@ -2024,7 +2053,7 @@ interface ConditionalRecoveryCommonRehydrationEvidence {
 
 interface ConditionalRecoveryTargetRehydrationEvidence
   extends ConditionalRecoveryCommonRehydrationEvidence {
-  readonly keysResponse: unknown;
+  readonly keysBytes: Uint8Array;
 }
 
 interface ConditionalRecoveryPlanRehydrationEvidence
@@ -2098,19 +2127,19 @@ export async function rehydrateConditionalRecoverySessionCapabilities(
     "completed-catalogue": ["stage", "catalogue"],
     "keyset-completed": ["stage", "catalogue"],
     "keyset-skipped": ["stage", "catalogue"],
-    "conditional-keys": ["stage", "catalogue", "keysResponse"],
-    "nut13-plan": ["stage", "catalogue", "keysResponse", "derivationPort"],
+    "conditional-keys": ["stage", "catalogue", "keysBytes"],
+    "nut13-plan": ["stage", "catalogue", "keysBytes", "derivationPort"],
     "nut09-request": [
       "stage",
       "catalogue",
-      "keysResponse",
+      "keysBytes",
       "derivationPort",
       "requestBytes",
     ],
     "nut09-response": [
       "stage",
       "catalogue",
-      "keysResponse",
+      "keysBytes",
       "derivationPort",
       "requestBytes",
       "responseBytes",
@@ -2119,13 +2148,13 @@ export async function rehydrateConditionalRecoverySessionCapabilities(
     "proof-verification": [
       "stage",
       "catalogue",
-      "keysResponse",
+      "keysBytes",
       "derivationPort",
       "requestBytes",
       "responseBytes",
       "stagedProofRows",
     ],
-    "atomic-admission": ["stage", "catalogue", "keysResponse"],
+    "atomic-admission": ["stage", "catalogue", "keysBytes"],
     "expired-keyset-retention": ["stage", "catalogue"],
   };
   const exactEvidenceKeys = evidenceKeys[evidence.stage];
@@ -2161,11 +2190,11 @@ export async function rehydrateConditionalRecoverySessionCapabilities(
   let request: ConditionalRecoveryNut09RequestAuthorization | null = null;
   let proofBatch: ChargedConditionalRecoveryProofBatch | null = null;
   let verifiedProofs: VerifiedConditionalRecoveryProofBatch | null = null;
-  if ("keysResponse" in evidence) {
+  if ("keysBytes" in evidence) {
     target = rehydrateConditionalRecoveryTarget({
       catalogue,
       session,
-      keysResponse: evidence.keysResponse,
+      keysBytes: evidence.keysBytes,
       sessionPort,
     });
   }

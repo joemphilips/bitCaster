@@ -136,6 +136,18 @@ function keysResponse(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function keysEntityBytes(
+  overrides: Record<string, unknown> = {},
+): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(keysResponse(overrides)));
+}
+
+function keysTransport(bytes: Uint8Array) {
+  return {
+    fetchConditionalKeysEntity: async () => new Uint8Array(bytes),
+  };
+}
+
 function progress(walletScope = scope()) {
   return createConditionalCatalogueProgress({
     capability: decodeConditionalRecoveryCapability(mintInfo())!,
@@ -202,14 +214,14 @@ async function targetFor(
     startCounter,
   });
   targetInitialSessions.set(session.walletScope.scopeId + ":" + startCounter, session);
-  const target = validateConditionalRecoveryKeys({
+  const rawKeysBytes = keysEntityBytes({
+    final_expiry: catalogue.keysets[0]!.finalExpiry,
+  });
+  const target = await validateConditionalRecoveryKeys({
     catalogue,
     walletScope: catalogue.walletScope,
     keysetId: KEYSET_ID,
-    response: keysResponse({
-      final_expiry: catalogue.keysets[0]!.finalExpiry,
-    }),
-    responseBytes: 1_024,
+    transport: keysTransport(rawKeysBytes),
     authority: await observation(catalogue),
     session,
   });
@@ -342,7 +354,9 @@ function linearPorts() {
   let throwAfterResponseStageCommit = false;
   let rejectNextRequestStage = false;
   let rejectNextResponseStage = false;
+  let rejectNextKeysStage = false;
   let genericCasCount = 0;
+  let stagedKeysBytes = new Uint8Array();
   const port = {
     readCurrentDigest: () => latest,
     compareAndSwap: ({
@@ -354,6 +368,25 @@ function linearPorts() {
     }) => {
       genericCasCount += 1;
       if (latest !== expectedDigest) return false;
+      latest = successor.digest;
+      return true;
+    },
+    compareAndSwapStageConditionalKeys: async ({
+      expectedDigest,
+      successor,
+      keysBytes,
+    }: {
+      expectedDigest: string;
+      successor: ConditionalRecoverySession;
+      keysBytes: Uint8Array;
+    }) => {
+      if (rejectNextKeysStage) {
+        rejectNextKeysStage = false;
+        return false;
+      }
+      if (latest !== expectedDigest) return false;
+      stagedKeysBytes = new Uint8Array(keysBytes);
+      stagedSession = successor;
       latest = successor.digest;
       return true;
     },
@@ -428,18 +461,15 @@ function linearPorts() {
       latest = successorSession.digest;
       return true;
     },
-    compareAndSwapRetainExpiredKeyset: ({
+    compareAndSwapRetainExpiredKeyset: async ({
       expectedSessionDigest,
-      successorSession,
-      nut07Authority,
+      successor,
     }: {
       expectedSessionDigest: string;
-      successorSession: { digest: string };
-      nut07Authority: { consumeForCommit: () => unknown };
+      successor: { digest: string };
     }) => {
       if (latest !== expectedSessionDigest) return false;
-      nut07Authority.consumeForCommit();
-      latest = successorSession.digest;
+      latest = successor.digest;
       return true;
     },
   };
@@ -447,6 +477,7 @@ function linearPorts() {
     cas: port,
     admissionPort: port,
     readStagedRows: () => stagedRows,
+    readStagedKeysBytes: () => new Uint8Array(stagedKeysBytes),
     readStagedSession: () => stagedSession,
     readStagedRequestBytes: () => new Uint8Array(stagedRequestBytes),
     readGenericCasCount: () => genericCasCount,
@@ -456,6 +487,9 @@ function linearPorts() {
     },
     throwAfterNextResponseStageCommit: () => {
       throwAfterResponseStageCommit = true;
+    },
+    rejectNextKeysStage: () => {
+      rejectNextKeysStage = true;
     },
     rejectNextRequestStage: () => {
       rejectNextRequestStage = true;
@@ -769,18 +803,18 @@ test("direct-current rehydration binds the supplied port without caller lineage"
     {
       stage: "nut13-plan",
       catalogue,
-      keysResponse: keysResponse(),
+      keysBytes: keysEntityBytes(),
     },
     {
       stage: "nut09-request",
       catalogue,
-      keysResponse: keysResponse(),
+      keysBytes: keysEntityBytes(),
       derivationPort: { deriveSeedOutputs: () => [] },
     },
     {
       stage: "nut09-response",
       catalogue,
-      keysResponse: keysResponse(),
+      keysBytes: keysEntityBytes(),
       derivationPort: { deriveSeedOutputs: () => [] },
       requestBytes: new Uint8Array(),
       responseBytes: new Uint8Array(),
@@ -802,7 +836,7 @@ test("direct-current rehydration binds the supplied port without caller lineage"
       {
         stage: "conditional-keys",
         catalogue,
-        keysResponse: keysResponse(),
+        keysBytes: keysEntityBytes(),
       },
       reopenedPort,
     );
@@ -823,7 +857,7 @@ test("direct-current rehydration binds the supplied port without caller lineage"
         {
           stage: "conditional-keys",
           catalogue,
-          keysResponse: keysResponse(),
+          keysBytes: keysEntityBytes(),
         },
         foreignPort,
       ),
@@ -867,27 +901,27 @@ test("authority is subject-bound and remains consumed after downstream validatio
     cas: ports.cas,
   });
   const keyAuthority = await observation(catalogue);
-  assert.throws(
+  await assert.rejects(
     () =>
       validateConditionalRecoveryKeys({
         catalogue,
         walletScope: catalogue.walletScope,
         keysetId: KEYSET_ID,
-        response: { keysets: [] },
-        responseBytes: 1,
+        transport: keysTransport(
+          new TextEncoder().encode(JSON.stringify({ keysets: [] })),
+        ),
         authority: keyAuthority,
         session,
       }),
     /exactly one keyset/i,
   );
-  assert.throws(
+  await assert.rejects(
     () =>
       validateConditionalRecoveryKeys({
         catalogue,
         walletScope: catalogue.walletScope,
         keysetId: KEYSET_ID,
-        response: keysResponse(),
-        responseBytes: 1,
+        transport: keysTransport(keysEntityBytes()),
         authority: keyAuthority,
         session,
       }),
@@ -914,17 +948,18 @@ test("expired conditional keysets never become recovery targets", async () => {
     walletScope: catalogue.walletScope,
     cas: ports.cas,
   });
-  const skip = validateConditionalRecoveryKeys({
+  const skip = await validateConditionalRecoveryKeys({
     catalogue,
     walletScope: catalogue.walletScope,
     keysetId: expiredId,
-    response: keysResponse({ id: expiredId, final_expiry: finalExpiry }),
-    responseBytes: 1,
+    transport: keysTransport(
+      keysEntityBytes({ id: expiredId, final_expiry: finalExpiry }),
+    ),
     authority: await observation(catalogue),
     session,
   });
   assert.equal(skip.reason, "freshly-proven-ineligible");
-  const skipped = skipFreshlyIneligibleConditionalRecoveryKeyset(skip);
+  const skipped = await skipFreshlyIneligibleConditionalRecoveryKeyset(skip);
   assert.equal(skipped.transition, "keyset-skipped");
   assert.equal(skipped.skipEvidence?.keysetId, expiredId);
   assert.equal(skipped.budget.transportBytes, skip.budget.transportBytes);
@@ -938,7 +973,7 @@ test("expired conditional keysets never become recovery targets", async () => {
     ports.cas,
   );
   assert.equal(capabilities.target, null);
-  assert.throws(
+  await assert.rejects(
     () => skipFreshlyIneligibleConditionalRecoveryKeyset(skip),
     /already consumed/i,
   );
@@ -963,14 +998,13 @@ test("off-unit catalogue metadata is retained but cannot become a target", async
     walletScope: catalogue.walletScope,
     cas: linearPorts().cas,
   });
-  assert.throws(
+  await assert.rejects(
     () =>
       validateConditionalRecoveryKeys({
         catalogue,
         walletScope: catalogue.walletScope,
         keysetId: usdId,
-        response: keysResponse({ id: usdId, unit: "usd" }),
-        responseBytes: 1,
+        transport: keysTransport(keysEntityBytes({ id: usdId, unit: "usd" })),
         authority: keyAuthority,
         session,
       }),
@@ -986,8 +1020,7 @@ test("key authority is fresh and one-use, and cross-mint scope substitution fail
     catalogue,
     walletScope: catalogue.walletScope,
     keysetId: KEYSET_ID,
-    response: keysResponse(),
-    responseBytes: 1,
+    transport: keysTransport(keysEntityBytes()),
     authority,
     session: createConditionalRecoverySession({
       catalogue,
@@ -995,10 +1028,13 @@ test("key authority is fresh and one-use, and cross-mint scope substitution fail
       cas: ports.cas,
     }),
   };
-  assert.notEqual(validateConditionalRecoveryKeys(input), null);
-  assert.throws(() => validateConditionalRecoveryKeys(input), /already used/i);
+  assert.notEqual(await validateConditionalRecoveryKeys(input), null);
+  await assert.rejects(
+    () => validateConditionalRecoveryKeys(input),
+    /already used/i,
+  );
   const foreignAuthority = await observation(catalogue);
-  assert.throws(
+  await assert.rejects(
     () =>
       validateConditionalRecoveryKeys({
         ...input,
@@ -1007,6 +1043,70 @@ test("key authority is fresh and one-use, and cross-mint scope substitution fail
       }),
     /foreign/i,
   );
+});
+
+test("conditional keys transport is raw-byte bounded and stages exactly before advance", async () => {
+  const catalogue = await completedCatalogue();
+  const ports = linearPorts();
+  const session = createConditionalRecoverySession({
+    catalogue,
+    walletScope: catalogue.walletScope,
+    cas: ports.cas,
+  });
+  const genericBefore = ports.readGenericCasCount();
+  let offeredMaximum = 0;
+  const oversizedAuthority = await observation(catalogue);
+  await assert.rejects(
+    () =>
+      validateConditionalRecoveryKeys({
+        catalogue,
+        walletScope: catalogue.walletScope,
+        keysetId: KEYSET_ID,
+        transport: {
+          fetchConditionalKeysEntity: async ({ maxEntityBytes }) => {
+            offeredMaximum = maxEntityBytes;
+            return new Uint8Array(maxEntityBytes + 1);
+          },
+        },
+        authority: oversizedAuthority,
+        session,
+      }),
+    /exact entity bound/i,
+  );
+  assert.ok(offeredMaximum > 0);
+  assert.equal(ports.cas.readCurrentDigest(catalogue.walletScope), session.digest);
+
+  const exactBytes = keysEntityBytes();
+  ports.rejectNextKeysStage();
+  const rejectedStageAuthority = await observation(catalogue);
+  await assert.rejects(
+    () =>
+      validateConditionalRecoveryKeys({
+        catalogue,
+        walletScope: catalogue.walletScope,
+        keysetId: KEYSET_ID,
+        transport: keysTransport(exactBytes),
+        authority: rejectedStageAuthority,
+        session,
+      }),
+    /atomic staging CAS failed/i,
+  );
+  assert.equal(ports.cas.readCurrentDigest(catalogue.walletScope), session.digest);
+
+  const target = await validateConditionalRecoveryKeys({
+    catalogue,
+    walletScope: catalogue.walletScope,
+    keysetId: KEYSET_ID,
+    transport: keysTransport(exactBytes),
+    authority: await observation(catalogue),
+    session,
+  });
+  assert.equal(target.session.transition, "conditional-keys");
+  assert.equal(
+    bytesToHex(ports.readStagedKeysBytes()),
+    bytesToHex(exactBytes),
+  );
+  assert.equal(ports.readGenericCasCount(), genericBefore);
 });
 async function proofHarness(
   rawMetadata: Record<string, unknown> = metadata(),
@@ -1189,7 +1289,7 @@ test("request staging survives commit-before-return crash without generic CAS", 
     {
       stage: "nut09-request",
       catalogue,
-      keysResponse: keysResponse(),
+      keysBytes: keysEntityBytes(),
       derivationPort: { deriveSeedOutputs: () => derivedOutputs },
       requestBytes: ports.readStagedRequestBytes(),
     },
@@ -1295,7 +1395,7 @@ test("empty response staging survives commit-before-return crash and rehydrates"
     {
       stage: "nut09-response",
       catalogue,
-      keysResponse: keysResponse(),
+      keysBytes: keysEntityBytes(),
       derivationPort: { deriveSeedOutputs: () => derivedOutputs },
       requestBytes: ports.readStagedRequestBytes(),
       responseBytes: ports.readStagedResponseBytes(),
@@ -1373,7 +1473,7 @@ test("proof-verification reopen rederives exact batch and requires fresh NUT-07"
         {
           stage: "proof-verification",
           catalogue: source.catalogue,
-          keysResponse: keysResponse(),
+          keysBytes: keysEntityBytes(),
           derivationPort: {
             deriveSeedOutputs: () => source.derivedOutputs,
           },
@@ -1394,7 +1494,7 @@ test("proof-verification reopen rederives exact batch and requires fresh NUT-07"
         {
           stage: "proof-verification",
           catalogue: source.catalogue,
-          keysResponse: keysResponse(),
+          keysBytes: keysEntityBytes(),
           derivationPort: {
             deriveSeedOutputs: () => source.derivedOutputs,
           },
@@ -1412,7 +1512,7 @@ test("proof-verification reopen rederives exact batch and requires fresh NUT-07"
       {
         stage: "proof-verification",
         catalogue: source.catalogue,
-        keysResponse: keysResponse(),
+        keysBytes: keysEntityBytes(),
         derivationPort: {
           deriveSeedOutputs: () => source.derivedOutputs,
         },
@@ -1470,7 +1570,7 @@ test("fresh-process reopen reconstructs each proof pipeline stage from exact evi
   responseBytes.set(responseSemantic);
   const planEvidence = {
     catalogue: source.catalogue,
-    keysResponse: keysResponse(),
+    keysBytes: keysEntityBytes(),
     derivationPort: { deriveSeedOutputs: () => source.derivedOutputs },
   };
   const requestEvidence = {
@@ -1488,7 +1588,7 @@ test("fresh-process reopen reconstructs each proof pipeline stage from exact evi
       evidence: {
         stage: "conditional-keys",
         catalogue: source.catalogue,
-        keysResponse: keysResponse(),
+        keysBytes: keysEntityBytes(),
       },
       expected: "target",
     },
@@ -1576,7 +1676,7 @@ test("fresh-process reopen reconstructs each proof pipeline stage from exact evi
       {
         stage: "atomic-admission",
         catalogue: source.catalogue,
-        keysResponse: keysResponse(),
+        keysBytes: keysEntityBytes(),
       },
       admissionPort,
     );
@@ -1637,7 +1737,7 @@ test("fresh-process reopen accepts an exact empty NUT-09 response", async () => 
     {
       stage: "nut09-response",
       catalogue,
-      keysResponse: keysResponse(),
+      keysBytes: keysEntityBytes(),
       derivationPort: { deriveSeedOutputs: () => derivedOutputs },
       requestBytes: request.requestBytes,
       responseBytes,
@@ -1695,7 +1795,7 @@ test("nut09-request reopen requires byte-identical dispatch replay before expiry
         {
           stage: "nut09-request",
           catalogue,
-          keysResponse: keysResponse(),
+          keysBytes: keysEntityBytes(),
           derivationPort: { deriveSeedOutputs: () => derivedOutputs },
           requestBytes: changedRequest,
         },
@@ -1709,7 +1809,7 @@ test("nut09-request reopen requires byte-identical dispatch replay before expiry
       {
         stage: "nut09-request",
         catalogue,
-        keysResponse: keysResponse(),
+        keysBytes: keysEntityBytes(),
         derivationPort: { deriveSeedOutputs: () => derivedOutputs },
         requestBytes: request.requestBytes,
         responseBytes: new Uint8Array(),
@@ -1723,7 +1823,7 @@ test("nut09-request reopen requires byte-identical dispatch replay before expiry
     {
       stage: "nut09-request",
       catalogue,
-      keysResponse: keysResponse(),
+      keysBytes: keysEntityBytes(),
       derivationPort: { deriveSeedOutputs: () => derivedOutputs },
       requestBytes: request.requestBytes,
     },
@@ -1924,7 +2024,7 @@ test("fresh SDK expiry evidence selects the distinct locked retention CAS", asyn
 
 
 
-test("retention CAS false, omission, and failure invalidate NUT-07 authority and require refetch", async () => {
+test("retention CAS false and failure invalidate NUT-07 authority and require refetch", async () => {
   const harness = await proofHarness(metadata(), false);
   const ports = targetPorts.get(harness.target)!;
   const expiryAuthority = issueConditionalRecoveryFreshExpiryEvidence({
@@ -1950,9 +2050,9 @@ test("retention CAS false, omission, and failure invalidate NUT-07 authority and
       responseBytes: 1_024,
     });
   const originalRetention = ports.cas.compareAndSwapRetainExpiredKeyset;
-  ports.cas.compareAndSwapRetainExpiredKeyset = () => false;
+  ports.cas.compareAndSwapRetainExpiredKeyset = async () => false;
   const staleAuthority = await fetchNut07();
-  assert.throws(
+  await assert.rejects(
     () =>
       retainExpiredConditionalRecoveryKeyset({
         catalogue: harness.catalogue,
@@ -1966,7 +2066,7 @@ test("retention CAS false, omission, and failure invalidate NUT-07 authority and
       }),
     /retention CAS failed/i,
   );
-  assert.throws(
+  await assert.rejects(
     () =>
       retainExpiredConditionalRecoveryKeyset({
         catalogue: harness.catalogue,
@@ -1980,38 +2080,17 @@ test("retention CAS false, omission, and failure invalidate NUT-07 authority and
       }),
     /authority is invalid/i,
   );
-  const omissionExpiry = issueConditionalRecoveryFreshExpiryEvidence({
-    catalogue: harness.catalogue,
-    target: harness.target,
-    authority: await observation(harness.catalogue, 2_000_000_000),
-  });
-  const omittedAuthority = await fetchNut07();
-  ports.cas.compareAndSwapRetainExpiredKeyset = () => true;
-  assert.throws(
-    () =>
-      retainExpiredConditionalRecoveryKeyset({
-        catalogue: harness.catalogue,
-        target: harness.target,
-        verifiedProofs: verified,
-        nut07Authority: omittedAuthority,
-        walletScope: harness.catalogue.walletScope,
-        proofs: harness.proofs,
-        expiryAuthority: omissionExpiry,
-        sessionPort: ports.cas,
-      }),
-    /omitted NUT-07 commit consumption/i,
-  );
+
   const failureExpiry = issueConditionalRecoveryFreshExpiryEvidence({
     catalogue: harness.catalogue,
     target: harness.target,
     authority: await observation(harness.catalogue, 2_000_000_000),
   });
   const failedAuthority = await fetchNut07();
-  ports.cas.compareAndSwapRetainExpiredKeyset = ({ nut07Authority }) => {
-    nut07Authority.consumeForCommit();
+  ports.cas.compareAndSwapRetainExpiredKeyset = async () => {
     throw new Error("test transaction rollback");
   };
-  assert.throws(
+  await assert.rejects(
     () =>
       retainExpiredConditionalRecoveryKeyset({
         catalogue: harness.catalogue,
@@ -2025,6 +2104,7 @@ test("retention CAS false, omission, and failure invalidate NUT-07 authority and
       }),
     /transaction rollback/i,
   );
+
   ports.cas.compareAndSwapRetainExpiredKeyset = originalRetention;
   const freshExpiry = issueConditionalRecoveryFreshExpiryEvidence({
     catalogue: harness.catalogue,
@@ -2032,7 +2112,7 @@ test("retention CAS false, omission, and failure invalidate NUT-07 authority and
     authority: await observation(harness.catalogue, 2_000_000_000),
   });
   const freshAuthority = await fetchNut07();
-  const retained = retainExpiredConditionalRecoveryKeyset({
+  const retained = await retainExpiredConditionalRecoveryKeyset({
     catalogue: harness.catalogue,
     target: harness.target,
     verifiedProofs: verified,

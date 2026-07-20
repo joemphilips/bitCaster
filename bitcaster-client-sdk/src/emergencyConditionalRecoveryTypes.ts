@@ -1,6 +1,6 @@
 import type { ProofLike } from "@cashu/cashu-ts";
 import {
-  CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION,
+  type CONDITIONAL_RECOVERY_SESSION_SCHEMA_VERSION,
   type ConditionalRecoveryBatchBinding,
   type ConditionalRecoveryKeysetTerminalEvidence,
   type ConditionalRecoverySessionScan,
@@ -20,7 +20,9 @@ export const CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES = 64 * 1_024 * 1_024;
 export const CONDITIONAL_RECOVERY_MAX_CHECKPOINT_BYTES =
   CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES;
 export const CONDITIONAL_RECOVERY_MAX_KEYS_PER_KEYSET = 1_024 as const;
-export const CONDITIONAL_RECOVERY_MAX_PROOFS = 100 as const;
+export const CONDITIONAL_RECOVERY_MAX_DERIVATION_BATCH_SIZE = 100 as const;
+export const CONDITIONAL_RECOVERY_GAP_LIMIT = 100 as const;
+export const CONDITIONAL_RECOVERY_MAX_NUT07_AUDIT_BYTES = 64 * 1_024 * 1_024;
 export const CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS = 100_000 as const;
 export const CONDITIONAL_RECOVERY_MAX_WORK_UNITS = 1_000_000 as const;
 export const CONDITIONAL_RECOVERY_MAX_UNIT_BYTES = 64 as const;
@@ -124,11 +126,13 @@ export interface ConditionalRecoverySession {
   readonly transition: ConditionalRecoverySessionTransition;
   readonly evidenceDigest: string;
   readonly budget: ConditionalRecoveryBudget;
+  readonly nut07AuditBytes: number;
   readonly catalogueDigest: string;
   readonly completedKeysetProofCount: number;
   readonly catalogueOrdinal: number | null;
   readonly activeKeysetId: string | null;
   readonly keysetMetadataDigest: string | null;
+  readonly keysDigest: string | null;
   readonly scan: ConditionalRecoverySessionScan;
   readonly currentBatch: ConditionalRecoveryBatchBinding | null;
   readonly keysetTerminalEvidence: ConditionalRecoveryKeysetTerminalEvidence | null;
@@ -147,6 +151,15 @@ export interface ConditionalRecoveryFreshExpiryEvidence {
   readonly authorityDigest: string;
 }
 
+
+export interface ConditionalRecoveryKeysTransportPort {
+  readonly fetchConditionalKeysEntity: (input: {
+    readonly walletScope: ConditionalRecoveryWalletScope;
+    readonly endpoint: string;
+    readonly keysetId: string;
+    readonly maxEntityBytes: number;
+  }) => Promise<Uint8Array>;
+}
 
 export interface ConditionalRecoveryNut09TransportPort {
   readonly fetchNut09Entity: (input: {
@@ -219,6 +232,14 @@ export interface ConditionalRecoverySessionCasPort {
     readonly expectedDigest: string | null;
     readonly successor: ConditionalRecoverySession;
   }) => boolean;
+  readonly compareAndSwapStageConditionalKeys: (input: {
+    readonly walletScope: ConditionalRecoveryWalletScope;
+    readonly expectedDigest: string;
+    readonly successor: ConditionalRecoverySession;
+    readonly keysetId: string;
+    readonly catalogueOrdinal: number;
+    readonly keysBytes: Uint8Array;
+  }) => Promise<boolean>;
   readonly compareAndSwapStageNut09Request: (input: {
     readonly walletScope: ConditionalRecoveryWalletScope;
     readonly expectedDigest: string;
@@ -235,15 +256,12 @@ export interface ConditionalRecoverySessionCasPort {
   }) => Promise<boolean>;
   readonly compareAndSwapInsertUnique: ConditionalRecoveryAdmissionPort["compareAndSwapInsertUnique"];
   readonly compareAndSwapRetainExpiredKeyset: (input: {
-    readonly walletScope: ConditionalRecoveryWalletScope;
     readonly expectedSessionDigest: string;
-    readonly successorSession: ConditionalRecoverySession;
+    readonly successor: ConditionalRecoverySession;
     readonly stagedBatchId: string;
     readonly expiryAuthority: ConditionalRecoveryFreshExpiryEvidence;
     readonly rows: readonly ConditionalRecoveryProofDispositionRow[];
-    readonly nut07Authority: ConditionalRecoveryNut07CommitAuthority;
-    readonly nut07Audit: ConditionalRecoveryNut07AuditPayload;
-  }) => boolean;
+  }) => Promise<boolean>;
 }
 
 export interface SeedDerivedConditionalRecoveryOutput {
