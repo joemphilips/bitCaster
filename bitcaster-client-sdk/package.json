@@ -176,6 +176,10 @@
       "types": "./dist/emergencySeedRecovery.d.ts",
       "import": "./dist/emergencySeedRecovery.js"
     },
+    "./emergencyConditionalSeedRecovery": {
+      "types": "./dist/emergencyConditionalSeedRecovery.d.ts",
+      "import": "./dist/emergencyConditionalSeedRecovery.js"
+    },
     "./encryptedWalletBackup": {
       "types": "./dist/encryptedWalletBackup.d.ts",
       "import": "./dist/encryptedWalletBackup.js"

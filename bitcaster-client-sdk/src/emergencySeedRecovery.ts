@@ -1,3 +1,8 @@
+import {
+  advanceSeedScanCursor,
+  classifySeedRecoveryMintState,
+} from "./seedRecoveryCore.ts";
+
 export const EMERGENCY_SEED_RECOVERY_SCHEMA_VERSION = 1 as const;
 export const EMERGENCY_SEED_RECOVERY_BATCH_SIZE = 300 as const;
 export const EMERGENCY_SEED_RECOVERY_GAP_LIMIT = 300 as const;
@@ -60,18 +65,26 @@ export function advanceEmergencySeedRecoveryCursor(
   ) {
     throw new Error("emergency seed recovery batch size is invalid");
   }
-  const endCounter = observation.startCounter + observation.requestedCount;
-  if (!Number.isSafeInteger(endCounter)) {
-    throw new Error("emergency seed recovery counter overflowed");
-  }
-  const trailingEmptyCounters = trailingEmptyCount(
-    cursor,
-    observation,
-    endCounter,
+  const lastCounterWithSignature = observation.lastCounterWithSignature;
+  const advanced = advanceSeedScanCursor(
+    {
+      nextCounter: cursor.nextCounter,
+      consecutiveEmptyOutputs: cursor.trailingEmptyCounters,
+    },
+    {
+      startCounter: observation.startCounter,
+      requestedCount: observation.requestedCount,
+      returnedCounterOffsets:
+        lastCounterWithSignature === null
+          ? []
+          : [lastCounterWithSignature - observation.startCounter],
+    },
+    EMERGENCY_SEED_RECOVERY_BATCH_SIZE,
   );
+  const trailingEmptyCounters = advanced.consecutiveEmptyOutputs;
   return {
     ...cursor,
-    nextCounter: endCounter,
+    nextCounter: advanced.nextCounter,
     trailingEmptyCounters,
     revision: cursor.revision + 1,
     state:
@@ -84,14 +97,14 @@ export function advanceEmergencySeedRecoveryCursor(
 export function classifyEmergencySeedRecoveryProof(
   mintState: "UNSPENT" | "SPENT" | "PENDING" | "UNKNOWN",
 ): EmergencySeedRecoveryProofDisposition {
-  switch (mintState) {
-    case "UNSPENT":
+  switch (classifySeedRecoveryMintState(mintState)) {
+    case "selectable":
       return "import-selectable";
-    case "SPENT":
+    case "spent":
       return "ignore-spent";
-    case "PENDING":
+    case "retain-nonselectable":
       return "retain-nonselectable";
-    case "UNKNOWN":
+    case "fail-closed":
       return "fail-closed";
   }
 }
@@ -121,30 +134,6 @@ export function validateEmergencySeedRecoveryCursor(
     throw new Error("emergency seed recovery completion state is inconsistent");
   }
   return { ...value };
-}
-
-function trailingEmptyCount(
-  cursor: EmergencySeedRecoveryCursor,
-  observation: EmergencySeedRecoveryBatchObservation,
-  endCounter: number,
-): number {
-  const last = observation.lastCounterWithSignature;
-  if (last === null) {
-    const accumulated =
-      cursor.trailingEmptyCounters + observation.requestedCount;
-    if (!Number.isSafeInteger(accumulated)) {
-      throw new Error("emergency seed recovery empty counter overflowed");
-    }
-    return accumulated;
-  }
-  if (
-    !Number.isSafeInteger(last) ||
-    last < observation.startCounter ||
-    last >= endCounter
-  ) {
-    throw new Error("emergency seed recovery signature counter is invalid");
-  }
-  return endCounter - last - 1;
 }
 
 function requireIdentifier(value: string, label: string): void {
