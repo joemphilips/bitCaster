@@ -147,11 +147,6 @@ export interface ConditionalRecoveryFreshExpiryEvidence {
   readonly authorityDigest: string;
 }
 
-export interface ConditionalRecoveryStagedProofRow {
-  readonly proofIdentity: string;
-  readonly state: ConditionalRecoveryNut07State;
-  readonly proof: CanonicalConditionalRecoveryProof;
-}
 
 export interface ConditionalRecoveryNut09TransportPort {
   readonly fetchNut09Entity: (input: {
@@ -172,10 +167,27 @@ export interface ConditionalRecoveryNut07TransportPort {
 }
 
 export interface ConditionalRecoveryNut07CommitAuthority {
-  readonly consumeAtCommitInitiation: () => Readonly<{
+  readonly consumeForCommit: () => Readonly<{
     authorityDigest: string;
     monotonicAgeMs: number;
   }>;
+}
+
+export interface ConditionalRecoveryNut07AuditPayload {
+  readonly walletScope: ConditionalRecoveryWalletScope;
+  readonly keysetId: string;
+  readonly expectedSessionDigest: string;
+  readonly stagedBatchId: string;
+  readonly proofYDigest: string;
+  readonly proofYs: readonly string[];
+  readonly requestBytes: Uint8Array;
+  readonly responseBytes: Uint8Array;
+  readonly requestDigest: string;
+  readonly responseDigest: string;
+  readonly results: readonly ConditionalRecoveryNut07Result[];
+  readonly issuedAt: number;
+  readonly deadline: number;
+  readonly authorityDigest: string;
 }
 
 export type ConditionalRecoveryProofDispositionRow =
@@ -217,11 +229,14 @@ export interface ConditionalRecoverySessionCasPort {
   }) => Promise<boolean>;
   readonly compareAndSwapInsertUnique: ConditionalRecoveryAdmissionPort["compareAndSwapInsertUnique"];
   readonly compareAndSwapRetainExpiredKeyset: (input: {
+    readonly walletScope: ConditionalRecoveryWalletScope;
     readonly expectedSessionDigest: string;
-    readonly successor: ConditionalRecoverySession;
+    readonly successorSession: ConditionalRecoverySession;
     readonly stagedBatchId: string;
     readonly expiryAuthority: ConditionalRecoveryFreshExpiryEvidence;
     readonly rows: readonly ConditionalRecoveryProofDispositionRow[];
+    readonly nut07Authority: ConditionalRecoveryNut07CommitAuthority;
+    readonly nut07Audit: ConditionalRecoveryNut07AuditPayload;
   }) => boolean;
 }
 
@@ -290,6 +305,7 @@ export interface ConditionalRecoveryAdmissionPort {
     readonly stagedBatchId: string;
     readonly rows: readonly ConditionalRecoveryProofDispositionRow[];
     readonly nut07Authority: ConditionalRecoveryNut07CommitAuthority;
+    readonly nut07Audit: ConditionalRecoveryNut07AuditPayload;
   }) => boolean;
 }
 
@@ -302,13 +318,23 @@ export interface ValidatedConditionalRecoveryTarget {
   readonly session: ConditionalRecoverySession;
 }
 
+export interface ConditionalRecoveryFreshIneligibleSkip {
+  readonly reason: "freshly-proven-ineligible";
+  readonly walletScope: ConditionalRecoveryWalletScope;
+  readonly keysetId: string;
+  readonly catalogueOrdinal: number;
+  readonly authorityDigest: string;
+  readonly budget: ConditionalRecoveryBudget;
+  readonly session: ConditionalRecoverySession;
+}
+
 export interface CanonicalConditionalRecoveryProof {
   readonly id: string;
   readonly amount: string;
   readonly secret: string;
   readonly C: string;
   readonly dleq: Readonly<{ e: string; s: string; r: string }>;
-  readonly p2pkE: string | null;
+  readonly p2pk_e: string | null;
   readonly witness: string | Readonly<Record<string, unknown>> | null;
 }
 

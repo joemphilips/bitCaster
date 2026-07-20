@@ -42,6 +42,7 @@ export {
   resumeConditionalRecoverySession,
   snapshotConditionalCatalogueCheckpoint,
   validateConditionalCataloguePage,
+  skipFreshlyIneligibleConditionalRecoveryKeyset,
   validateConditionalRecoveryKeys,
 } from "./emergencyConditionalRecoveryCatalogue.ts";
 
@@ -71,8 +72,10 @@ export type {
   ConditionalRecoveryAuthorityPort,
   ConditionalRecoveryBudget,
   ConditionalRecoveryCapability,
+  ConditionalRecoveryFreshIneligibleSkip,
   ConditionalRecoveryFreshExpiryEvidence,
   ConditionalRecoveryKeysetMetadata,
+  ConditionalRecoveryNut07AuditPayload,
   ConditionalRecoveryNut07CommitAuthority,
   ConditionalRecoveryNut07TransportPort,
   ConditionalRecoveryNut09TransportPort,
@@ -84,7 +87,6 @@ export type {
   ConditionalRecoveryNut13DerivationPort,
   ConditionalRecoverySession,
   ConditionalRecoverySessionCasPort,
-  ConditionalRecoveryStagedProofRow,
   ConditionalRecoveryWalletScope,
   SeedDerivedConditionalRecoveryOutput,
   SeedDerivedConditionalRecoveryPlan,

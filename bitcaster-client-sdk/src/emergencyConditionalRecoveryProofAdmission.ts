@@ -28,6 +28,7 @@ import {
   type ConditionalRecoveryAdmissionPort,
   type ConditionalRecoveryAuthorityObservation,
   type ConditionalRecoveryNut07CommitAuthority,
+  type ConditionalRecoveryNut07AuditPayload,
   type ConditionalRecoveryNut07TransportPort,
   type ConditionalRecoveryProofDispositionRow,
   type ConditionalRecoveryNut07Classification,
@@ -126,6 +127,8 @@ interface Nut07CommitAuthorityState {
   readonly authorityDigest: string;
   readonly issuedAt: number;
   readonly deadline: number;
+  readonly audit: ConditionalRecoveryNut07AuditPayload;
+  readonly auditDigest: string;
   valid: boolean;
   consumed: boolean;
 }
@@ -599,13 +602,6 @@ async function acceptConditionalRecoveryNut09ResponseBytes(input: {
     );
   }
   const { catalogue, target, plan, sessionPort } = requestState;
-  const planState = seedPlans.get(plan);
-  if (planState === undefined || planState.target !== target) {
-    throw new Error("conditional recovery NUT-13 plan evidence is invalid");
-  }
-  const privateRequested = new Map(
-    planState.privateOutputs.map((output) => [output.B_, output] as const),
-  );
   if (
     digestValue([
       "conditional-recovery-nut09-request-v2",
@@ -661,142 +657,8 @@ async function acceptConditionalRecoveryNut09ResponseBytes(input: {
       "conditional recovery NUT-09 response output/signature count is invalid",
     );
   }
-  const responseOutputs = responseObject.outputs;
-  const responseSignatures = responseObject.signatures;
-  const requested = new Map(
-    plan.outputs.map((output) => [output.B_, output] as const),
-  );
-  const seenOutputs = new Set<string>();
-  const seenSignatures = new Set<string>();
-  const derivedProofs: ProofLike[] = [];
-  responseOutputs.forEach((rawValue, index) => {
-    const output = requireObject(
-      rawValue,
-      "conditional recovery NUT-09 output",
-    );
-    requireExactKeys(
-      output,
-      ["id", "amount", "B_"],
-      "conditional recovery NUT-09 output",
-    );
-    const B_ = requireCompressedSecpPublicKey(
-      output.B_,
-      "conditional recovery NUT-09 output B_",
-    );
-    const expected = requested.get(B_);
-    if (expected === undefined || seenOutputs.has(B_)) {
-      throw new Error(
-        "conditional recovery NUT-09 response output was not uniquely requested",
-      );
-    }
-    seenOutputs.add(B_);
-    if (
-      requireV2KeysetId(output.id) !== expected.id ||
-      canonicalRestoreOutputAmount(
-        output.amount,
-        "conditional recovery NUT-09 output amount",
-      ) !== expected.amount
-    ) {
-      throw new Error(
-        "conditional recovery NUT-09 response output metadata changed",
-      );
-    }
-    const signature = requireObject(
-      responseSignatures[index],
-      "conditional recovery NUT-09 signature",
-    );
-    requireExactKeys(
-      signature,
-      ["id", "amount", "C_", "dleq"],
-      "conditional recovery NUT-09 signature",
-      ["dleq"],
-    );
-    const C_ = requireCompressedSecpPublicKey(
-      signature.C_,
-      "conditional recovery NUT-09 blind signature",
-    );
-    if (seenSignatures.has(C_)) {
-      throw new Error(
-        "conditional recovery NUT-09 response repeated a signature",
-      );
-    }
-    seenSignatures.add(C_);
-    const signatureAmount = canonicalAmount(
-      signature.amount,
-      "conditional recovery NUT-09 signature amount",
-    );
-    if (
-      requireV2KeysetId(signature.id) !== expected.id ||
-      !hasOwn(target.keys as Record<string, unknown>, signatureAmount)
-    ) {
-      throw new Error("conditional recovery NUT-09 signature metadata changed");
-    }
-    const rawDleq = requireObject(
-      signature.dleq,
-      "conditional recovery NUT-09 signature DLEQ",
-    );
-    requireExactKeys(
-      rawDleq,
-      ["e", "s"],
-      "conditional recovery NUT-09 signature DLEQ",
-    );
-    const rawE = requireLowerHex32(rawDleq.e, "NUT-09 signature DLEQ e");
-    const rawS = requireLowerHex32(rawDleq.s, "NUT-09 signature DLEQ s");
-    const privateOutput = privateRequested.get(B_);
-    if (privateOutput === undefined) {
-      throw new Error(
-        "conditional recovery NUT-09 output omitted private derivation evidence",
-      );
-    }
-    let proof: ProofLike;
-    try {
-      proof = privateOutput.unblind(responseSignatures[index]);
-    } catch (cause) {
-      throw new Error(
-        "conditional recovery NUT-09 signature unblinding failed",
-        { cause },
-      );
-    }
-    const proofRecord = requireObject(
-      proof,
-      "conditional recovery unblinded proof",
-    );
-    const proofDleq = requireObject(
-      proofRecord.dleq,
-      "conditional recovery unblinded proof DLEQ",
-    );
-    if (
-      canonicalAmount(
-        proofRecord.amount,
-        "conditional recovery unblinded proof amount",
-      ) !==
-        canonicalAmount(
-          signature.amount,
-          "conditional recovery NUT-09 signature amount",
-        ) ||
-      requireLowerHex32(proofDleq.e, "unblinded proof DLEQ e") !== rawE ||
-      requireLowerHex32(proofDleq.s, "unblinded proof DLEQ s") !== rawS
-    ) {
-      throw new Error(
-        "conditional recovery unblinded proof does not match raw NUT-09 signature",
-      );
-    }
-    derivedProofs.push(proof);
-  });
-  const snapshot = canonicalizeProofBatch(
-    derivedProofs,
-    target.metadata.id,
-    true,
-  );
-  responseOutputs.forEach((rawValue, index) => {
-    const B_ = (rawValue as { B_: string }).B_;
-    const expected = requested.get(B_)!;
-    if (snapshot.ys[index] !== expected.Y) {
-      throw new Error(
-        "conditional recovery restored proof does not match its seed-derived counter output",
-      );
-    }
-  });
+  const { responseOutputs, proofs: derivedProofs, snapshot } =
+    deriveNut09ResponseProofs(responseObject, target, plan);
   const responseSerializedBytes = boundedJsonBytes(
     response,
     CONDITIONAL_RECOVERY_MAX_PAGE_BYTES,
@@ -825,10 +687,10 @@ async function acceptConditionalRecoveryNut09ResponseBytes(input: {
     ),
     proofCount: snapshot.canonical.length,
   });
-  const responseDigest = digestValue([
-    "conditional-recovery-nut09-response-v2",
-    bytesToHex(input.responseBody),
-  ]);
+  const responseDigest = digestTaggedRawBytes(
+    "conditional-recovery-nut09-response-v3",
+    input.responseBody,
+  );
   const plannedStart = input.request.session.scan.plannedStart;
   const plannedCount = input.request.session.scan.plannedCount;
   if (plannedStart === null || plannedCount !== plan.outputs.length) {
@@ -840,8 +702,15 @@ async function acceptConditionalRecoveryNut09ResponseBytes(input: {
       startCounter: plannedStart,
       requestedCount: plannedCount,
       returnedCounterOffsets: responseOutputs.map((rawValue) => {
-        const requestedOutput = requested.get((rawValue as { B_: string }).B_);
-        return plan.outputs.indexOf(requestedOutput!);
+        const output = requireObject(
+          rawValue,
+          "conditional recovery NUT-09 output",
+        );
+        const B_ = requireCompressedSecpPublicKey(
+          output.B_,
+          "conditional recovery NUT-09 output B_",
+        );
+        return plan.outputs.findIndex((candidate) => candidate.B_ === B_);
       }),
     },
     {
@@ -1214,10 +1083,10 @@ export async function fetchConditionalRecoveryNut07CommitAuthority(input: {
     ),
     workUnits: checkedSafeAdd(response.states.length, 1, "NUT-07 work"),
   });
-  const responseDigest = digestValue([
-    "conditional-recovery-nut07-response-v1",
-    bytesToHex(responseBytes),
-  ]);
+  const responseDigest = digestTaggedRawBytes(
+    "conditional-recovery-nut07-response-v2",
+    responseBytes,
+  );
   const issuedAt = performance.now();
   const deadline = issuedAt + 5_000;
   const authorityDigest = digestValue([
@@ -1247,9 +1116,25 @@ export async function fetchConditionalRecoveryNut07CommitAuthority(input: {
     session: state.session,
     budget,
   });
+  const audit = Object.freeze({
+    walletScope,
+    keysetId: batch.keysetId,
+    expectedSessionDigest: state.session.digest,
+    stagedBatchId: batch.stagedBatchId!,
+    proofYDigest: batch.proofYDigest,
+    proofYs: Object.freeze([...state.ys]),
+    requestBytes: new Uint8Array(requestBytes),
+    responseBytes: new Uint8Array(responseBytes),
+    requestDigest,
+    responseDigest,
+    results,
+    issuedAt,
+    deadline,
+    authorityDigest,
+  });
   let authority!: ConditionalRecoveryNut07CommitAuthority;
   authority = Object.freeze({
-    consumeAtCommitInitiation: () => {
+    consumeForCommit: () => {
       const authorityState = nut07CommitAuthorities.get(authority);
       if (
         authorityState === undefined ||
@@ -1258,6 +1143,12 @@ export async function fetchConditionalRecoveryNut07CommitAuthority(input: {
       ) {
         throw new Error(
           "conditional recovery NUT-07 commit authority is invalid or already consumed",
+        );
+      }
+      if (digestNut07AuditPayload(audit) !== authorityState.auditDigest) {
+        authorityState.valid = false;
+        throw new Error(
+          "conditional recovery NUT-07 audit payload was mutated",
         );
       }
       const now = performance.now();
@@ -1282,6 +1173,8 @@ export async function fetchConditionalRecoveryNut07CommitAuthority(input: {
     deadline,
     valid: true,
     consumed: false,
+    audit,
+    auditDigest: digestNut07AuditPayload(audit),
   });
   return authority;
 }
@@ -1358,7 +1251,8 @@ export function authorizeConditionalRecoveryAdmission(input: {
     const proof = verifiedState.canonical[result.proofIndex]!;
     const proofIdentity =
       input.verifiedProofs.proofIdentities[result.proofIndex]!;
-    switch (classifySeedRecoveryMintState(result.state)) {
+    const disposition = classifySeedRecoveryMintState(result.state);
+    switch (disposition) {
       case "selectable":
         selectableProofs.push(proof);
         rows.push(
@@ -1397,9 +1291,7 @@ export function authorizeConditionalRecoveryAdmission(input: {
           "conditional recovery NUT-07 disposition cannot be admitted",
         );
       default:
-        assertNever(
-          classifySeedRecoveryMintState(result.state) as never,
-        );
+        assertNever(disposition);
     }
   }
   const dispositionRows = Object.freeze(rows);
@@ -1431,18 +1323,22 @@ export function authorizeConditionalRecoveryAdmission(input: {
     terminalEvidence: null,
   });
   validateConditionalRecoverySessionSuccessor(currentSession, successorSession);
-  const committed = input.admissionPort.compareAndSwapInsertUnique({
-    walletScope,
-    expectedSessionDigest: currentSession.digest,
-    successorSession,
-    stagedBatchId: currentSession.currentBatch!.stagedBatchId!,
-    rows: dispositionRows,
-    nut07Authority: input.nut07Authority,
-  });
-  if (
-    committed !== true ||
-    !nut07State.consumed
-  ) {
+  let committed: boolean;
+  try {
+    committed = input.admissionPort.compareAndSwapInsertUnique({
+      walletScope,
+      expectedSessionDigest: currentSession.digest,
+      successorSession,
+      stagedBatchId: currentSession.currentBatch!.stagedBatchId!,
+      rows: dispositionRows,
+      nut07Authority: input.nut07Authority,
+      nut07Audit: nut07State.audit,
+    });
+  } catch (error) {
+    nut07State.valid = false;
+    throw error;
+  }
+  if (committed !== true || !nut07State.consumed) {
     nut07State.valid = false;
     throw new Error(
       committed === true
@@ -1575,24 +1471,30 @@ export function retainExpiredConditionalRecoveryKeyset(input: {
     terminalEvidence: null,
   });
   validateConditionalRecoverySessionSuccessor(currentSession, successor);
-  input.nut07Authority.consumeAtCommitInitiation();
-  if (!nut07State.consumed) {
+  let committed: boolean;
+  try {
+    committed = input.sessionPort.compareAndSwapRetainExpiredKeyset({
+      walletScope,
+      expectedSessionDigest: currentSession.digest,
+      successorSession: successor,
+      stagedBatchId,
+      expiryAuthority: authority,
+      rows,
+      nut07Authority: input.nut07Authority,
+      nut07Audit: nut07State.audit,
+    });
+  } catch (error) {
     nut07State.valid = false;
-    throw new Error(
-      "conditional recovery NUT-07 commit authority did not consume",
-    );
+    freshExpiryEvidence.delete(authority);
+    throw error;
   }
-  const committed = input.sessionPort.compareAndSwapRetainExpiredKeyset({
-    expectedSessionDigest: currentSession.digest,
-    successor,
-    stagedBatchId,
-    expiryAuthority: authority,
-    rows,
-  });
-  if (committed !== true) {
+  if (committed !== true || !nut07State.consumed) {
     nut07State.valid = false;
+    freshExpiryEvidence.delete(authority);
     throw new Error(
-      "conditional recovery expired-keyset retention CAS failed",
+      committed === true
+        ? "conditional recovery retention port omitted NUT-07 commit consumption"
+        : "conditional recovery expired-keyset retention CAS failed",
     );
   }
   adoptExternallyCommittedConditionalRecoverySession(
@@ -1665,7 +1567,7 @@ function canonicalizeProofBatch(
       s: requireLowerHex32(dleqRaw.s, "proof DLEQ s"),
       r: requireLowerHex32(dleqRaw.r, "proof DLEQ r"),
     });
-    const p2pkE =
+    const p2pk_e =
       proof.p2pk_e === undefined
         ? null
         : requireCompressedSecpPublicKey(
@@ -1679,11 +1581,188 @@ function canonicalizeProofBatch(
     }
     seenYs.add(y);
     ys.push(y);
-    return Object.freeze({ id, amount, secret, C, dleq, p2pkE, witness });
+    return Object.freeze({ id, amount, secret, C, dleq, p2pk_e, witness });
   });
   return {
     canonical: Object.freeze(canonical),
     ys: Object.freeze(ys),
+  };
+}
+
+function deriveNut09ResponseProofs(
+  response: Record<string, unknown>,
+  target: ValidatedConditionalRecoveryTarget,
+  plan: SeedDerivedConditionalRecoveryPlan,
+): {
+  readonly responseOutputs: readonly unknown[];
+  readonly proofs: readonly ProofLike[];
+  readonly snapshot: {
+    readonly canonical: readonly CanonicalConditionalRecoveryProof[];
+    readonly ys: readonly string[];
+  };
+} {
+  if (
+    !Array.isArray(response.outputs) ||
+    !Array.isArray(response.signatures) ||
+    response.outputs.length !== response.signatures.length ||
+    response.outputs.length > CONDITIONAL_RECOVERY_MAX_PROOFS
+  ) {
+    throw new Error(
+      "conditional recovery NUT-09 response output/signature count is invalid",
+    );
+  }
+  const planState = seedPlans.get(plan);
+  if (planState === undefined || planState.target !== target) {
+    throw new Error(
+      "conditional recovery NUT-09 plan private derivation evidence is invalid",
+    );
+  }
+  const responseSignatures = response.signatures;
+  const requested = new Map(
+    plan.outputs.map((output) => [output.B_, output] as const),
+  );
+  const privateRequested = new Map(
+    planState.privateOutputs.map((output) => [output.B_, output] as const),
+  );
+  const seenOutputs = new Set<string>();
+  const seenSignatures = new Set<string>();
+  const proofs: ProofLike[] = [];
+  response.outputs.forEach((rawValue, index) => {
+    const output = requireObject(
+      rawValue,
+      "conditional recovery NUT-09 output",
+    );
+    requireExactKeys(
+      output,
+      ["id", "amount", "B_"],
+      "conditional recovery NUT-09 output",
+    );
+    const B_ = requireCompressedSecpPublicKey(
+      output.B_,
+      "conditional recovery NUT-09 output B_",
+    );
+    const expected = requested.get(B_);
+    if (expected === undefined || seenOutputs.has(B_)) {
+      throw new Error(
+        "conditional recovery NUT-09 response output was not uniquely requested",
+      );
+    }
+    seenOutputs.add(B_);
+    if (
+      requireV2KeysetId(output.id) !== expected.id ||
+      canonicalRestoreOutputAmount(
+        output.amount,
+        "conditional recovery NUT-09 output amount",
+      ) !== expected.amount
+    ) {
+      throw new Error(
+        "conditional recovery NUT-09 response output metadata changed",
+      );
+    }
+    const rawSignature = responseSignatures[index];
+    const signature = requireObject(
+      rawSignature,
+      "conditional recovery NUT-09 signature",
+    );
+    requireExactKeys(
+      signature,
+      ["id", "amount", "C_", "dleq"],
+      "conditional recovery NUT-09 signature",
+      ["dleq"],
+    );
+    const C_ = requireCompressedSecpPublicKey(
+      signature.C_,
+      "conditional recovery NUT-09 blind signature",
+    );
+    if (seenSignatures.has(C_)) {
+      throw new Error(
+        "conditional recovery NUT-09 response repeated a signature",
+      );
+    }
+    seenSignatures.add(C_);
+    const signatureAmount = canonicalAmount(
+      signature.amount,
+      "conditional recovery NUT-09 signature amount",
+    );
+    if (
+      requireV2KeysetId(signature.id) !== expected.id ||
+      !hasOwn(target.keys as Record<string, unknown>, signatureAmount)
+    ) {
+      throw new Error("conditional recovery NUT-09 signature metadata changed");
+    }
+    const rawDleq = requireObject(
+      signature.dleq,
+      "conditional recovery NUT-09 signature DLEQ",
+    );
+    requireExactKeys(
+      rawDleq,
+      ["e", "s"],
+      "conditional recovery NUT-09 signature DLEQ",
+    );
+    const rawE = requireLowerHex32(rawDleq.e, "NUT-09 signature DLEQ e");
+    const rawS = requireLowerHex32(rawDleq.s, "NUT-09 signature DLEQ s");
+    const privateOutput = privateRequested.get(B_);
+    if (privateOutput === undefined) {
+      throw new Error(
+        "conditional recovery NUT-09 output omitted private derivation evidence",
+      );
+    }
+    let proof: ProofLike;
+    try {
+      proof = privateOutput.unblind(rawSignature);
+    } catch (cause) {
+      throw new Error(
+        "conditional recovery NUT-09 signature unblinding failed",
+        { cause },
+      );
+    }
+    const proofRecord = requireObject(
+      proof,
+      "conditional recovery unblinded proof",
+    );
+    const proofDleq = requireObject(
+      proofRecord.dleq,
+      "conditional recovery unblinded proof DLEQ",
+    );
+    if (
+      canonicalAmount(
+        proofRecord.amount,
+        "conditional recovery unblinded proof amount",
+      ) !== signatureAmount ||
+      requireLowerHex32(proofDleq.e, "unblinded proof DLEQ e") !== rawE ||
+      requireLowerHex32(proofDleq.s, "unblinded proof DLEQ s") !== rawS
+    ) {
+      throw new Error(
+        "conditional recovery unblinded proof does not match raw NUT-09 signature",
+      );
+    }
+    proofs.push(proof);
+  });
+  const snapshot = canonicalizeProofBatch(
+    proofs,
+    target.metadata.id,
+    true,
+  );
+  response.outputs.forEach((rawValue, index) => {
+    const output = requireObject(
+      rawValue,
+      "conditional recovery NUT-09 output",
+    );
+    const B_ = requireCompressedSecpPublicKey(
+      output.B_,
+      "conditional recovery NUT-09 output B_",
+    );
+    const expected = requested.get(B_);
+    if (expected === undefined || snapshot.ys[index] !== expected.Y) {
+      throw new Error(
+        "conditional recovery restored proof does not match its seed-derived counter output",
+      );
+    }
+  });
+  return {
+    responseOutputs: response.outputs,
+    proofs: Object.freeze(proofs),
+    snapshot,
   };
 }
 
@@ -1769,6 +1848,50 @@ function canonicalizeWitness(
     );
   }
   return Object.freeze(canonical);
+}
+
+function digestTaggedRawBytes(tag: string, bytes: Uint8Array): string {
+  return bytesToHex(
+    sha256
+      .create()
+      .update(encoder.encode(tag))
+      .update(Uint8Array.of(0))
+      .update(bytes)
+      .digest(),
+  );
+}
+
+function digestNut07AuditPayload(
+  audit: ConditionalRecoveryNut07AuditPayload,
+): string {
+  const digest = sha256
+    .create()
+    .update(encoder.encode("conditional-recovery-nut07-audit-v1"))
+    .update(Uint8Array.of(0))
+    .update(
+      encoder.encode(
+        JSON.stringify({
+          walletScope: audit.walletScope,
+          keysetId: audit.keysetId,
+          expectedSessionDigest: audit.expectedSessionDigest,
+          stagedBatchId: audit.stagedBatchId,
+          proofYDigest: audit.proofYDigest,
+          proofYs: audit.proofYs,
+          requestDigest: audit.requestDigest,
+          responseDigest: audit.responseDigest,
+          results: audit.results,
+          issuedAt: audit.issuedAt,
+          deadline: audit.deadline,
+          authorityDigest: audit.authorityDigest,
+        }),
+      ),
+    )
+    .update(Uint8Array.of(0))
+    .update(audit.requestBytes)
+    .update(Uint8Array.of(0))
+    .update(audit.responseBytes)
+    .digest();
+  return bytesToHex(digest);
 }
 
 function digestCanonicalProofs(
@@ -1889,13 +2012,11 @@ export type ConditionalRecoverySessionRehydrationEvidence =
       readonly stage:
         | "completed-catalogue"
         | "keyset-completed"
-        | "keyset-skipped";
+        | "keyset-skipped"
+        | "expired-keyset-retention";
     })
   | (ConditionalRecoveryTargetRehydrationEvidence & {
-      readonly stage:
-        | "conditional-keys"
-        | "atomic-admission"
-        | "expired-keyset-retention";
+      readonly stage: "conditional-keys" | "atomic-admission";
     })
   | (ConditionalRecoveryPlanRehydrationEvidence & {
       readonly stage: "nut13-plan";
@@ -1969,7 +2090,7 @@ export async function rehydrateConditionalRecoverySessionCapabilities(
       "stagedProofRows",
     ],
     "atomic-admission": ["stage", "catalogue", "keysResponse"],
-    "expired-keyset-retention": ["stage", "catalogue", "keysResponse"],
+    "expired-keyset-retention": ["stage", "catalogue"],
   };
   const exactEvidenceKeys = evidenceKeys[evidence.stage];
   if (exactEvidenceKeys === undefined) {
@@ -2283,21 +2404,39 @@ function rehydratePersistedConditionalRecoveryBatch(input: {
     );
   }
   const binding = input.session.currentBatch!;
-  const snapshot = canonicalizeProofBatch(
-    input.rows as readonly ProofLike[],
+  const derived = deriveNut09ResponseProofs(response, input.target, input.plan);
+  const stagedProofs = input.rows.map((proof) => {
+    const witness = rehydrateProofLikeWitness(proof.witness);
+    return {
+      id: proof.id,
+      amount: proof.amount,
+      secret: proof.secret,
+      C: proof.C,
+      dleq: proof.dleq,
+      ...(proof.p2pk_e === null ? {} : { p2pk_e: proof.p2pk_e }),
+      ...(witness === undefined ? {} : { witness }),
+    };
+  });
+  const stagedSnapshot = canonicalizeProofBatch(
+    stagedProofs,
     input.target.metadata.id,
     true,
   );
-  if (snapshot.canonical.length !== binding.returnedCount) {
+  const snapshot = derived.snapshot;
+  const proofBodyDigest = digestCanonicalProofs(snapshot.canonical);
+  if (
+    snapshot.canonical.length !== binding.returnedCount ||
+    digestCanonicalProofs(stagedSnapshot.canonical) !== proofBodyDigest ||
+    !equalStringArrays(stagedSnapshot.ys, snapshot.ys)
+  ) {
     throw new Error(
-      "conditional recovery staged proof rows do not match returned count",
+      "conditional recovery staged proof rows do not match the raw response",
     );
   }
-  const responseDigest = digestValue([
-    "conditional-recovery-nut09-response-v2",
-    bytesToHex(input.responseBytes),
-  ]);
-  const proofBodyDigest = digestCanonicalProofs(snapshot.canonical);
+  const responseDigest = digestTaggedRawBytes(
+    "conditional-recovery-nut09-response-v3",
+    input.responseBytes,
+  );
   const proofYDigest = digestProofYs(snapshot.canonical, snapshot.ys);
   const stagedBatchId =
     snapshot.canonical.length === 0
@@ -2327,20 +2466,7 @@ function rehydratePersistedConditionalRecoveryBatch(input: {
       ]),
     ),
   );
-  const admittedProofs = Object.freeze(
-    snapshot.canonical.map((proof) => {
-      const witness = rehydrateProofLikeWitness(proof.witness);
-      return Object.freeze({
-        id: proof.id,
-        amount: proof.amount,
-        secret: proof.secret,
-        C: proof.C,
-        dleq: proof.dleq,
-        ...(proof.p2pkE === null ? {} : { p2pk_e: proof.p2pkE }),
-        ...(witness === undefined ? {} : { witness }),
-      });
-    }),
-  );
+  const admittedProofs = Object.freeze([...derived.proofs]);
   const proofBatch = Object.freeze({
     walletScope: input.session.walletScope,
     keysetId: input.target.metadata.id,
@@ -2408,6 +2534,16 @@ function rehydrateProofLikeWitness(
   return signatures === undefined ? {} : { signatures };
 }
 
+
+function equalStringArrays(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false;

@@ -62,6 +62,7 @@ import {
   type ConditionalRecoveryKeysetMetadata,
   type ConditionalRecoverySession,
   type ConditionalRecoverySessionCasPort,
+  type ConditionalRecoveryFreshIneligibleSkip,
   type ConditionalRecoveryWalletScope,
   type ValidatedConditionalCataloguePage,
   type ValidatedConditionalRecoveryTarget,
@@ -85,11 +86,20 @@ interface LiveProgressState {
 const liveProgress = new WeakMap<object, LiveProgressState>();
 const livePages = new WeakMap<object, LiveProgressState>();
 const completedCatalogues = new WeakSet<object>();
+const consumedCompletionCatalogues = new WeakSet<object>();
 const validatedTargets = new WeakSet<object>();
 const targetCatalogues = new WeakMap<object, object>();
 const targetSessionPorts = new WeakMap<
   object,
   ConditionalRecoverySessionCasPort
+>();
+const freshIneligibleSkips = new WeakMap<
+  object,
+  {
+    readonly sessionPort: ConditionalRecoverySessionCasPort;
+    readonly metadataDigest: string;
+    consumed: boolean;
+  }
 >();
 
 export function getConditionalRecoveryTargetSessionPort(
@@ -691,7 +701,7 @@ export function validateConditionalRecoveryKeys(input: {
   responseBytes: number;
   authority: ConditionalRecoveryAuthorityObservation;
   session: ConditionalRecoverySession;
-}): ValidatedConditionalRecoveryTarget | null {
+}): ValidatedConditionalRecoveryTarget | ConditionalRecoveryFreshIneligibleSkip {
   const catalogue = requireCompletedCatalogue(input.catalogue);
   const authority = consumeAuthority(input.authority, catalogue);
   const walletScope = decodeConditionalRecoveryWalletScope(input.walletScope);
@@ -813,7 +823,31 @@ export function validateConditionalRecoveryKeys(input: {
   if (
     !isConditionalRecoveryKeysetRecoverable(metadata, authority.effectiveTime)
   ) {
-    return null;
+    const catalogueOrdinal = catalogue.keysets.findIndex(
+      (candidate) => candidate.id === metadata.id,
+    );
+    const authorityDigest = digestValue([
+      "conditional-recovery-freshly-ineligible-v1",
+      catalogue.capability,
+      authority.effectiveTime,
+      metadata,
+      budget,
+    ]);
+    const skip = Object.freeze({
+      reason: "freshly-proven-ineligible" as const,
+      walletScope,
+      keysetId: metadata.id,
+      catalogueOrdinal,
+      authorityDigest,
+      budget,
+      session: input.session,
+    });
+    freshIneligibleSkips.set(skip, {
+      sessionPort,
+      metadataDigest: metadataFingerprint(metadata),
+      consumed: false,
+    });
+    return skip;
   }
   const catalogueOrdinal = catalogue.keysets.findIndex(
     (candidate) => candidate.id === metadata.id,
@@ -847,6 +881,61 @@ export function validateConditionalRecoveryKeys(input: {
   targetCatalogues.set(target, catalogue);
   targetSessionPorts.set(target, sessionPort);
   return target;
+}
+
+export function skipFreshlyIneligibleConditionalRecoveryKeyset(
+  skip: ConditionalRecoveryFreshIneligibleSkip,
+): ConditionalRecoverySession {
+  const state = freshIneligibleSkips.get(skip);
+  if (state === undefined || state.consumed) {
+    throw new Error(
+      "conditional recovery freshly-ineligible skip authority is invalid or already consumed",
+    );
+  }
+  const expectedOrdinal =
+    skip.session.catalogueOrdinal === null
+      ? 0
+      : skip.session.catalogueOrdinal + 1;
+  if (
+    skip.reason !== "freshly-proven-ineligible" ||
+    skip.catalogueOrdinal !== expectedOrdinal
+  ) {
+    state.consumed = true;
+    throw new Error(
+      "conditional recovery freshly-ineligible skip ordinal is invalid",
+    );
+  }
+  const skipDigest = digestValue([
+    "conditional-recovery-freshly-ineligible-skip-v1",
+    skip.authorityDigest,
+    state.metadataDigest,
+    skip.catalogueOrdinal,
+    skip.keysetId,
+    skip.budget,
+  ]);
+  state.consumed = true;
+  return advanceSession(
+    skip.session,
+    state.sessionPort,
+    "keyset-skipped",
+    skipDigest,
+    skip.budget,
+    initialConditionalRecoveryScan(skip.session.scan.nextCounter),
+    {
+      catalogueOrdinal: skip.catalogueOrdinal,
+      activeKeysetId: null,
+      keysetMetadataDigest: null,
+      currentBatch: null,
+      keysetTerminalEvidence: null,
+      skipEvidence: {
+        catalogueOrdinal: skip.catalogueOrdinal,
+        keysetId: skip.keysetId,
+        reason: "freshly-proven-ineligible",
+        authorityDigest: skipDigest,
+      },
+      terminalEvidence: null,
+    },
+  );
 }
 
 export function rehydrateConditionalRecoveryTarget(input: {
@@ -2090,28 +2179,44 @@ export function completeConditionalRecoveryKeyset(input: {
 export function completeConditionalRecoverySession(input: {
   session: ConditionalRecoverySession;
   sessionPort: ConditionalRecoverySessionCasPort;
-  catalogueLength: number;
-  evidenceDigest: string;
+  catalogue: CompletedConditionalRecoveryCatalogue;
 }): ConditionalRecoverySession {
-  const catalogueLength = requireSafeInteger(
-    input.catalogueLength,
-    "conditional recovery catalogue length",
-  );
-  if (
-    catalogueLength < 0 ||
-    (input.session.catalogueOrdinal === null
-      ? catalogueLength !== 0
-      : input.session.catalogueOrdinal + 1 !== catalogueLength)
-  ) {
+  const catalogue = requireCompletedCatalogue(input.catalogue);
+  if (consumedCompletionCatalogues.has(catalogue)) {
     throw new Error(
-      "conditional recovery completion catalogue length is inconsistent",
+      "conditional recovery completion catalogue authority was already consumed",
     );
   }
-  const evidenceDigest = requireLowerHex32(
-    input.evidenceDigest,
-    "recovery completion evidence digest",
+  assertConditionalRecoveryWalletScopeMatches(
+    catalogue.walletScope,
+    input.session.walletScope,
   );
-  return advanceSession(
+  const catalogueDigest = digestValue([
+    catalogue.capability,
+    catalogue.keysets,
+  ]);
+  if (catalogueDigest !== input.session.catalogueDigest) {
+    throw new Error(
+      "conditional recovery completion catalogue digest mismatched the session",
+    );
+  }
+  const catalogueLength = catalogue.keysets.length;
+  const nextOrdinal =
+    input.session.catalogueOrdinal === null
+      ? 0
+      : input.session.catalogueOrdinal + 1;
+  if (nextOrdinal !== catalogueLength) {
+    throw new Error(
+      "conditional recovery completion catalogue is not fully consumed",
+    );
+  }
+  const evidenceDigest = digestValue([
+    "conditional-recovery-completed-v2",
+    catalogueDigest,
+    catalogueLength,
+    input.session.digest,
+  ]);
+  const successor = advanceSession(
     input.session,
     input.sessionPort,
     "recovery-completed",
@@ -2132,6 +2237,8 @@ export function completeConditionalRecoverySession(input: {
       },
     },
   );
+  consumedCompletionCatalogues.add(catalogue);
+  return successor;
 }
 
 export function failConditionalRecoverySessionClosed(input: {
