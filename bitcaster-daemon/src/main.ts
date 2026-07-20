@@ -21,7 +21,7 @@ import {
   assertStoredDaemonStateIsEmptyForIdentityReplacement,
   emptyDaemonState,
   initializeDaemonStateInDatabase,
-  migrateDaemonStateStorageV1ToV2,
+  migrateDaemonStateStorageV2ToV3,
   readActiveTradeRuntimeState,
   readPendingTakerRecoveryState,
 } from './state.ts'
@@ -45,7 +45,7 @@ switch (command) {
     const { acquireDaemonRunLock } = await import('./runLock.ts')
     const initLock = await acquireDaemonRunLock()
     try {
-      await migrateDaemonStateStorageV1ToV2(initLock)
+      await migrateDaemonStateStorageV2ToV3(initLock)
       const initOptions = parseInitOptions(args)
       const importedSecrets = await resolveImportedSecrets(initOptions)
       let secrets
@@ -133,7 +133,7 @@ switch (command) {
       | ((reason: string, exitCode: number) => Promise<void>)
       | undefined
     try {
-      await migrateDaemonStateStorageV1ToV2(runLock)
+      await migrateDaemonStateStorageV2ToV3(runLock)
       const [profile, secrets, rpcToken] = await Promise.all([
         readProfile(),
         readIdentitySecrets(),

@@ -83,7 +83,7 @@ import {
   readDaemonWalletBalance,
   readDaemonWalletHoldingTotals,
   readDaemonWalletProofAmountSample,
-  migrateDaemonStateSchemaV1ToV2,
+  migrateDaemonStateSchemaV2ToV3,
   writeDaemonStateRows,
   type DaemonIdPage,
   type DaemonIdPageInput,
@@ -552,7 +552,7 @@ export async function assertDaemonStateStorageInitialized(): Promise<void> {
         'SELECT schema_version FROM daemon_state_metadata WHERE singleton = 1',
       )
       .get() as { schema_version?: unknown } | undefined
-    if (marker?.schema_version !== 2) {
+    if (marker?.schema_version !== 3) {
       throw new Error('daemon SQLite state row is missing or unsupported')
     }
   } finally {
@@ -561,7 +561,7 @@ export async function assertDaemonStateStorageInitialized(): Promise<void> {
 }
 
 /** Runs only after the caller has acquired the profile-wide daemon run lock. */
-export async function migrateDaemonStateStorageV1ToV2(
+export async function migrateDaemonStateStorageV2ToV3(
   runLock: DaemonRunLock,
 ): Promise<boolean> {
   await assertDaemonRunLockHeld(runLock)
@@ -573,7 +573,7 @@ export async function migrateDaemonStateStorageV1ToV2(
     // No await may separate this ownership check from the synchronous SQLite
     // writer transaction below.
     await assertDaemonRunLockHeld(runLock)
-    return migrateDaemonStateSchemaV1ToV2(database)
+    return migrateDaemonStateSchemaV2ToV3(database)
   } finally {
     database.close()
   }

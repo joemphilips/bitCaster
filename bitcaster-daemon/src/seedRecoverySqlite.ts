@@ -8,7 +8,7 @@ import {
 } from '@bitcaster-market/client-sdk/emergencySeedRecovery'
 import { CONDITIONAL_RECOVERY_MAX_KEYSETS } from '@bitcaster-market/client-sdk/emergencyConditionalSeedRecovery'
 
-const DAEMON_SEED_RECOVERY_SCHEMA_VERSION = 2
+const DAEMON_SEED_RECOVERY_SCHEMA_VERSION = 3
 
 export interface DaemonSeedRecoveryJob {
   walletScopeId: string
@@ -94,13 +94,13 @@ function insertSeedRecoveryJob(
     .prepare(
       `INSERT INTO daemon_seed_recovery_jobs (
        wallet_scope_id, mint_url, unit, recovery_id, schema_version,
-       disclosure_acknowledged, state, phase, revision,
+       disclosure_acknowledged, state, phase, revision, cursor_kind,
        current_cursor, current_cursor_digest,
        capability_version, capability_max_page_size,
        page_count, keyset_count, transport_bytes, serialized_bytes,
        work_units, proof_count, imported_proofs, ignored_spent_proofs,
        retained_pending_proofs, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, 1, 'active', 'restore', 0,
+     ) VALUES (?, ?, ?, ?, ?, 1, 'active', 'restore', 0, 'ordinary',
        NULL, NULL, NULL, NULL, 0, ?, 0, 0, 0, 0, 0, 0, 0, ?, ?)
      ON CONFLICT (wallet_scope_id, mint_url, unit) DO NOTHING`,
     )
@@ -126,7 +126,7 @@ function synchronizeSeedRecoveryJob(
       `SELECT keyset_id, next_counter, trailing_empty_counters, revision, state
        FROM daemon_seed_recovery_keysets
       WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
-        AND recovery_id = ? AND state = 'active'
+        AND recovery_id = ? AND keyset_kind = 'ordinary' AND state = 'active'
       ORDER BY ordinal
       LIMIT 1`,
     )
@@ -148,10 +148,11 @@ function synchronizeSeedRecoveryJob(
               SELECT COUNT(*) FROM daemon_seed_recovery_keysets
                WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
                  AND recovery_id = ?
+                 AND keyset_kind = 'ordinary'
             ),
             updated_at = ?
       WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
-        AND recovery_id = ?`,
+        AND recovery_id = ? AND cursor_kind = 'ordinary'`,
     )
     .run(
       cursor === null ? 'completed' : 'active',
@@ -184,7 +185,7 @@ export function readNextDaemonSeedRecoveryCursor(
        FROM daemon_seed_recovery_keysets
             INDEXED BY daemon_seed_recovery_active_keyset_idx
       WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
-        AND recovery_id = ? AND state = 'active'
+        AND recovery_id = ? AND keyset_kind = 'ordinary' AND state = 'active'
       ORDER BY ordinal
       LIMIT 1`,
     )
@@ -204,7 +205,7 @@ export function readNextDaemonSeedRecoveryCursor(
       `SELECT current_cursor, current_cursor_digest
        FROM daemon_seed_recovery_jobs
       WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
-        AND recovery_id = ?`,
+        AND recovery_id = ? AND cursor_kind = 'ordinary'`,
     )
     .get(job.walletScopeId, job.mintUrl, job.unit, recoveryId) as Record<
     string,
@@ -298,7 +299,8 @@ export function retainPendingDaemonSeedRecoveryProofs(
             reason, asset_kind
        FROM daemon_seed_recovery_proof_retention
       WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
-        AND recovery_id = ? AND retention_id = ?`,
+        AND recovery_id = ? AND retention_id = ?
+        AND asset_kind = 'ordinary'`,
   )
   let insertedProofs = 0
   let keysetId: string | undefined
@@ -353,7 +355,8 @@ export function retainPendingDaemonSeedRecoveryProofs(
               batch_count = batch_count + 1,
               retained_pending_proofs = retained_pending_proofs + ?
         WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
-          AND recovery_id = ? AND keyset_id = ? AND state = 'active'`,
+          AND recovery_id = ? AND keyset_id = ?
+          AND keyset_kind = 'ordinary' AND state = 'active'`,
     )
     .run(
       insertedProofs,
@@ -375,7 +378,7 @@ export function retainPendingDaemonSeedRecoveryProofs(
               retained_pending_proofs = retained_pending_proofs + ?,
               updated_at = ?
         WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
-          AND recovery_id = ?`,
+          AND recovery_id = ? AND cursor_kind = 'ordinary'`,
     )
     .run(
       proofs.length,
@@ -407,7 +410,8 @@ export function reconcileDaemonSeedRecoveryRetainedProofs(
     `DELETE FROM daemon_seed_recovery_proof_retention
       WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
         AND recovery_id = ? AND wallet_proof_id = ?
-        AND reason = 'pending-mint-state' AND mint_state = 'PENDING'`,
+        AND reason = 'pending-mint-state' AND mint_state = 'PENDING'
+        AND asset_kind = 'ordinary'`,
   )
   const markSpent = database.prepare(
     `UPDATE daemon_seed_recovery_proof_retention
@@ -415,7 +419,8 @@ export function reconcileDaemonSeedRecoveryRetainedProofs(
             reason = 'spent-audit', observed_at = ?
       WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
         AND recovery_id = ? AND wallet_proof_id = ?
-        AND reason = 'pending-mint-state' AND mint_state = 'PENDING'`,
+        AND reason = 'pending-mint-state' AND mint_state = 'PENDING'
+        AND asset_kind = 'ordinary'`,
   )
   for (const proofId of new Set(input.unspentProofIds)) {
     release.run(
@@ -455,7 +460,8 @@ function compareAndSwapSeedRecoveryKeyset(
       WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
         AND recovery_id = ? AND keyset_id = ?
         AND next_counter = ? AND trailing_empty_counters = ?
-        AND revision = ? AND state = ?`,
+        AND revision = ? AND state = ?
+        AND keyset_kind = 'ordinary'`,
     )
     .run(
       next.nextCounter,
@@ -494,7 +500,7 @@ function updateSeedRecoveryJobProgress(
             ignored_spent_proofs = ignored_spent_proofs + ?,
             updated_at = ?
       WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
-        AND recovery_id = ?`,
+        AND recovery_id = ? AND cursor_kind = 'ordinary'`,
     )
     .run(
       input.importedProofs,
@@ -530,11 +536,11 @@ export function readDaemonSeedRecoveryProgress(
             COALESCE(SUM(CASE WHEN state = 'completed' THEN 1 ELSE 0 END), 0)
               AS completed_keysets,
             (SELECT imported_proofs FROM daemon_seed_recovery_jobs
-              WHERE recovery_id = ?) AS imported_proofs,
+              WHERE recovery_id = ? AND cursor_kind = 'ordinary') AS imported_proofs,
             (SELECT ignored_spent_proofs FROM daemon_seed_recovery_jobs
-              WHERE recovery_id = ?) AS ignored_spent_proofs
+              WHERE recovery_id = ? AND cursor_kind = 'ordinary') AS ignored_spent_proofs
        FROM daemon_seed_recovery_keysets
-      WHERE recovery_id = ?`,
+      WHERE recovery_id = ? AND keyset_kind = 'ordinary'`,
     )
     .get(recoveryId, recoveryId, recoveryId) as Record<string, unknown>
   return {
@@ -569,7 +575,7 @@ function insertMissingKeysets(
       `SELECT COALESCE(MAX(ordinal), -1) AS maximum
        FROM daemon_seed_recovery_keysets
       WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
-        AND recovery_id = ?`,
+        AND recovery_id = ? AND keyset_kind = 'ordinary'`,
     )
     .get(job.walletScopeId, job.mintUrl, job.unit, job.recoveryId) as Record<
     string,
@@ -614,7 +620,8 @@ function readJobByScope(
       `SELECT wallet_scope_id, recovery_id, schema_version, mint_url, unit,
             disclosure_acknowledged, state
        FROM daemon_seed_recovery_jobs
-      WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?`,
+      WHERE wallet_scope_id = ? AND mint_url = ? AND unit = ?
+        AND cursor_kind = 'ordinary'`,
     )
     .get(walletScopeId, mintUrl, unit) as Record<string, unknown> | undefined
   return row === undefined ? null : decodeJob(row)
@@ -629,7 +636,7 @@ function readJob(
       `SELECT wallet_scope_id, recovery_id, schema_version, mint_url, unit,
             disclosure_acknowledged, state
        FROM daemon_seed_recovery_jobs
-      WHERE recovery_id = ?`,
+      WHERE recovery_id = ? AND cursor_kind = 'ordinary'`,
     )
     .get(recoveryId) as Record<string, unknown> | undefined
   if (row === undefined) throw new Error('seed recovery job is missing')

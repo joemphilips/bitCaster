@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import {
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
@@ -38,7 +39,8 @@ import type {
 } from './state.ts'
 
 const LEGACY_STATE_SCHEMA_VERSION = 1
-const STATE_SCHEMA_VERSION = 2
+const PREVIOUS_STATE_SCHEMA_VERSION = 2
+const STATE_SCHEMA_VERSION = 3
 const OPAQUE_ARTIFACT_MAX_BYTES = 4 * 1_024 * 1_024
 const SQLITE_IDENTIFIER_MAX_BYTES = 512
 const SQLITE_URL_MAX_BYTES = 2_048
@@ -84,6 +86,13 @@ const STATE_TABLES = [
   'daemon_seed_recovery_cursor_history',
   'daemon_seed_recovery_keysets',
   'daemon_seed_recovery_proof_retention',
+  'daemon_seed_recovery_current_sessions',
+  'daemon_seed_recovery_session_anchors',
+  'daemon_seed_recovery_requests',
+  'daemon_seed_recovery_batches',
+  'daemon_seed_recovery_staged_proofs',
+  'daemon_seed_recovery_nut07_audits',
+  'daemon_seed_recovery_terminal_evidence',
   'daemon_trade_sessions',
   'daemon_trade_expected_operations',
   'daemon_trade_planned_operations',
@@ -96,7 +105,10 @@ const STATE_TABLES = [
   'daemon_swaps',
 ] as const
 
-type StateMigrationFaultStage = 'after-v1-recovery-drop'
+type StateMigrationFaultStage =
+  | 'after-v2-recovery-drop'
+  | 'after-v3-recovery-create'
+  | 'after-v2-recovery-copy'
 let stateMigrationFaultHookForTest:
   | ((stage: StateMigrationFaultStage) => void)
   | undefined
@@ -205,7 +217,10 @@ export function ensureDaemonStateSchema(database: DatabaseSync): void {
   const version = readStateSchemaVersion(database)
   if (version === LEGACY_STATE_SCHEMA_VERSION) {
     assertLegacyDaemonStateSchema(database)
-    throw new Error('daemon SQLite state schema requires v1 to v2 migration')
+    throw new Error('daemon SQLite state schema v1 is unsupported')
+  }
+  if (version === PREVIOUS_STATE_SCHEMA_VERSION) {
+    throw new Error('daemon SQLite state schema requires v2 to v3 migration')
   }
   if (version !== STATE_SCHEMA_VERSION) {
     throw new Error('daemon SQLite state schema is unsupported')
@@ -217,10 +232,11 @@ export function ensureDaemonStateSchema(database: DatabaseSync): void {
 }
 
 /**
- * Performs the only supported state migration. The caller must already own the
- * daemon profile run lock; this function owns the SQLite writer transaction.
+ * Performs the only supported forward migration. The caller must already own
+ * the exclusive daemon profile run lock; this function owns the SQLite writer
+ * transaction. SQLite transactional DDL makes every injected boundary atomic.
  */
-export function migrateDaemonStateSchemaV1ToV2(
+export function migrateDaemonStateSchemaV2ToV3(
   database: DatabaseSync,
 ): boolean {
   const version = readStateSchemaVersion(database)
@@ -228,38 +244,155 @@ export function migrateDaemonStateSchemaV1ToV2(
     assertDaemonStateSchema(database)
     return false
   }
-  if (version !== LEGACY_STATE_SCHEMA_VERSION) {
+  if (version !== PREVIOUS_STATE_SCHEMA_VERSION) {
     throw new Error('daemon SQLite state schema is unsupported')
   }
 
   database.exec('BEGIN IMMEDIATE')
   try {
-    assertLegacyDaemonStateSchema(database)
+    assertDaemonStateSchemaV2ForMigration(database)
+    database.exec(`
+      DROP TRIGGER daemon_seed_recovery_retention_insert_guard;
+      DROP TRIGGER daemon_seed_recovery_retention_update_guard;
+      DROP TRIGGER daemon_seed_recovery_wallet_proof_update_guard;
+      DROP INDEX daemon_seed_recovery_active_keyset_idx;
+      DROP INDEX daemon_seed_recovery_retention_proof_idx;
+      DROP INDEX daemon_wallet_proofs_recovery_scope_idx;
+      ALTER TABLE daemon_seed_recovery_proof_retention RENAME TO daemon_seed_recovery_proof_retention_v2;
+      ALTER TABLE daemon_seed_recovery_cursor_history RENAME TO daemon_seed_recovery_cursor_history_v2;
+      ALTER TABLE daemon_seed_recovery_keysets RENAME TO daemon_seed_recovery_keysets_v2;
+      ALTER TABLE daemon_seed_recovery_catalogue RENAME TO daemon_seed_recovery_catalogue_v2;
+      ALTER TABLE daemon_seed_recovery_jobs RENAME TO daemon_seed_recovery_jobs_v2;
+      ALTER TABLE daemon_seed_recovery_clocks RENAME TO daemon_seed_recovery_clocks_v2;
+      ALTER TABLE daemon_state_metadata RENAME TO daemon_state_metadata_v2;
+    `)
+    stateMigrationFaultHookForTest?.('after-v2-recovery-drop')
+
+    database.exec(STATE_SCHEMA_V2_RECOVERY_SQL)
+    stateMigrationFaultHookForTest?.('after-v3-recovery-create')
+
+    database.exec(`
+      INSERT INTO daemon_state_metadata (singleton, schema_version)
+        VALUES (1, ${STATE_SCHEMA_VERSION});
+      INSERT INTO daemon_seed_recovery_clocks
+        SELECT * FROM daemon_seed_recovery_clocks_v2;
+      INSERT INTO daemon_seed_recovery_jobs (
+        wallet_scope_id, mint_url, unit, recovery_id, schema_version,
+        disclosure_acknowledged, state, phase, revision, cursor_kind,
+        ordinary_baseline_keysets, ordinary_baseline_proofs,
+        ordinary_baseline_transport_bytes, current_cursor,
+        current_cursor_digest, capability_version, capability_max_page_size,
+        page_count, keyset_count, transport_bytes, serialized_bytes,
+        work_units, proof_count, imported_proofs, ignored_spent_proofs,
+        retained_pending_proofs, created_at, updated_at
+      )
+      SELECT wallet_scope_id, mint_url, unit, recovery_id, ${STATE_SCHEMA_VERSION},
+        disclosure_acknowledged, state, phase, revision, 'ordinary',
+        keyset_count, proof_count, transport_bytes, current_cursor,
+        current_cursor_digest, capability_version, capability_max_page_size,
+        page_count, keyset_count, transport_bytes, serialized_bytes,
+        work_units, proof_count, imported_proofs, ignored_spent_proofs,
+        retained_pending_proofs, created_at, updated_at
+      FROM daemon_seed_recovery_jobs_v2;
+      INSERT INTO daemon_seed_recovery_catalogue
+        SELECT * FROM daemon_seed_recovery_catalogue_v2;
+      INSERT INTO daemon_seed_recovery_cursor_history
+        SELECT * FROM daemon_seed_recovery_cursor_history_v2;
+      INSERT INTO daemon_seed_recovery_keysets
+        SELECT * FROM daemon_seed_recovery_keysets_v2;
+      INSERT INTO daemon_seed_recovery_proof_retention
+        SELECT * FROM daemon_seed_recovery_proof_retention_v2;
+    `)
+    stateMigrationFaultHookForTest?.('after-v2-recovery-copy')
+
     assertStateForeignKeys(database)
     database.exec(`
-      DROP TABLE daemon_seed_recovery_keysets;
-      DROP TABLE daemon_seed_recovery_jobs;
-      DROP TABLE daemon_state_metadata;
+      DROP TABLE daemon_seed_recovery_proof_retention_v2;
+      DROP TABLE daemon_seed_recovery_cursor_history_v2;
+      DROP TABLE daemon_seed_recovery_keysets_v2;
+      DROP TABLE daemon_seed_recovery_catalogue_v2;
+      DROP TABLE daemon_seed_recovery_jobs_v2;
+      DROP TABLE daemon_seed_recovery_clocks_v2;
+      DROP TABLE daemon_state_metadata_v2;
     `)
-    stateMigrationFaultHookForTest?.('after-v1-recovery-drop')
-    database.exec(STATE_SCHEMA_V2_RECOVERY_SQL)
-    database
-      .prepare(
-        `INSERT INTO daemon_state_metadata (singleton, schema_version)
-       VALUES (1, ${STATE_SCHEMA_VERSION})`,
-      )
-      .run()
     assertDaemonStateSchema(database)
-    assertStateForeignKeys(database)
     database.exec('COMMIT')
     return true
   } catch (error) {
     try {
       database.exec('ROLLBACK')
     } catch {
-      // The transaction may already have completed while reporting corruption.
+      // Preserve the migration failure if SQLite already ended the transaction.
     }
     throw error
+  }
+}
+
+function assertDaemonStateSchemaV2ForMigration(database: DatabaseSync): void {
+  const required = STATE_TABLES.filter(
+    (table) =>
+      ![
+        'daemon_seed_recovery_current_sessions',
+        'daemon_seed_recovery_requests',
+        'daemon_seed_recovery_session_anchors',
+        'daemon_seed_recovery_batches',
+        'daemon_seed_recovery_staged_proofs',
+        'daemon_seed_recovery_nut07_audits',
+        'daemon_seed_recovery_terminal_evidence',
+      ].includes(table),
+  )
+  if (required.some((table) => !tableExists(database, table))) {
+    throw new Error('daemon SQLite state schema is incomplete')
+  }
+  assertExactRecoveryTableNames(database, required)
+  assertStateForeignKeys(database)
+  const integrity = database.prepare('PRAGMA integrity_check').get() as
+    | { integrity_check?: unknown }
+    | undefined
+  if (integrity?.integrity_check !== 'ok') {
+    throw new Error('daemon SQLite state authority is corrupt')
+  }
+  const invalid = database.prepare(
+    `SELECT 1 AS invalid
+       FROM daemon_seed_recovery_jobs AS job
+      WHERE job.schema_version <> 2
+         OR job.disclosure_acknowledged <> 1
+         OR (job.current_cursor IS NULL) <> (job.current_cursor_digest IS NULL)
+         OR 0
+         OR job.keyset_count <> (
+           SELECT COUNT(*) FROM daemon_seed_recovery_keysets AS keyset
+            WHERE keyset.wallet_scope_id = job.wallet_scope_id
+              AND keyset.mint_url = job.mint_url AND keyset.unit = job.unit
+              AND keyset.recovery_id = job.recovery_id
+              AND keyset.keyset_kind = 'ordinary')
+         OR EXISTS (
+           SELECT 1 FROM daemon_seed_recovery_keysets AS conditional
+            WHERE conditional.wallet_scope_id = job.wallet_scope_id
+              AND conditional.mint_url = job.mint_url
+              AND conditional.unit = job.unit
+              AND conditional.recovery_id = job.recovery_id
+              AND conditional.keyset_kind <> 'ordinary')
+      LIMIT 1`,
+  ).get()
+  if (invalid !== undefined) {
+    throw new Error('daemon SQLite v2 recovery authority is corrupt')
+  }
+  const cursors = database
+    .prepare(
+      `SELECT current_cursor, current_cursor_digest
+         FROM daemon_seed_recovery_jobs
+        WHERE current_cursor IS NOT NULL`,
+    )
+    .all() as Array<{ current_cursor?: unknown; current_cursor_digest?: unknown }>
+  for (const cursor of cursors) {
+    if (
+      typeof cursor.current_cursor !== 'string' ||
+      typeof cursor.current_cursor_digest !== 'string' ||
+      createHash('sha256').update(cursor.current_cursor).digest('hex') !==
+        cursor.current_cursor_digest
+    ) {
+      throw new Error('daemon SQLite v2 recovery cursor authority is corrupt')
+    }
   }
 }
 
@@ -269,59 +402,21 @@ export function setDaemonStateMigrationFaultHookForTest(
 ): void {
   stateMigrationFaultHookForTest = hook
 }
-
-/** Creates the exact formerly-shipped v1 schema for migration fixtures only. */
-export function initializeDaemonStateV1MigrationFixtureForTest(
+/** Creates the unreleased v2 recovery schema for crash-migration tests only. */
+export function initializeDaemonStateV2MigrationFixtureForTest(
   database: DatabaseSync,
 ): void {
   ensureDaemonSecretsSchema(database)
-  createLegacyStateSchema(database)
+  database.exec(STATE_SCHEMA_COMMON_SQL + stateSchemaV2FixtureSql())
   database
     .prepare(
       `INSERT INTO daemon_state_metadata (singleton, schema_version)
-     VALUES (1, ${LEGACY_STATE_SCHEMA_VERSION})`,
+       VALUES (1, ${PREVIOUS_STATE_SCHEMA_VERSION})`,
     )
     .run()
 }
 
-/** Replaces only v2 recovery authority with the exact shipped v1 fixture. */
-export function replaceDaemonStateV2RecoveryWithV1FixtureForTest(
-  database: DatabaseSync,
-): void {
-  assertDaemonStateSchema(database)
-  database.exec('BEGIN IMMEDIATE')
-  try {
-    database.exec(`
-      DROP TRIGGER daemon_seed_recovery_wallet_proof_update_guard;
-      DROP INDEX daemon_wallet_proofs_recovery_scope_idx;
-      DROP TABLE daemon_seed_recovery_proof_retention;
-      DROP TABLE daemon_seed_recovery_cursor_history;
-      DROP TABLE daemon_seed_recovery_keysets;
-      DROP TABLE daemon_seed_recovery_catalogue;
-      DROP TABLE daemon_seed_recovery_jobs;
-      DROP TABLE daemon_seed_recovery_clocks;
-      DROP TABLE daemon_state_metadata;
-      ${LEGACY_STATE_METADATA_SCHEMA_SQL}
-      ${LEGACY_SEED_RECOVERY_SCHEMA_SQL}
-      ${LEGACY_SEED_RECOVERY_INDEX_SQL}
-    `)
-    database
-      .prepare(
-        `INSERT INTO daemon_state_metadata (singleton, schema_version)
-         VALUES (1, ${LEGACY_STATE_SCHEMA_VERSION})`,
-      )
-      .run()
-    assertLegacyDaemonStateSchema(database)
-    database.exec('COMMIT')
-  } catch (error) {
-    try {
-      database.exec('ROLLBACK')
-    } catch {
-      // The transaction may already have ended while reporting fixture corruption.
-    }
-    throw error
-  }
-}
+
 
 export function assertDaemonStateSchema(
   database: DatabaseSync,
@@ -1947,6 +2042,10 @@ const STATE_SCHEMA_V2_RECOVERY_SQL = `
       state TEXT NOT NULL CHECK (state IN ('active', 'completed', 'failed-closed')),
       phase TEXT NOT NULL CHECK (phase IN ('catalogue', 'keys', 'restore', 'finalize', 'completed', 'failed-closed')),
       revision INTEGER NOT NULL CHECK (revision BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_WORK_UNITS}),
+      cursor_kind TEXT NOT NULL DEFAULT 'ordinary' CHECK (cursor_kind IN ('ordinary', 'conditional')),
+      ordinary_baseline_keysets INTEGER NOT NULL DEFAULT 0 CHECK (ordinary_baseline_keysets BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_KEYSETS}),
+      ordinary_baseline_proofs INTEGER NOT NULL DEFAULT 0 CHECK (ordinary_baseline_proofs BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS}),
+      ordinary_baseline_transport_bytes INTEGER NOT NULL DEFAULT 0 CHECK (ordinary_baseline_transport_bytes BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES}),
       current_cursor TEXT CHECK (current_cursor IS NULL OR length(CAST(current_cursor AS BLOB)) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_CURSOR_BYTES}),
       current_cursor_digest TEXT CHECK (current_cursor_digest IS NULL OR (length(current_cursor_digest) = 64 AND current_cursor_digest NOT GLOB '*[^0-9a-f]*')),
       capability_version INTEGER CHECK (capability_version = 1),
@@ -2081,18 +2180,202 @@ const STATE_SCHEMA_V2_RECOVERY_SQL = `
         REFERENCES daemon_wallet_proofs(proof_id, mint_url, unit)
         ON DELETE RESTRICT,
       CHECK (
-        (reason = 'pending-mint-state' AND mint_state = 'PENDING' AND wallet_proof_id IS NOT NULL)
-        OR (reason = 'expired-keyset' AND mint_state = 'UNSPENT' AND wallet_proof_id IS NOT NULL)
-        OR (reason = 'spent-audit' AND mint_state = 'SPENT' AND wallet_proof_id IS NULL)
-        OR (reason = 'failed-verification' AND mint_state = 'UNKNOWN' AND wallet_proof_id IS NULL)
-      ),
-      CHECK (
-        (asset_kind = 'ordinary' AND condition_id IS NULL AND outcome_collection IS NULL AND outcome_collection_id IS NULL)
-        OR (asset_kind = 'Outcome'
+        (reason = 'expired-keyset'
+          AND asset_kind = 'Outcome'
+          AND mint_state IN ('UNSPENT', 'PENDING')
+          AND wallet_proof_id IS NOT NULL
           AND condition_id IS NOT NULL AND length(condition_id) = 64 AND condition_id NOT GLOB '*[^0-9a-f]*'
           AND outcome_collection IS NOT NULL AND length(CAST(outcome_collection AS BLOB)) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_OUTCOME_COLLECTION_BYTES}
           AND outcome_collection_id IS NOT NULL AND length(outcome_collection_id) = 64 AND outcome_collection_id NOT GLOB '*[^0-9a-f]*')
+        OR (reason = 'pending-mint-state'
+          AND mint_state = 'PENDING' AND wallet_proof_id IS NOT NULL
+          AND (
+            (asset_kind = 'ordinary' AND condition_id IS NULL AND outcome_collection IS NULL AND outcome_collection_id IS NULL)
+            OR (asset_kind = 'Outcome'
+              AND condition_id IS NOT NULL AND length(condition_id) = 64 AND condition_id NOT GLOB '*[^0-9a-f]*'
+              AND outcome_collection IS NOT NULL AND length(CAST(outcome_collection AS BLOB)) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_OUTCOME_COLLECTION_BYTES}
+              AND outcome_collection_id IS NOT NULL AND length(outcome_collection_id) = 64 AND outcome_collection_id NOT GLOB '*[^0-9a-f]*')
+          ))
+        OR (reason = 'spent-audit' AND mint_state = 'SPENT' AND wallet_proof_id IS NULL
+          AND (
+            (asset_kind = 'ordinary' AND condition_id IS NULL AND outcome_collection IS NULL AND outcome_collection_id IS NULL)
+            OR (asset_kind = 'Outcome'
+              AND condition_id IS NOT NULL AND length(condition_id) = 64 AND condition_id NOT GLOB '*[^0-9a-f]*'
+              AND outcome_collection IS NOT NULL AND length(CAST(outcome_collection AS BLOB)) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_OUTCOME_COLLECTION_BYTES}
+              AND outcome_collection_id IS NOT NULL AND length(outcome_collection_id) = 64 AND outcome_collection_id NOT GLOB '*[^0-9a-f]*')
+          ))
+        OR (reason = 'failed-verification' AND asset_kind = 'ordinary'
+          AND mint_state = 'UNKNOWN' AND wallet_proof_id IS NULL
+          AND condition_id IS NULL AND outcome_collection IS NULL AND outcome_collection_id IS NULL)
       )
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_current_sessions (
+      wallet_scope_id TEXT NOT NULL,
+      mint_url TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      recovery_id TEXT NOT NULL,
+      envelope_version INTEGER NOT NULL CHECK (envelope_version = 1),
+      cursor_kind TEXT NOT NULL CHECK (cursor_kind = 'conditional'),
+      job_revision INTEGER NOT NULL CHECK (job_revision BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_WORK_UNITS}),
+      session_sequence INTEGER NOT NULL CHECK (session_sequence BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_WORK_UNITS}),
+      transition TEXT NOT NULL CHECK (transition IN (
+        'completed-catalogue', 'conditional-keys', 'nut13-plan', 'nut09-request',
+        'nut09-response', 'proof-verification', 'atomic-admission',
+        'expired-keyset-retention', 'keyset-completed', 'keyset-skipped',
+        'recovery-completed', 'recovery-failed-closed'
+      )),
+      session_bytes BLOB NOT NULL CHECK (length(session_bytes) BETWEEN 1 AND 65536),
+      inner_digest TEXT NOT NULL CHECK (length(inner_digest) = 64 AND inner_digest NOT GLOB '*[^0-9a-f]*'),
+      outer_digest TEXT NOT NULL CHECK (length(outer_digest) = 64 AND outer_digest NOT GLOB '*[^0-9a-f]*'),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id),
+      UNIQUE (recovery_id),
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id)
+        REFERENCES daemon_seed_recovery_jobs(wallet_scope_id, mint_url, unit, recovery_id)
+        ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_session_anchors (
+      wallet_scope_id TEXT NOT NULL,
+      mint_url TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      recovery_id TEXT NOT NULL,
+      session_sequence INTEGER NOT NULL CHECK (session_sequence BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_WORK_UNITS}),
+      transition TEXT NOT NULL CHECK (transition IN (
+        'nut09-request', 'nut09-response', 'proof-verification',
+        'atomic-admission', 'expired-keyset-retention'
+      )),
+      session_digest TEXT NOT NULL CHECK (length(session_digest) = 64 AND session_digest NOT GLOB '*[^0-9a-f]*'),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id, session_sequence),
+      UNIQUE (wallet_scope_id, mint_url, unit, recovery_id, session_sequence, transition, session_digest),
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id)
+        REFERENCES daemon_seed_recovery_jobs(wallet_scope_id, mint_url, unit, recovery_id)
+        ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_requests (
+      wallet_scope_id TEXT NOT NULL,
+      mint_url TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      recovery_id TEXT NOT NULL,
+      session_sequence INTEGER NOT NULL,
+      anchor_transition TEXT NOT NULL CHECK (anchor_transition = 'nut09-request'),
+      anchor_digest TEXT NOT NULL,
+      keyset_id TEXT NOT NULL,
+      request_digest TEXT NOT NULL CHECK (length(request_digest) = 64 AND request_digest NOT GLOB '*[^0-9a-f]*'),
+      request_bytes BLOB NOT NULL CHECK (length(request_bytes) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_PAGE_BYTES}),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id, session_sequence),
+      UNIQUE (wallet_scope_id, mint_url, unit, recovery_id, request_digest),
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id, session_sequence, anchor_transition, anchor_digest)
+        REFERENCES daemon_seed_recovery_session_anchors(wallet_scope_id, mint_url, unit, recovery_id, session_sequence, transition, session_digest)
+        ON DELETE RESTRICT,
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id, keyset_id)
+        REFERENCES daemon_seed_recovery_keysets(wallet_scope_id, mint_url, unit, recovery_id, keyset_id)
+        ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_batches (
+      wallet_scope_id TEXT NOT NULL,
+      mint_url TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      recovery_id TEXT NOT NULL,
+      session_sequence INTEGER NOT NULL,
+      anchor_transition TEXT NOT NULL,
+      anchor_digest TEXT NOT NULL,
+      staged_batch_id TEXT NOT NULL CHECK (length(CAST(staged_batch_id AS BLOB)) BETWEEN 1 AND ${SQLITE_IDENTIFIER_MAX_BYTES}),
+      keyset_id TEXT NOT NULL,
+      plan_digest TEXT NOT NULL CHECK (length(plan_digest) = 64 AND plan_digest NOT GLOB '*[^0-9a-f]*'),
+      request_digest TEXT NOT NULL CHECK (length(request_digest) = 64 AND request_digest NOT GLOB '*[^0-9a-f]*'),
+      response_digest TEXT NOT NULL CHECK (length(response_digest) = 64 AND response_digest NOT GLOB '*[^0-9a-f]*'),
+      request_bytes BLOB NOT NULL CHECK (length(request_bytes) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_PAGE_BYTES}),
+      response_bytes BLOB NOT NULL CHECK (length(response_bytes) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_CATALOGUE_BYTES}),
+      returned_count INTEGER NOT NULL CHECK (returned_count BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS}),
+      proof_body_digest TEXT NOT NULL CHECK (length(proof_body_digest) = 64 AND proof_body_digest NOT GLOB '*[^0-9a-f]*'),
+      proof_y_digest TEXT NOT NULL CHECK (length(proof_y_digest) = 64 AND proof_y_digest NOT GLOB '*[^0-9a-f]*'),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id, staged_batch_id),
+      UNIQUE (wallet_scope_id, mint_url, unit, recovery_id, session_sequence),
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id, session_sequence, anchor_transition, anchor_digest)
+        REFERENCES daemon_seed_recovery_session_anchors(wallet_scope_id, mint_url, unit, recovery_id, session_sequence, transition, session_digest)
+        ON DELETE RESTRICT,
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id, keyset_id)
+        REFERENCES daemon_seed_recovery_keysets(wallet_scope_id, mint_url, unit, recovery_id, keyset_id)
+        ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_staged_proofs (
+      wallet_scope_id TEXT NOT NULL,
+      mint_url TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      recovery_id TEXT NOT NULL,
+      staged_batch_id TEXT NOT NULL,
+      proof_ordinal INTEGER NOT NULL CHECK (proof_ordinal BETWEEN 0 AND ${CONDITIONAL_RECOVERY_MAX_TOTAL_PROOFS - 1}),
+      proof_identity TEXT NOT NULL CHECK (length(proof_identity) = 64 AND proof_identity NOT GLOB '*[^0-9a-f]*'),
+      keyset_id TEXT NOT NULL CHECK (length(CAST(keyset_id AS BLOB)) BETWEEN 1 AND 256),
+      amount TEXT NOT NULL CHECK (length(CAST(amount AS BLOB)) BETWEEN 1 AND 32),
+      secret TEXT NOT NULL CHECK (length(CAST(secret AS BLOB)) BETWEEN 1 AND 65536),
+      signature TEXT NOT NULL CHECK (length(CAST(signature AS BLOB)) BETWEEN 1 AND 512),
+      dleq_e TEXT NOT NULL CHECK (length(CAST(dleq_e AS BLOB)) BETWEEN 1 AND 512),
+      dleq_s TEXT NOT NULL CHECK (length(CAST(dleq_s AS BLOB)) BETWEEN 1 AND 512),
+      dleq_r TEXT NOT NULL CHECK (length(CAST(dleq_r AS BLOB)) BETWEEN 1 AND 512),
+      p2pk_e TEXT CHECK (p2pk_e IS NULL OR length(CAST(p2pk_e AS BLOB)) BETWEEN 1 AND 512),
+      witness_json TEXT CHECK (witness_json IS NULL OR (json_valid(witness_json) AND length(CAST(witness_json AS BLOB)) BETWEEN 1 AND 65536)),
+      proof_y TEXT NOT NULL CHECK (length(CAST(proof_y AS BLOB)) BETWEEN 1 AND 256),
+      verification_state TEXT NOT NULL CHECK (verification_state IN ('staged', 'verified')),
+      nut07_state TEXT CHECK (nut07_state IS NULL OR nut07_state IN ('UNSPENT', 'PENDING', 'SPENT')),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id, staged_batch_id, proof_ordinal),
+      UNIQUE (wallet_scope_id, mint_url, unit, recovery_id, proof_identity),
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id, staged_batch_id)
+        REFERENCES daemon_seed_recovery_batches(wallet_scope_id, mint_url, unit, recovery_id, staged_batch_id)
+        ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_nut07_audits (
+      wallet_scope_id TEXT NOT NULL,
+      mint_url TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      recovery_id TEXT NOT NULL,
+      staged_batch_id TEXT NOT NULL,
+      predecessor_sequence INTEGER NOT NULL,
+      predecessor_transition TEXT NOT NULL CHECK (predecessor_transition = 'proof-verification'),
+      predecessor_digest TEXT NOT NULL,
+      successor_sequence INTEGER NOT NULL,
+      successor_transition TEXT NOT NULL CHECK (successor_transition IN ('atomic-admission', 'expired-keyset-retention')),
+      successor_digest TEXT NOT NULL,
+      request_bytes BLOB NOT NULL CHECK (length(request_bytes) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_PAGE_BYTES}),
+      response_bytes BLOB NOT NULL CHECK (length(response_bytes) BETWEEN 1 AND ${CONDITIONAL_RECOVERY_MAX_PAGE_BYTES}),
+      request_digest TEXT NOT NULL CHECK (length(request_digest) = 64 AND request_digest NOT GLOB '*[^0-9a-f]*'),
+      response_digest TEXT NOT NULL CHECK (length(response_digest) = 64 AND response_digest NOT GLOB '*[^0-9a-f]*'),
+      authority_digest TEXT NOT NULL CHECK (length(authority_digest) = 64 AND authority_digest NOT GLOB '*[^0-9a-f]*'),
+      bound_authority_digest TEXT NOT NULL CHECK (length(bound_authority_digest) = 64 AND bound_authority_digest NOT GLOB '*[^0-9a-f]*'),
+      issued_at REAL NOT NULL CHECK (issued_at >= 0),
+      deadline REAL NOT NULL CHECK (deadline >= issued_at),
+      monotonic_age_ms REAL NOT NULL CHECK (monotonic_age_ms >= 0 AND monotonic_age_ms <= 5000),
+      CHECK (authority_digest = bound_authority_digest),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id, staged_batch_id),
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id, predecessor_sequence, predecessor_transition, predecessor_digest)
+        REFERENCES daemon_seed_recovery_session_anchors(wallet_scope_id, mint_url, unit, recovery_id, session_sequence, transition, session_digest)
+        ON DELETE RESTRICT,
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id, successor_sequence, successor_transition, successor_digest)
+        REFERENCES daemon_seed_recovery_session_anchors(wallet_scope_id, mint_url, unit, recovery_id, session_sequence, transition, session_digest)
+        ON DELETE RESTRICT,
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id, staged_batch_id)
+        REFERENCES daemon_seed_recovery_batches(wallet_scope_id, mint_url, unit, recovery_id, staged_batch_id)
+        ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_terminal_evidence (
+      wallet_scope_id TEXT NOT NULL,
+      mint_url TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      recovery_id TEXT NOT NULL,
+      session_sequence INTEGER NOT NULL,
+      terminal_kind TEXT NOT NULL CHECK (terminal_kind IN ('completed', 'failed-closed')),
+      session_digest TEXT NOT NULL CHECK (length(session_digest) = 64 AND session_digest NOT GLOB '*[^0-9a-f]*'),
+      evidence_bytes BLOB NOT NULL CHECK (length(evidence_bytes) BETWEEN 1 AND 65536),
+      PRIMARY KEY (wallet_scope_id, mint_url, unit, recovery_id),
+      FOREIGN KEY (wallet_scope_id, mint_url, unit, recovery_id)
+        REFERENCES daemon_seed_recovery_jobs(wallet_scope_id, mint_url, unit, recovery_id)
+        ON DELETE RESTRICT
     ) STRICT;
 
     CREATE UNIQUE INDEX daemon_wallet_proofs_recovery_scope_idx
@@ -2202,6 +2485,32 @@ const STATE_SCHEMA_V2_RECOVERY_SQL = `
         SELECT RAISE(ABORT, 'seed recovery retained proof cannot become selectable');
       END;
 `
+
+function stateSchemaV2FixtureSql(): string {
+  const conditionalStart = STATE_SCHEMA_V2_RECOVERY_SQL.indexOf(
+    '    CREATE TABLE daemon_seed_recovery_current_sessions',
+  )
+  const sharedIndexStart = STATE_SCHEMA_V2_RECOVERY_SQL.indexOf(
+    '    CREATE UNIQUE INDEX daemon_wallet_proofs_recovery_scope_idx',
+  )
+  if (conditionalStart < 0 || sharedIndexStart < conditionalStart) {
+    throw new Error('daemon SQLite v2 fixture schema boundary is invalid')
+  }
+  const withoutV3Tables =
+    STATE_SCHEMA_V2_RECOVERY_SQL.slice(0, conditionalStart) +
+    STATE_SCHEMA_V2_RECOVERY_SQL.slice(sharedIndexStart)
+  return withoutV3Tables
+    .replaceAll('schema_version = 3', 'schema_version = 2')
+    .split('\n')
+    .filter(
+      (line) =>
+        !line.includes("cursor_kind TEXT NOT NULL DEFAULT 'ordinary'") &&
+        !line.includes('ordinary_baseline_keysets INTEGER') &&
+        !line.includes('ordinary_baseline_proofs INTEGER') &&
+        !line.includes('ordinary_baseline_transport_bytes INTEGER'),
+    )
+    .join('\n')
+}
 
 const STATE_SCHEMA_SQL = STATE_SCHEMA_COMMON_SQL + STATE_SCHEMA_V2_RECOVERY_SQL
 
