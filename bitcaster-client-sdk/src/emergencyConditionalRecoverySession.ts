@@ -19,7 +19,6 @@ export type ConditionalRecoverySessionTransition =
   | "nut09-request"
   | "nut09-response"
   | "proof-verification"
-  | "nut07-classification"
   | "atomic-admission"
   | "keyset-completed"
   | "keyset-skipped"
@@ -40,6 +39,8 @@ export interface ConditionalRecoverySessionScan {
 export interface ConditionalRecoveryBatchBinding {
   readonly planDigest: string;
   readonly requestDigest: string | null;
+  readonly planStart: number;
+  readonly planCount: number;
   readonly batchDigest: string | null;
   readonly stagedBatchId: string | null;
   readonly returnedCount: number | null;
@@ -158,7 +159,6 @@ export function decodeConditionalRecoverySessionTransition(
     case "nut09-request":
     case "nut09-response":
     case "proof-verification":
-    case "nut07-classification":
     case "atomic-admission":
     case "keyset-completed":
     case "keyset-skipped":
@@ -177,6 +177,7 @@ export function validateConditionalRecoverySessionState(input: {
   readonly transition: ConditionalRecoverySessionTransition;
   readonly evidenceDigest: string;
   readonly budget: ConditionalRecoveryBudget;
+  readonly catalogueDigest: string;
   readonly completedKeysetProofCount: number;
   readonly catalogueOrdinal: number | null;
   readonly activeKeysetId: string | null;
@@ -196,6 +197,7 @@ export function validateConditionalRecoverySessionState(input: {
     throw new Error("conditional recovery session proof budget is inconsistent");
   }
   requireDigest(input.evidenceDigest, "evidence");
+  requireDigest(input.catalogueDigest, "catalogue");
   if (input.sequence === 0) {
     if (
       input.predecessorDigest !== null ||
@@ -246,6 +248,7 @@ export function computeConditionalRecoverySessionDigest(
     input.transition,
     input.evidenceDigest,
     input.budget,
+    input.catalogueDigest,
     input.completedKeysetProofCount,
     input.catalogueOrdinal,
     input.activeKeysetId,
@@ -352,8 +355,6 @@ function allowedSuccessors(
         ? ["nut13-plan", "keyset-completed", "keyset-skipped"]
         : ["proof-verification", "recovery-failed-closed"];
     case "proof-verification":
-      return ["nut07-classification", "recovery-failed-closed"];
-    case "nut07-classification":
       return [
         "atomic-admission",
         "expired-keyset-retention",
@@ -362,7 +363,7 @@ function allowedSuccessors(
     case "atomic-admission":
       return ["nut13-plan"];
     case "expired-keyset-retention":
-      return ["keyset-completed", "recovery-failed-closed"];
+      return ["keyset-completed"];
     case "recovery-completed":
     case "recovery-failed-closed":
       throw new Error("conditional recovery terminal session has no successor");
@@ -375,6 +376,11 @@ function validateEdgeFields(
   predecessor: ConditionalRecoverySession,
   successor: ConditionalRecoverySession,
 ): void {
+  if (successor.catalogueDigest !== predecessor.catalogueDigest) {
+    throw new Error(
+      "conditional recovery immutable catalogue digest changed",
+    );
+  }
   if (successor.transition === "conditional-keys") {
     const expectedOrdinal =
       predecessor.catalogueOrdinal === null
@@ -448,13 +454,24 @@ function validateEdgeFields(
       throw new Error("conditional recovery deterministic plan binding changed");
     }
     if (
+      successor.transition !== "nut13-plan" &&
+      (successor.currentBatch.planStart !==
+        predecessor.currentBatch.planStart ||
+        successor.currentBatch.planCount !==
+          predecessor.currentBatch.planCount)
+    ) {
+      throw new Error(
+        "conditional recovery deterministic plan range binding changed",
+      );
+    }
+    if (
       !["nut13-plan", "nut09-request"].includes(successor.transition) &&
       successor.currentBatch.requestDigest !== predecessor.currentBatch.requestDigest
     ) {
       throw new Error("conditional recovery deterministic request binding changed");
     }
     if (
-      ["proof-verification", "nut07-classification", "atomic-admission", "expired-keyset-retention"].includes(successor.transition) &&
+      ["proof-verification", "atomic-admission", "expired-keyset-retention"].includes(successor.transition) &&
       (successor.currentBatch.batchDigest !== predecessor.currentBatch.batchDigest ||
         successor.currentBatch.stagedBatchId !== predecessor.currentBatch.stagedBatchId)
     ) {
@@ -507,6 +524,15 @@ function validateEdgeFields(
   ) {
     throw new Error(
       "conditional recovery completed-keyset proof baseline changed early",
+    );
+  }
+  if (
+    successor.transition === "nut13-plan" &&
+    (successor.currentBatch?.planStart !== successor.scan.plannedStart ||
+      successor.currentBatch.planCount !== successor.scan.plannedCount)
+  ) {
+    throw new Error(
+      "conditional recovery deterministic plan range binding is inconsistent",
     );
   }
   if (successor.transition === "nut13-plan" && successor.currentBatch?.requestDigest !== null) {
@@ -589,7 +615,6 @@ function validateEvidenceShape(
     "nut09-request",
     "nut09-response",
     "proof-verification",
-    "nut07-classification",
     "atomic-admission",
     "expired-keyset-retention",
   ].includes(input.transition);
@@ -608,6 +633,8 @@ function validateEvidenceShape(
 
 function validateBatchBinding(binding: ConditionalRecoveryBatchBinding): void {
   requireDigest(binding.planDigest, "plan binding");
+  requireNonNegativeSafeInteger(binding.planStart, "plan start binding");
+  requirePositiveSafeInteger(binding.planCount, "plan count binding");
   if (binding.requestDigest !== null) requireDigest(binding.requestDigest, "request binding");
   if (binding.batchDigest !== null) requireDigest(binding.batchDigest, "batch binding");
   if (binding.stagedBatchId !== null && (typeof binding.stagedBatchId !== "string" || encoder.encode(binding.stagedBatchId).byteLength > 256 || binding.stagedBatchId.length === 0)) {
@@ -624,6 +651,7 @@ function boundPayload(session: ConditionalRecoverySession): Record<string, unkno
     transition: session.transition,
     evidenceDigest: session.evidenceDigest,
     budget: session.budget,
+    catalogueDigest: session.catalogueDigest,
     completedKeysetProofCount: session.completedKeysetProofCount,
     catalogueOrdinal: session.catalogueOrdinal,
     activeKeysetId: session.activeKeysetId,
@@ -654,6 +682,7 @@ function decodeBoundPayload(
     transition: decodeConditionalRecoverySessionTransition(row.transition),
     evidenceDigest: requireDigest(row.evidenceDigest, "evidence"),
     budget: decodeBudget(row.budget),
+    catalogueDigest: requireDigest(row.catalogueDigest, "catalogue"),
     completedKeysetProofCount: requireNonNegativeSafeInteger(row.completedKeysetProofCount, "completed proof baseline"),
     catalogueOrdinal: row.catalogueOrdinal === null ? null : requireNonNegativeSafeInteger(row.catalogueOrdinal, "catalogue ordinal"),
     activeKeysetId: row.activeKeysetId === null ? null : requireKeysetId(row.activeKeysetId, "active keyset"),
@@ -683,9 +712,11 @@ function decodeBudget(value: unknown): ConditionalRecoveryBudget {
 function decodeBatchBinding(value: unknown): ConditionalRecoveryBatchBinding | null {
   if (value === null) return null;
   const row = requireObject(value, "conditional recovery batch binding");
-  requireExactKeys(row, ["planDigest", "requestDigest", "batchDigest", "stagedBatchId", "returnedCount"], "conditional recovery batch binding");
+  requireExactKeys(row, ["planDigest", "planStart", "planCount", "requestDigest", "batchDigest", "stagedBatchId", "returnedCount"], "conditional recovery batch binding");
   const result = Object.freeze({
     planDigest: requireDigest(row.planDigest, "plan binding"),
+    planStart: requireNonNegativeSafeInteger(row.planStart, "plan start binding"),
+    planCount: requirePositiveSafeInteger(row.planCount, "plan count binding"),
     requestDigest: row.requestDigest === null ? null : requireDigest(row.requestDigest, "request binding"),
     batchDigest: row.batchDigest === null ? null : requireDigest(row.batchDigest, "batch binding"),
     stagedBatchId: row.stagedBatchId === null ? null : requireBoundedString(row.stagedBatchId, 256, "staged batch id"),

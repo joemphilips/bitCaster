@@ -57,6 +57,7 @@ function session(
       workUnits: 0,
       proofCount: 0,
     },
+    catalogueDigest: HEX_A,
     completedKeysetProofCount: 0,
     catalogueOrdinal: transition === "completed-catalogue" ? null : 0,
     activeKeysetId:
@@ -120,7 +121,9 @@ test("session-v2 codec is canonical, scope-bound, bounded, and fails closed on v
   const bytes = encodeConditionalRecoverySession(original, scope);
   const text = new TextDecoder().decode(bytes);
   assert.equal(text.includes("walletScope"), false);
-  assert.equal(decodeConditionalRecoverySession(bytes, scope).digest, original.digest);
+  const decoded = decodeConditionalRecoverySession(bytes, scope);
+  assert.equal(decoded.digest, original.digest);
+  assert.equal(decoded.catalogueDigest, original.catalogueDigest);
   assert.throws(
     () => decodeConditionalRecoverySession(new TextEncoder().encode(` ${text}`), scope),
     /canonical/i,
@@ -136,6 +139,19 @@ test("session-v2 codec is canonical, scope-bound, bounded, and fails closed on v
         scope,
       ),
     /unsupported|version/i,
+  );
+  assert.throws(
+    () =>
+      decodeConditionalRecoverySession(
+        new TextEncoder().encode(
+          text.replace(
+            `"catalogueDigest":"${HEX_A}"`,
+            `"catalogueDigest":"${HEX_B}"`,
+          ),
+        ),
+        scope,
+      ),
+    /digest/i,
   );
   assert.throws(
     () => decodeConditionalRecoverySession(new Uint8Array(65_537), scope),
@@ -175,6 +191,19 @@ test("strict predecessor sequence and digest are mandatory", () => {
       }),
     /predecessor|digest/i,
   );
+  assert.throws(
+    () =>
+      validateConditionalRecoverySessionSuccessor(
+        initial,
+        successor(initial, "conditional-keys", {
+          catalogueDigest: HEX_B,
+          catalogueOrdinal: 0,
+          activeKeysetId: KEYSET_A,
+          keysetMetadataDigest: HEX_A,
+        }),
+      ),
+    /immutable catalogue digest/i,
+  );
 });
 
 test("deterministic plan, request, and staged batch bindings advance in exact order", () => {
@@ -183,6 +212,8 @@ test("deterministic plan, request, and staged batch bindings advance in exact or
     scan: scan({ plannedStart: 10, plannedCount: 2 }),
     currentBatch: {
       planDigest: HEX_A,
+      planStart: 10,
+      planCount: 2,
       requestDigest: null,
       batchDigest: null,
       stagedBatchId: null,
@@ -235,6 +266,8 @@ test("proof batches require verification, fresh NUT-07, and admission before rep
     }),
     currentBatch: {
       planDigest: HEX_A,
+      planStart: 0,
+      planCount: 1,
       requestDigest: HEX_B,
       batchDigest: HEX_A,
       stagedBatchId: "batch-1",
@@ -264,12 +297,13 @@ test("proof batches require verification, fresh NUT-07, and admission before rep
     /proof|gap|edge/i,
   );
   const verified = successor(response, "proof-verification");
-  const classified = successor(verified, "nut07-classification");
-  const admitted = successor(classified, "atomic-admission");
+  const admitted = successor(verified, "atomic-admission");
   const nextPlan = successor(admitted, "nut13-plan", {
     scan: { ...admitted.scan, plannedStart: admitted.scan.nextCounter, plannedCount: 2 },
     currentBatch: {
       planDigest: HEX_B,
+      planStart: admitted.scan.nextCounter,
+      planCount: 2,
       requestDigest: null,
       batchDigest: null,
       stagedBatchId: null,
@@ -277,8 +311,7 @@ test("proof batches require verification, fresh NUT-07, and admission before rep
     },
   });
   validateConditionalRecoverySessionSuccessor(response, verified);
-  validateConditionalRecoverySessionSuccessor(verified, classified);
-  validateConditionalRecoverySessionSuccessor(classified, admitted);
+  validateConditionalRecoverySessionSuccessor(verified, admitted);
   validateConditionalRecoverySessionSuccessor(admitted, nextPlan);
 });
 
@@ -292,6 +325,8 @@ test("empty scans alone satisfy gap completion and reset on the next keyset", ()
     }),
     currentBatch: {
       planDigest: HEX_A,
+      planStart: 0,
+      planCount: 1,
       requestDigest: HEX_B,
       batchDigest: HEX_A,
       stagedBatchId: null,
@@ -358,6 +393,8 @@ test("budget equation is cumulative across keysets and per-keyset scans", () => 
     }),
     currentBatch: {
       planDigest: HEX_A,
+      planStart: 0,
+      planCount: 1,
       requestDigest: HEX_B,
       batchDigest: HEX_A,
       stagedBatchId: "batch-2",

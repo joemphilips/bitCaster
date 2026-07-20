@@ -103,14 +103,6 @@ const authorityObservations = new WeakMap<
 >();
 const consumedAuthorityObservations = new WeakSet<object>();
 const liveSessions = new WeakMap<object, ConditionalRecoverySessionCasPort>();
-const rehydratedSessionPorts = new Map<string, ConditionalRecoverySessionCasPort>();
-const replaySuccessors = new WeakMap<
-  object,
-  Readonly<{
-    successor: ConditionalRecoverySession;
-    port: ConditionalRecoverySessionCasPort;
-  }>
->();
 
 export function decodeConditionalRecoveryCapability(
   mintInfo: unknown,
@@ -857,6 +849,133 @@ export function validateConditionalRecoveryKeys(input: {
   return target;
 }
 
+export function rehydrateConditionalRecoveryTarget(input: {
+  readonly catalogue: CompletedConditionalRecoveryCatalogue;
+  readonly session: ConditionalRecoverySession;
+  readonly keysResponse: unknown;
+  readonly sessionPort: ConditionalRecoverySessionCasPort;
+}): ValidatedConditionalRecoveryTarget {
+  const catalogue = requireCompletedCatalogue(input.catalogue);
+  const session = input.session;
+  if (
+    session.activeKeysetId === null ||
+    session.catalogueOrdinal === null ||
+    session.keysetMetadataDigest === null
+  ) {
+    throw new Error(
+      "conditional recovery current session has no pinned target",
+    );
+  }
+  const metadata = catalogue.keysets[session.catalogueOrdinal];
+  if (
+    metadata === undefined ||
+    metadata.id !== session.activeKeysetId ||
+    metadataFingerprint(metadata) !== session.keysetMetadataDigest
+  ) {
+    throw new Error(
+      "conditional recovery persisted target metadata does not match the session",
+    );
+  }
+  const response = requireObject(
+    input.keysResponse,
+    "conditional recovery rehydration keys response",
+  );
+  requireExactKeys(
+    response,
+    ["keysets"],
+    "conditional recovery rehydration keys response",
+  );
+  if (!Array.isArray(response.keysets) || response.keysets.length !== 1) {
+    throw new Error(
+      "conditional recovery rehydration keys response must contain one keyset",
+    );
+  }
+  const raw = requireObject(
+    response.keysets[0],
+    "conditional recovery rehydration keys",
+  );
+  requireExactKeys(
+    raw,
+    ["id", "unit", "active", "input_fee_ppk", "final_expiry", "keys"],
+    "conditional recovery rehydration keys",
+    ["input_fee_ppk", "final_expiry"],
+  );
+  const id = requireV2KeysetId(raw.id);
+  const unit = requireBoundedUnit(raw.unit);
+  if (typeof raw.active !== "boolean") {
+    throw new Error(
+      "conditional recovery rehydration keys active flag is invalid",
+    );
+  }
+  const inputFeePpk = decodeOptionalSafeInteger(
+    raw,
+    "input_fee_ppk",
+    "conditional recovery rehydration keys input fee",
+    false,
+  );
+  const finalExpiry = decodeOptionalSafeInteger(
+    raw,
+    "final_expiry",
+    "conditional recovery rehydration keys expiry",
+    true,
+  );
+  if (
+    id !== metadata.id ||
+    unit !== metadata.unit ||
+    raw.active !== metadata.active ||
+    inputFeePpk !== metadata.inputFeePpk ||
+    finalExpiry !== metadata.finalExpiry
+  ) {
+    throw new Error(
+      "conditional recovery rehydration keys do not match pinned metadata",
+    );
+  }
+  const keys = decodeAmountKeys(raw.keys);
+  const derived = deriveConditionalKeysetId({
+    keys,
+    input_fee_ppk: inputFeePpk ?? undefined,
+    final_expiry: finalExpiry ?? undefined,
+    unit,
+    conditionId: metadata.conditionId,
+    outcomeCollectionId: metadata.outcomeCollectionId,
+  });
+  if (
+    derived !== metadata.id ||
+    !Keyset.verifyConditionalKeysetId(
+      {
+        id,
+        unit,
+        active: raw.active,
+        input_fee_ppk: inputFeePpk ?? undefined,
+        final_expiry: finalExpiry ?? undefined,
+        keys,
+      },
+      {
+        conditionId: metadata.conditionId,
+        outcomeCollection: metadata.outcomeCollection,
+        outcomeCollectionId: metadata.outcomeCollectionId,
+        registeredAt: metadata.registeredAt,
+      },
+    )
+  ) {
+    throw new Error(
+      "conditional recovery rehydration keys failed exact keyset verification",
+    );
+  }
+  const target = Object.freeze({
+    walletScope: session.walletScope,
+    metadata,
+    keys,
+    validatedAt: 0,
+    budget: session.budget,
+    session,
+  });
+  validatedTargets.add(target);
+  targetCatalogues.set(target, catalogue);
+  targetSessionPorts.set(target, input.sessionPort);
+  return target;
+}
+
 export function advanceConditionalRecoveryHighWater(
   persistedHighWater: number,
   nowMs: number,
@@ -906,6 +1025,7 @@ export function createConditionalRecoverySession(input: {
     transition: "completed-catalogue",
     evidenceDigest: digestValue([catalogue.capability, catalogue.keysets]),
     budget: catalogue.budget,
+    catalogueDigest: digestValue([catalogue.capability, catalogue.keysets]),
     completedKeysetProofCount: 0,
     catalogueOrdinal: null,
     activeKeysetId: null,
@@ -1694,6 +1814,7 @@ export function freezeSession(input: {
   transition: ConditionalRecoverySessionTransition;
   evidenceDigest: string;
   budget: ConditionalRecoveryBudget;
+  catalogueDigest: string;
   completedKeysetProofCount: number;
   catalogueOrdinal: number | null;
   activeKeysetId: string | null;
@@ -1742,6 +1863,10 @@ export function freezeSession(input: {
     transition,
     evidenceDigest,
     budget,
+    catalogueDigest: requireLowerHex32(
+      input.catalogueDigest,
+      "session catalogue digest",
+    ),
     completedKeysetProofCount,
     catalogueOrdinal: input.catalogueOrdinal,
     activeKeysetId: input.activeKeysetId,
@@ -1777,96 +1902,27 @@ export function requireLiveSession(
   return port;
 }
 
-export function beginConditionalRecoverySessionCapabilityReplay(input: {
-  readonly lineage: readonly ConditionalRecoverySession[];
+export function registerRehydratedConditionalRecoverySession(input: {
+  readonly session: ConditionalRecoverySession;
   readonly sessionPort: ConditionalRecoverySessionCasPort;
-}): ConditionalRecoverySession {
-  if (!Array.isArray(input.lineage) || input.lineage.length === 0) {
-    throw new Error("conditional recovery rehydration lineage is missing");
-  }
-  const [initial, ...successors] = input.lineage;
-  if (initial === undefined || initial.sequence !== 0) {
-    throw new Error("conditional recovery rehydration initial session is invalid");
-  }
-  if (initial.transition !== "completed-catalogue") {
-    throw new Error("conditional recovery rehydration lineage starts at the wrong stage");
-  }
-  if (initial.digest !== computeConditionalRecoverySessionDigest(initial)) {
-    throw new Error("conditional recovery rehydration initial digest is invalid");
-  }
-  let predecessor = initial;
-  for (const successor of successors) {
-    validateConditionalRecoverySessionSuccessor(predecessor, successor);
-    predecessor = successor;
-  }
+}): void {
   if (
-    input.sessionPort.readCurrentDigest(predecessor.walletScope) !==
-    predecessor.digest
+    input.session.digest !==
+      computeConditionalRecoverySessionDigest(input.session) ||
+    input.sessionPort.readCurrentDigest(input.session.walletScope) !==
+      input.session.digest
   ) {
     throw new Error(
-      "conditional recovery rehydration session is not the adapter latest",
+      "conditional recovery rehydrated session is not the adapter current",
     );
   }
-  const boundPort = rehydratedSessionPorts.get(predecessor.walletScope.scopeId);
+  const boundPort = liveSessions.get(input.session);
   if (boundPort !== undefined && boundPort !== input.sessionPort) {
     throw new Error(
       "conditional recovery rehydration cannot substitute a different session port",
     );
   }
-  rehydratedSessionPorts.set(predecessor.walletScope.scopeId, input.sessionPort);
-  liveSessions.set(initial, input.sessionPort);
-  return initial;
-}
-
-export async function replayConditionalRecoverySessionSuccessor<T>(input: {
-  readonly current: ConditionalRecoverySession;
-  readonly successor: ConditionalRecoverySession;
-  readonly sessionPort: ConditionalRecoverySessionCasPort;
-  readonly rederive: () => T | Promise<T>;
-  readonly readSession: (value: T) => ConditionalRecoverySession;
-}): Promise<T> {
-  if (liveSessions.get(input.current) !== input.sessionPort) {
-    throw new Error(
-      "conditional recovery rehydration uses a stale or foreign session",
-    );
-  }
-  validateConditionalRecoverySessionSuccessor(input.current, input.successor);
-  replaySuccessors.set(
-    input.current,
-    Object.freeze({
-      successor: input.successor,
-      port: input.sessionPort,
-    }),
-  );
-  try {
-    const value = await input.rederive();
-    if (input.readSession(value) !== input.successor) {
-      throw new Error(
-        "conditional recovery rehydration produced a foreign successor",
-      );
-    }
-    return value;
-  } finally {
-    replaySuccessors.delete(input.current);
-  }
-}
-
-export function adoptConditionalRecoveryReplaySuccessor(
-  current: ConditionalRecoverySession,
-  candidate: ConditionalRecoverySession,
-  port: ConditionalRecoverySessionCasPort,
-): ConditionalRecoverySession | null {
-  const replay = replaySuccessors.get(current);
-  if (replay === undefined) return null;
-  if (replay.port !== port || replay.successor.digest !== candidate.digest) {
-    throw new Error(
-      "conditional recovery rehydration successor does not match persisted evidence",
-    );
-  }
-  liveSessions.delete(current);
-  liveSessions.set(replay.successor, port);
-  replaySuccessors.delete(current);
-  return replay.successor;
+  liveSessions.set(input.session, input.sessionPort);
 }
 
 export function advanceSession(
@@ -1902,6 +1958,7 @@ export function advanceSession(
     transition,
     evidenceDigest,
     budget,
+    catalogueDigest: current.catalogueDigest,
     completedKeysetProofCount:
       patch.completedKeysetProofCount === undefined
         ? current.completedKeysetProofCount
@@ -1933,12 +1990,6 @@ export function advanceSession(
         : patch.terminalEvidence,
   });
   validateConditionalRecoverySessionSuccessor(current, successor);
-  const replayed = adoptConditionalRecoveryReplaySuccessor(
-    current,
-    successor,
-    port,
-  );
-  if (replayed !== null) return replayed;
   if (
     port.compareAndSwap({
       walletScope: current.walletScope,

@@ -124,6 +124,7 @@ export interface ConditionalRecoverySession {
   readonly transition: ConditionalRecoverySessionTransition;
   readonly evidenceDigest: string;
   readonly budget: ConditionalRecoveryBudget;
+  readonly catalogueDigest: string;
   readonly completedKeysetProofCount: number;
   readonly catalogueOrdinal: number | null;
   readonly activeKeysetId: string | null;
@@ -152,6 +153,51 @@ export interface ConditionalRecoveryStagedProofRow {
   readonly proof: CanonicalConditionalRecoveryProof;
 }
 
+export interface ConditionalRecoveryNut09TransportPort {
+  readonly fetchNut09Entity: (input: {
+    readonly walletScope: ConditionalRecoveryWalletScope;
+    readonly endpoint: string;
+    readonly requestBytes: Uint8Array;
+    readonly maxEntityBytes: number;
+  }) => Promise<Uint8Array>;
+}
+
+export interface ConditionalRecoveryNut07TransportPort {
+  readonly fetchNut07Entity: (input: {
+    readonly walletScope: ConditionalRecoveryWalletScope;
+    readonly endpoint: string;
+    readonly requestBytes: Uint8Array;
+    readonly maxEntityBytes: number;
+  }) => Promise<Uint8Array>;
+}
+
+export interface ConditionalRecoveryNut07CommitAuthority {
+  readonly consumeAtCommitInitiation: () => Readonly<{
+    authorityDigest: string;
+    monotonicAgeMs: number;
+  }>;
+}
+
+export type ConditionalRecoveryProofDispositionRow =
+  | Readonly<{
+      proofIdentity: string;
+      state: "UNSPENT";
+      disposition: "selectable-wallet-custody" | "expired-keyset";
+      proof: CanonicalConditionalRecoveryProof;
+    }>
+  | Readonly<{
+      proofIdentity: string;
+      state: "PENDING";
+      disposition: "pending-mint-state" | "expired-keyset";
+      proof: CanonicalConditionalRecoveryProof;
+    }>
+  | Readonly<{
+      proofIdentity: string;
+      state: "SPENT";
+      disposition: "spent-audit";
+      proof: CanonicalConditionalRecoveryProof;
+    }>;
+
 export interface ConditionalRecoverySessionCasPort {
   readonly readCurrentDigest: (
     walletScope: ConditionalRecoveryWalletScope,
@@ -175,8 +221,8 @@ export interface ConditionalRecoverySessionCasPort {
     readonly successor: ConditionalRecoverySession;
     readonly stagedBatchId: string;
     readonly expiryAuthority: ConditionalRecoveryFreshExpiryEvidence;
-    readonly rows: readonly ConditionalRecoveryStagedProofRow[];
-  }) => Promise<boolean>;
+    readonly rows: readonly ConditionalRecoveryProofDispositionRow[];
+  }) => boolean;
 }
 
 export interface SeedDerivedConditionalRecoveryOutput {
@@ -241,12 +287,9 @@ export interface ConditionalRecoveryAdmissionPort {
     readonly walletScope: ConditionalRecoveryWalletScope;
     readonly expectedSessionDigest: string;
     readonly successorSession: ConditionalRecoverySession;
-    readonly rows: readonly {
-      readonly proofIdentity: string;
-      readonly state: ConditionalRecoveryNut07State;
-      readonly proof: CanonicalConditionalRecoveryProof;
-    }[];
-    readonly authorizationDigest: string;
+    readonly stagedBatchId: string;
+    readonly rows: readonly ConditionalRecoveryProofDispositionRow[];
+    readonly nut07Authority: ConditionalRecoveryNut07CommitAuthority;
   }) => boolean;
 }
 
