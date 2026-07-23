@@ -2,8 +2,8 @@
 
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { constants, existsSync, readFileSync } from 'node:fs'
+import { open, readFile } from 'node:fs/promises'
 import { normalize } from 'node:path'
 import { stdin as input, stdout as output } from 'node:process'
 import { createInterface } from 'node:readline/promises'
@@ -318,17 +318,31 @@ function registerWalletCommand(program: Command): void {
     })
 
   wallet
-    .command('receive <token>')
+    .command('receive [token]')
     .description('Import a Cashu token into the wallet.')
+    .option('--token-file <path>', 'Owner-only file containing the Cashu token')
     .option('--condition-id <id>', 'Condition id for outcome-token imports')
     .option('--outcome-set <id>', 'Outcome set id for outcome-token imports')
-    .addHelpText('after', '\nExamples:\n  bitcaster-cli wallet receive <cashu-token>\n  bitcaster-cli wallet receive <token> --condition-id cond --outcome-set YES')
-    .action(async (token: string, options: { conditionId?: string; outcomeSet?: string }) => {
+    .addHelpText('after', '\nExamples:\n  bitcaster-cli wallet receive --token-file ./token.cashu\n  bitcaster-cli wallet receive <token> --condition-id cond --outcome-set YES')
+    .action(async (
+      token: string | undefined,
+      options: {
+        tokenFile?: string
+        conditionId?: string
+        outcomeSet?: string
+      },
+    ) => {
+      if ((token === undefined) === (options.tokenFile === undefined)) {
+        throwUsage('wallet receive requires exactly one token or --token-file')
+      }
+      const importedToken = options.tokenFile
+        ? await readPrivateTokenFile(options.tokenFile)
+        : token!
       const params: {
         token: string
         conditionId?: string
         outcomeSetId?: string
-      } = { token }
+      } = { token: importedToken }
       if (options.conditionId !== undefined) params.conditionId = options.conditionId
       if (options.outcomeSet !== undefined) params.outcomeSetId = options.outcomeSet
       if (!!params.conditionId !== !!params.outcomeSetId) {
@@ -1029,6 +1043,23 @@ function engineHttpErrorMessage(error: EngineClientError): string {
 
 function isTimeoutFailure(value: unknown): boolean {
   return value instanceof Error && (value.name === 'TimeoutError' || value.name === 'AbortError')
+}
+
+async function readPrivateTokenFile(path: string): Promise<string> {
+  const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW
+  const file = await open(path, constants.O_RDONLY | noFollow)
+  try {
+    const metadata = await file.stat()
+    if (!metadata.isFile()) throw new Error('--token-file must name a regular file')
+    if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0) {
+      throw new Error('--token-file must not be accessible by group or other users')
+    }
+    const token = (await file.readFile('utf8')).trim()
+    if (!token) throw new Error('--token-file was empty')
+    return token
+  } finally {
+    await file.close()
+  }
 }
 
 function errorMessage(value: unknown): string {
