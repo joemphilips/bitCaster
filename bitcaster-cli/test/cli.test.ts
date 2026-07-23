@@ -779,61 +779,32 @@ test('bitcaster-cli trade watch --wait exits non-zero on timeout', async () => {
   }
 })
 
-test('bitcaster-cli daemon init delegates setup/import to bitcaster-daemon', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-daemon-init-'))
-  const walletSeedHex = 'ab'.repeat(32)
-  const nostrSecretKeyHex = '01'.padStart(64, '0')
+test('bitcaster-cli daemon init rejects secrets passed through argv', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-daemon-init-argv-'))
   try {
-    const result = await execFileAsync(
-      process.execPath,
-      [
-        '--experimental-strip-types',
-        join(import.meta.dirname, '..', 'src', 'main.ts'),
-        'daemon',
-        'init',
-        '--wallet-seed-hex',
-        walletSeedHex,
-        '--nostr-secret-key-hex',
-        nostrSecretKeyHex,
-        '--engine-url',
-        'http://engine.example',
-        '--mint-url',
-        'http://mint.example',
-      ],
-      {
-        env: {
-          ...process.env,
-          BITCASTER_DAEMON_HOME: home,
-        },
+    await assert.rejects(
+      () =>
+        execFileAsync(
+          process.execPath,
+          [
+            '--experimental-strip-types',
+            join(import.meta.dirname, '..', 'src', 'main.ts'),
+            'daemon',
+            'init',
+            '--wallet-seed-hex',
+            'ab'.repeat(32),
+          ],
+          { env: { ...process.env, BITCASTER_DAEMON_HOME: home } },
+        ),
+      (error: unknown) => {
+        const output = error as { stdout?: string; stderr?: string }
+        assert.match(
+          `${output.stdout ?? ''}${output.stderr ?? ''}`,
+          /unknown option '--wallet-seed-hex'/,
+        )
+        return true
       },
     )
-
-    assert.match(result.stdout, /bitcaster-daemon profile initialized/)
-    const secrets = JSON.parse(
-      await readFile(join(home, 'daemon-secrets.json'), 'utf8'),
-    ) as {
-      protection: string
-      secrets: {
-        walletSeedHex: string
-        nostrSecretKeyHex: string
-        nostrPublicKeyHex: string
-      }
-    }
-    assert.equal(secrets.protection, 'file-mode-0600')
-    assert.equal(secrets.secrets.walletSeedHex, walletSeedHex)
-    assert.equal(secrets.secrets.nostrSecretKeyHex, nostrSecretKeyHex)
-    assert.equal(
-      secrets.secrets.nostrPublicKeyHex,
-      '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
-    )
-    const profile = JSON.parse(
-      await readFile(join(home, 'daemon-profile.json'), 'utf8'),
-    ) as {
-      engineBaseUrl: string
-      mintUrl: string
-    }
-    assert.equal(profile.engineBaseUrl, 'http://engine.example')
-    assert.equal(profile.mintUrl, 'http://mint.example')
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -847,8 +818,10 @@ test('bitcaster-cli daemon init delegates file-based setup/import to bitcaster-d
   const nostrSecretKeyFile = join(home, 'nostr-secret-key.hex')
 
   try {
-    await writeFile(walletSeedFile, `${walletSeedHex}\n`)
-    await writeFile(nostrSecretKeyFile, `${nostrSecretKeyHex}\n`)
+    await writeFile(walletSeedFile, `${walletSeedHex}\n`, { mode: 0o600 })
+    await writeFile(nostrSecretKeyFile, `${nostrSecretKeyHex}\n`, {
+      mode: 0o600,
+    })
     const result = await execFileAsync(
       process.execPath,
       [
@@ -928,13 +901,7 @@ test('bitcaster-cli auto-starts default local daemon when RPC is unavailable', a
     ).pid as number
     assert.equal(Number.isSafeInteger(daemonPid), true)
   } finally {
-    if (daemonPid) {
-      try {
-        process.kill(daemonPid, 'SIGTERM')
-      } catch {
-        // Process may have exited during test teardown.
-      }
-    }
+    if (daemonPid) await terminateProcess(daemonPid)
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -1093,7 +1060,8 @@ test('P47-1: bitcaster-cli daemon init --help shows help text (not an error)', a
     { env: process.env },
   )
   assert.match(result.stdout, /daemon init/)
-  assert.match(result.stdout, /wallet-seed-hex/)
+  assert.match(result.stdout, /wallet-seed-hex-file/)
+  assert.doesNotMatch(result.stdout, /--wallet-seed-hex <hex>/)
 })
 
 test('P47-1: bitcaster-cli config is a top-level command', async () => {
@@ -1226,13 +1194,7 @@ test('bitcaster-cli config set does not auto-start the daemon when autostart is 
     } catch {
       // No auto-start PID was written.
     }
-    if (daemonPid) {
-      try {
-        process.kill(daemonPid, 'SIGTERM')
-      } catch {
-        // Process may have exited during test teardown.
-      }
-    }
+    if (daemonPid) await terminateProcess(daemonPid)
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -2370,7 +2332,7 @@ async function runCliWithEnv(
       join(import.meta.dirname, '..', 'src', 'main.ts'),
       ...args,
     ],
-    { env },
+    { env: { ...env, NODE_NO_WARNINGS: '1' } },
   )
 }
 
@@ -2441,6 +2403,38 @@ async function waitForProcessStartTime(pid: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
   throw new Error(`process ${pid} did not expose start time`)
+}
+
+async function terminateProcess(pid: number): Promise<void> {
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch (err) {
+    if (
+      typeof err === 'object'
+      && err !== null
+      && (err as { code?: unknown }).code === 'ESRCH'
+    ) {
+      return
+    }
+    throw err
+  }
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0)
+    } catch (err) {
+      if (
+        typeof err === 'object'
+        && err !== null
+        && (err as { code?: unknown }).code === 'ESRCH'
+      ) {
+        return
+      }
+      throw err
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`process ${pid} did not exit after SIGTERM`)
 }
 
 async function processStartTime(pid: number): Promise<string | null> {

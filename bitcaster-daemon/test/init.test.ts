@@ -26,18 +26,22 @@ test('bitcaster-daemon init imports wallet seed and nostr key', async () => {
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   const walletSeedHex = 'ab'.repeat(32)
   const nostrSecretKeyHex = '01'.padStart(64, '0')
+  const walletSeedFile = join(home, 'wallet-seed.hex')
+  const nostrSecretKeyFile = join(home, 'nostr-secret-key.hex')
 
   try {
+    await writeFile(walletSeedFile, walletSeedHex, { mode: 0o600 })
+    await writeFile(nostrSecretKeyFile, nostrSecretKeyHex, { mode: 0o600 })
     await execFileAsync(
       process.execPath,
       [
         '--experimental-strip-types',
         join(import.meta.dirname, '..', 'src', 'main.ts'),
         'init',
-        '--wallet-seed-hex',
-        walletSeedHex,
-        '--nostr-secret-key-hex',
-        nostrSecretKeyHex,
+        '--wallet-seed-hex-file',
+        walletSeedFile,
+        '--nostr-secret-key-hex-file',
+        nostrSecretKeyFile,
         '--engine-url',
         'http://engine.example',
         '--mint-url',
@@ -74,6 +78,31 @@ test('bitcaster-daemon init imports wallet seed and nostr key', async () => {
   }
 })
 
+test('bitcaster-daemon init rejects secrets passed through argv', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-init-argv-'))
+  try {
+    await assert.rejects(
+      () =>
+        execFileAsync(
+          process.execPath,
+          [
+            '--experimental-strip-types',
+            join(import.meta.dirname, '..', 'src', 'main.ts'),
+            'init',
+            '--wallet-seed-hex',
+            'ab'.repeat(32),
+            '--nostr-secret-key-hex',
+            '01'.padStart(64, '0'),
+          ],
+          { env: { ...process.env, BITCASTER_DAEMON_HOME: home } },
+        ),
+      /Unknown init option: --wallet-seed-hex/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('daemon imported nostr key preserves fixed 32-byte scalar width', () => {
   const secrets = createDaemonSecretsFromImport({
     walletSeedHex: 'ab'.repeat(32),
@@ -96,8 +125,10 @@ test('bitcaster-daemon init imports wallet seed and nostr key from files', async
   const nostrSecretKeyFile = join(home, 'nostr-secret-key.hex')
 
   try {
-    await writeFile(walletSeedFile, `${walletSeedHex}\n`)
-    await writeFile(nostrSecretKeyFile, ` ${nostrSecretKeyHex}\n`)
+    await writeFile(walletSeedFile, `${walletSeedHex}\n`, { mode: 0o600 })
+    await writeFile(nostrSecretKeyFile, ` ${nostrSecretKeyHex}\n`, {
+      mode: 0o600,
+    })
     await execFileAsync(
       process.execPath,
       [
@@ -138,14 +169,13 @@ test('bitcaster-daemon init imports wallet seed and nostr key from files', async
   }
 })
 
-test('bitcaster-daemon init rejects mixed direct and file secret sources', async () => {
+test('bitcaster-daemon init requires both private secret files', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-init-source-'))
   const walletSeedHex = 'ab'.repeat(32)
-  const nostrSecretKeyHex = '01'.padStart(64, '0')
   const walletSeedFile = join(home, 'wallet-seed.hex')
 
   try {
-    await writeFile(walletSeedFile, `${walletSeedHex}\n`)
+    await writeFile(walletSeedFile, `${walletSeedHex}\n`, { mode: 0o600 })
     await assert.rejects(
       () =>
         execFileAsync(
@@ -154,12 +184,8 @@ test('bitcaster-daemon init rejects mixed direct and file secret sources', async
             '--experimental-strip-types',
             join(import.meta.dirname, '..', 'src', 'main.ts'),
             'init',
-            '--wallet-seed-hex',
-            walletSeedHex,
             '--wallet-seed-hex-file',
             walletSeedFile,
-            '--nostr-secret-key-hex',
-            nostrSecretKeyHex,
           ],
           {
             env: {
@@ -168,7 +194,39 @@ test('bitcaster-daemon init rejects mixed direct and file secret sources', async
             },
           },
         ),
-      /--wallet-seed-hex and --wallet-seed-hex-file are mutually exclusive/,
+      /--wallet-seed-hex-file and --nostr-secret-key-hex-file must be supplied together/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-daemon init rejects group-readable secret files', async () => {
+  if (process.platform === 'win32') return
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-init-mode-'))
+  const walletSeedFile = join(home, 'wallet-seed.hex')
+  const nostrSecretKeyFile = join(home, 'nostr-secret-key.hex')
+  try {
+    await writeFile(walletSeedFile, 'ab'.repeat(32), { mode: 0o644 })
+    await writeFile(nostrSecretKeyFile, '01'.padStart(64, '0'), {
+      mode: 0o600,
+    })
+    await assert.rejects(
+      () =>
+        execFileAsync(
+          process.execPath,
+          [
+            '--experimental-strip-types',
+            join(import.meta.dirname, '..', 'src', 'main.ts'),
+            'init',
+            '--wallet-seed-hex-file',
+            walletSeedFile,
+            '--nostr-secret-key-hex-file',
+            nostrSecretKeyFile,
+          ],
+          { env: { ...process.env, BITCASTER_DAEMON_HOME: home } },
+        ),
+      /must not be accessible by group or other users/,
     )
   } finally {
     await rm(home, { recursive: true, force: true })
@@ -518,16 +576,22 @@ async function runDaemonInit(
     force?: boolean
   },
 ): Promise<void> {
+  const walletSeedFile = join(home, 'test-wallet-seed.hex')
+  const nostrSecretKeyFile = join(home, 'test-nostr-secret-key.hex')
+  await writeFile(walletSeedFile, options.walletSeedHex, { mode: 0o600 })
+  await writeFile(nostrSecretKeyFile, options.nostrSecretKeyHex, {
+    mode: 0o600,
+  })
   await execFileAsync(
     process.execPath,
     [
       '--experimental-strip-types',
       join(import.meta.dirname, '..', 'src', 'main.ts'),
       'init',
-      '--wallet-seed-hex',
-      options.walletSeedHex,
-      '--nostr-secret-key-hex',
-      options.nostrSecretKeyHex,
+      '--wallet-seed-hex-file',
+      walletSeedFile,
+      '--nostr-secret-key-hex-file',
+      nostrSecretKeyFile,
       ...(options.engineUrl ? ['--engine-url', options.engineUrl] : []),
       ...(options.mintUrl ? ['--mint-url', options.mintUrl] : []),
       ...(options.force ? ['--force'] : []),

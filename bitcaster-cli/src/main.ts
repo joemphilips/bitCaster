@@ -712,27 +712,21 @@ function registerDaemonCommand(program: Command): void {
   daemon
     .command('init')
     .description('Initialize daemon profile, wallet seed, Nostr key, and endpoints.')
-    .option('--wallet-seed-hex <hex>', 'Wallet seed hex')
     .option('--wallet-seed-hex-file <path>', 'File containing wallet seed hex')
-    .option('--nostr-secret-key-hex <hex>', 'Nostr secret key hex')
     .option('--nostr-secret-key-hex-file <path>', 'File containing Nostr secret key hex')
     .option('--engine-url <url>', 'Engine URL')
     .option('--mint-url <url>', 'Mint URL')
     .option('--force', 'Overwrite existing daemon profile')
     .addHelpText('after', '\nExample:\n  bitcaster-cli daemon init --engine-url <url> --mint-url <url>')
     .action(async (options: {
-      walletSeedHex?: string
       walletSeedHexFile?: string
-      nostrSecretKeyHex?: string
       nostrSecretKeyHexFile?: string
       engineUrl?: string
       mintUrl?: string
       force?: boolean
     }) => {
       const passthrough = ['init']
-      pushOption(passthrough, '--wallet-seed-hex', options.walletSeedHex)
       pushOption(passthrough, '--wallet-seed-hex-file', options.walletSeedHexFile)
-      pushOption(passthrough, '--nostr-secret-key-hex', options.nostrSecretKeyHex)
       pushOption(passthrough, '--nostr-secret-key-hex-file', options.nostrSecretKeyHexFile)
       const rootOptions = rootProgram?.opts<{ engineUrl?: string; mintUrl?: string }>() ?? {}
       pushOption(passthrough, '--engine-url', options.engineUrl ?? rootOptions.engineUrl)
