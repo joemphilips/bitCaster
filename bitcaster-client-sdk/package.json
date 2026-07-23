@@ -19,6 +19,34 @@
       "types": "./dist/ctfConsolidation.d.ts",
       "import": "./dist/ctfConsolidation.js"
     },
+    "./durableCustody": {
+      "types": "./dist/durableCustody.d.ts",
+      "import": "./dist/durableCustody.js"
+    },
+    "./durableCustodyProofOperation": {
+      "types": "./dist/durableCustodyProofOperation.d.ts",
+      "import": "./dist/durableCustodyProofOperation.js"
+    },
+    "./durableCustodyProofOperationRecord": {
+      "types": "./dist/durableCustodyProofOperationRecord.d.ts",
+      "import": "./dist/durableCustodyProofOperationRecord.js"
+    },
+    "./durableWalletOperation": {
+      "types": "./dist/durableWalletOperation.d.ts",
+      "import": "./dist/durableWalletOperation.js"
+    },
+    "./durableWalletProofTransition": {
+      "types": "./dist/durableWalletProofTransition.d.ts",
+      "import": "./dist/durableWalletProofTransition.js"
+    },
+    "./emergencySeedRecovery": {
+      "types": "./dist/emergencySeedRecovery.d.ts",
+      "import": "./dist/emergencySeedRecovery.js"
+    },
+    "./seedRecoveryCore": {
+      "types": "./dist/seedRecoveryCore.d.ts",
+      "import": "./dist/seedRecoveryCore.js"
+    },
     "./ctfRedeem": {
       "types": "./dist/ctfRedeem.d.ts",
       "import": "./dist/ctfRedeem.js"
