@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { createRealDaemonSwapOps } from '../src/swapProtocolAdapter.ts'
+import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import {
   readState,
   type CashuProofRecord,
@@ -15,6 +16,13 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
   process.env.BITCASTER_DAEMON_HOME = home
   const calls: string[] = []
   try {
+    await bootstrapFreshDaemonProfile({
+      directory: home,
+      engineBaseUrl: 'https://engine.example',
+      mintUrl: 'https://mint.example',
+      walletSeedHex: '11'.repeat(32),
+      nostrSecretKeyHex: '22'.repeat(32),
+    })
     const ops = createRealDaemonSwapOps({
       nut07PollDeadlineMs: 10,
       nut07PollIntervalMs: 1,

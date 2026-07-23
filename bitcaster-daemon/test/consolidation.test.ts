@@ -7,8 +7,8 @@ import type { MintKeys, OutputData, Proof } from '@cashu/cashu-ts'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import { COLLATERAL_COLLECTION } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import { dispatch, type EngineClientLike } from '../src/server.ts'
-import { profileFromPublicKey, writeProfile } from '../src/profile.ts'
-import { createDaemonSecrets, writeSecrets } from '../src/secrets.ts'
+import { createDaemonSecrets } from '../src/secrets.ts'
+import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { recoverPreparedWalletSends } from '../src/walletOps.ts'
 import {
   emptyDaemonState,
@@ -19,7 +19,7 @@ import {
   type StoredProofAsset,
 } from '../src/state.ts'
 
-const MINT_URL = 'mint-a'
+const MINT_URL = 'https://mint-a.example'
 
 test('wallet.consolidateMarket executes T2 Not-A + Not-B into residual C and base collateral', async () => {
   await withDaemonHome(async () => {
@@ -267,10 +267,14 @@ async function withDaemonHome(run: () => Promise<void>): Promise<void> {
   process.env.BITCASTER_DAEMON_HOME = home
   try {
     const secrets = createDaemonSecrets('2026-06-05T00:00:00.000Z')
-    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    profile.mintUrl = MINT_URL
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapFreshDaemonProfile({
+      directory: home,
+      engineBaseUrl: 'https://engine.example',
+      mintUrl: MINT_URL,
+      walletSeedHex: secrets.walletSeedHex,
+      nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      nostrPublicKeyHex: secrets.nostrPublicKeyHex,
+    })
     await run()
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME

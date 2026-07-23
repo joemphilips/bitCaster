@@ -59,7 +59,7 @@ import { canBackOrder, type TokenHoldings } from '@bitcaster-market/client-sdk/t
 import { generateOrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
 import type { DaemonCommand, DaemonHealth, DaemonResponse } from './protocol.ts'
-import { ensureProfileDir, normalizeEndpointUrl, readProfile, updateProfile } from './profile.ts'
+import { normalizeEndpointUrl, readProfile, updateProfile } from './profile.ts'
 import { bearerToken, readRpcToken, rpcSocketPath, tokenMatches } from './rpcAuth.ts'
 import { readSecrets, updateSecrets } from './secrets.ts'
 import {
@@ -265,7 +265,6 @@ export async function startDaemonServer(
   const socketPath =
     options.socketPath ?? (options.host || options.port ? undefined : defaultRpcSocketPath())
   if (socketPath) {
-    await ensureProfileDir()
     await unlinkStaleSocket(socketPath)
     await new Promise<void>((resolve) => server.listen(socketPath, resolve))
     server.once('close', () => {

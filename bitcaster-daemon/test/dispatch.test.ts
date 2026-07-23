@@ -6,22 +6,30 @@ import { test } from 'node:test'
 import { getEncodedToken, type Proof } from '@cashu/cashu-ts'
 import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
 import { dispatch, type EngineClientLike } from '../src/server.ts'
-import { profileFromPublicKey, readProfile, writeProfile } from '../src/profile.ts'
+import { profileDir, readProfile, updateProfile } from '../src/profile.ts'
 import {
   createDaemonSecrets,
   readSecrets,
-  writeSecrets,
 } from '../src/secrets.ts'
+import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import {
   emptyDaemonState,
   readState,
-  writeState,
+  writeState as persistState,
   type DaemonState,
 } from '../src/state.ts'
 import {
   recoverPreparedWalletSends,
   splitAvailableSatProofsForCtfCollateral,
 } from '../src/walletOps.ts'
+import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
+
+async function writeState(state: DaemonState): Promise<void> {
+  await withDaemonStateSqliteTransaction(profileDir(), (database) => {
+    database.prepare('DELETE FROM target_ephemeral_keys').run()
+  })
+  await persistState(state)
+}
 
 test('daemon dispatch persists wallet, order, and swap state', async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-test-'))
@@ -29,18 +37,26 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
   process.env.BITCASTER_DAEMON_HOME = home
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
-    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    profile.mintUrl = 'mint-a'
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapFreshDaemonProfile({
+      directory: home,
+      engineBaseUrl: 'http://localhost:5000',
+      mintUrl: 'https://mint-a.example',
+      walletSeedHex: secrets.walletSeedHex,
+      nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      nostrPublicKeyHex: secrets.nostrPublicKeyHex,
+    })
+    const profile = (await readProfile())!
 
     await t.test('wallet.balance summarizes durable proof state', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 100, 'available', { kind: 'sats' }),
-        proofRecord('mint-a', 50, 'reserved', { kind: 'sats' }),
-        proofRecord('mint-a', 999, 'available', { kind: 'sats', baseAsset: 'usd' }),
-        proofRecord('mint-a', 25, 'locked', {
+        proofRecord('https://mint-a.example', 100, 'available', { kind: 'sats' }),
+        {
+          ...proofRecord('https://mint-a.example', 50, 'reserved', { kind: 'sats' }),
+          reservedBy: 'balance-test',
+        },
+        proofRecord('https://mint-a.example', 999, 'available', { kind: 'sats', baseAsset: 'usd' }),
+        proofRecord('https://mint-a.example', 25, 'locked', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
@@ -57,7 +73,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         totalLockedSats: 25,
         byMint: [
           {
-            mintUrl: 'mint-a',
+            mintUrl: 'https://mint-a.example',
             availableSats: 100,
             reservedSats: 50,
             lockedSats: 25,
@@ -65,7 +81,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         ],
         outcomePositions: [
           {
-            mintUrl: 'mint-a',
+            mintUrl: 'https://mint-a.example',
             conditionId: 'cond',
             outcomeSetId: 'YES',
             availableSats: 0,
@@ -80,7 +96,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       const priorState = await readState()
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 1_000, 'available', { kind: 'sats', baseAsset: 'sat' }, 'msat-proof'),
+        proofRecord('https://mint-a.example', 1_000, 'available', { kind: 'sats', baseAsset: 'sat' }, 'msat-proof'),
       )
       await writeState(state)
 
@@ -89,7 +105,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         await assert.rejects(
           () => splitAvailableSatProofsForCtfCollateral(
             1_000,
-            'mint-a',
+            'https://mint-a.example',
             'preflight-msat-unit',
             secrets,
             {
@@ -124,13 +140,13 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('daemon.status returns redacted profile and state summary', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 10, 'available', { kind: 'sats' }, 'status-secret'),
+        proofRecord('https://mint-a.example', 10, 'available', { kind: 'sats' }, 'status-secret'),
       )
       state.proofOperations['op-status'] = {
         operationId: 'op-status',
         kind: 'wallet-send',
         state: 'prepared',
-        mintUrl: 'mint-a',
+        mintUrl: 'https://mint-a.example',
         inputs: [{ amount: 10, secret: 'operation-input-secret', C: 'C-status' }],
         outputs: {},
         metadata: {},
@@ -173,7 +189,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           totalLockedSats: 0,
           byMint: [
             {
-              mintUrl: 'mint-a',
+              mintUrl: 'https://mint-a.example',
               availableSats: 10,
               reservedSats: 0,
               lockedSats: 0,
@@ -193,7 +209,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         operationId: 'ctf-native-op',
         kind: 'conditional-keyset-swap',
         state: 'completed',
-        mintUrl: 'mint-a',
+        mintUrl: 'https://mint-a.example',
         inputs: [
           { id: 'ctf-keyset', amount: 136n as never, secret: 'ctf-input', C: 'C-in' },
         ],
@@ -259,7 +275,10 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           .engineBaseUrl,
         'http://engine.example',
       )
-      await writeProfile(profile)
+      await updateProfile({
+        engineBaseUrl: profile.engineBaseUrl,
+        mintUrl: profile.mintUrl,
+      })
     })
 
     await t.test('daemon.config refuses endpoint changes after durable state exists', async () => {
@@ -267,7 +286,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         () => {
           const state = emptyDaemonState()
           state.wallet.proofs.push(
-            proofRecord('mint-a', 1, 'available', { kind: 'sats' }, 'config-proof'),
+            proofRecord('https://mint-a.example', 1, 'available', { kind: 'sats' }, 'config-proof'),
           )
           return state
         },
@@ -277,7 +296,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             operationId: 'config-op',
             kind: 'wallet-send',
             state: 'prepared',
-            mintUrl: 'mint-a',
+            mintUrl: 'https://mint-a.example',
             inputs: [{ amount: 1, secret: 'config-op-secret', C: 'C-config' }],
             outputs: {},
             metadata: {},
@@ -355,7 +374,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.receive redeems token proofs into daemon state', async () => {
       await writeState(emptyDaemonState())
       const token = getEncodedToken({
-        mint: 'mint-a',
+        mint: 'https://mint-a.example',
         unit: 'sat',
         proofs: [cashuProof(7, 'token-secret')],
       })
@@ -363,7 +382,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         { method: 'wallet.receive', params: { token } },
         {
           createCashuWallet(mintUrl) {
-            assert.equal(mintUrl, 'mint-a')
+            assert.equal(mintUrl, 'https://mint-a.example')
             return {
               async loadMint() {},
               async receive(receivedToken, config) {
@@ -381,7 +400,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
 
       assert.equal(response.ok, true)
       assert.deepEqual(response.result, {
-        mintUrl: 'mint-a',
+        mintUrl: 'https://mint-a.example',
         amountSats: 7,
         proofCount: 1,
         asset: { kind: 'sats', baseAsset: 'sat' },
@@ -395,7 +414,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.receive can classify imported proofs as outcome tokens', async () => {
       await writeState(emptyDaemonState())
       const token = getEncodedToken({
-        mint: 'mint-a',
+        mint: 'https://mint-a.example',
         unit: 'sat',
         proofs: [cashuProof(11, 'outcome-token-secret')],
       })
@@ -410,7 +429,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         },
         {
           async resolveConditionKeysetIds(mintUrl, conditionId) {
-            assert.equal(mintUrl, 'mint-a')
+            assert.equal(mintUrl, 'https://mint-a.example')
             assert.equal(conditionId, 'cond')
             return ['009a1f293253e41e']
           },
@@ -442,7 +461,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
 
       assert.equal(response.ok, true)
       assert.deepEqual(response.result, {
-        mintUrl: 'mint-a',
+        mintUrl: 'https://mint-a.example',
         amountSats: 11,
         proofCount: 1,
         asset: {
@@ -465,7 +484,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.receive rejects spent outcome-token proofs before persistence', async () => {
       await writeState(emptyDaemonState())
       const token = getEncodedToken({
-        mint: 'mint-a',
+        mint: 'https://mint-a.example',
         unit: 'sat',
         proofs: [cashuProof(11, 'spent-outcome-secret')],
       })
@@ -514,7 +533,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
 
     await t.test('wallet.receive rejects partial outcome metadata', async () => {
       const token = getEncodedToken({
-        mint: 'mint-a',
+        mint: 'https://mint-a.example',
         unit: 'sat',
         proofs: [cashuProof(7, 'partial-outcome-secret')],
       })
@@ -545,15 +564,15 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.send spends stored proofs and returns an encoded token', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'spend-secret-a'),
-        proofRecord('mint-a', 4, 'available', { kind: 'sats' }, 'spend-secret-b'),
+        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'spend-secret-a'),
+        proofRecord('https://mint-a.example', 4, 'available', { kind: 'sats' }, 'spend-secret-b'),
       )
       await writeState(state)
       const response = await dispatch(
-        { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'mint-a' } },
+        { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'https://mint-a.example' } },
         {
           createCashuWallet(mintUrl) {
-            assert.equal(mintUrl, 'mint-a')
+            assert.equal(mintUrl, 'https://mint-a.example')
             return resumableSendWallet({
               onPrepare(amount, proofs) {
                 assert.equal(amount, 5)
@@ -596,19 +615,19 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('concurrent wallet.send calls reserve distinct proofs', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'send-a'),
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'send-b'),
+        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'send-a'),
+        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'send-b'),
       )
       await writeState(state)
       const selectedSecrets: string[] = []
 
       const responses = await Promise.all([
         dispatch(
-          { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'mint-a' } },
+          { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'https://mint-a.example' } },
           { createCashuWallet: concurrentSendWallet(selectedSecrets) },
         ),
         dispatch(
-          { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'mint-a' } },
+          { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'https://mint-a.example' } },
           { createCashuWallet: concurrentSendWallet(selectedSecrets) },
         ),
       ])
@@ -625,14 +644,14 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.send releases reserved proofs when mint send fails', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'send-fail'),
+        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'send-fail'),
       )
       await writeState(state)
 
       await assert.rejects(
         () =>
           dispatch(
-            { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'mint-a' } },
+            { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'https://mint-a.example' } },
             {
               createCashuWallet() {
                 return {
@@ -665,7 +684,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.send with operation id is idempotent after completion', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'send-op'),
+        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'send-op'),
       )
       await writeState(state)
       let prepared = 0
@@ -676,7 +695,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           method: 'wallet.send',
           params: {
             amountSats: 5,
-            mintUrl: 'mint-a',
+            mintUrl: 'https://mint-a.example',
             operationId: 'wallet-send-op-1',
           },
         },
@@ -702,7 +721,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           method: 'wallet.send',
           params: {
             amountSats: 5,
-            mintUrl: 'mint-a',
+            mintUrl: 'https://mint-a.example',
             operationId: 'wallet-send-op-1',
           },
         },
@@ -736,7 +755,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.send with operation id restores spent prepared outputs', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'send-restore'),
+        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'send-restore'),
       )
       await writeState(state)
 
@@ -747,7 +766,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               method: 'wallet.send',
               params: {
                 amountSats: 5,
-                mintUrl: 'mint-a',
+                mintUrl: 'https://mint-a.example',
                 operationId: 'wallet-send-restore',
               },
             },
@@ -769,7 +788,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           method: 'wallet.send',
           params: {
             amountSats: 5,
-            mintUrl: 'mint-a',
+            mintUrl: 'https://mint-a.example',
             operationId: 'wallet-send-restore',
           },
         },
@@ -808,7 +827,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet recovery sweep completes spent prepared sends', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'recover-spent'),
+        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'recover-spent'),
       )
       await writeState(state)
 
@@ -819,7 +838,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               method: 'wallet.send',
               params: {
                 amountSats: 5,
-                mintUrl: 'mint-a',
+                mintUrl: 'https://mint-a.example',
                 operationId: 'wallet-send-recover-spent',
               },
             },
@@ -872,7 +891,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet recovery sweep reports mint-pending sends without throwing', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'recover-pending'),
+        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'recover-pending'),
       )
       await writeState(state)
 
@@ -883,7 +902,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               method: 'wallet.send',
               params: {
                 amountSats: 5,
-                mintUrl: 'mint-a',
+                mintUrl: 'https://mint-a.example',
                 operationId: 'wallet-send-recover-pending',
               },
             },
@@ -947,7 +966,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         operationId: 'op-a',
         kind: 'wallet-send',
         state: 'prepared',
-        mintUrl: 'mint-a',
+        mintUrl: 'https://mint-a.example',
         inputs: [
           { amount: 2, secret: 'input-secret-a', C: 'C-a' },
           { amount: 3, secret: 'input-secret-b', C: 'C-b' },
@@ -1003,7 +1022,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           operationId: 'op-a',
           kind: 'wallet-send',
           state: 'prepared',
-          mintUrl: 'mint-a',
+          mintUrl: 'https://mint-a.example',
           inputAmountSats: 5,
           inputCount: 2,
           outputCounts: { send: 1, keep: 0 },
@@ -1091,7 +1110,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
           generateEphemeralKeypair: () => ({
             privateKeyHex: '11'.repeat(32),
-            publicKeyHex: `02${'22'.repeat(32)}`,
+            publicKeyHex:
+              '034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa',
           }),
           tradeRuntime: {
             async start(state) {
@@ -1122,7 +1142,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
       )
       assert.deepEqual(submittedPubkeys, [
-        { tradeId: 'trade-1', pubkey: `02${'22'.repeat(32)}`, conditionId: 'cond' },
+        {
+          tradeId: 'trade-1',
+          pubkey:
+            '034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa',
+          conditionId: 'cond',
+        },
       ])
 
       const state = await readState()
@@ -1139,7 +1164,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         tradeId: 'trade-1',
         marketId: 'cond-YES',
         privateKeyHex: '11'.repeat(32),
-        publicKeyHex: `02${'22'.repeat(32)}`,
+        publicKeyHex:
+          '034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa',
         createdAt: updatedSecrets.orderEphemeralKeys['trade-1'].createdAt,
       })
     })
@@ -1273,7 +1299,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('order.submit allows POST when local buy collateral is sufficient', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 1_000, 'available', {
+        proofRecord('https://mint-a.example', 1_000, 'available', {
           kind: 'sats',
           baseAsset: 'sat',
         }, 'base-collateral'),
@@ -1473,7 +1499,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       const priorState = await readState()
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 100, 'available', { kind: 'sats', baseAsset: 'sat' }, 'score-proof'),
+        proofRecord('https://mint-a.example', 100, 'available', { kind: 'sats', baseAsset: 'sat' }, 'score-proof'),
       )
       await writeState(state)
 
@@ -2214,19 +2240,19 @@ function proofRecord(
 function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
   const state = emptyDaemonState()
   state.wallet.proofs.push(
-    proofRecord('mint-a', amount, 'available', {
+    proofRecord('https://mint-a.example', amount, 'available', {
       kind: 'outcome',
       conditionId,
       outcomeSetId: 'YES',
       baseAsset: 'sat',
     }, `${conditionId}-yes-vcs`),
-    proofRecord('mint-a', amount, 'available', {
+    proofRecord('https://mint-a.example', amount, 'available', {
       kind: 'outcome',
       conditionId,
       outcomeSetId: 'NO',
       baseAsset: 'sat',
     }, `${conditionId}-no-vcs`),
-    proofRecord('mint-a', amount, 'available', {
+    proofRecord('https://mint-a.example', amount, 'available', {
       kind: 'sats',
       baseAsset: 'sat',
     }, `${conditionId}-base`),

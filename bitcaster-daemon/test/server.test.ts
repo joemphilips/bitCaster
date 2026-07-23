@@ -6,10 +6,20 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { profileFromPublicKey, writeProfile } from '../src/profile.ts'
-import { ensureRpcToken } from '../src/rpcAuth.ts'
-import { createDaemonSecrets, writeSecrets } from '../src/secrets.ts'
+import { readRpcToken } from '../src/rpcAuth.ts'
+import { createDaemonSecrets } from '../src/secrets.ts'
+import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { orderBackingError, startDaemonServer } from '../src/server.ts'
+
+async function bootstrapTestProfile(directory: string): Promise<void> {
+  await bootstrapFreshDaemonProfile({
+    directory,
+    engineBaseUrl: 'https://engine.example',
+    mintUrl: 'https://mint.example',
+    walletSeedHex: '11'.repeat(32),
+    nostrSecretKeyHex: '22'.repeat(32),
+  })
+}
 
 test('startDaemonServer rejects non-loopback bind hosts', async () => {
   await assert.rejects(
@@ -163,7 +173,8 @@ test('startDaemonServer requires initialized RPC token for non-health commands',
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-server-auth-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
-  const token = await ensureRpcToken()
+  await bootstrapTestProfile(home)
+  const token = (await readRpcToken())!
   const server = await startDaemonServer({ host: '127.0.0.1', port: 0 })
   try {
     const address = server.address()
@@ -207,13 +218,16 @@ test('market.create refuses insecure daemon profile engine URL before engine RPC
   const previousAllowInsecure = process.env.BITCASTER_ALLOW_INSECURE_ENGINE
   process.env.BITCASTER_DAEMON_HOME = home
   delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-  const token = await ensureRpcToken()
   const secrets = createDaemonSecrets()
-  await writeSecrets(secrets)
-  await writeProfile(profileFromPublicKey(secrets.nostrPublicKeyHex, {
+  await bootstrapFreshDaemonProfile({
+    directory: home,
     engineBaseUrl: 'http://engine.example',
     mintUrl: 'http://localhost:8085',
-  }))
+    walletSeedHex: secrets.walletSeedHex,
+    nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+    nostrPublicKeyHex: secrets.nostrPublicKeyHex,
+  })
+  const token = (await readRpcToken())!
   const server = await startDaemonServer({ host: '127.0.0.1', port: 0 })
   try {
     const address = server.address()
@@ -259,13 +273,16 @@ test('market.close refuses insecure daemon profile engine URL before engine RPC'
   const previousAllowInsecure = process.env.BITCASTER_ALLOW_INSECURE_ENGINE
   process.env.BITCASTER_DAEMON_HOME = home
   delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-  const token = await ensureRpcToken()
   const secrets = createDaemonSecrets()
-  await writeSecrets(secrets)
-  await writeProfile(profileFromPublicKey(secrets.nostrPublicKeyHex, {
+  await bootstrapFreshDaemonProfile({
+    directory: home,
     engineBaseUrl: 'http://engine.example',
     mintUrl: 'http://localhost:8085',
-  }))
+    walletSeedHex: secrets.walletSeedHex,
+    nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+    nostrPublicKeyHex: secrets.nostrPublicKeyHex,
+  })
+  const token = (await readRpcToken())!
   const server = await startDaemonServer({ host: '127.0.0.1', port: 0 })
   try {
     const address = server.address()
