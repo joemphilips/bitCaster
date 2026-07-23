@@ -1711,7 +1711,14 @@ function addProofs(
   now: string,
   reservedBy?: string,
 ): void {
+  const existingSecrets = new Set(
+    state.wallet.proofs
+      .filter((record) => record.mintUrl === mintUrl)
+      .map((record) => record.proof.secret),
+  )
   for (const proof of proofs) {
+    if (existingSecrets.has(proof.secret)) continue
+    existingSecrets.add(proof.secret)
     state.wallet.proofs.push({
       proof,
       mintUrl,

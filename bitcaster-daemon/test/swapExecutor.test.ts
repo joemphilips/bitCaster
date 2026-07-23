@@ -67,7 +67,13 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
     const sent: string[] = []
     const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
-      ops: fakeOps(),
+      ops: {
+        ...fakeOps(),
+        async sellerClaim() {
+          const claimed = cashuProof(42, 'seller-claim')
+          return [claimed, structuredClone(claimed)]
+        },
+      },
     })
     const created = await recordTradeCreated({
       tradeId: 'trade-1',
@@ -116,6 +122,12 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
         (row) => row.asset.kind === 'sats' && row.proof.secret === 'seller-claim',
       ),
       true,
+    )
+    assert.equal(
+      persisted?.wallet.proofs.filter(
+        (row) => row.asset.kind === 'sats' && row.proof.secret === 'seller-claim',
+      ).length,
+      1,
     )
     assert.equal(sent.at(-1), 'trade-1:settlement-complete:')
   } finally {
