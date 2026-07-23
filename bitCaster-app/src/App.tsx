@@ -26,7 +26,10 @@ import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
-import { recoverKeysetCountersForMint } from "@/lib/cashu";
+import {
+  recoverKeysetCountersForMint,
+  recoverPendingTokenReceives,
+} from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import {
@@ -187,10 +190,19 @@ function AppRoutes() {
       if (counterRecoveryAttempted.current) return;
       counterRecoveryAttempted.current = true;
       const { mints, mnemonic } = useWalletStore.getState();
-      if (!mnemonic || mints.length === 0) return;
-      for (const m of mints) {
-        recoverKeysetCountersForMint(m.url, { baseAsset: "sat" }).catch(() => {});
-      }
+      if (!mnemonic) return;
+      void (async () => {
+        // Exact write-ahead receive journals own custody recovery and must
+        // finish before the broader counter migration touches the same proof
+        // secrets. Both paths now persist exact keyset units, but sequencing
+        // also prevents a stale generic row from winning a concurrent bulkPut.
+        await recoverPendingTokenReceives().catch(() => {});
+        for (const m of mints) {
+          await recoverKeysetCountersForMint(m.url, {
+            baseAsset: "sat",
+          }).catch(() => {});
+        }
+      })();
     };
     if (useWalletStore.persist.hasHydrated()) runRecovery();
     else {

@@ -13,6 +13,9 @@ import {
 } from './secrets.ts'
 import { ensureState, readState } from './state.ts'
 
+const MAX_SECRET_HEX_FILE_BYTES = 256
+const SECRET_FILE_READ_CHUNK_BYTES = 128
+
 const [, , command = 'run', ...args] = process.argv
 
 switch (command) {
@@ -272,20 +275,47 @@ async function resolveImportedSecrets(options: {
 }
 
 async function readSecretHexFile(path: string, option: string): Promise<string> {
-  const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW
-  const file = await open(path, constants.O_RDONLY | noFollow)
+  if (process.platform === 'win32') {
+    throw new Error(
+      `${option} is not supported on Windows until ACL and reparse-point validation is available`,
+    )
+  }
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
     const metadata = await file.stat()
     if (!metadata.isFile()) throw new Error(`${option} must name a regular file`)
-    if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0) {
+    if ((metadata.mode & 0o077) !== 0) {
       throw new Error(`${option} must not be accessible by group or other users`)
     }
-    const value = (await file.readFile('utf8')).trim()
+    if (metadata.size > MAX_SECRET_HEX_FILE_BYTES) {
+      throw new Error(`${option} exceeds ${MAX_SECRET_HEX_FILE_BYTES} bytes`)
+    }
+    const value = (await readBoundedSecretFile(file, option)).toString('utf8').trim()
     if (!value) throw new Error(`${option} was empty`)
     return value
   } finally {
     await file.close()
   }
+}
+
+async function readBoundedSecretFile(
+  file: Awaited<ReturnType<typeof open>>,
+  option: string,
+): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let total = 0
+  while (total <= MAX_SECRET_HEX_FILE_BYTES) {
+    const remaining = MAX_SECRET_HEX_FILE_BYTES + 1 - total
+    const buffer = Buffer.allocUnsafe(Math.min(SECRET_FILE_READ_CHUNK_BYTES, remaining))
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, total)
+    if (bytesRead === 0) break
+    chunks.push(buffer.subarray(0, bytesRead))
+    total += bytesRead
+  }
+  if (total > MAX_SECRET_HEX_FILE_BYTES) {
+    throw new Error(`${option} exceeds ${MAX_SECRET_HEX_FILE_BYTES} bytes`)
+  }
+  return Buffer.concat(chunks, total)
 }
 
 function requiredArg(value: string | undefined, option: string): string {

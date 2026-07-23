@@ -48,7 +48,7 @@ test('bitcaster-cli command help includes usage and subcommand summaries', async
   assert.match(result.stdout, /Usage:/)
   assert.match(result.stdout, /wallet balance/)
   assert.match(result.stdout, /Commands:/)
-  assert.match(result.stdout, /receive(?: \[options\])? \[token\]\s+Import a Cashu token/)
+  assert.match(result.stdout, /receive(?: \[options\])?\s+Import a Cashu token/)
 })
 
 test('bitcaster-cli completion reports that shell completion is a stub', async () => {
@@ -119,10 +119,13 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       '--token-file',
       receivedTokenFile,
     ])
+    const outcomeTokenFile = join(home, 'outcome-token.cashu')
+    await writeFile(outcomeTokenFile, 'cashuOutcomeToken=', { mode: 0o600 })
     await runCli(daemonUrl, [
       'wallet',
       'receive',
-      'cashuOutcomeToken=',
+      '--token-file',
+      outcomeTokenFile,
       '--condition-id',
       'cond',
       '--outcome-set',
@@ -405,15 +408,19 @@ test('bitcaster-cli rejects a symlinked token file', async () => {
   }
 })
 
-test('bitcaster-cli requires exactly one token input', async () => {
+test('bitcaster-cli requires private token-file input and rejects bearer tokens in argv', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-token-source-'))
   const tokenPath = join(home, 'token.cashu')
   try {
     await writeFile(tokenPath, 'cashuBoGZha2U=', { mode: 0o600 })
-    await assertCliFailure(['wallet', 'receive'], /requires exactly one token or --token-file/)
+    await assertCliFailure(['wallet', 'receive'], /requires --token-file/)
     await assertCliFailure(
       ['wallet', 'receive', 'cashuBinline', '--token-file', tokenPath],
-      /requires exactly one token or --token-file/,
+      /too many arguments|excess arguments/i,
+    )
+    await assertCliFailure(
+      ['wallet', 'receive', 'cashuBinline'],
+      /too many arguments|excess arguments/i,
     )
   } finally {
     await rm(home, { recursive: true, force: true })
@@ -603,6 +610,9 @@ test('bitcaster-cli consolidate --all sweeps wallet markets and warns on non-pen
 })
 
 test('bitcaster-cli rejects partial outcome-token receive metadata before RPC', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-partial-token-'))
+  const tokenPath = join(home, 'outcome.cashu')
+  await writeFile(tokenPath, 'cashuOutcomeToken=', { mode: 0o600 })
   const server = createServer(async (_req, res) => {
     writeJson(res, 500, { ok: false, error: 'RPC should not be called' })
   })
@@ -618,14 +628,16 @@ test('bitcaster-cli rejects partial outcome-token receive metadata before RPC', 
         runCliWithOutput(`http://127.0.0.1:${address.port}`, [
           'wallet',
           'receive',
-          'cashuOutcomeToken=',
+          '--token-file',
+          tokenPath,
           '--condition-id',
           'cond',
         ]),
       (err: unknown) => {
         assert.equal((err as { code?: unknown }).code, 2)
+        const output = err as { stdout?: string; stderr?: string }
         assert.match(
-          (err as { stderr?: string }).stderr ?? '',
+          `${output.stdout ?? ''}\n${output.stderr ?? ''}`,
           /require both --condition-id and --outcome-set/,
         )
         return true
@@ -633,6 +645,7 @@ test('bitcaster-cli rejects partial outcome-token receive metadata before RPC', 
     )
   } finally {
     server.close()
+    await rm(home, { recursive: true, force: true })
   }
 })
 
@@ -2344,7 +2357,8 @@ async function assertCliFailure(args: string[], expected: RegExp): Promise<void>
       BITCASTER_DAEMON_URL: 'http://127.0.0.1:1',
     }),
     (err: unknown) => {
-      assert.match((err as { stderr?: string }).stderr ?? '', expected)
+      const output = err as { stdout?: string; stderr?: string }
+      assert.match(`${output.stdout ?? ''}\n${output.stderr ?? ''}`, expected)
       return true
     },
   )

@@ -47,7 +47,8 @@ export type ProofOperationKind =
   | "ctf-redeem"
   | "ctf-condition-registration"
   | "regular-split"
-  | "proof-split";
+  | "proof-split"
+  | "token-receive";
 export type ProofOperationState = "prepared" | "completed" | "Failed";
 
 export interface ProofOperationRecord {

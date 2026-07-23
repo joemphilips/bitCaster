@@ -27,8 +27,8 @@ Sat markets are shown to users in sats. USD markets are shown in dollars or cent
 
 1. Create the market.
 2. Choose a funding tier or choose No liquidity.
-3. If funding, pay the Lightning invoice shown by the wizard.
-4. The wallet service credits the deposit and starts quoting after the market-maker budget is ready.
+3. If funding, paste a Cashu token issued by the configured mint and submit it.
+4. The wizard polls the deposit status. After the wallet service verifies and credits the ecash, it marks the market-maker budget ready and starts quoting.
 
 Only the first market-maker funding deposit is used as the Bot Budget in v1. Later wallet top-ups are credited as plain trading collateral; they do not increase the market's Bot Budget.
 

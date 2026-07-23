@@ -233,6 +233,36 @@ test('bitcaster-daemon init rejects group-readable secret files', async () => {
   }
 })
 
+test('bitcaster-daemon init rejects oversized secret files', async () => {
+  if (process.platform === 'win32') return
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-init-size-'))
+  const walletSeedFile = join(home, 'wallet-seed.hex')
+  const nostrSecretKeyFile = join(home, 'nostr-secret-key.hex')
+  try {
+    await writeFile(walletSeedFile, 'a'.repeat(257), { mode: 0o600 })
+    await writeFile(nostrSecretKeyFile, '01'.padStart(64, '0'), { mode: 0o600 })
+    await assert.rejects(
+      () =>
+        execFileAsync(
+          process.execPath,
+          [
+            '--experimental-strip-types',
+            join(import.meta.dirname, '..', 'src', 'main.ts'),
+            'init',
+            '--wallet-seed-hex-file',
+            walletSeedFile,
+            '--nostr-secret-key-hex-file',
+            nostrSecretKeyFile,
+          ],
+          { env: { ...process.env, BITCASTER_DAEMON_HOME: home } },
+        ),
+      /wallet-seed-hex-file exceeds 256 bytes/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('bitcaster-daemon init --force refuses to replace keys over non-empty state', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-init-force-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME

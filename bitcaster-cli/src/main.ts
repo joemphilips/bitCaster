@@ -320,26 +320,24 @@ function registerWalletCommand(program: Command): void {
     })
 
   wallet
-    .command('receive [token]')
+    .command('receive')
     .description('Import a Cashu token into the wallet.')
     .option('--token-file <path>', 'Owner-only file containing the Cashu token')
     .option('--condition-id <id>', 'Condition id for outcome-token imports')
     .option('--outcome-set <id>', 'Outcome set id for outcome-token imports')
-    .addHelpText('after', '\nExamples:\n  bitcaster-cli wallet receive --token-file ./token.cashu\n  bitcaster-cli wallet receive <token> --condition-id cond --outcome-set YES')
+    .addHelpText('after', '\nExamples:\n  bitcaster-cli wallet receive --token-file ./token.cashu\n  bitcaster-cli wallet receive --token-file ./outcome.cashu --condition-id cond --outcome-set YES')
+    .allowExcessArguments(false)
     .action(async (
-      token: string | undefined,
       options: {
         tokenFile?: string
         conditionId?: string
         outcomeSet?: string
       },
     ) => {
-      if ((token === undefined) === (options.tokenFile === undefined)) {
-        throwUsage('wallet receive requires exactly one token or --token-file')
+      if (options.tokenFile === undefined) {
+        throwUsage('wallet receive requires --token-file')
       }
-      const importedToken = options.tokenFile
-        ? await readPrivateTokenFile(options.tokenFile)
-        : token!
+      const importedToken = await readPrivateTokenFile(options.tokenFile)
       const params: {
         token: string
         conditionId?: string
@@ -1042,12 +1040,14 @@ function isTimeoutFailure(value: unknown): boolean {
 }
 
 async function readPrivateTokenFile(path: string): Promise<string> {
-  const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW
-  const file = await open(path, constants.O_RDONLY | noFollow)
+  if (process.platform === 'win32') {
+    throw new Error('--token-file is not supported on Windows until ACL and reparse-point validation is available')
+  }
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
     const metadata = await file.stat()
     if (!metadata.isFile()) throw new Error('--token-file must name a regular file')
-    if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0) {
+    if ((metadata.mode & 0o077) !== 0) {
       throw new Error('--token-file must not be accessible by group or other users')
     }
     if (metadata.size > MAX_CASHU_TOKEN_FILE_BYTES) {

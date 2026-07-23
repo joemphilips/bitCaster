@@ -17,6 +17,7 @@ export type TopUpPasteValidationErrorCode =
   | 'too_large'
   | 'decode_failed'
   | 'mint_mismatch'
+  | 'unit_invalid'
   | 'unit_mismatch'
   | 'amount_too_low'
 
@@ -78,15 +79,15 @@ export async function validateTopUpEcashToken(
   }
 
   const expectedBaseAsset = normalizeMarketBaseAsset(params.baseAsset)
-  const parsedUnit = parseCashuProofUnit(token.unit)
-  const unit = parsedUnit ?? (token.unit === '' || token.unit === undefined ? 'sat' : null)
-  if (unit === null) {
+  const unit = parseCashuProofUnit(token.unit)
+  if (!unit) {
     return {
       ok: false,
-      code: 'unit_mismatch',
+      code: 'unit_invalid',
       values: {
-        tokenUnit: token.unit ?? '',
-        expectedUnit: marketUnitLabel(expectedBaseAsset),
+        tokenUnit: typeof token.unit === 'string' && token.unit.length > 0
+          ? token.unit
+          : 'missing',
       },
     }
   }

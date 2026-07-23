@@ -56,6 +56,26 @@ describe('validateTopUpEcashToken', () => {
     })
   })
 
+  it.each([
+    ['missing', undefined],
+    ['unknown', 'btc'],
+  ])('rejects %s token unit metadata', async (_label, unit) => {
+    const result = await validateTopUpEcashToken('cashuB-token', {
+      activeMintUrl: 'https://mint.example',
+      baseAsset: 'sat',
+      deficit: 1,
+      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(
+        token({ unit: unit as Token['unit'] }),
+      ),
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'unit_invalid',
+      values: { tokenUnit: unit ?? 'missing' },
+    })
+  })
+
   it('rejects sat-denominated tokens for USD markets', async () => {
     const result = await validateTopUpEcashToken('cashuB-token', {
       activeMintUrl: 'https://mint.example',

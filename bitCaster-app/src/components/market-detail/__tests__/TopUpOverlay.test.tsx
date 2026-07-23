@@ -11,8 +11,7 @@ const waitForMintQuotePaidForUnit = vi.fn()
 const mintProofs = vi.fn()
 const mintProofsForUnit = vi.fn()
 const decodeToken = vi.fn()
-const getWalletForUnit = vi.fn()
-const addProofs = vi.fn()
+const receiveAndStoreTokenRecoverably = vi.fn()
 const ensureImplicitWallet = vi.fn()
 const navigate = vi.fn()
 let walletBackupState: 'none' | 'needs_backup' | 'confirmed' = 'none'
@@ -30,12 +29,8 @@ vi.mock('@/lib/cashu', async (importOriginal) => ({
   mintProofs: (...args: unknown[]) => mintProofs(...args),
   mintProofsForUnit: (...args: unknown[]) => mintProofsForUnit(...args),
   decodeToken: (...args: unknown[]) => decodeToken(...args),
-  getWalletForUnit: (...args: unknown[]) => getWalletForUnit(...args),
-}))
-
-vi.mock('@/stores/proof-db', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/stores/proof-db')>()),
-  addProofs: (...args: unknown[]) => addProofs(...args),
+  receiveAndStoreTokenRecoverably: (...args: unknown[]) =>
+    receiveAndStoreTokenRecoverably(...args),
 }))
 
 vi.mock('@/stores/wallet', () => ({
@@ -67,11 +62,10 @@ describe('TopUpOverlay', () => {
       unit: 'msat',
       proofs: [{ id: 'keyset-msat', amount: 15_000, secret: 'incoming', C: 'incoming-c' }],
     })
-    getWalletForUnit.mockReset()
-    getWalletForUnit.mockResolvedValue({
-      receive: vi.fn().mockResolvedValue([{ id: 'keyset-msat', amount: 15_000, secret: 'received', C: 'received-c' }]),
-    })
-    addProofs.mockReset()
+    receiveAndStoreTokenRecoverably.mockReset()
+    receiveAndStoreTokenRecoverably.mockResolvedValue([
+      { id: 'keyset-msat', amount: 15_000, secret: 'received', C: 'received-c' },
+    ])
     ensureImplicitWallet.mockReset()
     ensureImplicitWallet.mockResolvedValue(undefined)
     navigate.mockReset()
@@ -215,19 +209,13 @@ describe('TopUpOverlay', () => {
     await waitFor(() => {
       expect(decodeToken).toHaveBeenCalledWith('cashuB-token')
     })
-    expect(getWalletForUnit).toHaveBeenCalledWith('https://mint.example', 'msat')
+    expect(receiveAndStoreTokenRecoverably).toHaveBeenCalledWith(
+      'cashuB-token',
+      'https://mint.example',
+      'sat',
+      'msat',
+    )
     await waitFor(() => {
-      expect(addProofs).toHaveBeenCalledWith([
-        {
-          id: 'keyset-msat',
-          amount: 15_000,
-          secret: 'received',
-          C: 'received-c',
-          mintUrl: 'https://mint.example',
-          baseAsset: 'sat',
-          unit: 'msat',
-        },
-      ])
       expect(onSuccess).toHaveBeenCalledTimes(1)
     })
   })

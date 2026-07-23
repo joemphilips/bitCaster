@@ -20,6 +20,7 @@ import {
   type PartialMintQuoteResponse,
   type Token,
   type OutputType,
+  type OperationCounters,
 } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
 import { normalizeUrl } from "@/lib/url";
@@ -27,6 +28,7 @@ import {
   addProofs,
   getUnitProofs,
   getProofOperation,
+  getProofOperations,
   markProofOperationCompleted,
   markProofOperationFailed,
   prepareProofOperation,
@@ -43,6 +45,7 @@ import {
   redeemOutcomeLegWithOperation,
 } from "@bitcaster/client-sdk/ctfRedeem";
 import {
+  COLLATERAL_UNIT_REGISTRY,
   DEFAULT_MARKET_BASE_ASSET,
   collateralScaleForUnit,
   defaultCollateralUnit,
@@ -316,8 +319,11 @@ type RecoverableMintKeyset = {
 
 const COUNTER_RECOVERY_FALLBACK_SKIP = 100;
 
-function keysetBaseAsset(keyset: RecoverableMintKeyset): MarketBaseAsset {
-  return normalizeMarketBaseAsset(keyset.unit);
+function keysetCashuUnit(keyset: RecoverableMintKeyset): CashuProofUnit {
+  return (
+    parseCashuProofUnit(keyset.unit) ??
+    defaultCollateralUnit(DEFAULT_MARKET_BASE_ASSET)
+  );
 }
 
 async function bumpActiveKeysetCounter(
@@ -365,11 +371,16 @@ export async function recoverKeysetCountersForMint(
   const url = normalizeUrl(mintUrl);
   const store = useWalletStore.getState();
   if (!store.mnemonic) return { scannedKeysets: [] };
-  const requestedUnit = opts.baseAsset === undefined || opts.baseAsset === null
+  const requestedBaseAsset = opts.baseAsset === undefined || opts.baseAsset === null
     ? null
     : normalizeMarketBaseAsset(opts.baseAsset);
-  const discoveryUnit = requestedUnit ?? DEFAULT_MARKET_BASE_ASSET;
-  const discoveryWallet = await store.getWallet(url, discoveryUnit) as CashuWallet;
+  const discoveryUnit = defaultCollateralUnit(
+    requestedBaseAsset ?? DEFAULT_MARKET_BASE_ASSET,
+  );
+  const discoveryWallet = await store.getWalletForUnit(
+    url,
+    discoveryUnit,
+  ) as CashuWallet;
   // Use the wallet's freshly-loaded keysets via the underlying mint, not the
   // possibly-stale `store.mints[].keysets`. After mint key rotation the
   // store can be days behind; the duplicate-error path needs to scan
@@ -377,15 +388,23 @@ export async function recoverKeysetCountersForMint(
   const fresh = await discoveryWallet.mint.getKeySets().catch(() => null);
   const keysets: RecoverableMintKeyset[] =
     fresh?.keysets ?? store.mints.find((m) => m.url === url)?.keysets ?? [];
-  const units = requestedUnit
-    ? [requestedUnit]
-    : Array.from(new Set(keysets.map(keysetBaseAsset)));
+  const units = Array.from(
+    new Set(
+      keysets
+        .map(keysetCashuUnit)
+        .filter(
+          (unit) =>
+            requestedBaseAsset === null ||
+            COLLATERAL_UNIT_REGISTRY[unit].baseAsset === requestedBaseAsset,
+        ),
+    ),
+  );
   const scanned: string[] = [];
   for (const unit of units) {
     const wallet = unit === discoveryUnit
       ? discoveryWallet
-      : await store.getWallet(url, unit) as CashuWallet;
-    for (const keyset of keysets.filter((k) => keysetBaseAsset(k) === unit)) {
+      : await store.getWalletForUnit(url, unit) as CashuWallet;
+    for (const keyset of keysets.filter((k) => keysetCashuUnit(k) === unit)) {
       const recovered =
         useWalletStore.getState().keysetCountersRecovered[keyset.id];
       if (!opts.force && recovered) continue;
@@ -404,10 +423,6 @@ export async function recoverKeysetCountersForMint(
         const advanced = Math.max(current, next);
         useWalletStore.setState((s) => ({
           keysetCounters: { ...s.keysetCounters, [keyset.id]: advanced },
-          keysetCountersRecovered: {
-            ...s.keysetCountersRecovered,
-            [keyset.id]: true,
-          },
         }));
         // CRITICAL: batchRestore returns ALL deterministic proofs the mint
         // ever signed for this seed, including SPENT ones. Persisting spent
@@ -416,20 +431,30 @@ export async function recoverKeysetCountersForMint(
         // only UNSPENT. PENDING is also excluded — those are mid-flight on
         // another device and will resolve to SPENT or UNSPENT shortly.
         if (proofs.length > 0) {
-          const grouped = await wallet
-            .groupProofsByState(proofs)
-            .catch(() => null);
-          const safe = grouped?.unspent ?? [];
+          // Classification failure is nonterminal. Let the outer catch keep
+          // `keysetCountersRecovered` false so startup retries rather than
+          // permanently suppressing proofs it could not safely classify.
+          const grouped = await wallet.groupProofsByState(proofs);
+          const safe = grouped.unspent;
           if (safe.length > 0) {
             const stored: StoredProof[] = safe.map((p) => ({
               ...p,
               mintUrl: url,
-              baseAsset: normalizeMarketBaseAsset(unit),
-              unit: requireCashuProofUnit(unit),
+              baseAsset: COLLATERAL_UNIT_REGISTRY[unit].baseAsset,
+              unit,
             }));
             await addProofs(stored);
           }
         }
+        // Mark the scan complete only after every recovered UNSPENT proof is
+        // durably stored. A quota/IndexedDB failure must leave this false so
+        // the next startup retries the same keyset.
+        useWalletStore.setState((s) => ({
+          keysetCountersRecovered: {
+            ...s.keysetCountersRecovered,
+            [keyset.id]: true,
+          },
+        }));
         scanned.push(keyset.id);
       } catch {
         // Best-effort: if this keyset's recovery fails (mint unreachable,
@@ -579,6 +604,147 @@ export async function receiveToken(
   // reserved for the browser wallet's own mint/deposit operations.
   const receiveOutput: OutputType = { type: "random" };
   return wallet.receive(tokenStr, undefined, receiveOutput);
+}
+
+/**
+ * Receive an external bearer token with an exact write-ahead recovery record.
+ *
+ * cashu-ts reserves the deterministic counter range while preparing the swap.
+ * We persist that range before the mint call. If the process stops after the
+ * mint commits but before IndexedDB stores the successor proofs, startup can
+ * restore precisely this range through NUT-09 and classify it through NUT-07.
+ */
+export async function receiveAndStoreTokenRecoverably(
+  tokenStr: string,
+  mintUrl: string,
+  baseAsset: MarketBaseAsset | string | null,
+  unitValue: CashuProofUnit | string,
+): Promise<StoredProof[]> {
+  const unit = requireCashuProofUnit(unitValue);
+  const normalizedMintUrl = normalizeUrl(mintUrl);
+  const normalizedBaseAsset = normalizeMarketBaseAsset(baseAsset);
+  const wallet = await getWalletForUnit(normalizedMintUrl, unit);
+  let counters: OperationCounters | undefined;
+  const preview = await wallet.prepareSwapToReceive(
+    tokenStr,
+    {
+      onCountersReserved: (reserved) => {
+        counters = reserved;
+      },
+    },
+    { type: "deterministic", counter: 0 },
+  );
+  if (!counters || counters.count <= 0) {
+    throw new Error("Cashu receive did not reserve a deterministic recovery range");
+  }
+
+  const operationId = `token-receive:${crypto.randomUUID()}`;
+  await prepareProofOperation({
+    operationId,
+    kind: "token-receive",
+    mintUrl: normalizedMintUrl,
+    inputs: preview.inputs,
+    outputs: {},
+    metadata: {
+      baseAsset: normalizedBaseAsset,
+      unit,
+      keysetId: counters.keysetId,
+      counterStart: counters.start,
+      counterCount: counters.count,
+    },
+  });
+
+  const { keep } = await wallet.completeSwap(preview);
+  const stored = keep.map((proof) => ({
+    ...proof,
+    mintUrl: normalizedMintUrl,
+    baseAsset: normalizedBaseAsset,
+    unit,
+  }));
+  await addProofs(stored);
+  await markProofOperationCompleted(operationId, { receive: keep });
+  return stored;
+}
+
+/** Recover every nonterminal external-token receive from its exact counter range. */
+export async function recoverPendingTokenReceives(): Promise<void> {
+  const operations = await getProofOperations({
+    states: ["prepared"],
+    kinds: ["token-receive"],
+  });
+  for (const operation of operations) {
+    try {
+      const unit = requireCashuProofUnit(
+        requiredReceiveMetadataString(operation.metadata.unit, "unit"),
+      );
+      const baseAsset = normalizeMarketBaseAsset(
+        requiredReceiveMetadataString(operation.metadata.baseAsset, "baseAsset"),
+      );
+      const keysetId = requiredReceiveMetadataString(
+        operation.metadata.keysetId,
+        "keysetId",
+      );
+      const counterStart = requiredReceiveMetadataInteger(
+        operation.metadata.counterStart,
+        "counterStart",
+        0,
+      );
+      const counterCount = requiredReceiveMetadataInteger(
+        operation.metadata.counterCount,
+        "counterCount",
+        1,
+      );
+      const wallet = await getWalletForUnit(operation.mintUrl, unit);
+      const restored = await wallet.restore(counterStart, counterCount, {
+        keysetId,
+      });
+      if (restored.proofs.length > 0) {
+        const states = await wallet.groupProofsByState(restored.proofs);
+        if (states.unspent.length > 0) {
+          await addProofs(
+            states.unspent.map((proof) => ({
+              ...proof,
+              mintUrl: operation.mintUrl,
+              baseAsset,
+              unit,
+            })),
+          );
+        }
+        if (states.pending.length === 0) {
+          await markProofOperationCompleted(operation.operationId, {
+            receive: restored.proofs,
+          });
+        }
+        continue;
+      }
+
+      // No signed outputs can race a swap request that survived page teardown.
+      // Query NUT-07 for observability, but never terminalize from a transient
+      // UNSPENT answer: the mint may commit immediately afterward. The small
+      // prepared record remains retryable until NUT-09 yields successors.
+      await wallet.groupProofsByState(operation.inputs);
+    } catch {
+      // Keep the prepared journal. Startup will retry; custody recovery must
+      // never become terminal merely because the mint or IndexedDB is
+      // temporarily unavailable.
+    }
+  }
+}
+
+function requiredReceiveMetadataString(value: unknown, field: string): string {
+  if (typeof value === "string" && value.length > 0) return value;
+  throw new Error(`token receive journal is missing ${field}`);
+}
+
+function requiredReceiveMetadataInteger(
+  value: unknown,
+  field: string,
+  minimum: number,
+): number {
+  if (Number.isSafeInteger(value) && (value as number) >= minimum) {
+    return value as number;
+  }
+  throw new Error(`token receive journal has invalid ${field}`);
 }
 
 /**

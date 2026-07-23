@@ -7,16 +7,16 @@ import {
   createMintQuote,
   createMintQuoteForUnit,
   decodeToken,
-  getWalletForUnit,
   mintProofs,
   mintProofsForUnit,
+  receiveAndStoreTokenRecoverably,
   waitForMintQuotePaid,
   waitForMintQuotePaidForUnit,
   type MintQuoteWaitResult,
 } from '@/lib/cashu'
 import { addProofs, type StoredProof } from '@/stores/proof-db'
 import { useWalletStore } from '@/stores/wallet'
-import type { MintQuoteResponse, OutputType } from '@cashu/cashu-ts'
+import type { MintQuoteResponse } from '@cashu/cashu-ts'
 import {
   formatAmount,
   bufferSubunits,
@@ -94,6 +94,8 @@ function topUpPasteValidationErrorMessage(
       return t('topUp.ecash.errorDecode')
     case 'mint_mismatch':
       return t('topUp.ecash.errorMintMismatch', error.values)
+    case 'unit_invalid':
+      return t('topUp.ecash.errorUnitInvalid', error.values)
     case 'unit_mismatch':
       return t('topUp.ecash.errorUnitMismatch', error.values)
     case 'amount_too_low':
@@ -324,16 +326,12 @@ export function TopUpOverlay({
         return
       }
 
-      const wallet = await getWalletForUnit(activeMintUrl, validation.unit)
-      const receiveOutput: OutputType = { type: 'random' }
-      const proofs = await wallet.receive(trimmed, undefined, receiveOutput)
-      const stored: StoredProof[] = proofs.map((p) => ({
-        ...p,
-        mintUrl: validation.mintUrl,
-        baseAsset: validation.baseAsset,
-        unit: validation.unit,
-      }))
-      await addProofs(stored)
+      await receiveAndStoreTokenRecoverably(
+        trimmed,
+        validation.mintUrl,
+        validation.baseAsset,
+        validation.unit,
+      )
       if (!cancelledRef.current) onSuccessRef.current()
     } catch (e) {
       if (!cancelledRef.current) setError((e as Error).message)

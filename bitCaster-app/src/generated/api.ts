@@ -1211,7 +1211,7 @@ export interface components {
             liquiditySubunits: number;
             /**
              * Format: int64
-             * @description Static initial budget deposited to the LMSR bot at funding time, denominated in the market collateral's base subunits (msat for sat markets, cents for USD markets). Operator-owned, non-withdrawable, immutable after funding (ADR-024 §2 P46 amendment). Not a live residual and not orderbook depth.
+             * @description Static initial budget deposited to the LMSR bot at funding time, denominated in the market collateral's base subunits (msat for sat markets, cents for USD markets). Operator-owned, non-withdrawable, and immutable after funding. Not a live residual and not orderbook depth.
              */
             ammBotBudgetSubunits: number;
             /**

@@ -713,6 +713,7 @@
       "errorRequired": "先にCashu ecashトークンを貼り付けてください。",
       "errorTooLarge": "トークンが大きすぎます。{{maxKb}} KB未満のトークンを貼り付けてください。",
       "errorDecode": "このCashuトークンをデコードできませんでした。",
+      "errorUnitInvalid": "このCashuトークンの単位情報がないか、未対応です（{{tokenUnit}}）。",
       "errorMintMismatch": "このトークンは {{mintUrl}} のもので、アクティブなbitCasterミントのものではありません。",
       "errorUnitMismatch": "このトークンは {{tokenUnit}} 建てですが、このマーケットには {{expectedUnit}} が必要です。",
       "errorAmountTooLow": "トークンは {{covered}} 分です。少なくとも {{needed}} 必要です。"

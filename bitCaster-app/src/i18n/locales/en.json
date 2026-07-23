@@ -713,6 +713,7 @@
       "errorRequired": "Paste a Cashu ecash token first.",
       "errorTooLarge": "Token is too large. Paste a token under {{maxKb}} KB.",
       "errorDecode": "Could not decode this Cashu token.",
+      "errorUnitInvalid": "This Cashu token has missing or unsupported unit metadata ({{tokenUnit}}).",
       "errorMintMismatch": "This token is from {{mintUrl}}, not your active bitCaster mint.",
       "errorUnitMismatch": "This token is denominated in {{tokenUnit}}, but this market requires {{expectedUnit}}.",
       "errorAmountTooLow": "Token covers {{covered}}, need at least {{needed}}."

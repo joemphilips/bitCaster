@@ -31,6 +31,9 @@ const mocks = vi.hoisted(() => {
     mintProofs: vi.fn(),
     send: vi.fn(),
     batchRestore: vi.fn(),
+    prepareSwapToReceive: vi.fn(),
+    completeSwap: vi.fn(),
+    restore: vi.fn(),
     groupProofsByState: vi.fn(),
     mint: { getKeySets: vi.fn() },
     getKeyset: vi.fn(),
@@ -43,6 +46,7 @@ const mocks = vi.hoisted(() => {
     keysetCounters: Record<string, number>
     keysetCountersRecovered: Record<string, boolean>
     getWallet: (url?: string) => Promise<unknown>
+    getWalletForUnit: (url?: string, unit?: string) => Promise<unknown>
   } = {
     mnemonic: 'seed words',
     activeMintUrl: 'https://mint.test',
@@ -50,6 +54,7 @@ const mocks = vi.hoisted(() => {
     keysetCounters: {},
     keysetCountersRecovered: {},
     getWallet,
+    getWalletForUnit: getWallet,
   }
   const setStateImpl = vi.fn((updater: unknown) => {
     if (typeof updater === 'function') {
@@ -58,7 +63,21 @@ const mocks = vi.hoisted(() => {
     }
   })
   const addProofs = vi.fn(async (_p: unknown[]) => {})
-  return { wallet, store, setStateImpl, addProofs, getWallet }
+  const prepareProofOperation = vi.fn(async (record: unknown) => record)
+  const markProofOperationCompleted = vi.fn(async () => undefined)
+  const markProofOperationFailed = vi.fn(async () => undefined)
+  const getProofOperations = vi.fn(async () => [])
+  return {
+    wallet,
+    store,
+    setStateImpl,
+    addProofs,
+    getWallet,
+    prepareProofOperation,
+    markProofOperationCompleted,
+    markProofOperationFailed,
+    getProofOperations,
+  }
 })
 
 vi.mock('@/stores/wallet', () => ({
@@ -70,6 +89,13 @@ vi.mock('@/stores/wallet', () => ({
 
 vi.mock('@/stores/proof-db', () => ({
   addProofs: mocks.addProofs,
+  getProofOperations: mocks.getProofOperations,
+  getProofOperation: vi.fn(),
+  prepareProofOperation: mocks.prepareProofOperation,
+  markProofOperationCompleted: mocks.markProofOperationCompleted,
+  markProofOperationFailed: mocks.markProofOperationFailed,
+  removeProofs: vi.fn(),
+  getUnitProofs: vi.fn(),
 }))
 
 // `getWallet` is also defined in cashu.ts, but the mintProofs helper uses
@@ -99,6 +125,9 @@ beforeEach(() => {
   mocks.wallet.mintProofs.mockReset()
   mocks.wallet.send.mockReset()
   mocks.wallet.batchRestore.mockReset()
+  mocks.wallet.prepareSwapToReceive.mockReset()
+  mocks.wallet.completeSwap.mockReset()
+  mocks.wallet.restore.mockReset()
   mocks.wallet.groupProofsByState.mockReset()
   mocks.wallet.getKeyset.mockReset()
   mocks.wallet.getKeyset.mockReturnValue({ id: 'k1' })
@@ -118,9 +147,137 @@ beforeEach(() => {
   mocks.store.mints = [{ url: 'https://mint.test', keysets: [{ id: 'k1' }] }]
   mocks.store.mnemonic = 'seed words'
   mocks.addProofs.mockClear()
+  mocks.addProofs.mockResolvedValue(undefined)
+  mocks.prepareProofOperation.mockClear()
+  mocks.markProofOperationCompleted.mockClear()
+  mocks.markProofOperationFailed.mockClear()
+  mocks.getProofOperations.mockReset()
+  mocks.getProofOperations.mockResolvedValue([])
   mocks.getWallet.mockClear()
   mocks.getWallet.mockResolvedValue(mocks.wallet)
   mocks.store.getWallet = mocks.getWallet
+  mocks.store.getWalletForUnit = mocks.getWallet
+})
+
+describe('recoverable external-token receive journal', () => {
+  it.each([
+    ['sat', 'sat'],
+    ['sat', 'msat'],
+    ['usd', 'usd'],
+  ] as const)(
+    'restores exact %s/%s successors after post-swap proof persistence fails',
+    async (baseAsset, unit) => {
+      const inputs = [{ id: `input-${unit}`, amount: 8, secret: `in-${unit}`, C: 'Cin' }]
+      const successors = [{ id: `keyset-${unit}`, amount: 7, secret: `out-${unit}`, C: 'Cout' }]
+      mocks.wallet.prepareSwapToReceive.mockImplementationOnce(
+        async (_token: string, config: { onCountersReserved?: (value: unknown) => void }) => {
+          config.onCountersReserved?.({
+            keysetId: `keyset-${unit}`,
+            start: 7,
+            count: 2,
+            next: 9,
+          })
+          return { inputs, keysetId: `keyset-${unit}`, keepOutputs: [] }
+        },
+      )
+      mocks.wallet.completeSwap.mockResolvedValueOnce({ keep: successors, send: [] })
+      mocks.addProofs.mockRejectedValueOnce(new Error('IndexedDB quota exceeded'))
+
+      await expect(
+        cashu.receiveAndStoreTokenRecoverably(
+          'cashuB-token',
+          'https://mint.test',
+          baseAsset,
+          unit,
+        ),
+      ).rejects.toThrow('IndexedDB quota exceeded')
+
+      const prepared = mocks.prepareProofOperation.mock.calls[0][0] as {
+        operationId: string
+        metadata: Record<string, unknown>
+      }
+      expect(prepared.metadata).toMatchObject({
+        baseAsset,
+        unit,
+        keysetId: `keyset-${unit}`,
+        counterStart: 7,
+        counterCount: 2,
+      })
+      expect(mocks.prepareProofOperation.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.wallet.completeSwap.mock.invocationCallOrder[0],
+      )
+
+      mocks.getProofOperations.mockResolvedValueOnce([
+        {
+          ...prepared,
+          kind: 'token-receive',
+          state: 'prepared',
+          mintUrl: 'https://mint.test',
+          inputs,
+          outputs: {},
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ] as never)
+      mocks.wallet.restore.mockResolvedValueOnce({ proofs: successors })
+      mocks.wallet.groupProofsByState.mockResolvedValueOnce({
+        unspent: successors,
+        pending: [],
+        spent: [],
+      })
+      mocks.addProofs.mockResolvedValueOnce(undefined)
+
+      await cashu.recoverPendingTokenReceives()
+
+      expect(mocks.wallet.restore).toHaveBeenCalledWith(7, 2, {
+        keysetId: `keyset-${unit}`,
+      })
+      expect(mocks.addProofs).toHaveBeenLastCalledWith([
+        expect.objectContaining({
+          secret: `out-${unit}`,
+          mintUrl: 'https://mint.test',
+          baseAsset,
+          unit,
+        }),
+      ])
+      expect(mocks.markProofOperationCompleted).toHaveBeenCalledWith(
+        prepared.operationId,
+        { receive: successors },
+      )
+    },
+  )
+
+  it('keeps an unsigned journal retryable instead of racing a late mint commit', async () => {
+    const operation = {
+      operationId: 'token-receive:pending',
+      kind: 'token-receive',
+      state: 'prepared',
+      mintUrl: 'https://mint.test',
+      inputs: [{ id: 'input-msat', amount: 8, secret: 'in', C: 'Cin' }],
+      outputs: {},
+      metadata: {
+        baseAsset: 'sat',
+        unit: 'msat',
+        keysetId: 'keyset-msat',
+        counterStart: 7,
+        counterCount: 2,
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    mocks.getProofOperations.mockResolvedValueOnce([operation] as never)
+    mocks.wallet.restore.mockResolvedValueOnce({ proofs: [] })
+    mocks.wallet.groupProofsByState.mockResolvedValueOnce({
+      unspent: operation.inputs,
+      pending: [],
+      spent: [],
+    })
+
+    await cashu.recoverPendingTokenReceives()
+
+    expect(mocks.markProofOperationCompleted).not.toHaveBeenCalled()
+    expect(mocks.markProofOperationFailed).not.toHaveBeenCalled()
+  })
 })
 
 describe('mintProofs — CDK duplicate-output recovery', () => {
@@ -350,6 +507,67 @@ describe('recoverKeysetCountersForMint — idempotency', () => {
     expect(mocks.getWallet).toHaveBeenCalledWith('https://mint.test', 'usd')
     expect(mocks.store.keysetCounters).toEqual({ 'sat-keyset': 3, 'usd-keyset': 9 })
     expect(r.scannedKeysets).toEqual(['sat-keyset', 'usd-keyset'])
+  })
+
+  it('preserves exact sat and msat units while recovering sat-market keysets', async () => {
+    mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
+      keysets: [
+        { id: 'sat-keyset', unit: 'sat' },
+        { id: 'msat-keyset', unit: 'msat' },
+      ],
+    })
+    mocks.wallet.batchRestore
+      .mockResolvedValueOnce({
+        proofs: [{ id: 'sat-keyset', amount: 2, secret: 'sat-proof', C: 'Csat' }],
+        lastCounterWithSignature: 2,
+      })
+      .mockResolvedValueOnce({
+        proofs: [{ id: 'msat-keyset', amount: 2_000, secret: 'msat-proof', C: 'Cmsat' }],
+        lastCounterWithSignature: 8,
+      })
+
+    await cashu.recoverKeysetCountersForMint('https://mint.test', {
+      baseAsset: 'sat',
+    })
+
+    expect(mocks.getWallet).toHaveBeenCalledWith('https://mint.test', 'sat')
+    expect(mocks.getWallet).toHaveBeenCalledWith('https://mint.test', 'msat')
+    expect(mocks.addProofs).toHaveBeenCalledWith([
+      expect.objectContaining({
+        secret: 'sat-proof',
+        baseAsset: 'sat',
+        unit: 'sat',
+      }),
+    ])
+    expect(mocks.addProofs).toHaveBeenCalledWith([
+      expect.objectContaining({
+        secret: 'msat-proof',
+        baseAsset: 'sat',
+        unit: 'msat',
+      }),
+    ])
+  })
+
+  it('does not mark a keyset recovered when NUT-07 classification fails', async () => {
+    mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
+      keysets: [{ id: 'msat-keyset', unit: 'msat' }],
+    })
+    mocks.wallet.batchRestore.mockResolvedValueOnce({
+      proofs: [{ id: 'msat-keyset', amount: 2_000, secret: 'proof', C: 'C' }],
+      lastCounterWithSignature: 2,
+    })
+    mocks.wallet.groupProofsByState.mockRejectedValueOnce(
+      new Error('NUT-07 unavailable'),
+    )
+
+    const result = await cashu.recoverKeysetCountersForMint(
+      'https://mint.test',
+      { baseAsset: 'sat' },
+    )
+
+    expect(mocks.store.keysetCountersRecovered['msat-keyset']).toBeUndefined()
+    expect(mocks.addProofs).not.toHaveBeenCalled()
+    expect(result.scannedKeysets).toEqual([])
   })
 
   it('filters recovery to the requested non-sat unit', async () => {
