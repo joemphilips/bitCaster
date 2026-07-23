@@ -76,6 +76,7 @@ export type ProfileSchemaRefusalReason =
   | 'profile-directory-not-plain'
   | 'profile-permission-invalid'
   | 'profile-identity-changed'
+  | 'profile-not-fresh'
   | 'legacy-artifact'
   | 'sqlite-sidecar-invalid'
   | 'unknown-artifact'
@@ -92,6 +93,7 @@ const refusalMessages: Readonly<Record<ProfileSchemaRefusalReason, string>> = {
   'profile-directory-not-plain': 'daemon profile directory is not a plain directory',
   'profile-permission-invalid': 'daemon profile ownership or permissions are invalid',
   'profile-identity-changed': 'daemon profile identity changed during inspection',
+  'profile-not-fresh': 'daemon profile is not fresh',
   'legacy-artifact': 'legacy daemon profile artifacts are not supported',
   'sqlite-sidecar-invalid': 'daemon profile SQLite crash artifacts are invalid',
   'unknown-artifact': 'daemon profile contains an unknown artifact',
@@ -211,6 +213,105 @@ export interface ValidatedProfileSchema {
   readonly userVersion: number
 }
 
+/**
+ * Captures an exhaustive manifest from a freshly-created in-memory database.
+ * Production code uses this only with the frozen DDL and a separately pinned
+ * manifest digest; it is not an admission or compatibility reader.
+ *
+ * @internal
+ */
+export function captureProfileSchemaManifest(
+  database: DatabaseSync,
+  identity: {
+    readonly applicationId: number
+    readonly userVersion: number
+    readonly markers: readonly ProfileSchemaMarker[]
+  },
+): ProfileSchemaManifest {
+  const objects = (
+    database
+      .prepare(
+        `SELECT type, name, tbl_name AS tableName, sql
+         FROM sqlite_schema
+         ORDER BY type, name`,
+      )
+      .all() as {
+      type: 'table' | 'index' | 'trigger'
+      name: string
+      tableName: string
+      sql: string | null
+    }[]
+  ).map((object) => ({
+    ...object,
+    sql:
+      object.sql === null ? null : normalizeSqliteSchemaSql(object.sql),
+  }))
+  const tables = objects
+    .filter((object) => object.type === 'table')
+    .map((object): ProfileSchemaTable => {
+      const tableList = database
+        .prepare(`PRAGMA table_list(${quoteSqlString(object.name)})`)
+        .all() as {
+        schema: string
+        name: string
+        type: string
+        wr: number
+        strict: number
+      }[]
+      const table = tableList.find(
+        (row) =>
+          row.schema === 'main' &&
+          row.name === object.name &&
+          row.type === 'table',
+      )
+      if (table?.strict !== 1) {
+        throw new ProfileSchemaRefusalError('invalid-manifest')
+      }
+      return {
+        name: object.name,
+        strict: true,
+        withoutRowId: Boolean(table.wr),
+        columns: readProfileSchemaColumns(database, object.name),
+        foreignKeys: readProfileSchemaForeignKeys(database, object.name),
+      }
+    })
+  const indexes = objects
+    .filter((object) => object.type === 'index')
+    .map((object): ProfileSchemaIndex => {
+      const indexRow = database
+        .prepare(`PRAGMA index_list(${quoteSqlString(object.tableName)})`)
+        .all()
+        .map((row) => row as {
+          name: string
+          unique: number
+          origin: 'c' | 'u' | 'pk'
+          partial: number
+        })
+        .find((row) => row.name === object.name)
+      if (indexRow === undefined) {
+        throw new ProfileSchemaRefusalError('invalid-manifest')
+      }
+      return {
+        name: object.name,
+        tableName: object.tableName,
+        unique: Boolean(indexRow.unique),
+        origin: indexRow.origin,
+        partial: Boolean(indexRow.partial),
+        columns: readProfileSchemaIndexColumns(database, object.name),
+      }
+    })
+  const manifest: ProfileSchemaManifest = {
+    applicationId: identity.applicationId,
+    userVersion: identity.userVersion,
+    objects,
+    tables,
+    indexes,
+    markers: identity.markers,
+  }
+  assertCompleteProfileSchemaManifest(manifest)
+  return manifest
+}
+
 export async function inventoryDaemonProfile(
   directory: string,
 ): Promise<DaemonProfileInventory> {
@@ -280,7 +381,7 @@ export async function validateDaemonProfileSchema(
   manifest: ProfileSchemaManifest,
 ): Promise<ValidatedProfileSchema> {
   assertCompleteProfileSchemaManifest(manifest)
-  assertSupportedPlatform()
+  assertDaemonProfilePlatformSupported()
   const inventory = await inventoryDaemonProfile(directory)
   assertAdmissibleInventory(inventory)
 
@@ -331,6 +432,28 @@ export function assertCompleteProfileSchemaManifest(
   } catch {
     throw new ProfileSchemaRefusalError('invalid-manifest')
   }
+}
+
+export function assertDaemonProfilePlatformSupported(): void {
+  if (process.platform === 'win32') {
+    throw new ProfileSchemaRefusalError('unsupported-platform')
+  }
+}
+
+export function assertFreshDaemonProfileInventory(
+  inventory: DaemonProfileInventory,
+): void {
+  if (!inventory.directoryExists) return
+  if (!inventory.directoryIsPlain) {
+    throw new ProfileSchemaRefusalError('profile-directory-not-plain')
+  }
+  if (inventory.legacyArtifacts.length > 0) {
+    throw new ProfileSchemaRefusalError('legacy-artifact')
+  }
+  if (inventory.artifacts.length > 0) {
+    throw new ProfileSchemaRefusalError('profile-not-fresh')
+  }
+  assertOwnerOnlyDirectory(inventory)
 }
 
 export function normalizeSqliteSchemaSql(sql: string): string {
@@ -470,56 +593,10 @@ function validateTable(
     schemaMismatch()
   }
 
-  const columns = database
-    .prepare(`PRAGMA table_xinfo(${quoteSqlString(expected.name)})`)
-    .all()
-    .map((row) => {
-      const column = row as {
-        cid: number
-        name: string
-        type: string
-        notnull: number
-        dflt_value: string | null
-        pk: number
-        hidden: number
-      }
-      return {
-        cid: column.cid,
-        name: column.name,
-        type: column.type,
-        notNull: Boolean(column.notnull),
-        defaultValue: column.dflt_value,
-        primaryKeyPosition: column.pk,
-        hidden: column.hidden,
-      }
-    })
+  const columns = readProfileSchemaColumns(database, expected.name)
   if (!recordsEqual(columns, expected.columns)) schemaMismatch()
 
-  const foreignKeys = database
-    .prepare(`PRAGMA foreign_key_list(${quoteSqlString(expected.name)})`)
-    .all()
-    .map((row) => {
-      const foreignKey = row as {
-        id: number
-        seq: number
-        table: string
-        from: string
-        to: string | null
-        on_update: string
-        on_delete: string
-        match: string
-      }
-      return {
-        id: foreignKey.id,
-        sequence: foreignKey.seq,
-        table: foreignKey.table,
-        from: foreignKey.from,
-        to: foreignKey.to,
-        onUpdate: foreignKey.on_update,
-        onDelete: foreignKey.on_delete,
-        match: foreignKey.match,
-      }
-    })
+  const foreignKeys = readProfileSchemaForeignKeys(database, expected.name)
   if (!recordsEqual(foreignKeys, expected.foreignKeys)) schemaMismatch()
 }
 
@@ -559,27 +636,7 @@ function validateIndexes(
   }
 
   for (const expected of manifest.indexes) {
-    const columns = database
-      .prepare(`PRAGMA index_xinfo(${quoteSqlString(expected.name)})`)
-      .all()
-      .map((row) => {
-        const column = row as {
-          seqno: number
-          cid: number
-          name: string | null
-          desc: number
-          coll: string
-          key: number
-        }
-        return {
-          sequence: column.seqno,
-          cid: column.cid,
-          name: column.name,
-          descending: Boolean(column.desc),
-          collation: column.coll,
-          key: Boolean(column.key),
-        }
-      })
+    const columns = readProfileSchemaIndexColumns(database, expected.name)
     if (!recordsEqual(columns, expected.columns)) schemaMismatch()
   }
 }
@@ -594,6 +651,93 @@ function validateMarkers(
     >[]
     if (!recordsEqual(rows, marker.expectedRows)) schemaMismatch()
   }
+}
+
+function readProfileSchemaColumns(
+  database: DatabaseSync,
+  tableName: string,
+): ProfileSchemaColumn[] {
+  return database
+    .prepare(`PRAGMA table_xinfo(${quoteSqlString(tableName)})`)
+    .all()
+    .map((row) => {
+      const column = row as {
+        cid: number
+        name: string
+        type: string
+        notnull: number
+        dflt_value: string | null
+        pk: number
+        hidden: number
+      }
+      return {
+        cid: column.cid,
+        name: column.name,
+        type: column.type,
+        notNull: Boolean(column.notnull),
+        defaultValue: column.dflt_value,
+        primaryKeyPosition: column.pk,
+        hidden: column.hidden,
+      }
+    })
+}
+
+function readProfileSchemaForeignKeys(
+  database: DatabaseSync,
+  tableName: string,
+): ProfileSchemaForeignKey[] {
+  return database
+    .prepare(`PRAGMA foreign_key_list(${quoteSqlString(tableName)})`)
+    .all()
+    .map((row) => {
+      const foreignKey = row as {
+        id: number
+        seq: number
+        table: string
+        from: string
+        to: string | null
+        on_update: string
+        on_delete: string
+        match: string
+      }
+      return {
+        id: foreignKey.id,
+        sequence: foreignKey.seq,
+        table: foreignKey.table,
+        from: foreignKey.from,
+        to: foreignKey.to,
+        onUpdate: foreignKey.on_update,
+        onDelete: foreignKey.on_delete,
+        match: foreignKey.match,
+      }
+    })
+}
+
+function readProfileSchemaIndexColumns(
+  database: DatabaseSync,
+  indexName: string,
+): ProfileSchemaIndexColumn[] {
+  return database
+    .prepare(`PRAGMA index_xinfo(${quoteSqlString(indexName)})`)
+    .all()
+    .map((row) => {
+      const column = row as {
+        seqno: number
+        cid: number
+        name: string | null
+        desc: number
+        coll: string
+        key: number
+      }
+      return {
+        sequence: column.seqno,
+        cid: column.cid,
+        name: column.name,
+        descending: Boolean(column.desc),
+        collation: column.coll,
+        key: Boolean(column.key),
+      }
+    })
 }
 
 function validateManifestShape(manifest: ProfileSchemaManifest): void {
@@ -770,22 +914,15 @@ function emptyInventory(directory: string): DaemonProfileInventory {
   }
 }
 
-function assertSupportedPlatform(): void {
-  if (process.platform === 'win32') {
-    throw new ProfileSchemaRefusalError('unsupported-platform')
-  }
-}
-
 function assertOwnerOnlyProfile(inventory: DaemonProfileInventory): void {
+  assertOwnerOnlyDirectory(inventory)
   const directoryIdentity = inventory.directoryIdentity
   const currentOwnerId =
     typeof process.getuid === 'function' ? BigInt(process.getuid()) : undefined
   if (
     directoryIdentity === undefined ||
     directoryIdentity.realPath === undefined ||
-    currentOwnerId === undefined ||
-    directoryIdentity.ownerId !== currentOwnerId ||
-    (directoryIdentity.mode & 0o777) !== 0o700
+    currentOwnerId === undefined
   ) {
     throw new ProfileSchemaRefusalError('profile-permission-invalid')
   }
@@ -801,6 +938,21 @@ function assertOwnerOnlyProfile(inventory: DaemonProfileInventory): void {
     ) {
       throw new ProfileSchemaRefusalError('profile-permission-invalid')
     }
+  }
+}
+
+function assertOwnerOnlyDirectory(inventory: DaemonProfileInventory): void {
+  const identity = inventory.directoryIdentity
+  const currentOwnerId =
+    typeof process.getuid === 'function' ? BigInt(process.getuid()) : undefined
+  if (
+    identity === undefined ||
+    identity.realPath === undefined ||
+    currentOwnerId === undefined ||
+    identity.ownerId !== currentOwnerId ||
+    (identity.mode & 0o777) !== 0o700
+  ) {
+    throw new ProfileSchemaRefusalError('profile-permission-invalid')
   }
 }
 
