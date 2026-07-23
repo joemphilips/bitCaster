@@ -58,6 +58,7 @@ switch (command) {
     const { readProfile } = await import('./profile.ts')
     const { readSecrets } = await import('./secrets.ts')
     const { recoverPreparedWalletSends } = await import('./walletOps.ts')
+    const { recoverDaemonWalletFromSeed } = await import('./emergencySeedRecovery.ts')
     const {
       ensureState,
       recordSwapMessage,
@@ -206,6 +207,11 @@ switch (command) {
       const server = await startDaemonServer({
         tradeRuntime: runtime,
         swapExecutor: executor,
+        recoverWalletFromSeed: (input) =>
+          recoverDaemonWalletFromSeed(input, {
+            directory: profileDir(),
+            getFence: () => fence,
+          }),
       })
       const shutdown = installShutdownHandlers(server, runtime, releaseResources)
       renewal = setInterval(() => {

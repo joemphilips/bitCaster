@@ -91,6 +91,10 @@ import {
   type WalletOpsDependencies,
 } from './walletOps.ts'
 import { buildDaemonTokenHoldings } from './walletHoldings.ts'
+import type {
+  WalletSeedRecoveryParams,
+  WalletSeedRecoveryResult,
+} from './protocol.ts'
 
 export interface DaemonServerOptions {
   host?: string
@@ -98,6 +102,9 @@ export interface DaemonServerOptions {
   socketPath?: string
   tradeRuntime?: TradeRuntime
   swapExecutor?: SwapRecoveryExecutor
+  recoverWalletFromSeed?: (
+    input: WalletSeedRecoveryParams,
+  ) => Promise<WalletSeedRecoveryResult>
 }
 
 export interface SwapRecoveryExecutor {
@@ -225,6 +232,9 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   generateEphemeralKeypair?: typeof generateOrderEphemeralKeypair
   tradeRuntime?: TradeRuntime
   swapExecutor?: SwapRecoveryExecutor
+  recoverWalletFromSeed?: (
+    input: WalletSeedRecoveryParams,
+  ) => Promise<WalletSeedRecoveryResult>
 }
 
 const ctfProofOperationStore: CtfProofOperationStore = {
@@ -249,6 +259,7 @@ export async function startDaemonServer(
     void handleRequest(req, res, {
       tradeRuntime: options.tradeRuntime,
       swapExecutor: options.swapExecutor,
+      recoverWalletFromSeed: options.recoverWalletFromSeed,
     })
   })
   const socketPath =
@@ -584,6 +595,28 @@ export async function dispatch(
       return {
         ok: true,
         result: await recoverPreparedWalletSends(secrets, deps),
+      }
+    }
+    case 'wallet.seedRecovery': {
+      const profile = await readProfile()
+      if (!profile) {
+        return { ok: false, error: 'daemon profile is not initialized' }
+      }
+      if (command.params.disclosureAcknowledged !== true) {
+        return {
+          ok: false,
+          error: 'seed recovery requires explicit disclosure acknowledgement',
+        }
+      }
+      if (command.params.mintUrl !== profile.mintUrl) {
+        return { ok: false, error: 'seed recovery mint does not match the profile' }
+      }
+      if (!deps.recoverWalletFromSeed) {
+        return { ok: false, error: 'seed recovery is unavailable in this daemon runtime' }
+      }
+      return {
+        ok: true,
+        result: await deps.recoverWalletFromSeed(command.params),
       }
     }
     case 'wallet.operations': {

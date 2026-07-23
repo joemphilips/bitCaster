@@ -40,6 +40,7 @@ import type {
   MarketCreateParams,
   QueryMarketsParams,
   WalletConsolidationResult,
+  WalletSeedRecoveryParams,
 } from '@bitcaster-market/daemon/protocol'
 
 const execFileAsync = promisify(execFile)
@@ -62,6 +63,7 @@ let rootProgram: Command | undefined
 
 const DIRECT_ENGINE_READ_TIMEOUT_MS = 5_000
 const MAX_CASHU_TOKEN_FILE_BYTES = 4 * 1_024 * 1_024
+const MAX_WALLET_SEED_FILE_BYTES = 128
 const TOKEN_FILE_READ_CHUNK_BYTES = 64 * 1_024
 
 await main()
@@ -351,6 +353,67 @@ function registerWalletCommand(program: Command): void {
         )
       }
       await printDaemonResult(callDaemon({ method: 'wallet.receive', params }))
+    })
+
+  wallet
+    .command('recover-seed')
+    .description('Run one explicitly acknowledged ordinary seed-recovery invocation.')
+    .requiredOption(
+      '--wallet-seed-hex-file <path>',
+      'Owner-only file containing the 32-byte wallet seed as hex',
+    )
+    .requiredOption('--recovery-id <id>', 'Unique recovery invocation id')
+    .requiredOption('--mint <url>', 'Canonical mint origin')
+    .requiredOption('--unit <unit>', 'Mint unit: sat, msat, or usd')
+    .requiredOption('--keyset-id <id>', 'Mint keyset id')
+    .option(
+      '--acknowledge-seed-disclosure',
+      'Acknowledge that recovery discloses deterministic proof candidates to the mint',
+    )
+    .option('--dry-run', 'Validate and print the one-shot recovery request')
+    .allowExcessArguments(false)
+    .action(async (options: {
+      walletSeedHexFile: string
+      recoveryId: string
+      mint: string
+      unit: string
+      keysetId: string
+      acknowledgeSeedDisclosure?: boolean
+      dryRun?: boolean
+    }) => {
+      if (options.acknowledgeSeedDisclosure !== true) {
+        throwUsage(
+          'wallet recover-seed requires --acknowledge-seed-disclosure',
+        )
+      }
+      if (
+        options.unit !== 'sat' &&
+        options.unit !== 'msat' &&
+        options.unit !== 'usd'
+      ) {
+        throwUsage('wallet recover-seed unit must be sat, msat, or usd')
+      }
+      const walletSeedHex = await readPrivateWalletSeedFile(
+        options.walletSeedHexFile,
+      )
+      const params = {
+        recoveryId: options.recoveryId,
+        mintUrl: options.mint,
+        unit: options.unit as WalletSeedRecoveryParams['unit'],
+        keysetId: options.keysetId,
+        walletSeedHex,
+        disclosureAcknowledged: true as const,
+      } satisfies WalletSeedRecoveryParams
+      if (isDryRun(options)) {
+        printDryRun(params)
+        return
+      }
+      await printDaemonResult(
+        callDaemon({
+          method: 'wallet.seedRecovery',
+          params,
+        }),
+      )
     })
 
   wallet
@@ -1056,6 +1119,40 @@ async function readPrivateTokenFile(path: string): Promise<string> {
     const token = (await readBoundedFile(file)).toString('utf8').trim()
     if (!token) throw new Error('--token-file was empty')
     return token
+  } finally {
+    await file.close()
+  }
+}
+
+async function readPrivateWalletSeedFile(path: string): Promise<string> {
+  if (process.platform === 'win32') {
+    throw new Error(
+      '--wallet-seed-hex-file is not supported on Windows until ACL and reparse-point validation is available',
+    )
+  }
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const metadata = await file.stat()
+    if (!metadata.isFile()) {
+      throw new Error('--wallet-seed-hex-file must name a regular file')
+    }
+    if ((metadata.mode & 0o077) !== 0) {
+      throw new Error(
+        '--wallet-seed-hex-file must not be accessible by group or other users',
+      )
+    }
+    if (metadata.size > MAX_WALLET_SEED_FILE_BYTES) {
+      throw new Error(
+        `--wallet-seed-hex-file exceeds ${MAX_WALLET_SEED_FILE_BYTES} bytes`,
+      )
+    }
+    const seed = (await file.readFile('utf8')).trim()
+    if (!/^[0-9a-f]{64}$/.test(seed)) {
+      throw new Error(
+        '--wallet-seed-hex-file must contain exactly 64 lowercase hex characters',
+      )
+    }
+    return seed
   } finally {
     await file.close()
   }
