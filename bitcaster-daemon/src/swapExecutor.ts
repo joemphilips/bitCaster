@@ -1223,11 +1223,12 @@ export class DaemonSwapExecutor {
     profile: DaemonProfile
     secrets: DaemonSecrets
   } | null> {
-    const [profile, secrets, state] = await Promise.all([
-      readProfile(),
-      readSecrets(),
-      readState(),
-    ])
+    // Each reader performs an identity-bound schema preflight before opening
+    // SQLite. Keep those preflight/open windows ordered so the connections do
+    // not create or touch WAL sidecars underneath one another's inventory.
+    const profile = await readProfile()
+    const secrets = await readSecrets()
+    const state = await readState()
     const swap = state?.swaps[tradeId]
     if (!profile || !secrets || !swap || !swap.role || !swap.orderId) return null
     const key = secrets.orderEphemeralKeys[tradeId] ?? secrets.orderEphemeralKeys[swap.orderId]
@@ -1326,13 +1327,21 @@ export class DaemonSwapExecutor {
 
   private scheduleRetry(tradeId: string): void {
     if (this.retryTimers.has(tradeId)) return
-    const attempts = this.retryAttempts.get(tradeId) ?? 0
-    if (attempts >= this.maxRetryAttempts) return
-    this.retryAttempts.set(tradeId, attempts + 1)
-    const timer = setTimeout(() => {
+    if ((this.retryAttempts.get(tradeId) ?? 0) >= this.maxRetryAttempts) return
+    const retry = () => {
       this.retryTimers.delete(tradeId)
+      if ([...this.inFlight].some((key) => key.startsWith(`${tradeId}:`))) {
+        const deferred = setTimeout(retry, this.retryDelayMs)
+        deferred.unref?.()
+        this.retryTimers.set(tradeId, deferred)
+        return
+      }
+      const attempts = this.retryAttempts.get(tradeId) ?? 0
+      if (attempts >= this.maxRetryAttempts) return
+      this.retryAttempts.set(tradeId, attempts + 1)
       void this.retryActiveSwap(tradeId).catch(() => undefined)
-    }, this.retryDelayMs)
+    }
+    const timer = setTimeout(retry, this.retryDelayMs)
     timer.unref?.()
     this.retryTimers.set(tradeId, timer)
   }

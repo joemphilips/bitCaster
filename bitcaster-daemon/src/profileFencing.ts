@@ -6,6 +6,7 @@ import {
   validateDaemonProfileSchema,
 } from './profileSchema.ts'
 import { getFinalProfileSchemaManifest } from './profileSchemaManifest.ts'
+import { withProfileStorageAccess } from './profileAccess.ts'
 
 export const CUSTODY_SCOPE_LEASE_DURATION_MS = 60_000
 export const CUSTODY_SCOPE_RENEW_INTERVAL_MS = 20_000
@@ -168,31 +169,33 @@ async function withFencingTransaction<T>(
   directory: string,
   action: (database: DatabaseSync) => T,
 ): Promise<T> {
-  await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
-  const database = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE))
-  try {
-    database.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = FULL;
-      PRAGMA foreign_keys = ON;
-      PRAGMA busy_timeout = 5000;
-      BEGIN IMMEDIATE;
-    `)
+  return withProfileStorageAccess(async () => {
+    await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
+    const database = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE))
     try {
-      const result = action(database)
-      database.exec('COMMIT')
-      return result
-    } catch (error) {
+      database.exec(`
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = FULL;
+        PRAGMA foreign_keys = ON;
+        PRAGMA busy_timeout = 5000;
+        BEGIN IMMEDIATE;
+      `)
       try {
-        database.exec('ROLLBACK')
-      } catch {
-        // BEGIN or COMMIT may not have completed.
+        const result = action(database)
+        database.exec('COMMIT')
+        return result
+      } catch (error) {
+        try {
+          database.exec('ROLLBACK')
+        } catch {
+          // BEGIN or COMMIT may not have completed.
+        }
+        throw error
       }
-      throw error
+    } finally {
+      database.close()
     }
-  } finally {
-    database.close()
-  }
+  })
 }
 
 interface ScopeStateRow {

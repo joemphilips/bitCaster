@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'e26ce16953e6fa6f8ce8a32d5f8e64e76c506ce4cbaa50bb8edd8c2d55562439'
+  '1708a28372e82a0f9ae45038d9245a2fcfbb38940e8103bce243fcae328d1c84'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -105,6 +105,80 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       (owner_incarnation_id IS NULL AND lease_expires_at_ms IS NULL)
       OR
       (owner_incarnation_id IS NOT NULL AND lease_expires_at_ms IS NOT NULL)
+    )
+  ) STRICT`,
+  `CREATE TABLE target_state_metadata (
+    scope_id TEXT PRIMARY KEY NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    schema_version INTEGER NOT NULL CHECK (schema_version = 1)
+  ) STRICT`,
+  `CREATE TABLE target_wallet_proofs (
+    proof_id TEXT PRIMARY KEY NOT NULL CHECK (
+      length(proof_id) = 64 AND proof_id NOT GLOB '*[^0-9a-f]*'
+    ),
+    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
+    keyset_id TEXT CHECK (keyset_id IS NULL OR length(keyset_id) BETWEEN 1 AND 1024),
+    amount INTEGER NOT NULL CHECK (amount >= 0),
+    secret TEXT NOT NULL CHECK (length(secret) BETWEEN 1 AND 16384),
+    signature TEXT NOT NULL CHECK (length(signature) BETWEEN 1 AND 16384),
+    proof_body BLOB NOT NULL CHECK (length(proof_body) BETWEEN 1 AND ${recordBytesMax}),
+    state TEXT NOT NULL CHECK (state IN ('available', 'reserved', 'locked')),
+    reserved_by TEXT CHECK (reserved_by IS NULL OR length(reserved_by) BETWEEN 1 AND 16384),
+    asset_kind TEXT NOT NULL CHECK (asset_kind IN ('sats', 'outcome')),
+    condition_id TEXT CHECK (condition_id IS NULL OR length(condition_id) BETWEEN 1 AND 1024),
+    outcome_set_id TEXT CHECK (outcome_set_id IS NULL OR length(outcome_set_id) BETWEEN 1 AND 1024),
+    base_asset TEXT NOT NULL CHECK (base_asset IN ('sat', 'usd')),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
+    UNIQUE (scope_id, normalized_mint, secret),
+    CHECK (
+      (state = 'reserved' AND reserved_by IS NOT NULL)
+      OR state <> 'reserved'
+    ),
+    CHECK (
+      (asset_kind = 'sats' AND condition_id IS NULL AND outcome_set_id IS NULL)
+      OR
+      (asset_kind = 'outcome' AND condition_id IS NOT NULL AND outcome_set_id IS NOT NULL)
+    )
+  ) STRICT`,
+  `CREATE TABLE target_keyset_counters (
+    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
+    next_counter INTEGER NOT NULL CHECK (next_counter >= 0),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+    PRIMARY KEY (scope_id, keyset_id)
+  ) STRICT`,
+  `CREATE TABLE target_proof_operations (
+    operation_id TEXT PRIMARY KEY NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 16384),
+    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    kind TEXT NOT NULL CHECK (kind IN (
+      'swap-lock', 'swap-claim', 'conditional-keyset-swap',
+      'ctf-split', 'ctf-merge', 'ctf-consolidation', 'ctf-redeem',
+      'regular-split', 'wallet-send', 'proof-split', 'swap-refund'
+    )),
+    state TEXT NOT NULL CHECK (state IN ('prepared', 'completed', 'failed')),
+    normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
+    request_artifact_id TEXT NOT NULL,
+    output_artifact_id TEXT NOT NULL,
+    result_artifact_id TEXT,
+    input_count INTEGER NOT NULL CHECK (input_count BETWEEN 0 AND 256),
+    input_amount INTEGER NOT NULL CHECK (input_amount >= 0),
+    last_error TEXT,
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
+    UNIQUE (scope_id, operation_id),
+    FOREIGN KEY (scope_id, request_artifact_id)
+      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT
+      DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (scope_id, output_artifact_id)
+      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT
+      DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (scope_id, result_artifact_id)
+      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT
+      DEFERRABLE INITIALLY DEFERRED,
+    CHECK (
+      (state = 'completed' AND result_artifact_id IS NOT NULL)
+      OR (state <> 'completed' AND result_artifact_id IS NULL)
     )
   ) STRICT`,
   `CREATE TABLE custody_proofs (
@@ -516,15 +590,55 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     amount_subunits INTEGER CHECK (amount_subunits >= 0),
     status TEXT NOT NULL CHECK (length(status) BETWEEN 1 AND 256),
     revision INTEGER NOT NULL CHECK (revision >= 0),
+    ephemeral_pubkey TEXT CHECK (
+      ephemeral_pubkey IS NULL OR (
+        length(ephemeral_pubkey) = 66
+        AND substr(ephemeral_pubkey, 1, 2) IN ('02', '03')
+        AND ephemeral_pubkey NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
     client_order_id TEXT,
+    preflight_reservation_id TEXT,
+    preflight_condition_id TEXT,
+    preflight_keep_outcome_set_id TEXT,
+    preflight_lock_outcome_set_id TEXT,
+    preflight_amount_sats INTEGER CHECK (preflight_amount_sats > 0),
     base_asset TEXT CHECK (base_asset IS NULL OR base_asset IN ('sat', 'usd')),
     divisibility INTEGER CHECK (divisibility > 0),
+    engine_status_present INTEGER NOT NULL CHECK (engine_status_present IN (0, 1)),
     engine_status_body BLOB CHECK (
       engine_status_body IS NULL OR length(engine_status_body) <= ${recordBytesMax}
     ),
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
-    UNIQUE (scope_id, order_id)
+    UNIQUE (scope_id, order_id),
+    CHECK (
+      (preflight_reservation_id IS NULL
+        AND preflight_condition_id IS NULL
+        AND preflight_keep_outcome_set_id IS NULL
+        AND preflight_lock_outcome_set_id IS NULL
+        AND preflight_amount_sats IS NULL)
+      OR
+      (preflight_reservation_id IS NOT NULL
+        AND preflight_condition_id IS NOT NULL
+        AND preflight_keep_outcome_set_id IS NOT NULL
+        AND preflight_lock_outcome_set_id IS NOT NULL
+        AND preflight_amount_sats IS NOT NULL)
+    ),
+    CHECK (
+      (engine_status_present = 0 AND engine_status_body IS NULL)
+      OR (engine_status_present = 1 AND engine_status_body IS NOT NULL)
+    )
+  ) STRICT`,
+  `CREATE TABLE daemon_order_trades (
+    scope_id TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 511),
+    trade_id TEXT NOT NULL CHECK (length(trade_id) BETWEEN 1 AND 1024),
+    PRIMARY KEY (scope_id, order_id, position),
+    UNIQUE (scope_id, order_id, trade_id),
+    FOREIGN KEY (scope_id, order_id)
+      REFERENCES daemon_orders(scope_id, order_id) ON DELETE RESTRICT
   ) STRICT`,
   `CREATE TABLE order_collateral_pins (
     scope_id TEXT NOT NULL,
@@ -557,17 +671,24 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     trade_id TEXT PRIMARY KEY NOT NULL CHECK (length(trade_id) BETWEEN 1 AND 1024),
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     order_id TEXT,
-    market_id TEXT NOT NULL CHECK (length(market_id) BETWEEN 1 AND 1024),
-    role TEXT NOT NULL CHECK (role IN ('seller', 'buyer')),
-    counterparty_pubkey TEXT NOT NULL CHECK (length(counterparty_pubkey) BETWEEN 1 AND 256),
-    seller_locktime INTEGER NOT NULL CHECK (seller_locktime >= 0),
-    buyer_locktime INTEGER NOT NULL CHECK (buyer_locktime >= 0),
-    fill_amount_subunits INTEGER NOT NULL CHECK (fill_amount_subunits > 0),
-    outcome_face_amount_subunits INTEGER NOT NULL CHECK (outcome_face_amount_subunits > 0),
-    quote_payment_subunits INTEGER NOT NULL CHECK (quote_payment_subunits > 0),
-    base_asset TEXT NOT NULL CHECK (base_asset IN ('sat', 'usd')),
-    divisibility INTEGER NOT NULL CHECK (divisibility > 0),
-    settlement_kind TEXT NOT NULL CHECK (length(settlement_kind) BETWEEN 1 AND 128),
+    market_id TEXT CHECK (market_id IS NULL OR length(market_id) BETWEEN 1 AND 1024),
+    role TEXT CHECK (role IS NULL OR role IN ('seller', 'buyer')),
+    counterparty_pubkey TEXT CHECK (
+      counterparty_pubkey IS NULL OR length(counterparty_pubkey) BETWEEN 1 AND 256
+    ),
+    seller_locktime INTEGER CHECK (seller_locktime >= 0),
+    buyer_locktime INTEGER CHECK (buyer_locktime >= 0),
+    fill_amount_sats INTEGER CHECK (fill_amount_sats >= 0),
+    fill_amount_subunits INTEGER CHECK (fill_amount_subunits >= 0),
+    outcome_face_amount_sats INTEGER CHECK (outcome_face_amount_sats >= 0),
+    outcome_face_amount_subunits INTEGER CHECK (outcome_face_amount_subunits >= 0),
+    quote_payment_sats INTEGER CHECK (quote_payment_sats >= 0),
+    quote_payment_subunits INTEGER CHECK (quote_payment_subunits >= 0),
+    base_asset TEXT CHECK (base_asset IS NULL OR base_asset IN ('sat', 'usd')),
+    divisibility INTEGER CHECK (divisibility > 0),
+    settlement_kind TEXT CHECK (
+      settlement_kind IS NULL OR length(settlement_kind) BETWEEN 1 AND 128
+    ),
     seller_keep_outcome_set_id TEXT,
     seller_lock_outcome_set_id TEXT,
     step TEXT NOT NULL CHECK (step IN (
@@ -589,8 +710,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
     UNIQUE (scope_id, trade_id),
-    FOREIGN KEY (scope_id, order_id)
-      REFERENCES daemon_orders(scope_id, order_id) ON DELETE RESTRICT,
     FOREIGN KEY (scope_id, adaptor_point_cipher_artifact_id)
       REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT,
     FOREIGN KEY (scope_id, locked_seller_cipher_artifact_id)
@@ -645,11 +764,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     auth_tag BLOB CHECK (auth_tag IS NULL OR length(auth_tag) = 16),
     private_key_body BLOB NOT NULL CHECK (length(private_key_body) BETWEEN 1 AND 512),
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-    UNIQUE (scope_id, order_id),
-    FOREIGN KEY (scope_id, order_id)
-      REFERENCES daemon_orders(scope_id, order_id) ON DELETE RESTRICT,
-    FOREIGN KEY (scope_id, trade_id)
-      REFERENCES daemon_swaps(scope_id, trade_id) ON DELETE RESTRICT,
     CHECK (
       (protection = 'owner-only-plaintext'
         AND kdf IS NULL AND salt IS NULL AND iv IS NULL AND auth_tag IS NULL)
@@ -680,14 +794,16 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
     ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 255),
     next_counter INTEGER NOT NULL CHECK (next_counter >= 0),
-    trailing_empty_counters INTEGER NOT NULL CHECK (trailing_empty_counters BETWEEN 0 AND 300),
+    trailing_empty_counters INTEGER NOT NULL CHECK (
+      trailing_empty_counters BETWEEN 0 AND 9007199254740991
+    ),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
     PRIMARY KEY (recovery_id, keyset_id),
     UNIQUE (recovery_id, ordinal),
     CHECK (
       (state = 'active' AND trailing_empty_counters < 300)
-      OR (state = 'completed' AND trailing_empty_counters = 300)
+      OR (state = 'completed' AND trailing_empty_counters >= 300)
     )
   ) STRICT`,
   `CREATE TABLE seed_recovery_pending_proofs (

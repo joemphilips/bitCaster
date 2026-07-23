@@ -5,6 +5,7 @@ import {
   validateDaemonProfileSchema,
 } from './profileSchema.ts'
 import { getFinalProfileSchemaManifest } from './profileSchemaManifest.ts'
+import { withProfileStorageAccess } from './profileAccess.ts'
 
 export type StateSqliteFaultPhase =
   | 'transaction-opened'
@@ -29,34 +30,36 @@ export async function withDaemonStateSqliteTransaction<T>(
   action: (database: DatabaseSync) => T,
   options: StateSqliteTransactionOptions = {},
 ): Promise<T> {
-  const database = await openDaemonStateSqlite(directory)
-  let committed = false
-  try {
-    database.exec('BEGIN IMMEDIATE')
-    // Operation rows intentionally precede their exact artifact rows in the
-    // SDK transaction contract. Enforce all foreign keys at COMMIT.
-    database.exec('PRAGMA defer_foreign_keys = ON')
-    options.injectFault?.('transaction-opened')
+  return withProfileStorageAccess(async () => {
+    const database = await openDaemonStateSqlite(directory)
+    let committed = false
     try {
-      const result = action(database)
-      options.injectFault?.('before-commit')
-      database.exec('COMMIT')
-      committed = true
-      options.injectFault?.('after-commit')
-      return result
-    } catch (error) {
-      if (!committed) {
-        try {
-          database.exec('ROLLBACK')
-        } catch {
-          // Preserve the initiating failure.
+      database.exec('BEGIN IMMEDIATE')
+      // Operation rows intentionally precede their exact artifact rows in the
+      // SDK transaction contract. Enforce all foreign keys at COMMIT.
+      database.exec('PRAGMA defer_foreign_keys = ON')
+      options.injectFault?.('transaction-opened')
+      try {
+        const result = action(database)
+        options.injectFault?.('before-commit')
+        database.exec('COMMIT')
+        committed = true
+        options.injectFault?.('after-commit')
+        return result
+      } catch (error) {
+        if (!committed) {
+          try {
+            database.exec('ROLLBACK')
+          } catch {
+            // Preserve the initiating failure.
+          }
         }
+        throw error
       }
-      throw error
+    } finally {
+      database.close()
     }
-  } finally {
-    database.close()
-  }
+  })
 }
 
 export function configureDaemonStateSqlite(database: DatabaseSync): void {

@@ -1,4 +1,4 @@
-import { open, readFile, unlink } from 'node:fs/promises'
+import { lstat, open, readFile, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ensureProfileDir, profileDir } from './profile.ts'
 
@@ -20,10 +20,9 @@ export async function acquireDaemonRunLock(): Promise<DaemonRunLock> {
     if (!isFileExistsError(err)) throw err
   }
 
-  if (!(await lockOwnerIsAlive(path))) {
-    await unlink(path).catch((err: unknown) => {
-      if (!isNotFoundError(err)) throw err
-    })
+  const staleIdentity = await readPlainLockIdentity(path)
+  if (staleIdentity !== null && !(await lockOwnerIsAlive(path))) {
+    await unlinkIfIdentityMatches(path, staleIdentity)
     try {
       return await createLock(path)
     } catch (err) {
@@ -36,6 +35,8 @@ export async function acquireDaemonRunLock(): Promise<DaemonRunLock> {
 
 async function createLock(path: string): Promise<DaemonRunLock> {
   const handle = await open(path, 'wx', 0o600)
+  const metadata = await handle.stat({ bigint: true })
+  const identity = { dev: metadata.dev, ino: metadata.ino }
   try {
     await handle.writeFile(
       JSON.stringify(
@@ -56,10 +57,35 @@ async function createLock(path: string): Promise<DaemonRunLock> {
     async release() {
       if (released) return
       released = true
-      await unlink(path).catch((err: unknown) => {
-        if (!isNotFoundError(err)) throw err
-      })
+      await unlinkIfIdentityMatches(path, identity)
     },
+  }
+}
+
+async function readPlainLockIdentity(
+  path: string,
+): Promise<{ readonly dev: bigint; readonly ino: bigint } | null> {
+  try {
+    const metadata = await lstat(path, { bigint: true })
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return null
+    return { dev: metadata.dev, ino: metadata.ino }
+  } catch (error) {
+    if (isNotFoundError(error)) return null
+    throw error
+  }
+}
+
+async function unlinkIfIdentityMatches(
+  path: string,
+  identity: { readonly dev: bigint; readonly ino: bigint },
+): Promise<void> {
+  const current = await readPlainLockIdentity(path)
+  if (
+    current !== null &&
+    current.dev === identity.dev &&
+    current.ino === identity.ino
+  ) {
+    await unlink(path)
   }
 }
 

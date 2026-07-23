@@ -1,17 +1,16 @@
 #!/usr/bin/env node
 
 import type { Server } from 'node:http'
+import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
-import { profileFromPublicKey, writeProfile } from './profile.ts'
-import { ensureRpcToken } from './rpcAuth.ts'
+import { deriveDurableCustodyScopeId, deriveDurableCustodyWalletId } from '@bitcaster-market/client-sdk'
+import { assertDaemonProfileStorageComplete, profileDir } from './profile.ts'
 import {
+  createDaemonSecrets,
   createDaemonSecretsFromImport,
-  ensureSecrets,
-  readSecrets,
-  writeSecrets,
 } from './secrets.ts'
-import { ensureState, readState } from './state.ts'
+import { bootstrapFreshDaemonProfile } from './profileBootstrap.ts'
 
 const MAX_SECRET_HEX_FILE_BYTES = 256
 const SECRET_FILE_READ_CHUNK_BYTES = 128
@@ -22,35 +21,33 @@ switch (command) {
   case 'init': {
     const initOptions = parseInitOptions(args)
     const importedSecrets = await resolveImportedSecrets(initOptions)
-    if (importedSecrets) {
-      if ((await readSecrets()) && !initOptions.force) {
-        throw new Error('daemon secrets already exist; pass --force to replace them')
-      }
-      if (initOptions.force && !(await daemonStateIsEmpty())) {
-        throw new Error(
-          'daemon state is not empty; refusing to replace wallet/Nostr keys',
-        )
-      }
-      await writeSecrets(
-        createDaemonSecretsFromImport({
+    const secrets =
+      importedSecrets === null
+        ? createDaemonSecrets()
+        : createDaemonSecretsFromImport({
           walletSeedHex: importedSecrets.walletSeedHex,
           nostrSecretKeyHex: importedSecrets.nostrSecretKeyHex,
-        }),
-      )
-    }
-    const secrets = await ensureSecrets()
-    await writeProfile(
-      profileFromPublicKey(secrets.nostrPublicKeyHex, {
-        engineBaseUrl: initOptions.engineUrl,
-        mintUrl: initOptions.mintUrl,
-      }),
-    )
-    await ensureRpcToken()
-    await ensureState()
+        })
+    await bootstrapFreshDaemonProfile({
+      directory: profileDir(),
+      engineBaseUrl:
+        initOptions.engineUrl ??
+        process.env.BITCASTER_ENGINE_URL ??
+        'http://localhost:5000',
+      mintUrl:
+        initOptions.mintUrl ??
+        process.env.BITCASTER_MINT_URL ??
+        'http://localhost:8085',
+      walletSeedHex: secrets.walletSeedHex,
+      nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      nostrPublicKeyHex: secrets.nostrPublicKeyHex,
+      passphrase: process.env.BITCASTER_DAEMON_PASSPHRASE || undefined,
+    })
     process.stdout.write('bitcaster-daemon profile initialized\n')
     break
   }
   case 'run': {
+    await assertDaemonProfileStorageComplete()
     const { acquireDaemonRunLock } = await import('./runLock.ts')
     const { startDaemonServer } = await import('./server.ts')
     const { CompositeTradeRuntimeConnection, DaemonTradeRuntime } = await import('./tradeRuntime.ts')
@@ -70,6 +67,46 @@ switch (command) {
     const runLock = await acquireDaemonRunLock()
     const profile = await readProfile()
     const secrets = await readSecrets()
+    if (!profile || !secrets) {
+      await runLock.release()
+      throw new Error('daemon profile storage is incomplete')
+    }
+    const walletId = deriveDurableCustodyWalletId(
+      Buffer.from(secrets.walletSeedHex, 'hex'),
+    )
+    const scopeId = deriveDurableCustodyScopeId({
+      scopeKind: 'wallet',
+      walletId,
+    })
+    const {
+      claimCustodyScopeLease,
+      renewCustodyScopeLease,
+      releaseCustodyScopeLease,
+      CUSTODY_SCOPE_RENEW_INTERVAL_MS,
+    } = await import('./profileFencing.ts')
+    let fence: Awaited<ReturnType<typeof claimCustodyScopeLease>>
+    try {
+      fence = await claimCustodyScopeLease(profileDir(), {
+        scopeId,
+        incarnationId: randomUUID(),
+        observedAtMs: Date.now(),
+      })
+    } catch (error) {
+      await runLock.release()
+      throw error
+    }
+    let renewal: NodeJS.Timeout | undefined
+    let resourcesReleased = false
+    const releaseResources = async () => {
+      if (resourcesReleased) return
+      resourcesReleased = true
+      if (renewal) clearInterval(renewal)
+      try {
+        await releaseCustodyScopeLease(profileDir(), fence, Date.now())
+      } finally {
+        await runLock.release()
+      }
+    }
     let executor: InstanceType<typeof DaemonSwapExecutor> | undefined
     let runtime: InstanceType<typeof DaemonTradeRuntime> | undefined
     const tradeHub =
@@ -170,9 +207,21 @@ switch (command) {
         tradeRuntime: runtime,
         swapExecutor: executor,
       })
-      installShutdownHandlers(server, runtime, runLock.release)
+      const shutdown = installShutdownHandlers(server, runtime, releaseResources)
+      renewal = setInterval(() => {
+        void renewCustodyScopeLease(profileDir(), fence, Date.now())
+          .then((next) => {
+            fence = next
+          })
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error)
+            process.stderr.write(`custody lease renewal failed: ${message}\n`)
+            void shutdown('custody lease loss', 1)
+          })
+      }, CUSTODY_SCOPE_RENEW_INTERVAL_MS)
+      renewal.unref()
     } catch (err) {
-      await runLock.release()
+      await releaseResources().catch(() => undefined)
       throw err
     }
     if (secrets) {
@@ -207,7 +256,6 @@ switch (command) {
     process.stderr.write(`Usage:
   bitcaster-daemon init [--wallet-seed-hex-file <path>]
                          [--nostr-secret-key-hex-file <path>]
-                         [--force]
                          [--engine-url <url>] [--mint-url <url>]
   bitcaster-daemon run
 `)
@@ -219,15 +267,13 @@ function parseInitOptions(args: string[]): {
   nostrSecretKeyHexFile?: string
   engineUrl?: string
   mintUrl?: string
-  force: boolean
 } {
   const options: {
     walletSeedHexFile?: string
     nostrSecretKeyHexFile?: string
     engineUrl?: string
     mintUrl?: string
-    force: boolean
-  } = { force: false }
+  } = {}
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]
     if (arg === '--wallet-seed-hex-file') {
@@ -241,8 +287,6 @@ function parseInitOptions(args: string[]): {
       options.engineUrl = requiredArg(args[++i], '--engine-url')
     } else if (arg === '--mint-url') {
       options.mintUrl = requiredArg(args[++i], '--mint-url')
-    } else if (arg === '--force') {
-      options.force = true
     } else {
       throw new Error(`Unknown init option: ${arg}`)
     }
@@ -323,33 +367,21 @@ function requiredArg(value: string | undefined, option: string): string {
   throw new Error(`Missing value for ${option}`)
 }
 
-async function daemonStateIsEmpty(): Promise<boolean> {
-  const state = await readState()
-  if (!state) return true
-  return (
-    state.wallet.proofs.length === 0 &&
-    Object.keys(state.wallet.keysetCounters).length === 0 &&
-    Object.keys(state.proofOperations).length === 0 &&
-    Object.keys(state.orders).length === 0 &&
-    Object.keys(state.swaps).length === 0
-  )
-}
-
 function installShutdownHandlers(
   server: Server,
   runtime: { stop(): Promise<void> } | undefined,
   releaseRunLock: () => Promise<void>,
-): void {
+): (reason: string, exitCode?: number) => Promise<void> {
   let shuttingDown = false
-  const shutdown = async (signal: NodeJS.Signals) => {
+  const shutdown = async (reason: string, exitCode = 0) => {
     if (shuttingDown) return
     shuttingDown = true
-    process.stderr.write(`bitcaster-daemon received ${signal}, shutting down\n`)
+    process.stderr.write(`bitcaster-daemon received ${reason}, shutting down\n`)
     try {
       await closeServer(server)
       await runtime?.stop()
       await releaseRunLock()
-      process.exit(0)
+      process.exit(exitCode)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       process.stderr.write(`bitcaster-daemon shutdown failed: ${message}\n`)
@@ -358,6 +390,7 @@ function installShutdownHandlers(
   }
   process.once('SIGINT', () => void shutdown('SIGINT'))
   process.once('SIGTERM', () => void shutdown('SIGTERM'))
+  return shutdown
 }
 
 function closeServer(server: Server): Promise<void> {

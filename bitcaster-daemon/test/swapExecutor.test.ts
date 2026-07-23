@@ -1,12 +1,19 @@
 import assert from 'node:assert/strict'
+import { createECDH } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { profileFromPublicKey, writeProfile } from '../src/profile.ts'
+import {
+  profileDir,
+  profileDatabaseExists,
+  profileFromPublicKey,
+  type DaemonProfile,
+} from '../src/profile.ts'
+import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import {
   createDaemonSecrets,
-  writeSecrets,
+  updateSecrets,
   type DaemonSecrets,
 } from '../src/secrets.ts'
 import {
@@ -15,7 +22,7 @@ import {
   recordSwapMessage,
   recordTradeCreated,
   recordTradeStateChanged,
-  writeState,
+  writeState as writeBootstrappedState,
   type CashuProofRecord,
   type DaemonState,
 } from '../src/state.ts'
@@ -26,6 +33,8 @@ import {
 } from '../src/swapExecutor.ts'
 import type { TradeRuntimeConnection } from '../src/tradeRuntime.ts'
 
+let pendingEphemeralSecrets: DaemonSecrets | null = null
+
 test('DaemonSwapExecutor drives seller open and claim with durable wallet state', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-swap-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
@@ -34,8 +43,7 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const state = emptyDaemonState()
     state.orders['order-1'] = {
       orderId: 'order-1',
@@ -125,8 +133,7 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const state = emptyDaemonState()
     state.orders['order-1'] = {
       orderId: 'order-1',
@@ -239,8 +246,7 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const state = emptyDaemonState()
     state.swaps['trade-partial-refund'] = {
       tradeId: 'trade-partial-refund',
@@ -317,8 +323,7 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const state = emptyDaemonState()
     state.swaps['trade-partial-multi'] = {
       tradeId: 'trade-partial-multi',
@@ -428,8 +433,7 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const state = emptyDaemonState()
     state.swaps['trade-partial-spent'] = {
       tradeId: 'trade-partial-spent',
@@ -496,8 +500,7 @@ test('DaemonSwapExecutor leaves persisted seller open resumable when hub send fa
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const state = emptyDaemonState()
     state.orders['order-1'] = {
       orderId: 'order-1',
@@ -559,8 +562,7 @@ test('DaemonSwapExecutor keeps pending proof operations retryable', async () => 
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const state = emptyDaemonState()
     state.orders['order-1'] = {
       orderId: 'order-1',
@@ -628,8 +630,7 @@ test('DaemonSwapExecutor retries mint-pending seller open without another event'
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const state = emptyDaemonState()
     state.orders['order-1'] = {
       orderId: 'order-1',
@@ -703,20 +704,21 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
   process.env.BITCASTER_DAEMON_HOME = home
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
-    secrets.orderEphemeralKeys['order-2'] = {
-      ...orderKey(secrets),
-      orderId: 'order-2',
-      publicKeyHex: `03${'33'.repeat(32)}`,
-    }
+    const buyerKey = orderKeyFromPrivate(
+      secrets,
+      'order-2',
+      'cond-NO',
+      '33'.repeat(32),
+    )
+    secrets.orderEphemeralKeys['order-2'] = buyerKey
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const state = emptyDaemonState()
     state.orders['order-2'] = {
       orderId: 'order-2',
       marketId: 'cond-NO',
       status: 'resting',
-      ephemeralPubkey: `03${'33'.repeat(32)}`,
+      ephemeralPubkey: buyerKey.publicKeyHex,
       ...directBuyerOrderEconomics(),
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
@@ -736,7 +738,7 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
       await recordTradeCreated({
         tradeId: 'trade-2',
         sellerPubkey: `02${'44'.repeat(32)}`,
-        buyerPubkey: `03${'33'.repeat(32)}`,
+        buyerPubkey: buyerKey.publicKeyHex,
         sellerLocktime: '2026-05-21T00:02:00.000Z',
         buyerLocktime: '2026-05-21T00:01:00.000Z',
         marketId: 'cond-NO',
@@ -789,14 +791,14 @@ test('DaemonSwapExecutor resume sweep retries active claim after retryable timeo
   process.env.BITCASTER_DAEMON_HOME = home
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
-    secrets.orderEphemeralKeys['order-retry'] = {
-      ...orderKey(secrets),
-      orderId: 'order-retry',
-      publicKeyHex: `03${'99'.repeat(32)}`,
-    }
+    secrets.orderEphemeralKeys['order-retry'] = orderKeyFromPrivate(
+      secrets,
+      'order-retry',
+      'cond-NO',
+      '99'.repeat(32),
+    )
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const state = emptyDaemonState()
     state.swaps['trade-retry'] = {
       tradeId: 'trade-retry',
@@ -878,8 +880,7 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
       orderId: 'order-3',
     }
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const state = emptyDaemonState()
     state.orders['order-3'] = {
       orderId: 'order-3',
@@ -1019,8 +1020,7 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
       orderId: 'order-preflight',
     }
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const reservationId = `order-preflight:${orderKey(secrets).publicKeyHex}`
     const state = emptyDaemonState()
     state.orders['order-preflight'] = {
@@ -1148,8 +1148,7 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
       orderId: 'order-preflight',
     }
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const reservationId = `order-preflight:${orderKey(secrets).publicKeyHex}`
     const state = emptyDaemonState()
     state.orders['order-preflight'] = {
@@ -1304,8 +1303,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       orderId: 'order-preflight',
     }
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
-    await writeProfile(profile)
-    await writeSecrets(secrets)
+    await bootstrapTestProfile(profile, secrets)
     const reservationId = `order-preflight:${orderKey(secrets).publicKeyHex}`
     const state = emptyDaemonState()
     state.orders['order-preflight'] = {
@@ -1549,11 +1547,27 @@ test('DaemonSwapExecutor resends persisted buyer response and completion after r
 })
 
 function orderKey(secrets: DaemonSecrets): DaemonSecrets['orderEphemeralKeys'][string] {
+  return orderKeyFromPrivate(
+    secrets,
+    'order-1',
+    'cond-YES',
+    '11'.repeat(32),
+  )
+}
+
+function orderKeyFromPrivate(
+  secrets: DaemonSecrets,
+  orderId: string,
+  marketId: string,
+  privateKeyHex: string,
+): DaemonSecrets['orderEphemeralKeys'][string] {
+  const key = createECDH('secp256k1')
+  key.setPrivateKey(Buffer.from(privateKeyHex, 'hex'))
   return {
-    orderId: 'order-1',
-    marketId: 'cond-YES',
-    privateKeyHex: '11'.repeat(32),
-    publicKeyHex: `02${'11'.repeat(32)}`,
+    orderId,
+    marketId,
+    privateKeyHex,
+    publicKeyHex: key.getPublicKey('hex', 'compressed'),
     createdAt: secrets.createdAt,
   }
 }
@@ -1589,7 +1603,10 @@ async function waitForSwapStep(
   tradeId: string,
   step: string,
 ): Promise<DaemonState | null> {
-  const deadline = Date.now() + 500
+  // Let the unref'ed retry perform its identity-bound SQLite preflight before
+  // this observer starts opening competing read connections.
+  await new Promise((resolve) => setTimeout(resolve, 750))
+  const deadline = Date.now() + 3_000
   while (Date.now() < deadline) {
     const state = await readState()
     if (state?.swaps[tradeId]?.step === step) return state
@@ -1789,6 +1806,45 @@ function cashuProof(amount: number, secret: string): CashuProofRecord {
     secret,
     C: `c-${secret}`,
   }
+}
+
+async function bootstrapTestProfile(
+  profile: DaemonProfile,
+  secrets: DaemonSecrets,
+): Promise<void> {
+  await bootstrapFreshDaemonProfile({
+    directory: profileDir(),
+    engineBaseUrl: profile.engineBaseUrl,
+    mintUrl: profile.mintUrl,
+    walletSeedHex: secrets.walletSeedHex,
+    nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+    nostrPublicKeyHex: secrets.nostrPublicKeyHex,
+    initializedAtMs: Date.parse(profile.initializedAt),
+  })
+  pendingEphemeralSecrets = secrets
+}
+
+async function writeState(state: DaemonState): Promise<void> {
+  if (!(await profileDatabaseExists())) {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    await bootstrapTestProfile(
+      profileFromPublicKey(secrets.nostrPublicKeyHex),
+      secrets,
+    )
+  }
+  await writeBootstrappedState(state)
+  const pending = pendingEphemeralSecrets
+  if (pending === null) return
+  pendingEphemeralSecrets = null
+  await updateSecrets((secrets) => {
+    for (const [keyId, key] of Object.entries(pending.orderEphemeralKeys)) {
+      const order = state.orders[key.orderId]
+      secrets.orderEphemeralKeys[keyId] = {
+        ...structuredClone(key),
+        marketId: order?.marketId ?? key.marketId,
+      }
+    }
+  })
 }
 
 function newTestDaemonSwapExecutor(

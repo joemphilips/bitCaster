@@ -3,13 +3,16 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { profileDatabaseExists, profileDir } from '../src/profile.ts'
+import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import {
   emptyDaemonState,
   readState,
   recordSwapMessage,
   recordTradeCreated,
   recordTradeStateChanged,
-  writeState,
+  writeState as writeBootstrappedState,
+  type DaemonState,
 } from '../src/state.ts'
 
 test('TradeHub event records are durable swap state', async () => {
@@ -607,3 +610,16 @@ test('concurrent TradeHub events serialize daemon state writes', async () => {
     await rm(home, { recursive: true, force: true })
   }
 })
+
+async function writeState(state: DaemonState): Promise<void> {
+  if (!(await profileDatabaseExists())) {
+    await bootstrapFreshDaemonProfile({
+      directory: profileDir(),
+      engineBaseUrl: 'http://localhost:5000',
+      mintUrl: 'http://localhost:8085',
+      walletSeedHex: 'ab'.repeat(32),
+      nostrSecretKeyHex: '01'.padStart(64, '0'),
+    })
+  }
+  await writeBootstrappedState(state)
+}
