@@ -61,6 +61,8 @@ let globalJson = false
 let rootProgram: Command | undefined
 
 const DIRECT_ENGINE_READ_TIMEOUT_MS = 5_000
+const MAX_CASHU_TOKEN_FILE_BYTES = 4 * 1_024 * 1_024
+const TOKEN_FILE_READ_CHUNK_BYTES = 64 * 1_024
 
 await main()
 
@@ -1054,12 +1056,34 @@ async function readPrivateTokenFile(path: string): Promise<string> {
     if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0) {
       throw new Error('--token-file must not be accessible by group or other users')
     }
-    const token = (await file.readFile('utf8')).trim()
+    if (metadata.size > MAX_CASHU_TOKEN_FILE_BYTES) {
+      throw new Error(`--token-file exceeds ${MAX_CASHU_TOKEN_FILE_BYTES} bytes`)
+    }
+    const token = (await readBoundedFile(file)).toString('utf8').trim()
     if (!token) throw new Error('--token-file was empty')
     return token
   } finally {
     await file.close()
   }
+}
+
+async function readBoundedFile(
+  file: Awaited<ReturnType<typeof open>>,
+): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let total = 0
+  while (total <= MAX_CASHU_TOKEN_FILE_BYTES) {
+    const remaining = MAX_CASHU_TOKEN_FILE_BYTES + 1 - total
+    const buffer = Buffer.allocUnsafe(Math.min(TOKEN_FILE_READ_CHUNK_BYTES, remaining))
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, total)
+    if (bytesRead === 0) break
+    chunks.push(buffer.subarray(0, bytesRead))
+    total += bytesRead
+  }
+  if (total > MAX_CASHU_TOKEN_FILE_BYTES) {
+    throw new Error(`--token-file exceeds ${MAX_CASHU_TOKEN_FILE_BYTES} bytes`)
+  }
+  return Buffer.concat(chunks, total)
 }
 
 function errorMessage(value: unknown): string {
