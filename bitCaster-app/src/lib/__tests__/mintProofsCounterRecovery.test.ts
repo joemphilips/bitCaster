@@ -21,7 +21,7 @@
  *    are not swallowed by the recovery path.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Hoisted mocks — the cashu-ts wallet, the wallet store, and the proof DB
 // are all swapped out per-test via these handles.
@@ -159,7 +159,65 @@ beforeEach(() => {
   mocks.store.getWalletForUnit = mocks.getWallet
 })
 
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
 describe('recoverable external-token receive journal', () => {
+  it('persists mint-authenticated conditional metadata in the durable receive path', async () => {
+    const mintUrl = 'https://conditional-receive.mint'
+    const successors = [{
+      id: 'conditional-keyset',
+      amount: 7,
+      secret: 'conditional-output',
+      C: 'Cout',
+    }]
+    mocks.wallet.prepareSwapToReceive.mockImplementationOnce(
+      async (_token: string, config: { onCountersReserved?: (value: unknown) => void }) => {
+        config.onCountersReserved?.({
+          keysetId: 'conditional-keyset',
+          start: 3,
+          count: 1,
+          next: 4,
+        })
+        return {
+          inputs: [{ id: 'input', amount: 8, secret: 'in', C: 'Cin' }],
+          keysetId: 'conditional-keyset',
+          keepOutputs: [],
+        }
+      },
+    )
+    mocks.wallet.completeSwap.mockResolvedValueOnce({ keep: successors, send: [] })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        keysets: [{
+          id: 'conditional-keyset',
+          condition_id: 'condition-1',
+          outcome_collection: 'B',
+          outcome_collection_id: 'B',
+        }],
+      }),
+    }))
+
+    await cashu.receiveAndStoreTokenRecoverably(
+      'cashuB-token',
+      mintUrl,
+      'sat',
+      'sat',
+    )
+
+    expect(mocks.addProofs).toHaveBeenCalledWith([
+      expect.objectContaining({
+        secret: 'conditional-output',
+        mintUrl,
+        conditionId: 'condition-1',
+        outcomeCollection: 'B',
+        marketId: 'condition-1-B',
+      }),
+    ])
+  })
+
   it.each([
     ['sat', 'sat'],
     ['sat', 'msat'],

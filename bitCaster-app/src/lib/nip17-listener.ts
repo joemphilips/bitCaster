@@ -3,8 +3,6 @@ import { deriveNostrKeyPair, subscribeNip17DMs } from './nip17'
 import { encodeToken } from './cashu'
 import { ingressReceiveCashuToken } from './walletOps'
 import { normalizeUrl } from './url'
-import { normalizeMarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
-import { addProofs, type StoredProof } from '@/stores/proof-db'
 import { useActivityLogStore } from '@/stores/activity-log'
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 
@@ -64,14 +62,6 @@ async function handleIncomingDM(content: string): Promise<void> {
     const received = await ingressReceiveCashuToken(token, 'nip17', {
       mintUrl: normalizedMint,
     })
-    const unit = received.unit ?? 'sat'
-    const stored: StoredProof[] = received.proofs.map((p) => ({
-      ...p,
-      mintUrl: normalizedMint,
-      baseAsset: normalizeMarketBaseAsset(unit),
-      unit,
-    }))
-    await addProofs(stored)
 
     useActivityLogStore.getState().addActivity({
       type: 'deposit',

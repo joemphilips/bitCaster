@@ -19,7 +19,7 @@ import {
 
 vi.mock('@/lib/cashu', () => ({
   decodeToken: vi.fn(),
-  receiveToken: vi.fn(),
+  receiveAndStoreTokenRecoverably: vi.fn(),
 }))
 
 vi.mock('@/lib/nip17', () => ({
@@ -44,8 +44,8 @@ describe('walletOps facade', () => {
     removeMint = vi.fn()
     setActiveMint = vi.fn()
     vi.mocked(cashu.decodeToken).mockReset()
-    vi.mocked(cashu.receiveToken).mockReset()
-    vi.mocked(cashu.receiveToken).mockResolvedValue([
+    vi.mocked(cashu.receiveAndStoreTokenRecoverably).mockReset()
+    vi.mocked(cashu.receiveAndStoreTokenRecoverably).mockResolvedValue([
       { secret: 's1', amount: 21, id: 'kid', C: 'C1' },
       { secret: 's2', amount: 34, id: 'kid', C: 'C2' },
     ] as never)
@@ -100,12 +100,18 @@ describe('walletOps facade', () => {
   it('redeems ingress tokens under the issuing mint and reports the received amount', async () => {
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
       mint: 'https://unknown.mint/',
+      unit: 'sat',
       proofs: [],
     } as never)
 
     const result = await ingressReceiveCashuToken('cashuB-token', 'scan')
 
-    expect(cashu.receiveToken).toHaveBeenCalledWith('cashuB-token', 'https://unknown.mint', 'sat')
+    expect(cashu.receiveAndStoreTokenRecoverably).toHaveBeenCalledWith(
+      'cashuB-token',
+      'https://unknown.mint',
+      'sat',
+      'sat',
+    )
     expect(addMintWithoutActivating).toHaveBeenCalledWith('https://unknown.mint')
     expect(result).toMatchObject({
       added: true,
@@ -125,37 +131,47 @@ describe('walletOps facade', () => {
 
     const result = await ingressReceiveCashuToken('cashuB-usd-token', 'paste')
 
-    expect(cashu.receiveToken).toHaveBeenCalledWith('cashuB-usd-token', 'https://usd.mint', 'usd')
+    expect(cashu.receiveAndStoreTokenRecoverably).toHaveBeenCalledWith(
+      'cashuB-usd-token',
+      'https://usd.mint',
+      'usd',
+      'usd',
+    )
     expect(result).toMatchObject({
       unit: 'usd',
       mintUrl: 'https://usd.mint',
     })
   })
 
-  it('stamps received conditional proofs from the mint keyset registry', async () => {
+  it('returns conditional metadata persisted by the durable receiver', async () => {
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
       mint: 'https://conditional.mint/',
       unit: 'sat',
       proofs: [],
     } as never)
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          keysets: [{
-            id: 'kid',
-            condition_id: 'condition-1',
-            outcome_collection: 'B',
-            outcome_collection_id: 'B',
-          }],
-        }),
-      }),
-    )
+    vi.mocked(cashu.receiveAndStoreTokenRecoverably).mockResolvedValueOnce([
+      {
+        secret: 's1',
+        amount: 21,
+        id: 'kid',
+        C: 'C1',
+        conditionId: 'condition-1',
+        outcomeCollection: 'B',
+        marketId: 'condition-1-B',
+      },
+      {
+        secret: 's2',
+        amount: 34,
+        id: 'kid',
+        C: 'C2',
+        conditionId: 'condition-1',
+        outcomeCollection: 'B',
+        marketId: 'condition-1-B',
+      },
+    ] as never)
 
     const result = await ingressReceiveCashuToken('cashuB-conditional-token', 'paste')
 
-    expect(fetch).toHaveBeenCalledWith('https://conditional.mint/v1/conditional_keysets')
     expect(result.proofs).toEqual([
       expect.objectContaining({
         secret: 's1',
@@ -175,6 +191,7 @@ describe('walletOps facade', () => {
   it('does not re-register known ingress mints', async () => {
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
       mint: 'https://active.mint/',
+      unit: 'sat',
       proofs: [],
     } as never)
 
@@ -186,7 +203,25 @@ describe('walletOps facade', () => {
     expect(addMintWithoutActivating).not.toHaveBeenCalled()
     // decodeToken is always called to read the token's unit (NUT-00)
     expect(cashu.decodeToken).toHaveBeenCalledWith('token')
-    expect(cashu.receiveToken).toHaveBeenCalledWith('token', 'https://active.mint', 'sat')
+    expect(cashu.receiveAndStoreTokenRecoverably).toHaveBeenCalledWith(
+      'token',
+      'https://active.mint',
+      'sat',
+      'sat',
+    )
+  })
+
+  it('rejects decoded tokens whose unit is not supported', async () => {
+    vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+      mint: 'https://active.mint/',
+      unit: 'btc',
+      proofs: [],
+    } as never)
+
+    await expect(
+      ingressReceiveCashuToken('token', 'paste'),
+    ).rejects.toThrow("Unsupported Cashu proof unit 'btc'")
+    expect(cashu.receiveAndStoreTokenRecoverably).not.toHaveBeenCalled()
   })
 
   it('keeps read-only mint snapshots detached from store mutation', () => {

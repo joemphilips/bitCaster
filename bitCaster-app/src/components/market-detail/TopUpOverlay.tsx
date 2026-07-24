@@ -6,14 +6,16 @@ import { InvoiceDisplay } from '@/components/deposit-withdraw/InvoiceDisplay'
 import {
   createMintQuote,
   createMintQuoteForUnit,
-  decodeToken,
   mintProofs,
   mintProofsForUnit,
-  receiveAndStoreTokenRecoverably,
   waitForMintQuotePaid,
   waitForMintQuotePaidForUnit,
   type MintQuoteWaitResult,
 } from '@/lib/cashu'
+import {
+  decodeWalletIngressToken,
+  ingressReceiveCashuToken,
+} from '@/lib/walletOps'
 import { addProofs, type StoredProof } from '@/stores/proof-db'
 import { useWalletStore } from '@/stores/wallet'
 import type { MintQuoteResponse } from '@cashu/cashu-ts'
@@ -319,19 +321,16 @@ export function TopUpOverlay({
         baseAsset,
         proofUnit: proofUnitInput ?? undefined,
         deficit,
-        decodeToken,
+        decodeCashuToken: decodeWalletIngressToken,
       })
       if (!validation.ok) {
         setError(topUpPasteValidationErrorMessage(validation, t))
         return
       }
 
-      await receiveAndStoreTokenRecoverably(
-        trimmed,
-        validation.mintUrl,
-        validation.baseAsset,
-        validation.unit,
-      )
+      await ingressReceiveCashuToken(trimmed, 'paste', {
+        mintUrl: validation.mintUrl,
+      })
       if (!cancelledRef.current) onSuccessRef.current()
     } catch (e) {
       if (!cancelledRef.current) setError((e as Error).message)

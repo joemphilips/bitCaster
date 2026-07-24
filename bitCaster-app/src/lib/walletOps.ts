@@ -1,12 +1,15 @@
 import { PaymentRequest, PaymentRequestTransportType, type Proof } from '@cashu/cashu-ts'
-import { decodeToken, receiveToken } from '@/lib/cashu'
-import { proofsWithOptionalConditionalMetadata } from '@/lib/conditionalKeysetMetadata'
+import { decodeToken, receiveAndStoreTokenRecoverably } from '@/lib/cashu'
 import { deriveNostrKeyPair, getNostrNprofile } from '@/lib/nip17'
 import { normalizeUrl } from '@/lib/url'
 import { useSettingsStore } from '@/stores/settings'
 import { useWalletStore, type StoredMint } from '@/stores/wallet'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
-import { parseCashuProofUnit, type CashuProofUnit } from '@bitcaster/client-sdk/marketUnits'
+import {
+  normalizeMarketBaseAsset,
+  parseCashuProofUnit,
+  type CashuProofUnit,
+} from '@bitcaster/client-sdk/marketUnits'
 import { effectiveRelayUrls, isAllowedNostrRelayUrl, isKnownPublicNostrRelayUrl } from '@/lib/relayDefaults'
 
 export type WalletIngressSource = 'paste' | 'scan' | 'nip17'
@@ -124,24 +127,31 @@ export async function ingressReceiveCashuToken(
   // Always decode to read the token's unit field (NUT-00). The caller may
   // supply an explicit mintUrl override (e.g. from a payment-request context);
   // in that case the decoded mint URL is ignored but the unit is still used.
-  // Fall back to 'sat' for tokens that pre-date NUT-00 unit tagging.
   const decoded = await decodeToken(token)
   const mintUrl = options?.mintUrl
     ? normalizeUrl(options.mintUrl)
     : normalizeUrl(decoded.mint)
-  const unit = parseCashuProofUnit(decoded.unit) ?? 'sat'
+  const unit = parseCashuProofUnit(decoded.unit)
+  if (!unit) {
+    throw new Error(`Unsupported Cashu proof unit '${decoded.unit ?? ''}'`)
+  }
   const registration = await ingressRegisterMint(mintUrl, source)
-  const receivedProofs = await receiveToken(token, mintUrl, unit)
-  const proofs = await proofsWithOptionalConditionalMetadata({
+  const proofs = await receiveAndStoreTokenRecoverably(
+    token,
     mintUrl,
-    proofs: receivedProofs,
-  })
+    normalizeMarketBaseAsset(unit),
+    unit,
+  )
   return {
     ...registration,
     proofs,
     unit,
     amountSats: proofs.reduce((sum, p) => sum + amountToNumber(p.amount), 0),
   }
+}
+
+export async function decodeWalletIngressToken(token: string) {
+  return decodeToken(token)
 }
 
 export async function ingressDecodePaymentRequest(

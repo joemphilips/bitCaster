@@ -10,7 +10,6 @@ const mocks = vi.hoisted(() => {
   }
   return {
     walletState,
-    addProofsSpy: vi.fn(async (_proofs: unknown[]) => {}),
     addActivitySpy: vi.fn(),
     markReceivedSpy: vi.fn(),
     encodeToken: vi.fn(
@@ -34,10 +33,6 @@ vi.mock('@/stores/wallet', () => ({
   useWalletStore: {
     getState: () => mocks.walletState,
   },
-}))
-
-vi.mock('@/stores/proof-db', () => ({
-  addProofs: mocks.addProofsSpy,
 }))
 
 vi.mock('@/stores/activity-log', () => ({
@@ -78,7 +73,6 @@ beforeEach(() => {
   mocks.walletState.mints = []
   // Reset all hoisted spies but preserve their identity so the mock is
   // still wired to the listener module's imports.
-  mocks.addProofsSpy.mockClear()
   mocks.addActivitySpy.mockClear()
   mocks.markReceivedSpy.mockClear()
   mocks.encodeToken.mockClear()
@@ -88,7 +82,7 @@ beforeEach(() => {
 })
 
 describe('nip17-listener', () => {
-  it('normalizes payload mint URL and stores proofs under the canonical value', async () => {
+  it('normalizes the payload mint URL before durable wallet ingress', async () => {
     mocks.walletState.mints = [{ url: 'http://mint.example' }]
     mocks.ingressReceiveCashuToken.mockResolvedValueOnce({
       added: false,
@@ -119,17 +113,6 @@ describe('nip17-listener', () => {
       'nip17',
       { mintUrl: 'http://mint.example' },
     )
-    expect(mocks.addProofsSpy).toHaveBeenCalledTimes(1)
-    const stored = mocks.addProofsSpy.mock.calls[0][0] as {
-      mintUrl: string
-      conditionId?: string
-      outcomeCollection?: string
-      marketId?: string
-    }[]
-    expect(stored[0].mintUrl).toBe('http://mint.example')
-    expect(stored[0].conditionId).toBe('condition-1')
-    expect(stored[0].outcomeCollection).toBe('B')
-    expect(stored[0].marketId).toBe('condition-1-B')
     expect(mocks.markReceivedSpy).toHaveBeenCalledWith('req-1', 42)
   })
 
@@ -149,7 +132,6 @@ describe('nip17-listener', () => {
       'nip17',
       { mintUrl: 'http://new.mint' },
     )
-    expect(mocks.addProofsSpy).toHaveBeenCalledTimes(1)
     expect(mocks.markReceivedSpy).toHaveBeenCalledWith('req-2', 42)
   })
 
@@ -166,19 +148,19 @@ describe('nip17-listener', () => {
     await __handleIncomingDMForTests(body)
     await __handleIncomingDMForTests(body)
 
-    expect(mocks.addProofsSpy).toHaveBeenCalledTimes(1)
+    expect(mocks.ingressReceiveCashuToken).toHaveBeenCalledTimes(1)
     expect(mocks.markReceivedSpy).toHaveBeenCalledTimes(1)
   })
 
   it('silently ignores non-JSON content', async () => {
     await __handleIncomingDMForTests('hello world')
-    expect(mocks.addProofsSpy).not.toHaveBeenCalled()
+    expect(mocks.ingressReceiveCashuToken).not.toHaveBeenCalled()
     expect(mocks.markReceivedSpy).not.toHaveBeenCalled()
   })
 
   it('silently ignores JSON without proofs+mint', async () => {
     await __handleIncomingDMForTests(JSON.stringify({ id: 'x', message: 'hi' }))
-    expect(mocks.addProofsSpy).not.toHaveBeenCalled()
+    expect(mocks.ingressReceiveCashuToken).not.toHaveBeenCalled()
     expect(mocks.markReceivedSpy).not.toHaveBeenCalled()
   })
 })

@@ -10,8 +10,8 @@ const waitForMintQuotePaid = vi.fn()
 const waitForMintQuotePaidForUnit = vi.fn()
 const mintProofs = vi.fn()
 const mintProofsForUnit = vi.fn()
-const decodeToken = vi.fn()
-const receiveAndStoreTokenRecoverably = vi.fn()
+const decodeWalletIngressToken = vi.fn()
+const ingressReceiveCashuToken = vi.fn()
 const ensureImplicitWallet = vi.fn()
 const navigate = vi.fn()
 let walletBackupState: 'none' | 'needs_backup' | 'confirmed' = 'none'
@@ -28,9 +28,11 @@ vi.mock('@/lib/cashu', async (importOriginal) => ({
   waitForMintQuotePaidForUnit: (...args: unknown[]) => waitForMintQuotePaidForUnit(...args),
   mintProofs: (...args: unknown[]) => mintProofs(...args),
   mintProofsForUnit: (...args: unknown[]) => mintProofsForUnit(...args),
-  decodeToken: (...args: unknown[]) => decodeToken(...args),
-  receiveAndStoreTokenRecoverably: (...args: unknown[]) =>
-    receiveAndStoreTokenRecoverably(...args),
+}))
+
+vi.mock('@/lib/walletOps', () => ({
+  decodeWalletIngressToken: (...args: unknown[]) => decodeWalletIngressToken(...args),
+  ingressReceiveCashuToken: (...args: unknown[]) => ingressReceiveCashuToken(...args),
 }))
 
 vi.mock('@/stores/wallet', () => ({
@@ -56,16 +58,21 @@ describe('TopUpOverlay', () => {
     waitForMintQuotePaidForUnit.mockResolvedValue(() => undefined)
     mintProofs.mockReset()
     mintProofsForUnit.mockReset()
-    decodeToken.mockReset()
-    decodeToken.mockResolvedValue({
+    decodeWalletIngressToken.mockReset()
+    decodeWalletIngressToken.mockResolvedValue({
       mint: 'https://mint.example',
       unit: 'msat',
       proofs: [{ id: 'keyset-msat', amount: 15_000, secret: 'incoming', C: 'incoming-c' }],
     })
-    receiveAndStoreTokenRecoverably.mockReset()
-    receiveAndStoreTokenRecoverably.mockResolvedValue([
-      { id: 'keyset-msat', amount: 15_000, secret: 'received', C: 'received-c' },
-    ])
+    ingressReceiveCashuToken.mockReset()
+    ingressReceiveCashuToken.mockResolvedValue({
+      added: false,
+      mintUrl: 'https://mint.example',
+      source: 'paste',
+      unit: 'msat',
+      amountSats: 15_000,
+      proofs: [{ id: 'keyset-msat', amount: 15_000, secret: 'received', C: 'received-c' }],
+    })
     ensureImplicitWallet.mockReset()
     ensureImplicitWallet.mockResolvedValue(undefined)
     navigate.mockReset()
@@ -207,13 +214,12 @@ describe('TopUpOverlay', () => {
     await user.click(screen.getByTestId('top-up-ecash-submit'))
 
     await waitFor(() => {
-      expect(decodeToken).toHaveBeenCalledWith('cashuB-token')
+      expect(decodeWalletIngressToken).toHaveBeenCalledWith('cashuB-token')
     })
-    expect(receiveAndStoreTokenRecoverably).toHaveBeenCalledWith(
+    expect(ingressReceiveCashuToken).toHaveBeenCalledWith(
       'cashuB-token',
-      'https://mint.example',
-      'sat',
-      'msat',
+      'paste',
+      { mintUrl: 'https://mint.example' },
     )
     await waitFor(() => {
       expect(onSuccess).toHaveBeenCalledTimes(1)

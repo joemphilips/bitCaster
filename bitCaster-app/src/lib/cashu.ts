@@ -54,6 +54,7 @@ import {
   type CashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
+import { proofsWithOptionalConditionalMetadata } from "@/lib/conditionalKeysetMetadata";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -655,7 +656,11 @@ export async function receiveAndStoreTokenRecoverably(
   });
 
   const { keep } = await wallet.completeSwap(preview);
-  const stored = keep.map((proof) => ({
+  const enrichedProofs = await proofsWithOptionalConditionalMetadata({
+    mintUrl: normalizedMintUrl,
+    proofs: keep,
+  });
+  const stored = enrichedProofs.map((proof) => ({
     ...proof,
     mintUrl: normalizedMintUrl,
     baseAsset: normalizedBaseAsset,
@@ -701,8 +706,12 @@ export async function recoverPendingTokenReceives(): Promise<void> {
       if (restored.proofs.length > 0) {
         const states = await wallet.groupProofsByState(restored.proofs);
         if (states.unspent.length > 0) {
+          const enrichedProofs = await proofsWithOptionalConditionalMetadata({
+            mintUrl: operation.mintUrl,
+            proofs: states.unspent,
+          });
           await addProofs(
-            states.unspent.map((proof) => ({
+            enrichedProofs.map((proof) => ({
               ...proof,
               mintUrl: operation.mintUrl,
               baseAsset,

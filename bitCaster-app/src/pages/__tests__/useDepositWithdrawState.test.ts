@@ -424,10 +424,8 @@ describe('useDepositWithdrawState', () => {
   })
 
   describe('onPaste — ecash from unknown mint', () => {
-    it('routes redemption through walletOps and stores the returned proofs', async () => {
+    it('routes durable redemption and storage through walletOps', async () => {
       const walletOps = await import('@/lib/walletOps')
-      const proofDb = await import('@/stores/proof-db')
-      vi.mocked(proofDb.addProofs).mockClear()
       vi.mocked(walletOps.ingressReceiveCashuToken).mockResolvedValueOnce({
         added: true,
         mintUrl: 'https://testnut.cashu.space',
@@ -463,21 +461,10 @@ describe('useDepositWithdrawState', () => {
       expect(result.current.currentView).toBe('success')
       expect(result.current.successAmount).toBe(50)
       expect(result.current.error).toBeNull()
-      expect(proofDb.addProofs).toHaveBeenCalledWith([
-        expect.objectContaining({
-          mintUrl: 'https://testnut.cashu.space',
-          baseAsset: 'sat',
-          conditionId: 'condition-1',
-          outcomeCollection: 'B',
-          marketId: 'condition-1-B',
-        }),
-      ])
     })
 
-    it('stores a USD token under the usd asset silo and records activity as usd', async () => {
+    it('reports the durable receiver unit in the success state', async () => {
       const walletOps = await import('@/lib/walletOps')
-      const proofDb = await import('@/stores/proof-db')
-      vi.mocked(proofDb.addProofs).mockClear()
       vi.mocked(walletOps.ingressReceiveCashuToken).mockResolvedValueOnce({
         added: false,
         mintUrl: 'https://usd.mint',
@@ -495,11 +482,6 @@ describe('useDepositWithdrawState', () => {
       act(() => result.current.onSelectMethod('ecash'))
       await act(async () => { await result.current.onPaste() })
 
-      // The proof must land in the usd silo, not sat
-      expect(proofDb.addProofs).toHaveBeenCalledWith([
-        expect.objectContaining({ baseAsset: 'usd' }),
-      ])
-      // Success state must reflect the token's unit
       expect(result.current.successUnit).toBe('usd')
     })
 

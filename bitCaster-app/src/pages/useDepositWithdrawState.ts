@@ -465,13 +465,6 @@ export function useDepositWithdrawState(
         toastNewMintIfAdded(received)
         const receivedUnit = requireCashuProofUnit(received.unit)
         const receivedBaseAsset = normalizeMarketBaseAsset(receivedUnit)
-        const stored: StoredProof[] = received.proofs.map((p) => ({
-          ...p,
-          mintUrl: received.mintUrl,
-          baseAsset: receivedBaseAsset,
-          unit: receivedUnit,
-        }))
-        await addProofs(stored)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
           baseAsset: receivedBaseAsset,
@@ -592,13 +585,6 @@ export function useDepositWithdrawState(
         toastNewMintIfAdded(received)
         const receivedUnit = requireCashuProofUnit(received.unit)
         const receivedBaseAsset = normalizeMarketBaseAsset(receivedUnit)
-        const stored: StoredProof[] = received.proofs.map((p) => ({
-          ...p,
-          mintUrl: received.mintUrl,
-          baseAsset: receivedBaseAsset,
-          unit: receivedUnit,
-        }))
-        await addProofs(stored)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
           baseAsset: receivedBaseAsset,

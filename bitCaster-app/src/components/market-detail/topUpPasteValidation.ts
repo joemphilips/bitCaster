@@ -49,7 +49,7 @@ export async function validateTopUpEcashToken(
     baseAsset: MarketBaseAsset | string | null | undefined
     proofUnit?: CashuProofUnit | null
     deficit: number
-    decodeToken: DecodeCashuToken
+    decodeCashuToken: DecodeCashuToken
   },
 ): Promise<TopUpPasteValidationResult> {
   const trimmed = tokenText.trim()
@@ -63,7 +63,7 @@ export async function validateTopUpEcashToken(
 
   let token: Token
   try {
-    token = await params.decodeToken(trimmed)
+    token = await params.decodeCashuToken(trimmed)
   } catch {
     return { ok: false, code: 'decode_failed' }
   }
