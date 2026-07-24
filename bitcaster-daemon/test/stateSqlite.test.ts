@@ -164,6 +164,66 @@ test('ensureState initializes once without queue deadlock and survives restart',
   })
 })
 
+test('state persistence clamps wall-clock regressions at creation time', async () => {
+  await withProfile(async () => {
+    const state = emptyDaemonState()
+    state.wallet.proofs.push({
+      proof: { amount: 1, secret: 'proof-secret', C: 'proof-signature' },
+      mintUrl: 'http://localhost:8086',
+      state: 'available',
+      asset: { kind: 'sats', baseAsset: 'sat' },
+      createdAt: '2026-01-01T00:00:01.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+    state.proofOperations['operation-1'] = {
+      operationId: 'operation-1',
+      kind: 'wallet-send',
+      state: 'prepared',
+      mintUrl: 'http://localhost:8086',
+      inputs: [],
+      outputs: {},
+      metadata: {},
+      lastError: null,
+      createdAt: 1_700_000_001_000,
+      updatedAt: 1_700_000_000_000,
+    }
+    state.orders['order-1'] = {
+      orderId: 'order-1',
+      marketId: 'condition-1-YES',
+      status: 'resting',
+      tradeIds: [],
+      createdAt: '2026-01-01T00:00:01.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }
+    state.swaps['trade-1'] = {
+      tradeId: 'trade-1',
+      messages: {},
+      step: 'awaiting-trade-created',
+      createdAt: '2026-01-01T00:00:01.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }
+
+    await writeState(state)
+    state.orders['order-1'].createdAt = '2025-01-01T00:00:01.000Z'
+    state.orders['order-1'].updatedAt = '2025-01-01T00:00:01.000Z'
+    state.swaps['trade-1'].createdAt = '2025-01-01T00:00:01.000Z'
+    state.swaps['trade-1'].updatedAt = '2025-01-01T00:00:01.000Z'
+    await writeState(state)
+    const restored = await readState()
+
+    assert.equal(
+      restored?.wallet.proofs[0].updatedAt,
+      restored?.wallet.proofs[0].createdAt,
+    )
+    assert.equal(
+      restored?.proofOperations['operation-1'].updatedAt,
+      restored?.proofOperations['operation-1'].createdAt,
+    )
+    assert.equal(restored?.orders['order-1'].updatedAt, restored?.orders['order-1'].createdAt)
+    assert.equal(restored?.swaps['trade-1'].updatedAt, restored?.swaps['trade-1'].createdAt)
+  })
+})
+
 test('order upsert preserves its immutable ephemeral key binding', async () => {
   await withProfile(async () => {
     const state = emptyDaemonState()

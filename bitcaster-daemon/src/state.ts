@@ -1132,6 +1132,10 @@ function insertWalletProof(
     .update(proof.secret)
     .digest('hex')
   const asset = normalizeProofAsset(record.asset)
+  const timestamps = monotonicTimestamps(
+    isoToTimestamp(record.createdAt, 'proof created time'),
+    isoToTimestamp(record.updatedAt, 'proof updated time'),
+  )
   database
     .prepare(
       `INSERT INTO target_wallet_proofs (
@@ -1155,8 +1159,8 @@ function insertWalletProof(
       asset.kind === 'Outcome' ? asset.conditionId : null,
       asset.kind === 'Outcome' ? asset.outcomeSetId : null,
       normalizeProofAssetBaseAsset(asset),
-      isoToTimestamp(record.createdAt, 'proof created time'),
-      isoToTimestamp(record.updatedAt, 'proof updated time'),
+      timestamps.createdAt,
+      timestamps.updatedAt,
     )
 }
 
@@ -1178,6 +1182,10 @@ function insertProofOperation(
     (sum, proof) => sum + amountToNumber(proof.amount),
     0,
   )
+  const timestamps = monotonicTimestamps(
+    operation.createdAt,
+    operation.updatedAt,
+  )
   database
     .prepare(
       `INSERT INTO target_proof_operations (
@@ -1198,8 +1206,8 @@ function insertProofOperation(
       operation.inputs.length,
       inputAmount,
       operation.lastError ?? null,
-      operation.createdAt,
-      operation.updatedAt,
+      timestamps.createdAt,
+      timestamps.updatedAt,
     )
 }
 
@@ -1207,6 +1215,10 @@ function insertOrder(database: DatabaseSync, scopeId: string, order: LocalOrderR
   const preflight = order.preflightSplit
   const hasEngineStatus =
     Object.hasOwn(order, 'engineStatus') && order.engineStatus !== undefined
+  const timestamps = monotonicTimestamps(
+    isoToTimestamp(order.createdAt, 'order created time'),
+    isoToTimestamp(order.updatedAt, 'order updated time'),
+  )
   database
     .prepare(
       `INSERT INTO daemon_orders (
@@ -1236,7 +1248,7 @@ function insertOrder(database: DatabaseSync, scopeId: string, order: LocalOrderR
          divisibility = excluded.divisibility,
          engine_status_present = excluded.engine_status_present,
          engine_status_body = excluded.engine_status_body,
-         updated_at_ms = excluded.updated_at_ms
+         updated_at_ms = MAX(excluded.updated_at_ms, daemon_orders.created_at_ms)
        WHERE daemon_orders.scope_id = excluded.scope_id`,
     )
     .run(
@@ -1259,8 +1271,8 @@ function insertOrder(database: DatabaseSync, scopeId: string, order: LocalOrderR
       order.divisibility ?? null,
       hasEngineStatus ? 1 : 0,
       hasEngineStatus ? encodeArtifact(order.engineStatus) : null,
-      isoToTimestamp(order.createdAt, 'order created time'),
-      isoToTimestamp(order.updatedAt, 'order updated time'),
+      timestamps.createdAt,
+      timestamps.updatedAt,
     )
   order.tradeIds.forEach((tradeId, position) => {
     database
@@ -1285,6 +1297,10 @@ function insertSwap(database: DatabaseSync, scopeId: string, swap: LocalSwapReco
     sellerPreSigs: putOptionalArtifact(database, scopeId, 'seller-pre-signatures', swap.sellerPreSigsHex),
     failure: putOptionalArtifact(database, scopeId, 'failure', swap.failure),
   }
+  const timestamps = monotonicTimestamps(
+    isoToTimestamp(swap.createdAt, 'swap created time'),
+    isoToTimestamp(swap.updatedAt, 'swap updated time'),
+  )
   database
     .prepare(
       `INSERT INTO daemon_swaps (
@@ -1334,7 +1350,7 @@ function insertSwap(database: DatabaseSync, scopeId: string, swap: LocalSwapReco
          seller_pre_sigs_artifact_id = excluded.seller_pre_sigs_artifact_id,
          failure_artifact_id = excluded.failure_artifact_id,
          error = excluded.error,
-         updated_at_ms = excluded.updated_at_ms
+         updated_at_ms = MAX(excluded.updated_at_ms, daemon_swaps.created_at_ms)
        WHERE daemon_swaps.scope_id = excluded.scope_id`,
     )
     .run(
@@ -1369,8 +1385,8 @@ function insertSwap(database: DatabaseSync, scopeId: string, swap: LocalSwapReco
       artifacts.sellerPreSigs,
       artifacts.failure,
       swap.error ?? null,
-      isoToTimestamp(swap.createdAt, 'swap created time'),
-      isoToTimestamp(swap.updatedAt, 'swap updated time'),
+      timestamps.createdAt,
+      timestamps.updatedAt,
     )
 }
 
@@ -2100,6 +2116,22 @@ function isoToTimestamp(value: string, label: string): number {
     throw new Error(`${label} is invalid`)
   }
   return timestamp
+}
+
+function monotonicTimestamps(
+  createdAt: number,
+  updatedAt: number,
+): { createdAt: number; updatedAt: number } {
+  if (!Number.isSafeInteger(createdAt) || createdAt < 0) {
+    throw new Error('created timestamp is invalid')
+  }
+  if (!Number.isSafeInteger(updatedAt) || updatedAt < 0) {
+    throw new Error('updated timestamp is invalid')
+  }
+  return {
+    createdAt,
+    updatedAt: Math.max(createdAt, updatedAt),
+  }
 }
 
 function timestampToIso(value: unknown, label: string): string {
