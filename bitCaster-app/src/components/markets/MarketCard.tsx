@@ -3,6 +3,7 @@ import { Droplet, TrendingUp, ChevronUp, ChevronDown, Heart, ChevronRight } from
 import { useTranslation } from 'react-i18next'
 import { getMarketThumbnail } from '@/lib/markets'
 import { useBookmarkStore } from '@/stores/bookmarks'
+import { useMarketState } from '@/hooks/useMarketState'
 import { formatMarketSubunits, formatPricePercentage } from '@bitcaster/client-sdk/marketUnits'
 import type {
   Market,
@@ -227,6 +228,7 @@ export function MarketCard({
   const [isSecondaryExpanded, setIsSecondaryExpanded] = useState(false)
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id))
   const toggleBookmark = useBookmarkStore((s) => s.toggle)
+  const marketState = useMarketState(market.state)
 
   const handleCardClick = (e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('a')) return
@@ -286,7 +288,7 @@ export function MarketCard({
   }
 
   const renderNormalView = () => {
-    if (market.state === 'closed') return renderClosedView()
+    if (marketState === 'Closed') return renderClosedView()
 
     if (market.type === 'yesno') {
       const yesNoMarket = market as YesNoMarket
