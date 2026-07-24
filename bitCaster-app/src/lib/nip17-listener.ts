@@ -3,6 +3,7 @@ import { deriveNostrKeyPair, subscribeNip17DMs } from './nip17'
 import { encodeToken } from './cashu'
 import { ingressReceiveCashuToken } from './walletOps'
 import { normalizeUrl } from './url'
+import { parseCashuProofUnit } from '@bitcaster/client-sdk/marketUnits'
 import { useActivityLogStore } from '@/stores/activity-log'
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 
@@ -58,19 +59,28 @@ async function handleIncomingDM(content: string): Promise<void> {
   const normalizedMint = normalizeUrl(payload.mint)
 
   try {
-    const token = encodeToken(payload.proofs, normalizedMint)
+    const unit = parseCashuProofUnit(payload.unit)
+    if (!unit) {
+      throw new Error(`Unsupported Cashu proof unit '${payload.unit ?? ''}'`)
+    }
+    const token = encodeToken(payload.proofs, normalizedMint, unit)
     const received = await ingressReceiveCashuToken(token, 'nip17', {
       mintUrl: normalizedMint,
     })
 
     useActivityLogStore.getState().addActivity({
       type: 'deposit',
-      amountSats: received.amountSats,
+      amountSats: received.amountSubunits,
+      baseAsset: received.baseAsset,
       status: 'completed',
     })
 
     if (payload.id) {
-      usePaymentRequestInbox.getState().markReceived(payload.id, received.amountSats)
+      usePaymentRequestInbox.getState().markReceived(
+        payload.id,
+        received.amountSubunits,
+        received.baseAsset,
+      )
     }
   } catch (e) {
     console.warn(

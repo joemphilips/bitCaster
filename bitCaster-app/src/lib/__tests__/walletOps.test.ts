@@ -115,7 +115,8 @@ describe('walletOps facade', () => {
     expect(addMintWithoutActivating).toHaveBeenCalledWith('https://unknown.mint')
     expect(result).toMatchObject({
       added: true,
-      amountSats: 55,
+      amountSubunits: 55_000,
+      baseAsset: 'sat',
       unit: 'sat',
       mintUrl: 'https://unknown.mint',
       source: 'scan',
@@ -138,8 +139,26 @@ describe('walletOps facade', () => {
       'usd',
     )
     expect(result).toMatchObject({
+      amountSubunits: 55,
+      baseAsset: 'usd',
       unit: 'usd',
       mintUrl: 'https://usd.mint',
+    })
+  })
+
+  it('keeps msat proof amounts in sat-market subunits', async () => {
+    vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+      mint: 'https://msat.mint/',
+      unit: 'msat',
+      proofs: [],
+    } as never)
+
+    const result = await ingressReceiveCashuToken('cashuB-msat-token', 'paste')
+
+    expect(result).toMatchObject({
+      amountSubunits: 55,
+      baseAsset: 'sat',
+      unit: 'msat',
     })
   })
 

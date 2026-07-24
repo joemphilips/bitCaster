@@ -6,9 +6,11 @@ import { useSettingsStore } from '@/stores/settings'
 import { useWalletStore, type StoredMint } from '@/stores/wallet'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 import {
+  cashuAmountToMarketSubunits,
   normalizeMarketBaseAsset,
   parseCashuProofUnit,
   type CashuProofUnit,
+  type MarketBaseAsset,
 } from '@bitcaster/client-sdk/marketUnits'
 import { effectiveRelayUrls, isAllowedNostrRelayUrl, isKnownPublicNostrRelayUrl } from '@/lib/relayDefaults'
 
@@ -21,7 +23,8 @@ export interface IngressMintRegistrationResult {
 }
 
 export interface IngressReceiveCashuTokenResult extends IngressMintRegistrationResult {
-  amountSats: number
+  amountSubunits: number
+  baseAsset: MarketBaseAsset
   unit: CashuProofUnit
   proofs: Proof[]
 }
@@ -135,23 +138,36 @@ export async function ingressReceiveCashuToken(
   if (!unit) {
     throw new Error(`Unsupported Cashu proof unit '${decoded.unit ?? ''}'`)
   }
+  const baseAsset = normalizeMarketBaseAsset(unit)
   const registration = await ingressRegisterMint(mintUrl, source)
   const proofs = await receiveAndStoreTokenRecoverably(
     token,
     mintUrl,
-    normalizeMarketBaseAsset(unit),
+    baseAsset,
     unit,
   )
   return {
     ...registration,
     proofs,
     unit,
-    amountSats: proofs.reduce((sum, p) => sum + amountToNumber(p.amount), 0),
+    baseAsset,
+    amountSubunits: sumProofSubunits(proofs, unit),
   }
 }
 
 export async function decodeWalletIngressToken(token: string) {
   return decodeToken(token)
+}
+
+function sumProofSubunits(proofs: Proof[], unit: CashuProofUnit): number {
+  let total = 0
+  for (const proof of proofs) {
+    total += cashuAmountToMarketSubunits(amountToNumber(proof.amount), unit)
+    if (!Number.isSafeInteger(total)) {
+      throw new Error(`Received Cashu amount exceeds safe integer range for ${unit}`)
+    }
+  }
+  return total
 }
 
 export async function ingressDecodePaymentRequest(

@@ -82,6 +82,22 @@ export function collateralScaleForUnit(
   return info.scale
 }
 
+export function cashuAmountToMarketSubunits(
+  amount: number,
+  unit: CashuProofUnit | string,
+): number {
+  const normalized = parseCashuProofUnit(unit)
+  if (!normalized) throw new Error(`unsupported Cashu proof unit: ${unit}`)
+  if (!Number.isSafeInteger(amount) || amount < 0) {
+    throw new Error(`Cashu proof amount must be a non-negative safe integer: ${amount}`)
+  }
+  const result = normalized === 'sat' ? amount * 1_000 : amount
+  if (!Number.isSafeInteger(result)) {
+    throw new Error(`Cashu proof amount exceeds safe market subunit range: ${amount} ${normalized}`)
+  }
+  return result
+}
+
 export function isCollateralUnitOf(
   unit: string | null | undefined,
   baseAsset: string | null | undefined,

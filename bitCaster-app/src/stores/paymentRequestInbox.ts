@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
 
 /**
  * A received payment keyed by the originating PaymentRequest id.
@@ -9,23 +10,24 @@ import { create } from 'zustand'
  */
 export interface InboxEntry {
   id: string
-  amountSats: number
+  amountSubunits: number
+  baseAsset: MarketBaseAsset
   receivedAt: number
 }
 
 interface InboxState {
   entries: Record<string, InboxEntry>
-  markReceived: (id: string, amountSats: number) => void
+  markReceived: (id: string, amountSubunits: number, baseAsset: MarketBaseAsset) => void
   clear: (id: string) => void
 }
 
 export const usePaymentRequestInbox = create<InboxState>((set) => ({
   entries: {},
-  markReceived: (id, amountSats) =>
+  markReceived: (id, amountSubunits, baseAsset) =>
     set((s) => ({
       entries: {
         ...s.entries,
-        [id]: { id, amountSats, receivedAt: Date.now() },
+        [id]: { id, amountSubunits, baseAsset, receivedAt: Date.now() },
       },
     })),
   clear: (id) =>

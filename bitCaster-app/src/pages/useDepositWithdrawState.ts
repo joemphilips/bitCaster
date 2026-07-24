@@ -270,8 +270,8 @@ export function useDepositWithdrawState(
   useEffect(() => {
     if (!pendingRequestId || !inboxEntry) return
     setPaymentRequestStatus('received')
-    setSuccessAmount(inboxEntry.amountSats)
-    setSuccessUnit('sat')
+    setSuccessAmount(inboxEntry.amountSubunits)
+    setSuccessUnit(inboxEntry.baseAsset)
     const handle = setTimeout(() => {
       usePaymentRequestInbox.getState().clear(pendingRequestId)
       setPendingRequestId(null)
@@ -468,11 +468,11 @@ export function useDepositWithdrawState(
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
           baseAsset: receivedBaseAsset,
-          amountSats: received.amountSats,
+          amountSats: received.amountSubunits,
           status: 'completed',
         })
         setIsLoading(false)
-        setSuccessAmount(received.amountSats)
+        setSuccessAmount(received.amountSubunits)
         setSuccessUnit(receivedBaseAsset)
         setCurrentView('success')
       } else if (currentView === 'pay-lightning') {
@@ -588,10 +588,10 @@ export function useDepositWithdrawState(
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
           baseAsset: receivedBaseAsset,
-          amountSats: received.amountSats,
+          amountSats: received.amountSubunits,
           status: 'completed',
         })
-        setSuccessAmount(received.amountSats)
+        setSuccessAmount(received.amountSubunits)
         setSuccessUnit(receivedBaseAsset)
         setCurrentView('success')
       } catch (e) {

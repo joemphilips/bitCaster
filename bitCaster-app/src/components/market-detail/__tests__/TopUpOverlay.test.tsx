@@ -70,7 +70,8 @@ describe('TopUpOverlay', () => {
       mintUrl: 'https://mint.example',
       source: 'paste',
       unit: 'msat',
-      amountSats: 15_000,
+      amountSubunits: 15_000,
+      baseAsset: 'sat',
       proofs: [{ id: 'keyset-msat', amount: 15_000, secret: 'received', C: 'received-c' }],
     })
     ensureImplicitWallet.mockReset()

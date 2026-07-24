@@ -2,6 +2,7 @@ import type { Token } from '@cashu/cashu-ts'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 import {
   COLLATERAL_UNIT_REGISTRY,
+  cashuAmountToMarketSubunits,
   formatAmount,
   marketUnitLabel,
   normalizeMarketBaseAsset,
@@ -116,7 +117,7 @@ export async function validateTopUpEcashToken(
   const tokenAmountSubunits = token.proofs.reduce(
     (sum, proof) => {
       const amount = amountToNumber(proof.amount)
-      return sum + (params.proofUnit ? amount : tokenProofAmountToMarketSubunits(amount, unit))
+      return sum + (params.proofUnit ? amount : cashuAmountToMarketSubunits(amount, unit))
     },
     0,
   )
@@ -139,9 +140,4 @@ export async function validateTopUpEcashToken(
     baseAsset: expectedBaseAsset,
     tokenAmountSubunits,
   }
-}
-
-function tokenProofAmountToMarketSubunits(amount: number, unit: CashuProofUnit): number {
-  if (unit === 'sat') return amount * 1000
-  return amount
 }

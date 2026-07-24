@@ -6,6 +6,7 @@ import {
   DEFAULT_USD_MARKET_DIVISIBILITY,
   bufferSubunits,
   collateralScaleForUnit,
+  cashuAmountToMarketSubunits,
   defaultMarketDivisibility,
   defaultCollateralUnit,
   estimatedSettlementFeeSubunits,
@@ -81,6 +82,15 @@ test('collateralScaleForUnit produces physically correct conversions', () => {
   assert.equal(100 * collateralScaleForUnit('msat'), 100_000)
   // 1 USD base amount in cents stays 1
   assert.equal(1 * collateralScaleForUnit('usd'), 1)
+})
+
+test('cashuAmountToMarketSubunits normalizes supported proof units', () => {
+  assert.equal(cashuAmountToMarketSubunits(21, 'sat'), 21_000)
+  assert.equal(cashuAmountToMarketSubunits(21_000, 'msat'), 21_000)
+  assert.equal(cashuAmountToMarketSubunits(21, 'usd'), 21)
+  assert.throws(() => cashuAmountToMarketSubunits(1, 'btc'))
+  assert.throws(() => cashuAmountToMarketSubunits(-1, 'sat'))
+  assert.throws(() => cashuAmountToMarketSubunits(Number.MAX_SAFE_INTEGER, 'sat'))
 })
 
 test('formats system market display units', () => {

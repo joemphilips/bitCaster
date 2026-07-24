@@ -13,17 +13,16 @@ const mocks = vi.hoisted(() => {
     addActivitySpy: vi.fn(),
     markReceivedSpy: vi.fn(),
     encodeToken: vi.fn(
-      (proofs: unknown[], mintUrl: string) =>
-        `token:${mintUrl}:${(proofs as { amount: number }[]).reduce((s, p) => s + p.amount, 0)}`
+      (proofs: unknown[], mintUrl: string, unit: string) =>
+        `token:${mintUrl}:${unit}:${(proofs as { amount: number }[]).reduce((s, p) => s + p.amount, 0)}`
     ),
-    receiveToken: vi.fn(async (_token: string, _mintUrl: string) => [
-      { secret: 'rotated-1', amount: 42, id: 'kid', C: 'C' },
-    ]),
     ingressReceiveCashuToken: vi.fn(async (_token: string, _source: string, options?: { mintUrl?: string }) => ({
       added: !walletState.mints.some((m) => m.url === options?.mintUrl),
       mintUrl: options?.mintUrl ?? 'http://mint.example',
       source: 'nip17',
-      amountSats: 42,
+      amountSubunits: 42_000,
+      baseAsset: 'sat',
+      unit: 'sat',
       proofs: [{ secret: 'rotated-1', amount: 42, id: 'kid', C: 'C' }],
     })),
   }
@@ -76,7 +75,6 @@ beforeEach(() => {
   mocks.addActivitySpy.mockClear()
   mocks.markReceivedSpy.mockClear()
   mocks.encodeToken.mockClear()
-  mocks.receiveToken.mockClear()
   mocks.ingressReceiveCashuToken.mockClear()
   __resetProcessedEventsForTests()
 })
@@ -88,7 +86,9 @@ describe('nip17-listener', () => {
       added: false,
       mintUrl: 'http://mint.example',
       source: 'nip17',
-      amountSats: 42,
+      amountSubunits: 42_000,
+      baseAsset: 'sat',
+      unit: 'sat',
       proofs: [{
         secret: 'rotated-1',
         amount: 42,
@@ -109,11 +109,16 @@ describe('nip17-listener', () => {
     await __handleIncomingDMForTests(JSON.stringify(payload))
 
     expect(mocks.ingressReceiveCashuToken).toHaveBeenCalledWith(
-      'token:http://mint.example:42',
+      'token:http://mint.example:sat:42',
       'nip17',
       { mintUrl: 'http://mint.example' },
     )
-    expect(mocks.markReceivedSpy).toHaveBeenCalledWith('req-1', 42)
+    expect(mocks.encodeToken).toHaveBeenCalledWith(
+      payload.proofs,
+      'http://mint.example',
+      'sat',
+    )
+    expect(mocks.markReceivedSpy).toHaveBeenCalledWith('req-1', 42_000, 'sat')
   })
 
   it('auto-adds the mint when the payer uses a previously unconfigured one', async () => {
@@ -128,11 +133,58 @@ describe('nip17-listener', () => {
     await __handleIncomingDMForTests(JSON.stringify(payload))
 
     expect(mocks.ingressReceiveCashuToken).toHaveBeenCalledWith(
-      'token:http://new.mint:10',
+      'token:http://new.mint:sat:10',
       'nip17',
       { mintUrl: 'http://new.mint' },
     )
-    expect(mocks.markReceivedSpy).toHaveBeenCalledWith('req-2', 42)
+    expect(mocks.markReceivedSpy).toHaveBeenCalledWith('req-2', 42_000, 'sat')
+  })
+
+  it.each([
+    ['msat', 'sat'],
+    ['usd', 'usd'],
+  ] as const)('preserves the %s payload unit through durable ingress', async (unit, baseAsset) => {
+    mocks.ingressReceiveCashuToken.mockResolvedValueOnce({
+      added: false,
+      mintUrl: 'http://mint.example',
+      source: 'nip17',
+      amountSubunits: 42,
+      baseAsset,
+      unit,
+      proofs: [{ secret: 'rotated-1', amount: 42, id: 'kid', C: 'C' }],
+    })
+    const payload = {
+      id: `req-${unit}`,
+      mint: 'http://mint.example',
+      unit,
+      proofs: [{ secret: `s-${unit}`, amount: 42, id: 'kid', C: 'C' }],
+    }
+
+    await __handleIncomingDMForTests(JSON.stringify(payload))
+
+    expect(mocks.encodeToken).toHaveBeenCalledWith(
+      payload.proofs,
+      'http://mint.example',
+      unit,
+    )
+    expect(mocks.markReceivedSpy).toHaveBeenCalledWith(
+      `req-${unit}`,
+      42,
+      baseAsset,
+    )
+  })
+
+  it('rejects payloads with unsupported proof units before ingress', async () => {
+    await __handleIncomingDMForTests(JSON.stringify({
+      id: 'req-invalid',
+      mint: 'http://mint.example',
+      unit: 'btc',
+      proofs: [{ secret: 'invalid', amount: 1, id: 'kid', C: 'C' }],
+    }))
+
+    expect(mocks.encodeToken).not.toHaveBeenCalled()
+    expect(mocks.ingressReceiveCashuToken).not.toHaveBeenCalled()
+    expect(mocks.markReceivedSpy).not.toHaveBeenCalled()
   })
 
   it('dedups repeated DMs carrying the same payment payload', async () => {

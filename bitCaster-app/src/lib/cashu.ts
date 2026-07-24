@@ -19,7 +19,6 @@ import {
   type MeltQuoteResponse,
   type PartialMintQuoteResponse,
   type Token,
-  type OutputType,
   type OperationCounters,
 } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
@@ -591,20 +590,6 @@ function skipValue(b: Uint8Array, i: number): number {
   }
   if (major === 6) return skipValue(b, readLen(b, i)[1]);
   throw new Error("CBOR major " + major);
-}
-
-/** Receive a cashu token string and return the redeemed proofs. */
-export async function receiveToken(
-  tokenStr: string,
-  mintUrl?: string,
-  baseAsset?: MarketBaseAsset | string | null,
-): Promise<Proof[]> {
-  const wallet = await getWallet(mintUrl, baseAsset);
-  // Token ingress is a one-way receive from another wallet. Use random receive
-  // outputs so pasted tokens do not collide with deterministic counters already
-  // reserved for the browser wallet's own mint/deposit operations.
-  const receiveOutput: OutputType = { type: "random" };
-  return wallet.receive(tokenStr, undefined, receiveOutput);
 }
 
 /**

@@ -23,7 +23,8 @@ vi.mock('@/lib/walletOps', () => ({
     mintUrl: 'http://localhost:8085',
     source: 'paste',
     unit: 'sat',
-    amountSats: 0,
+    amountSubunits: 0,
+    baseAsset: 'sat',
     proofs: [],
   }),
   userCreatePaymentRequest: vi.fn().mockReturnValue({
@@ -431,7 +432,8 @@ describe('useDepositWithdrawState', () => {
         mintUrl: 'https://testnut.cashu.space',
         source: 'paste',
         unit: 'sat',
-        amountSats: 50,
+        amountSubunits: 50_000,
+        baseAsset: 'sat',
         proofs: [{
           secret: 's-new',
           amount: 50,
@@ -459,8 +461,12 @@ describe('useDepositWithdrawState', () => {
         'paste'
       )
       expect(result.current.currentView).toBe('success')
-      expect(result.current.successAmount).toBe(50)
+      expect(result.current.successAmount).toBe(50_000)
       expect(result.current.error).toBeNull()
+      expect(useActivityLogStore.getState().items[0]).toMatchObject({
+        amountSats: 50_000,
+        baseAsset: 'sat',
+      })
     })
 
     it('reports the durable receiver unit in the success state', async () => {
@@ -470,7 +476,8 @@ describe('useDepositWithdrawState', () => {
         mintUrl: 'https://usd.mint',
         source: 'paste',
         unit: 'usd',
-        amountSats: 23,
+        amountSubunits: 23,
+        baseAsset: 'usd',
         proofs: [{ secret: 's-usd', amount: 23, id: 'usd-kid', C: 'C' } as never],
       })
       Object.defineProperty(navigator, 'clipboard', {
@@ -483,6 +490,10 @@ describe('useDepositWithdrawState', () => {
       await act(async () => { await result.current.onPaste() })
 
       expect(result.current.successUnit).toBe('usd')
+      expect(useActivityLogStore.getState().items[0]).toMatchObject({
+        amountSats: 23,
+        baseAsset: 'usd',
+      })
     })
 
     it('surfaces walletOps receive errors to the red banner without swallowing', async () => {
