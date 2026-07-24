@@ -463,7 +463,7 @@ test("splitCompleteSetWithOperation fails closed for failed existing operations"
   failed.records.set("op-failed", {
     operationId: "op-failed",
     kind: "ctf-split",
-    state: "failed",
+    state: "Failed",
     mintUrl: "https://mint.example",
     inputs: [proof("input-keyset", 100, "input-secret")],
     outputs: {},

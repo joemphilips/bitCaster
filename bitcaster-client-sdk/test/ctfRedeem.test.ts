@@ -83,7 +83,7 @@ test("redeemOutcomeLegWithOperation terminally records losing legs", async () =>
 
   assert.deepEqual(result, { proofs: [], losing: true });
   const entry = await store.getProofOperation("redeem:losing");
-  assert.equal(entry?.state, "failed");
+  assert.equal(entry?.state, "Failed");
   assert.equal(entry?.failureCode, ORACLE_NOT_ATTESTED_OUTCOME_CODE);
 });
 
@@ -291,7 +291,7 @@ class MemoryProofOperationStore implements CtfProofOperationStore {
     if (!existing) throw new Error(`missing operation ${operationId}`);
     const failed: CtfProofOperationRecord = {
       ...existing,
-      state: "failed",
+      state: "Failed",
       lastError: message,
       failureCode,
       updatedAt: existing.updatedAt + 1,
