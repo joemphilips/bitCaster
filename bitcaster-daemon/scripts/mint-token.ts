@@ -205,9 +205,9 @@ async function waitForPaidQuote(
   wallet: CashuWallet,
   quote: MintQuoteResponse,
 ): Promise<void> {
-  const deadline = Date.now() + 20_000
+  const deadline = performance.now() + 20_000
   let last: PartialMintQuoteResponse | null = null
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
     last = await wallet.checkMintQuote(quote.quote)
     if (last.state === 'PAID' || last.state === 'ISSUED') return
     await new Promise((resolve) => setTimeout(resolve, 250))

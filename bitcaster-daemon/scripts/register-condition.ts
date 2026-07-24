@@ -125,9 +125,9 @@ async function waitForPaidQuote(
   wallet: CashuWallet,
   quoteId: string,
 ): Promise<void> {
-  const deadline = Date.now() + 20_000
+  const deadline = performance.now() + 20_000
   let lastState = 'unknown'
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
     const quote = await wallet.checkMintQuote(quoteId)
     lastState = quote.state ?? 'unknown'
     if (lastState === 'PAID' || lastState === 'ISSUED') return
