@@ -4,14 +4,15 @@ import { execFile, spawn } from 'node:child_process'
 import { closeSync, openSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { cliHomeDir } from './paths.ts'
 
 const DAEMON_STARTUP_TIMEOUT_MS = 10_000
 const DAEMON_STARTUP_POLL_MS = 100
 const execFileAsync = promisify(execFile)
+let rpcTokenPromise: Promise<string | null> | undefined
 
 interface DaemonPidFile {
   pid: number
@@ -75,7 +76,7 @@ function defaultDaemonBaseUrl(): string {
 async function sendDaemonCommand<T = unknown>(
   command: DaemonCommand,
 ): Promise<DaemonResponse<T>> {
-  const token = await readRpcToken()
+  const token = await readDaemonRpcToken()
   const socketPath = daemonSocketPath()
   if (socketPath) {
     return sendDaemonCommandOverSocket(command, socketPath, token)
@@ -89,6 +90,11 @@ async function sendDaemonCommand<T = unknown>(
     body: JSON.stringify(command),
   })
   return (await response.json()) as DaemonResponse<T>
+}
+
+function readDaemonRpcToken(): Promise<string | null> {
+  rpcTokenPromise ??= readRpcToken()
+  return rpcTokenPromise
 }
 
 function sendDaemonCommandOverSocket<T = unknown>(
@@ -172,7 +178,7 @@ function throwDaemonConnectionError(err: unknown, address: string): never {
 }
 
 export async function startDaemonProcess(): Promise<void> {
-  const dir = daemonProfileDir()
+  const dir = cliHomeDir()
   await mkdir(dir, { recursive: true, mode: 0o700 })
   const logFd = openSync(daemonLogPath(), 'a', 0o600)
   const daemonMain = fileURLToPath(import.meta.resolve('@bitcaster-market/daemon'))
@@ -201,16 +207,12 @@ export async function startDaemonProcess(): Promise<void> {
   child.unref()
 }
 
-export function daemonProfileDir(): string {
-  return process.env.BITCASTER_DAEMON_HOME || join(homedir(), '.bitcaster')
-}
-
 export function daemonPidPath(): string {
-  return join(daemonProfileDir(), 'daemon-autostart.pid')
+  return join(cliHomeDir(), 'daemon-autostart.pid')
 }
 
 export function daemonLogPath(): string {
-  return join(daemonProfileDir(), 'daemon.log')
+  return join(cliHomeDir(), 'daemon.log')
 }
 
 export async function waitForDaemon(): Promise<void> {

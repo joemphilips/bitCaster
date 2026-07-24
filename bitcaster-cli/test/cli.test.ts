@@ -19,10 +19,29 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
-import { ensureRpcToken } from '@bitcaster-market/daemon/rpcAuth'
+import {
+  bootstrapFreshDaemonProfile,
+  readBootstrappedProfileSecrets,
+} from '../../bitcaster-daemon/src/profileBootstrap.ts'
 import { isNetworkFailure } from '../src/rpc.ts'
 
 const execFileAsync = promisify(execFile)
+
+async function ensureRpcToken(): Promise<string> {
+  const testRoot = process.env.BITCASTER_DAEMON_HOME
+  if (!testRoot) throw new Error('BITCASTER_DAEMON_HOME is required by this test')
+  const directory = join(testRoot, 'daemon-profile')
+  process.env.BITCASTER_DAEMON_HOME = directory
+  return (
+    await bootstrapFreshDaemonProfile({
+      directory,
+      engineBaseUrl: 'http://engine.example',
+      mintUrl: 'https://mint.example',
+      walletSeedHex: 'ab'.repeat(32),
+      nostrSecretKeyHex: '01'.padStart(64, '0'),
+    })
+  ).rpcToken
+}
 
 test('bitcaster-cli bin entrypoint is directly executable', async () => {
   const result = await execFileAsync(
@@ -428,6 +447,7 @@ test('bitcaster-cli requires private token-file input and rejects bearer tokens 
 })
 
 test('bitcaster-cli exits non-zero when daemon returns ok false', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-daemon-error-'))
   const server = createServer(async (_req, res) => {
     writeJson(res, 200, { ok: false, error: 'daemon rejected command' })
   })
@@ -439,7 +459,13 @@ test('bitcaster-cli exits non-zero when daemon returns ok false', async () => {
 
   try {
     await assert.rejects(
-      () => runCli(`http://127.0.0.1:${address.port}`, ['health']),
+      () =>
+        runCliWithEnv(['health'], {
+          ...process.env,
+          BITCASTER_CLI_HOME: home,
+          BITCASTER_DAEMON_HOME: join(home, 'daemon-profile'),
+          BITCASTER_DAEMON_URL: `http://127.0.0.1:${address.port}`,
+        }),
       (err: unknown) => {
         assert.equal((err as { code?: unknown }).code, 1)
         const stdout = (err as { stdout?: string }).stdout ?? ''
@@ -452,6 +478,7 @@ test('bitcaster-cli exits non-zero when daemon returns ok false', async () => {
     )
   } finally {
     server.close()
+    await rm(home, { recursive: true, force: true })
   }
 })
 
@@ -656,6 +683,9 @@ test('bitcaster-cli uses default Unix socket RPC when no URL override is set', a
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   const token = await ensureRpcToken()
+  const daemonHome = process.env.BITCASTER_DAEMON_HOME
+  assert.ok(daemonHome)
+  const socketPath = join(daemonHome, 'daemon.sock')
   let received: unknown = null
   let authorization: string | undefined
   const server = createServer(async (req, res) => {
@@ -663,13 +693,13 @@ test('bitcaster-cli uses default Unix socket RPC when no URL override is set', a
     received = JSON.parse(await readBody(req))
     writeJson(res, 200, { ok: true, result: { socket: true } })
   })
-  server.listen(join(home, 'daemon.sock'))
+  server.listen(socketPath)
   await once(server, 'listening')
+  await chmod(socketPath, 0o600)
 
   try {
     const result = await runCliWithEnv(['health'], {
       ...process.env,
-      BITCASTER_DAEMON_HOME: home,
       BITCASTER_CLI_AUTOSTART_DAEMON: '0',
       BITCASTER_DAEMON_URL: undefined,
       BITCASTER_DAEMON_PORT: undefined,
@@ -825,6 +855,7 @@ test('bitcaster-cli daemon init rejects secrets passed through argv', async () =
 
 test('bitcaster-cli daemon init delegates file-based setup/import to bitcaster-daemon', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-daemon-init-files-'))
+  const daemonHome = join(home, 'daemon-profile')
   const walletSeedHex = 'ab'.repeat(32)
   const nostrSecretKeyHex = '01'.padStart(64, '0')
   const walletSeedFile = join(home, 'wallet-seed.hex')
@@ -854,22 +885,16 @@ test('bitcaster-cli daemon init delegates file-based setup/import to bitcaster-d
       {
         env: {
           ...process.env,
-          BITCASTER_DAEMON_HOME: home,
+          BITCASTER_DAEMON_HOME: daemonHome,
+          BITCASTER_CLI_HOME: home,
         },
       },
     )
 
     assert.match(result.stdout, /bitcaster-daemon profile initialized/)
-    const secrets = JSON.parse(
-      await readFile(join(home, 'daemon-secrets.json'), 'utf8'),
-    ) as {
-      secrets: {
-        walletSeedHex: string
-        nostrSecretKeyHex: string
-      }
-    }
-    assert.equal(secrets.secrets.walletSeedHex, walletSeedHex)
-    assert.equal(secrets.secrets.nostrSecretKeyHex, nostrSecretKeyHex)
+    const secrets = await readBootstrappedProfileSecrets(daemonHome)
+    assert.equal(secrets.walletSeedHex, walletSeedHex)
+    assert.equal(secrets.nostrSecretKeyHex, nostrSecretKeyHex)
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -877,10 +902,12 @@ test('bitcaster-cli daemon init delegates file-based setup/import to bitcaster-d
 
 test('bitcaster-cli auto-starts default local daemon when RPC is unavailable', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-autostart-'))
+  const daemonHome = join(home, 'daemon-profile')
   const port = 44_000 + Math.floor(Math.random() * 10_000)
   const env = {
     ...process.env,
-    BITCASTER_DAEMON_HOME: home,
+    BITCASTER_DAEMON_HOME: daemonHome,
+    BITCASTER_CLI_HOME: home,
     BITCASTER_DAEMON_PORT: String(port),
     BITCASTER_CLI_AUTOSTART_DAEMON: '1',
   }
@@ -909,6 +936,11 @@ test('bitcaster-cli auto-starts default local daemon when RPC is unavailable', a
     )
 
     assert.equal(JSON.parse(result.stdout).ok, true)
+    const profileArtifacts = await readdir(daemonHome)
+    assert.equal(profileArtifacts.includes('config.json'), false)
+    assert.equal(profileArtifacts.includes('daemon.log'), false)
+    assert.equal(profileArtifacts.includes('daemon-autostart.pid'), false)
+    assert.ok(await fileExists(join(home, 'daemon.log')))
     daemonPid = JSON.parse(
       (await readFile(join(home, 'daemon-autostart.pid'), 'utf8')).trim(),
     ).pid as number
@@ -935,7 +967,8 @@ test('bitcaster-cli daemon stop refuses a stale pid file when process start time
     await assert.rejects(
       () => runCliWithEnv(['daemon', 'stop'], {
         ...process.env,
-        BITCASTER_DAEMON_HOME: home,
+        BITCASTER_DAEMON_HOME: join(home, 'daemon-profile'),
+        BITCASTER_CLI_HOME: home,
       }),
       (err: unknown) => {
         assert.equal((err as { code?: unknown }).code, 1)
@@ -983,7 +1016,8 @@ test('bitcaster-cli daemon stop fails and keeps pid file when daemon ignores SIG
     await assert.rejects(
       () => runCliWithEnv(['daemon', 'stop'], {
         ...process.env,
-        BITCASTER_DAEMON_HOME: home,
+        BITCASTER_DAEMON_HOME: join(home, 'daemon-profile'),
+        BITCASTER_CLI_HOME: home,
       }),
       (err: unknown) => {
         assert.equal((err as { code?: unknown }).code, 1)
@@ -1776,7 +1810,7 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       'order', 'submit',
       '--market', 'cond-NO',
       '--outcome', 'NO',
-      '--side', 'buy',
+      '--side', 'Buy',
       '--price', '55',
       '--amount', '200',
       '--no-preflight-split',
@@ -1998,7 +2032,7 @@ test('P47-6b: market create with named flags sends daemon RPC params', async () 
       '--trust-engine-url',
     ], {
       ...process.env,
-      BITCASTER_DAEMON_HOME: home,
+      BITCASTER_CLI_HOME: home,
       BITCASTER_DAEMON_URL: `http://127.0.0.1:${address.port}`,
       BITCASTER_ENGINE_URL: 'https://engine.example',
     })
@@ -2338,6 +2372,12 @@ async function runCliWithEnv(
   args: string[],
   env: NodeJS.ProcessEnv,
 ): Promise<{ stdout: string; stderr: string }> {
+  const effectiveEnv = {
+    ...env,
+    BITCASTER_CLI_HOME:
+      env.BITCASTER_CLI_HOME ?? env.BITCASTER_DAEMON_HOME,
+    NODE_NO_WARNINGS: '1',
+  }
   return execFileAsync(
     process.execPath,
     [
@@ -2345,7 +2385,7 @@ async function runCliWithEnv(
       join(import.meta.dirname, '..', 'src', 'main.ts'),
       ...args,
     ],
-    { env: { ...env, NODE_NO_WARNINGS: '1' } },
+    { env: effectiveEnv },
   )
 }
 
@@ -2434,6 +2474,7 @@ async function terminateProcess(pid: number): Promise<void> {
   }
   const deadline = Date.now() + 5_000
   while (Date.now() < deadline) {
+    if (await isZombieProcess(pid)) return
     try {
       process.kill(pid, 0)
     } catch (err) {
@@ -2449,6 +2490,18 @@ async function terminateProcess(pid: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
   throw new Error(`process ${pid} did not exit after SIGTERM`)
+}
+
+async function isZombieProcess(pid: number): Promise<boolean> {
+  if (process.platform !== 'linux') return false
+  try {
+    const statText = await readFile(`/proc/${pid}/stat`, 'utf8')
+    const closeParen = statText.lastIndexOf(')')
+    if (closeParen === -1) return false
+    return statText.slice(closeParen + 2).trim().split(/\s+/, 1)[0] === 'Z'
+  } catch {
+    return false
+  }
 }
 
 async function processStartTime(pid: number): Promise<string | null> {

@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
+import { cliHomeDir } from './paths.ts'
 
 export interface CliConfig {
   engineUrl?: string
@@ -9,11 +9,7 @@ export interface CliConfig {
 }
 
 export function configFilePath(): string {
-  return join(daemonProfileDir(), 'config.json')
-}
-
-function daemonProfileDir(): string {
-  return process.env.BITCASTER_DAEMON_HOME || join(homedir(), '.bitcaster')
+  return join(cliHomeDir(), 'config.json')
 }
 
 export function readConfig(): CliConfig {
