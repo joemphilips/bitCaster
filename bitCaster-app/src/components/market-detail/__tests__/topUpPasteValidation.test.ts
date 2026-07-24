@@ -58,6 +58,7 @@ describe('validateTopUpEcashToken', () => {
 
   it.each([
     ['missing', undefined],
+    ['empty', ''],
     ['unknown', 'btc'],
   ])('rejects %s token unit metadata', async (_label, unit) => {
     const result = await validateTopUpEcashToken('cashuB-token', {
@@ -72,7 +73,7 @@ describe('validateTopUpEcashToken', () => {
     expect(result).toMatchObject({
       ok: false,
       code: 'unit_invalid',
-      values: { tokenUnit: unit ?? 'missing' },
+      values: { tokenUnit: unit ? unit : 'missing' },
     })
   })
 
@@ -122,35 +123,6 @@ describe('validateTopUpEcashToken', () => {
       code: 'unit_mismatch',
       values: { tokenUnit: 'usd', expectedUnit: 'sats' },
     })
-  })
-
-  it('rejects unrecognized non-empty token units instead of treating them as sats', async () => {
-    const result = await validateTopUpEcashToken('cashuB-token', {
-      activeMintUrl: 'https://mint.example',
-      baseAsset: 'sat',
-      deficit: 1,
-      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({ unit: 'btc' as never })),
-    })
-
-    expect(result).toMatchObject({
-      ok: false,
-      code: 'unit_mismatch',
-      values: { tokenUnit: 'btc', expectedUnit: 'sats' },
-    })
-  })
-
-  it('treats an empty token unit as the Cashu default sat unit', async () => {
-    const result = await validateTopUpEcashToken('cashuB-token', {
-      activeMintUrl: 'https://mint.example',
-      baseAsset: 'sat',
-      deficit: 10_000,
-      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({
-        unit: '' as never,
-        proofs: [{ id: 'keyset-default', amount: 10 as never, secret: 's', C: 'c' }],
-      })),
-    })
-
-    expect(result).toMatchObject({ ok: true, unit: 'sat', tokenAmountSubunits: 10_000 })
   })
 
   it('rejects tokens that do not cover the deficit', async () => {
