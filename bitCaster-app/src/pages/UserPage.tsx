@@ -1,11 +1,9 @@
-import { useParams } from 'react-router'
-import { UserCircle } from 'lucide-react'
+import { useParams } from "react-router";
+import { UserCircle } from "lucide-react";
 
 export function UserPage() {
-  const { pubkey = '' } = useParams()
-  const shortPubkey = pubkey.length > 16
-    ? `${pubkey.slice(0, 12)}...${pubkey.slice(-8)}`
-    : pubkey
+  const { pubkey = "" } = useParams();
+  const shortPubkey = pubkey.length > 16 ? `${pubkey.slice(0, 12)}...${pubkey.slice(-8)}` : pubkey;
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
@@ -15,9 +13,7 @@ export function UserPage() {
             <UserCircle className="w-8 h-8" />
           </div>
           <div className="min-w-0">
-            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
-              User
-            </h1>
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">User</h1>
             <p className="font-mono text-sm text-slate-500 dark:text-slate-400 truncate">
               {shortPubkey}
             </p>
@@ -34,5 +30,5 @@ export function UserPage() {
         </section>
       </div>
     </div>
-  )
+  );
 }

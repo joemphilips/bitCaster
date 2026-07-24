@@ -1,32 +1,32 @@
-import { useState } from 'react'
-import { ChevronDown, Check, X } from 'lucide-react'
-import type { MintInfo } from '@/types/deposit-withdraw'
-import { AddMintForm } from '@/components/shared/AddMintForm'
-import { normalizeUrl } from '@/lib/url'
-import { userAddAndSelectMint } from '@/lib/walletOps'
-import { formatAmount } from '@/lib/formatAmount'
-import type { MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
+import { useState } from "react";
+import { ChevronDown, Check, X } from "lucide-react";
+import type { MintInfo } from "@/types/deposit-withdraw";
+import { AddMintForm } from "@/components/shared/AddMintForm";
+import { normalizeUrl } from "@/lib/url";
+import { userAddAndSelectMint } from "@/lib/walletOps";
+import { formatAmount } from "@/lib/formatAmount";
+import type { MarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 
 interface MintSelectorProps {
-  mints: MintInfo[]
-  selectedMintId: string
-  selectedUnit?: MarketBaseAsset
-  onMintChange?: (mintId: string) => void
+  mints: MintInfo[];
+  selectedMintId: string;
+  selectedUnit?: MarketBaseAsset;
+  onMintChange?: (mintId: string) => void;
 }
 
 export function MintSelector({
   mints,
   selectedMintId,
-  selectedUnit = 'sat',
+  selectedUnit = "sat",
   onMintChange,
 }: MintSelectorProps) {
-  const [isOpen, setIsOpen] = useState(false)
-  const selected = mints.find((m) => m.id === selectedMintId) ?? mints[0]
-  if (!selected) return null
+  const [isOpen, setIsOpen] = useState(false);
+  const selected = mints.find((m) => m.id === selectedMintId) ?? mints[0];
+  if (!selected) return null;
   // Falling back to `balanceSats` is only correct for the sat unit — a mint
   // with no balance entry for a fiat unit holds 0 of it, not its sat balance.
   const balanceFor = (mint: MintInfo): number =>
-    mint.balancesByUnit?.[selectedUnit] ?? (selectedUnit === 'sat' ? mint.balanceSats : 0)
+    mint.balancesByUnit?.[selectedUnit] ?? (selectedUnit === "sat" ? mint.balanceSats : 0);
 
   /**
    * Add-mint completion (P5.2). The shared form invokes the wallet-store
@@ -36,9 +36,9 @@ export function MintSelector({
    * user sees the new row land in the list.
    */
   const handleAddMint = async (rawUrl: string) => {
-    await userAddAndSelectMint(rawUrl)
-    onMintChange?.(normalizeUrl(rawUrl))
-  }
+    await userAddAndSelectMint(rawUrl);
+    onMintChange?.(normalizeUrl(rawUrl));
+  };
 
   return (
     <>
@@ -94,8 +94,8 @@ export function MintSelector({
                 <button
                   key={mint.id}
                   onClick={() => {
-                    onMintChange?.(mint.id)
-                    setIsOpen(false)
+                    onMintChange?.(mint.id);
+                    setIsOpen(false);
                   }}
                   className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-slate-800 transition-colors"
                 >
@@ -115,24 +115,18 @@ export function MintSelector({
                   </div>
 
                   {/* Selected indicator */}
-                  {mint.id === selectedMintId && (
-                    <Check className="w-5 h-5 text-green-400" />
-                  )}
+                  {mint.id === selectedMintId && <Check className="w-5 h-5 text-green-400" />}
                 </button>
               ))}
 
               {/* Add Mint trigger — same shared form as /settings (T5.2.c). */}
               <div className="px-1 py-3">
-                <AddMintForm
-                  onAddMint={handleAddMint}
-                  triggerLabel="Add Mint"
-                  variant="sheet"
-                />
+                <AddMintForm onAddMint={handleAddMint} triggerLabel="Add Mint" variant="sheet" />
               </div>
             </div>
           </div>
         </div>
       )}
     </>
-  )
+  );
 }

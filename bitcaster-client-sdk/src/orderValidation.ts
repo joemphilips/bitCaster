@@ -19,13 +19,9 @@ export interface OrderIntentForValidation {
   timeInForce?: unknown
 }
 
-export type OrderIntentValidation =
-  | { valid: true }
-  | { valid: false; message: string }
+export type OrderIntentValidation = { valid: true } | { valid: false; message: string }
 
-export function validateOrderIntent(
-  request: unknown,
-): OrderIntentValidation {
+export function validateOrderIntent(request: unknown): OrderIntentValidation {
   if (!isRecord(request)) {
     return { valid: false, message: 'Order rejected: missing order request.' }
   }
@@ -50,14 +46,10 @@ export function validateOrderIntent(
     }
   }
   const marketOutcomeSegment = primitiveOutcomeSegment(intent.marketId)
-  if (
-    !marketOutcomeSegment ||
-    marketOutcomeSegment !== intent.outcomeId
-  ) {
+  if (!marketOutcomeSegment || marketOutcomeSegment !== intent.outcomeId) {
     return {
       valid: false,
-      message:
-        'Order rejected: outcome id must match the primitive outcome segment of market id.',
+      message: 'Order rejected: outcome id must match the primitive outcome segment of market id.',
     }
   }
   if (intent.tokenSide !== 'Outcome' && intent.tokenSide !== 'Complement') {
@@ -75,8 +67,14 @@ export function validateOrderIntent(
   const price = intent.price
   const divisibility =
     typeof intent.divisibility === 'number'
-      ? normalizeMarketDivisibility(intent.divisibility, typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined)
-      : normalizeMarketDivisibility(undefined, typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined)
+      ? normalizeMarketDivisibility(
+          intent.divisibility,
+          typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined,
+        )
+      : normalizeMarketDivisibility(
+          undefined,
+          typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined,
+        )
   if (typeof price !== 'number' || !validatePriceNumerator(price, divisibility)) {
     return {
       valid: false,
@@ -91,8 +89,7 @@ export function validateOrderIntent(
   ) {
     return {
       valid: false,
-      message:
-        `Order rejected: amountSubunits must be a positive integer in ${shareFace} sub-unit increments.`,
+      message: `Order rejected: amountSubunits must be a positive integer in ${shareFace} sub-unit increments.`,
     }
   }
   if (

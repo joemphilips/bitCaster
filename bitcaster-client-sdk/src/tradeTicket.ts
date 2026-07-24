@@ -81,28 +81,19 @@ export function buildTradeTicket(params: {
   orderBook?: SdkOrderBook | null
   complementaryOrderBook?: SdkOrderBook | null
 }): TradeTicket {
-  const {
-    market,
-    selection,
-    side,
-    orderType,
-    limitPrice,
-    orderBook,
-    complementaryOrderBook,
-  } = params
+  const { market, selection, side, orderType, limitPrice, orderBook, complementaryOrderBook } =
+    params
   const amountSubunits = params.amountSubunits ?? params.amountSats
 
   if (!selection) {
-    throw new TradeTicketError(
-      'missing-selection',
-      'Choose an outcome before placing an order.',
-    )
+    throw new TradeTicketError('missing-selection', 'Choose an outcome before placing an order.')
   }
-  if (typeof amountSubunits !== 'number' || !Number.isSafeInteger(amountSubunits) || amountSubunits <= 0) {
-    throw new TradeTicketError(
-      'invalid-amount',
-      'Enter an amount greater than zero.',
-    )
+  if (
+    typeof amountSubunits !== 'number' ||
+    !Number.isSafeInteger(amountSubunits) ||
+    amountSubunits <= 0
+  ) {
+    throw new TradeTicketError('invalid-amount', 'Enter an amount greater than zero.')
   }
   const divisibility = normalizeMarketDivisibility(market.divisibility, market.baseAsset)
   const shareFace = divisibility
@@ -115,12 +106,9 @@ export function buildTradeTicket(params: {
 
   const resolvedOutcome = resolveTradeOutcome(market, selection)
   if (!resolvedOutcome) {
-    throw new TradeTicketError(
-      'missing-selection',
-      'Choose an outcome before placing an order.',
-    )
+    throw new TradeTicketError('missing-selection', 'Choose an outcome before placing an order.')
   }
-  const requestSide = side === 'Buy'  ? 'Buy' : 'Sell'
+  const requestSide = side === 'Buy' ? 'Buy' : 'Sell'
   const settlementSupport = checkOrderSettlementSupport({
     request: { side: requestSide },
   })
@@ -133,10 +121,7 @@ export function buildTradeTicket(params: {
       ? Math.min(Math.max(Math.round(limitPrice), 1), divisibility - 1)
       : marketPriceFor(side, divisibility, orderBook, complementaryOrderBook)
   if (!validatePriceNumerator(price, divisibility)) {
-    throw new TradeTicketError(
-      'invalid-amount',
-      `Enter a price from 1 to ${divisibility - 1}.`,
-    )
+    throw new TradeTicketError('invalid-amount', `Enter a price from 1 to ${divisibility - 1}.`)
   }
 
   const request: SdkSubmitOrderRequest = {

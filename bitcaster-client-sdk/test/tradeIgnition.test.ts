@@ -84,32 +84,40 @@ test('handleMatchedForMaker submits only once for our maker order', async () => 
     },
   }
 
-  const first = await handleMatchedForMaker({
-    marketId: 'condition-YES',
-    tradeId: 't1',
-    makerOrderId: 'maker-1',
-    takerOrderId: 'taker-1',
-    executionPrice: 50,
-    amountSubunits: 100,
-    path: 'Complementary',
-    matchedAt: '2026-06-30T00:00:00Z',
-    deadline: '2026-06-30T00:00:10Z',
-  }, params)
-  const second = await handleMatchedForMaker({
-    marketId: 'condition-YES',
-    tradeId: 't1',
-    makerOrderId: 'maker-1',
-    takerOrderId: 'taker-1',
-    executionPrice: 50,
-    amountSubunits: 100,
-    path: 'Complementary',
-    matchedAt: '2026-06-30T00:00:00Z',
-    deadline: '2026-06-30T00:00:10Z',
-  }, params)
+  const first = await handleMatchedForMaker(
+    {
+      marketId: 'condition-YES',
+      tradeId: 't1',
+      makerOrderId: 'maker-1',
+      takerOrderId: 'taker-1',
+      executionPrice: 50,
+      amountSubunits: 100,
+      path: 'Complementary',
+      matchedAt: '2026-06-30T00:00:00Z',
+      deadline: '2026-06-30T00:00:10Z',
+    },
+    params,
+  )
+  const second = await handleMatchedForMaker(
+    {
+      marketId: 'condition-YES',
+      tradeId: 't1',
+      makerOrderId: 'maker-1',
+      takerOrderId: 'taker-1',
+      executionPrice: 50,
+      amountSubunits: 100,
+      path: 'Complementary',
+      matchedAt: '2026-06-30T00:00:00Z',
+      deadline: '2026-06-30T00:00:10Z',
+    },
+    params,
+  )
 
   assert.deepEqual(first, { submitted: true, tradeId: 't1', role: 'maker' })
   assert.deepEqual(second, { submitted: false, tradeId: 't1', reason: 'duplicate' })
-  assert.deepEqual(submissions, [{ tradeId: 't1', pubkey: '02'.padEnd(66, 'a'), conditionId: 'condition' }])
+  assert.deepEqual(submissions, [
+    { tradeId: 't1', pubkey: '02'.padEnd(66, 'a'), conditionId: 'condition' },
+  ])
 })
 
 test('handleMatchedForMaker ignores taker-only and foreign-maker matches', async () => {
@@ -123,17 +131,20 @@ test('handleMatchedForMaker ignores taker-only and foreign-maker matches', async
     },
   }
 
-  const result = await handleMatchedForMaker({
-    marketId: 'condition-YES',
-    tradeId: 't1',
-    makerOrderId: 'foreign-maker-order',
-    takerOrderId: 'our-taker-order',
-    executionPrice: 50,
-    amountSubunits: 100,
-    path: 'Complementary',
-    matchedAt: '2026-06-30T00:00:00Z',
-    deadline: '2026-06-30T00:00:10Z',
-  }, params)
+  const result = await handleMatchedForMaker(
+    {
+      marketId: 'condition-YES',
+      tradeId: 't1',
+      makerOrderId: 'foreign-maker-order',
+      takerOrderId: 'our-taker-order',
+      executionPrice: 50,
+      amountSubunits: 100,
+      path: 'Complementary',
+      matchedAt: '2026-06-30T00:00:00Z',
+      deadline: '2026-06-30T00:00:10Z',
+    },
+    params,
+  )
 
   assert.deepEqual(result, { submitted: false, tradeId: 't1', reason: 'not-maker-order' })
   assert.deepEqual(submissions, [])
@@ -143,26 +154,36 @@ test('handlePendingPubkeySubmissions submits each pending taker pubkey once', as
   const seenTradeIds = new Set<string>(['already'])
   const submissions: Array<{ tradeId: string; pubkey: string; conditionId?: string }> = []
 
-  const results = await handlePendingPubkeySubmissions({
-    pendingPubkeySubmissions: [
-      { tradeId: 'already', role: 'taker', fillAmountSubunits: 50, deadline: '2026-06-30T00:00:10Z' },
-      { tradeId: 'new', role: 'taker', fillAmountSubunits: 50, deadline: '2026-06-30T00:00:10Z' },
-    ],
-  }, {
-    conditionId: 'condition',
-    keypairStore: memoryStore({ new: '03'.padEnd(66, 'b') }),
-    seenTradeIds,
-    submitEphemeralPubkey: async (tradeId, pubkey, conditionId) => {
-      submissions.push({ tradeId, pubkey, conditionId })
-      return { tradeId, role: 'taker', bothReceived: false }
+  const results = await handlePendingPubkeySubmissions(
+    {
+      pendingPubkeySubmissions: [
+        {
+          tradeId: 'already',
+          role: 'taker',
+          fillAmountSubunits: 50,
+          deadline: '2026-06-30T00:00:10Z',
+        },
+        { tradeId: 'new', role: 'taker', fillAmountSubunits: 50, deadline: '2026-06-30T00:00:10Z' },
+      ],
     },
-  })
+    {
+      conditionId: 'condition',
+      keypairStore: memoryStore({ new: '03'.padEnd(66, 'b') }),
+      seenTradeIds,
+      submitEphemeralPubkey: async (tradeId, pubkey, conditionId) => {
+        submissions.push({ tradeId, pubkey, conditionId })
+        return { tradeId, role: 'taker', bothReceived: false }
+      },
+    },
+  )
 
   assert.deepEqual(results, [
     { submitted: false, tradeId: 'already', reason: 'duplicate' },
     { submitted: true, tradeId: 'new', role: 'taker' },
   ])
-  assert.deepEqual(submissions, [{ tradeId: 'new', pubkey: '03'.padEnd(66, 'b'), conditionId: 'condition' }])
+  assert.deepEqual(submissions, [
+    { tradeId: 'new', pubkey: '03'.padEnd(66, 'b'), conditionId: 'condition' },
+  ])
 })
 
 test('joinTradeWithRetry retries while awaiting trade-created and dedupes successful joins', async () => {
@@ -198,7 +219,7 @@ test('joinTradeWithRetry stops replay-miss retries when the swap step changes', 
   let attempts = 0
   const result = await joinTradeWithRetry({
     tradeId: 't1',
-    getSwapStep: async () => attempts === 0 ? 'awaiting-trade-created' : 'trade-created',
+    getSwapStep: async () => (attempts === 0 ? 'awaiting-trade-created' : 'trade-created'),
     invokeJoinTrade: async () => {
       attempts += 1
       return { success: false, error: 'not-ready' }

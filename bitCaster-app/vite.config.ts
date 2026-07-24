@@ -15,8 +15,7 @@ export default defineConfig({
       manifest: {
         name: "bitCaster – Bitcoin Prediction Markets",
         short_name: "bitCaster",
-        description:
-          "Free, anonymous, Bitcoin-native prediction markets powered by Cashu ecash",
+        description: "Free, anonymous, Bitcoin-native prediction markets powered by Cashu ecash",
         theme_color: "#f7931a",
         background_color: "#0a0a0a",
         display: "standalone",
@@ -69,17 +68,11 @@ export default defineConfig({
       },
       {
         find: /^@bitcaster\/client-sdk$/,
-        replacement: path.resolve(
-          __dirname,
-          "../bitcaster-client-sdk/src/index.ts",
-        ),
+        replacement: path.resolve(__dirname, "../bitcaster-client-sdk/src/index.ts"),
       },
       {
         find: /^@bitcaster\/swap-protocol\/(.+)$/,
-        replacement: path.resolve(
-          __dirname,
-          "../bitCaster-swap-protocol/src/$1",
-        ),
+        replacement: path.resolve(__dirname, "../bitCaster-swap-protocol/src/$1"),
       },
       {
         find: /^@cashu\/cashu-ts$/,

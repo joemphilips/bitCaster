@@ -5,8 +5,7 @@ export const TRADE_MESSAGE_TYPES = {
   settlementComplete: 'settlement-complete',
 } as const
 
-export type TradeMessageType =
-  (typeof TRADE_MESSAGE_TYPES)[keyof typeof TRADE_MESSAGE_TYPES]
+export type TradeMessageType = (typeof TRADE_MESSAGE_TYPES)[keyof typeof TRADE_MESSAGE_TYPES]
 
 export type SwapCipherMessageType = Exclude<
   TradeMessageType,
@@ -20,14 +19,11 @@ export const SETTLEMENT_KINDS = {
   mint: 'Mint',
 } as const
 
-export type SettlementKind =
-  (typeof SETTLEMENT_KINDS)[keyof typeof SETTLEMENT_KINDS]
+export type SettlementKind = (typeof SETTLEMENT_KINDS)[keyof typeof SETTLEMENT_KINDS]
 
 export const MIN_LOCKTIME_DELTA_SECS = 5
 
-const TRADE_MESSAGE_TYPE_VALUES = new Set<string>(
-  Object.values(TRADE_MESSAGE_TYPES),
-)
+const TRADE_MESSAGE_TYPE_VALUES = new Set<string>(Object.values(TRADE_MESSAGE_TYPES))
 
 const SWAP_CIPHER_MESSAGE_TYPE_VALUES = new Set<string>([
   TRADE_MESSAGE_TYPES.adaptorPoint,
@@ -39,9 +35,7 @@ export function isTradeMessageType(value: string): value is TradeMessageType {
   return TRADE_MESSAGE_TYPE_VALUES.has(value)
 }
 
-export function isSwapCipherMessageType(
-  value: string,
-): value is SwapCipherMessageType {
+export function isSwapCipherMessageType(value: string): value is SwapCipherMessageType {
   return SWAP_CIPHER_MESSAGE_TYPE_VALUES.has(value)
 }
 
@@ -94,10 +88,7 @@ export function validateTradeCreatedProtocol(
     return `Trade rejected: unsupported settlement kind '${settlementKind}'.`
   }
 
-  if (
-    !fields.sellerKeepOutcomeSetId?.trim() ||
-    !fields.sellerLockOutcomeSetId?.trim()
-  ) {
+  if (!fields.sellerKeepOutcomeSetId?.trim() || !fields.sellerLockOutcomeSetId?.trim()) {
     return 'Trade rejected: mint split is missing seller outcome-set metadata.'
   }
   if (fields.sellerKeepOutcomeSetId === fields.sellerLockOutcomeSetId) {
@@ -129,15 +120,13 @@ export function decideSwapRole(params: {
   return null
 }
 
-export function cacheSwapCipher<T extends {
-  adaptorPoint?: string
-  lockedProofsSeller?: string
-  lockedProofsBuyer?: string
-}>(
-  received: T,
-  messageType: string,
-  ciphertext: string,
-): void {
+export function cacheSwapCipher<
+  T extends {
+    adaptorPoint?: string
+    lockedProofsSeller?: string
+    lockedProofsBuyer?: string
+  },
+>(received: T, messageType: string, ciphertext: string): void {
   if (messageType === TRADE_MESSAGE_TYPES.adaptorPoint) received.adaptorPoint = ciphertext
   else if (messageType === TRADE_MESSAGE_TYPES.lockedProofsSeller)
     received.lockedProofsSeller = ciphertext

@@ -129,9 +129,7 @@ export function MarketDetail({
     <div className="min-h-screen bg-slate-50 pb-[calc(9rem+env(safe-area-inset-bottom))] dark:bg-slate-900 lg:pb-0">
       {/* Desktop Layout: Two Columns (single column when resolved) */}
       <div className="max-w-7xl mx-auto">
-        <div
-          className="p-4 lg:grid lg:grid-cols-[1fr_380px] lg:gap-6 lg:p-6"
-        >
+        <div className="p-4 lg:grid lg:grid-cols-[1fr_380px] lg:gap-6 lg:p-6">
           {/* Left Column - Main Content */}
           <div className="space-y-6">
             {/* Header */}
@@ -209,15 +207,12 @@ export function MarketDetail({
                   </span>
                 )}
                 {(() => {
-                  const primaryOutcomeId = outcomeBookKey(
-                    yesNoOutcomes(market)[0]?.label ?? "Yes",
-                  );
+                  const primaryOutcomeId = outcomeBookKey(yesNoOutcomes(market)[0]?.label ?? "Yes");
                   const directBook =
-                    market.outcomeOrderBooks?.[primaryOutcomeId] ??
-                    market.orderBook;
-                  const complementBook = Object.entries(
-                    market.outcomeOrderBooks ?? {},
-                  ).find(([id]) => id !== primaryOutcomeId)?.[1];
+                    market.outcomeOrderBooks?.[primaryOutcomeId] ?? market.orderBook;
+                  const complementBook = Object.entries(market.outcomeOrderBooks ?? {}).find(
+                    ([id]) => id !== primaryOutcomeId,
+                  )?.[1];
                   return (
                     <OrderBookSection
                       outcomeId={primaryOutcomeId}
@@ -243,16 +238,12 @@ export function MarketDetail({
                     title={outcome.label}
                     outcomeId={outcomeBookKey(outcome.label)}
                     orderBook={deriveExecutableOrderBook({
-                      book: market.outcomeOrderBooks?.[
-                        outcomeBookKey(outcome.label)
-                      ] ?? {
+                      book: market.outcomeOrderBooks?.[outcomeBookKey(outcome.label)] ?? {
                         bids: [],
                         asks: [],
                         spread: 0,
                       },
-                      complementBook: Object.entries(
-                        market.outcomeOrderBooks ?? {},
-                      ).find(
+                      complementBook: Object.entries(market.outcomeOrderBooks ?? {}).find(
                         ([id]) => id !== outcomeBookKey(outcome.label),
                       )?.[1],
                       divisibility: market.divisibility,
@@ -269,10 +260,7 @@ export function MarketDetail({
             {!isResolved && <ResolutionInfo resolution={market.resolution} />}
 
             {/* Related Markets */}
-            <RelatedMarkets
-              markets={market.relatedMarkets}
-              onMarketClick={onRelatedMarketClick}
-            />
+            <RelatedMarkets markets={market.relatedMarkets} onMarketClick={onRelatedMarketClick} />
 
             {/* Comments */}
             <CommentSection
@@ -375,9 +363,7 @@ export function MarketDetail({
                 }`}
               >
                 <span className="inline-flex items-center justify-center gap-2">
-                  {isTradeSubmitting && (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  )}
+                  {isTradeSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
                   {isTradeSubmitting
                     ? t("trade.submittingOrder")
                     : walletReady

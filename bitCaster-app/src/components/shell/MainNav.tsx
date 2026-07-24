@@ -1,23 +1,23 @@
-import { useState } from 'react'
-import { TrendingUp, Search } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
+import { useState } from "react";
+import { TrendingUp, Search } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 interface MainNavProps {
-  items: Array<{ label: string; href: string; isActive?: boolean }>
-  onNavigate?: (href: string) => void
-  onSearchChange?: (query: string) => void
+  items: Array<{ label: string; href: string; isActive?: boolean }>;
+  onNavigate?: (href: string) => void;
+  onSearchChange?: (query: string) => void;
 }
 
 export function MainNav({ items, onNavigate, onSearchChange }: MainNavProps) {
-  const { t } = useTranslation()
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchExpanded, setSearchExpanded] = useState(false)
+  const { t } = useTranslation();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchExpanded, setSearchExpanded] = useState(false);
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const query = e.target.value
-    setSearchQuery(query)
-    onSearchChange?.(query)
-  }
+    const query = e.target.value;
+    setSearchQuery(query);
+    onSearchChange?.(query);
+  };
 
   return (
     <nav className="flex items-center gap-2 md:gap-4 flex-1">
@@ -28,8 +28,8 @@ export function MainNav({ items, onNavigate, onSearchChange }: MainNavProps) {
           onClick={() => onNavigate?.(item.href)}
           className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
             item.isActive
-              ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300'
-              : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+              ? "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300"
+              : "text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
           }`}
         >
           <TrendingUp className="w-4 h-4" />
@@ -47,13 +47,13 @@ export function MainNav({ items, onNavigate, onSearchChange }: MainNavProps) {
             onChange={handleSearchChange}
             onFocus={() => setSearchExpanded(true)}
             onBlur={() => setSearchExpanded(false)}
-            placeholder={t('nav.searchMarkets')}
+            placeholder={t("nav.searchMarkets")}
             className={`w-full pl-9 pr-4 py-2 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
-              searchExpanded ? 'ring-2 ring-blue-500' : ''
+              searchExpanded ? "ring-2 ring-blue-500" : ""
             }`}
           />
         </div>
       </div>
     </nav>
-  )
+  );
 }

@@ -22,9 +22,7 @@ import {
   splitAvailableSatProofsForCtfCollateral,
   type WalletOpsDependencies,
 } from './walletOps.ts'
-import {
-  resolveRootDirectLockOutputAmountSats,
-} from '@bitcaster-market/client-sdk/ctfSplit'
+import { resolveRootDirectLockOutputAmountSats } from '@bitcaster-market/client-sdk/ctfSplit'
 import {
   type CashuProofRecord,
   type DaemonState,
@@ -127,10 +125,7 @@ export interface DaemonSwapOps {
     preserveSourceKeyset?: boolean
     operationId: string
   }): Promise<ExactProofSplitResult>
-  sellerOpen(
-    ctx: DaemonSwapContext,
-    proofs: CashuProofRecord[],
-  ): Promise<SellerOpenResult>
+  sellerOpen(ctx: DaemonSwapContext, proofs: CashuProofRecord[]): Promise<SellerOpenResult>
   sellerOpenPrelocked(
     ctx: DaemonSwapContext,
     lockedProofs: CashuProofRecord[],
@@ -208,9 +203,7 @@ export class DaemonSwapExecutor {
   async onTradeCreated(swap: LocalSwapRecord | null): Promise<void> {
     if (!swap || swap.step === 'Failed') return
     if (swap.role === 'seller' && swap.step === 'opened') {
-      await this.runOnce(swap.tradeId, 'seller-open', () =>
-        this.sellerOpen(swap.tradeId),
-      )
+      await this.runOnce(swap.tradeId, 'seller-open', () => this.sellerOpen(swap.tradeId))
       return
     }
     if (swap.role === 'buyer' && swap.step === 'opened') {
@@ -251,10 +244,12 @@ export class DaemonSwapExecutor {
   private async sweepPartialLockFailures(state: DaemonState): Promise<void> {
     const nowSecs = Math.floor(Date.now() / 1000)
     const swaps = Object.values(state.swaps)
-      .filter((swap) =>
-        swap.failure?.kind === 'PartialLockHeld' &&
-        typeof swap.failure.refundLocktime === 'number' &&
-        swap.failure.refundLocktime + PARTIAL_LOCK_REFUND_MARGIN_SECS <= nowSecs)
+      .filter(
+        (swap) =>
+          swap.failure?.kind === 'PartialLockHeld' &&
+          typeof swap.failure.refundLocktime === 'number' &&
+          swap.failure.refundLocktime + PARTIAL_LOCK_REFUND_MARGIN_SECS <= nowSecs,
+      )
       .sort((a, b) => a.tradeId.localeCompare(b.tradeId))
 
     for (const swap of swaps) {
@@ -270,9 +265,10 @@ export class DaemonSwapExecutor {
     const { ctx, swap, profile } = loaded
     if (swap.failure?.kind !== 'PartialLockHeld') return
     const failure = swap.failure
-    const lockedRows = (await readState())?.wallet.proofs.filter(
-      (row) => row.state === 'locked' && row.reservedBy === tradeId,
-    ) ?? []
+    const lockedRows =
+      (await readState())?.wallet.proofs.filter(
+        (row) => row.state === 'locked' && row.reservedBy === tradeId,
+      ) ?? []
     if (lockedRows.length === 0) {
       await this.markRefunded(tradeId)
       return
@@ -287,7 +283,11 @@ export class DaemonSwapExecutor {
       await updateState((state, now) => {
         const live = state.swaps[tradeId]
         if (!live) return
-        removeProofsBySecret(state, profile.mintUrl, lockedRows.map((row) => row.proof))
+        removeProofsBySecret(
+          state,
+          profile.mintUrl,
+          lockedRows.map((row) => row.proof),
+        )
         addRefundedProofsByKeyset(
           state,
           profile.mintUrl,
@@ -322,9 +322,7 @@ export class DaemonSwapExecutor {
     ) {
       return
     }
-    await this.runOnce(tradeId, 'buyer-respond', () =>
-      this.buyerRespond(tradeId),
-    )
+    await this.runOnce(tradeId, 'buyer-respond', () => this.buyerRespond(tradeId))
   }
 
   private async maybeClaim(tradeId: string): Promise<void> {
@@ -336,9 +334,7 @@ export class DaemonSwapExecutor {
       swap.sellerAdaptorPointHex &&
       swap.messages.lockedProofsBuyer
     ) {
-      await this.runOnce(tradeId, 'seller-claim', () =>
-        this.sellerClaim(tradeId),
-      )
+      await this.runOnce(tradeId, 'seller-claim', () => this.sellerClaim(tradeId))
     }
     if (
       swap.role === 'buyer' &&
@@ -347,9 +343,7 @@ export class DaemonSwapExecutor {
       swap.messages.lockedProofsSeller &&
       swap.sellerPreSigsHex
     ) {
-      await this.runOnce(tradeId, 'buyer-claim', () =>
-        this.buyerClaim(tradeId),
-      )
+      await this.runOnce(tradeId, 'buyer-claim', () => this.buyerClaim(tradeId))
     }
   }
 
@@ -368,11 +362,7 @@ export class DaemonSwapExecutor {
       const adaptorPoint = swap.messages.adaptorPoint
       const lockedProofsSeller = swap.messages.lockedProofsSeller
       await this.runOnce(tradeId, 'resend-seller-open', async () => {
-        await this.sendSwapMessageResumable(
-          tradeId,
-          TRADE_MESSAGE_TYPES.adaptorPoint,
-          adaptorPoint,
-        )
+        await this.sendSwapMessageResumable(tradeId, TRADE_MESSAGE_TYPES.adaptorPoint, adaptorPoint)
         await this.sendSwapMessageResumable(
           tradeId,
           TRADE_MESSAGE_TYPES.lockedProofsSeller,
@@ -400,11 +390,7 @@ export class DaemonSwapExecutor {
 
     if (swap.step === 'awaiting-confirmation') {
       await this.runOnce(tradeId, 'resend-settlement-complete', () =>
-        this.sendSwapMessageResumable(
-          tradeId,
-          TRADE_MESSAGE_TYPES.settlementComplete,
-          '',
-        ),
+        this.sendSwapMessageResumable(tradeId, TRADE_MESSAGE_TYPES.settlementComplete, ''),
       )
     }
   }
@@ -418,20 +404,13 @@ export class DaemonSwapExecutor {
     try {
       const amount = requiredAmount(
         swap.outcomeFaceAmountSubunits ??
-        swap.outcomeFaceAmountSats ??
-        swap.fillAmountSubunits ??
-        swap.fillAmountSats,
+          swap.outcomeFaceAmountSats ??
+          swap.fillAmountSubunits ??
+          swap.fillAmountSats,
       )
       const mint = resolveMintSellerSplit(swap)
       if (mint) {
-        await this.sellerOpenMint(
-          tradeId,
-          ctx,
-          swap,
-          profile.mintUrl,
-          mint,
-          amount,
-        )
+        await this.sellerOpenMint(tradeId, ctx, swap, profile.mintUrl, mint, amount)
         return
       }
       const asset = outcomeAssetForMarket(swap.marketId)
@@ -459,10 +438,7 @@ export class DaemonSwapExecutor {
         amount,
         operationStep: 'seller-lock',
       })
-      const result = await this.ops.sellerOpenPrelocked(
-        ctx,
-        locked.lockedProofs,
-      )
+      const result = await this.ops.sellerOpenPrelocked(ctx, locked.lockedProofs)
       await updateState((state, now) => {
         const live = state.swaps[tradeId]
         if (!live || isTerminal(live)) return
@@ -621,14 +597,13 @@ export class DaemonSwapExecutor {
       }
     })
     if (err && typeof err === 'object') {
-      ;(err as { failure?: PartialLockHeldRecord }).failure =
-        partialLockRecordFromParts(
-          tradeId,
-          conditionId,
-          collectionByKeyset,
-          err,
-          partial,
-        )
+      ;(err as { failure?: PartialLockHeldRecord }).failure = partialLockRecordFromParts(
+        tradeId,
+        conditionId,
+        collectionByKeyset,
+        err,
+        partial,
+      )
     }
   }
 
@@ -659,10 +634,7 @@ export class DaemonSwapExecutor {
         amount,
         operationStep: 'seller-inventory-lock',
       })
-      const result = await this.ops.sellerOpenPrelocked(
-        ctx,
-        locked.lockedProofs,
-      )
+      const result = await this.ops.sellerOpenPrelocked(ctx, locked.lockedProofs)
       await updateState((state, now) => {
         const live = state.swaps[tradeId]
         if (!live || isTerminal(live)) return
@@ -725,14 +697,7 @@ export class DaemonSwapExecutor {
 
     const preflight = resolvePreflightSplit(await readState(), swap, split)
     if (preflight) {
-      await this.sellerOpenPreflightMint(
-        tradeId,
-        ctx,
-        mintUrl,
-        split,
-        amount,
-        preflight,
-      )
+      await this.sellerOpenPreflightMint(tradeId, ctx, mintUrl, split, amount, preflight)
       return
     }
 
@@ -771,10 +736,7 @@ export class DaemonSwapExecutor {
     await updateState((state, now) => {
       const live = state.swaps[tradeId]
       if (!live || isTerminal(live)) return
-      removeProofsBySecret(state, mintUrl, [
-        ...collateral.spent,
-        ...result.spentSatProofs,
-      ])
+      removeProofsBySecret(state, mintUrl, [...collateral.spent, ...result.spentSatProofs])
       addProofs(state, mintUrl, collateral.keep, 'available', { kind: 'sats', baseAsset }, now)
       addOutcomeProofsByCollection(
         state,
@@ -834,9 +796,7 @@ export class DaemonSwapExecutor {
       preflight.lockOutcomeSetId,
     )
     if (!selectedLock || sumProofRows(selectedLock) < amount) {
-      throw new Error(
-        `insufficient pre-flight lock proofs for mint seller open (${amount} sats)`,
-      )
+      throw new Error(`insufficient pre-flight lock proofs for mint seller open (${amount} sats)`)
     }
     const selectedKeep = await selectReservedProofsForOutcomeSet(
       state,
@@ -848,9 +808,7 @@ export class DaemonSwapExecutor {
       this.walletOpsDeps,
     )
     if (!selectedKeep) {
-      throw new Error(
-        `insufficient pre-flight keep proofs for mint seller open (${amount} sats)`,
-      )
+      throw new Error(`insufficient pre-flight keep proofs for mint seller open (${amount} sats)`)
     }
 
     const lockProofs = await this.prepareReservedExactProofsByOutcomeSet(
@@ -867,13 +825,7 @@ export class DaemonSwapExecutor {
       `${tradeId}:seller-preflight-keep-exact-v2`,
     )
     await updateState((state, now) => {
-      applyReservedLockProofGroups(
-        state,
-        mintUrl,
-        lockProofs,
-        preflight.reservationId,
-        now,
-      )
+      applyReservedLockProofGroups(state, mintUrl, lockProofs, preflight.reservationId, now)
     })
 
     const lockCollectionByKeyset = keysetToOutcomeCollection(selectedLock)
@@ -884,9 +836,7 @@ export class DaemonSwapExecutor {
       for (const group of lockProofs) {
         const locked = await this.ops.sellerLockOutcomeProofs(
           ctx,
-          group.split.exactProofs.map((proof) =>
-            proofWithAssetMetadata(proof, group.asset),
-          ),
+          group.split.exactProofs.map((proof) => proofWithAssetMetadata(proof, group.asset)),
           amount,
           lockProofs.length === 1
             ? `${tradeId}:seller-preflight-lock`
@@ -947,13 +897,7 @@ export class DaemonSwapExecutor {
         now,
         preflight.reservationId,
       )
-      applyReservedKeepProofGroups(
-        state,
-        mintUrl,
-        keepProofs,
-        preflight.reservationId,
-        now,
-      )
+      applyReservedKeepProofGroups(state, mintUrl, keepProofs, preflight.reservationId, now)
       live.messages = {
         ...live.messages,
         adaptorPoint: result.adaptorPointCipher,
@@ -1027,10 +971,7 @@ export class DaemonSwapExecutor {
       if (row.asset.kind !== 'Outcome') {
         throw new Error('pre-flight keep proofs must be outcome proofs')
       }
-      byOutcome.set(row.asset.outcomeSetId, [
-        ...(byOutcome.get(row.asset.outcomeSetId) ?? []),
-        row,
-      ])
+      byOutcome.set(row.asset.outcomeSetId, [...(byOutcome.get(row.asset.outcomeSetId) ?? []), row])
     }
 
     const groups: ReservedExactProofGroup[] = []
@@ -1061,16 +1002,17 @@ export class DaemonSwapExecutor {
     const loaded = await this.loadContext(tradeId)
     if (!loaded) return
     const { ctx, swap, profile } = loaded
-    if (
-      ctx.role !== 'buyer' ||
-      !swap.messages.adaptorPoint ||
-      !swap.messages.lockedProofsSeller
-    ) {
+    if (ctx.role !== 'buyer' || !swap.messages.adaptorPoint || !swap.messages.lockedProofsSeller) {
       return
     }
 
     try {
-      const amount = requiredAmount(swap.quotePaymentSubunits ?? swap.quotePaymentSats ?? swap.fillAmountSubunits ?? swap.fillAmountSats)
+      const amount = requiredAmount(
+        swap.quotePaymentSubunits ??
+          swap.quotePaymentSats ??
+          swap.fillAmountSubunits ??
+          swap.fillAmountSats,
+      )
       const baseAsset = normalizeMarketBaseAsset(swap.baseAsset)
       const selected = await selectProofs(
         await readState(),
@@ -1144,11 +1086,7 @@ export class DaemonSwapExecutor {
         live.step = 'awaiting-confirmation'
         live.updatedAt = now
       })
-      await this.sendSwapMessageResumable(
-        tradeId,
-        TRADE_MESSAGE_TYPES.settlementComplete,
-        '',
-      )
+      await this.sendSwapMessageResumable(tradeId, TRADE_MESSAGE_TYPES.settlementComplete, '')
     } catch (err) {
       await this.handleSwapStepError(tradeId, err)
     }
@@ -1207,11 +1145,7 @@ export class DaemonSwapExecutor {
         live.step = 'awaiting-confirmation'
         live.updatedAt = now
       })
-      await this.sendSwapMessageResumable(
-        tradeId,
-        TRADE_MESSAGE_TYPES.settlementComplete,
-        '',
-      )
+      await this.sendSwapMessageResumable(tradeId, TRADE_MESSAGE_TYPES.settlementComplete, '')
     } catch (err) {
       await this.handleSwapStepError(tradeId, err)
     }
@@ -1277,10 +1211,7 @@ export class DaemonSwapExecutor {
     })
   }
 
-  private async failWithSwapFailure(
-    tradeId: string,
-    failure: SwapFailure,
-  ): Promise<void> {
+  private async failWithSwapFailure(tradeId: string, failure: SwapFailure): Promise<void> {
     await updateState((state, now) => {
       const swap = state.swaps[tradeId]
       if (!swap || isTerminal(swap)) return
@@ -1363,10 +1294,7 @@ export class DaemonSwapExecutor {
     this.retryAttempts.delete(tradeId)
   }
 
-  private async handleSwapStepError(
-    tradeId: string,
-    err: unknown,
-  ): Promise<void> {
+  private async handleSwapStepError(tradeId: string, err: unknown): Promise<void> {
     const message = errorMessage(err)
     const failure = swapFailureFromError(err)
     if (failure) {
@@ -1380,11 +1308,7 @@ export class DaemonSwapExecutor {
     await this.fail(tradeId, message)
   }
 
-  private async runOnce(
-    tradeId: string,
-    step: string,
-    run: () => Promise<void>,
-  ): Promise<void> {
+  private async runOnce(tradeId: string, step: string, run: () => Promise<void>): Promise<void> {
     const key = `${tradeId}:${step}`
     if (this.inFlight.has(key)) return
     this.inFlight.add(key)
@@ -1416,16 +1340,9 @@ async function selectProofs(
   deps: WalletOpsDependencies = {},
 ): Promise<StoredProofRecord[] | null> {
   const candidates = (state?.wallet.proofs ?? []).filter(
-    (proof) =>
-      proof.mintUrl === mintUrl &&
-      proof.state === 'available' &&
-      predicate(proof),
+    (proof) => proof.mintUrl === mintUrl && proof.state === 'available' && predicate(proof),
   )
-  const inputFeePpkByKeyset = await inputFeePpkByKeysetForRows(
-    mintUrl,
-    candidates,
-    deps,
-  )
+  const inputFeePpkByKeyset = await inputFeePpkByKeysetForRows(mintUrl, candidates, deps)
   const selectedProofs = takeProofsForLock(
     candidates.map((row) => row.proof),
     amount,
@@ -1493,11 +1410,7 @@ async function selectReservedProofs(
       proof.reservedBy === reservedBy &&
       predicate(proof),
   )
-  const inputFeePpkByKeyset = await inputFeePpkByKeysetForRows(
-    mintUrl,
-    candidates,
-    deps,
-  )
+  const inputFeePpkByKeyset = await inputFeePpkByKeysetForRows(mintUrl, candidates, deps)
   const selectedProofs = takeProofsForLock(
     candidates.map((row) => row.proof),
     amount,
@@ -1663,24 +1576,8 @@ function applyReservedLockProofs(
   if (!split.wasSplit) return
 
   removeProofsBySecret(state, mintUrl, split.spentProofs)
-  addProofs(
-    state,
-    mintUrl,
-    split.exactProofs,
-    'reserved',
-    asset,
-    now,
-    reservationId,
-  )
-  addProofs(
-    state,
-    mintUrl,
-    split.changeProofs,
-    'reserved',
-    asset,
-    now,
-    reservationId,
-  )
+  addProofs(state, mintUrl, split.exactProofs, 'reserved', asset, now, reservationId)
+  addProofs(state, mintUrl, split.changeProofs, 'reserved', asset, now, reservationId)
 }
 
 function applyReservedLockProofGroups(
@@ -1691,14 +1588,7 @@ function applyReservedLockProofGroups(
   now: string,
 ): void {
   for (const group of groups) {
-    applyReservedLockProofs(
-      state,
-      mintUrl,
-      group.split,
-      group.asset,
-      reservationId,
-      now,
-    )
+    applyReservedLockProofs(state, mintUrl, group.split, group.asset, reservationId, now)
   }
 }
 
@@ -1793,10 +1683,13 @@ function addRefundedProofsByKeyset(
   outcomeByKeyset: PartialLockHeldRecord['outcomeByKeyset'],
   now: string,
 ): void {
-  const byAsset = new Map<string, {
-    asset: StoredProofRecord['asset']
-    proofs: CashuProofRecord[]
-  }>()
+  const byAsset = new Map<
+    string,
+    {
+      asset: StoredProofRecord['asset']
+      proofs: CashuProofRecord[]
+    }
+  >()
   for (const proof of proofs) {
     const metadata = proof.id ? outcomeByKeyset[proof.id] : undefined
     if (!metadata) {
@@ -1833,11 +1726,7 @@ function sumProofRows(rows: StoredProofRecord[]): number {
   return rows.reduce((sum, row) => sum + amountToNumber(row.proof.amount), 0)
 }
 
-function releaseReservedProofs(
-  state: DaemonState,
-  proofs: StoredProofRecord[],
-  now: string,
-): void {
+function releaseReservedProofs(state: DaemonState, proofs: StoredProofRecord[], now: string): void {
   const keys = new Set(proofs.map((proof) => proofKey(proof.proof)))
   for (const row of state.wallet.proofs) {
     if (!keys.has(proofKey(row.proof))) continue
@@ -1847,9 +1736,7 @@ function releaseReservedProofs(
   }
 }
 
-function outcomeAssetForMarket(
-  marketId: string | undefined,
-): OutcomeAsset | null {
+function outcomeAssetForMarket(marketId: string | undefined): OutcomeAsset | null {
   if (!marketId) return null
   const dash = marketId.indexOf('-')
   if (dash <= 0 || dash >= marketId.length - 1) return null
@@ -1860,9 +1747,7 @@ function outcomeAssetForMarket(
   }
 }
 
-function resolveMintSellerSplit(
-  swap: LocalSwapRecord,
-): MintSellerSplit | null {
+function resolveMintSellerSplit(swap: LocalSwapRecord): MintSellerSplit | null {
   if (swap.role !== 'seller' || swap.settlementKind !== 'Mint') {
     return null
   }
@@ -1910,11 +1795,7 @@ function resolvePreflightSplit(
 }
 
 function requiredAmount(amount: number | undefined): number {
-  if (
-    typeof amount !== 'number' ||
-    !Number.isSafeInteger(amount) ||
-    amount <= 0
-  ) {
+  if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount <= 0) {
     throw new Error('swap is missing a positive fill amount')
   }
   return amount
@@ -1933,10 +1814,7 @@ function proofWithOutcomeMetadata(row: StoredProofRecord): CashuProofRecord {
   } as CashuProofRecord
 }
 
-function proofWithAssetMetadata(
-  proof: CashuProofRecord,
-  asset: OutcomeAsset,
-): CashuProofRecord {
+function proofWithAssetMetadata(proof: CashuProofRecord, asset: OutcomeAsset): CashuProofRecord {
   return {
     ...proof,
     conditionId: asset.conditionId,
@@ -1951,9 +1829,7 @@ function keysetToOutcomeCollection(rows: StoredProofRecord[]): Map<string, strin
   }))
 }
 
-function groupOutcomeProofRowsByCollection(
-  rows: StoredProofRecord[],
-): OutcomeProofRowGroup[] {
+function groupOutcomeProofRowsByCollection(rows: StoredProofRecord[]): OutcomeProofRowGroup[] {
   const byCollection = new Map<string, StoredProofRecord[]>()
   for (const row of rows) {
     if (row.asset.kind !== 'Outcome') {
@@ -2020,9 +1896,7 @@ function proofKey(proof: CashuProofRecord): string {
   return `${proof.id ?? ''}:${proof.secret}:${proof.C}`
 }
 
-function swapFailureFromError(
-  err: unknown,
-): SwapFailure | PartialLockHeldRecord | null {
+function swapFailureFromError(err: unknown): SwapFailure | PartialLockHeldRecord | null {
   if (!err || typeof err !== 'object') return null
   const maybe = err as { failure?: unknown }
   if (!maybe.failure || typeof maybe.failure !== 'object') return null
@@ -2035,10 +1909,7 @@ function swapFailureFromError(
     outcomeByKeyset?: PartialLockHeldRecord['outcomeByKeyset']
     lockedProofs?: unknown
   }
-  if (
-    failure.kind === 'PartialLockHeld' &&
-    typeof failure.refundLocktime === 'number'
-  ) {
+  if (failure.kind === 'PartialLockHeld' && typeof failure.refundLocktime === 'number') {
     return {
       kind: 'PartialLockHeld',
       tradeId: typeof failure.tradeId === 'string' ? failure.tradeId : '',
@@ -2046,9 +1917,7 @@ function swapFailureFromError(
       affectedKeysets: Array.isArray(failure.affectedKeysets)
         ? failure.affectedKeysets.filter((value): value is string => typeof value === 'string')
         : [],
-      detail: typeof failure.detail === 'string'
-        ? failure.detail
-        : errorMessage(err),
+      detail: typeof failure.detail === 'string' ? failure.detail : errorMessage(err),
       outcomeByKeyset: failure.outcomeByKeyset ?? {},
       lockedProofs: Array.isArray(failure.lockedProofs)
         ? failure.lockedProofs.filter(isProofWithKeyset)
@@ -2062,9 +1931,7 @@ function swapFailureFromError(
   ) {
     return {
       kind: failure.kind,
-      detail: typeof failure.detail === 'string'
-        ? failure.detail
-        : errorMessage(err),
+      detail: typeof failure.detail === 'string' ? failure.detail : errorMessage(err),
     }
   }
   return null
@@ -2097,8 +1964,7 @@ function partialLockRecordFromParts(
   err: unknown,
   partial: NonNullable<ReturnType<typeof partialLockFromError>>,
 ): PartialLockHeldRecord {
-  const baseFailure = (err as { failure?: Partial<PartialLockHeldRecord> } | null)
-    ?.failure
+  const baseFailure = (err as { failure?: Partial<PartialLockHeldRecord> } | null)?.failure
   const failureAffectedKeysets = Array.isArray(baseFailure?.affectedKeysets)
     ? baseFailure.affectedKeysets.filter((value): value is string => typeof value === 'string')
     : []
@@ -2128,14 +1994,9 @@ function partialLockRecordFromParts(
     kind: 'PartialLockHeld',
     tradeId,
     refundLocktime:
-      typeof baseFailure?.refundLocktime === 'number'
-        ? baseFailure.refundLocktime
-        : 0,
+      typeof baseFailure?.refundLocktime === 'number' ? baseFailure.refundLocktime : 0,
     affectedKeysets,
-    detail:
-      typeof baseFailure?.detail === 'string'
-        ? baseFailure.detail
-        : errorMessage(err),
+    detail: typeof baseFailure?.detail === 'string' ? baseFailure.detail : errorMessage(err),
     outcomeByKeyset,
     lockedProofs: partial.lockedProofs.filter(isProofWithKeyset),
   }

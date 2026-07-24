@@ -1,11 +1,11 @@
-import type { PaymentRequestPayload } from '@cashu/cashu-ts'
-import { deriveNostrKeyPair, subscribeNip17DMs } from './nip17'
-import { encodeToken } from './cashu'
-import { ingressReceiveCashuToken } from './walletOps'
-import { normalizeUrl } from './url'
-import { parseCashuProofUnit } from '@bitcaster/client-sdk/marketUnits'
-import { useActivityLogStore } from '@/stores/activity-log'
-import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
+import type { PaymentRequestPayload } from "@cashu/cashu-ts";
+import { deriveNostrKeyPair, subscribeNip17DMs } from "./nip17";
+import { encodeToken } from "./cashu";
+import { ingressReceiveCashuToken } from "./walletOps";
+import { normalizeUrl } from "./url";
+import { parseCashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
+import { useActivityLogStore } from "@/stores/activity-log";
+import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
 
 /**
  * Continuous NIP-17 listener. Runs for the lifetime of the tab once the
@@ -24,69 +24,64 @@ import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
  */
 
 interface ListenerHandle {
-  unsub: () => void
-  mnemonic: string
-  relayKey: string
-  startedAt: number
+  unsub: () => void;
+  mnemonic: string;
+  relayKey: string;
+  startedAt: number;
 }
 
-let _current: ListenerHandle | null = null
-const _processedEvents = new Set<string>()
-const MAX_PROCESSED = 5000
+let _current: ListenerHandle | null = null;
+const _processedEvents = new Set<string>();
+const MAX_PROCESSED = 5000;
 
 async function handleIncomingDM(content: string): Promise<void> {
-  let payload: PaymentRequestPayload
+  let payload: PaymentRequestPayload;
   try {
-    payload = JSON.parse(content) as PaymentRequestPayload
+    payload = JSON.parse(content) as PaymentRequestPayload;
   } catch {
     // Not a JSON payload — ignore silently (other NIP-17 traffic).
-    return
+    return;
   }
-  if (!payload?.proofs || !payload.mint) return
+  if (!payload?.proofs || !payload.mint) return;
 
   // Dedup on payload.id + first proof secret (payload itself has no id of
   // its own — use this composite to survive a retransmitted DM without
   // double-crediting). payload.id is the PaymentRequest id, optional.
-  const dedupKey = `${payload.id ?? ''}|${payload.proofs[0]?.secret ?? ''}`
-  if (_processedEvents.has(dedupKey)) return
-  _processedEvents.add(dedupKey)
+  const dedupKey = `${payload.id ?? ""}|${payload.proofs[0]?.secret ?? ""}`;
+  if (_processedEvents.has(dedupKey)) return;
+  _processedEvents.add(dedupKey);
   if (_processedEvents.size > MAX_PROCESSED) {
     // Crude LRU — avoid unbounded growth on long-running tabs.
-    const first = _processedEvents.values().next().value
-    if (first) _processedEvents.delete(first)
+    const first = _processedEvents.values().next().value;
+    if (first) _processedEvents.delete(first);
   }
 
-  const normalizedMint = normalizeUrl(payload.mint)
+  const normalizedMint = normalizeUrl(payload.mint);
 
   try {
-    const unit = parseCashuProofUnit(payload.unit)
+    const unit = parseCashuProofUnit(payload.unit);
     if (!unit) {
-      throw new Error(`Unsupported Cashu proof unit '${payload.unit ?? ''}'`)
+      throw new Error(`Unsupported Cashu proof unit '${payload.unit ?? ""}'`);
     }
-    const token = encodeToken(payload.proofs, normalizedMint, unit)
-    const received = await ingressReceiveCashuToken(token, 'nip17', {
+    const token = encodeToken(payload.proofs, normalizedMint, unit);
+    const received = await ingressReceiveCashuToken(token, "nip17", {
       mintUrl: normalizedMint,
-    })
+    });
 
     useActivityLogStore.getState().addActivity({
-      type: 'deposit',
+      type: "deposit",
       amountSats: received.amountSubunits,
       baseAsset: received.baseAsset,
-      status: 'completed',
-    })
+      status: "completed",
+    });
 
     if (payload.id) {
-      usePaymentRequestInbox.getState().markReceived(
-        payload.id,
-        received.amountSubunits,
-        received.baseAsset,
-      )
+      usePaymentRequestInbox
+        .getState()
+        .markReceived(payload.id, received.amountSubunits, received.baseAsset);
     }
   } catch (e) {
-    console.warn(
-      '[nip17-listener] failed to redeem payment payload:',
-      (e as Error).message
-    )
+    console.warn("[nip17-listener] failed to redeem payment payload:", (e as Error).message);
   }
 }
 
@@ -95,59 +90,52 @@ async function handleIncomingDM(content: string): Promise<void> {
  * mnemonic + relay set is a no-op. Re-invoking with a different set stops
  * the previous subscription before starting a new one.
  */
-export async function startNip17Listener(
-  mnemonic: string,
-  relays: string[]
-): Promise<void> {
-  if (!mnemonic) return
-  const relayKey = [...relays].sort().join('|')
-  if (
-    _current &&
-    _current.mnemonic === mnemonic &&
-    _current.relayKey === relayKey
-  ) {
-    return
+export async function startNip17Listener(mnemonic: string, relays: string[]): Promise<void> {
+  if (!mnemonic) return;
+  const relayKey = [...relays].sort().join("|");
+  if (_current && _current.mnemonic === mnemonic && _current.relayKey === relayKey) {
+    return;
   }
-  _current?.unsub()
-  _current = null
+  _current?.unsub();
+  _current = null;
 
-  const kp = deriveNostrKeyPair(mnemonic)
+  const kp = deriveNostrKeyPair(mnemonic);
   const unsub = await subscribeNip17DMs(
     kp.privateKeyHex,
     kp.publicKey,
     (content) => {
-      void handleIncomingDM(content)
+      void handleIncomingDM(content);
     },
-    relays.length > 0 ? relays : undefined
-  )
-  _current = { unsub, mnemonic, relayKey, startedAt: Date.now() }
+    relays.length > 0 ? relays : undefined,
+  );
+  _current = { unsub, mnemonic, relayKey, startedAt: Date.now() };
 }
 
 export function stopNip17Listener(): void {
-  _current?.unsub()
-  _current = null
+  _current?.unsub();
+  _current = null;
 }
 
 /** Test helper — exposes the running listener handle. */
 export function __getNip17ListenerHandleForTests(): ListenerHandle | null {
-  return _current
+  return _current;
 }
 
 export function getNip17ListenerDiagnostics(): {
-  active: boolean
-  relayKey: string | null
-  startedAt: number | null
+  active: boolean;
+  relayKey: string | null;
+  startedAt: number | null;
 } {
   return {
     active: _current !== null,
     relayKey: _current?.relayKey ?? null,
     startedAt: _current?.startedAt ?? null,
-  }
+  };
 }
 
 /** Test helper — reset dedup state between tests. */
 export function __resetProcessedEventsForTests(): void {
-  _processedEvents.clear()
+  _processedEvents.clear();
 }
 
 /**
@@ -155,5 +143,5 @@ export function __resetProcessedEventsForTests(): void {
  * Mirrors what `subscribeNip17DMs` would deliver on success.
  */
 export function __handleIncomingDMForTests(content: string): Promise<void> {
-  return handleIncomingDM(content)
+  return handleIncomingDM(content);
 }

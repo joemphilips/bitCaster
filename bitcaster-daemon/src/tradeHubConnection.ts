@@ -10,10 +10,7 @@ interface SignalRModule {
 }
 
 interface HubConnectionBuilderLike {
-  withUrl(
-    url: string,
-    options: { accessTokenFactory: () => string },
-  ): HubConnectionBuilderLike
+  withUrl(url: string, options: { accessTokenFactory: () => string }): HubConnectionBuilderLike
   withAutomaticReconnect(retryDelays: number[]): HubConnectionBuilderLike
   build(): HubConnectionLike
 }
@@ -88,16 +85,11 @@ export function parseTradeCreatedPayload(
     fillAmountSubunits: numberOrUndefined(fillAmountSubunits),
     outcomeFaceAmountSubunits: numberOrUndefined(outcomeFaceAmountSubunits),
     quotePaymentSubunits: numberOrUndefined(quotePaymentSubunits),
-    settlementKind:
-      typeof settlementKind === 'string' ? settlementKind : null,
+    settlementKind: typeof settlementKind === 'string' ? settlementKind : null,
     sellerKeepOutcomeSetId:
-      typeof sellerKeepOutcomeSetId === 'string'
-        ? sellerKeepOutcomeSetId
-        : null,
+      typeof sellerKeepOutcomeSetId === 'string' ? sellerKeepOutcomeSetId : null,
     sellerLockOutcomeSetId:
-      typeof sellerLockOutcomeSetId === 'string'
-        ? sellerLockOutcomeSetId
-        : null,
+      typeof sellerLockOutcomeSetId === 'string' ? sellerLockOutcomeSetId : null,
     baseAsset: typeof baseAsset === 'string' ? baseAsset : null,
     divisibility: numberOrUndefined(divisibility),
   }
@@ -118,17 +110,14 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
 
   async start(): Promise<void> {
     if (this.connection) return
-    const { HubConnectionBuilder } = require(
-      '@microsoft/signalr',
-    ) as SignalRModule
+    const { HubConnectionBuilder } = require('@microsoft/signalr') as SignalRModule
     const connection = new HubConnectionBuilder()
       .withUrl(this.hubUrl, {
         accessTokenFactory: () =>
-          signNip98(
-            { privateKeyHex: this.nostrSecretKeyHex },
-            this.hubUrl,
-            'POST',
-          ).replace(/^Nostr\s+/, ''),
+          signNip98({ privateKeyHex: this.nostrSecretKeyHex }, this.hubUrl, 'POST').replace(
+            /^Nostr\s+/,
+            '',
+          ),
       })
       .withAutomaticReconnect([0, 2_000, 5_000, 10_000, 30_000])
       .build()
@@ -159,17 +148,8 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
     }
   }
 
-  async sendSwapMessage(
-    tradeId: string,
-    messageType: string,
-    ciphertext: string,
-  ): Promise<void> {
-    await this.requireConnection().invoke(
-      'SendSwapMessage',
-      tradeId,
-      messageType,
-      ciphertext,
-    )
+  async sendSwapMessage(tradeId: string, messageType: string, ciphertext: string): Promise<void> {
+    await this.requireConnection().invoke('SendSwapMessage', tradeId, messageType, ciphertext)
   }
 
   private requireConnection(): HubConnectionLike {
@@ -224,18 +204,10 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
       (tradeId: unknown, messageType: unknown, ciphertext: unknown) => {
         void this.invokeCallback(async () => {
           const tradeIdText = stringFromSignalR(tradeId)
-          if (
-            !tradeIdText ||
-            typeof messageType !== 'string' ||
-            typeof ciphertext !== 'string'
-          ) {
+          if (!tradeIdText || typeof messageType !== 'string' || typeof ciphertext !== 'string') {
             throw new Error('SwapMessageReceived payload had unexpected shape')
           }
-          await this.callbacks.onSwapMessageReceived?.(
-            tradeIdText,
-            messageType,
-            ciphertext,
-          )
+          await this.callbacks.onSwapMessageReceived?.(tradeIdText, messageType, ciphertext)
         })
       },
     )
@@ -252,13 +224,7 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
 
     connection.on(
       'PendingPubkeyRequired',
-      (
-        tradeId: unknown,
-        orderId: unknown,
-        role: unknown,
-        marketId: unknown,
-        deadline: unknown,
-      ) => {
+      (tradeId: unknown, orderId: unknown, role: unknown, marketId: unknown, deadline: unknown) => {
         void this.invokeCallback(async () => {
           const tradeIdText = stringFromSignalR(tradeId)
           const orderIdText = stringFromSignalR(orderId)
@@ -271,7 +237,11 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
             orderIdText,
             typeof role === 'string' ? role : '',
             marketIdText,
-            deadline instanceof Date ? deadline.toISOString() : typeof deadline === 'string' ? deadline : '',
+            deadline instanceof Date
+              ? deadline.toISOString()
+              : typeof deadline === 'string'
+                ? deadline
+                : '',
           )
         })
       },

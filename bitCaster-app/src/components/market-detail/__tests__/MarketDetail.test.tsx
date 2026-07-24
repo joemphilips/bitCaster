@@ -1,10 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MarketDetail } from "../MarketDetail";
-import type {
-  MarketDetail as MarketDetailType,
-  TradePreview,
-} from "@/types/market-detail";
+import type { MarketDetail as MarketDetailType, TradePreview } from "@/types/market-detail";
 
 vi.mock("../MarketHeader", () => ({ MarketHeader: () => <div /> }));
 vi.mock("../TradingPanel", () => ({ TradingPanel: () => <div /> }));
@@ -21,9 +18,7 @@ vi.mock("../ResolutionInfo", () => ({ ResolutionInfo: () => <div /> }));
 vi.mock("../RelatedMarkets", () => ({ RelatedMarkets: () => <div /> }));
 vi.mock("../CommentSection", () => ({ CommentSection: () => <div /> }));
 
-function makeMarket(
-  overrides: Partial<MarketDetailType> = {},
-): MarketDetailType {
+function makeMarket(overrides: Partial<MarketDetailType> = {}): MarketDetailType {
   return {
     id: "condition-1",
     title: "Will it happen?",

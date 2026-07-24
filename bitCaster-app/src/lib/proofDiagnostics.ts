@@ -2,9 +2,7 @@ import type { Proof, ProofState, Wallet as CashuWallet } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
 
 const LOCAL_STORAGE_FLAG = "bitcaster.cashuProofDiagnostics";
-const STAGING_DIAGNOSTIC_HOSTNAMES = new Set([
-  "frontend-bitcaster-staging.azurewebsites.net",
-]);
+const STAGING_DIAGNOSTIC_HOSTNAMES = new Set(["frontend-bitcaster-staging.azurewebsites.net"]);
 
 export interface ProofStateDiagnosticSummary {
   enabled: boolean;
@@ -55,8 +53,7 @@ export async function diagnoseProofStates(input: {
   }
 
   try {
-    const wallet =
-      input.wallet ?? (await useWalletStore.getState().getWallet(input.mintUrl));
+    const wallet = input.wallet ?? (await useWalletStore.getState().getWallet(input.mintUrl));
     if (!wallet.checkProofsStates) {
       const summary = {
         ...base,

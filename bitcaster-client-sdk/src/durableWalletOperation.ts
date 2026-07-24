@@ -16,8 +16,7 @@ import {
 } from './durableWalletProofTransition.ts'
 
 export const DURABLE_WALLET_OPERATION_SCHEMA_VERSION = 1 as const
-export const DURABLE_WALLET_OPERATION_ARRAY_LENGTH_MAX =
-  DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX
+export const DURABLE_WALLET_OPERATION_ARRAY_LENGTH_MAX = DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX
 export const DURABLE_WALLET_OPERATION_METADATA_KEY = 'durableWalletOperation'
 
 export type DurableWalletOperationKind =
@@ -110,18 +109,9 @@ export interface DurableWalletOperationAuthority {
   outputPlanFingerprint: string
 }
 
-export function decodeDurableWalletOperation(
-  value: unknown,
-): DurableWalletOperation {
+export function decodeDurableWalletOperation(value: unknown): DurableWalletOperation {
   if (!isRecord(value)) throw new Error('durable wallet operation is invalid')
-  exactKeys(value, [
-    'schemaVersion',
-    'operationId',
-    'kind',
-    'mintUrl',
-    'unit',
-    'preview',
-  ])
+  exactKeys(value, ['schemaVersion', 'operationId', 'kind', 'mintUrl', 'unit', 'preview'])
   if (value.schemaVersion !== DURABLE_WALLET_OPERATION_SCHEMA_VERSION) {
     throw new Error('durable wallet operation schema is unsupported')
   }
@@ -268,9 +258,7 @@ export function deriveDurableWalletOperationAuthority(
   const custody = toDurableCustodyProofOperationInput(operation)
   return {
     requestFingerprint: deriveDurableCustodyArtifactFingerprint(operation),
-    outputPlanFingerprint: deriveDurableCustodyArtifactFingerprint(
-      custody.outputs,
-    ),
+    outputPlanFingerprint: deriveDurableCustodyArtifactFingerprint(custody.outputs),
   }
 }
 
@@ -287,12 +275,7 @@ function decodeSwapPreview(value: Record<string, unknown>): void {
   requireAmount(value.amount, 'amount', false)
   requireAmount(value.fees, 'fees', true)
   requireText(value.keysetId, 'keyset id')
-  decodeArray(
-    value.inputs,
-    decodeProof,
-    'inputs',
-    DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
-  )
+  decodeArray(value.inputs, decodeProof, 'inputs', DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX)
   decodeArray(
     value.sendOutputs,
     decodeOutput,
@@ -332,13 +315,7 @@ function decodeSwapPreview(value: Record<string, unknown>): void {
 }
 
 function decodeMintPreview(value: Record<string, unknown>): void {
-  exactKeys(value, [
-    'method',
-    'quoteExpiryUnixSeconds',
-    'payload',
-    'outputData',
-    'keysetId',
-  ])
+  exactKeys(value, ['method', 'quoteExpiryUnixSeconds', 'payload', 'outputData', 'keysetId'])
   requireText(value.method, 'mint method')
   if (
     value.quoteExpiryUnixSeconds !== null &&
@@ -366,30 +343,15 @@ function decodeMintPreview(value: Record<string, unknown>): void {
     'mint output data',
     DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   )
-  assertOutputKeyset(
-    value.outputData as Record<string, unknown>[],
-    value.keysetId,
-  )
+  assertOutputKeyset(value.outputData as Record<string, unknown>[], value.keysetId)
   assertDistinctOutputs(value.outputData as Record<string, unknown>[])
 }
 
 function decodeMeltPreview(value: Record<string, unknown>): void {
-  exactKeys(value, [
-    'method',
-    'inputs',
-    'outputData',
-    'keysetId',
-    'quote',
-    'requestOptions',
-  ])
+  exactKeys(value, ['method', 'inputs', 'outputData', 'keysetId', 'quote', 'requestOptions'])
   requireText(value.method, 'melt method')
   requireText(value.keysetId, 'keyset id')
-  decodeArray(
-    value.inputs,
-    decodeProof,
-    'melt inputs',
-    DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
-  )
+  decodeArray(value.inputs, decodeProof, 'melt inputs', DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX)
   decodeArray(
     value.outputData,
     decodeOutput,
@@ -399,10 +361,7 @@ function decodeMeltPreview(value: Record<string, unknown>): void {
   if ((value.inputs as unknown[]).length === 0) {
     throw new Error('durable wallet melt inputs are empty')
   }
-  assertOutputKeyset(
-    value.outputData as Record<string, unknown>[],
-    value.keysetId,
-  )
+  assertOutputKeyset(value.outputData as Record<string, unknown>[], value.keysetId)
   assertDistinctOutputs(value.outputData as Record<string, unknown>[])
   if (!isRecord(value.quote)) throw new Error('durable wallet melt quote is invalid')
   exactKeys(value.quote, ['quote', 'amount'])
@@ -490,10 +449,7 @@ function decodeArray(
   label: string,
   maximumLength: number,
 ): void {
-  if (
-    !Array.isArray(value) ||
-    value.length > maximumLength
-  ) {
+  if (!Array.isArray(value) || value.length > maximumLength) {
     throw new Error(`durable wallet ${label} are invalid`)
   }
   value.forEach(decode)
@@ -506,24 +462,17 @@ function assertDistinctProofs(proofs: readonly Record<string, unknown>[]): void 
   }
 }
 
-function assertOutputKeyset(
-  outputs: readonly Record<string, unknown>[],
-  expected: unknown,
-): void {
+function assertOutputKeyset(outputs: readonly Record<string, unknown>[], expected: unknown): void {
   if (
     outputs.some(
-      (output) =>
-        !isRecord(output.blindedMessage) ||
-        output.blindedMessage.id !== expected,
+      (output) => !isRecord(output.blindedMessage) || output.blindedMessage.id !== expected,
     )
   ) {
     throw new Error('durable wallet output keyset is invalid')
   }
 }
 
-function assertDistinctOutputs(
-  outputs: readonly Record<string, unknown>[],
-): void {
+function assertDistinctOutputs(outputs: readonly Record<string, unknown>[]): void {
   const ids = outputs.map((output) => {
     if (!isRecord(output.blindedMessage)) return ''
     return `${String(output.secret)}:${String(output.blindedMessage.B_)}`
@@ -564,7 +513,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     typeof value === 'object' &&
     value !== null &&
     !Array.isArray(value) &&
-    (Object.getPrototypeOf(value) === Object.prototype ||
-      Object.getPrototypeOf(value) === null)
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
   )
 }

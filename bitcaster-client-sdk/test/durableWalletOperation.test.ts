@@ -59,10 +59,7 @@ test('wallet operation decoder is strict and binds exact mint/unit authority', (
       }),
     /normalized/,
   )
-  assert.throws(
-    () => decodeDurableWalletOperation({ ...walletSend(), unit: '' }),
-    /unit/,
-  )
+  assert.throws(() => decodeDurableWalletOperation({ ...walletSend(), unit: '' }), /unit/)
 })
 
 test('wallet operation converts to and recovers from exact custody authority', () => {

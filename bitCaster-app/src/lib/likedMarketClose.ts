@@ -1,8 +1,8 @@
-import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
-import { assertNever } from '@/lib/enumDiscipline'
-import type { Market } from '@/types/market'
-import type { Notification } from '@/stores/notifications'
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import { assertNever } from "@/lib/enumDiscipline";
+import type { Market } from "@/types/market";
+import type { Notification } from "@/stores/notifications";
 
 /**
  * Liked-market close detection (P22 Link G2).
@@ -19,10 +19,10 @@ import type { Notification } from '@/stores/notifications'
 
 interface LastSeenStatesState {
   /** marketId -> last observed catalogue state. */
-  states: Record<string, Market['state']>
+  states: Record<string, Market["state"]>;
   /** Replace the whole map (one write per reconcile). */
-  setStates: (next: Record<string, Market['state']>) => void
-  clear: () => void
+  setStates: (next: Record<string, Market["state"]>) => void;
+  clear: () => void;
 }
 
 export const useLikedMarketStateStore = create<LastSeenStatesState>()(
@@ -32,27 +32,30 @@ export const useLikedMarketStateStore = create<LastSeenStatesState>()(
       setStates: (next) => set({ states: next }),
       clear: () => set({ states: {} }),
     }),
-    { name: 'bitcaster-liked-market-states' },
+    { name: "bitcaster-liked-market-states" },
   ),
-)
+);
 
 function didTransitionToClosed(
-  previous: Market['state'] | undefined,
-  current: Market['state'],
+  previous: Market["state"] | undefined,
+  current: Market["state"],
 ): boolean {
-  if (previous == null) return false
+  if (previous == null) return false;
 
   switch (previous) {
-    case 'open':
+    case "open":
       switch (current) {
-        case 'open':   return false
-        case 'closed': return true
-        default:       return assertNever(current)
+        case "open":
+          return false;
+        case "closed":
+          return true;
+        default:
+          return assertNever(current);
       }
-    case 'closed':
-      return false
+    case "closed":
+      return false;
     default:
-      return assertNever(previous)
+      return assertNever(previous);
   }
 }
 
@@ -72,15 +75,15 @@ function didTransitionToClosed(
  */
 export function reconcileLikedMarketCloses(
   markets: Market[],
-  lastSeen: Record<string, Market['state']>,
+  lastSeen: Record<string, Market["state"]>,
   now = Date.now(),
-): { notifications: Notification[]; nextStates: Record<string, Market['state']> } {
-  const notifications: Notification[] = []
-  const nextStates: Record<string, Market['state']> = {}
+): { notifications: Notification[]; nextStates: Record<string, Market["state"]> } {
+  const notifications: Notification[] = [];
+  const nextStates: Record<string, Market["state"]> = {};
 
   for (const market of markets) {
-    const previous = lastSeen[market.id]
-    nextStates[market.id] = market.state
+    const previous = lastSeen[market.id];
+    nextStates[market.id] = market.state;
 
     if (didTransitionToClosed(previous, market.state)) {
       // `market.id` is the bare conditionId (markets list maps
@@ -89,8 +92,8 @@ export function reconcileLikedMarketCloses(
       // `finalOutcome` here; the catalogue/portfolio surface shows it on click.
       notifications.push({
         id: `${market.id}-market_closed`,
-        kind: 'market_closed',
-        orderId: '',
+        kind: "market_closed",
+        orderId: "",
         marketId: market.id,
         filledAmountSubunits: 0,
         remainingAmountSubunits: 0,
@@ -98,9 +101,9 @@ export function reconcileLikedMarketCloses(
         read: false,
         conditionId: market.id,
         closedAt: now,
-      })
+      });
     }
   }
 
-  return { notifications, nextStates }
+  return { notifications, nextStates };
 }

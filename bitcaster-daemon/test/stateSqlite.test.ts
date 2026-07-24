@@ -5,13 +5,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { getOrCreateOrderEphemeralKeypair, readSecrets } from '../src/secrets.ts'
-import {
-  emptyDaemonState,
-  ensureState,
-  readState,
-  updateState,
-  writeState,
-} from '../src/state.ts'
+import { emptyDaemonState, ensureState, readState, updateState, writeState } from '../src/state.ts'
 
 const walletSeedHex = '11'.repeat(32)
 const nostrSecretKeyHex = '22'.repeat(32)
@@ -41,11 +35,13 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
       mintUrl: 'http://localhost:8086',
       inputs: [{ amount: 7, secret: 'proof-secret', C: 'proof-signature' }],
       outputs: {
-        send: [{
-          blindedMessage: { amount: 7, id: 'keyset-1', B_: 'blind' },
-          blindingFactor: 'factor',
-          secret: 'output-secret',
-        }],
+        send: [
+          {
+            blindedMessage: { amount: 7, id: 'keyset-1', B_: 'blind' },
+            blindingFactor: 'factor',
+            secret: 'output-secret',
+          },
+        ],
       },
       metadata: { conditionId: 'condition-1', attempt: 2 },
       resultProofs: {
@@ -140,10 +136,7 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
     assert.equal(restored?.orders['order-1'].preflightSplit?.lockOutcomeSetId, 'YES')
     assert.equal(restored?.orders['order-1'].ephemeralPubkey, `02${'44'.repeat(32)}`)
     assert.equal(restored?.swaps['trade-placeholder'].role, undefined)
-    assert.equal(
-      restored?.swaps['trade-recovery'].orderId,
-      'engine-order-without-local-row',
-    )
+    assert.equal(restored?.swaps['trade-recovery'].orderId, 'engine-order-without-local-row')
     assert.equal(restored?.swaps['trade-full'].fillAmountSats, 1)
     assert.equal(restored?.swaps['trade-full'].fillAmountSubunits, 100)
     assert.equal(restored?.swaps['trade-full'].messages.lockedProofsBuyer, 'cipher-c')
@@ -211,10 +204,7 @@ test('state persistence clamps wall-clock regressions at creation time', async (
     await writeState(state)
     const restored = await readState()
 
-    assert.equal(
-      restored?.wallet.proofs[0].updatedAt,
-      restored?.wallet.proofs[0].createdAt,
-    )
+    assert.equal(restored?.wallet.proofs[0].updatedAt, restored?.wallet.proofs[0].createdAt)
     assert.equal(
       restored?.proofOperations['operation-1'].updatedAt,
       restored?.proofOperations['operation-1'].createdAt,

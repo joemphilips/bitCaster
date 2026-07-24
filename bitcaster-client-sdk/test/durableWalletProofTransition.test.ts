@@ -26,10 +26,7 @@ test('wallet proof transition binds exact groups and passthrough proofs', () => 
     passthroughResultGroups: { keep: [passthrough] },
   })
   const metadata = addDurableWalletProofTransitionMetadata({ unit: 'sat' }, policy)
-  assert.equal(
-    requireDurableWalletProofTransition(metadata, ['keep']).inputSource,
-    'wallet',
-  )
+  assert.equal(requireDurableWalletProofTransition(metadata, ['keep']).inputSource, 'wallet')
   assert.doesNotThrow(() =>
     assertDurableWalletProofResultMatchesPlan(
       policy,
@@ -118,15 +115,9 @@ test('wallet proof transition accepts max passthroughs and rejects max plus one'
     () =>
       createDurableWalletProofTransition({
         inputSource: 'wallet',
-        plannedOutputLabels: Array.from(
-          { length: 17 },
-          (_, index) => `group-${index}`,
-        ),
+        plannedOutputLabels: Array.from({ length: 17 }, (_, index) => `group-${index}`),
         resultGroups: Object.fromEntries(
-          Array.from({ length: 17 }, (_, index) => [
-            `group-${index}`,
-            { kind: 'operation' },
-          ]),
+          Array.from({ length: 17 }, (_, index) => [`group-${index}`, { kind: 'operation' }]),
         ),
       }),
     /group limit/,

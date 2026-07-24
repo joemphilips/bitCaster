@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { MarketDetail } from "@/components/market-detail";
@@ -55,10 +48,7 @@ import {
   resolveOutcomeSets,
 } from "@/lib/outcomeSets";
 import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
-import {
-  defaultLimitPriceForDivisibility,
-  useMarketPrice,
-} from "@/hooks/useMarketPrice";
+import { defaultLimitPriceForDivisibility, useMarketPrice } from "@/hooks/useMarketPrice";
 import {
   joinMarket,
   leaveMarket,
@@ -74,11 +64,7 @@ import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
 import { debounce } from "@/lib/debounce";
 import { refreshOrderBook } from "@/lib/orderBookRefresh";
 import { onTradeTerminal } from "@/lib/tradeTerminalEvents";
-import {
-  getBalance,
-  useActiveMintInputFeePpk,
-  useWalletStore,
-} from "@/stores/wallet";
+import { getBalance, useActiveMintInputFeePpk, useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
@@ -110,9 +96,7 @@ import type { SecretBackupState } from "@/types/settings";
 
 export { defaultLimitPriceForDivisibility };
 
-export function shouldPromptForFundedActionBackup(
-  walletBackupState: SecretBackupState,
-): boolean {
+export function shouldPromptForFundedActionBackup(walletBackupState: SecretBackupState): boolean {
   return walletBackupState === "needs_backup";
 }
 
@@ -143,10 +127,7 @@ type DerivedMarketDetailFields =
   | "comments"
   | "recentTrades"
   | "relatedMarkets";
-type MarketDetailCore = DistributiveOmit<
-  MarketDetailType,
-  DerivedMarketDetailFields
->;
+type MarketDetailCore = DistributiveOmit<MarketDetailType, DerivedMarketDetailFields>;
 type CanonicalSliceSource = "snapshot" | "rest" | "live";
 type MarketOrderBooksLoad = {
   orderBook: OrderBook;
@@ -277,23 +258,16 @@ function sortedOutcomeLabels(market: MarketDetailType): string[] {
   return [...outcomeLabels(market)].sort();
 }
 
-function marketShapeMatches(
-  current: MarketDetailType,
-  latest: MarketDetailType,
-): boolean {
+function marketShapeMatches(current: MarketDetailType, latest: MarketDetailType): boolean {
   return (
     current.title === latest.title &&
     current.type === latest.type &&
-    JSON.stringify(sortedOutcomeLabels(current)) ===
-      JSON.stringify(sortedOutcomeLabels(latest)) &&
-    JSON.stringify(categoryTagIds(current)) ===
-      JSON.stringify(categoryTagIds(latest))
+    JSON.stringify(sortedOutcomeLabels(current)) === JSON.stringify(sortedOutcomeLabels(latest)) &&
+    JSON.stringify(categoryTagIds(current)) === JSON.stringify(categoryTagIds(latest))
   );
 }
 
-export async function fetchMarketDetailWithBooks(
-  conditionId: string,
-): Promise<MarketDetailType> {
+export async function fetchMarketDetailWithBooks(conditionId: string): Promise<MarketDetailType> {
   let detail = await fetchMarketDetail(conditionId);
   const books = await fetchMarketOrderBooks(conditionId, detail);
   detail = {
@@ -338,8 +312,7 @@ async function fetchMarketOrderBooks(
       ...(detail.outcomeOrderBooks ?? {}),
       ...Object.fromEntries(entries),
     };
-    const defaultOrderBook =
-      outcomeOrderBooks[outcomeSetIds[0]] ?? detail.orderBook;
+    const defaultOrderBook = outcomeOrderBooks[outcomeSetIds[0]] ?? detail.orderBook;
     return {
       orderBook: defaultOrderBook,
       outcomeOrderBooks,
@@ -454,8 +427,7 @@ export function booksByOutcomeSetFromDetail(
   onlyOutcomeSetIds?: readonly string[],
 ): Record<string, OrderBook> {
   const result: Record<string, OrderBook> = {};
-  const outcomeSetIds =
-    onlyOutcomeSetIds ?? outcomeSetIdsForMarketBooks(detail);
+  const outcomeSetIds = onlyOutcomeSetIds ?? outcomeSetIdsForMarketBooks(detail);
   for (const [index, outcomeSetId] of outcomeSetIds.entries()) {
     const book =
       detail.outcomeOrderBooks?.[outcomeSetId] ??
@@ -496,10 +468,7 @@ function historiesByOutcomeSetFromResponse(
   const timeframe = response.timeframe as ChartTimeframe;
   return {
     timeframe,
-    historiesByOutcomeSetId: historiesByOutcomeSetFromDetail(
-      withHistory,
-      timeframe,
-    ),
+    historiesByOutcomeSetId: historiesByOutcomeSetFromDetail(withHistory, timeframe),
   };
 }
 
@@ -534,8 +503,7 @@ function applyLatestHistoryOdds(
         ...outcome,
         odds:
           latestHistoryPrice(
-            historiesByOutcomeSetId[outcome.label] ??
-              historiesByOutcomeSetId[outcome.id],
+            historiesByOutcomeSetId[outcome.label] ?? historiesByOutcomeSetId[outcome.id],
           ) ?? outcome.odds,
       })),
     };
@@ -550,13 +518,9 @@ export function liveTradeChartUpdate(
   trade: { timestamp: string; executionPrice: number; amountSubunits: number },
 ): { outcomeSetId: string; point: PricePoint } {
   const divisibility = normalizeMarketDivisibility(market.divisibility, market.baseAsset);
-  const pricePercent = priceNumeratorToPercent(
-    trade.executionPrice,
-    divisibility,
-  );
+  const pricePercent = priceNumeratorToPercent(trade.executionPrice, divisibility);
   const primary = primaryOutcomeSetId(market);
-  const chartOutcomeSetId =
-    market.type === "yesno" && primary ? primary : outcomeSetId;
+  const chartOutcomeSetId = market.type === "yesno" && primary ? primary : outcomeSetId;
   const chartPrice =
     market.type === "yesno" && primary && outcomeSetId !== primary
       ? Math.max(0, Math.min(100, 100 - pricePercent))
@@ -575,9 +539,7 @@ function sourceMapFor<T>(
   slices: Record<string, T>,
   source: CanonicalSliceSource,
 ): Record<string, CanonicalSliceSource> {
-  return Object.fromEntries(
-    Object.keys(slices).map((key) => [key, source] as const),
-  );
+  return Object.fromEntries(Object.keys(slices).map((key) => [key, source] as const));
 }
 
 function mergeBookUpdates(
@@ -615,9 +577,7 @@ function mergePriceHistory(
   for (const point of second) byTimestamp.set(point.timestamp, point);
   return windowPriceHistory({
     timeframe: incoming.timeframe,
-    data: [...byTimestamp.values()].sort((a, b) =>
-      a.timestamp.localeCompare(b.timestamp),
-    ),
+    data: [...byTimestamp.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
   });
 }
 
@@ -634,13 +594,8 @@ function mergeHistoryUpdates(
   const sources = { ...currentSources };
   for (const [outcomeSetId, history] of Object.entries(incomingHistories)) {
     const previousSource = sources[outcomeSetId];
-    histories[outcomeSetId] = mergePriceHistory(
-      histories[outcomeSetId],
-      history,
-      previousSource,
-    );
-    sources[outcomeSetId] =
-      previousSource === "live" && source === "rest" ? "live" : source;
+    histories[outcomeSetId] = mergePriceHistory(histories[outcomeSetId], history, previousSource);
+    sources[outcomeSetId] = previousSource === "live" && source === "rest" ? "live" : source;
   }
   return { histories, sources };
 }
@@ -652,9 +607,7 @@ function commentsFromResponse(
   return applyMarketComments(market, response).comments;
 }
 
-export function createMarketDetailDataState(
-  detail: MarketDetailType,
-): MarketDetailDataState {
+export function createMarketDetailDataState(detail: MarketDetailType): MarketDetailDataState {
   const booksByOutcomeSetId = booksByOutcomeSetFromDetail(detail);
   const historiesByOutcomeSetId = historiesByOutcomeSetFromDetail(
     detail,
@@ -676,10 +629,7 @@ export function createMarketDetailDataState(
     },
     historySourcesByMarketId: {
       [detail.id]: {
-        [detail.priceHistory.timeframe]: sourceMapFor(
-          historiesByOutcomeSetId,
-          "snapshot",
-        ),
+        [detail.priceHistory.timeframe]: sourceMapFor(historiesByOutcomeSetId, "snapshot"),
       },
     },
     enrichmentByMarketId: {
@@ -804,11 +754,9 @@ export function marketDetailDataReducer(
       };
     case "historyLoaded": {
       if (state.marketId !== action.marketId) return state;
-      const historiesForMarket =
-        state.historiesByMarketId[action.marketId] ?? {};
+      const historiesForMarket = state.historiesByMarketId[action.marketId] ?? {};
       const historiesForTimeframe = historiesForMarket[action.timeframe] ?? {};
-      const sourcesForMarket =
-        state.historySourcesByMarketId[action.marketId] ?? {};
+      const sourcesForMarket = state.historySourcesByMarketId[action.marketId] ?? {};
       const sourcesForTimeframe = sourcesForMarket[action.timeframe] ?? {};
       const merged = mergeHistoryUpdates(
         historiesForTimeframe,
@@ -836,15 +784,12 @@ export function marketDetailDataReducer(
     }
     case "tradeExecuted": {
       if (state.marketId !== action.marketId) return state;
-      const historiesForMarket =
-        state.historiesByMarketId[action.marketId] ?? {};
+      const historiesForMarket = state.historiesByMarketId[action.marketId] ?? {};
       const historiesForTimeframe = historiesForMarket[action.timeframe] ?? {};
-      const sourcesForMarket =
-        state.historySourcesByMarketId[action.marketId] ?? {};
+      const sourcesForMarket = state.historySourcesByMarketId[action.marketId] ?? {};
       const sourcesForTimeframe = sourcesForMarket[action.timeframe] ?? {};
       const currentHistory =
-        historiesForTimeframe[action.outcomeSetId] ??
-        emptyPriceHistory(action.timeframe);
+        historiesForTimeframe[action.outcomeSetId] ?? emptyPriceHistory(action.timeframe);
       return {
         ...state,
         historiesByMarketId: {
@@ -853,10 +798,7 @@ export function marketDetailDataReducer(
             ...historiesForMarket,
             [action.timeframe]: {
               ...historiesForTimeframe,
-              [action.outcomeSetId]: appendLivePricePoint(
-                currentHistory,
-                action.point,
-              ),
+              [action.outcomeSetId]: appendLivePricePoint(currentHistory, action.point),
             },
           },
         },
@@ -882,9 +824,7 @@ export function marketDetailDataReducer(
           state: action.status.state,
           resolution: {
             ...core.resolution,
-            ...(action.status.finalOutcome
-              ? { finalOutcome: action.status.finalOutcome }
-              : {}),
+            ...(action.status.finalOutcome ? { finalOutcome: action.status.finalOutcome } : {}),
           },
         } as MarketDetailCore,
       };
@@ -921,11 +861,9 @@ export function composeMarketDetail(
   if (!core) return null;
 
   const primary = primaryOutcomeSetId(core);
-  const historiesForTimeframe =
-    state.historiesByMarketId[core.id]?.[timeframe] ?? {};
+  const historiesForTimeframe = state.historiesByMarketId[core.id]?.[timeframe] ?? {};
   const fallbackHistory = emptyPriceHistory(timeframe);
-  const priceHistory =
-    (primary ? historiesForTimeframe[primary] : undefined) ?? fallbackHistory;
+  const priceHistory = (primary ? historiesForTimeframe[primary] : undefined) ?? fallbackHistory;
   const booksByOutcomeSetId = state.booksByMarketId[core.id] ?? {};
   const oddsAlignedCore = applyLatestHistoryOdds(core, historiesForTimeframe);
   const enrichment = state.enrichmentByMarketId[core.id] ?? {
@@ -933,8 +871,7 @@ export function composeMarketDetail(
     recentTrades: [],
     relatedMarkets: [],
   };
-  const orderBook =
-    (primary ? booksByOutcomeSetId[primary] : undefined) ?? emptyOrderBook();
+  const orderBook = (primary ? booksByOutcomeSetId[primary] : undefined) ?? emptyOrderBook();
   const base = {
     ...oddsAlignedCore,
     priceHistory,
@@ -946,10 +883,7 @@ export function composeMarketDetail(
   };
 
   if (core.type === "categorical") {
-    const categoricalCore = oddsAlignedCore as Extract<
-      MarketDetailType,
-      { type: "categorical" }
-    >;
+    const categoricalCore = oddsAlignedCore as Extract<MarketDetailType, { type: "categorical" }>;
     return {
       ...base,
       type: "categorical",
@@ -993,15 +927,11 @@ export function MarketDetailPage() {
     [marketData, chartTimeframe],
   );
   const marketBaseAsset = normalizeMarketBaseAsset(market?.baseAsset);
-  const [tradeSelection, setTradeSelection] = useState<TradeSelection | null>(
-    null,
-  );
+  const [tradeSelection, setTradeSelection] = useState<TradeSelection | null>(null);
   const [tradeAmount, setTradeAmount] = useState(0);
   const [tradeSide, setTradeSide] = useState<TradeSide>("Buy");
   const [orderType, setOrderType] = useState<OrderType>("market");
-  const [limitPrice, setLimitPrice] = useState(
-    defaultLimitPriceForDivisibility,
-  );
+  const [limitPrice, setLimitPrice] = useState(defaultLimitPriceForDivisibility);
   const [priceManuallyEdited, setPriceManuallyEdited] = useState(false);
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
     kind: "info" | "success" | "error";
@@ -1027,20 +957,13 @@ export function MarketDetailPage() {
   const [lazySetupError, setLazySetupError] = useState<string | null>(null);
   const [lazySetupCreating, setLazySetupCreating] = useState(false);
   const [showBackupReminder, setShowBackupReminder] = useState(false);
-  const [showFundedActionBackupPrompt, setShowFundedActionBackupPrompt] =
-    useState(false);
-  const [engineScoreFeeSats, setEngineScoreFeeSats] = useState<number | null>(
+  const [showFundedActionBackupPrompt, setShowFundedActionBackupPrompt] = useState(false);
+  const [engineScoreFeeSats, setEngineScoreFeeSats] = useState<number | null>(null);
+  const [pendingTopUpComment, setPendingTopUpComment] = useState<string | undefined>();
+  const [pendingTopUpIntent, setPendingTopUpIntent] = useState<PendingTopUpOrderIntent | null>(
     null,
   );
-  const [pendingTopUpComment, setPendingTopUpComment] = useState<
-    string | undefined
-  >();
-  const [pendingTopUpIntent, setPendingTopUpIntent] = useState<
-    PendingTopUpOrderIntent | null
-  >(null);
-  const [lazySetupComment, setLazySetupComment] = useState<
-    string | undefined
-  >();
+  const [lazySetupComment, setLazySetupComment] = useState<string | undefined>();
   const walletReady = setupComplete && nostrSignerMode !== "none";
 
   // Load market data
@@ -1072,9 +995,7 @@ export function MarketDetailPage() {
           });
         })
         .catch(() => {
-          setError(
-            "Failed to load market. Please check that the mint is running.",
-          );
+          setError("Failed to load market. Please check that the mint is running.");
         })
         .finally(() => {
           if (showLoading) setLoading(false);
@@ -1110,9 +1031,11 @@ export function MarketDetailPage() {
       void new BitcasterEngineClient({
         baseUrl: window.location.origin,
         authorization: ({ url, method }) => generateNip98Header(url, method),
-      }).listMyOrders(id).catch((err) => {
-        console.warn("[MarketDetailPage] own-order reconciliation failed:", err);
-      });
+      })
+        .listMyOrders(id)
+        .catch((err) => {
+          console.warn("[MarketDetailPage] own-order reconciliation failed:", err);
+        });
     }, 200);
     reconcileOwnOrders();
     cleanups.push(reconcileOwnOrders.cancel);
@@ -1180,10 +1103,12 @@ export function MarketDetailPage() {
           refreshLiveOrderBook();
         }),
       );
-      cleanups.push(onMarketRejoined(liveMarketId, () => {
-        refreshLiveOrderBook();
-        reconcileOwnOrders();
-      }));
+      cleanups.push(
+        onMarketRejoined(liveMarketId, () => {
+          refreshLiveOrderBook();
+          reconcileOwnOrders();
+        }),
+      );
       void joinMarket(liveMarketId).catch((err) => {
         console.warn("[MarketDetailPage] joinMarket failed:", err);
       });
@@ -1237,10 +1162,7 @@ export function MarketDetailPage() {
           dispatchMarketData({
             type: "marketSubmitRefreshLoaded",
             detail: latest,
-            booksByOutcomeSetId: booksByOutcomeSetFromDetail(
-              latest,
-              books.fetchedOutcomeSetIds,
-            ),
+            booksByOutcomeSetId: booksByOutcomeSetFromDetail(latest, books.fetchedOutcomeSetIds),
             replaceOutcomeSetIds: books.fetchedOutcomeSetIds,
           });
         }
@@ -1268,13 +1190,12 @@ export function MarketDetailPage() {
     let cancelled = false;
     const loadHistory = async () => {
       try {
-        const history = await fetchMarketPriceHistory(
-          market.id,
-          chartTimeframe,
-        );
+        const history = await fetchMarketPriceHistory(market.id, chartTimeframe);
         if (!cancelled) {
-          const { timeframe, historiesByOutcomeSetId } =
-            historiesByOutcomeSetFromResponse(market, history);
+          const { timeframe, historiesByOutcomeSetId } = historiesByOutcomeSetFromResponse(
+            market,
+            history,
+          );
           dispatchMarketData({
             type: "historyLoaded",
             marketId: market.id,
@@ -1387,8 +1308,7 @@ export function MarketDetailPage() {
   // whole-share count; the wire face amount is derived only at protocol
   // boundaries.
   const tradePreview = useMemo<TradePreview | null>(() => {
-    if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market)
-      return null;
+    if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market) return null;
     if (orderType === "limit") return null;
 
     const tradeBooks = resolveTradeOrderBooks(market, tradeSelection);
@@ -1428,10 +1348,7 @@ export function MarketDetailPage() {
     });
     const predictedOdds = Math.max(
       0,
-      Math.min(
-        100,
-        (quotePreview.averageExecutionPrice / marketDivisibility) * 100,
-      ),
+      Math.min(100, (quotePreview.averageExecutionPrice / marketDivisibility) * 100),
     );
     return {
       amount: tradeAmount,
@@ -1464,8 +1381,7 @@ export function MarketDetailPage() {
   //
   // The displayed quote is whole shares × limit price.
   const limitOrderPreview = useMemo<LimitOrderPreview | null>(() => {
-    if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market)
-      return null;
+    if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market) return null;
     if (orderType !== "limit") return null;
 
     const cost = computeTradeCost({
@@ -1530,17 +1446,16 @@ export function MarketDetailPage() {
           baseAsset: market.baseAsset,
         });
         if (cancelled) return;
-        const canBack =
-          canBackOrder(
-            {
-              side: tradeSide === "Buy" ? "bid" : "ask",
-              sizeSubunits: ticket.request.amountSubunits,
-              shareFaceSubunits: marketDivisibility,
-            },
-            holdings,
-            {},
-            marketDivisibility,
-          ).canBack;
+        const canBack = canBackOrder(
+          {
+            side: tradeSide === "Buy" ? "bid" : "ask",
+            sizeSubunits: ticket.request.amountSubunits,
+            shareFaceSubunits: marketDivisibility,
+          },
+          holdings,
+          {},
+          marketDivisibility,
+        ).canBack;
         if (canBack) {
           setTradeFeasibility({ canBack: true });
           return;
@@ -1548,10 +1463,7 @@ export function MarketDetailPage() {
         setTradeFeasibility({
           canBack: false,
           reason: tradeSide === "Sell" ? "outcome-tokens" : "funds",
-          message:
-            tradeSide === "Sell"
-              ? "Insufficient outcome tokens"
-              : "Insufficient funds",
+          message: tradeSide === "Sell" ? "Insufficient outcome tokens" : "Insufficient funds",
         });
       } catch {
         if (!cancelled) setTradeFeasibility(null);
@@ -1617,8 +1529,7 @@ export function MarketDetailPage() {
       } catch {
         setTradeSubmitStatus({
           kind: "error",
-          message:
-            "Could not refresh market status before submitting the order.",
+          message: "Could not refresh market status before submitting the order.",
         });
         tradeSubmitInFlightRef.current = false;
         setIsTradeSubmitting(false);
@@ -1636,8 +1547,7 @@ export function MarketDetailPage() {
       if (!marketShapeMatches(market, latestMarket)) {
         setTradeSubmitStatus({
           kind: "error",
-          message:
-            "Market metadata changed before submission. Review the market and try again.",
+          message: "Market metadata changed before submission. Review the market and try again.",
         });
         tradeSubmitInFlightRef.current = false;
         setIsTradeSubmitting(false);
@@ -1669,9 +1579,7 @@ export function MarketDetailPage() {
         });
       } catch (e) {
         const message =
-          e instanceof TradeTicketError
-            ? e.message
-            : "This order cannot be submitted yet.";
+          e instanceof TradeTicketError ? e.message : "This order cannot be submitted yet.";
         setTradeSubmitStatus({ kind: "info", message });
         tradeSubmitInFlightRef.current = false;
         setIsTradeSubmitting(false);
@@ -1754,10 +1662,7 @@ export function MarketDetailPage() {
         }
         loadMarket({ showLoading: false });
       } catch (e) {
-        if (
-          e instanceof Error &&
-          e.message.includes("No Nostr signer configured")
-        ) {
+        if (e instanceof Error && e.message.includes("No Nostr signer configured")) {
           setShowNostrAuthModal(true);
           return;
         }
@@ -1788,11 +1693,7 @@ export function MarketDetailPage() {
   const handleTradeConfirm = useCallback(
     async (comment?: string) => {
       if (!market || !tradeSelection || !tradeAmount) return;
-      if (
-        shouldPromptForFundedActionBackup(
-          useWalletStore.getState().walletBackupState,
-        )
-      ) {
+      if (shouldPromptForFundedActionBackup(useWalletStore.getState().walletBackupState)) {
         setShowFundedActionBackupPrompt(true);
         return;
       }
@@ -1903,10 +1804,7 @@ export function MarketDetailPage() {
           return;
         }
       } catch (error) {
-        if (
-          error instanceof Error &&
-          error.message.includes("No Nostr signer configured")
-        ) {
+        if (error instanceof Error && error.message.includes("No Nostr signer configured")) {
           setShowNostrAuthModal(true);
           return;
         }
@@ -2051,41 +1949,44 @@ export function MarketDetailPage() {
     setTopUpStage("overlay");
   }, []);
 
-  const handleTradingPanelTopUp = useCallback((comment?: string) => {
-    if (!market || !tradeSelection || tradeAmount <= 0) return;
-    setBalanceAtCheck(0);
-    const required = tradeFaceAmountSubunits;
-    const baseAsset = marketBaseAsset;
-    setPendingTopUpComment(comment?.trim() || undefined);
-    setPendingTopUpIntent(
-      buildPendingTopUpOrderIntent({
-        market,
-        tradeSelection,
-        tradeAmount,
-        tradeSide,
-        orderType,
-        limitPrice,
-        comment,
-        baseAsset,
+  const handleTradingPanelTopUp = useCallback(
+    (comment?: string) => {
+      if (!market || !tradeSelection || tradeAmount <= 0) return;
+      setBalanceAtCheck(0);
+      const required = tradeFaceAmountSubunits;
+      const baseAsset = marketBaseAsset;
+      setPendingTopUpComment(comment?.trim() || undefined);
+      setPendingTopUpIntent(
+        buildPendingTopUpOrderIntent({
+          market,
+          tradeSelection,
+          tradeAmount,
+          tradeSide,
+          orderType,
+          limitPrice,
+          comment,
+          baseAsset,
+          required: Math.max(required, 1),
+        }),
+      );
+      setTopUpReason({
+        kind: "collateral",
         required: Math.max(required, 1),
-      }),
-    );
-    setTopUpReason({
-      kind: "collateral",
-      required: Math.max(required, 1),
-      baseAsset,
-    });
-    setTopUpStage("overlay");
-  }, [
-    limitPrice,
-    market,
-    marketBaseAsset,
-    orderType,
-    tradeAmount,
-    tradeFaceAmountSubunits,
-    tradeSelection,
-    tradeSide,
-  ]);
+        baseAsset,
+      });
+      setTopUpStage("overlay");
+    },
+    [
+      limitPrice,
+      market,
+      marketBaseAsset,
+      orderType,
+      tradeAmount,
+      tradeFaceAmountSubunits,
+      tradeSelection,
+      tradeSide,
+    ],
+  );
 
   const handleRelatedMarketClick = useCallback(
     (marketId: string) => {
@@ -2168,15 +2069,9 @@ export function MarketDetailPage() {
         <InsufficientBalanceModal
           balance={balanceAtCheck}
           required={topUpReason?.required ?? tradeAmount}
-          title={
-            topUpReason?.kind === "score"
-              ? t("insufficientBalance.scoreTitle")
-              : undefined
-          }
+          title={topUpReason?.kind === "score" ? t("insufficientBalance.scoreTitle") : undefined}
           requiredDescription={
-            topUpReason?.kind === "score"
-              ? t("insufficientBalance.scoreNeeds")
-              : undefined
+            topUpReason?.kind === "score" ? t("insufficientBalance.scoreNeeds") : undefined
           }
           formatAmount={(amount) =>
             topUpReason?.kind === "score"
@@ -2194,10 +2089,7 @@ export function MarketDetailPage() {
       )}
       {topUpStage === "overlay" && (
         <TopUpOverlay
-          deficit={Math.max(
-            (topUpReason?.required ?? tradeAmount) - balanceAtCheck,
-            0,
-          )}
+          deficit={Math.max((topUpReason?.required ?? tradeAmount) - balanceAtCheck, 0)}
           baseAsset={topUpReason?.kind === "score" ? "sat" : marketBaseAsset}
           proofUnit={topUpReason?.kind === "score" ? "sat" : undefined}
           minimumDescription={
@@ -2289,11 +2181,7 @@ async function submitPendingEphemeralPubkey(input: {
   }
   if (entry.submitted) return;
 
-  await submitEphemeralPubkey(
-    input.tradeId,
-    entry.pubkey,
-    conditionIdFromMarketId(input.marketId),
-  );
+  await submitEphemeralPubkey(input.tradeId, entry.pubkey, conditionIdFromMarketId(input.marketId));
   usePendingPubkeySubmissionsStore.getState().markSubmitted(input.tradeId);
 }
 

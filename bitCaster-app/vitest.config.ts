@@ -26,17 +26,11 @@ export default defineConfig({
       },
       {
         find: /^@bitcaster\/client-sdk$/,
-        replacement: path.resolve(
-          __dirname,
-          "../bitcaster-client-sdk/src/index.ts",
-        ),
+        replacement: path.resolve(__dirname, "../bitcaster-client-sdk/src/index.ts"),
       },
       {
         find: /^@bitcaster\/swap-protocol\/(.+)$/,
-        replacement: path.resolve(
-          __dirname,
-          "../bitCaster-swap-protocol/src/$1",
-        ),
+        replacement: path.resolve(__dirname, "../bitCaster-swap-protocol/src/$1"),
       },
       // @cashu/cashu-ts v3 renamed CashuMint → Mint, CashuWallet → Wallet.
       // ndk-wallet still imports the old names. Route through a shim that

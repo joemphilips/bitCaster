@@ -1,6 +1,6 @@
-export const RATIO_TARGET = 0.40
+export const RATIO_TARGET = 0.4
 export const RATIO_MIN = 0.05
-export const RATIO_MAX = 0.60
+export const RATIO_MAX = 0.6
 
 // 2n+1 token holdings: n primitive outcome tokens, n complement tokens, and one base-unit bucket.
 export interface TokenHoldings {
@@ -11,10 +11,7 @@ export interface TokenHoldings {
 
 export type Reservations = Record<string, number>
 
-export function vcsAvailable(
-  holdings: TokenHoldings,
-  reservations: Reservations,
-): number {
+export function vcsAvailable(holdings: TokenHoldings, reservations: Reservations): number {
   const atoms = new Set([
     ...Object.keys(holdings.primitiveProofsByAtom),
     ...Object.keys(holdings.complementProofsByAtom),
@@ -34,9 +31,10 @@ export function vcsAvailable(
   return Math.floor(available)
 }
 
-export function computeTokenRatio(
-  holdings: TokenHoldings,
-): { baseUnitRatio: number; withinBounds: boolean } {
+export function computeTokenRatio(holdings: TokenHoldings): {
+  baseUnitRatio: number
+  withinBounds: boolean
+} {
   const baseUnitProofs = Math.max(0, finiteOrZero(holdings.baseUnitProofs))
   const ctfProofs = vcsAvailable(holdings, {})
   const total = baseUnitProofs + ctfProofs
@@ -95,7 +93,9 @@ export function buildTokenHoldings(
   }
 }
 
-function sumProofsByAtom(proofsByAtom: Record<string, { amount: number }[]>): Record<string, number> {
+function sumProofsByAtom(
+  proofsByAtom: Record<string, { amount: number }[]>,
+): Record<string, number> {
   return Object.fromEntries(
     Object.entries(proofsByAtom).map(([atom, proofs]) => [atom, sumProofs(proofs)]),
   )

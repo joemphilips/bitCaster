@@ -64,7 +64,8 @@ export async function storedConditionalProofsFromMintMetadata(input: {
 }): Promise<StoredProof[]> {
   const out: StoredProof[] = [];
   const baseAsset = normalizeMarketBaseAsset(input.baseAsset);
-  const unit = parseCashuProofUnit(input.unit) ?? parseCashuProofUnit(defaultCollateralUnit(baseAsset));
+  const unit =
+    parseCashuProofUnit(input.unit) ?? parseCashuProofUnit(defaultCollateralUnit(baseAsset));
   if (!unit) throw new Error(`Unsupported Cashu unit for base asset '${baseAsset}'`);
   for (const proof of input.proofs) {
     const metadata = await resolveConditionalProofMetadata(
@@ -134,9 +135,7 @@ async function fetchConditionalKeysets(
 ): Promise<Map<string, ConditionalKeysetInfo>> {
   const response = await fetch(`${mintUrl}/v1/conditional_keysets`);
   if (!response.ok) {
-    throw new Error(
-      `Failed to fetch conditional keysets from mint: HTTP ${response.status}`,
-    );
+    throw new Error(`Failed to fetch conditional keysets from mint: HTTP ${response.status}`);
   }
   const body = (await response.json()) as ConditionalKeysetsResponse;
   return new Map((body.keysets ?? []).map((keyset) => [keyset.id, keyset]));

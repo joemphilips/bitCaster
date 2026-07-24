@@ -2,6 +2,8 @@
   "name": "bitcaster-monorepo",
   "private": true,
   "scripts": {
+    "format": "prettier --write \"{bitCaster-app,bitCaster-doc,bitCaster-swap-protocol,bitcaster-cli,bitcaster-client-sdk,bitcaster-daemon,scripts,test-vectors,tools}/**/*.{js,mjs,cjs,ts,tsx,css,json}\" \"*.{js,mjs,cjs,ts,tsx,json}\"",
+    "format:check": "prettier --check \"{bitCaster-app,bitCaster-doc,bitCaster-swap-protocol,bitcaster-cli,bitcaster-client-sdk,bitcaster-daemon,scripts,test-vectors,tools}/**/*.{js,mjs,cjs,ts,tsx,css,json}\" \"*.{js,mjs,cjs,ts,tsx,json}\"",
     "postinstall": "node scripts/postinstall-build-cli.mjs"
   },
   "workspaces": [
@@ -13,6 +15,7 @@
     "cashu-ts"
   ],
   "devDependencies": {
-    "jsdom": "^29.1.1"
+    "jsdom": "^29.1.1",
+    "prettier": "^3.8.3"
   }
 }

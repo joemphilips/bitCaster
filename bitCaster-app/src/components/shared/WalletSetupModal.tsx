@@ -1,15 +1,15 @@
-import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { Loader2, X } from 'lucide-react'
+import { useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Loader2, X } from "lucide-react";
 
-import { validateWord } from '@/lib/bip39'
+import { validateWord } from "@/lib/bip39";
 
 interface WalletSetupModalProps {
-  isCreating?: boolean
-  error?: string | null
-  onClose: () => void
-  onCreateNew: () => void
-  onImportSeed: (words: string[]) => void
+  isCreating?: boolean;
+  error?: string | null;
+  onClose: () => void;
+  onCreateNew: () => void;
+  onImportSeed: (words: string[]) => void;
 }
 
 export function WalletSetupModal({
@@ -19,25 +19,25 @@ export function WalletSetupModal({
   onCreateNew,
   onImportSeed,
 }: WalletSetupModalProps) {
-  const { t } = useTranslation()
-  const [showImport, setShowImport] = useState(false)
-  const [seedPhrase, setSeedPhrase] = useState('')
+  const { t } = useTranslation();
+  const [showImport, setShowImport] = useState(false);
+  const [seedPhrase, setSeedPhrase] = useState("");
 
   const words = seedPhrase
     .trim()
     .split(/\s+/)
     .filter(Boolean)
-    .map((word) => word.toLowerCase())
-  const hasSeedPhraseInput = words.length > 0
-  const wordCountIsValid = words.length === 12 || words.length === 24
-  const invalidWord = wordCountIsValid ? words.find((word) => !validateWord(word)) : undefined
+    .map((word) => word.toLowerCase());
+  const hasSeedPhraseInput = words.length > 0;
+  const wordCountIsValid = words.length === 12 || words.length === 24;
+  const invalidWord = wordCountIsValid ? words.find((word) => !validateWord(word)) : undefined;
   const seedPhraseError =
     hasSeedPhraseInput && !wordCountIsValid
-      ? t('wallet.seedphraseWordCountError')
+      ? t("wallet.seedphraseWordCountError")
       : invalidWord
-        ? t('wallet.invalidSeedphraseWord', { word: invalidWord })
-        : null
-  const seedPhraseIsValid = hasSeedPhraseInput && !seedPhraseError
+        ? t("wallet.invalidSeedphraseWord", { word: invalidWord })
+        : null;
+  const seedPhraseIsValid = hasSeedPhraseInput && !seedPhraseError;
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
@@ -46,16 +46,16 @@ export function WalletSetupModal({
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
-              {t('wallet.setupTitle')}
+              {t("wallet.setupTitle")}
             </h2>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              {t('wallet.setupDesc')}
+              {t("wallet.setupDesc")}
             </p>
           </div>
           <button
             onClick={onClose}
             className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-white"
-            aria-label={t('common.close')}
+            aria-label={t("common.close")}
           >
             <X className="h-5 w-5" />
           </button>
@@ -74,14 +74,14 @@ export function WalletSetupModal({
             className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isCreating && !showImport && <Loader2 className="h-4 w-4 animate-spin" />}
-            {t('wallet.createNewWallet')}
+            {t("wallet.createNewWallet")}
           </button>
           <button
             type="button"
             onClick={() => setShowImport(true)}
             className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:hover:bg-slate-700"
           >
-            {t('wallet.importExistingWallet')}
+            {t("wallet.importExistingWallet")}
           </button>
 
           {showImport && (
@@ -90,24 +90,27 @@ export function WalletSetupModal({
                 htmlFor="wallet-seed-phrase"
                 className="block text-sm font-medium text-slate-700 dark:text-slate-200"
               >
-                {t('wallet.enterSeedPhrase')}
+                {t("wallet.enterSeedPhrase")}
               </label>
               <textarea
                 id="wallet-seed-phrase"
                 value={seedPhrase}
                 onChange={(event) => setSeedPhrase(event.target.value)}
                 rows={4}
-                aria-invalid={seedPhraseError ? 'true' : 'false'}
-                aria-describedby={seedPhraseError ? 'wallet-seed-phrase-error' : undefined}
+                aria-invalid={seedPhraseError ? "true" : "false"}
+                aria-describedby={seedPhraseError ? "wallet-seed-phrase-error" : undefined}
                 className={`w-full resize-y rounded-lg border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 dark:bg-slate-800 dark:text-white ${
                   seedPhraseError
-                    ? 'border-rose-500 focus:border-rose-500 focus:ring-rose-500/20 dark:border-rose-500'
-                    : 'border-slate-300 focus:border-blue-500 focus:ring-blue-500/20 dark:border-slate-700'
+                    ? "border-rose-500 focus:border-rose-500 focus:ring-rose-500/20 dark:border-rose-500"
+                    : "border-slate-300 focus:border-blue-500 focus:ring-blue-500/20 dark:border-slate-700"
                 }`}
-                placeholder={t('wallet.enterSeedPhrase')}
+                placeholder={t("wallet.enterSeedPhrase")}
               />
               {seedPhraseError && (
-                <p id="wallet-seed-phrase-error" className="text-sm text-rose-600 dark:text-rose-300">
+                <p
+                  id="wallet-seed-phrase-error"
+                  className="text-sm text-rose-600 dark:text-rose-300"
+                >
                   {seedPhraseError}
                 </p>
               )}
@@ -118,12 +121,12 @@ export function WalletSetupModal({
                 className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isCreating && showImport && <Loader2 className="h-4 w-4 animate-spin" />}
-                {t('wallet.restoreWallet')}
+                {t("wallet.restoreWallet")}
               </button>
             </div>
           )}
         </div>
       </div>
     </div>
-  )
+  );
 }

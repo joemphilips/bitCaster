@@ -48,9 +48,7 @@ function operation(kind: DurableCustodyProofOperationInput['kind'] = 'regular-sp
     operationId: 'operation-1',
     kind,
     mintUrl: 'https://mint.example',
-    inputs: [
-      { id: KEYSET, amount: 1, secret: 'secret-1', C: 'signature-1' },
-    ],
+    inputs: [{ id: KEYSET, amount: 1, secret: 'secret-1', C: 'signature-1' }],
     outputs: {
       keep: [
         {
@@ -104,10 +102,7 @@ test('proof-operation bounds and curve-specific mint keys fail closed', async ()
       C: `signature-${index}`,
     })),
   }
-  assert.equal(
-    decodeDurableCustodyProofOperationInput(atMaximum).inputs.length,
-    256,
-  )
+  assert.equal(decodeDurableCustodyProofOperationInput(atMaximum).inputs.length, 256)
   assert.throws(
     () =>
       decodeDurableCustodyProofOperationInput({
@@ -137,12 +132,7 @@ test('proof-operation bounds and curve-specific mint keys fail closed', async ()
       resolveDurableCustodyProofOperationFacts({
         operation: base,
         resolveMintKeys: async () =>
-          new Map([
-            [
-              KEYSET,
-              { id: KEYSET, unit: 'sat', keys: { '1': '00'.repeat(96) } },
-            ],
-          ]),
+          new Map([[KEYSET, { id: KEYSET, unit: 'sat', keys: { '1': '00'.repeat(96) } }]]),
         requireDleq: false,
       }),
     /public keys/,
@@ -196,9 +186,7 @@ test('canonical proof-operation record binds exact request and result authority'
   const facts = await resolveDurableCustodyProofOperationFacts({
     operation: exact,
     resolveMintKeys: async () =>
-      new Map([
-        [KEYSET, { id: KEYSET, unit: 'sat', keys: { '1': PUBLIC_KEY } }],
-      ]),
+      new Map([[KEYSET, { id: KEYSET, unit: 'sat', keys: { '1': PUBLIC_KEY } }]]),
     requireDleq: false,
   })
   const record = createDurableCustodyProofOperation({
@@ -215,10 +203,7 @@ test('canonical proof-operation record binds exact request and result authority'
   )
   assert.equal(record.operation.exactRequest.method, fingerprints.method)
   assert.equal(record.operation.exactRequest.path, fingerprints.path)
-  assert.equal(
-    record.operation.exactRequest.idempotencyKey,
-    fingerprints.idempotencyKey,
-  )
+  assert.equal(record.operation.exactRequest.idempotencyKey, fingerprints.idempotencyKey)
   assertDurableCustodyArtifactMatchesReference(
     record.operation.exactRequest.body,
     fingerprints.requestBody,

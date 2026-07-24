@@ -26,10 +26,7 @@ describe("useActivityLogStore", () => {
 
     useActivityLogStore.getState().replace([older, newer]);
 
-    expect(useActivityLogStore.getState().items.map((i) => i.id)).toEqual([
-      "newer",
-      "older",
-    ]);
+    expect(useActivityLogStore.getState().items.map((i) => i.id)).toEqual(["newer", "older"]);
   });
 
   it("replace reorders an equal item set when dates require it", () => {
@@ -39,10 +36,7 @@ describe("useActivityLogStore", () => {
     useActivityLogStore.setState({ items: [older, newer] });
     useActivityLogStore.getState().replace([older, newer]);
 
-    expect(useActivityLogStore.getState().items.map((i) => i.id)).toEqual([
-      "newer",
-      "older",
-    ]);
+    expect(useActivityLogStore.getState().items.map((i) => i.id)).toEqual(["newer", "older"]);
   });
 
   it("clear empties the activity feed", () => {

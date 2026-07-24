@@ -4,4 +4,4 @@ export {
   isTradeMessageType,
   type SwapCipherMessageType,
   type TradeMessageType,
-} from '@bitcaster/client-sdk/tradeSession'
+} from "@bitcaster/client-sdk/tradeSession";

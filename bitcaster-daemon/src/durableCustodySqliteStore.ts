@@ -31,9 +31,7 @@ export interface CustodyProofSqliteRow {
   readonly dleqState: 'not-present' | 'verified'
   readonly nut07State: 'UNSPENT' | 'PENDING' | 'SPENT'
   readonly selectability: 'selectable' | 'locked' | 'spent' | 'retained'
-  readonly storageClass:
-    | 'pinned-operation-bound-deterministic'
-    | 'terminal-replay-retained'
+  readonly storageClass: 'pinned-operation-bound-deterministic' | 'terminal-replay-retained'
   readonly reservationOperationId: string | null
   readonly revision: number
   readonly createdAtMs: number
@@ -184,13 +182,7 @@ export class DurableCustodySqliteStore {
                scope_id, operation_id, lineage_kind, lineage_position, proof_id
              ) VALUES (?, ?, ?, ?, ?)`,
           )
-          .run(
-            record.scope.scopeId,
-            operation.operationId,
-            kind,
-            position,
-            proofId,
-          )
+          .run(record.scope.scopeId, operation.operationId, kind, position, proofId)
       })
     }
     for (const pinReason of operation.proofStorage.pinReasons) {
@@ -201,13 +193,7 @@ export class DurableCustodySqliteStore {
                scope_id, proof_id, pin_reason, operation_id, created_at_ms
              ) VALUES (?, ?, ?, ?, ?)`,
           )
-          .run(
-            record.scope.scopeId,
-            proofId,
-            pinReason,
-            operation.operationId,
-            input.createdAtMs,
-          )
+          .run(record.scope.scopeId, proofId, pinReason, operation.operationId, input.createdAtMs)
       }
     }
     operation.verification.keysetBindings.forEach((binding, position) => {
@@ -239,14 +225,7 @@ export class DurableCustodySqliteStore {
                scope_id, operation_id, use_kind, use_position, keyset_id, curve
              ) VALUES (?, ?, ?, ?, ?, ?)`,
           )
-          .run(
-            record.scope.scopeId,
-            operation.operationId,
-            kind,
-            position,
-            use.keysetId,
-            use.curve,
-          )
+          .run(record.scope.scopeId, operation.operationId, kind, position, use.keysetId, use.curve)
       })
     }
     for (const [kind, reference] of [
@@ -260,12 +239,7 @@ export class DurableCustodySqliteStore {
              scope_id, operation_id, link_kind, position, artifact_id
            ) VALUES (?, ?, ?, 0, ?)`,
         )
-        .run(
-          record.scope.scopeId,
-          operation.operationId,
-          kind,
-          reference.artifactId,
-        )
+        .run(record.scope.scopeId, operation.operationId, kind, reference.artifactId)
     }
   }
 
@@ -435,9 +409,7 @@ export class DurableCustodySqliteStore {
         },
         semanticKind: row.semanticKind,
         state: row.operationState,
-        terminalReplayEvidenceRequired: Boolean(
-          row.terminalReplayEvidenceRequired,
-        ),
+        terminalReplayEvidenceRequired: Boolean(row.terminalReplayEvidenceRequired),
         custodyContext: {
           normalizedMint: row.normalizedMint,
           unit: row.unit,
@@ -469,10 +441,7 @@ export class DurableCustodySqliteStore {
           materialHandle: row.privateMaterialHandle,
           useId: row.privateUseId,
           publicFingerprint: row.privatePublicFingerprint,
-          exactPrivateMaterial: this.#artifactReference(
-            row.scopeId,
-            row.privateArtifactId,
-          ),
+          exactPrivateMaterial: this.#artifactReference(row.scopeId, row.privateArtifactId),
         },
         result: {
           state: row.resultState,
@@ -508,10 +477,7 @@ export class DurableCustodySqliteStore {
             : {
                 deliveryKind: 'outbox',
                 deliveryId: deliveryRow.deliveryId,
-                exactPayload: this.#artifactReference(
-                  row.scopeId,
-                  deliveryRow.payloadArtifactId,
-                ),
+                exactPayload: this.#artifactReference(row.scopeId, deliveryRow.payloadArtifactId),
                 expiresAtMs: deliveryRow.expiresAtMs,
                 state: deliveryRow.state,
                 receipt:
@@ -551,9 +517,7 @@ export class DurableCustodySqliteStore {
           : {
               tombstoneId: tombstone.tombstoneId,
               terminalAuthorityId: tombstone.terminalAuthorityId,
-              authenticatedTerminalStatus: Boolean(
-                tombstone.authenticatedTerminalStatus,
-              ),
+              authenticatedTerminalStatus: Boolean(tombstone.authenticatedTerminalStatus),
               replayCutoffObserved: Boolean(tombstone.replayCutoffObserved),
             },
     }
@@ -566,11 +530,7 @@ export class DurableCustodySqliteStore {
     expectedOperationRevision: number
     reference: DurableCustodyArtifactReference
   }): DurableCustodyArtifactRow | null {
-    this.#assertOperationRevision(
-      input.scopeId,
-      input.operationId,
-      input.expectedOperationRevision,
-    )
+    this.#assertOperationRevision(input.scopeId, input.operationId, input.expectedOperationRevision)
     const row = this.#database
       .prepare(
         `SELECT encoding, body, fingerprint, revision
@@ -651,10 +611,7 @@ export class DurableCustodySqliteStore {
     }
   }
 
-  putProofCas(
-    row: CustodyProofSqliteRow,
-    expectedRevision: number | null,
-  ): void {
+  putProofCas(row: CustodyProofSqliteRow, expectedRevision: number | null): void {
     assertProofRow(row)
     if (expectedRevision === null) {
       if (row.revision !== 0) throw new Error('new custody proof revision is invalid')
@@ -731,19 +688,14 @@ export class DurableCustodySqliteStore {
          FROM custody_proofs WHERE scope_id = ? AND proof_id = ?`,
       )
       .get(scopeId, proofId) as
-      | Omit<CustodyProofSqliteRow, 'signatureVerified'> & {
+      | (Omit<CustodyProofSqliteRow, 'signatureVerified'> & {
           signatureVerified: number
-        }
+        })
       | undefined
-    return row === undefined
-      ? null
-      : { ...row, signatureVerified: Boolean(row.signatureVerified) }
+    return row === undefined ? null : { ...row, signatureVerified: Boolean(row.signatureVerified) }
   }
 
-  putCounterCas(
-    row: CustodyCounterSqliteRow,
-    expectedRevision: number | null,
-  ): void {
+  putCounterCas(row: CustodyCounterSqliteRow, expectedRevision: number | null): void {
     assertCounterRow(row)
     if (expectedRevision === null) {
       if (row.revision !== 0) {
@@ -792,10 +744,7 @@ export class DurableCustodySqliteStore {
     if (updated.changes !== 1) throw new Error('custody counter update CAS lost')
   }
 
-  listActiveWorkPage(
-    scopeId: string,
-    cursor: string | null = null,
-  ): CustodyActiveWorkPage {
+  listActiveWorkPage(scopeId: string, cursor: string | null = null): CustodyActiveWorkPage {
     const [cursorTime, cursorId] = decodeActiveCursor(cursor)
     const rows = this.#database
       .prepare(
@@ -841,10 +790,7 @@ export class DurableCustodySqliteStore {
     }
   }
 
-  #artifactReference(
-    scopeId: string,
-    artifactId: string,
-  ): DurableCustodyArtifactReference {
+  #artifactReference(scopeId: string, artifactId: string): DurableCustodyArtifactReference {
     const row = this.#database
       .prepare(
         `SELECT encoding, fingerprint, length(body) AS byteLength
@@ -879,11 +825,7 @@ export class DurableCustodySqliteStore {
     return rows.map(({ pinReason }) => pinReason)
   }
 
-  #assertOperationRevision(
-    scopeId: string,
-    operationId: string,
-    expectedRevision: number,
-  ): void {
+  #assertOperationRevision(scopeId: string, operationId: string, expectedRevision: number): void {
     const row = this.#database
       .prepare(
         `SELECT revision FROM custody_operations
@@ -970,16 +912,10 @@ function artifactsEqual(
     left.encoding === right.encoding &&
     left.fingerprint === right.fingerprint &&
     new TextDecoder().decode(
-      encodeBoundedDurableArtifact(
-        left.artifact,
-        DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
-      ),
+      encodeBoundedDurableArtifact(left.artifact, DURABLE_CUSTODY_ARTIFACT_BYTES_MAX),
     ) ===
       new TextDecoder().decode(
-        encodeBoundedDurableArtifact(
-          right.artifact,
-          DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
-        ),
+        encodeBoundedDurableArtifact(right.artifact, DURABLE_CUSTODY_ARTIFACT_BYTES_MAX),
       )
   )
 }
@@ -1040,12 +976,7 @@ function decodeActiveCursor(cursor: string | null): [number | null, string] {
   const separator = cursor.indexOf(':')
   const time = Number(cursor.slice(0, separator))
   const operationId = decodeURIComponent(cursor.slice(separator + 1))
-  if (
-    separator <= 0 ||
-    !Number.isSafeInteger(time) ||
-    time < 0 ||
-    operationId.length === 0
-  ) {
+  if (separator <= 0 || !Number.isSafeInteger(time) || time < 0 || operationId.length === 0) {
     throw new Error('custody active work cursor is invalid')
   }
   return [time, operationId]

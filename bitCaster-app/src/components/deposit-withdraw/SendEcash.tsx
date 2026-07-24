@@ -1,21 +1,21 @@
-import { X, Lock, Bitcoin } from 'lucide-react'
-import type { MintInfo } from '@/types/deposit-withdraw'
-import { MintSelector } from './MintSelector'
-import { AmountDisplay } from './AmountDisplay'
-import { Numpad } from './Numpad'
+import { X, Lock, Bitcoin } from "lucide-react";
+import type { MintInfo } from "@/types/deposit-withdraw";
+import { MintSelector } from "./MintSelector";
+import { AmountDisplay } from "./AmountDisplay";
+import { Numpad } from "./Numpad";
 
 interface SendEcashProps {
-  mints: MintInfo[]
-  selectedMintId: string
-  amountSats: number
-  amountFiat: string
-  fiatSymbol: string
-  showFiatPrimary: boolean
-  onMintChange?: (mintId: string) => void
-  onNumpadPress?: (key: string) => void
-  onToggleCurrency?: () => void
-  onSendEcash?: () => void
-  onClose?: () => void
+  mints: MintInfo[];
+  selectedMintId: string;
+  amountSats: number;
+  amountFiat: string;
+  fiatSymbol: string;
+  showFiatPrimary: boolean;
+  onMintChange?: (mintId: string) => void;
+  onNumpadPress?: (key: string) => void;
+  onToggleCurrency?: () => void;
+  onSendEcash?: () => void;
+  onClose?: () => void;
 }
 
 export function SendEcash({
@@ -52,11 +52,7 @@ export function SendEcash({
       <div className="flex-1 flex flex-col max-w-md mx-auto w-full">
         {/* Mint selector */}
         <div className="px-5 pt-2">
-          <MintSelector
-            mints={mints}
-            selectedMintId={selectedMintId}
-            onMintChange={onMintChange}
-          />
+          <MintSelector mints={mints} selectedMintId={selectedMintId} onMintChange={onMintChange} />
         </div>
 
         {/* Amount */}
@@ -85,5 +81,5 @@ export function SendEcash({
         </div>
       </div>
     </div>
-  )
+  );
 }

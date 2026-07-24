@@ -1,12 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import {
-  lstat,
-  mkdir,
-  open,
-  readdir,
-  rmdir,
-  unlink,
-} from 'node:fs/promises'
+import { lstat, mkdir, open, readdir, rmdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { pathToFileURL } from 'node:url'
@@ -162,10 +155,7 @@ export async function bootstrapFreshDaemonProfile(
     await reservation.close()
     reservation = undefined
 
-    await validateDaemonProfileSchema(
-      input.directory,
-      getFinalProfileSchemaManifest(),
-    )
+    await validateDaemonProfileSchema(input.directory, getFinalProfileSchemaManifest())
     return {
       walletScopeId: walletIdentity.walletScopeId,
       nostrPublicKeyHex: secrets.nostrPublicKeyHex,
@@ -255,15 +245,13 @@ export async function readBootstrappedProfileSecrets(
   }
 }
 
-export async function readBootstrappedRpcToken(
-  directory: string,
-): Promise<string> {
+export async function readBootstrappedRpcToken(directory: string): Promise<string> {
   await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
   const database = openImmutableProfileDatabase(directory)
   try {
-    const row = database
-      .prepare('SELECT token FROM daemon_rpc_token WHERE singleton = 1')
-      .get() as { token: string } | undefined
+    const row = database.prepare('SELECT token FROM daemon_rpc_token WHERE singleton = 1').get() as
+      | { token: string }
+      | undefined
     if (row === undefined || !/^[A-Za-z0-9_-]{43}$/.test(row.token)) {
       throw new Error('daemon RPC token is invalid')
     }
@@ -318,12 +306,7 @@ function writeAuthorityRows(
         (scope_id, scope_kind, wallet_id, wallet_seed_digest, created_at_ms)
        VALUES (?, 'wallet', ?, ?, ?)`,
     )
-    .run(
-      input.walletScopeId,
-      input.walletId,
-      input.walletSeedDigest,
-      input.initializedAtMs,
-    )
+    .run(input.walletScopeId, input.walletId, input.walletSeedDigest, input.initializedAtMs)
   database
     .prepare(
       `INSERT INTO custody_scope_state
@@ -454,9 +437,7 @@ function protectedBodyFromRow(row: SecretAuthorityRow): ProtectedSecretBody {
 
 function isMissing(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    'code' in error &&
-    (error as NodeJS.ErrnoException).code === 'ENOENT'
+    error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT'
   )
 }
 
@@ -465,11 +446,7 @@ async function assertPathHasIdentity(
   identity: { readonly dev: bigint; readonly ino: bigint },
 ): Promise<void> {
   const current = await lstat(path, { bigint: true })
-  if (
-    !current.isFile() ||
-    current.dev !== identity.dev ||
-    current.ino !== identity.ino
-  ) {
+  if (!current.isFile() || current.dev !== identity.dev || current.ino !== identity.ino) {
     throw new Error('daemon profile bootstrap inode identity changed')
   }
 }
@@ -477,10 +454,7 @@ async function assertPathHasIdentity(
 async function captureSidecarIdentities(
   databasePath: string,
 ): Promise<ReadonlyMap<string, { readonly dev: bigint; readonly ino: bigint }>> {
-  const identities = new Map<
-    string,
-    { readonly dev: bigint; readonly ino: bigint }
-  >()
+  const identities = new Map<string, { readonly dev: bigint; readonly ino: bigint }>()
   for (const path of [`${databasePath}-wal`, `${databasePath}-shm`]) {
     try {
       const current = await lstat(path, { bigint: true })

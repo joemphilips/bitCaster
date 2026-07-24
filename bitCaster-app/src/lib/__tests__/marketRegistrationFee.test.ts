@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   addProofs: vi.fn(),
@@ -14,14 +14,14 @@ const mocks = vi.hoisted(() => ({
   getWallet: vi.fn(),
   getWalletForUnit: vi.fn(),
   createdOutputs: [] as Array<{
-    blindedMessage: { amount: number; id: string; B_: string }
-    blindingFactor: bigint
-    secret: Uint8Array
-    toProof: ReturnType<typeof vi.fn>
+    blindedMessage: { amount: number; id: string; B_: string };
+    blindingFactor: bigint;
+    secret: Uint8Array;
+    toProof: ReturnType<typeof vi.fn>;
   }>,
-}))
+}));
 
-vi.mock('@/stores/proof-db', () => ({
+vi.mock("@/stores/proof-db", () => ({
   addProofs: mocks.addProofs,
   getUnitProofs: mocks.getUnitProofs,
   getProofOperation: mocks.getProofOperation,
@@ -31,74 +31,79 @@ vi.mock('@/stores/proof-db', () => ({
   releaseProofReservation: mocks.releaseProofReservation,
   removeProofs: mocks.removeProofs,
   reserveProofs: mocks.reserveProofs,
-}))
+}));
 
-vi.mock('@/lib/cashu', () => ({
+vi.mock("@/lib/cashu", () => ({
   getWallet: mocks.getWallet,
   getWalletForUnit: mocks.getWalletForUnit,
-}))
+}));
 
-vi.mock('@/lib/markets', () => ({
+vi.mock("@/lib/markets", () => ({
   MintError: class MintError extends Error {
-    constructor(public readonly code: number, public readonly detail: string) {
-      super(detail)
-      this.name = 'MintError'
+    constructor(
+      public readonly code: number,
+      public readonly detail: string,
+    ) {
+      super(detail);
+      this.name = "MintError";
     }
   },
   registerCondition: (...args: unknown[]) => mocks.registerCondition(...args),
   requiredMarketCreationOutcomeCollections: (outcomes: readonly string[]) => {
-    const universe = [...new Set(outcomes.map((outcome) => outcome.trim()))].filter(Boolean)
-    const collections = new Set<string>()
+    const universe = [...new Set(outcomes.map((outcome) => outcome.trim()))].filter(Boolean);
+    const collections = new Set<string>();
     for (const outcome of universe) {
-      collections.add(outcome)
-      const complement = universe.filter((candidate) => candidate !== outcome)
-      if (complement.length > 0) collections.add(complement.join('|'))
+      collections.add(outcome);
+      const complement = universe.filter((candidate) => candidate !== outcome);
+      if (complement.length > 0) collections.add(complement.join("|"));
     }
-    return [...collections]
+    return [...collections];
   },
-}))
+}));
 
-vi.mock('@cashu/cashu-ts', () => {
+vi.mock("@cashu/cashu-ts", () => {
   class Mint {
     constructor(public readonly mintUrl: string) {}
 
-    async getKeys(keysetId = 'regular-keyset') {
+    async getKeys(keysetId = "regular-keyset") {
       return {
-        keysets: [{
-          id: keysetId,
-          unit: 'sat',
-          active: true,
-          input_fee_ppk: 0,
-          keys: { '1': 'k1', '2': 'k2', '4': 'k4', '5': 'k5' },
-        }],
-      }
+        keysets: [
+          {
+            id: keysetId,
+            unit: "sat",
+            active: true,
+            input_fee_ppk: 0,
+            keys: { "1": "k1", "2": "k2", "4": "k4", "5": "k5" },
+          },
+        ],
+      };
     }
 
     async restore() {
-      return { signatures: [] }
+      return { signatures: [] };
     }
   }
 
   class OutputData {
-    toProof: ReturnType<typeof vi.fn>
+    toProof: ReturnType<typeof vi.fn>;
 
     constructor(
       public readonly blindedMessage: { amount: number; id: string; B_: string },
       public readonly blindingFactor: bigint,
       public readonly secret: Uint8Array,
     ) {
-      const index = mocks.createdOutputs.length
+      const index = mocks.createdOutputs.length;
       this.toProof = vi.fn((signature: { amount: number; id: string }) => ({
         id: signature.id,
         amount: signature.amount,
         C: `C-${index}`,
         secret: new TextDecoder().decode(secret),
-      }))
-      mocks.createdOutputs.push(this)
+      }));
+      mocks.createdOutputs.push(this);
     }
 
     static createRandomData(_amount: number, keyset: { id?: string }) {
-      const keysetId = keyset.id ?? 'regular-keyset'
+      const keysetId = keyset.id ?? "regular-keyset";
       return [1, 4].map((amount, index) => ({
         blindedMessage: {
           amount,
@@ -113,292 +118,308 @@ vi.mock('@cashu/cashu-ts', () => {
           C: `C-${index}`,
           secret: `change-secret-${index}`,
         })),
-      }))
+      }));
     }
   }
 
   return {
     Amount: { from: (value: number) => value },
-    CheckStateEnum: { SPENT: 'SPENT', UNSPENT: 'UNSPENT' },
+    CheckStateEnum: { SPENT: "SPENT", UNSPENT: "UNSPENT" },
     Mint,
     OutputData,
-  }
-})
+  };
+});
 
-const {
-  registerConditionWithFee,
-  registrationFeeForPolicy,
-} = await import('../marketRegistrationFee')
+const { registerConditionWithFee, registrationFeeForPolicy } =
+  await import("../marketRegistrationFee");
 
-describe('registerConditionWithFee', () => {
+describe("registerConditionWithFee", () => {
   beforeEach(() => {
-    vi.clearAllMocks()
-    mocks.createdOutputs = []
-    mocks.getUnitProofs.mockResolvedValue([{
-      id: 'regular-keyset',
-      amount: 8,
-      secret: 'fee-proof-secret',
-      C: 'fee-proof-C',
-    }])
-    mocks.getProofOperation.mockResolvedValue(null)
-    mocks.prepareProofOperation.mockResolvedValue(undefined)
-    mocks.reserveProofs.mockResolvedValue(undefined)
-    mocks.removeProofs.mockResolvedValue(undefined)
-    mocks.addProofs.mockResolvedValue(undefined)
-    mocks.markProofOperationCompleted.mockResolvedValue(undefined)
-    mocks.markProofOperationFailed.mockResolvedValue(undefined)
-    mocks.releaseProofReservation.mockResolvedValue(undefined)
+    vi.clearAllMocks();
+    mocks.createdOutputs = [];
+    mocks.getUnitProofs.mockResolvedValue([
+      {
+        id: "regular-keyset",
+        amount: 8,
+        secret: "fee-proof-secret",
+        C: "fee-proof-C",
+      },
+    ]);
+    mocks.getProofOperation.mockResolvedValue(null);
+    mocks.prepareProofOperation.mockResolvedValue(undefined);
+    mocks.reserveProofs.mockResolvedValue(undefined);
+    mocks.removeProofs.mockResolvedValue(undefined);
+    mocks.addProofs.mockResolvedValue(undefined);
+    mocks.markProofOperationCompleted.mockResolvedValue(undefined);
+    mocks.markProofOperationFailed.mockResolvedValue(undefined);
+    mocks.releaseProofReservation.mockResolvedValue(undefined);
     mocks.getWallet.mockResolvedValue({
       mint: {
         getKeys: async () => ({
-          keysets: [{
-            id: 'regular-keyset',
-            unit: 'sat',
-            active: true,
-            input_fee_ppk: 0,
-            keys: { '1': 'k1', '2': 'k2', '4': 'k4', '5': 'k5' },
-          }],
+          keysets: [
+            {
+              id: "regular-keyset",
+              unit: "sat",
+              active: true,
+              input_fee_ppk: 0,
+              keys: { "1": "k1", "2": "k2", "4": "k4", "5": "k5" },
+            },
+          ],
         }),
       },
-    })
-    mocks.getWalletForUnit.mockImplementation(mocks.getWallet)
-  })
+    });
+    mocks.getWalletForUnit.mockImplementation(mocks.getWallet);
+  });
 
-  it('charges one-vs-rest registration fees for every generated collection', () => {
-    expect(registrationFeeForPolicy(['A', 'B', 'C'], {
-      defaultKeysetCreation: 'one-vs-rest',
-      registrationFees: [{ unit: 'msat', registrationFeeBase: 10000, registrationFeePerKeyset: 10000 }],
-    }, 'msat')).toBe(70000)
-  })
+  it("charges one-vs-rest registration fees for every generated collection", () => {
+    expect(
+      registrationFeeForPolicy(
+        ["A", "B", "C"],
+        {
+          defaultKeysetCreation: "one-vs-rest",
+          registrationFees: [
+            { unit: "msat", registrationFeeBase: 10000, registrationFeePerKeyset: 10000 },
+          ],
+        },
+        "msat",
+      ),
+    ).toBe(70000);
+  });
 
-  it('accepts fewer registration-fee change signatures than prepared blank outputs', async () => {
+  it("accepts fewer registration-fee change signatures than prepared blank outputs", async () => {
     mocks.registerCondition.mockResolvedValue({
-      condition_id: 'cond-1',
-      keysets: { Yes: 'ks-yes', No: 'ks-no' },
-      change: [{ id: 'regular-keyset', amount: 5, C_: 'blind-sig' }],
-    })
+      condition_id: "cond-1",
+      keysets: { Yes: "ks-yes", No: "ks-no" },
+      change: [{ id: "regular-keyset", amount: 5, C_: "blind-sig" }],
+    });
 
     const result = await registerConditionWithFee({
-      mintUrl: 'https://mint.example.test',
+      mintUrl: "https://mint.example.test",
       requiredFeeSubunits: 3,
       request: {
-        tags: [['title', 'Fee change']],
-        announcementHex: 'announcement',
-        collateral: 'sat',
+        tags: [["title", "Fee change"]],
+        announcementHex: "announcement",
+        collateral: "sat",
       },
-    })
+    });
 
-    expect(result.condition_id).toBe('cond-1')
-    expect(mocks.createdOutputs).toHaveLength(2)
-    expect(mocks.registerCondition.mock.calls[0][0].outputs.map(
-      (output: { amount: number }) => output.amount,
-    )).toEqual([0, 0])
+    expect(result.condition_id).toBe("cond-1");
+    expect(mocks.createdOutputs).toHaveLength(2);
+    expect(
+      mocks.registerCondition.mock.calls[0][0].outputs.map(
+        (output: { amount: number }) => output.amount,
+      ),
+    ).toEqual([0, 0]);
     expect(mocks.createdOutputs[0].toProof).toHaveBeenCalledWith(
-      { id: 'regular-keyset', amount: 5, C_: 'blind-sig' },
-      expect.objectContaining({ id: 'regular-keyset' }),
-    )
+      { id: "regular-keyset", amount: 5, C_: "blind-sig" },
+      expect.objectContaining({ id: "regular-keyset" }),
+    );
     expect(mocks.addProofs).toHaveBeenCalledWith([
       expect.objectContaining({
-        mintUrl: 'https://mint.example.test',
+        mintUrl: "https://mint.example.test",
         amount: 5,
-        secret: 'change-secret-0',
+        secret: "change-secret-0",
       }),
-    ])
-    expect(mocks.removeProofs).toHaveBeenCalledWith(['fee-proof-secret'])
+    ]);
+    expect(mocks.removeProofs).toHaveBeenCalledWith(["fee-proof-secret"]);
     expect(mocks.markProofOperationCompleted).toHaveBeenCalledWith(
       expect.stringMatching(/^ctf-condition-registration:/),
       { change: [expect.objectContaining({ amount: 5 })] },
-    )
-  })
+    );
+  });
 
-  it('pays a USD registration fee for USD market collateral', async () => {
-    mocks.getUnitProofs.mockResolvedValueOnce([{
-      id: 'usd-keyset',
-      amount: 8,
-      secret: 'usd-fee-proof-secret',
-      C: 'usd-fee-proof-C',
-    }])
+  it("pays a USD registration fee for USD market collateral", async () => {
+    mocks.getUnitProofs.mockResolvedValueOnce([
+      {
+        id: "usd-keyset",
+        amount: 8,
+        secret: "usd-fee-proof-secret",
+        C: "usd-fee-proof-C",
+      },
+    ]);
     mocks.getWallet.mockResolvedValue({
       mint: {
         getKeys: async () => ({
-          keysets: [{
-            id: 'usd-keyset',
-            unit: 'usd',
-            active: true,
-            input_fee_ppk: 0,
-            keys: { '1': 'k1', '2': 'k2', '4': 'k4', '5': 'k5' },
-          }],
+          keysets: [
+            {
+              id: "usd-keyset",
+              unit: "usd",
+              active: true,
+              input_fee_ppk: 0,
+              keys: { "1": "k1", "2": "k2", "4": "k4", "5": "k5" },
+            },
+          ],
         }),
       },
-    })
+    });
     mocks.registerCondition.mockResolvedValue({
-      condition_id: 'cond-usd',
-      keysets: { Yes: 'ks-yes', No: 'ks-no' },
-      change: [{ id: 'usd-keyset', amount: 5, C_: 'blind-sig' }],
-    })
+      condition_id: "cond-usd",
+      keysets: { Yes: "ks-yes", No: "ks-no" },
+      change: [{ id: "usd-keyset", amount: 5, C_: "blind-sig" }],
+    });
 
     const result = await registerConditionWithFee({
-      mintUrl: 'https://mint.example.test',
+      mintUrl: "https://mint.example.test",
       requiredFeeSubunits: 3,
       request: {
-        tags: [['title', 'USD Fee']],
-        announcementHex: 'announcement',
-        collateral: 'usd',
+        tags: [["title", "USD Fee"]],
+        announcementHex: "announcement",
+        collateral: "usd",
       },
-    })
+    });
 
-    expect(result.condition_id).toBe('cond-usd')
-    expect(mocks.getUnitProofs).toHaveBeenCalledWith(
-      'https://mint.example.test',
-      { unit: 'usd' },
-    )
-    expect(mocks.getWalletForUnit).toHaveBeenCalledWith('https://mint.example.test', 'usd')
+    expect(result.condition_id).toBe("cond-usd");
+    expect(mocks.getUnitProofs).toHaveBeenCalledWith("https://mint.example.test", { unit: "usd" });
+    expect(mocks.getWalletForUnit).toHaveBeenCalledWith("https://mint.example.test", "usd");
     expect(mocks.registerCondition).toHaveBeenCalledWith(
       expect.objectContaining({
-        collateral: 'usd',
-        fee: [expect.objectContaining({ secret: 'usd-fee-proof-secret' })],
+        collateral: "usd",
+        fee: [expect.objectContaining({ secret: "usd-fee-proof-secret" })],
       }),
-    )
+    );
     expect(mocks.addProofs).toHaveBeenCalledWith([
       expect.objectContaining({
-        mintUrl: 'https://mint.example.test',
-        baseAsset: 'usd',
+        mintUrl: "https://mint.example.test",
+        baseAsset: "usd",
         amount: 5,
       }),
-    ])
-  })
+    ]);
+  });
 
-  it('preserves msat collateral unit for fee proofs and change outputs', async () => {
+  it("preserves msat collateral unit for fee proofs and change outputs", async () => {
     mocks.getUnitProofs.mockResolvedValueOnce([
       {
-        id: 'sat-keyset',
+        id: "sat-keyset",
         amount: 8,
-        secret: 'sat-fee-proof-secret',
-        C: 'sat-fee-proof-C',
+        secret: "sat-fee-proof-secret",
+        C: "sat-fee-proof-C",
       },
       {
-        id: 'msat-keyset',
+        id: "msat-keyset",
         amount: 8,
-        secret: 'msat-fee-proof-secret',
-        C: 'msat-fee-proof-C',
+        secret: "msat-fee-proof-secret",
+        C: "msat-fee-proof-C",
       },
-    ])
+    ]);
     mocks.getWalletForUnit.mockResolvedValue({
       mint: {
         getKeys: async () => ({
           keysets: [
             {
-              id: 'sat-keyset',
-              unit: 'sat',
+              id: "sat-keyset",
+              unit: "sat",
               active: true,
               input_fee_ppk: 0,
-              keys: { '1': 'k1', '2': 'k2', '4': 'k4', '5': 'k5' },
+              keys: { "1": "k1", "2": "k2", "4": "k4", "5": "k5" },
             },
             {
-              id: 'msat-keyset',
-              unit: 'msat',
+              id: "msat-keyset",
+              unit: "msat",
               active: true,
               input_fee_ppk: 0,
-              keys: { '1': 'k1', '2': 'k2', '4': 'k4', '5': 'k5' },
+              keys: { "1": "k1", "2": "k2", "4": "k4", "5": "k5" },
             },
           ],
         }),
       },
-    })
+    });
     mocks.registerCondition.mockResolvedValue({
-      condition_id: 'cond-msat',
-      keysets: { Yes: 'ks-yes', No: 'ks-no' },
-      change: [{ id: 'msat-keyset', amount: 5, C_: 'blind-sig' }],
-    })
+      condition_id: "cond-msat",
+      keysets: { Yes: "ks-yes", No: "ks-no" },
+      change: [{ id: "msat-keyset", amount: 5, C_: "blind-sig" }],
+    });
 
     const result = await registerConditionWithFee({
-      mintUrl: 'https://mint.example.test',
+      mintUrl: "https://mint.example.test",
       requiredFeeSubunits: 3,
       request: {
-        tags: [['title', 'msat Fee']],
-        announcementHex: 'announcement',
-        collateral: 'msat',
+        tags: [["title", "msat Fee"]],
+        announcementHex: "announcement",
+        collateral: "msat",
       },
-    })
+    });
 
-    expect(result.condition_id).toBe('cond-msat')
-    expect(mocks.getUnitProofs).toHaveBeenCalledWith(
-      'https://mint.example.test',
-      { unit: 'msat' },
-    )
-    expect(mocks.getWalletForUnit).toHaveBeenCalledWith('https://mint.example.test', 'msat')
-    expect(mocks.getWallet).not.toHaveBeenCalledWith('https://mint.example.test', 'msat')
+    expect(result.condition_id).toBe("cond-msat");
+    expect(mocks.getUnitProofs).toHaveBeenCalledWith("https://mint.example.test", { unit: "msat" });
+    expect(mocks.getWalletForUnit).toHaveBeenCalledWith("https://mint.example.test", "msat");
+    expect(mocks.getWallet).not.toHaveBeenCalledWith("https://mint.example.test", "msat");
     expect(mocks.registerCondition).toHaveBeenCalledWith(
       expect.objectContaining({
-        collateral: 'msat',
-        fee: [expect.objectContaining({ secret: 'msat-fee-proof-secret' })],
+        collateral: "msat",
+        fee: [expect.objectContaining({ secret: "msat-fee-proof-secret" })],
         outputs: [
-          expect.objectContaining({ id: 'msat-keyset' }),
-          expect.objectContaining({ id: 'msat-keyset' }),
+          expect.objectContaining({ id: "msat-keyset" }),
+          expect.objectContaining({ id: "msat-keyset" }),
         ],
       }),
-    )
+    );
     expect(mocks.addProofs).toHaveBeenCalledWith([
       expect.objectContaining({
-        mintUrl: 'https://mint.example.test',
-        baseAsset: 'sat',
-        unit: 'msat',
+        mintUrl: "https://mint.example.test",
+        baseAsset: "sat",
+        unit: "msat",
         amount: 5,
       }),
-    ])
-  })
+    ]);
+  });
 
-  it('fails closed when no regular USD keyset is available for USD fee change', async () => {
+  it("fails closed when no regular USD keyset is available for USD fee change", async () => {
     mocks.getWallet.mockResolvedValueOnce({
       mint: {
         getKeys: async () => ({
-          keysets: [{
-            id: 'sat-keyset',
-            unit: 'sat',
-            active: true,
-            input_fee_ppk: 0,
-            keys: { '1': 'k1', '2': 'k2', '4': 'k4', '5': 'k5' },
-          }],
+          keysets: [
+            {
+              id: "sat-keyset",
+              unit: "sat",
+              active: true,
+              input_fee_ppk: 0,
+              keys: { "1": "k1", "2": "k2", "4": "k4", "5": "k5" },
+            },
+          ],
         }),
       },
-    })
+    });
 
-    await expect(registerConditionWithFee({
-      mintUrl: 'https://mint.example.test',
-      requiredFeeSubunits: 3,
-      request: {
-        tags: [['title', 'Missing USD']],
-        announcementHex: 'announcement',
-        collateral: 'usd',
-      },
-    })).rejects.toThrow('Mint did not return a regular usd keyset')
+    await expect(
+      registerConditionWithFee({
+        mintUrl: "https://mint.example.test",
+        requiredFeeSubunits: 3,
+        request: {
+          tags: [["title", "Missing USD"]],
+          announcementHex: "announcement",
+          collateral: "usd",
+        },
+      }),
+    ).rejects.toThrow("Mint did not return a regular usd keyset");
 
-    expect(mocks.registerCondition).not.toHaveBeenCalled()
-  })
+    expect(mocks.registerCondition).not.toHaveBeenCalled();
+  });
 
-  it('rejects more registration-fee change signatures than prepared outputs', async () => {
+  it("rejects more registration-fee change signatures than prepared outputs", async () => {
     mocks.registerCondition.mockResolvedValue({
-      condition_id: 'cond-1',
-      keysets: { Yes: 'ks-yes', No: 'ks-no' },
+      condition_id: "cond-1",
+      keysets: { Yes: "ks-yes", No: "ks-no" },
       change: [
-        { id: 'regular-keyset', amount: 1, C_: 'sig-1' },
-        { id: 'regular-keyset', amount: 2, C_: 'sig-2' },
-        { id: 'regular-keyset', amount: 2, C_: 'sig-3' },
+        { id: "regular-keyset", amount: 1, C_: "sig-1" },
+        { id: "regular-keyset", amount: 2, C_: "sig-2" },
+        { id: "regular-keyset", amount: 2, C_: "sig-3" },
       ],
-    })
+    });
 
-    await expect(registerConditionWithFee({
-      mintUrl: 'https://mint.example.test',
-      requiredFeeSubunits: 3,
-      request: {
-        tags: [['title', 'Fee change']],
-        announcementHex: 'announcement',
-        collateral: 'sat',
-      },
-    })).rejects.toThrow(
-      'Mint returned 3 registration-fee change signatures, but only 2 change outputs were prepared',
-    )
-    expect(mocks.addProofs).not.toHaveBeenCalled()
-    expect(mocks.removeProofs).not.toHaveBeenCalled()
-  })
-})
+    await expect(
+      registerConditionWithFee({
+        mintUrl: "https://mint.example.test",
+        requiredFeeSubunits: 3,
+        request: {
+          tags: [["title", "Fee change"]],
+          announcementHex: "announcement",
+          collateral: "sat",
+        },
+      }),
+    ).rejects.toThrow(
+      "Mint returned 3 registration-fee change signatures, but only 2 change outputs were prepared",
+    );
+    expect(mocks.addProofs).not.toHaveBeenCalled();
+    expect(mocks.removeProofs).not.toHaveBeenCalled();
+  });
+});

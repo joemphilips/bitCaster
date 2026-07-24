@@ -20,11 +20,7 @@ export function takeProofsForLock<T extends AmountProofLike>(
     return source.length > 0 ? [...source] : null
   }
 
-  const sameKeyset = takeProofsForLockFromSingleKeyset(
-    source,
-    target,
-    inputFeePpkByKeyset,
-  )
+  const sameKeyset = takeProofsForLockFromSingleKeyset(source, target, inputFeePpkByKeyset)
   if (sameKeyset) return sameKeyset
 
   return takeGreedyProofs(source, target, inputFeePpkByKeyset)
@@ -49,9 +45,7 @@ export function keysetToOutcomeCollection<T>(
     if (!keysetId) throw new Error('Outcome proof is missing keyset id')
     const existing = result.get(keysetId)
     if (existing && existing !== outcomeCollection) {
-      throw new Error(
-        `Keyset ${keysetId} maps to both ${existing} and ${outcomeCollection}`,
-      )
+      throw new Error(`Keyset ${keysetId} maps to both ${existing} and ${outcomeCollection}`)
     }
     result.set(keysetId, outcomeCollection)
   }
@@ -101,20 +95,16 @@ function takeProofsForLockFromSingleKeyset<T extends AmountProofLike>(
         return taken
           ? {
               taken,
-              overpay:
-                spendableProofAmount(taken, inputFeePpkByKeyset) - target,
+              overpay: spendableProofAmount(taken, inputFeePpkByKeyset) - target,
               proofCount: taken.length,
             }
           : null
       })
       .filter(
-        (
-          candidate,
-        ): candidate is { taken: T[]; overpay: number; proofCount: number } =>
+        (candidate): candidate is { taken: T[]; overpay: number; proofCount: number } =>
           candidate !== null,
       )
-      .sort((a, b) => a.overpay - b.overpay || a.proofCount - b.proofCount)[0]
-      ?.taken ?? null
+      .sort((a, b) => a.overpay - b.overpay || a.proofCount - b.proofCount)[0]?.taken ?? null
   )
 }
 

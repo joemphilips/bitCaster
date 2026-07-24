@@ -50,9 +50,7 @@ export async function withDurableCustodyUnitOfWork<T>(
         observedAtMs < row.highWaterMarkMs ||
         observedAtMs >= row.leaseExpiresAtMs
       ) {
-        throw new DurableCustodyFenceError(
-          'custody unit of work has stale or expired authority',
-        )
+        throw new DurableCustodyFenceError('custody unit of work has stale or expired authority')
       }
       const updated = database
         .prepare(

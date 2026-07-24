@@ -2,10 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import { BitcasterEngineClient } from '../src/engineClient.ts'
-import {
-  createMarketViaEngine,
-  submitOracleAttestationViaEngine,
-} from '../src/marketLifecycle.ts'
+import { createMarketViaEngine, submitOracleAttestationViaEngine } from '../src/marketLifecycle.ts'
 import { signNip98 } from '../../bitcaster-daemon/src/nostrAuth.ts'
 
 const TEST_NOSTR_PRIVATE_KEY = `${'0'.repeat(62)}01`
@@ -73,10 +70,7 @@ test('createMarketViaEngine signs a NIP-98 payload tag for the exact serialized 
 
   assert.equal(authPayloadHash, sentBodyHash)
   assert.match(sentContentType ?? '', /^multipart\/form-data; boundary=/)
-  assert.match(
-    sentBodyText,
-    /name="thumbnail"; filename="thumb\.png"\r\nContent-Type: image\/png/,
-  )
+  assert.match(sentBodyText, /name="thumbnail"; filename="thumb\.png"\r\nContent-Type: image\/png/)
   assert.equal(readNip98PayloadTag(requests[0]?.auth), sentBodyHash)
   assert.deepEqual(requests, [
     {
@@ -201,20 +195,14 @@ test('submitOracleAttestationViaEngine posts self-authenticating JSON without au
 
 async function sha256Hex(data: BufferSource): Promise<string> {
   const hash = await crypto.subtle.digest('SHA-256', data)
-  return [...new Uint8Array(hash)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function sha256Utf8Hex(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
-function makeNip98LikeHeader(input: {
-  url: string
-  method: string
-  payloadHash?: string
-}): string {
+function makeNip98LikeHeader(input: { url: string; method: string; payloadHash?: string }): string {
   const tags = [
     ['u', input.url],
     ['method', input.method.toUpperCase()],
@@ -229,7 +217,10 @@ function readNip98PayloadTag(header: string | null | undefined): string | undefi
   return event.tags?.find((tag) => tag[0] === 'payload')?.[1]
 }
 
-function decodeNip98Header(header: string | null | undefined): { kind?: number; tags?: string[][] } {
+function decodeNip98Header(header: string | null | undefined): {
+  kind?: number
+  tags?: string[][]
+} {
   assert.ok(header?.startsWith('Nostr '))
   return JSON.parse(Buffer.from(header.slice('Nostr '.length), 'base64').toString('utf8')) as {
     kind?: number

@@ -24,16 +24,13 @@ describe("e2e diagnostics", () => {
       ephemeralPrivkeyHex: "33".repeat(32),
       ephemeralPubkeyHex: "02" + "44".repeat(32),
     });
-    useActiveSwapsStore
-      .getState()
-      .recordMessage("trade-1", "lockedProofsBuyer", "ciphertext");
+    useActiveSwapsStore.getState().recordMessage("trade-1", "lockedProofsBuyer", "ciphertext");
     useActiveSwapsStore.getState().setStep("trade-1", "completed");
 
     installE2EDiagnostics();
 
     const snapshot =
-      window.__BITCASTER_E2E__?.getSwapDiagnostics("trade-1") ??
-      getSwapDiagnostics("trade-1");
+      window.__BITCASTER_E2E__?.getSwapDiagnostics("trade-1") ?? getSwapDiagnostics("trade-1");
     const serialized = JSON.stringify(snapshot);
 
     expect(snapshot.activeTrade).toMatchObject({

@@ -1,9 +1,9 @@
-import { renderHook, act } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { ReactNode } from 'react'
-import { MemoryRouter } from 'react-router'
-import { useSettingsStore } from '@/stores/settings'
-import { useMarketDraftStore, defaultDraft } from '@/stores/marketDraft'
+import { renderHook, act } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router";
+import { useSettingsStore } from "@/stores/settings";
+import { useMarketDraftStore, defaultDraft } from "@/stores/marketDraft";
 
 const {
   mockNavigate,
@@ -25,162 +25,189 @@ const {
   mockGetOracleAnnouncementEventId: vi.fn(),
   mockRefreshMintInfoWithoutActivating: vi.fn(),
   mockWalletState: {
-    activeMintUrl: 'https://mint.example.test',
+    activeMintUrl: "https://mint.example.test",
     mints: [
       {
-        url: 'https://mint.example.test',
+        url: "https://mint.example.test",
         info: {
           nuts: {
             CTF: {
-              default_keyset_creation: 'one-vs-rest',
-              registration_fees: [{ unit: 'msat', registration_fee_base: 0, registration_fee_per_keyset: 0 }],
+              default_keyset_creation: "one-vs-rest",
+              registration_fees: [
+                { unit: "msat", registration_fee_base: 0, registration_fee_per_keyset: 0 },
+              ],
             },
           },
         },
       },
     ],
   },
-}))
+}));
 
-vi.mock('react-router', async () => {
-  const actual = await vi.importActual('react-router')
-  return { ...actual, useNavigate: () => mockNavigate }
-})
+vi.mock("react-router", async () => {
+  const actual = await vi.importActual("react-router");
+  return { ...actual, useNavigate: () => mockNavigate };
+});
 
-vi.mock('@/lib/markets', () => ({
+vi.mock("@/lib/markets", () => ({
   createMarket: (...args: unknown[]) => mockCreateMarket(...args),
   requiredMarketCreationOutcomeCollections: (outcomes: readonly string[]) => outcomes,
   MintError: class MintError extends Error {
-    constructor(public readonly code: number, public readonly detail: string) {
-      super(detail)
-      this.name = 'MintError'
+    constructor(
+      public readonly code: number,
+      public readonly detail: string,
+    ) {
+      super(detail);
+      this.name = "MintError";
     }
   },
-}))
+}));
 
-vi.mock('@/lib/marketRegistrationFee', () => ({
+vi.mock("@/lib/marketRegistrationFee", () => ({
   MAX_CONDITION_REGISTRATION_FEE_SUBUNITS: 1000000,
   getAvailableRegularBalanceSubunits: (...args: unknown[]) =>
     mockGetAvailableRegularBalanceSubunits(...args),
-  registerConditionWithFee: (...args: unknown[]) =>
-    mockRegisterConditionWithFee(...args),
+  registerConditionWithFee: (...args: unknown[]) => mockRegisterConditionWithFee(...args),
   registrationFeeForPolicy: (
     outcomes: readonly string[],
     settings: {
-      defaultKeysetCreation: 'none' | 'one-vs-rest' | 'all'
-      registrationFees: { unit: string; registrationFeeBase: number; registrationFeePerKeyset: number }[]
+      defaultKeysetCreation: "none" | "one-vs-rest" | "all";
+      registrationFees: {
+        unit: string;
+        registrationFeeBase: number;
+        registrationFeePerKeyset: number;
+      }[];
     },
     collateralUnit: string,
   ) => {
-    const fee = settings.registrationFees.find((entry) => entry.unit === collateralUnit)
-    if (!fee) throw new Error(`Active mint does not support CTF collateral unit '${collateralUnit}'.`)
+    const fee = settings.registrationFees.find((entry) => entry.unit === collateralUnit);
+    if (!fee)
+      throw new Error(`Active mint does not support CTF collateral unit '${collateralUnit}'.`);
     const numKeysets =
-      settings.defaultKeysetCreation === 'all'
+      settings.defaultKeysetCreation === "all"
         ? Math.max(0, 2 ** outcomes.length - 2)
-        : new Set(outcomes.map((outcome) => outcome.trim()).filter(Boolean)).size
-    return fee.registrationFeeBase + fee.registrationFeePerKeyset * numKeysets
+        : new Set(outcomes.map((outcome) => outcome.trim()).filter(Boolean)).size;
+    return fee.registrationFeeBase + fee.registrationFeePerKeyset * numKeysets;
   },
-}))
+}));
 
-vi.mock('@/lib/kormir', () => ({
+vi.mock("@/lib/kormir", () => ({
   createEnumAnnouncement: (...args: unknown[]) => mockCreateEnumAnnouncement(...args),
   ensureKormirNsec: (...args: unknown[]) => mockEnsureKormirNsec(...args),
-  getOracleAnnouncementEventId: (...args: unknown[]) =>
-    mockGetOracleAnnouncementEventId(...args),
-}))
+  getOracleAnnouncementEventId: (...args: unknown[]) => mockGetOracleAnnouncementEventId(...args),
+}));
 
-vi.mock('@/lib/walletOps', () => ({
+vi.mock("@/lib/walletOps", () => ({
   refreshMintInfoWithoutActivating: (...args: unknown[]) =>
     mockRefreshMintInfoWithoutActivating(...args),
-}))
+}));
 
 // Stub the wallet store — the real module transitively imports `@cashu/cashu-ts`
 // which fails to load cleanly under Vitest's ESM resolver, and this test does
 // not exercise the wallet at all.
-vi.mock('@/stores/wallet', () => ({
+vi.mock("@/stores/wallet", () => ({
   useWalletStore: {
     getState: () => mockWalletState,
   },
-}))
+}));
 
 // Pull the creator-markets store into the test so the post-success
 // "0% fee" assertion can read the persisted entry. Mocked separately from
 // the store under test so the assertion sees real reads/writes.
-import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
-import type { WizardOutcome } from '@/types/market-creation'
+import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
+import type { WizardOutcome } from "@/types/market-creation";
 
 // Stub nip17 so the test does not pull in nostr-tools at module load time.
 // The real derivation is covered in `bitCaster-app/src/lib/__tests__`.
-vi.mock('@/lib/nip17', () => ({
+vi.mock("@/lib/nip17", () => ({
   deriveNostrKeyPair: () => ({
-    privateKeyHex: '00'.repeat(32),
-    publicKey: '11'.repeat(32),
+    privateKeyHex: "00".repeat(32),
+    publicKey: "11".repeat(32),
   }),
-}))
+}));
 
 // Must import after mocks and env stub
-const { useMarketCreationState } = await import('../useMarketCreationState')
+const { useMarketCreationState } = await import("../useMarketCreationState");
 
 function wrapper({ children }: { children: ReactNode }) {
-  return <MemoryRouter>{children}</MemoryRouter>
+  return <MemoryRouter>{children}</MemoryRouter>;
 }
 
 beforeEach(() => {
-  vi.clearAllMocks()
-  mockRegisterConditionWithFee.mockResolvedValue({ condition_id: 'test-cond-id', keysets: { Yes: 'ks1', No: 'ks2' } })
-  mockGetAvailableRegularBalanceSubunits.mockResolvedValue(1000)
-  mockCreateMarket.mockResolvedValue({ conditionId: 'test-cond-id', marketsCreated: ['test-cond-id-Yes', 'test-cond-id-No'], thumbnailUrl: null })
-  mockCreateEnumAnnouncement.mockResolvedValue('announcement-hex')
-  mockEnsureKormirNsec.mockResolvedValue(undefined)
-  mockGetOracleAnnouncementEventId.mockResolvedValue('c'.repeat(64))
-  mockRefreshMintInfoWithoutActivating.mockResolvedValue(undefined)
-  mockWalletState.activeMintUrl = 'https://mint.example.test'
+  vi.clearAllMocks();
+  mockRegisterConditionWithFee.mockResolvedValue({
+    condition_id: "test-cond-id",
+    keysets: { Yes: "ks1", No: "ks2" },
+  });
+  mockGetAvailableRegularBalanceSubunits.mockResolvedValue(1000);
+  mockCreateMarket.mockResolvedValue({
+    conditionId: "test-cond-id",
+    marketsCreated: ["test-cond-id-Yes", "test-cond-id-No"],
+    thumbnailUrl: null,
+  });
+  mockCreateEnumAnnouncement.mockResolvedValue("announcement-hex");
+  mockEnsureKormirNsec.mockResolvedValue(undefined);
+  mockGetOracleAnnouncementEventId.mockResolvedValue("c".repeat(64));
+  mockRefreshMintInfoWithoutActivating.mockResolvedValue(undefined);
+  mockWalletState.activeMintUrl = "https://mint.example.test";
   mockWalletState.mints = [
     {
-      url: 'https://mint.example.test',
+      url: "https://mint.example.test",
       info: {
         nuts: {
           CTF: {
-            default_keyset_creation: 'one-vs-rest',
+            default_keyset_creation: "one-vs-rest",
             registration_fees: [
-              { unit: 'msat', registration_fee_base: 0, registration_fee_per_keyset: 0 },
-              { unit: 'usd', registration_fee_base: 0, registration_fee_per_keyset: 0 },
+              { unit: "msat", registration_fee_base: 0, registration_fee_per_keyset: 0 },
+              { unit: "usd", registration_fee_base: 0, registration_fee_per_keyset: 0 },
             ],
           },
         },
       },
     },
-  ]
+  ];
 
   useSettingsStore.setState({
-    nostrSignerMode: 'nsec',
-    nsecSecret: '11'.repeat(32),
-    relays: [{ url: 'ws://localhost:7777', connectionStatus: 'connected' }],
-  })
+    nostrSignerMode: "nsec",
+    nsecSecret: "11".repeat(32),
+    relays: [{ url: "ws://localhost:7777", connectionStatus: "connected" }],
+  });
   // Reset the persisted wizard draft so each test starts from a clean
   // "no work in progress" state.
-  useMarketDraftStore.setState({ draft: defaultDraft(), hasSavedDraft: false })
-})
+  useMarketDraftStore.setState({ draft: defaultDraft(), hasSavedDraft: false });
+});
 
 async function setupDraftForSubmission() {
-  const { result } = renderHook(() => useMarketCreationState(), { wrapper })
+  const { result } = renderHook(() => useMarketCreationState(), { wrapper });
 
   // Step 1: select outcome type
-  await act(async () => { result.current.onOutcomeTypeSelect('yesno') })
-  await act(async () => { result.current.onNext() })
-  // Step 2: basic info
-  await act(async () => { result.current.onTitleChange('Test Market') })
   await act(async () => {
-    const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16)
-    result.current.onClosingDateChange(future)
-  })
-  await act(async () => { result.current.onNext() })
+    result.current.onOutcomeTypeSelect("yesno");
+  });
+  await act(async () => {
+    result.current.onNext();
+  });
+  // Step 2: basic info
+  await act(async () => {
+    result.current.onTitleChange("Test Market");
+  });
+  await act(async () => {
+    const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16);
+    result.current.onClosingDateChange(future);
+  });
+  await act(async () => {
+    result.current.onNext();
+  });
   // Step 3: outcomes (default 50/50)
-  await act(async () => { result.current.onNext() })
+  await act(async () => {
+    result.current.onNext();
+  });
   // Step 4: description
-  await act(async () => { result.current.onDescriptionChange('Test description') })
+  await act(async () => {
+    result.current.onDescriptionChange("Test description");
+  });
 
-  return result
+  return result;
 }
 
 function setCategoricalOutcomes(outcomes: WizardOutcome[]) {
@@ -188,472 +215,531 @@ function setCategoricalOutcomes(outcomes: WizardOutcome[]) {
     draft: {
       ...defaultDraft(),
       currentStep: 3,
-      stepGetStarted: { outcomeType: 'categorical' },
+      stepGetStarted: { outcomeType: "categorical" },
       stepOutcomes: {
-        outcomeType: 'categorical',
+        outcomeType: "categorical",
         outcomes,
-        baseAsset: 'sat',
+        baseAsset: "sat",
       },
     },
     hasSavedDraft: true,
-  })
+  });
 }
 
 function makeOutcome(id: string, probability: number): WizardOutcome {
-  return { id, label: id.toUpperCase(), description: '', probability }
+  return { id, label: id.toUpperCase(), description: "", probability };
 }
 
-describe('useMarketCreationState – categorical outcome probabilities', () => {
-  it('edits one outcome probability without changing the other outcomes', async () => {
-    setCategoricalOutcomes([
-      makeOutcome('a', 60),
-      makeOutcome('b', 30),
-      makeOutcome('c', 10),
-    ])
-    const { result } = renderHook(() => useMarketCreationState(), { wrapper })
+describe("useMarketCreationState – categorical outcome probabilities", () => {
+  it("edits one outcome probability without changing the other outcomes", async () => {
+    setCategoricalOutcomes([makeOutcome("a", 60), makeOutcome("b", 30), makeOutcome("c", 10)]);
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
 
-    await act(async () => { result.current.onOutcomeProbabilityChange('a', 70) })
+    await act(async () => {
+      result.current.onOutcomeProbabilityChange("a", 70);
+    });
 
     expect(
-      useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([70, 30, 10])
-  })
+      useMarketDraftStore
+        .getState()
+        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
+    ).toEqual([70, 30, 10]);
+  });
 
-  it('still redistributes categorical outcomes equally when adding an outcome', async () => {
-    setCategoricalOutcomes([makeOutcome('a', 70), makeOutcome('b', 30)])
-    const { result } = renderHook(() => useMarketCreationState(), { wrapper })
+  it("still redistributes categorical outcomes equally when adding an outcome", async () => {
+    setCategoricalOutcomes([makeOutcome("a", 70), makeOutcome("b", 30)]);
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
 
-    await act(async () => { result.current.onAddOutcome() })
-
-    expect(
-      useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([34, 33, 33])
-  })
-
-  it('still proportionally rescales categorical outcomes when removing an outcome', async () => {
-    setCategoricalOutcomes([
-      makeOutcome('a', 50),
-      makeOutcome('b', 25),
-      makeOutcome('c', 25),
-    ])
-    const { result } = renderHook(() => useMarketCreationState(), { wrapper })
-
-    await act(async () => { result.current.onRemoveOutcome('a') })
+    await act(async () => {
+      result.current.onAddOutcome();
+    });
 
     expect(
-      useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([50, 50])
-  })
+      useMarketDraftStore
+        .getState()
+        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
+    ).toEqual([34, 33, 33]);
+  });
 
-  it('redistributes remaining zero-probability outcomes equally when removing an outcome', async () => {
-    setCategoricalOutcomes([
-      makeOutcome('a', 100),
-      makeOutcome('b', 0),
-      makeOutcome('c', 0),
-    ])
-    const { result } = renderHook(() => useMarketCreationState(), { wrapper })
+  it("still proportionally rescales categorical outcomes when removing an outcome", async () => {
+    setCategoricalOutcomes([makeOutcome("a", 50), makeOutcome("b", 25), makeOutcome("c", 25)]);
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
 
-    await act(async () => { result.current.onRemoveOutcome('a') })
+    await act(async () => {
+      result.current.onRemoveOutcome("a");
+    });
 
     expect(
-      useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([50, 50])
-  })
-})
+      useMarketDraftStore
+        .getState()
+        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
+    ).toEqual([50, 50]);
+  });
 
-describe('useMarketCreationState – onCreateMarket', () => {
-  it('uses the mint default keyset policy when registering the condition', async () => {
-    const result = await setupDraftForSubmission()
-    const callOrder: string[] = []
+  it("redistributes remaining zero-probability outcomes equally when removing an outcome", async () => {
+    setCategoricalOutcomes([makeOutcome("a", 100), makeOutcome("b", 0), makeOutcome("c", 0)]);
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+
+    await act(async () => {
+      result.current.onRemoveOutcome("a");
+    });
+
+    expect(
+      useMarketDraftStore
+        .getState()
+        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
+    ).toEqual([50, 50]);
+  });
+});
+
+describe("useMarketCreationState – onCreateMarket", () => {
+  it("uses the mint default keyset policy when registering the condition", async () => {
+    const result = await setupDraftForSubmission();
+    const callOrder: string[] = [];
     mockRegisterConditionWithFee.mockImplementation(async () => {
-      callOrder.push('condition')
-      return { condition_id: 'test-cond-id', keysets: { Yes: 'ks1', No: 'ks2' } }
-    })
+      callOrder.push("condition");
+      return { condition_id: "test-cond-id", keysets: { Yes: "ks1", No: "ks2" } };
+    });
     mockCreateMarket.mockImplementation(async () => {
-      callOrder.push('createMarket')
-      return { conditionId: 'test-cond-id', marketsCreated: [], thumbnailUrl: null }
-    })
+      callOrder.push("createMarket");
+      return { conditionId: "test-cond-id", marketsCreated: [], thumbnailUrl: null };
+    });
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
-    expect(callOrder).toEqual(['condition', 'createMarket'])
-    expect(mockRegisterConditionWithFee).toHaveBeenCalledOnce()
+    expect(callOrder).toEqual(["condition", "createMarket"]);
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledOnce();
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith({
-      mintUrl: 'https://mint.example.test',
+      mintUrl: "https://mint.example.test",
       requiredFeeSubunits: 0,
       request: {
         tags: [
-          ['title', 'Test Market'],
-          ['description', 'Test description'],
+          ["title", "Test Market"],
+          ["description", "Test description"],
         ],
-        announcementHex: 'announcement-hex',
-        collateral: 'msat',
+        announcementHex: "announcement-hex",
+        collateral: "msat",
         outcomeCollections: undefined,
       },
-    })
-    expect(mockCreateMarket).toHaveBeenCalledOnce()
+    });
+    expect(mockCreateMarket).toHaveBeenCalledOnce();
     expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
-      oracleAnnouncementHex: 'announcement-hex',
-    })
-  })
+      oracleAnnouncementHex: "announcement-hex",
+    });
+  });
 
-  it('requests outcome collections explicitly when the mint default policy is none', async () => {
-    mockWalletState.mints[0].info.nuts.CTF.default_keyset_creation = 'none'
-    const result = await setupDraftForSubmission()
+  it("requests outcome collections explicitly when the mint default policy is none", async () => {
+    mockWalletState.mints[0].info.nuts.CTF.default_keyset_creation = "none";
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
       expect.objectContaining({
         request: expect.objectContaining({
-          collateral: 'msat',
-          outcomeCollections: ['Yes', 'No'],
+          collateral: "msat",
+          outcomeCollections: ["Yes", "No"],
         }),
       }),
-    )
-  })
+    );
+  });
 
-  it('passes selected base asset collateral unit to mintd registration and omits request divisibility', async () => {
-    const result = await setupDraftForSubmission()
+  it("passes selected base asset collateral unit to mintd registration and omits request divisibility", async () => {
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { result.current.onBaseAssetChange('usd') })
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      result.current.onBaseAssetChange("usd");
+    });
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
       expect.objectContaining({
         request: expect.objectContaining({
-          collateral: 'usd',
+          collateral: "usd",
         }),
       }),
-    )
+    );
     expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
-      baseAsset: 'usd',
+      baseAsset: "usd",
       liquiditySats: 0,
-    })
-    expect(mockCreateMarket.mock.calls[0][1]).not.toHaveProperty('divisibility')
-    expect(result.current.createdMarketBaseAsset).toBe('usd')
-  })
+    });
+    expect(mockCreateMarket.mock.calls[0][1]).not.toHaveProperty("divisibility");
+    expect(result.current.createdMarketBaseAsset).toBe("usd");
+  });
 
-  it('uses regular USD balance for a USD market registration fee top-up', async () => {
+  it("uses regular USD balance for a USD market registration fee top-up", async () => {
     mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
-      { unit: 'msat', registration_fee_base: 0, registration_fee_per_keyset: 0 },
-      { unit: 'usd', registration_fee_base: 10, registration_fee_per_keyset: 2 },
-    ]
-    mockGetAvailableRegularBalanceSubunits
-      .mockResolvedValueOnce(3)
-      .mockResolvedValueOnce(1000)
-    const result = await setupDraftForSubmission()
+      { unit: "msat", registration_fee_base: 0, registration_fee_per_keyset: 0 },
+      { unit: "usd", registration_fee_base: 10, registration_fee_per_keyset: 2 },
+    ];
+    mockGetAvailableRegularBalanceSubunits.mockResolvedValueOnce(3).mockResolvedValueOnce(1000);
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { result.current.onBaseAssetChange('usd') })
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      result.current.onBaseAssetChange("usd");
+    });
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
     expect(mockGetAvailableRegularBalanceSubunits).toHaveBeenLastCalledWith(
-      'https://mint.example.test',
-      'usd',
-    )
-    expect(result.current.registrationFeeTopUpStage).toBe('modal')
+      "https://mint.example.test",
+      "usd",
+    );
+    expect(result.current.registrationFeeTopUpStage).toBe("modal");
     expect(result.current.registrationFeeTopUp).toEqual({
       feeSubunits: 14,
       balanceSubunits: 3,
-      baseAsset: 'usd',
-    })
+      baseAsset: "usd",
+    });
 
-    await act(async () => { await result.current.onRegistrationFeeTopUpSuccess() })
+    await act(async () => {
+      await result.current.onRegistrationFeeTopUpSuccess();
+    });
 
     expect(mockGetAvailableRegularBalanceSubunits).toHaveBeenLastCalledWith(
-      'https://mint.example.test',
-      'usd',
-    )
-    expect(result.current.registrationFeeTopUpStage).toBe('closed')
+      "https://mint.example.test",
+      "usd",
+    );
+    expect(result.current.registrationFeeTopUpStage).toBe("closed");
     expect(result.current.registrationFeePrompt).toEqual({
       feeSubunits: 14,
       balanceSubunits: 1000,
-      baseAsset: 'usd',
-    })
+      baseAsset: "usd",
+    });
 
-    await act(async () => { await result.current.onConfirmRegistrationFee() })
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
 
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
       expect.objectContaining({
         requiredFeeSubunits: 14,
         request: expect.objectContaining({
-          collateral: 'usd',
+          collateral: "usd",
         }),
       }),
-    )
+    );
     expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
-      baseAsset: 'usd',
-    })
-  })
+      baseAsset: "usd",
+    });
+  });
 
-  it('refreshes the active mint before rejecting missing CTF metadata', async () => {
-    mockWalletState.activeMintUrl = 'http://localhost:8086'
-    mockWalletState.mints = []
+  it("refreshes the active mint before rejecting missing CTF metadata", async () => {
+    mockWalletState.activeMintUrl = "http://localhost:8086";
+    mockWalletState.mints = [];
     mockRefreshMintInfoWithoutActivating.mockImplementation(async () => {
       mockWalletState.mints = [
         {
-          url: 'http://localhost:8086',
+          url: "http://localhost:8086",
           info: {
             nuts: {
               CTF: {
-                default_keyset_creation: 'one-vs-rest',
+                default_keyset_creation: "one-vs-rest",
                 registration_fees: [
-                  { unit: 'msat', registration_fee_base: 1, registration_fee_per_keyset: 1 },
+                  { unit: "msat", registration_fee_base: 1, registration_fee_per_keyset: 1 },
                 ],
               },
             },
           },
         },
-      ]
-    })
-    const result = await setupDraftForSubmission()
+      ];
+    });
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
-    expect(mockRefreshMintInfoWithoutActivating).toHaveBeenCalledWith('http://localhost:8086')
+    expect(mockRefreshMintInfoWithoutActivating).toHaveBeenCalledWith("http://localhost:8086");
     expect(result.current.registrationFeePrompt).toEqual({
       feeSubunits: 3,
       balanceSubunits: 1000,
-      baseAsset: 'sat',
-    })
-    expect(result.current.submitError).toBeNull()
-    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
-  })
+      baseAsset: "sat",
+    });
+    expect(result.current.submitError).toBeNull();
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+  });
 
-  it('omits client-defined collections when the mint default policy is all', async () => {
-    mockWalletState.mints[0].info.nuts.CTF.default_keyset_creation = 'all'
-    const result = await setupDraftForSubmission()
+  it("omits client-defined collections when the mint default policy is all", async () => {
+    mockWalletState.mints[0].info.nuts.CTF.default_keyset_creation = "all";
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
       expect.objectContaining({
         request: expect.objectContaining({
-          collateral: 'msat',
+          collateral: "msat",
           outcomeCollections: undefined,
         }),
       }),
-    )
-  })
+    );
+  });
 
-  it('prompts before paying a non-zero registration fee', async () => {
+  it("prompts before paying a non-zero registration fee", async () => {
     mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
-      { unit: 'msat', registration_fee_base: 10, registration_fee_per_keyset: 2 },
-      { unit: 'usd', registration_fee_base: 0, registration_fee_per_keyset: 0 },
-    ]
-    const result = await setupDraftForSubmission()
+      { unit: "msat", registration_fee_base: 10, registration_fee_per_keyset: 2 },
+      { unit: "usd", registration_fee_base: 0, registration_fee_per_keyset: 0 },
+    ];
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
     expect(result.current.registrationFeePrompt).toEqual({
       feeSubunits: 14,
       balanceSubunits: 1000,
-      baseAsset: 'sat',
-    })
-    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
-    expect(mockCreateMarket).not.toHaveBeenCalled()
+      baseAsset: "sat",
+    });
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    expect(mockCreateMarket).not.toHaveBeenCalled();
 
-    await act(async () => { await result.current.onConfirmRegistrationFee() })
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
 
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
       expect.objectContaining({ requiredFeeSubunits: 14 }),
-    )
-    expect(mockCreateMarket).toHaveBeenCalledOnce()
-  })
+    );
+    expect(mockCreateMarket).toHaveBeenCalledOnce();
+  });
 
-  it('shows the top-up gate when the registration fee exceeds available regular balance', async () => {
+  it("shows the top-up gate when the registration fee exceeds available regular balance", async () => {
     mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
-      { unit: 'msat', registration_fee_base: 10, registration_fee_per_keyset: 2 },
-      { unit: 'usd', registration_fee_base: 0, registration_fee_per_keyset: 0 },
-    ]
-    mockGetAvailableRegularBalanceSubunits.mockResolvedValueOnce(3)
-    const result = await setupDraftForSubmission()
+      { unit: "msat", registration_fee_base: 10, registration_fee_per_keyset: 2 },
+      { unit: "usd", registration_fee_base: 0, registration_fee_per_keyset: 0 },
+    ];
+    mockGetAvailableRegularBalanceSubunits.mockResolvedValueOnce(3);
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
-    expect(result.current.registrationFeeTopUpStage).toBe('modal')
+    expect(result.current.registrationFeeTopUpStage).toBe("modal");
     expect(result.current.registrationFeeTopUp).toEqual({
       feeSubunits: 14,
       balanceSubunits: 3,
-      baseAsset: 'sat',
-    })
-    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
-  })
+      baseAsset: "sat",
+    });
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+  });
 
-  it('rechecks the registration fee after top-up success', async () => {
+  it("rechecks the registration fee after top-up success", async () => {
     mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
-      { unit: 'msat', registration_fee_base: 10, registration_fee_per_keyset: 2 },
-      { unit: 'usd', registration_fee_base: 0, registration_fee_per_keyset: 0 },
-    ]
-    mockGetAvailableRegularBalanceSubunits
-      .mockResolvedValueOnce(3)
-      .mockResolvedValueOnce(1000)
-    const result = await setupDraftForSubmission()
+      { unit: "msat", registration_fee_base: 10, registration_fee_per_keyset: 2 },
+      { unit: "usd", registration_fee_base: 0, registration_fee_per_keyset: 0 },
+    ];
+    mockGetAvailableRegularBalanceSubunits.mockResolvedValueOnce(3).mockResolvedValueOnce(1000);
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { await result.current.onCreateMarket() })
-    await act(async () => { await result.current.onRegistrationFeeTopUpSuccess() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+    await act(async () => {
+      await result.current.onRegistrationFeeTopUpSuccess();
+    });
 
-    expect(result.current.registrationFeeTopUpStage).toBe('closed')
+    expect(result.current.registrationFeeTopUpStage).toBe("closed");
     expect(result.current.registrationFeePrompt).toEqual({
       feeSubunits: 14,
       balanceSubunits: 1000,
-      baseAsset: 'sat',
-    })
-    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
-  })
+      baseAsset: "sat",
+    });
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+  });
 
-  it('blocks market creation when the registration fee exceeds the app cap', async () => {
+  it("blocks market creation when the registration fee exceeds the app cap", async () => {
     mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
-      { unit: 'msat', registration_fee_base: 1000001, registration_fee_per_keyset: 0 },
-    ]
-    const result = await setupDraftForSubmission()
+      { unit: "msat", registration_fee_base: 1000001, registration_fee_per_keyset: 0 },
+    ];
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
     expect(result.current.submitError).toBe(
-      'This mint requires a 1,000,001 subunits condition registration fee, which exceeds the 1,000,000 subunits app limit.',
-    )
-    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
-    expect(mockCreateMarket).not.toHaveBeenCalled()
-  })
+      "This mint requires a 1,000,001 subunits condition registration fee, which exceeds the 1,000,000 subunits app limit.",
+    );
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    expect(mockCreateMarket).not.toHaveBeenCalled();
+  });
 
-  it('requires an nsec-backed Nostr identity before mint or engine market creation', async () => {
-    const result = await setupDraftForSubmission()
+  it("requires an nsec-backed Nostr identity before mint or engine market creation", async () => {
+    const result = await setupDraftForSubmission();
     useSettingsStore.setState({
-      nostrSignerMode: 'none',
+      nostrSignerMode: "none",
       nsecSecret: null,
-    })
+    });
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
-    expect(result.current.submitError).toBe('You must register a nostr key to become an oracle')
-    expect(mockGetAvailableRegularBalanceSubunits).not.toHaveBeenCalled()
-    expect(mockEnsureKormirNsec).not.toHaveBeenCalled()
-    expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled()
-    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
-    expect(mockCreateMarket).not.toHaveBeenCalled()
-  })
+    expect(result.current.submitError).toBe("You must register a nostr key to become an oracle");
+    expect(mockGetAvailableRegularBalanceSubunits).not.toHaveBeenCalled();
+    expect(mockEnsureKormirNsec).not.toHaveBeenCalled();
+    expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    expect(mockCreateMarket).not.toHaveBeenCalled();
+  });
 
-  it('blocks market creation when CTF settings are missing or invalid', async () => {
-    ;(mockWalletState.mints[0].info.nuts as any).CTF = { supported: true }
-    const result = await setupDraftForSubmission()
+  it("blocks market creation when CTF settings are missing or invalid", async () => {
+    (mockWalletState.mints[0].info.nuts as any).CTF = { supported: true };
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
     expect(result.current.submitError).toBe(
-      'Active mint CTF settings are missing or invalid. Refresh mint info or choose another mint.',
-    )
-    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
-    expect(mockCreateMarket).not.toHaveBeenCalled()
-  })
+      "Active mint CTF settings are missing or invalid. Refresh mint info or choose another mint.",
+    );
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    expect(mockCreateMarket).not.toHaveBeenCalled();
+  });
 
-  it('stops and sets error if registerCondition fails', async () => {
-    const result = await setupDraftForSubmission()
-    mockRegisterConditionWithFee.mockRejectedValueOnce(new Error('Mint rejected'))
+  it("stops and sets error if registerCondition fails", async () => {
+    const result = await setupDraftForSubmission();
+    mockRegisterConditionWithFee.mockRejectedValueOnce(new Error("Mint rejected"));
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
-    expect(result.current.submitError).toBe('Mint rejected')
-    expect(mockCreateMarket).not.toHaveBeenCalled()
-    expect(mockNavigate).not.toHaveBeenCalled()
-  })
+    expect(result.current.submitError).toBe("Mint rejected");
+    expect(mockCreateMarket).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
 
-  it('stops and sets error if createMarket fails', async () => {
-    const result = await setupDraftForSubmission()
-    mockCreateMarket.mockRejectedValueOnce(new Error('Market creation failed'))
+  it("stops and sets error if createMarket fails", async () => {
+    const result = await setupDraftForSubmission();
+    mockCreateMarket.mockRejectedValueOnce(new Error("Market creation failed"));
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
-    expect(result.current.submitError).toBe('Market creation failed')
-    expect(mockNavigate).not.toHaveBeenCalled()
-  })
+    expect(result.current.submitError).toBe("Market creation failed");
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
 
-  it('hands off to the deposit step on full success (does NOT navigate immediately)', async () => {
-    const result = await setupDraftForSubmission()
+  it("hands off to the deposit step on full success (does NOT navigate immediately)", async () => {
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
-    expect(mockCreateMarket).toHaveBeenCalledOnce()
+    expect(mockCreateMarket).toHaveBeenCalledOnce();
     // createMarket success transitions the wizard to the
     // deposit step rather than navigating to the market detail page. The
     // user funds the bot first; navigation happens from DepositStep once
     // the Lightning payment reaches Paid. The hook signals this via
     // `createdMarketConditionId`.
-    expect(result.current.createdMarketConditionId).toBe('test-cond-id')
-    expect(mockNavigate).not.toHaveBeenCalled()
-  })
+    expect(result.current.createdMarketConditionId).toBe("test-cond-id");
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
 
-  it('clears the persisted draft on success so the wizard does not resurface stale work', async () => {
-    const result = await setupDraftForSubmission()
-    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true)
+  it("clears the persisted draft on success so the wizard does not resurface stale work", async () => {
+    const result = await setupDraftForSubmission();
+    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true);
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
-    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(false)
-  })
+    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(false);
+  });
 
-  it('keeps the persisted draft when createMarket fails so the user can retry', async () => {
-    const result = await setupDraftForSubmission()
-    mockCreateMarket.mockRejectedValueOnce(new Error('Market creation failed'))
+  it("keeps the persisted draft when createMarket fails so the user can retry", async () => {
+    const result = await setupDraftForSubmission();
+    mockCreateMarket.mockRejectedValueOnce(new Error("Market creation failed"));
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
-    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true)
-  })
+    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true);
+  });
 
-  it('stamps creatorFeePercent=0 (P7 §/creator: engine accrues no fees)', async () => {
+  it("stamps creatorFeePercent=0 (P7 §/creator: engine accrues no fees)", async () => {
     // Reset the creator-markets store so the assertion is not polluted by
     // entries from the other tests in this file.
-    useCreatorMarketsStore.setState({ markets: [] })
-    const result = await setupDraftForSubmission()
+    useCreatorMarketsStore.setState({ markets: [] });
+    const result = await setupDraftForSubmission();
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
     const entry = useCreatorMarketsStore
       .getState()
-      .markets.find((m) => m.conditionId === 'test-cond-id')
-    expect(entry).toBeDefined()
-    expect(entry!.creatorFeePercent).toBe(0)
-  })
+      .markets.find((m) => m.conditionId === "test-cond-id");
+    expect(entry).toBeDefined();
+    expect(entry!.creatorFeePercent).toBe(0);
+  });
 
-  it('records self-oracle event metadata when creating as the oracle', async () => {
-    useCreatorMarketsStore.setState({ markets: [] })
+  it("records self-oracle event metadata when creating as the oracle", async () => {
+    useCreatorMarketsStore.setState({ markets: [] });
     useSettingsStore.setState({
-      nostrSignerMode: 'nsec',
-      nsecSecret: '11'.repeat(32),
-      relays: [{ url: 'ws://localhost:7777', connectionStatus: 'connected' }],
-    })
-    const { result } = renderHook(() => useMarketCreationState(), { wrapper })
+      nostrSignerMode: "nsec",
+      nsecSecret: "11".repeat(32),
+      relays: [{ url: "ws://localhost:7777", connectionStatus: "connected" }],
+    });
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
 
-    await act(async () => { result.current.onOutcomeTypeSelect('yesno') })
-    await act(async () => { result.current.onNext() })
-    await act(async () => { result.current.onTitleChange('Will BTC hit $150k?') })
     await act(async () => {
-      const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16)
-      result.current.onClosingDateChange(future)
-    })
-    await act(async () => { result.current.onNext() })
-    await act(async () => { result.current.onNext() })
-    await act(async () => { result.current.onDescriptionChange('Test description') })
+      result.current.onOutcomeTypeSelect("yesno");
+    });
+    await act(async () => {
+      result.current.onNext();
+    });
+    await act(async () => {
+      result.current.onTitleChange("Will BTC hit $150k?");
+    });
+    await act(async () => {
+      const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16);
+      result.current.onClosingDateChange(future);
+    });
+    await act(async () => {
+      result.current.onNext();
+    });
+    await act(async () => {
+      result.current.onNext();
+    });
+    await act(async () => {
+      result.current.onDescriptionChange("Test description");
+    });
 
-    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
 
-    expect(mockEnsureKormirNsec).toHaveBeenCalledWith(
-      ['ws://localhost:7777'],
-      '11'.repeat(32),
-    )
+    expect(mockEnsureKormirNsec).toHaveBeenCalledWith(["ws://localhost:7777"], "11".repeat(32));
     expect(mockCreateEnumAnnouncement).toHaveBeenCalledWith(
-      ['ws://localhost:7777'],
+      ["ws://localhost:7777"],
       expect.stringMatching(/^will_btc_hit_150k_[0-9a-f]{12}$/),
-      ['Yes', 'No'],
+      ["Yes", "No"],
       expect.any(Number),
-      'Will BTC hit $150k?',
-      'Test description',
-    )
-    const entry = useCreatorMarketsStore.getState().markets[0]
-    expect(entry.oracle?.type).toBe('self')
-    expect(entry.oracle?.eventId).toMatch(/^will_btc_hit_150k_[0-9a-f]{12}$/)
-    expect(entry.oracle?.announcementEventId).toBe('c'.repeat(64))
-    expect(entry.oracle?.outcomes).toEqual(['Yes', 'No'])
-  })
-})
+      "Will BTC hit $150k?",
+      "Test description",
+    );
+    const entry = useCreatorMarketsStore.getState().markets[0];
+    expect(entry.oracle?.type).toBe("self");
+    expect(entry.oracle?.eventId).toMatch(/^will_btc_hit_150k_[0-9a-f]{12}$/);
+    expect(entry.oracle?.announcementEventId).toBe("c".repeat(64));
+    expect(entry.oracle?.outcomes).toEqual(["Yes", "No"]);
+  });
+});

@@ -6,13 +6,12 @@ import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissi
 import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
 import { useToastStore } from "@/stores/toast";
 
-const { mockUseTradeHub, mockJoinOrder, mockJoinTrade, mockSendSwapMessage } =
-  vi.hoisted(() => ({
-    mockUseTradeHub: vi.fn(),
-    mockJoinOrder: vi.fn(),
-    mockJoinTrade: vi.fn(),
-    mockSendSwapMessage: vi.fn(),
-  }));
+const { mockUseTradeHub, mockJoinOrder, mockJoinTrade, mockSendSwapMessage } = vi.hoisted(() => ({
+  mockUseTradeHub: vi.fn(),
+  mockJoinOrder: vi.fn(),
+  mockJoinTrade: vi.fn(),
+  mockSendSwapMessage: vi.fn(),
+}));
 
 const { mockFetchOrderStatus } = vi.hoisted(() => ({
   mockFetchOrderStatus: vi.fn(),
@@ -83,10 +82,7 @@ vi.mock("@/lib/orderStatus", async (importOriginal) => {
 });
 
 vi.mock("@bitcaster/swap-protocol/atomicSwap", async (importOriginal) => {
-  const actual =
-    await importOriginal<
-      typeof import("@bitcaster/swap-protocol/atomicSwap")
-    >();
+  const actual = await importOriginal<typeof import("@bitcaster/swap-protocol/atomicSwap")>();
   return {
     ...actual,
     buyerPrepareSwap: mockBuyerPrepareSwap,
@@ -101,8 +97,7 @@ vi.mock("@/stores/wallet", () => ({
     selector({ activeMintUrl: "https://mint.example" }),
 }));
 
-const { useTradeSettlement, persistPartialLockFromError } =
-  await import("../useTradeSettlement");
+const { useTradeSettlement, persistPartialLockFromError } = await import("../useTradeSettlement");
 
 beforeEach(() => {
   vi.useRealTimers();
@@ -160,28 +155,25 @@ beforeEach(() => {
     lockedProofs: [],
     changeProofs: [],
   });
-  mockSellerLockOutcomeProofs.mockImplementation(
-    async (_ctx, proofs, amountSats) => {
-      const total = proofs.reduce(
-        (sum: number, candidate: { amount: unknown }) =>
-          sum + Number(candidate.amount),
-        0,
-      );
-      const prefix = proofs[0].secret.includes("lock") ? "lock" : "inventory";
-      return {
-        lockedProofs: [proof(amountSats, `${prefix}-locked-100`, proofs[0].id)],
-        changeProofs:
-          total > amountSats
-            ? [
-                {
-                  ...proof(total - amountSats, `${prefix}-change-36`),
-                  id: proofs[0].id,
-                },
-              ]
-            : [],
-      };
-    },
-  );
+  mockSellerLockOutcomeProofs.mockImplementation(async (_ctx, proofs, amountSats) => {
+    const total = proofs.reduce(
+      (sum: number, candidate: { amount: unknown }) => sum + Number(candidate.amount),
+      0,
+    );
+    const prefix = proofs[0].secret.includes("lock") ? "lock" : "inventory";
+    return {
+      lockedProofs: [proof(amountSats, `${prefix}-locked-100`, proofs[0].id)],
+      changeProofs:
+        total > amountSats
+          ? [
+              {
+                ...proof(total - amountSats, `${prefix}-change-36`),
+                id: proofs[0].id,
+              },
+            ]
+          : [],
+    };
+  });
   mockSplitProofsForExactSend.mockImplementation(async (params) => {
     const source = params.sourceProofs[0];
     const prefix = source.secret.includes("lock") ? "lock" : "keep";
@@ -267,9 +259,9 @@ describe("useTradeSettlement", () => {
     await act(async () => {});
 
     expect(mockJoinTrade).toHaveBeenCalledTimes(1);
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-retry-active"].step,
-    ).toBe("awaiting-trade-created");
+    expect(useActiveSwapsStore.getState().byTradeId["trade-retry-active"].step).toBe(
+      "awaiting-trade-created",
+    );
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
@@ -277,9 +269,9 @@ describe("useTradeSettlement", () => {
 
     expect(mockJoinTrade).toHaveBeenCalledTimes(2);
     expect(mockJoinTrade).toHaveBeenLastCalledWith("trade-retry-active");
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-retry-active"].step,
-    ).toBe("awaiting-trade-created");
+    expect(useActiveSwapsStore.getState().byTradeId["trade-retry-active"].step).toBe(
+      "awaiting-trade-created",
+    );
   });
 
   it("joins pending order groups so resting makers can receive TradeCreated", async () => {
@@ -297,9 +289,7 @@ describe("useTradeSettlement", () => {
 
     renderHook(() => useTradeSettlement(true));
 
-    await waitFor(() =>
-      expect(mockJoinOrder).toHaveBeenCalledWith("cond-YES", "order-pending"),
-    );
+    await waitFor(() => expect(mockJoinOrder).toHaveBeenCalledWith("cond-YES", "order-pending"));
   });
 
   it("replays pending order joins during status recovery", async () => {
@@ -358,9 +348,9 @@ describe("useTradeSettlement", () => {
     });
 
     expect(mockJoinTrade).toHaveBeenCalled();
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-status-retry"].step,
-    ).toBe("awaiting-trade-created");
+    expect(useActiveSwapsStore.getState().byTradeId["trade-status-retry"].step).toBe(
+      "awaiting-trade-created",
+    );
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
@@ -372,9 +362,7 @@ describe("useTradeSettlement", () => {
 
   it("retries pending order group joins after a transient hub failure", async () => {
     vi.useFakeTimers();
-    mockJoinOrder
-      .mockRejectedValueOnce(new Error("projection lag"))
-      .mockResolvedValue(undefined);
+    mockJoinOrder.mockRejectedValueOnce(new Error("projection lag")).mockResolvedValue(undefined);
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
@@ -471,13 +459,10 @@ describe("useTradeSettlement", () => {
         quotePaymentSubunits: 500_000,
         baseAsset: "sat",
         divisibility: 1_000,
-
       });
     });
 
-    await waitFor(() =>
-      expect(mockJoinTrade).toHaveBeenCalledWith("trade-pending"),
-    );
+    await waitFor(() => expect(mockJoinTrade).toHaveBeenCalledWith("trade-pending"));
     const swap = useActiveSwapsStore.getState().byTradeId["trade-pending"];
     expect(swap.orderId).toBe("order-pending");
     expect(swap.marketId).toBe("cond-NO");
@@ -543,13 +528,11 @@ describe("useTradeSettlement", () => {
     });
 
     await waitFor(() =>
-      expect(
-        useActiveSwapsStore.getState().byTradeId["trade-unit-mismatch"]?.step,
-      ).toBe("Failed"),
+      expect(useActiveSwapsStore.getState().byTradeId["trade-unit-mismatch"]?.step).toBe("Failed"),
     );
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-unit-mismatch"]?.error,
-    ).toContain("Trade unit mismatch");
+    expect(useActiveSwapsStore.getState().byTradeId["trade-unit-mismatch"]?.error).toContain(
+      "Trade unit mismatch",
+    );
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
     expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
@@ -605,13 +588,11 @@ describe("useTradeSettlement", () => {
     });
 
     await waitFor(() =>
-      expect(
-        useActiveSwapsStore.getState().byTradeId["trade-price-mismatch"]?.step,
-      ).toBe("Failed"),
+      expect(useActiveSwapsStore.getState().byTradeId["trade-price-mismatch"]?.step).toBe("Failed"),
     );
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-price-mismatch"]?.error,
-    ).toContain("does not satisfy the submitted order price");
+    expect(useActiveSwapsStore.getState().byTradeId["trade-price-mismatch"]?.error).toContain(
+      "does not satisfy the submitted order price",
+    );
     expect(mockJoinTrade).not.toHaveBeenCalled();
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
     expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
@@ -664,13 +645,13 @@ describe("useTradeSettlement", () => {
     });
 
     await waitFor(() =>
-      expect(
-        useActiveSwapsStore.getState().byTradeId["trade-legacy-no-economics"]?.step,
-      ).toBe("Failed"),
+      expect(useActiveSwapsStore.getState().byTradeId["trade-legacy-no-economics"]?.step).toBe(
+        "Failed",
+      ),
     );
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-legacy-no-economics"]?.error,
-    ).toContain("Expected order economics are missing");
+    expect(useActiveSwapsStore.getState().byTradeId["trade-legacy-no-economics"]?.error).toContain(
+      "Expected order economics are missing",
+    );
     expect(mockJoinTrade).not.toHaveBeenCalled();
     expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
@@ -728,13 +709,13 @@ describe("useTradeSettlement", () => {
     });
 
     await waitFor(() =>
-      expect(
-        useActiveSwapsStore.getState().byTradeId["trade-missing-canonical"]?.step,
-      ).toBe("Failed"),
+      expect(useActiveSwapsStore.getState().byTradeId["trade-missing-canonical"]?.step).toBe(
+        "Failed",
+      ),
     );
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-missing-canonical"]?.error,
-    ).toContain("missing outcome face subunits");
+    expect(useActiveSwapsStore.getState().byTradeId["trade-missing-canonical"]?.error).toContain(
+      "missing outcome face subunits",
+    );
     expect(mockJoinTrade).not.toHaveBeenCalled();
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
     expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
@@ -794,9 +775,7 @@ describe("useTradeSettlement", () => {
       });
     });
 
-    await waitFor(() =>
-      expect(mockJoinTrade).toHaveBeenCalledWith("trade-canonical-only"),
-    );
+    await waitFor(() => expect(mockJoinTrade).toHaveBeenCalledWith("trade-canonical-only"));
     const swap = useActiveSwapsStore.getState().byTradeId["trade-canonical-only"];
     expect(swap.role).toBe("buyer");
     expect(swap.outcomeFaceAmountSubunits).toBe(100_000);
@@ -857,15 +836,11 @@ describe("useTradeSettlement", () => {
 
     await waitFor(() =>
       expect(
-        useActiveSwapsStore.getState().byTradeId[
-          "trade-nondefault-divisibility-no-unit"
-        ]?.step,
+        useActiveSwapsStore.getState().byTradeId["trade-nondefault-divisibility-no-unit"]?.step,
       ).toBe("Failed"),
     );
     expect(
-      useActiveSwapsStore.getState().byTradeId[
-        "trade-nondefault-divisibility-no-unit"
-      ]?.error,
+      useActiveSwapsStore.getState().byTradeId["trade-nondefault-divisibility-no-unit"]?.error,
     ).toContain("non-default unit but the local expected unit is missing");
     expect(mockJoinTrade).not.toHaveBeenCalled();
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
@@ -927,14 +902,9 @@ describe("useTradeSettlement", () => {
     });
 
     await waitFor(() =>
-      expect(mockJoinTrade).toHaveBeenCalledWith(
-        "trade-nondefault-divisibility-expected",
-      ),
+      expect(mockJoinTrade).toHaveBeenCalledWith("trade-nondefault-divisibility-expected"),
     );
-    const swap =
-      useActiveSwapsStore.getState().byTradeId[
-        "trade-nondefault-divisibility-expected"
-      ];
+    const swap = useActiveSwapsStore.getState().byTradeId["trade-nondefault-divisibility-expected"];
     expect(swap.role).toBe("buyer");
     expect(swap.baseAsset).toBe("sat");
     expect(swap.divisibility).toBe(2_000);
@@ -998,15 +968,11 @@ describe("useTradeSettlement", () => {
 
     await waitFor(() =>
       expect(
-        useActiveSwapsStore.getState().byTradeId[
-          "trade-nondefault-divisibility-mismatch"
-        ]?.step,
+        useActiveSwapsStore.getState().byTradeId["trade-nondefault-divisibility-mismatch"]?.step,
       ).toBe("Failed"),
     );
     expect(
-      useActiveSwapsStore.getState().byTradeId[
-        "trade-nondefault-divisibility-mismatch"
-      ]?.error,
+      useActiveSwapsStore.getState().byTradeId["trade-nondefault-divisibility-mismatch"]?.error,
     ).toContain("Trade divisibility mismatch");
     expect(mockJoinTrade).not.toHaveBeenCalled();
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
@@ -1067,11 +1033,8 @@ describe("useTradeSettlement", () => {
       });
     });
 
-    await waitFor(() =>
-      expect(mockJoinTrade).toHaveBeenCalledWith("trade-pending-seller"),
-    );
-    const swap =
-      useActiveSwapsStore.getState().byTradeId["trade-pending-seller"];
+    await waitFor(() => expect(mockJoinTrade).toHaveBeenCalledWith("trade-pending-seller"));
+    const swap = useActiveSwapsStore.getState().byTradeId["trade-pending-seller"];
     expect(swap.orderId).toBe("order-pending");
     expect(swap.marketId).toBe("cond-YES");
     expect(swap.role).toBe("seller");
@@ -1186,8 +1149,7 @@ describe("useTradeSettlement", () => {
         operationId: "trade-buyer-recover/browser/buyer-lock",
       }),
     );
-    const swap =
-      useActiveSwapsStore.getState().byTradeId["trade-buyer-recover"];
+    const swap = useActiveSwapsStore.getState().byTradeId["trade-buyer-recover"];
     expect(swap.messages.lockedProofsBuyer).toBe("cipher-buyer");
     expect(swap.buyerState?.lockedProofsCipher).toBe("cipher-buyer");
   });
@@ -1223,8 +1185,7 @@ describe("useTradeSettlement", () => {
       ]),
     });
 
-    const record =
-      usePartialLockFailuresStore.getState().byTradeId["trade-partial-multi"];
+    const record = usePartialLockFailuresStore.getState().byTradeId["trade-partial-multi"];
     expect(record.outcomeByKeyset["keyset-B"]).toEqual({
       conditionId: "condition-1",
       outcomeCollection: "B",
@@ -1235,10 +1196,7 @@ describe("useTradeSettlement", () => {
       outcomeCollection: "C",
       marketId: "condition-1-C",
     });
-    expect(record.lockedProofs.map((locked) => locked.secret)).toEqual([
-      "locked-B",
-      "locked-C",
-    ]);
+    expect(record.lockedProofs.map((locked) => locked.secret)).toEqual(["locked-B", "locked-C"]);
     expect(mockReplaceProofs).toHaveBeenCalledWith(
       ["spent-B", "spent-C"],
       [
@@ -1353,9 +1311,7 @@ describe("useTradeSettlement", () => {
 
     await act(async () => callbacks.onTradeCreated(payload));
     await waitFor(() =>
-      expect(
-        useActiveSwapsStore.getState().byTradeId["trade-duplicate-inflight"],
-      ).toBeTruthy(),
+      expect(useActiveSwapsStore.getState().byTradeId["trade-duplicate-inflight"]).toBeTruthy(),
     );
 
     await act(async () =>
@@ -1365,8 +1321,7 @@ describe("useTradeSettlement", () => {
       }),
     );
 
-    let swap =
-      useActiveSwapsStore.getState().byTradeId["trade-duplicate-inflight"];
+    let swap = useActiveSwapsStore.getState().byTradeId["trade-duplicate-inflight"];
     expect(swap.step).toBe("Failed");
     expect(swap.role).toBeNull();
     expect(swap.error).toMatch(/TradeCreated payload changed/i);
@@ -1376,8 +1331,7 @@ describe("useTradeSettlement", () => {
     });
 
     await waitFor(() => {
-      swap =
-        useActiveSwapsStore.getState().byTradeId["trade-duplicate-inflight"];
+      swap = useActiveSwapsStore.getState().byTradeId["trade-duplicate-inflight"];
       expect(swap.step).toBe("Failed");
       expect(swap.role).toBeNull();
     });
@@ -1429,9 +1383,7 @@ describe("useTradeSettlement", () => {
     const swap = useActiveSwapsStore.getState().byTradeId["trade-2"];
     expect(swap.step).toBe("Failed");
     expect(swap.role).toBeNull();
-    expect(swap.error).toMatch(
-      /locktime ordering violates protocol invariant/i,
-    );
+    expect(swap.error).toMatch(/locktime ordering violates protocol invariant/i);
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
   });
 
@@ -1455,9 +1407,7 @@ describe("useTradeSettlement", () => {
     await act(async () => {
       callbacks.onTradeStateChanged("trade-3", "Confirmed");
     });
-    expect(useActiveSwapsStore.getState().byTradeId["trade-3"].step).toBe(
-      "completed",
-    );
+    expect(useActiveSwapsStore.getState().byTradeId["trade-3"].step).toBe("completed");
 
     await act(async () => {
       callbacks.onTradeStateChanged("trade-3", "Failed");
@@ -1490,10 +1440,9 @@ describe("useTradeSettlement", () => {
     });
 
     expect(useToastStore.getState().toasts).toEqual([]);
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-nonparticipant-failure"]
-        .step,
-    ).toBe("Failed");
+    expect(useActiveSwapsStore.getState().byTradeId["trade-nonparticipant-failure"].step).toBe(
+      "Failed",
+    );
   });
 
   it("fails before locking proofs when TradeCreated outcome face is not a whole market share for sat/10000", async () => {
@@ -1546,13 +1495,13 @@ describe("useTradeSettlement", () => {
     });
 
     await waitFor(() =>
-      expect(
-        useActiveSwapsStore.getState().byTradeId["trade-ambiguous-sat100"]?.step,
-      ).toBe("Failed"),
+      expect(useActiveSwapsStore.getState().byTradeId["trade-ambiguous-sat100"]?.step).toBe(
+        "Failed",
+      ),
     );
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-ambiguous-sat100"]?.error,
-    ).toContain("Trade outcome face amount is not a whole market share");
+    expect(useActiveSwapsStore.getState().byTradeId["trade-ambiguous-sat100"]?.error).toContain(
+      "Trade outcome face amount is not a whole market share",
+    );
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
     expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
@@ -1612,13 +1561,13 @@ describe("useTradeSettlement", () => {
     });
 
     await waitFor(() =>
-      expect(
-        useActiveSwapsStore.getState().byTradeId["trade-ambiguous-usd-quote"]?.step,
-      ).toBe("Failed"),
+      expect(useActiveSwapsStore.getState().byTradeId["trade-ambiguous-usd-quote"]?.step).toBe(
+        "Failed",
+      ),
     );
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-ambiguous-usd-quote"]?.error,
-    ).toContain("Trade quote payment exceeds the submitted order price");
+    expect(useActiveSwapsStore.getState().byTradeId["trade-ambiguous-usd-quote"]?.error).toContain(
+      "Trade quote payment exceeds the submitted order price",
+    );
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
     expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
@@ -1739,16 +1688,11 @@ describe("useTradeSettlement", () => {
       });
     });
 
-    await waitFor(() =>
-      expect(mockJoinTrade).toHaveBeenCalledWith("trade-tokenside-mismatch"),
-    );
-    const swap =
-      useActiveSwapsStore.getState().byTradeId["trade-tokenside-mismatch"];
+    await waitFor(() => expect(mockJoinTrade).toHaveBeenCalledWith("trade-tokenside-mismatch"));
+    const swap = useActiveSwapsStore.getState().byTradeId["trade-tokenside-mismatch"];
     expect(swap?.role).toBe("seller");
     expect(swap?.orderId).toBe("order-tokenside-mismatch");
-    expect(swap?.error ?? "").not.toContain(
-      "does not match the submitted order side",
-    );
+    expect(swap?.error ?? "").not.toContain("does not match the submitted order side");
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
   });

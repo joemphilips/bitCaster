@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react'
-import { X, ChevronUp, ChevronDown, Loader2 } from 'lucide-react'
+import React, { useState, useRef, useEffect } from "react";
+import { X, ChevronUp, ChevronDown, Loader2 } from "lucide-react";
 import type {
   MarketDetail,
   TradeSelection,
@@ -10,8 +10,8 @@ import type {
   YesNoMarketDetail,
   CategoricalMarketDetail,
   NumericMarketDetail,
-} from '@/types/market-detail'
-import { useTranslation } from 'react-i18next'
+} from "@/types/market-detail";
+import { useTranslation } from "react-i18next";
 import {
   formatMarketSubunits,
   formatPricePercentage,
@@ -21,94 +21,94 @@ import {
   type MarketBaseAsset,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
-} from '@bitcaster/client-sdk/marketUnits'
+} from "@bitcaster/client-sdk/marketUnits";
 
 interface TradingPanelProps {
-  market: MarketDetail
-  tradeSelection: TradeSelection | null
-  tradeAmount: number
-  tradePreview: TradePreview | null
-  tradeSide: TradeSide
-  orderType: OrderType
-  limitOrderPreview?: LimitOrderPreview | null
-  limitPrice?: number
-  userHoldings?: number
+  market: MarketDetail;
+  tradeSelection: TradeSelection | null;
+  tradeAmount: number;
+  tradePreview: TradePreview | null;
+  tradeSide: TradeSide;
+  orderType: OrderType;
+  limitOrderPreview?: LimitOrderPreview | null;
+  limitPrice?: number;
+  userHoldings?: number;
   tradeSubmitStatus?: {
-    kind: 'info' | 'success' | 'error'
-    message: string
-  } | null
+    kind: "info" | "success" | "error";
+    message: string;
+  } | null;
   tradeFeasibility?: {
-    canBack: boolean
-    reason?: 'funds' | 'outcome-tokens'
-    message?: string
-  } | null
-  isTradeSubmitting?: boolean
-  onTradeSelect?: (selection: TradeSelection) => void
-  onTradeClear?: () => void
-  onAmountChange?: (amount: number) => void
-  onTradeConfirm?: (comment?: string) => void
-  onCommentPost?: (content: string) => void
-  onTradeSideChange?: (side: TradeSide) => void
-  onOrderTypeChange?: (type: OrderType) => void
-  onLimitPriceChange?: (price: number) => void
-  walletReady?: boolean
-  onWalletRequired?: (comment?: string) => void
-  onTopUpRequired?: (comment?: string) => void
-  disabled?: boolean
+    canBack: boolean;
+    reason?: "funds" | "outcome-tokens";
+    message?: string;
+  } | null;
+  isTradeSubmitting?: boolean;
+  onTradeSelect?: (selection: TradeSelection) => void;
+  onTradeClear?: () => void;
+  onAmountChange?: (amount: number) => void;
+  onTradeConfirm?: (comment?: string) => void;
+  onCommentPost?: (content: string) => void;
+  onTradeSideChange?: (side: TradeSide) => void;
+  onOrderTypeChange?: (type: OrderType) => void;
+  onLimitPriceChange?: (price: number) => void;
+  walletReady?: boolean;
+  onWalletRequired?: (comment?: string) => void;
+  onTopUpRequired?: (comment?: string) => void;
+  disabled?: boolean;
 }
 
 // Buy quick-presets are user-facing display shares. Boundary code maps each
 // display share to a market-divisibility-sized conditional-token face lot
 // before submit.
-const QUICK_SHARE_PRESETS = [1, 5, 10, 50]
-const QUICK_SELL_PERCENTAGES = [25, 50, 75, 100]
+const QUICK_SHARE_PRESETS = [1, 5, 10, 50];
+const QUICK_SELL_PERCENTAGES = [25, 50, 75, 100];
 
 // Custom scrollable container with chevron buttons
 function ScrollableContainer({
   children,
   className,
-  groupName = 'scroll',
+  groupName = "scroll",
 }: {
-  children: React.ReactNode
-  className?: string
-  groupName?: string
+  children: React.ReactNode;
+  className?: string;
+  groupName?: string;
 }) {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [canScrollUp, setCanScrollUp] = useState(false)
-  const [canScrollDown, setCanScrollDown] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollUp, setCanScrollUp] = useState(false);
+  const [canScrollDown, setCanScrollDown] = useState(false);
 
   const checkScroll = () => {
     if (scrollRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
-      setCanScrollUp(scrollTop > 2)
-      setCanScrollDown(scrollTop < scrollHeight - clientHeight - 2)
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      setCanScrollUp(scrollTop > 2);
+      setCanScrollDown(scrollTop < scrollHeight - clientHeight - 2);
     }
-  }
+  };
 
   useEffect(() => {
-    checkScroll()
-    const resizeObserver = new ResizeObserver(checkScroll)
+    checkScroll();
+    const resizeObserver = new ResizeObserver(checkScroll);
     if (scrollRef.current) {
-      resizeObserver.observe(scrollRef.current)
+      resizeObserver.observe(scrollRef.current);
     }
-    return () => resizeObserver.disconnect()
-  }, [children])
+    return () => resizeObserver.disconnect();
+  }, [children]);
 
-  const scroll = (direction: 'up' | 'down', e: React.MouseEvent) => {
-    e.stopPropagation()
+  const scroll = (direction: "up" | "down", e: React.MouseEvent) => {
+    e.stopPropagation();
     if (scrollRef.current) {
       scrollRef.current.scrollBy({
-        top: direction === 'up' ? -100 : 100,
-        behavior: 'smooth',
-      })
+        top: direction === "up" ? -100 : 100,
+        behavior: "smooth",
+      });
     }
-  }
+  };
 
   return (
     <div className={`relative group/${groupName}`}>
       {canScrollUp && (
         <button
-          onClick={(e) => scroll('up', e)}
+          onClick={(e) => scroll("up", e)}
           className="absolute left-1/2 -translate-x-1/2 -top-2 z-10 w-7 h-7 bg-white dark:bg-slate-800 shadow-lg rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 opacity-0 group-hover/scroll:opacity-100 transition-opacity border border-slate-200 dark:border-slate-700"
         >
           <ChevronUp className="w-4 h-4" />
@@ -119,21 +119,21 @@ function ScrollableContainer({
         ref={scrollRef}
         onScroll={checkScroll}
         className={className}
-        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
       >
         {children}
       </div>
 
       {canScrollDown && (
         <button
-          onClick={(e) => scroll('down', e)}
+          onClick={(e) => scroll("down", e)}
           className="absolute left-1/2 -translate-x-1/2 -bottom-2 z-10 w-7 h-7 bg-white dark:bg-slate-800 shadow-lg rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 opacity-0 group-hover/scroll:opacity-100 transition-opacity border border-slate-200 dark:border-slate-700"
         >
           <ChevronDown className="w-4 h-4" />
         </button>
       )}
     </div>
-  )
+  );
 }
 
 function YesNoOutcomes({
@@ -143,28 +143,28 @@ function YesNoOutcomes({
   onTradeSelect,
   disabled = false,
 }: {
-  market: YesNoMarketDetail
-  tradeSelection: TradeSelection | null
-  tradeSide: TradeSide
-  onTradeSelect?: (selection: TradeSelection) => void
-  disabled?: boolean
+  market: YesNoMarketDetail;
+  tradeSelection: TradeSelection | null;
+  tradeSide: TradeSide;
+  onTradeSelect?: (selection: TradeSelection) => void;
+  disabled?: boolean;
 }) {
-  const { t } = useTranslation()
-  const isSell = tradeSide === 'Sell'
+  const { t } = useTranslation();
+  const isSell = tradeSide === "Sell";
   return (
     <div className="grid grid-cols-2 gap-3">
       <button
         data-testid="trade-outcome-yes"
         disabled={disabled}
-        onClick={() => onTradeSelect?.({ side: 'yes' })}
+        onClick={() => onTradeSelect?.({ side: "yes" })}
         className={`relative p-4 rounded-xl border-2 transition-all ${
-          tradeSelection?.side === 'yes'
-            ? 'border-emerald-500 bg-emerald-500/10'
-            : 'border-slate-200 dark:border-slate-700 hover:border-emerald-500/50 hover:bg-emerald-500/5'
+          tradeSelection?.side === "yes"
+            ? "border-emerald-500 bg-emerald-500/10"
+            : "border-slate-200 dark:border-slate-700 hover:border-emerald-500/50 hover:bg-emerald-500/5"
         }`}
       >
         <div className="text-xs font-medium text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1">
-          {isSell ? t('trade.sellYes') : t('common.yes')}
+          {isSell ? t("trade.sellYes") : t("common.yes")}
         </div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">
           {market.currentOdds.yes.toFixed(2)}%
@@ -174,22 +174,22 @@ function YesNoOutcomes({
       <button
         data-testid="trade-outcome-no"
         disabled={disabled}
-        onClick={() => onTradeSelect?.({ side: 'no' })}
+        onClick={() => onTradeSelect?.({ side: "no" })}
         className={`relative p-4 rounded-xl border-2 transition-all ${
-          tradeSelection?.side === 'no'
-            ? 'border-red-500 bg-red-500/10'
-            : 'border-slate-200 dark:border-slate-700 hover:border-red-500/50 hover:bg-red-500/5'
+          tradeSelection?.side === "no"
+            ? "border-red-500 bg-red-500/10"
+            : "border-slate-200 dark:border-slate-700 hover:border-red-500/50 hover:bg-red-500/5"
         }`}
       >
         <div className="text-xs font-medium text-red-600 dark:text-red-400 uppercase tracking-wider mb-1">
-          {isSell ? t('trade.sellNo') : t('common.no')}
+          {isSell ? t("trade.sellNo") : t("common.no")}
         </div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">
           {market.currentOdds.no.toFixed(2)}%
         </div>
       </button>
     </div>
-  )
+  );
 }
 
 function CategoricalOutcomes({
@@ -199,25 +199,25 @@ function CategoricalOutcomes({
   onTradeSelect,
   disabled = false,
 }: {
-  market: CategoricalMarketDetail
-  tradeSelection: TradeSelection | null
-  tradeSide: TradeSide
-  onTradeSelect?: (selection: TradeSelection) => void
-  disabled?: boolean
+  market: CategoricalMarketDetail;
+  tradeSelection: TradeSelection | null;
+  tradeSide: TradeSide;
+  onTradeSelect?: (selection: TradeSelection) => void;
+  disabled?: boolean;
 }) {
-  const { t } = useTranslation()
-  const isSell = tradeSide === 'Sell'
+  const { t } = useTranslation();
+  const isSell = tradeSide === "Sell";
   return (
     <ScrollableContainer className="space-y-2 max-h-64 overflow-y-auto pr-1 scrollbar-hide">
       {market.outcomes.map((outcome) => {
-        const isSelected = tradeSelection?.outcomeId === outcome.id
+        const isSelected = tradeSelection?.outcomeId === outcome.id;
         return (
           <div
             key={outcome.id}
             className={`p-3 rounded-xl border transition-all ${
               isSelected
-                ? 'border-blue-500 bg-blue-500/10'
-                : 'border-slate-200 dark:border-slate-700'
+                ? "border-blue-500 bg-blue-500/10"
+                : "border-slate-200 dark:border-slate-700"
             }`}
           >
             <div className="flex items-center justify-between mb-2">
@@ -232,33 +232,33 @@ function CategoricalOutcomes({
               <button
                 data-testid={`buy-yes-${outcome.label}`}
                 disabled={disabled}
-                onClick={() => onTradeSelect?.({ side: 'yes', outcomeId: outcome.id })}
+                onClick={() => onTradeSelect?.({ side: "yes", outcomeId: outcome.id })}
                 className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-colors ${
-                  isSelected && tradeSelection?.side === 'yes'
-                    ? 'bg-emerald-500 text-white'
-                    : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20'
+                  isSelected && tradeSelection?.side === "yes"
+                    ? "bg-emerald-500 text-white"
+                    : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20"
                 }`}
               >
-                {isSell ? t('trade.sellYes') : t('trade.buyYes')}
+                {isSell ? t("trade.sellYes") : t("trade.buyYes")}
               </button>
               <button
                 data-testid={`buy-no-${outcome.label}`}
                 disabled={disabled}
-                onClick={() => onTradeSelect?.({ side: 'no', outcomeId: outcome.id })}
+                onClick={() => onTradeSelect?.({ side: "no", outcomeId: outcome.id })}
                 className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-colors ${
-                  isSelected && tradeSelection?.side === 'no'
-                    ? 'bg-red-500 text-white'
-                    : 'bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20'
+                  isSelected && tradeSelection?.side === "no"
+                    ? "bg-red-500 text-white"
+                    : "bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20"
                 }`}
               >
-                {isSell ? t('trade.sellNo') : t('trade.buyNo')}
+                {isSell ? t("trade.sellNo") : t("trade.buyNo")}
               </button>
             </div>
           </div>
-        )
+        );
       })}
     </ScrollableContainer>
-  )
+  );
 }
 
 function NumericOutcomes({
@@ -268,26 +268,27 @@ function NumericOutcomes({
   onTradeSelect,
   disabled = false,
 }: {
-  market: NumericMarketDetail
-  tradeSelection: TradeSelection | null
-  tradeSide: TradeSide
-  onTradeSelect?: (selection: TradeSelection) => void
-  disabled?: boolean
+  market: NumericMarketDetail;
+  tradeSelection: TradeSelection | null;
+  tradeSide: TradeSide;
+  onTradeSelect?: (selection: TradeSelection) => void;
+  disabled?: boolean;
 }) {
-  const { t } = useTranslation()
-  const isSell = tradeSide === 'Sell'
+  const { t } = useTranslation();
+  const isSell = tradeSide === "Sell";
   const formatPrice = (value: number) => {
-    if (market.unit === 'USD') return `$${value.toLocaleString()}`
-    return `${value.toLocaleString()} ${market.unit}`
-  }
-  const rangePercent = ((market.currentPrice - market.loBound) / (market.hiBound - market.loBound)) * 100
+    if (market.unit === "USD") return `$${value.toLocaleString()}`;
+    return `${value.toLocaleString()} ${market.unit}`;
+  };
+  const rangePercent =
+    ((market.currentPrice - market.loBound) / (market.hiBound - market.loBound)) * 100;
 
   return (
     <div className="space-y-4">
       {/* Current implied price */}
       <div className="text-center p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
         <div className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-          {t('market.impliedPrice')}
+          {t("market.impliedPrice")}
         </div>
         <div className="text-3xl font-bold text-slate-900 dark:text-white">
           {formatPrice(market.currentPrice)}
@@ -307,7 +308,7 @@ function NumericOutcomes({
           />
           <div
             className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white border-2 border-blue-500 rounded-full shadow"
-            style={{ left: `${rangePercent}%`, transform: 'translate(-50%, -50%)' }}
+            style={{ left: `${rangePercent}%`, transform: "translate(-50%, -50%)" }}
           />
         </div>
       </div>
@@ -315,41 +316,41 @@ function NumericOutcomes({
       {/* Higher / Lower buttons */}
       <div className="grid grid-cols-2 gap-3">
         <button
-          onClick={() => onTradeSelect?.({ side: 'hi' })}
+          onClick={() => onTradeSelect?.({ side: "hi" })}
           disabled={disabled}
           className={`relative p-4 rounded-xl border-2 transition-all ${
-            tradeSelection?.side === 'hi'
-              ? 'border-emerald-500 bg-emerald-500/10'
-              : 'border-slate-200 dark:border-slate-700 hover:border-emerald-500/50 hover:bg-emerald-500/5'
+            tradeSelection?.side === "hi"
+              ? "border-emerald-500 bg-emerald-500/10"
+              : "border-slate-200 dark:border-slate-700 hover:border-emerald-500/50 hover:bg-emerald-500/5"
           }`}
         >
           <div className="text-xs font-medium text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1">
-            {isSell ? t('trade.sellHigher') : t('trade.buyHigher')}
+            {isSell ? t("trade.sellHigher") : t("trade.buyHigher")}
           </div>
           <div className="text-sm font-bold text-slate-900 dark:text-white">
-            {t('market.hiToken')}
+            {t("market.hiToken")}
           </div>
         </button>
 
         <button
-          onClick={() => onTradeSelect?.({ side: 'lo' })}
+          onClick={() => onTradeSelect?.({ side: "lo" })}
           disabled={disabled}
           className={`relative p-4 rounded-xl border-2 transition-all ${
-            tradeSelection?.side === 'lo'
-              ? 'border-red-500 bg-red-500/10'
-              : 'border-slate-200 dark:border-slate-700 hover:border-red-500/50 hover:bg-red-500/5'
+            tradeSelection?.side === "lo"
+              ? "border-red-500 bg-red-500/10"
+              : "border-slate-200 dark:border-slate-700 hover:border-red-500/50 hover:bg-red-500/5"
           }`}
         >
           <div className="text-xs font-medium text-red-600 dark:text-red-400 uppercase tracking-wider mb-1">
-            {isSell ? t('trade.sellLower') : t('trade.buyLower')}
+            {isSell ? t("trade.sellLower") : t("trade.buyLower")}
           </div>
           <div className="text-sm font-bold text-slate-900 dark:text-white">
-            {t('market.loToken')}
+            {t("market.loToken")}
           </div>
         </button>
       </div>
     </div>
-  )
+  );
 }
 
 function BuySellToggle({
@@ -357,37 +358,37 @@ function BuySellToggle({
   onTradeSideChange,
   disabled = false,
 }: {
-  tradeSide: TradeSide
-  onTradeSideChange?: (side: TradeSide) => void
-  disabled?: boolean
+  tradeSide: TradeSide;
+  onTradeSideChange?: (side: TradeSide) => void;
+  disabled?: boolean;
 }) {
-  const { t } = useTranslation()
+  const { t } = useTranslation();
   return (
     <div className="grid grid-cols-2 mb-3">
       <button
-        onClick={() => onTradeSideChange?.('Buy')}
+        onClick={() => onTradeSideChange?.("Buy")}
         disabled={disabled}
         className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
-          tradeSide === 'Buy'
-            ? 'text-slate-900 dark:text-white border-slate-900 dark:border-white'
-            : 'text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
+          tradeSide === "Buy"
+            ? "text-slate-900 dark:text-white border-slate-900 dark:border-white"
+            : "text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300"
         }`}
       >
-        {t('trade.buy')}
+        {t("trade.buy")}
       </button>
       <button
-        onClick={() => onTradeSideChange?.('Sell')}
+        onClick={() => onTradeSideChange?.("Sell")}
         disabled={disabled}
         className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
-          tradeSide === 'Sell'
-            ? 'text-slate-900 dark:text-white border-slate-900 dark:border-white'
-            : 'text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
+          tradeSide === "Sell"
+            ? "text-slate-900 dark:text-white border-slate-900 dark:border-white"
+            : "text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300"
         }`}
       >
-        {t('trade.sell')}
+        {t("trade.sell")}
       </button>
     </div>
-  )
+  );
 }
 
 function MarketLimitToggle({
@@ -395,37 +396,37 @@ function MarketLimitToggle({
   onOrderTypeChange,
   disabled = false,
 }: {
-  orderType: OrderType
-  onOrderTypeChange?: (type: OrderType) => void
-  disabled?: boolean
+  orderType: OrderType;
+  onOrderTypeChange?: (type: OrderType) => void;
+  disabled?: boolean;
 }) {
-  const { t } = useTranslation()
+  const { t } = useTranslation();
   return (
     <div className="flex bg-slate-100 dark:bg-slate-700/50 rounded-lg p-1 mb-4">
       <button
-        onClick={() => onOrderTypeChange?.('market')}
+        onClick={() => onOrderTypeChange?.("market")}
         disabled={disabled}
         className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
-          orderType === 'market'
-            ? 'bg-blue-600 text-white shadow-sm'
-            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+          orderType === "market"
+            ? "bg-blue-600 text-white shadow-sm"
+            : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
         }`}
       >
-        {t('trade.market')}
+        {t("trade.market")}
       </button>
       <button
-        onClick={() => onOrderTypeChange?.('limit')}
+        onClick={() => onOrderTypeChange?.("limit")}
         disabled={disabled}
         className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
-          orderType === 'limit'
-            ? 'bg-blue-600 text-white shadow-sm'
-            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+          orderType === "limit"
+            ? "bg-blue-600 text-white shadow-sm"
+            : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
         }`}
       >
-        {t('trade.limit')}
+        {t("trade.limit")}
       </button>
     </div>
-  )
+  );
 }
 
 function LimitPriceInput({
@@ -435,49 +436,49 @@ function LimitPriceInput({
   onLimitPriceChange,
   disabled = false,
 }: {
-  limitPrice: number
-  baseAsset: MarketBaseAsset
-  divisibility: number
-  onLimitPriceChange?: (price: number) => void
-  disabled?: boolean
+  limitPrice: number;
+  baseAsset: MarketBaseAsset;
+  divisibility: number;
+  onLimitPriceChange?: (price: number) => void;
+  disabled?: boolean;
 }) {
-  const { t } = useTranslation()
-  const [priceText, setPriceText] = useState(formatLimitPriceInputValue(limitPrice, baseAsset))
-  const [isFocused, setIsFocused] = useState(false)
-  const maxPrice = Math.max(1, divisibility - 1)
-  const maxDisplayPrice = limitPriceToDisplayAmount(maxPrice, baseAsset)
-  const inputStep = limitPriceInputStep(baseAsset)
-  const displayUnit = marketUnitLabel(baseAsset)
+  const { t } = useTranslation();
+  const [priceText, setPriceText] = useState(formatLimitPriceInputValue(limitPrice, baseAsset));
+  const [isFocused, setIsFocused] = useState(false);
+  const maxPrice = Math.max(1, divisibility - 1);
+  const maxDisplayPrice = limitPriceToDisplayAmount(maxPrice, baseAsset);
+  const inputStep = limitPriceInputStep(baseAsset);
+  const displayUnit = marketUnitLabel(baseAsset);
 
   useEffect(() => {
     if (!isFocused) {
-      setPriceText(formatLimitPriceInputValue(limitPrice, baseAsset))
+      setPriceText(formatLimitPriceInputValue(limitPrice, baseAsset));
     }
-  }, [limitPrice, baseAsset, isFocused])
+  }, [limitPrice, baseAsset, isFocused]);
 
   const handlePriceBlur = () => {
-    const trimmed = priceText.trim()
-    if (trimmed === '') {
-      setPriceText(formatLimitPriceInputValue(limitPrice, baseAsset))
-      return
+    const trimmed = priceText.trim();
+    if (trimmed === "") {
+      setPriceText(formatLimitPriceInputValue(limitPrice, baseAsset));
+      return;
     }
 
-    const parsed = Number(trimmed)
+    const parsed = Number(trimmed);
     if (!Number.isFinite(parsed)) {
-      setPriceText(formatLimitPriceInputValue(limitPrice, baseAsset))
-      return
+      setPriceText(formatLimitPriceInputValue(limitPrice, baseAsset));
+      return;
     }
 
-    const priceSubunits = limitPriceDisplayAmountToSubunits(parsed, baseAsset)
-    const clamped = Math.min(maxPrice, Math.max(1, priceSubunits))
-    onLimitPriceChange?.(clamped)
-    setPriceText(formatLimitPriceInputValue(clamped, baseAsset))
-  }
+    const priceSubunits = limitPriceDisplayAmountToSubunits(parsed, baseAsset);
+    const clamped = Math.min(maxPrice, Math.max(1, priceSubunits));
+    onLimitPriceChange?.(clamped);
+    setPriceText(formatLimitPriceInputValue(clamped, baseAsset));
+  };
 
   return (
     <div className="mb-4">
       <label className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-2 block">
-        {t('trade.limitPrice')}
+        {t("trade.limitPrice")}
       </label>
       <div className="relative">
         <input
@@ -488,8 +489,8 @@ function LimitPriceInput({
           onChange={(e) => setPriceText(e.target.value)}
           onFocus={() => setIsFocused(true)}
           onBlur={() => {
-            setIsFocused(false)
-            handlePriceBlur()
+            setIsFocused(false);
+            handlePriceBlur();
           }}
           min={limitPriceToDisplayAmount(1, baseAsset)}
           max={maxDisplayPrice}
@@ -501,54 +502,57 @@ function LimitPriceInput({
         </span>
       </div>
       <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
-        {t('trade.pricePerShare', {
+        {t("trade.pricePerShare", {
           price: formatPriceWithProbability(limitPrice, divisibility, baseAsset),
         })}
       </p>
     </div>
-  )
+  );
 }
 
 function limitPriceDisplayScale(baseAsset: MarketBaseAsset): number {
-  if (baseAsset === 'sat') return 1_000
-  if (baseAsset === 'usd') return 100
-  return 1
+  if (baseAsset === "sat") return 1_000;
+  if (baseAsset === "usd") return 100;
+  return 1;
 }
 
 function limitPriceToDisplayAmount(priceSubunits: number, baseAsset: MarketBaseAsset): number {
-  return priceSubunits / limitPriceDisplayScale(baseAsset)
+  return priceSubunits / limitPriceDisplayScale(baseAsset);
 }
 
-function limitPriceDisplayAmountToSubunits(displayAmount: number, baseAsset: MarketBaseAsset): number {
-  return Math.round(displayAmount * limitPriceDisplayScale(baseAsset))
+function limitPriceDisplayAmountToSubunits(
+  displayAmount: number,
+  baseAsset: MarketBaseAsset,
+): number {
+  return Math.round(displayAmount * limitPriceDisplayScale(baseAsset));
 }
 
 function limitPriceInputStep(baseAsset: MarketBaseAsset): number {
-  if (baseAsset === 'sat') return 0.001
-  if (baseAsset === 'usd') return 0.01
-  return 1
+  if (baseAsset === "sat") return 0.001;
+  if (baseAsset === "usd") return 0.01;
+  return 1;
 }
 
 function formatLimitPriceInputValue(priceSubunits: number, baseAsset: MarketBaseAsset): string {
-  return String(limitPriceToDisplayAmount(priceSubunits, baseAsset))
+  return String(limitPriceToDisplayAmount(priceSubunits, baseAsset));
 }
 
 function formatLimitPriceAmount(priceSubunits: number, baseAsset: MarketBaseAsset): string {
   const displayAmount = limitPriceToDisplayAmount(
     Number.isFinite(priceSubunits) ? priceSubunits : 0,
     baseAsset,
-  )
-  if (baseAsset === 'usd') {
+  );
+  if (baseAsset === "usd") {
     return `$${displayAmount.toLocaleString(undefined, {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
-    })}`
+    })}`;
   }
-  if (baseAsset === 'jpy') return `¥${Math.trunc(displayAmount).toLocaleString()}`
+  if (baseAsset === "jpy") return `¥${Math.trunc(displayAmount).toLocaleString()}`;
   return `${displayAmount.toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 3,
-  })} sats`
+  })} sats`;
 }
 
 function formatPriceWithProbability(
@@ -556,7 +560,7 @@ function formatPriceWithProbability(
   divisibility: number,
   baseAsset: MarketBaseAsset,
 ): string {
-  return `${formatLimitPriceAmount(price, baseAsset)} (${formatPricePercentage(price, divisibility)})`
+  return `${formatLimitPriceAmount(price, baseAsset)} (${formatPricePercentage(price, divisibility)})`;
 }
 
 function LimitOrderPreviewSection({
@@ -565,42 +569,54 @@ function LimitOrderPreviewSection({
   baseAsset,
   formatAmount,
 }: {
-  preview: LimitOrderPreview
-  divisibility: number
-  baseAsset: MarketBaseAsset
-  formatAmount: (amount: number) => string
+  preview: LimitOrderPreview;
+  divisibility: number;
+  baseAsset: MarketBaseAsset;
+  formatAmount: (amount: number) => string;
 }) {
-  const { t } = useTranslation()
-  const estimatedSettlementFee = estimatedSettlementFeeSubunits(baseAsset)
-  const totalWithFee = preview.totalCost + estimatedSettlementFee
+  const { t } = useTranslation();
+  const estimatedSettlementFee = estimatedSettlementFeeSubunits(baseAsset);
+  const totalWithFee = preview.totalCost + estimatedSettlementFee;
   return (
     <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
       <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">{t('trade.pricePerShareLabel')}</span>
+        <span className="text-slate-500 dark:text-slate-400">{t("trade.pricePerShareLabel")}</span>
         <span className="font-medium text-slate-600 dark:text-slate-300">
           {formatPriceWithProbability(preview.limitPrice, divisibility, baseAsset)}
         </span>
       </div>
       <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
-        <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.quotePayment')}</span>
+        <span className="text-slate-700 dark:text-slate-300 font-medium">
+          {t("trade.quotePayment")}
+        </span>
         <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="limit-total-cost">
           {formatAmount(preview.totalCost)}
         </span>
       </div>
       <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">{t('trade.estimatedSettlementFee')}</span>
-        <span className="font-medium text-slate-600 dark:text-slate-300" data-testid="limit-settlement-fee">
+        <span className="text-slate-500 dark:text-slate-400">
+          {t("trade.estimatedSettlementFee")}
+        </span>
+        <span
+          className="font-medium text-slate-600 dark:text-slate-300"
+          data-testid="limit-settlement-fee"
+        >
           {formatAmount(estimatedSettlementFee)}
         </span>
       </div>
       <div className="flex justify-between">
-        <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.totalWithFee')}</span>
-        <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="limit-grand-total">
+        <span className="text-slate-700 dark:text-slate-300 font-medium">
+          {t("trade.totalWithFee")}
+        </span>
+        <span
+          className="font-bold text-blue-600 dark:text-blue-400"
+          data-testid="limit-grand-total"
+        >
           {formatAmount(totalWithFee)}
         </span>
       </div>
     </div>
-  )
+  );
 }
 
 export function TradingPanel({
@@ -629,94 +645,105 @@ export function TradingPanel({
   onTopUpRequired,
   disabled = false,
 }: TradingPanelProps) {
-  const { t } = useTranslation()
-  const [tradeComment, setTradeComment] = useState('')
-  const isSell = tradeSide === 'Sell'
-  const isLimit = orderType === 'limit'
-  const baseAsset = normalizeMarketBaseAsset(market.baseAsset)
-  const unitLabel = marketUnitLabel(baseAsset)
-  const divisibility = normalizeMarketDivisibility(market.divisibility)
-  const wholeShareLabel = formatShareFace(baseAsset, divisibility)
-  const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset)
-  const estimatedSettlementFee = estimatedSettlementFeeSubunits(baseAsset)
+  const { t } = useTranslation();
+  const [tradeComment, setTradeComment] = useState("");
+  const isSell = tradeSide === "Sell";
+  const isLimit = orderType === "limit";
+  const baseAsset = normalizeMarketBaseAsset(market.baseAsset);
+  const unitLabel = marketUnitLabel(baseAsset);
+  const divisibility = normalizeMarketDivisibility(market.divisibility);
+  const wholeShareLabel = formatShareFace(baseAsset, divisibility);
+  const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset);
+  const estimatedSettlementFee = estimatedSettlementFeeSubunits(baseAsset);
   const shareCountLabel = (shares: number) =>
-    t('trade.shareCount', { count: shares.toLocaleString() })
-  const [tradeAmountText, setTradeAmountText] = useState(tradeAmount > 0 ? String(tradeAmount) : '')
-  const [isTradeAmountFocused, setIsTradeAmountFocused] = useState(false)
-  const userHoldingShares =
-    userHoldings == null ? null : Math.floor(userHoldings / divisibility)
-  const tradingDisabled = disabled
+    t("trade.shareCount", { count: shares.toLocaleString() });
+  const [tradeAmountText, setTradeAmountText] = useState(
+    tradeAmount > 0 ? String(tradeAmount) : "",
+  );
+  const [isTradeAmountFocused, setIsTradeAmountFocused] = useState(false);
+  const userHoldingShares = userHoldings == null ? null : Math.floor(userHoldings / divisibility);
+  const tradingDisabled = disabled;
   const marketOrderHasNoLiquidity =
     !isLimit &&
     !!tradeSelection &&
     tradeAmount > 0 &&
-    tradePreview?.hasExecutableLiquidity === false
-  const backingBlocked = walletReady && tradeFeasibility?.canBack === false
-  const backingBlockReason =
-    tradeFeasibility?.reason ?? (isSell ? 'outcome-tokens' : 'funds')
+    tradePreview?.hasExecutableLiquidity === false;
+  const backingBlocked = walletReady && tradeFeasibility?.canBack === false;
+  const backingBlockReason = tradeFeasibility?.reason ?? (isSell ? "outcome-tokens" : "funds");
   const backingBlockMessage =
-    backingBlockReason === 'outcome-tokens'
-      ? t('trade.insufficientOutcomeTokens')
-      : t('trade.insufficientFunds')
-  const buyNeedsTopUp = backingBlocked && backingBlockReason === 'funds'
+    backingBlockReason === "outcome-tokens"
+      ? t("trade.insufficientOutcomeTokens")
+      : t("trade.insufficientFunds");
+  const buyNeedsTopUp = backingBlocked && backingBlockReason === "funds";
 
   useEffect(() => {
     if (!isTradeAmountFocused) {
-      setTradeAmountText(tradeAmount > 0 ? String(tradeAmount) : '')
+      setTradeAmountText(tradeAmount > 0 ? String(tradeAmount) : "");
     }
-  }, [tradeAmount, isTradeAmountFocused])
+  }, [tradeAmount, isTradeAmountFocused]);
 
   const handleShareAmountBlur = () => {
-    const trimmed = tradeAmountText.trim()
-    if (trimmed === '') {
-      onAmountChange?.(0)
-      setTradeAmountText('')
-      return
+    const trimmed = tradeAmountText.trim();
+    if (trimmed === "") {
+      onAmountChange?.(0);
+      setTradeAmountText("");
+      return;
     }
 
-    const parsed = Number(trimmed)
+    const parsed = Number(trimmed);
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      onAmountChange?.(0)
-      setTradeAmountText('')
-      return
+      onAmountChange?.(0);
+      setTradeAmountText("");
+      return;
     }
 
-    const rounded = Math.max(1, Math.round(parsed))
-    onAmountChange?.(rounded)
-    setTradeAmountText(String(rounded))
-  }
+    const rounded = Math.max(1, Math.round(parsed));
+    onAmountChange?.(rounded);
+    setTradeAmountText(String(rounded));
+  };
 
   // Build confirm button text
   const getConfirmText = () => {
-    if (isTradeSubmitting) return t('trade.submittingOrder')
-    if (!walletReady) return t('wallet.startTrading')
-    if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
-    if (buyNeedsTopUp) return t('trade.topUpWalletUnit', { unit: unitLabel })
-    if (backingBlocked) return backingBlockMessage
-    if (marketOrderHasNoLiquidity) return t('trade.noExecutableLiquidity')
-    const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
-    const amountLabel = shareCountLabel(tradeAmount)
+    if (isTradeSubmitting) return t("trade.submittingOrder");
+    if (!walletReady) return t("wallet.startTrading");
+    if (!tradeAmount || tradeAmount <= 0) return t("trade.enterAmount");
+    if (buyNeedsTopUp) return t("trade.topUpWalletUnit", { unit: unitLabel });
+    if (backingBlocked) return backingBlockMessage;
+    if (marketOrderHasNoLiquidity) return t("trade.noExecutableLiquidity");
+    const sideLabel = tradeSelection?.side.toUpperCase() ?? "";
+    const amountLabel = shareCountLabel(tradeAmount);
 
-    if (isSell && isLimit) return t('trade.confirmLimitSell', { amount: amountLabel })
-    if (isSell) return t('trade.confirmSell', { side: sideLabel, amount: amountLabel })
-    if (isLimit) return t('trade.confirmLimitBuy', { amount: amountLabel })
-    return t('trade.confirmBuy', { side: sideLabel, amount: amountLabel })
-  }
+    if (isSell && isLimit) return t("trade.confirmLimitSell", { amount: amountLabel });
+    if (isSell) return t("trade.confirmSell", { side: sideLabel, amount: amountLabel });
+    if (isLimit) return t("trade.confirmLimitBuy", { amount: amountLabel });
+    return t("trade.confirmBuy", { side: sideLabel, amount: amountLabel });
+  };
 
   return (
-    <div data-trading-panel className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5">
+    <div
+      data-trading-panel
+      className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5"
+    >
       <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">
-        {t('trade.title')}
+        {t("trade.title")}
       </h3>
 
       {/* Buy/Sell Toggle */}
-      <BuySellToggle tradeSide={tradeSide} onTradeSideChange={onTradeSideChange} disabled={tradingDisabled} />
+      <BuySellToggle
+        tradeSide={tradeSide}
+        onTradeSideChange={onTradeSideChange}
+        disabled={tradingDisabled}
+      />
 
       {/* Market/Limit Sub-tabs */}
-      <MarketLimitToggle orderType={orderType} onOrderTypeChange={onOrderTypeChange} disabled={tradingDisabled} />
+      <MarketLimitToggle
+        orderType={orderType}
+        onOrderTypeChange={onOrderTypeChange}
+        disabled={tradingDisabled}
+      />
 
       {/* Outcomes based on market type */}
-      {market.type === 'yesno' && (
+      {market.type === "yesno" && (
         <YesNoOutcomes
           market={market}
           tradeSelection={tradeSelection}
@@ -725,7 +752,7 @@ export function TradingPanel({
           disabled={tradingDisabled}
         />
       )}
-      {market.type === 'categorical' && (
+      {market.type === "categorical" && (
         <CategoricalOutcomes
           market={market}
           tradeSelection={tradeSelection}
@@ -734,7 +761,7 @@ export function TradingPanel({
           disabled={tradingDisabled}
         />
       )}
-      {market.type === 'numeric' && (
+      {market.type === "numeric" && (
         <NumericOutcomes
           market={market}
           tradeSelection={tradeSelection}
@@ -749,7 +776,7 @@ export function TradingPanel({
         <div className="mt-5 pt-5 border-t border-slate-200 dark:border-slate-700">
           <div className="flex items-center justify-between mb-1">
             <span className="text-sm font-medium text-slate-600 dark:text-slate-400">
-              {t('trade.shares')}
+              {t("trade.shares")}
             </span>
             <button
               onClick={onTradeClear}
@@ -764,11 +791,11 @@ export function TradingPanel({
               balance is intentionally omitted from this panel. */}
           {isSell && userHoldingShares != null && (
             <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
-              {t('trade.balanceShares', { count: userHoldingShares.toLocaleString() })}
+              {t("trade.balanceShares", { count: userHoldingShares.toLocaleString() })}
             </p>
           )}
           <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
-            {t('trade.wholeShareValue', { amount: wholeShareLabel })}
+            {t("trade.wholeShareValue", { amount: wholeShareLabel })}
           </p>
 
           {/* Shares Input — one displayed share maps to a market-divisibility
@@ -781,19 +808,19 @@ export function TradingPanel({
               disabled={tradingDisabled}
               value={tradeAmountText}
               onChange={(e) => {
-                const next = e.target.value
-                setTradeAmountText(next)
-                const parsed = Number(next)
+                const next = e.target.value;
+                setTradeAmountText(next);
+                const parsed = Number(next);
                 if (Number.isFinite(parsed) && parsed > 0) {
-                  onAmountChange?.(Math.max(1, Math.round(parsed)))
-                } else if (next.trim() === '') {
-                  onAmountChange?.(0)
+                  onAmountChange?.(Math.max(1, Math.round(parsed)));
+                } else if (next.trim() === "") {
+                  onAmountChange?.(0);
                 }
               }}
               onFocus={() => setIsTradeAmountFocused(true)}
               onBlur={() => {
-                setIsTradeAmountFocused(false)
-                handleShareAmountBlur()
+                setIsTradeAmountFocused(false);
+                handleShareAmountBlur();
               }}
               step={1}
               min={1}
@@ -804,36 +831,36 @@ export function TradingPanel({
 
           {/* Quick Amount / Percentage Buttons */}
           <div className="flex gap-2 mb-4">
-            {isSell ? (
-              QUICK_SELL_PERCENTAGES.map((pct) => {
-                const calculatedAmount = userHoldingShares ? Math.round(userHoldingShares * pct / 100) : 0
-                return (
+            {isSell
+              ? QUICK_SELL_PERCENTAGES.map((pct) => {
+                  const calculatedAmount = userHoldingShares
+                    ? Math.round((userHoldingShares * pct) / 100)
+                    : 0;
+                  return (
+                    <button
+                      key={pct}
+                      disabled={tradingDisabled}
+                      onClick={() => onAmountChange?.(calculatedAmount)}
+                      className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors ${
+                        tradeAmount === calculatedAmount && calculatedAmount > 0
+                          ? "bg-blue-500 text-white"
+                          : "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
+                      }`}
+                    >
+                      {pct}%
+                    </button>
+                  );
+                })
+              : QUICK_SHARE_PRESETS.map((shares) => (
                   <button
-                    key={pct}
+                    key={shares}
                     disabled={tradingDisabled}
-                    onClick={() => onAmountChange?.(calculatedAmount)}
-                    className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors ${
-                      tradeAmount === calculatedAmount && calculatedAmount > 0
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
-                    }`}
+                    onClick={() => onAmountChange?.(Math.round(tradeAmount || 0) + shares)}
+                    className="flex-1 py-2 rounded-lg text-xs font-medium transition-colors bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                   >
-                    {pct}%
+                    +{shares}
                   </button>
-                )
-              })
-            ) : (
-              QUICK_SHARE_PRESETS.map((shares) => (
-                <button
-                  key={shares}
-                  disabled={tradingDisabled}
-                  onClick={() => onAmountChange?.(Math.round(tradeAmount || 0) + shares)}
-                  className="flex-1 py-2 rounded-lg text-xs font-medium transition-colors bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
-                >
-                  +{shares}
-                </button>
-              ))
-            )}
+                ))}
           </div>
 
           {/* Limit Price Input (shown for limit orders, below amount) */}
@@ -852,14 +879,23 @@ export function TradingPanel({
             <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
               {tradePreview.hasExecutableLiquidity === false ? (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-                  {t('trade.noExecutableLiquidityDescription')}
+                  {t("trade.noExecutableLiquidityDescription")}
                 </div>
               ) : (
                 <>
                   <div className="flex justify-between text-sm">
-                    <span className="text-slate-500 dark:text-slate-400">{t('trade.pricePerShareLabel')}</span>
-                    <span className="font-medium text-slate-600 dark:text-slate-300" data-testid="trade-average-execution-price">
-                      {formatPriceWithProbability(tradePreview.averageExecutionPrice ?? 0, divisibility, baseAsset)}
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {t("trade.pricePerShareLabel")}
+                    </span>
+                    <span
+                      className="font-medium text-slate-600 dark:text-slate-300"
+                      data-testid="trade-average-execution-price"
+                    >
+                      {formatPriceWithProbability(
+                        tradePreview.averageExecutionPrice ?? 0,
+                        divisibility,
+                        baseAsset,
+                      )}
                     </span>
                   </div>
                 </>
@@ -868,25 +904,34 @@ export function TradingPanel({
                 <>
                   <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
                     <span className="text-slate-700 dark:text-slate-300 font-medium">
-                      {t('trade.quotePayment')}
+                      {t("trade.quotePayment")}
                     </span>
-                    <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="trade-total-cost">
+                    <span
+                      className="font-bold text-blue-600 dark:text-blue-400"
+                      data-testid="trade-total-cost"
+                    >
                       {formatAmount(tradePreview.totalCost)}
                     </span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-slate-500 dark:text-slate-400">
-                      {t('trade.estimatedSettlementFee')}
+                      {t("trade.estimatedSettlementFee")}
                     </span>
-                    <span className="font-medium text-slate-600 dark:text-slate-300" data-testid="trade-settlement-fee">
+                    <span
+                      className="font-medium text-slate-600 dark:text-slate-300"
+                      data-testid="trade-settlement-fee"
+                    >
                       {formatAmount(estimatedSettlementFee)}
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-700 dark:text-slate-300 font-medium">
-                      {t('trade.totalWithFee')}
+                      {t("trade.totalWithFee")}
                     </span>
-                    <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="trade-grand-total">
+                    <span
+                      className="font-bold text-blue-600 dark:text-blue-400"
+                      data-testid="trade-grand-total"
+                    >
                       {formatAmount(tradePreview.totalCost + estimatedSettlementFee)}
                     </span>
                   </div>
@@ -910,11 +955,11 @@ export function TradingPanel({
               role="status"
               data-testid="trade-submit-status"
               className={`mb-4 rounded-lg border px-3 py-2 text-sm ${
-                tradeSubmitStatus.kind === 'success'
-                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300'
-                  : tradeSubmitStatus.kind === 'error'
-                    ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-300'
-                    : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300'
+                tradeSubmitStatus.kind === "success"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300"
+                  : tradeSubmitStatus.kind === "error"
+                    ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-300"
+                    : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
               }`}
             >
               {tradeSubmitStatus.message}
@@ -936,13 +981,13 @@ export function TradingPanel({
           {/* Optional Comment with Trade */}
           <div className="mb-4">
             <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5 block">
-              {t('trade.comment')}
+              {t("trade.comment")}
             </label>
             <textarea
               value={tradeComment}
               disabled={tradingDisabled}
               onChange={(e) => setTradeComment(e.target.value.slice(0, 280))}
-              placeholder={t('trade.commentPlaceholder')}
+              placeholder={t("trade.commentPlaceholder")}
               rows={2}
               className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
             />
@@ -955,21 +1000,21 @@ export function TradingPanel({
           <button
             data-testid="trade-confirm"
             onClick={() => {
-              if (tradingDisabled) return
+              if (tradingDisabled) return;
               if (!walletReady) {
-                onWalletRequired?.(tradeComment.trim() || undefined)
-                return
+                onWalletRequired?.(tradeComment.trim() || undefined);
+                return;
               }
               if (buyNeedsTopUp) {
-                const comment = tradeComment.trim()
-                onTopUpRequired?.(comment || undefined)
-                return
+                const comment = tradeComment.trim();
+                onTopUpRequired?.(comment || undefined);
+                return;
               }
-              const comment = tradeComment.trim()
-              onTradeConfirm?.(comment || undefined)
+              const comment = tradeComment.trim();
+              onTradeConfirm?.(comment || undefined);
               if (comment) {
-                onCommentPost?.(comment)
-                setTradeComment('')
+                onCommentPost?.(comment);
+                setTradeComment("");
               }
             }}
             disabled={
@@ -982,8 +1027,8 @@ export function TradingPanel({
             title={backingBlocked && !buyNeedsTopUp ? backingBlockMessage : undefined}
             className={`w-full py-3 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
               !walletReady
-                ? 'bg-[#f7931a] hover:bg-[#e8850f] text-white'
-                : 'bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white'
+                ? "bg-[#f7931a] hover:bg-[#e8850f] text-white"
+                : "bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white"
             }`}
           >
             <span className="inline-flex items-center justify-center gap-2">
@@ -994,5 +1039,5 @@ export function TradingPanel({
         </div>
       )}
     </div>
-  )
+  );
 }

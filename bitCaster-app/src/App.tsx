@@ -1,10 +1,4 @@
-import {
-  BrowserRouter,
-  Routes,
-  Route,
-  useNavigate,
-  useLocation,
-} from "react-router";
+import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
 import { AppShell } from "@/components/shell";
 import { MarketsPage } from "@/pages/MarketsPage";
@@ -26,16 +20,10 @@ import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
-import {
-  recoverKeysetCountersForMint,
-  recoverPendingTokenReceives,
-} from "@/lib/cashu";
+import { recoverKeysetCountersForMint, recoverPendingTokenReceives } from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
-import {
-  refreshMintInfoWithoutActivating,
-  userAddAndSelectMint,
-} from "@/lib/walletOps";
+import { refreshMintInfoWithoutActivating, userAddAndSelectMint } from "@/lib/walletOps";
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
 import { sweepElapsedPartialLockFailures } from "@/lib/partialLockRecovery";
 import { installE2EDiagnostics } from "@/lib/e2eDiagnostics";
@@ -76,8 +64,7 @@ function ShellRoutes() {
     {
       label: t("nav.markets"),
       href: "/markets",
-      isActive:
-        location.pathname === "/" || location.pathname.startsWith("/markets"),
+      isActive: location.pathname === "/" || location.pathname.startsWith("/markets"),
     },
   ];
 
@@ -119,8 +106,7 @@ function ShellRoutes() {
 }
 
 function titleForPath(pathname: string): string {
-  if (pathname === "/" || pathname === "/markets")
-    return "bitCaster/All Markets";
+  if (pathname === "/" || pathname === "/markets") return "bitCaster/All Markets";
   if (pathname.startsWith("/markets/")) return "bitCaster/Market";
   if (pathname === "/portfolio") return "bitCaster/Portfolio";
   if (pathname === "/creator/new") return "bitCaster/Create Market";
@@ -248,9 +234,7 @@ function AppRoutes() {
   // missed payments that arrived while the user wasn't on the Receive
   // view — P5 item 5 regression.
   const mnemonic = useWalletStore((s) => s.mnemonic);
-  const relayUrlsKey = useSettingsStore((s) =>
-    s.relays.map((r) => r.url).join("|"),
-  );
+  const relayUrlsKey = useSettingsStore((s) => s.relays.map((r) => r.url).join("|"));
   useEffect(() => {
     if (!mnemonic) return;
     const relays = effectiveRelayUrls(useSettingsStore.getState().relays);
@@ -287,20 +271,16 @@ function AppRoutes() {
       if (mints.length === 0) {
         // Skip seeding while full-window creation flows are visible; those
         // flows can own their setup state while mounted.
-        const onWizard = (WIZARD_PATHS as readonly string[]).includes(
-          window.location.pathname,
-        );
+        const onWizard = (WIZARD_PATHS as readonly string[]).includes(window.location.pathname);
         if (!onWizard) {
           userAddAndSelectMint(DEFAULT_MINT_URL).catch(() => {});
         }
         return;
       }
       for (const m of mints) {
-        const nuts = (m.info as { nuts?: Record<string, unknown> } | undefined)
-          ?.nuts;
+        const nuts = (m.info as { nuts?: Record<string, unknown> } | undefined)?.nuts;
         const isDefault = m.url === DEFAULT_MINT_URL;
-        const missingCtfOnDefault =
-          isDefault && nuts != null && !("CTF" in nuts);
+        const missingCtfOnDefault = isDefault && nuts != null && !("CTF" in nuts);
         if (!nuts || missingCtfOnDefault) {
           refreshMintInfoWithoutActivating(m.url).catch(() => {});
         }
@@ -316,14 +296,13 @@ function AppRoutes() {
     };
   }, []);
 
-  const isWizard = (WIZARD_PATHS as readonly string[]).includes(
-    location.pathname,
-  );
+  const isWizard = (WIZARD_PATHS as readonly string[]).includes(location.pathname);
   return (
     <>
       {pendingWalletWarning && (
         <div className="border-b border-amber-400/40 bg-amber-500/15 px-4 py-3 text-sm text-amber-100">
-          Payment was sent but local wallet state may be inconsistent. Please restart the app to reconcile.
+          Payment was sent but local wallet state may be inconsistent. Please restart the app to
+          reconcile.
         </div>
       )}
       {isWizard ? <WizardRoutes /> : <ShellRoutes />}

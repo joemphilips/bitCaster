@@ -1,17 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
-import {
-  fetchNip78CreatorMarkets,
-  publishNip78CreatorMarkets,
-} from '@/lib/nip78CreatorMarkets'
-import { resolveNsecIdentity } from '@/lib/identityOps'
+import { useEffect, useRef, useState } from "react";
+import { fetchNip78CreatorMarkets, publishNip78CreatorMarkets } from "@/lib/nip78CreatorMarkets";
+import { resolveNsecIdentity } from "@/lib/identityOps";
 import {
   creatorMarketsEqual,
   useCreatorMarketsStore,
   type StoredCreatorMarket,
-} from './creatorMarkets'
-import { useSettingsStore } from './settings'
+} from "./creatorMarkets";
+import { useSettingsStore } from "./settings";
 
-const PUBLISH_DEBOUNCE_MS = 800
+const PUBLISH_DEBOUNCE_MS = 800;
 
 /**
  * Merge two creator-market sets, keeping the most recently created copy of
@@ -22,16 +19,16 @@ function mergeCreatorMarkets(
   a: readonly StoredCreatorMarket[],
   b: readonly StoredCreatorMarket[],
 ): StoredCreatorMarket[] {
-  const byId = new Map<string, StoredCreatorMarket>()
+  const byId = new Map<string, StoredCreatorMarket>();
   for (const m of [...a, ...b]) {
-    const existing = byId.get(m.conditionId)
+    const existing = byId.get(m.conditionId);
     if (!existing || existing.createdAt < m.createdAt) {
-      byId.set(m.conditionId, m)
+      byId.set(m.conditionId, m);
     }
   }
   return Array.from(byId.values()).sort((x, y) =>
     x.createdAt < y.createdAt ? 1 : x.createdAt > y.createdAt ? -1 : 0,
-  )
+  );
 }
 
 /**
@@ -48,76 +45,70 @@ function mergeCreatorMarkets(
  * Mount this once at the application root, alongside `useBookmarkSync`.
  */
 export function useCreatorSync(): void {
-  const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode)
-  const nsecSecret = useSettingsStore((s) => s.nsecSecret)
-  const markets = useCreatorMarketsStore((s) => s.markets)
-  const replace = useCreatorMarketsStore((s) => s.replace)
-  const [initialSyncDone, setInitialSyncDone] = useState(false)
-  const lastPublished = useRef<StoredCreatorMarket[] | null>(null)
-  const keysRef = useRef<{ privateKeyHex: string; publicKey: string } | null>(
-    null,
-  )
+  const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
+  const nsecSecret = useSettingsStore((s) => s.nsecSecret);
+  const markets = useCreatorMarketsStore((s) => s.markets);
+  const replace = useCreatorMarketsStore((s) => s.replace);
+  const [initialSyncDone, setInitialSyncDone] = useState(false);
+  const lastPublished = useRef<StoredCreatorMarket[] | null>(null);
+  const keysRef = useRef<{ privateKeyHex: string; publicKey: string } | null>(null);
 
   // Initial fetch + merge whenever the active nsec identity changes.
   useEffect(() => {
-    setInitialSyncDone(false)
-    lastPublished.current = null
-    keysRef.current = null
-    if (nostrSignerMode !== 'nsec') return
+    setInitialSyncDone(false);
+    lastPublished.current = null;
+    keysRef.current = null;
+    if (nostrSignerMode !== "nsec") return;
 
-    const keys = resolveNsecIdentity(nsecSecret)
-    if (!keys) return
-    keysRef.current = keys
+    const keys = resolveNsecIdentity(nsecSecret);
+    if (!keys) return;
+    keysRef.current = keys;
 
-    let cancelled = false
+    let cancelled = false;
     void (async () => {
-      const remote = await fetchNip78CreatorMarkets(keys.publicKey).catch(() => null)
-      if (cancelled) return
+      const remote = await fetchNip78CreatorMarkets(keys.publicKey).catch(() => null);
+      if (cancelled) return;
 
-      const local = useCreatorMarketsStore.getState().markets
+      const local = useCreatorMarketsStore.getState().markets;
       if (remote === null) {
         // No remote state — seed the relay with whatever we have locally.
-        lastPublished.current = [...local]
-        setInitialSyncDone(true)
+        lastPublished.current = [...local];
+        setInitialSyncDone(true);
         if (local.length > 0) {
-          await publishNip78CreatorMarkets(keys.privateKeyHex, local).catch(() => {})
+          await publishNip78CreatorMarkets(keys.privateKeyHex, local).catch(() => {});
         }
-        return
+        return;
       }
 
-      const merged = mergeCreatorMarkets(local, remote)
-      lastPublished.current = merged
-      replace(merged)
-      setInitialSyncDone(true)
+      const merged = mergeCreatorMarkets(local, remote);
+      lastPublished.current = merged;
+      replace(merged);
+      setInitialSyncDone(true);
 
-      const remoteIds = new Set(remote.map((m) => m.conditionId))
-      const remoteHasAll = local.every((m) => remoteIds.has(m.conditionId))
+      const remoteIds = new Set(remote.map((m) => m.conditionId));
+      const remoteHasAll = local.every((m) => remoteIds.has(m.conditionId));
       if (!remoteHasAll || !creatorMarketsEqual(remote, merged)) {
-        await publishNip78CreatorMarkets(keys.privateKeyHex, merged).catch(() => {})
+        await publishNip78CreatorMarkets(keys.privateKeyHex, merged).catch(() => {});
       }
-    })()
+    })();
 
     return () => {
-      cancelled = true
-    }
-  }, [nostrSignerMode, nsecSecret, replace])
+      cancelled = true;
+    };
+  }, [nostrSignerMode, nsecSecret, replace]);
 
   // Publish to relays whenever the local set changes after the initial sync.
   useEffect(() => {
-    if (nostrSignerMode !== 'nsec' || !initialSyncDone) return
-    const keys = keysRef.current
-    if (!keys) return
-    if (
-      lastPublished.current &&
-      creatorMarketsEqual(lastPublished.current, markets)
-    )
-      return
+    if (nostrSignerMode !== "nsec" || !initialSyncDone) return;
+    const keys = keysRef.current;
+    if (!keys) return;
+    if (lastPublished.current && creatorMarketsEqual(lastPublished.current, markets)) return;
 
-    const snapshot = [...markets]
+    const snapshot = [...markets];
     const handle = setTimeout(() => {
-      lastPublished.current = snapshot
-      publishNip78CreatorMarkets(keys.privateKeyHex, snapshot).catch(() => {})
-    }, PUBLISH_DEBOUNCE_MS)
-    return () => clearTimeout(handle)
-  }, [nostrSignerMode, markets, initialSyncDone])
+      lastPublished.current = snapshot;
+      publishNip78CreatorMarkets(keys.privateKeyHex, snapshot).catch(() => {});
+    }, PUBLISH_DEBOUNCE_MS);
+    return () => clearTimeout(handle);
+  }, [nostrSignerMode, markets, initialSyncDone]);
 }

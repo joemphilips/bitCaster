@@ -42,11 +42,7 @@ export function advanceSeedScanCursor(
   ) {
     throw new Error('seed recovery batch size is invalid')
   }
-  const nextCounter = checkedAdd(
-    observation.startCounter,
-    observation.requestedCount,
-    'counter',
-  )
+  const nextCounter = checkedAdd(observation.startCounter, observation.requestedCount, 'counter')
   const seen = new Set<number>()
   let highest = -1
   for (const offset of observation.returnedCounterOffsets) {
@@ -86,11 +82,7 @@ export function advanceSeedScan(
   validateSeedScanState(current, limits.maxTotalOutputs)
   requirePositive(limits.maxBatchSize, 'maximum batch size')
   requirePositive(limits.maxTotalOutputs, 'maximum total outputs')
-  const cursor = advanceSeedScanCursor(
-    current,
-    observation,
-    limits.maxBatchSize,
-  )
+  const cursor = advanceSeedScanCursor(current, observation, limits.maxBatchSize)
   const totalRequestedOutputs = checkedAdd(
     current.totalRequestedOutputs,
     observation.requestedCount,

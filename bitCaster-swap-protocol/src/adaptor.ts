@@ -24,8 +24,8 @@ import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 
 const Pt = secp256k1.Point
-const Fn = Pt.Fn          // Field of scalars mod n
-const ORDER = Fn.ORDER    // curve order n
+const Fn = Pt.Fn // Field of scalars mod n
+const ORDER = Fn.ORDER // curve order n
 
 // ---------------------------------------------------------------------------
 // Adaptor point generation
@@ -99,7 +99,7 @@ export function preSign(
   const signedNonce = nonceIsOdd ? Fn.create(ORDER - r_scalar) : r_scalar
   const s_prime = Fn.create(signedNonce + Fn.create(e * x))
 
-  const R_prime_compressed = hexToBytes(R_prime.toHex(true))  // 33 bytes
+  const R_prime_compressed = hexToBytes(R_prime.toHex(true)) // 33 bytes
   const out = new Uint8Array(65)
   out.set(R_prime_compressed, 0)
   out.set(bigIntToBytes32(s_prime), 33)
@@ -136,9 +136,7 @@ export function preVerify(
     // For an even R', s'G - eP == R' - T. For an odd R', BIP-340 uses
     // -R', and preSign used -r, so s'G - eP == T - R'.
     const lhs = Pt.BASE.multiply(Fn.create(s_prime)).subtract(P.multiply(Fn.create(e)))
-    const rhs = R_prime.toAffine().y % 2n === 0n
-      ? R_prime.subtract(T)
-      : T.subtract(R_prime)
+    const rhs = R_prime.toAffine().y % 2n === 0n ? R_prime.subtract(T) : T.subtract(R_prime)
     return lhs.equals(rhs)
   } catch {
     return false
@@ -170,12 +168,10 @@ export function adapt(preSig: Uint8Array, adaptorSecret: Uint8Array): Uint8Array
 
   const R_prime = Pt.fromHex(bytesToHex(preSig.slice(0, 33)))
   const nonceIsOdd = R_prime.toAffine().y % 2n !== 0n
-  const s_val = nonceIsOdd
-    ? Fn.create(s_prime - t + ORDER)
-    : Fn.create(s_prime + t)
+  const s_val = nonceIsOdd ? Fn.create(s_prime - t + ORDER) : Fn.create(s_prime + t)
 
   const sig = new Uint8Array(64)
-  sig.set(bigIntToBytes32(R_prime.toAffine().x), 0)  // x-only 32 bytes
+  sig.set(bigIntToBytes32(R_prime.toAffine().x), 0) // x-only 32 bytes
   sig.set(bigIntToBytes32(s_val), 32)
   return sig
 }
@@ -225,7 +221,7 @@ function getTagPrefix(): Uint8Array {
 
 function schnorrChallenge(R_x: Uint8Array, P_x: Uint8Array, message: Uint8Array): bigint {
   const prefix = getTagPrefix()
-  const data = new Uint8Array(64 + 96)  // prefix(64) + R_x(32) + P_x(32) + m(32)
+  const data = new Uint8Array(64 + 96) // prefix(64) + R_x(32) + P_x(32) + m(32)
   data.set(prefix, 0)
   data.set(R_x, 64)
   data.set(P_x, 96)

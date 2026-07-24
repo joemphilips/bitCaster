@@ -3,10 +3,7 @@ import { lstat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
-import {
-  DAEMON_PROFILE_DATABASE,
-  validateDaemonProfileSchema,
-} from './profileSchema.ts'
+import { DAEMON_PROFILE_DATABASE, validateDaemonProfileSchema } from './profileSchema.ts'
 import { getFinalProfileSchemaManifest } from './profileSchemaManifest.ts'
 import { withDaemonStateSqliteTransaction } from './stateSqlite.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
@@ -37,10 +34,7 @@ export async function ensureProfileDir(): Promise<string> {
 }
 
 export async function assertDaemonProfileStorageComplete(): Promise<void> {
-  await validateDaemonProfileSchema(
-    profileDir(),
-    getFinalProfileSchemaManifest(),
-  )
+  await validateDaemonProfileSchema(profileDir(), getFinalProfileSchemaManifest())
 }
 
 export async function readProfile(): Promise<DaemonProfile | null> {
@@ -70,9 +64,7 @@ export async function readProfile(): Promise<DaemonProfile | null> {
 }
 
 export async function writeProfile(_profile: DaemonProfile): Promise<void> {
-  throw new Error(
-    'daemon profile creation is only supported by fresh atomic init',
-  )
+  throw new Error('daemon profile creation is only supported by fresh atomic init')
 }
 
 export async function updateProfile(
@@ -125,10 +117,7 @@ export function profileFromPublicKey(
     ...(overrides.engineBaseUrl === undefined
       ? {}
       : {
-          engineBaseUrl: normalizeEndpointUrl(
-            overrides.engineBaseUrl,
-            'engine URL',
-          ),
+          engineBaseUrl: normalizeEndpointUrl(overrides.engineBaseUrl, 'engine URL'),
         }),
     ...(overrides.mintUrl === undefined
       ? {}
@@ -197,9 +186,7 @@ function openImmutableProfileDatabase(): DatabaseSync {
   return new DatabaseSync(url, { readOnly: true, allowExtension: false })
 }
 
-export async function isMissingDaemonProfileError(
-  error: unknown,
-): Promise<boolean> {
+export async function isMissingDaemonProfileError(error: unknown): Promise<boolean> {
   if (
     error instanceof Error &&
     'reason' in error &&
@@ -218,10 +205,6 @@ export async function isMissingDaemonProfileError(
     await lstat(profileDir())
     return false
   } catch (statError) {
-    return (
-      statError instanceof Error &&
-      'code' in statError &&
-      statError.code === 'ENOENT'
-    )
+    return statError instanceof Error && 'code' in statError && statError.code === 'ENOENT'
   }
 }

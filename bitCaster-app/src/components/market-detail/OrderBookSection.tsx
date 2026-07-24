@@ -1,21 +1,18 @@
-import { useTranslation } from 'react-i18next'
-import type { OrderBook } from '@/types/market-detail'
-import {
-  formatPricePercent,
-  normalizeMarketDivisibility,
-} from '@bitcaster/client-sdk/marketUnits'
-import { buildOrderBookDepthRows } from './orderBookViewModel'
+import { useTranslation } from "react-i18next";
+import type { OrderBook } from "@/types/market-detail";
+import { formatPricePercent, normalizeMarketDivisibility } from "@bitcaster/client-sdk/marketUnits";
+import { buildOrderBookDepthRows } from "./orderBookViewModel";
 
 interface OrderBookSectionProps {
-  orderBook: OrderBook
-  selectedOutcomeId?: string
-  outcomeOrderBooks?: Record<string, OrderBook>
-  onOutcomeChange?: (outcomeId: string) => void
-  outcomes?: Array<{ id: string; label: string }>
-  baseAsset?: string | null
-  divisibility?: number | null
-  title?: string
-  outcomeId?: string
+  orderBook: OrderBook;
+  selectedOutcomeId?: string;
+  outcomeOrderBooks?: Record<string, OrderBook>;
+  onOutcomeChange?: (outcomeId: string) => void;
+  outcomes?: Array<{ id: string; label: string }>;
+  baseAsset?: string | null;
+  divisibility?: number | null;
+  title?: string;
+  outcomeId?: string;
 }
 
 export function OrderBookSection({
@@ -28,25 +25,26 @@ export function OrderBookSection({
   title,
   outcomeId,
 }: OrderBookSectionProps) {
-  const { t } = useTranslation()
-  const divisibility = normalizeMarketDivisibility(divisibilityInput)
+  const { t } = useTranslation();
+  const divisibility = normalizeMarketDivisibility(divisibilityInput);
 
   // Use outcome-specific order book if available
-  const activeOrderBook = selectedOutcomeId && outcomeOrderBooks
-    ? outcomeOrderBooks[selectedOutcomeId] || orderBook
-    : orderBook
-  const depthLimit = 5
+  const activeOrderBook =
+    selectedOutcomeId && outcomeOrderBooks
+      ? outcomeOrderBooks[selectedOutcomeId] || orderBook
+      : orderBook;
+  const depthLimit = 5;
   const visibleBids = [...activeOrderBook.bids]
     .sort((a, b) => b.price - a.price)
-    .slice(0, depthLimit)
+    .slice(0, depthLimit);
   const visibleAsks = [...activeOrderBook.asks]
     .sort((a, b) => a.price - b.price)
     .slice(0, depthLimit)
-    .reverse()
-  const bidRows = buildOrderBookDepthRows(visibleBids, 'bid', visibleAsks)
-  const askRows = buildOrderBookDepthRows(visibleAsks, 'ask', visibleBids)
-  const bidPlaceholders = Array.from({ length: Math.max(0, depthLimit - visibleBids.length) })
-  const askPlaceholders = Array.from({ length: Math.max(0, depthLimit - visibleAsks.length) })
+    .reverse();
+  const bidRows = buildOrderBookDepthRows(visibleBids, "bid", visibleAsks);
+  const askRows = buildOrderBookDepthRows(visibleAsks, "ask", visibleBids);
+  const bidPlaceholders = Array.from({ length: Math.max(0, depthLimit - visibleBids.length) });
+  const askPlaceholders = Array.from({ length: Math.max(0, depthLimit - visibleAsks.length) });
 
   return (
     <div
@@ -56,7 +54,7 @@ export function OrderBookSection({
     >
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
-          {title ?? t('orderBook.title')}
+          {title ?? t("orderBook.title")}
         </h3>
 
         {/* Outcome Selector for Categorical Markets */}
@@ -77,8 +75,8 @@ export function OrderBookSection({
 
       <div className="rounded-xl border border-slate-100 dark:border-slate-700/70 bg-slate-50/70 dark:bg-slate-900/40 p-2">
         <div className="grid grid-cols-[1fr_auto] px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
-          <span>{t('orderBook.price')}</span>
-          <span>{t('orderBook.amount')}</span>
+          <span>{t("orderBook.price")}</span>
+          <span>{t("orderBook.amount")}</span>
         </div>
 
         <div className="min-h-[400px] space-y-1">
@@ -86,11 +84,13 @@ export function OrderBookSection({
             <div className="flex items-center gap-1 px-3 pt-1">
               <div className="w-2 h-2 rounded-full bg-red-500" />
               <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                {t('orderBook.asks')}
+                {t("orderBook.asks")}
               </span>
             </div>
             {activeOrderBook.asks.length === 0 && (
-              <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">{t('orderBook.noAsks')}</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">
+                {t("orderBook.noAsks")}
+              </p>
             )}
             {askPlaceholders.map((_, i) => (
               <div
@@ -127,8 +127,13 @@ export function OrderBookSection({
             ))}
           </div>
 
-          <div data-testid="order-book-spread-row" className="flex items-center justify-center gap-2 rounded-lg bg-white/80 dark:bg-slate-800/70 px-3 py-2">
-            <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('orderBook.spread')}</span>
+          <div
+            data-testid="order-book-spread-row"
+            className="flex items-center justify-center gap-2 rounded-lg bg-white/80 dark:bg-slate-800/70 px-3 py-2"
+          >
+            <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              {t("orderBook.spread")}
+            </span>
             <span className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300">
               {formatPricePercent(activeOrderBook.spread, divisibility)}
             </span>
@@ -138,11 +143,13 @@ export function OrderBookSection({
             <div className="flex items-center gap-1 px-3 pt-1">
               <div className="w-2 h-2 rounded-full bg-emerald-500" />
               <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                {t('orderBook.bids')}
+                {t("orderBook.bids")}
               </span>
             </div>
             {activeOrderBook.bids.length === 0 && (
-              <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">{t('orderBook.noBids')}</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">
+                {t("orderBook.noBids")}
+              </p>
             )}
             {bidRows.map((row, i) => (
               <div
@@ -181,14 +188,14 @@ export function OrderBookSection({
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 function formatOrderBookShares(amountSubunits: number, divisibility: number): string {
-  const denominator = Number.isFinite(divisibility) && divisibility > 0 ? divisibility : 1
-  const shares = Number.isFinite(amountSubunits) ? amountSubunits / denominator : 0
+  const denominator = Number.isFinite(divisibility) && divisibility > 0 ? divisibility : 1;
+  const shares = Number.isFinite(amountSubunits) ? amountSubunits / denominator : 0;
   const formatted = shares.toLocaleString(undefined, {
     maximumFractionDigits: 4,
-  })
-  return `${formatted} ${shares === 1 ? 'share' : 'shares'}`
+  });
+  return `${formatted} ${shares === 1 ? "share" : "shares"}`;
 }

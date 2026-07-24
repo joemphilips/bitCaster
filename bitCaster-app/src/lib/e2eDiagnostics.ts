@@ -74,20 +74,18 @@ export function getSwapDiagnostics(tradeId: string): SwapDiagnosticsSnapshot {
 export function installE2EDiagnostics(): void {
   if (typeof window === "undefined") return;
   if (!unsubscribeActiveSwapDiagnostics) {
-    unsubscribeActiveSwapDiagnostics = useActiveSwapsStore.subscribe(
-      (state, previous) => {
-        for (const [tradeId, swap] of Object.entries(previous.byTradeId)) {
-          if (!(tradeId in state.byTradeId)) {
-            rememberTerminalSwap(swap);
-          }
+    unsubscribeActiveSwapDiagnostics = useActiveSwapsStore.subscribe((state, previous) => {
+      for (const [tradeId, swap] of Object.entries(previous.byTradeId)) {
+        if (!(tradeId in state.byTradeId)) {
+          rememberTerminalSwap(swap);
         }
-        for (const swap of Object.values(state.byTradeId)) {
-          if (swap.step === "completed" || swap.step === "Failed") {
-            rememberTerminalSwap(swap);
-          }
+      }
+      for (const swap of Object.values(state.byTradeId)) {
+        if (swap.step === "completed" || swap.step === "Failed") {
+          rememberTerminalSwap(swap);
         }
-      },
-    );
+      }
+    });
   }
   window.__BITCASTER_E2E__ = {
     getSwapDiagnostics,
@@ -96,9 +94,7 @@ export function installE2EDiagnostics(): void {
 }
 
 function rememberTerminalSwap(
-  swap: NonNullable<
-    ReturnType<typeof useActiveSwapsStore.getState>["byTradeId"][string]
-  >,
+  swap: NonNullable<ReturnType<typeof useActiveSwapsStore.getState>["byTradeId"][string]>,
 ): void {
   const sanitized = sanitizeActiveSwap(swap);
   if (!sanitized) return;
@@ -109,9 +105,7 @@ function rememberTerminalSwap(
 }
 
 function sanitizeActiveSwap(
-  swap:
-    | ReturnType<typeof useActiveSwapsStore.getState>["byTradeId"][string]
-    | null,
+  swap: ReturnType<typeof useActiveSwapsStore.getState>["byTradeId"][string] | null,
 ): SanitizedActiveSwap | null {
   if (!swap) return null;
   return {

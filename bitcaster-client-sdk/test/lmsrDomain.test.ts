@@ -8,10 +8,7 @@ import {
   estimateDepthPreview,
   logit,
 } from '../src/lmsrDomain.ts'
-import type {
-  AmmStrategyParams,
-  PendingQRow,
-} from '../src/lmsrTypes.ts'
+import type { AmmStrategyParams, PendingQRow } from '../src/lmsrTypes.ts'
 
 function params(overrides: Partial<AmmStrategyParams> = {}): AmmStrategyParams {
   return {
@@ -76,9 +73,7 @@ describe('lmsrDomain properties', () => {
         YES: randInt(rng, -20_000, 20_000),
         NO: randInt(rng, -20_000, 20_000),
       }
-      const fills = Array.from({ length: randInt(rng, 2, 8) }, () =>
-        randInt(rng, 1, 2_000),
-      )
+      const fills = Array.from({ length: randInt(rng, 2, 8) }, () => randInt(rng, 1, 2_000))
       const shuffled = [...fills].sort(() => rng() - 0.5)
       const total = fills.reduce((sum, x) => sum + x, 0)
 
@@ -129,16 +124,7 @@ describe('lmsrDomain properties', () => {
         for (const priceStep of [1, Math.max(1, Math.floor(divisibility / 1_000))]) {
           const pS = 0.5
           const minimumSize = 5
-          const ladder = buildLadder(
-            'ask',
-            pS,
-            0,
-            b,
-            divisibility,
-            priceStep,
-            5,
-            minimumSize,
-          )
+          const ladder = buildLadder('ask', pS, 0, b, divisibility, priceStep, 5, minimumSize)
           const maxCurve = (divisibility - 1) / divisibility
           const sharesInRange = Math.floor(deltaQShares(b, pS, maxCurve))
           assert.equal(ladder.length === 0, sharesInRange < minimumSize)

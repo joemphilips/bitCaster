@@ -10,8 +10,7 @@ vi.mock("@/lib/nostr", () => ({
   fetchPublicNostrProfile: vi.fn().mockResolvedValue(null),
 }));
 
-const creatorPubkey =
-  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const creatorPubkey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const creatorNpub = nip19.npubEncode(creatorPubkey);
 const shortCreatorNpub = `${creatorNpub.slice(0, 12)}...${creatorNpub.slice(-8)}`;
 
@@ -19,9 +18,7 @@ interface NavigatorMutable {
   clipboard?: { writeText: (text: string) => Promise<void> };
 }
 
-function makeMarket(
-  overrides: Partial<YesNoMarketDetail> = {},
-): YesNoMarketDetail {
+function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDetail {
   return {
     id: "abc123",
     title: "Will BTC hit 100K?",
@@ -178,9 +175,7 @@ describe("MarketHeader", () => {
     renderHeader(makeMarket());
 
     expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: "Copy oracle pubkey" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Copy oracle pubkey" }));
 
     expect(writeText).toHaveBeenCalledWith(creatorNpub);
   });
@@ -198,8 +193,6 @@ describe("MarketHeader", () => {
     );
 
     expect(screen.getByText("Oracle pubkey unavailable")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Copy oracle pubkey" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy oracle pubkey" })).not.toBeInTheDocument();
   });
 });

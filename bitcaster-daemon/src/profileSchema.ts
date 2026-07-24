@@ -28,12 +28,7 @@ const recognizedProfileArtifacts = new Set<string>([
   DAEMON_RPC_SOCKET,
 ])
 
-export type ProfileArtifactKind =
-  | 'file'
-  | 'directory'
-  | 'symbolic-link'
-  | 'socket'
-  | 'other'
+export type ProfileArtifactKind = 'file' | 'directory' | 'symbolic-link' | 'socket' | 'other'
 
 export interface ProfilePathIdentity {
   readonly device: bigint
@@ -173,21 +168,14 @@ export interface ProfileSchemaIndex {
   readonly columns: readonly ProfileSchemaIndexColumn[]
 }
 
-export type ProfileSchemaMarkerValue =
-  | null
-  | string
-  | number
-  | bigint
-  | Uint8Array
+export type ProfileSchemaMarkerValue = null | string | number | bigint | Uint8Array
 
 export interface ProfileSchemaMarker {
   readonly name: string
   /** A single read-only SELECT with no statement separator. */
   readonly selectSql: string
   /** At least one exact row is required for every marker query. */
-  readonly expectedRows: readonly Readonly<
-    Record<string, ProfileSchemaMarkerValue>
-  >[]
+  readonly expectedRows: readonly Readonly<Record<string, ProfileSchemaMarkerValue>>[]
 }
 
 /**
@@ -243,8 +231,7 @@ export function captureProfileSchemaManifest(
     }[]
   ).map((object) => ({
     ...object,
-    sql:
-      object.sql === null ? null : normalizeSqliteSchemaSql(object.sql),
+    sql: object.sql === null ? null : normalizeSqliteSchemaSql(object.sql),
   }))
   const tables = objects
     .filter((object) => object.type === 'table')
@@ -259,10 +246,7 @@ export function captureProfileSchemaManifest(
         strict: number
       }[]
       const table = tableList.find(
-        (row) =>
-          row.schema === 'main' &&
-          row.name === object.name &&
-          row.type === 'table',
+        (row) => row.schema === 'main' && row.name === object.name && row.type === 'table',
       )
       if (table?.strict !== 1) {
         throw new ProfileSchemaRefusalError('invalid-manifest')
@@ -281,12 +265,15 @@ export function captureProfileSchemaManifest(
       const indexRow = database
         .prepare(`PRAGMA index_list(${quoteSqlString(object.tableName)})`)
         .all()
-        .map((row) => row as {
-          name: string
-          unique: number
-          origin: 'c' | 'u' | 'pk'
-          partial: number
-        })
+        .map(
+          (row) =>
+            row as {
+              name: string
+              unique: number
+              origin: 'c' | 'u' | 'pk'
+              partial: number
+            },
+        )
         .find((row) => row.name === object.name)
       if (indexRow === undefined) {
         throw new ProfileSchemaRefusalError('invalid-manifest')
@@ -312,9 +299,7 @@ export function captureProfileSchemaManifest(
   return manifest
 }
 
-export async function inventoryDaemonProfile(
-  directory: string,
-): Promise<DaemonProfileInventory> {
+export async function inventoryDaemonProfile(directory: string): Promise<DaemonProfileInventory> {
   let directoryStat
   try {
     directoryStat = await lstat(directory, { bigint: true })
@@ -352,12 +337,10 @@ export async function inventoryDaemonProfile(
     )
   ).sort(compareArtifacts)
   const byName = new Map(artifacts.map((artifact) => [artifact.name, artifact]))
-  const legacyArtifacts = LEGACY_DAEMON_PROFILE_ARTIFACTS
-    .map((name) => byName.get(name))
-    .filter(isDefined)
-  const sqliteSidecars = DAEMON_PROFILE_SIDECARS
-    .map((name) => byName.get(name))
-    .filter(isDefined)
+  const legacyArtifacts = LEGACY_DAEMON_PROFILE_ARTIFACTS.map((name) => byName.get(name)).filter(
+    isDefined,
+  )
+  const sqliteSidecars = DAEMON_PROFILE_SIDECARS.map((name) => byName.get(name)).filter(isDefined)
 
   return {
     directory,
@@ -424,9 +407,7 @@ export async function validateDaemonProfileSchema(
   }
 }
 
-export function assertCompleteProfileSchemaManifest(
-  manifest: ProfileSchemaManifest,
-): void {
+export function assertCompleteProfileSchemaManifest(manifest: ProfileSchemaManifest): void {
   try {
     validateManifestShape(manifest)
   } catch {
@@ -440,9 +421,7 @@ export function assertDaemonProfilePlatformSupported(): void {
   }
 }
 
-export function assertFreshDaemonProfileInventory(
-  inventory: DaemonProfileInventory,
-): void {
+export function assertFreshDaemonProfileInventory(inventory: DaemonProfileInventory): void {
   if (!inventory.directoryExists) return
   if (!inventory.directoryIsPlain) {
     throw new ProfileSchemaRefusalError('profile-directory-not-plain')
@@ -496,14 +475,8 @@ export function normalizeSqliteSchemaSql(sql: string): string {
   return normalized.trim().replace(/;$/, '').trim()
 }
 
-function validateOpenDatabase(
-  database: DatabaseSync,
-  manifest: ProfileSchemaManifest,
-): void {
-  const quickCheck = database.prepare('PRAGMA quick_check(1)').all() as Record<
-    string,
-    unknown
-  >[]
+function validateOpenDatabase(database: DatabaseSync, manifest: ProfileSchemaManifest): void {
+  const quickCheck = database.prepare('PRAGMA quick_check(1)').all() as Record<string, unknown>[]
   if (
     quickCheck.length !== 1 ||
     Object.values(quickCheck[0] ?? {}).length !== 1 ||
@@ -517,10 +490,7 @@ function validateOpenDatabase(
 
   const applicationId = readSinglePragmaNumber(database, 'application_id')
   const userVersion = readSinglePragmaNumber(database, 'user_version')
-  if (
-    applicationId !== manifest.applicationId ||
-    userVersion !== manifest.userVersion
-  ) {
+  if (applicationId !== manifest.applicationId || userVersion !== manifest.userVersion) {
     schemaMismatch()
   }
 
@@ -555,8 +525,7 @@ function validateSchemaObjects(
   const normalizedExpected = expected
     .map((object) => ({
       ...object,
-      sql:
-        object.sql === null ? null : normalizeSqliteSchemaSql(object.sql),
+      sql: object.sql === null ? null : normalizeSqliteSchemaSql(object.sql),
     }))
     .sort(compareSchemaObjects)
 
@@ -564,10 +533,7 @@ function validateSchemaObjects(
   if (!recordsEqual(actual, normalizedExpected)) schemaMismatch()
 }
 
-function validateTable(
-  database: DatabaseSync,
-  expected: ProfileSchemaTable,
-): void {
+function validateTable(database: DatabaseSync, expected: ProfileSchemaTable): void {
   const tableList = database
     .prepare(`PRAGMA table_list(${quoteSqlString(expected.name)})`)
     .all() as {
@@ -579,10 +545,7 @@ function validateTable(
     strict: number
   }[]
   const table = tableList.find(
-    (row) =>
-      row.schema === 'main' &&
-      row.name === expected.name &&
-      row.type === 'table',
+    (row) => row.schema === 'main' && row.name === expected.name && row.type === 'table',
   )
   if (
     table === undefined ||
@@ -600,10 +563,7 @@ function validateTable(
   if (!recordsEqual(foreignKeys, expected.foreignKeys)) schemaMismatch()
 }
 
-function validateIndexes(
-  database: DatabaseSync,
-  manifest: ProfileSchemaManifest,
-): void {
+function validateIndexes(database: DatabaseSync, manifest: ProfileSchemaManifest): void {
   for (const table of manifest.tables) {
     const expectedIndexes = manifest.indexes
       .filter((index) => index.tableName === table.name)
@@ -641,10 +601,7 @@ function validateIndexes(
   }
 }
 
-function validateMarkers(
-  database: DatabaseSync,
-  markers: readonly ProfileSchemaMarker[],
-): void {
+function validateMarkers(database: DatabaseSync, markers: readonly ProfileSchemaMarker[]): void {
   for (const marker of markers) {
     const rows = database.prepare(marker.selectSql).all() as Readonly<
       Record<string, ProfileSchemaMarkerValue>
@@ -758,12 +715,8 @@ function validateManifestShape(manifest: ProfileSchemaManifest): void {
   assertUniqueNames(manifest.indexes)
   assertUniqueNames(manifest.markers)
 
-  const tableObjects = manifest.objects.filter(
-    (object) => object.type === 'table',
-  )
-  const indexObjects = manifest.objects.filter(
-    (object) => object.type === 'index',
-  )
+  const tableObjects = manifest.objects.filter((object) => object.type === 'table')
+  const indexObjects = manifest.objects.filter((object) => object.type === 'index')
   if (
     tableObjects.length !== manifest.tables.length ||
     indexObjects.length !== manifest.indexes.length
@@ -793,12 +746,9 @@ function validateManifestShape(manifest: ProfileSchemaManifest): void {
       }
     } else if (object.type === 'index') {
       if (
-        (object.sql === null &&
-          !object.name.startsWith('sqlite_autoindex_')) ||
+        (object.sql === null && !object.name.startsWith('sqlite_autoindex_')) ||
         (object.sql !== null &&
-          !/^CREATE (?:UNIQUE )?INDEX\b/i.test(
-            normalizeSqliteSchemaSql(object.sql),
-          ))
+          !/^CREATE (?:UNIQUE )?INDEX\b/i.test(normalizeSqliteSchemaSql(object.sql)))
       ) {
         throw new Error()
       }
@@ -822,9 +772,7 @@ function validateManifestShape(manifest: ProfileSchemaManifest): void {
     if (
       table.columns.some(
         (column, index) =>
-          column.cid !== index ||
-          column.name.length === 0 ||
-          column.type.length === 0,
+          column.cid !== index || column.name.length === 0 || column.type.length === 0,
       )
     ) {
       throw new Error()
@@ -836,8 +784,7 @@ function validateManifestShape(manifest: ProfileSchemaManifest): void {
       index.columns.length === 0 ||
       !tables.has(index.tableName) ||
       !indexObjects.some(
-        (object) =>
-          object.name === index.name && object.tableName === index.tableName,
+        (object) => object.name === index.name && object.tableName === index.tableName,
       )
     ) {
       throw new Error()
@@ -873,12 +820,8 @@ function assertAdmissibleInventory(inventory: DaemonProfileInventory): void {
   if (inventory.sqliteDatabase.kind !== 'file') {
     throw new ProfileSchemaRefusalError('sqlite-database-not-plain')
   }
-  const wal = inventory.sqliteSidecars.find(
-    ({ name }) => name === `${DAEMON_PROFILE_DATABASE}-wal`,
-  )
-  const shm = inventory.sqliteSidecars.find(
-    ({ name }) => name === `${DAEMON_PROFILE_DATABASE}-shm`,
-  )
+  const wal = inventory.sqliteSidecars.find(({ name }) => name === `${DAEMON_PROFILE_DATABASE}-wal`)
+  const shm = inventory.sqliteSidecars.find(({ name }) => name === `${DAEMON_PROFILE_DATABASE}-shm`)
   if (
     (wal !== undefined && wal.kind !== 'file') ||
     (shm !== undefined && shm.kind !== 'file') ||
@@ -917,8 +860,7 @@ function emptyInventory(directory: string): DaemonProfileInventory {
 function assertOwnerOnlyProfile(inventory: DaemonProfileInventory): void {
   assertOwnerOnlyDirectory(inventory)
   const directoryIdentity = inventory.directoryIdentity
-  const currentOwnerId =
-    typeof process.getuid === 'function' ? BigInt(process.getuid()) : undefined
+  const currentOwnerId = typeof process.getuid === 'function' ? BigInt(process.getuid()) : undefined
   if (
     directoryIdentity === undefined ||
     directoryIdentity.realPath === undefined ||
@@ -943,8 +885,7 @@ function assertOwnerOnlyProfile(inventory: DaemonProfileInventory): void {
 
 function assertOwnerOnlyDirectory(inventory: DaemonProfileInventory): void {
   const identity = inventory.directoryIdentity
-  const currentOwnerId =
-    typeof process.getuid === 'function' ? BigInt(process.getuid()) : undefined
+  const currentOwnerId = typeof process.getuid === 'function' ? BigInt(process.getuid()) : undefined
   if (
     identity === undefined ||
     identity.realPath === undefined ||
@@ -975,9 +916,7 @@ function readSinglePragmaNumber(
   database: DatabaseSync,
   pragma: 'application_id' | 'user_version',
 ): number {
-  const row = database.prepare(`PRAGMA ${pragma}`).get() as
-    | Record<string, unknown>
-    | undefined
+  const row = database.prepare(`PRAGMA ${pragma}`).get() as Record<string, unknown> | undefined
   const values = Object.values(row ?? {})
   if (values.length !== 1 || typeof values[0] !== 'number') schemaMismatch()
   return values[0]
@@ -996,17 +935,12 @@ function canonicalValue(value: unknown): string {
     return framed('array', value.map(canonicalValue).join(''))
   }
   if (value !== null && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>).sort(
-      ([left], [right]) => left.localeCompare(right),
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+      left.localeCompare(right),
     )
     return framed(
       'object',
-      entries
-        .map(
-          ([key, entry]) =>
-            `${framed('key', key)}${canonicalValue(entry)}`,
-        )
-        .join(''),
+      entries.map(([key, entry]) => `${framed('key', key)}${canonicalValue(entry)}`).join(''),
     )
   }
   return framed(typeof value, JSON.stringify(value))
@@ -1028,10 +962,7 @@ function compareSchemaObjects(
   return left.type.localeCompare(right.type) || left.name.localeCompare(right.name)
 }
 
-function compareNamedRecords(
-  left: { name: string },
-  right: { name: string },
-): number {
+function compareNamedRecords(left: { name: string }, right: { name: string }): number {
   return left.name.localeCompare(right.name)
 }
 
@@ -1059,9 +990,7 @@ function schemaMismatch(): never {
 
 function isNotFound(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    'code' in error &&
-    (error as NodeJS.ErrnoException).code === 'ENOENT'
+    error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT'
   )
 }
 

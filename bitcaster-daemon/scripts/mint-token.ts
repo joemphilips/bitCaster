@@ -130,7 +130,10 @@ async function mintRegularProofsForCtfSplit(
 
 type CollateralTokenUnit = 'sat' | 'msat' | 'usd'
 
-async function getActiveCollateralKeyset(mint: CashuMint, unit: CollateralTokenUnit): Promise<MintKeys> {
+async function getActiveCollateralKeyset(
+  mint: CashuMint,
+  unit: CollateralTokenUnit,
+): Promise<MintKeys> {
   const active = (await mint.getKeySets()).keysets.find(
     (keyset) => keyset.active && keyset.unit === unit,
   )
@@ -145,10 +148,7 @@ async function getActiveCollateralKeyset(mint: CashuMint, unit: CollateralTokenU
   return keyset
 }
 
-async function getCtfCondition(
-  mintUrl: string,
-  conditionId: string,
-): Promise<CtfConditionInfo> {
+async function getCtfCondition(mintUrl: string, conditionId: string): Promise<CtfConditionInfo> {
   const mint = new CashuMint(mintUrl) as CashuMint & {
     getCtfCondition(conditionId: string): Promise<CtfConditionInfo>
   }
@@ -163,8 +163,7 @@ function selectMintRootPartitionForOutcome(
   const target = canonicalizeOutcomeSet(parseOutcomeSetId(outcomeSetId))
   const keysetCollections = Object.keys(condition.keysets)
   const matches = keysetCollections.filter(
-    (collection) =>
-      canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
+    (collection) => canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
   )
 
   if (matches.length !== 1) {
@@ -195,16 +194,12 @@ function resolveSplitOutcomeSetKey(
   const target = canonicalizeOutcomeSet(parseOutcomeSetId(outcomeSetId))
   return (
     Object.keys(split).find(
-      (collection) =>
-        canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
+      (collection) => canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
     ) ?? null
   )
 }
 
-async function waitForPaidQuote(
-  wallet: CashuWallet,
-  quote: MintQuoteResponse,
-): Promise<void> {
+async function waitForPaidQuote(wallet: CashuWallet, quote: MintQuoteResponse): Promise<void> {
   const deadline = performance.now() + 20_000
   let last: PartialMintQuoteResponse | null = null
   while (performance.now() < deadline) {
@@ -218,9 +213,7 @@ async function waitForPaidQuote(
 function printToken(mintUrl: string, unit: CollateralTokenUnit, proofs: Proof[]): void {
   const token = getEncodedToken({ mint: mintUrl, unit, proofs })
   process.stdout.write(
-    jsonOutput
-      ? `${JSON.stringify({ mintUrl, token, proofs })}\n`
-      : `${token}\n`,
+    jsonOutput ? `${JSON.stringify({ mintUrl, token, proofs })}\n` : `${token}\n`,
   )
 }
 

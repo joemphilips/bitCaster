@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Loader2, Plus } from 'lucide-react'
+import { useState } from "react";
+import { Loader2, Plus } from "lucide-react";
 
 /**
  * Shared inline add-mint form. Lifted out of `Settings.tsx` (P5.2) so the
@@ -8,51 +8,51 @@ import { Loader2, Plus } from 'lucide-react'
  *
  * The form is "trigger button → expanded input row" — same shape as the
  * Settings page version. The single shared piece of state (the actual mint
-   * row) lives behind the callback supplied by the page-level wallet operation;
-   * this component is purely the UX shell around the async call. That keeps the
-   * component dumb and the wallet store the single source of truth, satisfying
-   * T5.2.c (no duplicate state).
+ * row) lives behind the callback supplied by the page-level wallet operation;
+ * this component is purely the UX shell around the async call. That keeps the
+ * component dumb and the wallet store the single source of truth, satisfying
+ * T5.2.c (no duplicate state).
  */
 interface AddMintFormProps {
   /** Async add-mint callback. Resolves on success, rejects on failure. */
-  onAddMint: (url: string) => Promise<void>
+  onAddMint: (url: string) => Promise<void>;
   /** Surface customisation. The collapsed trigger reads `triggerLabel`. */
-  triggerLabel?: string
+  triggerLabel?: string;
   /** Tone variant — `inline` for Settings rows, `sheet` for bottom-sheet dialogs. */
-  variant?: 'inline' | 'sheet'
+  variant?: "inline" | "sheet";
 }
 
 export function AddMintForm({
   onAddMint,
-  triggerLabel = 'Add Mint',
-  variant = 'inline',
+  triggerLabel = "Add Mint",
+  variant = "inline",
 }: AddMintFormProps) {
-  const [showInput, setShowInput] = useState(false)
-  const [url, setUrl] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [showInput, setShowInput] = useState(false);
+  const [url, setUrl] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
-    const trimmed = url.trim()
-    if (!trimmed) return
-    setSubmitting(true)
-    setError(null)
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    setSubmitting(true);
+    setError(null);
     try {
-      await onAddMint(trimmed)
-      setUrl('')
-      setShowInput(false)
+      await onAddMint(trimmed);
+      setUrl("");
+      setShowInput(false);
     } catch (e) {
-      setError((e as Error).message || 'Failed to connect to mint')
+      setError((e as Error).message || "Failed to connect to mint");
     } finally {
-      setSubmitting(false)
+      setSubmitting(false);
     }
-  }
+  };
 
   const cancel = () => {
-    setShowInput(false)
-    setUrl('')
-    setError(null)
-  }
+    setShowInput(false);
+    setUrl("");
+    setError(null);
+  };
 
   if (!showInput) {
     return (
@@ -60,15 +60,15 @@ export function AddMintForm({
         onClick={() => setShowInput(true)}
         data-testid="add-mint-trigger"
         className={
-          variant === 'inline'
-            ? 'flex items-center gap-2 px-3 py-2 rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium transition-colors'
-            : 'w-full flex items-center justify-center gap-2 px-3 py-3 rounded-xl border border-dashed border-slate-600 text-blue-400 hover:bg-slate-800 hover:border-blue-500 text-sm font-medium transition-colors'
+          variant === "inline"
+            ? "flex items-center gap-2 px-3 py-2 rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium transition-colors"
+            : "w-full flex items-center justify-center gap-2 px-3 py-3 rounded-xl border border-dashed border-slate-600 text-blue-400 hover:bg-slate-800 hover:border-blue-500 text-sm font-medium transition-colors"
         }
       >
         <Plus className="w-4 h-4" />
         {triggerLabel}
       </button>
-    )
+    );
   }
 
   return (
@@ -78,10 +78,10 @@ export function AddMintForm({
           type="url"
           value={url}
           onChange={(e) => {
-            setUrl(e.target.value)
-            setError(null)
+            setUrl(e.target.value);
+            setError(null);
           }}
-          onKeyDown={(e) => e.key === 'Enter' && submit()}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
           placeholder="https://mint.example.com"
           disabled={submitting}
           data-testid="add-mint-url-input"
@@ -111,5 +111,5 @@ export function AddMintForm({
         </p>
       )}
     </div>
-  )
+  );
 }

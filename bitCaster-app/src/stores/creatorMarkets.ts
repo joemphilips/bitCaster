@@ -146,9 +146,7 @@ export const useCreatorMarketsStore = create<CreatorMarketsState>()(
       markets: [],
       addCreatedMarket: (market) => {
         set((state) => {
-          const without = state.markets.filter(
-            (m) => m.conditionId !== market.conditionId,
-          );
+          const without = state.markets.filter((m) => m.conditionId !== market.conditionId);
           // Newest first so the dashboard's most-recent rows match the user's
           // expectation immediately after the wizard completes.
           return { markets: [market, ...without] };
@@ -157,8 +155,7 @@ export const useCreatorMarketsStore = create<CreatorMarketsState>()(
       markOracleAttested: (conditionId, attestation) => {
         set((state) => ({
           markets: state.markets.map((market) => {
-            if (market.conditionId !== conditionId || !market.oracle)
-              return market;
+            if (market.conditionId !== conditionId || !market.oracle) return market;
             return {
               ...market,
               oracle: {

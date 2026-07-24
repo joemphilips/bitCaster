@@ -13,10 +13,10 @@
  */
 export function BitCasterLogo({
   className,
-  ariaLabel = 'bitCaster (beta)',
+  ariaLabel = "bitCaster (beta)",
 }: {
-  className?: string
-  ariaLabel?: string
+  className?: string;
+  ariaLabel?: string;
 }) {
   return (
     <svg
@@ -26,7 +26,7 @@ export function BitCasterLogo({
       className={className}
       xmlns="http://www.w3.org/2000/svg"
       // Height defaults to 1em so the parent's `text-xl` / `text-2xl` controls size
-      style={{ height: '1.1em', width: 'auto' }}
+      style={{ height: "1.1em", width: "auto" }}
     >
       {/* Wordmark — sized to dominate the lockup. */}
       <text
@@ -66,5 +66,5 @@ export function BitCasterLogo({
         opacity={0.45}
       />
     </svg>
-  )
+  );
 }

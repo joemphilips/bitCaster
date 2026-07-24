@@ -73,10 +73,7 @@ export function createP2PKSecret(params: P2PKSecretParams): string {
  * @param message    - 32-byte message hash (typically SHA-256 of the proof secret)
  * @returns JSON string `{"signatures": ["<hex sig>"]}`
  */
-export function createP2PKWitness(
-  privateKey: Uint8Array,
-  message: Uint8Array,
-): string {
+export function createP2PKWitness(privateKey: Uint8Array, message: Uint8Array): string {
   if (message.length !== 32) throw new Error('message must be 32 bytes')
   // NUT-11 requires BIP-340 Schnorr signatures (not ECDSA).
   // schnorr.sign returns a 64-byte Uint8Array directly — no cast needed.

@@ -1,43 +1,43 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from "vitest";
 
-import { debounce } from '../debounce'
+import { debounce } from "../debounce";
 
-describe('debounce', () => {
-  it('coalesces trailing calls into one invocation with the latest args', () => {
-    vi.useFakeTimers()
+describe("debounce", () => {
+  it("coalesces trailing calls into one invocation with the latest args", () => {
+    vi.useFakeTimers();
     try {
-      const fn = vi.fn()
-      const debounced = debounce(fn, 200)
+      const fn = vi.fn();
+      const debounced = debounce(fn, 200);
 
-      debounced('first')
-      debounced('second')
-      vi.advanceTimersByTime(199)
-      expect(fn).not.toHaveBeenCalled()
+      debounced("first");
+      debounced("second");
+      vi.advanceTimersByTime(199);
+      expect(fn).not.toHaveBeenCalled();
 
-      vi.advanceTimersByTime(1)
-      expect(fn).toHaveBeenCalledTimes(1)
-      expect(fn).toHaveBeenCalledWith('second')
+      vi.advanceTimersByTime(1);
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenCalledWith("second");
     } finally {
-      vi.useRealTimers()
+      vi.useRealTimers();
     }
-  })
+  });
 
-  it('supports leading plus trailing delivery', () => {
-    vi.useFakeTimers()
+  it("supports leading plus trailing delivery", () => {
+    vi.useFakeTimers();
     try {
-      const fn = vi.fn()
-      const debounced = debounce(fn, 200, { leading: true, trailing: true })
+      const fn = vi.fn();
+      const debounced = debounce(fn, 200, { leading: true, trailing: true });
 
-      debounced('first')
-      debounced('second')
-      expect(fn).toHaveBeenCalledTimes(1)
-      expect(fn).toHaveBeenLastCalledWith('first')
+      debounced("first");
+      debounced("second");
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenLastCalledWith("first");
 
-      vi.advanceTimersByTime(200)
-      expect(fn).toHaveBeenCalledTimes(2)
-      expect(fn).toHaveBeenLastCalledWith('second')
+      vi.advanceTimersByTime(200);
+      expect(fn).toHaveBeenCalledTimes(2);
+      expect(fn).toHaveBeenLastCalledWith("second");
     } finally {
-      vi.useRealTimers()
+      vi.useRealTimers();
     }
-  })
-})
+  });
+});

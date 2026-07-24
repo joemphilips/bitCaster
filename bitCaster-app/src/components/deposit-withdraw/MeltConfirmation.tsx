@@ -1,12 +1,12 @@
-import { X, Zap, Loader2 } from 'lucide-react'
+import { X, Zap, Loader2 } from "lucide-react";
 
 interface MeltConfirmationProps {
-  amountSats: number
-  feeSats: number
-  invoice: string
-  isPaying: boolean
-  onConfirm?: () => void
-  onClose?: () => void
+  amountSats: number;
+  feeSats: number;
+  invoice: string;
+  isPaying: boolean;
+  onConfirm?: () => void;
+  onClose?: () => void;
 }
 
 export function MeltConfirmation({
@@ -17,7 +17,7 @@ export function MeltConfirmation({
   onConfirm,
   onClose,
 }: MeltConfirmationProps) {
-  const total = amountSats + feeSats
+  const total = amountSats + feeSats;
 
   return (
     <div className="fixed inset-0 z-[70] bg-slate-900 flex flex-col">
@@ -40,9 +40,7 @@ export function MeltConfirmation({
       <div className="flex-1 flex flex-col max-w-md mx-auto w-full px-5">
         {/* Invoice preview */}
         <div className="mt-4 bg-slate-800 border border-slate-700 rounded-xl p-4">
-          <div className="text-xs text-slate-400 font-mono truncate">
-            {invoice}
-          </div>
+          <div className="text-xs text-slate-400 font-mono truncate">{invoice}</div>
         </div>
 
         {/* Amount breakdown */}
@@ -57,7 +55,9 @@ export function MeltConfirmation({
           </div>
           <div className="border-t border-slate-700 pt-4 flex justify-between items-center">
             <span className="text-base font-semibold text-white">Total</span>
-            <span className="text-base font-bold font-mono text-white">₿{total.toLocaleString()}</span>
+            <span className="text-base font-bold font-mono text-white">
+              ₿{total.toLocaleString()}
+            </span>
           </div>
         </div>
 
@@ -77,11 +77,11 @@ export function MeltConfirmation({
                 Paying...
               </>
             ) : (
-              'Pay'
+              "Pay"
             )}
           </button>
         </div>
       </div>
     </div>
-  )
+  );
 }

@@ -19,9 +19,7 @@ export interface SeedRecoveryObservedProof {
   readonly proof: CustodyProofSqliteRow
 }
 
-export class SeedRecoverySqliteStore
-  implements EmergencySeedRecoveryCasStore
-{
+export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
   readonly #directory: string
   readonly #fence: CustodyScopeFence
   readonly #invocationId: string
@@ -49,14 +47,15 @@ export class SeedRecoverySqliteStore
     if (this.#staged.has(key) || proofs.length > 300) {
       throw new Error('seed recovery proof batch is duplicated or oversized')
     }
-    this.#staged.set(key, proofs.map((proof) => structuredClone(proof)))
+    this.#staged.set(
+      key,
+      proofs.map((proof) => structuredClone(proof)),
+    )
   }
 
   async commitRecoveryBatch(raw: EmergencySeedRecoveryCoCommit): Promise<void> {
     const input = validateEmergencySeedRecoveryCoCommit(raw)
-    const staged = this.#staged.get(
-      batchKey(input.recoveryJobId, input.expectedCursor.keysetId),
-    )
+    const staged = this.#staged.get(batchKey(input.recoveryJobId, input.expectedCursor.keysetId))
     if (staged === undefined) {
       throw new Error('seed recovery proof batch was not staged')
     }
@@ -72,9 +71,7 @@ export class SeedRecoverySqliteStore
       .map(({ observed }) => observed.proof)
     if (
       selectable.length !== input.recoveredProofIds.length ||
-      selectable.some(
-        ({ proofId }, index) => proofId !== input.recoveredProofIds[index],
-      )
+      selectable.some(({ proofId }, index) => proofId !== input.recoveredProofIds[index])
     ) {
       throw new Error('seed recovery selectable proof authority is foreign')
     }
@@ -118,13 +115,11 @@ export class SeedRecoverySqliteStore
             }
           | undefined
         if (
-          (existingCursor === undefined &&
-            input.expectedCursor.revision !== 0) ||
+          (existingCursor === undefined && input.expectedCursor.revision !== 0) ||
           (existingCursor !== undefined &&
             (existingCursor.revision !== input.expectedCursor.revision ||
               existingCursor.nextCounter !== input.expectedCursor.nextCounter ||
-              existingCursor.trailingEmptyCounters !==
-                input.expectedCursor.trailingEmptyCounters ||
+              existingCursor.trailingEmptyCounters !== input.expectedCursor.trailingEmptyCounters ||
               existingCursor.state !== input.expectedCursor.state))
         ) {
           throw new Error('seed recovery cursor CAS is stale')
@@ -275,9 +270,7 @@ export class SeedRecoverySqliteStore
         }
       },
     )
-    this.#staged.delete(
-      batchKey(input.recoveryJobId, input.expectedCursor.keysetId),
-    )
+    this.#staged.delete(batchKey(input.recoveryJobId, input.expectedCursor.keysetId))
   }
 }
 

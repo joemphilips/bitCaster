@@ -15,9 +15,7 @@ import {
   registrationFeeForPolicy,
   toWireAmountBearing,
 } from '../../bitcaster-client-sdk/src/ctfRegistration.ts'
-import {
-  sumProofs,
-} from '../../bitcaster-client-sdk/src/proofSelection.ts'
+import { sumProofs } from '../../bitcaster-client-sdk/src/proofSelection.ts'
 
 type RegistrationOutputData = OutputDataLike & {
   blindedMessage: SerializedBlindedMessage
@@ -34,16 +32,12 @@ const info = await fetchMintInfo(mintUrl)
 const settings = parseCtfSettingsFromMintInfo(info)
 const requiredFeeSubunits = registrationFeeForPolicy(outcomes, settings, collateral)
 const feeProofs =
-  requiredFeeSubunits > 0
-    ? await mintRegularProofs(mintUrl, collateral, requiredFeeSubunits)
-    : []
+  requiredFeeSubunits > 0 ? await mintRegularProofs(mintUrl, collateral, requiredFeeSubunits) : []
 const selectedTotalSubunits = sumProofs(feeProofs)
-const changeAmount = selectedTotalSubunits > requiredFeeSubunits
-  ? selectedTotalSubunits - requiredFeeSubunits
-  : 0
-const changeOutputs = changeAmount > 0
-  ? await prepareRegularBlankOutputs(mintUrl, collateral, changeAmount)
-  : []
+const changeAmount =
+  selectedTotalSubunits > requiredFeeSubunits ? selectedTotalSubunits - requiredFeeSubunits : 0
+const changeOutputs =
+  changeAmount > 0 ? await prepareRegularBlankOutputs(mintUrl, collateral, changeAmount) : []
 
 const response = await fetch(new URL('/v1/conditions', mintUrl), {
   method: 'POST',
@@ -103,10 +97,7 @@ async function prepareRegularBlankOutputs(
   ) as RegistrationOutputData[]
 }
 
-async function getActiveCollateralKeyset(
-  mint: CashuMint,
-  unit: string,
-): Promise<MintKeys> {
+async function getActiveCollateralKeyset(mint: CashuMint, unit: string): Promise<MintKeys> {
   const active = (await mint.getKeySets()).keysets.find(
     (keyset) => keyset.active && keyset.unit === unit,
   )
@@ -121,10 +112,7 @@ async function getActiveCollateralKeyset(
   return keyset
 }
 
-async function waitForPaidQuote(
-  wallet: CashuWallet,
-  quoteId: string,
-): Promise<void> {
+async function waitForPaidQuote(wallet: CashuWallet, quoteId: string): Promise<void> {
   const deadline = performance.now() + 20_000
   let lastState = 'unknown'
   while (performance.now() < deadline) {

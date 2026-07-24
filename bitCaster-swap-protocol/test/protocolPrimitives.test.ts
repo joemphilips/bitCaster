@@ -8,13 +8,7 @@ import {
   sellerPreparePrelockedSwap,
   validateLocktimeOrdering,
 } from '../src/atomicSwap.ts'
-import {
-  adapt,
-  extract,
-  generateAdaptorPoint,
-  preSign,
-  preVerify,
-} from '../src/adaptor.ts'
+import { adapt, extract, generateAdaptorPoint, preSign, preVerify } from '../src/adaptor.ts'
 import {
   computeSharedSecret,
   decrypt,
@@ -26,18 +20,12 @@ import { createP2PKSecret, createP2PKWitness } from '../src/p2pk.ts'
 import { normalizeUrl, safeHostname } from '../src/url.ts'
 
 test('validateLocktimeOrdering enforces the atomic-swap refund invariant', () => {
-  assert.equal(
-    validateLocktimeOrdering(100 + MIN_LOCKTIME_DELTA_SECS + 1, 100),
-    null,
-  )
+  assert.equal(validateLocktimeOrdering(100 + MIN_LOCKTIME_DELTA_SECS + 1, 100), null)
   assert.match(
     validateLocktimeOrdering(100 + MIN_LOCKTIME_DELTA_SECS, 100) ?? '',
     /locktime ordering violates protocol invariant/,
   )
-  assert.match(
-    validateLocktimeOrdering(Number.NaN, 100) ?? '',
-    /invalid locktime values/,
-  )
+  assert.match(validateLocktimeOrdering(Number.NaN, 100) ?? '', /invalid locktime values/)
 })
 
 test('ECDH helpers derive the same key for both sides and decrypt round trips', async () => {
@@ -76,14 +64,8 @@ test('Block2_MultiLegSwap_PerLegNonceR_AreDistinct', () => {
   const messageA = new Uint8Array(32).fill(1)
   const messageB = new Uint8Array(32).fill(2)
 
-  const finalSigA = adapt(
-    preSign(signer.privateKey, messageA, adaptorA.point),
-    adaptorA.secret,
-  )
-  const finalSigB = adapt(
-    preSign(signer.privateKey, messageB, adaptorB.point),
-    adaptorB.secret,
-  )
+  const finalSigA = adapt(preSign(signer.privateKey, messageA, adaptorA.point), adaptorA.secret)
+  const finalSigB = adapt(preSign(signer.privateKey, messageB, adaptorB.point), adaptorB.secret)
 
   const nonceRA = Buffer.from(finalSigA.slice(0, 32)).toString('hex')
   const nonceRB = Buffer.from(finalSigB.slice(0, 32)).toString('hex')
@@ -142,10 +124,7 @@ test('seller prelocked swap rejects raw outcome proofs before presigning', async
     C: '02'.padEnd(66, '0'),
   }
 
-  assert.throws(
-    () => assertProofsAtomicSwapLocked(ctx, [rawProof]),
-    /requires P2PK-locked proofs/,
-  )
+  assert.throws(() => assertProofsAtomicSwapLocked(ctx, [rawProof]), /requires P2PK-locked proofs/)
   await assert.rejects(
     () => sellerPreparePrelockedSwap(ctx, [rawProof]),
     /requires P2PK-locked proofs/,

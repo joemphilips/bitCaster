@@ -1,1 +1,1 @@
-export * from '@bitcaster/swap-protocol/atomicSwap'
+export * from "@bitcaster/swap-protocol/atomicSwap";

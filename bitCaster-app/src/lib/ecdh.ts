@@ -1,1 +1,1 @@
-export * from '@bitcaster/swap-protocol/ecdh'
+export * from "@bitcaster/swap-protocol/ecdh";

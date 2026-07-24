@@ -50,24 +50,24 @@
 
 /** Split a NUT-CTF outcome-collection label ("A|B", escaped "\|") into legs. */
 export function parseOutcomeCollection(value: string): string[] {
-  const outcomes: string[] = []
-  let current = ''
-  let escaped = false
+  const outcomes: string[] = [];
+  let current = "";
+  let escaped = false;
   for (const ch of value) {
     if (escaped) {
-      current += ch
-      escaped = false
-    } else if (ch === '\\') {
-      escaped = true
-    } else if (ch === '|') {
-      outcomes.push(current)
-      current = ''
+      current += ch;
+      escaped = false;
+    } else if (ch === "\\") {
+      escaped = true;
+    } else if (ch === "|") {
+      outcomes.push(current);
+      current = "";
     } else {
-      current += ch
+      current += ch;
     }
   }
-  outcomes.push(current)
-  return outcomes.filter((outcome) => outcome.length > 0)
+  outcomes.push(current);
+  return outcomes.filter((outcome) => outcome.length > 0);
 }
 
 /**
@@ -80,7 +80,7 @@ export function parseOutcomeCollection(value: string): string[] {
  *   yet known. Value is the full held amount (an undecided position is not a
  *   loss). The row shows an "awaiting resolution" indicator and no actions.
  */
-export type WinnerStatus = 'active' | 'winner' | 'loser' | 'pending'
+export type WinnerStatus = "active" | "winner" | "loser" | "pending";
 
 /**
  * One held leg of a position: the keyset's outcome-collection label and the
@@ -88,9 +88,9 @@ export type WinnerStatus = 'active' | 'winner' | 'loser' | 'pending'
  */
 export interface HeldLeg {
   /** The keyset's outcome-collection label, e.g. "A" or "A|B". */
-  outcomeCollection: string
+  outcomeCollection: string;
   /** Total amount of proofs currently held on this keyset. */
-  amount: number
+  amount: number;
 }
 
 /**
@@ -103,34 +103,34 @@ export function isWinningCollection(
   outcomeCollection: string,
   finalOutcome: string | null | undefined,
 ): boolean {
-  const final = finalOutcome?.trim().toLowerCase()
-  if (!final) return false
+  const final = finalOutcome?.trim().toLowerCase();
+  if (!final) return false;
   return parseOutcomeCollection(outcomeCollection).some(
     (leg) => leg.trim().toLowerCase() === final,
-  )
+  );
 }
 
 export interface DeriveWinnerInput {
   /** Whether the market is closed (final outcome attested). */
-  isClosed: boolean
+  isClosed: boolean;
   /** The market's attested final outcome name, if any. */
-  finalOutcome: string | null | undefined
+  finalOutcome: string | null | undefined;
   /**
    * The legs (keysets) actually held by this position. Each leg carries its
    * keyset's outcome-collection label and the amount held on it.
    */
-  legs: HeldLeg[]
+  legs: HeldLeg[];
 }
 
 export interface WinnerResult {
-  status: WinnerStatus
+  status: WinnerStatus;
   /**
    * For `winner`: sum of amounts on WINNING keysets only (losing-keyset proofs
    * are worth 0). For `pending` (closed-but-unattested): the full held amount —
    * the outcome is undecided, not a loss, so the value is NOT zeroed. For
    * `active`/`loser`: 0.
    */
-  claimableValue: number
+  claimableValue: number;
 }
 
 /**
@@ -149,31 +149,27 @@ export interface WinnerResult {
  *   rule) → `winner`; claimable value sums only the winning legs.
  * - Closed AND attested AND no winning leg → `loser` (value 0).
  */
-export function deriveWinner({
-  isClosed,
-  finalOutcome,
-  legs,
-}: DeriveWinnerInput): WinnerResult {
-  if (!isClosed) return { status: 'active', claimableValue: 0 }
-  const final = finalOutcome?.trim()
+export function deriveWinner({ isClosed, finalOutcome, legs }: DeriveWinnerInput): WinnerResult {
+  if (!isClosed) return { status: "active", claimableValue: 0 };
+  const final = finalOutcome?.trim();
   if (!final) {
     // Closed but unattested: undecided, never destructive. Value = full held
     // amount across all legs (the outcome is not yet a loss).
-    const heldValue = legs.reduce((sum, leg) => sum + leg.amount, 0)
-    return { status: 'pending', claimableValue: heldValue }
+    const heldValue = legs.reduce((sum, leg) => sum + leg.amount, 0);
+    return { status: "pending", claimableValue: heldValue };
   }
 
-  let claimableValue = 0
+  let claimableValue = 0;
   for (const leg of legs) {
     if (isWinningCollection(leg.outcomeCollection, final)) {
-      claimableValue += leg.amount
+      claimableValue += leg.amount;
     }
   }
-  if (claimableValue > 0) return { status: 'winner', claimableValue }
-  return { status: 'loser', claimableValue: 0 }
+  if (claimableValue > 0) return { status: "winner", claimableValue };
+  return { status: "loser", claimableValue: 0 };
 }
 
 /** Convenience wrapper returning only the status. */
 export function deriveWinnerStatus(input: DeriveWinnerInput): WinnerStatus {
-  return deriveWinner(input).status
+  return deriveWinner(input).status;
 }

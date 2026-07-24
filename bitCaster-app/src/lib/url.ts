@@ -1,1 +1,1 @@
-export * from '@bitcaster/swap-protocol/url'
+export * from "@bitcaster/swap-protocol/url";

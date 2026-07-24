@@ -1,14 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import {
-  chmod,
-  mkdtemp,
-  open,
-  readFile,
-  rm,
-  symlink,
-  writeFile,
-} from 'node:fs/promises'
+import { chmod, mkdtemp, open, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -127,11 +119,7 @@ async function runCli(
   const stderrFile = await open(stderrPath, 'wx', 0o600)
   const child = spawn(
     process.execPath,
-    [
-      '--experimental-strip-types',
-      join(import.meta.dirname, '..', 'src', 'main.ts'),
-      ...args,
-    ],
+    ['--experimental-strip-types', join(import.meta.dirname, '..', 'src', 'main.ts'), ...args],
     {
       cwd: join(import.meta.dirname, '..'),
       env: childEnv,

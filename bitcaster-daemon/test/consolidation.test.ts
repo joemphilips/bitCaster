@@ -23,10 +23,7 @@ const MINT_URL = 'https://mint-a.example'
 
 test('wallet.consolidateMarket executes T2 Not-A + Not-B into residual C and base collateral', async () => {
   await withDaemonHome(async () => {
-    await seedWallet([
-      proofRecord(2, 'B|C', 'not-a'),
-      proofRecord(2, 'A|C', 'not-b'),
-    ])
+    await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
 
     const response = await dispatch(
       { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
@@ -118,10 +115,7 @@ test('wallet.consolidateMarket refuses non-pending markets with a typed error', 
 
 test('wallet.consolidateMarket returns typed no-gain error without mutating proofs', async () => {
   await withDaemonHome(async () => {
-    await seedWallet([
-      proofRecord(1, 'B|C', 'nogain-not-a'),
-      proofRecord(1, 'A|C', 'nogain-not-b'),
-    ])
+    await seedWallet([proofRecord(1, 'B|C', 'nogain-not-a'), proofRecord(1, 'A|C', 'nogain-not-b')])
 
     const response = await dispatch(
       { method: 'wallet.consolidateMarket', params: { marketId: 'nogain-A', type: 't2' } },
@@ -142,10 +136,7 @@ test('wallet.consolidateMarket returns typed no-gain error without mutating proo
 test('wallet recovery sweep resumes prepared CTF consolidation operations', async () => {
   await withDaemonHome(async () => {
     const state = emptyDaemonState()
-    state.wallet.proofs.push(
-      proofRecord(2, 'B|C', 'not-a'),
-      proofRecord(2, 'A|C', 'not-b'),
-    )
+    state.wallet.proofs.push(proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b'))
     await writeState(state)
     await prepareProofOperation({
       operationId: 'ctf-consolidation-recover',
@@ -175,14 +166,8 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
           assert.equal(mintUrl, MINT_URL)
           assert.equal(request.condition_id, 'cond2')
           assert.deepEqual(Object.keys(request.inputs).sort(), ['A|C', 'B|C'])
-          assert.deepEqual(Object.keys(request.outputs).sort(), [
-            COLLATERAL_COLLECTION,
-            'C',
-          ])
-          assert.deepEqual(Object.keys(outputsByCollection).sort(), [
-            COLLATERAL_COLLECTION,
-            'C',
-          ])
+          assert.deepEqual(Object.keys(request.outputs).sort(), [COLLATERAL_COLLECTION, 'C'])
+          assert.deepEqual(Object.keys(outputsByCollection).sort(), [COLLATERAL_COLLECTION, 'C'])
           return {
             [COLLATERAL_COLLECTION]: [cashuProof(1, 'recovered-base', 'ks-base')],
             C: [cashuProof(2, 'recovered-C', 'ks-C')],
@@ -197,10 +182,7 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
     })
     assert.equal(ctfConvertCalls, 1)
     const updated = await readState()
-    assert.equal(
-      updated?.proofOperations['ctf-consolidation-recover']?.state,
-      'completed',
-    )
+    assert.equal(updated?.proofOperations['ctf-consolidation-recover']?.state, 'completed')
     assertWalletProofs(updated, {
       sats: 1,
       outcomes: { C: 2 },
@@ -212,10 +194,7 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
 test('wallet recovery sweep finalizes completed CTF consolidation operations', async () => {
   await withDaemonHome(async () => {
     const state = emptyDaemonState()
-    state.wallet.proofs.push(
-      proofRecord(2, 'B|C', 'not-a'),
-      proofRecord(2, 'A|C', 'not-b'),
-    )
+    state.wallet.proofs.push(proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b'))
     await writeState(state)
     await prepareProofOperation({
       operationId: 'ctf-consolidation-finalize',
@@ -458,9 +437,7 @@ function assertWalletProofs(
   for (const [outcomeSetId, amount] of Object.entries(expected.outcomes)) {
     const total = state.wallet.proofs
       .filter(
-        (record) =>
-          record.asset.kind === 'Outcome' &&
-          record.asset.outcomeSetId === outcomeSetId,
+        (record) => record.asset.kind === 'Outcome' && record.asset.outcomeSetId === outcomeSetId,
       )
       .reduce((sum, record) => sum + amountToNumber(record.proof.amount), 0)
     assert.equal(total, amount, `${outcomeSetId} amount`)

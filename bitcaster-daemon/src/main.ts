@@ -4,12 +4,12 @@ import type { Server } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
-import { deriveDurableCustodyScopeId, deriveDurableCustodyWalletId } from '@bitcaster-market/client-sdk'
-import { assertDaemonProfileStorageComplete, profileDir } from './profile.ts'
 import {
-  createDaemonSecrets,
-  createDaemonSecretsFromImport,
-} from './secrets.ts'
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from '@bitcaster-market/client-sdk'
+import { assertDaemonProfileStorageComplete, profileDir } from './profile.ts'
+import { createDaemonSecrets, createDaemonSecretsFromImport } from './secrets.ts'
 import { bootstrapFreshDaemonProfile } from './profileBootstrap.ts'
 
 const MAX_SECRET_HEX_FILE_BYTES = 256
@@ -25,19 +25,14 @@ switch (command) {
       importedSecrets === null
         ? createDaemonSecrets()
         : createDaemonSecretsFromImport({
-          walletSeedHex: importedSecrets.walletSeedHex,
-          nostrSecretKeyHex: importedSecrets.nostrSecretKeyHex,
-        })
+            walletSeedHex: importedSecrets.walletSeedHex,
+            nostrSecretKeyHex: importedSecrets.nostrSecretKeyHex,
+          })
     await bootstrapFreshDaemonProfile({
       directory: profileDir(),
       engineBaseUrl:
-        initOptions.engineUrl ??
-        process.env.BITCASTER_ENGINE_URL ??
-        'http://localhost:5000',
-      mintUrl:
-        initOptions.mintUrl ??
-        process.env.BITCASTER_MINT_URL ??
-        'http://localhost:8085',
+        initOptions.engineUrl ?? process.env.BITCASTER_ENGINE_URL ?? 'http://localhost:5000',
+      mintUrl: initOptions.mintUrl ?? process.env.BITCASTER_MINT_URL ?? 'http://localhost:8085',
       walletSeedHex: secrets.walletSeedHex,
       nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       nostrPublicKeyHex: secrets.nostrPublicKeyHex,
@@ -50,7 +45,8 @@ switch (command) {
     await assertDaemonProfileStorageComplete()
     const { acquireDaemonRunLock } = await import('./runLock.ts')
     const { startDaemonServer } = await import('./server.ts')
-    const { CompositeTradeRuntimeConnection, DaemonTradeRuntime } = await import('./tradeRuntime.ts')
+    const { CompositeTradeRuntimeConnection, DaemonTradeRuntime } =
+      await import('./tradeRuntime.ts')
     const { SignalRTradeHubConnection } = await import('./tradeHubConnection.ts')
     const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
     const { DaemonSwapExecutor } = await import('./swapExecutor.ts')
@@ -59,12 +55,8 @@ switch (command) {
     const { readSecrets } = await import('./secrets.ts')
     const { recoverPreparedWalletSends } = await import('./walletOps.ts')
     const { recoverDaemonWalletFromSeed } = await import('./emergencySeedRecovery.ts')
-    const {
-      ensureState,
-      recordSwapMessage,
-      recordTradeCreated,
-      recordTradeStateChanged,
-    } = await import('./state.ts')
+    const { ensureState, recordSwapMessage, recordTradeCreated, recordTradeStateChanged } =
+      await import('./state.ts')
     const runLock = await acquireDaemonRunLock()
     const profile = await readProfile()
     const secrets = await readSecrets()
@@ -72,9 +64,7 @@ switch (command) {
       await runLock.release()
       throw new Error('daemon profile storage is incomplete')
     }
-    const walletId = deriveDurableCustodyWalletId(
-      Buffer.from(secrets.walletSeedHex, 'hex'),
-    )
+    const walletId = deriveDurableCustodyWalletId(Buffer.from(secrets.walletSeedHex, 'hex'))
     const scopeId = deriveDurableCustodyScopeId({
       scopeKind: 'wallet',
       walletId,
@@ -122,25 +112,21 @@ switch (command) {
               }
               await executor?.onTradeCreated(swap)
             },
-            onSwapMessageReceived: async (
-              tradeId,
-              messageType,
-              ciphertext,
-            ) => {
+            onSwapMessageReceived: async (tradeId, messageType, ciphertext) => {
               await executor?.onSwapMessage(
                 await recordSwapMessage(tradeId, messageType, ciphertext),
               )
             },
             onTradeStateChanged: async (tradeId, newState) => {
-              await executor?.onTradeStateChanged(
-                await recordTradeStateChanged(tradeId, newState),
-              )
+              await executor?.onTradeStateChanged(await recordTradeStateChanged(tradeId, newState))
             },
             onPendingPubkeyRequired: async (tradeId, _orderId, _role, marketId, _deadline) => {
               const { signNip98 } = await import('./nostrAuth.ts')
-              const { conditionIdFromMarketId } = await import('@bitcaster-market/client-sdk/tradeIgnition')
+              const { conditionIdFromMarketId } =
+                await import('@bitcaster-market/client-sdk/tradeIgnition')
               const { generateOrderEphemeralKeypair } = await import('./ephemeralKey.ts')
-              const { submitEphemeralPubkey: submitPubkey } = await import('@bitcaster-market/client-sdk/engineClient')
+              const { submitEphemeralPubkey: submitPubkey } =
+                await import('@bitcaster-market/client-sdk/engineClient')
               const keypair = generateOrderEphemeralKeypair()
               type AuthorizationRequest = {
                 url: string
@@ -234,9 +220,7 @@ switch (command) {
       void recoverPreparedWalletSends(secrets)
         .then((result) => {
           if (result.recovered.length > 0) {
-            process.stderr.write(
-              `Recovered wallet operations: ${result.recovered.join(', ')}\n`,
-            )
+            process.stderr.write(`Recovered wallet operations: ${result.recovered.join(', ')}\n`)
           }
           for (const pending of result.pending) {
             process.stderr.write(
@@ -285,10 +269,7 @@ function parseInitOptions(args: string[]): {
     if (arg === '--wallet-seed-hex-file') {
       options.walletSeedHexFile = requiredArg(args[++i], '--wallet-seed-hex-file')
     } else if (arg === '--nostr-secret-key-hex-file') {
-      options.nostrSecretKeyHexFile = requiredArg(
-        args[++i],
-        '--nostr-secret-key-hex-file',
-      )
+      options.nostrSecretKeyHexFile = requiredArg(args[++i], '--nostr-secret-key-hex-file')
     } else if (arg === '--engine-url') {
       options.engineUrl = requiredArg(args[++i], '--engine-url')
     } else if (arg === '--mint-url') {
@@ -304,17 +285,12 @@ async function resolveImportedSecrets(options: {
   walletSeedHexFile?: string
   nostrSecretKeyHexFile?: string
 }): Promise<{ walletSeedHex: string; nostrSecretKeyHex: string } | null> {
-  const walletSeedHex =
-    options.walletSeedHexFile
-      ? await readSecretHexFile(options.walletSeedHexFile, '--wallet-seed-hex-file')
-      : undefined
-  const nostrSecretKeyHex =
-    options.nostrSecretKeyHexFile
-      ? await readSecretHexFile(
-          options.nostrSecretKeyHexFile,
-          '--nostr-secret-key-hex-file',
-        )
-      : undefined
+  const walletSeedHex = options.walletSeedHexFile
+    ? await readSecretHexFile(options.walletSeedHexFile, '--wallet-seed-hex-file')
+    : undefined
+  const nostrSecretKeyHex = options.nostrSecretKeyHexFile
+    ? await readSecretHexFile(options.nostrSecretKeyHexFile, '--nostr-secret-key-hex-file')
+    : undefined
   if (!walletSeedHex && !nostrSecretKeyHex) return null
   if (!walletSeedHex || !nostrSecretKeyHex) {
     throw new Error(

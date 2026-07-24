@@ -1,28 +1,28 @@
-import { useTranslation } from 'react-i18next'
-import type { UserProfile } from '@/types/portfolio'
-import { Camera } from 'lucide-react'
+import { useTranslation } from "react-i18next";
+import type { UserProfile } from "@/types/portfolio";
+import { Camera } from "lucide-react";
 
 interface ProfileCardProps {
-  profile: UserProfile
-  onAvatarUpload?: (file: File) => void
+  profile: UserProfile;
+  onAvatarUpload?: (file: File) => void;
 }
 
 export function ProfileCard({ profile, onAvatarUpload }: ProfileCardProps) {
-  const { t, i18n } = useTranslation()
+  const { t, i18n } = useTranslation();
   const joinedDate = new Date(profile.registeredDate).toLocaleDateString(i18n.language, {
-    month: 'short',
-    year: 'numeric',
-  })
+    month: "short",
+    year: "numeric",
+  });
 
   function handleAvatarClick() {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = 'image/*'
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
     input.onchange = (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0]
-      if (file) onAvatarUpload?.(file)
-    }
-    input.click()
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) onAvatarUpload?.(file);
+    };
+    input.click();
   }
 
   return (
@@ -57,9 +57,9 @@ export function ProfileCard({ profile, onAvatarUpload }: ProfileCardProps) {
           {profile.displayName}
         </h2>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          {t('portfolio.joined', { date: joinedDate })}
+          {t("portfolio.joined", { date: joinedDate })}
         </p>
       </div>
     </div>
-  )
+  );
 }

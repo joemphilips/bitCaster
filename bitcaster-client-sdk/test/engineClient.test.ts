@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { BitcasterEngineClient, EngineClientError, submitEphemeralPubkey } from '../src/engineClient.ts'
+import {
+  BitcasterEngineClient,
+  EngineClientError,
+  submitEphemeralPubkey,
+} from '../src/engineClient.ts'
 import { isKind89NostrEvent } from '../src/marketLifecycle.ts'
 
 test('BitcasterEngineClient.getMarket reads one catalogue row through query ids', async () => {
@@ -86,11 +90,14 @@ test('submitEphemeralPubkey includes conditionId in the request URL and auth inp
     null,
     async (input) => {
       requests.push(String(input))
-      return new Response(JSON.stringify({
-        tradeId: '11111111-1111-4111-8111-111111111111',
-        role: 'maker',
-        bothReceived: true,
-      }), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(
+        JSON.stringify({
+          tradeId: '11111111-1111-4111-8111-111111111111',
+          role: 'maker',
+          bothReceived: true,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
     },
     async ({ url }) => {
       authUrls.push(url)
@@ -111,11 +118,14 @@ test('BitcasterEngineClient.submitEphemeralPubkey passes conditionId to the help
     baseUrl: 'https://engine.example/',
     fetchImpl: async (input) => {
       requests.push(String(input))
-      return new Response(JSON.stringify({
-        tradeId: '22222222-2222-4222-8222-222222222222',
-        role: 'maker',
-        bothReceived: true,
-      }), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(
+        JSON.stringify({
+          tradeId: '22222222-2222-4222-8222-222222222222',
+          role: 'maker',
+          bothReceived: true,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
     },
   })
 
@@ -214,9 +224,7 @@ test('BitcasterEngineClient.getMarketComments reads condition-keyed comments', a
   assert.equal(response.comments[0].content, 'hello')
   assert.equal(response.comments[0].createdAt, '2026-05-25T10:00:00Z')
   assert.equal(response.comments[0].authorPubkey, 'a'.repeat(64))
-  assert.deepEqual(requests, [
-    'https://engine.example/api/v1/markets/condition-1/comments',
-  ])
+  assert.deepEqual(requests, ['https://engine.example/api/v1/markets/condition-1/comments'])
 })
 
 test('BitcasterEngineClient.getParticipationScore reads authenticated Score state', async () => {
@@ -270,11 +278,14 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
     authorization: async ({ url, method, bodyText }) => {
       assert.equal(url, 'https://engine.example/api/v1/participation-score/ecash')
       assert.equal(method, 'POST')
-      assert.equal(bodyText, JSON.stringify({
-        amountSats: 2,
-        proofsToken: 'cashuB-token',
-        paymentId: 'client-payment-id',
-      }))
+      assert.equal(
+        bodyText,
+        JSON.stringify({
+          amountSats: 2,
+          proofsToken: 'cashuB-token',
+          paymentId: 'client-payment-id',
+        }),
+      )
       return 'Nostr auth'
     },
     fetchImpl: async (input, init) => {
@@ -300,11 +311,7 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
     },
   })
 
-  const result = await client.payParticipationScoreEcash(
-    2,
-    'cashuB-token',
-    'client-payment-id',
-  )
+  const result = await client.payParticipationScoreEcash(2, 'cashuB-token', 'client-payment-id')
 
   assert.equal(result.status, 'credited')
   assert.deepEqual(requests, [
@@ -326,10 +333,7 @@ test('BitcasterEngineClient default fetch keeps the browser fetch receiver', asy
   let observedThis: unknown
   globalThis.fetch = function (this: unknown, input: RequestInfo | URL) {
     observedThis = this
-    assert.equal(
-      String(input),
-      'https://engine.example/api/v1/condition-1-YES/orderbook',
-    )
+    assert.equal(String(input), 'https://engine.example/api/v1/condition-1-YES/orderbook')
     return Promise.resolve(
       new Response(
         JSON.stringify({
@@ -363,13 +367,10 @@ test('BitcasterEngineClient exposes plain submit-order validation errors', async
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',
     fetchImpl: async () =>
-      new Response(
-        'OutcomeId must match the primitive outcome segment of marketId.',
-        {
-          status: 400,
-          headers: { 'content-type': 'text/plain' },
-        },
-      ),
+      new Response('OutcomeId must match the primitive outcome segment of marketId.', {
+        status: 400,
+        headers: { 'content-type': 'text/plain' },
+      }),
   })
 
   await assert.rejects(

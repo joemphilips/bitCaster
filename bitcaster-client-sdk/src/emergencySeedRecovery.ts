@@ -1,12 +1,6 @@
 // Re-authored from the ordinary emergency recovery cursor at 7e1385c.
-import {
-  advanceSeedScanCursor,
-  classifySeedRecoveryMintState,
-} from './seedRecoveryCore.ts'
-import {
-  decodeCanonicalMintOrigin,
-  decodeDurableCustodyScopeId,
-} from './durableCustody.ts'
+import { advanceSeedScanCursor, classifySeedRecoveryMintState } from './seedRecoveryCore.ts'
+import { decodeCanonicalMintOrigin, decodeDurableCustodyScopeId } from './durableCustody.ts'
 
 export const EMERGENCY_SEED_RECOVERY_SCHEMA_VERSION = 1 as const
 export const EMERGENCY_SEED_RECOVERY_BATCH_SIZE = 300 as const
@@ -107,8 +101,7 @@ export function advanceEmergencySeedRecoveryCursor(
     {
       startCounter: observation.startCounter,
       requestedCount: observation.requestedCount,
-      returnedCounterOffsets:
-        last === null ? [] : [last - observation.startCounter],
+      returnedCounterOffsets: last === null ? [] : [last - observation.startCounter],
     },
     EMERGENCY_SEED_RECOVERY_BATCH_SIZE,
   )
@@ -132,10 +125,7 @@ export function createEmergencySeedRecoveryCoCommit(input: {
   authority: EmergencySeedRecoveryLeaseAuthority
 }): EmergencySeedRecoveryCoCommit {
   const expectedCursor = validateEmergencySeedRecoveryCursor(input.cursor)
-  const nextCursor = advanceEmergencySeedRecoveryCursor(
-    expectedCursor,
-    input.observation,
-  )
+  const nextCursor = advanceEmergencySeedRecoveryCursor(expectedCursor, input.observation)
   return validateEmergencySeedRecoveryCoCommit({
     walletScopeId: expectedCursor.walletScopeId,
     authority: structuredClone(input.authority),
@@ -152,9 +142,7 @@ export async function commitEmergencySeedRecoveryBatch(
   store: EmergencySeedRecoveryCasStore,
   input: EmergencySeedRecoveryCoCommit,
 ): Promise<void> {
-  await store.commitRecoveryBatch(
-    validateEmergencySeedRecoveryCoCommit(input),
-  )
+  await store.commitRecoveryBatch(validateEmergencySeedRecoveryCoCommit(input))
 }
 
 export function validateEmergencySeedRecoveryCoCommit(
@@ -206,8 +194,7 @@ export function validateEmergencySeedRecoveryCoCommit(
     !safeNonnegativeInteger(value.authority.effectiveClockHighWaterMarkMs) ||
     (value.authority.observedAtMs as number) <
       (value.authority.effectiveClockHighWaterMarkMs as number) ||
-    (value.authority.observedAtMs as number) >=
-      (value.authority.leaseExpiresAtMs as number)
+    (value.authority.observedAtMs as number) >= (value.authority.leaseExpiresAtMs as number)
   ) {
     throw new Error('emergency seed recovery lease authority is not live')
   }
@@ -220,8 +207,7 @@ export function validateEmergencySeedRecoveryCoCommit(
     'requestedCount',
     'lastCounterWithSignature',
   ])
-  const observation =
-    value.observation as unknown as EmergencySeedRecoveryBatchObservation
+  const observation = value.observation as unknown as EmergencySeedRecoveryBatchObservation
   if (
     value.expectedCursorRevision !== expected.revision ||
     observation.expectedRevision !== expected.revision ||
@@ -241,18 +227,12 @@ export function validateEmergencySeedRecoveryCoCommit(
     throw new Error('emergency seed recovery proof batch is invalid')
   }
   const proofIds = value.recoveredProofIds.map((proofId) => {
-    if (
-      typeof proofId !== 'string' ||
-      !/^[0-9a-f]{64}$/.test(proofId)
-    ) {
+    if (typeof proofId !== 'string' || !/^[0-9a-f]{64}$/.test(proofId)) {
       throw new Error('emergency seed recovery proof id is invalid')
     }
     return proofId
   })
-  if (
-    proofIds.length > observation.requestedCount ||
-    new Set(proofIds).size !== proofIds.length
-  ) {
+  if (proofIds.length > observation.requestedCount || new Set(proofIds).size !== proofIds.length) {
     throw new Error('emergency seed recovery proof batch is inconsistent')
   }
   return structuredClone(value) as unknown as EmergencySeedRecoveryCoCommit
@@ -273,9 +253,7 @@ export function classifyEmergencySeedRecoveryProof(
   }
 }
 
-export function validateEmergencySeedRecoveryCursor(
-  value: unknown,
-): EmergencySeedRecoveryCursor {
+export function validateEmergencySeedRecoveryCursor(value: unknown): EmergencySeedRecoveryCursor {
   if (!isRecord(value)) {
     throw new Error('emergency seed recovery cursor is invalid')
   }
@@ -321,20 +299,12 @@ export function validateEmergencySeedRecoveryCursor(
     ['trailing empty counter count', value.trailingEmptyCounters],
     ['cursor revision', value.revision],
   ] as const) {
-    if (
-      typeof count !== 'number' ||
-      !Number.isSafeInteger(count) ||
-      count < 0
-    ) {
+    if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) {
       throw new Error(`emergency seed recovery ${label} is invalid`)
     }
   }
-  const completed =
-    (value.trailingEmptyCounters as number) >=
-    EMERGENCY_SEED_RECOVERY_GAP_LIMIT
-  if (
-    (value.trailingEmptyCounters as number) > (value.nextCounter as number)
-  ) {
+  const completed = (value.trailingEmptyCounters as number) >= EMERGENCY_SEED_RECOVERY_GAP_LIMIT
+  if ((value.trailingEmptyCounters as number) > (value.nextCounter as number)) {
     throw new Error('emergency seed recovery cursor counters are inconsistent')
   }
   if (
@@ -346,8 +316,7 @@ export function validateEmergencySeedRecoveryCursor(
   return structuredClone(value) as unknown as EmergencySeedRecoveryCursor
 }
 
-export const decodeEmergencySeedRecoveryCursor =
-  validateEmergencySeedRecoveryCursor
+export const decodeEmergencySeedRecoveryCursor = validateEmergencySeedRecoveryCursor
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return (
@@ -358,10 +327,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   )
 }
 
-function exactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-): void {
+function exactKeys(value: Record<string, unknown>, expected: readonly string[]): void {
   if (
     Object.keys(value).length !== expected.length ||
     Object.keys(value).some((key) => !expected.includes(key))
@@ -381,11 +347,7 @@ function boundedText(value: unknown, label: string): asserts value is string {
 }
 
 function safeNonnegativeInteger(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isSafeInteger(value) &&
-    value >= 0
-  )
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
 function emergencySeedRecoveryCursorsEqual(

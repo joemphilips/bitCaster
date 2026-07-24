@@ -5,10 +5,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { createRealDaemonSwapOps } from '../src/swapProtocolAdapter.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
-import {
-  readState,
-  type CashuProofRecord,
-} from '../src/state.ts'
+import { readState, type CashuProofRecord } from '../src/state.ts'
 
 test('real daemon swap adapter maps SDK daemon context to atomic-swap operations', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-swap-adapter-'))
@@ -86,9 +83,7 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
             }
           },
           async sellerPreparePrelockedSwap(ctx, lockedProofs) {
-            calls.push(
-              `sellerPrelocked:${ctx.tradeId}:${lockedProofs[0].secret}`,
-            )
+            calls.push(`sellerPrelocked:${ctx.tradeId}:${lockedProofs[0].secret}`)
             return {
               adaptorPointCipher: 'cipher-ca',
               lockedProofsCipher: 'cipher-cs',
@@ -169,13 +164,10 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
               },
               metadata: { amount: params.amountSats },
             })
-            await params.proofOperationStore.markProofOperationCompleted(
-              params.operationId,
-              {
-                YES: [proof(100, 'keep-proof')],
-                NO: [proof(100, 'lock-proof')],
-              },
-            )
+            await params.proofOperationStore.markProofOperationCompleted(params.operationId, {
+              YES: [proof(100, 'keep-proof')],
+              NO: [proof(100, 'lock-proof')],
+            })
             return {
               resolvedKeepOutcomeSetId: 'YES',
               resolvedLockOutcomeSetId: 'NO',
@@ -253,18 +245,12 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       'buyerClaim:trade-1/buyer-claim:trade-1:204:cipher-s:pre-s',
     ])
     const state = await readState()
-    assert.equal(
-      state?.proofOperations['trade-1/seller-lock'].state,
-      'completed',
-    )
+    assert.equal(state?.proofOperations['trade-1/seller-lock'].state, 'completed')
     assert.equal(
       state?.proofOperations['trade-1/seller-lock'].outputs.send[0].secret,
       'send-secret',
     )
-    assert.equal(
-      state?.proofOperations['trade-1/seller-mint-ctf-split'].state,
-      'completed',
-    )
+    assert.equal(state?.proofOperations['trade-1/seller-mint-ctf-split'].state, 'completed')
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome

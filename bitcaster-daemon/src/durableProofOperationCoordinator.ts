@@ -1,16 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite'
-import {
-  createDurableCustodyProofOperation,
-} from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
+import { createDurableCustodyProofOperation } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import type {
   DurableCustodyExactArtifact,
   DurableCustodyRecord,
   DurableCustodyScope,
   DurableProofOperationFacts,
 } from '@bitcaster-market/client-sdk/durableCustody'
-import type {
-  DurableCustodyProofOperationInput,
-} from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
+import type { DurableCustodyProofOperationInput } from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
 
 export interface PreparedDaemonProofOperation {
   readonly record: DurableCustodyRecord
@@ -65,14 +61,7 @@ export function putTargetSwapOperationLinkCas(
          ) VALUES (?, ?, ?, ?, ?, ?, 0)
          ON CONFLICT(scope_id, trade_id, operation_id) DO NOTHING`,
       )
-      .run(
-        input.scopeId,
-        input.tradeId,
-        input.orderId,
-        input.operationId,
-        input.role,
-        input.stage,
-      )
+      .run(input.scopeId, input.tradeId, input.orderId, input.operationId, input.role, input.stage)
     if (inserted.changes !== 1) {
       throw new Error('target swap operation link insertion CAS lost')
     }

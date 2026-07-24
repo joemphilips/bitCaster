@@ -17,10 +17,7 @@ test('validateLocktimeOrdering requires seller proofs to unlock after buyer proo
     validateLocktimeOrdering(105, 100, 5) ?? '',
     /locktime ordering violates protocol invariant/,
   )
-  assert.match(
-    validateLocktimeOrdering(Number.NaN, 100, 5) ?? '',
-    /invalid locktime values/,
-  )
+  assert.match(validateLocktimeOrdering(Number.NaN, 100, 5) ?? '', /invalid locktime values/)
 })
 
 test('validateTradeCreatedProtocol accepts direct and complete mint metadata', () => {

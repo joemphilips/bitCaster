@@ -90,41 +90,32 @@ test('fenced custody unit of work rolls proof and counter writes back atomically
     try {
       assert.equal(
         (
-          database
-            .prepare('SELECT count(*) AS count FROM custody_proofs')
-            .get() as { count: number }
+          database.prepare('SELECT count(*) AS count FROM custody_proofs').get() as {
+            count: number
+          }
         ).count,
         0,
       )
       assert.equal(
         (
-          database
-            .prepare('SELECT count(*) AS count FROM custody_keyset_counters')
-            .get() as { count: number }
+          database.prepare('SELECT count(*) AS count FROM custody_keyset_counters').get() as {
+            count: number
+          }
         ).count,
         0,
       )
     } finally {
       database.close()
     }
-    await withDurableCustodyUnitOfWork(
-      fixture.directory,
-      fence,
-      4,
-      (database) => {
-        const store = new DurableCustodySqliteStore(database)
-        store.putProofCas({ ...proof, updatedAtMs: 4 }, null)
-        store.putCounterCas({ ...counter, updatedAtMs: 4 }, null)
-        assert.throws(
-          () =>
-            store.putCounterCas(
-              { ...counter, nextCounter: 4, revision: 2, updatedAtMs: 4 },
-              0,
-            ),
-          /advance exactly/,
-        )
-      },
-    )
+    await withDurableCustodyUnitOfWork(fixture.directory, fence, 4, (database) => {
+      const store = new DurableCustodySqliteStore(database)
+      store.putProofCas({ ...proof, updatedAtMs: 4 }, null)
+      store.putCounterCas({ ...counter, updatedAtMs: 4 }, null)
+      assert.throws(
+        () => store.putCounterCas({ ...counter, nextCounter: 4, revision: 2, updatedAtMs: 4 }, 0),
+        /advance exactly/,
+      )
+    })
     await assert.rejects(
       () =>
         withDurableCustodyUnitOfWork(
@@ -150,14 +141,8 @@ test('artifact adapter validates full immutable reference and operation revision
       const privateMaterial = artifact({ private: 1 })
       const operationId = 'custody-operation:test'
       const references = {
-        request: createDurableCustodyArtifactReference(
-          `artifact:${operationId}:request`,
-          request,
-        ),
-        output: createDurableCustodyArtifactReference(
-          `artifact:${operationId}:output`,
-          output,
-        ),
+        request: createDurableCustodyArtifactReference(`artifact:${operationId}:request`, request),
+        output: createDurableCustodyArtifactReference(`artifact:${operationId}:output`, output),
         private: createDurableCustodyArtifactReference(
           `artifact:${operationId}:private`,
           privateMaterial,
@@ -351,9 +336,7 @@ test('P09 physically deletes only after receipt, tombstone, and persisted admiss
       )
       assert.equal(
         database
-          .prepare(
-            'SELECT 1 FROM custody_operations WHERE operation_id = ?',
-          )
+          .prepare('SELECT 1 FROM custody_operations WHERE operation_id = ?')
           .get(operationId),
         undefined,
       )
@@ -372,11 +355,7 @@ test('active work pages enforce exact 256-record and 4 MiB boundaries', async ()
     try {
       for (let index = 0; index < 257; index += 1) {
         const operationId = `custody-operation:page-${index}`
-        const ids = seedMinimalArtifacts(
-          database,
-          fixture.walletScopeId,
-          operationId,
-        )
+        const ids = seedMinimalArtifacts(database, fixture.walletScopeId, operationId)
         insertMinimalOperation(database, {
           scopeId: fixture.walletScopeId,
           operationId,
@@ -416,11 +395,7 @@ test('active work pages enforce exact 256-record and 4 MiB boundaries', async ()
              scope_id, operation_id, next_attempt_at_ms, estimated_bytes
            ) VALUES (?, ?, 0, ?)`,
         )
-        .run(
-          fixture.walletScopeId,
-          'custody-operation:page-0',
-          4 * 1_024 * 1_024,
-        )
+        .run(fixture.walletScopeId, 'custody-operation:page-0', 4 * 1_024 * 1_024)
       database
         .prepare(
           `INSERT INTO custody_active_work (
@@ -439,11 +414,7 @@ test('active work pages enforce exact 256-record and 4 MiB boundaries', async ()
               `UPDATE custody_active_work SET estimated_bytes = ?
                WHERE scope_id = ? AND operation_id = ?`,
             )
-            .run(
-              4 * 1_024 * 1_024 + 1,
-              fixture.walletScopeId,
-              'custody-operation:page-0',
-            ),
+            .run(4 * 1_024 * 1_024 + 1, fixture.walletScopeId, 'custody-operation:page-0'),
         /constraint/,
       )
     } finally {
@@ -472,11 +443,7 @@ test('operation and artifacts round-trip exactly with deferred FK ordering', asy
         },
         null,
       )
-      const transaction = new DurableCustodyTransactionSqlite(
-        database,
-        fixture.walletScopeId,
-        3,
-      )
+      const transaction = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 3)
       applyDurableCustodyTransaction(
         transaction,
         {
@@ -494,23 +461,15 @@ test('operation and artifacts round-trip exactly with deferred FK ordering', asy
           ],
         },
         (selected) =>
-          bindDurableCustodyProofOperation(
-            selected,
-            prepared.record,
-            {
-              requestBody: prepared.artifacts[0][1],
-              output: prepared.artifacts[1][1],
-              privateMaterial: prepared.artifacts[2][1],
-            },
-          ),
+          bindDurableCustodyProofOperation(selected, prepared.record, {
+            requestBody: prepared.artifacts[0][1],
+            output: prepared.artifacts[1][1],
+            privateMaterial: prepared.artifacts[2][1],
+          }),
       )
     })
     await withDaemonStateSqliteTransaction(fixture.directory, (database) => {
-      const transaction = new DurableCustodyTransactionSqlite(
-        database,
-        fixture.walletScopeId,
-        4,
-      )
+      const transaction = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 4)
       applyDurableCustodyTransaction(
         transaction,
         {
@@ -540,9 +499,7 @@ test('operation and artifacts round-trip exactly with deferred FK ordering', asy
             operationId: prepared.record.operation.operationId,
             expectedRevision: 0,
             reservationId: 'foreign-reservation',
-            proofIds: prepared.record.operation.reservation.inputs.map(
-              ({ proofId }) => proofId,
-            ),
+            proofIds: prepared.record.operation.reservation.inputs.map(({ proofId }) => proofId),
           }),
         /foreign/,
       )
@@ -551,11 +508,8 @@ test('operation and artifacts round-trip exactly with deferred FK ordering', asy
           transaction.reserveExactInputs({
             operationId: prepared.record.operation.operationId,
             expectedRevision: 1,
-            reservationId:
-              prepared.record.operation.reservation.reservationId,
-            proofIds: prepared.record.operation.reservation.inputs.map(
-              ({ proofId }) => proofId,
-            ),
+            reservationId: prepared.record.operation.reservation.reservationId,
+            proofIds: prepared.record.operation.reservation.inputs.map(({ proofId }) => proofId),
           }),
         /revision CAS/,
       )
@@ -563,9 +517,7 @@ test('operation and artifacts round-trip exactly with deferred FK ordering', asy
     const database = await openDaemonStateSqlite(fixture.directory)
     try {
       assert.deepEqual(
-        new DurableCustodySqliteStore(database).getOperation(
-          prepared.record.operation.operationId,
-        ),
+        new DurableCustodySqliteStore(database).getOperation(prepared.record.operation.operationId),
         prepared.record,
       )
     } finally {
@@ -591,16 +543,12 @@ test('history paging uses exact multibyte UTF-8 page bytes at max and max plus o
     operationState: 'dispatch-intent',
     updatedAtMs: 256,
   }
-  const emptyBytes = custodyHistorySerializedPageBytes(
-    [...prefix, finalRow],
-    null,
-  )
+  const emptyBytes = custodyHistorySerializedPageBytes([...prefix, finalRow], null)
   const remaining = DAEMON_HISTORY_PAGE_BYTES_MAX - emptyBytes
   assert.ok(remaining > 0)
   finalRow.operationId = '界'.repeat(Math.floor(remaining / 3))
   const padding =
-    DAEMON_HISTORY_PAGE_BYTES_MAX -
-    custodyHistorySerializedPageBytes([...prefix, finalRow], null)
+    DAEMON_HISTORY_PAGE_BYTES_MAX - custodyHistorySerializedPageBytes([...prefix, finalRow], null)
   assert.ok(padding >= 0)
   finalRow.operationId += 'a'.repeat(padding)
   const exact = takeBoundedCustodyHistoryRows([...prefix, finalRow])
@@ -634,11 +582,7 @@ test('row-scoped active rebuild and transition preserve unrelated operation work
           },
           null,
         )
-        const transaction = new DurableCustodyTransactionSqlite(
-          database,
-          fixture.walletScopeId,
-          3,
-        )
+        const transaction = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 3)
         applyDurableCustodyTransaction(
           transaction,
           {
@@ -699,11 +643,7 @@ test('row-scoped active rebuild and transition preserve unrelated operation work
             },
           }),
       )
-      const rebuild = new DurableCustodyTransactionSqlite(
-        database,
-        fixture.walletScopeId,
-        4,
-      )
+      const rebuild = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 4)
       rebuild.rebuildActiveWorkIndex({
         scopeId: fixture.walletScopeId,
         operationRows: [
@@ -716,9 +656,7 @@ test('row-scoped active rebuild and transition preserve unrelated operation work
       assert.equal(
         (
           database
-            .prepare(
-              'SELECT count(*) AS count FROM custody_active_work WHERE scope_id = ?',
-            )
+            .prepare('SELECT count(*) AS count FROM custody_active_work WHERE scope_id = ?')
             .get(fixture.walletScopeId) as { count: number }
         ).count,
         2,
@@ -734,11 +672,8 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
   try {
     const prepared = exactIntent(fixture.walletScopeId, 'admission', 2)
     const operationId = prepared.record.operation.operationId
-    const [successorId, secondSuccessorId] =
-      prepared.record.operation.proofStorage.lineage.successorProofIds as [
-        string,
-        string,
-      ]
+    const [successorId, secondSuccessorId] = prepared.record.operation.proofStorage.lineage
+      .successorProofIds as [string, string]
     const fence = await claimCustodyScopeLease(fixture.directory, {
       scopeId: fixture.walletScopeId,
       incarnationId: 'incarnation-admission',
@@ -753,11 +688,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
         },
         null,
       )
-      const bind = new DurableCustodyTransactionSqlite(
-        database,
-        fixture.walletScopeId,
-        3,
-      )
+      const bind = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 3)
       applyDurableCustodyTransaction(
         bind,
         {
@@ -781,11 +712,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
         fencingEpoch: fence.fencingEpoch,
         observedAtMs: 4,
       }
-      const transition = new DurableCustodyTransactionSqlite(
-        database,
-        fixture.walletScopeId,
-        4,
-      )
+      const transition = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 4)
       transition.transitionOperation({
         operationId,
         expectedRevision: 0,
@@ -800,8 +727,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
         operationId,
         expectedRevision: 1,
         authorization: authority,
-        outputPlanFingerprint:
-          prepared.record.operation.outputPlan.outputPlanFingerprint,
+        outputPlanFingerprint: prepared.record.operation.outputPlan.outputPlanFingerprint,
         resultHandle: 'result-admission',
         resultFingerprint: result.fingerprint,
         exactResult: result,
@@ -826,8 +752,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
             operationId,
             expectedRevision: 2,
             authorization: { ...authority, observedAtMs: 5 },
-            outputPlanFingerprint:
-              prepared.record.operation.outputPlan.outputPlanFingerprint,
+            outputPlanFingerprint: prepared.record.operation.outputPlan.outputPlanFingerprint,
             resultHandle: 'result-admission',
             resultFingerprint: result.fingerprint,
             successorAdmission: evidence,
@@ -851,11 +776,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
         { resultHandle: 'foreign-result-handle' },
         { resultFingerprint: 'd'.repeat(64) },
       ]) {
-        const mismatch = new DurableCustodyTransactionSqlite(
-          database,
-          fixture.walletScopeId,
-          5,
-        )
+        const mismatch = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 5)
         mismatch.stageSuccessorProofCas(operationId, [
           { proof: desiredProof, expectedRevision: null },
           { proof: secondDesiredProof, expectedRevision: null },
@@ -866,8 +787,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
               operationId,
               expectedRevision: 2,
               authorization: { ...authority, observedAtMs: 5 },
-              outputPlanFingerprint:
-                prepared.record.operation.outputPlan.outputPlanFingerprint,
+              outputPlanFingerprint: prepared.record.operation.outputPlan.outputPlanFingerprint,
               resultHandle: 'result-admission',
               resultFingerprint: result.fingerprint,
               successorAdmission: evidence,
@@ -889,8 +809,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
           0,
         )
       }
-      const foreignResultArtifactId =
-        'artifact:custody-operation:foreign:result'
+      const foreignResultArtifactId = 'artifact:custody-operation:foreign:result'
       database
         .prepare(
           `INSERT INTO custody_artifacts (
@@ -910,11 +829,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
            WHERE scope_id = ? AND operation_id = ?`,
         )
         .run(foreignResultArtifactId, fixture.walletScopeId, operationId)
-      const misbound = new DurableCustodyTransactionSqlite(
-        database,
-        fixture.walletScopeId,
-        5,
-      )
+      const misbound = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 5)
       misbound.stageSuccessorProofCas(operationId, [
         { proof: desiredProof, expectedRevision: null },
         { proof: secondDesiredProof, expectedRevision: null },
@@ -925,8 +840,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
             operationId,
             expectedRevision: 2,
             authorization: { ...authority, observedAtMs: 5 },
-            outputPlanFingerprint:
-              prepared.record.operation.outputPlan.outputPlanFingerprint,
+            outputPlanFingerprint: prepared.record.operation.outputPlan.outputPlanFingerprint,
             resultHandle: 'result-admission',
             resultFingerprint: result.fingerprint,
             successorAdmission: evidence,
@@ -939,16 +853,8 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
           `UPDATE custody_operations SET result_artifact_id = ?
            WHERE scope_id = ? AND operation_id = ?`,
         )
-        .run(
-          `artifact:${operationId}:result`,
-          fixture.walletScopeId,
-          operationId,
-        )
-      const foreign = new DurableCustodyTransactionSqlite(
-        database,
-        fixture.walletScopeId,
-        5,
-      )
+        .run(`artifact:${operationId}:result`, fixture.walletScopeId, operationId)
+      const foreign = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 5)
       foreign.stageSuccessorProofCas(operationId, [
         { proof: { ...desiredProof, proofId: 'f'.repeat(64) }, expectedRevision: null },
         { proof: secondDesiredProof, expectedRevision: null },
@@ -959,8 +865,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
             operationId,
             expectedRevision: 2,
             authorization: { ...authority, observedAtMs: 5 },
-            outputPlanFingerprint:
-              prepared.record.operation.outputPlan.outputPlanFingerprint,
+            outputPlanFingerprint: prepared.record.operation.outputPlan.outputPlanFingerprint,
             resultHandle: 'result-admission',
             resultFingerprint: result.fingerprint,
             successorAdmission: evidence,
@@ -977,11 +882,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
         },
         null,
       )
-      const stale = new DurableCustodyTransactionSqlite(
-        database,
-        fixture.walletScopeId,
-        5,
-      )
+      const stale = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 5)
       stale.stageSuccessorProofCas(operationId, [
         { proof: desiredProof, expectedRevision: null },
         { proof: secondDesiredProof, expectedRevision: 0 },
@@ -992,8 +893,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
             operationId,
             expectedRevision: 2,
             authorization: { ...authority, observedAtMs: 5 },
-            outputPlanFingerprint:
-              prepared.record.operation.outputPlan.outputPlanFingerprint,
+            outputPlanFingerprint: prepared.record.operation.outputPlan.outputPlanFingerprint,
             resultHandle: 'result-admission',
             resultFingerprint: result.fingerprint,
             successorAdmission: {
@@ -1020,11 +920,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
         .prepare('DELETE FROM custody_proofs WHERE scope_id = ? AND proof_id = ?')
         .run(fixture.walletScopeId, secondSuccessorId)
 
-      const success = new DurableCustodyTransactionSqlite(
-        database,
-        fixture.walletScopeId,
-        5,
-      )
+      const success = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 5)
       success.stageSuccessorProofCas(operationId, [
         { proof: desiredProof, expectedRevision: null },
         { proof: secondDesiredProof, expectedRevision: null },
@@ -1033,18 +929,14 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
         operationId,
         expectedRevision: 2,
         authorization: { ...authority, observedAtMs: 5 },
-        outputPlanFingerprint:
-          prepared.record.operation.outputPlan.outputPlanFingerprint,
+        outputPlanFingerprint: prepared.record.operation.outputPlan.outputPlanFingerprint,
         resultHandle: 'result-admission',
         resultFingerprint: result.fingerprint,
         successorAdmission: evidence,
       })
       assert.equal(store.getOperation(operationId)?.revision, 3)
       assert.equal(store.getProof(fixture.walletScopeId, successorId)?.revision, 0)
-      assert.equal(
-        store.getProof(fixture.walletScopeId, secondSuccessorId)?.revision,
-        0,
-      )
+      assert.equal(store.getProof(fixture.walletScopeId, secondSuccessorId)?.revision, 0)
     })
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })

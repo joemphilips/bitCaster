@@ -145,8 +145,8 @@ async function teardownCurrentSigner(ndk: NDK): Promise<void> {
 
 /** Check whether a NIP-07 browser extension (e.g. Alby, nos2x) is available. */
 export function isNip07Available(): boolean {
-  const ext = (window as { nostr?: { getPublicKey?: unknown } }).nostr
-  return !!ext && typeof ext.getPublicKey === 'function'
+  const ext = (window as { nostr?: { getPublicKey?: unknown } }).nostr;
+  return !!ext && typeof ext.getPublicKey === "function";
 }
 
 // ---------------------------------------------------------------------------
@@ -288,15 +288,11 @@ export async function fetchAndStoreNostrProfile(): Promise<void> {
       return;
     }
     const user = await signer.user();
-    const cached = settings.nostrProfile?.pubkey === user.pubkey
-      ? settings.nostrProfile
-      : null;
+    const cached = settings.nostrProfile?.pubkey === user.pubkey ? settings.nostrProfile : null;
     settings.setProfile(cached, "fetching");
     await Promise.race([
       user.fetchProfile(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("timeout")), 8000)
-      ),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 8000)),
     ]).catch(() => {
       /* timeout or relay error — profile stays null */
     });
@@ -305,14 +301,13 @@ export async function fetchAndStoreNostrProfile(): Promise<void> {
       settings.setProfile(
         {
           pubkey: user.pubkey,
-          displayName:
-            profile.displayName ?? profile.name ?? user.pubkey.slice(0, 8),
+          displayName: profile.displayName ?? profile.name ?? user.pubkey.slice(0, 8),
           avatar: profile.image ?? "",
           nip05: profile.nip05 ?? "",
           nip05verified: !!profile.nip05,
           bio: profile.bio ?? profile.about ?? "",
         },
-        "found"
+        "found",
       );
     } else if (cached) {
       settings.setProfile(cached, "found");
@@ -335,17 +330,13 @@ export interface PublicNostrProfile {
   avatar: string;
 }
 
-export async function fetchPublicNostrProfile(
-  pubkey: string,
-): Promise<PublicNostrProfile | null> {
+export async function fetchPublicNostrProfile(pubkey: string): Promise<PublicNostrProfile | null> {
   try {
     const ndk = getNdk();
     const user = ndk.getUser({ pubkey });
     await Promise.race([
       user.fetchProfile(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("timeout")), 5000)
-      ),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
     ]).catch(() => {});
     const profile = user.profile;
     if (!profile) return null;
@@ -374,9 +365,7 @@ export async function connectReadOnly(): Promise<void> {
  * @param pairingCode - nostr+walletconnect:// URI from the user's wallet
  * @returns the NDKNWCWallet instance (already assigned to ndk.wallet)
  */
-export async function connectNwcWallet(
-  pairingCode: string
-): Promise<NDKNWCWallet> {
+export async function connectNwcWallet(pairingCode: string): Promise<NDKNWCWallet> {
   const ndk = getNdk();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- NDK version mismatch between ndk and ndk-wallet
   const wallet = new NDKNWCWallet(ndk as any, { pairingCode, timeout: 30_000 });
@@ -404,9 +393,7 @@ export async function connectNwcWallet(
 export const KIND_DLC_ANNOUNCEMENT = 88 as const;
 
 /** Filter for DLC oracle announcements published by a specific oracle pubkey. */
-export function oracleAnnouncementFilter(
-  oraclePubkey: string
-): NDKFilter {
+export function oracleAnnouncementFilter(oraclePubkey: string): NDKFilter {
   return {
     kinds: [KIND_DLC_ANNOUNCEMENT as number],
     authors: [oraclePubkey],
@@ -421,7 +408,7 @@ export function oracleAnnouncementFilter(
  */
 export function subscribeOracleAnnouncements(
   oraclePubkey: string,
-  onEvent: (event: NDKEvent) => void
+  onEvent: (event: NDKEvent) => void,
 ): ReturnType<NDK["subscribe"]> {
   const ndk = getNdk();
   const filter = oracleAnnouncementFilter(oraclePubkey);

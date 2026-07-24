@@ -2,25 +2,25 @@
 // Wallet & Currency Types
 // =============================================================================
 
-export type WalletState = 'none' | 'ready'
-export type BaseCurrency = 'BTC' | 'USD' | 'JPY'
+export type WalletState = "none" | "ready";
+export type BaseCurrency = "BTC" | "USD" | "JPY";
 
 // =============================================================================
 // P/L Chart Types
 // =============================================================================
 
-export type PLTimeSelector = '1D' | '1W' | '1M' | 'ALL'
+export type PLTimeSelector = "1D" | "1W" | "1M" | "ALL";
 
 export interface PLChartDataPoint {
-  timestamp: string
-  cumulativePL: number
+  timestamp: string;
+  cumulativePL: number;
 }
 
 export interface PLChartData {
-  '1D': PLChartDataPoint[]
-  '1W': PLChartDataPoint[]
-  '1M': PLChartDataPoint[]
-  'ALL': PLChartDataPoint[]
+  "1D": PLChartDataPoint[];
+  "1W": PLChartDataPoint[];
+  "1M": PLChartDataPoint[];
+  ALL: PLChartDataPoint[];
 }
 
 // =============================================================================
@@ -28,10 +28,10 @@ export interface PLChartData {
 // =============================================================================
 
 export interface UserProfile {
-  userId: string
-  displayName: string
-  avatarUrl: string | null
-  registeredDate: string
+  userId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  registeredDate: string;
 }
 
 // =============================================================================
@@ -39,40 +39,40 @@ export interface UserProfile {
 // =============================================================================
 
 export interface PortfolioStats {
-  positionsValueSats: number
-  totalValueSats: number
-  positionsValueByUnit?: Array<{ unit: 'sat' | 'usd' | 'jpy'; amount: number }>
-  totalValueByUnit?: Array<{ unit: 'sat' | 'usd' | 'jpy'; amount: number }>
-  biggestWinSats: number
-  predictionsCount: number
+  positionsValueSats: number;
+  totalValueSats: number;
+  positionsValueByUnit?: Array<{ unit: "sat" | "usd" | "jpy"; amount: number }>;
+  totalValueByUnit?: Array<{ unit: "sat" | "usd" | "jpy"; amount: number }>;
+  biggestWinSats: number;
+  predictionsCount: number;
 }
 
 // =============================================================================
 // Position Types
 // =============================================================================
 
-export type PositionStatus = 'active' | 'closed'
-export type PositionSide = 'yes' | 'no' | 'Outcome'
+export type PositionStatus = "active" | "closed";
+export type PositionSide = "yes" | "no" | "Outcome";
 
 export interface Position {
-  id: string
-  marketId: string
-  marketTitle: string
-  marketImageUrl: string
-  side: PositionSide
-  outcomeId?: string
-  outcomeLabel?: string
-  canClaimPayout?: boolean
-  canDiscard?: boolean
-  baseAsset?: 'sat' | 'usd' | 'jpy'
-  divisibility?: number
-  shares: number
-  avgBuyPrice: number
-  currentPrice: number
-  currentValueSats: number
-  profitLossSats: number
-  profitLossPercent: number
-  status: PositionStatus
+  id: string;
+  marketId: string;
+  marketTitle: string;
+  marketImageUrl: string;
+  side: PositionSide;
+  outcomeId?: string;
+  outcomeLabel?: string;
+  canClaimPayout?: boolean;
+  canDiscard?: boolean;
+  baseAsset?: "sat" | "usd" | "jpy";
+  divisibility?: number;
+  shares: number;
+  avgBuyPrice: number;
+  currentPrice: number;
+  currentValueSats: number;
+  profitLossSats: number;
+  profitLossPercent: number;
+  status: PositionStatus;
   /**
    * Single source-of-truth winner flag for a closed position (P22 Link F),
    * derived once in usePortfolioState via deriveWinner. A position is a winner
@@ -81,12 +81,12 @@ export interface Position {
    * value/P&L, and the destructive "Remove" guard all read this same field so
    * they can never disagree. Always false while active.
    */
-  isWinner: boolean
+  isWinner: boolean;
   /**
    * Closed, attested, and not a winner. Always false while active or pending.
    * Gates "Remove" — only an attested loser may have its proofs destroyed.
    */
-  isLoser: boolean
+  isLoser: boolean;
   /**
    * Closed but NOT YET ATTESTED (no final outcome — closed by deadline, or
    * before the oracle attests). Win/loss is UNDECIDED (P22 Link F): the row
@@ -94,16 +94,16 @@ export interface Position {
    * Remove, so not-yet-decided proofs can never be destroyed. Its value is the
    * full held amount, not zero. Always false while active.
    */
-  isPending: boolean
+  isPending: boolean;
   /**
    * The market's attested final outcome (P22 Link F). Carried so the
    * destructive "Remove" handler can apply a defense-in-depth filter: it must
    * never delete a proof on a winning keyset, even if classification were off.
    */
-  finalOutcome?: string | null
-  closedDate?: string
-  acquiredDate: string
-  mintUrl: string
+  finalOutcome?: string | null;
+  closedDate?: string;
+  acquiredDate: string;
+  mintUrl: string;
 }
 
 // =============================================================================
@@ -111,68 +111,74 @@ export interface Position {
 // =============================================================================
 
 export interface Fund {
-  id: string
-  unit: 'sats' | 'usd' | 'jpy'
-  amount: number
-  mintUrl: string
+  id: string;
+  unit: "sats" | "usd" | "jpy";
+  amount: number;
+  mintUrl: string;
 }
 
 // =============================================================================
 // Activity Types (replaces OrderHistoryItem)
 // =============================================================================
 
-export type ActivityType = 'deposit' | 'withdrawal' | 'Buy' | 'Sell' | 'payout_claimed' | 'creator_fee_claimed'
-export type ActivityStatus = 'pending' | 'completed' | 'Failed'
+export type ActivityType =
+  | "deposit"
+  | "withdrawal"
+  | "Buy"
+  | "Sell"
+  | "payout_claimed"
+  | "creator_fee_claimed";
+export type ActivityStatus = "pending" | "completed" | "Failed";
 
 export interface ActivityItem {
-  id: string
-  type: ActivityType
-  amountSats: number
-  baseAsset?: 'sat' | 'usd' | 'jpy'
-  date: string
-  status: ActivityStatus
-  txId: string | null
-  lightningInvoice: string | null
-  failureReason?: string
-  marketId?: string
-  marketTitle?: string
-  positionId?: string
+  id: string;
+  type: ActivityType;
+  amountSats: number;
+  baseAsset?: "sat" | "usd" | "jpy";
+  date: string;
+  status: ActivityStatus;
+  txId: string | null;
+  lightningInvoice: string | null;
+  failureReason?: string;
+  marketId?: string;
+  marketTitle?: string;
+  positionId?: string;
 }
 
 // =============================================================================
 // Created Market Types
 // =============================================================================
 
-export type CreatedMarketStatus = 'active' | 'resolved' | 'refunded'
+export type CreatedMarketStatus = "active" | "resolved" | "refunded";
 
 export interface CreatedMarket {
-  id: string
-  title: string
-  imageUrl: string
-  status: CreatedMarketStatus
-  createdDate: string
-  baseAsset?: 'sat' | 'usd' | 'jpy'
-  divisibility?: number
-  resolvedDate?: string
-  refundedDate?: string
-  volume: number
-  creatorFeesEarned: number
-  creatorFeePercent: number
+  id: string;
+  title: string;
+  imageUrl: string;
+  status: CreatedMarketStatus;
+  createdDate: string;
+  baseAsset?: "sat" | "usd" | "jpy";
+  divisibility?: number;
+  resolvedDate?: string;
+  refundedDate?: string;
+  volume: number;
+  creatorFeesEarned: number;
+  creatorFeePercent: number;
   oracle?: {
-    type: 'self'
-    eventId: string
-    announcementEventId?: string
-    outcomes: string[]
+    type: "self";
+    eventId: string;
+    announcementEventId?: string;
+    outcomes: string[];
     /**
      * TLV-hex of the kormir DLC oracle announcement. Mirrored client-side so a
      * fresh browser profile can re-import the committed-nonce material before
      * re-signing the attestation (P22 B1b).
      */
-    announcementHex?: string
-    attestationHex?: string
-    attestedOutcome?: string
-    attestedAt?: string
-  }
+    announcementHex?: string;
+    attestationHex?: string;
+    attestedOutcome?: string;
+    attestedAt?: string;
+  };
 }
 
 // =============================================================================
@@ -181,90 +187,90 @@ export interface CreatedMarket {
 
 export interface PortfolioProps {
   /** Wallet state — determines whether to show portfolio or onboarding CTA */
-  walletState: WalletState
+  walletState: WalletState;
 
   /** User's preferred base currency for display */
-  baseCurrency: BaseCurrency
+  baseCurrency: BaseCurrency;
 
   /** Currently selected P/L time range */
-  selectedTimeRange: PLTimeSelector
+  selectedTimeRange: PLTimeSelector;
 
   /** User profile information */
-  profile: UserProfile
+  profile: UserProfile;
 
   /** P/L chart data for each time range */
-  plChartData: PLChartData
+  plChartData: PLChartData;
 
   /** Portfolio statistics */
-  stats: PortfolioStats
+  stats: PortfolioStats;
 
   /** User's positions in markets */
-  positions: Position[]
+  positions: Position[];
 
   /** Activity feed (deposits, withdrawals, trades, payouts, fees) */
-  activity: ActivityItem[]
+  activity: ActivityItem[];
 
   /** Base ecash fund balances */
-  funds: Fund[]
+  funds: Fund[];
 
   /** Markets created by the user */
-  createdMarkets: CreatedMarket[]
+  createdMarkets: CreatedMarket[];
 
   /** Currently selected positions sub-tab */
-  positionsTab: 'active' | 'closed'
+  positionsTab: "active" | "closed";
 
   /** Called when user clicks "Get Started" (no-wallet state). */
-  onGetStarted?: () => void
+  onGetStarted?: () => void;
 
   /** Called when user uploads a new avatar image */
-  onAvatarUpload?: (file: File) => void
+  onAvatarUpload?: (file: File) => void;
 
   /** Called when user selects a P/L time range */
-  onTimeRangeChange?: (range: PLTimeSelector) => void
+  onTimeRangeChange?: (range: PLTimeSelector) => void;
 
   /** Called when user clicks Deposit */
-  onDeposit?: () => void
+  onDeposit?: () => void;
 
   /** Called when user clicks Withdraw */
-  onWithdraw?: () => void
+  onWithdraw?: () => void;
 
   /** Called when user clicks Sell on a position */
-  onSellPosition?: (positionId: string) => void
+  onSellPosition?: (positionId: string) => void;
 
   /** Called when user clicks to view position details */
-  onViewPosition?: (positionId: string) => void
+  onViewPosition?: (positionId: string) => void;
 
   /** Called when user clicks to view a market they created */
-  onViewMarket?: (marketId: string) => void
+  onViewMarket?: (marketId: string) => void;
 
   /** Called when user clicks to view activity item details */
-  onViewActivity?: (activityId: string) => void
+  onViewActivity?: (activityId: string) => void;
 
   /** Called when user switches positions sub-tab */
-  onPositionsTabChange?: (tab: 'active' | 'closed') => void
+  onPositionsTabChange?: (tab: "active" | "closed") => void;
 
   /** Called when user clicks to claim creator fees from a resolved market */
-  onClaimCreatorFees?: (marketId: string) => void
+  onClaimCreatorFees?: (marketId: string) => void;
 
   /** Called when user claims payout from a winning position */
-  onClaimPayout?: (positionId: string) => void
+  onClaimPayout?: (positionId: string) => void;
 
   /** Called when user removes a losing closed CTF position from local wallet state */
-  onDiscardLostPosition?: (positionId: string) => void
+  onDiscardLostPosition?: (positionId: string) => void;
 
   /** Called when user clicks to view a fund */
-  onViewFund?: (fundId: string) => void
+  onViewFund?: (fundId: string) => void;
 
   /** Called when user opens Settings */
-  onOpenSettings?: () => void
+  onOpenSettings?: () => void;
 
   /**
    * Show the "Connect Nostr" CTA just beneath ProfileCard. Set by the
    * page when the user has no configured Nostr signer and no cached
    * profile (Anon state) — P5 item 4.
    */
-  showConnectNostrCta?: boolean
+  showConnectNostrCta?: boolean;
 
   /** Called when user clicks "Connect Nostr" (navigates to Nostr settings) */
-  onConnectNostr?: () => void
+  onConnectNostr?: () => void;
 }

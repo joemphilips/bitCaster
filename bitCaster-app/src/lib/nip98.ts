@@ -15,5 +15,5 @@
  * The server checks the `u` tag against the negotiation URL.
  */
 export function tradeHubUrl(baseUrl: string): string {
-  return `${baseUrl}/hubs/trade`
+  return `${baseUrl}/hubs/trade`;
 }

@@ -93,19 +93,17 @@ test('explicit ordinary recovery co-commits selectable, pending, spent, cursor, 
       )
       assert.equal(
         (
-          database
-            .prepare('SELECT count(*) AS count FROM custody_proofs')
-            .get() as { count: number }
+          database.prepare('SELECT count(*) AS count FROM custody_proofs').get() as {
+            count: number
+          }
         ).count,
         1,
       )
       assert.equal(
         (
-          database
-            .prepare(
-              'SELECT count(*) AS count FROM seed_recovery_pending_proofs',
-            )
-            .get() as { count: number }
+          database.prepare('SELECT count(*) AS count FROM seed_recovery_pending_proofs').get() as {
+            count: number
+          }
         ).count,
         1,
       )
@@ -181,14 +179,7 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
           batches: [
             {
               ...emptyBatch(0),
-              proofs: [
-                observed(
-                  profile.walletScopeId,
-                  'd',
-                  'UNKNOWN',
-                  'retained',
-                ),
-              ],
+              proofs: [observed(profile.walletScopeId, 'd', 'UNKNOWN', 'retained')],
             },
           ],
         }),
@@ -230,9 +221,7 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
           batches: [
             {
               observation: oneProofObservation(),
-              proofs: [
-                observed(profile.walletScopeId, 'f', 'PENDING', 'selectable'),
-              ],
+              proofs: [observed(profile.walletScopeId, 'f', 'PENDING', 'selectable')],
             },
           ],
         }),
@@ -242,9 +231,9 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
     try {
       assert.equal(
         (
-          database
-            .prepare('SELECT count(*) AS count FROM seed_recovery_jobs')
-            .get() as { count: number }
+          database.prepare('SELECT count(*) AS count FROM seed_recovery_jobs').get() as {
+            count: number
+          }
         ).count,
         0,
       )
@@ -343,12 +332,7 @@ function observed(
       curve: 'secp256k1',
       signatureVerified: mintState === 'UNSPENT',
       dleqState: 'not-present',
-      nut07State:
-        mintState === 'UNSPENT'
-          ? 'UNSPENT'
-          : mintState === 'SPENT'
-            ? 'SPENT'
-            : 'PENDING',
+      nut07State: mintState === 'UNSPENT' ? 'UNSPENT' : mintState === 'SPENT' ? 'SPENT' : 'PENDING',
       selectability,
       storageClass: 'pinned-operation-bound-deterministic',
       reservationOperationId: null,

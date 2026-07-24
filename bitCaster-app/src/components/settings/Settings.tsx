@@ -1,14 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { nip19 } from 'nostr-tools'
-import { getPublicKey } from 'nostr-tools/pure'
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { nip19 } from "nostr-tools";
+import { getPublicKey } from "nostr-tools/pure";
 import type {
   SettingsProps,
   SettingsCategory,
   ThemeOption,
   MintConfig,
   RelayConnectionStatus,
-} from '@/types/settings'
+} from "@/types/settings";
 import {
   Trash2,
   Plus,
@@ -28,13 +28,13 @@ import {
   Plug,
   KeyRound,
   AlertTriangle,
-} from 'lucide-react'
-import { useToastStore } from '@/stores/toast'
-import { isNip07Available } from '@/lib/nostr'
-import { getNotificationPermission } from '@/lib/webNotifications'
-import { getRelayUrlValidationError } from '@/lib/walletOps'
-import { safeHostname } from '@/lib/url'
-import { AddMintForm } from '@/components/shared/AddMintForm'
+} from "lucide-react";
+import { useToastStore } from "@/stores/toast";
+import { isNip07Available } from "@/lib/nostr";
+import { getNotificationPermission } from "@/lib/webNotifications";
+import { getRelayUrlValidationError } from "@/lib/walletOps";
+import { safeHostname } from "@/lib/url";
+import { AddMintForm } from "@/components/shared/AddMintForm";
 
 //─── Segmented Control ──────────────────────────────────────────────────────
 
@@ -43,9 +43,9 @@ function SegmentedControl<T extends string>({
   value,
   onChange,
 }: {
-  options: { label: string; value: T }[]
-  value: T
-  onChange?: (v: T) => void
+  options: { label: string; value: T }[];
+  value: T;
+  onChange?: (v: T) => void;
 }) {
   return (
     <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-700/50 p-1">
@@ -55,31 +55,26 @@ function SegmentedControl<T extends string>({
           onClick={() => onChange?.(opt.value)}
           className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
             value === opt.value
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+              ? "bg-blue-600 text-white shadow-sm"
+              : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
           }`}
         >
           {opt.label}
         </button>
       ))}
     </div>
-  )
+  );
 }
 
 // ─── Status Dot ─────────────────────────────────────────────────────────────
 
-function StatusDot({ status }: { status: MintConfig['connectionStatus'] | RelayConnectionStatus }) {
+function StatusDot({ status }: { status: MintConfig["connectionStatus"] | RelayConnectionStatus }) {
   const colors = {
-    connected: 'bg-green-500',
-    disconnected: 'bg-slate-400',
-    error: 'bg-red-500',
-  }
-  return (
-    <span
-      className={`inline-block w-2 h-2 rounded-full ${colors[status]}`}
-      title={status}
-    />
-  )
+    connected: "bg-green-500",
+    disconnected: "bg-slate-400",
+    error: "bg-red-500",
+  };
+  return <span className={`inline-block w-2 h-2 rounded-full ${colors[status]}`} title={status} />;
 }
 
 // ─── Collapsible Category Card ──────────────────────────────────────────────
@@ -92,14 +87,14 @@ function CategoryCard({
   onToggle,
   children,
 }: {
-  icon: React.ComponentType<{ className?: string }>
-  label: string
-  category: Exclude<SettingsCategory, null>
-  activeCategory: SettingsCategory
-  onToggle?: (cat: Exclude<SettingsCategory, null>) => void
-  children: React.ReactNode
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  category: Exclude<SettingsCategory, null>;
+  activeCategory: SettingsCategory;
+  onToggle?: (cat: Exclude<SettingsCategory, null>) => void;
+  children: React.ReactNode;
 }) {
-  const isOpen = activeCategory === category
+  const isOpen = activeCategory === category;
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
       <button
@@ -112,7 +107,7 @@ function CategoryCard({
         </span>
         <ChevronDown
           className={`w-5 h-5 text-slate-400 transition-transform duration-200 ${
-            isOpen ? 'rotate-180' : ''
+            isOpen ? "rotate-180" : ""
           }`}
         />
       </button>
@@ -122,7 +117,7 @@ function CategoryCard({
         </div>
       )}
     </div>
-  )
+  );
 }
 
 // ─── Main Settings Component ────────────────────────────────────────────────
@@ -150,61 +145,61 @@ export function Settings({
   onAddRelay,
   onRemoveRelay,
 }: SettingsProps) {
-  const { t } = useTranslation()
-  const { general, cashu, nostr } = settings
+  const { t } = useTranslation();
+  const { general, cashu, nostr } = settings;
 
   // Local state for UI interactions. The add-mint subform is owned by
   // AddMintForm itself so the same component can be reused from the
   // portfolio mint selector (P5.2) without duplicating spinner / error
   // state — `onAddMint` resolves only when the underlying wallet store
   // has finished mutating.
-  const [showSeedConfirm, setShowSeedConfirm] = useState(false)
-  const [showSeedPhrase, setShowSeedPhrase] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [nsecValue, setNsecValue] = useState('')
-  const [showNsec, setShowNsec] = useState(false)
-  const [showNsecInput, setShowNsecInput] = useState(false)
-  const [showGeneratedNsecConfirm, setShowGeneratedNsecConfirm] = useState(false)
-  const [showGeneratedNsecSecret, setShowGeneratedNsecSecret] = useState(false)
-  const [generatedNsecBlurred, setGeneratedNsecBlurred] = useState(false)
-  const [generatedNsecCopied, setGeneratedNsecCopied] = useState(false)
-  const [generatedNpubCopied, setGeneratedNpubCopied] = useState(false)
-  const [ncryptsecPassphrase, setNcryptsecPassphrase] = useState('')
-  const [showAddRelay, setShowAddRelay] = useState(false)
-  const [newRelayUrl, setNewRelayUrl] = useState('')
-  const [isConnectingNip07, setIsConnectingNip07] = useState(false)
-  const [isConnectingNsec, setIsConnectingNsec] = useState(false)
-  const [isRetryingProfile, setIsRetryingProfile] = useState(false)
-  const seedClipboardClearRef = useRef<number | null>(null)
-  const nsecClipboardClearRef = useRef<number | null>(null)
+  const [showSeedConfirm, setShowSeedConfirm] = useState(false);
+  const [showSeedPhrase, setShowSeedPhrase] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [nsecValue, setNsecValue] = useState("");
+  const [showNsec, setShowNsec] = useState(false);
+  const [showNsecInput, setShowNsecInput] = useState(false);
+  const [showGeneratedNsecConfirm, setShowGeneratedNsecConfirm] = useState(false);
+  const [showGeneratedNsecSecret, setShowGeneratedNsecSecret] = useState(false);
+  const [generatedNsecBlurred, setGeneratedNsecBlurred] = useState(false);
+  const [generatedNsecCopied, setGeneratedNsecCopied] = useState(false);
+  const [generatedNpubCopied, setGeneratedNpubCopied] = useState(false);
+  const [ncryptsecPassphrase, setNcryptsecPassphrase] = useState("");
+  const [showAddRelay, setShowAddRelay] = useState(false);
+  const [newRelayUrl, setNewRelayUrl] = useState("");
+  const [isConnectingNip07, setIsConnectingNip07] = useState(false);
+  const [isConnectingNsec, setIsConnectingNsec] = useState(false);
+  const [isRetryingProfile, setIsRetryingProfile] = useState(false);
+  const seedClipboardClearRef = useRef<number | null>(null);
+  const nsecClipboardClearRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!showGeneratedNsecSecret) return
-    setGeneratedNsecBlurred(false)
-    const blurTimer = window.setTimeout(() => setGeneratedNsecBlurred(true), 15_000)
+    if (!showGeneratedNsecSecret) return;
+    setGeneratedNsecBlurred(false);
+    const blurTimer = window.setTimeout(() => setGeneratedNsecBlurred(true), 15_000);
     const hideTimer = window.setTimeout(() => {
-      setShowGeneratedNsecSecret(false)
-      setShowGeneratedNsecConfirm(false)
-      setGeneratedNsecBlurred(false)
-      setGeneratedNsecCopied(false)
-      setGeneratedNpubCopied(false)
-    }, 60_000)
+      setShowGeneratedNsecSecret(false);
+      setShowGeneratedNsecConfirm(false);
+      setGeneratedNsecBlurred(false);
+      setGeneratedNsecCopied(false);
+      setGeneratedNpubCopied(false);
+    }, 60_000);
     return () => {
-      window.clearTimeout(blurTimer)
-      window.clearTimeout(hideTimer)
-    }
-  }, [showGeneratedNsecSecret])
+      window.clearTimeout(blurTimer);
+      window.clearTimeout(hideTimer);
+    };
+  }, [showGeneratedNsecSecret]);
 
   useEffect(() => {
     return () => {
       if (seedClipboardClearRef.current != null) {
-        window.clearTimeout(seedClipboardClearRef.current)
+        window.clearTimeout(seedClipboardClearRef.current);
       }
       if (nsecClipboardClearRef.current != null) {
-        window.clearTimeout(nsecClipboardClearRef.current)
+        window.clearTimeout(nsecClipboardClearRef.current);
       }
-    }
-  }, [])
+    };
+  }, []);
 
   /**
    * Manual retry for the Nostr profile fetch. Even after the persist-
@@ -214,32 +209,32 @@ export function Settings({
    * trigger another fetch without a full reload.
    */
   const handleRetryProfile = async () => {
-    setIsRetryingProfile(true)
+    setIsRetryingProfile(true);
     try {
-      await onRetryNostrProfile?.()
+      await onRetryNostrProfile?.();
     } finally {
-      setIsRetryingProfile(false)
+      setIsRetryingProfile(false);
     }
-  }
+  };
 
-  const displaySeedPhrase = seedPhrase ?? ''
+  const displaySeedPhrase = seedPhrase ?? "";
 
   const handleCopySeed = () => {
-    void navigator.clipboard.writeText(displaySeedPhrase)
+    void navigator.clipboard.writeText(displaySeedPhrase);
     if (seedClipboardClearRef.current != null) {
-      window.clearTimeout(seedClipboardClearRef.current)
+      window.clearTimeout(seedClipboardClearRef.current);
     }
     seedClipboardClearRef.current = window.setTimeout(() => {
       void navigator.clipboard
         .readText()
         .then((value) => {
-          if (value === displaySeedPhrase) void navigator.clipboard.writeText('')
+          if (value === displaySeedPhrase) void navigator.clipboard.writeText("");
         })
-        .catch(() => {})
-    }, 60_000)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
+        .catch(() => {});
+    }, 60_000);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   /**
    * Derive the public npub from the generated nsec. The npub is the BIP-340
@@ -251,112 +246,108 @@ export function Settings({
    * rather than throw inside render.
    */
   const generatedNpub = useMemo(() => {
-    if (!generatedNsecSecret) return null
+    if (!generatedNsecSecret) return null;
     try {
-      const decoded = nip19.decode(generatedNsecSecret)
-      if (decoded.type !== 'nsec') return null
-      const pubkeyHex = getPublicKey(decoded.data)
-      return nip19.npubEncode(pubkeyHex)
+      const decoded = nip19.decode(generatedNsecSecret);
+      if (decoded.type !== "nsec") return null;
+      const pubkeyHex = getPublicKey(decoded.data);
+      return nip19.npubEncode(pubkeyHex);
     } catch {
-      return null
+      return null;
     }
-  }, [generatedNsecSecret])
+  }, [generatedNsecSecret]);
 
   const handleCopyGeneratedNpub = () => {
-    if (!generatedNpub) return
+    if (!generatedNpub) return;
     // npub is public — plain copy, no clipboard auto-clear needed.
-    void navigator.clipboard.writeText(generatedNpub)
-    setGeneratedNpubCopied(true)
-    window.setTimeout(() => setGeneratedNpubCopied(false), 2_000)
-  }
+    void navigator.clipboard.writeText(generatedNpub);
+    setGeneratedNpubCopied(true);
+    window.setTimeout(() => setGeneratedNpubCopied(false), 2_000);
+  };
 
   const handleCopyGeneratedNsec = () => {
-    if (!generatedNsecSecret) return
-    void navigator.clipboard.writeText(generatedNsecSecret)
+    if (!generatedNsecSecret) return;
+    void navigator.clipboard.writeText(generatedNsecSecret);
     if (nsecClipboardClearRef.current != null) {
-      window.clearTimeout(nsecClipboardClearRef.current)
+      window.clearTimeout(nsecClipboardClearRef.current);
     }
     nsecClipboardClearRef.current = window.setTimeout(() => {
       void navigator.clipboard
         .readText()
         .then((value) => {
-          if (value === generatedNsecSecret) void navigator.clipboard.writeText('')
+          if (value === generatedNsecSecret) void navigator.clipboard.writeText("");
         })
-        .catch(() => {})
-    }, 60_000)
-    setGeneratedNsecCopied(true)
-    window.setTimeout(() => setGeneratedNsecCopied(false), 2_000)
-  }
+        .catch(() => {});
+    }, 60_000);
+    setGeneratedNsecCopied(true);
+    window.setTimeout(() => setGeneratedNsecCopied(false), 2_000);
+  };
 
-  const [notificationPermission, setNotificationPermission] = useState(
-    getNotificationPermission(),
-  )
+  const [notificationPermission, setNotificationPermission] = useState(getNotificationPermission());
 
   const handleToggleLikedMarketCloseNotifications = async () => {
-    const next = !general.likedMarketCloseNotifications
-    await onLikedMarketCloseNotificationsChange?.(next)
+    const next = !general.likedMarketCloseNotifications;
+    await onLikedMarketCloseNotificationsChange?.(next);
     // Permission may have changed as a side-effect of enabling.
-    setNotificationPermission(getNotificationPermission())
-  }
+    setNotificationPermission(getNotificationPermission());
+  };
 
-  const trimmedNsec = nsecValue.trim()
-  const isNcryptsec = trimmedNsec.startsWith('ncryptsec1')
-  const relayError = getRelayUrlValidationError(newRelayUrl)
+  const trimmedNsec = nsecValue.trim();
+  const isNcryptsec = trimmedNsec.startsWith("ncryptsec1");
+  const relayError = getRelayUrlValidationError(newRelayUrl);
 
   const handleNsecSubmit = async () => {
-    if (!trimmedNsec) return
-    if (isNcryptsec && !ncryptsecPassphrase) return
-    setIsConnectingNsec(true)
+    if (!trimmedNsec) return;
+    if (isNcryptsec && !ncryptsecPassphrase) return;
+    setIsConnectingNsec(true);
     try {
       const success = await onNsecSubmit?.(
         trimmedNsec,
         isNcryptsec ? ncryptsecPassphrase : undefined,
-      )
+      );
       if (success) {
-        setNsecValue('')
-        setNcryptsecPassphrase('')
-        setShowNsecInput(false)
+        setNsecValue("");
+        setNcryptsecPassphrase("");
+        setShowNsecInput(false);
       }
     } finally {
-      setIsConnectingNsec(false)
+      setIsConnectingNsec(false);
     }
-  }
+  };
 
   const handleNip07Connect = async () => {
     if (!isNip07Available()) {
       useToastStore.getState().addToast({
-        type: 'error',
-        message: 'You need to install a Nostr extension like Alby. Visit https://getalby.com',
-      })
-      return
+        type: "error",
+        message: "You need to install a Nostr extension like Alby. Visit https://getalby.com",
+      });
+      return;
     }
-    setIsConnectingNip07(true)
+    setIsConnectingNip07(true);
     try {
-      const success = await onSignerModeChange?.('nip07')
+      const success = await onSignerModeChange?.("nip07");
       if (success) {
         useToastStore.getState().addToast({
-          type: 'success',
-          message: 'Connected via NIP-07 extension',
-        })
+          type: "success",
+          message: "Connected via NIP-07 extension",
+        });
       }
     } finally {
-      setIsConnectingNip07(false)
+      setIsConnectingNip07(false);
     }
-  }
+  };
 
   const handleAddRelay = () => {
-    const trimmed = newRelayUrl.trim()
-    if (!trimmed || relayError) return
-    onAddRelay?.(trimmed)
-    setNewRelayUrl('')
-    setShowAddRelay(false)
-  }
+    const trimmed = newRelayUrl.trim();
+    if (!trimmed || relayError) return;
+    onAddRelay?.(trimmed);
+    setNewRelayUrl("");
+    setShowAddRelay(false);
+  };
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
-      <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
-        Settings
-      </h1>
+      <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">Settings</h1>
 
       {/* ════════════════════════════════════════════════════════════════════ */}
       {/* 1. General Settings                                                */}
@@ -375,9 +366,9 @@ export function Settings({
           </h3>
           <SegmentedControl<ThemeOption>
             options={[
-              { label: 'Light', value: 'light' },
-              { label: 'Dark', value: 'dark' },
-              { label: 'System', value: 'system' },
+              { label: "Light", value: "light" },
+              { label: "Dark", value: "dark" },
+              { label: "System", value: "system" },
             ]}
             value={general.theme}
             onChange={onThemeChange}
@@ -387,42 +378,42 @@ export function Settings({
         {/* Notifications (P22 Link G) */}
         <div>
           <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-            {t('settings.notifications')}
+            {t("settings.notifications")}
           </h3>
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <p className="text-sm font-medium text-slate-900 dark:text-white">
-                {t('settings.likedMarketCloseNotifications')}
+                {t("settings.likedMarketCloseNotifications")}
               </p>
               <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-                {t('settings.likedMarketCloseNotificationsDesc')}
+                {t("settings.likedMarketCloseNotificationsDesc")}
               </p>
-              {notificationPermission === 'denied' && (
+              {notificationPermission === "denied" && (
                 <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                  {t('settings.notificationsBlocked')}
+                  {t("settings.notificationsBlocked")}
                 </p>
               )}
-              {notificationPermission === 'unsupported' && (
+              {notificationPermission === "unsupported" && (
                 <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                  {t('settings.notificationsUnsupported')}
+                  {t("settings.notificationsUnsupported")}
                 </p>
               )}
             </div>
             <button
               role="switch"
               aria-checked={general.likedMarketCloseNotifications}
-              aria-label={t('settings.likedMarketCloseNotifications')}
-              disabled={notificationPermission === 'unsupported'}
+              aria-label={t("settings.likedMarketCloseNotifications")}
+              disabled={notificationPermission === "unsupported"}
               onClick={handleToggleLikedMarketCloseNotifications}
               className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                 general.likedMarketCloseNotifications
-                  ? 'bg-blue-600'
-                  : 'bg-slate-300 dark:bg-slate-600'
+                  ? "bg-blue-600"
+                  : "bg-slate-300 dark:bg-slate-600"
               }`}
             >
               <span
                 className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  general.likedMarketCloseNotifications ? 'translate-x-6' : 'translate-x-1'
+                  general.likedMarketCloseNotifications ? "translate-x-6" : "translate-x-1"
                 }`}
               />
             </button>
@@ -443,9 +434,9 @@ export function Settings({
             </div>
             <div className="border-t border-slate-100 dark:border-slate-700" />
             {[
-              { label: 'Source Code', href: 'https://github.com/joemphilips/bitCaster' },
-              { label: 'Documentation', href: 'https://bitcasterdoc.com' },
-              { label: 'Support', href: 'https://github.com/joemphilips/bitCaster/issues' },
+              { label: "Source Code", href: "https://github.com/joemphilips/bitCaster" },
+              { label: "Documentation", href: "https://bitcasterdoc.com" },
+              { label: "Support", href: "https://github.com/joemphilips/bitCaster/issues" },
             ].map((link) => (
               <a
                 key={link.label}
@@ -494,7 +485,9 @@ export function Settings({
                       src={mint.iconUrl}
                       alt=""
                       className="h-full w-full object-cover"
-                      onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                      }}
                     />
                   ) : (
                     <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
@@ -507,12 +500,14 @@ export function Settings({
                     <span className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                       {mint.name ?? safeHostname(mint.url)}
                     </span>
-                    <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                      mint.supportsCTF
-                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
-                        : 'bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300'
-                    }`}>
-                      {mint.supportsCTF ? 'CTF supported' : 'Ecash only'}
+                    <span
+                      className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                        mint.supportsCTF
+                          ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                          : "bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300"
+                      }`}
+                    >
+                      {mint.supportsCTF ? "CTF supported" : "Ecash only"}
                     </span>
                   </div>
                   <div className="font-mono text-xs text-slate-500 dark:text-slate-400 truncate">
@@ -526,7 +521,10 @@ export function Settings({
                 )}
                 {!mint.isDefault && (
                   <button
-                    onClick={(e) => { e.stopPropagation(); onRemoveMint?.(mint.url) }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRemoveMint?.(mint.url);
+                    }}
                     className="shrink-0 p-1.5 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                     title="Remove mint"
                   >
@@ -540,8 +538,8 @@ export function Settings({
           <div className="mt-3">
             <AddMintForm
               onAddMint={async (url) => {
-                if (!onAddMint) return
-                await onAddMint(url)
+                if (!onAddMint) return;
+                await onAddMint(url);
               }}
               triggerLabel="Add Mint"
             />
@@ -556,7 +554,7 @@ export function Settings({
           <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
             Back up your wallet seed phrase. Anyone with this phrase can access your funds.
           </p>
-          {walletBackupState === 'needs_backup' && (
+          {walletBackupState === "needs_backup" && (
             <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-300">
               <AlertTriangle className="h-4 w-4 shrink-0" />
               Save this phrase before relying on this browser.
@@ -583,7 +581,7 @@ export function Settings({
         onToggle={onCategoryToggle}
       >
         {/* Nostr Connection — only show connect buttons if not already connected */}
-        {nostr.signerMode === 'none' && (
+        {nostr.signerMode === "none" && (
           <div>
             <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
               Connect to Nostr
@@ -621,7 +619,9 @@ export function Settings({
             <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50">
               <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
               <p className="text-sm text-amber-800 dark:text-amber-300">
-                <span className="font-semibold">WARNING:</span> Pasting nsec is dangerous. This is necessary for now if you want to become an oracle. It is left for future improvement to make this not mandatory.
+                <span className="font-semibold">WARNING:</span> Pasting nsec is dangerous. This is
+                necessary for now if you want to become an oracle. It is left for future improvement
+                to make this not mandatory.
               </p>
             </div>
             <div>
@@ -630,14 +630,14 @@ export function Settings({
               </h3>
               <div className="relative">
                 <input
-                  type={showNsec ? 'text' : 'password'}
+                  type={showNsec ? "text" : "password"}
                   value={nsecValue}
                   onChange={(e) => {
-                    const v = e.target.value
-                    setNsecValue(v)
-                    if (!v.trim().startsWith('ncryptsec1')) setNcryptsecPassphrase('')
+                    const v = e.target.value;
+                    setNsecValue(v);
+                    if (!v.trim().startsWith("ncryptsec1")) setNcryptsecPassphrase("");
                   }}
-                  onKeyDown={(e) => e.key === 'Enter' && handleNsecSubmit()}
+                  onKeyDown={(e) => e.key === "Enter" && handleNsecSubmit()}
                   placeholder="nsec1... or ncryptsec1..."
                   autoComplete="off"
                   spellCheck={false}
@@ -660,7 +660,7 @@ export function Settings({
                     type="password"
                     value={ncryptsecPassphrase}
                     onChange={(e) => setNcryptsecPassphrase(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleNsecSubmit()}
+                    onKeyDown={(e) => e.key === "Enter" && handleNsecSubmit()}
                     placeholder="Decrypt passphrase (NIP-49)"
                     autoComplete="off"
                     spellCheck={false}
@@ -674,29 +674,33 @@ export function Settings({
                 className="mt-3 w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {isConnectingNsec && <Loader2 className="w-4 h-4 animate-spin" />}
-                {isNcryptsec ? 'Decrypt & Connect' : 'Connect'}
+                {isNcryptsec ? "Decrypt & Connect" : "Connect"}
               </button>
             </div>
           </div>
         )}
 
         {/* Profile Preview */}
-        {nostr.signerMode !== 'none' && (
+        {nostr.signerMode !== "none" && (
           <div>
             <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3">
               Profile
             </h3>
-            {nostr.profileFetchStatus === 'fetching' && !nostr.profile && (
+            {nostr.profileFetchStatus === "fetching" && !nostr.profile && (
               <div className="flex items-center gap-2 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
                 <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
-                <span className="text-sm text-slate-500 dark:text-slate-400">Fetching profile...</span>
+                <span className="text-sm text-slate-500 dark:text-slate-400">
+                  Fetching profile...
+                </span>
               </div>
             )}
-            {nostr.profileFetchStatus === 'not-found' && (
+            {nostr.profileFetchStatus === "not-found" && (
               <div className="flex items-center justify-between gap-2 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
                 <div className="flex items-center gap-2 min-w-0">
                   <UserCircle className="w-5 h-5 text-slate-400 shrink-0" />
-                  <span className="text-sm text-slate-500 dark:text-slate-400 truncate">Profile not found on connected relays</span>
+                  <span className="text-sm text-slate-500 dark:text-slate-400 truncate">
+                    Profile not found on connected relays
+                  </span>
                 </div>
                 <button
                   onClick={handleRetryProfile}
@@ -720,7 +724,7 @@ export function Settings({
                     <span className="font-semibold text-slate-900 dark:text-white">
                       {nostr.profile.displayName}
                     </span>
-                    {nostr.profileFetchStatus === 'fetching' && (
+                    {nostr.profileFetchStatus === "fetching" && (
                       <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
                     )}
                     {nostr.profile.nip05verified && (
@@ -741,7 +745,7 @@ export function Settings({
               </div>
             )}
             <div className="mt-3 flex items-center gap-3">
-              {nostr.signerMode === 'nip07' && (
+              {nostr.signerMode === "nip07" && (
                 <button
                   onClick={handleNip07Connect}
                   disabled={isConnectingNip07}
@@ -771,7 +775,8 @@ export function Settings({
                       Generated Nostr key
                     </h4>
                     <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
-                      Back up this nsec if you want to recover this Nostr identity outside this browser.
+                      Back up this nsec if you want to recover this Nostr identity outside this
+                      browser.
                     </p>
                     <button
                       onClick={() => setShowGeneratedNsecConfirm(true)}
@@ -819,7 +824,7 @@ export function Settings({
                 type="url"
                 value={newRelayUrl}
                 onChange={(e) => setNewRelayUrl(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleAddRelay()}
+                onKeyDown={(e) => e.key === "Enter" && handleAddRelay()}
                 placeholder="ws://localhost:7778"
                 className="flex-1 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 autoFocus
@@ -832,7 +837,10 @@ export function Settings({
                 Add
               </button>
               <button
-                onClick={() => { setShowAddRelay(false); setNewRelayUrl('') }}
+                onClick={() => {
+                  setShowAddRelay(false);
+                  setNewRelayUrl("");
+                }}
                 className="px-3 py-2 rounded-lg text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 text-sm transition-colors"
               >
                 Cancel
@@ -868,9 +876,8 @@ export function Settings({
               </h3>
             </div>
             <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">
-              Your seed phrase is the master key to your wallet. Never share it
-              with anyone. Make sure no one is looking at your screen before
-              proceeding.
+              Your seed phrase is the master key to your wallet. Never share it with anyone. Make
+              sure no one is looking at your screen before proceeding.
             </p>
 
             {!showSeedPhrase ? (
@@ -883,8 +890,8 @@ export function Settings({
                 </button>
                 <button
                   onClick={() => {
-                    setShowSeedPhrase(true)
-                    onViewSeedPhrase?.()
+                    setShowSeedPhrase(true);
+                    onViewSeedPhrase?.();
                   }}
                   className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
                 >
@@ -894,7 +901,7 @@ export function Settings({
             ) : (
               <>
                 <div className="grid grid-cols-3 gap-2 mb-4">
-                  {displaySeedPhrase.split(' ').map((word, i) => (
+                  {displaySeedPhrase.split(" ").map((word, i) => (
                     <div
                       key={i}
                       className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600"
@@ -927,10 +934,10 @@ export function Settings({
                   </button>
                   <button
                     onClick={() => {
-                      setShowSeedConfirm(false)
-                      setShowSeedPhrase(false)
-                      setCopied(false)
-                      onConfirmWalletBackup?.()
+                      setShowSeedConfirm(false);
+                      setShowSeedPhrase(false);
+                      setCopied(false);
+                      onConfirmWalletBackup?.();
                     }}
                     className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
                   >
@@ -956,9 +963,8 @@ export function Settings({
               </h3>
             </div>
             <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">
-              This nsec controls your generated Nostr identity. Never share it
-              with anyone. Make sure no one is looking at your screen before
-              proceeding.
+              This nsec controls your generated Nostr identity. Never share it with anyone. Make
+              sure no one is looking at your screen before proceeding.
             </p>
 
             {!showGeneratedNsecSecret ? (
@@ -971,8 +977,8 @@ export function Settings({
                 </button>
                 <button
                   onClick={() => {
-                    onRevealGeneratedNsec?.()
-                    setShowGeneratedNsecSecret(true)
+                    onRevealGeneratedNsec?.();
+                    setShowGeneratedNsecSecret(true);
                   }}
                   className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
                 >
@@ -986,10 +992,10 @@ export function Settings({
                   <div className="mb-4">
                     <div className="mb-1.5 flex items-center gap-1.5">
                       <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        {t('settings.publicKeyNpubLabel')}
+                        {t("settings.publicKeyNpubLabel")}
                       </span>
                       <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                        {t('settings.npubSafeToShare')}
+                        {t("settings.npubSafeToShare")}
                       </span>
                     </div>
                     <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-700/50">
@@ -1002,7 +1008,7 @@ export function Settings({
                     </div>
                     <button
                       onClick={handleCopyGeneratedNpub}
-                      aria-label={t('settings.copyNpub')}
+                      aria-label={t("settings.copyNpub")}
                       className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-slate-100 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
                     >
                       {generatedNpubCopied ? (
@@ -1013,7 +1019,7 @@ export function Settings({
                       ) : (
                         <>
                           <Copy className="h-4 w-4" />
-                          {t('settings.copyNpub')}
+                          {t("settings.copyNpub")}
                         </>
                       )}
                     </button>
@@ -1023,20 +1029,20 @@ export function Settings({
                 {/* ── Secret key (nsec) — blurred / auto-hidden / clipboard-cleared ── */}
                 <div className="mb-1.5 flex items-center gap-1.5">
                   <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                    {t('settings.secretKeyNsecLabel')}
+                    {t("settings.secretKeyNsecLabel")}
                   </span>
                   <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/30 dark:text-red-400">
-                    {t('settings.nsecKeepPrivate')}
+                    {t("settings.nsecKeepPrivate")}
                   </span>
                 </div>
                 <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-700/50">
                   <div
                     data-testid="generated-nsec-value"
                     className={`break-all font-mono text-sm text-slate-900 transition-[filter] dark:text-white ${
-                      generatedNsecBlurred ? 'blur-sm select-none' : ''
+                      generatedNsecBlurred ? "blur-sm select-none" : ""
                     }`}
                   >
-                    {generatedNsecSecret ?? ''}
+                    {generatedNsecSecret ?? ""}
                   </div>
                   {generatedNsecBlurred && (
                     <button
@@ -1050,7 +1056,7 @@ export function Settings({
                 <div className="flex gap-3">
                   <button
                     onClick={handleCopyGeneratedNsec}
-                    aria-label={t('settings.copyNsec')}
+                    aria-label={t("settings.copyNsec")}
                     className="flex items-center justify-center gap-2 flex-1 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors"
                   >
                     {generatedNsecCopied ? (
@@ -1061,18 +1067,18 @@ export function Settings({
                     ) : (
                       <>
                         <Copy className="w-4 h-4" />
-                        {t('settings.copyNsec')}
+                        {t("settings.copyNsec")}
                       </>
                     )}
                   </button>
                   <button
                     onClick={() => {
-                      setShowGeneratedNsecConfirm(false)
-                      setShowGeneratedNsecSecret(false)
-                      setGeneratedNsecBlurred(false)
-                      setGeneratedNsecCopied(false)
-                      setGeneratedNpubCopied(false)
-                      onConfirmSignerBackup?.()
+                      setShowGeneratedNsecConfirm(false);
+                      setShowGeneratedNsecSecret(false);
+                      setGeneratedNsecBlurred(false);
+                      setGeneratedNsecCopied(false);
+                      setGeneratedNpubCopied(false);
+                      onConfirmSignerBackup?.();
                     }}
                     className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
                   >
@@ -1085,5 +1091,5 @@ export function Settings({
         </div>
       )}
     </div>
-  )
+  );
 }

@@ -21,12 +21,7 @@ import {
 } from "nostr-tools/pure";
 import type { UnsignedEvent, EventTemplate } from "nostr-tools/core";
 import { bytesToHex, hexToBytes } from "nostr-tools/utils";
-import {
-  NDKPrivateKeySigner,
-  NDKEvent,
-  NDKRelayStatus,
-  type NDKFilter,
-} from "@nostr-dev-kit/ndk";
+import { NDKPrivateKeySigner, NDKEvent, NDKRelayStatus, type NDKFilter } from "@nostr-dev-kit/ndk";
 import { createExplicitRelayNdk, DEFAULT_RELAYS } from "./nostr";
 
 // ---------------------------------------------------------------------------
@@ -58,10 +53,7 @@ export function deriveNostrKeyPair(mnemonic: string): NostrKeyPair {
 /**
  * Encode a public key + relay list as an nprofile bech32 string.
  */
-export function getNostrNprofile(
-  pubkey: string,
-  relays?: string[]
-): string {
+export function getNostrNprofile(pubkey: string, relays?: string[]): string {
   return nip19.nprofileEncode({
     pubkey,
     relays: relays ?? DEFAULT_RELAYS,
@@ -71,9 +63,7 @@ export function getNostrNprofile(
 /**
  * Decode an nprofile bech32 string to pubkey + relays.
  */
-export function decodeNprofile(
-  nprofile: string
-): { pubkey: string; relays: string[] } {
+export function decodeNprofile(nprofile: string): { pubkey: string; relays: string[] } {
   const { data } = nip19.decode(nprofile);
   const profile = data as { pubkey: string; relays?: string[] };
   return {
@@ -100,7 +90,7 @@ export async function sendNip17DM(
   senderPubKey: string,
   recipientPubKey: string,
   message: string,
-  relays?: string[]
+  relays?: string[],
 ): Promise<void> {
   const resolvedRelays = relays ?? DEFAULT_RELAYS;
 
@@ -117,10 +107,7 @@ export async function sendNip17DM(
 
   // 2. Create kind 13 seal — encrypt rumor with sender's key for recipient
   const senderPrivKey = hexToBytes(senderPrivKeyHex);
-  const sealConvKey = nip44.v2.utils.getConversationKey(
-    senderPrivKey,
-    recipientPubKey
-  );
+  const sealConvKey = nip44.v2.utils.getConversationKey(senderPrivKey, recipientPubKey);
   const sealContent = nip44.v2.encrypt(rumorString, sealConvKey);
 
   const sealTemplate: EventTemplate = {
@@ -136,10 +123,7 @@ export async function sendNip17DM(
   const randomPrivKey = generateSecretKey();
   const randomPubKey = getPublicKey(randomPrivKey);
 
-  const wrapConvKey = nip44.v2.utils.getConversationKey(
-    randomPrivKey,
-    recipientPubKey
-  );
+  const wrapConvKey = nip44.v2.utils.getConversationKey(randomPrivKey, recipientPubKey);
   const wrapContent = nip44.v2.encrypt(sealString, wrapConvKey);
 
   const wrapTemplate: EventTemplate = {
@@ -189,7 +173,7 @@ export async function subscribeNip17DMs(
   privateKeyHex: string,
   publicKey: string,
   onMessage: (content: string, senderPubkey: string) => void,
-  relays?: string[]
+  relays?: string[],
 ): Promise<() => void> {
   const resolvedRelays = relays ?? DEFAULT_RELAYS;
   const privKey = hexToBytes(privateKeyHex);
@@ -225,7 +209,9 @@ export async function subscribeNip17DMs(
     };
     checkConnected();
     if (!resolved) {
-      interval = setInterval(() => { checkConnected(); }, 500);
+      interval = setInterval(() => {
+        checkConnected();
+      }, 500);
       timeout = setTimeout(() => {
         if (interval) clearInterval(interval);
         if (!resolved) {
@@ -254,10 +240,7 @@ export async function subscribeNip17DMs(
 
     try {
       // Unwrap: decrypt gift wrap → seal
-      const wrapConvKey = nip44.v2.utils.getConversationKey(
-        privKey,
-        wrapEvent.pubkey
-      );
+      const wrapConvKey = nip44.v2.utils.getConversationKey(privKey, wrapEvent.pubkey);
       const sealString = nip44.v2.decrypt(wrapEvent.content, wrapConvKey);
       const sealEvent = JSON.parse(sealString);
 
@@ -268,10 +251,7 @@ export async function subscribeNip17DMs(
       }
 
       // Unwrap seal: decrypt → rumor
-      const sealConvKey = nip44.v2.utils.getConversationKey(
-        privKey,
-        sealEvent.pubkey
-      );
+      const sealConvKey = nip44.v2.utils.getConversationKey(privKey, sealEvent.pubkey);
       const rumorString = nip44.v2.decrypt(sealEvent.content, sealConvKey);
       const rumor = JSON.parse(rumorString);
 

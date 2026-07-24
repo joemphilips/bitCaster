@@ -1,14 +1,6 @@
 import assert from 'node:assert/strict'
 import { createECDH, createHash } from 'node:crypto'
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -77,22 +69,17 @@ test('fresh bootstrap atomically creates the exact frozen owner-only profile', a
   })
 
   assert.equal((await stat(directory)).mode & 0o777, 0o700)
-  assert.equal(
-    (await stat(join(directory, DAEMON_PROFILE_DATABASE))).mode & 0o777,
-    0o600,
-  )
+  assert.equal((await stat(join(directory, DAEMON_PROFILE_DATABASE))).mode & 0o777, 0o600)
   assert.deepEqual(await readdir(directory), [DAEMON_PROFILE_DATABASE])
 
   const database = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE))
   try {
     assert.equal(
-      (database.prepare('PRAGMA journal_mode').get() as { journal_mode: string })
-        .journal_mode,
+      (database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode,
       'wal',
     )
     assert.equal(
-      (database.prepare('PRAGMA synchronous').get() as { synchronous: number })
-        .synchronous,
+      (database.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous,
       2,
     )
     const state = database
@@ -102,12 +89,15 @@ test('fresh bootstrap atomically creates the exact frozen owner-only profile', a
          FROM custody_scope_state`,
       )
       .get() as Record<string, unknown>
-    assert.deepEqual({ ...state }, {
-      epoch: 0,
-      owner: null,
-      lease: null,
-      highWater: initializedAtMs,
-    })
+    assert.deepEqual(
+      { ...state },
+      {
+        epoch: 0,
+        owner: null,
+        lease: null,
+        highWater: initializedAtMs,
+      },
+    )
     const walletId = deriveDurableCustodyWalletId(Buffer.from(seed, 'hex'))
     assert.equal(
       result.walletScopeId,
@@ -119,12 +109,13 @@ test('fresh bootstrap atomically creates the exact frozen owner-only profile', a
          FROM custody_scopes`,
       )
       .get() as { walletId: string; seedDigest: string }
-    assert.deepEqual({ ...scope }, {
-      walletId,
-      seedDigest: createHash('sha256')
-        .update(Buffer.from(seed, 'hex'))
-        .digest('hex'),
-    })
+    assert.deepEqual(
+      { ...scope },
+      {
+        walletId,
+        seedDigest: createHash('sha256').update(Buffer.from(seed, 'hex')).digest('hex'),
+      },
+    )
     const operationId = deriveDurableCustodyOperationId(result.walletScopeId, {
       retainedOperationKey: 'operation-key',
       binding: { kind: 'wallet', activityId: 'activity-1', stage: 'send' },
@@ -137,18 +128,12 @@ test('fresh bootstrap atomically creates the exact frozen owner-only profile', a
            revision, private_material, created_at_ms)
          VALUES (?, ?, 'exact-request', 'canonical-json', ?, ?, 0, 0, ?)`,
       )
-      .run(
-        artifactId,
-        result.walletScopeId,
-        Buffer.from('{}'),
-        'a'.repeat(64),
-        initializedAtMs,
-      )
+      .run(artifactId, result.walletScopeId, Buffer.from('{}'), 'a'.repeat(64), initializedAtMs)
     assert.equal(
       (
-        database
-          .prepare('SELECT artifact_id AS artifactId FROM custody_artifacts')
-          .get() as { artifactId: string }
+        database.prepare('SELECT artifact_id AS artifactId FROM custody_artifacts').get() as {
+          artifactId: string
+        }
       ).artifactId,
       artifactId,
     )
@@ -171,10 +156,7 @@ test('fresh bootstrap atomically creates the exact frozen owner-only profile', a
 })
 
 test('production schema manifest is pinned and excludes source-only recovery authority', () => {
-  assert.equal(
-    finalProfileSchemaManifestDigest(),
-    FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST,
-  )
+  assert.equal(finalProfileSchemaManifestDigest(), FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST)
   const manifest = getFinalProfileSchemaManifest()
   assert.equal(Object.isFrozen(manifest), true)
   assert.equal(Object.isFrozen(manifest.objects), true)
@@ -228,13 +210,8 @@ test('production schema manifest is pinned and excludes source-only recovery aut
   const operationSql = manifest.objects.find(
     (object) => object.type === 'table' && object.name === 'custody_operations',
   )!.sql!
-  assert.equal(
-    operationSql.match(/DEFERRABLE INITIALLY DEFERRED/g)?.length,
-    4,
-  )
-  const lineage = manifest.tables.find(
-    (table) => table.name === 'custody_proof_lineage',
-  )!
+  assert.equal(operationSql.match(/DEFERRABLE INITIALLY DEFERRED/g)?.length, 4)
+  const lineage = manifest.tables.find((table) => table.name === 'custody_proof_lineage')!
   assert.equal(
     lineage.foreignKeys.some((foreignKey) => foreignKey.table === 'custody_proofs'),
     false,
@@ -243,9 +220,7 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     (table) => table.name === 'custody_successor_admission_proofs',
   )!
   assert.equal(
-    admissionProofs.foreignKeys.some(
-      (foreignKey) => foreignKey.table === 'custody_proofs',
-    ),
+    admissionProofs.foreignKeys.some((foreignKey) => foreignKey.table === 'custody_proofs'),
     true,
   )
   for (const forbidden of [
@@ -388,13 +363,9 @@ test('passphrase encryption fails closed without exposing seed or Nostr secret',
     readBootstrappedProfileSecrets(directory, 'wrong battery'),
     secretError('unlock-failed'),
   )
-  assert.deepEqual(
-    await readFile(join(directory, DAEMON_PROFILE_DATABASE)),
-    bytes,
-  )
+  assert.deepEqual(await readFile(join(directory, DAEMON_PROFILE_DATABASE)), bytes)
   assert.equal(
-    (await readBootstrappedProfileSecrets(directory, 'correct horse'))
-      .nostrPublicKeyHex,
+    (await readBootstrappedProfileSecrets(directory, 'correct horse')).nostrPublicKeyHex,
     result.nostrPublicKeyHex,
   )
 })
@@ -410,17 +381,9 @@ test('target-v1 ephemeral private keys are passphrase protected and binding exac
     marketId: 'condition-yes',
     publicKeyHex: ecdh.getPublicKey('hex', 'compressed'),
   }
-  const protectedBody = protectTargetEphemeralPrivateKey(
-    privateKeyHex,
-    binding,
-    'key passphrase',
-  )
+  const protectedBody = protectTargetEphemeralPrivateKey(privateKeyHex, binding, 'key passphrase')
   assert.equal(
-    unlockTargetEphemeralPrivateKey(
-      protectedBody,
-      binding,
-      'key passphrase',
-    ),
+    unlockTargetEphemeralPrivateKey(protectedBody, binding, 'key passphrase'),
     privateKeyHex,
   )
   assert.throws(
@@ -482,9 +445,7 @@ test('unlock rederives and compares every persisted public and wallet binding', 
       if (tamper === 'public-key') {
         const replacementPublicKey = '55'.repeat(32)
         database
-          .prepare(
-            'UPDATE daemon_profile SET nostr_public_key_hex = ? WHERE singleton = 1',
-          )
+          .prepare('UPDATE daemon_profile SET nostr_public_key_hex = ? WHERE singleton = 1')
           .run(replacementPublicKey)
         database
           .prepare(
@@ -493,9 +454,7 @@ test('unlock rederives and compares every persisted public and wallet binding', 
           )
           .run(replacementPublicKey)
       } else if (tamper === 'seed-digest') {
-        database
-          .prepare('UPDATE custody_scopes SET wallet_seed_digest = ?')
-          .run('66'.repeat(32))
+        database.prepare('UPDATE custody_scopes SET wallet_seed_digest = ?').run('66'.repeat(32))
       } else {
         const otherSeed = Buffer.from('77'.repeat(32), 'hex')
         const otherWalletId = deriveDurableCustodyWalletId(otherSeed)
@@ -510,20 +469,10 @@ test('unlock rederives and compares every persisted public and wallet binding', 
               `UPDATE custody_scopes
                SET scope_id = ?, wallet_id = ?, wallet_seed_digest = ?`,
             )
-            .run(
-              otherScope,
-              otherWalletId,
-              createHash('sha256').update(otherSeed).digest('hex'),
-            )
-          database
-            .prepare('UPDATE custody_scope_state SET scope_id = ?')
-            .run(otherScope)
-          database
-            .prepare('UPDATE daemon_profile SET wallet_scope_id = ?')
-            .run(otherScope)
-          database
-            .prepare('UPDATE daemon_secret_authority SET wallet_scope_id = ?')
-            .run(otherScope)
+            .run(otherScope, otherWalletId, createHash('sha256').update(otherSeed).digest('hex'))
+          database.prepare('UPDATE custody_scope_state SET scope_id = ?').run(otherScope)
+          database.prepare('UPDATE daemon_profile SET wallet_scope_id = ?').run(otherScope)
+          database.prepare('UPDATE daemon_secret_authority SET wallet_scope_id = ?').run(otherScope)
           database.exec('COMMIT')
         } catch (error) {
           database.exec('ROLLBACK')
@@ -542,10 +491,7 @@ test('unlock rederives and compares every persisted public and wallet binding', 
 })
 
 test('reserved final inode rejects pre-open and mid-init pathname replacement', async () => {
-  for (const replacementPhase of [
-    'before-database-open',
-    'during-initialization',
-  ] as const) {
+  for (const replacementPhase of ['before-database-open', 'during-initialization'] as const) {
     const directory = await freshProfileDirectory(`inode-race-${replacementPhase}`)
     const attackerBytes = Buffer.from(`attacker-owned:${replacementPhase}`)
     await assert.rejects(
@@ -554,11 +500,10 @@ test('reserved final inode rejects pre-open and mid-init pathname replacement', 
         injectFault(phase) {
           if (phase === replacementPhase) {
             unlinkSync(join(directory, DAEMON_PROFILE_DATABASE))
-            writeFileSync(
-              join(directory, DAEMON_PROFILE_DATABASE),
-              attackerBytes,
-              { mode: 0o600, flag: 'wx' },
-            )
+            writeFileSync(join(directory, DAEMON_PROFILE_DATABASE), attackerBytes, {
+              mode: 0o600,
+              flag: 'wx',
+            })
           }
         },
       }),
@@ -653,22 +598,12 @@ test('scope fencing tolerates clock rollback and takeover advances epoch', async
     renewCustodyScopeLease(directory, renewed, second.leaseExpiresAtMs - 1),
     leaseError('stale-fence'),
   )
-  const renewedAfterClockRollback = await renewCustodyScopeLease(
-    directory,
-    second,
-    initializedAtMs,
-  )
+  const renewedAfterClockRollback = await renewCustodyScopeLease(directory, second, initializedAtMs)
   assert.equal(renewedAfterClockRollback.fencingEpoch, second.fencingEpoch)
-  assert.equal(
-    renewedAfterClockRollback.leaseExpiresAtMs,
-    second.leaseExpiresAtMs,
-  )
+  assert.equal(renewedAfterClockRollback.leaseExpiresAtMs, second.leaseExpiresAtMs)
 })
 
-async function bootstrap(
-  directory: string,
-  overrides: { readonly passphrase?: string } = {},
-) {
+async function bootstrap(directory: string, overrides: { readonly passphrase?: string } = {}) {
   return bootstrapFreshDaemonProfile({
     ...bootstrapInput(directory),
     ...overrides,
@@ -715,8 +650,7 @@ async function snapshotDirectory(directory: string) {
 }
 
 function schemaError(reason: ProfileSchemaRefusalError['reason']) {
-  return (error: unknown) =>
-    error instanceof ProfileSchemaRefusalError && error.reason === reason
+  return (error: unknown) => error instanceof ProfileSchemaRefusalError && error.reason === reason
 }
 
 function secretError(reason: ProfileSecretProtectionError['reason']) {
@@ -725,14 +659,11 @@ function secretError(reason: ProfileSecretProtectionError['reason']) {
 }
 
 function leaseError(reason: ScopeLeaseRefusalError['reason']) {
-  return (error: unknown) =>
-    error instanceof ScopeLeaseRefusalError && error.reason === reason
+  return (error: unknown) => error instanceof ScopeLeaseRefusalError && error.reason === reason
 }
 
 function missingFile(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    'code' in error &&
-    (error as NodeJS.ErrnoException).code === 'ENOENT'
+    error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT'
   )
 }

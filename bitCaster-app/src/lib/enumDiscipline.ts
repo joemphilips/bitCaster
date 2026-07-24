@@ -24,5 +24,5 @@
  * picking the "wrong" branch.
  */
 export function assertNever(x: never): never {
-  throw new Error(`unhandled enum variant: ${JSON.stringify(x)}`)
+  throw new Error(`unhandled enum variant: ${JSON.stringify(x)}`);
 }

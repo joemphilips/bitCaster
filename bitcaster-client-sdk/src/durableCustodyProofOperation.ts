@@ -74,9 +74,7 @@ export function decodeDurableCustodyProofOperationInput(
   if (!isRecord(value)) throw new Error('custody proof operation is invalid')
   exactKeys(value, ['operationId', 'kind', 'mintUrl', 'inputs', 'outputs', 'metadata'], true)
   requireText(value.operationId, 'operation id')
-  durableCustodyProofOperationSemanticKind(
-    value.kind as DurableCustodyProofOperationKind,
-  )
+  durableCustodyProofOperationSemanticKind(value.kind as DurableCustodyProofOperationKind)
   decodeCanonicalMintOrigin(value.mintUrl)
   if (!Array.isArray(value.inputs) || !isRecord(value.outputs)) {
     throw new Error('custody proof operation artifacts are invalid')
@@ -88,7 +86,17 @@ export function decodeDurableCustodyProofOperationInput(
     if (!isRecord(proof)) throw new Error('custody input proof is invalid')
     exactKeys(
       proof,
-      ['id', 'amount', 'secret', 'C', 'dleq', 'p2pk_e', 'witness', 'conditionId', 'outcomeCollection'],
+      [
+        'id',
+        'amount',
+        'secret',
+        'C',
+        'dleq',
+        'p2pk_e',
+        'witness',
+        'conditionId',
+        'outcomeCollection',
+      ],
       true,
     )
     if (proof.id !== undefined) requireText(proof.id, 'input keyset id')
@@ -108,11 +116,7 @@ export function decodeDurableCustodyProofOperationInput(
     outputCount += outputs.length
     outputs.forEach((output) => {
       if (!isRecord(output)) throw new Error('custody blinded output is invalid')
-      exactKeys(
-        output,
-        ['blindedMessage', 'blindingFactor', 'secret', 'ephemeralE'],
-        true,
-      )
+      exactKeys(output, ['blindedMessage', 'blindingFactor', 'secret', 'ephemeralE'], true)
       if (!isRecord(output.blindedMessage)) {
         throw new Error('custody blinded message is invalid')
       }
@@ -135,10 +139,7 @@ export function decodeDurableCustodyProofOperationInput(
     if (Object.keys(value.metadata).length > 16) {
       throw new Error('custody proof operation metadata field limit exceeded')
     }
-    encodeBoundedDurableArtifact(
-      value.metadata,
-      DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
-    )
+    encodeBoundedDurableArtifact(value.metadata, DURABLE_CUSTODY_ARTIFACT_BYTES_MAX)
   }
   return structuredClone(value) as unknown as DurableCustodyProofOperationInput
 }
@@ -226,15 +227,7 @@ export function durableCustodyProofOperationSemanticKind(
 
 function stageForSemantic(
   kind: DurableCustodySemanticKind,
-):
-  | 'lock'
-  | 'claim'
-  | 'refund'
-  | 'receive'
-  | 'send'
-  | 'ctf-split'
-  | 'ctf-merge'
-  | 'ctf-redeem' {
+): 'lock' | 'claim' | 'refund' | 'receive' | 'send' | 'ctf-split' | 'ctf-merge' | 'ctf-redeem' {
   switch (kind) {
     case 'swap-lock':
       return 'lock'
@@ -326,9 +319,7 @@ function decodeWitness(value: unknown): void {
   ) {
     throw new Error('custody proof witness signatures are invalid')
   }
-  value.signatures.forEach((signature) =>
-    requireText(signature, 'proof witness signature'),
-  )
+  value.signatures.forEach((signature) => requireText(signature, 'proof witness signature'))
 }
 
 function requireText(value: unknown, label: string): asserts value is string {
@@ -352,7 +343,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     typeof value === 'object' &&
     value !== null &&
     !Array.isArray(value) &&
-    (Object.getPrototypeOf(value) === Object.prototype ||
-      Object.getPrototypeOf(value) === null)
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
   )
 }

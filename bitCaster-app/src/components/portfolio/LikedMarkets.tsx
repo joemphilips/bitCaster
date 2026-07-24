@@ -1,11 +1,11 @@
-import { useTranslation } from 'react-i18next'
-import { Heart } from 'lucide-react'
-import { HorizontalPager } from '@/components/common/HorizontalPager'
-import { useLikedMarkets } from '@/hooks/useLikedMarkets'
-import type { Market } from '@/types/market'
+import { useTranslation } from "react-i18next";
+import { Heart } from "lucide-react";
+import { HorizontalPager } from "@/components/common/HorizontalPager";
+import { useLikedMarkets } from "@/hooks/useLikedMarkets";
+import type { Market } from "@/types/market";
 
 interface LikedMarketsProps {
-  onViewMarket?: (marketId: string) => void
+  onViewMarket?: (marketId: string) => void;
 }
 
 /**
@@ -18,8 +18,8 @@ interface LikedMarketsProps {
  * separation, if requested, can split the two without changing this UI.
  */
 export function LikedMarkets({ onViewMarket }: LikedMarketsProps) {
-  const { t } = useTranslation()
-  const { markets, loading, error } = useLikedMarkets()
+  const { t } = useTranslation();
+  const { markets, loading, error } = useLikedMarkets();
 
   return (
     <section
@@ -33,14 +33,12 @@ export function LikedMarkets({ onViewMarket }: LikedMarketsProps) {
           id="liked-markets-heading"
           className="text-sm font-semibold text-slate-900 dark:text-white"
         >
-          {t('portfolio.likedMarkets')}
+          {t("portfolio.likedMarkets")}
         </h3>
       </div>
 
       {loading ? (
-        <p className="py-6 text-sm text-slate-400 dark:text-slate-500">
-          {t('common.loading')}
-        </p>
+        <p className="py-6 text-sm text-slate-400 dark:text-slate-500">{t("common.loading")}</p>
       ) : error ? (
         <p
           className="py-6 text-sm text-red-500 dark:text-red-400"
@@ -53,26 +51,22 @@ export function LikedMarkets({ onViewMarket }: LikedMarketsProps) {
           className="py-6 text-sm text-slate-400 dark:text-slate-500"
           data-testid="liked-markets-empty"
         >
-          {t('portfolio.likedMarketsEmpty')}
+          {t("portfolio.likedMarketsEmpty")}
         </p>
       ) : (
         <HorizontalPager
           className="gap-3 pb-2 -mx-1 px-1 snap-x"
-          ariaLabel={t('portfolio.likedMarkets')}
+          ariaLabel={t("portfolio.likedMarkets")}
           role="list"
           scrollerTestId="liked-markets-scroller"
         >
           {markets.map((m) => (
-            <LikedMarketCard
-              key={m.id}
-              market={m}
-              onClick={() => onViewMarket?.(m.id)}
-            />
+            <LikedMarketCard key={m.id} market={m} onClick={() => onViewMarket?.(m.id)} />
           ))}
         </HorizontalPager>
       )}
     </section>
-  )
+  );
 }
 
 function LikedMarketCard({ market, onClick }: { market: Market; onClick: () => void }) {
@@ -85,12 +79,7 @@ function LikedMarketCard({ market, onClick }: { market: Market; onClick: () => v
     >
       <div className="aspect-video bg-slate-200 dark:bg-slate-700 flex items-center justify-center overflow-hidden">
         {market.imageUrl ? (
-          <img
-            src={market.imageUrl}
-            alt=""
-            className="w-full h-full object-cover"
-            loading="lazy"
-          />
+          <img src={market.imageUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
         ) : (
           <span className="text-2xl text-slate-400 dark:text-slate-500">&#8383;</span>
         )}
@@ -99,12 +88,12 @@ function LikedMarketCard({ market, onClick }: { market: Market; onClick: () => v
         <p className="text-sm font-medium text-slate-900 dark:text-white line-clamp-2">
           {market.title}
         </p>
-        {market.type === 'yesno' && (
+        {market.type === "yesno" && (
           <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
             {market.currentOdds.yes.toFixed(2)}% / {market.currentOdds.no.toFixed(2)}%
           </p>
         )}
       </div>
     </button>
-  )
+  );
 }

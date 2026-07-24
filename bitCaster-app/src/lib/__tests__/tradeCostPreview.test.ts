@@ -211,8 +211,8 @@ describe("computeMarketOrderQuotePreview", () => {
       orderBook: {
         bids: [],
         asks: [
-      { price: 40, amount: 100, total: 100 },
-      { price: 50, amount: 200, total: 300 },
+          { price: 40, amount: 100, total: 100 },
+          { price: 50, amount: 200, total: 300 },
         ],
         spread: 10,
       },

@@ -1,88 +1,88 @@
-import { useState } from 'react'
-import { useSearchParams, useNavigate } from 'react-router'
-import { ArrowLeft, Trash2, ChevronDown, Mail, AtSign, Copy } from 'lucide-react'
-import { useWalletStore } from '@/stores/wallet'
-import { userRemoveMint } from '@/lib/walletOps'
-import { safeHostname } from '@/lib/url'
-import { getMintIconUrl } from '@/lib/mints'
+import { useState } from "react";
+import { useSearchParams, useNavigate } from "react-router";
+import { ArrowLeft, Trash2, ChevronDown, Mail, AtSign, Copy } from "lucide-react";
+import { useWalletStore } from "@/stores/wallet";
+import { userRemoveMint } from "@/lib/walletOps";
+import { safeHostname } from "@/lib/url";
+import { getMintIconUrl } from "@/lib/mints";
 
 /** Human-readable names for well-known NUTs (7+). */
 const NUT_NAMES: Record<string, string> = {
-  '7': 'Token state check',
-  '8': 'Overpaid Lightning fees',
-  '9': 'Signature restore',
-  '10': 'Spending conditions',
-  '11': 'Pay-to-Pubkey (P2PK)',
-  '12': 'DLEQ proofs',
-  '13': 'Deterministic secrets',
-  '14': 'Hashed Timelock Contracts',
-  '15': 'Partial multi-path payments',
-  '16': 'Animated QR codes',
-  '17': 'WebSocket subscriptions',
-  '18': 'Payment requests',
-  '19': 'Cached responses',
-  '20': 'Signature on mint quote',
-  '21': 'Clear authentication',
-  '22': 'Blind authentication',
-  '29': 'Batched minting',
-  'CTF': 'Conditional Tokens',
-  'CTF-split-merge': 'CTF Split/Merge',
-  'CTF-numeric': 'CTF Numeric',
-}
+  "7": "Token state check",
+  "8": "Overpaid Lightning fees",
+  "9": "Signature restore",
+  "10": "Spending conditions",
+  "11": "Pay-to-Pubkey (P2PK)",
+  "12": "DLEQ proofs",
+  "13": "Deterministic secrets",
+  "14": "Hashed Timelock Contracts",
+  "15": "Partial multi-path payments",
+  "16": "Animated QR codes",
+  "17": "WebSocket subscriptions",
+  "18": "Payment requests",
+  "19": "Cached responses",
+  "20": "Signature on mint quote",
+  "21": "Clear authentication",
+  "22": "Blind authentication",
+  "29": "Batched minting",
+  CTF: "Conditional Tokens",
+  "CTF-split-merge": "CTF Split/Merge",
+  "CTF-numeric": "CTF Numeric",
+};
 
 interface ContactEntry {
-  method: string
-  info: string
+  method: string;
+  info: string;
 }
 
 interface SwapMethodLike {
-  method?: string
-  unit?: string
+  method?: string;
+  unit?: string;
 }
 
 export function MintDetailPage() {
-  const [searchParams] = useSearchParams()
-  const navigate = useNavigate()
-  const mintUrl = searchParams.get('mintUrl') ?? ''
-  const [nutsExpanded, setNutsExpanded] = useState(false)
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const mintUrl = searchParams.get("mintUrl") ?? "";
+  const [nutsExpanded, setNutsExpanded] = useState(false);
 
-  const storedMint = useWalletStore((s) => s.mints.find((m) => m.url === mintUrl))
-  const mints = useWalletStore((s) => s.mints)
+  const storedMint = useWalletStore((s) => s.mints.find((m) => m.url === mintUrl));
+  const mints = useWalletStore((s) => s.mints);
 
-  const info = storedMint?.info as Record<string, unknown> | undefined
-  const name = (info?.name as string) ?? safeHostname(mintUrl)
-  const description = (info?.description as string) ?? ''
-  const descriptionLong = (info?.description_long as string) ?? ''
-  const motd = (info?.motd as string) ?? ''
-  const version = (info?.version as string) ?? ''
-  const nuts = info?.nuts as Record<string, unknown> | undefined
-  const contact = (info?.contact ?? []) as ContactEntry[]
-  const iconUrl = getMintIconUrl(mintUrl, info)
+  const info = storedMint?.info as Record<string, unknown> | undefined;
+  const name = (info?.name as string) ?? safeHostname(mintUrl);
+  const description = (info?.description as string) ?? "";
+  const descriptionLong = (info?.description_long as string) ?? "";
+  const motd = (info?.motd as string) ?? "";
+  const version = (info?.version as string) ?? "";
+  const nuts = info?.nuts as Record<string, unknown> | undefined;
+  const contact = (info?.contact ?? []) as ContactEntry[];
+  const iconUrl = getMintIconUrl(mintUrl, info);
 
   // Derive supported currencies/units from NUT-4 (mint) and NUT-5 (melt) method lists.
-  const methodUnits = (['4', '5'] as const).flatMap((key) => {
-    const nut = nuts?.[key] as { methods?: SwapMethodLike[] } | undefined
-    return nut?.methods?.map((m) => m.unit).filter((u): u is string => !!u) ?? []
-  })
-  const supportedUnits = Array.from(new Set(methodUnits))
+  const methodUnits = (["4", "5"] as const).flatMap((key) => {
+    const nut = nuts?.[key] as { methods?: SwapMethodLike[] } | undefined;
+    return nut?.methods?.map((m) => m.unit).filter((u): u is string => !!u) ?? [];
+  });
+  const supportedUnits = Array.from(new Set(methodUnits));
 
   const handleRemove = () => {
-    if (mints.length <= 1) return
-    userRemoveMint(mintUrl)
-    navigate('/settings?category=cashu')
-  }
+    if (mints.length <= 1) return;
+    userRemoveMint(mintUrl);
+    navigate("/settings?category=cashu");
+  };
 
-  const isSafeUrl = mintUrl.startsWith('http://') || mintUrl.startsWith('https://')
+  const isSafeUrl = mintUrl.startsWith("http://") || mintUrl.startsWith("https://");
 
   if (!mintUrl || !isSafeUrl) {
     return (
       <div className="max-w-3xl mx-auto px-4 py-6">
         <p className="text-slate-500">No valid mint URL specified.</p>
       </div>
-    )
+    );
   }
 
-  const nutKeys = nuts ? Object.keys(nuts) : []
+  const nutKeys = nuts ? Object.keys(nuts) : [];
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
@@ -94,9 +94,7 @@ export function MintDetailPage() {
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
-          {name}
-        </h1>
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-white">{name}</h1>
       </div>
 
       {/* Mint Info Card */}
@@ -109,7 +107,9 @@ export function MintDetailPage() {
                 src={iconUrl}
                 alt=""
                 className="h-full w-full object-cover"
-                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                }}
               />
             ) : (
               <span className="text-xl font-bold text-slate-700 dark:text-slate-200">
@@ -222,7 +222,7 @@ export function MintDetailPage() {
                 Supported NUTs ({nutKeys.length})
               </h3>
               <ChevronDown
-                className={`w-4 h-4 text-slate-400 transition-transform ${nutsExpanded ? 'rotate-180' : ''}`}
+                className={`w-4 h-4 text-slate-400 transition-transform ${nutsExpanded ? "rotate-180" : ""}`}
               />
             </button>
             {nutsExpanded && (
@@ -257,12 +257,12 @@ export function MintDetailPage() {
         </button>
       )}
     </div>
-  )
+  );
 }
 
 function ContactIcon({ method }: { method: string }) {
-  if (method === 'email') {
-    return <Mail className="w-4 h-4 text-slate-400 shrink-0" />
+  if (method === "email") {
+    return <Mail className="w-4 h-4 text-slate-400 shrink-0" />;
   }
-  return <AtSign className="w-4 h-4 text-slate-400 shrink-0" />
+  return <AtSign className="w-4 h-4 text-slate-400 shrink-0" />;
 }

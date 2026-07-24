@@ -122,20 +122,13 @@ export async function getProofs(
   options: { includeReserved?: boolean } = {},
 ): Promise<StoredProof[]> {
   if (mintUrl) {
-    const rows = await db.proofs
-      .where("mintUrl")
-      .equals(normalizeUrl(mintUrl))
-      .toArray();
+    const rows = await db.proofs.where("mintUrl").equals(normalizeUrl(mintUrl)).toArray();
     const normalized = rows.map(normalizeStoredProof);
-    return options.includeReserved
-      ? normalized
-      : normalized.filter((p) => !p.reservedBy);
+    return options.includeReserved ? normalized : normalized.filter((p) => !p.reservedBy);
   }
   const rows = await db.proofs.toArray();
   const normalized = rows.map(normalizeStoredProof);
-  return options.includeReserved
-    ? normalized
-    : normalized.filter((p) => !p.reservedBy);
+  return options.includeReserved ? normalized : normalized.filter((p) => !p.reservedBy);
 }
 
 /**
@@ -151,9 +144,7 @@ export async function getBaseProofs(
     includeReserved: options.includeReserved,
   });
   const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
-  return proofs.filter(
-    (p) => !isCtfProof(p) && normalizeStoredProofBaseAsset(p) === baseAsset,
-  );
+  return proofs.filter((p) => !isCtfProof(p) && normalizeStoredProofBaseAsset(p) === baseAsset);
 }
 
 /**
@@ -169,9 +160,7 @@ export async function getUnitProofs(
   const proofs = await getProofs(mintUrl, {
     includeReserved: options.includeReserved,
   });
-  return proofs.filter(
-    (p) => !isCtfProof(p) && normalizeStoredProofUnit(p) === unit,
-  );
+  return proofs.filter((p) => !isCtfProof(p) && normalizeStoredProofUnit(p) === unit);
 }
 
 export async function selectAndReserveUnitProofs(
@@ -193,9 +182,7 @@ export async function selectAndReserveUnitProofs(
       .map(normalizeStoredProof)
       .filter(
         (proof) =>
-          !proof.reservedBy &&
-          !isCtfProof(proof) &&
-          normalizeStoredProofUnit(proof) === unit,
+          !proof.reservedBy && !isCtfProof(proof) && normalizeStoredProofUnit(proof) === unit,
       );
 
     const picked: StoredProof[] = [];
@@ -245,9 +232,7 @@ export async function getOutcomeProofs(
     const normalized = indexed
       .map(normalizeStoredProof)
       .filter((proof) => normalizeStoredProofBaseAsset(proof) === baseAsset);
-    return options.includeReserved
-      ? normalized
-      : normalized.filter((proof) => !proof.reservedBy);
+    return options.includeReserved ? normalized : normalized.filter((proof) => !proof.reservedBy);
   }
 
   const proofs = await getProofs(normalizedMintUrl, options);
@@ -257,11 +242,11 @@ export async function getOutcomeProofs(
       outcome_collection?: string;
     };
     const proofConditionId = candidate.conditionId ?? candidate.condition_id;
-    const proofOutcome =
-      candidate.outcomeCollection ?? candidate.outcome_collection;
+    const proofOutcome = candidate.outcomeCollection ?? candidate.outcome_collection;
     return (
-      proofConditionId === conditionId && proofOutcome === outcomeCollection
-      && normalizeStoredProofBaseAsset(p) === baseAsset
+      proofConditionId === conditionId &&
+      proofOutcome === outcomeCollection &&
+      normalizeStoredProofBaseAsset(p) === baseAsset
     );
   });
 }
@@ -289,10 +274,7 @@ export async function getConditionCtfProofs(
     if (!isCtfProof(p)) return false;
     const candidate = p as StoredProof & { condition_id?: string };
     const proofConditionId = candidate.conditionId ?? candidate.condition_id;
-    return (
-      proofConditionId === conditionId &&
-      normalizeStoredProofBaseAsset(p) === baseAsset
-    );
+    return proofConditionId === conditionId && normalizeStoredProofBaseAsset(p) === baseAsset;
   });
 }
 
@@ -338,10 +320,7 @@ export async function replaceProofs(
   });
 }
 
-export async function reserveProofs(
-  secrets: string[],
-  reservedBy: string,
-): Promise<void> {
+export async function reserveProofs(secrets: string[], reservedBy: string): Promise<void> {
   const secretSet = new Set(secrets);
   await db.transaction("rw", db.proofs, async () => {
     const rows = await db.proofs.bulkGet(secrets);
@@ -353,23 +332,15 @@ export async function reserveProofs(
   });
 }
 
-export async function releaseProofReservation(
-  reservedBy: string,
-): Promise<void> {
-  const rows = await db.proofs
-    .filter((proof) => proof.reservedBy === reservedBy)
-    .toArray();
+export async function releaseProofReservation(reservedBy: string): Promise<void> {
+  const rows = await db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
   if (rows.length === 0) return;
   await db.proofs.bulkPut(
-    rows.map(({ reservedBy: _reservedBy, ...row }) =>
-      normalizeStoredProof(row),
-    ),
+    rows.map(({ reservedBy: _reservedBy, ...row }) => normalizeStoredProof(row)),
   );
 }
 
-export async function releaseProofReservationsBySecret(
-  secrets: string[],
-): Promise<void> {
+export async function releaseProofReservationsBySecret(secrets: string[]): Promise<void> {
   const rows = await db.proofs.bulkGet(secrets);
   const changed = rows
     .filter((row): row is StoredProof => !!row)
@@ -378,12 +349,8 @@ export async function releaseProofReservationsBySecret(
   await db.proofs.bulkPut(changed);
 }
 
-export async function getReservedProofs(
-  reservedBy: string,
-): Promise<StoredProof[]> {
-  const rows = await db.proofs
-    .filter((proof) => proof.reservedBy === reservedBy)
-    .toArray();
+export async function getReservedProofs(reservedBy: string): Promise<StoredProof[]> {
+  const rows = await db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
   return rows.map(normalizeStoredProof);
 }
 
@@ -441,9 +408,7 @@ function validateStoredProofUnitInvariant(proof: StoredProof): StoredProof {
   return proof;
 }
 
-export async function getProofOperation(
-  operationId: string,
-): Promise<ProofOperationRecord | null> {
+export async function getProofOperation(operationId: string): Promise<ProofOperationRecord | null> {
   return (await db.proofOperations.get(operationId)) ?? null;
 }
 
@@ -464,10 +429,7 @@ export async function getProofOperations(
         if (mintUrl && operation.mintUrl !== mintUrl) return false;
         if (stateSet && !stateSet.has(operation.state)) return false;
         if (kindSet && !kindSet.has(operation.kind)) return false;
-        if (
-          input.operationIdPrefix &&
-          !operation.operationId.startsWith(input.operationIdPrefix)
-        ) {
+        if (input.operationIdPrefix && !operation.operationId.startsWith(input.operationIdPrefix)) {
           return false;
         }
         return true;
@@ -548,9 +510,7 @@ function mintErrorCode(error: unknown): number | undefined {
   return typeof code === "number" ? code : undefined;
 }
 
-async function getRequiredProofOperation(
-  operationId: string,
-): Promise<ProofOperationRecord> {
+async function getRequiredProofOperation(operationId: string): Promise<ProofOperationRecord> {
   const existing = await getProofOperation(operationId);
   if (!existing) throw new Error(`Missing proof operation ${operationId}`);
   return existing;
@@ -565,8 +525,6 @@ function assertCompatibleProofOperation(
     existing.mintUrl !== normalizeUrl(input.mintUrl) ||
     JSON.stringify(existing.inputs) !== JSON.stringify(input.inputs)
   ) {
-    throw new Error(
-      `Proof operation ${input.operationId} already exists with different inputs`,
-    );
+    throw new Error(`Proof operation ${input.operationId} already exists with different inputs`);
   }
 }

@@ -1,24 +1,16 @@
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import {
-  DAEMON_PROFILE_DATABASE,
-  validateDaemonProfileSchema,
-} from './profileSchema.ts'
+import { DAEMON_PROFILE_DATABASE, validateDaemonProfileSchema } from './profileSchema.ts'
 import { getFinalProfileSchemaManifest } from './profileSchemaManifest.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
 
-export type StateSqliteFaultPhase =
-  | 'transaction-opened'
-  | 'before-commit'
-  | 'after-commit'
+export type StateSqliteFaultPhase = 'transaction-opened' | 'before-commit' | 'after-commit'
 
 export interface StateSqliteTransactionOptions {
   readonly injectFault?: (phase: StateSqliteFaultPhase) => void
 }
 
-export async function openDaemonStateSqlite(
-  directory: string,
-): Promise<DatabaseSync> {
+export async function openDaemonStateSqlite(directory: string): Promise<DatabaseSync> {
   await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
   const database = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE))
   configureDaemonStateSqlite(database)

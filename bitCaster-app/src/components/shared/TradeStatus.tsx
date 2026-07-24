@@ -10,9 +10,9 @@
  *   failed    → "Swap failed. Tokens will be refunded after locktime." (red)
  */
 
-import React from 'react'
-import { useTranslation } from 'react-i18next'
-import type { TradeLifecycleState } from '@/stores/tradeStore'
+import React from "react";
+import { useTranslation } from "react-i18next";
+import type { TradeLifecycleState } from "@/stores/tradeStore";
 
 // ---------------------------------------------------------------------------
 // Icons (inline SVG to avoid an extra dependency)
@@ -21,27 +21,16 @@ import type { TradeLifecycleState } from '@/stores/tradeStore'
 function SpinnerIcon({ className }: { className?: string }) {
   return (
     <svg
-      className={`animate-spin ${className ?? ''}`}
+      className={`animate-spin ${className ?? ""}`}
       xmlns="http://www.w3.org/2000/svg"
       fill="none"
       viewBox="0 0 24 24"
       aria-hidden
     >
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-      />
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
     </svg>
-  )
+  );
 }
 
 function CheckIcon({ className }: { className?: string }) {
@@ -59,7 +48,7 @@ function CheckIcon({ className }: { className?: string }) {
     >
       <polyline points="20 6 9 17 4 12" />
     </svg>
-  )
+  );
 }
 
 function AlertIcon({ className }: { className?: string }) {
@@ -79,7 +68,7 @@ function AlertIcon({ className }: { className?: string }) {
       <line x1="12" y1="8" x2="12" y2="12" />
       <line x1="12" y1="16" x2="12.01" y2="16" />
     </svg>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -87,34 +76,32 @@ function AlertIcon({ className }: { className?: string }) {
 // ---------------------------------------------------------------------------
 
 function SettlingStepIndicator({ currentStep }: { currentStep?: number }) {
-  const { t } = useTranslation()
-  const step = currentStep ?? 0
+  const { t } = useTranslation();
+  const step = currentStep ?? 0;
   const settlingSteps = [
-    t('trade.settlingStep0'),
-    t('trade.settlingStep1'),
-    t('trade.settlingStep2'),
-  ]
+    t("trade.settlingStep0"),
+    t("trade.settlingStep1"),
+    t("trade.settlingStep2"),
+  ];
   return (
     <ol className="flex gap-2 mt-2 text-xs text-slate-500 dark:text-slate-400">
       {settlingSteps.map((label, i) => (
         <li
           key={label}
           className={`flex items-center gap-1 ${
-            i <= step
-              ? 'text-blue-600 dark:text-blue-400 font-medium'
-              : ''
+            i <= step ? "text-blue-600 dark:text-blue-400 font-medium" : ""
           }`}
         >
           <span
             className={`w-4 h-4 rounded-full border text-[10px] flex items-center justify-center shrink-0 ${
               i < step
-                ? 'border-blue-600 bg-blue-600 dark:border-blue-400 dark:bg-blue-400 text-white'
+                ? "border-blue-600 bg-blue-600 dark:border-blue-400 dark:bg-blue-400 text-white"
                 : i === step
-                ? 'border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400'
-                : 'border-slate-300 dark:border-slate-600'
+                  ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400"
+                  : "border-slate-300 dark:border-slate-600"
             }`}
           >
-            {i < step ? '✓' : i + 1}
+            {i < step ? "✓" : i + 1}
           </span>
           {label}
           {i < settlingSteps.length - 1 && (
@@ -123,7 +110,7 @@ function SettlingStepIndicator({ currentStep }: { currentStep?: number }) {
         </li>
       ))}
     </ol>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -131,14 +118,14 @@ function SettlingStepIndicator({ currentStep }: { currentStep?: number }) {
 // ---------------------------------------------------------------------------
 
 export interface TradeStatusProps {
-  state: TradeLifecycleState
+  state: TradeLifecycleState;
   /** Optional 0-based step index while in 'settling' state. */
-  settlingStep?: number
+  settlingStep?: number;
   /** Optional trade ID for display. */
-  tradeId?: string
+  tradeId?: string;
   /** Optional unix-second refund locktime for partial-lock failures. */
-  refundLocktime?: number
-  className?: string
+  refundLocktime?: number;
+  className?: string;
 }
 
 const STATE_META: Record<
@@ -147,40 +134,40 @@ const STATE_META: Record<
 > = {
   Matched: {
     icon: <SpinnerIcon className="w-5 h-5" />,
-    labelKey: 'trade.preparing',
-    colour: 'text-blue-600 dark:text-blue-400',
+    labelKey: "trade.preparing",
+    colour: "text-blue-600 dark:text-blue-400",
   },
   settling: {
     icon: <SpinnerIcon className="w-5 h-5" />,
-    labelKey: 'trade.exchanging',
-    colour: 'text-blue-600 dark:text-blue-400',
+    labelKey: "trade.exchanging",
+    colour: "text-blue-600 dark:text-blue-400",
   },
   confirmed: {
     icon: <CheckIcon className="w-5 h-5" />,
-    labelKey: 'trade.complete',
-    colour: 'text-emerald-600 dark:text-emerald-400',
+    labelKey: "trade.complete",
+    colour: "text-emerald-600 dark:text-emerald-400",
   },
   retrying: {
     icon: <SpinnerIcon className="w-5 h-5" />,
-    labelKey: 'trade.retrying',
-    colour: 'text-amber-600 dark:text-amber-400',
+    labelKey: "trade.retrying",
+    colour: "text-amber-600 dark:text-amber-400",
   },
   Failed: {
     icon: <AlertIcon className="w-5 h-5" />,
-    labelKey: 'trade.failed',
-    colour: 'text-red-600 dark:text-red-400',
+    labelKey: "trade.failed",
+    colour: "text-red-600 dark:text-red-400",
   },
-}
+};
 
 export function TradeStatus({
   state,
   settlingStep,
   tradeId,
   refundLocktime,
-  className = '',
+  className = "",
 }: TradeStatusProps) {
-  const { t } = useTranslation()
-  const { icon, labelKey, colour } = STATE_META[state]
+  const { t } = useTranslation();
+  const { icon, labelKey, colour } = STATE_META[state];
 
   return (
     <div
@@ -190,7 +177,7 @@ export function TradeStatus({
     >
       {tradeId && (
         <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2 font-mono truncate">
-          {t('trade.tradeId', { id: tradeId })}
+          {t("trade.tradeId", { id: tradeId })}
         </p>
       )}
 
@@ -199,16 +186,14 @@ export function TradeStatus({
         <span>
           {t(labelKey, {
             locktime:
-              typeof refundLocktime === 'number'
+              typeof refundLocktime === "number"
                 ? new Date(refundLocktime * 1000).toLocaleString()
-                : t('trade.locktimeFallback'),
+                : t("trade.locktimeFallback"),
           })}
         </span>
       </div>
 
-      {state === 'settling' && (
-        <SettlingStepIndicator currentStep={settlingStep} />
-      )}
+      {state === "settling" && <SettlingStepIndicator currentStep={settlingStep} />}
     </div>
-  )
+  );
 }

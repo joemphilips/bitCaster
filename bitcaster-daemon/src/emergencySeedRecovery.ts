@@ -21,15 +21,9 @@ import {
   type EmergencySeedRecoveryCursor,
   type EmergencySeedRecoveryLeaseAuthority,
 } from '@bitcaster-market/client-sdk/emergencySeedRecovery'
-import {
-  SeedRecoverySqliteStore,
-  type SeedRecoveryObservedProof,
-} from './seedRecoverySqlite.ts'
+import { SeedRecoverySqliteStore, type SeedRecoveryObservedProof } from './seedRecoverySqlite.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
-import type {
-  WalletSeedRecoveryParams,
-  WalletSeedRecoveryResult,
-} from './protocol.ts'
+import type { WalletSeedRecoveryParams, WalletSeedRecoveryResult } from './protocol.ts'
 import type { CustodyProofSqliteRow } from './durableCustodySqliteStore.ts'
 import {
   deriveDurableCustodyScopeId,
@@ -75,8 +69,7 @@ export async function runExplicitEmergencySeedRecovery(input: {
     }
     const selectableProofIds = batch.proofs
       .filter(
-        ({ mintState }) =>
-          classifyEmergencySeedRecoveryProof(mintState) === 'import-selectable',
+        ({ mintState }) => classifyEmergencySeedRecoveryProof(mintState) === 'import-selectable',
       )
       .map(({ proof }) => proof.proofId)
     const commit = createEmergencySeedRecoveryCoCommit({
@@ -116,11 +109,7 @@ export async function recoverDaemonWalletFromSeed(
   deps: {
     directory: string
     getFence: () => CustodyScopeFence
-    createWallet?: (
-      mintUrl: string,
-      unit: string,
-      seed: Uint8Array,
-    ) => RecoveryWallet
+    createWallet?: (mintUrl: string, unit: string, seed: Uint8Array) => RecoveryWallet
     nowMs?: () => number
     invocationId?: () => string
   },
@@ -138,11 +127,7 @@ export async function recoverDaemonWalletFromSeed(
     seed.fill(0)
     throw new Error('seed recovery wallet seed does not match the active profile')
   }
-  const wallet = (deps.createWallet ?? createRecoveryWallet)(
-    input.mintUrl,
-    input.unit,
-    seed,
-  )
+  const wallet = (deps.createWallet ?? createRecoveryWallet)(input.mintUrl, input.unit, seed)
   seed.fill(0)
   await wallet.loadMint()
   if (!wallet.keyChain.getKeysets().some(({ id }) => id === input.keysetId)) {
@@ -159,38 +144,21 @@ export async function recoverDaemonWalletFromSeed(
   })
   const batches: ExplicitSeedRecoveryBatch[] = []
   while (batches.length < 4 && cursor.state === 'active') {
-    const restored = await wallet.restore(
-      cursor.nextCounter,
-      EMERGENCY_SEED_RECOVERY_BATCH_SIZE,
-      { keysetId: input.keysetId },
-    )
-    if (
-      restored.proofs.length > 0 &&
-      restored.lastCounterWithSignature === undefined
-    ) {
+    const restored = await wallet.restore(cursor.nextCounter, EMERGENCY_SEED_RECOVERY_BATCH_SIZE, {
+      keysetId: input.keysetId,
+    })
+    if (restored.proofs.length > 0 && restored.lastCounterWithSignature === undefined) {
       throw new Error('seed recovery mint omitted its signature cursor')
     }
-    verifyProofsForReceive(
-      restored.proofs,
-      (keysetId) => wallet.getKeyset(keysetId),
-    )
+    verifyProofsForReceive(restored.proofs, (keysetId) => wallet.getKeyset(keysetId))
     const states =
-      restored.proofs.length === 0
-        ? []
-        : await wallet.checkProofsStates(restored.proofs)
+      restored.proofs.length === 0 ? [] : await wallet.checkProofsStates(restored.proofs)
     if (states.length !== restored.proofs.length) {
       throw new Error('seed recovery mint returned mismatched proof states')
     }
     const now = (deps.nowMs ?? Date.now)()
     const proofs = restored.proofs.map((proof, index) =>
-      observedProof(
-        fence.scopeId,
-        input.mintUrl,
-        input.unit,
-        proof,
-        states[index]?.state,
-        now,
-      ),
+      observedProof(fence.scopeId, input.mintUrl, input.unit, proof, states[index]?.state, now),
     )
     const observation = {
       expectedRevision: cursor.revision,
@@ -232,11 +200,7 @@ export async function recoverDaemonWalletFromSeed(
   }
 }
 
-function createRecoveryWallet(
-  mintUrl: string,
-  unit: string,
-  seed: Uint8Array,
-): RecoveryWallet {
+function createRecoveryWallet(mintUrl: string, unit: string, seed: Uint8Array): RecoveryWallet {
   return new CashuWallet(new CashuMint(mintUrl), {
     unit,
     bip39seed: Uint8Array.from(seed),
@@ -267,9 +231,7 @@ function observedProof(
   const proofFingerprint = createHash('sha256').update(proofBody).digest('hex')
   const amount = Number(Amount.from(proof.amount).toBigInt())
   const curve = 'secp256k1' as const
-  const proofY = hashToCurve(
-    new TextEncoder().encode(proof.secret),
-  ).toHex(true)
+  const proofY = hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true)
   const disposition = classifyEmergencySeedRecoveryProof(mintState)
   const row: CustodyProofSqliteRow = {
     proofId: createHash('sha256')
@@ -290,12 +252,7 @@ function observedProof(
     curve,
     signatureVerified: mintState === 'UNSPENT',
     dleqState: 'not-present',
-    nut07State:
-      mintState === 'UNSPENT'
-        ? 'UNSPENT'
-        : mintState === 'SPENT'
-          ? 'SPENT'
-          : 'PENDING',
+    nut07State: mintState === 'UNSPENT' ? 'UNSPENT' : mintState === 'SPENT' ? 'SPENT' : 'PENDING',
     selectability:
       disposition === 'import-selectable'
         ? 'selectable'

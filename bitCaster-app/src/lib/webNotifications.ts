@@ -12,21 +12,21 @@
  * worker for this origin is alive — best-effort, client-only.
  */
 
-export type NotificationPermissionState = 'default' | 'granted' | 'denied' | 'unsupported'
+export type NotificationPermissionState = "default" | "granted" | "denied" | "unsupported";
 
 /** Whether the browser exposes the Notification API at all. */
 export function isWebNotificationSupported(): boolean {
   return (
-    typeof window !== 'undefined' &&
-    'Notification' in window &&
-    typeof window.Notification !== 'undefined'
-  )
+    typeof window !== "undefined" &&
+    "Notification" in window &&
+    typeof window.Notification !== "undefined"
+  );
 }
 
 /** Current permission state, normalised with an `unsupported` sentinel. */
 export function getNotificationPermission(): NotificationPermissionState {
-  if (!isWebNotificationSupported()) return 'unsupported'
-  return Notification.permission
+  if (!isWebNotificationSupported()) return "unsupported";
+  return Notification.permission;
 }
 
 /**
@@ -37,12 +37,12 @@ export function getNotificationPermission(): NotificationPermissionState {
  * callback form.
  */
 export async function requestNotificationPermission(): Promise<NotificationPermissionState> {
-  if (!isWebNotificationSupported()) return 'unsupported'
-  if (Notification.permission !== 'default') return Notification.permission
+  if (!isWebNotificationSupported()) return "unsupported";
+  if (Notification.permission !== "default") return Notification.permission;
   try {
-    return await Notification.requestPermission()
+    return await Notification.requestPermission();
   } catch {
-    return Notification.permission
+    return Notification.permission;
   }
 }
 
@@ -52,17 +52,14 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
  * branch. Construction failures are swallowed — a missing notification must
  * never break the close-reconcile path.
  */
-export function showWebNotification(
-  title: string,
-  options?: NotificationOptions,
-): boolean {
-  if (!isWebNotificationSupported()) return false
-  if (Notification.permission !== 'granted') return false
+export function showWebNotification(title: string, options?: NotificationOptions): boolean {
+  if (!isWebNotificationSupported()) return false;
+  if (Notification.permission !== "granted") return false;
   try {
     // eslint-disable-next-line no-new
-    new Notification(title, options)
-    return true
+    new Notification(title, options);
+    return true;
   } catch {
-    return false
+    return false;
   }
 }

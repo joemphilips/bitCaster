@@ -20,10 +20,7 @@ export type OrderSettlementSupport =
 export class SettlementSupportError extends Error {
   readonly code: SettlementSupportErrorCode
 
-  constructor(
-    code: SettlementSupportErrorCode,
-    message: string,
-  ) {
+  constructor(code: SettlementSupportErrorCode, message: string) {
     super(message)
     this.name = 'SettlementSupportError'
     this.code = code
@@ -34,10 +31,7 @@ export function checkOrderSettlementSupport(params: {
   request: Pick<SdkSubmitOrderRequest, 'side'>
   capabilities?: SettlementSupportCapabilities
 }): OrderSettlementSupport {
-  if (
-    params.request.side === 'Sell' &&
-    params.capabilities?.directCtfSellLocking === false
-  ) {
+  if (params.request.side === 'Sell' && params.capabilities?.directCtfSellLocking === false) {
     return {
       supported: false,
       code: 'unsupported-direct-ctf-sell',

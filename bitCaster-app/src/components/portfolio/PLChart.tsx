@@ -1,43 +1,48 @@
-import type { PLChartData, PLTimeSelector } from '@/types/portfolio'
-import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
+import type { PLChartData, PLTimeSelector } from "@/types/portfolio";
+import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
 
-const TIME_RANGES: PLTimeSelector[] = ['1D', '1W', '1M', 'ALL']
+const TIME_RANGES: PLTimeSelector[] = ["1D", "1W", "1M", "ALL"];
 
 interface PLChartProps {
-  chartData: PLChartData
-  selectedTimeRange: PLTimeSelector
-  totalValueSats?: number
-  onTimeRangeChange?: (range: PLTimeSelector) => void
+  chartData: PLChartData;
+  selectedTimeRange: PLTimeSelector;
+  totalValueSats?: number;
+  onTimeRangeChange?: (range: PLTimeSelector) => void;
 }
 
-export function PLChart({ chartData, selectedTimeRange, totalValueSats, onTimeRangeChange }: PLChartProps) {
-  const data = chartData[selectedTimeRange]
-  const currentPL = data.length > 0 ? data[data.length - 1].cumulativePL : 0
-  const startPL = data.length > 0 ? data[0].cumulativePL : 0
-  const periodChange = currentPL - startPL
-  const isPositive = currentPL >= 0
-  const periodPositive = periodChange >= 0
+export function PLChart({
+  chartData,
+  selectedTimeRange,
+  totalValueSats,
+  onTimeRangeChange,
+}: PLChartProps) {
+  const data = chartData[selectedTimeRange];
+  const currentPL = data.length > 0 ? data[data.length - 1].cumulativePL : 0;
+  const startPL = data.length > 0 ? data[0].cumulativePL : 0;
+  const periodChange = currentPL - startPL;
+  const isPositive = currentPL >= 0;
+  const periodPositive = periodChange >= 0;
 
   // SVG chart generation
-  const values = data.map((d) => d.cumulativePL)
-  const minVal = Math.min(...values, 0)
-  const maxVal = Math.max(...values, 1)
-  const range = maxVal - minVal || 1
+  const values = data.map((d) => d.cumulativePL);
+  const minVal = Math.min(...values, 0);
+  const maxVal = Math.max(...values, 1);
+  const range = maxVal - minVal || 1;
 
-  const width = 100
-  const height = 100
-  const padding = 4
+  const width = 100;
+  const height = 100;
+  const padding = 4;
 
   const points = data.map((d, i) => {
-    const x = padding + ((width - 2 * padding) * i) / (data.length - 1 || 1)
-    const y = height - padding - ((d.cumulativePL - minVal) / range) * (height - 2 * padding)
-    return { x, y }
-  })
+    const x = padding + ((width - 2 * padding) * i) / (data.length - 1 || 1);
+    const y = height - padding - ((d.cumulativePL - minVal) / range) * (height - 2 * padding);
+    return { x, y };
+  });
 
-  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
-  const areaPath = `${linePath} L ${points[points.length - 1]?.x ?? width - padding} ${height} L ${points[0]?.x ?? padding} ${height} Z`
+  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+  const areaPath = `${linePath} L ${points[points.length - 1]?.x ?? width - padding} ${height} L ${points[0]?.x ?? padding} ${height} Z`;
 
-  const lineColor = isPositive ? 'rgb(16, 185, 129)' : 'rgb(239, 68, 68)'
+  const lineColor = isPositive ? "rgb(16, 185, 129)" : "rgb(239, 68, 68)";
 
   return (
     <div>
@@ -45,16 +50,22 @@ export function PLChart({ chartData, selectedTimeRange, totalValueSats, onTimeRa
       <div className="mb-3">
         {totalValueSats != null && totalValueSats > 0 ? (
           <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
-            {formatMarketSubunits(totalValueSats, 'sat')}
+            {formatMarketSubunits(totalValueSats, "sat")}
           </div>
         ) : (
-          <div className={`text-2xl font-bold font-mono ${isPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
-            {isPositive ? '+' : ''}{formatMarketSubunits(currentPL, 'sat')}
+          <div
+            className={`text-2xl font-bold font-mono ${isPositive ? "text-emerald-500" : "text-rose-500"}`}
+          >
+            {isPositive ? "+" : ""}
+            {formatMarketSubunits(currentPL, "sat")}
           </div>
         )}
         {data.length > 0 && (
-          <div className={`text-sm font-mono ${periodPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
-            {periodPositive ? '+' : ''}{formatMarketSubunits(periodChange, 'sat')} this period
+          <div
+            className={`text-sm font-mono ${periodPositive ? "text-emerald-500" : "text-rose-500"}`}
+          >
+            {periodPositive ? "+" : ""}
+            {formatMarketSubunits(periodChange, "sat")} this period
           </div>
         )}
       </div>
@@ -66,7 +77,11 @@ export function PLChart({ chartData, selectedTimeRange, totalValueSats, onTimeRa
             No data
           </div>
         ) : (
-          <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="w-full h-full">
+          <svg
+            viewBox={`0 0 ${width} ${height}`}
+            preserveAspectRatio="none"
+            className="w-full h-full"
+          >
             <defs>
               <linearGradient id="plAreaGradient" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={lineColor} stopOpacity="0.2" />
@@ -74,7 +89,13 @@ export function PLChart({ chartData, selectedTimeRange, totalValueSats, onTimeRa
               </linearGradient>
             </defs>
             <path d={areaPath} fill="url(#plAreaGradient)" />
-            <path d={linePath} fill="none" stroke={lineColor} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+            <path
+              d={linePath}
+              fill="none"
+              stroke={lineColor}
+              strokeWidth="2"
+              vectorEffect="non-scaling-stroke"
+            />
           </svg>
         )}
       </div>
@@ -88,8 +109,8 @@ export function PLChart({ chartData, selectedTimeRange, totalValueSats, onTimeRa
             aria-pressed={selectedTimeRange === range}
             className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
               selectedTimeRange === range
-                ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+                ? "bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm"
+                : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
             }`}
           >
             {range}
@@ -97,5 +118,5 @@ export function PLChart({ chartData, selectedTimeRange, totalValueSats, onTimeRa
         ))}
       </div>
     </div>
-  )
+  );
 }

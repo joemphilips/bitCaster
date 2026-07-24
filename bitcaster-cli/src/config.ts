@@ -52,9 +52,9 @@ function sanitizeConfig(value: unknown): CliConfig {
   if (typeof source.mintUrl === 'string') config.mintUrl = source.mintUrl
   let trustedEngineUrls: string[] = []
   if (Array.isArray(source.trustedEngineUrls)) {
-    trustedEngineUrls = Array.from(new Set(
-      source.trustedEngineUrls.filter((url): url is string => typeof url === 'string'),
-    ))
+    trustedEngineUrls = Array.from(
+      new Set(source.trustedEngineUrls.filter((url): url is string => typeof url === 'string')),
+    )
   }
   return { ...config, trustedEngineUrls }
 }

@@ -12,9 +12,7 @@ export function outcomeLabels(market: SdkMarketForTrading): string[] {
 }
 
 export function canonicalizeOutcomeSet(outcomes: string[]): string {
-  return [...new Set(outcomes.map((outcome) => outcome.trim()).filter(Boolean))]
-    .sort()
-    .join('|')
+  return [...new Set(outcomes.map((outcome) => outcome.trim()).filter(Boolean))].sort().join('|')
 }
 
 export function parseOutcomeSetId(outcomeSetId: string): string[] {
@@ -24,34 +22,21 @@ export function parseOutcomeSetId(outcomeSetId: string): string[] {
     .filter(Boolean)
 }
 
-export function complementOutcomeSetId(
-  universe: string[],
-  selectedOutcomeSetId: string,
-): string {
+export function complementOutcomeSetId(universe: string[], selectedOutcomeSetId: string): string {
   const selected = new Set(parseOutcomeSetId(selectedOutcomeSetId))
-  return canonicalizeOutcomeSet(
-    universe.filter((outcome) => !selected.has(outcome)),
-  )
+  return canonicalizeOutcomeSet(universe.filter((outcome) => !selected.has(outcome)))
 }
 
-export function outcomeSetMarketId(
-  conditionId: string,
-  outcomeSetId: string,
-): string {
+export function outcomeSetMarketId(conditionId: string, outcomeSetId: string): string {
   return `${conditionId}-${outcomeSetId}`
 }
 
 export function outcomeSetIdsForMarketBooks(market: SdkMarketForTrading): string[] {
   const universe = outcomeLabels(market)
-  return universe
-    .map((outcome) => canonicalizeOutcomeSet([outcome]))
-    .filter(Boolean)
+  return universe.map((outcome) => canonicalizeOutcomeSet([outcome])).filter(Boolean)
 }
 
-export function outcomeSetDisplayLabel(
-  universe: readonly string[],
-  outcomeSetId: string,
-): string {
+export function outcomeSetDisplayLabel(universe: readonly string[], outcomeSetId: string): string {
   const members = parseOutcomeSetId(outcomeSetId)
   if (members.length === 0) return outcomeSetId
   if (members.length === 1) return members[0]
@@ -84,15 +69,10 @@ export function resolveOutcomeSets(
         ? 'Complement'
         : 'Outcome'
   const selectedOutcomeSetId =
-    tokenSide === 'Complement'
-      ? complementOutcomeSetId(universe, primitiveSetId)
-      : primitiveSetId
+    tokenSide === 'Complement' ? complementOutcomeSetId(universe, primitiveSetId) : primitiveSetId
   if (!selectedOutcomeSetId) return null
 
-  const complementOutcomeSetIdValue = complementOutcomeSetId(
-    universe,
-    selectedOutcomeSetId,
-  )
+  const complementOutcomeSetIdValue = complementOutcomeSetId(universe, selectedOutcomeSetId)
   if (!complementOutcomeSetIdValue) return null
 
   return {
@@ -113,9 +93,7 @@ function selectedPrimitiveOutcome(
     if (!selectedOutcomeId) return null
     return (
       (market.outcomes ?? []).find(
-        (outcome) =>
-          outcome.id === selectedOutcomeId ||
-          outcome.label === selectedOutcomeId,
+        (outcome) => outcome.id === selectedOutcomeId || outcome.label === selectedOutcomeId,
       )?.label ?? null
     )
   }

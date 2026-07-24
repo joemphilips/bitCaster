@@ -80,11 +80,7 @@ async function unlinkIfIdentityMatches(
   identity: { readonly dev: bigint; readonly ino: bigint },
 ): Promise<void> {
   const current = await readPlainLockIdentity(path)
-  if (
-    current !== null &&
-    current.dev === identity.dev &&
-    current.ino === identity.ino
-  ) {
+  if (current !== null && current.dev === identity.dev && current.ino === identity.ino) {
     await unlink(path)
   }
 }

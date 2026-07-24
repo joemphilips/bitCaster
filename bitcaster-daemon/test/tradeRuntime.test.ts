@@ -52,12 +52,7 @@ test('DaemonTradeRuntime starts once and deduplicates joins', async () => {
   await runtime.start(state)
   await runtime.stop()
 
-  assert.deepEqual(calls, [
-    'start',
-    'joinOrder:cond-YES:resting',
-    'joinTrade:trade-a',
-    'stop',
-  ])
+  assert.deepEqual(calls, ['start', 'joinOrder:cond-YES:resting', 'joinTrade:trade-a', 'stop'])
 })
 
 test('DaemonTradeRuntime retries awaiting trade-created joins until replay succeeds', async () => {
@@ -76,9 +71,7 @@ test('DaemonTradeRuntime retries awaiting trade-created joins until replay succe
     async joinTrade(tradeId) {
       calls.push(`joinTrade:${tradeId}`)
       attempts += 1
-      return attempts < 3
-        ? { success: false, error: 'Trade was not found' }
-        : { success: true }
+      return attempts < 3 ? { success: false, error: 'Trade was not found' } : { success: true }
     },
     async sendSwapMessage(tradeId, messageType, ciphertext) {
       calls.push(`sendSwapMessage:${tradeId}:${messageType}:${ciphertext}`)
@@ -90,12 +83,7 @@ test('DaemonTradeRuntime retries awaiting trade-created joins until replay succe
 
   await runtime.start(state)
 
-  assert.deepEqual(calls, [
-    'start',
-    'joinTrade:trade-a',
-    'joinTrade:trade-a',
-    'joinTrade:trade-a',
-  ])
+  assert.deepEqual(calls, ['start', 'joinTrade:trade-a', 'joinTrade:trade-a', 'joinTrade:trade-a'])
 })
 
 test('DaemonTradeRuntime stops retrying when swap advances and schedules one recovery pass after exhaustion', async () => {

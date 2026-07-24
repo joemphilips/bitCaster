@@ -1,14 +1,6 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  createECDH,
-  randomBytes,
-  scryptSync,
-} from 'node:crypto'
+import { createCipheriv, createDecipheriv, createECDH, randomBytes, scryptSync } from 'node:crypto'
 
-export type SecretProtectionKind =
-  | 'owner-only-plaintext'
-  | 'scrypt-aes-256-gcm'
+export type SecretProtectionKind = 'owner-only-plaintext' | 'scrypt-aes-256-gcm'
 
 export interface ProtectedSecretBody {
   readonly protection: SecretProtectionKind
@@ -53,10 +45,7 @@ export function normalizeInitialProfileSecrets(input: {
   const walletSeedHex = exactPrivateHex(input.walletSeedHex)
   const nostrSecretKeyHex = exactPrivateHex(input.nostrSecretKeyHex)
   const nostrPublicKeyHex = deriveNostrPublicKey(nostrSecretKeyHex)
-  if (
-    input.nostrPublicKeyHex !== undefined &&
-    input.nostrPublicKeyHex !== nostrPublicKeyHex
-  ) {
+  if (input.nostrPublicKeyHex !== undefined && input.nostrPublicKeyHex !== nostrPublicKeyHex) {
     throw new ProfileSecretProtectionError('secret-binding-mismatch')
   }
   return { walletSeedHex, nostrSecretKeyHex, nostrPublicKeyHex }
@@ -100,11 +89,7 @@ export function unlockInitialProfileSecrets(
     throw new ProfileSecretProtectionError('secret-body-invalid')
   }
   if (
-    !isExactRecord(parsed, [
-      'version',
-      'walletSeedHex',
-      'nostrSecretKeyHex',
-    ]) ||
+    !isExactRecord(parsed, ['version', 'walletSeedHex', 'nostrSecretKeyHex']) ||
     parsed.version !== 1 ||
     typeof parsed.walletSeedHex !== 'string' ||
     typeof parsed.nostrSecretKeyHex !== 'string'
@@ -181,11 +166,7 @@ function protectBody(
   }
   const salt = randomBytes(16)
   const iv = randomBytes(12)
-  const cipher = createCipheriv(
-    'aes-256-gcm',
-    scryptSync(passphrase, salt, 32),
-    iv,
-  )
+  const cipher = createCipheriv('aes-256-gcm', scryptSync(passphrase, salt, 32), iv)
   cipher.setAAD(binding)
   const body = Buffer.concat([cipher.update(plaintext), cipher.final()])
   return {
@@ -233,19 +214,13 @@ function unlockBody(
     )
     decipher.setAAD(binding)
     decipher.setAuthTag(protectedBody.authTag)
-    return Buffer.concat([
-      decipher.update(protectedBody.body),
-      decipher.final(),
-    ])
+    return Buffer.concat([decipher.update(protectedBody.body), decipher.final()])
   } catch {
     throw new ProfileSecretProtectionError('unlock-failed')
   }
 }
 
-function profileSecretBinding(
-  walletScopeId: string,
-  nostrPublicKeyHex: string,
-): Uint8Array {
+function profileSecretBinding(walletScopeId: string, nostrPublicKeyHex: string): Uint8Array {
   return Buffer.from(
     `bitcaster-daemon/profile-secrets/v1\0${walletScopeId}\0${nostrPublicKeyHex}`,
     'utf8',
@@ -290,15 +265,13 @@ function deriveNostrPublicKey(privateKeyHex: string): string {
   return ecdh.getPublicKey(undefined, 'compressed').subarray(1).toString('hex')
 }
 
-function isExactRecord(
-  value: unknown,
-  keys: readonly string[],
-): value is Record<string, unknown> {
+function isExactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   return (
     value !== null &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
-    Object.keys(value as Record<string, unknown>).sort().join('\0') ===
-      [...keys].sort().join('\0')
+    Object.keys(value as Record<string, unknown>)
+      .sort()
+      .join('\0') === [...keys].sort().join('\0')
   )
 }

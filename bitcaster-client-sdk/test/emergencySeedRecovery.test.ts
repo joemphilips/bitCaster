@@ -9,10 +9,7 @@ import {
   validateEmergencySeedRecoveryCursor,
   validateEmergencySeedRecoveryCoCommit,
 } from '../src/emergencySeedRecovery.ts'
-import {
-  advanceSeedScan,
-  classifySeedRecoveryMintState,
-} from '../src/seedRecoveryCore.ts'
+import { advanceSeedScan, classifySeedRecoveryMintState } from '../src/seedRecoveryCore.ts'
 
 function cursor() {
   return createEmergencySeedRecoveryCursor({
@@ -108,10 +105,7 @@ test('ordinary seed recovery rejects stale, oversized, and inconsistent cursors'
 test('only NUT-07 unspent proofs become selectable', () => {
   assert.equal(classifyEmergencySeedRecoveryProof('UNSPENT'), 'import-selectable')
   assert.equal(classifyEmergencySeedRecoveryProof('SPENT'), 'ignore-spent')
-  assert.equal(
-    classifyEmergencySeedRecoveryProof('PENDING'),
-    'retain-nonselectable',
-  )
+  assert.equal(classifyEmergencySeedRecoveryProof('PENDING'), 'retain-nonselectable')
   assert.equal(classifyEmergencySeedRecoveryProof('UNKNOWN'), 'fail-closed')
   assert.equal(classifyEmergencySeedRecoveryProof('FOREIGN'), 'fail-closed')
 })

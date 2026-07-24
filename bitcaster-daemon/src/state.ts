@@ -6,20 +6,12 @@ import {
   decideTradeStateChanged,
   isSettlementCompleteMessage,
 } from '@bitcaster-market/client-sdk/tradeFlow'
-import {
-  normalizeMarketBaseAsset,
-} from '@bitcaster-market/client-sdk/marketUnits'
+import { normalizeMarketBaseAsset } from '@bitcaster-market/client-sdk/marketUnits'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
-import type {
-  PartialLockHeldRecord,
-  SwapFailure,
-} from '@bitcaster-market/client-sdk/swapFailure'
+import type { PartialLockHeldRecord, SwapFailure } from '@bitcaster-market/client-sdk/swapFailure'
 import { profileDatabasePath, profileDir } from './profile.ts'
 import { readSecrets } from './secrets.ts'
-import {
-  openDaemonStateSqlite,
-  withDaemonStateSqliteTransaction,
-} from './stateSqlite.ts'
+import { openDaemonStateSqlite, withDaemonStateSqliteTransaction } from './stateSqlite.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
 
 export interface CashuProofRecord {
@@ -188,8 +180,8 @@ export interface LocalSwapRecord {
     | 'settling'
     | 'awaiting-confirmation'
     | 'confirmed'
-      | 'refunded'
-      | 'Failed'
+    | 'refunded'
+    | 'Failed'
   error?: string
   failure?: SwapFailure | PartialLockHeldRecord
   createdAt: string
@@ -305,9 +297,7 @@ export async function writeState(state: DaemonState): Promise<void> {
   })
 }
 
-export async function updateState<T>(
-  update: (state: DaemonState, now: string) => T,
-): Promise<T> {
+export async function updateState<T>(update: (state: DaemonState, now: string) => T): Promise<T> {
   return withStateUpdateLock(async () => {
     return withDaemonStateSqliteTransaction(profileDir(), (database) => {
       const state = readStateFromDatabase(database) ?? emptyDaemonState()
@@ -437,9 +427,7 @@ export async function completeReservedSatSend(input: {
 }): Promise<StoredProofRecord[]> {
   return updateState((state, now) => {
     state.wallet.proofs = state.wallet.proofs.filter(
-      (record) =>
-        record.mintUrl !== input.mintUrl ||
-        record.reservedBy !== input.reservedBy,
+      (record) => record.mintUrl !== input.mintUrl || record.reservedBy !== input.reservedBy,
     )
 
     const existingSecrets = new Set(
@@ -479,9 +467,7 @@ export async function releaseProofReservation(reservedBy: string): Promise<void>
   })
 }
 
-export async function getProofOperation(
-  operationId: string,
-): Promise<ProofOperationRecord | null> {
+export async function getProofOperation(operationId: string): Promise<ProofOperationRecord | null> {
   return (await readState())?.proofOperations[operationId] ?? null
 }
 
@@ -578,9 +564,7 @@ export function summarizeWalletBalance(state: DaemonState): WalletBalance {
     }
   }
 
-  const mintRows = [...byMint.values()].sort((a, b) =>
-    a.mintUrl.localeCompare(b.mintUrl),
-  )
+  const mintRows = [...byMint.values()].sort((a, b) => a.mintUrl.localeCompare(b.mintUrl))
   return {
     totalAvailableSats: mintRows.reduce((sum, row) => sum + row.availableSats, 0),
     totalReservedSats: mintRows.reduce((sum, row) => sum + row.reservedSats, 0),
@@ -665,18 +649,13 @@ export async function recordSubmittedOrder(
   )
 }
 
-function summarizeProofOperation(
-  operation: ProofOperationRecord,
-): ProofOperationSummary {
+function summarizeProofOperation(operation: ProofOperationRecord): ProofOperationSummary {
   return {
     operationId: operation.operationId,
     kind: operation.kind,
     state: operation.state,
     mintUrl: operation.mintUrl,
-    inputAmountSats: operation.inputs.reduce(
-      (sum, proof) => sum + amountToNumber(proof.amount),
-      0,
-    ),
+    inputAmountSats: operation.inputs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0),
     inputCount: operation.inputs.length,
     outputCounts: countRecordArrays(operation.outputs),
     resultProofCounts: countRecordArrays(operation.resultProofs ?? {}),
@@ -687,9 +666,7 @@ function summarizeProofOperation(
 }
 
 function countRecordArrays<T>(record: Record<string, T[]>): Record<string, number> {
-  return Object.fromEntries(
-    Object.entries(record).map(([key, values]) => [key, values.length]),
-  )
+  return Object.fromEntries(Object.entries(record).map(([key, values]) => [key, values.length]))
 }
 
 function upsertOrderFromEngine(
@@ -706,16 +683,9 @@ function upsertOrderFromEngine(
   return updateState((state, now) => {
     const existing = state.orders[orderId]
     const status = readStringProperty(engineStatus, 'status') ?? existing?.status ?? 'unknown'
-    const baseAsset =
-      readStringProperty(engineStatus, 'baseAsset') ?? existing?.baseAsset ?? null
-    const divisibility =
-      readNumberProperty(engineStatus, 'divisibility') ?? existing?.divisibility
-    const tradeIds = [
-      ...new Set([
-        ...(existing?.tradeIds ?? []),
-        ...extractTradeIds(engineStatus),
-      ]),
-    ]
+    const baseAsset = readStringProperty(engineStatus, 'baseAsset') ?? existing?.baseAsset ?? null
+    const divisibility = readNumberProperty(engineStatus, 'divisibility') ?? existing?.divisibility
+    const tradeIds = [...new Set([...(existing?.tradeIds ?? []), ...extractTradeIds(engineStatus)])]
     const nextTokenSide = tokenSide ?? existing?.tokenSide
     const nextSide = side ?? existing?.side
     const nextPriceSubunits = priceSubunits ?? existing?.priceSubunits
@@ -799,9 +769,7 @@ export async function recordTradeCreated(
         (key.tradeId !== undefined && key.tradeId !== payload.tradeId) ||
         key.publicKeyHex !== match.ownEphemeralPubkey)
     ) {
-      throw new Error(
-        `TradeCreated ${payload.tradeId} protocol key binding is invalid`,
-      )
+      throw new Error(`TradeCreated ${payload.tradeId} protocol key binding is invalid`)
     }
 
     const existing = state.swaps[payload.tradeId]
@@ -811,7 +779,9 @@ export async function recordTradeCreated(
         ? payload.divisibility / 100
         : 1
     const expectedDivisibility =
-      order?.divisibility ?? payload.divisibility ?? (order?.amountSubunits != null ? 100 : undefined)
+      order?.divisibility ??
+      payload.divisibility ??
+      (order?.amountSubunits != null ? 100 : undefined)
     const legacyOutcomeAmountScale =
       payload.outcomeFaceAmountSubunits == null &&
       payload.outcomeFaceAmountSats != null &&
@@ -845,8 +815,7 @@ export async function recordTradeCreated(
             }
           : null,
       requireExpectedOrder: true,
-      outcomeFaceAmountSubunits:
-        payload.outcomeFaceAmountSubunits ?? payload.outcomeFaceAmountSats,
+      outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits ?? payload.outcomeFaceAmountSats,
       quotePaymentSubunits: payload.quotePaymentSubunits ?? payload.quotePaymentSats,
     })
     const protocolError = decision.accepted ? null : decision.error
@@ -863,8 +832,7 @@ export async function recordTradeCreated(
       fillAmountSats: payload.fillAmountSats ?? existing?.fillAmountSats,
       fillAmountSubunits:
         payload.fillAmountSubunits ?? payload.fillAmountSats ?? existing?.fillAmountSubunits,
-      outcomeFaceAmountSats:
-        payload.outcomeFaceAmountSats ?? existing?.outcomeFaceAmountSats,
+      outcomeFaceAmountSats: payload.outcomeFaceAmountSats ?? existing?.outcomeFaceAmountSats,
       outcomeFaceAmountSubunits:
         payload.outcomeFaceAmountSubunits ??
         (payload.outcomeFaceAmountSats != null
@@ -992,8 +960,10 @@ function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
   for (const raw of database
     .prepare('SELECT keyset_id, next_counter FROM target_keyset_counters WHERE scope_id = ?')
     .all(scopeId) as Array<Record<string, unknown>>) {
-    state.wallet.keysetCounters[requireText(raw.keyset_id, 'counter keyset')] =
-      requireInteger(raw.next_counter, 'counter value')
+    state.wallet.keysetCounters[requireText(raw.keyset_id, 'counter keyset')] = requireInteger(
+      raw.next_counter,
+      'counter value',
+    )
   }
   for (const raw of database
     .prepare('SELECT * FROM target_proof_operations WHERE scope_id = ?')
@@ -1007,8 +977,9 @@ function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
       kind: requireProofOperationKind(raw.kind),
       state: requireProofOperationState(raw.state),
       mintUrl: requireText(raw.normalized_mint, 'operation mint'),
-      inputs: requireArray(requestRecord.inputs, 'operation inputs')
-        .map((proof) => normalizeCashuProofRecord(proof as CashuProofRecord)),
+      inputs: requireArray(requestRecord.inputs, 'operation inputs').map((proof) =>
+        normalizeCashuProofRecord(proof as CashuProofRecord),
+      ),
       outputs: requireRecord(outputs, 'operation outputs') as Record<string, StoredOutputData[]>,
       metadata: requireRecord(requestRecord.metadata, 'operation metadata'),
       lastError: raw.last_error === null ? null : requireText(raw.last_error, 'operation error'),
@@ -1029,13 +1000,14 @@ function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
     .prepare('SELECT * FROM daemon_orders WHERE scope_id = ?')
     .all(scopeId) as Array<Record<string, unknown>>) {
     const orderId = requireText(raw.order_id, 'order id')
-    const tradeIds = (database
-      .prepare(
-        `SELECT trade_id FROM daemon_order_trades
+    const tradeIds = (
+      database
+        .prepare(
+          `SELECT trade_id FROM daemon_order_trades
          WHERE scope_id = ? AND order_id = ? ORDER BY position`,
-      )
-      .all(scopeId, orderId) as Array<Record<string, unknown>>)
-      .map((row) => requireText(row.trade_id, 'order trade id'))
+        )
+        .all(scopeId, orderId) as Array<Record<string, unknown>>
+    ).map((row) => requireText(row.trade_id, 'order trade id'))
     const preflight =
       raw.preflight_reservation_id === null
         ? undefined
@@ -1051,14 +1023,26 @@ function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
       marketId: requireText(raw.market_id, 'order market'),
       ...(raw.token_side === null ? {} : { tokenSide: requireTokenSide(raw.token_side) }),
       ...(raw.side === null ? {} : { side: requireOrderSide(raw.side) }),
-      ...(raw.price_subunits === null ? {} : { priceSubunits: requireInteger(raw.price_subunits, 'order price') }),
-      ...(raw.amount_subunits === null ? {} : { amountSubunits: requireInteger(raw.amount_subunits, 'order amount') }),
+      ...(raw.price_subunits === null
+        ? {}
+        : { priceSubunits: requireInteger(raw.price_subunits, 'order price') }),
+      ...(raw.amount_subunits === null
+        ? {}
+        : { amountSubunits: requireInteger(raw.amount_subunits, 'order amount') }),
       status: requireText(raw.status, 'order status'),
-      ...(raw.ephemeral_pubkey === null ? {} : { ephemeralPubkey: requireText(raw.ephemeral_pubkey, 'order ephemeral pubkey') }),
-      ...(raw.client_order_id === null ? {} : { clientOrderId: requireText(raw.client_order_id, 'client order id') }),
+      ...(raw.ephemeral_pubkey === null
+        ? {}
+        : { ephemeralPubkey: requireText(raw.ephemeral_pubkey, 'order ephemeral pubkey') }),
+      ...(raw.client_order_id === null
+        ? {}
+        : { clientOrderId: requireText(raw.client_order_id, 'client order id') }),
       ...(preflight === undefined ? {} : { preflightSplit: preflight }),
-      ...(raw.base_asset === null ? {} : { baseAsset: requireText(raw.base_asset, 'order base asset') }),
-      ...(raw.divisibility === null ? {} : { divisibility: requireInteger(raw.divisibility, 'order divisibility') }),
+      ...(raw.base_asset === null
+        ? {}
+        : { baseAsset: requireText(raw.base_asset, 'order base asset') }),
+      ...(raw.divisibility === null
+        ? {}
+        : { divisibility: requireInteger(raw.divisibility, 'order divisibility') }),
       tradeIds,
       ...(raw.engine_status_present === 1
         ? { engineStatus: decodeArtifact(raw.engine_status_body, 'engine status') }
@@ -1105,9 +1089,7 @@ function writeStateToDatabase(database: DatabaseSync, state: DaemonState): void 
   }
   for (const order of Object.values(state.orders)) {
     database
-      .prepare(
-        'DELETE FROM daemon_order_trades WHERE scope_id = ? AND order_id = ?',
-      )
+      .prepare('DELETE FROM daemon_order_trades WHERE scope_id = ? AND order_id = ?')
       .run(scopeId, order.orderId)
     insertOrder(database, scopeId, order)
   }
@@ -1178,14 +1160,8 @@ function insertProofOperation(
     operation.resultProofs === undefined
       ? null
       : putArtifact(database, scopeId, 'exact-result', operation.resultProofs)
-  const inputAmount = operation.inputs.reduce(
-    (sum, proof) => sum + amountToNumber(proof.amount),
-    0,
-  )
-  const timestamps = monotonicTimestamps(
-    operation.createdAt,
-    operation.updatedAt,
-  )
+  const inputAmount = operation.inputs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0)
+  const timestamps = monotonicTimestamps(operation.createdAt, operation.updatedAt)
   database
     .prepare(
       `INSERT INTO target_proof_operations (
@@ -1213,8 +1189,7 @@ function insertProofOperation(
 
 function insertOrder(database: DatabaseSync, scopeId: string, order: LocalOrderRecord): void {
   const preflight = order.preflightSplit
-  const hasEngineStatus =
-    Object.hasOwn(order, 'engineStatus') && order.engineStatus !== undefined
+  const hasEngineStatus = Object.hasOwn(order, 'engineStatus') && order.engineStatus !== undefined
   const timestamps = monotonicTimestamps(
     isoToTimestamp(order.createdAt, 'order created time'),
     isoToTimestamp(order.updatedAt, 'order updated time'),
@@ -1288,13 +1263,43 @@ function insertOrder(database: DatabaseSync, scopeId: string, order: LocalOrderR
 function insertSwap(database: DatabaseSync, scopeId: string, swap: LocalSwapRecord): void {
   const artifacts = {
     adaptor: putOptionalArtifact(database, scopeId, 'relay-ciphertext', swap.messages.adaptorPoint),
-    sellerCipher: putOptionalArtifact(database, scopeId, 'relay-ciphertext', swap.messages.lockedProofsSeller),
-    buyerCipher: putOptionalArtifact(database, scopeId, 'relay-ciphertext', swap.messages.lockedProofsBuyer),
+    sellerCipher: putOptionalArtifact(
+      database,
+      scopeId,
+      'relay-ciphertext',
+      swap.messages.lockedProofsSeller,
+    ),
+    buyerCipher: putOptionalArtifact(
+      database,
+      scopeId,
+      'relay-ciphertext',
+      swap.messages.lockedProofsBuyer,
+    ),
     buyerProofs: putOptionalArtifact(database, scopeId, 'locked-proofs', swap.buyerLockedProofs),
-    adaptorSecret: putOptionalArtifact(database, scopeId, 'adaptor-secret', swap.sellerAdaptorSecretHex),
-    adaptorPoint: putOptionalArtifact(database, scopeId, 'adaptor-point', swap.sellerAdaptorPointHex),
-    buyerPreSigs: putOptionalArtifact(database, scopeId, 'buyer-pre-signatures', swap.buyerPreSigsHex),
-    sellerPreSigs: putOptionalArtifact(database, scopeId, 'seller-pre-signatures', swap.sellerPreSigsHex),
+    adaptorSecret: putOptionalArtifact(
+      database,
+      scopeId,
+      'adaptor-secret',
+      swap.sellerAdaptorSecretHex,
+    ),
+    adaptorPoint: putOptionalArtifact(
+      database,
+      scopeId,
+      'adaptor-point',
+      swap.sellerAdaptorPointHex,
+    ),
+    buyerPreSigs: putOptionalArtifact(
+      database,
+      scopeId,
+      'buyer-pre-signatures',
+      swap.buyerPreSigsHex,
+    ),
+    sellerPreSigs: putOptionalArtifact(
+      database,
+      scopeId,
+      'seller-pre-signatures',
+      swap.sellerPreSigsHex,
+    ),
     failure: putOptionalArtifact(database, scopeId, 'failure', swap.failure),
   }
   const timestamps = monotonicTimestamps(
@@ -1396,42 +1401,99 @@ function decodeSwap(
   raw: Record<string, unknown>,
 ): LocalSwapRecord {
   const optionalArtifact = (column: string): unknown | undefined =>
-    raw[column] === null
-      ? undefined
-      : decodeArtifactById(database, scopeId, raw[column])
+    raw[column] === null ? undefined : decodeArtifactById(database, scopeId, raw[column])
   return {
     tradeId: requireText(raw.trade_id, 'swap trade id'),
     ...(raw.market_id === null ? {} : { marketId: requireText(raw.market_id, 'swap market') }),
     ...(raw.order_id === null ? {} : { orderId: requireText(raw.order_id, 'swap order') }),
     ...(raw.role === null ? {} : { role: requireSwapRole(raw.role) }),
-    ...(raw.counterparty_pubkey === null ? {} : { counterpartyPubkey: requireText(raw.counterparty_pubkey, 'swap counterparty') }),
-    ...(raw.seller_locktime === null ? {} : { sellerLocktime: requireInteger(raw.seller_locktime, 'seller locktime') }),
-    ...(raw.buyer_locktime === null ? {} : { buyerLocktime: requireInteger(raw.buyer_locktime, 'buyer locktime') }),
-    ...(raw.fill_amount_sats === null ? {} : { fillAmountSats: requireInteger(raw.fill_amount_sats, 'fill sats') }),
-    ...(raw.fill_amount_subunits === null ? {} : { fillAmountSubunits: requireInteger(raw.fill_amount_subunits, 'fill subunits') }),
-    ...(raw.outcome_face_amount_sats === null ? {} : { outcomeFaceAmountSats: requireInteger(raw.outcome_face_amount_sats, 'outcome sats') }),
-    ...(raw.outcome_face_amount_subunits === null ? {} : { outcomeFaceAmountSubunits: requireInteger(raw.outcome_face_amount_subunits, 'outcome subunits') }),
-    ...(raw.quote_payment_sats === null ? {} : { quotePaymentSats: requireInteger(raw.quote_payment_sats, 'quote sats') }),
-    ...(raw.quote_payment_subunits === null ? {} : { quotePaymentSubunits: requireInteger(raw.quote_payment_subunits, 'quote subunits') }),
-    ...(raw.base_asset === null ? {} : { baseAsset: requireText(raw.base_asset, 'swap base asset') }),
-    ...(raw.divisibility === null ? {} : { divisibility: requireInteger(raw.divisibility, 'swap divisibility') }),
-    ...(raw.settlement_kind === null ? {} : { settlementKind: requireText(raw.settlement_kind, 'settlement kind') }),
-    ...(raw.seller_keep_outcome_set_id === null ? {} : { sellerKeepOutcomeSetId: requireText(raw.seller_keep_outcome_set_id, 'seller keep set') }),
-    ...(raw.seller_lock_outcome_set_id === null ? {} : { sellerLockOutcomeSetId: requireText(raw.seller_lock_outcome_set_id, 'seller lock set') }),
+    ...(raw.counterparty_pubkey === null
+      ? {}
+      : { counterpartyPubkey: requireText(raw.counterparty_pubkey, 'swap counterparty') }),
+    ...(raw.seller_locktime === null
+      ? {}
+      : { sellerLocktime: requireInteger(raw.seller_locktime, 'seller locktime') }),
+    ...(raw.buyer_locktime === null
+      ? {}
+      : { buyerLocktime: requireInteger(raw.buyer_locktime, 'buyer locktime') }),
+    ...(raw.fill_amount_sats === null
+      ? {}
+      : { fillAmountSats: requireInteger(raw.fill_amount_sats, 'fill sats') }),
+    ...(raw.fill_amount_subunits === null
+      ? {}
+      : { fillAmountSubunits: requireInteger(raw.fill_amount_subunits, 'fill subunits') }),
+    ...(raw.outcome_face_amount_sats === null
+      ? {}
+      : { outcomeFaceAmountSats: requireInteger(raw.outcome_face_amount_sats, 'outcome sats') }),
+    ...(raw.outcome_face_amount_subunits === null
+      ? {}
+      : {
+          outcomeFaceAmountSubunits: requireInteger(
+            raw.outcome_face_amount_subunits,
+            'outcome subunits',
+          ),
+        }),
+    ...(raw.quote_payment_sats === null
+      ? {}
+      : { quotePaymentSats: requireInteger(raw.quote_payment_sats, 'quote sats') }),
+    ...(raw.quote_payment_subunits === null
+      ? {}
+      : { quotePaymentSubunits: requireInteger(raw.quote_payment_subunits, 'quote subunits') }),
+    ...(raw.base_asset === null
+      ? {}
+      : { baseAsset: requireText(raw.base_asset, 'swap base asset') }),
+    ...(raw.divisibility === null
+      ? {}
+      : { divisibility: requireInteger(raw.divisibility, 'swap divisibility') }),
+    ...(raw.settlement_kind === null
+      ? {}
+      : { settlementKind: requireText(raw.settlement_kind, 'settlement kind') }),
+    ...(raw.seller_keep_outcome_set_id === null
+      ? {}
+      : { sellerKeepOutcomeSetId: requireText(raw.seller_keep_outcome_set_id, 'seller keep set') }),
+    ...(raw.seller_lock_outcome_set_id === null
+      ? {}
+      : { sellerLockOutcomeSetId: requireText(raw.seller_lock_outcome_set_id, 'seller lock set') }),
     messages: {
-      ...(raw.adaptor_point_cipher_artifact_id === null ? {} : { adaptorPoint: String(optionalArtifact('adaptor_point_cipher_artifact_id')) }),
-      ...(raw.locked_seller_cipher_artifact_id === null ? {} : { lockedProofsSeller: String(optionalArtifact('locked_seller_cipher_artifact_id')) }),
-      ...(raw.locked_buyer_cipher_artifact_id === null ? {} : { lockedProofsBuyer: String(optionalArtifact('locked_buyer_cipher_artifact_id')) }),
+      ...(raw.adaptor_point_cipher_artifact_id === null
+        ? {}
+        : { adaptorPoint: String(optionalArtifact('adaptor_point_cipher_artifact_id')) }),
+      ...(raw.locked_seller_cipher_artifact_id === null
+        ? {}
+        : { lockedProofsSeller: String(optionalArtifact('locked_seller_cipher_artifact_id')) }),
+      ...(raw.locked_buyer_cipher_artifact_id === null
+        ? {}
+        : { lockedProofsBuyer: String(optionalArtifact('locked_buyer_cipher_artifact_id')) }),
     },
-    ...(raw.seller_adaptor_secret_artifact_id === null ? {} : { sellerAdaptorSecretHex: String(optionalArtifact('seller_adaptor_secret_artifact_id')) }),
-    ...(raw.seller_adaptor_point_artifact_id === null ? {} : { sellerAdaptorPointHex: String(optionalArtifact('seller_adaptor_point_artifact_id')) }),
-    ...(raw.buyer_pre_sigs_artifact_id === null ? {} : { buyerPreSigsHex: optionalArtifact('buyer_pre_sigs_artifact_id') as string[] }),
-    ...(raw.buyer_locked_proofs_artifact_id === null ? {} : { buyerLockedProofs: (optionalArtifact('buyer_locked_proofs_artifact_id') as CashuProofRecord[]).map(normalizeCashuProofRecord) }),
-    ...(raw.seller_pre_sigs_artifact_id === null ? {} : { sellerPreSigsHex: optionalArtifact('seller_pre_sigs_artifact_id') as string[] }),
-    ...(raw.engine_state === null ? {} : { engineState: requireText(raw.engine_state, 'engine state') }),
+    ...(raw.seller_adaptor_secret_artifact_id === null
+      ? {}
+      : { sellerAdaptorSecretHex: String(optionalArtifact('seller_adaptor_secret_artifact_id')) }),
+    ...(raw.seller_adaptor_point_artifact_id === null
+      ? {}
+      : { sellerAdaptorPointHex: String(optionalArtifact('seller_adaptor_point_artifact_id')) }),
+    ...(raw.buyer_pre_sigs_artifact_id === null
+      ? {}
+      : { buyerPreSigsHex: optionalArtifact('buyer_pre_sigs_artifact_id') as string[] }),
+    ...(raw.buyer_locked_proofs_artifact_id === null
+      ? {}
+      : {
+          buyerLockedProofs: (
+            optionalArtifact('buyer_locked_proofs_artifact_id') as CashuProofRecord[]
+          ).map(normalizeCashuProofRecord),
+        }),
+    ...(raw.seller_pre_sigs_artifact_id === null
+      ? {}
+      : { sellerPreSigsHex: optionalArtifact('seller_pre_sigs_artifact_id') as string[] }),
+    ...(raw.engine_state === null
+      ? {}
+      : { engineState: requireText(raw.engine_state, 'engine state') }),
     step: requireSwapStep(raw.step),
     ...(raw.error === null ? {} : { error: requireText(raw.error, 'swap error') }),
-    ...(raw.failure_artifact_id === null ? {} : { failure: optionalArtifact('failure_artifact_id') as SwapFailure | PartialLockHeldRecord }),
+    ...(raw.failure_artifact_id === null
+      ? {}
+      : {
+          failure: optionalArtifact('failure_artifact_id') as SwapFailure | PartialLockHeldRecord,
+        }),
     createdAt: timestampToIso(raw.created_at_ms, 'swap created time'),
     updatedAt: timestampToIso(raw.updated_at_ms, 'swap updated time'),
   }
@@ -1515,11 +1577,7 @@ function putArtifact(
   return artifactId
 }
 
-function decodeArtifactById(
-  database: DatabaseSync,
-  scopeId: string,
-  artifactId: unknown,
-): unknown {
+function decodeArtifactById(database: DatabaseSync, scopeId: string, artifactId: unknown): unknown {
   const id = requireText(artifactId, 'artifact id')
   const row = database
     .prepare(
@@ -1528,8 +1586,10 @@ function decodeArtifactById(
     )
     .get(scopeId, id) as { encoding?: unknown; body?: unknown } | undefined
   if (row === undefined) throw new Error('target state artifact is missing')
-  if (row.encoding === 'utf8') return Buffer.from(requireBytes(row.body, 'artifact body')).toString('utf8')
-  if (row.encoding !== 'canonical-json') throw new Error('target state artifact encoding is invalid')
+  if (row.encoding === 'utf8')
+    return Buffer.from(requireBytes(row.body, 'artifact body')).toString('utf8')
+  if (row.encoding !== 'canonical-json')
+    throw new Error('target state artifact encoding is invalid')
   return decodeArtifact(row.body, 'target state artifact')
 }
 
@@ -1670,9 +1730,7 @@ function deleteUnreferencedMissingOrders(
     const orderId = requireText(row.order_id, 'order id')
     if (retainedOrderIds.has(orderId)) continue
     database
-      .prepare(
-        'DELETE FROM daemon_order_trades WHERE scope_id = ? AND order_id = ?',
-      )
+      .prepare('DELETE FROM daemon_order_trades WHERE scope_id = ? AND order_id = ?')
       .run(scopeId, orderId)
     database
       .prepare(
@@ -1687,14 +1745,7 @@ function deleteUnreferencedMissingOrders(
              WHERE scope_id = ? AND order_id = ?
            )`,
       )
-      .run(
-        scopeId,
-        orderId,
-        scopeId,
-        orderId,
-        scopeId,
-        orderId,
-      )
+      .run(scopeId, orderId, scopeId, orderId, scopeId, orderId)
   }
 }
 
@@ -1702,27 +1753,24 @@ function normalizeState(value: unknown): DaemonState {
   if (!isRecord(value) || value.version !== 1) return emptyDaemonState()
   return {
     version: 1,
-    wallet: isRecord(value.wallet) && Array.isArray(value.wallet.proofs)
-      ? {
-          proofs: (value.wallet.proofs as StoredProofRecord[]).map((record) => ({
-            ...record,
-            proof: normalizeCashuProofRecord(record.proof),
-            asset: normalizeProofAsset(record.asset),
-          })),
-          keysetCounters: isRecord(value.wallet.keysetCounters)
-            ? normalizeCounterMap(value.wallet.keysetCounters)
-            : {},
-        }
-      : { proofs: [], keysetCounters: {} },
+    wallet:
+      isRecord(value.wallet) && Array.isArray(value.wallet.proofs)
+        ? {
+            proofs: (value.wallet.proofs as StoredProofRecord[]).map((record) => ({
+              ...record,
+              proof: normalizeCashuProofRecord(record.proof),
+              asset: normalizeProofAsset(record.asset),
+            })),
+            keysetCounters: isRecord(value.wallet.keysetCounters)
+              ? normalizeCounterMap(value.wallet.keysetCounters)
+              : {},
+          }
+        : { proofs: [], keysetCounters: {} },
     proofOperations: isRecord(value.proofOperations)
       ? normalizeProofOperations(value.proofOperations)
       : {},
-    orders: isRecord(value.orders)
-      ? normalizeOrders(value.orders)
-      : {},
-    swaps: isRecord(value.swaps)
-      ? normalizeSwaps(value.swaps)
-      : {},
+    orders: isRecord(value.orders) ? normalizeOrders(value.orders) : {},
+    swaps: isRecord(value.swaps) ? normalizeSwaps(value.swaps) : {},
   }
 }
 
@@ -1756,9 +1804,7 @@ function normalizeCounterMap(value: Record<string, unknown>): Record<string, num
   return Object.fromEntries(
     Object.entries(value).filter(
       (entry): entry is [string, number] =>
-        typeof entry[1] === 'number' &&
-        Number.isInteger(entry[1]) &&
-        entry[1] >= 0,
+        typeof entry[1] === 'number' && Number.isInteger(entry[1]) && entry[1] >= 0,
     ),
   )
 }
@@ -1781,30 +1827,21 @@ function normalizeProofOperation(
   const kind = raw.kind
   const state = normalizeProofOperationState(raw.state)
   const mintUrl = raw.mintUrl
-  if (
-    !isProofOperationKind(kind) ||
-    !isProofOperationState(state) ||
-    typeof mintUrl !== 'string'
-  ) {
+  if (!isProofOperationKind(kind) || !isProofOperationState(state) || typeof mintUrl !== 'string') {
     return null
   }
   return [
     operationId,
     {
-      operationId:
-        typeof raw.operationId === 'string' ? raw.operationId : operationId,
+      operationId: typeof raw.operationId === 'string' ? raw.operationId : operationId,
       kind,
       state,
       mintUrl,
       inputs: Array.isArray(raw.inputs)
         ? (raw.inputs as CashuProofRecord[]).map(normalizeCashuProofRecord)
         : [],
-      outputs: isRecord(raw.outputs)
-        ? (raw.outputs as Record<string, StoredOutputData[]>)
-        : {},
-      metadata: isRecord(raw.metadata)
-        ? (raw.metadata as Record<string, unknown>)
-        : {},
+      outputs: isRecord(raw.outputs) ? (raw.outputs as Record<string, StoredOutputData[]>) : {},
+      metadata: isRecord(raw.metadata) ? (raw.metadata as Record<string, unknown>) : {},
       resultProofs: isRecord(raw.resultProofs)
         ? normalizeProofRecordGroups(raw.resultProofs as Record<string, CashuProofRecord[]>)
         : undefined,
@@ -1824,9 +1861,7 @@ function assertCompatibleProofOperation(
     existing.mintUrl !== input.mintUrl ||
     JSON.stringify(existing.inputs) !== JSON.stringify(input.inputs)
   ) {
-    throw new Error(
-      `Proof operation ${input.operationId} does not match this swap step`,
-    )
+    throw new Error(`Proof operation ${input.operationId} does not match this swap step`)
   }
 }
 
@@ -1861,9 +1896,7 @@ function normalizeOrders(value: Record<string, unknown>): Record<string, LocalOr
           ...(normalizeTokenSide(order.tokenSide)
             ? { tokenSide: normalizeTokenSide(order.tokenSide) }
             : {}),
-          ...(normalizeOrderSide(order.side)
-            ? { side: normalizeOrderSide(order.side) }
-            : {}),
+          ...(normalizeOrderSide(order.side) ? { side: normalizeOrderSide(order.side) } : {}),
           status: normalizeOrderStatus(order.status),
           tradeIds: order.tradeIds ?? [],
           createdAt: order.createdAt ?? new Date(0).toISOString(),
@@ -1922,10 +1955,7 @@ function normalizeProofRecordGroups(
   groups: Record<string, CashuProofRecord[]>,
 ): Record<string, CashuProofRecord[]> {
   return Object.fromEntries(
-    Object.entries(groups).map(([label, proofs]) => [
-      label,
-      proofs.map(normalizeCashuProofRecord),
-    ]),
+    Object.entries(groups).map(([label, proofs]) => [label, proofs.map(normalizeCashuProofRecord)]),
   )
 }
 
@@ -1953,11 +1983,13 @@ function extractTradeIds(value: unknown): string[] {
     : []
   const pendingTradeIds = Array.isArray(value.pendingPubkeySubmissions)
     ? value.pendingPubkeySubmissions.map((submission) =>
-        isRecord(submission) ? submission.tradeId : undefined)
+        isRecord(submission) ? submission.tradeId : undefined,
+      )
     : []
   const topLevelTradeId = typeof value.tradeId === 'string' && value.tradeId ? [value.tradeId] : []
-  return [...fillTradeIds, ...pendingTradeIds, ...topLevelTradeId]
-    .filter((tradeId): tradeId is string => typeof tradeId === 'string' && tradeId.length > 0)
+  return [...fillTradeIds, ...pendingTradeIds, ...topLevelTradeId].filter(
+    (tradeId): tradeId is string => typeof tradeId === 'string' && tradeId.length > 0,
+  )
 }
 
 function readStringProperty(value: unknown, key: string): string | null {
@@ -2004,9 +2036,7 @@ function toJsonSafe(value: unknown): unknown {
   }
   if (Array.isArray(value)) return value.map(toJsonSafe)
   if (!isRecord(value)) return value
-  return Object.fromEntries(
-    Object.entries(value).map(([key, nested]) => [key, toJsonSafe(nested)]),
-  )
+  return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, toJsonSafe(nested)]))
 }
 
 function isProofOperationState(value: unknown): value is ProofOperationState {
@@ -2062,7 +2092,8 @@ function requireSwapStep(value: unknown): LocalSwapRecord['step'] {
     value === 'confirmed' ||
     value === 'refunded' ||
     value === 'Failed'
-  ) return value
+  )
+    return value
   throw new Error('swap step is invalid')
 }
 
@@ -2155,8 +2186,7 @@ function findOrderForTradeCreated(
   }> = []
   let exactOrderCount = 0
   for (const order of Object.values(state.orders)) {
-    const matchedEphemeralPubkey =
-      ownEphemeralPubkey ?? order.ephemeralPubkey
+    const matchedEphemeralPubkey = ownEphemeralPubkey ?? order.ephemeralPubkey
     if (order.tradeIds.includes(payload.tradeId)) {
       exactOrderCount += 1
       if (!matchedEphemeralPubkey) continue
@@ -2188,20 +2218,14 @@ function findOrderForTradeCreated(
     }
   }
   if (exactOrderCount > 1) {
-    throw new Error(
-      `TradeCreated ${payload.tradeId} matches multiple exact local orders`,
-    )
+    throw new Error(`TradeCreated ${payload.tradeId} matches multiple exact local orders`)
   }
   if (exactOrderCount === 1 && exactMatches.length === 0) {
-    throw new Error(
-      `TradeCreated ${payload.tradeId} exact local order has no protocol key`,
-    )
+    throw new Error(`TradeCreated ${payload.tradeId} exact local order has no protocol key`)
   }
   if (exactMatches.length === 1) return exactMatches[0]
   if (fallbackMatches.length > 1) {
-    throw new Error(
-      `TradeCreated ${payload.tradeId} has ambiguous local order fallback`,
-    )
+    throw new Error(`TradeCreated ${payload.tradeId} has ambiguous local order fallback`)
   }
   return fallbackMatches[0] ?? null
 }
@@ -2211,8 +2235,7 @@ function isOrderEphemeralForTrade(
   payload: DaemonTradeCreatedPayload,
 ): boolean {
   return (
-    orderEphemeralPubkey === payload.sellerPubkey ||
-    orderEphemeralPubkey === payload.buyerPubkey
+    orderEphemeralPubkey === payload.sellerPubkey || orderEphemeralPubkey === payload.buyerPubkey
   )
 }
 

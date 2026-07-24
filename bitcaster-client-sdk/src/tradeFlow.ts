@@ -82,9 +82,7 @@ export type TradeCreatedDecision =
       buyerLocktime: number
     }
 
-export function decideTradeCreated(
-  input: TradeCreatedDecisionInput,
-): TradeCreatedDecision {
+export function decideTradeCreated(input: TradeCreatedDecisionInput): TradeCreatedDecision {
   const sellerLocktime = normalizeLocktime(input.sellerLocktime)
   const buyerLocktime = normalizeLocktime(input.buyerLocktime)
   const role = decideSwapRole({
@@ -101,8 +99,7 @@ export function decideTradeCreated(
       buyerLocktime,
     }
   }
-  const counterpartyPubkey =
-    role === 'seller' ? input.buyerPubkey : input.sellerPubkey
+  const counterpartyPubkey = role === 'seller' ? input.buyerPubkey : input.sellerPubkey
 
   const settlementMetadataError = validateTradeCreatedSettlementAmounts(input, role)
   if (settlementMetadataError) {
@@ -242,7 +239,8 @@ function resolveSettlementUnit(input: TradeCreatedDecisionInput): {
   const expectedBaseAsset = parseExpectedBaseAsset(input.expectedBaseAsset)
   if (expectedBaseAsset.error) return { ...defaultResolvedUnit(), error: expectedBaseAsset.error }
   const expectedDivisibility = parseExpectedDivisibility(input.expectedDivisibility)
-  if (expectedDivisibility.error) return { ...defaultResolvedUnit(), error: expectedDivisibility.error }
+  if (expectedDivisibility.error)
+    return { ...defaultResolvedUnit(), error: expectedDivisibility.error }
 
   return {
     baseAsset: baseAsset.value,
@@ -280,9 +278,10 @@ function parseOptionalBaseAsset(
     : { value: DEFAULT_MARKET_BASE_ASSET, error: `${label} is unsupported.` }
 }
 
-function parseExpectedBaseAsset(
-  value: string | null | undefined,
-): { value: MarketBaseAsset | null; error: string | null } {
+function parseExpectedBaseAsset(value: string | null | undefined): {
+  value: MarketBaseAsset | null
+  error: string | null
+} {
   if (value == null || value.trim() === '') return { value: null, error: null }
   const parsed = parseMarketBaseAsset(value)
   return parsed
@@ -301,9 +300,10 @@ function parseOptionalDivisibility(
     : { value: DEFAULT_SAT_MARKET_DIVISIBILITY, error: `${label} is unsupported.` }
 }
 
-function parseExpectedDivisibility(
-  value: number | null | undefined,
-): { value: number | null; error: string | null } {
+function parseExpectedDivisibility(value: number | null | undefined): {
+  value: number | null
+  error: string | null
+} {
   if (value == null) return { value: null, error: null }
   const parsed = parseMarketDivisibility(value)
   return parsed
@@ -323,9 +323,7 @@ function validateExpectedOrderEconomics(input: {
 }): string | null {
   const order = input.order
   if (!order) {
-    return input.required
-      ? 'Expected order economics are missing for this local trade.'
-      : null
+    return input.required ? 'Expected order economics are missing for this local trade.' : null
   }
   if (!isPositiveInteger(order.priceSubunits) || order.priceSubunits >= input.divisibility) {
     return 'Expected order price is out of range.'
@@ -411,14 +409,12 @@ export interface SwapMessageDecision {
   action: SwapMessageAction
 }
 
-export function decideSwapMessage(
-  input: {
-    role: SwapRole | null | undefined
-    messages: SwapMessages
-    messageType: string
-    ciphertext: string
-  },
-): SwapMessageDecision {
+export function decideSwapMessage(input: {
+  role: SwapRole | null | undefined
+  messages: SwapMessages
+  messageType: string
+  ciphertext: string
+}): SwapMessageDecision {
   const messages = { ...input.messages }
   if (!isSwapCipherMessageType(input.messageType)) {
     return { messages, action: 'none' }
@@ -427,10 +423,7 @@ export function decideSwapMessage(
   const messageKey = messageStoreKey(input.messageType)
   const alreadyHadMessage = Boolean(messages[messageKey])
   cacheSwapCipher(messages, input.messageType, input.ciphertext)
-  if (
-    input.role === 'seller' &&
-    input.messageType === TRADE_MESSAGE_TYPES.lockedProofsBuyer
-  ) {
+  if (input.role === 'seller' && input.messageType === TRADE_MESSAGE_TYPES.lockedProofsBuyer) {
     return { messages, messageKey, action: 'settlement-claim' }
   }
   if (
@@ -471,21 +464,15 @@ export function decideTradeStateChanged(newState: string): TradeStateAction {
   }
 }
 
-export function protocolRejectionReason(
-  error: string,
-): 'invalid-locktime' | 'invalid-protocol' {
+export function protocolRejectionReason(error: string): 'invalid-locktime' | 'invalid-protocol' {
   return error.includes('locktime') ? 'invalid-locktime' : 'invalid-protocol'
 }
 
 function normalizeLocktime(value: string | number): number {
-  return typeof value === 'number'
-    ? value
-    : Math.floor(new Date(value).getTime() / 1000)
+  return typeof value === 'number' ? value : Math.floor(new Date(value).getTime() / 1000)
 }
 
-function messageStoreKey(
-  messageType: SwapCipherMessageType,
-): keyof SwapMessages {
+function messageStoreKey(messageType: SwapCipherMessageType): keyof SwapMessages {
   switch (messageType) {
     case TRADE_MESSAGE_TYPES.adaptorPoint:
       return 'adaptorPoint'
@@ -511,11 +498,7 @@ function isSwapCipherMessageType(value: string): value is SwapCipherMessageType 
   return SWAP_CIPHER_MESSAGE_TYPE_VALUES.has(value)
 }
 
-function cacheSwapCipher(
-  received: SwapMessages,
-  messageType: string,
-  ciphertext: string,
-): void {
+function cacheSwapCipher(received: SwapMessages, messageType: string, ciphertext: string): void {
   if (messageType === TRADE_MESSAGE_TYPES.adaptorPoint) {
     received.adaptorPoint = ciphertext
   } else if (messageType === TRADE_MESSAGE_TYPES.lockedProofsSeller) {

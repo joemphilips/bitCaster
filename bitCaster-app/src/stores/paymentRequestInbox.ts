@@ -1,5 +1,5 @@
-import { create } from 'zustand'
-import type { MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
+import { create } from "zustand";
+import type { MarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 
 /**
  * A received payment keyed by the originating PaymentRequest id.
@@ -9,16 +9,16 @@ import type { MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
  * view is mounted.
  */
 export interface InboxEntry {
-  id: string
-  amountSubunits: number
-  baseAsset: MarketBaseAsset
-  receivedAt: number
+  id: string;
+  amountSubunits: number;
+  baseAsset: MarketBaseAsset;
+  receivedAt: number;
 }
 
 interface InboxState {
-  entries: Record<string, InboxEntry>
-  markReceived: (id: string, amountSubunits: number, baseAsset: MarketBaseAsset) => void
-  clear: (id: string) => void
+  entries: Record<string, InboxEntry>;
+  markReceived: (id: string, amountSubunits: number, baseAsset: MarketBaseAsset) => void;
+  clear: (id: string) => void;
 }
 
 export const usePaymentRequestInbox = create<InboxState>((set) => ({
@@ -32,9 +32,9 @@ export const usePaymentRequestInbox = create<InboxState>((set) => ({
     })),
   clear: (id) =>
     set((s) => {
-      if (!(id in s.entries)) return s
-      const next = { ...s.entries }
-      delete next[id]
-      return { entries: next }
+      if (!(id in s.entries)) return s;
+      const next = { ...s.entries };
+      delete next[id];
+      return { entries: next };
     }),
-}))
+}));

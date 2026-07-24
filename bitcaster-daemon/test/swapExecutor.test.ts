@@ -11,11 +11,7 @@ import {
   type DaemonProfile,
 } from '../src/profile.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
-import {
-  createDaemonSecrets,
-  updateSecrets,
-  type DaemonSecrets,
-} from '../src/secrets.ts'
+import { createDaemonSecrets, updateSecrets, type DaemonSecrets } from '../src/secrets.ts'
 import {
   emptyDaemonState,
   readState,
@@ -221,25 +217,17 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
 
     const persisted = await readState()
     assert.equal(persisted?.swaps['trade-partial-lock'].step, 'Failed')
-    assert.equal(
-      persisted?.swaps['trade-partial-lock'].failure?.kind,
-      'PartialLockHeld',
-    )
-    assert.equal(
-      persisted?.swaps['trade-partial-lock'].failure?.refundLocktime,
-      1_779_393_600,
-    )
-    assert.deepEqual(
-      persisted?.swaps['trade-partial-lock'].failure?.affectedKeysets,
-      ['keyset-100'],
-    )
+    assert.equal(persisted?.swaps['trade-partial-lock'].failure?.kind, 'PartialLockHeld')
+    assert.equal(persisted?.swaps['trade-partial-lock'].failure?.refundLocktime, 1_779_393_600)
+    assert.deepEqual(persisted?.swaps['trade-partial-lock'].failure?.affectedKeysets, [
+      'keyset-100',
+    ])
     assert.equal(
       persisted?.wallet.proofs.some((row) => row.proof.secret === 'secret-100'),
       false,
     )
     assert.equal(
-      persisted?.wallet.proofs.find((row) => row.proof.secret === 'partial-locked')
-        ?.state,
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'partial-locked')?.state,
       'locked',
     )
     assert.deepEqual(sent, [])
@@ -304,20 +292,17 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
       },
     })
 
-    await executor.resumeActiveSwaps(await readState() as DaemonState)
+    await executor.resumeActiveSwaps((await readState()) as DaemonState)
 
     const persisted = await readState()
-    assert.deepEqual(refunded, [
-      'trade-partial-refund:partial-lock-refund:partial-locked',
-    ])
+    assert.deepEqual(refunded, ['trade-partial-refund:partial-lock-refund:partial-locked'])
     assert.equal(persisted?.swaps['trade-partial-refund'].step, 'refunded')
     assert.equal(
       persisted?.wallet.proofs.some((row) => row.proof.secret === 'partial-locked'),
       false,
     )
     assert.equal(
-      persisted?.wallet.proofs.find((row) => row.proof.secret === 'partial-refunded')
-        ?.state,
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'partial-refunded')?.state,
       'available',
     )
   } finally {
@@ -410,7 +395,7 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
       },
     })
 
-    await executor.resumeActiveSwaps(await readState() as DaemonState)
+    await executor.resumeActiveSwaps((await readState()) as DaemonState)
 
     const persisted = await readState()
     assert.equal(persisted?.swaps['trade-partial-multi'].step, 'refunded')
@@ -421,15 +406,9 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
       (row) => row.proof.secret === 'refunded-partial-locked-C',
     )
     assert.equal(refundedB?.asset.kind, 'Outcome')
-    assert.equal(
-      refundedB?.asset.kind === 'Outcome' ? refundedB.asset.outcomeSetId : '',
-      'B',
-    )
+    assert.equal(refundedB?.asset.kind === 'Outcome' ? refundedB.asset.outcomeSetId : '', 'B')
     assert.equal(refundedC?.asset.kind, 'Outcome')
-    assert.equal(
-      refundedC?.asset.kind === 'Outcome' ? refundedC.asset.outcomeSetId : '',
-      'C',
-    )
+    assert.equal(refundedC?.asset.kind === 'Outcome' ? refundedC.asset.outcomeSetId : '', 'C')
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -489,7 +468,7 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
       },
     })
 
-    await executor.resumeActiveSwaps(await readState() as DaemonState)
+    await executor.resumeActiveSwaps((await readState()) as DaemonState)
 
     const persisted = await readState()
     assert.equal(persisted?.swaps['trade-partial-spent'].step, 'refunded')
@@ -555,10 +534,7 @@ test('DaemonSwapExecutor leaves persisted seller open resumable when hub send fa
 
     const persisted = await readState()
     assert.equal(persisted?.swaps['trade-send-fail'].step, 'seller-opened')
-    assert.equal(
-      persisted?.swaps['trade-send-fail'].messages.lockedProofsSeller,
-      'cipher-seller',
-    )
+    assert.equal(persisted?.swaps['trade-send-fail'].messages.lockedProofsSeller, 'cipher-seller')
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -622,10 +598,7 @@ test('DaemonSwapExecutor keeps pending proof operations retryable', async () => 
 
     const persisted = await readState()
     assert.equal(persisted?.swaps['trade-pending'].step, 'opened')
-    assert.match(
-      persisted?.swaps['trade-pending'].error ?? '',
-      /still pending at the mint/,
-    )
+    assert.match(persisted?.swaps['trade-pending'].error ?? '', /still pending at the mint/)
     assert.equal(persisted?.wallet.proofs[0].state, 'available')
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
@@ -716,12 +689,7 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
   process.env.BITCASTER_DAEMON_HOME = home
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
-    const buyerKey = orderKeyFromPrivate(
-      secrets,
-      'order-2',
-      'cond-NO',
-      '33'.repeat(32),
-    )
+    const buyerKey = orderKeyFromPrivate(secrets, 'order-2', 'cond-NO', '33'.repeat(32))
     secrets.orderEphemeralKeys['order-2'] = buyerKey
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
     await bootstrapTestProfile(profile, secrets)
@@ -736,9 +704,7 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
-    state.wallet.proofs.push(
-      proofRecord(profile.mintUrl, 42, 'available', { kind: 'sats' }),
-    )
+    state.wallet.proofs.push(proofRecord(profile.mintUrl, 42, 'available', { kind: 'sats' }))
     await writeState(state)
 
     const sent: string[] = []
@@ -774,9 +740,7 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
     assert.equal(persisted?.wallet.proofs[0].state, 'locked')
     assert.equal(sent.at(-1), 'trade-2:locked-proofs-buyer:cipher-buyer')
 
-    await executor.onTradeStateChanged(
-      await recordTradeStateChanged('trade-2', 'Settling'),
-    )
+    await executor.onTradeStateChanged(await recordTradeStateChanged('trade-2', 'Settling'))
 
     persisted = await readState()
     assert.equal(persisted?.swaps['trade-2'].step, 'awaiting-confirmation')
@@ -860,7 +824,7 @@ test('DaemonSwapExecutor resume sweep retries active claim after retryable timeo
       /Timed out waiting for seller to spend at mint/,
     )
 
-    await executor.resumeActiveSwaps(await readState() as DaemonState)
+    await executor.resumeActiveSwaps((await readState()) as DaemonState)
 
     persisted = await readState()
     assert.equal(persisted?.swaps['trade-retry'].step, 'awaiting-confirmation')
@@ -904,9 +868,7 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
-    state.wallet.proofs.push(
-      proofRecord(profile.mintUrl, 100, 'available', { kind: 'sats' }),
-    )
+    state.wallet.proofs.push(proofRecord(profile.mintUrl, 100, 'available', { kind: 'sats' }))
     await writeState(state)
 
     const sent: string[] = []
@@ -1122,20 +1084,14 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
     const persisted = await readState()
     assert.equal(persisted?.swaps['trade-preflight'].step, 'seller-opened')
     assert.equal(
-      persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'reserved-lock-no',
-      )?.state,
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'reserved-lock-no')?.state,
       undefined,
     )
     assert.equal(
-      persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'lock-locked-100',
-      )?.state,
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'lock-locked-100')?.state,
       'locked',
     )
-    const keep = persisted?.wallet.proofs.find(
-      (row) => row.proof.secret === 'reserved-keep-yes',
-    )
+    const keep = persisted?.wallet.proofs.find((row) => row.proof.secret === 'reserved-keep-yes')
     assert.equal(keep?.state, 'available')
     assert.equal(keep?.reservedBy, undefined)
     assert.deepEqual(sent, [
@@ -1229,13 +1185,15 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
           }
         },
         async splitProofsForExactSend() {
-          throw new Error('pre-flight split proof path must not run when primitive inventory is available')
+          throw new Error(
+            'pre-flight split proof path must not run when primitive inventory is available',
+          )
         },
         async sellerOpenPrelocked(_ctx, proofs) {
-          assert.deepEqual(
-            proofs.map((proof) => proof.secret).sort(),
-            ['locked-primitive-b', 'locked-primitive-c'],
-          )
+          assert.deepEqual(proofs.map((proof) => proof.secret).sort(), [
+            'locked-primitive-b',
+            'locked-primitive-c',
+          ])
           return {
             adaptorPointCipher: 'cipher-adaptor',
             lockedProofsCipher: 'cipher-seller',
@@ -1368,26 +1326,17 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
           assert.match(operationId, /seller-preflight-lock$/)
           return {
             lockedProofs: [cashuProof(100, 'lock-locked-100')],
-            changeProofs: [
-              { ...cashuProof(36, 'lock-change-36'), id: 'keyset-136' },
-            ],
+            changeProofs: [{ ...cashuProof(36, 'lock-change-36'), id: 'keyset-136' }],
           }
         },
         async splitProofsForExactSend(params) {
           assert.equal(params.amountSats, 100)
           assert.equal(params.preserveSourceKeyset, true)
-          assert.match(
-            params.operationId,
-            /seller-preflight-(lock|keep)-exact-v2\/(NO|YES)$/,
-          )
-          const prefix = params.operationId.includes('seller-preflight-lock')
-            ? 'lock'
-            : 'keep'
+          assert.match(params.operationId, /seller-preflight-(lock|keep)-exact-v2\/(NO|YES)$/)
+          const prefix = params.operationId.includes('seller-preflight-lock') ? 'lock' : 'keep'
           return {
             sendProofs: [cashuProof(100, `${prefix}-exact-100`)],
-            changeProofs: [
-              { ...cashuProof(36, `${prefix}-change-36`), id: 'keyset-136' },
-            ],
+            changeProofs: [{ ...cashuProof(36, `${prefix}-change-36`), id: 'keyset-136' }],
             spentProofs: params.sourceProofs,
           }
         },
@@ -1429,33 +1378,23 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       persisted?.swaps['trade-preflight-overpay'].error,
     )
     assert.equal(
-      persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'reserved-lock-no-136',
-      )?.state,
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'reserved-lock-no-136')?.state,
       undefined,
     )
     assert.equal(
-      persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'lock-locked-100',
-      )?.state,
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'lock-locked-100')?.state,
       'locked',
     )
     assert.equal(
-      persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'lock-change-36',
-      )?.state,
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'lock-change-36')?.state,
       'reserved',
     )
     assert.equal(
-      persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'keep-exact-100',
-      )?.state,
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'keep-exact-100')?.state,
       'available',
     )
     assert.equal(
-      persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'keep-change-36',
-      )?.state,
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'keep-change-36')?.state,
       'reserved',
     )
     assert.deepEqual(sent, [
@@ -1559,12 +1498,7 @@ test('DaemonSwapExecutor resends persisted buyer response and completion after r
 })
 
 function orderKey(secrets: DaemonSecrets): DaemonSecrets['orderEphemeralKeys'][string] {
-  return orderKeyFromPrivate(
-    secrets,
-    'order-1',
-    'cond-YES',
-    '11'.repeat(32),
-  )
+  return orderKeyFromPrivate(secrets, 'order-1', 'cond-YES', '11'.repeat(32))
 }
 
 function orderKeyFromPrivate(
@@ -1611,10 +1545,7 @@ function mintSellerOrderEconomics() {
   }
 }
 
-async function waitForSwapStep(
-  tradeId: string,
-  step: string,
-): Promise<DaemonState | null> {
+async function waitForSwapStep(tradeId: string, step: string): Promise<DaemonState | null> {
   // Let the unref'ed retry perform its identity-bound SQLite preflight before
   // this observer starts opening competing read connections.
   await new Promise((resolve) => setTimeout(resolve, 750))
@@ -1820,10 +1751,7 @@ function cashuProof(amount: number, secret: string): CashuProofRecord {
   }
 }
 
-async function bootstrapTestProfile(
-  profile: DaemonProfile,
-  secrets: DaemonSecrets,
-): Promise<void> {
+async function bootstrapTestProfile(profile: DaemonProfile, secrets: DaemonSecrets): Promise<void> {
   await bootstrapFreshDaemonProfile({
     directory: profileDir(),
     engineBaseUrl: profile.engineBaseUrl,
@@ -1839,10 +1767,7 @@ async function bootstrapTestProfile(
 async function writeState(state: DaemonState): Promise<void> {
   if (!(await profileDatabaseExists())) {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
-    await bootstrapTestProfile(
-      profileFromPublicKey(secrets.nostrPublicKeyHex),
-      secrets,
-    )
+    await bootstrapTestProfile(profileFromPublicKey(secrets.nostrPublicKeyHex), secrets)
   }
   await writeBootstrappedState(state)
   const pending = pendingEphemeralSecrets
@@ -1859,9 +1784,7 @@ async function writeState(state: DaemonState): Promise<void> {
   })
 }
 
-function newTestDaemonSwapExecutor(
-  options: DaemonSwapExecutorOptions,
-): DaemonSwapExecutor {
+function newTestDaemonSwapExecutor(options: DaemonSwapExecutorOptions): DaemonSwapExecutor {
   return new DaemonSwapExecutor({
     ...options,
     walletOpsDeps: {

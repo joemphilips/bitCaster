@@ -10,24 +10,19 @@ import {
   type SerializedBlindedMessage,
   type SerializedBlindedSignature,
 } from "@cashu/cashu-ts";
-import {
-  amountToNumber,
-  sumProofs,
-  takeProofsForLock,
-} from "@bitcaster/client-sdk/proofSelection";
+import { amountToNumber, sumProofs, takeProofsForLock } from "@bitcaster/client-sdk/proofSelection";
 import {
   registrationFeeForPolicy,
   requiredMarketCreationOutcomeCollections,
 } from "@bitcaster/client-sdk/ctfRegistration";
+import { deserializeOutputGroups, serializeOutputDataArray } from "@bitcaster/client-sdk/ctfSplit";
 import {
-  deserializeOutputGroups,
-  serializeOutputDataArray,
-} from "@bitcaster/client-sdk/ctfSplit";
-import { defaultCollateralUnit, normalizeMarketBaseAsset, parseCashuProofUnit, type CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
-import {
-  MintError,
-  registerCondition,
-} from "@/lib/markets";
+  defaultCollateralUnit,
+  normalizeMarketBaseAsset,
+  parseCashuProofUnit,
+  type CashuProofUnit,
+} from "@bitcaster/client-sdk/marketUnits";
+import { MintError, registerCondition } from "@/lib/markets";
 import { getWalletForUnit } from "@/lib/cashu";
 import {
   addProofs,
@@ -89,10 +84,7 @@ export async function registerConditionWithFee(input: {
     );
   }
 
-  const operationId = await buildOperationId(
-    input.request,
-    input.requiredFeeSubunits,
-  );
+  const operationId = await buildOperationId(input.request, input.requiredFeeSubunits);
   const feeUnit = registrationFeeUnit(input.request);
   const existing = await getProofOperation(operationId);
   if (existing) {
@@ -104,10 +96,7 @@ export async function registerConditionWithFee(input: {
   const available = await getUnitProofs(input.mintUrl, {
     unit: feeUnit,
   }).then((proofs) => proofs.filter((proof) => regularKeysetIds.has(proof.id)));
-  const selected = takeProofsForLock(
-    available,
-    input.requiredFeeSubunits,
-  );
+  const selected = takeProofsForLock(available, input.requiredFeeSubunits);
   if (!selected) {
     throw new Error(
       `Not enough regular ${feeUnit} proofs are available for the ${input.requiredFeeSubunits} ${feeUnit} condition registration fee.`,
@@ -117,9 +106,7 @@ export async function registerConditionWithFee(input: {
   const selectedTotal = sumProofs(selected);
   const changeAmount = selectedTotal - input.requiredFeeSubunits;
   const changeOutputs =
-    changeAmount > 0
-      ? await prepareRegularOutputs(input.mintUrl, changeAmount, feeUnit)
-      : [];
+    changeAmount > 0 ? await prepareRegularOutputs(input.mintUrl, changeAmount, feeUnit) : [];
 
   await prepareProofOperation({
     operationId,
@@ -176,14 +163,8 @@ async function resumeOrRetryRegistration(
   const states = await wallet.checkProofsStates(
     entry.inputs.map(({ id, secret }) => ({ id, secret })),
   );
-  if (
-    states.length > 0 &&
-    states.every((state) => state.state === CheckStateEnum.SPENT)
-  ) {
-    const changeProofs = await restoreChangeOutputs(
-      mintUrl,
-      entry.outputs.change ?? [],
-    );
+  if (states.length > 0 && states.every((state) => state.state === CheckStateEnum.SPENT)) {
+    const changeProofs = await restoreChangeOutputs(mintUrl, entry.outputs.change ?? []);
     await completeRegistrationFeeOperation(
       entry.operationId,
       mintUrl,
@@ -193,10 +174,7 @@ async function resumeOrRetryRegistration(
     );
     return registerCondition(request);
   }
-  if (
-    states.length > 0 &&
-    states.every((state) => state.state === CheckStateEnum.UNSPENT)
-  ) {
+  if (states.length > 0 && states.every((state) => state.state === CheckStateEnum.UNSPENT)) {
     const outputs = (deserializeOutputGroups({
       change: entry.outputs.change ?? [],
     }).change ?? []) as RegistrationOutputData[];
@@ -236,11 +214,7 @@ async function postPreparedRegistration(
           ? prepared.outputs.map((output) => output.blindedMessage)
           : undefined,
     });
-    const changeProofs = await buildChangeProofs(
-      mintUrl,
-      prepared.outputs,
-      response.change ?? [],
-    );
+    const changeProofs = await buildChangeProofs(mintUrl, prepared.outputs, response.change ?? []);
     await completeRegistrationFeeOperation(
       prepared.operationId,
       mintUrl,
@@ -250,10 +224,7 @@ async function postPreparedRegistration(
     );
     return response;
   } catch (error) {
-    if (
-      error instanceof MintError &&
-      (error.code === 13044 || error.code === 13047)
-    ) {
+    if (error instanceof MintError && (error.code === 13044 || error.code === 13047)) {
       await releaseProofReservation(prepared.operationId);
       await markProofOperationFailed(prepared.operationId, error);
     }
@@ -280,12 +251,14 @@ async function completeRegistrationFeeOperation(
 ): Promise<void> {
   const proofUnit = requireCashuProofUnit(unit);
   if (changeProofs.length > 0) {
-    await addProofs(changeProofs.map((proof) => ({
-      ...proof,
-      mintUrl,
-      baseAsset: normalizeMarketBaseAsset(proofUnit),
-      unit: proofUnit,
-    })));
+    await addProofs(
+      changeProofs.map((proof) => ({
+        ...proof,
+        mintUrl,
+        baseAsset: normalizeMarketBaseAsset(proofUnit),
+        unit: proofUnit,
+      })),
+    );
   }
   await removeProofs(inputs.map((proof) => proof.secret));
   await markProofOperationCompleted(operationId, { change: changeProofs });
@@ -321,24 +294,16 @@ async function prepareRegularOutputs(
   );
 }
 
-async function getActiveRegularKeyset(
-  wallet: CashuWallet,
-  unit: string,
-): Promise<MintKeys> {
+async function getActiveRegularKeyset(wallet: CashuWallet, unit: string): Promise<MintKeys> {
   const response = await wallet.mint.getKeys();
   const keyset =
-    response.keysets.find(
-      (candidate) => candidate.unit === unit && candidate.active !== false,
-    ) ??
+    response.keysets.find((candidate) => candidate.unit === unit && candidate.active !== false) ??
     response.keysets.find((candidate) => candidate.unit === unit);
   if (!keyset) throw new Error(`Mint did not return a regular ${unit} keyset`);
   return keyset;
 }
 
-async function getRegularKeysetIdsForUnit(
-  wallet: CashuWallet,
-  unit: string,
-): Promise<Set<string>> {
+async function getRegularKeysetIdsForUnit(wallet: CashuWallet, unit: string): Promise<Set<string>> {
   const response = await wallet.mint.getKeys();
   const ids = response.keysets
     .filter((candidate) => candidate.unit === unit)
@@ -391,9 +356,8 @@ async function restoreChangeOutputs(
   mintUrl: string,
   storedOutputs: StoredOutputData[],
 ): Promise<Proof[]> {
-  const outputData = (
-    deserializeOutputGroups({ change: storedOutputs }).change ?? []
-  ) as RegistrationOutputData[];
+  const outputData = (deserializeOutputGroups({ change: storedOutputs }).change ??
+    []) as RegistrationOutputData[];
   if (outputData.length === 0) return [];
   const mint = new CashuMint(mintUrl);
   const response = await mint.restore({
@@ -402,16 +366,11 @@ async function restoreChangeOutputs(
   return buildChangeProofs(mintUrl, outputData, response.signatures);
 }
 
-async function getKeyset(
-  mintUrl: string,
-  keysetId?: string,
-): Promise<MintKeys> {
+async function getKeyset(mintUrl: string, keysetId?: string): Promise<MintKeys> {
   if (!keysetId) throw new Error("Missing keyset id for registration-fee change output");
   const mint = new CashuMint(mintUrl);
   const response = await mint.getKeys(keysetId);
-  const keyset = response.keysets.find(
-    (candidate) => candidate.id === keysetId,
-  );
+  const keyset = response.keysets.find((candidate) => candidate.id === keysetId);
   if (!keyset) throw new Error(`Mint did not return keys for keyset ${keysetId}`);
   return keyset;
 }
@@ -438,9 +397,7 @@ function stableRegistrationRequest(
     tags: request.tags.map((tag) => [...tag]),
     announcementHex: request.announcementHex,
     collateral: request.collateral,
-    outcomeCollections: request.outcomeCollections
-      ? [...request.outcomeCollections]
-      : undefined,
+    outcomeCollections: request.outcomeCollections ? [...request.outcomeCollections] : undefined,
   };
 }
 

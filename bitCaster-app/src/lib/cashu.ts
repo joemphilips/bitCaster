@@ -59,9 +59,7 @@ import { proofsWithOptionalConditionalMetadata } from "@/lib/conditionalKeysetMe
 // Default mint (can be overridden at runtime)
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MINT_URL = normalizeUrl(
-  import.meta.env.VITE_MINT_URL ?? "http://localhost:8085",
-);
+const DEFAULT_MINT_URL = normalizeUrl(import.meta.env.VITE_MINT_URL ?? "http://localhost:8085");
 
 /**
  * Small sats buffer added to top-up prefills to cover NUT-05 melt fees and
@@ -195,18 +193,14 @@ export async function mintProofs(
     // collisions — their secrets are random. Re-throw so the caller sees
     // the real error rather than a swallowed retry.
     if (!useWalletStore.getState().mnemonic) throw err;
-    const url = normalizeUrl(
-      mintUrl ?? useWalletStore.getState().activeMintUrl,
-    );
+    const url = normalizeUrl(mintUrl ?? useWalletStore.getState().activeMintUrl);
     const result = await recoverKeysetCountersForMint(url, { force: true, baseAsset });
     if (!result.scannedKeysets.length) {
       // Recovery couldn't scan the active unit (network down, restore not
       // supported for that unit, stale keyset metadata). Skip a bounded
       // deterministic counter window before the one allowed retry so local
       // wallets can still escape a stale counter without looping forever.
-      const bumped = await bumpActiveKeysetCounter(wallet, baseAsset).catch(
-        () => false,
-      );
+      const bumped = await bumpActiveKeysetCounter(wallet, baseAsset).catch(() => false);
       if (!bumped) throw err;
     }
     // ZustandCounterSource.reserve() reads from the live store on every
@@ -299,11 +293,7 @@ function isCdkDuplicateOutputsError(err: unknown): boolean {
   // Structural sanity check: cashu-ts surfaces this as `MintOperationError`
   // with status 400. If neither shape matches, the error is some other code
   // path (e.g. a wrapped fetch failure) using the same human string — skip.
-  return (
-    e.name === "MintOperationError" ||
-    e.status === 400 ||
-    typeof e.code === "number"
-  );
+  return e.name === "MintOperationError" || e.status === 400 || typeof e.code === "number";
 }
 
 export interface KeysetRecoveryResult {
@@ -320,10 +310,7 @@ type RecoverableMintKeyset = {
 const COUNTER_RECOVERY_FALLBACK_SKIP = 100;
 
 function keysetCashuUnit(keyset: RecoverableMintKeyset): CashuProofUnit {
-  return (
-    parseCashuProofUnit(keyset.unit) ??
-    defaultCollateralUnit(DEFAULT_MARKET_BASE_ASSET)
-  );
+  return parseCashuProofUnit(keyset.unit) ?? defaultCollateralUnit(DEFAULT_MARKET_BASE_ASSET);
 }
 
 async function bumpActiveKeysetCounter(
@@ -371,16 +358,12 @@ export async function recoverKeysetCountersForMint(
   const url = normalizeUrl(mintUrl);
   const store = useWalletStore.getState();
   if (!store.mnemonic) return { scannedKeysets: [] };
-  const requestedBaseAsset = opts.baseAsset === undefined || opts.baseAsset === null
-    ? null
-    : normalizeMarketBaseAsset(opts.baseAsset);
-  const discoveryUnit = defaultCollateralUnit(
-    requestedBaseAsset ?? DEFAULT_MARKET_BASE_ASSET,
-  );
-  const discoveryWallet = await store.getWalletForUnit(
-    url,
-    discoveryUnit,
-  ) as CashuWallet;
+  const requestedBaseAsset =
+    opts.baseAsset === undefined || opts.baseAsset === null
+      ? null
+      : normalizeMarketBaseAsset(opts.baseAsset);
+  const discoveryUnit = defaultCollateralUnit(requestedBaseAsset ?? DEFAULT_MARKET_BASE_ASSET);
+  const discoveryWallet = (await store.getWalletForUnit(url, discoveryUnit)) as CashuWallet;
   // Use the wallet's freshly-loaded keysets via the underlying mint, not the
   // possibly-stale `store.mints[].keysets`. After mint key rotation the
   // store can be days behind; the duplicate-error path needs to scan
@@ -401,12 +384,12 @@ export async function recoverKeysetCountersForMint(
   );
   const scanned: string[] = [];
   for (const unit of units) {
-    const wallet = unit === discoveryUnit
-      ? discoveryWallet
-      : await store.getWalletForUnit(url, unit) as CashuWallet;
+    const wallet =
+      unit === discoveryUnit
+        ? discoveryWallet
+        : ((await store.getWalletForUnit(url, unit)) as CashuWallet);
     for (const keyset of keysets.filter((k) => keysetCashuUnit(k) === unit)) {
-      const recovered =
-        useWalletStore.getState().keysetCountersRecovered[keyset.id];
+      const recovered = useWalletStore.getState().keysetCountersRecovered[keyset.id];
       if (!opts.force && recovered) continue;
       try {
         const { proofs, lastCounterWithSignature } = await wallet.batchRestore(
@@ -415,10 +398,7 @@ export async function recoverKeysetCountersForMint(
           0,
           keyset.id,
         );
-        const next =
-          lastCounterWithSignature !== undefined
-            ? lastCounterWithSignature + 1
-            : 0;
+        const next = lastCounterWithSignature !== undefined ? lastCounterWithSignature + 1 : 0;
         const current = useWalletStore.getState().keysetCounters[keyset.id] ?? 0;
         const advanced = Math.max(current, next);
         useWalletStore.setState((s) => ({
@@ -482,9 +462,7 @@ export async function decodeToken(tokenStr: string): Promise<Token> {
   } catch {
     // v1 short keyset IDs need expansion — try all configured mints' stored keysets first
     const store = useWalletStore.getState();
-    const allStoredKeysetIds = store.mints
-      .flatMap((m) => m.keysets ?? [])
-      .map((k) => k.id);
+    const allStoredKeysetIds = store.mints.flatMap((m) => m.keysets ?? []).map((k) => k.id);
 
     if (allStoredKeysetIds.length > 0) {
       try {
@@ -552,10 +530,7 @@ function readLen(b: Uint8Array, i: number): [number, number] {
   if (ai === 24) return [b[i + 1], i + 2];
   if (ai === 25) return [(b[i + 1] << 8) | b[i + 2], i + 3];
   if (ai === 26)
-    return [
-      ((b[i + 1] << 24) | (b[i + 2] << 16) | (b[i + 3] << 8) | b[i + 4]) >>> 0,
-      i + 5,
-    ];
+    return [((b[i + 1] << 24) | (b[i + 2] << 16) | (b[i + 3] << 8) | b[i + 4]) >>> 0, i + 5];
   throw new Error("CBOR len > uint32");
 }
 
@@ -670,10 +645,7 @@ export async function recoverPendingTokenReceives(): Promise<void> {
       const baseAsset = normalizeMarketBaseAsset(
         requiredReceiveMetadataString(operation.metadata.baseAsset, "baseAsset"),
       );
-      const keysetId = requiredReceiveMetadataString(
-        operation.metadata.keysetId,
-        "keysetId",
-      );
+      const keysetId = requiredReceiveMetadataString(operation.metadata.keysetId, "keysetId");
       const counterStart = requiredReceiveMetadataInteger(
         operation.metadata.counterStart,
         "counterStart",
@@ -730,11 +702,7 @@ function requiredReceiveMetadataString(value: unknown, field: string): string {
   throw new Error(`token receive journal is missing ${field}`);
 }
 
-function requiredReceiveMetadataInteger(
-  value: unknown,
-  field: string,
-  minimum: number,
-): number {
+function requiredReceiveMetadataInteger(value: unknown, field: string, minimum: number): number {
   if (Number.isSafeInteger(value) && (value as number) >= minimum) {
     return value as number;
   }
@@ -751,10 +719,7 @@ export async function sendProofs(
   options: { mintUrl?: string; baseAsset?: MarketBaseAsset | string | null } = {},
 ): Promise<{ keep: Proof[]; send: Proof[] }> {
   const wallet = await getWallet(options.mintUrl, options.baseAsset);
-  const amountSubunits = collateralSubunitsFromBaseAmount(
-    amountSats,
-    options.baseAsset,
-  );
+  const amountSubunits = collateralSubunitsFromBaseAmount(amountSats, options.baseAsset);
   return wallet.send(amountSubunits, proofs);
 }
 
@@ -926,9 +891,7 @@ function waitForMintQuotePaidWithWallet(
 /** Map a poll-observed MintQuoteState into a terminal result, or `null` if
  *  we should keep polling. Total mapping — a new upstream variant breaks
  *  compilation, not silently. */
-function classifyPollState(
-  q: PartialMintQuoteResponse,
-): MintQuoteWaitResult | null {
+function classifyPollState(q: PartialMintQuoteResponse): MintQuoteWaitResult | null {
   switch (q.state) {
     case "PAID":
       return { status: "PAID", quote: q };
@@ -988,8 +951,7 @@ function subscribeWsForPaid(
   wallet.on
     .mintQuotePaid(
       quoteId,
-      (response: PartialMintQuoteResponse) =>
-        fire({ status: "PAID", quote: response }),
+      (response: PartialMintQuoteResponse) => fire({ status: "PAID", quote: response }),
       (error: Error) => {
         // Surface as a transient error — polling will continue and may still
         // resolve to PAID or EXPIRED. Don't fire a terminal ERROR on a WS hiccup.
@@ -1001,10 +963,7 @@ function subscribeWsForPaid(
       else unsub = u;
     })
     .catch((e) => {
-      console.warn(
-        "[cashu] mintQuotePaid WS subscribe failed, polling only",
-        e,
-      );
+      console.warn("[cashu] mintQuotePaid WS subscribe failed, polling only", e);
     });
   return { cancel: () => unsub?.() };
 }
@@ -1098,13 +1057,9 @@ export async function mintCtfProofs(
  * @param position - the winning MarketPosition
  * @returns regular Cashu proofs redeemable as sats
  */
-export async function settleCtfPosition(
-  position: MarketPosition,
-): Promise<Proof[]> {
+export async function settleCtfPosition(position: MarketPosition): Promise<Proof[]> {
   validateRedeemPosition(position);
-  const mintUrl = normalizeUrl(
-    position.mintUrl ?? useWalletStore.getState().activeMintUrl,
-  );
+  const mintUrl = normalizeUrl(position.mintUrl ?? useWalletStore.getState().activeMintUrl);
   const baseAsset = normalizeMarketBaseAsset(position.baseAsset);
 
   // A composite ("A|B") position spans MULTIPLE primitive keysets, but the
@@ -1119,9 +1074,7 @@ export async function settleCtfPosition(
   // We resolve the attestation only for its oracle witness. The attested
   // OUTCOME is intentionally NOT used to pre-classify legs locally — only the
   // mint may condemn a proof (see `redeemKeysetLeg`).
-  const { witnessJson } = await fetchConditionAttestation(
-    position.conditionId,
-  );
+  const { witnessJson } = await fetchConditionAttestation(position.conditionId);
 
   const redeemed: Proof[] = [];
   for (const [keysetId, legProofs] of legs) {
@@ -1173,11 +1126,8 @@ interface RedeemKeysetLegInput {
  *                the now-worthless proofs locally, and we surface NO error — a
  *                composite position legitimately carries a losing leg.
  */
-async function redeemKeysetLeg(
-  input: RedeemKeysetLegInput,
-): Promise<Proof[]> {
-  const { conditionId, keysetId, proofs, mintUrl, witnessJson, baseAsset } =
-    input;
+async function redeemKeysetLeg(input: RedeemKeysetLegInput): Promise<Proof[]> {
+  const { conditionId, keysetId, proofs, mintUrl, witnessJson, baseAsset } = input;
   const operationId = buildKeysetRedeemOperationId(conditionId, keysetId, proofs);
   const existing = (await getProofOperation(operationId)) as CtfProofOperationRecord | null;
   const unit = defaultCollateralUnit(baseAsset);
@@ -1206,9 +1156,7 @@ async function redeemKeysetLeg(
     return [];
   }
   if (existing?.state !== "completed") {
-    await addProofs(
-      result.proofs.map((proof) => ({ ...proof, mintUrl, baseAsset, unit })),
-    );
+    await addProofs(result.proofs.map((proof) => ({ ...proof, mintUrl, baseAsset, unit })));
     await removeProofs(proofs.map((proof) => proof.secret));
   }
   return result.proofs;
@@ -1236,17 +1184,11 @@ function ctfRedeemProofOperationStore(): CtfProofOperationStore {
     prepareProofOperation: async (input) =>
       (await prepareProofOperation(input)) as CtfProofOperationRecord,
     markProofOperationCompleted: async (operationId, resultProofs) =>
-      (await markProofOperationCompleted(
-        operationId,
-        resultProofs,
-      )) as CtfProofOperationRecord,
+      (await markProofOperationCompleted(operationId, resultProofs)) as CtfProofOperationRecord,
     markProofOperationFailed: async (operationId, message, failureCode) => {
       const error = new Error(message) as Error & { code?: number };
       error.code = failureCode;
-      return (await markProofOperationFailed(
-        operationId,
-        error,
-      )) as CtfProofOperationRecord;
+      return (await markProofOperationFailed(operationId, error)) as CtfProofOperationRecord;
     },
   };
 }
@@ -1265,9 +1207,7 @@ interface ConditionAttestationResponse {
 
 function validateRedeemPosition(position: MarketPosition): void {
   if (!/^[0-9a-fA-F]{64}$/.test(position.conditionId)) {
-    throw new Error(
-      "conditionId must be a 64-character hex string for CTF redeem",
-    );
+    throw new Error("conditionId must be a 64-character hex string for CTF redeem");
   }
   if (!Number.isSafeInteger(position.amountSats) || position.amountSats <= 0) {
     throw new Error("amountSats must be a positive safe integer");
@@ -1275,10 +1215,7 @@ function validateRedeemPosition(position: MarketPosition): void {
   if (position.proofs.length === 0) {
     throw new Error("CTF redeem requires at least one proof");
   }
-  const proofTotal = position.proofs.reduce(
-    (sum, proof) => sum + amountToNumber(proof.amount),
-    0,
-  );
+  const proofTotal = position.proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
   if (proofTotal !== position.amountSats) {
     throw new Error(
       `CTF redeem proof total ${proofTotal} sats does not match position amount ${position.amountSats}`,
@@ -1294,28 +1231,19 @@ interface ResolvedConditionAttestation {
 async function fetchConditionAttestation(
   conditionId: string,
 ): Promise<ResolvedConditionAttestation> {
-  const response = await fetch(
-    `/api/v1/conditions/${conditionId}/attestation`,
-    {
-      headers: { accept: "application/json" },
-    },
-  );
+  const response = await fetch(`/api/v1/conditions/${conditionId}/attestation`, {
+    headers: { accept: "application/json" },
+  });
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(
-      `Condition attestation lookup failed with HTTP ${response.status}: ${body}`,
-    );
+    throw new Error(`Condition attestation lookup failed with HTTP ${response.status}: ${body}`);
   }
   const body = (await response.json()) as ConditionAttestationResponse;
   if (body.conditionId.toLowerCase() !== conditionId.toLowerCase()) {
-    throw new Error(
-      "Condition attestation response did not match requested condition",
-    );
+    throw new Error("Condition attestation response did not match requested condition");
   }
   if (body.oracleWitness == null) {
-    throw new Error(
-      "Condition attestation response did not include an oracle witness",
-    );
+    throw new Error("Condition attestation response did not include an oracle witness");
   }
   return {
     witnessJson: JSON.stringify(body.oracleWitness),

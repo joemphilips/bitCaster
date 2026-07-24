@@ -1,16 +1,16 @@
-import { ChevronLeft, Maximize2, Clipboard, ScanLine, FileText } from 'lucide-react'
-import { MintSelector } from './MintSelector'
-import type { MintInfo } from '@/types/deposit-withdraw'
+import { ChevronLeft, Maximize2, Clipboard, ScanLine, FileText } from "lucide-react";
+import { MintSelector } from "./MintSelector";
+import type { MintInfo } from "@/types/deposit-withdraw";
 
 interface DepositEcashProps {
-  mints?: MintInfo[]
-  selectedMintId?: string
-  onMintChange?: (mintId: string) => void
-  onPaste?: () => void
-  onScan?: () => void
-  onRequest?: () => void
-  onBack?: () => void
-  onToggleFullscreen?: () => void
+  mints?: MintInfo[];
+  selectedMintId?: string;
+  onMintChange?: (mintId: string) => void;
+  onPaste?: () => void;
+  onScan?: () => void;
+  onRequest?: () => void;
+  onBack?: () => void;
+  onToggleFullscreen?: () => void;
 }
 
 export function DepositEcash({
@@ -92,5 +92,5 @@ export function DepositEcash({
         </div>
       </div>
     </div>
-  )
+  );
 }

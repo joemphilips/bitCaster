@@ -308,7 +308,10 @@ test('TradeCreated rejects non-default rows without canonical settlement amounts
     })
 
     assert.equal(created?.step, 'Failed')
-    assert.match(created?.error ?? '', /outcome face subunits must be a positive safe integer|missing outcome face subunits/)
+    assert.match(
+      created?.error ?? '',
+      /outcome face subunits must be a positive safe integer|missing outcome face subunits/,
+    )
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome

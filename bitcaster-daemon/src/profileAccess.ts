@@ -5,9 +5,7 @@ let profileAccessQueue: Promise<unknown> = Promise.resolve()
  * Cross-process exclusion remains the responsibility of the run lock and
  * custody-scope fence.
  */
-export async function withProfileStorageAccess<T>(
-  run: () => Promise<T> | T,
-): Promise<T> {
+export async function withProfileStorageAccess<T>(run: () => Promise<T> | T): Promise<T> {
   const next = profileAccessQueue.then(run, run)
   profileAccessQueue = next.then(
     () => undefined,

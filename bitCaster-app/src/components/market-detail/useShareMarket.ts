@@ -1,9 +1,9 @@
-import { useCallback } from 'react'
-import { useTranslation } from 'react-i18next'
-import { useToastStore } from '@/stores/toast'
+import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
+import { useToastStore } from "@/stores/toast";
 
 interface ShareableMarket {
-  title: string
+  title: string;
 }
 
 /**
@@ -31,20 +31,20 @@ interface ShareableMarket {
  * require SSR for OG tags). Title + URL is sufficient for v1.
  */
 export function useShareMarket(market: ShareableMarket) {
-  const { t } = useTranslation()
-  const addToast = useToastStore((s) => s.addToast)
+  const { t } = useTranslation();
+  const addToast = useToastStore((s) => s.addToast);
 
   return useCallback(async () => {
-    const url = window.location.href
-    const title = market.title
+    const url = window.location.href;
+    const title = market.title;
 
-    if (typeof navigator.share === 'function') {
-      await invokeNativeShare(navigator.share.bind(navigator), title, url)
-      return
+    if (typeof navigator.share === "function") {
+      await invokeNativeShare(navigator.share.bind(navigator), title, url);
+      return;
     }
 
-    await copyToClipboard(url, addToast, t)
-  }, [market.title, t, addToast])
+    await copyToClipboard(url, addToast, t);
+  }, [market.title, t, addToast]);
 }
 
 /**
@@ -59,25 +59,21 @@ async function invokeNativeShare(
   url: string,
 ): Promise<void> {
   try {
-    await share({ title, url })
+    await share({ title, url });
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') return
+    if (err instanceof Error && err.name === "AbortError") return;
     // Non-cancel rejection — leave the user where the share sheet left them.
   }
 }
 
-type Toaster = ReturnType<typeof useToastStore.getState>['addToast']
-type Translator = ReturnType<typeof useTranslation>['t']
+type Toaster = ReturnType<typeof useToastStore.getState>["addToast"];
+type Translator = ReturnType<typeof useTranslation>["t"];
 
-async function copyToClipboard(
-  url: string,
-  addToast: Toaster,
-  t: Translator,
-): Promise<void> {
+async function copyToClipboard(url: string, addToast: Toaster, t: Translator): Promise<void> {
   try {
-    await navigator.clipboard.writeText(url)
-    addToast({ message: t('market.linkCopied'), type: 'success' })
+    await navigator.clipboard.writeText(url);
+    addToast({ message: t("market.linkCopied"), type: "success" });
   } catch {
-    addToast({ message: t('market.shareFailed'), type: 'error' })
+    addToast({ message: t("market.shareFailed"), type: "error" });
   }
 }

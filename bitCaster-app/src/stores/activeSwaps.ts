@@ -20,15 +20,15 @@
  *     exposure for no benefit during the live handshake.
  */
 
-import { create } from 'zustand'
-import type { Proof } from '@cashu/cashu-ts'
-import type { AdaptorPoint } from '@/lib/adaptor'
+import { create } from "zustand";
+import type { Proof } from "@cashu/cashu-ts";
+import type { AdaptorPoint } from "@/lib/adaptor";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type SwapRole = 'seller' | 'buyer'
+export type SwapRole = "seller" | "buyer";
 
 /**
  * Tracks which protocol messages have been observed for a given trade. Each
@@ -39,127 +39,123 @@ export type SwapRole = 'seller' | 'buyer'
  * `lockedProofsBuyer` comes from the buyer (Bob).
  */
 export interface SwapMessages {
-  adaptorPoint?: string
-  lockedProofsSeller?: string
-  lockedProofsBuyer?: string
+  adaptorPoint?: string;
+  lockedProofsSeller?: string;
+  lockedProofsBuyer?: string;
 }
 
 export interface SellerProtocolState {
-  adaptorPoint: AdaptorPoint
+  adaptorPoint: AdaptorPoint;
 }
 
 export interface BuyerProtocolState {
   /** Bob's pre-sigs over Bob's locked sat proofs — extract `t` from these. */
-  ownPreSigsHex: string[]
+  ownPreSigsHex: string[];
   /** The proofs Bob locked to Alice; needed for the NUT-07 poll. */
-  lockedSatProofs: Proof[]
+  lockedSatProofs: Proof[];
   /** Bob's encrypted locked-proofs message; replayed seller messages resend this. */
-  lockedProofsCipher: string
+  lockedProofsCipher: string;
   /** Alice's pre-sigs from her locked-proofs message — adapted on claim. */
-  sellerPreSigsHex: string[]
+  sellerPreSigsHex: string[];
 }
 
-export type SwapWorkKey = 'seller-open' | 'buyer-respond' | 'settle'
+export type SwapWorkKey = "seller-open" | "buyer-respond" | "settle";
 
 /** What stage of the protocol the local driver has finished. */
 export type SwapStep =
-  | 'awaiting-trade-created'
-  | 'awaiting-counterparty'
-  | 'driving'
-  | 'awaiting-confirmation'
-  | 'completed'
-  | 'Failed'
+  | "awaiting-trade-created"
+  | "awaiting-counterparty"
+  | "driving"
+  | "awaiting-confirmation"
+  | "completed"
+  | "Failed";
 
 export interface ActiveSwap {
-  tradeId: string
+  tradeId: string;
   /** The order whose fill triggered this swap. */
-  orderId: string
-  clientOrderId?: string
-  marketId: string
+  orderId: string;
+  clientOrderId?: string;
+  marketId: string;
   /**
    * Ephemeral keypair seeded from `pendingPubkeySubmissions` at promote-time.
    * Captured here so the swap can survive even after the pending-pubkey entry
    * is evicted on terminal settlement status. Both halves are hex.
    */
-  ephemeralPrivkeyHex: string
-  ephemeralPubkeyHex: string
-  role: SwapRole | null
-  counterpartyPubkey: string | null
+  ephemeralPrivkeyHex: string;
+  ephemeralPubkeyHex: string;
+  role: SwapRole | null;
+  counterpartyPubkey: string | null;
   /** Unix seconds — Alice's locktime per the protocol spec. */
-  sellerLocktime: number | null
+  sellerLocktime: number | null;
   /** Unix seconds — Bob's shorter locktime. */
-  buyerLocktime: number | null
+  buyerLocktime: number | null;
   /** Face amount of outcome tokens the seller locks. */
-  outcomeFaceAmountSats: number | null
+  outcomeFaceAmountSats: number | null;
   /** Canonical face amount of outcome tokens the seller locks, in market subunits. */
-  outcomeFaceAmountSubunits: number | null
+  outcomeFaceAmountSubunits: number | null;
   /** Regular sats the buyer locks. */
-  quotePaymentSats: number | null
-  baseAsset: string | null
-  divisibility: number | null
-  side?: 'Buy' | 'Sell'
-  tokenSide?: 'Outcome' | 'Complement'
-  priceSubunits?: number | null
-  amountSubunits?: number | null
-  quotePaymentSubunits: number | null
-  settlementKind: string | null
-  sellerKeepOutcomeSetId: string | null
-  sellerLockOutcomeSetId: string | null
-  step: SwapStep
-  messages: SwapMessages
-  sellerState: SellerProtocolState | null
-  buyerState: BuyerProtocolState | null
-  inFlightSteps: Partial<Record<SwapWorkKey, true>>
+  quotePaymentSats: number | null;
+  baseAsset: string | null;
+  divisibility: number | null;
+  side?: "Buy" | "Sell";
+  tokenSide?: "Outcome" | "Complement";
+  priceSubunits?: number | null;
+  amountSubunits?: number | null;
+  quotePaymentSubunits: number | null;
+  settlementKind: string | null;
+  sellerKeepOutcomeSetId: string | null;
+  sellerLockOutcomeSetId: string | null;
+  step: SwapStep;
+  messages: SwapMessages;
+  sellerState: SellerProtocolState | null;
+  buyerState: BuyerProtocolState | null;
+  inFlightSteps: Partial<Record<SwapWorkKey, true>>;
   /** Last error message if the swap fell into the `failed` step. */
-  error: string | null
-  startedAt: number
+  error: string | null;
+  startedAt: number;
 }
 
 interface ActiveSwapsState {
-  byTradeId: Record<string, ActiveSwap>
+  byTradeId: Record<string, ActiveSwap>;
   promote: (init: {
-    tradeId: string
-    orderId: string
-    clientOrderId?: string
-    marketId: string
-    ephemeralPrivkeyHex: string
-    ephemeralPubkeyHex: string
-    baseAsset?: string | null
-    divisibility?: number | null
-    side?: 'Buy' | 'Sell'
-    tokenSide?: 'Outcome' | 'Complement'
-    priceSubunits?: number | null
-    amountSubunits?: number | null
-  }) => void
+    tradeId: string;
+    orderId: string;
+    clientOrderId?: string;
+    marketId: string;
+    ephemeralPrivkeyHex: string;
+    ephemeralPubkeyHex: string;
+    baseAsset?: string | null;
+    divisibility?: number | null;
+    side?: "Buy" | "Sell";
+    tokenSide?: "Outcome" | "Complement";
+    priceSubunits?: number | null;
+    amountSubunits?: number | null;
+  }) => void;
   setRoleAndCounterparty: (
     tradeId: string,
     role: SwapRole,
     counterpartyPubkey: string,
     locktimes: { sellerLocktime: number; buyerLocktime: number },
     settlementAmounts?: {
-      outcomeFaceAmountSats?: number
-      outcomeFaceAmountSubunits?: number
-      quotePaymentSats?: number
-      baseAsset?: string | null
-      divisibility?: number | null
-      quotePaymentSubunits?: number | null
-      settlementKind?: string | null
-      sellerKeepOutcomeSetId?: string | null
-      sellerLockOutcomeSetId?: string | null
+      outcomeFaceAmountSats?: number;
+      outcomeFaceAmountSubunits?: number;
+      quotePaymentSats?: number;
+      baseAsset?: string | null;
+      divisibility?: number | null;
+      quotePaymentSubunits?: number | null;
+      settlementKind?: string | null;
+      sellerKeepOutcomeSetId?: string | null;
+      sellerLockOutcomeSetId?: string | null;
     },
-  ) => void
-  recordMessage: (
-    tradeId: string,
-    messageType: keyof SwapMessages,
-    ciphertext: string,
-  ) => void
-  setSellerState: (tradeId: string, state: SellerProtocolState) => void
-  setBuyerState: (tradeId: string, state: BuyerProtocolState) => void
-  claimStep: (tradeId: string, key: SwapWorkKey) => boolean
-  releaseStep: (tradeId: string, key: SwapWorkKey) => void
-  clearProtocolState: (tradeId: string) => void
-  setStep: (tradeId: string, step: SwapStep, error?: string) => void
-  remove: (tradeId: string) => void
+  ) => void;
+  recordMessage: (tradeId: string, messageType: keyof SwapMessages, ciphertext: string) => void;
+  setSellerState: (tradeId: string, state: SellerProtocolState) => void;
+  setBuyerState: (tradeId: string, state: BuyerProtocolState) => void;
+  claimStep: (tradeId: string, key: SwapWorkKey) => boolean;
+  releaseStep: (tradeId: string, key: SwapWorkKey) => void;
+  clearProtocolState: (tradeId: string) => void;
+  setStep: (tradeId: string, step: SwapStep, error?: string) => void;
+  remove: (tradeId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +184,7 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
     amountSubunits,
   }) => {
     set((s) => {
-      if (s.byTradeId[tradeId]) return s
+      if (s.byTradeId[tradeId]) return s;
       const swap: ActiveSwap = {
         tradeId,
         orderId,
@@ -213,28 +209,22 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
         settlementKind: null,
         sellerKeepOutcomeSetId: null,
         sellerLockOutcomeSetId: null,
-        step: 'awaiting-trade-created',
+        step: "awaiting-trade-created",
         messages: {},
         sellerState: null,
         buyerState: null,
         inFlightSteps: {},
         error: null,
         startedAt: Date.now(),
-      }
-      return { byTradeId: { ...s.byTradeId, [tradeId]: swap } }
-    })
+      };
+      return { byTradeId: { ...s.byTradeId, [tradeId]: swap } };
+    });
   },
 
-  setRoleAndCounterparty: (
-    tradeId,
-    role,
-    counterpartyPubkey,
-    locktimes,
-    settlementAmounts,
-  ) => {
+  setRoleAndCounterparty: (tradeId, role, counterpartyPubkey, locktimes, settlementAmounts) => {
     set((s) => {
-      const existing = s.byTradeId[tradeId]
-      if (!existing) return s
+      const existing = s.byTradeId[tradeId];
+      if (!existing) return s;
       return {
         byTradeId: {
           ...s.byTradeId,
@@ -245,42 +235,31 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
             sellerLocktime: locktimes.sellerLocktime,
             buyerLocktime: locktimes.buyerLocktime,
             outcomeFaceAmountSats:
-              settlementAmounts?.outcomeFaceAmountSats ??
-              existing.outcomeFaceAmountSats,
+              settlementAmounts?.outcomeFaceAmountSats ?? existing.outcomeFaceAmountSats,
             outcomeFaceAmountSubunits:
-              settlementAmounts?.outcomeFaceAmountSubunits ??
-              existing.outcomeFaceAmountSubunits,
-            quotePaymentSats:
-              settlementAmounts?.quotePaymentSats ?? existing.quotePaymentSats,
-            baseAsset:
-              settlementAmounts?.baseAsset ?? existing.baseAsset,
-            divisibility:
-              settlementAmounts?.divisibility ?? existing.divisibility,
+              settlementAmounts?.outcomeFaceAmountSubunits ?? existing.outcomeFaceAmountSubunits,
+            quotePaymentSats: settlementAmounts?.quotePaymentSats ?? existing.quotePaymentSats,
+            baseAsset: settlementAmounts?.baseAsset ?? existing.baseAsset,
+            divisibility: settlementAmounts?.divisibility ?? existing.divisibility,
             quotePaymentSubunits:
-              settlementAmounts?.quotePaymentSubunits ??
-              existing.quotePaymentSubunits,
-            settlementKind:
-              settlementAmounts?.settlementKind ?? existing.settlementKind,
+              settlementAmounts?.quotePaymentSubunits ?? existing.quotePaymentSubunits,
+            settlementKind: settlementAmounts?.settlementKind ?? existing.settlementKind,
             sellerKeepOutcomeSetId:
-              settlementAmounts?.sellerKeepOutcomeSetId ??
-              existing.sellerKeepOutcomeSetId,
+              settlementAmounts?.sellerKeepOutcomeSetId ?? existing.sellerKeepOutcomeSetId,
             sellerLockOutcomeSetId:
-              settlementAmounts?.sellerLockOutcomeSetId ??
-              existing.sellerLockOutcomeSetId,
+              settlementAmounts?.sellerLockOutcomeSetId ?? existing.sellerLockOutcomeSetId,
             step:
-              existing.step === 'awaiting-trade-created'
-                ? 'awaiting-counterparty'
-                : existing.step,
+              existing.step === "awaiting-trade-created" ? "awaiting-counterparty" : existing.step,
           },
         },
-      }
-    })
+      };
+    });
   },
 
   recordMessage: (tradeId, messageType, ciphertext) => {
     set((s) => {
-      const existing = s.byTradeId[tradeId]
-      if (!existing) return s
+      const existing = s.byTradeId[tradeId];
+      if (!existing) return s;
       return {
         byTradeId: {
           ...s.byTradeId,
@@ -289,42 +268,42 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
             messages: { ...existing.messages, [messageType]: ciphertext },
           },
         },
-      }
-    })
+      };
+    });
   },
 
   setSellerState: (tradeId, sellerState) => {
     set((s) => {
-      const existing = s.byTradeId[tradeId]
-      if (!existing) return s
+      const existing = s.byTradeId[tradeId];
+      if (!existing) return s;
       return {
         byTradeId: {
           ...s.byTradeId,
           [tradeId]: { ...existing, sellerState },
         },
-      }
-    })
+      };
+    });
   },
 
   setBuyerState: (tradeId, buyerState) => {
     set((s) => {
-      const existing = s.byTradeId[tradeId]
-      if (!existing) return s
+      const existing = s.byTradeId[tradeId];
+      if (!existing) return s;
       return {
         byTradeId: {
           ...s.byTradeId,
           [tradeId]: { ...existing, buyerState },
         },
-      }
-    })
+      };
+    });
   },
 
   claimStep: (tradeId, key) => {
-    const existing = get().byTradeId[tradeId]
-    if (!existing || existing.inFlightSteps[key]) return false
+    const existing = get().byTradeId[tradeId];
+    if (!existing || existing.inFlightSteps[key]) return false;
     set((s) => {
-      const current = s.byTradeId[tradeId]
-      if (!current || current.inFlightSteps[key]) return s
+      const current = s.byTradeId[tradeId];
+      if (!current || current.inFlightSteps[key]) return s;
       return {
         byTradeId: {
           ...s.byTradeId,
@@ -333,30 +312,30 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
             inFlightSteps: { ...current.inFlightSteps, [key]: true },
           },
         },
-      }
-    })
-    return true
+      };
+    });
+    return true;
   },
 
   releaseStep: (tradeId, key) => {
     set((s) => {
-      const existing = s.byTradeId[tradeId]
-      if (!existing || !existing.inFlightSteps[key]) return s
-      const nextInFlight = { ...existing.inFlightSteps }
-      delete nextInFlight[key]
+      const existing = s.byTradeId[tradeId];
+      if (!existing || !existing.inFlightSteps[key]) return s;
+      const nextInFlight = { ...existing.inFlightSteps };
+      delete nextInFlight[key];
       return {
         byTradeId: {
           ...s.byTradeId,
           [tradeId]: { ...existing, inFlightSteps: nextInFlight },
         },
-      }
-    })
+      };
+    });
   },
 
   clearProtocolState: (tradeId) => {
     set((s) => {
-      const existing = s.byTradeId[tradeId]
-      if (!existing) return s
+      const existing = s.byTradeId[tradeId];
+      if (!existing) return s;
       return {
         byTradeId: {
           ...s.byTradeId,
@@ -367,29 +346,29 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
             inFlightSteps: {},
           },
         },
-      }
-    })
+      };
+    });
   },
 
   setStep: (tradeId, step, error) => {
     set((s) => {
-      const existing = s.byTradeId[tradeId]
-      if (!existing) return s
+      const existing = s.byTradeId[tradeId];
+      if (!existing) return s;
       return {
         byTradeId: {
           ...s.byTradeId,
           [tradeId]: { ...existing, step, error: error ?? existing.error },
         },
-      }
-    })
+      };
+    });
   },
 
   remove: (tradeId) => {
     set((s) => {
-      if (!(tradeId in s.byTradeId)) return s
-      const next = { ...s.byTradeId }
-      delete next[tradeId]
-      return { byTradeId: next }
-    })
+      if (!(tradeId in s.byTradeId)) return s;
+      const next = { ...s.byTradeId };
+      delete next[tradeId];
+      return { byTradeId: next };
+    });
   },
-}))
+}));

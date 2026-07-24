@@ -45,9 +45,7 @@ vi.mock("@/stores/wallet", () => ({
   },
 }));
 
-const { ensureParticipationScoreForNextMatch } = await import(
-  "../participationScorePayment"
-);
+const { ensureParticipationScoreForNextMatch } = await import("../participationScorePayment");
 
 const baseScore = {
   pubkey: "a".repeat(64),
@@ -147,9 +145,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
   });
 
   it("spends exact sat-keyset proofs unchanged and pays Score with a caller supplied id", async () => {
-    const satProofs = [
-      { id: "sat-keyset", amount: 10, secret: "sat-proof", C: "sat-C" },
-    ];
+    const satProofs = [{ id: "sat-keyset", amount: 10, secret: "sat-proof", C: "sat-C" }];
     const msatProof = {
       id: "msat-keyset",
       amount: 10_000,
@@ -179,10 +175,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     expect(mocks.getUnitProofs).toHaveBeenCalledWith("https://mint.example", {
       unit: "sat",
     });
-    expect(mocks.getWalletForUnit).toHaveBeenCalledWith(
-      "https://mint.example",
-      "sat",
-    );
+    expect(mocks.getWalletForUnit).toHaveBeenCalledWith("https://mint.example", "sat");
     expect(wallet.send).toHaveBeenCalledWith(2, satProofs);
     expect(wallet.send).not.toHaveBeenCalledWith(2_000, satProofs);
     expect(mocks.spendRegularSatsAsToken).not.toHaveBeenCalled();

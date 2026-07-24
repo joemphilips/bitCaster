@@ -18,7 +18,12 @@ import {
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
 import { onOrderBookUpdated, onTradeExecuted } from "@/lib/marketHub";
-import type { MarketStatusChanged, Matched, OrderBookSnapshot, TradeExecuted } from "@/lib/marketHub";
+import type {
+  MarketStatusChanged,
+  Matched,
+  OrderBookSnapshot,
+  TradeExecuted,
+} from "@/lib/marketHub";
 import type {
   CategoricalMarketDetail,
   Comment,
@@ -45,12 +50,10 @@ const mocks = vi.hoisted(() => ({
   orderBookHandlers: new Map<string, (snapshot: OrderBookSnapshot) => void>(),
   matchedHandlers: new Map<string, (match: Matched) => void>(),
   tradeExecutedHandlers: new Map<string, (trade: TradeExecuted) => void>(),
-  windowPriceHistory: vi.fn(
-    (history: { timeframe: string; data: Array<unknown> }) => ({
-      ...history,
-      data: history.data.slice(-1000),
-    }),
-  ),
+  windowPriceHistory: vi.fn((history: { timeframe: string; data: Array<unknown> }) => ({
+    ...history,
+    data: history.data.slice(-1000),
+  })),
 }));
 
 vi.mock("react-router", () => ({
@@ -106,10 +109,7 @@ vi.mock("@/lib/marketHub", () => ({
 }));
 
 vi.mock("@/lib/markets", () => ({
-  appendLivePricePoint: (
-    history: { timeframe: string; data: Array<unknown> },
-    point: unknown,
-  ) => ({
+  appendLivePricePoint: (history: { timeframe: string; data: Array<unknown> }, point: unknown) => ({
     ...history,
     data: [...history.data, point],
   }),
@@ -133,8 +133,7 @@ vi.mock("@/lib/markets", () => ({
     spread: snapshot.spread ?? 0,
     depthLimit: snapshot.depthLimit,
   }),
-  priceNumeratorToPercent: (price: number, divisibility = 100) =>
-    (price / divisibility) * 100,
+  priceNumeratorToPercent: (price: number, divisibility = 100) => (price / divisibility) * 100,
   signTradeComment: vi.fn(),
   submitEphemeralPubkey: vi.fn(),
   submitOrder: vi.fn(),
@@ -326,16 +325,16 @@ describe("fetchMarketDetailWithBooks", () => {
 
   it("fetches singleton outcome-set books for categorical markets", async () => {
     vi.mocked(fetchMarketDetail).mockResolvedValue(categoricalMarket());
-    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      book(marketId.length),
-    );
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) => book(marketId.length));
 
     const detail = await fetchMarketDetailWithBooks("condition-1");
 
     expect(fetchOrderBook).toHaveBeenCalledTimes(3);
-    expect(
-      vi.mocked(fetchOrderBook).mock.calls.map(([marketId]) => marketId),
-    ).toEqual(["condition-1-Alice", "condition-1-Bob", "condition-1-Carol"]);
+    expect(vi.mocked(fetchOrderBook).mock.calls.map(([marketId]) => marketId)).toEqual([
+      "condition-1-Alice",
+      "condition-1-Bob",
+      "condition-1-Carol",
+    ]);
     expect(detail.outcomeOrderBooks).toHaveProperty("Alice");
     expect(detail.outcomeOrderBooks).not.toHaveProperty("Bob|Carol");
   });
@@ -403,9 +402,9 @@ describe("MarketDetailPage live market status", () => {
   });
 
   it("throws from the submit guard when the market is closed", () => {
-    expect(() =>
-      assertMarketAcceptsOrders(yesNoMarket({ state: "closed" })),
-    ).toThrow("This market is closed and no longer accepts orders.");
+    expect(() => assertMarketAcceptsOrders(yesNoMarket({ state: "closed" }))).toThrow(
+      "This market is closed and no longer accepts orders.",
+    );
   });
 
   it("cancels the TradeExecuted REST fallback when OrderBookUpdated arrives first", async () => {
@@ -475,9 +474,7 @@ describe("MarketDetailPage live market status", () => {
     fireEvent.blur(screen.getAllByTestId("limit-price-input")[0]);
 
     await waitFor(() =>
-      expect(screen.getAllByTestId("trade-confirm")[0]).toHaveTextContent(
-        "Top up sats wallet",
-      ),
+      expect(screen.getAllByTestId("trade-confirm")[0]).toHaveTextContent("Top up sats wallet"),
     );
     expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled();
     expect(screen.getAllByText("Insufficient funds").length).toBeGreaterThan(0);
@@ -665,15 +662,12 @@ describe("marketDetailDataReducer", () => {
       outcomeOrderBooks: {},
     });
 
-    const state = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      {
-        type: "marketSubmitRefreshLoaded",
-        detail: refresh,
-        booksByOutcomeSetId: booksByOutcomeSetFromDetail(refresh, []),
-        replaceOutcomeSetIds: [],
-      },
-    );
+    const state = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "marketSubmitRefreshLoaded",
+      detail: refresh,
+      booksByOutcomeSetId: booksByOutcomeSetFromDetail(refresh, []),
+      replaceOutcomeSetIds: [],
+    });
     const view = composeMarketDetail(state, "7d");
 
     expect(view?.state).toBe("closed");
@@ -687,9 +681,7 @@ describe("marketDetailDataReducer", () => {
       currentOdds: { yes: 50, no: 50 },
       priceHistory: {
         timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" },
-        ],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" }],
       },
     });
 
@@ -710,28 +702,20 @@ describe("marketDetailDataReducer", () => {
     ];
     initial.priceHistory = {
       timeframe: "7d",
-      data: [
-        { timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" },
-      ],
+      data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" }],
     };
     initial.outcomePriceHistories = {
       Alice: {
         timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" },
-        ],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" }],
       },
       Bob: {
         timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" },
-        ],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" }],
       },
       Carol: {
         timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" },
-        ],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" }],
       },
     };
 
@@ -739,9 +723,7 @@ describe("marketDetailDataReducer", () => {
 
     expect(view?.type).toBe("categorical");
     if (view?.type === "categorical") {
-      expect(view.outcomes.map((outcome) => outcome.odds)).toEqual([
-        80, 10, 10,
-      ]);
+      expect(view.outcomes.map((outcome) => outcome.odds)).toEqual([80, 10, 10]);
     }
   });
 
@@ -775,10 +757,10 @@ describe("marketDetailDataReducer", () => {
       outcomeOrderBooks: {},
     };
 
-    const state = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      { type: "marketSnapshotLoaded", detail: refresh },
-    );
+    const state = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "marketSnapshotLoaded",
+      detail: refresh,
+    });
     const view = composeMarketDetail(state, "7d");
 
     expect(view?.state).toBe("closed");
@@ -788,9 +770,7 @@ describe("marketDetailDataReducer", () => {
       expect(view.outcomePriceHistories.Alice.data).toEqual(
         initial.outcomePriceHistories.Alice.data,
       );
-      expect(view.outcomePriceHistories.Bob.data).toEqual(
-        initial.outcomePriceHistories.Bob.data,
-      );
+      expect(view.outcomePriceHistories.Bob.data).toEqual(initial.outcomePriceHistories.Bob.data);
     }
   });
 
@@ -813,15 +793,12 @@ describe("marketDetailDataReducer", () => {
       spread: 0,
     };
 
-    const state = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      {
-        type: "orderBookUpdated",
-        marketId: initial.id,
-        outcomeSetId: "Yes",
-        orderBook: liveBook,
-      },
-    );
+    const state = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "orderBookUpdated",
+      marketId: initial.id,
+      outcomeSetId: "Yes",
+      orderBook: liveBook,
+    });
     const view = composeMarketDetail(state, "7d");
 
     expect(view?.orderBook).toBe(liveBook);
@@ -838,15 +815,12 @@ describe("marketDetailDataReducer", () => {
     });
     const liveBook = book(58);
     const restBook = book(51);
-    const stateWithLive = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      {
-        type: "orderBookUpdated",
-        marketId: initial.id,
-        outcomeSetId: "Yes",
-        orderBook: liveBook,
-      },
-    );
+    const stateWithLive = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "orderBookUpdated",
+      marketId: initial.id,
+      outcomeSetId: "Yes",
+      orderBook: liveBook,
+    });
 
     const stateAfterRest = marketDetailDataReducer(stateWithLive, {
       type: "booksLoaded",
@@ -866,16 +840,13 @@ describe("marketDetailDataReducer", () => {
         data: [{ timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 1 }],
       },
     });
-    const stateWithLive = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      {
-        type: "tradeExecuted",
-        marketId: initial.id,
-        outcomeSetId: "Yes",
-        timeframe: "7d",
-        point: { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-      },
-    );
+    const stateWithLive = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "tradeExecuted",
+      marketId: initial.id,
+      outcomeSetId: "Yes",
+      timeframe: "7d",
+      point: { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
+    });
 
     const stateAfterRest = marketDetailDataReducer(stateWithLive, {
       type: "historyLoaded",
@@ -912,22 +883,17 @@ describe("marketDetailDataReducer", () => {
     const initial = yesNoMarket({
       priceHistory: {
         timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-01T00:00:00Z", price: 49, source: "initial" },
-        ],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 49, source: "initial" }],
       },
       outcomeOrderBooks: { Yes: book(50), No: book(50) },
     });
-    const stateWithLive = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      {
-        type: "tradeExecuted",
-        marketId: initial.id,
-        outcomeSetId: "Yes",
-        timeframe: "7d",
-        point: { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-      },
-    );
+    const stateWithLive = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "tradeExecuted",
+      marketId: initial.id,
+      outcomeSetId: "Yes",
+      timeframe: "7d",
+      point: { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
+    });
 
     const refresh = yesNoMarket({
       ...initial,
@@ -958,15 +924,11 @@ describe("marketDetailDataReducer", () => {
   });
 
   it("projects live No trades into the visible Yes chart for yes/no markets", () => {
-    const update = liveTradeChartUpdate(
-      yesNoMarket({ divisibility: 1000 }),
-      "No",
-      {
-        timestamp: "2026-01-03T00:00:00Z",
-        executionPrice: 200,
-        amountSubunits: 1_000_000,
-      },
-    );
+    const update = liveTradeChartUpdate(yesNoMarket({ divisibility: 1000 }), "No", {
+      timestamp: "2026-01-03T00:00:00Z",
+      executionPrice: 200,
+      amountSubunits: 1_000_000,
+    });
 
     expect(update).toEqual({
       outcomeSetId: "Yes",

@@ -942,9 +942,7 @@ export function getFinalProfileSchemaManifest(): ProfileSchemaManifest {
       userVersion: FINAL_PROFILE_SCHEMA_VERSION,
       markers: FINAL_PROFILE_SCHEMA_MARKERS,
     })
-    const digest = createHash('sha256')
-      .update(JSON.stringify(captured))
-      .digest('hex')
+    const digest = createHash('sha256').update(JSON.stringify(captured)).digest('hex')
     if (digest !== FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST) {
       throw new Error('frozen daemon profile schema manifest digest changed')
     }
@@ -956,17 +954,11 @@ export function getFinalProfileSchemaManifest(): ProfileSchemaManifest {
 }
 
 export function finalProfileSchemaManifestDigest(): string {
-  return createHash('sha256')
-    .update(JSON.stringify(getFinalProfileSchemaManifest()))
-    .digest('hex')
+  return createHash('sha256').update(JSON.stringify(getFinalProfileSchemaManifest())).digest('hex')
 }
 
 function deepFreeze<T>(value: T): T {
-  if (
-    value !== null &&
-    typeof value === 'object' &&
-    !ArrayBuffer.isView(value)
-  ) {
+  if (value !== null && typeof value === 'object' && !ArrayBuffer.isView(value)) {
     for (const child of Object.values(value)) deepFreeze(child)
     Object.freeze(value)
   }

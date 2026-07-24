@@ -61,13 +61,10 @@ export function computeSharedSecret(
 export function deriveEncryptionKey(sharedSecret: Uint8Array): Promise<CryptoKey> {
   const digest = crypto.subtle.digest('SHA-256', sharedSecret.buffer as ArrayBuffer)
   return digest.then((raw) =>
-    crypto.subtle.importKey(
-      'raw',
-      raw,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt'],
-    ),
+    crypto.subtle.importKey('raw', raw, { name: 'AES-GCM', length: 256 }, false, [
+      'encrypt',
+      'decrypt',
+    ]),
   )
 }
 

@@ -6,11 +6,7 @@
  * self-encryption so it can be restored on a fresh browser profile.
  */
 
-import type {
-  ActivityItem,
-  ActivityStatus,
-  ActivityType,
-} from "@/types/portfolio";
+import type { ActivityItem, ActivityStatus, ActivityType } from "@/types/portfolio";
 import { fetchPrivateNip78Content, publishPrivateNip78 } from "./nip78Private";
 
 export const ACTIVITY_LOG_D_TAG = "bitcaster:activity-log" as const;
@@ -28,11 +24,7 @@ const ACTIVITY_TYPES = new Set<ActivityType>([
   "creator_fee_claimed",
 ]);
 
-const ACTIVITY_STATUSES = new Set<ActivityStatus>([
-  "pending",
-  "completed",
-  "Failed",
-]);
+const ACTIVITY_STATUSES = new Set<ActivityStatus>(["pending", "completed", "Failed"]);
 
 function isActivityItem(value: unknown): value is ActivityItem {
   if (typeof value !== "object" || value === null) return false;
@@ -46,10 +38,8 @@ function isActivityItem(value: unknown): value is ActivityItem {
     typeof item.status === "string" &&
     ACTIVITY_STATUSES.has(item.status as ActivityStatus) &&
     (item.txId === null || typeof item.txId === "string") &&
-    (item.lightningInvoice === null ||
-      typeof item.lightningInvoice === "string") &&
-    (item.failureReason === undefined ||
-      typeof item.failureReason === "string") &&
+    (item.lightningInvoice === null || typeof item.lightningInvoice === "string") &&
+    (item.failureReason === undefined || typeof item.failureReason === "string") &&
     (item.marketId === undefined || typeof item.marketId === "string") &&
     (item.marketTitle === undefined || typeof item.marketTitle === "string") &&
     (item.positionId === undefined || typeof item.positionId === "string")
@@ -71,11 +61,7 @@ export async function fetchNip78ActivityLog(
   pubkey: string,
   privateKeyHex: string,
 ): Promise<ActivityItem[] | null> {
-  const content = await fetchPrivateNip78Content(
-    pubkey,
-    ACTIVITY_LOG_D_TAG,
-    privateKeyHex,
-  );
+  const content = await fetchPrivateNip78Content(pubkey, ACTIVITY_LOG_D_TAG, privateKeyHex);
   if (!content) return null;
 
   try {

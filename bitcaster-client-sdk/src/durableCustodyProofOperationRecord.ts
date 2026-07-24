@@ -35,10 +35,7 @@ export function createDurableCustodyProofOperation(input: {
   }
 }): DurableCustodyRecord {
   const operation = decodeDurableCustodyProofOperationInput(input.operation)
-  if (
-    operation.metadata?.unit !== input.facts.unit ||
-    operation.mintUrl.length === 0
-  ) {
+  if (operation.metadata?.unit !== input.facts.unit || operation.mintUrl.length === 0) {
     throw new Error('custody proof operation unit is invalid')
   }
   const fingerprints = {
@@ -64,17 +61,16 @@ export function createDurableCustodyProofOperation(input: {
     }
   })
   const handle = (kind: string, fingerprint: string) => `${kind}:${fingerprint}`
-  const successorProofIds = Object.values(operation.outputs).flatMap(
-    (outputs) =>
-      outputs.map((output) =>
-        deriveDurableCustodyProofId({
-          scopeId: input.scope.scopeId,
-          normalizedMint: operation.mintUrl,
-          unit: input.facts.unit,
-          keysetId: output.blindedMessage.id,
-          secret: output.secret,
-        }),
-      ),
+  const successorProofIds = Object.values(operation.outputs).flatMap((outputs) =>
+    outputs.map((output) =>
+      deriveDurableCustodyProofId({
+        scopeId: input.scope.scopeId,
+        normalizedMint: operation.mintUrl,
+        unit: input.facts.unit,
+        keysetId: output.blindedMessage.id,
+        secret: output.secret,
+      }),
+    ),
   )
   return createDurableCustodyDispatchIntent({
     scope: input.scope,
@@ -84,8 +80,7 @@ export function createDurableCustodyProofOperation(input: {
     normalizedMint: operation.mintUrl,
     inventoryAccountId: input.inventoryAccountId,
     reservation: {
-      reservationId:
-        input.reservationId ?? handle('reservation', fingerprints.requestFingerprint),
+      reservationId: input.reservationId ?? handle('reservation', fingerprints.requestFingerprint),
       parentReservationId: input.parentReservationId ?? null,
       inputs: inputProofs,
     },
@@ -107,10 +102,7 @@ export function createDurableCustodyProofOperation(input: {
     outputPlan: {
       outputPlanId: handle('output-plan', fingerprints.outputPlanFingerprint),
       outputPlanFingerprint: fingerprints.outputPlanFingerprint,
-      outputMaterialHandle: handle(
-        'output-material',
-        fingerprints.outputPlanFingerprint,
-      ),
+      outputMaterialHandle: handle('output-material', fingerprints.outputPlanFingerprint),
       exactOutput: input.exactBoundary.output,
     },
     privateMaterial: {
@@ -149,16 +141,11 @@ function exactRequestArtifact(operation: DurableCustodyProofOperationInput) {
 }
 
 export function deriveDurableCustodyProofResultFingerprint(
-  groups: Readonly<
-    Record<string, readonly DurableCustodyProofOperationInput['inputs'][number][]>
-  >,
+  groups: Readonly<Record<string, readonly DurableCustodyProofOperationInput['inputs'][number][]>>,
 ): string {
   return deriveDurableCustodyArtifactFingerprint(
     Object.fromEntries(
-      Object.entries(groups).map(([label, proofs]) => [
-        label,
-        proofs.map(canonicalProof),
-      ]),
+      Object.entries(groups).map(([label, proofs]) => [label, proofs.map(canonicalProof)]),
     ),
   )
 }
@@ -183,10 +170,7 @@ export function bindDurableCustodyProofOperation(
   for (const [reference, artifact] of [
     [expected.operation.exactRequest.body, artifacts.requestBody],
     [expected.operation.outputPlan.exactOutput, artifacts.output],
-    [
-      expected.operation.privateMaterial.exactPrivateMaterial,
-      artifacts.privateMaterial,
-    ],
+    [expected.operation.privateMaterial.exactPrivateMaterial, artifacts.privateMaterial],
   ] as const) {
     const artifactLookup = {
       scopeId: expected.scope.scopeId,
@@ -257,10 +241,6 @@ function canonicalOutput(
   })
 }
 
-function omitUndefined(
-  value: Record<string, unknown>,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, item]) => item !== undefined),
-  )
+function omitUndefined(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined))
 }

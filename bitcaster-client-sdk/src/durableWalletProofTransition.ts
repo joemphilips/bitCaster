@@ -7,8 +7,7 @@ import {
   encodeBoundedDurableArtifact,
 } from './durableCustody.ts'
 
-export const DURABLE_WALLET_PROOF_TRANSITION_METADATA_KEY =
-  'durableWalletProofTransition'
+export const DURABLE_WALLET_PROOF_TRANSITION_METADATA_KEY = 'durableWalletProofTransition'
 
 export type DurableWalletProofInputSource = 'wallet' | 'external'
 export type DurableWalletProofResultDisposition =
@@ -33,9 +32,7 @@ export interface DurableWalletProofTransition {
   schemaVersion: 1
   inputSource: DurableWalletProofInputSource
   resultGroups: Readonly<Record<string, DurableWalletProofResultDisposition>>
-  passthroughResultGroups: Readonly<
-    Record<string, readonly DurableWalletProofIdentity[]>
-  >
+  passthroughResultGroups: Readonly<Record<string, readonly DurableWalletProofIdentity[]>>
   resultCardinality: Readonly<Record<string, 'exact' | 'prefix'>>
 }
 
@@ -58,21 +55,19 @@ export function createDurableWalletProofTransition(input: {
   inputSource: DurableWalletProofInputSource
   plannedOutputLabels: readonly string[]
   resultGroups: Readonly<Record<string, DurableWalletProofResultDisposition>>
-  passthroughResultGroups?: Readonly<
-    Record<string, readonly DurableWalletResultProof[]>
-  >
+  passthroughResultGroups?: Readonly<Record<string, readonly DurableWalletResultProof[]>>
   resultCardinality?: Readonly<Record<string, 'exact' | 'prefix'>>
 }): DurableWalletProofTransition {
   if (
     input.plannedOutputLabels.length === 0 ||
-    input.plannedOutputLabels.length >
-      DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX
+    input.plannedOutputLabels.length > DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX
   ) {
     throw new Error('wallet proof transition group limit exceeded')
   }
-  const passthroughCount = Object.values(
-    input.passthroughResultGroups ?? {},
-  ).reduce((total, proofs) => total + proofs.length, 0)
+  const passthroughCount = Object.values(input.passthroughResultGroups ?? {}).reduce(
+    (total, proofs) => total + proofs.length,
+    0,
+  )
   if (passthroughCount > DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX) {
     throw new Error('wallet proof transition passthrough limit exceeded')
   }
@@ -81,9 +76,10 @@ export function createDurableWalletProofTransition(input: {
     inputSource: input.inputSource,
     resultGroups: structuredClone(input.resultGroups),
     passthroughResultGroups: Object.fromEntries(
-      Object.entries(input.passthroughResultGroups ?? {}).map(
-        ([label, proofs]) => [label, proofs.map(normalizeProof)],
-      ),
+      Object.entries(input.passthroughResultGroups ?? {}).map(([label, proofs]) => [
+        label,
+        proofs.map(normalizeProof),
+      ]),
     ),
     resultCardinality: Object.fromEntries(
       input.plannedOutputLabels.map((label) => [
@@ -128,9 +124,7 @@ export function assertDurableWalletProofResultGroups(
 export function durableWalletPassthroughProofs(
   policy: DurableWalletProofTransition,
 ): DurableWalletProofIdentity[] {
-  return Object.values(policy.passthroughResultGroups).flatMap((proofs) =>
-    structuredClone(proofs),
-  )
+  return Object.values(policy.passthroughResultGroups).flatMap((proofs) => structuredClone(proofs))
 }
 
 export function assertDurableWalletProofResultMatchesPlan(
@@ -138,10 +132,7 @@ export function assertDurableWalletProofResultMatchesPlan(
   outputs: Readonly<Record<string, readonly DurableWalletPlannedOutput[]>>,
   results: Readonly<Record<string, readonly DurableWalletResultProof[]>>,
 ): void {
-  const resultCount = Object.values(results).reduce(
-    (total, proofs) => total + proofs.length,
-    0,
-  )
+  const resultCount = Object.values(results).reduce((total, proofs) => total + proofs.length, 0)
   if (resultCount > DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX) {
     throw new Error('wallet proof transition result limit exceeded')
   }
@@ -156,9 +147,7 @@ export function assertDurableWalletProofResultMatchesPlan(
       if (passthrough.length > 0 || actual.length > planned.length) {
         throw new Error('wallet proof result exceeds its planned prefix')
       }
-      actual.forEach((proof, index) =>
-        assertPlannedProof(planned[index]!, proof, seen),
-      )
+      actual.forEach((proof, index) => assertPlannedProof(planned[index]!, proof, seen))
       continue
     }
     if (actual.length !== planned.length + passthrough.length) {
@@ -213,9 +202,7 @@ function normalizeProof(proof: DurableWalletResultProof): DurableWalletProofIden
     C: proof.C,
     ...(proof.dleq === undefined ? {} : { dleq: structuredClone(proof.dleq) }),
     ...(proof.p2pk_e === undefined ? {} : { p2pk_e: proof.p2pk_e }),
-    ...(proof.witness === undefined
-      ? {}
-      : { witness: structuredClone(proof.witness) }),
+    ...(proof.witness === undefined ? {} : { witness: structuredClone(proof.witness) }),
   }
   assertProof(value)
   return value
@@ -228,10 +215,7 @@ function assertTransition(
   if (!isRecord(value) || value.schemaVersion !== 1) {
     throw new Error('wallet proof transition metadata is invalid')
   }
-  if (
-    labels.length === 0 ||
-    labels.length > DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX
-  ) {
+  if (labels.length === 0 || labels.length > DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX) {
     throw new Error('wallet proof transition group limit exceeded')
   }
   assertExactKeys(value, [
@@ -263,11 +247,9 @@ function assertTransition(
     } else if (disposition.kind === 'wallet') {
       assertExactKeys(disposition, ['kind', 'asset', 'reservedBy'])
       if (
-        (disposition.asset !== 'regular' &&
-          disposition.asset !== 'conditional') ||
+        (disposition.asset !== 'regular' && disposition.asset !== 'conditional') ||
         (disposition.reservedBy !== null &&
-          (typeof disposition.reservedBy !== 'string' ||
-            disposition.reservedBy.length === 0))
+          (typeof disposition.reservedBy !== 'string' || disposition.reservedBy.length === 0))
       ) {
         throw new Error('wallet proof result reservation is invalid')
       }
@@ -284,8 +266,7 @@ function assertTransition(
   }
   if (
     Object.values(value.passthroughResultGroups).reduce<number>(
-      (total, proofs) =>
-        total + (Array.isArray(proofs) ? proofs.length : 0),
+      (total, proofs) => total + (Array.isArray(proofs) ? proofs.length : 0),
       0,
     ) > DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX
   ) {

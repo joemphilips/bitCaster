@@ -38,10 +38,7 @@ export function signNip98(
     content: '',
   }
   const { finalizeEvent } = require('nostr-tools/pure') as {
-    finalizeEvent: (
-      template: EventTemplate,
-      privateKey: Uint8Array,
-    ) => Record<string, unknown>
+    finalizeEvent: (template: EventTemplate, privateKey: Uint8Array) => Record<string, unknown>
   }
   const event = finalizeEvent(template, hexToBytes(identity.privateKeyHex))
   return `Nostr ${Buffer.from(JSON.stringify(event), 'utf8').toString('base64')}`

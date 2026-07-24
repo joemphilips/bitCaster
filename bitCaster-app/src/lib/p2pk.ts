@@ -7,7 +7,7 @@
  * Spec reference: nuts/11.md (P2PK spending conditions)
  */
 
-export { createP2PKWitness } from '@bitcaster/swap-protocol/p2pk'
+export { createP2PKWitness } from "@bitcaster/swap-protocol/p2pk";
 
 // ---------------------------------------------------------------------------
 // NUT-11 secret structure
@@ -16,16 +16,16 @@ export { createP2PKWitness } from '@bitcaster/swap-protocol/p2pk'
 /** Parameters for building a NUT-11 P2PK spending condition. */
 export interface P2PKSecretParams {
   /** Compressed secp256k1 pubkey (hex, 66 chars) that must sign to spend. */
-  recipientPubkey: string
+  recipientPubkey: string;
   /** Unix timestamp after which the refund pubkey may spend. */
-  locktime: number
+  locktime: number;
   /** Compressed secp256k1 pubkey (hex) that can spend after locktime expires. */
-  refundPubkey: string
+  refundPubkey: string;
   /**
    * NUT-11 sigflag. Defaults to 'SIG_INPUTS' (only inputs must be signed).
    * Use 'SIG_ALL' to also commit to outputs.
    */
-  sigFlag?: string
+  sigFlag?: string;
 }
 
 /**
@@ -46,19 +46,19 @@ export interface P2PKSecretParams {
  * ```
  */
 export function createP2PKSecret(params: P2PKSecretParams): string {
-  const nonce = randomHex(32)
+  const nonce = randomHex(32);
   return JSON.stringify([
-    'P2PK',
+    "P2PK",
     {
       nonce,
       data: params.recipientPubkey,
       tags: [
-        ['sigflag', params.sigFlag ?? 'SIG_INPUTS'],
-        ['locktime', String(params.locktime)],
-        ['refund', params.refundPubkey],
+        ["sigflag", params.sigFlag ?? "SIG_INPUTS"],
+        ["locktime", String(params.locktime)],
+        ["refund", params.refundPubkey],
       ],
     },
-  ])
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -66,13 +66,13 @@ export function createP2PKSecret(params: P2PKSecretParams): string {
 // ---------------------------------------------------------------------------
 
 function randomHex(bytes: number): string {
-  const arr = new Uint8Array(bytes)
-  crypto.getRandomValues(arr)
-  return bytesToHex(arr)
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return bytesToHex(arr);
 }
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }

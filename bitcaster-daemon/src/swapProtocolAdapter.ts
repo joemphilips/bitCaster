@@ -1,8 +1,4 @@
-import {
-  Mint as CashuMint,
-  Wallet as CashuWallet,
-  getEncodedToken,
-} from '@cashu/cashu-ts'
+import { Mint as CashuMint, Wallet as CashuWallet, getEncodedToken } from '@cashu/cashu-ts'
 import { createP2PKWitness } from '@bitcaster-market/swap-protocol/p2pk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import {
@@ -13,17 +9,11 @@ import {
   type PrepareProofOperationInput,
   type ProofOperationRecord,
 } from './state.ts'
-import type {
-  DaemonSwapContext,
-  DaemonSwapOps,
-  SellerMintOpenResult,
-} from './swapExecutor.ts'
+import type { DaemonSwapContext, DaemonSwapOps, SellerMintOpenResult } from './swapExecutor.ts'
 
 interface ProofOperationStore {
   getProofOperation(operationId: string): Promise<ProofOperationRecord | null>
-  prepareProofOperation(
-    input: PrepareProofOperationInput,
-  ): Promise<ProofOperationRecord>
+  prepareProofOperation(input: PrepareProofOperationInput): Promise<ProofOperationRecord>
   markProofOperationCompleted(
     operationId: string,
     resultProofs: Record<string, CashuProofRecord[]>,
@@ -163,17 +153,11 @@ export interface RealDaemonSwapOpsOptions {
 const DEFAULT_NUT07_POLL_DEADLINE_MS = 60_000
 const DEFAULT_NUT07_POLL_INTERVAL_MS = 1_000
 
-export function createRealDaemonSwapOps(
-  options: RealDaemonSwapOpsOptions = {},
-): DaemonSwapOps {
-  const loadAtomicSwapModule =
-    options.loadAtomicSwapModule ?? defaultAtomicSwapModuleLoader
-  const loadCtfSplitModule =
-    options.loadCtfSplitModule ?? defaultCtfSplitModuleLoader
-  const nut07PollDeadlineMs =
-    options.nut07PollDeadlineMs ?? DEFAULT_NUT07_POLL_DEADLINE_MS
-  const nut07PollIntervalMs =
-    options.nut07PollIntervalMs ?? DEFAULT_NUT07_POLL_INTERVAL_MS
+export function createRealDaemonSwapOps(options: RealDaemonSwapOpsOptions = {}): DaemonSwapOps {
+  const loadAtomicSwapModule = options.loadAtomicSwapModule ?? defaultAtomicSwapModuleLoader
+  const loadCtfSplitModule = options.loadCtfSplitModule ?? defaultCtfSplitModuleLoader
+  const nut07PollDeadlineMs = options.nut07PollDeadlineMs ?? DEFAULT_NUT07_POLL_DEADLINE_MS
+  const nut07PollIntervalMs = options.nut07PollIntervalMs ?? DEFAULT_NUT07_POLL_INTERVAL_MS
 
   return {
     async splitProofsForExactSend(params) {
@@ -207,10 +191,7 @@ export function createRealDaemonSwapOps(
 
     async sellerOpenPrelocked(ctx, lockedProofs) {
       const atomicSwap = await loadAtomicSwapModule()
-      const out = await atomicSwap.sellerPreparePrelockedSwap(
-        toAtomicCtx(ctx),
-        lockedProofs,
-      )
+      const out = await atomicSwap.sellerPreparePrelockedSwap(toAtomicCtx(ctx), lockedProofs)
       return {
         adaptorPointCipher: out.adaptorPointCipher,
         lockedProofsCipher: out.lockedProofsCipher,
@@ -223,15 +204,10 @@ export function createRealDaemonSwapOps(
 
     async sellerLockOutcomeProofs(ctx, outcomeProofs, amountSats, operationId) {
       const atomicSwap = await loadAtomicSwapModule()
-      return atomicSwap.sellerLockOutcomeProofs(
-        toAtomicCtx(ctx),
-        outcomeProofs,
-        amountSats,
-        {
-          operationId,
-          proofOperationStore: DAEMON_PROOF_OPERATION_STORE,
-        },
-      )
+      return atomicSwap.sellerLockOutcomeProofs(toAtomicCtx(ctx), outcomeProofs, amountSats, {
+        operationId,
+        proofOperationStore: DAEMON_PROOF_OPERATION_STORE,
+      })
     },
 
     async sellerOpenMint(ctx, params, collateralProofs) {

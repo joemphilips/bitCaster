@@ -1,10 +1,7 @@
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { decodeDurableCustodyScopeId } from '@bitcaster-market/client-sdk'
-import {
-  DAEMON_PROFILE_DATABASE,
-  validateDaemonProfileSchema,
-} from './profileSchema.ts'
+import { DAEMON_PROFILE_DATABASE, validateDaemonProfileSchema } from './profileSchema.ts'
 import { getFinalProfileSchemaManifest } from './profileSchemaManifest.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
 
@@ -103,16 +100,10 @@ export async function renewCustodyScopeLease(
   return withFencingTransaction(directory, (database) => {
     const state = readScopeState(database, fence.scopeId)
     assertCurrentFence(state, fence)
-    if (
-      state.leaseExpiresAtMs === null ||
-      state.leaseExpiresAtMs <= observedAtMs
-    ) {
+    if (state.leaseExpiresAtMs === null || state.leaseExpiresAtMs <= observedAtMs) {
       throw new ScopeLeaseRefusalError('lease-expired')
     }
-    const leaseExpiresAtMs = Math.max(
-      state.leaseExpiresAtMs,
-      checkedLeaseExpiry(observedAtMs),
-    )
+    const leaseExpiresAtMs = Math.max(state.leaseExpiresAtMs, checkedLeaseExpiry(observedAtMs))
     const result = database
       .prepare(
         `UPDATE custody_scope_state
@@ -140,10 +131,7 @@ export async function releaseCustodyScopeLease(
   await withFencingTransaction(directory, (database) => {
     const state = readScopeState(database, fence.scopeId)
     assertCurrentFence(state, fence)
-    if (
-      state.leaseExpiresAtMs === null ||
-      state.leaseExpiresAtMs <= observedAtMs
-    ) {
+    if (state.leaseExpiresAtMs === null || state.leaseExpiresAtMs <= observedAtMs) {
       throw new ScopeLeaseRefusalError('lease-expired')
     }
     const result = database
@@ -203,10 +191,7 @@ interface ScopeStateRow {
   readonly highWaterMarkMs: number
 }
 
-function readScopeState(
-  database: DatabaseSync,
-  scopeId: string,
-): ScopeStateRow {
+function readScopeState(database: DatabaseSync, scopeId: string): ScopeStateRow {
   const row = database
     .prepare(
       `SELECT fencing_epoch AS fencingEpoch,
@@ -220,10 +205,7 @@ function readScopeState(
   return row
 }
 
-function assertCurrentFence(
-  state: ScopeStateRow,
-  fence: CustodyScopeFence,
-): void {
+function assertCurrentFence(state: ScopeStateRow, fence: CustodyScopeFence): void {
   if (
     state.ownerIncarnationId !== fence.incarnationId ||
     state.fencingEpoch !== fence.fencingEpoch
@@ -232,10 +214,7 @@ function assertCurrentFence(
   }
 }
 
-function fenceFromState(
-  scopeId: string,
-  state: ScopeStateRow,
-): CustodyScopeFence {
+function fenceFromState(scopeId: string, state: ScopeStateRow): CustodyScopeFence {
   if (state.ownerIncarnationId === null || state.leaseExpiresAtMs === null) {
     throw new ScopeLeaseRefusalError('stale-fence')
   }

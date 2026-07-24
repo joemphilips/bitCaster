@@ -1,24 +1,21 @@
-import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 interface BookmarkState {
-  markets: string[]
-  toggle: (marketId: string) => void
+  markets: string[];
+  toggle: (marketId: string) => void;
   /** Replace the bookmark set wholesale (used by the Nostr sync hook). */
-  replace: (marketIds: string[]) => void
+  replace: (marketIds: string[]) => void;
 }
 
 /** Order-insensitive equality for bookmark lists. */
-export function bookmarkSetsEqual(
-  a: readonly string[],
-  b: readonly string[],
-): boolean {
-  if (a.length !== b.length) return false
-  const setA = new Set(a)
+export function bookmarkSetsEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const setA = new Set(a);
   for (const x of b) {
-    if (!setA.has(x)) return false
+    if (!setA.has(x)) return false;
   }
-  return true
+  return true;
 }
 
 /**
@@ -52,33 +49,33 @@ export const useBookmarkStore = create<BookmarkState>()(
       markets: [],
       toggle: (marketId) => {
         set((state) => {
-          const has = state.markets.includes(marketId)
+          const has = state.markets.includes(marketId);
           return {
             markets: has
               ? state.markets.filter((id) => id !== marketId)
               : [...state.markets, marketId],
-          }
-        })
+          };
+        });
       },
       replace: (marketIds) => {
-        const deduped = Array.from(new Set(marketIds))
-        if (bookmarkSetsEqual(get().markets, deduped)) return
-        set({ markets: deduped })
+        const deduped = Array.from(new Set(marketIds));
+        if (bookmarkSetsEqual(get().markets, deduped)) return;
+        set({ markets: deduped });
       },
     }),
     {
-      name: 'bitcaster-bookmarks',
+      name: "bitcaster-bookmarks",
       // Union-merge persisted disk state with in-memory state on rehydrate.
       // Default behaviour replaces memory with disk and drops any pre-hydrate
       // clicks; the union preserves them and dedupes.
       merge: (persisted, current) => {
-        const disk = (persisted as Partial<BookmarkState> | undefined)?.markets ?? []
-        const memory = current.markets
+        const disk = (persisted as Partial<BookmarkState> | undefined)?.markets ?? [];
+        const memory = current.markets;
         return {
           ...current,
           markets: Array.from(new Set([...memory, ...disk])),
-        }
+        };
       },
     },
   ),
-)
+);

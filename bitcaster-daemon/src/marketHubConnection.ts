@@ -11,10 +11,7 @@ interface SignalRModule {
 }
 
 interface HubConnectionBuilderLike {
-  withUrl(
-    url: string,
-    options: { accessTokenFactory: () => string },
-  ): HubConnectionBuilderLike
+  withUrl(url: string, options: { accessTokenFactory: () => string }): HubConnectionBuilderLike
   withAutomaticReconnect(retryDelays: number[]): HubConnectionBuilderLike
   build(): HubConnectionLike
 }
@@ -60,17 +57,14 @@ export class SignalRMarketHubConnection {
 
   async start(): Promise<void> {
     if (this.connection) return
-    const { HubConnectionBuilder } = require(
-      '@microsoft/signalr',
-    ) as SignalRModule
+    const { HubConnectionBuilder } = require('@microsoft/signalr') as SignalRModule
     const connection = new HubConnectionBuilder()
       .withUrl(this.hubUrl, {
         accessTokenFactory: () =>
-          signNip98(
-            { privateKeyHex: this.nostrSecretKeyHex },
-            this.hubUrl,
-            'POST',
-          ).replace(/^Nostr\s+/, ''),
+          signNip98({ privateKeyHex: this.nostrSecretKeyHex }, this.hubUrl, 'POST').replace(
+            /^Nostr\s+/,
+            '',
+          ),
       })
       .withAutomaticReconnect([0, 2_000, 5_000, 10_000, 30_000])
       .build()
@@ -115,12 +109,7 @@ export class SignalRMarketHubConnection {
               null,
               fetch,
               async ({ url, method, bodyText }) =>
-                signNip98(
-                  { privateKeyHex: this.nostrSecretKeyHex },
-                  url,
-                  method,
-                  bodyText,
-                ),
+                signNip98({ privateKeyHex: this.nostrSecretKeyHex }, url, method, bodyText),
               conditionId,
             )
           },
@@ -147,11 +136,7 @@ export async function handleMatchedForMaker(input: {
   processedTradeIds: Set<string>
   knownOrderIds: Set<string>
   getOrCreateEphemeralKeypair: (tradeId: string) => Promise<OrderEphemeralKeypair>
-  submitEphemeralPubkey: (
-    tradeId: string,
-    pubkey: string,
-    conditionId?: string,
-  ) => Promise<void>
+  submitEphemeralPubkey: (tradeId: string, pubkey: string, conditionId?: string) => Promise<void>
 }): Promise<void> {
   if (input.processedTradeIds.has(input.delta.tradeId)) return
   if (!input.knownOrderIds.has(input.delta.makerOrderId)) return
@@ -200,10 +185,8 @@ function parseMatchedDelta(value: unknown): MarketMatchedDelta {
   const delta = {
     marketId: stringField(record, 'marketId') ?? stringField(record, 'MarketId'),
     tradeId: stringField(record, 'tradeId') ?? stringField(record, 'TradeId'),
-    makerOrderId:
-      stringField(record, 'makerOrderId') ?? stringField(record, 'MakerOrderId'),
-    takerOrderId:
-      stringField(record, 'takerOrderId') ?? stringField(record, 'TakerOrderId'),
+    makerOrderId: stringField(record, 'makerOrderId') ?? stringField(record, 'MakerOrderId'),
+    takerOrderId: stringField(record, 'takerOrderId') ?? stringField(record, 'TakerOrderId'),
     deadline: stringField(record, 'deadline') ?? stringField(record, 'Deadline'),
   }
   if (!delta.marketId || !delta.tradeId || !delta.makerOrderId || !delta.takerOrderId) {

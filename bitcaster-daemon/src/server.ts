@@ -1,9 +1,4 @@
-import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from 'node:http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { createConnection } from 'node:net'
 import { readFile, unlink } from 'node:fs/promises'
@@ -30,9 +25,7 @@ import {
   type MarketThumbnailBytes,
 } from '@bitcaster-market/client-sdk'
 import { planParticipationScoreTopUp } from '@bitcaster-market/client-sdk/participationScore'
-import {
-  complementOutcomeSetId,
-} from '@bitcaster-market/client-sdk/outcomeSets'
+import { complementOutcomeSetId } from '@bitcaster-market/client-sdk/outcomeSets'
 import { validateOrderIntent } from '@bitcaster-market/client-sdk/orderValidation'
 import { checkOrderSettlementSupport } from '@bitcaster-market/client-sdk/settlementSupport'
 import {
@@ -91,10 +84,7 @@ import {
   type WalletOpsDependencies,
 } from './walletOps.ts'
 import { buildDaemonTokenHoldings } from './walletHoldings.ts'
-import type {
-  WalletSeedRecoveryParams,
-  WalletSeedRecoveryResult,
-} from './protocol.ts'
+import type { WalletSeedRecoveryParams, WalletSeedRecoveryResult } from './protocol.ts'
 
 export interface DaemonServerOptions {
   host?: string
@@ -102,9 +92,7 @@ export interface DaemonServerOptions {
   socketPath?: string
   tradeRuntime?: TradeRuntime
   swapExecutor?: SwapRecoveryExecutor
-  recoverWalletFromSeed?: (
-    input: WalletSeedRecoveryParams,
-  ) => Promise<WalletSeedRecoveryResult>
+  recoverWalletFromSeed?: (input: WalletSeedRecoveryParams) => Promise<WalletSeedRecoveryResult>
 }
 
 export interface SwapRecoveryExecutor {
@@ -114,19 +102,9 @@ export interface SwapRecoveryExecutor {
 }
 
 export interface EngineClientLike {
-  submitOrder(
-    marketId: string,
-    request: SubmitOrderRequest,
-  ): Promise<SubmitOrderResponse>
-  submitEphemeralPubkey?(
-    tradeId: string,
-    pubkey: string,
-    conditionId?: string,
-  ): Promise<unknown>
-  getOrderStatus(
-    marketId: string,
-    orderId: string,
-  ): Promise<OrderStatusResponse | null>
+  submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse>
+  submitEphemeralPubkey?(tradeId: string, pubkey: string, conditionId?: string): Promise<unknown>
+  getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null>
   cancelOrder(marketId: string, orderId: string): Promise<boolean>
   getOrderBook(marketId: string): Promise<OrderBookSnapshot>
   queryMarkets(params: QueryMarketsParams): Promise<QueryMarketsResponse>
@@ -179,9 +157,7 @@ async function splitWalletCompleteSet(input: {
     input.secrets,
   )
   const transport = new CashuMintCtfSplitTransport(input.mintUrl)
-  const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
-    input.conditionId,
-  )
+  const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(input.conditionId)
   const proofsByCollection = await splitCompleteSetWithOperation({
     mintUrl: input.mintUrl,
     operationId: `${input.operationId}:ctf-split`,
@@ -195,11 +171,15 @@ async function splitWalletCompleteSet(input: {
       OutputData.createRandomData(Amount.from(amountSubunits), keyset),
   })
   await updateState((state, now) => {
-    removeProofsBySecretFromState(state, input.mintUrl, [
-      ...collateral.spent,
-      ...collateral.inputs,
-    ])
-    addProofsToState(state, input.mintUrl, collateral.keep, 'available', { kind: 'sats', baseAsset: 'sat' }, now)
+    removeProofsBySecretFromState(state, input.mintUrl, [...collateral.spent, ...collateral.inputs])
+    addProofsToState(
+      state,
+      input.mintUrl,
+      collateral.keep,
+      'available',
+      { kind: 'sats', baseAsset: 'sat' },
+      now,
+    )
     for (const [outcomeSetId, proofs] of Object.entries(proofsByCollection)) {
       addProofsToState(
         state,
@@ -216,25 +196,17 @@ async function splitWalletCompleteSet(input: {
     conditionId: input.conditionId,
     amountSats: input.amountSats,
     outcomeProofCounts: Object.fromEntries(
-      Object.entries(proofsByCollection).map(([outcome, proofs]) => [
-        outcome,
-        proofs.length,
-      ]),
+      Object.entries(proofsByCollection).map(([outcome, proofs]) => [outcome, proofs.length]),
     ),
   }
 }
 
 export interface DispatchDependencies extends WalletOpsDependencies {
-  createEngineClient?: (options: {
-    baseUrl: string
-    nostrSecretKeyHex: string
-  }) => EngineClientLike
+  createEngineClient?: (options: { baseUrl: string; nostrSecretKeyHex: string }) => EngineClientLike
   generateEphemeralKeypair?: typeof generateOrderEphemeralKeypair
   tradeRuntime?: TradeRuntime
   swapExecutor?: SwapRecoveryExecutor
-  recoverWalletFromSeed?: (
-    input: WalletSeedRecoveryParams,
-  ) => Promise<WalletSeedRecoveryResult>
+  recoverWalletFromSeed?: (input: WalletSeedRecoveryParams) => Promise<WalletSeedRecoveryResult>
 }
 
 const ctfProofOperationStore: CtfProofOperationStore = {
@@ -243,15 +215,10 @@ const ctfProofOperationStore: CtfProofOperationStore = {
   prepareProofOperation: async (input) =>
     (await prepareProofOperation(input)) as CtfProofOperationRecord,
   markProofOperationCompleted: async (operationId, resultProofs) =>
-    (await markProofOperationCompleted(
-      operationId,
-      resultProofs,
-    )) as CtfProofOperationRecord,
+    (await markProofOperationCompleted(operationId, resultProofs)) as CtfProofOperationRecord,
 }
 
-export async function startDaemonServer(
-  options: DaemonServerOptions = {},
-): Promise<Server> {
+export async function startDaemonServer(options: DaemonServerOptions = {}): Promise<Server> {
   if (options.tradeRuntime && (await readProfile())) {
     await startTradeRuntimeBestEffort(options.tradeRuntime)
   }
@@ -281,8 +248,7 @@ export async function startDaemonServer(
   const port = options.port ?? Number(process.env.BITCASTER_DAEMON_PORT || 42871)
   await new Promise<void>((resolve) => server.listen(port, host, resolve))
   const address = server.address()
-  const boundPort =
-    typeof address === 'object' && address ? address.port : port
+  const boundPort = typeof address === 'object' && address ? address.port : port
   process.stdout.write(`bitcaster-daemon listening on http://${host}:${boundPort}\n`)
   return server
 }
@@ -308,10 +274,7 @@ async function handleRequest(
   }
 
   const expectedToken = await readRpcToken()
-  if (
-    expectedToken &&
-    !tokenMatches(bearerToken(req.headers.authorization), expectedToken)
-  ) {
+  if (expectedToken && !tokenMatches(bearerToken(req.headers.authorization), expectedToken)) {
     return writeJson(res, 401, { ok: false, error: 'unauthorized' })
   }
   if (!expectedToken && command.method !== 'health') {
@@ -330,13 +293,9 @@ function normalizeRpcError(err: unknown): DaemonResponse {
     return { ok: false, error: String(err) }
   }
 
-  const status =
-    'status' in err && typeof err.status === 'number' ? err.status : undefined
-  const cause =
-    'cause' in err && err.cause instanceof Error ? err.cause.message : undefined
-  const detail = [err.message, status ? `status=${status}` : null, cause]
-    .filter(Boolean)
-    .join('; ')
+  const status = 'status' in err && typeof err.status === 'number' ? err.status : undefined
+  const cause = 'cause' in err && err.cause instanceof Error ? err.cause.message : undefined
+  const detail = [err.message, status ? `status=${status}` : null, cause].filter(Boolean).join('; ')
   return { ok: false, error: detail || err.message }
 }
 
@@ -405,9 +364,7 @@ export async function dispatch(
         }
       }
       const profile = await updateProfile({
-        ...(command.params.engineUrl !== undefined
-          ? { engineBaseUrl: nextEngineBaseUrl }
-          : {}),
+        ...(command.params.engineUrl !== undefined ? { engineBaseUrl: nextEngineBaseUrl } : {}),
         ...(command.params.mintUrl !== undefined ? { mintUrl: nextMintUrl } : {}),
       })
       return {
@@ -661,13 +618,13 @@ export async function dispatch(
       const market =
         client.getMarket !== undefined
           ? await client.getMarket(command.params.conditionId)
-          : (
+          : ((
               await client.queryMarkets({
                 ids: [command.params.conditionId],
                 state: 'All',
                 limit: 1,
               })
-            ).markets[0] ?? null
+            ).markets[0] ?? null)
       return {
         ok: true,
         result: market,
@@ -690,7 +647,12 @@ export async function dispatch(
       let secrets: Awaited<ReturnType<typeof readSecrets>> | null = null
       let client: EngineClientLike | null = null
       const ensureOrderContext = async (): Promise<
-        | { ok: true; profile: NonNullable<typeof profile>; secrets: NonNullable<typeof secrets>; client: EngineClientLike }
+        | {
+            ok: true
+            profile: NonNullable<typeof profile>
+            secrets: NonNullable<typeof secrets>
+            client: EngineClientLike
+          }
         | { ok: false; error: string }
       > => {
         profile ??= await readProfile()
@@ -730,7 +692,8 @@ export async function dispatch(
       if (typeof amountSubunits !== 'number') {
         return {
           ok: false,
-          error: 'Order rejected: amountSubunits must be a positive integer in 100 sub-unit increments.',
+          error:
+            'Order rejected: amountSubunits must be a positive integer in 100 sub-unit increments.',
         }
       }
       const context = await ensureOrderContext()
@@ -821,11 +784,11 @@ export async function dispatch(
         orderParams.price,
         amountSubunits,
       )
-    await submitPendingEphemeralPubkeys({
-      client: context.client,
-      marketId: orderParams.marketId,
-      conditionId: splitMarketId(orderParams.marketId)?.conditionId,
-      orderId: submitted.orderId,
+      await submitPendingEphemeralPubkeys({
+        client: context.client,
+        marketId: orderParams.marketId,
+        conditionId: splitMarketId(orderParams.marketId)?.conditionId,
+        orderId: submitted.orderId,
         pendingPubkeySubmissions: submitted.pendingPubkeySubmissions,
         generateEphemeralKeypair: deps.generateEphemeralKeypair,
       })
@@ -883,16 +846,9 @@ export async function dispatch(
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
-      const status = await client.getOrderStatus(
-        command.params.marketId,
-        command.params.orderId,
-      )
+      const status = await client.getOrderStatus(command.params.marketId, command.params.orderId)
       const local = status
-        ? await recordOrderStatus(
-            command.params.marketId,
-            command.params.orderId,
-            status,
-          )
+        ? await recordOrderStatus(command.params.marketId, command.params.orderId, status)
         : null
       if (local) {
         await startTradeRuntimeBestEffort(deps.tradeRuntime)
@@ -925,20 +881,13 @@ export async function dispatch(
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
-      const cancelled = await client.cancelOrder(
-        command.params.marketId,
-        command.params.orderId,
-      )
+      const cancelled = await client.cancelOrder(command.params.marketId, command.params.orderId)
       const local = cancelled
-        ? await recordOrderStatus(
-            command.params.marketId,
-            command.params.orderId,
-            {
-              orderId: command.params.orderId,
-              marketId: command.params.marketId,
-              status: 'cancelled',
-            },
-          )
+        ? await recordOrderStatus(command.params.marketId, command.params.orderId, {
+            orderId: command.params.orderId,
+            marketId: command.params.marketId,
+            status: 'cancelled',
+          })
         : null
       return {
         ok: true,
@@ -1005,18 +954,12 @@ async function payParticipationScoreEcashWithRetry(
   let lastError: unknown
   for (let attempt = 0; attempt < SCORE_PAYMENT_ATTEMPTS; attempt += 1) {
     try {
-      return await client.payParticipationScoreEcash(
-        amountSats,
-        token,
-        paymentId,
-      )
+      return await client.payParticipationScoreEcash(amountSats, token, paymentId)
     } catch (err) {
       lastError = err
     }
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error('Failed to pay Engine Score.')
+  throw lastError instanceof Error ? lastError : new Error('Failed to pay Engine Score.')
 }
 
 async function consolidateMarket(input: {
@@ -1062,9 +1005,7 @@ async function consolidateMarket(input: {
   })
   const inputFeePpkByKeyset = await resolveCtfConsolidationInputFees(
     input.mintUrl,
-    Object.values(proofsByCollection).flatMap((proofs) =>
-      proofs.map((proof) => proof.id),
-    ),
+    Object.values(proofsByCollection).flatMap((proofs) => proofs.map((proof) => proof.id)),
     input.deps,
   )
   const outputKeysetByCollection = await resolveCtfConsolidationOutputKeysets(
@@ -1091,10 +1032,7 @@ async function consolidateMarket(input: {
       const keyset = outputKeysets[keysetId]
       if (!keyset) throw new Error(`missing mint keys for output keyset ${keysetId}`)
       const outputs = OutputData.createRandomData(Amount.from(amountSubunits), keyset)
-      outputsByCollection[collection] = [
-        ...(outputsByCollection[collection] ?? []),
-        ...outputs,
-      ]
+      outputsByCollection[collection] = [...(outputsByCollection[collection] ?? []), ...outputs]
       return outputs.map((output) => output.blindedMessage)
     },
   })
@@ -1155,10 +1093,7 @@ async function availableMarketProofs(input: {
       ]
       continue
     }
-    if (
-      record.asset.kind === 'Outcome' &&
-      record.asset.conditionId === input.conditionId
-    ) {
+    if (record.asset.kind === 'Outcome' && record.asset.conditionId === input.conditionId) {
       groups[record.asset.outcomeSetId] = [
         ...(groups[record.asset.outcomeSetId] ?? []),
         record.proof as Proof,
@@ -1168,18 +1103,17 @@ async function availableMarketProofs(input: {
   return groups
 }
 
-async function loadMarket(
-  client: EngineClientLike,
-  conditionId: string,
-): Promise<unknown | null> {
+async function loadMarket(client: EngineClientLike, conditionId: string): Promise<unknown | null> {
   if (client.getMarket) return client.getMarket(conditionId)
   return (
-    await client.queryMarkets({
-      ids: [conditionId],
-      state: 'All',
-      limit: 1,
-    })
-  ).markets[0] ?? null
+    (
+      await client.queryMarkets({
+        ids: [conditionId],
+        state: 'All',
+        limit: 1,
+      })
+    ).markets[0] ?? null
+  )
 }
 
 function extractMarketOutcomes(market: unknown): string[] {
@@ -1239,8 +1173,10 @@ function shouldRetryOrderValidationWithMarketUnit(
   request: unknown,
   validationMessage: string,
 ): boolean {
-  if (!validationMessage.includes('price must be an integer') &&
-      !validationMessage.includes('amountSubunits must be a positive integer')) {
+  if (
+    !validationMessage.includes('price must be an integer') &&
+    !validationMessage.includes('amountSubunits must be a positive integer')
+  ) {
     return false
   }
   if (typeof request !== 'object' || request === null || Array.isArray(request)) {
@@ -1259,12 +1195,17 @@ function shouldRetryOrderValidationWithMarketUnit(
   if (price <= 0 || amountSubunits <= 0) {
     return false
   }
-  if (intent.amountSubunits !== undefined && intent.amountSats === undefined &&
-      validationMessage.includes('amountSubunits must be a positive integer')) {
+  if (
+    intent.amountSubunits !== undefined &&
+    intent.amountSats === undefined &&
+    validationMessage.includes('amountSubunits must be a positive integer')
+  ) {
     return true
   }
 
-  return price >= DEFAULT_SAT_MARKET_DIVISIBILITY || amountSubunits >= DEFAULT_SAT_MARKET_DIVISIBILITY
+  return (
+    price >= DEFAULT_SAT_MARKET_DIVISIBILITY || amountSubunits >= DEFAULT_SAT_MARKET_DIVISIBILITY
+  )
 }
 
 async function submitPendingEphemeralPubkeys(input: {
@@ -1285,7 +1226,7 @@ async function submitPendingEphemeralPubkeys(input: {
           privateKeyHex: existing.privateKeyHex,
           publicKeyHex: existing.publicKeyHex,
         }
-      : input.generateEphemeralKeypair?.() ?? generateOrderEphemeralKeypair()
+      : (input.generateEphemeralKeypair?.() ?? generateOrderEphemeralKeypair())
     if (!existing) {
       await updateSecrets((current, now) => {
         current.orderEphemeralKeys[submission.tradeId] = {
@@ -1331,11 +1272,7 @@ async function maybePreparePreflightSplitForOrder(input: {
       'pre-flight split requires outcomeId to match the submitted primitive market id',
     )
   }
-  const outcomeLabels = await loadOutcomeLabels(
-    input.client,
-    input.mintUrl,
-    market.conditionId,
-  )
+  const outcomeLabels = await loadOutcomeLabels(input.client, input.mintUrl, market.conditionId)
   if (outcomeLabels.length < 2) {
     throw new Error('pre-flight split requires market outcome labels')
   }
@@ -1349,10 +1286,8 @@ async function maybePreparePreflightSplitForOrder(input: {
   const marketUnit = await loadMarketUnit(input.client, market.conditionId)
 
   const reservationId = `order-preflight:${input.clientOrderId}`
-  const keepOutcomeSetId =
-    input.tokenSide === 'Complement' ? complement : market.outcomeSetId
-  const lockOutcomeSetId =
-    input.tokenSide === 'Complement' ? market.outcomeSetId : complement
+  const keepOutcomeSetId = input.tokenSide === 'Complement' ? complement : market.outcomeSetId
+  const lockOutcomeSetId = input.tokenSide === 'Complement' ? market.outcomeSetId : complement
   let resolvedKeepOutcomeSetId = keepOutcomeSetId
   let resolvedLockOutcomeSetId = lockOutcomeSetId
   try {
@@ -1363,15 +1298,14 @@ async function maybePreparePreflightSplitForOrder(input: {
       outcomeProofsByCollection: {},
       regularProofs: [],
       splitRegularToOutcome: async () => {
-        const preflightOutputAmountSats =
-          await resolveRootPreflightOutputAmountSats({
-            mintUrl: input.mintUrl,
-            baseAsset: marketUnit.baseAsset,
-            conditionId: market.conditionId,
-            amountSats: input.amountSats,
-            keepOutcomeSetId,
-            lockOutcomeSetId,
-          })
+        const preflightOutputAmountSats = await resolveRootPreflightOutputAmountSats({
+          mintUrl: input.mintUrl,
+          baseAsset: marketUnit.baseAsset,
+          conditionId: market.conditionId,
+          amountSats: input.amountSats,
+          keepOutcomeSetId,
+          lockOutcomeSetId,
+        })
         const secrets = await readSecrets()
         if (!secrets) throw new Error('daemon secrets are not initialized')
         const collateral = await splitAvailableSatProofsForCtfCollateral(
@@ -1525,10 +1459,7 @@ async function loadOutcomeLabels(
   return loadMintOutcomeLabels(mintUrl, conditionId)
 }
 
-async function loadMintOutcomeLabels(
-  mintUrl: string,
-  conditionId: string,
-): Promise<string[]> {
+async function loadMintOutcomeLabels(mintUrl: string, conditionId: string): Promise<string[]> {
   try {
     const response = await fetch(`${mintUrl.replace(/\/+$/, '')}/v1/conditions`)
     if (!response.ok) return []
@@ -1538,9 +1469,7 @@ async function loadMintOutcomeLabels(
         keysets?: unknown
       }>
     }
-    const condition = body.conditions?.find(
-      (candidate) => candidate.condition_id === conditionId,
-    )
+    const condition = body.conditions?.find((candidate) => candidate.condition_id === conditionId)
     if (!condition?.keysets || typeof condition.keysets !== 'object') return []
     const labels = new Set<string>()
     for (const collection of Object.keys(condition.keysets as Record<string, unknown>)) {
@@ -1740,14 +1669,15 @@ export function orderBackingError(input: {
   holdings: TokenHoldings
 }): string | null {
   if (input.side === 'Buy') {
-    const requiredCollateral = input.amountSubunits % input.divisibility === 0
-      ? quotePaymentSubunits({
-        faceAmountSubunits: input.amountSubunits,
-        priceNumerator: input.price,
-        divisibility: input.divisibility,
-      })
-      // TODO: move arbitrary-size quote-payment rounding into the SDK helper.
-      : Math.ceil(input.amountSubunits * input.price / input.divisibility)
+    const requiredCollateral =
+      input.amountSubunits % input.divisibility === 0
+        ? quotePaymentSubunits({
+            faceAmountSubunits: input.amountSubunits,
+            priceNumerator: input.price,
+            divisibility: input.divisibility,
+          })
+        : // TODO: move arbitrary-size quote-payment rounding into the SDK helper.
+          Math.ceil((input.amountSubunits * input.price) / input.divisibility)
     if (input.holdings.baseUnitProofs >= requiredCollateral) return null
     return `insufficient backing: have ${input.holdings.baseUnitProofs} base subunits, need ${requiredCollateral}`
   }
@@ -1767,9 +1697,7 @@ export function orderBackingError(input: {
   return `insufficient backing: have ${backing.maxShares} outcome token shares, need ${requiredShares} shares`
 }
 
-function splitMarketId(
-  marketId: string,
-): { conditionId: string; outcomeSetId: string } | null {
+function splitMarketId(marketId: string): { conditionId: string; outcomeSetId: string } | null {
   const dash = marketId.lastIndexOf('-')
   if (dash <= 0 || dash >= marketId.length - 1) return null
   return {
@@ -1788,9 +1716,7 @@ function daemonStateIsEmpty(state: Awaited<ReturnType<typeof ensureState>>): boo
   )
 }
 
-async function startTradeRuntimeBestEffort(
-  tradeRuntime: TradeRuntime | undefined,
-): Promise<void> {
+async function startTradeRuntimeBestEffort(tradeRuntime: TradeRuntime | undefined): Promise<void> {
   if (!tradeRuntime) return
   try {
     await tradeRuntime.start(await ensureState())
@@ -1810,13 +1736,7 @@ function createEngineClient(
   return new BitcasterEngineClient({
     baseUrl: options.baseUrl,
     authorization: ({ url, method, bodyText, payloadHash }) =>
-      signNip98(
-        { privateKeyHex: options.nostrSecretKeyHex },
-        url,
-        method,
-        bodyText,
-        payloadHash,
-      ),
+      signNip98({ privateKeyHex: options.nostrSecretKeyHex }, url, method, bodyText, payloadHash),
   })
 }
 
@@ -1827,13 +1747,7 @@ function createAuthenticatedBitcasterEngineClient(options: {
   return new BitcasterEngineClient({
     baseUrl: options.baseUrl,
     authorization: ({ url, method, bodyText, payloadHash }) =>
-      signNip98(
-        { privateKeyHex: options.nostrSecretKeyHex },
-        url,
-        method,
-        bodyText,
-        payloadHash,
-      ),
+      signNip98({ privateKeyHex: options.nostrSecretKeyHex }, url, method, bodyText, payloadHash),
   })
 }
 
@@ -1865,19 +1779,12 @@ function writeJson(res: ServerResponse, status: number, body: DaemonResponse): v
 
 function isLocalCaller(address: string | undefined): boolean {
   if (!address) return true
-  return (
-    address === '127.0.0.1' ||
-    address === '::1' ||
-    address === '::ffff:127.0.0.1'
-  )
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
 }
 
 function isLoopbackBindHost(host: string): boolean {
   return (
-    host === 'localhost' ||
-    host === '127.0.0.1' ||
-    host === '::1' ||
-    host === '::ffff:127.0.0.1'
+    host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '::ffff:127.0.0.1'
   )
 }
 

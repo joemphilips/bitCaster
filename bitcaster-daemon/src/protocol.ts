@@ -10,7 +10,10 @@ export type DaemonCommand =
   | { method: 'markets.show'; params: { conditionId: string } }
   | { method: 'wallet.balance'; params?: undefined }
   | { method: 'wallet.receive'; params: WalletReceiveParams }
-  | { method: 'wallet.send'; params: { amountSats: number; mintUrl?: string; operationId?: string } }
+  | {
+      method: 'wallet.send'
+      params: { amountSats: number; mintUrl?: string; operationId?: string }
+    }
   | { method: 'wallet.splitCompleteSet'; params: WalletSplitCompleteSetParams }
   | { method: 'wallet.consolidateMarket'; params: WalletConsolidateMarketParams }
   | { method: 'wallet.operations'; params?: { kind?: string; state?: string } }

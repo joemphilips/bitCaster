@@ -46,7 +46,9 @@ export function isKind89NostrEvent(value: unknown): value is OracleNostrEvent {
     typeof event.sig === 'string' &&
     event.kind === 89 &&
     Array.isArray(event.tags) &&
-    event.tags.every((tag) => Array.isArray(tag) && tag.every((item) => typeof item === 'string')) &&
+    event.tags.every(
+      (tag) => Array.isArray(tag) && tag.every((item) => typeof item === 'string'),
+    ) &&
     typeof event.content === 'string' &&
     typeof event.createdAt === 'number'
   )
@@ -74,9 +76,7 @@ export interface MarketThumbnailBytes {
 interface EngineClientInternals {
   baseUrl: string
   fetchImpl: EngineFetch
-  authorization?: (
-    request: EngineAuthorizationRequest,
-  ) => string | Promise<string>
+  authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>
 }
 
 export async function createMarketViaEngine(
@@ -105,8 +105,7 @@ export async function createMarketViaEngine(
   // same bytes with the same Content-Type so server-side SHA-256 matches.
   const serialized = new Request(url, { method: 'POST', body: formData })
   const bodyBytes = await serialized.arrayBuffer()
-  const contentType =
-    serialized.headers.get('Content-Type') ?? 'multipart/form-data'
+  const contentType = serialized.headers.get('Content-Type') ?? 'multipart/form-data'
   const payloadHash = await sha256Hex(bodyBytes)
   const headers: Record<string, string> = { 'Content-Type': contentType }
   if (authorization) {
@@ -123,9 +122,7 @@ export async function createMarketViaEngine(
     body: bodyBytes,
   })
   if (!response.ok) {
-    throw new Error(
-      `[Matching Engine] Failed to create market: ${await readErrorDetail(response)}`,
-    )
+    throw new Error(`[Matching Engine] Failed to create market: ${await readErrorDetail(response)}`)
   }
   return (await response.json()) as CreateMarketResponse
 }
@@ -142,9 +139,7 @@ export async function submitOracleAttestationViaEngine(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(event),
   })
-  const body = (await response
-    .json()
-    .catch(() => null)) as OracleAttestationResponse | null
+  const body = (await response.json().catch(() => null)) as OracleAttestationResponse | null
   if (!response.ok) {
     throw new Error(
       body?.result
@@ -156,17 +151,13 @@ export async function submitOracleAttestationViaEngine(
   return body
 }
 
-function getEngineClientInternals(
-  client: BitcasterEngineClient,
-): EngineClientInternals {
+function getEngineClientInternals(client: BitcasterEngineClient): EngineClientInternals {
   return client as unknown as EngineClientInternals
 }
 
 async function sha256Hex(data: BufferSource): Promise<string> {
   const hash = await crypto.subtle.digest('SHA-256', data)
-  return [...new Uint8Array(hash)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 async function readErrorDetail(response: Response): Promise<string> {
@@ -174,9 +165,8 @@ async function readErrorDetail(response: Response): Promise<string> {
   try {
     const body = await response.json()
     const candidate = readProblemDetail(body)
-    detail = typeof candidate === 'string'
-      ? candidate.slice(0, 500)
-      : String(candidate).slice(0, 500)
+    detail =
+      typeof candidate === 'string' ? candidate.slice(0, 500) : String(candidate).slice(0, 500)
   } catch {
     detail = response.statusText || detail
   }

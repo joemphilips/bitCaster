@@ -114,7 +114,10 @@ test('fails fast for unsupported unit conversion base assets', () => {
 })
 
 test('normalizes initial AMM liquidity to sat markets only', () => {
-  assert.equal(normalizeMarketCreationLiquiditySats({ baseAsset: 'sat', liquiditySats: 10_000 }), 10_000)
+  assert.equal(
+    normalizeMarketCreationLiquiditySats({ baseAsset: 'sat', liquiditySats: 10_000 }),
+    10_000,
+  )
   assert.equal(normalizeMarketCreationLiquiditySats({ baseAsset: 'usd', liquiditySats: 10_000 }), 0)
   assert.equal(normalizeMarketCreationLiquiditySats({ baseAsset: 'sat', liquiditySats: -1 }), 0)
   assert.equal(normalizeMarketCreationLiquiditySats({ baseAsset: 'sat', liquiditySats: 1.5 }), 0)
@@ -172,11 +175,11 @@ test('validates price numerator and whole-share face amount', () => {
 
 test('computes quote payment by dividing into whole shares first', () => {
   assert.equal(
-      quotePaymentSubunits({
-        faceAmountSubunits: 3_000_000,
-        priceNumerator: 333,
-        divisibility: 1_000,
-      }),
+    quotePaymentSubunits({
+      faceAmountSubunits: 3_000_000,
+      priceNumerator: 333,
+      divisibility: 1_000,
+    }),
     999_000,
   )
   assert.throws(
@@ -189,11 +192,11 @@ test('computes quote payment by dividing into whole shares first', () => {
     /whole-share/,
   )
   assert.equal(
-      quotePaymentSubunits({
-        faceAmountSubunits: 1_000_000,
-        priceNumerator: 500,
-        divisibility: 1_000,
-      }),
+    quotePaymentSubunits({
+      faceAmountSubunits: 1_000_000,
+      priceNumerator: 500,
+      divisibility: 1_000,
+    }),
     500_000,
   )
 })

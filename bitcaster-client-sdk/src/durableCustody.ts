@@ -17,12 +17,9 @@ export const DURABLE_CUSTODY_ARTIFACT_BYTES_MAX = 16 * 1_024 * 1_024
 export const DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX = 16 * 1_024
 export const DURABLE_CUSTODY_ARTIFACT_DEPTH_LIMIT_MAX = 32
 export const DURABLE_CUSTODY_ARTIFACT_NODE_LIMIT_MAX = 16_384
-export const DURABLE_CUSTODY_RECOVERY_PAGE_MAX_BYTES =
-  DURABLE_CUSTODY_RECOVERY_PAGE_BYTES_MAX
-export const DURABLE_CUSTODY_RECORD_MAX_BYTES =
-  DURABLE_CUSTODY_RECORD_BYTES_MAX
-export const DURABLE_ARTIFACT_BYTES_LIMIT_MAX =
-  DURABLE_CUSTODY_ARTIFACT_BYTES_MAX
+export const DURABLE_CUSTODY_RECOVERY_PAGE_MAX_BYTES = DURABLE_CUSTODY_RECOVERY_PAGE_BYTES_MAX
+export const DURABLE_CUSTODY_RECORD_MAX_BYTES = DURABLE_CUSTODY_RECORD_BYTES_MAX
+export const DURABLE_ARTIFACT_BYTES_LIMIT_MAX = DURABLE_CUSTODY_ARTIFACT_BYTES_MAX
 
 export type DurableCustodySemanticKind =
   | 'swap-lock'
@@ -360,10 +357,7 @@ export type DurableCustodyTransition =
 export interface DurableCustodyTransaction {
   getScopeState(): DurableCustodyScopeState
   getOperation(operationId: string): DurableCustodyRecord | null
-  putOperation(input: {
-    record: DurableCustodyRecord
-    expectedRevision: number | null
-  }): void
+  putOperation(input: { record: DurableCustodyRecord; expectedRevision: number | null }): void
   getArtifact(input: {
     scopeId: string
     operationId: string
@@ -447,15 +441,10 @@ export interface DurableCustodyRecoveryPage {
   nextCursor: string | null
 }
 
-const WALLET_ID_DOMAIN = new TextEncoder().encode(
-  'bitcaster/durable-custody-wallet-id/v1\0',
-)
+const WALLET_ID_DOMAIN = new TextEncoder().encode('bitcaster/durable-custody-wallet-id/v1\0')
 
 export function deriveDurableCustodyWalletId(seed: Uint8Array): string {
-  if (
-    !(seed instanceof Uint8Array) ||
-    (seed.length !== 32 && seed.length !== 64)
-  ) {
+  if (!(seed instanceof Uint8Array) || (seed.length !== 32 && seed.length !== 64)) {
     throw new Error('custody wallet seed root must be 32 or 64 bytes')
   }
   const bytes = new Uint8Array(WALLET_ID_DOMAIN.length + seed.length)
@@ -464,9 +453,7 @@ export function deriveDurableCustodyWalletId(seed: Uint8Array): string {
   return bytesToHex(sha256(bytes))
 }
 
-export function deriveDurableCustodyScopeId(
-  scope: DurableCustodyScopeInput,
-): string {
+export function deriveDurableCustodyScopeId(scope: DurableCustodyScopeInput): string {
   validateScopeInput(scope)
   return scope.scopeKind === 'wallet'
     ? compositeId(['custody', 'wallet', scope.walletId])
@@ -529,10 +516,7 @@ export function deriveDurableCustodyOperationId(
   ])
 }
 
-export function decodeDurableCustodyOperationId(
-  value: unknown,
-  expectedScopeId: string,
-): string {
+export function decodeDurableCustodyOperationId(value: unknown, expectedScopeId: string): string {
   requireText(value, 'operation id')
   if (
     !value.startsWith(
@@ -546,9 +530,7 @@ export function decodeDurableCustodyOperationId(
   return value
 }
 
-export function deriveDurableCustodyProofId(
-  input: DurableCustodyProofIdentityInput,
-): string {
+export function deriveDurableCustodyProofId(input: DurableCustodyProofIdentityInput): string {
   const scopeId = decodeDurableCustodyScopeId(input.scopeId)
   requireNormalizedMint(input.normalizedMint)
   requireText(input.unit, 'unit')
@@ -568,23 +550,15 @@ export function deriveDurableCustodyProofId(
   )
 }
 
-export function deriveDurableCustodyArtifactFingerprint(
-  artifact: unknown,
-): string {
+export function deriveDurableCustodyArtifactFingerprint(artifact: unknown): string {
   return bytesToHex(sha256(encodeDurableCustodyArtifact(artifact)))
 }
 
 export function encodeDurableCustodyArtifact(value: unknown): Uint8Array {
-  return encodeBoundedDurableArtifact(
-    value,
-    DURABLE_CUSTODY_RECOVERY_PAGE_MAX_BYTES,
-  )
+  return encodeBoundedDurableArtifact(value, DURABLE_CUSTODY_RECOVERY_PAGE_MAX_BYTES)
 }
 
-export function encodeBoundedDurableArtifact(
-  value: unknown,
-  maximumBytes: number,
-): Uint8Array {
+export function encodeBoundedDurableArtifact(value: unknown, maximumBytes: number): Uint8Array {
   if (
     !Number.isSafeInteger(maximumBytes) ||
     maximumBytes < 1 ||
@@ -611,9 +585,7 @@ export function canonicalDurableCustodyKeysetIdentity(keysetId: string): string 
   if (normalized.length % 4 === 1) return keysetId
   try {
     const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
-    const decoded = Uint8Array.from(atob(padded), (character) =>
-      character.charCodeAt(0),
-    )
+    const decoded = Uint8Array.from(atob(padded), (character) => character.charCodeAt(0))
     let standard = ''
     for (const byte of decoded) standard += String.fromCharCode(byte)
     if (btoa(standard).replace(/=+$/, '') !== normalized) return keysetId
@@ -633,10 +605,7 @@ export function deriveDurableCustodyKeysetFingerprint(input: {
   requireText(input.unit, 'keyset unit')
   validateCurve(input.curve)
   const entries = Object.entries(input.publicKeys)
-  if (
-    entries.length === 0 ||
-    entries.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX
-  ) {
+  if (entries.length === 0 || entries.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
     throw new Error('custody keyset public keys are invalid')
   }
   const expectedLength = input.curve === 'bls12-381' ? 192 : 66
@@ -722,7 +691,7 @@ export function createDurableProofOperationFacts(
   if (input.inputKeysetRequirement === 'required' && inputKeysets.length === 0) {
     throw new Error('custody input keyset is required')
   }
-  if (input.hasOutputs !== (outputKeysets.length > 0)) {
+  if (input.hasOutputs !== outputKeysets.length > 0) {
     throw new Error('custody output keyset authority is invalid')
   }
   const expiries = input.keysets
@@ -756,14 +725,12 @@ export function createDurableCustodyDispatchIntent(input: {
     predecessorProofIds: readonly string[]
     successorProofIds: readonly string[]
   }
-  exactRequest: Omit<
-    DurableCustodyRecord['operation']['exactRequest'],
-    'body'
-  > & { body: DurableCustodyExactArtifact }
-  outputPlan: Omit<
-    DurableCustodyRecord['operation']['outputPlan'],
-    'exactOutput'
-  > & { exactOutput: DurableCustodyExactArtifact }
+  exactRequest: Omit<DurableCustodyRecord['operation']['exactRequest'], 'body'> & {
+    body: DurableCustodyExactArtifact
+  }
+  outputPlan: Omit<DurableCustodyRecord['operation']['outputPlan'], 'exactOutput'> & {
+    exactOutput: DurableCustodyExactArtifact
+  }
   privateMaterial: Omit<
     DurableCustodyRecord['operation']['privateMaterial'],
     'exactPrivateMaterial'
@@ -794,18 +761,12 @@ export function createDurableCustodyDispatchIntent(input: {
   ) {
     throw new Error('custody input proof limit or uniqueness is invalid')
   }
-  if (
-    input.exactRequest.outputPlanFingerprint !==
-      input.outputPlan.outputPlanFingerprint
-  ) {
+  if (input.exactRequest.outputPlanFingerprint !== input.outputPlan.outputPlanFingerprint) {
     throw new Error('custody output plan fingerprint is inconsistent')
   }
   const { body: requestBody, ...exactRequestAuthority } = input.exactRequest
   const { exactOutput, ...outputPlanAuthority } = input.outputPlan
-  const {
-    exactPrivateMaterial,
-    ...privateMaterialAuthority
-  } = input.privateMaterial
+  const { exactPrivateMaterial, ...privateMaterialAuthority } = input.privateMaterial
   const record: DurableCustodyRecord = {
     schemaVersion: DURABLE_CUSTODY_SCHEMA_VERSION,
     revision: 0,
@@ -903,13 +864,7 @@ export function createDurableCustodyDispatchIntent(input: {
 
 export function decodeDurableCustodyRecord(value: unknown): DurableCustodyRecord {
   if (!isRecord(value)) throw new Error('custody record is invalid')
-  exactKeys(value, [
-    'schemaVersion',
-    'revision',
-    'scope',
-    'operation',
-    'terminalTombstone',
-  ])
+  exactKeys(value, ['schemaVersion', 'revision', 'scope', 'operation', 'terminalTombstone'])
   if (
     value.schemaVersion !== 1 ||
     !Number.isSafeInteger(value.revision) ||
@@ -950,9 +905,7 @@ export function decodeDurableCustodyRecord(value: unknown): DurableCustodyRecord
   }
   validateOperationDetails(value.operation, value.scope)
   validateTerminalTombstone(value.terminalTombstone, value.operation)
-  durableCustodyArtifactReferences(
-    value as unknown as DurableCustodyRecord,
-  )
+  durableCustodyArtifactReferences(value as unknown as DurableCustodyRecord)
   const bytes = new TextEncoder().encode(canonicalJson(value)).length
   if (bytes > DURABLE_CUSTODY_RECORD_BYTES_MAX) {
     throw new Error('custody record byte limit exceeded')
@@ -974,8 +927,7 @@ export function assertDurableCustodyImmutableAuthorityMatches(
       retainedOperationKey: record.operation.retainedOperationKey,
       binding: record.operation.binding,
       semanticKind: record.operation.semanticKind,
-      terminalReplayEvidenceRequired:
-        record.operation.terminalReplayEvidenceRequired,
+      terminalReplayEvidenceRequired: record.operation.terminalReplayEvidenceRequired,
       custodyContext: record.operation.custodyContext,
       reservation: record.operation.reservation,
       exactRequest: record.operation.exactRequest,
@@ -986,35 +938,22 @@ export function assertDurableCustodyImmutableAuthorityMatches(
         lineage: {
           scopeId: record.operation.proofStorage.lineage.scopeId,
           operationId: record.operation.proofStorage.lineage.operationId,
-          predecessorProofIds:
-            record.operation.proofStorage.lineage.predecessorProofIds,
-          successorProofIds:
-            record.operation.proofStorage.lineage.successorProofIds,
+          predecessorProofIds: record.operation.proofStorage.lineage.predecessorProofIds,
+          successorProofIds: record.operation.proofStorage.lineage.successorProofIds,
         },
       },
       verification: record.operation.verification,
       horizon: record.operation.horizon,
     },
   })
-  if (
-    canonicalJson(immutableAuthority(current)) !==
-    canonicalJson(immutableAuthority(candidate))
-  ) {
+  if (canonicalJson(immutableAuthority(current)) !== canonicalJson(immutableAuthority(candidate))) {
     throw new Error('custody operation immutable authority is not exact')
   }
 }
 
-export function decodeDurableCustodyScopeState(
-  value: unknown,
-): DurableCustodyScopeState {
+export function decodeDurableCustodyScopeState(value: unknown): DurableCustodyScopeState {
   if (!isRecord(value)) throw new Error('custody scope state is invalid')
-  exactKeys(value, [
-    'schemaVersion',
-    'scope',
-    'fencingEpoch',
-    'owner',
-    'effectiveClock',
-  ])
+  exactKeys(value, ['schemaVersion', 'scope', 'fencingEpoch', 'owner', 'effectiveClock'])
   if (
     value.schemaVersion !== 1 ||
     !Number.isSafeInteger(value.fencingEpoch) ||
@@ -1037,9 +976,7 @@ export function decodeDurableCustodyScopeState(
   return structuredClone(value) as unknown as DurableCustodyScopeState
 }
 
-export function decodeDurableCustodyTransactionOperationIds(
-  value: unknown,
-): string[] {
+export function decodeDurableCustodyTransactionOperationIds(value: unknown): string[] {
   if (!Array.isArray(value)) {
     throw new Error('custody transaction operation ids are invalid')
   }
@@ -1074,8 +1011,7 @@ export function applyDurableCustodyTransaction<T>(
   authorize(scopeState, selection.owner)
   if (
     selection.operationRows.length === 0 ||
-    selection.operationRows.length >
-      DURABLE_CUSTODY_TRANSACTION_OPERATION_LIMIT_MAX
+    selection.operationRows.length > DURABLE_CUSTODY_TRANSACTION_OPERATION_LIMIT_MAX
   ) {
     throw new Error('custody transaction operation limit is invalid')
   }
@@ -1102,10 +1038,7 @@ export function applyDurableCustodyTransaction<T>(
       throw new Error('custody operation was not selected')
     }
     const selectedRevision = selectedRows.get(operationId)!
-    if (
-      expectedRevision !== undefined &&
-      selectedRevision !== expectedRevision
-    ) {
+    if (expectedRevision !== undefined && selectedRevision !== expectedRevision) {
       throw new Error('custody operation revision is not selected')
     }
     const current = transaction.getOperation(operationId)
@@ -1135,10 +1068,7 @@ export function applyDurableCustodyTransaction<T>(
       return requireSelected(operationId)
     },
     putOperation(input) {
-      requireSelected(
-        input.record.operation.operationId,
-        input.expectedRevision,
-      )
+      requireSelected(input.record.operation.operationId, input.expectedRevision)
       if (
         input.expectedRevision !== null ||
         input.record.revision !== 0 ||
@@ -1152,10 +1082,7 @@ export function applyDurableCustodyTransaction<T>(
     },
     getArtifact(input) {
       validateArtifactReference(input.reference)
-      const record = requireSelected(
-        input.operationId,
-        input.expectedOperationRevision,
-      )
+      const record = requireSelected(input.operationId, input.expectedOperationRevision)
       if (
         record === null ||
         input.scopeId !== selection.scope.scopeId ||
@@ -1175,10 +1102,7 @@ export function applyDurableCustodyTransaction<T>(
       if (input.scopeId !== selection.scope.scopeId) {
         throw new Error('custody artifact scope is foreign')
       }
-      assertDurableCustodyArtifactMatchesReference(
-        input.reference,
-        input.artifact,
-      )
+      assertDurableCustodyArtifactMatchesReference(input.reference, input.artifact)
       const record = transaction.getOperation(input.operationId)
       if (
         record === null ||
@@ -1265,9 +1189,7 @@ export function applyDurableCustodyTransaction<T>(
   return result
 }
 
-export function isDurableCustodyActiveRecoveryRecord(
-  record: DurableCustodyRecord,
-): boolean {
+export function isDurableCustodyActiveRecoveryRecord(record: DurableCustodyRecord): boolean {
   const decoded = decodeDurableCustodyRecord(record)
   return (
     decoded.operation.state === 'dispatch-intent' ||
@@ -1367,8 +1289,7 @@ export function reduceDurableCustodyState(
       if (
         transition.nextAttemptAtMs < transition.authorization.observedAtMs ||
         (operation.operation.retry.nextAttemptAtMs !== null &&
-          transition.nextAttemptAtMs <
-            operation.operation.retry.nextAttemptAtMs)
+          transition.nextAttemptAtMs < operation.operation.retry.nextAttemptAtMs)
       ) {
         throw new Error('custody retry time moves backwards')
       }
@@ -1377,10 +1298,7 @@ export function reduceDurableCustodyState(
         nextAttemptAtMs: transition.nextAttemptAtMs,
         reason: transition.reason,
       }
-      setStoragePins(operation, [
-        'active-reservation',
-        'active-retry-cursor',
-      ])
+      setStoragePins(operation, ['active-reservation', 'active-retry-cursor'])
       break
     case 'stage-verified-result':
       if (
@@ -1390,15 +1308,12 @@ export function reduceDurableCustodyState(
         throw new Error('custody result transition is invalid')
       }
       if (
-        transition.outputPlanFingerprint !==
-        operation.operation.outputPlan.outputPlanFingerprint
+        transition.outputPlanFingerprint !== operation.operation.outputPlan.outputPlanFingerprint
       ) {
         throw new Error('custody verified output plan is invalid')
       }
       validateExactArtifact(transition.exactResult)
-      if (
-        transition.exactResult.fingerprint !== transition.resultFingerprint
-      ) {
+      if (transition.exactResult.fingerprint !== transition.resultFingerprint) {
         throw new Error('custody verified result body is foreign')
       }
       operation.operation.result = {
@@ -1430,8 +1345,9 @@ export function reduceDurableCustodyState(
       )
       operation.operation.result.state = 'applied'
       operation.operation.state = 'reconciled'
-      operation.operation.proofStorage.lineage.successorAdmission =
-        structuredClone(transition.successorAdmission)
+      operation.operation.proofStorage.lineage.successorAdmission = structuredClone(
+        transition.successorAdmission,
+      )
       break
     case 'abort':
       if (operation.operation.state !== 'dispatch-intent') {
@@ -1484,8 +1400,7 @@ export function reduceDurableCustodyState(
       if (
         transition.receipt.payloadFingerprint !==
           operation.operation.delivery.exactPayload.fingerprint ||
-        transition.receipt.acknowledgedAtMs !==
-          transition.authorization.observedAtMs
+        transition.receipt.acknowledgedAtMs !== transition.authorization.observedAtMs
       ) {
         throw new Error('custody delivery receipt is foreign')
       }
@@ -1513,16 +1428,14 @@ export function reduceDurableCustodyState(
         authenticatedTerminalStatus: false,
         replayCutoffObserved: false,
       }
-      operation.operation.proofStorage.storageClass =
-        'terminal-replay-retained'
+      operation.operation.proofStorage.storageClass = 'terminal-replay-retained'
       setStoragePins(operation, ['replay-tombstone'])
       break
     case 'confirm-terminal-status':
     case 'observe-replay-cutoff':
       if (
         operation.terminalTombstone === null ||
-        operation.terminalTombstone.terminalAuthorityId !==
-          transition.terminalAuthorityId
+        operation.terminalTombstone.terminalAuthorityId !== transition.terminalAuthorityId
       ) {
         throw new Error('custody terminal evidence is foreign')
       }
@@ -1545,11 +1458,7 @@ export function reduceDurableCustodyState(
   }
 }
 
-export type DurableCustodyActiveWorkDisposition =
-  | 'operation'
-  | 'delivery'
-  | 'tombstone'
-  | 'none'
+export type DurableCustodyActiveWorkDisposition = 'operation' | 'delivery' | 'tombstone' | 'none'
 
 export function classifyDurableCustodyActiveWork(
   record: DurableCustodyRecord,
@@ -1604,30 +1513,20 @@ export function decideDurableCustodyPurge(
 
 export const decideTerminalTombstoneDrain = decideDurableCustodyPurge
 
-export function isDurableCustodyProofReservationActive(
-  record: DurableCustodyRecord,
-): boolean {
+export function isDurableCustodyProofReservationActive(record: DurableCustodyRecord): boolean {
   return record.operation.state !== 'reconciled' && record.operation.state !== 'aborted'
 }
 
-function setStoragePins(
-  record: DurableCustodyRecord,
-  pins: DurableCustodyPinReason[],
-): void {
+function setStoragePins(record: DurableCustodyRecord, pins: DurableCustodyPinReason[]): void {
   record.operation.proofStorage.pinReasons = [...pins].sort()
 }
 
-function isDeliveryResolved(
-  delivery: DurableCustodyRecord['operation']['delivery'],
-): boolean {
+function isDeliveryResolved(delivery: DurableCustodyRecord['operation']['delivery']): boolean {
   switch (delivery.deliveryKind) {
     case 'none':
       return false
     case 'outbox':
-      return (
-        delivery.state === 'acknowledged' &&
-        delivery.receipt !== null
-      )
+      return delivery.state === 'acknowledged' && delivery.receipt !== null
   }
 }
 
@@ -1660,10 +1559,7 @@ export async function readDurableCustodyRecoveryPage(
     throw new Error('custody recovery page exceeds its record limit')
   }
   const records = page.records.map(decodeDurableCustodyRecord)
-  if (
-    new Set(records.map((record) => record.operation.operationId)).size !==
-    records.length
-  ) {
+  if (new Set(records.map((record) => record.operation.operationId)).size !== records.length) {
     throw new Error('custody recovery page contains duplicate operations')
   }
   if (
@@ -1677,8 +1573,7 @@ export async function readDurableCustodyRecoveryPage(
     throw new Error('custody recovery page contains a foreign record')
   }
   if (
-    new TextEncoder().encode(canonicalJson(page)).length >
-    DURABLE_CUSTODY_RECOVERY_PAGE_BYTES_MAX
+    new TextEncoder().encode(canonicalJson(page)).length > DURABLE_CUSTODY_RECOVERY_PAGE_BYTES_MAX
   ) {
     throw new Error('custody recovery page byte limit exceeded')
   }
@@ -1729,22 +1624,14 @@ function validateOperationDetails(
   if (!isRecord(operation.custodyContext)) {
     throw new Error('custody context is invalid')
   }
-  exactKeys(operation.custodyContext, [
-    'normalizedMint',
-    'unit',
-    'inventoryAccountId',
-  ])
+  exactKeys(operation.custodyContext, ['normalizedMint', 'unit', 'inventoryAccountId'])
   requireNormalizedMint(operation.custodyContext.normalizedMint)
   requireText(operation.custodyContext.unit, 'unit')
   nullableText(operation.custodyContext.inventoryAccountId, 'inventory account id')
   if (!isRecord(operation.reservation)) {
     throw new Error('custody reservation is invalid')
   }
-  exactKeys(operation.reservation, [
-    'reservationId',
-    'parentReservationId',
-    'inputs',
-  ])
+  exactKeys(operation.reservation, ['reservationId', 'parentReservationId', 'inputs'])
   requireText(operation.reservation.reservationId, 'reservation id')
   nullableText(operation.reservation.parentReservationId, 'parent reservation id')
   if (
@@ -1769,17 +1656,21 @@ function validateOperationDetails(
   ) {
     throw new Error('custody reservation proof is duplicated')
   }
-  validateExactObject(operation.exactRequest, [
-    'requestId',
-    'requestFingerprint',
-    'payloadHandle',
-    'inputProofIds',
-    'outputPlanFingerprint',
-    'method',
-    'path',
-    'idempotencyKey',
-    'body',
-  ], 'exact request')
+  validateExactObject(
+    operation.exactRequest,
+    [
+      'requestId',
+      'requestFingerprint',
+      'payloadHandle',
+      'inputProofIds',
+      'outputPlanFingerprint',
+      'method',
+      'path',
+      'idempotencyKey',
+      'body',
+    ],
+    'exact request',
+  )
   const exactRequest = operation.exactRequest as Record<string, unknown>
   requireText(exactRequest.requestId, 'request id')
   requireFingerprint(exactRequest.requestFingerprint, 'request fingerprint')
@@ -1799,50 +1690,39 @@ function validateOperationDetails(
     throw new Error('custody exact input proof ids are invalid')
   }
   exactRequest.inputProofIds.forEach((id) => requireFingerprint(id, 'input proof id'))
-  validateExactObject(operation.outputPlan, [
-    'outputPlanId',
-    'outputPlanFingerprint',
-    'outputMaterialHandle',
-    'exactOutput',
-  ], 'output plan')
+  validateExactObject(
+    operation.outputPlan,
+    ['outputPlanId', 'outputPlanFingerprint', 'outputMaterialHandle', 'exactOutput'],
+    'output plan',
+  )
   const outputPlan = operation.outputPlan as Record<string, unknown>
   requireText(outputPlan.outputPlanId, 'output plan id')
   requireFingerprint(outputPlan.outputPlanFingerprint, 'output plan fingerprint')
   requireText(outputPlan.outputMaterialHandle, 'output material handle')
   validateArtifactReference(outputPlan.exactOutput)
-  if (
-    outputPlan.exactOutput.fingerprint !==
-    outputPlan.outputPlanFingerprint
-  ) {
+  if (outputPlan.exactOutput.fingerprint !== outputPlan.outputPlanFingerprint) {
     throw new Error('custody exact output reference is foreign')
   }
   if (outputPlan.outputPlanFingerprint !== exactRequest.outputPlanFingerprint) {
     throw new Error('custody output plan fingerprint is inconsistent')
   }
-  validateExactObject(operation.privateMaterial, [
-    'materialHandle',
-    'useId',
-    'publicFingerprint',
-    'exactPrivateMaterial',
-  ], 'private material')
+  validateExactObject(
+    operation.privateMaterial,
+    ['materialHandle', 'useId', 'publicFingerprint', 'exactPrivateMaterial'],
+    'private material',
+  )
   const privateMaterial = operation.privateMaterial as Record<string, unknown>
   requireText(privateMaterial.materialHandle, 'private material handle')
   requireText(privateMaterial.useId, 'private material use id')
   requireFingerprint(privateMaterial.publicFingerprint, 'public fingerprint')
   validateArtifactReference(privateMaterial.exactPrivateMaterial)
-  validateExactObject(operation.result, [
-    'state',
-    'resultHandle',
-    'resultFingerprint',
-    'outputPlanFingerprint',
-    'exactResult',
-  ], 'result')
+  validateExactObject(
+    operation.result,
+    ['state', 'resultHandle', 'resultFingerprint', 'outputPlanFingerprint', 'exactResult'],
+    'result',
+  )
   const result = operation.result as Record<string, unknown>
-  if (
-    result.state !== 'none' &&
-    result.state !== 'verified-staged' &&
-    result.state !== 'applied'
-  ) {
+  if (result.state !== 'none' && result.state !== 'verified-staged' && result.state !== 'applied') {
     throw new Error('custody result state is invalid')
   }
   nullableText(result.resultHandle, 'result handle')
@@ -1851,10 +1731,10 @@ function validateOperationDetails(
   if (result.exactResult !== null) validateArtifactReference(result.exactResult)
   if (
     (result.state === 'none') !==
-      (result.resultHandle === null &&
-        result.resultFingerprint === null &&
-        result.outputPlanFingerprint === null &&
-        result.exactResult === null)
+    (result.resultHandle === null &&
+      result.resultFingerprint === null &&
+      result.outputPlanFingerprint === null &&
+      result.exactResult === null)
   ) {
     throw new Error('custody result authority is incoherent')
   }
@@ -1871,11 +1751,7 @@ function validateOperationDetails(
   validateProofStorage(operation.proofStorage, operation, scope)
   validateDelivery(operation.delivery)
   validateVerification(operation.verification, outputPlan.outputPlanFingerprint)
-  validateExactObject(operation.retry, [
-    'attempt',
-    'nextAttemptAtMs',
-    'reason',
-  ], 'retry')
+  validateExactObject(operation.retry, ['attempt', 'nextAttemptAtMs', 'reason'], 'retry')
   const retry = operation.retry as Record<string, unknown>
   if (!Number.isSafeInteger(retry.attempt) || (retry.attempt as number) < 0) {
     throw new Error('custody retry attempt is invalid')
@@ -1893,12 +1769,11 @@ function validateOperationDetails(
   ) {
     throw new Error('custody retry reason is invalid')
   }
-  validateExactObject(operation.horizon, [
-    'notBeforeMs',
-    'notAfterMs',
-    'safetyMarginMs',
-    'keysetExpiryMs',
-  ], 'horizon')
+  validateExactObject(
+    operation.horizon,
+    ['notBeforeMs', 'notAfterMs', 'safetyMarginMs', 'keysetExpiryMs'],
+    'horizon',
+  )
   const horizon = operation.horizon as Record<string, unknown>
   nullableTime(horizon.notBeforeMs as number | null, 'not-before time')
   nullableTime(horizon.notAfterMs as number | null, 'not-after time')
@@ -1908,18 +1783,13 @@ function validateOperationDetails(
 }
 
 function validateVerification(value: unknown, outputFingerprint: unknown): void {
-  validateExactObject(value, [
-    'outputPlanFingerprint',
-    'hasOutputs',
-    'keysetBindings',
-    'inputKeysets',
-    'outputKeysets',
-  ], 'verification')
-  const verification = value as Record<string, unknown>
-  requireFingerprint(
-    verification.outputPlanFingerprint,
-    'verification output fingerprint',
+  validateExactObject(
+    value,
+    ['outputPlanFingerprint', 'hasOutputs', 'keysetBindings', 'inputKeysets', 'outputKeysets'],
+    'verification',
   )
+  const verification = value as Record<string, unknown>
+  requireFingerprint(verification.outputPlanFingerprint, 'verification output fingerprint')
   if (
     verification.outputPlanFingerprint !== outputFingerprint ||
     typeof verification.hasOutputs !== 'boolean'
@@ -1930,19 +1800,13 @@ function validateVerification(value: unknown, outputFingerprint: unknown): void 
     !Array.isArray(verification.keysetBindings) ||
     !Array.isArray(verification.inputKeysets) ||
     !Array.isArray(verification.outputKeysets) ||
-    verification.keysetBindings.length >
-      DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX
+    verification.keysetBindings.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX
   ) {
     throw new Error('custody verification keysets are invalid')
   }
   verification.keysetBindings.forEach((binding) => {
     if (!isRecord(binding)) throw new Error('custody keyset binding is invalid')
-    exactKeys(binding, [
-      'keysetId',
-      'curve',
-      'keysetFingerprint',
-      'requireDleq',
-    ])
+    exactKeys(binding, ['keysetId', 'curve', 'keysetFingerprint', 'requireDleq'])
     requireText(binding.keysetId, 'keyset id')
     validateCurve(binding.curve)
     requireFingerprint(binding.keysetFingerprint, 'keyset fingerprint')
@@ -1960,19 +1824,14 @@ function validateVerification(value: unknown, outputFingerprint: unknown): void 
   }
 }
 
-function validateExactArtifact(
-  value: unknown,
-): asserts value is DurableCustodyExactArtifact {
+function validateExactArtifact(value: unknown): asserts value is DurableCustodyExactArtifact {
   if (!isRecord(value)) throw new Error('custody exact artifact is invalid')
   exactKeys(value, ['encoding', 'artifact', 'fingerprint'])
   if (value.encoding !== 'canonical-json') {
     throw new Error('custody exact artifact encoding is invalid')
   }
   requireFingerprint(value.fingerprint, 'exact artifact fingerprint')
-  const bytes = encodeBoundedDurableArtifact(
-    value.artifact,
-    DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
-  )
+  const bytes = encodeBoundedDurableArtifact(value.artifact, DURABLE_CUSTODY_ARTIFACT_BYTES_MAX)
   if (bytesToHex(sha256(bytes)) !== value.fingerprint) {
     throw new Error('custody exact artifact fingerprint is invalid')
   }
@@ -1988,10 +1847,8 @@ export function createDurableCustodyArtifactReference(
     artifactId,
     encoding: 'canonical-json',
     fingerprint: value.fingerprint,
-    byteLength: encodeBoundedDurableArtifact(
-      value.artifact,
-      DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
-    ).length,
+    byteLength: encodeBoundedDurableArtifact(value.artifact, DURABLE_CUSTODY_ARTIFACT_BYTES_MAX)
+      .length,
   }
 }
 
@@ -2021,9 +1878,7 @@ export function durableCustodyArtifactReferences(
     record.operation.exactRequest.body,
     record.operation.outputPlan.exactOutput,
     record.operation.privateMaterial.exactPrivateMaterial,
-    ...(record.operation.result.exactResult === null
-      ? []
-      : [record.operation.result.exactResult]),
+    ...(record.operation.result.exactResult === null ? [] : [record.operation.result.exactResult]),
     ...(record.operation.delivery.deliveryKind === 'outbox'
       ? [record.operation.delivery.exactPayload]
       : []),
@@ -2145,7 +2000,10 @@ function validateProofStorage(
     }
     return pin
   })
-  if (new Set(pins).size !== pins.length || [...pins].sort().some((pin, index) => pin !== pins[index])) {
+  if (
+    new Set(pins).size !== pins.length ||
+    [...pins].sort().some((pin, index) => pin !== pins[index])
+  ) {
     throw new Error('custody proof storage pins are not canonical')
   }
   if (!isRecord(value.lineage)) throw new Error('custody proof lineage is invalid')
@@ -2173,8 +2031,7 @@ function validateProofStorage(
       predecessorProofIds: value.lineage.predecessorProofIds as string[],
       successorProofIds: value.lineage.successorProofIds as string[],
     },
-    (operation.reservation as DurableCustodyRecord['operation']['reservation'])
-      .inputs,
+    (operation.reservation as DurableCustodyRecord['operation']['reservation']).inputs,
   )
   if (value.lineage.successorAdmission !== null) {
     validateSuccessorAdmission(
@@ -2196,10 +2053,7 @@ function validateSuccessorAdmission(
     throw new Error('custody successor admission is invalid')
   }
   exactKeys(value, ['scopeId', 'operationId', 'admissionId', 'proofRows'])
-  if (
-    value.scopeId !== scope.scopeId ||
-    value.operationId !== operationId
-  ) {
+  if (value.scopeId !== scope.scopeId || value.operationId !== operationId) {
     throw new Error('custody successor admission is foreign')
   }
   requireText(value.admissionId, 'successor admission id')
@@ -2218,8 +2072,7 @@ function validateSuccessorAdmission(
     requireFingerprint(row.proofId, 'successor admission proof id')
     if (
       row.expectedRevision !== null &&
-      (!Number.isSafeInteger(row.expectedRevision) ||
-        (row.expectedRevision as number) < 0)
+      (!Number.isSafeInteger(row.expectedRevision) || (row.expectedRevision as number) < 0)
     ) {
       throw new Error('custody successor admission expected revision is invalid')
     }
@@ -2268,25 +2121,14 @@ function validateDelivery(value: unknown): void {
   requireText(value.deliveryId, 'delivery id')
   validateArtifactReference(value.exactPayload)
   if (value.expiresAtMs !== null) safeTime(value.expiresAtMs as number, 'delivery expiry')
-  if (
-    value.state !== 'pending' &&
-    value.state !== 'acknowledged' &&
-    value.state !== 'expired'
-  ) {
+  if (value.state !== 'pending' && value.state !== 'acknowledged' && value.state !== 'expired') {
     throw new Error('custody delivery state is invalid')
   }
   if (value.receipt !== null) {
     if (!isRecord(value.receipt)) throw new Error('custody delivery receipt is invalid')
-    exactKeys(value.receipt, [
-      'receiptId',
-      'payloadFingerprint',
-      'acknowledgedAtMs',
-    ])
+    exactKeys(value.receipt, ['receiptId', 'payloadFingerprint', 'acknowledgedAtMs'])
     requireText(value.receipt.receiptId, 'delivery receipt id')
-    requireFingerprint(
-      value.receipt.payloadFingerprint,
-      'delivery receipt payload fingerprint',
-    )
+    requireFingerprint(value.receipt.payloadFingerprint, 'delivery receipt payload fingerprint')
     safeTime(value.receipt.acknowledgedAtMs as number, 'delivery receipt time')
     if (
       value.state !== 'acknowledged' ||
@@ -2299,10 +2141,7 @@ function validateDelivery(value: unknown): void {
   }
 }
 
-function validateTerminalTombstone(
-  value: unknown,
-  operation: Record<string, unknown>,
-): void {
+function validateTerminalTombstone(value: unknown, operation: Record<string, unknown>): void {
   if (value === null) return
   if (!isRecord(value)) throw new Error('custody terminal tombstone is invalid')
   exactKeys(value, [
@@ -2328,28 +2167,22 @@ function validateLifecycleCoherence(operation: Record<string, unknown>): void {
   const reservation = operation.reservation as Record<string, unknown>
   const retry = operation.retry as Record<string, unknown>
   const delivery = operation.delivery as Record<string, unknown>
-  const lineage = (
-    (operation.proofStorage as Record<string, unknown>)
-      .lineage as Record<string, unknown>
-  )
+  const lineage = (operation.proofStorage as Record<string, unknown>).lineage as Record<
+    string,
+    unknown
+  >
   if (
     (operation.state === 'reconciled') !== (result.state === 'applied') ||
-    (operation.state === 'reconciled') !==
-      (lineage.successorAdmission !== null) ||
+    (operation.state === 'reconciled') !== (lineage.successorAdmission !== null) ||
     (operation.state === 'aborted' &&
-      (result.state !== 'none' ||
-        delivery.deliveryKind !== 'none' ||
-        retry.reason !== 'none'))
+      (result.state !== 'none' || delivery.deliveryKind !== 'none' || retry.reason !== 'none'))
   ) {
     throw new Error('custody operation lifecycle is incoherent')
   }
   const reserved = (reservation.inputs as Array<Record<string, unknown>>).map(
     ({ proofId }) => proofId,
   )
-  const requested = (
-    (operation.exactRequest as Record<string, unknown>)
-      .inputProofIds as unknown[]
-  )
+  const requested = (operation.exactRequest as Record<string, unknown>).inputProofIds as unknown[]
   if (
     reserved.length !== requested.length ||
     new Set(reserved).size !== reserved.length ||
@@ -2480,9 +2313,7 @@ function requiresTerminalReplay(kind: DurableCustodySemanticKind): boolean {
   }
 }
 
-function semanticStage(
-  kind: DurableCustodySemanticKind,
-): DurableCustodyWalletStage {
+function semanticStage(kind: DurableCustodySemanticKind): DurableCustodyWalletStage {
   switch (kind) {
     case 'swap-lock':
       return 'lock'
@@ -2504,12 +2335,7 @@ function semanticStage(
 }
 
 function requireHttpMethod(value: unknown): void {
-  if (
-    value !== 'POST' &&
-    value !== 'PUT' &&
-    value !== 'PATCH' &&
-    value !== 'DELETE'
-  ) {
+  if (value !== 'POST' && value !== 'PUT' && value !== 'PATCH' && value !== 'DELETE') {
     throw new Error('custody exact request method is invalid')
   }
 }
@@ -2699,10 +2525,7 @@ function nullableText(value: unknown, label: string): void {
   if (value !== null) requireText(value, label)
 }
 
-function requireFingerprint(
-  value: unknown,
-  label: string,
-): asserts value is string {
+function requireFingerprint(value: unknown, label: string): asserts value is string {
   if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
     throw new Error(`custody ${label} is invalid`)
   }
@@ -2724,9 +2547,7 @@ function safeTime(value: number, label: string): void {
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   return (
-    (typeof value === 'object' || typeof value === 'function') &&
-    value !== null &&
-    'then' in value
+    (typeof value === 'object' || typeof value === 'function') && value !== null && 'then' in value
   )
 }
 
@@ -2735,7 +2556,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     typeof value === 'object' &&
     value !== null &&
     !Array.isArray(value) &&
-    (Object.getPrototypeOf(value) === Object.prototype ||
-      Object.getPrototypeOf(value) === null)
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
   )
 }

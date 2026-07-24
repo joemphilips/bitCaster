@@ -72,9 +72,7 @@ function requireMarketBaseAsset(
   throw new Error(`unsupported base asset: ${value}`)
 }
 
-export function collateralScaleForUnit(
-  unit: string | null | undefined,
-): number {
+export function collateralScaleForUnit(unit: string | null | undefined): number {
   const normalized = unit?.trim().toLowerCase()
   if (!normalized) throw new Error('collateralScaleForUnit: unit is required')
   const info = COLLATERAL_UNIT_REGISTRY[normalized]
@@ -82,10 +80,7 @@ export function collateralScaleForUnit(
   return info.scale
 }
 
-export function cashuAmountToMarketSubunits(
-  amount: number,
-  unit: CashuProofUnit | string,
-): number {
+export function cashuAmountToMarketSubunits(amount: number, unit: CashuProofUnit | string): number {
   const normalized = parseCashuProofUnit(unit)
   if (!normalized) throw new Error(`unsupported Cashu proof unit: ${unit}`)
   if (!Number.isSafeInteger(amount) || amount < 0) {
@@ -171,7 +166,9 @@ export function estimatedSettlementFeeSubunits(
   return floor
 }
 
-export function defaultCollateralUnit(value: MarketBaseAsset | string | null | undefined): CashuProofUnit {
+export function defaultCollateralUnit(
+  value: MarketBaseAsset | string | null | undefined,
+): CashuProofUnit {
   const asset = requireMarketBaseAsset(value)
   if (asset === 'usd') return 'usd'
   if (asset === 'sat') return 'msat'
@@ -201,9 +198,10 @@ export function formatMarketSubunits(
   if (normalized === 'jpy') {
     return `${sign}¥${Math.trunc(absoluteAmount).toLocaleString()}`
   }
-  if (normalized === 'sat') return `${sign}${(absoluteAmount / 1000).toLocaleString(undefined, {
-    maximumFractionDigits: 3,
-  })} sats`
+  if (normalized === 'sat')
+    return `${sign}${(absoluteAmount / 1000).toLocaleString(undefined, {
+      maximumFractionDigits: 3,
+    })} sats`
   throw new Error(`unsupported base asset: ${normalized}`)
 }
 
@@ -214,10 +212,11 @@ export function formatAmount(
   return formatMarketSubunits(amountSubunits, baseAsset)
 }
 
-export function formatWholeShareFaceValue(
-  spec: MarketUnitSpec,
-): string {
-  return formatShareFace(spec.baseAsset, normalizeMarketDivisibility(spec.divisibility, spec.baseAsset))
+export function formatWholeShareFaceValue(spec: MarketUnitSpec): string {
+  return formatShareFace(
+    spec.baseAsset,
+    normalizeMarketDivisibility(spec.divisibility, spec.baseAsset),
+  )
 }
 
 export function formatPricePercentage(

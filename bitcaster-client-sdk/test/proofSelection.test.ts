@@ -24,13 +24,15 @@ test('takeProofsForLock treats input fees as subunits when computing spendable p
 
 test('keysetToOutcomeCollection maps each keyset to exactly one outcome collection', () => {
   assert.deepEqual(
-    [...keysetToOutcomeCollection(
-      [
-        { keysetId: 'keyset-a', outcomeCollection: 'A' },
-        { keysetId: 'keyset-b', outcomeCollection: 'B|C' },
-      ],
-      (row) => row,
-    )],
+    [
+      ...keysetToOutcomeCollection(
+        [
+          { keysetId: 'keyset-a', outcomeCollection: 'A' },
+          { keysetId: 'keyset-b', outcomeCollection: 'B|C' },
+        ],
+        (row) => row,
+      ),
+    ],
     [
       ['keyset-a', 'A'],
       ['keyset-b', 'B|C'],

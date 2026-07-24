@@ -48,10 +48,7 @@ export async function ensureParticipationScoreForNextMatch(input: {
 
   const deficitSats = plan.deficitScore;
   const satProofs = await getSatKeysetProofs(input.mintUrl);
-  const regularBalance = satProofs.reduce(
-    (sum, proof) => sum + amountToNumber(proof.amount),
-    0,
-  );
+  const regularBalance = satProofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
   if (regularBalance < deficitSats) {
     return {
       kind: "needs-regular-top-up",
@@ -63,16 +60,8 @@ export async function ensureParticipationScoreForNextMatch(input: {
   }
 
   const paymentId = input.paymentId ?? crypto.randomUUID();
-  const token = await spendParticipationScoreSatsAsToken(
-    deficitSats,
-    input.mintUrl,
-    satProofs,
-  );
-  const payment = await payParticipationScoreEcashWithRetry(
-    deficitSats,
-    token,
-    paymentId,
-  );
+  const token = await spendParticipationScoreSatsAsToken(deficitSats, input.mintUrl, satProofs);
+  const payment = await payParticipationScoreEcashWithRetry(deficitSats, token, paymentId);
   return { kind: "paid", score, payment, paymentId };
 }
 
@@ -128,7 +117,5 @@ async function payParticipationScoreEcashWithRetry(
       lastError = error;
     }
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("Failed to pay Engine Score.");
+  throw lastError instanceof Error ? lastError : new Error("Failed to pay Engine Score.");
 }

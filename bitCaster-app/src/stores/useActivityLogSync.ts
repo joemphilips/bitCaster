@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { resolveNsecIdentity } from "@/lib/identityOps";
-import {
-  fetchNip78ActivityLog,
-  publishNip78ActivityLog,
-} from "@/lib/nip78ActivityLog";
+import { fetchNip78ActivityLog, publishNip78ActivityLog } from "@/lib/nip78ActivityLog";
 import { activityLogsEqual, useActivityLogStore } from "./activity-log";
 import { useSettingsStore } from "./settings";
 import type { ActivityItem } from "@/types/portfolio";
@@ -35,9 +32,7 @@ export function useActivityLogSync(): void {
   const replace = useActivityLogStore((s) => s.replace);
   const [initialSyncDone, setInitialSyncDone] = useState(false);
   const lastPublished = useRef<ActivityItem[] | null>(null);
-  const keysRef = useRef<{ privateKeyHex: string; publicKey: string } | null>(
-    null,
-  );
+  const keysRef = useRef<{ privateKeyHex: string; publicKey: string } | null>(null);
 
   useEffect(() => {
     setInitialSyncDone(false);
@@ -51,10 +46,9 @@ export function useActivityLogSync(): void {
 
     let cancelled = false;
     void (async () => {
-      const remote = await fetchNip78ActivityLog(
-        keys.publicKey,
-        keys.privateKeyHex,
-      ).catch(() => null);
+      const remote = await fetchNip78ActivityLog(keys.publicKey, keys.privateKeyHex).catch(
+        () => null,
+      );
       if (cancelled) return;
 
       const local = useActivityLogStore.getState().items;
@@ -79,10 +73,7 @@ export function useActivityLogSync(): void {
     if (nostrSignerMode !== "nsec" || !initialSyncDone) return;
     const keys = keysRef.current;
     if (!keys) return;
-    if (
-      lastPublished.current &&
-      activityLogsEqual(lastPublished.current, items)
-    ) {
+    if (lastPublished.current && activityLogsEqual(lastPublished.current, items)) {
       return;
     }
 

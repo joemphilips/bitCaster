@@ -186,8 +186,7 @@ test('custody transaction exposes only the selected bounded operation set', () =
   const record = intent()
   const records = new Map([[record.operation.operationId, record]])
   let storedArtifact: unknown = null
-  let storedArtifactRow: ReturnType<DurableCustodyTransaction['getArtifact']> =
-    null
+  let storedArtifactRow: ReturnType<DurableCustodyTransaction['getArtifact']> = null
   const scopeState: DurableCustodyScopeState = {
     schemaVersion: 1,
     scope: record.scope,
@@ -202,9 +201,7 @@ test('custody transaction exposes only the selected bounded operation set', () =
       fencingEpoch: 1,
       observedAtMs: 1,
     },
-    operationRows: [
-      { operationId: record.operation.operationId, expectedRevision: 0 },
-    ],
+    operationRows: [{ operationId: record.operation.operationId, expectedRevision: 0 }],
   }
   const transaction: DurableCustodyTransaction = {
     getScopeState: () => scopeState,
@@ -218,8 +215,7 @@ test('custody transaction exposes only the selected bounded operation set', () =
         revision: 0,
       }
     },
-    putOperation: ({ record: next }) =>
-      records.set(next.operation.operationId, next),
+    putOperation: ({ record: next }) => records.set(next.operation.operationId, next),
     reserveExactInputs: () => undefined,
     transitionOperation: () => undefined,
     stageVerifiedResult: () => undefined,
@@ -286,23 +282,18 @@ test('custody transaction exposes only the selected bounded operation set', () =
   )
   assert.throws(
     () =>
-      applyDurableCustodyTransaction(
-        transaction,
-        selection,
-        (selected) =>
-          selected.putOperation({
-            record,
-            expectedRevision: record.revision + 1,
-          }),
+      applyDurableCustodyTransaction(transaction, selection, (selected) =>
+        selected.putOperation({
+          record,
+          expectedRevision: record.revision + 1,
+        }),
       ),
     /revision is not selected/,
   )
   assert.throws(
     () =>
-      applyDurableCustodyTransaction(
-        transaction,
-        selection,
-        (selected) => selected.getOperation('foreign-operation'),
+      applyDurableCustodyTransaction(transaction, selection, (selected) =>
+        selected.getOperation('foreign-operation'),
       ),
     /not selected/,
   )
@@ -471,10 +462,7 @@ test('custody rejects cross-scope reducers and incoherent persisted state', () =
 test('artifact and mint authorities reject depth and URL aliases before hashing', () => {
   let deep: unknown = 'leaf'
   for (let index = 0; index < 33; index += 1) deep = { child: deep }
-  assert.throws(
-    () => encodeBoundedDurableArtifact(deep, 1_024 * 1_024),
-    /structure limit/,
-  )
+  assert.throws(() => encodeBoundedDurableArtifact(deep, 1_024 * 1_024), /structure limit/)
   assert.throws(
     () =>
       deriveDurableCustodyProofId({
@@ -502,14 +490,8 @@ test('artifact and mint authorities reject depth and URL aliases before hashing'
 test('exact artifacts accept the 16 MiB boundary and reject max plus one', () => {
   const maximum = 16 * 1_024 * 1_024
   const atMaximum = 'x'.repeat(maximum - 2)
-  assert.equal(
-    encodeBoundedDurableArtifact(atMaximum, maximum).length,
-    maximum,
-  )
-  assert.throws(
-    () => encodeBoundedDurableArtifact(`${atMaximum}x`, maximum),
-    /byte limit/,
-  )
+  assert.equal(encodeBoundedDurableArtifact(atMaximum, maximum).length, maximum)
+  assert.throws(() => encodeBoundedDurableArtifact(`${atMaximum}x`, maximum), /byte limit/)
   assert.equal('artifact' in intent().operation.exactRequest.body, false)
 })
 
@@ -540,11 +522,8 @@ test('P09 purge requires terminal status, replay cutoff, and resolved delivery',
     lineage: {
       scopeId: record.scope.scopeId,
       operationId: record.operation.operationId,
-      predecessorProofIds: record.operation.reservation.inputs.map(
-        ({ proofId }) => proofId,
-      ),
-      successorProofIds:
-        record.operation.proofStorage.lineage.successorProofIds,
+      predecessorProofIds: record.operation.reservation.inputs.map(({ proofId }) => proofId),
+      successorProofIds: record.operation.proofStorage.lineage.successorProofIds,
       successorAdmission: null,
     },
   })
@@ -606,14 +585,11 @@ test('P09 purge requires terminal status, replay cutoff, and resolved delivery',
       scopeId: record.scope.scopeId,
       operationId: record.operation.operationId,
       admissionId: 'admission-1',
-      proofRows:
-        record.operation.proofStorage.lineage.successorProofIds.map(
-          (proofId) => ({
-            proofId,
-            expectedRevision: null,
-            admittedRevision: 0,
-          }),
-        ),
+      proofRows: record.operation.proofStorage.lineage.successorProofIds.map((proofId) => ({
+        proofId,
+        expectedRevision: null,
+        admittedRevision: 0,
+      })),
     },
   })
   state = reduceDurableCustodyState(state, {
@@ -634,8 +610,7 @@ test('P09 purge requires terminal status, replay cutoff, and resolved delivery',
     expectedRevision: 5,
     receipt: {
       receiptId: 'receipt-1',
-      payloadFingerprint:
-        state.operation.operation.delivery.exactPayload!.fingerprint,
+      payloadFingerprint: state.operation.operation.delivery.exactPayload!.fingerprint,
       acknowledgedAtMs: 7,
     },
   })

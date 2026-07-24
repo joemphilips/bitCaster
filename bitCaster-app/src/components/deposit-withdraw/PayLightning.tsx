@@ -1,16 +1,16 @@
-import { X, Bitcoin, ScanLine } from 'lucide-react'
-import type { MintInfo } from '@/types/deposit-withdraw'
-import { MintSelector } from './MintSelector'
+import { X, Bitcoin, ScanLine } from "lucide-react";
+import type { MintInfo } from "@/types/deposit-withdraw";
+import { MintSelector } from "./MintSelector";
 
 interface PayLightningProps {
-  mints: MintInfo[]
-  selectedMintId: string
-  lightningInput: string
-  onMintChange?: (mintId: string) => void
-  onLightningInputChange?: (value: string) => void
-  onPaste?: () => void
-  onScanQR?: () => void
-  onClose?: () => void
+  mints: MintInfo[];
+  selectedMintId: string;
+  lightningInput: string;
+  onMintChange?: (mintId: string) => void;
+  onLightningInputChange?: (value: string) => void;
+  onPaste?: () => void;
+  onScanQR?: () => void;
+  onClose?: () => void;
 }
 
 export function PayLightning({
@@ -43,11 +43,7 @@ export function PayLightning({
       <div className="flex-1 flex flex-col max-w-md mx-auto w-full">
         {/* Mint selector */}
         <div className="px-5 pt-2">
-          <MintSelector
-            mints={mints}
-            selectedMintId={selectedMintId}
-            onMintChange={onMintChange}
-          />
+          <MintSelector mints={mints} selectedMintId={selectedMintId} onMintChange={onMintChange} />
         </div>
 
         {/* Invoice input */}
@@ -81,16 +77,12 @@ export function PayLightning({
               <ScanLine className="w-5 h-5 text-slate-300" />
             </div>
             <div className="text-left">
-              <div className="text-sm font-semibold text-white">
-                Scan QR Code
-              </div>
-              <div className="text-xs text-slate-400">
-                Tap to scan an address
-              </div>
+              <div className="text-sm font-semibold text-white">Scan QR Code</div>
+              <div className="text-xs text-slate-400">Tap to scan an address</div>
             </div>
           </button>
         </div>
       </div>
     </div>
-  )
+  );
 }

@@ -64,9 +64,7 @@ describe("CreatedMarketRow", () => {
 
     const close = screen.getByRole("button", { name: /close market/i });
     const view = screen.getByRole("button", { name: /view/i });
-    expect(
-      close.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(close.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     await userEvent.click(close);
 
@@ -74,12 +72,7 @@ describe("CreatedMarketRow", () => {
   });
 
   it("does not show a disabled close-market control when oracle metadata is missing", () => {
-    render(
-      <CreatedMarketRow
-        market={fixture()}
-        onPublishOracleAttestation={vi.fn()}
-      />,
-    );
+    render(<CreatedMarketRow market={fixture()} onPublishOracleAttestation={vi.fn()} />);
 
     expect(screen.queryByRole("button", { name: /close market/i })).toBeNull();
   });

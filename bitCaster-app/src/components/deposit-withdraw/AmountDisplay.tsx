@@ -1,15 +1,15 @@
-import { ArrowUpDown } from 'lucide-react'
+import { ArrowUpDown } from "lucide-react";
 
 interface AmountDisplayProps {
-  amountSats: number
-  amountLabel?: string
-  amountFiat: string
-  fiatSymbol: string
-  showFiatPrimary: boolean
+  amountSats: number;
+  amountLabel?: string;
+  amountFiat: string;
+  fiatSymbol: string;
+  showFiatPrimary: boolean;
   /** Hide the fiat-equivalent toggle line — e.g. when the entered amount is
    *  already fiat-denominated (USD/JPY deposit units). Defaults to true. */
-  showFiatToggle?: boolean
-  onToggleCurrency?: () => void
+  showFiatToggle?: boolean;
+  onToggleCurrency?: () => void;
 }
 
 export function AmountDisplay({
@@ -21,11 +21,11 @@ export function AmountDisplay({
   showFiatToggle = true,
   onToggleCurrency,
 }: AmountDisplayProps) {
-  const satsText = amountLabel ?? `₿${amountSats.toLocaleString()}`
-  const fiatText = `${fiatSymbol}${amountFiat}`
+  const satsText = amountLabel ?? `₿${amountSats.toLocaleString()}`;
+  const fiatText = `${fiatSymbol}${amountFiat}`;
 
-  const primary = showFiatToggle && showFiatPrimary ? fiatText : satsText
-  const secondary = showFiatPrimary ? satsText : fiatText
+  const primary = showFiatToggle && showFiatPrimary ? fiatText : satsText;
+  const secondary = showFiatPrimary ? satsText : fiatText;
 
   return (
     <div className="flex flex-col items-center justify-center py-8">
@@ -42,5 +42,5 @@ export function AmountDisplay({
         </button>
       )}
     </div>
-  )
+  );
 }

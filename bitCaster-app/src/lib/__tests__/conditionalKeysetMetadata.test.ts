@@ -14,10 +14,7 @@ describe("conditional keyset metadata", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        keysets: [
-          keyset("keyset-A", "condition-1", "A"),
-          keyset("keyset-C", "condition-1", "C"),
-        ],
+        keysets: [keyset("keyset-A", "condition-1", "A"), keyset("keyset-C", "condition-1", "C")],
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -31,17 +28,10 @@ describe("conditional keyset metadata", () => {
     });
 
     expect(stored.map((row) => row.outcomeCollection)).toEqual(["A", "C"]);
-    expect(stored.map((row) => row.marketId)).toEqual([
-      "condition-1-A",
-      "condition-1-C",
-    ]);
-    expect(stored.every((row) => row.reservedBy === "reservation-1")).toBe(
-      true,
-    );
+    expect(stored.map((row) => row.marketId)).toEqual(["condition-1-A", "condition-1-C"]);
+    expect(stored.every((row) => row.reservedBy === "reservation-1")).toBe(true);
     expect(stored.every((row) => row.baseAsset === "usd")).toBe(true);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://mint.example/v1/conditional_keysets",
-    );
+    expect(fetchMock).toHaveBeenCalledWith("https://mint.example/v1/conditional_keysets");
   });
 
   it("fails closed when a proof keyset belongs to a different condition", async () => {
@@ -83,9 +73,7 @@ describe("conditional keyset metadata", () => {
         proof("keyset-Z", "z"),
         "condition-1",
       ),
-    ).rejects.toThrow(
-      "Conditional keyset keyset-Z is not known by the mint",
-    );
+    ).rejects.toThrow("Conditional keyset keyset-Z is not known by the mint");
   });
 });
 

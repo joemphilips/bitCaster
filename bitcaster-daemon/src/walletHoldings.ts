@@ -1,8 +1,6 @@
 import { buildTokenHoldings } from '@bitcaster-market/client-sdk/tradingClient'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
-import {
-  normalizeMarketBaseAsset,
-} from '@bitcaster-market/client-sdk/marketUnits'
+import { normalizeMarketBaseAsset } from '@bitcaster-market/client-sdk/marketUnits'
 import type { DaemonState, StoredProofRecord } from './state.ts'
 
 export function buildDaemonTokenHoldings(

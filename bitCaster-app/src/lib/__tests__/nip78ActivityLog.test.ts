@@ -1,9 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivityItem } from "@/types/portfolio";
-import {
-  fetchNip78ActivityLog,
-  publishNip78ActivityLog,
-} from "../nip78ActivityLog";
+import { fetchNip78ActivityLog, publishNip78ActivityLog } from "../nip78ActivityLog";
 import { fetchPrivateNip78Content, publishPrivateNip78 } from "../nip78Private";
 
 vi.mock("../nip78Private", () => ({
@@ -51,9 +48,7 @@ describe("fetchNip78ActivityLog", () => {
       }),
     );
 
-    await expect(fetchNip78ActivityLog("pub", "priv")).resolves.toEqual([
-      item({ id: "valid" }),
-    ]);
+    await expect(fetchNip78ActivityLog("pub", "priv")).resolves.toEqual([item({ id: "valid" })]);
   });
 
   it("returns null for missing or malformed content", async () => {

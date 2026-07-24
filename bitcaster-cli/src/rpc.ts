@@ -43,9 +43,7 @@ export function daemonSocketPath(): string | null {
   return rpcSocketPath()
 }
 
-export async function callDaemon<T = unknown>(
-  command: DaemonCommand,
-): Promise<DaemonResponse<T>> {
+export async function callDaemon<T = unknown>(command: DaemonCommand): Promise<DaemonResponse<T>> {
   const address = daemonAttemptAddress()
   try {
     return await sendDaemonCommand(command)
@@ -73,9 +71,7 @@ function defaultDaemonBaseUrl(): string {
   return `http://127.0.0.1:${process.env.BITCASTER_DAEMON_PORT || '42871'}`
 }
 
-async function sendDaemonCommand<T = unknown>(
-  command: DaemonCommand,
-): Promise<DaemonResponse<T>> {
+async function sendDaemonCommand<T = unknown>(command: DaemonCommand): Promise<DaemonResponse<T>> {
   const token = await readDaemonRpcToken()
   const socketPath = daemonSocketPath()
   if (socketPath) {
@@ -122,9 +118,7 @@ function sendDaemonCommandOverSocket<T = unknown>(
         })
         res.on('end', () => {
           try {
-            resolve(
-              JSON.parse(Buffer.concat(chunks).toString('utf8')) as DaemonResponse<T>,
-            )
+            resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as DaemonResponse<T>)
           } catch (err) {
             reject(err)
           }
@@ -149,9 +143,7 @@ export function isNetworkFailure(err: unknown): boolean {
   const directCode = (err as { code?: unknown }).code
   const causeObj = (err as { cause?: unknown }).cause
   const causeCode =
-    causeObj && typeof causeObj === 'object'
-      ? (causeObj as { code?: unknown }).code
-      : undefined
+    causeObj && typeof causeObj === 'object' ? (causeObj as { code?: unknown }).code : undefined
   const code = directCode ?? causeCode
   if (
     code === 'ECONNREFUSED' ||
@@ -182,15 +174,11 @@ export async function startDaemonProcess(): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 })
   const logFd = openSync(daemonLogPath(), 'a', 0o600)
   const daemonMain = fileURLToPath(import.meta.resolve('@bitcaster-market/daemon'))
-  const child = spawn(
-    process.execPath,
-    ['--experimental-strip-types', daemonMain, 'run'],
-    {
-      detached: true,
-      env: process.env,
-      stdio: ['ignore', logFd, logFd],
-    },
-  )
+  const child = spawn(process.execPath, ['--experimental-strip-types', daemonMain, 'run'], {
+    detached: true,
+    env: process.env,
+    stdio: ['ignore', logFd, logFd],
+  })
   closeSync(logFd)
   if (child.pid) {
     const startedAt = await readProcessStartTime(child.pid)
@@ -259,7 +247,8 @@ export async function stopDaemon(): Promise<{ stopped: boolean; message: string 
   try {
     process.kill(pidFile.pid, 'SIGTERM')
   } catch (err) {
-    const code = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined
+    const code =
+      typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined
     if (code === 'ESRCH') {
       await removePidFile()
       return { stopped: false, message: 'daemon is not running' }
@@ -336,9 +325,7 @@ async function pidStartTimeMatches(pidFile: DaemonPidFile): Promise<boolean> {
 async function isBitcasterDaemonProcess(pidFile: DaemonPidFile): Promise<boolean> {
   const cmdline = await readProcessCommandLine(pidFile.pid)
   if (!cmdline) return false
-  const daemonMainMatches = pidFile.daemonMain
-    ? cmdline.includes(pidFile.daemonMain)
-    : false
+  const daemonMainMatches = pidFile.daemonMain ? cmdline.includes(pidFile.daemonMain) : false
   return (
     (daemonMainMatches || cmdline.includes('@bitcaster-market/daemon')) &&
     /(?:^|\s)run(?:\s|$)/.test(cmdline)
@@ -367,7 +354,10 @@ async function readProcessStartTime(pid: number): Promise<string | null> {
       const statText = await readFile(`/proc/${pid}/stat`, 'utf8')
       const closeParen = statText.lastIndexOf(')')
       if (closeParen === -1) return null
-      const fieldsFrom3 = statText.slice(closeParen + 2).trim().split(/\s+/)
+      const fieldsFrom3 = statText
+        .slice(closeParen + 2)
+        .trim()
+        .split(/\s+/)
       return fieldsFrom3[19] ?? null
     } catch {
       return null

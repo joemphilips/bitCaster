@@ -1,1 +1,1 @@
-export * from '@bitcaster/swap-protocol/adaptor'
+export * from "@bitcaster/swap-protocol/adaptor";

@@ -1,10 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { join } from 'node:path'
-import {
-  isMissingDaemonProfileError,
-  profileDatabasePath,
-  profileDir,
-} from './profile.ts'
+import { isMissingDaemonProfileError, profileDatabasePath, profileDir } from './profile.ts'
 import { readBootstrappedRpcToken } from './profileBootstrap.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
 
@@ -39,9 +35,7 @@ export async function ensureRpcToken(): Promise<string> {
   return token
 }
 
-export function bearerToken(
-  header: string | string[] | undefined,
-): string | null {
+export function bearerToken(header: string | string[] | undefined): string | null {
   if (typeof header !== 'string') return null
   const match = /^Bearer\s+(.+)$/i.exec(header.trim())
   return match?.[1] ?? null

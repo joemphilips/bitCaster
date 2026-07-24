@@ -5,11 +5,7 @@ export interface TradeRuntimeConnection {
   stop(): Promise<void>
   joinOrder(marketId: string, orderId: string): Promise<void>
   joinTrade(tradeId: string): Promise<TradeJoinResult>
-  sendSwapMessage(
-    tradeId: string,
-    messageType: string,
-    ciphertext: string,
-  ): Promise<void>
+  sendSwapMessage(tradeId: string, messageType: string, ciphertext: string): Promise<void>
 }
 
 export interface MarketRuntimeConnection {
@@ -22,10 +18,7 @@ export class CompositeTradeRuntimeConnection implements TradeRuntimeConnection {
   private readonly trade: TradeRuntimeConnection
   private readonly market?: MarketRuntimeConnection
 
-  constructor(
-    trade: TradeRuntimeConnection,
-    market?: MarketRuntimeConnection,
-  ) {
+  constructor(trade: TradeRuntimeConnection, market?: MarketRuntimeConnection) {
     this.trade = trade
     this.market = market
   }
@@ -54,11 +47,7 @@ export class CompositeTradeRuntimeConnection implements TradeRuntimeConnection {
     return this.trade.joinTrade(tradeId)
   }
 
-  sendSwapMessage(
-    tradeId: string,
-    messageType: string,
-    ciphertext: string,
-  ): Promise<void> {
+  sendSwapMessage(tradeId: string, messageType: string, ciphertext: string): Promise<void> {
     return this.trade.sendSwapMessage(tradeId, messageType, ciphertext)
   }
 }
@@ -99,18 +88,12 @@ export class DaemonTradeRuntime implements TradeRuntime {
   private readonly retryExhaustedRecoveryDelayMs: number
   private readonly scheduleResumeActiveSwaps?: (delayMs: number) => void
 
-  constructor(
-    connection: TradeRuntimeConnection,
-    options: DaemonTradeRuntimeOptions = {},
-  ) {
+  constructor(connection: TradeRuntimeConnection, options: DaemonTradeRuntimeOptions = {}) {
     this.connection = connection
-    this.joinTradeMaxRetries =
-      options.joinTradeMaxRetries ?? DEFAULT_JOIN_TRADE_MAX_RETRIES
-    this.joinTradeRetryDelayMs =
-      options.joinTradeRetryDelayMs ?? DEFAULT_JOIN_TRADE_RETRY_DELAY_MS
+    this.joinTradeMaxRetries = options.joinTradeMaxRetries ?? DEFAULT_JOIN_TRADE_MAX_RETRIES
+    this.joinTradeRetryDelayMs = options.joinTradeRetryDelayMs ?? DEFAULT_JOIN_TRADE_RETRY_DELAY_MS
     this.retryExhaustedRecoveryDelayMs =
-      options.retryExhaustedRecoveryDelayMs ??
-      DEFAULT_RETRY_EXHAUSTED_RECOVERY_DELAY_MS
+      options.retryExhaustedRecoveryDelayMs ?? DEFAULT_RETRY_EXHAUSTED_RECOVERY_DELAY_MS
     this.scheduleResumeActiveSwaps = options.scheduleResumeActiveSwaps
   }
 
@@ -209,13 +192,9 @@ export function buildTradeResumePlan(state: DaemonState): TradeResumePlan {
 
   return {
     orders: [...orderMap.values()].sort(
-      (a, b) =>
-        a.marketId.localeCompare(b.marketId) ||
-        a.orderId.localeCompare(b.orderId),
+      (a, b) => a.marketId.localeCompare(b.marketId) || a.orderId.localeCompare(b.orderId),
     ),
-    trades: [...tradeMap.values()].sort((a, b) =>
-      a.tradeId.localeCompare(b.tradeId),
-    ),
+    trades: [...tradeMap.values()].sort((a, b) => a.tradeId.localeCompare(b.tradeId)),
   }
 }
 

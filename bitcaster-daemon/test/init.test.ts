@@ -89,12 +89,7 @@ test('init refuses argv secrets and incomplete secret-file imports', async () =>
     const source = await createSecretSource({ walletSeedHex })
     try {
       await assert.rejects(
-        () =>
-          runMain(home, [
-            'init',
-            '--wallet-seed-hex-file',
-            source.walletSeedFile,
-          ]),
+        () => runMain(home, ['init', '--wallet-seed-hex-file', source.walletSeedFile]),
         /must be supplied together/,
       )
     } finally {
@@ -155,10 +150,7 @@ test('init never overwrites or migrates an existing profile', async () => {
         }),
       /profile-not-fresh|fresh daemon profile/,
     )
-    await assert.rejects(
-      () => runMain(home, ['init', '--force']),
-      /Unknown init option: --force/,
-    )
+    await assert.rejects(() => runMain(home, ['init', '--force']), /Unknown init option: --force/)
     assert.equal(await digestFile(join(home, 'daemon-state.sqlite')), before)
   })
 })
@@ -179,10 +171,7 @@ test('passphrase protection keeps plaintext secrets out of SQLite', async () => 
       async () => {
         assert.equal((await readSecrets())?.walletSeedHex, walletSeedHex)
         delete process.env.BITCASTER_DAEMON_PASSPHRASE
-        await assert.rejects(
-          () => readSecrets(),
-          /daemon profile passphrase is required/,
-        )
+        await assert.rejects(() => readSecrets(), /daemon profile passphrase is required/)
       },
       { BITCASTER_DAEMON_PASSPHRASE: 'correct horse battery staple' },
     )
@@ -240,10 +229,7 @@ test('run lock is exclusive, stale-reclaimable, and identity-bound', async () =>
     await runDaemonInit(home, { walletSeedHex, nostrSecretKeyHex })
     await withDaemonHome(home, async () => {
       const first = await acquireDaemonRunLock()
-      await assert.rejects(
-        () => acquireDaemonRunLock(),
-        /already running for profile/,
-      )
+      await assert.rejects(() => acquireDaemonRunLock(), /already running for profile/)
       await first.release()
 
       await writeFile(
@@ -323,17 +309,13 @@ async function runMain(
   args: string[],
   extraEnv: NodeJS.ProcessEnv = {},
 ): Promise<void> {
-  await execFileAsync(
-    process.execPath,
-    ['--experimental-strip-types', mainPath, ...args],
-    {
-      env: {
-        ...process.env,
-        ...extraEnv,
-        BITCASTER_DAEMON_HOME: home,
-      },
+  await execFileAsync(process.execPath, ['--experimental-strip-types', mainPath, ...args], {
+    env: {
+      ...process.env,
+      ...extraEnv,
+      BITCASTER_DAEMON_HOME: home,
     },
-  )
+  })
 }
 
 async function createSecretSource(input: {
@@ -377,8 +359,7 @@ async function withDaemonHome(
   if (extraEnv.BITCASTER_DAEMON_PASSPHRASE === undefined) {
     delete process.env.BITCASTER_DAEMON_PASSPHRASE
   } else {
-    process.env.BITCASTER_DAEMON_PASSPHRASE =
-      extraEnv.BITCASTER_DAEMON_PASSPHRASE
+    process.env.BITCASTER_DAEMON_PASSPHRASE = extraEnv.BITCASTER_DAEMON_PASSPHRASE
   }
   try {
     await run()
@@ -394,5 +375,7 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 async function digestFile(path: string): Promise<string> {
-  return createHash('sha256').update(await readFile(path)).digest('hex')
+  return createHash('sha256')
+    .update(await readFile(path))
+    .digest('hex')
 }

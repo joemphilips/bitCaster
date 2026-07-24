@@ -11,37 +11,32 @@
  * and re-hydrate on read.
  */
 
-import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
+import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type TradeRole = 'seller' | 'buyer'
+export type TradeRole = "seller" | "buyer";
 
-export type TradeLifecycleState =
-  | 'Matched'
-  | 'settling'
-  | 'confirmed'
-  | 'retrying'
-  | 'Failed'
+export type TradeLifecycleState = "Matched" | "settling" | "confirmed" | "retrying" | "Failed";
 
 /** Serialised form stored in sessionStorage — private key as hex. */
 export interface PersistedTradeEntry {
-  tradeId: string
-  role: TradeRole
-  state: TradeLifecycleState
+  tradeId: string;
+  role: TradeRole;
+  state: TradeLifecycleState;
   /** 32-byte scalar, hex. */
-  ephemeralPrivkeyHex: string
-  counterpartyPubkey?: string
-  locktimes?: { sellerUnix: number; buyerUnix: number }
-  createdAt: number
+  ephemeralPrivkeyHex: string;
+  counterpartyPubkey?: string;
+  locktimes?: { sellerUnix: number; buyerUnix: number };
+  createdAt: number;
 }
 
 /** Runtime view — private key as Uint8Array. */
-export interface TradeEntry extends Omit<PersistedTradeEntry, 'ephemeralPrivkeyHex'> {
-  ephemeralPrivkey: Uint8Array
+export interface TradeEntry extends Omit<PersistedTradeEntry, "ephemeralPrivkeyHex"> {
+  ephemeralPrivkey: Uint8Array;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,34 +44,31 @@ export interface TradeEntry extends Omit<PersistedTradeEntry, 'ephemeralPrivkeyH
 // ---------------------------------------------------------------------------
 
 interface TradeStoreState {
-  byTradeId: Record<string, PersistedTradeEntry>
+  byTradeId: Record<string, PersistedTradeEntry>;
 
   /** Add or replace a trade record. */
-  upsert: (entry: TradeEntry) => void
+  upsert: (entry: TradeEntry) => void;
 
   /** Transition a trade to a new lifecycle state. */
-  updateState: (tradeId: string, newState: TradeLifecycleState) => void
+  updateState: (tradeId: string, newState: TradeLifecycleState) => void;
 
   /** Record the counterparty pubkey once the TradeCreated event arrives. */
-  setCounterpartyPubkey: (tradeId: string, pubkey: string) => void
+  setCounterpartyPubkey: (tradeId: string, pubkey: string) => void;
 
   /** Record locktimes from the TradeCreated event. */
-  setLocktimes: (
-    tradeId: string,
-    locktimes: { sellerUnix: number; buyerUnix: number },
-  ) => void
+  setLocktimes: (tradeId: string, locktimes: { sellerUnix: number; buyerUnix: number }) => void;
 
   /** Remove a completed or failed trade. */
-  remove: (tradeId: string) => void
+  remove: (tradeId: string) => void;
 
   /**
    * Zero out the ephemeral private key for a trade that has reached a terminal
    * state (CONFIRMED or FAILED). Reduces the window of key exposure.
    */
-  clearTradeKeys: (tradeId: string) => void
+  clearTradeKeys: (tradeId: string) => void;
 
   /** Return the runtime TradeEntry for a trade, or undefined. */
-  get: (tradeId: string) => TradeEntry | undefined
+  get: (tradeId: string) => TradeEntry | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -84,26 +76,26 @@ interface TradeStoreState {
 // ---------------------------------------------------------------------------
 
 function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2)
+  const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
-  return out
+  return out;
 }
 
 function toRuntime(entry: PersistedTradeEntry): TradeEntry {
-  const { ephemeralPrivkeyHex, ...rest } = entry
-  return { ...rest, ephemeralPrivkey: hexToBytes(ephemeralPrivkeyHex) }
+  const { ephemeralPrivkeyHex, ...rest } = entry;
+  return { ...rest, ephemeralPrivkey: hexToBytes(ephemeralPrivkeyHex) };
 }
 
 function toPersisted(entry: TradeEntry): PersistedTradeEntry {
-  const { ephemeralPrivkey, ...rest } = entry
+  const { ephemeralPrivkey, ...rest } = entry;
   return {
     ...rest,
     ephemeralPrivkeyHex: Array.from(ephemeralPrivkey)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join(''),
-  }
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join(""),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +104,7 @@ function toPersisted(entry: TradeEntry): PersistedTradeEntry {
 
 // TTL matches the typical locktime window — 5 minutes is sufficient for the
 // atomic swap handshake. Using sessionStorage means keys are cleared on tab close.
-const TRADE_TTL_MS = 5 * 60 * 1000
+const TRADE_TTL_MS = 5 * 60 * 1000;
 
 export const useTradeStore = create<TradeStoreState>()(
   persist(
@@ -125,93 +117,90 @@ export const useTradeStore = create<TradeStoreState>()(
             ...s.byTradeId,
             [entry.tradeId]: toPersisted(entry),
           },
-        }))
+        }));
       },
 
       updateState: (tradeId: string, newState: TradeLifecycleState) => {
         set((s) => {
-          const existing = s.byTradeId[tradeId]
-          if (!existing) return s
+          const existing = s.byTradeId[tradeId];
+          if (!existing) return s;
           return {
             byTradeId: {
               ...s.byTradeId,
               [tradeId]: { ...existing, state: newState },
             },
-          }
-        })
+          };
+        });
       },
 
       setCounterpartyPubkey: (tradeId: string, pubkey: string) => {
         set((s) => {
-          const existing = s.byTradeId[tradeId]
-          if (!existing) return s
+          const existing = s.byTradeId[tradeId];
+          if (!existing) return s;
           return {
             byTradeId: {
               ...s.byTradeId,
               [tradeId]: { ...existing, counterpartyPubkey: pubkey },
             },
-          }
-        })
+          };
+        });
       },
 
-      setLocktimes: (
-        tradeId: string,
-        locktimes: { sellerUnix: number; buyerUnix: number },
-      ) => {
+      setLocktimes: (tradeId: string, locktimes: { sellerUnix: number; buyerUnix: number }) => {
         set((s) => {
-          const existing = s.byTradeId[tradeId]
-          if (!existing) return s
+          const existing = s.byTradeId[tradeId];
+          if (!existing) return s;
           return {
             byTradeId: {
               ...s.byTradeId,
               [tradeId]: { ...existing, locktimes },
             },
-          }
-        })
+          };
+        });
       },
 
       remove: (tradeId: string) => {
         set((s) => {
-          if (!(tradeId in s.byTradeId)) return s
-          const next = { ...s.byTradeId }
-          delete next[tradeId]
-          return { byTradeId: next }
-        })
+          if (!(tradeId in s.byTradeId)) return s;
+          const next = { ...s.byTradeId };
+          delete next[tradeId];
+          return { byTradeId: next };
+        });
       },
 
       clearTradeKeys: (tradeId: string) => {
         set((s) => {
-          const existing = s.byTradeId[tradeId]
-          if (!existing) return s
+          const existing = s.byTradeId[tradeId];
+          if (!existing) return s;
           return {
             byTradeId: {
               ...s.byTradeId,
-              [tradeId]: { ...existing, ephemeralPrivkeyHex: '0'.repeat(64) },
+              [tradeId]: { ...existing, ephemeralPrivkeyHex: "0".repeat(64) },
             },
-          }
-        })
+          };
+        });
       },
 
       get: (tradeId: string) => {
-        const entry = get().byTradeId[tradeId]
-        return entry ? toRuntime(entry) : undefined
+        const entry = get().byTradeId[tradeId];
+        return entry ? toRuntime(entry) : undefined;
       },
     }),
     {
-      name: 'bitcaster-trades',
+      name: "bitcaster-trades",
       // Use sessionStorage: ephemeral keys must not survive a tab close.
       storage: createJSONStorage(() => sessionStorage),
       // Evict entries older than the TTL on rehydration.
       // Use useTradeStore.setState (accessed lazily after creation) so that
       // Zustand subscribers are notified — direct state mutation bypasses them.
       onRehydrateStorage: () => (state) => {
-        if (!state) return
-        const cutoff = Date.now() - TRADE_TTL_MS
-        const entries = Object.entries(state.byTradeId)
-        const fresh = entries.filter(([, t]) => t.createdAt >= cutoff)
-        if (fresh.length === entries.length) return
-        useTradeStore.setState({ byTradeId: Object.fromEntries(fresh) })
+        if (!state) return;
+        const cutoff = Date.now() - TRADE_TTL_MS;
+        const entries = Object.entries(state.byTradeId);
+        const fresh = entries.filter(([, t]) => t.createdAt >= cutoff);
+        if (fresh.length === entries.length) return;
+        useTradeStore.setState({ byTradeId: Object.fromEntries(fresh) });
       },
     },
   ),
-)
+);

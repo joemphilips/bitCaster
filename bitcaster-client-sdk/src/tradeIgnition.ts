@@ -176,7 +176,9 @@ export async function handleMatchedForMaker(
 }
 
 export async function handlePendingPubkeySubmissions(
-  response: Pick<SubmitOrderResponse, 'pendingPubkeySubmissions'> | { pendingPubkeySubmissions?: PendingPubkeySubmission[] | null },
+  response:
+    | Pick<SubmitOrderResponse, 'pendingPubkeySubmissions'>
+    | { pendingPubkeySubmissions?: PendingPubkeySubmission[] | null },
   params: HandlePendingPubkeySubmissionsParams,
 ): Promise<TradeIgnitionResult[]> {
   const pending = response.pendingPubkeySubmissions ?? []
@@ -200,7 +202,11 @@ export async function handlePendingPubkeySubmissions(
         publicKey,
         params.conditionId,
       )
-      results.push({ submitted: true, tradeId: submission.tradeId, role: submitResult.role || submission.role })
+      results.push({
+        submitted: true,
+        tradeId: submission.tradeId,
+        role: submitResult.role || submission.role,
+      })
     } catch (err) {
       params.seenTradeIds?.delete(submission.tradeId)
       throw err

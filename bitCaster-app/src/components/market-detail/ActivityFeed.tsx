@@ -1,20 +1,20 @@
-import { useRef, useState, useEffect } from 'react'
-import { ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
-import type { Trade } from '@/types/market-detail'
-import { formatTimeAgo } from '@/lib/format'
+import { useRef, useState, useEffect } from "react";
+import { ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { Trade } from "@/types/market-detail";
+import { formatTimeAgo } from "@/lib/format";
 import {
   formatMarketSubunits,
   formatPricePercent,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
-} from '@bitcaster/client-sdk/marketUnits'
+} from "@bitcaster/client-sdk/marketUnits";
 
 interface ActivityFeedProps {
-  trades: Trade[]
-  baseAsset?: string | null
-  divisibility?: number | null
-  onLoadMoreTrades?: () => void
+  trades: Trade[];
+  baseAsset?: string | null;
+  divisibility?: number | null;
+  onLoadMoreTrades?: () => void;
 }
 
 function TradeRow({
@@ -22,16 +22,16 @@ function TradeRow({
   baseAsset,
   divisibility,
 }: {
-  trade: Trade
-  baseAsset: ReturnType<typeof normalizeMarketBaseAsset>
-  divisibility: number
+  trade: Trade;
+  baseAsset: ReturnType<typeof normalizeMarketBaseAsset>;
+  divisibility: number;
 }) {
-  const isYes = trade.side === 'yes'
+  const isYes = trade.side === "yes";
 
   return (
     <div className="flex items-center gap-3 py-3 border-b border-slate-100 dark:border-slate-700/50 last:border-0">
       {/* Side Icon */}
-      <div className={`p-1.5 rounded-lg ${isYes ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
+      <div className={`p-1.5 rounded-lg ${isYes ? "bg-emerald-500/10" : "bg-red-500/10"}`}>
         {isYes ? (
           <ArrowUpRight className="w-4 h-4 text-emerald-500" />
         ) : (
@@ -45,11 +45,13 @@ function TradeRow({
           <span className="text-sm font-medium text-slate-900 dark:text-white truncate">
             {trade.userDisplayName}
           </span>
-          <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
-            isYes
-              ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-              : 'bg-red-500/10 text-red-600 dark:text-red-400'
-          }`}>
+          <span
+            className={`text-xs font-medium px-1.5 py-0.5 rounded ${
+              isYes
+                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                : "bg-red-500/10 text-red-600 dark:text-red-400"
+            }`}
+          >
             {trade.side.toUpperCase()}
           </span>
           {trade.outcomeId && (
@@ -59,7 +61,8 @@ function TradeRow({
           )}
         </div>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          {formatMarketSubunits(trade.amount, baseAsset)} @ {formatPricePercent(trade.price, divisibility)}
+          {formatMarketSubunits(trade.amount, baseAsset)} @{" "}
+          {formatPricePercent(trade.price, divisibility)}
         </p>
       </div>
 
@@ -68,7 +71,7 @@ function TradeRow({
         {formatTimeAgo(trade.timestamp)}
       </span>
     </div>
-  )
+  );
 }
 
 export function ActivityFeed({
@@ -77,45 +80,45 @@ export function ActivityFeed({
   divisibility: divisibilityInput,
   onLoadMoreTrades,
 }: ActivityFeedProps) {
-  const { t } = useTranslation()
-  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
-  const divisibility = normalizeMarketDivisibility(divisibilityInput)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [canScrollUp, setCanScrollUp] = useState(false)
-  const [canScrollDown, setCanScrollDown] = useState(false)
+  const { t } = useTranslation();
+  const baseAsset = normalizeMarketBaseAsset(baseAssetInput);
+  const divisibility = normalizeMarketDivisibility(divisibilityInput);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollUp, setCanScrollUp] = useState(false);
+  const [canScrollDown, setCanScrollDown] = useState(false);
 
   const checkScroll = () => {
     if (scrollRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
-      setCanScrollUp(scrollTop > 2)
-      setCanScrollDown(scrollTop < scrollHeight - clientHeight - 2)
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      setCanScrollUp(scrollTop > 2);
+      setCanScrollDown(scrollTop < scrollHeight - clientHeight - 2);
     }
-  }
+  };
 
   useEffect(() => {
-    checkScroll()
-    const resizeObserver = new ResizeObserver(checkScroll)
+    checkScroll();
+    const resizeObserver = new ResizeObserver(checkScroll);
     if (scrollRef.current) {
-      resizeObserver.observe(scrollRef.current)
+      resizeObserver.observe(scrollRef.current);
     }
-    return () => resizeObserver.disconnect()
-  }, [trades])
+    return () => resizeObserver.disconnect();
+  }, [trades]);
 
-  const scroll = (direction: 'up' | 'down') => {
+  const scroll = (direction: "up" | "down") => {
     if (scrollRef.current) {
       scrollRef.current.scrollBy({
-        top: direction === 'up' ? -100 : 100,
-        behavior: 'smooth',
-      })
+        top: direction === "up" ? -100 : 100,
+        behavior: "smooth",
+      });
     }
-  }
+  };
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700">
       {/* Header */}
       <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-          {t('trade.recentTrades')}
+          {t("trade.recentTrades")}
           <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500 font-normal">
             ({trades.length})
           </span>
@@ -126,7 +129,7 @@ export function ActivityFeed({
       <div className="relative group/trades">
         {canScrollUp && (
           <button
-            onClick={() => scroll('up')}
+            onClick={() => scroll("up")}
             className="absolute left-1/2 -translate-x-1/2 top-1 z-10 w-7 h-7 bg-white dark:bg-slate-800 shadow-lg rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 opacity-0 group-hover/trades:opacity-100 transition-opacity border border-slate-200 dark:border-slate-700"
           >
             <ChevronUp className="w-4 h-4" />
@@ -137,28 +140,28 @@ export function ActivityFeed({
           ref={scrollRef}
           onScroll={checkScroll}
           className="p-4 max-h-96 overflow-y-auto scrollbar-hide"
-          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
         >
           {trades.length === 0 ? (
             <p className="text-center text-sm text-slate-400 dark:text-slate-500 py-8">
-              {t('trade.noTrades')}
+              {t("trade.noTrades")}
             </p>
           ) : (
             <>
-          {trades.map((trade) => (
-            <TradeRow
-              key={trade.id}
-              trade={trade}
-              baseAsset={baseAsset}
-              divisibility={divisibility}
-            />
-          ))}
+              {trades.map((trade) => (
+                <TradeRow
+                  key={trade.id}
+                  trade={trade}
+                  baseAsset={baseAsset}
+                  divisibility={divisibility}
+                />
+              ))}
               {trades.length >= 5 && (
                 <button
                   onClick={onLoadMoreTrades}
                   className="w-full py-3 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium"
                 >
-                  {t('trade.loadMoreTrades')}
+                  {t("trade.loadMoreTrades")}
                 </button>
               )}
             </>
@@ -167,7 +170,7 @@ export function ActivityFeed({
 
         {canScrollDown && (
           <button
-            onClick={() => scroll('down')}
+            onClick={() => scroll("down")}
             className="absolute left-1/2 -translate-x-1/2 bottom-1 z-10 w-7 h-7 bg-white dark:bg-slate-800 shadow-lg rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 opacity-0 group-hover/trades:opacity-100 transition-opacity border border-slate-200 dark:border-slate-700"
           >
             <ChevronDown className="w-4 h-4" />
@@ -175,5 +178,5 @@ export function ActivityFeed({
         )}
       </div>
     </div>
-  )
+  );
 }

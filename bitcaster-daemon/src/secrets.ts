@@ -4,14 +4,8 @@ import {
   normalizeSecp256k1PrivateKeyHex,
   type OrderEphemeralKeypair,
 } from './ephemeralKey.ts'
-import {
-  isMissingDaemonProfileError,
-  profileDatabasePath,
-  profileDir,
-} from './profile.ts'
-import {
-  readBootstrappedProfileSecrets,
-} from './profileBootstrap.ts'
+import { isMissingDaemonProfileError, profileDatabasePath, profileDir } from './profile.ts'
+import { readBootstrappedProfileSecrets } from './profileBootstrap.ts'
 import {
   protectTargetEphemeralPrivateKey,
   unlockTargetEphemeralPrivateKey,
@@ -55,9 +49,7 @@ async function withSecretsUpdateLock<T>(run: () => Promise<T>): Promise<T> {
   return next
 }
 
-export function createDaemonSecrets(
-  now = new Date().toISOString(),
-): DaemonSecrets {
+export function createDaemonSecrets(now = new Date().toISOString()): DaemonSecrets {
   const nostr = createECDH('secp256k1')
   nostr.generateKeys()
   return createDaemonSecretsFromImport(
@@ -74,9 +66,7 @@ export function createDaemonSecretsFromImport(
   now = new Date().toISOString(),
 ): DaemonSecrets {
   const walletSeedHex = normalizeHexSecret(input.walletSeedHex, 'wallet seed')
-  const nostrSecretKeyHex = normalizeSecp256k1PrivateKeyHex(
-    input.nostrSecretKeyHex,
-  )
+  const nostrSecretKeyHex = normalizeSecp256k1PrivateKeyHex(input.nostrSecretKeyHex)
   const nostr = createECDH('secp256k1')
   try {
     nostr.setPrivateKey(Buffer.from(nostrSecretKeyHex, 'hex'))
@@ -86,10 +76,7 @@ export function createDaemonSecretsFromImport(
   return {
     walletSeedHex,
     nostrSecretKeyHex,
-    nostrPublicKeyHex: nostr
-      .getPublicKey(undefined, 'compressed')
-      .subarray(1)
-      .toString('hex'),
+    nostrPublicKeyHex: nostr.getPublicKey(undefined, 'compressed').subarray(1).toString('hex'),
     orderEphemeralKeys: {},
     createdAt: normalizeIsoTime(now),
   }
@@ -109,10 +96,7 @@ export async function readIdentitySecrets(): Promise<DaemonIdentitySecrets | nul
 
 async function readIdentitySecretsUnlocked(): Promise<DaemonIdentitySecrets | null> {
   try {
-    const identity = await readBootstrappedProfileSecrets(
-      profileDir(),
-      daemonPassphrase(),
-    )
+    const identity = await readBootstrappedProfileSecrets(profileDir(), daemonPassphrase())
     return {
       ...identity,
       createdAt: (await readCreatedAt()).toISOString(),
@@ -162,9 +146,7 @@ export async function assertDaemonStorageBindings(): Promise<void> {
 }
 
 export async function writeSecrets(_secrets: DaemonSecrets): Promise<void> {
-  throw new Error(
-    'daemon identity secrets are immutable after fresh atomic init',
-  )
+  throw new Error('daemon identity secrets are immutable after fresh atomic init')
 }
 
 export async function updateSecrets<T>(
@@ -214,10 +196,7 @@ export async function getOrCreateOrderEphemeralKeypair(input: {
   })
 }
 
-async function persistNewEphemeralKeys(
-  current: DaemonSecrets,
-  next: DaemonSecrets,
-): Promise<void> {
+async function persistNewEphemeralKeys(current: DaemonSecrets, next: DaemonSecrets): Promise<void> {
   const additions = Object.entries(next.orderEphemeralKeys).filter(
     ([keyId]) => current.orderEphemeralKeys[keyId] === undefined,
   )
@@ -312,7 +291,9 @@ async function readCreatedAt(): Promise<Date> {
   const database = await openDaemonStateSqlite(profileDir())
   try {
     const row = database
-      .prepare('SELECT created_at_ms AS createdAtMs FROM daemon_secret_authority WHERE singleton = 1')
+      .prepare(
+        'SELECT created_at_ms AS createdAtMs FROM daemon_secret_authority WHERE singleton = 1',
+      )
       .get() as { createdAtMs: number }
     return new Date(row.createdAtMs)
   } finally {

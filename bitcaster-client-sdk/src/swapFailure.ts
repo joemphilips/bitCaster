@@ -43,8 +43,6 @@ export function redactSwapFailureForTelemetry(
 ): Pick<SwapFailure, 'kind' | 'refundLocktime'> {
   return {
     kind: failure.kind,
-    ...(failure.refundLocktime === undefined
-      ? {}
-      : { refundLocktime: failure.refundLocktime }),
+    ...(failure.refundLocktime === undefined ? {} : { refundLocktime: failure.refundLocktime }),
   }
 }

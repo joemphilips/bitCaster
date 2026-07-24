@@ -272,11 +272,7 @@ for (const legacyArtifact of LEGACY_DAEMON_PROFILE_ARTIFACTS) {
     const directory = await temporaryProfile(t)
     await createFixtureDatabase(directory)
     await writeFile(join(directory, legacyArtifact), `legacy:${legacyArtifact}`)
-    await assertByteIdenticalRefusal(
-      directory,
-      'legacy-artifact',
-      fixtureManifest,
-    )
+    await assertByteIdenticalRefusal(directory, 'legacy-artifact', fixtureManifest)
   })
 }
 
@@ -297,13 +293,11 @@ for (const crashState of ['committed', 'uncommitted'] as const) {
     const recoveryRoot = await temporaryProfile(t)
     const recoveryCopy = join(recoveryRoot, 'copy')
     await cp(directory, recoveryCopy, { recursive: true, force: true })
-    const recovered = new DatabaseSync(
-      join(recoveryCopy, DAEMON_PROFILE_DATABASE),
-    )
+    const recovered = new DatabaseSync(join(recoveryCopy, DAEMON_PROFILE_DATABASE))
     try {
-      const row = recovered
-        .prepare('SELECT count(*) AS count FROM wallet_scope')
-        .get() as { count: number }
+      const row = recovered.prepare('SELECT count(*) AS count FROM wallet_scope').get() as {
+        count: number
+      }
       assert.equal(row.count, crashState === 'committed' ? 1 : 0)
     } finally {
       recovered.close()
@@ -317,10 +311,7 @@ test('allows a WAL crash artifact without SHM', async (t) => {
   await unlink(join(directory, `${DAEMON_PROFILE_DATABASE}-shm`))
   const before = await snapshotDirectory(directory)
 
-  const inventory = await validateDaemonProfileSchema(
-    directory,
-    fixtureManifest,
-  )
+  const inventory = await validateDaemonProfileSchema(directory, fixtureManifest)
 
   assert.deepEqual(
     inventory.inventory.sqliteSidecars.map(({ name }) => name),
@@ -335,11 +326,7 @@ test('refuses SHM without WAL byte-identically', async (t) => {
   await writeFile(join(directory, `${DAEMON_PROFILE_DATABASE}-shm`), 'shm', {
     mode: 0o600,
   })
-  await assertByteIdenticalRefusal(
-    directory,
-    'sqlite-sidecar-invalid',
-    fixtureManifest,
-  )
+  await assertByteIdenticalRefusal(directory, 'sqlite-sidecar-invalid', fixtureManifest)
 })
 
 test('refuses non-file WAL and SHM crash artifacts', async (t) => {
@@ -348,18 +335,10 @@ test('refuses non-file WAL and SHM crash artifacts', async (t) => {
       const directory = await temporaryProfile(subtest)
       await createFixtureDatabase(directory)
       if (sidecar.endsWith('-shm')) {
-        await writeFile(
-          join(directory, `${DAEMON_PROFILE_DATABASE}-wal`),
-          'wal',
-          { mode: 0o600 },
-        )
+        await writeFile(join(directory, `${DAEMON_PROFILE_DATABASE}-wal`), 'wal', { mode: 0o600 })
       }
       await mkdir(join(directory, sidecar), { mode: 0o700 })
-      await assertByteIdenticalRefusal(
-        directory,
-        'sqlite-sidecar-invalid',
-        fixtureManifest,
-      )
+      await assertByteIdenticalRefusal(directory, 'sqlite-sidecar-invalid', fixtureManifest)
     })
   }
 })
@@ -396,10 +375,7 @@ test('classifies safe run-lock and RPC-socket lifecycle artifacts without cleanu
     await chmod(socketPath, 0o600)
     const before = await snapshotDirectory(directory)
 
-    const result = await validateDaemonProfileSchema(
-      directory,
-      fixtureManifest,
-    )
+    const result = await validateDaemonProfileSchema(directory, fixtureManifest)
 
     assert.equal(result.inventory.runLock?.kind, 'file')
     assert.equal(result.inventory.rpcSocket?.kind, 'socket')
@@ -418,14 +394,9 @@ test('fails closed on win32 before reading a profile path', async () => {
   })
   try {
     await assert.rejects(
-      () =>
-        validateDaemonProfileSchema(
-          join(tmpdir(), 'must-not-be-inventoried'),
-          fixtureManifest,
-        ),
+      () => validateDaemonProfileSchema(join(tmpdir(), 'must-not-be-inventoried'), fixtureManifest),
       (error) =>
-        error instanceof ProfileSchemaRefusalError &&
-        error.reason === 'unsupported-platform',
+        error instanceof ProfileSchemaRefusalError && error.reason === 'unsupported-platform',
     )
   } finally {
     Object.defineProperty(process, 'platform', descriptor)
@@ -437,10 +408,7 @@ test('refuses a dev/inode/realpath identity replacement during inspection', asyn
   const replacementDirectory = await temporaryProfile(t)
   await createFixtureDatabase(directory)
   await createFixtureDatabase(replacementDirectory)
-  const replacementPath = join(
-    replacementDirectory,
-    DAEMON_PROFILE_DATABASE,
-  )
+  const replacementPath = join(replacementDirectory, DAEMON_PROFILE_DATABASE)
   const databasePath = join(directory, DAEMON_PROFILE_DATABASE)
   const child = spawn(
     process.execPath,
@@ -493,8 +461,7 @@ test('refuses a dev/inode/realpath identity replacement during inspection', asyn
   await assert.rejects(
     () => validateDaemonProfileSchema(directory, slowManifest),
     (error) =>
-      error instanceof ProfileSchemaRefusalError &&
-      error.reason === 'profile-identity-changed',
+      error instanceof ProfileSchemaRefusalError && error.reason === 'profile-identity-changed',
   )
   if (child.exitCode === null) {
     await new Promise<void>((resolve) => child.once('exit', () => resolve()))
@@ -503,9 +470,9 @@ test('refuses a dev/inode/realpath identity replacement during inspection', asyn
 
 test('requires Node 22.15 for immutable SQLite URL support', async () => {
   const daemonDirectory = join(import.meta.dirname, '..')
-  const packageJson = JSON.parse(
-    await readFile(join(daemonDirectory, 'package.json'), 'utf8'),
-  ) as { engines?: { node?: unknown } }
+  const packageJson = JSON.parse(await readFile(join(daemonDirectory, 'package.json'), 'utf8')) as {
+    engines?: { node?: unknown }
+  }
   assert.equal(packageJson.engines?.node, '>=22.15')
   const packageLock = JSON.parse(
     await readFile(join(daemonDirectory, 'package-lock.json'), 'utf8'),
@@ -518,19 +485,12 @@ test('requires Node 22.15 for immutable SQLite URL support', async () => {
       'bitcaster-daemon'?: { engines?: { node?: unknown } }
     }
   }
-  assert.equal(
-    workspaceLock.packages?.['bitcaster-daemon']?.engines?.node,
-    '>=22.15',
-  )
+  assert.equal(workspaceLock.packages?.['bitcaster-daemon']?.engines?.node, '>=22.15')
 })
 
 test('refuses a missing database without creating the profile or database', async (t) => {
   const directory = await temporaryProfile(t)
-  await assertByteIdenticalRefusal(
-    directory,
-    'sqlite-database-missing',
-    fixtureManifest,
-  )
+  await assertByteIdenticalRefusal(directory, 'sqlite-database-missing', fixtureManifest)
 })
 
 test('refuses unsafe owner-visible permission modes without chmod repair', async (t) => {
@@ -558,11 +518,7 @@ test('refuses unsafe owner-visible permission modes without chmod repair', async
               )
         await chmod(path, profilePart === 'directory' ? 0o750 : 0o640)
       }
-      await assertByteIdenticalRefusal(
-        directory,
-        'profile-permission-invalid',
-        fixtureManifest,
-      )
+      await assertByteIdenticalRefusal(directory, 'profile-permission-invalid', fixtureManifest)
     })
   }
 })
@@ -605,10 +561,7 @@ test('refuses directory, database, sidecar, lock, and socket symlinks', async (t
       reason: 'run-lock-invalid',
       setup: async (directory: string, target: string) => {
         await createFixtureDatabase(directory)
-        await symlink(
-          join(target, DAEMON_PROFILE_DATABASE),
-          join(directory, DAEMON_RUN_LOCK),
-        )
+        await symlink(join(target, DAEMON_PROFILE_DATABASE), join(directory, DAEMON_RUN_LOCK))
         return directory
       },
     },
@@ -617,10 +570,7 @@ test('refuses directory, database, sidecar, lock, and socket symlinks', async (t
       reason: 'rpc-socket-invalid',
       setup: async (directory: string, target: string) => {
         await createFixtureDatabase(directory)
-        await symlink(
-          join(target, DAEMON_PROFILE_DATABASE),
-          join(directory, DAEMON_RPC_SOCKET),
-        )
+        await symlink(join(target, DAEMON_PROFILE_DATABASE), join(directory, DAEMON_RPC_SOCKET))
         return directory
       },
     },
@@ -635,9 +585,7 @@ test('refuses directory, database, sidecar, lock, and socket symlinks', async (t
       const before = await snapshotDirectory(directory)
       await assert.rejects(
         () => validateDaemonProfileSchema(inspectedPath, fixtureManifest),
-        (error) =>
-          error instanceof ProfileSchemaRefusalError &&
-          error.reason === testCase.reason,
+        (error) => error instanceof ProfileSchemaRefusalError && error.reason === testCase.reason,
       )
       await assertDirectoryUnchanged(directory, before)
     })
@@ -648,49 +596,28 @@ test('refuses an unknown profile artifact byte-identically', async (t) => {
   const directory = await temporaryProfile(t)
   await createFixtureDatabase(directory)
   await writeFile(join(directory, 'operator-note.txt'), 'must remain unchanged')
-  await assertByteIdenticalRefusal(
-    directory,
-    'unknown-artifact',
-    fixtureManifest,
-  )
+  await assertByteIdenticalRefusal(directory, 'unknown-artifact', fixtureManifest)
 })
 
 test('refuses a non-file SQLite candidate without traversing it', async (t) => {
   const directory = await temporaryProfile(t)
   await mkdir(join(directory, DAEMON_PROFILE_DATABASE))
-  await writeFile(
-    join(directory, DAEMON_PROFILE_DATABASE, 'authority'),
-    'nested authority',
-  )
-  await assertByteIdenticalRefusal(
-    directory,
-    'sqlite-database-not-plain',
-    fixtureManifest,
-  )
+  await writeFile(join(directory, DAEMON_PROFILE_DATABASE, 'authority'), 'nested authority')
+  await assertByteIdenticalRefusal(directory, 'sqlite-database-not-plain', fixtureManifest)
 })
 
 test('refuses corrupt SQLite bytes byte-identically and creates no sidecars', async (t) => {
   const directory = await temporaryProfile(t)
-  await writeFile(
-    join(directory, DAEMON_PROFILE_DATABASE),
-    'not a SQLite database',
-    { mode: 0o600 },
-  )
-  await assertByteIdenticalRefusal(
-    directory,
-    'sqlite-corrupt',
-    fixtureManifest,
-  )
+  await writeFile(join(directory, DAEMON_PROFILE_DATABASE), 'not a SQLite database', {
+    mode: 0o600,
+  })
+  await assertByteIdenticalRefusal(directory, 'sqlite-corrupt', fixtureManifest)
 })
 
 test('refuses a partial schema byte-identically', async (t) => {
   const directory = await temporaryProfile(t)
   await createFixtureDatabase(directory, { omitWalletScope: true })
-  await assertByteIdenticalRefusal(
-    directory,
-    'sqlite-schema-mismatch',
-    fixtureManifest,
-  )
+  await assertByteIdenticalRefusal(directory, 'sqlite-schema-mismatch', fixtureManifest)
 })
 
 test('refuses an extra schema object byte-identically', async (t) => {
@@ -698,26 +625,15 @@ test('refuses an extra schema object byte-identically', async (t) => {
   await createFixtureDatabase(directory, {
     extraSql: 'CREATE TABLE unexpected_authority (id INTEGER NOT NULL) STRICT',
   })
-  await assertByteIdenticalRefusal(
-    directory,
-    'sqlite-schema-mismatch',
-    fixtureManifest,
-  )
+  await assertByteIdenticalRefusal(directory, 'sqlite-schema-mismatch', fixtureManifest)
 })
 
 test('refuses drifted STRICT and CHECK SQL byte-identically', async (t) => {
   const directory = await temporaryProfile(t)
   await createFixtureDatabase(directory, {
-    walletTableSql: walletScopeTableSql.replace(
-      'CHECK (epoch >= 0)',
-      'CHECK (epoch >= 1)',
-    ),
+    walletTableSql: walletScopeTableSql.replace('CHECK (epoch >= 0)', 'CHECK (epoch >= 1)'),
   })
-  await assertByteIdenticalRefusal(
-    directory,
-    'sqlite-schema-mismatch',
-    fixtureManifest,
-  )
+  await assertByteIdenticalRefusal(directory, 'sqlite-schema-mismatch', fixtureManifest)
 })
 
 test('refuses a non-STRICT table byte-identically', async (t) => {
@@ -725,11 +641,7 @@ test('refuses a non-STRICT table byte-identically', async (t) => {
   await createFixtureDatabase(directory, {
     walletTableSql: walletScopeTableSql.replace(/\)\s*STRICT\s*$/, ')'),
   })
-  await assertByteIdenticalRefusal(
-    directory,
-    'sqlite-schema-mismatch',
-    fixtureManifest,
-  )
+  await assertByteIdenticalRefusal(directory, 'sqlite-schema-mismatch', fixtureManifest)
 })
 
 test('refuses persisted foreign-key violations as corrupt', async (t) => {
@@ -751,11 +663,7 @@ test('refuses persisted foreign-key violations as corrupt', async (t) => {
   } finally {
     database.close()
   }
-  await assertByteIdenticalRefusal(
-    directory,
-    'sqlite-corrupt',
-    fixtureManifest,
-  )
+  await assertByteIdenticalRefusal(directory, 'sqlite-corrupt', fixtureManifest)
 })
 
 test('refuses drifted columns, foreign keys, indexes, and triggers', async (t) => {
@@ -769,9 +677,7 @@ test('refuses drifted columns, foreign keys, indexes, and triggers', async (t) =
             ? {
                 ...table,
                 columns: table.columns.map((column) =>
-                  column.name === 'epoch'
-                    ? { ...column, defaultValue: '1' }
-                    : column,
+                  column.name === 'epoch' ? { ...column, defaultValue: '1' } : column,
                 ),
               }
             : table,
@@ -815,10 +721,9 @@ test('refuses drifted columns, foreign keys, indexes, and triggers', async (t) =
           object.type === 'trigger'
             ? {
                 ...object,
-                sql: object.sql?.replace(
-                  'profile schema marker is immutable',
-                  'different trigger',
-                ) ?? null,
+                sql:
+                  object.sql?.replace('profile schema marker is immutable', 'different trigger') ??
+                  null,
               }
             : object,
         ),
@@ -847,11 +752,10 @@ test('refuses wrong application and user versions byte-identically', async (t) =
     await t.test(JSON.stringify(versionDrift), async (subtest) => {
       const directory = await temporaryProfile(subtest)
       await createFixtureDatabase(directory)
-      await assertByteIdenticalRefusal(
-        directory,
-        'sqlite-schema-mismatch',
-        { ...fixtureManifest, ...versionDrift },
-      )
+      await assertByteIdenticalRefusal(directory, 'sqlite-schema-mismatch', {
+        ...fixtureManifest,
+        ...versionDrift,
+      })
     })
   }
 })
@@ -859,11 +763,7 @@ test('refuses wrong application and user versions byte-identically', async (t) =
 test('refuses a missing mandatory marker row byte-identically', async (t) => {
   const directory = await temporaryProfile(t)
   await createFixtureDatabase(directory, { omitMarker: true })
-  await assertByteIdenticalRefusal(
-    directory,
-    'sqlite-schema-mismatch',
-    fixtureManifest,
-  )
+  await assertByteIdenticalRefusal(directory, 'sqlite-schema-mismatch', fixtureManifest)
 })
 
 test('rejects empty or partial deployment manifests before filesystem access', () => {
@@ -882,9 +782,7 @@ test('rejects empty or partial deployment manifests before filesystem access', (
   ]) {
     assert.throws(
       () => assertCompleteProfileSchemaManifest(manifest),
-      (error) =>
-        error instanceof ProfileSchemaRefusalError &&
-        error.reason === 'invalid-manifest',
+      (error) => error instanceof ProfileSchemaRefusalError && error.reason === 'invalid-manifest',
     )
   }
 })
@@ -972,18 +870,14 @@ async function createWalCrashFixture(
     process.stdout.write('ready\\n')
     setInterval(() => undefined, 60_000)
   `
-  const child = spawn(
-    process.execPath,
-    ['--input-type=module', '--eval', childScript],
-    {
-      env: {
-        ...process.env,
-        DAEMON_TEST_DATABASE: join(directory, DAEMON_PROFILE_DATABASE),
-        DAEMON_TEST_CRASH_STATE: crashState,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', childScript], {
+    env: {
+      ...process.env,
+      DAEMON_TEST_DATABASE: join(directory, DAEMON_PROFILE_DATABASE),
+      DAEMON_TEST_CRASH_STATE: crashState,
     },
-  )
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
   await waitForChildReady(child)
   child.kill('SIGKILL')
   await new Promise<void>((resolve) => child.once('exit', () => resolve()))
@@ -991,17 +885,12 @@ async function createWalCrashFixture(
   const artifacts = await readdir(directory)
   assert.ok(artifacts.includes(`${DAEMON_PROFILE_DATABASE}-wal`))
   assert.ok(artifacts.includes(`${DAEMON_PROFILE_DATABASE}-shm`))
-  for (const artifact of [
-    DAEMON_PROFILE_DATABASE,
-    ...DAEMON_PROFILE_SIDECARS,
-  ]) {
+  for (const artifact of [DAEMON_PROFILE_DATABASE, ...DAEMON_PROFILE_SIDECARS]) {
     await chmod(join(directory, artifact), 0o600)
   }
 }
 
-async function waitForChildReady(
-  child: ReturnType<typeof spawn>,
-): Promise<void> {
+async function waitForChildReady(child: ReturnType<typeof spawn>): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let stdout = ''
     let stderr = ''
@@ -1028,9 +917,7 @@ async function waitForChildReady(
       if (ready) return
       clearTimeout(timeout)
       reject(
-        new Error(
-          `WAL crash child exited before ready: code=${code} signal=${signal} ${stderr}`,
-        ),
+        new Error(`WAL crash child exited before ready: code=${code} signal=${signal} ${stderr}`),
       )
     })
   })
@@ -1060,17 +947,12 @@ interface DirectorySnapshot {
   >
 }
 
-async function snapshotDirectory(
-  directory: string,
-): Promise<DirectorySnapshot> {
+async function snapshotDirectory(directory: string): Promise<DirectorySnapshot> {
   const directoryStat = await lstat(directory, { bigint: true })
-  const entries = (await readdir(directory, { withFileTypes: true })).sort(
-    (left, right) => left.name.localeCompare(right.name),
+  const entries = (await readdir(directory, { withFileTypes: true })).sort((left, right) =>
+    left.name.localeCompare(right.name),
   )
-  const files = new Map<
-    string,
-    { length: number; digest: string; bytes: Buffer }
-  >()
+  const files = new Map<string, { length: number; digest: string; bytes: Buffer }>()
   const entryIdentities = new Map<
     string,
     {
@@ -1116,8 +998,7 @@ async function assertByteIdenticalRefusal(
   const before = await snapshotDirectory(directory)
   await assert.rejects(
     () => validateDaemonProfileSchema(directory, manifest),
-    (error) =>
-      error instanceof ProfileSchemaRefusalError && error.reason === reason,
+    (error) => error instanceof ProfileSchemaRefusalError && error.reason === reason,
   )
   await assertDirectoryUnchanged(directory, before)
 }
@@ -1142,9 +1023,7 @@ async function assertDirectoryUnchanged(
   }
 }
 
-async function temporaryProfile(
-  t: TestContext,
-): Promise<string> {
+async function temporaryProfile(t: TestContext): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'daemon-profile-schema-'))
   t.after(async () => {
     await rm(directory, { recursive: true, force: true })

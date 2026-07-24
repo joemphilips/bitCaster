@@ -5,9 +5,7 @@ export type EngineFetch = typeof fetch
 export interface EngineClientOptions {
   baseUrl: string
   fetchImpl?: EngineFetch
-  authorization?: (
-    request: EngineAuthorizationRequest,
-  ) => string | Promise<string>
+  authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>
 }
 
 export interface EngineAuthorizationRequest {
@@ -78,8 +76,7 @@ export interface BatchSubmitOrdersRequest {
   orders: BatchSubmitOrderRequestItem[]
 }
 
-export interface BatchSubmitOrderRequestItem
-  extends Omit<SubmitOrderRequest, 'comment'> {
+export interface BatchSubmitOrderRequestItem extends Omit<SubmitOrderRequest, 'comment'> {
   marketId: string
   expiresAt?: string | null
 }
@@ -271,21 +268,15 @@ export interface PayParticipationScoreEcashResponse {
 export class BitcasterEngineClient {
   private readonly baseUrl: string
   private readonly fetchImpl: EngineFetch
-  private readonly authorization?: (
-    request: EngineAuthorizationRequest,
-  ) => string | Promise<string>
+  private readonly authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>
 
   constructor(options: EngineClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '')
-    this.fetchImpl =
-      options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init))
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init))
     this.authorization = options.authorization
   }
 
-  async submitOrder(
-    marketId: string,
-    request: SubmitOrderRequest,
-  ): Promise<SubmitOrderResponse> {
+  async submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse> {
     const bodyText = JSON.stringify(request)
     const response = await this.request(
       `/api/v1/${encodePathSegment(marketId)}/orders`,
@@ -299,10 +290,7 @@ export class BitcasterEngineClient {
     return (await response.json()) as SubmitOrderResponse
   }
 
-  async getOrderStatus(
-    marketId: string,
-    orderId: string,
-  ): Promise<OrderStatusResponse | null> {
+  async getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null> {
     const response = await this.request(
       `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
     )
@@ -310,17 +298,8 @@ export class BitcasterEngineClient {
     return (await response.json()) as OrderStatusResponse
   }
 
-  async listMyOrders(
-    conditionId: string,
-    cursor?: string,
-  ): Promise<ListMyOrdersResponse> {
-    return listMyOrders(
-      this.baseUrl,
-      conditionId,
-      cursor,
-      this.fetchImpl,
-      this.authorization,
-    )
+  async listMyOrders(conditionId: string, cursor?: string): Promise<ListMyOrdersResponse> {
+    return listMyOrders(this.baseUrl, conditionId, cursor, this.fetchImpl, this.authorization)
   }
 
   async batchSubmitOrders(
@@ -363,12 +342,10 @@ export class BitcasterEngineClient {
     conditionIdOrNostrEvent?: string | NostrKind1Event | null,
     nostrEvent?: NostrKind1Event | null,
   ): Promise<SubmitEphemeralPubkeyResponse> {
-    const conditionId = typeof conditionIdOrNostrEvent === 'string'
-      ? conditionIdOrNostrEvent
-      : undefined
-    const comment = typeof conditionIdOrNostrEvent === 'string'
-      ? nostrEvent
-      : conditionIdOrNostrEvent
+    const conditionId =
+      typeof conditionIdOrNostrEvent === 'string' ? conditionIdOrNostrEvent : undefined
+    const comment =
+      typeof conditionIdOrNostrEvent === 'string' ? nostrEvent : conditionIdOrNostrEvent
     return submitEphemeralPubkey(
       this.baseUrl,
       tradeId,
@@ -389,18 +366,12 @@ export class BitcasterEngineClient {
   }
 
   async getOrderBook(marketId: string): Promise<OrderBookSnapshot> {
-    const response = await this.request(
-      `/api/v1/${encodePathSegment(marketId)}/orderbook`,
-    )
+    const response = await this.request(`/api/v1/${encodePathSegment(marketId)}/orderbook`)
     return (await response.json()) as OrderBookSnapshot
   }
 
-  async queryMarkets(
-    params: QueryMarketsParams = {},
-  ): Promise<QueryMarketsResponse> {
-    const response = await this.request(
-      `/api/v1/markets/query${buildMarketsQueryString(params)}`,
-    )
+  async queryMarkets(params: QueryMarketsParams = {}): Promise<QueryMarketsResponse> {
+    const response = await this.request(`/api/v1/markets/query${buildMarketsQueryString(params)}`)
     return (await response.json()) as QueryMarketsResponse
   }
 
@@ -476,12 +447,7 @@ export class BitcasterEngineClient {
     if (!response.ok && response.status !== 404) {
       const detail = await response.text().catch(() => '')
       const problem = parseEngineProblem(detail)
-      throw new EngineClientError(
-        response.status,
-        detail,
-        problem?.code,
-        problem?.detail,
-      )
+      throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)
     }
     return response
   }
@@ -574,12 +540,7 @@ export class EngineClientError extends Error {
   public readonly code?: string
   public readonly problemDetail?: string
 
-  constructor(
-    status: number,
-    detail: string,
-    code?: string,
-    problemDetail?: string,
-  ) {
+  constructor(status: number, detail: string, code?: string, problemDetail?: string) {
     super(formatEngineClientError(status, detail, code, problemDetail))
     this.name = 'EngineClientError'
     this.status = status

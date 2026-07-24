@@ -49,16 +49,11 @@ export function readBoundedCustodyHistory(
       ? `${last.updatedAtMs}:${encodeURIComponent(last.operationId)}`
       : null
   let exactPageBytes = custodyHistorySerializedPageBytes(selected, nextCursor)
-  while (
-    exactPageBytes > DAEMON_HISTORY_PAGE_BYTES_MAX &&
-    selected.length > 0
-  ) {
+  while (exactPageBytes > DAEMON_HISTORY_PAGE_BYTES_MAX && selected.length > 0) {
     selected.pop()
     last = selected.at(-1)
     nextCursor =
-      last === undefined
-        ? null
-        : `${last.updatedAtMs}:${encodeURIComponent(last.operationId)}`
+      last === undefined ? null : `${last.updatedAtMs}:${encodeURIComponent(last.operationId)}`
     exactPageBytes = custodyHistorySerializedPageBytes(selected, nextCursor)
   }
   return {
@@ -68,9 +63,10 @@ export function readBoundedCustodyHistory(
   }
 }
 
-export function takeBoundedCustodyHistoryRows(
-  rows: readonly CustodyHistoryRow[],
-): { rows: CustodyHistoryRow[]; serializedBytes: number } {
+export function takeBoundedCustodyHistoryRows(rows: readonly CustodyHistoryRow[]): {
+  rows: CustodyHistoryRow[]
+  serializedBytes: number
+} {
   const selected: CustodyHistoryRow[] = []
   let serializedBytes = custodyHistorySerializedPageBytes(selected, null)
   for (const row of rows) {
@@ -103,12 +99,7 @@ function decodeHistoryCursor(cursor: string | null): [number | null, string] {
   const separator = cursor.indexOf(':')
   const time = Number(cursor.slice(0, separator))
   const operationId = decodeURIComponent(cursor.slice(separator + 1))
-  if (
-    separator <= 0 ||
-    !Number.isSafeInteger(time) ||
-    time < 0 ||
-    operationId.length === 0
-  ) {
+  if (separator <= 0 || !Number.isSafeInteger(time) || time < 0 || operationId.length === 0) {
     throw new Error('custody history cursor is invalid')
   }
   return [time, operationId]

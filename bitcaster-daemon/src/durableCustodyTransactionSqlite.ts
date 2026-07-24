@@ -10,9 +10,7 @@ import {
 import { DurableCustodySqliteStore } from './durableCustodySqliteStore.ts'
 import type { CustodyProofSqliteRow } from './durableCustodySqliteStore.ts'
 
-export class DurableCustodyTransactionSqlite
-  implements DurableCustodyTransaction
-{
+export class DurableCustodyTransactionSqlite implements DurableCustodyTransaction {
   readonly #database: DatabaseSync
   readonly #scopeId: string
   readonly #nowMs: number
@@ -73,10 +71,7 @@ export class DurableCustodyTransactionSqlite
 
   putOperation(input: Parameters<DurableCustodyTransaction['putOperation']>[0]) {
     this.#store.putOperation({ ...input, createdAtMs: this.#nowMs })
-    this.#pendingOperations.set(
-      input.record.operation.operationId,
-      structuredClone(input.record),
-    )
+    this.#pendingOperations.set(input.record.operation.operationId, structuredClone(input.record))
   }
 
   getArtifact(input: Parameters<DurableCustodyTransaction['getArtifact']>[0]) {
@@ -87,16 +82,13 @@ export class DurableCustodyTransactionSqlite
     this.#store.putArtifact({ ...input, createdAtMs: this.#nowMs })
   }
 
-  reserveExactInputs(
-    input: Parameters<DurableCustodyTransaction['reserveExactInputs']>[0],
-  ): void {
+  reserveExactInputs(input: Parameters<DurableCustodyTransaction['reserveExactInputs']>[0]): void {
     const operation = this.#requiredOperation(input.operationId, input.expectedRevision)
     if (
       operation.operation.reservation.reservationId !== input.reservationId ||
       input.proofIds.length !== operation.operation.reservation.inputs.length ||
       input.proofIds.some(
-        (proofId, index) =>
-          proofId !== operation.operation.reservation.inputs[index]!.proofId,
+        (proofId, index) => proofId !== operation.operation.reservation.inputs[index]!.proofId,
       )
     ) {
       throw new Error('custody reservation authority is foreign')
@@ -203,10 +195,7 @@ export class DurableCustodyTransactionSqlite
   applyVerifiedResult(
     input: Parameters<DurableCustodyTransaction['applyVerifiedResult']>[0],
   ): void {
-    const stagedOperation = this.#requiredOperation(
-      input.operationId,
-      input.expectedRevision,
-    )
+    const stagedOperation = this.#requiredOperation(input.operationId, input.expectedRevision)
     const stagedResult = stagedOperation.operation.result
     if (
       stagedResult.state !== 'verified-staged' ||
@@ -235,15 +224,13 @@ export class DurableCustodyTransactionSqlite
       canonicalResultReference === null ||
       canonicalResultReference.artifactId !== stagedResult.exactResult.artifactId ||
       canonicalResultReference.encoding !== stagedResult.exactResult.encoding ||
-      canonicalResultReference.fingerprint !==
-        stagedResult.exactResult.fingerprint ||
+      canonicalResultReference.fingerprint !== stagedResult.exactResult.fingerprint ||
       canonicalResultReference.byteLength !== stagedResult.exactResult.byteLength
     ) {
       throw new Error('custody staged result artifact authority is foreign')
     }
     const staged = this.#stagedSuccessors.get(input.operationId) ?? []
-    const planned =
-      stagedOperation.operation.proofStorage.lineage.successorProofIds
+    const planned = stagedOperation.operation.proofStorage.lineage.successorProofIds
     if (
       staged.length !== planned.length ||
       input.successorAdmission.proofRows.length !== planned.length ||
@@ -276,23 +263,26 @@ export class DurableCustodyTransactionSqlite
           }
         }
       }
-      this.#applyTransition(input.operationId, input.expectedRevision, {
-        kind: 'apply-verified-result',
-        authorization: input.authorization,
-        expectedRevision: input.expectedRevision,
-        successorAdmission: input.successorAdmission,
-      }, {
-        outputPlanFingerprint: input.outputPlanFingerprint,
-        resultHandle: input.resultHandle,
-        resultFingerprint: input.resultFingerprint,
-        resultArtifactId: stagedResult.exactResult.artifactId,
-      })
+      this.#applyTransition(
+        input.operationId,
+        input.expectedRevision,
+        {
+          kind: 'apply-verified-result',
+          authorization: input.authorization,
+          expectedRevision: input.expectedRevision,
+          successorAdmission: input.successorAdmission,
+        },
+        {
+          outputPlanFingerprint: input.outputPlanFingerprint,
+          resultHandle: input.resultHandle,
+          resultFingerprint: input.resultFingerprint,
+          resultArtifactId: stagedResult.exactResult.artifactId,
+        },
+      )
       this.#database.exec('RELEASE SAVEPOINT custody_apply_verified_result')
       this.#stagedSuccessors.delete(input.operationId)
     } catch (error) {
-      this.#database.exec(
-        'ROLLBACK TO SAVEPOINT custody_apply_verified_result',
-      )
+      this.#database.exec('ROLLBACK TO SAVEPOINT custody_apply_verified_result')
       this.#database.exec('RELEASE SAVEPOINT custody_apply_verified_result')
       throw error
     }
@@ -330,15 +320,10 @@ export class DurableCustodyTransactionSqlite
         .run(this.#scopeId, row.operationId)
       const operation = this.getOperation(row.operationId)
       if (operation === null || operation.revision !== row.expectedRevision) continue
-      if (
-        operation.operation.state === 'reconciled' ||
-        operation.operation.state === 'aborted'
-      ) {
+      if (operation.operation.state === 'reconciled' || operation.operation.state === 'aborted') {
         continue
       }
-      const estimatedBytes = new TextEncoder().encode(
-        JSON.stringify(operation),
-      ).length
+      const estimatedBytes = new TextEncoder().encode(JSON.stringify(operation)).length
       this.#database
         .prepare(
           `INSERT INTO custody_active_work (
@@ -416,7 +401,9 @@ export class DurableCustodyTransactionSqlite
     this.#pendingOperations.set(operationId, structuredClone(next))
   }
 
-  #replaceLifecycleRows(record: NonNullable<ReturnType<DurableCustodySqliteStore['getOperation']>>): void {
+  #replaceLifecycleRows(
+    record: NonNullable<ReturnType<DurableCustodySqliteStore['getOperation']>>,
+  ): void {
     const operationId = record.operation.operationId
     this.#database
       .prepare('DELETE FROM custody_proof_pins WHERE scope_id = ? AND operation_id = ?')
@@ -433,7 +420,9 @@ export class DurableCustodyTransactionSqlite
       }
     }
     this.#database
-      .prepare('DELETE FROM custody_successor_admission_proofs WHERE scope_id = ? AND operation_id = ?')
+      .prepare(
+        'DELETE FROM custody_successor_admission_proofs WHERE scope_id = ? AND operation_id = ?',
+      )
       .run(this.#scopeId, operationId)
     this.#database
       .prepare('DELETE FROM custody_successor_admissions WHERE scope_id = ? AND operation_id = ?')
@@ -510,9 +499,7 @@ export class DurableCustodyTransactionSqlite
           Number(record.terminalTombstone.replayCutoffObserved),
         )
     }
-    for (const [kind, reference] of [
-      ['result', record.operation.result.exactResult],
-    ] as const) {
+    for (const [kind, reference] of [['result', record.operation.result.exactResult]] as const) {
       this.#database
         .prepare(
           `DELETE FROM custody_operation_artifact_links
@@ -540,10 +527,7 @@ export class DurableCustodyTransactionSqlite
   }
 }
 
-function proofRowsEqual(
-  left: CustodyProofSqliteRow,
-  right: CustodyProofSqliteRow,
-): boolean {
+function proofRowsEqual(left: CustodyProofSqliteRow, right: CustodyProofSqliteRow): boolean {
   const normalize = (row: CustodyProofSqliteRow) => ({
     ...row,
     proofBody: [...row.proofBody],

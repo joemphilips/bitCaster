@@ -1,47 +1,47 @@
-import { useEffect, useRef } from 'react'
-import { X } from 'lucide-react'
-import QrScanner from 'qr-scanner'
+import { useEffect, useRef } from "react";
+import { X } from "lucide-react";
+import QrScanner from "qr-scanner";
 
 interface QrScannerProps {
-  onDecode: (data: string) => void
-  onClose: () => void
+  onDecode: (data: string) => void;
+  onClose: () => void;
 }
 
 export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const scannerRef = useRef<QrScanner | null>(null)
-  const onDecodeRef = useRef(onDecode)
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const scannerRef = useRef<QrScanner | null>(null);
+  const onDecodeRef = useRef(onDecode);
 
   useEffect(() => {
-    onDecodeRef.current = onDecode
-  }, [onDecode])
+    onDecodeRef.current = onDecode;
+  }, [onDecode]);
 
   useEffect(() => {
-    const video = videoRef.current
-    if (!video) return
+    const video = videoRef.current;
+    if (!video) return;
 
     const scanner = new QrScanner(
       video,
       (result: QrScanner.ScanResult) => {
-        scanner.stop()
-        onDecodeRef.current(result.data)
+        scanner.stop();
+        onDecodeRef.current(result.data);
       },
       {
         returnDetailedScanResult: true,
         highlightScanRegion: true,
         highlightCodeOutline: true,
         onDecodeError: () => {},
-      }
-    )
+      },
+    );
 
-    scannerRef.current = scanner
-    scanner.start()
+    scannerRef.current = scanner;
+    scanner.start();
 
     return () => {
-      scanner.destroy()
-      scannerRef.current = null
-    }
-  }, [])
+      scanner.destroy();
+      scannerRef.current = null;
+    };
+  }, []);
 
   return (
     <div className="fixed inset-0 z-[70] bg-slate-900 flex flex-col">
@@ -64,5 +64,5 @@ export function QrScannerView({ onDecode, onClose }: QrScannerProps) {
         </div>
       </div>
     </div>
-  )
+  );
 }

@@ -107,10 +107,7 @@ test('startDaemonServer refuses to replace a live Unix socket daemon', async () 
   delete process.env.BITCASTER_DAEMON_PORT
   const server = await startDaemonServer()
   try {
-    await assert.rejects(
-      () => startDaemonServer(),
-      /RPC socket is already in use/,
-    )
+    await assert.rejects(() => startDaemonServer(), /RPC socket is already in use/)
   } finally {
     server.close()
     await once(server, 'close')
@@ -253,7 +250,8 @@ test('market.create refuses insecure daemon profile engine URL before engine RPC
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), {
       ok: false,
-      error: 'market.create requires https engine URL (or BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost)',
+      error:
+        'market.create requires https engine URL (or BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost)',
       code: 'insecure-engine-url',
     })
   } finally {
@@ -314,7 +312,8 @@ test('market.close refuses insecure daemon profile engine URL before engine RPC'
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), {
       ok: false,
-      error: 'market.create requires https engine URL (or BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost)',
+      error:
+        'market.create requires https engine URL (or BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost)',
       code: 'insecure-engine-url',
     })
   } finally {

@@ -188,9 +188,7 @@ test('buildTradeTicket rejects market orders with no liquidity instead of price 
         limitPrice: 500,
         orderBook: { bids: [], asks: [], spread: 0 },
       }),
-    (error) =>
-      error instanceof TradeTicketError &&
-      error.code === 'no-market-liquidity',
+    (error) => error instanceof TradeTicketError && error.code === 'no-market-liquidity',
   )
 })
 

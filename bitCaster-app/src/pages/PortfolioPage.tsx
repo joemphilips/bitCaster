@@ -8,21 +8,14 @@ import { usePortfolioState } from "./usePortfolioState";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { useWalletStore } from "@/stores/wallet";
-import {
-  getConditionCtfProofs,
-  getOutcomeProofs,
-  removeProofs,
-} from "@/stores/proof-db";
+import { getConditionCtfProofs, getOutcomeProofs, removeProofs } from "@/stores/proof-db";
 import { settleCtfPosition } from "@/lib/cashu";
 import { isWinningCollection } from "@/lib/positionWinner";
 import type { PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 
-export function toPortfolioMarketDetailId(
-  marketId: string,
-  outcomeId?: string | null,
-): string {
+export function toPortfolioMarketDetailId(marketId: string, outcomeId?: string | null): string {
   const suffix = outcomeId ? `-${outcomeId}` : "";
   if (suffix && marketId.endsWith(suffix)) {
     return marketId.slice(0, -suffix.length);
@@ -35,12 +28,8 @@ export function PortfolioPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const state = usePortfolioState();
-  const [overlayMode, setOverlayMode] = useState<DepositWithdrawMode | null>(
-    null,
-  );
-  const [claimingPositionId, setClaimingPositionId] = useState<string | null>(
-    null,
-  );
+  const [overlayMode, setOverlayMode] = useState<DepositWithdrawMode | null>(null);
+  const [claimingPositionId, setClaimingPositionId] = useState<string | null>(null);
   const [showWalletSetup, setShowWalletSetup] = useState(false);
   const [walletSetupCreating, setWalletSetupCreating] = useState(false);
   const [walletSetupError, setWalletSetupError] = useState<string | null>(null);
@@ -58,9 +47,7 @@ export function PortfolioPage() {
       await useWalletStore.getState().ensureImplicitWallet();
       setShowWalletSetup(false);
     } catch (error) {
-      setWalletSetupError(
-        error instanceof Error ? error.message : t("wallet.setupFailed"),
-      );
+      setWalletSetupError(error instanceof Error ? error.message : t("wallet.setupFailed"));
     } finally {
       setWalletSetupCreating(false);
     }
@@ -79,9 +66,7 @@ export function PortfolioPage() {
         await useWalletStore.getState().ensureImplicitWallet();
         setShowWalletSetup(false);
       } catch (error) {
-        setWalletSetupError(
-          error instanceof Error ? error.message : t("wallet.setupFailed"),
-        );
+        setWalletSetupError(error instanceof Error ? error.message : t("wallet.setupFailed"));
       } finally {
         setWalletSetupCreating(false);
       }
@@ -116,9 +101,7 @@ export function PortfolioPage() {
     (positionId: string) => {
       const position = state.positions.find((p) => p.id === positionId);
       if (position) {
-        navigate(
-          `/markets/${toPortfolioMarketDetailId(position.marketId, position.outcomeId)}`,
-        );
+        navigate(`/markets/${toPortfolioMarketDetailId(position.marketId, position.outcomeId)}`);
       }
     },
     [navigate, state.positions],
@@ -128,9 +111,7 @@ export function PortfolioPage() {
     (positionId: string) => {
       const position = state.positions.find((p) => p.id === positionId);
       if (position) {
-        navigate(
-          `/markets/${toPortfolioMarketDetailId(position.marketId, position.outcomeId)}`,
-        );
+        navigate(`/markets/${toPortfolioMarketDetailId(position.marketId, position.outcomeId)}`);
       }
     },
     [navigate, state.positions],
@@ -147,11 +128,7 @@ export function PortfolioPage() {
     async (positionId: string) => {
       if (claimingPositionId) return;
       const position = state.positions.find((p) => p.id === positionId);
-      if (
-        !position ||
-        position.status !== "closed" ||
-        position.currentValueSats <= 0
-      ) {
+      if (!position || position.status !== "closed" || position.currentValueSats <= 0) {
         return;
       }
 
@@ -165,19 +142,13 @@ export function PortfolioPage() {
         // them by keyset id, redeeming the winning leg and removing the losing
         // one — so the claim resolves the whole position, leaving no leftover
         // composite-tagged proof to keep the row alive or look like a winner.
-        const proofs = await getConditionCtfProofs(
-          position.mintUrl,
-          conditionId,
-          { baseAsset: position.baseAsset },
-        );
-        if (proofs.length === 0)
-          throw new Error("Position has no redeemable proofs");
+        const proofs = await getConditionCtfProofs(position.mintUrl, conditionId, {
+          baseAsset: position.baseAsset,
+        });
+        if (proofs.length === 0) throw new Error("Position has no redeemable proofs");
         const regularProofs = await settleCtfPosition({
           conditionId,
-          amountSats: proofs.reduce(
-            (sum, proof) => sum + amountToNumber(proof.amount),
-            0,
-          ),
+          amountSats: proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0),
           proofs,
           mintUrl: position.mintUrl,
           outcomeCollection,
@@ -186,19 +157,14 @@ export function PortfolioPage() {
         addActivity({
           type: "payout_claimed",
           baseAsset: position.baseAsset,
-          amountSats: regularProofs.reduce(
-            (sum, proof) => sum + amountToNumber(proof.amount),
-            0,
-          ),
+          amountSats: regularProofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0),
           status: "completed",
           marketId: position.marketId,
           marketTitle: position.marketTitle,
         });
       } catch (error) {
         console.error("[portfolio] failed to claim payout", error);
-        window.alert(
-          error instanceof Error ? error.message : "Failed to claim payout",
-        );
+        window.alert(error instanceof Error ? error.message : "Failed to claim payout");
       } finally {
         setClaimingPositionId(null);
       }
@@ -216,13 +182,7 @@ export function PortfolioPage() {
       // position the derivation does not consider an attested loser, even if a
       // stale callback fired. Only an attested loser (isLoser, not isWinner, not
       // isPending) may have its proofs destroyed.
-      if (
-        !position ||
-        !position.isLoser ||
-        position.isWinner ||
-        position.isPending
-      )
-        return;
+      if (!position || !position.isLoser || position.isWinner || position.isPending) return;
       if (!window.confirm(t("portfolio.discardLostPositionConfirm"))) return;
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId);
@@ -231,12 +191,10 @@ export function PortfolioPage() {
         // leg(s)), not the whole condition — a condition can hold several
         // positions. No mint redeem: a losing leg has nothing to claim.
         const proofs = outcomeCollection
-          ? await getOutcomeProofs(
-              position.mintUrl,
-              conditionId,
-              outcomeCollection,
-              { includeReserved: true, baseAsset: position.baseAsset },
-            )
+          ? await getOutcomeProofs(position.mintUrl, conditionId, outcomeCollection, {
+              includeReserved: true,
+              baseAsset: position.baseAsset,
+            })
           : [];
         // F2 defense-in-depth (P22 Link F): destroying a proof on a WINNING
         // keyset is permanent value loss. Even though `isLoser` already gates
@@ -247,23 +205,15 @@ export function PortfolioPage() {
           const candidate = proof as typeof proof & {
             outcome_collection?: string;
           };
-          const proofCollection =
-            candidate.outcomeCollection ?? candidate.outcome_collection;
-          return !(
-            proofCollection &&
-            isWinningCollection(proofCollection, position.finalOutcome)
-          );
+          const proofCollection = candidate.outcomeCollection ?? candidate.outcome_collection;
+          return !(proofCollection && isWinningCollection(proofCollection, position.finalOutcome));
         });
         if (safeToDelete.length > 0) {
           await removeProofs(safeToDelete.map((proof) => proof.secret));
         }
       } catch (error) {
         console.error("[portfolio] failed to remove lost position", error);
-        window.alert(
-          error instanceof Error
-            ? error.message
-            : "Failed to remove losing position",
-        );
+        window.alert(error instanceof Error ? error.message : "Failed to remove losing position");
       }
     },
     [state.positions, t],
@@ -288,8 +238,7 @@ export function PortfolioPage() {
   // empty app-bar "Anon" + empty avatar the user sees in this state.
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const nostrProfile = useSettingsStore((s) => s.nostrProfile);
-  const showConnectNostrCta =
-    nostrSignerMode === "none" && nostrProfile == null;
+  const showConnectNostrCta = nostrSignerMode === "none" && nostrProfile == null;
 
   return (
     <>
@@ -321,10 +270,7 @@ export function PortfolioPage() {
         onConnectNostr={handleConnectNostr}
       />
       {overlayMode && (
-        <DepositWithdrawOverlay
-          mode={overlayMode}
-          onClose={() => setOverlayMode(null)}
-        />
+        <DepositWithdrawOverlay mode={overlayMode} onClose={() => setOverlayMode(null)} />
       )}
       {showWalletSetup && (
         <WalletSetupModal

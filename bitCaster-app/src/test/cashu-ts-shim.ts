@@ -10,5 +10,5 @@
  */
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck — the real module path is not '@cashu/cashu-ts' here
-export { Mint as CashuMint, Wallet as CashuWallet } from '@cashu/cashu-ts-real'
-export * from '@cashu/cashu-ts-real'
+export { Mint as CashuMint, Wallet as CashuWallet } from "@cashu/cashu-ts-real";
+export * from "@cashu/cashu-ts-real";
