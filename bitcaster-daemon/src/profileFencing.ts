@@ -14,7 +14,6 @@ export const CUSTODY_SCOPE_RENEW_INTERVAL_MS = 20_000
 export type ScopeLeaseRefusalReason =
   | 'scope-missing'
   | 'already-owned'
-  | 'clock-rollback'
   | 'stale-fence'
   | 'lease-expired'
   | 'invalid-input'
@@ -22,7 +21,6 @@ export type ScopeLeaseRefusalReason =
 const leaseMessages: Readonly<Record<ScopeLeaseRefusalReason, string>> = {
   'scope-missing': 'custody scope is missing',
   'already-owned': 'custody scope is already owned',
-  'clock-rollback': 'custody scope clock moved backwards',
   'stale-fence': 'custody scope fence is stale',
   'lease-expired': 'custody scope lease expired',
   'invalid-input': 'custody scope lease input is invalid',
@@ -56,7 +54,6 @@ export async function claimCustodyScopeLease(
   validateLeaseIdentity(input)
   return withFencingTransaction(directory, (database) => {
     const state = readScopeState(database, input.scopeId)
-    assertMonotonicClock(input.observedAtMs, state.highWaterMarkMs)
     if (
       state.ownerIncarnationId !== null &&
       state.leaseExpiresAtMs !== null &&
@@ -83,7 +80,7 @@ export async function claimCustodyScopeLease(
         fencingEpoch,
         input.incarnationId,
         leaseExpiresAtMs,
-        input.observedAtMs,
+        Math.max(input.observedAtMs, state.highWaterMarkMs),
         input.scopeId,
         state.fencingEpoch,
       )
@@ -105,7 +102,6 @@ export async function renewCustodyScopeLease(
   validateLeaseIdentity({ ...fence, observedAtMs })
   return withFencingTransaction(directory, (database) => {
     const state = readScopeState(database, fence.scopeId)
-    assertMonotonicClock(observedAtMs, state.highWaterMarkMs)
     assertCurrentFence(state, fence)
     if (
       state.leaseExpiresAtMs === null ||
@@ -113,7 +109,10 @@ export async function renewCustodyScopeLease(
     ) {
       throw new ScopeLeaseRefusalError('lease-expired')
     }
-    const leaseExpiresAtMs = checkedLeaseExpiry(observedAtMs)
+    const leaseExpiresAtMs = Math.max(
+      state.leaseExpiresAtMs,
+      checkedLeaseExpiry(observedAtMs),
+    )
     const result = database
       .prepare(
         `UPDATE custody_scope_state
@@ -122,7 +121,7 @@ export async function renewCustodyScopeLease(
       )
       .run(
         leaseExpiresAtMs,
-        observedAtMs,
+        Math.max(observedAtMs, state.highWaterMarkMs),
         fence.scopeId,
         fence.incarnationId,
         fence.fencingEpoch,
@@ -140,7 +139,6 @@ export async function releaseCustodyScopeLease(
   validateLeaseIdentity({ ...fence, observedAtMs })
   await withFencingTransaction(directory, (database) => {
     const state = readScopeState(database, fence.scopeId)
-    assertMonotonicClock(observedAtMs, state.highWaterMarkMs)
     assertCurrentFence(state, fence)
     if (
       state.leaseExpiresAtMs === null ||
@@ -156,7 +154,7 @@ export async function releaseCustodyScopeLease(
          WHERE scope_id = ? AND owner_incarnation_id = ? AND fencing_epoch = ?`,
       )
       .run(
-        observedAtMs,
+        Math.max(observedAtMs, state.highWaterMarkMs),
         fence.scopeId,
         fence.incarnationId,
         fence.fencingEpoch,
@@ -231,12 +229,6 @@ function assertCurrentFence(
     state.fencingEpoch !== fence.fencingEpoch
   ) {
     throw new ScopeLeaseRefusalError('stale-fence')
-  }
-}
-
-function assertMonotonicClock(observedAtMs: number, highWaterMarkMs: number): void {
-  if (observedAtMs < highWaterMarkMs) {
-    throw new ScopeLeaseRefusalError('clock-rollback')
   }
 }
 

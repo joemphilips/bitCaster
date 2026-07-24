@@ -614,7 +614,7 @@ test('legacy, partial, valid, and insecure-directory profiles are refused byte-i
   assert.equal((await stat(insecure)).mode & 0o777, 0o755)
 })
 
-test('scope fencing renews at 20 seconds and takeover monotonically advances epoch', async () => {
+test('scope fencing tolerates clock rollback and takeover advances epoch', async () => {
   assert.equal(CUSTODY_SCOPE_RENEW_INTERVAL_MS, 20_000)
   assert.equal(CUSTODY_SCOPE_LEASE_DURATION_MS, 60_000)
   const directory = await freshProfileDirectory('lease')
@@ -653,9 +653,15 @@ test('scope fencing renews at 20 seconds and takeover monotonically advances epo
     renewCustodyScopeLease(directory, renewed, second.leaseExpiresAtMs - 1),
     leaseError('stale-fence'),
   )
-  await assert.rejects(
-    renewCustodyScopeLease(directory, second, initializedAtMs),
-    leaseError('clock-rollback'),
+  const renewedAfterClockRollback = await renewCustodyScopeLease(
+    directory,
+    second,
+    initializedAtMs,
+  )
+  assert.equal(renewedAfterClockRollback.fencingEpoch, second.fencingEpoch)
+  assert.equal(
+    renewedAfterClockRollback.leaseExpiresAtMs,
+    second.leaseExpiresAtMs,
   )
 })
 
