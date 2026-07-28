@@ -112,7 +112,7 @@ export interface PendingTopUpOrderIntent {
   orderType: OrderType;
   limitPrice: number;
   comment?: string;
-  baseAsset: "sat" | "usd" | "jpy";
+  baseAsset: "sat";
   required: number;
 }
 
@@ -926,12 +926,14 @@ export function MarketDetailPage() {
     () => composeMarketDetail(marketData, chartTimeframe),
     [marketData, chartTimeframe],
   );
-  const marketBaseAsset = normalizeMarketBaseAsset(market?.baseAsset);
+  const marketBaseAsset = market ? normalizeMarketBaseAsset(market.baseAsset) : "sat";
   const [tradeSelection, setTradeSelection] = useState<TradeSelection | null>(null);
   const [tradeAmount, setTradeAmount] = useState(0);
   const [tradeSide, setTradeSide] = useState<TradeSide>("Buy");
   const [orderType, setOrderType] = useState<OrderType>("market");
-  const [limitPrice, setLimitPrice] = useState(defaultLimitPriceForDivisibility);
+  const [limitPrice, setLimitPrice] = useState(() =>
+    defaultLimitPriceForDivisibility(10_000, "sat"),
+  );
   const [priceManuallyEdited, setPriceManuallyEdited] = useState(false);
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
     kind: "info" | "success" | "error";
@@ -1258,7 +1260,9 @@ export function MarketDetailPage() {
     };
   }, [walletReady]);
 
-  const marketDivisibility = normalizeMarketDivisibility(market?.divisibility, marketBaseAsset);
+  const marketDivisibility = market
+    ? normalizeMarketDivisibility(market.divisibility, marketBaseAsset)
+    : 10_000;
   const priceOutcomeSetId = useMemo(() => {
     if (!market) return null;
     if (tradeSelection) {
@@ -1596,11 +1600,9 @@ export function MarketDetailPage() {
           clientOrderId,
           ...(signedComment ? { comment: signedComment } : {}),
         });
-        const acceptedBaseAsset = normalizeMarketBaseAsset(
-          response.baseAsset ?? latestMarket.baseAsset,
-        );
+        const acceptedBaseAsset = normalizeMarketBaseAsset(response.baseAsset);
         const acceptedDivisibility = normalizeMarketDivisibility(
-          response.divisibility ?? latestMarket.divisibility,
+          response.divisibility,
           acceptedBaseAsset,
         );
         // Only persist the privkey once the engine has accepted the order.

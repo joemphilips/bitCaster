@@ -64,7 +64,7 @@ function renderStep(
     conditionId: string;
     defaultAmountSats: number;
     outcomeCount: number;
-    baseAsset: "sat" | "usd" | "jpy";
+    baseAsset: "sat";
   }>,
 ) {
   const conditionId = props?.conditionId ?? "cond-test-abc123";
@@ -201,50 +201,6 @@ describe("DepositStep", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("previews USD custom funding as entered dollars", async () => {
-    const user = userEvent.setup();
-    renderStep({ baseAsset: "usd" });
-
-    await openFunding(user);
-    await user.clear(screen.getByRole("spinbutton"));
-    await user.type(screen.getByRole("spinbutton"), "15");
-
-    expect(screen.getByText("Funding amount: $15.00")).toBeInTheDocument();
-  });
-
-  it("converts USD custom funding dollars to cent subunits at the request boundary", async () => {
-    const user = userEvent.setup();
-    renderStep({ baseAsset: "usd" });
-
-    await openFunding(user);
-    await user.clear(screen.getByRole("spinbutton"));
-    await user.type(screen.getByRole("spinbutton"), "15");
-    await user.click(screen.getByTestId("confirm-amm-funding"));
-
-    await waitFor(() => {
-      expect(requestEcashDeposit).toHaveBeenCalledWith(
-        "cond-test-abc123",
-        1_500,
-        "cashuBlocally-generated",
-        expect.objectContaining({ fundAmm: true, unit: "usd", divisibility: 1_000 }),
-      );
-    });
-    expect(getWalletForUnit).toHaveBeenCalledWith("https://mint.example", "usd");
-  });
-
-  it("renders USD funding tiers in dollars instead of cent subunits", async () => {
-    const user = userEvent.setup();
-    renderStep({ baseAsset: "usd", outcomeCount: 4 });
-
-    await openFunding(user);
-
-    expect(screen.getByTestId("amm-funding-tier-minimal")).toHaveTextContent("$100");
-    expect(screen.getByTestId("amm-funding-tier-standard")).toHaveTextContent("$1,000");
-    expect(screen.getByTestId("amm-funding-tier-deep")).toHaveTextContent("$5,000");
-    expect(screen.queryByText("1500")).not.toBeInTheDocument();
-    expect(screen.queryByText("15000")).not.toBeInTheDocument();
-  });
-
   it("submits AMM funding by paying from the local wallet", async () => {
     const user = userEvent.setup();
     renderStep();
@@ -342,10 +298,6 @@ describe("DepositStep", () => {
         expect.objectContaining({ fundAmm: true, unit: "msat", divisibility: 10_000 }),
       );
     });
-  });
-
-  it("fails fast for unsupported AMM funding base assets", () => {
-    expect(() => renderStep({ baseAsset: "jpy" })).toThrow(/unsupported base asset: jpy/);
   });
 
   it("auto-navigates five seconds after ecash funding is accepted", async () => {
@@ -485,28 +437,5 @@ describe("DepositStep", () => {
       await screen.findByText("Payment received — crediting your market…"),
     ).toBeInTheDocument();
     expect(screen.getByTestId("confirm-amm-funding")).toBeDisabled();
-  });
-
-  it("renders USD funding tiers as hardcoded round whole-dollar amounts and requests base subunits", async () => {
-    const user = userEvent.setup();
-    renderStep({ baseAsset: "usd", outcomeCount: 4 });
-
-    await openFunding(user);
-    expect(screen.getByTestId("amm-funding-tier-minimal")).toHaveTextContent("$100");
-    expect(screen.getByTestId("amm-funding-tier-standard")).toHaveTextContent("$1,000");
-    expect(screen.getByTestId("amm-funding-tier-deep")).toHaveTextContent("$5,000");
-    expect(screen.queryByText("$15.00")).not.toBeInTheDocument();
-    expect(screen.queryByText("cents")).not.toBeInTheDocument();
-
-    await user.click(screen.getByTestId("confirm-amm-funding"));
-
-    await waitFor(() => {
-      expect(requestEcashDeposit).toHaveBeenCalledWith(
-        "cond-test-abc123",
-        100_000,
-        "cashuBlocally-generated",
-        expect.objectContaining({ fundAmm: true, unit: "usd", divisibility: 1_000 }),
-      );
-    });
   });
 });

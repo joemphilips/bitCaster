@@ -2,6 +2,7 @@ import { useRef, useState, useEffect } from "react";
 import { ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Trade } from "@/types/market-detail";
+import type { ProductMarketDivisibility } from "@/types/market";
 import { formatTimeAgo } from "@/lib/format";
 import {
   formatMarketSubunits,
@@ -12,8 +13,8 @@ import {
 
 interface ActivityFeedProps {
   trades: Trade[];
-  baseAsset?: string | null;
-  divisibility?: number | null;
+  baseAsset: "sat";
+  divisibility: ProductMarketDivisibility;
   onLoadMoreTrades?: () => void;
 }
 
@@ -82,7 +83,7 @@ export function ActivityFeed({
 }: ActivityFeedProps) {
   const { t } = useTranslation();
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput);
-  const divisibility = normalizeMarketDivisibility(divisibilityInput);
+  const divisibility = normalizeMarketDivisibility(divisibilityInput, baseAsset);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);

@@ -12,7 +12,7 @@ const yesNoMarket: YesNoMarket = {
   imageUrl: "",
   categoryTags: ["crypto"],
   metaTags: ["trending"],
-  currentOdds: { yes: 65.0, no: 35.0 },
+  currentOdds: { yes: 6_500, no: 3_500 },
   volume: 100000,
   liquidity: 50000,
   liquiditySubunits: 50_000,
@@ -23,6 +23,8 @@ const yesNoMarket: YesNoMarket = {
   activeSince: "2026-01-01T00:00:00Z",
   creatorFeePercent: 2,
   baseMarket: "sats",
+  baseAsset: "sat",
+  divisibility: 10_000,
 };
 
 const categoricalMarket: CategoricalMarket = {
@@ -34,9 +36,9 @@ const categoricalMarket: CategoricalMarket = {
   categoryTags: ["sports"],
   metaTags: [],
   outcomes: [
-    { id: "a", label: "Team A", odds: 40 },
-    { id: "b", label: "Team B", odds: 35 },
-    { id: "c", label: "Team C", odds: 25 },
+    { id: "a", label: "Team A", odds: 4_000 },
+    { id: "b", label: "Team B", odds: 3_500 },
+    { id: "c", label: "Team C", odds: 2_500 },
   ],
   volume: 50000,
   liquidity: 20000,
@@ -48,6 +50,8 @@ const categoricalMarket: CategoricalMarket = {
   activeSince: "2026-01-01T00:00:00Z",
   creatorFeePercent: 1.5,
   baseMarket: "sats",
+  baseAsset: "sat",
+  divisibility: 10_000,
 };
 
 describe("MarketCard", () => {
@@ -99,23 +103,6 @@ describe("MarketCard", () => {
 
     expect(screen.getByText("100 sats")).toBeInTheDocument();
     expect(screen.getByText("50 sats")).toBeInTheDocument();
-  });
-
-  it("shows non-zero funded USD bot budget in dollars", () => {
-    render(
-      <MarketCard
-        market={{
-          ...yesNoMarket,
-          baseAsset: "usd",
-          baseMarket: "USD",
-          volumeLifetimeSubunits: 12_345,
-          ammBotBudgetSubunits: 1_234,
-        }}
-      />,
-    );
-
-    expect(screen.getByTestId("market-bot-budget")).toHaveTextContent("$12.34");
-    expect(screen.getByTestId("market-bot-budget")).not.toHaveTextContent("0 sats");
   });
 
   it("shows zero bot budget for unfunded markets without inventing liquidity", () => {

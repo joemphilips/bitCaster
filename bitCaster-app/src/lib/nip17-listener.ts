@@ -15,7 +15,8 @@ import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
  *
  * - Single module-scope subscription; `start()` is idempotent and cheap to
  *   call on every wallet/relay change in App.tsx.
- * - Auto-adds the payer's mint if it isn't configured (cashu.me parity).
+ * - Accepts only the exact mint bound to an outstanding local request before
+ *   any mint network access; unsolicited DMs are ignored.
  * - Payload mint URL is normalized before matching / storage so it lines
  *   up with `activeMintUrl` in balance queries.
  * - Redeemed payments are recorded both in the activity log AND the
@@ -32,6 +33,7 @@ interface ListenerHandle {
 
 let _current: ListenerHandle | null = null;
 const _processedEvents = new Set<string>();
+const _processingEvents = new Set<string>();
 const MAX_PROCESSED = 5000;
 
 async function handleIncomingDM(content: string): Promise<void> {
@@ -43,20 +45,15 @@ async function handleIncomingDM(content: string): Promise<void> {
     return;
   }
   if (!payload?.proofs || !payload.mint) return;
-
-  // Dedup on payload.id + first proof secret (payload itself has no id of
-  // its own — use this composite to survive a retransmitted DM without
-  // double-crediting). payload.id is the PaymentRequest id, optional.
-  const dedupKey = `${payload.id ?? ""}|${payload.proofs[0]?.secret ?? ""}`;
-  if (_processedEvents.has(dedupKey)) return;
-  _processedEvents.add(dedupKey);
-  if (_processedEvents.size > MAX_PROCESSED) {
-    // Crude LRU — avoid unbounded growth on long-running tabs.
-    const first = _processedEvents.values().next().value;
-    if (first) _processedEvents.delete(first);
-  }
+  if (typeof payload.id !== "string" || payload.id.length === 0) return;
 
   const normalizedMint = normalizeUrl(payload.mint);
+  const pending = usePaymentRequestInbox.getState().pending[payload.id];
+  if (!pending || pending.mintUrl !== normalizedMint) return;
+
+  const dedupKey = `${payload.id}|${payload.proofs[0]?.secret ?? ""}`;
+  if (_processedEvents.has(dedupKey) || _processingEvents.has(dedupKey)) return;
+  _processingEvents.add(dedupKey);
 
   try {
     const unit = parseCashuProofUnit(payload.unit);
@@ -75,13 +72,18 @@ async function handleIncomingDM(content: string): Promise<void> {
       status: "completed",
     });
 
-    if (payload.id) {
-      usePaymentRequestInbox
-        .getState()
-        .markReceived(payload.id, received.amountSubunits, received.baseAsset);
+    _processedEvents.add(dedupKey);
+    if (_processedEvents.size > MAX_PROCESSED) {
+      const first = _processedEvents.values().next().value;
+      if (first) _processedEvents.delete(first);
     }
+    usePaymentRequestInbox
+      .getState()
+      .markReceived(payload.id, received.amountSubunits, received.baseAsset);
   } catch (e) {
     console.warn("[nip17-listener] failed to redeem payment payload:", (e as Error).message);
+  } finally {
+    _processingEvents.delete(dedupKey);
   }
 }
 
@@ -136,6 +138,7 @@ export function getNip17ListenerDiagnostics(): {
 /** Test helper — reset dedup state between tests. */
 export function __resetProcessedEventsForTests(): void {
   _processedEvents.clear();
+  _processingEvents.clear();
 }
 
 /**

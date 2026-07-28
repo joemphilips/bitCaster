@@ -67,5 +67,7 @@ function promote(tradeId: string) {
     marketId: "market-1",
     ephemeralPrivkeyHex: "11".repeat(32),
     ephemeralPubkeyHex: "02".padEnd(66, "0"),
+    baseAsset: "sat",
+    divisibility: 10_000,
   });
 }

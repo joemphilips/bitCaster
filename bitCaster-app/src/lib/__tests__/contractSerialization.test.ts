@@ -12,8 +12,8 @@ describe("generated contract serialization", () => {
       path: "Complementary",
       status: "Filled",
       filledAt: "2026-06-19T00:00:00Z",
-      baseAsset: "usd",
-      divisibility: 1000,
+      baseAsset: "sat",
+      divisibility: 10_000,
       quotePaymentSubunits: 500,
       outcomeFaceAmountSubunits: 1000,
       tokenSide: "Outcome",
@@ -22,8 +22,8 @@ describe("generated contract serialization", () => {
 
     const roundTripped = JSON.parse(JSON.stringify(fill)) as components["schemas"]["Fill"];
 
-    expect(roundTripped.baseAsset).toBe("usd");
-    expect(roundTripped.divisibility).toBe(1000);
+    expect(roundTripped.baseAsset).toBe("sat");
+    expect(roundTripped.divisibility).toBe(10_000);
     expect(roundTripped.quotePaymentSubunits).toBe(500);
     expect(roundTripped.outcomeFaceAmountSubunits).toBe(1000);
     expect(roundTripped.tokenSide).toBe("Outcome");

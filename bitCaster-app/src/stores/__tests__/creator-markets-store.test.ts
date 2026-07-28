@@ -11,6 +11,8 @@ function makeMarket(overrides: Partial<StoredCreatorMarket> = {}): StoredCreator
     title: "Will BTC cross $150k by EOY?",
     thumbnailUrl: null,
     createdAt: "2026-04-10T00:00:00.000Z",
+    baseAsset: "sat",
+    divisibility: 10_000,
     creatorFeePercent: 0.02,
     ...overrides,
   };

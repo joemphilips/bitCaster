@@ -2,6 +2,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useActiveSwapsStore } from "@/stores/activeSwaps";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import type { PendingTrade } from "@/stores/pendingTrades";
 import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
 import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
 import { useToastStore } from "@/stores/toast";
@@ -99,6 +100,30 @@ vi.mock("@/stores/wallet", () => ({
 
 const { useTradeSettlement, persistPartialLockFromError } = await import("../useTradeSettlement");
 
+type PendingTradeInput = Omit<PendingTrade, "baseAsset" | "divisibility"> &
+  Partial<Pick<PendingTrade, "baseAsset" | "divisibility">>;
+type ActiveSwapPromotion = Parameters<
+  ReturnType<typeof useActiveSwapsStore.getState>["promote"]
+>[0];
+type ActiveSwapPromotionInput = Omit<ActiveSwapPromotion, "baseAsset" | "divisibility"> &
+  Partial<Pick<ActiveSwapPromotion, "baseAsset" | "divisibility">>;
+
+function addPendingTrade(input: PendingTradeInput): void {
+  usePendingTradesStore.getState().add({
+    baseAsset: "sat",
+    divisibility: 10_000,
+    ...input,
+  });
+}
+
+function promoteActiveSwap(input: ActiveSwapPromotionInput): void {
+  useActiveSwapsStore.getState().promote({
+    baseAsset: "sat",
+    divisibility: 10_000,
+    ...input,
+  });
+}
+
 beforeEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
@@ -191,11 +216,18 @@ beforeEach(() => {
     filledAmountSubunits: 0,
     fills: [],
   });
-  mockUseTradeHub.mockReturnValue({
-    joinOrder: mockJoinOrder,
-    joinTrade: mockJoinTrade,
-    sendSwapMessage: mockSendSwapMessage,
-    connectionState: vi.fn(),
+  mockUseTradeHub.mockImplementation((_enabled, callbacks) => {
+    const onTradeCreated = callbacks?.onTradeCreated;
+    if (onTradeCreated) {
+      callbacks.onTradeCreated = (payload: Record<string, unknown>) =>
+        onTradeCreated({ collateralUnit: "msat", ...payload });
+    }
+    return {
+      joinOrder: mockJoinOrder,
+      joinTrade: mockJoinTrade,
+      sendSwapMessage: mockSendSwapMessage,
+      connectionState: vi.fn(),
+    };
   });
 });
 
@@ -229,7 +261,7 @@ describe("useTradeSettlement", () => {
     renderHook(() => useTradeSettlement(true));
 
     await act(async () => {
-      useActiveSwapsStore.getState().promote({
+      promoteActiveSwap({
         tradeId: "trade-1",
         orderId: "order-1",
         marketId: "market-1",
@@ -248,7 +280,7 @@ describe("useTradeSettlement", () => {
       .mockRejectedValueOnce(new Error("Not authorised to join this trade"))
       .mockResolvedValue(undefined);
 
-    useActiveSwapsStore.getState().promote({
+    promoteActiveSwap({
       tradeId: "trade-retry-active",
       orderId: "order-1",
       marketId: "market-1",
@@ -275,14 +307,14 @@ describe("useTradeSettlement", () => {
   });
 
   it("joins pending order groups so resting makers can receive TradeCreated", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-pending",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
-      divisibility: 2_000,
-      priceSubunits: 500,
+      divisibility: 10_000,
+      priceSubunits: 5_000,
       amountSubunits: 2_000,
       submittedAt: Date.now(),
     });
@@ -294,7 +326,7 @@ describe("useTradeSettlement", () => {
 
   it("replays pending order joins during status recovery", async () => {
     vi.useFakeTimers();
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-pending",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
@@ -330,7 +362,7 @@ describe("useTradeSettlement", () => {
     mockJoinTrade
       .mockRejectedValueOnce(new Error("Not authorised to join this trade"))
       .mockResolvedValue(undefined);
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-pending",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
@@ -363,7 +395,7 @@ describe("useTradeSettlement", () => {
   it("retries pending order group joins after a transient hub failure", async () => {
     vi.useFakeTimers();
     mockJoinOrder.mockRejectedValueOnce(new Error("projection lag")).mockResolvedValue(undefined);
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-pending",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
@@ -392,7 +424,7 @@ describe("useTradeSettlement", () => {
       filledAmountSubunits: 0,
       fills: [],
     });
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-pending",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
@@ -411,13 +443,13 @@ describe("useTradeSettlement", () => {
   });
 
   it("promotes an unsolicited TradeCreated event for a pending mint order", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-pending",
       marketId: "cond-NO",
       clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 500,
+      priceSubunits: 5_000,
       amountSubunits: 1_000_000,
       submittedAt: Date.now(),
     });
@@ -458,7 +490,7 @@ describe("useTradeSettlement", () => {
         outcomeFaceAmountSubunits: 1_000_000,
         quotePaymentSubunits: 500_000,
         baseAsset: "sat",
-        divisibility: 1_000,
+        divisibility: 10_000,
       });
     });
 
@@ -470,21 +502,21 @@ describe("useTradeSettlement", () => {
     expect(swap.outcomeFaceAmountSubunits).toBe(1_000_000);
     expect(swap.quotePaymentSubunits).toBe(500_000);
     expect(swap.baseAsset).toBe("sat");
-    expect(swap.divisibility).toBe(1_000);
+    expect(swap.divisibility).toBe(10_000);
     expect(swap.quotePaymentSubunits).toBe(500_000);
   });
 
-  it("fails before locking proofs when TradeCreated unit metadata mismatches the local order", async () => {
-    usePendingTradesStore.getState().add({
+  it("fails before locking proofs when TradeCreated divisibility mismatches the local order", async () => {
+    addPendingTrade({
       orderId: "order-usd",
       marketId: "cond-NO",
       clientOrderId: "client-order-pending",
-      baseAsset: "usd",
-      divisibility: 2_000,
+      baseAsset: "sat",
+      divisibility: 1_000_000,
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 1_000,
-      amountSubunits: 2_000,
+      priceSubunits: 100_000,
+      amountSubunits: 1_000_000,
       submittedAt: Date.now(),
     });
 
@@ -523,7 +555,7 @@ describe("useTradeSettlement", () => {
         outcomeFaceAmountSubunits: 1_000_000,
         quotePaymentSubunits: 500_000,
         baseAsset: "sat",
-        divisibility: 1_000,
+        divisibility: 10_000,
       });
     });
 
@@ -531,7 +563,7 @@ describe("useTradeSettlement", () => {
       expect(useActiveSwapsStore.getState().byTradeId["trade-unit-mismatch"]?.step).toBe("Failed"),
     );
     expect(useActiveSwapsStore.getState().byTradeId["trade-unit-mismatch"]?.error).toContain(
-      "Trade unit mismatch",
+      "Trade divisibility mismatch",
     );
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
     expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
@@ -539,7 +571,7 @@ describe("useTradeSettlement", () => {
   });
 
   it("fails before locking proofs when TradeCreated violates local order economics", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-price-mismatch",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
@@ -547,7 +579,7 @@ describe("useTradeSettlement", () => {
       divisibility: 10_000,
       side: "Sell",
       tokenSide: "Outcome",
-      priceSubunits: 400,
+      priceSubunits: 4_000,
       amountSubunits: 1_000_000,
       submittedAt: Date.now(),
     });
@@ -600,7 +632,7 @@ describe("useTradeSettlement", () => {
   });
 
   it("fails before joining when a legacy pending trade lacks order economics", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-legacy-no-economics",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
@@ -658,16 +690,16 @@ describe("useTradeSettlement", () => {
   });
 
   it("fails before locking proofs when non-default TradeCreated is missing canonical settlement amounts", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-usd-canonical",
       marketId: "cond-NO",
       clientOrderId: "client-order-pending",
-      baseAsset: "usd",
-      divisibility: 2_000,
+      baseAsset: "sat",
+      divisibility: 10_000,
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 500,
-      amountSubunits: 2_000,
+      priceSubunits: 5_000,
+      amountSubunits: 20_000,
       submittedAt: Date.now(),
     });
 
@@ -703,8 +735,8 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        baseAsset: "usd",
-        divisibility: 2_000,
+        baseAsset: "sat",
+        divisibility: 10_000,
       });
     });
 
@@ -722,16 +754,16 @@ describe("useTradeSettlement", () => {
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
   });
 
-  it("uses canonical non-default settlement amounts without legacy sats fields", async () => {
-    usePendingTradesStore.getState().add({
+  it("uses canonical settlement amounts without legacy sats fields", async () => {
+    addPendingTrade({
       orderId: "order-usd-canonical-only",
       marketId: "cond-NO",
       clientOrderId: "client-order-pending",
-      baseAsset: "usd",
-      divisibility: 1_000,
+      baseAsset: "sat",
+      divisibility: 10_000,
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 400,
+      priceSubunits: 4_000,
       amountSubunits: 1_000_000,
       submittedAt: Date.now(),
     });
@@ -768,8 +800,8 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        baseAsset: "usd",
-        divisibility: 1_000,
+        baseAsset: "sat",
+        divisibility: 10_000,
         outcomeFaceAmountSubunits: 100_000,
         quotePaymentSubunits: 40_000,
       });
@@ -783,14 +815,14 @@ describe("useTradeSettlement", () => {
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
   });
 
-  it("fails before locking proofs when non-default divisibility is missing the local expected unit", async () => {
-    usePendingTradesStore.getState().add({
+  it("ignores an untrusted TradeCreated with an unsupported divisibility before promotion", async () => {
+    addPendingTrade({
       orderId: "order-nondefault-divisibility-no-unit",
       marketId: "cond-NO",
       clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 500,
+      priceSubunits: 5_000,
       amountSubunits: 1_000_000,
       submittedAt: Date.now(),
     });
@@ -829,19 +861,14 @@ describe("useTradeSettlement", () => {
         sellerLockOutcomeSetId: "NO",
         baseAsset: "sat",
         divisibility: 2_000,
-        outcomeFaceAmountSubunits: 2_000,
-        quotePaymentSubunits: 1_000_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 5_000,
       });
     });
 
-    await waitFor(() =>
-      expect(
-        useActiveSwapsStore.getState().byTradeId["trade-nondefault-divisibility-no-unit"]?.step,
-      ).toBe("Failed"),
-    );
     expect(
-      useActiveSwapsStore.getState().byTradeId["trade-nondefault-divisibility-no-unit"]?.error,
-    ).toContain("non-default unit but the local expected unit is missing");
+      useActiveSwapsStore.getState().byTradeId["trade-nondefault-divisibility-no-unit"],
+    ).toBeUndefined();
     expect(mockJoinTrade).not.toHaveBeenCalled();
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
     expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
@@ -849,15 +876,15 @@ describe("useTradeSettlement", () => {
   });
 
   it("accepts non-default divisibility when the local expected unit is asserted", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-nondefault-divisibility-expected",
       marketId: "cond-NO",
       clientOrderId: "client-order-pending",
       baseAsset: "sat",
-      divisibility: 2_000,
+      divisibility: 1_000_000,
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 1_000,
+      priceSubunits: 100_000,
       amountSubunits: 1_000_000,
       submittedAt: Date.now(),
     });
@@ -895,9 +922,9 @@ describe("useTradeSettlement", () => {
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
         baseAsset: "sat",
-        divisibility: 2_000,
+        divisibility: 1_000_000,
         outcomeFaceAmountSubunits: 1_000_000,
-        quotePaymentSubunits: 500_000,
+        quotePaymentSubunits: 100_000,
       });
     });
 
@@ -907,23 +934,23 @@ describe("useTradeSettlement", () => {
     const swap = useActiveSwapsStore.getState().byTradeId["trade-nondefault-divisibility-expected"];
     expect(swap.role).toBe("buyer");
     expect(swap.baseAsset).toBe("sat");
-    expect(swap.divisibility).toBe(2_000);
+    expect(swap.divisibility).toBe(1_000_000);
     expect(swap.outcomeFaceAmountSubunits).toBe(1_000_000);
-    expect(swap.quotePaymentSubunits).toBe(500_000);
+    expect(swap.quotePaymentSubunits).toBe(100_000);
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
   });
 
   it("fails before locking proofs when expected unit assertion mismatches TradeCreated", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-nondefault-divisibility-mismatch",
       marketId: "cond-NO",
       clientOrderId: "client-order-pending",
       baseAsset: "sat",
-      divisibility: 2_000,
+      divisibility: 1_000_000,
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 1_000,
-      amountSubunits: 2_000,
+      priceSubunits: 100_000,
+      amountSubunits: 1_000_000,
       submittedAt: Date.now(),
     });
 
@@ -960,7 +987,7 @@ describe("useTradeSettlement", () => {
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
         baseAsset: "sat",
-        divisibility: 1_000,
+        divisibility: 10_000,
         outcomeFaceAmountSubunits: 1_000_000,
         quotePaymentSubunits: 500_000,
       });
@@ -981,16 +1008,16 @@ describe("useTradeSettlement", () => {
   });
 
   it("keeps the maker market when promoting a mint seller TradeCreated event", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-pending",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Complement",
-      priceSubunits: 500,
+      priceSubunits: 5_000,
       amountSubunits: 1_000_000,
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 10_000,
       submittedAt: Date.now(),
     });
 
@@ -1027,7 +1054,7 @@ describe("useTradeSettlement", () => {
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
         baseAsset: "sat",
-        divisibility: 1_000,
+        divisibility: 10_000,
         outcomeFaceAmountSubunits: 1_000_000,
         quotePaymentSubunits: 500_000,
       });
@@ -1068,16 +1095,16 @@ describe("useTradeSettlement", () => {
       proof(32, "depleted-change-32", "base-keyset"),
       proof(4, "depleted-change-4", "base-keyset"),
     ]);
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-buyer-recover",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 500,
+      priceSubunits: 5_000,
       amountSubunits: 1_000_000,
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 10_000,
       submittedAt: Date.now(),
     });
 
@@ -1113,7 +1140,7 @@ describe("useTradeSettlement", () => {
         buyerLocktime: "2026-05-07T12:00:00Z",
         marketId: "cond-YES",
         baseAsset: "sat",
-        divisibility: 1_000,
+        divisibility: 10_000,
         outcomeFaceAmountSubunits: 1_000_000,
         quotePaymentSubunits: 500_000,
       });
@@ -1176,6 +1203,7 @@ describe("useTradeSettlement", () => {
       swap: {
         tradeId: "trade-partial-multi",
         orderId: "order-partial-multi",
+        baseAsset: "sat",
       } as Parameters<typeof persistPartialLockFromError>[0]["swap"],
       mintUrl: "https://mint.example",
       conditionId: "condition-1",
@@ -1219,16 +1247,16 @@ describe("useTradeSettlement", () => {
   });
 
   it("ignores duplicate TradeCreated events after role assignment", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-pending",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 500,
+      priceSubunits: 5_000,
       amountSubunits: 1_000_000,
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 10_000,
       submittedAt: Date.now(),
     });
 
@@ -1252,7 +1280,7 @@ describe("useTradeSettlement", () => {
       buyerLocktime: "2026-05-07T12:00:00Z",
       marketId: "cond-YES",
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 10_000,
       outcomeFaceAmountSubunits: 1_000_000,
       quotePaymentSubunits: 500_000,
     };
@@ -1272,13 +1300,13 @@ describe("useTradeSettlement", () => {
           resolveJoinTrade = resolve;
         }),
     );
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-pending",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
       side: "Sell",
       tokenSide: "Outcome",
-      priceSubunits: 500,
+      priceSubunits: 5_000,
       amountSubunits: 1_000_000,
       submittedAt: Date.now(),
     });
@@ -1304,6 +1332,8 @@ describe("useTradeSettlement", () => {
       sellerLocktime: "2026-05-07T12:01:00Z",
       buyerLocktime: "2026-05-07T12:00:00Z",
       marketId: "cond-YES",
+      baseAsset: "sat",
+      divisibility: 10_000,
       outcomeFaceAmountSubunits: 1_000_000,
       quotePaymentSubunits: 500_000,
     };
@@ -1342,7 +1372,7 @@ describe("useTradeSettlement", () => {
     renderHook(() => useTradeSettlement(true));
 
     await act(async () => {
-      useActiveSwapsStore.getState().promote({
+      promoteActiveSwap({
         tradeId: "trade-2",
         orderId: "order-2",
         marketId: "market-1",
@@ -1350,7 +1380,7 @@ describe("useTradeSettlement", () => {
         ephemeralPubkeyHex: "22".repeat(32),
         side: "Sell",
         tokenSide: "Outcome",
-        priceSubunits: 500,
+        priceSubunits: 5_000,
         amountSubunits: 1_000_000,
       });
     });
@@ -1364,6 +1394,8 @@ describe("useTradeSettlement", () => {
         buyerLocktime: string;
         outcomeFaceAmountSubunits?: number;
         quotePaymentSubunits?: number;
+        baseAsset?: string;
+        divisibility?: number;
       }) => void;
     };
 
@@ -1375,6 +1407,8 @@ describe("useTradeSettlement", () => {
         buyerPubkey: "33".repeat(32),
         sellerLocktime: "2026-05-07T12:00:00Z",
         buyerLocktime: "2026-05-07T12:01:00Z",
+        baseAsset: "sat",
+        divisibility: 10_000,
         outcomeFaceAmountSubunits: 1_000_000,
         quotePaymentSubunits: 500_000,
       });
@@ -1391,7 +1425,7 @@ describe("useTradeSettlement", () => {
     renderHook(() => useTradeSettlement(true));
 
     await act(async () => {
-      useActiveSwapsStore.getState().promote({
+      promoteActiveSwap({
         tradeId: "trade-3",
         orderId: "order-3",
         marketId: "market-1",
@@ -1422,7 +1456,7 @@ describe("useTradeSettlement", () => {
     renderHook(() => useTradeSettlement(true));
 
     await act(async () => {
-      useActiveSwapsStore.getState().promote({
+      promoteActiveSwap({
         tradeId: "trade-nonparticipant-failure",
         orderId: "order-nonparticipant-failure",
         marketId: "market-1",
@@ -1446,7 +1480,7 @@ describe("useTradeSettlement", () => {
   });
 
   it("fails before locking proofs when TradeCreated outcome face is not a whole market share for sat/10000", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-ambiguous-sat100",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
@@ -1508,15 +1542,15 @@ describe("useTradeSettlement", () => {
   });
 
   it("fails before locking proofs when non-default TradeCreated carries inconsistent quote payment amounts", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-ambiguous-usd",
       marketId: "cond-NO",
       clientOrderId: "client-order-pending",
-      baseAsset: "usd",
-      divisibility: 1_000,
+      baseAsset: "sat",
+      divisibility: 10_000,
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 400,
+      priceSubunits: 4_000,
       amountSubunits: 1_000_000,
       submittedAt: Date.now(),
     });
@@ -1555,8 +1589,8 @@ describe("useTradeSettlement", () => {
         sellerLockOutcomeSetId: "NO",
         outcomeFaceAmountSubunits: 100_000,
         quotePaymentSubunits: 99_999,
-        baseAsset: "usd",
-        divisibility: 1_000,
+        baseAsset: "sat",
+        divisibility: 10_000,
       });
     });
 
@@ -1573,78 +1607,14 @@ describe("useTradeSettlement", () => {
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
   });
 
-  it("fails before locking proofs when a non-default TradeCreated arrives for a legacy pending trade with no expected unit", async () => {
-    usePendingTradesStore.getState().add({
-      orderId: "order-legacy-no-unit",
-      marketId: "cond-NO",
-      clientOrderId: "client-order-pending",
-      side: "Buy",
-      tokenSide: "Outcome",
-      priceSubunits: 500,
-      amountSubunits: 1_000_000,
-      submittedAt: Date.now(),
-    });
-
-    renderHook(() => useTradeSettlement(true));
-
-    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
-      onTradeCreated: (payload: {
-        tradeId: string;
-        sellerPubkey: string;
-        buyerPubkey: string;
-        sellerLocktime: string;
-        buyerLocktime: string;
-        marketId?: string;
-        settlementKind?: string;
-        sellerKeepOutcomeSetId?: string;
-        sellerLockOutcomeSetId?: string;
-        outcomeFaceAmountSubunits?: number;
-        quotePaymentSubunits?: number;
-        baseAsset?: string;
-        divisibility?: number;
-      }) => void;
-    };
-
-    await act(async () => {
-      seedPendingPubkey("trade-nondefault-no-expected-unit");
-      callbacks.onTradeCreated({
-        tradeId: "trade-nondefault-no-expected-unit",
-        sellerPubkey: "02" + "33".repeat(32),
-        buyerPubkey: "02" + "22".repeat(32),
-        sellerLocktime: "2026-05-07T12:01:00Z",
-        buyerLocktime: "2026-05-07T12:00:00Z",
-        marketId: "cond-NO",
-        settlementKind: "Mint",
-        sellerKeepOutcomeSetId: "YES",
-        sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSubunits: 100_000,
-        quotePaymentSubunits: 50_000,
-        baseAsset: "usd",
-        divisibility: 2_000,
-      });
-    });
-
-    await waitFor(() =>
-      expect(
-        useActiveSwapsStore.getState().byTradeId["trade-nondefault-no-expected-unit"]?.step,
-      ).toBe("Failed"),
-    );
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-nondefault-no-expected-unit"]?.error,
-    ).toContain("non-default unit but the local expected unit is missing");
-    expect(mockSendSwapMessage).not.toHaveBeenCalled();
-    expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
-    expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
-  });
-
   it("accepts an outcome-side buy order as the mint seller", async () => {
-    usePendingTradesStore.getState().add({
+    addPendingTrade({
       orderId: "order-tokenside-mismatch",
       marketId: "cond-YES",
       clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 500,
+      priceSubunits: 5_000,
       amountSubunits: 1_000_000,
       submittedAt: Date.now(),
     });
@@ -1684,7 +1654,7 @@ describe("useTradeSettlement", () => {
         outcomeFaceAmountSubunits: 1_000_000,
         quotePaymentSubunits: 500_000,
         baseAsset: "sat",
-        divisibility: 1_000,
+        divisibility: 10_000,
       });
     });
 

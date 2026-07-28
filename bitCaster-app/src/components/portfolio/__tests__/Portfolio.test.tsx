@@ -52,6 +52,8 @@ const mockPositions: Position[] = [
     marketId: "mkt-001",
     marketTitle: "Will Bitcoin reach $100K?",
     marketImageUrl: "/images/markets/bitcoin-100k.jpg",
+    baseAsset: "sat",
+    divisibility: 10_000,
     mintUrl: "https://mint.bitcaster.io",
     side: "yes",
     shares: 150,
@@ -71,6 +73,8 @@ const mockPositions: Position[] = [
     marketId: "mkt-resolved-001",
     marketTitle: "Will Ethereum merge complete?",
     marketImageUrl: "/images/markets/eth-merge.jpg",
+    baseAsset: "sat",
+    divisibility: 10_000,
     mintUrl: "https://mint.bitcaster.io",
     side: "yes",
     shares: 100,
@@ -91,6 +95,8 @@ const mockPositions: Position[] = [
     marketId: "mkt-resolved-002",
     marketTitle: "Will the Fed raise rates?",
     marketImageUrl: "/images/markets/fed-rates.jpg",
+    baseAsset: "sat",
+    divisibility: 10_000,
     mintUrl: "https://mint.bitcaster.io",
     side: "yes",
     shares: 250,
@@ -111,13 +117,13 @@ const mockPositions: Position[] = [
 const mockFunds: Fund[] = [
   { id: "fund-001", unit: "sats", amount: 125000, mintUrl: "https://mint.bitcaster.io" },
   { id: "fund-002", unit: "sats", amount: 48000, mintUrl: "https://testnut.cashu.space" },
-  { id: "fund-003", unit: "usd", amount: 2500, mintUrl: "https://mint.bitcaster.io" },
 ];
 
 const mockActivity: ActivityItem[] = [
   {
     id: "act-001",
     type: "deposit",
+    baseAsset: "sat",
     amountSats: 500000,
     date: "2025-08-15T09:35:00Z",
     status: "completed",
@@ -127,6 +133,7 @@ const mockActivity: ActivityItem[] = [
   {
     id: "act-002",
     type: "Buy",
+    baseAsset: "sat",
     amountSats: 93600,
     date: "2025-09-20T10:30:00Z",
     status: "completed",
@@ -143,6 +150,8 @@ const mockCreatedMarkets: CreatedMarket[] = [
     id: "mkt-user-001",
     title: "Will Lightning reach 100K channels?",
     imageUrl: "/images/markets/lightning-channels.jpg",
+    baseAsset: "sat",
+    divisibility: 10_000,
     status: "active",
     createdDate: "2025-11-20T14:00:00Z",
     volume: 456200,
@@ -153,6 +162,8 @@ const mockCreatedMarkets: CreatedMarket[] = [
     id: "mkt-user-003",
     title: "Will Nostr reach 10M users?",
     imageUrl: "/images/markets/nostr-users.jpg",
+    baseAsset: "sat",
+    divisibility: 10_000,
     status: "resolved",
     createdDate: "2025-06-10T08:30:00Z",
     resolvedDate: "2025-12-31T23:59:59Z",
@@ -210,23 +221,6 @@ describe("Portfolio", () => {
       expect(screen.getByText("Predictions")).toBeInTheDocument();
     });
 
-    it("shows multi-unit totals without summing Score fees into market collateral", () => {
-      renderPortfolio({
-        stats: {
-          ...mockStats,
-          positionsValueByUnit: [{ unit: "usd", amount: 15_000 }],
-          totalValueByUnit: [
-            { unit: "sat", amount: 125_000 },
-            { unit: "usd", amount: 15_000 },
-          ],
-        },
-      });
-
-      expect(screen.getByText("125 sats / $150.00")).toBeInTheDocument();
-      expect(screen.getByText("$150.00")).toBeInTheDocument();
-      expect(screen.queryByText("15.125 sats")).not.toBeInTheDocument();
-    });
-
     it("renders deposit and withdraw buttons", () => {
       renderPortfolio();
       expect(screen.getByRole("button", { name: /deposit/i })).toBeInTheDocument();
@@ -273,6 +267,8 @@ describe("Portfolio", () => {
             marketId: "cond-abc-A",
             marketTitle: "Which team wins?",
             marketImageUrl: "",
+            baseAsset: "sat",
+            divisibility: 10_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "A",
@@ -294,6 +290,8 @@ describe("Portfolio", () => {
             marketId: "cond-abc-B|C",
             marketTitle: "Which team wins?",
             marketImageUrl: "",
+            baseAsset: "sat",
+            divisibility: 10_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "B|C",
@@ -329,6 +327,8 @@ describe("Portfolio", () => {
             marketId: "cond-abc-B|C",
             marketTitle: "Which team wins?",
             marketImageUrl: "",
+            baseAsset: "sat",
+            divisibility: 10_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "B|C",
@@ -362,6 +362,8 @@ describe("Portfolio", () => {
             marketId: "cond-abc-B|C",
             marketTitle: "Which team wins?",
             marketImageUrl: "",
+            baseAsset: "sat",
+            divisibility: 10_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "B|C",
@@ -382,6 +384,8 @@ describe("Portfolio", () => {
             marketId: "cond-abc-unknown",
             marketTitle: "Unknown position",
             marketImageUrl: "",
+            baseAsset: "sat",
+            divisibility: 10_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             shares: 1,
@@ -485,8 +489,7 @@ describe("Portfolio", () => {
     it("renders fund rows with correct info", async () => {
       renderPortfolio();
       await userEvent.click(screen.getByRole("tab", { name: /funds/i }));
-      // Two mints referenced in funds
-      expect(screen.getAllByText("mint.bitcaster.io")).toHaveLength(2); // sats + usd
+      expect(screen.getByText("mint.bitcaster.io")).toBeInTheDocument();
       expect(screen.getByText("testnut.cashu.space")).toBeInTheDocument();
     });
 

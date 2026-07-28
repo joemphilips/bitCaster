@@ -6,9 +6,8 @@ import { useSettingsStore } from "@/stores/settings";
 import { useWalletStore, type StoredMint } from "@/stores/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
+  COLLATERAL_UNIT_REGISTRY,
   cashuAmountToMarketSubunits,
-  normalizeMarketBaseAsset,
-  parseCashuProofUnit,
   type CashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
@@ -17,6 +16,9 @@ import {
   isAllowedNostrRelayUrl,
   isKnownPublicNostrRelayUrl,
 } from "@/lib/relayDefaults";
+import { validateProductWalletTokenImport } from "@bitcaster/client-sdk/tokenImportValidation";
+import { resolveTokenImportKeysets } from "@/lib/tokenImportKeysetResolver";
+import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
 
 export type WalletIngressSource = "paste" | "scan" | "nip17";
 
@@ -131,18 +133,28 @@ export async function ingressReceiveCashuToken(
   source: WalletIngressSource,
   options?: { mintUrl?: string },
 ): Promise<IngressReceiveCashuTokenResult> {
-  // Always decode to read the token's unit field (NUT-00). The caller may
-  // supply an explicit mintUrl override (e.g. from a payment-request context);
-  // in that case the decoded mint URL is ignored but the unit is still used.
-  const decoded = await decodeToken(token);
-  const mintUrl = options?.mintUrl ? normalizeUrl(options.mintUrl) : normalizeUrl(decoded.mint);
-  const unit = parseCashuProofUnit(decoded.unit);
-  if (!unit) {
-    throw new Error(`Unsupported Cashu proof unit '${decoded.unit ?? ""}'`);
+  const validated = await validateProductWalletTokenImport({
+    encodedToken: token,
+    decode: decodeToken,
+    resolveKeysets: resolveTokenImportKeysets,
+    allowInsecureLoopbackHttp: isLocalDevelopmentOrigin(),
+  });
+  if (validated.canonicalMintUrls.length !== 1) {
+    throw new Error("Wallet receive supports exactly one mint per Cashu token");
   }
-  const baseAsset = normalizeMarketBaseAsset(unit);
+  const validatedMintUrl = validated.canonicalMintUrls[0];
+  if (!validatedMintUrl) throw new Error("Cashu token did not contain a mint");
+  const mintUrl = options?.mintUrl ? normalizeUrl(options.mintUrl) : validatedMintUrl;
+  if (mintUrl !== validatedMintUrl) throw new Error("Cashu token mint does not match the request");
+  const unit = validated.unit;
+  const baseAsset = COLLATERAL_UNIT_REGISTRY[unit].baseAsset;
   const registration = await ingressRegisterMint(mintUrl, source);
-  const proofs = await receiveAndStoreTokenRecoverably(token, mintUrl, baseAsset, unit);
+  const proofs = await receiveAndStoreTokenRecoverably(
+    validated.encodedToken,
+    mintUrl,
+    baseAsset,
+    unit,
+  );
   return {
     ...registration,
     proofs,
@@ -150,6 +162,14 @@ export async function ingressReceiveCashuToken(
     baseAsset,
     amountSubunits: sumProofSubunits(proofs, unit),
   };
+}
+
+function isLocalDevelopmentOrigin(): boolean {
+  return (
+    import.meta.env.DEV ||
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1"
+  );
 }
 
 export async function decodeWalletIngressToken(token: string) {
@@ -193,6 +213,7 @@ export function userCreatePaymentRequest(mintUrl: string): CreatedWalletPaymentR
   // cashu-ts leaves the id undefined unless we provide one; the NIP-17 inbox
   // needs it echoed back by the payer to correlate the received token.
   const id = crypto.randomUUID().split("-")[0];
+  const canonicalMintUrl = normalizeUrl(mintUrl);
   const request = new PaymentRequest(
     [
       {
@@ -204,9 +225,10 @@ export function userCreatePaymentRequest(mintUrl: string): CreatedWalletPaymentR
     id,
     undefined,
     "sat",
-    [normalizeUrl(mintUrl)],
+    [canonicalMintUrl],
     undefined,
   );
+  usePaymentRequestInbox.getState().registerPending(id, canonicalMintUrl);
 
   return {
     encoded: request.toEncodedRequest(),

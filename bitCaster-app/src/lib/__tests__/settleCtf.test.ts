@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Proof } from "@cashu/cashu-ts";
+import { buildKeysetRedeemOperationId } from "@bitcaster/client-sdk/ctfRedeem";
 
 // ---------------------------------------------------------------------------
 // Mock state (hoisted so the vi.mock factories can close over it)
@@ -58,8 +59,14 @@ vi.mock("@/stores/proof-db", () => {
       proofDbState.operations.set(input.operationId, record);
       return record;
     }),
-    markProofOperationCompleted: vi.fn(async (operationId: string, resultProofs: any) => {
+    markProofOperationCompleted: vi.fn(async (operationId: string, completion: any) => {
       const existing = proofDbState.operations.get(operationId);
+      const resultProofs =
+        completion &&
+        typeof completion === "object" &&
+        "resultProofs" in completion
+          ? completion.resultProofs
+          : completion;
       const updated = { ...existing, state: "completed", resultProofs };
       proofDbState.operations.set(operationId, updated);
       return updated;
@@ -284,6 +291,7 @@ describe("settleCtfPosition — per-keyset redeem", () => {
       amountSats: 200,
       proofs,
       mintUrl: "http://mint.test",
+      baseAsset: "sat",
     });
 
     // A leg redeemed → 100 sats credited.
@@ -315,6 +323,7 @@ describe("settleCtfPosition — per-keyset redeem", () => {
       amountSats: 100,
       proofs,
       mintUrl: "http://mint.test",
+      baseAsset: "sat",
     });
 
     // Redeemed for full value despite the wrong label — value preserved.
@@ -344,13 +353,14 @@ describe("settleCtfPosition — per-keyset redeem", () => {
         amountSats: 200,
         proofs,
         mintUrl: "http://mint.test",
+        baseAsset: "sat",
       }),
     ).rejects.toThrow(/Oracle has not attested/);
 
     expect(cashuState.redeemCalls).toHaveLength(2);
     expect(proofDbState.removedSecrets).toEqual(["sA"]);
     const losingOp = Array.from(proofDbState.operations.values()).find(
-      (op) => op.metadata?.keysetId === "keyset-B",
+      (op) => op.metadata?.outcomeKeysetId === "keyset-B",
     );
     expect(losingOp?.state).toBe("prepared");
   });
@@ -372,11 +382,12 @@ describe("settleCtfPosition — per-keyset redeem", () => {
         amountSats: 200,
         proofs,
         mintUrl: "http://mint.test",
+        baseAsset: "sat",
       }),
     ).rejects.toThrow(/simulated crash/);
 
     const losingOpAfterCrash = Array.from(proofDbState.operations.values()).find(
-      (op) => op.metadata?.keysetId === "keyset-B",
+      (op) => op.metadata?.outcomeKeysetId === "keyset-B",
     );
     expect(losingOpAfterCrash?.state).toBe("prepared");
     expect(proofDbState.removedSecrets.sort()).toEqual(["sA", "sB"]);
@@ -386,11 +397,12 @@ describe("settleCtfPosition — per-keyset redeem", () => {
       amountSats: 200,
       proofs,
       mintUrl: "http://mint.test",
+      baseAsset: "sat",
     });
 
     expect(regular.reduce((s, p) => s + Number(p.amount), 0)).toBe(100);
     const losingOpAfterResume = Array.from(proofDbState.operations.values()).find(
-      (op) => op.metadata?.keysetId === "keyset-B",
+      (op) => op.metadata?.outcomeKeysetId === "keyset-B",
     );
     expect(losingOpAfterResume?.state).toBe("Failed");
     expect(proofDbState.removedSecrets.filter((secret) => secret === "sB")).toHaveLength(2);
@@ -412,6 +424,7 @@ describe("settleCtfPosition — per-keyset redeem", () => {
       amountSats: 200,
       proofs,
       mintUrl: "http://mint.test",
+      baseAsset: "sat",
     });
 
     expect(regular.reduce((s, p) => s + Number(p.amount), 0)).toBe(100);
@@ -420,7 +433,7 @@ describe("settleCtfPosition — per-keyset redeem", () => {
     // Both legs removed locally; losing leg surfaced NO error (resolved fine).
     expect(proofDbState.removedSecrets.sort()).toEqual(["sA", "sB"]);
     const losingOp = Array.from(proofDbState.operations.values()).find(
-      (op) => op.metadata?.keysetId === "keyset-B",
+      (op) => op.metadata?.outcomeKeysetId === "keyset-B",
     );
     expect(losingOp?.state).toBe("Failed");
     expect(losingOp?.failureCode).toBe(13015);
@@ -431,14 +444,29 @@ describe("settleCtfPosition — per-keyset redeem", () => {
     const { settleCtfPosition } = await import("@/lib/cashu");
 
     const proof = makeProof("sA", 100, "keyset-A", "A");
-    proofDbState.operations.set(`ctf-redeem:${CONDITION_ID}:keyset-A:sA`, {
-      operationId: `ctf-redeem:${CONDITION_ID}:keyset-A:sA`,
+    const operationId = buildKeysetRedeemOperationId({
+      mintUrl: "http://mint.test",
+      unit: "msat",
+      conditionId: CONDITION_ID,
+      keysetId: "keyset-A",
+      proofs: [proof],
+    });
+    proofDbState.operations.set(operationId, {
+      operationId,
       kind: "ctf-redeem",
       state: "Failed",
       mintUrl: "http://mint.test",
+      baseAsset: "sat",
       inputs: [proof],
       outputs: { regular: [] },
-      metadata: { conditionId: CONDITION_ID, keysetId: "keyset-A", amountSats: 100 },
+      metadata: {
+        conditionId: CONDITION_ID,
+        outcome: "keyset-A",
+        outcomeKeysetId: "keyset-A",
+        regularKeysetId: "regular-keyset",
+        unit: "msat",
+        amountSubunits: 100,
+      },
       lastError: "mint rejected duplicate outputs",
       failureCode: 20006,
       createdAt: Date.now(),
@@ -451,6 +479,7 @@ describe("settleCtfPosition — per-keyset redeem", () => {
         amountSats: 100,
         proofs: [proof],
         mintUrl: "http://mint.test",
+        baseAsset: "sat",
       }),
     ).rejects.toThrow(/non-losing failure code 20006/);
 
@@ -463,14 +492,29 @@ describe("settleCtfPosition — per-keyset redeem", () => {
     const { settleCtfPosition } = await import("@/lib/cashu");
 
     const proof = makeProof("sA", 100, "keyset-A", "A");
-    proofDbState.operations.set(`ctf-redeem:${CONDITION_ID}:keyset-A:sA`, {
-      operationId: `ctf-redeem:${CONDITION_ID}:keyset-A:sA`,
+    const operationId = buildKeysetRedeemOperationId({
+      mintUrl: "http://mint.test",
+      unit: "msat",
+      conditionId: CONDITION_ID,
+      keysetId: "keyset-A",
+      proofs: [proof],
+    });
+    proofDbState.operations.set(operationId, {
+      operationId,
       kind: "ctf-redeem",
       state: "Failed",
       mintUrl: "http://mint.test",
+      baseAsset: "sat",
       inputs: [proof],
       outputs: { regular: [] },
-      metadata: { conditionId: CONDITION_ID, keysetId: "keyset-A", amountSats: 100 },
+      metadata: {
+        conditionId: CONDITION_ID,
+        outcome: "keyset-A",
+        outcomeKeysetId: "keyset-A",
+        regularKeysetId: "regular-keyset",
+        unit: "msat",
+        amountSubunits: 100,
+      },
       lastError: "legacy losing leg",
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -481,6 +525,7 @@ describe("settleCtfPosition — per-keyset redeem", () => {
       amountSats: 100,
       proofs: [proof],
       mintUrl: "http://mint.test",
+      baseAsset: "sat",
     });
 
     expect(result).toEqual([]);
@@ -498,6 +543,7 @@ describe("settleCtfPosition — per-keyset redeem", () => {
       amountSats: 150,
       proofs,
       mintUrl: "http://mint.test",
+      baseAsset: "sat",
     });
 
     expect(regular.reduce((s, p) => s + Number(p.amount), 0)).toBe(150);
@@ -518,6 +564,7 @@ describe("settleCtfPosition — per-keyset redeem", () => {
         amountSats: 100,
         proofs,
         mintUrl: "http://mint.test",
+        baseAsset: "sat",
       }),
     ).rejects.toThrow(/network timeout/);
 

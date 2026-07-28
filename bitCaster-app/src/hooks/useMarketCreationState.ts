@@ -203,7 +203,11 @@ export function useMarketCreationState() {
       if (next === 3 && !updated.stepOutcomes) {
         const outcomeType = updated.stepGetStarted?.outcomeType ?? "yesno";
         if (outcomeType === "numeric") {
-          updated.stepOutcomes = { outcomeType, outcomes: null };
+          updated.stepOutcomes = {
+            outcomeType,
+            outcomes: null,
+            baseAsset: DEFAULT_MARKET_BASE_ASSET,
+          };
         } else {
           updated.stepOutcomes = {
             outcomeType,
@@ -408,16 +412,6 @@ export function useMarketCreationState() {
     setDraft((prev) => ({
       ...prev,
       stepOutcomes: prev.stepOutcomes ? { ...prev.stepOutcomes, unit: value } : null,
-      lastModified: new Date().toISOString(),
-    }));
-  }, []);
-
-  const onBaseAssetChange = useCallback((value: MarketBaseAsset) => {
-    setDraft((prev) => ({
-      ...prev,
-      stepOutcomes: prev.stepOutcomes
-        ? { ...prev.stepOutcomes, baseAsset: normalizeMarketBaseAsset(value) }
-        : null,
       lastModified: new Date().toISOString(),
     }));
   }, []);
@@ -728,7 +722,6 @@ export function useMarketCreationState() {
     onHiBoundChange,
     onPrecisionChange,
     onUnitChange,
-    onBaseAssetChange,
     onDescriptionChange,
     onCreateMarket,
     onConfirmRegistrationFee,

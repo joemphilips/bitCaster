@@ -29,6 +29,7 @@ export function addOrderSubmitNotifications({
     marketId,
     filledAmountSubunits,
     remainingAmountSubunits,
+    unit: "sat",
     occurredAt: now,
     read: false,
   });
@@ -44,6 +45,7 @@ export function addOrderSubmitNotifications({
       marketId,
       filledAmountSubunits,
       remainingAmountSubunits,
+      unit: "sat",
       occurredAt: now,
       read: false,
     });
@@ -57,6 +59,7 @@ export function addOrderSubmitNotifications({
     marketId,
     filledAmountSubunits,
     remainingAmountSubunits,
+    unit: "sat",
     occurredAt: now,
     read: false,
   });

@@ -44,7 +44,7 @@ export function computeSpreadMidpoint(orderBook: OrderBook | null | undefined): 
 export function deriveExecutableOrderBook(input: {
   book: OrderBook;
   complementBook?: OrderBook | null;
-  divisibility?: number;
+  divisibility: number;
   completeness: OrderBookCompleteness;
 }): OrderBook {
   const depthLimit = normalizeDepthLimit(input.book.depthLimit);
@@ -54,14 +54,11 @@ export function deriveExecutableOrderBook(input: {
   }
 
   const asks = mergeOrdersByPrice(
-    [
-      ...book.asks,
-      ...ordersFromComplementBids(input.complementBook.bids, input.divisibility ?? 10_000),
-    ],
+    [...book.asks, ...ordersFromComplementBids(input.complementBook.bids, input.divisibility)],
     "ask",
     depthLimit,
   );
-  return withSpread({ ...book, asks, depthLimit: input.book.depthLimit });
+  return withSpread({ ...book, asks });
 }
 
 export function recomputeBookTotals(

@@ -111,7 +111,7 @@ describe("useTradeHub", () => {
     expect(connection.invoke).toHaveBeenCalledWith("JoinOrder", "cond-YES", "order-1");
   });
 
-  it("maps the canonical 15-argument TradeCreated payload including tokenSide", async () => {
+  it("maps the canonical 16-argument TradeCreated payload including collateral unit", async () => {
     const connection = makeConnection();
     connections.push(connection);
     const onTradeCreated = vi.fn();
@@ -141,8 +141,9 @@ describe("useTradeHub", () => {
       "Mint",
       "NO",
       "YES",
-      "usd",
-      1_000,
+      "sat",
+      "msat",
+      10_000,
       "Complement",
     );
 
@@ -159,8 +160,9 @@ describe("useTradeHub", () => {
       settlementKind: "Mint",
       sellerKeepOutcomeSetId: "NO",
       sellerLockOutcomeSetId: "YES",
-      baseAsset: "usd",
-      divisibility: 1_000,
+      baseAsset: "sat",
+      collateralUnit: "msat",
+      divisibility: 10_000,
       tokenSide: "Complement",
     });
   });

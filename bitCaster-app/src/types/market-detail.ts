@@ -3,7 +3,7 @@
 // =============================================================================
 
 // Import shared types from market discovery
-import type { CurrentOdds, Outcome, CategoryTag } from "./market";
+import type { CurrentOdds, Outcome, CategoryTag, ProductMarketDivisibility } from "./market";
 import type { MarketState } from "@/hooks/useMarketState";
 
 // =============================================================================
@@ -113,7 +113,7 @@ export interface RelatedMarket {
   imageUrl?: string;
   currentOdds?: CurrentOdds;
   volume: number;
-  baseAsset?: "sat" | "usd" | "jpy";
+  baseAsset: "sat";
   closingDate: string;
 }
 
@@ -134,8 +134,8 @@ interface BaseMarketDetail {
   closingDate: string | null;
   createdDate: string;
   activeSince: string;
-  baseAsset?: "sat" | "usd" | "jpy";
-  divisibility?: number;
+  baseAsset: "sat";
+  divisibility: ProductMarketDivisibility;
   baseUnit: string; // e.g. "sats", "USD"
   mint?: MarketMintInfo;
   creator: MarketCreator;

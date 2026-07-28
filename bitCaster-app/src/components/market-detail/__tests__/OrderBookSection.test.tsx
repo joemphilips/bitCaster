@@ -6,12 +6,12 @@ describe("OrderBookSection", () => {
   it("formats amounts as shares and price numerators with the market divisibility", () => {
     render(
       <OrderBookSection
-        baseAsset="usd"
-        divisibility={1_000}
+        baseAsset="sat"
+        divisibility={10_000}
         orderBook={{
-          bids: [{ price: 50, amount: 100, total: 100 }],
-          asks: [{ price: 60, amount: 200, total: 200 }],
-          spread: 10,
+          bids: [{ price: 500, amount: 1_000, total: 1_000 }],
+          asks: [{ price: 600, amount: 2_000, total: 2_000 }],
+          spread: 100,
         }}
       />,
     );
@@ -28,22 +28,23 @@ describe("OrderBookSection", () => {
   it("renders the fixed five-row display depth while preserving stable bounded sides", () => {
     render(
       <OrderBookSection
-        divisibility={100}
+        baseAsset="sat"
+        divisibility={10_000}
         orderBook={{
           depthLimit: 3,
           bids: [
-            { price: 90, amount: 100, total: 100 },
-            { price: 80, amount: 100, total: 200 },
-            { price: 70, amount: 100, total: 300 },
-            { price: 60, amount: 100, total: 400 },
+            { price: 9_000, amount: 100, total: 100 },
+            { price: 8_000, amount: 100, total: 200 },
+            { price: 7_000, amount: 100, total: 300 },
+            { price: 6_000, amount: 100, total: 400 },
           ],
           asks: [
-            { price: 91, amount: 100, total: 100 },
-            { price: 92, amount: 100, total: 200 },
-            { price: 93, amount: 100, total: 300 },
-            { price: 94, amount: 100, total: 400 },
+            { price: 9_100, amount: 100, total: 100 },
+            { price: 9_200, amount: 100, total: 200 },
+            { price: 9_300, amount: 100, total: 300 },
+            { price: 9_400, amount: 100, total: 400 },
           ],
-          spread: 1,
+          spread: 100,
         }}
       />,
     );
@@ -61,19 +62,20 @@ describe("OrderBookSection", () => {
   it("renders asks and bids in descending price order with closest prices around the spread", () => {
     render(
       <OrderBookSection
-        divisibility={100}
+        baseAsset="sat"
+        divisibility={10_000}
         orderBook={{
           bids: [
-            { price: 70, amount: 100, total: 100 },
-            { price: 90, amount: 100, total: 200 },
-            { price: 80, amount: 100, total: 300 },
+            { price: 7_000, amount: 100, total: 100 },
+            { price: 9_000, amount: 100, total: 200 },
+            { price: 8_000, amount: 100, total: 300 },
           ],
           asks: [
-            { price: 95, amount: 100, total: 100 },
-            { price: 91, amount: 100, total: 200 },
-            { price: 93, amount: 100, total: 300 },
+            { price: 9_500, amount: 100, total: 100 },
+            { price: 9_100, amount: 100, total: 200 },
+            { price: 9_300, amount: 100, total: 300 },
           ],
-          spread: 1,
+          spread: 100,
         }}
       />,
     );
@@ -104,11 +106,12 @@ describe("OrderBookSection", () => {
   it("renders ask rows above the spread and bid rows below it in DOM order", () => {
     render(
       <OrderBookSection
-        divisibility={100}
+        baseAsset="sat"
+        divisibility={10_000}
         orderBook={{
-          bids: [{ price: 45, amount: 100, total: 100 }],
-          asks: [{ price: 55, amount: 100, total: 100 }],
-          spread: 10,
+          bids: [{ price: 4_500, amount: 100, total: 100 }],
+          asks: [{ price: 5_500, amount: 100, total: 100 }],
+          spread: 1_000,
         }}
       />,
     );
@@ -128,18 +131,19 @@ describe("OrderBookSection", () => {
   it("combines price, share amount, and amount-proportional depth into each compact row", () => {
     render(
       <OrderBookSection
-        divisibility={100}
+        baseAsset="sat"
+        divisibility={10_000}
         orderBook={{
           depthLimit: 2,
           bids: [
-            { price: 52, amount: 100, total: 100 },
-            { price: 51, amount: 200, total: 300 },
+            { price: 5_200, amount: 10_000, total: 10_000 },
+            { price: 5_100, amount: 20_000, total: 30_000 },
           ],
           asks: [
-            { price: 53, amount: 30, total: 30 },
-            { price: 54, amount: 60, total: 90 },
+            { price: 5_300, amount: 3_000, total: 3_000 },
+            { price: 5_400, amount: 6_000, total: 9_000 },
           ],
-          spread: 1,
+          spread: 100,
         }}
       />,
     );

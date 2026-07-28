@@ -97,6 +97,7 @@ export function reconcileLikedMarketCloses(
         marketId: market.id,
         filledAmountSubunits: 0,
         remainingAmountSubunits: 0,
+        unit: market.baseAsset,
         occurredAt: now,
         read: false,
         conditionId: market.id,

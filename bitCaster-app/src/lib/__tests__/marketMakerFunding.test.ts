@@ -14,7 +14,7 @@ describe("market-maker funding math", () => {
     });
   });
 
-  it("returns sat tiers in msat subunits and USD tiers in cent subunits", () => {
+  it("returns sat tiers in msat subunits", () => {
     const [none, minimal, standard, deep] = BINARY_AMM_FUNDING_TIERS;
 
     // Sat tiers are defined in sats; fundingTierBudget returns msat subunits.
@@ -23,18 +23,7 @@ describe("market-maker funding math", () => {
     expect(fundingTierBudget(standard, "sat")).toBe(100_000_000);
     expect(fundingTierBudget(deep, "sat")).toBe(500_000_000);
 
-    // USD tiers are already in cent subunits.
-    expect(fundingTierBudget(none, "usd")).toBe(0);
-    expect(fundingTierBudget(minimal, "usd")).toBe(10_000);
-    expect(fundingTierBudget(standard, "usd")).toBe(100_000);
-    expect(fundingTierBudget(deep, "usd")).toBe(500_000);
-
-    // Unknown base asset must fail fast.
-    expect(() => fundingTierBudget(minimal, "jpy")).toThrow();
-  });
-
-  it("fails fast when formatting an unsupported funding base asset", () => {
-    expect(() => formatFundingBudget(1_500, "jpy")).toThrow(/unsupported base asset: jpy/);
+    expect(formatFundingBudget(1_500_000, "sat")).toBe("1,500 sats");
   });
 });
 

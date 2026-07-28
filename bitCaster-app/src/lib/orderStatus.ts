@@ -13,6 +13,7 @@ import { generateNip98Header } from "@/lib/markets";
 import { resolveApiSigningUrl } from "@/lib/hubUrl";
 import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
 import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import type { ProductMarketDivisibility } from "@/types/market";
 
 export type OrderStatusResponse = components["schemas"]["OrderStatusResponse"];
 export type FillStatus = components["schemas"]["FillStatus"];
@@ -88,8 +89,8 @@ type PendingTradeForPromotion = {
   orderId: string;
   clientOrderId?: string;
   marketId: string;
-  baseAsset?: string | null;
-  divisibility?: number | null;
+  baseAsset: "sat";
+  divisibility: ProductMarketDivisibility;
   side?: "Buy" | "Sell";
   tokenSide?: "Outcome" | "Complement";
   priceSubunits?: number | null;

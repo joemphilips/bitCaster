@@ -15,21 +15,42 @@ export interface InboxEntry {
   receivedAt: number;
 }
 
+export interface PendingPaymentRequest {
+  id: string;
+  mintUrl: string;
+  createdAt: number;
+}
+
 interface InboxState {
   entries: Record<string, InboxEntry>;
+  pending: Record<string, PendingPaymentRequest>;
+  registerPending: (id: string, mintUrl: string) => void;
   markReceived: (id: string, amountSubunits: number, baseAsset: MarketBaseAsset) => void;
   clear: (id: string) => void;
 }
 
 export const usePaymentRequestInbox = create<InboxState>((set) => ({
   entries: {},
-  markReceived: (id, amountSubunits, baseAsset) =>
+  pending: {},
+  registerPending: (id, mintUrl) =>
     set((s) => ({
-      entries: {
-        ...s.entries,
-        [id]: { id, amountSubunits, baseAsset, receivedAt: Date.now() },
+      pending: {
+        ...s.pending,
+        [id]: { id, mintUrl, createdAt: Date.now() },
       },
     })),
+  markReceived: (id, amountSubunits, baseAsset) =>
+    set((s) => {
+      const pending = { ...s.pending };
+      delete pending[id];
+      return {
+        pending,
+        entries: {
+          ...s.entries,
+          [id]: { id, amountSubunits, baseAsset, receivedAt: Date.now() },
+        },
+      };
+    }),
   clear: (id) =>
     set((s) => {
       if (!(id in s.entries)) return s;

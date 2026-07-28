@@ -48,10 +48,21 @@ vi.mock("@/stores/wallet", () => ({
   },
 }));
 
-import { waitForMintQuotePaid, type MintQuoteWaitResult } from "../cashu";
+import {
+  waitForMintQuotePaid as waitForProductMintQuotePaid,
+  type MintQuoteWaitResult,
+} from "../cashu";
 
 const NOW_SEC = 1_700_000_000;
 const POLL_MS = 50;
+
+function waitForMintQuotePaid(
+  quote: MintQuoteResponse,
+  onResult: (result: MintQuoteWaitResult) => void,
+  options: Parameters<typeof waitForProductMintQuotePaid>[2],
+) {
+  return waitForProductMintQuotePaid(quote, onResult, options, undefined, "sat");
+}
 
 function makeQuote(overrides: Partial<MintQuoteResponse> = {}): MintQuoteResponse {
   return {

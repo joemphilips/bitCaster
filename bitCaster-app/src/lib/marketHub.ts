@@ -18,6 +18,7 @@ import type { components } from "@/generated/api";
 import { debounce, type DebouncedFunction } from "@/lib/debounce";
 import { resolveHubServerUrl } from "@/lib/hubUrl";
 import { refreshOrderBook } from "@/lib/orderBookRefresh";
+import { parseMatchedDelta } from "@bitcaster/client-sdk/tradeIgnition";
 
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
 export type MarketStatusChanged = components["schemas"]["MarketStatusChanged"];
@@ -38,6 +39,7 @@ export interface Matched {
   path: string;
   matchedAt: string;
   deadline: string;
+  collateralUnit: "msat";
 }
 
 export interface OrderCancelled {
@@ -116,79 +118,20 @@ export function parseTradeExecuted(
 }
 
 export function parseMatched(payload: unknown): { marketId: string; match: Matched } | null {
-  const raw = payload as Record<string, unknown>;
-  const marketId =
-    typeof raw.marketId === "string"
-      ? raw.marketId
-      : typeof raw.MarketId === "string"
-        ? raw.MarketId
-        : null;
-  const tradeId =
-    typeof raw.tradeId === "string"
-      ? raw.tradeId
-      : typeof raw.TradeId === "string"
-        ? raw.TradeId
-        : null;
-  const makerOrderId =
-    typeof raw.makerOrderId === "string"
-      ? raw.makerOrderId
-      : typeof raw.MakerOrderId === "string"
-        ? raw.MakerOrderId
-        : null;
-  const takerOrderId =
-    typeof raw.takerOrderId === "string"
-      ? raw.takerOrderId
-      : typeof raw.TakerOrderId === "string"
-        ? raw.TakerOrderId
-        : null;
-  const executionPrice =
-    typeof raw.executionPrice === "number"
-      ? raw.executionPrice
-      : typeof raw.ExecutionPrice === "number"
-        ? raw.ExecutionPrice
-        : null;
-  const amountSubunits =
-    typeof raw.amountSubunits === "number"
-      ? raw.amountSubunits
-      : typeof raw.AmountSubunits === "number"
-        ? raw.AmountSubunits
-        : null;
-  const path =
-    typeof raw.path === "string" ? raw.path : typeof raw.Path === "string" ? raw.Path : "";
-  const matchedAt =
-    typeof raw.matchedAt === "string"
-      ? raw.matchedAt
-      : typeof raw.MatchedAt === "string"
-        ? raw.MatchedAt
-        : new Date().toISOString();
-  const deadline =
-    typeof raw.deadline === "string"
-      ? raw.deadline
-      : typeof raw.Deadline === "string"
-        ? raw.Deadline
-        : matchedAt;
-
-  if (
-    !marketId ||
-    !tradeId ||
-    !makerOrderId ||
-    !takerOrderId ||
-    executionPrice == null ||
-    amountSubunits == null
-  ) {
-    return null;
-  }
+  const parsed = parseMatchedDelta(payload);
+  if (!parsed) return null;
   return {
-    marketId,
+    marketId: parsed.marketId,
     match: {
-      tradeId,
-      makerOrderId,
-      takerOrderId,
-      executionPrice,
-      amountSubunits,
-      path,
-      matchedAt,
-      deadline,
+      tradeId: parsed.tradeId,
+      makerOrderId: parsed.makerOrderId,
+      takerOrderId: parsed.takerOrderId,
+      executionPrice: parsed.executionPrice,
+      amountSubunits: parsed.amountSubunits,
+      path: parsed.path,
+      matchedAt: parsed.matchedAt,
+      deadline: parsed.deadline,
+      collateralUnit: parsed.collateralUnit,
     },
   };
 }

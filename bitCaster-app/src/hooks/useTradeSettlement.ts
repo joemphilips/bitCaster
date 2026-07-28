@@ -97,6 +97,8 @@ import {
   defaultCollateralUnit,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
+  type MarketBaseAsset,
+  type MarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
 import {
@@ -123,8 +125,8 @@ const ctfProofOperationStore: CtfProofOperationStore = {
     (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
   prepareProofOperation: async (input) =>
     (await prepareProofOperation(input)) as CtfProofOperationRecord,
-  markProofOperationCompleted: async (operationId, resultProofs) =>
-    (await markProofOperationCompleted(operationId, resultProofs)) as CtfProofOperationRecord,
+  markProofOperationCompleted: async (operationId, completion) =>
+    (await markProofOperationCompleted(operationId, completion)) as CtfProofOperationRecord,
 };
 
 async function prepareRegularCollateralForCtfSplit(input: {
@@ -522,7 +524,24 @@ async function handleTradeCreated(
   sendSwapMessage: SendSwapMessageFn,
   mintUrl: string,
 ): Promise<void> {
-  const fingerprint = tradeCreatedFingerprint(payload);
+  let canonicalPayload: CanonicalTradeCreatedPayload;
+  try {
+    canonicalPayload = canonicalTradeCreatedPayload(payload);
+  } catch (error) {
+    const active = useActiveSwapsStore.getState().byTradeId[payload.tradeId];
+    if (active) {
+      useActiveSwapsStore
+        .getState()
+        .setStep(
+          payload.tradeId,
+          "Failed",
+          error instanceof Error ? error.message : "TradeCreated has invalid market units.",
+        );
+    }
+    return;
+  }
+
+  const fingerprint = tradeCreatedFingerprint(canonicalPayload);
   const existingFingerprint = tradeCreatedFingerprints.get(payload.tradeId);
   if (existingFingerprint && existingFingerprint !== fingerprint) {
     useActiveSwapsStore
@@ -534,14 +553,14 @@ async function handleTradeCreated(
   if (tradeCreatedInFlight.has(payload.tradeId)) return;
   tradeCreatedInFlight.add(payload.tradeId);
   try {
-    await handleTradeCreatedOnce(payload, joinTrade, sendSwapMessage, mintUrl);
+    await handleTradeCreatedOnce(canonicalPayload, joinTrade, sendSwapMessage, mintUrl);
   } finally {
     tradeCreatedInFlight.delete(payload.tradeId);
   }
 }
 
 async function handleTradeCreatedOnce(
-  payload: TradeCreatedPayload,
+  payload: CanonicalTradeCreatedPayload,
   joinTrade: (tradeId: string) => Promise<void>,
   sendSwapMessage: SendSwapMessageFn,
   mintUrl: string,
@@ -633,7 +652,24 @@ async function handleTradeCreatedOnce(
   }
 }
 
-function tradeCreatedFingerprint(payload: TradeCreatedPayload): string {
+type CanonicalTradeCreatedPayload = TradeCreatedPayload & {
+  baseAsset: MarketBaseAsset;
+  divisibility: MarketDivisibility;
+};
+
+function canonicalTradeCreatedPayload(payload: TradeCreatedPayload): CanonicalTradeCreatedPayload {
+  if (payload.collateralUnit !== "msat") {
+    throw new Error("TradeCreated collateralUnit must be msat.");
+  }
+  const baseAsset = normalizeMarketBaseAsset(payload.baseAsset);
+  return {
+    ...payload,
+    baseAsset,
+    divisibility: normalizeMarketDivisibility(payload.divisibility, baseAsset),
+  };
+}
+
+function tradeCreatedFingerprint(payload: CanonicalTradeCreatedPayload): string {
   return JSON.stringify({
     tradeId: payload.tradeId,
     marketId: payload.marketId ?? null,
@@ -646,8 +682,9 @@ function tradeCreatedFingerprint(payload: TradeCreatedPayload): string {
     sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId ?? null,
     outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits ?? null,
     quotePaymentSubunits: payload.quotePaymentSubunits ?? null,
-    baseAsset: normalizeMarketBaseAsset(payload.baseAsset),
-    divisibility: normalizeMarketDivisibility(payload.divisibility),
+    baseAsset: payload.baseAsset,
+    collateralUnit: payload.collateralUnit,
+    divisibility: payload.divisibility,
     tokenSide: payload.tokenSide ?? null,
   });
 }
@@ -941,7 +978,7 @@ async function selectOutcomeProofs(
   conditionId: string,
   outcomeSetId: string,
   amountSats: number,
-  baseAsset?: string | null,
+  baseAsset: MarketBaseAsset,
 ): Promise<StoredProof[] | null> {
   const available = await getOutcomeProofs(mintUrl, conditionId, outcomeSetId, {
     baseAsset,
@@ -958,7 +995,7 @@ async function selectOutcomeProofGroups(
   conditionId: string,
   outcomeSetId: string,
   amountSats: number,
-  baseAsset?: string | null,
+  baseAsset: MarketBaseAsset,
 ): Promise<SelectedOutcomeProofGroup[] | null> {
   const exact = await selectOutcomeProofs(
     mintUrl,
@@ -1323,8 +1360,9 @@ async function loadProofsForLock(
   mintUrl: string,
   targetSats?: number,
   sellerMarketId?: string,
-  baseAsset?: string | null,
+  baseAsset?: MarketBaseAsset,
 ): Promise<Proof[]> {
+  if (!baseAsset) throw new Error("Swap is missing its base asset");
   const outcome = sellerMarketId ? outcomeMetadataForMarket(sellerMarketId) : null;
   const proofs = outcome
     ? await getOutcomeProofs(mintUrl, outcome.conditionId, outcome.outcomeCollection, { baseAsset })

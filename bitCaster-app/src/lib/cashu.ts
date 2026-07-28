@@ -75,18 +75,18 @@ export const FEE_BUFFER_SATS = 10;
 
 let _wallet: CashuWallet | null = null;
 let _mintUrl: string = DEFAULT_MINT_URL;
-let _walletUnit = defaultCollateralUnit("sat");
+let _walletUnit: CashuProofUnit = defaultCollateralUnit("sat");
 
 /** Return the shared CashuWallet, initialising it lazily. */
 export async function getWallet(
-  mintUrl?: string,
-  baseAsset?: MarketBaseAsset | string | null,
+  mintUrl: string | undefined,
+  baseAsset: MarketBaseAsset,
 ): Promise<CashuWallet> {
   // If the wallet store has a mnemonic, delegate to it for deterministic secrets
   const store = useWalletStore.getState();
   const unit = defaultCollateralUnit(baseAsset);
   if (store.mnemonic) {
-    return store.getWallet(mintUrl, unit);
+    return store.getWallet(mintUrl, baseAsset);
   }
 
   // Fallback for pre-setup usage
@@ -134,8 +134,8 @@ export async function getWalletForUnit(
 /** Request a Lightning invoice to fund the wallet. */
 export async function createMintQuote(
   amountSats: number,
-  mintUrl?: string,
-  baseAsset?: MarketBaseAsset | string | null,
+  mintUrl: string | undefined,
+  baseAsset: MarketBaseAsset,
 ): Promise<MintQuoteResponse> {
   const wallet = await getWallet(mintUrl, baseAsset);
   return wallet.createMintQuote(collateralSubunitsFromBaseAmount(amountSats, baseAsset));
@@ -174,8 +174,8 @@ export async function createMintQuoteForUnit(
 export async function mintProofs(
   amountSats: number,
   quote: MintQuoteResponse,
-  mintUrl?: string,
-  baseAsset?: MarketBaseAsset | string | null,
+  mintUrl: string | undefined,
+  baseAsset: MarketBaseAsset,
 ): Promise<Proof[]> {
   const wallet = await getWallet(mintUrl, baseAsset);
   const amountSubunits = collateralSubunitsFromBaseAmount(amountSats, baseAsset);
@@ -714,13 +714,12 @@ function requiredReceiveMetadataInteger(value: unknown, field: string, minimum: 
  * Returns `{ keep, send }` — store `keep` proofs, share `send` proofs.
  */
 export async function sendProofs(
-  amountSats: number,
+  amount: number,
   proofs: Proof[],
-  options: { mintUrl?: string; baseAsset?: MarketBaseAsset | string | null } = {},
+  options: { mintUrl?: string; unit: CashuProofUnit },
 ): Promise<{ keep: Proof[]; send: Proof[] }> {
-  const wallet = await getWallet(options.mintUrl, options.baseAsset);
-  const amountSubunits = collateralSubunitsFromBaseAmount(amountSats, options.baseAsset);
-  return wallet.send(amountSubunits, proofs);
+  const wallet = await getWalletForUnit(options.mintUrl, options.unit);
+  return wallet.send(amount, proofs);
 }
 
 /** Spend regular sat proofs into a Cashu token and persist local change. */
@@ -735,7 +734,7 @@ export async function spendRegularSatsAsToken(
   const proofs = await getUnitProofs(mintUrl, { unit });
   const { keep, send } = await sendProofs(amountSats, proofs, {
     mintUrl,
-    baseAsset: "sat",
+    unit,
   });
   await removeProofs(proofs.map((proof) => proof.secret));
   if (keep.length > 0) {
@@ -756,7 +755,7 @@ export async function createMeltQuote(
   invoice: string,
   mintUrl?: string,
 ): Promise<MeltQuoteResponse> {
-  const wallet = await getWallet(mintUrl);
+  const wallet = await getWalletForUnit(mintUrl, "sat");
   return wallet.createMeltQuote(invoice);
 }
 
@@ -766,7 +765,7 @@ export async function meltProofs(
   proofs: Proof[],
   mintUrl?: string,
 ): Promise<{ paid: boolean; change: Proof[] }> {
-  const wallet = await getWallet(mintUrl);
+  const wallet = await getWalletForUnit(mintUrl, "sat");
   const response = await wallet.meltProofs(quote, proofs);
   return {
     paid: response.quote.state === "PAID",
@@ -777,8 +776,8 @@ export async function meltProofs(
 /** Check the status of a mint quote. */
 export async function checkMintQuote(
   quoteId: string,
-  mintUrl?: string,
-  baseAsset?: MarketBaseAsset | string | null,
+  mintUrl: string | undefined,
+  baseAsset: MarketBaseAsset,
 ): Promise<PartialMintQuoteResponse> {
   const wallet = await getWallet(mintUrl, baseAsset);
   return wallet.checkMintQuote(quoteId);
@@ -833,8 +832,8 @@ export async function waitForMintQuotePaid(
   quote: MintQuoteResponse,
   onResult: (result: MintQuoteWaitResult) => void,
   options: WaitForMintQuoteOptions = {},
-  mintUrl?: string,
-  baseAsset?: MarketBaseAsset | string | null,
+  mintUrl: string | undefined,
+  baseAsset: MarketBaseAsset,
 ): Promise<() => void> {
   const wallet = await getWallet(mintUrl, baseAsset);
   return waitForMintQuotePaidWithWallet(wallet, quote, onResult, options);
@@ -1018,7 +1017,7 @@ export interface MarketPosition {
   amountSats: number;
   mintUrl?: string;
   outcomeCollection?: string;
-  baseAsset?: MarketBaseAsset | string | null;
+  baseAsset: MarketBaseAsset;
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,7 +1039,7 @@ export async function mintCtfProofs(
   amountSats: number,
   quote: MintQuoteResponse,
 ): Promise<CtfProof[]> {
-  const wallet = await getWallet();
+  const wallet = await getWallet(undefined, DEFAULT_MARKET_BASE_ASSET);
   // NUT-CTF extends CashuWallet with a conditionId option on mintProofs.
   // Once cashu-ts ships NUT-CTF support this call becomes:
   //   wallet.mintProofs(amountSats, quote.quote, { conditionId })
@@ -1128,9 +1127,15 @@ interface RedeemKeysetLegInput {
  */
 async function redeemKeysetLeg(input: RedeemKeysetLegInput): Promise<Proof[]> {
   const { conditionId, keysetId, proofs, mintUrl, witnessJson, baseAsset } = input;
-  const operationId = buildKeysetRedeemOperationId(conditionId, keysetId, proofs);
-  const existing = (await getProofOperation(operationId)) as CtfProofOperationRecord | null;
   const unit = defaultCollateralUnit(baseAsset);
+  const operationId = buildKeysetRedeemOperationId({
+    mintUrl,
+    unit,
+    conditionId,
+    keysetId,
+    proofs,
+  });
+  const existing = (await getProofOperation(operationId)) as CtfProofOperationRecord | null;
   const wallet = await getWallet(mintUrl, baseAsset);
   const result = await redeemOutcomeLegWithOperation({
     mintUrl,
@@ -1183,8 +1188,8 @@ function ctfRedeemProofOperationStore(): CtfProofOperationStore {
       (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
     prepareProofOperation: async (input) =>
       (await prepareProofOperation(input)) as CtfProofOperationRecord,
-    markProofOperationCompleted: async (operationId, resultProofs) =>
-      (await markProofOperationCompleted(operationId, resultProofs)) as CtfProofOperationRecord,
+    markProofOperationCompleted: async (operationId, completion) =>
+      (await markProofOperationCompleted(operationId, completion)) as CtfProofOperationRecord,
     markProofOperationFailed: async (operationId, message, failureCode) => {
       const error = new Error(message) as Error & { code?: number };
       error.code = failureCode;

@@ -67,6 +67,8 @@ describe("useCreatorDashboardState", () => {
           thumbnailUrl: null,
           createdAt: "2026-04-10T00:00:00.000Z",
           creatorFeePercent: 0.02,
+          baseAsset: "sat",
+          divisibility: 10_000,
         },
         {
           conditionId: CONDITION_B,
@@ -74,6 +76,8 @@ describe("useCreatorDashboardState", () => {
           thumbnailUrl: "/api/v1/foo/thumbnail",
           createdAt: "2026-04-09T00:00:00.000Z",
           creatorFeePercent: 0.03,
+          baseAsset: "sat",
+          divisibility: 10_000,
         },
       ],
     });
@@ -124,6 +128,8 @@ describe("useCreatorDashboardState", () => {
           thumbnailUrl: null,
           createdAt: "2026-04-10T00:00:00.000Z",
           creatorFeePercent: 0,
+          baseAsset: "sat",
+          divisibility: 10_000,
           oracle: {
             type: "self",
             eventId: "event-1",
@@ -171,6 +177,8 @@ describe("useCreatorDashboardState", () => {
           thumbnailUrl: null,
           createdAt: "2026-04-10T00:00:00.000Z",
           creatorFeePercent: 0.02,
+          baseAsset: "sat",
+          divisibility: 10_000,
         },
       ],
     });

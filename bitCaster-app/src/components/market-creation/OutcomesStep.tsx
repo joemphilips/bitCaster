@@ -1,8 +1,7 @@
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import type { WizardOutcome, OutcomeType, MarketBaseAsset } from "@/types/market-creation";
-import { DEFAULT_MARKET_BASE_ASSET, marketUnitLabel } from "@bitcaster/client-sdk/marketUnits";
+import type { WizardOutcome, OutcomeType } from "@/types/market-creation";
 import {
   MAX_MARKET_OUTCOMES,
   probabilitySumValid,
@@ -16,7 +15,6 @@ interface OutcomesStepProps {
   hiBound?: number;
   precision?: number;
   unit?: string;
-  baseAsset?: MarketBaseAsset;
   onAddOutcome?: () => void;
   onRemoveOutcome?: (outcomeId: string) => void;
   onOutcomeLabelChange?: (outcomeId: string, label: string) => void;
@@ -26,7 +24,6 @@ interface OutcomesStepProps {
   onHiBoundChange?: (value: number) => void;
   onPrecisionChange?: (value: number) => void;
   onUnitChange?: (value: string) => void;
-  onBaseAssetChange?: (value: MarketBaseAsset) => void;
   onNext?: () => void;
 }
 
@@ -77,45 +74,6 @@ function ProbabilityBar({
   );
 }
 
-function MarketUnitControls({
-  baseAsset,
-  onBaseAssetChange,
-}: {
-  baseAsset?: MarketBaseAsset;
-  onBaseAssetChange?: (value: MarketBaseAsset) => void;
-}) {
-  const { t } = useTranslation();
-  const selectedBaseAsset = baseAsset ?? DEFAULT_MARKET_BASE_ASSET;
-
-  return (
-    <div className="mb-6">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3">
-        <div>
-          <label className="block text-sm font-medium text-slate-300 mb-2">
-            {t("marketCreation.baseAsset")}
-          </label>
-          <div className="grid grid-cols-2 gap-2">
-            {(["sat", "usd"] as const).map((asset) => (
-              <button
-                key={asset}
-                type="button"
-                onClick={() => onBaseAssetChange?.(asset)}
-                className={`px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
-                  selectedBaseAsset === asset
-                    ? "border-blue-500 bg-blue-500/15 text-white"
-                    : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500"
-                }`}
-              >
-                {marketUnitLabel(asset)}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function OutcomesStep({
   outcomeType,
   outcomes,
@@ -123,7 +81,6 @@ export function OutcomesStep({
   hiBound,
   precision,
   unit,
-  baseAsset,
   onAddOutcome,
   onRemoveOutcome,
   onOutcomeLabelChange,
@@ -134,7 +91,6 @@ export function OutcomesStep({
   onHiBoundChange,
   onPrecisionChange,
   onUnitChange,
-  onBaseAssetChange,
   onNext,
 }: OutcomesStepProps) {
   const { t } = useTranslation();
@@ -250,8 +206,6 @@ export function OutcomesStep({
         </h2>
         <p className="text-sm text-slate-400 mb-8">{t("marketCreation.marketOutcomesDesc")}</p>
 
-        <MarketUnitControls baseAsset={baseAsset} onBaseAssetChange={onBaseAssetChange} />
-
         <div className="space-y-3 mb-4">
           {outcomes.map((outcome) => (
             <div key={outcome.id} className="p-4 rounded-lg bg-slate-900 border border-slate-700">
@@ -334,8 +288,6 @@ export function OutcomesStep({
         {t("marketCreation.defineOutcomes")}
       </h2>
       <p className="text-sm text-slate-400 mb-8">{t("marketCreation.defineOutcomesDesc")}</p>
-
-      <MarketUnitControls baseAsset={baseAsset} onBaseAssetChange={onBaseAssetChange} />
 
       <div className="space-y-3 mb-4">
         {outcomes?.map((outcome) => (

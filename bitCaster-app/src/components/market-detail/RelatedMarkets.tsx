@@ -50,7 +50,7 @@ function RelatedMarketCard({ market, onClick }: { market: RelatedMarket; onClick
       <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
         <div className="flex items-center gap-1">
           <TrendingUp className="w-3.5 h-3.5" />
-          <span>{formatMarketSubunits(market.volume, market.baseAsset ?? "sat")}</span>
+          <span>{formatMarketSubunits(market.volume, market.baseAsset)}</span>
         </div>
         <span>{formatClosingDate(market.closingDate, t, i18n.language)}</span>
       </div>

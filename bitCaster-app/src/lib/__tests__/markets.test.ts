@@ -69,7 +69,7 @@ const yesNoEntry: MarketCatalogueEntry = {
   ammBotBudgetSubunits: 88_000,
   volumeLifetimeSubunits: 980_000,
   baseAsset: "sat",
-  divisibility: 1_000,
+  divisibility: 10_000,
   lastTradedPrice: 0.62,
   initialProbabilities: { Yes: 62, No: 38 },
   categoryTags: ["crypto"],
@@ -91,7 +91,7 @@ const categoricalEntry: MarketCatalogueEntry = {
   ammBotBudgetSubunits: 12_000,
   volumeLifetimeSubunits: 45_000,
   baseAsset: "sat",
-  divisibility: 1_000,
+  divisibility: 10_000,
   lastTradedPrice: null,
   initialProbabilities: {},
   categoryTags: ["politics"],
@@ -108,7 +108,7 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.title).toBe("Will BTC hit 100K?");
     expect(market.type).toBe("yesno");
     expect(market.baseAsset).toBe("sat");
-    expect(market.divisibility).toBe(1_000);
+    expect(market.divisibility).toBe(10_000);
     expect(market.baseMarket).toBe("sats");
     if (market.type === "yesno") {
       expect(market.currentOdds).toEqual({ yes: 62, no: 38 });
@@ -119,21 +119,21 @@ describe("mapCatalogueEntryToMarket", () => {
     // With lastTradedPrice present, list odds use it (not initial probabilities)
     const marketWithTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
-      divisibility: 1_000,
-      lastTradedPrice: 620,
+      divisibility: 10_000,
+      lastTradedPrice: 6_200,
       initialProbabilities: { Yes: 77, No: 23 },
     });
 
     expect(marketWithTrades.type).toBe("yesno");
     if (marketWithTrades.type === "yesno") {
-      // lastTradedPrice=620 with D=1000 → 62%
+      // lastTradedPrice=6200 with D=10000 → 62%
       expect(marketWithTrades.currentOdds.yes).toBe(62);
     }
 
     // Without lastTradedPrice, falls back to initial probabilities
     const marketNoTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
-      divisibility: 1_000,
+      divisibility: 10_000,
       lastTradedPrice: null,
       initialProbabilities: { Yes: 77, No: 23 },
     });
@@ -448,9 +448,12 @@ describe("deposit API normalization", () => {
       ),
     );
 
-    await expect(requestEcashDeposit("deadbeef", 1000, "cashu-token")).resolves.toMatchObject({
-      state: "requested",
-    });
+    await expect(
+      requestEcashDeposit("deadbeef", 1000, "cashu-token", {
+        unit: "msat",
+        divisibility: 10_000,
+      }),
+    ).resolves.toMatchObject({ state: "requested" });
   });
 });
 
@@ -580,6 +583,8 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
             liquiditySubunits: 75000,
             ammBotBudgetSubunits: 75000,
             volumeLifetimeSubunits: 250000,
+            baseAsset: "sat",
+            divisibility: 10_000,
             lastTradedPrice: null,
             categoryTags: ["crypto"],
             lastSuccessfulRefreshAt: "2026-05-04T00:00:00Z",
@@ -1015,14 +1020,14 @@ describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
 
 describe("price history normalization", () => {
   it("normalizes raw price numerators to percentages", () => {
-    expect(priceNumeratorToPercent(50, 100)).toBe(50);
-    expect(priceNumeratorToPercent(500, 1_000)).toBe(50);
-    expect(priceNumeratorToPercent(500, 100)).toBe(100);
+    expect(priceNumeratorToPercent(5_000, 10_000)).toBe(50);
+    expect(priceNumeratorToPercent(500_000, 1_000_000)).toBe(50);
+    expect(priceNumeratorToPercent(20_000, 10_000)).toBe(100);
   });
 
   it("applies market divisibility when mapping fetched history", () => {
     const market = {
-      ...mapCatalogueEntryToMarket({ ...yesNoEntry, divisibility: 1_000 }),
+      ...mapCatalogueEntryToMarket({ ...yesNoEntry, divisibility: 10_000 }),
       priceHistory: { timeframe: "7d" as const, data: [] },
       orderBook: { bids: [], asks: [], spread: 0 },
       recentTrades: [],
@@ -1052,7 +1057,7 @@ describe("price history normalization", () => {
           data: [
             {
               timestamp: "2026-05-25T10:00:00Z",
-              price: 500,
+              price: 5_000,
               volumeSubunits: 10,
               source: "fill",
             },

@@ -7,7 +7,7 @@ interface ActivityLogState {
   addActivity: (entry: {
     type: ActivityType;
     amountSats: number;
-    baseAsset?: ActivityItem["baseAsset"];
+    baseAsset: ActivityItem["baseAsset"];
     status: ActivityStatus;
     txId?: string | null;
     lightningInvoice?: string | null;

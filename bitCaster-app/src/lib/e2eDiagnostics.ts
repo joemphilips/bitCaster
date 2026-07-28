@@ -24,6 +24,8 @@ type SanitizedPendingTrade = {
   clientOrderId?: string;
   marketId: string;
   submittedAt: number;
+  baseAsset: "sat";
+  divisibility: number;
 };
 
 export type SwapDiagnosticsSnapshot = {
@@ -56,6 +58,8 @@ export function getSwapDiagnostics(tradeId: string): SwapDiagnosticsSnapshot {
         clientOrderId: trade.clientOrderId,
         marketId: trade.marketId,
         submittedAt: trade.submittedAt,
+        baseAsset: trade.baseAsset,
+        divisibility: trade.divisibility,
       },
     ]),
   );

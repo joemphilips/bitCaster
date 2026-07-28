@@ -118,7 +118,6 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
           amountLabel={state.amountLabel}
           status={state.invoiceStatus}
           expiresAtSec={state.invoiceExpiresAtSec}
-          rateInfo={state.invoiceRateInfo}
           errorMessage={state.error}
           onClose={state.onClose}
           onRegenerate={state.onRegenerateInvoice}
@@ -169,8 +168,6 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         selectedMintId={state.selectedMintId}
         amountSats={state.amountSats}
         amountLabel={state.amountLabel}
-        selectedUnit={state.selectedUnit}
-        unitOptions={state.unitOptions}
         amountFiat={state.amountFiat}
         fiatSymbol={state.fiatSymbol}
         showFiatPrimary={state.showFiatPrimary}
@@ -178,7 +175,6 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         onSelectMethod={state.onSelectMethod}
         onNumpadPress={state.onNumpadPress}
         onMintChange={state.onMintChange}
-        onUnitChange={state.onUnitChange}
         onToggleCurrency={state.onToggleCurrency}
         onCreateInvoice={state.onCreateInvoice}
         onSendEcash={state.onSendEcash}

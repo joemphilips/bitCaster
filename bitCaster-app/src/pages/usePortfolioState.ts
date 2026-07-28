@@ -8,8 +8,10 @@ import { safeHostname } from "@/lib/url";
 import type { MarketCatalogueEntry, MarketCatalogueResponse } from "@/lib/markets";
 import { outcomeSetDisplayLabel } from "@/lib/outcomeSets";
 import {
+  cashuAmountToMarketSubunits,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
+  parseCashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import { groupAmountsByUnit } from "@/lib/formatAmount";
@@ -54,7 +56,7 @@ const TIME_RANGE_MS: Record<PLTimeSelector, number> = {
 export function buildPLChartData(items: ActivityItem[]): PLChartData {
   // Sort oldest-first
   const sorted = [...items]
-    .filter((a) => a.status === "completed" && normalizeMarketBaseAsset(a.baseAsset) === "sat")
+    .filter((a) => a.status === "completed")
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
   if (sorted.length === 0) {
@@ -235,7 +237,7 @@ export function usePortfolioState(): PortfolioState & {
       return entries.map((entry): Position => {
         const market = catalogue.get(entry.conditionId);
         const baseAsset = normalizeMarketBaseAsset(market?.baseAsset ?? entry.baseAsset);
-        const divisibility = normalizeMarketDivisibility(market?.divisibility);
+        const divisibility = normalizeMarketDivisibility(market?.divisibility, baseAsset);
         const outcomeLabel = outcomeSetDisplayLabel(
           market?.outcomes ?? [],
           entry.outcomeCollection,
@@ -316,12 +318,15 @@ export function usePortfolioState(): PortfolioState & {
       > = {};
       for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
         const baseAsset = normalizeMarketBaseAsset(p.baseAsset);
+        const unit = parseCashuProofUnit(p.unit);
+        if (!unit) throw new Error(`Stored proof has unsupported unit '${String(p.unit)}'`);
         const key = `${p.mintUrl}:${baseAsset}`;
         const current = balanceByMintAndUnit[key];
         balanceByMintAndUnit[key] = {
           mintUrl: p.mintUrl,
           baseAsset,
-          amount: (current?.amount ?? 0) + amountToNumber(p.amount),
+          amount:
+            (current?.amount ?? 0) + cashuAmountToMarketSubunits(amountToNumber(p.amount), unit),
         };
       }
       return Object.values(balanceByMintAndUnit).map(({ mintUrl, baseAsset, amount }) => {
@@ -329,7 +334,7 @@ export function usePortfolioState(): PortfolioState & {
         const name = (mintInfo?.info as Record<string, unknown>)?.name as string | undefined;
         return {
           id: `${mintUrl}:${baseAsset}`,
-          unit: baseAsset === "sat" ? ("sats" as const) : baseAsset,
+          unit: "sats" as const,
           amount,
           mintUrl,
           mintName: name ?? safeHostname(mintUrl),

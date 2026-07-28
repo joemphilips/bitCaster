@@ -223,7 +223,6 @@ describe("recoverable external-token receive journal", () => {
   it.each([
     ["sat", "sat"],
     ["sat", "msat"],
-    ["usd", "usd"],
   ] as const)(
     "restores exact %s/%s successors after post-swap proof persistence fails",
     async (baseAsset, unit) => {
@@ -361,24 +360,24 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
     expect(mocks.wallet.mintProofs).toHaveBeenCalledWith(satAmount * 1_000, "q1");
   });
 
-  it("scales sat-market sendProofs requests into msat collateral subunits", async () => {
+  it("sends regular sat proofs through the explicit sat wallet", async () => {
     const proofs = [{ id: "k1", amount: 20_000, secret: "s1", C: "C1" }] as never;
     const split = { keep: [], send: proofs };
     mocks.wallet.send.mockResolvedValueOnce(split);
 
     const result = await cashu.sendProofs(13, proofs, {
       mintUrl: "https://mint.test",
-      baseAsset: "sat",
+      unit: "sat",
     });
 
     expect(result).toBe(split);
-    expect(mocks.wallet.send).toHaveBeenCalledWith(13_000, proofs);
+    expect(mocks.wallet.send).toHaveBeenCalledWith(13, proofs);
   });
 
   it("advances persisted counters after a successful deterministic mint even when the wallet adapter did not persist the reservation", async () => {
     mocks.wallet.mintProofs.mockResolvedValueOnce(PROOFS);
 
-    const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "usd");
+    const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
     expect(result).toEqual(PROOFS);
     expect(mocks.store.keysetCounters.k1).toBe(1);
@@ -391,7 +390,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
       return PROOFS;
     });
 
-    await cashu.mintProofs(100, QUOTE, "https://mint.test", "usd");
+    await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
     expect(mocks.store.keysetCounters.k1).toBe(8);
   });
@@ -405,7 +404,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
       lastCounterWithSignature: 7,
     });
 
-    const result = await cashu.mintProofs(100, QUOTE, "https://mint.test");
+    const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
     expect(result).toEqual(PROOFS);
     // Counter advanced past the highest known signature and the retry mint.
@@ -421,14 +420,14 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
       .mockRejectedValueOnce(cdkDuplicateError("Blinded message already signed or pending"))
       .mockResolvedValueOnce(PROOFS);
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
-      keysets: [{ id: "k1", unit: "usd" }],
+      keysets: [{ id: "k1", unit: "msat" }],
     });
     mocks.wallet.batchRestore.mockResolvedValueOnce({
       proofs: [],
       lastCounterWithSignature: 11,
     });
 
-    const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "usd");
+    const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
     expect(result).toEqual(PROOFS);
     expect(mocks.store.keysetCounters.k1).toBe(13);
@@ -441,11 +440,11 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
       .mockResolvedValueOnce(PROOFS);
     mocks.wallet.getKeyset.mockReturnValue({ id: "usd-keyset" });
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
-      keysets: [{ id: "usd-keyset", unit: "usd" }],
+      keysets: [{ id: "usd-keyset", unit: "msat" }],
     });
     mocks.wallet.batchRestore.mockRejectedValueOnce(new Error("restore unavailable"));
 
-    const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "usd");
+    const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
     expect(result).toEqual(PROOFS);
     expect(mocks.wallet.batchRestore).toHaveBeenCalledOnce();
@@ -459,14 +458,14 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
       .mockResolvedValueOnce(PROOFS);
     const recoveredProofs = [{ id: "k1", amount: 50, secret: "rs1", C: "rC1" }] as never;
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
-      keysets: [{ id: "k1", unit: "usd" }],
+      keysets: [{ id: "k1", unit: "msat" }],
     });
     mocks.wallet.batchRestore.mockResolvedValueOnce({
       proofs: recoveredProofs,
       lastCounterWithSignature: 3,
     });
 
-    await cashu.mintProofs(100, QUOTE, "https://mint.test", "usd");
+    await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
     expect(mocks.addProofs).toHaveBeenCalledOnce();
     expect(mocks.addProofs).toHaveBeenCalledWith(
@@ -474,7 +473,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
         expect.objectContaining({
           secret: "rs1",
           mintUrl: "https://mint.test",
-          baseAsset: "usd",
+          baseAsset: "sat",
         }),
       ]),
     );
@@ -483,7 +482,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
   it("does NOT swallow non-CDK-duplicate errors (real LN payment failures must propagate)", async () => {
     mocks.wallet.mintProofs.mockRejectedValueOnce(new Error("Lightning payment timeout"));
 
-    await expect(cashu.mintProofs(100, QUOTE, "https://mint.test")).rejects.toThrow(
+    await expect(cashu.mintProofs(100, QUOTE, "https://mint.test", "sat")).rejects.toThrow(
       "Lightning payment timeout",
     );
     expect(mocks.wallet.batchRestore).not.toHaveBeenCalled();
@@ -501,7 +500,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
       lastCounterWithSignature: 5,
     });
 
-    await expect(cashu.mintProofs(100, QUOTE, "https://mint.test")).rejects.toThrow(
+    await expect(cashu.mintProofs(100, QUOTE, "https://mint.test", "sat")).rejects.toThrow(
       "Blinded message already signed or pending",
     );
     expect(mocks.wallet.mintProofs).toHaveBeenCalledTimes(2); // one retry, no more
@@ -541,11 +540,11 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
     expect(r.scannedKeysets).toEqual(["k1", "k2"]);
   });
 
-  it("walks every advertised keyset unit when no baseAsset filter is provided", async () => {
+  it("walks every supported advertised keyset unit when no baseAsset filter is provided", async () => {
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
       keysets: [
         { id: "sat-keyset", unit: "sat" },
-        { id: "usd-keyset", unit: "usd" },
+        { id: "msat-keyset", unit: "msat" },
       ],
     });
     mocks.wallet.batchRestore
@@ -555,9 +554,9 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
     const r = await cashu.recoverKeysetCountersForMint("https://mint.test");
 
     expect(mocks.getWallet).toHaveBeenCalledWith("https://mint.test", "sat");
-    expect(mocks.getWallet).toHaveBeenCalledWith("https://mint.test", "usd");
-    expect(mocks.store.keysetCounters).toEqual({ "sat-keyset": 3, "usd-keyset": 9 });
-    expect(r.scannedKeysets).toEqual(["sat-keyset", "usd-keyset"]);
+    expect(mocks.getWallet).toHaveBeenCalledWith("https://mint.test", "msat");
+    expect(mocks.store.keysetCounters).toEqual({ "sat-keyset": 3, "msat-keyset": 9 });
+    expect(r.scannedKeysets).toEqual(["sat-keyset", "msat-keyset"]);
   });
 
   it("preserves exact sat and msat units while recovering sat-market keysets", async () => {
@@ -616,26 +615,6 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
     expect(mocks.store.keysetCountersRecovered["msat-keyset"]).toBeUndefined();
     expect(mocks.addProofs).not.toHaveBeenCalled();
     expect(result.scannedKeysets).toEqual([]);
-  });
-
-  it("filters recovery to the requested non-sat unit", async () => {
-    mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
-      keysets: [
-        { id: "sat-keyset", unit: "sat" },
-        { id: "usd-keyset", unit: "usd" },
-      ],
-    });
-    mocks.wallet.batchRestore.mockResolvedValueOnce({
-      proofs: [],
-      lastCounterWithSignature: 4,
-    });
-
-    const r = await cashu.recoverKeysetCountersForMint("https://mint.test", { baseAsset: "usd" });
-
-    expect(mocks.wallet.batchRestore).toHaveBeenCalledWith(300, 100, 0, "usd-keyset");
-    expect(mocks.wallet.batchRestore).toHaveBeenCalledTimes(1);
-    expect(mocks.store.keysetCounters).toEqual({ "usd-keyset": 5 });
-    expect(r.scannedKeysets).toEqual(["usd-keyset"]);
   });
 
   it("uses fresh keysets from mint.getKeySets, not stale store keysets (codex review #3)", async () => {

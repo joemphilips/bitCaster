@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { ProductMarketDivisibility } from "@/types/market";
 
 /**
  * Client-side record of a market the user has created via the wizard.
@@ -18,10 +19,10 @@ export interface StoredCreatorMarket {
   thumbnailUrl: string | null;
   /** ISO-8601 timestamp recorded when the wizard reported a successful submission. */
   createdAt: string;
-  /** Market quote asset selected at creation. Missing legacy records replay as sat. */
-  baseAsset?: "sat" | "usd" | "jpy";
+  /** Explicit product base asset captured at creation. */
+  baseAsset: "sat";
   /** Immutable market price denominator selected at creation. */
-  divisibility?: number;
+  divisibility: ProductMarketDivisibility;
   /**
    * Percentage fee (0.0-1.0 scale matching `CreatedMarket.creatorFeePercent`)
    * the user chose at wizard step 5. Kept client-side because fee accrual is

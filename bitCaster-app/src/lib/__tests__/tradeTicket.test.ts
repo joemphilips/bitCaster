@@ -18,6 +18,8 @@ const market: MarketDetail = {
   createdDate: "2026-01-01T00:00:00Z",
   activeSince: "2026-01-01T00:00:00Z",
   baseUnit: "sats",
+  baseAsset: "sat",
+  divisibility: 10_000,
   creator: {
     id: "creator",
     name: "creator",
@@ -263,7 +265,7 @@ describe("buildTradeTicket", () => {
 
   it("sends protocol face amountSubunits, not the derived display cost", () => {
     const displayShares = 10;
-    const faceAmountSats = displaySharesToFaceSubunits(displayShares, "sat");
+    const faceAmountSats = displaySharesToFaceSubunits(displayShares, "sat", 10_000);
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },

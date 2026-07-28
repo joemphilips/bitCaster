@@ -1,4 +1,5 @@
 import type { CurrentOdds, Market, FilterState } from "@/types/market";
+import type { ProductMarketDivisibility } from "@/types/market";
 import type {
   MarketDetail,
   OrderBook,
@@ -627,7 +628,7 @@ export function windowPriceHistory(history: PriceHistory): PriceHistory {
 
 export function priceNumeratorToPercent(price: number, divisibility: number): number {
   if (!Number.isFinite(price)) return 0;
-  const normalizedDivisibility = normalizeMarketDivisibility(divisibility);
+  const normalizedDivisibility = normalizeMarketDivisibility(divisibility, "sat");
   return Math.max(0, Math.min(100, (price / normalizedDivisibility) * 100));
 }
 
@@ -1002,8 +1003,8 @@ export type DepositMethod = components["schemas"]["DepositMethod"];
 export interface MarketFundingDepositOptions {
   creatorPubkey?: string | null;
   fundAmm?: boolean;
-  unit?: string;
-  divisibility?: number;
+  unit: "msat";
+  divisibility: ProductMarketDivisibility;
 }
 
 function normalizeDepositState(state: unknown): DepositState {
@@ -1048,18 +1049,18 @@ export async function requestEcashDeposit(
   conditionId: string,
   amountSubunits: number,
   proofsToken: string,
-  options: MarketFundingDepositOptions = {},
+  options: MarketFundingDepositOptions,
 ): Promise<RequestEcashDepositResponse> {
   const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ecash`;
   const body: RequestEcashDepositRequest = {
     amountSubunits,
+    unit: options.unit,
+    divisibility: options.divisibility,
     proofsToken,
     fundAmm: false,
   };
   if (options.creatorPubkey) body.creatorPubkey = options.creatorPubkey;
   if (options.fundAmm !== undefined) body.fundAmm = options.fundAmm;
-  if (options.unit) body.unit = options.unit;
-  if (options.divisibility !== undefined) body.divisibility = options.divisibility;
   const bodyText = JSON.stringify(body);
   const bodyBytes = new TextEncoder().encode(bodyText);
   const payloadHash = await sha256Hex(bodyBytes);

@@ -49,6 +49,7 @@ export interface TradeCreatedPayload {
   sellerKeepOutcomeSetId?: string | null;
   sellerLockOutcomeSetId?: string | null;
   baseAsset?: string | null;
+  collateralUnit?: string | null;
   divisibility?: number | null;
   tokenSide?: string | null;
 }
@@ -168,6 +169,7 @@ export function useTradeHub(enabled: boolean, callbacks: TradeHubCallbacks): Tra
         sellerKeepOutcomeSetId?: string | null,
         sellerLockOutcomeSetId?: string | null,
         baseAsset?: string | null,
+        collateralUnit?: string | null,
         divisibility?: number | null,
         tokenSide?: string | null,
       ) => {
@@ -185,6 +187,7 @@ export function useTradeHub(enabled: boolean, callbacks: TradeHubCallbacks): Tra
           sellerKeepOutcomeSetId,
           sellerLockOutcomeSetId,
           baseAsset,
+          collateralUnit,
           divisibility,
           tokenSide,
         });

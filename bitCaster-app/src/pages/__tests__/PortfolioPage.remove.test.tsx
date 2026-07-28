@@ -72,6 +72,8 @@ function closedPosition(overrides: Partial<Position>): Position {
     marketId: "cond1-A|B",
     marketTitle: "Lost market",
     marketImageUrl: "",
+    baseAsset: "sat",
+    divisibility: 10_000,
     side: "Outcome",
     outcomeId: "A|B",
     outcomeLabel: "A|B",
@@ -110,6 +112,7 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
     await userEvent.click(screen.getByLabelText(/remove.*lost market/i));
 
     expect(getOutcomeProofs).toHaveBeenCalledWith("https://mint.example", "cond1", "A|B", {
+      baseAsset: "sat",
       includeReserved: true,
     });
     expect(removeProofs).toHaveBeenCalledWith(["s-lost-1", "s-lost-2"]);
@@ -208,6 +211,7 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
     await userEvent.click(screen.getByLabelText(/remove.*attested loser market/i));
 
     expect(getOutcomeProofs).toHaveBeenCalledWith("https://mint.example", "cond1", "B", {
+      baseAsset: "sat",
       includeReserved: true,
     });
     expect(removeProofs).toHaveBeenCalledWith(["s-lost"]);

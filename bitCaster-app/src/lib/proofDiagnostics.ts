@@ -1,4 +1,5 @@
 import type { Proof, ProofState, Wallet as CashuWallet } from "@cashu/cashu-ts";
+import type { CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
 import { useWalletStore } from "@/stores/wallet";
 
 const LOCAL_STORAGE_FLAG = "bitcaster.cashuProofDiagnostics";
@@ -28,6 +29,7 @@ export async function diagnoseProofStates(input: {
   label: string;
   mintUrl: string;
   proofs: Proof[];
+  unit: CashuProofUnit;
   wallet?: Pick<CashuWallet, "checkProofsStates"> | null;
   extra?: Record<string, unknown>;
 }): Promise<ProofStateDiagnosticSummary | null> {
@@ -53,7 +55,8 @@ export async function diagnoseProofStates(input: {
   }
 
   try {
-    const wallet = input.wallet ?? (await useWalletStore.getState().getWallet(input.mintUrl));
+    const wallet =
+      input.wallet ?? (await useWalletStore.getState().getWalletForUnit(input.mintUrl, input.unit));
     if (!wallet.checkProofsStates) {
       const summary = {
         ...base,

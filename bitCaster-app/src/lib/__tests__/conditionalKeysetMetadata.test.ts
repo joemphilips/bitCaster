@@ -24,13 +24,13 @@ describe("conditional keyset metadata", () => {
       proofs: [proof("keyset-A", "a"), proof("keyset-C", "c")],
       expectedConditionId: "condition-1",
       reservedBy: "reservation-1",
-      baseAsset: "usd",
+      baseAsset: "sat",
     });
 
     expect(stored.map((row) => row.outcomeCollection)).toEqual(["A", "C"]);
     expect(stored.map((row) => row.marketId)).toEqual(["condition-1-A", "condition-1-C"]);
     expect(stored.every((row) => row.reservedBy === "reservation-1")).toBe(true);
-    expect(stored.every((row) => row.baseAsset === "usd")).toBe(true);
+    expect(stored.every((row) => row.baseAsset === "sat")).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith("https://mint.example/v1/conditional_keysets");
   });
 

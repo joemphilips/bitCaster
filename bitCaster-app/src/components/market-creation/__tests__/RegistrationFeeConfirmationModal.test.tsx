@@ -13,14 +13,14 @@ describe("RegistrationFeeConfirmationModal", () => {
       <RegistrationFeeConfirmationModal
         feeSubunits={2_500}
         balanceSubunits={1_000}
-        baseAsset="usd"
+        baseAsset="sat"
         onCancel={vi.fn()}
         onConfirm={vi.fn()}
       />,
     );
 
-    expect(screen.getByText(/This mint charges \$25\.00/)).toBeInTheDocument();
-    expect(screen.getByText("$10.00")).toBeInTheDocument();
-    expect(screen.queryByText(/This mint charges \$15\.00/)).not.toBeInTheDocument();
+    expect(screen.getByText(/This mint charges 2\.5 sats/)).toBeInTheDocument();
+    expect(screen.getByText("1 sats")).toBeInTheDocument();
+    expect(screen.queryByText(/This mint charges 1\.5 sats/)).not.toBeInTheDocument();
   });
 });

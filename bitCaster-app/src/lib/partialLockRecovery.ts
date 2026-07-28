@@ -66,7 +66,7 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
   });
 
   try {
-    const wallet = await useWalletStore.getState().getWallet(mintUrl);
+    const wallet = await useWalletStore.getState().getWalletForUnit(mintUrl, unit);
     const refundKey = hexToBytes(pendingKey.privkey);
     const witnessed = locked.map((proof) => ({
       ...proof,

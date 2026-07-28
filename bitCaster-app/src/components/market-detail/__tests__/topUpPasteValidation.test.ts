@@ -79,42 +79,7 @@ describe("validateTopUpEcashToken", () => {
     });
   });
 
-  it("rejects sat-denominated tokens for USD markets", async () => {
-    const result = await validateTopUpEcashToken("cashuB-token", {
-      activeMintUrl: "https://mint.example",
-      baseAsset: "usd",
-      deficit: 1,
-      decodeCashuToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({ unit: "sat" })),
-    });
-
-    expect(result).toMatchObject({
-      ok: false,
-      code: "unit_mismatch",
-      values: { tokenUnit: "sat", expectedUnit: "USD" },
-    });
-  });
-
-  it("rejects msat-denominated regular sats before applying USD deficit coverage", async () => {
-    const result = await validateTopUpEcashToken("cashuB-token", {
-      activeMintUrl: "https://mint.example",
-      baseAsset: "usd",
-      deficit: 1,
-      decodeCashuToken: vi.fn<DecodeCashuToken>().mockResolvedValue(
-        token({
-          unit: "msat",
-          proofs: [{ id: "keyset-msat", amount: 1_000_000 as never, secret: "s", C: "c" }],
-        }),
-      ),
-    });
-
-    expect(result).toMatchObject({
-      ok: false,
-      code: "unit_mismatch",
-      values: { tokenUnit: "msat", expectedUnit: "USD" },
-    });
-  });
-
-  it("rejects USD-denominated tokens for sat markets", async () => {
+  it("rejects unsupported token units for sat markets", async () => {
     const result = await validateTopUpEcashToken("cashuB-token", {
       activeMintUrl: "https://mint.example",
       baseAsset: "sat",
@@ -124,20 +89,20 @@ describe("validateTopUpEcashToken", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      code: "unit_mismatch",
-      values: { tokenUnit: "usd", expectedUnit: "sats" },
+      code: "unit_invalid",
+      values: { tokenUnit: "usd" },
     });
   });
 
   it("rejects tokens that do not cover the deficit", async () => {
     const result = await validateTopUpEcashToken("cashuB-token", {
       activeMintUrl: "https://mint.example",
-      baseAsset: "usd",
+      baseAsset: "sat",
       deficit: 1_500,
       decodeCashuToken: vi.fn<DecodeCashuToken>().mockResolvedValue(
         token({
-          unit: "usd",
-          proofs: [{ id: "keyset-usd", amount: 1_000 as never, secret: "s", C: "c" }],
+          unit: "msat",
+          proofs: [{ id: "keyset-msat", amount: 1_000 as never, secret: "s", C: "c" }],
         }),
       ),
     });
@@ -145,7 +110,7 @@ describe("validateTopUpEcashToken", () => {
     expect(result).toMatchObject({
       ok: false,
       code: "amount_too_low",
-      values: { covered: "$10.00", needed: "$15.00" },
+      values: { covered: "1 sats", needed: "1.5 sats" },
     });
   });
 

@@ -17,6 +17,10 @@ describe("shared trade-flow event planner", () => {
       sellerLocktime: 120,
       buyerLocktime: 60,
       settlementKind: "DirectSwap",
+      baseAsset: "sat",
+      divisibility: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
+      quotePaymentSubunits: 5_000,
     });
 
     expect(decision).toMatchObject({
@@ -36,6 +40,8 @@ describe("shared trade-flow event planner", () => {
       sellerLocktime: 120,
       buyerLocktime: 60,
       settlementKind: "SellSellMerge",
+      baseAsset: "sat",
+      divisibility: 10_000,
     });
 
     expect(decision).toMatchObject({
@@ -53,12 +59,12 @@ describe("shared trade-flow event planner", () => {
       buyerLocktime: 60,
       settlementKind: "DirectSwap",
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 10_000,
       expectedBaseAsset: "sat",
-      expectedDivisibility: 1_000,
+      expectedDivisibility: 10_000,
       expectedOrder: {
         side: "Buy",
-        priceSubunits: 500,
+        priceSubunits: 5_000,
         amountSubunits: SAT_MARKET_ORDER_CAP_SUBUNITS,
       },
       requireExpectedOrder: true,
@@ -78,12 +84,12 @@ describe("shared trade-flow event planner", () => {
       buyerLocktime: 60,
       settlementKind: "DirectSwap",
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 10_000,
       expectedBaseAsset: "sat",
-      expectedDivisibility: 1_000,
+      expectedDivisibility: 10_000,
       expectedOrder: {
         side: "Buy",
-        priceSubunits: 500,
+        priceSubunits: 5_000,
         amountSubunits: SAT_MARKET_ORDER_CAP_SUBUNITS,
       },
       requireExpectedOrder: true,
@@ -106,12 +112,12 @@ describe("shared trade-flow event planner", () => {
       buyerLocktime: 60,
       settlementKind: "DirectSwap",
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 10_000,
       expectedBaseAsset: "sat",
-      expectedDivisibility: 1_000,
+      expectedDivisibility: 10_000,
       expectedOrder: {
         side: "Buy",
-        priceSubunits: 500,
+        priceSubunits: 5_000,
         amountSubunits: SAT_MARKET_ORDER_CAP_SUBUNITS,
       },
       requireExpectedOrder: true,

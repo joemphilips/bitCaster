@@ -33,6 +33,8 @@ export interface Outcome {
 }
 
 // Base market properties shared by all market types
+export type ProductMarketDivisibility = 10_000 | 1_000_000;
+
 interface BaseMarket {
   id: string;
   title: string;
@@ -48,8 +50,8 @@ interface BaseMarket {
   closingDate: string;
   createdDate: string;
   activeSince: string;
-  baseAsset?: "sat" | "usd" | "jpy";
-  divisibility?: number;
+  baseAsset: "sat";
+  divisibility: ProductMarketDivisibility;
   creatorFeePercent: number;
   baseMarket: string; // Default: "sats"
   secondaryMarkets?: string[]; // IDs of markets using this as base

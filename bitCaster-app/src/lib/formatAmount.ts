@@ -11,17 +11,14 @@ import {
  * `formatMarketSubunits` so every surface renders identical strings
  * ("1,000 sats", "$1.23", "¥120") — do NOT fork the label spelling here.
  */
-export function formatAmount(
-  amountSubunits: number,
-  baseAsset: MarketBaseAsset | string | null | undefined = "sat",
-): string {
+export function formatAmount(amountSubunits: number, baseAsset: MarketBaseAsset): string {
   return formatSdkAmount(amountSubunits, baseAsset);
 }
 
-/** Display name for a funding unit ("sats" / "USD" / "JPY"). */
+/** Display name for the product funding unit. */
 export const formatUnitName = marketUnitLabel;
 
-/** Display name for the subunit a raw amount is entered in ("sats" / "cents" / "yen"). */
+/** Display name for the product collateral subunit. */
 export const formatUnitSubunitName = marketSubunitLabel;
 
 export interface AmountByUnit {
@@ -30,12 +27,11 @@ export interface AmountByUnit {
 }
 
 /**
- * Sum amounts per normalized unit. This is the single shared guard that
- * keeps totals per unit — sats and USD subunits must NEVER be summed together.
+ * Sum explicitly sat-denominated product amounts.
  */
 export function groupAmountsByUnit<T>(
   items: Iterable<T>,
-  getUnit: (item: T) => MarketBaseAsset | string | null | undefined,
+  getUnit: (item: T) => MarketBaseAsset,
   getAmount: (item: T) => number,
 ): AmountByUnit[] {
   const totals = new Map<MarketBaseAsset, number>();

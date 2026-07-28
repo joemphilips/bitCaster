@@ -39,6 +39,8 @@ function makeMarket(id: string, title = `Market ${id}`): Market {
     activeSince: now,
     creatorFeePercent: 0,
     baseMarket: "sats",
+    baseAsset: "sat",
+    divisibility: 10_000,
   } as Market;
 }
 

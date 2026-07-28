@@ -331,57 +331,6 @@ describe("useDepositWithdrawState", () => {
       expect(result.current.invoiceExpiresAtSec).toBe(quote.expiry);
     });
 
-    it("uses the selected advertised unit for Lightning deposit quotes", async () => {
-      const cashu = await import("@/lib/cashu");
-      vi.mocked(cashu.createMintQuote).mockClear();
-      vi.mocked(cashu.waitForMintQuotePaid).mockClear();
-      useWalletStore.setState({
-        mints: [
-          {
-            url: "http://localhost:8085",
-            info: { name: "Test Mint" },
-            keysets: [
-              { id: "sat-keyset", unit: "sat", active: true },
-              { id: "usd-keyset", unit: "usd", active: true },
-            ] as never,
-          },
-        ],
-      });
-      const quote = {
-        quote: "q-usd",
-        request: "lnbc10u1pjexample",
-        unit: "usd",
-        amount: 100,
-        state: "UNPAID",
-        expiry: Math.floor(Date.now() / 1000) + 90,
-      };
-      vi.mocked(cashu.createMintQuote).mockResolvedValue(quote as never);
-      vi.mocked(cashu.waitForMintQuotePaid).mockResolvedValue(() => {});
-
-      const { result } = renderHook(() => useDepositWithdrawState("deposit", vi.fn()));
-      act(() => result.current.onUnitChange("usd"));
-      act(() => result.current.onNumpadPress("1"));
-      act(() => result.current.onNumpadPress("0"));
-      act(() => result.current.onNumpadPress("0"));
-      await act(async () => {
-        await result.current.onCreateInvoice();
-      });
-
-      expect(cashu.createMintQuote).toHaveBeenCalledWith(100, "http://localhost:8085", "usd");
-      expect(cashu.waitForMintQuotePaid).toHaveBeenCalledWith(
-        quote,
-        expect.any(Function),
-        expect.any(Object),
-        "http://localhost:8085",
-        "usd",
-      );
-      expect(result.current.amountLabel).toBe("$1.00");
-      expect(result.current.invoiceRateInfo).toEqual({
-        label: "10 sat/cent",
-        source: "implied",
-      });
-    });
-
     it("stores paid sat deposits in activity-log subunits while the input label remains sats", async () => {
       const cashu = await import("@/lib/cashu");
       vi.mocked(cashu.createMintQuote).mockClear();
@@ -514,9 +463,9 @@ describe("useDepositWithdrawState", () => {
         added: false,
         mintUrl: "https://usd.mint",
         source: "paste",
-        unit: "usd",
+        unit: "msat",
         amountSubunits: 23,
-        baseAsset: "usd",
+        baseAsset: "sat",
         proofs: [{ secret: "s-usd", amount: 23, id: "usd-kid", C: "C" } as never],
       });
       Object.defineProperty(navigator, "clipboard", {
@@ -530,10 +479,10 @@ describe("useDepositWithdrawState", () => {
         await result.current.onPaste();
       });
 
-      expect(result.current.successUnit).toBe("usd");
+      expect(result.current.successUnit).toBe("sat");
       expect(useActivityLogStore.getState().items[0]).toMatchObject({
         amountSats: 23,
-        baseAsset: "usd",
+        baseAsset: "sat",
       });
     });
 

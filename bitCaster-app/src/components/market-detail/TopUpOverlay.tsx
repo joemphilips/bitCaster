@@ -20,7 +20,6 @@ import {
   formatAmount,
   bufferSubunits,
   defaultCollateralUnit,
-  marketUnitLabel,
   normalizeMarketBaseAsset,
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
@@ -32,61 +31,50 @@ type TopUpMethod = "lightning" | "ecash";
 
 function displayInputAmount(
   amountSubunits: number,
-  baseAsset: string,
+  baseAsset: "sat",
   proofUnit: CashuProofUnit,
 ): number {
-  if (baseAsset === "usd") return amountSubunits / 100;
-  if (baseAsset === "sat") return proofUnit === "sat" ? amountSubunits : amountSubunits / 1000;
-  throw new Error(`unsupported base asset: ${baseAsset}`);
+  if (baseAsset !== "sat") throw new Error(`unsupported base asset: ${String(baseAsset)}`);
+  return proofUnit === "sat" ? amountSubunits : amountSubunits / 1000;
 }
 
-function displayInputStep(baseAsset: string): number {
-  if (baseAsset === "usd") return 0.01;
-  if (baseAsset === "sat") return 1;
-  throw new Error(`unsupported base asset: ${baseAsset}`);
+function displayInputStep(baseAsset: "sat"): number {
+  if (baseAsset !== "sat") throw new Error(`unsupported base asset: ${String(baseAsset)}`);
+  return 1;
 }
 
 function inputAmountToSubunits(
   displayAmount: number,
-  baseAsset: string,
+  baseAsset: "sat",
   proofUnit: CashuProofUnit,
 ): number {
   if (!Number.isFinite(displayAmount)) return 0;
-  if (baseAsset === "usd") return Math.round(displayAmount * 100);
-  if (baseAsset === "sat")
-    return proofUnit === "sat" ? Math.round(displayAmount) : Math.round(displayAmount * 1000);
-  throw new Error(`unsupported base asset: ${baseAsset}`);
+  if (baseAsset !== "sat") throw new Error(`unsupported base asset: ${String(baseAsset)}`);
+  return proofUnit === "sat" ? Math.round(displayAmount) : Math.round(displayAmount * 1000);
 }
 
 function topUpRequestAmount(
   amountSubunits: number,
-  baseAsset: string,
+  baseAsset: "sat",
   proofUnit: CashuProofUnit,
 ): number {
-  if (baseAsset === "usd") return amountSubunits;
-  if (baseAsset === "sat")
-    return proofUnit === "sat" ? amountSubunits : Math.ceil(amountSubunits / 1000);
-  throw new Error(`unsupported base asset: ${baseAsset}`);
+  if (baseAsset !== "sat") throw new Error(`unsupported base asset: ${String(baseAsset)}`);
+  return proofUnit === "sat" ? amountSubunits : Math.ceil(amountSubunits / 1000);
 }
 
-function topUpAmountLabel(
-  baseAsset: string,
-  unitLabel: string,
-  t: (key: string) => string,
-): string {
-  if (baseAsset === "usd") return `${t("topUp.amount")} (${unitLabel})`;
-  if (baseAsset === "sat") return t("topUp.amountSats");
-  throw new Error(`unsupported base asset: ${baseAsset}`);
+function topUpAmountLabel(baseAsset: "sat", t: (key: string) => string): string {
+  if (baseAsset !== "sat") throw new Error(`unsupported base asset: ${String(baseAsset)}`);
+  return t("topUp.amountSats");
 }
 
-function topUpBuffer(baseAsset: string, deficit: number, proofUnit: CashuProofUnit): number {
+function topUpBuffer(baseAsset: "sat", deficit: number, proofUnit: CashuProofUnit): number {
   if (baseAsset === "sat" && proofUnit === "sat") {
     return Math.max(Math.ceil(deficit * 0.2), 10);
   }
   return bufferSubunits(baseAsset, deficit);
 }
 
-function formatTopUpAmount(amount: number, baseAsset: string, proofUnit: CashuProofUnit): string {
+function formatTopUpAmount(amount: number, baseAsset: "sat", proofUnit: CashuProofUnit): string {
   if (baseAsset === "sat" && proofUnit === "sat") {
     return `${amount.toLocaleString()} sats`;
   }
@@ -130,7 +118,7 @@ interface TopUpOverlayProps {
   feeSubunits?: number;
   /** Current user balance for market-creation top-ups. Omit for trade top-ups. */
   balanceSubunits?: number;
-  baseAsset?: string | null;
+  baseAsset: "sat";
   proofUnit?: CashuProofUnit | null;
   minimumDescription?: string;
   minimumErrorDescription?: string;
@@ -163,7 +151,6 @@ export function TopUpOverlay({
   const walletBackupState = useWalletStore((s) => s.walletBackupState);
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput);
   const proofUnit = proofUnitInput ?? defaultCollateralUnit(baseAsset);
-  const unitLabel = marketUnitLabel(baseAsset);
   const prefill =
     deficit > 0 ? Math.max(deficit + topUpBuffer(baseAsset, deficit, proofUnit), 1) : 1;
   const displayMin = displayInputAmount(deficit, baseAsset, proofUnit);
@@ -497,7 +484,7 @@ export function TopUpOverlay({
         {method === "lightning" ? (
           <>
             <label className="block text-xs text-slate-400 dark:text-slate-500 mb-1">
-              {topUpAmountLabel(baseAsset, unitLabel, t)}
+              {topUpAmountLabel(baseAsset, t)}
             </label>
             <input
               data-testid="top-up-amount-input"

@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import type { OrderBook } from "@/types/market-detail";
+import type { ProductMarketDivisibility } from "@/types/market";
 import { formatPricePercent, normalizeMarketDivisibility } from "@bitcaster/client-sdk/marketUnits";
 import { buildOrderBookDepthRows } from "./orderBookViewModel";
 
@@ -9,8 +10,8 @@ interface OrderBookSectionProps {
   outcomeOrderBooks?: Record<string, OrderBook>;
   onOutcomeChange?: (outcomeId: string) => void;
   outcomes?: Array<{ id: string; label: string }>;
-  baseAsset?: string | null;
-  divisibility?: number | null;
+  baseAsset: "sat";
+  divisibility: ProductMarketDivisibility;
   title?: string;
   outcomeId?: string;
 }
@@ -21,12 +22,13 @@ export function OrderBookSection({
   outcomeOrderBooks,
   onOutcomeChange,
   outcomes,
+  baseAsset,
   divisibility: divisibilityInput,
   title,
   outcomeId,
 }: OrderBookSectionProps) {
   const { t } = useTranslation();
-  const divisibility = normalizeMarketDivisibility(divisibilityInput);
+  const divisibility = normalizeMarketDivisibility(divisibilityInput, baseAsset);
 
   // Use outcome-specific order book if available
   const activeOrderBook =

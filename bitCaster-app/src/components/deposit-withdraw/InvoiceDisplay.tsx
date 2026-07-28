@@ -3,7 +3,6 @@ import { QRCodeSVG } from "qrcode.react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useInvoiceCountdown, formatRemaining } from "@/lib/invoiceCountdown";
-import type { MintQuoteRateInfo } from "@/lib/mintQuoteRate";
 
 interface InvoiceDisplayProps {
   bolt11: string;
@@ -14,7 +13,6 @@ interface InvoiceDisplayProps {
   expiresAtSec?: number;
   /** Last poll/mint error to surface under the status pill. */
   errorMessage?: string | null;
-  rateInfo?: MintQuoteRateInfo | null;
   onClose?: () => void;
   /** Shown as a "Try again" button when status is 'expired' or 'error'. */
   onRegenerate?: () => void;
@@ -28,7 +26,6 @@ export function InvoiceDisplay({
   status,
   expiresAtSec,
   errorMessage,
-  rateInfo,
   onClose,
   onRegenerate,
 }: InvoiceDisplayProps) {
@@ -112,13 +109,6 @@ export function InvoiceDisplay({
         <div className="mt-6 text-2xl font-bold text-white font-mono">
           {amountLabel ?? `₿${amountSats.toLocaleString()}`}
         </div>
-        {rateInfo && (
-          <div className="mt-2 text-sm text-slate-300">
-            {t("deposit.quoteRate", { rate: rateInfo.label })}
-            {rateInfo.source === "implied" && <> {t("deposit.impliedRateSource")}</>}
-          </div>
-        )}
-
         {/* Invoice text + copy */}
         <div className="mt-4 w-full">
           <div className="bg-slate-800 border border-slate-700 rounded-xl p-3 flex items-center gap-2">

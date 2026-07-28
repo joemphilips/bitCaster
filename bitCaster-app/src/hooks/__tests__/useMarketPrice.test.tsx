@@ -33,7 +33,7 @@ function makeMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
     createdDate: "2026-01-01T00:00:00Z",
     activeSince: "2026-01-01T00:00:00Z",
     baseAsset: "sat",
-    divisibility: 100,
+    divisibility: 10_000,
     baseUnit: "sats",
     creator: {
       id: "creator",
@@ -74,8 +74,8 @@ describe("useMarketPrice", () => {
       }),
     );
 
-    expect(result.current.currentPrice).toBe(50);
-    expect(result.current.defaultOrderPrice).toBe(50);
+    expect(result.current.currentPrice).toBe(5_000);
+    expect(result.current.defaultOrderPrice).toBe(5_000);
   });
 
   it("uses creator initial probability before any trades exist", () => {
@@ -91,8 +91,8 @@ describe("useMarketPrice", () => {
       }),
     );
 
-    expect(result.current.currentPrice).toBe(70);
-    expect(result.current.defaultOrderPrice).toBe(70);
+    expect(result.current.currentPrice).toBe(7_000);
+    expect(result.current.defaultOrderPrice).toBe(7_000);
   });
 
   it("updates current price from the latest trade event", () => {
@@ -108,15 +108,15 @@ describe("useMarketPrice", () => {
     act(() => {
       tradeHandlers.get("condition-1-Yes")?.({
         tradeId: "trade-1",
-        executionPrice: 63,
+        executionPrice: 6_300,
         amountSubunits: 10,
         side: "Buy",
         timestamp: "2026-01-01T00:01:00Z",
       });
     });
 
-    expect(result.current.currentPrice).toBe(63);
-    expect(result.current.defaultOrderPrice).toBe(63);
+    expect(result.current.currentPrice).toBe(6_300);
+    expect(result.current.defaultOrderPrice).toBe(6_300);
   });
 
   it("uses the spread midpoint as the order entry default when both sides exist", () => {
@@ -126,15 +126,15 @@ describe("useMarketPrice", () => {
         marketId: "condition-1-Yes",
         outcomeSetId: "Yes",
         orderBook: {
-          bids: [{ price: 40, amount: 1, total: 1 }],
-          asks: [{ price: 70, amount: 1, total: 1 }],
-          spread: 30,
+          bids: [{ price: 4_000, amount: 1, total: 1 }],
+          asks: [{ price: 7_000, amount: 1, total: 1 }],
+          spread: 3_000,
         },
       }),
     );
 
-    expect(result.current.currentPrice).toBe(60);
-    expect(result.current.defaultOrderPrice).toBe(55);
+    expect(result.current.currentPrice).toBe(6_000);
+    expect(result.current.defaultOrderPrice).toBe(5_500);
   });
 
   it("derives a yes/no No price by inverting the primary Yes history", () => {
@@ -153,8 +153,8 @@ describe("useMarketPrice", () => {
       }),
     );
 
-    expect(result.current.currentPrice).toBe(40);
-    expect(result.current.defaultOrderPrice).toBe(40);
+    expect(result.current.currentPrice).toBe(4_000);
+    expect(result.current.defaultOrderPrice).toBe(4_000);
   });
 
   it("derives a categorical complement price from the missing primary outcome history", () => {
@@ -180,7 +180,7 @@ describe("useMarketPrice", () => {
       }),
     );
 
-    expect(result.current.currentPrice).toBe(30);
+    expect(result.current.currentPrice).toBe(3_000);
   });
 
   it("maps numeric currentPrice percentages onto the market divisibility range", () => {
@@ -211,26 +211,26 @@ describe("useMarketPrice", () => {
         marketId: "condition-1-Yes",
         outcomeSetId: "Yes",
         orderBook: {
-          bids: [{ price: 40, amount: 1, total: 1 }],
+          bids: [{ price: 4_000, amount: 1, total: 1 }],
           asks: [],
           spread: 0,
         },
       }),
     );
 
-    expect(result.current.defaultOrderPrice).toBe(65);
+    expect(result.current.defaultOrderPrice).toBe(6_500);
   });
 
   it("does not override the user's manual price edit in a page-style consumer", () => {
     const bookWithoutSpread: OrderBook = {
-      bids: [{ price: 40, amount: 1, total: 1 }],
+      bids: [{ price: 4_000, amount: 1, total: 1 }],
       asks: [],
       spread: 0,
     };
     const bookWithSpread: OrderBook = {
-      bids: [{ price: 40, amount: 1, total: 1 }],
-      asks: [{ price: 70, amount: 1, total: 1 }],
-      spread: 30,
+      bids: [{ price: 4_000, amount: 1, total: 1 }],
+      asks: [{ price: 7_000, amount: 1, total: 1 }],
+      spread: 3_000,
     };
     let manuallyEdited = false;
     let limitPrice = 0;
@@ -249,13 +249,13 @@ describe("useMarketPrice", () => {
       { initialProps: { orderBook: bookWithoutSpread } },
     );
 
-    expect(limitPrice).toBe(60);
+    expect(limitPrice).toBe(6_000);
     manuallyEdited = true;
-    limitPrice = 42;
+    limitPrice = 4_200;
 
     rerender({ orderBook: bookWithSpread });
 
-    expect(result.current.defaultOrderPrice).toBe(55);
-    expect(limitPrice).toBe(42);
+    expect(result.current.defaultOrderPrice).toBe(5_500);
+    expect(limitPrice).toBe(4_200);
   });
 });

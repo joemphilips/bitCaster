@@ -30,7 +30,7 @@ const ACCEPTED_LOCAL_STATE_WARNING =
 
 interface LocalWalletPayButtonProps {
   amountSubunits: number;
-  baseAsset: string;
+  baseAsset: "sat";
   unit: CashuProofUnit;
   disabled?: boolean;
   pending?: boolean;

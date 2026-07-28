@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => {
   };
   return {
     walletState,
+    pending: {} as Record<string, { id: string; mintUrl: string; createdAt: number }>,
     addActivitySpy: vi.fn(),
     markReceivedSpy: vi.fn(),
     encodeToken: vi.fn(
@@ -44,7 +45,7 @@ vi.mock("@/stores/activity-log", () => ({
 
 vi.mock("@/stores/paymentRequestInbox", () => ({
   usePaymentRequestInbox: {
-    getState: () => ({ markReceived: mocks.markReceivedSpy }),
+    getState: () => ({ pending: mocks.pending, markReceived: mocks.markReceivedSpy }),
   },
 }));
 
@@ -69,6 +70,14 @@ import { __handleIncomingDMForTests, __resetProcessedEventsForTests } from "../n
 
 beforeEach(() => {
   mocks.walletState.mints = [];
+  mocks.pending = {
+    "req-1": { id: "req-1", mintUrl: "http://mint.example", createdAt: 1 },
+    "req-2": { id: "req-2", mintUrl: "http://new.mint", createdAt: 1 },
+    "req-sat": { id: "req-sat", mintUrl: "http://mint.example", createdAt: 1 },
+    "req-msat": { id: "req-msat", mintUrl: "http://mint.example", createdAt: 1 },
+    "req-invalid": { id: "req-invalid", mintUrl: "http://mint.example", createdAt: 1 },
+    "req-3": { id: "req-3", mintUrl: "http://mint.example", createdAt: 1 },
+  };
   // Reset all hoisted spies but preserve their identity so the mock is
   // still wired to the listener module's imports.
   mocks.addActivitySpy.mockClear();
@@ -118,7 +127,7 @@ describe("nip17-listener", () => {
     expect(mocks.markReceivedSpy).toHaveBeenCalledWith("req-1", 42_000, "sat");
   });
 
-  it("auto-adds the mint when the payer uses a previously unconfigured one", async () => {
+  it("accepts the exact mint admitted by the outstanding payment request", async () => {
     mocks.walletState.mints = [{ url: "http://other.mint" }];
 
     const payload = {
@@ -137,10 +146,9 @@ describe("nip17-listener", () => {
     expect(mocks.markReceivedSpy).toHaveBeenCalledWith("req-2", 42_000, "sat");
   });
 
-  it.each([
-    ["msat", "sat"],
-    ["usd", "usd"],
-  ] as const)("preserves the %s payload unit through durable ingress", async (unit, baseAsset) => {
+  it("preserves the msat payload unit through durable ingress", async () => {
+    const unit = "msat";
+    const baseAsset = "sat";
     mocks.ingressReceiveCashuToken.mockResolvedValueOnce({
       added: false,
       mintUrl: "http://mint.example",
@@ -203,6 +211,29 @@ describe("nip17-listener", () => {
 
   it("silently ignores JSON without proofs+mint", async () => {
     await __handleIncomingDMForTests(JSON.stringify({ id: "x", message: "hi" }));
+    expect(mocks.ingressReceiveCashuToken).not.toHaveBeenCalled();
+    expect(mocks.markReceivedSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsolicited or wrong-mint DMs before wallet ingress", async () => {
+    await __handleIncomingDMForTests(
+      JSON.stringify({
+        id: "unknown-request",
+        mint: "http://attacker.example",
+        unit: "sat",
+        proofs: [{ secret: "probe", amount: 1, id: "kid", C: "C" }],
+      }),
+    );
+    await __handleIncomingDMForTests(
+      JSON.stringify({
+        id: "req-1",
+        mint: "http://attacker.example",
+        unit: "sat",
+        proofs: [{ secret: "probe-2", amount: 1, id: "kid", C: "C" }],
+      }),
+    );
+
+    expect(mocks.encodeToken).not.toHaveBeenCalled();
     expect(mocks.ingressReceiveCashuToken).not.toHaveBeenCalled();
     expect(mocks.markReceivedSpy).not.toHaveBeenCalled();
   });

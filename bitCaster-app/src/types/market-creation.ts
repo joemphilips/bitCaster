@@ -3,7 +3,7 @@
 // =============================================================================
 
 export type OutcomeType = "yesno" | "categorical" | "numeric";
-export type MarketBaseAsset = "sat" | "usd" | "jpy";
+export type MarketBaseAsset = "sat";
 
 export interface WizardStepGetStarted {
   outcomeType: OutcomeType | null;
@@ -39,7 +39,7 @@ export interface WizardStepOutcomes {
   hiBound?: number;
   precision?: number;
   unit?: string;
-  baseAsset?: MarketBaseAsset;
+  baseAsset: MarketBaseAsset;
 }
 
 // =============================================================================
@@ -177,9 +177,6 @@ export interface MarketCreationWizardProps {
 
   /** Called when user updates numeric unit */
   onUnitChange?: (value: string) => void;
-
-  /** Called when user updates market base asset */
-  onBaseAssetChange?: (value: MarketBaseAsset) => void;
 
   // -------------------------------------------------------------------------
   // Review Callbacks (Step 4)

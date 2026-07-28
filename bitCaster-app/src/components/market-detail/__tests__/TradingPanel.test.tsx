@@ -7,7 +7,7 @@ import { useState } from "react";
 
 function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDetail {
   return {
-    id: "usd-market",
+    id: "sat-market",
     title: "Will it happen?",
     type: "yesno",
     categoryTags: [],
@@ -19,9 +19,9 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
     closingDate: "2030-01-01T00:00:00Z",
     createdDate: "2026-01-01T00:00:00Z",
     activeSince: "2026-01-01T00:00:00Z",
-    baseAsset: "usd",
-    divisibility: 1_000,
-    baseUnit: "USD",
+    baseAsset: "sat",
+    divisibility: 10_000,
+    baseUnit: "sats",
     creator: {
       id: "creator",
       name: "Creator",
@@ -85,15 +85,15 @@ describe("TradingPanel", () => {
       amount: 50,
       predictedOdds: 50,
       priceImpact: 0,
-      averageExecutionPrice: 30,
+      averageExecutionPrice: 3_000,
       executableShares: 25,
       hasExecutableLiquidity: true,
-      quoteSubunits: 150,
+      quoteSubunits: 150_000,
       mintFee: 0,
-      potentialPayout: 500,
+      potentialPayout: 500_000,
       creatorFee: 1,
       engineScoreFeeSats: 0,
-      totalCost: 150,
+      totalCost: 150_000,
     };
 
     render(
@@ -109,13 +109,13 @@ describe("TradingPanel", () => {
     );
 
     expect(screen.getByText("Shares")).toBeInTheDocument();
-    expect(screen.getByText("1 share = $10.00")).toBeInTheDocument();
+    expect(screen.getByText("1 share = 10 sats")).toBeInTheDocument();
     expect(screen.getByText("Price per share")).toBeInTheDocument();
     expect(screen.getByText("Quote payment")).toBeInTheDocument();
     expect(screen.getByText("Est. settlement fee")).toBeInTheDocument();
-    expect(screen.getByTestId("trade-total-cost")).toHaveTextContent("$1.50");
-    expect(screen.getByTestId("trade-settlement-fee")).toHaveTextContent("$0.10");
-    expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("$1.60");
+    expect(screen.getByTestId("trade-total-cost")).toHaveTextContent("150 sats");
+    expect(screen.getByTestId("trade-settlement-fee")).toHaveTextContent("10 sats");
+    expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("160 sats");
     expect(screen.getByRole("button", { name: "Buy YES for 50 shares" })).toBeInTheDocument();
     expect(screen.queryByText("Executable shares")).not.toBeInTheDocument();
     expect(screen.queryByText("Market Creator fee (1%)")).not.toBeInTheDocument();
@@ -148,10 +148,10 @@ describe("TradingPanel", () => {
 
     const button = screen.getByTestId("trade-confirm");
     expect(button).toBeEnabled();
-    expect(button).toHaveTextContent("Top up USD wallet");
+    expect(button).toHaveTextContent("Top up sats wallet");
     expect(button).not.toHaveAttribute("title");
     expect(screen.getByTestId("trade-feasibility-status")).toHaveTextContent("Insufficient funds");
-    expect(screen.queryByRole("button", { name: "Top up USD wallet" })).toBe(button);
+    expect(screen.queryByRole("button", { name: "Top up sats wallet" })).toBe(button);
     expect(screen.queryByText(/VCS/i)).not.toBeInTheDocument();
 
     fireEvent.click(button);
@@ -236,43 +236,43 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getByTestId("trade-total-cost")).toHaveTextContent("$2.50");
+    expect(screen.getByTestId("trade-total-cost")).toHaveTextContent("0.25 sats");
   });
 
   it("formats sat-denominated limit preview as price plus quote payment and estimated settlement fee", () => {
     const preview: LimitOrderPreview = {
-      limitPrice: 30,
+      limitPrice: 3_000,
       amount: 50,
       sharesIfFilled: 50,
-      quoteSubunits: 1_500,
+      quoteSubunits: 150_000,
       creatorFee: 0,
       mintFee: 0,
       engineScoreFeeSats: 0,
-      potentialPayout: 500,
-      totalCost: 1_500,
+      potentialPayout: 500_000,
+      totalCost: 150_000,
     };
 
     render(
       <TradingPanel
-        market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 100 })}
+        market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 10_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={50}
         tradePreview={null}
         tradeSide="Buy"
         orderType="limit"
-        limitPrice={30}
+        limitPrice={3_000}
         limitOrderPreview={preview}
         onTradeConfirm={vi.fn()}
       />,
     );
 
     expect(screen.getByText("Price per share")).toBeInTheDocument();
-    expect(screen.getByText("0.03 sats (30.00%)")).toBeInTheDocument();
+    expect(screen.getByText("3.00 sats (30.00%)")).toBeInTheDocument();
     expect(screen.getByText("Quote payment")).toBeInTheDocument();
     expect(screen.getByText("Est. settlement fee")).toBeInTheDocument();
-    expect(screen.getByTestId("limit-total-cost")).toHaveTextContent("1.5 sats");
+    expect(screen.getByTestId("limit-total-cost")).toHaveTextContent("150 sats");
     expect(screen.getByTestId("limit-settlement-fee")).toHaveTextContent("10 sats");
-    expect(screen.getByTestId("limit-grand-total")).toHaveTextContent("11.5 sats");
+    expect(screen.getByTestId("limit-grand-total")).toHaveTextContent("160 sats");
     expect(screen.queryByText("Shares you receive if order fills")).not.toBeInTheDocument();
     expect(screen.queryByText("Market Creator fee (1%)")).not.toBeInTheDocument();
     expect(screen.queryByText("Mint fee")).not.toBeInTheDocument();
@@ -362,7 +362,7 @@ describe("TradingPanel", () => {
 
     render(
       <TradingPanel
-        market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 100 })}
+        market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 10_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={1}
         tradePreview={null}
@@ -374,7 +374,7 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getByText("1 share = 0.1 sats")).toBeInTheDocument();
+    expect(screen.getByText("1 share = 10 sats")).toBeInTheDocument();
   });
 
   it("does not show fee rows in the simplified limit preview", () => {
@@ -392,7 +392,7 @@ describe("TradingPanel", () => {
 
     render(
       <TradingPanel
-        market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 100 })}
+        market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 10_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={50}
         tradePreview={null}
@@ -430,7 +430,7 @@ describe("TradingPanel", () => {
 
     render(
       <TradingPanel
-        market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 100 })}
+        market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 10_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={50}
         tradePreview={null}
@@ -496,7 +496,7 @@ describe("TradingPanel", () => {
 
     fireEvent.blur(priceInput);
 
-    expect(onLimitPriceChange).toHaveBeenCalledWith(75);
+    expect(onLimitPriceChange).toHaveBeenCalledWith(750);
     expect(priceInput).toHaveValue(0.75);
   });
 
@@ -513,8 +513,8 @@ describe("TradingPanel", () => {
     await user.type(priceInput, "5000");
     fireEvent.blur(priceInput);
 
-    expect(onLimitPriceChange).toHaveBeenCalledWith(999);
-    expect(priceInput).toHaveValue(9.99);
+    expect(onLimitPriceChange).toHaveBeenCalledWith(9_999);
+    expect(priceInput).toHaveValue(9.999);
   });
 
   it("restores the previous valid limit price when the field is empty on blur", async () => {
@@ -533,7 +533,7 @@ describe("TradingPanel", () => {
     fireEvent.blur(priceInput);
 
     expect(onLimitPriceChange).not.toHaveBeenCalled();
-    expect(priceInput).toHaveValue(0.4);
+    expect(priceInput).toHaveValue(0.04);
   });
 
   it("does not overwrite an in-progress limit price edit when live props refresh", async () => {
@@ -624,53 +624,53 @@ describe("TradingPanel", () => {
     expect(amountInput).toHaveValue(null);
   });
 
-  it("respects price ticks for D=100 and D=1000", () => {
+  it("respects price ticks for D=10000 and D=1000000", () => {
     const preview: LimitOrderPreview = {
-      limitPrice: 30,
+      limitPrice: 3_000,
       amount: 1,
       sharesIfFilled: 1,
-      quoteSubunits: 30,
+      quoteSubunits: 3_000,
       creatorFee: 0,
       mintFee: 0,
       engineScoreFeeSats: 0,
-      potentialPayout: 100,
-      totalCost: 30,
+      potentialPayout: 10_000,
+      totalCost: 3_000,
     };
 
     const { rerender } = render(
       <TradingPanel
-        market={makeMarket({ divisibility: 100 })}
+        market={makeMarket({ divisibility: 10_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={1}
         tradePreview={null}
         tradeSide="Buy"
         orderType="limit"
-        limitPrice={30}
+        limitPrice={3_000}
         limitOrderPreview={preview}
       />,
     );
 
-    expect(screen.getByText("$0.30 (30.00%)")).toBeInTheDocument();
+    expect(screen.getByText("3.00 sats (30.00%)")).toBeInTheDocument();
 
     rerender(
       <TradingPanel
-        market={makeMarket({ divisibility: 1_000 })}
+        market={makeMarket({ divisibility: 1_000_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={1}
         tradePreview={null}
         tradeSide="Buy"
         orderType="limit"
-        limitPrice={301}
+        limitPrice={301_000}
         limitOrderPreview={{
           ...preview,
-          limitPrice: 301,
-          quoteSubunits: 301,
-          potentialPayout: 1_000,
-          totalCost: 301,
+          limitPrice: 301_000,
+          quoteSubunits: 301_000,
+          potentialPayout: 1_000_000,
+          totalCost: 301_000,
         }}
       />,
     );
 
-    expect(screen.getByText("$3.01 (30.10%)")).toBeInTheDocument();
+    expect(screen.getByText("301.00 sats (30.10%)")).toBeInTheDocument();
   });
 });

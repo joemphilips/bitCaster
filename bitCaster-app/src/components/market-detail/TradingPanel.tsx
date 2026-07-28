@@ -511,9 +511,8 @@ function LimitPriceInput({
 }
 
 function limitPriceDisplayScale(baseAsset: MarketBaseAsset): number {
-  if (baseAsset === "sat") return 1_000;
-  if (baseAsset === "usd") return 100;
-  return 1;
+  if (baseAsset !== "sat") throw new Error(`unsupported base asset: ${String(baseAsset)}`);
+  return 1_000;
 }
 
 function limitPriceToDisplayAmount(priceSubunits: number, baseAsset: MarketBaseAsset): number {
@@ -528,9 +527,8 @@ function limitPriceDisplayAmountToSubunits(
 }
 
 function limitPriceInputStep(baseAsset: MarketBaseAsset): number {
-  if (baseAsset === "sat") return 0.001;
-  if (baseAsset === "usd") return 0.01;
-  return 1;
+  if (baseAsset !== "sat") throw new Error(`unsupported base asset: ${String(baseAsset)}`);
+  return 0.001;
 }
 
 function formatLimitPriceInputValue(priceSubunits: number, baseAsset: MarketBaseAsset): string {
@@ -542,13 +540,7 @@ function formatLimitPriceAmount(priceSubunits: number, baseAsset: MarketBaseAsse
     Number.isFinite(priceSubunits) ? priceSubunits : 0,
     baseAsset,
   );
-  if (baseAsset === "usd") {
-    return `$${displayAmount.toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}`;
-  }
-  if (baseAsset === "jpy") return `¥${Math.trunc(displayAmount).toLocaleString()}`;
+  if (baseAsset !== "sat") throw new Error(`unsupported base asset: ${String(baseAsset)}`);
   return `${displayAmount.toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 3,
@@ -651,7 +643,7 @@ export function TradingPanel({
   const isLimit = orderType === "limit";
   const baseAsset = normalizeMarketBaseAsset(market.baseAsset);
   const unitLabel = marketUnitLabel(baseAsset);
-  const divisibility = normalizeMarketDivisibility(market.divisibility);
+  const divisibility = normalizeMarketDivisibility(market.divisibility, baseAsset);
   const wholeShareLabel = formatShareFace(baseAsset, divisibility);
   const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset);
   const estimatedSettlementFee = estimatedSettlementFeeSubunits(baseAsset);

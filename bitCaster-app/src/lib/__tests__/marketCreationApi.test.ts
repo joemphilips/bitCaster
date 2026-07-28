@@ -154,7 +154,7 @@ const createMarketParams = {
   ],
   liquiditySats: 10000,
   baseAsset: "sat" as const,
-  divisibility: 100,
+  divisibility: 10_000,
   categoryTags: ["crypto"],
 };
 
@@ -202,6 +202,8 @@ describe("createMarket", () => {
       conditionId: "cond-123",
       marketsCreated: ["cond-123-Yes", "cond-123-No"],
       thumbnailUrl: null,
+      baseAsset: "sat",
+      divisibility: 10_000,
     };
     mockFetchSuccess(body);
     const result = await createMarket("cond-123", createMarketParams);
@@ -210,7 +212,13 @@ describe("createMarket", () => {
   });
 
   it("sends metadata as multipart form data", async () => {
-    mockFetchSuccess({ conditionId: "cond-123", marketsCreated: [], thumbnailUrl: null });
+    mockFetchSuccess({
+      conditionId: "cond-123",
+      marketsCreated: [],
+      thumbnailUrl: null,
+      baseAsset: "sat",
+      divisibility: 10_000,
+    });
     await createMarket("cond-123", createMarketParams);
 
     const call = vi.mocked(globalThis.fetch).mock.calls[0];
@@ -226,7 +234,13 @@ describe("createMarket", () => {
   });
 
   it("binds the NIP-98 token to the request body via SHA-256 payload tag", async () => {
-    mockFetchSuccess({ conditionId: "cond-123", marketsCreated: [], thumbnailUrl: null });
+    mockFetchSuccess({
+      conditionId: "cond-123",
+      marketsCreated: [],
+      thumbnailUrl: null,
+      baseAsset: "sat",
+      divisibility: 10_000,
+    });
     await createMarket("cond-123", createMarketParams);
 
     const call = vi.mocked(globalThis.fetch).mock.calls[0];

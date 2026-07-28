@@ -26,6 +26,7 @@ describe("proof diagnostics", () => {
       label: "test",
       mintUrl: "https://mint.example",
       proofs,
+      unit: "msat",
       wallet,
       extra: { order: "order-1" },
     });

@@ -166,7 +166,7 @@ describe("buildOrderStatusNotifications", () => {
     });
   });
 
-  it("carries the trade baseAsset onto the notification unit", () => {
+  it("carries the sat product unit onto the notification", () => {
     const status = {
       ...orderStatusWithTradeFills("trade-a"),
       status: "Filled",
@@ -174,17 +174,12 @@ describe("buildOrderStatusNotifications", () => {
       remainingAmountSubunits: 0,
     } as OrderStatusResponse;
 
-    const notifications = buildOrderStatusNotifications(
-      status,
-      { ...pendingTrade(), baseAsset: "usd" },
-      0,
-      123,
-    );
+    const notifications = buildOrderStatusNotifications(status, pendingTrade(), 0, 123);
 
     expect(notifications).toHaveLength(1);
     expect(notifications[0]).toMatchObject({
       kind: "Filled",
-      unit: "usd",
+      unit: "sat",
     });
   });
 
@@ -207,19 +202,6 @@ describe("buildOrderStatusNotifications", () => {
       occurredAt: 123,
     });
   });
-
-  it("defaults unit to sat when trade baseAsset is absent", () => {
-    const status = {
-      ...orderStatusWithTradeFills("trade-a"),
-      status: "Filled",
-      filledAmountSubunits: 1000,
-      remainingAmountSubunits: 0,
-    } as OrderStatusResponse;
-
-    const notifications = buildOrderStatusNotifications(status, pendingTrade(), 0, 123);
-
-    expect(notifications[0]).toMatchObject({ unit: "sat" });
-  });
 });
 
 function pendingTrade() {
@@ -227,6 +209,8 @@ function pendingTrade() {
     orderId: "order-1",
     clientOrderId: "client-order-1",
     marketId: "market-1",
+    baseAsset: "sat" as const,
+    divisibility: 10_000 as const,
   };
 }
 

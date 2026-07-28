@@ -14,6 +14,7 @@ function marketClosed(overrides: Partial<Notification> = {}): Notification {
     marketId: MARKET_ID,
     filledAmountSubunits: 0,
     remainingAmountSubunits: 0,
+    unit: "sat",
     occurredAt: Date.now(),
     read: false,
     conditionId: COND,

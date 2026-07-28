@@ -15,7 +15,7 @@ const testMarkets: Market[] = [
     imageUrl: "",
     categoryTags: ["crypto"],
     metaTags: ["trending"],
-    currentOdds: { yes: 60, no: 40 },
+    currentOdds: { yes: 6_000, no: 4_000 },
     volume: 1000,
     liquidity: 500,
     liquiditySubunits: 500,
@@ -26,6 +26,8 @@ const testMarkets: Market[] = [
     activeSince: "2026-01-01T00:00:00Z",
     creatorFeePercent: 2,
     baseMarket: "sats",
+    baseAsset: "sat",
+    divisibility: 10_000,
   },
   {
     id: "test-002",
@@ -36,8 +38,8 @@ const testMarkets: Market[] = [
     categoryTags: ["sports"],
     metaTags: [],
     outcomes: [
-      { id: "lakers", label: "Lakers", odds: 50 },
-      { id: "celtics", label: "Celtics", odds: 50 },
+      { id: "lakers", label: "Lakers", odds: 5_000 },
+      { id: "celtics", label: "Celtics", odds: 5_000 },
     ],
     volume: 500,
     liquidity: 200,
@@ -49,6 +51,8 @@ const testMarkets: Market[] = [
     activeSince: "2026-01-01T00:00:00Z",
     creatorFeePercent: 1.5,
     baseMarket: "sats",
+    baseAsset: "sat",
+    divisibility: 10_000,
   },
 ];
 

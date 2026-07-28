@@ -55,12 +55,8 @@ export interface Notification {
   filledAmountSats?: number;
   /** Legacy persisted field; new notifications use remainingAmountSubunits. */
   remainingAmountSats?: number;
-  /**
-   * Base asset of the order (e.g. 'sat', 'usd'). Used by the notification
-   * bell to format amounts correctly. Absent on old persisted notifications;
-   * defaults to 'sat' at render time.
-   */
-  unit?: MarketBaseAsset;
+  /** Explicit product base asset used to format amount fields. */
+  unit: MarketBaseAsset;
   /** Unix ms. */
   occurredAt: number;
   read: boolean;

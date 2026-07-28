@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => {
     byTradeId: {} as Record<string, unknown>,
   };
   const walletState = {
-    getWallet: vi.fn(),
+    getWalletForUnit: vi.fn(),
   };
   return {
     partialState,
@@ -118,7 +118,7 @@ describe("partial-lock recovery", () => {
         unit: "msat",
       },
     ]);
-    mocks.walletState.getWallet.mockResolvedValue({
+    mocks.walletState.getWalletForUnit.mockResolvedValue({
       receive: vi.fn().mockResolvedValue([
         { id: "keyset-B", amount: 100, secret: "fresh-B", C: "02".padEnd(66, "1") },
         { id: "keyset-C", amount: 100, secret: "fresh-C", C: "03".padEnd(66, "1") },
@@ -180,7 +180,7 @@ describe("partial-lock recovery", () => {
       },
     ]);
     const wallet = { receive: vi.fn() };
-    mocks.walletState.getWallet.mockResolvedValue(wallet);
+    mocks.walletState.getWalletForUnit.mockResolvedValue(wallet);
     const { sweepElapsedPartialLockFailures } = await import("../partialLockRecovery");
 
     await sweepElapsedPartialLockFailures();
@@ -194,7 +194,7 @@ describe("partial-lock recovery", () => {
     const wallet = {
       receive: vi.fn().mockRejectedValue(new Error("Token already spent")),
     };
-    mocks.walletState.getWallet.mockResolvedValue(wallet);
+    mocks.walletState.getWalletForUnit.mockResolvedValue(wallet);
     const { sweepElapsedPartialLockFailures } = await import("../partialLockRecovery");
 
     await sweepElapsedPartialLockFailures();

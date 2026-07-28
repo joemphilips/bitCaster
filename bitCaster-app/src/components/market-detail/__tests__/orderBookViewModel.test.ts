@@ -26,92 +26,93 @@ describe("deriveExecutableOrderBook", () => {
   it("can internally derive executable asks from a raw complement bid book", () => {
     const book = deriveExecutableOrderBook({
       completeness: "direct",
-      divisibility: 100,
+      divisibility: 10_000,
       book: {
-        bids: [{ price: 40, amount: 100, total: 1 }],
-        asks: [{ price: 65, amount: 200, total: 1 }],
+        bids: [{ price: 4_000, amount: 100, total: 1 }],
+        asks: [{ price: 6_500, amount: 200, total: 1 }],
         spread: 0,
       },
       complementBook: {
-        bids: [{ price: 30, amount: 300, total: 1 }],
-        asks: [{ price: 75, amount: 400, total: 1 }],
+        bids: [{ price: 3_000, amount: 300, total: 1 }],
+        asks: [{ price: 7_500, amount: 400, total: 1 }],
         spread: 0,
       },
     });
 
     expect(book).toEqual({
-      bids: [{ price: 40, amount: 100, total: 100 }],
+      bids: [{ price: 4_000, amount: 100, total: 100 }],
       asks: [
-        { price: 65, amount: 200, total: 200 },
-        { price: 70, amount: 300, total: 500 },
+        { price: 6_500, amount: 200, total: 200 },
+        { price: 7_000, amount: 300, total: 500 },
       ],
-      spread: 25,
+      spread: 2_500,
     });
   });
 
   it("uses the default D=10000 denominator for complement bids", () => {
     const book = deriveExecutableOrderBook({
       completeness: "direct",
+      divisibility: 10_000,
       book: {
-        bids: [{ price: 400, amount: 100, total: 1 }],
+        bids: [{ price: 4_000, amount: 100, total: 1 }],
         asks: [],
         spread: 0,
       },
       complementBook: {
-        bids: [{ price: 300, amount: 300, total: 1 }],
+        bids: [{ price: 3_000, amount: 300, total: 1 }],
         asks: [],
         spread: 0,
       },
     });
 
-    expect(book.asks).toEqual([{ price: 9700, amount: 300, total: 300 }]);
+    expect(book.asks).toEqual([{ price: 7_000, amount: 300, total: 300 }]);
   });
 
   it("does not duplicate complement levels when the incoming book is already executable", () => {
     const book = deriveExecutableOrderBook({
       completeness: "executable",
-      divisibility: 100,
+      divisibility: 10_000,
       book: {
-        bids: [{ price: 40, amount: 100, total: 1 }],
-        asks: [{ price: 70, amount: 300, total: 1 }],
+        bids: [{ price: 4_000, amount: 100, total: 1 }],
+        asks: [{ price: 7_000, amount: 300, total: 1 }],
         spread: 0,
       },
       complementBook: {
-        bids: [{ price: 30, amount: 300, total: 1 }],
+        bids: [{ price: 3_000, amount: 300, total: 1 }],
         asks: [],
         spread: 0,
       },
     });
 
     expect(book).toEqual({
-      bids: [{ price: 40, amount: 100, total: 100 }],
-      asks: [{ price: 70, amount: 300, total: 300 }],
-      spread: 30,
+      bids: [{ price: 4_000, amount: 100, total: 100 }],
+      asks: [{ price: 7_000, amount: 300, total: 300 }],
+      spread: 3_000,
     });
   });
 
   it("uses server depthLimit to merge then truncate stable top-N rows", () => {
     const book = deriveExecutableOrderBook({
       completeness: "direct",
-      divisibility: 100,
+      divisibility: 10_000,
       book: {
         depthLimit: 2,
         bids: [
-          { price: 40, amount: 100, total: 1 },
-          { price: 45, amount: 200, total: 1 },
-          { price: 45, amount: 300, total: 1 },
-          { price: 30, amount: 400, total: 1 },
+          { price: 4_000, amount: 100, total: 1 },
+          { price: 4_500, amount: 200, total: 1 },
+          { price: 4_500, amount: 300, total: 1 },
+          { price: 3_000, amount: 400, total: 1 },
         ],
         asks: [
-          { price: 65, amount: 100, total: 1 },
-          { price: 80, amount: 100, total: 1 },
+          { price: 6_500, amount: 100, total: 1 },
+          { price: 8_000, amount: 100, total: 1 },
         ],
         spread: 0,
       },
       complementBook: {
         bids: [
-          { price: 35, amount: 250, total: 1 },
-          { price: 10, amount: 500, total: 1 },
+          { price: 3_500, amount: 250, total: 1 },
+          { price: 1_000, amount: 500, total: 1 },
         ],
         asks: [],
         spread: 0,
@@ -120,13 +121,13 @@ describe("deriveExecutableOrderBook", () => {
 
     expect(book.depthLimit).toBe(2);
     expect(book.bids).toEqual([
-      { price: 45, amount: 500, total: 500 },
-      { price: 40, amount: 100, total: 600 },
+      { price: 4_500, amount: 500, total: 500 },
+      { price: 4_000, amount: 100, total: 600 },
     ]);
     expect(book.asks).toEqual([
-      { price: 65, amount: 350, total: 350 },
-      { price: 80, amount: 100, total: 450 },
+      { price: 6_500, amount: 350, total: 350 },
+      { price: 8_000, amount: 100, total: 450 },
     ]);
-    expect(book.spread).toBe(20);
+    expect(book.spread).toBe(2_000);
   });
 });

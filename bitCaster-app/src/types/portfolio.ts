@@ -41,8 +41,8 @@ export interface UserProfile {
 export interface PortfolioStats {
   positionsValueSats: number;
   totalValueSats: number;
-  positionsValueByUnit?: Array<{ unit: "sat" | "usd" | "jpy"; amount: number }>;
-  totalValueByUnit?: Array<{ unit: "sat" | "usd" | "jpy"; amount: number }>;
+  positionsValueByUnit?: Array<{ unit: "sat"; amount: number }>;
+  totalValueByUnit?: Array<{ unit: "sat"; amount: number }>;
   biggestWinSats: number;
   predictionsCount: number;
 }
@@ -64,8 +64,8 @@ export interface Position {
   outcomeLabel?: string;
   canClaimPayout?: boolean;
   canDiscard?: boolean;
-  baseAsset?: "sat" | "usd" | "jpy";
-  divisibility?: number;
+  baseAsset: "sat";
+  divisibility: import("./market").ProductMarketDivisibility;
   shares: number;
   avgBuyPrice: number;
   currentPrice: number;
@@ -112,7 +112,7 @@ export interface Position {
 
 export interface Fund {
   id: string;
-  unit: "sats" | "usd" | "jpy";
+  unit: "sats";
   amount: number;
   mintUrl: string;
 }
@@ -134,7 +134,7 @@ export interface ActivityItem {
   id: string;
   type: ActivityType;
   amountSats: number;
-  baseAsset?: "sat" | "usd" | "jpy";
+  baseAsset: "sat";
   date: string;
   status: ActivityStatus;
   txId: string | null;
@@ -157,8 +157,8 @@ export interface CreatedMarket {
   imageUrl: string;
   status: CreatedMarketStatus;
   createdDate: string;
-  baseAsset?: "sat" | "usd" | "jpy";
-  divisibility?: number;
+  baseAsset: "sat";
+  divisibility: import("./market").ProductMarketDivisibility;
   resolvedDate?: string;
   refundedDate?: string;
   volume: number;

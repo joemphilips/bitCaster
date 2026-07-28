@@ -64,20 +64,10 @@ describe("OutcomesStep auto-normalize — add/remove", () => {
 
 describe("OutcomesStep market unit controls", () => {
   it("does not render a divisibility selector or denominator guidance", () => {
-    render(
-      <OutcomesStep outcomeType="categorical" outcomes={makeOutcomes([50, 50])} baseAsset="sat" />,
-    );
+    render(<OutcomesStep outcomeType="categorical" outcomes={makeOutcomes([50, 50])} />);
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.queryByText(/divisibility/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/price moves/i)).not.toBeInTheDocument();
-  });
-
-  it("still renders the base asset selector", () => {
-    render(<OutcomesStep outcomeType="categorical" outcomes={makeOutcomes([50, 50])} />);
-
-    expect(screen.getByRole("button", { name: /sats/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /usd/i })).toBeInTheDocument();
-    expect(screen.queryByTestId("divisibility-unsupported-message")).not.toBeInTheDocument();
   });
 });
 

@@ -144,6 +144,7 @@ beforeEach(() => {
     conditionId: "test-cond-id",
     marketsCreated: ["test-cond-id-Yes", "test-cond-id-No"],
     thumbnailUrl: null,
+    divisibility: 10_000,
   });
   mockCreateEnumAnnouncement.mockResolvedValue("announcement-hex");
   mockEnsureKormirNsec.mockResolvedValue(undefined);
@@ -159,7 +160,6 @@ beforeEach(() => {
             default_keyset_creation: "one-vs-rest",
             registration_fees: [
               { unit: "msat", registration_fee_base: 0, registration_fee_per_keyset: 0 },
-              { unit: "usd", registration_fee_base: 0, registration_fee_per_keyset: 0 },
             ],
           },
         },
@@ -302,7 +302,12 @@ describe("useMarketCreationState – onCreateMarket", () => {
     });
     mockCreateMarket.mockImplementation(async () => {
       callOrder.push("createMarket");
-      return { conditionId: "test-cond-id", marketsCreated: [], thumbnailUrl: null };
+      return {
+        conditionId: "test-cond-id",
+        marketsCreated: [],
+        thumbnailUrl: null,
+        divisibility: 10_000,
+      };
     });
 
     await act(async () => {
@@ -346,89 +351,6 @@ describe("useMarketCreationState – onCreateMarket", () => {
         }),
       }),
     );
-  });
-
-  it("passes selected base asset collateral unit to mintd registration and omits request divisibility", async () => {
-    const result = await setupDraftForSubmission();
-
-    await act(async () => {
-      result.current.onBaseAssetChange("usd");
-    });
-    await act(async () => {
-      await result.current.onCreateMarket();
-    });
-
-    expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
-      expect.objectContaining({
-        request: expect.objectContaining({
-          collateral: "usd",
-        }),
-      }),
-    );
-    expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
-      baseAsset: "usd",
-      liquiditySats: 0,
-    });
-    expect(mockCreateMarket.mock.calls[0][1]).not.toHaveProperty("divisibility");
-    expect(result.current.createdMarketBaseAsset).toBe("usd");
-  });
-
-  it("uses regular USD balance for a USD market registration fee top-up", async () => {
-    mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
-      { unit: "msat", registration_fee_base: 0, registration_fee_per_keyset: 0 },
-      { unit: "usd", registration_fee_base: 10, registration_fee_per_keyset: 2 },
-    ];
-    mockGetAvailableRegularBalanceSubunits.mockResolvedValueOnce(3).mockResolvedValueOnce(1000);
-    const result = await setupDraftForSubmission();
-
-    await act(async () => {
-      result.current.onBaseAssetChange("usd");
-    });
-    await act(async () => {
-      await result.current.onCreateMarket();
-    });
-
-    expect(mockGetAvailableRegularBalanceSubunits).toHaveBeenLastCalledWith(
-      "https://mint.example.test",
-      "usd",
-    );
-    expect(result.current.registrationFeeTopUpStage).toBe("modal");
-    expect(result.current.registrationFeeTopUp).toEqual({
-      feeSubunits: 14,
-      balanceSubunits: 3,
-      baseAsset: "usd",
-    });
-
-    await act(async () => {
-      await result.current.onRegistrationFeeTopUpSuccess();
-    });
-
-    expect(mockGetAvailableRegularBalanceSubunits).toHaveBeenLastCalledWith(
-      "https://mint.example.test",
-      "usd",
-    );
-    expect(result.current.registrationFeeTopUpStage).toBe("closed");
-    expect(result.current.registrationFeePrompt).toEqual({
-      feeSubunits: 14,
-      balanceSubunits: 1000,
-      baseAsset: "usd",
-    });
-
-    await act(async () => {
-      await result.current.onConfirmRegistrationFee();
-    });
-
-    expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requiredFeeSubunits: 14,
-        request: expect.objectContaining({
-          collateral: "usd",
-        }),
-      }),
-    );
-    expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
-      baseAsset: "usd",
-    });
   });
 
   it("refreshes the active mint before rejecting missing CTF metadata", async () => {

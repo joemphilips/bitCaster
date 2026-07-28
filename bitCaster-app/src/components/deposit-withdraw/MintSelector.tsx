@@ -5,28 +5,17 @@ import { AddMintForm } from "@/components/shared/AddMintForm";
 import { normalizeUrl } from "@/lib/url";
 import { userAddAndSelectMint } from "@/lib/walletOps";
 import { formatAmount } from "@/lib/formatAmount";
-import type { MarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 
 interface MintSelectorProps {
   mints: MintInfo[];
   selectedMintId: string;
-  selectedUnit?: MarketBaseAsset;
   onMintChange?: (mintId: string) => void;
 }
 
-export function MintSelector({
-  mints,
-  selectedMintId,
-  selectedUnit = "sat",
-  onMintChange,
-}: MintSelectorProps) {
+export function MintSelector({ mints, selectedMintId, onMintChange }: MintSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const selected = mints.find((m) => m.id === selectedMintId) ?? mints[0];
   if (!selected) return null;
-  // Falling back to `balanceSats` is only correct for the sat unit — a mint
-  // with no balance entry for a fiat unit holds 0 of it, not its sat balance.
-  const balanceFor = (mint: MintInfo): number =>
-    mint.balancesByUnit?.[selectedUnit] ?? (selectedUnit === "sat" ? mint.balanceSats : 0);
 
   /**
    * Add-mint completion (P5.2). The shared form invokes the wallet-store
@@ -58,7 +47,7 @@ export function MintSelector({
         <div className="flex-1 text-left">
           <div className="text-sm font-semibold text-white">{selected.name}</div>
           <div className="text-xs text-slate-400 font-mono">
-            {formatAmount(balanceFor(selected), selectedUnit)} available
+            {formatAmount(selected.balanceSats, "sat")} available
           </div>
         </div>
 
@@ -110,7 +99,7 @@ export function MintSelector({
                   <div className="flex-1 text-left">
                     <div className="text-sm font-semibold text-white">{mint.name}</div>
                     <div className="text-xs text-slate-400 font-mono">
-                      {formatAmount(balanceFor(mint), selectedUnit)} available
+                      {formatAmount(mint.balanceSats, "sat")} available
                     </div>
                   </div>
 

@@ -23,6 +23,7 @@
 import { create } from "zustand";
 import type { Proof } from "@cashu/cashu-ts";
 import type { AdaptorPoint } from "@/lib/adaptor";
+import type { ProductMarketDivisibility } from "@/types/market";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -95,8 +96,8 @@ export interface ActiveSwap {
   outcomeFaceAmountSubunits: number | null;
   /** Regular sats the buyer locks. */
   quotePaymentSats: number | null;
-  baseAsset: string | null;
-  divisibility: number | null;
+  baseAsset: "sat";
+  divisibility: ProductMarketDivisibility;
   side?: "Buy" | "Sell";
   tokenSide?: "Outcome" | "Complement";
   priceSubunits?: number | null;
@@ -124,8 +125,8 @@ interface ActiveSwapsState {
     marketId: string;
     ephemeralPrivkeyHex: string;
     ephemeralPubkeyHex: string;
-    baseAsset?: string | null;
-    divisibility?: number | null;
+    baseAsset: "sat";
+    divisibility: ProductMarketDivisibility;
     side?: "Buy" | "Sell";
     tokenSide?: "Outcome" | "Complement";
     priceSubunits?: number | null;
@@ -140,8 +141,8 @@ interface ActiveSwapsState {
       outcomeFaceAmountSats?: number;
       outcomeFaceAmountSubunits?: number;
       quotePaymentSats?: number;
-      baseAsset?: string | null;
-      divisibility?: number | null;
+      baseAsset: "sat";
+      divisibility: ProductMarketDivisibility;
       quotePaymentSubunits?: number | null;
       settlementKind?: string | null;
       sellerKeepOutcomeSetId?: string | null;
@@ -199,8 +200,8 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
         outcomeFaceAmountSats: null,
         outcomeFaceAmountSubunits: null,
         quotePaymentSats: null,
-        baseAsset: baseAsset ?? null,
-        divisibility: divisibility ?? null,
+        baseAsset,
+        divisibility,
         side,
         tokenSide,
         priceSubunits: priceSubunits ?? null,

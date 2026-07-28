@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { ProductMarketDivisibility } from "@/types/market";
 
 /**
  * TTL for persisted entries. A pending trade older than this is assumed to be
@@ -18,8 +19,8 @@ export interface PendingTrade {
   /** Unix ms when the order was submitted — useful for TTL/expiry handling. */
   submittedAt: number;
   /** Market base asset and denominator captured from the accepted order. */
-  baseAsset?: string | null;
-  divisibility?: number | null;
+  baseAsset: "sat";
+  divisibility: ProductMarketDivisibility;
   side?: "Buy" | "Sell";
   tokenSide?: "Outcome" | "Complement";
   priceSubunits?: number | null;

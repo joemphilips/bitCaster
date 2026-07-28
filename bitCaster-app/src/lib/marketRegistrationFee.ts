@@ -17,8 +17,8 @@ import {
 } from "@bitcaster/client-sdk/ctfRegistration";
 import { deserializeOutputGroups, serializeOutputDataArray } from "@bitcaster/client-sdk/ctfSplit";
 import {
+  COLLATERAL_UNIT_REGISTRY,
   defaultCollateralUnit,
-  normalizeMarketBaseAsset,
   parseCashuProofUnit,
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
@@ -255,7 +255,7 @@ async function completeRegistrationFeeOperation(
       changeProofs.map((proof) => ({
         ...proof,
         mintUrl,
-        baseAsset: normalizeMarketBaseAsset(proofUnit),
+        baseAsset: COLLATERAL_UNIT_REGISTRY[proofUnit].baseAsset,
         unit: proofUnit,
       })),
     );

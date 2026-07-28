@@ -9,6 +9,7 @@ function makeNotification(id: string, overrides: Partial<Notification> = {}): No
     marketId: "cond-Alice",
     filledAmountSubunits: 100,
     remainingAmountSubunits: 0,
+    unit: "sat",
     occurredAt: 1_700_000_000_000,
     read: false,
     ...overrides,

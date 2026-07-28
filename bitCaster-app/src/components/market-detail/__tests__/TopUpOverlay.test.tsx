@@ -112,44 +112,24 @@ describe("TopUpOverlay", () => {
     expect(screen.getByTestId("top-up-continue")).toBeEnabled();
   });
 
-  it("shows USD top-up inputs in dollars while requesting cent subunits", async () => {
-    const user = userEvent.setup();
-
-    render(<TopUpOverlay deficit={1_500} baseAsset="usd" onCancel={vi.fn()} onSuccess={vi.fn()} />);
-
-    expect(screen.getByText(/Minimum \$15\.00 to cover the trade/)).toBeInTheDocument();
-    expect(screen.getByText("Amount (USD)")).toBeInTheDocument();
-    expect(screen.getByTestId("top-up-amount-input")).toHaveValue(18);
-
-    await user.clear(screen.getByTestId("top-up-amount-input"));
-    await user.type(screen.getByTestId("top-up-amount-input"), "150");
-    await user.click(screen.getByTestId("top-up-continue"));
-
-    await waitFor(() => {
-      expect(createMintQuote).toHaveBeenCalledWith(15_000, "https://mint.example", "usd");
-    });
-    expect(await screen.findByTestId("bolt11-display")).toBeInTheDocument();
-    expect(screen.getByText("$150.00")).toBeInTheDocument();
-  });
-
   it("shows the full registration fee separately from the top-up deficit", () => {
     render(
       <TopUpOverlay
         deficit={1_500}
         balanceSubunits={1_000}
         feeSubunits={2_500}
-        baseAsset="usd"
+        baseAsset="sat"
         onCancel={vi.fn()}
         onSuccess={vi.fn()}
       />,
     );
 
     expect(screen.getByText("Registration fee")).toBeInTheDocument();
-    expect(screen.getByText("$25.00")).toBeInTheDocument();
+    expect(screen.getByText("2.5 sats")).toBeInTheDocument();
     expect(screen.getByText("Your balance")).toBeInTheDocument();
-    expect(screen.getByText("$10.00")).toBeInTheDocument();
+    expect(screen.getByText("1 sats")).toBeInTheDocument();
     expect(screen.getByText("Top-up needed")).toBeInTheDocument();
-    expect(screen.getByText("$15.00")).toBeInTheDocument();
+    expect(screen.getByText("1.5 sats")).toBeInTheDocument();
   });
 
   it("adds the unit-aware top-up buffer and converts sat-market subunits to sats for the invoice", async () => {
@@ -215,13 +195,5 @@ describe("TopUpOverlay", () => {
     await waitFor(() => {
       expect(onSuccess).toHaveBeenCalledTimes(1);
     });
-  });
-
-  it("fails fast for unsupported top-up base assets", () => {
-    expect(() =>
-      render(
-        <TopUpOverlay deficit={1_500} baseAsset="jpy" onCancel={vi.fn()} onSuccess={vi.fn()} />,
-      ),
-    ).toThrow(/unsupported base asset: jpy/);
   });
 });

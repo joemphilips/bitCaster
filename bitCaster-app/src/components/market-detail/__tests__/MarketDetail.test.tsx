@@ -35,7 +35,7 @@ function makeMarket(overrides: Partial<MarketDetailType> = {}): MarketDetailType
     activeSince: "2026-01-01T00:00:00Z",
     state: "open",
     baseAsset: "sat",
-    divisibility: 1_000,
+    divisibility: 10_000,
     baseUnit: "sats",
     creator: {
       id: "creator",
@@ -110,7 +110,7 @@ describe("MarketDetail", () => {
     render(
       <MarketDetail
         market={makeMarket({
-          divisibility: 1000,
+          divisibility: 10_000,
           outcomeOrderBooks: {
             Yes: {
               bids: [],

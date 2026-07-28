@@ -15,8 +15,10 @@ import { db, getUnitProofs, isCtfProof, type StoredProof } from "./proof-db";
 import type { MintConnectionTestStatus } from "@/types/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
+  cashuAmountToMarketSubunits,
   defaultCollateralUnit,
   normalizeMarketBaseAsset,
+  parseCashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import type { SecretBackupState } from "@/types/settings";
@@ -71,10 +73,7 @@ interface WalletState {
   _removeMint: (url: string) => void;
   _setActiveMint: (url: string) => void;
   completeSetup: () => Promise<void>;
-  getWallet: (
-    mintUrl?: string,
-    baseAsset?: MarketBaseAsset | string | null,
-  ) => Promise<CashuWallet>;
+  getWallet: (mintUrl: string | undefined, baseAsset: MarketBaseAsset) => Promise<CashuWallet>;
   getWalletForUnit: (mintUrl: string | undefined, unit: string) => Promise<CashuWallet>;
 }
 
@@ -84,7 +83,7 @@ export const DEFAULT_MINT_URL = normalizeUrl(
 
 let _walletCache: Map<string, CashuWallet> = new Map();
 
-function walletCacheKey(mintUrl: string, baseAsset?: MarketBaseAsset | string | null): string {
+function walletCacheKey(mintUrl: string, baseAsset: MarketBaseAsset): string {
   return `${mintUrl}::${defaultCollateralUnit(baseAsset)}`;
 }
 
@@ -328,8 +327,8 @@ export const useWalletStore = create<WalletState>()(
       },
 
       getWallet: async (
-        mintUrl?: string,
-        baseAsset?: MarketBaseAsset | string | null,
+        mintUrl: string | undefined,
+        baseAsset: MarketBaseAsset,
       ): Promise<CashuWallet> => {
         const url = normalizeUrl(mintUrl ?? get().activeMintUrl);
         const cacheKey = walletCacheKey(url, baseAsset);
@@ -385,7 +384,10 @@ export function useBalance(
         : await db.proofs.toArray();
       return proofs
         .filter((p) => !isCtfProof(p) && normalizeMarketBaseAsset(p.baseAsset) === baseAsset)
-        .reduce((sum, p) => sum + amountToNumber(p.amount), 0);
+        .reduce((sum, p) => {
+          const unit = parseCashuProofUnit(p.unit);
+          return unit ? sum + cashuAmountToMarketSubunits(amountToNumber(p.amount), unit) : sum;
+        }, 0);
     },
     [normalized, baseAsset],
     0,

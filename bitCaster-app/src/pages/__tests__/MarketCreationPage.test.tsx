@@ -1,11 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { MarketCreationPage } from "../MarketCreationPage";
-
-const mocks = vi.hoisted(() => ({
-  onBaseAssetChange: vi.fn(),
-}));
 
 vi.mock("@/hooks/useMarketCreationState", () => ({
   useMarketCreationState: () => ({
@@ -54,7 +49,6 @@ vi.mock("@/hooks/useMarketCreationState", () => ({
     onHiBoundChange: vi.fn(),
     onPrecisionChange: vi.fn(),
     onUnitChange: vi.fn(),
-    onBaseAssetChange: mocks.onBaseAssetChange,
     onDescriptionChange: vi.fn(),
     onCreateMarket: vi.fn(),
     onConfirmRegistrationFee: vi.fn(),
@@ -69,23 +63,12 @@ vi.mock("@/hooks/useMarketCreationState", () => ({
 }));
 
 vi.mock("@/components/market-creation", () => ({
-  MarketCreationWizard: (props: { onBaseAssetChange?: (value: "sat" | "usd" | "jpy") => void }) => (
-    <div>
-      <button type="button" onClick={() => props.onBaseAssetChange?.("usd")}>
-        choose USD
-      </button>
-    </div>
-  ),
+  MarketCreationWizard: () => <div>creation wizard</div>,
 }));
 
 describe("MarketCreationPage", () => {
-  it("passes base asset callback through to the creation wizard", async () => {
-    const user = userEvent.setup();
-
+  it("renders the sat-only creation wizard", () => {
     render(<MarketCreationPage />);
-
-    await user.click(screen.getByRole("button", { name: /choose usd/i }));
-
-    expect(mocks.onBaseAssetChange).toHaveBeenCalledWith("usd");
+    expect(screen.getByText("creation wizard")).toBeInTheDocument();
   });
 });

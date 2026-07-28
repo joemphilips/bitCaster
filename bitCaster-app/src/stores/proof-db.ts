@@ -7,6 +7,7 @@ import {
   parseCashuProofUnit,
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
+import type { CtfProofOperationCompletion } from "@bitcaster/client-sdk/ctfSplit";
 import { normalizeUrl } from "../lib/url";
 
 export interface StoredProof extends Proof {
@@ -60,6 +61,7 @@ export interface ProofOperationRecord {
   outputs: Record<string, StoredOutputData[]>;
   metadata: Record<string, unknown> & { unit?: CashuProofUnit };
   resultProofs?: Record<string, Proof[]>;
+  resultProofsDigest?: string;
   lastError?: string | null;
   /** Structured mint error code for failed operations, when available. */
   failureCode?: number | undefined;
@@ -137,8 +139,8 @@ export async function getProofs(
  * and is unsafe for spend/settlement operations. Use `getUnitProofs` there.
  */
 export async function getBaseProofs(
-  mintUrl?: string,
-  options: { includeReserved?: boolean; baseAsset?: string | null } = {},
+  mintUrl: string | undefined,
+  options: { includeReserved?: boolean; baseAsset: string },
 ): Promise<StoredProof[]> {
   const proofs = await getProofs(mintUrl, {
     includeReserved: options.includeReserved,
@@ -220,7 +222,7 @@ export async function getOutcomeProofs(
   mintUrl: string,
   conditionId: string,
   outcomeCollection: string,
-  options: { includeReserved?: boolean; baseAsset?: string | null } = {},
+  options: { includeReserved?: boolean; baseAsset: string },
 ): Promise<StoredProof[]> {
   const normalizedMintUrl = normalizeUrl(mintUrl);
   const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
@@ -231,7 +233,11 @@ export async function getOutcomeProofs(
   if (indexed.length > 0) {
     const normalized = indexed
       .map(normalizeStoredProof)
-      .filter((proof) => normalizeStoredProofBaseAsset(proof) === baseAsset);
+      .filter(
+        (proof) =>
+          normalizeStoredProofBaseAsset(proof) === baseAsset &&
+          normalizeStoredProofUnit(proof) === "msat",
+      );
     return options.includeReserved ? normalized : normalized.filter((proof) => !proof.reservedBy);
   }
 
@@ -246,7 +252,8 @@ export async function getOutcomeProofs(
     return (
       proofConditionId === conditionId &&
       proofOutcome === outcomeCollection &&
-      normalizeStoredProofBaseAsset(p) === baseAsset
+      normalizeStoredProofBaseAsset(p) === baseAsset &&
+      normalizeStoredProofUnit(p) === "msat"
     );
   });
 }
@@ -266,7 +273,7 @@ export async function getOutcomeProofs(
 export async function getConditionCtfProofs(
   mintUrl: string,
   conditionId: string,
-  options: { includeReserved?: boolean; baseAsset?: string | null } = {},
+  options: { includeReserved?: boolean; baseAsset: string },
 ): Promise<StoredProof[]> {
   const proofs = await getProofs(mintUrl, options);
   const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
@@ -274,7 +281,11 @@ export async function getConditionCtfProofs(
     if (!isCtfProof(p)) return false;
     const candidate = p as StoredProof & { condition_id?: string };
     const proofConditionId = candidate.conditionId ?? candidate.condition_id;
-    return proofConditionId === conditionId && normalizeStoredProofBaseAsset(p) === baseAsset;
+    return (
+      proofConditionId === conditionId &&
+      normalizeStoredProofBaseAsset(p) === baseAsset &&
+      normalizeStoredProofUnit(p) === "msat"
+    );
   });
 }
 
@@ -393,7 +404,7 @@ export function normalizeStoredProofUnit(proof: StoredProof): CashuProofUnit | u
 }
 
 function validateStoredProofUnitInvariant(proof: StoredProof): StoredProof {
-  if (!proof.unit) return proof;
+  if (!proof.unit) throw new Error("Stored proof unit is required");
   const unit = parseCashuProofUnit(proof.unit);
   if (!unit) throw new Error(`Unsupported Cashu proof unit '${proof.unit}'`);
   const unitInfo = COLLATERAL_UNIT_REGISTRY[unit];
@@ -404,6 +415,9 @@ function validateStoredProofUnitInvariant(proof: StoredProof): StoredProof {
     throw new Error(
       `Stored proof unit '${proof.unit}' is not compatible with base asset '${proof.baseAsset}'`,
     );
+  }
+  if (isCtfProof(proof) && unit !== "msat") {
+    throw new Error("CTF proofs require exact Cashu unit 'msat'");
   }
   return proof;
 }
@@ -460,6 +474,7 @@ export async function prepareProofOperation(
     outputs: structuredClone(input.outputs),
     metadata: structuredClone(input.metadata ?? {}),
     resultProofs: undefined,
+    resultProofsDigest: undefined,
     lastError: null,
     failureCode: undefined,
     createdAt: now,
@@ -471,19 +486,54 @@ export async function prepareProofOperation(
 
 export async function markProofOperationCompleted(
   operationId: string,
-  resultProofs: Record<string, Proof[]>,
+  completion: Record<string, Proof[]> | CtfProofOperationCompletion,
 ): Promise<ProofOperationRecord> {
   const existing = await getRequiredProofOperation(operationId);
+  const ctfCompletion = isCtfProofOperationCompletion(completion);
+  if (isSdkCtfProofOperationKind(existing.kind) && !ctfCompletion) {
+    throw new Error(`Proof operation ${operationId} requires an SDK completion`);
+  }
+  if (ctfCompletion && completion.kind !== existing.kind) {
+    throw new Error(
+      `Proof operation ${operationId} kind ${existing.kind} does not match completion ${completion.kind}`,
+    );
+  }
+  const resultProofs = ctfCompletion ? completion.resultProofs : completion;
   const updated: ProofOperationRecord = {
     ...existing,
     state: "completed",
     resultProofs: structuredClone(resultProofs),
+    resultProofsDigest:
+      ctfCompletion && "resultProofsDigest" in completion
+        ? completion.resultProofsDigest
+        : undefined,
     lastError: null,
     failureCode: undefined,
     updatedAt: Date.now(),
   };
   await db.proofOperations.put(updated);
   return updated;
+}
+
+function isCtfProofOperationCompletion(
+  value: Record<string, Proof[]> | CtfProofOperationCompletion,
+): value is CtfProofOperationCompletion {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    typeof value.kind === "string" &&
+    "resultProofs" in value
+  );
+}
+
+function isSdkCtfProofOperationKind(kind: ProofOperationKind): boolean {
+  return (
+    kind === "ctf-split" ||
+    kind === "ctf-merge" ||
+    kind === "ctf-redeem" ||
+    kind === "regular-split"
+  );
 }
 
 export async function markProofOperationFailed(

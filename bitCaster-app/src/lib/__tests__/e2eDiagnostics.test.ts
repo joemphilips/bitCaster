@@ -16,6 +16,8 @@ describe("e2e diagnostics", () => {
       clientOrderId: "client-order-1",
       marketId: "cond-A",
       submittedAt: 1_700_000_000_000,
+      baseAsset: "sat",
+      divisibility: 10_000,
     });
     useActiveSwapsStore.getState().promote({
       tradeId: "trade-1",
@@ -23,6 +25,8 @@ describe("e2e diagnostics", () => {
       marketId: "cond-A",
       ephemeralPrivkeyHex: "33".repeat(32),
       ephemeralPubkeyHex: "02" + "44".repeat(32),
+      baseAsset: "sat",
+      divisibility: 10_000,
     });
     useActiveSwapsStore.getState().recordMessage("trade-1", "lockedProofsBuyer", "ciphertext");
     useActiveSwapsStore.getState().setStep("trade-1", "completed");
@@ -45,6 +49,8 @@ describe("e2e diagnostics", () => {
       clientOrderId: "client-order-1",
       marketId: "cond-A",
       submittedAt: 1_700_000_000_000,
+      baseAsset: "sat",
+      divisibility: 10_000,
     });
     expect(serialized).not.toContain("33".repeat(32));
     expect(serialized).not.toContain("ciphertext");
@@ -58,8 +64,8 @@ describe("e2e diagnostics", () => {
       marketId: "cond-Yes",
       ephemeralPrivkeyHex: "55".repeat(32),
       ephemeralPubkeyHex: "02" + "66".repeat(32),
-      baseAsset: "usd",
-      divisibility: 1000,
+      baseAsset: "sat",
+      divisibility: 10_000,
     });
     useActiveSwapsStore.getState().setRoleAndCounterparty(
       "trade-removed",
@@ -67,8 +73,8 @@ describe("e2e diagnostics", () => {
       "77".repeat(32),
       { sellerLocktime: 1, buyerLocktime: 2 },
       {
-        baseAsset: "usd",
-        divisibility: 1000,
+        baseAsset: "sat",
+        divisibility: 10_000,
         outcomeFaceAmountSubunits: 1000,
         quotePaymentSubunits: 999,
       },
@@ -82,8 +88,8 @@ describe("e2e diagnostics", () => {
     expect(snapshot.activeTrade).toMatchObject({
       tradeId: "trade-removed",
       step: "completed",
-      baseAsset: "usd",
-      divisibility: 1000,
+      baseAsset: "sat",
+      divisibility: 10_000,
       outcomeFaceAmountSubunits: 1000,
       quotePaymentSubunits: 999,
     });

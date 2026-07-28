@@ -28,6 +28,7 @@ function activity(overrides: Partial<ActivityItem> = {}): ActivityItem {
     id: "activity-1",
     type: "deposit",
     amountSats: 1000,
+    baseAsset: "sat",
     date: "2026-05-09T00:00:00.000Z",
     status: "completed",
     txId: null,
@@ -97,6 +98,7 @@ describe("useActivityLogSync", () => {
       useActivityLogStore.getState().addActivity({
         type: "Buy",
         amountSats: 500,
+        baseAsset: "sat",
         status: "completed",
         marketId: "m1",
         marketTitle: "Will BTC hit $150k?",

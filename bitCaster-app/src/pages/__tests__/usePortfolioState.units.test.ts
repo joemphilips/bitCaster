@@ -7,6 +7,8 @@ const basePosition: Position = {
   marketId: "m",
   marketTitle: "Market",
   marketImageUrl: "",
+  baseAsset: "sat",
+  divisibility: 10_000,
   side: "yes",
   shares: 1,
   avgBuyPrice: 0,
@@ -23,27 +25,21 @@ const basePosition: Position = {
 };
 
 describe("computeStats", () => {
-  it("keeps portfolio totals per unit and never sums sats with cents", () => {
+  it("sums sat product positions and funds", () => {
     const positions: Position[] = [
       { ...basePosition, id: "sat-position", baseAsset: "sat", currentValueSats: 1000 },
-      { ...basePosition, id: "usd-position", baseAsset: "usd", currentValueSats: 23 },
+      { ...basePosition, id: "second-position", currentValueSats: 23 },
     ];
     const funds: Fund[] = [
       { id: "sat-fund", unit: "sats", amount: 500, mintUrl: "https://mint.example" },
-      { id: "usd-fund", unit: "usd", amount: 77, mintUrl: "https://mint.example" },
+      { id: "second-sat-fund", unit: "sats", amount: 77, mintUrl: "https://mint.example" },
     ];
 
     const stats = computeStats(positions, funds);
 
-    expect(stats.positionsValueByUnit).toEqual([
-      { unit: "sat", amount: 1000 },
-      { unit: "usd", amount: 23 },
-    ]);
-    expect(stats.totalValueByUnit).toEqual([
-      { unit: "sat", amount: 1500 },
-      { unit: "usd", amount: 100 },
-    ]);
-    expect(stats.totalValueSats).toBe(1500);
+    expect(stats.positionsValueByUnit).toEqual([{ unit: "sat", amount: 1023 }]);
+    expect(stats.totalValueByUnit).toEqual([{ unit: "sat", amount: 1600 }]);
+    expect(stats.totalValueSats).toBe(1600);
   });
 
   it("keeps PL chart cumulative and stats total in sat-market subunits", () => {

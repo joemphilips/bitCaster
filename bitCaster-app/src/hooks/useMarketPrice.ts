@@ -2,7 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { computeSpreadMidpoint } from "@/components/market-detail/orderBookViewModel";
 import { onTradeExecuted } from "@/lib/marketHub";
 import type { MarketDetail, OrderBook, PriceHistory } from "@/types/market-detail";
-import { normalizeMarketDivisibility } from "@bitcaster/client-sdk/marketUnits";
+import {
+  DEFAULT_SAT_MARKET_DIVISIBILITY,
+  normalizeMarketDivisibility,
+} from "@bitcaster/client-sdk/marketUnits";
 import { complementOutcomeSetId, parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
 
 export interface UseMarketPriceInput {
@@ -17,15 +20,12 @@ export interface MarketPriceState {
   defaultOrderPrice: number;
 }
 
-export function defaultLimitPriceForDivisibility(
-  divisibility?: number | null,
-  baseAsset?: string | null,
-): number {
+export function defaultLimitPriceForDivisibility(divisibility: number, baseAsset: string): number {
   return Math.max(1, Math.floor(normalizeMarketDivisibility(divisibility, baseAsset) / 2));
 }
 
 export function clampOrderPrice(price: number, divisibility: number): number {
-  if (!Number.isFinite(price)) return defaultLimitPriceForDivisibility(divisibility);
+  if (!Number.isFinite(price)) return Math.max(1, Math.floor(divisibility / 2));
   return Math.max(1, Math.min(divisibility - 1, Math.round(price)));
 }
 
@@ -35,7 +35,9 @@ export function useMarketPrice({
   outcomeSetId,
   orderBook,
 }: UseMarketPriceInput): MarketPriceState {
-  const divisibility = normalizeMarketDivisibility(market?.divisibility, market?.baseAsset);
+  const divisibility = market
+    ? normalizeMarketDivisibility(market.divisibility, market.baseAsset)
+    : DEFAULT_SAT_MARKET_DIVISIBILITY;
   const initialPrice = useMemo(
     () => deriveInitialCurrentPrice(market, outcomeSetId, divisibility),
     [market, outcomeSetId, divisibility],
@@ -68,7 +70,7 @@ function deriveInitialCurrentPrice(
   outcomeSetId: string | null | undefined,
   divisibility: number,
 ): number {
-  if (!market) return defaultLimitPriceForDivisibility(divisibility);
+  if (!market) return defaultLimitPriceForDivisibility(divisibility, "sat");
 
   const historyPrice = latestHistoryNumerator(market, outcomeSetId, divisibility);
   if (historyPrice != null) return historyPrice;

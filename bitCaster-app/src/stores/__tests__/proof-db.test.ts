@@ -18,6 +18,7 @@ type AnyProof = {
   outcome_collection?: string;
   baseAsset?: string;
   unit?: string;
+  operationId?: string;
 };
 
 const store = new Map<string, AnyProof>();
@@ -26,13 +27,16 @@ const txCallbacks: Array<() => Promise<void>> = [];
 vi.mock("dexie", () => {
   class FakeTable {
     async bulkPut(rows: AnyProof[]): Promise<void> {
-      for (const r of rows) store.set(r.secret, r);
+      for (const r of rows) store.set(r.secret ?? r.operationId ?? "", r);
     }
     async bulkDelete(keys: string[]): Promise<void> {
       for (const k of keys) store.delete(k);
     }
     async bulkGet(keys: string[]): Promise<Array<AnyProof | undefined>> {
       return keys.map((key) => store.get(key));
+    }
+    async get(key: string): Promise<AnyProof | undefined> {
+      return store.get(key);
     }
     async toArray(): Promise<AnyProof[]> {
       return Array.from(store.values());
@@ -62,7 +66,7 @@ vi.mock("dexie", () => {
       };
     }
     async put(row: AnyProof): Promise<void> {
-      store.set(row.secret, row);
+      store.set(row.secret ?? row.operationId ?? "", row);
     }
   }
 
@@ -102,6 +106,9 @@ import {
   getUnitProofs,
   getReservedProofs,
   normalizeStoredMintUrls,
+  getProofOperation,
+  markProofOperationCompleted,
+  prepareProofOperation,
   releaseProofReservation,
   releaseProofReservationsBySecret,
   reserveProofs,
@@ -122,6 +129,8 @@ describe("proof-db normalization", () => {
         id: "id1",
         C: "C1",
         mintUrl: "http://mint.example/",
+        baseAsset: "sat",
+        unit: "sat",
       },
     ]);
     const rows = await getProofs("http://mint.example");
@@ -137,6 +146,8 @@ describe("proof-db normalization", () => {
         id: "id1",
         C: "C1",
         mintUrl: "http://mint.example",
+        baseAsset: "sat",
+        unit: "sat",
       },
       {
         secret: "s2",
@@ -144,6 +155,8 @@ describe("proof-db normalization", () => {
         id: "id2",
         C: "C2",
         mintUrl: "http://mint.example",
+        baseAsset: "sat",
+        unit: "sat",
       } as never,
     ]);
 
@@ -161,6 +174,8 @@ describe("proof-db normalization", () => {
         id: "id1",
         C: "C1",
         mintUrl: "http://mint.example",
+        baseAsset: "sat",
+        unit: "sat",
       },
     ]);
     const rows = await getProofs("http://mint.example//");
@@ -175,6 +190,8 @@ describe("proof-db normalization", () => {
       id: "idL",
       C: "CL",
       mintUrl: "https://mint.staging//",
+      baseAsset: "sat",
+      unit: "sat",
     });
     const changed = await normalizeStoredMintUrls();
     expect(changed).toBe(1);
@@ -184,7 +201,15 @@ describe("proof-db normalization", () => {
 
   it("migration is a no-op when all rows are already normalized", async () => {
     await addProofs([
-      { secret: "s1", amount: Amount.from(100), id: "id1", C: "C1", mintUrl: "http://m" },
+      {
+        secret: "s1",
+        amount: Amount.from(100),
+        id: "id1",
+        C: "C1",
+        mintUrl: "http://m",
+        baseAsset: "sat",
+        unit: "sat",
+      },
     ]);
     const changed = await normalizeStoredMintUrls();
     expect(changed).toBe(0);
@@ -192,7 +217,15 @@ describe("proof-db normalization", () => {
 
   it("getBaseProofs excludes CTF proofs from spendable ecash balances", async () => {
     await addProofs([
-      { secret: "base", amount: Amount.from(100), id: "id1", C: "C1", mintUrl: "http://m" },
+      {
+        secret: "base",
+        amount: Amount.from(100),
+        id: "id1",
+        C: "C1",
+        mintUrl: "http://m",
+        baseAsset: "sat",
+        unit: "sat",
+      },
       {
         secret: "ctf",
         amount: Amount.from(200),
@@ -200,31 +233,14 @@ describe("proof-db normalization", () => {
         C: "C2",
         mintUrl: "http://m",
         conditionId: "cond-yes",
+        baseAsset: "sat",
+        unit: "msat",
       } as never,
     ]);
 
-    const rows = await getBaseProofs("http://m");
+    const rows = await getBaseProofs("http://m", { baseAsset: "sat" });
 
     expect(rows.map((r) => r.secret)).toEqual(["base"]);
-  });
-
-  it("getBaseProofs filters by base asset and defaults legacy rows to sat", async () => {
-    await addProofs([
-      { secret: "legacy-sat", amount: Amount.from(100), id: "id1", C: "C1", mintUrl: "http://m" },
-      {
-        secret: "usd",
-        amount: Amount.from(100),
-        id: "id2",
-        C: "C2",
-        mintUrl: "http://m",
-        baseAsset: "usd",
-      },
-    ]);
-
-    expect((await getBaseProofs("http://m")).map((r) => r.secret)).toEqual(["legacy-sat"]);
-    expect((await getBaseProofs("http://m", { baseAsset: "usd" })).map((r) => r.secret)).toEqual([
-      "usd",
-    ]);
   });
 
   it("getUnitProofs filters exact sat and msat units while getBaseProofs groups both for display", async () => {
@@ -262,15 +278,15 @@ describe("proof-db normalization", () => {
   });
 
   it("getUnitProofs excludes legacy rows without an explicit unit", async () => {
+    store.set("legacy-sat", {
+      secret: "legacy-sat",
+      amount: Amount.from(100),
+      id: "id1",
+      C: "C1",
+      mintUrl: "http://m",
+      baseAsset: "sat",
+    });
     await addProofs([
-      {
-        secret: "legacy-sat",
-        amount: Amount.from(100),
-        id: "id1",
-        C: "C1",
-        mintUrl: "http://m",
-        baseAsset: "sat",
-      },
       {
         secret: "msat-proof",
         amount: Amount.from(200),
@@ -292,6 +308,46 @@ describe("proof-db normalization", () => {
     ]);
   });
 
+  it("requires an exact unit on every new proof write", async () => {
+    await expect(
+      addProofs([
+        {
+          secret: "missing-unit",
+          amount: Amount.from(1),
+          id: "id1",
+          C: "C1",
+          mintUrl: "http://m",
+          baseAsset: "sat",
+        },
+      ]),
+    ).rejects.toThrow("Stored proof unit is required");
+  });
+
+  it("rejects sat-unit CTF writes and excludes malformed legacy CTF rows", async () => {
+    const malformed = {
+      secret: "legacy-ctf-sat",
+      amount: Amount.from(100),
+      id: "conditional-id",
+      C: "C1",
+      mintUrl: "http://m",
+      conditionId: "cond",
+      outcomeCollection: "YES",
+      baseAsset: "sat",
+      unit: "sat",
+    } as const;
+    await expect(addProofs([malformed])).rejects.toThrow(
+      "CTF proofs require exact Cashu unit 'msat'",
+    );
+
+    store.set(malformed.secret, malformed);
+    await expect(
+      getConditionCtfProofs("http://m", "cond", { baseAsset: "sat" }),
+    ).resolves.toEqual([]);
+    await expect(
+      getOutcomeProofs("http://m", "cond", "YES", { baseAsset: "sat" }),
+    ).resolves.toEqual([]);
+  });
+
   it("rejects mismatched base asset and unit on write", async () => {
     await expect(
       addProofs([
@@ -302,31 +358,25 @@ describe("proof-db normalization", () => {
           C: "C1",
           mintUrl: "http://m",
           baseAsset: "sat",
-          unit: "usd",
+          unit: "usd" as never,
         },
       ]),
-    ).rejects.toThrow("Stored proof unit 'usd' is not compatible with base asset 'sat'");
+    ).rejects.toThrow("Unsupported Cashu proof unit 'usd'");
   });
 
-  it("derives base asset from explicit unit before validating on write", async () => {
-    await addProofs([
-      {
-        secret: "usd-without-base",
-        amount: Amount.from(100),
-        id: "id1",
-        C: "C1",
-        mintUrl: "http://m",
-        unit: "usd",
-      },
-    ]);
-
-    const rows = await getProofs("http://m");
-
-    expect(rows[0]).toMatchObject({
-      secret: "usd-without-base",
-      baseAsset: "usd",
-      unit: "usd",
-    });
+  it("rejects an unsupported explicit proof unit before persistence", async () => {
+    await expect(
+      addProofs([
+        {
+          secret: "usd-without-base",
+          amount: Amount.from(100),
+          id: "id1",
+          C: "C1",
+          mintUrl: "http://m",
+          unit: "usd" as never,
+        },
+      ]),
+    ).rejects.toThrow(/unsupported Cashu proof unit/i);
   });
 
   it("getOutcomeProofs returns only the requested condition outcome", async () => {
@@ -339,6 +389,8 @@ describe("proof-db normalization", () => {
         mintUrl: "http://m",
         conditionId: "cond",
         outcomeCollection: "YES",
+        baseAsset: "sat",
+        unit: "msat",
       },
       {
         secret: "no",
@@ -348,11 +400,21 @@ describe("proof-db normalization", () => {
         mintUrl: "http://m",
         condition_id: "cond",
         outcome_collection: "NO",
+        baseAsset: "sat",
+        unit: "msat",
       } as never,
-      { secret: "base", amount: Amount.from(100), id: "id3", C: "C3", mintUrl: "http://m" },
+      {
+        secret: "base",
+        amount: Amount.from(100),
+        id: "id3",
+        C: "C3",
+        mintUrl: "http://m",
+        baseAsset: "sat",
+        unit: "sat",
+      },
     ]);
 
-    const rows = await getOutcomeProofs("http://m", "cond", "YES");
+    const rows = await getOutcomeProofs("http://m", "cond", "YES", { baseAsset: "sat" });
 
     expect(rows.map((r) => r.secret)).toEqual(["yes"]);
   });
@@ -368,6 +430,8 @@ describe("proof-db normalization", () => {
         mintUrl: "http://m",
         conditionId: "cond",
         outcomeCollection: "A|B",
+        baseAsset: "sat",
+        unit: "msat",
       },
       {
         secret: "compB",
@@ -377,6 +441,8 @@ describe("proof-db normalization", () => {
         mintUrl: "http://m",
         conditionId: "cond",
         outcomeCollection: "A|B",
+        baseAsset: "sat",
+        unit: "msat",
       },
       // per-primitive storage variant under condition_id snake-case key
       {
@@ -387,6 +453,8 @@ describe("proof-db normalization", () => {
         mintUrl: "http://m",
         condition_id: "cond",
         outcome_collection: "C",
+        baseAsset: "sat",
+        unit: "msat",
       } as never,
       // different condition — must be excluded
       {
@@ -397,60 +465,47 @@ describe("proof-db normalization", () => {
         mintUrl: "http://m",
         conditionId: "cond2",
         outcomeCollection: "A",
+        baseAsset: "sat",
+        unit: "msat",
       },
       // base (non-CTF) proof — must be excluded
-      { secret: "base", amount: Amount.from(100), id: "id5", C: "C5", mintUrl: "http://m" },
+      {
+        secret: "base",
+        amount: Amount.from(100),
+        id: "id5",
+        C: "C5",
+        mintUrl: "http://m",
+        baseAsset: "sat",
+        unit: "sat",
+      },
     ]);
 
-    const rows = await getConditionCtfProofs("http://m", "cond");
+    const rows = await getConditionCtfProofs("http://m", "cond", { baseAsset: "sat" });
 
     expect(rows.map((r) => r.secret).sort()).toEqual(["compA", "compB", "primC"]);
     // Bucketing by real keyset id recovers all three legs.
     expect(new Set(rows.map((r) => r.id))).toEqual(new Set(["keyset-A", "keyset-B", "keyset-C"]));
   });
 
-  it("getOutcomeProofs filters by base asset and defaults legacy rows to sat", async () => {
+  it("hides reserved proofs from spendable base and outcome queries", async () => {
     await addProofs([
       {
-        secret: "legacy-sat-yes",
+        secret: "base-free",
         amount: Amount.from(100),
         id: "id1",
         C: "C1",
         mintUrl: "http://m",
-        conditionId: "cond",
-        outcomeCollection: "YES",
+        baseAsset: "sat",
+        unit: "sat",
       },
-      {
-        secret: "usd-yes",
-        amount: Amount.from(100),
-        id: "id2",
-        C: "C2",
-        mintUrl: "http://m",
-        conditionId: "cond",
-        outcomeCollection: "YES",
-        baseAsset: "usd",
-      },
-    ]);
-
-    expect((await getOutcomeProofs("http://m", "cond", "YES")).map((r) => r.secret)).toEqual([
-      "legacy-sat-yes",
-    ]);
-    expect(
-      (await getOutcomeProofs("http://m", "cond", "YES", { baseAsset: "usd" })).map(
-        (r) => r.secret,
-      ),
-    ).toEqual(["usd-yes"]);
-  });
-
-  it("hides reserved proofs from spendable base and outcome queries", async () => {
-    await addProofs([
-      { secret: "base-free", amount: Amount.from(100), id: "id1", C: "C1", mintUrl: "http://m" },
       {
         secret: "base-reserved",
         amount: Amount.from(100),
         id: "id2",
         C: "C2",
         mintUrl: "http://m",
+        baseAsset: "sat",
+        unit: "sat",
       },
       {
         secret: "yes-free",
@@ -460,6 +515,8 @@ describe("proof-db normalization", () => {
         mintUrl: "http://m",
         conditionId: "cond",
         outcomeCollection: "YES",
+        baseAsset: "sat",
+        unit: "msat",
       },
       {
         secret: "yes-reserved",
@@ -469,14 +526,20 @@ describe("proof-db normalization", () => {
         mintUrl: "http://m",
         conditionId: "cond",
         outcomeCollection: "YES",
+        baseAsset: "sat",
+        unit: "msat",
       },
     ]);
     await reserveProofs(["base-reserved", "yes-reserved"], "order-1");
 
-    expect((await getBaseProofs("http://m")).map((r) => r.secret)).toEqual(["base-free"]);
-    expect((await getOutcomeProofs("http://m", "cond", "YES")).map((r) => r.secret)).toEqual([
-      "yes-free",
+    expect((await getBaseProofs("http://m", { baseAsset: "sat" })).map((r) => r.secret)).toEqual([
+      "base-free",
     ]);
+    expect(
+      (await getOutcomeProofs("http://m", "cond", "YES", { baseAsset: "sat" })).map(
+        (r) => r.secret,
+      ),
+    ).toEqual(["yes-free"]);
     expect((await getReservedProofs("order-1")).map((r) => r.secret)).toEqual([
       "base-reserved",
       "yes-reserved",
@@ -485,8 +548,24 @@ describe("proof-db normalization", () => {
 
   it("releases reserved proofs by owner or selected secret", async () => {
     await addProofs([
-      { secret: "s1", amount: Amount.from(100), id: "id1", C: "C1", mintUrl: "http://m" },
-      { secret: "s2", amount: Amount.from(100), id: "id2", C: "C2", mintUrl: "http://m" },
+      {
+        secret: "s1",
+        amount: Amount.from(100),
+        id: "id1",
+        C: "C1",
+        mintUrl: "http://m",
+        baseAsset: "sat",
+        unit: "sat",
+      },
+      {
+        secret: "s2",
+        amount: Amount.from(100),
+        id: "id2",
+        C: "C2",
+        mintUrl: "http://m",
+        baseAsset: "sat",
+        unit: "sat",
+      },
     ]);
     await reserveProofs(["s1", "s2"], "order-1");
     await releaseProofReservationsBySecret(["s1"]);
@@ -575,5 +654,54 @@ describe("proof-db normalization", () => {
       selectAndReserveUnitProofs("http://m", { unit: "msat", minimumAmount: 50 }, "pay-1"),
     ).rejects.toThrow("Insufficient spendable proofs");
     expect(await getReservedProofs("pay-1")).toEqual([]);
+  });
+
+  it("persists SDK-supplied CTF completion fields verbatim", async () => {
+    await prepareProofOperation({
+      operationId: "ctf-split:1",
+      kind: "ctf-split",
+      mintUrl: "https://mint.example/",
+      inputs: [],
+      outputs: {},
+      metadata: { unit: "msat" },
+    });
+    const resultProofs = {
+      YES: [{ secret: "yes", amount: Amount.from(100), id: "keyset-yes", C: "02aa" }],
+      NO: [{ secret: "no", amount: Amount.from(100), id: "keyset-no", C: "02bb" }],
+    };
+
+    const suppliedDigest = "ab".repeat(32);
+    const completed = await markProofOperationCompleted("ctf-split:1", {
+      kind: "ctf-split",
+      resultProofs,
+      resultProofsDigest: suppliedDigest,
+    });
+
+    expect(completed.resultProofsDigest).toBe(suppliedDigest);
+    expect((await getProofOperation("ctf-split:1"))?.resultProofsDigest).toBe(suppliedDigest);
+    await expect(
+      markProofOperationCompleted("ctf-split:1", {
+        kind: "ctf-merge",
+        resultProofs,
+        resultProofsDigest: suppliedDigest,
+      }),
+    ).rejects.toThrow("does not match completion");
+  });
+
+  it("does not attach a CTF authority digest to ordinary proof operations", async () => {
+    await prepareProofOperation({
+      operationId: "token-receive:1",
+      kind: "token-receive",
+      mintUrl: "https://mint.example",
+      inputs: [],
+      outputs: {},
+      metadata: { unit: "sat" },
+    });
+
+    const completed = await markProofOperationCompleted("token-receive:1", {
+      receive: [{ secret: "received", amount: Amount.from(1), id: "keyset", C: "02cc" }],
+    });
+
+    expect(completed.resultProofsDigest).toBeUndefined();
   });
 });

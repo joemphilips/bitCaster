@@ -72,19 +72,6 @@ describe("InvoiceDisplay", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows USD quote rate details", () => {
-    render(
-      <InvoiceDisplay
-        bolt11={bolt11}
-        amountSats={100}
-        amountLabel="$1.00"
-        status="pending"
-        rateInfo={{ label: "10 sat/cent", source: "implied" }}
-      />,
-    );
-    expect(screen.getByText(/quote rate/i)).toHaveTextContent("(implied)");
-  });
-
   it("displays the amount", () => {
     render(<InvoiceDisplay bolt11={bolt11} amountSats={42000} status="pending" />);
     expect(screen.getByText(/42,000/)).toBeInTheDocument();

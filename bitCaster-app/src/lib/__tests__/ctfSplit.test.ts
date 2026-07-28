@@ -94,7 +94,7 @@ const { MockAmount, MockOutputData, MockCtfMint, ctfMintState } = vi.hoisted(() 
         keysets: [
           {
             id: keysetId,
-            unit: keysetId.startsWith("usd") ? "usd" : "sat",
+            unit: keysetId.startsWith("sat") ? "sat" : "msat",
             active: true,
             input_fee_ppk: 1,
             keys: { 1: "02".padEnd(66, "1") },
@@ -161,7 +161,7 @@ vi.mock("@cashu/cashu-ts", () => {
 
 const conditionId = "a".repeat(64);
 const inputProof = {
-  id: "sat-keyset",
+  id: "msat-keyset",
   amount: 101,
   secret: "input-secret",
   C: "02".padEnd(66, "0"),
@@ -181,15 +181,18 @@ function proofOperationStore(): CtfProofOperationStore {
       }),
     ),
     markProofOperationCompleted: vi.fn(
-      async (operationId, resultProofs): Promise<CtfProofOperationRecord> => ({
+      async (operationId, completion): Promise<CtfProofOperationRecord> => ({
         operationId,
-        kind: "ctf-split",
+        kind: completion.kind,
         state: "completed",
         mintUrl: "https://mint.example",
         inputs: [inputProof],
         outputs: {},
         metadata: {},
-        resultProofs,
+        resultProofs: completion.resultProofs,
+        ...("resultProofsDigest" in completion
+          ? { resultProofsDigest: completion.resultProofsDigest }
+          : {}),
         lastError: null,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -209,9 +212,10 @@ function mockMintCondition(
     {},
     ...entries.map((entry) => toMockConditionKeysetEntry(entry).keysets),
   );
-  ctfMintState.collateral = entries
-    .map((entry) => toMockConditionKeysetEntry(entry).collateral)
-    .find((collateral): collateral is string => typeof collateral === "string");
+  ctfMintState.collateral =
+    entries
+      .map((entry) => toMockConditionKeysetEntry(entry).collateral)
+      .find((collateral): collateral is string => typeof collateral === "string") ?? "msat";
   ctfMintState.conditionalKeysets = [];
   ctfMintState.splitRequests = [];
 }
@@ -254,6 +258,7 @@ describe("splitRootCompleteSetForSwap", () => {
 
     const result = await splitRootCompleteSetForSwap({
       mintUrl: "https://mint.example",
+      baseAsset: "sat",
       conditionId,
       collateralProofs: [inputProof],
       amountSats: 100,
@@ -283,6 +288,7 @@ describe("splitRootCompleteSetForSwap", () => {
 
     const result = await splitRootCompleteSetForPreflightOrder({
       mintUrl: "https://mint.example",
+      baseAsset: "sat",
       conditionId,
       collateralProofs: [inputProof],
       amountSats: 100,
@@ -316,12 +322,14 @@ describe("splitRootCompleteSetForSwap", () => {
     ctfMintState.conditionalKeysets = [
       {
         id: "keyset-a",
+        unit: "msat",
         condition_id: conditionId,
         outcome_collection: "A",
         outcome_collection_id: aCollectionId,
       },
       {
         id: "keyset-not-a",
+        unit: "msat",
         condition_id: conditionId,
         outcome_collection: "B|C|D",
         outcome_collection_id: notACollectionId,
@@ -330,6 +338,7 @@ describe("splitRootCompleteSetForSwap", () => {
 
     const result = await splitRootCompleteSetForPreflightOrder({
       mintUrl: "https://mint.example",
+      baseAsset: "sat",
       conditionId,
       collateralProofs: [inputProof],
       amountSats: 100,
@@ -351,37 +360,23 @@ describe("splitRootCompleteSetForSwap", () => {
     mockMintCondition([
       {
         keysets: {
-          Alpha: "usd-alpha",
-          Beta: "usd-beta",
+          Alpha: "msat-alpha",
+          Beta: "msat-beta",
         },
-        collateral: "usd",
+        collateral: "msat",
       },
     ]);
     ctfMintState.conditionalKeysets = [
       {
-        id: "sat-alpha",
-        unit: "sat",
+        id: "msat-alpha",
+        unit: "msat",
         condition_id: conditionId,
         outcome_collection: "Alpha",
         outcome_collection_id: "alpha-id",
       },
       {
-        id: "sat-beta",
-        unit: "sat",
-        condition_id: conditionId,
-        outcome_collection: "Beta",
-        outcome_collection_id: "beta-id",
-      },
-      {
-        id: "usd-alpha",
-        unit: "usd",
-        condition_id: conditionId,
-        outcome_collection: "Alpha",
-        outcome_collection_id: "alpha-id",
-      },
-      {
-        id: "usd-beta",
-        unit: "usd",
+        id: "msat-beta",
+        unit: "msat",
         condition_id: conditionId,
         outcome_collection: "Beta",
         outcome_collection_id: "beta-id",
@@ -390,47 +385,47 @@ describe("splitRootCompleteSetForSwap", () => {
 
     await splitRootCompleteSetForSwap({
       mintUrl: "https://mint.example",
-      baseAsset: "usd",
+      baseAsset: "sat",
       conditionId,
-      collateralProofs: [{ ...inputProof, id: "usd-regular" }],
+      collateralProofs: [{ ...inputProof, id: "msat-regular" }],
       amountSats: 100,
       lockOutcomeSetId: "Beta",
       keepOutcomeSetId: "Alpha",
       p2pk: { pubkey: ["02".padEnd(66, "2")], locktime: 1 },
-      operationId: "op-usd-keysets",
+      operationId: "op-msat-keysets",
       proofOperationStore: proofOperationStore(),
     });
 
     const splitRequest = ctfMintState.splitRequests[0];
-    expect(splitRequest.outputs.Alpha[0].id).toBe("usd-alpha");
-    expect(splitRequest.outputs.Beta[0].id).toBe("usd-beta");
+    expect(splitRequest.outputs.Alpha[0].id).toBe("msat-alpha");
+    expect(splitRequest.outputs.Beta[0].id).toBe("msat-beta");
   });
 
   it("fails closed before posting when input proof keysets do not match the requested unit", async () => {
     mockMintCondition([
       {
         keysets: {
-          Alpha: "usd-alpha",
-          Beta: "usd-beta",
+          Alpha: "msat-alpha",
+          Beta: "msat-beta",
         },
-        collateral: "usd",
+        collateral: "msat",
       },
     ]);
 
     await expect(
       splitRootCompleteSetForSwap({
         mintUrl: "https://mint.example",
-        baseAsset: "usd",
+        baseAsset: "sat",
         conditionId,
         collateralProofs: [{ ...inputProof, id: "sat-regular" }],
         amountSats: 100,
         lockOutcomeSetId: "Beta",
         keepOutcomeSetId: "Alpha",
         p2pk: { pubkey: ["02".padEnd(66, "2")], locktime: 1 },
-        operationId: "op-usd-wrong-input-unit",
+        operationId: "op-msat-wrong-input-unit",
         proofOperationStore: proofOperationStore(),
       }),
-    ).rejects.toThrow(/input proof keyset sat-regular unit mismatch: expected usd, got sat/);
+    ).rejects.toThrow(/input proof keyset sat-regular unit must be exactly msat/);
     expect(ctfMintState.splitRequests).toHaveLength(0);
   });
 
@@ -441,24 +436,24 @@ describe("splitRootCompleteSetForSwap", () => {
           Alpha: "sat-alpha",
           Beta: "sat-beta",
         },
-        collateral: "usd",
+        collateral: "msat",
       },
     ]);
 
     await expect(
       splitRootCompleteSetForSwap({
         mintUrl: "https://mint.example",
-        baseAsset: "usd",
+        baseAsset: "sat",
         conditionId,
-        collateralProofs: [{ ...inputProof, id: "usd-regular" }],
+        collateralProofs: [{ ...inputProof, id: "msat-regular" }],
         amountSats: 100,
         lockOutcomeSetId: "Beta",
         keepOutcomeSetId: "Alpha",
         p2pk: { pubkey: ["02".padEnd(66, "2")], locktime: 1 },
-        operationId: "op-usd-wrong-output-unit",
+        operationId: "op-msat-wrong-output-unit",
         proofOperationStore: proofOperationStore(),
       }),
-    ).rejects.toThrow(/output keyset sat-alpha for Alpha unit mismatch: expected usd, got sat/);
+    ).rejects.toThrow(/output keyset sat-alpha for Alpha unit must be exactly msat/);
     expect(ctfMintState.splitRequests).toHaveLength(0);
   });
 
@@ -468,21 +463,21 @@ describe("splitRootCompleteSetForSwap", () => {
     mockMintCondition([
       {
         keysets: {
-          [alphaCollectionId]: "usd-alpha",
-          [betaCollectionId]: "usd-beta",
+          [alphaCollectionId]: "msat-alpha",
+          [betaCollectionId]: "msat-beta",
         },
-        collateral: "usd",
+        collateral: "msat",
       },
     ]);
     ctfMintState.conditionalKeysets = [
       {
-        id: "usd-alpha",
+        id: "msat-alpha",
         condition_id: conditionId,
         outcome_collection: "Alpha",
         outcome_collection_id: alphaCollectionId,
       },
       {
-        id: "usd-beta",
+        id: "msat-beta",
         condition_id: conditionId,
         outcome_collection: "Beta",
         outcome_collection_id: betaCollectionId,
@@ -492,17 +487,17 @@ describe("splitRootCompleteSetForSwap", () => {
     await expect(
       splitRootCompleteSetForSwap({
         mintUrl: "https://mint.example",
-        baseAsset: "usd",
+        baseAsset: "sat",
         conditionId,
-        collateralProofs: [{ ...inputProof, id: "usd-regular" }],
+        collateralProofs: [{ ...inputProof, id: "msat-regular" }],
         amountSats: 100,
         lockOutcomeSetId: "Beta",
         keepOutcomeSetId: "Alpha",
         p2pk: { pubkey: ["02".padEnd(66, "2")], locktime: 1 },
-        operationId: "op-usd-missing-keyset-unit",
+        operationId: "op-msat-missing-keyset-unit",
         proofOperationStore: proofOperationStore(),
       }),
-    ).rejects.toThrow("Expected root usd CTF keysets");
+    ).rejects.toThrow(/conditional keyset msat-alpha unit must be exactly msat/);
     expect(ctfMintState.splitRequests).toHaveLength(0);
   });
 
@@ -512,22 +507,22 @@ describe("splitRootCompleteSetForSwap", () => {
     mockMintCondition([
       {
         keysets: {
-          [alphaCollectionId]: "usd-alpha",
-          [betaCollectionId]: "usd-beta",
+          [alphaCollectionId]: "msat-alpha",
+          [betaCollectionId]: "msat-beta",
         },
-        collateral: "usd",
+        collateral: "msat",
       },
     ]);
     ctfMintState.conditionalKeysets = [
       {
-        id: "usd-alpha",
+        id: "msat-alpha",
         unit: "credits",
         condition_id: conditionId,
         outcome_collection: "Alpha",
         outcome_collection_id: alphaCollectionId,
       },
       {
-        id: "usd-beta",
+        id: "msat-beta",
         unit: "credits",
         condition_id: conditionId,
         outcome_collection: "Beta",
@@ -538,17 +533,17 @@ describe("splitRootCompleteSetForSwap", () => {
     await expect(
       splitRootCompleteSetForSwap({
         mintUrl: "https://mint.example",
-        baseAsset: "usd",
+        baseAsset: "sat",
         conditionId,
-        collateralProofs: [{ ...inputProof, id: "usd-regular" }],
+        collateralProofs: [{ ...inputProof, id: "msat-regular" }],
         amountSats: 100,
         lockOutcomeSetId: "Beta",
         keepOutcomeSetId: "Alpha",
         p2pk: { pubkey: ["02".padEnd(66, "2")], locktime: 1 },
-        operationId: "op-usd-invalid-keyset-unit",
+        operationId: "op-msat-invalid-keyset-unit",
         proofOperationStore: proofOperationStore(),
       }),
-    ).rejects.toThrow("Expected root usd CTF keysets");
+    ).rejects.toThrow(/conditional keyset msat-alpha unit must be exactly msat/);
     expect(ctfMintState.splitRequests).toHaveLength(0);
   });
 
@@ -568,6 +563,7 @@ describe("splitRootCompleteSetForSwap", () => {
     await expect(
       splitRootCompleteSetForSwap({
         mintUrl: "https://mint.example",
+        baseAsset: "sat",
         conditionId,
         collateralProofs: [inputProof],
         amountSats: 100,

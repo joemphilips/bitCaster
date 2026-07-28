@@ -15,8 +15,8 @@ import { useSettingsStore } from "@/stores/settings";
 import type { MarketBaseAsset } from "@/types/market-creation";
 import { estimateDepthPreview } from "@bitcaster/client-sdk/lmsrDomain";
 import {
+  DEFAULT_SAT_MARKET_DIVISIBILITY,
   defaultCollateralUnit,
-  normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 
 function isFundingDepositComplete(state: DepositState | null | undefined): boolean {
@@ -41,31 +41,8 @@ function assertNeverDepositState(state: never): never {
   throw new Error(`Unhandled deposit state: ${String(state)}`);
 }
 
-function fundingUnitForBaseAsset(baseAsset: MarketBaseAsset): "sat" | "usd" {
-  if (baseAsset === "usd") return "usd";
-  if (baseAsset === "sat") return "sat";
-  throw new Error(`unsupported base asset: ${baseAsset}`);
-}
-
-function customBudgetInputToSubunits(
-  customBudgetInput: number,
-  baseAsset: MarketBaseAsset,
-): number {
-  if (baseAsset === "usd") return Math.round(customBudgetInput * 100);
-  if (baseAsset === "sat") return Math.max(0, Math.floor(customBudgetInput * 1000));
-  throw new Error(`unsupported base asset: ${baseAsset}`);
-}
-
-function customBudgetInputStep(baseAsset: MarketBaseAsset): string {
-  if (baseAsset === "usd") return "0.01";
-  if (baseAsset === "sat") return "1";
-  throw new Error(`unsupported base asset: ${baseAsset}`);
-}
-
-function customBudgetInputMode(baseAsset: MarketBaseAsset): "decimal" | "numeric" {
-  if (baseAsset === "usd") return "decimal";
-  if (baseAsset === "sat") return "numeric";
-  throw new Error(`unsupported base asset: ${baseAsset}`);
+function customBudgetInputToSubunits(customBudgetInput: number): number {
+  return Math.max(0, Math.floor(customBudgetInput * 1_000));
 }
 
 interface DepositStepProps {
@@ -92,10 +69,9 @@ export function DepositStep({
   const [depositState, setDepositState] = useState<DepositState | null>(null);
   const [activeDepositId, setActiveDepositId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const fundingUnit = fundingUnitForBaseAsset(baseAsset);
   const cashuUnit = defaultCollateralUnit(baseAsset);
-  const divisibility = normalizeMarketDivisibility(undefined, baseAsset);
-  const customBudgetSubunits = customBudgetInputToSubunits(customBudgetInput, baseAsset);
+  const divisibility = DEFAULT_SAT_MARKET_DIVISIBILITY;
+  const customBudgetSubunits = customBudgetInputToSubunits(customBudgetInput);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setStage("funding"), 5_000);
@@ -113,7 +89,7 @@ export function DepositStep({
   const selectedTierBudget =
     tiers.find((tier) => tier.id === selectedTier)?.budgetSats ?? customBudgetSubunits;
   const budgetSats = selectedTier === "custom" ? customBudgetSubunits : selectedTierBudget;
-  const customBudgetPreview = formatFundingBudget(customBudgetSubunits, fundingUnit);
+  const customBudgetPreview = formatFundingBudget(customBudgetSubunits, baseAsset);
   const showWarning = selectedTier === "minimal";
   const depthPreview =
     selectedTier === "none"
@@ -246,7 +222,7 @@ export function DepositStep({
               {t(`marketCreation.ammFundingTier.${tier.id}`)}
             </span>
             <span className="mt-1 block text-lg font-bold text-slate-100">
-              {formatFundingBudget(tier.budgetSats, fundingUnit, { wholeUsd: true })}
+              {formatFundingBudget(tier.budgetSats, baseAsset)}
             </span>
             {tier.warning && (
               <span className="mt-3 inline-flex items-center gap-1 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-normal text-amber-200">
@@ -266,8 +242,8 @@ export function DepositStep({
           data-testid="amm-funding-custom-budget"
           type="number"
           min={0}
-          step={customBudgetInputStep(baseAsset)}
-          inputMode={customBudgetInputMode(baseAsset)}
+          step="1"
+          inputMode="numeric"
           aria-describedby="amm-funding-custom-preview"
           value={customBudgetInput}
           onChange={(event) => {

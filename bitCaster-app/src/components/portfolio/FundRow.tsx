@@ -1,5 +1,5 @@
 import type { Fund } from "@/types/portfolio";
-import { Coins, DollarSign } from "lucide-react";
+import { Coins } from "lucide-react";
 import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
 
 interface FundRowProps {
@@ -9,8 +9,6 @@ interface FundRowProps {
 
 export function FundRow({ fund, onView }: FundRowProps) {
   const mintHostname = new URL(fund.mintUrl).hostname;
-  const baseAsset = fund.unit === "sats" ? "sat" : fund.unit;
-  const unitLabel = fund.unit === "sats" ? "Sats" : fund.unit.toUpperCase();
 
   return (
     <button
@@ -19,16 +17,12 @@ export function FundRow({ fund, onView }: FundRowProps) {
     >
       {/* Icon */}
       <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-700 flex items-center justify-center shrink-0">
-        {fund.unit === "sats" ? (
-          <Coins className="w-5 h-5 text-amber-500" />
-        ) : (
-          <DollarSign className="w-5 h-5 text-emerald-500" />
-        )}
+        <Coins className="w-5 h-5 text-amber-500" />
       </div>
 
       {/* Info */}
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-slate-900 dark:text-white">{unitLabel}</p>
+        <p className="text-sm font-medium text-slate-900 dark:text-white">Sats</p>
         <p className="text-xs font-mono text-slate-400 dark:text-slate-500 truncate">
           {mintHostname}
         </p>
@@ -37,7 +31,7 @@ export function FundRow({ fund, onView }: FundRowProps) {
       {/* Amount */}
       <div className="text-right shrink-0">
         <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
-          {formatMarketSubunits(fund.amount, baseAsset)}
+          {formatMarketSubunits(fund.amount, "sat")}
         </div>
       </div>
     </button>

@@ -19,7 +19,7 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
     createdDate: "2026-01-01T00:00:00Z",
     activeSince: "2026-01-02T00:00:00Z",
     baseAsset: "sat",
-    divisibility: 1_000,
+    divisibility: 10_000,
     baseUnit: "sats",
     creator: {
       id: "creator",
@@ -38,26 +38,26 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
     recentTrades: [],
     comments: [],
     relatedMarkets: [],
-    currentOdds: { yes: 50, no: 50 },
+    currentOdds: { yes: 5_000, no: 5_000 },
     ...overrides,
   };
 }
 
 describe("MarketStats bot budget", () => {
-  it("shows non-zero funded USD bot budget in dollars", () => {
+  it("shows non-zero funded sat bot budget", () => {
     render(
       <MarketStats
         market={makeMarket({
-          baseAsset: "usd",
-          baseUnit: "USD",
-          divisibility: 1_000,
+          baseAsset: "sat",
+          baseUnit: "sats",
+          divisibility: 10_000,
           ammBotBudgetSubunits: 1_234,
         })}
       />,
     );
 
     const budget = screen.getByTestId("market-bot-budget");
-    expect(within(budget).getByText("$12.34")).toBeInTheDocument();
+    expect(within(budget).getByText("1.234 sats")).toBeInTheDocument();
     expect(budget).not.toHaveTextContent("0 sats");
   });
 

@@ -65,7 +65,7 @@ function buildCreatedMarket(
     status: toCreatedMarketStatus(backend?.state),
     createdDate: stored.createdAt,
     baseAsset: normalizeMarketBaseAsset(stored.baseAsset),
-    divisibility: normalizeMarketDivisibility(stored.divisibility),
+    divisibility: normalizeMarketDivisibility(stored.divisibility, stored.baseAsset),
     volume: backend?.totalVolumeSubunits ?? 0,
     creatorFeesEarned: 0,
     creatorFeePercent: stored.creatorFeePercent,
