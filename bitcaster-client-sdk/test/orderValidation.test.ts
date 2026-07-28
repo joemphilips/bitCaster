@@ -9,6 +9,8 @@ const validOrder = {
   side: 'Buy',
   price: 4_200,
   amountSubunits: 1_000_000,
+  baseAsset: 'sat',
+  divisibility: 10_000,
   timeInForce: 'GTC',
 }
 
@@ -34,6 +36,11 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
     ],
     [{ ...validOrder, tokenSide: 'Either' }, /tokenSide must be Outcome or Complement/],
     [{ ...validOrder, side: 'Hold' }, /side must be Buy or Sell/],
+    [{ ...validOrder, baseAsset: undefined }, /baseAsset must be sat/],
+    [{ ...validOrder, baseAsset: 'SAT' }, /baseAsset must be sat/],
+    [{ ...validOrder, baseAsset: 'usd' }, /baseAsset must be sat/],
+    [{ ...validOrder, divisibility: undefined }, /divisibility must be 10000 or 1000000/],
+    [{ ...validOrder, divisibility: 1_000 }, /divisibility must be 10000 or 1000000/],
     [{ ...validOrder, price: 0 }, /price must be an integer from 1 to 9999/],
     [{ ...validOrder, price: 10_000 }, /price must be an integer from 1 to 9999/],
     [{ ...validOrder, price: 42.5 }, /price must be an integer from 1 to 9999/],
@@ -55,36 +62,41 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
 
 test('validateOrderIntent applies supplied market divisibility', () => {
   assert.deepEqual(
-    validateOrderIntent({ ...validOrder, divisibility: 1_000, price: 999, amountSubunits: 2_000 }),
+    validateOrderIntent({
+      ...validOrder,
+      divisibility: 1_000_000,
+      price: 999_999,
+      amountSubunits: 2_000_000,
+    }),
     { valid: true },
   )
 
-  const priceResult = validateOrderIntent({ ...validOrder, divisibility: 1_000, price: 1_000 })
+  const priceResult = validateOrderIntent({
+    ...validOrder,
+    divisibility: 1_000_000,
+    price: 1_000_000,
+  })
   assert.equal(priceResult.valid, false)
-  assert.match(priceResult.valid ? '' : priceResult.message, /from 1 to 999/)
+  assert.match(priceResult.valid ? '' : priceResult.message, /from 1 to 999999/)
 
   const amountResult = validateOrderIntent({
     ...validOrder,
-    divisibility: 1_000,
-    price: 500,
-    amountSubunits: 1_501,
+    divisibility: 1_000_000,
+    price: 500_000,
+    amountSubunits: 1_000_001,
   })
   assert.equal(amountResult.valid, false)
-  assert.match(amountResult.valid ? '' : amountResult.message, /1000 sub-unit increments/)
+  assert.match(amountResult.valid ? '' : amountResult.message, /1000000 sub-unit increments/)
 })
 
-test('validateOrderIntent validates whole-share amounts by base asset share face', () => {
-  assert.deepEqual(
-    validateOrderIntent({ ...validOrder, baseAsset: 'usd', price: 500, amountSubunits: 1_000 }),
-    { valid: true },
-  )
-
-  const usdAmountResult = validateOrderIntent({
+test('validateOrderIntent rejects unsupported product units before amount semantics', () => {
+  const result = validateOrderIntent({
     ...validOrder,
     baseAsset: 'usd',
+    divisibility: 1_000,
     price: 500,
-    amountSubunits: 1_001,
+    amountSubunits: 1_000,
   })
-  assert.equal(usdAmountResult.valid, false)
-  assert.match(usdAmountResult.valid ? '' : usdAmountResult.message, /1000 sub-unit increments/)
+  assert.equal(result.valid, false)
+  assert.match(result.valid ? '' : result.message, /baseAsset must be sat/)
 })

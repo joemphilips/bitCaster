@@ -1,8 +1,6 @@
 import { validateTradeCreatedProtocol } from './tradeSession.ts'
 import {
   DEFAULT_SAT_MARKET_DIVISIBILITY,
-  DEFAULT_MARKET_BASE_ASSET,
-  defaultMarketDivisibility,
   parseMarketBaseAsset,
   parseMarketDivisibility,
   quotePaymentSubunits,
@@ -47,8 +45,8 @@ export interface TradeCreatedDecisionInput {
   sellerLockOutcomeSetId?: string | null
   outcomeFaceAmountSubunits?: number | null
   quotePaymentSubunits?: number | null
-  baseAsset?: string | null
-  divisibility?: number | null
+  baseAsset: string
+  divisibility: number
   expectedBaseAsset?: string | null
   expectedDivisibility?: number | null
   expectedOrder?: TradeCreatedExpectedOrder | null
@@ -154,11 +152,6 @@ function validateTradeCreatedSettlementAmounts(
   const unit = resolveSettlementUnit(input)
   if (unit.error) return unit.error
   const { baseAsset, divisibility, expectedBaseAsset, expectedDivisibility } = unit
-  const expectedUnitSpecified = expectedBaseAsset != null && expectedDivisibility != null
-  const isDefaultUnit = isDefaultSettlementUnit(baseAsset, divisibility)
-  if (!expectedUnitSpecified && !isDefaultUnit) {
-    return 'TradeCreated carries a non-default unit but the local expected unit is missing.'
-  }
   if (expectedBaseAsset != null && baseAsset !== expectedBaseAsset) {
     return `Trade unit mismatch: expected ${expectedBaseAsset}, received ${baseAsset}.`
   }
@@ -166,56 +159,30 @@ function validateTradeCreatedSettlementAmounts(
     return `Trade divisibility mismatch: expected ${expectedDivisibility}, received ${divisibility}.`
   }
 
-  const canonicalBaseAsset = expectedBaseAsset ?? baseAsset
-  const canonicalDivisibility = expectedDivisibility ?? divisibility
-  const isDefault = isDefaultSettlementUnit(canonicalBaseAsset, canonicalDivisibility)
-  if (!isDefault) {
-    if (input.outcomeFaceAmountSubunits == null) {
-      return 'Trade settlement metadata is missing outcome face subunits.'
-    }
-    if (!isPositiveSafeInteger(input.outcomeFaceAmountSubunits)) {
-      return 'Trade settlement metadata outcome face subunits must be a positive safe integer.'
-    }
-    if (input.quotePaymentSubunits == null) {
-      return 'Trade settlement metadata is missing quote payment subunits.'
-    }
-    if (!isPositiveSafeInteger(input.quotePaymentSubunits)) {
-      return 'Trade settlement metadata quote payment subunits must be a positive safe integer.'
-    }
+  if (input.outcomeFaceAmountSubunits == null) {
+    return 'Trade settlement metadata is missing outcome face subunits.'
   }
-  if (
-    input.outcomeFaceAmountSubunits != null &&
-    input.outcomeFaceAmountSubunits != null &&
-    input.outcomeFaceAmountSubunits !== input.outcomeFaceAmountSubunits
-  ) {
-    return 'Trade settlement metadata has inconsistent outcome face amounts.'
+  if (!isPositiveSafeInteger(input.outcomeFaceAmountSubunits)) {
+    return 'Trade settlement metadata outcome face subunits must be a positive safe integer.'
   }
-  if (
-    input.quotePaymentSubunits != null &&
-    input.quotePaymentSubunits != null &&
-    input.quotePaymentSubunits !== input.quotePaymentSubunits
-  ) {
-    return 'Trade settlement metadata has inconsistent quote payment amounts.'
+  if (input.quotePaymentSubunits == null) {
+    return 'Trade settlement metadata is missing quote payment subunits.'
+  }
+  if (!isPositiveSafeInteger(input.quotePaymentSubunits)) {
+    return 'Trade settlement metadata quote payment subunits must be a positive safe integer.'
   }
   const orderError = validateExpectedOrderEconomics({
     role,
     settlementKind: input.settlementKind,
     order: input.expectedOrder,
     required: input.requireExpectedOrder,
-    baseAsset: canonicalBaseAsset,
-    divisibility: canonicalDivisibility,
-    outcomeFaceAmountSubunits: input.outcomeFaceAmountSubunits ?? input.outcomeFaceAmountSubunits,
-    quotePaymentSubunits: input.quotePaymentSubunits ?? input.quotePaymentSubunits,
+    baseAsset,
+    divisibility,
+    outcomeFaceAmountSubunits: input.outcomeFaceAmountSubunits,
+    quotePaymentSubunits: input.quotePaymentSubunits,
   })
   if (orderError) return orderError
   return null
-}
-
-function isDefaultSettlementUnit(baseAsset: MarketBaseAsset, divisibility: number): boolean {
-  if (baseAsset === DEFAULT_MARKET_BASE_ASSET && (divisibility === 100 || divisibility === 1_000)) {
-    return true
-  }
-  return divisibility === defaultMarketDivisibility(baseAsset)
 }
 
 function resolveSettlementUnit(input: TradeCreatedDecisionInput): {
@@ -225,16 +192,9 @@ function resolveSettlementUnit(input: TradeCreatedDecisionInput): {
   expectedDivisibility: number | null
   error: string | null
 } {
-  const baseAsset = parseOptionalBaseAsset(input.baseAsset, 'Trade unit')
+  const baseAsset = parseRequiredBaseAsset(input.baseAsset, 'Trade unit')
   if (baseAsset.error) return { ...defaultResolvedUnit(), error: baseAsset.error }
-  const legacyDefaultDivisibility =
-    input.divisibility == null &&
-    input.outcomeFaceAmountSubunits == null &&
-    input.quotePaymentSubunits == null &&
-    (input.outcomeFaceAmountSubunits != null || input.quotePaymentSubunits != null)
-      ? 1_000
-      : input.divisibility
-  const divisibility = parseOptionalDivisibility(legacyDefaultDivisibility, 'Trade divisibility')
+  const divisibility = parseRequiredDivisibility(input.divisibility, 'Trade divisibility')
   if (divisibility.error) return { ...defaultResolvedUnit(), error: divisibility.error }
   const expectedBaseAsset = parseExpectedBaseAsset(input.expectedBaseAsset)
   if (expectedBaseAsset.error) return { ...defaultResolvedUnit(), error: expectedBaseAsset.error }
@@ -258,42 +218,38 @@ function defaultResolvedUnit(): {
   expectedDivisibility: number | null
 } {
   return {
-    baseAsset: DEFAULT_MARKET_BASE_ASSET,
+    baseAsset: 'sat',
     divisibility: DEFAULT_SAT_MARKET_DIVISIBILITY,
     expectedBaseAsset: null,
     expectedDivisibility: null,
   }
 }
 
-function parseOptionalBaseAsset(
-  value: string | null | undefined,
+function parseRequiredBaseAsset(
+  value: unknown,
   label: string,
 ): { value: MarketBaseAsset; error: string | null } {
-  if (value == null || value.trim() === '') {
-    return { value: DEFAULT_MARKET_BASE_ASSET, error: null }
-  }
   const parsed = parseMarketBaseAsset(value)
   return parsed
     ? { value: parsed, error: null }
-    : { value: DEFAULT_MARKET_BASE_ASSET, error: `${label} is unsupported.` }
+    : { value: 'sat', error: `${label} must be exactly sat.` }
 }
 
 function parseExpectedBaseAsset(value: string | null | undefined): {
   value: MarketBaseAsset | null
   error: string | null
 } {
-  if (value == null || value.trim() === '') return { value: null, error: null }
+  if (value == null) return { value: null, error: null }
   const parsed = parseMarketBaseAsset(value)
   return parsed
     ? { value: parsed, error: null }
     : { value: null, error: 'Expected trade unit is unsupported.' }
 }
 
-function parseOptionalDivisibility(
-  value: number | null | undefined,
+function parseRequiredDivisibility(
+  value: unknown,
   label: string,
 ): { value: number; error: string | null } {
-  if (value == null) return { value: DEFAULT_SAT_MARKET_DIVISIBILITY, error: null }
   const parsed = parseMarketDivisibility(value)
   return parsed
     ? { value: parsed, error: null }

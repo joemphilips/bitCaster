@@ -3,6 +3,7 @@ import type {
   EngineAuthorizationRequest,
   EngineFetch,
 } from './engineClient.ts'
+import type { MarketBaseAsset } from './marketUnits.ts'
 
 export interface CreateMarketOutcome {
   name: string
@@ -15,7 +16,7 @@ export interface CreateMarketRequest {
   outcomes: CreateMarketOutcome[]
   outcomeType?: 'yesno' | 'categorical' | 'numeric'
   liquiditySats?: number
-  baseAsset?: 'sat' | 'usd' | 'jpy'
+  baseAsset: MarketBaseAsset
   categoryTags?: string[]
   oracleAnnouncementHex?: string | null
 }
@@ -24,7 +25,7 @@ export interface CreateMarketResponse {
   conditionId: string
   marketsCreated: string[]
   thumbnailUrl?: string | null
-  divisibility?: number
+  divisibility: number
 }
 
 export interface OracleNostrEvent {

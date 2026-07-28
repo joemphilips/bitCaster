@@ -349,7 +349,7 @@ test('splitCompleteSetWithOperation accepts msat collateral keysets for sat mark
   assert.equal(transport.posted.length, 1)
 })
 
-test('splitCompleteSetWithOperation accepts usd collateral keysets for usd markets', async () => {
+test('splitCompleteSetWithOperation rejects unsupported product base assets before posting', async () => {
   const transport = new FakeSplitTransport({
     'input-keyset': 'usd',
     'keyset-yes': 'usd',
@@ -357,22 +357,26 @@ test('splitCompleteSetWithOperation accepts usd collateral keysets for usd marke
   })
   const store = new MemoryProofOperationStore()
 
-  await splitCompleteSetWithOperation({
-    mintUrl: 'https://mint.example',
-    baseAsset: 'usd',
-    operationId: 'op-usd-collateral',
-    transport,
-    conditionId: CONDITION_ID,
-    collateralProofs: [proof('input-keyset', 100, 'input-secret')],
-    outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
-    amountSubunits: 100,
-    proofOperationStore: store,
-    makeOutputs: ({ collection, amountSubunits, keyset }) => [
-      output(collection, amountSubunits, keyset.id),
-    ],
-  })
-
-  assert.equal(transport.posted.length, 1)
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        mintUrl: 'https://mint.example',
+        baseAsset: 'usd',
+        operationId: 'op-usd-collateral',
+        transport,
+        conditionId: CONDITION_ID,
+        collateralProofs: [proof('input-keyset', 100, 'input-secret')],
+        outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
+        amountSubunits: 100,
+        proofOperationStore: store,
+        makeOutputs: ({ collection, amountSubunits, keyset }) => [
+          output(collection, amountSubunits, keyset.id),
+        ],
+      }),
+    /baseAsset must be exactly sat/,
+  )
+  assert.equal(transport.posted.length, 0)
+  assert.equal(store.records.size, 0)
 })
 
 test('splitCompleteSetWithOperation normalizes structured Cashu Amount inputs before mint calls', async () => {
@@ -381,6 +385,7 @@ test('splitCompleteSetWithOperation normalizes structured Cashu Amount inputs be
 
   await splitCompleteSetWithOperation({
     mintUrl: 'https://mint.example',
+    baseAsset: 'sat',
     operationId: 'op-structured-input',
     transport,
     conditionId: CONDITION_ID,
@@ -485,7 +490,7 @@ test('mergeCompleteSetToRegularWithOperation prepares conditional inputs and reg
 
   const result = await mergeCompleteSetToRegularWithOperation({
     mintUrl: 'https://mint.example',
-    baseAsset: 'usd',
+    baseAsset: 'sat',
     operationId: 'merge-op-1',
     transport,
     conditionId: CONDITION_ID,
@@ -511,7 +516,7 @@ test('mergeCompleteSetToRegularWithOperation prepares conditional inputs and reg
   assert.deepEqual(Object.keys(transport.converted[0].inputs).sort(), ['Alpha', 'Beta', 'Gamma'])
   assert.deepEqual(Object.keys(transport.converted[0].outputs), ['*'])
   assert.equal(store.records.get('merge-op-1')?.kind, 'ctf-merge')
-  assert.equal(store.records.get('merge-op-1')?.metadata.baseAsset, 'usd')
+  assert.equal(store.records.get('merge-op-1')?.metadata.baseAsset, 'sat')
 })
 
 test('mergeCompleteSetToRegularWithOperation replays completed operations without mint calls', async () => {
@@ -632,7 +637,7 @@ test('splitRegularProofsWithOperation turns a larger regular proof into an exact
 
   const split = await splitRegularProofsWithOperation({
     mintUrl: 'https://mint.example',
-    baseAsset: 'usd',
+    baseAsset: 'sat',
     operationId: 'regular-op-210',
     wallet,
     proofs: [proof('regular-keyset', 210, 'input-210')],
@@ -646,7 +651,7 @@ test('splitRegularProofsWithOperation turns a larger regular proof into an exact
   assert.equal(wallet.prepareCalls, 1)
   assert.equal(wallet.completeCalls, 1)
   assert.equal(store.records.get('regular-op-210')?.state, 'completed')
-  assert.equal(store.records.get('regular-op-210')?.metadata.baseAsset, 'usd')
+  assert.equal(store.records.get('regular-op-210')?.metadata.baseAsset, 'sat')
 })
 
 test('splitRegularProofsWithOperation replays completed regular splits without mint calls', async () => {

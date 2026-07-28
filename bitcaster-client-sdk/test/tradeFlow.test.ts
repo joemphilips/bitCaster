@@ -1,22 +1,36 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { decideTradeCreated } from '../src/tradeFlow.ts'
+import {
+  decideTradeCreated,
+  type TradeCreatedDecisionInput,
+  type TradeCreatedExpectedOrder,
+} from '../src/tradeFlow.ts'
 import { validateTradeCreatedProtocol } from '../src/tradeSession.ts'
 
-test('decideTradeCreated uses shared trade-session protocol validation', () => {
-  const payload = {
-    ownEphemeralPubkey: 'abc',
+function tradeInput(overrides: Partial<TradeCreatedDecisionInput> = {}): TradeCreatedDecisionInput {
+  return {
+    ownEphemeralPubkey: 'def',
     sellerPubkey: 'abc',
     buyerPubkey: 'def',
     sellerLocktime: 120,
     buyerLocktime: 60,
     settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'YES',
-    outcomeFaceAmountSubunits: 100,
-    quotePaymentSubunits: 99,
+    sellerLockOutcomeSetId: 'NO',
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 400_000,
+    baseAsset: 'sat',
+    divisibility: 10_000,
+    ...overrides,
   }
+}
 
+test('decideTradeCreated uses shared trade-session protocol validation', () => {
+  const payload = tradeInput({
+    ownEphemeralPubkey: 'abc',
+    sellerKeepOutcomeSetId: 'YES',
+    sellerLockOutcomeSetId: 'YES',
+  })
   const sharedError = validateTradeCreatedProtocol(payload)
   const decision = decideTradeCreated(payload)
 
@@ -32,21 +46,8 @@ test('decideTradeCreated uses shared trade-session protocol validation', () => {
   })
 })
 
-test('decideTradeCreated validates canonical amounts without legacy sats fields', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 1_000_000,
-    quotePaymentSubunits: 400_000,
-  })
-
-  assert.deepEqual(decision, {
+test('decideTradeCreated accepts exact sat product settlement metadata', () => {
+  assert.deepEqual(decideTradeCreated(tradeInput()), {
     accepted: true,
     role: 'buyer',
     counterpartyPubkey: 'abc',
@@ -55,614 +56,179 @@ test('decideTradeCreated validates canonical amounts without legacy sats fields'
   })
 })
 
-test('decideTradeCreated accepts non-default canonical amounts when local expected unit is asserted', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'usd',
-    divisibility: 1_000,
-    expectedBaseAsset: 'usd',
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
-  })
-
-  assert.deepEqual(decision, {
-    accepted: true,
-    role: 'buyer',
-    counterpartyPubkey: 'abc',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-  })
-})
-
-test('decideTradeCreated accepts default usd canonical amounts when local expected unit is not asserted', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'usd',
-    divisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
-  })
-
-  assert.equal(decision.accepted, true)
-})
-
-test('decideTradeCreated accepts default usd canonical amounts when only expected divisibility is asserted', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'usd',
-    divisibility: 1_000,
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
-  })
-
-  assert.equal(decision.accepted, true)
-})
-
-test('decideTradeCreated derives system sat/10000 default from canonical payload when expected unit is missing', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 1_000_000,
-    quotePaymentSubunits: 400_000,
-  })
-
-  assert.deepEqual(decision, {
-    accepted: true,
-    role: 'buyer',
-    counterpartyPubkey: 'abc',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-  })
-})
-
-test('decideTradeCreated accepts default sat/10000 TradeCreated without expected unit assertion', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'sat',
-    divisibility: 10_000,
-    outcomeFaceAmountSubunits: 1_000_000,
-    quotePaymentSubunits: 500_000,
-  })
-
-  assert.equal(decision.accepted, true)
-})
-
-test('decideTradeCreated rejects non-default divisibility without expected unit assertion', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'sat',
-    divisibility: 2_000,
-    outcomeFaceAmountSubunits: 2_000,
-    quotePaymentSubunits: 1_000,
-  })
-
-  assert.equal(decision.accepted, false)
-  if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
-    assert.match(decision.error, /non-default unit.*expected unit is missing/i)
-  }
-})
-
-test('decideTradeCreated accepts explicit non-default divisibility assertion', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'sat',
-    divisibility: 2_000,
-    expectedBaseAsset: 'sat',
-    expectedDivisibility: 2_000,
-    outcomeFaceAmountSubunits: 2_000,
-    quotePaymentSubunits: 1_000,
-  })
-
-  assert.equal(decision.accepted, true)
-})
-
-test('decideTradeCreated rejects default divisibility when expected non-default divisibility is asserted', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'sat',
-    divisibility: 1_000,
-    expectedBaseAsset: 'sat',
-    expectedDivisibility: 2_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 500,
-  })
-
-  assert.equal(decision.accepted, false)
-  if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
-    assert.match(decision.error, /divisibility mismatch/i)
-  }
-})
-
-test('decideTradeCreated accepts default usd base asset without expected unit assertion', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'usd',
-    divisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 500,
-  })
-
-  assert.equal(decision.accepted, true)
-})
-
-test('decideTradeCreated accepts explicit non-default base asset assertion', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'usd',
-    divisibility: 1_000,
-    expectedBaseAsset: 'usd',
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 500,
-  })
-
-  assert.equal(decision.accepted, true)
-})
-
-test('decideTradeCreated accepts legacy sat/100 TradeCreated only with explicit expected unit assertion', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'sat',
-    divisibility: 100,
-    expectedBaseAsset: 'sat',
-    expectedDivisibility: 100,
-    outcomeFaceAmountSubunits: 100,
-    quotePaymentSubunits: 50,
-  })
-
-  assert.equal(decision.accepted, true)
-})
-
-test('decideTradeCreated validates payload unit against expected local unit', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'sat',
-    divisibility: 1_000,
-    expectedBaseAsset: 'usd',
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
-  })
-
-  assert.equal(decision.accepted, false)
-  if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
-    assert.match(decision.error, /unit mismatch/i)
-  }
-})
-
-test('decideTradeCreated rejects omitted non-default payload metadata from expected local unit', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    expectedBaseAsset: 'usd',
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
-  })
-
-  assert.equal(decision.accepted, false)
-  if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
-    assert.match(decision.error, /unit mismatch/i)
-  }
-})
-
-test('decideTradeCreated accepts default usd units with legacy-compatible amount fields', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'usd',
-    divisibility: 1_000,
-    expectedBaseAsset: 'usd',
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
-  })
-
-  assert.equal(decision.accepted, true)
-})
-
-test('decideTradeCreated rejects unsupported explicit unit metadata', () => {
-  for (const baseAsset of ['btc', ' sats ']) {
-    const decision = decideTradeCreated({
-      ownEphemeralPubkey: 'def',
-      sellerPubkey: 'abc',
-      buyerPubkey: 'def',
-      sellerLocktime: 120,
-      buyerLocktime: 60,
-      baseAsset,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 40,
-    })
-
+test('decideTradeCreated rejects missing or noncanonical product base assets', () => {
+  for (const baseAsset of [undefined, null, '', 'SAT', ' sat', 'sat ', 'usd', 'jpy', 'btc']) {
+    const decision = decideTradeCreated(tradeInput({ baseAsset: baseAsset as unknown as string }))
     assert.equal(decision.accepted, false)
     if (!decision.accepted) {
       assert.equal(decision.reason, 'invalid-protocol')
-      assert.match(decision.error, /unit is unsupported/i)
+      assert.match(decision.error, /Trade unit must be exactly sat/)
     }
   }
 })
 
-test('decideTradeCreated accepts explicit positive divisibility metadata', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    divisibility: 10_000,
-    outcomeFaceAmountSubunits: 1_000_000,
-    quotePaymentSubunits: 400_000,
-  })
+test('decideTradeCreated rejects missing or unsupported divisibilities', () => {
+  for (const divisibility of [undefined, null, 0, 100, 1_000, 2_000, 10_001]) {
+    const decision = decideTradeCreated(
+      tradeInput({ divisibility: divisibility as unknown as number }),
+    )
+    assert.equal(decision.accepted, false)
+    if (!decision.accepted) {
+      assert.equal(decision.reason, 'invalid-protocol')
+      assert.match(decision.error, /Trade divisibility is unsupported/)
+    }
+  }
+})
 
+test('decideTradeCreated accepts explicit numeric metadata without a local expectation', () => {
+  const decision = decideTradeCreated(
+    tradeInput({
+      divisibility: 1_000_000,
+      outcomeFaceAmountSubunits: 1_000_000,
+      quotePaymentSubunits: 400_000,
+    }),
+  )
   assert.equal(decision.accepted, true)
 })
 
+test('decideTradeCreated requires both canonical amounts for every divisibility', () => {
+  for (const divisibility of [10_000, 1_000_000]) {
+    for (const overrides of [
+      { outcomeFaceAmountSubunits: undefined },
+      { outcomeFaceAmountSubunits: 0 },
+      { outcomeFaceAmountSubunits: 1.5 },
+      { quotePaymentSubunits: undefined },
+      { quotePaymentSubunits: 0 },
+      { quotePaymentSubunits: Number.MAX_SAFE_INTEGER + 1 },
+    ]) {
+      const decision = decideTradeCreated(tradeInput({ divisibility, ...overrides }))
+      assert.equal(decision.accepted, false)
+      if (!decision.accepted) {
+        assert.match(decision.error, /settlement metadata.*(missing|positive safe integer)/i)
+      }
+    }
+  }
+})
+
+test('decideTradeCreated rejects mismatched local unit expectations', () => {
+  const baseAssetMismatch = decideTradeCreated(
+    tradeInput({ expectedBaseAsset: 'usd', expectedDivisibility: 10_000 }),
+  )
+  assert.equal(baseAssetMismatch.accepted, false)
+  if (!baseAssetMismatch.accepted) {
+    assert.match(baseAssetMismatch.error, /Expected trade unit is unsupported/)
+  }
+
+  const divisibilityMismatch = decideTradeCreated(
+    tradeInput({ expectedBaseAsset: 'sat', expectedDivisibility: 1_000_000 }),
+  )
+  assert.equal(divisibilityMismatch.accepted, false)
+  if (!divisibilityMismatch.accepted) {
+    assert.match(divisibilityMismatch.error, /divisibility mismatch/i)
+  }
+})
+
 test('decideTradeCreated validates buyer quote against submitted order limit', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    baseAsset: 'usd',
-    divisibility: 1_000,
-    expectedBaseAsset: 'usd',
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 100_000,
-    quotePaymentSubunits: 40_001,
-    expectedOrder: {
-      side: 'Buy',
-      tokenSide: 'Outcome',
-      priceSubunits: 400,
-      amountSubunits: 100_000,
-    },
-  })
+  const decision = decideTradeCreated(
+    tradeInput({
+      outcomeFaceAmountSubunits: 1_000_000,
+      quotePaymentSubunits: 400_001,
+      expectedOrder: order({
+        side: 'Buy',
+        tokenSide: 'Outcome',
+        priceSubunits: 4_000,
+      }),
+    }),
+  )
 
   assert.equal(decision.accepted, false)
   if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
     assert.match(decision.error, /exceeds the submitted order price/i)
   }
 })
 
 test('decideTradeCreated validates exact maker bid-as-complement quote', () => {
-  const accepted = decideTradeCreated({
-    ownEphemeralPubkey: 'abc',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'usd',
-    divisibility: 1_000,
-    expectedBaseAsset: 'usd',
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 100_000,
-    quotePaymentSubunits: 80_000,
-    expectedOrder: {
-      side: 'bid',
-      tokenSide: 'Complement',
-      priceSubunits: 200,
-      amountSubunits: 100_000,
-      quotePolicy: 'exact',
-    },
+  const expectedOrder = order({
+    side: 'bid',
+    tokenSide: 'Complement',
+    priceSubunits: 2_000,
+    quotePolicy: 'exact',
   })
+  const accepted = decideTradeCreated(
+    tradeInput({
+      ownEphemeralPubkey: 'abc',
+      quotePaymentSubunits: 800_000,
+      expectedOrder,
+    }),
+  )
   assert.equal(accepted.accepted, true)
 
-  const rejected = decideTradeCreated({
-    ownEphemeralPubkey: 'abc',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'usd',
-    divisibility: 1_000,
-    expectedBaseAsset: 'usd',
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 100_000,
-    quotePaymentSubunits: 80_001,
-    expectedOrder: {
-      side: 'bid',
-      tokenSide: 'Complement',
-      priceSubunits: 200,
-      amountSubunits: 100_000,
-      quotePolicy: 'exact',
-    },
-  })
-
+  const rejected = decideTradeCreated(
+    tradeInput({
+      ownEphemeralPubkey: 'abc',
+      quotePaymentSubunits: 800_001,
+      expectedOrder,
+    }),
+  )
   assert.equal(rejected.accepted, false)
   if (!rejected.accepted) {
-    assert.equal(rejected.reason, 'invalid-protocol')
     assert.match(rejected.error, /does not satisfy the submitted order price/i)
   }
 })
 
 test('decideTradeCreated accepts mint seller settlement backed by outcome-side bid', () => {
-  const accepted = decideTradeCreated({
-    ownEphemeralPubkey: 'abc',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    baseAsset: 'sat',
-    divisibility: 1_000,
-    expectedBaseAsset: 'sat',
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000_000,
-    quotePaymentSubunits: 900_000,
-    expectedOrder: {
-      side: 'Buy',
-      tokenSide: 'Outcome',
-      priceSubunits: 100,
-      amountSubunits: 1_000_000,
-      quotePolicy: 'exact',
-    },
-  })
-
-  assert.equal(accepted.accepted, true)
-})
-
-test('decideTradeCreated accepts mint seller settlement backed by complement-side bid', () => {
-  const accepted = decideTradeCreated({
-    ownEphemeralPubkey: 'abc',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 1_000_000,
-    quotePaymentSubunits: 600_000,
-    expectedOrder: {
-      side: 'Buy',
-      tokenSide: 'Complement',
-      priceSubunits: 4_000,
-      amountSubunits: 1_000_000,
-    },
-  })
-
-  assert.equal(accepted.accepted, true)
+  const decision = decideTradeCreated(
+    tradeInput({
+      ownEphemeralPubkey: 'abc',
+      quotePaymentSubunits: 900_000,
+      expectedOrder: order({
+        side: 'Buy',
+        tokenSide: 'Outcome',
+        priceSubunits: 1_000,
+        quotePolicy: 'exact',
+      }),
+    }),
+  )
+  assert.equal(decision.accepted, true)
 })
 
 test('decideTradeCreated fails closed when expected order economics are required but missing', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
-    requireExpectedOrder: true,
-  })
-
+  const decision = decideTradeCreated(tradeInput({ requireExpectedOrder: true }))
   assert.equal(decision.accepted, false)
   if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
     assert.match(decision.error, /Expected order economics are missing/i)
   }
 })
 
-test('decideTradeCreated accepts buy-side mint seller without explicit token side', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'abc',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'Mint',
-    sellerKeepOutcomeSetId: 'YES',
-    sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 1_000_000,
-    quotePaymentSubunits: 600_000,
-    expectedOrder: {
-      side: 'Buy',
-      priceSubunits: 4_000,
-      amountSubunits: 1_000_000,
-    },
-  })
+test('decideTradeCreated enforces direct-settlement role and order side', () => {
+  const seller = decideTradeCreated(
+    tradeInput({
+      ownEphemeralPubkey: 'abc',
+      settlementKind: 'DirectSwap',
+      expectedOrder: order({ side: 'Sell', tokenSide: 'Outcome' }),
+    }),
+  )
+  assert.equal(seller.accepted, true)
 
-  assert.equal(decision.accepted, true)
-})
-
-test('decideTradeCreated accepts direct seller settlement backed by sell order', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'abc',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 1_000_000,
-    quotePaymentSubunits: 400_000,
-    expectedOrder: {
-      side: 'Sell',
-      tokenSide: 'Outcome',
-      priceSubunits: 4_000,
-      amountSubunits: 1_000_000,
-    },
-  })
-
-  assert.equal(decision.accepted, true)
-})
-
-test('decideTradeCreated accepts direct buyer settlement backed by buy order', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 1_000_000,
-    quotePaymentSubunits: 400_000,
-    expectedOrder: {
-      side: 'Buy',
-      tokenSide: 'Outcome',
-      priceSubunits: 4_000,
-      amountSubunits: 1_000_000,
-    },
-  })
-
-  assert.equal(decision.accepted, true)
-})
-
-test('decideTradeCreated rejects direct seller settlement backed by buy order', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'abc',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 1_000_000,
-    quotePaymentSubunits: 400_000,
-    expectedOrder: {
-      side: 'Buy',
-      tokenSide: 'Outcome',
-      priceSubunits: 4_000,
-      amountSubunits: 1_000_000,
-    },
-  })
-
-  assert.equal(decision.accepted, false)
-  if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
-    assert.match(decision.error, /role does not match/)
+  const wrongSellerSide = decideTradeCreated(
+    tradeInput({
+      ownEphemeralPubkey: 'abc',
+      settlementKind: 'DirectSwap',
+      expectedOrder: order({ side: 'Buy', tokenSide: 'Outcome' }),
+    }),
+  )
+  assert.equal(wrongSellerSide.accepted, false)
+  if (!wrongSellerSide.accepted) {
+    assert.match(wrongSellerSide.error, /role does not match/)
   }
 })
 
-test('decideTradeCreated rejects direct buyer settlement backed by sell order', () => {
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: 'def',
-    sellerPubkey: 'abc',
-    buyerPubkey: 'def',
-    sellerLocktime: 120,
-    buyerLocktime: 60,
-    settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 1_000_000,
-    quotePaymentSubunits: 400_000,
-    expectedOrder: {
-      side: 'Sell',
-      tokenSide: 'Outcome',
-      priceSubunits: 4_000,
-      amountSubunits: 1_000_000,
-    },
-  })
-
-  assert.equal(decision.accepted, false)
-  if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
-    assert.match(decision.error, /role does not match/)
+function order(overrides: Partial<TradeCreatedExpectedOrder>): TradeCreatedExpectedOrder {
+  return {
+    side: 'Buy',
+    tokenSide: 'Outcome',
+    priceSubunits: 4_000,
+    amountSubunits: 1_000_000,
+    ...overrides,
   }
-})
+}

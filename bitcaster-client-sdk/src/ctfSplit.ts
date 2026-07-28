@@ -1536,10 +1536,9 @@ function conditionalKeysetMatchesUnit(
 }
 
 function requireMarketBaseAsset(value: CtfCollateralBaseAsset, context: string): MarketBaseAsset {
-  if (value == null) return 'sat'
   const parsed = parseMarketBaseAsset(value)
   if (!parsed) {
-    throw new Error(`${context} must be one of: sat, usd, jpy`)
+    throw new Error(`${context} must be exactly sat`)
   }
   return parsed
 }

@@ -1,3 +1,5 @@
+import type { MarketBaseAsset } from './marketUnits.ts'
+
 export interface SdkMarketOutcome {
   id: string
   label: string
@@ -23,8 +25,8 @@ export interface SdkMarketForTrading {
   id: string
   type: SdkMarketType
   outcomes?: SdkMarketOutcome[]
-  baseAsset?: 'sat' | 'usd' | 'jpy'
-  divisibility?: number
+  baseAsset: MarketBaseAsset
+  divisibility: number
 }
 
 export interface SdkTradeSelection {

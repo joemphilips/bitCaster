@@ -6,6 +6,8 @@ import type { SdkMarketForTrading, SdkOrderBook } from '../src/types.ts'
 const yesNoMarket: SdkMarketForTrading = {
   id: 'condition-yesno',
   type: 'yesno',
+  baseAsset: 'sat',
+  divisibility: 10_000,
   outcomes: [
     { id: 'yes', label: 'Yes' },
     { id: 'no', label: 'No' },
@@ -15,6 +17,8 @@ const yesNoMarket: SdkMarketForTrading = {
 const categoricalMarket: SdkMarketForTrading = {
   id: 'condition-category',
   type: 'categorical',
+  baseAsset: 'sat',
+  divisibility: 10_000,
   outcomes: [
     { id: 'alice', label: 'Alice' },
     { id: 'bob', label: 'Bob' },
@@ -124,55 +128,48 @@ test('buildTradeTicket prices executable market buys as aggressive FAK orders', 
 
 test('buildTradeTicket applies market divisibility to price and amount validation', () => {
   const ticket = buildTradeTicket({
-    market: { ...yesNoMarket, divisibility: 1_000 },
+    market: { ...yesNoMarket, divisibility: 1_000_000 },
     selection: { side: 'yes' },
-    amountSubunits: 2_000,
+    amountSubunits: 2_000_000,
     side: 'Buy',
     orderType: 'market',
     limitPrice: 50,
     orderBook: liquidBook,
   })
-  assert.equal(ticket.request.price, 999)
+  assert.equal(ticket.request.price, 999_999)
 
   assert.throws(
     () =>
       buildTradeTicket({
-        market: { ...yesNoMarket, divisibility: 1_000 },
+        market: { ...yesNoMarket, divisibility: 1_000_000 },
         selection: { side: 'yes' },
-        amountSubunits: 1_501,
+        amountSubunits: 1_000_001,
         side: 'Buy',
         orderType: 'limit',
         limitPrice: 50,
         orderBook: liquidBook,
       }),
-    /1000 sub-unit increments/,
+    /1000000 sub-unit increments/,
   )
 })
 
-test('buildTradeTicket validates amount by market divisibility share face', () => {
-  const ticket = buildTradeTicket({
-    market: { ...yesNoMarket, baseAsset: 'usd', divisibility: 1_000 },
-    selection: { side: 'yes' },
-    amountSubunits: 1_000,
-    side: 'Buy',
-    orderType: 'limit',
-    limitPrice: 500,
-    orderBook: liquidBook,
-  })
-  assert.equal(ticket.request.amountSubunits, 1_000)
-
+test('buildTradeTicket rejects unsupported product units', () => {
   assert.throws(
     () =>
       buildTradeTicket({
-        market: { ...yesNoMarket, baseAsset: 'usd', divisibility: 1_000 },
+        market: {
+          ...yesNoMarket,
+          baseAsset: 'usd',
+          divisibility: 1_000,
+        } as unknown as SdkMarketForTrading,
         selection: { side: 'yes' },
-        amountSubunits: 1_001,
+        amountSubunits: 1_000,
         side: 'Buy',
         orderType: 'limit',
         limitPrice: 500,
         orderBook: liquidBook,
       }),
-    /1000 sub-unit increments/,
+    /unsupported base asset/,
   )
 })
 

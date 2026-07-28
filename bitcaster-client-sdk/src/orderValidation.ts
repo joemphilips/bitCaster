@@ -1,5 +1,5 @@
 import {
-  normalizeMarketDivisibility,
+  parseMarketDivisibility,
   validatePriceNumerator,
   validateWholeShareFaceAmount,
 } from './marketUnits.ts'
@@ -64,17 +64,20 @@ export function validateOrderIntent(request: unknown): OrderIntentValidation {
       message: 'Order rejected: side must be Buy or Sell.',
     }
   }
+  if (intent.baseAsset !== 'sat') {
+    return {
+      valid: false,
+      message: 'Order rejected: baseAsset must be sat.',
+    }
+  }
+  const divisibility = parseMarketDivisibility(intent.divisibility)
+  if (divisibility === null) {
+    return {
+      valid: false,
+      message: 'Order rejected: divisibility must be 10000 or 1000000.',
+    }
+  }
   const price = intent.price
-  const divisibility =
-    typeof intent.divisibility === 'number'
-      ? normalizeMarketDivisibility(
-          intent.divisibility,
-          typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined,
-        )
-      : normalizeMarketDivisibility(
-          undefined,
-          typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined,
-        )
   if (typeof price !== 'number' || !validatePriceNumerator(price, divisibility)) {
     return {
       valid: false,
