@@ -737,7 +737,14 @@ export class DaemonSwapExecutor {
       const live = state.swaps[tradeId]
       if (!live || isTerminal(live)) return
       removeProofsBySecret(state, mintUrl, [...collateral.spent, ...result.spentSatProofs])
-      addProofs(state, mintUrl, collateral.keep, 'available', { kind: 'sats', baseAsset }, now)
+      addProofs(
+        state,
+        mintUrl,
+        collateral.keep,
+        'available',
+        { kind: 'sats', baseAsset, unit: 'msat' },
+        now,
+      )
       addOutcomeProofsByCollection(
         state,
         mintUrl,
@@ -883,6 +890,8 @@ export class DaemonSwapExecutor {
           kind: 'Outcome',
           conditionId: split.conditionId,
           outcomeSetId: preflight.lockOutcomeSetId,
+          baseAsset: 'sat',
+          unit: 'msat',
         },
         now,
         tradeId,
@@ -992,6 +1001,8 @@ export class DaemonSwapExecutor {
           kind: 'Outcome',
           conditionId: first.asset.conditionId,
           outcomeSetId,
+          baseAsset: 'sat',
+          unit: 'msat',
         },
       })
     }
@@ -1039,7 +1050,14 @@ export class DaemonSwapExecutor {
         const live = state.swaps[tradeId]
         if (!live || isTerminal(live)) return
         markProofs(state, selected, 'locked', tradeId, now)
-        addProofs(state, profile.mintUrl, result.changeProofs, 'available', { kind: 'sats' }, now)
+        addProofs(
+          state,
+          profile.mintUrl,
+          result.changeProofs,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+          now,
+        )
         live.messages = {
           ...live.messages,
           lockedProofsBuyer: result.lockedProofsCipher,
@@ -1082,7 +1100,14 @@ export class DaemonSwapExecutor {
       await updateState((state, now) => {
         const live = state.swaps[tradeId]
         if (!live || isTerminal(live)) return
-        addProofs(state, profile.mintUrl, fresh, 'available', { kind: 'sats' }, now)
+        addProofs(
+          state,
+          profile.mintUrl,
+          fresh,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+          now,
+        )
         live.step = 'awaiting-confirmation'
         live.updatedAt = now
       })
@@ -1120,6 +1145,8 @@ export class DaemonSwapExecutor {
               kind: 'Outcome' as const,
               conditionId: asset.conditionId,
               outcomeSetId: swap.sellerLockOutcomeSetId,
+              baseAsset: 'sat' as const,
+              unit: 'msat' as const,
             }
           : asset
       const compoundOutcomeSet = parseOutcomeSetId(receivedAsset.outcomeSetId).length > 1
@@ -1637,7 +1664,13 @@ function addOutcomeProofsByCollection(
       mintUrl,
       proofsByCollection[collection] ?? [],
       proofState,
-      { kind: 'Outcome', conditionId, outcomeSetId: collection },
+      {
+        kind: 'Outcome',
+        conditionId,
+        outcomeSetId: collection,
+        baseAsset: 'sat',
+        unit: 'msat',
+      },
       now,
       reservedBy,
     )
@@ -1669,7 +1702,13 @@ function addOutcomeProofsByKeyset(
       mintUrl,
       collectionProofs,
       proofState,
-      { kind: 'Outcome', conditionId, outcomeSetId: collection },
+      {
+        kind: 'Outcome',
+        conditionId,
+        outcomeSetId: collection,
+        baseAsset: 'sat',
+        unit: 'msat',
+      },
       now,
       reservedBy,
     )
@@ -1699,6 +1738,8 @@ function addRefundedProofsByKeyset(
       kind: 'Outcome',
       conditionId: metadata.conditionId,
       outcomeSetId: metadata.outcomeCollection,
+      baseAsset: 'sat',
+      unit: 'msat',
     }
     const key = JSON.stringify(asset)
     const group = byAsset.get(key) ?? { asset, proofs: [] }
@@ -1744,6 +1785,8 @@ function outcomeAssetForMarket(marketId: string | undefined): OutcomeAsset | nul
     kind: 'Outcome',
     conditionId: marketId.slice(0, dash),
     outcomeSetId: marketId.slice(dash + 1),
+    baseAsset: 'sat',
+    unit: 'msat',
   }
 }
 

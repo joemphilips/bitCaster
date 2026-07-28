@@ -14,15 +14,16 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
   await withProfile(async () => {
     const state = emptyDaemonState()
     state.wallet.proofs.push({
-      proof: { amount: 7, secret: 'proof-secret', C: 'proof-signature' },
+      proof: { id: 'keyset-1', amount: 7, secret: 'proof-secret', C: 'proof-signature' },
       mintUrl: 'http://localhost:8086',
       state: 'reserved',
       reservedBy: 'send-1',
       asset: {
-        kind: 'outcome',
+        kind: 'Outcome',
         conditionId: 'condition-1',
         outcomeSetId: 'YES',
         baseAsset: 'sat',
+        unit: 'msat',
       },
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:01.000Z',
@@ -56,7 +57,7 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
       marketId: 'condition-1-YES',
       tokenSide: 'Outcome',
       side: 'Sell',
-      priceSubunits: 42,
+      priceSubunits: 4_200,
       amountSubunits: 100,
       status: 'resting',
       ephemeralPubkey: `02${'44'.repeat(32)}`,
@@ -66,10 +67,10 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
         conditionId: 'condition-1',
         keepOutcomeSetId: 'NO',
         lockOutcomeSetId: 'YES',
-        amountSats: 100,
+        amountSubunits: 100,
       },
       baseAsset: 'sat',
-      divisibility: 100,
+      divisibility: 10_000,
       tradeIds: ['trade-placeholder', 'trade-full'],
       engineStatus: { status: 'resting', fills: [{ tradeId: 'trade-full' }] },
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -79,6 +80,8 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
       tradeId: 'trade-placeholder',
       marketId: 'condition-1-YES',
       orderId: 'order-1',
+      baseAsset: 'sat',
+      divisibility: 10_000,
       messages: {},
       step: 'awaiting-trade-created',
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -88,6 +91,8 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
       tradeId: 'trade-recovery',
       marketId: 'condition-2-NO',
       orderId: 'engine-order-without-local-row',
+      baseAsset: 'sat',
+      divisibility: 10_000,
       messages: {},
       step: 'awaiting-trade-created',
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -108,7 +113,7 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
       quotePaymentSats: 1,
       quotePaymentSubunits: 42,
       baseAsset: 'sat',
-      divisibility: 100,
+      divisibility: 10_000,
       settlementKind: 'DirectSwap',
       messages: {
         adaptorPoint: 'cipher-a',
@@ -130,7 +135,7 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
 
     await writeState(state)
     const restored = await readState()
-    assert.equal(restored?.wallet.proofs[0].proof.id, undefined)
+    assert.equal(restored?.wallet.proofs[0].proof.id, 'keyset-1')
     assert.equal(restored?.wallet.keysetCounters['keyset-1'], 9)
     assert.equal(restored?.proofOperations['operation-1'].kind, 'ctf-consolidation')
     assert.equal(restored?.orders['order-1'].preflightSplit?.lockOutcomeSetId, 'YES')
@@ -161,10 +166,10 @@ test('state persistence clamps wall-clock regressions at creation time', async (
   await withProfile(async () => {
     const state = emptyDaemonState()
     state.wallet.proofs.push({
-      proof: { amount: 1, secret: 'proof-secret', C: 'proof-signature' },
+      proof: { id: 'keyset-1', amount: 1, secret: 'proof-secret', C: 'proof-signature' },
       mintUrl: 'http://localhost:8086',
       state: 'available',
-      asset: { kind: 'sats', baseAsset: 'sat' },
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
       createdAt: '2026-01-01T00:00:01.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     })
@@ -183,6 +188,8 @@ test('state persistence clamps wall-clock regressions at creation time', async (
     state.orders['order-1'] = {
       orderId: 'order-1',
       marketId: 'condition-1-YES',
+      baseAsset: 'sat',
+      divisibility: 10_000,
       status: 'resting',
       tradeIds: [],
       createdAt: '2026-01-01T00:00:01.000Z',
@@ -190,6 +197,8 @@ test('state persistence clamps wall-clock regressions at creation time', async (
     }
     state.swaps['trade-1'] = {
       tradeId: 'trade-1',
+      baseAsset: 'sat',
+      divisibility: 10_000,
       messages: {},
       step: 'awaiting-trade-created',
       createdAt: '2026-01-01T00:00:01.000Z',
@@ -220,6 +229,8 @@ test('order upsert preserves its immutable ephemeral key binding', async () => {
     state.orders['order-1'] = {
       orderId: 'order-1',
       marketId: 'condition-1-YES',
+      baseAsset: 'sat',
+      divisibility: 10_000,
       status: 'resting',
       tradeIds: [],
       createdAt: '2026-01-01T00:00:00.000Z',

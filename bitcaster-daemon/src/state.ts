@@ -1,12 +1,21 @@
 import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
+import type { Proof } from '@cashu/cashu-ts'
+import {
+  completedProofAuthorityDigest,
+  type CtfProofOperationCompletion,
+} from '@bitcaster-market/client-sdk/ctfSplit'
 import {
   decideSwapMessage,
   decideTradeCreated,
   decideTradeStateChanged,
   isSettlementCompleteMessage,
 } from '@bitcaster-market/client-sdk/tradeFlow'
-import { normalizeMarketBaseAsset } from '@bitcaster-market/client-sdk/marketUnits'
+import {
+  cashuAmountToMarketSubunits,
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from '@bitcaster-market/client-sdk/marketUnits'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import type { PartialLockHeldRecord, SwapFailure } from '@bitcaster-market/client-sdk/swapFailure'
 import { profileDatabasePath, profileDir } from './profile.ts'
@@ -57,6 +66,7 @@ export interface ProofOperationRecord {
   outputs: Record<string, StoredOutputData[]>
   metadata: Record<string, unknown>
   resultProofs?: Record<string, CashuProofRecord[]>
+  resultProofsDigest?: string
   lastError?: string | null
   createdAt: number
   updatedAt: number
@@ -101,8 +111,14 @@ export interface StoredProofRecord {
 }
 
 export type StoredProofAsset =
-  | { kind: 'sats'; baseAsset?: string | null }
-  | { kind: 'Outcome'; conditionId: string; outcomeSetId: string; baseAsset?: string | null }
+  | { kind: 'sats'; baseAsset: 'sat'; unit: 'sat' | 'msat' }
+  | {
+      kind: 'Outcome'
+      conditionId: string
+      outcomeSetId: string
+      baseAsset: 'sat'
+      unit: 'msat'
+    }
 
 export interface LocalOrderRecord {
   orderId: string
@@ -115,8 +131,8 @@ export interface LocalOrderRecord {
   ephemeralPubkey?: string
   clientOrderId?: string
   preflightSplit?: LocalOrderPreflightSplit
-  baseAsset?: string | null
-  divisibility?: number
+  baseAsset: 'sat'
+  divisibility: number
   tradeIds: string[]
   engineStatus?: unknown
   createdAt: string
@@ -128,7 +144,7 @@ export interface LocalOrderPreflightSplit {
   conditionId: string
   keepOutcomeSetId: string
   lockOutcomeSetId: string
-  amountSats: number
+  amountSubunits: number
 }
 
 export interface ListLocalOrdersParams {
@@ -155,8 +171,8 @@ export interface LocalSwapRecord {
   outcomeFaceAmountSats?: number
   outcomeFaceAmountSubunits?: number
   quotePaymentSats?: number
-  baseAsset?: string | null
-  divisibility?: number
+  baseAsset: 'sat'
+  divisibility: number
   quotePaymentSubunits?: number
   settlementKind?: string | null
   sellerKeepOutcomeSetId?: string | null
@@ -200,8 +216,9 @@ export interface DaemonTradeCreatedPayload {
   outcomeFaceAmountSats?: number
   outcomeFaceAmountSubunits?: number
   quotePaymentSats?: number
-  baseAsset?: string | null
-  divisibility?: number
+  baseAsset: 'sat'
+  collateralUnit: 'msat'
+  divisibility: number
   quotePaymentSubunits?: number
   settlementKind?: string | null
   sellerKeepOutcomeSetId?: string | null
@@ -308,13 +325,6 @@ export async function updateState<T>(update: (state: DaemonState, now: string) =
   })
 }
 
-export async function addAvailableSatProofs(
-  mintUrl: string,
-  proofs: CashuProofRecord[],
-): Promise<StoredProofRecord[]> {
-  return addAvailableProofs(mintUrl, proofs, { kind: 'sats' })
-}
-
 export async function addAvailableProofs(
   mintUrl: string,
   proofs: CashuProofRecord[],
@@ -345,45 +355,6 @@ export async function addAvailableProofs(
   })
 }
 
-export async function replaceSentSatProofs(input: {
-  mintUrl: string
-  spentSecrets: string[]
-  keepProofs: CashuProofRecord[]
-}): Promise<StoredProofRecord[]> {
-  return updateState((state, now) => {
-    const spent = new Set(input.spentSecrets)
-    const before = state.wallet.proofs.length
-    state.wallet.proofs = state.wallet.proofs.filter(
-      (record) => record.mintUrl !== input.mintUrl || !spent.has(record.proof.secret),
-    )
-    if (state.wallet.proofs.length === before) {
-      throw new Error('send operation did not consume any stored proofs')
-    }
-
-    const existingSecrets = new Set(
-      state.wallet.proofs
-        .filter((record) => record.mintUrl === input.mintUrl)
-        .map((record) => record.proof.secret),
-    )
-    const inserted: StoredProofRecord[] = []
-    for (const proof of input.keepProofs) {
-      if (existingSecrets.has(proof.secret)) continue
-      existingSecrets.add(proof.secret)
-      const record: StoredProofRecord = {
-        proof: normalizeCashuProofRecord(proof),
-        mintUrl: input.mintUrl,
-        state: 'available',
-        asset: { kind: 'sats' },
-        createdAt: now,
-        updatedAt: now,
-      }
-      state.wallet.proofs.push(record)
-      inserted.push(record)
-    }
-    return inserted
-  })
-}
-
 export async function reserveAvailableSatProofsForSend(input: {
   mintUrl: string
   amountSats: number
@@ -398,7 +369,8 @@ export async function reserveAvailableSatProofsForSend(input: {
           record.mintUrl === input.mintUrl &&
           record.state === 'available' &&
           record.asset.kind === 'sats' &&
-          normalizeProofAssetBaseAsset(record.asset) === 'sat',
+          normalizeProofAssetBaseAsset(record.asset) === 'sat' &&
+          normalizeProofAssetUnit(record.asset) === 'sat',
       )
       .sort((a, b) => amountToNumber(b.proof.amount) - amountToNumber(a.proof.amount))
 
@@ -443,7 +415,7 @@ export async function completeReservedSatSend(input: {
         proof: normalizeCashuProofRecord(proof),
         mintUrl: input.mintUrl,
         state: 'available',
-        asset: { kind: 'sats' },
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
         createdAt: now,
         updatedAt: now,
       }
@@ -491,6 +463,7 @@ export async function prepareProofOperation(
       outputs: structuredClone(input.outputs),
       metadata: structuredClone(input.metadata ?? {}),
       resultProofs: undefined,
+      resultProofsDigest: undefined,
       lastError: null,
       createdAt: now,
       updatedAt: now,
@@ -502,23 +475,58 @@ export async function prepareProofOperation(
 
 export async function markProofOperationCompleted(
   operationId: string,
-  resultProofs: Record<string, CashuProofRecord[]>,
+  completion: Record<string, CashuProofRecord[]> | CtfProofOperationCompletion,
 ): Promise<ProofOperationRecord> {
   return updateState((state) => {
     const existing = state.proofOperations[operationId]
     if (!existing) {
       throw new Error(`Missing proof operation ${operationId}`)
     }
+    const ctfCompletion = isCtfProofOperationCompletion(completion)
+    if (isSdkCtfProofOperationKind(existing.kind) && !ctfCompletion) {
+      throw new Error(`Proof operation ${operationId} requires an SDK completion`)
+    }
+    if (ctfCompletion && completion.kind !== existing.kind) {
+      throw new Error(
+        `Proof operation ${operationId} kind ${existing.kind} does not match completion ${completion.kind}`,
+      )
+    }
+    const resultProofs = ctfCompletion ? completion.resultProofs : completion
     const updated: ProofOperationRecord = {
       ...existing,
       state: 'completed',
       resultProofs: normalizeProofRecordGroups(resultProofs),
+      resultProofsDigest:
+        ctfCompletion && 'resultProofsDigest' in completion
+          ? completion.resultProofsDigest
+          : undefined,
       lastError: null,
       updatedAt: Date.now(),
     }
     state.proofOperations[operationId] = updated
     return updated
   })
+}
+
+function isCtfProofOperationCompletion(
+  value: Record<string, CashuProofRecord[]> | CtfProofOperationCompletion,
+): value is CtfProofOperationCompletion {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'kind' in value &&
+    typeof value.kind === 'string' &&
+    'resultProofs' in value
+  )
+}
+
+function isSdkCtfProofOperationKind(kind: ProofOperationKind): boolean {
+  return (
+    kind === 'ctf-split' ||
+    kind === 'ctf-merge' ||
+    kind === 'ctf-redeem' ||
+    kind === 'regular-split'
+  )
 }
 
 export function summarizeWalletBalance(state: DaemonState): WalletBalance {
@@ -541,7 +549,11 @@ export function summarizeWalletBalance(state: DaemonState): WalletBalance {
   for (const proof of state.wallet.proofs) {
     if (normalizeProofAssetBaseAsset(proof.asset) !== 'sat') continue
 
-    const amount = amountToNumber(proof.proof.amount)
+    const amount =
+      cashuAmountToMarketSubunits(
+        amountToNumber(proof.proof.amount),
+        normalizeProofAssetUnit(proof.asset),
+      ) / 1_000
     const mint = getOrCreate(byMint, proof.mintUrl, () => ({
       mintUrl: proof.mintUrl,
       availableSats: 0,
@@ -583,8 +595,22 @@ export async function recordOrderStatus(
   marketId: string,
   orderId: string,
   engineStatus: unknown,
+  baseAsset?: 'sat',
+  divisibility?: number,
 ): Promise<LocalOrderRecord> {
-  return upsertOrderFromEngine(marketId, orderId, engineStatus)
+  return upsertOrderFromEngine(
+    marketId,
+    orderId,
+    engineStatus,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    baseAsset,
+    divisibility,
+  )
 }
 
 export async function listLocalOrders(
@@ -631,6 +657,8 @@ export async function recordSubmittedOrder(
   side?: 'Buy' | 'Sell',
   priceSubunits?: number,
   amountSubunits?: number,
+  baseAsset?: 'sat',
+  divisibility?: number,
 ): Promise<LocalOrderRecord> {
   const orderId = readStringProperty(engineResponse, 'orderId')
   if (!orderId) {
@@ -646,6 +674,8 @@ export async function recordSubmittedOrder(
     side,
     priceSubunits,
     amountSubunits,
+    baseAsset,
+    divisibility,
   )
 }
 
@@ -679,12 +709,30 @@ function upsertOrderFromEngine(
   side?: 'Buy' | 'Sell',
   priceSubunits?: number,
   amountSubunits?: number,
+  suppliedBaseAsset?: 'sat',
+  suppliedDivisibility?: number,
 ): Promise<LocalOrderRecord> {
   return updateState((state, now) => {
     const existing = state.orders[orderId]
     const status = readStringProperty(engineStatus, 'status') ?? existing?.status ?? 'unknown'
-    const baseAsset = readStringProperty(engineStatus, 'baseAsset') ?? existing?.baseAsset ?? null
-    const divisibility = readNumberProperty(engineStatus, 'divisibility') ?? existing?.divisibility
+    const engineBaseAsset = readStringProperty(engineStatus, 'baseAsset')
+    const baseAsset =
+      suppliedBaseAsset ??
+      (engineBaseAsset === undefined
+        ? existing?.baseAsset
+        : normalizeMarketBaseAsset(engineBaseAsset))
+    if (baseAsset === undefined) {
+      throw new Error('engine order status did not include required baseAsset')
+    }
+    const engineDivisibility = readNumberProperty(engineStatus, 'divisibility')
+    const divisibility =
+      suppliedDivisibility ??
+      (engineDivisibility === undefined
+        ? existing?.divisibility
+        : normalizeMarketDivisibility(engineDivisibility, baseAsset))
+    if (divisibility === undefined) {
+      throw new Error('engine order status did not include required divisibility')
+    }
     const tradeIds = [...new Set([...(existing?.tradeIds ?? []), ...extractTradeIds(engineStatus)])]
     const nextTokenSide = tokenSide ?? existing?.tokenSide
     const nextSide = side ?? existing?.side
@@ -701,8 +749,8 @@ function upsertOrderFromEngine(
       ...((clientOrderId ?? existing?.clientOrderId)
         ? { clientOrderId: clientOrderId ?? existing?.clientOrderId }
         : {}),
-      ...(baseAsset ? { baseAsset } : {}),
-      ...(divisibility ? { divisibility } : {}),
+      baseAsset,
+      divisibility,
       ...(preflightSplit === null
         ? {}
         : preflightSplit || existing?.preflightSplit
@@ -729,8 +777,8 @@ function upsertOrderFromEngine(
         outcomeFaceAmountSats: swap?.outcomeFaceAmountSats,
         outcomeFaceAmountSubunits: swap?.outcomeFaceAmountSubunits,
         quotePaymentSats: swap?.quotePaymentSats,
-        baseAsset: swap?.baseAsset,
-        divisibility: swap?.divisibility,
+        baseAsset: swap?.baseAsset ?? baseAsset,
+        divisibility: swap?.divisibility ?? divisibility,
         quotePaymentSubunits: swap?.quotePaymentSubunits,
         settlementKind: swap?.settlementKind,
         sellerKeepOutcomeSetId: swap?.sellerKeepOutcomeSetId,
@@ -755,10 +803,16 @@ function upsertOrderFromEngine(
 export async function recordTradeCreated(
   payload: DaemonTradeCreatedPayload,
 ): Promise<LocalSwapRecord | null> {
+  const canonicalPayload: DaemonTradeCreatedPayload = {
+    ...payload,
+    baseAsset: normalizeMarketBaseAsset(payload.baseAsset),
+    divisibility: normalizeMarketDivisibility(payload.divisibility, 'sat'),
+  }
   const secrets = await readSecrets()
-  const tradeKey = secrets?.orderEphemeralKeys[payload.tradeId]
+  const tradeKey = secrets?.orderEphemeralKeys[canonicalPayload.tradeId]
   const ownEphemeralPubkey = tradeKey?.publicKeyHex
   return updateState((state, now) => {
+    const payload = canonicalPayload
     const match = findOrderForTradeCreated(state, payload, ownEphemeralPubkey)
     if (!match) return null
     const key = tradeKey ?? secrets?.orderEphemeralKeys[match.orderId]
@@ -774,20 +828,7 @@ export async function recordTradeCreated(
 
     const existing = state.swaps[payload.tradeId]
     const order = state.orders[match.orderId]
-    const legacyOrderAmountScale =
-      order?.divisibility == null && typeof payload.divisibility === 'number'
-        ? payload.divisibility / 100
-        : 1
-    const expectedDivisibility =
-      order?.divisibility ??
-      payload.divisibility ??
-      (order?.amountSubunits != null ? 100 : undefined)
-    const legacyOutcomeAmountScale =
-      payload.outcomeFaceAmountSubunits == null &&
-      payload.outcomeFaceAmountSats != null &&
-      typeof expectedDivisibility === 'number'
-        ? expectedDivisibility / 100
-        : 1
+    const expectedDivisibility = order?.divisibility ?? payload.divisibility
     if (order && !order.tradeIds.includes(payload.tradeId)) {
       order.tradeIds = [...order.tradeIds, payload.tradeId]
       order.updatedAt = now
@@ -801,8 +842,8 @@ export async function recordTradeCreated(
       settlementKind: payload.settlementKind,
       sellerKeepOutcomeSetId: payload.sellerKeepOutcomeSetId,
       sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId,
-      baseAsset: payload.baseAsset ?? order?.baseAsset ?? null,
-      divisibility: payload.divisibility ?? expectedDivisibility,
+      baseAsset: payload.baseAsset,
+      divisibility: payload.divisibility,
       expectedBaseAsset: order?.baseAsset,
       expectedDivisibility,
       expectedOrder:
@@ -811,12 +852,12 @@ export async function recordTradeCreated(
               side: order.side,
               tokenSide: order.tokenSide,
               priceSubunits: order.priceSubunits,
-              amountSubunits: order.amountSubunits * legacyOrderAmountScale,
+              amountSubunits: order.amountSubunits,
             }
           : null,
       requireExpectedOrder: true,
-      outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits ?? payload.outcomeFaceAmountSats,
-      quotePaymentSubunits: payload.quotePaymentSubunits ?? payload.quotePaymentSats,
+      outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits,
+      quotePaymentSubunits: payload.quotePaymentSubunits,
     })
     const protocolError = decision.accepted ? null : decision.error
     const accepted = decision.accepted
@@ -830,19 +871,14 @@ export async function recordTradeCreated(
       sellerLocktime: decision.sellerLocktime,
       buyerLocktime: decision.buyerLocktime,
       fillAmountSats: payload.fillAmountSats ?? existing?.fillAmountSats,
-      fillAmountSubunits:
-        payload.fillAmountSubunits ?? payload.fillAmountSats ?? existing?.fillAmountSubunits,
+      fillAmountSubunits: payload.fillAmountSubunits ?? existing?.fillAmountSubunits,
       outcomeFaceAmountSats: payload.outcomeFaceAmountSats ?? existing?.outcomeFaceAmountSats,
       outcomeFaceAmountSubunits:
-        payload.outcomeFaceAmountSubunits ??
-        (payload.outcomeFaceAmountSats != null
-          ? payload.outcomeFaceAmountSats * legacyOutcomeAmountScale
-          : existing?.outcomeFaceAmountSubunits),
+        payload.outcomeFaceAmountSubunits ?? existing?.outcomeFaceAmountSubunits,
       quotePaymentSats: payload.quotePaymentSats ?? existing?.quotePaymentSats,
-      baseAsset: payload.baseAsset ?? order?.baseAsset ?? existing?.baseAsset ?? null,
-      divisibility: expectedDivisibility ?? existing?.divisibility,
-      quotePaymentSubunits:
-        payload.quotePaymentSubunits ?? payload.quotePaymentSats ?? existing?.quotePaymentSubunits,
+      baseAsset: payload.baseAsset,
+      divisibility: payload.divisibility,
+      quotePaymentSubunits: payload.quotePaymentSubunits ?? existing?.quotePaymentSubunits,
       settlementKind: payload.settlementKind ?? existing?.settlementKind ?? null,
       sellerKeepOutcomeSetId:
         payload.sellerKeepOutcomeSetId ?? existing?.sellerKeepOutcomeSetId ?? null,
@@ -939,11 +975,13 @@ function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
             kind: 'Outcome',
             conditionId: requireText(raw.condition_id, 'proof condition'),
             outcomeSetId: requireText(raw.outcome_set_id, 'proof outcome set'),
-            baseAsset: requireText(raw.base_asset, 'proof base asset'),
+            baseAsset: requireSatBaseAsset(raw.base_asset, 'proof base asset'),
+            unit: requireMsatUnit(raw.unit, 'outcome proof unit'),
           }
         : {
             kind: 'sats',
-            baseAsset: requireText(raw.base_asset, 'proof base asset'),
+            baseAsset: requireSatBaseAsset(raw.base_asset, 'proof base asset'),
+            unit: requireCashuUnit(raw.unit, 'proof unit'),
           }
     state.wallet.proofs.push({
       proof: normalizeCashuProofRecord(proof),
@@ -993,6 +1031,21 @@ function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
           'operation result',
         ) as Record<string, CashuProofRecord[]>,
       )
+      if (operation.kind === 'ctf-split' || operation.kind === 'ctf-merge') {
+        const storedDigest = requireText(
+          raw.result_proofs_digest,
+          'operation result authority digest',
+        )
+        const computedDigest = completedProofAuthorityDigest(
+          operation.resultProofs as Record<string, Proof[]>,
+        )
+        if (storedDigest !== computedDigest) {
+          throw new Error('operation result authority digest does not match result proofs')
+        }
+        operation.resultProofsDigest = storedDigest
+      } else if (raw.result_proofs_digest !== null) {
+        throw new Error('non-CTF operation has an unexpected result authority digest')
+      }
     }
     state.proofOperations[operationId] = operation
   }
@@ -1016,7 +1069,10 @@ function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
             conditionId: requireText(raw.preflight_condition_id, 'preflight condition'),
             keepOutcomeSetId: requireText(raw.preflight_keep_outcome_set_id, 'preflight keep set'),
             lockOutcomeSetId: requireText(raw.preflight_lock_outcome_set_id, 'preflight lock set'),
-            amountSats: requireInteger(raw.preflight_amount_sats, 'preflight amount'),
+            amountSubunits: requireInteger(
+              raw.preflight_amount_subunits,
+              'preflight amountSubunits',
+            ),
           }
     state.orders[orderId] = {
       orderId,
@@ -1037,12 +1093,11 @@ function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
         ? {}
         : { clientOrderId: requireText(raw.client_order_id, 'client order id') }),
       ...(preflight === undefined ? {} : { preflightSplit: preflight }),
-      ...(raw.base_asset === null
-        ? {}
-        : { baseAsset: requireText(raw.base_asset, 'order base asset') }),
-      ...(raw.divisibility === null
-        ? {}
-        : { divisibility: requireInteger(raw.divisibility, 'order divisibility') }),
+      baseAsset: requireSatBaseAsset(raw.base_asset, 'order base asset'),
+      divisibility: normalizeMarketDivisibility(
+        requireInteger(raw.divisibility, 'order divisibility'),
+        'sat',
+      ),
       tradeIds,
       ...(raw.engine_status_present === 1
         ? { engineStatus: decodeArtifact(raw.engine_status_body, 'engine status') }
@@ -1121,16 +1176,17 @@ function insertWalletProof(
   database
     .prepare(
       `INSERT INTO target_wallet_proofs (
-         proof_id, scope_id, normalized_mint, keyset_id, amount, secret,
+         proof_id, scope_id, normalized_mint, unit, keyset_id, amount, secret,
          signature, proof_body, state, reserved_by, asset_kind, condition_id,
          outcome_set_id, base_asset, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       proofId,
       scopeId,
       record.mintUrl,
-      proof.id ?? null,
+      asset.unit,
+      requireProofKeysetId(proof.id),
       amountToNumber(proof.amount),
       proof.secret,
       proof.C,
@@ -1160,15 +1216,16 @@ function insertProofOperation(
     operation.resultProofs === undefined
       ? null
       : putArtifact(database, scopeId, 'exact-result', operation.resultProofs)
+  const resultProofsDigest = persistedResultProofsDigest(operation)
   const inputAmount = operation.inputs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0)
   const timestamps = monotonicTimestamps(operation.createdAt, operation.updatedAt)
   database
     .prepare(
       `INSERT INTO target_proof_operations (
          operation_id, scope_id, kind, state, normalized_mint,
-         request_artifact_id, output_artifact_id, result_artifact_id,
+         request_artifact_id, output_artifact_id, result_artifact_id, result_proofs_digest,
          input_count, input_amount, last_error, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       operation.operationId,
@@ -1179,12 +1236,35 @@ function insertProofOperation(
       requestId,
       outputId,
       resultId,
+      resultProofsDigest,
       operation.inputs.length,
       inputAmount,
       operation.lastError ?? null,
       timestamps.createdAt,
       timestamps.updatedAt,
     )
+}
+
+function persistedResultProofsDigest(operation: ProofOperationRecord): string | null {
+  const isCompletedCtf =
+    (operation.kind === 'ctf-split' || operation.kind === 'ctf-merge') &&
+    operation.state === 'completed'
+  if (!isCompletedCtf) {
+    if (operation.resultProofsDigest !== undefined) {
+      throw new Error('non-completed CTF operation has an unexpected result authority digest')
+    }
+    return null
+  }
+  if (operation.resultProofs === undefined) {
+    throw new Error('completed CTF operation is missing result proofs')
+  }
+  const computed = completedProofAuthorityDigest(operation.resultProofs as Record<string, Proof[]>)
+  if (operation.resultProofsDigest !== computed) {
+    throw new Error(
+      `completed CTF operation result authority digest does not match result proofs (${operation.resultProofsDigest ?? 'missing'} != ${computed})`,
+    )
+  }
+  return computed
 }
 
 function insertOrder(database: DatabaseSync, scopeId: string, order: LocalOrderRecord): void {
@@ -1201,7 +1281,7 @@ function insertOrder(database: DatabaseSync, scopeId: string, order: LocalOrderR
          amount_subunits, status, revision, ephemeral_pubkey, client_order_id,
          preflight_reservation_id, preflight_condition_id,
          preflight_keep_outcome_set_id, preflight_lock_outcome_set_id,
-         preflight_amount_sats, base_asset, divisibility,
+         preflight_amount_subunits, base_asset, divisibility,
          engine_status_present, engine_status_body, created_at_ms, updated_at_ms
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(order_id) DO UPDATE SET
@@ -1218,7 +1298,7 @@ function insertOrder(database: DatabaseSync, scopeId: string, order: LocalOrderR
          preflight_condition_id = excluded.preflight_condition_id,
          preflight_keep_outcome_set_id = excluded.preflight_keep_outcome_set_id,
          preflight_lock_outcome_set_id = excluded.preflight_lock_outcome_set_id,
-         preflight_amount_sats = excluded.preflight_amount_sats,
+         preflight_amount_subunits = excluded.preflight_amount_subunits,
          base_asset = excluded.base_asset,
          divisibility = excluded.divisibility,
          engine_status_present = excluded.engine_status_present,
@@ -1241,7 +1321,7 @@ function insertOrder(database: DatabaseSync, scopeId: string, order: LocalOrderR
       preflight?.conditionId ?? null,
       preflight?.keepOutcomeSetId ?? null,
       preflight?.lockOutcomeSetId ?? null,
-      preflight?.amountSats ?? null,
+      preflight?.amountSubunits ?? null,
       order.baseAsset ?? null,
       order.divisibility ?? null,
       hasEngineStatus ? 1 : 0,
@@ -1439,12 +1519,11 @@ function decodeSwap(
     ...(raw.quote_payment_subunits === null
       ? {}
       : { quotePaymentSubunits: requireInteger(raw.quote_payment_subunits, 'quote subunits') }),
-    ...(raw.base_asset === null
-      ? {}
-      : { baseAsset: requireText(raw.base_asset, 'swap base asset') }),
-    ...(raw.divisibility === null
-      ? {}
-      : { divisibility: requireInteger(raw.divisibility, 'swap divisibility') }),
+    baseAsset: requireSatBaseAsset(raw.base_asset, 'swap base asset'),
+    divisibility: normalizeMarketDivisibility(
+      requireInteger(raw.divisibility, 'swap divisibility'),
+      'sat',
+    ),
     ...(raw.settlement_kind === null
       ? {}
       : { settlementKind: requireText(raw.settlement_kind, 'settlement kind') }),
@@ -1781,12 +1860,14 @@ function normalizeProofAsset(asset: StoredProofAsset | undefined): StoredProofAs
       conditionId: asset.conditionId,
       outcomeSetId: asset.outcomeSetId,
       baseAsset: normalizeProofAssetBaseAsset(asset),
+      unit: 'msat',
     }
   }
 
   return {
     kind: 'sats',
     baseAsset: normalizeProofAssetBaseAsset(asset),
+    unit: normalizeProofAssetUnit(asset),
   }
 }
 
@@ -1796,8 +1877,13 @@ function isOutcomeProofAsset(
   return asset?.kind === 'Outcome' || (asset as { kind?: unknown } | undefined)?.kind === 'outcome'
 }
 
-function normalizeProofAssetBaseAsset(asset: StoredProofAsset | undefined): string {
+function normalizeProofAssetBaseAsset(asset: StoredProofAsset | undefined): 'sat' {
   return normalizeMarketBaseAsset(asset?.baseAsset)
+}
+
+function normalizeProofAssetUnit(asset: StoredProofAsset | undefined): 'sat' | 'msat' {
+  if (asset?.unit === 'sat' || asset?.unit === 'msat') return asset.unit
+  throw new Error('proof asset unit must be exactly sat or msat')
 }
 
 function normalizeCounterMap(value: Record<string, unknown>): Record<string, number> {
@@ -1845,11 +1931,20 @@ function normalizeProofOperation(
       resultProofs: isRecord(raw.resultProofs)
         ? normalizeProofRecordGroups(raw.resultProofs as Record<string, CashuProofRecord[]>)
         : undefined,
+      resultProofsDigest: normalizeOptionalSha256(raw.resultProofsDigest),
       lastError: typeof raw.lastError === 'string' ? raw.lastError : null,
       createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : 0,
       updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : 0,
     },
   ]
+}
+
+function normalizeOptionalSha256(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error('proof operation result authority digest must be canonical SHA-256 hex')
+  }
+  return value
 }
 
 function assertCompatibleProofOperation(
@@ -2101,6 +2196,27 @@ function requireText(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`${label} is invalid`)
   }
+  return value
+}
+
+function requireSatBaseAsset(value: unknown, label: string): 'sat' {
+  if (value !== 'sat') throw new Error(`${label} must be exactly sat`)
+  return value
+}
+
+function requireCashuUnit(value: unknown, label: string): 'sat' | 'msat' {
+  if (value !== 'sat' && value !== 'msat') {
+    throw new Error(`${label} must be exactly sat or msat`)
+  }
+  return value
+}
+
+function requireProofKeysetId(value: unknown): string {
+  return requireText(value, 'proof keyset id')
+}
+
+function requireMsatUnit(value: unknown, label: string): 'msat' {
+  if (value !== 'msat') throw new Error(`${label} must be exactly msat`)
   return value
 }
 

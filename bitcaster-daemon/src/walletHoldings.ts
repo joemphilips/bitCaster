@@ -1,6 +1,9 @@
 import { buildTokenHoldings } from '@bitcaster-market/client-sdk/tradingClient'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
-import { normalizeMarketBaseAsset } from '@bitcaster-market/client-sdk/marketUnits'
+import {
+  cashuAmountToMarketSubunits,
+  normalizeMarketBaseAsset,
+} from '@bitcaster-market/client-sdk/marketUnits'
 import type { DaemonState, StoredProofRecord } from './state.ts'
 
 export function buildDaemonTokenHoldings(
@@ -20,11 +23,11 @@ export function buildDaemonTokenHoldings(
       if (record.asset.conditionId !== input.conditionId) continue
       for (const atom of atomsFromOutcomeSet(record.asset.outcomeSetId)) {
         ;(primitiveProofsByAtom[atom] ??= []).push({
-          amount: amountToNumber(record.proof.amount),
+          amount: proofMarketSubunits(record),
         })
       }
     } else {
-      baseUnitProofs.push({ amount: amountToNumber(record.proof.amount) })
+      baseUnitProofs.push({ amount: proofMarketSubunits(record) })
     }
   }
 
@@ -32,6 +35,10 @@ export function buildDaemonTokenHoldings(
   // proof validity/spend gate remains the Cashu/mint settlement path; this is a
   // client-side UX pre-submit feasibility check only.
   return buildTokenHoldings(primitiveProofsByAtom, {}, baseUnitProofs)
+}
+
+function proofMarketSubunits(record: StoredProofRecord): number {
+  return cashuAmountToMarketSubunits(amountToNumber(record.proof.amount), record.asset.unit)
 }
 
 function recordBaseAsset(record: StoredProofRecord): string {

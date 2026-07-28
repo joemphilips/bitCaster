@@ -34,8 +34,7 @@ export interface SubmitOrderParams {
   tokenSide?: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
-  amountSubunits?: number
-  amountSats?: number
+  amountSubunits: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
   /**
    * Limit-buy maker collateral should be split into a complete set before the
@@ -82,7 +81,7 @@ export interface WalletReceiveParams {
 export interface WalletSeedRecoveryParams {
   recoveryId: string
   mintUrl: string
-  unit: 'sat' | 'msat' | 'usd'
+  unit: 'sat' | 'msat'
   keysetId: string
   walletSeedHex: string
   disclosureAcknowledged: true

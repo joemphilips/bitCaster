@@ -17,10 +17,10 @@ export interface CustodyProofSqliteRow {
   readonly proofId: string
   readonly scopeId: string
   readonly normalizedMint: string
-  readonly unit: 'sat' | 'msat' | 'usd'
+  readonly unit: 'sat' | 'msat'
   readonly keysetId: string
   readonly amount: number
-  readonly baseAsset: 'sat' | 'usd'
+  readonly baseAsset: 'sat'
   readonly conditionId: string | null
   readonly outcomeSetId: string | null
   readonly productBinding: string | null
@@ -41,7 +41,7 @@ export interface CustodyProofSqliteRow {
 export interface CustodyCounterSqliteRow {
   readonly scopeId: string
   readonly normalizedMint: string
-  readonly unit: 'sat' | 'msat' | 'usd'
+  readonly unit: 'sat' | 'msat'
   readonly keysetId: string
   readonly nextCounter: number
   readonly revision: number

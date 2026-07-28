@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '1708a28372e82a0f9ae45038d9245a2fcfbb38940e8103bce243fcae328d1c84'
+  '9d5449b3aaefb7a99e41c59628703e88ce8e69687e23e69f83bfbef04dc4ac10'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -117,8 +117,9 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ),
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
-    keyset_id TEXT CHECK (keyset_id IS NULL OR length(keyset_id) BETWEEN 1 AND 1024),
-    amount INTEGER NOT NULL CHECK (amount >= 0),
+    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
+    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
+    amount INTEGER NOT NULL CHECK (amount > 0),
     secret TEXT NOT NULL CHECK (length(secret) BETWEEN 1 AND 16384),
     signature TEXT NOT NULL CHECK (length(signature) BETWEEN 1 AND 16384),
     proof_body BLOB NOT NULL CHECK (length(proof_body) BETWEEN 1 AND ${recordBytesMax}),
@@ -127,7 +128,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     asset_kind TEXT NOT NULL CHECK (asset_kind IN ('sats', 'outcome')),
     condition_id TEXT CHECK (condition_id IS NULL OR length(condition_id) BETWEEN 1 AND 1024),
     outcome_set_id TEXT CHECK (outcome_set_id IS NULL OR length(outcome_set_id) BETWEEN 1 AND 1024),
-    base_asset TEXT NOT NULL CHECK (base_asset IN ('sat', 'usd')),
+    base_asset TEXT NOT NULL CHECK (base_asset = 'sat'),
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
     UNIQUE (scope_id, normalized_mint, secret),
@@ -139,6 +140,9 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       (asset_kind = 'sats' AND condition_id IS NULL AND outcome_set_id IS NULL)
       OR
       (asset_kind = 'outcome' AND condition_id IS NOT NULL AND outcome_set_id IS NOT NULL)
+    ),
+    CHECK (
+      asset_kind = 'sats' OR unit = 'msat'
     )
   ) STRICT`,
   `CREATE TABLE target_keyset_counters (
@@ -161,6 +165,13 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     request_artifact_id TEXT NOT NULL,
     output_artifact_id TEXT NOT NULL,
     result_artifact_id TEXT,
+    result_proofs_digest TEXT CHECK (
+      result_proofs_digest IS NULL
+      OR (
+        length(result_proofs_digest) = 64
+        AND result_proofs_digest NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
     input_count INTEGER NOT NULL CHECK (input_count BETWEEN 0 AND 256),
     input_amount INTEGER NOT NULL CHECK (input_amount >= 0),
     last_error TEXT,
@@ -179,6 +190,14 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     CHECK (
       (state = 'completed' AND result_artifact_id IS NOT NULL)
       OR (state <> 'completed' AND result_artifact_id IS NULL)
+    ),
+    CHECK (
+      (kind IN ('ctf-split', 'ctf-merge')
+        AND state = 'completed'
+        AND result_proofs_digest IS NOT NULL)
+      OR
+      ((kind NOT IN ('ctf-split', 'ctf-merge') OR state <> 'completed')
+        AND result_proofs_digest IS NULL)
     )
   ) STRICT`,
   `CREATE TABLE custody_proofs (
@@ -187,10 +206,10 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ),
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
-    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat', 'usd')),
+    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
     keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
     amount INTEGER NOT NULL CHECK (amount > 0),
-    base_asset TEXT NOT NULL CHECK (base_asset IN ('sat', 'usd')),
+    base_asset TEXT NOT NULL CHECK (base_asset = 'sat'),
     condition_id TEXT CHECK (condition_id IS NULL OR length(condition_id) BETWEEN 1 AND 1024),
     outcome_set_id TEXT CHECK (outcome_set_id IS NULL OR length(outcome_set_id) BETWEEN 1 AND 1024),
     product_binding TEXT CHECK (product_binding IS NULL OR length(product_binding) BETWEEN 1 AND 1024),
@@ -218,8 +237,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       OR (condition_id IS NOT NULL AND outcome_set_id IS NOT NULL)
     ),
     CHECK (
-      (unit IN ('sat', 'msat') AND base_asset = 'sat')
-      OR (unit = 'usd' AND base_asset = 'usd')
+      unit IN ('sat', 'msat') AND base_asset = 'sat'
     ),
     CHECK (
       (selectability = 'selectable'
@@ -230,7 +248,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE TABLE custody_keyset_counters (
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
-    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat', 'usd')),
+    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
     keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
     next_counter INTEGER NOT NULL CHECK (next_counter >= 0),
     revision INTEGER NOT NULL CHECK (revision >= 0),
@@ -290,7 +308,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       wallet_stage IN ('lock', 'claim', 'refund', 'receive', 'send', 'ctf-split', 'ctf-merge', 'ctf-redeem')
     ),
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
-    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat', 'usd')),
+    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
     inventory_account_id TEXT CHECK (
       inventory_account_id IS NULL OR length(inventory_account_id) BETWEEN 1 AND 1024
     ),
@@ -602,9 +620,9 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     preflight_condition_id TEXT,
     preflight_keep_outcome_set_id TEXT,
     preflight_lock_outcome_set_id TEXT,
-    preflight_amount_sats INTEGER CHECK (preflight_amount_sats > 0),
-    base_asset TEXT CHECK (base_asset IS NULL OR base_asset IN ('sat', 'usd')),
-    divisibility INTEGER CHECK (divisibility > 0),
+    preflight_amount_subunits INTEGER CHECK (preflight_amount_subunits > 0),
+    base_asset TEXT NOT NULL CHECK (base_asset = 'sat'),
+    divisibility INTEGER NOT NULL CHECK (divisibility IN (10000, 1000000)),
     engine_status_present INTEGER NOT NULL CHECK (engine_status_present IN (0, 1)),
     engine_status_body BLOB CHECK (
       engine_status_body IS NULL OR length(engine_status_body) <= ${recordBytesMax}
@@ -617,13 +635,13 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
         AND preflight_condition_id IS NULL
         AND preflight_keep_outcome_set_id IS NULL
         AND preflight_lock_outcome_set_id IS NULL
-        AND preflight_amount_sats IS NULL)
+        AND preflight_amount_subunits IS NULL)
       OR
       (preflight_reservation_id IS NOT NULL
         AND preflight_condition_id IS NOT NULL
         AND preflight_keep_outcome_set_id IS NOT NULL
         AND preflight_lock_outcome_set_id IS NOT NULL
-        AND preflight_amount_sats IS NOT NULL)
+        AND preflight_amount_subunits IS NOT NULL)
     ),
     CHECK (
       (engine_status_present = 0 AND engine_status_body IS NULL)
@@ -684,8 +702,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     outcome_face_amount_subunits INTEGER CHECK (outcome_face_amount_subunits >= 0),
     quote_payment_sats INTEGER CHECK (quote_payment_sats >= 0),
     quote_payment_subunits INTEGER CHECK (quote_payment_subunits >= 0),
-    base_asset TEXT CHECK (base_asset IS NULL OR base_asset IN ('sat', 'usd')),
-    divisibility INTEGER CHECK (divisibility > 0),
+    base_asset TEXT NOT NULL CHECK (base_asset = 'sat'),
+    divisibility INTEGER NOT NULL CHECK (divisibility IN (10000, 1000000)),
     settlement_kind TEXT CHECK (
       settlement_kind IS NULL OR length(settlement_kind) BETWEEN 1 AND 128
     ),
@@ -779,7 +797,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     invocation_id TEXT NOT NULL UNIQUE CHECK (length(invocation_id) BETWEEN 1 AND 1024),
     disclosure_acknowledged INTEGER NOT NULL CHECK (disclosure_acknowledged = 1),
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
-    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat', 'usd')),
+    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
     state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     imported_proofs INTEGER NOT NULL CHECK (imported_proofs >= 0),
@@ -813,7 +831,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     proof_position INTEGER NOT NULL CHECK (proof_position BETWEEN 0 AND 299),
     scope_id TEXT NOT NULL,
     normalized_mint TEXT NOT NULL,
-    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat', 'usd')),
+    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
     curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
     proof_body BLOB NOT NULL CHECK (length(proof_body) BETWEEN 1 AND ${recordBytesMax}),
     retained_reason TEXT NOT NULL CHECK (retained_reason = 'PENDING'),

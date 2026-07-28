@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { createCtfProofOperationCompletion } from '@bitcaster-market/client-sdk/ctfSplit'
 import { createRealDaemonSwapOps } from '../src/swapProtocolAdapter.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { readState, type CashuProofRecord } from '../src/state.ts'
@@ -164,10 +165,13 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
               },
               metadata: { amount: params.amountSats },
             })
-            await params.proofOperationStore.markProofOperationCompleted(params.operationId, {
-              YES: [proof(100, 'keep-proof')],
-              NO: [proof(100, 'lock-proof')],
-            })
+            await params.proofOperationStore.markProofOperationCompleted(
+              params.operationId,
+              createCtfProofOperationCompletion('ctf-split', {
+                YES: [proof(100, 'keep-proof')],
+                NO: [proof(100, 'lock-proof')],
+              }),
+            )
             return {
               resolvedKeepOutcomeSetId: 'YES',
               resolvedLockOutcomeSetId: 'NO',

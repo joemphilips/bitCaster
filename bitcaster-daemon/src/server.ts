@@ -26,7 +26,10 @@ import {
 } from '@bitcaster-market/client-sdk'
 import { planParticipationScoreTopUp } from '@bitcaster-market/client-sdk/participationScore'
 import { complementOutcomeSetId } from '@bitcaster-market/client-sdk/outcomeSets'
-import { validateOrderIntent } from '@bitcaster-market/client-sdk/orderValidation'
+import {
+  validateOrderIntent,
+  validateOrderRoutingIdentity,
+} from '@bitcaster-market/client-sdk/orderValidation'
 import { checkOrderSettlementSupport } from '@bitcaster-market/client-sdk/settlementSupport'
 import {
   COLLATERAL_COLLECTION,
@@ -35,7 +38,7 @@ import {
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import {
   CashuMintCtfSplitTransport,
-  resolveRootPreflightOutputAmountSats,
+  resolveRootPreflightOutputAmountSubunits,
   splitCompleteSetWithOperation,
   splitRootCompleteSetForPreflightOrder,
   type CtfProofOperationRecord,
@@ -43,10 +46,10 @@ import {
 } from '@bitcaster-market/client-sdk/ctfSplit'
 import { prepareSwapInputsForTrade } from '@bitcaster-market/client-sdk/tradePreparation'
 import {
-  DEFAULT_SAT_MARKET_DIVISIBILITY,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
   quotePaymentSubunits,
+  type MarketBaseAsset,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { canBackOrder, type TokenHoldings } from '@bitcaster-market/client-sdk/tradingClient'
 import { generateOrderEphemeralKeypair } from './ephemeralKey.ts'
@@ -122,7 +125,7 @@ interface PreparedPreflightSplit {
   conditionId: string
   keepOutcomeSetId: string
   lockOutcomeSetId: string
-  amountSats: number
+  amountSubunits: number
 }
 
 type DaemonParticipationScorePreflightResult =
@@ -160,6 +163,7 @@ async function splitWalletCompleteSet(input: {
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(input.conditionId)
   const proofsByCollection = await splitCompleteSetWithOperation({
     mintUrl: input.mintUrl,
+    baseAsset: 'sat',
     operationId: `${input.operationId}:ctf-split`,
     transport,
     conditionId: input.conditionId,
@@ -177,7 +181,7 @@ async function splitWalletCompleteSet(input: {
       input.mintUrl,
       collateral.keep,
       'available',
-      { kind: 'sats', baseAsset: 'sat' },
+      { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
       now,
     )
     for (const [outcomeSetId, proofs] of Object.entries(proofsByCollection)) {
@@ -186,7 +190,13 @@ async function splitWalletCompleteSet(input: {
         input.mintUrl,
         proofs,
         'available',
-        { kind: 'Outcome', conditionId: input.conditionId, outcomeSetId },
+        {
+          kind: 'Outcome',
+          conditionId: input.conditionId,
+          outcomeSetId,
+          baseAsset: 'sat',
+          unit: 'msat',
+        },
         now,
       )
     }
@@ -214,8 +224,8 @@ const ctfProofOperationStore: CtfProofOperationStore = {
     (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
   prepareProofOperation: async (input) =>
     (await prepareProofOperation(input)) as CtfProofOperationRecord,
-  markProofOperationCompleted: async (operationId, resultProofs) =>
-    (await markProofOperationCompleted(operationId, resultProofs)) as CtfProofOperationRecord,
+  markProofOperationCompleted: async (operationId, completion) =>
+    (await markProofOperationCompleted(operationId, completion)) as CtfProofOperationRecord,
 }
 
 export async function startDaemonServer(options: DaemonServerOptions = {}): Promise<Server> {
@@ -408,6 +418,7 @@ export async function dispatch(
         client,
         command.params.conditionId,
         {
+          baseAsset: 'sat',
           title: command.params.title,
           description: command.params.description,
           outcomes: createMarketOutcomes(command.params.outcomes),
@@ -635,13 +646,14 @@ export async function dispatch(
         tokenSide: 'Outcome' as const,
         ...command.params,
       }
-      const amountSubunits = orderParams.amountSubunits ?? orderParams.amountSats
+      const amountSubunits = orderParams.amountSubunits
       const orderIntent = {
         ...orderParams,
         amountSubunits,
-        ...(orderParams.amountSubunits === undefined && orderParams.amountSats !== undefined
-          ? { divisibility: 100 }
-          : {}),
+      }
+      const shapeValidation = validateOrderRoutingIdentity(orderIntent)
+      if (!shapeValidation.valid) {
+        return { ok: false, error: shapeValidation.message }
       }
       let profile: Awaited<ReturnType<typeof readProfile>> | null = null
       let secrets: Awaited<ReturnType<typeof readSecrets>> | null = null
@@ -670,42 +682,24 @@ export async function dispatch(
         return { ok: true, profile, secrets, client }
       }
 
-      let requestValidation = validateOrderIntent(orderIntent)
-      if (
-        !requestValidation.valid &&
-        shouldRetryOrderValidationWithMarketUnit(orderIntent, requestValidation.message)
-      ) {
-        const context = await ensureOrderContext()
-        if (!context.ok) return context
-        const marketUnit = await loadMarketUnit(
-          context.client,
-          conditionIdFromMarketId(orderParams.marketId),
-        )
-        requestValidation = validateOrderIntent({
-          ...orderIntent,
-          divisibility: marketUnit.divisibility,
-        })
-      }
+      const context = await ensureOrderContext()
+      if (!context.ok) return context
+      const conditionId = conditionIdFromMarketId(orderParams.marketId)
+      const marketUnit = await loadMarketUnit(context.client, conditionId)
+      const requestValidation = validateOrderIntent({
+        ...orderIntent,
+        baseAsset: marketUnit.baseAsset,
+        divisibility: marketUnit.divisibility,
+      })
       if (!requestValidation.valid) {
         return { ok: false, error: requestValidation.message }
       }
-      if (typeof amountSubunits !== 'number') {
-        return {
-          ok: false,
-          error:
-            'Order rejected: amountSubunits must be a positive integer in 100 sub-unit increments.',
-        }
-      }
-      const context = await ensureOrderContext()
-      if (!context.ok) return context
       const settlementSupport = checkOrderSettlementSupport({
         request: { side: orderParams.side },
       })
       if (!settlementSupport.supported) {
         return { ok: false, error: settlementSupport.message }
       }
-      const conditionId = conditionIdFromMarketId(orderParams.marketId)
-      const marketUnit = await loadMarketUnit(context.client, conditionId)
       const currentState = await ensureState()
       const holdings = buildDaemonTokenHoldings(currentState, {
         mintUrl: context.profile.mintUrl,
@@ -731,7 +725,7 @@ export async function dispatch(
         side: orderParams.side,
         tokenSide: orderParams.tokenSide,
         price: orderParams.price,
-        amountSats: amountSubunits,
+        amountSubunits,
         timeInForce: orderParams.timeInForce,
         preflightSplit: orderParams.preflightSplit,
         clientOrderId,
@@ -783,6 +777,8 @@ export async function dispatch(
         orderParams.side,
         orderParams.price,
         amountSubunits,
+        marketUnit.baseAsset,
+        marketUnit.divisibility,
       )
       await submitPendingEphemeralPubkeys({
         client: context.client,
@@ -847,8 +843,17 @@ export async function dispatch(
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
       const status = await client.getOrderStatus(command.params.marketId, command.params.orderId)
+      const marketUnit = status
+        ? await loadMarketUnit(client, conditionIdFromMarketId(command.params.marketId))
+        : null
       const local = status
-        ? await recordOrderStatus(command.params.marketId, command.params.orderId, status)
+        ? await recordOrderStatus(
+            command.params.marketId,
+            command.params.orderId,
+            status,
+            marketUnit?.baseAsset,
+            marketUnit?.divisibility,
+          )
         : null
       if (local) {
         await startTradeRuntimeBestEffort(deps.tradeRuntime)
@@ -882,12 +887,21 @@ export async function dispatch(
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
       const cancelled = await client.cancelOrder(command.params.marketId, command.params.orderId)
+      const marketUnit = cancelled
+        ? await loadMarketUnit(client, conditionIdFromMarketId(command.params.marketId))
+        : null
       const local = cancelled
-        ? await recordOrderStatus(command.params.marketId, command.params.orderId, {
-            orderId: command.params.orderId,
-            marketId: command.params.marketId,
-            status: 'cancelled',
-          })
+        ? await recordOrderStatus(
+            command.params.marketId,
+            command.params.orderId,
+            {
+              orderId: command.params.orderId,
+              marketId: command.params.marketId,
+              status: 'cancelled',
+            },
+            marketUnit?.baseAsset,
+            marketUnit?.divisibility,
+          )
         : null
       return {
         ok: true,
@@ -1086,6 +1100,7 @@ async function availableMarketProofs(input: {
   const groups: Record<string, Proof[]> = {}
   for (const record of state.wallet.proofs) {
     if (record.mintUrl !== input.mintUrl || record.state !== 'available') continue
+    if (record.asset.unit !== 'msat') continue
     if (record.asset.kind === 'sats') {
       groups[COLLATERAL_COLLECTION] = [
         ...(groups[COLLATERAL_COLLECTION] ?? []),
@@ -1169,45 +1184,6 @@ function conditionIdFromMarketId(marketId: string): string {
   return parsed?.conditionId ?? marketId
 }
 
-function shouldRetryOrderValidationWithMarketUnit(
-  request: unknown,
-  validationMessage: string,
-): boolean {
-  if (
-    !validationMessage.includes('price must be an integer') &&
-    !validationMessage.includes('amountSubunits must be a positive integer')
-  ) {
-    return false
-  }
-  if (typeof request !== 'object' || request === null || Array.isArray(request)) {
-    return false
-  }
-
-  const intent = request as { price?: unknown; amountSubunits?: unknown; amountSats?: unknown }
-  const price = intent.price
-  const amountSubunits = intent.amountSubunits ?? intent.amountSats
-  if (typeof price !== 'number' || typeof amountSubunits !== 'number') {
-    return false
-  }
-  if (!Number.isInteger(price) || !Number.isInteger(amountSubunits)) {
-    return false
-  }
-  if (price <= 0 || amountSubunits <= 0) {
-    return false
-  }
-  if (
-    intent.amountSubunits !== undefined &&
-    intent.amountSats === undefined &&
-    validationMessage.includes('amountSubunits must be a positive integer')
-  ) {
-    return true
-  }
-
-  return (
-    price >= DEFAULT_SAT_MARKET_DIVISIBILITY || amountSubunits >= DEFAULT_SAT_MARKET_DIVISIBILITY
-  )
-}
-
 async function submitPendingEphemeralPubkeys(input: {
   client: EngineClientLike
   marketId: string
@@ -1255,7 +1231,7 @@ async function maybePreparePreflightSplitForOrder(input: {
   side: 'Buy' | 'Sell'
   tokenSide: 'Outcome' | 'Complement'
   price: number
-  amountSats: number
+  amountSubunits: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
   preflightSplit?: boolean
   clientOrderId: string
@@ -1294,22 +1270,22 @@ async function maybePreparePreflightSplitForOrder(input: {
     const prepared = await prepareSwapInputsForTrade({
       role: 'seller',
       lockOutcomeSetId,
-      amountSats: input.amountSats,
+      amountSats: input.amountSubunits,
       outcomeProofsByCollection: {},
       regularProofs: [],
       splitRegularToOutcome: async () => {
-        const preflightOutputAmountSats = await resolveRootPreflightOutputAmountSats({
+        const preflightOutputAmountSubunits = await resolveRootPreflightOutputAmountSubunits({
           mintUrl: input.mintUrl,
           baseAsset: marketUnit.baseAsset,
           conditionId: market.conditionId,
-          amountSats: input.amountSats,
+          amountSubunits: input.amountSubunits,
           keepOutcomeSetId,
           lockOutcomeSetId,
         })
         const secrets = await readSecrets()
         if (!secrets) throw new Error('daemon secrets are not initialized')
         const collateral = await splitAvailableSatProofsForCtfCollateral(
-          preflightOutputAmountSats,
+          preflightOutputAmountSubunits,
           input.mintUrl,
           `${reservationId}:regular-split:0`,
           secrets,
@@ -1338,7 +1314,7 @@ async function maybePreparePreflightSplitForOrder(input: {
           baseAsset: marketUnit.baseAsset,
           conditionId: market.conditionId,
           collateralProofs: collateral.inputs,
-          amountSats: preflightOutputAmountSats,
+          amountSubunits: preflightOutputAmountSubunits,
           keepOutcomeSetId,
           lockOutcomeSetId,
           operationId: `${reservationId}:ctf-split:0`,
@@ -1374,7 +1350,7 @@ async function maybePreparePreflightSplitForOrder(input: {
     conditionId: market.conditionId,
     keepOutcomeSetId: resolvedKeepOutcomeSetId,
     lockOutcomeSetId: resolvedLockOutcomeSetId,
-    amountSats: input.amountSats,
+    amountSubunits: input.amountSubunits,
   }
 }
 
@@ -1416,20 +1392,10 @@ async function loadMarketOutcomeLabels(
 async function loadMarketUnit(
   client: EngineClientLike,
   conditionId: string,
-): Promise<{ baseAsset: string; divisibility: number }> {
-  if (!client.getMarket) {
-    return {
-      baseAsset: normalizeMarketBaseAsset(undefined),
-      divisibility: DEFAULT_SAT_MARKET_DIVISIBILITY,
-    }
-  }
+): Promise<{ baseAsset: MarketBaseAsset; divisibility: number }> {
+  if (!client.getMarket) throw new Error('engine client does not support market unit lookup')
   const market = await client.getMarket(conditionId)
-  if (!market || typeof market !== 'object') {
-    return {
-      baseAsset: normalizeMarketBaseAsset(undefined),
-      divisibility: DEFAULT_SAT_MARKET_DIVISIBILITY,
-    }
-  }
+  if (!market || typeof market !== 'object') throw new Error('market unit metadata is unavailable')
   const record = market as {
     baseAsset?: unknown
     base_asset?: unknown
@@ -1445,6 +1411,7 @@ async function loadMarketUnit(
     ),
     divisibility: normalizeMarketDivisibility(
       typeof record.divisibility === 'number' ? record.divisibility : undefined,
+      'sat',
     ),
   }
 }
@@ -1575,7 +1542,7 @@ async function replaceAvailableSatProofsWithPreparedCollateral(input: {
   keepProofs: CashuProofRecord[]
   inputProofs: CashuProofRecord[]
   reservationId: string
-  baseAsset?: string | null
+  baseAsset: MarketBaseAsset
 }): Promise<void> {
   const spent = new Set(input.spentSecrets)
   const baseAsset = normalizeMarketBaseAsset(input.baseAsset)
@@ -1595,7 +1562,7 @@ async function replaceAvailableSatProofsWithPreparedCollateral(input: {
         proof: structuredClone(proof),
         mintUrl: input.mintUrl,
         state: 'available',
-        asset: { kind: 'sats', baseAsset },
+        asset: { kind: 'sats', baseAsset, unit: 'msat' },
         createdAt: now,
         updatedAt: now,
       })
@@ -1608,7 +1575,7 @@ async function replaceAvailableSatProofsWithPreparedCollateral(input: {
         mintUrl: input.mintUrl,
         state: 'reserved',
         reservedBy: input.reservationId,
-        asset: { kind: 'sats', baseAsset },
+        asset: { kind: 'sats', baseAsset, unit: 'msat' },
         createdAt: now,
         updatedAt: now,
       })
@@ -1622,7 +1589,7 @@ async function replaceReservedSatProofsWithReservedOutcomes(input: {
   spentSecrets: string[]
   conditionId: string
   proofsByCollection: Record<string, CashuProofRecord[]>
-  baseAsset?: string | null
+  baseAsset: MarketBaseAsset
 }): Promise<void> {
   const spent = new Set(input.spentSecrets)
   const baseAsset = normalizeMarketBaseAsset(input.baseAsset)
@@ -1652,6 +1619,7 @@ async function replaceReservedSatProofsWithReservedOutcomes(input: {
             conditionId: input.conditionId,
             outcomeSetId,
             baseAsset,
+            unit: 'msat',
           },
           createdAt: now,
           updatedAt: now,

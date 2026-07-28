@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module'
 import { submitEphemeralPubkey as submitEphemeralPubkeyRequest } from '@bitcaster-market/client-sdk/engineClient'
+import { parseMatchedDelta, type MatchedDelta } from '@bitcaster-market/client-sdk/tradeIgnition'
 import { generateOrderEphemeralKeypair, type OrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
 import { readSecrets, updateSecrets } from './secrets.ts'
@@ -23,13 +24,7 @@ interface HubConnectionLike {
   invoke(methodName: string, ...args: unknown[]): Promise<unknown>
 }
 
-export interface MarketMatchedDelta {
-  marketId: string
-  tradeId: string
-  makerOrderId: string
-  takerOrderId: string
-  deadline?: string
-}
+export type MarketMatchedDelta = MatchedDelta
 
 export interface SignalRMarketHubConnectionOptions {
   engineBaseUrl: string
@@ -92,14 +87,14 @@ export class SignalRMarketHubConnection {
     connection.on('Matched', (delta: unknown) => {
       void this.invokeCallback(async () => {
         await handleMatchedForMaker({
-          delta: parseMatchedDelta(delta),
+          delta,
           processedTradeIds: this.processedTradeIds,
           knownOrderIds: this.knownOrderIds,
-          getOrCreateEphemeralKeypair: (tradeId) =>
+          getOrCreateEphemeralKeypair: (tradeId, orderId, marketId) =>
             getOrCreateStoredEphemeralKeypair({
               tradeId,
-              orderId: parseMatchedDelta(delta).makerOrderId,
-              marketId: parseMatchedDelta(delta).marketId,
+              orderId,
+              marketId,
             }),
           submitEphemeralPubkey: async (tradeId, pubkey, conditionId) => {
             await submitEphemeralPubkeyRequest(
@@ -132,21 +127,31 @@ export class SignalRMarketHubConnection {
 }
 
 export async function handleMatchedForMaker(input: {
-  delta: MarketMatchedDelta
+  delta: unknown
   processedTradeIds: Set<string>
   knownOrderIds: Set<string>
-  getOrCreateEphemeralKeypair: (tradeId: string) => Promise<OrderEphemeralKeypair>
+  getOrCreateEphemeralKeypair: (
+    tradeId: string,
+    orderId: string,
+    marketId: string,
+  ) => Promise<OrderEphemeralKeypair>
   submitEphemeralPubkey: (tradeId: string, pubkey: string, conditionId?: string) => Promise<void>
 }): Promise<void> {
-  if (input.processedTradeIds.has(input.delta.tradeId)) return
-  if (!input.knownOrderIds.has(input.delta.makerOrderId)) return
+  const matched = parseMatchedDelta(input.delta)
+  if (!matched) throw new Error('Matched payload had unexpected shape or product facts')
+  if (input.processedTradeIds.has(matched.tradeId)) return
+  if (!input.knownOrderIds.has(matched.makerOrderId)) return
 
-  input.processedTradeIds.add(input.delta.tradeId)
-  const key = await input.getOrCreateEphemeralKeypair(input.delta.tradeId)
+  input.processedTradeIds.add(matched.tradeId)
+  const key = await input.getOrCreateEphemeralKeypair(
+    matched.tradeId,
+    matched.makerOrderId,
+    matched.marketId,
+  )
   await input.submitEphemeralPubkey(
-    input.delta.tradeId,
+    matched.tradeId,
     key.publicKeyHex,
-    conditionIdFromMarketId(input.delta.marketId),
+    conditionIdFromMarketId(matched.marketId),
   )
 }
 
@@ -175,29 +180,6 @@ async function getOrCreateStoredEphemeralKeypair(input: {
     }
   })
   return created
-}
-
-function parseMatchedDelta(value: unknown): MarketMatchedDelta {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('Matched payload had unexpected shape')
-  }
-  const record = value as Record<string, unknown>
-  const delta = {
-    marketId: stringField(record, 'marketId') ?? stringField(record, 'MarketId'),
-    tradeId: stringField(record, 'tradeId') ?? stringField(record, 'TradeId'),
-    makerOrderId: stringField(record, 'makerOrderId') ?? stringField(record, 'MakerOrderId'),
-    takerOrderId: stringField(record, 'takerOrderId') ?? stringField(record, 'TakerOrderId'),
-    deadline: stringField(record, 'deadline') ?? stringField(record, 'Deadline'),
-  }
-  if (!delta.marketId || !delta.tradeId || !delta.makerOrderId || !delta.takerOrderId) {
-    throw new Error('Matched payload had unexpected shape')
-  }
-  return delta as MarketMatchedDelta
-}
-
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key]
-  return typeof value === 'string' && value.trim() ? value : undefined
 }
 
 function conditionIdFromMarketId(marketId: string): string | undefined {

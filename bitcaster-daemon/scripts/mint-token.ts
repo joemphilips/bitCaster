@@ -45,22 +45,19 @@ if (mode === 'sats') {
     collateralAmountForUnit('msat', amountMinorUnits),
   )
   printToken(mintUrl, 'msat', msats)
-} else if (mode === 'usd') {
-  const usd = await mintRegularProofs(mintUrl, 'usd', amountMinorUnits)
-  printToken(mintUrl, 'usd', usd)
-} else if (mode === 'outcome' || mode === 'outcome-msats') {
+} else if (mode === 'outcome-msats') {
   if (!conditionId || !outcomeSetId) usage()
-  const unit = mode === 'outcome-msats' ? 'msat' : 'sat'
+  const unit = 'msat'
   const collateralAmount = collateralAmountForUnit(unit, amountMinorUnits)
   const sats = await mintRegularProofsForCtfSplit(mintUrl, unit, collateralAmount)
   const condition = await getCtfCondition(mintUrl, conditionId)
-  const selection = selectMintRootPartitionForOutcome(condition, outcomeSetId, unit)
+  const selection = selectMintRootPartitionForOutcome(condition, outcomeSetId)
   const split = await splitRootCompleteSet(
     new CashuMintCtfSplitTransport(mintUrl),
     conditionId,
     sats,
     collateralAmount,
-    {},
+    { baseAsset: 'sat' },
     selection,
   )
   const selectedKey = resolveSplitOutcomeSetKey(split, outcomeSetId)
@@ -75,7 +72,6 @@ if (mode === 'sats') {
 
 function collateralAmountForUnit(unit: CollateralTokenUnit, amountMinorUnits: number): number {
   if (unit === 'sat') return amountMinorUnits
-  if (unit === 'usd') return amountMinorUnits
   const amountMsats = amountMinorUnits * msatsPerSat
   if (!Number.isSafeInteger(amountMsats)) {
     throw new Error(`amount is too large to scale from sats to msat: ${amountMinorUnits}`)
@@ -128,7 +124,7 @@ async function mintRegularProofsForCtfSplit(
   return wallet.mintProofs(grossAmountSats, quote.quote)
 }
 
-type CollateralTokenUnit = 'sat' | 'msat' | 'usd'
+type CollateralTokenUnit = 'sat' | 'msat'
 
 async function getActiveCollateralKeyset(
   mint: CashuMint,
@@ -158,7 +154,6 @@ async function getCtfCondition(mintUrl: string, conditionId: string): Promise<Ct
 function selectMintRootPartitionForOutcome(
   condition: CtfConditionInfo,
   outcomeSetId: string,
-  unit: 'sat' | 'msat',
 ): CtfRootPartitionSelection {
   const target = canonicalizeOutcomeSet(parseOutcomeSetId(outcomeSetId))
   const keysetCollections = Object.keys(condition.keysets)
@@ -183,7 +178,7 @@ function selectMintRootPartitionForOutcome(
   return {
     keepOutcomeSetId: outcomeSetId,
     lockOutcomeSetId: complement,
-    baseAsset: unit === 'msat' ? 'sat' : undefined,
+    baseAsset: 'sat',
   }
 }
 
@@ -221,8 +216,6 @@ function usage(): never {
   process.stderr.write(
     'Usage: mint-token.ts sats <mint-url> <amount-sats> [--json] [--exact]\n' +
       '       mint-token.ts msats <mint-url> <amount-sats> [--json] [--exact]\n' +
-      '       mint-token.ts usd <mint-url> <amount-usd-subunits> [--json] [--exact]\n' +
-      '       mint-token.ts outcome <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n' +
       '       mint-token.ts outcome-msats <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n',
   )
   process.exit(1)

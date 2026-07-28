@@ -1,4 +1,8 @@
 import { createRequire } from 'node:module'
+import {
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from '@bitcaster-market/client-sdk/marketUnits'
 import { signNip98 } from './nostrAuth.ts'
 import type { DaemonTradeCreatedPayload } from './state.ts'
 import type { TradeJoinResult, TradeRuntimeConnection } from './tradeRuntime.ts'
@@ -56,6 +60,7 @@ export function parseTradeCreatedPayload(
   sellerKeepOutcomeSetId?: unknown,
   sellerLockOutcomeSetId?: unknown,
   baseAsset?: unknown,
+  collateralUnit?: unknown,
   divisibility?: unknown,
 ): DaemonTradeCreatedPayload {
   const tradeIdText = stringFromSignalR(tradeId)
@@ -70,7 +75,8 @@ export function parseTradeCreatedPayload(
     !sellerLocktimeText ||
     !buyerLocktimeText ||
     typeof marketId !== 'string' ||
-    !marketId.trim()
+    !marketId.trim() ||
+    collateralUnit !== 'msat'
   ) {
     throw new Error('TradeCreated payload had unexpected shape')
   }
@@ -90,8 +96,9 @@ export function parseTradeCreatedPayload(
       typeof sellerKeepOutcomeSetId === 'string' ? sellerKeepOutcomeSetId : null,
     sellerLockOutcomeSetId:
       typeof sellerLockOutcomeSetId === 'string' ? sellerLockOutcomeSetId : null,
-    baseAsset: typeof baseAsset === 'string' ? baseAsset : null,
-    divisibility: numberOrUndefined(divisibility),
+    baseAsset: normalizeMarketBaseAsset(baseAsset),
+    collateralUnit,
+    divisibility: normalizeMarketDivisibility(divisibility, 'sat'),
   }
 }
 
@@ -174,6 +181,7 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
         sellerKeepOutcomeSetId?: unknown,
         sellerLockOutcomeSetId?: unknown,
         baseAsset?: unknown,
+        collateralUnit?: unknown,
         divisibility?: unknown,
       ) => {
         void this.invokeCallback(async () => {
@@ -192,6 +200,7 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
               sellerKeepOutcomeSetId,
               sellerLockOutcomeSetId,
               baseAsset,
+              collateralUnit,
               divisibility,
             ),
           )

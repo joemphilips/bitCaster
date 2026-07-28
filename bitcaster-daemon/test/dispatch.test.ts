@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { getEncodedToken, type Proof } from '@cashu/cashu-ts'
+import { completedProofAuthorityDigest } from '@bitcaster-market/client-sdk/ctfSplit'
 import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
 import { dispatch, type EngineClientLike } from '../src/server.ts'
 import { profileDir, readProfile, updateProfile } from '../src/profile.ts'
@@ -22,6 +23,31 @@ import {
 import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 
 async function writeState(state: DaemonState): Promise<void> {
+  for (const record of state.wallet.proofs) {
+    const outcome =
+      record.asset.kind === 'Outcome' || (record.asset as { kind?: unknown }).kind === 'outcome'
+    record.asset = outcome
+      ? {
+          ...record.asset,
+          kind: 'Outcome',
+          baseAsset: 'sat',
+          unit: 'msat',
+        }
+      : {
+          ...record.asset,
+          kind: 'sats',
+          baseAsset: 'sat',
+          unit: record.asset.unit === 'sat' ? 'sat' : 'msat',
+        }
+  }
+  for (const order of Object.values(state.orders)) {
+    order.baseAsset ??= 'sat'
+    order.divisibility ??= 10_000
+  }
+  for (const swap of Object.values(state.swaps)) {
+    swap.baseAsset ??= 'sat'
+    swap.divisibility ??= 10_000
+  }
   await withDaemonStateSqliteTransaction(profileDir(), (database) => {
     database.prepare('DELETE FROM target_ephemeral_keys').run()
   })
@@ -47,16 +73,25 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.balance summarizes durable proof state', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('https://mint-a.example', 100, 'available', { kind: 'sats' }),
+        proofRecord('https://mint-a.example', 100, 'available', {
+          kind: 'sats',
+          baseAsset: 'sat',
+          unit: 'sat',
+        }),
         {
-          ...proofRecord('https://mint-a.example', 50, 'reserved', { kind: 'sats' }),
+          ...proofRecord('https://mint-a.example', 50_000, 'reserved', {
+            kind: 'sats',
+            baseAsset: 'sat',
+            unit: 'msat',
+          }),
           reservedBy: 'balance-test',
         },
-        proofRecord('https://mint-a.example', 999, 'available', { kind: 'sats', baseAsset: 'usd' }),
-        proofRecord('https://mint-a.example', 25, 'locked', {
+        proofRecord('https://mint-a.example', 25_000, 'locked', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
+          baseAsset: 'sat',
+          unit: 'msat',
         }),
       )
       await writeState(state)
@@ -147,7 +182,13 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('daemon.status returns redacted profile and state summary', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('https://mint-a.example', 10, 'available', { kind: 'sats' }, 'status-secret'),
+        proofRecord(
+          'https://mint-a.example',
+          10,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+          'status-secret',
+        ),
       )
       state.proofOperations['op-status'] = {
         operationId: 'op-status',
@@ -296,7 +337,13 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         () => {
           const state = emptyDaemonState()
           state.wallet.proofs.push(
-            proofRecord('https://mint-a.example', 1, 'available', { kind: 'sats' }, 'config-proof'),
+            proofRecord(
+              'https://mint-a.example',
+              1,
+              'available',
+              { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+              'config-proof',
+            ),
           )
           return state
         },
@@ -388,6 +435,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       const response = await dispatch(
         { method: 'wallet.receive', params: { token } },
         {
+          resolveTokenImportKeysets: tokenImportKeysetResolver('regular', 'sat'),
           createCashuWallet(mintUrl) {
             assert.equal(mintUrl, 'https://mint-a.example')
             return {
@@ -410,19 +458,25 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         mintUrl: 'https://mint-a.example',
         amountSats: 7,
         proofCount: 1,
-        asset: { kind: 'sats', baseAsset: 'sat' },
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+        unit: 'sat',
+        hasInactiveProofs: false,
       })
       const state = await readState()
       assert.equal(state?.wallet.proofs[0]?.proof.secret, 'fresh-secret')
       assert.equal(state?.wallet.proofs[0]?.state, 'available')
-      assert.deepEqual(state?.wallet.proofs[0]?.asset, { kind: 'sats', baseAsset: 'sat' })
+      assert.deepEqual(state?.wallet.proofs[0]?.asset, {
+        kind: 'sats',
+        baseAsset: 'sat',
+        unit: 'sat',
+      })
     })
 
     await t.test('wallet.receive can classify imported proofs as outcome tokens', async () => {
       await writeState(emptyDaemonState())
       const token = getEncodedToken({
         mint: 'https://mint-a.example',
-        unit: 'sat',
+        unit: 'msat',
         proofs: [cashuProof(11, 'outcome-token-secret')],
       })
       const response = await dispatch(
@@ -435,6 +489,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
         },
         {
+          resolveTokenImportKeysets: tokenImportKeysetResolver('conditional', 'msat'),
           async resolveConditionKeysetIds(mintUrl, conditionId) {
             assert.equal(mintUrl, 'https://mint-a.example')
             assert.equal(conditionId, 'cond')
@@ -476,7 +531,10 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           conditionId: 'cond',
           outcomeSetId: 'YES',
           baseAsset: 'sat',
+          unit: 'msat',
         },
+        unit: 'msat',
+        hasInactiveProofs: false,
       })
       const state = await readState()
       assert.deepEqual(state?.wallet.proofs[0]?.asset, {
@@ -484,6 +542,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         conditionId: 'cond',
         outcomeSetId: 'YES',
         baseAsset: 'sat',
+        unit: 'msat',
       })
       assert.equal(state?.wallet.proofs[0]?.proof.secret, 'outcome-token-secret')
     })
@@ -494,7 +553,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         await writeState(emptyDaemonState())
         const token = getEncodedToken({
           mint: 'https://mint-a.example',
-          unit: 'sat',
+          unit: 'msat',
           proofs: [cashuProof(11, 'spent-outcome-secret')],
         })
 
@@ -510,6 +569,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 },
               },
               {
+                resolveTokenImportKeysets: tokenImportKeysetResolver('conditional', 'msat'),
                 async resolveConditionKeysetIds() {
                   return ['009a1f293253e41e']
                 },
@@ -544,45 +604,81 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.receive rejects partial outcome metadata', async () => {
       const token = getEncodedToken({
         mint: 'https://mint-a.example',
-        unit: 'sat',
+        unit: 'msat',
         proofs: [cashuProof(7, 'partial-outcome-secret')],
       })
 
       await assert.rejects(
         () =>
-          dispatch({
-            method: 'wallet.receive',
-            params: { token, conditionId: 'cond' },
-          }),
+          dispatch(
+            {
+              method: 'wallet.receive',
+              params: { token, conditionId: 'cond' },
+            },
+            {
+              resolveTokenImportKeysets: tokenImportKeysetResolver('conditional', 'msat'),
+            },
+          ),
         /conditionId and outcomeSetId must be supplied together/,
       )
     })
 
     await t.test('wallet.receive rejects tokens for unexpected mints', async () => {
+      let resolverCalls = 0
       const token = getEncodedToken({
-        mint: 'http://unexpected-mint.local',
+        mint: 'https://unexpected-mint.example',
         unit: 'sat',
         proofs: [cashuProof(7, 'unexpected-mint-secret')],
       })
 
       await assert.rejects(
-        () => dispatch({ method: 'wallet.receive', params: { token } }),
-        /mint does not match daemon profile mint/,
+        () =>
+          dispatch(
+            { method: 'wallet.receive', params: { token } },
+            {
+              resolveTokenImportKeysets: async (request) => {
+                resolverCalls += 1
+                return tokenImportKeysetResolver('regular', 'sat')(request)
+              },
+            },
+          ),
+        /allowed canonical mint set/,
       )
+      assert.equal(resolverCalls, 0)
     })
 
     await t.test('wallet.send spends stored proofs and returns an encoded token', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'spend-secret-a'),
-        proofRecord('https://mint-a.example', 4, 'available', { kind: 'sats' }, 'spend-secret-b'),
+        proofRecord(
+          'https://mint-a.example',
+          8,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+          'spend-secret-a',
+        ),
+        proofRecord(
+          'https://mint-a.example',
+          4,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+          'spend-secret-b',
+        ),
+        proofRecord(
+          'https://mint-a.example',
+          100_000,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+          'market-collateral',
+        ),
       )
       await writeState(state)
       const response = await dispatch(
         { method: 'wallet.send', params: { amountSats: 5, mintUrl: 'https://mint-a.example' } },
         {
-          createCashuWallet(mintUrl) {
+          createCashuWallet(mintUrl, unit) {
             assert.equal(mintUrl, 'https://mint-a.example')
+            assert.equal(unit, 'sat')
             return resumableSendWallet({
               onPrepare(amount, proofs) {
                 assert.equal(amount, 5)
@@ -613,6 +709,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
       assert.deepEqual(updated?.wallet.proofs.map((record) => record.proof.secret).sort(), [
         'change-secret',
+        'market-collateral',
         'spend-secret-b',
       ])
     })
@@ -620,8 +717,20 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('concurrent wallet.send calls reserve distinct proofs', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'send-a'),
-        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'send-b'),
+        proofRecord(
+          'https://mint-a.example',
+          8,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+          'send-a',
+        ),
+        proofRecord(
+          'https://mint-a.example',
+          8,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+          'send-b',
+        ),
       )
       await writeState(state)
       const selectedSecrets: string[] = []
@@ -652,7 +761,13 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.send releases reserved proofs when mint send fails', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'send-fail'),
+        proofRecord(
+          'https://mint-a.example',
+          8,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+          'send-fail',
+        ),
       )
       await writeState(state)
 
@@ -692,7 +807,13 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.send with operation id is idempotent after completion', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'send-op'),
+        proofRecord(
+          'https://mint-a.example',
+          8,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+          'send-op',
+        ),
       )
       await writeState(state)
       let prepared = 0
@@ -746,6 +867,32 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
         },
       )
+      await assert.rejects(
+        () =>
+          dispatch(
+            {
+              method: 'wallet.send',
+              params: {
+                amountSats: 4,
+                mintUrl: 'https://mint-a.example',
+                operationId: 'wallet-send-op-1',
+              },
+            },
+            {
+              createCashuWallet() {
+                return resumableSendWallet({
+                  onPrepare: () => {
+                    throw new Error('prepare should not run for a mismatched retry')
+                  },
+                  onComplete: () => {
+                    throw new Error('complete should not run for a mismatched retry')
+                  },
+                })
+              },
+            },
+          ),
+        /does not match this wallet send/,
+      )
 
       assert.equal(first.ok, true)
       assert.equal(second.ok, true)
@@ -766,7 +913,13 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet.send with operation id restores spent prepared outputs', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'send-restore'),
+        proofRecord(
+          'https://mint-a.example',
+          8,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+          'send-restore',
+        ),
       )
       await writeState(state)
 
@@ -838,7 +991,13 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet recovery sweep completes spent prepared sends', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'recover-spent'),
+        proofRecord(
+          'https://mint-a.example',
+          8,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+          'recover-spent',
+        ),
       )
       await writeState(state)
 
@@ -902,7 +1061,13 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('wallet recovery sweep reports mint-pending sends without throwing', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('https://mint-a.example', 8, 'available', { kind: 'sats' }, 'recover-pending'),
+        proofRecord(
+          'https://mint-a.example',
+          8,
+          'available',
+          { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+          'recover-pending',
+        ),
       )
       await writeState(state)
 
@@ -990,6 +1155,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         createdAt: 10,
         updatedAt: 20,
       }
+      const completedResults = {
+        YES: [{ id: 'keyset-b', amount: 8, secret: 'result-secret', C: 'C-result' }],
+      }
       state.proofOperations['op-b'] = {
         operationId: 'op-b',
         kind: 'ctf-split',
@@ -998,9 +1166,10 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         inputs: [{ amount: 8, secret: 'input-secret-c', C: 'C-c' }],
         outputs: {},
         metadata: {},
-        resultProofs: {
-          YES: [{ amount: 8, secret: 'result-secret', C: 'C-result' }],
-        },
+        resultProofs: completedResults,
+        resultProofsDigest: completedProofAuthorityDigest(
+          completedResults as Record<string, Proof[]>,
+        ),
         lastError: null,
         createdAt: 30,
         updatedAt: 40,
@@ -1040,7 +1209,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test(
       'order.submit uses clientOrderId and submits pubkey only for pending matches',
       async () => {
-        await writeState(backedDaemonState('cond', 10_000))
+        await writeState(backedDaemonState('cond', 1_000_000))
         let capturedOptions: { baseUrl: string; nostrSecretKeyHex: string } | null = null
         let capturedRequest: unknown = null
         const submittedPubkeys: Array<{ tradeId: string; pubkey: string }> = []
@@ -1102,8 +1271,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 42,
-              amountSats: 100,
+              price: 4_200,
+              amountSubunits: 10_000,
               timeInForce: 'GTC',
             },
           },
@@ -1135,8 +1304,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           outcomeId: 'YES',
           tokenSide: 'Outcome',
           side: 'Buy',
-          price: 42,
-          amountSubunits: 100,
+          price: 4_200,
+          amountSubunits: 10_000,
           timeInForce: 'GTC',
           clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
         })
@@ -1172,78 +1341,84 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       },
     )
 
-    await t.test('order.submit validates D=1000 prices using engine market metadata', async () => {
-      await writeState(backedDaemonState('cond', 10_000))
-      let capturedRequest: unknown = null
-      const engine: EngineClientLike = {
-        ...scoreDisabledEngineMethods,
-        async submitOrder(_marketId, request) {
-          capturedRequest = request
-          return {
-            orderId: 'order-d1000',
-            status: 'resting',
-            remainingAmountSubunits: request.amountSubunits,
-            fills: [],
-          }
-        },
-        async getOrderStatus() {
-          return null
-        },
-        async cancelOrder() {
-          throw new Error('cancelOrder unused')
-        },
-        async getOrderBook() {
-          throw new Error('getOrderBook unused')
-        },
-        async queryMarkets() {
-          return { markets: [], nextCursor: null }
-        },
-        async getMarket() {
-          return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000 }
-        },
-      }
+    await t.test(
+      'order.submit validates D=1000000 prices using engine market metadata',
+      async () => {
+        await writeState(backedDaemonState('cond', 1_000_000))
+        let capturedRequest: unknown = null
+        const engine: EngineClientLike = {
+          ...scoreDisabledEngineMethods,
+          async submitOrder(_marketId, request) {
+            capturedRequest = request
+            return {
+              orderId: 'order-d1000000',
+              status: 'resting',
+              remainingAmountSubunits: request.amountSubunits,
+              fills: [],
+            }
+          },
+          async getOrderStatus() {
+            return null
+          },
+          async cancelOrder() {
+            throw new Error('cancelOrder unused')
+          },
+          async getOrderBook() {
+            throw new Error('getOrderBook unused')
+          },
+          async queryMarkets() {
+            return { markets: [], nextCursor: null }
+          },
+          async getMarket() {
+            return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000_000 }
+          },
+        }
 
-      const response = await dispatch(
-        {
-          method: 'order.submit',
-          params: {
-            marketId: 'cond-YES',
-            outcomeId: 'YES',
-            side: 'Buy',
-            price: 500,
-            amountSubunits: 1_000,
-            timeInForce: 'GTC',
-          },
-        },
-        {
-          createEngineClient() {
-            return engine
-          },
-          generateEphemeralKeypair: () => ({
-            privateKeyHex: '55'.repeat(32),
-            publicKeyHex: `02${'66'.repeat(32)}`,
-          }),
-          tradeRuntime: {
-            async start() {
-              return { orders: [], trades: [] }
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              side: 'Buy',
+              price: 500_000,
+              amountSubunits: 1_000_000,
+              timeInForce: 'GTC',
             },
-            async stop() {},
           },
-        },
-      )
+          {
+            createEngineClient() {
+              return engine
+            },
+            generateEphemeralKeypair: () => ({
+              privateKeyHex: '55'.repeat(32),
+              publicKeyHex: `02${'66'.repeat(32)}`,
+            }),
+            tradeRuntime: {
+              async start() {
+                return { orders: [], trades: [] }
+              },
+              async stop() {},
+            },
+          },
+        )
 
-      assert.equal(response.ok, true)
-      assert.deepEqual(capturedRequest, {
-        outcomeId: 'YES',
-        tokenSide: 'Outcome',
-        side: 'Buy',
-        price: 500,
-        amountSubunits: 1_000,
-        timeInForce: 'GTC',
-        clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
-      })
-      assert.match((capturedRequest as { clientOrderId: string }).clientOrderId, /^[0-9a-f-]{36}$/i)
-    })
+        assert.equal(response.ok, true, response.error)
+        assert.deepEqual(capturedRequest, {
+          outcomeId: 'YES',
+          tokenSide: 'Outcome',
+          side: 'Buy',
+          price: 500_000,
+          amountSubunits: 1_000_000,
+          timeInForce: 'GTC',
+          clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
+        })
+        assert.match(
+          (capturedRequest as { clientOrderId: string }).clientOrderId,
+          /^[0-9a-f-]{36}$/i,
+        )
+      },
+    )
 
     await t.test(
       'order.submit blocks before POST when local buy collateral is insufficient',
@@ -1269,7 +1444,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             return { markets: [], nextCursor: null }
           },
           async getMarket() {
-            return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000 }
+            return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000_000 }
           },
         }
 
@@ -1280,8 +1455,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 500,
-              amountSubunits: 2_000,
+              price: 500_000,
+              amountSubunits: 2_000_000,
               timeInForce: 'GTC',
             },
           },
@@ -1289,7 +1464,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         )
 
         assert.equal(response.ok, false)
-        assert.equal(response.error, 'insufficient backing: have 0 base subunits, need 1000')
+        assert.equal(response.error, 'insufficient backing: have 0 base subunits, need 1000000')
         assert.equal(submitCalls, 0)
         assert.deepEqual((await readState())?.orders, {})
         // Bypass invariant: this client gate is UX-only. If bypassed, the engine
@@ -1303,7 +1478,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       state.wallet.proofs.push(
         proofRecord(
           'https://mint-a.example',
-          1_000,
+          1_000_000,
           'available',
           {
             kind: 'sats',
@@ -1338,7 +1513,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           return { markets: [], nextCursor: null }
         },
         async getMarket() {
-          return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000 }
+          return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000_000 }
         },
       }
 
@@ -1349,8 +1524,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             marketId: 'cond-YES',
             outcomeId: 'YES',
             side: 'Buy',
-            price: 500,
-            amountSubunits: 2_000,
+            price: 500_000,
+            amountSubunits: 2_000_000,
             timeInForce: 'GTC',
           },
         },
@@ -1364,7 +1539,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
 
       assert.equal(response.ok, true)
-      assert.equal((capturedRequest as { amountSubunits?: number }).amountSubunits, 2_000)
+      assert.equal((capturedRequest as { amountSubunits?: number }).amountSubunits, 2_000_000)
       assert.equal((await readState())?.orders['order-backed']?.orderId, 'order-backed')
     })
 
@@ -1413,8 +1588,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 outcomeId: 'YES',
                 tokenSide: 'Complement',
                 side: 'Buy',
-                price: 99,
-                amountSats: 100,
+                price: 9_900,
+                amountSubunits: 10_000,
                 timeInForce: 'GTC',
               },
             },
@@ -1436,7 +1611,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             },
           )
 
-          assert.equal(response.ok, true)
+          assert.equal(response.ok, true, response.error)
           assert.equal(runtimeOrder?.orderId, 'order-complement')
           assert.equal(runtimeOrder?.marketId, 'cond-YES')
           assert.equal(runtimeOrder?.tokenSide, 'Complement')
@@ -1480,8 +1655,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             marketId: 'cond-Bob',
             outcomeId: 'Bob',
             side: 'Buy',
-            price: 42,
-            amountSats: 100,
+            price: 4_200,
+            amountSubunits: 10_000,
             timeInForce: 'GTC',
           },
         },
@@ -1516,7 +1691,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             'https://mint-a.example',
             100,
             'available',
-            { kind: 'sats', baseAsset: 'sat' },
+            { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
             'score-proof',
           ),
         )
@@ -1527,6 +1702,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           let capturedPayment: { amountSats: number; token: string; paymentId?: string } | null =
             null
           const engine: EngineClientLike = {
+            async getMarket(conditionId) {
+              return { conditionId, baseAsset: 'sat', divisibility: 10_000 }
+            },
             async getParticipationScore() {
               calls.push('score')
               return scoreResponse({ balance: -1, matchDebitScore: 1 })
@@ -1572,8 +1750,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 marketId: 'cond-YES',
                 outcomeId: 'YES',
                 side: 'Buy',
-                price: 42,
-                amountSats: 100,
+                price: 4_200,
+                amountSubunits: 10_000,
                 timeInForce: 'GTC',
               },
             },
@@ -1605,7 +1783,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             },
           )
 
-          assert.equal(response.ok, true)
+          assert.equal(response.ok, true, response.error)
           assert.deepEqual(calls, ['score', 'pay-score', 'submit'])
           assert.equal(capturedPayment?.amountSats, 2)
           assert.match(capturedPayment?.token ?? '', /^cashu/)
@@ -1634,100 +1812,120 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       },
     )
 
-    await t.test('order.submit rejects malformed order intent before side effects', async () => {
-      const priorState = await readState()
-      await writeState(backedDaemonState())
+    await t.test(
+      'order.submit rejects malformed order intent before mutation or submission',
+      async () => {
+        const priorState = await readState()
+        await writeState(backedDaemonState())
 
-      try {
-        for (const params of [
-          {
-            marketId: 'cond-YES',
-            outcomeId: 'YES',
-            side: 'Buy',
-            price: 0,
-            amountSats: 100,
-            timeInForce: 'GTC',
-          },
-          {
-            marketId: 'cond-YES',
-            outcomeId: 'YES',
-            side: 'Buy',
-            price: 42,
-            amountSats: 50,
-            timeInForce: 'GTC',
-          },
-          {
-            marketId: 'cond-YES',
-            outcomeId: 'YES',
-            side: 'Buy',
-            price: 42,
-            amountSats: 100,
-            timeInForce: 'IOC',
-          },
-          {
-            marketId: 'cond-Bob|Carol',
-            outcomeId: 'Bob',
-            side: 'Buy',
-            price: 42,
-            amountSats: 100,
-            timeInForce: 'GTC',
-          },
-          {
-            marketId: 'cond-Bob',
-            outcomeId: 'Bob|Carol',
-            side: 'Buy',
-            price: 42,
-            amountSats: 100,
-            timeInForce: 'GTC',
-          },
-          {
-            marketId: 'cond-Bob',
-            outcomeId: 'Carol',
-            side: 'Buy',
-            price: 42,
-            amountSats: 100,
-            timeInForce: 'GTC',
-          },
-        ]) {
-          let generatedEphemeral = false
-          let createdEngineClient = false
-          let startedRuntime = false
-
-          const response = await dispatch(
+        try {
+          for (const params of [
             {
-              method: 'order.submit',
-              params,
-            } as never,
-            {
-              createEngineClient() {
-                createdEngineClient = true
-                throw new Error('createEngineClient unused')
-              },
-              generateEphemeralKeypair: () => {
-                generatedEphemeral = true
-                throw new Error('generateEphemeralKeypair unused')
-              },
-              tradeRuntime: {
-                async start() {
-                  startedRuntime = true
-                  return { orders: [], trades: [] }
-                },
-                async stop() {},
-              },
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              side: 'Buy',
+              price: 0,
+              amountSubunits: 10_000,
+              timeInForce: 'GTC',
             },
-          )
+            {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 5_000,
+              timeInForce: 'GTC',
+            },
+            {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 10_000,
+              timeInForce: 'IOC',
+            },
+            {
+              marketId: 'cond-Bob|Carol',
+              outcomeId: 'Bob',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 10_000,
+              timeInForce: 'GTC',
+            },
+            {
+              marketId: 'cond-Bob',
+              outcomeId: 'Bob|Carol',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 10_000,
+              timeInForce: 'GTC',
+            },
+            {
+              marketId: 'cond-Bob',
+              outcomeId: 'Carol',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 10_000,
+              timeInForce: 'GTC',
+            },
+          ]) {
+            let generatedEphemeral = false
+            let submitCalls = 0
+            let startedRuntime = false
 
-          assert.equal(response.ok, false)
-          assert.match(response.error ?? '', /Order rejected:/)
-          assert.equal(generatedEphemeral, false)
-          assert.equal(createdEngineClient, false)
-          assert.equal(startedRuntime, false)
-          assert.deepEqual((await readState())?.orders, {})
+            const response = await dispatch(
+              {
+                method: 'order.submit',
+                params,
+              } as never,
+              {
+                createEngineClient() {
+                  return {
+                    ...scoreDisabledEngineMethods,
+                    async submitOrder() {
+                      submitCalls += 1
+                      throw new Error('submitOrder unused')
+                    },
+                    async getOrderStatus() {
+                      throw new Error('getOrderStatus unused')
+                    },
+                    async cancelOrder() {
+                      throw new Error('cancelOrder unused')
+                    },
+                    async getOrderBook() {
+                      throw new Error('getOrderBook unused')
+                    },
+                    async queryMarkets() {
+                      throw new Error('queryMarkets unused')
+                    },
+                  }
+                },
+                generateEphemeralKeypair: () => {
+                  generatedEphemeral = true
+                  throw new Error('generateEphemeralKeypair unused')
+                },
+                tradeRuntime: {
+                  async start() {
+                    startedRuntime = true
+                    return { orders: [], trades: [] }
+                  },
+                  async stop() {},
+                },
+              },
+            )
+
+            assert.equal(response.ok, false)
+            assert.match(response.error ?? '', /Order rejected:/)
+            assert.equal(generatedEphemeral, false)
+            assert.equal(submitCalls, 0)
+            assert.equal(startedRuntime, false)
+            assert.deepEqual((await readState())?.orders, {})
+          }
+        } finally {
+          if (priorState) await writeState(priorState)
         }
-      } finally {
-        if (priorState) await writeState(priorState)
-      }
-    })
+      },
+    )
 
     await t.test('trade.watch reads persisted swap state', async () => {
       const state = emptyDaemonState()
@@ -1910,6 +2108,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 capturedCancel = { marketId, orderId }
                 return true
               },
+              async getMarket(conditionId) {
+                return { conditionId, baseAsset: 'sat', divisibility: 10_000 }
+              },
               async getOrderBook() {
                 throw new Error('getOrderBook unused')
               },
@@ -1932,6 +2133,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           orderId: 'order-cancel',
           marketId: 'cond-YES',
           status: 'cancelled',
+          baseAsset: 'sat',
+          divisibility: 10_000,
           tradeIds: [],
           engineStatus: {
             orderId: 'order-cancel',
@@ -2026,8 +2229,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 42,
-              amountSats: 100,
+              price: 4_200,
+              amountSubunits: 10_000,
               timeInForce: 'GTC',
             },
           },
@@ -2069,8 +2272,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Sell',
-              price: 42,
-              amountSats: 100,
+              price: 4_200,
+              amountSubunits: 10_000,
               timeInForce: 'GTC',
             },
           },
@@ -2119,8 +2322,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           outcomeId: 'YES',
           tokenSide: 'Outcome',
           side: 'Sell',
-          price: 42,
-          amountSubunits: 100,
+          price: 4_200,
+          amountSubunits: 10_000,
           timeInForce: 'GTC',
           clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
         })
@@ -2234,10 +2437,24 @@ function proofRecord(
   asset: DaemonState['wallet']['proofs'][number]['asset'],
   secret = `secret-${amount}`,
 ): DaemonState['wallet']['proofs'][number] {
+  const strictAsset =
+    asset.kind === 'Outcome' || (asset as { kind?: unknown }).kind === 'outcome'
+      ? {
+          ...asset,
+          kind: 'Outcome' as const,
+          baseAsset: 'sat' as const,
+          unit: 'msat' as const,
+        }
+      : {
+          ...asset,
+          kind: 'sats' as const,
+          baseAsset: 'sat' as const,
+          unit: asset.unit === 'sat' ? ('sat' as const) : ('msat' as const),
+        }
   return {
     mintUrl,
     state,
-    asset,
+    asset: strictAsset,
     proof: {
       id: `keyset-${amount}`,
       amount,
@@ -2261,6 +2478,7 @@ function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
         conditionId,
         outcomeSetId: 'YES',
         baseAsset: 'sat',
+        unit: 'msat',
       },
       `${conditionId}-yes-vcs`,
     ),
@@ -2273,6 +2491,7 @@ function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
         conditionId,
         outcomeSetId: 'NO',
         baseAsset: 'sat',
+        unit: 'msat',
       },
       `${conditionId}-no-vcs`,
     ),
@@ -2283,6 +2502,7 @@ function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
       {
         kind: 'sats',
         baseAsset: 'sat',
+        unit: 'msat',
       },
       `${conditionId}-base`,
     ),
@@ -2291,13 +2511,19 @@ function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
 }
 
 const scoreDisabledEngineMethods = {
+  async getMarket(conditionId: string) {
+    return { conditionId, baseAsset: 'sat', divisibility: 10_000 }
+  },
   async getParticipationScore() {
     return scoreResponse({ enabled: false })
   },
   async payParticipationScoreEcash() {
     throw new Error('payParticipationScoreEcash unused')
   },
-} satisfies Pick<EngineClientLike, 'getParticipationScore' | 'payParticipationScoreEcash'>
+} satisfies Pick<
+  EngineClientLike,
+  'getMarket' | 'getParticipationScore' | 'payParticipationScoreEcash'
+>
 
 function scoreResponse(
   overrides: Partial<Awaited<ReturnType<EngineClientLike['getParticipationScore']>>> = {},
@@ -2321,6 +2547,16 @@ function cashuProof(amount: number, secret: string): Proof {
     secret,
     C: `02${'11'.repeat(32)}`,
   }
+}
+
+function tokenImportKeysetResolver(registry: 'regular' | 'conditional', unit: 'sat' | 'msat') {
+  return async () => ({
+    freshness: 'fresh' as const,
+    regularKeysets:
+      registry === 'regular' ? [{ keysetId: '009a1f293253e41e', unit, active: true }] : [],
+    conditionalKeysets:
+      registry === 'conditional' ? [{ keysetId: '009a1f293253e41e', unit, active: true }] : [],
+  })
 }
 
 function concurrentSendWallet(selectedSecrets: string[]) {

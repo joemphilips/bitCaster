@@ -16,7 +16,7 @@ import {
   emptyDaemonState,
   readState,
   recordSwapMessage,
-  recordTradeCreated,
+  recordTradeCreated as recordTradeCreatedStrict,
   recordTradeStateChanged,
   writeState as writeBootstrappedState,
   type CashuProofRecord,
@@ -52,11 +52,17 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
     state.wallet.proofs.push(
-      proofRecord(profile.mintUrl, 100, 'available', {
-        kind: 'Outcome',
-        conditionId: 'cond',
-        outcomeSetId: 'YES',
-      }),
+      proofRecord(
+        profile.mintUrl,
+        10_000,
+        'available',
+        {
+          kind: 'Outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'YES',
+        },
+        'secret-100',
+      ),
     )
     await writeState(state)
 
@@ -66,7 +72,7 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
       ops: {
         ...fakeOps(),
         async sellerClaim() {
-          const claimed = cashuProof(42, 'seller-claim')
+          const claimed = cashuProof(4_200, 'seller-claim')
           return [claimed, structuredClone(claimed)]
         },
       },
@@ -78,16 +84,20 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-YES',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 42,
+      fillAmountSubunits: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
+      quotePaymentSubunits: 4_200,
       settlementKind: 'DirectSwap',
     })
 
     await executor.onTradeCreated(created)
 
     let persisted = await readState()
-    assert.equal(persisted?.swaps['trade-1'].step, 'seller-opened')
+    assert.equal(
+      persisted?.swaps['trade-1'].step,
+      'seller-opened',
+      persisted?.swaps['trade-1'].error,
+    )
     assert.equal(persisted?.swaps['trade-1'].sellerAdaptorSecretHex, 'aa')
     assert.equal(persisted?.swaps['trade-1'].sellerAdaptorPointHex, 'bb')
     assert.equal(
@@ -154,11 +164,17 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
     state.wallet.proofs.push(
-      proofRecord(profile.mintUrl, 100, 'available', {
-        kind: 'Outcome',
-        conditionId: 'cond',
-        outcomeSetId: 'A',
-      }),
+      proofRecord(
+        profile.mintUrl,
+        10_000,
+        'available',
+        {
+          kind: 'Outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'A',
+        },
+        'secret-100',
+      ),
     )
     await writeState(state)
 
@@ -188,8 +204,8 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
             detail: 'leg 1 locked; leg 2 failed',
           }
           err.partialLock = {
-            spentProofs: [cashuProof(100, 'secret-100')],
-            lockedProofs: [cashuProof(100, 'partial-locked')],
+            spentProofs: [cashuProof(10_000, 'secret-100')],
+            lockedProofs: [cashuProof(10_000, 'partial-locked')],
             changeProofs: [],
           }
           throw err
@@ -208,9 +224,9 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
         sellerLocktime: '2026-05-21T00:02:00.000Z',
         buyerLocktime: '2026-05-21T00:01:00.000Z',
         marketId: 'cond-A',
-        fillAmountSubunits: 100,
-        outcomeFaceAmountSubunits: 100,
-        quotePaymentSubunits: 42,
+        fillAmountSubunits: 10_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 4_200,
         settlementKind: 'DirectSwap',
       }),
     )
@@ -220,7 +236,7 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
     assert.equal(persisted?.swaps['trade-partial-lock'].failure?.kind, 'PartialLockHeld')
     assert.equal(persisted?.swaps['trade-partial-lock'].failure?.refundLocktime, 1_779_393_600)
     assert.deepEqual(persisted?.swaps['trade-partial-lock'].failure?.affectedKeysets, [
-      'keyset-100',
+      'keyset-10000',
     ])
     assert.equal(
       persisted?.wallet.proofs.some((row) => row.proof.secret === 'secret-100'),
@@ -270,13 +286,13 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
     state.wallet.proofs.push({
-      ...proofRecord(profile.mintUrl, 100, 'locked', {
+      ...proofRecord(profile.mintUrl, 10_000, 'locked', {
         kind: 'Outcome',
         conditionId: 'cond',
         outcomeSetId: 'A',
       }),
       reservedBy: 'trade-partial-refund',
-      proof: cashuProof(100, 'partial-locked'),
+      proof: cashuProof(10_000, 'partial-locked'),
     })
     await writeState(state)
 
@@ -287,7 +303,7 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
         ...fakeOps(),
         async refundLockedProofs(_ctx, proofs, operationId) {
           refunded.push(`${operationId}:${proofs[0].secret}`)
-          return [cashuProof(100, 'partial-refunded')]
+          return [cashuProof(10_000, 'partial-refunded')]
         },
       },
     })
@@ -353,8 +369,8 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
           },
         },
         lockedProofs: [
-          { ...cashuProof(100, 'partial-locked-B'), id: 'keyset-B' },
-          { ...cashuProof(100, 'partial-locked-C'), id: 'keyset-C' },
+          { ...cashuProof(10_000, 'partial-locked-B'), id: 'keyset-B' },
+          { ...cashuProof(10_000, 'partial-locked-C'), id: 'keyset-C' },
         ],
       },
       createdAt: '2026-05-21T00:00:00.000Z',
@@ -362,22 +378,22 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
     }
     state.wallet.proofs.push(
       {
-        ...proofRecord(profile.mintUrl, 100, 'locked', {
+        ...proofRecord(profile.mintUrl, 10_000, 'locked', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'B',
         }),
         reservedBy: 'trade-partial-multi',
-        proof: { ...cashuProof(100, 'partial-locked-B'), id: 'keyset-B' },
+        proof: { ...cashuProof(10_000, 'partial-locked-B'), id: 'keyset-B' },
       },
       {
-        ...proofRecord(profile.mintUrl, 100, 'locked', {
+        ...proofRecord(profile.mintUrl, 10_000, 'locked', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'C',
         }),
         reservedBy: 'trade-partial-multi',
-        proof: { ...cashuProof(100, 'partial-locked-C'), id: 'keyset-C' },
+        proof: { ...cashuProof(10_000, 'partial-locked-C'), id: 'keyset-C' },
       },
     )
     await writeState(state)
@@ -448,13 +464,13 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
     state.wallet.proofs.push({
-      ...proofRecord(profile.mintUrl, 100, 'locked', {
+      ...proofRecord(profile.mintUrl, 10_000, 'locked', {
         kind: 'Outcome',
         conditionId: 'cond',
         outcomeSetId: 'A',
       }),
       reservedBy: 'trade-partial-spent',
-      proof: cashuProof(100, 'partial-spent'),
+      proof: cashuProof(10_000, 'partial-spent'),
     })
     await writeState(state)
 
@@ -504,11 +520,17 @@ test('DaemonSwapExecutor leaves persisted seller open resumable when hub send fa
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
     state.wallet.proofs.push(
-      proofRecord(profile.mintUrl, 100, 'available', {
-        kind: 'Outcome',
-        conditionId: 'cond',
-        outcomeSetId: 'YES',
-      }),
+      proofRecord(
+        profile.mintUrl,
+        10_000,
+        'available',
+        {
+          kind: 'Outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'YES',
+        },
+        'secret-100',
+      ),
     )
     await writeState(state)
 
@@ -525,15 +547,19 @@ test('DaemonSwapExecutor leaves persisted seller open resumable when hub send fa
         sellerLocktime: '2026-05-21T00:02:00.000Z',
         buyerLocktime: '2026-05-21T00:01:00.000Z',
         marketId: 'cond-YES',
-        fillAmountSubunits: 100,
-        outcomeFaceAmountSubunits: 100,
-        quotePaymentSubunits: 42,
+        fillAmountSubunits: 10_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 4_200,
         settlementKind: 'DirectSwap',
       }),
     )
 
     const persisted = await readState()
-    assert.equal(persisted?.swaps['trade-send-fail'].step, 'seller-opened')
+    assert.equal(
+      persisted?.swaps['trade-send-fail'].step,
+      'seller-opened',
+      persisted?.swaps['trade-send-fail'].error,
+    )
     assert.equal(persisted?.swaps['trade-send-fail'].messages.lockedProofsSeller, 'cipher-seller')
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
@@ -563,11 +589,17 @@ test('DaemonSwapExecutor keeps pending proof operations retryable', async () => 
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
     state.wallet.proofs.push(
-      proofRecord(profile.mintUrl, 100, 'available', {
-        kind: 'Outcome',
-        conditionId: 'cond',
-        outcomeSetId: 'YES',
-      }),
+      proofRecord(
+        profile.mintUrl,
+        10_000,
+        'available',
+        {
+          kind: 'Outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'YES',
+        },
+        'secret-100',
+      ),
     )
     await writeState(state)
 
@@ -589,9 +621,9 @@ test('DaemonSwapExecutor keeps pending proof operations retryable', async () => 
         sellerLocktime: '2026-05-21T00:02:00.000Z',
         buyerLocktime: '2026-05-21T00:01:00.000Z',
         marketId: 'cond-YES',
-        fillAmountSubunits: 100,
-        outcomeFaceAmountSubunits: 100,
-        quotePaymentSubunits: 42,
+        fillAmountSubunits: 10_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 4_200,
         settlementKind: 'DirectSwap',
       }),
     )
@@ -628,11 +660,17 @@ test('DaemonSwapExecutor retries mint-pending seller open without another event'
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
     state.wallet.proofs.push(
-      proofRecord(profile.mintUrl, 100, 'available', {
-        kind: 'Outcome',
-        conditionId: 'cond',
-        outcomeSetId: 'YES',
-      }),
+      proofRecord(
+        profile.mintUrl,
+        10_000,
+        'available',
+        {
+          kind: 'Outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'YES',
+        },
+        'secret-100',
+      ),
     )
     await writeState(state)
 
@@ -662,14 +700,19 @@ test('DaemonSwapExecutor retries mint-pending seller open without another event'
         sellerLocktime: '2026-05-21T00:02:00.000Z',
         buyerLocktime: '2026-05-21T00:01:00.000Z',
         marketId: 'cond-YES',
-        fillAmountSubunits: 100,
-        outcomeFaceAmountSubunits: 100,
-        quotePaymentSubunits: 42,
+        fillAmountSubunits: 10_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 4_200,
         settlementKind: 'DirectSwap',
       }),
     )
 
     const persisted = await waitForSwapStep('trade-retry', 'seller-opened')
+    assert.equal(
+      persisted?.swaps['trade-retry'].step,
+      'seller-opened',
+      persisted?.swaps['trade-retry'].error,
+    )
     assert.equal(lockAttempts, 2)
     assert.equal(persisted?.swaps['trade-retry'].sellerAdaptorSecretHex, 'aa')
     assert.deepEqual(sent, [
@@ -704,7 +747,13 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
-    state.wallet.proofs.push(proofRecord(profile.mintUrl, 42, 'available', { kind: 'sats' }))
+    state.wallet.proofs.push(
+      proofRecord(profile.mintUrl, 4_200, 'available', {
+        kind: 'sats',
+        baseAsset: 'sat',
+        unit: 'msat',
+      }),
+    )
     await writeState(state)
 
     const sent: string[] = []
@@ -720,9 +769,9 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
         sellerLocktime: '2026-05-21T00:02:00.000Z',
         buyerLocktime: '2026-05-21T00:01:00.000Z',
         marketId: 'cond-NO',
-        fillAmountSubunits: 100,
-        outcomeFaceAmountSubunits: 100,
-        quotePaymentSubunits: 42,
+        fillAmountSubunits: 10_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 4_200,
         settlementKind: 'DirectSwap',
       }),
     )
@@ -791,7 +840,7 @@ test('DaemonSwapExecutor resume sweep retries active claim after retryable timeo
         lockedProofsSeller: 'cipher-seller',
         lockedProofsBuyer: 'cipher-buyer',
       },
-      buyerLockedProofs: [cashuProof(42, 'buyer-locked')],
+      buyerLockedProofs: [cashuProof(4_200, 'buyer-locked')],
       buyerPreSigsHex: ['pre-b'],
       sellerPreSigsHex: ['pre-s'],
       step: 'settling',
@@ -811,7 +860,7 @@ test('DaemonSwapExecutor resume sweep retries active claim after retryable timeo
           if (attempts === 1) {
             throw new Error('Timed out waiting for seller to spend at mint')
           }
-          return [cashuProof(100, 'buyer-claim-retry')]
+          return [cashuProof(10_000, 'buyer-claim-retry')]
         },
       },
     })
@@ -868,7 +917,15 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
-    state.wallet.proofs.push(proofRecord(profile.mintUrl, 100, 'available', { kind: 'sats' }))
+    state.wallet.proofs.push(
+      proofRecord(
+        profile.mintUrl,
+        10_000,
+        'available',
+        { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+        'secret-100',
+      ),
+    )
     await writeState(state)
 
     const sent: string[] = []
@@ -929,11 +986,11 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
             mintUrl: profile.mintUrl,
             baseAsset: 'sat',
             conditionId: 'cond',
-            amountSats: 100,
+            amountSats: 10_000,
             keepOutcomeSetId: 'YES',
             lockOutcomeSetId: 'NO',
           })
-          return 100
+          return 10_000
         },
       },
     })
@@ -946,9 +1003,9 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
         sellerLocktime: '2026-05-21T00:02:00.000Z',
         buyerLocktime: '2026-05-21T00:01:00.000Z',
         marketId: 'cond-YES',
-        fillAmountSubunits: 100,
-        outcomeFaceAmountSubunits: 100,
-        quotePaymentSubunits: 42,
+        fillAmountSubunits: 10_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 4_200,
         settlementKind: 'Mint',
         sellerKeepOutcomeSetId: 'YES',
         sellerLockOutcomeSetId: 'NO',
@@ -1008,7 +1065,7 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
         conditionId: 'cond',
         keepOutcomeSetId: 'YES',
         lockOutcomeSetId: 'NO',
-        amountSats: 200,
+        amountSubunits: 200,
       },
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
@@ -1016,22 +1073,22 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
     }
     state.wallet.proofs.push(
       {
-        ...proofRecord(profile.mintUrl, 100, 'reserved', {
+        ...proofRecord(profile.mintUrl, 10_000, 'reserved', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'NO',
         }),
         reservedBy: reservationId,
-        proof: cashuProof(100, 'reserved-lock-no'),
+        proof: cashuProof(10_000, 'reserved-lock-no'),
       },
       {
-        ...proofRecord(profile.mintUrl, 100, 'reserved', {
+        ...proofRecord(profile.mintUrl, 10_000, 'reserved', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
         }),
         reservedBy: reservationId,
-        proof: cashuProof(100, 'reserved-keep-yes'),
+        proof: cashuProof(10_000, 'reserved-keep-yes'),
       },
     )
     await writeState(state)
@@ -1043,10 +1100,10 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
         ...fakeOps(),
         async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
           assert.equal(proofs[0].secret, 'reserved-lock-no')
-          assert.equal(amount, 100)
+          assert.equal(amount, 10_000)
           assert.match(operationId, /seller-preflight-lock$/)
           return {
-            lockedProofs: [cashuProof(100, 'lock-locked-100')],
+            lockedProofs: [cashuProof(10_000, 'lock-locked-100')],
             changeProofs: [],
           }
         },
@@ -1072,9 +1129,9 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
         sellerLocktime: '2026-05-21T00:02:00.000Z',
         buyerLocktime: '2026-05-21T00:01:00.000Z',
         marketId: 'cond-YES',
-        fillAmountSubunits: 100,
-        outcomeFaceAmountSubunits: 100,
-        quotePaymentSubunits: 42,
+        fillAmountSubunits: 10_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 4_200,
         settlementKind: 'Mint',
         sellerKeepOutcomeSetId: 'YES',
         sellerLockOutcomeSetId: 'NO',
@@ -1130,7 +1187,7 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
         conditionId: 'cond',
         keepOutcomeSetId: 'A',
         lockOutcomeSetId: 'B|C',
-        amountSats: 100,
+        amountSubunits: 10_000,
       },
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
@@ -1138,29 +1195,29 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
     }
     state.wallet.proofs.push(
       {
-        ...proofRecord(profile.mintUrl, 100, 'available', {
+        ...proofRecord(profile.mintUrl, 10_000, 'available', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'B',
         }),
-        proof: { ...cashuProof(100, 'primitive-b'), id: 'keyset-B' },
+        proof: { ...cashuProof(10_000, 'primitive-b'), id: 'keyset-B' },
       },
       {
-        ...proofRecord(profile.mintUrl, 100, 'available', {
+        ...proofRecord(profile.mintUrl, 10_000, 'available', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'C',
         }),
-        proof: { ...cashuProof(100, 'primitive-c'), id: 'keyset-C' },
+        proof: { ...cashuProof(10_000, 'primitive-c'), id: 'keyset-C' },
       },
       {
-        ...proofRecord(profile.mintUrl, 100, 'reserved', {
+        ...proofRecord(profile.mintUrl, 10_000, 'reserved', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'B|C',
         }),
         reservedBy: reservationId,
-        proof: { ...cashuProof(100, 'reserved-composite'), id: 'keyset-BC' },
+        proof: { ...cashuProof(10_000, 'reserved-composite'), id: 'keyset-BC' },
       },
     )
     await writeState(state)
@@ -1172,12 +1229,12 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
       ops: {
         ...fakeOps(),
         async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
-          assert.equal(amount, 100)
+          assert.equal(amount, 10_000)
           lockCalls.push(`${operationId}:${proofs[0].secret}`)
           return {
             lockedProofs: [
               {
-                ...cashuProof(100, `locked-${proofs[0].secret}`),
+                ...cashuProof(10_000, `locked-${proofs[0].secret}`),
                 id: proofs[0].id,
               },
             ],
@@ -1214,9 +1271,9 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
         sellerLocktime: '2026-05-21T00:02:00.000Z',
         buyerLocktime: '2026-05-21T00:01:00.000Z',
         marketId: 'cond-A',
-        fillAmountSubunits: 100,
-        outcomeFaceAmountSubunits: 100,
-        quotePaymentSubunits: 42,
+        fillAmountSubunits: 10_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 4_200,
         settlementKind: 'Mint',
         sellerKeepOutcomeSetId: 'A',
         sellerLockOutcomeSetId: 'B|C',
@@ -1287,7 +1344,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
         conditionId: 'cond',
         keepOutcomeSetId: 'YES',
         lockOutcomeSetId: 'NO',
-        amountSats: 100,
+        amountSubunits: 10_000,
       },
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
@@ -1295,22 +1352,22 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
     }
     state.wallet.proofs.push(
       {
-        ...proofRecord(profile.mintUrl, 136, 'reserved', {
+        ...proofRecord(profile.mintUrl, 13_600, 'reserved', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'NO',
         }),
         reservedBy: reservationId,
-        proof: cashuProof(136, 'reserved-lock-no-136'),
+        proof: { ...cashuProof(13_600, 'reserved-lock-no-136'), id: 'keyset-136' },
       },
       {
-        ...proofRecord(profile.mintUrl, 136, 'reserved', {
+        ...proofRecord(profile.mintUrl, 13_600, 'reserved', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
         }),
         reservedBy: reservationId,
-        proof: cashuProof(136, 'reserved-keep-yes-136'),
+        proof: { ...cashuProof(13_600, 'reserved-keep-yes-136'), id: 'keyset-136' },
       },
     )
     await writeState(state)
@@ -1322,21 +1379,21 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
         ...fakeOps(),
         async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
           assert.equal(proofs[0].secret, 'reserved-lock-no-136')
-          assert.equal(amount, 100)
+          assert.equal(amount, 10_000)
           assert.match(operationId, /seller-preflight-lock$/)
           return {
-            lockedProofs: [cashuProof(100, 'lock-locked-100')],
-            changeProofs: [{ ...cashuProof(36, 'lock-change-36'), id: 'keyset-136' }],
+            lockedProofs: [{ ...cashuProof(10_000, 'lock-locked-100'), id: 'keyset-136' }],
+            changeProofs: [{ ...cashuProof(3_600, 'lock-change-36'), id: 'keyset-136' }],
           }
         },
         async splitProofsForExactSend(params) {
-          assert.equal(params.amountSats, 100)
+          assert.equal(params.amountSats, 10_000)
           assert.equal(params.preserveSourceKeyset, true)
           assert.match(params.operationId, /seller-preflight-(lock|keep)-exact-v2\/(NO|YES)$/)
           const prefix = params.operationId.includes('seller-preflight-lock') ? 'lock' : 'keep'
           return {
-            sendProofs: [cashuProof(100, `${prefix}-exact-100`)],
-            changeProofs: [{ ...cashuProof(36, `${prefix}-change-36`), id: 'keyset-136' }],
+            sendProofs: [{ ...cashuProof(10_000, `${prefix}-exact-100`), id: 'keyset-136' }],
+            changeProofs: [{ ...cashuProof(3_600, `${prefix}-change-36`), id: 'keyset-136' }],
             spentProofs: params.sourceProofs,
           }
         },
@@ -1362,9 +1419,9 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
         sellerLocktime: '2026-05-21T00:02:00.000Z',
         buyerLocktime: '2026-05-21T00:01:00.000Z',
         marketId: 'cond-YES',
-        fillAmountSubunits: 100,
-        outcomeFaceAmountSubunits: 100,
-        quotePaymentSubunits: 42,
+        fillAmountSubunits: 10_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 4_200,
         settlementKind: 'Mint',
         sellerKeepOutcomeSetId: 'YES',
         sellerLockOutcomeSetId: 'NO',
@@ -1522,8 +1579,10 @@ function directSellerOrderEconomics() {
   return {
     side: 'Sell' as const,
     tokenSide: 'Outcome' as const,
-    priceSubunits: 42,
-    amountSubunits: 100,
+    priceSubunits: 4_200,
+    amountSubunits: 10_000,
+    baseAsset: 'sat' as const,
+    divisibility: 10_000,
   }
 }
 
@@ -1531,8 +1590,10 @@ function directBuyerOrderEconomics() {
   return {
     side: 'Buy' as const,
     tokenSide: 'Outcome' as const,
-    priceSubunits: 42,
-    amountSubunits: 100,
+    priceSubunits: 4_200,
+    amountSubunits: 10_000,
+    baseAsset: 'sat' as const,
+    divisibility: 10_000,
   }
 }
 
@@ -1540,8 +1601,10 @@ function mintSellerOrderEconomics() {
   return {
     side: 'Buy' as const,
     tokenSide: 'Complement' as const,
-    priceSubunits: 58,
-    amountSubunits: 100,
+    priceSubunits: 5_800,
+    amountSubunits: 10_000,
+    baseAsset: 'sat' as const,
+    divisibility: 10_000,
   }
 }
 
@@ -1601,16 +1664,16 @@ function fakeOps(): DaemonSwapOps {
         lockedProofsCipher: 'cipher-seller',
         adaptorSecretHex: 'aa',
         adaptorPointHex: 'bb',
-        lockedProofs: [cashuProof(100, 'seller-locked')],
+        lockedProofs: [cashuProof(10_000, 'seller-locked')],
         changeProofs: [],
       }
     },
     async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
       assert.equal(proofs[0].secret, 'secret-100')
-      assert.equal(amount, 100)
+      assert.equal(amount, 10_000)
       assert.match(operationId, /seller-lock$/)
       return {
-        lockedProofs: [cashuProof(100, 'direct-lock-100')],
+        lockedProofs: [cashuProof(10_000, 'direct-lock-100')],
         changeProofs: [],
       }
     },
@@ -1621,7 +1684,7 @@ function fakeOps(): DaemonSwapOps {
       throw new Error('mint path unused in this test')
     },
     async sellerClaim() {
-      return [cashuProof(42, 'seller-claim')]
+      return [cashuProof(4_200, 'seller-claim')]
     },
     async buyerClaim() {
       throw new Error('buyer path unused in this test')
@@ -1649,7 +1712,7 @@ function buyerFakeOps(): DaemonSwapOps {
     async buyerRespond() {
       return {
         lockedProofsCipher: 'cipher-buyer',
-        lockedProofs: [cashuProof(42, 'buyer-locked')],
+        lockedProofs: [cashuProof(4_200, 'buyer-locked')],
         changeProofs: [],
         preSigsHex: ['pre-b'],
         sellerPreSigsHex: ['pre-s'],
@@ -1662,7 +1725,7 @@ function buyerFakeOps(): DaemonSwapOps {
       throw new Error('seller path unused in this test')
     },
     async buyerClaim() {
-      return [cashuProof(100, 'buyer-claim')]
+      return [cashuProof(10_000, 'buyer-claim')]
     },
     async refundLockedProofs() {
       throw new Error('refund path unused in this test')
@@ -1689,7 +1752,7 @@ function mintFakeOps(): DaemonSwapOps {
         conditionId: 'cond',
         keepOutcomeSetId: 'YES',
         lockOutcomeSetId: 'NO',
-        amountSats: 100,
+        amountSats: 10_000,
       })
       assert.equal(collateralProofs[0].secret, 'secret-100')
       return {
@@ -1697,13 +1760,13 @@ function mintFakeOps(): DaemonSwapOps {
         lockedProofsCipher: 'cipher-seller',
         adaptorSecretHex: 'aa',
         adaptorPointHex: 'bb',
-        lockedProofs: [cashuProof(100, 'lock-proof')],
+        lockedProofs: [cashuProof(10_000, 'lock-proof')],
         changeProofs: [],
         spentSatProofs: collateralProofs,
-        keepProofs: [cashuProof(100, 'keep-proof')],
+        keepProofs: [cashuProof(10_000, 'keep-proof')],
         proofsByCollection: {
-          YES: [cashuProof(100, 'keep-proof')],
-          NO: [cashuProof(100, 'lock-proof')],
+          YES: [cashuProof(10_000, 'keep-proof')],
+          NO: [cashuProof(10_000, 'lock-proof')],
         },
         lockCollections: ['NO'],
         keepCollections: ['YES'],
@@ -1715,7 +1778,7 @@ function mintFakeOps(): DaemonSwapOps {
       throw new Error('buyer path unused in this test')
     },
     async sellerClaim() {
-      return [cashuProof(42, 'seller-claim')]
+      return [cashuProof(4_200, 'seller-claim')]
     },
     async buyerClaim() {
       throw new Error('buyer path unused in this test')
@@ -1731,12 +1794,27 @@ function proofRecord(
   amount: number,
   state: DaemonState['wallet']['proofs'][number]['state'],
   asset: DaemonState['wallet']['proofs'][number]['asset'],
+  secret = `secret-${amount}`,
 ): DaemonState['wallet']['proofs'][number] {
+  const strictAsset =
+    asset.kind === 'Outcome' || (asset as { kind?: unknown }).kind === 'outcome'
+      ? {
+          ...asset,
+          kind: 'Outcome' as const,
+          baseAsset: 'sat' as const,
+          unit: 'msat' as const,
+        }
+      : {
+          ...asset,
+          kind: 'sats' as const,
+          baseAsset: 'sat' as const,
+          unit: asset.unit === 'sat' ? ('sat' as const) : ('msat' as const),
+        }
   return {
     mintUrl,
     state,
-    asset,
-    proof: cashuProof(amount, `secret-${amount}`),
+    asset: strictAsset,
+    proof: cashuProof(amount, secret),
     createdAt: '2026-05-21T00:00:00.000Z',
     updatedAt: '2026-05-21T00:00:00.000Z',
   }
@@ -1765,6 +1843,30 @@ async function bootstrapTestProfile(profile: DaemonProfile, secrets: DaemonSecre
 }
 
 async function writeState(state: DaemonState): Promise<void> {
+  for (const proof of state.wallet.proofs) {
+    proof.asset =
+      proof.asset.kind === 'Outcome' || (proof.asset as { kind?: unknown }).kind === 'outcome'
+        ? {
+            ...proof.asset,
+            kind: 'Outcome',
+            baseAsset: 'sat',
+            unit: 'msat',
+          }
+        : {
+            ...proof.asset,
+            kind: 'sats',
+            baseAsset: 'sat',
+            unit: proof.asset.unit === 'sat' ? 'sat' : 'msat',
+          }
+  }
+  for (const order of Object.values(state.orders)) {
+    order.baseAsset ??= 'sat'
+    order.divisibility ??= 10_000
+  }
+  for (const swap of Object.values(state.swaps)) {
+    swap.baseAsset ??= 'sat'
+    swap.divisibility ??= 10_000
+  }
   if (!(await profileDatabaseExists())) {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     await bootstrapTestProfile(profileFromPublicKey(secrets.nostrPublicKeyHex), secrets)
@@ -1781,6 +1883,22 @@ async function writeState(state: DaemonState): Promise<void> {
         marketId: order?.marketId ?? key.marketId,
       }
     }
+  })
+}
+
+type StrictTradeCreatedInput = Parameters<typeof recordTradeCreatedStrict>[0]
+type TradeCreatedFixtureInput = Omit<
+  StrictTradeCreatedInput,
+  'baseAsset' | 'collateralUnit' | 'divisibility'
+> &
+  Partial<Pick<StrictTradeCreatedInput, 'baseAsset' | 'collateralUnit' | 'divisibility'>>
+
+async function recordTradeCreated(input: TradeCreatedFixtureInput) {
+  return recordTradeCreatedStrict({
+    ...input,
+    baseAsset: input.baseAsset ?? 'sat',
+    collateralUnit: input.collateralUnit ?? 'msat',
+    divisibility: input.divisibility ?? 10_000,
   })
 }
 

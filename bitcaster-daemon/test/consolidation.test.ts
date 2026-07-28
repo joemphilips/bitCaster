@@ -133,6 +133,29 @@ test('wallet.consolidateMarket returns typed no-gain error without mutating proo
   })
 })
 
+test('wallet.consolidateMarket never treats ordinary sat proofs as msat collateral', async () => {
+  await withDaemonHome(async () => {
+    await seedWallet([
+      proofRecord(10, 'A', 'a'),
+      proofRecord(10, 'B', 'b'),
+      satRecord(1, 'ordinary-sat', 'sat'),
+    ])
+
+    const response = await dispatch(
+      { method: 'wallet.consolidateMarket', params: { marketId: 'cond1-A', type: 't1' } },
+      depsForMarket(market('cond1', 'pending')),
+    )
+
+    assert.equal(response.ok, true)
+    const persisted = await readState()
+    assert.equal(
+      persisted?.wallet.proofs.some((record) => record.proof.secret === 'secret-ordinary-sat'),
+      true,
+    )
+    assertNoProofInternals(response)
+  })
+})
+
 test('wallet recovery sweep resumes prepared CTF consolidation operations', async () => {
   await withDaemonHome(async () => {
     const state = emptyDaemonState()
@@ -375,8 +398,14 @@ function cashuProof(amount: number, label: string, id: string): Proof {
   } as Proof
 }
 
-function satRecord(amount: number, label: string): ReturnType<typeof proofRecord> {
-  return proofRecord(amount, null, label)
+function satRecord(
+  amount: number,
+  label: string,
+  unit: 'sat' | 'msat' = 'msat',
+): ReturnType<typeof proofRecord> {
+  const record = proofRecord(amount, null, label)
+  record.asset = { kind: 'sats', baseAsset: 'sat', unit }
+  return record
 }
 
 function proofRecord(
@@ -392,8 +421,14 @@ function proofRecord(
   updatedAt: string
 } {
   const asset: StoredProofAsset = outcomeSetId
-    ? { kind: 'outcome', conditionId: conditionIdForLabel(label), outcomeSetId }
-    : { kind: 'sats' }
+    ? {
+        kind: 'Outcome',
+        conditionId: conditionIdForLabel(label),
+        outcomeSetId,
+        baseAsset: 'sat',
+        unit: 'msat',
+      }
+    : { kind: 'sats', baseAsset: 'sat', unit: 'msat' }
   return {
     mintUrl: MINT_URL,
     proof: {

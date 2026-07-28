@@ -9,7 +9,7 @@ import {
   emptyDaemonState,
   readState,
   recordSwapMessage,
-  recordTradeCreated,
+  recordTradeCreated as recordTradeCreatedStrict,
   recordTradeStateChanged,
   writeState as writeBootstrappedState,
   type DaemonState,
@@ -26,8 +26,8 @@ test('TradeHub event records are durable swap state', async () => {
       marketId: 'cond-YES',
       side: 'Sell',
       tokenSide: 'Outcome',
-      priceSubunits: 42,
-      amountSubunits: 100,
+      priceSubunits: 4_200,
+      amountSubunits: 10_000,
       status: 'resting',
       ephemeralPubkey: `02${'11'.repeat(32)}`,
       tradeIds: ['trade-1'],
@@ -52,11 +52,11 @@ test('TradeHub event records are durable swap state', async () => {
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-YES',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
+      fillAmountSubunits: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
       baseAsset: 'sat',
-      divisibility: 100,
-      quotePaymentSubunits: 42,
+      divisibility: 10_000,
+      quotePaymentSubunits: 4_200,
       settlementKind: 'DirectSwap',
     })
 
@@ -64,9 +64,9 @@ test('TradeHub event records are durable swap state', async () => {
     assert.equal(created?.counterpartyPubkey, `03${'22'.repeat(32)}`)
     assert.equal(created?.step, 'opened')
     assert.equal(created?.baseAsset, 'sat')
-    assert.equal(created?.divisibility, 100)
-    assert.equal(created?.outcomeFaceAmountSubunits, 100)
-    assert.equal(created?.quotePaymentSubunits, 42)
+    assert.equal(created?.divisibility, 10_000)
+    assert.equal(created?.outcomeFaceAmountSubunits, 10_000)
+    assert.equal(created?.quotePaymentSubunits, 4_200)
 
     await recordSwapMessage('trade-1', 'adaptor-point', 'cipher-a')
     await recordSwapMessage('trade-1', 'locked-proofs-seller', 'cipher-b')
@@ -81,9 +81,9 @@ test('TradeHub event records are durable swap state', async () => {
     assert.equal(persisted?.swaps['trade-1'].engineState, 'Settling')
     assert.equal(persisted?.swaps['trade-1'].step, 'settling')
     assert.equal(persisted?.swaps['trade-1'].baseAsset, 'sat')
-    assert.equal(persisted?.swaps['trade-1'].divisibility, 100)
-    assert.equal(persisted?.swaps['trade-1'].outcomeFaceAmountSubunits, 100)
-    assert.equal(persisted?.swaps['trade-1'].quotePaymentSubunits, 42)
+    assert.equal(persisted?.swaps['trade-1'].divisibility, 10_000)
+    assert.equal(persisted?.swaps['trade-1'].outcomeFaceAmountSubunits, 10_000)
+    assert.equal(persisted?.swaps['trade-1'].quotePaymentSubunits, 4_200)
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -115,9 +115,9 @@ test('TradeCreated direct match must use the same local order market path', asyn
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-NO',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 42,
+      fillAmountSubunits: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
+      quotePaymentSubunits: 4_200,
       settlementKind: 'DirectSwap',
     })
 
@@ -143,38 +143,38 @@ test('TradeCreated rejects unit metadata that does not match the local order', a
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: `02${'11'.repeat(32)}`,
-      baseAsset: 'usd',
-      divisibility: 100,
+      baseAsset: 'sat',
+      divisibility: 10_000,
       side: 'Sell',
       tokenSide: 'Outcome',
-      priceSubunits: 42,
-      amountSubunits: 100,
+      priceSubunits: 4_200,
+      amountSubunits: 10_000,
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
     await writeState(state)
 
-    const created = await recordTradeCreated({
-      tradeId: 'trade-unit-mismatch',
-      sellerPubkey: `02${'11'.repeat(32)}`,
-      buyerPubkey: `03${'22'.repeat(32)}`,
-      sellerLocktime: '2026-05-21T00:02:00.000Z',
-      buyerLocktime: '2026-05-21T00:01:00.000Z',
-      marketId: 'cond-YES',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 42,
-      baseAsset: 'sat',
-      divisibility: 100,
-      settlementKind: 'DirectSwap',
-    })
-
-    assert.equal(created?.step, 'Failed')
-    assert.match(created?.error ?? '', /Trade unit mismatch/)
+    await assert.rejects(
+      () =>
+        recordTradeCreated({
+          tradeId: 'trade-unit-mismatch',
+          sellerPubkey: `02${'11'.repeat(32)}`,
+          buyerPubkey: `03${'22'.repeat(32)}`,
+          sellerLocktime: '2026-05-21T00:02:00.000Z',
+          buyerLocktime: '2026-05-21T00:01:00.000Z',
+          marketId: 'cond-YES',
+          fillAmountSubunits: 10_000,
+          outcomeFaceAmountSubunits: 10_000,
+          quotePaymentSubunits: 4_200,
+          baseAsset: 'usd' as never,
+          divisibility: 10_000,
+          settlementKind: 'DirectSwap',
+        }),
+      /unsupported base asset/,
+    )
     const persisted = await readState()
-    assert.equal(persisted?.swaps['trade-unit-mismatch'].step, 'Failed')
-    assert.match(persisted?.swaps['trade-unit-mismatch'].error ?? '', /Trade unit mismatch/)
+    assert.equal(persisted?.swaps['trade-unit-mismatch'], undefined)
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -194,11 +194,11 @@ test('TradeCreated rejects quote payment that violates local submitted order eco
       status: 'resting',
       ephemeralPubkey: `02${'11'.repeat(32)}`,
       baseAsset: 'sat',
-      divisibility: 100,
+      divisibility: 10_000,
       side: 'Sell',
       tokenSide: 'Outcome',
-      priceSubunits: 40,
-      amountSubunits: 100,
+      priceSubunits: 4_000,
+      amountSubunits: 10_000,
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -212,11 +212,11 @@ test('TradeCreated rejects quote payment that violates local submitted order eco
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-YES',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 39,
+      fillAmountSubunits: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
+      quotePaymentSubunits: 3_900,
       baseAsset: 'sat',
-      divisibility: 100,
+      divisibility: 10_000,
       settlementKind: 'DirectSwap',
     })
 
@@ -243,7 +243,7 @@ test('TradeCreated rejects legacy local orders without submitted order economics
       status: 'resting',
       ephemeralPubkey: `02${'11'.repeat(32)}`,
       baseAsset: 'sat',
-      divisibility: 100,
+      divisibility: 10_000,
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -257,11 +257,11 @@ test('TradeCreated rejects legacy local orders without submitted order economics
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-YES',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 40,
+      fillAmountSubunits: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
+      quotePaymentSubunits: 4_000,
       baseAsset: 'sat',
-      divisibility: 100,
+      divisibility: 10_000,
       settlementKind: 'DirectSwap',
     })
 
@@ -285,8 +285,8 @@ test('TradeCreated rejects non-default rows without canonical settlement amounts
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: `02${'11'.repeat(32)}`,
-      baseAsset: 'usd',
-      divisibility: 100,
+      baseAsset: 'sat',
+      divisibility: 10_000,
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -300,10 +300,10 @@ test('TradeCreated rejects non-default rows without canonical settlement amounts
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-YES',
-      fillAmountSubunits: 100,
-      quotePaymentSubunits: 42,
-      baseAsset: 'usd',
-      divisibility: 100,
+      fillAmountSubunits: 10_000,
+      quotePaymentSubunits: 4_200,
+      baseAsset: 'sat',
+      divisibility: 10_000,
       settlementKind: 'DirectSwap',
     })
 
@@ -339,8 +339,8 @@ test('TradeCreated mint seller matches keep path and buyer matches lock path', a
       marketId: 'cond-NO',
       side: 'Buy',
       tokenSide: 'Outcome',
-      priceSubunits: 42,
-      amountSubunits: 100,
+      priceSubunits: 4_200,
+      amountSubunits: 10_000,
       status: 'matched',
       ephemeralPubkey: `03${'22'.repeat(32)}`,
       tradeIds: [],
@@ -356,9 +356,9 @@ test('TradeCreated mint seller matches keep path and buyer matches lock path', a
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-NO',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 42,
+      fillAmountSubunits: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
+      quotePaymentSubunits: 4_200,
       settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'YES',
       sellerLockOutcomeSetId: 'NO',
@@ -370,9 +370,9 @@ test('TradeCreated mint seller matches keep path and buyer matches lock path', a
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-NO',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 42,
+      fillAmountSubunits: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
+      quotePaymentSubunits: 4_200,
       settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'YES',
       sellerLockOutcomeSetId: 'NO',
@@ -400,8 +400,8 @@ test('TradeCreated binds known public complement order by submitted trade id', a
       marketId: 'cond-A',
       side: 'Buy',
       tokenSide: 'Complement',
-      priceSubunits: 99,
-      amountSubunits: 100,
+      priceSubunits: 9_900,
+      amountSubunits: 10_000,
       status: 'matched',
       ephemeralPubkey: `03${'22'.repeat(32)}`,
       tradeIds: ['trade-known-complement'],
@@ -426,9 +426,9 @@ test('TradeCreated binds known public complement order by submitted trade id', a
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-B|C',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 99,
+      fillAmountSubunits: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
+      quotePaymentSubunits: 9_900,
       settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'A',
       sellerLockOutcomeSetId: 'B|C',
@@ -456,8 +456,8 @@ test('TradeCreated binds buyer complement order by settlement metadata', async (
       marketId: 'cond-YES',
       tokenSide: 'Complement',
       side: 'Buy',
-      priceSubunits: 99,
-      amountSubunits: 100,
+      priceSubunits: 9_900,
+      amountSubunits: 10_000,
       status: 'matched',
       ephemeralPubkey: `03${'22'.repeat(32)}`,
       tradeIds: [],
@@ -473,9 +473,9 @@ test('TradeCreated binds buyer complement order by settlement metadata', async (
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-NO',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 99,
+      fillAmountSubunits: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
+      quotePaymentSubunits: 9_900,
       settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'YES',
       sellerLockOutcomeSetId: 'NO',
@@ -526,9 +526,9 @@ test('TradeCreated mint match rejects mismatched keep or lock paths', async () =
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-NO',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 42,
+      fillAmountSubunits: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
+      quotePaymentSubunits: 4_200,
       settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'YES',
       sellerLockOutcomeSetId: 'NO',
@@ -540,9 +540,9 @@ test('TradeCreated mint match rejects mismatched keep or lock paths', async () =
       sellerLocktime: '2026-05-21T00:02:00.000Z',
       buyerLocktime: '2026-05-21T00:01:00.000Z',
       marketId: 'cond-NO',
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 42,
+      fillAmountSubunits: 10_000,
+      outcomeFaceAmountSubunits: 10_000,
+      quotePaymentSubunits: 4_200,
       settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'YES',
       sellerLockOutcomeSetId: 'NO',
@@ -614,7 +614,31 @@ test('concurrent TradeHub events serialize daemon state writes', async () => {
   }
 })
 
+type StrictTradeCreatedInput = Parameters<typeof recordTradeCreatedStrict>[0]
+type TradeCreatedFixtureInput = Omit<
+  StrictTradeCreatedInput,
+  'baseAsset' | 'collateralUnit' | 'divisibility'
+> &
+  Partial<Pick<StrictTradeCreatedInput, 'baseAsset' | 'collateralUnit' | 'divisibility'>>
+
+async function recordTradeCreated(input: TradeCreatedFixtureInput) {
+  return recordTradeCreatedStrict({
+    ...input,
+    baseAsset: input.baseAsset ?? 'sat',
+    collateralUnit: input.collateralUnit ?? 'msat',
+    divisibility: input.divisibility ?? 10_000,
+  })
+}
+
 async function writeState(state: DaemonState): Promise<void> {
+  for (const order of Object.values(state.orders)) {
+    order.baseAsset ??= 'sat'
+    order.divisibility ??= 10_000
+  }
+  for (const swap of Object.values(state.swaps)) {
+    swap.baseAsset ??= 'sat'
+    swap.divisibility ??= 10_000
+  }
   if (!(await profileDatabaseExists())) {
     await bootstrapFreshDaemonProfile({
       directory: profileDir(),

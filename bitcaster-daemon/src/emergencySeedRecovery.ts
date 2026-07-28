@@ -39,7 +39,7 @@ export async function runExplicitEmergencySeedRecovery(input: {
   recoveryId: string
   walletScopeId: string
   mintUrl: string
-  unit: 'sat' | 'msat' | 'usd'
+  unit: 'sat' | 'msat'
   keysetId: string
   disclosureAcknowledged: boolean
   authority: EmergencySeedRecoveryLeaseAuthority
@@ -243,7 +243,7 @@ function observedProof(
     unit,
     keysetId: proof.id,
     amount,
-    baseAsset: unit === 'usd' ? 'usd' : 'sat',
+    baseAsset: 'sat',
     conditionId: null,
     outcomeSetId: null,
     productBinding: null,
