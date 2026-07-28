@@ -27,6 +27,31 @@ import {
   type CtfCollateralUnit,
   type MarketBaseAsset,
 } from './marketUnits.ts'
+import {
+  DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
+  DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+} from './durableCustody.ts'
+import {
+  canonicalProofOperationMintIdentity,
+  createCtfProofOperationCompletion,
+  proofAuthority,
+  proofGroupAuthority,
+  requireBoundedCtfProofOperationPreparation,
+  requireProofArray,
+  requireProofGroups,
+  requireSameOperationAuthority,
+  requireStringMapping,
+  sortedStringMapping,
+  validateMergeStoredOutputAuthority,
+  validateSplitStoredOutputAuthority,
+} from './ctfProofOperationAuthority.ts'
+
+export {
+  completedProofAuthorityDigest,
+  createCtfProofOperationCompletion,
+} from './ctfProofOperationAuthority.ts'
+export type { CtfProofOperationCompletion } from './ctfProofOperationAuthority.ts'
+import type { CtfProofOperationCompletion } from './ctfProofOperationAuthority.ts'
 
 const ROOT_PARENT_COLLECTION_ID = '0'.repeat(64)
 
@@ -81,6 +106,7 @@ export interface CtfProofOperationRecord {
   outputs: Record<string, StoredOutputData[]>
   metadata: Record<string, unknown>
   resultProofs?: Record<string, Proof[]>
+  resultProofsDigest?: string
   lastError?: string | null
   failureCode?: number | undefined
   createdAt: number
@@ -99,15 +125,27 @@ export interface CtfPrepareProofOperationInput {
 export interface CtfProofOperationStore {
   getProofOperation(operationId: string): Promise<CtfProofOperationRecord | null>
   prepareProofOperation(input: CtfPrepareProofOperationInput): Promise<CtfProofOperationRecord>
+  /**
+   * Persist the supplied completion fields verbatim after confirming that its
+   * discriminant matches the prepared record kind. Only split and merge
+   * completions carry a result-proof digest.
+   */
   markProofOperationCompleted(
     operationId: string,
-    resultProofs: Record<string, Proof[]>,
+    completion: CtfProofOperationCompletion,
   ): Promise<CtfProofOperationRecord>
   markProofOperationFailed?(
     operationId: string,
     message: string,
     failureCode?: number,
   ): Promise<CtfProofOperationRecord>
+}
+
+export function prepareBoundedCtfProofOperation(
+  store: CtfProofOperationStore,
+  input: CtfPrepareProofOperationInput,
+): Promise<CtfProofOperationRecord> {
+  return store.prepareProofOperation(requireBoundedCtfProofOperationPreparation(input))
 }
 
 export interface SplitCollateralSelection {
@@ -251,9 +289,15 @@ export async function splitRegularProofsWithOperation(params: {
     'amountSubunits',
   )
 
-  const normalizedProofs = params.proofs.map(normalizeProof)
   const existing = await params.proofOperationStore.getProofOperation(params.operationId)
   if (existing) {
+    requireMatchingRegularSplitOperation(existing, {
+      operationId: params.operationId,
+      mintUrl: params.mintUrl,
+      baseAsset: params.baseAsset,
+      amountSubunits,
+      proofs: params.proofs,
+    })
     return resumeRegularSplit(
       params.mintUrl,
       existing,
@@ -262,6 +306,11 @@ export async function splitRegularProofsWithOperation(params: {
       params.restoreOutputGroups,
     )
   }
+  const normalizedProofs = requireProofArray(
+    params.proofs,
+    'regular split input proofs',
+    DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+  )
 
   if (!params.wallet.prepareSwapToSend || !params.wallet.completeSwap) {
     throw new Error('Cashu wallet adapter does not support resumable split preparation')
@@ -273,7 +322,13 @@ export async function splitRegularProofsWithOperation(params: {
     undefined,
     { send: { type: 'random' }, keep: { type: 'random' } },
   )
-  await params.proofOperationStore.prepareProofOperation({
+  if (
+    (preview.sendOutputs?.length ?? 0) + (preview.keepOutputs?.length ?? 0) >
+    DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX
+  ) {
+    throw new Error('regular split blinded output limit exceeded')
+  }
+  await prepareBoundedCtfProofOperation(params.proofOperationStore, {
     operationId: params.operationId,
     kind: 'regular-split',
     mintUrl: params.mintUrl,
@@ -297,7 +352,10 @@ export async function splitRegularProofsWithOperation(params: {
     send: result.send.map(normalizeProof),
     keep: result.keep.map(normalizeProof),
   }
-  await params.proofOperationStore.markProofOperationCompleted(params.operationId, completed)
+  await params.proofOperationStore.markProofOperationCompleted(
+    params.operationId,
+    createCtfProofOperationCompletion('regular-split', completed),
+  )
   return { ...completed, spent: preview.inputs.map(normalizeProof) }
 }
 
@@ -671,8 +729,13 @@ export async function splitCompleteSet(
   options: CtfSplitOptions,
 ): Promise<Record<string, Proof[]>> {
   const policy = requireProductCtfPolicy(options.baseAsset, options.parentCollectionId, 'CTF split')
-  const normalizedInputs = inputs.map(normalizeProof)
-  validateSplitInput(conditionId, normalizedInputs, outcomeCollectionKeysets, amountSubunits)
+  const normalizedInputs = requireProofArray(
+    inputs,
+    'CTF split input proofs',
+    DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+  )
+  const boundedKeysets = requireStringMapping(outcomeCollectionKeysets, 'CTF split outcome keysets')
+  validateSplitInput(conditionId, normalizedInputs, boundedKeysets, amountSubunits)
 
   const makeOutputs = options.makeOutputs ?? defaultMakeOutputs
   const keysetsById = new Map<string, MintKeys>()
@@ -690,7 +753,8 @@ export async function splitCompleteSet(
   const outputsByCollection: Record<string, CtfSplitOutputData[]> = {}
   const requestOutputs: Record<string, SerializedBlindedMessage[]> = {}
 
-  for (const [collection, keysetId] of Object.entries(outcomeCollectionKeysets)) {
+  let outputCount = 0
+  for (const [collection, keysetId] of Object.entries(boundedKeysets)) {
     const keyset = await getCachedKeys(keysetId)
     validateCtfKeysetUnit(keyset, `CTF split output keyset ${keysetId} for ${collection}`)
     keysetsByCollection.set(collection, keyset)
@@ -700,6 +764,10 @@ export async function splitCompleteSet(
       amountSats: amountSubunits,
       keyset,
     })
+    outputCount += outputs.length
+    if (outputCount > DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX) {
+      throw new Error('CTF split blinded output limit exceeded')
+    }
     validateOutputs(collection, keysetId, amountSubunits, outputs)
     outputsByCollection[collection] = outputs
     requestOutputs[collection] = outputs.map((output) =>
@@ -869,7 +937,7 @@ export async function splitCompleteSetWithOperation(params: {
             serializeOutputDataArray(outputs),
           ]),
         )
-        await params.proofOperationStore.prepareProofOperation({
+        await prepareBoundedCtfProofOperation(params.proofOperationStore, {
           operationId: params.operationId,
           kind: 'ctf-split',
           mintUrl: params.mintUrl,
@@ -889,7 +957,10 @@ export async function splitCompleteSetWithOperation(params: {
   )
 
   try {
-    await params.proofOperationStore.markProofOperationCompleted(params.operationId, result)
+    await params.proofOperationStore.markProofOperationCompleted(
+      params.operationId,
+      createCtfProofOperationCompletion('ctf-split', result),
+    )
   } catch {
     throw new ProofOperationPendingError(params.operationId)
   }
@@ -922,7 +993,13 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
   }
   validateCtfKeysetUnit(params.regularKeyset, 'CTF merge regular output keyset')
 
-  const normalizedInputsByCollection = normalizeProofGroups(params.conditionalProofsByCollection)
+  const normalizedInputsByCollection = normalizeProofGroups(
+    requireProofGroups(
+      params.conditionalProofsByCollection,
+      'CTF merge input groups',
+      DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+    ),
+  )
   const existing = await params.proofOperationStore.getProofOperation(params.operationId)
   if (existing) {
     const spentConditionalProofsByCollection = requireMatchingCtfMergeOperation(
@@ -958,7 +1035,10 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
       Amount.from(params.outputAmountSubunits),
       params.regularKeyset,
     )
-  await params.proofOperationStore.prepareProofOperation({
+  if (outputData.length > DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX) {
+    throw new Error('CTF merge blinded output limit exceeded')
+  }
+  await prepareBoundedCtfProofOperation(params.proofOperationStore, {
     operationId: params.operationId,
     kind: 'ctf-merge',
     mintUrl: params.mintUrl,
@@ -982,9 +1062,10 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     regularKeyset: params.regularKeyset,
     parentCollectionId: policy.parentCollectionId,
   })
-  await params.proofOperationStore.markProofOperationCompleted(params.operationId, {
-    regular: regularProofs,
-  })
+  await params.proofOperationStore.markProofOperationCompleted(
+    params.operationId,
+    createCtfProofOperationCompletion('ctf-merge', { regular: regularProofs }),
+  )
   return {
     regularProofs,
     spentConditionalProofsByCollection: normalizedInputsByCollection,
@@ -1109,7 +1190,10 @@ async function resumeCtfMergeToRegular(
     throw new ProofOperationPendingError(entry.operationId)
   }
 
-  await proofOperationStore.markProofOperationCompleted(entry.operationId, { regular: completed })
+  await proofOperationStore.markProofOperationCompleted(
+    entry.operationId,
+    createCtfProofOperationCompletion('ctf-merge', { regular: completed }),
+  )
   return completed
 }
 
@@ -1145,7 +1229,7 @@ function requireMatchingCtfSplitOperation(
   const storedAuthority = {
     operationId: entry.operationId,
     kind: entry.kind,
-    mintUrl: canonicalCtfMintIdentity(entry.mintUrl),
+    mintUrl: canonicalProofOperationMintIdentity(entry.mintUrl),
     conditionId: requireConditionIdentity(metadata.conditionId),
     ...requireOperationCtfPolicy(metadata, 'CTF split proof operation'),
     unit: CTF_COLLATERAL_UNIT,
@@ -1156,7 +1240,7 @@ function requireMatchingCtfSplitOperation(
   const requestAuthority = {
     operationId: request.operationId,
     kind: 'ctf-split',
-    mintUrl: canonicalCtfMintIdentity(request.mintUrl),
+    mintUrl: canonicalProofOperationMintIdentity(request.mintUrl),
     conditionId: requireConditionIdentity(request.conditionId),
     ...policy,
     unit: CTF_COLLATERAL_UNIT,
@@ -1186,7 +1270,7 @@ function requireMatchingCtfMergeOperation(
   const storedAuthority = {
     operationId: entry.operationId,
     kind: entry.kind,
-    mintUrl: canonicalCtfMintIdentity(entry.mintUrl),
+    mintUrl: canonicalProofOperationMintIdentity(entry.mintUrl),
     conditionId: requireConditionIdentity(metadata.conditionId),
     ...requireOperationCtfPolicy(metadata, 'CTF merge proof operation'),
     unit: CTF_COLLATERAL_UNIT,
@@ -1200,7 +1284,7 @@ function requireMatchingCtfMergeOperation(
   const requestAuthority = {
     operationId: request.operationId,
     kind: 'ctf-merge',
-    mintUrl: canonicalCtfMintIdentity(request.mintUrl),
+    mintUrl: canonicalProofOperationMintIdentity(request.mintUrl),
     conditionId: requireConditionIdentity(request.conditionId),
     ...policy,
     unit: CTF_COLLATERAL_UNIT,
@@ -1301,7 +1385,10 @@ async function resumeCtfSplit(
       mintUrl,
       entry.outputs,
     )
-    await proofOperationStore.markProofOperationCompleted(entry.operationId, restored)
+    await proofOperationStore.markProofOperationCompleted(
+      entry.operationId,
+      createCtfProofOperationCompletion('ctf-split', restored),
+    )
     return restored
   }
   if (allStates(states, CheckStateEnum.UNSPENT)) {
@@ -1329,7 +1416,10 @@ async function resumeCtfSplit(
         makeOutputs: ({ collection }) => outputDataByCollection[collection] ?? [],
       },
     )
-    await proofOperationStore.markProofOperationCompleted(entry.operationId, result)
+    await proofOperationStore.markProofOperationCompleted(
+      entry.operationId,
+      createCtfProofOperationCompletion('ctf-split', result),
+    )
     return normalizeProofGroups(result)
   }
 
@@ -1392,8 +1482,73 @@ async function resumeRegularSplit(
     throw new ProofOperationPendingError(entry.operationId)
   }
 
-  await proofOperationStore.markProofOperationCompleted(entry.operationId, completed)
+  await proofOperationStore.markProofOperationCompleted(
+    entry.operationId,
+    createCtfProofOperationCompletion('regular-split', completed),
+  )
   return { ...completed, spent: entry.inputs.map(normalizeProof) }
+}
+
+function requireMatchingRegularSplitOperation(
+  entry: CtfProofOperationRecord,
+  request: {
+    operationId: string
+    mintUrl: string
+    baseAsset: CtfCollateralBaseAsset
+    amountSubunits: number
+    proofs: Proof[]
+  },
+): void {
+  if (entry.kind !== 'regular-split') {
+    throw new Error(`proof operation ${entry.operationId} is not a regular split`)
+  }
+  requireOperationUnitPolicy(entry.metadata, 'regular split proof operation')
+  const storedAuthority = {
+    operationId: entry.operationId,
+    kind: entry.kind,
+    mintUrl: canonicalProofOperationMintIdentity(entry.mintUrl),
+    baseAsset: requireMarketBaseAsset(
+      entry.metadata.baseAsset,
+      'regular split proof operation baseAsset',
+    ),
+    unit: requireCtfCollateralUnit(entry.metadata.unit, 'regular split proof operation unit'),
+    amountSubunits: requirePositiveSafeInteger(
+      entry.metadata.amount,
+      'stored regular split amountSubunits',
+    ),
+  }
+  const requestAuthority = {
+    operationId: request.operationId,
+    kind: 'regular-split',
+    mintUrl: canonicalProofOperationMintIdentity(request.mintUrl),
+    baseAsset: requireMarketBaseAsset(request.baseAsset, 'regular split request baseAsset'),
+    unit: CTF_COLLATERAL_UNIT,
+    amountSubunits: request.amountSubunits,
+  }
+  requireSameOperationAuthority(storedAuthority, requestAuthority, entry.operationId)
+
+  // An explicit resume-by-ID may omit fresh proof authority entirely. When a
+  // caller does supply its current proof set, require it to be the exact set
+  // that the durable preview selected or left unselected.
+  if (request.proofs.length > 0) {
+    const storedProofs = [...entry.inputs, ...readUnselectedProofs(entry)]
+    requireSameOperationAuthority(
+      { proofs: canonicalProofSetAuthority(storedProofs) },
+      { proofs: canonicalProofSetAuthority(request.proofs) },
+      entry.operationId,
+    )
+  }
+}
+
+function canonicalProofSetAuthority(proofs: Proof[]): Record<string, unknown>[] {
+  return requireProofArray(proofs, 'regular split proof authority')
+    .sort(
+      (left, right) =>
+        left.secret.localeCompare(right.secret) ||
+        left.id.localeCompare(right.id) ||
+        amountToNumber(left.amount) - amountToNumber(right.amount),
+    )
+    .map(proofAuthority)
 }
 
 export async function restoreOutputGroups(
@@ -1673,247 +1828,6 @@ function requireRecordMetadata(
   return entry.metadata
 }
 
-function requireSameOperationAuthority(
-  stored: Record<string, unknown>,
-  requested: Record<string, unknown>,
-  operationId: string,
-): void {
-  if (canonicalAuthorityFingerprint(stored) !== canonicalAuthorityFingerprint(requested)) {
-    throw new Error(`proof operation ${operationId} does not match the current request`)
-  }
-}
-
-function proofAuthority(proof: Proof): Record<string, unknown> {
-  return {
-    id: requireNonEmptyText(proof.id, 'proof keyset id'),
-    amount: requirePositiveSafeInteger(amountToNumber(proof.amount), 'proof amount'),
-    secret: requireNonEmptyText(proof.secret, 'proof secret'),
-    C: requireNonEmptyText(proof.C, 'proof signature'),
-    dleq: canonicalAuthorityValue(proof.dleq ?? null),
-    p2pk_e: proof.p2pk_e ?? null,
-    witness: canonicalAuthorityValue(proof.witness ?? null),
-  }
-}
-
-function proofGroupAuthority(groups: Record<string, Proof[]>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.keys(groups)
-      .sort()
-      .map((group) => [group, groups[group]!.map(proofAuthority)]),
-  )
-}
-
-function canonicalAuthorityFingerprint(value: unknown): string {
-  return JSON.stringify(canonicalAuthorityValue(value))
-}
-
-function canonicalAuthorityValue(value: unknown): unknown {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new Error('operation authority contains invalid number')
-    return value
-  }
-  if (typeof value === 'bigint') return { bigint: value.toString(10) }
-  if (value instanceof Uint8Array) return { bytes: bytesToHex(value) }
-  if (Array.isArray(value)) return value.map(canonicalAuthorityValue)
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([, child]) => child !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, child]) => [key, canonicalAuthorityValue(child)]),
-    )
-  }
-  throw new Error('operation authority contains unsupported value')
-}
-
-function requireProofArray(value: unknown, context: string): Proof[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error(`${context} must be a non-empty proof array`)
-  }
-  return value.map((proof, index) => {
-    if (!proof || typeof proof !== 'object' || Array.isArray(proof)) {
-      throw new Error(`${context}[${index}] is invalid`)
-    }
-    proofAuthority(proof as Proof)
-    return normalizeProof(proof as Proof)
-  })
-}
-
-function requireProofGroups(value: unknown, context: string): Record<string, Proof[]> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${context} must be an object`)
-  }
-  const entries = Object.entries(value)
-  if (entries.length === 0) throw new Error(`${context} must not be empty`)
-  return Object.fromEntries(
-    entries.map(([group, proofs]) => [
-      requireNonEmptyText(group, `${context} group`),
-      requireProofArray(proofs, `${context}.${group}`),
-    ]),
-  )
-}
-
-function requireStringMapping(value: unknown, context: string): Record<string, string> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${context} must be an object`)
-  }
-  const entries = Object.entries(value)
-  if (entries.length === 0) throw new Error(`${context} must not be empty`)
-  return Object.fromEntries(
-    entries.map(([key, mapped]) => [
-      requireNonEmptyText(key, `${context} key`),
-      requireNonEmptyText(mapped, `${context}.${key}`),
-    ]),
-  )
-}
-
-function sortedStringMapping(mapping: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(mapping).sort(([left], [right]) => left.localeCompare(right)),
-  )
-}
-
-function validateSplitStoredOutputAuthority(
-  entry: CtfProofOperationRecord,
-  outcomeKeysets: Record<string, string>,
-  amountSubunits: number,
-): void {
-  const groups = requireStoredOutputGroups(entry.outputs, 'CTF split stored outputs')
-  requireExactGroupKeys(groups, Object.keys(outcomeKeysets), 'CTF split stored outputs')
-  for (const [collection, outputs] of Object.entries(groups)) {
-    validateOutputDescriptors(outputs, outcomeKeysets[collection]!, amountSubunits, collection)
-  }
-  if (entry.state === 'completed') {
-    validateCompletedResultGroups(entry, groups, outcomeKeysets, 'CTF split completed result')
-  }
-}
-
-function validateMergeStoredOutputAuthority(
-  entry: CtfProofOperationRecord,
-  regularKeysetId: string,
-  outputAmountSubunits: number,
-): void {
-  const groups = requireStoredOutputGroups(entry.outputs, 'CTF merge stored outputs')
-  requireExactGroupKeys(groups, ['*'], 'CTF merge stored outputs')
-  validateOutputDescriptors(groups['*']!, regularKeysetId, outputAmountSubunits, '*')
-  if (entry.state === 'completed') {
-    validateCompletedResultGroups(
-      entry,
-      groups,
-      { regular: regularKeysetId },
-      'CTF merge completed result',
-      { regular: '*' },
-    )
-  }
-}
-
-function requireStoredOutputGroups(
-  value: unknown,
-  context: string,
-): Record<string, StoredOutputData[]> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${context} must be an object`)
-  }
-  return Object.fromEntries(
-    Object.entries(value).map(([group, outputs]) => {
-      if (!Array.isArray(outputs) || outputs.length === 0) {
-        throw new Error(`${context}.${group} must be non-empty`)
-      }
-      for (const output of outputs) validateStoredOutputShape(output, `${context}.${group}`)
-      return [group, outputs as StoredOutputData[]]
-    }),
-  )
-}
-
-function validateStoredOutputShape(value: unknown, context: string): void {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${context} contains invalid output data`)
-  }
-  const output = value as StoredOutputData
-  requirePositiveSafeInteger(output.blindedMessage?.amount, `${context} amount`)
-  requireNonEmptyText(output.blindedMessage?.id, `${context} keyset id`)
-  requireNonEmptyText(output.blindedMessage?.B_, `${context} blinded message`)
-  requireNonEmptyText(output.blindingFactor, `${context} blinding factor`)
-  requireNonEmptyText(output.secret, `${context} secret`)
-}
-
-function validateOutputDescriptors(
-  outputs: StoredOutputData[],
-  expectedKeysetId: string,
-  expectedAmount: number,
-  group: string,
-): void {
-  const total = outputs.reduce((sum, output) => sum + output.blindedMessage.amount, 0)
-  if (
-    total !== expectedAmount ||
-    outputs.some((output) => output.blindedMessage.id !== expectedKeysetId)
-  ) {
-    throw new Error(`stored output authority for ${group} does not match request`)
-  }
-}
-
-function validateCompletedResultGroups(
-  entry: CtfProofOperationRecord,
-  outputsByGroup: Record<string, StoredOutputData[]>,
-  resultKeysets: Record<string, string>,
-  context: string,
-  outputGroupByResult: Record<string, string> = {},
-): void {
-  const results = requireProofGroups(entry.resultProofs, context)
-  requireExactGroupKeys(results, Object.keys(resultKeysets), context)
-  for (const [resultGroup, proofs] of Object.entries(results)) {
-    const outputs = outputsByGroup[outputGroupByResult[resultGroup] ?? resultGroup]!
-    if (proofs.length !== outputs.length)
-      throw new Error(`${context}.${resultGroup} count mismatch`)
-    proofs.forEach((proof, index) => {
-      const output = outputs[index]!
-      if (
-        proof.id !== resultKeysets[resultGroup] ||
-        amountToNumber(proof.amount) !== output.blindedMessage.amount
-      ) {
-        throw new Error(`${context}.${resultGroup} does not match stored outputs`)
-      }
-    })
-  }
-}
-
-function requireExactGroupKeys(
-  groups: Record<string, unknown>,
-  expected: string[],
-  context: string,
-): void {
-  const actualKeys = Object.keys(groups).sort()
-  const expectedKeys = [...expected].sort()
-  if (canonicalAuthorityFingerprint(actualKeys) !== canonicalAuthorityFingerprint(expectedKeys)) {
-    throw new Error(`${context} groups do not match request`)
-  }
-}
-
-function canonicalCtfMintIdentity(value: unknown): string {
-  const text = requireNonEmptyText(value, 'CTF operation mint URL')
-  let url: URL
-  try {
-    url = new URL(text)
-  } catch {
-    throw new Error('CTF operation mint URL is invalid')
-  }
-  if (
-    (url.protocol !== 'https:' && url.protocol !== 'http:') ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    url.href.includes('?') ||
-    url.href.includes('#') ||
-    /%[0-9a-f]{2}/i.test(url.pathname)
-  ) {
-    throw new Error('CTF operation mint URL is not canonical')
-  }
-  const path = url.pathname.replace(/\/+$/, '')
-  return `${url.origin}${path === '' ? '' : path}`
-}
-
 function requireConditionIdentity(value: unknown): string {
   const conditionId = requireNonEmptyText(value, 'CTF operation conditionId')
   if (!/^[0-9a-fA-F]{64}$/.test(conditionId)) {
@@ -2158,6 +2072,9 @@ function validateSignature(
 export function serializeOutputDataArray(
   outputs: Array<Pick<CtfSplitOutputData, 'blindedMessage' | 'blindingFactor' | 'secret'>>,
 ): StoredOutputData[] {
+  if (outputs.length > DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX) {
+    throw new Error('proof operation blinded output limit exceeded')
+  }
   return outputs.map((output) => ({
     blindedMessage: {
       amount: amountToNumber(output.blindedMessage.amount),
@@ -2194,7 +2111,9 @@ export function normalizeProofGroups(groups: Record<string, Proof[]>): Record<st
 }
 
 function flattenProofs(proofsByCollection: Record<string, Proof[]>): Proof[] {
-  return Object.values(proofsByCollection).flatMap((proofs) => proofs)
+  return Object.keys(proofsByCollection)
+    .sort()
+    .flatMap((collection) => proofsByCollection[collection] ?? [])
 }
 
 function deserializeCtfOutputGroups(

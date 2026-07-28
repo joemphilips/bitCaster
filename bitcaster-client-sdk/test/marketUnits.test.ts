@@ -160,13 +160,10 @@ test('computes product quote payment in whole shares', () => {
   )
 })
 
-test('accepts only sat vectors from the shared legacy fixture', () => {
+test('accepts every sat-only product settlement vector', () => {
   for (const vector of sharedMarketUnitSettlementVectors()) {
     const baseAsset = parseMarketBaseAsset(vector.baseAsset)
-    if (baseAsset === null) {
-      assert.equal(vector.baseAsset, 'usd')
-      continue
-    }
+    assert.equal(baseAsset, 'sat', vector.name)
     assert.equal(
       quotePaymentSubunits({
         faceAmountSubunits: vector.faceAmountSubunits,

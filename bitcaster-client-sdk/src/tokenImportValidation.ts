@@ -63,16 +63,184 @@ export type DecodeTokenImport = (
   encodedToken: string,
 ) => Token | readonly Token[] | Promise<Token | readonly Token[]>
 
+export function canonicalizeTokenImportMintUrl(
+  mintUrl: string,
+  allowInsecureLoopbackHttp = false,
+): string {
+  return canonicalizeMintUrl(mintUrl, allowInsecureLoopbackHttp)
+}
+
+export interface TokenImportJsonResponse {
+  readonly body: ReadableStream<Uint8Array> | null
+  readonly headers: { get(name: string): string | null }
+  /**
+   * Optional non-streaming adapter hook that must enforce `maximumBytes`
+   * before allocating or returning the complete decoded body.
+   */
+  readBoundedBody?(maximumBytes: number): Promise<Uint8Array>
+}
+
+export interface SelectTokenImportKeysetCandidatesInput {
+  request: TokenImportKeysetRequest
+  regularResponse: unknown
+  conditionalResponse: unknown
+}
+
+export function assertTokenImportResolverRequestLive(
+  request: TokenImportKeysetRequest,
+  nowMs = Date.now(),
+): void {
+  if (request.signal.aborted || nowMs >= request.deadlineMs) {
+    throw new Error('Mint keyset lookup deadline elapsed')
+  }
+}
+
+/**
+ * Parses both keyset responses from unknown input, selects only requested
+ * exact IDs/prefixes, and applies one combined candidate cap.
+ */
+export function selectTokenImportKeysetCandidates(
+  input: SelectTokenImportKeysetCandidatesInput,
+): TokenImportKeysetLookup {
+  assertTokenImportResolverRequestLive(input.request)
+  if (!Number.isSafeInteger(input.request.maxCandidates) || input.request.maxCandidates <= 0) {
+    throw new Error('Mint keyset lookup candidate bound is invalid')
+  }
+  const regularKeysets = selectCandidatesFromWireResponse(input.regularResponse, input.request)
+  const conditionalKeysets = selectCandidatesFromWireResponse(
+    input.conditionalResponse,
+    input.request,
+  )
+  if (regularKeysets.length + conditionalKeysets.length > input.request.maxCandidates) {
+    throw new Error('Mint keyset lookup exceeded the candidate bound')
+  }
+  return { freshness: 'fresh', regularKeysets, conditionalKeysets }
+}
+
+/**
+ * Reads JSON under an allocation bound. Streams stop as soon as the cap is
+ * crossed; runtimes without a stream must supply an adapter-owned bounded body
+ * reader. Content-Length is only an early rejection signal because Fetch may
+ * expose a decompressed body while retaining the compressed transfer length.
+ */
+export async function readBoundedTokenImportJsonResponse(
+  response: TokenImportJsonResponse,
+  maximumBytes: number,
+): Promise<unknown> {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
+    throw new Error('Mint keyset response byte limit is invalid')
+  }
+  const declaredBytes = parseDeclaredResponseBytes(response.headers.get('content-length'))
+  if (declaredBytes !== null && declaredBytes > maximumBytes) {
+    throw new Error('Mint keyset response byte limit exceeded')
+  }
+  const bytes =
+    response.body === null
+      ? await readBoundedFallbackResponse(response, maximumBytes)
+      : await readBoundedResponseStream(response.body, maximumBytes)
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown
+  } catch {
+    throw new Error('Mint keyset lookup returned invalid JSON')
+  }
+}
+
+function selectCandidatesFromWireResponse(
+  value: unknown,
+  request: TokenImportKeysetRequest,
+): TokenImportKeysetMetadata[] {
+  if (!isRecord(value) || !Array.isArray(value.keysets)) {
+    throw new Error('Mint keyset lookup returned invalid data')
+  }
+  return value.keysets
+    .map((item) => {
+      if (!isRecord(item) || typeof item.id !== 'string') {
+        throw new Error('Mint keyset lookup returned invalid data')
+      }
+      return item
+    })
+    .filter((item) =>
+      request.encodedKeysetIds.some((encodedId) =>
+        keysetMatches(parseEncodedKeysetId(encodedId), item.id as string),
+      ),
+    )
+    .map((item) => ({
+      keysetId: item.id as string,
+      unit: item.unit,
+      active: item.active,
+    }))
+}
+
+function parseDeclaredResponseBytes(value: string | null): number | null {
+  if (value === null) return null
+  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error('Mint keyset response Content-Length is invalid')
+  }
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error('Mint keyset response Content-Length is invalid')
+  }
+  return parsed
+}
+
+async function readBoundedFallbackResponse(
+  response: TokenImportJsonResponse,
+  maximumBytes: number,
+): Promise<Uint8Array> {
+  if (response.readBoundedBody === undefined) {
+    throw new Error('Mint keyset response fallback requires an adapter-owned bounded body reader')
+  }
+  const bytes = await response.readBoundedBody(maximumBytes)
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength > maximumBytes) {
+    throw new Error('Mint keyset response byte limit exceeded')
+  }
+  return bytes
+}
+
+async function readBoundedResponseStream(
+  stream: ReadableStream<Uint8Array>,
+  maximumBytes: number,
+): Promise<Uint8Array> {
+  const reader = stream.getReader()
+  const chunks: Uint8Array[] = []
+  let totalBytes = 0
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      if (!ArrayBuffer.isView(next.value) || next.value.BYTES_PER_ELEMENT !== 1) {
+        throw new Error('Mint keyset response stream returned invalid data')
+      }
+      const chunk = new Uint8Array(next.value.buffer, next.value.byteOffset, next.value.byteLength)
+      totalBytes += chunk.byteLength
+      if (totalBytes > maximumBytes) {
+        await reader.cancel().catch(() => {})
+        throw new Error('Mint keyset response byte limit exceeded')
+      }
+      chunks.push(chunk)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const bytes = new Uint8Array(totalBytes)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return bytes
+}
+
 /**
  * The resolver must query both regular and conditional registries and return
  * only bounded candidates matching the requested exact IDs/prefixes. It must
  * honor `signal`, `deadlineMs`, and `maxCandidates`.
  *
- * Before each connection and redirect, the adapter remains responsible for
- * resolving DNS and rejecting loopback/private/link-local destinations. The
- * sole exception is a canonical direct loopback HTTP URL already admitted by
- * the explicit development flag. This protects against DNS rebinding, which
- * URL syntax validation cannot detect.
+ * The adapter remains responsible for environment-appropriate redirect and
+ * private-target admission. Native adapters can resolve and pin public
+ * destinations; browser adapters must reject redirects and apply the strictest
+ * target checks their runtime exposes. Response bytes must be bounded before
+ * JSON parsing.
  */
 export type ResolveTokenImportKeysets = (
   request: TokenImportKeysetRequest,
@@ -83,6 +251,12 @@ export interface ValidateTokenImportInput {
   context: TokenImportContext
   resolveKeysets: ResolveTokenImportKeysets
   bounds?: Partial<TokenImportBounds>
+  /**
+   * Optional exact canonical mint identities admitted by the caller. Native
+   * single-profile wallets should pass their configured mint; interactive
+   * browser imports may omit this after explicit user mint admission.
+   */
+  allowedCanonicalMintUrls?: ReadonlySet<string>
   /** Explicit development-only permission; never permits non-loopback HTTP. */
   allowInsecureLoopbackHttp?: boolean
   signal?: AbortSignal
@@ -122,6 +296,7 @@ export type TokenImportValidationErrorCode =
   | 'unsupported_unit'
   | 'unit_mismatch'
   | 'source_mismatch'
+  | 'mint_mismatch'
   | 'insecure_mint_url'
   | 'private_mint_url'
   | 'stale_keyset_metadata'
@@ -238,6 +413,7 @@ async function completeTokenImportValidation(
   ) => TokenImportContext,
 ): Promise<ValidatedTokenImport> {
   const preflight = preflightDecodedImport(decoded, policy, bounds, input)
+  requireAllowedCanonicalMints(preflight.canonicalMintUrls, input.allowedCanonicalMintUrls)
   const lifetime = createResolutionLifetime(input.signal, bounds.resolverTimeoutMs)
   try {
     const classifications = await resolveAllKeysets(
@@ -259,6 +435,19 @@ async function completeTokenImportValidation(
     }
   } finally {
     lifetime.dispose()
+  }
+}
+
+function requireAllowedCanonicalMints(
+  canonicalMintUrls: readonly string[],
+  allowedCanonicalMintUrls: ReadonlySet<string> | undefined,
+): void {
+  if (allowedCanonicalMintUrls === undefined) return
+  if (!allowedCanonicalMintUrls || typeof allowedCanonicalMintUrls.has !== 'function') {
+    fail('invalid_bounds', 'allowed canonical mint URL set is invalid')
+  }
+  if (canonicalMintUrls.some((mintUrl) => !allowedCanonicalMintUrls.has(mintUrl))) {
+    fail('mint_mismatch', 'cashu token mint does not match the allowed canonical mint set')
   }
 }
 
@@ -760,4 +949,8 @@ function assertNever(value: never): never {
 
 function fail(code: TokenImportValidationErrorCode, message: string): never {
   throw new TokenImportValidationError(code, message)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

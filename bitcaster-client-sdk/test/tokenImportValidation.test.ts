@@ -4,7 +4,10 @@ import { Amount, getEncodedToken, getEncodedTokenBinary, type Token } from '@cas
 import {
   DEFAULT_TOKEN_IMPORT_BOUNDS,
   TokenImportValidationError,
+  assertTokenImportResolverRequestLive,
   decodeTokenImportLocally,
+  readBoundedTokenImportJsonResponse,
+  selectTokenImportKeysetCandidates,
   validateProductWalletTokenImport,
   validateTokenImport,
   type ResolveTokenImportKeysets,
@@ -220,6 +223,197 @@ test('canonicalizes mint identities and groups encoded keyset lookup', async () 
     },
   ])
   assert.equal(result.proofs.length, 3)
+})
+
+test('rejects a canonical mint outside the exact allowed set before resolver work', async () => {
+  let resolverCalls = 0
+  await expectCode(
+    validateTokenImport({
+      encodedToken: 'cashuA-wrong-mint-double',
+      context: 'ordinary-sat',
+      decode: () => token('HTTPS://OTHER.EXAMPLE:443/'),
+      allowedCanonicalMintUrls: new Set(['https://mint.example']),
+      resolveKeysets: async () => {
+        resolverCalls += 1
+        return lookup()
+      },
+    }),
+    'mint_mismatch',
+  )
+  assert.equal(resolverCalls, 0)
+})
+
+test('admits a canonical mint in the exact allowed set', async () => {
+  const result = await validateTokenImport({
+    encodedToken: 'cashuA-allowed-mint-double',
+    context: 'ordinary-sat',
+    decode: () => token('HTTPS://MINT.EXAMPLE:443/'),
+    allowedCanonicalMintUrls: new Set(['https://mint.example']),
+    resolveKeysets: matchingResolver(),
+  })
+
+  assert.deepEqual(result.canonicalMintUrls, ['https://mint.example'])
+})
+
+test('shared keyset response selection parses unknown input and enforces one combined cap', () => {
+  const controller = new AbortController()
+  const request = {
+    canonicalMintUrl: 'https://mint.example',
+    encodedKeysetIds: [V0_ID, REGULAR_SHORT_ID],
+    signal: controller.signal,
+    deadlineMs: Date.now() + 10_000,
+    maxCandidates: 2,
+  }
+
+  assert.deepEqual(
+    selectTokenImportKeysetCandidates({
+      request,
+      regularResponse: {
+        keysets: [
+          { id: V0_ID, unit: 'sat', active: true },
+          { id: CONDITIONAL_FULL_ID, unit: 'msat', active: true },
+        ],
+      },
+      conditionalResponse: {
+        keysets: [{ id: REGULAR_FULL_ID, unit: 'sat', active: false }],
+      },
+    }),
+    {
+      freshness: 'fresh',
+      regularKeysets: [{ keysetId: V0_ID, unit: 'sat', active: true }],
+      conditionalKeysets: [{ keysetId: REGULAR_FULL_ID, unit: 'sat', active: false }],
+    },
+  )
+
+  assert.throws(
+    () =>
+      selectTokenImportKeysetCandidates({
+        request: { ...request, maxCandidates: 1 },
+        regularResponse: { keysets: [{ id: V0_ID, unit: 'sat', active: true }] },
+        conditionalResponse: {
+          keysets: [{ id: REGULAR_FULL_ID, unit: 'sat', active: true }],
+        },
+      }),
+    /candidate bound/,
+  )
+})
+
+test('shared keyset response selection rejects malformed wire records and elapsed requests', () => {
+  const request = {
+    canonicalMintUrl: 'https://mint.example',
+    encodedKeysetIds: [V0_ID],
+    signal: new AbortController().signal,
+    deadlineMs: Date.now() + 10_000,
+    maxCandidates: 2,
+  }
+
+  for (const regularResponse of [
+    null,
+    {},
+    { keysets: 'invalid' },
+    { keysets: [null] },
+    { keysets: [{ id: 42, unit: 'sat', active: true }] },
+  ]) {
+    assert.throws(
+      () =>
+        selectTokenImportKeysetCandidates({
+          request,
+          regularResponse,
+          conditionalResponse: { keysets: [] },
+        }),
+      /invalid data/,
+    )
+  }
+
+  assert.throws(
+    () => assertTokenImportResolverRequestLive({ ...request, deadlineMs: 1 }, 1),
+    /deadline elapsed/,
+  )
+  const controller = new AbortController()
+  controller.abort()
+  assert.throws(
+    () => assertTokenImportResolverRequestLive({ ...request, signal: controller.signal }),
+    /deadline elapsed/,
+  )
+})
+
+test('shared response reader parses streamed JSON under an explicit byte cap', async () => {
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"keysets":'))
+        controller.enqueue(new TextEncoder().encode('[]}'))
+        controller.close()
+      },
+    }),
+  )
+
+  assert.deepEqual(await readBoundedTokenImportJsonResponse(response, 32), { keysets: [] })
+})
+
+test('shared response reader does not compare decompressed bytes to Content-Length', async () => {
+  const payload = '{"keysets":[]}'
+  const response = new Response(payload, {
+    headers: { 'Content-Length': '7', 'Content-Encoding': 'gzip' },
+  })
+
+  assert.deepEqual(await readBoundedTokenImportJsonResponse(response, 32), { keysets: [] })
+})
+
+test('shared response reader stops once streamed JSON exceeds the byte cap', async () => {
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"keysets":['))
+        controller.enqueue(new Uint8Array(32))
+        controller.close()
+      },
+    }),
+  )
+
+  await assert.rejects(
+    readBoundedTokenImportJsonResponse(response, 16),
+    /response byte limit exceeded/,
+  )
+})
+
+test('shared response reader requires an adapter-owned bounded body reader for fallback', async () => {
+  const payload = new TextEncoder().encode('{"keysets":[]}')
+  let boundedReadCalls = 0
+  const fallback = {
+    body: null,
+    headers: new Headers({ 'Content-Length': String(payload.byteLength) }),
+    async readBoundedBody(maximumBytes: number) {
+      boundedReadCalls += 1
+      assert.equal(maximumBytes, 32)
+      return payload
+    },
+  }
+  assert.deepEqual(await readBoundedTokenImportJsonResponse(fallback, 32), { keysets: [] })
+  assert.equal(boundedReadCalls, 1)
+
+  await assert.rejects(
+    readBoundedTokenImportJsonResponse(
+      {
+        ...fallback,
+        headers: new Headers({ 'Content-Length': '33' }),
+      },
+      32,
+    ),
+    /response byte limit exceeded/,
+  )
+  assert.equal(boundedReadCalls, 1)
+
+  await assert.rejects(
+    readBoundedTokenImportJsonResponse(
+      {
+        body: null,
+        headers: new Headers({ 'Content-Length': String(payload.byteLength) }),
+      },
+      32,
+    ),
+    /adapter-owned bounded body reader/,
+  )
 })
 
 test('preserves known inactive classification for regular and conditional proofs', async () => {

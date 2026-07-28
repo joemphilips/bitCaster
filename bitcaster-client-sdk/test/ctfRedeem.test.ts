@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import { CheckStateEnum, type MintKeys, type Proof, type ProofState } from '@cashu/cashu-ts'
 import {
   buildKeysetRedeemOperationId,
+  getActiveRegularKeyset,
   isLosingLegError,
   ORACLE_NOT_ATTESTED_OUTCOME_CODE,
   redeemOutcomeLegWithOperation,
@@ -10,6 +11,7 @@ import {
 } from '../src/ctfRedeem.ts'
 import type {
   CtfPrepareProofOperationInput,
+  CtfProofOperationCompletion,
   CtfProofOperationRecord,
   CtfProofOperationStore,
 } from '../src/ctfSplit.ts'
@@ -22,10 +24,41 @@ test('isLosingLegError recognizes the mint oracle-not-attested error code', () =
 })
 
 test('buildKeysetRedeemOperationId is stable across proof ordering', () => {
-  const left = buildKeysetRedeemOperationId('ABCDEF', 'keyset', ['b', 'a'])
-  const right = buildKeysetRedeemOperationId('abcdef', 'keyset', ['a', 'b'])
-  assert.equal(left, 'ctf-redeem:abcdef:keyset:a|b')
+  const left = buildKeysetRedeemOperationId({
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    conditionId: 'ABCDEF',
+    keysetId: 'keyset',
+    proofs: ['b', 'a'],
+  })
+  const right = buildKeysetRedeemOperationId({
+    mintUrl: 'https://mint.example/',
+    unit: 'msat',
+    conditionId: 'abcdef',
+    keysetId: 'keyset',
+    proofs: ['a', 'b'],
+  })
+  assert.match(left, /^ctf-redeem:[0-9a-f]{64}$/)
   assert.equal(left, right)
+})
+
+test('buildKeysetRedeemOperationId is unambiguous and never contains proof secrets', () => {
+  const left = buildKeysetRedeemOperationId({
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    conditionId: 'condition',
+    keysetId: 'keyset',
+    proofs: ['secret-one|secret-two', 'secret-three'],
+  })
+  const right = buildKeysetRedeemOperationId({
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    conditionId: 'condition',
+    keysetId: 'keyset',
+    proofs: ['secret-one', 'secret-two|secret-three'],
+  })
+  assert.notEqual(left, right)
+  assert.doesNotMatch(left, /secret-/)
 })
 
 test('redeemOutcomeLegWithOperation prepares, redeems, and marks completed', async () => {
@@ -167,6 +200,61 @@ test('redeemOutcomeLegWithOperation re-executes prepared operations when inputs 
   assert.equal(wallet.redeemCalls.length, 1)
 })
 
+test('redeemOutcomeLegWithOperation rejects request substitution before mint effects', async () => {
+  const store = new MemoryProofOperationStore()
+  const original = [proof('ctf-keyset', 'original-input', 5)]
+  await redeemOutcomeLegWithOperation({
+    mintUrl: 'https://mint.example',
+    operationId: 'redeem:authority',
+    wallet: new FakeRedeemWallet({ error: new Error('transient') }),
+    proofOperationStore: store,
+    conditionId: 'condition',
+    outcome: 'YES',
+    outcomeKeysetId: 'ctf-keyset',
+    unit: 'sat',
+    oracleWitness: 'witness',
+    proofs: original,
+    regularKeyset: regularKeyset(),
+  }).catch(() => undefined)
+
+  const retryWallet = new FakeRedeemWallet()
+  await assert.rejects(
+    () =>
+      redeemOutcomeLegWithOperation({
+        mintUrl: 'https://mint.example',
+        operationId: 'redeem:authority',
+        wallet: retryWallet,
+        proofOperationStore: store,
+        conditionId: 'condition',
+        outcome: 'YES',
+        outcomeKeysetId: 'ctf-keyset',
+        unit: 'sat',
+        oracleWitness: 'witness',
+        proofs: [proof('ctf-keyset', 'substituted-input', 5)],
+        regularKeyset: regularKeyset(),
+      }),
+    /does not match the current request/,
+  )
+  assert.equal(retryWallet.redeemCalls.length, 0)
+})
+
+test('getActiveRegularKeyset rejects an inactive-only keyset response', async () => {
+  await assert.rejects(
+    () =>
+      getActiveRegularKeyset(
+        {
+          mint: {
+            getKeys: async () => ({
+              keysets: [{ ...regularKeyset(), active: false }],
+            }),
+          },
+        },
+        'sat',
+      ),
+    /active regular sat keyset/,
+  )
+})
+
 test('redeemOutcomeLegWithOperation refuses non-losing failed records', async () => {
   const store = new MemoryProofOperationStore()
   await store.prepareProofOperation({
@@ -175,6 +263,14 @@ test('redeemOutcomeLegWithOperation refuses non-losing failed records', async ()
     mintUrl: 'https://mint.example',
     inputs: [proof('ctf-keyset', 'input', 1)],
     outputs: {},
+    metadata: {
+      conditionId: 'condition',
+      outcome: 'YES',
+      outcomeKeysetId: 'ctf-keyset',
+      regularKeysetId: 'regular-keyset',
+      unit: 'sat',
+      amountSubunits: 1,
+    },
   })
   await store.markProofOperationFailed?.('redeem:failed', 'boom', 999)
 
@@ -271,14 +367,17 @@ class MemoryProofOperationStore implements CtfProofOperationStore {
 
   async markProofOperationCompleted(
     operationId: string,
-    resultProofs: Record<string, Proof[]>,
+    completion: CtfProofOperationCompletion,
   ): Promise<CtfProofOperationRecord> {
     const existing = this.records.get(operationId)
     if (!existing) throw new Error(`missing operation ${operationId}`)
+    if (existing.kind !== completion.kind) throw new Error('completion kind mismatch')
     const completed: CtfProofOperationRecord = {
       ...existing,
       state: 'completed',
-      resultProofs,
+      resultProofs: completion.resultProofs,
+      resultProofsDigest:
+        'resultProofsDigest' in completion ? completion.resultProofsDigest : undefined,
       updatedAt: existing.updatedAt + 1,
     }
     this.records.set(operationId, completed)

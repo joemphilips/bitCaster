@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { validateOrderIntent } from '../src/orderValidation.ts'
+import { validateOrderIntent, validateOrderRoutingIdentity } from '../src/orderValidation.ts'
 
 const validOrder = {
   marketId: 'cond-YES',
@@ -18,6 +18,34 @@ test('validateOrderIntent accepts supported order intent shapes', () => {
   for (const timeInForce of ['FAK', 'FOK', 'GTC']) {
     assert.deepEqual(validateOrderIntent({ ...validOrder, timeInForce }), { valid: true })
   }
+})
+
+test('validateOrderRoutingIdentity rejects malformed identity before market-unit lookup', () => {
+  assert.deepEqual(
+    validateOrderRoutingIdentity({
+      ...validOrder,
+      marketId: 'cond-NO',
+      baseAsset: undefined,
+      divisibility: undefined,
+    }),
+    {
+      valid: false,
+      message: 'Order rejected: outcome id must match the primitive outcome segment of market id.',
+    },
+  )
+})
+
+test('validateOrderRoutingIdentity intentionally admits routing fields without market units', () => {
+  assert.deepEqual(
+    validateOrderRoutingIdentity({
+      marketId: validOrder.marketId,
+      outcomeId: validOrder.outcomeId,
+      tokenSide: validOrder.tokenSide,
+      side: validOrder.side,
+      timeInForce: validOrder.timeInForce,
+    }),
+    { valid: true },
+  )
 })
 
 test('validateOrderIntent rejects malformed or unsupported order intent', () => {

@@ -9,14 +9,24 @@ import {
 } from '@cashu/cashu-ts'
 import {
   allStates,
+  createCtfProofOperationCompletion,
   deserializeOutputGroups,
   normalizeProofArray,
+  prepareBoundedCtfProofOperation,
   restoreOutputGroups as defaultRestoreOutputGroups,
   serializeOutputDataArray,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
 } from './ctfSplit.ts'
+import { DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX } from './durableCustody.ts'
 import { amountToNumber } from './proofSelection.ts'
+import {
+  canonicalProofOperationMintIdentity,
+  proofAuthority,
+  proofOperationAuthorityDigest,
+  requireProofArray,
+  requireSameOperationAuthority,
+} from './ctfProofOperationAuthority.ts'
 
 /**
  * Shared NUT-CTF redeem helpers.
@@ -62,28 +72,45 @@ export async function redeemOutcomeLegWithOperation(params: {
   onLosingLeg?: (inputs: Proof[]) => Promise<void>
 }): Promise<RedeemOutcomeLegResult> {
   if (params.proofs.length === 0) return { proofs: [], losing: false }
-
-  await params.wallet.loadMint()
-  const existing = await params.proofOperationStore.getProofOperation(params.operationId)
-  if (existing) {
-    return resumeCtfRedeem({
-      ...params,
-      entry: existing,
-      restoreOutputGroups: params.restoreOutputGroups ?? defaultRestoreOutputGroups,
-    })
+  if (params.proofs.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX) {
+    throw new Error('CTF redeem input proof limit exceeded')
   }
-
   const inputs = normalizeProofArray(params.proofs)
   const amountSubunits = inputs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0)
   if (!Number.isSafeInteger(amountSubunits) || amountSubunits <= 0) {
     throw new Error('CTF redeem inputs must have a positive safe-integer total')
   }
 
+  await params.wallet.loadMint()
+  const existing = await params.proofOperationStore.getProofOperation(params.operationId)
+  if (existing) {
+    requireMatchingCtfRedeemOperation(existing, {
+      operationId: params.operationId,
+      mintUrl: params.mintUrl,
+      conditionId: params.conditionId,
+      outcome: params.outcome,
+      outcomeKeysetId: params.outcomeKeysetId,
+      regularKeysetId: params.regularKeyset?.id,
+      unit: params.unit,
+      amountSubunits,
+      inputs,
+    })
+    return resumeCtfRedeem({
+      mintUrl: params.mintUrl,
+      wallet: params.wallet,
+      proofOperationStore: params.proofOperationStore,
+      oracleWitness: params.oracleWitness,
+      onLosingLeg: params.onLosingLeg,
+      entry: existing,
+      restoreOutputGroups: params.restoreOutputGroups ?? defaultRestoreOutputGroups,
+    })
+  }
+
   const regularKeyset =
     params.regularKeyset ?? (await getActiveRegularKeyset(params.wallet, params.unit))
   const outputData = OutputData.createRandomData(Amount.from(amountSubunits), regularKeyset)
 
-  await params.proofOperationStore.prepareProofOperation({
+  await prepareBoundedCtfProofOperation(params.proofOperationStore, {
     operationId: params.operationId,
     kind: 'ctf-redeem',
     mintUrl: params.mintUrl,
@@ -92,9 +119,8 @@ export async function redeemOutcomeLegWithOperation(params: {
     metadata: {
       conditionId: params.conditionId,
       outcome: params.outcome,
-      amountSats: amountSubunits,
       amountSubunits,
-      keysetId: params.outcomeKeysetId ?? regularKeyset.id,
+      outcomeKeysetId: params.outcomeKeysetId ?? inputs[0]!.id,
       regularKeysetId: regularKeyset.id,
       unit: params.unit,
     },
@@ -111,16 +137,25 @@ export async function redeemOutcomeLegWithOperation(params: {
   })
 }
 
-export function buildKeysetRedeemOperationId(
-  conditionId: string,
-  keysetId: string,
-  sortedSecrets: readonly string[] | readonly Pick<Proof, 'secret'>[],
-): string {
-  const secrets = sortedSecrets
+export function buildKeysetRedeemOperationId(params: {
+  mintUrl: string
+  unit: string
+  conditionId: string
+  keysetId: string
+  proofs: readonly string[] | readonly Pick<Proof, 'secret'>[]
+}): string {
+  const secrets = params.proofs
     .map((value) => (typeof value === 'string' ? value : value.secret))
     .sort()
-    .join('|')
-  return ['ctf-redeem', conditionId.toLowerCase(), keysetId, secrets].join(':')
+  const digest = proofOperationAuthorityDigest({
+    domain: 'bitcaster:ctf-redeem-operation-id:v1',
+    mintUrl: canonicalProofOperationMintIdentity(params.mintUrl),
+    unit: params.unit,
+    conditionId: params.conditionId.toLowerCase(),
+    keysetId: params.keysetId,
+    secrets,
+  })
+  return `ctf-redeem:${digest}`
 }
 
 export async function getActiveRegularKeyset(
@@ -131,11 +166,94 @@ export async function getActiveRegularKeyset(
     throw new Error('Cashu wallet adapter does not expose mint keyset lookup')
   }
   const response = await wallet.mint.getKeys()
-  const keyset =
-    response.keysets.find((candidate) => candidate.unit === unit && candidate.active !== false) ??
-    response.keysets.find((candidate) => candidate.unit === unit)
+  const keyset = response.keysets.find(
+    (candidate) => candidate.unit === unit && candidate.active !== false,
+  )
   if (!keyset) throw new Error(`Mint did not return an active regular ${unit} keyset`)
   return keyset
+}
+
+function requireMatchingCtfRedeemOperation(
+  entry: CtfProofOperationRecord,
+  request: {
+    operationId: string
+    mintUrl: string
+    conditionId: string
+    outcome: string
+    outcomeKeysetId?: string
+    regularKeysetId?: string
+    unit: string
+    amountSubunits: number
+    inputs: Proof[]
+  },
+): void {
+  if (entry.kind !== 'ctf-redeem') {
+    throw new Error(`proof operation ${entry.operationId} is not a CTF redeem`)
+  }
+  const metadata = entry.metadata
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    throw new Error(`proof operation ${entry.operationId} has invalid CTF redeem metadata`)
+  }
+  const storedOutcomeKeysetId =
+    typeof metadata.outcomeKeysetId === 'string' ? metadata.outcomeKeysetId : null
+  const storedRegularKeysetId =
+    typeof metadata.regularKeysetId === 'string' ? metadata.regularKeysetId : null
+  const storedAuthority = {
+    operationId: entry.operationId,
+    kind: entry.kind,
+    mintUrl: canonicalProofOperationMintIdentity(entry.mintUrl),
+    conditionId: requireText(metadata.conditionId, 'stored CTF redeem conditionId').toLowerCase(),
+    outcome: requireText(metadata.outcome, 'stored CTF redeem outcome'),
+    outcomeKeysetId: requireText(storedOutcomeKeysetId, 'stored CTF redeem outcome keyset'),
+    regularKeysetId: requireText(
+      storedRegularKeysetId,
+      'stored CTF redeem regular keyset',
+    ),
+    unit: requireText(metadata.unit, 'stored CTF redeem unit'),
+    amountSubunits: requirePositiveSafeInteger(
+      metadata.amountSubunits,
+      'stored CTF redeem amountSubunits',
+    ),
+    inputs: canonicalRedeemInputAuthority(entry.inputs),
+  }
+  const requestAuthority = {
+    operationId: request.operationId,
+    kind: 'ctf-redeem',
+    mintUrl: canonicalProofOperationMintIdentity(request.mintUrl),
+    conditionId: request.conditionId.toLowerCase(),
+    outcome: request.outcome,
+    outcomeKeysetId: request.outcomeKeysetId ?? request.inputs[0]!.id,
+    regularKeysetId: request.regularKeysetId ?? storedRegularKeysetId,
+    unit: request.unit,
+    amountSubunits: request.amountSubunits,
+    inputs: canonicalRedeemInputAuthority(request.inputs),
+  }
+  requireSameOperationAuthority(storedAuthority, requestAuthority, entry.operationId)
+}
+
+function canonicalRedeemInputAuthority(proofs: readonly Proof[]): Record<string, unknown>[] {
+  return requireProofArray(proofs, 'CTF redeem inputs')
+    .sort(
+      (left, right) =>
+        left.secret.localeCompare(right.secret) ||
+        left.id.localeCompare(right.id) ||
+        amountToNumber(left.amount) - amountToNumber(right.amount),
+    )
+    .map(proofAuthority)
+}
+
+function requireText(value: unknown, context: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${context} must be a non-empty string`)
+  }
+  return value
+}
+
+function requirePositiveSafeInteger(value: unknown, context: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw new Error(`${context} must be a positive safe integer`)
+  }
+  return value as number
 }
 
 export function isLosingLegError(error: unknown): boolean {
@@ -185,9 +303,10 @@ async function resumeCtfRedeem(params: {
   if (allStates(states, CheckStateEnum.SPENT)) {
     const restored = await params.restoreOutputGroups(params.mintUrl, entry.outputs)
     const final = normalizeProofArray(restored.regular ?? [])
-    await params.proofOperationStore.markProofOperationCompleted(entry.operationId, {
-      regular: final,
-    })
+    await params.proofOperationStore.markProofOperationCompleted(
+      entry.operationId,
+      createCtfProofOperationCompletion('ctf-redeem', { regular: final }),
+    )
     return { proofs: final, losing: false }
   }
   if (allStates(states, CheckStateEnum.UNSPENT)) {
@@ -224,9 +343,10 @@ async function executeCtfRedeem(params: {
       outputs: params.outputData,
     })
     const final = normalizeProofArray(settled)
-    await params.proofOperationStore.markProofOperationCompleted(params.operationId, {
-      regular: final,
-    })
+    await params.proofOperationStore.markProofOperationCompleted(
+      params.operationId,
+      createCtfProofOperationCompletion('ctf-redeem', { regular: final }),
+    )
     return { proofs: final, losing: false }
   } catch (error) {
     if (isLosingLegError(error)) {

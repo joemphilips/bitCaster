@@ -22,6 +22,49 @@ export interface OrderIntentForValidation {
 export type OrderIntentValidation = { valid: true } | { valid: false; message: string }
 
 export function validateOrderIntent(request: unknown): OrderIntentValidation {
+  const shape = validateOrderRoutingIdentity(request)
+  if (!shape.valid) return shape
+  const intent = request as OrderIntentForValidation
+  if (intent.baseAsset !== 'sat') {
+    return {
+      valid: false,
+      message: 'Order rejected: baseAsset must be sat.',
+    }
+  }
+  const divisibility = parseMarketDivisibility(intent.divisibility)
+  if (divisibility === null) {
+    return {
+      valid: false,
+      message: 'Order rejected: divisibility must be 10000 or 1000000.',
+    }
+  }
+  const price = intent.price
+  if (typeof price !== 'number' || !validatePriceNumerator(price, divisibility)) {
+    return {
+      valid: false,
+      message: `Order rejected: price must be an integer from 1 to ${divisibility - 1}.`,
+    }
+  }
+  const amountSubunits = intent.amountSubunits
+  const shareFace = divisibility
+  if (
+    typeof amountSubunits !== 'number' ||
+    !validateWholeShareFaceAmount(amountSubunits, shareFace)
+  ) {
+    return {
+      valid: false,
+      message: `Order rejected: amountSubunits must be a positive integer in ${shareFace} sub-unit increments.`,
+    }
+  }
+
+  return { valid: true }
+}
+
+/**
+ * Validates only the fields needed to identify and route an order before
+ * market-owned unit and economics metadata is available.
+ */
+export function validateOrderRoutingIdentity(request: unknown): OrderIntentValidation {
   if (!isRecord(request)) {
     return { valid: false, message: 'Order rejected: missing order request.' }
   }
@@ -62,37 +105,6 @@ export function validateOrderIntent(request: unknown): OrderIntentValidation {
     return {
       valid: false,
       message: 'Order rejected: side must be Buy or Sell.',
-    }
-  }
-  if (intent.baseAsset !== 'sat') {
-    return {
-      valid: false,
-      message: 'Order rejected: baseAsset must be sat.',
-    }
-  }
-  const divisibility = parseMarketDivisibility(intent.divisibility)
-  if (divisibility === null) {
-    return {
-      valid: false,
-      message: 'Order rejected: divisibility must be 10000 or 1000000.',
-    }
-  }
-  const price = intent.price
-  if (typeof price !== 'number' || !validatePriceNumerator(price, divisibility)) {
-    return {
-      valid: false,
-      message: `Order rejected: price must be an integer from 1 to ${divisibility - 1}.`,
-    }
-  }
-  const amountSubunits = intent.amountSubunits
-  const shareFace = divisibility
-  if (
-    typeof amountSubunits !== 'number' ||
-    !validateWholeShareFaceAmount(amountSubunits, shareFace)
-  ) {
-    return {
-      valid: false,
-      message: `Order rejected: amountSubunits must be a positive integer in ${shareFace} sub-unit increments.`,
     }
   }
   if (

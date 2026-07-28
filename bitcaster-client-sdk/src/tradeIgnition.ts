@@ -28,6 +28,7 @@ export interface MatchedDelta {
   path: 'Complementary' | 'Mint'
   matchedAt: string
   deadline: string
+  collateralUnit: 'msat'
   baseAsset: MarketBaseAsset
   divisibility: MarketDivisibility
   quotePaymentSubunits: number
@@ -122,6 +123,7 @@ export function parseMatchedDelta(payload: unknown): MatchedDelta | null {
   const path = readString(raw, 'path', 'Path')
   const matchedAt = readString(raw, 'matchedAt', 'MatchedAt')
   const deadline = readString(raw, 'deadline', 'Deadline')
+  const collateralUnit = readString(raw, 'collateralUnit', 'CollateralUnit')
   const baseAsset = parseMarketBaseAsset(readString(raw, 'baseAsset', 'BaseAsset'))
   const divisibility = parseMarketDivisibility(readNumber(raw, 'divisibility', 'Divisibility'))
   const quotePaymentSubunits = readNumber(raw, 'quotePaymentSubunits', 'QuotePaymentSubunits')
@@ -140,6 +142,7 @@ export function parseMatchedDelta(payload: unknown): MatchedDelta | null {
     (path !== 'Complementary' && path !== 'Mint') ||
     !matchedAt ||
     !deadline ||
+    collateralUnit !== 'msat' ||
     !baseAsset ||
     !divisibility ||
     (tokenSide !== 'Outcome' && tokenSide !== 'Complement') ||
@@ -166,6 +169,7 @@ export function parseMatchedDelta(payload: unknown): MatchedDelta | null {
     path,
     matchedAt,
     deadline,
+    collateralUnit,
     baseAsset,
     divisibility,
     quotePaymentSubunits,

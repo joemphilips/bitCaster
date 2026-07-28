@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  completedProofAuthorityDigest,
   computeGrossCtfInputAmountSubunits,
   computeGrossCtfInputAmountSats,
+  createCtfProofOperationCompletion,
   normalizeProof,
   normalizeProofArray,
   normalizeProofGroups,
+  prepareBoundedCtfProofOperation,
   ProofOperationPendingError,
   resolveComplementaryOutcomeLegs,
   resolveInputFeePpkByProofKeyset,
@@ -16,6 +19,7 @@ import {
   mergeCompleteSetToRegularWithOperation,
   selectCompleteSetMergeInputs,
   type CtfPrepareProofOperationInput,
+  type CtfProofOperationCompletion,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
   type CtfSplitOutputData,
@@ -56,6 +60,152 @@ test('proof normalization helpers are exported for wallet-service sharing', () =
   assert.deepEqual(normalizeProofGroups({ outcome: [proof] }), {
     outcome: [{ ...proof, amount: 2 }],
   })
+})
+
+test('proof operation completion carries SDK-owned digest only for CTF split and merge', () => {
+  const resultProofs = { result: [completedProof('keyset', 1, 'secret')] }
+  const split = createCtfProofOperationCompletion('ctf-split', resultProofs)
+  const merge = createCtfProofOperationCompletion('ctf-merge', resultProofs)
+  const redeem = createCtfProofOperationCompletion('ctf-redeem', resultProofs)
+  const regular = createCtfProofOperationCompletion('regular-split', resultProofs)
+
+  assert.equal(split.resultProofsDigest, completedProofAuthorityDigest(resultProofs))
+  assert.equal(merge.resultProofsDigest, completedProofAuthorityDigest(resultProofs))
+  assert.equal('resultProofsDigest' in redeem, false)
+  assert.equal('resultProofsDigest' in regular, false)
+})
+
+test('completed proof authority sorting does not consult the process locale', () => {
+  const original = String.prototype.localeCompare
+  String.prototype.localeCompare = () => {
+    throw new Error('locale-dependent comparison was used')
+  }
+  try {
+    const left = {
+      Z: [completedProof('keyset', 1, 'z')],
+      a: [completedProof('keyset', 1, 'a')],
+    }
+    const right = { a: left.a, Z: left.Z }
+    assert.equal(completedProofAuthorityDigest(left), completedProofAuthorityDigest(right))
+  } finally {
+    String.prototype.localeCompare = original
+  }
+})
+
+test('completed proof authority enforces ADR-033 bounds before proof mapping', () => {
+  const oversizedGroups = Object.fromEntries(
+    Array.from({ length: 17 }, (_, index) => [
+      `group-${index}`,
+      [completedProof('keyset', 1, `secret-${index}`)],
+    ]),
+  )
+  assert.throws(() => completedProofAuthorityDigest(oversizedGroups), /group limit/)
+
+  const unmappable = {
+    get id(): string {
+      throw new Error('proof mapping started before the result count bound')
+    },
+    amount: 1,
+    secret: 'secret',
+    C: SECP256K1_GENERATOR,
+  } as Proof
+  assert.throws(
+    () => completedProofAuthorityDigest({ result: Array.from({ length: 513 }, () => unmappable) }),
+    /result proof limit/,
+  )
+
+  assert.throws(
+    () =>
+      completedProofAuthorityDigest({
+        result: [
+          {
+            ...completedProof('keyset', 1, 'secret'),
+            witness: { signatures: ['x'.repeat(65 * 1_024)] },
+          },
+        ],
+      }),
+    /byte limit|string limit/,
+  )
+
+  let nested: unknown = 'leaf'
+  for (let depth = 0; depth < 34; depth += 1) nested = { child: nested }
+  assert.throws(
+    () =>
+      completedProofAuthorityDigest({
+        result: [{ ...completedProof('keyset', 1, 'secret'), witness: nested }],
+      }),
+    /structure limit/,
+  )
+})
+
+test('proof operation preparation enforces the 64 KiB record authority before persistence', async () => {
+  let storeCalls = 0
+  const store = {
+    async prepareProofOperation(input: CtfPrepareProofOperationInput) {
+      storeCalls += 1
+      return input as unknown as CtfProofOperationRecord
+    },
+  } as CtfProofOperationStore
+  const metadata = Object.fromEntries(
+    Array.from({ length: 5 }, (_, index) => [`field${index}`, 'x'.repeat(15_000)]),
+  )
+
+  await assert.rejects(
+    async () =>
+      prepareBoundedCtfProofOperation(store, {
+        operationId: 'operation',
+        kind: 'ctf-split',
+        mintUrl: 'https://mint.example',
+        inputs: [completedProof('keyset', 1, 'secret')],
+        outputs: {},
+        metadata,
+      }),
+    /byte limit/,
+  )
+  assert.equal(storeCalls, 0)
+})
+
+test('CTF split enforces input, group, and blinded-output bounds before effects', async () => {
+  const inputStore = new MemoryProofOperationStore()
+  const inputTransport = new FakeSplitTransport()
+  await assert.rejects(
+    splitCompleteSetWithOperation({
+      ...splitReplayRequest('input-bound', inputStore, inputTransport),
+      collateralProofs: Array.from({ length: 257 }, (_, index) =>
+        proof('input-keyset', 1, `input-${index}`),
+      ),
+    }),
+    /input proofs proof limit/,
+  )
+  assert.deepEqual(inputTransport.keyLookups, [])
+  assert.equal(inputStore.prepareCalls, 0)
+
+  const groupStore = new MemoryProofOperationStore()
+  const groupTransport = new FakeSplitTransport()
+  await assert.rejects(
+    splitCompleteSetWithOperation({
+      ...splitReplayRequest('group-bound', groupStore, groupTransport),
+      outcomeCollectionKeysets: Object.fromEntries(
+        Array.from({ length: 17 }, (_, index) => [`group-${index}`, `keyset-${index}`]),
+      ),
+    }),
+    /group limit/,
+  )
+  assert.deepEqual(groupTransport.keyLookups, [])
+  assert.equal(groupStore.prepareCalls, 0)
+
+  const outputStore = new MemoryProofOperationStore()
+  const outputTransport = new FakeSplitTransport()
+  await assert.rejects(
+    splitCompleteSetWithOperation({
+      ...splitReplayRequest('output-bound', outputStore, outputTransport),
+      makeOutputs: () =>
+        Array.from({ length: 257 }, (_, index) => output(`output-${index}`, 1, 'keyset-yes')),
+    }),
+    /blinded output limit/,
+  )
+  assert.equal(outputTransport.posted.length, 0)
+  assert.equal(outputStore.prepareCalls, 0)
 })
 
 test('resolveMintOutcomeSetKey matches engine outcome sets to mint keyset-map keys', () => {
@@ -544,8 +694,8 @@ test('splitCompleteSetWithOperation replays completed operations without mint ca
   })
 
   assert.deepEqual(result, {
-    YES: [proof('keyset-yes', 100, 'stored-proof')],
-    NO: [proof('keyset-no', 100, 'stored-proof-no')],
+    YES: [completedProof('keyset-yes', 100, 'stored-proof')],
+    NO: [completedProof('keyset-no', 100, 'stored-proof-no')],
   })
   result.YES[0].secret = 'mutated'
   assert.equal(completed.records.get('op-completed')?.resultProofs?.YES[0].secret, 'stored-proof')
@@ -638,7 +788,7 @@ test('mergeCompleteSetToRegularWithOperation replays completed operations withou
     proofOperationStore: store,
   })
 
-  assert.deepEqual(result.regularProofs, [proof('regular-keyset', 9, 'regular-stored')])
+  assert.deepEqual(result.regularProofs, [completedProof('regular-keyset', 9, 'regular-stored')])
   assert.deepEqual(result.spentConditionalProofsByCollection, {
     Alpha: [proof('keyset-alpha', 10, 'alpha')],
   })
@@ -747,6 +897,7 @@ test('prepared CTF replay validates persisted keysets before proof-state or mint
     metadata: {
       baseAsset: 'sat',
       unit: 'msat',
+      amount: 100,
       parentCollectionId: '0'.repeat(64),
       conditionId: CONDITION_ID,
       amountSubunits: 100,
@@ -870,6 +1021,181 @@ test('completed CTF merge replay rejects every request-authority mismatch withou
   }
 })
 
+test('completed CTF merge replay accepts canonical groups regardless of object key order', async () => {
+  const operationId = 'merge-key-order'
+  const record = completedMergeRecord(operationId)
+  const alpha = proof('keyset-alpha', 10, 'alpha')
+  const beta = proof('keyset-beta', 10, 'beta')
+  record.inputs = [alpha, beta]
+  record.metadata.inputsByCollection = { Alpha: [alpha], Beta: [beta] }
+  const store = new MemoryProofOperationStore()
+  store.records.set(operationId, record)
+  const transport = new FakeSplitTransport()
+  const request = mergeReplayRequest(operationId, store, transport)
+  request.conditionalProofsByCollection = { Beta: [beta], Alpha: [alpha] }
+
+  const result = await mergeCompleteSetToRegularWithOperation(request)
+
+  assert.deepEqual(result.spentConditionalProofsByCollection, { Alpha: [alpha], Beta: [beta] })
+  assert.deepEqual(transport.keyLookups, [])
+  assert.equal(transport.converted.length, 0)
+})
+
+test('completed CTF replay rejects substituted durable proof authority without effects', async () => {
+  const cases: Array<{
+    name: string
+    mutate: (record: CtfProofOperationRecord) => void
+  }> = [
+    {
+      name: 'missing result digest',
+      mutate: (record) => void delete record.resultProofsDigest,
+    },
+    {
+      name: 'substituted result digest',
+      mutate: (record) => void (record.resultProofsDigest = '0'.repeat(64)),
+    },
+    {
+      name: 'result secret',
+      mutate: (record) => {
+        record.resultProofs!.YES[0]!.secret = 'substituted'
+        record.resultProofsDigest = completedProofAuthorityDigest(record.resultProofs!)
+      },
+    },
+    {
+      name: 'result signature',
+      mutate: (record) => {
+        record.resultProofs!.YES[0]!.C = 'not-a-point'
+        record.resultProofsDigest = completedProofAuthorityDigest(record.resultProofs!)
+      },
+    },
+    {
+      name: 'result DLEQ',
+      mutate: (record) => {
+        record.resultProofs!.YES[0]!.dleq = {
+          e: 'not-hex',
+          s: '0'.repeat(64),
+          r: '0'.repeat(64),
+        }
+        record.resultProofsDigest = completedProofAuthorityDigest(record.resultProofs!)
+      },
+    },
+    {
+      name: 'stored secret',
+      mutate: (record) => void (record.outputs.YES![0]!.secret = 'not-hex'),
+    },
+    {
+      name: 'stored blinding factor',
+      mutate: (record) => void (record.outputs.YES![0]!.blindingFactor = '01'),
+    },
+    {
+      name: 'out-of-range blinding factor',
+      mutate: (record) => void (record.outputs.YES![0]!.blindingFactor = 'f'.repeat(64)),
+    },
+    {
+      name: 'stored blinded point',
+      mutate: (record) => void (record.outputs.YES![0]!.blindedMessage.B_ = 'not-a-point'),
+    },
+  ]
+
+  for (const scenario of cases) {
+    const operationId = `completed-authority-${scenario.name}`
+    const record = completedSplitRecord(operationId)
+    scenario.mutate(record)
+    const store = new MemoryProofOperationStore()
+    store.records.set(operationId, record)
+    const transport = new FakeSplitTransport()
+
+    await assert.rejects(() =>
+      splitCompleteSetWithOperation(splitReplayRequest(operationId, store, transport)),
+    )
+    assert.deepEqual(transport.keyLookups, [], scenario.name)
+    assert.equal(transport.posted.length, 0, scenario.name)
+    assert.equal(store.completedCalls, 0, scenario.name)
+  }
+})
+
+test('prepared CTF replay rejects malformed stored outputs before mint effects', async () => {
+  const cases: Array<{
+    name: string
+    mutate: (record: CtfProofOperationRecord) => void
+  }> = [
+    {
+      name: 'stored secret',
+      mutate: (record) => void (record.outputs.YES![0]!.secret = 'not-hex'),
+    },
+    {
+      name: 'stored blinding factor',
+      mutate: (record) => void (record.outputs.YES![0]!.blindingFactor = '01'),
+    },
+    {
+      name: 'out-of-range blinding factor',
+      mutate: (record) => void (record.outputs.YES![0]!.blindingFactor = 'f'.repeat(64)),
+    },
+    {
+      name: 'stored blinded point',
+      mutate: (record) => void (record.outputs.YES![0]!.blindedMessage.B_ = 'not-a-point'),
+    },
+  ]
+
+  for (const scenario of cases) {
+    const operationId = `prepared-output-${scenario.name}`
+    const record = completedSplitRecord(operationId)
+    record.state = 'prepared'
+    delete record.resultProofs
+    delete record.resultProofsDigest
+    scenario.mutate(record)
+    const store = new MemoryProofOperationStore()
+    store.records.set(operationId, record)
+    const transport = new FakeSplitTransport()
+
+    await assert.rejects(() =>
+      splitCompleteSetWithOperation(splitReplayRequest(operationId, store, transport)),
+    )
+    assert.deepEqual(transport.keyLookups, [], scenario.name)
+    assert.equal(transport.posted.length, 0, scenario.name)
+    assert.equal(store.completedCalls, 0, scenario.name)
+  }
+})
+
+test('completed BLS CTF replay accepts a canonical secp P2BK ephemeral point', async () => {
+  const operationId = 'completed-bls-p2bk'
+  const record = completedSplitRecord(operationId)
+  const resultProofs = {
+    YES: [
+      {
+        ...completedProof(BLS_KEYSET_ID, 100, 'stored-proof'),
+        C: BLS_G1_POINT,
+        p2pk_e: SECP256K1_GENERATOR,
+      },
+    ],
+    NO: [
+      {
+        ...completedProof(BLS_KEYSET_ID, 100, 'stored-proof-no'),
+        C: BLS_G1_POINT,
+        p2pk_e: SECP256K1_GENERATOR,
+      },
+    ],
+  }
+  record.metadata.outcomeCollectionKeysets = { YES: BLS_KEYSET_ID, NO: BLS_KEYSET_ID }
+  record.outputs.YES![0]!.blindedMessage.id = BLS_KEYSET_ID
+  record.outputs.YES![0]!.blindedMessage.B_ = BLS_G1_POINT
+  record.outputs.NO![0]!.blindedMessage.id = BLS_KEYSET_ID
+  record.outputs.NO![0]!.blindedMessage.B_ = BLS_G1_POINT
+  record.resultProofs = resultProofs
+  record.resultProofsDigest = completedProofAuthorityDigest(resultProofs)
+  const store = new MemoryProofOperationStore()
+  store.records.set(operationId, record)
+  const transport = new FakeSplitTransport()
+  const request = splitReplayRequest(operationId, store, transport)
+  request.outcomeCollectionKeysets = { YES: BLS_KEYSET_ID, NO: BLS_KEYSET_ID }
+
+  const result = await splitCompleteSetWithOperation(request)
+
+  assert.equal(result.YES[0]?.p2pk_e, SECP256K1_GENERATOR)
+  assert.deepEqual(transport.keyLookups, [])
+  assert.equal(transport.posted.length, 0)
+})
+
 test('selectCompleteSetMergeInputs selects equal gross inputs across a complete partition', () => {
   const selection = selectCompleteSetMergeInputs({
     desiredOutputSats: 8,
@@ -975,6 +1301,7 @@ test('splitRegularProofsWithOperation replays completed regular splits without m
     metadata: {
       baseAsset: 'sat',
       unit: 'msat',
+      amount: 100,
     },
     resultProofs: {
       send: [proof('regular-keyset', 100, 'send-100')],
@@ -1012,6 +1339,7 @@ test('splitRegularProofsWithOperation throws typed pending error and checks proo
     metadata: {
       baseAsset: 'sat',
       unit: 'msat',
+      amount: 100,
     },
     createdAt: 1,
     updatedAt: 2,
@@ -1156,15 +1484,18 @@ class MemoryProofOperationStore implements CtfProofOperationStore {
 
   async markProofOperationCompleted(
     operationId: string,
-    resultProofs: Record<string, Proof[]>,
+    completion: CtfProofOperationCompletion,
   ): Promise<CtfProofOperationRecord> {
     this.completedCalls += 1
     const existing = this.records.get(operationId)
     if (!existing) throw new Error(`missing operation ${operationId}`)
+    if (existing.kind !== completion.kind) throw new Error('completion kind mismatch')
     const completed: CtfProofOperationRecord = {
       ...existing,
       state: 'completed',
-      resultProofs,
+      resultProofs: completion.resultProofs,
+      resultProofsDigest:
+        'resultProofsDigest' in completion ? completion.resultProofsDigest : undefined,
       updatedAt: existing.updatedAt + 1,
     }
     this.records.set(operationId, completed)
@@ -1271,6 +1602,10 @@ function mergeReplayRequest(
 }
 
 function completedSplitRecord(operationId: string): CtfProofOperationRecord {
+  const resultProofs = {
+    YES: [completedProof('keyset-yes', 100, 'stored-proof')],
+    NO: [completedProof('keyset-no', 100, 'stored-proof-no')],
+  }
   return {
     operationId,
     kind: 'ctf-split',
@@ -1278,8 +1613,8 @@ function completedSplitRecord(operationId: string): CtfProofOperationRecord {
     mintUrl: 'https://mint.example',
     inputs: [proof('input-keyset', 100, 'input-secret')],
     outputs: {
-      YES: [storedOutput('YES', 100, 'keyset-yes')],
-      NO: [storedOutput('NO', 100, 'keyset-no')],
+      YES: [storedOutput('stored-proof', 100, 'keyset-yes')],
+      NO: [storedOutput('stored-proof-no', 100, 'keyset-no')],
     },
     metadata: {
       conditionId: CONDITION_ID,
@@ -1289,16 +1624,17 @@ function completedSplitRecord(operationId: string): CtfProofOperationRecord {
       parentCollectionId: '0'.repeat(64),
       outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
     },
-    resultProofs: {
-      YES: [proof('keyset-yes', 100, 'stored-proof')],
-      NO: [proof('keyset-no', 100, 'stored-proof-no')],
-    },
+    resultProofs,
+    resultProofsDigest: completedProofAuthorityDigest(resultProofs),
     createdAt: 1,
     updatedAt: 2,
   }
 }
 
 function completedMergeRecord(operationId: string): CtfProofOperationRecord {
+  const resultProofs = {
+    regular: [completedProof('regular-keyset', 9, 'regular-stored')],
+  }
   return {
     operationId,
     kind: 'ctf-merge',
@@ -1306,7 +1642,7 @@ function completedMergeRecord(operationId: string): CtfProofOperationRecord {
     mintUrl: 'https://mint.example',
     inputs: [proof('keyset-alpha', 10, 'alpha')],
     outputs: {
-      '*': [storedOutput('regular', 9, 'regular-keyset')],
+      '*': [storedOutput('regular-stored', 9, 'regular-keyset')],
     },
     metadata: {
       conditionId: CONDITION_ID,
@@ -1318,19 +1654,34 @@ function completedMergeRecord(operationId: string): CtfProofOperationRecord {
         Alpha: [proof('keyset-alpha', 10, 'alpha')],
       },
     },
-    resultProofs: {
-      regular: [proof('regular-keyset', 9, 'regular-stored')],
-    },
+    resultProofs,
+    resultProofsDigest: completedProofAuthorityDigest(resultProofs),
     createdAt: 1,
     updatedAt: 2,
   }
 }
 
-function storedOutput(collection: string, amount: number, keysetId: string) {
+const SECP256K1_GENERATOR = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
+const BLS_KEYSET_ID = '02ce4c47836fd0e64f37a08254777b7fd0dedb95fc1ddd0acadf5600674c743c5d'
+const BLS_G1_POINT =
+  'b7a4881059133fd91a8753600d9a5e524c65d6224f6fe2d5aef9e59f1507fdad90b3b4d48ee46da5c8dfaa0b88e28b69'
+
+function completedProof(id: string, amount: number, secret: string): Proof {
   return {
-    blindedMessage: { amount, id: keysetId, B_: `B-${collection}` },
-    blindingFactor: '01',
-    secret: `01-${collection}`,
+    id,
+    amount,
+    secret,
+    C: SECP256K1_GENERATOR,
+  }
+}
+
+function storedOutput(secret: string, amount: number, keysetId: string) {
+  return {
+    blindedMessage: { amount, id: keysetId, B_: SECP256K1_GENERATOR },
+    blindingFactor: '1',
+    secret: Array.from(new TextEncoder().encode(secret))
+      .map((value) => value.toString(16).padStart(2, '0'))
+      .join(''),
   }
 }
 
