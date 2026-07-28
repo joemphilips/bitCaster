@@ -31,7 +31,7 @@ public interface ITradeHubClient
         string? settlementKind,
         string? sellerKeepOutcomeSetId,
         string? sellerLockOutcomeSetId,
-        string baseAsset,
+        BaseAsset baseAsset,
         int divisibility,
-        string tokenSide);
+        TokenSide tokenSide);
 }

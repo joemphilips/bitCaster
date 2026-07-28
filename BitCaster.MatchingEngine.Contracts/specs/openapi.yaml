@@ -1376,6 +1376,8 @@ components:
         - orderId
         - marketId
         - conditionId
+        - baseAsset
+        - divisibility
         - side
         - price
         - amountSubunits
@@ -1391,6 +1393,12 @@ components:
           type: string
         conditionId:
           type: string
+        baseAsset:
+          $ref: '#/components/schemas/BaseAsset'
+        divisibility:
+          type: integer
+          format: int32
+          enum: [10000, 1000000]
         side:
           $ref: '#/components/schemas/OrderSide'
         price:
@@ -1868,6 +1876,8 @@ components:
       required:
         - conditionId
         - marketsCreated
+        - baseAsset
+        - divisibility
       properties:
         conditionId:
           type: string
@@ -1879,6 +1889,9 @@ components:
           description: >
             List of per-outcome market IDs created
             (format: "{conditionId}-{outcomeName}").
+        baseAsset:
+          $ref: '#/components/schemas/BaseAsset'
+          description: Required immutable product base asset. Always exact `sat`.
         thumbnailUrl:
           oneOf:
             - type: string

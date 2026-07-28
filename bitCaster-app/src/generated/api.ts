@@ -682,6 +682,12 @@ export interface components {
             orderId: string;
             marketId: string;
             conditionId: string;
+            baseAsset: components["schemas"]["BaseAsset"];
+            /**
+             * Format: int32
+             * @enum {integer}
+             */
+            divisibility: 10000 | 1000000;
             side: components["schemas"]["OrderSide"];
             price: components["schemas"]["Probability"];
             amountSubunits: components["schemas"]["CollateralSubunits"];
@@ -878,6 +884,8 @@ export interface components {
             conditionId: string;
             /** @description List of per-outcome market IDs created (format: "{conditionId}-{outcomeName}"). */
             marketsCreated: string[];
+            /** @description Required immutable product base asset. Always exact `sat`. */
+            baseAsset: components["schemas"]["BaseAsset"];
             /** @description URL to the uploaded thumbnail, or null if none was provided. */
             thumbnailUrl?: string | null;
             /**
@@ -885,7 +893,7 @@ export interface components {
              * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
-            divisibility?: 10000 | 1000000;
+            divisibility: 10000 | 1000000;
         };
         MarketPriceHistoryPoint: {
             /** Format: date-time */

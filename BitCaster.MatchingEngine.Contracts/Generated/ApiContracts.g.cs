@@ -815,11 +815,13 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderEntry(long @amountSubunits, string @clientOrderId, string @conditionId, System.DateTimeOffset? @deadline, System.DateTimeOffset? @filledAt, string @marketId, System.Guid @orderId, System.DateTimeOffset @placedAt, int @price, bool? @pubkeySubmitted, long @remainingAmountSubunits, OrderSide @side, OrderEntryStatus @status, TokenSide @tokenSide, System.Guid? @tradeId)
+        public OrderEntry(long @amountSubunits, BaseAsset @baseAsset, string @clientOrderId, string @conditionId, System.DateTimeOffset? @deadline, OrderEntryDivisibility @divisibility, System.DateTimeOffset? @filledAt, string @marketId, System.Guid @orderId, System.DateTimeOffset @placedAt, int @price, bool? @pubkeySubmitted, long @remainingAmountSubunits, OrderSide @side, OrderEntryStatus @status, TokenSide @tokenSide, System.Guid? @tradeId)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
             this.ConditionId = @conditionId;
+            this.BaseAsset = @baseAsset;
+            this.Divisibility = @divisibility;
             this.Side = @side;
             this.Price = @price;
             this.AmountSubunits = @amountSubunits;
@@ -842,6 +844,13 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
         public string ConditionId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
+        public BaseAsset BaseAsset { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public OrderEntryDivisibility Divisibility { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("side")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderSide>))]
@@ -1668,10 +1677,11 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketResponse(string @conditionId, CreateMarketResponseDivisibility? @divisibility, System.Collections.Generic.List<string> @marketsCreated, string @thumbnailUrl)
+        public CreateMarketResponse(BaseAsset @baseAsset, string @conditionId, CreateMarketResponseDivisibility @divisibility, System.Collections.Generic.List<string> @marketsCreated, string @thumbnailUrl)
         {
             this.ConditionId = @conditionId;
             this.MarketsCreated = @marketsCreated;
+            this.BaseAsset = @baseAsset;
             this.ThumbnailUrl = @thumbnailUrl;
             this.Divisibility = @divisibility;
         }
@@ -1690,6 +1700,13 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Collections.Generic.List<string> MarketsCreated { get; }
 
         /// <summary>
+        /// Required immutable product base asset. Always exact `sat`.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
+        public BaseAsset BaseAsset { get; }
+
+        /// <summary>
         /// URL to the uploaded thumbnail, or null if none was provided.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("thumbnailUrl")]
@@ -1700,7 +1717,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public CreateMarketResponseDivisibility? Divisibility { get; }
+        public CreateMarketResponseDivisibility Divisibility { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -2953,6 +2970,16 @@ namespace BitCaster.MatchingEngine.Contracts
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum RestingOrderResponseDivisibility
+    {
+
+        _10000 = 10000,
+
+        _1000000 = 1000000,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum OrderEntryDivisibility
     {
 
         _10000 = 10000,
