@@ -6,11 +6,9 @@ export const DEFAULT_MARKET_BASE_ASSET: MarketBaseAsset = 'sat'
 export const DEFAULT_SAT_MARKET_DIVISIBILITY = 10_000
 export const NUMERIC_MARKET_DIVISIBILITY = 1_000_000
 export const CTF_COLLATERAL_UNIT: CtfCollateralUnit = 'msat'
-
-const PRODUCT_MARKET_DIVISIBILITIES = new Set<number>([
-  DEFAULT_SAT_MARKET_DIVISIBILITY,
-  NUMERIC_MARKET_DIVISIBILITY,
-])
+export type MarketDivisibility =
+  | typeof DEFAULT_SAT_MARKET_DIVISIBILITY
+  | typeof NUMERIC_MARKET_DIVISIBILITY
 
 /**
  * Default LMSR quote-grid step for a market price denominator D.
@@ -37,7 +35,7 @@ export const COLLATERAL_UNIT_REGISTRY: Readonly<Record<CashuProofUnit, Collatera
 
 export interface MarketUnitSpec {
   baseAsset: MarketBaseAsset
-  divisibility: number
+  divisibility: MarketDivisibility
 }
 
 /**
@@ -100,17 +98,18 @@ export function defaultMarketDivisibility(baseAsset: unknown): number {
   return DEFAULT_SAT_MARKET_DIVISIBILITY
 }
 
-export function normalizeMarketDivisibility(value: unknown, baseAsset: unknown): number {
+export function normalizeMarketDivisibility(
+  value: unknown,
+  baseAsset: unknown,
+): MarketDivisibility {
   requireMarketBaseAsset(baseAsset)
   const parsed = parseMarketDivisibility(value)
   if (parsed !== null) return parsed
   throw new Error(`unsupported market divisibility: ${String(value)}`)
 }
 
-export function parseMarketDivisibility(value: unknown): number | null {
-  return typeof value === 'number' &&
-    Number.isSafeInteger(value) &&
-    PRODUCT_MARKET_DIVISIBILITIES.has(value)
+export function parseMarketDivisibility(value: unknown): MarketDivisibility | null {
+  return value === DEFAULT_SAT_MARKET_DIVISIBILITY || value === NUMERIC_MARKET_DIVISIBILITY
     ? value
     : null
 }
