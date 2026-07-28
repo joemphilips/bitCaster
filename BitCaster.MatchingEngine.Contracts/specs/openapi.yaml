@@ -861,11 +861,10 @@ components:
       format: int64
       minimum: 0
       description: >
-        Collateral subunits — msat (1/1000 sat) for sat-denominated markets,
-        cents for USD-denominated markets. Wire amount = collateral subunits
-        per ADR-025. Request fields enforce minimum 1 at validation;
-        response fields (remainingAmountSubunits, filledAmountSubunits)
-        may be 0 for filled/cancelled orders.
+        Product collateral subunits in msat (1/1000 sat). Wire amount =
+        collateral subunits. Request fields enforce minimum 1 at validation;
+        response fields (remainingAmountSubunits, filledAmountSubunits) may be
+        0 for filled/cancelled orders.
 
     Probability:
       type: integer
@@ -873,18 +872,16 @@ components:
       description: >
         Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where
         `D` is the market's immutable `divisibility`. Immutable price
-        denominator D is per-market: sat markets use D=10000 (0.01%
-        precision), USD markets use D=1000 (0.1% precision), numeric sat
-        markets use D=1000000 (0.0001% precision).
+        denominator D is per-market: categorical markets use D=10000 (0.01%
+        precision), while future numeric markets use D=1000000 (0.0001%
+        precision).
 
     BaseAsset:
       type: string
-      enum: [sat, usd, jpy]
+      enum: [sat]
       description: >
-        Market quote/collateral base asset. `sat` and `usd` are accepted for
-        market registration. `usd`: BTC-backed; deposits are priced as BTC
-        Lightning invoices at quote time. Collateral is held in msat for `sat`
-        markets and cents (`usd`) for `usd` markets. `jpy` is reserved.
+        Product quote asset. The current product accepts only exact `sat`;
+        product collateral is held in `msat`.
 
     OrderSide:
       type: string
@@ -1077,7 +1074,7 @@ components:
         Canonical settlement amounts are carried by `quotePaymentSubunits`,
         `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`.
         `amountSubunits` is the conditional-token face amount in market
-        collateral subunits (msat for sat markets, cents for USD markets).
+        collateral subunits (msat).
         `quotePaymentSubunits + baseAsset + divisibility` is the authoritative
         quote payment.
       required:
@@ -1089,6 +1086,11 @@ components:
         - path
         - filledAt
         - status
+        - baseAsset
+        - divisibility
+        - quotePaymentSubunits
+        - outcomeFaceAmountSubunits
+        - tokenSide
       properties:
         id:
           type: string
@@ -1107,7 +1109,7 @@ components:
             - $ref: '#/components/schemas/CollateralSubunits'
           description: >
              Conditional-token face amount matched for settlement in market
-             collateral subunits (msat for sat markets, cents for USD markets).
+             collateral subunits (msat).
         executionPrice:
           $ref: '#/components/schemas/Probability'
         path:
@@ -1115,48 +1117,32 @@ components:
         status:
           $ref: '#/components/schemas/FillStatus'
         baseAsset:
-          allOf:
-            - $ref: '#/components/schemas/BaseAsset'
-          default: sat
-          description: >
-            Base asset for the canonical settlement amount. Optional for
-            backward compatibility; omitting it implies the legacy `sat` base
-            asset.
+          $ref: '#/components/schemas/BaseAsset'
+          description: Required product base asset for the canonical settlement amount.
         divisibility:
           type: integer
           format: int32
-          minimum: 2
-          default: 10000
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
         quotePaymentSubunits:
           type: integer
           format: int64
-          nullable: true
           description: >
             Engine-computed quote payment in the market base-asset sub-unit.
             This field plus `baseAsset` and `divisibility` is the
-            authoritative quote payment. Present for new trade-start fills;
-            omitted or null for older replay data.
+            authoritative quote payment.
         outcomeFaceAmountSubunits:
           type: integer
           format: int64
-          nullable: true
           description: >
             Engine-computed conditional-token face amount in the market
-            base-asset sub-unit. Present for new trade-start fills; omitted
-            or null for older replay data.
+            base-asset sub-unit.
         tokenSide:
-          allOf:
-            - $ref: '#/components/schemas/TokenSide'
-          default: Outcome
+          $ref: '#/components/schemas/TokenSide'
           description: >
             Which token on the primitive outcome book was traded for the
-            order that produced this fill. Optional for backward
-            compatibility; omitting it implies `Outcome`.
+            order that produced this fill.
         filledAt:
           type: string
           format: date-time
@@ -1196,8 +1182,8 @@ components:
           description: >
             Limit-order size as conditional-token face amount. Must be
             divisible by the market's whole-share face value, independent of
-            `divisibility`. Sat markets use D=10000 (10000 msat = 10 sats); USD markets
-            use D=1000 (1000 cents = $10.00). The whole-share face value is D.
+            `divisibility`. Categorical markets use D=10000 (10000 msat =
+            10 sats). The whole-share face value is D.
         timeInForce:
           $ref: '#/components/schemas/TimeInForce'
           default: GTC
@@ -1310,20 +1296,14 @@ components:
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
         baseAsset:
-          allOf:
-            - $ref: '#/components/schemas/BaseAsset'
-          default: sat
+          $ref: '#/components/schemas/BaseAsset'
           description: Base asset context for amount and price fields.
         divisibility:
           type: integer
           format: int32
-          minimum: 2
-          default: 10000
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
 
     RestingOrderResponse:
       type: object
@@ -1371,20 +1351,14 @@ components:
           format: date-time
           nullable: true
         baseAsset:
-          allOf:
-            - $ref: '#/components/schemas/BaseAsset'
-          default: sat
+          $ref: '#/components/schemas/BaseAsset'
           description: Base asset context for amount and price fields.
         divisibility:
           type: integer
           format: int32
-          minimum: 2
-          default: 10000
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
 
     ListRestingOrdersResponse:
       type: object
@@ -1499,20 +1473,14 @@ components:
           items:
             $ref: '#/components/schemas/PendingPubkeySubmission'
         baseAsset:
-          allOf:
-            - $ref: '#/components/schemas/BaseAsset'
-          default: sat
+          $ref: '#/components/schemas/BaseAsset'
           description: Base asset context for amount and price fields.
         divisibility:
           type: integer
           format: int32
-          minimum: 2
-          default: 10000
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
 
     BatchSubmitOrdersRequest:
       type: object
@@ -1665,12 +1633,9 @@ components:
         divisibility:
           type: integer
           format: int32
-          minimum: 2
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
         errorCode:
           oneOf:
             - $ref: '#/components/schemas/BatchSubmitOrderErrorCode'
@@ -1851,6 +1816,7 @@ components:
         - title
         - description
         - outcomes
+        - baseAsset
       properties:
         title:
           type: string
@@ -1880,12 +1846,9 @@ components:
             collected after creation through the funding flow; create requests
             should send `0`.
         baseAsset:
-          allOf:
-            - $ref: '#/components/schemas/BaseAsset'
-          default: sat
+          $ref: '#/components/schemas/BaseAsset'
           description: >
-            Immutable market base asset. Accepted values: `sat` and `usd`.
-            `jpy` is reserved.
+            Required immutable product base asset. Must be exact `sat`.
         categoryTags:
           type: array
           items:
@@ -1924,12 +1887,9 @@ components:
         divisibility:
           type: integer
           format: int32
-          minimum: 2
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
 
     MarketPriceHistoryPoint:
       type: object
@@ -2097,11 +2057,9 @@ components:
           $ref: '#/components/schemas/BaseAsset'
         divisibility:
           type: integer
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
         restingOrderLiquiditySubunits:
           type: integer
           format: int64
@@ -2214,6 +2172,8 @@ components:
       type: object
       required:
         - amountSubunits
+        - unit
+        - divisibility
         - proofsToken
       properties:
         amountSubunits:
@@ -2225,13 +2185,13 @@ components:
             the registered market.
         unit:
           type: string
-          minLength: 1
-          description: Cashu token unit expected for the supplied proofs.
+          enum: [msat]
+          description: Exact Cashu product-collateral unit for the supplied proofs.
         divisibility:
           type: integer
           format: int32
-          minimum: 1
-          description: Market price divisibility associated with the supplied unit.
+          enum: [10000, 1000000]
+          description: Exact market divisibility associated with the supplied proofs.
         proofsToken:
           type: string
           description: >
@@ -2493,34 +2453,30 @@ components:
           minimum: 0
           description: >
             Trading volume over the last 24 hours in the market collateral's
-            base subunits: msat for sat markets, cents (`usd`) for USD markets.
-            Drives the `Trending` sort dimension.
+            base subunits (msat). Drives the `Trending` sort dimension.
         volume30dSubunits:
           type: integer
           format: int64
           minimum: 0
           description: >
             Trading volume over the last 30 days in the market collateral's
-            base subunits: msat for sat markets, cents (`usd`) for USD markets.
-            Drives the `Popular` sort dimension.
+            base subunits (msat). Drives the `Popular` sort dimension.
         liquiditySubunits:
           type: integer
           format: int64
           minimum: 0
           description: >
             Total face amount of currently-resting orders across the market's
-            order books, denominated in the market collateral's base subunits:
-            msat for sat markets, cents (`usd`) for USD markets.
+            order books, denominated in product collateral subunits (msat).
         ammBotBudgetSubunits:
           type: integer
           format: int64
           minimum: 0
           description: >
             Static initial budget deposited to the LMSR bot at funding time,
-            denominated in the market collateral's base subunits (msat for sat
-            markets, cents for USD markets). Operator-owned, non-withdrawable,
-            and immutable after funding. Not a live residual and not orderbook
-            depth.
+            denominated in product collateral subunits (msat).
+            Operator-owned, non-withdrawable, and immutable after funding.
+            Not a live residual and not orderbook depth.
         volumeLifetimeSubunits:
           type: integer
           format: int64
@@ -2533,12 +2489,9 @@ components:
         divisibility:
           type: integer
           format: int32
-          minimum: 2
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
         lastTradedPrice:
           type: number
           nullable: true

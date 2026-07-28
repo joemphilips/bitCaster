@@ -27,7 +27,7 @@ namespace BitCaster.MatchingEngine.Contracts
     
 
     /// <summary>
-    /// Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time. Collateral is held in msat for `sat` markets and cents (`usd`) for `usd` markets. `jpy` is reserved.
+    /// Product quote asset. The current product accepts only exact `sat`; product collateral is held in `msat`.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -36,12 +36,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"sat")]
         Sat = 0,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"usd")]
-        Usd = 1,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"jpy")]
-        Jpy = 2,
 
     }
 
@@ -366,14 +360,14 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// One leg of a match: the taker's incoming order crossing a single maker. Canonical settlement amounts are carried by `quotePaymentSubunits`, `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`. `amountSubunits` is the conditional-token face amount in market collateral subunits (msat for sat markets, cents for USD markets). `quotePaymentSubunits + baseAsset + divisibility` is the authoritative quote payment.
+    /// One leg of a match: the taker's incoming order crossing a single maker. Canonical settlement amounts are carried by `quotePaymentSubunits`, `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`. `amountSubunits` is the conditional-token face amount in market collateral subunits (msat). `quotePaymentSubunits + baseAsset + divisibility` is the authoritative quote payment.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class Fill
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public Fill(long @amountSubunits, BaseAsset? @baseAsset, int? @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, System.Guid @makerOrderId, long? @outcomeFaceAmountSubunits, MatchPath @path, long? @quotePaymentSubunits, FillStatus @status, System.Guid @takerOrderId, TokenSide? @tokenSide, System.Guid? @tradeId)
+        public Fill(long @amountSubunits, BaseAsset @baseAsset, FillDivisibility @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, System.Guid @makerOrderId, long @outcomeFaceAmountSubunits, MatchPath @path, long @quotePaymentSubunits, FillStatus @status, System.Guid @takerOrderId, TokenSide @tokenSide, System.Guid? @tradeId)
         {
             this.Id = @id;
             this.TakerOrderId = @takerOrderId;
@@ -410,7 +404,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid MakerOrderId { get; }
 
         /// <summary>
-        /// Conditional-token face amount matched for settlement in market collateral subunits (msat for sat markets, cents for USD markets).
+        /// Conditional-token face amount matched for settlement in market collateral subunits (msat).
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
@@ -428,41 +422,40 @@ namespace BitCaster.MatchingEngine.Contracts
         public FillStatus Status { get; }
 
         /// <summary>
-        /// Base asset for the canonical settlement amount. Optional for backward compatibility; omitting it implies the legacy `sat` base asset.
-        /// <br/>
+        /// Required product base asset for the canonical settlement amount.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
-        public BaseAsset? BaseAsset { get; }
+        public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use per-market D: sat markets use D=10000 (0.01% price precision, one whole share = 10000 msat = 10 sats); USD markets use D=1000 (0.1% price precision, one whole share = 1000 cents = $10.00).
+        /// Immutable price denominator `D`, server-determined.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int? Divisibility { get; }
+        public FillDivisibility Divisibility { get; }
 
         /// <summary>
-        /// Engine-computed quote payment in the market base-asset sub-unit. This field plus `baseAsset` and `divisibility` is the authoritative quote payment. Present for new trade-start fills; omitted or null for older replay data.
+        /// Engine-computed quote payment in the market base-asset sub-unit. This field plus `baseAsset` and `divisibility` is the authoritative quote payment.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("quotePaymentSubunits")]
-        public long? QuotePaymentSubunits { get; }
+        public long QuotePaymentSubunits { get; }
 
         /// <summary>
-        /// Engine-computed conditional-token face amount in the market base-asset sub-unit. Present for new trade-start fills; omitted or null for older replay data.
+        /// Engine-computed conditional-token face amount in the market base-asset sub-unit.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomeFaceAmountSubunits")]
-        public long? OutcomeFaceAmountSubunits { get; }
+        public long OutcomeFaceAmountSubunits { get; }
 
         /// <summary>
-        /// Which token on the primitive outcome book was traded for the order that produced this fill. Optional for backward compatibility; omitting it implies `Outcome`.
+        /// Which token on the primitive outcome book was traded for the order that produced this fill.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
-        public TokenSide? TokenSide { get; }
+        public TokenSide TokenSide { get; }
 
         /// <summary>
         /// Timestamp when this fill was executed.
@@ -523,7 +516,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public int Price { get; }
 
         /// <summary>
-        /// Limit-order size as conditional-token face amount. Must be divisible by the market's whole-share face value, independent of `divisibility`. Sat markets use D=10000 (10000 msat = 10 sats); USD markets use D=1000 (1000 cents = $10.00). The whole-share face value is D.
+        /// Limit-order size as conditional-token face amount. Must be divisible by the market's whole-share face value, independent of `divisibility`. Categorical markets use D=10000 (10000 msat = 10 sats). The whole-share face value is D.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
@@ -611,7 +604,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderStatusResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderStatusResponse(BaseAsset @baseAsset, System.DateTimeOffset? @deadline, int @divisibility, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, string @status, TokenSide @tokenSide, System.Guid? @tradeId)
+        public OrderStatusResponse(BaseAsset @baseAsset, System.DateTimeOffset? @deadline, OrderStatusResponseDivisibility @divisibility, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, string @status, TokenSide @tokenSide, System.Guid? @tradeId)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -687,11 +680,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use per-market D: sat markets use D=10000 (0.01% price precision, one whole share = 10000 msat = 10 sats); USD markets use D=1000 (0.1% price precision, one whole share = 1000 cents = $10.00).
+        /// Immutable price denominator `D`, server-determined.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int Divisibility { get; }
+        public OrderStatusResponseDivisibility Divisibility { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -708,7 +701,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RestingOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RestingOrderResponse(long @amountSubunits, BaseAsset @baseAsset, int @divisibility, System.DateTimeOffset? @expiresAt, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, TimeInForce @timeInForce, TokenSide @tokenSide)
+        public RestingOrderResponse(long @amountSubunits, BaseAsset @baseAsset, RestingOrderResponseDivisibility @divisibility, System.DateTimeOffset? @expiresAt, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, TimeInForce @timeInForce, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -778,11 +771,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use per-market D: sat markets use D=10000 (0.01% price precision, one whole share = 10000 msat = 10 sats); USD markets use D=1000 (0.1% price precision, one whole share = 1000 cents = $10.00).
+        /// Immutable price denominator `D`, server-determined.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int Divisibility { get; }
+        public RestingOrderResponseDivisibility Divisibility { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -931,7 +924,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderResponse(BaseAsset @baseAsset, int @divisibility, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, System.Collections.Generic.List<PendingPubkeySubmission> @pendingPubkeySubmissions, long @remainingAmountSubunits, string @status)
+        public SubmitOrderResponse(BaseAsset @baseAsset, SubmitOrderResponseDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, System.Collections.Generic.List<PendingPubkeySubmission> @pendingPubkeySubmissions, long @remainingAmountSubunits, string @status)
         {
             this.OrderId = @orderId;
             this.Status = @status;
@@ -975,11 +968,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use per-market D: sat markets use D=10000 (0.01% price precision, one whole share = 10000 msat = 10 sats); USD markets use D=1000 (0.1% price precision, one whole share = 1000 cents = $10.00).
+        /// Immutable price denominator `D`, server-determined.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int Divisibility { get; }
+        public SubmitOrderResponseDivisibility Divisibility { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -1203,7 +1196,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class BatchSubmitOrderResult
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrderResult(BaseAsset @baseAsset, string @clientOrderId, int @divisibility, BatchSubmitOrderErrorCode? @errorCode, string @errorMessage, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid? @orderId, System.Collections.Generic.List<PendingPubkeySubmission> @pendingPubkeySubmissions, long @remainingAmountSubunits, int @requestIndex, string @status, bool @success)
+        public BatchSubmitOrderResult(BaseAsset @baseAsset, string @clientOrderId, BatchSubmitOrderResultDivisibility @divisibility, BatchSubmitOrderErrorCode? @errorCode, string @errorMessage, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid? @orderId, System.Collections.Generic.List<PendingPubkeySubmission> @pendingPubkeySubmissions, long @remainingAmountSubunits, int @requestIndex, string @status, bool @success)
         {
             this.RequestIndex = @requestIndex;
             this.ClientOrderId = @clientOrderId;
@@ -1252,11 +1245,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use per-market D: sat markets use D=10000 (0.01% price precision, one whole share = 10000 msat = 10 sats); USD markets use D=1000 (0.1% price precision, one whole share = 1000 cents = $10.00).
+        /// Immutable price denominator `D`, server-determined.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int Divisibility { get; }
+        public BatchSubmitOrderResultDivisibility Divisibility { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("errorCode")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BatchSubmitOrderErrorCode>))]
@@ -1594,7 +1587,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(BaseAsset? @baseAsset, System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
+        public CreateMarketRequest(BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
         {
             this.Title = @title;
             this.Description = @description;
@@ -1640,12 +1633,12 @@ namespace BitCaster.MatchingEngine.Contracts
         public long? LiquiditySats { get; }
 
         /// <summary>
-        /// Immutable market base asset. Accepted values: `sat` and `usd`. `jpy` is reserved.
+        /// Required immutable product base asset. Must be exact `sat`.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
-        public BaseAsset? BaseAsset { get; }
+        public BaseAsset BaseAsset { get; }
 
         /// <summary>
         /// Optional category tags for the market.
@@ -1675,7 +1668,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketResponse(string @conditionId, int? @divisibility, System.Collections.Generic.List<string> @marketsCreated, string @thumbnailUrl)
+        public CreateMarketResponse(string @conditionId, CreateMarketResponseDivisibility? @divisibility, System.Collections.Generic.List<string> @marketsCreated, string @thumbnailUrl)
         {
             this.ConditionId = @conditionId;
             this.MarketsCreated = @marketsCreated;
@@ -1703,11 +1696,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ThumbnailUrl { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use per-market D: sat markets use D=10000 (0.01% price precision, one whole share = 10000 msat = 10 sats); USD markets use D=1000 (0.1% price precision, one whole share = 1000 cents = $10.00).
+        /// Immutable price denominator `D`, server-determined.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int? Divisibility { get; }
+        public CreateMarketResponseDivisibility? Divisibility { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -1968,7 +1961,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class LiquidityStateResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public LiquidityStateResponse(int @activeOrders, BaseAsset @baseAsset, long @completeSetLiquiditySubunits, int @divisibility, int @impliedProbability, string @marketId, long @reserveA, long @reserveB, long @restingOrderLiquiditySubunits, long @totalLiquiditySubunits)
+        public LiquidityStateResponse(int @activeOrders, BaseAsset @baseAsset, long @completeSetLiquiditySubunits, LiquidityStateResponseDivisibility @divisibility, int @impliedProbability, string @marketId, long @reserveA, long @reserveB, long @restingOrderLiquiditySubunits, long @totalLiquiditySubunits)
         {
             this.MarketId = @marketId;
             this.ReserveA = @reserveA;
@@ -1999,11 +1992,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use per-market D: sat markets use D=10000 (0.01% price precision, one whole share = 10000 msat = 10 sats); USD markets use D=1000 (0.1% price precision, one whole share = 1000 cents = $10.00).
+        /// Immutable price denominator `D`, server-determined.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int Divisibility { get; }
+        public LiquidityStateResponseDivisibility Divisibility { get; }
 
         /// <summary>
         /// Liquidity represented by currently resting bot orders, in market-base subunits.
@@ -2212,7 +2205,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RequestEcashDepositRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RequestEcashDepositRequest(long @amountSubunits, string @creatorPubkey, int? @divisibility, bool? @fundAmm, string @proofsToken, string @unit)
+        public RequestEcashDepositRequest(long @amountSubunits, string @creatorPubkey, RequestEcashDepositRequestDivisibility @divisibility, bool? @fundAmm, string @proofsToken, RequestEcashDepositRequestUnit @unit)
         {
             this.AmountSubunits = @amountSubunits;
             this.Unit = @unit;
@@ -2230,16 +2223,17 @@ namespace BitCaster.MatchingEngine.Contracts
         public long AmountSubunits { get; }
 
         /// <summary>
-        /// Cashu token unit expected for the supplied proofs.
+        /// Exact Cashu product-collateral unit for the supplied proofs.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("unit")]
-        public string Unit { get; }
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<RequestEcashDepositRequestUnit>))]
+        public RequestEcashDepositRequestUnit Unit { get; }
 
         /// <summary>
-        /// Market price divisibility associated with the supplied unit.
+        /// Exact market divisibility associated with the supplied proofs.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int? Divisibility { get; }
+        public RequestEcashDepositRequestDivisibility Divisibility { get; }
 
         /// <summary>
         /// Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting.
@@ -2538,7 +2532,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(long @ammBotBudgetSubunits, BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, int @divisibility, string @finalOutcome, System.Collections.Generic.Dictionary<string, int> @initialProbabilities, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
+        public MarketCatalogueEntry(long @ammBotBudgetSubunits, BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, MarketCatalogueEntryDivisibility @divisibility, string @finalOutcome, System.Collections.Generic.Dictionary<string, int> @initialProbabilities, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
@@ -2643,28 +2637,28 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset CreatedAt { get; }
 
         /// <summary>
-        /// Trading volume over the last 24 hours in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. Drives the `Trending` sort dimension.
+        /// Trading volume over the last 24 hours in the market collateral's base subunits (msat). Drives the `Trending` sort dimension.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("volume24hSubunits")]
         public long Volume24hSubunits { get; }
 
         /// <summary>
-        /// Trading volume over the last 30 days in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. Drives the `Popular` sort dimension.
+        /// Trading volume over the last 30 days in the market collateral's base subunits (msat). Drives the `Popular` sort dimension.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("volume30dSubunits")]
         public long Volume30dSubunits { get; }
 
         /// <summary>
-        /// Total face amount of currently-resting orders across the market's order books, denominated in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets.
+        /// Total face amount of currently-resting orders across the market's order books, denominated in product collateral subunits (msat).
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("liquiditySubunits")]
         public long LiquiditySubunits { get; }
 
         /// <summary>
-        /// Static initial budget deposited to the LMSR bot at funding time, denominated in the market collateral's base subunits (msat for sat markets, cents for USD markets). Operator-owned, non-withdrawable, and immutable after funding. Not a live residual and not orderbook depth.
+        /// Static initial budget deposited to the LMSR bot at funding time, denominated in product collateral subunits (msat). Operator-owned, non-withdrawable, and immutable after funding. Not a live residual and not orderbook depth.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("ammBotBudgetSubunits")]
@@ -2682,11 +2676,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use per-market D: sat markets use D=10000 (0.01% price precision, one whole share = 10000 msat = 10 sats); USD markets use D=1000 (0.1% price precision, one whole share = 1000 cents = $10.00).
+        /// Immutable price denominator `D`, server-determined.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int Divisibility { get; }
+        public MarketCatalogueEntryDivisibility Divisibility { get; }
 
         /// <summary>
         /// Most recent execution price as a decimal ratio in `[0, 1]`, null if the market has never traded. Runtime order, fill, orderbook, and price-history price fields use integer numerators against the market's `divisibility`; this catalogue summary keeps the legacy ratio form for sorting/display compatibility.
@@ -2930,10 +2924,40 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum FillDivisibility
+    {
+
+        _10000 = 10000,
+
+        _1000000 = 1000000,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum NostrKind1EventKind
     {
 
         _1 = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum OrderStatusResponseDivisibility
+    {
+
+        _10000 = 10000,
+
+        _1000000 = 1000000,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum RestingOrderResponseDivisibility
+    {
+
+        _10000 = 10000,
+
+        _1000000 = 1000000,
 
     }
 
@@ -2952,6 +2976,16 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"Matched")]
         Matched = 3,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum SubmitOrderResponseDivisibility
+    {
+
+        _10000 = 10000,
+
+        _1000000 = 1000000,
 
     }
 
@@ -2980,6 +3014,16 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum BatchSubmitOrderResultDivisibility
+    {
+
+        _10000 = 10000,
+
+        _1000000 = 1000000,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum MarketStatusChangedState
     {
 
@@ -3003,6 +3047,16 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"numeric")]
         Numeric = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum CreateMarketResponseDivisibility
+    {
+
+        _10000 = 10000,
+
+        _1000000 = 1000000,
 
     }
 
@@ -3040,6 +3094,16 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum LiquidityStateResponseDivisibility
+    {
+
+        _10000 = 10000,
+
+        _1000000 = 1000000,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum CreatorMarketEntryState
     {
 
@@ -3052,11 +3116,40 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum RequestEcashDepositRequestDivisibility
+    {
+
+        _10000 = 10000,
+
+        _1000000 = 1000000,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum RequestEcashDepositRequestUnit
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"msat")]
+        Msat = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum PayParticipationScoreEcashResponseStatus
     {
 
         [System.Runtime.Serialization.EnumMember(Value = @"credited")]
         Credited = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum MarketCatalogueEntryDivisibility
+    {
+
+        _10000 = 10000,
+
+        _1000000 = 1000000,
 
     }
 

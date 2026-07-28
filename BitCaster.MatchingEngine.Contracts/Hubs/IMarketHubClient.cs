@@ -44,7 +44,12 @@ public sealed record MatchedDelta(
     long AmountSubunits,
     MatchPath Path,
     DateTimeOffset MatchedAt,
-    DateTimeOffset Deadline);
+    DateTimeOffset Deadline,
+    BaseAsset BaseAsset,
+    int Divisibility,
+    long QuotePaymentSubunits,
+    long OutcomeFaceAmountSubunits,
+    TokenSide TokenSide);
 
 public sealed record MarketStatusChanged(
     string ConditionId,
