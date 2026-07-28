@@ -328,10 +328,8 @@ the oracle signature and condition keyset again during `redeem_outcome`.
 
 ## Collateral subunits and CTF registration fees
 
-User-facing inputs use display units: sats for sat markets and dollars or cents
-for USD markets. Protocol amounts that sum Cashu proofs, quote collateral, or
-appear in public `*Subunits` REST fields use the market collateral subunit
-instead: msat for sat-display markets and cents (`usd`) for USD markets. In
+User-facing inputs use sats. Protocol amounts that sum Cashu proofs, quote
+collateral, or appear in public `*Subunits` REST fields use msat instead. In
 NUT-CTF, `sat` is therefore not a collateral proof unit; clients should convert
 display sats to msat before constructing condition-registration or settlement
 amounts.
@@ -428,10 +426,11 @@ The privacy advantage is the key differentiator. With HTLCs, the mint sees the s
 ### Token Denomination Granularity
 
 Cashu proofs use integer amounts and power-of-2 proof denominations. bitCaster
-accounts market collateral at finer precision than the display unit: msat for sat
-markets and standard cents for USD markets. Sat markets use `D=10000` (10-sat shares), and USD markets use `D=1000` ($10 shares). With `D=10000`, a 10-sat share at
-37.00% maps to 370,000 msat. Implementations should compute quote payments in the
-market collateral unit and reject orders that would require fractional collateral
+accounts market collateral at finer precision than the display unit: msat.
+Categorical markets use `D=10000` (10-sat shares), while numeric markets use
+`D=1000000`. With `D=10000`, a 10-sat share at 37.00% maps to 370,000 msat.
+Implementations should compute quote payments in the market collateral unit and
+reject orders that would require fractional collateral
 units instead of silently rounding.
 
 ### Front-Running

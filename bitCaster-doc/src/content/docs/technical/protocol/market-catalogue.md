@@ -11,8 +11,8 @@ The catalogue exposes lifetime/display metrics for market cards and discovery pa
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `ammBotBudgetSubunits` | `int64` | Static initial budget deposited to the automated market-making bot, denominated in the market collateral subunit: msat for sat-display markets, cents (`usd`) for USD markets. This is the value clients display as **Bot Budget**. It is not live order-book liquidity, remaining bot inventory, or a withdrawable creator balance. |
-| `liquiditySubunits` | `int64` | Total face amount of currently resting orders across the market's order books, denominated in the market collateral subunit: msat for sat-display markets, cents (`usd`) for USD markets. |
+| `ammBotBudgetSubunits` | `int64` | Static initial budget deposited to the automated market-making bot, denominated in msat. This is the value clients display as **Bot Budget**. It is not live order-book liquidity, remaining bot inventory, or a withdrawable creator balance. |
+| `liquiditySubunits` | `int64` | Total face amount of currently resting orders across the market's order books, denominated in msat. |
 | `traderCount` | `int32` | Number of distinct traders that have settled a trade in this market. |
 | `volumeLifetimeSubunits` | `int64` | Cumulative settled collateral face amount of all fills in the market's history, in collateral subunits. |
 

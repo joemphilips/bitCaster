@@ -18,19 +18,22 @@ Ecash is a form of digital money based on **Chaumian blind signatures**, invente
 - Ecash is a **bearer instrument** — whoever holds the token owns it, just like physical cash. There is no account, no login, no identity attached to a token.
 - **Privacy is built into the protocol**, not bolted on after the fact. The mint itself cannot track who is spending what.
 
-In bitCaster, the mint issues ecash tokens denominated in bitcoin (sats), and a mint may also advertise other units such as USD cents. When you top up over Lightning, you receive ecash in the unit you selected. You can also paste an existing Cashu ecash token into the top-up overlay and credit that token to your trading wallet directly, without creating a new Lightning invoice. When you place a bet, you exchange that ecash for **conditional tokens** locked to a specific outcome. If you win, those conditional tokens become redeemable for regular ecash, which you can withdraw back to Lightning at any time.
-
-## USD deposits over Lightning
-
-When a mint supports USD, the app asks for the deposit amount in cents and requests a fresh Lightning invoice for that USD quote. The invoice is still paid in BTC over Lightning, but the BTC amount is priced at quote time and the quote screen shows the expiry countdown. USD quotes are intentionally short-lived, usually around 90 seconds, because the BTC/USD rate can move.
-
-If the quote expires before you pay, request a new quote from the same screen. If you pay a quote that the mint can still settle, the wallet is credited for the exact USD-cent amount that was quoted, not a later re-priced amount.
+In bitCaster, the mint issues ordinary ecash denominated in bitcoin (sats).
+Generic Cashu mints may advertise other units, but bitCaster wallet surfaces
+accept only sat funding and msat conditional proofs. You can top up over
+Lightning or paste an existing sat Cashu token into the top-up overlay without
+creating a new invoice. When you place a bet, you exchange that ecash for
+**conditional tokens** locked to a specific outcome. If you win, those
+conditional tokens become redeemable for regular ecash, which you can withdraw
+back to Lightning at any time.
 
 ## Ecash paste top-ups
 
 The trade ticket's top-up overlay lets you choose between **Lightning invoice** and **Ecash paste**. Use Lightning when you want the app to generate a new invoice. Use Ecash paste when you already have a Cashu token from another wallet or device and want to move it into the bitCaster wallet for trading.
 
-The top-up button names the wallet unit required by the trade, such as **Top up USD wallet** or **Top up sats wallet**. Paste a token in the matching unit for the market you are trading; a USD market needs USD ecash, while a sat market needs sat ecash.
+The top-up button names the wallet unit required by the trade: **Top up sats wallet**.
+Paste a sat token when moving ordinary ecash into the wallet. Conditional market
+proofs use msat and are managed by the trading flow rather than this top-up path.
 
 ## Why Cashu?
 

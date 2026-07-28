@@ -13,7 +13,7 @@ Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell 
 
 Public trading books are primitive outcome books. A categorical market with outcomes `A`, `B`, and `C` exposes `A / Not A`, `B / Not B`, and `C / Not C` books; clients submit to `condition-A`, `condition-B`, or `condition-C` and choose the selected token or its one-vs-rest complement in the order body. Compound ids such as `B|C` remain internal settlement and mint keyset identifiers, not public market routes.
 
-The market-detail trade ticket is share-based. Users enter a whole number of shares and the ticket shows a cost breakdown before submission: **Quote payment** for the matched order amount, **Est. settlement fee** for the estimated mint fee, and **Total** for the sum. The UI no longer shows separate payout or executable-share rows. If the wallet needs funds, the top-up action names the required unit, for example **Top up USD wallet** or **Top up sats wallet**. Sat markets use `D=10000`, so a price numerator `k` means `k / 10000`; one sat-market share pays **10 sats** if it wins. USD markets use `D=1000`, so `k` means `k / 1000`; one USD-market share pays **$10.00** if it wins. Sat-market collateral is accounted in **msat** and USD-market collateral in standard **usd** cents.
+The market-detail trade ticket is share-based. Users enter a whole number of shares and the ticket shows a cost breakdown before submission: **Quote payment** for the matched order amount, **Est. settlement fee** for the estimated mint fee, and **Total** for the sum. The UI no longer shows separate payout or executable-share rows. If the wallet needs funds, the top-up action names the required unit: **Top up sats wallet**. Categorical markets use `D=10000`, so a price numerator `k` means `k / 10000`; one categorical-market share pays **10 sats** if it wins. Numeric markets use `D=1000000`. All market collateral is accounted in **msat**.
 
 The market-detail order book combines price, cumulative depth, and visual thickness into one row per price level. Bar length represents cumulative liquidity available at that price or better, which makes the depth profile visible without a separate chart.
 
@@ -30,7 +30,7 @@ Professional market makers should run a bot rather than rely on an occasional br
 Complementary matching is the usual buy-versus-sell flow for the same outcome set:
 
 - Seller locks outcome proofs for the buyer.
-- Buyer locks collateral subunit proofs for the seller (msat for sat-display markets, cents for USD markets).
+- Buyer locks msat collateral proofs for the seller.
 - Adaptor signatures make the two mint spends atomic.
 
 The seller's token locktime must be longer than the buyer's collateral locktime by the configured safety delta. This gives the buyer time to extract the adaptor secret after the seller spends.

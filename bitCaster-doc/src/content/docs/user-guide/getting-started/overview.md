@@ -17,7 +17,11 @@ For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https:/
 
 ### Trade anything, any way you wish
 
-Browse existing markets or place limit orders at any price. Markets can be binary (Yes/No), categorical (multiple outcomes), or even two-dimensional. You trade with ecash in the market's unit: sat markets use sat ecash, and USD markets use USD ecash. You can top up through a Lightning invoice or by pasting an existing Cashu ecash token.
+Browse existing markets or place limit orders at any price. Markets can be binary
+(Yes/No), categorical (multiple outcomes), or even two-dimensional. The product
+uses sat ecash for ordinary wallet funding and msat conditional ecash for market
+positions. You can top up through a Lightning invoice or by pasting an existing
+sat Cashu token.
 
 Categorical markets show primitive outcome books such as `A / Not A`, `B / Not B`, and `C / Not C`. Under the hood, settlement can still lock complementary multi-outcome legs such as `B|C`, but users trade through the primitive book labels. The first release supports markets with up to 8 outcomes.
 
@@ -42,7 +46,7 @@ Any user can run their own Cashu mint to issue prediction market tokens. The min
 
 Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is. Prices are shown as probabilities with two decimal places, such as **53.27%**.
 
-The trade ticket asks for whole shares and shows the cost before you submit. The breakdown separates **Quote payment**, **Est. settlement fee**, and **Total**, so you can see the order payment apart from the estimated mint fee. One sat-market share pays **10 sats** if it wins. One USD-market share pays **$10.00** if it wins. Internally, sat-display markets use msat collateral subunits with `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% quote 150 sats in a sat market before any estimated settlement fee, and pay 500 sats if they win.
+The trade ticket asks for whole shares and shows the cost before you submit. The breakdown separates **Quote payment**, **Est. settlement fee**, and **Total**, so you can see the order payment apart from the estimated mint fee. One categorical-market share pays **10 sats** if it wins. Internally, categorical markets use msat collateral subunits with `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% quote 150 sats before any estimated settlement fee, and pay 500 sats if they win.
 
 When the event resolves, winning tokens are redeemable for their full share value, and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many.
 

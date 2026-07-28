@@ -23,22 +23,27 @@ Prediction markets always involve trusting an oracle. The fundamental choice of 
 
 ## Base Asset
 
-Every market is denominated in a display **base asset** that controls how users enter funding, stake, and quote amounts. Wire amounts and proof sums use the market's collateral subunit. Two display values are currently supported:
+Every market is denominated in a display **base asset** that controls how users enter funding, stake, and quote amounts. Wire amounts and proof sums use the market's collateral subunit. The current product supports one value:
 
 - **sat** — users enter amounts in satoshis; collateral proofs and public API subunit fields use msat.
-- **usd** — users enter dollar or cent amounts; deposits are priced as BTC Lightning invoices at quote time and credited as USD cents. The BTC/USD exchange rate is locked at quote time, and collateral proofs/API subunit fields use cents (`usd`).
 
-JPY and other units are not yet available.
+USD, JPY, and other product collateral units are not available.
 
-For non-sat-display markets, bitCaster verifies with the mint that the underlying condition's collateral matches the chosen base asset. If the mint cannot yet confirm the unit, market registration returns a retryable error; try again once the mint has registered the condition. In NUT-CTF, `sat` is a display asset, not a collateral proof unit; sat-display markets register and sum proof amounts in msat.
+bitCaster verifies with the mint that the underlying condition uses `msat`
+collateral. If the mint cannot yet confirm the unit, market registration returns
+a retryable error; try again once the mint has registered the condition. In
+NUT-CTF, `sat` is a display asset, not a collateral proof unit; markets register
+and sum proof amounts in msat.
 
 ## Price Denominator
 
-Every market has a **price denominator** (D). Current user-facing markets use `D=10000`, which gives `0.01%` price precision and lets the app display prices with two decimal places, such as **53.27%**.
+Every market has a **price denominator** (D). Categorical markets use `D=10000`,
+which gives `0.01%` price precision and lets the app display prices with two
+decimal places, such as **53.27%**. Numeric markets use `D=1000000`.
 
 - **Price granularity.** Prices are quoted as integers from 1 to D−1, so the smallest price move is 1/D.
-- **Share face value.** D controls price precision; the share face value is fixed by the market unit. One sat-market share pays **10 sats** if it wins. One USD-market share pays **$10.00** if it wins.
-- **Settlement precision.** Sat-market collateral is accounted in **msat** with D=10000 (10-sat shares). USD-market collateral is accounted in standard **usd** cents with D=1000 ($10 shares).
+- **Share face value.** D controls price precision. One categorical-market share pays **10 sats** if it wins.
+- **Settlement precision.** All market collateral is accounted in **msat**.
 
 The denominator and share face value cannot be changed after a market is registered.
 
@@ -48,9 +53,11 @@ After market creation succeeds, bitCaster shows an optional **Fund the market ma
 
 The funding deposit is sent with the creator's Nostr public key and a `fundAmm` flag so the service treats it as AMM quoting budget, not as a withdrawable user balance. The creator key on the deposit must match the Nostr identity that signs the request.
 
-Market-maker funding follows the market's display base asset. Sat markets show funding in sats; USD markets show funding in dollars backed by the mint's BTC-collateralized USD ecash. Internally and on public `*Subunits` wire fields, collateral is tracked as msat for sat-display markets and cents (`usd`) for USD markets. JPY and other units are not available yet.
+Market-maker funding is shown in sats. Internally and on public `*Subunits`
+wire fields, collateral is tracked in msat. USD, JPY, and other product
+collateral units are not available.
 
-The funding step offers No liquidity, Minimal, Standard, Deep, and Custom budgets. Binary markets show round preset tiers of **$100 / $1,000 / $5,000** for USD markets and **10,000 / 100,000 / 500,000 sats** for sat markets. Categorical markets multiply the paid tiers by `log2(outcome count)`.
+The funding step offers No liquidity, Minimal, Standard, Deep, and Custom budgets. Binary markets show round preset tiers of **10,000 / 100,000 / 500,000 sats**. Categorical markets multiply the paid tiers by `log2(outcome count)`.
 
 The wizard also previews the estimated starting depth for the selected budget, showing roughly how many price levels the bot can post on each side and how many shares appear at each level. The preview is an estimate before mint fees, so actual quoted depth can be lower.
 

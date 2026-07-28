@@ -9,7 +9,7 @@ sidebar:
 
 When a market is created, the order book starts empty. To give early traders a counterparty, bitCaster can run an automated market maker (AMM) that posts initial bid and ask orders to the book.
 
-Funding is optional. After the market is created, the wizard shows a funding screen where you can choose **No liquidity**, **Minimal**, **Standard**, **Deep**, or a custom budget. Binary-market presets use round amounts: **$100 / $1,000 / $5,000** for USD markets and **10,000 / 100,000 / 500,000 sats** for sat markets. Categorical markets scale those paid tiers by `log2(outcome count)`.
+Funding is optional. After the market is created, the wizard shows a funding screen where you can choose **No liquidity**, **Minimal**, **Standard**, **Deep**, or a custom budget. Binary-market presets use round amounts: **10,000 / 100,000 / 500,000 sats**. Categorical markets scale those paid tiers by `log2(outcome count)`.
 
 The wizard previews the selected budget as estimated starting depth: roughly how many price levels the bot can post per side and roughly how many shares appear at each level. The preview is before mint fees, so actual quoted depth can be lower.
 
@@ -21,7 +21,10 @@ Market cards and detail pages show this committed amount as **Bot Budget**. It i
 
 The deposit is **non-refundable**. It is committed to market-making until the market resolves. The maker's loss is bounded by the funded budget; there is no withdrawal, residual claim, or creator profit-share claim.
 
-Sat markets are shown to users in sats. USD markets are shown in dollars or cents. Internally and on public market-summary `*Subunits` wire fields, sat-market collateral is accounted in **msat**, and USD-market collateral is accounted in standard **usd** cents. Protocol fields that still explicitly use `amountSats`, such as participation-score ecash payment fields, keep their contract-specific meaning.
+Markets are shown to users in sats. Internally and on public market-summary
+`*Subunits` wire fields, collateral is accounted in **msat**. Protocol fields
+that explicitly use `amountSats`, such as participation-score ecash payment
+fields, keep their contract-specific meaning.
 
 ## Funding Flow
 
