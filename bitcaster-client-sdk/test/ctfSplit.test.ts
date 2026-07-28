@@ -130,6 +130,7 @@ test('resolveComplementaryOutcomeLegs requires strict complete primitive coverag
 test('selectRootPartitionKeysets chooses the root partition matching the requested split target', () => {
   const condition = {
     condition_id: CONDITION_ID,
+    collateral: 'msat',
     keysets: {
       Alice: 'keyset-alice',
       'Bob|Carol|Dave': 'keyset-not-alice',
@@ -144,6 +145,7 @@ test('selectRootPartitionKeysets chooses the root partition matching the request
     selectRootPartitionKeysets(condition, {
       lockOutcomeSetId: 'Alice',
       keepOutcomeSetId: 'Carol|Bob|Dave',
+      baseAsset: 'sat',
     }),
     {
       Alice: 'keyset-alice',
@@ -155,6 +157,7 @@ test('selectRootPartitionKeysets chooses the root partition matching the request
 test('selectRootPartitionKeysets expands one-vs-rest primitive root partitions', () => {
   const condition = {
     condition_id: CONDITION_ID,
+    collateral: 'msat',
     keysets: {
       Alice: 'keyset-alice',
       Bob: 'keyset-bob',
@@ -166,6 +169,7 @@ test('selectRootPartitionKeysets expands one-vs-rest primitive root partitions',
     selectRootPartitionKeysets(condition, {
       lockOutcomeSetId: 'Alice',
       keepOutcomeSetId: 'Bob|Carol',
+      baseAsset: 'sat',
     }),
     {
       Alice: 'keyset-alice',
@@ -180,48 +184,10 @@ test('selectRootPartitionKeysets resolves id-keyed root keysets through conditio
   const notAliceCollectionId = 'b'.repeat(64)
   const condition = {
     condition_id: CONDITION_ID,
+    collateral: 'msat',
     keysets: {
       [aliceCollectionId]: 'keyset-alice',
       [notAliceCollectionId]: 'keyset-not-alice',
-    },
-  }
-
-  assert.deepEqual(
-    selectRootPartitionKeysets(
-      condition,
-      {
-        lockOutcomeSetId: 'Alice',
-        keepOutcomeSetId: 'Carol|Bob|Dave',
-      },
-      [
-        {
-          id: 'keyset-alice',
-          condition_id: CONDITION_ID,
-          outcome_collection: 'Alice',
-          outcome_collection_id: aliceCollectionId,
-        },
-        {
-          id: 'keyset-not-alice',
-          condition_id: CONDITION_ID,
-          outcome_collection: 'Bob|Carol|Dave',
-          outcome_collection_id: notAliceCollectionId,
-        },
-      ],
-    ),
-    {
-      Alice: 'keyset-alice',
-      'Bob|Carol|Dave': 'keyset-not-alice',
-    },
-  )
-})
-
-test('selectRootPartitionKeysets prefers requested-unit conditional metadata over ambiguous condition map values', () => {
-  const condition = {
-    condition_id: CONDITION_ID,
-    collateral: 'sat',
-    keysets: {
-      Alice: 'usd-keyset-alice',
-      'Bob|Carol|Dave': 'usd-keyset-not-alice',
     },
   }
 
@@ -235,45 +201,86 @@ test('selectRootPartitionKeysets prefers requested-unit conditional metadata ove
       },
       [
         {
-          id: 'usd-keyset-alice',
+          id: 'keyset-alice',
           condition_id: CONDITION_ID,
           outcome_collection: 'Alice',
-          outcome_collection_id: 'alice-usd',
-          unit: 'usd',
-        },
-        {
-          id: 'usd-keyset-not-alice',
-          condition_id: CONDITION_ID,
-          outcome_collection: 'Bob|Carol|Dave',
-          outcome_collection_id: 'not-alice-usd',
-          unit: 'usd',
-        },
-        {
-          id: 'sat-keyset-alice',
-          condition_id: CONDITION_ID,
-          outcome_collection: 'Alice',
-          outcome_collection_id: 'alice-sat',
+          outcome_collection_id: aliceCollectionId,
           unit: 'msat',
         },
         {
-          id: 'sat-keyset-not-alice',
+          id: 'keyset-not-alice',
           condition_id: CONDITION_ID,
           outcome_collection: 'Bob|Carol|Dave',
-          outcome_collection_id: 'not-alice-sat',
+          outcome_collection_id: notAliceCollectionId,
           unit: 'msat',
         },
       ],
     ),
     {
-      Alice: 'sat-keyset-alice',
-      'Bob|Carol|Dave': 'sat-keyset-not-alice',
+      Alice: 'keyset-alice',
+      'Bob|Carol|Dave': 'keyset-not-alice',
     },
+  )
+})
+
+test('selectRootPartitionKeysets rejects mixed conditional collateral metadata', () => {
+  const condition = {
+    condition_id: CONDITION_ID,
+    collateral: 'msat',
+    keysets: {
+      Alice: 'usd-keyset-alice',
+      'Bob|Carol|Dave': 'usd-keyset-not-alice',
+    },
+  }
+
+  assert.throws(
+    () =>
+      selectRootPartitionKeysets(
+        condition,
+        {
+          lockOutcomeSetId: 'Alice',
+          keepOutcomeSetId: 'Carol|Bob|Dave',
+          baseAsset: 'sat',
+        },
+        [
+          {
+            id: 'usd-keyset-alice',
+            condition_id: CONDITION_ID,
+            outcome_collection: 'Alice',
+            outcome_collection_id: 'alice-usd',
+            unit: 'usd',
+          },
+          {
+            id: 'usd-keyset-not-alice',
+            condition_id: CONDITION_ID,
+            outcome_collection: 'Bob|Carol|Dave',
+            outcome_collection_id: 'not-alice-usd',
+            unit: 'usd',
+          },
+          {
+            id: 'sat-keyset-alice',
+            condition_id: CONDITION_ID,
+            outcome_collection: 'Alice',
+            outcome_collection_id: 'alice-sat',
+            unit: 'msat',
+          },
+          {
+            id: 'sat-keyset-not-alice',
+            condition_id: CONDITION_ID,
+            outcome_collection: 'Bob|Carol|Dave',
+            outcome_collection_id: 'not-alice-sat',
+            unit: 'msat',
+          },
+        ],
+      ),
+    /unit must be exactly msat/,
   )
 })
 
 test('selectRootPartitionKeysets keeps binary single-root compatibility without a target', () => {
   const condition = {
     condition_id: CONDITION_ID,
+    collateral: 'msat',
     keysets: {
       YES: 'keyset-yes',
       NO: 'keyset-no',
@@ -286,6 +293,49 @@ test('selectRootPartitionKeysets keeps binary single-root compatibility without 
   })
 })
 
+test('selectRootPartitionKeysets rejects non-exact condition and conditional keyset units', () => {
+  const invalidUnits = [undefined, null, 'sat', 'usd', 'MSAT', ' msat', 'msat ']
+  for (const collateral of invalidUnits) {
+    assert.throws(
+      () =>
+        selectRootPartitionKeysets({
+          condition_id: CONDITION_ID,
+          collateral,
+          keysets: { YES: 'keyset-yes', NO: 'keyset-no' },
+        }),
+      /must be exactly msat/,
+    )
+  }
+
+  for (const unit of invalidUnits) {
+    assert.throws(
+      () =>
+        selectRootPartitionKeysets(
+          {
+            condition_id: CONDITION_ID,
+            collateral: 'msat',
+            keysets: { ['b'.repeat(64)]: 'keyset-yes', ['c'.repeat(64)]: 'keyset-no' },
+          },
+          {
+            lockOutcomeSetId: 'YES',
+            keepOutcomeSetId: 'NO',
+            baseAsset: 'sat',
+          },
+          [
+            {
+              id: 'keyset-yes',
+              condition_id: CONDITION_ID,
+              outcome_collection: 'YES',
+              outcome_collection_id: 'b'.repeat(64),
+              unit,
+            },
+          ],
+        ),
+      /must be exactly msat/,
+    )
+  }
+})
+
 test('splitCompleteSetWithOperation prepares outputs before posting and completes results', async () => {
   const transport = new FakeSplitTransport()
   const store = new MemoryProofOperationStore()
@@ -293,6 +343,7 @@ test('splitCompleteSetWithOperation prepares outputs before posting and complete
   const result = await splitCompleteSetWithOperation({
     mintUrl: 'https://mint.example',
     baseAsset: 'sat',
+    parentCollectionId: '0'.repeat(64),
     operationId: 'op-1',
     transport,
     conditionId: CONDITION_ID,
@@ -318,10 +369,74 @@ test('splitCompleteSetWithOperation prepares outputs before posting and complete
   assert.equal(record?.metadata.conditionId, CONDITION_ID)
   assert.equal(record?.metadata.amountSubunits, 100)
   assert.equal(record?.metadata.baseAsset, 'sat')
+  assert.equal(record?.metadata.unit, 'msat')
+  assert.equal(record?.metadata.parentCollectionId, '0'.repeat(64))
   assert.deepEqual(record?.metadata.outcomeCollectionKeysets, {
     YES: 'keyset-yes',
     NO: 'keyset-no',
   })
+})
+
+test('splitCompleteSetWithOperation rejects malformed root parents before store or mint effects', async () => {
+  const invalidParents = [null, '', '0'.repeat(63), '1'.repeat(64), '0'.repeat(64) + ' ']
+  for (const [index, parentCollectionId] of invalidParents.entries()) {
+    const transport = new FakeSplitTransport()
+    const store = new MemoryProofOperationStore()
+    await assert.rejects(
+      () =>
+        splitCompleteSetWithOperation({
+          mintUrl: 'https://mint.example',
+          baseAsset: 'sat',
+          parentCollectionId,
+          operationId: `invalid-parent-${index}`,
+          transport,
+          conditionId: CONDITION_ID,
+          collateralProofs: [proof('input-keyset', 100, 'input-secret')],
+          outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
+          amountSubunits: 100,
+          proofOperationStore: store,
+          makeOutputs: ({ collection, amountSubunits, keyset }) => [
+            output(collection, amountSubunits, keyset.id),
+          ],
+        }),
+      /parentCollectionId must be omitted or exactly 64 zeroes/,
+    )
+    assert.deepEqual(transport.keyLookups, [])
+    assert.equal(transport.posted.length, 0)
+    assert.equal(store.prepareCalls, 0)
+    assert.equal(store.records.size, 0)
+  }
+})
+
+test('splitCompleteSetWithOperation rejects non-msat input or output keysets before journaling', async () => {
+  for (const [keysetId, unit] of [
+    ['input-keyset', 'sat'],
+    ['keyset-yes', 'usd'],
+    ['keyset-no', 'MSAT'],
+  ]) {
+    const transport = new FakeSplitTransport({ [keysetId]: unit })
+    const store = new MemoryProofOperationStore()
+    await assert.rejects(
+      () =>
+        splitCompleteSetWithOperation({
+          mintUrl: 'https://mint.example',
+          baseAsset: 'sat',
+          operationId: `invalid-unit-${keysetId}`,
+          transport,
+          conditionId: CONDITION_ID,
+          collateralProofs: [proof('input-keyset', 100, 'input-secret')],
+          outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
+          amountSubunits: 100,
+          proofOperationStore: store,
+          makeOutputs: ({ collection, amountSubunits, keyset }) => [
+            output(collection, amountSubunits, keyset.id),
+          ],
+        }),
+      /unit must be exactly msat/,
+    )
+    assert.equal(transport.posted.length, 0)
+    assert.equal(store.prepareCalls, 0)
+  }
 })
 
 test('splitCompleteSetWithOperation accepts msat collateral keysets for sat markets', async () => {
@@ -417,7 +532,11 @@ test('splitCompleteSetWithOperation replays completed operations without mint ca
     mintUrl: 'https://mint.example',
     inputs: [proof('input-keyset', 100, 'input-secret')],
     outputs: {},
-    metadata: {},
+    metadata: {
+      baseAsset: 'sat',
+      unit: 'msat',
+      parentCollectionId: '0'.repeat(64),
+    },
     resultProofs: {
       YES: [proof('keyset-yes', 100, 'stored-proof')],
     },
@@ -428,6 +547,7 @@ test('splitCompleteSetWithOperation replays completed operations without mint ca
 
   const result = await splitCompleteSetWithOperation({
     mintUrl: 'https://mint.example',
+    baseAsset: 'sat',
     operationId: 'op-completed',
     transport,
     conditionId: CONDITION_ID,
@@ -457,7 +577,11 @@ test('splitCompleteSetWithOperation fails closed for failed existing operations'
     mintUrl: 'https://mint.example',
     inputs: [proof('input-keyset', 100, 'input-secret')],
     outputs: {},
-    metadata: {},
+    metadata: {
+      baseAsset: 'sat',
+      unit: 'msat',
+      parentCollectionId: '0'.repeat(64),
+    },
     lastError: 'mint refused split',
     createdAt: 1,
     updatedAt: 2,
@@ -468,6 +592,7 @@ test('splitCompleteSetWithOperation fails closed for failed existing operations'
     () =>
       splitCompleteSetWithOperation({
         mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
         operationId: 'op-failed',
         transport,
         conditionId: CONDITION_ID,
@@ -513,6 +638,7 @@ test('mergeCompleteSetToRegularWithOperation prepares conditional inputs and reg
   ])
   assert.equal(result.outputAmountSubunits, 9)
   assert.equal(transport.converted.length, 1)
+  assert.equal(transport.converted[0].parent_collection_id, '0'.repeat(64))
   assert.deepEqual(Object.keys(transport.converted[0].inputs).sort(), ['Alpha', 'Beta', 'Gamma'])
   assert.deepEqual(Object.keys(transport.converted[0].outputs), ['*'])
   assert.equal(store.records.get('merge-op-1')?.kind, 'ctf-merge')
@@ -529,6 +655,9 @@ test('mergeCompleteSetToRegularWithOperation replays completed operations withou
     inputs: [proof('keyset-alpha', 10, 'alpha')],
     outputs: {},
     metadata: {
+      baseAsset: 'sat',
+      unit: 'msat',
+      parentCollectionId: '0'.repeat(64),
       inputsByCollection: {
         Alpha: [proof('keyset-alpha', 10, 'alpha')],
       },
@@ -543,6 +672,7 @@ test('mergeCompleteSetToRegularWithOperation replays completed operations withou
 
   const result = await mergeCompleteSetToRegularWithOperation({
     mintUrl: 'https://mint.example',
+    baseAsset: 'sat',
     operationId: 'merge-op-completed',
     transport,
     conditionId: CONDITION_ID,
@@ -559,6 +689,155 @@ test('mergeCompleteSetToRegularWithOperation replays completed operations withou
     Alpha: [proof('keyset-alpha', 10, 'alpha')],
   })
   assert.equal(transport.converted.length, 0)
+})
+
+test('mergeCompleteSetToRegularWithOperation rejects malformed policy before store or mint effects', async () => {
+  const transport = new FakeSplitTransport()
+  const store = new MemoryProofOperationStore()
+  await assert.rejects(
+    () =>
+      mergeCompleteSetToRegularWithOperation({
+        mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
+        parentCollectionId: '1'.repeat(64),
+        operationId: 'merge-invalid-parent',
+        transport,
+        conditionId: CONDITION_ID,
+        conditionalProofsByCollection: {
+          YES: [proof('keyset-yes', 10, 'yes')],
+          NO: [proof('keyset-no', 10, 'no')],
+        },
+        outputAmountSubunits: 10,
+        regularKeyset: feePlanningKeyset(0, { 1: 'regular' }) as MintKeys,
+        proofOperationStore: store,
+      }),
+    /parentCollectionId must be omitted or exactly 64 zeroes/,
+  )
+  assert.deepEqual(transport.keyLookups, [])
+  assert.equal(transport.converted.length, 0)
+  assert.equal(store.prepareCalls, 0)
+
+  const mixedTransport = new FakeSplitTransport({ 'keyset-no': 'sat' })
+  await assert.rejects(
+    () =>
+      mergeCompleteSetToRegularWithOperation({
+        mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
+        operationId: 'merge-invalid-unit',
+        transport: mixedTransport,
+        conditionId: CONDITION_ID,
+        conditionalProofsByCollection: {
+          YES: [proof('keyset-yes', 10, 'yes')],
+          NO: [proof('keyset-no', 10, 'no')],
+        },
+        outputAmountSubunits: 10,
+        regularKeyset: feePlanningKeyset(0, { 1: 'regular' }) as MintKeys,
+        proofOperationStore: store,
+      }),
+    /unit must be exactly msat/,
+  )
+  assert.equal(mixedTransport.converted.length, 0)
+  assert.equal(store.prepareCalls, 0)
+})
+
+test('CTF replay rejects noncanonical durable policy and keyset metadata without mutation', async () => {
+  const invalidMetadata = [
+    { baseAsset: undefined, unit: 'msat', parentCollectionId: '0'.repeat(64) },
+    { baseAsset: 'sat', unit: 'sat', parentCollectionId: '0'.repeat(64) },
+    { baseAsset: 'sat', unit: 'msat', parentCollectionId: undefined },
+    { baseAsset: 'sat', unit: 'msat', parentCollectionId: '1'.repeat(64) },
+  ]
+  for (const [index, metadata] of invalidMetadata.entries()) {
+    const store = new MemoryProofOperationStore()
+    store.records.set(`replay-invalid-${index}`, {
+      operationId: `replay-invalid-${index}`,
+      kind: 'ctf-split',
+      state: 'completed',
+      mintUrl: 'https://mint.example',
+      inputs: [proof('input-keyset', 100, 'input-secret')],
+      outputs: {},
+      metadata,
+      resultProofs: { YES: [proof('keyset-yes', 100, 'stored-proof')] },
+      createdAt: 1,
+      updatedAt: 2,
+    })
+    const transport = new FakeSplitTransport()
+    await assert.rejects(
+      () =>
+        splitCompleteSetWithOperation({
+          mintUrl: 'https://mint.example',
+          baseAsset: 'sat',
+          operationId: `replay-invalid-${index}`,
+          transport,
+          conditionId: CONDITION_ID,
+          collateralProofs: [],
+          outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
+          amountSubunits: 100,
+          proofOperationStore: store,
+        }),
+      /must be exactly sat|must be exactly msat|must be omitted or exactly 64 zeroes/,
+    )
+    assert.deepEqual(transport.keyLookups, [])
+    assert.equal(transport.posted.length, 0)
+    assert.equal(store.completedCalls, 0)
+  }
+})
+
+test('prepared CTF replay validates persisted keysets before proof-state or mint mutation', async () => {
+  const store = new MemoryProofOperationStore()
+  store.records.set('replay-invalid-output-unit', {
+    operationId: 'replay-invalid-output-unit',
+    kind: 'ctf-split',
+    state: 'prepared',
+    mintUrl: 'https://mint.example',
+    inputs: [proof('input-keyset', 100, 'input-secret')],
+    outputs: {
+      YES: [
+        {
+          blindedMessage: { amount: 100, id: 'keyset-yes', B_: 'B-YES' },
+          blindingFactor: '1',
+          secret: '01',
+        },
+      ],
+    },
+    metadata: {
+      baseAsset: 'sat',
+      unit: 'msat',
+      parentCollectionId: '0'.repeat(64),
+      conditionId: CONDITION_ID,
+      amountSubunits: 100,
+      outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
+    },
+    createdAt: 1,
+    updatedAt: 2,
+  })
+  const transport = new FakeSplitTransport({ 'keyset-yes': 'sat' })
+  let proofStateCalls = 0
+
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
+        operationId: 'replay-invalid-output-unit',
+        transport,
+        conditionId: CONDITION_ID,
+        collateralProofs: [],
+        outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
+        amountSubunits: 100,
+        proofOperationStore: store,
+        proofStateChecker: {
+          checkProofsStates: async () => {
+            proofStateCalls += 1
+            return []
+          },
+        },
+      }),
+    /unit must be exactly msat/,
+  )
+  assert.equal(proofStateCalls, 0)
+  assert.equal(transport.posted.length, 0)
+  assert.equal(store.completedCalls, 0)
 })
 
 test('selectCompleteSetMergeInputs selects equal gross inputs across a complete partition', () => {
@@ -663,7 +942,10 @@ test('splitRegularProofsWithOperation replays completed regular splits without m
     mintUrl: 'https://mint.example',
     inputs: [proof('regular-keyset', 210, 'input-210')],
     outputs: {},
-    metadata: {},
+    metadata: {
+      baseAsset: 'sat',
+      unit: 'msat',
+    },
     resultProofs: {
       send: [proof('regular-keyset', 100, 'send-100')],
       keep: [proof('regular-keyset', 110, 'keep-110')],
@@ -675,6 +957,7 @@ test('splitRegularProofsWithOperation replays completed regular splits without m
 
   const split = await splitRegularProofsWithOperation({
     mintUrl: 'https://mint.example',
+    baseAsset: 'sat',
     operationId: 'regular-op-completed',
     wallet,
     proofs: [],
@@ -696,7 +979,10 @@ test('splitRegularProofsWithOperation throws typed pending error and checks proo
     mintUrl: 'https://mint.example',
     inputs: [proof('regular-keyset', 210, 'input-210')],
     outputs: {},
-    metadata: {},
+    metadata: {
+      baseAsset: 'sat',
+      unit: 'msat',
+    },
     createdAt: 1,
     updatedAt: 2,
   })
@@ -710,6 +996,7 @@ test('splitRegularProofsWithOperation throws typed pending error and checks proo
     () =>
       splitRegularProofsWithOperation({
         mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
         operationId: 'regular-op-pending',
         wallet,
         proofs: [],
@@ -763,6 +1050,7 @@ const CONDITION_ID = 'a'.repeat(64)
 class FakeSplitTransport implements CtfSplitTransport {
   private readonly unitByKeysetId: Record<string, string>
 
+  readonly keyLookups: string[] = []
   readonly posted: Array<Parameters<CtfSplitTransport['postSplit']>[0]> = []
   readonly converted: Array<Parameters<NonNullable<CtfSplitTransport['postConvert']>>[0]> = []
 
@@ -771,9 +1059,10 @@ class FakeSplitTransport implements CtfSplitTransport {
   }
 
   async getKeys(keysetId: string): Promise<MintKeys> {
+    this.keyLookups.push(keysetId)
     return {
       id: keysetId,
-      unit: this.unitByKeysetId[keysetId] ?? 'sat',
+      unit: this.unitByKeysetId[keysetId] ?? 'msat',
       keys: {},
       input_fee_ppk: 0,
     } as MintKeys
@@ -814,6 +1103,8 @@ class FakeSplitTransport implements CtfSplitTransport {
 
 class MemoryProofOperationStore implements CtfProofOperationStore {
   readonly records = new Map<string, CtfProofOperationRecord>()
+  prepareCalls = 0
+  completedCalls = 0
 
   async getProofOperation(operationId: string): Promise<CtfProofOperationRecord | null> {
     return this.records.get(operationId) ?? null
@@ -822,6 +1113,7 @@ class MemoryProofOperationStore implements CtfProofOperationStore {
   async prepareProofOperation(
     input: CtfPrepareProofOperationInput,
   ): Promise<CtfProofOperationRecord> {
+    this.prepareCalls += 1
     const record: CtfProofOperationRecord = {
       ...input,
       state: 'prepared',
@@ -836,6 +1128,7 @@ class MemoryProofOperationStore implements CtfProofOperationStore {
     operationId: string,
     resultProofs: Record<string, Proof[]>,
   ): Promise<CtfProofOperationRecord> {
+    this.completedCalls += 1
     const existing = this.records.get(operationId)
     if (!existing) throw new Error(`missing operation ${operationId}`)
     const completed: CtfProofOperationRecord = {
@@ -917,6 +1210,7 @@ function signature(message: SerializedBlindedMessage): SerializedBlindedSignatur
 function feePlanningKeyset(inputFeePpk: number, keys: Record<number, string>) {
   return {
     id: 'regular-keyset',
+    unit: 'msat',
     keys,
     input_fee_ppk: inputFeePpk,
   }

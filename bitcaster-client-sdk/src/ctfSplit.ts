@@ -22,11 +22,13 @@ import {
   takeProofsForLock,
 } from './proofSelection.ts'
 import {
-  defaultCollateralUnit,
-  isCollateralUnitOf,
+  CTF_COLLATERAL_UNIT,
   parseMarketBaseAsset,
+  type CtfCollateralUnit,
   type MarketBaseAsset,
 } from './marketUnits.ts'
+
+const ROOT_PARENT_COLLECTION_ID = '0'.repeat(64)
 
 export interface CtfConditionalKeysetInfo {
   id: string
@@ -115,7 +117,7 @@ export interface SplitCollateralSelection {
   grossInputSats: number
 }
 
-export type CtfCollateralBaseAsset = MarketBaseAsset | string | null | undefined
+export type CtfCollateralBaseAsset = MarketBaseAsset
 
 export interface CtfGrossInputPlanningKeyset {
   id: string
@@ -155,7 +157,7 @@ export interface ComplementaryOutcomeLegResolution {
 export interface CtfRootPartitionSelection {
   lockOutcomeSetId: string
   keepOutcomeSetId: string
-  baseAsset?: CtfCollateralBaseAsset
+  baseAsset: CtfCollateralBaseAsset
 }
 
 export interface CtfSplitTransport {
@@ -167,11 +169,13 @@ export interface CtfSplitTransport {
   ): Promise<Record<string, string>>
   postConvert?(request: {
     condition_id: CtfConvertRequest['condition_id']
+    parent_collection_id: CtfConvertRequest['parent_collection_id']
     inputs: CtfConvertRequest['inputs']
     outputs: CtfConvertRequest['outputs']
   }): Promise<CtfConvertResponse>
   postSplit(request: {
     condition_id: CtfConvertRequest['condition_id']
+    parent_collection_id: CtfConvertRequest['parent_collection_id']
     inputs: Proof[]
     outputs: CtfConvertRequest['outputs']
   }): Promise<CtfConvertResponse>
@@ -189,7 +193,8 @@ export type CtfSplitMakeOutputs = (input: CtfSplitMakeOutputsInput) => CtfSplitO
 
 export interface CtfSplitOptions {
   makeOutputs?: CtfSplitMakeOutputs
-  baseAsset?: CtfCollateralBaseAsset
+  baseAsset: CtfCollateralBaseAsset
+  parentCollectionId?: unknown
   onPrepared?: (prepared: {
     inputs: Proof[]
     outputsByCollection: Record<string, CtfSplitOutputData[]>
@@ -229,7 +234,7 @@ export interface CompleteSetMergeInputSelection {
 
 export async function splitRegularProofsWithOperation(params: {
   mintUrl: string
-  baseAsset?: CtfCollateralBaseAsset
+  baseAsset: CtfCollateralBaseAsset
   operationId: string
   wallet: RegularSplitWallet
   proofs: Proof[]
@@ -282,7 +287,7 @@ export async function splitRegularProofsWithOperation(params: {
       fees: amountToNumber(preview.fees),
       keysetId: preview.keysetId,
       baseAsset: requireMarketBaseAsset(params.baseAsset, 'regular split baseAsset'),
-      unit: defaultCollateralUnit(params.baseAsset),
+      unit: CTF_COLLATERAL_UNIT,
       unselectedProofs: preview.unselectedProofs ?? [],
     },
   })
@@ -300,15 +305,16 @@ export async function selectCollateralForCtfSplit(
   mintUrl: string,
   availableProofs: Proof[],
   faceAmountSubunits: number,
-  baseAsset?: CtfCollateralBaseAsset,
+  baseAsset: CtfCollateralBaseAsset,
 ): Promise<SplitCollateralSelection> {
   if (!Number.isSafeInteger(faceAmountSubunits) || faceAmountSubunits <= 0) {
     throw new Error('faceAmountSubunits must be a positive safe integer')
   }
+  requireMarketBaseAsset(baseAsset, 'CTF split collateral baseAsset')
 
   const mint = new CashuMint(mintUrl)
   const wallet = new CashuWallet(mint, {
-    unit: requireMarketBaseAsset(baseAsset, 'CTF split collateral baseAsset'),
+    unit: requireCtfCollateralUnit(CTF_COLLATERAL_UNIT, 'CTF split collateral unit'),
   })
   await wallet.loadMint()
   if (!wallet.selectProofsToSend) {
@@ -393,7 +399,8 @@ export function computeGrossCtfInputAmountSats(params: {
 
 export async function splitRootCompleteSetForSwap(params: {
   mintUrl: string
-  baseAsset?: CtfCollateralBaseAsset
+  baseAsset: CtfCollateralBaseAsset
+  parentCollectionId?: unknown
   conditionId: string
   collateralProofs: Proof[]
   amountSubunits?: number
@@ -437,6 +444,7 @@ export async function splitRootCompleteSetForSwap(params: {
     outcomeCollectionKeysets,
     amountSubunits,
     baseAsset: params.baseAsset,
+    parentCollectionId: params.parentCollectionId,
     proofOperationStore: params.proofOperationStore,
     proofStateChecker: params.proofStateChecker,
     restoreOutputGroups: params.restoreOutputGroups,
@@ -473,7 +481,8 @@ export async function splitRootCompleteSetForSwap(params: {
 
 export async function splitRootCompleteSetForPreflightOrder(params: {
   mintUrl: string
-  baseAsset?: CtfCollateralBaseAsset
+  baseAsset: CtfCollateralBaseAsset
+  parentCollectionId?: unknown
   conditionId: string
   collateralProofs: Proof[]
   amountSubunits?: number
@@ -508,6 +517,7 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
     outcomeCollectionKeysets,
     amountSubunits,
     baseAsset: params.baseAsset,
+    parentCollectionId: params.parentCollectionId,
     proofOperationStore: params.proofOperationStore,
     makeOutputs: ({ amountSubunits, keyset }) =>
       RegularOutputData.createRandomData(Amount.from(amountSubunits), keyset),
@@ -535,7 +545,7 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
 
 export async function resolveRootPreflightOutputAmountSubunits(params: {
   mintUrl: string
-  baseAsset?: CtfCollateralBaseAsset
+  baseAsset: CtfCollateralBaseAsset
   conditionId: string
   amountSubunits?: number
   amountSats?: number
@@ -580,7 +590,7 @@ export const resolveRootPreflightOutputAmountSats = resolveRootPreflightOutputAm
 
 export async function resolveRootDirectLockOutputAmountSubunits(params: {
   mintUrl: string
-  baseAsset?: CtfCollateralBaseAsset
+  baseAsset: CtfCollateralBaseAsset
   conditionId: string
   amountSubunits?: number
   amountSats?: number
@@ -634,16 +644,21 @@ export async function splitRootCompleteSet(
   conditionId: string,
   inputs: Proof[],
   amountSubunits: number,
-  options: CtfSplitOptions = {},
+  options: CtfSplitOptions,
   selection?: CtfRootPartitionSelection,
 ): Promise<Record<string, Proof[]>> {
+  const policy = requireProductCtfPolicy(
+    selection?.baseAsset ?? options.baseAsset,
+    options.parentCollectionId,
+    'CTF root split',
+  )
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(conditionId, selection)
   const splitKeysets = selection
     ? outcomeCollectionKeysets
     : preferAtomicRootPartitionKeysets(outcomeCollectionKeysets)
   return splitCompleteSet(transport, conditionId, inputs, splitKeysets, amountSubunits, {
     ...options,
-    baseAsset: selection?.baseAsset ?? options.baseAsset,
+    ...policy,
   })
 }
 
@@ -653,12 +668,10 @@ export async function splitCompleteSet(
   inputs: Proof[],
   outcomeCollectionKeysets: Record<string, string>,
   amountSubunits: number,
-  options: CtfSplitOptions = {},
+  options: CtfSplitOptions,
 ): Promise<Record<string, Proof[]>> {
+  const policy = requireProductCtfPolicy(options.baseAsset, options.parentCollectionId, 'CTF split')
   const normalizedInputs = inputs.map(normalizeProof)
-  const expectedBaseAsset = options.baseAsset
-    ? requireMarketBaseAsset(options.baseAsset, 'CTF split baseAsset')
-    : null
   validateSplitInput(conditionId, normalizedInputs, outcomeCollectionKeysets, amountSubunits)
 
   const makeOutputs = options.makeOutputs ?? defaultMakeOutputs
@@ -671,7 +684,7 @@ export async function splitCompleteSet(
     return keyset
   }
 
-  await validateInputBalance(normalizedInputs, amountSubunits, getCachedKeys, expectedBaseAsset)
+  await validateInputBalance(normalizedInputs, amountSubunits, getCachedKeys)
 
   const keysetsByCollection = new Map<string, MintKeys>()
   const outputsByCollection: Record<string, CtfSplitOutputData[]> = {}
@@ -679,13 +692,7 @@ export async function splitCompleteSet(
 
   for (const [collection, keysetId] of Object.entries(outcomeCollectionKeysets)) {
     const keyset = await getCachedKeys(keysetId)
-    if (expectedBaseAsset) {
-      validateKeysetUnit(
-        keyset,
-        expectedBaseAsset,
-        `CTF split output keyset ${keysetId} for ${collection}`,
-      )
-    }
+    validateCtfKeysetUnit(keyset, `CTF split output keyset ${keysetId} for ${collection}`)
     keysetsByCollection.set(collection, keyset)
     const outputs = makeOutputs({
       collection,
@@ -708,6 +715,7 @@ export async function splitCompleteSet(
 
   const response = await transport.postSplit({
     condition_id: conditionId,
+    parent_collection_id: policy.parentCollectionId,
     inputs: normalizedInputs,
     outputs: requestOutputs,
   })
@@ -787,6 +795,7 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
   ): Promise<CtfConvertResponse> {
     return this.mint.ctfConvert({
       condition_id: request.condition_id,
+      parent_collection_id: request.parent_collection_id,
       inputs: { '*': request.inputs },
       outputs: request.outputs,
     })
@@ -797,6 +806,7 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
   ): Promise<CtfConvertResponse> {
     return this.mint.ctfConvert({
       condition_id: request.condition_id,
+      parent_collection_id: request.parent_collection_id,
       inputs: request.inputs,
       outputs: request.outputs,
     })
@@ -805,7 +815,8 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
 
 export async function splitCompleteSetWithOperation(params: {
   mintUrl: string
-  baseAsset?: CtfCollateralBaseAsset
+  baseAsset: CtfCollateralBaseAsset
+  parentCollectionId?: unknown
   operationId: string
   transport: CtfSplitTransport
   conditionId: string
@@ -824,6 +835,11 @@ export async function splitCompleteSetWithOperation(params: {
     keyset: MintKeys
   }) => CtfSplitOutputData[]
 }): Promise<Record<string, Proof[]>> {
+  const policy = requireProductCtfPolicy(
+    params.baseAsset,
+    params.parentCollectionId,
+    'CTF split operation',
+  )
   const existing = await params.proofOperationStore.getProofOperation(params.operationId)
   if (existing) {
     return resumeCtfSplit(
@@ -843,7 +859,7 @@ export async function splitCompleteSetWithOperation(params: {
     params.outcomeCollectionKeysets,
     params.amountSubunits,
     {
-      baseAsset: params.baseAsset,
+      ...policy,
       makeOutputs: params.makeOutputs,
       onPrepared: async (prepared) => {
         const preparedOutputs = Object.fromEntries(
@@ -861,8 +877,9 @@ export async function splitCompleteSetWithOperation(params: {
           metadata: {
             conditionId: params.conditionId,
             amountSubunits: params.amountSubunits,
-            baseAsset: requireMarketBaseAsset(params.baseAsset, 'CTF split baseAsset'),
-            unit: defaultCollateralUnit(params.baseAsset),
+            baseAsset: policy.baseAsset,
+            unit: CTF_COLLATERAL_UNIT,
+            parentCollectionId: policy.parentCollectionId,
             outcomeCollectionKeysets: params.outcomeCollectionKeysets,
           },
         })
@@ -880,7 +897,8 @@ export async function splitCompleteSetWithOperation(params: {
 
 export async function mergeCompleteSetToRegularWithOperation(params: {
   mintUrl: string
-  baseAsset?: CtfCollateralBaseAsset
+  baseAsset: CtfCollateralBaseAsset
+  parentCollectionId?: unknown
   operationId: string
   transport: CtfSplitTransport
   conditionId: string
@@ -890,12 +908,18 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
   proofOperationStore: CtfProofOperationStore
   makeRegularOutputs?: (input: { amountSubunits: number; keyset: MintKeys }) => CtfSplitOutputData[]
 }): Promise<MergeCompleteSetToRegularResult> {
+  const policy = requireProductCtfPolicy(
+    params.baseAsset,
+    params.parentCollectionId,
+    'CTF merge operation',
+  )
   if (!Number.isSafeInteger(params.outputAmountSubunits) || params.outputAmountSubunits <= 0) {
     throw new Error('outputAmountSubunits must be a positive safe integer')
   }
   if (!params.transport.postConvert) {
     throw new Error('CTF transport does not support conditional merge convert')
   }
+  validateCtfKeysetUnit(params.regularKeyset, 'CTF merge regular output keyset')
 
   const normalizedInputsByCollection = normalizeProofGroups(params.conditionalProofsByCollection)
   const existing = await params.proofOperationStore.getProofOperation(params.operationId)
@@ -917,6 +941,11 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     }
   }
 
+  await validateProofKeysetUnits(
+    params.transport,
+    flattenProofs(normalizedInputsByCollection),
+    'CTF merge input keyset',
+  )
   const outputData =
     params.makeRegularOutputs?.({
       amountSubunits: params.outputAmountSubunits,
@@ -935,8 +964,9 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     metadata: {
       conditionId: params.conditionId,
       outputAmountSubunits: params.outputAmountSubunits,
-      baseAsset: requireMarketBaseAsset(params.baseAsset, 'CTF merge baseAsset'),
-      unit: defaultCollateralUnit(params.baseAsset),
+      baseAsset: policy.baseAsset,
+      unit: CTF_COLLATERAL_UNIT,
+      parentCollectionId: policy.parentCollectionId,
       inputsByCollection: normalizedInputsByCollection,
     },
   })
@@ -947,6 +977,7 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     inputsByCollection: normalizedInputsByCollection,
     outputData,
     regularKeyset: params.regularKeyset,
+    parentCollectionId: policy.parentCollectionId,
   })
   await params.proofOperationStore.markProofOperationCompleted(params.operationId, {
     regular: regularProofs,
@@ -1022,6 +1053,7 @@ async function resumeCtfMergeToRegular(
   if (entry.kind !== 'ctf-merge') {
     throw new Error(`proof operation ${entry.operationId} is not a CTF merge`)
   }
+  const policy = requireOperationCtfPolicy(entry.metadata, 'CTF merge proof operation')
   if (entry.state === 'completed') {
     return (entry.resultProofs?.regular ?? []).map(normalizeProof)
   }
@@ -1030,9 +1062,11 @@ async function resumeCtfMergeToRegular(
       `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`,
     )
   }
+  await validateProofKeysetUnits(transport, entry.inputs, 'CTF merge replay input keyset')
+  await validateStoredOutputKeysetUnits(transport, entry.outputs, 'CTF merge replay output keyset')
 
   const wallet = new CashuWallet(new CashuMint(mintUrl), {
-    unit: readOperationBaseAsset(entry.metadata),
+    unit: CTF_COLLATERAL_UNIT,
   })
   await wallet.loadMint()
   if (!wallet.checkProofsStates) {
@@ -1059,12 +1093,14 @@ async function resumeCtfMergeToRegular(
       throw new Error(`proof operation ${entry.operationId} has no regular merge outputs`)
     }
     const regularKeyset = await transport.getKeys(outputData[0].blindedMessage.id)
+    validateCtfKeysetUnit(regularKeyset, 'CTF merge replay regular output keyset')
     completed = await executeCtfMergeToRegular({
       transport,
       conditionId: metadata.conditionId,
       inputsByCollection: normalizeProofGroups(metadata.inputsByCollection),
       outputData,
       regularKeyset,
+      parentCollectionId: policy.parentCollectionId,
     })
   } else {
     throw new ProofOperationPendingError(entry.operationId)
@@ -1090,12 +1126,14 @@ async function executeCtfMergeToRegular(params: {
   inputsByCollection: Record<string, Proof[]>
   outputData: CtfSplitOutputData[]
   regularKeyset: MintKeys
+  parentCollectionId: string
 }): Promise<Proof[]> {
   if (!params.transport.postConvert) {
     throw new Error('CTF transport does not support conditional merge convert')
   }
   const response = await params.transport.postConvert({
     condition_id: params.conditionId,
+    parent_collection_id: params.parentCollectionId,
     inputs: params.inputsByCollection,
     outputs: {
       '*': params.outputData.map((output) => toWireBlindedMessage(output.blindedMessage)),
@@ -1134,6 +1172,7 @@ async function resumeCtfSplit(
   if (entry.kind !== 'ctf-split') {
     throw new Error(`proof operation ${entry.operationId} is not a CTF split`)
   }
+  const policy = requireOperationCtfPolicy(entry.metadata, 'CTF split proof operation')
   if (entry.state === 'completed') {
     return structuredClone(entry.resultProofs ?? {})
   }
@@ -1142,11 +1181,13 @@ async function resumeCtfSplit(
       `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`,
     )
   }
+  await validateProofKeysetUnits(transport, entry.inputs, 'CTF split replay input keyset')
+  await validateStoredOutputKeysetUnits(transport, entry.outputs, 'CTF split replay output keyset')
 
   let proofStateWallet = proofStateChecker
   if (!proofStateWallet) {
     const wallet = new CashuWallet(new CashuMint(mintUrl), {
-      unit: readOperationBaseAsset(entry.metadata),
+      unit: CTF_COLLATERAL_UNIT,
     })
     await wallet.loadMint()
     proofStateWallet = wallet
@@ -1185,6 +1226,8 @@ async function resumeCtfSplit(
       metadata.outcomeCollectionKeysets,
       amountSubunits,
       {
+        baseAsset: policy.baseAsset,
+        parentCollectionId: policy.parentCollectionId,
         makeOutputs: ({ collection }) => outputDataByCollection[collection] ?? [],
       },
     )
@@ -1193,13 +1236,6 @@ async function resumeCtfSplit(
   }
 
   throw new ProofOperationPendingError(entry.operationId)
-}
-
-function readOperationBaseAsset(metadata: Record<string, unknown>): MarketBaseAsset {
-  return requireMarketBaseAsset(
-    typeof metadata.baseAsset === 'string' ? metadata.baseAsset : undefined,
-    'proof operation baseAsset',
-  )
 }
 
 async function resumeRegularSplit(
@@ -1215,6 +1251,7 @@ async function resumeRegularSplit(
   if (entry.kind !== 'regular-split') {
     throw new Error(`proof operation ${entry.operationId} is not a regular split`)
   }
+  requireOperationUnitPolicy(entry.metadata, 'regular split proof operation')
   if (entry.state === 'completed') {
     return {
       send: (entry.resultProofs?.send ?? []).map(normalizeProof),
@@ -1400,15 +1437,14 @@ export function selectRootPartitionKeysets(
   selection?: CtfRootPartitionSelection,
   conditionalKeysets: CtfConditionalKeysetInfo[] = [],
 ): Record<string, string> {
-  const baseAsset = requireMarketBaseAsset(
-    selection?.baseAsset ?? condition.collateral ?? 'sat',
-    'CTF condition collateral',
-  )
+  const baseAsset = selection
+    ? requireMarketBaseAsset(selection.baseAsset, 'CTF root partition baseAsset')
+    : ('sat' as const)
+  requireCtfCollateralUnit(condition.collateral, 'CTF condition collateral')
   const rootKeysets = normalizeRootConditionKeysets(
     condition.condition_id,
     condition.keysets,
     conditionalKeysets,
-    baseAsset,
   )
 
   if (!selection) {
@@ -1462,14 +1498,8 @@ function normalizeRootConditionKeysets(
   conditionId: string,
   keysets: Record<string, string>,
   conditionalKeysets: CtfConditionalKeysetInfo[],
-  baseAsset: MarketBaseAsset,
 ): Record<string, string> {
-  const lookup = buildOutcomeCollectionKeysetLookup(
-    conditionId,
-    keysets,
-    conditionalKeysets,
-    baseAsset,
-  )
+  const lookup = buildOutcomeCollectionKeysetLookup(conditionId, keysets, conditionalKeysets)
   const normalized = new Map<string, string>()
   for (const collection of Object.keys(keysets)) {
     const keysetId = lookup.get(collection)
@@ -1481,9 +1511,9 @@ function normalizeRootConditionKeysets(
       const keyset = conditionalKeysets.find(
         (candidate) =>
           sameConditionId(candidate.condition_id, conditionId) &&
-          conditionalKeysetMatchesUnit(candidate, baseAsset) &&
           candidate.outcome_collection_id === collection,
       )
+      if (keyset) validateCtfKeysetUnit(keyset, `CTF conditional keyset ${keyset.id}`)
       if (keyset?.outcome_collection) {
         normalized.set(keyset.outcome_collection, keysetId)
       }
@@ -1508,7 +1538,6 @@ function buildOutcomeCollectionKeysetLookup(
   conditionId: string,
   keysets: Record<string, string>,
   conditionalKeysets: CtfConditionalKeysetInfo[],
-  baseAsset: MarketBaseAsset,
 ): Map<string, string> {
   const lookup = new Map<string, string>()
   for (const [collection, keysetId] of Object.entries(keysets)) {
@@ -1516,7 +1545,7 @@ function buildOutcomeCollectionKeysetLookup(
   }
   for (const keyset of conditionalKeysets) {
     if (!sameConditionId(keyset.condition_id, conditionId)) continue
-    if (!conditionalKeysetMatchesUnit(keyset, baseAsset)) continue
+    validateCtfKeysetUnit(keyset, `CTF conditional keyset ${keyset.id}`)
     const keysetId = keyset.id
     for (const collection of [keyset.outcome_collection, keyset.outcome_collection_id]) {
       if (collection) lookup.set(collection, keysetId)
@@ -1525,22 +1554,69 @@ function buildOutcomeCollectionKeysetLookup(
   return lookup
 }
 
-function conditionalKeysetMatchesUnit(
-  keyset: CtfConditionalKeysetInfo,
-  baseAsset: MarketBaseAsset,
-): boolean {
-  // Legacy mint keysets without unit metadata predate multi-collateral support
-  // and are treated as sat-only.
-  if (keyset.unit == null) return baseAsset === 'sat'
-  return isCollateralUnitOf(keyset.unit, baseAsset)
+interface ProductCtfPolicy {
+  baseAsset: MarketBaseAsset
+  parentCollectionId: string
 }
 
-function requireMarketBaseAsset(value: CtfCollateralBaseAsset, context: string): MarketBaseAsset {
+function requireProductCtfPolicy(
+  baseAsset: unknown,
+  parentCollectionId: unknown,
+  context: string,
+): ProductCtfPolicy {
+  return {
+    baseAsset: requireMarketBaseAsset(baseAsset, `${context} baseAsset`),
+    parentCollectionId: requireRootParentCollectionId(
+      parentCollectionId,
+      `${context} parentCollectionId`,
+      true,
+    ),
+  }
+}
+
+function requireOperationCtfPolicy(
+  metadata: Record<string, unknown>,
+  context: string,
+): ProductCtfPolicy {
+  requireOperationUnitPolicy(metadata, context)
+  return {
+    baseAsset: 'sat',
+    parentCollectionId: requireRootParentCollectionId(
+      metadata.parentCollectionId,
+      `${context} parentCollectionId`,
+      false,
+    ),
+  }
+}
+
+function requireOperationUnitPolicy(metadata: Record<string, unknown>, context: string): void {
+  requireMarketBaseAsset(metadata.baseAsset, `${context} baseAsset`)
+  requireCtfCollateralUnit(metadata.unit, `${context} unit`)
+}
+
+function requireRootParentCollectionId(
+  value: unknown,
+  context: string,
+  allowOmitted: boolean,
+): string {
+  if (allowOmitted && value === undefined) return ROOT_PARENT_COLLECTION_ID
+  if (value === ROOT_PARENT_COLLECTION_ID) return ROOT_PARENT_COLLECTION_ID
+  throw new Error(`${context} must be omitted or exactly 64 zeroes`)
+}
+
+function requireMarketBaseAsset(value: unknown, context: string): MarketBaseAsset {
   const parsed = parseMarketBaseAsset(value)
   if (!parsed) {
     throw new Error(`${context} must be exactly sat`)
   }
   return parsed
+}
+
+function requireCtfCollateralUnit(value: unknown, context: string): CtfCollateralUnit {
+  if (value !== CTF_COLLATERAL_UNIT) {
+    throw new Error(`${context} must be exactly ${CTF_COLLATERAL_UNIT}`)
+  }
+  return CTF_COLLATERAL_UNIT
 }
 
 function requirePositiveSafeInteger(value: unknown, name: string): number {
@@ -1550,21 +1626,32 @@ function requirePositiveSafeInteger(value: unknown, name: string): number {
   return value
 }
 
-function validateKeysetUnit(
-  keyset: Pick<MintKeys, 'id' | 'unit'>,
-  expectedBaseAsset: MarketBaseAsset,
+function validateCtfKeysetUnit(keyset: { id: string; unit?: unknown }, context: string): void {
+  requireCtfCollateralUnit(keyset.unit, `${context} unit`)
+}
+
+async function validateProofKeysetUnits(
+  transport: Pick<CtfSplitTransport, 'getKeys'>,
+  proofs: readonly Proof[],
   context: string,
-): void {
-  if (keyset.unit == null) {
-    if (expectedBaseAsset === 'sat') return
-    throw new Error(`${context} is missing unit metadata for ${expectedBaseAsset}`)
+): Promise<void> {
+  for (const keysetId of new Set(proofs.map((proof) => proof.id))) {
+    const keyset = await transport.getKeys(keysetId)
+    validateCtfKeysetUnit(keyset, `${context} ${keysetId}`)
   }
-  if (!isCollateralUnitOf(keyset.unit, expectedBaseAsset)) {
-    const parsed = parseMarketBaseAsset(keyset.unit)
-    if (!parsed) {
-      throw new Error(`${context} has unsupported unit ${keyset.unit}`)
-    }
-    throw new Error(`${context} unit mismatch: expected ${expectedBaseAsset}, got ${parsed}`)
+}
+
+async function validateStoredOutputKeysetUnits(
+  transport: Pick<CtfSplitTransport, 'getKeys'>,
+  outputs: Record<string, StoredOutputData[]>,
+  context: string,
+): Promise<void> {
+  const keysetIds = Object.values(outputs).flatMap((group) =>
+    group.map((output) => output.blindedMessage.id),
+  )
+  for (const keysetId of new Set(keysetIds)) {
+    const keyset = await transport.getKeys(keysetId)
+    validateCtfKeysetUnit(keyset, `${context} ${keysetId}`)
   }
 }
 
@@ -1605,14 +1692,11 @@ async function validateInputBalance(
   inputs: Proof[],
   amountSubunits: number,
   getKeys: (keysetId: string) => Promise<MintKeys>,
-  expectedBaseAsset: MarketBaseAsset | null = null,
 ): Promise<void> {
   const inputFeePpkByKeyset: Record<string, number> = {}
   for (const proof of inputs) {
     const keyset = await getKeys(proof.id)
-    if (expectedBaseAsset) {
-      validateKeysetUnit(keyset, expectedBaseAsset, `CTF split input proof keyset ${proof.id}`)
-    }
+    validateCtfKeysetUnit(keyset, `CTF split input proof keyset ${proof.id}`)
     inputFeePpkByKeyset[proof.id] = keyset.input_fee_ppk ?? 0
   }
 
