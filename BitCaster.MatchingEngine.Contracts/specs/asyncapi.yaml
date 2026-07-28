@@ -394,7 +394,7 @@ components:
         Public match delta broadcast to affected market groups. Canonical
         settlement amounts are required; consumers must use
         `quotePaymentSubunits`, `outcomeFaceAmountSubunits`, `baseAsset`,
-        `divisibility`, and `tokenSide`.
+        `collateralUnit`, `divisibility`, and `tokenSide`.
       required:
         - marketId
         - tradeId
@@ -406,6 +406,7 @@ components:
         - matchedAt
         - deadline
         - baseAsset
+        - collateralUnit
         - divisibility
         - quotePaymentSubunits
         - outcomeFaceAmountSubunits
@@ -438,6 +439,10 @@ components:
         baseAsset:
           $ref: '#/components/schemas/BaseAsset'
           description: Required product base asset for the canonical settlement amount.
+        collateralUnit:
+          type: string
+          const: msat
+          description: Required collateral unit for every settlement amount.
         divisibility:
           type: integer
           format: int32
@@ -494,9 +499,9 @@ components:
       description: >
         Positional SignalR arguments for ITradeHubClient.TradeCreated. The
         authoritative canonical settlement amount is `quotePaymentSubunits +
-        baseAsset + divisibility`.
-      minItems: 15
-      maxItems: 15
+        baseAsset + collateralUnit + divisibility`.
+      minItems: 16
+      maxItems: 16
       prefixItems:
         - type: string
           format: uuid
@@ -536,6 +541,9 @@ components:
           description: sellerLockOutcomeSetId
         - $ref: '#/components/schemas/BaseAsset'
           description: baseAsset
+        - type: string
+          const: msat
+          description: collateralUnit
         - type: integer
           format: int32
           enum: [10000, 1000000]

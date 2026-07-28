@@ -46,6 +46,7 @@ public sealed record MatchedDelta(
     DateTimeOffset MatchedAt,
     DateTimeOffset Deadline,
     BaseAsset BaseAsset,
+    string CollateralUnit,
     int Divisibility,
     long QuotePaymentSubunits,
     long OutcomeFaceAmountSubunits,

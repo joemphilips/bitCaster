@@ -20,8 +20,8 @@ public interface ITradeHubClient
     /// Carries counterparty pubkeys, the engine-computed asymmetric locktimes,
     /// the market id, the canonical matched fill amount, and explicit settlement
     /// amounts. The canonical settlement amount is `quotePaymentSubunits +
-    /// baseAsset + divisibility`; `fillAmountSubunits` is the aggregate matched
-    /// face amount.
+    /// baseAsset + collateralUnit + divisibility`; `fillAmountSubunits` is the
+    /// aggregate matched face amount.
     /// </summary>
     Task TradeCreated(Guid tradeId, string sellerPubkey, string buyerPubkey,
         DateTimeOffset sellerLocktime, DateTimeOffset buyerLocktime,
@@ -32,6 +32,7 @@ public interface ITradeHubClient
         string? sellerKeepOutcomeSetId,
         string? sellerLockOutcomeSetId,
         BaseAsset baseAsset,
+        string collateralUnit,
         int divisibility,
         TokenSide tokenSide);
 }
