@@ -383,7 +383,7 @@ function registerWalletCommand(program: Command): void {
     )
     .requiredOption('--recovery-id <id>', 'Unique recovery invocation id')
     .requiredOption('--mint <url>', 'Canonical mint origin')
-    .requiredOption('--unit <unit>', 'Mint unit: sat, msat, or usd')
+    .requiredOption('--unit <unit>', 'Mint unit: sat or msat')
     .requiredOption('--keyset-id <id>', 'Mint keyset id')
     .option(
       '--acknowledge-seed-disclosure',
@@ -404,8 +404,8 @@ function registerWalletCommand(program: Command): void {
         if (options.acknowledgeSeedDisclosure !== true) {
           throwUsage('wallet recover-seed requires --acknowledge-seed-disclosure')
         }
-        if (options.unit !== 'sat' && options.unit !== 'msat' && options.unit !== 'usd') {
-          throwUsage('wallet recover-seed unit must be sat, msat, or usd')
+        if (options.unit !== 'sat' && options.unit !== 'msat') {
+          throwUsage('wallet recover-seed unit must be sat or msat')
         }
         const walletSeedHex = await readPrivateWalletSeedFile(options.walletSeedHexFile)
         const params = {
@@ -614,7 +614,7 @@ function registerOrderCommand(program: Command): void {
     .description('Submit, inspect, list, cancel orders, and read order books.')
     .addHelpText(
       'after',
-      '\nExamples:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 42 --amount 100\n  bitcaster-cli order book <market-id>',
+      '\nExamples:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 4200 --amount 10000\n  bitcaster-cli order book <market-id>',
     )
 
   order
@@ -624,7 +624,11 @@ function registerOrderCommand(program: Command): void {
     .option('--outcome <id>', 'Outcome id')
     .option('--side <side>', 'Order side: buy or sell', parseSide)
     .option('--price <n>', 'Limit price', parseIntegerOption('price'))
-    .option('--amount <sats>', 'Amount in sats', parseIntegerOption('amount sats'))
+    .option(
+      '--amount <subunits>',
+      'Amount in market subunits',
+      parseIntegerOption('amount subunits'),
+    )
     .option('--tif <tif>', 'Time in force: GTC, FAK, or FOK', parseTimeInForce, 'GTC')
     .option('--token-side <side>', 'Token side: Outcome or Complement', parseTokenSide)
     .option('--no-preflight-split', 'Disable preflight complete-set split')
@@ -634,7 +638,7 @@ function registerOrderCommand(program: Command): void {
     )
     .addHelpText(
       'after',
-      '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 42 --amount 100 --tif FAK',
+      '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 4200 --amount 10000 --tif FAK',
     )
     .action(async (options: OrderSubmitOptions, command: Command) => {
       const params = orderSubmitParams(options, command.args)
@@ -710,7 +714,7 @@ interface OrderSubmitParams {
   tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
-  amountSats: number
+  amountSubunits: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
   preflightSplit: boolean
 }
@@ -726,7 +730,7 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     tokenSide: options.tokenSide ?? 'Outcome',
     side: requiredParsedOption(options.side, 'side'),
     price: requiredParsedOption(options.price, 'price'),
-    amountSats: requiredParsedOption(options.amount, 'amount sats'),
+    amountSubunits: requiredParsedOption(options.amount, 'amount subunits'),
     timeInForce: options.tif,
     preflightSplit: options.preflightSplit,
   }
