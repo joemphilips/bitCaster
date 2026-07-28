@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import { BitcasterEngineClient } from '../src/engineClient.ts'
-import { createMarketViaEngine, submitOracleAttestationViaEngine } from '../src/marketLifecycle.ts'
+import {
+  createMarketViaEngine,
+  parseCreateMarketResponse,
+  submitOracleAttestationViaEngine,
+} from '../src/marketLifecycle.ts'
 import { signNip98 } from '../../bitcaster-daemon/src/nostrAuth.ts'
 
 const TEST_NOSTR_PRIVATE_KEY = `${'0'.repeat(62)}01`
@@ -41,6 +45,7 @@ test('createMarketViaEngine signs a NIP-98 payload tag for the exact serialized 
         JSON.stringify({
           conditionId: 'cond/1',
           marketsCreated: ['cond/1-Yes', 'cond/1-No'],
+          baseAsset: 'sat',
           thumbnailUrl: null,
           divisibility: 10000,
         }),
@@ -59,6 +64,7 @@ test('createMarketViaEngine signs a NIP-98 payload tag for the exact serialized 
         { name: 'Yes', probability: 50 },
         { name: 'No', probability: 50 },
       ],
+      baseAsset: 'sat',
       liquiditySats: 0,
     },
     {
@@ -112,6 +118,7 @@ test('createMarketViaEngine can use the daemon NIP-98 signer for exact multipart
         JSON.stringify({
           conditionId: 'cond/real-signer',
           marketsCreated: ['cond/real-signer-Yes', 'cond/real-signer-No'],
+          baseAsset: 'sat',
           thumbnailUrl: null,
           divisibility: 10000,
         }),
@@ -130,6 +137,7 @@ test('createMarketViaEngine can use the daemon NIP-98 signer for exact multipart
         { name: 'Yes', probability: 50 },
         { name: 'No', probability: 50 },
       ],
+      baseAsset: 'sat',
       liquiditySats: 0,
     },
     {
@@ -144,6 +152,25 @@ test('createMarketViaEngine can use the daemon NIP-98 signer for exact multipart
   assert.equal(readTag(event, 'u'), url)
   assert.equal(readTag(event, 'method'), 'POST')
   assert.equal(readTag(event, 'payload'), sentBodyHash)
+})
+
+test('parseCreateMarketResponse requires canonical product metadata', () => {
+  const valid = {
+    conditionId: 'condition',
+    marketsCreated: ['condition-Yes', 'condition-No'],
+    baseAsset: 'sat',
+    divisibility: 10_000,
+  }
+  assert.deepEqual(parseCreateMarketResponse(valid), valid)
+  for (const key of ['baseAsset', 'divisibility'] as const) {
+    const incomplete: Record<string, unknown> = { ...valid }
+    delete incomplete[key]
+    assert.throws(() => parseCreateMarketResponse(incomplete), /omitted canonical product metadata/)
+  }
+  assert.throws(
+    () => parseCreateMarketResponse({ ...valid, baseAsset: 'usd' }),
+    /omitted canonical product metadata/,
+  )
 })
 
 test('submitOracleAttestationViaEngine posts self-authenticating JSON without authorization', async () => {

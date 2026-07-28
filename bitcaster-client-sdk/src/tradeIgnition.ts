@@ -4,6 +4,12 @@ import type {
   SubmitEphemeralPubkeyResponse,
   SubmitOrderResponse,
 } from './engineClient.ts'
+import {
+  parseMarketBaseAsset,
+  parseMarketDivisibility,
+  type MarketBaseAsset,
+  type MarketDivisibility,
+} from './marketUnits.ts'
 
 export interface EphemeralKeypair {
   /** 32-byte secp256k1 private scalar, lowercase hex (64 chars). */
@@ -19,9 +25,14 @@ export interface MatchedDelta {
   takerOrderId: string
   executionPrice: number
   amountSubunits: number
-  path: string
+  path: 'Complementary' | 'Mint'
   matchedAt: string
   deadline: string
+  baseAsset: MarketBaseAsset
+  divisibility: MarketDivisibility
+  quotePaymentSubunits: number
+  outcomeFaceAmountSubunits: number
+  tokenSide: 'Outcome' | 'Complement'
 }
 
 export interface KeypairStore {
@@ -111,18 +122,36 @@ export function parseMatchedDelta(payload: unknown): MatchedDelta | null {
   const path = readString(raw, 'path', 'Path')
   const matchedAt = readString(raw, 'matchedAt', 'MatchedAt')
   const deadline = readString(raw, 'deadline', 'Deadline')
+  const baseAsset = parseMarketBaseAsset(readString(raw, 'baseAsset', 'BaseAsset'))
+  const divisibility = parseMarketDivisibility(readNumber(raw, 'divisibility', 'Divisibility'))
+  const quotePaymentSubunits = readNumber(raw, 'quotePaymentSubunits', 'QuotePaymentSubunits')
+  const outcomeFaceAmountSubunits = readNumber(
+    raw,
+    'outcomeFaceAmountSubunits',
+    'OutcomeFaceAmountSubunits',
+  )
+  const tokenSide = readString(raw, 'tokenSide', 'TokenSide')
 
-  // Fail-closed: marketId, tradeId, deadline are required protocol fields.
-  // path and matchedAt are required by asyncapi.yaml but may be absent in
-  // older payloads — default path to empty string and matchedAt to now.
   if (
     !marketId ||
     !tradeId ||
     !makerOrderId ||
     !takerOrderId ||
+    (path !== 'Complementary' && path !== 'Mint') ||
+    !matchedAt ||
     !deadline ||
+    !baseAsset ||
+    !divisibility ||
+    (tokenSide !== 'Outcome' && tokenSide !== 'Complement') ||
     executionPrice === null ||
-    amountSubunits === null
+    amountSubunits === null ||
+    quotePaymentSubunits === null ||
+    outcomeFaceAmountSubunits === null ||
+    !isPositiveSafeInteger(executionPrice) ||
+    executionPrice >= divisibility ||
+    !isPositiveSafeInteger(amountSubunits) ||
+    !isPositiveSafeInteger(quotePaymentSubunits) ||
+    !isPositiveSafeInteger(outcomeFaceAmountSubunits)
   ) {
     return null
   }
@@ -134,10 +163,19 @@ export function parseMatchedDelta(payload: unknown): MatchedDelta | null {
     takerOrderId,
     executionPrice,
     amountSubunits,
-    path: path ?? '',
-    matchedAt: matchedAt ?? new Date().toISOString(),
+    path,
+    matchedAt,
     deadline,
+    baseAsset,
+    divisibility,
+    quotePaymentSubunits,
+    outcomeFaceAmountSubunits,
+    tokenSide,
   }
+}
+
+function isPositiveSafeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   joinTradeWithRetry,
   parseMatchedDelta,
   type KeypairStore,
+  type MatchedDelta,
 } from '../src/tradeIgnition.ts'
 
 test('generateEphemeralKeypair returns compressed secp256k1 hex keys', () => {
@@ -33,6 +34,11 @@ test('parseMatchedDelta accepts camelCase payloads', () => {
     path: 'Complementary',
     matchedAt: '2026-06-30T00:00:00Z',
     deadline: '2026-06-30T00:00:10Z',
+    baseAsset: 'sat',
+    divisibility: 10_000,
+    quotePaymentSubunits: 51_000,
+    outcomeFaceAmountSubunits: 1_000_000,
+    tokenSide: 'Outcome',
   })
 
   assert.deepEqual(parsed, {
@@ -45,10 +51,15 @@ test('parseMatchedDelta accepts camelCase payloads', () => {
     path: 'Complementary',
     matchedAt: '2026-06-30T00:00:00Z',
     deadline: '2026-06-30T00:00:10Z',
+    baseAsset: 'sat',
+    divisibility: 10_000,
+    quotePaymentSubunits: 51_000,
+    outcomeFaceAmountSubunits: 1_000_000,
+    tokenSide: 'Outcome',
   })
 })
 
-test('parseMatchedDelta accepts PascalCase payloads and defaults optional values', () => {
+test('parseMatchedDelta accepts a complete PascalCase payload', () => {
   const parsed = parseMatchedDelta({
     MarketId: 'condition-YES',
     TradeId: '11111111-1111-4111-8111-111111111111',
@@ -56,16 +67,38 @@ test('parseMatchedDelta accepts PascalCase payloads and defaults optional values
     TakerOrderId: '33333333-3333-4333-8333-333333333333',
     ExecutionPrice: 51,
     AmountSubunits: 1_000,
+    Path: 'Mint',
+    MatchedAt: '2026-06-30T11:59:59Z',
     Deadline: '2026-06-30T12:00:00Z',
+    BaseAsset: 'sat',
+    Divisibility: 10_000,
+    QuotePaymentSubunits: 51_000,
+    OutcomeFaceAmountSubunits: 1_000_000,
+    TokenSide: 'Complement',
   })
 
-  assert.equal(parsed?.path, '')
-  assert.match(parsed?.matchedAt ?? '', /^\d{4}-\d{2}-\d{2}T/)
+  assert.equal(parsed?.path, 'Mint')
+  assert.equal(parsed?.matchedAt, '2026-06-30T11:59:59Z')
   assert.equal(parsed?.deadline, '2026-06-30T12:00:00Z')
+  assert.equal(parsed?.baseAsset, 'sat')
+  assert.equal(parsed?.tokenSide, 'Complement')
 })
 
 test('parseMatchedDelta returns null for incomplete payloads', () => {
   assert.equal(parseMatchedDelta({ tradeId: 'missing-market' }), null)
+  for (const required of [
+    'path',
+    'matchedAt',
+    'baseAsset',
+    'divisibility',
+    'quotePaymentSubunits',
+    'outcomeFaceAmountSubunits',
+    'tokenSide',
+  ]) {
+    const payload: Record<string, unknown> = { ...matchedDelta() }
+    delete payload[required]
+    assert.equal(parseMatchedDelta(payload), null, `accepted missing ${required}`)
+  }
   assert.equal(parseMatchedDelta(null), null)
 })
 
@@ -86,29 +119,21 @@ test('handleMatchedForMaker submits only once for our maker order', async () => 
 
   const first = await handleMatchedForMaker(
     {
+      ...matchedDelta(),
       marketId: 'condition-YES',
       tradeId: 't1',
       makerOrderId: 'maker-1',
       takerOrderId: 'taker-1',
-      executionPrice: 50,
-      amountSubunits: 100,
-      path: 'Complementary',
-      matchedAt: '2026-06-30T00:00:00Z',
-      deadline: '2026-06-30T00:00:10Z',
     },
     params,
   )
   const second = await handleMatchedForMaker(
     {
+      ...matchedDelta(),
       marketId: 'condition-YES',
       tradeId: 't1',
       makerOrderId: 'maker-1',
       takerOrderId: 'taker-1',
-      executionPrice: 50,
-      amountSubunits: 100,
-      path: 'Complementary',
-      matchedAt: '2026-06-30T00:00:00Z',
-      deadline: '2026-06-30T00:00:10Z',
     },
     params,
   )
@@ -133,15 +158,11 @@ test('handleMatchedForMaker ignores taker-only and foreign-maker matches', async
 
   const result = await handleMatchedForMaker(
     {
+      ...matchedDelta(),
       marketId: 'condition-YES',
       tradeId: 't1',
       makerOrderId: 'foreign-maker-order',
       takerOrderId: 'our-taker-order',
-      executionPrice: 50,
-      amountSubunits: 100,
-      path: 'Complementary',
-      matchedAt: '2026-06-30T00:00:00Z',
-      deadline: '2026-06-30T00:00:10Z',
     },
     params,
   )
@@ -239,5 +260,24 @@ function memoryStore(publicKeys: Record<string, string>): KeypairStore {
     async getPrivateKey(): Promise<string | null> {
       return null
     },
+  }
+}
+
+function matchedDelta(): MatchedDelta {
+  return {
+    marketId: 'condition-YES',
+    tradeId: '11111111-1111-4111-8111-111111111111',
+    makerOrderId: '22222222-2222-4222-8222-222222222222',
+    takerOrderId: '33333333-3333-4333-8333-333333333333',
+    executionPrice: 51,
+    amountSubunits: 1_000,
+    path: 'Complementary',
+    matchedAt: '2026-06-30T00:00:00Z',
+    deadline: '2026-06-30T00:00:10Z',
+    baseAsset: 'sat',
+    divisibility: 10_000,
+    quotePaymentSubunits: 51_000,
+    outcomeFaceAmountSubunits: 1_000_000,
+    tokenSide: 'Outcome',
   }
 }

@@ -3,7 +3,12 @@ import type {
   EngineAuthorizationRequest,
   EngineFetch,
 } from './engineClient.ts'
-import type { MarketBaseAsset } from './marketUnits.ts'
+import {
+  parseMarketBaseAsset,
+  parseMarketDivisibility,
+  type MarketBaseAsset,
+  type MarketDivisibility,
+} from './marketUnits.ts'
 
 export interface CreateMarketOutcome {
   name: string
@@ -24,8 +29,9 @@ export interface CreateMarketRequest {
 export interface CreateMarketResponse {
   conditionId: string
   marketsCreated: string[]
+  baseAsset: MarketBaseAsset
   thumbnailUrl?: string | null
-  divisibility: number
+  divisibility: MarketDivisibility
 }
 
 export interface OracleNostrEvent {
@@ -125,7 +131,50 @@ export async function createMarketViaEngine(
   if (!response.ok) {
     throw new Error(`[Matching Engine] Failed to create market: ${await readErrorDetail(response)}`)
   }
-  return (await response.json()) as CreateMarketResponse
+  return parseCreateMarketResponse(await response.json())
+}
+
+export function parseCreateMarketResponse(value: unknown): CreateMarketResponse {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('create-market response had an invalid shape')
+  }
+  const response = value as Record<string, unknown>
+  const conditionId =
+    typeof response.conditionId === 'string' && response.conditionId.length > 0
+      ? response.conditionId
+      : null
+  const rawMarketsCreated = response.marketsCreated
+  const rawMarketCount = Array.isArray(rawMarketsCreated) ? rawMarketsCreated.length : null
+  const marketsCreated = Array.isArray(rawMarketsCreated)
+    ? rawMarketsCreated.filter(
+        (marketId): marketId is string => typeof marketId === 'string' && marketId.length > 0,
+      )
+    : null
+  const baseAsset = parseMarketBaseAsset(response.baseAsset)
+  const divisibility = parseMarketDivisibility(response.divisibility)
+  if (
+    !conditionId ||
+    !marketsCreated ||
+    marketsCreated.length !== rawMarketCount ||
+    !baseAsset ||
+    !divisibility
+  ) {
+    throw new Error('create-market response omitted canonical product metadata')
+  }
+  const thumbnailUrl =
+    response.thumbnailUrl === null || typeof response.thumbnailUrl === 'string'
+      ? response.thumbnailUrl
+      : undefined
+  if (response.thumbnailUrl !== undefined && thumbnailUrl === undefined) {
+    throw new Error('create-market response had an invalid thumbnail URL')
+  }
+  return {
+    conditionId,
+    marketsCreated,
+    baseAsset,
+    divisibility,
+    ...(thumbnailUrl !== undefined ? { thumbnailUrl } : {}),
+  }
 }
 
 export async function submitOracleAttestationViaEngine(
