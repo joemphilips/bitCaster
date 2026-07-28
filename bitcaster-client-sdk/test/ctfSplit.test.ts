@@ -525,24 +525,7 @@ test('splitCompleteSetWithOperation normalizes structured Cashu Amount inputs be
 
 test('splitCompleteSetWithOperation replays completed operations without mint calls', async () => {
   const completed = new MemoryProofOperationStore()
-  completed.records.set('op-completed', {
-    operationId: 'op-completed',
-    kind: 'ctf-split',
-    state: 'completed',
-    mintUrl: 'https://mint.example',
-    inputs: [proof('input-keyset', 100, 'input-secret')],
-    outputs: {},
-    metadata: {
-      baseAsset: 'sat',
-      unit: 'msat',
-      parentCollectionId: '0'.repeat(64),
-    },
-    resultProofs: {
-      YES: [proof('keyset-yes', 100, 'stored-proof')],
-    },
-    createdAt: 1,
-    updatedAt: 2,
-  })
+  completed.records.set('op-completed', completedSplitRecord('op-completed'))
   const transport = new FakeSplitTransport()
 
   const result = await splitCompleteSetWithOperation({
@@ -562,6 +545,7 @@ test('splitCompleteSetWithOperation replays completed operations without mint ca
 
   assert.deepEqual(result, {
     YES: [proof('keyset-yes', 100, 'stored-proof')],
+    NO: [proof('keyset-no', 100, 'stored-proof-no')],
   })
   result.YES[0].secret = 'mutated'
   assert.equal(completed.records.get('op-completed')?.resultProofs?.YES[0].secret, 'stored-proof')
@@ -571,20 +555,10 @@ test('splitCompleteSetWithOperation replays completed operations without mint ca
 test('splitCompleteSetWithOperation fails closed for failed existing operations', async () => {
   const failed = new MemoryProofOperationStore()
   failed.records.set('op-failed', {
-    operationId: 'op-failed',
-    kind: 'ctf-split',
+    ...completedSplitRecord('op-failed'),
     state: 'Failed',
-    mintUrl: 'https://mint.example',
-    inputs: [proof('input-keyset', 100, 'input-secret')],
-    outputs: {},
-    metadata: {
-      baseAsset: 'sat',
-      unit: 'msat',
-      parentCollectionId: '0'.repeat(64),
-    },
+    resultProofs: undefined,
     lastError: 'mint refused split',
-    createdAt: 1,
-    updatedAt: 2,
   })
   const transport = new FakeSplitTransport()
 
@@ -647,27 +621,7 @@ test('mergeCompleteSetToRegularWithOperation prepares conditional inputs and reg
 
 test('mergeCompleteSetToRegularWithOperation replays completed operations without mint calls', async () => {
   const store = new MemoryProofOperationStore()
-  store.records.set('merge-op-completed', {
-    operationId: 'merge-op-completed',
-    kind: 'ctf-merge',
-    state: 'completed',
-    mintUrl: 'https://mint.example',
-    inputs: [proof('keyset-alpha', 10, 'alpha')],
-    outputs: {},
-    metadata: {
-      baseAsset: 'sat',
-      unit: 'msat',
-      parentCollectionId: '0'.repeat(64),
-      inputsByCollection: {
-        Alpha: [proof('keyset-alpha', 10, 'alpha')],
-      },
-    },
-    resultProofs: {
-      regular: [proof('regular-keyset', 9, 'regular-stored')],
-    },
-    createdAt: 1,
-    updatedAt: 2,
-  })
+  store.records.set('merge-op-completed', completedMergeRecord('merge-op-completed'))
   const transport = new FakeSplitTransport()
 
   const result = await mergeCompleteSetToRegularWithOperation({
@@ -677,7 +631,7 @@ test('mergeCompleteSetToRegularWithOperation replays completed operations withou
     transport,
     conditionId: CONDITION_ID,
     conditionalProofsByCollection: {
-      Beta: [proof('keyset-beta', 10, 'beta-not-recorded')],
+      Alpha: [proof('keyset-alpha', 10, 'alpha')],
     },
     outputAmountSubunits: 9,
     regularKeyset: feePlanningKeyset(0, { 1: 'regular' }) as MintKeys,
@@ -750,16 +704,11 @@ test('CTF replay rejects noncanonical durable policy and keyset metadata without
   for (const [index, metadata] of invalidMetadata.entries()) {
     const store = new MemoryProofOperationStore()
     store.records.set(`replay-invalid-${index}`, {
-      operationId: `replay-invalid-${index}`,
-      kind: 'ctf-split',
-      state: 'completed',
-      mintUrl: 'https://mint.example',
-      inputs: [proof('input-keyset', 100, 'input-secret')],
-      outputs: {},
-      metadata,
-      resultProofs: { YES: [proof('keyset-yes', 100, 'stored-proof')] },
-      createdAt: 1,
-      updatedAt: 2,
+      ...completedSplitRecord(`replay-invalid-${index}`),
+      metadata: {
+        ...completedSplitRecord(`replay-invalid-${index}`).metadata,
+        ...metadata,
+      },
     })
     const transport = new FakeSplitTransport()
     await assert.rejects(
@@ -770,7 +719,7 @@ test('CTF replay rejects noncanonical durable policy and keyset metadata without
           operationId: `replay-invalid-${index}`,
           transport,
           conditionId: CONDITION_ID,
-          collateralProofs: [],
+          collateralProofs: [proof('input-keyset', 100, 'input-secret')],
           outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
           amountSubunits: 100,
           proofOperationStore: store,
@@ -792,13 +741,8 @@ test('prepared CTF replay validates persisted keysets before proof-state or mint
     mintUrl: 'https://mint.example',
     inputs: [proof('input-keyset', 100, 'input-secret')],
     outputs: {
-      YES: [
-        {
-          blindedMessage: { amount: 100, id: 'keyset-yes', B_: 'B-YES' },
-          blindingFactor: '1',
-          secret: '01',
-        },
-      ],
+      YES: [storedOutput('YES', 100, 'keyset-yes')],
+      NO: [storedOutput('NO', 100, 'keyset-no')],
     },
     metadata: {
       baseAsset: 'sat',
@@ -822,7 +766,7 @@ test('prepared CTF replay validates persisted keysets before proof-state or mint
         operationId: 'replay-invalid-output-unit',
         transport,
         conditionId: CONDITION_ID,
-        collateralProofs: [],
+        collateralProofs: [proof('input-keyset', 100, 'input-secret')],
         outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
         amountSubunits: 100,
         proofOperationStore: store,
@@ -838,6 +782,92 @@ test('prepared CTF replay validates persisted keysets before proof-state or mint
   assert.equal(proofStateCalls, 0)
   assert.equal(transport.posted.length, 0)
   assert.equal(store.completedCalls, 0)
+})
+
+test('completed CTF split replay rejects every request-authority mismatch without effects', async () => {
+  const cases: Array<{
+    name: string
+    change: (request: SplitReplayRequest) => void
+  }> = [
+    { name: 'mint', change: (request) => void (request.mintUrl = 'https://other.example') },
+    { name: 'condition', change: (request) => void (request.conditionId = 'b'.repeat(64)) },
+    { name: 'amount', change: (request) => void (request.amountSubunits = 101) },
+    {
+      name: 'input',
+      change: (request) =>
+        void (request.collateralProofs = [proof('input-keyset', 100, 'other-secret')]),
+    },
+    {
+      name: 'outcome mapping',
+      change: (request) =>
+        void (request.outcomeCollectionKeysets = {
+          YES: 'keyset-yes',
+          NO: 'different-keyset',
+        }),
+    },
+  ]
+
+  for (const scenario of cases) {
+    const operationId = `split-mismatch-${scenario.name}`
+    const store = new MemoryProofOperationStore()
+    store.records.set(operationId, completedSplitRecord(operationId))
+    const transport = new FakeSplitTransport()
+    const request = splitReplayRequest(operationId, store, transport)
+    scenario.change(request)
+
+    await assert.rejects(
+      () => splitCompleteSetWithOperation(request),
+      /does not match the current request/,
+      scenario.name,
+    )
+    assert.deepEqual(transport.keyLookups, [], scenario.name)
+    assert.equal(transport.posted.length, 0, scenario.name)
+    assert.equal(store.completedCalls, 0, scenario.name)
+  }
+})
+
+test('completed CTF merge replay rejects every request-authority mismatch without effects', async () => {
+  const cases: Array<{
+    name: string
+    change: (request: MergeReplayRequest) => void
+  }> = [
+    { name: 'mint', change: (request) => void (request.mintUrl = 'https://other.example') },
+    { name: 'condition', change: (request) => void (request.conditionId = 'b'.repeat(64)) },
+    { name: 'amount', change: (request) => void (request.outputAmountSubunits = 8) },
+    {
+      name: 'input',
+      change: (request) =>
+        void (request.conditionalProofsByCollection = {
+          Alpha: [proof('keyset-alpha', 10, 'other-alpha')],
+        }),
+    },
+    {
+      name: 'output keyset',
+      change: (request) =>
+        void (request.regularKeyset = {
+          ...request.regularKeyset,
+          id: 'other-regular-keyset',
+        }),
+    },
+  ]
+
+  for (const scenario of cases) {
+    const operationId = `merge-mismatch-${scenario.name}`
+    const store = new MemoryProofOperationStore()
+    store.records.set(operationId, completedMergeRecord(operationId))
+    const transport = new FakeSplitTransport()
+    const request = mergeReplayRequest(operationId, store, transport)
+    scenario.change(request)
+
+    await assert.rejects(
+      () => mergeCompleteSetToRegularWithOperation(request),
+      /does not match the current request|stored output authority/,
+      scenario.name,
+    )
+    assert.deepEqual(transport.keyLookups, [], scenario.name)
+    assert.equal(transport.converted.length, 0, scenario.name)
+    assert.equal(store.completedCalls, 0, scenario.name)
+  }
 })
 
 test('selectCompleteSetMergeInputs selects equal gross inputs across a complete partition', () => {
@@ -1196,6 +1226,111 @@ function output(collection: string, amount: number, keysetId: string): CtfSplitO
     blindingFactor: 1n,
     secret: new TextEncoder().encode(`secret-${collection}`),
     toProof: (sig) => proof(sig.id, sig.amount, `proof-${collection}`),
+  }
+}
+
+type SplitReplayRequest = Parameters<typeof splitCompleteSetWithOperation>[0]
+type MergeReplayRequest = Parameters<typeof mergeCompleteSetToRegularWithOperation>[0]
+
+function splitReplayRequest(
+  operationId: string,
+  proofOperationStore: CtfProofOperationStore,
+  transport: CtfSplitTransport,
+): SplitReplayRequest {
+  return {
+    mintUrl: 'https://mint.example',
+    baseAsset: 'sat',
+    operationId,
+    transport,
+    conditionId: CONDITION_ID,
+    collateralProofs: [proof('input-keyset', 100, 'input-secret')],
+    outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
+    amountSubunits: 100,
+    proofOperationStore,
+  }
+}
+
+function mergeReplayRequest(
+  operationId: string,
+  proofOperationStore: CtfProofOperationStore,
+  transport: CtfSplitTransport,
+): MergeReplayRequest {
+  return {
+    mintUrl: 'https://mint.example',
+    baseAsset: 'sat',
+    operationId,
+    transport,
+    conditionId: CONDITION_ID,
+    conditionalProofsByCollection: {
+      Alpha: [proof('keyset-alpha', 10, 'alpha')],
+    },
+    outputAmountSubunits: 9,
+    regularKeyset: feePlanningKeyset(0, { 1: 'regular' }) as MintKeys,
+    proofOperationStore,
+  }
+}
+
+function completedSplitRecord(operationId: string): CtfProofOperationRecord {
+  return {
+    operationId,
+    kind: 'ctf-split',
+    state: 'completed',
+    mintUrl: 'https://mint.example',
+    inputs: [proof('input-keyset', 100, 'input-secret')],
+    outputs: {
+      YES: [storedOutput('YES', 100, 'keyset-yes')],
+      NO: [storedOutput('NO', 100, 'keyset-no')],
+    },
+    metadata: {
+      conditionId: CONDITION_ID,
+      amountSubunits: 100,
+      baseAsset: 'sat',
+      unit: 'msat',
+      parentCollectionId: '0'.repeat(64),
+      outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
+    },
+    resultProofs: {
+      YES: [proof('keyset-yes', 100, 'stored-proof')],
+      NO: [proof('keyset-no', 100, 'stored-proof-no')],
+    },
+    createdAt: 1,
+    updatedAt: 2,
+  }
+}
+
+function completedMergeRecord(operationId: string): CtfProofOperationRecord {
+  return {
+    operationId,
+    kind: 'ctf-merge',
+    state: 'completed',
+    mintUrl: 'https://mint.example',
+    inputs: [proof('keyset-alpha', 10, 'alpha')],
+    outputs: {
+      '*': [storedOutput('regular', 9, 'regular-keyset')],
+    },
+    metadata: {
+      conditionId: CONDITION_ID,
+      outputAmountSubunits: 9,
+      baseAsset: 'sat',
+      unit: 'msat',
+      parentCollectionId: '0'.repeat(64),
+      inputsByCollection: {
+        Alpha: [proof('keyset-alpha', 10, 'alpha')],
+      },
+    },
+    resultProofs: {
+      regular: [proof('regular-keyset', 9, 'regular-stored')],
+    },
+    createdAt: 1,
+    updatedAt: 2,
+  }
+}
+
+function storedOutput(collection: string, amount: number, keysetId: string) {
+  return {
+    blindedMessage: { amount, id: keysetId, B_: `B-${collection}` },
+    blindingFactor: '01',
+    secret: `01-${collection}`,
   }
 }
 

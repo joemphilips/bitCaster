@@ -842,6 +842,7 @@ export async function splitCompleteSetWithOperation(params: {
   )
   const existing = await params.proofOperationStore.getProofOperation(params.operationId)
   if (existing) {
+    requireMatchingCtfSplitOperation(existing, params, policy)
     return resumeCtfSplit(
       params.mintUrl,
       existing,
@@ -924,9 +925,11 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
   const normalizedInputsByCollection = normalizeProofGroups(params.conditionalProofsByCollection)
   const existing = await params.proofOperationStore.getProofOperation(params.operationId)
   if (existing) {
-    const spentConditionalProofsByCollection = readMergeInputsByCollection(
+    const spentConditionalProofsByCollection = requireMatchingCtfMergeOperation(
       existing,
       normalizedInputsByCollection,
+      params,
+      policy,
     )
     const regularProofs = await resumeCtfMergeToRegular(
       params.mintUrl,
@@ -1110,14 +1113,109 @@ async function resumeCtfMergeToRegular(
   return completed
 }
 
-function readMergeInputsByCollection(
+interface CtfSplitReplayRequest {
+  operationId: string
+  mintUrl: string
+  conditionId: string
+  collateralProofs: Proof[]
+  outcomeCollectionKeysets: Record<string, string>
+  amountSubunits: number
+}
+
+interface CtfMergeReplayRequest {
+  operationId: string
+  mintUrl: string
+  conditionId: string
+  outputAmountSubunits: number
+  regularKeyset: MintKeys
+}
+
+function requireMatchingCtfSplitOperation(
   entry: CtfProofOperationRecord,
-  fallback: Record<string, Proof[]>,
-): Record<string, Proof[]> {
-  const metadata = entry.metadata as {
-    inputsByCollection?: Record<string, Proof[]>
+  request: CtfSplitReplayRequest,
+  policy: ProductCtfPolicy,
+): void {
+  const metadata = requireRecordMetadata(entry, 'ctf-split')
+  const storedMapping = requireStringMapping(
+    metadata.outcomeCollectionKeysets,
+    'CTF split outcome keysets',
+  )
+  const storedInputs = requireProofArray(entry.inputs, 'CTF split stored inputs')
+  const currentInputs = requireProofArray(request.collateralProofs, 'CTF split request inputs')
+  const storedAuthority = {
+    operationId: entry.operationId,
+    kind: entry.kind,
+    mintUrl: canonicalCtfMintIdentity(entry.mintUrl),
+    conditionId: requireConditionIdentity(metadata.conditionId),
+    ...requireOperationCtfPolicy(metadata, 'CTF split proof operation'),
+    unit: CTF_COLLATERAL_UNIT,
+    amountSubunits: requirePositiveSafeInteger(metadata.amountSubunits, 'stored amountSubunits'),
+    inputs: storedInputs.map(proofAuthority),
+    outcomeCollectionKeysets: sortedStringMapping(storedMapping),
   }
-  return metadata.inputsByCollection ? normalizeProofGroups(metadata.inputsByCollection) : fallback
+  const requestAuthority = {
+    operationId: request.operationId,
+    kind: 'ctf-split',
+    mintUrl: canonicalCtfMintIdentity(request.mintUrl),
+    conditionId: requireConditionIdentity(request.conditionId),
+    ...policy,
+    unit: CTF_COLLATERAL_UNIT,
+    amountSubunits: requirePositiveSafeInteger(request.amountSubunits, 'amountSubunits'),
+    inputs: currentInputs.map(proofAuthority),
+    outcomeCollectionKeysets: sortedStringMapping(
+      requireStringMapping(request.outcomeCollectionKeysets, 'CTF split request keysets'),
+    ),
+  }
+  requireSameOperationAuthority(storedAuthority, requestAuthority, entry.operationId)
+  validateSplitStoredOutputAuthority(entry, storedMapping, request.amountSubunits)
+}
+
+function requireMatchingCtfMergeOperation(
+  entry: CtfProofOperationRecord,
+  currentInputsByCollection: Record<string, Proof[]>,
+  request: CtfMergeReplayRequest,
+  policy: ProductCtfPolicy,
+): Record<string, Proof[]> {
+  const metadata = requireRecordMetadata(entry, 'ctf-merge')
+  const storedInputsByCollection = requireProofGroups(
+    metadata.inputsByCollection,
+    'CTF merge stored input groups',
+  )
+  const storedInputs = requireProofArray(entry.inputs, 'CTF merge stored inputs')
+  const currentInputs = flattenProofs(currentInputsByCollection)
+  const storedAuthority = {
+    operationId: entry.operationId,
+    kind: entry.kind,
+    mintUrl: canonicalCtfMintIdentity(entry.mintUrl),
+    conditionId: requireConditionIdentity(metadata.conditionId),
+    ...requireOperationCtfPolicy(metadata, 'CTF merge proof operation'),
+    unit: CTF_COLLATERAL_UNIT,
+    outputAmountSubunits: requirePositiveSafeInteger(
+      metadata.outputAmountSubunits,
+      'stored outputAmountSubunits',
+    ),
+    inputs: storedInputs.map(proofAuthority),
+    inputsByCollection: proofGroupAuthority(storedInputsByCollection),
+  }
+  const requestAuthority = {
+    operationId: request.operationId,
+    kind: 'ctf-merge',
+    mintUrl: canonicalCtfMintIdentity(request.mintUrl),
+    conditionId: requireConditionIdentity(request.conditionId),
+    ...policy,
+    unit: CTF_COLLATERAL_UNIT,
+    outputAmountSubunits: requirePositiveSafeInteger(
+      request.outputAmountSubunits,
+      'outputAmountSubunits',
+    ),
+    inputs: requireProofArray(currentInputs, 'CTF merge request inputs').map(proofAuthority),
+    inputsByCollection: proofGroupAuthority(
+      requireProofGroups(currentInputsByCollection, 'CTF merge request input groups'),
+    ),
+  }
+  requireSameOperationAuthority(storedAuthority, requestAuthority, entry.operationId)
+  validateMergeStoredOutputAuthority(entry, request.regularKeyset.id, request.outputAmountSubunits)
+  return storedInputsByCollection
 }
 
 async function executeCtfMergeToRegular(params: {
@@ -1557,6 +1655,278 @@ function buildOutcomeCollectionKeysetLookup(
 interface ProductCtfPolicy {
   baseAsset: MarketBaseAsset
   parentCollectionId: string
+}
+
+function requireRecordMetadata(
+  entry: CtfProofOperationRecord,
+  expectedKind: 'ctf-split' | 'ctf-merge',
+): Record<string, unknown> {
+  if (entry.kind !== expectedKind) {
+    throw new Error(`proof operation ${entry.operationId} kind does not match request`)
+  }
+  if (entry.state !== 'prepared' && entry.state !== 'completed' && entry.state !== 'Failed') {
+    throw new Error(`proof operation ${entry.operationId} has invalid state`)
+  }
+  if (!entry.metadata || typeof entry.metadata !== 'object' || Array.isArray(entry.metadata)) {
+    throw new Error(`proof operation ${entry.operationId} has invalid metadata`)
+  }
+  return entry.metadata
+}
+
+function requireSameOperationAuthority(
+  stored: Record<string, unknown>,
+  requested: Record<string, unknown>,
+  operationId: string,
+): void {
+  if (canonicalAuthorityFingerprint(stored) !== canonicalAuthorityFingerprint(requested)) {
+    throw new Error(`proof operation ${operationId} does not match the current request`)
+  }
+}
+
+function proofAuthority(proof: Proof): Record<string, unknown> {
+  return {
+    id: requireNonEmptyText(proof.id, 'proof keyset id'),
+    amount: requirePositiveSafeInteger(amountToNumber(proof.amount), 'proof amount'),
+    secret: requireNonEmptyText(proof.secret, 'proof secret'),
+    C: requireNonEmptyText(proof.C, 'proof signature'),
+    dleq: canonicalAuthorityValue(proof.dleq ?? null),
+    p2pk_e: proof.p2pk_e ?? null,
+    witness: canonicalAuthorityValue(proof.witness ?? null),
+  }
+}
+
+function proofGroupAuthority(groups: Record<string, Proof[]>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.keys(groups)
+      .sort()
+      .map((group) => [group, groups[group]!.map(proofAuthority)]),
+  )
+}
+
+function canonicalAuthorityFingerprint(value: unknown): string {
+  return JSON.stringify(canonicalAuthorityValue(value))
+}
+
+function canonicalAuthorityValue(value: unknown): unknown {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('operation authority contains invalid number')
+    return value
+  }
+  if (typeof value === 'bigint') return { bigint: value.toString(10) }
+  if (value instanceof Uint8Array) return { bytes: bytesToHex(value) }
+  if (Array.isArray(value)) return value.map(canonicalAuthorityValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, child]) => child !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonicalAuthorityValue(child)]),
+    )
+  }
+  throw new Error('operation authority contains unsupported value')
+}
+
+function requireProofArray(value: unknown, context: string): Proof[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${context} must be a non-empty proof array`)
+  }
+  return value.map((proof, index) => {
+    if (!proof || typeof proof !== 'object' || Array.isArray(proof)) {
+      throw new Error(`${context}[${index}] is invalid`)
+    }
+    proofAuthority(proof as Proof)
+    return normalizeProof(proof as Proof)
+  })
+}
+
+function requireProofGroups(value: unknown, context: string): Record<string, Proof[]> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${context} must be an object`)
+  }
+  const entries = Object.entries(value)
+  if (entries.length === 0) throw new Error(`${context} must not be empty`)
+  return Object.fromEntries(
+    entries.map(([group, proofs]) => [
+      requireNonEmptyText(group, `${context} group`),
+      requireProofArray(proofs, `${context}.${group}`),
+    ]),
+  )
+}
+
+function requireStringMapping(value: unknown, context: string): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${context} must be an object`)
+  }
+  const entries = Object.entries(value)
+  if (entries.length === 0) throw new Error(`${context} must not be empty`)
+  return Object.fromEntries(
+    entries.map(([key, mapped]) => [
+      requireNonEmptyText(key, `${context} key`),
+      requireNonEmptyText(mapped, `${context}.${key}`),
+    ]),
+  )
+}
+
+function sortedStringMapping(mapping: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(mapping).sort(([left], [right]) => left.localeCompare(right)),
+  )
+}
+
+function validateSplitStoredOutputAuthority(
+  entry: CtfProofOperationRecord,
+  outcomeKeysets: Record<string, string>,
+  amountSubunits: number,
+): void {
+  const groups = requireStoredOutputGroups(entry.outputs, 'CTF split stored outputs')
+  requireExactGroupKeys(groups, Object.keys(outcomeKeysets), 'CTF split stored outputs')
+  for (const [collection, outputs] of Object.entries(groups)) {
+    validateOutputDescriptors(outputs, outcomeKeysets[collection]!, amountSubunits, collection)
+  }
+  if (entry.state === 'completed') {
+    validateCompletedResultGroups(entry, groups, outcomeKeysets, 'CTF split completed result')
+  }
+}
+
+function validateMergeStoredOutputAuthority(
+  entry: CtfProofOperationRecord,
+  regularKeysetId: string,
+  outputAmountSubunits: number,
+): void {
+  const groups = requireStoredOutputGroups(entry.outputs, 'CTF merge stored outputs')
+  requireExactGroupKeys(groups, ['*'], 'CTF merge stored outputs')
+  validateOutputDescriptors(groups['*']!, regularKeysetId, outputAmountSubunits, '*')
+  if (entry.state === 'completed') {
+    validateCompletedResultGroups(
+      entry,
+      groups,
+      { regular: regularKeysetId },
+      'CTF merge completed result',
+      { regular: '*' },
+    )
+  }
+}
+
+function requireStoredOutputGroups(
+  value: unknown,
+  context: string,
+): Record<string, StoredOutputData[]> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${context} must be an object`)
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([group, outputs]) => {
+      if (!Array.isArray(outputs) || outputs.length === 0) {
+        throw new Error(`${context}.${group} must be non-empty`)
+      }
+      for (const output of outputs) validateStoredOutputShape(output, `${context}.${group}`)
+      return [group, outputs as StoredOutputData[]]
+    }),
+  )
+}
+
+function validateStoredOutputShape(value: unknown, context: string): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${context} contains invalid output data`)
+  }
+  const output = value as StoredOutputData
+  requirePositiveSafeInteger(output.blindedMessage?.amount, `${context} amount`)
+  requireNonEmptyText(output.blindedMessage?.id, `${context} keyset id`)
+  requireNonEmptyText(output.blindedMessage?.B_, `${context} blinded message`)
+  requireNonEmptyText(output.blindingFactor, `${context} blinding factor`)
+  requireNonEmptyText(output.secret, `${context} secret`)
+}
+
+function validateOutputDescriptors(
+  outputs: StoredOutputData[],
+  expectedKeysetId: string,
+  expectedAmount: number,
+  group: string,
+): void {
+  const total = outputs.reduce((sum, output) => sum + output.blindedMessage.amount, 0)
+  if (
+    total !== expectedAmount ||
+    outputs.some((output) => output.blindedMessage.id !== expectedKeysetId)
+  ) {
+    throw new Error(`stored output authority for ${group} does not match request`)
+  }
+}
+
+function validateCompletedResultGroups(
+  entry: CtfProofOperationRecord,
+  outputsByGroup: Record<string, StoredOutputData[]>,
+  resultKeysets: Record<string, string>,
+  context: string,
+  outputGroupByResult: Record<string, string> = {},
+): void {
+  const results = requireProofGroups(entry.resultProofs, context)
+  requireExactGroupKeys(results, Object.keys(resultKeysets), context)
+  for (const [resultGroup, proofs] of Object.entries(results)) {
+    const outputs = outputsByGroup[outputGroupByResult[resultGroup] ?? resultGroup]!
+    if (proofs.length !== outputs.length)
+      throw new Error(`${context}.${resultGroup} count mismatch`)
+    proofs.forEach((proof, index) => {
+      const output = outputs[index]!
+      if (
+        proof.id !== resultKeysets[resultGroup] ||
+        amountToNumber(proof.amount) !== output.blindedMessage.amount
+      ) {
+        throw new Error(`${context}.${resultGroup} does not match stored outputs`)
+      }
+    })
+  }
+}
+
+function requireExactGroupKeys(
+  groups: Record<string, unknown>,
+  expected: string[],
+  context: string,
+): void {
+  const actualKeys = Object.keys(groups).sort()
+  const expectedKeys = [...expected].sort()
+  if (canonicalAuthorityFingerprint(actualKeys) !== canonicalAuthorityFingerprint(expectedKeys)) {
+    throw new Error(`${context} groups do not match request`)
+  }
+}
+
+function canonicalCtfMintIdentity(value: unknown): string {
+  const text = requireNonEmptyText(value, 'CTF operation mint URL')
+  let url: URL
+  try {
+    url = new URL(text)
+  } catch {
+    throw new Error('CTF operation mint URL is invalid')
+  }
+  if (
+    (url.protocol !== 'https:' && url.protocol !== 'http:') ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    url.href.includes('?') ||
+    url.href.includes('#') ||
+    /%[0-9a-f]{2}/i.test(url.pathname)
+  ) {
+    throw new Error('CTF operation mint URL is not canonical')
+  }
+  const path = url.pathname.replace(/\/+$/, '')
+  return `${url.origin}${path === '' ? '' : path}`
+}
+
+function requireConditionIdentity(value: unknown): string {
+  const conditionId = requireNonEmptyText(value, 'CTF operation conditionId')
+  if (!/^[0-9a-fA-F]{64}$/.test(conditionId)) {
+    throw new Error('CTF operation conditionId must be 64 hex characters')
+  }
+  return conditionId.toLowerCase()
+}
+
+function requireNonEmptyText(value: unknown, context: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${context} must be a non-empty string`)
+  }
+  return value
 }
 
 function requireProductCtfPolicy(
