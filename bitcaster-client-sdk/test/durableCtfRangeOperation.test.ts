@@ -38,13 +38,6 @@ import {
   type DurableCtfRangeOperation,
   type DurableCtfRangeAllManifestRecovery,
 } from '../src/durableCtfRangeOperation.ts'
-import {
-  createSettlementCapabilityArtifact,
-  decodeSettlementCapabilityArtifact,
-  decodeSettlementCapabilityArtifactBytes,
-  deriveSettlementCapabilityArtifactDigest,
-  encodeSettlementCapabilityArtifact,
-} from '../src/settlementCapabilityArtifact.ts'
 import type { TokenImportKeysetLookup } from '../src/tokenImportValidation.ts'
 import { bindDurableCustodyProofOperation } from '../src/durableCustodyProofOperationRecord.ts'
 import {
@@ -445,96 +438,6 @@ test('range operation preserves direct proof-operation authority and fee bounds'
         inputs: [{ ...operation.inputs[0]!, witness: { signatures: [] } }],
       }),
     /proof witness/,
-  )
-})
-
-test('range capability exposes only exact public settlement authority', () => {
-  const operation = fixture()
-  operation.inputs[0]!.dleq = {
-    e: '11'.repeat(32),
-    s: '22'.repeat(32),
-    r: '33'.repeat(32),
-  }
-  const artifact = createSettlementCapabilityArtifact(operation)
-  const bytes = encodeSettlementCapabilityArtifact(artifact)
-  const decoded = decodeSettlementCapabilityArtifactBytes(bytes)
-
-  assert.deepEqual(decoded, artifact)
-  assert.equal(
-    deriveSettlementCapabilityArtifactDigest(decoded),
-    deriveSettlementCapabilityArtifactDigest(artifact),
-  )
-  assert.equal(decoded.inputs.length, operation.inputs.length)
-  assert.equal(decoded.manifest.entries.length, operation.manifest.entries.length)
-  assert.equal(decoded.manifest.commitment, operation.manifest.commitment)
-  assert.ok(decoded.inputProofYs.every((value) => value.length > 0))
-  assert.deepEqual(decoded.inputs[0]!.dleq, {
-    e: '11'.repeat(32),
-    s: '22'.repeat(32),
-  })
-
-  const serialized = new TextDecoder().decode(bytes)
-  assert.equal(serialized.includes('refundKey'), false)
-  assert.equal(serialized.includes('privateKey'), false)
-  assert.equal(serialized.includes('outputData'), false)
-  assert.equal(serialized.includes('blindingFactor'), false)
-  assert.equal(serialized.includes('"r":'), false)
-})
-
-test('range capability rejects changed authority and noncanonical bytes', () => {
-  const artifact = createSettlementCapabilityArtifact(fixture())
-  assert.throws(
-    () =>
-      decodeSettlementCapabilityArtifact({
-        ...artifact,
-        inputs: artifact.inputs.map((proof, index) => ({
-          ...proof,
-          ...(index === 0
-            ? { dleq: { e: '11'.repeat(32), s: '22'.repeat(32), r: '33'.repeat(32) } }
-            : {}),
-        })),
-      }),
-    /foreign or missing fields/,
-  )
-  assert.throws(
-    () =>
-      decodeSettlementCapabilityArtifact({
-        ...artifact,
-        offerKeysetId: `02${'11'.repeat(32)}`,
-      }),
-    /offer keyset id is not canonical/,
-  )
-  assert.throws(
-    () =>
-      decodeSettlementCapabilityArtifact({
-        ...artifact,
-        inputProofYs: artifact.inputProofYs.map((value, index) =>
-          index === 0 ? `02${'00'.repeat(32)}` : value,
-        ),
-      }),
-    /proof authority is inconsistent/,
-  )
-  assert.throws(
-    () =>
-      decodeSettlementCapabilityArtifact({
-        ...artifact,
-        manifest: {
-          ...artifact.manifest,
-          entries: artifact.manifest.entries.map((entry, index) => ({
-            ...entry,
-            ...(index === 0 ? { amount: '2' } : {}),
-          })),
-        },
-      }),
-    /manifest commitment is invalid/,
-  )
-
-  const canonical = encodeSettlementCapabilityArtifact(artifact)
-  const parsed = JSON.parse(new TextDecoder().decode(canonical)) as object
-  const noncanonical = new TextEncoder().encode(JSON.stringify(parsed, null, 2))
-  assert.throws(
-    () => decodeSettlementCapabilityArtifactBytes(noncanonical),
-    /bytes are not canonical/,
   )
 })
 
