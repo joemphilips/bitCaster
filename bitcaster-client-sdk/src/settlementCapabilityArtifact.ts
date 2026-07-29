@@ -565,7 +565,7 @@ function requireKeyset(value: unknown, name: string): string {
   const keyset = requireText(value, name)
   if (
     canonicalDurableCustodyKeysetIdentity(keyset) !== keyset ||
-    !/^(?:[0-9a-f]{16}|01[0-9a-f]{64})$/.test(keyset)
+    !/^(?:00[0-9a-f]{14}|01[0-9a-f]{64})$/.test(keyset)
   ) {
     throw new Error(`${name} is not canonical`)
   }

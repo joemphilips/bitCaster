@@ -250,6 +250,13 @@ test('v2 capability modes reject cross-mode, legacy, and changed authority', () 
       },
       /foreign or missing fields/,
     ],
+    [
+      {
+        ...pool,
+        offerKeysetId: '1111223344556677',
+      },
+      /keyset.*canonical/i,
+    ],
   ]
   for (const [value, expected] of invalid) {
     assert.throws(() => decodeSettlementCapabilityArtifact(value), expected)
