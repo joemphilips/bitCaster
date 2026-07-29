@@ -57,6 +57,9 @@ const MINT_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(MINT_PRIVATE_KEY, true
 const KEYS = { '1': MINT_PUBLIC_KEY, '2': MINT_PUBLIC_KEY, '4': MINT_PUBLIC_KEY }
 const INPUT_FEE_PPK = 100
 const FINAL_EXPIRY = 200
+const COORDINATOR_PUBLIC_KEY = 'f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9'
+const OTHER_COORDINATOR_PUBLIC_KEY =
+  'e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13'
 const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
   outcomeCollection: OUTCOME_COLLECTION,
@@ -123,6 +126,7 @@ function fixture(
       ],
     },
     refund: refundKey.publicKey,
+    coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
     poolPolicy: { rateN: '1', rateD: '1', minReceive: '1', maxDebit: '4' },
   })
   return createDurableCtfRangeOperation({
@@ -133,6 +137,7 @@ function fixture(
     unit: 'msat',
     conditionId: CONDITION_ID,
     parentCollectionId: ROOT_PARENT,
+    coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
     offerKeysetId: OFFER_KEYSET,
     receiveKeysetId: RECEIVE_KEYSET,
     keysetLookup: options.keysetLookup ?? rangeKeysetLookup(),
@@ -383,7 +388,13 @@ test('range operation preserves direct proof-operation authority and fee bounds'
       outcomeCollectionId: OUTCOME_COLLECTION_ID,
     },
   })
+  assert.equal(operation.schemaVersion, 2)
+  assert.equal(operation.coordinatorPublicKey, COORDINATOR_PUBLIC_KEY)
   assert.equal(decodeDurableCtfRangeOperation(operation).sourceOperationId, 'prepare-operation-1')
+  assert.throws(
+    () => decodeDurableCtfRangeOperation({ ...operation, schemaVersion: 1 }),
+    /schema is unsupported/,
+  )
   assert.deepEqual(deriveDurableCtfRangeFeeBounds(operation), {
     weightPpk: 100n,
     minimumFee: 0n,
@@ -438,6 +449,22 @@ test('range operation preserves direct proof-operation authority and fee bounds'
         inputs: [{ ...operation.inputs[0]!, witness: { signatures: [] } }],
       }),
     /proof witness/,
+  )
+  assert.throws(
+    () =>
+      decodeDurableCtfRangeOperation({
+        ...operation,
+        coordinatorPublicKey: OTHER_COORDINATOR_PUBLIC_KEY,
+      }),
+    /input authority/,
+  )
+  assert.throws(
+    () =>
+      decodeDurableCtfRangeOperation({
+        ...operation,
+        coordinatorPublicKey: '00'.repeat(32),
+      }),
+    /coordinator public key is invalid/,
   )
 })
 
@@ -986,10 +1013,9 @@ test('direct preparation link and selected result commit atomically across resta
   const privateArtifact = restarted
     .readArtifacts()
     .find(({ reference }) => reference.artifactId.endsWith(':private'))
-  assert.equal(
-    decodeDurableCtfRangeOperation(privateArtifact?.artifact.artifact).sourceOperationId,
-    operation.sourceOperationId,
-  )
+  const restartedOperation = decodeDurableCtfRangeOperation(privateArtifact?.artifact.artifact)
+  assert.equal(restartedOperation.sourceOperationId, operation.sourceOperationId)
+  assert.equal(restartedOperation.coordinatorPublicKey, COORDINATOR_PUBLIC_KEY)
 
   const selection = createCtfSelectionBitmap(4, [1, 3])
   const envelope = createDurableCtfRangeResultEnvelope({

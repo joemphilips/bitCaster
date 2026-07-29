@@ -24,8 +24,7 @@ const OFFER_KEYSET = '0011223344556677'
 const RECEIVE_KEYSET = `01${'aa'.repeat(32)}`
 const POINT_ONE = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
 const POINT_TWO = '02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5'
-const POOL_PROOF_SIGNATURE =
-  '023487d4b2fd7302862ed765610fbcfa3355b637ad0169864b08d78644bc8beeb6'
+const POOL_PROOF_SIGNATURE = '023487d4b2fd7302862ed765610fbcfa3355b637ad0169864b08d78644bc8beeb6'
 const POOL_DLEQ = {
   e: '7434a6e4a1b0e088ae76020be608ffc3ec5a1893006827d9705f22976ec0fb7f',
   s: '814bdafc32472f25f6c4f4dacc5b00bfcabad0da23eeee347d9d901236b132a5',
@@ -44,8 +43,7 @@ const EXPIRY = 2_000_000_000
 const POOL_COMMITMENT = '92be6e407746227598f9a32c4c2c8b695b716ba1e3fec372f88175a1fc669c4b'
 const POOL_PROOF_Y = '023487d4b2fd7302862ed765610fbcfa3355b637ad0169864b08d78644bc8beeb6'
 const POOL_ARTIFACT_DIGEST = 'eaa35d8555b53e33acc6f995e2f4907429fd8ed795c8098f36abbdc8cc8274bc'
-const STANDARD_ARTIFACT_DIGEST =
-  'ef93567954cad6bb9dc249ac3d05ecc32ba088437d857736c1897359dfa58809'
+const STANDARD_ARTIFACT_DIGEST = 'ef93567954cad6bb9dc249ac3d05ecc32ba088437d857736c1897359dfa58809'
 
 function standardFixture(): StandardSettlementCapabilityArtifact {
   const outputs: SettlementCapabilityOutput[] = [{ amount: '4', id: RECEIVE_KEYSET, B_: POINT_TWO }]
@@ -321,7 +319,7 @@ test('v2 capability binds one valid coordinator and unique proof nonce', () => {
         inputs: [{ ...pool.inputs[0], secret: invalidCoordinator }],
         inputProofYs: [hashToCurve(new TextEncoder().encode(invalidCoordinator)).toHex(true)],
       }),
-    /coordinator public key is invalid/,
+    /coordinator public key is not a valid x-only public key/,
   )
 
   assert.throws(

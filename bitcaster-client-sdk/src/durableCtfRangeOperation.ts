@@ -58,7 +58,7 @@ import type {
   TokenImportKeysetSource,
 } from './tokenImportValidation.ts'
 
-export const DURABLE_CTF_RANGE_OPERATION_SCHEMA_VERSION = 1 as const
+export const DURABLE_CTF_RANGE_OPERATION_SCHEMA_VERSION = 2 as const
 export const DURABLE_CTF_RANGE_OPERATION_METADATA_KEY = 'durableCtfRangeOperation'
 export const DURABLE_CTF_RANGE_RESULT_BYTES_MAX = 256 * 1_024
 export const CTF_RANGE_PRODUCT_UNIT = 'msat' as const
@@ -154,7 +154,7 @@ export interface DurableCtfRangeExpiryAuthority {
 }
 
 export interface DurableCtfRangeOperation {
-  schemaVersion: 1
+  schemaVersion: 2
   operationId: string
   sourceOperationId: string
   authorizationId: string
@@ -162,6 +162,7 @@ export interface DurableCtfRangeOperation {
   unit: 'msat'
   conditionId: string
   parentCollectionId: string
+  coordinatorPublicKey: string
   offerKeysetId: string
   receiveKeysetId: string
   offerAsset: DurableCtfRangeAsset
@@ -716,6 +717,7 @@ function requireRangeOperationShape(value: unknown): DurableCtfRangeOperation {
     'unit',
     'conditionId',
     'parentCollectionId',
+    'coordinatorPublicKey',
     'offerKeysetId',
     'receiveKeysetId',
     'offerAsset',
@@ -729,7 +731,9 @@ function requireRangeOperationShape(value: unknown): DurableCtfRangeOperation {
     'inputs',
     'manifest',
   ])
-  if (value.schemaVersion !== 1) throw new Error('durable CTF range schema is unsupported')
+  if (value.schemaVersion !== DURABLE_CTF_RANGE_OPERATION_SCHEMA_VERSION) {
+    throw new Error('durable CTF range schema is unsupported')
+  }
   return value as unknown as DurableCtfRangeOperation
 }
 
@@ -743,6 +747,7 @@ function validateRangeIdentity(value: DurableCtfRangeOperation): void {
   if (value.parentCollectionId !== ROOT_PARENT_COLLECTION_ID) {
     throw new Error('nested CTF range conditions are unsupported')
   }
+  requireXOnlyPublicKey(value.coordinatorPublicKey, 'CTF range coordinator public key')
   requireBoundedText(value.offerKeysetId, 'offer keyset id')
   requireBoundedText(value.receiveKeysetId, 'receive keyset id')
   if (!Number.isSafeInteger(value.expiry) || value.expiry < 0) {
@@ -1047,6 +1052,7 @@ function validateRangeInputs(value: DurableCtfRangeOperation): void {
       condition.data !== value.manifest.commitment ||
       condition.expiry !== BigInt(value.expiry) ||
       condition.refund !== value.refundKey.publicKey ||
+      condition.coordinatorPublicKey !== value.coordinatorPublicKey ||
       condition.mode.kind !== 'pool' ||
       canonicalPolicy(condition.mode.policy) !== canonicalJson(value.policy)
     ) {
@@ -2119,6 +2125,16 @@ function requireLowerHexPoint(value: unknown, field: string): string {
     throw new Error(`${field} is invalid`)
   }
   return value
+}
+
+function requireXOnlyPublicKey(value: unknown, field: string): string {
+  const publicKey = requireLowerHex(value, 64, field)
+  try {
+    secp256k1.Point.fromHex(`02${publicKey}`)
+  } catch {
+    throw new Error(`${field} is invalid`)
+  }
+  return publicKey
 }
 
 function requireRangeKeysetPublicKeys(value: unknown): Record<string, string> {

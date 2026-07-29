@@ -405,62 +405,11 @@ function validateArtifactAuthority(
 function parseCoordinatorBoundCondition(
   secret: string,
 ): ReturnType<typeof parseCtfPayToUnlockCondition> & { coordinatorPublicKey: string } {
-  let wire: unknown
-  try {
-    wire = JSON.parse(secret)
-  } catch {
-    throw new Error('settlement capability PAY_TO_UNLOCK condition is malformed')
+  const parsed = parseCtfPayToUnlockCondition(secret)
+  if (parsed.coordinatorPublicKey === undefined) {
+    throw new Error('settlement capability coordinator public key is missing')
   }
-  if (!Array.isArray(wire) || wire.length !== 2 || wire[0] !== 'PAY_TO_UNLOCK') {
-    throw new Error('settlement capability PAY_TO_UNLOCK condition is malformed')
-  }
-  const condition = exactRecord(wire[1], ['data', 'nonce', 'tags'])
-  if (!Array.isArray(condition.tags)) {
-    throw new Error('settlement capability PAY_TO_UNLOCK condition is malformed')
-  }
-  const tags = new Map<string, string>()
-  for (const item of condition.tags) {
-    if (
-      !Array.isArray(item) ||
-      item.length !== 2 ||
-      typeof item[0] !== 'string' ||
-      typeof item[1] !== 'string' ||
-      tags.has(item[0])
-    ) {
-      throw new Error('settlement capability PAY_TO_UNLOCK condition is malformed')
-    }
-    tags.set(item[0], item[1])
-  }
-  const allowed = new Set([
-    'offer_keyset',
-    'expiry',
-    'refund',
-    'coordinator_pubkey',
-    'rate_n',
-    'rate_d',
-    'min_receive',
-    'max_debit',
-  ])
-  if (
-    tags.size !== (tags.has('rate_n') ? 8 : 4) ||
-    [...tags.keys()].some((tag) => !allowed.has(tag))
-  ) {
-    throw new Error('settlement capability PAY_TO_UNLOCK condition is malformed')
-  }
-  const coordinatorPublicKey = requireXOnlyPoint(
-    tags.get('coordinator_pubkey'),
-    'coordinator public key',
-  )
-  const baseTags = condition.tags.filter(
-    (item) => (item as [string, string])[0] !== 'coordinator_pubkey',
-  )
-  const parsed = parseCtfPayToUnlockCondition(
-    JSON.stringify([
-      'PAY_TO_UNLOCK',
-      { data: condition.data, nonce: condition.nonce, tags: baseTags },
-    ]),
-  )
-  return { ...parsed, coordinatorPublicKey }
+  return { ...parsed, coordinatorPublicKey: parsed.coordinatorPublicKey }
 }
 
 function validateCapabilityDleq(value: unknown): void {
@@ -545,16 +494,6 @@ function requirePoint(value: unknown, name: string): string {
   if (!/^(?:02|03)[0-9a-f]{64}$/.test(point)) throw new Error(`${name} is invalid`)
   try {
     if (secp256k1.Point.fromHex(point).toHex(true) !== point) throw new Error()
-  } catch {
-    throw new Error(`${name} is invalid`)
-  }
-  return point
-}
-
-function requireXOnlyPoint(value: unknown, name: string): string {
-  const point = requireLowerHex(value, 64, name)
-  try {
-    secp256k1.Point.fromHex(`02${point}`)
   } catch {
     throw new Error(`${name} is invalid`)
   }
