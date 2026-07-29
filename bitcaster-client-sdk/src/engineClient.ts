@@ -1,4 +1,8 @@
-import type { MarketBaseAsset } from './marketUnits.ts'
+import type {
+  CtfCollateralUnit,
+  MarketBaseAsset,
+  MarketDivisibility,
+} from './marketUnits.ts'
 
 export type EngineFetch = typeof fetch
 
@@ -15,15 +19,87 @@ export interface EngineAuthorizationRequest {
   payloadHash?: string
 }
 
-export interface SubmitOrderRequest {
+export interface SettlementCapabilityReference {
+  artifactId: string
+  bindingDigest: string
+}
+
+export type SettlementCapabilityState =
+  | 'staged'
+  | 'bindingPending'
+  | 'bound'
+  | 'selected'
+  | 'uncertain'
+  | 'terminal'
+  | 'quarantined'
+
+export type OrderLifecycleStatus =
+  | 'resting'
+  | 'matched'
+  | 'partially_filled'
+  | 'awaiting_authorization'
+  | 'filled'
+  | 'cancelled'
+  | 'expired'
+  | 'evicted_capacity'
+  | 'rejected_capacity'
+  | 'failed'
+
+export type OrderTimeInForce = 'GTC' | 'FOK' | 'FAK' | 'GTD'
+
+export interface SettlementOrderIntent {
   outcomeId: string
   tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
   amountSubunits: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC'
+  baseAsset: MarketBaseAsset
+  collateralUnit: CtfCollateralUnit
+  timeInForce: OrderTimeInForce
+  expiresAt: string | null
+}
+
+export interface CreateSettlementCapabilityRequest {
+  stageIdempotencyKey: string
   clientOrderId: string
-  comment?: NostrKind1Event | null
+  marketId: string
+  orderIntent: SettlementOrderIntent
+  artifact: string
+}
+
+export interface SettlementCapabilityResponse {
+  reference: SettlementCapabilityReference
+  orderId: string
+  clientOrderId: string
+  marketId: string
+  artifactDigest: string
+  state: SettlementCapabilityState
+  version: number
+  authorizationExpiresAt: string
+  stageExpiresAt: string
+  settlementGroup: SettlementGroupSummary | null
+}
+
+export interface SettlementCapabilityResultResponse {
+  resultId: string
+  reference: SettlementCapabilityReference
+  operationId: string
+  requestDigest: string
+  envelopeDigest: string
+  envelope: string
+  createdAt: string
+  acknowledgedAt?: string | null
+  version: number
+  settlementGroup: SettlementGroupSummary
+}
+
+export interface AcknowledgeSettlementCapabilityResultRequest {
+  expectedVersion: number
+}
+
+export interface SubmitOrderRequest {
+  settlementCapability: SettlementCapabilityReference
+  comment: NostrKind1Event | null
 }
 
 export interface NostrKind1Event {
@@ -40,35 +116,52 @@ export interface Fill {
   id: string
   makerOrderId: string
   takerOrderId: string
-  outcomeId: string
   amountSubunits: number
   executionPrice: number
   path: 'Complementary' | 'Mint'
   status: 'Matched' | 'Filled' | 'Failed'
   filledAt: string
+  settlementGroup: SettlementGroupSummary
   tradeId?: string
   baseAsset: MarketBaseAsset
-  divisibility: number
+  divisibility: MarketDivisibility
   tokenSide: 'Outcome' | 'Complement'
-  quotePaymentSubunits?: number | null
-  outcomeFaceAmountSubunits?: number | null
+  quotePaymentSubunits: number
+  outcomeFaceAmountSubunits: number
+}
+
+export type SettlementGroupStatus =
+  | 'Prepared'
+  | 'SubmissionPending'
+  | 'Reconciling'
+  | 'Confirmed'
+  | 'DefinitivelyRejected'
+  | 'Refundable'
+  | 'ExpiredBeforeSubmission'
+
+export interface SettlementGroupSummary {
+  groupId: string
+  status: SettlementGroupStatus
+  revision: number
+  coalescingDeadline: string
+  frozenAt: string | null
 }
 
 export interface SubmitOrderResponse {
   orderId: string
-  status: string
+  status: OrderLifecycleStatus
   remainingAmountSubunits: number
   fills: Fill[]
-  pendingPubkeySubmissions?: PendingPubkeySubmission[]
+  pendingPubkeySubmissions: PendingPubkeySubmission[]
   baseAsset: MarketBaseAsset
-  divisibility: number
+  divisibility: MarketDivisibility
+  activeSettlementGroup: SettlementGroupSummary | null
 }
 
 export interface PendingPubkeySubmission {
   tradeId: string
   role: 'maker' | 'taker'
-  fillAmountSubunits: number
-  fillAmount?: number
+  fillAmount: number
   deadline: string
 }
 
@@ -76,41 +169,41 @@ export interface BatchSubmitOrdersRequest {
   orders: BatchSubmitOrderRequestItem[]
 }
 
-export interface BatchSubmitOrderRequestItem extends Omit<SubmitOrderRequest, 'comment'> {
-  marketId: string
-  expiresAt?: string | null
+export interface BatchSubmitOrderRequestItem {
+  settlementCapability: SettlementCapabilityReference
 }
 
 export interface BatchSubmitOrdersResponse {
-  results: BatchSubmitOrderResult[]
+  accepted: BatchSubmitOrderSuccess[]
+  rejected: BatchSubmitOrderFailure[]
 }
 
-export interface BatchSubmitOrderResult {
+export interface BatchSubmitOrderSuccess {
   requestIndex: number
-  clientOrderId?: string | null
-  success: boolean
+  clientOrderId: string
   marketId: string
-  orderId?: string | null
-  status: string
+  orderId: string
+  status: OrderLifecycleStatus
   remainingAmountSubunits: number
   fills: Fill[]
-  pendingPubkeySubmissions?: PendingPubkeySubmission[]
+  pendingPubkeySubmissions: PendingPubkeySubmission[]
   baseAsset: MarketBaseAsset
-  divisibility: number
-  errorCode?: BatchSubmitOrderErrorCode | null
-  errorMessage?: string | null
+  divisibility: MarketDivisibility
+  activeSettlementGroup: SettlementGroupSummary | null
+}
+
+export interface BatchSubmitOrderFailure {
+  requestIndex: number
+  errorCode: BatchSubmitOrderErrorCode
 }
 
 export type BatchSubmitOrderErrorCode =
-  | 'invalidMarket'
-  | 'invalidOutcome'
-  | 'invalidTokenSide'
-  | 'invalidSide'
-  | 'invalidPrice'
-  | 'invalidAmount'
-  | 'invalidTimeInForce'
-  | 'duplicateClientOrderId'
-  | 'unsupportedOrder'
+  | 'capabilityNotFound'
+  | 'capabilityNotCurrent'
+  | 'routeMismatch'
+  | 'authorityUnavailable'
+  | 'participationScoreRequired'
+  | 'marketClosed'
   | 'bookRejected'
 
 export interface SubmitEphemeralPubkeyRequest {
@@ -151,31 +244,35 @@ export interface EngineProblem {
 export interface OrderStatusResponse {
   orderId: string
   marketId: string
-  status: string
+  status: OrderLifecycleStatus
   remainingAmountSubunits: number
   filledAmountSubunits: number
   fills: Fill[]
   tokenSide: 'Outcome' | 'Complement'
   baseAsset: MarketBaseAsset
-  divisibility: number
+  divisibility: MarketDivisibility
+  activeSettlementGroup: SettlementGroupSummary | null
 }
 
 export interface OrderEntry {
   orderId: string
   marketId: string
   conditionId: string
+  baseAsset: MarketBaseAsset
+  divisibility: MarketDivisibility
   side: 'Buy' | 'Sell'
   price: number
   amountSubunits: number
   remainingAmountSubunits: number
   tokenSide: 'Outcome' | 'Complement'
-  status: 'Resting' | 'Filled' | 'Cancelled' | 'Matched' | string
+  status: OrderLifecycleStatus
   placedAt: string
   filledAt?: string | null
   tradeId?: string | null
   deadline?: string | null
   pubkeySubmitted?: boolean | null
   clientOrderId?: string | null
+  activeSettlementGroup: SettlementGroupSummary | null
 }
 
 export interface ListMyOrdersResponse {
@@ -276,6 +373,67 @@ export class BitcasterEngineClient {
     this.authorization = options.authorization
   }
 
+  async createSettlementCapability(
+    request: CreateSettlementCapabilityRequest,
+  ): Promise<SettlementCapabilityResponse> {
+    const bodyText = JSON.stringify(request)
+    const response = await this.request(
+      '/api/v1/settlement-capabilities',
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+      },
+      bodyText,
+    )
+    return (await response.json()) as SettlementCapabilityResponse
+  }
+
+  async getSettlementCapability(
+    reference: SettlementCapabilityReference,
+  ): Promise<SettlementCapabilityResponse | null> {
+    const query = new URLSearchParams({ bindingDigest: reference.bindingDigest })
+    return this.getOptional<SettlementCapabilityResponse>(
+      `/api/v1/settlement-capabilities/${encodePathSegment(reference.artifactId)}?${query}`,
+    )
+  }
+
+  async getSettlementCapabilityResult(
+    resultId: string,
+  ): Promise<SettlementCapabilityResultResponse | null> {
+    return this.getOptional<SettlementCapabilityResultResponse>(
+      `/api/v1/settlement-capability-results/${encodePathSegment(resultId)}`,
+    )
+  }
+
+  async getSettlementCapabilityResultByOperation(
+    operationId: string,
+  ): Promise<SettlementCapabilityResultResponse | null> {
+    const query = new URLSearchParams({ operationId })
+    return this.getOptional<SettlementCapabilityResultResponse>(
+      `/api/v1/settlement-capability-results/by-operation?${query}`,
+    )
+  }
+
+  async acknowledgeSettlementCapabilityResult(
+    resultId: string,
+    request: AcknowledgeSettlementCapabilityResultRequest,
+  ): Promise<SettlementCapabilityResultResponse | null> {
+    const bodyText = JSON.stringify(request)
+    const response = await this.request(
+      `/api/v1/settlement-capability-results/${encodePathSegment(resultId)}/acknowledgement`,
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+      },
+      bodyText,
+      true,
+    )
+    if (response.status === 404) return null
+    return (await response.json()) as SettlementCapabilityResultResponse
+  }
+
   async submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse> {
     const bodyText = JSON.stringify(request)
     const response = await this.request(
@@ -293,6 +451,9 @@ export class BitcasterEngineClient {
   async getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null> {
     const response = await this.request(
       `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
+      {},
+      undefined,
+      true,
     )
     if (response.status === 404) return null
     return (await response.json()) as OrderStatusResponse
@@ -361,6 +522,8 @@ export class BitcasterEngineClient {
     const response = await this.request(
       `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
       { method: 'DELETE' },
+      undefined,
+      true,
     )
     return response.status !== 404
   }
@@ -429,10 +592,17 @@ export class BitcasterEngineClient {
     return response.markets[0] ?? null
   }
 
+  private async getOptional<T>(path: string): Promise<T | null> {
+    const response = await this.request(path, {}, undefined, true)
+    if (response.status === 404) return null
+    return (await response.json()) as T
+  }
+
   private async request(
     path: string,
     init: RequestInit = {},
     bodyText?: string,
+    allowNotFound = false,
   ): Promise<Response> {
     const url = `${this.baseUrl}${path}`
     const headers = normalizeHeaders(init.headers)
@@ -444,7 +614,7 @@ export class BitcasterEngineClient {
       })
     }
     const response = await this.fetchImpl(url, { ...init, headers })
-    if (!response.ok && response.status !== 404) {
+    if (!response.ok && !(allowNotFound && response.status === 404)) {
       const detail = await response.text().catch(() => '')
       const problem = parseEngineProblem(detail)
       throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)

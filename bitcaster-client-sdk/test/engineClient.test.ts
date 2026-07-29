@@ -363,6 +363,313 @@ test('BitcasterEngineClient default fetch keeps the browser fetch receiver', asy
   }
 })
 
+test('BitcasterEngineClient.submitOrder sends only the capability reference and nullable comment', async () => {
+  const comment = {
+    id: '1'.repeat(64),
+    pubkey: '2'.repeat(64),
+    createdAt: 1_718_000_000,
+    kind: 1 as const,
+    tags: [['r', 'https://bitcaster.example/markets/condition-1-YES']],
+    content: 'trade comment',
+    sig: '3'.repeat(128),
+  }
+  const expectedBody = JSON.stringify({
+    settlementCapability: {
+      artifactId: '11111111-1111-4111-8111-111111111111',
+      bindingDigest: 'a'.repeat(64),
+    },
+    comment,
+  })
+  const requests: Array<{ url: string; body?: string; authorization?: string }> = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: ({ bodyText }) => {
+      assert.equal(bodyText, expectedBody)
+      return 'Nostr auth'
+    },
+    fetchImpl: async (input, init) => {
+      requests.push({
+        url: String(input),
+        body: String(init?.body),
+        authorization: new Headers(init?.headers).get('authorization') ?? undefined,
+      })
+      return new Response(
+        JSON.stringify({
+          orderId: '22222222-2222-4222-8222-222222222222',
+          status: 'resting',
+          remainingAmountSubunits: 10_000,
+          fills: [],
+          pendingPubkeySubmissions: [
+            {
+              tradeId: '33333333-3333-4333-8333-333333333333',
+              role: 'maker',
+              fillAmount: 10_000,
+              deadline: '2026-07-29T00:00:10Z',
+            },
+          ],
+          baseAsset: 'sat',
+          divisibility: 10_000,
+          activeSettlementGroup: null,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    },
+  })
+
+  const response = await client.submitOrder('condition-1-YES', {
+    settlementCapability: {
+      artifactId: '11111111-1111-4111-8111-111111111111',
+      bindingDigest: 'a'.repeat(64),
+    },
+    comment,
+  })
+
+  assert.equal(response.status, 'resting')
+  assert.equal(response.pendingPubkeySubmissions[0]?.fillAmount, 10_000)
+  assert.deepEqual(requests, [
+    {
+      url: 'https://engine.example/api/v1/condition-1-YES/orders',
+      body: expectedBody,
+      authorization: 'Nostr auth',
+    },
+  ])
+})
+
+test('BitcasterEngineClient.listMyOrders preserves strict unit and lifecycle fields', async () => {
+  const settlementGroup = {
+    groupId: '44444444-4444-4444-8444-444444444444',
+    status: 'Prepared',
+    revision: 1,
+    coalescingDeadline: '2026-07-29T00:00:10Z',
+    frozenAt: null,
+  }
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (input) => {
+      assert.equal(
+        String(input),
+        'https://engine.example/api/v1/orders/mine?conditionId=condition-1&cursor=next-page',
+      )
+      return new Response(
+        JSON.stringify({
+          orders: [
+            {
+              orderId: '22222222-2222-4222-8222-222222222222',
+              marketId: 'condition-1-YES',
+              conditionId: 'condition-1',
+              baseAsset: 'sat',
+              divisibility: 10_000,
+              side: 'Buy',
+              price: 4_000,
+              amountSubunits: 20_000,
+              remainingAmountSubunits: 10_000,
+              tokenSide: 'Outcome',
+              status: 'partially_filled',
+              placedAt: '2026-07-29T00:00:00Z',
+              filledAt: null,
+              tradeId: null,
+              deadline: null,
+              pubkeySubmitted: null,
+              clientOrderId: 'client-order-1',
+              activeSettlementGroup: settlementGroup,
+            },
+          ],
+          nextCursor: null,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    },
+  })
+
+  const response = await client.listMyOrders('condition-1', 'next-page')
+
+  assert.equal(response.orders[0]?.baseAsset, 'sat')
+  assert.equal(response.orders[0]?.divisibility, 10_000)
+  assert.deepEqual(response.orders[0]?.activeSettlementGroup, settlementGroup)
+})
+
+test('BitcasterEngineClient.batchSubmitOrders preserves accepted and rejected results', async () => {
+  const expectedBody = JSON.stringify({
+    orders: [
+      {
+        settlementCapability: {
+          artifactId: '11111111-1111-4111-8111-111111111111',
+          bindingDigest: 'a'.repeat(64),
+        },
+      },
+      {
+        settlementCapability: {
+          artifactId: '22222222-2222-4222-8222-222222222222',
+          bindingDigest: 'b'.repeat(64),
+        },
+      },
+    ],
+  })
+  let observedBody = ''
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (_input, init) => {
+      observedBody = String(init?.body)
+      return new Response(
+        JSON.stringify({
+          accepted: [
+            {
+              requestIndex: 0,
+              clientOrderId: 'client-order-1',
+              marketId: 'condition-1-YES',
+              orderId: '33333333-3333-4333-8333-333333333333',
+              status: 'resting',
+              remainingAmountSubunits: 10_000,
+              fills: [],
+              pendingPubkeySubmissions: [],
+              baseAsset: 'sat',
+              divisibility: 10_000,
+              activeSettlementGroup: null,
+            },
+          ],
+          rejected: [{ requestIndex: 1, errorCode: 'capabilityNotCurrent' }],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    },
+  })
+
+  const response = await client.batchSubmitOrders('condition-1', {
+    orders: [
+      {
+        settlementCapability: {
+          artifactId: '11111111-1111-4111-8111-111111111111',
+          bindingDigest: 'a'.repeat(64),
+        },
+      },
+      {
+        settlementCapability: {
+          artifactId: '22222222-2222-4222-8222-222222222222',
+          bindingDigest: 'b'.repeat(64),
+        },
+      },
+    ],
+  })
+
+  assert.equal(observedBody, expectedBody)
+  assert.equal(response.accepted[0]?.clientOrderId, 'client-order-1')
+  assert.equal(response.rejected[0]?.errorCode, 'capabilityNotCurrent')
+})
+
+test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', async () => {
+  const reference = {
+    artifactId: '11111111-1111-4111-8111-111111111111',
+    bindingDigest: 'a'.repeat(64),
+  }
+  const capability = {
+    reference,
+    orderId: '22222222-2222-4222-8222-222222222222',
+    clientOrderId: 'client-order-1',
+    marketId: `${'b'.repeat(64)}-YES`,
+    artifactDigest: 'c'.repeat(64),
+    state: 'bound',
+    version: 3,
+    authorizationExpiresAt: '2026-08-01T00:00:00Z',
+    stageExpiresAt: '2026-07-30T00:00:00Z',
+    settlementGroup: null,
+  }
+  const settlementGroup = {
+    groupId: '44444444-4444-4444-8444-444444444444',
+    status: 'Confirmed',
+    revision: 2,
+    coalescingDeadline: '2026-07-29T00:00:10Z',
+    frozenAt: '2026-07-29T00:00:05Z',
+  }
+  const result = {
+    resultId: '33333333-3333-4333-8333-333333333333',
+    reference,
+    operationId: 'operation+1',
+    requestDigest: 'd'.repeat(64),
+    envelopeDigest: 'e'.repeat(64),
+    envelope: 'Y2Fub25pY2FsLWVudmVsb3Bl',
+    createdAt: '2026-07-29T00:00:00Z',
+    acknowledgedAt: null,
+    version: 4,
+    settlementGroup,
+  }
+  const createRequest = {
+    stageIdempotencyKey: 'stage-1',
+    clientOrderId: 'client-order-1',
+    marketId: capability.marketId,
+    orderIntent: {
+      outcomeId: 'YES',
+      tokenSide: 'Outcome' as const,
+      side: 'Buy' as const,
+      price: 4_000,
+      amountSubunits: 10_000,
+      baseAsset: 'sat' as const,
+      collateralUnit: 'msat' as const,
+      timeInForce: 'GTC' as const,
+      expiresAt: null,
+    },
+    artifact: 'Y2Fub25pY2FsLWFydGlmYWN0',
+  }
+  const requests: Array<{ url: string; method: string; body?: string }> = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (input, init) => {
+      const url = String(input)
+      requests.push({
+        url,
+        method: init?.method ?? 'GET',
+        ...(init?.body === undefined ? {} : { body: String(init.body) }),
+      })
+      const responseBody = url.endsWith('/acknowledgement')
+        ? { ...result, acknowledgedAt: '2026-07-29T00:01:00Z', version: 5 }
+        : url.includes('settlement-capability-results')
+          ? result
+          : capability
+      return new Response(JSON.stringify(responseBody), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+
+  assert.deepEqual(await client.createSettlementCapability(createRequest), capability)
+  assert.deepEqual(await client.getSettlementCapability(reference), capability)
+  assert.deepEqual(await client.getSettlementCapabilityResult(result.resultId), result)
+  assert.deepEqual(await client.getSettlementCapabilityResultByOperation('operation+1'), result)
+  assert.equal(
+    (
+      await client.acknowledgeSettlementCapabilityResult(result.resultId, {
+        expectedVersion: 4,
+      })
+    )?.version,
+    5,
+  )
+
+  assert.deepEqual(requests, [
+    {
+      url: 'https://engine.example/api/v1/settlement-capabilities',
+      method: 'POST',
+      body: JSON.stringify(createRequest),
+    },
+    {
+      url: `https://engine.example/api/v1/settlement-capabilities/${reference.artifactId}?bindingDigest=${reference.bindingDigest}`,
+      method: 'GET',
+    },
+    {
+      url: `https://engine.example/api/v1/settlement-capability-results/${result.resultId}`,
+      method: 'GET',
+    },
+    {
+      url: 'https://engine.example/api/v1/settlement-capability-results/by-operation?operationId=operation%2B1',
+      method: 'GET',
+    },
+    {
+      url: `https://engine.example/api/v1/settlement-capability-results/${result.resultId}/acknowledgement`,
+      method: 'POST',
+      body: JSON.stringify({ expectedVersion: 4 }),
+    },
+  ])
+})
+
 test('BitcasterEngineClient exposes plain submit-order validation errors', async () => {
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',
@@ -376,13 +683,11 @@ test('BitcasterEngineClient exposes plain submit-order validation errors', async
   await assert.rejects(
     () =>
       client.submitOrder('condition-Bob%7CCarol', {
-        outcomeId: 'Alice',
-        tokenSide: 'Outcome',
-        side: 'Buy',
-        price: 42,
-        amountSubunits: 100,
-        timeInForce: 'GTC',
-        ephemeralPubkey: `02${'22'.repeat(32)}`,
+        settlementCapability: {
+          artifactId: '11111111-1111-4111-8111-111111111111',
+          bindingDigest: 'a'.repeat(64),
+        },
+        comment: null,
       }),
     (err) =>
       err instanceof EngineClientError &&

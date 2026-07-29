@@ -70,6 +70,25 @@ channels:
       Server pushes a lifecycle-change notification (e.g. open -> closed) to
       every per-outcome market group of a condition.
 
+  orderLifecycleChanged:
+    address: OrderLifecycleChanged
+    messages:
+      orderLifecycleChangedMessage:
+        $ref: '#/components/messages/OrderLifecycleChangedMessage'
+    description: >
+      Server pushes an owner-filtered, capability-secret-free order lifecycle
+      update over the authenticated trade hub.
+
+  settlementGroupStateChanged:
+    address: SettlementGroupStateChanged
+    messages:
+      settlementGroupStateChangedMessage:
+        $ref: '#/components/messages/SettlementGroupStateChangedMessage'
+    description: >
+      Server pushes an owner-filtered settlement-group transition for one
+      affected order. No capability artifact or bearer proof material is
+      included.
+
   tradeCreated:
     address: TradeCreated
     messages:
@@ -163,6 +182,22 @@ operations:
     messages:
       - $ref: '#/channels/marketStatusChanged/messages/marketStatusChangedMessage'
 
+  orderLifecycleChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/orderLifecycleChanged'
+    summary: Receive an owned order lifecycle update
+    messages:
+      - $ref: '#/channels/orderLifecycleChanged/messages/orderLifecycleChangedMessage'
+
+  settlementGroupStateChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/settlementGroupStateChanged'
+    summary: Receive an owned settlement-group lifecycle update
+    messages:
+      - $ref: '#/channels/settlementGroupStateChanged/messages/settlementGroupStateChangedMessage'
+
   tradeCreated:
     action: receive
     channel:
@@ -233,6 +268,14 @@ components:
     MarketStatusChangedMessage:
       payload:
         $ref: '#/components/schemas/MarketStatusChanged'
+
+    OrderLifecycleChangedMessage:
+      payload:
+        $ref: '#/components/schemas/OrderLifecycleChangedDelta'
+
+    SettlementGroupStateChangedMessage:
+      payload:
+        $ref: '#/components/schemas/SettlementGroupStateChangedDelta'
 
     TradeCreatedMessage:
       payload:
@@ -493,6 +536,117 @@ components:
           description: >
             Winning outcome after an oracle attestation close. Null for
             deadline-only closes or non-resolving transitions.
+
+    OrderLifecycleStatus:
+      type: string
+      enum:
+        - resting
+        - matched
+        - partially_filled
+        - awaiting_authorization
+        - filled
+        - cancelled
+        - expired
+        - evicted_capacity
+        - rejected_capacity
+        - failed
+
+    SettlementGroupStatus:
+      type: string
+      enum:
+        - Prepared
+        - SubmissionPending
+        - Reconciling
+        - Confirmed
+        - DefinitivelyRejected
+        - Refundable
+        - ExpiredBeforeSubmission
+
+    SettlementGroupSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - groupId
+        - status
+        - revision
+        - coalescingDeadline
+        - frozenAt
+      properties:
+        groupId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/SettlementGroupStatus'
+        revision:
+          type: integer
+          format: int32
+          minimum: 0
+        coalescingDeadline:
+          type: string
+          format: date-time
+        frozenAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: >
+            Null for Prepared and ExpiredBeforeSubmission. Non-null for every
+            lifecycle path that reached SubmissionPending.
+
+    OrderLifecycleChangedDelta:
+      type: object
+      additionalProperties: false
+      required:
+        - orderId
+        - marketId
+        - status
+        - remainingAmountSubunits
+        - baseAsset
+        - collateralUnit
+        - divisibility
+        - activeSettlementGroup
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        marketId:
+          type: string
+        status:
+          $ref: '#/components/schemas/OrderLifecycleStatus'
+        remainingAmountSubunits:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Remaining unfilled collateral subunits; zero is terminal.
+        baseAsset:
+          $ref: '#/components/schemas/BaseAsset'
+        collateralUnit:
+          type: string
+          const: msat
+        divisibility:
+          type: integer
+          format: int32
+          enum: [10000, 1000000]
+        activeSettlementGroup:
+          oneOf:
+            - $ref: '#/components/schemas/SettlementGroupSummary'
+            - type: 'null'
+
+    SettlementGroupStateChangedDelta:
+      type: object
+      additionalProperties: false
+      required:
+        - orderId
+        - marketId
+        - settlementGroup
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        marketId:
+          type: string
+        settlementGroup:
+          $ref: '#/components/schemas/SettlementGroupSummary'
 
     TradeCreatedArguments:
       type: array

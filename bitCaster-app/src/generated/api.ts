@@ -115,7 +115,7 @@ export interface paths {
         put?: never;
         /**
          * Submit multiple orders for one condition
-         * @description Applies order items in request order across visible books that share conditionId. Each item returns an independent result; envelope, auth, route, closed-market, and rate-limit failures still use HTTP errors.
+         * @description Applies current settlement-capability references in request order across visible books that share conditionId. The server loads every immutable order term from each durable DCB binding; the authenticated owner and route condition must exactly match the prebound intent. References are not bearer authority and foreign, stale, or non-current references fail closed. An exact retry by the same authenticated owner for the same order, reference, and fingerprint returns its prior accepted admission result even if the capability has since become selected or terminal. Each item returns an independent result; envelope, auth, closed-market, and rate-limit failures still use HTTP errors.
          */
         post: operations["batchSubmitOrders"];
         delete?: never;
@@ -159,7 +159,7 @@ export interface paths {
         put?: never;
         /**
          * Submit a new order
-         * @description Submit a limit or market order to the matching engine.
+         * @description Submits the current settlement capability referenced by the request. The server loads every immutable order term from the durable DCB binding; the authenticated owner and route market must exactly match that prebound intent. The reference is not bearer authority and is rejected when it is foreign, stale, or no longer current. An exact retry by the same authenticated owner for the same order, reference, and fingerprint returns the prior accepted admission result even if the capability has since become selected or terminal.
          */
         post: operations["submitOrder"];
         delete?: never;
@@ -436,7 +436,7 @@ export interface paths {
         put?: never;
         /**
          * Validate and bind one range-settlement authorization
-         * @description Stages one canonical, secret-free NUT-CTF range-settlement artifact, validates its mint authority, reserves its exact input proofs, and binds it durably to the authenticated subject's order identity before returning. The artifact contains conditioned bearer proofs and public blinded outputs, but never refund private keys, output secrets, or blinding factors. A byte-identical retry is idempotent; changing any artifact or order-binding field under the same idempotency key fails closed.
+         * @description Stages one canonical NUT-CTF range-settlement artifact, validates its mint authority, reserves its exact input proofs, and binds it durably to the authenticated subject's order identity before returning. The artifact is a sensitive bearer capability containing conditioned proof secrets and public blinded outputs, but never refund private keys, output secrets, or blinding factors. A byte-identical retry is idempotent; changing any artifact or order-binding field under the same idempotency key fails closed.
          */
         post: operations["createSettlementCapability"];
         delete?: never;
@@ -532,6 +532,27 @@ export interface components {
         };
         /** @enum {string} */
         SettlementCapabilityState: "staged" | "bindingPending" | "bound" | "selected" | "uncertain" | "terminal" | "quarantined";
+        /** @description Immutable economic order terms authenticated by the settlement capability binding. Later order submission supplies only the resulting capability reference; the server loads these terms from the current durable DCB binding. */
+        SettlementOrderIntent: {
+            /** @description Primitive outcome segment of the top-level marketId. It must not contain a finite outcome-set separator such as "|". */
+            outcomeId: string;
+            tokenSide: components["schemas"]["TokenSide"];
+            side: components["schemas"]["OrderSide"];
+            price: components["schemas"]["Probability"];
+            /** @description Conditional-token face amount in the market collateral sub-unit. */
+            amountSubunits: components["schemas"]["CollateralSubunits"];
+            /** @description Required explicit quote asset. No default is implied. */
+            baseAsset: components["schemas"]["BaseAsset"];
+            /** @description Required explicit collateral unit. No default is implied. */
+            collateralUnit: components["schemas"]["CollateralUnit"];
+            /** @description GTD requires a non-null expiresAt. GTC, FOK, and FAK forbid expiresAt. */
+            timeInForce: components["schemas"]["TimeInForce"];
+            /**
+             * Format: date-time
+             * @description Non-null for GTD intent and exactly null for every other time-in-force value. Requiring the field gives the authenticated intent one canonical wire representation.
+             */
+            expiresAt: string | null;
+        };
         CreateSettlementCapabilityRequest: {
             /** @description Client-generated idempotency key for this exact artifact and order binding. It is scoped to the authenticated subject. */
             stageIdempotencyKey: string;
@@ -539,6 +560,8 @@ export interface components {
             clientOrderId: string;
             /** @description Primitive outcome market id in `{conditionId}-{outcomeName}` form. */
             marketId: string;
+            /** @description Economic order terms to authenticate in the durable capability binding. Reusing the stage idempotency key with different terms conflicts. */
+            orderIntent: components["schemas"]["SettlementOrderIntent"];
             /**
              * Format: byte
              * @description Base64 encoding of at most 262144 canonical JSON bytes produced by the shared SDK settlement-capability artifact encoder.
@@ -559,6 +582,8 @@ export interface components {
             authorizationExpiresAt: string;
             /** Format: date-time */
             stageExpiresAt: string;
+            /** @description Current or terminal group that selected this capability, or null before selection. */
+            settlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
         };
         SettlementCapabilityResultResponse: {
             /** Format: uuid */
@@ -578,6 +603,8 @@ export interface components {
             acknowledgedAt?: string | null;
             /** Format: int64 */
             version: number;
+            /** @description Atomic group that produced this owner result envelope. */
+            settlementGroup: components["schemas"]["SettlementGroupSummary"];
         };
         AcknowledgeSettlementCapabilityResultRequest: {
             /** Format: int64 */
@@ -601,6 +628,11 @@ export interface components {
          */
         BaseAsset: "sat";
         /**
+         * @description Product collateral unit. The current product accepts only exact `msat`; callers must provide it explicitly where required.
+         * @enum {string}
+         */
+        CollateralUnit: "msat";
+        /**
          * @description Direction of an order relative to the outcome token.
          * @enum {string}
          */
@@ -617,17 +649,41 @@ export interface components {
          */
         OrderType: "Limit" | "Market";
         /**
-         * @description Time-in-force policy. GTC = Good-Till-Cancel (rests on book), FOK = Fill-Or-Kill (reject if not fully filled), FAK = Fill-And-Kill (cancel remaining after partial fill).
+         * @description Time-in-force policy. GTC = Good-Till-Cancel (rests on book), FOK = Fill-Or-Kill (reject if not fully filled), FAK = Fill-And-Kill (cancel remaining after partial fill), GTD = Good-Till-Date. GTD requires a non-null `expiresAt`; GTC, FOK, and FAK forbid `expiresAt`.
          * @enum {string}
          */
-        TimeInForce: "GTC" | "FOK" | "FAK";
+        TimeInForce: "GTC" | "FOK" | "FAK" | "GTD";
+        /**
+         * @description Closed public order lifecycle. `awaiting_authorization` means an unfilled resting remainder is intentionally non-matchable until its owner durably binds a replacement one-shot range authorization.
+         * @enum {string}
+         */
+        OrderLifecycleStatus: "resting" | "matched" | "partially_filled" | "awaiting_authorization" | "filled" | "cancelled" | "expired" | "evicted_capacity" | "rejected_capacity" | "failed";
+        /**
+         * @description Public atomic settlement-group lifecycle. `Prepared` is the bounded coalescing state. `SubmissionPending` means the group is frozen and its exact request authority was durably committed before mint I/O.
+         * @enum {string}
+         */
+        SettlementGroupStatus: "Prepared" | "SubmissionPending" | "Reconciling" | "Confirmed" | "DefinitivelyRejected" | "Refundable" | "ExpiredBeforeSubmission";
+        SettlementGroupSummary: {
+            /** Format: uuid */
+            groupId: string;
+            status: components["schemas"]["SettlementGroupStatus"];
+            /** Format: int32 */
+            revision: number;
+            /** Format: date-time */
+            coalescingDeadline: string;
+            /**
+             * Format: date-time
+             * @description Null for `Prepared` and for `ExpiredBeforeSubmission`, which transitions directly from `Prepared` without mint submission. Non-null for every lifecycle path that reached `SubmissionPending`, and preserved through later transitions.
+             */
+            frozenAt: string | null;
+        };
         /**
          * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
          * @enum {string}
          */
         MatchPath: "Complementary" | "Mint";
         /**
-         * @description Lifecycle status of a fill-shaped order execution row. `Matched` means atomic-swap settlement is still pending; `Filled` means settlement committed; `Failed` means the atomic-swap session reached a terminal failure and should no longer be retried.
+         * @description Lifecycle status of a fill-shaped order execution row. `Matched` means its atomic mint settlement group is not yet confirmed; `Filled` means settlement committed; `Failed` means the group was definitively rejected and this fill will not be retried.
          * @enum {string}
          */
         FillStatus: "Matched" | "Filled" | "Failed";
@@ -729,26 +785,20 @@ export interface components {
              * @description Timestamp when this fill was executed.
              */
             filledAt: string;
+            /** @description Atomic settlement group that durably owns this fill reservation. */
+            settlementGroup: components["schemas"]["SettlementGroupSummary"];
             /**
              * Format: uuid
              * @description Atomic-swap trade session identifier for this fill. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
              */
             tradeId?: string;
         };
+        /** @description Reference-only order submission. The server loads all immutable order identity and economic terms from the current durable DCB binding. The authenticated owner and route market must exactly match that prebound intent. This reference is not bearer authority. */
         SubmitOrderRequest: {
-            /** @description The primitive outcome to trade (e.g. "Alice" or "YES"). Must match the outcomeName segment of marketId and must not contain "|". */
-            outcomeId: string;
-            tokenSide: components["schemas"]["TokenSide"];
-            side: components["schemas"]["OrderSide"];
-            price: components["schemas"]["Probability"];
-            /** @description Limit-order size as conditional-token face amount. Must be divisible by the market's whole-share face value, independent of `divisibility`. Categorical markets use D=10000 (10000 msat = 10 sats). The whole-share face value is D. */
-            amountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @default GTC */
-            timeInForce: components["schemas"]["TimeInForce"];
-            /** @description Client-supplied idempotency key scoped to the authenticated pubkey and condition. */
-            clientOrderId: string;
+            /** @description Current capability binding to submit. Possession does not authorize use: the server verifies ownership, route identity, and current DCB authorization state. */
+            settlementCapability: components["schemas"]["SettlementCapabilityReference"];
             /** @description Optional signed Nostr kind-1 event to index as a verified trade comment once this order produces a fill. The event pubkey must match the NIP-98 submitter and include an `r` tag for the market detail URL. */
-            comment?: components["schemas"]["NostrKind1Event"] | null;
+            comment: components["schemas"]["NostrKind1Event"] | null;
         };
         NostrKind1Event: {
             id: string;
@@ -772,16 +822,15 @@ export interface components {
             orderId: string;
             /** @description The market this order belongs to. */
             marketId: string;
-            /** @description One of: "resting" (on book, unmatched), "matched" (reserved for atomic-swap settlement), "partially_filled", "filled", "cancelled", "failed". */
-            status: string;
+            status: components["schemas"]["OrderLifecycleStatus"];
             remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @description Conditional-token face amount already consumed by committed fills or currently matched atomic-swap sessions. A provisional mint match is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake. */
+            /** @description Conditional-token face amount already consumed by committed fills or reserved by a nonterminal atomic settlement group. */
             filledAmountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @description All fills and active or terminal atomic-swap sessions produced against this order so far. */
+            /** @description All fills and active or terminal atomic settlement groups produced against this order so far. */
             fills: components["schemas"]["Fill"][];
             /**
              * Format: uuid
-             * @description Pending atomic-swap trade id when status is `matched` and the engine is waiting for ephemeral pubkey submission.
+             * @description Legacy HTLC trade identifier retained until Phase 12 removes the superseded protocol surface.
              */
             tradeId?: string | null;
             /**
@@ -789,6 +838,8 @@ export interface components {
              * @description Deadline for pending ephemeral pubkey submission.
              */
             deadline?: string | null;
+            /** @description Current nonterminal settlement group for this order, or null when no group currently owns an unconfirmed fill. */
+            activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
             tokenSide: components["schemas"]["TokenSide"];
             /** @description Base asset context for amount and price fields. */
             baseAsset: components["schemas"]["BaseAsset"];
@@ -847,8 +898,7 @@ export interface components {
             amountSubunits: components["schemas"]["CollateralSubunits"];
             remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
             tokenSide: components["schemas"]["TokenSide"];
-            /** @enum {string} */
-            status: "Resting" | "Filled" | "Cancelled" | "Matched";
+            status: components["schemas"]["OrderLifecycleStatus"];
             /** Format: date-time */
             placedAt: string;
             /** Format: date-time */
@@ -859,6 +909,8 @@ export interface components {
             deadline?: string | null;
             pubkeySubmitted?: boolean | null;
             clientOrderId?: string | null;
+            /** @description Current nonterminal settlement group for this order, or null. */
+            activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
         };
         ListMyOrdersResponse: {
             orders: components["schemas"]["OrderEntry"][];
@@ -870,8 +922,7 @@ export interface components {
              * @description The unique identifier assigned to this order.
              */
             orderId: string;
-            /** @description One of: "filled", "matched" (reserved for atomic-swap settlement), "partially_filled", "resting", "cancelled", "failed". */
-            status: string;
+            status: components["schemas"]["OrderLifecycleStatus"];
             remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
             /** @description List of fills produced by this order. Empty if no matches. */
             fills: components["schemas"]["Fill"][];
@@ -880,10 +931,11 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
-             * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
             divisibility: 10000 | 1000000;
+            /** @description Current nonterminal settlement group for this order, or null. */
+            activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
         };
         BatchSubmitOrdersRequest: {
             orders: components["schemas"]["BatchSubmitOrderRequestItem"][];
@@ -908,37 +960,27 @@ export interface components {
             role: "maker" | "taker";
             bothReceived: boolean;
         };
+        /** @description Reference-only batch item. The server loads every immutable order fact from the current durable DCB binding. Possession of the reference is not bearer authority; ownership, route condition, and current authorization are verified. */
         BatchSubmitOrderRequestItem: {
-            /** @description Client-supplied idempotency key scoped to the authenticated pubkey and condition. */
-            clientOrderId: string;
-            /** @description Visible market id for this item. Must belong to the route conditionId. */
-            marketId: string;
-            /** @description Primitive outcome segment for marketId. */
-            outcomeId: string;
-            tokenSide: components["schemas"]["TokenSide"];
-            side: components["schemas"]["OrderSide"];
-            price: components["schemas"]["Probability"];
-            amountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @default GTC */
-            timeInForce: components["schemas"]["TimeInForce"];
-            /** Format: date-time */
-            expiresAt?: string | null;
+            settlementCapability: components["schemas"]["SettlementCapabilityReference"];
         };
+        /** @description Every request item appears exactly once in either `accepted` or `rejected`. Consumers may reconstruct request order by sorting both arrays by `requestIndex`. */
         BatchSubmitOrdersResponse: {
-            results: components["schemas"]["BatchSubmitOrderResult"][];
+            accepted: components["schemas"]["BatchSubmitOrderSuccess"][];
+            rejected: components["schemas"]["BatchSubmitOrderFailure"][];
         };
-        BatchSubmitOrderResult: {
+        /** @description Accepted admission result with binding-owned order and execution facts. */
+        BatchSubmitOrderSuccess: {
             /** Format: int32 */
             requestIndex: number;
-            clientOrderId?: string | null;
-            success: boolean;
+            clientOrderId: string;
             marketId: string;
             /** Format: uuid */
-            orderId?: string | null;
-            status: string;
+            orderId: string;
+            status: components["schemas"]["OrderLifecycleStatus"];
             remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
             fills: components["schemas"]["Fill"][];
-            pendingPubkeySubmissions?: components["schemas"]["PendingPubkeySubmission"][];
+            pendingPubkeySubmissions: components["schemas"]["PendingPubkeySubmission"][];
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
@@ -946,11 +988,20 @@ export interface components {
              * @enum {integer}
              */
             divisibility: 10000 | 1000000;
-            errorCode?: components["schemas"]["BatchSubmitOrderErrorCode"] | null;
-            errorMessage?: string | null;
+            /** @description Current nonterminal settlement group for this order, or null. */
+            activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
         };
-        /** @enum {string} */
-        BatchSubmitOrderErrorCode: "invalidMarket" | "invalidOutcome" | "invalidTokenSide" | "invalidSide" | "invalidPrice" | "invalidAmount" | "invalidTimeInForce" | "duplicateClientOrderId" | "unsupportedOrder" | "bookRejected";
+        /** @description Per-item admission failure. This variant exposes no binding-owned identity, market, order, amount, fill, asset, divisibility, or free-form dependency details. */
+        BatchSubmitOrderFailure: {
+            /** Format: int32 */
+            requestIndex: number;
+            errorCode: components["schemas"]["BatchSubmitOrderErrorCode"];
+        };
+        /**
+         * @description `capabilityNotFound` covers absent, foreign, or digest-mismatched references. `capabilityNotCurrent` covers stale, expired, selected, or otherwise non-current capabilities only when no matching accepted admission exists. An exact authenticated owner, order, reference, and fingerprint replay returns its prior accepted admission result even if the capability later became selected or terminal.
+         * @enum {string}
+         */
+        BatchSubmitOrderErrorCode: "capabilityNotFound" | "capabilityNotCurrent" | "routeMismatch" | "authorityUnavailable" | "participationScoreRequired" | "marketClosed" | "bookRejected";
         BatchCancelOrdersRequest: {
             orderIds: string[];
         };
@@ -1420,7 +1471,7 @@ export interface components {
     };
     responses: never;
     parameters: {
-        /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+        /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
         MarketId: string;
         /** @description The condition identifier (hex string derived from the oracle announcement). */
         ConditionId: string;
@@ -1664,7 +1715,7 @@ export interface operations {
                     "application/json": components["schemas"]["BatchSubmitOrdersResponse"];
                 };
             };
-            /** @description Invalid batch envelope or route mismatch */
+            /** @description Malformed batch envelope or malformed condition path. A resolved per-item condition mismatch returns a `routeMismatch` failure result instead of HTTP 400. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -1761,7 +1812,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -1791,7 +1842,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -1822,6 +1873,27 @@ export interface operations {
             };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Settlement capability is absent, belongs to another authenticated owner, or its binding digest does not match. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Route market does not match the bound intent, or the capability is stale, expired, selected, or otherwise not current and no matching previously accepted admission exists. An exact accepted replay returns that prior result instead of this conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Settlement capability authority is unavailable. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1929,7 +2001,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
                 marketId: components["parameters"]["MarketId"];
                 /** @description The order's unique identifier. */
                 orderId: string;
@@ -1968,7 +2040,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
                 marketId: components["parameters"]["MarketId"];
                 /** @description The unique identifier of the order to cancel. */
                 orderId: string;
@@ -2005,7 +2077,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -2028,7 +2100,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -2058,7 +2130,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;

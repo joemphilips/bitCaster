@@ -210,9 +210,17 @@ paths:
       security:
         - nip98: []
       description: >
-        Applies order items in request order across visible books that share
-        conditionId. Each item returns an independent result; envelope, auth,
-        route, closed-market, and rate-limit failures still use HTTP errors.
+        Applies current settlement-capability references in request order
+        across visible books that share conditionId. The server loads every
+        immutable order term from each durable DCB binding; the authenticated
+        owner and route condition must exactly match the prebound intent.
+        References are not bearer authority and foreign, stale, or non-current
+        references fail closed. An exact retry by the same authenticated owner
+        for the same order, reference, and fingerprint returns its prior
+        accepted admission result even if the capability has since become
+        selected or terminal. Each item returns an independent result;
+        envelope, auth, closed-market, and rate-limit failures still use HTTP
+        errors.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
       requestBody:
@@ -229,7 +237,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/BatchSubmitOrdersResponse'
         '400':
-          description: Invalid batch envelope or route mismatch
+          description: >
+            Malformed batch envelope or malformed condition path. A resolved
+            per-item condition mismatch returns a `routeMismatch` failure
+            result instead of HTTP 400.
         '401':
           description: Missing or invalid NIP-98 authentication
         '404':
@@ -300,7 +311,15 @@ paths:
       summary: Submit a new order
       security:
         - nip98: []
-      description: Submit a limit or market order to the matching engine.
+      description: >
+        Submits the current settlement capability referenced by the request.
+        The server loads every immutable order term from the durable DCB
+        binding; the authenticated owner and route market must exactly match
+        that prebound intent. The reference is not bearer authority and is
+        rejected when it is foreign, stale, or no longer current. An exact
+        retry by the same authenticated owner for the same order, reference,
+        and fingerprint returns the prior accepted admission result even if
+        the capability has since become selected or terminal.
       parameters:
         - $ref: '#/components/parameters/MarketId'
       requestBody:
@@ -324,6 +343,18 @@ paths:
                 type: string
         '401':
           description: Missing or invalid NIP-98 authentication
+        '404':
+          description: >
+            Settlement capability is absent, belongs to another authenticated
+            owner, or its binding digest does not match.
+        '409':
+          description: >
+            Route market does not match the bound intent, or the capability is
+            stale, expired, selected, or otherwise not current and no matching
+            previously accepted admission exists. An exact accepted replay
+            returns that prior result instead of this conflict.
+        '503':
+          description: Settlement capability authority is unavailable.
 
   /api/v1/orders/mine:
     get:
@@ -819,14 +850,14 @@ paths:
       security:
         - nip98: []
       description: >
-        Stages one canonical, secret-free NUT-CTF range-settlement artifact,
-        validates its mint authority, reserves its exact input proofs, and
-        binds it durably to the authenticated subject's order identity before
-        returning. The artifact contains conditioned bearer proofs and public
-        blinded outputs, but never refund private keys, output secrets, or
-        blinding factors. A byte-identical retry is idempotent; changing any
-        artifact or order-binding field under the same idempotency key fails
-        closed.
+        Stages one canonical NUT-CTF range-settlement artifact, validates its
+        mint authority, reserves its exact input proofs, and binds it durably
+        to the authenticated subject's order identity before returning. The
+        artifact is a sensitive bearer capability containing conditioned proof
+        secrets and public blinded outputs, but never refund private keys,
+        output secrets, or blinding factors. A byte-identical retry is
+        idempotent; changing any artifact or order-binding field under the same
+        idempotency key fails closed.
       requestBody:
         required: true
         content:
@@ -927,7 +958,7 @@ paths:
           schema:
             type: string
             minLength: 1
-            maxLength: 1024
+            maxLength: 128
       responses:
         '200':
           description: Authenticated result envelope for the capability owner.
@@ -1003,10 +1034,11 @@ components:
         The primitive outcome book to trade on, in the format
         "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public
         market IDs never contain finite outcome-set separators such as "|";
-        use SubmitOrderRequest.tokenSide to choose the primitive outcome token
-        or its one-vs-rest complement. Binary YES/NO markets expose only the
-        YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement
-        on that YES route, and "{conditionId}-NO" is not a valid market ID.
+        use SettlementOrderIntent.tokenSide during capability creation to
+        choose the primitive outcome token or its one-vs-rest complement.
+        Binary YES/NO markets expose only the YES route
+        ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that
+        YES route, and "{conditionId}-NO" is not a valid market ID.
 
     ConditionId:
       name: conditionId
@@ -1047,6 +1079,68 @@ components:
         - terminal
         - quarantined
 
+    SettlementOrderIntent:
+      type: object
+      additionalProperties: false
+      required:
+        - outcomeId
+        - tokenSide
+        - side
+        - price
+        - amountSubunits
+        - baseAsset
+        - collateralUnit
+        - timeInForce
+        - expiresAt
+      description: >
+        Immutable economic order terms authenticated by the settlement
+        capability binding. Later order submission supplies only the resulting
+        capability reference; the server loads these terms from the current
+        durable DCB binding.
+      properties:
+        outcomeId:
+          type: string
+          minLength: 1
+          maxLength: 191
+          pattern: '^[^|]+$'
+          description: >
+            Primitive outcome segment of the top-level marketId. It must not
+            contain a finite outcome-set separator such as "|".
+        tokenSide:
+          $ref: '#/components/schemas/TokenSide'
+        side:
+          $ref: '#/components/schemas/OrderSide'
+        price:
+          $ref: '#/components/schemas/Probability'
+        amountSubunits:
+          allOf:
+            - $ref: '#/components/schemas/CollateralSubunits'
+          minimum: 1
+          description: >
+            Conditional-token face amount in the market collateral sub-unit.
+        baseAsset:
+          $ref: '#/components/schemas/BaseAsset'
+          description: >
+            Required explicit quote asset. No default is implied.
+        collateralUnit:
+          $ref: '#/components/schemas/CollateralUnit'
+          description: >
+            Required explicit collateral unit. No default is implied.
+        timeInForce:
+          $ref: '#/components/schemas/TimeInForce'
+          description: >
+            GTD requires a non-null expiresAt. GTC, FOK, and FAK forbid
+            expiresAt.
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: >
+            Non-null for GTD intent and exactly null for every other
+            time-in-force value. Requiring the field gives the authenticated
+            intent one canonical wire representation.
+
     CreateSettlementCapabilityRequest:
       type: object
       additionalProperties: false
@@ -1054,6 +1148,7 @@ components:
         - stageIdempotencyKey
         - clientOrderId
         - marketId
+        - orderIntent
         - artifact
       properties:
         stageIdempotencyKey:
@@ -1074,7 +1169,14 @@ components:
           type: string
           minLength: 66
           maxLength: 256
+          pattern: '^[0-9a-f]{64}-[^|]+$'
           description: Primitive outcome market id in `{conditionId}-{outcomeName}` form.
+        orderIntent:
+          $ref: '#/components/schemas/SettlementOrderIntent'
+          description: >
+            Economic order terms to authenticate in the durable capability
+            binding. Reusing the stage idempotency key with different terms
+            conflicts.
         artifact:
           type: string
           format: byte
@@ -1097,6 +1199,7 @@ components:
         - version
         - authorizationExpiresAt
         - stageExpiresAt
+        - settlementGroup
       properties:
         reference:
           $ref: '#/components/schemas/SettlementCapabilityReference'
@@ -1121,6 +1224,13 @@ components:
         stageExpiresAt:
           type: string
           format: date-time
+        settlementGroup:
+          oneOf:
+            - $ref: '#/components/schemas/SettlementGroupSummary'
+            - type: 'null'
+          description: >
+            Current or terminal group that selected this capability, or null
+            before selection.
 
     SettlementCapabilityResultResponse:
       type: object
@@ -1134,6 +1244,7 @@ components:
         - envelope
         - createdAt
         - version
+        - settlementGroup
       properties:
         resultId:
           type: string
@@ -1143,7 +1254,7 @@ components:
         operationId:
           type: string
           minLength: 1
-          maxLength: 1024
+          maxLength: 128
         requestDigest:
           $ref: '#/components/schemas/Sha256Digest'
         envelopeDigest:
@@ -1167,6 +1278,9 @@ components:
           type: integer
           format: int64
           minimum: 0
+        settlementGroup:
+          $ref: '#/components/schemas/SettlementGroupSummary'
+          description: Atomic group that produced this owner result envelope.
 
     AcknowledgeSettlementCapabilityResultRequest:
       type: object
@@ -1212,6 +1326,13 @@ components:
         Product quote asset. The current product accepts only exact `sat`;
         product collateral is held in `msat`.
 
+    CollateralUnit:
+      type: string
+      enum: [msat]
+      description: >
+        Product collateral unit. The current product accepts only exact
+        `msat`; callers must provide it explicitly where required.
+
     OrderSide:
       type: string
       enum:
@@ -1248,10 +1369,79 @@ components:
         - GTC
         - FOK
         - FAK
+        - GTD
       description: >
         Time-in-force policy. GTC = Good-Till-Cancel (rests on book),
         FOK = Fill-Or-Kill (reject if not fully filled),
-        FAK = Fill-And-Kill (cancel remaining after partial fill).
+        FAK = Fill-And-Kill (cancel remaining after partial fill), GTD =
+        Good-Till-Date. GTD requires a non-null `expiresAt`; GTC, FOK, and FAK
+        forbid `expiresAt`.
+
+    OrderLifecycleStatus:
+      type: string
+      enum:
+        - resting
+        - matched
+        - partially_filled
+        - awaiting_authorization
+        - filled
+        - cancelled
+        - expired
+        - evicted_capacity
+        - rejected_capacity
+        - failed
+      description: >
+        Closed public order lifecycle. `awaiting_authorization` means an
+        unfilled resting remainder is intentionally non-matchable until its
+        owner durably binds a replacement one-shot range authorization.
+
+    SettlementGroupStatus:
+      type: string
+      enum:
+        - Prepared
+        - SubmissionPending
+        - Reconciling
+        - Confirmed
+        - DefinitivelyRejected
+        - Refundable
+        - ExpiredBeforeSubmission
+      description: >
+        Public atomic settlement-group lifecycle. `Prepared` is the bounded
+        coalescing state. `SubmissionPending` means the group is frozen and its
+        exact request authority was durably committed before mint I/O.
+
+    SettlementGroupSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - groupId
+        - status
+        - revision
+        - coalescingDeadline
+        - frozenAt
+      properties:
+        groupId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/SettlementGroupStatus'
+        revision:
+          type: integer
+          format: int32
+          minimum: 0
+        coalescingDeadline:
+          type: string
+          format: date-time
+        frozenAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: >
+            Null for `Prepared` and for `ExpiredBeforeSubmission`, which
+            transitions directly from `Prepared` without mint submission.
+            Non-null for every lifecycle path that reached
+            `SubmissionPending`, and preserved through later transitions.
 
     MatchPath:
       type: string
@@ -1275,9 +1465,9 @@ components:
         - Failed
       description: >
         Lifecycle status of a fill-shaped order execution row. `Matched`
-        means atomic-swap settlement is still pending; `Filled` means
-        settlement committed; `Failed` means the atomic-swap session reached
-        a terminal failure and should no longer be retried.
+        means its atomic mint settlement group is not yet confirmed; `Filled`
+        means settlement committed; `Failed` means the group was definitively
+        rejected and this fill will not be retried.
 
     OracleNostrEvent:
       type: object
@@ -1398,6 +1588,7 @@ components:
 
     Fill:
       type: object
+      additionalProperties: false
       description: >
         One leg of a match: the taker's incoming order crossing a single maker.
         Canonical settlement amounts are carried by `quotePaymentSubunits`,
@@ -1420,6 +1611,7 @@ components:
         - quotePaymentSubunits
         - outcomeFaceAmountSubunits
         - tokenSide
+        - settlementGroup
       properties:
         id:
           type: string
@@ -1476,6 +1668,10 @@ components:
           type: string
           format: date-time
           description: Timestamp when this fill was executed.
+        settlementGroup:
+          $ref: '#/components/schemas/SettlementGroupSummary'
+          description: >
+            Atomic settlement group that durably owns this fill reservation.
         tradeId:
           type: string
           format: uuid
@@ -1486,39 +1682,22 @@ components:
 
     SubmitOrderRequest:
       type: object
+      additionalProperties: false
       required:
-        - outcomeId
-        - tokenSide
-        - side
-        - price
-        - amountSubunits
-        - clientOrderId
+        - settlementCapability
+        - comment
+      description: >
+        Reference-only order submission. The server loads all immutable order
+        identity and economic terms from the current durable DCB binding. The
+        authenticated owner and route market must exactly match that prebound
+        intent. This reference is not bearer authority.
       properties:
-        outcomeId:
-          type: string
+        settlementCapability:
+          $ref: '#/components/schemas/SettlementCapabilityReference'
           description: >
-            The primitive outcome to trade (e.g. "Alice" or "YES"). Must match
-            the outcomeName segment of marketId and must not contain "|".
-        tokenSide:
-          $ref: '#/components/schemas/TokenSide'
-        side:
-          $ref: '#/components/schemas/OrderSide'
-        price:
-          $ref: '#/components/schemas/Probability'
-        amountSubunits:
-          allOf:
-            - $ref: '#/components/schemas/CollateralSubunits'
-          description: >
-            Limit-order size as conditional-token face amount. Must be
-            divisible by the market's whole-share face value, independent of
-            `divisibility`. Categorical markets use D=10000 (10000 msat =
-            10 sats). The whole-share face value is D.
-        timeInForce:
-          $ref: '#/components/schemas/TimeInForce'
-          default: GTC
-        clientOrderId:
-          type: string
-          description: Client-supplied idempotency key scoped to the authenticated pubkey and condition.
+            Current capability binding to submit. Possession does not authorize
+            use: the server verifies ownership, route identity, and current DCB
+            authorization state.
         comment:
           oneOf:
             - $ref: '#/components/schemas/NostrKind1Event'
@@ -1570,6 +1749,7 @@ components:
 
     OrderStatusResponse:
       type: object
+      additionalProperties: false
       required:
         - orderId
         - marketId
@@ -1580,6 +1760,7 @@ components:
         - tokenSide
         - baseAsset
         - divisibility
+        - activeSettlementGroup
       properties:
         orderId:
           type: string
@@ -1589,39 +1770,40 @@ components:
           type: string
           description: The market this order belongs to.
         status:
-          type: string
-          description: >
-            One of: "resting" (on book, unmatched), "matched" (reserved for
-            atomic-swap settlement), "partially_filled", "filled",
-            "cancelled", "failed".
+          $ref: '#/components/schemas/OrderLifecycleStatus'
         remainingAmountSubunits:
           $ref: '#/components/schemas/CollateralSubunits'
         filledAmountSubunits:
           $ref: '#/components/schemas/CollateralSubunits'
           description: >
             Conditional-token face amount already consumed by committed fills
-            or currently matched atomic-swap sessions. A provisional mint match
-            is exposed here before final settlement so clients can notify
-            makers and start the atomic-swap handshake.
+            or reserved by a nonterminal atomic settlement group.
         fills:
           type: array
           items:
             $ref: '#/components/schemas/Fill'
           description: >
-            All fills and active or terminal atomic-swap sessions produced
+            All fills and active or terminal atomic settlement groups produced
             against this order so far.
         tradeId:
           type: string
           format: uuid
           nullable: true
           description: >
-            Pending atomic-swap trade id when status is `matched` and the
-            engine is waiting for ephemeral pubkey submission.
+            Legacy HTLC trade identifier retained until Phase 12 removes the
+            superseded protocol surface.
         deadline:
           type: string
           format: date-time
           nullable: true
           description: Deadline for pending ephemeral pubkey submission.
+        activeSettlementGroup:
+          oneOf:
+            - $ref: '#/components/schemas/SettlementGroupSummary'
+            - type: 'null'
+          description: >
+            Current nonterminal settlement group for this order, or null when
+            no group currently owns an unconfirmed fill.
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
         baseAsset:
@@ -1701,6 +1883,7 @@ components:
 
     OrderEntry:
       type: object
+      additionalProperties: false
       required:
         - orderId
         - marketId
@@ -1714,6 +1897,7 @@ components:
         - tokenSide
         - status
         - placedAt
+        - activeSettlementGroup
       properties:
         orderId:
           type: string
@@ -1739,8 +1923,7 @@ components:
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
         status:
-          type: string
-          enum: [Resting, Filled, Cancelled, Matched]
+          $ref: '#/components/schemas/OrderLifecycleStatus'
         placedAt:
           type: string
           format: date-time
@@ -1762,6 +1945,12 @@ components:
         clientOrderId:
           type: string
           nullable: true
+        activeSettlementGroup:
+          oneOf:
+            - $ref: '#/components/schemas/SettlementGroupSummary'
+            - type: 'null'
+          description: >
+            Current nonterminal settlement group for this order, or null.
 
     ListMyOrdersResponse:
       type: object
@@ -1779,6 +1968,7 @@ components:
 
     SubmitOrderResponse:
       type: object
+      additionalProperties: false
       required:
         - orderId
         - status
@@ -1787,17 +1977,14 @@ components:
         - pendingPubkeySubmissions
         - baseAsset
         - divisibility
+        - activeSettlementGroup
       properties:
         orderId:
           type: string
           format: uuid
           description: The unique identifier assigned to this order.
         status:
-          type: string
-          description: >
-            One of: "filled", "matched" (reserved for atomic-swap
-            settlement), "partially_filled", "resting", "cancelled",
-            "failed".
+          $ref: '#/components/schemas/OrderLifecycleStatus'
         remainingAmountSubunits:
           $ref: '#/components/schemas/CollateralSubunits'
         fills:
@@ -1816,11 +2003,16 @@ components:
           type: integer
           format: int32
           enum: [10000, 1000000]
+        activeSettlementGroup:
+          oneOf:
+            - $ref: '#/components/schemas/SettlementGroupSummary'
+            - type: 'null'
           description: >
-            Immutable price denominator `D`, server-determined.
+            Current nonterminal settlement group for this order, or null.
 
     BatchSubmitOrdersRequest:
       type: object
+      additionalProperties: false
       required:
         - orders
       properties:
@@ -1879,82 +2071,69 @@ components:
 
     BatchSubmitOrderRequestItem:
       type: object
+      additionalProperties: false
       required:
-        - marketId
-        - outcomeId
-        - tokenSide
-        - side
-        - price
-        - amountSubunits
-        - clientOrderId
+        - settlementCapability
+      description: >
+        Reference-only batch item. The server loads every immutable order fact
+        from the current durable DCB binding. Possession of the reference is
+        not bearer authority; ownership, route condition, and current
+        authorization are verified.
       properties:
-        clientOrderId:
-          type: string
-          description: Client-supplied idempotency key scoped to the authenticated pubkey and condition.
-        marketId:
-          type: string
-          description: Visible market id for this item. Must belong to the route conditionId.
-        outcomeId:
-          type: string
-          description: Primitive outcome segment for marketId.
-        tokenSide:
-          $ref: '#/components/schemas/TokenSide'
-        side:
-          $ref: '#/components/schemas/OrderSide'
-        price:
-          $ref: '#/components/schemas/Probability'
-        amountSubunits:
-          $ref: '#/components/schemas/CollateralSubunits'
-        timeInForce:
-          $ref: '#/components/schemas/TimeInForce'
-          default: GTC
-        expiresAt:
-          type:
-            - string
-            - 'null'
-          format: date-time
+        settlementCapability:
+          $ref: '#/components/schemas/SettlementCapabilityReference'
 
     BatchSubmitOrdersResponse:
       type: object
+      additionalProperties: false
       required:
-        - results
+        - accepted
+        - rejected
+      description: >
+        Every request item appears exactly once in either `accepted` or
+        `rejected`. Consumers may reconstruct request order by sorting both
+        arrays by `requestIndex`.
       properties:
-        results:
+        accepted:
           type: array
           items:
-            $ref: '#/components/schemas/BatchSubmitOrderResult'
+            $ref: '#/components/schemas/BatchSubmitOrderSuccess'
+        rejected:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchSubmitOrderFailure'
 
-    BatchSubmitOrderResult:
+    BatchSubmitOrderSuccess:
       type: object
+      additionalProperties: false
+      description: >
+        Accepted admission result with binding-owned order and execution facts.
       required:
         - requestIndex
-        - success
+        - clientOrderId
         - marketId
+        - orderId
         - status
         - remainingAmountSubunits
         - fills
+        - pendingPubkeySubmissions
         - baseAsset
         - divisibility
+        - activeSettlementGroup
       properties:
         requestIndex:
           type: integer
           format: int32
           minimum: 0
         clientOrderId:
-          type:
-            - string
-            - 'null'
-        success:
-          type: boolean
+          type: string
         marketId:
           type: string
         orderId:
-          type:
-            - string
-            - 'null'
+          type: string
           format: uuid
         status:
-          type: string
+          $ref: '#/components/schemas/OrderLifecycleStatus'
         remainingAmountSubunits:
           $ref: '#/components/schemas/CollateralSubunits'
         fills:
@@ -1973,28 +2152,48 @@ components:
           enum: [10000, 1000000]
           description: >
             Immutable price denominator `D`, server-determined.
-        errorCode:
+        activeSettlementGroup:
           oneOf:
-            - $ref: '#/components/schemas/BatchSubmitOrderErrorCode'
+            - $ref: '#/components/schemas/SettlementGroupSummary'
             - type: 'null'
-        errorMessage:
-          type:
-            - string
-            - 'null'
+          description: >
+            Current nonterminal settlement group for this order, or null.
+
+    BatchSubmitOrderFailure:
+      type: object
+      additionalProperties: false
+      description: >
+        Per-item admission failure. This variant exposes no binding-owned
+        identity, market, order, amount, fill, asset, divisibility, or
+        free-form dependency details.
+      required:
+        - requestIndex
+        - errorCode
+      properties:
+        requestIndex:
+          type: integer
+          format: int32
+          minimum: 0
+        errorCode:
+          $ref: '#/components/schemas/BatchSubmitOrderErrorCode'
 
     BatchSubmitOrderErrorCode:
       type: string
       enum:
-        - invalidMarket
-        - invalidOutcome
-        - invalidTokenSide
-        - invalidSide
-        - invalidPrice
-        - invalidAmount
-        - invalidTimeInForce
-        - duplicateClientOrderId
-        - unsupportedOrder
+        - capabilityNotFound
+        - capabilityNotCurrent
+        - routeMismatch
+        - authorityUnavailable
+        - participationScoreRequired
+        - marketClosed
         - bookRejected
+      description: >
+        `capabilityNotFound` covers absent, foreign, or digest-mismatched
+        references. `capabilityNotCurrent` covers stale, expired, selected, or
+        otherwise non-current capabilities only when no matching accepted
+        admission exists. An exact authenticated owner, order, reference, and
+        fingerprint replay returns its prior accepted admission result even if
+        the capability later became selected or terminal.
 
     BatchCancelOrdersRequest:
       type: object
