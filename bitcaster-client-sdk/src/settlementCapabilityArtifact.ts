@@ -27,6 +27,11 @@ export const SETTLEMENT_CAPABILITY_MANIFEST_ENTRIES_MAX = 128
 const ROOT_PARENT_COLLECTION_ID = '0'.repeat(64)
 const MAX_U128 = 340_282_366_920_938_463_463_374_607_431_768_211_455n
 
+export interface SettlementCapabilityInputProof
+  extends Omit<DurableCtfRangeProof, 'dleq'> {
+  dleq: { e: string; s: string } | null
+}
+
 export interface SettlementCapabilityArtifact {
   schemaVersion: 1
   operationId: string
@@ -46,7 +51,7 @@ export interface SettlementCapabilityArtifact {
   }
   inputFeePpkByKeyset: Record<string, number>
   inputProofYs: string[]
-  inputs: DurableCtfRangeProof[]
+  inputs: SettlementCapabilityInputProof[]
   manifest: {
     commitment: string
     entries: CtfPoolEntry[]
@@ -71,7 +76,7 @@ export function createSettlementCapabilityArtifact(
     policy: structuredClone(operation.policy),
     inputFeePpkByKeyset: { ...operation.inputFeePpkByKeyset },
     inputProofYs: operation.inputs.map(deriveInputY),
-    inputs: structuredClone(operation.inputs),
+    inputs: operation.inputs.map(projectCapabilityInput),
     manifest: {
       commitment: operation.manifest.commitment,
       entries: operation.manifest.entries.map(({ outputData: _, ...entry }) => entry),
@@ -180,7 +185,7 @@ function validateFeeAuthority(value: unknown, offerKeysetId: unknown): void {
   }
 }
 
-function validateInputs(value: unknown): DurableCtfRangeProof[] {
+function validateInputs(value: unknown): SettlementCapabilityInputProof[] {
   if (
     !Array.isArray(value) ||
     value.length < 1 ||
@@ -194,8 +199,9 @@ function validateInputs(value: unknown): DurableCtfRangeProof[] {
     requirePositiveDecimal(proof.amount, 'proof amount')
     requireText(proof.secret, 'proof secret', 16_384)
     requireText(proof.C, 'proof signature')
+    validateCapabilityDleq(proof.dleq)
     if (proof.p2pkE !== null) requireText(proof.p2pkE, 'proof P2PK point')
-    return structuredClone(proof) as unknown as DurableCtfRangeProof
+    return structuredClone(proof) as unknown as SettlementCapabilityInputProof
   })
 }
 
@@ -224,7 +230,7 @@ function validateManifest(value: unknown): {
 
 function validateArtifactAuthority(
   artifact: Record<string, unknown>,
-  inputs: DurableCtfRangeProof[],
+  inputs: SettlementCapabilityInputProof[],
   manifest: { commitment: string; entries: CtfPoolEntry[] },
 ): void {
   const policy = artifact.policy as SettlementCapabilityArtifact['policy']
@@ -261,7 +267,28 @@ function validateArtifactAuthority(
   }
 }
 
-function deriveInputY(proof: DurableCtfRangeProof): string {
+function projectCapabilityInput(proof: DurableCtfRangeProof): SettlementCapabilityInputProof {
+  const { dleq, ...rest } = structuredClone(proof)
+  return {
+    ...rest,
+    dleq:
+      dleq === null
+        ? null
+        : {
+            e: requireScalar((dleq as { e?: unknown }).e, 'proof DLEQ e'),
+            s: requireScalar((dleq as { s?: unknown }).s, 'proof DLEQ s'),
+          },
+  }
+}
+
+function validateCapabilityDleq(value: unknown): void {
+  if (value === null) return
+  const dleq = exactRecord(value, ['e', 's'])
+  requireScalar(dleq.e, 'proof DLEQ e')
+  requireScalar(dleq.s, 'proof DLEQ s')
+}
+
+function deriveInputY(proof: SettlementCapabilityInputProof | DurableCtfRangeProof): string {
   const secret = new TextEncoder().encode(proof.secret)
   return isBlsKeyset(proof.id)
     ? hashToCurveBls(secret).toHex(true)
@@ -306,9 +333,19 @@ function requireHash(value: unknown, name: string): string {
   return value
 }
 
+function requireScalar(value: unknown, name: string): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`${name} is invalid`)
+  }
+  return value
+}
+
 function requireKeyset(value: unknown, name: string): string {
   const keyset = requireText(value, name)
-  if (canonicalDurableCustodyKeysetIdentity(keyset) !== keyset) {
+  if (
+    canonicalDurableCustodyKeysetIdentity(keyset) !== keyset ||
+    !/^(?:[0-9a-f]{16}|01[0-9a-f]{64})$/.test(keyset)
+  ) {
     throw new Error(`${name} is not canonical`)
   }
   return keyset

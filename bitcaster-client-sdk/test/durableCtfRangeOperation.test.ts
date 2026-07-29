@@ -450,6 +450,11 @@ test('range operation preserves direct proof-operation authority and fee bounds'
 
 test('range capability exposes only exact public settlement authority', () => {
   const operation = fixture()
+  operation.inputs[0]!.dleq = {
+    e: '11'.repeat(32),
+    s: '22'.repeat(32),
+    r: '33'.repeat(32),
+  }
   const artifact = createSettlementCapabilityArtifact(operation)
   const bytes = encodeSettlementCapabilityArtifact(artifact)
   const decoded = decodeSettlementCapabilityArtifactBytes(bytes)
@@ -463,16 +468,42 @@ test('range capability exposes only exact public settlement authority', () => {
   assert.equal(decoded.manifest.entries.length, operation.manifest.entries.length)
   assert.equal(decoded.manifest.commitment, operation.manifest.commitment)
   assert.ok(decoded.inputProofYs.every((value) => value.length > 0))
+  assert.deepEqual(decoded.inputs[0]!.dleq, {
+    e: '11'.repeat(32),
+    s: '22'.repeat(32),
+  })
 
   const serialized = new TextDecoder().decode(bytes)
   assert.equal(serialized.includes('refundKey'), false)
   assert.equal(serialized.includes('privateKey'), false)
   assert.equal(serialized.includes('outputData'), false)
   assert.equal(serialized.includes('blindingFactor'), false)
+  assert.equal(serialized.includes('"r":'), false)
 })
 
 test('range capability rejects changed authority and noncanonical bytes', () => {
   const artifact = createSettlementCapabilityArtifact(fixture())
+  assert.throws(
+    () =>
+      decodeSettlementCapabilityArtifact({
+        ...artifact,
+        inputs: artifact.inputs.map((proof, index) => ({
+          ...proof,
+          ...(index === 0
+            ? { dleq: { e: '11'.repeat(32), s: '22'.repeat(32), r: '33'.repeat(32) } }
+            : {}),
+        })),
+      }),
+    /foreign or missing fields/,
+  )
+  assert.throws(
+    () =>
+      decodeSettlementCapabilityArtifact({
+        ...artifact,
+        offerKeysetId: `02${'11'.repeat(32)}`,
+      }),
+    /offer keyset id is not canonical/,
+  )
   assert.throws(
     () =>
       decodeSettlementCapabilityArtifact({
