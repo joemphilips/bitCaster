@@ -66,7 +66,7 @@ export interface SettlementCapabilityInputProof {
   amount: string
   secret: string
   C: string
-  dleq: { e: string; s: string } | null
+  dleq: { e: string; s: string; r: string }
   p2pkE: string | null
   witness: string | { signatures: string[] } | null
 }
@@ -464,10 +464,11 @@ function parseCoordinatorBoundCondition(
 }
 
 function validateCapabilityDleq(value: unknown): void {
-  if (value === null) return
-  const dleq = exactRecord(value, ['e', 's'])
+  if (value === null) throw new Error('settlement capability proof DLEQ is required')
+  const dleq = exactRecord(value, ['e', 's', 'r'])
   requireScalar(dleq.e, 'proof DLEQ e')
   requireScalar(dleq.s, 'proof DLEQ s')
+  requireScalar(dleq.r, 'proof DLEQ r')
 }
 
 function validateWitness(value: unknown): void {
