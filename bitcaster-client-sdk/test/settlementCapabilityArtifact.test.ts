@@ -216,6 +216,35 @@ test('v2 capability modes reject cross-mode, legacy, and changed authority', () 
   }
 })
 
+test('v2 pool policy follows the pinned unsigned bounds', () => {
+  const pool = poolFixture()
+  const zeroRate = {
+    ...pool,
+    policy: { ...pool.policy, rateN: '0' },
+  }
+  zeroRate.inputs = zeroRate.inputs.map((proof) => ({
+    ...proof,
+    secret: payToUnlockSecret(pool.manifest.commitment, zeroRate.policy),
+  }))
+  zeroRate.inputProofYs = zeroRate.inputs.map((proof) =>
+    hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+  )
+  assert.equal(decodeSettlementCapabilityArtifact(zeroRate).policy.rateN, '0')
+
+  const zeroMaximumDebit = {
+    ...pool,
+    policy: { ...pool.policy, maxDebit: '0' },
+  }
+  zeroMaximumDebit.inputs = zeroMaximumDebit.inputs.map((proof) => ({
+    ...proof,
+    secret: payToUnlockSecret(pool.manifest.commitment, zeroMaximumDebit.policy),
+  }))
+  zeroMaximumDebit.inputProofYs = zeroMaximumDebit.inputs.map((proof) =>
+    hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+  )
+  assert.equal(decodeSettlementCapabilityArtifact(zeroMaximumDebit).policy.maxDebit, '0')
+})
+
 test('v2 capability binds one valid coordinator and unique proof nonce', () => {
   const pool = poolFixture()
   const invalidCoordinator = payToUnlockSecret(pool.manifest.commitment, pool.policy).replace(

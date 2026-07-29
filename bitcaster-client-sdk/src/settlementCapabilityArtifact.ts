@@ -227,10 +227,10 @@ function requireSettlementMintOrigin(value: unknown): string {
 
 function validatePolicy(value: unknown): SettlementCapabilityPolicy {
   const policy = exactRecord(value, ['rateN', 'rateD', 'minReceive', 'maxDebit'])
-  const rateN = requirePositiveDecimal(policy.rateN, MAX_U128, 'rate numerator')
+  const rateN = requireUnsignedDecimal(policy.rateN, MAX_U128, 'rate numerator')
   const rateD = requirePositiveDecimal(policy.rateD, MAX_U128, 'rate denominator')
   const minReceive = requirePositiveDecimal(policy.minReceive, MAX_U128, 'minimum receive')
-  const maxDebit = requirePositiveDecimal(policy.maxDebit, MAX_U128, 'maximum debit')
+  const maxDebit = requireUnsignedDecimal(policy.maxDebit, MAX_U128, 'maximum debit')
   if (greatestCommonDivisor(BigInt(rateN), BigInt(rateD)) !== 1n) {
     throw new Error('settlement capability rate fraction is not reduced')
   }
