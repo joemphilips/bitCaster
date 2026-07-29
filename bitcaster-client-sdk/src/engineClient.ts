@@ -1,8 +1,5 @@
-import type {
-  CtfCollateralUnit,
-  MarketBaseAsset,
-  MarketDivisibility,
-} from './marketUnits.ts'
+import type { CtfCollateralUnit, MarketBaseAsset, MarketDivisibility } from './marketUnits.ts'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
 
 export type EngineFetch = typeof fetch
 
@@ -78,6 +75,10 @@ export interface SettlementCapabilityResponse {
   authorizationExpiresAt: string
   stageExpiresAt: string
   settlementGroup: SettlementGroupSummary | null
+}
+
+export interface SettlementCapabilityAdmissionPolicyResponse {
+  coordinatorPubkey: string
 }
 
 export interface SettlementCapabilityResultResponse {
@@ -389,6 +390,11 @@ export class BitcasterEngineClient {
     return (await response.json()) as SettlementCapabilityResponse
   }
 
+  async getSettlementCapabilityAdmissionPolicy(): Promise<SettlementCapabilityAdmissionPolicyResponse> {
+    const response = await this.request('/api/v1/settlement-capabilities/policy')
+    return decodeSettlementCapabilityAdmissionPolicy(await response.json())
+  }
+
   async getSettlementCapability(
     reference: SettlementCapabilityReference,
   ): Promise<SettlementCapabilityResponse | null> {
@@ -621,6 +627,30 @@ export class BitcasterEngineClient {
     }
     return response
   }
+}
+
+function decodeSettlementCapabilityAdmissionPolicy(
+  value: unknown,
+): SettlementCapabilityAdmissionPolicyResponse {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 1 ||
+    !Object.hasOwn(value, 'coordinatorPubkey')
+  ) {
+    throw new Error('settlement capability admission policy is malformed')
+  }
+  const coordinatorPubkey = (value as { coordinatorPubkey?: unknown }).coordinatorPubkey
+  if (typeof coordinatorPubkey !== 'string' || !/^[0-9a-f]{64}$/.test(coordinatorPubkey)) {
+    throw new Error('settlement coordinator public key is malformed')
+  }
+  try {
+    secp256k1.Point.fromHex(`02${coordinatorPubkey}`)
+  } catch (error) {
+    throw new Error('settlement coordinator public key is invalid', { cause: error })
+  }
+  return { coordinatorPubkey }
 }
 
 export async function submitEphemeralPubkey(

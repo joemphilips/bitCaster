@@ -886,6 +886,35 @@ paths:
         '503':
           description: Mint validation or durable capability authority is unavailable.
 
+  /api/v1/settlement-capabilities/policy:
+    get:
+      operationId: getSettlementCapabilityAdmissionPolicy
+      summary: Read the current range-settlement admission policy
+      security:
+        - nip98: []
+      description: >
+        Returns the coordinator public key that every newly created bitCaster
+        PAY_TO_UNLOCK authorization must bind. Clients fetch this authenticated
+        policy before creating or reauthorizing a range operation. Historical
+        operations retain their persisted coordinator key.
+      responses:
+        '200':
+          description: Current coordinator-bound settlement admission policy.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+              description: The admission key must not be served from a cache.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityAdmissionPolicyResponse'
+        '401':
+          description: Missing or invalid authentication.
+        '503':
+          description: Settlement admission policy is unavailable.
+
   /api/v1/settlement-capabilities/{artifactId}:
     get:
       operationId: getSettlementCapability
@@ -1231,6 +1260,22 @@ components:
           description: >
             Current or terminal group that selected this capability, or null
             before selection.
+
+    SettlementCapabilityAdmissionPolicyResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - coordinatorPubkey
+      properties:
+        coordinatorPubkey:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          minLength: 64
+          maxLength: 64
+          description: >
+            Current environment BIP-340 x-only coordinator public key. Every
+            input proof in a newly admitted bitCaster PAY_TO_UNLOCK artifact
+            must bind this exact key.
 
     SettlementCapabilityResultResponse:
       type: object

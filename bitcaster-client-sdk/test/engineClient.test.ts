@@ -4,6 +4,7 @@ import {
   BitcasterEngineClient,
   EngineClientError,
   submitEphemeralPubkey,
+  type EngineAuthorizationRequest,
 } from '../src/engineClient.ts'
 import { isKind89NostrEvent } from '../src/marketLifecycle.ts'
 
@@ -592,6 +593,9 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
     version: 4,
     settlementGroup,
   }
+  const policy = {
+    coordinatorPubkey: '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+  }
   const createRequest = {
     stageIdempotencyKey: 'stage-1',
     clientOrderId: 'client-order-1',
@@ -621,9 +625,11 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
       })
       const responseBody = url.endsWith('/acknowledgement')
         ? { ...result, acknowledgedAt: '2026-07-29T00:01:00Z', version: 5 }
-        : url.includes('settlement-capability-results')
-          ? result
-          : capability
+        : url.endsWith('/settlement-capabilities/policy')
+          ? policy
+          : url.includes('settlement-capability-results')
+            ? result
+            : capability
       return new Response(JSON.stringify(responseBody), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -631,6 +637,7 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
     },
   })
 
+  assert.deepEqual(await client.getSettlementCapabilityAdmissionPolicy(), policy)
   assert.deepEqual(await client.createSettlementCapability(createRequest), capability)
   assert.deepEqual(await client.getSettlementCapability(reference), capability)
   assert.deepEqual(await client.getSettlementCapabilityResult(result.resultId), result)
@@ -645,6 +652,10 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
   )
 
   assert.deepEqual(requests, [
+    {
+      url: 'https://engine.example/api/v1/settlement-capabilities/policy',
+      method: 'GET',
+    },
     {
       url: 'https://engine.example/api/v1/settlement-capabilities',
       method: 'POST',
@@ -666,6 +677,33 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
       url: `https://engine.example/api/v1/settlement-capability-results/${result.resultId}/acknowledgement`,
       method: 'POST',
       body: JSON.stringify({ expectedVersion: 4 }),
+    },
+  ])
+})
+
+test('BitcasterEngineClient authenticates and strictly validates settlement policy', async () => {
+  const authorizationRequests: EngineAuthorizationRequest[] = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: async (request) => {
+      authorizationRequests.push(request)
+      return 'Nostr signed-policy-request'
+    },
+    fetchImpl: async (_input, init) => {
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Nostr signed-policy-request')
+      return Response.json({ coordinatorPubkey: 'f'.repeat(64) })
+    },
+  })
+
+  await assert.rejects(
+    () => client.getSettlementCapabilityAdmissionPolicy(),
+    /coordinator public key is invalid/,
+  )
+  assert.deepEqual(authorizationRequests, [
+    {
+      url: 'https://engine.example/api/v1/settlement-capabilities/policy',
+      method: 'GET',
+      bodyText: undefined,
     },
   ])
 })

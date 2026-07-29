@@ -255,6 +255,24 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class SettlementCapabilityAdmissionPolicyResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public SettlementCapabilityAdmissionPolicyResponse(string @coordinatorPubkey)
+        {
+            this.CoordinatorPubkey = @coordinatorPubkey;
+        }
+
+        /// <summary>
+        /// Current environment BIP-340 x-only coordinator public key. Every input proof in a newly admitted bitCaster PAY_TO_UNLOCK artifact must bind this exact key.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("coordinatorPubkey")]
+        public string CoordinatorPubkey { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class SettlementCapabilityResultResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]

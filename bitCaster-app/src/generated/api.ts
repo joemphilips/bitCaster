@@ -445,6 +445,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settlement-capabilities/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the current range-settlement admission policy
+         * @description Returns the coordinator public key that every newly created bitCaster PAY_TO_UNLOCK authorization must bind. Clients fetch this authenticated policy before creating or reauthorizing a range operation. Historical operations retain their persisted coordinator key.
+         */
+        get: operations["getSettlementCapabilityAdmissionPolicy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settlement-capabilities/{artifactId}": {
         parameters: {
             query?: never;
@@ -584,6 +604,10 @@ export interface components {
             stageExpiresAt: string;
             /** @description Current or terminal group that selected this capability, or null before selection. */
             settlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
+        };
+        SettlementCapabilityAdmissionPolicyResponse: {
+            /** @description Current environment BIP-340 x-only coordinator public key. Every input proof in a newly admitted bitCaster PAY_TO_UNLOCK artifact must bind this exact key. */
+            coordinatorPubkey: string;
         };
         SettlementCapabilityResultResponse: {
             /** Format: uuid */
@@ -2485,6 +2509,42 @@ export interface operations {
                 content?: never;
             };
             /** @description Mint validation or durable capability authority is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSettlementCapabilityAdmissionPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current coordinator-bound settlement admission policy. */
+            200: {
+                headers: {
+                    /** @description The admission key must not be served from a cache. */
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettlementCapabilityAdmissionPolicyResponse"];
+                };
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Settlement admission policy is unavailable. */
             503: {
                 headers: {
                     [name: string]: unknown;
