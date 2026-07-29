@@ -855,9 +855,11 @@ paths:
         to the authenticated subject's order identity before returning. The
         artifact is a sensitive bearer capability containing conditioned proof
         secrets and public blinded outputs, but never refund private keys,
-        output secrets, or blinding factors. A byte-identical retry is
-        idempotent; changing any artifact or order-binding field under the same
-        idempotency key fails closed.
+        output secrets, or blinding factors. A successful or
+        response-uncertain attempt must be retried byte-identically. Once the
+        key is durably associated with an artifact, changing any artifact or
+        order-binding field fails closed. A definitive rejection before
+        staging stores no key association.
       requestBody:
         required: true
         content:
@@ -1186,7 +1188,9 @@ components:
           maxLength: 128
           description: >
             Client-generated idempotency key for this exact artifact and order
-            binding. It is scoped to the authenticated subject.
+            binding. It is scoped to the authenticated subject. Successful or
+            response-uncertain attempts must retry the exact request; a
+            definitive rejection before staging stores no key association.
         clientOrderId:
           type: string
           minLength: 1
@@ -1204,8 +1208,8 @@ components:
           $ref: '#/components/schemas/SettlementOrderIntent'
           description: >
             Economic order terms to authenticate in the durable capability
-            binding. Reusing the stage idempotency key with different terms
-            conflicts.
+            binding. Once the stage idempotency key is durably associated,
+            reusing it with different terms conflicts.
         artifact:
           type: string
           format: byte

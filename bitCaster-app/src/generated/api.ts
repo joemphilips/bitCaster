@@ -436,7 +436,7 @@ export interface paths {
         put?: never;
         /**
          * Validate and bind one range-settlement authorization
-         * @description Stages one canonical NUT-CTF range-settlement artifact, validates its mint authority, reserves its exact input proofs, and binds it durably to the authenticated subject's order identity before returning. The artifact is a sensitive bearer capability containing conditioned proof secrets and public blinded outputs, but never refund private keys, output secrets, or blinding factors. A byte-identical retry is idempotent; changing any artifact or order-binding field under the same idempotency key fails closed.
+         * @description Stages one canonical NUT-CTF range-settlement artifact, validates its mint authority, reserves its exact input proofs, and binds it durably to the authenticated subject's order identity before returning. The artifact is a sensitive bearer capability containing conditioned proof secrets and public blinded outputs, but never refund private keys, output secrets, or blinding factors. A successful or response-uncertain attempt must be retried byte-identically. Once the key is durably associated with an artifact, changing any artifact or order-binding field fails closed. A definitive rejection before staging stores no key association.
          */
         post: operations["createSettlementCapability"];
         delete?: never;
@@ -574,13 +574,13 @@ export interface components {
             expiresAt: string | null;
         };
         CreateSettlementCapabilityRequest: {
-            /** @description Client-generated idempotency key for this exact artifact and order binding. It is scoped to the authenticated subject. */
+            /** @description Client-generated idempotency key for this exact artifact and order binding. It is scoped to the authenticated subject. Successful or response-uncertain attempts must retry the exact request; a definitive rejection before staging stores no key association. */
             stageIdempotencyKey: string;
             /** @description Stable client order identity used to derive the server order id. Reusing it with a different authorization fingerprint conflicts. */
             clientOrderId: string;
             /** @description Primitive outcome market id in `{conditionId}-{outcomeName}` form. */
             marketId: string;
-            /** @description Economic order terms to authenticate in the durable capability binding. Reusing the stage idempotency key with different terms conflicts. */
+            /** @description Economic order terms to authenticate in the durable capability binding. Once the stage idempotency key is durably associated, reusing it with different terms conflicts. */
             orderIntent: components["schemas"]["SettlementOrderIntent"];
             /**
              * Format: byte

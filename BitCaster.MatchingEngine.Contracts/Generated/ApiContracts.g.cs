@@ -164,7 +164,7 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// Client-generated idempotency key for this exact artifact and order binding. It is scoped to the authenticated subject.
+        /// Client-generated idempotency key for this exact artifact and order binding. It is scoped to the authenticated subject. Successful or response-uncertain attempts must retry the exact request; a definitive rejection before staging stores no key association.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("stageIdempotencyKey")]
@@ -184,7 +184,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string MarketId { get; }
 
         /// <summary>
-        /// Economic order terms to authenticate in the durable capability binding. Reusing the stage idempotency key with different terms conflicts.
+        /// Economic order terms to authenticate in the durable capability binding. Once the stage idempotency key is durably associated, reusing it with different terms conflicts.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("orderIntent")]
