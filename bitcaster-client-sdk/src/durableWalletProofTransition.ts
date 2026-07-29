@@ -33,8 +33,10 @@ export interface DurableWalletProofTransition {
   inputSource: DurableWalletProofInputSource
   resultGroups: Readonly<Record<string, DurableWalletProofResultDisposition>>
   passthroughResultGroups: Readonly<Record<string, readonly DurableWalletProofIdentity[]>>
-  resultCardinality: Readonly<Record<string, 'exact' | 'prefix'>>
+  resultCardinality: Readonly<Record<string, DurableWalletResultCardinality>>
 }
+
+export type DurableWalletResultCardinality = 'exact' | 'prefix' | 'subset'
 
 export interface DurableWalletPlannedOutput {
   secret: string
@@ -56,7 +58,7 @@ export function createDurableWalletProofTransition(input: {
   plannedOutputLabels: readonly string[]
   resultGroups: Readonly<Record<string, DurableWalletProofResultDisposition>>
   passthroughResultGroups?: Readonly<Record<string, readonly DurableWalletResultProof[]>>
-  resultCardinality?: Readonly<Record<string, 'exact' | 'prefix'>>
+  resultCardinality?: Readonly<Record<string, DurableWalletResultCardinality>>
 }): DurableWalletProofTransition {
   if (
     input.plannedOutputLabels.length === 0 ||
@@ -150,6 +152,10 @@ export function assertDurableWalletProofResultMatchesPlan(
       actual.forEach((proof, index) => assertPlannedProof(planned[index]!, proof, seen))
       continue
     }
+    if (cardinality === 'subset') {
+      assertSubsetProofs(planned, passthrough, actual, seen)
+      continue
+    }
     if (actual.length !== planned.length + passthrough.length) {
       throw new Error('wallet proof result count does not match its exact plan')
     }
@@ -170,6 +176,26 @@ export function assertDurableWalletProofResultMatchesPlan(
       assertUnique(expected.secret, seen)
     })
   }
+}
+
+function assertSubsetProofs(
+  planned: readonly DurableWalletPlannedOutput[],
+  passthrough: readonly DurableWalletProofIdentity[],
+  actual: readonly DurableWalletResultProof[],
+  seen: Set<string>,
+): void {
+  if (passthrough.length > 0 || actual.length > planned.length) {
+    throw new Error('wallet proof result exceeds its planned subset')
+  }
+  const bySecret = new Map(planned.map((output) => [output.secret, output]))
+  if (bySecret.size !== planned.length) {
+    throw new Error('wallet proof plan reuses a proof secret')
+  }
+  actual.forEach((proof) => {
+    const output = bySecret.get(proof.secret)
+    if (!output) throw new Error('wallet proof result is outside its planned subset')
+    assertPlannedProof(output, proof, seen)
+  })
 }
 
 function assertPlannedProof(
@@ -273,15 +299,15 @@ function assertTransition(
     throw new Error('wallet proof transition passthrough limit exceeded')
   }
   for (const [label, cardinality] of Object.entries(value.resultCardinality)) {
-    if (cardinality !== 'exact' && cardinality !== 'prefix') {
+    if (cardinality !== 'exact' && cardinality !== 'prefix' && cardinality !== 'subset') {
       throw new Error('wallet proof result cardinality is invalid')
     }
     if (
-      cardinality === 'prefix' &&
+      cardinality !== 'exact' &&
       Array.isArray(value.passthroughResultGroups[label]) &&
       value.passthroughResultGroups[label].length > 0
     ) {
-      throw new Error('prefix proof result cannot contain passthrough proofs')
+      throw new Error('non-exact proof result cannot contain passthrough proofs')
     }
   }
 }

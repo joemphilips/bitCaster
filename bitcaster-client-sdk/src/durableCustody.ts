@@ -125,6 +125,8 @@ export interface DurableCustodyProofStorageAuthority {
     operationId: string
     predecessorProofIds: string[]
     successorProofIds: string[]
+    successorAdmissionMode: 'exact' | 'subset'
+    selectedSuccessorProofIds: string[] | null
     successorAdmission: DurableCustodySuccessorAdmissionEvidence | null
   }
 }
@@ -310,6 +312,7 @@ export type DurableCustodyTransition =
       resultFingerprint: string
       outputPlanFingerprint: string
       exactResult: DurableCustodyExactArtifact
+      selectedSuccessorProofIds: readonly string[]
     }
   | {
       kind: 'apply-verified-result'
@@ -391,6 +394,7 @@ export interface DurableCustodyTransaction {
     resultHandle: string
     resultFingerprint: string
     exactResult: DurableCustodyExactArtifact
+    selectedSuccessorProofIds: readonly string[]
   }): void
   applyVerifiedResult(input: {
     /**
@@ -724,6 +728,7 @@ export function createDurableCustodyDispatchIntent(input: {
   proofLineage: {
     predecessorProofIds: readonly string[]
     successorProofIds: readonly string[]
+    successorAdmissionMode: 'exact' | 'subset'
   }
   exactRequest: Omit<DurableCustodyRecord['operation']['exactRequest'], 'body'> & {
     body: DurableCustodyExactArtifact
@@ -839,6 +844,8 @@ export function createDurableCustodyDispatchIntent(input: {
           }),
           predecessorProofIds: [...input.proofLineage.predecessorProofIds],
           successorProofIds: [...input.proofLineage.successorProofIds],
+          successorAdmissionMode: input.proofLineage.successorAdmissionMode,
+          selectedSuccessorProofIds: null,
           successorAdmission: null,
         },
       },
@@ -940,6 +947,7 @@ export function assertDurableCustodyImmutableAuthorityMatches(
           operationId: record.operation.proofStorage.lineage.operationId,
           predecessorProofIds: record.operation.proofStorage.lineage.predecessorProofIds,
           successorProofIds: record.operation.proofStorage.lineage.successorProofIds,
+          successorAdmissionMode: record.operation.proofStorage.lineage.successorAdmissionMode,
         },
       },
       verification: record.operation.verification,
@@ -1160,7 +1168,7 @@ export function applyDurableCustodyTransaction<T>(
         input.successorAdmission,
         record.scope,
         record.operation.operationId,
-        record.operation.proofStorage.lineage.successorProofIds,
+        requireSelectedSuccessorProofIds(record),
       )
       transaction.applyVerifiedResult(input)
     },
@@ -1316,6 +1324,10 @@ export function reduceDurableCustodyState(
       if (transition.exactResult.fingerprint !== transition.resultFingerprint) {
         throw new Error('custody verified result body is foreign')
       }
+      operation.operation.proofStorage.lineage.selectedSuccessorProofIds = selectSuccessorProofIds(
+        operation,
+        transition.selectedSuccessorProofIds,
+      )
       operation.operation.result = {
         state: 'verified-staged',
         resultHandle: transition.resultHandle,
@@ -1341,7 +1353,7 @@ export function reduceDurableCustodyState(
         transition.successorAdmission,
         operation.scope,
         operation.operation.operationId,
-        operation.operation.proofStorage.lineage.successorProofIds,
+        requireSelectedSuccessorProofIds(operation),
       )
       operation.operation.result.state = 'applied'
       operation.operation.state = 'reconciled'
@@ -1945,6 +1957,7 @@ function validateProofLineageInput(
   lineage: {
     predecessorProofIds: readonly string[]
     successorProofIds: readonly string[]
+    successorAdmissionMode: 'exact' | 'subset'
   },
   inputs: DurableCustodyRecord['operation']['reservation']['inputs'],
 ): void {
@@ -1963,6 +1976,9 @@ function validateProofLineageInput(
     return id
   })
   const reserved = inputs.map(({ proofId }) => proofId)
+  if (lineage.successorAdmissionMode !== 'exact' && lineage.successorAdmissionMode !== 'subset') {
+    throw new Error('custody successor admission mode is invalid')
+  }
   if (
     new Set(predecessors).size !== predecessors.length ||
     new Set(successors).size !== successors.length ||
@@ -1970,6 +1986,65 @@ function validateProofLineageInput(
     predecessors.some((proofId) => !reserved.includes(proofId))
   ) {
     throw new Error('custody proof lineage is invalid')
+  }
+}
+
+function selectSuccessorProofIds(
+  record: DurableCustodyRecord,
+  selectedValue: readonly string[],
+): string[] {
+  const lineage = record.operation.proofStorage.lineage
+  const selected = [...selectedValue]
+  if (
+    selected.length > DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX ||
+    new Set(selected).size !== selected.length
+  ) {
+    throw new Error('custody selected successor proof limit or uniqueness is invalid')
+  }
+  selected.forEach((proofId) => requireFingerprint(proofId, 'selected successor proof id'))
+  const selectedSet = new Set(selected)
+  const canonical = lineage.successorProofIds.filter((proofId) => selectedSet.has(proofId))
+  if (
+    canonical.length !== selected.length ||
+    canonical.some((proofId, index) => proofId !== selected[index]) ||
+    (record.operation.verification.hasOutputs && selected.length === 0) ||
+    (!record.operation.verification.hasOutputs && selected.length !== 0) ||
+    (lineage.successorAdmissionMode === 'exact' &&
+      selected.length !== lineage.successorProofIds.length)
+  ) {
+    throw new Error('custody selected successor proofs do not match the output authority')
+  }
+  return selected
+}
+
+function requireSelectedSuccessorProofIds(record: DurableCustodyRecord): string[] {
+  const selected = record.operation.proofStorage.lineage.selectedSuccessorProofIds
+  if (selected === null) throw new Error('custody successor selection is not staged')
+  return selected
+}
+
+function validateSelectedSuccessorProofIds(lineage: Record<string, unknown>): void {
+  const mode = lineage.successorAdmissionMode
+  const candidates = lineage.successorProofIds as string[]
+  const selected = lineage.selectedSuccessorProofIds as string[] | null
+  if (mode !== 'exact' && mode !== 'subset') {
+    throw new Error('custody successor admission mode is invalid')
+  }
+  if (selected === null) {
+    if (lineage.successorAdmission !== null) {
+      throw new Error('custody successor admission has no staged selection')
+    }
+    return
+  }
+  const selectedSet = new Set(selected)
+  const canonical = candidates.filter((proofId) => selectedSet.has(proofId))
+  if (
+    selectedSet.size !== selected.length ||
+    canonical.length !== selected.length ||
+    canonical.some((proofId, index) => proofId !== selected[index]) ||
+    (mode === 'exact' && selected.length !== candidates.length)
+  ) {
+    throw new Error('custody selected successor proofs are invalid')
   }
 }
 
@@ -2012,6 +2087,8 @@ function validateProofStorage(
     'operationId',
     'predecessorProofIds',
     'successorProofIds',
+    'successorAdmissionMode',
+    'selectedSuccessorProofIds',
     'successorAdmission',
   ])
   if (
@@ -2022,7 +2099,9 @@ function validateProofStorage(
   }
   if (
     !Array.isArray(value.lineage.predecessorProofIds) ||
-    !Array.isArray(value.lineage.successorProofIds)
+    !Array.isArray(value.lineage.successorProofIds) ||
+    (value.lineage.selectedSuccessorProofIds !== null &&
+      !Array.isArray(value.lineage.selectedSuccessorProofIds))
   ) {
     throw new Error('custody proof lineage is invalid')
   }
@@ -2030,15 +2109,27 @@ function validateProofStorage(
     {
       predecessorProofIds: value.lineage.predecessorProofIds as string[],
       successorProofIds: value.lineage.successorProofIds as string[],
+      successorAdmissionMode: value.lineage.successorAdmissionMode as 'exact' | 'subset',
     },
     (operation.reservation as DurableCustodyRecord['operation']['reservation']).inputs,
   )
+  validateSelectedSuccessorProofIds(value.lineage)
+  const selected = value.lineage.selectedSuccessorProofIds as string[] | null
+  const resultState = (operation.result as DurableCustodyRecord['operation']['result']).state
+  const hasOutputs = (operation.verification as DurableCustodyRecord['operation']['verification'])
+    .hasOutputs
+  if (
+    (resultState === 'none') !== (selected === null) ||
+    (selected !== null && hasOutputs !== selected.length > 0)
+  ) {
+    throw new Error('custody successor selection and result state are inconsistent')
+  }
   if (value.lineage.successorAdmission !== null) {
     validateSuccessorAdmission(
       value.lineage.successorAdmission,
       scope,
       operation.operationId as string,
-      value.lineage.successorProofIds as string[],
+      value.lineage.selectedSuccessorProofIds as string[],
     )
   }
 }

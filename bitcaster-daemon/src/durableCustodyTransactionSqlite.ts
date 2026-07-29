@@ -177,6 +177,7 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
       resultHandle: input.resultHandle,
       resultFingerprint: input.resultFingerprint,
       exactResult: input.exactResult,
+      selectedSuccessorProofIds: input.selectedSuccessorProofIds,
     })
     this.#store.putArtifact({
       scopeId: this.#scopeId,
@@ -230,7 +231,10 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
       throw new Error('custody staged result artifact authority is foreign')
     }
     const staged = this.#stagedSuccessors.get(input.operationId) ?? []
-    const planned = stagedOperation.operation.proofStorage.lineage.successorProofIds
+    const planned = stagedOperation.operation.proofStorage.lineage.selectedSuccessorProofIds
+    if (planned === null) {
+      throw new Error('custody selected successor authority is absent')
+    }
     if (
       staged.length !== planned.length ||
       input.successorAdmission.proofRows.length !== planned.length ||
@@ -361,7 +365,8 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
         `UPDATE custody_operations SET revision = ?, operation_state = ?,
            result_state = ?, result_handle = ?, result_artifact_id = ?,
            result_fingerprint = ?, result_output_plan_fingerprint = ?,
-           proof_storage_class = ?, transport_attempted = ?,
+           proof_storage_class = ?, successor_selection_staged = ?,
+           transport_attempted = ?,
            retry_attempt = ?, retry_reason = ?, next_attempt_at_ms = ?,
            updated_at_ms = ?
          WHERE scope_id = ? AND operation_id = ? AND revision = ?
@@ -382,6 +387,7 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
         operation.result.resultFingerprint,
         operation.result.outputPlanFingerprint,
         operation.proofStorage.storageClass,
+        Number(operation.proofStorage.lineage.selectedSuccessorProofIds !== null),
         Number(operation.state !== 'dispatch-intent'),
         operation.retry.attempt,
         operation.retry.reason,
@@ -397,14 +403,36 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
         stagedAuthority?.resultArtifactId ?? null,
       )
     if (updated.changes !== 1) throw new Error('custody operation transition CAS lost')
-    this.#replaceLifecycleRows(next)
+    this.#replaceLifecycleRows(
+      next,
+      !sameNullableProofIds(
+        current.operation.proofStorage.lineage.selectedSuccessorProofIds,
+        next.operation.proofStorage.lineage.selectedSuccessorProofIds,
+      ),
+    )
     this.#pendingOperations.set(operationId, structuredClone(next))
   }
 
   #replaceLifecycleRows(
     record: NonNullable<ReturnType<DurableCustodySqliteStore['getOperation']>>,
+    replaceSelectedSuccessors: boolean,
   ): void {
     const operationId = record.operation.operationId
+    if (replaceSelectedSuccessors) {
+      this.#database
+        .prepare('DELETE FROM custody_selected_successors WHERE scope_id = ? AND operation_id = ?')
+        .run(this.#scopeId, operationId)
+      const insertSelectedSuccessor = this.#database.prepare(
+        `INSERT INTO custody_selected_successors (
+           scope_id, operation_id, proof_position, proof_id
+         ) VALUES (?, ?, ?, ?)`,
+      )
+      record.operation.proofStorage.lineage.selectedSuccessorProofIds?.forEach(
+        (proofId, position) => {
+          insertSelectedSuccessor.run(this.#scopeId, operationId, position, proofId)
+        },
+      )
+    }
     this.#database
       .prepare('DELETE FROM custody_proof_pins WHERE scope_id = ? AND operation_id = ?')
       .run(this.#scopeId, operationId)
@@ -533,4 +561,14 @@ function proofRowsEqual(left: CustodyProofSqliteRow, right: CustodyProofSqliteRo
     proofBody: [...row.proofBody],
   })
   return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right))
+}
+
+function sameNullableProofIds(left: string[] | null, right: string[] | null): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.length === right.length &&
+      left.every((proofId, index) => proofId === right[index]))
+  )
 }

@@ -168,6 +168,7 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     'custody_artifacts',
     'custody_operation_tombstones',
     'custody_verification_keyset_uses',
+    'custody_selected_successors',
     'custody_successor_admissions',
     'custody_successor_admission_proofs',
     'custody_deliveries',
@@ -198,6 +199,8 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     'private_public_fingerprint',
     'result_handle',
     'result_output_plan_fingerprint',
+    'successor_admission_mode',
+    'successor_selection_staged',
     'verification_output_plan_fingerprint',
     'verification_has_outputs',
     'not_before_ms',
@@ -265,6 +268,7 @@ test('operation-first UoW defers artifacts and permits planned successor lineage
           private_artifact_id, result_state, result_handle,
           result_artifact_id, result_fingerprint,
           result_output_plan_fingerprint, proof_storage_class,
+          successor_admission_mode, successor_selection_staged,
           verification_output_plan_fingerprint, verification_has_outputs,
           transport_attempted, retry_attempt, retry_reason, next_attempt_at_ms,
           not_before_ms, not_after_ms, safety_margin_ms, keyset_expiry_ms,
@@ -277,7 +281,7 @@ test('operation-first UoW defers artifacts and permits planned successor lineage
           ?, ?, 'plan-1', 'output-material-1', ?,
           'private-material-1', 'private-use-1', ?, ?,
           'none', NULL, NULL, NULL, NULL,
-          'pinned-operation-bound-deterministic', ?, 0,
+          'pinned-operation-bound-deterministic', 'exact', 0, ?, 0,
           0, 0, 'none', NULL, NULL, NULL, 0, NULL, 0, ?, ?
         )`,
       )

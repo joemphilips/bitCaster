@@ -275,13 +275,36 @@ test('shared keyset response selection parses unknown input and enforces one com
         ],
       },
       conditionalResponse: {
-        keysets: [{ id: REGULAR_FULL_ID, unit: 'sat', active: false }],
+        keysets: [
+          {
+            id: REGULAR_FULL_ID,
+            unit: 'sat',
+            active: false,
+            input_fee_ppk: 100,
+            final_expiry: 200,
+            condition_id: 'ab'.repeat(32),
+            outcome_collection: 'YES',
+            outcome_collection_id: 'cd'.repeat(32),
+          },
+        ],
       },
     }),
     {
+      canonicalMintUrl: 'https://mint.example',
       freshness: 'fresh',
       regularKeysets: [{ keysetId: V0_ID, unit: 'sat', active: true }],
-      conditionalKeysets: [{ keysetId: REGULAR_FULL_ID, unit: 'sat', active: false }],
+      conditionalKeysets: [
+        {
+          keysetId: REGULAR_FULL_ID,
+          unit: 'sat',
+          active: false,
+          inputFeePpk: 100,
+          finalExpiry: 200,
+          conditionId: 'ab'.repeat(32),
+          outcomeCollection: 'YES',
+          outcomeCollectionId: 'cd'.repeat(32),
+        },
+      ],
     },
   )
 

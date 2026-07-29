@@ -40,9 +40,18 @@ export interface TokenImportKeysetMetadata {
   keysetId: string
   unit: unknown
   active: unknown
+  /** Present only for conditional keysets. */
+  conditionId?: unknown
+  /** Present only for conditional keysets. */
+  outcomeCollection?: unknown
+  /** Present only for conditional keysets. */
+  outcomeCollectionId?: unknown
+  inputFeePpk?: unknown
+  finalExpiry?: unknown
 }
 
 export interface TokenImportKeysetLookup {
+  canonicalMintUrl?: string
   freshness: 'fresh' | 'stale'
   regularKeysets: readonly TokenImportKeysetMetadata[]
   conditionalKeysets: readonly TokenImportKeysetMetadata[]
@@ -57,6 +66,18 @@ export interface TokenImportKeysetRequest {
   deadlineMs: number
   /** Combined regular plus conditional candidate response bound. */
   maxCandidates: number
+}
+
+export interface ClassifiedExactTokenImportKeyset {
+  keysetId: string
+  unit: TokenImportUnit
+  source: TokenImportKeysetSource
+  activity: TokenImportKeysetActivity
+  inputFeePpk?: unknown
+  finalExpiry?: unknown
+  conditionId?: unknown
+  outcomeCollection?: unknown
+  outcomeCollectionId?: unknown
 }
 
 export type DecodeTokenImport = (
@@ -106,15 +127,88 @@ export function selectTokenImportKeysetCandidates(
   if (!Number.isSafeInteger(input.request.maxCandidates) || input.request.maxCandidates <= 0) {
     throw new Error('Mint keyset lookup candidate bound is invalid')
   }
-  const regularKeysets = selectCandidatesFromWireResponse(input.regularResponse, input.request)
+  const regularKeysets = selectCandidatesFromWireResponse(
+    input.regularResponse,
+    input.request,
+    'regular',
+  )
   const conditionalKeysets = selectCandidatesFromWireResponse(
     input.conditionalResponse,
     input.request,
+    'conditional',
   )
   if (regularKeysets.length + conditionalKeysets.length > input.request.maxCandidates) {
     throw new Error('Mint keyset lookup exceeded the candidate bound')
   }
-  return { freshness: 'fresh', regularKeysets, conditionalKeysets }
+  return {
+    canonicalMintUrl: input.request.canonicalMintUrl,
+    freshness: 'fresh',
+    regularKeysets,
+    conditionalKeysets,
+  }
+}
+
+/**
+ * Applies the shared bounded token-import classification policy to exact
+ * keyset IDs without performing network or persistence work.
+ */
+export function classifyExactTokenImportKeysets(input: {
+  lookup: TokenImportKeysetLookup
+  canonicalMintUrl: string
+  keysetIds: readonly string[]
+  unit: TokenImportUnit
+  maxCandidates: number
+}): ClassifiedExactTokenImportKeyset[] {
+  if (
+    input.keysetIds.length === 0 ||
+    input.keysetIds.length > input.maxCandidates ||
+    new Set(input.keysetIds).size !== input.keysetIds.length ||
+    !Number.isSafeInteger(input.maxCandidates) ||
+    input.maxCandidates <= 0
+  ) {
+    fail('invalid_bounds', 'exact keyset classification bounds are invalid')
+  }
+  const requested = new Map(
+    input.keysetIds.map((id) => {
+      const parsed = parseEncodedKeysetId(id)
+      if (parsed.kind !== 'exact') {
+        fail('invalid_token', `keyset ${id} is not an exact identifier`)
+      }
+      return [id, parsed] as const
+    }),
+  )
+  const lookup = requireFreshKeysetLookup(
+    input.lookup,
+    input.maxCandidates,
+    'exact keysets',
+    input.canonicalMintUrl,
+  )
+  const policy: ImportContextPolicy = { unit: input.unit, source: 'either' }
+  const candidates = [
+    ...parseCandidates(lookup.regularKeysets, 'regular', requested, policy),
+    ...parseCandidates(lookup.conditionalKeysets, 'conditional', requested, policy),
+  ]
+  return input.keysetIds.map((keysetId) => {
+    const matches = candidates.filter((candidate) => candidate.keysetId === keysetId)
+    if (matches.length === 0) fail('unknown_keyset', `mint did not return keyset ${keysetId}`)
+    if (matches.length !== 1) fail('ambiguous_keyset', `keyset ${keysetId} is ambiguous`)
+    const match = matches[0]!
+    return {
+      keysetId: match.keysetId,
+      unit: input.unit,
+      source: match.source,
+      activity: match.active ? 'active' : 'inactive',
+      ...(match.inputFeePpk === undefined ? {} : { inputFeePpk: match.inputFeePpk }),
+      ...(match.finalExpiry === undefined ? {} : { finalExpiry: match.finalExpiry }),
+      ...(match.conditionId === undefined ? {} : { conditionId: match.conditionId }),
+      ...(match.outcomeCollection === undefined
+        ? {}
+        : { outcomeCollection: match.outcomeCollection }),
+      ...(match.outcomeCollectionId === undefined
+        ? {}
+        : { outcomeCollectionId: match.outcomeCollectionId }),
+    }
+  })
 }
 
 /**
@@ -148,6 +242,7 @@ export async function readBoundedTokenImportJsonResponse(
 function selectCandidatesFromWireResponse(
   value: unknown,
   request: TokenImportKeysetRequest,
+  source: TokenImportKeysetSource,
 ): TokenImportKeysetMetadata[] {
   if (!isRecord(value) || !Array.isArray(value.keysets)) {
     throw new Error('Mint keyset lookup returned invalid data')
@@ -164,11 +259,25 @@ function selectCandidatesFromWireResponse(
         keysetMatches(parseEncodedKeysetId(encodedId), item.id as string),
       ),
     )
-    .map((item) => ({
-      keysetId: item.id as string,
-      unit: item.unit,
-      active: item.active,
-    }))
+    .map((item) => {
+      const metadata: TokenImportKeysetMetadata = {
+        keysetId: item.id as string,
+        unit: item.unit,
+        active: item.active,
+      }
+      if (item.input_fee_ppk !== undefined) metadata.inputFeePpk = item.input_fee_ppk
+      if (item.final_expiry !== undefined) metadata.finalExpiry = item.final_expiry
+      if (source === 'conditional') {
+        if (item.condition_id !== undefined) metadata.conditionId = item.condition_id
+        if (item.outcome_collection !== undefined) {
+          metadata.outcomeCollection = item.outcome_collection
+        }
+        if (item.outcome_collection_id !== undefined) {
+          metadata.outcomeCollectionId = item.outcome_collection_id
+        }
+      }
+      return metadata
+    })
 }
 
 function parseDeclaredResponseBytes(value: string | null): number | null {
@@ -692,19 +801,36 @@ function requireFreshLookup(
   lookup: TokenImportKeysetLookup,
   request: TokenImportKeysetRequest,
 ): TokenImportKeysetLookup {
+  return requireFreshKeysetLookup(lookup, request.maxCandidates, request.canonicalMintUrl, null)
+}
+
+function requireFreshKeysetLookup(
+  lookup: TokenImportKeysetLookup,
+  maxCandidates: number,
+  label: string,
+  expectedCanonicalMintUrl: string | null,
+): TokenImportKeysetLookup {
   if (!lookup || typeof lookup !== 'object') {
     fail('spoofed_keyset_metadata', 'keyset resolver returned invalid metadata')
   }
   if (lookup.freshness === 'stale') {
-    fail('stale_keyset_metadata', `keyset metadata for ${request.canonicalMintUrl} is stale`)
+    fail('stale_keyset_metadata', `keyset metadata for ${label} is stale`)
   }
   if (lookup.freshness !== 'fresh') {
     fail('spoofed_keyset_metadata', 'keyset resolver returned invalid freshness metadata')
   }
+  if (expectedCanonicalMintUrl !== null) {
+    if (
+      canonicalizeMintUrl(lookup.canonicalMintUrl, false) !==
+      canonicalizeMintUrl(expectedCanonicalMintUrl, false)
+    ) {
+      fail('mint_mismatch', `keyset metadata for ${label} came from a foreign mint`)
+    }
+  }
   const count =
     (Array.isArray(lookup.regularKeysets) ? lookup.regularKeysets.length : 0) +
     (Array.isArray(lookup.conditionalKeysets) ? lookup.conditionalKeysets.length : 0)
-  if (count > request.maxCandidates) {
+  if (count > maxCandidates) {
     fail('resolver_response_too_large', 'keyset resolver returned too many candidates')
   }
   return lookup

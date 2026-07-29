@@ -87,6 +87,7 @@ export function createDurableCustodyProofOperation(input: {
     proofLineage: {
       predecessorProofIds: inputProofs.map(({ proofId }) => proofId),
       successorProofIds,
+      successorAdmissionMode: operation.kind === 'ctf-range-authorization' ? 'subset' : 'exact',
     },
     exactRequest: {
       requestId: handle('request', fingerprints.requestFingerprint),

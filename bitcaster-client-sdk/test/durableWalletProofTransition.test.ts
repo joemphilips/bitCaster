@@ -123,3 +123,35 @@ test('wallet proof transition accepts max passthroughs and rejects max plus one'
     /group limit/,
   )
 })
+
+test('wallet proof transition accepts an arbitrary exact subset of planned outputs', () => {
+  const policy = createDurableWalletProofTransition({
+    inputSource: 'wallet',
+    plannedOutputLabels: ['selected'],
+    resultGroups: {
+      selected: { kind: 'wallet', asset: 'conditional', reservedBy: null },
+    },
+    resultCardinality: { selected: 'subset' },
+  })
+  const outputs = {
+    selected: [1, 2, 4].map((amount) => ({
+      secret: `secret-${amount}`,
+      blindedMessage: { id: 'keyset-1', amount },
+    })),
+  }
+  assert.doesNotThrow(() =>
+    assertDurableWalletProofResultMatchesPlan(policy, outputs, {
+      selected: [
+        { id: 'keyset-1', amount: 4, secret: 'secret-4', C: 'signature-4' },
+        { id: 'keyset-1', amount: 1, secret: 'secret-1', C: 'signature-1' },
+      ],
+    }),
+  )
+  assert.throws(
+    () =>
+      assertDurableWalletProofResultMatchesPlan(policy, outputs, {
+        selected: [{ id: 'keyset-1', amount: 8, secret: 'foreign', C: 'foreign-signature' }],
+      }),
+    /outside its planned subset/,
+  )
+})

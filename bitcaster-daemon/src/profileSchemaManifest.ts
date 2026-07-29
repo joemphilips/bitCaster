@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '9d5449b3aaefb7a99e41c59628703e88ce8e69687e23e69f83bfbef04dc4ac10'
+  'a55e6872e78c83bf223e33308e7456410de4e2d3518b03945904d1a764d5ea8b'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -354,6 +354,12 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
         'pinned-operation-bound-deterministic', 'terminal-replay-retained'
       )
     ),
+    successor_admission_mode TEXT NOT NULL CHECK (
+      successor_admission_mode IN ('exact', 'subset')
+    ),
+    successor_selection_staged INTEGER NOT NULL CHECK (
+      successor_selection_staged IN (0, 1)
+    ),
     verification_output_plan_fingerprint TEXT NOT NULL CHECK (
       length(verification_output_plan_fingerprint) = 64
     ),
@@ -398,13 +404,15 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
         AND result_handle IS NULL
         AND result_artifact_id IS NULL
         AND result_fingerprint IS NULL
-        AND result_output_plan_fingerprint IS NULL)
+        AND result_output_plan_fingerprint IS NULL
+        AND successor_selection_staged = 0)
       OR
       (result_state <> 'none'
         AND result_handle IS NOT NULL
         AND result_artifact_id IS NOT NULL
         AND result_fingerprint IS NOT NULL
-        AND result_output_plan_fingerprint IS NOT NULL)
+        AND result_output_plan_fingerprint IS NOT NULL
+        AND successor_selection_staged = 1)
     ),
     CHECK (verification_output_plan_fingerprint = output_plan_fingerprint),
     CHECK (
@@ -511,6 +519,19 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     UNIQUE (scope_id, operation_id, proof_id),
     FOREIGN KEY (scope_id, operation_id)
       REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
+  ) STRICT`,
+  `CREATE TABLE custody_selected_successors (
+    scope_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    proof_position INTEGER NOT NULL CHECK (proof_position BETWEEN 0 AND 511),
+    proof_id TEXT NOT NULL,
+    PRIMARY KEY (scope_id, operation_id, proof_position),
+    UNIQUE (scope_id, operation_id, proof_id),
+    FOREIGN KEY (scope_id, operation_id)
+      REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT,
+    FOREIGN KEY (scope_id, operation_id, proof_id)
+      REFERENCES custody_proof_lineage(scope_id, operation_id, proof_id)
+      ON DELETE RESTRICT
   ) STRICT`,
   `CREATE TABLE custody_successor_admissions (
     scope_id TEXT NOT NULL,

@@ -35,6 +35,13 @@ import {
   takeBoundedCustodyHistoryRows,
   type CustodyHistoryRow,
 } from '../src/boundedHistory.ts'
+import {
+  assertDurableCustodyAdapterConformance,
+  createDurableCustodyConformancePrepared,
+  type DurableCustodyAdapterConformanceHarness,
+  type DurableCustodyAdapterConformanceSnapshot,
+  type DurableCustodyConformancePrepared,
+} from '../../bitcaster-client-sdk/test/support/durableCustodyAdapterConformance.ts'
 
 async function profile() {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-custody-sqlite-'))
@@ -226,6 +233,7 @@ test('P09 physically deletes only after receipt, tombstone, and persisted admiss
     const database = await openDaemonStateSqlite(fixture.directory)
     try {
       const operationId = 'custody-operation:purge'
+      const successorProofId = 'd'.repeat(64)
       const refs = ['request', 'output', 'private', 'delivery', 'result'].map((suffix) => {
         const exact = artifact({ suffix })
         const reference = createDurableCustodyArtifactReference(
@@ -269,7 +277,8 @@ test('P09 physically deletes only after receipt, tombstone, and persisted admiss
           `UPDATE custody_operations SET
              operation_state = 'reconciled', result_state = 'applied',
              result_handle = 'result-1', result_artifact_id = ?,
-             result_fingerprint = ?, result_output_plan_fingerprint = ?
+             result_fingerprint = ?, result_output_plan_fingerprint = ?,
+             successor_selection_staged = 1
            WHERE scope_id = ? AND operation_id = ?`,
         )
         .run(
@@ -279,6 +288,27 @@ test('P09 physically deletes only after receipt, tombstone, and persisted admiss
           fixture.walletScopeId,
           operationId,
         )
+      new DurableCustodySqliteStore(database).putProofCas(
+        {
+          ...proofRow(fixture.walletScopeId),
+          proofId: successorProofId,
+        },
+        null,
+      )
+      database
+        .prepare(
+          `INSERT INTO custody_proof_lineage (
+             scope_id, operation_id, lineage_kind, lineage_position, proof_id
+           ) VALUES (?, ?, 'successor', 0, ?)`,
+        )
+        .run(fixture.walletScopeId, operationId, successorProofId)
+      database
+        .prepare(
+          `INSERT INTO custody_selected_successors (
+             scope_id, operation_id, proof_position, proof_id
+           ) VALUES (?, ?, 0, ?)`,
+        )
+        .run(fixture.walletScopeId, operationId, successorProofId)
       database
         .prepare(
           `INSERT INTO custody_deliveries (
@@ -307,13 +337,19 @@ test('P09 physically deletes only after receipt, tombstone, and persisted admiss
         scopeId: fixture.walletScopeId,
         operationId,
         admissionId: 'admission-1',
-        proofRows: [],
+        proofRows: [
+          {
+            proofId: successorProofId,
+            expectedRevision: null,
+            admittedRevision: 0,
+          },
+        ],
       }
       assert.equal(
         purgeCustodyOperationP09(database, {
           scopeId: fixture.walletScopeId,
           operationId,
-          plannedSuccessorProofIds: [],
+          plannedSuccessorProofIds: [successorProofId],
           successorAdmission: evidence,
         }),
         'retained',
@@ -325,11 +361,19 @@ test('P09 physically deletes only after receipt, tombstone, and persisted admiss
            ) VALUES (?, ?, ?)`,
         )
         .run(fixture.walletScopeId, operationId, evidence.admissionId)
+      database
+        .prepare(
+          `INSERT INTO custody_successor_admission_proofs (
+             scope_id, operation_id, proof_position, proof_id,
+             expected_revision, admitted_revision
+           ) VALUES (?, ?, 0, ?, NULL, 0)`,
+        )
+        .run(fixture.walletScopeId, operationId, successorProofId)
       assert.equal(
         purgeCustodyOperationP09(database, {
           scopeId: fixture.walletScopeId,
           operationId,
-          plannedSuccessorProofIds: [],
+          plannedSuccessorProofIds: [successorProofId],
           successorAdmission: evidence,
         }),
         'deleted',
@@ -731,6 +775,7 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
         resultHandle: 'result-admission',
         resultFingerprint: result.fingerprint,
         exactResult: result,
+        selectedSuccessorProofIds: prepared.record.operation.proofStorage.lineage.successorProofIds,
       })
       const evidence = {
         scopeId: fixture.walletScopeId,
@@ -943,6 +988,349 @@ test('verified apply requires exact same-UoW successor proof CAS and rolls failu
   }
 })
 
+test('subset successor authority admits only the durably selected proof', async () => {
+  const fixture = await profile()
+  try {
+    const prepared = exactIntent(fixture.walletScopeId, 'subset', 2)
+    prepared.record.operation.proofStorage.lineage.successorAdmissionMode = 'subset'
+    const operationId = prepared.record.operation.operationId
+    const [selectedId, unselectedId] =
+      prepared.record.operation.proofStorage.lineage.successorProofIds
+    const fence = await claimCustodyScopeLease(fixture.directory, {
+      scopeId: fixture.walletScopeId,
+      incarnationId: 'incarnation-subset',
+      observedAtMs: 2,
+    })
+    await withDaemonStateSqliteTransaction(fixture.directory, (database) => {
+      const store = new DurableCustodySqliteStore(database)
+      store.putProofCas(
+        {
+          ...proofRow(fixture.walletScopeId),
+          proofId: prepared.record.operation.reservation.inputs[0]!.proofId,
+        },
+        null,
+      )
+      const owner = {
+        incarnationId: fence.incarnationId,
+        fencingEpoch: fence.fencingEpoch,
+        observedAtMs: 3,
+      }
+      applyDurableCustodyTransaction(
+        new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 3),
+        {
+          scope: prepared.record.scope,
+          owner,
+          operationRows: [{ operationId, expectedRevision: null }],
+        },
+        (selected) =>
+          bindDurableCustodyProofOperation(selected, prepared.record, {
+            requestBody: prepared.artifacts[0][1],
+            output: prepared.artifacts[1][1],
+            privateMaterial: prepared.artifacts[2][1],
+          }),
+      )
+      assert.throws(
+        () =>
+          database
+            .prepare(
+              `UPDATE custody_operations SET successor_selection_staged = 1
+               WHERE scope_id = ? AND operation_id = ?`,
+            )
+            .run(fixture.walletScopeId, operationId),
+        /constraint failed/i,
+      )
+      const result = artifact({ proofs: [selectedId] })
+      const transaction = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 4)
+      transaction.stageVerifiedResult({
+        operationId,
+        expectedRevision: 0,
+        authorization: { ...owner, observedAtMs: 4 },
+        outputPlanFingerprint: prepared.record.operation.outputPlan.outputPlanFingerprint,
+        resultHandle: 'result-subset',
+        resultFingerprint: result.fingerprint,
+        exactResult: result,
+        selectedSuccessorProofIds: [selectedId!],
+      })
+      const selectedRowId = (
+        database
+          .prepare(
+            `SELECT rowid AS rowId FROM custody_selected_successors
+             WHERE scope_id = ? AND operation_id = ?`,
+          )
+          .get(fixture.walletScopeId, operationId) as { rowId: number }
+      ).rowId
+      const proof = { ...proofRow(fixture.walletScopeId), proofId: selectedId! }
+      transaction.stageSuccessorProofCas(operationId, [{ proof, expectedRevision: null }])
+      transaction.applyVerifiedResult({
+        operationId,
+        expectedRevision: 1,
+        authorization: { ...owner, observedAtMs: 5 },
+        outputPlanFingerprint: prepared.record.operation.outputPlan.outputPlanFingerprint,
+        resultHandle: 'result-subset',
+        resultFingerprint: result.fingerprint,
+        successorAdmission: {
+          scopeId: fixture.walletScopeId,
+          operationId,
+          admissionId: 'admission-subset',
+          proofRows: [{ proofId: selectedId!, expectedRevision: null, admittedRevision: 0 }],
+        },
+      })
+      const stored = store.getOperation(operationId)!
+      assert.equal(stored.operation.state, 'reconciled')
+      assert.deepEqual(stored.operation.proofStorage.lineage.selectedSuccessorProofIds, [
+        selectedId,
+      ])
+      assert.equal(store.getProof(fixture.walletScopeId, selectedId!)?.revision, 0)
+      assert.equal(store.getProof(fixture.walletScopeId, unselectedId!), null)
+      assert.equal(
+        (
+          database
+            .prepare(
+              `SELECT rowid AS rowId FROM custody_selected_successors
+               WHERE scope_id = ? AND operation_id = ?`,
+            )
+            .get(fixture.walletScopeId, operationId) as { rowId: number }
+        ).rowId,
+        selectedRowId,
+      )
+    })
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('SQLite custody adapter satisfies the shared conformance contract', async () => {
+  await assertDurableCustodyAdapterConformance((suffix) => SqliteConformanceHarness.create(suffix))
+})
+
+test('an empty staged successor selection survives a SQLite reopen', async () => {
+  const fixture = await profile()
+  try {
+    const prepared = exactIntent(fixture.walletScopeId, 'empty-selection', 0)
+    const operationId = prepared.record.operation.operationId
+    const fence = await claimCustodyScopeLease(fixture.directory, {
+      scopeId: fixture.walletScopeId,
+      incarnationId: 'incarnation-empty-selection',
+      observedAtMs: 2,
+    })
+    await withDaemonStateSqliteTransaction(fixture.directory, (database) => {
+      const store = new DurableCustodySqliteStore(database)
+      store.putProofCas(
+        {
+          ...proofRow(fixture.walletScopeId),
+          proofId: prepared.record.operation.reservation.inputs[0]!.proofId,
+        },
+        null,
+      )
+      const owner = {
+        incarnationId: fence.incarnationId,
+        fencingEpoch: fence.fencingEpoch,
+        observedAtMs: 3,
+      }
+      applyDurableCustodyTransaction(
+        new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 3),
+        {
+          scope: prepared.record.scope,
+          owner,
+          operationRows: [{ operationId, expectedRevision: null }],
+        },
+        (selected) =>
+          bindDurableCustodyProofOperation(selected, prepared.record, {
+            requestBody: prepared.artifacts[0][1],
+            output: prepared.artifacts[1][1],
+            privateMaterial: prepared.artifacts[2][1],
+          }),
+      )
+      const result = artifact({ proofs: [] })
+      new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 4).stageVerifiedResult({
+        operationId,
+        expectedRevision: 0,
+        authorization: { ...owner, observedAtMs: 4 },
+        outputPlanFingerprint: prepared.record.operation.outputPlan.outputPlanFingerprint,
+        resultHandle: 'result-empty-selection',
+        resultFingerprint: result.fingerprint,
+        exactResult: result,
+        selectedSuccessorProofIds: [],
+      })
+    })
+    await withDaemonStateSqliteTransaction(fixture.directory, (database) => {
+      const stored = new DurableCustodySqliteStore(database).getOperation(operationId)!
+      assert.equal(stored.operation.result.state, 'verified-staged')
+      assert.deepEqual(stored.operation.proofStorage.lineage.selectedSuccessorProofIds, [])
+    })
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+class SqliteConformanceHarness implements DurableCustodyAdapterConformanceHarness {
+  readonly successorProofIds: readonly string[]
+  readonly #directory: string
+  readonly #scopeId: string
+  readonly #prepared: DurableCustodyConformancePrepared
+  readonly #fence: Awaited<ReturnType<typeof claimCustodyScopeLease>>
+
+  private constructor(
+    directory: string,
+    scopeId: string,
+    prepared: DurableCustodyConformancePrepared,
+    fence: Awaited<ReturnType<typeof claimCustodyScopeLease>>,
+  ) {
+    this.#directory = directory
+    this.#scopeId = scopeId
+    this.#prepared = prepared
+    this.#fence = fence
+    this.successorProofIds = prepared.successorProofIds
+  }
+
+  static async create(suffix: string): Promise<SqliteConformanceHarness> {
+    const fixture = await profile()
+    const scope = {
+      scopeKind: 'wallet' as const,
+      walletId: fixture.walletScopeId.slice('custody:wallet:'.length),
+      scopeId: fixture.walletScopeId,
+    }
+    const prepared = createDurableCustodyConformancePrepared(scope, suffix)
+    const fence = await claimCustodyScopeLease(fixture.directory, {
+      scopeId: fixture.walletScopeId,
+      incarnationId: `incarnation-conformance-${suffix}`,
+      observedAtMs: 2,
+    })
+    await withDaemonStateSqliteTransaction(fixture.directory, (database) => {
+      new DurableCustodySqliteStore(database).putProofCas(
+        {
+          ...proofRow(fixture.walletScopeId),
+          proofId: prepared.predecessorProofId,
+        },
+        null,
+      )
+    })
+    return new SqliteConformanceHarness(fixture.directory, fixture.walletScopeId, prepared, fence)
+  }
+
+  async bind(injectFault = false): Promise<void> {
+    await withDaemonStateSqliteTransaction(this.#directory, (database) => {
+      const transaction = new DurableCustodyTransactionSqlite(database, this.#scopeId, 3)
+      applyDurableCustodyTransaction(
+        transaction,
+        {
+          scope: this.#prepared.record.scope,
+          owner: this.#owner(3),
+          operationRows: [
+            {
+              operationId: this.#prepared.record.operation.operationId,
+              expectedRevision: null,
+            },
+          ],
+        },
+        (selected) =>
+          bindDurableCustodyProofOperation(
+            selected,
+            this.#prepared.record,
+            this.#prepared.artifacts,
+          ),
+      )
+      if (injectFault) throw new Error('injected bind fault')
+    })
+  }
+
+  async stageSelection(selectedProofIds: readonly string[], injectFault = false): Promise<void> {
+    await withDaemonStateSqliteTransaction(this.#directory, (database) => {
+      const record = new DurableCustodySqliteStore(database).getOperation(
+        this.#prepared.record.operation.operationId,
+      )
+      if (record === null) throw new Error('conformance operation is absent')
+      new DurableCustodyTransactionSqlite(database, this.#scopeId, 4).stageVerifiedResult({
+        operationId: record.operation.operationId,
+        expectedRevision: record.revision,
+        authorization: this.#owner(4),
+        outputPlanFingerprint: record.operation.outputPlan.outputPlanFingerprint,
+        resultHandle: `conformance-result:${this.#prepared.result.fingerprint}`,
+        resultFingerprint: this.#prepared.result.fingerprint,
+        exactResult: this.#prepared.result,
+        selectedSuccessorProofIds: [...selectedProofIds],
+      })
+      if (injectFault) throw new Error('injected stage fault')
+    })
+  }
+
+  async applySelection(selectedProofIds: readonly string[], injectFault = false): Promise<void> {
+    await withDaemonStateSqliteTransaction(this.#directory, (database) => {
+      const store = new DurableCustodySqliteStore(database)
+      const record = store.getOperation(this.#prepared.record.operation.operationId)
+      if (record === null) throw new Error('conformance operation is absent')
+      const transaction = new DurableCustodyTransactionSqlite(database, this.#scopeId, 5)
+      transaction.stageSuccessorProofCas(
+        record.operation.operationId,
+        selectedProofIds.map((proofId) => ({
+          proof: { ...proofRow(this.#scopeId), proofId },
+          expectedRevision: null,
+        })),
+      )
+      transaction.applyVerifiedResult({
+        operationId: record.operation.operationId,
+        expectedRevision: record.revision,
+        authorization: this.#owner(5),
+        outputPlanFingerprint: record.operation.outputPlan.outputPlanFingerprint,
+        resultHandle: record.operation.result.resultHandle!,
+        resultFingerprint: record.operation.result.resultFingerprint!,
+        successorAdmission: {
+          scopeId: this.#scopeId,
+          operationId: record.operation.operationId,
+          admissionId: `conformance-admission:${record.operation.operationId}`,
+          proofRows: selectedProofIds.map((proofId) => ({
+            proofId,
+            expectedRevision: null,
+            admittedRevision: 0,
+          })),
+        },
+      })
+      if (injectFault) throw new Error('injected apply fault')
+    })
+  }
+
+  reopen(): SqliteConformanceHarness {
+    return new SqliteConformanceHarness(this.#directory, this.#scopeId, this.#prepared, this.#fence)
+  }
+
+  async snapshot(): Promise<DurableCustodyAdapterConformanceSnapshot> {
+    const database = await openDaemonStateSqlite(this.#directory)
+    try {
+      const store = new DurableCustodySqliteStore(database)
+      const record = store.getOperation(this.#prepared.record.operation.operationId)
+      const artifactCount = (
+        database
+          .prepare('SELECT count(*) AS count FROM custody_artifacts WHERE scope_id = ?')
+          .get(this.#scopeId) as { count: number }
+      ).count
+      return {
+        operationState: record?.operation.state ?? null,
+        resultState: record?.operation.result.state ?? null,
+        selectedSuccessorProofIds:
+          record?.operation.proofStorage.lineage.selectedSuccessorProofIds ?? null,
+        artifactCount,
+        admittedSuccessorProofIds: this.successorProofIds.filter(
+          (proofId) => store.getProof(this.#scopeId, proofId) !== null,
+        ),
+      }
+    } finally {
+      database.close()
+    }
+  }
+
+  async dispose(): Promise<void> {
+    await rm(this.#directory, { recursive: true, force: true })
+  }
+
+  #owner(observedAtMs: number) {
+    return {
+      incarnationId: this.#fence.incarnationId,
+      fencingEpoch: this.#fence.fencingEpoch,
+      observedAtMs,
+    }
+  }
+}
+
 function artifact(value: unknown): DurableCustodyExactArtifact {
   return {
     encoding: 'canonical-json',
@@ -984,7 +1372,7 @@ function exactIntent(scopeId: string, suffix = '1', successorCount = 1) {
       stage: 'send',
     },
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
-    hasOutputs: true,
+    hasOutputs: successorCount > 0,
     inputKeysetRequirement: 'required',
     keysets: [
       {
@@ -995,7 +1383,7 @@ function exactIntent(scopeId: string, suffix = '1', successorCount = 1) {
         keysetExpiryMs: null,
         requireDleq: false,
         usedByInputs: true,
-        usedByOutputs: true,
+        usedByOutputs: successorCount > 0,
       },
     ],
   })
@@ -1014,6 +1402,7 @@ function exactIntent(scopeId: string, suffix = '1', successorCount = 1) {
     proofLineage: {
       predecessorProofIds: [proofId],
       successorProofIds: successorIds,
+      successorAdmissionMode: 'exact',
     },
     exactRequest: {
       requestId: `request-${suffix}`,
@@ -1084,6 +1473,7 @@ function insertMinimalOperation(
     requestId: string
     outputId: string
     privateId: string
+    hasOutputs?: boolean
   },
 ): void {
   database
@@ -1099,6 +1489,7 @@ function insertMinimalOperation(
          private_use_id, private_public_fingerprint, private_artifact_id,
          result_state, result_handle, result_artifact_id, result_fingerprint,
          result_output_plan_fingerprint, proof_storage_class,
+         successor_admission_mode, successor_selection_staged,
          verification_output_plan_fingerprint, verification_has_outputs,
          transport_attempted, retry_attempt, retry_reason, next_attempt_at_ms,
          not_before_ms, not_after_ms, safety_margin_ms, keyset_expiry_ms,
@@ -1111,7 +1502,7 @@ function insertMinimalOperation(
          ?, ?, ?, 'output-plan-1', 'output-material-1', ?,
          'private-material-1', 'private-use-1', ?, ?,
          'none', NULL, NULL, NULL, NULL,
-         'pinned-operation-bound-deterministic', ?, 1,
+         'pinned-operation-bound-deterministic', 'exact', 0, ?, ?,
          0, 0, 'none', NULL, NULL, NULL, 0, NULL, 0, 2, 2
        )`,
     )
@@ -1126,6 +1517,7 @@ function insertMinimalOperation(
       '3'.repeat(64),
       input.privateId,
       '2'.repeat(64),
+      Number(input.hasOutputs ?? true),
     )
 }
 

@@ -100,6 +100,7 @@ function intent(
     proofLineage: {
       predecessorProofIds: [proofId],
       successorProofIds: [successorProofId],
+      successorAdmissionMode: 'exact',
     },
     exactRequest: {
       requestId: 'request-1',
@@ -524,6 +525,8 @@ test('P09 purge requires terminal status, replay cutoff, and resolved delivery',
       operationId: record.operation.operationId,
       predecessorProofIds: record.operation.reservation.inputs.map(({ proofId }) => proofId),
       successorProofIds: record.operation.proofStorage.lineage.successorProofIds,
+      successorAdmissionMode: 'exact',
+      selectedSuccessorProofIds: null,
       successorAdmission: null,
     },
   })
@@ -576,6 +579,7 @@ test('P09 purge requires terminal status, replay cutoff, and resolved delivery',
       artifact: { result: 1 },
       fingerprint: deriveDurableCustodyArtifactFingerprint({ result: 1 }),
     },
+    selectedSuccessorProofIds: record.operation.proofStorage.lineage.successorProofIds,
   })
   state = reduceDurableCustodyState(state, {
     kind: 'apply-verified-result',

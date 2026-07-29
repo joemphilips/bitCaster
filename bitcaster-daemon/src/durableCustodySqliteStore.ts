@@ -93,6 +93,7 @@ export class DurableCustodySqliteStore {
           private_artifact_id, result_state, result_handle,
           result_artifact_id, result_fingerprint,
           result_output_plan_fingerprint, proof_storage_class,
+          successor_admission_mode, successor_selection_staged,
           verification_output_plan_fingerprint, verification_has_outputs,
           transport_attempted, retry_attempt, retry_reason, next_attempt_at_ms,
           not_before_ms, not_after_ms, safety_margin_ms, keyset_expiry_ms,
@@ -100,7 +101,7 @@ export class DurableCustodySqliteStore {
         ) VALUES (
           ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?
         ) ON CONFLICT(operation_id) DO NOTHING`,
       )
       .run(
@@ -138,6 +139,8 @@ export class DurableCustodySqliteStore {
         operation.result.resultFingerprint,
         operation.result.outputPlanFingerprint,
         operation.proofStorage.storageClass,
+        operation.proofStorage.lineage.successorAdmissionMode,
+        Number(operation.proofStorage.lineage.selectedSuccessorProofIds !== null),
         operation.verification.outputPlanFingerprint,
         Number(operation.verification.hasOutputs),
         Number(operation.state !== 'dispatch-intent'),
@@ -273,6 +276,8 @@ export class DurableCustodySqliteStore {
            result_fingerprint AS resultFingerprint,
            result_output_plan_fingerprint AS resultOutputPlanFingerprint,
            proof_storage_class AS proofStorageClass,
+           successor_admission_mode AS successorAdmissionMode,
+           successor_selection_staged AS successorSelectionStaged,
            verification_output_plan_fingerprint AS verificationOutputPlanFingerprint,
            verification_has_outputs AS verificationHasOutputs,
            retry_attempt AS retryAttempt, retry_reason AS retryReason,
@@ -309,6 +314,15 @@ export class DurableCustodySqliteStore {
           proofId: string
         }>
       ).map(({ proofId }) => proofId)
+    const selectedSuccessorProofIds = (
+      this.#database
+        .prepare(
+          `SELECT proof_id AS proofId FROM custody_selected_successors
+           WHERE scope_id = ? AND operation_id = ?
+           ORDER BY proof_position`,
+        )
+        .all(row.scopeId, operationId) as unknown as Array<{ proofId: string }>
+    ).map(({ proofId }) => proofId)
     const bindings = this.#database
       .prepare(
         `SELECT keyset_id AS keysetId, curve,
@@ -461,6 +475,9 @@ export class DurableCustodySqliteStore {
             operationId,
             predecessorProofIds: lineage('predecessor'),
             successorProofIds: lineage('successor'),
+            successorAdmissionMode: row.successorAdmissionMode,
+            selectedSuccessorProofIds:
+              row.successorSelectionStaged === 0 ? null : selectedSuccessorProofIds,
             successorAdmission: admission,
           },
         },
@@ -873,6 +890,8 @@ interface OperationSqlRow {
   resultFingerprint: string | null
   resultOutputPlanFingerprint: string | null
   proofStorageClass: DurableCustodyRecord['operation']['proofStorage']['storageClass']
+  successorAdmissionMode: 'exact' | 'subset'
+  successorSelectionStaged: 0 | 1
   verificationOutputPlanFingerprint: string
   verificationHasOutputs: number
   retryAttempt: number
