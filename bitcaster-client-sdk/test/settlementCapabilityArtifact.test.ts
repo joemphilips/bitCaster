@@ -243,6 +243,22 @@ test('v2 pool policy follows the pinned unsigned bounds', () => {
     hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
   )
   assert.equal(decodeSettlementCapabilityArtifact(zeroMaximumDebit).policy.maxDebit, '0')
+
+  const excessiveMaximumDebit = {
+    ...pool,
+    policy: { ...pool.policy, maxDebit: '5' },
+  }
+  excessiveMaximumDebit.inputs = excessiveMaximumDebit.inputs.map((proof) => ({
+    ...proof,
+    secret: payToUnlockSecret(pool.manifest.commitment, excessiveMaximumDebit.policy),
+  }))
+  excessiveMaximumDebit.inputProofYs = excessiveMaximumDebit.inputs.map((proof) =>
+    hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+  )
+  assert.throws(
+    () => decodeSettlementCapabilityArtifact(excessiveMaximumDebit),
+    /maximum debit exceeds fixed inputs/,
+  )
 })
 
 test('v2 capability binds one valid coordinator and unique proof nonce', () => {

@@ -369,6 +369,12 @@ function validateArtifactAuthority(
     authorizationMode === 'pool'
       ? (authority as { policy: SettlementCapabilityPolicy }).policy
       : null
+  if (
+    policy !== null &&
+    BigInt(policy.maxDebit) > inputs.reduce((total, proof) => total + BigInt(proof.amount), 0n)
+  ) {
+    throw new Error('settlement capability maximum debit exceeds fixed inputs')
+  }
   const coordinatorPublicKeys = new Set<string>()
   const nonces = new Set<string>()
   if (
