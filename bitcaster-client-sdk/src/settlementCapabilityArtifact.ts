@@ -14,6 +14,10 @@ import {
   decodeCanonicalMintOrigin,
   encodeBoundedDurableArtifact,
 } from './durableCustody.ts'
+import {
+  decodeDurableCtfRangeOperation,
+  type DurableCtfRangeOperation,
+} from './durableCtfRangeOperation.ts'
 
 export const SETTLEMENT_CAPABILITY_ARTIFACT_SCHEMA_VERSION = 2 as const
 export const SETTLEMENT_CAPABILITY_ARTIFACT_BYTES_MAX = 256 * 1_024
@@ -178,6 +182,47 @@ export function decodeSettlementCapabilityArtifactBytes(
 
 export function deriveSettlementCapabilityArtifactDigest(value: unknown): string {
   return bytesToHex(sha256(encodeSettlementCapabilityArtifact(value)))
+}
+
+export function createPoolSettlementCapabilityArtifact(
+  value: DurableCtfRangeOperation,
+): PoolSettlementCapabilityArtifact {
+  const operation = decodeDurableCtfRangeOperation(value)
+  const artifact = decodeSettlementCapabilityArtifact({
+    schemaVersion: SETTLEMENT_CAPABILITY_ARTIFACT_SCHEMA_VERSION,
+    authorizationMode: 'pool',
+    operationId: operation.operationId,
+    authorizationId: operation.authorizationId,
+    mintUrl: operation.mintUrl,
+    unit: operation.unit,
+    conditionId: operation.conditionId,
+    parentCollectionId: operation.parentCollectionId,
+    offerKeysetId: operation.offerKeysetId,
+    receiveKeysetId: operation.receiveKeysetId,
+    expiry: operation.expiry,
+    policy: operation.policy,
+    inputFeePpkByKeyset: operation.inputFeePpkByKeyset,
+    inputProofYs: operation.inputs.map((proof) =>
+      hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+    ),
+    inputs: operation.inputs.map((proof) => ({
+      id: proof.id,
+      amount: proof.amount,
+      secret: proof.secret,
+      C: proof.C,
+      dleq: structuredClone(proof.dleq),
+      p2pkE: proof.p2pkE,
+      witness: structuredClone(proof.witness),
+    })),
+    manifest: {
+      commitment: operation.manifest.commitment,
+      entries: operation.manifest.entries.map(({ outputData: _, ...entry }) => entry),
+    },
+  })
+  if (artifact.authorizationMode !== 'pool') {
+    throw new Error('durable CTF range operation did not produce a pool capability')
+  }
+  return artifact
 }
 
 function requireAuthorizationMode(value: unknown): 'standard' | 'pool' {

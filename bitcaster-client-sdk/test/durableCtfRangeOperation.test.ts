@@ -47,6 +47,10 @@ import {
   type DurableCustodyScopeState,
   type DurableCustodyTransaction,
 } from '../src/index.ts'
+import {
+  createPoolSettlementCapabilityArtifact,
+  decodeSettlementCapabilityArtifact,
+} from '../src/settlementCapabilityArtifact.ts'
 import { FaultInjectingDurableCustodyAdapter } from './support/faultInjectingDurableCustodyAdapter.ts'
 
 const CONDITION_ID = 'ab'.repeat(32)
@@ -250,6 +254,7 @@ function signOutput(output: OutputData): Proof {
       id: signature.id,
       amount: output.blindedMessage.amount,
       C_: signature.C_.toHex(true),
+      dleq: serializeDleq(output.blindedMessage.B_),
     },
     { id: output.blindedMessage.id, keys: KEYS },
   )
@@ -465,6 +470,30 @@ test('range operation preserves direct proof-operation authority and fee bounds'
         coordinatorPublicKey: '00'.repeat(32),
       }),
     /coordinator public key is invalid/,
+  )
+})
+
+test('range operation produces one canonical pool settlement capability artifact', () => {
+  const operation = fixture()
+  const artifact = createPoolSettlementCapabilityArtifact(operation)
+
+  assert.equal(artifact.operationId, operation.operationId)
+  assert.equal(artifact.authorizationId, operation.authorizationId)
+  assert.deepEqual(artifact.policy, operation.policy)
+  assert.deepEqual(
+    artifact.manifest.entries,
+    operation.manifest.entries.map(({ outputData: _, ...entry }) => entry),
+  )
+  assert.deepEqual(artifact.inputProofYs, [inputY(operation)])
+  assert.deepEqual(decodeSettlementCapabilityArtifact(artifact), artifact)
+
+  assert.throws(
+    () =>
+      createPoolSettlementCapabilityArtifact({
+        ...operation,
+        inputs: operation.inputs.map((proof) => ({ ...proof, dleq: null })),
+      }),
+    /proof DLEQ is required/,
   )
 })
 
