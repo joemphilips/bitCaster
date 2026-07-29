@@ -35,6 +35,10 @@
       "types": "./dist/durableCtfRangeOperation.d.ts",
       "import": "./dist/durableCtfRangeOperation.js"
     },
+    "./settlementCapabilityArtifact": {
+      "types": "./dist/settlementCapabilityArtifact.d.ts",
+      "import": "./dist/settlementCapabilityArtifact.js"
+    },
     "./durableWalletOperation": {
       "types": "./dist/durableWalletOperation.d.ts",
       "import": "./dist/durableWalletOperation.js"
