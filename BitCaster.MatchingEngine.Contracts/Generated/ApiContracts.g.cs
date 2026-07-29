@@ -26,6 +26,203 @@ namespace BitCaster.MatchingEngine.Contracts
 
     
 
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class SettlementCapabilityReference
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public SettlementCapabilityReference(System.Guid @artifactId, string @bindingDigest)
+        {
+            this.ArtifactId = @artifactId;
+            this.BindingDigest = @bindingDigest;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("artifactId")]
+        public System.Guid ArtifactId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("bindingDigest")]
+        public string BindingDigest { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum SettlementCapabilityState
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"staged")]
+        Staged = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"bindingPending")]
+        BindingPending = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"bound")]
+        Bound = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"selected")]
+        Selected = 3,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"uncertain")]
+        Uncertain = 4,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"terminal")]
+        Terminal = 5,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"quarantined")]
+        Quarantined = 6,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class CreateSettlementCapabilityRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public CreateSettlementCapabilityRequest(byte[] @artifact, string @clientOrderId, string @marketId, string @stageIdempotencyKey)
+        {
+            this.StageIdempotencyKey = @stageIdempotencyKey;
+            this.ClientOrderId = @clientOrderId;
+            this.MarketId = @marketId;
+            this.Artifact = @artifact;
+        }
+
+        /// <summary>
+        /// Client-generated idempotency key for this exact artifact and order binding. It is scoped to the authenticated subject.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("stageIdempotencyKey")]
+        public string StageIdempotencyKey { get; }
+
+        /// <summary>
+        /// Stable client order identity used to derive the server order id. Reusing it with a different authorization fingerprint conflicts.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("clientOrderId")]
+        public string ClientOrderId { get; }
+
+        /// <summary>
+        /// Primitive outcome market id in `{conditionId}-{outcomeName}` form.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        /// <summary>
+        /// Base64 encoding of at most 262144 canonical JSON bytes produced by the shared SDK settlement-capability artifact encoder.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("artifact")]
+        public byte[] Artifact { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class SettlementCapabilityResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public SettlementCapabilityResponse(string @artifactDigest, System.DateTimeOffset @authorizationExpiresAt, string @clientOrderId, string @marketId, System.Guid @orderId, SettlementCapabilityReference @reference, System.DateTimeOffset @stageExpiresAt, SettlementCapabilityState @state, long @version)
+        {
+            this.Reference = @reference;
+            this.OrderId = @orderId;
+            this.ClientOrderId = @clientOrderId;
+            this.MarketId = @marketId;
+            this.ArtifactDigest = @artifactDigest;
+            this.State = @state;
+            this.Version = @version;
+            this.AuthorizationExpiresAt = @authorizationExpiresAt;
+            this.StageExpiresAt = @stageExpiresAt;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("reference")]
+        public SettlementCapabilityReference Reference { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
+        public System.Guid OrderId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("clientOrderId")]
+        public string ClientOrderId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("artifactDigest")]
+        public string ArtifactDigest { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("state")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<SettlementCapabilityState>))]
+        public SettlementCapabilityState State { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("version")]
+        public long Version { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("authorizationExpiresAt")]
+        public System.DateTimeOffset AuthorizationExpiresAt { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("stageExpiresAt")]
+        public System.DateTimeOffset StageExpiresAt { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class SettlementCapabilityResultResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public SettlementCapabilityResultResponse(System.DateTimeOffset? @acknowledgedAt, System.DateTimeOffset @createdAt, byte[] @envelope, string @envelopeDigest, string @operationId, SettlementCapabilityReference @reference, string @requestDigest, System.Guid @resultId, long @version)
+        {
+            this.ResultId = @resultId;
+            this.Reference = @reference;
+            this.OperationId = @operationId;
+            this.RequestDigest = @requestDigest;
+            this.EnvelopeDigest = @envelopeDigest;
+            this.Envelope = @envelope;
+            this.CreatedAt = @createdAt;
+            this.AcknowledgedAt = @acknowledgedAt;
+            this.Version = @version;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("resultId")]
+        public System.Guid ResultId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("reference")]
+        public SettlementCapabilityReference Reference { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("operationId")]
+        public string OperationId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("requestDigest")]
+        public string RequestDigest { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("envelopeDigest")]
+        public string EnvelopeDigest { get; }
+
+        /// <summary>
+        /// Base64-encoded canonical owner result envelope. It contains the selected bitmap and mint signatures but no unblinding material.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("envelope")]
+        public byte[] Envelope { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
+        public System.DateTimeOffset CreatedAt { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("acknowledgedAt")]
+        public System.DateTimeOffset? AcknowledgedAt { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("version")]
+        public long Version { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AcknowledgeSettlementCapabilityResultRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AcknowledgeSettlementCapabilityResultRequest(long @expectedVersion)
+        {
+            this.ExpectedVersion = @expectedVersion;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("expectedVersion")]
+        public long ExpectedVersion { get; }
+
+    }
+
     /// <summary>
     /// Product quote asset. The current product accepts only exact `sat`; product collateral is held in `msat`.
     /// <br/>

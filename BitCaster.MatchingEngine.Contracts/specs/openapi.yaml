@@ -812,6 +812,174 @@ paths:
             with a higher permit ceiling. The engine returns this when the
             applicable bucket is empty.
 
+  /api/v1/settlement-capabilities:
+    post:
+      operationId: createSettlementCapability
+      summary: Validate and bind one range-settlement authorization
+      security:
+        - nip98: []
+      description: >
+        Stages one canonical, secret-free NUT-CTF range-settlement artifact,
+        validates its mint authority, reserves its exact input proofs, and
+        binds it durably to the authenticated subject's order identity before
+        returning. The artifact contains conditioned bearer proofs and public
+        blinded outputs, but never refund private keys, output secrets, or
+        blinding factors. A byte-identical retry is idempotent; changing any
+        artifact or order-binding field under the same idempotency key fails
+        closed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSettlementCapabilityRequest'
+      responses:
+        '200':
+          description: Capability validated, input-reserved, and durably bound.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityResponse'
+        '400':
+          description: Malformed, noncanonical, expired, or unsupported artifact.
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: >
+            Idempotency conflict, reused input proof, mismatched order binding,
+            or capability lifecycle conflict.
+        '413':
+          description: Artifact or request exceeds the advertised byte/count limits.
+        '429':
+          description: Per-subject capability admission is saturated.
+        '503':
+          description: Mint validation or durable capability authority is unavailable.
+
+  /api/v1/settlement-capabilities/{artifactId}:
+    get:
+      operationId: getSettlementCapability
+      summary: Read one owned settlement-capability lifecycle
+      security:
+        - nip98: []
+      description: >
+        Returns lifecycle facts only when the capability belongs to the
+        authenticated subject and the supplied binding digest matches. A
+        reference or digest is not bearer authorization.
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: bindingDigest
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Sha256Digest'
+      responses:
+        '200':
+          description: Owner-filtered capability lifecycle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityResponse'
+        '401':
+          description: Missing or invalid authentication.
+        '404':
+          description: Capability is absent, foreign, or has a different binding digest.
+
+  /api/v1/settlement-capability-results/{resultId}:
+    get:
+      operationId: getSettlementCapabilityResult
+      summary: Retrieve one owned settlement result envelope
+      security:
+        - nip98: []
+      parameters:
+        - name: resultId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Authenticated result envelope for the capability owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityResultResponse'
+        '401':
+          description: Missing or invalid authentication.
+        '404':
+          description: Result is absent or belongs to another subject.
+
+  /api/v1/settlement-capability-results/by-operation:
+    get:
+      operationId: getSettlementCapabilityResultByOperation
+      summary: Retrieve one owned result by durable SDK operation id
+      security:
+        - nip98: []
+      parameters:
+        - name: operationId
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 1024
+      responses:
+        '200':
+          description: Authenticated result envelope for the capability owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityResultResponse'
+        '401':
+          description: Missing or invalid authentication.
+        '404':
+          description: Result is absent or belongs to another subject.
+
+  /api/v1/settlement-capability-results/{resultId}/acknowledgement:
+    post:
+      operationId: acknowledgeSettlementCapabilityResult
+      summary: Acknowledge durable local commit of a settlement result
+      security:
+        - nip98: []
+      description: >
+        Advances acknowledgement only after the owner has durably committed
+        the exact recovered outputs and SDK operation transition. Repeating
+        the same expected version is idempotent; stale or foreign authority
+        fails closed.
+      parameters:
+        - name: resultId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcknowledgeSettlementCapabilityResultRequest'
+      responses:
+        '200':
+          description: Result acknowledgement recorded or already recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityResultResponse'
+        '400':
+          description: Invalid expected version.
+        '401':
+          description: Missing or invalid authentication.
+        '404':
+          description: Result is absent or belongs to another subject.
+        '409':
+          description: Result lifecycle version conflict.
+
 components:
   securitySchemes:
     nip98:
@@ -850,6 +1018,167 @@ components:
         The condition identifier (hex string derived from the oracle announcement).
 
   schemas:
+    Sha256Digest:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+      description: Canonical lowercase SHA-256 digest.
+
+    SettlementCapabilityReference:
+      type: object
+      additionalProperties: false
+      required:
+        - artifactId
+        - bindingDigest
+      properties:
+        artifactId:
+          type: string
+          format: uuid
+        bindingDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+
+    SettlementCapabilityState:
+      type: string
+      enum:
+        - staged
+        - bindingPending
+        - bound
+        - selected
+        - uncertain
+        - terminal
+        - quarantined
+
+    CreateSettlementCapabilityRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - stageIdempotencyKey
+        - clientOrderId
+        - marketId
+        - artifact
+      properties:
+        stageIdempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: >
+            Client-generated idempotency key for this exact artifact and order
+            binding. It is scoped to the authenticated subject.
+        clientOrderId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: >
+            Stable client order identity used to derive the server order id.
+            Reusing it with a different authorization fingerprint conflicts.
+        marketId:
+          type: string
+          minLength: 66
+          maxLength: 256
+          description: Primitive outcome market id in `{conditionId}-{outcomeName}` form.
+        artifact:
+          type: string
+          format: byte
+          minLength: 4
+          maxLength: 349528
+          description: >
+            Base64 encoding of at most 262144 canonical JSON bytes produced by
+            the shared SDK settlement-capability artifact encoder.
+
+    SettlementCapabilityResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - reference
+        - orderId
+        - clientOrderId
+        - marketId
+        - artifactDigest
+        - state
+        - version
+        - authorizationExpiresAt
+        - stageExpiresAt
+      properties:
+        reference:
+          $ref: '#/components/schemas/SettlementCapabilityReference'
+        orderId:
+          type: string
+          format: uuid
+        clientOrderId:
+          type: string
+        marketId:
+          type: string
+        artifactDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+        state:
+          $ref: '#/components/schemas/SettlementCapabilityState'
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+        authorizationExpiresAt:
+          type: string
+          format: date-time
+        stageExpiresAt:
+          type: string
+          format: date-time
+
+    SettlementCapabilityResultResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - resultId
+        - reference
+        - operationId
+        - requestDigest
+        - envelopeDigest
+        - envelope
+        - createdAt
+        - version
+      properties:
+        resultId:
+          type: string
+          format: uuid
+        reference:
+          $ref: '#/components/schemas/SettlementCapabilityReference'
+        operationId:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        requestDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+        envelopeDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+        envelope:
+          type: string
+          format: byte
+          maxLength: 349528
+          description: >
+            Base64-encoded canonical owner result envelope. It contains the
+            selected bitmap and mint signatures but no unblinding material.
+        createdAt:
+          type: string
+          format: date-time
+        acknowledgedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+
+    AcknowledgeSettlementCapabilityResultRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - expectedVersion
+      properties:
+        expectedVersion:
+          type: integer
+          format: int64
+          minimum: 0
+
     Sats:
       type: integer
       format: int64

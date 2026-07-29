@@ -425,10 +425,164 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settlement-capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate and bind one range-settlement authorization
+         * @description Stages one canonical, secret-free NUT-CTF range-settlement artifact, validates its mint authority, reserves its exact input proofs, and binds it durably to the authenticated subject's order identity before returning. The artifact contains conditioned bearer proofs and public blinded outputs, but never refund private keys, output secrets, or blinding factors. A byte-identical retry is idempotent; changing any artifact or order-binding field under the same idempotency key fails closed.
+         */
+        post: operations["createSettlementCapability"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settlement-capabilities/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one owned settlement-capability lifecycle
+         * @description Returns lifecycle facts only when the capability belongs to the authenticated subject and the supplied binding digest matches. A reference or digest is not bearer authorization.
+         */
+        get: operations["getSettlementCapability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settlement-capability-results/{resultId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Retrieve one owned settlement result envelope */
+        get: operations["getSettlementCapabilityResult"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settlement-capability-results/by-operation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Retrieve one owned result by durable SDK operation id */
+        get: operations["getSettlementCapabilityResultByOperation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settlement-capability-results/{resultId}/acknowledgement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Acknowledge durable local commit of a settlement result
+         * @description Advances acknowledgement only after the owner has durably committed the exact recovered outputs and SDK operation transition. Repeating the same expected version is idempotent; stale or foreign authority fails closed.
+         */
+        post: operations["acknowledgeSettlementCapabilityResult"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Canonical lowercase SHA-256 digest. */
+        Sha256Digest: string;
+        SettlementCapabilityReference: {
+            /** Format: uuid */
+            artifactId: string;
+            bindingDigest: components["schemas"]["Sha256Digest"];
+        };
+        /** @enum {string} */
+        SettlementCapabilityState: "staged" | "bindingPending" | "bound" | "selected" | "uncertain" | "terminal" | "quarantined";
+        CreateSettlementCapabilityRequest: {
+            /** @description Client-generated idempotency key for this exact artifact and order binding. It is scoped to the authenticated subject. */
+            stageIdempotencyKey: string;
+            /** @description Stable client order identity used to derive the server order id. Reusing it with a different authorization fingerprint conflicts. */
+            clientOrderId: string;
+            /** @description Primitive outcome market id in `{conditionId}-{outcomeName}` form. */
+            marketId: string;
+            /**
+             * Format: byte
+             * @description Base64 encoding of at most 262144 canonical JSON bytes produced by the shared SDK settlement-capability artifact encoder.
+             */
+            artifact: string;
+        };
+        SettlementCapabilityResponse: {
+            reference: components["schemas"]["SettlementCapabilityReference"];
+            /** Format: uuid */
+            orderId: string;
+            clientOrderId: string;
+            marketId: string;
+            artifactDigest: components["schemas"]["Sha256Digest"];
+            state: components["schemas"]["SettlementCapabilityState"];
+            /** Format: int64 */
+            version: number;
+            /** Format: date-time */
+            authorizationExpiresAt: string;
+            /** Format: date-time */
+            stageExpiresAt: string;
+        };
+        SettlementCapabilityResultResponse: {
+            /** Format: uuid */
+            resultId: string;
+            reference: components["schemas"]["SettlementCapabilityReference"];
+            operationId: string;
+            requestDigest: components["schemas"]["Sha256Digest"];
+            envelopeDigest: components["schemas"]["Sha256Digest"];
+            /**
+             * Format: byte
+             * @description Base64-encoded canonical owner result envelope. It contains the selected bitmap and mint signatures but no unblinding material.
+             */
+            envelope: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            acknowledgedAt?: string | null;
+            /** Format: int64 */
+            version: number;
+        };
+        AcknowledgeSettlementCapabilityResultRequest: {
+            /** Format: int64 */
+            expectedVersion: number;
+        };
         /**
          * Format: int64
          * @description A non-negative amount of satoshis.
@@ -2194,6 +2348,236 @@ export interface operations {
             };
             /** @description Rate limit exceeded. Anonymous callers share a per-IP bucket; NIP-98-authenticated callers have their own per-pubkey bucket with a higher permit ceiling. The engine returns this when the applicable bucket is empty. */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createSettlementCapability: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSettlementCapabilityRequest"];
+            };
+        };
+        responses: {
+            /** @description Capability validated, input-reserved, and durably bound. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettlementCapabilityResponse"];
+                };
+            };
+            /** @description Malformed, noncanonical, expired, or unsupported artifact. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Idempotency conflict, reused input proof, mismatched order binding, or capability lifecycle conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Artifact or request exceeds the advertised byte/count limits. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Per-subject capability admission is saturated. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Mint validation or durable capability authority is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSettlementCapability: {
+        parameters: {
+            query: {
+                bindingDigest: components["schemas"]["Sha256Digest"];
+            };
+            header?: never;
+            path: {
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner-filtered capability lifecycle. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettlementCapabilityResponse"];
+                };
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Capability is absent, foreign, or has a different binding digest. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSettlementCapabilityResult: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                resultId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Authenticated result envelope for the capability owner. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettlementCapabilityResultResponse"];
+                };
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Result is absent or belongs to another subject. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSettlementCapabilityResultByOperation: {
+        parameters: {
+            query: {
+                operationId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Authenticated result envelope for the capability owner. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettlementCapabilityResultResponse"];
+                };
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Result is absent or belongs to another subject. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    acknowledgeSettlementCapabilityResult: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                resultId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcknowledgeSettlementCapabilityResultRequest"];
+            };
+        };
+        responses: {
+            /** @description Result acknowledgement recorded or already recorded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettlementCapabilityResultResponse"];
+                };
+            };
+            /** @description Invalid expected version. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Result is absent or belongs to another subject. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Result lifecycle version conflict. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
