@@ -32,9 +32,12 @@ import {
   DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
   DURABLE_CUSTODY_RECOVERY_PAGE_BYTES_MAX,
+  canonicalDurableCustodyKeysetIdentity,
   decodeCanonicalMintOrigin,
+  decodeDurableCustodyRecord,
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyKeysetFingerprint,
+  deriveDurableCustodyProofId,
   encodeBoundedDurableArtifact,
   type DurableCustodyExactArtifact,
   type DurableCustodyOwnerAuthorization,
@@ -487,7 +490,7 @@ export function recoverDurableCtfRangeResult(
 ): DurableCtfRangeRecoveredResult {
   const operation = decodeDurableCtfRangeOperation(operationValue)
   const envelope = decodeDurableCtfRangeResultEnvelope(envelopeValue)
-  assertRangeCustodyRecord(record, operation)
+  assertDurableCtfRangeCustodyAuthority(record, operation)
   return recoverCompleteRangeResult(operation, envelope, recoveryValue, record, resolveKeyset)
 }
 
@@ -543,7 +546,7 @@ export function stageDurableCtfRangeVerifiedResult(input: {
 }): DurableCtfRangeRecoveryDecision {
   const operation = decodeDurableCtfRangeOperation(input.operation)
   const custody = rangeProofOperationInput(operation)
-  assertRangeCustodyRecord(input.record, operation)
+  assertDurableCtfRangeCustodyAuthority(input.record, operation)
   let envelope: DurableCtfRangeResultEnvelope
   let result: DurableCtfRangeRecoveredResult
   try {
@@ -598,7 +601,7 @@ export function classifyDurableCtfRangeRecovery(input: {
   resolveKeyset: DurableCtfRangeKeysetResolver
 }): DurableCtfRangeRecoveryDecision {
   const operation = decodeDurableCtfRangeOperation(input.operation)
-  assertRangeCustodyRecord(input.record, operation)
+  assertDurableCtfRangeCustodyAuthority(input.record, operation)
   let observation: DurableCtfRangeRecoveryObservation
   try {
     observation = normalizeRecoveryObservation(input.observation)
@@ -1496,37 +1499,86 @@ function assertRangeKeysetVerificationAuthority(
   ) {
     throw new Error('CTF range custody binding authority is foreign')
   }
-  const expected = new Set(operation.manifest.entries.map(({ id }) => id))
-  const outputKeysets = new Map(
-    facts.verification.outputKeysets.map(({ keysetId, curve }) => [keysetId, curve]),
+  const expectedInputs = expectedRangeKeysets(operation.inputs.map(({ id }) => id))
+  const expectedOutputs = expectedRangeKeysets(operation.manifest.entries.map(({ id }) => id))
+  const inputKeysets = canonicalKeysetUses(
+    facts.verification.inputKeysets,
+    'CTF range input keyset authority',
   )
-  const bindings = new Map(
-    facts.verification.keysetBindings.map((binding) => [binding.keysetId, binding]),
+  const outputKeysets = canonicalKeysetUses(
+    facts.verification.outputKeysets,
+    'CTF range output keyset authority',
   )
-  const inputKeysets = new Map(
-    facts.verification.inputKeysets.map(({ keysetId, curve }) => [keysetId, curve]),
-  )
-  const offerCurve = isBlsKeyset(operation.offerKeysetId) ? 'bls12-381' : 'secp256k1'
-  if (
-    expected.size !== outputKeysets.size ||
-    expected.size !== bindings.size ||
-    inputKeysets.size !== 1 ||
-    inputKeysets.get(operation.offerKeysetId) !== offerCurve ||
-    [...expected].some((keysetId) => !outputKeysets.has(keysetId))
-  ) {
-    throw new Error('CTF range output keyset authority is incomplete')
+  assertExactKeysetUses(inputKeysets, expectedInputs, 'CTF range input keyset authority')
+  assertExactKeysetUses(outputKeysets, expectedOutputs, 'CTF range output keyset authority')
+  const expectedBindings = new Map([...expectedInputs, ...expectedOutputs])
+  const bindings = canonicalKeysetBindings(facts.verification.keysetBindings)
+  if (bindings.size !== expectedBindings.size) {
+    throw new Error('CTF range keyset binding authority is incomplete')
   }
-  for (const keysetId of expected) {
+  for (const [keysetId, expectedCurve] of expectedBindings) {
     const binding = bindings.get(keysetId)
-    const expectedCurve = isBlsKeyset(keysetId) ? 'bls12-381' : 'secp256k1'
     if (
       binding === undefined ||
-      outputKeysets.get(keysetId) !== expectedCurve ||
       binding.curve !== expectedCurve ||
       (binding.curve === 'secp256k1' && !binding.requireDleq)
     ) {
-      throw new Error('CTF range output verification authority is unsafe')
+      throw new Error('CTF range verification authority is unsafe: keyset binding')
     }
+  }
+}
+
+function expectedRangeKeysets(ids: readonly string[]) {
+  const expected = new Map<string, 'secp256k1' | 'bls12-381'>()
+  for (const id of ids) {
+    const canonicalId = canonicalDurableCustodyKeysetIdentity(id)
+    const curve = isBlsKeyset(id) ? 'bls12-381' : 'secp256k1'
+    const existing = expected.get(canonicalId)
+    if (existing !== undefined && existing !== curve) {
+      throw new Error('CTF range keyset curve authority is inconsistent')
+    }
+    expected.set(canonicalId, curve)
+  }
+  return expected
+}
+
+function canonicalKeysetUses(
+  uses: DurableProofOperationFacts['verification']['inputKeysets'],
+  error: string,
+) {
+  const result = new Map<string, 'secp256k1' | 'bls12-381'>()
+  for (const use of uses) {
+    const keysetId = canonicalDurableCustodyKeysetIdentity(use.keysetId)
+    if (result.has(keysetId)) throw new Error(`${error} is duplicated`)
+    result.set(keysetId, use.curve)
+  }
+  return result
+}
+
+function canonicalKeysetBindings(
+  bindings: DurableProofOperationFacts['verification']['keysetBindings'],
+) {
+  const result = new Map<string, (typeof bindings)[number]>()
+  for (const binding of bindings) {
+    const keysetId = canonicalDurableCustodyKeysetIdentity(binding.keysetId)
+    if (result.has(keysetId)) {
+      throw new Error('CTF range keyset binding authority is duplicated')
+    }
+    result.set(keysetId, binding)
+  }
+  return result
+}
+
+function assertExactKeysetUses(
+  actual: ReadonlyMap<string, 'secp256k1' | 'bls12-381'>,
+  expected: ReadonlyMap<string, 'secp256k1' | 'bls12-381'>,
+  error: string,
+): void {
+  if (
+    actual.size !== expected.size ||
+    [...expected].some(([keysetId, curve]) => actual.get(keysetId) !== curve)
+  ) {
+    throw new Error(`${error} is incomplete`)
   }
 }
 
@@ -1598,26 +1650,131 @@ function verifyRangeKeysetIdentity(
   }
 }
 
-function assertRangeCustodyRecord(
-  record: DurableCustodyRecord,
-  operation: DurableCtfRangeOperation,
-): void {
+export function assertDurableCtfRangeCustodyAuthority(
+  recordValue: DurableCustodyRecord,
+  operationValue: DurableCtfRangeOperation,
+): DurableCtfRangeOperation {
+  const record = decodeDurableCustodyRecord(recordValue)
+  const operation = decodeDurableCtfRangeOperation(operationValue)
   const custody = rangeProofOperationInput(operation)
-  if (
-    record.operation.retainedOperationKey !== operation.operationId ||
-    record.operation.privateMaterial.publicFingerprint !==
-      deriveDurableCustodyArtifactFingerprint(operation) ||
-    record.operation.outputPlan.outputPlanFingerprint !==
-      deriveDurableCustodyArtifactFingerprint(custody.outputs)
-  ) {
-    throw new Error('CTF range custody record is foreign')
-  }
+  assertRangeRecordContext(record, operation)
+  assertRangeArtifactAuthority(record, operation, custody)
   assertRangeKeysetVerificationAuthority(operation, {
     unit: operation.unit,
     binding: record.operation.binding,
     horizon: record.operation.horizon,
     verification: record.operation.verification,
   })
+  assertRangeProofOperationLinks(record, operation, custody)
+  return operation
+}
+
+function assertRangeRecordContext(
+  record: DurableCustodyRecord,
+  operation: DurableCtfRangeOperation,
+): void {
+  if (
+    record.operation.retainedOperationKey !== operation.operationId ||
+    record.operation.binding.kind !== 'wallet' ||
+    record.operation.binding.activityId !== operation.operationId ||
+    record.operation.binding.stage !== 'send' ||
+    record.operation.semanticKind !== 'conditional-keyset-swap' ||
+    record.operation.custodyContext.normalizedMint !== operation.mintUrl ||
+    record.operation.custodyContext.unit !== operation.unit
+  ) {
+    throw new Error('CTF range custody context is foreign')
+  }
+}
+
+function assertRangeArtifactAuthority(
+  record: DurableCustodyRecord,
+  operation: DurableCtfRangeOperation,
+  custody: DurableCustodyProofOperationInput,
+): void {
+  const privateFingerprint = deriveDurableCustodyArtifactFingerprint(operation)
+  if (
+    record.operation.privateMaterial.publicFingerprint !== privateFingerprint ||
+    record.operation.privateMaterial.exactPrivateMaterial.fingerprint !== privateFingerprint
+  ) {
+    throw new Error('CTF range custody record is foreign: private authority')
+  }
+  const outputFingerprint = deriveDurableCustodyArtifactFingerprint(custody.outputs)
+  if (
+    record.operation.outputPlan.outputPlanFingerprint !== outputFingerprint ||
+    record.operation.outputPlan.exactOutput.fingerprint !== outputFingerprint ||
+    record.operation.exactRequest.outputPlanFingerprint !== outputFingerprint ||
+    record.operation.verification.outputPlanFingerprint !== outputFingerprint ||
+    record.operation.verification.hasOutputs !== true
+  ) {
+    throw new Error('CTF range output plan authority is foreign')
+  }
+}
+
+function assertRangeProofOperationLinks(
+  record: DurableCustodyRecord,
+  operation: DurableCtfRangeOperation,
+  custody: DurableCustodyProofOperationInput,
+): void {
+  const inputProofIds = custody.inputs.map((proof) =>
+    deriveRangeCustodyProofId(record.scope.scopeId, operation, proof),
+  )
+  const reservation = record.operation.reservation.inputs
+  const inputUses = canonicalKeysetUses(
+    record.operation.verification.inputKeysets,
+    'CTF range input keyset authority',
+  )
+  if (
+    reservation.length !== custody.inputs.length ||
+    reservation.some((link, index) => {
+      const proof = custody.inputs[index]!
+      const keysetId = canonicalDurableCustodyKeysetIdentity(proof.id!)
+      return (
+        link.proofId !== inputProofIds[index] ||
+        canonicalDurableCustodyKeysetIdentity(link.keysetId) !== keysetId ||
+        inputUses.get(keysetId) !== link.curve
+      )
+    }) ||
+    !sameOrderedStrings(record.operation.exactRequest.inputProofIds, inputProofIds) ||
+    !sameOrderedStrings(record.operation.proofStorage.lineage.predecessorProofIds, inputProofIds)
+  ) {
+    throw new Error('CTF range proof-operation link is foreign')
+  }
+  const successorProofIds = Object.values(custody.outputs).flatMap((outputs) =>
+    outputs.map((output) =>
+      deriveDurableCustodyProofId({
+        scopeId: record.scope.scopeId,
+        normalizedMint: operation.mintUrl,
+        unit: operation.unit,
+        keysetId: output.blindedMessage.id,
+        secret: output.secret,
+      }),
+    ),
+  )
+  if (
+    record.operation.proofStorage.lineage.successorAdmissionMode !== 'subset' ||
+    !sameOrderedStrings(record.operation.proofStorage.lineage.successorProofIds, successorProofIds)
+  ) {
+    throw new Error('CTF range successor proof authority is foreign')
+  }
+}
+
+function deriveRangeCustodyProofId(
+  scopeId: string,
+  operation: DurableCtfRangeOperation,
+  proof: DurableCustodyProofOperationInput['inputs'][number],
+): string {
+  if (proof.id === undefined) throw new Error('CTF range input keyset is missing')
+  return deriveDurableCustodyProofId({
+    scopeId,
+    normalizedMint: operation.mintUrl,
+    unit: operation.unit,
+    keysetId: proof.id,
+    secret: proof.secret,
+  })
+}
+
+function sameOrderedStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
 function createBoundRangeKeysetResolver(

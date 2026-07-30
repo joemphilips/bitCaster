@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { isDeepStrictEqual } from 'node:util'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { bytesToHex } from '@noble/curves/utils.js'
 import {
@@ -18,6 +19,7 @@ import {
   type Proof,
 } from '@cashu/cashu-ts'
 import {
+  assertDurableCtfRangeCustodyAuthority,
   buildDurableCtfRangeRecoveryQuery,
   classifyDurableCtfRangeRecovery,
   createDurableCtfRangeOperation,
@@ -471,6 +473,100 @@ test('range operation preserves direct proof-operation authority and fee bounds'
       }),
     /coordinator public key is invalid/,
   )
+})
+
+test('range custody authority admits repeated input keysets and rejects substitutions', async () => {
+  const operation = fixture({ inputAmounts: ['2', '2'] })
+  const record = await recordFor(operation)
+  assert.equal(
+    isDeepStrictEqual(assertDurableCtfRangeCustodyAuthority(record, operation), operation),
+    true,
+    'validated range authority must preserve the exact operation',
+  )
+
+  const substitutions: Array<[typeof record, RegExp]> = [
+    [
+      {
+        ...record,
+        operation: {
+          ...record.operation,
+          custodyContext: {
+            ...record.operation.custodyContext,
+            normalizedMint: 'https://foreign-mint.example',
+          },
+        },
+      },
+      /custody context/,
+    ],
+    [
+      {
+        ...record,
+        operation: {
+          ...record.operation,
+          privateMaterial: {
+            ...record.operation.privateMaterial,
+            publicFingerprint: '0'.repeat(64),
+          },
+        },
+      },
+      /private authority/,
+    ],
+    [
+      {
+        ...record,
+        operation: {
+          ...record.operation,
+          outputPlan: {
+            ...record.operation.outputPlan,
+            outputPlanFingerprint: '0'.repeat(64),
+          },
+        },
+      },
+      /output/,
+    ],
+    [
+      {
+        ...record,
+        operation: {
+          ...record.operation,
+          reservation: {
+            ...record.operation.reservation,
+            inputs: [...record.operation.reservation.inputs].reverse(),
+          },
+        },
+      },
+      /proof-operation link/,
+    ],
+    [
+      {
+        ...record,
+        operation: {
+          ...record.operation,
+          verification: {
+            ...record.operation.verification,
+            inputKeysets: [],
+          },
+        },
+      },
+      /input keyset authority/,
+    ],
+    [
+      {
+        ...record,
+        operation: {
+          ...record.operation,
+          verification: {
+            ...record.operation.verification,
+            keysetBindings: record.operation.verification.keysetBindings.slice(1),
+          },
+        },
+      },
+      /keyset binding authority/,
+    ],
+  ]
+  for (const [substituted, expected] of substitutions) {
+    assert.throws(() => assertDurableCtfRangeCustodyAuthority(substituted, operation), expected)
+  }
 })
 
 test('range operation produces one canonical pool settlement capability artifact', () => {
