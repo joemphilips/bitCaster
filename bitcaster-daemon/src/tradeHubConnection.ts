@@ -23,7 +23,13 @@ interface HubConnectionLike {
   start(): Promise<void>
   stop(): Promise<void>
   on(methodName: string, callback: (...args: unknown[]) => void): void
+  onreconnected?(callback: () => void): void
   invoke(methodName: string, ...args: unknown[]): Promise<unknown>
+}
+
+export interface RangeSettlementDelta {
+  readonly orderId: string
+  readonly marketId: string
 }
 
 export interface SignalRTradeHubConnectionOptions {
@@ -43,6 +49,8 @@ export interface SignalRTradeHubConnectionOptions {
     marketId: string,
     deadline: string,
   ) => void | Promise<void>
+  onRangeSettlementChanged?: (delta: RangeSettlementDelta) => void | Promise<void>
+  onReconnected?: () => void | Promise<void>
   onError?: (err: Error) => void
 }
 
@@ -100,6 +108,18 @@ export function parseTradeCreatedPayload(
     collateralUnit,
     divisibility: normalizeMarketDivisibility(divisibility, 'sat'),
   }
+}
+
+export function parseRangeSettlementDelta(value: unknown): RangeSettlementDelta {
+  if (!isRecord(value)) {
+    throw new Error('range settlement delta had unexpected shape')
+  }
+  const orderId = stringFromSignalR(value.orderId)
+  const marketId = stringFromSignalR(value.marketId)
+  if (!orderId || !marketId?.trim()) {
+    throw new Error('range settlement delta had unexpected shape')
+  }
+  return { orderId, marketId }
 }
 
 export class SignalRTradeHubConnection implements TradeRuntimeConnection {
@@ -165,6 +185,20 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
   }
 
   private registerHandlers(connection: HubConnectionLike): void {
+    connection.onreconnected?.(() => {
+      void this.invokeCallback(async () => {
+        await this.callbacks.onReconnected?.()
+      })
+    })
+
+    const onRangeSettlementChanged = (value: unknown) => {
+      void this.invokeCallback(async () => {
+        await this.callbacks.onRangeSettlementChanged?.(parseRangeSettlementDelta(value))
+      })
+    }
+    connection.on('OrderLifecycleChanged', onRangeSettlementChanged)
+    connection.on('SettlementGroupStateChanged', onRangeSettlementChanged)
+
     connection.on(
       'TradeCreated',
       (
@@ -279,6 +313,10 @@ function stringFromSignalR(value: unknown): string | null {
   if (typeof value === 'number' && Number.isFinite(value)) return String(value)
   if (value instanceof Date) return value.toISOString()
   return null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function isJoinTradeReplayMiss(err: unknown): boolean {

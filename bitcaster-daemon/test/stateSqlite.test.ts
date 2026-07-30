@@ -3,9 +3,23 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import {
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from '@bitcaster-market/client-sdk'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
+import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import { getOrCreateOrderEphemeralKeypair, readSecrets } from '../src/secrets.ts'
-import { emptyDaemonState, ensureState, readState, updateState, writeState } from '../src/state.ts'
+import {
+  emptyDaemonState,
+  ensureState,
+  markProofOperationCompletedFenced,
+  prepareProofOperationWithExactReservation,
+  readAvailableWalletProofPage,
+  readState,
+  updateState,
+  writeState,
+} from '../src/state.ts'
 
 const walletSeedHex = '11'.repeat(32)
 const nostrSecretKeyHex = '22'.repeat(32)
@@ -162,6 +176,96 @@ test('ensureState initializes once without queue deadlock and survives restart',
   })
 })
 
+test('wallet proof selection pages and exact reservation stay row-scoped', async () => {
+  await withProfile(async (home) => {
+    const state = emptyDaemonState()
+    for (let index = 0; index < 300; index += 1) {
+      state.wallet.proofs.push({
+        proof: {
+          id: 'keyset-page',
+          amount: 300 - index,
+          secret: `page-secret-${index}`,
+          C: `page-signature-${index}`,
+        },
+        mintUrl: 'http://localhost:8086',
+        state: 'available',
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      })
+    }
+    await writeState(state)
+
+    const first = await readAvailableWalletProofPage({
+      mintUrl: 'http://localhost:8086',
+      keysetId: 'keyset-page',
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      limit: 64,
+    })
+    assert.equal(first.proofs.length, 64)
+    assert.ok(first.nextCursor)
+    assert.deepEqual(
+      first.proofs.map(({ proof }) => Number(proof.amount)),
+      Array.from({ length: 64 }, (_, index) => 300 - index),
+    )
+
+    const observedAtMs = Date.now()
+    const fence = await claimCustodyScopeLease(home, {
+      scopeId: deriveDurableCustodyScopeId({
+        scopeKind: 'wallet',
+        walletId: deriveDurableCustodyWalletId(Buffer.from(walletSeedHex, 'hex')),
+      }),
+      incarnationId: 'state-row-scoped-test',
+      observedAtMs,
+    })
+    await prepareProofOperationWithExactReservation(
+      {
+        operationId: 'page-reservation',
+        kind: 'wallet-send',
+        mintUrl: 'http://localhost:8086',
+        inputs: first.proofs.slice(0, 2).map(({ proof }) => proof),
+        outputs: { send: [] },
+        metadata: { purpose: 'page-test' },
+        reservationId: 'page-reservation-id',
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      },
+      { fence, observedAtMs },
+    )
+
+    const second = await readAvailableWalletProofPage({
+      mintUrl: 'http://localhost:8086',
+      keysetId: 'keyset-page',
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      limit: 64,
+    })
+    assert.equal(second.proofs.length, 64)
+    assert.deepEqual(
+      second.proofs.slice(0, 2).map(({ proof }) => Number(proof.amount)),
+      [298, 297],
+    )
+    const persisted = await readState()
+    assert.equal(persisted?.wallet.proofs.length, 300)
+    assert.equal(
+      persisted?.wallet.proofs.filter(({ state: proofState }) => proofState === 'reserved').length,
+      2,
+    )
+    await claimCustodyScopeLease(home, {
+      scopeId: fence.scopeId,
+      incarnationId: 'state-row-scoped-successor',
+      observedAtMs: fence.leaseExpiresAtMs,
+    })
+    await assert.rejects(
+      markProofOperationCompletedFenced(
+        'page-reservation',
+        { send: [] },
+        { fence, observedAtMs: observedAtMs + 1 },
+      ),
+      /stale or expired authority/,
+    )
+    assert.equal((await readState())?.proofOperations['page-reservation']?.state, 'prepared')
+  })
+})
+
 test('state persistence clamps wall-clock regressions at creation time', async () => {
   await withProfile(async () => {
     const state = emptyDaemonState()
@@ -269,7 +373,7 @@ test('recovery key retains its exact order binding without a local order row', a
   })
 })
 
-async function withProfile(run: () => Promise<void>): Promise<void> {
+async function withProfile(run: (home: string) => Promise<void>): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-state-sqlite-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -281,7 +385,7 @@ async function withProfile(run: () => Promise<void>): Promise<void> {
       walletSeedHex,
       nostrSecretKeyHex,
     })
-    await run()
+    await run(home)
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome

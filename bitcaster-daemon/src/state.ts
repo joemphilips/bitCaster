@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
+import { isDeepStrictEqual } from 'node:util'
 import type { Proof } from '@cashu/cashu-ts'
 import {
   completedProofAuthorityDigest,
@@ -21,6 +22,8 @@ import type { PartialLockHeldRecord, SwapFailure } from '@bitcaster-market/clien
 import { profileDatabasePath, profileDir } from './profile.ts'
 import { readSecrets } from './secrets.ts'
 import { openDaemonStateSqlite, withDaemonStateSqliteTransaction } from './stateSqlite.ts'
+import { withDurableCustodyUnitOfWork } from './durableCustodyUnitOfWork.ts'
+import type { CustodyScopeFence } from './profileFencing.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
 
 export interface CashuProofRecord {
@@ -30,6 +33,7 @@ export interface CashuProofRecord {
   C: string
   witness?: unknown
   dleq?: unknown
+  p2pk_e?: string
 }
 
 export interface StoredOutputData {
@@ -40,6 +44,7 @@ export interface StoredOutputData {
   }
   blindingFactor: string
   secret: string
+  ephemeralE?: string
 }
 
 export type ProofOperationKind =
@@ -98,6 +103,33 @@ export interface PrepareProofOperationInput {
   inputs: CashuProofRecord[]
   outputs: Record<string, StoredOutputData[]>
   metadata?: Record<string, unknown>
+}
+
+export const CTF_RANGE_REFUND_PURPOSE = 'ctf-range-refund'
+
+export interface FencedStateMutation {
+  readonly fence: CustodyScopeFence
+  readonly observedAtMs: number
+}
+
+export interface WalletProofPageCursor {
+  readonly amount: number
+  readonly proofId: string
+}
+
+export interface AvailableWalletProofPage {
+  readonly proofs: StoredProofRecord[]
+  readonly nextCursor: WalletProofPageCursor | null
+}
+
+export interface ProofOperationPageCursor {
+  readonly updatedAt: number
+  readonly operationId: string
+}
+
+export interface ProofOperationPage {
+  readonly operations: ProofOperationRecord[]
+  readonly nextCursor: ProofOperationPageCursor | null
 }
 
 export interface StoredProofRecord {
@@ -289,7 +321,7 @@ export async function ensureState(): Promise<DaemonState> {
     if (latest) return latest
     const fresh = emptyDaemonState()
     await withDaemonStateSqliteTransaction(profileDir(), (database) => {
-      writeStateToDatabase(database, fresh)
+      writeDaemonStateToDatabase(database, fresh)
     })
     return fresh
   })
@@ -299,7 +331,7 @@ export async function readState(): Promise<DaemonState | null> {
   return withProfileStorageAccess(async () => {
     const database = await openDaemonStateSqlite(profileDir())
     try {
-      return readStateFromDatabase(database)
+      return readDaemonStateFromDatabase(database)
     } finally {
       database.close()
     }
@@ -309,7 +341,7 @@ export async function readState(): Promise<DaemonState | null> {
 export async function writeState(state: DaemonState): Promise<void> {
   await withStateUpdateLock(async () => {
     await withDaemonStateSqliteTransaction(profileDir(), (database) => {
-      writeStateToDatabase(database, normalizeState(state))
+      writeDaemonStateToDatabase(database, normalizeState(state))
     })
   })
 }
@@ -317,9 +349,9 @@ export async function writeState(state: DaemonState): Promise<void> {
 export async function updateState<T>(update: (state: DaemonState, now: string) => T): Promise<T> {
   return withStateUpdateLock(async () => {
     return withDaemonStateSqliteTransaction(profileDir(), (database) => {
-      const state = readStateFromDatabase(database) ?? emptyDaemonState()
+      const state = readDaemonStateFromDatabase(database) ?? emptyDaemonState()
       const result = update(state, new Date().toISOString())
-      writeStateToDatabase(database, normalizeState(state))
+      writeDaemonStateToDatabase(database, normalizeState(state))
       return result
     })
   })
@@ -440,7 +472,14 @@ export async function releaseProofReservation(reservedBy: string): Promise<void>
 }
 
 export async function getProofOperation(operationId: string): Promise<ProofOperationRecord | null> {
-  return (await readState())?.proofOperations[operationId] ?? null
+  return withProfileStorageAccess(async () => {
+    const database = await openDaemonStateSqlite(profileDir())
+    try {
+      return readDaemonProofOperationFromDatabase(database, operationId)
+    } finally {
+      database.close()
+    }
+  })
 }
 
 export async function prepareProofOperation(
@@ -473,39 +512,401 @@ export async function prepareProofOperation(
   })
 }
 
+export async function prepareProofOperationWithExactReservation(
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly asset: StoredProofAsset
+  },
+  mutation: FencedStateMutation,
+  afterPrepare?: (database: DatabaseSync, operation: ProofOperationRecord) => void,
+  beforePrepare?: (database: DatabaseSync) => void,
+): Promise<ProofOperationRecord> {
+  return withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      beforePrepare?.(database)
+      const operation = prepareExactProofOperation(database, input)
+      afterPrepare?.(database, operation)
+      return operation
+    },
+  )
+}
+
+export function admitExactAvailableWalletProofsFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly mintUrl: string
+    readonly proofs: readonly CashuProofRecord[]
+    readonly asset: StoredProofAsset
+    readonly nowMs: number
+  },
+): void {
+  const scopeId = readScopeId(database)
+  const expectedAsset = normalizeProofAsset(input.asset)
+  const timestamp = new Date(input.nowMs).toISOString()
+  for (const proof of input.proofs) {
+    const normalizedProof = normalizeCashuProofRecord(proof)
+    const raw = database
+      .prepare(
+        `SELECT * FROM target_wallet_proofs
+         WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+      )
+      .get(scopeId, input.mintUrl, normalizedProof.secret) as Record<string, unknown> | undefined
+    if (raw !== undefined) {
+      const existing = decodeWalletProofRow(raw)
+      if (
+        existing.state !== 'available' ||
+        !isDeepStrictEqual(existing.proof, normalizedProof) ||
+        !isDeepStrictEqual(normalizeProofAsset(existing.asset), expectedAsset)
+      ) {
+        throw new Error('daemon residual source proof conflicts with local wallet authority')
+      }
+      continue
+    }
+    insertWalletProof(database, scopeId, {
+      proof: normalizedProof,
+      mintUrl: input.mintUrl,
+      state: 'available',
+      asset: expectedAsset,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    })
+  }
+}
+
+export function prepareCtfRangeRefundProofOperationFromDatabase(
+  database: DatabaseSync,
+  input: PrepareProofOperationInput,
+  observedAtMs: number,
+): ProofOperationRecord {
+  assertCtfRangeRefundProofOperationInput(input)
+  const existing = readDaemonProofOperationFromDatabase(database, input.operationId)
+  if (existing !== null) {
+    assertCompatibleProofOperation(existing, input)
+    return existing
+  }
+  const record = newPreparedProofOperation(input, observedAtMs)
+  insertProofOperation(database, readScopeId(database), record)
+  return record
+}
+
+export function completeCtfRangeRefundProofOperationFromDatabase(
+  database: DatabaseSync,
+  operationId: string,
+  refundProofs: readonly CashuProofRecord[],
+  observedAtMs: number,
+): ProofOperationRecord {
+  const existing = readDaemonProofOperationFromDatabase(database, operationId)
+  if (
+    existing === null ||
+    existing.kind !== 'swap-refund' ||
+    existing.metadata.purpose !== CTF_RANGE_REFUND_PURPOSE
+  ) {
+    throw new Error('daemon CTF range refund operation authority is invalid')
+  }
+  return completeProofOperation(database, operationId, { refund: [...refundProofs] }, observedAtMs)
+}
+
+function assertCtfRangeRefundProofOperationInput(input: PrepareProofOperationInput): void {
+  if (
+    input.kind !== 'swap-refund' ||
+    input.inputs.length < 1 ||
+    input.inputs.length > 256 ||
+    Object.keys(input.outputs).join('\0') !== 'refund' ||
+    input.outputs.refund === undefined ||
+    input.outputs.refund.length < 1 ||
+    input.outputs.refund.length > 256 ||
+    input.metadata?.purpose !== CTF_RANGE_REFUND_PURPOSE ||
+    typeof input.metadata.rangeOperationId !== 'string' ||
+    input.metadata.rangeOperationId.length < 1 ||
+    typeof input.metadata.custodyOperationId !== 'string' ||
+    input.metadata.custodyOperationId.length < 1 ||
+    typeof input.metadata.refundKeysetId !== 'string' ||
+    input.metadata.refundKeysetId.length < 1 ||
+    input.metadata.unit !== 'msat' ||
+    input.metadata.reservationId !== undefined
+  ) {
+    throw new Error('daemon CTF range refund operation is invalid')
+  }
+}
+
+function prepareExactProofOperation(
+  database: DatabaseSync,
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly asset: StoredProofAsset
+  },
+): ProofOperationRecord {
+  const existing = readDaemonProofOperationFromDatabase(database, input.operationId)
+  if (existing !== null) {
+    assertCompatibleProofOperation(existing, input)
+    assertExactReservedProofRows(
+      readDaemonReservedWalletProofsFromDatabase(database, input.reservationId),
+      input,
+    )
+    return existing
+  }
+  assertValidExactInputs(input)
+  const scopeId = readScopeId(database)
+  const timestamp = Date.now()
+  for (const proof of input.inputs) reserveExactProofRow(database, scopeId, input, proof, timestamp)
+  const record = newPreparedProofOperation(input, timestamp)
+  insertProofOperation(database, scopeId, record)
+  return record
+}
+
+function reserveExactProofRow(
+  database: DatabaseSync,
+  scopeId: string,
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly asset: StoredProofAsset
+  },
+  proof: CashuProofRecord,
+  timestamp: number,
+): void {
+  const raw = database
+    .prepare(
+      `SELECT * FROM target_wallet_proofs
+       WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+    )
+    .get(scopeId, input.mintUrl, proof.secret) as Record<string, unknown> | undefined
+  if (raw === undefined) {
+    throw new Error(`Proof operation ${input.operationId} exact input is unavailable`)
+  }
+  const record = decodeWalletProofRow(raw)
+  if (
+    record.state !== 'available' ||
+    !isDeepStrictEqual(record.proof, normalizeCashuProofRecord(proof)) ||
+    !isDeepStrictEqual(normalizeProofAsset(record.asset), normalizeProofAsset(input.asset))
+  ) {
+    throw new Error(`Proof operation ${input.operationId} exact input is unavailable`)
+  }
+  const updated = database
+    .prepare(
+      `UPDATE target_wallet_proofs
+       SET state = 'reserved', reserved_by = ?,
+           updated_at_ms = MAX(created_at_ms, ?)
+       WHERE scope_id = ? AND proof_id = ? AND state = 'available'`,
+    )
+    .run(input.reservationId, timestamp, scopeId, requireText(raw.proof_id, 'proof id'))
+  if (updated.changes !== 1) {
+    throw new Error(`Proof operation ${input.operationId} exact input reservation raced`)
+  }
+}
+
+function newPreparedProofOperation(
+  input: PrepareProofOperationInput,
+  timestamp: number,
+): ProofOperationRecord {
+  return {
+    operationId: input.operationId,
+    kind: input.kind,
+    state: 'prepared',
+    mintUrl: input.mintUrl,
+    inputs: input.inputs.map(normalizeCashuProofRecord),
+    outputs: structuredClone(input.outputs),
+    metadata: structuredClone(input.metadata ?? {}),
+    lastError: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }
+}
+
 export async function markProofOperationCompleted(
   operationId: string,
   completion: Record<string, CashuProofRecord[]> | CtfProofOperationCompletion,
 ): Promise<ProofOperationRecord> {
-  return updateState((state) => {
-    const existing = state.proofOperations[operationId]
-    if (!existing) {
-      throw new Error(`Missing proof operation ${operationId}`)
-    }
-    const ctfCompletion = isCtfProofOperationCompletion(completion)
-    if (isSdkCtfProofOperationKind(existing.kind) && !ctfCompletion) {
-      throw new Error(`Proof operation ${operationId} requires an SDK completion`)
-    }
-    if (ctfCompletion && completion.kind !== existing.kind) {
-      throw new Error(
-        `Proof operation ${operationId} kind ${existing.kind} does not match completion ${completion.kind}`,
+  return withDaemonStateSqliteTransaction(profileDir(), (database) =>
+    completeProofOperation(database, operationId, completion),
+  )
+}
+
+export async function markProofOperationCompletedFenced(
+  operationId: string,
+  completion: Record<string, CashuProofRecord[]> | CtfProofOperationCompletion,
+  mutation: FencedStateMutation,
+): Promise<ProofOperationRecord> {
+  return withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => completeProofOperation(database, operationId, completion, mutation.observedAtMs),
+  )
+}
+
+export async function releasePreparedProofReservationFenced(
+  input: {
+    readonly operationId: string
+    readonly reservationId: string
+    readonly reason: string
+  },
+  mutation: FencedStateMutation,
+  afterRelease?: (database: DatabaseSync, operation: ProofOperationRecord) => void,
+): Promise<ProofOperationRecord> {
+  return withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const operation = releasePreparedProofReservationFromDatabase(
+        database,
+        input,
+        mutation.observedAtMs,
       )
+      afterRelease?.(database, operation)
+      return operation
+    },
+  )
+}
+
+export function releasePreparedProofReservationFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly operationId: string
+    readonly reservationId: string
+    readonly reason: string
+  },
+  observedAtMs: number,
+): ProofOperationRecord {
+  const operation = readDaemonProofOperationFromDatabase(database, input.operationId)
+  if (
+    operation === null ||
+    operation.metadata.reservationId !== input.reservationId ||
+    input.reason.length < 1 ||
+    input.reason.length > 1_024 ||
+    input.reason !== input.reason.trim()
+  ) {
+    throw new Error('prepared proof reservation release authority is invalid')
+  }
+  if (operation.state === 'Failed') {
+    if (operation.lastError !== input.reason) {
+      throw new Error('prepared proof reservation failed with a different reason')
     }
-    const resultProofs = ctfCompletion ? completion.resultProofs : completion
-    const updated: ProofOperationRecord = {
-      ...existing,
-      state: 'completed',
-      resultProofs: normalizeProofRecordGroups(resultProofs),
-      resultProofsDigest:
-        ctfCompletion && 'resultProofsDigest' in completion
-          ? completion.resultProofsDigest
-          : undefined,
-      lastError: null,
-      updatedAt: Date.now(),
+    if (readDaemonReservedWalletProofsFromDatabase(database, input.reservationId).length !== 0) {
+      throw new Error('failed proof reservation still owns wallet proofs')
     }
-    state.proofOperations[operationId] = updated
-    return updated
+    return operation
+  }
+  if (operation.state !== 'prepared') {
+    throw new Error('only a prepared proof reservation can be released')
+  }
+  const reserved = readDaemonReservedWalletProofsFromDatabase(database, input.reservationId)
+  assertExactReservedProofRows(reserved, {
+    operationId: operation.operationId,
+    kind: operation.kind,
+    mintUrl: operation.mintUrl,
+    inputs: operation.inputs,
+    outputs: operation.outputs,
+    metadata: operation.metadata,
+    reservationId: input.reservationId,
+    asset: reserved[0]?.asset ?? { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
   })
+  const scopeId = readScopeId(database)
+  const released = database
+    .prepare(
+      `UPDATE target_wallet_proofs
+       SET state = 'available', reserved_by = NULL,
+           updated_at_ms = MAX(created_at_ms, ?)
+       WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?`,
+    )
+    .run(observedAtMs, scopeId, input.reservationId)
+  if (released.changes !== operation.inputs.length) {
+    throw new Error('prepared proof reservation changed before release')
+  }
+  const failed = database
+    .prepare(
+      `UPDATE target_proof_operations
+       SET state = 'failed', last_error = ?,
+           updated_at_ms = MAX(created_at_ms, ?)
+       WHERE scope_id = ? AND operation_id = ? AND state = 'prepared'`,
+    )
+    .run(input.reason, observedAtMs, scopeId, input.operationId)
+  if (failed.changes !== 1) {
+    throw new Error('prepared proof operation changed before release')
+  }
+  return {
+    ...operation,
+    state: 'Failed',
+    lastError: input.reason,
+    updatedAt: observedAtMs,
+  }
+}
+
+function completeProofOperation(
+  database: DatabaseSync,
+  operationId: string,
+  completion: Record<string, CashuProofRecord[]> | CtfProofOperationCompletion,
+  updatedAtMs = Date.now(),
+): ProofOperationRecord {
+  const existing = readDaemonProofOperationFromDatabase(database, operationId)
+  if (!existing) throw new Error(`Missing proof operation ${operationId}`)
+  const updated = completedProofOperation(existing, completion, updatedAtMs)
+  if (updated === existing) return existing
+  persistProofOperationCompletion(database, updated)
+  return updated
+}
+
+function completedProofOperation(
+  existing: ProofOperationRecord,
+  completion: Record<string, CashuProofRecord[]> | CtfProofOperationCompletion,
+  updatedAtMs: number,
+): ProofOperationRecord {
+  const ctfCompletion = isCtfProofOperationCompletion(completion)
+  if (isSdkCtfProofOperationKind(existing.kind) && !ctfCompletion) {
+    throw new Error(`Proof operation ${existing.operationId} requires an SDK completion`)
+  }
+  if (ctfCompletion && completion.kind !== existing.kind) {
+    throw new Error(`Proof operation ${existing.operationId} completion kind differs`)
+  }
+  const resultProofs = normalizeProofRecordGroups(
+    ctfCompletion ? completion.resultProofs : completion,
+  )
+  if (existing.state === 'completed') {
+    if (!isDeepStrictEqual(existing.resultProofs, resultProofs)) {
+      throw new Error(`Proof operation ${existing.operationId} completed with a different result`)
+    }
+    return existing
+  }
+  return {
+    ...existing,
+    state: 'completed',
+    resultProofs,
+    resultProofsDigest:
+      ctfCompletion && 'resultProofsDigest' in completion
+        ? completion.resultProofsDigest
+        : undefined,
+    lastError: null,
+    updatedAt: Math.max(existing.createdAt, updatedAtMs),
+  }
+}
+
+function persistProofOperationCompletion(
+  database: DatabaseSync,
+  operation: ProofOperationRecord,
+): void {
+  const scopeId = readScopeId(database)
+  const resultArtifactId = putArtifact(database, scopeId, 'exact-result', operation.resultProofs)
+  const changed = database
+    .prepare(
+      `UPDATE target_proof_operations
+       SET state = 'completed', result_artifact_id = ?,
+           result_proofs_digest = ?, last_error = NULL,
+           updated_at_ms = MAX(created_at_ms, ?)
+       WHERE scope_id = ? AND operation_id = ? AND state <> 'completed'`,
+    )
+    .run(
+      resultArtifactId,
+      persistedResultProofsDigest(operation),
+      operation.updatedAt,
+      scopeId,
+      operation.operationId,
+    )
+  if (changed.changes !== 1) {
+    throw new Error(`Proof operation ${operation.operationId} changed before completion`)
+  }
 }
 
 function isCtfProofOperationCompletion(
@@ -957,7 +1358,7 @@ export async function recordTradeStateChanged(
   })
 }
 
-function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
+export function readDaemonStateFromDatabase(database: DatabaseSync): DaemonState | null {
   const scopeId = readScopeId(database)
   const metadata = database
     .prepare('SELECT schema_version FROM target_state_metadata WHERE scope_id = ?')
@@ -968,32 +1369,7 @@ function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
   for (const raw of database
     .prepare('SELECT * FROM target_wallet_proofs WHERE scope_id = ? ORDER BY proof_id')
     .all(scopeId) as Array<Record<string, unknown>>) {
-    const proof = decodeArtifact(raw.proof_body, 'wallet proof') as CashuProofRecord
-    const asset: StoredProofAsset =
-      raw.asset_kind === 'outcome'
-        ? {
-            kind: 'Outcome',
-            conditionId: requireText(raw.condition_id, 'proof condition'),
-            outcomeSetId: requireText(raw.outcome_set_id, 'proof outcome set'),
-            baseAsset: requireSatBaseAsset(raw.base_asset, 'proof base asset'),
-            unit: requireMsatUnit(raw.unit, 'outcome proof unit'),
-          }
-        : {
-            kind: 'sats',
-            baseAsset: requireSatBaseAsset(raw.base_asset, 'proof base asset'),
-            unit: requireCashuUnit(raw.unit, 'proof unit'),
-          }
-    state.wallet.proofs.push({
-      proof: normalizeCashuProofRecord(proof),
-      mintUrl: requireText(raw.normalized_mint, 'proof mint'),
-      state: requireProofState(raw.state),
-      asset,
-      ...(raw.reserved_by === null
-        ? {}
-        : { reservedBy: requireText(raw.reserved_by, 'proof reservation') }),
-      createdAt: timestampToIso(raw.created_at_ms, 'proof created time'),
-      updatedAt: timestampToIso(raw.updated_at_ms, 'proof updated time'),
-    })
+    state.wallet.proofs.push(decodeWalletProofRow(raw))
   }
   for (const raw of database
     .prepare('SELECT keyset_id, next_counter FROM target_keyset_counters WHERE scope_id = ?')
@@ -1006,47 +1382,8 @@ function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
   for (const raw of database
     .prepare('SELECT * FROM target_proof_operations WHERE scope_id = ?')
     .all(scopeId) as Array<Record<string, unknown>>) {
-    const operationId = requireText(raw.operation_id, 'operation id')
-    const request = decodeArtifactById(database, scopeId, raw.request_artifact_id)
-    const outputs = decodeArtifactById(database, scopeId, raw.output_artifact_id)
-    const requestRecord = requireRecord(request, 'operation request')
-    const operation: ProofOperationRecord = {
-      operationId,
-      kind: requireProofOperationKind(raw.kind),
-      state: requireProofOperationState(raw.state),
-      mintUrl: requireText(raw.normalized_mint, 'operation mint'),
-      inputs: requireArray(requestRecord.inputs, 'operation inputs').map((proof) =>
-        normalizeCashuProofRecord(proof as CashuProofRecord),
-      ),
-      outputs: requireRecord(outputs, 'operation outputs') as Record<string, StoredOutputData[]>,
-      metadata: requireRecord(requestRecord.metadata, 'operation metadata'),
-      lastError: raw.last_error === null ? null : requireText(raw.last_error, 'operation error'),
-      createdAt: requireInteger(raw.created_at_ms, 'operation created time'),
-      updatedAt: requireInteger(raw.updated_at_ms, 'operation updated time'),
-    }
-    if (raw.result_artifact_id !== null) {
-      operation.resultProofs = normalizeProofRecordGroups(
-        requireRecord(
-          decodeArtifactById(database, scopeId, raw.result_artifact_id),
-          'operation result',
-        ) as Record<string, CashuProofRecord[]>,
-      )
-      if (operation.kind === 'ctf-split' || operation.kind === 'ctf-merge') {
-        const storedDigest = requireText(
-          raw.result_proofs_digest,
-          'operation result authority digest',
-        )
-        const computedDigest = completedProofAuthorityDigest(
-          operation.resultProofs as Record<string, Proof[]>,
-        )
-        if (storedDigest !== computedDigest) {
-          throw new Error('operation result authority digest does not match result proofs')
-        }
-        operation.resultProofsDigest = storedDigest
-      } else if (raw.result_proofs_digest !== null) {
-        throw new Error('non-CTF operation has an unexpected result authority digest')
-      }
-    }
+    const operation = decodeProofOperationRow(database, scopeId, raw)
+    const operationId = operation.operationId
     state.proofOperations[operationId] = operation
   }
   for (const raw of database
@@ -1115,7 +1452,395 @@ function readStateFromDatabase(database: DatabaseSync): DaemonState | null {
   return state
 }
 
-function writeStateToDatabase(database: DatabaseSync, state: DaemonState): void {
+export function readDaemonProofOperationFromDatabase(
+  database: DatabaseSync,
+  operationId: string,
+): ProofOperationRecord | null {
+  const scopeId = readScopeId(database)
+  const raw = database
+    .prepare(
+      `SELECT * FROM target_proof_operations
+       WHERE scope_id = ? AND operation_id = ?`,
+    )
+    .get(scopeId, operationId) as Record<string, unknown> | undefined
+  return raw === undefined ? null : decodeProofOperationRow(database, scopeId, raw)
+}
+
+export function readDaemonReservedWalletProofsFromDatabase(
+  database: DatabaseSync,
+  reservationId: string,
+): StoredProofRecord[] {
+  const scopeId = readScopeId(database)
+  return (
+    database
+      .prepare(
+        `SELECT * FROM target_wallet_proofs
+         WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?
+         ORDER BY proof_id`,
+      )
+      .all(scopeId, reservationId) as Array<Record<string, unknown>>
+  ).map(decodeWalletProofRow)
+}
+
+export async function readAvailableWalletProofPage(input: {
+  readonly mintUrl: string
+  readonly keysetId: string
+  readonly asset: StoredProofAsset
+  readonly after?: WalletProofPageCursor
+  readonly limit: number
+}): Promise<AvailableWalletProofPage> {
+  const limit = boundedPageLimit(input.limit)
+  const expectedAsset = normalizeProofAsset(input.asset)
+  return withProfileStorageAccess(async () => {
+    const database = await openDaemonStateSqlite(profileDir())
+    try {
+      return readAvailableWalletProofPageFromDatabase(database, {
+        ...input,
+        asset: expectedAsset,
+        limit,
+      })
+    } finally {
+      database.close()
+    }
+  })
+}
+
+function readAvailableWalletProofPageFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly mintUrl: string
+    readonly keysetId: string
+    readonly asset: StoredProofAsset
+    readonly after?: WalletProofPageCursor
+    readonly limit: number
+  },
+): AvailableWalletProofPage {
+  const afterClause =
+    input.after === undefined ? '' : 'AND (amount < ? OR (amount = ? AND proof_id > ?))'
+  const bindings: Array<string | number | null> = [
+    readScopeId(database),
+    input.mintUrl,
+    input.asset.unit,
+    input.asset.kind === 'Outcome' ? 'outcome' : 'sats',
+    input.asset.kind === 'Outcome' ? input.asset.conditionId : null,
+    input.asset.kind === 'Outcome' ? input.asset.outcomeSetId : null,
+    input.keysetId,
+  ]
+  if (input.after !== undefined) {
+    validateWalletProofPageCursor(input.after)
+    bindings.push(input.after.amount, input.after.amount, input.after.proofId)
+  }
+  bindings.push(input.limit + 1)
+  const fetched = database
+    .prepare(
+      `SELECT * FROM target_wallet_proofs
+       WHERE scope_id = ? AND normalized_mint = ? AND unit = ?
+         AND asset_kind = ? AND condition_id IS ? AND outcome_set_id IS ?
+         AND keyset_id = ? AND state = 'available'
+         ${afterClause}
+       ORDER BY amount DESC, proof_id
+       LIMIT ?`,
+    )
+    .all(...bindings) as Array<Record<string, unknown>>
+  const rows = fetched.slice(0, input.limit)
+  const last = rows.at(-1)
+  return {
+    proofs: rows.map(decodeWalletProofRow),
+    nextCursor:
+      fetched.length > input.limit && last !== undefined
+        ? {
+            amount: requireInteger(last.amount, 'proof page amount'),
+            proofId: requireText(last.proof_id, 'proof page id'),
+          }
+        : null,
+  }
+}
+
+export async function readProofOperationsByPurposePage(input: {
+  readonly purpose: string
+  readonly after?: ProofOperationPageCursor
+  readonly limit: number
+}): Promise<ProofOperationPage> {
+  const purpose = requireOperationPurpose(input.purpose)
+  const limit = boundedPageLimit(input.limit)
+  return withProfileStorageAccess(async () => {
+    const database = await openDaemonStateSqlite(profileDir())
+    try {
+      const scopeId = readScopeId(database)
+      const afterClause =
+        input.after === undefined
+          ? ''
+          : 'AND (updated_at_ms > ? OR (updated_at_ms = ? AND operation_id > ?))'
+      const bindings: Array<string | number> = [scopeId, purpose]
+      if (input.after !== undefined) {
+        validateProofOperationPageCursor(input.after)
+        bindings.push(input.after.updatedAt, input.after.updatedAt, input.after.operationId)
+      }
+      bindings.push(limit + 1)
+      const fetched = database
+        .prepare(
+          `SELECT * FROM target_proof_operations
+           WHERE scope_id = ? AND purpose = ?
+             ${afterClause}
+           ORDER BY updated_at_ms, operation_id
+           LIMIT ?`,
+        )
+        .all(...bindings) as Array<Record<string, unknown>>
+      const rows = fetched.slice(0, limit)
+      const last = rows.at(-1)
+      return {
+        operations: rows.map((row) => decodeProofOperationRow(database, scopeId, row)),
+        nextCursor:
+          fetched.length > limit && last !== undefined
+            ? {
+                updatedAt: requireInteger(last.updated_at_ms, 'operation page update time'),
+                operationId: requireText(last.operation_id, 'operation page id'),
+              }
+            : null,
+      }
+    } finally {
+      database.close()
+    }
+  })
+}
+
+export async function hasSubmittedClientOrder(clientOrderId: string): Promise<boolean> {
+  if (clientOrderId.length === 0) throw new Error('client order id must not be empty')
+  return withProfileStorageAccess(async () => {
+    const database = await openDaemonStateSqlite(profileDir())
+    try {
+      const scopeId = readScopeId(database)
+      return (
+        database
+          .prepare(
+            `SELECT 1 FROM daemon_orders
+             WHERE scope_id = ? AND client_order_id = ?
+             LIMIT 1`,
+          )
+          .get(scopeId, clientOrderId) !== undefined
+      )
+    } finally {
+      database.close()
+    }
+  })
+}
+
+export function replaceDaemonReservedWalletProofsFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly mintUrl: string
+    readonly reservationId: string
+    readonly expectedCount: number
+    readonly keepProofs: readonly CashuProofRecord[]
+    readonly asset: StoredProofAsset
+    readonly nowMs: number
+  },
+): void {
+  const scopeId = readScopeId(database)
+  const removed = database
+    .prepare(
+      `DELETE FROM target_wallet_proofs
+       WHERE scope_id = ? AND normalized_mint = ?
+         AND state = 'reserved' AND reserved_by = ?`,
+    )
+    .run(scopeId, input.mintUrl, input.reservationId)
+  if (removed.changes !== input.expectedCount) {
+    throw new Error('daemon proof reservation changed before exact replacement')
+  }
+  const now = new Date(input.nowMs).toISOString()
+  for (const proof of input.keepProofs) {
+    insertWalletProof(database, scopeId, {
+      proof: structuredClone(proof),
+      mintUrl: input.mintUrl,
+      state: 'available',
+      asset: structuredClone(input.asset),
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+}
+
+export async function finalizeCompletedProofReservation(
+  input: {
+    readonly operationId: string
+    readonly reservationId: string
+    readonly resultGroup: string
+    readonly asset: StoredProofAsset
+  },
+  mutation: FencedStateMutation,
+): Promise<void> {
+  await withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const operation = readDaemonProofOperationFromDatabase(database, input.operationId)
+      if (
+        operation === null ||
+        operation.state !== 'completed' ||
+        operation.metadata.reservationId !== input.reservationId
+      ) {
+        throw new Error('completed proof reservation authority is missing or incompatible')
+      }
+      const result = operation.resultProofs?.[input.resultGroup]
+      if (result === undefined) {
+        throw new Error('completed proof reservation result group is missing')
+      }
+      const reserved = readDaemonReservedWalletProofsFromDatabase(database, input.reservationId)
+      if (reserved.length > 0) {
+        assertExactReservedProofRows(reserved, {
+          operationId: operation.operationId,
+          kind: operation.kind,
+          mintUrl: operation.mintUrl,
+          inputs: operation.inputs,
+          outputs: operation.outputs,
+          metadata: operation.metadata,
+          reservationId: input.reservationId,
+          asset: input.asset,
+        })
+        replaceDaemonReservedWalletProofsFromDatabase(database, {
+          mintUrl: operation.mintUrl,
+          reservationId: input.reservationId,
+          expectedCount: operation.inputs.length,
+          keepProofs: result,
+          asset: input.asset,
+          nowMs: Date.now(),
+        })
+        return
+      }
+      assertCompletedReservationAlreadyFinalized(database, operation, result, input.asset)
+    },
+  )
+}
+
+function assertCompletedReservationAlreadyFinalized(
+  database: DatabaseSync,
+  operation: ProofOperationRecord,
+  result: readonly CashuProofRecord[],
+  asset: StoredProofAsset,
+): void {
+  const scopeId = readScopeId(database)
+  for (const { secret } of operation.inputs) {
+    const staleInput = database
+      .prepare(
+        `SELECT 1 FROM target_wallet_proofs
+         WHERE scope_id = ? AND normalized_mint = ? AND secret = ?
+         LIMIT 1`,
+      )
+      .get(scopeId, operation.mintUrl, secret)
+    if (staleInput !== undefined) {
+      throw new Error('completed proof reservation retained a predecessor proof')
+    }
+  }
+  const expectedAsset = normalizeProofAsset(asset)
+  for (const proof of result) {
+    const raw = database
+      .prepare(
+        `SELECT * FROM target_wallet_proofs
+         WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+      )
+      .get(scopeId, operation.mintUrl, proof.secret) as Record<string, unknown> | undefined
+    if (raw === undefined) {
+      throw new Error('completed proof reservation successor is missing')
+    }
+    const record = decodeWalletProofRow(raw)
+    if (
+      record.state !== 'available' ||
+      !isDeepStrictEqual(record.proof, normalizeCashuProofRecord(proof)) ||
+      !isDeepStrictEqual(normalizeProofAsset(record.asset), expectedAsset)
+    ) {
+      throw new Error('completed proof reservation successor differs from durable authority')
+    }
+  }
+}
+
+function decodeWalletProofRow(raw: Record<string, unknown>): StoredProofRecord {
+  const proof = decodeArtifact(raw.proof_body, 'wallet proof') as CashuProofRecord
+  const asset: StoredProofAsset =
+    raw.asset_kind === 'outcome'
+      ? {
+          kind: 'Outcome',
+          conditionId: requireText(raw.condition_id, 'proof condition'),
+          outcomeSetId: requireText(raw.outcome_set_id, 'proof outcome set'),
+          baseAsset: requireSatBaseAsset(raw.base_asset, 'proof base asset'),
+          unit: requireMsatUnit(raw.unit, 'outcome proof unit'),
+        }
+      : {
+          kind: 'sats',
+          baseAsset: requireSatBaseAsset(raw.base_asset, 'proof base asset'),
+          unit: requireCashuUnit(raw.unit, 'proof unit'),
+        }
+  return {
+    proof: normalizeCashuProofRecord(proof),
+    mintUrl: requireText(raw.normalized_mint, 'proof mint'),
+    state: requireProofState(raw.state),
+    asset,
+    ...(raw.reserved_by === null
+      ? {}
+      : { reservedBy: requireText(raw.reserved_by, 'proof reservation') }),
+    createdAt: timestampToIso(raw.created_at_ms, 'proof created time'),
+    updatedAt: timestampToIso(raw.updated_at_ms, 'proof updated time'),
+  }
+}
+
+function decodeProofOperationRow(
+  database: DatabaseSync,
+  scopeId: string,
+  raw: Record<string, unknown>,
+): ProofOperationRecord {
+  const request = decodeArtifactById(database, scopeId, raw.request_artifact_id)
+  const outputs = decodeArtifactById(database, scopeId, raw.output_artifact_id)
+  const requestRecord = requireRecord(request, 'operation request')
+  const operation: ProofOperationRecord = {
+    operationId: requireText(raw.operation_id, 'operation id'),
+    kind: requireProofOperationKind(raw.kind),
+    state: requireProofOperationState(raw.state),
+    mintUrl: requireText(raw.normalized_mint, 'operation mint'),
+    inputs: requireArray(requestRecord.inputs, 'operation inputs').map((proof) =>
+      normalizeCashuProofRecord(proof as CashuProofRecord),
+    ),
+    outputs: requireRecord(outputs, 'operation outputs') as Record<string, StoredOutputData[]>,
+    metadata: requireRecord(requestRecord.metadata, 'operation metadata'),
+    lastError: raw.last_error === null ? null : requireText(raw.last_error, 'operation error'),
+    createdAt: requireInteger(raw.created_at_ms, 'operation created time'),
+    updatedAt: requireInteger(raw.updated_at_ms, 'operation updated time'),
+  }
+  if (requireOperationPurpose(raw.purpose) !== operationPurpose(operation.metadata)) {
+    throw new Error('operation purpose index does not match its exact request')
+  }
+  if (raw.result_artifact_id !== null) {
+    operation.resultProofs = normalizeProofRecordGroups(
+      requireRecord(
+        decodeArtifactById(database, scopeId, raw.result_artifact_id),
+        'operation result',
+      ) as Record<string, CashuProofRecord[]>,
+    )
+    attachProofOperationResultDigest(operation, raw.result_proofs_digest)
+  }
+  return operation
+}
+
+function attachProofOperationResultDigest(
+  operation: ProofOperationRecord,
+  storedValue: unknown,
+): void {
+  if (operation.kind !== 'ctf-split' && operation.kind !== 'ctf-merge') {
+    if (storedValue !== null) {
+      throw new Error('non-CTF operation has an unexpected result authority digest')
+    }
+    return
+  }
+  const storedDigest = requireText(storedValue, 'operation result authority digest')
+  const computedDigest = completedProofAuthorityDigest(
+    operation.resultProofs as Record<string, Proof[]>,
+  )
+  if (storedDigest !== computedDigest) {
+    throw new Error('operation result authority digest does not match result proofs')
+  }
+  operation.resultProofsDigest = storedDigest
+}
+
+export function writeDaemonStateToDatabase(database: DatabaseSync, state: DaemonState): void {
   const scopeId = readScopeId(database)
   const priorTargetArtifactIds = collectTargetArtifactIds(database, scopeId)
   database.prepare('DELETE FROM target_proof_operations WHERE scope_id = ?').run(scopeId)
@@ -1222,15 +1947,16 @@ function insertProofOperation(
   database
     .prepare(
       `INSERT INTO target_proof_operations (
-         operation_id, scope_id, kind, state, normalized_mint,
+         operation_id, scope_id, kind, purpose, state, normalized_mint,
          request_artifact_id, output_artifact_id, result_artifact_id, result_proofs_digest,
-         input_count, input_amount, last_error, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         input_count, input_amount, last_error, reservation_id, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       operation.operationId,
       scopeId,
       operation.kind,
+      operationPurpose(operation.metadata),
       operation.state === 'Failed' ? 'failed' : operation.state,
       operation.mintUrl,
       requestId,
@@ -1240,9 +1966,66 @@ function insertProofOperation(
       operation.inputs.length,
       inputAmount,
       operation.lastError ?? null,
+      operationReservationId(operation.metadata),
       timestamps.createdAt,
       timestamps.updatedAt,
     )
+}
+
+function operationPurpose(metadata: Record<string, unknown>): string {
+  const purpose = metadata.purpose
+  if (purpose === undefined) return ''
+  if (typeof purpose !== 'string' || purpose.length > 256) {
+    throw new Error('proof operation purpose must be a string of at most 256 characters')
+  }
+  return purpose
+}
+
+function operationReservationId(metadata: Record<string, unknown>): string | null {
+  const reservationId = metadata.reservationId
+  if (reservationId === undefined) return null
+  if (
+    typeof reservationId !== 'string' ||
+    reservationId.length < 1 ||
+    reservationId.length > 16_384
+  ) {
+    throw new Error('proof operation reservation id is invalid')
+  }
+  return reservationId
+}
+
+function requireOperationPurpose(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 256) {
+    throw new Error('proof operation purpose index is invalid')
+  }
+  return value
+}
+
+function boundedPageLimit(value: number): number {
+  if (!Number.isInteger(value) || value < 1 || value > 256) {
+    throw new Error('SQLite page limit must be an integer between 1 and 256')
+  }
+  return value
+}
+
+function validateWalletProofPageCursor(cursor: WalletProofPageCursor): void {
+  if (
+    !Number.isSafeInteger(cursor.amount) ||
+    cursor.amount <= 0 ||
+    !/^[0-9a-f]{64}$/.test(cursor.proofId)
+  ) {
+    throw new Error('wallet proof page cursor is invalid')
+  }
+}
+
+function validateProofOperationPageCursor(cursor: ProofOperationPageCursor): void {
+  if (
+    !Number.isSafeInteger(cursor.updatedAt) ||
+    cursor.updatedAt < 0 ||
+    cursor.operationId.length === 0
+  ) {
+    throw new Error('proof operation page cursor is invalid')
+  }
 }
 
 function persistedResultProofsDigest(operation: ProofOperationRecord): string | null {
@@ -1835,11 +2618,7 @@ function normalizeState(value: unknown): DaemonState {
     wallet:
       isRecord(value.wallet) && Array.isArray(value.wallet.proofs)
         ? {
-            proofs: (value.wallet.proofs as StoredProofRecord[]).map((record) => ({
-              ...record,
-              proof: normalizeCashuProofRecord(record.proof),
-              asset: normalizeProofAsset(record.asset),
-            })),
+            proofs: (value.wallet.proofs as StoredProofRecord[]).map(normalizeStoredProofRecord),
             keysetCounters: isRecord(value.wallet.keysetCounters)
               ? normalizeCounterMap(value.wallet.keysetCounters)
               : {},
@@ -1850,6 +2629,26 @@ function normalizeState(value: unknown): DaemonState {
       : {},
     orders: isRecord(value.orders) ? normalizeOrders(value.orders) : {},
     swaps: isRecord(value.swaps) ? normalizeSwaps(value.swaps) : {},
+  }
+}
+
+function normalizeStoredProofRecord(record: StoredProofRecord): StoredProofRecord {
+  const state = requireProofState(record.state)
+  const reservedBy = record.reservedBy
+  const { reservedBy: _reservedBy, ...authority } = record
+  if (
+    state === 'available'
+      ? reservedBy !== undefined
+      : typeof reservedBy !== 'string' || reservedBy.length < 1 || reservedBy.length > 16_384
+  ) {
+    throw new Error('wallet proof reservation authority is invalid')
+  }
+  return {
+    ...authority,
+    state,
+    proof: normalizeCashuProofRecord(record.proof),
+    asset: normalizeProofAsset(record.asset),
+    ...(state === 'available' ? {} : { reservedBy }),
   }
 }
 
@@ -1954,9 +2753,52 @@ function assertCompatibleProofOperation(
   if (
     existing.kind !== input.kind ||
     existing.mintUrl !== input.mintUrl ||
-    JSON.stringify(existing.inputs) !== JSON.stringify(input.inputs)
+    !isDeepStrictEqual(existing.inputs, input.inputs.map(normalizeCashuProofRecord)) ||
+    !isDeepStrictEqual(existing.outputs, input.outputs) ||
+    !isDeepStrictEqual(existing.metadata, input.metadata ?? {})
   ) {
     throw new Error(`Proof operation ${input.operationId} does not match this swap step`)
+  }
+}
+
+function assertValidExactInputs(
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly asset: StoredProofAsset
+  },
+): void {
+  if (
+    input.inputs.length === 0 ||
+    new Set(input.inputs.map(({ secret }) => secret)).size !== input.inputs.length
+  ) {
+    throw new Error(`Proof operation ${input.operationId} has invalid exact inputs`)
+  }
+}
+
+function assertExactReservedProofRows(
+  reserved: readonly StoredProofRecord[],
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly asset: StoredProofAsset
+  },
+): void {
+  assertValidExactInputs(input)
+  const expectedAsset = normalizeProofAsset(input.asset)
+  if (
+    reserved.length !== input.inputs.length ||
+    input.inputs.some(
+      (proof) =>
+        !reserved.some(
+          (record) =>
+            record.mintUrl === input.mintUrl &&
+            record.reservedBy === input.reservationId &&
+            record.proof.secret === proof.secret &&
+            isDeepStrictEqual(record.proof, normalizeCashuProofRecord(proof)) &&
+            isDeepStrictEqual(normalizeProofAsset(record.asset), expectedAsset),
+        ),
+    )
+  ) {
+    throw new Error(`Proof operation ${input.operationId} exact reservation is incomplete`)
   }
 }
 

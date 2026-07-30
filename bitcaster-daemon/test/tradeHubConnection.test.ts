@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { parseTradeCreatedPayload } from '../src/tradeHubConnection.ts'
+import { parseRangeSettlementDelta, parseTradeCreatedPayload } from '../src/tradeHubConnection.ts'
 
 test('parseTradeCreatedPayload accepts current TradeCreated contract shape', () => {
   assert.deepEqual(
@@ -86,5 +86,28 @@ test('parseTradeCreatedPayload rejects missing marketId before local order bindi
         '   ',
       ),
     /TradeCreated payload had unexpected shape/,
+  )
+})
+
+test('parseRangeSettlementDelta accepts owner-filtered lifecycle notifications', () => {
+  assert.deepEqual(
+    parseRangeSettlementDelta({
+      orderId: '5f612d3d-c561-429a-947b-f00fa51a7845',
+      marketId: 'condition-YES',
+      status: 'SettlementPending',
+    }),
+    {
+      orderId: '5f612d3d-c561-429a-947b-f00fa51a7845',
+      marketId: 'condition-YES',
+    },
+  )
+})
+
+test('parseRangeSettlementDelta rejects malformed notifications', () => {
+  assert.throws(() => parseRangeSettlementDelta(null), /unexpected shape/)
+  assert.throws(() => parseRangeSettlementDelta({ marketId: 'condition-YES' }), /unexpected shape/)
+  assert.throws(
+    () => parseRangeSettlementDelta({ orderId: 'order-1', marketId: '   ' }),
+    /unexpected shape/,
   )
 })

@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '775e5c0102b759f50d6005d7f82ac8dd154e7b60f8e3b6c5670d5361b9e7c7f8'
+  'c9a718ae089ca4976dec9b17feb75605d2ba251dc96ba42be71246c8df019077'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -133,8 +133,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
     UNIQUE (scope_id, normalized_mint, secret),
     CHECK (
-      (state = 'reserved' AND reserved_by IS NOT NULL)
-      OR state <> 'reserved'
+      (state IN ('reserved', 'locked') AND reserved_by IS NOT NULL)
+      OR (state = 'available' AND reserved_by IS NULL)
     ),
     CHECK (
       (asset_kind = 'sats' AND condition_id IS NULL AND outcome_set_id IS NULL)
@@ -160,6 +160,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       'ctf-split', 'ctf-merge', 'ctf-consolidation', 'ctf-redeem',
       'regular-split', 'wallet-send', 'proof-split', 'swap-refund'
     )),
+    purpose TEXT NOT NULL CHECK (length(purpose) <= 256),
     state TEXT NOT NULL CHECK (state IN ('prepared', 'completed', 'failed')),
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
     request_artifact_id TEXT NOT NULL,
@@ -174,10 +175,16 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ),
     input_count INTEGER NOT NULL CHECK (input_count BETWEEN 0 AND 256),
     input_amount INTEGER NOT NULL CHECK (input_amount >= 0),
-    last_error TEXT,
+    last_error TEXT CHECK (
+      last_error IS NULL OR length(last_error) BETWEEN 1 AND 1024
+    ),
+    reservation_id TEXT CHECK (
+      reservation_id IS NULL OR length(reservation_id) BETWEEN 1 AND 16384
+    ),
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
     UNIQUE (scope_id, operation_id),
+    UNIQUE (scope_id, operation_id, reservation_id, purpose),
     FOREIGN KEY (scope_id, request_artifact_id)
       REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT
       DEFERRABLE INITIALLY DEFERRED,
@@ -192,6 +199,10 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       OR (state <> 'completed' AND result_artifact_id IS NULL)
     ),
     CHECK (
+      (state = 'failed' AND last_error IS NOT NULL)
+      OR (state <> 'failed' AND last_error IS NULL)
+    ),
+    CHECK (
       (kind IN ('ctf-split', 'ctf-merge')
         AND state = 'completed'
         AND result_proofs_digest IS NOT NULL)
@@ -199,6 +210,175 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       ((kind NOT IN ('ctf-split', 'ctf-merge') OR state <> 'completed')
         AND result_proofs_digest IS NULL)
     )
+  ) STRICT`,
+  `CREATE TABLE daemon_ctf_range_preparations (
+    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    range_operation_id TEXT NOT NULL CHECK (
+      length(range_operation_id) BETWEEN 1 AND 16384
+    ),
+    source_operation_id TEXT NOT NULL CHECK (
+      length(source_operation_id) BETWEEN 1 AND 16384
+    ),
+    source_kind TEXT NOT NULL CHECK (
+      source_kind IN ('wallet-prepared', 'residual-change')
+    ),
+    predecessor_range_operation_id TEXT CHECK (
+      predecessor_range_operation_id IS NULL
+      OR length(predecessor_range_operation_id) BETWEEN 1 AND 16384
+    ),
+    authorization_id TEXT NOT NULL CHECK (
+      length(authorization_id) BETWEEN 1 AND 16384
+    ),
+    client_order_id TEXT NOT NULL CHECK (
+      length(client_order_id) BETWEEN 1 AND 1024
+    ),
+    market_id TEXT NOT NULL CHECK (length(market_id) BETWEEN 1 AND 1024),
+    normalized_mint TEXT NOT NULL CHECK (
+      length(normalized_mint) BETWEEN 1 AND 2048
+    ),
+    condition_id TEXT NOT NULL CHECK (length(condition_id) BETWEEN 1 AND 1024),
+    unit TEXT NOT NULL CHECK (unit = 'msat'),
+    token_side TEXT NOT NULL CHECK (token_side IN ('Outcome', 'Complement')),
+    side TEXT NOT NULL CHECK (side IN ('Buy', 'Sell')),
+    price_subunits INTEGER NOT NULL CHECK (
+      price_subunits BETWEEN 1 AND divisibility
+    ),
+    amount_subunits INTEGER NOT NULL CHECK (
+      amount_subunits BETWEEN 1 AND 9007199254740991
+    ),
+    divisibility INTEGER NOT NULL CHECK (divisibility IN (10000, 1000000)),
+    authorization_expires_at_unix_seconds INTEGER NOT NULL CHECK (
+      authorization_expires_at_unix_seconds BETWEEN 1 AND 9007199254740991
+    ),
+    preparation_body BLOB NOT NULL CHECK (
+      length(preparation_body) BETWEEN 1 AND 262144
+    ),
+    lifecycle_state TEXT NOT NULL CHECK (
+      lifecycle_state IN (
+        'prepared', 'capability-bound', 'order-submitted', 'submission-rejected', 'terminal'
+      )
+    ),
+    revision INTEGER NOT NULL CHECK (revision >= 0),
+    capability_artifact_id TEXT CHECK (
+      capability_artifact_id IS NULL OR (
+        length(capability_artifact_id) = 36
+        AND substr(capability_artifact_id, 9, 1) = '-'
+        AND substr(capability_artifact_id, 14, 1) = '-'
+        AND substr(capability_artifact_id, 19, 1) = '-'
+        AND substr(capability_artifact_id, 24, 1) = '-'
+        AND replace(capability_artifact_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
+    capability_binding_digest TEXT CHECK (
+      capability_binding_digest IS NULL OR (
+        length(capability_binding_digest) = 64
+        AND capability_binding_digest NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
+    capability_artifact_digest TEXT CHECK (
+      capability_artifact_digest IS NULL OR (
+        length(capability_artifact_digest) = 64
+        AND capability_artifact_digest NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
+    engine_order_id TEXT CHECK (
+      engine_order_id IS NULL OR (
+        length(engine_order_id) = 36
+        AND substr(engine_order_id, 9, 1) = '-'
+        AND substr(engine_order_id, 14, 1) = '-'
+        AND substr(engine_order_id, 19, 1) = '-'
+        AND substr(engine_order_id, 24, 1) = '-'
+        AND replace(engine_order_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
+    PRIMARY KEY (scope_id, range_operation_id),
+    FOREIGN KEY (scope_id, predecessor_range_operation_id)
+      REFERENCES daemon_ctf_range_preparations(scope_id, range_operation_id)
+      ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    UNIQUE (scope_id, source_operation_id),
+    UNIQUE (scope_id, authorization_id),
+    UNIQUE (scope_id, range_operation_id, source_operation_id),
+    CHECK (
+      (source_kind = 'wallet-prepared' AND predecessor_range_operation_id IS NULL)
+      OR
+      (source_kind = 'residual-change'
+        AND predecessor_range_operation_id IS NOT NULL
+        AND predecessor_range_operation_id <> range_operation_id)
+    ),
+    CHECK (
+      (
+        capability_artifact_id IS NULL
+        AND capability_binding_digest IS NULL
+        AND capability_artifact_digest IS NULL
+        AND engine_order_id IS NULL
+      )
+      OR
+      (
+        capability_artifact_id IS NOT NULL
+        AND capability_binding_digest IS NOT NULL
+        AND capability_artifact_digest IS NOT NULL
+        AND engine_order_id IS NOT NULL
+      )
+    ),
+    CHECK (
+      (lifecycle_state = 'prepared' AND capability_artifact_id IS NULL)
+      OR
+      (lifecycle_state IN ('capability-bound', 'order-submitted', 'submission-rejected')
+        AND capability_artifact_id IS NOT NULL)
+      OR lifecycle_state = 'terminal'
+    )
+  ) STRICT`,
+  `CREATE TABLE daemon_ctf_range_sources (
+    scope_id TEXT NOT NULL,
+    range_operation_id TEXT NOT NULL CHECK (
+      length(range_operation_id) BETWEEN 1 AND 16384
+    ),
+    source_operation_id TEXT NOT NULL CHECK (
+      length(source_operation_id) BETWEEN 1 AND 16384
+    ),
+    reservation_id TEXT NOT NULL CHECK (
+      length(reservation_id) BETWEEN 1 AND 16384
+    ),
+    operation_purpose TEXT NOT NULL CHECK (
+      operation_purpose = 'ctf-range-authorization-source'
+    ),
+    PRIMARY KEY (scope_id, range_operation_id),
+    UNIQUE (scope_id, source_operation_id),
+    UNIQUE (scope_id, reservation_id),
+    FOREIGN KEY (scope_id, range_operation_id, source_operation_id)
+      REFERENCES daemon_ctf_range_preparations(
+        scope_id, range_operation_id, source_operation_id
+      ) ON DELETE RESTRICT,
+    FOREIGN KEY (scope_id, source_operation_id, reservation_id, operation_purpose)
+      REFERENCES target_proof_operations(
+        scope_id, operation_id, reservation_id, purpose
+      ) ON DELETE RESTRICT
+  ) STRICT`,
+  `CREATE TABLE daemon_ctf_range_consolidations (
+    scope_id TEXT NOT NULL,
+    range_operation_id TEXT NOT NULL CHECK (
+      length(range_operation_id) BETWEEN 1 AND 16384
+    ),
+    round INTEGER NOT NULL CHECK (round BETWEEN 0 AND 255),
+    operation_id TEXT NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 16384),
+    reservation_id TEXT NOT NULL CHECK (
+      length(reservation_id) BETWEEN 1 AND 16384
+    ),
+    operation_purpose TEXT NOT NULL CHECK (
+      operation_purpose = 'ctf-range-authorization-consolidation'
+    ),
+    PRIMARY KEY (scope_id, range_operation_id, round),
+    UNIQUE (scope_id, operation_id),
+    UNIQUE (scope_id, reservation_id),
+    FOREIGN KEY (scope_id, range_operation_id)
+      REFERENCES daemon_ctf_range_preparations(scope_id, range_operation_id)
+      ON DELETE RESTRICT,
+    FOREIGN KEY (scope_id, operation_id, reservation_id, operation_purpose)
+      REFERENCES target_proof_operations(
+        scope_id, operation_id, reservation_id, purpose
+      ) ON DELETE RESTRICT
   ) STRICT`,
   `CREATE TABLE custody_proofs (
     proof_id TEXT PRIMARY KEY NOT NULL CHECK (
@@ -648,6 +828,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
     UNIQUE (scope_id, order_id),
+    UNIQUE (scope_id, client_order_id),
     CHECK (
       (preflight_reservation_id IS NULL
         AND preflight_condition_id IS NULL
@@ -868,6 +1049,32 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     )`,
   `CREATE INDEX custody_proofs_reservation_idx
     ON custody_proofs (scope_id, reservation_operation_id, selectability, proof_id)`,
+  `CREATE INDEX target_wallet_proofs_selection_idx
+    ON target_wallet_proofs (
+      scope_id, normalized_mint, unit, asset_kind, condition_id, outcome_set_id,
+      keyset_id, state, amount DESC, proof_id
+    )`,
+  `CREATE INDEX target_wallet_proofs_holdings_idx
+    ON target_wallet_proofs (
+      scope_id, normalized_mint, state, base_asset, asset_kind,
+      condition_id, unit, outcome_set_id, amount
+    )`,
+  `CREATE INDEX target_wallet_proofs_reservation_idx
+    ON target_wallet_proofs (scope_id, normalized_mint, reserved_by, state, proof_id)`,
+  `CREATE INDEX target_proof_operations_recovery_idx
+    ON target_proof_operations (
+      scope_id, purpose, state, updated_at_ms, operation_id
+    )`,
+  `CREATE INDEX daemon_ctf_range_active_recovery_idx
+    ON daemon_ctf_range_preparations (
+      scope_id, updated_at_ms, range_operation_id, client_order_id
+    )
+    WHERE lifecycle_state <> 'terminal'`,
+  `CREATE UNIQUE INDEX daemon_ctf_range_active_client_order_idx
+    ON daemon_ctf_range_preparations (scope_id, client_order_id)
+    WHERE lifecycle_state <> 'terminal'`,
+  `CREATE INDEX daemon_orders_client_id_idx
+    ON daemon_orders (scope_id, client_order_id)`,
   `CREATE INDEX custody_operations_history_idx
     ON custody_operations (scope_id, updated_at_ms DESC, operation_id DESC)`,
   `CREATE INDEX custody_operations_retry_idx

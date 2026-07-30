@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { getEncodedToken, type Proof } from '@cashu/cashu-ts'
 import { completedProofAuthorityDigest } from '@bitcaster-market/client-sdk/ctfSplit'
 import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
-import { dispatch, type EngineClientLike } from '../src/server.ts'
+import {
+  dispatch,
+  type EngineClientLike,
+  type PrepareSettlementCapabilityInput,
+} from '../src/server.ts'
 import { profileDir, readProfile, updateProfile } from '../src/profile.ts'
 import { createDaemonSecrets, readSecrets } from '../src/secrets.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
@@ -86,13 +90,16 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           }),
           reservedBy: 'balance-test',
         },
-        proofRecord('https://mint-a.example', 25_000, 'locked', {
-          kind: 'Outcome',
-          conditionId: 'cond',
-          outcomeSetId: 'YES',
-          baseAsset: 'sat',
-          unit: 'msat',
-        }),
+        {
+          ...proofRecord('https://mint-a.example', 25_000, 'locked', {
+            kind: 'Outcome',
+            conditionId: 'cond',
+            outcomeSetId: 'YES',
+            baseAsset: 'sat',
+            unit: 'msat',
+          }),
+          reservedBy: 'balance-lock-test',
+        },
       )
       await writeState(state)
 
@@ -645,6 +652,33 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         /allowed canonical mint set/,
       )
       assert.equal(resolverCalls, 0)
+    })
+
+    await t.test('wallet.receive rejects unsupported units byte-identically', async () => {
+      let resolverCalls = 0
+      const token = getEncodedToken({
+        mint: 'https://mint-a.example',
+        unit: 'usd' as never,
+        proofs: [cashuProof(7, 'unsupported-unit-secret')],
+      })
+      const before = await profileFileSnapshot(home)
+
+      await assert.rejects(
+        () =>
+          dispatch(
+            { method: 'wallet.receive', params: { token } },
+            {
+              resolveTokenImportKeysets: async () => {
+                resolverCalls += 1
+                throw new Error('unsupported units must fail before keyset resolution')
+              },
+            },
+          ),
+        /unsupported.*unit/i,
+      )
+
+      assert.equal(resolverCalls, 0)
+      assert.deepEqual(await profileFileSnapshot(home), before)
     })
 
     await t.test('wallet.send spends stored proofs and returns an encoded token', async () => {
@@ -1207,48 +1241,26 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     })
 
     await t.test(
-      'order.submit uses clientOrderId and submits pubkey only for pending matches',
+      'order.submit prepares a capability and submits only its bound reference',
       async () => {
         await writeState(backedDaemonState('cond', 1_000_000))
         let capturedOptions: { baseUrl: string; nostrSecretKeyHex: string } | null = null
         let capturedRequest: unknown = null
-        const submittedPubkeys: Array<{ tradeId: string; pubkey: string }> = []
-        let runtimeStartOrderIds: string[] = []
+        let capturedPreparation: PrepareSettlementCapabilityInput | null = null
         const engine: EngineClientLike = {
           ...scoreDisabledEngineMethods,
           async submitOrder(_marketId, request) {
             capturedRequest = request
             return {
               orderId: 'order-1',
-              status: 'matched',
-              remainingAmountSubunits: 0,
-              fills: [
-                {
-                  id: 'fill-1',
-                  makerOrderId: 'maker-1',
-                  takerOrderId: 'order-1',
-                  outcomeId: request.outcomeId,
-                  amountSubunits: request.amountSubunits,
-                  executionPrice: request.price,
-                  path: 'Complementary',
-                  status: 'Matched',
-                  filledAt: '2026-05-21T00:00:00.000Z',
-                  tradeId: 'trade-1',
-                },
-              ],
-              pendingPubkeySubmissions: [
-                {
-                  tradeId: 'trade-1',
-                  role: 'taker',
-                  fillAmountSubunits: request.amountSubunits,
-                  deadline: '2026-05-21T00:01:00.000Z',
-                },
-              ],
+              status: 'resting',
+              remainingAmountSubunits: 10_000,
+              fills: [],
+              pendingPubkeySubmissions: [],
+              baseAsset: 'sat',
+              divisibility: 10_000,
+              activeSettlementGroup: null,
             }
-          },
-          async submitEphemeralPubkey(tradeId, pubkey, conditionId) {
-            submittedPubkeys.push({ tradeId, pubkey, conditionId })
-            return { tradeId, role: 'taker', bothReceived: false }
           },
           async getOrderStatus() {
             return null
@@ -1281,17 +1293,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               capturedOptions = options
               return engine
             },
-            generateEphemeralKeypair: () => ({
-              privateKeyHex: '11'.repeat(32),
-              publicKeyHex: '034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa',
+            prepareSettlementCapability: prepareSettlementCapability('order-1', (input) => {
+              capturedPreparation = input
             }),
-            tradeRuntime: {
-              async start(state) {
-                runtimeStartOrderIds = Object.keys(state.orders)
-                return { orders: [], trades: [] }
-              },
-              async stop() {},
-            },
           },
         )
 
@@ -1301,43 +1305,42 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           nostrSecretKeyHex: secrets.nostrSecretKeyHex,
         })
         assert.deepEqual(capturedRequest, {
+          settlementCapability: {
+            artifactId: '00000000-0000-4000-8000-000000000001',
+            bindingDigest: 'ab'.repeat(32),
+          },
+          comment: null,
+        })
+        assert.match(
+          (capturedPreparation as unknown as { clientOrderId: string }).clientOrderId,
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        )
+        assert.deepEqual(capturedPreparation, {
+          clientOrderId: (capturedPreparation as unknown as { clientOrderId: string })
+            .clientOrderId,
+          marketId: 'cond-YES',
+          conditionId: 'cond',
           outcomeId: 'YES',
           tokenSide: 'Outcome',
           side: 'Buy',
           price: 4_200,
           amountSubunits: 10_000,
+          baseAsset: 'sat',
+          collateralUnit: 'msat',
+          divisibility: 10_000,
           timeInForce: 'GTC',
-          clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
+          expiresAt: null,
+          mintUrl: 'https://mint-a.example',
+          walletSeedHex: secrets.walletSeedHex,
         })
-        assert.match(
-          (capturedRequest as { clientOrderId: string }).clientOrderId,
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-        )
-        assert.deepEqual(submittedPubkeys, [
-          {
-            tradeId: 'trade-1',
-            pubkey: '034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa',
-            conditionId: 'cond',
-          },
-        ])
 
         const state = await readState()
         assert.equal(
           state?.orders['order-1']?.clientOrderId,
-          (capturedRequest as { clientOrderId: string }).clientOrderId,
+          (capturedPreparation as unknown as { clientOrderId: string }).clientOrderId,
         )
-        assert.equal(state?.swaps['trade-1']?.step, 'awaiting-trade-created')
-        assert.deepEqual(runtimeStartOrderIds, ['order-1'])
-
-        const updatedSecrets = await readSecrets()
-        assert.deepEqual(updatedSecrets?.orderEphemeralKeys['trade-1'], {
-          orderId: 'order-1',
-          tradeId: 'trade-1',
-          marketId: 'cond-YES',
-          privateKeyHex: '11'.repeat(32),
-          publicKeyHex: '034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa',
-          createdAt: updatedSecrets.orderEphemeralKeys['trade-1'].createdAt,
-        })
+        assert.deepEqual(state?.swaps, {})
+        assert.deepEqual((await readSecrets())?.orderEphemeralKeys, {})
       },
     )
 
@@ -1346,6 +1349,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       async () => {
         await writeState(backedDaemonState('cond', 1_000_000))
         let capturedRequest: unknown = null
+        let capturedPreparation: PrepareSettlementCapabilityInput | null = null
         const engine: EngineClientLike = {
           ...scoreDisabledEngineMethods,
           async submitOrder(_marketId, request) {
@@ -1353,8 +1357,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             return {
               orderId: 'order-d1000000',
               status: 'resting',
-              remainingAmountSubunits: request.amountSubunits,
+              remainingAmountSubunits: 1_000_000,
               fills: [],
+              pendingPubkeySubmissions: [],
+              baseAsset: 'sat',
+              divisibility: 1_000_000,
+              activeSettlementGroup: null,
             }
           },
           async getOrderStatus() {
@@ -1390,32 +1398,27 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             createEngineClient() {
               return engine
             },
-            generateEphemeralKeypair: () => ({
-              privateKeyHex: '55'.repeat(32),
-              publicKeyHex: `02${'66'.repeat(32)}`,
+            prepareSettlementCapability: prepareSettlementCapability('order-d1000000', (input) => {
+              capturedPreparation = input
             }),
-            tradeRuntime: {
-              async start() {
-                return { orders: [], trades: [] }
-              },
-              async stop() {},
-            },
           },
         )
 
         assert.equal(response.ok, true, response.error)
         assert.deepEqual(capturedRequest, {
-          outcomeId: 'YES',
-          tokenSide: 'Outcome',
-          side: 'Buy',
-          price: 500_000,
-          amountSubunits: 1_000_000,
-          timeInForce: 'GTC',
-          clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
+          settlementCapability: {
+            artifactId: '00000000-0000-4000-8000-000000000001',
+            bindingDigest: 'ab'.repeat(32),
+          },
+          comment: null,
         })
-        assert.match(
-          (capturedRequest as { clientOrderId: string }).clientOrderId,
-          /^[0-9a-f-]{36}$/i,
+        assert.equal(
+          (capturedPreparation as unknown as PrepareSettlementCapabilityInput).divisibility,
+          1_000_000,
+        )
+        assert.equal(
+          (capturedPreparation as unknown as PrepareSettlementCapabilityInput).price,
+          500_000,
         )
       },
     )
@@ -1489,6 +1492,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
       await writeState(state)
       let capturedRequest: unknown = null
+      let capturedPreparation: PrepareSettlementCapabilityInput | null = null
       const engine: EngineClientLike = {
         ...scoreDisabledEngineMethods,
         async submitOrder(_marketId, request) {
@@ -1496,8 +1500,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           return {
             orderId: 'order-backed',
             status: 'resting',
-            remainingAmountSubunits: request.amountSubunits,
+            remainingAmountSubunits: 2_000_000,
             fills: [],
+            pendingPubkeySubmissions: [],
+            baseAsset: 'sat',
+            divisibility: 1_000_000,
+            activeSettlementGroup: null,
           }
         },
         async getOrderStatus() {
@@ -1531,20 +1539,29 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         },
         {
           createEngineClient: () => engine,
-          generateEphemeralKeypair: () => ({
-            privateKeyHex: '77'.repeat(32),
-            publicKeyHex: `02${'88'.repeat(32)}`,
+          prepareSettlementCapability: prepareSettlementCapability('order-backed', (input) => {
+            capturedPreparation = input
           }),
         },
       )
 
       assert.equal(response.ok, true)
-      assert.equal((capturedRequest as { amountSubunits?: number }).amountSubunits, 2_000_000)
+      assert.deepEqual(capturedRequest, {
+        settlementCapability: {
+          artifactId: '00000000-0000-4000-8000-000000000001',
+          bindingDigest: 'ab'.repeat(32),
+        },
+        comment: null,
+      })
+      assert.equal(
+        (capturedPreparation as unknown as PrepareSettlementCapabilityInput).amountSubunits,
+        2_000_000,
+      )
       assert.equal((await readState())?.orders['order-backed']?.orderId, 'order-backed')
     })
 
     await t.test(
-      'order.submit starts runtime with complement order subscription state',
+      'order.submit binds complement intent and starts its lifecycle runtime',
       async () => {
         const priorState = await readState()
         await writeState(backedDaemonState())
@@ -1555,8 +1572,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               return {
                 orderId: 'order-complement',
                 status: 'resting',
-                remainingAmountSubunits: request.amountSubunits,
+                remainingAmountSubunits: 10_000,
                 fills: [],
+                pendingPubkeySubmissions: [],
+                baseAsset: 'sat',
+                divisibility: 10_000,
+                activeSettlementGroup: null,
               }
             },
             async getOrderStatus() {
@@ -1572,13 +1593,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               throw new Error('queryMarkets unused')
             },
           }
-          let runtimeOrder:
-            | {
-                marketId: string
-                tokenSide?: 'Outcome' | 'Complement'
-                orderId: string
-              }
-            | undefined
+          let preparedTokenSide: 'Outcome' | 'Complement' | undefined
+          let runtimeStarted = false
 
           const response = await dispatch(
             {
@@ -1597,13 +1613,15 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               createEngineClient() {
                 return engine
               },
-              generateEphemeralKeypair: () => ({
-                privateKeyHex: '33'.repeat(32),
-                publicKeyHex: `02${'44'.repeat(32)}`,
-              }),
+              prepareSettlementCapability: prepareSettlementCapability(
+                'order-complement',
+                (input) => {
+                  preparedTokenSide = input.tokenSide
+                },
+              ),
               tradeRuntime: {
-                async start(state) {
-                  runtimeOrder = state.orders['order-complement']
+                async start() {
+                  runtimeStarted = true
                   return { orders: [], trades: [] }
                 },
                 async stop() {},
@@ -1612,9 +1630,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           )
 
           assert.equal(response.ok, true, response.error)
-          assert.equal(runtimeOrder?.orderId, 'order-complement')
-          assert.equal(runtimeOrder?.marketId, 'cond-YES')
-          assert.equal(runtimeOrder?.tokenSide, 'Complement')
+          assert.equal(preparedTokenSide, 'Complement')
+          assert.equal(runtimeStarted, true)
+          assert.equal((await readState())?.orders['order-complement']?.tokenSide, 'Complement')
         } finally {
           if (priorState) await writeState(priorState)
         }
@@ -1648,6 +1666,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         },
       }
 
+      let markedRejected = false
       const response = await dispatch(
         {
           method: 'order.submit',
@@ -1664,10 +1683,13 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           createEngineClient() {
             return engine
           },
-          generateEphemeralKeypair: () => ({
-            privateKeyHex: '11'.repeat(32),
-            publicKeyHex: `02${'22'.repeat(32)}`,
-          }),
+          prepareSettlementCapability: prepareSettlementCapability(
+            'order-rejected',
+            undefined,
+            () => {
+              markedRejected = true
+            },
+          ),
         },
       )
 
@@ -1677,9 +1699,139 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         response.error,
         'OutcomeId must match the primitive outcome segment of marketId.',
       )
+      assert.equal(markedRejected, true)
       assert.deepEqual((await readState())?.orders, {})
       if (priorState) await writeState(priorState)
     })
+
+    await t.test(
+      'order.submit retains a prepared capability after a retryable rejection',
+      async () => {
+        const priorState = await readState()
+        await writeState(backedDaemonState())
+        let markedRejected = false
+        let recoveryTriggers = 0
+        const engine: EngineClientLike = {
+          ...scoreDisabledEngineMethods,
+          async submitOrder() {
+            throw new EngineClientError(
+              429,
+              '{"code":"RateLimited","detail":"Retry later."}',
+              'RateLimited',
+              'Retry later.',
+            )
+          },
+          async getOrderStatus() {
+            return null
+          },
+          async cancelOrder() {
+            throw new Error('cancelOrder unused')
+          },
+          async getOrderBook() {
+            throw new Error('getOrderBook unused')
+          },
+          async queryMarkets() {
+            return { markets: [], nextCursor: null }
+          },
+        }
+
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: {
+              marketId: 'cond-Bob',
+              outcomeId: 'Bob',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 10_000,
+              timeInForce: 'GTC',
+            },
+          },
+          {
+            createEngineClient: () => engine,
+            prepareSettlementCapability: prepareSettlementCapability(
+              'order-retryable',
+              undefined,
+              () => {
+                markedRejected = true
+              },
+            ),
+            triggerSettlementRecovery: () => {
+              recoveryTriggers += 1
+            },
+          },
+        )
+
+        assert.equal(response.ok, false)
+        assert.equal(response.code, 'RateLimited')
+        assert.equal(markedRejected, false)
+        assert.equal(recoveryTriggers, 1)
+        assert.deepEqual((await readState())?.orders, {})
+        if (priorState) await writeState(priorState)
+      },
+    )
+
+    await t.test(
+      'order.submit checks combined order and Score backing before spending either',
+      async () => {
+        const priorState = await readState()
+        const state = emptyDaemonState()
+        state.wallet.proofs.push(
+          proofRecord(
+            'https://mint-a.example',
+            6,
+            'available',
+            { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+            'joint-backing-proof',
+          ),
+        )
+        await writeState(state)
+        let scorePayments = 0
+        let preparations = 0
+        try {
+          const response = await dispatch(
+            {
+              method: 'order.submit',
+              params: {
+                marketId: 'cond-YES',
+                outcomeId: 'YES',
+                side: 'Buy',
+                price: 4_200,
+                amountSubunits: 10_000,
+                timeInForce: 'GTC',
+              },
+            },
+            {
+              createEngineClient: () => ({
+                ...scoreDisabledEngineMethods,
+                getMarket: async (conditionId) => ({
+                  conditionId,
+                  baseAsset: 'sat',
+                  divisibility: 10_000,
+                }),
+                getParticipationScore: async () =>
+                  scoreResponse({ balance: -1, matchDebitScore: 1 }),
+                payParticipationScoreEcash: async () => {
+                  scorePayments += 1
+                  throw new Error('Score payment must not start')
+                },
+              }),
+              prepareSettlementCapability: prepareSettlementCapability('unused', () => {
+                preparations += 1
+              }),
+            },
+          )
+
+          assert.equal(response.ok, false)
+          assert.match(response.error, /insufficient combined backing/)
+          assert.equal(scorePayments, 0)
+          assert.equal(preparations, 0)
+          assert.equal((await readState())?.wallet.proofs[0]?.proof.secret, 'joint-backing-proof')
+        } finally {
+          if (priorState) await writeState(priorState)
+        }
+      },
+    )
 
     await t.test(
       'order.submit pays missing Participation Score from wallet sats before submitting',
@@ -1725,8 +1877,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               return {
                 orderId: 'order-score',
                 status: 'resting',
-                remainingAmountSubunits: request.amountSubunits,
+                remainingAmountSubunits: 10_000,
                 fills: [],
+                pendingPubkeySubmissions: [],
+                baseAsset: 'sat',
+                divisibility: 10_000,
+                activeSettlementGroup: null,
               }
             },
             async getOrderStatus() {
@@ -1776,15 +1932,14 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                   },
                 })
               },
-              generateEphemeralKeypair: () => ({
-                privateKeyHex: '55'.repeat(32),
-                publicKeyHex: `02${'55'.repeat(32)}`,
+              prepareSettlementCapability: prepareSettlementCapability('order-score', () => {
+                calls.push('prepare-capability')
               }),
             },
           )
 
           assert.equal(response.ok, true, response.error)
-          assert.deepEqual(calls, ['score', 'pay-score', 'submit'])
+          assert.deepEqual(calls, ['score', 'pay-score', 'prepare-capability', 'submit'])
           assert.equal(capturedPayment?.amountSats, 2)
           assert.match(capturedPayment?.token ?? '', /^cashu/)
           assert.match(capturedPayment?.paymentId ?? '', /^[0-9a-f-]{36}$/)
@@ -1869,7 +2024,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               timeInForce: 'GTC',
             },
           ]) {
-            let generatedEphemeral = false
+            let prepareCalls = 0
             let submitCalls = 0
             let startedRuntime = false
 
@@ -1900,10 +2055,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                     },
                   }
                 },
-                generateEphemeralKeypair: () => {
-                  generatedEphemeral = true
-                  throw new Error('generateEphemeralKeypair unused')
-                },
+                prepareSettlementCapability: prepareSettlementCapability('unused', () => {
+                  prepareCalls += 1
+                }),
                 tradeRuntime: {
                   async start() {
                     startedRuntime = true
@@ -1916,7 +2070,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
 
             assert.equal(response.ok, false)
             assert.match(response.error ?? '', /Order rejected:/)
-            assert.equal(generatedEphemeral, false)
+            assert.equal(prepareCalls, 0)
             assert.equal(submitCalls, 0)
             assert.equal(startedRuntime, false)
             assert.deepEqual((await readState())?.orders, {})
@@ -2194,76 +2348,78 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
     })
 
-    await t.test(
-      'order.submit remains successful when trade runtime start fails after persistence',
-      async () => {
-        await writeState(backedDaemonState())
-        const engine: EngineClientLike = {
-          ...scoreDisabledEngineMethods,
-          async submitOrder(_marketId, request) {
-            return {
-              orderId: 'order-runtime-fail',
-              status: 'resting',
-              remainingAmountSubunits: request.amountSubunits,
-              fills: [],
-            }
-          },
-          async getOrderStatus() {
-            return null
-          },
-          async cancelOrder() {
-            throw new Error('cancelOrder unused')
-          },
-          async getOrderBook() {
-            throw new Error('getOrderBook unused')
-          },
-          async queryMarkets() {
-            return { markets: [], nextCursor: null }
-          },
-        }
+    await t.test('order.submit starts the order lifecycle runtime after persistence', async () => {
+      await writeState(backedDaemonState())
+      let runtimeStarted = false
+      const engine: EngineClientLike = {
+        ...scoreDisabledEngineMethods,
+        async submitOrder(_marketId, request) {
+          return {
+            orderId: 'order-runtime-fail',
+            status: 'resting',
+            remainingAmountSubunits: 10_000,
+            fills: [],
+            pendingPubkeySubmissions: [],
+            baseAsset: 'sat',
+            divisibility: 10_000,
+            activeSettlementGroup: null,
+          }
+        },
+        async getOrderStatus() {
+          return null
+        },
+        async cancelOrder() {
+          throw new Error('cancelOrder unused')
+        },
+        async getOrderBook() {
+          throw new Error('getOrderBook unused')
+        },
+        async queryMarkets() {
+          return { markets: [], nextCursor: null }
+        },
+      }
 
-        const response = await dispatch(
-          {
-            method: 'order.submit',
-            params: {
-              marketId: 'cond-YES',
-              outcomeId: 'YES',
-              side: 'Buy',
-              price: 4_200,
-              amountSubunits: 10_000,
-              timeInForce: 'GTC',
-            },
+      const response = await dispatch(
+        {
+          method: 'order.submit',
+          params: {
+            marketId: 'cond-YES',
+            outcomeId: 'YES',
+            side: 'Buy',
+            price: 4_200,
+            amountSubunits: 10_000,
+            timeInForce: 'GTC',
           },
-          {
-            createEngineClient() {
-              return engine
-            },
-            generateEphemeralKeypair: () => ({
-              privateKeyHex: '33'.repeat(32),
-              publicKeyHex: `02${'33'.repeat(32)}`,
-            }),
-            tradeRuntime: {
-              async start() {
-                throw new Error('TradeHub unavailable')
-              },
-              async stop() {},
-            },
+        },
+        {
+          createEngineClient() {
+            return engine
           },
-        )
+          prepareSettlementCapability: prepareSettlementCapability('order-runtime-fail'),
+          tradeRuntime: {
+            async start() {
+              runtimeStarted = true
+              return { orders: [], trades: [] }
+            },
+            async stop() {},
+          },
+        },
+      )
 
-        assert.equal(response.ok, true)
-        const state = await readState()
-        assert.equal(state?.orders['order-runtime-fail']?.status, 'resting')
-        const updatedSecrets = await readSecrets()
-        assert.equal(updatedSecrets?.orderEphemeralKeys['order-runtime-fail'], undefined)
-      },
-    )
+      assert.equal(response.ok, true)
+      const state = await readState()
+      assert.equal(state?.orders['order-runtime-fail']?.status, 'resting')
+      assert.equal(runtimeStarted, true)
+      const updatedSecrets = await readSecrets()
+      assert.equal(updatedSecrets?.orderEphemeralKeys['order-runtime-fail'], undefined)
+    })
 
     await t.test(
       'order.submit accepts direct sell flow after same-outcome CTF swaps are supported',
       async () => {
         await writeState(backedDaemonState())
         let capturedRequest: unknown = null
+        let capturedPreparation: PrepareSettlementCapabilityInput | null = null
 
         const response = await dispatch(
           {
@@ -2286,8 +2442,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                   return {
                     orderId: 'order-direct-sell',
                     status: 'resting',
-                    remainingAmountSubunits: request.amountSubunits,
+                    remainingAmountSubunits: 10_000,
                     fills: [],
+                    pendingPubkeySubmissions: [],
+                    baseAsset: 'sat',
+                    divisibility: 10_000,
+                    activeSettlementGroup: null,
                   }
                 },
                 async getOrderStatus() {
@@ -2304,32 +2464,26 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 },
               }
             },
-            generateEphemeralKeypair: () => ({
-              privateKeyHex: '44'.repeat(32),
-              publicKeyHex: `02${'44'.repeat(32)}`,
-            }),
-            tradeRuntime: {
-              async start() {
-                return { orders: [], trades: [] }
+            prepareSettlementCapability: prepareSettlementCapability(
+              'order-direct-sell',
+              (input) => {
+                capturedPreparation = input
               },
-              async stop() {},
-            },
+            ),
           },
         )
 
         assert.equal(response.ok, true)
         assert.deepEqual(capturedRequest, {
-          outcomeId: 'YES',
-          tokenSide: 'Outcome',
-          side: 'Sell',
-          price: 4_200,
-          amountSubunits: 10_000,
-          timeInForce: 'GTC',
-          clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
+          settlementCapability: {
+            artifactId: '00000000-0000-4000-8000-000000000001',
+            bindingDigest: 'ab'.repeat(32),
+          },
+          comment: null,
         })
-        assert.match(
-          (capturedRequest as { clientOrderId: string }).clientOrderId,
-          /^[0-9a-f-]{36}$/i,
+        assert.equal(
+          (capturedPreparation as unknown as PrepareSettlementCapabilityInput).side,
+          'Sell',
         )
         assert.equal((await readState())?.orders['order-direct-sell']?.status, 'resting')
         assert.equal((await readSecrets())?.orderEphemeralKeys['order-direct-sell'], undefined)
@@ -2429,6 +2583,37 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await rm(home, { recursive: true, force: true })
   }
 })
+
+function prepareSettlementCapability(
+  orderId: string,
+  onPrepare?: (input: PrepareSettlementCapabilityInput) => void,
+  onRejected?: () => void,
+) {
+  return async (input: PrepareSettlementCapabilityInput) => {
+    onPrepare?.(input)
+    return {
+      operationId: `range:${input.clientOrderId}`,
+      markSubmitted: async () => undefined,
+      markRejected: async () => onRejected?.(),
+      consolidation: { operationIds: [], feeSubunits: 0 },
+      capability: {
+        reference: {
+          artifactId: '00000000-0000-4000-8000-000000000001',
+          bindingDigest: 'ab'.repeat(32),
+        },
+        orderId,
+        clientOrderId: input.clientOrderId,
+        marketId: input.marketId,
+        artifactDigest: 'cd'.repeat(32),
+        state: 'bound' as const,
+        version: 1,
+        authorizationExpiresAt: '2026-08-01T00:00:00.000Z',
+        stageExpiresAt: '2026-07-31T23:59:00.000Z',
+        settlementGroup: null,
+      },
+    }
+  }
+}
 
 function proofRecord(
   mintUrl: string,
@@ -2557,6 +2742,15 @@ function tokenImportKeysetResolver(registry: 'regular' | 'conditional', unit: 's
     conditionalKeysets:
       registry === 'conditional' ? [{ keysetId: '009a1f293253e41e', unit, active: true }] : [],
   })
+}
+
+async function profileFileSnapshot(directory: string): Promise<Array<[string, Buffer]>> {
+  const entries = await readdir(directory, { withFileTypes: true })
+  const files = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort()
+  return Promise.all(files.map(async (file) => [file, await readFile(join(directory, file))]))
 }
 
 function concurrentSendWallet(selectedSecrets: string[]) {

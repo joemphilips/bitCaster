@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
 import {
+  Amount,
   OutputData,
   createBlindSignature,
   createCtfAuthorizationOutputs,
@@ -22,6 +23,7 @@ import {
   buildDurableCtfRangeRecoveryQuery,
   createDurableCtfRangeCustodyBinding,
   createDurableCtfRangeOperation,
+  createDurableCtfRangeRefundOperation,
   createDurableCtfRangeResultEnvelope,
   deriveRootCtfOutcomeCollectionId,
   toDurableCtfRangeProofOperationInput,
@@ -44,7 +46,15 @@ import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { DurableCustodyTransactionSqlite } from '../src/durableCustodyTransactionSqlite.ts'
 import { DaemonCtfRangeCoordinator } from '../src/ctfRangeCoordinator.ts'
 import { loadDaemonDurableCtfRangeAuthority } from '../src/durableCtfRangeSqlite.ts'
+import {
+  CTF_RANGE_REFUND_PURPOSE,
+  emptyDaemonState,
+  prepareCtfRangeRefundProofOperationFromDatabase,
+  writeDaemonStateToDatabase,
+  type CashuProofRecord,
+} from '../src/state.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
+import { serializeOutputDataArray } from '../src/walletOps.ts'
 
 const CONDITION_ID = 'ab'.repeat(32)
 const ROOT_PARENT = '0'.repeat(64)
@@ -313,6 +323,91 @@ test('daemon range coordinator binds exactly across before/after-commit restart 
   }
 })
 
+test('daemon range coordinator atomically transfers its prepared source across restart', async () => {
+  const fixture = await createProfile()
+  try {
+    const operation = createRangeOperation()
+    const binding = await createRangeBinding(walletScope(fixture.walletScopeId), operation)
+    const custodyOperationId = binding.record.operation.operationId
+    const fence = await claimCustodyScopeLease(fixture.directory, {
+      scopeId: fixture.walletScopeId,
+      incarnationId: 'range-coordinator-source',
+      observedAtMs: 2,
+    })
+    await seedPreparedRangeSource(fixture.directory, operation)
+    const coordinator = new DaemonCtfRangeCoordinator(fixture.directory, fence)
+    const beforeRollback = await readDatabaseFingerprint(fixture.directory)
+
+    await assert.rejects(
+      () =>
+        coordinator.bindPreparedSource({
+          binding,
+          proofStateClient: unspentProofStateClient(),
+          observedAtMs: 3,
+          injectFault: (phase) => {
+            if (phase === 'before-commit') throw new Error('injected source transfer rollback')
+          },
+        }),
+      /injected source transfer rollback/,
+    )
+    assert.equal(
+      isDeepStrictEqual(await readDatabaseFingerprint(fixture.directory), beforeRollback),
+      true,
+      'source rollback must preserve target inventory and custody byte-for-byte',
+    )
+
+    await assert.rejects(
+      () =>
+        coordinator.bindPreparedSource({
+          binding,
+          proofStateClient: unspentProofStateClient(),
+          observedAtMs: 4,
+          injectFault: (phase) => {
+            if (phase === 'after-commit') throw new Error('injected source acknowledgement loss')
+          },
+        }),
+      /injected source acknowledgement loss/,
+    )
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      const reserved = database
+        .prepare(
+          `SELECT count(*) AS count FROM target_wallet_proofs
+           WHERE scope_id = ? AND reserved_by = ?`,
+        )
+        .get(fixture.walletScopeId, sourceReservationId(operation)) as { count: number }
+      assert.equal(reserved.count, 0)
+      assert.ok(
+        loadDaemonDurableCtfRangeAuthority(
+          new DurableCustodySqliteStore(database),
+          custodyOperationId,
+        ),
+      )
+    } finally {
+      database.close()
+    }
+
+    const restarted = new DaemonCtfRangeCoordinator(fixture.directory, fence)
+    const beforeReplay = await readDatabaseFingerprint(fixture.directory)
+    await restarted.bindPreparedSource({
+      binding,
+      proofStateClient: {
+        check: async () => {
+          throw new Error('NUT-07 must not run after durable source transfer')
+        },
+      },
+      observedAtMs: 5,
+    })
+    assert.equal(
+      isDeepStrictEqual(await readDatabaseFingerprint(fixture.directory), beforeReplay),
+      true,
+      'source transfer replay must be read-only',
+    )
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
 test('daemon range coordinator stages and applies the exact result across crash boundaries', async () => {
   const fixture = await createProfile()
   try {
@@ -518,6 +613,48 @@ test('daemon range coordinator stages and applies the exact result across crash 
         assert.equal(predecessor?.selectability, 'spent')
         assert.equal(predecessor?.reservationOperationId, null)
       }
+      const successorProofIds =
+        applied?.record.operation.proofStorage.lineage.successorAdmission?.proofRows.map(
+          ({ proofId }) => proofId,
+        ) ?? []
+      assert.equal(successorProofIds.length, 2)
+      for (const proofId of successorProofIds) {
+        const successor = new DurableCustodySqliteStore(appliedDatabase).getProof(
+          fixture.walletScopeId,
+          proofId,
+        )
+        assert.equal(successor?.nut07State, 'UNSPENT')
+        assert.equal(successor?.selectability, 'retained')
+        assert.equal(successor?.reservationOperationId, null)
+      }
+      const walletProofs = appliedDatabase
+        .prepare(
+          `SELECT state, asset_kind AS assetKind, base_asset AS baseAsset, unit,
+             condition_id AS conditionId, outcome_set_id AS outcomeSetId
+           FROM target_wallet_proofs
+           WHERE scope_id = ?
+           ORDER BY asset_kind`,
+        )
+        .all(fixture.walletScopeId)
+        .map((row) => ({ ...row }))
+      assert.deepEqual(walletProofs, [
+        {
+          state: 'available',
+          assetKind: 'outcome',
+          baseAsset: 'sat',
+          unit: 'msat',
+          conditionId: CONDITION_ID,
+          outcomeSetId: OUTCOME_COLLECTION,
+        },
+        {
+          state: 'available',
+          assetKind: 'sats',
+          baseAsset: 'sat',
+          unit: 'msat',
+          conditionId: null,
+          outcomeSetId: null,
+        },
+      ])
       const reservationCount = appliedDatabase
         .prepare(
           `SELECT count(*) AS count FROM custody_proof_reservations
@@ -577,7 +714,7 @@ test('daemon range coordinator stages and applies the exact result across crash 
   }
 })
 
-test('daemon range recovery classification remains bounded and preserves nonterminal authority', async () => {
+test('daemon range recovery remains bounded and stages confirmed mint recovery atomically', async () => {
   const fixture = await createProfile()
   try {
     const operation = createRangeOperation()
@@ -664,6 +801,207 @@ test('daemon range recovery classification remains bounded and preserves nonterm
     assert.equal(retained?.record.operation.result.state, 'none')
     assert.equal(retained?.record.operation.reservation.inputs.length, operation.inputs.length)
     assert.ok(retained?.record.operation.privateMaterial.exactPrivateMaterial)
+
+    const selection = createCtfSelectionBitmap(operation.manifest.entries.length, [1, 3])
+    const confirmedObservation = {
+      ...recoveryFor(operation, selection),
+      selection: null,
+      inputStates: inputStates.map((state) => ({ ...state, state: 'SPENT' as const })),
+      now: operation.expiry,
+    }
+    await assert.rejects(
+      () =>
+        coordinator.stageRecovered({
+          custodyOperationId,
+          observation: confirmedObservation,
+          resolveKeyset: rangeKeysetResolver(operation),
+          observedAtMs: 4,
+          injectFault: (phase) => {
+            if (phase === 'before-commit') throw new Error('injected recovered stage rollback')
+          },
+        }),
+      /injected recovered stage rollback/,
+    )
+    assert.equal(
+      (await coordinator.load(custodyOperationId))?.record.operation.result.state,
+      'none',
+    )
+    await assert.rejects(
+      () =>
+        coordinator.stageRecovered({
+          custodyOperationId,
+          observation: confirmedObservation,
+          resolveKeyset: rangeKeysetResolver(operation),
+          observedAtMs: 5,
+          injectFault: (phase) => {
+            if (phase === 'after-commit') {
+              throw new Error('injected recovered stage acknowledgement loss')
+            }
+          },
+        }),
+      /injected recovered stage acknowledgement loss/,
+    )
+    const restarted = new DaemonCtfRangeCoordinator(fixture.directory, fence)
+    assert.equal(
+      (await restarted.load(custodyOperationId))?.record.operation.result.state,
+      'verified-staged',
+    )
+    const applied = await restarted.applyStaged({
+      custodyOperationId,
+      resolveKeyset: rangeKeysetResolver(operation),
+      observedAtMs: 6,
+    })
+    assert.equal(applied.operation.result.state, 'applied')
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('daemon range refund completion is atomic and replay-safe across commit faults', async () => {
+  const fixture = await createProfile()
+  try {
+    const operation = createRangeOperation()
+    const binding = await createRangeBinding(walletScope(fixture.walletScopeId), operation)
+    const custodyOperationId = binding.record.operation.operationId
+    const fence = await claimCustodyScopeLease(fixture.directory, {
+      scopeId: fixture.walletScopeId,
+      incarnationId: 'range-coordinator-refund',
+      observedAtMs: 2,
+    })
+    await seedInputProofs(fixture.directory, fence, operation, binding)
+    const coordinator = new DaemonCtfRangeCoordinator(fixture.directory, fence)
+    await coordinator.bind({
+      binding,
+      proofStateClient: unspentProofStateClient(),
+      observedAtMs: 3,
+    })
+
+    const refundOperationId = 'daemon-range-refund-1'
+    const refundOutputs = OutputData.createRandomData(Amount.from(3), {
+      id: OFFER_KEYSET_ID,
+      keys: MINT_KEYS,
+    })
+    const prepared = createDurableCtfRangeRefundOperation({
+      operationId: refundOperationId,
+      source: operation,
+      refundKeysetId: OFFER_KEYSET_ID,
+      resolveKeysetAsset: (id) => (id === OFFER_KEYSET_ID ? operation.offerAsset : undefined),
+      outputs: refundOutputs.map(OutputData.serialize),
+    })
+    await withDurableCustodyUnitOfWork(fixture.directory, fence, 4, (database) => {
+      prepareCtfRangeRefundProofOperationFromDatabase(
+        database,
+        {
+          operationId: refundOperationId,
+          kind: 'swap-refund',
+          mintUrl: operation.mintUrl,
+          inputs: prepared.request.inputs,
+          outputs: { refund: serializeOutputDataArray(refundOutputs) },
+          metadata: {
+            ...prepared.operation.metadata,
+            purpose: CTF_RANGE_REFUND_PURPOSE,
+            rangeOperationId: operation.operationId,
+            custodyOperationId,
+            refundKeysetId: OFFER_KEYSET_ID,
+          },
+        },
+        4,
+      )
+    })
+    const refundProofs = refundOutputs.map(signOutput)
+    const refundAsset = { kind: 'sats', baseAsset: 'sat', unit: 'msat' } as const
+    const beforeRollback = await readDatabaseFingerprint(fixture.directory)
+
+    await assert.rejects(
+      () =>
+        coordinator.completeRefund({
+          custodyOperationId,
+          refundOperationId,
+          refundProofs,
+          refundAsset,
+          observedAtMs: 5,
+          injectFault: (phase) => {
+            if (phase === 'before-commit') throw new Error('injected refund completion rollback')
+          },
+        }),
+      /injected refund completion rollback/,
+    )
+    assert.equal(
+      isDeepStrictEqual(await readDatabaseFingerprint(fixture.directory), beforeRollback),
+      true,
+      'refund rollback must preserve the exact source, journal, and wallet inventory',
+    )
+
+    await assert.rejects(
+      () =>
+        coordinator.completeRefund({
+          custodyOperationId,
+          refundOperationId,
+          refundProofs,
+          refundAsset,
+          observedAtMs: 6,
+          injectFault: (phase) => {
+            if (phase === 'after-commit') {
+              throw new Error('injected refund completion acknowledgement loss')
+            }
+          },
+        }),
+      /injected refund completion acknowledgement loss/,
+    )
+    const restarted = new DaemonCtfRangeCoordinator(fixture.directory, fence)
+    const committed = await restarted.load(custodyOperationId)
+    assert.equal(committed?.record.operation.state, 'aborted')
+    assert.equal(committed?.record.operation.result.state, 'none')
+    const committedDatabase = await openDaemonStateSqlite(fixture.directory)
+    try {
+      const refundJournal = committedDatabase
+        .prepare(
+          `SELECT state FROM target_proof_operations
+           WHERE scope_id = ? AND operation_id = ?`,
+        )
+        .get(fixture.walletScopeId, refundOperationId) as { state: string }
+      assert.equal(refundJournal.state, 'completed')
+      const walletRefunds = committedDatabase
+        .prepare(
+          `SELECT count(*) AS count FROM target_wallet_proofs
+           WHERE scope_id = ? AND state = 'available'
+             AND asset_kind = 'sats' AND unit = 'msat'`,
+        )
+        .get(fixture.walletScopeId) as { count: number }
+      assert.equal(walletRefunds.count, refundProofs.length)
+      const activeWork = committedDatabase
+        .prepare(
+          `SELECT count(*) AS count FROM custody_active_work
+           WHERE scope_id = ? AND operation_id = ?`,
+        )
+        .get(fixture.walletScopeId, custodyOperationId) as { count: number }
+      assert.equal(activeWork.count, 0)
+      for (const { proofId } of binding.record.operation.reservation.inputs) {
+        const source = new DurableCustodySqliteStore(committedDatabase).getProof(
+          fixture.walletScopeId,
+          proofId,
+        )
+        assert.equal(source?.nut07State, 'SPENT')
+        assert.equal(source?.selectability, 'spent')
+        assert.equal(source?.reservationOperationId, null)
+      }
+    } finally {
+      committedDatabase.close()
+    }
+
+    const beforeReplay = await readDatabaseFingerprint(fixture.directory)
+    await restarted.completeRefund({
+      custodyOperationId,
+      refundOperationId,
+      refundProofs,
+      refundAsset,
+      observedAtMs: 7,
+    })
+    assert.equal(
+      isDeepStrictEqual(await readDatabaseFingerprint(fixture.directory), beforeReplay),
+      true,
+      'exact refund completion replay must be read-only',
+    )
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })
   }
@@ -976,6 +1314,65 @@ async function seedInputProofs(
   })
 }
 
+async function seedPreparedRangeSource(
+  directory: string,
+  operation: DurableCtfRangeOperation,
+): Promise<void> {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const state = emptyDaemonState()
+    const reservationId = sourceReservationId(operation)
+    const proofs = operation.inputs.map(toCashuProofRecord)
+    const now = new Date(2).toISOString()
+    state.wallet.proofs = proofs.map((proof) => ({
+      proof,
+      mintUrl: operation.mintUrl,
+      state: 'reserved',
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      reservedBy: reservationId,
+      createdAt: now,
+      updatedAt: now,
+    }))
+    state.proofOperations[operation.sourceOperationId] = {
+      operationId: operation.sourceOperationId,
+      kind: 'wallet-send',
+      state: 'completed',
+      mintUrl: operation.mintUrl,
+      inputs: proofs,
+      outputs: {},
+      metadata: {
+        purpose: 'ctf-range-authorization-source',
+        rangeOperationId: operation.operationId,
+        reservationId,
+        unit: operation.unit,
+      },
+      resultProofs: { authorization: proofs, keep: [] },
+      lastError: null,
+      createdAt: 2,
+      updatedAt: 2,
+    }
+    writeDaemonStateToDatabase(database, state)
+  } finally {
+    database.close()
+  }
+}
+
+function sourceReservationId(operation: DurableCtfRangeOperation): string {
+  return `range-source:${operation.operationId}`
+}
+
+function toCashuProofRecord(proof: DurableCtfRangeOperation['inputs'][number]): CashuProofRecord {
+  return {
+    id: proof.id,
+    amount: proof.amount,
+    secret: proof.secret,
+    C: proof.C,
+    ...(proof.dleq === null ? {} : { dleq: structuredClone(proof.dleq) }),
+    ...(proof.p2pkE === null ? {} : { p2pk_e: proof.p2pkE }),
+    ...(proof.witness === null ? {} : { witness: structuredClone(proof.witness) }),
+  }
+}
+
 function unspentProofStateClient() {
   return {
     check: async ({ Ys }: { Ys: string[] }) => ({
@@ -1076,6 +1473,17 @@ async function readRangeLifecycleSnapshot(directory: string, scopeId: string, op
          ORDER BY proof_id`,
       )
       .all(scopeId)
+    const walletProofs = database
+      .prepare(
+        `SELECT proof_id AS proofId, state, reserved_by AS reservedBy,
+           normalized_mint AS normalizedMint, unit, keyset_id AS keysetId,
+           amount, asset_kind AS assetKind, condition_id AS conditionId,
+           outcome_set_id AS outcomeSetId
+         FROM target_wallet_proofs
+         WHERE scope_id = ?
+         ORDER BY proof_id`,
+      )
+      .all(scopeId)
     const lineage = database
       .prepare(
         `SELECT lineage_kind AS lineageKind, lineage_position AS lineagePosition,
@@ -1123,6 +1531,7 @@ async function readRangeLifecycleSnapshot(directory: string, scopeId: string, op
       artifacts,
       artifactLinks,
       proofs,
+      walletProofs,
       lineage,
       selectedSuccessors,
       successorAdmissions,

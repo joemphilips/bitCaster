@@ -11,6 +11,7 @@ import {
 import { assertDaemonProfileStorageComplete, profileDir } from './profile.ts'
 import { createDaemonSecrets, createDaemonSecretsFromImport } from './secrets.ts'
 import { bootstrapFreshDaemonProfile } from './profileBootstrap.ts'
+import type { CtfRangeRecoveryLoop } from './ctfRangeRecoveryLoop.ts'
 
 const MAX_SECRET_HEX_FILE_BYTES = 256
 const SECRET_FILE_READ_CHUNK_BYTES = 128
@@ -54,6 +55,8 @@ switch (command) {
     const { readProfile } = await import('./profile.ts')
     const { readSecrets } = await import('./secrets.ts')
     const { recoverPreparedWalletSends } = await import('./walletOps.ts')
+    const { DaemonCtfRangeOrderCoordinator } = await import('./ctfRangeOrderCoordinator.ts')
+    const { createCtfRangeRecoveryLoop } = await import('./ctfRangeRecoveryLoop.ts')
     const { recoverDaemonWalletFromSeed } = await import('./emergencySeedRecovery.ts')
     const { ensureState, recordSwapMessage, recordTradeCreated, recordTradeStateChanged } =
       await import('./state.ts')
@@ -86,18 +89,37 @@ switch (command) {
       await runLock.release()
       throw error
     }
-    let renewal: NodeJS.Timeout | undefined
+    let renewal: LeaseRenewal | undefined
+    let rangeRecoveryLoop: CtfRangeRecoveryLoop | undefined
+    let leaseFailure: Error | undefined
+    let shutdown: ((reason: string, exitCode?: number) => Promise<void>) | undefined
+    const currentFence = () => {
+      if (leaseFailure !== undefined) throw leaseFailure
+      return fence
+    }
     let resourcesReleased = false
     const releaseResources = async () => {
       if (resourcesReleased) return
       resourcesReleased = true
-      if (renewal) clearInterval(renewal)
+      renewal?.stop()
+      rangeRecoveryLoop?.stop()
       try {
         await releaseCustodyScopeLease(profileDir(), fence, Date.now())
       } finally {
         await runLock.release()
       }
     }
+    renewal = startLeaseRenewal({
+      intervalMs: CUSTODY_SCOPE_RENEW_INTERVAL_MS,
+      renew: async () => {
+        fence = await renewCustodyScopeLease(profileDir(), currentFence(), Date.now())
+      },
+      onFailure: (error) => {
+        leaseFailure = error
+        process.stderr.write(`custody lease renewal failed: ${error.message}\n`)
+        if (shutdown !== undefined) void shutdown('custody lease loss', 1)
+      },
+    })
     let executor: InstanceType<typeof DaemonSwapExecutor> | undefined
     let runtime: InstanceType<typeof DaemonTradeRuntime> | undefined
     const tradeHub =
@@ -151,6 +173,12 @@ switch (command) {
                 conditionIdFromMarketId(marketId),
               )
             },
+            onRangeSettlementChanged: () => {
+              rangeRecoveryLoop?.trigger()
+            },
+            onReconnected: () => {
+              rangeRecoveryLoop?.trigger()
+            },
             onError: (err: Error) => {
               process.stderr.write(`TradeHub event error: ${err.message}\n`)
             },
@@ -190,28 +218,65 @@ switch (command) {
         })
       : undefined
     try {
+      const rangeOrderCoordinator = new DaemonCtfRangeOrderCoordinator(profileDir(), currentFence)
+      const { BitcasterEngineClient } = await import('@bitcaster-market/client-sdk/engineClient')
+      const { signNip98 } = await import('./nostrAuth.ts')
+      const rangeRecoveryClient = new BitcasterEngineClient({
+        baseUrl: profile.engineBaseUrl,
+        authorization: ({ url, method, bodyText, payloadHash }) =>
+          signNip98(
+            { privateKeyHex: secrets.nostrSecretKeyHex },
+            url,
+            method,
+            bodyText,
+            payloadHash,
+          ),
+      })
+      const logRangeRecovery = (result: {
+        readonly recovered: readonly string[]
+        readonly pending: ReadonlyArray<{ readonly operationId: string; readonly error: string }>
+      }) => {
+        if (result.recovered.length > 0) {
+          process.stderr.write(`Recovered range operations: ${result.recovered.join(', ')}\n`)
+        }
+        for (const pending of result.pending) {
+          process.stderr.write(
+            `Range operation ${pending.operationId} remains pending: ${pending.error}\n`,
+          )
+        }
+      }
+      const recoverRangeOrders = () =>
+        rangeOrderCoordinator.recover(secrets.walletSeedHex, rangeRecoveryClient)
+      const initialRangeRecovery = await recoverRangeOrders()
+      logRangeRecovery(initialRangeRecovery)
+      rangeRecoveryLoop = createCtfRangeRecoveryLoop({
+        recover: recoverRangeOrders,
+        onResult: logRangeRecovery,
+        onError: (error: Error) => {
+          process.stderr.write(`Range recovery sweep failed: ${error.message}\n`)
+        },
+      })
+      rangeRecoveryLoop.accept(initialRangeRecovery)
+      currentFence()
       const server = await startDaemonServer({
         tradeRuntime: runtime,
         swapExecutor: executor,
         recoverWalletFromSeed: (input) =>
           recoverDaemonWalletFromSeed(input, {
             directory: profileDir(),
-            getFence: () => fence,
+            getFence: currentFence,
           }),
+        prepareSettlementCapability: (input, client) =>
+          rangeOrderCoordinator.prepare(input, client),
+        triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
       })
-      const shutdown = installShutdownHandlers(server, runtime, releaseResources)
-      renewal = setInterval(() => {
-        void renewCustodyScopeLease(profileDir(), fence, Date.now())
-          .then((next) => {
-            fence = next
-          })
-          .catch((error: unknown) => {
-            const message = error instanceof Error ? error.message : String(error)
-            process.stderr.write(`custody lease renewal failed: ${message}\n`)
-            void shutdown('custody lease loss', 1)
-          })
-      }, CUSTODY_SCOPE_RENEW_INTERVAL_MS)
-      renewal.unref()
+      shutdown = installShutdownHandlers(server, runtime, releaseResources)
+      void runtime?.start(await ensureState()).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+        process.stderr.write(
+          `bitcaster-daemon trade runtime start failed; RPC will remain available: ${message}\n`,
+        )
+      })
     } catch (err) {
       await releaseResources().catch(() => undefined)
       throw err
@@ -373,6 +438,39 @@ function installShutdownHandlers(
   process.once('SIGINT', () => void shutdown('SIGINT'))
   process.once('SIGTERM', () => void shutdown('SIGTERM'))
   return shutdown
+}
+
+interface LeaseRenewal {
+  stop(): void
+}
+
+function startLeaseRenewal(input: {
+  readonly intervalMs: number
+  readonly renew: () => Promise<void>
+  readonly onFailure: (error: Error) => void
+}): LeaseRenewal {
+  let stopped = false
+  let timer: NodeJS.Timeout | undefined
+  const schedule = () => {
+    if (stopped) return
+    timer = setTimeout(() => void tick(), input.intervalMs)
+    timer.unref()
+  }
+  const tick = async () => {
+    try {
+      await input.renew()
+      schedule()
+    } catch (error) {
+      input.onFailure(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+  schedule()
+  return {
+    stop: () => {
+      stopped = true
+      if (timer !== undefined) clearTimeout(timer)
+    },
+  }
 }
 
 function closeServer(server: Server): Promise<void> {

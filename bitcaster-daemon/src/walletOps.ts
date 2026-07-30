@@ -768,7 +768,9 @@ export async function recoverPreparedWalletSends(
   const state = await ensureState()
   const recoverable = Object.values(state.proofOperations).filter(
     (entry) =>
-      (entry.kind === 'wallet-send' && entry.state === 'prepared') ||
+      (entry.kind === 'wallet-send' &&
+        entry.state === 'prepared' &&
+        entry.metadata.purpose !== 'ctf-range-authorization-source') ||
       (entry.kind === 'ctf-consolidation' &&
         (entry.state === 'prepared' ||
           (entry.state === 'completed' &&
@@ -1095,8 +1097,10 @@ function proofCollection(asset: StoredProofAsset): string {
   return asset.kind === 'sats' ? COLLATERAL_COLLECTION : asset.outcomeSetId
 }
 
-function serializeOutputDataArray(
-  outputs: Array<Pick<OutputDataLike, 'blindedMessage' | 'blindingFactor' | 'secret'>>,
+export function serializeOutputDataArray(
+  outputs: Array<
+    Pick<OutputDataLike, 'blindedMessage' | 'blindingFactor' | 'secret' | 'ephemeralE'>
+  >,
 ): StoredOutputData[] {
   return outputs.map((output) => ({
     blindedMessage: {
@@ -1106,10 +1110,11 @@ function serializeOutputDataArray(
     },
     blindingFactor: output.blindingFactor.toString(16),
     secret: bytesToHex(output.secret),
+    ...(output.ephemeralE === undefined ? {} : { ephemeralE: output.ephemeralE }),
   }))
 }
 
-function deserializeOutputGroups(
+export function deserializeOutputGroups(
   groups: Record<string, StoredOutputData[]>,
 ): Record<string, OutputData[]> {
   return Object.fromEntries(
@@ -1124,13 +1129,14 @@ function deserializeOutputGroups(
             },
             BigInt(`0x${output.blindingFactor}`),
             hexToBytes(output.secret),
+            output.ephemeralE,
           ),
       ),
     ]),
   )
 }
 
-async function restoreOutputGroups(
+export async function restoreOutputGroups(
   mintUrl: string,
   outputs: Record<string, StoredOutputData[]>,
 ): Promise<Record<string, Proof[]>> {

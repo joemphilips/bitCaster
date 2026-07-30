@@ -54,6 +54,7 @@ function assertPersistedProofRows(
 ): void {
   const links = record.operation.reservation.inputs
   const predecessor = predecessorDisposition(
+    record.operation.state,
     record.operation.result.state,
     record.operation.operationId,
   )
@@ -93,6 +94,7 @@ function assertPersistedProofRows(
 }
 
 function predecessorDisposition(
+  operationState: DurableCustodyRecord['operation']['state'],
   resultState: DurableCustodyRecord['operation']['result']['state'],
   operationId: string,
 ): {
@@ -100,6 +102,16 @@ function predecessorDisposition(
   readonly selectability: 'locked' | 'spent'
   readonly reservationOperationId: string | null
 } {
+  if (operationState === 'aborted') {
+    if (resultState !== 'none') {
+      throw new Error('aborted durable CTF range authority has a settlement result')
+    }
+    return {
+      nut07State: 'SPENT',
+      selectability: 'spent',
+      reservationOperationId: null,
+    }
+  }
   switch (resultState) {
     case 'none':
     case 'verified-staged':
