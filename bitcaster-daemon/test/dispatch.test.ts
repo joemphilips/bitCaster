@@ -74,62 +74,82 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     })
     const profile = (await readProfile())!
 
-    await t.test('wallet.balance summarizes durable proof state', async () => {
-      const state = emptyDaemonState()
-      state.wallet.proofs.push(
-        proofRecord('https://mint-a.example', 100, 'available', {
-          kind: 'sats',
-          baseAsset: 'sat',
-          unit: 'sat',
-        }),
-        {
-          ...proofRecord('https://mint-a.example', 50_000, 'reserved', {
+    await t.test(
+      'wallet.balance summarizes durable proof and custody state',
+      async (balanceTest) => {
+        const state = emptyDaemonState()
+        state.wallet.proofs.push(
+          proofRecord('https://mint-a.example', 100, 'available', {
             kind: 'sats',
             baseAsset: 'sat',
-            unit: 'msat',
+            unit: 'sat',
           }),
-          reservedBy: 'balance-test',
-        },
-        {
-          ...proofRecord('https://mint-a.example', 25_000, 'locked', {
-            kind: 'Outcome',
-            conditionId: 'cond',
-            outcomeSetId: 'YES',
-            baseAsset: 'sat',
-            unit: 'msat',
-          }),
-          reservedBy: 'balance-lock-test',
-        },
-      )
-      await writeState(state)
-
-      const result = await dispatch({ method: 'wallet.balance' })
-
-      assert.equal(result.ok, true)
-      assert.deepEqual(result.result, {
-        totalAvailableSats: 100,
-        totalReservedSats: 50,
-        totalLockedSats: 25,
-        byMint: [
           {
-            mintUrl: 'https://mint-a.example',
-            availableSats: 100,
-            reservedSats: 50,
-            lockedSats: 25,
+            ...proofRecord('https://mint-a.example', 50_000, 'reserved', {
+              kind: 'sats',
+              baseAsset: 'sat',
+              unit: 'msat',
+            }),
+            reservedBy: 'balance-test',
           },
-        ],
-        outcomePositions: [
           {
-            mintUrl: 'https://mint-a.example',
-            conditionId: 'cond',
-            outcomeSetId: 'YES',
-            availableSats: 0,
-            reservedSats: 0,
-            lockedSats: 25,
+            ...proofRecord('https://mint-a.example', 25_000, 'locked', {
+              kind: 'Outcome',
+              conditionId: 'cond',
+              outcomeSetId: 'YES',
+              baseAsset: 'sat',
+              unit: 'msat',
+            }),
+            reservedBy: 'balance-lock-test',
           },
-        ],
-      })
-    })
+        )
+        await writeState(state)
+        await insertCustodyBalanceProof({
+          proofId: 'ab'.repeat(32),
+          amount: 75_000,
+          nut07State: 'UNSPENT',
+          selectability: 'locked',
+        })
+        await insertCustodyBalanceProof({
+          proofId: 'cd'.repeat(32),
+          amount: 1_000_000,
+          nut07State: 'SPENT',
+          selectability: 'spent',
+        })
+        balanceTest.after(async () => {
+          await withDaemonStateSqliteTransaction(profileDir(), (database) => {
+            database.prepare('DELETE FROM custody_proofs').run()
+          })
+        })
+
+        const result = await dispatch({ method: 'wallet.balance' })
+
+        assert.equal(result.ok, true)
+        assert.deepEqual(result.result, {
+          totalAvailableSats: 100,
+          totalReservedSats: 50,
+          totalLockedSats: 100,
+          byMint: [
+            {
+              mintUrl: 'https://mint-a.example',
+              availableSats: 100,
+              reservedSats: 50,
+              lockedSats: 100,
+            },
+          ],
+          outcomePositions: [
+            {
+              mintUrl: 'https://mint-a.example',
+              conditionId: 'cond',
+              outcomeSetId: 'YES',
+              availableSats: 0,
+              reservedSats: 0,
+              lockedSats: 25,
+            },
+          ],
+        })
+      },
+    )
 
     await t.test(
       'preflight collateral preparation opens sat markets with msat wallet unit',
@@ -2583,6 +2603,44 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await rm(home, { recursive: true, force: true })
   }
 })
+
+async function insertCustodyBalanceProof(input: {
+  readonly proofId: string
+  readonly amount: number
+  readonly nut07State: 'UNSPENT' | 'SPENT'
+  readonly selectability: 'locked' | 'spent'
+}): Promise<void> {
+  await withDaemonStateSqliteTransaction(profileDir(), (database) => {
+    const scope = database
+      .prepare(`SELECT scope_id AS scopeId FROM custody_scopes WHERE scope_kind = 'wallet'`)
+      .get() as { scopeId: string }
+    database
+      .prepare(
+        `INSERT INTO custody_proofs (
+          proof_id, scope_id, normalized_mint, unit, keyset_id, amount,
+          base_asset, condition_id, outcome_set_id, product_binding,
+          proof_body, proof_fingerprint, curve, signature_verified,
+          dleq_state, nut07_state, selectability, storage_class,
+          reservation_operation_id, revision, created_at_ms, updated_at_ms
+        ) VALUES (
+          ?, ?, 'https://mint-a.example', 'msat', 'balance-keyset', ?,
+          'sat', NULL, NULL, NULL,
+          ?, ?, 'secp256k1', 1,
+          'not-present', ?, ?, 'pinned-operation-bound-deterministic',
+          'balance-operation', 0, 0, 0
+        )`,
+      )
+      .run(
+        input.proofId,
+        scope.scopeId,
+        input.amount,
+        new Uint8Array([1]),
+        input.proofId,
+        input.nut07State,
+        input.selectability,
+      )
+  })
+}
 
 function prepareSettlementCapability(
   orderId: string,

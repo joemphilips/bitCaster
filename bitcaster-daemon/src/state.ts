@@ -288,6 +288,14 @@ export interface WalletBalance {
   }>
 }
 
+export interface LockedCustodyBalanceEntry {
+  readonly mintUrl: string
+  readonly unit: 'sat' | 'msat'
+  readonly amount: number
+  readonly conditionId: string | null
+  readonly outcomeSetId: string | null
+}
+
 export function statePath(): string {
   return profileDatabasePath()
 }
@@ -930,7 +938,10 @@ function isSdkCtfProofOperationKind(kind: ProofOperationKind): boolean {
   )
 }
 
-export function summarizeWalletBalance(state: DaemonState): WalletBalance {
+export function summarizeWalletBalance(
+  state: DaemonState,
+  lockedCustody: readonly LockedCustodyBalanceEntry[] = [],
+): WalletBalance {
   const byMint = new Map<
     string,
     { mintUrl: string; availableSats: number; reservedSats: number; lockedSats: number }
@@ -950,31 +961,26 @@ export function summarizeWalletBalance(state: DaemonState): WalletBalance {
   for (const proof of state.wallet.proofs) {
     if (normalizeProofAssetBaseAsset(proof.asset) !== 'sat') continue
 
-    const amount =
-      cashuAmountToMarketSubunits(
-        amountToNumber(proof.proof.amount),
-        normalizeProofAssetUnit(proof.asset),
-      ) / 1_000
-    const mint = getOrCreate(byMint, proof.mintUrl, () => ({
+    addWalletBalanceEntry(byMint, outcomes, {
       mintUrl: proof.mintUrl,
-      availableSats: 0,
-      reservedSats: 0,
-      lockedSats: 0,
-    }))
-    addAmount(mint, proof.state, amount)
-
-    if (proof.asset.kind === 'Outcome') {
-      const key = `${proof.mintUrl}\n${proof.asset.conditionId}\n${proof.asset.outcomeSetId}`
-      const outcome = getOrCreate(outcomes, key, () => ({
-        mintUrl: proof.mintUrl,
-        conditionId: proof.asset.kind === 'Outcome' ? proof.asset.conditionId : '',
-        outcomeSetId: proof.asset.kind === 'Outcome' ? proof.asset.outcomeSetId : '',
-        availableSats: 0,
-        reservedSats: 0,
-        lockedSats: 0,
-      }))
-      addAmount(outcome, proof.state, amount)
-    }
+      state: proof.state,
+      amount:
+        cashuAmountToMarketSubunits(
+          amountToNumber(proof.proof.amount),
+          normalizeProofAssetUnit(proof.asset),
+        ) / 1_000,
+      conditionId: proof.asset.kind === 'Outcome' ? proof.asset.conditionId : null,
+      outcomeSetId: proof.asset.kind === 'Outcome' ? proof.asset.outcomeSetId : null,
+    })
+  }
+  for (const proof of lockedCustody) {
+    addWalletBalanceEntry(byMint, outcomes, {
+      mintUrl: proof.mintUrl,
+      state: 'locked',
+      amount: cashuAmountToMarketSubunits(proof.amount, proof.unit) / 1_000,
+      conditionId: proof.conditionId,
+      outcomeSetId: proof.outcomeSetId,
+    })
   }
 
   const mintRows = [...byMint.values()].sort((a, b) => a.mintUrl.localeCompare(b.mintUrl))
@@ -990,6 +996,38 @@ export function summarizeWalletBalance(state: DaemonState): WalletBalance {
         a.outcomeSetId.localeCompare(b.outcomeSetId),
     ),
   }
+}
+
+function addWalletBalanceEntry(
+  byMint: Map<string, WalletBalance['byMint'][number]>,
+  outcomes: Map<string, WalletBalance['outcomePositions'][number]>,
+  entry: {
+    readonly mintUrl: string
+    readonly state: StoredProofRecord['state']
+    readonly amount: number
+    readonly conditionId: string | null
+    readonly outcomeSetId: string | null
+  },
+): void {
+  const mint = getOrCreate(byMint, entry.mintUrl, () => ({
+    mintUrl: entry.mintUrl,
+    availableSats: 0,
+    reservedSats: 0,
+    lockedSats: 0,
+  }))
+  addAmount(mint, entry.state, entry.amount)
+
+  if (entry.conditionId === null || entry.outcomeSetId === null) return
+  const key = `${entry.mintUrl}\n${entry.conditionId}\n${entry.outcomeSetId}`
+  const outcome = getOrCreate(outcomes, key, () => ({
+    mintUrl: entry.mintUrl,
+    conditionId: entry.conditionId!,
+    outcomeSetId: entry.outcomeSetId!,
+    availableSats: 0,
+    reservedSats: 0,
+    lockedSats: 0,
+  }))
+  addAmount(outcome, entry.state, entry.amount)
 }
 
 export async function recordOrderStatus(

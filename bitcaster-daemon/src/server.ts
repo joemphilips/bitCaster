@@ -74,7 +74,6 @@ import {
   readState,
   recordSubmittedOrder,
   recordOrderStatus,
-  summarizeWalletBalance,
   updateState,
   type CashuProofRecord,
 } from './state.ts'
@@ -91,6 +90,7 @@ import {
   type WalletOpsDependencies,
 } from './walletOps.ts'
 import { readDaemonTokenHoldings } from './walletHoldings.ts'
+import { readDaemonWalletBalance } from './walletBalance.ts'
 import type { WalletSeedRecoveryParams, WalletSeedRecoveryResult } from './protocol.ts'
 
 export interface DaemonServerOptions {
@@ -275,8 +275,18 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
   if (options.tradeRuntime && (await readProfile())) {
     await startTradeRuntimeBestEffort(options.tradeRuntime)
   }
+  const socketPath =
+    options.socketPath ?? (options.host || options.port ? undefined : defaultRpcSocketPath())
+  const host = options.host ?? '127.0.0.1'
+  if (!socketPath && !isLoopbackBindHost(host)) {
+    throw new Error(`bitcaster-daemon refuses to bind non-loopback host ${host}`)
+  }
+  // A running daemon cannot replace its profile authority. Validate and pin
+  // the RPC token once at startup so concurrent WAL commits cannot turn
+  // per-request immutable profile inspection into a process-level failure.
+  const expectedToken = await readRpcToken()
   const server = createServer((req, res) => {
-    void handleRequest(req, res, {
+    void handleRequest(req, res, expectedToken, {
       tradeRuntime: options.tradeRuntime,
       swapExecutor: options.swapExecutor,
       recoverWalletFromSeed: options.recoverWalletFromSeed,
@@ -284,8 +294,6 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
       triggerSettlementRecovery: options.triggerSettlementRecovery,
     })
   })
-  const socketPath =
-    options.socketPath ?? (options.host || options.port ? undefined : defaultRpcSocketPath())
   if (socketPath) {
     await unlinkStaleSocket(socketPath)
     await new Promise<void>((resolve) => server.listen(socketPath, resolve))
@@ -296,10 +304,6 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
     return server
   }
 
-  const host = options.host ?? '127.0.0.1'
-  if (!isLoopbackBindHost(host)) {
-    throw new Error(`bitcaster-daemon refuses to bind non-loopback host ${host}`)
-  }
   const port = options.port ?? Number(process.env.BITCASTER_DAEMON_PORT || 42871)
   await new Promise<void>((resolve) => server.listen(port, host, resolve))
   const address = server.address()
@@ -311,6 +315,7 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
 async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
+  expectedToken: string | null,
   deps: DispatchDependencies = {},
 ): Promise<void> {
   if (!isLocalCaller(req.socket.remoteAddress)) {
@@ -328,7 +333,6 @@ async function handleRequest(
     return writeJson(res, 400, { ok: false, error: 'invalid JSON command' })
   }
 
-  const expectedToken = await readRpcToken()
   if (expectedToken && !tokenMatches(bearerToken(req.headers.authorization), expectedToken)) {
     return writeJson(res, 401, { ok: false, error: 'unauthorized' })
   }
@@ -385,7 +389,7 @@ export async function dispatch(
             orders: Object.keys(state.orders).length,
             swaps: Object.keys(state.swaps).length,
           },
-          wallet: summarizeWalletBalance(state),
+          wallet: await readDaemonWalletBalance(profileDir()),
         },
       }
     }
@@ -507,9 +511,10 @@ export async function dispatch(
       if (!(await readProfile())) {
         return { ok: false, error: 'daemon profile is not initialized' }
       }
+      await ensureState()
       return {
         ok: true,
-        result: summarizeWalletBalance(await ensureState()),
+        result: await readDaemonWalletBalance(profileDir()),
       }
     case 'wallet.receive': {
       const profile = await readProfile()
