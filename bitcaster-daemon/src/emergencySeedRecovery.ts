@@ -1,10 +1,11 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import {
-  Amount,
   CheckStateEnum,
   Mint as CashuMint,
   Wallet as CashuWallet,
   hashToCurve,
+  hashToCurveBls,
+  isBlsKeyset,
   verifyProofsForReceive,
   type Proof,
   type ProofState,
@@ -24,7 +25,7 @@ import {
 import { SeedRecoverySqliteStore, type SeedRecoveryObservedProof } from './seedRecoverySqlite.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import type { WalletSeedRecoveryParams, WalletSeedRecoveryResult } from './protocol.ts'
-import type { CustodyProofSqliteRow } from './durableCustodySqliteStore.ts'
+import { createCustodyProofSqliteRow } from './custodyProofSqliteRow.ts'
 import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
@@ -223,35 +224,30 @@ function observedProof(
         : rawState === CheckStateEnum.SPENT
           ? 'SPENT'
           : 'UNKNOWN'
-  const proofBody = new TextEncoder().encode(
-    JSON.stringify(proof, (_key, value: unknown) =>
-      typeof value === 'bigint' ? value.toString() : value,
-    ),
-  )
-  const proofFingerprint = createHash('sha256').update(proofBody).digest('hex')
-  const amount = Number(Amount.from(proof.amount).toBigInt())
-  const curve = 'secp256k1' as const
-  const proofY = hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true)
+  const proofY = (
+    isBlsKeyset(proof.id)
+      ? hashToCurveBls(new TextEncoder().encode(proof.secret))
+      : hashToCurve(new TextEncoder().encode(proof.secret))
+  ).toHex(true)
   const disposition = classifyEmergencySeedRecoveryProof(mintState)
-  const row: CustodyProofSqliteRow = {
-    proofId: createHash('sha256')
-      .update(`${scopeId}\u0000${mintUrl}\u0000${unit}\u0000`)
-      .update(proofBody)
-      .digest('hex'),
+  const row = createCustodyProofSqliteRow({
     scopeId,
     normalizedMint: mintUrl,
     unit,
-    keysetId: proof.id,
-    amount,
+    proof: {
+      id: proof.id,
+      amount: proof.amount,
+      secret: proof.secret,
+      C: proof.C,
+      dleq: proof.dleq ?? null,
+      p2pkE: proof.p2pk_e ?? null,
+      witness: proof.witness ?? null,
+    },
     baseAsset: 'sat',
     conditionId: null,
     outcomeSetId: null,
     productBinding: null,
-    proofBody,
-    proofFingerprint,
-    curve,
-    signatureVerified: mintState === 'UNSPENT',
-    dleqState: 'not-present',
+    signatureVerified: true,
     nut07State: mintState === 'UNSPENT' ? 'UNSPENT' : mintState === 'SPENT' ? 'SPENT' : 'PENDING',
     selectability:
       disposition === 'import-selectable'
@@ -262,8 +258,7 @@ function observedProof(
     storageClass: 'pinned-operation-bound-deterministic',
     reservationOperationId: null,
     revision: 0,
-    createdAtMs: nowMs,
-    updatedAtMs: nowMs,
-  }
+    nowMs,
+  })
   return { proofY, mintState, proof: row }
 }

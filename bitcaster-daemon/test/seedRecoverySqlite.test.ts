@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { deriveDurableCustodyScopeId } from '@bitcaster-market/client-sdk/durableCustody'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import {
@@ -15,6 +16,7 @@ import {
 } from '../src/seedRecoverySqlite.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import type { CustodyProofSqliteRow } from '../src/durableCustodySqliteStore.ts'
+import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 
 test('explicit ordinary recovery co-commits selectable, pending, spent, cursor, and job', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-'))
@@ -200,7 +202,7 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
           batches: [
             {
               observation: oneProofObservation(),
-              proofs: [observed('foreign-wallet-scope', 'e', 'UNSPENT', 'selectable')],
+              proofs: [observed(foreignWalletScopeId(), 'e', 'UNSPENT', 'selectable')],
             },
           ],
         }),
@@ -313,33 +315,36 @@ function observed(
   mintState: unknown,
   selectability: CustodyProofSqliteRow['selectability'],
 ): SeedRecoveryObservedProof {
+  const nut07State =
+    mintState === 'UNSPENT' ? 'UNSPENT' : mintState === 'SPENT' ? 'SPENT' : 'PENDING'
   return {
     proofY: `proof-y-${id}`,
     mintState,
-    proof: {
-      proofId: id.repeat(64),
+    proof: createCustodyProofSqliteRow({
       scopeId,
       normalizedMint: 'https://mint.example',
       unit: 'sat',
-      keysetId: 'keyset-1',
-      amount: 1,
+      proof: {
+        id: 'keyset-1',
+        amount: '1',
+        secret: `secret-${id}`,
+        C: `signature-${id}`,
+        dleq: null,
+        p2pkE: null,
+        witness: null,
+      },
       baseAsset: 'sat',
       conditionId: null,
       outcomeSetId: null,
       productBinding: null,
-      proofBody: new TextEncoder().encode(`{"proof":"${id}"}`),
-      proofFingerprint: id.repeat(64),
-      curve: 'secp256k1',
       signatureVerified: mintState === 'UNSPENT',
-      dleqState: 'not-present',
-      nut07State: mintState === 'UNSPENT' ? 'UNSPENT' : mintState === 'SPENT' ? 'SPENT' : 'PENDING',
+      nut07State,
       selectability,
       storageClass: 'pinned-operation-bound-deterministic',
       reservationOperationId: null,
       revision: 0,
-      createdAtMs: 3,
-      updatedAtMs: 3,
-    },
+      nowMs: 3,
+    }),
   }
 }
 
@@ -362,4 +367,11 @@ function oneProofObservation() {
     requestedCount: 1,
     lastCounterWithSignature: 0,
   }
+}
+
+function foreignWalletScopeId(): string {
+  return deriveDurableCustodyScopeId({
+    scopeKind: 'wallet',
+    walletId: '99'.repeat(32),
+  })
 }

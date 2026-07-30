@@ -11,6 +11,7 @@ import {
   DurableCustodySqliteStore,
   type CustodyProofSqliteRow,
 } from './durableCustodySqliteStore.ts'
+import { decodeCustodyProofSqliteRow } from './custodyProofSqliteRow.ts'
 import { withDurableCustodyUnitOfWork } from './durableCustodyUnitOfWork.ts'
 
 export interface SeedRecoveryObservedProof {
@@ -49,7 +50,10 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     }
     this.#staged.set(
       key,
-      proofs.map((proof) => structuredClone(proof)),
+      proofs.map((proof) => ({
+        ...structuredClone(proof),
+        proof: decodeCustodyProofSqliteRow(proof.proof).row,
+      })),
     )
   }
 
