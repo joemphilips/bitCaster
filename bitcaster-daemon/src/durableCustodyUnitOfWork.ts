@@ -40,19 +40,18 @@ export async function withDurableCustodyUnitOfWork<T>(
         ) => storage.transaction(action, transactionOptions)
   return transaction((database) => {
     const row = requireAuthorizedScopeState(database, fence, observedAtMs)
+    const highWaterMarkMs = Math.max(observedAtMs, row.highWaterMarkMs)
     const updated = database
       .prepare(
         `UPDATE custody_scope_state SET high_water_mark_ms = ?
            WHERE scope_id = ? AND owner_incarnation_id = ?
-             AND fencing_epoch = ? AND lease_expires_at_ms = ?
-             AND high_water_mark_ms = ?`,
+             AND fencing_epoch = ? AND high_water_mark_ms = ?`,
       )
       .run(
-        observedAtMs,
+        highWaterMarkMs,
         fence.scopeId,
         fence.incarnationId,
         fence.fencingEpoch,
-        fence.leaseExpiresAtMs,
         row.highWaterMarkMs,
       )
     if (updated.changes !== 1) {
@@ -90,18 +89,20 @@ function requireAuthorizedScopeState(
         FROM custody_scope_state WHERE scope_id = ?`,
     )
     .get(fence.scopeId) as ScopeStateRow | undefined
-  if (
-    row === undefined ||
-    row.ownerIncarnationId !== fence.incarnationId ||
-    row.fencingEpoch !== fence.fencingEpoch ||
-    row.leaseExpiresAtMs === null ||
-    row.leaseExpiresAtMs !== fence.leaseExpiresAtMs ||
-    observedAtMs < row.highWaterMarkMs ||
-    observedAtMs >= row.leaseExpiresAtMs
-  ) {
-    throw new DurableCustodyFenceError('custody unit of work has stale or expired authority')
-  }
+  if (row === undefined) throw staleFence('scope is missing')
+  if (row.ownerIncarnationId !== fence.incarnationId) throw staleFence('owner changed')
+  if (row.fencingEpoch !== fence.fencingEpoch) throw staleFence('epoch changed')
+  // Expiry permits a competing claimant to advance the epoch; it is not a
+  // second fence version. Until takeover commits, this owner/epoch remains
+  // linearizable, including across a same-owner lease renewal.
+  if (row.leaseExpiresAtMs === null) throw staleFence('lease is missing')
   return row
+}
+
+function staleFence(reason: string): DurableCustodyFenceError {
+  return new DurableCustodyFenceError(
+    `custody unit of work has stale or expired authority: ${reason}`,
+  )
 }
 
 function assertObservationTime(observedAtMs: number): void {

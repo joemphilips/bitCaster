@@ -12,14 +12,12 @@ export type ScopeLeaseRefusalReason =
   | 'scope-missing'
   | 'already-owned'
   | 'stale-fence'
-  | 'lease-expired'
   | 'invalid-input'
 
 const leaseMessages: Readonly<Record<ScopeLeaseRefusalReason, string>> = {
   'scope-missing': 'custody scope is missing',
   'already-owned': 'custody scope is already owned',
   'stale-fence': 'custody scope fence is stale',
-  'lease-expired': 'custody scope lease expired',
   'invalid-input': 'custody scope lease input is invalid',
 }
 
@@ -100,9 +98,7 @@ export async function renewCustodyScopeLease(
   return withFencingTransaction(directory, (database) => {
     const state = readScopeState(database, fence.scopeId)
     assertCurrentFence(state, fence)
-    if (state.leaseExpiresAtMs === null || state.leaseExpiresAtMs <= observedAtMs) {
-      throw new ScopeLeaseRefusalError('lease-expired')
-    }
+    if (state.leaseExpiresAtMs === null) throw new ScopeLeaseRefusalError('stale-fence')
     const leaseExpiresAtMs = Math.max(state.leaseExpiresAtMs, checkedLeaseExpiry(observedAtMs))
     const result = database
       .prepare(
@@ -131,9 +127,7 @@ export async function releaseCustodyScopeLease(
   await withFencingTransaction(directory, (database) => {
     const state = readScopeState(database, fence.scopeId)
     assertCurrentFence(state, fence)
-    if (state.leaseExpiresAtMs === null || state.leaseExpiresAtMs <= observedAtMs) {
-      throw new ScopeLeaseRefusalError('lease-expired')
-    }
+    if (state.leaseExpiresAtMs === null) throw new ScopeLeaseRefusalError('stale-fence')
     const result = database
       .prepare(
         `UPDATE custody_scope_state

@@ -24,6 +24,7 @@ import {
   renewCustodyScopeLease,
   ScopeLeaseRefusalError,
 } from '../src/profileFencing.ts'
+import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import {
   DAEMON_PROFILE_DATABASE,
   ProfileSchemaRefusalError,
@@ -591,6 +592,12 @@ test('scope fencing tolerates clock rollback and takeover advances epoch', async
   )
   assert.equal(renewed.fencingEpoch, 1)
   assert.equal(renewed.leaseExpiresAtMs, initializedAtMs + 80_000)
+  await withDurableCustodyUnitOfWork(
+    directory,
+    first,
+    initializedAtMs + CUSTODY_SCOPE_RENEW_INTERVAL_MS - 1,
+    () => undefined,
+  )
 
   const second = await claimCustodyScopeLease(directory, {
     scopeId: walletScopeId,
@@ -605,6 +612,15 @@ test('scope fencing tolerates clock rollback and takeover advances epoch', async
   const renewedAfterClockRollback = await renewCustodyScopeLease(directory, second, initializedAtMs)
   assert.equal(renewedAfterClockRollback.fencingEpoch, second.fencingEpoch)
   assert.equal(renewedAfterClockRollback.leaseExpiresAtMs, second.leaseExpiresAtMs)
+  const renewedAfterForwardJump = await renewCustodyScopeLease(
+    directory,
+    renewedAfterClockRollback,
+    second.leaseExpiresAtMs + 1,
+  )
+  assert.equal(
+    renewedAfterForwardJump.leaseExpiresAtMs,
+    second.leaseExpiresAtMs + CUSTODY_SCOPE_LEASE_DURATION_MS + 1,
+  )
 })
 
 async function bootstrap(directory: string, overrides: { readonly passphrase?: string } = {}) {
