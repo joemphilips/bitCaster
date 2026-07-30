@@ -51,6 +51,10 @@
       "types": "./dist/ctfRangeOrderPreparation.d.ts",
       "import": "./dist/ctfRangeOrderPreparation.js"
     },
+    "./ctfRangeOrderJournal": {
+      "types": "./dist/ctfRangeOrderJournal.d.ts",
+      "import": "./dist/ctfRangeOrderJournal.js"
+    },
     "./settlementCapabilityArtifact": {
       "types": "./dist/settlementCapabilityArtifact.d.ts",
       "import": "./dist/settlementCapabilityArtifact.js"

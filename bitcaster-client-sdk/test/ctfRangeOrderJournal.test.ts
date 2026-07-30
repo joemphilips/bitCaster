@@ -1,0 +1,264 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import {
+  assertCtfRangeOrderPreparationTransition,
+  bindCtfRangeOrderPreparationCapability,
+  decodeCtfRangeOrderPreparationArtifact,
+  decodeCtfRangeOrderPreparationCapability,
+  decodeCtfRangeOrderPreparationIdentity,
+  decodeCtfRangeOrderPreparationPageCursor,
+  decodeCtfRangeOrderPreparationPageLimit,
+  decodeCtfRangeOrderPreparationRecord,
+  encodeCtfRangeOrderPreparationArtifact,
+  sameCtfRangeOrderPreparationCapability,
+  sameCtfRangeOrderPreparationIdentity,
+} from '../src/ctfRangeOrderJournal.ts'
+
+const CAPABILITY = {
+  artifactId: '11111111-1111-4111-8111-111111111111',
+  bindingDigest: '22'.repeat(32),
+  artifactDigest: '33'.repeat(32),
+  orderId: '44444444-4444-4444-8444-444444444444',
+} as const
+
+test('canonical preparation artifacts are bounded, detached, and byte exact', () => {
+  const value = { z: [1, 2], a: { value: 'before' } }
+  const encoded = encodeCtfRangeOrderPreparationArtifact(value)
+  value.a.value = 'after'
+
+  assert.equal(Buffer.from(encoded).toString('utf8'), '{"a":{"value":"before"},"z":[1,2]}')
+  assert.equal(
+    JSON.stringify(decodeCtfRangeOrderPreparationArtifact(encoded)),
+    '{"a":{"value":"before"},"z":[1,2]}',
+  )
+  assert.throws(
+    () => decodeCtfRangeOrderPreparationArtifact(Buffer.from('{"z":1, "a":2}')),
+    /canonical/,
+  )
+  assert.throws(
+    () => encodeCtfRangeOrderPreparationArtifact({ body: 'x'.repeat(256 * 1_024) }),
+    /byte limit/,
+  )
+  assert.throws(() => encodeCtfRangeOrderPreparationArtifact({ invalid: undefined }), /undefined/)
+  assert.throws(() => encodeCtfRangeOrderPreparationArtifact({ invalid: Number.NaN }), /number/)
+})
+
+test('strict identity validation preserves source lineage and exact replay', () => {
+  const identity = preparationIdentity()
+  const decoded = decodeCtfRangeOrderPreparationIdentity(identity)
+
+  assert.equal(decoded.sourceKind, 'wallet-prepared')
+  assert.equal(decoded.predecessorRangeOperationId, null)
+  assert.equal(sameCtfRangeOrderPreparationIdentity(decoded, identity), true)
+  assert.equal(
+    sameCtfRangeOrderPreparationIdentity(decoded, {
+      ...identity,
+      amountSubunits: identity.amountSubunits + 1,
+    }),
+    false,
+  )
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationIdentity({
+        ...identity,
+        sourceKind: 'residual-change',
+        predecessorRangeOperationId: null,
+      }),
+    /predecessor/,
+  )
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationIdentity({
+        ...identity,
+        priceSubunits: identity.divisibility,
+      }),
+    /price/,
+  )
+  assert.throws(
+    () => decodeCtfRangeOrderPreparationIdentity({ ...identity, unexpected: true }),
+    /fields/,
+  )
+})
+
+test('capability and lifecycle validation reject partial or illegal authority', () => {
+  assert.equal(
+    sameCtfRangeOrderPreparationCapability(
+      decodeCtfRangeOrderPreparationCapability(CAPABILITY),
+      CAPABILITY,
+    ),
+    true,
+  )
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationCapability({
+        ...CAPABILITY,
+        bindingDigest: 'not-a-digest',
+      }),
+    /capability/,
+  )
+  assert.throws(
+    () => assertCtfRangeOrderPreparationTransition('prepared', 'capability-bound'),
+    /transition/,
+  )
+  assert.doesNotThrow(() =>
+    assertCtfRangeOrderPreparationTransition('capability-bound', 'submission-rejected'),
+  )
+  assert.doesNotThrow(() =>
+    assertCtfRangeOrderPreparationTransition('submission-rejected', 'terminal'),
+  )
+  assert.throws(
+    () => assertCtfRangeOrderPreparationTransition('order-submitted', 'prepared'),
+    /transition/,
+  )
+
+  const identity = preparationIdentity()
+  const prepared = decodeCtfRangeOrderPreparationRecord({
+    ...identity,
+    lifecycleState: 'prepared',
+    revision: 0,
+    capability: null,
+    updatedAtMs: identity.createdAtMs,
+  })
+  const bound = bindCtfRangeOrderPreparationCapability({
+    current: prepared,
+    expectedRevision: 0,
+    capability: CAPABILITY,
+    updatedAtMs: identity.createdAtMs + 1,
+  })
+  assert.equal(bound.lifecycleState, 'capability-bound')
+  assert.deepEqual(
+    bindCtfRangeOrderPreparationCapability({
+      current: bound,
+      expectedRevision: 0,
+      capability: CAPABILITY,
+      updatedAtMs: identity.createdAtMs + 1,
+    }),
+    bound,
+  )
+  assert.equal(
+    decodeCtfRangeOrderPreparationRecord({
+      ...identity,
+      lifecycleState: 'capability-bound',
+      revision: 1,
+      capability: CAPABILITY,
+      updatedAtMs: identity.createdAtMs + 1,
+    }).revision,
+    1,
+  )
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationRecord({
+        ...identity,
+        lifecycleState: 'submission-rejected',
+        revision: 1,
+        capability: null,
+        updatedAtMs: identity.createdAtMs + 1,
+      }),
+    /lifecycle authority/,
+  )
+})
+
+test('generic transitions and persisted capability pairing cover the complete lifecycle matrix', () => {
+  const lifecycles = [
+    'prepared',
+    'capability-bound',
+    'order-submitted',
+    'submission-rejected',
+    'terminal',
+  ] as const
+  const genericTransitions = new Set([
+    'prepared:terminal',
+    'capability-bound:order-submitted',
+    'capability-bound:submission-rejected',
+    'capability-bound:terminal',
+    'order-submitted:terminal',
+    'submission-rejected:terminal',
+  ])
+  for (const from of lifecycles) {
+    for (const to of lifecycles) {
+      const transition = () => assertCtfRangeOrderPreparationTransition(from, to)
+      if (genericTransitions.has(`${from}:${to}`)) {
+        assert.doesNotThrow(transition)
+      } else {
+        assert.throws(transition, /transition/)
+      }
+    }
+  }
+
+  const identity = preparationIdentity()
+  for (const lifecycleState of lifecycles) {
+    for (const capability of [null, CAPABILITY] as const) {
+      const decode = () =>
+        decodeCtfRangeOrderPreparationRecord({
+          ...identity,
+          lifecycleState,
+          revision: lifecycleState === 'prepared' ? 0 : 1,
+          capability,
+          updatedAtMs: identity.createdAtMs + 1,
+        })
+      const pairingIsValid =
+        lifecycleState === 'terminal' ||
+        (lifecycleState === 'prepared' ? capability === null : capability !== null)
+      if (pairingIsValid) {
+        assert.doesNotThrow(decode)
+      } else {
+        assert.throws(decode, /lifecycle authority/)
+      }
+    }
+  }
+})
+
+test('page inputs are bounded and reject ambiguous cursors', () => {
+  assert.equal(decodeCtfRangeOrderPreparationPageLimit(256), 256)
+  assert.equal(
+    decodeCtfRangeOrderPreparationPageCursor({
+      updatedAtMs: 12,
+      rangeOperationId: 'range-1',
+    }).rangeOperationId,
+    'range-1',
+  )
+  assert.throws(() => decodeCtfRangeOrderPreparationPageLimit(257), /page limit/)
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationPageCursor({
+        updatedAtMs: -1,
+        rangeOperationId: 'range-1',
+      }),
+    /cursor/,
+  )
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationPageCursor({
+        updatedAtMs: 1,
+        rangeOperationId: '',
+      }),
+    /cursor/,
+  )
+})
+
+function preparationIdentity() {
+  return {
+    scopeId: `custody:wallet:${'11'.repeat(32)}`,
+    rangeOperationId: 'range-1',
+    sourceOperationId: 'source-1',
+    sourceKind: 'wallet-prepared' as const,
+    predecessorRangeOperationId: null,
+    authorizationId: 'authorization-1',
+    clientOrderId: 'client-1',
+    marketId: 'condition-1-YES',
+    normalizedMint: 'https://mint.example',
+    conditionId: 'condition-1',
+    unit: 'msat' as const,
+    tokenSide: 'Outcome' as const,
+    side: 'Buy' as const,
+    priceSubunits: 5_000,
+    amountSubunits: 100,
+    divisibility: 10_000 as const,
+    authorizationExpiresAtUnixSeconds: 2_000_000_000,
+    preparationBytes: encodeCtfRangeOrderPreparationArtifact({
+      rangeOperationId: 'range-1',
+      authorizationId: 'authorization-1',
+    }),
+    createdAtMs: 10,
+  }
+}

@@ -132,7 +132,7 @@ test('range preparation schema rejects partial capability and loose authority', 
         ...preparationInput('range-full-price', 'source-full-price', 'client-full-price', 2),
         priceSubunits: 10_000,
       }),
-    /constraint/,
+    /price/,
   )
 })
 
