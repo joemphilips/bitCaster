@@ -400,7 +400,7 @@ test('custody transaction exposes only the selected bounded operation set', () =
   )
 })
 
-test('scope claim and reducer require exact monotonic fencing authority', () => {
+test('scope claim and reducer keep clock monotonic without invalidating the current epoch', () => {
   const walletScope = scope()
   const unowned: DurableCustodyScopeState = {
     schemaVersion: 1,
@@ -427,16 +427,28 @@ test('scope claim and reducer require exact monotonic fencing authority', () => 
     },
   )
   assert.equal(next.operation.operation.state, 'transport-attempted')
+  const clockSkewed = reduceDurableCustodyState(next, {
+    kind: 'schedule-retry',
+    authorization: {
+      incarnationId: 'process-1',
+      fencingEpoch: 1,
+      observedAtMs: 9,
+    },
+    expectedRevision: 1,
+    reason: 'mint-response-unknown',
+    nextAttemptAtMs: 14,
+  })
+  assert.equal(clockSkewed.scopeState.effectiveClock.highWaterMarkMs, 12)
   assert.throws(
     () =>
-      reduceDurableCustodyState(next, {
+      reduceDurableCustodyState(clockSkewed, {
         kind: 'mark-transport-attempted',
         authorization: {
           incarnationId: 'process-1',
           fencingEpoch: 1,
           observedAtMs: 13,
         },
-        expectedRevision: 0,
+        expectedRevision: 1,
       }),
     /revision is stale/,
   )

@@ -1259,10 +1259,7 @@ export function claimDurableCustodyScope(
   requireText(input.incarnationId, 'incarnation id')
   safeTime(input.observedAtMs, 'observed time')
   safeTime(input.leaseExpiresAtMs, 'lease expiry')
-  if (
-    input.observedAtMs < state.effectiveClock.highWaterMarkMs ||
-    input.leaseExpiresAtMs <= input.observedAtMs
-  ) {
+  if (input.leaseExpiresAtMs <= input.observedAtMs) {
     throw new Error('custody scope clock or lease is invalid')
   }
   if (state.owner !== null && state.owner.leaseExpiresAtMs > input.observedAtMs) {
@@ -1275,7 +1272,9 @@ export function claimDurableCustodyScope(
       incarnationId: input.incarnationId,
       leaseExpiresAtMs: input.leaseExpiresAtMs,
     },
-    effectiveClock: { highWaterMarkMs: input.observedAtMs },
+    effectiveClock: {
+      highWaterMarkMs: Math.max(state.effectiveClock.highWaterMarkMs, input.observedAtMs),
+    },
   }
 }
 
@@ -1283,7 +1282,7 @@ export function renewDurableCustodyScope(
   state: DurableCustodyScopeState,
   input: DurableCustodyOwnerAuthorization & { leaseExpiresAtMs: number },
 ): DurableCustodyScopeState {
-  authorize(state, input)
+  const owner = authorize(state, input)
   safeTime(input.leaseExpiresAtMs, 'lease expiry')
   if (input.leaseExpiresAtMs <= input.observedAtMs) {
     throw new Error('custody lease expiry is invalid')
@@ -1292,9 +1291,11 @@ export function renewDurableCustodyScope(
     ...structuredClone(state),
     owner: {
       incarnationId: input.incarnationId,
-      leaseExpiresAtMs: input.leaseExpiresAtMs,
+      leaseExpiresAtMs: Math.max(owner.leaseExpiresAtMs, input.leaseExpiresAtMs),
     },
-    effectiveClock: { highWaterMarkMs: input.observedAtMs },
+    effectiveClock: {
+      highWaterMarkMs: Math.max(state.effectiveClock.highWaterMarkMs, input.observedAtMs),
+    },
   }
 }
 
@@ -1306,7 +1307,9 @@ export function releaseDurableCustodyScope(
   return {
     ...structuredClone(state),
     owner: null,
-    effectiveClock: { highWaterMarkMs: input.observedAtMs },
+    effectiveClock: {
+      highWaterMarkMs: Math.max(state.effectiveClock.highWaterMarkMs, input.observedAtMs),
+    },
   }
 }
 
@@ -1505,7 +1508,10 @@ export function reduceDurableCustodyState(
     scopeState: {
       ...structuredClone(state.scopeState),
       effectiveClock: {
-        highWaterMarkMs: transition.authorization.observedAtMs,
+        highWaterMarkMs: Math.max(
+          state.scopeState.effectiveClock.highWaterMarkMs,
+          transition.authorization.observedAtMs,
+        ),
       },
     },
     operation: decodeDurableCustodyRecord(operation),
@@ -2344,18 +2350,17 @@ function validateExactObject(
 function authorize(
   scope: DurableCustodyScopeState,
   authorization: DurableCustodyOwnerAuthorization,
-): void {
+): NonNullable<DurableCustodyScopeState['owner']> {
   const owner = scope.owner
   safeTime(authorization.observedAtMs, 'observed time')
   if (
     owner === null ||
     owner.incarnationId !== authorization.incarnationId ||
-    scope.fencingEpoch !== authorization.fencingEpoch ||
-    authorization.observedAtMs < scope.effectiveClock.highWaterMarkMs ||
-    authorization.observedAtMs >= owner.leaseExpiresAtMs
+    scope.fencingEpoch !== authorization.fencingEpoch
   ) {
     throw new Error('custody fencing authorization is invalid')
   }
+  return owner
 }
 
 function validateScope(value: unknown): asserts value is DurableCustodyScope {
