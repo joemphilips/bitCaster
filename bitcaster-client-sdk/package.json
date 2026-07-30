@@ -35,6 +35,10 @@
       "types": "./dist/durableCtfRangeOperation.d.ts",
       "import": "./dist/durableCtfRangeOperation.js"
     },
+    "./ctfRangeRecoveryTransport": {
+      "types": "./dist/ctfRangeRecoveryTransport.d.ts",
+      "import": "./dist/ctfRangeRecoveryTransport.js"
+    },
     "./settlementCapabilityArtifact": {
       "types": "./dist/settlementCapabilityArtifact.d.ts",
       "import": "./dist/settlementCapabilityArtifact.js"

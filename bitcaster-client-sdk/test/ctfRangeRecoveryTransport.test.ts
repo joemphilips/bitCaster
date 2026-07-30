@@ -29,19 +29,19 @@ import {
   toDurableCtfRangeProofOperationInput,
   type DurableCtfRangeMintKeyset,
   type DurableCtfRangeOperation,
-} from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
+} from '../src/durableCtfRangeOperation.ts'
 import {
   resolveDurableCustodyProofOperationFacts,
   type DurableCustodyScope,
-} from '@bitcaster-market/client-sdk'
-import type { SettlementCapabilityResultResponse } from '@bitcaster-market/client-sdk/engineClient'
+} from '../src/durableCustodyProofOperation.ts'
+import type { SettlementCapabilityResultResponse } from '../src/engineClient.ts'
 import {
-  DAEMON_CTF_RANGE_MINT_RESTORE_RESPONSE_BYTES_MAX,
-  DaemonCtfRangeMintRecoveryAdapter,
-  checkDaemonCtfRangeInputProofStates,
-  decodeDaemonCtfRangeEngineResult,
-  fetchDaemonCtfRangeEngineResultByOperation,
-  type DaemonCtfRangeMintClient,
+  CTF_RANGE_MINT_RESTORE_RESPONSE_BYTES_MAX,
+  CtfRangeMintRecoveryAdapter,
+  checkCtfRangeInputProofStates,
+  decodeCtfRangeEngineResult,
+  fetchCtfRangeEngineResultByOperation,
+  type CtfRangeMintClient,
 } from '../src/ctfRangeRecoveryTransport.ts'
 
 const CONDITION_ID = 'ab'.repeat(32)
@@ -80,7 +80,7 @@ test('engine result-by-operation decodes bounded canonical base64 and verifies i
     JSON.stringify({
       schemaVersion: 1,
       operationId,
-      authorizationId: 'daemon-range-authorization-1',
+      authorizationId: 'range-authorization-1',
       requestDigest,
       selection: '01',
       signatures: [],
@@ -89,7 +89,7 @@ test('engine result-by-operation decodes bounded canonical base64 and verifies i
   const response = engineResult(operationId, requestDigest, envelopeBytes)
   const authority = { operation, reference: response.reference }
   const calls: string[] = []
-  const decoded = await fetchDaemonCtfRangeEngineResultByOperation(
+  const decoded = await fetchCtfRangeEngineResultByOperation(
     {
       async getSettlementCapabilityResultByOperation(requestedOperationId) {
         calls.push(requestedOperationId)
@@ -116,26 +116,42 @@ test('engine result decoder rejects noncanonical base64, digest mismatch, and ov
     JSON.stringify({
       schemaVersion: 1,
       operationId,
-      authorizationId: 'daemon-range-authorization-1',
+      authorizationId: 'range-authorization-1',
       requestDigest,
       selection: '01',
       signatures: [],
     }),
   )
   const valid = engineResult(operationId, requestDigest, bytes)
+  const padded = engineResult(
+    operationId,
+    requestDigest,
+    Uint8Array.from([...bytes, ...new Uint8Array(bytes.length % 3 === 0 ? 1 : 0).fill(32)]),
+  )
   const authority = { operation, reference: valid.reference }
 
   for (const response of [
     { ...valid, envelope: `${valid.envelope}\n` },
+    { ...padded, envelope: makeBase64TailNoncanonical(padded.envelope) },
     { ...valid, envelopeDigest: '00'.repeat(32) },
     { ...valid, envelope: 'A'.repeat(349_529) },
   ]) {
     assert.throws(
-      () => decodeDaemonCtfRangeEngineResult(response, authority),
-      /daemon CTF range engine result is invalid/,
+      () => decodeCtfRangeEngineResult(response, authority),
+      /CTF range engine result is invalid/,
     )
   }
 })
+
+function makeBase64TailNoncanonical(value: string): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const offset = value.endsWith('==') ? -3 : value.endsWith('=') ? -2 : null
+  if (offset === null) throw new Error('test envelope must have base64 padding')
+  const index = value.length + offset
+  const replacement = alphabet[alphabet.indexOf(value[index]!) + 1]
+  if (replacement === undefined) throw new Error('test envelope tail cannot be mutated')
+  return `${value.slice(0, index)}${replacement}${value.slice(index + 1)}`
+}
 
 test('engine result decoder binds persisted capability, authorization, and retry digest', () => {
   const operation = createRangeOperation()
@@ -155,7 +171,7 @@ test('engine result decoder binds persisted capability, authorization, and retry
     ),
   )
   const authority = { operation, reference: response.reference }
-  assert.equal(decodeDaemonCtfRangeEngineResult(response, authority).requestDigest, requestDigest)
+  assert.equal(decodeCtfRangeEngineResult(response, authority).requestDigest, requestDigest)
 
   for (const invalidAuthority of [
     {
@@ -165,20 +181,20 @@ test('engine result decoder binds persisted capability, authorization, and retry
     { ...authority, previouslyPersistedRequestDigest: 'aa'.repeat(32) },
   ]) {
     assert.throws(
-      () => decodeDaemonCtfRangeEngineResult(response, invalidAuthority),
-      /daemon CTF range engine result is invalid/,
+      () => decodeCtfRangeEngineResult(response, invalidAuthority),
+      /CTF range engine result is invalid/,
     )
   }
   assert.throws(
     () =>
-      decodeDaemonCtfRangeEngineResult(
+      decodeCtfRangeEngineResult(
         {
           ...response,
           reference: { ...response.reference, artifactId: 'noncanonical-artifact' },
         },
         authority,
       ),
-    /daemon CTF range engine result is invalid/,
+    /CTF range engine result is invalid/,
   )
 
   const foreignAuthorization = new TextEncoder().encode(
@@ -193,11 +209,11 @@ test('engine result decoder binds persisted capability, authorization, and retry
   )
   assert.throws(
     () =>
-      decodeDaemonCtfRangeEngineResult(
+      decodeCtfRangeEngineResult(
         engineResult(operation.operationId, requestDigest, foreignAuthorization),
         authority,
       ),
-    /daemon CTF range engine result is invalid/,
+    /CTF range engine result is invalid/,
   )
 })
 
@@ -211,7 +227,7 @@ test('uncertain recovery queries the exact full manifest and delegates classific
   const restoreCalls: PostRestorePayload[] = []
   const checkCalls: CheckStatePayload[] = []
   const keyCalls: string[] = []
-  const mint: DaemonCtfRangeMintClient = {
+  const mint: CtfRangeMintClient = {
     async restore(payload) {
       restoreCalls.push(payload)
       return {
@@ -230,7 +246,7 @@ test('uncertain recovery queries the exact full manifest and delegates classific
       return { keysets: [mintKeyset(operation, keysetId ?? '')] }
     },
   }
-  const adapter = new DaemonCtfRangeMintRecoveryAdapter(operation, mint)
+  const adapter = new CtfRangeMintRecoveryAdapter(operation, mint)
   const decision = await adapter.classifyUncertainRecovery({
     record: binding.record,
     selection,
@@ -261,7 +277,7 @@ test('mint recovery rejects foreign restore rows and keysets without exposing pr
   const operation = createRangeOperation()
   const binding = await createRangeBinding(operation)
   const secret = operation.inputs[0]!.secret
-  const foreignRestore: DaemonCtfRangeMintClient = {
+  const foreignRestore: CtfRangeMintClient = {
     async restore(payload): Promise<PostRestoreResponse> {
       return {
         outputs: [{ ...payload.outputs[0]!, B_: MINT_PUBLIC_KEY }],
@@ -273,7 +289,7 @@ test('mint recovery rejects foreign restore rows and keysets without exposing pr
       return { keysets: [mintKeyset(operation, keysetId ?? '')] }
     },
   }
-  const leakingCheck: DaemonCtfRangeMintClient = {
+  const leakingCheck: CtfRangeMintClient = {
     async restore(): Promise<PostRestoreResponse> {
       return { outputs: [], signatures: [] }
     },
@@ -284,7 +300,7 @@ test('mint recovery rejects foreign restore rows and keysets without exposing pr
       return { keysets: [mintKeyset(operation, keysetId ?? '')] }
     },
   }
-  const foreignKeyset: DaemonCtfRangeMintClient = {
+  const foreignKeyset: CtfRangeMintClient = {
     async restore(): Promise<PostRestoreResponse> {
       return { outputs: [], signatures: [] }
     },
@@ -297,7 +313,7 @@ test('mint recovery rejects foreign restore rows and keysets without exposing pr
   }
 
   for (const mint of [foreignRestore, leakingCheck, foreignKeyset]) {
-    const adapter = new DaemonCtfRangeMintRecoveryAdapter(operation, mint)
+    const adapter = new CtfRangeMintRecoveryAdapter(operation, mint)
     await assert.rejects(
       () =>
         adapter.classifyUncertainRecovery({
@@ -307,7 +323,7 @@ test('mint recovery rejects foreign restore rows and keysets without exposing pr
         }),
       (error: unknown) =>
         error instanceof Error &&
-        /daemon CTF range mint recovery failed/.test(error.message) &&
+        /CTF range mint recovery failed/.test(error.message) &&
         !error.message.includes(secret),
     )
   }
@@ -319,7 +335,7 @@ test('exact NUT-07 rejects missing and duplicate states and batches through the 
     secret: `input-${index}`,
   }))
   const batchSizes: number[] = []
-  const states = await checkDaemonCtfRangeInputProofStates(
+  const states = await checkCtfRangeInputProofStates(
     {
       async check(payload) {
         batchSizes.push(payload.Ys.length)
@@ -333,7 +349,7 @@ test('exact NUT-07 rejects missing and duplicate states and batches through the 
 
   const blsId = `02${'12'.repeat(32)}`
   let blsY = ''
-  await checkDaemonCtfRangeInputProofStates(
+  await checkCtfRangeInputProofStates(
     {
       async check(payload) {
         blsY = payload.Ys[0]!
@@ -346,7 +362,7 @@ test('exact NUT-07 rejects missing and duplicate states and batches through the 
 
   await assert.rejects(
     () =>
-      checkDaemonCtfRangeInputProofStates(
+      checkCtfRangeInputProofStates(
         {
           async check() {
             return { states: [] }
@@ -354,11 +370,11 @@ test('exact NUT-07 rejects missing and duplicate states and batches through the 
         },
         [{ id: OFFER_KEYSET_ID, secret: 'missing-input' }],
       ),
-    /daemon CTF range proof-state response is invalid/,
+    /CTF range proof-state response is invalid/,
   )
   await assert.rejects(
     () =>
-      checkDaemonCtfRangeInputProofStates(
+      checkCtfRangeInputProofStates(
         {
           async check(payload) {
             return {
@@ -374,13 +390,13 @@ test('exact NUT-07 rejects missing and duplicate states and batches through the 
           { id: OFFER_KEYSET_ID, secret: 'duplicate-input-2' },
         ],
       ),
-    /daemon CTF range proof-state response is invalid/,
+    /CTF range proof-state response is invalid/,
   )
 
   let overCapCalls = 0
   await assert.rejects(
     () =>
-      checkDaemonCtfRangeInputProofStates(
+      checkCtfRangeInputProofStates(
         {
           async check(payload) {
             overCapCalls += 1
@@ -392,7 +408,7 @@ test('exact NUT-07 rejects missing and duplicate states and batches through the 
           secret: `over-cap-${index}`,
         })),
       ),
-    /daemon CTF range proof-state response is invalid/,
+    /CTF range proof-state response is invalid/,
   )
   assert.equal(overCapCalls, 0)
 })
@@ -402,7 +418,7 @@ test('invalid restored signature remains reconciling instead of becoming termina
   const binding = await createRangeBinding(operation)
   const selection = createCtfSelectionBitmap(operation.manifest.entries.length, [1])
   const selected = buildDurableCtfRangeRecoveryQuery(operation, null).outputs[1]!
-  const mint: DaemonCtfRangeMintClient = {
+  const mint: CtfRangeMintClient = {
     async restore() {
       return {
         outputs: [selected],
@@ -415,14 +431,13 @@ test('invalid restored signature remains reconciling instead of becoming termina
     },
   }
 
-  const decision = await new DaemonCtfRangeMintRecoveryAdapter(
-    operation,
-    mint,
-  ).classifyUncertainRecovery({
-    record: binding.record,
-    selection,
-    now: 50,
-  })
+  const decision = await new CtfRangeMintRecoveryAdapter(operation, mint).classifyUncertainRecovery(
+    {
+      record: binding.record,
+      selection,
+      now: 50,
+    },
+  )
   assert.equal(decision.kind, 'reconciling')
 })
 
@@ -441,7 +456,7 @@ test('default Cashu recovery cancels oversized restore responses with safe fetch
       return new Response(
         new ReadableStream<Uint8Array>({
           start(controller) {
-            controller.enqueue(new Uint8Array(DAEMON_CTF_RANGE_MINT_RESTORE_RESPONSE_BYTES_MAX))
+            controller.enqueue(new Uint8Array(CTF_RANGE_MINT_RESTORE_RESPONSE_BYTES_MAX))
             controller.enqueue(Uint8Array.of(1))
           },
           cancel() {
@@ -457,7 +472,7 @@ test('default Cashu recovery cancels oversized restore responses with safe fetch
     const keysetId = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1))
     return Response.json({ keysets: [mintKeyset(operation, keysetId)] })
   }
-  const adapter = new DaemonCtfRangeMintRecoveryAdapter(operation, undefined, fetchImpl)
+  const adapter = new CtfRangeMintRecoveryAdapter(operation, undefined, fetchImpl)
 
   await assert.rejects(
     () =>
@@ -466,7 +481,7 @@ test('default Cashu recovery cancels oversized restore responses with safe fetch
         selection: null,
         now: 50,
       }),
-    /daemon CTF range mint recovery failed/,
+    /CTF range mint recovery failed/,
   )
   assert.equal(restoreCancelled, true)
   assert.equal(
@@ -509,7 +524,7 @@ function engineResult(
 
 function createRangeOperation(): DurableCtfRangeOperation {
   const seed = new Uint8Array(64).fill(7)
-  const operationId = 'daemon-range-operation-1'
+  const operationId = 'range-operation-1'
   const manifest = createCtfRangeManifest({
     seed,
     operationId,
@@ -539,8 +554,8 @@ function createRangeOperation(): DurableCtfRangeOperation {
   )
   return createDurableCtfRangeOperation({
     operationId,
-    sourceOperationId: 'daemon-range-prepare-1',
-    authorizationId: 'daemon-range-authorization-1',
+    sourceOperationId: 'range-prepare-1',
+    authorizationId: 'range-authorization-1',
     mintUrl: 'https://mint.example',
     unit: 'msat',
     conditionId: CONDITION_ID,
