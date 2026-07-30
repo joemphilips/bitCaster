@@ -88,6 +88,15 @@ export interface DurableCustodyExactArtifact {
   artifact: unknown
   fingerprint: string
 }
+interface PreparedDurableCustodyArtifactMetadata {
+  encodedBytes: Uint8Array
+  fingerprint: string
+  byteLength: number
+}
+const preparedDurableCustodyArtifacts = new WeakMap<
+  object,
+  PreparedDurableCustodyArtifactMetadata
+>()
 export interface DurableCustodyArtifactReference {
   artifactId: string
   encoding: 'canonical-json'
@@ -576,6 +585,42 @@ export function encodeBoundedDurableArtifact(value: unknown, maximumBytes: numbe
     throw new Error('custody artifact exceeds the byte limit')
   }
   return bytes
+}
+
+export function prepareDurableCustodyExactArtifact(artifact: unknown): DurableCustodyExactArtifact {
+  let detachedArtifact: unknown
+  try {
+    detachedArtifact = structuredClone(artifact)
+  } catch {
+    throw new Error('custody artifact cannot be cloned')
+  }
+  const encodedBytes = encodeBoundedDurableArtifact(
+    detachedArtifact,
+    DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
+  )
+  const fingerprint = bytesToHex(sha256(encodedBytes))
+  freezeCanonicalArtifactGraph(detachedArtifact)
+  const exactArtifact = Object.freeze({
+    encoding: 'canonical-json' as const,
+    artifact: detachedArtifact,
+    fingerprint,
+  })
+  preparedDurableCustodyArtifacts.set(exactArtifact, {
+    encodedBytes,
+    fingerprint,
+    byteLength: encodedBytes.length,
+  })
+  return exactArtifact
+}
+
+export function readPreparedDurableCustodyArtifactBytes(
+  artifact: DurableCustodyExactArtifact,
+): Uint8Array {
+  const metadata = preparedDurableCustodyArtifacts.get(artifact)
+  if (metadata === undefined) {
+    throw new Error('custody exact artifact is not SDK-prepared')
+  }
+  return metadata.encodedBytes.slice()
 }
 
 export function canonicalDurableCustodyKeysetIdentity(keysetId: string): string {
@@ -1134,10 +1179,7 @@ export function applyDurableCustodyTransaction<T>(
         return
       }
       validateArtifactRow(current, input.reference)
-      if (
-        input.expectedArtifactRevision !== current.revision ||
-        canonicalJson(current.artifact) !== canonicalJson(input.artifact)
-      ) {
+      if (input.expectedArtifactRevision !== current.revision) {
         throw new Error('custody artifact is immutable or its CAS is stale')
       }
     },
@@ -1836,8 +1878,10 @@ function validateVerification(value: unknown, outputFingerprint: unknown): void 
   }
 }
 
-function validateExactArtifact(value: unknown): asserts value is DurableCustodyExactArtifact {
+function validateExactArtifactMetadata(value: unknown): PreparedDurableCustodyArtifactMetadata {
   if (!isRecord(value)) throw new Error('custody exact artifact is invalid')
+  const prepared = preparedDurableCustodyArtifacts.get(value)
+  if (prepared !== undefined) return prepared
   exactKeys(value, ['encoding', 'artifact', 'fingerprint'])
   if (value.encoding !== 'canonical-json') {
     throw new Error('custody exact artifact encoding is invalid')
@@ -1847,6 +1891,15 @@ function validateExactArtifact(value: unknown): asserts value is DurableCustodyE
   if (bytesToHex(sha256(bytes)) !== value.fingerprint) {
     throw new Error('custody exact artifact fingerprint is invalid')
   }
+  return {
+    encodedBytes: bytes,
+    fingerprint: value.fingerprint,
+    byteLength: bytes.length,
+  }
+}
+
+function validateExactArtifact(value: unknown): asserts value is DurableCustodyExactArtifact {
+  validateExactArtifactMetadata(value)
 }
 
 export function createDurableCustodyArtifactReference(
@@ -1854,13 +1907,12 @@ export function createDurableCustodyArtifactReference(
   value: DurableCustodyExactArtifact,
 ): DurableCustodyArtifactReference {
   requireText(artifactId, 'artifact id')
-  validateExactArtifact(value)
+  const metadata = validateExactArtifactMetadata(value)
   return {
     artifactId,
     encoding: 'canonical-json',
-    fingerprint: value.fingerprint,
-    byteLength: encodeBoundedDurableArtifact(value.artifact, DURABLE_CUSTODY_ARTIFACT_BYTES_MAX)
-      .length,
+    fingerprint: metadata.fingerprint,
+    byteLength: metadata.byteLength,
   }
 }
 
@@ -1869,14 +1921,10 @@ export function assertDurableCustodyArtifactMatchesReference(
   artifact: DurableCustodyExactArtifact,
 ): void {
   validateArtifactReference(reference)
-  validateExactArtifact(artifact)
-  const byteLength = encodeBoundedDurableArtifact(
-    artifact.artifact,
-    DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
-  ).length
+  const metadata = validateExactArtifactMetadata(artifact)
   if (
-    reference.fingerprint !== artifact.fingerprint ||
-    reference.byteLength !== byteLength ||
+    reference.fingerprint !== metadata.fingerprint ||
+    reference.byteLength !== metadata.byteLength ||
     reference.encoding !== artifact.encoding
   ) {
     throw new Error('custody artifact does not match its exact reference')
@@ -2564,6 +2612,20 @@ function assertBoundedArtifactGraph(value: unknown, maximumBytes: number): void 
     if (estimatedBytes > maximumBytes) {
       throw new Error('custody artifact exceeds the byte limit')
     }
+  }
+}
+
+function freezeCanonicalArtifactGraph(value: unknown): void {
+  if (value === null || typeof value !== 'object') return
+  const stack: object[] = [value]
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    for (const child of Object.values(current)) {
+      if (child !== null && typeof child === 'object') {
+        stack.push(child)
+      }
+    }
+    Object.freeze(current)
   }
 }
 

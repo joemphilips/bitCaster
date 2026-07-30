@@ -4,8 +4,10 @@ import {
   DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX,
   DURABLE_CUSTODY_TRANSACTION_OPERATION_LIMIT_MAX,
   applyDurableCustodyTransaction,
+  assertDurableCustodyArtifactMatchesReference,
   classifyDurableCustodyActiveWork,
   claimDurableCustodyScope,
+  createDurableCustodyArtifactReference,
   createDurableCustodyDispatchIntent,
   createDurableProofOperationFacts,
   decideDurableCustodyPurge,
@@ -16,7 +18,9 @@ import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
   encodeBoundedDurableArtifact,
+  prepareDurableCustodyExactArtifact,
   readDurableCustodyRecoveryPage,
+  readPreparedDurableCustodyArtifactBytes,
   reduceDurableCustodyState,
   type DurableCustodyRecord,
   type DurableCustodyScopeState,
@@ -166,6 +170,65 @@ test('custody identifiers are scope-separated and never expose proof secrets', (
   assert.equal(proofId.includes('bearer-secret'), false)
 })
 
+test('prepared exact artifacts detach and freeze their canonical graph', () => {
+  const original = { nested: { value: 'before' }, list: [{ amount: 1 }] }
+  const prepared = prepareDurableCustodyExactArtifact(original)
+
+  original.nested.value = 'after'
+  original.list[0]!.amount = 2
+
+  assert.deepEqual(prepared.artifact, {
+    nested: { value: 'before' },
+    list: [{ amount: 1 }],
+  })
+  assert.equal(Object.isFrozen(prepared), true)
+  assert.equal(Object.isFrozen(prepared.artifact), true)
+  assert.equal(Object.isFrozen((prepared.artifact as typeof original).nested), true)
+  assert.equal(Object.isFrozen((prepared.artifact as typeof original).list[0]), true)
+  assert.throws(() => {
+    ;(prepared.artifact as typeof original).nested.value = 'replacement'
+  }, TypeError)
+})
+
+test('prepared exact-artifact bytes are copy-safe and identity-authorized', () => {
+  const prepared = prepareDurableCustodyExactArtifact({ b: 2, a: 1 })
+  const reference = createDurableCustodyArtifactReference('artifact-1', prepared)
+  const first = readPreparedDurableCustodyArtifactBytes(prepared)
+  const second = readPreparedDurableCustodyArtifactBytes(prepared)
+
+  assert.equal(new TextDecoder().decode(first), '{"a":1,"b":2}')
+  assert.equal(first.length, reference.byteLength)
+  assert.notEqual(first, second)
+  first[0] = 0
+  assert.equal(new TextDecoder().decode(second), '{"a":1,"b":2}')
+  assertDurableCustodyArtifactMatchesReference(reference, prepared)
+
+  const forged = structuredClone(prepared)
+  assert.throws(() => readPreparedDurableCustodyArtifactBytes(forged), /not SDK-prepared/)
+  assert.deepEqual(createDurableCustodyArtifactReference('artifact-2', forged), {
+    ...reference,
+    artifactId: 'artifact-2',
+  })
+})
+
+test('unprepared exact artifacts remain fail-closed after graph mutation', () => {
+  const value = { state: 'before' }
+  const artifact = {
+    encoding: 'canonical-json' as const,
+    artifact: value,
+    fingerprint: deriveDurableCustodyArtifactFingerprint(value),
+  }
+  const reference = createDurableCustodyArtifactReference('artifact-1', artifact)
+
+  value.state = 'after'
+
+  assert.throws(
+    () => assertDurableCustodyArtifactMatchesReference(reference, artifact),
+    /fingerprint/,
+  )
+  assert.throws(() => createDurableCustodyArtifactReference('artifact-2', artifact), /fingerprint/)
+})
+
 test('custody decoder is exact and excludes foreign semantics', () => {
   const record = intent()
   assert.equal(decodeDurableCustodyRecord(record).operation.semanticKind, 'wallet-send')
@@ -229,11 +292,9 @@ test('custody transaction exposes only the selected bounded operation set', () =
     (selected) => selected.getOperation(record.operation.operationId)?.revision,
   )
   assert.equal(result, 0)
-  const exactBody = {
-    encoding: 'canonical-json' as const,
-    artifact: { operation: 'wallet-operation-1' },
-    fingerprint: record.operation.exactRequest.requestFingerprint,
-  }
+  const exactBody = prepareDurableCustodyExactArtifact({
+    operation: 'wallet-operation-1',
+  })
   applyDurableCustodyTransaction(transaction, selection, (selected) =>
     selected.putArtifact({
       scopeId: record.scope.scopeId,
@@ -567,18 +628,15 @@ test('P09 purge requires terminal status, replay cutoff, and resolved delivery',
     nextAttemptAtMs: 10,
     reason: 'mint-response-unknown',
   })
+  const exactResult = prepareDurableCustodyExactArtifact({ result: 1 })
   state = reduceDurableCustodyState(state, {
     kind: 'stage-verified-result',
     authorization: authority(4),
     expectedRevision: 2,
     resultHandle: 'result:1',
-    resultFingerprint: deriveDurableCustodyArtifactFingerprint({ result: 1 }),
+    resultFingerprint: exactResult.fingerprint,
     outputPlanFingerprint: record.operation.outputPlan.outputPlanFingerprint,
-    exactResult: {
-      encoding: 'canonical-json',
-      artifact: { result: 1 },
-      fingerprint: deriveDurableCustodyArtifactFingerprint({ result: 1 }),
-    },
+    exactResult,
     selectedSuccessorProofIds: record.operation.proofStorage.lineage.successorProofIds,
   })
   state = reduceDurableCustodyState(state, {
