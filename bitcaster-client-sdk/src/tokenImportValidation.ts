@@ -1,4 +1,8 @@
 import { getDecodedToken, getDecodedTokenBinary, type Token } from '@cashu/cashu-ts'
+import {
+  readAllocationBoundedJsonResponse,
+  type AllocationBoundedJsonResponse,
+} from './boundedJsonResponse.ts'
 
 /**
  * The browser already applies a 100 KiB paste limit. At that size, 512 proofs
@@ -91,15 +95,7 @@ export function canonicalizeTokenImportMintUrl(
   return canonicalizeMintUrl(mintUrl, allowInsecureLoopbackHttp)
 }
 
-export interface TokenImportJsonResponse {
-  readonly body: ReadableStream<Uint8Array> | null
-  readonly headers: { get(name: string): string | null }
-  /**
-   * Optional non-streaming adapter hook that must enforce `maximumBytes`
-   * before allocating or returning the complete decoded body.
-   */
-  readBoundedBody?(maximumBytes: number): Promise<Uint8Array>
-}
+export type TokenImportJsonResponse = AllocationBoundedJsonResponse
 
 export interface SelectTokenImportKeysetCandidatesInput {
   request: TokenImportKeysetRequest
@@ -221,22 +217,7 @@ export async function readBoundedTokenImportJsonResponse(
   response: TokenImportJsonResponse,
   maximumBytes: number,
 ): Promise<unknown> {
-  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
-    throw new Error('Mint keyset response byte limit is invalid')
-  }
-  const declaredBytes = parseDeclaredResponseBytes(response.headers.get('content-length'))
-  if (declaredBytes !== null && declaredBytes > maximumBytes) {
-    throw new Error('Mint keyset response byte limit exceeded')
-  }
-  const bytes =
-    response.body === null
-      ? await readBoundedFallbackResponse(response, maximumBytes)
-      : await readBoundedResponseStream(response.body, maximumBytes)
-  try {
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown
-  } catch {
-    throw new Error('Mint keyset lookup returned invalid JSON')
-  }
+  return readAllocationBoundedJsonResponse(response, maximumBytes)
 }
 
 function selectCandidatesFromWireResponse(
@@ -278,66 +259,6 @@ function selectCandidatesFromWireResponse(
       }
       return metadata
     })
-}
-
-function parseDeclaredResponseBytes(value: string | null): number | null {
-  if (value === null) return null
-  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
-    throw new Error('Mint keyset response Content-Length is invalid')
-  }
-  const parsed = Number(value)
-  if (!Number.isSafeInteger(parsed)) {
-    throw new Error('Mint keyset response Content-Length is invalid')
-  }
-  return parsed
-}
-
-async function readBoundedFallbackResponse(
-  response: TokenImportJsonResponse,
-  maximumBytes: number,
-): Promise<Uint8Array> {
-  if (response.readBoundedBody === undefined) {
-    throw new Error('Mint keyset response fallback requires an adapter-owned bounded body reader')
-  }
-  const bytes = await response.readBoundedBody(maximumBytes)
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength > maximumBytes) {
-    throw new Error('Mint keyset response byte limit exceeded')
-  }
-  return bytes
-}
-
-async function readBoundedResponseStream(
-  stream: ReadableStream<Uint8Array>,
-  maximumBytes: number,
-): Promise<Uint8Array> {
-  const reader = stream.getReader()
-  const chunks: Uint8Array[] = []
-  let totalBytes = 0
-  try {
-    while (true) {
-      const next = await reader.read()
-      if (next.done) break
-      if (!ArrayBuffer.isView(next.value) || next.value.BYTES_PER_ELEMENT !== 1) {
-        throw new Error('Mint keyset response stream returned invalid data')
-      }
-      const chunk = new Uint8Array(next.value.buffer, next.value.byteOffset, next.value.byteLength)
-      totalBytes += chunk.byteLength
-      if (totalBytes > maximumBytes) {
-        await reader.cancel().catch(() => {})
-        throw new Error('Mint keyset response byte limit exceeded')
-      }
-      chunks.push(chunk)
-    }
-  } finally {
-    reader.releaseLock()
-  }
-  const bytes = new Uint8Array(totalBytes)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return bytes
 }
 
 /**

@@ -3,6 +3,8 @@ import { test } from 'node:test'
 import {
   BitcasterEngineClient,
   EngineClientError,
+  SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX,
+  SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX,
   submitEphemeralPubkey,
   type EngineAuthorizationRequest,
 } from '../src/engineClient.ts'
@@ -677,6 +679,188 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
       url: `https://engine.example/api/v1/settlement-capability-results/${result.resultId}/acknowledgement`,
       method: 'POST',
       body: JSON.stringify({ expectedVersion: 4 }),
+    },
+  ])
+})
+
+test('BitcasterEngineClient bounds result streams before Response.json allocation', async () => {
+  let jsonCalls = 0
+  let cancelled = false
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => {
+      const response = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX))
+            controller.enqueue(Uint8Array.of(1))
+          },
+          cancel() {
+            cancelled = true
+          },
+        }),
+        { status: 200 },
+      )
+      Object.defineProperty(response, 'json', {
+        value: async () => {
+          jsonCalls += 1
+          return {}
+        },
+      })
+      return response
+    },
+  })
+
+  await assert.rejects(
+    () => client.getSettlementCapabilityResultByOperation('operation-1'),
+    /response byte limit exceeded/,
+  )
+  assert.equal(jsonCalls, 0)
+  assert.equal(cancelled, true)
+})
+
+test('BitcasterEngineClient cancels an endless 404 settlement-result body', async () => {
+  let cancelled = false
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          cancel() {
+            cancelled = true
+          },
+        }),
+        { status: 404 },
+      ),
+  })
+
+  assert.equal(await client.getSettlementCapabilityResult('missing-result'), null)
+  assert.equal(cancelled, true)
+})
+
+test('BitcasterEngineClient bounds and cancels oversized settlement-result errors', async () => {
+  let cancelled = false
+  let textCalls = 0
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => {
+      const response = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new Uint8Array(SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX),
+            )
+            controller.enqueue(Uint8Array.of(1))
+          },
+          cancel() {
+            cancelled = true
+          },
+        }),
+        { status: 503 },
+      )
+      Object.defineProperty(response, 'text', {
+        value: async () => {
+          textCalls += 1
+          return 'unbounded'
+        },
+      })
+      return response
+    },
+  })
+
+  await assert.rejects(
+    () => client.getSettlementCapabilityResultByOperation('operation-1'),
+    /Engine request failed: 503/,
+  )
+  assert.equal(cancelled, true)
+  assert.equal(textCalls, 0)
+})
+
+test('BitcasterEngineClient result lifetime rejects redirects and covers body consumption', async () => {
+  let redirectMode: RequestRedirect | undefined
+  let bodySignalAborted = false
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    settlementResultRequestTimeoutMs: 5,
+    fetchImpl: async (_input, init) => {
+      redirectMode = init?.redirect
+      const signal = init?.signal
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            signal?.addEventListener(
+              'abort',
+              () => {
+                bodySignalAborted = true
+                controller.error(new DOMException('aborted', 'AbortError'))
+              },
+              { once: true },
+            )
+          },
+        }),
+        { status: 200 },
+      )
+    },
+  })
+
+  await assert.rejects(
+    () => client.getSettlementCapabilityResultByOperation('operation-1'),
+    /settlement capability result request failed/,
+  )
+  assert.equal(redirectMode, 'error')
+  assert.equal(bodySignalAborted, true)
+})
+
+test('BitcasterEngineClient result request accepts caller cancellation without changing auth input', async () => {
+  const controller = new AbortController()
+  const authorizationRequests: EngineAuthorizationRequest[] = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: async (request) => {
+      authorizationRequests.push(request)
+      return 'Nostr signed-result-request'
+    },
+    fetchImpl: async (_input, init) => {
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Nostr signed-result-request')
+      controller.abort()
+      return new Response('{}')
+    },
+  })
+
+  await assert.rejects(
+    () => client.getSettlementCapabilityResult('result-1', controller.signal),
+    /settlement capability result request failed/,
+  )
+  assert.deepEqual(authorizationRequests, [
+    {
+      url: 'https://engine.example/api/v1/settlement-capability-results/result-1',
+      method: 'GET',
+      bodyText: undefined,
+    },
+  ])
+})
+
+test('BitcasterEngineClient acknowledgement preserves the exact NIP-98 body input', async () => {
+  const authorizationRequests: EngineAuthorizationRequest[] = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: async (request) => {
+      authorizationRequests.push(request)
+      return 'Nostr signed-acknowledgement'
+    },
+    fetchImpl: async (_input, init) => {
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Nostr signed-acknowledgement')
+      assert.equal(init?.redirect, 'error')
+      return Response.json({})
+    },
+  })
+
+  await client.acknowledgeSettlementCapabilityResult('result-1', { expectedVersion: 7 })
+  assert.deepEqual(authorizationRequests, [
+    {
+      url: 'https://engine.example/api/v1/settlement-capability-results/result-1/acknowledgement',
+      method: 'POST',
+      bodyText: '{"expectedVersion":7}',
     },
   ])
 })

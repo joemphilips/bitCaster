@@ -100,6 +100,10 @@
       "types": "./dist/tokenImportValidation.d.ts",
       "import": "./dist/tokenImportValidation.js"
     },
+    "./boundedJsonResponse": {
+      "types": "./dist/boundedJsonResponse.d.ts",
+      "import": "./dist/boundedJsonResponse.js"
+    },
     "./participationScore": {
       "types": "./dist/participationScore.d.ts",
       "import": "./dist/participationScore.js"

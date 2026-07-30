@@ -1,12 +1,21 @@
 import type { CtfCollateralUnit, MarketBaseAsset, MarketDivisibility } from './marketUnits.ts'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
+import {
+  readAllocationBoundedJsonResponse,
+  readAllocationBoundedTextResponse,
+} from './boundedJsonResponse.ts'
 
 export type EngineFetch = typeof fetch
+export const SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX = 384 * 1_024
+export const SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX = 64 * 1_024
+const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS = 10_000
+const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS_MAX = 60_000
 
 export interface EngineClientOptions {
   baseUrl: string
   fetchImpl?: EngineFetch
   authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>
+  settlementResultRequestTimeoutMs?: number
 }
 
 export interface EngineAuthorizationRequest {
@@ -367,11 +376,21 @@ export class BitcasterEngineClient {
   private readonly baseUrl: string
   private readonly fetchImpl: EngineFetch
   private readonly authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>
+  private readonly settlementResultRequestTimeoutMs: number
 
   constructor(options: EngineClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '')
     this.fetchImpl = options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init))
     this.authorization = options.authorization
+    this.settlementResultRequestTimeoutMs =
+      options.settlementResultRequestTimeoutMs ?? SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS
+    if (
+      !Number.isSafeInteger(this.settlementResultRequestTimeoutMs) ||
+      this.settlementResultRequestTimeoutMs <= 0 ||
+      this.settlementResultRequestTimeoutMs > SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS_MAX
+    ) {
+      throw new Error('settlement capability result request timeout is invalid')
+    }
   }
 
   async createSettlementCapability(
@@ -406,27 +425,36 @@ export class BitcasterEngineClient {
 
   async getSettlementCapabilityResult(
     resultId: string,
+    signal?: AbortSignal,
   ): Promise<SettlementCapabilityResultResponse | null> {
-    return this.getOptional<SettlementCapabilityResultResponse>(
+    return this.requestSettlementCapabilityResult(
       `/api/v1/settlement-capability-results/${encodePathSegment(resultId)}`,
+      {},
+      undefined,
+      signal,
     )
   }
 
   async getSettlementCapabilityResultByOperation(
     operationId: string,
+    signal?: AbortSignal,
   ): Promise<SettlementCapabilityResultResponse | null> {
     const query = new URLSearchParams({ operationId })
-    return this.getOptional<SettlementCapabilityResultResponse>(
+    return this.requestSettlementCapabilityResult(
       `/api/v1/settlement-capability-results/by-operation?${query}`,
+      {},
+      undefined,
+      signal,
     )
   }
 
   async acknowledgeSettlementCapabilityResult(
     resultId: string,
     request: AcknowledgeSettlementCapabilityResultRequest,
+    signal?: AbortSignal,
   ): Promise<SettlementCapabilityResultResponse | null> {
     const bodyText = JSON.stringify(request)
-    const response = await this.request(
+    return this.requestSettlementCapabilityResult(
       `/api/v1/settlement-capability-results/${encodePathSegment(resultId)}/acknowledgement`,
       {
         method: 'POST',
@@ -434,10 +462,8 @@ export class BitcasterEngineClient {
         headers: { 'content-type': 'application/json' },
       },
       bodyText,
-      true,
+      signal,
     )
-    if (response.status === 404) return null
-    return (await response.json()) as SettlementCapabilityResultResponse
   }
 
   async submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse> {
@@ -611,6 +637,67 @@ export class BitcasterEngineClient {
     allowNotFound = false,
   ): Promise<Response> {
     const url = `${this.baseUrl}${path}`
+    const headers = await this.authorizedHeaders(url, init, bodyText)
+    const response = await this.fetchImpl(url, { ...init, headers })
+    if (!response.ok && !(allowNotFound && response.status === 404)) {
+      const detail = await response.text().catch(() => '')
+      const problem = parseEngineProblem(detail)
+      throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)
+    }
+    return response
+  }
+
+  private async requestSettlementCapabilityResult(
+    path: string,
+    init: RequestInit,
+    bodyText: string | undefined,
+    callerSignal: AbortSignal | undefined,
+  ): Promise<SettlementCapabilityResultResponse | null> {
+    const url = `${this.baseUrl}${path}`
+    const headers = await this.authorizedHeaders(url, init, bodyText)
+    const lifetime = createSettlementResultRequestLifetime(
+      callerSignal,
+      this.settlementResultRequestTimeoutMs,
+    )
+    try {
+      let response: Response
+      try {
+        response = await this.fetchImpl(url, {
+          ...init,
+          headers,
+          redirect: 'error',
+          signal: lifetime.signal,
+        })
+      } catch {
+        throw new Error('settlement capability result request failed')
+      }
+      if (lifetime.signal.aborted) {
+        await response.body?.cancel().catch(() => {})
+        throw new Error('settlement capability result request failed')
+      }
+      if (response.status === 404) {
+        await response.body?.cancel().catch(() => {})
+        return null
+      }
+      if (!response.ok) throw await boundedSettlementResultError(response)
+      try {
+        return await readSettlementCapabilityResultResponse(response)
+      } catch (error) {
+        if (lifetime.signal.aborted) {
+          throw new Error('settlement capability result request failed')
+        }
+        throw error
+      }
+    } finally {
+      lifetime.dispose()
+    }
+  }
+
+  private async authorizedHeaders(
+    url: string,
+    init: RequestInit,
+    bodyText: string | undefined,
+  ): Promise<Record<string, string>> {
     const headers = normalizeHeaders(init.headers)
     if (this.authorization) {
       headers.Authorization = await this.authorization({
@@ -619,13 +706,48 @@ export class BitcasterEngineClient {
         bodyText,
       })
     }
-    const response = await this.fetchImpl(url, { ...init, headers })
-    if (!response.ok && !(allowNotFound && response.status === 404)) {
-      const detail = await response.text().catch(() => '')
-      const problem = parseEngineProblem(detail)
-      throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)
-    }
-    return response
+    return headers
+  }
+}
+
+async function readSettlementCapabilityResultResponse(
+  response: Response,
+): Promise<SettlementCapabilityResultResponse> {
+  return (await readAllocationBoundedJsonResponse(
+    response,
+    SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX,
+  )) as SettlementCapabilityResultResponse
+}
+
+async function boundedSettlementResultError(response: Response): Promise<EngineClientError> {
+  let detail = ''
+  try {
+    detail = await readAllocationBoundedTextResponse(
+      response,
+      SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX,
+    )
+  } catch {
+    detail = ''
+  }
+  const problem = parseEngineProblem(detail)
+  return new EngineClientError(response.status, detail, problem?.code, problem?.detail)
+}
+
+function createSettlementResultRequestLifetime(
+  callerSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; dispose(): void } {
+  const controller = new AbortController()
+  const forwardAbort = () => controller.abort()
+  if (callerSignal?.aborted) controller.abort()
+  else callerSignal?.addEventListener('abort', forwardAbort, { once: true })
+  const timeout = setTimeout(forwardAbort, timeoutMs)
+  return {
+    signal: controller.signal,
+    dispose() {
+      clearTimeout(timeout)
+      callerSignal?.removeEventListener('abort', forwardAbort)
+    },
   }
 }
 
