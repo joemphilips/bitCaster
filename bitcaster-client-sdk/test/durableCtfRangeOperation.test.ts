@@ -59,6 +59,7 @@ import { FaultInjectingDurableCustodyAdapter } from './support/faultInjectingDur
 
 const CONDITION_ID = 'ab'.repeat(32)
 const OUTCOME_COLLECTION = 'YES'
+const SECOND_OUTCOME_COLLECTION = 'NO'
 const ROOT_PARENT = '0'.repeat(64)
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(MINT_PRIVATE_KEY, true))
@@ -90,6 +91,14 @@ const RECEIVE_KEYSET = deriveConditionalKeysetId({
   conditionId: CONDITION_ID,
   outcomeCollectionId: OUTCOME_COLLECTION_ID,
 })
+const SECOND_CONDITIONAL_KEYSET = deriveConditionalKeysetId({
+  keys: KEYS,
+  unit: 'msat',
+  input_fee_ppk: INPUT_FEE_PPK,
+  final_expiry: FINAL_EXPIRY,
+  conditionId: CONDITION_ID,
+  outcomeCollectionId: SECOND_OUTCOME_COLLECTION_ID,
+})
 const SEED = new Uint8Array(64).fill(7)
 
 function fixture(
@@ -98,14 +107,18 @@ function fixture(
     keysetLookup?: TokenImportKeysetLookup
     expiry?: number
     expiryObservation?: DurableCtfRangeExpiryObservation
+    proofSigningPrivateKey?: Uint8Array
+    offerKeysetId?: string
+    expiryContext?: Parameters<typeof createCtfAuthorizationOutputs>[0]['expiryContext']
   } = {},
 ): DurableCtfRangeOperation {
   const expiry = options.expiry ?? 100
+  const offerKeysetId = options.offerKeysetId ?? OFFER_KEYSET
   const manifest = createCtfRangeManifest({
     seed: SEED,
     operationId: 'range-operation-1',
     receiveKeyset: { id: RECEIVE_KEYSET, active: true, keys: KEYS },
-    offerKeyset: { id: OFFER_KEYSET, active: true, keys: KEYS },
+    offerKeyset: { id: offerKeysetId, active: true, keys: KEYS },
     maxReceive: '3',
     maxChange: '3',
     maxEntries: 4,
@@ -114,25 +127,11 @@ function fixture(
   const authorization = createCtfAuthorizationOutputs({
     seed: SEED,
     operationId: 'range-operation-1',
-    offerKeysetId: OFFER_KEYSET,
+    offerKeysetId,
     amounts: options.inputAmounts ?? ['4'],
     commitment: manifest.commitment,
     expiry,
-    expiryContext: {
-      now: 10,
-      maxExpirySeconds: 100,
-      condition: {
-        condition_id: CONDITION_ID,
-        keysets: { YES: RECEIVE_KEYSET },
-      },
-      conditionalKeysets: [
-        {
-          id: RECEIVE_KEYSET,
-          condition_id: CONDITION_ID,
-          final_expiry: 200,
-        },
-      ],
-    },
+    expiryContext: options.expiryContext ?? authorizationExpiryContext(),
     refund: refundKey.publicKey,
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
     poolPolicy: { rateN: '1', rateD: '1', minReceive: '1', maxDebit: '4' },
@@ -146,17 +145,81 @@ function fixture(
     conditionId: CONDITION_ID,
     parentCollectionId: ROOT_PARENT,
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
-    offerKeysetId: OFFER_KEYSET,
+    offerKeysetId,
     receiveKeysetId: RECEIVE_KEYSET,
     keysetLookup: options.keysetLookup ?? rangeKeysetLookup(),
     expiryObservation: options.expiryObservation ?? conditionExpiryObservation(),
     expiry,
     policy: { rateN: '1', rateD: '1', minReceive: '1', maxDebit: '4' },
     refundKey,
-    inputFeePpkByKeyset: { [OFFER_KEYSET]: INPUT_FEE_PPK },
-    inputs: authorization.map(signOutput),
+    inputFeePpkByKeyset: { [offerKeysetId]: INPUT_FEE_PPK },
+    inputs: authorization.map((output) =>
+      signOutput(output, options.proofSigningPrivateKey ?? MINT_PRIVATE_KEY),
+    ),
     manifest,
   })
+}
+
+function ambiguousConditionalFixture(): DurableCtfRangeOperation {
+  const baseLookup = rangeKeysetLookup()
+  const second = conditionExpiryObservationWithSecondKeyset(FINAL_EXPIRY)
+  return fixture({
+    offerKeysetId: SECOND_CONDITIONAL_KEYSET,
+    keysetLookup: {
+      ...baseLookup,
+      regularKeysets: [],
+      conditionalKeysets: [
+        ...baseLookup.conditionalKeysets,
+        {
+          keysetId: SECOND_CONDITIONAL_KEYSET,
+          unit: 'msat',
+          active: true,
+          conditionId: CONDITION_ID,
+          outcomeCollection: SECOND_OUTCOME_COLLECTION,
+          outcomeCollectionId: SECOND_OUTCOME_COLLECTION_ID,
+          inputFeePpk: INPUT_FEE_PPK,
+          finalExpiry: FINAL_EXPIRY,
+        },
+      ],
+    },
+    expiryObservation: second.observation,
+    expiryContext: {
+      now: 10,
+      maxExpirySeconds: 100,
+      condition: {
+        condition_id: CONDITION_ID,
+        keysets: {
+          [OUTCOME_COLLECTION]: RECEIVE_KEYSET,
+          [SECOND_OUTCOME_COLLECTION]: SECOND_CONDITIONAL_KEYSET,
+        },
+      },
+      conditionalKeysets: [
+        {
+          id: RECEIVE_KEYSET,
+          condition_id: CONDITION_ID,
+          final_expiry: FINAL_EXPIRY,
+        },
+        {
+          id: SECOND_CONDITIONAL_KEYSET,
+          condition_id: CONDITION_ID,
+          final_expiry: FINAL_EXPIRY,
+        },
+      ],
+    },
+  })
+}
+
+function authorizationExpiryContext(): Parameters<
+  typeof createCtfAuthorizationOutputs
+>[0]['expiryContext'] {
+  return {
+    now: 10,
+    maxExpirySeconds: 100,
+    condition: { condition_id: CONDITION_ID, keysets: { YES: RECEIVE_KEYSET } },
+    conditionalKeysets: [
+      { id: RECEIVE_KEYSET, condition_id: CONDITION_ID, final_expiry: FINAL_EXPIRY },
+    ],
+  }
 }
 
 function conditionExpiryObservation(): DurableCtfRangeExpiryObservation {
@@ -247,10 +310,12 @@ function rangeKeysetLookup(): TokenImportKeysetLookup {
   }
 }
 
-function signOutput(output: OutputData): Proof {
+function signOutput(output: OutputData, mintPrivateKey = MINT_PRIVATE_KEY): Proof {
+  const mintPublicKey = bytesToHex(secp256k1.getPublicKey(mintPrivateKey, true))
+  const signingKeys = Object.fromEntries(Object.keys(KEYS).map((amount) => [amount, mintPublicKey]))
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    MINT_PRIVATE_KEY,
+    mintPrivateKey,
     output.blindedMessage.id,
   )
   return output.toProof(
@@ -258,9 +323,9 @@ function signOutput(output: OutputData): Proof {
       id: signature.id,
       amount: output.blindedMessage.amount,
       C_: signature.C_.toHex(true),
-      dleq: serializeDleq(output.blindedMessage.B_),
+      dleq: serializeDleq(output.blindedMessage.B_, mintPrivateKey),
     },
-    { id: output.blindedMessage.id, keys: KEYS },
+    { id: output.blindedMessage.id, keys: signingKeys },
   )
 }
 
@@ -291,8 +356,8 @@ function signaturesFor(operation: DurableCtfRangeOperation, selection: string) {
     })
 }
 
-function serializeDleq(B_: string) {
-  const dleq = createDLEQProof(pointFromHex(B_), MINT_PRIVATE_KEY)
+function serializeDleq(B_: string, mintPrivateKey = MINT_PRIVATE_KEY) {
+  const dleq = createDLEQProof(pointFromHex(B_), mintPrivateKey)
   return { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) }
 }
 
@@ -796,6 +861,91 @@ test('range custody binding rejects mint keys inconsistent with persisted author
   assert.throws(() => bind(wrongFee), /metadata is foreign/)
 })
 
+test('range custody binding verifies every input proof against the pinned mint keys', async () => {
+  const inputAmounts = ['2', '2']
+  const operation = fixture({ inputAmounts })
+  const facts = await factsFor(operation)
+  const bind = (candidate: DurableCtfRangeOperation) =>
+    createDurableCtfRangeCustodyBinding({
+      scope: walletScope(),
+      operation: candidate,
+      facts,
+      mintKeysets: mintKeysetsFor(operation),
+      inventoryAccountId: null,
+      boundary: {
+        method: 'POST',
+        path: '/v1/range-authorizations',
+        idempotencyKey: operation.authorizationId,
+        requestBody: {},
+      },
+    })
+
+  const tamperedSignature = structuredClone(operation)
+  tamperedSignature.inputs[1]!.C = MINT_PUBLIC_KEY
+  assert.throws(() => bind(tamperedSignature), /input proof cryptographic verification failed/)
+
+  const invalidDleq = structuredClone(operation)
+  invalidDleq.inputs[0]!.dleq = {
+    ...(invalidDleq.inputs[0]!.dleq as { e: string; s: string; r: string }),
+    e: '00'.repeat(32),
+  }
+  assert.throws(() => bind(invalidDleq), /input proof cryptographic verification failed/)
+
+  const foreignMintPrivateKey = Uint8Array.from([...new Uint8Array(31), 2])
+  assert.throws(
+    () => bind(fixture({ inputAmounts, proofSigningPrivateKey: foreignMintPrivateKey })),
+    /input proof cryptographic verification failed/,
+  )
+})
+
+test('range market custody scope is derived from the unique conditional asset', async () => {
+  const operation = fixture()
+  const facts = await factsFor(operation)
+  const canonicalMarketId = `${CONDITION_ID}-${OUTCOME_COLLECTION}`
+  const bind = (scope: DurableCustodyScope) =>
+    createDurableCtfRangeCustodyBinding({
+      scope,
+      operation,
+      facts,
+      mintKeysets: mintKeysetsFor(operation),
+      inventoryAccountId: 'inventory-1',
+      boundary: {
+        method: 'POST',
+        path: '/v1/range-authorizations',
+        idempotencyKey: operation.authorizationId,
+        requestBody: {},
+      },
+    })
+
+  assert.equal(bind(marketScope(canonicalMarketId)).record.scope.marketId, canonicalMarketId)
+  assert.throws(
+    () => bind(marketScope(`${'cd'.repeat(32)}-${OUTCOME_COLLECTION}`)),
+    /market scope does not match the conditional asset/,
+  )
+})
+
+test('range market custody binding rejects ambiguous conditional assets', async () => {
+  const operation = ambiguousConditionalFixture()
+  const facts = await factsFor(operation)
+  assert.throws(
+    () =>
+      createDurableCtfRangeCustodyBinding({
+        scope: marketScope(`${CONDITION_ID}-${OUTCOME_COLLECTION}`),
+        operation,
+        facts,
+        mintKeysets: mintKeysetsFor(operation),
+        inventoryAccountId: 'inventory-1',
+        boundary: {
+          method: 'POST',
+          path: '/v1/range-authorizations',
+          idempotencyKey: operation.authorizationId,
+          requestBody: {},
+        },
+      }),
+    /market scope conditional asset is ambiguous/,
+  )
+})
+
 test('selected range result unblinds only the exact persisted subset', async () => {
   const operation = fixture()
   const record = await recordFor(operation)
@@ -1296,6 +1446,17 @@ test('direct preparation link and selected result commit atomically across resta
 
 function walletScope(): DurableCustodyScope {
   const input = { scopeKind: 'wallet' as const, walletId: 'a'.repeat(64) }
+  return { ...input, scopeId: deriveDurableCustodyScopeId(input) }
+}
+
+function marketScope(marketId: string): DurableCustodyScope {
+  const input = {
+    scopeKind: 'market' as const,
+    marketId,
+    inventoryAccountId: 'inventory-1',
+    normalizedMint: 'https://mint.example',
+    unit: 'msat',
+  }
   return { ...input, scopeId: deriveDurableCustodyScopeId(input) }
 }
 

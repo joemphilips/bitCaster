@@ -184,8 +184,9 @@ function decodeEngineResultAuthority(
 }
 
 /**
- * NUT-07 is queried only from uncertain recovery. The durable format admits
- * at most 256 inputs, so the mint requests are explicitly split into batches.
+ * Exact NUT-07 input classification is shared by pre-admission validation and
+ * uncertain recovery. The durable format admits at most 256 inputs, so mint
+ * requests are explicitly split into batches.
  */
 export async function checkCtfRangeInputProofStates(
   mint: CtfRangeProofStateClient,

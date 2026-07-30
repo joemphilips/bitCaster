@@ -15,6 +15,7 @@ import {
   recoverCtfRangeProofs,
   selectCtfManifestOutputs,
   signPayToUnlockRefund,
+  verifyProofsForReceive,
   type CtfPoolEntry,
   type CtfRangeManifestMaterial,
   type HasKeysetKeys,
@@ -385,8 +386,10 @@ export function createDurableCtfRangeCustodyBinding(input: {
   }
 }): DurableCtfRangeCustodyBinding {
   const operation = toDurableCtfRangeProofOperationInput(input.operation)
+  assertRangeCustodyScopeAuthority(input.scope, input.operation)
   assertRangeKeysetVerificationAuthority(input.operation, input.facts)
   assertRangeMintKeysetAuthority(input.operation, input.mintKeysets, input.facts)
+  assertRangeInputProofsCryptographicallyValid(input.operation, input.mintKeysets)
   const artifacts = {
     requestBody: exactArtifact(input.boundary.requestBody),
     output: exactArtifact(operation.outputs),
@@ -401,6 +404,29 @@ export function createDurableCtfRangeCustodyBinding(input: {
     exactBoundary: { ...input.boundary, ...artifacts },
   })
   return { record, operation, artifacts }
+}
+
+function assertRangeCustodyScopeAuthority(
+  scope: DurableCustodyScope,
+  operation: DurableCtfRangeOperation,
+): void {
+  if (scope.scopeKind === 'wallet') return
+  const conditionalAssets = new Map<
+    string,
+    Extract<DurableCtfRangeAsset, { kind: 'conditional' }>
+  >()
+  for (const asset of [operation.offerAsset, operation.receiveAsset]) {
+    if (asset.kind === 'conditional') {
+      conditionalAssets.set(`${asset.conditionId}\0${asset.outcomeCollection}`, asset)
+    }
+  }
+  if (conditionalAssets.size !== 1) {
+    throw new Error('CTF range market scope conditional asset is ambiguous')
+  }
+  const asset = conditionalAssets.values().next().value!
+  if (scope.marketId !== `${asset.conditionId}-${asset.outcomeCollection}`) {
+    throw new Error('CTF range market scope does not match the conditional asset')
+  }
 }
 
 export function requireDurableCtfRangeOperationFromCustody(
@@ -1685,6 +1711,27 @@ function assertRangeMintKeysetAuthority(
     ) {
       throw new Error('CTF range mint keys differ from custody verification authority')
     }
+  }
+}
+
+function assertRangeInputProofsCryptographicallyValid(
+  operation: DurableCtfRangeOperation,
+  mintKeysets: ReadonlyMap<string, DurableCtfRangeMintKeyset>,
+): void {
+  try {
+    verifyProofsForReceive(
+      operation.inputs.map(deserializeProof),
+      (keysetId) => {
+        const keyset = mintKeysets.get(keysetId)
+        if (keyset === undefined) {
+          throw new Error('CTF range input keyset is not pinned')
+        }
+        return { id: keyset.id, keys: keyset.keys }
+      },
+      { requireDleq: true },
+    )
+  } catch (error) {
+    throw new Error('CTF range input proof cryptographic verification failed', { cause: error })
   }
 }
 
