@@ -126,6 +126,14 @@ test('range preparation schema rejects partial capability and loose authority', 
     () => seedWalletProof(database, 'available', 'unexpected-reservation'),
     /constraint/,
   )
+  assert.throws(
+    () =>
+      insertRangePreparation(database, {
+        ...preparationInput('range-full-price', 'source-full-price', 'client-full-price', 2),
+        priceSubunits: 10_000,
+      }),
+    /constraint/,
+  )
 })
 
 test('source and consolidation links are exact, idempotent, and ordered', (t) => {

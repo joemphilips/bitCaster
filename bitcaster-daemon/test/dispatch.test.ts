@@ -1705,7 +1705,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     })
 
     await t.test(
-      'order.submit retains a prepared capability after a retryable rejection',
+      'order.submit retains a prepared capability after a retryable 409 conflict',
       async () => {
         const priorState = await readState()
         await writeState(backedDaemonState())
@@ -1715,10 +1715,10 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           ...scoreDisabledEngineMethods,
           async submitOrder() {
             throw new EngineClientError(
-              429,
-              '{"code":"RateLimited","detail":"Retry later."}',
-              'RateLimited',
-              'Retry later.',
+              409,
+              'Order book changed while submitting order; retry the request.',
+              undefined,
+              'Order book changed while submitting order; retry the request.',
             )
           },
           async getOrderStatus() {
@@ -1763,7 +1763,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         )
 
         assert.equal(response.ok, false)
-        assert.equal(response.code, 'RateLimited')
+        assert.equal(response.code, undefined)
         assert.equal(markedRejected, false)
         assert.equal(recoveryTriggers, 1)
         assert.deepEqual((await readState())?.orders, {})

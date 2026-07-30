@@ -465,7 +465,74 @@ test('daemon refunds a definitively rejected order without requiring engine orde
   )
 })
 
-test('daemon applies a settlement result once when its acknowledgement response is lost', async () => {
+test('daemon cancels an expired resting order before refunding its authorization', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-resting-expiry-',
+      incarnationId: 'range-resting-expiry-test',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      let activeFence = fence
+      let nowMs = 10_000
+      let cancelled = false
+      let cancellationCalls = 0
+      const baseClient = fakeEngineClient(boundCapability)
+      const client: EngineClientLike = {
+        ...baseClient,
+        getOrderStatus: async () => (cancelled ? cancelledOrderStatus() : restingOrderStatus()),
+        cancelOrder: async () => {
+          cancellationCalls += 1
+          cancelled = true
+          return true
+        },
+      }
+      const ids = ['range-operation-resting-expiry', 'range-authorization-resting-expiry']
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => activeFence, {
+        createMint: () => fakeMint(64, 320),
+        createWallet: () => new FakeWallet([sourceProof]),
+        executeRefundSwap: async (_mintUrl, request) => {
+          assert.equal(cancelled, true)
+          return { signatures: request.outputs.map(signBlindedOutput) }
+        },
+        now: () => nowMs,
+        randomId: () => ids.shift()!,
+      })
+      const request = orderRequest()
+      const prepared = await coordinator.prepare(request, client)
+      await recordSubmittedOrder(
+        request.marketId,
+        request.clientOrderId,
+        submittedOrder(),
+        null,
+        request.tokenSide,
+        request.side,
+        request.price,
+        request.amountSubunits,
+        request.baseAsset,
+        request.divisibility,
+      )
+      await prepared.markSubmitted()
+
+      nowMs = 71_000
+      activeFence = await claimCustodyScopeLease(directory, {
+        scopeId: testScopeId(),
+        incarnationId: 'range-resting-expiry-recovery',
+        observedAtMs: nowMs,
+      })
+      assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
+        recovered: ['range-operation-resting-expiry:source'],
+        pending: [],
+      })
+      assert.equal(cancellationCalls, 1)
+      assert.equal((await readState())?.orders[ORDER_ID]?.status, 'cancelled')
+    },
+  )
+})
+
+test('daemon terminates a partially filled FAK result after acknowledgement recovery', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
@@ -497,7 +564,7 @@ test('daemon applies a settlement result once when its acknowledgement response 
           acknowledgementCommitted = true
           throw new Error('settlement result acknowledgement response lost')
         },
-        getOrderStatus: async () => filledOrderStatus(),
+        getOrderStatus: async () => partiallyFilledFakOrderStatus(),
       }
       const ids = ['range-operation-result', 'range-authorization-result']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
@@ -506,7 +573,7 @@ test('daemon applies a settlement result once when its acknowledgement response 
         now: () => 10_000,
         randomId: () => ids.shift()!,
       })
-      const request = orderRequest()
+      const request = { ...orderRequest(), timeInForce: 'FAK' as const }
       const prepared = await coordinator.prepare(request, client)
       await recordSubmittedOrder(
         request.marketId,
@@ -1434,6 +1501,15 @@ function restingOrderStatus(): Awaited<ReturnType<EngineClientLike['getOrderStat
     ...awaitingAuthorizationOrderStatus(orderRequest().amountSubunits),
     status: 'resting',
     filledAmountSubunits: 0,
+  }
+}
+
+function partiallyFilledFakOrderStatus(): Awaited<ReturnType<EngineClientLike['getOrderStatus']>> {
+  return {
+    ...restingOrderStatus(),
+    status: 'partially_filled',
+    remainingAmountSubunits: 5_000,
+    filledAmountSubunits: 5_000,
   }
 }
 

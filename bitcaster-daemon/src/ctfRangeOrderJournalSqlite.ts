@@ -486,7 +486,7 @@ function decodePreparationRow(row: Record<string, unknown>): RangePreparationRec
     capability,
     updatedAtMs: requireTimestamp(row.updated_at_ms, 'updated time'),
   }
-  if (record.priceSubunits > record.divisibility || record.updatedAtMs < record.createdAtMs) {
+  if (record.priceSubunits >= record.divisibility || record.updatedAtMs < record.createdAtMs) {
     throw new Error('daemon CTF range preparation numeric authority is invalid')
   }
   return record

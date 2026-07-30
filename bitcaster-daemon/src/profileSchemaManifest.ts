@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'c9a718ae089ca4976dec9b17feb75605d2ba251dc96ba42be71246c8df019077'
+  'fa5cd3ed5c9942bbc1145819717166af76825fe6e92c15881550674e7ec3e864'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -18,6 +18,8 @@ const recordBytesMax = 64 * 1_024
 /**
  * The one clean-start production schema. It deliberately contains target-v1
  * swap authority and no source-era trade session/cipher/recovery tables.
+ * This custody schema is not deployed yet, so v1 revisions replace an empty
+ * store instead of migrating previously initialized profiles.
  */
 export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE TABLE profile_schema_marker (
@@ -241,7 +243,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     token_side TEXT NOT NULL CHECK (token_side IN ('Outcome', 'Complement')),
     side TEXT NOT NULL CHECK (side IN ('Buy', 'Sell')),
     price_subunits INTEGER NOT NULL CHECK (
-      price_subunits BETWEEN 1 AND divisibility
+      price_subunits >= 1 AND price_subunits < divisibility
     ),
     amount_subunits INTEGER NOT NULL CHECK (
       amount_subunits BETWEEN 1 AND 9007199254740991

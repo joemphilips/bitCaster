@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   BitcasterEngineClient,
   EngineClientError,
+  isDefinitiveOrderSubmissionError,
   SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX,
   SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX,
   submitEphemeralPubkey,
@@ -916,4 +917,27 @@ test('BitcasterEngineClient exposes plain submit-order validation errors', async
       err.status === 400 &&
       err.detail === 'OutcomeId must match the primitive outcome segment of marketId.',
   )
+})
+
+test('order submission error classification recognizes only the transient book conflict', () => {
+  for (const detail of [
+    'Order book changed while submitting order; retry the request.',
+    JSON.stringify('Order book changed while submitting order; retry the request.'),
+  ]) {
+    assert.equal(isDefinitiveOrderSubmissionError(new EngineClientError(409, detail)), false)
+  }
+  assert.equal(
+    isDefinitiveOrderSubmissionError(
+      new EngineClientError(409, 'Settlement capability is not current.'),
+    ),
+    true,
+  )
+  assert.equal(
+    isDefinitiveOrderSubmissionError(
+      new EngineClientError(409, '{"detail":"Market is closed."}', undefined, 'Market is closed.'),
+    ),
+    true,
+  )
+  assert.equal(isDefinitiveOrderSubmissionError(new EngineClientError(429, 'retry')), false)
+  assert.equal(isDefinitiveOrderSubmissionError(new EngineClientError(400, 'invalid')), true)
 })

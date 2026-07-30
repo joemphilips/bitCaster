@@ -114,6 +114,7 @@ import {
   readActiveRangePreparationByClientOrderId,
   readRangePreparation,
   transitionRangePreparation,
+  type RangePreparationCapability,
   type RangePreparationRecord,
 } from './ctfRangeOrderJournalSqlite.ts'
 import {
@@ -745,6 +746,7 @@ export class DaemonCtfRangeOrderCoordinator {
     const refundOperationId = rangeRefundOperationId(input.operationId)
     const existingRefund = response === null ? await getProofOperation(refundOperationId) : null
     if (existingRefund !== null) {
+      await this.#cancelRestingOrderBeforeRefund(input, capability, status, client)
       await this.#resumeOrCreateRefund(
         coordinator,
         custodyOperationId,
@@ -793,6 +795,7 @@ export class DaemonCtfRangeOrderCoordinator {
           loaded.operation.expiry * 1_000 + 1_000,
         )
       case 'refundable':
+        await this.#cancelRestingOrderBeforeRefund(input, capability, status, client)
         await this.#resumeOrCreateRefund(
           coordinator,
           custodyOperationId,
@@ -1020,6 +1023,14 @@ export class DaemonCtfRangeOrderCoordinator {
       return
     }
     if (
+      input.request.timeInForce === 'FAK' &&
+      status.status === 'partially_filled' &&
+      residual.kind === 'none'
+    ) {
+      await this.#markTerminal(input.operationId)
+      return
+    }
+    if (
       status.status === 'resting' ||
       status.status === 'matched' ||
       status.status === 'partially_filled' ||
@@ -1028,6 +1039,29 @@ export class DaemonCtfRangeOrderCoordinator {
       throw new Error('range result and order lifecycle disagree')
     }
     await this.#markTerminal(input.operationId)
+  }
+
+  async #cancelRestingOrderBeforeRefund(
+    input: PersistedPreparationInput,
+    capability: RangePreparationCapability,
+    status: OrderStatusResponse | null,
+    client: EngineClientLike,
+  ): Promise<void> {
+    if (status?.status !== 'resting') return
+    if (!(await client.cancelOrder(input.request.marketId, capability.orderId))) {
+      throw new Error('expired resting range order cancellation was not acknowledged')
+    }
+    const cancelled = await client.getOrderStatus(input.request.marketId, capability.orderId)
+    if (cancelled === null || cancelled.status === 'resting') {
+      throw new Error('expired resting range order remains matchable')
+    }
+    await recordOrderStatus(
+      input.request.marketId,
+      capability.orderId,
+      cancelled,
+      input.request.baseAsset,
+      input.request.divisibility,
+    )
   }
 
   async #reauthorizeResidual(

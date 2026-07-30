@@ -872,6 +872,36 @@ export class EngineClientError extends Error {
   }
 }
 
+const RETRYABLE_ORDER_BOOK_CONFLICT =
+  'Order book changed while submitting order; retry the request.'
+
+export function isDefinitiveOrderSubmissionError(error: EngineClientError): boolean {
+  if (
+    error.status < 400 ||
+    error.status >= 500 ||
+    error.status === 401 ||
+    error.status === 403 ||
+    error.status === 408 ||
+    error.status === 425 ||
+    error.status === 429
+  ) {
+    return false
+  }
+  if (error.status !== 409) return true
+  return orderSubmissionErrorDetail(error) !== RETRYABLE_ORDER_BOOK_CONFLICT
+}
+
+function orderSubmissionErrorDetail(error: EngineClientError): string {
+  if (error.problemDetail !== undefined) return error.problemDetail
+  const detail = error.detail.trim()
+  try {
+    const parsed = JSON.parse(detail) as unknown
+    return typeof parsed === 'string' ? parsed : detail
+  } catch {
+    return detail
+  }
+}
+
 function encodePathSegment(segment: string): string {
   return encodeURIComponent(segment)
 }

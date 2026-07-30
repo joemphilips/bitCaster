@@ -270,7 +270,13 @@ switch (command) {
           rangeOrderCoordinator.prepare(input, client),
         triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
       })
-      shutdown = installShutdownHandlers(server, runtime, releaseResources)
+      try {
+        currentFence()
+        shutdown = installShutdownHandlers(server, runtime, releaseResources)
+      } catch (error) {
+        await closeServer(server)
+        throw error
+      }
       void runtime?.start(await ensureState()).catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
         process.stderr.write(

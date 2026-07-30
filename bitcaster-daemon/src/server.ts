@@ -7,6 +7,7 @@ import { Amount, OutputData, type Proof } from '@cashu/cashu-ts'
 import {
   BitcasterEngineClient,
   EngineClientError,
+  isDefinitiveOrderSubmissionError,
   type OrderBookSnapshot,
   type OrderStatusResponse,
   type ParticipationScoreResponse,
@@ -831,7 +832,7 @@ export async function dispatch(
         })
       } catch (err) {
         if (err instanceof EngineClientError) {
-          if (isDefinitiveOrderSubmissionRejection(err.status)) {
+          if (isDefinitiveOrderSubmissionError(err)) {
             await prepared.markRejected()
           } else {
             deps.triggerSettlementRecovery?.()
@@ -1332,18 +1333,6 @@ function assertPreparedSettlementCapability(
   ) {
     throw new Error('daemon settlement capability response is foreign')
   }
-}
-
-function isDefinitiveOrderSubmissionRejection(status: number): boolean {
-  return (
-    status >= 400 &&
-    status < 500 &&
-    status !== 401 &&
-    status !== 403 &&
-    status !== 408 &&
-    status !== 425 &&
-    status !== 429
-  )
 }
 
 export function orderBackingError(input: {
