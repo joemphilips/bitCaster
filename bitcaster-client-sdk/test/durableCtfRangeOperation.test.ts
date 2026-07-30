@@ -158,6 +158,7 @@ function fixture(
     receiveKeysetId: RECEIVE_KEYSET,
     keysetLookup: options.keysetLookup ?? rangeKeysetLookup(),
     expiryObservation: options.expiryObservation ?? conditionExpiryObservation(),
+    allowInsecureLoopbackHttp: false,
     expiry,
     policy: { rateN: '1', rateD: '1', minReceive: '1', maxDebit: '4' },
     refundKey,

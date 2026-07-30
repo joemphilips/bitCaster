@@ -5,6 +5,7 @@ import {
   DEFAULT_TOKEN_IMPORT_BOUNDS,
   TokenImportValidationError,
   assertTokenImportResolverRequestLive,
+  classifyExactTokenImportKeysets,
   decodeTokenImportLocally,
   readBoundedTokenImportJsonResponse,
   selectTokenImportKeysetCandidates,
@@ -667,6 +668,34 @@ test('rejects insecure and literal private targets before resolver access', asyn
     resolveKeysets: matchingResolver(),
   })
   assert.deepEqual(allowed.canonicalMintUrls, ['http://127.0.0.1:8080'])
+})
+
+test('exact keyset classification requires explicit loopback HTTP permission', () => {
+  const canonicalMintUrl = 'http://127.0.0.1:8080'
+  const input = {
+    lookup: {
+      canonicalMintUrl,
+      freshness: 'fresh' as const,
+      regularKeysets: [metadata(REGULAR_FULL_ID)],
+      conditionalKeysets: [],
+    },
+    canonicalMintUrl,
+    keysetIds: [REGULAR_FULL_ID],
+    unit: 'sat' as const,
+    maxCandidates: 4,
+  }
+
+  assert.throws(
+    () => classifyExactTokenImportKeysets(input),
+    /loopback HTTP requires explicit development permission/,
+  )
+  assert.equal(
+    classifyExactTokenImportKeysets({
+      ...input,
+      allowInsecureLoopbackHttp: true,
+    })[0]?.keysetId,
+    REGULAR_FULL_ID,
+  )
 })
 
 test('resolver timeout and caller cancellation fail closed', async () => {

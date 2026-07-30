@@ -77,6 +77,7 @@ test('prepares exact PAY_TO_UNLOCK material and completes one durable buy author
     inputs: prepared.authorizationOutputs.map(signOutput),
     keysetLookup: keysetLookup(),
     expiryObservation: expiryObservation(),
+    allowInsecureLoopbackHttp: false,
   })
   const artifact = createPoolSettlementCapabilityArtifact(operation)
 
@@ -110,6 +111,7 @@ test('prepares a sell authorization from the conditional asset into regular coll
     inputs: prepared.authorizationOutputs.map(signOutput),
     keysetLookup: keysetLookup(),
     expiryObservation: expiryObservation(),
+    allowInsecureLoopbackHttp: false,
   })
 
   assert.equal(operation.offerAsset.kind, 'conditional')

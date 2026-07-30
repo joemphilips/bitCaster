@@ -154,6 +154,7 @@ export function classifyExactTokenImportKeysets(input: {
   keysetIds: readonly string[]
   unit: TokenImportUnit
   maxCandidates: number
+  allowInsecureLoopbackHttp?: boolean
 }): ClassifiedExactTokenImportKeyset[] {
   if (
     input.keysetIds.length === 0 ||
@@ -178,6 +179,7 @@ export function classifyExactTokenImportKeysets(input: {
     input.maxCandidates,
     'exact keysets',
     input.canonicalMintUrl,
+    input.allowInsecureLoopbackHttp === true,
   )
   const policy: ImportContextPolicy = { unit: input.unit, source: 'either' }
   const candidates = [
@@ -722,7 +724,13 @@ function requireFreshLookup(
   lookup: TokenImportKeysetLookup,
   request: TokenImportKeysetRequest,
 ): TokenImportKeysetLookup {
-  return requireFreshKeysetLookup(lookup, request.maxCandidates, request.canonicalMintUrl, null)
+  return requireFreshKeysetLookup(
+    lookup,
+    request.maxCandidates,
+    request.canonicalMintUrl,
+    null,
+    false,
+  )
 }
 
 function requireFreshKeysetLookup(
@@ -730,6 +738,7 @@ function requireFreshKeysetLookup(
   maxCandidates: number,
   label: string,
   expectedCanonicalMintUrl: string | null,
+  allowInsecureLoopbackHttp: boolean,
 ): TokenImportKeysetLookup {
   if (!lookup || typeof lookup !== 'object') {
     fail('spoofed_keyset_metadata', 'keyset resolver returned invalid metadata')
@@ -742,8 +751,8 @@ function requireFreshKeysetLookup(
   }
   if (expectedCanonicalMintUrl !== null) {
     if (
-      canonicalizeMintUrl(lookup.canonicalMintUrl, false) !==
-      canonicalizeMintUrl(expectedCanonicalMintUrl, false)
+      canonicalizeMintUrl(lookup.canonicalMintUrl, allowInsecureLoopbackHttp) !==
+      canonicalizeMintUrl(expectedCanonicalMintUrl, allowInsecureLoopbackHttp)
     ) {
       fail('mint_mismatch', `keyset metadata for ${label} came from a foreign mint`)
     }

@@ -114,6 +114,7 @@ export function completeCtfRangeOrderAuthorization(input: {
   inputs: readonly Proof[]
   keysetLookup: TokenImportKeysetLookup
   expiryObservation: DurableCtfRangeExpiryObservation
+  allowInsecureLoopbackHttp: boolean
 }): DurableCtfRangeOperation {
   const prepared = input.preparation
   return createDurableCtfRangeOperation({
@@ -129,6 +130,7 @@ export function completeCtfRangeOrderAuthorization(input: {
     receiveKeysetId: prepared.receiveKeysetId,
     keysetLookup: input.keysetLookup,
     expiryObservation: input.expiryObservation,
+    allowInsecureLoopbackHttp: input.allowInsecureLoopbackHttp,
     expiry: prepared.expiry,
     policy: prepared.plan.policy,
     refundKey: prepared.refundKey,

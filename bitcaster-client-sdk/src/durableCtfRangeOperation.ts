@@ -207,6 +207,7 @@ export interface CreateDurableCtfRangeOperationInput extends Omit<
   manifest: CtfRangeManifestMaterial
   keysetLookup: TokenImportKeysetLookup
   expiryObservation: DurableCtfRangeExpiryObservation
+  allowInsecureLoopbackHttp: boolean
 }
 
 export interface DurableCtfRangeSignature {
@@ -302,7 +303,12 @@ export function createDurableCtfRangeOperation(
 ): DurableCtfRangeOperation {
   const keysetAuthority = classifyRangeKeysetAuthority(input)
   const expiryAuthority = createRangeExpiryAuthority(input)
-  const { keysetLookup: _, expiryObservation: __, ...persistedInput } = input
+  const {
+    keysetLookup: _,
+    expiryObservation: __,
+    allowInsecureLoopbackHttp: ___,
+    ...persistedInput
+  } = input
   const operation: DurableCtfRangeOperation = {
     ...persistedInput,
     offerAsset: assetFromKeysetAuthority(keysetAuthority.offer),
@@ -1389,6 +1395,7 @@ function classifyRangeKeysetAuthority(
     keysetIds: [input.offerKeysetId, input.receiveKeysetId],
     unit: CTF_RANGE_PRODUCT_UNIT,
     maxCandidates: DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
+    allowInsecureLoopbackHttp: input.allowInsecureLoopbackHttp,
   })
   return {
     offer: rangeKeysetAuthority(offer!, 'offer', input.conditionId),
