@@ -541,14 +541,6 @@ function recoverCompleteRangeResult(
 ): DurableCtfRangeRecoveredResult {
   requireEnvelopeIdentity(operation, envelope)
   const recovery = normalizeAllManifestRecovery(recoveryValue)
-  if (!recovery.queryCompleted) throw new Error('complete all-manifest recovery is required')
-  const material = manifestMaterial(operation)
-  assertExactAllManifestQuery(material, recovery.queriedOutputs)
-  const selection = deriveCtfRangeRecoverySelection(material, recovery.restoredOutputs)
-  if (selection !== envelope.selection) {
-    throw new Error('CTF range result selection is not complete')
-  }
-  const boundResolver = createBoundRangeKeysetResolver(record, operation, resolveKeyset)
   const selectedOutputs = selectCtfManifestOutputs(
     serializedManifest(operation),
     envelope.selection,
@@ -561,6 +553,31 @@ function recoverCompleteRangeResult(
     recovery.restoredOutputs,
     recovery.signatures,
   )
+  return recoverMintVerifiedRangeResult(
+    operation,
+    envelope.selection,
+    recovery,
+    record,
+    resolveKeyset,
+  )
+}
+
+function recoverMintVerifiedRangeResult(
+  operation: DurableCtfRangeOperation,
+  expectedSelection: string,
+  recoveryValue: DurableCtfRangeAllManifestRecovery,
+  record: DurableCustodyRecord,
+  resolveKeyset: DurableCtfRangeKeysetResolver,
+): DurableCtfRangeRecoveredResult {
+  const recovery = normalizeAllManifestRecovery(recoveryValue)
+  if (!recovery.queryCompleted) throw new Error('complete all-manifest recovery is required')
+  const material = manifestMaterial(operation)
+  assertExactAllManifestQuery(material, recovery.queriedOutputs)
+  const selection = deriveCtfRangeRecoverySelection(material, recovery.restoredOutputs)
+  if (selection !== expectedSelection) {
+    throw new Error('CTF range result selection is not complete')
+  }
+  const boundResolver = createBoundRangeKeysetResolver(record, operation, resolveKeyset)
   requireRangeSignatureAuthority(record, recovery.restoredOutputs, recovery.signatures)
   const proofs = recoverCtfRangeProofs(
     material,
@@ -625,16 +642,59 @@ export function prepareDurableCtfRangeVerifiedResult(input: {
         change: result.change.map(serializeProof),
       },
     })
-    return {
-      kind: 'confirmed',
-      result,
-      exactResult,
-      resultHandle: `ctf-range-result:${exactResult.fingerprint}`,
-      resultFingerprint: exactResult.fingerprint,
-      selectedSuccessorProofIds: selectedRangeSuccessorProofIds(input.record, custody, result),
-    }
+    return verifiedResultPreparation(input.record, custody, result, exactResult)
   } catch {
     return { kind: 'reconciling' }
+  }
+}
+
+export function prepareDurableCtfRangeRecoveredResult(input: {
+  record: DurableCustodyRecord
+  operation: DurableCtfRangeOperation
+  observation: DurableCtfRangeRecoveryObservation
+  resolveKeyset: DurableCtfRangeKeysetResolver
+}): DurableCtfRangeVerifiedResultPreparation {
+  const operation = decodeDurableCtfRangeOperation(input.operation)
+  const custody = rangeProofOperationInput(operation)
+  assertDurableCtfRangeCustodyAuthority(input.record, operation)
+  try {
+    const observation = normalizeRecoveryObservation(input.observation)
+    const decision = classifyDurableCtfRangeRecovery({
+      record: input.record,
+      operation,
+      observation,
+      resolveKeyset: input.resolveKeyset,
+    })
+    if (decision.kind !== 'confirmed') return { kind: 'reconciling' }
+    const exactResult = exactArtifact({
+      schemaVersion: 2,
+      source: 'mint-recovery',
+      selection: decision.result.selection,
+      allManifestRecovery: serializeAllManifestRecovery(observation),
+      proofs: {
+        receive: decision.result.receive.map(serializeProof),
+        change: decision.result.change.map(serializeProof),
+      },
+    })
+    return verifiedResultPreparation(input.record, custody, decision.result, exactResult)
+  } catch {
+    return { kind: 'reconciling' }
+  }
+}
+
+function verifiedResultPreparation(
+  record: DurableCustodyRecord,
+  custody: DurableCustodyProofOperationInput,
+  result: DurableCtfRangeRecoveredResult,
+  exactResult: DurableCustodyExactArtifact,
+): Extract<DurableCtfRangeVerifiedResultPreparation, { kind: 'confirmed' }> {
+  return {
+    kind: 'confirmed',
+    result,
+    exactResult,
+    resultHandle: `ctf-range-result:${exactResult.fingerprint}`,
+    resultFingerprint: exactResult.fingerprint,
+    selectedSuccessorProofIds: selectedRangeSuccessorProofIds(record, custody, result),
   }
 }
 
@@ -657,8 +717,7 @@ export function recoverDurableCtfRangeVerifiedResultArtifact(input: {
   assertDurableCustodyArtifactMatchesReference(resultAuthority.exactResult, input.exactResult)
   const value = input.exactResult.artifact
   if (!isRecord(value)) throw new Error('CTF range verified result artifact is invalid')
-  exactKeys(value, ['schemaVersion', 'envelope', 'allManifestRecovery', 'proofs'])
-  if (value.schemaVersion !== 1 || !isRecord(value.proofs)) {
+  if (!isRecord(value.proofs)) {
     throw new Error('CTF range verified result artifact schema is invalid')
   }
   exactKeys(value.proofs, ['receive', 'change'])
@@ -667,13 +726,38 @@ export function recoverDurableCtfRangeVerifiedResultArtifact(input: {
   }
   value.proofs.receive.forEach(decodeProof)
   value.proofs.change.forEach(decodeProof)
-  const recovered = recoverCompleteRangeResult(
-    operation,
-    decodeDurableCtfRangeResultEnvelope(value.envelope),
-    normalizeAllManifestRecovery(value.allManifestRecovery as DurableCtfRangeAllManifestRecovery),
-    record,
-    input.resolveKeyset,
-  )
+  let recovered: DurableCtfRangeRecoveredResult
+  switch (value.schemaVersion) {
+    case 1:
+      exactKeys(value, ['schemaVersion', 'envelope', 'allManifestRecovery', 'proofs'])
+      recovered = recoverCompleteRangeResult(
+        operation,
+        decodeDurableCtfRangeResultEnvelope(value.envelope),
+        normalizeAllManifestRecovery(
+          value.allManifestRecovery as DurableCtfRangeAllManifestRecovery,
+        ),
+        record,
+        input.resolveKeyset,
+      )
+      break
+    case 2:
+      exactKeys(value, ['schemaVersion', 'source', 'selection', 'allManifestRecovery', 'proofs'])
+      if (value.source !== 'mint-recovery') {
+        throw new Error('CTF range verified result recovery source is invalid')
+      }
+      recovered = recoverMintVerifiedRangeResult(
+        operation,
+        requireBoundedText(value.selection, 'verified recovery selection'),
+        normalizeAllManifestRecovery(
+          value.allManifestRecovery as DurableCtfRangeAllManifestRecovery,
+        ),
+        record,
+        input.resolveKeyset,
+      )
+      break
+    default:
+      throw new Error('CTF range verified result artifact schema is invalid')
+  }
   if (
     canonicalJson({
       receive: recovered.receive.map(serializeProof),

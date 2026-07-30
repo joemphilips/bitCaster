@@ -32,6 +32,7 @@ import {
   deriveDurableCtfRangeFeeBounds,
   deriveDurableCtfResidualDecision,
   deriveRootCtfOutcomeCollectionId,
+  prepareDurableCtfRangeRecoveredResult,
   prepareDurableCtfRangeVerifiedResult,
   recoverDurableCtfRangeResult,
   recoverDurableCtfRangeVerifiedResultArtifact,
@@ -1353,6 +1354,71 @@ test('recovery queries the exact manifest and never invents terminal state', asy
       resolveKeyset,
     }).kind,
     'reconciling',
+  )
+})
+
+test('mint-verified recovery stages the exact durable result without an engine envelope', async () => {
+  const { operation, binding } = await sharedRangeBinding()
+  const selection = createCtfSelectionBitmap(4, [1, 3])
+  const query = buildDurableCtfRangeRecoveryQuery(operation, null)
+  const observation = {
+    selection: null,
+    inputStates: [{ Y: inputY(operation), state: 'SPENT' as const, witness: null }],
+    queriedOutputs: query.outputs,
+    restoredOutputs: buildDurableCtfRangeRecoveryQuery(operation, selection).outputs,
+    signatures: signaturesFor(operation, selection),
+    queryCompleted: true,
+    now: 50,
+  }
+  const prepared = prepareDurableCtfRangeRecoveredResult({
+    record: binding.record,
+    operation,
+    observation,
+    resolveKeyset,
+  })
+  assert.equal(prepared.kind, 'confirmed')
+  if (prepared.kind !== 'confirmed') throw new Error('mint recovery fixture is not confirmed')
+  assert.deepEqual(
+    {
+      schemaVersion: (prepared.exactResult.artifact as { schemaVersion: unknown }).schemaVersion,
+      source: (prepared.exactResult.artifact as { source: unknown }).source,
+    },
+    { schemaVersion: 2, source: 'mint-recovery' },
+  )
+
+  const adapter = new FaultInjectingDurableCustodyAdapter(scopeState(binding.record.scope))
+  adapter.run((transaction) =>
+    bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
+  )
+  adapter.run((transaction) =>
+    transaction.stageVerifiedResult({
+      operationId: binding.record.operation.operationId,
+      expectedRevision: binding.record.revision,
+      authorization: { incarnationId: 'process-1', fencingEpoch: 1, observedAtMs: 20 },
+      outputPlanFingerprint: binding.record.operation.outputPlan.outputPlanFingerprint,
+      resultHandle: prepared.resultHandle,
+      resultFingerprint: prepared.resultFingerprint,
+      exactResult: prepared.exactResult,
+      selectedSuccessorProofIds: prepared.selectedSuccessorProofIds,
+    }),
+  )
+  const reopened = adapter.reopen()
+  const staged = reopened.readOperation()!
+  const artifact = reopened
+    .readArtifacts()
+    .find(({ reference }) => reference.artifactId.endsWith(':result'))!
+  assert.equal(
+    isDeepStrictEqual(
+      recoverDurableCtfRangeVerifiedResultArtifact({
+        record: staged,
+        operation,
+        exactResult: artifact.artifact,
+        resolveKeyset,
+      }),
+      prepared.result,
+    ),
+    true,
+    'mint-verified recovery artifact must reproduce the exact proof result',
   )
 })
 
