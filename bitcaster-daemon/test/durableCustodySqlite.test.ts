@@ -1163,6 +1163,58 @@ test('an empty staged successor selection survives a SQLite reopen', async () =>
   }
 })
 
+test('operation pins survive restart for a zero-input receive', async () => {
+  const fixture = await profile()
+  try {
+    const prepared = exactIntent(fixture.walletScopeId, 'zero-input-receive', 1, 'none')
+    const operationId = prepared.record.operation.operationId
+    const fence = await claimCustodyScopeLease(fixture.directory, {
+      scopeId: fixture.walletScopeId,
+      incarnationId: 'incarnation-zero-input-receive',
+      observedAtMs: 2,
+    })
+    await withDaemonStateSqliteTransaction(fixture.directory, (database) => {
+      applyDurableCustodyTransaction(
+        new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 3),
+        {
+          scope: prepared.record.scope,
+          owner: {
+            incarnationId: fence.incarnationId,
+            fencingEpoch: fence.fencingEpoch,
+            observedAtMs: 3,
+          },
+          operationRows: [{ operationId, expectedRevision: null }],
+        },
+        (selected) =>
+          bindDurableCustodyProofOperation(selected, prepared.record, {
+            requestBody: prepared.artifacts[0][1],
+            output: prepared.artifacts[1][1],
+            privateMaterial: prepared.artifacts[2][1],
+          }),
+      )
+    })
+    await withDaemonStateSqliteTransaction(fixture.directory, (database) => {
+      const restored = new DurableCustodySqliteStore(database).getOperation(operationId)
+      assert.deepEqual(restored?.operation.reservation.inputs, [])
+      assert.deepEqual(restored?.operation.proofStorage.lineage.predecessorProofIds, [])
+      assert.deepEqual(restored?.operation.proofStorage.pinReasons, ['active-reservation'])
+      assert.equal(
+        (
+          database
+            .prepare(
+              `SELECT count(*) AS count FROM custody_operation_pins
+               WHERE scope_id = ? AND operation_id = ?`,
+            )
+            .get(fixture.walletScopeId, operationId) as { count: number }
+        ).count,
+        1,
+      )
+    })
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
 class SqliteConformanceHarness implements DurableCustodyAdapterConformanceHarness {
   readonly successorProofIds: readonly string[]
   readonly #directory: string
@@ -1339,7 +1391,12 @@ function artifact(value: unknown): DurableCustodyExactArtifact {
   }
 }
 
-function exactIntent(scopeId: string, suffix = '1', successorCount = 1) {
+function exactIntent(
+  scopeId: string,
+  suffix = '1',
+  successorCount = 1,
+  inputMode: 'one' | 'none' = 'one',
+) {
   const scope = {
     scopeKind: 'wallet' as const,
     walletId: scopeId.slice('custody:wallet:'.length),
@@ -1369,11 +1426,11 @@ function exactIntent(scopeId: string, suffix = '1', successorCount = 1) {
     binding: {
       kind: 'wallet',
       activityId: `activity-${suffix}`,
-      stage: 'send',
+      stage: inputMode === 'one' ? 'send' : 'receive',
     },
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
     hasOutputs: successorCount > 0,
-    inputKeysetRequirement: 'required',
+    inputKeysetRequirement: inputMode === 'one' ? 'required' : 'none',
     keysets: [
       {
         keysetId: 'keyset-1',
@@ -1382,7 +1439,7 @@ function exactIntent(scopeId: string, suffix = '1', successorCount = 1) {
         publicKeys: { '1': `02${'11'.repeat(32)}` },
         keysetExpiryMs: null,
         requireDleq: false,
-        usedByInputs: true,
+        usedByInputs: inputMode === 'one',
         usedByOutputs: successorCount > 0,
       },
     ],
@@ -1390,17 +1447,17 @@ function exactIntent(scopeId: string, suffix = '1', successorCount = 1) {
   const record = createDurableCustodyDispatchIntent({
     scope,
     retainedOperationKey: `retained-${suffix}`,
-    semanticKind: 'wallet-send',
+    semanticKind: inputMode === 'one' ? 'wallet-send' : 'generic-receive',
     facts,
     normalizedMint: 'https://mint.example',
     inventoryAccountId: null,
     reservation: {
       reservationId: `reservation-${suffix}`,
       parentReservationId: null,
-      inputs: [{ proofId, keysetId: 'keyset-1', curve: 'secp256k1' }],
+      inputs: inputMode === 'one' ? [{ proofId, keysetId: 'keyset-1', curve: 'secp256k1' }] : [],
     },
     proofLineage: {
-      predecessorProofIds: [proofId],
+      predecessorProofIds: inputMode === 'one' ? [proofId] : [],
       successorProofIds: successorIds,
       successorAdmissionMode: 'exact',
     },
@@ -1408,7 +1465,7 @@ function exactIntent(scopeId: string, suffix = '1', successorCount = 1) {
       requestId: `request-${suffix}`,
       requestFingerprint: request.fingerprint,
       payloadHandle: `payload-${suffix}`,
-      inputProofIds: [proofId],
+      inputProofIds: inputMode === 'one' ? [proofId] : [],
       outputPlanFingerprint: output.fingerprint,
       method: 'POST',
       path: '/v1/swap',

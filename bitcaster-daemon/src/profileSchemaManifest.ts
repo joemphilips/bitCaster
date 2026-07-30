@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'a55e6872e78c83bf223e33308e7456410de4e2d3518b03945904d1a764d5ea8b'
+  '775e5c0102b759f50d6005d7f82ac8dd154e7b60f8e3b6c5670d5361b9e7c7f8'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -492,17 +492,14 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
         scope_id, operation_id, keyset_id, curve
       ) ON DELETE RESTRICT
   ) STRICT`,
-  `CREATE TABLE custody_proof_pins (
+  `CREATE TABLE custody_operation_pins (
     scope_id TEXT NOT NULL,
-    proof_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
     pin_reason TEXT NOT NULL CHECK (pin_reason IN (
       'active-reservation', 'pending-outbox', 'active-retry-cursor', 'replay-tombstone'
     )),
-    operation_id TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-    PRIMARY KEY (scope_id, proof_id, pin_reason, operation_id),
-    FOREIGN KEY (scope_id, proof_id)
-      REFERENCES custody_proofs(scope_id, proof_id) ON DELETE RESTRICT,
+    PRIMARY KEY (scope_id, operation_id, pin_reason),
     FOREIGN KEY (scope_id, operation_id)
       REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
   ) STRICT`,

@@ -164,7 +164,7 @@ export function purgeCustodyOperationP09(
   for (const table of [
     'swap_operation_links',
     'custody_proof_reservations',
-    'custody_proof_pins',
+    'custody_operation_pins',
     'custody_successor_admission_proofs',
     'custody_successor_admissions',
     'custody_selected_successors',

@@ -189,15 +189,13 @@ export class DurableCustodySqliteStore {
       })
     }
     for (const pinReason of operation.proofStorage.pinReasons) {
-      for (const proofId of operation.proofStorage.lineage.predecessorProofIds) {
-        this.#database
-          .prepare(
-            `INSERT INTO custody_proof_pins (
-               scope_id, proof_id, pin_reason, operation_id, created_at_ms
-             ) VALUES (?, ?, ?, ?, ?)`,
-          )
-          .run(record.scope.scopeId, proofId, pinReason, operation.operationId, input.createdAtMs)
-      }
+      this.#database
+        .prepare(
+          `INSERT INTO custody_operation_pins (
+             scope_id, operation_id, pin_reason, created_at_ms
+           ) VALUES (?, ?, ?, ?)`,
+        )
+        .run(record.scope.scopeId, operation.operationId, pinReason, input.createdAtMs)
     }
     operation.verification.keysetBindings.forEach((binding, position) => {
       this.#database
@@ -833,7 +831,7 @@ export class DurableCustodySqliteStore {
   ): DurableCustodyRecord['operation']['proofStorage']['pinReasons'] {
     const rows = this.#database
       .prepare(
-        `SELECT DISTINCT pin_reason AS pinReason FROM custody_proof_pins
+        `SELECT pin_reason AS pinReason FROM custody_operation_pins
          WHERE scope_id = ? AND operation_id = ? ORDER BY pin_reason`,
       )
       .all(scopeId, operationId) as unknown as Array<{

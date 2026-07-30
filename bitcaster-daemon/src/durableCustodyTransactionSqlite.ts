@@ -434,18 +434,16 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
       )
     }
     this.#database
-      .prepare('DELETE FROM custody_proof_pins WHERE scope_id = ? AND operation_id = ?')
+      .prepare('DELETE FROM custody_operation_pins WHERE scope_id = ? AND operation_id = ?')
       .run(this.#scopeId, operationId)
     for (const pinReason of record.operation.proofStorage.pinReasons) {
-      for (const proofId of record.operation.proofStorage.lineage.predecessorProofIds) {
-        this.#database
-          .prepare(
-            `INSERT INTO custody_proof_pins (
-               scope_id, proof_id, pin_reason, operation_id, created_at_ms
-             ) VALUES (?, ?, ?, ?, ?)`,
-          )
-          .run(this.#scopeId, proofId, pinReason, operationId, this.#nowMs)
-      }
+      this.#database
+        .prepare(
+          `INSERT INTO custody_operation_pins (
+             scope_id, operation_id, pin_reason, created_at_ms
+           ) VALUES (?, ?, ?, ?)`,
+        )
+        .run(this.#scopeId, operationId, pinReason, this.#nowMs)
     }
     this.#database
       .prepare(
