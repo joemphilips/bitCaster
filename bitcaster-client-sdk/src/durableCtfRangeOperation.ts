@@ -32,6 +32,7 @@ import {
   DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
   DURABLE_CUSTODY_RECOVERY_PAGE_BYTES_MAX,
+  assertDurableCustodyArtifactMatchesReference,
   canonicalDurableCustodyKeysetIdentity,
   decodeCanonicalMintOrigin,
   decodeDurableCustodyRecord,
@@ -581,6 +582,50 @@ export function stageDurableCtfRangeVerifiedResult(input: {
     selectedSuccessorProofIds: selectedRangeSuccessorProofIds(input.record, custody, result),
   })
   return { kind: 'confirmed', result }
+}
+
+export function recoverDurableCtfRangeVerifiedResultArtifact(input: {
+  record: DurableCustodyRecord
+  operation: DurableCtfRangeOperation
+  exactResult: DurableCustodyExactArtifact
+  resolveKeyset: DurableCtfRangeKeysetResolver
+}): DurableCtfRangeRecoveredResult {
+  const record = decodeDurableCustodyRecord(input.record)
+  const operation = decodeDurableCtfRangeOperation(input.operation)
+  assertDurableCtfRangeCustodyAuthority(record, operation)
+  const resultAuthority = record.operation.result
+  if (resultAuthority.state !== 'verified-staged' || resultAuthority.exactResult === null) {
+    throw new Error('CTF range verified result has not been staged')
+  }
+  assertDurableCustodyArtifactMatchesReference(resultAuthority.exactResult, input.exactResult)
+  const value = input.exactResult.artifact
+  if (!isRecord(value)) throw new Error('CTF range verified result artifact is invalid')
+  exactKeys(value, ['schemaVersion', 'envelope', 'allManifestRecovery', 'proofs'])
+  if (value.schemaVersion !== 1 || !isRecord(value.proofs)) {
+    throw new Error('CTF range verified result artifact schema is invalid')
+  }
+  exactKeys(value.proofs, ['receive', 'change'])
+  if (!Array.isArray(value.proofs.receive) || !Array.isArray(value.proofs.change)) {
+    throw new Error('CTF range verified result proofs are invalid')
+  }
+  value.proofs.receive.forEach(decodeProof)
+  value.proofs.change.forEach(decodeProof)
+  const recovered = recoverCompleteRangeResult(
+    operation,
+    decodeDurableCtfRangeResultEnvelope(value.envelope),
+    normalizeAllManifestRecovery(value.allManifestRecovery as DurableCtfRangeAllManifestRecovery),
+    record,
+    input.resolveKeyset,
+  )
+  if (
+    canonicalJson({
+      receive: recovered.receive.map(serializeProof),
+      change: recovered.change.map(serializeProof),
+    }) !== canonicalJson(value.proofs)
+  ) {
+    throw new Error('CTF range verified result proofs are foreign')
+  }
+  return recovered
 }
 
 export function buildDurableCtfRangeRecoveryQuery(

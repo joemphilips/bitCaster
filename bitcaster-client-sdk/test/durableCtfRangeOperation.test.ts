@@ -33,6 +33,7 @@ import {
   deriveDurableCtfResidualDecision,
   deriveRootCtfOutcomeCollectionId,
   recoverDurableCtfRangeResult,
+  recoverDurableCtfRangeVerifiedResultArtifact,
   requireDurableCtfRangeOperationFromCustody,
   toDurableCtfRangeProofOperationInput,
   stageDurableCtfRangeVerifiedResult,
@@ -1227,6 +1228,24 @@ test('direct preparation link and selected result commit atomically across resta
     true,
   )
   const staged = recovered.readOperation()!
+  const stagedArtifact = recovered
+    .readArtifacts()
+    .find(({ reference }) => reference.artifactId.endsWith(':result'))!
+  assert.deepEqual(
+    recoverDurableCtfRangeVerifiedResultArtifact({
+      record: staged,
+      operation,
+      exactResult: stagedArtifact.artifact,
+      resolveKeyset,
+    }),
+    recoverDurableCtfRangeResult(
+      operation,
+      envelope,
+      recoveryFor(operation, selection),
+      staged,
+      resolveKeyset,
+    ),
+  )
   const selected = staged.operation.proofStorage.lineage.selectedSuccessorProofIds!
   assert.equal(selected.length, 2)
   assert.equal(staged.operation.proofStorage.lineage.successorProofIds.length, 4)
