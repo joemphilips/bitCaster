@@ -32,6 +32,7 @@ import {
   deriveDurableCtfRangeFeeBounds,
   deriveDurableCtfResidualDecision,
   deriveRootCtfOutcomeCollectionId,
+  prepareDurableCtfRangeVerifiedResult,
   recoverDurableCtfRangeResult,
   recoverDurableCtfRangeVerifiedResultArtifact,
   requireDurableCtfRangeOperationFromCustody,
@@ -1209,6 +1210,20 @@ test('direct preparation link and selected result commit atomically across resta
     /injected fault/,
   )
   assert.equal(restarted.readOperation()?.operation.result.state, 'none')
+
+  const prepared = prepareDurableCtfRangeVerifiedResult({
+    record: restarted.readOperation()!,
+    operation,
+    envelope,
+    allManifestRecovery: recoveryFor(operation, selection),
+    resolveKeyset,
+  })
+  assert.equal(prepared.kind, 'confirmed')
+  assert.equal(restarted.readOperation()?.operation.result.state, 'none')
+  assert.equal(
+    restarted.readArtifacts().some(({ reference }) => reference.artifactId.endsWith(':result')),
+    false,
+  )
 
   restarted.run((transaction) =>
     stageDurableCtfRangeVerifiedResult({

@@ -238,6 +238,17 @@ export type DurableCtfRangeRecoveryDecision =
   | { kind: 'refundable' }
   | { kind: 'reconciling' }
 
+export type DurableCtfRangeVerifiedResultPreparation =
+  | {
+      kind: 'confirmed'
+      result: DurableCtfRangeRecoveredResult
+      exactResult: DurableCustodyExactArtifact
+      resultHandle: string
+      resultFingerprint: string
+      selectedSuccessorProofIds: string[]
+    }
+  | { kind: 'reconciling' }
+
 export type DurableCtfRangeKeysetResolver = (
   canonicalMintUrl: string,
   keysetId: string,
@@ -545,43 +556,60 @@ export function stageDurableCtfRangeVerifiedResult(input: {
   authorization: DurableCustodyOwnerAuthorization
   resolveKeyset: DurableCtfRangeKeysetResolver
 }): DurableCtfRangeRecoveryDecision {
+  const prepared = prepareDurableCtfRangeVerifiedResult(input)
+  if (prepared.kind !== 'confirmed') return prepared
+  input.transaction.stageVerifiedResult({
+    operationId: input.record.operation.operationId,
+    expectedRevision: input.record.revision,
+    authorization: input.authorization,
+    outputPlanFingerprint: input.record.operation.outputPlan.outputPlanFingerprint,
+    resultHandle: prepared.resultHandle,
+    resultFingerprint: prepared.resultFingerprint,
+    exactResult: prepared.exactResult,
+    selectedSuccessorProofIds: prepared.selectedSuccessorProofIds,
+  })
+  return { kind: 'confirmed', result: prepared.result }
+}
+
+export function prepareDurableCtfRangeVerifiedResult(input: {
+  record: DurableCustodyRecord
+  operation: DurableCtfRangeOperation
+  envelope: DurableCtfRangeResultEnvelope
+  allManifestRecovery: DurableCtfRangeAllManifestRecovery
+  resolveKeyset: DurableCtfRangeKeysetResolver
+}): DurableCtfRangeVerifiedResultPreparation {
   const operation = decodeDurableCtfRangeOperation(input.operation)
   const custody = rangeProofOperationInput(operation)
   assertDurableCtfRangeCustodyAuthority(input.record, operation)
-  let envelope: DurableCtfRangeResultEnvelope
-  let result: DurableCtfRangeRecoveredResult
   try {
-    envelope = decodeDurableCtfRangeResultEnvelope(input.envelope)
-    result = recoverCompleteRangeResult(
+    const envelope = decodeDurableCtfRangeResultEnvelope(input.envelope)
+    const result = recoverCompleteRangeResult(
       operation,
       envelope,
       input.allManifestRecovery,
       input.record,
       input.resolveKeyset,
     )
+    const exactResult = exactArtifact({
+      schemaVersion: 1,
+      envelope,
+      allManifestRecovery: serializeAllManifestRecovery(input.allManifestRecovery),
+      proofs: {
+        receive: result.receive.map(serializeProof),
+        change: result.change.map(serializeProof),
+      },
+    })
+    return {
+      kind: 'confirmed',
+      result,
+      exactResult,
+      resultHandle: `ctf-range-result:${exactResult.fingerprint}`,
+      resultFingerprint: exactResult.fingerprint,
+      selectedSuccessorProofIds: selectedRangeSuccessorProofIds(input.record, custody, result),
+    }
   } catch {
     return { kind: 'reconciling' }
   }
-  const exactResult = exactArtifact({
-    schemaVersion: 1,
-    envelope,
-    allManifestRecovery: serializeAllManifestRecovery(input.allManifestRecovery),
-    proofs: {
-      receive: result.receive.map(serializeProof),
-      change: result.change.map(serializeProof),
-    },
-  })
-  input.transaction.stageVerifiedResult({
-    operationId: input.record.operation.operationId,
-    expectedRevision: input.record.revision,
-    authorization: input.authorization,
-    outputPlanFingerprint: input.record.operation.outputPlan.outputPlanFingerprint,
-    resultHandle: `ctf-range-result:${exactResult.fingerprint}`,
-    resultFingerprint: exactResult.fingerprint,
-    exactResult,
-    selectedSuccessorProofIds: selectedRangeSuccessorProofIds(input.record, custody, result),
-  })
-  return { kind: 'confirmed', result }
 }
 
 export function recoverDurableCtfRangeVerifiedResultArtifact(input: {
