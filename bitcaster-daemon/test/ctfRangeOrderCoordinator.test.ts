@@ -98,7 +98,7 @@ const RECEIVE_KEYSET_ID = deriveConditionalKeysetId({
 })
 const WALLET_SEED_HEX = '11'.repeat(32)
 const MINT_URL = 'https://mint.example'
-const ORDER_ID = '00000000-0000-4000-8000-000000000001'
+const ORDER_ID = '00000000-0000-8000-8000-000000000001'
 const CAPABILITY_ARTIFACT_ID = '00000000-0000-4000-8000-000000000002'
 
 test('daemon resumes the exact bound range source after capability acknowledgement loss', async () => {
@@ -1256,11 +1256,16 @@ class FakeWallet {
   async prepareSwapToSend(
     amount: number,
     proofs: Proof[],
-    _config: unknown,
+    config: { includeFees: false; keysetId: string },
     outputConfig: {
       send: { type: 'custom'; data: OutputData[] } | { type: 'random' }
     },
   ): Promise<SwapPreview> {
+    assert.equal(
+      config.includeFees,
+      false,
+      'range preparation must not add a second recipient-spend fee to its exact outputs',
+    )
     const fees = 1
     const keepAmount =
       proofs.reduce((total, proof) => total + amountToNumber(proof.amount), 0) - amount - fees
@@ -1376,6 +1381,13 @@ function fakeMint(
           input_fee_ppk: INPUT_FEE_PPK,
           final_expiry: FINAL_EXPIRY,
         },
+        {
+          id: '00deadbeef000000',
+          unit: 'msat',
+          active: false,
+          input_fee_ppk: INPUT_FEE_PPK,
+          final_expiry: FINAL_EXPIRY,
+        },
       ],
     }),
     getConditionalKeysets: async () => ({
@@ -1456,7 +1468,7 @@ function boundCapability(
     marketId: request.marketId,
     artifactDigest: deriveSettlementCapabilityArtifactDigest(artifact),
     state,
-    version: 1,
+    version: 3,
     authorizationExpiresAt: new Date(109_000).toISOString(),
     stageExpiresAt: new Date(109_000).toISOString(),
     settlementGroup: null,

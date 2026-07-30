@@ -218,7 +218,9 @@ switch (command) {
         })
       : undefined
     try {
-      const rangeOrderCoordinator = new DaemonCtfRangeOrderCoordinator(profileDir(), currentFence)
+      const rangeOrderCoordinator = new DaemonCtfRangeOrderCoordinator(profileDir(), currentFence, {
+        allowInsecureLoopbackHttp: process.env.BITCASTER_ALLOW_INSECURE_LOOPBACK_HTTP === '1',
+      })
       const { BitcasterEngineClient } = await import('@bitcaster-market/client-sdk/engineClient')
       const { signNip98 } = await import('./nostrAuth.ts')
       const rangeRecoveryClient = new BitcasterEngineClient({

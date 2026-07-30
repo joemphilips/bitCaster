@@ -10,7 +10,7 @@ const PAGE_LIMIT_MAX = 256
 const SOURCE_PURPOSE = 'ctf-range-authorization-source'
 const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
 const SHA256_PATTERN = /^[0-9a-f]{64}$/
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 export type RangePreparationLifecycle =
   | 'prepared'

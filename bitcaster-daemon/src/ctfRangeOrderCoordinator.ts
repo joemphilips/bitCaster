@@ -141,7 +141,7 @@ const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
 const ACTIVE_RANGE_SOURCE_LIMIT = 256
 const MAX_CONSOLIDATION_ROUNDS = 256
 const RANGE_REFUND_SAFETY_MARGIN_SECONDS = 300
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const SHA256_PATTERN = /^[0-9a-f]{64}$/
 
 interface CtfRangeMintLike {
@@ -173,7 +173,7 @@ interface CtfRangeWalletLike {
   prepareSwapToSend(
     amount: number,
     proofs: Proof[],
-    config: { includeFees: true; keysetId: string },
+    config: { includeFees: false; keysetId: string },
     outputConfig: {
       send: { type: 'custom'; data: OutputData[] } | { type: 'random' }
       keep: { type: 'random' }
@@ -193,6 +193,7 @@ interface CtfRangeWalletLike {
 }
 
 export interface DaemonCtfRangeOrderCoordinatorDependencies {
+  readonly allowInsecureLoopbackHttp?: boolean
   readonly createMint?: (mintUrl: string) => CtfRangeMintLike
   readonly createWallet?: (mintUrl: string, walletSeedHex: string) => CtfRangeWalletLike
   readonly now?: () => number
@@ -288,6 +289,7 @@ export class DaemonCtfRangeOrderCoordinator {
       inputs: source.authorization,
       keysetLookup: authority.lookup,
       expiryObservation: authority.observation,
+      allowInsecureLoopbackHttp: this.#dependencies.allowInsecureLoopbackHttp === true,
     })
     const capabilityRequest = createCapabilityRequest(request, operation)
     const binding = await createRangeBinding(
@@ -403,6 +405,7 @@ export class DaemonCtfRangeOrderCoordinator {
       inputs: sourceResult.authorization,
       keysetLookup: authority.lookup,
       expiryObservation: authority.observation,
+      allowInsecureLoopbackHttp: this.#dependencies.allowInsecureLoopbackHttp === true,
     })
     const capabilityRequest = createCapabilityRequest(preparationInput.request, operation)
     const binding = await createRangeBinding(
@@ -515,7 +518,13 @@ export class DaemonCtfRangeOrderCoordinator {
     const mint = this.#createMint(request.mintUrl)
     const [policy, metadata, market] = await Promise.all([
       getPolicy.call(client),
-      loadMintMetadata(mint, request.mintUrl, request.conditionId, this.#nowSeconds()),
+      loadMintMetadata(
+        mint,
+        request.mintUrl,
+        request.conditionId,
+        this.#nowSeconds(),
+        this.#dependencies.allowInsecureLoopbackHttp === true,
+      ),
       loadEngineMarket(client, request.conditionId),
     ])
     const preparationInput = buildPreparationInput({
@@ -908,7 +917,12 @@ export class DaemonCtfRangeOrderCoordinator {
     source: DurableCtfRangeOperation,
     mint: CtfRangeMintLike,
   ): Promise<ProofOperationRecord> {
-    const keyset = await selectRangeRefundKeyset(mint, source, this.#nowSeconds())
+    const keyset = await selectRangeRefundKeyset(
+      mint,
+      source,
+      this.#nowSeconds(),
+      this.#dependencies.allowInsecureLoopbackHttp === true,
+    )
     const refundAmount =
       source.inputs.reduce((total, proof) => total + Amount.from(proof.amount).toBigInt(), 0n) -
       deriveDurableCtfRangeFeeBounds(source).maximumFee
@@ -1086,6 +1100,7 @@ export class DaemonCtfRangeOrderCoordinator {
         predecessorInput.mintUrl,
         predecessorInput.conditionId,
         this.#nowSeconds(),
+        this.#dependencies.allowInsecureLoopbackHttp === true,
       ),
       loadEngineMarket(client, predecessorInput.conditionId),
     ])
@@ -1285,7 +1300,7 @@ function preparedMintAuthority(
       ...withoutRequest(preparationInput),
     }),
     preparationInput,
-    lookup: metadata.lookup,
+    lookup: keysetLookupFromPreparation(preparationInput),
     observation: metadata.observation,
     mintKeysets: exactPreparationMintKeysets(preparationInput),
     offerAsset: assetForKeyset(preparationInput.offerKeyset),
@@ -1307,7 +1322,6 @@ interface LoadedMintMetadata {
   readonly maxInputs: number
   readonly maxPoolEntries: number
   readonly maxExpirySeconds: number
-  readonly lookup: TokenImportKeysetLookup
   readonly observation: DurableCtfRangeExpiryObservation
 }
 
@@ -1316,6 +1330,7 @@ async function loadMintMetadata(
   mintUrl: string,
   conditionId: string,
   observedAt: number,
+  allowInsecureLoopbackHttp: boolean,
 ): Promise<LoadedMintMetadata> {
   const [info, regularResponse, condition] = await Promise.all([
     mint.getInfo(),
@@ -1343,7 +1358,7 @@ async function loadMintMetadata(
   }
   const keys = await loadMintKeys(mint, keyIds)
   const limits = settlementLimits(info)
-  const canonicalMintUrl = canonicalizeTokenImportMintUrl(mintUrl, true)
+  const canonicalMintUrl = canonicalizeTokenImportMintUrl(mintUrl, allowInsecureLoopbackHttp)
   return buildLoadedMintMetadata({
     canonicalMintUrl,
     regularResponse: regularResponse.keysets,
@@ -1454,34 +1469,7 @@ function buildLoadedMintMetadata(input: {
     conditional,
     conditionKeysetIds: input.conditionKeysetIds,
     ...input.limits,
-    lookup: loadedKeysetLookup(input),
     observation: loadedExpiryObservation(input, allConditional),
-  }
-}
-
-function loadedKeysetLookup(
-  input: Parameters<typeof buildLoadedMintMetadata>[0],
-): TokenImportKeysetLookup {
-  return {
-    canonicalMintUrl: input.canonicalMintUrl,
-    freshness: 'fresh',
-    regularKeysets: input.regularResponse.map((keyset) => ({
-      keysetId: keyset.id,
-      unit: keyset.unit,
-      active: keyset.active,
-      inputFeePpk: keyset.input_fee_ppk,
-      finalExpiry: keyset.final_expiry,
-    })),
-    conditionalKeysets: input.conditionEntries.map((keyset) => ({
-      keysetId: keyset.id,
-      unit: keyset.unit,
-      active: keyset.active,
-      inputFeePpk: keyset.input_fee_ppk,
-      finalExpiry: keyset.final_expiry,
-      conditionId: keyset.condition_id,
-      outcomeCollection: keyset.outcome_collection,
-      outcomeCollectionId: keyset.outcome_collection_id,
-    })),
   }
 }
 
@@ -1942,8 +1930,7 @@ function persistedRangeKeysetResolver(
   input: PersistedPreparationInput,
 ): DurableCtfRangeKeysetResolver {
   const keysets = exactPreparationMintKeysets(input)
-  return (mintUrl, keysetId) =>
-    canonicalizeTokenImportMintUrl(mintUrl) === input.mintUrl ? keysets.get(keysetId) : undefined
+  return (mintUrl, keysetId) => (mintUrl === input.mintUrl ? keysets.get(keysetId) : undefined)
 }
 
 function persistedMintAuthority(
@@ -2164,7 +2151,7 @@ async function prepareRegularSource(
   const preview = await wallet.prepareSwapToSend(
     target,
     candidates,
-    { includeFees: true, keysetId: authority.preparation.offerKeysetId },
+    { includeFees: false, keysetId: authority.preparation.offerKeysetId },
     {
       send: { type: 'custom', data: authority.preparation.authorizationOutputs },
       keep: { type: 'random' },
@@ -2449,7 +2436,7 @@ async function prepareRegularConsolidation(
   const preview = await wallet.prepareSwapToSend(
     outputAmount,
     inputs,
-    { includeFees: true, keysetId: authority.preparation.offerKeysetId },
+    { includeFees: false, keysetId: authority.preparation.offerKeysetId },
     { send: { type: 'random' }, keep: { type: 'random' } },
   )
   assertExactInputProofs(preview.inputs, inputs)
@@ -2918,7 +2905,8 @@ function assertCapabilityResponse(
     !UUID_PATTERN.test(capability.orderId) ||
     !UUID_PATTERN.test(capability.reference?.artifactId ?? '') ||
     !SHA256_PATTERN.test(capability.reference?.bindingDigest ?? '') ||
-    capability.version !== 1 ||
+    !Number.isSafeInteger(capability.version) ||
+    capability.version < 1 ||
     !isIsoDateTime(capability.authorizationExpiresAt) ||
     !isIsoDateTime(capability.stageExpiresAt)
   ) {
@@ -2979,8 +2967,15 @@ async function selectRangeRefundKeyset(
   mint: CtfRangeMintLike,
   source: DurableCtfRangeOperation,
   observedAt: number,
+  allowInsecureLoopbackHttp: boolean,
 ): Promise<ActiveCtfRangeMintKeyset> {
-  const metadata = await loadMintMetadata(mint, source.mintUrl, source.conditionId, observedAt)
+  const metadata = await loadMintMetadata(
+    mint,
+    source.mintUrl,
+    source.conditionId,
+    observedAt,
+    allowInsecureLoopbackHttp,
+  )
   let candidates: ActiveCtfRangeMintKeyset[]
   switch (source.offerAsset.kind) {
     case 'regular':
