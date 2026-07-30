@@ -39,6 +39,10 @@
       "types": "./dist/durableCtfRangeOperation.d.ts",
       "import": "./dist/durableCtfRangeOperation.js"
     },
+    "./durableCtfRangeCustody": {
+      "types": "./dist/durableCtfRangeCustody.d.ts",
+      "import": "./dist/durableCtfRangeCustody.js"
+    },
     "./ctfRangeRecoveryTransport": {
       "types": "./dist/ctfRangeRecoveryTransport.d.ts",
       "import": "./dist/ctfRangeRecoveryTransport.js"

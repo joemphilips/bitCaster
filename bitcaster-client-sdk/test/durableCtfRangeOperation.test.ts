@@ -42,6 +42,14 @@ import {
   type DurableCtfRangeOperation,
   type DurableCtfRangeAllManifestRecovery,
 } from '../src/durableCtfRangeOperation.ts'
+import {
+  assertDurableCtfRangeExactBinding,
+  assertDurableCtfRangeExactCommittedBinding,
+  assertDurableCtfRangeInputsUnspent,
+  createDurableCtfRangeStagedResultAuthority,
+  mapDurableCtfRangeSuccessorProofs,
+  matchDurableCtfRangeExactStagedResult,
+} from '../src/durableCtfRangeCustody.ts'
 import type { TokenImportKeysetLookup } from '../src/tokenImportValidation.ts'
 import { bindDurableCustodyProofOperation } from '../src/durableCustodyProofOperationRecord.ts'
 import {
@@ -635,6 +643,210 @@ test('range custody authority admits repeated input keysets and rejects substitu
     assert.throws(() => assertDurableCtfRangeCustodyAuthority(substituted, operation), expected)
   }
 })
+
+test('shared range custody binding and NUT-07 helpers preserve exact authority', async () => {
+  const { operation, binding } = await sharedRangeBinding()
+  const exactOperation = assertDurableCtfRangeExactBinding(binding)
+  assertDurableCtfRangeExactCommittedBinding(binding.record, binding.record, exactOperation)
+  const substitutedBinding = structuredClone(binding.record)
+  substitutedBinding.operation.exactRequest.idempotencyKey = 'foreign-idempotency-key'
+  assert.throws(
+    () =>
+      assertDurableCtfRangeExactCommittedBinding(
+        substitutedBinding,
+        binding.record,
+        exactOperation,
+      ),
+    /immutable authority is not exact/,
+  )
+  assertDurableCtfRangeInputsUnspent([{ Y: inputY(operation), state: 'UNSPENT', witness: null }])
+  assert.throws(
+    () =>
+      assertDurableCtfRangeInputsUnspent([
+        { Y: inputY(operation), state: 'PENDING', witness: null },
+      ]),
+    /not UNSPENT/,
+  )
+})
+
+test('shared range custody mapping is exact and rejects over-bound results before mapping', async () => {
+  const { operation, prepared, staged } = await stagedSharedRangeResult()
+  assert.equal(
+    matchDurableCtfRangeExactStagedResult(staged, prepared.authority)?.fingerprint,
+    prepared.resultFingerprint,
+  )
+  const successors = mapDurableCtfRangeSuccessorProofs(
+    { record: staged, operation, result: prepared.result },
+    (proof) => proof,
+  )
+  assert.deepEqual(
+    successors.map(({ material }) => material.proofId),
+    prepared.selectedSuccessorProofIds,
+  )
+  assert.deepEqual(
+    successors.map(({ classification }) => classification),
+    [
+      { conditionId: CONDITION_ID, outcomeSetId: OUTCOME_COLLECTION },
+      { conditionId: null, outcomeSetId: null },
+    ],
+  )
+  let oversizedMapCalls = 0
+  assert.throws(
+    () =>
+      mapDurableCtfRangeSuccessorProofs(
+        {
+          record: staged,
+          operation,
+          result: {
+            ...prepared.result,
+            receive: Array.from({ length: 513 }, () => prepared.result.receive[0]!),
+            change: [],
+          },
+        },
+        () => {
+          oversizedMapCalls += 1
+        },
+      ),
+    /proof count is invalid/,
+  )
+  assert.equal(oversizedMapCalls, 0)
+
+  for (const result of [
+    {
+      ...prepared.result,
+      change: [prepared.result.receive[0]!],
+    },
+    {
+      ...prepared.result,
+      change: [
+        {
+          ...prepared.result.change[0]!,
+          secret: `${prepared.result.change[0]!.secret}-foreign`,
+        },
+      ],
+    },
+  ]) {
+    let invalidMapCalls = 0
+    assert.throws(
+      () =>
+        mapDurableCtfRangeSuccessorProofs({ record: staged, operation, result }, () => {
+          invalidMapCalls += 1
+        }),
+      /duplicated|foreign/,
+    )
+    assert.equal(invalidMapCalls, 0)
+  }
+})
+
+test('shared range custody applied replay uses persisted authority without remapping', async () => {
+  const { operation, prepared, adapter, staged } = await stagedSharedRangeResult()
+  adapter.run((transaction) =>
+    transaction.applyVerifiedResult({
+      operationId: staged.operation.operationId,
+      expectedRevision: staged.revision,
+      authorization: { incarnationId: 'process-1', fencingEpoch: 1, observedAtMs: 21 },
+      outputPlanFingerprint: staged.operation.outputPlan.outputPlanFingerprint,
+      resultHandle: staged.operation.result.resultHandle!,
+      resultFingerprint: staged.operation.result.resultFingerprint!,
+      successorAdmission: {
+        scopeId: staged.scope.scopeId,
+        operationId: staged.operation.operationId,
+        admissionId: 'shared-helper-admission',
+        proofRows: prepared.selectedSuccessorProofIds.map((proofId) => ({
+          proofId,
+          expectedRevision: null,
+          admittedRevision: 0,
+        })),
+      },
+    }),
+  )
+  assert.equal(
+    matchDurableCtfRangeExactStagedResult(adapter.readOperation()!, prepared.authority)
+      ?.fingerprint,
+    prepared.resultFingerprint,
+  )
+  assert.throws(
+    () =>
+      mapDurableCtfRangeSuccessorProofs(
+        { record: adapter.readOperation()!, operation, result: prepared.result },
+        (proof) => proof,
+      ),
+    /successor rows are already applied/,
+  )
+
+  const substituted = structuredClone(staged)
+  substituted.operation.result.resultHandle = 'foreign-result'
+  assert.throws(
+    () => matchDurableCtfRangeExactStagedResult(substituted, prepared.authority),
+    /staged result authority is foreign/,
+  )
+})
+
+async function sharedRangeBinding() {
+  const operation = fixture()
+  const binding = createDurableCtfRangeCustodyBinding({
+    scope: walletScope(),
+    operation,
+    facts: await factsFor(operation),
+    mintKeysets: mintKeysetsFor(operation),
+    inventoryAccountId: null,
+    boundary: {
+      method: 'POST',
+      path: '/v1/range-authorizations',
+      idempotencyKey: operation.authorizationId,
+      requestBody: { authorizationId: operation.authorizationId },
+    },
+  })
+  return { operation, binding }
+}
+
+async function stagedSharedRangeResult() {
+  const { operation, binding } = await sharedRangeBinding()
+  const selection = createCtfSelectionBitmap(4, [1, 3])
+  const decision = prepareDurableCtfRangeVerifiedResult({
+    record: binding.record,
+    operation,
+    envelope: createDurableCtfRangeResultEnvelope({
+      operation,
+      requestDigest: 'ef'.repeat(32),
+      selection,
+      signatures: signaturesFor(operation, selection),
+    }),
+    allManifestRecovery: recoveryFor(operation, selection),
+    resolveKeyset,
+  })
+  assert.equal(decision.kind, 'confirmed')
+  if (decision.kind !== 'confirmed') throw new Error('range result fixture is not confirmed')
+  const authority = createDurableCtfRangeStagedResultAuthority({
+    record: binding.record,
+    exactResult: decision.exactResult,
+    resultHandle: decision.resultHandle,
+    resultFingerprint: decision.resultFingerprint,
+    selectedSuccessorProofIds: decision.selectedSuccessorProofIds,
+  })
+  const adapter = new FaultInjectingDurableCustodyAdapter(scopeState(binding.record.scope))
+  adapter.run((transaction) =>
+    bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
+  )
+  adapter.run((transaction) =>
+    transaction.stageVerifiedResult({
+      operationId: binding.record.operation.operationId,
+      expectedRevision: binding.record.revision,
+      authorization: { incarnationId: 'process-1', fencingEpoch: 1, observedAtMs: 20 },
+      outputPlanFingerprint: binding.record.operation.outputPlan.outputPlanFingerprint,
+      resultHandle: decision.resultHandle,
+      resultFingerprint: decision.resultFingerprint,
+      exactResult: decision.exactResult,
+      selectedSuccessorProofIds: decision.selectedSuccessorProofIds,
+    }),
+  )
+  return {
+    operation,
+    adapter,
+    staged: adapter.readOperation()!,
+    prepared: { ...decision, authority },
+  }
+}
 
 test('range operation produces one canonical pool settlement capability artifact', () => {
   const operation = fixture()
