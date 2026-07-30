@@ -177,7 +177,7 @@ export function createDurableCustodyConformancePrepared(
     semanticKind: 'wallet-send',
     facts,
     normalizedMint: 'https://mint.example',
-    inventoryAccountId: null,
+    inventoryAccountId: scopeInventoryAccountId(scope),
     reservation: {
       reservationId: `reservation-${suffix}`,
       parentReservationId: null,
@@ -222,6 +222,15 @@ export function createDurableCustodyConformancePrepared(
     result: artifact({ selected: suffix }),
     predecessorProofId,
     successorProofIds,
+  }
+}
+
+function scopeInventoryAccountId(scope: DurableCustodyScope): string | null {
+  switch (scope.scopeKind) {
+    case 'market':
+      return scope.inventoryAccountId
+    case 'wallet':
+      return null
   }
 }
 

@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict'
 import test from 'node:test'
 import { bindDurableCustodyProofOperation } from '../src/durableCustodyProofOperationRecord.ts'
 import {
@@ -16,6 +17,17 @@ import { FaultInjectingDurableCustodyAdapter } from './support/faultInjectingDur
 
 test('in-memory custody adapter satisfies the shared conformance contract', async () => {
   await assertDurableCustodyAdapterConformance((suffix) => MemoryHarness.create(suffix))
+})
+
+test('market-scope conformance fixture preserves its inventory account', () => {
+  const scope = marketScope()
+
+  const prepared = createDurableCustodyConformancePrepared(scope, 'market')
+
+  assert.equal(
+    prepared.record.operation.custodyContext.inventoryAccountId,
+    scope.inventoryAccountId,
+  )
 })
 
 class MemoryHarness implements DurableCustodyAdapterConformanceHarness {
@@ -123,6 +135,17 @@ function walletScope(suffix: string): DurableCustodyScope {
   const input = {
     scopeKind: 'wallet' as const,
     walletId: `${'a'.repeat(63)}${suffix === 'empty' ? 'b' : 'c'}`,
+  }
+  return { ...input, scopeId: deriveDurableCustodyScopeId(input) }
+}
+
+function marketScope(): DurableCustodyScope {
+  const input = {
+    scopeKind: 'market' as const,
+    marketId: 'condition-1-yes',
+    inventoryAccountId: 'inventory-account-exact',
+    normalizedMint: 'https://mint.example',
+    unit: 'sat',
   }
   return { ...input, scopeId: deriveDurableCustodyScopeId(input) }
 }
