@@ -63,6 +63,7 @@ export interface CtfRangeEngineResult {
   readonly envelopeDigest: string
   readonly envelopeBytes: Uint8Array
   readonly envelope: DurableCtfRangeResultEnvelope
+  readonly acknowledgedAt: string | null
   readonly version: number
 }
 
@@ -81,6 +82,11 @@ export interface CtfRangeEngineResultAuthority {
 export interface CtfRangeMintClient extends CtfRangeProofStateClient {
   restore(payload: PostRestorePayload): Promise<PostRestoreResponse>
   getKeys(keysetId?: string): Promise<GetKeysResponse>
+}
+
+export interface CtfRangeMintVerificationContext {
+  readonly allManifestRecovery: DurableCtfRangeAllManifestRecovery
+  readonly resolveKeyset: DurableCtfRangeKeysetResolver
 }
 
 export interface CtfRangeProofStateClient {
@@ -136,11 +142,27 @@ export function decodeCtfRangeEngineResult(
       envelopeDigest: value.envelopeDigest,
       envelopeBytes,
       envelope,
+      acknowledgedAt:
+        value.acknowledgedAt === undefined || value.acknowledgedAt === null
+          ? null
+          : requireIsoDateTime(value.acknowledgedAt),
       version: value.version,
     }
   } catch {
     throw new Error('CTF range engine result is invalid')
   }
+}
+
+function requireIsoDateTime(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length < 20 ||
+    value.length > 64 ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    throw new Error('engine result acknowledgement time is invalid')
+  }
+  return value
 }
 
 function decodeEngineResultAuthority(
@@ -253,10 +275,9 @@ export class CtfRangeMintRecoveryAdapter {
   }): Promise<DurableCtfRangeRecoveryDecision> {
     try {
       const operation = assertDurableCtfRangeCustodyAuthority(input.record, this.#operation)
-      const [recovery, inputStates, resolveKeyset] = await Promise.all([
-        this.#restoreExactAllManifest(),
+      const [verification, inputStates] = await Promise.all([
+        this.loadExactVerificationContext(input.record),
         checkCtfRangeInputProofStates(this.#mint, this.#operation.inputs, input.signal),
-        this.#loadBoundKeysets(input.record),
       ])
       return classifyDurableCtfRangeRecovery({
         operation,
@@ -264,13 +285,28 @@ export class CtfRangeMintRecoveryAdapter {
         observation: {
           selection: input.selection,
           inputStates,
-          ...recovery,
+          ...verification.allManifestRecovery,
           now: input.now,
         },
-        resolveKeyset,
+        resolveKeyset: verification.resolveKeyset,
       })
     } catch {
       throw new Error('CTF range mint recovery failed')
+    }
+  }
+
+  async loadExactVerificationContext(
+    record: DurableCustodyRecord,
+  ): Promise<CtfRangeMintVerificationContext> {
+    try {
+      assertDurableCtfRangeCustodyAuthority(record, this.#operation)
+      const [allManifestRecovery, resolveKeyset] = await Promise.all([
+        this.#restoreExactAllManifest(),
+        this.#loadBoundKeysets(record),
+      ])
+      return { allManifestRecovery, resolveKeyset }
+    } catch {
+      throw new Error('CTF range mint verification context failed')
     }
   }
 

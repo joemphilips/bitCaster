@@ -105,6 +105,7 @@ test('engine result-by-operation decodes bounded canonical base64 and verifies i
     ...envelopeBytes,
   ])
   assert.equal(decoded?.resultId, response.resultId)
+  assert.equal(decoded?.acknowledgedAt, null)
   assert.equal(decoded?.version, response.version)
 })
 
@@ -134,6 +135,7 @@ test('engine result decoder rejects noncanonical base64, digest mismatch, and ov
     { ...valid, envelope: `${valid.envelope}\n` },
     { ...padded, envelope: makeBase64TailNoncanonical(padded.envelope) },
     { ...valid, envelopeDigest: '00'.repeat(32) },
+    { ...valid, acknowledgedAt: 'not-a-time' },
     { ...valid, envelope: 'A'.repeat(349_529) },
   ]) {
     assert.throws(
@@ -270,6 +272,30 @@ test('uncertain recovery queries the exact full manifest and delegates classific
     checkCalls[0]?.Ys,
     operation.inputs.map(({ secret }) => hashToCurve(new TextEncoder().encode(secret)).toHex(true)),
   )
+  assert.deepEqual(new Set(keyCalls), new Set([OFFER_KEYSET_ID, RECEIVE_KEYSET_ID]))
+})
+
+test('confirmed result verification exposes exact manifest recovery and bound keysets', async () => {
+  const operation = createRangeOperation()
+  const binding = await createRangeBinding(operation)
+  const keyCalls: string[] = []
+  const adapter = new CtfRangeMintRecoveryAdapter(operation, {
+    async restore() {
+      return { outputs: [], signatures: [] }
+    },
+    check: unspentStates,
+    async getKeys(keysetId) {
+      keyCalls.push(keysetId ?? '')
+      return { keysets: [mintKeyset(operation, keysetId ?? '')] }
+    },
+  })
+
+  const context = await adapter.loadExactVerificationContext(binding.record)
+
+  assert.equal(context.allManifestRecovery.queryCompleted, true)
+  assert.equal(context.allManifestRecovery.queriedOutputs.length, operation.manifest.entries.length)
+  assert.equal(context.resolveKeyset(operation.mintUrl, OFFER_KEYSET_ID)?.id, OFFER_KEYSET_ID)
+  assert.equal(context.resolveKeyset(operation.mintUrl, RECEIVE_KEYSET_ID)?.id, RECEIVE_KEYSET_ID)
   assert.deepEqual(new Set(keyCalls), new Set([OFFER_KEYSET_ID, RECEIVE_KEYSET_ID]))
 })
 

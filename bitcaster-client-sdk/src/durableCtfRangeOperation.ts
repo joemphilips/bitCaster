@@ -648,8 +648,11 @@ export function recoverDurableCtfRangeVerifiedResultArtifact(input: {
   const operation = decodeDurableCtfRangeOperation(input.operation)
   assertDurableCtfRangeCustodyAuthority(record, operation)
   const resultAuthority = record.operation.result
-  if (resultAuthority.state !== 'verified-staged' || resultAuthority.exactResult === null) {
-    throw new Error('CTF range verified result has not been staged')
+  if (
+    (resultAuthority.state !== 'verified-staged' && resultAuthority.state !== 'applied') ||
+    resultAuthority.exactResult === null
+  ) {
+    throw new Error('CTF range verified result is unavailable')
   }
   assertDurableCustodyArtifactMatchesReference(resultAuthority.exactResult, input.exactResult)
   const value = input.exactResult.artifact
@@ -803,7 +806,7 @@ export function deriveDurableCtfResidualDecision(input: {
   return {
     kind: 'awaiting-authorization',
     predecessorOperationId: source.operationId,
-    sourceProofs: structuredClone(input.result.change),
+    sourceProofs: input.result.change.map((proof) => deserializeProof(serializeProof(proof))),
     remainingOrderAmount: remaining.toString(),
   }
 }

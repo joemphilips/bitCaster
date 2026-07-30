@@ -1,4 +1,4 @@
-import type { SdkMarketForTrading, SdkTradeSelection } from './types.ts'
+import type { SdkMarketForTrading, SdkMarketOutcome, SdkTradeSelection } from './types.ts'
 
 export interface ResolvedOutcomeSets {
   publicOutcomeSetId: string
@@ -7,8 +7,52 @@ export interface ResolvedOutcomeSets {
   complementOutcomeSetId: string
 }
 
+export function parseMarketOutcomes(market: unknown): SdkMarketOutcome[] {
+  if (
+    !isRecord(market) ||
+    !Array.isArray(market.outcomes) ||
+    market.outcomes.length < 2 ||
+    market.outcomes.length > 64
+  ) {
+    throw new Error('engine market outcomes are invalid')
+  }
+  const outcomes = market.outcomes.map((raw, index) => parseMarketOutcome(raw, index))
+  if (
+    new Set(outcomes.map(({ id }) => id)).size !== outcomes.length ||
+    new Set(outcomes.map(({ label }) => label)).size !== outcomes.length
+  ) {
+    throw new Error('engine market outcomes are not unique')
+  }
+  return outcomes
+}
+
 export function outcomeLabels(market: SdkMarketForTrading): string[] {
   return (market.outcomes ?? []).map((outcome) => outcome.label)
+}
+
+function parseMarketOutcome(value: unknown, index: number): SdkMarketOutcome {
+  if (typeof value === 'string') {
+    const label = requireOutcomeText(value, index)
+    return { id: label, label }
+  }
+  if (!isRecord(value)) throw new Error(`engine market outcome ${index} is invalid`)
+  const label = requireOutcomeText(
+    typeof value.label === 'string' ? value.label : value.name,
+    index,
+  )
+  const id = requireOutcomeText(value.id ?? label, index)
+  return { id, label }
+}
+
+function requireOutcomeText(value: unknown, index: number): string {
+  if (typeof value !== 'string' || value.length === 0 || value !== value.trim()) {
+    throw new Error(`engine market outcome ${index} is invalid`)
+  }
+  return value
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export function canonicalizeOutcomeSet(outcomes: string[]): string {

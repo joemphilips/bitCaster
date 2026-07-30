@@ -108,6 +108,14 @@
       "types": "./dist/proofSelection.d.ts",
       "import": "./dist/proofSelection.js"
     },
+    "./boundedProofConsolidation": {
+      "types": "./dist/boundedProofConsolidation.d.ts",
+      "import": "./dist/boundedProofConsolidation.js"
+    },
+    "./ctfRangeSourceRecovery": {
+      "types": "./dist/ctfRangeSourceRecovery.d.ts",
+      "import": "./dist/ctfRangeSourceRecovery.js"
+    },
     "./proofUnit": {
       "types": "./dist/proofUnit.d.ts",
       "import": "./dist/proofUnit.js"

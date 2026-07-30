@@ -1405,6 +1405,12 @@ test('refund preserves offered class and residual reauthorization links exact ch
     residual.kind === 'awaiting-authorization' ? residual.predecessorOperationId : '',
     operation.operationId,
   )
+  assert.equal(
+    residual.kind === 'awaiting-authorization'
+      ? residual.sourceProofs.every((proof) => Amount.from(proof.amount).toBigInt() > 0n)
+      : false,
+    true,
+  )
   assert.throws(
     () =>
       deriveDurableCtfResidualDecision({
@@ -1608,20 +1614,24 @@ test('direct preparation link and selected result commit atomically across resta
   const stagedArtifact = recovered
     .readArtifacts()
     .find(({ reference }) => reference.artifactId.endsWith(':result'))!
-  assert.deepEqual(
-    recoverDurableCtfRangeVerifiedResultArtifact({
-      record: staged,
-      operation,
-      exactResult: stagedArtifact.artifact,
-      resolveKeyset,
-    }),
-    recoverDurableCtfRangeResult(
-      operation,
-      envelope,
-      recoveryFor(operation, selection),
-      staged,
-      resolveKeyset,
+  assert.equal(
+    isDeepStrictEqual(
+      recoverDurableCtfRangeVerifiedResultArtifact({
+        record: staged,
+        operation,
+        exactResult: stagedArtifact.artifact,
+        resolveKeyset,
+      }),
+      recoverDurableCtfRangeResult(
+        operation,
+        envelope,
+        recoveryFor(operation, selection),
+        staged,
+        resolveKeyset,
+      ),
     ),
+    true,
+    'staged range recovery must equal the expected proof result',
   )
   const selected = staged.operation.proofStorage.lineage.selectedSuccessorProofIds!
   assert.equal(selected.length, 2)
@@ -1650,6 +1660,25 @@ test('direct preparation link and selected result commit atomically across resta
   assert.equal(recovered.readOperation()?.operation.result.state, 'verified-staged')
   recovered.run(apply)
   assert.equal(recovered.readOperation()?.operation.state, 'reconciled')
+  assert.equal(
+    isDeepStrictEqual(
+      recoverDurableCtfRangeVerifiedResultArtifact({
+        record: recovered.readOperation()!,
+        operation,
+        exactResult: stagedArtifact.artifact,
+        resolveKeyset,
+      }),
+      recoverDurableCtfRangeResult(
+        operation,
+        envelope,
+        recoveryFor(operation, selection),
+        recovered.readOperation()!,
+        resolveKeyset,
+      ),
+    ),
+    true,
+    'applied range recovery must equal the expected proof result',
+  )
   assert.deepEqual(
     recovered.readOperation()?.operation.proofStorage.lineage.successorAdmission?.proofRows,
     admission.proofRows,

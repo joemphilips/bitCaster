@@ -5,6 +5,7 @@ import {
   complementOutcomeSetId,
   outcomeSetDisplayLabel,
   outcomeSetIdsForMarketBooks,
+  parseMarketOutcomes,
   parseOutcomeSetId,
   resolveOutcomeSets,
 } from '../src/outcomeSets.ts'
@@ -33,6 +34,35 @@ test('canonicalizeOutcomeSet produces stable finite outcome-set ids', () => {
   assert.equal(canonicalizeOutcomeSet(['Carol', 'Alice', 'Alice']), 'Alice|Carol')
   assert.deepEqual(parseOutcomeSetId(' Bob | Alice | '), ['Bob', 'Alice'])
   assert.equal(complementOutcomeSetId(['Alice', 'Bob', 'Carol'], 'Alice|Carol'), 'Bob')
+})
+
+test('parseMarketOutcomes rejects malformed or ambiguous engine authority', () => {
+  assert.deepEqual(
+    parseMarketOutcomes({
+      outcomes: ['Yes', { id: 'no', label: 'No' }, { id: 'draw', name: 'Draw' }],
+    }),
+    [
+      { id: 'Yes', label: 'Yes' },
+      { id: 'no', label: 'No' },
+      { id: 'draw', label: 'Draw' },
+    ],
+  )
+  for (const market of [
+    {},
+    { outcomes: [] },
+    { outcomes: Array.from({ length: 65 }, (_, index) => `outcome-${index}`) },
+    { outcomes: ['Yes', ''] },
+    { outcomes: [{ id: 'yes' }] },
+    { outcomes: ['Yes', { id: 'other', label: 'Yes' }] },
+    {
+      outcomes: [
+        { id: 'same', label: 'Yes' },
+        { id: 'same', label: 'No' },
+      ],
+    },
+  ]) {
+    assert.throws(() => parseMarketOutcomes(market), /engine market outcome/)
+  }
 })
 
 test('resolveOutcomeSets preserves categorical YES oracle labels', () => {
