@@ -47,6 +47,10 @@
       "types": "./dist/ctfRangeRecoveryTransport.d.ts",
       "import": "./dist/ctfRangeRecoveryTransport.js"
     },
+    "./ctfRangeOrderPreparation": {
+      "types": "./dist/ctfRangeOrderPreparation.d.ts",
+      "import": "./dist/ctfRangeOrderPreparation.js"
+    },
     "./settlementCapabilityArtifact": {
       "types": "./dist/settlementCapabilityArtifact.d.ts",
       "import": "./dist/settlementCapabilityArtifact.js"
