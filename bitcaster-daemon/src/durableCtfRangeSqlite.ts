@@ -53,6 +53,10 @@ function assertPersistedProofRows(
   operation: DurableCtfRangeOperation,
 ): void {
   const links = record.operation.reservation.inputs
+  const predecessor = predecessorDisposition(
+    record.operation.result.state,
+    record.operation.operationId,
+  )
   operation.inputs.forEach((proof, position) => {
     const link = links[position]!
     const row = store.getProof(record.scope.scopeId, link.proofId)
@@ -77,14 +81,46 @@ function assertPersistedProofRows(
       (row.curve === 'secp256k1'
         ? row.dleqState !== 'verified'
         : row.dleqState !== 'not-present') ||
-      row.selectability !== 'locked' ||
-      row.reservationOperationId !== record.operation.operationId ||
+      row.nut07State !== predecessor.nut07State ||
+      row.selectability !== predecessor.selectability ||
+      row.reservationOperationId !== predecessor.reservationOperationId ||
       decoded === null ||
       !sameProofMaterial(decoded.proof, proof)
     ) {
       throw new Error('durable CTF range persisted proof authority is foreign')
     }
   })
+}
+
+function predecessorDisposition(
+  resultState: DurableCustodyRecord['operation']['result']['state'],
+  operationId: string,
+): {
+  readonly nut07State: 'UNSPENT' | 'SPENT'
+  readonly selectability: 'locked' | 'spent'
+  readonly reservationOperationId: string | null
+} {
+  switch (resultState) {
+    case 'none':
+    case 'verified-staged':
+      return {
+        nut07State: 'UNSPENT',
+        selectability: 'locked',
+        reservationOperationId: operationId,
+      }
+    case 'applied':
+      return {
+        nut07State: 'SPENT',
+        selectability: 'spent',
+        reservationOperationId: null,
+      }
+    default:
+      return assertNever(resultState)
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unexpected durable CTF range result state: ${String(value)}`)
 }
 
 function sameProofMaterial(

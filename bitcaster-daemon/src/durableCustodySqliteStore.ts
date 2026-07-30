@@ -630,19 +630,7 @@ export class DurableCustodySqliteStore {
     assertProofRow(row)
     if (expectedRevision === null) {
       if (row.revision !== 0) throw new Error('new custody proof revision is invalid')
-      const inserted = this.#database
-        .prepare(
-          `INSERT INTO custody_proofs (
-             proof_id, scope_id, normalized_mint, unit, keyset_id, amount,
-             base_asset, condition_id, outcome_set_id, product_binding,
-             proof_body, proof_fingerprint, curve, signature_verified,
-             dleq_state, nut07_state, selectability, storage_class,
-             reservation_operation_id, revision, created_at_ms, updated_at_ms
-           ) VALUES (
-             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-           ) ON CONFLICT(proof_id) DO NOTHING`,
-        )
-        .run(...proofSqlValues(row))
+      const inserted = this.#database.prepare(CUSTODY_PROOF_INSERT_SQL).run(...proofSqlValues(row))
       if (inserted.changes !== 1) throw new Error('custody proof insertion CAS lost')
       return
     }
@@ -687,27 +675,35 @@ export class DurableCustodySqliteStore {
     if (updated.changes !== 1) throw new Error('custody proof update CAS lost')
   }
 
+  putProofBatchCas(
+    rows: readonly {
+      readonly proof: CustodyProofSqliteRow
+      readonly expectedRevision: number | null
+    }[],
+  ): void {
+    const insert = this.#database.prepare(CUSTODY_PROOF_INSERT_SQL)
+    const read = this.#database.prepare(CUSTODY_PROOF_SELECT_SQL)
+    for (const { proof, expectedRevision } of rows) {
+      assertProofRow(proof)
+      if (expectedRevision === null) {
+        if (proof.revision !== 0) throw new Error('new custody proof revision is invalid')
+        const inserted = insert.run(...proofSqlValues(proof))
+        if (inserted.changes !== 1) throw new Error('custody proof insertion CAS lost')
+        continue
+      }
+      const existing = decodeProofSqlRow(read.get(proof.scopeId, proof.proofId))
+      if (
+        existing === null ||
+        existing.revision !== expectedRevision ||
+        !proofRowsEqual(existing, proof)
+      ) {
+        throw new Error('custody successor proof CAS is stale or foreign')
+      }
+    }
+  }
+
   getProof(scopeId: string, proofId: string): CustodyProofSqliteRow | null {
-    const row = this.#database
-      .prepare(
-        `SELECT proof_id AS proofId, scope_id AS scopeId,
-           normalized_mint AS normalizedMint, unit, keyset_id AS keysetId,
-           amount, base_asset AS baseAsset, condition_id AS conditionId,
-           outcome_set_id AS outcomeSetId, product_binding AS productBinding,
-           proof_body AS proofBody, proof_fingerprint AS proofFingerprint,
-           curve, signature_verified AS signatureVerified,
-           dleq_state AS dleqState, nut07_state AS nut07State, selectability,
-           storage_class AS storageClass,
-           reservation_operation_id AS reservationOperationId,
-           revision, created_at_ms AS createdAtMs, updated_at_ms AS updatedAtMs
-         FROM custody_proofs WHERE scope_id = ? AND proof_id = ?`,
-      )
-      .get(scopeId, proofId) as
-      | (Omit<CustodyProofSqliteRow, 'signatureVerified'> & {
-          signatureVerified: number
-        })
-      | undefined
-    return row === undefined ? null : { ...row, signatureVerified: Boolean(row.signatureVerified) }
+    return decodeProofSqlRow(this.#database.prepare(CUSTODY_PROOF_SELECT_SQL).get(scopeId, proofId))
   }
 
   putCounterCas(row: CustodyCounterSqliteRow, expectedRevision: number | null): void {
@@ -986,6 +982,46 @@ function proofSqlValues(row: CustodyProofSqliteRow): SQLInputValue[] {
     row.createdAtMs,
     row.updatedAtMs,
   ]
+}
+
+const CUSTODY_PROOF_INSERT_SQL = `INSERT INTO custody_proofs (
+  proof_id, scope_id, normalized_mint, unit, keyset_id, amount,
+  base_asset, condition_id, outcome_set_id, product_binding,
+  proof_body, proof_fingerprint, curve, signature_verified,
+  dleq_state, nut07_state, selectability, storage_class,
+  reservation_operation_id, revision, created_at_ms, updated_at_ms
+) VALUES (
+  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+) ON CONFLICT(proof_id) DO NOTHING`
+
+const CUSTODY_PROOF_SELECT_SQL = `SELECT
+  proof_id AS proofId, scope_id AS scopeId,
+  normalized_mint AS normalizedMint, unit, keyset_id AS keysetId,
+  amount, base_asset AS baseAsset, condition_id AS conditionId,
+  outcome_set_id AS outcomeSetId, product_binding AS productBinding,
+  proof_body AS proofBody, proof_fingerprint AS proofFingerprint,
+  curve, signature_verified AS signatureVerified,
+  dleq_state AS dleqState, nut07_state AS nut07State, selectability,
+  storage_class AS storageClass,
+  reservation_operation_id AS reservationOperationId,
+  revision, created_at_ms AS createdAtMs, updated_at_ms AS updatedAtMs
+FROM custody_proofs WHERE scope_id = ? AND proof_id = ?`
+
+function decodeProofSqlRow(value: unknown): CustodyProofSqliteRow | null {
+  const row = value as
+    | (Omit<CustodyProofSqliteRow, 'signatureVerified'> & {
+        signatureVerified: number
+      })
+    | undefined
+  return row === undefined ? null : { ...row, signatureVerified: Boolean(row.signatureVerified) }
+}
+
+function proofRowsEqual(left: CustodyProofSqliteRow, right: CustodyProofSqliteRow): boolean {
+  const normalize = (row: CustodyProofSqliteRow) => ({
+    ...row,
+    proofBody: [...row.proofBody],
+  })
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right))
 }
 
 function decodeActiveCursor(cursor: string | null): [number | null, string] {

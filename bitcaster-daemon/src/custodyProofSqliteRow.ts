@@ -3,6 +3,7 @@ import {
   createDurableCustodyProofMaterialRecord,
   decodeDurableCustodyProofMaterialRecord,
   type DurableCustodyProofMaterial,
+  type DurableCustodyProofMaterialRecord,
 } from '@bitcaster-market/client-sdk/durableCustodyProofMaterial'
 import type { CustodyProofSqliteRow } from './durableCustodySqliteStore.ts'
 
@@ -28,7 +29,21 @@ export function createCustodyProofSqliteRow(
   },
 ): CustodyProofSqliteRow {
   const material = createDurableCustodyProofMaterialRecord(input)
-  const { proof: _, nowMs: __, ...metadata } = input
+  const { proof: _, ...withoutProof } = input
+  const row = createCustodyProofSqliteRowFromMaterial({
+    ...withoutProof,
+    material,
+  })
+  return decodeCustodyProofSqliteRow(row).row
+}
+
+export function createCustodyProofSqliteRowFromMaterial(
+  input: CustodyProofRowMetadata & {
+    readonly material: DurableCustodyProofMaterialRecord
+    readonly nowMs: number
+  },
+): CustodyProofSqliteRow {
+  const { material, nowMs, ...metadata } = input
   const { dleqPresence, ...persistedMaterial } = material
   if (
     (metadata.dleqState === 'verified' && dleqPresence !== 'present') ||
@@ -39,10 +54,10 @@ export function createCustodyProofSqliteRow(
   const row: CustodyProofSqliteRow = {
     ...metadata,
     ...persistedMaterial,
-    createdAtMs: input.nowMs,
-    updatedAtMs: input.nowMs,
+    createdAtMs: nowMs,
+    updatedAtMs: nowMs,
   }
-  return decodeCustodyProofSqliteRow(row).row
+  return row
 }
 
 export function decodeCustodyProofSqliteRow(row: CustodyProofSqliteRow): {

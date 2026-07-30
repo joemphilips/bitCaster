@@ -3,6 +3,7 @@ import {
   decodeDurableCustodyScopeState,
   createDurableCustodyArtifactReference,
   reduceDurableCustodyState,
+  type DurableCustodyRecord,
   type DurableCustodyScopeState,
   type DurableCustodyTransaction,
   type DurableCustodyTransition,
@@ -24,11 +25,24 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
     Array<{ proof: CustodyProofSqliteRow; expectedRevision: number | null }>
   >()
 
-  constructor(database: DatabaseSync, scopeId: string, nowMs: number) {
+  constructor(
+    database: DatabaseSync,
+    scopeId: string,
+    nowMs: number,
+    initialOperations: readonly NonNullable<
+      ReturnType<DurableCustodySqliteStore['getOperation']>
+    >[] = [],
+  ) {
     this.#database = database
     this.#scopeId = scopeId
     this.#nowMs = nowMs
     this.#store = new DurableCustodySqliteStore(database)
+    for (const operation of initialOperations) {
+      if (operation.scope.scopeId !== scopeId) {
+        throw new Error('custody initial operation scope is foreign')
+      }
+      this.#pendingOperations.set(operation.operation.operationId, structuredClone(operation))
+    }
   }
 
   getScopeState(): DurableCustodyScopeState {
@@ -93,24 +107,35 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
     ) {
       throw new Error('custody reservation authority is foreign')
     }
+    const readReservation = this.#database.prepare(
+      `SELECT operation_id AS operationId, reservation_id AS reservationId,
+         input_position AS inputPosition
+       FROM custody_proof_reservations
+       WHERE scope_id = ? AND proof_id = ?`,
+    )
+    const readProofLock = this.#database.prepare(
+      `SELECT selectability, reservation_operation_id AS reservationOperationId
+       FROM custody_proofs WHERE scope_id = ? AND proof_id = ?`,
+    )
+    const insertReservation = this.#database.prepare(
+      `INSERT INTO custody_proof_reservations (
+         scope_id, proof_id, operation_id, reservation_id, input_position
+       ) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(scope_id, proof_id) DO NOTHING`,
+    )
+    const lockProof = this.#database.prepare(
+      `UPDATE custody_proofs SET selectability = 'locked',
+         reservation_operation_id = ?, revision = revision + 1,
+         updated_at_ms = ?
+       WHERE scope_id = ? AND proof_id = ?
+         AND selectability = 'selectable'`,
+    )
     input.proofIds.forEach((proofId, position) => {
-      const existing = this.#database
-        .prepare(
-          `SELECT operation_id AS operationId, reservation_id AS reservationId,
-             input_position AS inputPosition
-           FROM custody_proof_reservations
-           WHERE scope_id = ? AND proof_id = ?`,
-        )
-        .get(this.#scopeId, proofId) as
+      const existing = readReservation.get(this.#scopeId, proofId) as
         | { operationId: string; reservationId: string; inputPosition: number }
         | undefined
       if (existing !== undefined) {
-        const proof = this.#database
-          .prepare(
-            `SELECT selectability, reservation_operation_id AS reservationOperationId
-             FROM custody_proofs WHERE scope_id = ? AND proof_id = ?`,
-          )
-          .get(this.#scopeId, proofId) as
+        const proof = readProofLock.get(this.#scopeId, proofId) as
           | { selectability: string; reservationOperationId: string | null }
           | undefined
         if (
@@ -124,24 +149,15 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
         }
         return
       }
-      const reserved = this.#database
-        .prepare(
-          `INSERT INTO custody_proof_reservations (
-             scope_id, proof_id, operation_id, reservation_id, input_position
-           ) VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(scope_id, proof_id) DO NOTHING`,
-        )
-        .run(this.#scopeId, proofId, input.operationId, input.reservationId, position)
+      const reserved = insertReservation.run(
+        this.#scopeId,
+        proofId,
+        input.operationId,
+        input.reservationId,
+        position,
+      )
       if (reserved.changes !== 1) throw new Error('custody proof reservation CAS lost')
-      const locked = this.#database
-        .prepare(
-          `UPDATE custody_proofs SET selectability = 'locked',
-             reservation_operation_id = ?, revision = revision + 1,
-             updated_at_ms = ?
-           WHERE scope_id = ? AND proof_id = ?
-             AND selectability = 'selectable'`,
-        )
-        .run(input.operationId, this.#nowMs, this.#scopeId, proofId)
+      const locked = lockProof.run(input.operationId, this.#nowMs, this.#scopeId, proofId)
       if (locked.changes !== 1) throw new Error('custody proof lock CAS lost')
     })
   }
@@ -253,20 +269,7 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
     }
     this.#database.exec('SAVEPOINT custody_apply_verified_result')
     try {
-      for (const { proof, expectedRevision } of staged) {
-        if (expectedRevision === null) {
-          this.#store.putProofCas(proof, null)
-        } else {
-          const existing = this.#store.getProof(this.#scopeId, proof.proofId)
-          if (
-            existing === null ||
-            existing.revision !== expectedRevision ||
-            !proofRowsEqual(existing, proof)
-          ) {
-            throw new Error('custody successor proof CAS is stale or foreign')
-          }
-        }
-      }
+      this.#store.putProofBatchCas(staged)
       this.#applyTransition(
         input.operationId,
         input.expectedRevision,
@@ -283,12 +286,45 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
           resultArtifactId: stagedResult.exactResult.artifactId,
         },
       )
+      this.#retirePredecessorProofs(stagedOperation)
       this.#database.exec('RELEASE SAVEPOINT custody_apply_verified_result')
       this.#stagedSuccessors.delete(input.operationId)
     } catch (error) {
       this.#database.exec('ROLLBACK TO SAVEPOINT custody_apply_verified_result')
       this.#database.exec('RELEASE SAVEPOINT custody_apply_verified_result')
       throw error
+    }
+  }
+
+  #retirePredecessorProofs(operation: DurableCustodyRecord): void {
+    const retire = this.#database.prepare(
+      `UPDATE custody_proofs SET
+         nut07_state = 'SPENT', selectability = 'spent',
+         reservation_operation_id = NULL, revision = revision + 1,
+         updated_at_ms = ?
+       WHERE scope_id = ? AND proof_id = ?
+         AND nut07_state = 'UNSPENT' AND selectability = 'locked'
+         AND reservation_operation_id = ?`,
+    )
+    for (const { proofId } of operation.operation.reservation.inputs) {
+      const result = retire.run(
+        this.#nowMs,
+        this.#scopeId,
+        proofId,
+        operation.operation.operationId,
+      )
+      if (result.changes !== 1) {
+        throw new Error('custody predecessor proof CAS lost')
+      }
+    }
+    const released = this.#database
+      .prepare(
+        `DELETE FROM custody_proof_reservations
+         WHERE scope_id = ? AND operation_id = ?`,
+      )
+      .run(this.#scopeId, operation.operation.operationId)
+    if (released.changes !== operation.operation.reservation.inputs.length) {
+      throw new Error('custody predecessor reservation release is incomplete')
     }
   }
 
@@ -436,14 +472,13 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
     this.#database
       .prepare('DELETE FROM custody_operation_pins WHERE scope_id = ? AND operation_id = ?')
       .run(this.#scopeId, operationId)
+    const insertPin = this.#database.prepare(
+      `INSERT INTO custody_operation_pins (
+         scope_id, operation_id, pin_reason, created_at_ms
+       ) VALUES (?, ?, ?, ?)`,
+    )
     for (const pinReason of record.operation.proofStorage.pinReasons) {
-      this.#database
-        .prepare(
-          `INSERT INTO custody_operation_pins (
-             scope_id, operation_id, pin_reason, created_at_ms
-           ) VALUES (?, ?, ?, ?)`,
-        )
-        .run(this.#scopeId, operationId, pinReason, this.#nowMs)
+      insertPin.run(this.#scopeId, operationId, pinReason, this.#nowMs)
     }
     this.#database
       .prepare(
@@ -462,22 +497,21 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
            ) VALUES (?, ?, ?)`,
         )
         .run(this.#scopeId, operationId, admission.admissionId)
+      const insertAdmissionProof = this.#database.prepare(
+        `INSERT INTO custody_successor_admission_proofs (
+           scope_id, operation_id, proof_position, proof_id,
+           expected_revision, admitted_revision
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
       admission.proofRows.forEach((proof, position) => {
-        this.#database
-          .prepare(
-            `INSERT INTO custody_successor_admission_proofs (
-               scope_id, operation_id, proof_position, proof_id,
-               expected_revision, admitted_revision
-             ) VALUES (?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            this.#scopeId,
-            operationId,
-            position,
-            proof.proofId,
-            proof.expectedRevision,
-            proof.admittedRevision,
-          )
+        insertAdmissionProof.run(
+          this.#scopeId,
+          operationId,
+          position,
+          proof.proofId,
+          proof.expectedRevision,
+          proof.admittedRevision,
+        )
       })
     }
     this.#database
@@ -551,14 +585,6 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
     }
     return operation
   }
-}
-
-function proofRowsEqual(left: CustodyProofSqliteRow, right: CustodyProofSqliteRow): boolean {
-  const normalize = (row: CustodyProofSqliteRow) => ({
-    ...row,
-    proofBody: [...row.proofBody],
-  })
-  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right))
 }
 
 function sameNullableProofIds(left: string[] | null, right: string[] | null): boolean {
