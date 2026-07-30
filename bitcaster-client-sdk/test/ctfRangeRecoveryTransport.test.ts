@@ -413,6 +413,35 @@ test('exact NUT-07 rejects missing and duplicate states and batches through the 
   assert.equal(overCapCalls, 0)
 })
 
+test('exact NUT-07 cancellation stops before the next proof-state batch', async () => {
+  const inputs = Array.from({ length: 201 }, (_, index) => ({
+    id: OFFER_KEYSET_ID,
+    secret: `cancelled-input-${index}`,
+  }))
+  const controller = new AbortController()
+  let checkCalls = 0
+  const observedSignals: Array<AbortSignal | undefined> = []
+
+  await assert.rejects(
+    () =>
+      checkCtfRangeInputProofStates(
+        {
+          async check(payload, signal) {
+            checkCalls += 1
+            observedSignals.push(signal)
+            controller.abort()
+            return unspentStates(payload)
+          },
+        },
+        inputs,
+        controller.signal,
+      ),
+    /CTF range proof-state response is invalid/,
+  )
+  assert.equal(checkCalls, 1)
+  assert.deepEqual(observedSignals, [controller.signal])
+})
+
 test('invalid restored signature remains reconciling instead of becoming terminal', async () => {
   const operation = createRangeOperation()
   const binding = await createRangeBinding(operation)
@@ -492,6 +521,49 @@ test('default Cashu recovery cancels oversized restore responses with safe fetch
     requests.every(({ hasSignal }) => hasSignal),
     true,
   )
+})
+
+test('default Cashu recovery binds NUT-07 cancellation through request options', async () => {
+  const operation = createRangeOperation()
+  const binding = await createRangeBinding(operation)
+  const controller = new AbortController()
+  let observedCheckSignal: AbortSignal | undefined
+  let notifyCheckStarted: (() => void) | undefined
+  const checkStarted = new Promise<void>((resolve) => {
+    notifyCheckStarted = resolve
+  })
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input)
+    if (url.endsWith('/v1/restore')) {
+      return Response.json({ outputs: [], signatures: [] })
+    }
+    if (url.endsWith('/v1/checkstate')) {
+      observedCheckSignal = init?.signal ?? undefined
+      notifyCheckStarted?.()
+      return await new Promise<Response>((_resolve, reject) => {
+        const rejectAbort = () => reject(new DOMException('aborted', 'AbortError'))
+        if (observedCheckSignal?.aborted) rejectAbort()
+        else observedCheckSignal?.addEventListener('abort', rejectAbort, { once: true })
+      })
+    }
+    const keysetId = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1))
+    return Response.json({ keysets: [mintKeyset(operation, keysetId)] })
+  }
+  const adapter = new CtfRangeMintRecoveryAdapter(operation, undefined, fetchImpl)
+  const classification = adapter.classifyUncertainRecovery({
+    record: binding.record,
+    selection: null,
+    now: 50,
+    signal: controller.signal,
+  })
+  const rejection = assert.rejects(classification, /CTF range mint recovery failed/)
+
+  await checkStarted
+  controller.abort()
+  await rejection
+
+  assert.equal(observedCheckSignal instanceof AbortSignal, true)
+  assert.equal(observedCheckSignal?.aborted, true)
 })
 
 function engineResult(

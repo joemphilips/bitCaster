@@ -78,14 +78,13 @@ export interface CtfRangeEngineResultAuthority {
   readonly previouslyPersistedRequestDigest?: string
 }
 
-export interface CtfRangeMintClient {
+export interface CtfRangeMintClient extends CtfRangeProofStateClient {
   restore(payload: PostRestorePayload): Promise<PostRestoreResponse>
-  check(payload: CheckStatePayload): Promise<CheckStateResponse>
   getKeys(keysetId?: string): Promise<GetKeysResponse>
 }
 
 export interface CtfRangeProofStateClient {
-  check(payload: CheckStatePayload): Promise<CheckStateResponse>
+  check(payload: CheckStatePayload, signal?: AbortSignal): Promise<CheckStateResponse>
 }
 
 export interface CtfRangeInputProofIdentity {
@@ -191,6 +190,7 @@ function decodeEngineResultAuthority(
 export async function checkCtfRangeInputProofStates(
   mint: CtfRangeProofStateClient,
   inputs: readonly CtfRangeInputProofIdentity[],
+  signal?: AbortSignal,
 ): Promise<ProofState[]> {
   try {
     if (inputs.length === 0 || inputs.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX) {
@@ -204,8 +204,9 @@ export async function checkCtfRangeInputProofStates(
     })
     const ordered: ProofState[] = []
     for (let offset = 0; offset < Ys.length; offset += NUT07_BATCH_SIZE) {
+      signal?.throwIfAborted()
       const batch = Ys.slice(offset, offset + NUT07_BATCH_SIZE)
-      const response = await mint.check({ Ys: batch })
+      const response = await mint.check({ Ys: batch }, signal)
       if (!Array.isArray(response.states) || response.states.length > batch.length) {
         throw new Error('invalid range proof-state response size')
       }
@@ -248,12 +249,13 @@ export class CtfRangeMintRecoveryAdapter {
     record: DurableCustodyRecord
     selection: string | null
     now: number
+    signal?: AbortSignal
   }): Promise<DurableCtfRangeRecoveryDecision> {
     try {
       const operation = assertDurableCtfRangeCustodyAuthority(input.record, this.#operation)
       const [recovery, inputStates, resolveKeyset] = await Promise.all([
         this.#restoreExactAllManifest(),
-        checkCtfRangeInputProofStates(this.#mint, this.#operation.inputs),
+        checkCtfRangeInputProofStates(this.#mint, this.#operation.inputs, input.signal),
         this.#loadBoundKeysets(input.record),
       ])
       return classifyDurableCtfRangeRecovery({
@@ -343,7 +345,8 @@ function createBoundedCashuMintClient(
   const request = createBoundedCashuRequest(canonicalMintUrl, fetchImpl)
   return {
     restore: (payload) => mint.restore(payload, request),
-    check: (payload) => mint.check(payload, request),
+    check: (payload, signal) =>
+      mint.check(payload, (options) => request({ ...options, signal: signal ?? options.signal })),
     getKeys: (keysetId) => mint.getKeys(keysetId, undefined, request),
   }
 }
