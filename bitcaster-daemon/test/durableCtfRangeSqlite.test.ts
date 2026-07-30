@@ -171,7 +171,7 @@ test('range authority survives restart and injected rollback exposes no partial 
         .run(fixture.walletScopeId, proofIds[0]!)
       assert.throws(
         () => loadDaemonDurableCtfRangeAuthority(store, custodyOperationId),
-        /proof row authority|persisted proof authority/,
+        /proof material authority|persisted proof authority/,
       )
     } finally {
       database.close()
@@ -395,6 +395,7 @@ function proofRow(
     outcomeSetId: null,
     productBinding: null,
     signatureVerified: true,
+    dleqState: proof.dleq === null ? 'not-present' : 'verified',
     nut07State: 'UNSPENT',
     selectability: 'selectable',
     storageClass: 'pinned-operation-bound-deterministic',

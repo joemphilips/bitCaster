@@ -31,6 +31,10 @@
       "types": "./dist/durableCustodyProofOperationRecord.d.ts",
       "import": "./dist/durableCustodyProofOperationRecord.js"
     },
+    "./durableCustodyProofMaterial": {
+      "types": "./dist/durableCustodyProofMaterial.d.ts",
+      "import": "./dist/durableCustodyProofMaterial.js"
+    },
     "./durableCtfRangeOperation": {
       "types": "./dist/durableCtfRangeOperation.d.ts",
       "import": "./dist/durableCtfRangeOperation.js"

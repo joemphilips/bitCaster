@@ -68,6 +68,7 @@ function createRow(keysetId: string, secret: string, dleq: unknown) {
     outcomeSetId: null,
     productBinding: null,
     signatureVerified: true,
+    dleqState: dleq === null ? 'not-present' : 'verified',
     nut07State: 'UNSPENT',
     selectability: 'selectable',
     storageClass: 'pinned-operation-bound-deterministic',

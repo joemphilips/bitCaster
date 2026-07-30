@@ -248,6 +248,7 @@ function observedProof(
     outcomeSetId: null,
     productBinding: null,
     signatureVerified: true,
+    dleqState: proof.dleq === undefined ? 'not-present' : 'verified',
     nut07State: mintState === 'UNSPENT' ? 'UNSPENT' : mintState === 'SPENT' ? 'SPENT' : 'PENDING',
     selectability:
       disposition === 'import-selectable'

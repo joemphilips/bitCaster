@@ -338,6 +338,7 @@ function observed(
       outcomeSetId: null,
       productBinding: null,
       signatureVerified: mintState === 'UNSPENT',
+      dleqState: 'not-present',
       nut07State,
       selectability,
       storageClass: 'pinned-operation-bound-deterministic',
