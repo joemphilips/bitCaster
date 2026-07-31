@@ -97,6 +97,7 @@ import {
   readAvailableWalletProofPage,
   recordDiscoveredOrder,
   recordOrderStatus,
+  recordSubmittedOrder,
   releasePreparedProofReservationFenced,
   type CashuProofRecord,
   type FencedStateMutation,
@@ -408,7 +409,37 @@ export class DaemonCtfRangeOrderCoordinator {
     } else {
       await rangeCoordinator.bindPreparedSource(bindInput)
     }
+    if (preparationInput.sourceKind === 'residual-change') {
+      await this.#submitRecoveredResidual(preparationInput, operation, capabilityRequest, client)
+      return
+    }
     await this.#recoverUnsubmittedAuthorization(preparationInput, walletSeedHex)
+  }
+
+  async #submitRecoveredResidual(
+    input: PersistedPreparationInput,
+    operation: DurableCtfRangeOperation,
+    request: CreateSettlementCapabilityRequest,
+    client: EngineClientLike,
+  ): Promise<void> {
+    const createCapability = client.createSettlementCapability
+    if (createCapability === undefined) {
+      throw new Error('engine client does not support settlement capability creation')
+    }
+    const response = await createCapability.call(client, request)
+    const capability = validateAndProjectCtfRangeSettlementCapabilityResponse({
+      capability: response,
+      preparation: input,
+      operation,
+      recovering: true,
+    })
+    await this.#bindCapability(operation.operationId, capability)
+    await submitRecoveredResidualOrder(client, input.request, capability)
+    await this.#markOrderSubmitted(operation.operationId)
+    throw new RangeRecoveryDeferredError(
+      'recovered residual range order was submitted and remains pending settlement',
+      this.#nowMs() + 30_000,
+    )
   }
 
   async #recoverCapabilityBoundOrder(
@@ -1313,6 +1344,35 @@ export class DaemonCtfRangeOrderCoordinator {
       observedAtMs: this.#nowMs(),
     }
   }
+}
+
+async function submitRecoveredResidualOrder(
+  client: EngineClientLike,
+  request: PersistedPreparationInput['request'],
+  capability: RangePreparationCapability,
+): Promise<void> {
+  const submitted = await client.submitOrder(request.marketId, {
+    settlementCapability: {
+      artifactId: capability.artifactId,
+      bindingDigest: capability.bindingDigest,
+    },
+    comment: null,
+  })
+  if (submitted.orderId !== capability.orderId) {
+    throw new Error('recovered residual order differs from its settlement capability')
+  }
+  await recordSubmittedOrder(
+    request.marketId,
+    request.clientOrderId,
+    submitted,
+    null,
+    request.tokenSide,
+    request.side,
+    request.price,
+    request.amountSubunits,
+    request.baseAsset,
+    request.divisibility,
+  )
 }
 
 function preparedMintAuthority(
