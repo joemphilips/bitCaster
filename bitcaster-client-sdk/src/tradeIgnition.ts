@@ -10,6 +10,7 @@ import {
   type MarketBaseAsset,
   type MarketDivisibility,
 } from './marketUnits.ts'
+import { parseOrderRouteId } from './orderRoute.ts'
 
 export interface EphemeralKeypair {
   /** 32-byte secp256k1 private scalar, lowercase hex (64 chars). */
@@ -108,7 +109,9 @@ export function generateEphemeralKeypair(): EphemeralKeypair {
  * condition ids that contain dashes.
  */
 export function conditionIdFromMarketId(marketId: string): string {
-  return marketId.slice(0, marketId.lastIndexOf('-'))
+  const route = parseOrderRouteId(marketId)
+  if (route === null) throw new Error('market id is not an exact order route')
+  return route.conditionId
 }
 
 export function parseMatchedDelta(payload: unknown): MatchedDelta | null {

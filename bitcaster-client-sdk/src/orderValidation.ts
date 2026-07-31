@@ -3,6 +3,7 @@ import {
   validatePriceNumerator,
   validateWholeShareFaceAmount,
 } from './marketUnits.ts'
+import { parseOrderRouteId } from './orderRoute.ts'
 
 export type SupportedOrderSide = 'Buy' | 'Sell'
 export type SupportedTimeInForce = 'FAK' | 'FOK' | 'GTC'
@@ -88,8 +89,8 @@ export function validateOrderRoutingIdentity(request: unknown): OrderIntentValid
       message: 'Order rejected: outcome id must be a primitive outcome name.',
     }
   }
-  const marketOutcomeSegment = primitiveOutcomeSegment(intent.marketId)
-  if (!marketOutcomeSegment || marketOutcomeSegment !== intent.outcomeId) {
+  const orderRoute = parseOrderRouteId(intent.marketId)
+  if (orderRoute === null || orderRoute.outcomeId !== intent.outcomeId) {
     return {
       valid: false,
       message: 'Order rejected: outcome id must match the primitive outcome segment of market id.',
@@ -127,10 +128,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
-}
-
-function primitiveOutcomeSegment(marketId: string): string | null {
-  const index = marketId.lastIndexOf('-')
-  if (index <= 0 || index >= marketId.length - 1) return null
-  return marketId.slice(index + 1)
 }

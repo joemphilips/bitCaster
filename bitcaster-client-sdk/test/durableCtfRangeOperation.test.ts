@@ -1112,10 +1112,9 @@ test('range custody binding verifies every input proof against the pinned mint k
   )
 })
 
-test('range market custody scope is derived from the unique conditional asset', async () => {
+test('range condition-inventory custody scope binds the exact condition', async () => {
   const operation = fixture()
   const facts = await factsFor(operation)
-  const canonicalMarketId = `${CONDITION_ID}-${OUTCOME_COLLECTION}`
   const bind = (scope: DurableCustodyScope) =>
     createDurableCtfRangeCustodyBinding({
       scope,
@@ -1131,20 +1130,23 @@ test('range market custody scope is derived from the unique conditional asset', 
       },
     })
 
-  assert.equal(bind(marketScope(canonicalMarketId)).record.scope.marketId, canonicalMarketId)
+  const scope = conditionInventoryScope(CONDITION_ID)
+  const bound = bind(scope)
+  assert.equal(bound.record.scope.scopeId, scope.scopeId)
+  assert.equal(bound.record.scope.conditionId, CONDITION_ID)
   assert.throws(
-    () => bind(marketScope(`${'cd'.repeat(32)}-${OUTCOME_COLLECTION}`)),
-    /market scope does not match the conditional asset/,
+    () => bind(conditionInventoryScope('cd'.repeat(32))),
+    /condition-inventory scope does not match the conditional asset/,
   )
 })
 
-test('range market custody binding rejects ambiguous conditional assets', async () => {
+test('range condition-inventory custody binding rejects ambiguous conditional assets', async () => {
   const operation = ambiguousConditionalFixture()
   const facts = await factsFor(operation)
   assert.throws(
     () =>
       createDurableCtfRangeCustodyBinding({
-        scope: marketScope(`${CONDITION_ID}-${OUTCOME_COLLECTION}`),
+        scope: conditionInventoryScope(CONDITION_ID),
         operation,
         facts,
         mintKeysets: mintKeysetsFor(operation),
@@ -1156,7 +1158,7 @@ test('range market custody binding rejects ambiguous conditional assets', async 
           requestBody: {},
         },
       }),
-    /market scope conditional asset is ambiguous/,
+    /condition-inventory scope conditional asset is ambiguous/,
   )
 })
 
@@ -1757,10 +1759,10 @@ function walletScope(): DurableCustodyScope {
   return { ...input, scopeId: deriveDurableCustodyScopeId(input) }
 }
 
-function marketScope(marketId: string): DurableCustodyScope {
+function conditionInventoryScope(conditionId: string): DurableCustodyScope {
   const input = {
-    scopeKind: 'market' as const,
-    marketId,
+    scopeKind: 'condition-inventory' as const,
+    conditionId,
     inventoryAccountId: 'inventory-1',
     normalizedMint: 'https://mint.example',
     unit: 'msat',

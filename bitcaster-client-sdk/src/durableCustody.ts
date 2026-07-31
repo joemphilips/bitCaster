@@ -51,8 +51,8 @@ export type DurableCustodyWalletStage =
 export type DurableCustodyScope =
   | { scopeKind: 'wallet'; walletId: string; scopeId: string }
   | {
-      scopeKind: 'market'
-      marketId: string
+      scopeKind: 'condition-inventory'
+      conditionId: string
       inventoryAccountId: string
       normalizedMint: string
       unit: string
@@ -61,8 +61,8 @@ export type DurableCustodyScope =
 export type DurableCustodyScopeInput =
   | { scopeKind: 'wallet'; walletId: string }
   | {
-      scopeKind: 'market'
-      marketId: string
+      scopeKind: 'condition-inventory'
+      conditionId: string
       inventoryAccountId: string
       normalizedMint: string
       unit: string
@@ -472,8 +472,8 @@ export function deriveDurableCustodyScopeId(scope: DurableCustodyScopeInput): st
     ? compositeId(['custody', 'wallet', scope.walletId])
     : compositeId([
         'custody',
-        'market',
-        encodeURIComponent(scope.marketId),
+        'condition-inventory',
+        encodeURIComponent(scope.conditionId),
         encodeURIComponent(scope.inventoryAccountId),
         encodeURIComponent(scope.normalizedMint),
         encodeURIComponent(scope.unit),
@@ -481,30 +481,30 @@ export function deriveDurableCustodyScopeId(scope: DurableCustodyScopeInput): st
 }
 
 export function decodeDurableCustodyScopeId(value: unknown): string {
+  decodeDurableCustodyScopeInput(value)
+  return value as string
+}
+
+export function decodeDurableCustodyScopeInput(value: unknown): DurableCustodyScopeInput {
   requireText(value, 'scope id')
   const parts = value.split(':')
   try {
-    if (
-      parts.length === 3 &&
-      parts[0] === 'custody' &&
-      parts[1] === 'wallet' &&
-      value ===
-        deriveDurableCustodyScopeId({
-          scopeKind: 'wallet',
-          walletId: parts[2]!,
-        })
-    ) {
-      return value
-    }
-    if (parts.length === 6 && parts[0] === 'custody' && parts[1] === 'market') {
+    if (parts.length === 3 && parts[0] === 'custody' && parts[1] === 'wallet') {
       const input: DurableCustodyScopeInput = {
-        scopeKind: 'market',
-        marketId: decodeURIComponent(parts[2]!),
+        scopeKind: 'wallet',
+        walletId: parts[2]!,
+      }
+      if (value === deriveDurableCustodyScopeId(input)) return input
+    }
+    if (parts.length === 6 && parts[0] === 'custody' && parts[1] === 'condition-inventory') {
+      const input: DurableCustodyScopeInput = {
+        scopeKind: 'condition-inventory',
+        conditionId: decodeURIComponent(parts[2]!),
         inventoryAccountId: decodeURIComponent(parts[3]!),
         normalizedMint: decodeURIComponent(parts[4]!),
         unit: decodeURIComponent(parts[5]!),
       }
-      if (value === deriveDurableCustodyScopeId(input)) return value
+      if (value === deriveDurableCustodyScopeId(input)) return input
     }
   } catch {
     // Normalize malformed components to a non-secret error.
@@ -796,12 +796,12 @@ export function createDurableCustodyDispatchIntent(input: {
   requireText(input.facts.unit, 'unit')
   validateBinding(input.facts.binding)
   if (
-    input.scope.scopeKind === 'market' &&
+    input.scope.scopeKind === 'condition-inventory' &&
     (input.scope.normalizedMint !== input.normalizedMint ||
       input.scope.unit !== input.facts.unit ||
       input.scope.inventoryAccountId !== input.inventoryAccountId)
   ) {
-    throw new Error('custody market scope authority is invalid')
+    throw new Error('custody condition-inventory scope authority is invalid')
   }
   validateProofLineageInput(input.proofLineage, input.reservation.inputs)
   if (
@@ -2368,16 +2368,16 @@ function validateScope(value: unknown): asserts value is DurableCustodyScope {
   if (value.scopeKind === 'wallet') {
     exactKeys(value, ['scopeKind', 'walletId', 'scopeId'])
     requireText(value.walletId, 'wallet id')
-  } else if (value.scopeKind === 'market') {
+  } else if (value.scopeKind === 'condition-inventory') {
     exactKeys(value, [
       'scopeKind',
-      'marketId',
+      'conditionId',
       'inventoryAccountId',
       'normalizedMint',
       'unit',
       'scopeId',
     ])
-    requireText(value.marketId, 'market id')
+    requireText(value.conditionId, 'condition id')
     requireText(value.inventoryAccountId, 'inventory account id')
     requireNormalizedMint(value.normalizedMint)
     requireText(value.unit, 'unit')
@@ -2396,11 +2396,13 @@ function validateScopeInput(value: DurableCustodyScopeInput): void {
     if (!/^[0-9a-f]{64}$/.test(value.walletId)) {
       throw new Error('custody wallet id is invalid')
     }
-  } else {
-    requireText(value.marketId, 'market id')
+  } else if (value.scopeKind === 'condition-inventory') {
+    requireText(value.conditionId, 'condition id')
     requireText(value.inventoryAccountId, 'inventory account id')
     requireNormalizedMint(value.normalizedMint)
     requireText(value.unit, 'unit')
+  } else {
+    throw new Error('custody scope kind is invalid')
   }
 }
 

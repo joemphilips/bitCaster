@@ -21,6 +21,7 @@ test('generateEphemeralKeypair returns compressed secp256k1 hex keys', () => {
 test('conditionIdFromMarketId splits on the rightmost dash', () => {
   assert.equal(conditionIdFromMarketId('condition-with-dashes-YES'), 'condition-with-dashes')
   assert.equal(conditionIdFromMarketId('abcdef-NO'), 'abcdef')
+  assert.throws(() => conditionIdFromMarketId('missingroute'), /exact order route/)
 })
 
 test('parseMatchedDelta accepts camelCase payloads', () => {

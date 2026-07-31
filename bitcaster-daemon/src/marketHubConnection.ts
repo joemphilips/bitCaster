@@ -1,6 +1,10 @@
 import { createRequire } from 'node:module'
 import { submitEphemeralPubkey as submitEphemeralPubkeyRequest } from '@bitcaster-market/client-sdk/engineClient'
-import { parseMatchedDelta, type MatchedDelta } from '@bitcaster-market/client-sdk/tradeIgnition'
+import {
+  conditionIdFromMarketId,
+  parseMatchedDelta,
+  type MatchedDelta,
+} from '@bitcaster-market/client-sdk/tradeIgnition'
 import { generateOrderEphemeralKeypair, type OrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
 import { readSecrets, updateSecrets } from './secrets.ts'
@@ -180,9 +184,4 @@ async function getOrCreateStoredEphemeralKeypair(input: {
     }
   })
   return created
-}
-
-function conditionIdFromMarketId(marketId: string): string | undefined {
-  const index = marketId.lastIndexOf('-')
-  return index > 0 ? marketId.substring(0, index) : undefined
 }

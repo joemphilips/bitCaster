@@ -19,7 +19,7 @@ test('in-memory custody adapter satisfies the shared conformance contract', asyn
   await assertDurableCustodyAdapterConformance((suffix) => MemoryHarness.create(suffix))
 })
 
-test('market-scope conformance fixture preserves its inventory account', () => {
+test('condition-inventory conformance fixture preserves its inventory account', () => {
   const scope = marketScope()
 
   const prepared = createDurableCustodyConformancePrepared(scope, 'market')
@@ -141,8 +141,8 @@ function walletScope(suffix: string): DurableCustodyScope {
 
 function marketScope(): DurableCustodyScope {
   const input = {
-    scopeKind: 'market' as const,
-    marketId: 'condition-1-yes',
+    scopeKind: 'condition-inventory' as const,
+    conditionId: 'condition-1',
     inventoryAccountId: 'inventory-account-exact',
     normalizedMint: 'https://mint.example',
     unit: 'sat',

@@ -12,6 +12,9 @@ import {
   createDurableProofOperationFacts,
   decideDurableCustodyPurge,
   decodeDurableCustodyRecord,
+  decodeDurableCustodyScopeId,
+  decodeDurableCustodyScopeInput,
+  decodeDurableCustodyScopeState,
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyOperationId,
   deriveDurableCustodyProofId,
@@ -168,6 +171,51 @@ test('custody identifiers are scope-separated and never expose proof secrets', (
   assert.match(operationId, /^custody-operation:/)
   assert.match(proofId, /^[0-9a-f]{64}$/)
   assert.equal(proofId.includes('bearer-secret'), false)
+})
+
+test('condition-inventory scope encoding is strict and excludes order routes', () => {
+  const input = {
+    scopeKind: 'condition-inventory' as const,
+    conditionId: 'condition-with-dashes',
+    inventoryAccountId: 'inventory-1',
+    normalizedMint: MINT,
+    unit: 'msat',
+  }
+  const scopeId = deriveDurableCustodyScopeId(input)
+  const scope = { ...input, scopeId }
+
+  assert.equal(
+    scopeId,
+    'custody:condition-inventory:condition-with-dashes:inventory-1:https%3A%2F%2Fmint.example:msat',
+  )
+  assert.equal(decodeDurableCustodyScopeId(scopeId), scopeId)
+  assert.deepEqual(decodeDurableCustodyScopeInput(scopeId), input)
+  assert.throws(
+    () =>
+      decodeDurableCustodyScopeId(
+        'custody:market:condition-with-dashes-YES:inventory-1:https%3A%2F%2Fmint.example:msat',
+      ),
+    /scope id/,
+  )
+  assert.throws(
+    () =>
+      deriveDurableCustodyScopeId({
+        ...input,
+        scopeKind: 'market',
+      } as unknown as Parameters<typeof deriveDurableCustodyScopeId>[0]),
+    /scope kind/,
+  )
+  assert.throws(
+    () =>
+      decodeDurableCustodyScopeState({
+        schemaVersion: 1,
+        scope: { ...scope, orderRouteId: 'condition-with-dashes-YES' },
+        fencingEpoch: 0,
+        owner: null,
+        effectiveClock: { highWaterMarkMs: 0 },
+      }),
+    /fields/,
+  )
 })
 
 test('prepared exact artifacts detach and freeze their canonical graph', () => {

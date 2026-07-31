@@ -59,6 +59,19 @@ test('range preparation insert is exact and canonical bytes fail closed', (t) =>
       }),
     /canonical/,
   )
+  assert.throws(
+    () =>
+      insertRangePreparation(database, {
+        ...preparationInput(
+          'range-foreign-route',
+          'source-foreign-route',
+          'client-foreign-route',
+          12,
+        ),
+        orderRouteId: 'condition-2-YES',
+      }),
+    /foreign condition/,
+  )
 
   database
     .prepare(
@@ -79,7 +92,7 @@ test('range preparation schema rejects partial capability and loose authority', 
     `INSERT INTO daemon_ctf_range_preparations (
        scope_id, range_operation_id, source_operation_id, source_kind,
        predecessor_range_operation_id, authorization_id,
-       client_order_id, market_id, normalized_mint, condition_id, unit,
+       client_order_id, order_route_id, normalized_mint, condition_id, unit,
        token_side, side, price_subunits, amount_subunits, divisibility,
        authorization_expires_at_unix_seconds, preparation_body, lifecycle_state, revision,
        capability_artifact_id, capability_binding_digest, capability_artifact_digest,
@@ -88,6 +101,18 @@ test('range preparation schema rejects partial capability and loose authority', 
        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      )`,
   )
+  const insertPrepared = (candidate: ReturnType<typeof preparationInput>) =>
+    statement.run(
+      ...preparationValues(candidate),
+      'prepared',
+      0,
+      null,
+      null,
+      null,
+      null,
+      candidate.createdAtMs,
+      candidate.createdAtMs,
+    )
 
   assert.throws(
     () =>
@@ -134,6 +159,27 @@ test('range preparation schema rejects partial capability and loose authority', 
       }),
     /price/,
   )
+  for (const [suffix, orderRouteId, conditionId] of [
+    ['foreign', 'condition-2-YES', 'condition-1'],
+    ['empty-suffix', 'condition-1-', 'condition-1'],
+    ['nested-suffix', 'condition-1-YES-extra', 'condition-1'],
+    ['pipe', 'condition-1|YES', 'condition-1'],
+    ['route-leading-space', ' condition-1-YES', 'condition-1'],
+    ['route-trailing-tab', 'condition-1-YES\t', 'condition-1'],
+    ['condition-trailing-space', 'condition-1 -YES', 'condition-1 '],
+  ] as const) {
+    const candidate = {
+      ...preparationInput(
+        `range-raw-${suffix}`,
+        `source-raw-${suffix}`,
+        `client-raw-${suffix}`,
+        10,
+      ),
+      orderRouteId,
+      conditionId,
+    }
+    assert.throws(() => insertPrepared(candidate), /constraint/)
+  }
 })
 
 test('source and consolidation links are exact, idempotent, and ordered', (t) => {
@@ -345,7 +391,7 @@ function preparationInput(
     predecessorRangeOperationId: null,
     authorizationId: `authorization-${rangeOperationId}`,
     clientOrderId,
-    marketId: 'condition-1-YES',
+    orderRouteId: 'condition-1-YES',
     normalizedMint: MINT_URL,
     conditionId: 'condition-1',
     unit: 'msat' as const,
@@ -373,7 +419,7 @@ function preparationValues(input: ReturnType<typeof preparationInput>): unknown[
     input.predecessorRangeOperationId,
     input.authorizationId,
     input.clientOrderId,
-    input.marketId,
+    input.orderRouteId,
     input.normalizedMint,
     input.conditionId,
     input.unit,

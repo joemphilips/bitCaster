@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'fa5cd3ed5c9942bbc1145819717166af76825fe6e92c15881550674e7ec3e864'
+  'ae783ada07c807e90ae3aa3652cda19905580c56f0c56c9ae9a7a7e5c8a36108'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -234,7 +234,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     client_order_id TEXT NOT NULL CHECK (
       length(client_order_id) BETWEEN 1 AND 1024
     ),
-    market_id TEXT NOT NULL CHECK (length(market_id) BETWEEN 1 AND 1024),
+    order_route_id TEXT NOT NULL CHECK (length(order_route_id) BETWEEN 1 AND 1024),
     normalized_mint TEXT NOT NULL CHECK (
       length(normalized_mint) BETWEEN 1 AND 2048
     ),
@@ -302,6 +302,16 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     UNIQUE (scope_id, source_operation_id),
     UNIQUE (scope_id, authorization_id),
     UNIQUE (scope_id, range_operation_id, source_operation_id),
+    CHECK (
+      trim(order_route_id, char(9) || char(10) || char(11) || char(12) || char(13) || ' ')
+        = order_route_id
+      AND trim(condition_id, char(9) || char(10) || char(11) || char(12) || char(13) || ' ')
+        = condition_id
+      AND instr(order_route_id, '|') = 0
+      AND length(order_route_id) > length(condition_id) + 1
+      AND substr(order_route_id, 1, length(condition_id) + 1) = condition_id || '-'
+      AND instr(substr(order_route_id, length(condition_id) + 2), '-') = 0
+    ),
     CHECK (
       (source_kind = 'wallet-prepared' AND predecessor_range_operation_id IS NULL)
       OR

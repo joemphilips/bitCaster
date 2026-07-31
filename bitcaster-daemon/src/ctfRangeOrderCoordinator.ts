@@ -588,7 +588,7 @@ export class DaemonCtfRangeOrderCoordinator {
             predecessorRangeOperationId: input.predecessorRangeOperationId,
             authorizationId: input.authorizationId,
             clientOrderId: input.request.clientOrderId,
-            marketId: input.request.marketId,
+            orderRouteId: input.request.marketId,
             normalizedMint: input.mintUrl,
             conditionId: input.conditionId,
             unit: 'msat',
@@ -1168,7 +1168,7 @@ export class DaemonCtfRangeOrderCoordinator {
           predecessorRangeOperationId: proposed.predecessorRangeOperationId,
           authorizationId: proposed.authorizationId,
           clientOrderId: proposed.request.clientOrderId,
-          marketId: proposed.request.marketId,
+          orderRouteId: proposed.request.marketId,
           normalizedMint: proposed.mintUrl,
           conditionId: proposed.conditionId,
           unit: 'msat',
@@ -1496,7 +1496,7 @@ function loadedExpiryObservation(
       inputFeePpk: keyset.inputFeePpk,
       ...(keyset.finalExpiry === null ? {} : { finalExpiry: keyset.finalExpiry }),
       outcomeCollectionId: keyset.outcomeCollectionId,
-      keys: keyset.keys,
+      keys: { ...keyset.keys },
     })),
   }
 }
@@ -1756,7 +1756,7 @@ function preparationFromJournal(
     input.predecessorRangeOperationId !== record.predecessorRangeOperationId ||
     input.authorizationId !== record.authorizationId ||
     input.request.clientOrderId !== record.clientOrderId ||
-    input.request.marketId !== record.marketId ||
+    input.request.marketId !== record.orderRouteId ||
     input.mintUrl !== record.normalizedMint ||
     input.request.mintUrl !== record.normalizedMint ||
     input.conditionId !== record.conditionId ||

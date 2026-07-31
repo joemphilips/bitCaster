@@ -427,11 +427,11 @@ function assertRangeCustodyScopeAuthority(
     }
   }
   if (conditionalAssets.size !== 1) {
-    throw new Error('CTF range market scope conditional asset is ambiguous')
+    throw new Error('CTF range condition-inventory scope conditional asset is ambiguous')
   }
   const asset = conditionalAssets.values().next().value!
-  if (scope.marketId !== `${asset.conditionId}-${asset.outcomeCollection}`) {
-    throw new Error('CTF range market scope does not match the conditional asset')
+  if (scope.conditionId !== asset.conditionId) {
+    throw new Error('CTF range condition-inventory scope does not match the conditional asset')
   }
 }
 

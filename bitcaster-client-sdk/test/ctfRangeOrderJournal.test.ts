@@ -13,6 +13,7 @@ import {
   sameCtfRangeOrderPreparationCapability,
   sameCtfRangeOrderPreparationIdentity,
 } from '../src/ctfRangeOrderJournal.ts'
+import { deriveDurableCustodyScopeId } from '../src/durableCustody.ts'
 
 const CAPABILITY = {
   artifactId: '11111111-1111-4111-8111-111111111111',
@@ -77,6 +78,93 @@ test('strict identity validation preserves source lineage and exact replay', () 
   assert.throws(
     () => decodeCtfRangeOrderPreparationIdentity({ ...identity, unexpected: true }),
     /fields/,
+  )
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationIdentity({
+        ...identity,
+        orderRouteId: 'condition-2-YES',
+      }),
+    /foreign condition/,
+  )
+})
+
+test('one wallet scope may retain exact order routes from several conditions', () => {
+  const first = decodeCtfRangeOrderPreparationIdentity(preparationIdentity())
+  const second = decodeCtfRangeOrderPreparationIdentity({
+    ...preparationIdentity(),
+    rangeOperationId: 'range-2',
+    sourceOperationId: 'source-2',
+    authorizationId: 'authorization-2',
+    clientOrderId: 'client-2',
+    orderRouteId: 'condition-2-NO',
+    normalizedMint: 'https://other-mint.example',
+    conditionId: 'condition-2',
+  })
+
+  assert.equal(first.scopeId, second.scopeId)
+  assert.notEqual(first.normalizedMint, second.normalizedMint)
+  assert.notEqual(first.conditionId, second.conditionId)
+  assert.notEqual(first.orderRouteId, second.orderRouteId)
+})
+
+test('one condition-inventory scope owns several exact order routes for its condition', () => {
+  const scopeId = deriveDurableCustodyScopeId({
+    scopeKind: 'condition-inventory',
+    conditionId: 'condition-1',
+    inventoryAccountId: 'inventory-1',
+    normalizedMint: 'https://mint.example',
+    unit: 'msat',
+  })
+  const first = decodeCtfRangeOrderPreparationIdentity({
+    ...preparationIdentity(),
+    scopeId,
+    orderRouteId: 'condition-1-YES',
+  })
+  const second = decodeCtfRangeOrderPreparationIdentity({
+    ...preparationIdentity(),
+    scopeId,
+    rangeOperationId: 'range-2',
+    sourceOperationId: 'source-2',
+    authorizationId: 'authorization-2',
+    clientOrderId: 'client-2',
+    orderRouteId: 'condition-1-NO',
+  })
+
+  assert.equal(first.scopeId, second.scopeId)
+  assert.notEqual(first.orderRouteId, second.orderRouteId)
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationIdentity({
+        ...preparationIdentity(),
+        scopeId,
+        conditionId: 'condition-2',
+        orderRouteId: 'condition-2-YES',
+      }),
+    /crosses its condition-inventory scope/,
+  )
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationIdentity({
+        ...preparationIdentity(),
+        scopeId,
+        normalizedMint: 'https://other-mint.example',
+      }),
+    /crosses its condition-inventory scope/,
+  )
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationIdentity({
+        ...preparationIdentity(),
+        scopeId: deriveDurableCustodyScopeId({
+          scopeKind: 'condition-inventory',
+          conditionId: 'condition-1',
+          inventoryAccountId: 'inventory-1',
+          normalizedMint: 'https://mint.example',
+          unit: 'sat',
+        }),
+      }),
+    /crosses its condition-inventory scope/,
   )
 })
 
@@ -245,7 +333,7 @@ function preparationIdentity() {
     predecessorRangeOperationId: null,
     authorizationId: 'authorization-1',
     clientOrderId: 'client-1',
-    marketId: 'condition-1-YES',
+    orderRouteId: 'condition-1-YES',
     normalizedMint: 'https://mint.example',
     conditionId: 'condition-1',
     unit: 'msat' as const,

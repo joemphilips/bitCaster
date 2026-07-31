@@ -24,6 +24,7 @@ import {
 } from '@bitcaster-market/client-sdk/engineClient'
 import {
   createMarketViaEngine,
+  conditionIdFromMarketId,
   isKind89NostrEvent,
   parseMarketOutcomes,
   validateMarketCreateEngineUrl,
@@ -1248,11 +1249,6 @@ function extractParentCollectionId(market: unknown): string | undefined {
   return undefined
 }
 
-function conditionIdFromMarketId(marketId: string): string {
-  const parsed = splitMarketId(marketId)
-  return parsed?.conditionId ?? marketId
-}
-
 async function loadMarketUnit(
   client: EngineClientLike,
   conditionId: string,
@@ -1400,15 +1396,6 @@ function requiredBuyCollateral(input: {
       })
     : // TODO: move arbitrary-size quote-payment rounding into the SDK helper.
       Math.ceil((input.amountSubunits * input.price) / input.divisibility)
-}
-
-function splitMarketId(marketId: string): { conditionId: string; outcomeSetId: string } | null {
-  const dash = marketId.lastIndexOf('-')
-  if (dash <= 0 || dash >= marketId.length - 1) return null
-  return {
-    conditionId: marketId.slice(0, dash),
-    outcomeSetId: marketId.slice(dash + 1),
-  }
 }
 
 function daemonStateIsEmpty(state: Awaited<ReturnType<typeof ensureState>>): boolean {

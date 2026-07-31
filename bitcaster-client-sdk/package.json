@@ -108,6 +108,10 @@
       "types": "./dist/outcomeSets.d.ts",
       "import": "./dist/outcomeSets.js"
     },
+    "./orderRoute": {
+      "types": "./dist/orderRoute.d.ts",
+      "import": "./dist/orderRoute.js"
+    },
     "./proofSelection": {
       "types": "./dist/proofSelection.d.ts",
       "import": "./dist/proofSelection.js"

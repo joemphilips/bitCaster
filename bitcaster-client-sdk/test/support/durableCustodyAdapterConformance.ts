@@ -227,7 +227,7 @@ export function createDurableCustodyConformancePrepared(
 
 function scopeInventoryAccountId(scope: DurableCustodyScope): string | null {
   switch (scope.scopeKind) {
-    case 'market':
+    case 'condition-inventory':
       return scope.inventoryAccountId
     case 'wallet':
       return null

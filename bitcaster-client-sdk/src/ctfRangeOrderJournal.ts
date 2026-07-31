@@ -1,4 +1,9 @@
-import { decodeCanonicalMintOrigin, encodeBoundedDurableArtifact } from './durableCustody.ts'
+import {
+  decodeCanonicalMintOrigin,
+  decodeDurableCustodyScopeInput,
+  encodeBoundedDurableArtifact,
+} from './durableCustody.ts'
+import { assertOrderRouteBelongsToCondition } from './orderRoute.ts'
 
 export const CTF_RANGE_ORDER_PREPARATION_BYTES_MAX = 256 * 1_024
 export const CTF_RANGE_ORDER_PREPARATION_PAGE_LIMIT_MAX = 256
@@ -15,7 +20,7 @@ const IDENTITY_FIELDS = [
   'predecessorRangeOperationId',
   'authorizationId',
   'clientOrderId',
-  'marketId',
+  'orderRouteId',
   'normalizedMint',
   'conditionId',
   'unit',
@@ -61,7 +66,7 @@ export interface CtfRangeOrderPreparationIdentity {
   readonly predecessorRangeOperationId: string | null
   readonly authorizationId: string
   readonly clientOrderId: string
-  readonly marketId: string
+  readonly orderRouteId: string
   readonly normalizedMint: string
   readonly conditionId: string
   readonly unit: 'msat'
@@ -248,7 +253,7 @@ export function sameCtfRangeOrderPreparationIdentity(
     left.predecessorRangeOperationId === right.predecessorRangeOperationId &&
     left.authorizationId === right.authorizationId &&
     left.clientOrderId === right.clientOrderId &&
-    left.marketId === right.marketId &&
+    left.orderRouteId === right.orderRouteId &&
     left.normalizedMint === right.normalizedMint &&
     left.conditionId === right.conditionId &&
     left.unit === right.unit &&
@@ -329,18 +334,33 @@ function decodeIdentityFields(
   if (priceSubunits >= divisibility) {
     throw new Error('CTF range preparation price is outside its divisibility')
   }
+  const conditionId = requireText(candidate.conditionId, 'condition id', SHORT_ID_LENGTH_MAX)
+  const orderRouteId = requireText(candidate.orderRouteId, 'order route id', SHORT_ID_LENGTH_MAX)
+  assertOrderRouteBelongsToCondition(orderRouteId, conditionId)
+  const normalizedMint = decodeCanonicalMintOrigin(candidate.normalizedMint)
+  const unit = requireExact(candidate.unit, 'msat', 'unit')
+  const scopeId = requireText(candidate.scopeId, 'scope id')
+  const scope = decodeDurableCustodyScopeInput(scopeId)
+  if (
+    scope.scopeKind === 'condition-inventory' &&
+    (scope.conditionId !== conditionId ||
+      scope.normalizedMint !== normalizedMint ||
+      scope.unit !== unit)
+  ) {
+    throw new Error('CTF range preparation crosses its condition-inventory scope')
+  }
   return {
-    scopeId: requireText(candidate.scopeId, 'scope id'),
+    scopeId,
     rangeOperationId,
     sourceOperationId: requireText(candidate.sourceOperationId, 'source operation id'),
     sourceKind,
     predecessorRangeOperationId,
     authorizationId: requireText(candidate.authorizationId, 'authorization id'),
     clientOrderId: requireText(candidate.clientOrderId, 'client order id', SHORT_ID_LENGTH_MAX),
-    marketId: requireText(candidate.marketId, 'market id', SHORT_ID_LENGTH_MAX),
-    normalizedMint: decodeCanonicalMintOrigin(candidate.normalizedMint),
-    conditionId: requireText(candidate.conditionId, 'condition id', SHORT_ID_LENGTH_MAX),
-    unit: requireExact(candidate.unit, 'msat', 'unit'),
+    orderRouteId,
+    normalizedMint,
+    conditionId,
+    unit,
     tokenSide: requireClosed(candidate.tokenSide, ['Outcome', 'Complement'], 'token side'),
     side: requireClosed(candidate.side, ['Buy', 'Sell'], 'side'),
     priceSubunits,
