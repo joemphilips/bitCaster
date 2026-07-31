@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Amount } from '@cashu/cashu-ts'
 import {
   createDurableCustodyProofMaterialRecord,
   decodeDurableCustodyProofMaterialRecord,
+  deserializeDurableCustodyProofArtifact,
+  serializeDurableCustodyProofArtifact,
 } from '../src/durableCustodyProofMaterial.ts'
 import { deriveDurableCustodyScopeId } from '../src/durableCustody.ts'
 
@@ -30,6 +33,23 @@ test('proof material codec rejects identity, curve, and canonical-body substitut
   assert.throws(
     () => decode({ ...record, proofBody: new TextEncoder().encode('{"schemaVersion":1}') }),
     /proof body/,
+  )
+})
+
+test('proof artifact codec preserves the Cashu P2PK ephemeral key across restart', () => {
+  const proof = {
+    id: '01'.padEnd(66, '1'),
+    amount: Amount.from(2),
+    secret: 'p2pk-secret',
+    C: 'proof-signature',
+    p2pk_e: `02${'22'.repeat(32)}`,
+  }
+  const artifact = serializeDurableCustodyProofArtifact(proof)
+  assert.equal(artifact.p2pkE, proof.p2pk_e)
+  assert.deepEqual(deserializeDurableCustodyProofArtifact(artifact), proof)
+  assert.throws(
+    () => deserializeDurableCustodyProofArtifact({ ...artifact, p2pk_e: proof.p2pk_e }),
+    /fields/,
   )
 })
 

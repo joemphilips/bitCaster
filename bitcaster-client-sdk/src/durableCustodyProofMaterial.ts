@@ -1,4 +1,4 @@
-import { Amount, isBlsKeyset, type AmountLike } from '@cashu/cashu-ts'
+import { Amount, isBlsKeyset, type AmountLike, type Proof } from '@cashu/cashu-ts'
 import {
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyProofId,
@@ -25,6 +25,44 @@ export interface DurableCustodyProofMaterialRecord {
   readonly proofFingerprint: string
   readonly curve: 'secp256k1' | 'bls12-381'
   readonly dleqPresence: 'not-present' | 'present'
+}
+
+export interface DurableCustodyProofArtifact {
+  readonly schemaVersion: 1
+  readonly id: string
+  readonly amount: string
+  readonly secret: string
+  readonly C: string
+  readonly dleq: unknown | null
+  readonly p2pkE: string | null
+  readonly witness: unknown | null
+}
+
+export function serializeDurableCustodyProofArtifact(proof: Proof): DurableCustodyProofArtifact {
+  return normalizeProof({
+    id: proof.id,
+    amount: proof.amount,
+    secret: proof.secret,
+    C: proof.C,
+    dleq: proof.dleq ?? null,
+    p2pkE: proof.p2pk_e ?? null,
+    witness: proof.witness ?? null,
+  })
+}
+
+export function deserializeDurableCustodyProofArtifact(value: unknown): Proof {
+  const proof = decodeProofArtifact(value)
+  return {
+    id: proof.id,
+    amount: Amount.from(proof.amount),
+    secret: proof.secret,
+    C: proof.C,
+    ...(proof.dleq === null ? {} : { dleq: structuredClone(proof.dleq) as Proof['dleq'] }),
+    ...(proof.p2pkE === null ? {} : { p2pk_e: proof.p2pkE }),
+    ...(proof.witness === null
+      ? {}
+      : { witness: structuredClone(proof.witness) as Proof['witness'] }),
+  }
 }
 
 export function createDurableCustodyProofMaterialRecord(input: {
@@ -85,13 +123,7 @@ export function decodeDurableCustodyProofMaterialRecord(
   return { record: structuredClone(expected), proof }
 }
 
-function normalizeProof(value: DurableCustodyProofMaterial): Omit<
-  DurableCustodyProofMaterial,
-  'amount'
-> & {
-  readonly schemaVersion: 1
-  readonly amount: string
-} {
+function normalizeProof(value: DurableCustodyProofMaterial): DurableCustodyProofArtifact {
   if (
     typeof value.id !== 'string' ||
     value.id.length === 0 ||
@@ -135,20 +167,29 @@ function decodeProofBody(body: Uint8Array): Omit<DurableCustodyProofMaterial, 'a
   } catch {
     throw new Error('custody proof body encoding is invalid')
   }
-  if (!isRecord(value) || value.schemaVersion !== 1) {
-    throw new Error('custody proof body schema is invalid')
+  let proof: DurableCustodyProofArtifact
+  try {
+    proof = decodeProofArtifact(value)
+  } catch (error) {
+    throw new Error('custody proof body authority is invalid', { cause: error })
   }
-  if (
-    Object.keys(value).sort().join(',') !== 'C,amount,dleq,id,p2pkE,schemaVersion,secret,witness'
-  ) {
-    throw new Error('custody proof body fields are invalid')
-  }
-  const proof = normalizeProof(value as unknown as DurableCustodyProofMaterial)
   const canonical = encodeBoundedDurableArtifact(proof, DURABLE_CUSTODY_PROOF_BODY_BYTES_MAX)
   if (!equalBytes(canonical, body)) {
     throw new Error('custody proof body is not canonical')
   }
   return proof
+}
+
+function decodeProofArtifact(value: unknown): DurableCustodyProofArtifact {
+  if (!isRecord(value) || value.schemaVersion !== 1) {
+    throw new Error('custody proof artifact schema is invalid')
+  }
+  if (
+    Object.keys(value).sort().join(',') !== 'C,amount,dleq,id,p2pkE,schemaVersion,secret,witness'
+  ) {
+    throw new Error('custody proof artifact fields are invalid')
+  }
+  return normalizeProof(value as unknown as DurableCustodyProofMaterial)
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
