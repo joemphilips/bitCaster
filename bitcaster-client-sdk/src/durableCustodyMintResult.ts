@@ -423,7 +423,9 @@ function assertExactGroups(
 
 function assertSupportedOperation(operation: DurableCustodyProofOperationInput): void {
   if (
-    (operation.kind !== 'wallet-send' && operation.kind !== 'conditional-keyset-swap') ||
+    (operation.kind !== 'wallet-send' &&
+      operation.kind !== 'conditional-keyset-swap' &&
+      operation.kind !== 'ctf-range-refund') ||
     operation.inputs.length === 0 ||
     Object.values(operation.outputs).every((outputs) => outputs.length === 0)
   ) {

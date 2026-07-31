@@ -41,6 +41,7 @@ import type { SettlementCapabilityResultResponse } from '../src/engineClient.ts'
 import {
   CTF_RANGE_MINT_RESTORE_RESPONSE_BYTES_MAX,
   CtfRangeMintRecoveryAdapter,
+  CtfRangeRecoveryResponseError,
   checkCtfRangeInputProofStates,
   decodeCtfRangeEngineResult,
   fetchCtfRangeEngineResultByOperation,
@@ -370,7 +371,7 @@ test('mint recovery rejects foreign restore rows and keysets without exposing pr
         }),
       (error: unknown) =>
         error instanceof Error &&
-        /CTF range mint recovery failed/.test(error.message) &&
+        /CTF range mint recovery (failed|response is invalid)/.test(error.message) &&
         !error.message.includes(secret),
     )
   }
@@ -417,7 +418,9 @@ test('exact NUT-07 rejects missing and duplicate states and batches through the 
         },
         [{ id: OFFER_KEYSET_ID, secret: 'missing-input' }],
       ),
-    /CTF range proof-state response is invalid/,
+    (error: unknown) =>
+      error instanceof CtfRangeRecoveryResponseError &&
+      /CTF range proof-state response is invalid/.test(error.message),
   )
   await assert.rejects(
     () =>
@@ -455,7 +458,7 @@ test('exact NUT-07 rejects missing and duplicate states and batches through the 
           secret: `over-cap-${index}`,
         })),
       ),
-    /CTF range proof-state response is invalid/,
+    /range input proof limit is invalid/,
   )
   assert.equal(overCapCalls, 0)
 })
@@ -679,7 +682,9 @@ test('NUT-09 refund restore uses persisted keys and rejects missing or invalid D
   assert.equal(keyFetches, 0)
   await assert.rejects(
     restore(signatures.map(({ dleq: _, ...signature }) => signature)),
-    /DLEQ|cryptographic|proof/i,
+    (error: unknown) =>
+      error instanceof CtfRangeRecoveryResponseError &&
+      /refund restore response is invalid/i.test(error.message),
   )
   await assert.rejects(
     restore(
@@ -689,7 +694,7 @@ test('NUT-09 refund restore uses persisted keys and rejects missing or invalid D
           : signature,
       ),
     ),
-    /DLEQ|cryptographic|proof/i,
+    /refund restore response is invalid/i,
   )
   await assert.rejects(
     restoreDurableCtfRangeRefundOutputs({

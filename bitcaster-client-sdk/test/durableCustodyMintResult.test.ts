@@ -164,6 +164,17 @@ test('requires the exact input and output keyset authority', () => {
   )
 })
 
+test('accepts an exact CTF range refund as a mint-verified operation', () => {
+  const prepared = preparedSend('refund:1')
+  const authority = prepareDurableCustodyMintOperationAuthority({
+    operation: { ...prepared.operation, kind: 'ctf-range-refund' },
+    keysets: prepared.authority.keysets,
+  })
+
+  assert.equal(authority.authority.operation.kind, 'ctf-range-refund')
+  assert.equal(authority.facts.binding.stage, 'refund')
+})
+
 test('verifies an exact persisted BLS output without secp DLEQ material', () => {
   const prepared = preparedSend('send:bls', {
     id: BLS_KEYSET_ID,
