@@ -6,9 +6,7 @@ import {
   OutputData,
   Wallet as CashuWallet,
   type ConditionalSwapPreview,
-  type GetInfoResponse,
   type MintKeys,
-  type MintKeyset,
   type Proof,
   type ProofState,
   type SerializedBlindedSignature,
@@ -57,9 +55,14 @@ import {
   encodePersistedCtfRangeOrderPreparation as encodeCanonicalRangePreparation,
   exactCtfRangeOrderPreparationMintKeysets,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
-  type CtfRangeReviewedMintFacts,
   type PersistedCtfRangeOrderPreparation,
 } from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
+import {
+  loadCtfRangeMintKeys as loadMintKeys,
+  loadCtfRangeMintMetadata,
+  type CtfRangeMintMetadata as LoadedMintMetadata,
+  type CtfRangeMintMetadataClient,
+} from '@bitcaster-market/client-sdk/ctfRangeMintMetadata'
 import {
   amountToNumber,
   computeInputFeeSatsForProofs,
@@ -75,7 +78,6 @@ import {
   type BoundedProofConsolidationPlan,
   type ProofConsolidationRound,
 } from '@bitcaster-market/client-sdk/boundedProofConsolidation'
-import { canonicalizeTokenImportMintUrl } from '@bitcaster-market/client-sdk/tokenImportValidation'
 import type {
   CreateSettlementCapabilityRequest,
   OrderStatusResponse,
@@ -129,35 +131,12 @@ import type {
   PrepareSettlementCapabilityInput,
 } from './server.ts'
 
-const MINT_KEYSET_CANDIDATE_LIMIT = 256
-const SETTLEMENT_INPUT_LIMIT = 64
-const SETTLEMENT_POOL_ENTRY_LIMIT = 128
 const SOURCE_PURPOSE = 'ctf-range-authorization-source'
 const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
 const ACTIVE_RANGE_SOURCE_LIMIT = 256
 const MAX_CONSOLIDATION_ROUNDS = 256
 
-interface CtfRangeMintLike {
-  getInfo(): Promise<GetInfoResponse>
-  getKeySets(): Promise<{ keysets: MintKeyset[] }>
-  getConditionalKeysets(query?: { since?: number; limit?: number; active?: boolean }): Promise<{
-    keysets: Array<{
-      id: string
-      unit: string
-      active: boolean
-      input_fee_ppk?: number
-      final_expiry?: number
-      registered_at?: number
-      condition_id: string
-      outcome_collection: string
-      outcome_collection_id: string
-    }>
-  }>
-  getCtfCondition(conditionId: string): Promise<{
-    condition_id: string
-    keysets: Record<string, string>
-  }>
-  getKeys(keysetId?: string): Promise<{ keysets: MintKeys[] }>
+interface CtfRangeMintLike extends CtfRangeMintMetadataClient {
   check(payload: { Ys: string[] }, signal?: AbortSignal): Promise<{ states: ProofState[] }>
 }
 
@@ -1294,22 +1273,6 @@ function preparedMintAuthority(
   }
 }
 
-interface LoadedMintMetadata extends CtfRangeReviewedMintFacts {
-  readonly regular: ActiveCtfRangeMintKeyset[]
-  readonly conditional: Array<
-    ActiveCtfRangeMintKeyset & {
-      readonly conditionId: string
-      readonly outcomeCollection: string
-      readonly outcomeCollectionId: string
-    }
-  >
-  readonly conditionKeysetIds: string[]
-  readonly maxInputs: number
-  readonly maxPoolEntries: number
-  readonly maxExpirySeconds: number
-  readonly observation: DurableCtfRangeExpiryObservation
-}
-
 async function loadMintMetadata(
   mint: CtfRangeMintLike,
   mintUrl: string,
@@ -1317,252 +1280,13 @@ async function loadMintMetadata(
   observedAt: number,
   allowInsecureLoopbackHttp: boolean,
 ): Promise<LoadedMintMetadata> {
-  const [info, regularResponse, condition] = await Promise.all([
-    mint.getInfo(),
-    mint.getKeySets(),
-    mint.getCtfCondition(conditionId),
-  ])
-  if (condition.condition_id !== conditionId) {
-    throw new Error('mint returned a foreign CTF condition')
-  }
-  const conditionKeysetIds = [...new Set(Object.values(condition.keysets))].sort()
-  if (conditionKeysetIds.length === 0 || conditionKeysetIds.length > MINT_KEYSET_CANDIDATE_LIMIT) {
-    throw new Error('mint CTF condition keyset count is unsupported')
-  }
-  const conditionEntries = await loadConditionKeysets(mint, conditionKeysetIds)
-  const keyIds = [
-    ...new Set([
-      ...regularResponse.keysets
-        .filter((keyset) => keyset.active && keyset.unit === 'msat')
-        .map(({ id }) => id),
-      ...conditionKeysetIds,
-    ]),
-  ]
-  if (keyIds.length === 0 || keyIds.length > MINT_KEYSET_CANDIDATE_LIMIT) {
-    throw new Error('mint keyset authority count is unsupported')
-  }
-  const keys = await loadMintKeys(mint, keyIds)
-  const limits = settlementLimits(info)
-  const canonicalMintUrl = canonicalizeTokenImportMintUrl(mintUrl, allowInsecureLoopbackHttp)
-  return buildLoadedMintMetadata({
-    canonicalMintUrl,
-    regularResponse: regularResponse.keysets,
-    conditionEntries,
-    conditionKeysetIds,
-    keys,
-    limits,
+  return loadCtfRangeMintMetadata({
+    mint,
+    mintUrl,
+    conditionId,
     observedAt,
+    allowInsecureLoopbackHttp,
   })
-}
-
-type ConditionalKeysetEntry = Awaited<
-  ReturnType<CtfRangeMintLike['getConditionalKeysets']>
->['keysets'][number]
-
-async function loadConditionKeysets(
-  mint: CtfRangeMintLike,
-  conditionKeysetIds: readonly string[],
-): Promise<ConditionalKeysetEntry[]> {
-  const targets = new Set(conditionKeysetIds)
-  const found = new Map<string, ConditionalKeysetEntry>()
-  let since: number | undefined
-  let priorPage = ''
-  for (let pageNumber = 0; pageNumber < 16; pageNumber += 1) {
-    const response = await mint.getConditionalKeysets({
-      limit: MINT_KEYSET_CANDIDATE_LIMIT,
-      ...(since === undefined ? {} : { since }),
-    })
-    if (response.keysets.length > MINT_KEYSET_CANDIDATE_LIMIT) {
-      throw new Error('mint exceeded the conditional keyset page limit')
-    }
-    for (const keyset of response.keysets) {
-      if (targets.has(keyset.id)) found.set(keyset.id, keyset)
-    }
-    if (found.size === targets.size) {
-      return [...found.values()].sort((left, right) => left.id.localeCompare(right.id))
-    }
-    if (response.keysets.length < MINT_KEYSET_CANDIDATE_LIMIT) break
-    const page = response.keysets.map(({ id }) => id).join('\0')
-    const registeredAt = response.keysets.at(-1)?.registered_at
-    if (
-      page === priorPage ||
-      !Number.isSafeInteger(registeredAt) ||
-      (since !== undefined && (registeredAt as number) < since)
-    ) {
-      throw new Error('mint conditional keyset pagination did not advance')
-    }
-    priorPage = page
-    since = registeredAt as number
-  }
-  throw new Error('mint CTF condition keyset authority is incomplete')
-}
-
-async function loadMintKeys(
-  mint: CtfRangeMintLike,
-  keysetIds: readonly string[],
-): Promise<ReadonlyMap<string, MintKeys>> {
-  const keys = new Map<string, MintKeys>()
-  for (let offset = 0; offset < keysetIds.length; offset += 8) {
-    const page = keysetIds.slice(offset, offset + 8)
-    const responses = await Promise.all(page.map((keysetId) => mint.getKeys(keysetId)))
-    responses.forEach((response, index) => {
-      const expectedId = page[index]!
-      const keyset = response.keysets.find(({ id }) => id === expectedId)
-      if (keyset === undefined) throw new Error(`mint omitted keys for keyset ${expectedId}`)
-      keys.set(expectedId, keyset)
-    })
-  }
-  return keys
-}
-
-function buildLoadedMintMetadata(input: {
-  canonicalMintUrl: string
-  regularResponse: MintKeyset[]
-  conditionEntries: Array<{
-    id: string
-    unit: string
-    active: boolean
-    input_fee_ppk?: number
-    final_expiry?: number
-    condition_id: string
-    outcome_collection: string
-    outcome_collection_id: string
-  }>
-  conditionKeysetIds: string[]
-  keys: ReadonlyMap<string, MintKeys>
-  limits: ReturnType<typeof settlementLimits>
-  observedAt: number
-}): LoadedMintMetadata {
-  const regular = input.regularResponse
-    .filter((keyset) => keyset.active && keyset.unit === 'msat')
-    .map((keyset) => activeKeyset(input.canonicalMintUrl, keyset, input.keys))
-  const allConditional = input.conditionEntries.map((keyset) => ({
-    ...resolvedKeyset(input.canonicalMintUrl, keyset, input.keys),
-    active: keyset.active,
-    conditionId: keyset.condition_id,
-    outcomeCollection: keyset.outcome_collection,
-    outcomeCollectionId: keyset.outcome_collection_id,
-  }))
-  const conditional = allConditional
-    .filter((keyset) => keyset.active)
-    .map((keyset) => ({ ...keyset, active: true as const }))
-  if (regular.length === 0 || conditional.length === 0) {
-    throw new Error('mint has no active msat range-order keyset authority')
-  }
-  return {
-    regular,
-    conditional,
-    conditionKeysetIds: input.conditionKeysetIds,
-    ...input.limits,
-    observation: loadedExpiryObservation(input, allConditional),
-  }
-}
-
-function loadedExpiryObservation(
-  input: Parameters<typeof buildLoadedMintMetadata>[0],
-  conditional: Array<
-    DurableCtfRangeMintKeyset & {
-      conditionId: string
-      outcomeCollection: string
-      outcomeCollectionId: string
-    }
-  >,
-): DurableCtfRangeExpiryObservation {
-  return {
-    canonicalMintUrl: input.canonicalMintUrl,
-    freshness: 'fresh',
-    observedAt: input.observedAt,
-    maxExpirySeconds: input.limits.maxExpirySeconds,
-    conditionKeysetIds: input.conditionKeysetIds,
-    conditionalKeysets: conditional.map((keyset) => ({
-      keysetId: keyset.id,
-      conditionId: keyset.conditionId,
-      unit: keyset.unit,
-      inputFeePpk: keyset.inputFeePpk,
-      ...(keyset.finalExpiry === null ? {} : { finalExpiry: keyset.finalExpiry }),
-      outcomeCollectionId: keyset.outcomeCollectionId,
-      keys: { ...keyset.keys },
-    })),
-  }
-}
-
-function activeKeyset(
-  canonicalMintUrl: string,
-  metadata: {
-    id: string
-    unit: string
-    active: boolean
-    input_fee_ppk?: number
-    final_expiry?: number
-  },
-  keys: ReadonlyMap<string, MintKeys>,
-): ActiveCtfRangeMintKeyset {
-  if (!metadata.active) throw new Error(`mint keyset ${metadata.id} is inactive`)
-  return { ...resolvedKeyset(canonicalMintUrl, metadata, keys), active: true }
-}
-
-function resolvedKeyset(
-  canonicalMintUrl: string,
-  metadata: {
-    id: string
-    unit: string
-    input_fee_ppk?: number
-    final_expiry?: number
-  },
-  keys: ReadonlyMap<string, MintKeys>,
-): DurableCtfRangeMintKeyset {
-  const resolved = keys.get(metadata.id)
-  if (
-    resolved === undefined ||
-    resolved.id !== metadata.id ||
-    resolved.unit !== 'msat' ||
-    metadata.unit !== 'msat'
-  ) {
-    throw new Error(`mint keyset ${metadata.id} is foreign`)
-  }
-  return {
-    canonicalMintUrl,
-    id: metadata.id,
-    unit: 'msat',
-    keys: Object.fromEntries(
-      Object.entries(resolved.keys).map(([amount, publicKey]) => [amount, publicKey]),
-    ),
-    inputFeePpk: positiveInteger(metadata.input_fee_ppk, 'mint input fee'),
-    finalExpiry:
-      metadata.final_expiry === undefined
-        ? null
-        : positiveInteger(metadata.final_expiry, 'mint keyset final expiry'),
-  }
-}
-
-function settlementLimits(info: GetInfoResponse): {
-  readonly maxInputs: number
-  readonly maxPoolEntries: number
-  readonly maxExpirySeconds: number
-} {
-  const nuts = info.nuts as unknown as Record<string, unknown>
-  const setting = requireRecord(nuts['CTF-split-merge'], 'mint CTF settlement setting')
-  if (setting.supported !== true || setting.partial_fill !== true) {
-    throw new Error('mint does not support CTF range settlement')
-  }
-  return {
-    maxInputs: Math.min(
-      positiveInteger(setting.max_inputs, 'mint settlement input limit'),
-      SETTLEMENT_INPUT_LIMIT,
-    ),
-    maxPoolEntries: Math.min(
-      positiveInteger(setting.max_pool_entries, 'mint settlement pool limit'),
-      SETTLEMENT_POOL_ENTRY_LIMIT,
-    ),
-    maxExpirySeconds: positiveInteger(setting.max_expiry_seconds, 'mint settlement expiry limit'),
-  }
-}
-
-function positiveInteger(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${label} is invalid`)
-  }
-  return value
 }
 
 function persistedOrderRequest(
@@ -2771,18 +2495,9 @@ function readSourceNumber(entry: ProofOperationRecord, key: string): number {
   return value
 }
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!isRecord(value)) throw new Error(`${label} is invalid`)
-  return value
-}
-
 function requireText(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0 || value !== value.trim()) {
     throw new Error(`${label} is invalid`)
   }
   return value
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
