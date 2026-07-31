@@ -229,6 +229,9 @@ test('capability and lifecycle validation reject partial or illegal authority', 
     /transition/,
   )
   assert.doesNotThrow(() =>
+    assertCtfRangeOrderPreparationTransition('prepared', 'capability-requested'),
+  )
+  assert.doesNotThrow(() =>
     assertCtfRangeOrderPreparationTransition('capability-bound', 'submission-rejected'),
   )
   assert.doesNotThrow(() =>
@@ -247,19 +250,25 @@ test('capability and lifecycle validation reject partial or illegal authority', 
     capability: null,
     updatedAtMs: identity.createdAtMs,
   })
-  const bound = bindCtfRangeOrderPreparationCapability({
-    current: prepared,
-    expectedRevision: 0,
-    capability: CAPABILITY,
+  const requested = decodeCtfRangeOrderPreparationRecord({
+    ...prepared,
+    lifecycleState: 'capability-requested',
+    revision: 1,
     updatedAtMs: identity.createdAtMs + 1,
+  })
+  const bound = bindCtfRangeOrderPreparationCapability({
+    current: requested,
+    expectedRevision: 1,
+    capability: CAPABILITY,
+    updatedAtMs: identity.createdAtMs + 2,
   })
   assert.equal(bound.lifecycleState, 'capability-bound')
   assert.deepEqual(
     bindCtfRangeOrderPreparationCapability({
       current: bound,
-      expectedRevision: 0,
+      expectedRevision: 1,
       capability: CAPABILITY,
-      updatedAtMs: identity.createdAtMs + 1,
+      updatedAtMs: identity.createdAtMs + 2,
     }),
     bound,
   )
@@ -267,11 +276,11 @@ test('capability and lifecycle validation reject partial or illegal authority', 
     decodeCtfRangeOrderPreparationRecord({
       ...identity,
       lifecycleState: 'capability-bound',
-      revision: 1,
+      revision: 2,
       capability: CAPABILITY,
-      updatedAtMs: identity.createdAtMs + 1,
+      updatedAtMs: identity.createdAtMs + 2,
     }).revision,
-    1,
+    2,
   )
   assert.throws(
     () =>
@@ -289,6 +298,7 @@ test('capability and lifecycle validation reject partial or illegal authority', 
 test('generic transitions and persisted capability pairing cover the complete lifecycle matrix', () => {
   const lifecycles = [
     'prepared',
+    'capability-requested',
     'capability-bound',
     'order-submitted',
     'submission-rejected',
@@ -296,6 +306,8 @@ test('generic transitions and persisted capability pairing cover the complete li
   ] as const
   const genericTransitions = new Set([
     'prepared:terminal',
+    'prepared:capability-requested',
+    'capability-requested:terminal',
     'capability-bound:order-submitted',
     'capability-bound:submission-rejected',
     'capability-bound:terminal',
@@ -326,7 +338,9 @@ test('generic transitions and persisted capability pairing cover the complete li
         })
       const pairingIsValid =
         lifecycleState === 'terminal' ||
-        (lifecycleState === 'prepared' ? capability === null : capability !== null)
+        (lifecycleState === 'prepared' || lifecycleState === 'capability-requested'
+          ? capability === null
+          : capability !== null)
       if (pairingIsValid) {
         assert.doesNotThrow(decode)
       } else {
@@ -340,7 +354,7 @@ test('page inputs are bounded and reject ambiguous cursors', () => {
   assert.equal(decodeCtfRangeOrderPreparationPageLimit(256), 256)
   assert.equal(
     decodeCtfRangeOrderPreparationPageCursor({
-      updatedAtMs: 12,
+      createdAtMs: 12,
       rangeOperationId: 'range-1',
     }).rangeOperationId,
     'range-1',
@@ -349,7 +363,7 @@ test('page inputs are bounded and reject ambiguous cursors', () => {
   assert.throws(
     () =>
       decodeCtfRangeOrderPreparationPageCursor({
-        updatedAtMs: -1,
+        createdAtMs: -1,
         rangeOperationId: 'range-1',
       }),
     /cursor/,
@@ -357,7 +371,7 @@ test('page inputs are bounded and reject ambiguous cursors', () => {
   assert.throws(
     () =>
       decodeCtfRangeOrderPreparationPageCursor({
-        updatedAtMs: 1,
+        createdAtMs: 1,
         rangeOperationId: '',
       }),
     /cursor/,

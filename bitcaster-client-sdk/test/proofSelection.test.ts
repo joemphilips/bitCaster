@@ -22,6 +22,28 @@ test('takeProofsForLock treats input fees as subunits when computing spendable p
   assert.equal(takeProofsForLock(proofs, 10_000, { 'msat-keyset': 1 }), null)
 })
 
+test('takeProofsForLock accounts for fragmented-wallet fees in one pass', () => {
+  const proofs = Array.from({ length: 10_000 }, (_, index) => ({
+    amount: 1,
+    id: 'msat-keyset',
+    secret: `s-${index}`,
+    C: `C-${index}`,
+  }))
+  let feeReads = 0
+  const fees = new Proxy(
+    { 'msat-keyset': 1 },
+    {
+      get(target, property, receiver) {
+        feeReads += 1
+        return Reflect.get(target, property, receiver)
+      },
+    },
+  )
+
+  assert.equal(takeProofsForLock(proofs, 9_990, fees)?.length, 10_000)
+  assert.ok(feeReads <= proofs.length * 2)
+})
+
 test('keysetToOutcomeCollection maps each keyset to exactly one outcome collection', () => {
   assert.deepEqual(
     [

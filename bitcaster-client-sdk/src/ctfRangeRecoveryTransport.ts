@@ -315,8 +315,11 @@ export async function acknowledgeCtfRangeEngineResult(
     response = await client.acknowledgeSettlementCapabilityResult(result.resultId, {
       expectedVersion: result.version,
     })
-  } catch {
-    throw new Error('CTF range engine result acknowledgement failed')
+  } catch (error) {
+    throw new CtfRangeRecoveryTransportError(
+      'CTF range engine result acknowledgement failed',
+      error,
+    )
   }
   if (response === null) throw new Error('CTF range engine result acknowledgement is absent')
   const acknowledged = decodeCtfRangeEngineResult(response, {

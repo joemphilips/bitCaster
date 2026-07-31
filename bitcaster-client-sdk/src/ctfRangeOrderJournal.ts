@@ -51,6 +51,7 @@ const CAPABILITY_FIELDS = ['artifactId', 'bindingDigest', 'artifactDigest', 'ord
 
 export type CtfRangeOrderPreparationLifecycle =
   | 'prepared'
+  | 'capability-requested'
   | 'capability-bound'
   | 'order-submitted'
   | 'submission-rejected'
@@ -98,7 +99,7 @@ export interface CtfRangeOrderPreparationRecord extends CtfRangeOrderPreparation
 }
 
 export interface CtfRangeOrderPreparationPageCursor {
-  readonly updatedAtMs: number
+  readonly createdAtMs: number
   readonly rangeOperationId: string
 }
 
@@ -182,7 +183,14 @@ export function decodeCtfRangeOrderPreparationLifecycle(
 ): CtfRangeOrderPreparationLifecycle {
   return requireClosed(
     value,
-    ['prepared', 'capability-bound', 'order-submitted', 'submission-rejected', 'terminal'],
+    [
+      'prepared',
+      'capability-requested',
+      'capability-bound',
+      'order-submitted',
+      'submission-rejected',
+      'terminal',
+    ],
     'lifecycle state',
   )
 }
@@ -196,6 +204,9 @@ export function assertCtfRangeOrderPreparationTransition(
   let legal: boolean
   switch (from) {
     case 'prepared':
+      legal = to === 'capability-requested' || to === 'terminal'
+      break
+    case 'capability-requested':
       legal = to === 'terminal'
       break
     case 'capability-bound':
@@ -225,7 +236,7 @@ export function bindCtfRangeOrderPreparationCapability(input: {
   const expectedRevision = requireNonnegativeSafeInteger(input.expectedRevision, 'revision')
   const updatedAtMs = requireNonnegativeSafeInteger(input.updatedAtMs, 'updated time')
   if (
-    current.lifecycleState !== 'prepared' ||
+    current.lifecycleState !== 'capability-requested' ||
     current.revision !== expectedRevision ||
     updatedAtMs < current.updatedAtMs
   ) {
@@ -306,9 +317,9 @@ export function decodeCtfRangeOrderPreparationPageCursor(
 ): CtfRangeOrderPreparationPageCursor {
   let candidate: Record<string, unknown>
   try {
-    candidate = exactRecord(value, ['updatedAtMs', 'rangeOperationId'], 'page cursor')
+    candidate = exactRecord(value, ['createdAtMs', 'rangeOperationId'], 'page cursor')
     return {
-      updatedAtMs: requireNonnegativeSafeInteger(candidate.updatedAtMs, 'page cursor time'),
+      createdAtMs: requireNonnegativeSafeInteger(candidate.createdAtMs, 'page cursor time'),
       rangeOperationId: requireText(candidate.rangeOperationId, 'page cursor operation id'),
     }
   } catch {
@@ -474,6 +485,7 @@ function assertLifecycleCapability(
 ): void {
   switch (lifecycle) {
     case 'prepared':
+    case 'capability-requested':
       if (capability !== null) {
         throw new Error('CTF range preparation lifecycle authority is invalid')
       }

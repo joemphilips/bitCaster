@@ -115,11 +115,22 @@ function takeGreedyProofs<T extends AmountProofLike>(
 ): T[] | null {
   const sorted = [...source].sort((a, b) => amountToNumber(b.amount) - amountToNumber(a.amount))
   const taken: T[] = []
+  let face = 0
+  let feePpk = 0
   let spendable = 0
   for (const p of sorted) {
     if (spendable >= target) break
     taken.push(p)
-    spendable = spendableProofAmount(taken, inputFeePpkByKeyset)
+    face += amountToNumber(p.amount)
+    if (inputFeePpkByKeyset) {
+      if (!p.id) throw new Error('Input proof is missing keyset id')
+      const inputFeePpk = inputFeePpkByKeyset[p.id]
+      if (!Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0) {
+        throw new Error(`Missing input_fee_ppk for keyset ${p.id}`)
+      }
+      feePpk += inputFeePpk
+    }
+    spendable = face - computeInputFeeSubunitsFromPpk(feePpk)
   }
   return spendable >= target ? taken : null
 }
