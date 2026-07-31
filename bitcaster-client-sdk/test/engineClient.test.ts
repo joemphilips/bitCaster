@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   BitcasterEngineClient,
+  decodeSubmitOrderResponse,
   EngineClientError,
   isDefinitiveOrderSubmissionError,
   SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX,
   SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX,
+  SUBMIT_ORDER_RESPONSE_BYTES_MAX,
   submitEphemeralPubkey,
   type EngineAuthorizationRequest,
 } from '../src/engineClient.ts'
@@ -437,6 +439,62 @@ test('BitcasterEngineClient.submitOrder sends only the capability reference and 
       authorization: 'Nostr auth',
     },
   ])
+})
+
+test('decodeSubmitOrderResponse rejects foreign fields and malformed nested authority', () => {
+  const response = {
+    orderId: '22222222-2222-4222-8222-222222222222',
+    status: 'filled',
+    remainingAmountSubunits: 0,
+    fills: [],
+    pendingPubkeySubmissions: [],
+    baseAsset: 'sat',
+    divisibility: 10_000,
+    activeSettlementGroup: null,
+  }
+  assert.deepEqual(decodeSubmitOrderResponse(response), response)
+  assert.throws(
+    () => decodeSubmitOrderResponse({ ...response, foreign: true }),
+    /response fields are invalid/,
+  )
+  assert.throws(
+    () =>
+      decodeSubmitOrderResponse({
+        ...response,
+        pendingPubkeySubmissions: [
+          {
+            tradeId: 'not-a-uuid',
+            role: 'maker',
+            fillAmount: 1,
+            deadline: '2026-07-29T00:00:10Z',
+          },
+        ],
+      }),
+    /pending trade id is invalid/,
+  )
+})
+
+test('BitcasterEngineClient.submitOrder rejects an oversized response before decoding', async () => {
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ padding: 'x'.repeat(SUBMIT_ORDER_RESPONSE_BYTES_MAX) }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+  })
+
+  await assert.rejects(
+    () =>
+      client.submitOrder('condition-1-YES', {
+        settlementCapability: {
+          artifactId: '11111111-1111-4111-8111-111111111111',
+          bindingDigest: 'a'.repeat(64),
+        },
+        comment: null,
+      }),
+    /byte limit/,
+  )
 })
 
 test('BitcasterEngineClient.listMyOrders preserves strict unit and lifecycle fields', async () => {

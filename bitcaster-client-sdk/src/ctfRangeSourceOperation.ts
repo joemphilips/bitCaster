@@ -6,6 +6,7 @@ import {
   type SwapPreview,
 } from '@cashu/cashu-ts'
 import {
+  decodeDurableCustodyProofOperationInput,
   deserializeDurableCustodyOutput,
   serializeDurableCustodyOutput,
   type DurableCustodyProofOperationInput,
@@ -20,6 +21,13 @@ import {
 } from './proofSelection.ts'
 
 const SOURCE_PURPOSE = 'ctf-range-authorization-source'
+declare const VALIDATED_SOURCE_COMPLETION: unique symbol
+
+export interface ValidatedCtfRangeSourceCompletionOperation {
+  readonly operation: DurableCustodyProofOperationInput
+  readonly outputs: Record<string, OutputData[]>
+  readonly [VALIDATED_SOURCE_COMPLETION]: true
+}
 
 export interface CtfRangeSourceWallet {
   prepareSwapToSend(
@@ -78,13 +86,20 @@ export async function completeCtfRangeSourceOperation(
   operation: DurableCustodyProofOperationInput,
   wallet: CtfRangeSourceWallet,
 ): Promise<CtfRangeSourceResult> {
-  assertSourceOperation(operation)
-  const outputs = deserializeOutputs(operation.outputs)
+  const validated = validateCtfRangeSourceCompletionOperation(operation)
+  return completeValidatedCtfRangeSourceOperation(validated, wallet)
+}
+
+export async function completeValidatedCtfRangeSourceOperation(
+  validated: ValidatedCtfRangeSourceCompletionOperation,
+  wallet: CtfRangeSourceWallet,
+): Promise<CtfRangeSourceResult> {
+  const operation = validated.operation
   if (operation.kind === 'conditional-keyset-swap') {
     const result = await wallet.completeConditionalSwap({
       keysetId: metadataText(operation, 'keysetId'),
       inputs: operation.inputs as Proof[],
-      outputDataByLabel: outputs,
+      outputDataByLabel: validated.outputs,
     })
     return { authorization: result.authorization ?? [], keep: result.keep ?? [] }
   }
@@ -93,11 +108,23 @@ export async function completeCtfRangeSourceOperation(
     fees: Amount.from(metadataNumber(operation, 'fees')),
     keysetId: metadataText(operation, 'keysetId'),
     inputs: operation.inputs as Proof[],
-    sendOutputs: outputs.authorization ?? [],
-    keepOutputs: outputs.keep ?? [],
+    sendOutputs: validated.outputs.authorization ?? [],
+    keepOutputs: validated.outputs.keep ?? [],
     unselectedProofs: [],
   })
   return { authorization: result.send, keep: result.keep }
+}
+
+export function validateCtfRangeSourceCompletionOperation(
+  operation: DurableCustodyProofOperationInput,
+): ValidatedCtfRangeSourceCompletionOperation {
+  const validated = decodeDurableCustodyProofOperationInput(operation)
+  assertSourceOperation(validated)
+  const outputs = deserializeOutputs(validated.outputs)
+  metadataText(validated, 'keysetId')
+  metadataNumber(validated, 'amount')
+  metadataNumber(validated, 'fees')
+  return { operation: validated, outputs } as ValidatedCtfRangeSourceCompletionOperation
 }
 
 async function prepareRegularSource(

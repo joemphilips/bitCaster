@@ -682,9 +682,12 @@ class StagedBrowserCustodyTransaction implements DurableCustodyTransaction {
   transitionOperation(
     input: Parameters<DurableCustodyTransaction["transitionOperation"]>[0],
   ): void {
+    const current = this.#requiredOperation(input.operationId, input.expectedRevision);
     this.#applyTransition(input.operationId, input.expectedRevision, input.transition);
     if (input.transition.kind === "stage-outbox") {
       this.#stageTransitionArtifact(input.operationId, input.transition.exactPayload, "delivery");
+    } else if (input.transition.kind === "release-unspent-reservation") {
+      this.#releasePredecessors(current);
     }
   }
 
@@ -859,6 +862,32 @@ class StagedBrowserCustodyTransaction implements DurableCustodyTransaction {
           ...proof,
           revision: incrementRevision(proof.revision, "proof"),
           selectability: "spent",
+          reservationOperationId: null,
+        }),
+      );
+      this.reservations.delete(proofId);
+      this.changedProofIds.add(proofId);
+      this.changedReservationIds.delete(proofId);
+      this.deletedReservationIds.add(proofId);
+    }
+  }
+
+  #releasePredecessors(operation: DurableCustodyRecord): void {
+    for (const { proofId } of operation.operation.reservation.inputs) {
+      const proof = this.proofs.get(proofId);
+      if (
+        !proof ||
+        proof.selectability !== "locked" ||
+        proof.reservationOperationId !== operation.operation.operationId
+      ) {
+        throw new Error("browser custody predecessor proof release CAS lost");
+      }
+      this.proofs.set(
+        proofId,
+        decodeBrowserCustodyProofRow({
+          ...proof,
+          revision: incrementRevision(proof.revision, "proof"),
+          selectability: "selectable",
           reservationOperationId: null,
         }),
       );

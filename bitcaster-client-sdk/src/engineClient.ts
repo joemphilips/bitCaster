@@ -1,4 +1,9 @@
-import type { CtfCollateralUnit, MarketBaseAsset, MarketDivisibility } from './marketUnits.ts'
+import {
+  parseMarketDivisibility,
+  type CtfCollateralUnit,
+  type MarketBaseAsset,
+  type MarketDivisibility,
+} from './marketUnits.ts'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import {
   readAllocationBoundedJsonResponse,
@@ -8,6 +13,7 @@ import {
 export type EngineFetch = typeof fetch
 export const SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX = 384 * 1_024
 export const SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX = 64 * 1_024
+export const SUBMIT_ORDER_RESPONSE_BYTES_MAX = 1024 * 1024
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS = 10_000
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS_MAX = 60_000
 
@@ -477,7 +483,9 @@ export class BitcasterEngineClient {
       },
       bodyText,
     )
-    return (await response.json()) as SubmitOrderResponse
+    return decodeSubmitOrderResponse(
+      await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX),
+    )
   }
 
   async getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null> {
@@ -717,6 +725,231 @@ async function readSettlementCapabilityResultResponse(
     response,
     SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX,
   )) as SettlementCapabilityResultResponse
+}
+
+export function decodeSubmitOrderResponse(value: unknown): SubmitOrderResponse {
+  const response = exactEngineRecord(value, [
+    'orderId',
+    'status',
+    'remainingAmountSubunits',
+    'fills',
+    'pendingPubkeySubmissions',
+    'baseAsset',
+    'divisibility',
+    'activeSettlementGroup',
+  ])
+  requireUuid(response.orderId, 'order id')
+  requireOrderStatus(response.status)
+  requireNonnegativeSafeInteger(response.remainingAmountSubunits, 'remaining order amount')
+  const fills = boundedEngineArray(response.fills, 512, 'order fills').map(decodeFill)
+  const pendingPubkeySubmissions = boundedEngineArray(
+    response.pendingPubkeySubmissions,
+    512,
+    'pending public-key submissions',
+  ).map(decodePendingPubkeySubmission)
+  if (response.baseAsset !== 'sat') throw new Error('order response base asset is invalid')
+  const divisibility = parseMarketDivisibility(response.divisibility)
+  if (divisibility === null) throw new Error('order response divisibility is invalid')
+  const activeSettlementGroup =
+    response.activeSettlementGroup === null
+      ? null
+      : decodeSettlementGroup(response.activeSettlementGroup)
+  return {
+    orderId: response.orderId as string,
+    status: response.status as OrderLifecycleStatus,
+    remainingAmountSubunits: response.remainingAmountSubunits as number,
+    fills,
+    pendingPubkeySubmissions,
+    baseAsset: 'sat',
+    divisibility,
+    activeSettlementGroup,
+  }
+}
+
+function decodeFill(value: unknown): Fill {
+  const fill = exactEngineRecord(
+    value,
+    [
+      'id',
+      'makerOrderId',
+      'takerOrderId',
+      'amountSubunits',
+      'executionPrice',
+      'path',
+      'status',
+      'filledAt',
+      'settlementGroup',
+      'baseAsset',
+      'divisibility',
+      'tokenSide',
+      'quotePaymentSubunits',
+      'outcomeFaceAmountSubunits',
+    ],
+    ['tradeId'],
+  )
+  requireUuid(fill.id, 'fill id')
+  requireUuid(fill.makerOrderId, 'maker order id')
+  requireUuid(fill.takerOrderId, 'taker order id')
+  requirePositiveSafeInteger(fill.amountSubunits, 'fill amount')
+  if (fill.path !== 'Complementary' && fill.path !== 'Mint') {
+    throw new Error('fill path is invalid')
+  }
+  if (fill.status !== 'Matched' && fill.status !== 'Filled' && fill.status !== 'Failed') {
+    throw new Error('fill status is invalid')
+  }
+  requireIsoEngineTime(fill.filledAt, 'fill time')
+  if (fill.baseAsset !== 'sat') throw new Error('fill base asset is invalid')
+  const divisibility = parseMarketDivisibility(fill.divisibility)
+  if (divisibility === null) throw new Error('fill divisibility is invalid')
+  requirePositiveSafeInteger(fill.executionPrice, 'fill execution price')
+  if ((fill.executionPrice as number) >= divisibility) {
+    throw new Error('fill execution price is invalid')
+  }
+  if (fill.tokenSide !== 'Outcome' && fill.tokenSide !== 'Complement') {
+    throw new Error('fill token side is invalid')
+  }
+  requireNonnegativeSafeInteger(fill.quotePaymentSubunits, 'fill quote payment')
+  requirePositiveSafeInteger(fill.outcomeFaceAmountSubunits, 'fill outcome amount')
+  if (fill.tradeId !== undefined) requireUuid(fill.tradeId, 'fill trade id')
+  return {
+    id: fill.id as string,
+    makerOrderId: fill.makerOrderId as string,
+    takerOrderId: fill.takerOrderId as string,
+    amountSubunits: fill.amountSubunits as number,
+    executionPrice: fill.executionPrice as number,
+    path: fill.path,
+    status: fill.status,
+    filledAt: fill.filledAt as string,
+    settlementGroup: decodeSettlementGroup(fill.settlementGroup),
+    ...(fill.tradeId === undefined ? {} : { tradeId: fill.tradeId as string }),
+    baseAsset: 'sat',
+    divisibility,
+    tokenSide: fill.tokenSide,
+    quotePaymentSubunits: fill.quotePaymentSubunits as number,
+    outcomeFaceAmountSubunits: fill.outcomeFaceAmountSubunits as number,
+  }
+}
+
+function decodePendingPubkeySubmission(value: unknown): PendingPubkeySubmission {
+  const pending = exactEngineRecord(value, ['tradeId', 'role', 'fillAmount', 'deadline'])
+  requireUuid(pending.tradeId, 'pending trade id')
+  if (pending.role !== 'maker' && pending.role !== 'taker') {
+    throw new Error('pending public-key role is invalid')
+  }
+  requirePositiveSafeInteger(pending.fillAmount, 'pending fill amount')
+  requireIsoEngineTime(pending.deadline, 'pending public-key deadline')
+  return {
+    tradeId: pending.tradeId as string,
+    role: pending.role,
+    fillAmount: pending.fillAmount as number,
+    deadline: pending.deadline as string,
+  }
+}
+
+function decodeSettlementGroup(value: unknown): SettlementGroupSummary {
+  const group = exactEngineRecord(value, [
+    'groupId',
+    'status',
+    'revision',
+    'coalescingDeadline',
+    'frozenAt',
+  ])
+  requireUuid(group.groupId, 'settlement group id')
+  if (
+    group.status !== 'Prepared' &&
+    group.status !== 'SubmissionPending' &&
+    group.status !== 'Reconciling' &&
+    group.status !== 'Confirmed' &&
+    group.status !== 'DefinitivelyRejected' &&
+    group.status !== 'Refundable' &&
+    group.status !== 'ExpiredBeforeSubmission'
+  ) {
+    throw new Error('settlement group status is invalid')
+  }
+  requireNonnegativeSafeInteger(group.revision, 'settlement group revision')
+  requireIsoEngineTime(group.coalescingDeadline, 'settlement group deadline')
+  if (group.frozenAt !== null) requireIsoEngineTime(group.frozenAt, 'settlement group freeze time')
+  return {
+    groupId: group.groupId as string,
+    status: group.status,
+    revision: group.revision as number,
+    coalescingDeadline: group.coalescingDeadline as string,
+    frozenAt: group.frozenAt as string | null,
+  }
+}
+
+function requireOrderStatus(value: unknown): asserts value is OrderLifecycleStatus {
+  if (
+    value !== 'resting' &&
+    value !== 'matched' &&
+    value !== 'partially_filled' &&
+    value !== 'awaiting_authorization' &&
+    value !== 'filled' &&
+    value !== 'cancelled' &&
+    value !== 'expired' &&
+    value !== 'evicted_capacity' &&
+    value !== 'rejected_capacity' &&
+    value !== 'failed'
+  ) {
+    throw new Error('order response status is invalid')
+  }
+}
+
+function exactEngineRecord(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('engine response object is invalid')
+  }
+  const record = value as Record<string, unknown>
+  const keys = Object.keys(record)
+  if (
+    required.some((key) => !Object.hasOwn(record, key)) ||
+    keys.some((key) => !required.includes(key) && !optional.includes(key))
+  ) {
+    throw new Error('engine response fields are invalid')
+  }
+  return record
+}
+
+function boundedEngineArray(value: unknown, maximum: number, name: string): unknown[] {
+  if (!Array.isArray(value) || value.length > maximum) {
+    throw new Error(`${name} are invalid`)
+  }
+  return value
+}
+
+function requireUuid(value: unknown, name: string): asserts value is string {
+  if (
+    typeof value !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+  ) {
+    throw new Error(`${name} is invalid`)
+  }
+}
+
+function requireNonnegativeSafeInteger(value: unknown, name: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`${name} is invalid`)
+  }
+}
+
+function requirePositiveSafeInteger(value: unknown, name: string): asserts value is number {
+  requireNonnegativeSafeInteger(value, name)
+  if (value === 0) throw new Error(`${name} is invalid`)
+}
+
+function requireIsoEngineTime(value: unknown, name: string): asserts value is string {
+  if (
+    typeof value !== 'string' ||
+    value.length < 20 ||
+    value.length > 64 ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    throw new Error(`${name} is invalid`)
+  }
 }
 
 async function boundedSettlementResultError(response: Response): Promise<EngineClientError> {

@@ -36,7 +36,10 @@ import {
   createPoolSettlementCapabilityArtifact,
   deriveSettlementCapabilityArtifactDigest,
 } from '../src/settlementCapabilityArtifact.ts'
-import { prepareCtfRangeSourceOperation } from '../src/ctfRangeSourceOperation.ts'
+import {
+  prepareCtfRangeSourceOperation,
+  validateCtfRangeSourceCompletionOperation,
+} from '../src/ctfRangeSourceOperation.ts'
 
 const CONDITION_ID = 'ab'.repeat(32)
 const OUTCOME_COLLECTION = 'YES'
@@ -394,6 +397,32 @@ test('prepares one exact persisted range source through the shared wallet bounda
   assert.equal(operation.inputs[0]?.secret, candidate.secret)
   assert.equal(operation.metadata?.purpose, 'ctf-range-authorization-source')
   assert.ok((operation.outputs.authorization?.length ?? 0) > 0)
+  assert.deepEqual(validateCtfRangeSourceCompletionOperation(operation).operation, operation)
+  assert.throws(
+    () =>
+      validateCtfRangeSourceCompletionOperation({
+        ...operation,
+        metadata: { ...operation.metadata, keysetId: '' },
+      }),
+    /keysetId is invalid/,
+  )
+  const output = operation.outputs.authorization![0]!
+  assert.throws(
+    () =>
+      validateCtfRangeSourceCompletionOperation({
+        ...operation,
+        outputs: {
+          ...operation.outputs,
+          authorization: [
+            {
+              ...output,
+              blindedMessage: { ...output.blindedMessage, B_: MINT_PUBLIC_KEY },
+            },
+          ],
+        },
+      }),
+    /does not match its exact private material/,
+  )
 })
 
 test('rejects wallet substitution of exact range authorization outputs', async () => {

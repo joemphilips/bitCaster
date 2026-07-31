@@ -335,6 +335,11 @@ export type DurableCustodyTransition =
       expectedRevision: number
     }
   | {
+      kind: 'release-unspent-reservation'
+      authorization: DurableCustodyOwnerAuthorization
+      expectedRevision: number
+    }
+  | {
       kind: 'stage-outbox'
       authorization: DurableCustodyOwnerAuthorization
       expectedRevision: number
@@ -1413,6 +1418,21 @@ export function reduceDurableCustodyState(
     case 'abort':
       if (operation.operation.state !== 'dispatch-intent') {
         throw new Error('custody abort transition is invalid')
+      }
+      operation.operation.state = 'aborted'
+      operation.operation.retry = {
+        attempt: 0,
+        nextAttemptAtMs: null,
+        reason: 'none',
+      }
+      setStoragePins(operation, [])
+      break
+    case 'release-unspent-reservation':
+      if (
+        operation.operation.state !== 'dispatch-intent' &&
+        operation.operation.state !== 'transport-attempted'
+      ) {
+        throw new Error('custody unspent release transition is invalid')
       }
       operation.operation.state = 'aborted'
       operation.operation.retry = {

@@ -165,6 +165,7 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
   transitionOperation(
     input: Parameters<DurableCustodyTransaction['transitionOperation']>[0],
   ): void {
+    const current = this.#requiredOperation(input.operationId, input.expectedRevision)
     this.#applyTransition(input.operationId, input.expectedRevision, input.transition)
     if (input.transition.kind === 'stage-outbox') {
       this.#store.putArtifact({
@@ -179,6 +180,8 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
         artifact: input.transition.exactPayload,
         createdAtMs: this.#nowMs,
       })
+    } else if (input.transition.kind === 'release-unspent-reservation') {
+      this.#releasePredecessorProofs(current)
     }
   }
 
@@ -316,6 +319,35 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
       if (result.changes !== 1) {
         throw new Error('custody predecessor proof CAS lost')
       }
+    }
+    const released = this.#database
+      .prepare(
+        `DELETE FROM custody_proof_reservations
+         WHERE scope_id = ? AND operation_id = ?`,
+      )
+      .run(this.#scopeId, operation.operation.operationId)
+    if (released.changes !== operation.operation.reservation.inputs.length) {
+      throw new Error('custody predecessor reservation release is incomplete')
+    }
+  }
+
+  #releasePredecessorProofs(operation: DurableCustodyRecord): void {
+    const release = this.#database.prepare(
+      `UPDATE custody_proofs SET
+         selectability = 'selectable', reservation_operation_id = NULL,
+         revision = revision + 1, updated_at_ms = ?
+       WHERE scope_id = ? AND proof_id = ?
+         AND nut07_state = 'UNSPENT' AND selectability = 'locked'
+         AND reservation_operation_id = ?`,
+    )
+    for (const { proofId } of operation.operation.reservation.inputs) {
+      const result = release.run(
+        this.#nowMs,
+        this.#scopeId,
+        proofId,
+        operation.operation.operationId,
+      )
+      if (result.changes !== 1) throw new Error('custody predecessor proof release CAS lost')
     }
     const released = this.#database
       .prepare(

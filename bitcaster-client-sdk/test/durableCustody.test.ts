@@ -587,6 +587,45 @@ test('scope claim and reducer keep clock monotonic without invalidating the curr
   )
 })
 
+test('custody releases a prepared reservation only through explicit unspent evidence', () => {
+  const record = intent()
+  const scopeState = claimDurableCustodyScope(
+    {
+      schemaVersion: 1,
+      scope: record.scope,
+      fencingEpoch: 0,
+      owner: null,
+      effectiveClock: { highWaterMarkMs: 0 },
+    },
+    { incarnationId: 'process-1', observedAtMs: 1, leaseExpiresAtMs: 100 },
+  )
+  const authorization = {
+    incarnationId: 'process-1',
+    fencingEpoch: 1,
+    observedAtMs: 2,
+  }
+  const releasedBeforeTransport = reduceDurableCustodyState(
+    { scopeState, operation: record },
+    {
+      kind: 'release-unspent-reservation',
+      authorization,
+      expectedRevision: 0,
+    },
+  )
+  assert.equal(releasedBeforeTransport.operation.operation.state, 'aborted')
+  const attempted = reduceDurableCustodyState(
+    { scopeState, operation: record },
+    { kind: 'mark-transport-attempted', authorization, expectedRevision: 0 },
+  )
+  const released = reduceDurableCustodyState(attempted, {
+    kind: 'release-unspent-reservation',
+    authorization: { ...authorization, observedAtMs: 3 },
+    expectedRevision: 1,
+  })
+  assert.equal(released.operation.operation.state, 'aborted')
+  assert.deepEqual(released.operation.operation.proofStorage.pinReasons, [])
+})
+
 test('custody rejects cross-scope reducers and incoherent persisted state', () => {
   const record = intent()
   const foreign = scope()
