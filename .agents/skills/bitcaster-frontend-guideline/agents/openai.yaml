@@ -1,0 +1,4 @@
+interface:
+  display_name: "bitCaster Frontend Guideline"
+  short_description: "Apply durable bitCaster GUI behavior rules"
+  default_prompt: "Use $bitcaster-frontend-guideline to implement or review this bitCaster GUI change."

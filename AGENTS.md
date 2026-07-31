@@ -140,3 +140,9 @@ Details scoped per subproject live in `.claude/rules/`:
 - `doc-site.md` — Astro Starlight
 - `design.md` — Design system
 - `cdk.md` — CDK (upstream) build / lint / style
+
+## Repo-Local Skills
+
+Use `.agents/skills/bitcaster-frontend-guideline` for user-visible frontend
+behavior. This includes errors, notifications, recovery progress, and browser
+persistence.
