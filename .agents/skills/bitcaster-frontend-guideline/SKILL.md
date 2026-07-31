@@ -12,13 +12,18 @@ description: Apply bitCaster GUI behavior rules. Use this skill when you change 
 - If a funds operation has an uncertain result, show that recovery is in progress.
 - Recreate a durable error or recovery message after a reload from the durable operation state.
 - Do not use a transient toast as the only record of a durable failure.
+- Identify a durable message by operation ID, operation state version, and a bounded error code.
 
 ## Error Dismissal
 
 - Do not set an automatic timeout for an error message.
 - Remove an error message only after an explicit user action.
+- Persist the acknowledgement for the exact durable message identity.
+- Keep the same acknowledged message dismissed after reload.
+- A later state version or error code can create a new message.
 - Provide a visible and keyboard-accessible close button.
 - Do not remove an unresolved error when a message queue reaches its limit.
+- Store unresolved errors in bounded pages. Use a bounded visible viewport.
 - Keep error text selectable and copyable.
 - Do not include secrets, proofs, tokens, keys, or private protocol artifacts in an error.
 - Success and information messages can use a bounded automatic timeout.
