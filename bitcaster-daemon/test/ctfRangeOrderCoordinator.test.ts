@@ -101,7 +101,7 @@ const MINT_URL = 'https://mint.example'
 const ORDER_ID = '00000000-0000-8000-8000-000000000001'
 const CAPABILITY_ARTIFACT_ID = '00000000-0000-4000-8000-000000000002'
 
-test('daemon resumes the exact bound range source after capability acknowledgement loss', async () => {
+test('daemon recovers funds without recreating an unacknowledged capability', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
@@ -118,10 +118,11 @@ test('daemon resumes the exact bound range source after capability acknowledgeme
       const client = fakeEngineClient((request) => {
         posted.push(structuredClone(request))
         createAttempts += 1
-        if (createAttempts === 1) {
-          throw new Error('capability acknowledgement lost')
-        }
-        return boundCapability(request)
+        throw new Error(
+          createAttempts === 1
+            ? 'capability acknowledgement lost'
+            : 'capability creation must not be retried during recovery',
+        )
       })
       const ids = ['range-operation-1', 'range-authorization-1']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
@@ -151,11 +152,9 @@ test('daemon resumes the exact bound range source after capability acknowledgeme
       const recovered = await coordinator.recover(WALLET_SEED_HEX, client)
       assert.deepEqual(recovered.recovered, [])
       assert.equal(recovered.pending.length, 1)
-      assert.match(recovered.pending[0]!.error, /submitted and remains pending settlement/)
-      assert.equal(recovered.pending[0]!.retryAtMs, 40_000)
+      assert.match(recovered.pending[0]!.error, /unsubmitted range authorization remains unspent/)
       assert.equal(wallet.completeCalls, 1)
-      assert.equal(posted.length, 2)
-      assert.deepEqual(posted[1], posted[0])
+      assert.equal(posted.length, 1)
       const database = await openDaemonStateSqlite(directory)
       const custodyRows = database
         .prepare(
@@ -169,33 +168,20 @@ test('daemon resumes the exact bound range source after capability acknowledgeme
       )
 
       const persisted = await readState()
-      assert.equal(persisted?.orders[ORDER_ID]?.clientOrderId, 'client-order-1')
+      assert.deepEqual(persisted?.orders, {})
       const beforePendingRecovery = await rangeRecoverySnapshot(directory)
-      const waiting = await coordinator.recover(WALLET_SEED_HEX, {
-        ...client,
-        getOrderStatus: async () => restingOrderStatus(),
-      })
+      const waiting = await coordinator.recover(WALLET_SEED_HEX, client)
       assert.deepEqual(waiting.recovered, [])
       assert.equal(waiting.pending.length, 1)
       assert.match(waiting.pending[0]!.error, /remains unspent before expiry/)
       assert.deepEqual(await rangeRecoverySnapshot(directory), beforePendingRecovery)
-      const offline = await coordinator.recover(WALLET_SEED_HEX, {
-        ...client,
-        getSettlementCapabilityResultByOperation: async () => {
-          throw new Error('engine is offline')
-        },
-      })
-      assert.deepEqual(offline.recovered, [])
-      assert.equal(offline.pending.length, 1)
-      assert.match(offline.pending[0]!.error, /engine is offline/)
-      assert.deepEqual(await rangeRecoverySnapshot(directory), beforePendingRecovery)
-      assert.equal(posted.length, 2)
+      assert.equal(posted.length, 1)
       await assertSeedAbsentFromArtifacts(directory)
     },
   )
 })
 
-test('daemon resumes exact bounded consolidation before recreating its range capability', async () => {
+test('daemon resumes exact bounded consolidation without recreating its range capability', async () => {
   const sourceProofs = [4_096, 4_096, 2, 2, 2].map((amount) =>
     signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
   )
@@ -238,7 +224,10 @@ test('daemon resumes exact bounded consolidation before recreating its range cap
       const recoveredPass = await coordinator.recover(WALLET_SEED_HEX, client)
       assert.deepEqual(recoveredPass.recovered, [])
       assert.equal(recoveredPass.pending.length, 1)
-      assert.match(recoveredPass.pending[0]!.error, /submitted and remains pending settlement/)
+      assert.match(
+        recoveredPass.pending[0]!.error,
+        /unsubmitted range authorization remains unspent/,
+      )
       assert.equal(wallet.completeCalls, 2)
       const recovered = await readState()
       assert.equal(recovered?.proofOperations[consolidationId]?.state, 'completed')
@@ -247,7 +236,7 @@ test('daemon resumes exact bounded consolidation before recreating its range cap
         recovered?.proofOperations['range-operation-consolidated:source']?.state,
         'completed',
       )
-      assert.equal(recovered?.orders[ORDER_ID]?.clientOrderId, 'client-order-1')
+      assert.deepEqual(recovered?.orders, {})
     },
   )
 })
@@ -334,7 +323,7 @@ test('daemon refuses a range authorization without five minutes of refund headro
   )
 })
 
-test('daemon replays the exact order after its submission acknowledgement is lost', async () => {
+test('daemon discovers but does not replay an order after its submission acknowledgement is lost', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
@@ -346,7 +335,7 @@ test('daemon replays the exact order after its submission acknowledgement is los
     async ({ directory, fence }) => {
       let capabilityState: SettlementCapabilityResponse['state'] = 'bound'
       let submitAttempts = 0
-      const client = fakeEngineClient(
+      const baseClient = fakeEngineClient(
         (request) => boundCapability(request, capabilityState),
         async () => {
           submitAttempts += 1
@@ -355,6 +344,10 @@ test('daemon replays the exact order after its submission acknowledgement is los
           return submittedOrder()
         },
       )
+      const client: EngineClientLike = {
+        ...baseClient,
+        getOrderStatus: async () => (submitAttempts > 0 ? restingOrderStatus() : null),
+      }
       const ids = ['range-operation-submit', 'range-authorization-submit']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(),
@@ -376,8 +369,8 @@ test('daemon replays the exact order after its submission acknowledgement is los
       const recovered = await coordinator.recover(WALLET_SEED_HEX, client)
       assert.deepEqual(recovered.recovered, [])
       assert.equal(recovered.pending.length, 1)
-      assert.match(recovered.pending[0]!.error, /submitted and remains pending settlement/)
-      assert.equal(submitAttempts, 2)
+      assert.match(recovered.pending[0]!.error, /submitted range authorization remains unspent/)
+      assert.equal(submitAttempts, 1)
       assert.equal((await readState())?.orders[ORDER_ID]?.clientOrderId, 'client-order-1')
     },
   )

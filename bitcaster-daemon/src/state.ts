@@ -1052,6 +1052,36 @@ export async function recordOrderStatus(
   )
 }
 
+export async function recordDiscoveredOrder(
+  marketId: string,
+  clientOrderId: string,
+  engineStatus: unknown,
+  tokenSide: 'Outcome' | 'Complement',
+  side: 'Buy' | 'Sell',
+  priceSubunits: number,
+  amountSubunits: number,
+  baseAsset: 'sat',
+  divisibility: number,
+): Promise<LocalOrderRecord> {
+  const orderId = readStringProperty(engineStatus, 'orderId')
+  if (!orderId) {
+    throw new Error('discovered engine order status did not include orderId')
+  }
+  return upsertOrderFromEngine(
+    marketId,
+    orderId,
+    engineStatus,
+    clientOrderId,
+    undefined,
+    tokenSide,
+    side,
+    priceSubunits,
+    amountSubunits,
+    baseAsset,
+    divisibility,
+  )
+}
+
 export async function listLocalOrders(
   params: ListLocalOrdersParams = {},
 ): Promise<LocalOrderRecord[]> {

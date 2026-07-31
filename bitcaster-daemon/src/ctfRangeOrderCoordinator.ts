@@ -95,8 +95,8 @@ import {
   prepareProofOperationWithExactReservation,
   prepareCtfRangeRefundProofOperationFromDatabase,
   readAvailableWalletProofPage,
+  recordDiscoveredOrder,
   recordOrderStatus,
-  recordSubmittedOrder,
   releasePreparedProofReservationFenced,
   type CashuProofRecord,
   type FencedStateMutation,
@@ -307,12 +307,30 @@ export class DaemonCtfRangeOrderCoordinator {
     walletSeedHex: string,
     client: EngineClientLike,
   ): Promise<void> {
-    if (
-      preparationRecord.lifecycleState === 'order-submitted' ||
-      preparationRecord.lifecycleState === 'submission-rejected'
-    ) {
-      await this.#recoverSubmittedOrder(preparationRecord, preparationInput, walletSeedHex, client)
-      return
+    switch (preparationRecord.lifecycleState) {
+      case 'order-submitted':
+      case 'submission-rejected':
+        await this.#recoverSubmittedOrder(
+          preparationRecord,
+          preparationInput,
+          walletSeedHex,
+          client,
+        )
+        return
+      case 'capability-bound':
+        await this.#recoverCapabilityBoundOrder(
+          preparationRecord,
+          preparationInput,
+          walletSeedHex,
+          client,
+        )
+        return
+      case 'prepared':
+        break
+      case 'terminal':
+        return
+      default:
+        throw new Error('daemon CTF range preparation lifecycle is invalid')
     }
     const authority = persistedMintAuthority(
       preparationInput,
@@ -390,24 +408,96 @@ export class DaemonCtfRangeOrderCoordinator {
     } else {
       await rangeCoordinator.bindPreparedSource(bindInput)
     }
-    const createCapability = client.createSettlementCapability
-    if (createCapability === undefined) {
-      throw new Error('engine client does not support settlement capability creation')
+    await this.#recoverUnsubmittedAuthorization(preparationInput, walletSeedHex)
+  }
+
+  async #recoverCapabilityBoundOrder(
+    preparation: RangePreparationRecord,
+    input: PersistedPreparationInput,
+    walletSeedHex: string,
+    client: EngineClientLike,
+  ): Promise<void> {
+    const capability = preparation.capability
+    if (capability === null) throw new Error('bound range capability authority is missing')
+    const status = await client.getOrderStatus(input.request.marketId, capability.orderId)
+    if (status === null) {
+      await this.#recoverUnsubmittedAuthorization(input, walletSeedHex)
+      return
     }
-    const capability = await createCapability.call(client, capabilityRequest)
-    const projectedCapability = validateAndProjectCtfRangeSettlementCapabilityResponse({
-      capability,
-      preparation: preparationInput,
-      operation,
-      recovering: true,
-    })
-    await this.#bindCapability(operation.operationId, projectedCapability)
-    await submitRecoveredOrder(client, preparationInput.request, capability)
-    await this.#markOrderSubmitted(operation.operationId)
-    throw new RangeRecoveryDeferredError(
-      'recovered range order was submitted and remains pending settlement',
-      this.#nowMs() + 30_000,
+    await recordDiscoveredOrder(
+      input.request.marketId,
+      input.request.clientOrderId,
+      status,
+      input.request.tokenSide,
+      input.request.side,
+      input.request.price,
+      input.request.amountSubunits,
+      input.request.baseAsset,
+      input.request.divisibility,
     )
+    await this.#markOrderSubmitted(input.operationId)
+    await this.#recoverSubmittedOrder(
+      { ...preparation, lifecycleState: 'order-submitted' },
+      input,
+      walletSeedHex,
+      client,
+    )
+  }
+
+  async #recoverUnsubmittedAuthorization(
+    input: PersistedPreparationInput,
+    walletSeedHex: string,
+  ): Promise<void> {
+    const coordinator = new DaemonCtfRangeCoordinator(this.#directory, this.#getFence())
+    const custodyOperationId = rangeCustodyOperationId(walletSeedHex, input.operationId)
+    const loaded = await coordinator.load(custodyOperationId)
+    if (loaded === null) throw new Error('daemon CTF range custody authority is missing')
+    const mint = this.#createMint(input.mintUrl) as CtfRangeMintLike & CtfRangeMintClient
+    const existingRefund = await getProofOperation(rangeRefundOperationId(input.operationId))
+    if (existingRefund !== null) {
+      await this.#resumeOrCreateRefund(
+        coordinator,
+        custodyOperationId,
+        loaded.operation,
+        mint,
+        existingRefund,
+      )
+      await this.#markTerminal(input.operationId)
+      return
+    }
+    const recovery = new CtfRangeMintRecoveryAdapter(loaded.operation, mint)
+    const verification = await recovery.loadExactVerificationContext(loaded.record)
+    const decision = await this.#classifyMintRecovery(
+      coordinator,
+      custodyOperationId,
+      loaded.operation,
+      verification,
+      mint,
+    )
+    switch (decision.kind) {
+      case 'confirmed':
+        await this.#markTerminal(input.operationId)
+        return
+      case 'waiting':
+        throw new RangeRecoveryDeferredError(
+          'unsubmitted range authorization remains unspent before expiry',
+          loaded.operation.expiry * 1_000 + 1_000,
+        )
+      case 'refundable':
+        await this.#resumeOrCreateRefund(
+          coordinator,
+          custodyOperationId,
+          loaded.operation,
+          mint,
+          null,
+        )
+        await this.#markTerminal(input.operationId)
+        return
+      case 'reconciling':
+        throw new Error('unsubmitted range authorization remains reconciling')
+      default:
+        throw new Error('unsubmitted range recovery decision is invalid')
+    }
   }
 
   async #loadResidualSource(
@@ -1223,32 +1313,6 @@ export class DaemonCtfRangeOrderCoordinator {
       observedAtMs: this.#nowMs(),
     }
   }
-}
-
-async function submitRecoveredOrder(
-  client: EngineClientLike,
-  request: PersistedPreparationInput['request'],
-  capability: SettlementCapabilityResponse,
-): Promise<void> {
-  const submitted = await client.submitOrder(request.marketId, {
-    settlementCapability: capability.reference,
-    comment: null,
-  })
-  if (submitted.orderId !== capability.orderId) {
-    throw new Error('recovered engine order differs from its settlement capability')
-  }
-  await recordSubmittedOrder(
-    request.marketId,
-    request.clientOrderId,
-    submitted,
-    null,
-    request.tokenSide,
-    request.side,
-    request.price,
-    request.amountSubunits,
-    request.baseAsset,
-    request.divisibility,
-  )
 }
 
 function preparedMintAuthority(
