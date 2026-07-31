@@ -3,6 +3,7 @@ import test from 'node:test'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { bytesToHex } from '@noble/curves/utils.js'
 import {
+  Amount,
   OutputData,
   createBlindSignature,
   createDLEQProof,
@@ -35,6 +36,7 @@ import {
   createPoolSettlementCapabilityArtifact,
   deriveSettlementCapabilityArtifactDigest,
 } from '../src/settlementCapabilityArtifact.ts'
+import { prepareCtfRangeSourceOperation } from '../src/ctfRangeSourceOperation.ts'
 
 const CONDITION_ID = 'ab'.repeat(32)
 const OUTCOME_COLLECTION = 'YES'
@@ -356,6 +358,74 @@ test('builds one capability request and validates its exact engine projection', 
   )
 })
 
+test('prepares one exact persisted range source through the shared wallet boundary', async () => {
+  const preparation = persistedPreparation('range-operation-source')
+  const candidate: Proof = {
+    id: preparation.offerKeyset.id,
+    amount: 4,
+    secret: 'source-proof',
+    C: MINT_PUBLIC_KEY,
+  }
+  const operation = await prepareCtfRangeSourceOperation({
+    preparation,
+    seed: new Uint8Array(64).fill(7),
+    candidates: [candidate],
+    wallet: {
+      prepareSwapToSend: async (amount, proofs, config, outputs) => ({
+        amount: Amount.from(amount),
+        fees: Amount.from(1),
+        keysetId: config.keysetId,
+        inputs: proofs,
+        sendOutputs: outputs.send.data,
+        keepOutputs: [],
+        unselectedProofs: [],
+      }),
+      completeSwap: async () => ({ keep: [], send: [] }),
+      prepareConditionalSwap: async () => {
+        throw new Error('unexpected conditional source')
+      },
+      completeConditionalSwap: async () => ({}),
+    },
+  })
+
+  assert.ok(operation)
+  assert.equal(operation.kind, 'wallet-send')
+  assert.equal(operation.operationId, preparation.sourceOperationId)
+  assert.equal(operation.inputs[0]?.secret, candidate.secret)
+  assert.equal(operation.metadata?.purpose, 'ctf-range-authorization-source')
+  assert.ok((operation.outputs.authorization?.length ?? 0) > 0)
+})
+
+test('rejects wallet substitution of exact range authorization outputs', async () => {
+  const preparation = persistedPreparation('range-operation-substitution')
+  await assert.rejects(
+    prepareCtfRangeSourceOperation({
+      preparation,
+      seed: new Uint8Array(64).fill(7),
+      candidates: [
+        { id: preparation.offerKeyset.id, amount: 4, secret: 'source-proof', C: MINT_PUBLIC_KEY },
+      ],
+      wallet: {
+        prepareSwapToSend: async (amount, proofs, config) => ({
+          amount: Amount.from(amount),
+          fees: Amount.from(1),
+          keysetId: config.keysetId,
+          inputs: proofs,
+          sendOutputs: [],
+          keepOutputs: [],
+          unselectedProofs: [],
+        }),
+        completeSwap: async () => ({ keep: [], send: [] }),
+        prepareConditionalSwap: async () => {
+          throw new Error('unexpected conditional source')
+        },
+        completeConditionalSwap: async () => ({}),
+      },
+    }),
+    /changed exact authorization outputs/,
+  )
+})
+
 function preparationInput() {
   return {
     seed: new Uint8Array(64).fill(7),
@@ -508,6 +578,22 @@ function reviewedMintFacts() {
 function sequentialId(...ids: string[]): () => string {
   let index = 0
   return () => ids[index++] ?? 'unexpected-id'
+}
+
+function persistedPreparation(operationId: string) {
+  return buildPersistedCtfRangeOrderPreparation({
+    request: rangeOrderRequest(),
+    coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
+    mintFacts: reviewedMintFacts(),
+    market: {
+      outcomes: [
+        { id: 'yes-id', label: 'YES' },
+        { id: 'no-id', label: 'NO' },
+      ],
+    },
+    nowUnixSeconds: 20,
+    randomId: sequentialId(operationId, `${operationId}:authorization`),
+  })
 }
 
 function preparationRecord(
