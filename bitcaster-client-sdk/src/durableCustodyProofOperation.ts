@@ -189,7 +189,6 @@ export async function resolveDurableCustodyProofOperationFacts(
   const operation = decodeDurableCustodyProofOperationInput(input.operation)
   const unit = operation.metadata?.unit
   requireText(unit, 'metadata unit')
-  const semanticKind = durableCustodyProofOperationSemanticKind(operation.kind)
   const usage = keysetUsage(operation)
   if (usage.size === 0) throw new Error('custody operation has no keysets')
   const mintKeys = await input.resolveMintKeys(operation.mintUrl, [...usage.keys()])
@@ -225,7 +224,7 @@ export async function resolveDurableCustodyProofOperationFacts(
     binding: {
       kind: 'wallet',
       activityId: operation.operationId,
-      stage: stageForSemantic(semanticKind),
+      stage: durableCustodyProofOperationStage(operation.kind),
     },
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
     hasOutputs: Object.values(operation.outputs).some((group) => group.length > 0),
@@ -266,6 +265,12 @@ export function durableCustodyProofOperationSemanticKind(
     default:
       throw new Error('custody proof operation kind is invalid')
   }
+}
+
+export function durableCustodyProofOperationStage(
+  kind: DurableCustodyProofOperationKind,
+): DurableProofOperationFacts['binding']['stage'] {
+  return stageForSemantic(durableCustodyProofOperationSemanticKind(kind))
 }
 
 function stageForSemantic(
