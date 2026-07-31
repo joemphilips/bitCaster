@@ -8,6 +8,7 @@ import {
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
 import type { CtfProofOperationCompletion } from "@bitcaster/client-sdk/ctfSplit";
+import type { CtfRangeOrderPreparationRecord } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { normalizeUrl } from "../lib/url";
 
 export interface StoredProof extends Proof {
@@ -93,12 +94,33 @@ export function isCtfProof(proof: StoredProof | Proof): boolean {
   );
 }
 
-class BitcasterDB extends Dexie {
+export interface CtfRangePreparationSourceLinkRow {
+  scopeId: string;
+  rangeOperationId: string;
+  sourceOperationId: string;
+  reservationId: string;
+}
+
+export interface CtfRangePreparationConsolidationLinkRow {
+  scopeId: string;
+  rangeOperationId: string;
+  round: number;
+  operationId: string;
+  reservationId: string;
+}
+
+export class BitcasterDB extends Dexie {
   proofs!: Table<StoredProof>;
   proofOperations!: Table<ProofOperationRecord>;
+  ctfRangePreparations!: Table<CtfRangeOrderPreparationRecord, [string, string]>;
+  ctfRangePreparationSources!: Table<CtfRangePreparationSourceLinkRow, [string, string]>;
+  ctfRangePreparationConsolidations!: Table<
+    CtfRangePreparationConsolidationLinkRow,
+    [string, string, number]
+  >;
 
-  constructor() {
-    super("bitcaster");
+  constructor(databaseName = "bitcaster") {
+    super(databaseName);
     this.version(1).stores({
       proofs: "secret, id, C, amount, mintUrl",
     });
@@ -113,6 +135,16 @@ class BitcasterDB extends Dexie {
       proofs:
         "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+conditionId+outcomeCollection]",
       proofOperations: "operationId, state, kind, mintUrl, updatedAt",
+    });
+    this.version(5).stores({
+      proofs:
+        "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+conditionId+outcomeCollection]",
+      proofOperations: "operationId, state, kind, mintUrl, updatedAt",
+      ctfRangePreparations:
+        "&[scopeId+rangeOperationId], scopeId, [scopeId+clientOrderId], [scopeId+updatedAtMs+rangeOperationId]",
+      ctfRangePreparationSources: "&[scopeId+rangeOperationId], &[scopeId+sourceOperationId]",
+      ctfRangePreparationConsolidations:
+        "&[scopeId+rangeOperationId+round], &[scopeId+operationId]",
     });
   }
 }
