@@ -448,6 +448,78 @@ test('custody transaction exposes only the selected bounded operation set', () =
   )
 })
 
+test('custody transaction rebuilds recovery indexes for exact selected subsets only', () => {
+  const range = intent()
+  const source = {
+    ...structuredClone(range),
+    operation: {
+      ...structuredClone(range.operation),
+      operationId: 'selected-source-operation',
+    },
+  }
+  const records = new Map<string, DurableCustodyRecord | null>([
+    [source.operation.operationId, source],
+    [range.operation.operationId, range],
+  ])
+  const rebuilt: string[][] = []
+  const transaction: DurableCustodyTransaction = {
+    getScopeState: () => ({
+      schemaVersion: 1,
+      scope: range.scope,
+      fencingEpoch: 1,
+      owner: { incarnationId: 'process-1', leaseExpiresAtMs: 100 },
+      effectiveClock: { highWaterMarkMs: 0 },
+    }),
+    getOperation: (operationId) => records.get(operationId) ?? null,
+    getArtifact: () => null,
+    putArtifact: () => undefined,
+    putOperation: () => undefined,
+    reserveExactInputs: () => undefined,
+    transitionOperation: () => undefined,
+    stageVerifiedResult: () => undefined,
+    applyVerifiedResult: () => undefined,
+    rebuildActiveWorkIndex: ({ operationRows }) => {
+      rebuilt.push(operationRows.map(({ operationId }) => operationId))
+    },
+  }
+  const selection = {
+    scope: range.scope,
+    owner: { incarnationId: 'process-1', fencingEpoch: 1, observedAtMs: 1 },
+    operationRows: [
+      { operationId: source.operation.operationId, expectedRevision: 0 },
+      { operationId: range.operation.operationId, expectedRevision: 0 },
+    ],
+  }
+
+  applyDurableCustodyTransaction(transaction, selection, (selected) =>
+    selected.rebuildActiveWorkIndex({
+      scopeId: range.scope.scopeId,
+      operationRows: [{ operationId: range.operation.operationId, expectedRevision: 0 }],
+    }),
+  )
+  assert.deepEqual(rebuilt, [[range.operation.operationId]])
+
+  for (const operationRows of [
+    [],
+    [
+      { operationId: range.operation.operationId, expectedRevision: 0 },
+      { operationId: range.operation.operationId, expectedRevision: 0 },
+    ],
+    [{ operationId: 'foreign-operation', expectedRevision: 0 }],
+  ]) {
+    assert.throws(
+      () =>
+        applyDurableCustodyTransaction(transaction, selection, (selected) =>
+          selected.rebuildActiveWorkIndex({
+            scopeId: range.scope.scopeId,
+            operationRows,
+          }),
+        ),
+      /active index selection is foreign/,
+    )
+  }
+})
+
 test('scope claim and reducer keep clock monotonic without invalidating the current epoch', () => {
   const walletScope = scope()
   const unowned: DurableCustodyScopeState = {

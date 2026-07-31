@@ -419,6 +419,7 @@ export interface DurableCustodyTransaction {
     successorAdmission: DurableCustodySuccessorAdmissionEvidence
   }): void
   rebuildActiveWorkIndex(input: {
+    /** Nonempty exact subset of the enclosing transaction selection. */
     scopeId: string
     operationRows: readonly {
       operationId: string
@@ -1215,13 +1216,16 @@ export function applyDurableCustodyTransaction<T>(
       transaction.applyVerifiedResult(input)
     },
     rebuildActiveWorkIndex(input) {
+      const operationIds = new Set(input.operationRows.map(({ operationId }) => operationId))
       if (
         input.scopeId !== selection.scope.scopeId ||
-        input.operationRows.length !== selection.operationRows.length ||
+        input.operationRows.length === 0 ||
+        input.operationRows.length > selectedRows.size ||
+        operationIds.size !== input.operationRows.length ||
         input.operationRows.some(
           (row) =>
-            selectedRows.get(row.operationId) !== row.expectedRevision ||
-            !selectedRows.has(row.operationId),
+            !selectedRows.has(row.operationId) ||
+            selectedRows.get(row.operationId) !== row.expectedRevision,
         )
       ) {
         throw new Error('custody active index selection is foreign')
