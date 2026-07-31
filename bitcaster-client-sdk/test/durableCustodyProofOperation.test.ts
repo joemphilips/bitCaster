@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { OutputData } from '@cashu/cashu-ts'
 import {
   createDurableCustodyProofOperation,
   deriveDurableCustodyProofOperationFingerprints,
@@ -8,7 +9,9 @@ import {
 import {
   durableCustodyProofOperationSemanticKind,
   decodeDurableCustodyProofOperationInput,
+  deserializeDurableCustodyOutput,
   resolveDurableCustodyProofOperationFacts,
+  serializeDurableCustodyOutput,
   type DurableCustodyProofOperationInput,
 } from '../src/durableCustodyProofOperation.ts'
 import {
@@ -245,5 +248,21 @@ test('canonical proof-operation record binds exact request and result authority'
         record,
       ),
     /immutable authority/,
+  )
+})
+
+test('custody output serialization preserves final proof identity and exact private material', () => {
+  const output = OutputData.createSingleRandomData(1, KEYSET)
+  const serialized = serializeDurableCustodyOutput(output)
+  const restored = deserializeDurableCustodyOutput(serialized)
+  assert.deepEqual(OutputData.serialize(restored), OutputData.serialize(output))
+
+  assert.throws(
+    () =>
+      deserializeDurableCustodyOutput({
+        ...serialized,
+        blindedMessage: { ...serialized.blindedMessage, B_: `02${'11'.repeat(32)}` },
+      }),
+    /does not match/,
   )
 })

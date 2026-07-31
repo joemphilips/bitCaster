@@ -48,7 +48,10 @@ import {
   type DurableCustodyTransaction,
   type DurableProofOperationFacts,
 } from './durableCustody.ts'
-import type { DurableCustodyProofOperationInput } from './durableCustodyProofOperation.ts'
+import {
+  serializeDurableCustodyOutput,
+  type DurableCustodyProofOperationInput,
+} from './durableCustodyProofOperation.ts'
 import { createDurableCustodyProofOperation } from './durableCustodyProofOperationRecord.ts'
 import {
   addDurableWalletProofTransitionMetadata,
@@ -1660,7 +1663,7 @@ function refundProofOperation(
     kind: 'ctf-range-refund',
     mintUrl: source.mintUrl,
     inputs: request.inputs.map((proof) => toCustodyProof(serializeProof(proof))),
-    outputs: { refund: outputs.map((output) => toCustodyOutput(OutputData.serialize(output))) },
+    outputs: { refund: outputs.map(serializeDurableCustodyOutput) },
     metadata: addDurableWalletProofTransitionMetadata(
       { unit: source.unit, predecessorOperationId: source.operationId },
       transition,
@@ -2297,17 +2300,7 @@ function toCustodyProof(proof: DurableCtfRangeProof) {
 }
 
 function toCustodyOutput(value: SerializedOutputData) {
-  const output = OutputData.deserialize(value)
-  return {
-    blindedMessage: {
-      id: value.blindedMessage.id,
-      amount: value.blindedMessage.amount,
-      B_: value.blindedMessage.B_,
-    },
-    blindingFactor: value.blindingFactor,
-    secret: new TextDecoder().decode(output.secret),
-    ...(value.ephemeralE === undefined ? {} : { ephemeralE: value.ephemeralE }),
-  }
+  return serializeDurableCustodyOutput(OutputData.deserialize(value))
 }
 
 function serializeSignature(value: SerializedBlindedSignature): DurableCtfRangeSignature {

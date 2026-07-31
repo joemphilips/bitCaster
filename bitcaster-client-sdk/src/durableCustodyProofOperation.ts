@@ -1,5 +1,6 @@
 // Generic proof-operation authority re-authored from 7e1385c; protocol-bound
 // variants and catalogue/migration concerns are intentionally outside this API.
+import { OutputData, type OutputDataLike } from '@cashu/cashu-ts'
 import {
   createDurableProofOperationFacts,
   encodeBoundedDurableArtifact,
@@ -57,6 +58,42 @@ export interface DurableCustodyProofOperationInput {
     >
   >
   metadata?: Readonly<Record<string, unknown>>
+}
+
+export type DurableCustodyPlannedOutput =
+  DurableCustodyProofOperationInput['outputs'][string][number]
+
+export function serializeDurableCustodyOutput(output: OutputDataLike): DurableCustodyPlannedOutput {
+  const serialized = OutputData.serialize(output)
+  const secret = new TextDecoder('utf-8', { fatal: true }).decode(output.secret)
+  return {
+    blindedMessage: {
+      amount: serialized.blindedMessage.amount,
+      id: serialized.blindedMessage.id,
+      B_: serialized.blindedMessage.B_,
+    },
+    blindingFactor: serialized.blindingFactor,
+    secret,
+    ...(serialized.ephemeralE === undefined ? {} : { ephemeralE: serialized.ephemeralE }),
+  }
+}
+
+export function deserializeDurableCustodyOutput(output: DurableCustodyPlannedOutput): OutputData {
+  const rebuilt = OutputData.createSingleData(
+    amountToNumber(output.blindedMessage.amount),
+    output.blindedMessage.id,
+    output.secret,
+    BigInt(output.blindingFactor),
+  )
+  if (rebuilt.blindedMessage.B_ !== output.blindedMessage.B_) {
+    throw new Error('custody blinded output does not match its exact private material')
+  }
+  return new OutputData(
+    rebuilt.blindedMessage,
+    rebuilt.blindingFactor,
+    rebuilt.secret,
+    output.ephemeralE,
+  )
 }
 
 export type DurableCustodyMintKeyResolver = (
