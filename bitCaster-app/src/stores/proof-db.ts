@@ -10,6 +10,14 @@ import {
 import type { CtfProofOperationCompletion } from "@bitcaster/client-sdk/ctfSplit";
 import type { CtfRangeOrderPreparationRecord } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { normalizeUrl } from "../lib/url";
+import type {
+  BrowserCustodyActiveWorkRow,
+  BrowserCustodyArtifactRow,
+  BrowserCustodyOperationRow,
+  BrowserCustodyProofRow,
+  BrowserCustodyReservationRow,
+  BrowserCustodyScopeRow,
+} from "./durable-custody-types";
 
 export interface StoredProof extends Proof {
   mintUrl: string;
@@ -118,6 +126,12 @@ export class BitcasterDB extends Dexie {
     CtfRangePreparationConsolidationLinkRow,
     [string, string, number]
   >;
+  custodyScopes!: Table<BrowserCustodyScopeRow, string>;
+  custodyOperations!: Table<BrowserCustodyOperationRow, [string, string]>;
+  custodyArtifacts!: Table<BrowserCustodyArtifactRow, [string, string, string]>;
+  custodyProofs!: Table<BrowserCustodyProofRow, [string, string]>;
+  custodyReservations!: Table<BrowserCustodyReservationRow, [string, string]>;
+  custodyActiveWork!: Table<BrowserCustodyActiveWorkRow, [string, string]>;
 
   constructor(databaseName = "bitcaster") {
     super(databaseName);
@@ -145,6 +159,24 @@ export class BitcasterDB extends Dexie {
       ctfRangePreparationSources: "&[scopeId+rangeOperationId], &[scopeId+sourceOperationId]",
       ctfRangePreparationConsolidations:
         "&[scopeId+rangeOperationId+round], &[scopeId+operationId]",
+    });
+    this.version(6).stores({
+      proofs:
+        "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+conditionId+outcomeCollection]",
+      proofOperations: "operationId, state, kind, mintUrl, updatedAt",
+      ctfRangePreparations:
+        "&[scopeId+rangeOperationId], scopeId, [scopeId+clientOrderId], [scopeId+updatedAtMs+rangeOperationId]",
+      ctfRangePreparationSources: "&[scopeId+rangeOperationId], &[scopeId+sourceOperationId]",
+      ctfRangePreparationConsolidations:
+        "&[scopeId+rangeOperationId+round], &[scopeId+operationId]",
+      custodyScopes: "&scopeId",
+      custodyOperations: "&[scopeId+operationId], [scopeId+operationState]",
+      custodyArtifacts: "&[scopeId+operationId+artifactId], [scopeId+operationId]",
+      custodyProofs:
+        "&[scopeId+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability]",
+      custodyReservations:
+        "&[scopeId+proofId], [scopeId+operationId], &[scopeId+operationId+inputPosition]",
+      custodyActiveWork: "&[scopeId+operationId], [scopeId+nextAttemptAtMs+operationId]",
     });
   }
 }
