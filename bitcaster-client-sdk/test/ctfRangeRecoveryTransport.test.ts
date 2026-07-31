@@ -22,9 +22,12 @@ import {
   type SerializedBlindedSignature,
 } from '@cashu/cashu-ts'
 import {
+  createDeterministicDurableCtfRangeRefundOutputs,
   buildDurableCtfRangeRecoveryQuery,
   createDurableCtfRangeCustodyBinding,
   createDurableCtfRangeOperation,
+  createDurableCtfRangeRefundOperation,
+  deriveDurableCtfRangeRefundOperationId,
   deriveRootCtfOutcomeCollectionId,
   toDurableCtfRangeProofOperationInput,
   type DurableCtfRangeMintKeyset,
@@ -41,6 +44,8 @@ import {
   checkCtfRangeInputProofStates,
   decodeCtfRangeEngineResult,
   fetchCtfRangeEngineResultByOperation,
+  restoreDurableCtfRangeRefundOutputs,
+  verifyDurableCtfRangeRefundSignatures,
   type CtfRangeMintClient,
 } from '../src/ctfRangeRecoveryTransport.ts'
 
@@ -249,6 +254,17 @@ test('uncertain recovery queries the exact full manifest and delegates classific
     },
   }
   const adapter = new CtfRangeMintRecoveryAdapter(operation, mint)
+  const observed = await adapter.loadUncertainRecoveryObservation({
+    record: binding.record,
+    selection,
+    now: 50,
+  })
+  assert.equal(observed.observation.queryCompleted, true)
+  assert.equal(observed.observation.selection, selection)
+  assert.deepEqual(
+    observed.observation.inputStates.map(({ state }) => state),
+    operation.inputs.map(() => 'UNSPENT'),
+  )
   const decision = await adapter.classifyUncertainRecovery({
     record: binding.record,
     selection,
@@ -592,6 +608,113 @@ test('default Cashu recovery binds NUT-07 cancellation through request options',
   assert.equal(observedCheckSignal?.aborted, true)
 })
 
+test('direct refund verification binds persisted keys and requires valid DLEQ', async () => {
+  const fixture = await createRefundFixture()
+  const valid = verifyDurableCtfRangeRefundSignatures({
+    ...fixture,
+    signatures: fixture.outputs.map(({ blindedMessage }) => signBlindedOutput(blindedMessage)),
+  })
+  assert.equal(valid.length, fixture.outputs.length)
+
+  const foreignSameId = {
+    ...fixture.keyset,
+    keys: Object.fromEntries(
+      Object.keys(fixture.keyset.keys).map((amount) => [amount, `03${MINT_PUBLIC_KEY.slice(2)}`]),
+    ),
+  }
+  assert.throws(
+    () =>
+      verifyDurableCtfRangeRefundSignatures({
+        ...fixture,
+        keyset: foreignSameId,
+        signatures: fixture.outputs.map(({ blindedMessage }) => signBlindedOutput(blindedMessage)),
+      }),
+    /keyset|authority|keys/,
+  )
+
+  const validSignatures = fixture.outputs.map(({ blindedMessage }) =>
+    signBlindedOutput(blindedMessage),
+  )
+  for (const signatures of [
+    validSignatures.map(({ dleq: _, ...signature }) => signature),
+    validSignatures.map((signature, index) =>
+      index === 0 ? { ...signature, dleq: { e: '00'.repeat(32), s: '00'.repeat(32) } } : signature,
+    ),
+  ]) {
+    assert.throws(
+      () => verifyDurableCtfRangeRefundSignatures({ ...fixture, signatures }),
+      /DLEQ|cryptographic|proof/i,
+    )
+  }
+})
+
+test('NUT-09 refund restore uses persisted keys and rejects missing or invalid DLEQ', async () => {
+  const fixture = await createRefundFixture()
+  const signatures = fixture.outputs.map(({ blindedMessage }) => signBlindedOutput(blindedMessage))
+  let keyFetches = 0
+  const restore = (restoredSignatures: readonly SerializedBlindedSignature[]) =>
+    restoreDurableCtfRangeRefundOutputs({
+      ...fixture,
+      mint: {
+        async restore() {
+          return {
+            outputs: fixture.outputs.map(({ blindedMessage }) => blindedMessage),
+            signatures: [...restoredSignatures],
+          }
+        },
+        check: unspentStates,
+        async getKeys() {
+          keyFetches += 1
+          return { keysets: [] }
+        },
+      },
+    })
+
+  assert.equal((await restore(signatures)).length, fixture.outputs.length)
+  assert.equal(keyFetches, 0)
+  await assert.rejects(
+    restore(signatures.map(({ dleq: _, ...signature }) => signature)),
+    /DLEQ|cryptographic|proof/i,
+  )
+  await assert.rejects(
+    restore(
+      signatures.map((signature, index) =>
+        index === 0
+          ? { ...signature, dleq: { e: '00'.repeat(32), s: '00'.repeat(32) } }
+          : signature,
+      ),
+    ),
+    /DLEQ|cryptographic|proof/i,
+  )
+  await assert.rejects(
+    restoreDurableCtfRangeRefundOutputs({
+      ...fixture,
+      keyset: {
+        ...fixture.keyset,
+        keys: Object.fromEntries(
+          Object.keys(fixture.keyset.keys).map((amount) => [
+            amount,
+            `03${MINT_PUBLIC_KEY.slice(2)}`,
+          ]),
+        ),
+      },
+      mint: {
+        async restore() {
+          return {
+            outputs: fixture.outputs.map(({ blindedMessage }) => blindedMessage),
+            signatures,
+          }
+        },
+        check: unspentStates,
+        async getKeys() {
+          return { keysets: [] }
+        },
+      },
+    }),
+    /keyset|authority|keys/,
+  )
+})
+
 function engineResult(
   operationId: string,
   requestDigest: string,
@@ -671,6 +794,33 @@ function createRangeOperation(): DurableCtfRangeOperation {
     inputs,
     manifest,
   })
+}
+
+async function createRefundFixture() {
+  const operation = createRangeOperation()
+  const binding = await createRangeBinding(operation)
+  const serialized = createDeterministicDurableCtfRangeRefundOutputs({
+    seed: new Uint8Array(64).fill(7),
+    source: operation,
+    refundOperationId: deriveDurableCtfRangeRefundOperationId(operation.operationId),
+    amount: 3,
+    keyset: { id: OFFER_KEYSET_ID, keys: MINT_KEYS },
+  })
+  const refund = createDurableCtfRangeRefundOperation({
+    operationId: deriveDurableCtfRangeRefundOperationId(operation.operationId),
+    source: operation,
+    refundKeysetId: OFFER_KEYSET_ID,
+    resolveKeysetAsset: (keysetId) =>
+      keysetId === OFFER_KEYSET_ID ? operation.offerAsset : undefined,
+    outputs: serialized,
+  })
+  return {
+    mintUrl: operation.mintUrl,
+    operation,
+    record: binding.record,
+    keyset: mintKeysets(operation).get(OFFER_KEYSET_ID)!,
+    outputs: refund.operation.outputs.refund!,
+  }
 }
 
 async function createRangeBinding(operation: DurableCtfRangeOperation) {

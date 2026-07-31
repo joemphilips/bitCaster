@@ -267,6 +267,83 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     return result;
   }
 
+  async retireAbortedInputsAndAdmitRefunds(input: {
+    scopeId: string;
+    operationId: string;
+    refundProofs: readonly BrowserCustodyProofRow[];
+  }): Promise<void> {
+    await this.#database.transaction(
+      "rw",
+      [
+        this.#database.custodyOperations,
+        this.#database.custodyProofs,
+        this.#database.custodyReservations,
+      ],
+      async () => {
+        const operationRow = await this.#database.custodyOperations.get([
+          input.scopeId,
+          input.operationId,
+        ]);
+        if (!operationRow) throw new Error("browser refunded operation is missing");
+        const operation = decodeOperationRow(operationRow).record;
+        if (
+          operation.operation.state !== "aborted" ||
+          operation.operation.result.state !== "none"
+        ) {
+          throw new Error("browser refunded operation lifecycle is invalid");
+        }
+        const reservations = (
+          await this.#database.custodyReservations
+            .where("[scopeId+operationId]")
+            .equals([input.scopeId, input.operationId])
+            .toArray()
+        ).map(decodeReservationRow);
+        const expectedProofIds = operation.operation.proofStorage.lineage.predecessorProofIds;
+        if (
+          reservations.length !== expectedProofIds.length ||
+          reservations.some(({ proofId }) => !expectedProofIds.includes(proofId))
+        ) {
+          throw new Error("browser refunded reservation authority is incomplete");
+        }
+        const proofRows = await this.#database.custodyProofs.bulkGet(
+          expectedProofIds.map((proofId) => [input.scopeId, proofId]),
+        );
+        const retired = proofRows.map((row) => {
+          if (!row) throw new Error("browser refunded predecessor proof is missing");
+          const proof = decodeBrowserCustodyProofRow(row);
+          if (
+            proof.selectability !== "locked" ||
+            proof.reservationOperationId !== input.operationId
+          ) {
+            throw new Error("browser refunded predecessor proof authority is invalid");
+          }
+          return decodeBrowserCustodyProofRow({
+            ...proof,
+            revision: proof.revision + 1,
+            selectability: "spent",
+            reservationOperationId: null,
+          });
+        });
+        const refunds = input.refundProofs.map(decodeBrowserCustodyProofRow);
+        if (
+          refunds.some(
+            (proof) =>
+              proof.scopeId !== input.scopeId ||
+              proof.selectability !== "selectable" ||
+              proof.reservationOperationId !== null,
+          )
+        ) {
+          throw new Error("browser refund proof authority is invalid");
+        }
+        await this.#database.custodyProofs.bulkPut(retired);
+        await this.#database.custodyReservations.bulkDelete(
+          expectedProofIds.map((proofId) => [input.scopeId, proofId]),
+        );
+        await this.#database.custodyProofs.bulkAdd(refunds);
+      },
+    );
+  }
+
   async readOperation(
     scope: DurableCustodyScope,
     operationId: string,

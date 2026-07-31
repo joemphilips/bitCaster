@@ -22,6 +22,7 @@ import {
   assertDurableCtfRangeCustodyAuthority,
   buildDurableCtfRangeRecoveryQuery,
   classifyDurableCtfRangeRecovery,
+  createDeterministicDurableCtfRangeRefundOutputs,
   createDurableCtfRangeOperation,
   createDurableCtfRangeCustodyBinding,
   createDurableCtfRangeRefundOperation,
@@ -30,6 +31,8 @@ import {
   decodeDurableCtfRangeResultEnvelopeBytes,
   DURABLE_CTF_RANGE_RESULT_BYTES_MAX,
   deriveDurableCtfRangeFeeBounds,
+  deriveDurableCtfRangeRefundOperationId,
+  deriveDurableCtfRangeRefundRequestFingerprint,
   deriveDurableCtfResidualDecision,
   deriveRootCtfOutcomeCollectionId,
   prepareDurableCtfRangeRecoveredResult,
@@ -1490,6 +1493,46 @@ test('refund preserves offered class and residual reauthorization links exact ch
       }),
     /result is foreign/,
   )
+})
+
+test('refund operation identity is deterministic and range-bound', () => {
+  const first = deriveDurableCtfRangeRefundOperationId('range-operation-1')
+  assert.equal(first, deriveDurableCtfRangeRefundOperationId('range-operation-1'))
+  assert.notEqual(first, deriveDurableCtfRangeRefundOperationId('range-operation-2'))
+  assert.match(first, /^ctf-range-refund:[0-9a-f]{64}$/)
+})
+
+test('refund outputs reconstruct exactly from seed after local origin loss', () => {
+  const operation = fixture()
+  const refundOperationId = deriveDurableCtfRangeRefundOperationId(operation.operationId)
+  const derive = (seed: Uint8Array) =>
+    createDeterministicDurableCtfRangeRefundOutputs({
+      seed,
+      source: operation,
+      refundOperationId,
+      amount: '3',
+      keyset: { id: OFFER_KEYSET, keys: KEYS },
+    })
+  const first = derive(SEED)
+  const reconstructed = derive(new Uint8Array(SEED))
+  assert.deepEqual(reconstructed, first)
+  assert.notDeepEqual(derive(new Uint8Array(64).fill(8)), first)
+
+  const prepared = createDurableCtfRangeRefundOperation({
+    operationId: refundOperationId,
+    source: operation,
+    refundKeysetId: OFFER_KEYSET,
+    resolveKeysetAsset: (id) => (id === OFFER_KEYSET ? operation.offerAsset : undefined),
+    outputs: reconstructed,
+  })
+  const fingerprint = deriveDurableCtfRangeRefundRequestFingerprint(prepared.request)
+  const mutated = {
+    inputs: prepared.request.inputs.map((proof, index) =>
+      index === 0 ? { ...proof, witness: { signatures: ['00'.repeat(64)] } } : proof,
+    ),
+    outputs: [...prepared.request.outputs],
+  }
+  assert.notEqual(deriveDurableCtfRangeRefundRequestFingerprint(mutated), fingerprint)
 })
 
 test('range response admission is bounded before JSON parsing or cryptography', () => {

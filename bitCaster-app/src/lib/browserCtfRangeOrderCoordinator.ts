@@ -1,4 +1,11 @@
-import type { Proof, ProofState } from "@cashu/cashu-ts";
+import {
+  Mint as CashuMint,
+  OutputData,
+  type Proof,
+  type ProofState,
+  type SerializedBlindedSignature,
+  type SwapRequest,
+} from "@cashu/cashu-ts";
 import {
   prepareDurableCustodyExactArtifact,
   type DurableCustodyOwnerAuthorization,
@@ -9,9 +16,33 @@ import {
  * The coordinator owns lifecycle sequencing. Protocol material and storage
  * mapping stay in browserCtfRangeOrderSource.
  */
-import type { DurableCustodyProofOperationInput } from "@bitcaster/client-sdk/durableCustodyProofOperation";
+import {
+  deserializeDurableCustodyOutput,
+  type DurableCustodyProofOperationInput,
+} from "@bitcaster/client-sdk/durableCustodyProofOperation";
 import { bindDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
-import type { DurableCtfRangeOperation } from "@bitcaster/client-sdk/durableCtfRangeOperation";
+import {
+  classifyDurableCtfRangeRecovery,
+  createDeterministicDurableCtfRangeRefundOutputs,
+  createDurableCtfRangeRefundOperation,
+  deriveDurableCtfRangeFeeBounds,
+  deriveDurableCtfRangeRefundOperationId,
+  deriveDurableCtfRangeRefundRequestFingerprint,
+  prepareDurableCtfRangeRecoveredResult,
+  prepareDurableCtfRangeVerifiedResult,
+  recoverDurableCtfRangeVerifiedResultArtifact,
+  type DurableCtfRangeOperation,
+  type DurableCtfRangeKeysetResolver,
+  type DurableCtfRangeRecoveredResult,
+  type DurableCtfRangeVerifiedResultPreparation,
+} from "@bitcaster/client-sdk/durableCtfRangeOperation";
+import {
+  CtfRangeRecoveryTransportError,
+  CtfRangeMintRecoveryAdapter,
+  decodeCtfRangeEngineResult,
+  restoreDurableCtfRangeRefundOutputs,
+  verifyDurableCtfRangeRefundSignatures,
+} from "@bitcaster/client-sdk/ctfRangeRecoveryTransport";
 import {
   completeValidatedCtfRangeSourceOperation,
   prepareCtfRangeSourceOperation,
@@ -38,6 +69,7 @@ import type {
   CreateSettlementCapabilityRequest,
   NostrKind1Event,
   OrderStatusResponse,
+  SettlementCapabilityResultResponse,
   SettlementCapabilityAdmissionPolicyResponse,
   SettlementCapabilityResponse,
   SubmitOrderRequest,
@@ -45,6 +77,7 @@ import type {
 } from "@bitcaster/client-sdk/engineClient";
 import { decodeSubmitOrderResponse } from "@bitcaster/client-sdk/engineClient";
 import type { CtfRangeOrderPreparationPageCursor } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
 import {
@@ -53,6 +86,12 @@ import {
   browserOwnerAt,
   browserPersistedSourceResult,
   browserRangeJournalIdentity,
+  browserRangeOperationFromSnapshot,
+  browserRangeRefundProofRows,
+  browserRangeRefundStoredProofs,
+  browserRangeSourceAsset,
+  browserRangeStoredProofs,
+  browserRangeSuccessorProofRows,
   browserSourceOperationFromSnapshot,
   browserSourceProofRows,
   browserSourceResultFromSnapshot,
@@ -67,9 +106,19 @@ import {
   bindCtfRangePreparationCapability,
   insertCtfRangePreparation,
   pageActiveCtfRangePreparations,
+  readCtfRangePreparation,
   transitionCtfRangePreparation,
 } from "../stores/ctf-range-order-db";
-import { db, type BitcasterDB } from "../stores/proof-db";
+import {
+  db,
+  normalizeAndValidateStoredProof,
+  storedProofFromRow,
+  storedProofRow,
+  type BitcasterDB,
+  type ProofOperationRecord,
+  type StoredProof,
+  type StoredProofRow,
+} from "../stores/proof-db";
 
 const SCOPE_LEASE_MS = 10 * 60 * 1_000;
 const RECOVERY_PAGE_LIMIT_DEFAULT = 64;
@@ -78,6 +127,10 @@ type WalletLockManager = Pick<LockManager, "request">;
 type BrowserCtfRangeWallet = CtfRangeSourceWallet & {
   checkProofsStates(proofs: Array<Pick<Proof, "id" | "secret">>): Promise<ProofState[]>;
 };
+type BrowserCtfRangeMintRecovery = Pick<
+  CtfRangeMintRecoveryAdapter,
+  "loadExactVerificationContext" | "loadUncertainRecoveryObservation"
+>;
 
 export interface BrowserCtfRangeEngine {
   createSettlementCapability(
@@ -85,19 +138,33 @@ export interface BrowserCtfRangeEngine {
   ): Promise<SettlementCapabilityResponse>;
   submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse>;
   getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null>;
+  getSettlementCapabilityResultByOperation(
+    operationId: string,
+  ): Promise<SettlementCapabilityResultResponse | null>;
+  acknowledgeSettlementCapabilityResult(
+    resultId: string,
+    request: { expectedVersion: number },
+  ): Promise<SettlementCapabilityResultResponse | null>;
 }
 
 export interface BrowserCtfRangeOrderCoordinatorDependencies {
   readonly wallet: BrowserCtfRangeWallet;
   readonly engine: BrowserCtfRangeEngine;
   readonly database?: BitcasterDB;
-  readonly custody?: BrowserDurableCustodyAdapter;
   readonly lockManager?: WalletLockManager;
   readonly now?: () => number;
   readonly randomId?: () => string;
   readonly allowInsecureLoopbackHttp?: boolean;
   readonly isDefinitiveOrderRejection?: (error: unknown) => boolean;
   readonly restoreOutputs?: typeof restoreOutputGroups;
+  readonly restoreRefundOutputs?: typeof restoreDurableCtfRangeRefundOutputs;
+  readonly createMintRecovery?: (
+    operation: DurableCtfRangeOperation,
+  ) => BrowserCtfRangeMintRecovery;
+  readonly executeRefundSwap?: (
+    mintUrl: string,
+    request: SwapRequest,
+  ) => Promise<{ signatures: SerializedBlindedSignature[] }>;
 }
 
 export interface BrowserCtfRangeRecoveryPage {
@@ -122,9 +189,12 @@ interface AppliedSourceCommitInput {
   readonly scope: DurableCustodyScope;
   readonly authorization: DurableCustodyOwnerAuthorization;
   readonly source: DurableCustodyRecord;
+  readonly sourceOperation: DurableCustodyProofOperationInput;
   readonly binding: Awaited<ReturnType<typeof createBrowserRangeBinding>>;
   readonly successors: ReturnType<typeof browserSourceProofRows>;
   readonly resultAuthority: ReturnType<typeof requireBrowserStagedResult>;
+  readonly preparation: PersistedCtfRangeOrderPreparation;
+  readonly result: CtfRangeSourceResult;
 }
 
 export class BrowserCtfRangeOrderError extends Error {
@@ -166,18 +236,32 @@ export class BrowserCtfRangeOrderCoordinator {
   readonly #allowInsecureLoopbackHttp: boolean;
   readonly #isDefinitiveOrderRejection: (error: unknown) => boolean;
   readonly #restoreOutputs: typeof restoreOutputGroups;
+  readonly #restoreRefundOutputs: typeof restoreDurableCtfRangeRefundOutputs;
+  readonly #createMintRecovery: (
+    operation: DurableCtfRangeOperation,
+  ) => BrowserCtfRangeMintRecovery;
+  readonly #executeRefundSwap: (
+    mintUrl: string,
+    request: SwapRequest,
+  ) => Promise<{ signatures: SerializedBlindedSignature[] }>;
 
   constructor(input: BrowserCtfRangeOrderCoordinatorDependencies) {
     this.#wallet = input.wallet;
     this.#engine = input.engine;
     this.#database = input.database ?? db;
-    this.#custody = input.custody ?? new BrowserDurableCustodyAdapter(this.#database);
+    this.#custody = new BrowserDurableCustodyAdapter(this.#database);
     this.#lockManager = input.lockManager;
     this.#now = input.now ?? Date.now;
     this.#randomId = input.randomId ?? crypto.randomUUID;
     this.#allowInsecureLoopbackHttp = input.allowInsecureLoopbackHttp === true;
     this.#isDefinitiveOrderRejection = input.isDefinitiveOrderRejection ?? (() => false);
-    this.#restoreOutputs = input.restoreOutputs ?? restoreOutputGroups;
+    const restoreOutputs = input.restoreOutputs;
+    this.#restoreOutputs = restoreOutputs ?? restoreOutputGroups;
+    this.#restoreRefundOutputs = input.restoreRefundOutputs ?? restoreDurableCtfRangeRefundOutputs;
+    this.#createMintRecovery =
+      input.createMintRecovery ?? ((operation) => new CtfRangeMintRecoveryAdapter(operation));
+    this.#executeRefundSwap =
+      input.executeRefundSwap ?? ((mintUrl, request) => new CashuMint(mintUrl).swap(request));
   }
 
   async prepareAndSubmit(input: {
@@ -259,18 +343,195 @@ export class BrowserCtfRangeOrderCoordinator {
     owner: DurableCustodyOwnerAuthorization,
   ): Promise<boolean> {
     switch (record.lifecycleState) {
-      case "prepared":
-        return this.#resumePreparedSource(record, seed, scope, owner);
+      case "prepared": {
+        const sourceReleased = await this.#resumePreparedSource(record, seed, scope, owner);
+        if (sourceReleased) return true;
+        break;
+      }
       case "capability-bound":
         await this.#discoverBoundOrder(record);
-        return false;
+        break;
       case "order-submitted":
       case "submission-rejected":
-        return false;
+        break;
       case "terminal":
         return true;
       default:
         return assertNever(record.lifecycleState);
+    }
+    const current = await readCtfRangePreparation(
+      record.scopeId,
+      record.rangeOperationId,
+      this.#database,
+    );
+    if (current === null) throw new Error("browser range journal disappeared during recovery");
+    return this.#recoverOuterRange(current, seed, scope, owner);
+  }
+
+  async #recoverOuterRange(
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    seed: Uint8Array,
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+  ): Promise<boolean> {
+    const snapshot = await this.#custody.readOperationSnapshot(
+      scope,
+      browserCustodyOperationId(scope, journalRecord.rangeOperationId),
+    );
+    if (snapshot === null) throw rangeError("recovery-pending");
+    const operation = browserRangeOperationFromSnapshot(snapshot.record, snapshot.artifacts);
+    const existingRefund = await this.#database.proofOperations.get(
+      deriveDurableCtfRangeRefundOperationId(operation.operationId),
+    );
+    if (existingRefund !== undefined) {
+      await this.#resumeOuterRefund(
+        journalRecord,
+        scope,
+        owner,
+        snapshot.record,
+        operation,
+        existingRefund,
+      );
+      return true;
+    }
+    const recovery = this.#createMintRecovery(operation);
+    const capability = journalRecord.capability;
+    let response: SettlementCapabilityResultResponse | null;
+    try {
+      response =
+        capability === null
+          ? null
+          : await this.#engine.getSettlementCapabilityResultByOperation(operation.operationId);
+    } catch (error) {
+      throw rangeError("recovery-pending", error);
+    }
+    if (snapshot.record.operation.result.state === "applied") {
+      if (response !== null) {
+        const engineResult = decodeCtfRangeEngineResult(response, {
+          operation,
+          reference: requireCapabilityReference(journalRecord),
+        });
+        await this.#acknowledgeEngineResult(operation, journalRecord, engineResult);
+      }
+      await this.#terminalizeRecoveredJournal(journalRecord);
+      return true;
+    }
+    let prepared: DurableCtfRangeVerifiedResultPreparation;
+    let resolveKeyset: DurableCtfRangeKeysetResolver;
+    let engineResult: ReturnType<typeof decodeCtfRangeEngineResult> | null = null;
+    if (response === null) {
+      const observed = await this.#pendingOnRecoveryTransport(() =>
+        recovery.loadUncertainRecoveryObservation({
+          record: snapshot.record,
+          selection: null,
+          now: Math.floor(this.#now() / 1_000),
+        }),
+      );
+      prepared = prepareDurableCtfRangeRecoveredResult({
+        record: snapshot.record,
+        operation,
+        observation: observed.observation,
+        resolveKeyset: observed.resolveKeyset,
+      });
+      resolveKeyset = observed.resolveKeyset;
+      const decision = classifyDurableCtfRangeRecovery({
+        record: snapshot.record,
+        operation,
+        observation: observed.observation,
+        resolveKeyset: observed.resolveKeyset,
+      });
+      switch (decision.kind) {
+        case "confirmed":
+          break;
+        case "waiting":
+        case "reconciling":
+          throw rangeError("recovery-pending");
+        case "refundable":
+          await this.#startOuterRefund(
+            journalRecord,
+            seed,
+            scope,
+            owner,
+            snapshot.record,
+            operation,
+          );
+          return true;
+        default:
+          return assertNever(decision);
+      }
+    } else {
+      const verification = await this.#pendingOnRecoveryTransport(() =>
+        recovery.loadExactVerificationContext(snapshot.record),
+      );
+      resolveKeyset = verification.resolveKeyset;
+      engineResult = decodeCtfRangeEngineResult(response, {
+        operation,
+        reference: requireCapabilityReference(journalRecord),
+      });
+      prepared = prepareDurableCtfRangeVerifiedResult({
+        record: snapshot.record,
+        operation,
+        envelope: engineResult.envelope,
+        allManifestRecovery: verification.allManifestRecovery,
+        resolveKeyset: verification.resolveKeyset,
+      });
+    }
+    if (prepared.kind !== "confirmed") throw rangeError("recovery-pending");
+    await this.#commitRecoveredOuterResult(
+      scope,
+      owner,
+      snapshot.record,
+      operation,
+      prepared,
+      resolveKeyset,
+    );
+    if (engineResult !== null) {
+      await this.#acknowledgeEngineResult(operation, journalRecord, engineResult);
+    }
+    await this.#terminalizeRecoveredJournal(journalRecord);
+    return true;
+  }
+
+  async #acknowledgeEngineResult(
+    operation: DurableCtfRangeOperation,
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    result: ReturnType<typeof decodeCtfRangeEngineResult>,
+  ): Promise<void> {
+    if (result.acknowledgedAt !== null) return;
+    let acknowledgedResponse: SettlementCapabilityResultResponse | null;
+    try {
+      acknowledgedResponse = await this.#engine.acknowledgeSettlementCapabilityResult(
+        result.resultId,
+        { expectedVersion: result.version },
+      );
+    } catch (error) {
+      throw rangeError("recovery-pending", error);
+    }
+    if (acknowledgedResponse === null) {
+      throw rangeError("recovery-pending");
+    }
+    const acknowledged = decodeCtfRangeEngineResult(acknowledgedResponse, {
+      operation,
+      reference: requireCapabilityReference(journalRecord),
+      previouslyPersistedRequestDigest: result.requestDigest,
+    });
+    if (
+      acknowledged.resultId !== result.resultId ||
+      acknowledged.version !== result.version + 1 ||
+      acknowledged.acknowledgedAt === null
+    ) {
+      throw new Error("browser range result acknowledgement is foreign");
+    }
+  }
+
+  async #pendingOnRecoveryTransport<T>(action: () => Promise<T>): Promise<T> {
+    try {
+      return await action();
+    } catch (error) {
+      if (error instanceof CtfRangeRecoveryTransportError) {
+        throw rangeError("recovery-pending", error);
+      }
+      throw error;
     }
   }
 
@@ -294,8 +555,8 @@ export class BrowserCtfRangeOrderCoordinator {
         wallet: this.#wallet,
         candidates: input.candidates,
       });
-    } catch {
-      throw rangeError("source-preparation-failed");
+    } catch (error) {
+      throw rangeError("source-preparation-failed", error);
     }
     if (operation === null) throw rangeError("insufficient-funds");
     const binding = await createBrowserRangeSourceBinding(scope, input.preparation, operation);
@@ -316,6 +577,7 @@ export class BrowserCtfRangeOrderCoordinator {
       binding,
       custodyOperationId,
       predecessors,
+      operation.inputs,
     );
     return { operation, custodyOperationId };
   }
@@ -327,6 +589,7 @@ export class BrowserCtfRangeOrderCoordinator {
     binding: Awaited<ReturnType<typeof createBrowserRangeSourceBinding>>,
     custodyOperationId: string,
     predecessors: ReturnType<typeof browserSourceProofRows>[number]["proof"][],
+    sourceProofs: DurableCustodyProofOperationInput["inputs"],
   ): Promise<void> {
     try {
       await this.#database.transaction("rw", this.#transactionTables(true), async () => {
@@ -345,9 +608,16 @@ export class BrowserCtfRangeOrderCoordinator {
             bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
           { predecessorProofs: { [custodyOperationId]: predecessors } },
         );
+        await this.#reserveLegacySourceProofs(
+          scope,
+          preparation,
+          custodyOperationId,
+          sourceProofs,
+          predecessors,
+        );
       });
-    } catch {
-      throw rangeError("custody-commit-failed");
+    } catch (error) {
+      throw rangeError("custody-commit-failed", error);
     }
   }
 
@@ -371,7 +641,7 @@ export class BrowserCtfRangeOrderCoordinator {
       throw rangeError("mint-source-uncertain");
     }
     const staged = await this.#stageSourceResult(scope, owner, preparation, attempted, result);
-    return this.#applySourceAndBindRange(scope, owner, preparation, seed, staged, result);
+    return this.#applySourceAndBindRange(scope, owner, preparation, seed, source, staged, result);
   }
 
   async #resumePreparedSource(
@@ -409,6 +679,7 @@ export class BrowserCtfRangeOrderCoordinator {
           owner,
           preparation,
           seed,
+          source,
           snapshot.record,
           result,
         );
@@ -460,6 +731,7 @@ export class BrowserCtfRangeOrderCoordinator {
           input.owner,
           input.preparation,
           input.seed,
+          input.source,
           staged,
           result,
         );
@@ -479,6 +751,7 @@ export class BrowserCtfRangeOrderCoordinator {
   }
 
   async #releaseExpiredSource(input: {
+    source: DurableCustodyProofOperationInput;
     sourceRecord: DurableCustodyRecord;
     journalRecord: Awaited<
       ReturnType<typeof pageActiveCtfRangePreparations>
@@ -506,6 +779,7 @@ export class BrowserCtfRangeOrderCoordinator {
             },
           }),
       );
+      await this.#releaseLegacySourceProofs(input.source, input.sourceRecord.operation.operationId);
       await transitionCtfRangePreparation(
         {
           scopeId: input.journalRecord.scopeId,
@@ -636,6 +910,7 @@ export class BrowserCtfRangeOrderCoordinator {
     owner: DurableCustodyOwnerAuthorization,
     preparation: PersistedCtfRangeOrderPreparation,
     seed: Uint8Array,
+    sourceOperation: DurableCustodyProofOperationInput,
     source: DurableCustodyRecord,
     result: CtfRangeSourceResult,
   ): Promise<{
@@ -665,9 +940,12 @@ export class BrowserCtfRangeOrderCoordinator {
       scope,
       authorization,
       source,
+      sourceOperation,
       binding,
       successors,
       resultAuthority,
+      preparation,
+      result,
     });
     return { operation, capabilityRequest };
   }
@@ -675,49 +953,59 @@ export class BrowserCtfRangeOrderCoordinator {
   async #commitAppliedSource(input: AppliedSourceCommitInput): Promise<void> {
     const outerOperationId = input.binding.record.operation.operationId;
     try {
-      await this.#custody.transact(
-        {
-          scope: input.scope,
-          owner: input.authorization,
-          operationRows: [
-            {
+      await this.#database.transaction("rw", this.#transactionTables(false), async () => {
+        await this.#custody.transact(
+          {
+            scope: input.scope,
+            owner: input.authorization,
+            operationRows: [
+              {
+                operationId: input.source.operation.operationId,
+                expectedRevision: input.source.revision,
+              },
+              { operationId: outerOperationId, expectedRevision: null },
+            ],
+          },
+          (transaction) => {
+            transaction.applyVerifiedResult({
               operationId: input.source.operation.operationId,
               expectedRevision: input.source.revision,
-            },
-            { operationId: outerOperationId, expectedRevision: null },
-          ],
-        },
-        (transaction) => {
-          transaction.applyVerifiedResult({
-            operationId: input.source.operation.operationId,
-            expectedRevision: input.source.revision,
-            authorization: input.authorization,
-            outputPlanFingerprint: input.source.operation.outputPlan.outputPlanFingerprint,
-            resultHandle: input.resultAuthority.resultHandle,
-            resultFingerprint: input.resultAuthority.resultFingerprint,
-            successorAdmission: {
-              scopeId: input.scope.scopeId,
-              operationId: input.source.operation.operationId,
-              admissionId: `range-source-admission:${input.resultAuthority.resultFingerprint}`,
-              proofRows: input.successors.map(({ proof, expectedRevision }) => ({
-                proofId: proof.proofId,
-                expectedRevision,
-                admittedRevision: proof.revision,
-              })),
-            },
-          });
-          bindDurableCustodyProofOperation(
-            transaction,
-            input.binding.record,
-            input.binding.artifacts,
-          );
-        },
-        {
-          successorProofs: {
-            [input.source.operation.operationId]: input.successors,
+              authorization: input.authorization,
+              outputPlanFingerprint: input.source.operation.outputPlan.outputPlanFingerprint,
+              resultHandle: input.resultAuthority.resultHandle,
+              resultFingerprint: input.resultAuthority.resultFingerprint,
+              successorAdmission: {
+                scopeId: input.scope.scopeId,
+                operationId: input.source.operation.operationId,
+                admissionId: `range-source-admission:${input.resultAuthority.resultFingerprint}`,
+                proofRows: input.successors.map(({ proof, expectedRevision }) => ({
+                  proofId: proof.proofId,
+                  expectedRevision,
+                  admittedRevision: proof.revision,
+                })),
+              },
+            });
+            bindDurableCustodyProofOperation(
+              transaction,
+              input.binding.record,
+              input.binding.artifacts,
+            );
           },
-        },
-      );
+          {
+            successorProofs: {
+              [input.source.operation.operationId]: input.successors,
+            },
+          },
+        );
+        await this.#replaceLegacySourceProofs(
+          input.preparation,
+          input.sourceOperation,
+          input.source.operation.operationId,
+          outerOperationId,
+          input.result,
+          input.authorization.observedAtMs,
+        );
+      });
     } catch {
       throw rangeError("custody-commit-failed");
     }
@@ -865,6 +1153,426 @@ export class BrowserCtfRangeOrderCoordinator {
     );
   }
 
+  async #startOuterRefund(
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    seed: Uint8Array,
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+    record: DurableCustodyRecord,
+    operation: DurableCtfRangeOperation,
+  ): Promise<void> {
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(journalRecord);
+    const refundAmount =
+      operation.inputs.reduce((total, proof) => total + BigInt(proof.amount), 0n) -
+      deriveDurableCtfRangeFeeBounds(operation).maximumFee;
+    if (refundAmount <= 0n) throw new Error("browser range refund is fee-dominated");
+    const operationId = deriveDurableCtfRangeRefundOperationId(operation.operationId);
+    const outputs = createDeterministicDurableCtfRangeRefundOutputs({
+      seed,
+      source: operation,
+      refundOperationId: operationId,
+      amount: refundAmount,
+      keyset: { id: preparation.offerKeyset.id, keys: preparation.offerKeyset.keys },
+    });
+    const prepared = createDurableCtfRangeRefundOperation({
+      operationId,
+      source: operation,
+      refundKeysetId: preparation.offerKeyset.id,
+      resolveKeysetAsset: (keysetId) =>
+        keysetId === preparation.offerKeyset.id ? operation.offerAsset : undefined,
+      outputs,
+    });
+    const now = this.#now();
+    const refund: ProofOperationRecord = {
+      operationId,
+      kind: "swap-refund",
+      state: "prepared",
+      mintUrl: operation.mintUrl,
+      inputs: prepared.request.inputs,
+      outputs: storedRefundOutputGroups(prepared.operation.outputs),
+      metadata: {
+        ...prepared.operation.metadata,
+        unit: "msat",
+        rangeOperationId: operation.operationId,
+        refundRequestFingerprint: deriveDurableCtfRangeRefundRequestFingerprint(prepared.request),
+      },
+      lastError: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.#database.transaction("rw", this.#database.proofOperations, async () => {
+      const existing = await this.#database.proofOperations.get(operationId);
+      if (existing !== undefined) throw new Error("browser range refund identity already exists");
+      await this.#database.proofOperations.add(refund);
+    });
+    await this.#resumeOuterRefund(journalRecord, scope, owner, record, operation, refund);
+  }
+
+  async #resumeOuterRefund(
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+    record: DurableCustodyRecord,
+    operation: DurableCtfRangeOperation,
+    refund: ProofOperationRecord,
+  ): Promise<void> {
+    assertExactRefundRecord(refund, operation);
+    if (refund.state === "Failed") throw new Error("browser range refund failed");
+    let proofs = refund.resultProofs?.refund;
+    if (refund.state !== "completed") {
+      let states: ProofState[];
+      try {
+        states = await this.#wallet.checkProofsStates(refund.inputs);
+      } catch (error) {
+        throw rangeError("recovery-pending", error);
+      }
+      if (states.every(({ state }) => state === "UNSPENT")) {
+        const outputs = refund.outputs.refund?.map(deserializeDurableCustodyOutput) ?? [];
+        let response: { signatures: SerializedBlindedSignature[] };
+        try {
+          response = await this.#executeRefundSwap(refund.mintUrl, {
+            inputs: refund.inputs,
+            outputs: outputs.map(({ blindedMessage }) => blindedMessage),
+          });
+        } catch (error) {
+          throw rangeError("recovery-pending", error);
+        }
+        const preparation = decodeCtfRangeOrderPreparationFromRecord(journalRecord);
+        proofs = verifyDurableCtfRangeRefundSignatures({
+          record,
+          operation,
+          keyset: preparation.offerKeyset,
+          outputs: refund.outputs.refund ?? [],
+          signatures: response.signatures,
+        });
+      } else if (states.every(({ state }) => state === "SPENT")) {
+        const refundOutputs = refund.outputs.refund;
+        if (refundOutputs === undefined) {
+          throw new Error("browser range refund output authority is missing");
+        }
+        const preparation = decodeCtfRangeOrderPreparationFromRecord(journalRecord);
+        proofs = await this.#pendingOnRecoveryTransport(() =>
+          this.#restoreRefundOutputs({
+            mintUrl: refund.mintUrl,
+            outputs: refundOutputs,
+            record,
+            operation,
+            keyset: preparation.offerKeyset,
+          }),
+        );
+      } else {
+        throw rangeError("recovery-pending");
+      }
+    }
+    if (proofs === undefined || proofs.length === 0) {
+      throw new Error("browser range refund proofs are incomplete");
+    }
+    await this.#commitOuterRefund(journalRecord, scope, owner, record, operation, refund, proofs);
+  }
+
+  async #commitOuterRefund(
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+    record: DurableCustodyRecord,
+    operation: DurableCtfRangeOperation,
+    refund: ProofOperationRecord,
+    proofs: readonly Proof[],
+  ): Promise<void> {
+    const authorization = browserOwnerAt(owner, this.#now());
+    const legacyProofs = browserRangeRefundStoredProofs(
+      operation,
+      proofs,
+      authorization.observedAtMs,
+    );
+    const custodyProofs = browserRangeRefundProofRows(
+      record,
+      operation,
+      proofs,
+      authorization.observedAtMs,
+    );
+    await this.#database.transaction("rw", this.#transactionTables(true), async () => {
+      await this.#database.proofOperations.put({
+        ...refund,
+        state: "completed",
+        resultProofs: { refund: [...proofs] },
+        lastError: null,
+        updatedAt: authorization.observedAtMs,
+      });
+      await this.#custody.transact(
+        browserCustodySelection(
+          scope,
+          authorization,
+          record.operation.operationId,
+          record.revision,
+        ),
+        (transaction) =>
+          transaction.transitionOperation({
+            operationId: record.operation.operationId,
+            expectedRevision: record.revision,
+            transition: {
+              kind: "abort",
+              authorization,
+              expectedRevision: record.revision,
+            },
+          }),
+      );
+      await this.#custody.retireAbortedInputsAndAdmitRefunds({
+        scopeId: scope.scopeId,
+        operationId: record.operation.operationId,
+        refundProofs: custodyProofs,
+      });
+      await this.#replaceLegacyReservedProofs(
+        operation.inputs.map(({ secret }) => secret),
+        record.operation.operationId,
+        legacyProofs,
+      );
+      await transitionCtfRangePreparation(
+        {
+          scopeId: journalRecord.scopeId,
+          rangeOperationId: journalRecord.rangeOperationId,
+          expectedRevision: journalRecord.revision,
+          from: journalRecord.lifecycleState,
+          to: "terminal",
+          updatedAtMs: authorization.observedAtMs,
+        },
+        this.#database,
+      );
+    });
+  }
+
+  async #commitRecoveredOuterResult(
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+    record: DurableCustodyRecord,
+    operation: DurableCtfRangeOperation,
+    prepared: Extract<DurableCtfRangeVerifiedResultPreparation, { kind: "confirmed" }>,
+    resolveKeyset: DurableCtfRangeKeysetResolver,
+  ): Promise<void> {
+    const operationId = record.operation.operationId;
+    let current = record;
+    if (current.operation.result.state === "none") {
+      const authorization = browserOwnerAt(owner, this.#now());
+      await this.#custody.transact(
+        browserCustodySelection(scope, authorization, operationId, current.revision),
+        (transaction) =>
+          transaction.stageVerifiedResult({
+            operationId,
+            expectedRevision: current.revision,
+            authorization,
+            outputPlanFingerprint: current.operation.outputPlan.outputPlanFingerprint,
+            resultHandle: prepared.resultHandle,
+            resultFingerprint: prepared.resultFingerprint,
+            exactResult: prepared.exactResult,
+            selectedSuccessorProofIds: prepared.selectedSuccessorProofIds,
+          }),
+      );
+      current = await requireBrowserCustodyOperation(this.#custody, scope, operationId);
+    }
+    if (current.operation.result.state === "applied") {
+      return;
+    }
+    if (current.operation.result.state !== "verified-staged") {
+      throw rangeError("recovery-pending");
+    }
+    const exactResult = await this.#readExactResultArtifact(scope, current);
+    const result = recoverDurableCtfRangeVerifiedResultArtifact({
+      record: current,
+      operation,
+      exactResult,
+      resolveKeyset,
+    });
+    await this.#applyRecoveredOuterResult(scope, owner, current, operation, result);
+  }
+
+  async #applyRecoveredOuterResult(
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+    record: DurableCustodyRecord,
+    operation: DurableCtfRangeOperation,
+    result: DurableCtfRangeRecoveredResult,
+  ): Promise<void> {
+    const authorization = browserOwnerAt(owner, this.#now());
+    const resultAuthority = requireAppliedResultAuthority(record);
+    const successors = browserRangeSuccessorProofRows(
+      record,
+      operation,
+      result,
+      authorization.observedAtMs,
+    );
+    const legacySuccessors = browserRangeStoredProofs(
+      operation,
+      result,
+      authorization.observedAtMs,
+    );
+    await this.#database.transaction("rw", this.#transactionTables(false), async () => {
+      await this.#custody.transact(
+        browserCustodySelection(
+          scope,
+          authorization,
+          record.operation.operationId,
+          record.revision,
+        ),
+        (transaction) =>
+          transaction.applyVerifiedResult({
+            operationId: record.operation.operationId,
+            expectedRevision: record.revision,
+            authorization,
+            outputPlanFingerprint: record.operation.outputPlan.outputPlanFingerprint,
+            resultHandle: resultAuthority.resultHandle,
+            resultFingerprint: resultAuthority.resultFingerprint,
+            successorAdmission: {
+              scopeId: scope.scopeId,
+              operationId: record.operation.operationId,
+              admissionId: `ctf-range-admission:${resultAuthority.resultFingerprint}`,
+              proofRows: successors.map(({ proof, expectedRevision }) => ({
+                proofId: proof.proofId,
+                expectedRevision,
+                admittedRevision: proof.revision,
+              })),
+            },
+          }),
+        { successorProofs: { [record.operation.operationId]: successors } },
+      );
+      await this.#replaceLegacyReservedProofs(
+        operation.inputs.map(({ secret }) => secret),
+        record.operation.operationId,
+        legacySuccessors,
+      );
+    });
+  }
+
+  async #readExactResultArtifact(scope: DurableCustodyScope, record: DurableCustodyRecord) {
+    const snapshot = await this.#custody.readOperationSnapshot(scope, record.operation.operationId);
+    const reference = record.operation.result.exactResult;
+    if (snapshot === null || reference === null) {
+      throw new Error("browser range result artifact is missing");
+    }
+    const row = snapshot.artifacts.find(
+      ({ reference: candidate }) => candidate.artifactId === reference.artifactId,
+    );
+    if (row === undefined) throw new Error("browser range result artifact is missing");
+    return row.artifact;
+  }
+
+  async #terminalizeRecoveredJournal(
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+  ): Promise<void> {
+    if (journalRecord.lifecycleState === "terminal") return;
+    await transitionCtfRangePreparation(
+      {
+        scopeId: journalRecord.scopeId,
+        rangeOperationId: journalRecord.rangeOperationId,
+        expectedRevision: journalRecord.revision,
+        from: journalRecord.lifecycleState,
+        to: "terminal",
+        updatedAtMs: this.#now(),
+      },
+      this.#database,
+    );
+  }
+
+  async #reserveLegacySourceProofs(
+    scope: DurableCustodyScope,
+    preparation: PersistedCtfRangeOrderPreparation,
+    reservationOperationId: string,
+    sourceProofs: DurableCustodyProofOperationInput["inputs"],
+    expectedProofs: ReturnType<typeof browserSourceProofRows>[number]["proof"][],
+  ): Promise<void> {
+    const rows = await this.#database.proofs.bulkGet(sourceProofs.map(({ secret }) => secret));
+    if (rows.length !== sourceProofs.length || rows.length !== expectedProofs.length) {
+      throw new Error("browser source proof mirror count is invalid");
+    }
+    const reserved: StoredProofRow[] = [];
+    for (const [index, sourceProof] of sourceProofs.entries()) {
+      const row = rows[index];
+      if (!row || row.reservedBy !== undefined) {
+        throw new Error("browser source proof mirror is missing or reserved");
+      }
+      const proof = storedProofFromRow(row);
+      const observed = browserSourceProofRows(
+        scope,
+        preparation,
+        { authorization: [proof], keep: [] },
+        this.#now(),
+      )[0]?.proof;
+      const expected = expectedProofs[index];
+      if (
+        observed === undefined ||
+        expected === undefined ||
+        row.secret !== sourceProof.secret ||
+        row.id !== sourceProof.id ||
+        !hasExpectedLegacySourceAsset(preparation, proof) ||
+        observed.proofId !== expected.proofId ||
+        observed.proofFingerprint !== expected.proofFingerprint ||
+        observed.amount !== expected.amount ||
+        observed.keysetId !== expected.keysetId
+      ) {
+        throw new Error("browser source proof mirror differs from custody authority");
+      }
+      reserved.push({ ...row, reservedBy: reservationOperationId });
+    }
+    await this.#database.proofs.bulkPut(reserved);
+  }
+
+  async #replaceLegacySourceProofs(
+    preparation: PersistedCtfRangeOrderPreparation,
+    source: DurableCustodyProofOperationInput,
+    sourceCustodyOperationId: string,
+    rangeCustodyOperationId: string,
+    result: CtfRangeSourceResult,
+    receivedAtMs: number,
+  ): Promise<void> {
+    const inputSecrets = source.inputs.map(({ secret }) => secret);
+    const authorization = result.authorization.map((proof) =>
+      legacySourceProof(preparation, proof, receivedAtMs, rangeCustodyOperationId),
+    );
+    const keep = result.keep.map((proof) => legacySourceProof(preparation, proof, receivedAtMs));
+    await this.#replaceLegacyReservedProofs(inputSecrets, sourceCustodyOperationId, [
+      ...authorization,
+      ...keep,
+    ]);
+  }
+
+  async #replaceLegacyReservedProofs(
+    inputSecrets: readonly string[],
+    reservationOperationId: string,
+    successors: readonly StoredProof[],
+  ): Promise<void> {
+    const inputRows = await this.#database.proofs.bulkGet([...inputSecrets]);
+    if (inputRows.some((row) => !row || row.reservedBy !== reservationOperationId)) {
+      throw new Error("browser proof mirror replacement authority is invalid");
+    }
+    await this.#database.proofs.bulkDelete([...inputSecrets]);
+    if (successors.length > 0) {
+      await this.#database.proofs.bulkAdd(successors.map(storedProofRow));
+    }
+  }
+
+  async #releaseLegacySourceProofs(
+    source: DurableCustodyProofOperationInput,
+    sourceCustodyOperationId: string,
+  ): Promise<void> {
+    const rows = await this.#database.proofs.bulkGet(source.inputs.map(({ secret }) => secret));
+    if (
+      rows.some(
+        (row, index) =>
+          !row ||
+          row.secret !== source.inputs[index]?.secret ||
+          row.reservedBy !== sourceCustodyOperationId,
+      )
+    ) {
+      throw new Error("browser source proof mirror release authority is invalid");
+    }
+    await this.#database.proofs.bulkPut(
+      rows.map((row) => {
+        if (!row) throw new Error("browser source proof mirror is missing");
+        const { reservedBy: _reservedBy, ...released } = row;
+        return released;
+      }),
+    );
+  }
+
   async #withScopeOwner<T>(
     scope: DurableCustodyScope,
     action: (owner: DurableCustodyOwnerAuthorization) => Promise<T>,
@@ -885,6 +1593,8 @@ export class BrowserCtfRangeOrderCoordinator {
   #transactionTables(includeJournal: boolean) {
     return [
       ...(includeJournal ? [this.#database.ctfRangePreparations] : []),
+      this.#database.proofs,
+      this.#database.proofOperations,
       this.#database.custodyScopes,
       this.#database.custodyOperations,
       this.#database.custodyArtifacts,
@@ -926,7 +1636,10 @@ function requireImmediateSubmitResponse(
   return response;
 }
 
-function rangeError(code: BrowserCtfRangeOrderErrorCode): BrowserCtfRangeOrderError {
+function rangeError(
+  code: BrowserCtfRangeOrderErrorCode,
+  cause?: unknown,
+): BrowserCtfRangeOrderError {
   const messages: Record<BrowserCtfRangeOrderErrorCode, string> = {
     "invalid-order-type": "The browser supports only immediate FAK or FOK range orders.",
     "insufficient-funds": "The wallet has insufficient selectable funds for this order.",
@@ -939,7 +1652,9 @@ function rangeError(code: BrowserCtfRangeOrderErrorCode): BrowserCtfRangeOrderEr
     "order-submission-uncertain": "The order acknowledgement is uncertain. It will not retry.",
     "recovery-pending": "The durable range operation still requires funds recovery.",
   };
-  return new BrowserCtfRangeOrderError(code, messages[code]);
+  const error = new BrowserCtfRangeOrderError(code, messages[code]);
+  if (cause !== undefined) Object.defineProperty(error, "cause", { value: cause });
+  return error;
 }
 
 function isPendingRecoveryError(error: unknown): error is BrowserCtfRangeOrderError & {
@@ -956,6 +1671,162 @@ function requireSourceKeysetId(value: string | undefined): string {
     throw new Error("range source proof keyset is invalid");
   }
   return value;
+}
+
+function legacySourceProof(
+  preparation: PersistedCtfRangeOrderPreparation,
+  proof: Proof,
+  receivedAt: number,
+  reservedBy?: string,
+): StoredProof {
+  if (proof.id !== preparation.offerKeyset.id || amountToNumber(proof.amount) <= 0) {
+    throw new Error("browser source successor differs from the offer keyset authority");
+  }
+  const common: StoredProof = {
+    ...proof,
+    mintUrl: preparation.mintUrl,
+    baseAsset: "sat",
+    unit: "msat" as const,
+    receivedAt,
+    ...(reservedBy === undefined ? {} : { reservedBy }),
+  };
+  const asset = browserRangeSourceAsset(preparation);
+  switch (asset.kind) {
+    case "regular":
+      return normalizeAndValidateStoredProof(common);
+    case "conditional":
+      return normalizeAndValidateStoredProof({
+        ...common,
+        conditionId: asset.conditionId,
+        outcomeCollection: asset.outcomeCollection,
+        marketId: `${asset.conditionId}-${asset.outcomeCollection}`,
+      });
+    default:
+      return assertNever(asset);
+  }
+}
+
+function hasExpectedLegacySourceAsset(
+  preparation: PersistedCtfRangeOrderPreparation,
+  proof: StoredProof,
+): boolean {
+  if (proof.mintUrl !== preparation.mintUrl || proof.unit !== "msat" || proof.baseAsset !== "sat") {
+    return false;
+  }
+  const asset = browserRangeSourceAsset(preparation);
+  switch (asset.kind) {
+    case "regular":
+      return proof.conditionId === undefined && proof.outcomeCollection === undefined;
+    case "conditional":
+      return (
+        proof.conditionId === asset.conditionId &&
+        proof.outcomeCollection === asset.outcomeCollection
+      );
+    default:
+      return assertNever(asset);
+  }
+}
+
+function requireCapabilityReference(
+  journal: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+) {
+  if (journal.capability === null) {
+    throw new Error("browser range capability authority is missing");
+  }
+  return {
+    artifactId: journal.capability.artifactId,
+    bindingDigest: journal.capability.bindingDigest,
+  };
+}
+
+function requireAppliedResultAuthority(record: DurableCustodyRecord): {
+  resultHandle: string;
+  resultFingerprint: string;
+} {
+  const result = record.operation.result;
+  if (
+    result.state !== "verified-staged" ||
+    result.resultHandle === null ||
+    result.resultFingerprint === null
+  ) {
+    throw new Error("browser range staged result authority is incomplete");
+  }
+  return { resultHandle: result.resultHandle, resultFingerprint: result.resultFingerprint };
+}
+
+function assertExactRefundRecord(
+  refund: ProofOperationRecord,
+  operation: DurableCtfRangeOperation,
+): void {
+  const outputs = refund.outputs.refund;
+  if (outputs === undefined) {
+    throw new Error("browser range refund output authority is missing");
+  }
+  const rebuilt = createDurableCtfRangeRefundOperation({
+    operationId: deriveDurableCtfRangeRefundOperationId(operation.operationId),
+    source: operation,
+    refundKeysetId: operation.offerKeysetId,
+    resolveKeysetAsset: (keysetId) =>
+      keysetId === operation.offerKeysetId ? operation.offerAsset : undefined,
+    outputs: outputs.map((output) => OutputData.serialize(deserializeDurableCustodyOutput(output))),
+  });
+  const persistedRequest: SwapRequest = {
+    inputs: refund.inputs,
+    outputs: outputs.map((output) => deserializeDurableCustodyOutput(output).blindedMessage),
+  };
+  if (
+    refund.operationId !== rebuilt.operation.operationId ||
+    refund.kind !== "swap-refund" ||
+    refund.mintUrl !== operation.mintUrl ||
+    refund.metadata.rangeOperationId !== operation.operationId ||
+    refund.metadata.unit !== "msat" ||
+    refund.metadata.refundRequestFingerprint !==
+      deriveDurableCtfRangeRefundRequestFingerprint(persistedRequest) ||
+    Object.keys(refund.outputs).join("\0") !== "refund" ||
+    refund.inputs.length !== rebuilt.request.inputs.length ||
+    refund.inputs.some((proof, index) => {
+      const expected = rebuilt.request.inputs[index];
+      return expected === undefined || !sameRefundProof(proof, expected);
+    })
+  ) {
+    throw new Error("browser range refund differs from persisted authority");
+  }
+}
+
+function sameRefundProof(observed: Proof, expected: Proof): boolean {
+  return (
+    observed.id === expected.id &&
+    amountToNumber(observed.amount) === amountToNumber(expected.amount) &&
+    observed.secret === expected.secret &&
+    observed.C === expected.C &&
+    (observed.p2pk_e ?? null) === (expected.p2pk_e ?? null) &&
+    JSON.stringify(observed.dleq ?? null) === JSON.stringify(expected.dleq ?? null) &&
+    observed.witness !== undefined
+  );
+}
+
+function storedRefundOutputGroups(
+  outputs: DurableCustodyProofOperationInput["outputs"],
+): Record<string, StoredOutputData[]> {
+  return Object.fromEntries(
+    Object.entries(outputs).map(([label, values]) => [
+      label,
+      values.map((output) => {
+        if (output.ephemeralE !== undefined) {
+          throw new Error("browser range refund output has unexpected conditional material");
+        }
+        return {
+          blindedMessage: {
+            amount: amountToNumber(output.blindedMessage.amount),
+            id: output.blindedMessage.id,
+            B_: output.blindedMessage.B_,
+          },
+          blindingFactor: output.blindingFactor,
+          secret: output.secret,
+        };
+      }),
+    ]),
+  );
 }
 
 function assertNever(value: never): never {

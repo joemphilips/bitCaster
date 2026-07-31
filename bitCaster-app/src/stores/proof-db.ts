@@ -1,5 +1,5 @@
 import Dexie, { type Table } from "dexie";
-import type { Proof } from "@cashu/cashu-ts";
+import { Amount, type Proof } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   COLLATERAL_UNIT_REGISTRY,
@@ -19,7 +19,7 @@ import type {
   BrowserCustodyScopeRow,
 } from "./durable-custody-types";
 
-export interface StoredProof extends Proof {
+interface StoredProofMetadata {
   mintUrl: string;
   /** Local-only reservation owner. Reserved proofs are hidden from spendable balances. */
   reservedBy?: string;
@@ -36,6 +36,12 @@ export interface StoredProof extends Proof {
   /** Timestamp (ms since epoch) when this proof was added to the wallet */
   receivedAt?: number;
 }
+
+/** Cashu-ready proof used by wallet and UI code. This type is never an IndexedDB row. */
+export interface StoredProof extends Proof, StoredProofMetadata {}
+
+/** Exact IndexedDB row. Structured clone stores the amount as a safe integer. */
+export type StoredProofRow = Omit<Proof, "amount"> & StoredProofMetadata & { amount: number };
 
 export interface StoredOutputData {
   blindedMessage: {
@@ -87,7 +93,7 @@ export interface PrepareProofOperationInput {
   metadata?: Record<string, unknown>;
 }
 
-export function isCtfProof(proof: StoredProof | Proof): boolean {
+export function isCtfProof(proof: StoredProof | StoredProofRow | Proof): boolean {
   const candidate = proof as Proof & {
     conditionId?: unknown;
     condition_id?: unknown;
@@ -118,7 +124,7 @@ export interface CtfRangePreparationConsolidationLinkRow {
 }
 
 export class BitcasterDB extends Dexie {
-  proofs!: Table<StoredProof>;
+  proofs!: Table<StoredProofRow>;
   proofOperations!: Table<ProofOperationRecord>;
   ctfRangePreparations!: Table<CtfRangeOrderPreparationRecord, [string, string]>;
   ctfRangePreparationSources!: Table<CtfRangePreparationSourceLinkRow, [string, string]>;
@@ -273,9 +279,7 @@ export async function selectAndReserveUnitProofs(
 
     selected = current.filter((row): row is StoredProof => !!row);
     if (selected.length > 0) {
-      await db.proofs.bulkPut(
-        selected.map((proof) => normalizeStoredProof({ ...proof, reservedBy })),
-      );
+      await db.proofs.bulkPut(selected.map((proof) => storedProofRow({ ...proof, reservedBy })));
     }
   });
 
@@ -361,12 +365,12 @@ export async function getConditionCtfProofs(
 export async function addProofs(proofs: StoredProof[]): Promise<void> {
   const now = Date.now();
   const stamped = proofs.map((p) =>
-    normalizeStoredProof({
-      ...validateStoredProofUnitInvariant(p),
+    normalizeAndValidateStoredProof({
+      ...p,
       receivedAt: p.receivedAt ?? now,
     }),
   );
-  await db.proofs.bulkPut(stamped);
+  await db.proofs.bulkPut(stamped.map(storedProofRow));
 }
 
 export async function removeProofs(secrets: string[]): Promise<void> {
@@ -380,8 +384,8 @@ export async function replaceProofs(
   const uniqueSpentSecrets = [...new Set(spentSecrets)];
   const now = Date.now();
   const stamped = freshProofs.map((p) =>
-    normalizeStoredProof({
-      ...validateStoredProofUnitInvariant(p),
+    normalizeAndValidateStoredProof({
+      ...p,
       receivedAt: p.receivedAt ?? now,
     }),
   );
@@ -390,7 +394,7 @@ export async function replaceProofs(
       await db.proofs.bulkDelete(uniqueSpentSecrets);
     }
     if (stamped.length > 0) {
-      await db.proofs.bulkPut(stamped);
+      await db.proofs.bulkPut(stamped.map(storedProofRow));
     }
   });
 }
@@ -401,8 +405,8 @@ export async function reserveProofs(secrets: string[], reservedBy: string): Prom
     const rows = await db.proofs.bulkGet(secrets);
     await db.proofs.bulkPut(
       rows
-        .filter((row): row is StoredProof => !!row && secretSet.has(row.secret))
-        .map((row) => normalizeStoredProof({ ...row, reservedBy })),
+        .filter((row): row is StoredProofRow => !!row && secretSet.has(row.secret))
+        .map((row) => ({ ...row, reservedBy })),
     );
   });
 }
@@ -410,16 +414,14 @@ export async function reserveProofs(secrets: string[], reservedBy: string): Prom
 export async function releaseProofReservation(reservedBy: string): Promise<void> {
   const rows = await db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
   if (rows.length === 0) return;
-  await db.proofs.bulkPut(
-    rows.map(({ reservedBy: _reservedBy, ...row }) => normalizeStoredProof(row)),
-  );
+  await db.proofs.bulkPut(rows.map(({ reservedBy: _reservedBy, ...row }) => row));
 }
 
 export async function releaseProofReservationsBySecret(secrets: string[]): Promise<void> {
   const rows = await db.proofs.bulkGet(secrets);
   const changed = rows
-    .filter((row): row is StoredProof => !!row)
-    .map(({ reservedBy: _reservedBy, ...row }) => normalizeStoredProof(row));
+    .filter((row): row is StoredProofRow => !!row)
+    .map(({ reservedBy: _reservedBy, ...row }) => row);
   if (changed.length === 0) return;
   await db.proofs.bulkPut(changed);
 }
@@ -447,23 +449,43 @@ export async function normalizeStoredMintUrls(): Promise<number> {
   return changed;
 }
 
-function normalizeStoredProof(proof: StoredProof): StoredProof {
+export function normalizeAndValidateStoredProof(proof: StoredProof): StoredProof {
+  return normalizeStoredProof(validateStoredProofUnitInvariant(proof));
+}
+
+function normalizeStoredProof(proof: StoredProof | StoredProofRow): StoredProof {
   return {
     ...proof,
-    amount: amountToNumber(proof.amount) as never,
+    amount: Amount.from(amountToNumber(proof.amount)),
     mintUrl: normalizeUrl(proof.mintUrl),
     baseAsset: normalizeStoredProofBaseAsset(proof),
     unit: normalizeStoredProofUnit(proof),
   };
 }
 
-function normalizeStoredProofBaseAsset(proof: StoredProof): string {
+export function storedProofFromRow(proof: StoredProofRow): StoredProof {
+  return normalizeStoredProof(proof);
+}
+
+export function storedProofRow(proof: StoredProof): StoredProofRow {
+  return {
+    ...proof,
+    amount: amountToNumber(proof.amount),
+    mintUrl: normalizeUrl(proof.mintUrl),
+    baseAsset: normalizeStoredProofBaseAsset(proof),
+    unit: normalizeStoredProofUnit(proof),
+  };
+}
+
+function normalizeStoredProofBaseAsset(proof: StoredProof | StoredProofRow): string {
   const unit = parseCashuProofUnit(proof.unit);
   if (unit && !proof.baseAsset) return COLLATERAL_UNIT_REGISTRY[unit].baseAsset;
   return normalizeMarketBaseAsset(proof.baseAsset);
 }
 
-export function normalizeStoredProofUnit(proof: StoredProof): CashuProofUnit | undefined {
+export function normalizeStoredProofUnit(
+  proof: StoredProof | StoredProofRow,
+): CashuProofUnit | undefined {
   return parseCashuProofUnit(proof.unit) ?? undefined;
 }
 

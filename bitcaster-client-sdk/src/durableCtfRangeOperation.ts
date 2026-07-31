@@ -28,6 +28,7 @@ import {
 } from '@cashu/cashu-ts'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { hexToBytes } from '@noble/curves/utils.js'
+import { hmac } from '@noble/hashes/hmac.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import {
   DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
@@ -48,6 +49,7 @@ import {
   type DurableCustodyTransaction,
   type DurableProofOperationFacts,
 } from './durableCustody.ts'
+import { amountToNumber } from './proofSelection.ts'
 import {
   serializeDurableCustodyOutput,
   type DurableCustodyProofOperationInput,
@@ -876,6 +878,77 @@ export function createDurableCtfRangeRefundOperation(input: {
     request,
     operation: refundProofOperation(input.operationId, source, refundAsset, outputData, request),
   }
+}
+
+export function deriveDurableCtfRangeRefundOperationId(rangeOperationId: string): string {
+  const operationId = requireBoundedText(rangeOperationId, 'range operation id')
+  const domain = new TextEncoder().encode('bitcaster/ctf-range-refund/v1\0')
+  const identity = new TextEncoder().encode(operationId)
+  return `ctf-range-refund:${bytesToHex(sha256(concatenateBytes(domain, identity)))}`
+}
+
+export function createDeterministicDurableCtfRangeRefundOutputs(input: {
+  seed: Uint8Array
+  source: DurableCtfRangeOperation
+  refundOperationId: string
+  amount: string | bigint | number
+  keyset: { id: string; keys: Readonly<Record<string, string>> }
+}): SerializedOutputData[] {
+  const source = decodeDurableCtfRangeOperation(input.source)
+  const refundOperationId = requireBoundedText(input.refundOperationId, 'refund operation id')
+  if (refundOperationId !== deriveDurableCtfRangeRefundOperationId(source.operationId)) {
+    throw new Error('CTF range refund operation identity is foreign')
+  }
+  if (!(input.seed instanceof Uint8Array) || input.seed.length < 32 || input.seed.length > 64) {
+    throw new Error('CTF range refund seed is invalid')
+  }
+  if (input.keyset.id !== source.offerKeysetId) {
+    throw new Error('CTF range refund keyset is foreign')
+  }
+  const identity = new TextEncoder().encode(
+    canonicalJson({
+      schemaVersion: 1,
+      rangeOperationId: source.operationId,
+      authorizationId: source.authorizationId,
+      refundOperationId,
+    }),
+  )
+  const domain = new TextEncoder().encode('bitcaster/ctf-range-refund-output/v1\0')
+  const outputSeed = hmac(sha256, input.seed, concatenateBytes(domain, identity))
+  for (let attempt = 0; attempt < 128; attempt += 1) {
+    try {
+      return OutputData.createDeterministicData(
+        Amount.from(input.amount),
+        outputSeed,
+        attempt * 256,
+        input.keyset,
+      ).map(OutputData.serialize)
+    } catch {
+      // Invalid scalar derivations are rare. The next disjoint counter page is deterministic.
+    }
+  }
+  throw new Error('CTF range refund output derivation failed')
+}
+
+export function deriveDurableCtfRangeRefundRequestFingerprint(request: SwapRequest): string {
+  const canonical = canonicalJson({
+    inputs: request.inputs.map((proof) => ({
+      id: proof.id,
+      amount: amountToNumber(proof.amount).toString(),
+      secret: proof.secret,
+      C: proof.C,
+      dleq: structuredClone(proof.dleq ?? null),
+      p2pkE: proof.p2pk_e ?? null,
+      witness: structuredClone(proof.witness ?? null),
+    })),
+    outputs: request.outputs.map((output) => ({
+      id: output.id,
+      amount: output.amount.toString(),
+      B_: output.B_,
+    })),
+  })
+  const domain = new TextEncoder().encode('bitcaster/ctf-range-refund-request/v1\0')
+  return bytesToHex(sha256(concatenateBytes(domain, new TextEncoder().encode(canonical))))
 }
 
 export function deriveDurableCtfResidualDecision(input: {
@@ -1884,6 +1957,46 @@ export function assertDurableCtfRangeCustodyAuthority(
   })
   assertRangeProofOperationLinks(record, operation, custody)
   return operation
+}
+
+export function assertDurableCtfRangeRefundKeysetAuthority(input: {
+  record: DurableCustodyRecord
+  operation: DurableCtfRangeOperation
+  keyset: DurableCtfRangeMintKeyset
+}): DurableCtfRangeMintKeyset {
+  const operation = assertDurableCtfRangeCustodyAuthority(input.record, input.operation)
+  const record = decodeDurableCustodyRecord(input.record)
+  const keyset = input.keyset
+  const authority = operation.keysetAuthority.offer
+  verifyRangeKeysetIdentity(operation, authority, keyset)
+  const bindings = record.operation.verification.keysetBindings.filter(
+    ({ keysetId }) => keysetId === authority.keysetId,
+  )
+  const binding = bindings[0]
+  const curve = isBlsKeyset(authority.keysetId) ? 'bls12-381' : 'secp256k1'
+  if (
+    bindings.length !== 1 ||
+    binding === undefined ||
+    binding.curve !== curve ||
+    binding.requireDleq !== true ||
+    binding.keysetFingerprint !==
+      deriveDurableCustodyKeysetFingerprint({
+        keysetId: authority.keysetId,
+        unit: authority.unit,
+        curve,
+        publicKeys: keyset.keys,
+      })
+  ) {
+    throw new Error('CTF range refund keyset differs from persisted custody authority')
+  }
+  return {
+    canonicalMintUrl: keyset.canonicalMintUrl,
+    id: keyset.id,
+    unit: keyset.unit,
+    keys: { ...keyset.keys },
+    inputFeePpk: keyset.inputFeePpk,
+    finalExpiry: keyset.finalExpiry,
+  }
 }
 
 function assertRangeRecordContext(

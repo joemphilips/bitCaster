@@ -5,12 +5,14 @@ import {
   hashToCurve,
   hashToCurveBls,
   isBlsKeyset,
+  verifyProofsForReceive,
   type CheckStatePayload,
   type CheckStateResponse,
   type GetKeysResponse,
   type HasKeysetKeys,
   type PostRestorePayload,
   type PostRestoreResponse,
+  type Proof,
   type ProofState,
   type RequestFn,
   type RequestOptions,
@@ -21,6 +23,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import {
   DURABLE_CTF_RANGE_RESULT_BYTES_MAX,
+  assertDurableCtfRangeRefundKeysetAuthority,
   assertDurableCtfRangeCustodyAuthority,
   buildDurableCtfRangeRecoveryQuery,
   classifyDurableCtfRangeRecovery,
@@ -28,8 +31,10 @@ import {
   decodeDurableCtfRangeResultEnvelopeBytes,
   type DurableCtfRangeAllManifestRecovery,
   type DurableCtfRangeKeysetResolver,
+  type DurableCtfRangeMintKeyset,
   type DurableCtfRangeOperation,
   type DurableCtfRangeRecoveryDecision,
+  type DurableCtfRangeRecoveryObservation,
   type DurableCtfRangeResultEnvelope,
 } from './durableCtfRangeOperation.ts'
 import {
@@ -39,6 +44,10 @@ import {
   deriveDurableCustodyKeysetFingerprint,
   type DurableCustodyRecord,
 } from './durableCustody.ts'
+import {
+  deserializeDurableCustodyOutput,
+  type DurableCustodyPlannedOutput,
+} from './durableCustodyProofOperation.ts'
 import { readAllocationBoundedJsonResponse } from './boundedJsonResponse.ts'
 import type {
   BitcasterEngineClient,
@@ -89,8 +98,134 @@ export interface CtfRangeMintVerificationContext {
   readonly resolveKeyset: DurableCtfRangeKeysetResolver
 }
 
+export interface CtfRangeMintRecoveryObservationContext extends CtfRangeMintVerificationContext {
+  readonly observation: DurableCtfRangeRecoveryObservation
+}
+
 export interface CtfRangeProofStateClient {
   check(payload: CheckStatePayload, signal?: AbortSignal): Promise<CheckStateResponse>
+}
+
+export class CtfRangeRecoveryTransportError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause })
+    this.name = 'CtfRangeRecoveryTransportError'
+  }
+}
+
+export async function restoreDurableCtfRangeRefundOutputs(input: {
+  mintUrl: string
+  outputs: readonly DurableCustodyPlannedOutput[]
+  record: DurableCustodyRecord
+  operation: DurableCtfRangeOperation
+  keyset: DurableCtfRangeMintKeyset
+  mint?: CtfRangeMintClient
+}): Promise<Proof[]> {
+  const operation = decodeDurableCtfRangeOperation(input.operation)
+  const mintUrl = decodeCanonicalMintOrigin(input.mintUrl)
+  if (mintUrl !== operation.mintUrl) {
+    throw new Error('CTF range refund restore mint is foreign')
+  }
+  assertDurableCtfRangeRefundKeysetAuthority({
+    record: input.record,
+    operation,
+    keyset: input.keyset,
+  })
+  const outputData = input.outputs.map(deserializeDurableCustodyOutput)
+  if (outputData.length === 0 || outputData.length > 256) {
+    throw new Error('CTF range refund restore output limit is invalid')
+  }
+  const mint = input.mint ?? createCtfRangeMintClient(mintUrl)
+  let response: PostRestoreResponse
+  try {
+    response = await mint.restore({
+      outputs: outputData.map(({ blindedMessage }) => blindedMessage),
+    })
+  } catch (error) {
+    throw new CtfRangeRecoveryTransportError('CTF range refund restore transport failed', error)
+  }
+  if (
+    !Array.isArray(response.outputs) ||
+    !Array.isArray(response.signatures) ||
+    response.outputs.length !== outputData.length ||
+    response.signatures.length !== response.outputs.length
+  ) {
+    throw new Error('CTF range refund restore response size is invalid')
+  }
+  const expected = new Map(
+    outputData.map(({ blindedMessage }) => [blindedMessage.B_, blindedMessage]),
+  )
+  const restored = new Set<string>()
+  const signatures = new Map<string, SerializedBlindedSignature>()
+  response.outputs.forEach((output, index) => {
+    const signature = response.signatures[index]!
+    assertRestoredPair(output, signature, expected, restored)
+    signatures.set(output.B_, signature)
+  })
+  return verifyDurableCtfRangeRefundSignatures({
+    record: input.record,
+    operation: input.operation,
+    keyset: input.keyset,
+    outputs: input.outputs,
+    signatures: outputData.map((output) => {
+      const signature = signatures.get(output.blindedMessage.B_)
+      if (signature === undefined) {
+        throw new Error('CTF range refund restore authority is incomplete')
+      }
+      return signature
+    }),
+  })
+}
+
+export function verifyDurableCtfRangeRefundSignatures(input: {
+  record: DurableCustodyRecord
+  operation: DurableCtfRangeOperation
+  keyset: DurableCtfRangeMintKeyset
+  outputs: readonly DurableCustodyPlannedOutput[]
+  signatures: readonly SerializedBlindedSignature[]
+}): Proof[] {
+  const operation = decodeDurableCtfRangeOperation(input.operation)
+  const keyset = assertDurableCtfRangeRefundKeysetAuthority({
+    record: input.record,
+    operation,
+    keyset: input.keyset,
+  })
+  const outputs = input.outputs.map(deserializeDurableCustodyOutput)
+  if (
+    outputs.length === 0 ||
+    outputs.length > 256 ||
+    input.signatures.length !== outputs.length ||
+    outputs.some(({ blindedMessage }) => blindedMessage.id !== operation.offerKeysetId)
+  ) {
+    throw new Error('CTF range refund signature authority is incomplete')
+  }
+  const signatures = outputs.map((output, index) => {
+    const signature = input.signatures[index]
+    if (
+      signature === undefined ||
+      signature.id !== output.blindedMessage.id ||
+      signature.amount.toString() !== output.blindedMessage.amount.toString()
+    ) {
+      throw new Error('CTF range refund signature differs from its exact output')
+    }
+    return signature
+  })
+  try {
+    const proofs = outputs.map((output, index) =>
+      output.toProof({ ...signatures[index]!, amount: output.blindedMessage.amount }, keyset),
+    )
+    verifyProofsForReceive(
+      proofs,
+      (keysetId) => {
+        if (keysetId !== keyset.id) throw new Error('CTF range refund proof keyset is foreign')
+        return keyset
+      },
+      { requireDleq: true },
+    )
+    return proofs
+  } catch (error) {
+    throw new Error('CTF range refund proof cryptographic verification failed', { cause: error })
+  }
 }
 
 export interface CtfRangeInputProofIdentity {
@@ -228,7 +363,12 @@ export async function checkCtfRangeInputProofStates(
     for (let offset = 0; offset < Ys.length; offset += NUT07_BATCH_SIZE) {
       signal?.throwIfAborted()
       const batch = Ys.slice(offset, offset + NUT07_BATCH_SIZE)
-      const response = await mint.check({ Ys: batch }, signal)
+      let response: CheckStateResponse
+      try {
+        response = await mint.check({ Ys: batch }, signal)
+      } catch (error) {
+        throw new CtfRangeRecoveryTransportError('CTF range proof-state transport failed', error)
+      }
       if (!Array.isArray(response.states) || response.states.length > batch.length) {
         throw new Error('invalid range proof-state response size')
       }
@@ -245,7 +385,8 @@ export async function checkCtfRangeInputProofStates(
       }
     }
     return ordered
-  } catch {
+  } catch (error) {
+    if (error instanceof CtfRangeRecoveryTransportError) throw error
     throw new Error('CTF range proof-state response is invalid')
   }
 }
@@ -274,24 +415,50 @@ export class CtfRangeMintRecoveryAdapter {
     signal?: AbortSignal
   }): Promise<DurableCtfRangeRecoveryDecision> {
     try {
-      const operation = assertDurableCtfRangeCustodyAuthority(input.record, this.#operation)
+      const recovery = await this.loadUncertainRecoveryObservation(input)
+      return classifyDurableCtfRangeRecovery({
+        operation: this.#operation,
+        record: input.record,
+        observation: recovery.observation,
+        resolveKeyset: recovery.resolveKeyset,
+      })
+    } catch (error) {
+      if (error instanceof CtfRangeRecoveryTransportError) {
+        throw new CtfRangeRecoveryTransportError('CTF range mint recovery failed', error)
+      }
+      throw new Error('CTF range mint recovery failed')
+    }
+  }
+
+  async loadUncertainRecoveryObservation(input: {
+    record: DurableCustodyRecord
+    selection: string | null
+    now: number
+    signal?: AbortSignal
+  }): Promise<CtfRangeMintRecoveryObservationContext> {
+    try {
+      assertDurableCtfRangeCustodyAuthority(input.record, this.#operation)
       const [verification, inputStates] = await Promise.all([
         this.loadExactVerificationContext(input.record),
         checkCtfRangeInputProofStates(this.#mint, this.#operation.inputs, input.signal),
       ])
-      return classifyDurableCtfRangeRecovery({
-        operation,
-        record: input.record,
+      return {
+        ...verification,
         observation: {
           selection: input.selection,
           inputStates,
           ...verification.allManifestRecovery,
           now: input.now,
         },
-        resolveKeyset: verification.resolveKeyset,
-      })
-    } catch {
-      throw new Error('CTF range mint recovery failed')
+      }
+    } catch (error) {
+      if (error instanceof CtfRangeRecoveryTransportError) {
+        throw new CtfRangeRecoveryTransportError(
+          'CTF range mint recovery observation failed',
+          error,
+        )
+      }
+      throw new Error('CTF range mint recovery observation failed')
     }
   }
 
@@ -305,7 +472,13 @@ export class CtfRangeMintRecoveryAdapter {
         this.#loadBoundKeysets(record),
       ])
       return { allManifestRecovery, resolveKeyset }
-    } catch {
+    } catch (error) {
+      if (error instanceof CtfRangeRecoveryTransportError) {
+        throw new CtfRangeRecoveryTransportError(
+          'CTF range mint verification context failed',
+          error,
+        )
+      }
       throw new Error('CTF range mint verification context failed')
     }
   }
@@ -314,7 +487,12 @@ export class CtfRangeMintRecoveryAdapter {
     const query = buildDurableCtfRangeRecoveryQuery(this.#operation, null)
     const queriedOutputs = query.outputs
     if (queriedOutputs.length === 0) throw new Error('empty range recovery query')
-    const response = await this.#mint.restore({ outputs: queriedOutputs })
+    let response: PostRestoreResponse
+    try {
+      response = await this.#mint.restore({ outputs: queriedOutputs })
+    } catch (error) {
+      throw new CtfRangeRecoveryTransportError('CTF range restore transport failed', error)
+    }
     if (
       !Array.isArray(response.outputs) ||
       !Array.isArray(response.signatures) ||
@@ -344,7 +522,12 @@ export class CtfRangeMintRecoveryAdapter {
     ]
     const keysets = new Map<string, HasKeysetKeys>()
     for (const authorizedId of authorizedIds) {
-      const response = await this.#mint.getKeys(authorizedId)
+      let response: GetKeysResponse
+      try {
+        response = await this.#mint.getKeys(authorizedId)
+      } catch (error) {
+        throw new CtfRangeRecoveryTransportError('CTF range key transport failed', error)
+      }
       if (!Array.isArray(response.keysets) || response.keysets.length > 4) {
         throw new Error('invalid range keyset response size')
       }

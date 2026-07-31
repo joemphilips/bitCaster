@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Amount } from "@cashu/cashu-ts";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 
 // Mock Dexie before importing the module under test — we don't need a real
 // IndexedDB (no polyfill installed in the jsdom harness), just an object
@@ -162,7 +163,7 @@ describe("proof-db normalization", () => {
 
     const rows = await getProofs("http://mint.example");
 
-    expect(rows.map((proof) => proof.amount)).toEqual([100, 110]);
+    expect(rows.map((proof) => amountToNumber(proof.amount))).toEqual([100, 110]);
     expect(Array.from(store.values()).map((proof) => proof.amount)).toEqual([100, 110]);
   });
 
@@ -340,9 +341,9 @@ describe("proof-db normalization", () => {
     );
 
     store.set(malformed.secret, malformed);
-    await expect(
-      getConditionCtfProofs("http://m", "cond", { baseAsset: "sat" }),
-    ).resolves.toEqual([]);
+    await expect(getConditionCtfProofs("http://m", "cond", { baseAsset: "sat" })).resolves.toEqual(
+      [],
+    );
     await expect(
       getOutcomeProofs("http://m", "cond", "YES", { baseAsset: "sat" }),
     ).resolves.toEqual([]);

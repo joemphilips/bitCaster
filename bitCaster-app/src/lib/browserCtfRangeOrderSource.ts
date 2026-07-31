@@ -1,4 +1,4 @@
-import type { Proof } from "@cashu/cashu-ts";
+import { Amount, type Proof } from "@cashu/cashu-ts";
 import {
   deriveDurableCustodyOperationId,
   deriveDurableCustodyScopeId,
@@ -19,11 +19,16 @@ import {
   serializeDurableCustodyProofArtifact,
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import {
+  assertDurableCtfRangeCustodyAuthority,
   createDurableCtfRangeCustodyBinding,
+  decodeDurableCtfRangeOperation,
   toDurableCtfRangeProofOperationInput,
+  type DurableCtfRangeAsset,
   type DurableCtfRangeMintKeyset,
   type DurableCtfRangeOperation,
+  type DurableCtfRangeRecoveredResult,
 } from "@bitcaster/client-sdk/durableCtfRangeOperation";
+import { mapDurableCtfRangeSuccessorProofs } from "@bitcaster/client-sdk/durableCtfRangeCustody";
 import {
   completeCtfRangeOrderAuthorization,
   prepareCtfRangeOrderAuthorization,
@@ -43,6 +48,7 @@ import {
   type StagedBrowserCustodyProof,
 } from "../stores/durable-custody-db";
 import type { BrowserCustodyProofRow } from "../stores/durable-custody-types";
+import { normalizeAndValidateStoredProof, type StoredProof } from "../stores/proof-db";
 
 export function browserWalletScope(
   seed: Uint8Array,
@@ -210,6 +216,104 @@ export function browserSourceResultFromSnapshot(
   return decodeBrowserPersistedSourceResult(row.artifact.artifact);
 }
 
+export function browserRangeOperationFromSnapshot(
+  record: DurableCustodyRecord,
+  artifacts: readonly { reference: { artifactId: string }; artifact: { artifact: unknown } }[],
+): DurableCtfRangeOperation {
+  const reference = record.operation.privateMaterial.exactPrivateMaterial;
+  const row = findArtifact(artifacts, reference.artifactId, "range private authority");
+  const operation = decodeDurableCtfRangeOperation(row.artifact.artifact);
+  assertDurableCtfRangeCustodyAuthority(record, operation);
+  return operation;
+}
+
+export function browserRangeSuccessorProofRows(
+  record: DurableCustodyRecord,
+  operation: DurableCtfRangeOperation,
+  result: DurableCtfRangeRecoveredResult,
+  receivedAtMs: number,
+): StagedBrowserCustodyProof[] {
+  return mapDurableCtfRangeSuccessorProofs({ record, operation, result }, (authority) => ({
+    proof: createBrowserCustodyProofRow({
+      scopeId: record.scope.scopeId,
+      normalizedMint: operation.mintUrl,
+      unit: "msat",
+      proof: deserializeDurableCustodyProofArtifact({
+        schemaVersion: 1,
+        id: authority.proof.id,
+        amount: Amount.from(authority.proof.amount).toString(),
+        secret: authority.proof.secret,
+        C: authority.proof.C,
+        dleq: authority.proof.dleq,
+        p2pkE: authority.proof.p2pkE,
+        witness: authority.proof.witness,
+      }),
+      asset: browserProofAsset(authority.classification),
+      receivedAtMs,
+    }),
+    expectedRevision: null,
+  }));
+}
+
+export function browserRangeStoredProofs(
+  operation: DurableCtfRangeOperation,
+  result: DurableCtfRangeRecoveredResult,
+  receivedAtMs: number,
+): StoredProof[] {
+  return [
+    ...result.receive.map((proof) =>
+      browserStoredProof(operation, operation.receiveAsset, proof, receivedAtMs),
+    ),
+    ...result.change.map((proof) =>
+      browserStoredProof(operation, operation.offerAsset, proof, receivedAtMs),
+    ),
+  ];
+}
+
+export function browserRangeRefundStoredProofs(
+  operation: DurableCtfRangeOperation,
+  proofs: readonly Proof[],
+  receivedAtMs: number,
+): StoredProof[] {
+  return proofs.map((proof) =>
+    browserStoredProof(operation, operation.offerAsset, proof, receivedAtMs),
+  );
+}
+
+export function browserRangeRefundProofRows(
+  record: DurableCustodyRecord,
+  operation: DurableCtfRangeOperation,
+  proofs: readonly Proof[],
+  receivedAtMs: number,
+): BrowserCustodyProofRow[] {
+  const asset = browserCustodyAssetFromRangeAsset(operation.offerAsset);
+  return proofs.map((proof) =>
+    createBrowserCustodyProofRow({
+      scopeId: record.scope.scopeId,
+      normalizedMint: operation.mintUrl,
+      unit: "msat",
+      proof,
+      asset,
+      receivedAtMs,
+    }),
+  );
+}
+
+function browserCustodyAssetFromRangeAsset(asset: DurableCtfRangeAsset): BrowserCustodyProofAsset {
+  switch (asset.kind) {
+    case "regular":
+      return { kind: "regular" };
+    case "conditional":
+      return {
+        kind: "conditional",
+        conditionId: asset.conditionId,
+        outcomeCollection: asset.outcomeCollection,
+      };
+    default:
+      return assertNever(asset);
+  }
+}
+
 export function decodeBrowserPersistedSourceResult(value: unknown): CtfRangeSourceResult {
   if (!isRecord(value) || value.schemaVersion !== 1) {
     throw new Error("range source result authority is invalid");
@@ -281,12 +385,14 @@ function createProofRow(
     normalizedMint: preparation.mintUrl,
     unit: "msat",
     proof,
-    asset: sourceAsset(preparation),
+    asset: browserRangeSourceAsset(preparation),
     receivedAtMs,
   });
 }
 
-function sourceAsset(preparation: PersistedCtfRangeOrderPreparation): BrowserCustodyProofAsset {
+export function browserRangeSourceAsset(
+  preparation: PersistedCtfRangeOrderPreparation,
+): BrowserCustodyProofAsset {
   switch (preparation.side) {
     case "Buy":
       return { kind: "regular" };
@@ -312,6 +418,54 @@ function conditionalSourceAsset(
     conditionId: keyset.conditionId,
     outcomeCollection: keyset.outcomeCollection,
   };
+}
+
+function browserProofAsset(classification: {
+  readonly conditionId: string | null;
+  readonly outcomeSetId: string | null;
+}): BrowserCustodyProofAsset {
+  if (classification.conditionId === null && classification.outcomeSetId === null) {
+    return { kind: "regular" };
+  }
+  if (
+    typeof classification.conditionId === "string" &&
+    typeof classification.outcomeSetId === "string"
+  ) {
+    return {
+      kind: "conditional",
+      conditionId: classification.conditionId,
+      outcomeCollection: classification.outcomeSetId,
+    };
+  }
+  throw new Error("browser range successor asset is incomplete");
+}
+
+function browserStoredProof(
+  operation: DurableCtfRangeOperation,
+  asset: DurableCtfRangeAsset,
+  proof: Proof,
+  receivedAtMs: number,
+): StoredProof {
+  const common: StoredProof = {
+    ...proof,
+    mintUrl: operation.mintUrl,
+    baseAsset: "sat",
+    unit: "msat",
+    receivedAt: receivedAtMs,
+  };
+  switch (asset.kind) {
+    case "regular":
+      return normalizeAndValidateStoredProof(common);
+    case "conditional":
+      return normalizeAndValidateStoredProof({
+        ...common,
+        conditionId: asset.conditionId,
+        outcomeCollection: asset.outcomeCollection,
+        marketId: `${asset.conditionId}-${asset.outcomeCollection}`,
+      });
+    default:
+      return assertNever(asset);
+  }
 }
 
 async function resolveFacts(
