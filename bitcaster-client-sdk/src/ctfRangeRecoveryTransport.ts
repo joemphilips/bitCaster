@@ -264,7 +264,7 @@ export class CtfRangeMintRecoveryAdapter {
     if (this.#operation.unit !== 'msat') {
       throw new Error('CTF range mint authority is invalid')
     }
-    this.#mint = mint ?? createBoundedCashuMintClient(this.#operation.mintUrl, fetchImpl)
+    this.#mint = mint ?? createCtfRangeMintClient(this.#operation.mintUrl, fetchImpl)
   }
 
   async classifyUncertainRecovery(input: {
@@ -373,9 +373,9 @@ export class CtfRangeMintRecoveryAdapter {
   }
 }
 
-function createBoundedCashuMintClient(
+export function createCtfRangeMintClient(
   canonicalMintUrl: string,
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch = fetch,
 ): CtfRangeMintClient {
   const mint = new CashuMint(canonicalMintUrl)
   const request = createBoundedCashuRequest(canonicalMintUrl, fetchImpl)
