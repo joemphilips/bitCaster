@@ -686,6 +686,10 @@
     "filled": "Order filled: {{amount}} on {{market}}",
     "partiallyFilled": "Partial fill: {{amount}} filled on {{market}}, {{remaining}} remaining",
     "cancelled": "Order cancelled on {{market}}",
+    "expired": "Order expired on {{market}}",
+    "evictedCapacity": "Order removed because the order book reached capacity on {{market}}",
+    "rejectedCapacity": "Order rejected because the order book reached capacity on {{market}}",
+    "failed": "Order failed on {{market}}",
     "marketClosed": "Market closed: {{market}}",
     "marketClosedTitle": "A market you follow has closed"
   },

@@ -51,3 +51,22 @@ describe("NotificationBell market_closed", () => {
     expect(navigated).toBe(`/markets/${COND}`);
   });
 });
+
+describe("NotificationBell order failures", () => {
+  it("does not describe a failed order as cancelled", () => {
+    useNotificationsStore.getState().add(
+      marketClosed({
+        id: "order-1-failed",
+        kind: "Failed",
+        orderId: "order-1",
+        finalOutcome: undefined,
+      }),
+    );
+
+    render(<NotificationBell />);
+    fireEvent.click(screen.getByLabelText("Notifications"));
+
+    expect(screen.getByText(/Order failed on Alice/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Order cancelled/i)).not.toBeInTheDocument();
+  });
+});

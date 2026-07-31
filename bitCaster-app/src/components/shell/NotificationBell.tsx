@@ -198,5 +198,17 @@ function formatNotification(
   if (n.kind === "market_closed") {
     return t("notification.marketClosed", { market: n.finalOutcome ?? marketLabel });
   }
-  return t("notification.cancelled", { market: marketLabel });
+  if (n.kind === "cancelled") {
+    return t("notification.cancelled", { market: marketLabel });
+  }
+  if (n.kind === "expired") {
+    return t("notification.expired", { market: marketLabel });
+  }
+  if (n.kind === "evicted_capacity") {
+    return t("notification.evictedCapacity", { market: marketLabel });
+  }
+  if (n.kind === "rejected_capacity") {
+    return t("notification.rejectedCapacity", { market: marketLabel });
+  }
+  return t("notification.failed", { market: marketLabel });
 }

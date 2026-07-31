@@ -26,6 +26,9 @@ export type NotificationKind =
   | "Filled"
   | "partially_filled"
   | "cancelled"
+  | "expired"
+  | "evicted_capacity"
+  | "rejected_capacity"
   | "Failed"
   | "market_closed";
 

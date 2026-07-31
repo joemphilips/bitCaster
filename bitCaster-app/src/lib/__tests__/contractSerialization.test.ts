@@ -18,6 +18,13 @@ describe("generated contract serialization", () => {
       outcomeFaceAmountSubunits: 1000,
       tokenSide: "Outcome",
       tradeId: "44444444-4444-4444-4444-444444444444",
+      settlementGroup: {
+        groupId: "55555555-5555-5555-5555-555555555555",
+        status: "Confirmed",
+        revision: 1,
+        coalescingDeadline: "2026-06-19T00:00:00Z",
+        frozenAt: "2026-06-19T00:00:00Z",
+      },
     };
 
     const roundTripped = JSON.parse(JSON.stringify(fill)) as components["schemas"]["Fill"];

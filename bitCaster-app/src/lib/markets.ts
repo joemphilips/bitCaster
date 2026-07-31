@@ -15,7 +15,6 @@ import {
   createMarketViaEngine,
   submitEphemeralPubkey as sdkSubmitEphemeralPubkey,
   submitOracleAttestationViaEngine,
-  type SubmitOrderRequest as SdkSubmitOrderRequest,
 } from "@bitcaster/client-sdk";
 import {
   marketUnitLabel,
@@ -32,12 +31,7 @@ export { requiredMarketCreationOutcomeCollections } from "@bitcaster/client-sdk/
 
 // Types from generated OpenAPI spec
 
-export type SubmitOrderRequest = Omit<
-  components["schemas"]["SubmitOrderRequest"],
-  "clientOrderId"
-> & {
-  clientOrderId?: string;
-};
+export type SubmitOrderRequest = components["schemas"]["SubmitOrderRequest"];
 export type SubmitOrderResponse = components["schemas"]["SubmitOrderResponse"];
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
 export type LevelDto = components["schemas"]["LevelDto"];
@@ -735,13 +729,9 @@ export async function submitOrder(
   marketId: string,
   params: SubmitOrderRequest,
 ): Promise<SubmitOrderResponse> {
-  const request = {
-    ...params,
-    clientOrderId: params.clientOrderId ?? crypto.randomUUID(),
-  } as SdkSubmitOrderRequest;
   return (await createAuthenticatedBrowserEngineClient().submitOrder(
     marketId,
-    request,
+    params,
   )) as unknown as SubmitOrderResponse;
 }
 

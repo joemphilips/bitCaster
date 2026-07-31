@@ -686,6 +686,10 @@
     "filled": "注文が約定しました: {{market}} で {{amount}}",
     "partiallyFilled": "一部約定: {{market}} で {{amount}} 約定、残り {{remaining}}",
     "cancelled": "{{market}} の注文がキャンセルされました",
+    "expired": "{{market}} の注文が期限切れになりました",
+    "evictedCapacity": "{{market}} の注文はオーダーブックの容量上限により削除されました",
+    "rejectedCapacity": "{{market}} の注文はオーダーブックの容量上限により拒否されました",
+    "failed": "{{market}} の注文が失敗しました",
     "marketClosed": "マーケットがクローズしました: {{market}}",
     "marketClosedTitle": "フォロー中のマーケットがクローズしました"
   },

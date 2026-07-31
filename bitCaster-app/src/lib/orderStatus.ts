@@ -21,28 +21,20 @@ export type FillStatus = components["schemas"]["FillStatus"];
 /**
  * Mirrors `OrderStatusResponse.status` from `openapi.yaml`.
  */
-export type OrderStatus =
-  | "resting"
-  | "matched"
-  | "Matched"
-  | "partially_filled"
-  | "filled"
-  | "Filled"
-  | "cancelled"
-  | "failed"
-  | "Failed";
+export type OrderStatus = components["schemas"]["OrderLifecycleStatus"];
 
 function normalizeOrderStatus(status: string): OrderStatus {
   switch (status) {
     case "resting":
     case "matched":
-    case "Matched":
     case "partially_filled":
+    case "awaiting_authorization":
     case "filled":
-    case "Filled":
     case "cancelled":
+    case "expired":
+    case "evicted_capacity":
+    case "rejected_capacity":
     case "failed":
-    case "Failed":
       return status;
     default:
       throw new Error(`Unhandled OrderStatus: ${status}`);
@@ -52,17 +44,21 @@ function normalizeOrderStatus(status: string): OrderStatus {
 function notificationKindForTerminalStatus(status: OrderStatus): NotificationKind {
   switch (status) {
     case "filled":
-    case "Filled":
       return "Filled";
     case "failed":
-    case "Failed":
       return "Failed";
     case "cancelled":
       return "cancelled";
+    case "expired":
+      return "expired";
+    case "evicted_capacity":
+      return "evicted_capacity";
+    case "rejected_capacity":
+      return "rejected_capacity";
     case "resting":
     case "matched":
-    case "Matched":
     case "partially_filled":
+    case "awaiting_authorization":
       throw new Error(`OrderStatus is not terminal: ${status}`);
     default:
       return assertNever(status);
@@ -103,10 +99,11 @@ type FillLike = {
 
 const TERMINAL_STATUSES: ReadonlySet<OrderStatus> = new Set([
   "filled",
-  "Filled",
   "cancelled",
+  "expired",
+  "evicted_capacity",
+  "rejected_capacity",
   "failed",
-  "Failed",
 ]);
 
 export async function fetchOrderStatus(
@@ -189,12 +186,12 @@ export function buildOrderStatusNotifications(
 
   if (
     !isTerminal &&
-    (current === "matched" || current === "Matched" || current === "partially_filled") &&
+    (current === "matched" || current === "partially_filled") &&
     hasNewFills &&
     status.filledAmountSubunits > 0
   ) {
-    const kind = current === "matched" || current === "Matched" ? "Matched" : "partially_filled";
-    const idKind = current === "matched" || current === "Matched" ? "matched" : "partially_filled";
+    const kind = current === "matched" ? "Matched" : "partially_filled";
+    const idKind = current === "matched" ? "matched" : "partially_filled";
     return [
       {
         id: `${trade.orderId}-${idKind}-${fillCount}`,
@@ -327,7 +324,7 @@ export function usePendingTradesPoller(): void {
             }
 
             if (isTerminal) {
-              if (current === "Filled" || current === "filled") {
+              if (current === "filled") {
                 useToastStore.getState().addToast({
                   type: "success",
                   message: `All your amount for order ${shortOrderId(trade.orderId)} has been filled. 0 sats remaining.`,

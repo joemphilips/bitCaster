@@ -259,12 +259,13 @@ function fundedSatYesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDeta
 function mockAcceptedOrder() {
   vi.mocked(submitOrder).mockResolvedValue({
     orderId: "order-auto-1",
-    status: "Filled",
+    status: "filled",
     remainingAmountSubunits: 0,
     fills: [],
     pendingPubkeySubmissions: [],
     baseAsset: "sat",
     divisibility: 10_000,
+    activeSettlementGroup: null,
   });
 }
 

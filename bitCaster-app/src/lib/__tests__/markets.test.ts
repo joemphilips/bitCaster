@@ -476,13 +476,11 @@ describe("submitOrder", () => {
 
   it("submits an authenticated order without a maker heartbeat preflight", async () => {
     await submitOrder("cond-123-YES", {
-      outcomeId: "YES",
-      tokenSide: "Outcome",
-      side: "Buy",
-      price: 50,
-      amountSubunits: 100,
-      timeInForce: "GTC",
-      clientOrderId: "client-order-1",
+      settlementCapability: {
+        artifactId: "artifact-1",
+        bindingDigest: "a".repeat(64),
+      },
+      comment: null,
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -491,8 +489,12 @@ describe("submitOrder", () => {
     );
     const init = (fetchMock.mock.calls[0] as [string, RequestInit])[1];
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toMatchObject({
-      clientOrderId: "client-order-1",
+    expect(JSON.parse(String(init.body))).toEqual({
+      settlementCapability: {
+        artifactId: "artifact-1",
+        bindingDigest: "a".repeat(64),
+      },
+      comment: null,
     });
     expect((init.headers as Record<string, string>).Authorization).toMatch(/^Nostr /);
   });

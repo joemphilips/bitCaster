@@ -99,7 +99,7 @@ describe("buildOrderStatusNotifications", () => {
   it("notifies on a mint match-shaped settlement handle", () => {
     const status = {
       ...orderStatusWithTradeFills("trade-a"),
-      status: "Matched",
+      status: "matched",
       remainingAmountSubunits: 100,
       filledAmountSubunits: 100,
     } as OrderStatusResponse;
@@ -149,7 +149,7 @@ describe("buildOrderStatusNotifications", () => {
   it("notifies when an order settlement fails terminally", () => {
     const status = {
       ...orderStatusWithTradeFills("trade-a"),
-      status: "Failed",
+      status: "failed",
       remainingAmountSubunits: 0,
       filledAmountSubunits: 0,
     } as OrderStatusResponse;
@@ -166,10 +166,29 @@ describe("buildOrderStatusNotifications", () => {
     });
   });
 
+  it("preserves a capacity rejection as a distinct terminal reason", () => {
+    const status = {
+      ...orderStatusWithTradeFills(),
+      status: "rejected_capacity",
+      remainingAmountSubunits: 100,
+      filledAmountSubunits: 0,
+    } as OrderStatusResponse;
+
+    const notifications = buildOrderStatusNotifications(status, pendingTrade(), 0, 123);
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      id: "order-1-rejected_capacity",
+      kind: "rejected_capacity",
+      remainingAmountSubunits: 100,
+      occurredAt: 123,
+    });
+  });
+
   it("carries the sat product unit onto the notification", () => {
     const status = {
       ...orderStatusWithTradeFills("trade-a"),
-      status: "Filled",
+      status: "filled",
       filledAmountSubunits: 50,
       remainingAmountSubunits: 0,
     } as OrderStatusResponse;
