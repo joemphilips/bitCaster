@@ -35,7 +35,6 @@ import {
   deriveDurableCtfResidualDecision,
   toDurableCtfRangeProofOperationInput,
   type DurableCtfRangeExpiryObservation,
-  type DurableCtfRangeKeysetResolver,
   type DurableCtfRangeMintKeyset,
   type DurableCtfRangeOperation,
   type DurableCtfRangeProof,
@@ -49,15 +48,18 @@ import {
   type CtfRangeMintClient,
 } from '@bitcaster-market/client-sdk/ctfRangeRecoveryTransport'
 import {
-  createPoolSettlementCapabilityArtifact,
-  deriveSettlementCapabilityArtifactDigest,
-  encodeSettlementCapabilityArtifact,
-} from '@bitcaster-market/client-sdk/settlementCapabilityArtifact'
-import {
-  canonicalizeOutcomeSet,
-  complementOutcomeSetId,
-  parseMarketOutcomes,
-} from '@bitcaster-market/client-sdk/outcomeSets'
+  buildPersistedCtfRangeOrderPreparation,
+  createCtfRangeOrderPreparationKeysetResolver,
+  createCtfRangeSettlementCapabilityRequest,
+  ctfRangeOrderPreparationKeysetLookup,
+  decodeCtfRangeOrderPreparationFromRecord as preparationFromJournal,
+  decodeSettlementCoordinatorPublicKey as requireCoordinatorKey,
+  encodePersistedCtfRangeOrderPreparation as encodeCanonicalRangePreparation,
+  exactCtfRangeOrderPreparationMintKeysets,
+  validateAndProjectCtfRangeSettlementCapabilityResponse,
+  type CtfRangeReviewedMintFacts,
+  type PersistedCtfRangeOrderPreparation,
+} from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
 import {
   amountToNumber,
   computeInputFeeSatsForProofs,
@@ -73,15 +75,11 @@ import {
   type BoundedProofConsolidationPlan,
   type ProofConsolidationRound,
 } from '@bitcaster-market/client-sdk/boundedProofConsolidation'
-import {
-  canonicalizeTokenImportMintUrl,
-  type TokenImportKeysetLookup,
-} from '@bitcaster-market/client-sdk/tokenImportValidation'
+import { canonicalizeTokenImportMintUrl } from '@bitcaster-market/client-sdk/tokenImportValidation'
 import type {
   CreateSettlementCapabilityRequest,
   OrderStatusResponse,
   SettlementCapabilityResultResponse,
-  SettlementCapabilityAdmissionPolicyResponse,
   SettlementCapabilityResponse,
 } from '@bitcaster-market/client-sdk/engineClient'
 import { DaemonCtfRangeCoordinator } from './ctfRangeCoordinator.ts'
@@ -106,8 +104,6 @@ import {
 import {
   appendRangePreparationConsolidation,
   bindRangePreparationCapability,
-  decodeCanonicalRangePreparation,
-  encodeCanonicalRangePreparation,
   insertRangePreparation,
   linkRangePreparationSource,
   pageActiveRangePreparations,
@@ -140,9 +136,6 @@ const SOURCE_PURPOSE = 'ctf-range-authorization-source'
 const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
 const ACTIVE_RANGE_SOURCE_LIMIT = 256
 const MAX_CONSOLIDATION_ROUNDS = 256
-const RANGE_REFUND_SAFETY_MARGIN_SECONDS = 300
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-const SHA256_PATTERN = /^[0-9a-f]{64}$/
 
 interface CtfRangeMintLike {
   getInfo(): Promise<GetInfoResponse>
@@ -213,7 +206,7 @@ export interface DaemonCtfRangeRecoveryResult {
 interface PreparedMintAuthority {
   readonly preparation: CtfRangeOrderPreparation
   readonly preparationInput: PersistedPreparationInput
-  readonly lookup: TokenImportKeysetLookup
+  readonly lookup: ReturnType<typeof ctfRangeOrderPreparationKeysetLookup>
   readonly observation: DurableCtfRangeExpiryObservation
   readonly mintKeysets: ReadonlyMap<string, DurableCtfRangeMintKeyset>
   readonly offerAsset: StoredProofAsset
@@ -221,28 +214,7 @@ interface PreparedMintAuthority {
   readonly mutation: () => FencedStateMutation
 }
 
-interface PersistedPreparationInput {
-  readonly version: 1
-  readonly operationId: string
-  readonly sourceOperationId: string
-  readonly sourceKind: 'wallet-prepared' | 'residual-change'
-  readonly predecessorRangeOperationId: string | null
-  readonly authorizationId: string
-  readonly mintUrl: string
-  readonly conditionId: string
-  readonly coordinatorPublicKey: string
-  readonly side: 'Buy' | 'Sell'
-  readonly priceNumerator: number
-  readonly amountSubunits: number
-  readonly divisibility: number
-  readonly offerKeyset: ActiveCtfRangeMintKeyset
-  readonly receiveKeyset: ActiveCtfRangeMintKeyset
-  readonly expiryObservation: DurableCtfRangeExpiryObservation
-  readonly expiry: number
-  readonly maxPoolEntries: number
-  readonly maxInputs: number
-  readonly request: Omit<PrepareSettlementCapabilityInput, 'walletSeedHex'>
-}
+type PersistedPreparationInput = PersistedCtfRangeOrderPreparation
 
 class RangeSourceReleasedError extends Error {
   constructor(operationId: string) {
@@ -291,7 +263,10 @@ export class DaemonCtfRangeOrderCoordinator {
       expiryObservation: authority.observation,
       allowInsecureLoopbackHttp: this.#dependencies.allowInsecureLoopbackHttp === true,
     })
-    const capabilityRequest = createCapabilityRequest(request, operation)
+    const capabilityRequest = createCtfRangeSettlementCapabilityRequest(
+      authority.preparationInput,
+      operation,
+    )
     const binding = await createRangeBinding(
       request.walletSeedHex,
       operation,
@@ -309,8 +284,13 @@ export class DaemonCtfRangeOrderCoordinator {
       throw new Error('engine client does not support settlement capability creation')
     }
     const capability = await createCapability.call(client, capabilityRequest)
-    assertCapabilityResponse(capability, request, operation, false)
-    await this.#bindCapability(operation.operationId, capability)
+    const projectedCapability = validateAndProjectCtfRangeSettlementCapabilityResponse({
+      capability,
+      preparation: authority.preparationInput,
+      operation,
+      recovering: false,
+    })
+    await this.#bindCapability(operation.operationId, projectedCapability)
     return {
       operationId: operation.operationId,
       capability,
@@ -407,7 +387,7 @@ export class DaemonCtfRangeOrderCoordinator {
       expiryObservation: authority.observation,
       allowInsecureLoopbackHttp: this.#dependencies.allowInsecureLoopbackHttp === true,
     })
-    const capabilityRequest = createCapabilityRequest(preparationInput.request, operation)
+    const capabilityRequest = createCtfRangeSettlementCapabilityRequest(preparationInput, operation)
     const binding = await createRangeBinding(
       walletSeedHex,
       operation,
@@ -436,8 +416,13 @@ export class DaemonCtfRangeOrderCoordinator {
       throw new Error('engine client does not support settlement capability creation')
     }
     const capability = await createCapability.call(client, capabilityRequest)
-    assertCapabilityResponse(capability, preparationInput.request, operation, true)
-    await this.#bindCapability(operation.operationId, capability)
+    const projectedCapability = validateAndProjectCtfRangeSettlementCapabilityResponse({
+      capability,
+      preparation: preparationInput,
+      operation,
+      recovering: true,
+    })
+    await this.#bindCapability(operation.operationId, projectedCapability)
     await submitRecoveredOrder(client, preparationInput.request, capability)
     await this.#markOrderSubmitted(operation.operationId)
     throw new RangeRecoveryDeferredError(
@@ -481,7 +466,7 @@ export class DaemonCtfRangeOrderCoordinator {
     if (loaded === null) throw new Error('residual range custody authority is missing')
     const result = await rangeCoordinator.readAppliedResult({
       custodyOperationId,
-      resolveKeyset: persistedRangeKeysetResolver(predecessor),
+      resolveKeyset: createCtfRangeOrderPreparationKeysetResolver(predecessor),
     })
     const residual = deriveDurableCtfResidualDecision({
       source: loaded.operation,
@@ -527,12 +512,12 @@ export class DaemonCtfRangeOrderCoordinator {
       ),
       loadEngineMarket(client, request.conditionId),
     ])
-    const preparationInput = buildPreparationInput({
-      request,
+    const preparationInput = buildPersistedCtfRangeOrderPreparation({
+      request: persistedOrderRequest(request),
       coordinatorPublicKey: requireCoordinatorKey(policy),
-      metadata,
+      mintFacts: metadata,
       market,
-      now: this.#nowSeconds(),
+      nowUnixSeconds: this.#nowSeconds(),
       randomId: this.#randomId.bind(this),
     })
     const durablePreparation = await this.#persistPreparation(preparationInput)
@@ -638,7 +623,7 @@ export class DaemonCtfRangeOrderCoordinator {
 
   async #bindCapability(
     rangeOperationId: string,
-    capability: SettlementCapabilityResponse,
+    capability: RangePreparationCapability,
   ): Promise<void> {
     const mutation = this.#mutation()
     await withDurableCustodyUnitOfWork(
@@ -648,7 +633,7 @@ export class DaemonCtfRangeOrderCoordinator {
       (database) => {
         const current = readRangePreparation(database, mutation.fence.scopeId, rangeOperationId)
         if (current === null) throw new Error('daemon CTF range preparation is missing')
-        const expected = rangePreparationCapability(capability)
+        const expected = capability
         if (current.lifecycleState !== 'prepared') {
           if (current.capability === null || !isDeepStrictEqual(current.capability, expected)) {
             throw new Error('daemon CTF range capability conflicts with its journal')
@@ -1104,12 +1089,12 @@ export class DaemonCtfRangeOrderCoordinator {
       ),
       loadEngineMarket(client, predecessorInput.conditionId),
     ])
-    const proposed = buildPreparationInput({
-      request: { ...predecessorInput.request, walletSeedHex },
+    const proposed = buildPersistedCtfRangeOrderPreparation({
+      request: predecessorInput.request,
       coordinatorPublicKey: requireCoordinatorKey(policy),
-      metadata,
+      mintFacts: metadata,
       market,
-      now: this.#nowSeconds(),
+      nowUnixSeconds: this.#nowSeconds(),
       randomId: this.#randomId.bind(this),
       authorizationAmountSubunits: remainingAmountSubunits,
       sourceKind: 'residual-change',
@@ -1300,16 +1285,16 @@ function preparedMintAuthority(
       ...withoutRequest(preparationInput),
     }),
     preparationInput,
-    lookup: keysetLookupFromPreparation(preparationInput),
+    lookup: ctfRangeOrderPreparationKeysetLookup(preparationInput),
     observation: metadata.observation,
-    mintKeysets: exactPreparationMintKeysets(preparationInput),
+    mintKeysets: exactCtfRangeOrderPreparationMintKeysets(preparationInput),
     offerAsset: assetForKeyset(preparationInput.offerKeyset),
     mint,
     mutation,
   }
 }
 
-interface LoadedMintMetadata {
+interface LoadedMintMetadata extends CtfRangeReviewedMintFacts {
   readonly regular: ActiveCtfRangeMintKeyset[]
   readonly conditional: Array<
     ActiveCtfRangeMintKeyset & {
@@ -1550,11 +1535,6 @@ function resolvedKeyset(
   }
 }
 
-function durableMintKeyset(keyset: ActiveCtfRangeMintKeyset): DurableCtfRangeMintKeyset {
-  const { active: _, ...durable } = keyset
-  return durable
-}
-
 function settlementLimits(info: GetInfoResponse): {
   readonly maxInputs: number
   readonly maxPoolEntries: number
@@ -1585,90 +1565,11 @@ function positiveInteger(value: unknown, label: string): number {
   return value
 }
 
-function buildPreparationInput(input: {
-  request: PrepareSettlementCapabilityInput
-  coordinatorPublicKey: string
-  metadata: LoadedMintMetadata
-  market: unknown
-  now: number
-  randomId: () => string
-  authorizationAmountSubunits?: number
-  sourceKind?: PersistedPreparationInput['sourceKind']
-  predecessorRangeOperationId?: string | null
-}): PersistedPreparationInput {
-  const selectedCollection = selectedOutcomeCollection(
-    input.market,
-    input.request.outcomeId,
-    input.request.tokenSide,
-  )
-  const { regular, conditional } = selectPreparationKeysets(
-    input.metadata,
-    input.request.conditionId,
-    selectedCollection,
-  )
-  const ceiling = effectiveExpiryCeiling(input.metadata.observation)
-  const expiry = ceiling - RANGE_REFUND_SAFETY_MARGIN_SECONDS
-  if (expiry <= input.now) {
-    throw new Error('mint CTF range authorization horizon is exhausted')
-  }
-  const operationId = input.randomId()
-  const sourceKind = input.sourceKind ?? 'wallet-prepared'
-  return {
-    version: 1,
-    operationId,
-    sourceOperationId: `${operationId}:source`,
-    sourceKind,
-    predecessorRangeOperationId: input.predecessorRangeOperationId ?? null,
-    authorizationId: input.randomId(),
-    mintUrl: input.metadata.observation.canonicalMintUrl,
-    conditionId: input.request.conditionId,
-    coordinatorPublicKey: input.coordinatorPublicKey,
-    side: input.request.side,
-    priceNumerator: input.request.price,
-    amountSubunits: input.authorizationAmountSubunits ?? input.request.amountSubunits,
-    divisibility: input.request.divisibility,
-    offerKeyset: input.request.side === 'Buy' ? regular : conditional,
-    receiveKeyset: input.request.side === 'Buy' ? conditional : regular,
-    expiryObservation: input.metadata.observation,
-    expiry,
-    maxPoolEntries: input.metadata.maxPoolEntries,
-    maxInputs: input.metadata.maxInputs,
-    request: persistedOrderRequest(input.request),
-  }
-}
-
-function selectPreparationKeysets(
-  metadata: LoadedMintMetadata,
-  conditionId: string,
-  selectedCollection: string,
-): {
-  regular: ActiveCtfRangeMintKeyset
-  conditional: LoadedMintMetadata['conditional'][number]
-} {
-  const regular = [...metadata.regular].sort(
-    (left, right) =>
-      left.inputFeePpk - right.inputFeePpk ||
-      (right.finalExpiry ?? Number.MAX_SAFE_INTEGER) -
-        (left.finalExpiry ?? Number.MAX_SAFE_INTEGER) ||
-      left.id.localeCompare(right.id),
-  )[0]
-  const conditional = metadata.conditional.find(
-    (keyset) =>
-      keyset.conditionId === conditionId &&
-      keyset.outcomeCollection === selectedCollection &&
-      keyset.active,
-  )
-  if (regular === undefined || conditional === undefined) {
-    throw new Error('mint does not expose the selected active range keysets')
-  }
-  return { regular, conditional }
-}
-
 function persistedOrderRequest(
   input: PrepareSettlementCapabilityInput,
-): Omit<PrepareSettlementCapabilityInput, 'walletSeedHex'> {
+): PersistedPreparationInput['request'] {
   const { walletSeedHex: _, ...request } = input
-  return structuredClone(request)
+  return structuredClone(request) as PersistedPreparationInput['request']
 }
 
 function withoutRequest(
@@ -1676,45 +1577,6 @@ function withoutRequest(
 ): Omit<PersistedPreparationInput, 'request' | 'version'> {
   const { request: _, version: __, ...preparation } = input
   return preparation
-}
-
-function effectiveExpiryCeiling(observation: DurableCtfRangeExpiryObservation): number {
-  const fallback = observation.observedAt + observation.maxExpirySeconds
-  if (!Number.isSafeInteger(fallback)) {
-    throw new Error('mint settlement expiry ceiling exceeds the safe integer range')
-  }
-  return observation.conditionalKeysets.reduce((ceiling, keyset) => {
-    const finalExpiry = keyset.finalExpiry
-    return finalExpiry === undefined
-      ? ceiling
-      : Math.min(ceiling, positiveInteger(finalExpiry, 'condition keyset final expiry'))
-  }, fallback)
-}
-
-function selectedOutcomeCollection(
-  market: unknown,
-  outcomeId: string,
-  tokenSide: 'Outcome' | 'Complement',
-): string {
-  const outcomes = extractMarketOutcomes(market)
-  if (outcomes.length < 2) throw new Error('engine market outcome authority is incomplete')
-  const selected = outcomes.find(
-    (outcome) => outcome.id === outcomeId || outcome.label === outcomeId,
-  )
-  if (selected === undefined) throw new Error('selected outcome is absent from the engine market')
-  const primitive = canonicalizeOutcomeSet([selected.label])
-  const collection =
-    tokenSide === 'Outcome'
-      ? primitive
-      : complementOutcomeSetId(
-          outcomes.map(({ label }) => label),
-          primitive,
-        )
-  return requireText(collection, 'selected outcome collection')
-}
-
-function extractMarketOutcomes(market: unknown): Array<{ id: string; label: string }> {
-  return parseMarketOutcomes(market)
 }
 
 async function loadEngineMarket(client: EngineClientLike, conditionId: string): Promise<unknown> {
@@ -1732,207 +1594,6 @@ async function loadEngineMarket(client: EngineClientLike, conditionId: string): 
   return market
 }
 
-function requireCoordinatorKey(policy: SettlementCapabilityAdmissionPolicyResponse): string {
-  const key = requireText(policy.coordinatorPubkey, 'coordinator public key')
-  if (!/^[0-9a-f]{64}$/i.test(key)) throw new Error('coordinator public key is invalid')
-  return key.toLowerCase()
-}
-
-function preparationFromJournal(
-  record: RangePreparationRecord,
-  expectedRequest?: PersistedPreparationInput['request'],
-): PersistedPreparationInput {
-  const value = requireRecord(
-    decodeCanonicalRangePreparation(record.preparationBytes),
-    'range preparation input',
-  )
-  const request = requireRecord(value.request, 'range preparation request')
-  const input = structuredClone(value) as unknown as PersistedPreparationInput
-  assertPersistedPreparationShape(input, request)
-  if (
-    input.operationId !== record.rangeOperationId ||
-    input.sourceOperationId !== record.sourceOperationId ||
-    input.sourceKind !== record.sourceKind ||
-    input.predecessorRangeOperationId !== record.predecessorRangeOperationId ||
-    input.authorizationId !== record.authorizationId ||
-    input.request.clientOrderId !== record.clientOrderId ||
-    input.request.marketId !== record.orderRouteId ||
-    input.mintUrl !== record.normalizedMint ||
-    input.request.mintUrl !== record.normalizedMint ||
-    input.conditionId !== record.conditionId ||
-    input.request.conditionId !== input.conditionId ||
-    input.request.tokenSide !== record.tokenSide ||
-    input.side !== record.side ||
-    input.request.side !== record.side ||
-    input.priceNumerator !== record.priceSubunits ||
-    input.request.price !== record.priceSubunits ||
-    input.amountSubunits !== record.amountSubunits ||
-    (input.sourceKind === 'wallet-prepared' &&
-      input.request.amountSubunits !== record.amountSubunits) ||
-    (input.sourceKind === 'residual-change' &&
-      input.request.amountSubunits < record.amountSubunits) ||
-    input.divisibility !== record.divisibility ||
-    input.request.divisibility !== record.divisibility ||
-    input.expiry !== record.authorizationExpiresAtUnixSeconds ||
-    input.request.baseAsset !== 'sat' ||
-    input.request.collateralUnit !== 'msat' ||
-    'walletSeedHex' in request ||
-    (expectedRequest !== undefined && !isDeepStrictEqual(input.request, expectedRequest))
-  ) {
-    throw new Error(`Range operation ${record.rangeOperationId} preparation is foreign`)
-  }
-  return input
-}
-
-function assertPersistedPreparationShape(
-  input: PersistedPreparationInput,
-  request: Record<string, unknown>,
-): void {
-  if (input.version !== 1) throw new Error('range preparation version is unsupported')
-  for (const [label, value] of [
-    ['operation id', input.operationId],
-    ['source operation id', input.sourceOperationId],
-    ['authorization id', input.authorizationId],
-    ['mint URL', input.mintUrl],
-    ['condition id', input.conditionId],
-    ['coordinator key', input.coordinatorPublicKey],
-  ] as const) {
-    requireText(value, `range preparation ${label}`)
-  }
-  if (!/^[0-9a-f]{64}$/.test(input.coordinatorPublicKey)) {
-    throw new Error('range preparation coordinator key is invalid')
-  }
-  if (input.side !== 'Buy' && input.side !== 'Sell') {
-    throw new Error('range preparation side is invalid')
-  }
-  if (
-    (input.sourceKind === 'wallet-prepared' && input.predecessorRangeOperationId !== null) ||
-    (input.sourceKind === 'residual-change' &&
-      (typeof input.predecessorRangeOperationId !== 'string' ||
-        input.predecessorRangeOperationId.length === 0 ||
-        input.predecessorRangeOperationId === input.operationId))
-  ) {
-    throw new Error('range preparation predecessor authority is invalid')
-  }
-  for (const [label, value] of [
-    ['price', input.priceNumerator],
-    ['amount', input.amountSubunits],
-    ['divisibility', input.divisibility],
-    ['expiry', input.expiry],
-    ['pool limit', input.maxPoolEntries],
-    ['input limit', input.maxInputs],
-  ] as const) {
-    positiveInteger(value, `range preparation ${label}`)
-  }
-  assertPersistedKeyset(input.offerKeyset)
-  assertPersistedKeyset(input.receiveKeyset)
-  assertPersistedExpiryObservation(input.expiryObservation)
-  assertPersistedOrderRequest(request)
-}
-
-function assertPersistedKeyset(value: ActiveCtfRangeMintKeyset): void {
-  if (
-    value.active !== true ||
-    value.unit !== 'msat' ||
-    typeof value.canonicalMintUrl !== 'string' ||
-    typeof value.id !== 'string' ||
-    !Number.isSafeInteger(value.inputFeePpk) ||
-    value.inputFeePpk <= 0 ||
-    (value.finalExpiry !== null &&
-      (!Number.isSafeInteger(value.finalExpiry) || value.finalExpiry <= 0))
-  ) {
-    throw new Error('range preparation keyset is invalid')
-  }
-  const keys = requireRecord(value.keys, 'range preparation keyset keys')
-  if (
-    Object.keys(keys).length === 0 ||
-    Object.entries(keys).some(
-      ([amount, publicKey]) => !/^[1-9][0-9]*$/.test(amount) || typeof publicKey !== 'string',
-    )
-  ) {
-    throw new Error('range preparation keyset keys are invalid')
-  }
-}
-
-function assertPersistedExpiryObservation(value: DurableCtfRangeExpiryObservation): void {
-  if (
-    value.freshness !== 'fresh' ||
-    typeof value.canonicalMintUrl !== 'string' ||
-    !Number.isSafeInteger(value.observedAt) ||
-    value.observedAt < 0 ||
-    !Number.isSafeInteger(value.maxExpirySeconds) ||
-    value.maxExpirySeconds <= 0 ||
-    !Array.isArray(value.conditionKeysetIds) ||
-    value.conditionKeysetIds.length === 0 ||
-    value.conditionKeysetIds.some((id) => typeof id !== 'string' || id.length === 0) ||
-    !Array.isArray(value.conditionalKeysets) ||
-    value.conditionalKeysets.length === 0
-  ) {
-    throw new Error('range preparation expiry observation is invalid')
-  }
-}
-
-function assertPersistedOrderRequest(request: Record<string, unknown>): void {
-  for (const field of ['clientOrderId', 'marketId', 'conditionId', 'outcomeId', 'mintUrl']) {
-    requireText(request[field], `range preparation request ${field}`)
-  }
-  if (
-    (request.tokenSide !== 'Outcome' && request.tokenSide !== 'Complement') ||
-    (request.side !== 'Buy' && request.side !== 'Sell') ||
-    request.baseAsset !== 'sat' ||
-    request.collateralUnit !== 'msat' ||
-    (request.timeInForce !== 'FAK' &&
-      request.timeInForce !== 'FOK' &&
-      request.timeInForce !== 'GTC') ||
-    request.expiresAt !== null
-  ) {
-    throw new Error('range preparation request enum is invalid')
-  }
-  for (const field of ['price', 'amountSubunits', 'divisibility']) {
-    positiveInteger(request[field], `range preparation request ${field}`)
-  }
-}
-
-function keysetLookupFromPreparation(input: PersistedPreparationInput): TokenImportKeysetLookup {
-  const keysets = [input.offerKeyset, input.receiveKeyset]
-  const regularKeysets = keysets
-    .filter((keyset) => !hasConditionalMetadata(keyset))
-    .map((keyset) => preparationKeysetMetadata(keyset))
-  const conditionalKeysets = keysets.filter(hasConditionalMetadata).map((keyset) => ({
-    ...preparationKeysetMetadata(keyset),
-    conditionId: keyset.conditionId,
-    outcomeCollection: keyset.outcomeCollection,
-    outcomeCollectionId: keyset.outcomeCollectionId,
-  }))
-  if (regularKeysets.length !== 1 || conditionalKeysets.length !== 1) {
-    throw new Error('range preparation keyset source authority is incomplete')
-  }
-  return {
-    canonicalMintUrl: input.mintUrl,
-    freshness: 'fresh',
-    regularKeysets,
-    conditionalKeysets,
-  }
-}
-
-function exactPreparationMintKeysets(
-  input: PersistedPreparationInput,
-): ReadonlyMap<string, DurableCtfRangeMintKeyset> {
-  return new Map(
-    [input.offerKeyset, input.receiveKeyset].map((keyset) => [
-      keyset.id,
-      durableMintKeyset(keyset),
-    ]),
-  )
-}
-
-function persistedRangeKeysetResolver(
-  input: PersistedPreparationInput,
-): DurableCtfRangeKeysetResolver {
-  const keysets = exactPreparationMintKeysets(input)
-  return (mintUrl, keysetId) => (mintUrl === input.mintUrl ? keysets.get(keysetId) : undefined)
-}
-
 function persistedMintAuthority(
   input: PersistedPreparationInput,
   walletSeedHex: string,
@@ -1946,42 +1607,13 @@ function persistedMintAuthority(
   return {
     preparation,
     preparationInput: input,
-    lookup: keysetLookupFromPreparation(input),
+    lookup: ctfRangeOrderPreparationKeysetLookup(input),
     observation: input.expiryObservation,
-    mintKeysets: exactPreparationMintKeysets(input),
+    mintKeysets: exactCtfRangeOrderPreparationMintKeysets(input),
     offerAsset: assetForKeyset(input.offerKeyset),
     mint,
     mutation,
   }
-}
-
-function preparationKeysetMetadata(keyset: ActiveCtfRangeMintKeyset) {
-  return {
-    keysetId: keyset.id,
-    unit: keyset.unit,
-    active: keyset.active,
-    inputFeePpk: keyset.inputFeePpk,
-    ...(keyset.finalExpiry === null ? {} : { finalExpiry: keyset.finalExpiry }),
-  }
-}
-
-function hasConditionalMetadata(
-  keyset: ActiveCtfRangeMintKeyset,
-): keyset is ActiveCtfRangeMintKeyset & {
-  conditionId: string
-  outcomeCollection: string
-  outcomeCollectionId: string
-} {
-  const value = keyset as ActiveCtfRangeMintKeyset & {
-    conditionId?: unknown
-    outcomeCollection?: unknown
-    outcomeCollectionId?: unknown
-  }
-  return (
-    typeof value.conditionId === 'string' &&
-    typeof value.outcomeCollection === 'string' &&
-    typeof value.outcomeCollectionId === 'string'
-  )
 }
 
 interface SourceResult {
@@ -2856,77 +2488,6 @@ function rangeCustodyOperationId(walletSeedHex: string, rangeOperationId: string
       stage: 'send',
     },
   })
-}
-
-function createCapabilityRequest(
-  request: Omit<PrepareSettlementCapabilityInput, 'walletSeedHex'>,
-  operation: DurableCtfRangeOperation,
-): CreateSettlementCapabilityRequest {
-  const artifact = createPoolSettlementCapabilityArtifact(operation)
-  return {
-    stageIdempotencyKey: operation.authorizationId,
-    clientOrderId: request.clientOrderId,
-    marketId: request.marketId,
-    orderIntent: {
-      outcomeId: request.outcomeId,
-      tokenSide: request.tokenSide,
-      side: request.side,
-      price: request.price,
-      amountSubunits: request.amountSubunits,
-      baseAsset: request.baseAsset,
-      collateralUnit: request.collateralUnit,
-      timeInForce: request.timeInForce,
-      expiresAt: request.expiresAt,
-    },
-    artifact: Buffer.from(encodeSettlementCapabilityArtifact(artifact)).toString('base64'),
-  }
-}
-
-function assertCapabilityResponse(
-  capability: SettlementCapabilityResponse,
-  request: Omit<PrepareSettlementCapabilityInput, 'walletSeedHex'>,
-  operation: DurableCtfRangeOperation,
-  recovering: boolean,
-): void {
-  const expectedDigest = deriveSettlementCapabilityArtifactDigest(
-    createPoolSettlementCapabilityArtifact(operation),
-  )
-  const validState =
-    capability.state === 'bound' ||
-    (recovering &&
-      (capability.state === 'selected' ||
-        capability.state === 'uncertain' ||
-        capability.state === 'terminal'))
-  if (
-    capability.clientOrderId !== request.clientOrderId ||
-    capability.marketId !== request.marketId ||
-    capability.artifactDigest !== expectedDigest ||
-    !validState ||
-    !UUID_PATTERN.test(capability.orderId) ||
-    !UUID_PATTERN.test(capability.reference?.artifactId ?? '') ||
-    !SHA256_PATTERN.test(capability.reference?.bindingDigest ?? '') ||
-    !Number.isSafeInteger(capability.version) ||
-    capability.version < 1 ||
-    !isIsoDateTime(capability.authorizationExpiresAt) ||
-    !isIsoDateTime(capability.stageExpiresAt)
-  ) {
-    throw new Error('engine returned a foreign settlement capability')
-  }
-}
-
-function rangePreparationCapability(
-  capability: SettlementCapabilityResponse,
-): NonNullable<RangePreparationRecord['capability']> {
-  return {
-    artifactId: capability.reference.artifactId,
-    bindingDigest: capability.reference.bindingDigest,
-    artifactDigest: capability.artifactDigest,
-    orderId: capability.orderId,
-  }
-}
-
-function isIsoDateTime(value: unknown): value is string {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value))
 }
 
 function assetForKeyset(

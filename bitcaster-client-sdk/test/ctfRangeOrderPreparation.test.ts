@@ -16,8 +16,25 @@ import {
   completeCtfRangeOrderAuthorization,
   prepareCtfRangeOrderAuthorization,
 } from '../src/ctfRangeOrderPreparation.ts'
+import {
+  buildPersistedCtfRangeOrderPreparation,
+  createCtfRangeSettlementCapabilityRequest,
+  ctfRangeOrderPreparationKeysetLookup,
+  decodeCtfRangeOrderPreparationFromRecord,
+  decodePersistedCtfRangeOrderPreparationBytes,
+  encodePersistedCtfRangeOrderPreparation,
+  validateAndProjectCtfRangeSettlementCapabilityResponse,
+  type CtfRangeOrderRequest,
+} from '../src/ctfRangeOrderProtocol.ts'
+import {
+  encodeCtfRangeOrderPreparationArtifact,
+  type CtfRangeOrderPreparationRecord,
+} from '../src/ctfRangeOrderJournal.ts'
 import { deriveRootCtfOutcomeCollectionId } from '../src/durableCtfRangeOperation.ts'
-import { createPoolSettlementCapabilityArtifact } from '../src/settlementCapabilityArtifact.ts'
+import {
+  createPoolSettlementCapabilityArtifact,
+  deriveSettlementCapabilityArtifactDigest,
+} from '../src/settlementCapabilityArtifact.ts'
 
 const CONDITION_ID = 'ab'.repeat(32)
 const OUTCOME_COLLECTION = 'YES'
@@ -45,6 +62,21 @@ const OUTCOME_KEYSET_ID = deriveConditionalKeysetId({
   unit: 'msat',
   input_fee_ppk: INPUT_FEE_PPK,
   final_expiry: FINAL_EXPIRY,
+  conditionId: CONDITION_ID,
+  outcomeCollectionId: OUTCOME_COLLECTION_ID,
+})
+const REVIEWED_FINAL_EXPIRY = 1_000
+const REVIEWED_REGULAR_KEYSET_ID = deriveKeysetId(KEYS, {
+  unit: 'msat',
+  input_fee_ppk: INPUT_FEE_PPK,
+  expiry: REVIEWED_FINAL_EXPIRY,
+  versionByte: 1,
+})
+const REVIEWED_OUTCOME_KEYSET_ID = deriveConditionalKeysetId({
+  keys: KEYS,
+  unit: 'msat',
+  input_fee_ppk: INPUT_FEE_PPK,
+  final_expiry: REVIEWED_FINAL_EXPIRY,
   conditionId: CONDITION_ID,
   outcomeCollectionId: OUTCOME_COLLECTION_ID,
 })
@@ -122,6 +154,205 @@ test('prepares a sell authorization from the conditional asset into regular coll
         parseCtfPayToUnlockCondition(new TextDecoder().decode(output.secret)).offerKeyset ===
         OUTCOME_KEYSET_ID,
     ),
+  )
+})
+
+test('builds, canonically persists, and verifies one exact range preparation record', () => {
+  const request = rangeOrderRequest()
+  const persisted = buildPersistedCtfRangeOrderPreparation({
+    request,
+    coordinatorPublicKey: COORDINATOR_PUBLIC_KEY.toUpperCase(),
+    mintFacts: reviewedMintFacts(),
+    market: {
+      outcomes: [
+        { id: 'yes-id', label: 'YES' },
+        { id: 'no-id', label: 'NO' },
+      ],
+    },
+    nowUnixSeconds: 20,
+    randomId: sequentialId('range-operation-2', 'authorization-2'),
+  })
+  const preparationBytes = encodePersistedCtfRangeOrderPreparation(persisted)
+  const record = preparationRecord(persisted, preparationBytes)
+
+  assert.equal(persisted.coordinatorPublicKey, COORDINATOR_PUBLIC_KEY)
+  assert.equal(persisted.offerKeyset.id, REVIEWED_REGULAR_KEYSET_ID)
+  assert.equal(persisted.receiveKeyset.id, REVIEWED_OUTCOME_KEYSET_ID)
+  assert.equal(persisted.expiry, 700)
+  assert.deepEqual(decodePersistedCtfRangeOrderPreparationBytes(preparationBytes), persisted)
+  assert.deepEqual(decodeCtfRangeOrderPreparationFromRecord(record, request), persisted)
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationFromRecord(
+        { ...record, orderRouteId: `${CONDITION_ID}-NO` },
+        request,
+      ),
+    /preparation is foreign/,
+  )
+  assert.throws(
+    () =>
+      decodePersistedCtfRangeOrderPreparationBytes(
+        encodeCtfRangeOrderPreparationArtifact({
+          ...persisted,
+          request: { ...request, walletSeedHex: 'secret' },
+        }),
+      ),
+    /request fields are invalid/,
+  )
+  for (const candidate of [
+    {
+      ...persisted,
+      offerKeyset: { ...persisted.offerKeyset, unknown: true },
+    },
+    {
+      ...persisted,
+      expiryObservation: { ...persisted.expiryObservation, unknown: true },
+    },
+    {
+      ...persisted,
+      expiryObservation: {
+        ...persisted.expiryObservation,
+        conditionalKeysets: persisted.expiryObservation.conditionalKeysets.map((keyset, index) =>
+          index === 0 ? { ...keyset, unknown: true } : keyset,
+        ),
+      },
+    },
+  ]) {
+    assert.throws(
+      () =>
+        decodePersistedCtfRangeOrderPreparationBytes(
+          encodeCtfRangeOrderPreparationArtifact(candidate),
+        ),
+      /fields are invalid/,
+    )
+  }
+  for (const nowUnixSeconds of [Number.NaN, -1, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(
+      () =>
+        buildPersistedCtfRangeOrderPreparation({
+          request,
+          coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
+          mintFacts: reviewedMintFacts(),
+          market: {
+            outcomes: [
+              { id: 'yes-id', label: 'YES' },
+              { id: 'no-id', label: 'NO' },
+            ],
+          },
+          nowUnixSeconds,
+          randomId: sequentialId('invalid-clock-operation', 'invalid-clock-authorization'),
+        }),
+      /current time/,
+    )
+  }
+  assert.throws(
+    () =>
+      buildPersistedCtfRangeOrderPreparation({
+        request: { ...request, marketId: `${CONDITION_ID}-NO` },
+        coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
+        mintFacts: reviewedMintFacts(),
+        market: {
+          outcomes: [
+            { id: 'yes-id', label: 'YES' },
+            { id: 'no-id', label: 'NO' },
+          ],
+        },
+        nowUnixSeconds: 20,
+        randomId: sequentialId('cross-route-operation', 'cross-route-authorization'),
+      }),
+    /exact engine order route/,
+  )
+  assert.throws(
+    () =>
+      buildPersistedCtfRangeOrderPreparation({
+        request,
+        coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
+        mintFacts: reviewedMintFacts(),
+        market: {
+          outcomes: [
+            { id: 'yes-id', label: 'YES' },
+            { id: 'other-id', label: 'yes-id' },
+          ],
+        },
+        nowUnixSeconds: 20,
+        randomId: sequentialId('ambiguous-operation', 'ambiguous-authorization'),
+      }),
+    /exact engine order route/,
+  )
+})
+
+test('builds one capability request and validates its exact engine projection', () => {
+  const preparation = buildPersistedCtfRangeOrderPreparation({
+    request: rangeOrderRequest(),
+    coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
+    mintFacts: reviewedMintFacts(),
+    market: {
+      outcomes: [
+        { id: 'yes-id', label: 'YES' },
+        { id: 'no-id', label: 'NO' },
+      ],
+    },
+    nowUnixSeconds: 20,
+    randomId: sequentialId('range-operation-capability', 'authorization-capability'),
+  })
+  const request = preparation.request
+  const operation = completedOperation(preparation)
+  const capabilityRequest = createCtfRangeSettlementCapabilityRequest(preparation, operation)
+  const artifactDigest = deriveSettlementCapabilityArtifactDigest(
+    createPoolSettlementCapabilityArtifact(operation),
+  )
+  const capability = {
+    reference: {
+      artifactId: '11111111-1111-4111-8111-111111111111',
+      bindingDigest: '11'.repeat(32),
+    },
+    orderId: '22222222-2222-4222-8222-222222222222',
+    clientOrderId: request.clientOrderId,
+    marketId: request.marketId,
+    artifactDigest,
+    state: 'bound' as const,
+    version: 1,
+    authorizationExpiresAt: '2030-01-01T00:00:00.000Z',
+    stageExpiresAt: '2030-01-01T00:01:00.000Z',
+    settlementGroup: null,
+  }
+
+  assert.equal(capabilityRequest.stageIdempotencyKey, operation.authorizationId)
+  assert.equal(
+    Buffer.from(capabilityRequest.artifact, 'base64').toString('base64'),
+    capabilityRequest.artifact,
+  )
+  assert.deepEqual(
+    validateAndProjectCtfRangeSettlementCapabilityResponse({
+      capability,
+      preparation,
+      operation,
+      recovering: false,
+    }),
+    {
+      artifactId: capability.reference.artifactId,
+      bindingDigest: capability.reference.bindingDigest,
+      artifactDigest,
+      orderId: capability.orderId,
+    },
+  )
+  assert.throws(
+    () =>
+      validateAndProjectCtfRangeSettlementCapabilityResponse({
+        capability: { ...capability, marketId: `${CONDITION_ID}-NO` },
+        preparation,
+        operation,
+        recovering: false,
+      }),
+    /foreign settlement capability/,
+  )
+  assert.throws(
+    () =>
+      createCtfRangeSettlementCapabilityRequest(preparation, {
+        ...operation,
+        sourceOperationId: 'foreign-source-operation',
+      }),
+    /foreign to its persisted order preparation/,
   )
 })
 
@@ -218,6 +449,130 @@ function keysetLookup() {
       },
     ],
   }
+}
+
+function rangeOrderRequest(): CtfRangeOrderRequest {
+  return {
+    clientOrderId: 'client-order-1',
+    marketId: `${CONDITION_ID}-YES`,
+    conditionId: CONDITION_ID,
+    outcomeId: 'yes-id',
+    tokenSide: 'Outcome',
+    side: 'Buy',
+    price: 2,
+    amountSubunits: 10_000,
+    baseAsset: 'sat',
+    collateralUnit: 'msat',
+    divisibility: 10_000,
+    timeInForce: 'GTC',
+    expiresAt: null,
+    mintUrl: MINT_URL,
+  }
+}
+
+function reviewedMintFacts() {
+  const observation = {
+    ...expiryObservation(),
+    maxExpirySeconds: REVIEWED_FINAL_EXPIRY,
+    conditionKeysetIds: [REVIEWED_OUTCOME_KEYSET_ID],
+    conditionalKeysets: expiryObservation().conditionalKeysets.map((keyset) => ({
+      ...keyset,
+      keysetId: REVIEWED_OUTCOME_KEYSET_ID,
+      finalExpiry: REVIEWED_FINAL_EXPIRY,
+    })),
+  }
+  return {
+    regular: [
+      {
+        ...regularKeyset(),
+        id: REVIEWED_REGULAR_KEYSET_ID,
+        finalExpiry: REVIEWED_FINAL_EXPIRY,
+      },
+    ],
+    conditional: [
+      {
+        ...outcomeKeyset(),
+        id: REVIEWED_OUTCOME_KEYSET_ID,
+        finalExpiry: REVIEWED_FINAL_EXPIRY,
+        conditionId: CONDITION_ID,
+        outcomeCollection: OUTCOME_COLLECTION,
+        outcomeCollectionId: OUTCOME_COLLECTION_ID,
+      },
+    ],
+    maxInputs: 64,
+    maxPoolEntries: 128,
+    observation,
+  }
+}
+
+function sequentialId(...ids: string[]): () => string {
+  let index = 0
+  return () => ids[index++] ?? 'unexpected-id'
+}
+
+function preparationRecord(
+  persisted: ReturnType<typeof buildPersistedCtfRangeOrderPreparation>,
+  preparationBytes: Uint8Array,
+): CtfRangeOrderPreparationRecord {
+  return {
+    scopeId: `custody:wallet:${'11'.repeat(32)}`,
+    rangeOperationId: persisted.operationId,
+    sourceOperationId: persisted.sourceOperationId,
+    sourceKind: persisted.sourceKind,
+    predecessorRangeOperationId: persisted.predecessorRangeOperationId,
+    authorizationId: persisted.authorizationId,
+    clientOrderId: persisted.request.clientOrderId,
+    orderRouteId: persisted.request.marketId,
+    normalizedMint: persisted.mintUrl,
+    conditionId: persisted.conditionId,
+    unit: 'msat',
+    tokenSide: persisted.request.tokenSide,
+    side: persisted.side,
+    priceSubunits: persisted.priceNumerator,
+    amountSubunits: persisted.amountSubunits,
+    divisibility: persisted.divisibility,
+    authorizationExpiresAtUnixSeconds: persisted.expiry,
+    preparationBytes,
+    createdAtMs: 1,
+    lifecycleState: 'prepared',
+    revision: 0,
+    capability: null,
+    updatedAtMs: 1,
+  }
+}
+
+function completedOperation(persisted?: ReturnType<typeof buildPersistedCtfRangeOrderPreparation>) {
+  const prepared = prepareCtfRangeOrderAuthorization(
+    persisted === undefined
+      ? preparationInput()
+      : {
+          seed: new Uint8Array(64).fill(7),
+          operationId: persisted.operationId,
+          sourceOperationId: persisted.sourceOperationId,
+          authorizationId: persisted.authorizationId,
+          mintUrl: persisted.mintUrl,
+          conditionId: persisted.conditionId,
+          coordinatorPublicKey: persisted.coordinatorPublicKey,
+          side: persisted.side,
+          priceNumerator: persisted.priceNumerator,
+          amountSubunits: persisted.amountSubunits,
+          divisibility: persisted.divisibility,
+          offerKeyset: persisted.offerKeyset,
+          receiveKeyset: persisted.receiveKeyset,
+          expiryObservation: persisted.expiryObservation,
+          expiry: persisted.expiry,
+          maxPoolEntries: persisted.maxPoolEntries,
+          maxInputs: persisted.maxInputs,
+        },
+  )
+  return completeCtfRangeOrderAuthorization({
+    preparation: prepared,
+    inputs: prepared.authorizationOutputs.map(signOutput),
+    keysetLookup:
+      persisted === undefined ? keysetLookup() : ctfRangeOrderPreparationKeysetLookup(persisted),
+    expiryObservation: persisted === undefined ? expiryObservation() : persisted.expiryObservation,
+    allowInsecureLoopbackHttp: false,
+  })
 }
 
 function signOutput(output: OutputData): Proof {

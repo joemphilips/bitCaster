@@ -51,6 +51,10 @@
       "types": "./dist/ctfRangeOrderPreparation.d.ts",
       "import": "./dist/ctfRangeOrderPreparation.js"
     },
+    "./ctfRangeOrderProtocol": {
+      "types": "./dist/ctfRangeOrderProtocol.d.ts",
+      "import": "./dist/ctfRangeOrderProtocol.js"
+    },
     "./ctfRangeOrderJournal": {
       "types": "./dist/ctfRangeOrderJournal.d.ts",
       "import": "./dist/ctfRangeOrderJournal.js"
