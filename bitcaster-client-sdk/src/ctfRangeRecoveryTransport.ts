@@ -84,6 +84,13 @@ export interface CtfRangeEngineResultClient {
   ): ReturnType<BitcasterEngineClient['getSettlementCapabilityResultByOperation']>
 }
 
+export interface CtfRangeEngineResultAcknowledgementClient {
+  acknowledgeSettlementCapabilityResult(
+    resultId: string,
+    request: { readonly expectedVersion: number },
+  ): ReturnType<BitcasterEngineClient['acknowledgeSettlementCapabilityResult']>
+}
+
 export interface CtfRangeEngineResultAuthority {
   readonly operation: DurableCtfRangeOperation
   readonly reference: SettlementCapabilityReference
@@ -262,6 +269,35 @@ export async function fetchCtfRangeEngineResultByOperation(
   return response === null
     ? null
     : decodeCtfRangeEngineResult(response, { ...authority, operation })
+}
+
+export async function acknowledgeCtfRangeEngineResult(
+  client: CtfRangeEngineResultAcknowledgementClient,
+  authority: CtfRangeEngineResultAuthority,
+  result: CtfRangeEngineResult,
+): Promise<CtfRangeEngineResult> {
+  if (result.acknowledgedAt !== null) return result
+  let response: SettlementCapabilityResultResponse | null
+  try {
+    response = await client.acknowledgeSettlementCapabilityResult(result.resultId, {
+      expectedVersion: result.version,
+    })
+  } catch {
+    throw new Error('CTF range engine result acknowledgement failed')
+  }
+  if (response === null) throw new Error('CTF range engine result acknowledgement is absent')
+  const acknowledged = decodeCtfRangeEngineResult(response, {
+    ...authority,
+    previouslyPersistedRequestDigest: result.requestDigest,
+  })
+  if (
+    acknowledged.resultId !== result.resultId ||
+    acknowledged.version !== result.version + 1 ||
+    acknowledged.acknowledgedAt === null
+  ) {
+    throw new Error('CTF range engine result acknowledgement is foreign')
+  }
+  return acknowledged
 }
 
 export function decodeCtfRangeEngineResult(

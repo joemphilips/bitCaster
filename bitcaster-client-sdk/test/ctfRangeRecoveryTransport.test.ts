@@ -42,6 +42,7 @@ import {
   CTF_RANGE_MINT_RESTORE_RESPONSE_BYTES_MAX,
   CtfRangeMintRecoveryAdapter,
   CtfRangeRecoveryResponseError,
+  acknowledgeCtfRangeEngineResult,
   checkCtfRangeInputProofStates,
   decodeCtfRangeEngineResult,
   fetchCtfRangeEngineResultByOperation,
@@ -115,6 +116,46 @@ test('engine result-by-operation decodes bounded canonical base64 and verifies i
   assert.equal(decoded?.version, response.version)
   assert.equal(decoded?.settlementGroupId, response.settlementGroup.groupId)
   assert.equal(decoded?.settlementGroupRevision, response.settlementGroup.revision)
+})
+
+test('engine result acknowledgement validates the exact versioned response', async () => {
+  const operation = createRangeOperation()
+  const requestDigest = 'ef'.repeat(32)
+  const response = engineResult(
+    operation.operationId,
+    requestDigest,
+    new TextEncoder().encode(
+      JSON.stringify({
+        schemaVersion: 1,
+        operationId: operation.operationId,
+        authorizationId: operation.authorizationId,
+        requestDigest,
+        selection: '01',
+        signatures: [],
+      }),
+    ),
+  )
+  const authority = { operation, reference: response.reference }
+  const result = decodeCtfRangeEngineResult(response, authority)
+  const calls: Array<{ resultId: string; expectedVersion: number }> = []
+  const acknowledged = await acknowledgeCtfRangeEngineResult(
+    {
+      async acknowledgeSettlementCapabilityResult(resultId, request) {
+        calls.push({ resultId, expectedVersion: request.expectedVersion })
+        return {
+          ...response,
+          version: response.version + 1,
+          acknowledgedAt: '2026-08-01T00:00:00.000Z',
+        }
+      },
+    },
+    authority,
+    result,
+  )
+
+  assert.deepEqual(calls, [{ resultId: response.resultId, expectedVersion: response.version }])
+  assert.equal(acknowledged.version, response.version + 1)
+  assert.equal(acknowledged.acknowledgedAt, '2026-08-01T00:00:00.000Z')
 })
 
 test('engine result decoder rejects noncanonical base64, digest mismatch, and oversized input', () => {
