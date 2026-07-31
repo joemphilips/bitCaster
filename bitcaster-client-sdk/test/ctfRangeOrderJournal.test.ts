@@ -77,6 +77,36 @@ test('strict identity validation preserves source lineage and exact replay', () 
       }),
     /predecessor/,
   )
+  const continuation = {
+    predecessorOrderId: '11111111-1111-4111-8111-111111111111',
+    settlementGroupId: '22222222-2222-4222-8222-222222222222',
+    settlementGroupRevision: 3,
+    continuationRevision: 4,
+  }
+  const residual = decodeCtfRangeOrderPreparationIdentity({
+    ...identity,
+    rangeOperationId: 'range-residual',
+    sourceOperationId: 'source-residual',
+    authorizationId: 'authorization-residual',
+    clientOrderId: 'client-residual',
+    sourceKind: 'residual-change',
+    predecessorRangeOperationId: identity.rangeOperationId,
+    continueAfterPartialFill: true,
+    continuation,
+  })
+  assert.deepEqual(residual.continuation, continuation)
+  assert.throws(
+    () => decodeCtfRangeOrderPreparationIdentity({ ...identity, continuation }),
+    /initial order has continuation authority/,
+  )
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationIdentity({
+        ...residual,
+        continueAfterPartialFill: false,
+      }),
+    /continuation authority is incomplete/,
+  )
   assert.throws(
     () =>
       decodeCtfRangeOrderPreparationIdentity({
@@ -352,6 +382,8 @@ function preparationIdentity() {
     priceSubunits: 5_000,
     amountSubunits: 10_000,
     minimumFillAmountSubunits: 10_000,
+    continueAfterPartialFill: false,
+    continuation: null,
     divisibility: 10_000 as const,
     authorizationExpiresAtUnixSeconds: 2_000_000_000,
     preparationBytes: encodeCtfRangeOrderPreparationArtifact({

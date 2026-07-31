@@ -673,6 +673,7 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
       timeInForce: 'GTC' as const,
       expiresAt: null,
     },
+    continuation: null,
     artifact: 'Y2Fub25pY2FsLWFydGlmYWN0',
   }
   const requests: Array<{ url: string; method: string; body?: string }> = []
@@ -741,6 +742,138 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
       body: JSON.stringify({ expectedVersion: 4 }),
     },
   ])
+})
+
+test('BitcasterEngineClient reads and declines one exact order continuation revision', async () => {
+  const orderId = '11111111-1111-4111-8111-111111111111'
+  const settlementGroupId = '22222222-2222-4222-8222-222222222222'
+  const requests: Array<{ url: string; method: string; body?: string }> = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (input, init) => {
+      requests.push({
+        url: String(input),
+        method: init?.method ?? 'GET',
+        ...(init?.body === undefined ? {} : { body: String(init.body) }),
+      })
+      if (init?.method === 'POST') return new Response(null, { status: 204 })
+      return new Response(
+        JSON.stringify({
+          orderId,
+          marketId: 'condition-1-YES',
+          status: 'awaiting_authorization',
+          remainingAmountSubunits: 10_000,
+          filledAmountSubunits: 10_000,
+          fills: [],
+          amountSubunits: 20_000,
+          outcomeId: 'YES',
+          side: 'Buy',
+          price: 5_000,
+          placedAt: '2026-07-29T00:00:00.000Z',
+          timeInForce: 'GTC',
+          expiresAt: null,
+          tokenSide: 'Outcome',
+          baseAsset: 'sat',
+          divisibility: 10_000,
+          tradeId: null,
+          deadline: null,
+          activeSettlementGroup: null,
+          continuation: {
+            settlementGroupId,
+            settlementGroupRevision: 3,
+            revision: 4,
+            status: 'open',
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    },
+  })
+
+  const status = await client.getOrderStatus('condition-1-YES', orderId)
+  assert.deepEqual(status, {
+    orderId,
+    marketId: 'condition-1-YES',
+    status: 'awaiting_authorization',
+    remainingAmountSubunits: 10_000,
+    filledAmountSubunits: 10_000,
+    fills: [],
+    amountSubunits: 20_000,
+    outcomeId: 'YES',
+    side: 'Buy',
+    price: 5_000,
+    placedAt: '2026-07-29T00:00:00.000Z',
+    timeInForce: 'GTC',
+    expiresAt: null,
+    tradeId: null,
+    deadline: null,
+    tokenSide: 'Outcome',
+    baseAsset: 'sat',
+    divisibility: 10_000,
+    activeSettlementGroup: null,
+    continuation: {
+      settlementGroupId,
+      settlementGroupRevision: 3,
+      revision: 4,
+      status: 'open',
+    },
+  })
+  await client.declineOrderContinuation('condition-1-YES', orderId, 4)
+  assert.deepEqual(requests, [
+    {
+      url: `https://engine.example/api/v1/condition-1-YES/orders/${orderId}`,
+      method: 'GET',
+    },
+    {
+      url: `https://engine.example/api/v1/condition-1-YES/orders/${orderId}/continuation/decline`,
+      method: 'POST',
+      body: JSON.stringify({ expectedContinuationRevision: 4 }),
+    },
+  ])
+  await assert.rejects(
+    () => client.declineOrderContinuation('condition-1-YES', orderId, 0),
+    /continuation revision is invalid/,
+  )
+  assert.equal(requests.length, 2)
+})
+
+test('BitcasterEngineClient rejects malformed order continuation authority', async () => {
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          orderId: '11111111-1111-4111-8111-111111111111',
+          marketId: 'condition-1-YES',
+          status: 'awaiting_authorization',
+          remainingAmountSubunits: 10_000,
+          filledAmountSubunits: 10_000,
+          fills: [],
+          amountSubunits: 20_000,
+          outcomeId: 'YES',
+          side: 'Buy',
+          price: 5_000,
+          placedAt: '2026-07-29T00:00:00.000Z',
+          timeInForce: 'GTC',
+          tokenSide: 'Outcome',
+          baseAsset: 'sat',
+          divisibility: 10_000,
+          activeSettlementGroup: null,
+          continuation: {
+            settlementGroupId: '22222222-2222-4222-8222-222222222222',
+            settlementGroupRevision: 3,
+            revision: 0,
+            status: 'open',
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+  })
+
+  await assert.rejects(
+    () => client.getOrderStatus('condition-1-YES', '11111111-1111-4111-8111-111111111111'),
+    /continuation revision is invalid/,
+  )
 })
 
 test('BitcasterEngineClient bounds result streams before Response.json allocation', async () => {

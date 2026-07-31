@@ -36,6 +36,34 @@ export interface SettlementCapabilityReference {
   bindingDigest: string
 }
 
+export interface SettlementOrderContinuationReference {
+  predecessorOrderId: string
+  settlementGroupId: string
+  settlementGroupRevision: number
+  continuationRevision: number
+}
+
+export function decodeSettlementOrderContinuationReference(
+  value: unknown,
+): SettlementOrderContinuationReference {
+  const reference = exactEngineRecord(value, [
+    'predecessorOrderId',
+    'settlementGroupId',
+    'settlementGroupRevision',
+    'continuationRevision',
+  ])
+  requireUuid(reference.predecessorOrderId, 'continuation predecessor order id')
+  requireUuid(reference.settlementGroupId, 'continuation settlement group id')
+  requirePositiveSafeInteger(reference.settlementGroupRevision, 'continuation group revision')
+  requirePositiveSafeInteger(reference.continuationRevision, 'continuation revision')
+  return {
+    predecessorOrderId: reference.predecessorOrderId as string,
+    settlementGroupId: reference.settlementGroupId as string,
+    settlementGroupRevision: reference.settlementGroupRevision as number,
+    continuationRevision: reference.continuationRevision as number,
+  }
+}
+
 export type SettlementCapabilityState =
   | 'staged'
   | 'bindingPending'
@@ -77,6 +105,7 @@ export interface CreateSettlementCapabilityRequest {
   clientOrderId: string
   marketId: string
   orderIntent: SettlementOrderIntent
+  continuation: SettlementOrderContinuationReference | null
   artifact: string
 }
 
@@ -265,10 +294,27 @@ export interface OrderStatusResponse {
   remainingAmountSubunits: number
   filledAmountSubunits: number
   fills: Fill[]
+  amountSubunits: number
+  outcomeId: string
+  side: 'Buy' | 'Sell'
+  price: number
+  placedAt: string
+  timeInForce: OrderTimeInForce
+  expiresAt?: string | null
+  tradeId?: string | null
+  deadline?: string | null
   tokenSide: 'Outcome' | 'Complement'
   baseAsset: MarketBaseAsset
   divisibility: MarketDivisibility
   activeSettlementGroup: SettlementGroupSummary | null
+  continuation: OrderContinuationState | null
+}
+
+export interface OrderContinuationState {
+  settlementGroupId: string
+  settlementGroupRevision: number
+  revision: number
+  status: 'open' | 'consumed' | 'declined'
 }
 
 export interface OrderEntry {
@@ -497,7 +543,28 @@ export class BitcasterEngineClient {
       true,
     )
     if (response.status === 404) return null
-    return (await response.json()) as OrderStatusResponse
+    return decodeOrderStatusResponse(
+      await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX),
+    )
+  }
+
+  async declineOrderContinuation(
+    marketId: string,
+    orderId: string,
+    expectedContinuationRevision: number,
+  ): Promise<void> {
+    requireUuid(orderId, 'continuation order id')
+    requirePositiveSafeInteger(expectedContinuationRevision, 'continuation revision')
+    const bodyText = JSON.stringify({ expectedContinuationRevision })
+    await this.request(
+      `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}/continuation/decline`,
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+      },
+      bodyText,
+    )
   }
 
   async listMyOrders(conditionId: string, cursor?: string): Promise<ListMyOrdersResponse> {
@@ -767,6 +834,143 @@ export function decodeSubmitOrderResponse(value: unknown): SubmitOrderResponse {
   }
 }
 
+export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
+  const response = exactEngineRecord(
+    value,
+    [
+      'orderId',
+      'marketId',
+      'status',
+      'remainingAmountSubunits',
+      'filledAmountSubunits',
+      'fills',
+      'amountSubunits',
+      'outcomeId',
+      'side',
+      'price',
+      'placedAt',
+      'timeInForce',
+      'tokenSide',
+      'baseAsset',
+      'divisibility',
+      'activeSettlementGroup',
+      'continuation',
+    ],
+    ['expiresAt', 'tradeId', 'deadline'],
+  )
+  requireUuid(response.orderId, 'order id')
+  if (typeof response.marketId !== 'string' || response.marketId.length < 1) {
+    throw new Error('order market id is invalid')
+  }
+  requireOrderStatus(response.status)
+  requireNonnegativeSafeInteger(response.remainingAmountSubunits, 'remaining order amount')
+  requireNonnegativeSafeInteger(response.filledAmountSubunits, 'filled order amount')
+  const fills = boundedEngineArray(response.fills, 512, 'order fills').map(decodeFill)
+  if (response.tokenSide !== 'Outcome' && response.tokenSide !== 'Complement') {
+    throw new Error('order token side is invalid')
+  }
+  if (response.baseAsset !== 'sat') throw new Error('order base asset is invalid')
+  const divisibility = parseMarketDivisibility(response.divisibility)
+  if (divisibility === null) throw new Error('order divisibility is invalid')
+  const orderFields = decodeOrderStatusFields(response, divisibility)
+  const activeSettlementGroup =
+    response.activeSettlementGroup === null
+      ? null
+      : decodeSettlementGroup(response.activeSettlementGroup)
+  const continuation =
+    response.continuation === null ? null : decodeOrderContinuationState(response.continuation)
+  return {
+    orderId: response.orderId as string,
+    marketId: response.marketId,
+    status: response.status,
+    remainingAmountSubunits: response.remainingAmountSubunits as number,
+    filledAmountSubunits: response.filledAmountSubunits as number,
+    fills,
+    ...orderFields,
+    tokenSide: response.tokenSide,
+    baseAsset: 'sat',
+    divisibility,
+    activeSettlementGroup,
+    continuation,
+  }
+}
+
+function decodeOrderStatusFields(
+  response: Record<string, unknown>,
+  divisibility: MarketDivisibility,
+): Pick<
+  OrderStatusResponse,
+  | 'amountSubunits'
+  | 'outcomeId'
+  | 'side'
+  | 'price'
+  | 'placedAt'
+  | 'timeInForce'
+  | 'expiresAt'
+  | 'tradeId'
+  | 'deadline'
+> {
+  requirePositiveSafeInteger(response.amountSubunits, 'order amount')
+  if (typeof response.outcomeId !== 'string' || response.outcomeId.length === 0) {
+    throw new Error('order outcome id is invalid')
+  }
+  if (response.side !== 'Buy' && response.side !== 'Sell') {
+    throw new Error('order side is invalid')
+  }
+  requirePositiveSafeInteger(response.price, 'order price')
+  if (response.price >= divisibility) throw new Error('order price is invalid')
+  requireIsoEngineTime(response.placedAt, 'order placed time')
+  if (
+    response.timeInForce !== 'GTC' &&
+    response.timeInForce !== 'GTD' &&
+    response.timeInForce !== 'FOK' &&
+    response.timeInForce !== 'FAK'
+  ) {
+    throw new Error('order time in force is invalid')
+  }
+  requireOptionalIsoEngineTime(response.expiresAt, 'order expiry')
+  if (response.tradeId !== undefined && response.tradeId !== null) {
+    requireUuid(response.tradeId, 'order trade id')
+  }
+  requireOptionalIsoEngineTime(response.deadline, 'order deadline')
+  return {
+    amountSubunits: response.amountSubunits,
+    outcomeId: response.outcomeId,
+    side: response.side,
+    price: response.price,
+    placedAt: response.placedAt as string,
+    timeInForce: response.timeInForce,
+    ...(response.expiresAt === undefined ? {} : { expiresAt: response.expiresAt as string | null }),
+    ...(response.tradeId === undefined ? {} : { tradeId: response.tradeId as string | null }),
+    ...(response.deadline === undefined ? {} : { deadline: response.deadline as string | null }),
+  }
+}
+
+function requireOptionalIsoEngineTime(value: unknown, name: string): void {
+  if (value !== undefined && value !== null) requireIsoEngineTime(value, name)
+}
+
+function decodeOrderContinuationState(value: unknown): OrderContinuationState {
+  const state = exactEngineRecord(value, [
+    'settlementGroupId',
+    'settlementGroupRevision',
+    'revision',
+    'status',
+  ])
+  requireUuid(state.settlementGroupId, 'continuation settlement group id')
+  requirePositiveSafeInteger(state.settlementGroupRevision, 'continuation group revision')
+  requirePositiveSafeInteger(state.revision, 'continuation revision')
+  if (state.status !== 'open' && state.status !== 'consumed' && state.status !== 'declined') {
+    throw new Error('order continuation status is invalid')
+  }
+  return {
+    settlementGroupId: state.settlementGroupId as string,
+    settlementGroupRevision: state.settlementGroupRevision as number,
+    revision: state.revision as number,
+    status: state.status,
+  }
+}
+
 function decodeFill(value: unknown): Fill {
   const fill = exactEngineRecord(
     value,
@@ -925,7 +1129,7 @@ function boundedEngineArray(value: unknown, maximum: number, name: string): unkn
 function requireUuid(value: unknown, name: string): asserts value is string {
   if (
     typeof value !== 'string' ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
   ) {
     throw new Error(`${name} is invalid`)
   }

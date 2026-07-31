@@ -1,5 +1,6 @@
 export interface CtfRangeRecoveryPass {
   readonly pending: ReadonlyArray<{ readonly retryAtMs?: number }>
+  readonly deferredCount?: number
 }
 
 export interface CtfRangeRecoveryLoop {
@@ -40,7 +41,16 @@ export function createCtfRangeRecoveryLoop<Result extends CtfRangeRecoveryPass>(
   }
   const schedulePending = (result: CtfRangeRecoveryPass) => {
     clearScheduled()
-    if (stopped || result.pending.length === 0) return
+    if (stopped) return
+    if ((result.deferredCount ?? 0) > 0) {
+      timer = schedule(() => {
+        timer = undefined
+        trigger()
+      }, 0)
+      timer.unref?.()
+      return
+    }
+    if (result.pending.length === 0) return
     const fallback = now() + retryDelayMs
     const retryAt = result.pending.reduce(
       (earliest, pending) =>

@@ -31,6 +31,7 @@ import {
   createDurableCtfRangeRefundOperation,
   deriveDurableCtfRangeFeeBounds,
   deriveDurableCtfResidualDecision,
+  deriveDurableCtfRangeSelectionRemainingAmount,
   toDurableCtfRangeProofOperationInput,
   type DurableCtfRangeExpiryObservation,
   type DurableCtfRangeMintKeyset,
@@ -81,8 +82,8 @@ import {
 import type {
   CreateSettlementCapabilityRequest,
   OrderStatusResponse,
-  SettlementCapabilityResultResponse,
   SettlementCapabilityResponse,
+  SettlementOrderContinuationReference,
 } from '@bitcaster-market/client-sdk/engineClient'
 import { DaemonCtfRangeCoordinator } from './ctfRangeCoordinator.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
@@ -108,13 +109,18 @@ import {
   appendRangePreparationConsolidation,
   bindRangePreparationCapability,
   insertRangePreparation,
+  insertRangeSuccessorIntent,
   linkRangePreparationSource,
   pageActiveRangePreparations,
   readActiveRangePreparationByClientOrderId,
+  readResidualRangePreparationByPredecessor,
+  readRangeSuccessorIntent,
   readRangePreparation,
   transitionRangePreparation,
   type RangePreparationCapability,
+  type RangePreparationPageCursor,
   type RangePreparationRecord,
+  type RangeSuccessorIntent,
 } from './ctfRangeOrderJournalSqlite.ts'
 import {
   withDurableCustodyFencedRead,
@@ -181,6 +187,9 @@ export interface DaemonCtfRangeOrderCoordinatorDependencies {
 export interface DaemonCtfRangeRecoveryResult {
   readonly recovered: string[]
   readonly pending: Array<{ operationId: string; error: string; retryAtMs?: number }>
+  readonly processedCount?: number
+  readonly deferredCount?: number
+  readonly nextCursor?: RangePreparationPageCursor | null
 }
 
 interface PreparedMintAuthority {
@@ -218,6 +227,7 @@ export class DaemonCtfRangeOrderCoordinator {
   readonly #getFence: () => CustodyScopeFence
   readonly #dependencies: DaemonCtfRangeOrderCoordinatorDependencies
   readonly #storage: DaemonStateSqliteSession
+  #recoveryCursor: RangePreparationPageCursor | undefined
 
   constructor(
     directory: string,
@@ -246,6 +256,7 @@ export class DaemonCtfRangeOrderCoordinator {
     const capabilityRequest = createCtfRangeSettlementCapabilityRequest(
       authority.preparationInput,
       operation,
+      null,
     )
     const binding = await createRangeBinding(
       request.walletSeedHex,
@@ -284,9 +295,25 @@ export class DaemonCtfRangeOrderCoordinator {
     walletSeedHex: string,
     client: EngineClientLike,
   ): Promise<DaemonCtfRangeRecoveryResult> {
-    const preparations = await this.#activeRangePreparations()
-    const result: DaemonCtfRangeRecoveryResult = { recovered: [], pending: [] }
-    for (const preparation of preparations) {
+    const startedAfterCursor = this.#recoveryCursor !== undefined
+    const page = await this.#activeRangePreparations()
+    const exposesPage =
+      startedAfterCursor ||
+      page.preparations.length === ACTIVE_RANGE_SOURCE_LIMIT ||
+      page.deferredCount > 0
+    const result: DaemonCtfRangeRecoveryResult = {
+      recovered: [],
+      pending: [],
+      ...(exposesPage
+        ? {
+            processedCount: page.preparations.length,
+            deferredCount: page.deferredCount,
+            nextCursor: page.nextCursor,
+          }
+        : {}),
+    }
+    this.#recoveryCursor = page.nextCursor ?? undefined
+    for (const preparation of page.preparations) {
       const preparationInput = preparationFromJournal(preparation)
       try {
         await this.#recoverPreparation(preparation, preparationInput, walletSeedHex, client)
@@ -308,6 +335,12 @@ export class DaemonCtfRangeOrderCoordinator {
     walletSeedHex: string,
     client: EngineClientLike,
   ): Promise<void> {
+    if (
+      preparationRecord.sourceKind === 'residual-change' &&
+      preparationRecord.capability !== null
+    ) {
+      await this.#markResidualPredecessorTerminal(preparationInput)
+    }
     switch (preparationRecord.lifecycleState) {
       case 'order-submitted':
       case 'submission-rejected':
@@ -385,7 +418,11 @@ export class DaemonCtfRangeOrderCoordinator {
       expiryObservation: authority.observation,
       allowInsecureLoopbackHttp: this.#dependencies.allowInsecureLoopbackHttp === true,
     })
-    const capabilityRequest = createCtfRangeSettlementCapabilityRequest(preparationInput, operation)
+    const capabilityRequest = createCtfRangeSettlementCapabilityRequest(
+      preparationInput,
+      operation,
+      preparationRecord.continuation,
+    )
     const binding = await createRangeBinding(
       walletSeedHex,
       operation,
@@ -427,6 +464,12 @@ export class DaemonCtfRangeOrderCoordinator {
       throw new Error('engine client does not support settlement capability creation')
     }
     const response = await createCapability.call(client, request)
+    if (
+      request.continuation === null ||
+      response.orderId === request.continuation.predecessorOrderId
+    ) {
+      throw new Error('engine residual successor order identity is not fresh')
+    }
     const capability = validateAndProjectCtfRangeSettlementCapabilityResponse({
       capability: response,
       preparation: input,
@@ -434,6 +477,7 @@ export class DaemonCtfRangeOrderCoordinator {
       recovering: true,
     })
     await this.#bindCapability(operation.operationId, capability)
+    await this.#markResidualPredecessorTerminal(input)
     await submitRecoveredResidualOrder(client, input.request, capability)
     await this.#markOrderSubmitted(operation.operationId)
     throw new RangeRecoveryDeferredError(
@@ -555,8 +599,8 @@ export class DaemonCtfRangeOrderCoordinator {
     )
     if (
       predecessor.operationId !== predecessorOperationId ||
-      predecessor.request.clientOrderId !== input.request.clientOrderId ||
-      predecessor.request.marketId !== input.request.marketId
+      predecessor.request.clientOrderId === input.request.clientOrderId ||
+      !sameResidualOrderTerms(predecessor.request, input.request)
     ) {
       throw new Error('residual range predecessor identity is foreign')
     }
@@ -571,6 +615,7 @@ export class DaemonCtfRangeOrderCoordinator {
     const residual = deriveDurableCtfResidualDecision({
       source: loaded.operation,
       result,
+      originalOrderAmount: predecessor.request.amountSubunits,
       remainingOrderAmount: input.amountSubunits,
       restingOrder: true,
     })
@@ -620,7 +665,10 @@ export class DaemonCtfRangeOrderCoordinator {
       nowUnixSeconds: this.#nowSeconds(),
       randomId: this.#randomId.bind(this),
     })
-    const durablePreparation = await this.#persistPreparation(preparationInput)
+    const durablePreparation = await this.#persistPreparation(
+      preparationInput,
+      request.continueAfterPartialFill,
+    )
     return preparedMintAuthority(
       durablePreparation,
       request.walletSeedHex,
@@ -644,14 +692,22 @@ export class DaemonCtfRangeOrderCoordinator {
           this.#getFence().scopeId,
           request.clientOrderId,
         )
-        return record === null
-          ? null
-          : preparationFromJournal(record, persistedOrderRequest(request))
+        if (record === null) return null
+        if (
+          record.continueAfterPartialFill !== request.continueAfterPartialFill ||
+          record.continuation !== null
+        ) {
+          throw new Error('daemon CTF range continuation policy conflicts with its journal')
+        }
+        return preparationFromJournal(record, persistedOrderRequest(request))
       },
     )
   }
 
-  async #persistPreparation(input: PersistedPreparationInput): Promise<PersistedPreparationInput> {
+  async #persistPreparation(
+    input: PersistedPreparationInput,
+    continueAfterPartialFill: boolean,
+  ): Promise<PersistedPreparationInput> {
     const mutation = this.#mutation()
     return withDurableCustodyUnitOfWork(
       this.#storage,
@@ -663,7 +719,15 @@ export class DaemonCtfRangeOrderCoordinator {
           mutation.fence.scopeId,
           input.request.clientOrderId,
         )
-        if (existing !== null) return preparationFromJournal(existing, input.request)
+        if (existing !== null) {
+          if (
+            existing.continueAfterPartialFill !== continueAfterPartialFill ||
+            existing.continuation !== null
+          ) {
+            throw new Error('daemon CTF range continuation policy conflicts with its journal')
+          }
+          return preparationFromJournal(existing, input.request)
+        }
         return preparationFromJournal(
           insertRangePreparation(database, {
             scopeId: mutation.fence.scopeId,
@@ -682,6 +746,8 @@ export class DaemonCtfRangeOrderCoordinator {
             priceSubunits: input.priceNumerator,
             amountSubunits: input.amountSubunits,
             minimumFillAmountSubunits: input.request.minimumFillAmountSubunits,
+            continueAfterPartialFill,
+            continuation: null,
             divisibility: input.divisibility as 10_000 | 1_000_000,
             authorizationExpiresAtUnixSeconds: input.expiry,
             preparationBytes: encodeCanonicalRangePreparation(input),
@@ -693,31 +759,20 @@ export class DaemonCtfRangeOrderCoordinator {
     )
   }
 
-  async #activeRangePreparations(): Promise<RangePreparationRecord[]> {
+  async #activeRangePreparations(): Promise<ReturnType<typeof pageActiveRangePreparations>> {
     const observedAtMs = this.#nowMs()
     return withDurableCustodyFencedRead(
       this.#storage,
       this.#getFence(),
       observedAtMs,
       (database) => {
-        const result: RangePreparationRecord[] = []
-        let after: Parameters<typeof pageActiveRangePreparations>[1]['after']
-        do {
-          const page = pageActiveRangePreparations(database, {
-            scopeId: this.#getFence().scopeId,
-            limit: 64,
-            ...(after === undefined ? {} : { after }),
-          })
-          for (const record of page.preparations) {
-            preparationFromJournal(record)
-            result.push(record)
-            if (result.length > ACTIVE_RANGE_SOURCE_LIMIT) {
-              throw new Error('active daemon CTF range recovery set exceeds its bound')
-            }
-          }
-          after = page.nextCursor ?? undefined
-        } while (after !== undefined)
-        return result
+        const page = pageActiveRangePreparations(database, {
+          scopeId: this.#getFence().scopeId,
+          limit: ACTIVE_RANGE_SOURCE_LIMIT,
+          ...(this.#recoveryCursor === undefined ? {} : { after: this.#recoveryCursor }),
+        })
+        for (const record of page.preparations) preparationFromJournal(record)
+        return page
       },
     )
   }
@@ -824,10 +879,19 @@ export class DaemonCtfRangeOrderCoordinator {
     const custodyOperationId = rangeCustodyOperationId(walletSeedHex, input.operationId)
     const loaded = await coordinator.load(custodyOperationId)
     if (loaded === null) throw new Error('daemon CTF range custody authority is missing')
-    const mint = this.#createMint(input.mintUrl) as CtfRangeMintLike & CtfRangeMintClient
     const status = await client.getOrderStatus(input.request.marketId, capability.orderId)
     if (status === null && preparation.lifecycleState !== 'submission-rejected') {
       throw new Error('submitted range order status is unavailable')
+    }
+    const engineResult =
+      response === null
+        ? null
+        : decodeCtfRangeEngineResult(response, {
+            operation: loaded.operation,
+            reference,
+          })
+    if (status?.status === 'awaiting_authorization') {
+      requirePendingContinuation(status, preparation, loaded.operation, engineResult)
     }
     if (status !== null) {
       await recordOrderStatus(
@@ -838,6 +902,7 @@ export class DaemonCtfRangeOrderCoordinator {
         input.request.divisibility,
       )
     }
+    const mint = this.#createMint(input.mintUrl) as CtfRangeMintLike & CtfRangeMintClient
     const refundOperationId = rangeRefundOperationId(input.operationId)
     const existingRefund = response === null ? await getProofOperation(refundOperationId) : null
     if (existingRefund !== null) {
@@ -868,7 +933,7 @@ export class DaemonCtfRangeOrderCoordinator {
             custodyOperationId,
             loaded.operation,
             verification,
-            response,
+            engineResult!,
             reference,
             client,
           )
@@ -882,6 +947,7 @@ export class DaemonCtfRangeOrderCoordinator {
           loaded.operation,
           decision.result,
           status,
+          engineResult,
         )
         return
       case 'waiting':
@@ -1070,11 +1136,10 @@ export class DaemonCtfRangeOrderCoordinator {
     custodyOperationId: string,
     operation: DurableCtfRangeOperation,
     verification: Awaited<ReturnType<CtfRangeMintRecoveryAdapter['loadExactVerificationContext']>>,
-    response: SettlementCapabilityResultResponse,
+    engineResult: CtfRangeEngineResult,
     reference: { readonly artifactId: string; readonly bindingDigest: string },
     client: EngineClientLike,
   ): Promise<DurableCtfRangeRecoveryDecision> {
-    const engineResult = decodeCtfRangeEngineResult(response, { operation, reference })
     const decision = await coordinator.stageVerified({
       custodyOperationId,
       operation,
@@ -1101,6 +1166,7 @@ export class DaemonCtfRangeOrderCoordinator {
     operation: DurableCtfRangeOperation,
     result: Extract<DurableCtfRangeRecoveryDecision, { kind: 'confirmed' }>['result'],
     status: OrderStatusResponse | null,
+    engineResult: CtfRangeEngineResult | null,
   ): Promise<void> {
     if (status === null) {
       await this.#markTerminal(input.operationId)
@@ -1109,16 +1175,32 @@ export class DaemonCtfRangeOrderCoordinator {
     const residual = deriveDurableCtfResidualDecision({
       source: operation,
       result,
+      originalOrderAmount: input.request.amountSubunits,
       remainingOrderAmount: status.remainingAmountSubunits,
       restingOrder: status.status === 'awaiting_authorization',
     })
     if (residual.kind === 'awaiting-authorization') {
+      const continuation = requirePendingContinuation(status, preparation, operation, engineResult)
+      if (status.continuation?.status === 'declined') {
+        await this.#declineContinuation(input, continuation, client)
+        await this.#markTerminal(input.operationId)
+        return
+      }
+      if (
+        !preparation.continueAfterPartialFill ||
+        BigInt(residual.remainingOrderAmount) < BigInt(preparation.minimumFillAmountSubunits)
+      ) {
+        await this.#declineContinuation(input, continuation, client)
+        await this.#markTerminal(input.operationId)
+        return
+      }
       await this.#reauthorizeResidual(
         preparation,
         input,
         walletSeedHex,
         client,
         Number(residual.remainingOrderAmount),
+        continuation,
       )
       return
     }
@@ -1164,16 +1246,39 @@ export class DaemonCtfRangeOrderCoordinator {
     )
   }
 
+  async #declineContinuation(
+    input: PersistedPreparationInput,
+    continuation: SettlementOrderContinuationReference,
+    client: EngineClientLike,
+  ): Promise<void> {
+    const decline = client.declineOrderContinuation
+    if (decline === undefined) {
+      throw new Error('engine client does not support residual continuation decline')
+    }
+    await decline.call(
+      client,
+      input.request.marketId,
+      continuation.predecessorOrderId,
+      continuation.continuationRevision,
+    )
+  }
+
   async #reauthorizeResidual(
     predecessor: RangePreparationRecord,
     predecessorInput: PersistedPreparationInput,
     walletSeedHex: string,
     client: EngineClientLike,
     remainingAmountSubunits: number,
+    continuation: SettlementOrderContinuationReference,
   ): Promise<void> {
     if (!Number.isSafeInteger(remainingAmountSubunits) || remainingAmountSubunits <= 0) {
       throw new Error('residual range amount is invalid')
     }
+    const intent = await this.#persistSuccessorIntent(
+      predecessor,
+      remainingAmountSubunits,
+      continuation,
+    )
     const getPolicy = client.getSettlementCapabilityAdmissionPolicy
     if (getPolicy === undefined) {
       throw new Error('engine client does not expose settlement admission policy')
@@ -1191,23 +1296,69 @@ export class DaemonCtfRangeOrderCoordinator {
       loadEngineMarket(client, predecessorInput.conditionId),
     ])
     const proposed = buildPersistedCtfRangeOrderPreparation({
-      request: predecessorInput.request,
+      request: {
+        ...predecessorInput.request,
+        clientOrderId: intent.successorClientOrderId,
+        amountSubunits: intent.remainingAmountSubunits,
+      },
       coordinatorPublicKey: requireCoordinatorKey(policy),
       mintFacts: metadata,
       market,
       nowUnixSeconds: this.#nowSeconds(),
-      randomId: this.#randomId.bind(this),
-      authorizationAmountSubunits: remainingAmountSubunits,
+      randomId: sequentialStableIds(
+        intent.successorRangeOperationId,
+        intent.successorAuthorizationId,
+      ),
       sourceKind: 'residual-change',
       predecessorRangeOperationId: predecessorInput.operationId,
     })
-    const successor = await this.#persistResidualPreparation(predecessor, proposed)
+    const successor = await this.#persistResidualPreparation(predecessor, proposed, continuation)
     await this.#recoverPreparation(successor.record, successor.input, walletSeedHex, client)
+  }
+
+  async #persistSuccessorIntent(
+    predecessor: RangePreparationRecord,
+    remainingAmountSubunits: number,
+    continuation: SettlementOrderContinuationReference,
+  ): Promise<RangeSuccessorIntent> {
+    const mutation = this.#mutation()
+    return withDurableCustodyUnitOfWork(
+      this.#storage,
+      mutation.fence,
+      mutation.observedAtMs,
+      (database) => {
+        const existing = readRangeSuccessorIntent(
+          database,
+          mutation.fence.scopeId,
+          predecessor.rangeOperationId,
+        )
+        if (existing !== null) {
+          if (
+            existing.remainingAmountSubunits !== remainingAmountSubunits ||
+            !sameContinuationReference(existing.continuation, continuation)
+          ) {
+            throw new Error('daemon residual successor intent conflicts with its journal')
+          }
+          return existing
+        }
+        return insertRangeSuccessorIntent(database, {
+          scopeId: mutation.fence.scopeId,
+          predecessorRangeOperationId: predecessor.rangeOperationId,
+          successorClientOrderId: this.#randomId(),
+          successorRangeOperationId: this.#randomId(),
+          successorAuthorizationId: this.#randomId(),
+          remainingAmountSubunits,
+          continuation,
+          createdAtMs: mutation.observedAtMs,
+        })
+      },
+    )
   }
 
   async #persistResidualPreparation(
     predecessor: RangePreparationRecord,
     proposed: PersistedPreparationInput,
+    continuation: SettlementOrderContinuationReference,
   ): Promise<{ record: RangePreparationRecord; input: PersistedPreparationInput }> {
     const mutation = this.#mutation()
     return withDurableCustodyUnitOfWork(
@@ -1215,16 +1366,19 @@ export class DaemonCtfRangeOrderCoordinator {
       mutation.fence,
       mutation.observedAtMs,
       (database) => {
-        const active = readActiveRangePreparationByClientOrderId(
+        const active = readResidualRangePreparationByPredecessor(
           database,
           mutation.fence.scopeId,
-          predecessor.clientOrderId,
+          predecessor.rangeOperationId,
         )
-        if (active !== null && active.rangeOperationId !== predecessor.rangeOperationId) {
-          const input = preparationFromJournal(active, proposed.request)
+        if (active !== null) {
+          const input = preparationFromJournal(active)
           if (
             input.sourceKind !== 'residual-change' ||
-            input.predecessorRangeOperationId !== predecessor.rangeOperationId
+            input.predecessorRangeOperationId !== predecessor.rangeOperationId ||
+            !sameContinuationReference(active.continuation, continuation) ||
+            !sameResidualOrderTerms(preparationFromJournal(predecessor).request, input.request) ||
+            input.amountSubunits !== proposed.amountSubunits
           ) {
             throw new Error('daemon residual range successor conflicts with active authority')
           }
@@ -1263,6 +1417,8 @@ export class DaemonCtfRangeOrderCoordinator {
           priceSubunits: proposed.priceNumerator,
           amountSubunits: proposed.amountSubunits,
           minimumFillAmountSubunits: proposed.request.minimumFillAmountSubunits,
+          continueAfterPartialFill: true,
+          continuation,
           divisibility: proposed.divisibility as 10_000 | 1_000_000,
           authorizationExpiresAtUnixSeconds: proposed.expiry,
           preparationBytes: encodeCanonicalRangePreparation(proposed),
@@ -1296,6 +1452,8 @@ export class DaemonCtfRangeOrderCoordinator {
     if (
       acknowledged.resultId !== result.resultId ||
       acknowledged.version !== result.version + 1 ||
+      acknowledged.settlementGroupId !== result.settlementGroupId ||
+      acknowledged.settlementGroupRevision !== result.settlementGroupRevision ||
       acknowledged.acknowledgedAt === null
     ) {
       throw new Error('engine settlement result acknowledgement is foreign')
@@ -1324,6 +1482,13 @@ export class DaemonCtfRangeOrderCoordinator {
     )
   }
 
+  async #markResidualPredecessorTerminal(input: PersistedPreparationInput): Promise<void> {
+    if (input.sourceKind !== 'residual-change' || input.predecessorRangeOperationId === null) {
+      return
+    }
+    await this.#markTerminal(input.predecessorRangeOperationId)
+  }
+
   #createMint(mintUrl: string): CtfRangeMintLike {
     return this.#dependencies.createMint?.(mintUrl) ?? (new CashuMint(mintUrl) as CtfRangeMintLike)
   }
@@ -1345,6 +1510,37 @@ export class DaemonCtfRangeOrderCoordinator {
       fence: this.#getFence(),
       observedAtMs: this.#nowMs(),
     }
+  }
+}
+
+function sameResidualOrderTerms(
+  predecessor: PersistedPreparationInput['request'],
+  successor: PersistedPreparationInput['request'],
+): boolean {
+  return (
+    predecessor.marketId === successor.marketId &&
+    predecessor.conditionId === successor.conditionId &&
+    predecessor.outcomeId === successor.outcomeId &&
+    predecessor.tokenSide === successor.tokenSide &&
+    predecessor.side === successor.side &&
+    predecessor.price === successor.price &&
+    predecessor.minimumFillAmountSubunits === successor.minimumFillAmountSubunits &&
+    predecessor.baseAsset === successor.baseAsset &&
+    predecessor.collateralUnit === successor.collateralUnit &&
+    predecessor.divisibility === successor.divisibility &&
+    predecessor.timeInForce === successor.timeInForce &&
+    predecessor.expiresAt === successor.expiresAt &&
+    successor.amountSubunits < predecessor.amountSubunits
+  )
+}
+
+function sequentialStableIds(first: string, second: string): () => string {
+  let index = 0
+  return () => {
+    index += 1
+    if (index === 1) return first
+    if (index === 2) return second
+    throw new Error('daemon residual successor requested an unexpected identity')
   }
 }
 
@@ -1374,6 +1570,57 @@ async function submitRecoveredResidualOrder(
     request.amountSubunits,
     request.baseAsset,
     request.divisibility,
+  )
+}
+
+function requirePendingContinuation(
+  status: OrderStatusResponse,
+  predecessor: RangePreparationRecord,
+  operation: DurableCtfRangeOperation,
+  engineResult: CtfRangeEngineResult | null,
+): SettlementOrderContinuationReference {
+  const capability = predecessor.capability
+  const continuation = status.continuation
+  if (
+    capability === null ||
+    status.status !== 'awaiting_authorization' ||
+    continuation === null ||
+    (continuation.status !== 'open' && continuation.status !== 'declined') ||
+    status.orderId !== capability.orderId ||
+    engineResult === null ||
+    continuation.settlementGroupId !== engineResult.settlementGroupId ||
+    continuation.settlementGroupRevision !== engineResult.settlementGroupRevision
+  ) {
+    throw new Error('daemon residual continuation authority is unavailable')
+  }
+  const exactRemaining = Number(
+    deriveDurableCtfRangeSelectionRemainingAmount({
+      source: operation,
+      selection: engineResult.envelope.selection,
+      originalOrderAmount: predecessor.amountSubunits,
+    }),
+  )
+  if (!Number.isSafeInteger(exactRemaining) || status.remainingAmountSubunits !== exactRemaining) {
+    throw new Error('daemon residual continuation amount differs from the exact result')
+  }
+  return {
+    predecessorOrderId: status.orderId,
+    settlementGroupId: continuation.settlementGroupId,
+    settlementGroupRevision: continuation.settlementGroupRevision,
+    continuationRevision: continuation.revision,
+  }
+}
+
+function sameContinuationReference(
+  left: SettlementOrderContinuationReference | null,
+  right: SettlementOrderContinuationReference,
+): boolean {
+  return (
+    left !== null &&
+    left.predecessorOrderId === right.predecessorOrderId &&
+    left.settlementGroupId === right.settlementGroupId &&
+    left.settlementGroupRevision === right.settlementGroupRevision &&
+    left.continuationRevision === right.continuationRevision
   )
 }
 
@@ -1418,7 +1665,7 @@ async function loadMintMetadata(
 function persistedOrderRequest(
   input: PrepareSettlementCapabilityInput,
 ): PersistedPreparationInput['request'] {
-  const { walletSeedHex: _, ...request } = input
+  const { walletSeedHex: _, continueAfterPartialFill: __, ...request } = input
   return structuredClone(request) as PersistedPreparationInput['request']
 }
 

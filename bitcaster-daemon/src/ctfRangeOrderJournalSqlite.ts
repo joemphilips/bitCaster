@@ -1,5 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite'
 import {
+  decodeSettlementOrderContinuationReference,
+  type SettlementOrderContinuationReference,
+} from '@bitcaster-market/client-sdk/engineClient'
+import {
   assertCtfRangeOrderPreparationTransition,
   bindCtfRangeOrderPreparationCapability,
   decodeCtfRangeOrderPreparationArtifact,
@@ -30,6 +34,7 @@ export type RangePreparationPageCursor = CtfRangeOrderPreparationPageCursor
 export interface RangePreparationPage {
   readonly preparations: readonly RangePreparationRecord[]
   readonly nextCursor: RangePreparationPageCursor | null
+  readonly deferredCount: number
 }
 
 export interface RangePreparationSourceLink {
@@ -52,6 +57,17 @@ export interface RangePreparationOperationLinks {
   readonly consolidations: readonly RangePreparationConsolidationLink[]
 }
 
+export interface RangeSuccessorIntent {
+  readonly scopeId: string
+  readonly predecessorRangeOperationId: string
+  readonly successorRangeOperationId: string
+  readonly successorAuthorizationId: string
+  readonly successorClientOrderId: string
+  readonly remainingAmountSubunits: number
+  readonly continuation: SettlementOrderContinuationReference
+  readonly createdAtMs: number
+}
+
 export const encodeCanonicalRangePreparation = encodeCtfRangeOrderPreparationArtifact
 export const decodeCanonicalRangePreparation = decodeCtfRangeOrderPreparationArtifact
 
@@ -67,12 +83,14 @@ export function insertRangePreparation(
          predecessor_range_operation_id, authorization_id,
          client_order_id, order_route_id, normalized_mint, condition_id, unit,
          token_side, side, price_subunits, amount_subunits,
-         minimum_fill_amount_subunits, divisibility,
+         minimum_fill_amount_subunits, continue_after_partial_fill,
+         continuation_predecessor_order_id, continuation_settlement_group_id,
+         continuation_settlement_group_revision, continuation_revision, divisibility,
          authorization_expires_at_unix_seconds, preparation_body, lifecycle_state, revision,
          capability_artifact_id, capability_binding_digest, capability_artifact_digest,
          engine_order_id, created_at_ms, updated_at_ms
        ) VALUES (
-         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'msat', ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', 0,
+         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'msat', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', 0,
          NULL, NULL, NULL, NULL, ?, ?
        )
        ON CONFLICT DO NOTHING`,
@@ -93,6 +111,11 @@ export function insertRangePreparation(
       input.priceSubunits,
       input.amountSubunits,
       input.minimumFillAmountSubunits,
+      input.continueAfterPartialFill ? 1 : 0,
+      input.continuation?.predecessorOrderId ?? null,
+      input.continuation?.settlementGroupId ?? null,
+      input.continuation?.settlementGroupRevision ?? null,
+      input.continuation?.continuationRevision ?? null,
       input.divisibility,
       input.authorizationExpiresAtUnixSeconds,
       input.preparationBytes,
@@ -142,6 +165,104 @@ export function readActiveRangePreparationByClientOrderId(
     throw new Error('daemon CTF range client order has overlapping active preparations')
   }
   return rows.length === 0 ? null : decodePreparationRow(rows[0]!)
+}
+
+export function readResidualRangePreparationByPredecessor(
+  database: DatabaseSync,
+  scopeId: string,
+  predecessorRangeOperationId: string,
+): RangePreparationRecord | null {
+  requireText(scopeId, 'scope id')
+  requireText(predecessorRangeOperationId, 'predecessor range operation id')
+  const row = database
+    .prepare(
+      `SELECT * FROM daemon_ctf_range_preparations
+       WHERE scope_id = ? AND predecessor_range_operation_id = ?`,
+    )
+    .get(scopeId, predecessorRangeOperationId) as Record<string, unknown> | undefined
+  return row === undefined ? null : decodePreparationRow(row)
+}
+
+export function insertRangeSuccessorIntent(
+  database: DatabaseSync,
+  input: RangeSuccessorIntent,
+): RangeSuccessorIntent {
+  const intent = decodeRangeSuccessorIntent(input)
+  database
+    .prepare(
+      `INSERT INTO daemon_ctf_range_successor_intents (
+         scope_id, predecessor_range_operation_id, successor_range_operation_id,
+         successor_authorization_id, successor_client_order_id, remaining_amount_subunits,
+         continuation_predecessor_order_id, continuation_settlement_group_id,
+         continuation_settlement_group_revision, continuation_revision, created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`,
+    )
+    .run(
+      intent.scopeId,
+      intent.predecessorRangeOperationId,
+      intent.successorRangeOperationId,
+      intent.successorAuthorizationId,
+      intent.successorClientOrderId,
+      intent.remainingAmountSubunits,
+      intent.continuation.predecessorOrderId,
+      intent.continuation.settlementGroupId,
+      intent.continuation.settlementGroupRevision,
+      intent.continuation.continuationRevision,
+      intent.createdAtMs,
+    )
+  const persisted = readRangeSuccessorIntent(
+    database,
+    intent.scopeId,
+    intent.predecessorRangeOperationId,
+  )
+  if (persisted === null || !sameRangeSuccessorIntent(persisted, intent)) {
+    throw new Error('daemon CTF range successor intent conflicts with persisted authority')
+  }
+  return persisted
+}
+
+export function readRangeSuccessorIntent(
+  database: DatabaseSync,
+  scopeId: string,
+  predecessorRangeOperationId: string,
+): RangeSuccessorIntent | null {
+  requireText(scopeId, 'scope id')
+  requireText(predecessorRangeOperationId, 'predecessor range operation id')
+  const row = database
+    .prepare(
+      `SELECT * FROM daemon_ctf_range_successor_intents
+       WHERE scope_id = ? AND predecessor_range_operation_id = ?`,
+    )
+    .get(scopeId, predecessorRangeOperationId) as Record<string, unknown> | undefined
+  if (row === undefined) return null
+  return {
+    scopeId: requireText(row.scope_id, 'successor scope id'),
+    predecessorRangeOperationId: requireText(
+      row.predecessor_range_operation_id,
+      'successor predecessor operation id',
+    ),
+    successorRangeOperationId: requireText(
+      row.successor_range_operation_id,
+      'successor operation id',
+    ),
+    successorAuthorizationId: requireText(
+      row.successor_authorization_id,
+      'successor authorization id',
+    ),
+    successorClientOrderId: requireText(row.successor_client_order_id, 'successor client order id'),
+    remainingAmountSubunits: requirePositiveSafeInteger(
+      row.remaining_amount_subunits,
+      'successor remaining amount',
+    ),
+    continuation: decodeSettlementOrderContinuationReference({
+      predecessorOrderId: row.continuation_predecessor_order_id,
+      settlementGroupId: row.continuation_settlement_group_id,
+      settlementGroupRevision: row.continuation_settlement_group_revision,
+      continuationRevision: row.continuation_revision,
+    }),
+    createdAtMs: requireNonnegativeSafeInteger(row.created_at_ms, 'successor created time'),
+  }
 }
 
 export function bindRangePreparationCapability(
@@ -257,7 +378,7 @@ export function pageActiveRangePreparations(
   parameters.push(input.limit + 1)
   const rows = database
     .prepare(
-      `SELECT preparation.*
+      `SELECT preparation.*, count(*) OVER () AS active_page_total
        FROM daemon_ctf_range_preparations AS preparation
        WHERE preparation.scope_id = ?
          AND preparation.lifecycle_state <> 'terminal'
@@ -269,15 +390,19 @@ export function pageActiveRangePreparations(
   const pageRows = rows.slice(0, input.limit)
   const preparations = pageRows.map(decodePreparationRow)
   const last = pageRows.at(-1)
+  const total =
+    rows.length === 0 ? 0 : requireSafeInteger(rows[0]!.active_page_total, 'active page total')
+  const deferredCount = Math.max(0, total - pageRows.length)
   return {
     preparations,
     nextCursor:
-      rows.length > input.limit && last !== undefined
+      deferredCount > 0 && last !== undefined
         ? {
             updatedAtMs: requireSafeInteger(last.updated_at_ms, 'updated time'),
             rangeOperationId: requireText(last.range_operation_id, 'range operation id'),
           }
         : null,
+    deferredCount,
   }
 }
 
@@ -400,6 +525,11 @@ function decodePreparationRow(row: Record<string, unknown>): RangePreparationRec
     priceSubunits: row.price_subunits,
     amountSubunits: row.amount_subunits,
     minimumFillAmountSubunits: row.minimum_fill_amount_subunits,
+    continueAfterPartialFill: decodeSqliteBoolean(
+      row.continue_after_partial_fill,
+      'continuation policy',
+    ),
+    continuation: decodeContinuation(row),
     divisibility: row.divisibility,
     authorizationExpiresAtUnixSeconds: row.authorization_expires_at_unix_seconds,
     preparationBytes: row.preparation_body,
@@ -409,6 +539,75 @@ function decodePreparationRow(row: Record<string, unknown>): RangePreparationRec
     capability: decodeCapability(row),
     updatedAtMs: row.updated_at_ms,
   })
+}
+
+function decodeContinuation(row: Record<string, unknown>): RangePreparationRecord['continuation'] {
+  const values = [
+    row.continuation_predecessor_order_id,
+    row.continuation_settlement_group_id,
+    row.continuation_settlement_group_revision,
+    row.continuation_revision,
+  ]
+  if (values.every((value) => value === null)) return null
+  if (values.some((value) => value === null)) {
+    throw new Error('daemon CTF range continuation authority is partial')
+  }
+  return {
+    predecessorOrderId: requireText(values[0], 'continuation predecessor order id'),
+    settlementGroupId: requireText(values[1], 'continuation settlement group id'),
+    settlementGroupRevision: requirePositiveSafeInteger(values[2], 'continuation group revision'),
+    continuationRevision: requirePositiveSafeInteger(values[3], 'continuation revision'),
+  }
+}
+
+function decodeRangeSuccessorIntent(value: RangeSuccessorIntent): RangeSuccessorIntent {
+  const scopeId = requireText(value.scopeId, 'successor scope id')
+  const predecessorRangeOperationId = requireText(
+    value.predecessorRangeOperationId,
+    'successor predecessor operation id',
+  )
+  const successorRangeOperationId = requireText(
+    value.successorRangeOperationId,
+    'successor operation id',
+  )
+  if (successorRangeOperationId === predecessorRangeOperationId) {
+    throw new Error('daemon CTF range successor operation is not fresh')
+  }
+  return {
+    scopeId,
+    predecessorRangeOperationId,
+    successorRangeOperationId,
+    successorAuthorizationId: requireText(
+      value.successorAuthorizationId,
+      'successor authorization id',
+    ),
+    successorClientOrderId: requireText(value.successorClientOrderId, 'successor client order id'),
+    remainingAmountSubunits: requirePositiveSafeInteger(
+      value.remainingAmountSubunits,
+      'successor remaining amount',
+    ),
+    continuation: decodeSettlementOrderContinuationReference(value.continuation),
+    createdAtMs: requireNonnegativeSafeInteger(value.createdAtMs, 'successor created time'),
+  }
+}
+
+function sameRangeSuccessorIntent(
+  left: RangeSuccessorIntent,
+  right: RangeSuccessorIntent,
+): boolean {
+  return (
+    left.scopeId === right.scopeId &&
+    left.predecessorRangeOperationId === right.predecessorRangeOperationId &&
+    left.successorRangeOperationId === right.successorRangeOperationId &&
+    left.successorAuthorizationId === right.successorAuthorizationId &&
+    left.successorClientOrderId === right.successorClientOrderId &&
+    left.remainingAmountSubunits === right.remainingAmountSubunits &&
+    left.createdAtMs === right.createdAtMs &&
+    left.continuation.predecessorOrderId === right.continuation.predecessorOrderId &&
+    left.continuation.settlementGroupId === right.continuation.settlementGroupId &&
+    left.continuation.settlementGroupRevision === right.continuation.settlementGroupRevision &&
+    left.continuation.continuationRevision === right.continuation.continuationRevision
+  )
 }
 
 function decodeCapability(row: Record<string, unknown>): RangePreparationCapability | null {
@@ -556,6 +755,24 @@ function requireRevision(value: unknown): number {
   const revision = requireSafeInteger(value, 'revision')
   if (revision < 0) throw new Error('daemon CTF range revision is invalid')
   return revision
+}
+
+function requirePositiveSafeInteger(value: unknown, label: string): number {
+  const result = requireSafeInteger(value, label)
+  if (result <= 0) throw new Error(`daemon CTF range ${label} is invalid`)
+  return result
+}
+
+function requireNonnegativeSafeInteger(value: unknown, label: string): number {
+  const result = requireSafeInteger(value, label)
+  if (result < 0) throw new Error(`daemon CTF range ${label} is invalid`)
+  return result
+}
+
+function decodeSqliteBoolean(value: unknown, label: string): boolean {
+  if (value === 0) return false
+  if (value === 1) return true
+  throw new Error(`daemon CTF range ${label} is invalid`)
 }
 
 function requireRound(value: unknown): number {

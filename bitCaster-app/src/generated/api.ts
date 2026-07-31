@@ -229,6 +229,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/{marketId}/orders/{orderId}/continuation/decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decline one suspended residual continuation */
+        post: operations["declineOrderContinuation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/{marketId}/orderbook": {
         parameters: {
             query?: never;
@@ -552,6 +569,30 @@ export interface components {
         };
         /** @enum {string} */
         SettlementCapabilityState: "staged" | "bindingPending" | "bound" | "selected" | "uncertain" | "terminal" | "quarantined";
+        SettlementOrderContinuationReference: {
+            /** Format: uuid */
+            predecessorOrderId: string;
+            /** Format: uuid */
+            settlementGroupId: string;
+            /** Format: int32 */
+            settlementGroupRevision: number;
+            /** Format: int64 */
+            continuationRevision: number;
+        };
+        OrderContinuationState: {
+            /** Format: uuid */
+            settlementGroupId: string;
+            /** Format: int32 */
+            settlementGroupRevision: number;
+            /** Format: int64 */
+            revision: number;
+            /** @enum {string} */
+            status: "open" | "consumed" | "declined";
+        };
+        DeclineOrderContinuationRequest: {
+            /** Format: int64 */
+            expectedContinuationRevision: number;
+        };
         /** @description Immutable economic order terms authenticated by the settlement capability binding. Later order submission supplies only the resulting capability reference; the server loads these terms from the current durable DCB binding. */
         SettlementOrderIntent: {
             /** @description Primitive outcome segment of the top-level marketId. It must not contain a finite outcome-set separator such as "|". */
@@ -584,6 +625,8 @@ export interface components {
             marketId: string;
             /** @description Economic order terms to authenticate in the durable capability binding. Once the stage idempotency key is durably associated, reusing it with different terms conflicts. */
             orderIntent: components["schemas"]["SettlementOrderIntent"];
+            /** @description Exactly null for an initial order. A fresh successor binds the confirmed predecessor continuation right and consumes it atomically when the capability is bound. */
+            continuation: components["schemas"]["SettlementOrderContinuationReference"] | null;
             /**
              * Format: byte
              * @description Base64 encoding of at most 262144 canonical JSON bytes produced by the shared SDK settlement-capability artifact encoder.
@@ -854,6 +897,17 @@ export interface components {
             filledAmountSubunits: components["schemas"]["CollateralSubunits"];
             /** @description All fills and active or terminal atomic settlement groups produced against this order so far. */
             fills: components["schemas"]["Fill"][];
+            /** @description The order's original conditional-token face amount. */
+            amountSubunits: components["schemas"]["CollateralSubunits"];
+            /** @description The primitive route outcome this order trades against. */
+            outcomeId: string;
+            side: components["schemas"]["OrderSide"];
+            price: components["schemas"]["Probability"];
+            /** Format: date-time */
+            placedAt: string;
+            timeInForce: components["schemas"]["TimeInForce"];
+            /** Format: date-time */
+            expiresAt?: string | null;
             /**
              * Format: uuid
              * @description Legacy HTLC trade identifier retained until Phase 12 removes the superseded protocol surface.
@@ -866,6 +920,8 @@ export interface components {
             deadline?: string | null;
             /** @description Current nonterminal settlement group for this order, or null when no group currently owns an unconfirmed fill. */
             activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
+            /** @description Current durable residual-continuation state. It is non-null only after a confirmed partial resting-order settlement. */
+            continuation: components["schemas"]["OrderContinuationState"] | null;
             tokenSide: components["schemas"]["TokenSide"];
             /** @description Base asset context for amount and price fields. */
             baseAsset: components["schemas"]["BaseAsset"];
@@ -2091,6 +2147,53 @@ export interface operations {
             };
             /** @description Order not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    declineOrderContinuation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+                marketId: components["parameters"]["MarketId"];
+                orderId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeclineOrderContinuationRequest"];
+            };
+        };
+        responses: {
+            /** @description Continuation is durably declined. Exact replay is idempotent. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Order or continuation is absent. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale revision or continuation already consumed. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -112,6 +112,8 @@ test('engine result-by-operation decodes bounded canonical base64 and verifies i
   assert.equal(decoded?.resultId, response.resultId)
   assert.equal(decoded?.acknowledgedAt, null)
   assert.equal(decoded?.version, response.version)
+  assert.equal(decoded?.settlementGroupId, response.settlementGroup.groupId)
+  assert.equal(decoded?.settlementGroupRevision, response.settlementGroup.revision)
 })
 
 test('engine result decoder rejects noncanonical base64, digest mismatch, and oversized input', () => {
@@ -141,6 +143,9 @@ test('engine result decoder rejects noncanonical base64, digest mismatch, and ov
     { ...padded, envelope: makeBase64TailNoncanonical(padded.envelope) },
     { ...valid, envelopeDigest: '00'.repeat(32) },
     { ...valid, acknowledgedAt: 'not-a-time' },
+    { ...valid, settlementGroup: { ...valid.settlementGroup, status: 'Refundable' as const } },
+    { ...valid, settlementGroup: { ...valid.settlementGroup, groupId: 'foreign' } },
+    { ...valid, settlementGroup: { ...valid.settlementGroup, revision: 0 } },
     { ...valid, envelope: 'A'.repeat(349_529) },
   ]) {
     assert.throws(

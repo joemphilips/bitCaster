@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'd1995af6b5ac3644551ebbb003a36468b6e2860e8c92181154149633e225df00'
+  '0f0c5ad6bd38854668ac0dc509d17d9f22350f75b721e2061cc3ca14ce35cb2c'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -253,6 +253,36 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       minimum_fill_amount_subunits BETWEEN 1 AND amount_subunits
       AND minimum_fill_amount_subunits % divisibility = 0
     ),
+    continue_after_partial_fill INTEGER NOT NULL CHECK (
+      continue_after_partial_fill IN (0, 1)
+    ),
+    continuation_predecessor_order_id TEXT CHECK (
+      continuation_predecessor_order_id IS NULL OR (
+        length(continuation_predecessor_order_id) = 36
+        AND substr(continuation_predecessor_order_id, 9, 1) = '-'
+        AND substr(continuation_predecessor_order_id, 14, 1) = '-'
+        AND substr(continuation_predecessor_order_id, 19, 1) = '-'
+        AND substr(continuation_predecessor_order_id, 24, 1) = '-'
+        AND replace(continuation_predecessor_order_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
+    continuation_settlement_group_id TEXT CHECK (
+      continuation_settlement_group_id IS NULL OR (
+        length(continuation_settlement_group_id) = 36
+        AND substr(continuation_settlement_group_id, 9, 1) = '-'
+        AND substr(continuation_settlement_group_id, 14, 1) = '-'
+        AND substr(continuation_settlement_group_id, 19, 1) = '-'
+        AND substr(continuation_settlement_group_id, 24, 1) = '-'
+        AND replace(continuation_settlement_group_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
+    continuation_settlement_group_revision INTEGER CHECK (
+      continuation_settlement_group_revision IS NULL
+      OR continuation_settlement_group_revision BETWEEN 1 AND 9007199254740991
+    ),
+    continuation_revision INTEGER CHECK (
+      continuation_revision IS NULL OR continuation_revision BETWEEN 1 AND 9007199254740991
+    ),
     divisibility INTEGER NOT NULL CHECK (divisibility IN (10000, 1000000)),
     authorization_expires_at_unix_seconds INTEGER NOT NULL CHECK (
       authorization_expires_at_unix_seconds BETWEEN 1 AND 9007199254740991
@@ -306,6 +336,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     UNIQUE (scope_id, source_operation_id),
     UNIQUE (scope_id, authorization_id),
+    UNIQUE (scope_id, client_order_id),
+    UNIQUE (scope_id, predecessor_range_operation_id),
     UNIQUE (scope_id, range_operation_id, source_operation_id),
     CHECK (
       trim(order_route_id, char(9) || char(10) || char(11) || char(12) || char(13) || ' ')
@@ -318,11 +350,21 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       AND instr(substr(order_route_id, length(condition_id) + 2), '-') = 0
     ),
     CHECK (
-      (source_kind = 'wallet-prepared' AND predecessor_range_operation_id IS NULL)
+      (source_kind = 'wallet-prepared'
+        AND predecessor_range_operation_id IS NULL
+        AND continuation_predecessor_order_id IS NULL
+        AND continuation_settlement_group_id IS NULL
+        AND continuation_settlement_group_revision IS NULL
+        AND continuation_revision IS NULL)
       OR
       (source_kind = 'residual-change'
         AND predecessor_range_operation_id IS NOT NULL
-        AND predecessor_range_operation_id <> range_operation_id)
+        AND predecessor_range_operation_id <> range_operation_id
+        AND continue_after_partial_fill = 1
+        AND continuation_predecessor_order_id IS NOT NULL
+        AND continuation_settlement_group_id IS NOT NULL
+        AND continuation_settlement_group_revision IS NOT NULL
+        AND continuation_revision IS NOT NULL)
     ),
     CHECK (
       (
@@ -346,6 +388,55 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
         AND capability_artifact_id IS NOT NULL)
       OR lifecycle_state = 'terminal'
     )
+  ) STRICT`,
+  `CREATE TABLE daemon_ctf_range_successor_intents (
+    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    predecessor_range_operation_id TEXT NOT NULL CHECK (
+      length(predecessor_range_operation_id) BETWEEN 1 AND 16384
+    ),
+    successor_range_operation_id TEXT NOT NULL CHECK (
+      length(successor_range_operation_id) BETWEEN 1 AND 16384
+    ),
+    successor_authorization_id TEXT NOT NULL CHECK (
+      length(successor_authorization_id) BETWEEN 1 AND 16384
+    ),
+    successor_client_order_id TEXT NOT NULL CHECK (
+      length(successor_client_order_id) BETWEEN 1 AND 1024
+    ),
+    remaining_amount_subunits INTEGER NOT NULL CHECK (
+      remaining_amount_subunits BETWEEN 1 AND 9007199254740991
+    ),
+    continuation_predecessor_order_id TEXT NOT NULL CHECK (
+      length(continuation_predecessor_order_id) = 36
+      AND substr(continuation_predecessor_order_id, 9, 1) = '-'
+      AND substr(continuation_predecessor_order_id, 14, 1) = '-'
+      AND substr(continuation_predecessor_order_id, 19, 1) = '-'
+      AND substr(continuation_predecessor_order_id, 24, 1) = '-'
+      AND replace(continuation_predecessor_order_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    continuation_settlement_group_id TEXT NOT NULL CHECK (
+      length(continuation_settlement_group_id) = 36
+      AND substr(continuation_settlement_group_id, 9, 1) = '-'
+      AND substr(continuation_settlement_group_id, 14, 1) = '-'
+      AND substr(continuation_settlement_group_id, 19, 1) = '-'
+      AND substr(continuation_settlement_group_id, 24, 1) = '-'
+      AND replace(continuation_settlement_group_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    continuation_settlement_group_revision INTEGER NOT NULL CHECK (
+      continuation_settlement_group_revision BETWEEN 1 AND 9007199254740991
+    ),
+    continuation_revision INTEGER NOT NULL CHECK (
+      continuation_revision BETWEEN 1 AND 9007199254740991
+    ),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+    PRIMARY KEY (scope_id, predecessor_range_operation_id),
+    UNIQUE (scope_id, successor_range_operation_id),
+    UNIQUE (scope_id, successor_authorization_id),
+    UNIQUE (scope_id, successor_client_order_id),
+    FOREIGN KEY (scope_id, predecessor_range_operation_id)
+      REFERENCES daemon_ctf_range_preparations(scope_id, range_operation_id)
+      ON DELETE RESTRICT,
+    CHECK (successor_range_operation_id <> predecessor_range_operation_id)
   ) STRICT`,
   `CREATE TABLE daemon_ctf_range_sources (
     scope_id TEXT NOT NULL,

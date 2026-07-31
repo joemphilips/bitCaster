@@ -71,6 +71,73 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class SettlementOrderContinuationReference
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public SettlementOrderContinuationReference(long @continuationRevision, System.Guid @predecessorOrderId, System.Guid @settlementGroupId, int @settlementGroupRevision)
+        {
+            this.PredecessorOrderId = @predecessorOrderId;
+            this.SettlementGroupId = @settlementGroupId;
+            this.SettlementGroupRevision = @settlementGroupRevision;
+            this.ContinuationRevision = @continuationRevision;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("predecessorOrderId")]
+        public System.Guid PredecessorOrderId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("settlementGroupId")]
+        public System.Guid SettlementGroupId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("settlementGroupRevision")]
+        public int SettlementGroupRevision { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("continuationRevision")]
+        public long ContinuationRevision { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OrderContinuationState
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OrderContinuationState(long @revision, System.Guid @settlementGroupId, int @settlementGroupRevision, OrderContinuationStateStatus @status)
+        {
+            this.SettlementGroupId = @settlementGroupId;
+            this.SettlementGroupRevision = @settlementGroupRevision;
+            this.Revision = @revision;
+            this.Status = @status;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("settlementGroupId")]
+        public System.Guid SettlementGroupId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("settlementGroupRevision")]
+        public int SettlementGroupRevision { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("revision")]
+        public long Revision { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderContinuationStateStatus>))]
+        public OrderContinuationStateStatus Status { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class DeclineOrderContinuationRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public DeclineOrderContinuationRequest(long @expectedContinuationRevision)
+        {
+            this.ExpectedContinuationRevision = @expectedContinuationRevision;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("expectedContinuationRevision")]
+        public long ExpectedContinuationRevision { get; }
+
+    }
+
     /// <summary>
     /// Immutable economic order terms authenticated by the settlement capability binding. Later order submission supplies only the resulting capability reference; the server loads these terms from the current durable DCB binding.
     /// <br/>
@@ -162,12 +229,13 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateSettlementCapabilityRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateSettlementCapabilityRequest(byte[] @artifact, string @clientOrderId, string @marketId, SettlementOrderIntent @orderIntent, string @stageIdempotencyKey)
+        public CreateSettlementCapabilityRequest(byte[] @artifact, string @clientOrderId, SettlementOrderContinuationReference @continuation, string @marketId, SettlementOrderIntent @orderIntent, string @stageIdempotencyKey)
         {
             this.StageIdempotencyKey = @stageIdempotencyKey;
             this.ClientOrderId = @clientOrderId;
             this.MarketId = @marketId;
             this.OrderIntent = @orderIntent;
+            this.Continuation = @continuation;
             this.Artifact = @artifact;
         }
 
@@ -197,6 +265,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("orderIntent")]
         public SettlementOrderIntent OrderIntent { get; }
+
+        /// <summary>
+        /// Exactly null for an initial order. A fresh successor binds the confirmed predecessor continuation right and consumes it atomically when the capability is bound.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("continuation")]
+        public SettlementOrderContinuationReference Continuation { get; }
 
         /// <summary>
         /// Base64 encoding of at most 262144 canonical JSON bytes produced by the shared SDK settlement-capability artifact encoder.
@@ -1011,7 +1086,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderStatusResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderStatusResponse(SettlementGroupSummary @activeSettlementGroup, BaseAsset @baseAsset, System.DateTimeOffset? @deadline, OrderStatusResponseDivisibility @divisibility, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, OrderLifecycleStatus @status, TokenSide @tokenSide, System.Guid? @tradeId)
+        public OrderStatusResponse(SettlementGroupSummary @activeSettlementGroup, long @amountSubunits, BaseAsset @baseAsset, OrderContinuationState @continuation, System.DateTimeOffset? @deadline, OrderStatusResponseDivisibility @divisibility, System.DateTimeOffset? @expiresAt, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, OrderLifecycleStatus @status, TimeInForce @timeInForce, TokenSide @tokenSide, System.Guid? @tradeId)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -1019,9 +1094,17 @@ namespace BitCaster.MatchingEngine.Contracts
             this.RemainingAmountSubunits = @remainingAmountSubunits;
             this.FilledAmountSubunits = @filledAmountSubunits;
             this.Fills = @fills;
+            this.AmountSubunits = @amountSubunits;
+            this.OutcomeId = @outcomeId;
+            this.Side = @side;
+            this.Price = @price;
+            this.PlacedAt = @placedAt;
+            this.TimeInForce = @timeInForce;
+            this.ExpiresAt = @expiresAt;
             this.TradeId = @tradeId;
             this.Deadline = @deadline;
             this.ActiveSettlementGroup = @activeSettlementGroup;
+            this.Continuation = @continuation;
             this.TokenSide = @tokenSide;
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
@@ -1061,6 +1144,35 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Collections.Generic.List<Fill> Fills { get; }
 
         /// <summary>
+        /// The order's original conditional-token face amount.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
+        public long AmountSubunits { get; }
+
+        /// <summary>
+        /// The primitive route outcome this order trades against.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
+        public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("side")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderSide>))]
+        public OrderSide Side { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("price")]
+        public int Price { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("placedAt")]
+        public System.DateTimeOffset PlacedAt { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TimeInForce>))]
+        public TimeInForce TimeInForce { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
+        public System.DateTimeOffset? ExpiresAt { get; }
+
+        /// <summary>
         /// Legacy HTLC trade identifier retained until Phase 12 removes the superseded protocol surface.
         /// <br/>
         /// </summary>
@@ -1079,6 +1191,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("activeSettlementGroup")]
         public SettlementGroupSummary ActiveSettlementGroup { get; }
+
+        /// <summary>
+        /// Current durable residual-continuation state. It is non-null only after a confirmed partial resting-order settlement.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("continuation")]
+        public OrderContinuationState Continuation { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
@@ -3231,6 +3350,21 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"New")]
         New = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum OrderContinuationStateStatus
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"open")]
+        Open = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"consumed")]
+        Consumed = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"declined")]
+        Declined = 2,
 
     }
 

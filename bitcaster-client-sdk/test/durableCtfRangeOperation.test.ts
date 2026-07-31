@@ -1469,6 +1469,7 @@ test('refund preserves offered class and residual reauthorization links exact ch
   const residual = deriveDurableCtfResidualDecision({
     source: operation,
     result,
+    originalOrderAmount: 4,
     remainingOrderAmount: 2,
     restingOrder: true,
   })
@@ -1488,10 +1489,22 @@ test('refund preserves offered class and residual reauthorization links exact ch
       deriveDurableCtfResidualDecision({
         source: operation,
         result: { ...result, operationId: 'foreign-operation' },
+        originalOrderAmount: 4,
         remainingOrderAmount: 2,
         restingOrder: true,
       }),
     /result is foreign/,
+  )
+  assert.throws(
+    () =>
+      deriveDurableCtfResidualDecision({
+        source: operation,
+        result,
+        originalOrderAmount: 4,
+        remainingOrderAmount: 3,
+        restingOrder: true,
+      }),
+    /remaining amount differs/,
   )
 })
 

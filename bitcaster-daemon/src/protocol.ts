@@ -36,7 +36,9 @@ export interface SubmitOrderParams {
   price: number
   amountSubunits: number
   minimumFillAmountSubunits?: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC'
+  continueAfterPartialFill?: boolean
+  timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  expiresAt?: string | null
   /**
    * Limit-buy maker collateral should be split into a complete set before the
    * order rests. bitcaster-cli sends true by default and false for

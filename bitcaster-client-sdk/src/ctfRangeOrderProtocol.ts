@@ -27,10 +27,12 @@ import type {
 import type { ActiveCtfRangeMintKeyset } from './ctfRangeOrderPreparation.ts'
 import { planCtfRangeOrderAuthorization } from './ctfRangeOrderAuthorization.ts'
 import type { TokenImportKeysetLookup } from './tokenImportValidation.ts'
-import type {
-  CreateSettlementCapabilityRequest,
-  SettlementCapabilityAdmissionPolicyResponse,
-  SettlementCapabilityResponse,
+import {
+  decodeSettlementOrderContinuationReference,
+  type CreateSettlementCapabilityRequest,
+  type SettlementCapabilityAdmissionPolicyResponse,
+  type SettlementCapabilityResponse,
+  type SettlementOrderContinuationReference,
 } from './engineClient.ts'
 import type { MarketDivisibility } from './marketUnits.ts'
 
@@ -122,8 +124,8 @@ export interface CtfRangeOrderRequest {
   readonly baseAsset: 'sat'
   readonly collateralUnit: 'msat'
   readonly divisibility: MarketDivisibility
-  readonly timeInForce: 'FAK' | 'FOK' | 'GTC'
-  readonly expiresAt: null
+  readonly timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  readonly expiresAt: string | null
   readonly mintUrl: string
 }
 
@@ -187,7 +189,7 @@ export function buildPersistedCtfRangeOrderPreparation(input: {
     input.nowUnixSeconds,
     'range preparation current time',
   )
-  const expiry = derivePreparationExpiry(input.mintFacts.observation, nowUnixSeconds)
+  const expiry = derivePreparationExpiry(input.mintFacts.observation, nowUnixSeconds, request)
   const operationId = requireText(input.randomId(), 'range preparation operation id')
   const sourceKind = input.sourceKind ?? 'wallet-prepared'
   return decodePersistedCtfRangeOrderPreparation({
@@ -301,11 +303,14 @@ export function decodeSettlementCoordinatorPublicKey(
 export function createCtfRangeSettlementCapabilityRequest(
   preparationValue: PersistedCtfRangeOrderPreparation,
   operation: DurableCtfRangeOperation,
+  continuation: SettlementOrderContinuationReference | null = null,
 ): CreateSettlementCapabilityRequest {
   const preparation = decodePersistedCtfRangeOrderPreparation(preparationValue)
   const request = preparation.request
   assertOperationMatchesPreparation(operation, preparation)
   const artifact = createPoolSettlementCapabilityArtifact(operation)
+  const continuationReference =
+    continuation === null ? null : decodeSettlementOrderContinuationReference(continuation)
   return {
     stageIdempotencyKey: operation.authorizationId,
     clientOrderId: request.clientOrderId,
@@ -322,6 +327,7 @@ export function createCtfRangeSettlementCapabilityRequest(
       timeInForce: request.timeInForce,
       expiresAt: request.expiresAt,
     },
+    continuation: continuationReference,
     artifact: bytesToBase64(encodeSettlementCapabilityArtifact(artifact)),
   }
 }
@@ -436,6 +442,12 @@ function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
   ) {
     throw new Error('range preparation request fill amount is invalid')
   }
+  const timeInForce = requireClosed(
+    request.timeInForce,
+    ['FAK', 'FOK', 'GTC', 'GTD'],
+    'range preparation request time in force',
+  )
+  const expiresAt = decodeOrderExpiry(request.expiresAt, timeInForce)
   return {
     clientOrderId: requireText(request.clientOrderId, 'range preparation request client order id'),
     marketId,
@@ -457,12 +469,8 @@ function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
       'range preparation request collateral unit',
     ),
     divisibility,
-    timeInForce: requireClosed(
-      request.timeInForce,
-      ['FAK', 'FOK', 'GTC'],
-      'range preparation request time in force',
-    ),
-    expiresAt: requireExact(request.expiresAt, null, 'range preparation request expiry'),
+    timeInForce,
+    expiresAt,
     mintUrl: decodeCanonicalMintOrigin(request.mintUrl),
   }
 }
@@ -500,6 +508,7 @@ function compareKeysetPreference(
 function derivePreparationExpiry(
   observation: DurableCtfRangeExpiryObservation,
   nowUnixSeconds: number,
+  request: CtfRangeOrderRequest,
 ): number {
   const fallback = observation.observedAt + observation.maxExpirySeconds
   if (!Number.isSafeInteger(fallback)) {
@@ -511,11 +520,40 @@ function derivePreparationExpiry(
       ? current
       : Math.min(current, requirePositiveSafeInteger(finalExpiry, 'condition keyset final expiry'))
   }, fallback)
-  const expiry = ceiling - RANGE_REFUND_SAFETY_MARGIN_SECONDS
+  const mintExpiry = ceiling - RANGE_REFUND_SAFETY_MARGIN_SECONDS
+  const orderExpiry =
+    request.timeInForce === 'GTD'
+      ? Math.floor(Date.parse(requireGtdExpiry(request.expiresAt)) / 1_000)
+      : Number.MAX_SAFE_INTEGER
+  if (request.timeInForce === 'GTD' && orderExpiry <= nowUnixSeconds) {
+    throw new Error('GTD order expiry horizon is exhausted')
+  }
+  const expiry = Math.min(mintExpiry, orderExpiry)
   if (expiry <= nowUnixSeconds) {
     throw new Error('mint CTF range authorization horizon is exhausted')
   }
   return expiry
+}
+
+function decodeOrderExpiry(
+  value: unknown,
+  timeInForce: CtfRangeOrderRequest['timeInForce'],
+): string | null {
+  if (timeInForce === 'GTD') return requireGtdExpiry(value)
+  return requireExact(value, null, 'range preparation request expiry')
+}
+
+function requireGtdExpiry(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length < 20 ||
+    value.length > 64 ||
+    !Number.isFinite(Date.parse(value)) ||
+    new Date(value).toISOString() !== value
+  ) {
+    throw new Error('range preparation GTD order expiry is invalid')
+  }
+  return value
 }
 
 function selectedOutcomeCollection(market: unknown, request: CtfRangeOrderRequest): string {

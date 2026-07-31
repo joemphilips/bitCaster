@@ -954,6 +954,7 @@ export function deriveDurableCtfRangeRefundRequestFingerprint(request: SwapReque
 export function deriveDurableCtfResidualDecision(input: {
   source: DurableCtfRangeOperation
   result: DurableCtfRangeRecoveredResult
+  originalOrderAmount: string | bigint | number
   remainingOrderAmount: string | bigint | number
   restingOrder: boolean
 }): DurableCtfResidualDecision {
@@ -966,6 +967,21 @@ export function deriveDurableCtfResidualDecision(input: {
   ) {
     throw new Error('residual range result is foreign')
   }
+  const expectedRemaining = BigInt(
+    deriveDurableCtfRangeSelectionRemainingAmount({
+      source,
+      selection: input.result.selection,
+      originalOrderAmount: input.originalOrderAmount,
+    }),
+  )
+  const verifiedRemaining = deriveVerifiedRemainingOrderAmount(
+    source,
+    input.result,
+    Amount.from(input.originalOrderAmount).toBigInt(),
+  )
+  if (remaining !== expectedRemaining || remaining !== verifiedRemaining) {
+    throw new Error('residual range remaining amount differs from the exact mint result')
+  }
   if (input.result.change.length === 0) {
     throw new Error('residual range order has no returned change authority')
   }
@@ -975,6 +991,63 @@ export function deriveDurableCtfResidualDecision(input: {
     sourceProofs: input.result.change.map((proof) => deserializeProof(serializeProof(proof))),
     remainingOrderAmount: remaining.toString(),
   }
+}
+
+export function deriveDurableCtfRangeSelectionRemainingAmount(input: {
+  source: DurableCtfRangeOperation
+  selection: string
+  originalOrderAmount: string | bigint | number
+}): string {
+  const source = decodeDurableCtfRangeOperation(input.source)
+  const original = Amount.from(input.originalOrderAmount).toBigInt()
+  const selected = parseCtfSelectionBitmap(input.selection, source.manifest.entries.length).map(
+    (index) => source.manifest.entries[index]!,
+  )
+  const receive = selected
+    .filter(({ role }) => role === 'receive')
+    .reduce((total, entry) => total + BigInt(entry.amount), 0n)
+  const change = selected
+    .filter(({ role }) => role === 'change')
+    .reduce((total, entry) => total + BigInt(entry.amount), 0n)
+  return remainingOrderAmount(source, original, receive, change).toString()
+}
+
+function deriveVerifiedRemainingOrderAmount(
+  source: DurableCtfRangeOperation,
+  result: DurableCtfRangeRecoveredResult,
+  original: bigint,
+): bigint {
+  const receive = result.receive.reduce(
+    (total, proof) => total + Amount.from(proof.amount).toBigInt(),
+    0n,
+  )
+  const change = result.change.reduce(
+    (total, proof) => total + Amount.from(proof.amount).toBigInt(),
+    0n,
+  )
+  return remainingOrderAmount(source, original, receive, change)
+}
+
+function remainingOrderAmount(
+  source: DurableCtfRangeOperation,
+  original: bigint,
+  receive: bigint,
+  change: bigint,
+): bigint {
+  const inputTotal = source.inputs.reduce(
+    (total, proof) => total + Amount.from(proof.amount).toBigInt(),
+    0n,
+  )
+  const filled =
+    source.offerAsset.kind === 'regular' && source.receiveAsset.kind === 'conditional'
+      ? receive
+      : source.offerAsset.kind === 'conditional' && source.receiveAsset.kind === 'regular'
+        ? inputTotal - change
+        : -1n
+  if (original <= 0n || filled <= 0n || filled > original) {
+    throw new Error('residual range selected face amount is invalid')
+  }
+  return original - filled
 }
 
 function requireRangeOperationShape(value: unknown): DurableCtfRangeOperation {

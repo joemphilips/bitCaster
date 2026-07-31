@@ -135,6 +135,11 @@ export interface EngineClientLike {
     resultId: string,
     request: AcknowledgeSettlementCapabilityResultRequest,
   ): Promise<SettlementCapabilityResultResponse | null>
+  declineOrderContinuation?(
+    marketId: string,
+    orderId: string,
+    expectedContinuationRevision: number,
+  ): Promise<void>
 }
 
 export interface PrepareSettlementCapabilityInput {
@@ -147,11 +152,12 @@ export interface PrepareSettlementCapabilityInput {
   price: number
   amountSubunits: number
   minimumFillAmountSubunits: number
+  continueAfterPartialFill: boolean
   baseAsset: 'sat'
   collateralUnit: 'msat'
   divisibility: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC'
-  expiresAt: null
+  timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  expiresAt: string | null
   mintUrl: string
   walletSeedHex: string
 }
@@ -761,6 +767,29 @@ export async function dispatch(
           error: `Order rejected: minimum fill must be a positive multiple of ${marketUnit.divisibility} and no larger than the order amount`,
         }
       }
+      if (
+        orderParams.continueAfterPartialFill !== undefined &&
+        typeof orderParams.continueAfterPartialFill !== 'boolean'
+      ) {
+        return { ok: false, error: 'Order rejected: continuation policy must be boolean' }
+      }
+      if (
+        orderParams.continueAfterPartialFill === true &&
+        orderParams.timeInForce !== 'GTC' &&
+        orderParams.timeInForce !== 'GTD'
+      ) {
+        return { ok: false, error: 'Order rejected: continuation requires a resting order' }
+      }
+      const expiresAt = orderParams.expiresAt ?? null
+      if (
+        (orderParams.timeInForce === 'GTD' &&
+          (typeof expiresAt !== 'string' ||
+            !Number.isFinite(Date.parse(expiresAt)) ||
+            new Date(expiresAt).toISOString() !== expiresAt)) ||
+        (orderParams.timeInForce !== 'GTD' && expiresAt !== null)
+      ) {
+        return { ok: false, error: 'Order rejected: GTD requires one canonical UTC expiry' }
+      }
       const settlementSupport = checkOrderSettlementSupport({
         request: { side: orderParams.side },
       })
@@ -823,11 +852,12 @@ export async function dispatch(
             price: orderParams.price,
             amountSubunits,
             minimumFillAmountSubunits,
+            continueAfterPartialFill: orderParams.continueAfterPartialFill === true,
             baseAsset: marketUnit.baseAsset,
             collateralUnit: 'msat',
             divisibility: marketUnit.divisibility,
             timeInForce: orderParams.timeInForce,
-            expiresAt: null,
+            expiresAt,
             mintUrl: context.profile.mintUrl,
             walletSeedHex: context.secrets.walletSeedHex,
           },

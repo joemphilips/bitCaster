@@ -634,7 +634,12 @@ function registerOrderCommand(program: Command): void {
       'Minimum fill in market subunits (default: one whole tradable unit)',
       parseIntegerOption('minimum fill subunits'),
     )
-    .option('--tif <tif>', 'Time in force: GTC, FAK, or FOK', parseTimeInForce, 'GTC')
+    .option(
+      '--continue-after-partial-fill',
+      'Create a fresh successor order after a confirmed partial resting-order fill',
+    )
+    .option('--tif <tif>', 'Time in force: GTC, GTD, FAK, or FOK', parseTimeInForce, 'GTC')
+    .option('--expires-at <time>', 'Required ISO 8601 UTC expiry for GTD', parseIsoDateTime)
     .option('--token-side <side>', 'Token side: Outcome or Complement', parseTokenSide)
     .option('--no-preflight-split', 'Disable preflight complete-set split')
     .option(
@@ -708,7 +713,9 @@ interface OrderSubmitOptions {
   price?: number
   amount?: number
   minFill?: number
-  tif: 'FAK' | 'FOK' | 'GTC'
+  continueAfterPartialFill?: boolean
+  tif: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  expiresAt?: string
   tokenSide?: 'Outcome' | 'Complement'
   preflightSplit: boolean
   dryRun?: boolean
@@ -722,7 +729,9 @@ interface OrderSubmitParams {
   price: number
   amountSubunits: number
   minimumFillAmountSubunits?: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC'
+  continueAfterPartialFill: boolean
+  timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  expiresAt: string | null
   preflightSplit: boolean
 }
 
@@ -732,6 +741,12 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
   }
 
   const minimumFillAmountSubunits = options.minFill
+  if (options.tif === 'GTD' && options.expiresAt === undefined) {
+    throwUsage('Missing expires-at for GTD order')
+  }
+  if (options.tif !== 'GTD' && options.expiresAt !== undefined) {
+    throwUsage('expires-at is valid only for GTD order')
+  }
   return {
     marketId: requiredArg(options.market, 'market'),
     outcomeId: requiredArg(options.outcome, 'outcome'),
@@ -740,7 +755,9 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     price: requiredParsedOption(options.price, 'price'),
     amountSubunits: requiredParsedOption(options.amount, 'amount subunits'),
     ...(minimumFillAmountSubunits === undefined ? {} : { minimumFillAmountSubunits }),
+    continueAfterPartialFill: options.continueAfterPartialFill === true,
     timeInForce: options.tif,
+    expiresAt: options.expiresAt ?? null,
     preflightSplit: options.preflightSplit,
   }
 }
@@ -1376,10 +1393,16 @@ function parseTokenSide(value: string): 'Outcome' | 'Complement' {
   throwUsage(`Invalid token side: ${value}`)
 }
 
-function parseTimeInForce(value: string): 'FAK' | 'FOK' | 'GTC' {
+function parseTimeInForce(value: string): 'FAK' | 'FOK' | 'GTC' | 'GTD' {
   const upper = value.toUpperCase()
-  if (upper === 'FAK' || upper === 'FOK' || upper === 'GTC') return upper
+  if (upper === 'FAK' || upper === 'FOK' || upper === 'GTC' || upper === 'GTD') return upper
   throwUsage(`Invalid time in force: ${value}`)
+}
+
+function parseIsoDateTime(value: string): string {
+  const time = Date.parse(value)
+  if (!Number.isFinite(time)) throwUsage(`Invalid ISO 8601 time: ${value}`)
+  return new Date(time).toISOString()
 }
 
 function parseMarketState(value: string): 'Open' | 'Closed' | 'Resolved' | 'All' {

@@ -74,6 +74,8 @@ export interface CtfRangeEngineResult {
   readonly envelope: DurableCtfRangeResultEnvelope
   readonly acknowledgedAt: string | null
   readonly version: number
+  readonly settlementGroupId: string
+  readonly settlementGroupRevision: number
 }
 
 export interface CtfRangeEngineResultClient {
@@ -270,6 +272,7 @@ export function decodeCtfRangeEngineResult(
     ) {
       throw new Error('engine result envelope authority mismatch')
     }
+    const settlementGroup = requireConfirmedSettlementGroup(value)
     return {
       resultId: value.resultId,
       reference,
@@ -282,10 +285,30 @@ export function decodeCtfRangeEngineResult(
           ? null
           : requireIsoDateTime(value.acknowledgedAt),
       version: value.version,
+      settlementGroupId: settlementGroup.groupId,
+      settlementGroupRevision: settlementGroup.revision,
     }
   } catch {
     throw new Error('CTF range engine result is invalid')
   }
+}
+
+function requireConfirmedSettlementGroup(value: SettlementCapabilityResultResponse): {
+  groupId: string
+  revision: number
+} {
+  const group = value.settlementGroup
+  if (
+    typeof group !== 'object' ||
+    group === null ||
+    !UUID_PATTERN.test(group.groupId) ||
+    !Number.isSafeInteger(group.revision) ||
+    group.revision <= 0 ||
+    group.status !== 'Confirmed'
+  ) {
+    throw new Error('engine result settlement group is invalid')
+  }
+  return { groupId: group.groupId, revision: group.revision }
 }
 
 function requireIsoDateTime(value: unknown): string {

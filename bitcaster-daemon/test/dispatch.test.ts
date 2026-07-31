@@ -1306,6 +1306,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               price: 4_200,
               amountSubunits: 20_000,
               minimumFillAmountSubunits: 10_000,
+              continueAfterPartialFill: true,
               timeInForce: 'GTC',
             },
           },
@@ -1347,6 +1348,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           price: 4_200,
           amountSubunits: 20_000,
           minimumFillAmountSubunits: 10_000,
+          continueAfterPartialFill: true,
           baseAsset: 'sat',
           collateralUnit: 'msat',
           divisibility: 10_000,
@@ -1446,6 +1448,11 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           (capturedPreparation as unknown as PrepareSettlementCapabilityInput)
             .minimumFillAmountSubunits,
           1_000_000,
+        )
+        assert.equal(
+          (capturedPreparation as unknown as PrepareSettlementCapabilityInput)
+            .continueAfterPartialFill,
+          false,
         )
       },
     )
@@ -2052,6 +2059,24 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               price: 4_200,
               amountSubunits: 10_000,
               timeInForce: 'IOC',
+            },
+            {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 10_000,
+              continueAfterPartialFill: 'yes',
+              timeInForce: 'GTC',
+            },
+            {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 10_000,
+              continueAfterPartialFill: true,
+              timeInForce: 'FAK',
             },
             {
               marketId: 'cond-Bob|Carol',
