@@ -629,6 +629,11 @@ function registerOrderCommand(program: Command): void {
       'Amount in market subunits',
       parseIntegerOption('amount subunits'),
     )
+    .option(
+      '--min-fill <subunits>',
+      'Minimum fill in market subunits (default: one whole tradable unit)',
+      parseIntegerOption('minimum fill subunits'),
+    )
     .option('--tif <tif>', 'Time in force: GTC, FAK, or FOK', parseTimeInForce, 'GTC')
     .option('--token-side <side>', 'Token side: Outcome or Complement', parseTokenSide)
     .option('--no-preflight-split', 'Disable preflight complete-set split')
@@ -702,6 +707,7 @@ interface OrderSubmitOptions {
   side?: 'Buy' | 'Sell'
   price?: number
   amount?: number
+  minFill?: number
   tif: 'FAK' | 'FOK' | 'GTC'
   tokenSide?: 'Outcome' | 'Complement'
   preflightSplit: boolean
@@ -715,6 +721,7 @@ interface OrderSubmitParams {
   side: 'Buy' | 'Sell'
   price: number
   amountSubunits: number
+  minimumFillAmountSubunits?: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
   preflightSplit: boolean
 }
@@ -724,6 +731,7 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     throwUsage(`Unexpected order submit argument: ${positionals[0]}`)
   }
 
+  const minimumFillAmountSubunits = options.minFill
   return {
     marketId: requiredArg(options.market, 'market'),
     outcomeId: requiredArg(options.outcome, 'outcome'),
@@ -731,6 +739,7 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     side: requiredParsedOption(options.side, 'side'),
     price: requiredParsedOption(options.price, 'price'),
     amountSubunits: requiredParsedOption(options.amount, 'amount subunits'),
+    ...(minimumFillAmountSubunits === undefined ? {} : { minimumFillAmountSubunits }),
     timeInForce: options.tif,
     preflightSplit: options.preflightSplit,
   }

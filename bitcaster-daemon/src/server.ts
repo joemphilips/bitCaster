@@ -146,6 +146,7 @@ export interface PrepareSettlementCapabilityInput {
   side: 'Buy' | 'Sell'
   price: number
   amountSubunits: number
+  minimumFillAmountSubunits: number
   baseAsset: 'sat'
   collateralUnit: 'msat'
   divisibility: number
@@ -737,6 +738,10 @@ export async function dispatch(
       if (!context.ok) return context
       const conditionId = conditionIdFromMarketId(orderParams.marketId)
       const marketUnit = await loadMarketUnit(context.client, conditionId)
+      const minimumFillAmountSubunits =
+        orderParams.minimumFillAmountSubunits === undefined
+          ? marketUnit.divisibility
+          : orderParams.minimumFillAmountSubunits
       const requestValidation = validateOrderIntent({
         ...orderIntent,
         baseAsset: marketUnit.baseAsset,
@@ -744,6 +749,17 @@ export async function dispatch(
       })
       if (!requestValidation.valid) {
         return { ok: false, error: requestValidation.message }
+      }
+      if (
+        !Number.isSafeInteger(minimumFillAmountSubunits) ||
+        minimumFillAmountSubunits <= 0 ||
+        minimumFillAmountSubunits > amountSubunits ||
+        minimumFillAmountSubunits % marketUnit.divisibility !== 0
+      ) {
+        return {
+          ok: false,
+          error: `Order rejected: minimum fill must be a positive multiple of ${marketUnit.divisibility} and no larger than the order amount`,
+        }
       }
       const settlementSupport = checkOrderSettlementSupport({
         request: { side: orderParams.side },
@@ -806,6 +822,7 @@ export async function dispatch(
             side: orderParams.side,
             price: orderParams.price,
             amountSubunits,
+            minimumFillAmountSubunits,
             baseAsset: marketUnit.baseAsset,
             collateralUnit: 'msat',
             divisibility: marketUnit.divisibility,

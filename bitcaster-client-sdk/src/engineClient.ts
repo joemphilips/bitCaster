@@ -65,6 +65,7 @@ export interface SettlementOrderIntent {
   side: 'Buy' | 'Sell'
   price: number
   amountSubunits: number
+  minimumFillAmountSubunits: number
   baseAsset: MarketBaseAsset
   collateralUnit: CtfCollateralUnit
   timeInForce: OrderTimeInForce

@@ -667,6 +667,7 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
       side: 'Buy' as const,
       price: 4_000,
       amountSubunits: 10_000,
+      minimumFillAmountSubunits: 10_000,
       baseAsset: 'sat' as const,
       collateralUnit: 'msat' as const,
       timeInForce: 'GTC' as const,

@@ -561,6 +561,8 @@ export interface components {
             price: components["schemas"]["Probability"];
             /** @description Conditional-token face amount in the market collateral sub-unit. */
             amountSubunits: components["schemas"]["CollateralSubunits"];
+            /** @description Minimum aggregate conditional-token face amount that this order accepts in one matching round. It must not exceed amountSubunits and must be a whole tradable unit for the market divisibility. */
+            minimumFillAmountSubunits: components["schemas"]["CollateralSubunits"];
             /** @description Required explicit quote asset. No default is implied. */
             baseAsset: components["schemas"]["BaseAsset"];
             /** @description Required explicit collateral unit. No default is implied. */

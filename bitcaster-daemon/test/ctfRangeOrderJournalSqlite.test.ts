@@ -47,7 +47,7 @@ test('range preparation insert is exact and canonical bytes fail closed', (t) =>
     () =>
       insertRangePreparation(database, {
         ...input,
-        amountSubunits: input.amountSubunits + 1,
+        amountSubunits: input.amountSubunits * 2,
       }),
     /conflicts with its persisted authority/,
   )
@@ -93,12 +93,13 @@ test('range preparation schema rejects partial capability and loose authority', 
        scope_id, range_operation_id, source_operation_id, source_kind,
        predecessor_range_operation_id, authorization_id,
        client_order_id, order_route_id, normalized_mint, condition_id, unit,
-       token_side, side, price_subunits, amount_subunits, divisibility,
+       token_side, side, price_subunits, amount_subunits,
+       minimum_fill_amount_subunits, divisibility,
        authorization_expires_at_unix_seconds, preparation_body, lifecycle_state, revision,
        capability_artifact_id, capability_binding_digest, capability_artifact_digest,
        engine_order_id, created_at_ms, updated_at_ms
      ) VALUES (
-       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      )`,
   )
   const insertPrepared = (candidate: ReturnType<typeof preparationInput>) =>
@@ -151,6 +152,13 @@ test('range preparation schema rejects partial capability and loose authority', 
     () => seedWalletProof(database, 'available', 'unexpected-reservation'),
     /constraint/,
   )
+  for (const candidate of [
+    { ...input, amountSubunits: 15_000 },
+    { ...input, minimumFillAmountSubunits: 5_000 },
+    { ...input, minimumFillAmountSubunits: 20_000 },
+  ]) {
+    assert.throws(() => insertPrepared(candidate), /constraint/)
+  }
   assert.throws(
     () =>
       insertRangePreparation(database, {
@@ -398,7 +406,8 @@ function preparationInput(
     tokenSide: 'Outcome' as const,
     side: 'Buy' as const,
     priceSubunits: 5_000,
-    amountSubunits: 100,
+    amountSubunits: 10_000,
+    minimumFillAmountSubunits: 10_000,
     divisibility: 10_000,
     authorizationExpiresAtUnixSeconds: 2_000_000_000,
     preparationBytes: encodeCanonicalRangePreparation({
@@ -427,6 +436,7 @@ function preparationValues(input: ReturnType<typeof preparationInput>): unknown[
     input.side,
     input.priceSubunits,
     input.amountSubunits,
+    input.minimumFillAmountSubunits,
     input.divisibility,
     input.authorizationExpiresAtUnixSeconds,
     input.preparationBytes,

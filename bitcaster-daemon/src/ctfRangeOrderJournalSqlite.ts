@@ -66,12 +66,13 @@ export function insertRangePreparation(
          scope_id, range_operation_id, source_operation_id, source_kind,
          predecessor_range_operation_id, authorization_id,
          client_order_id, order_route_id, normalized_mint, condition_id, unit,
-         token_side, side, price_subunits, amount_subunits, divisibility,
+         token_side, side, price_subunits, amount_subunits,
+         minimum_fill_amount_subunits, divisibility,
          authorization_expires_at_unix_seconds, preparation_body, lifecycle_state, revision,
          capability_artifact_id, capability_binding_digest, capability_artifact_digest,
          engine_order_id, created_at_ms, updated_at_ms
        ) VALUES (
-         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'msat', ?, ?, ?, ?, ?, ?, ?, 'prepared', 0,
+         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'msat', ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', 0,
          NULL, NULL, NULL, NULL, ?, ?
        )
        ON CONFLICT DO NOTHING`,
@@ -91,6 +92,7 @@ export function insertRangePreparation(
       input.side,
       input.priceSubunits,
       input.amountSubunits,
+      input.minimumFillAmountSubunits,
       input.divisibility,
       input.authorizationExpiresAtUnixSeconds,
       input.preparationBytes,
@@ -397,6 +399,7 @@ function decodePreparationRow(row: Record<string, unknown>): RangePreparationRec
     side: row.side,
     priceSubunits: row.price_subunits,
     amountSubunits: row.amount_subunits,
+    minimumFillAmountSubunits: row.minimum_fill_amount_subunits,
     divisibility: row.divisibility,
     authorizationExpiresAtUnixSeconds: row.authorization_expires_at_unix_seconds,
     preparationBytes: row.preparation_body,

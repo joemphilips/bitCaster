@@ -35,6 +35,7 @@ export interface SubmitOrderParams {
   side: 'Buy' | 'Sell'
   price: number
   amountSubunits: number
+  minimumFillAmountSubunits?: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
   /**
    * Limit-buy maker collateral should be split into a complete set before the

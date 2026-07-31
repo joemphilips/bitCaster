@@ -92,6 +92,7 @@ export function browserRangeJournalIdentity(
     side: preparation.side,
     priceSubunits: preparation.priceNumerator,
     amountSubunits: preparation.amountSubunits,
+    minimumFillAmountSubunits: preparation.request.minimumFillAmountSubunits,
     divisibility: preparation.divisibility,
     authorizationExpiresAtUnixSeconds: preparation.expiry,
     preparationBytes: encodePersistedCtfRangeOrderPreparation(preparation),

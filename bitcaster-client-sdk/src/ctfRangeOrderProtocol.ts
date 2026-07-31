@@ -69,6 +69,7 @@ const REQUEST_FIELDS = [
   'side',
   'price',
   'amountSubunits',
+  'minimumFillAmountSubunits',
   'baseAsset',
   'collateralUnit',
   'divisibility',
@@ -117,6 +118,7 @@ export interface CtfRangeOrderRequest {
   readonly side: 'Buy' | 'Sell'
   readonly price: number
   readonly amountSubunits: number
+  readonly minimumFillAmountSubunits: number
   readonly baseAsset: 'sat'
   readonly collateralUnit: 'msat'
   readonly divisibility: MarketDivisibility
@@ -314,6 +316,7 @@ export function createCtfRangeSettlementCapabilityRequest(
       side: request.side,
       price: request.price,
       amountSubunits: request.amountSubunits,
+      minimumFillAmountSubunits: request.minimumFillAmountSubunits,
       baseAsset: request.baseAsset,
       collateralUnit: request.collateralUnit,
       timeInForce: request.timeInForce,
@@ -418,6 +421,21 @@ function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
   const divisibility = requireDivisibility(request.divisibility)
   const price = requirePositiveSafeInteger(request.price, 'range preparation request price')
   if (price >= divisibility) throw new Error('range preparation request price is invalid')
+  const amountSubunits = requirePositiveSafeInteger(
+    request.amountSubunits,
+    'range preparation request amount',
+  )
+  const minimumFillAmountSubunits = requirePositiveSafeInteger(
+    request.minimumFillAmountSubunits,
+    'range preparation request minimum fill amount',
+  )
+  if (
+    amountSubunits % divisibility !== 0 ||
+    minimumFillAmountSubunits % divisibility !== 0 ||
+    minimumFillAmountSubunits > amountSubunits
+  ) {
+    throw new Error('range preparation request fill amount is invalid')
+  }
   return {
     clientOrderId: requireText(request.clientOrderId, 'range preparation request client order id'),
     marketId,
@@ -430,10 +448,8 @@ function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
     ),
     side: requireClosed(request.side, ['Buy', 'Sell'], 'range preparation request side'),
     price,
-    amountSubunits: requirePositiveSafeInteger(
-      request.amountSubunits,
-      'range preparation request amount',
-    ),
+    amountSubunits,
+    minimumFillAmountSubunits,
     baseAsset: requireExact(request.baseAsset, 'sat', 'range preparation request base asset'),
     collateralUnit: requireExact(
       request.collateralUnit,
@@ -544,6 +560,7 @@ function recordMatchesPreparation(
     input.request.price === record.priceSubunits &&
     input.amountSubunits === record.amountSubunits &&
     sourceAmountMatchesRecord(input, record.amountSubunits) &&
+    input.request.minimumFillAmountSubunits === record.minimumFillAmountSubunits &&
     input.divisibility === record.divisibility &&
     input.request.divisibility === record.divisibility &&
     input.expiry === record.authorizationExpiresAtUnixSeconds

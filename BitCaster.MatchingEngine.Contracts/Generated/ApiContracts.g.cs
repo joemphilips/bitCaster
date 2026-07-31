@@ -79,13 +79,14 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SettlementOrderIntent
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SettlementOrderIntent(long @amountSubunits, BaseAsset @baseAsset, CollateralUnit @collateralUnit, System.DateTimeOffset? @expiresAt, string @outcomeId, int @price, OrderSide @side, TimeInForce @timeInForce, TokenSide @tokenSide)
+        public SettlementOrderIntent(long @amountSubunits, BaseAsset @baseAsset, CollateralUnit @collateralUnit, System.DateTimeOffset? @expiresAt, long @minimumFillAmountSubunits, string @outcomeId, int @price, OrderSide @side, TimeInForce @timeInForce, TokenSide @tokenSide)
         {
             this.OutcomeId = @outcomeId;
             this.TokenSide = @tokenSide;
             this.Side = @side;
             this.Price = @price;
             this.AmountSubunits = @amountSubunits;
+            this.MinimumFillAmountSubunits = @minimumFillAmountSubunits;
             this.BaseAsset = @baseAsset;
             this.CollateralUnit = @collateralUnit;
             this.TimeInForce = @timeInForce;
@@ -116,6 +117,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
         public long AmountSubunits { get; }
+
+        /// <summary>
+        /// Minimum aggregate conditional-token face amount that this order accepts in one matching round. It must not exceed amountSubunits and must be a whole tradable unit for the market divisibility.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("minimumFillAmountSubunits")]
+        public long MinimumFillAmountSubunits { get; }
 
         /// <summary>
         /// Required explicit quote asset. No default is implied.

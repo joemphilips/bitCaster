@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'ae783ada07c807e90ae3aa3652cda19905580c56f0c56c9ae9a7a7e5c8a36108'
+  'd1995af6b5ac3644551ebbb003a36468b6e2860e8c92181154149633e225df00'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -247,6 +247,11 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ),
     amount_subunits INTEGER NOT NULL CHECK (
       amount_subunits BETWEEN 1 AND 9007199254740991
+      AND amount_subunits % divisibility = 0
+    ),
+    minimum_fill_amount_subunits INTEGER NOT NULL CHECK (
+      minimum_fill_amount_subunits BETWEEN 1 AND amount_subunits
+      AND minimum_fill_amount_subunits % divisibility = 0
     ),
     divisibility INTEGER NOT NULL CHECK (divisibility IN (10000, 1000000)),
     authorization_expires_at_unix_seconds INTEGER NOT NULL CHECK (

@@ -1274,7 +1274,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             return {
               orderId: 'order-1',
               status: 'resting',
-              remainingAmountSubunits: 10_000,
+              remainingAmountSubunits: 20_000,
               fills: [],
               pendingPubkeySubmissions: [],
               baseAsset: 'sat',
@@ -1304,7 +1304,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               outcomeId: 'YES',
               side: 'Buy',
               price: 4_200,
-              amountSubunits: 10_000,
+              amountSubunits: 20_000,
+              minimumFillAmountSubunits: 10_000,
               timeInForce: 'GTC',
             },
           },
@@ -1344,7 +1345,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           tokenSide: 'Outcome',
           side: 'Buy',
           price: 4_200,
-          amountSubunits: 10_000,
+          amountSubunits: 20_000,
+          minimumFillAmountSubunits: 10_000,
           baseAsset: 'sat',
           collateralUnit: 'msat',
           divisibility: 10_000,
@@ -1439,6 +1441,11 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         assert.equal(
           (capturedPreparation as unknown as PrepareSettlementCapabilityInput).price,
           500_000,
+        )
+        assert.equal(
+          (capturedPreparation as unknown as PrepareSettlementCapabilityInput)
+            .minimumFillAmountSubunits,
+          1_000_000,
         )
       },
     )
@@ -2009,6 +2016,33 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               side: 'Buy',
               price: 4_200,
               amountSubunits: 5_000,
+              timeInForce: 'GTC',
+            },
+            {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 20_000,
+              minimumFillAmountSubunits: 5_000,
+              timeInForce: 'GTC',
+            },
+            {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 20_000,
+              minimumFillAmountSubunits: 30_000,
+              timeInForce: 'GTC',
+            },
+            {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 20_000,
+              minimumFillAmountSubunits: null,
               timeInForce: 'GTC',
             },
             {

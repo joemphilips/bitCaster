@@ -51,10 +51,20 @@ test('strict identity validation preserves source lineage and exact replay', () 
   assert.equal(decoded.sourceKind, 'wallet-prepared')
   assert.equal(decoded.predecessorRangeOperationId, null)
   assert.equal(sameCtfRangeOrderPreparationIdentity(decoded, identity), true)
+  for (const minimumFillAmountSubunits of [5_000, 20_000]) {
+    assert.throws(
+      () =>
+        decodeCtfRangeOrderPreparationIdentity({
+          ...identity,
+          minimumFillAmountSubunits,
+        }),
+      /amount policy/,
+    )
+  }
   assert.equal(
     sameCtfRangeOrderPreparationIdentity(decoded, {
       ...identity,
-      amountSubunits: identity.amountSubunits + 1,
+      amountSubunits: identity.amountSubunits * 2,
     }),
     false,
   )
@@ -340,7 +350,8 @@ function preparationIdentity() {
     tokenSide: 'Outcome' as const,
     side: 'Buy' as const,
     priceSubunits: 5_000,
-    amountSubunits: 100,
+    amountSubunits: 10_000,
+    minimumFillAmountSubunits: 10_000,
     divisibility: 10_000 as const,
     authorizationExpiresAtUnixSeconds: 2_000_000_000,
     preparationBytes: encodeCtfRangeOrderPreparationArtifact({

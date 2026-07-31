@@ -28,6 +28,7 @@ const IDENTITY_FIELDS = [
   'side',
   'priceSubunits',
   'amountSubunits',
+  'minimumFillAmountSubunits',
   'divisibility',
   'authorizationExpiresAtUnixSeconds',
   'preparationBytes',
@@ -74,6 +75,7 @@ export interface CtfRangeOrderPreparationIdentity {
   readonly side: 'Buy' | 'Sell'
   readonly priceSubunits: number
   readonly amountSubunits: number
+  readonly minimumFillAmountSubunits: number
   readonly divisibility: 10_000 | 1_000_000
   readonly authorizationExpiresAtUnixSeconds: number
   readonly preparationBytes: Uint8Array
@@ -261,6 +263,7 @@ export function sameCtfRangeOrderPreparationIdentity(
     left.side === right.side &&
     left.priceSubunits === right.priceSubunits &&
     left.amountSubunits === right.amountSubunits &&
+    left.minimumFillAmountSubunits === right.minimumFillAmountSubunits &&
     left.divisibility === right.divisibility &&
     left.authorizationExpiresAtUnixSeconds === right.authorizationExpiresAtUnixSeconds &&
     left.createdAtMs === right.createdAtMs &&
@@ -339,6 +342,18 @@ function decodeIdentityFields(
   assertOrderRouteBelongsToCondition(orderRouteId, conditionId)
   const normalizedMint = decodeCanonicalMintOrigin(candidate.normalizedMint)
   const unit = requireExact(candidate.unit, 'msat', 'unit')
+  const amountSubunits = requirePositiveSafeInteger(candidate.amountSubunits, 'amount')
+  const minimumFillAmountSubunits = requirePositiveSafeInteger(
+    candidate.minimumFillAmountSubunits,
+    'minimum fill amount',
+  )
+  if (
+    amountSubunits % divisibility !== 0 ||
+    minimumFillAmountSubunits % divisibility !== 0 ||
+    minimumFillAmountSubunits > amountSubunits
+  ) {
+    throw new Error('CTF range preparation amount policy is invalid')
+  }
   const scopeId = requireText(candidate.scopeId, 'scope id')
   const scope = decodeDurableCustodyScopeInput(scopeId)
   if (
@@ -364,7 +379,8 @@ function decodeIdentityFields(
     tokenSide: requireClosed(candidate.tokenSide, ['Outcome', 'Complement'], 'token side'),
     side: requireClosed(candidate.side, ['Buy', 'Sell'], 'side'),
     priceSubunits,
-    amountSubunits: requirePositiveSafeInteger(candidate.amountSubunits, 'amount'),
+    amountSubunits,
+    minimumFillAmountSubunits,
     divisibility,
     authorizationExpiresAtUnixSeconds: requirePositiveSafeInteger(
       candidate.authorizationExpiresAtUnixSeconds,

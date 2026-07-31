@@ -163,7 +163,10 @@ test('prepares a sell authorization from the conditional asset into regular coll
 })
 
 test('builds, canonically persists, and verifies one exact range preparation record', () => {
-  const request = rangeOrderRequest()
+  const request = {
+    ...rangeOrderRequest(),
+    amountSubunits: 20_000,
+  }
   const persisted = buildPersistedCtfRangeOrderPreparation({
     request,
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY.toUpperCase(),
@@ -190,6 +193,14 @@ test('builds, canonically persists, and verifies one exact range preparation rec
     () =>
       decodeCtfRangeOrderPreparationFromRecord(
         { ...record, orderRouteId: `${CONDITION_ID}-NO` },
+        request,
+      ),
+    /preparation is foreign/,
+  )
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationFromRecord(
+        { ...record, minimumFillAmountSubunits: 20_000 },
         request,
       ),
     /preparation is foreign/,
@@ -467,6 +478,7 @@ function preparationInput() {
     side: 'Buy' as const,
     priceNumerator: 2,
     amountSubunits: 10_000,
+    minimumFillAmountSubunits: 10_000,
     divisibility: 10_000,
     offerKeyset: regularKeyset(),
     receiveKeyset: outcomeKeyset(),
@@ -560,6 +572,7 @@ function rangeOrderRequest(): CtfRangeOrderRequest {
     side: 'Buy',
     price: 2,
     amountSubunits: 10_000,
+    minimumFillAmountSubunits: 10_000,
     baseAsset: 'sat',
     collateralUnit: 'msat',
     divisibility: 10_000,
@@ -645,6 +658,7 @@ function preparationRecord(
     side: persisted.side,
     priceSubunits: persisted.priceNumerator,
     amountSubunits: persisted.amountSubunits,
+    minimumFillAmountSubunits: persisted.request.minimumFillAmountSubunits,
     divisibility: persisted.divisibility,
     authorizationExpiresAtUnixSeconds: persisted.expiry,
     preparationBytes,

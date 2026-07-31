@@ -174,6 +174,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       '42',
       '--amount',
       '100',
+      '--min-fill',
+      '50',
       '--tif',
       'FAK',
     ])
@@ -282,6 +284,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           side: 'Buy',
           price: 42,
           amountSubunits: 100,
+          minimumFillAmountSubunits: 50,
           timeInForce: 'FAK',
           preflightSplit: true,
         },
@@ -2346,6 +2349,8 @@ test('P47-7: bitcaster-cli order submit --dry-run prints payload without calling
     '42',
     '--amount',
     '100',
+    '--min-fill',
+    '50',
     '--tif',
     'FAK',
     '--token-side',
@@ -2359,6 +2364,7 @@ test('P47-7: bitcaster-cli order submit --dry-run prints payload without calling
     side: 'Buy',
     price: 42,
     amountSubunits: 100,
+    minimumFillAmountSubunits: 50,
     timeInForce: 'FAK',
     preflightSplit: true,
   })

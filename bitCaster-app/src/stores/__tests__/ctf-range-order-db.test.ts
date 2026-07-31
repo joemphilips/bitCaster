@@ -39,7 +39,7 @@ describe("browser CTF range order journal", () => {
     expect(await insertCtfRangePreparation(input, database)).toEqual(inserted);
 
     await expect(
-      insertCtfRangePreparation({ ...input, amountSubunits: 101 }, database),
+      insertCtfRangePreparation({ ...input, amountSubunits: 20_000 }, database),
     ).rejects.toThrow(/conflicts with its persisted authority/);
     expect(await readCtfRangePreparation(input.scopeId, input.rangeOperationId, database)).toEqual(
       inserted,
@@ -164,7 +164,8 @@ function identity(
     tokenSide: "Outcome",
     side: "Buy",
     priceSubunits: 5_000,
-    amountSubunits: 100,
+    amountSubunits: 10_000,
+    minimumFillAmountSubunits: 10_000,
     divisibility: 10_000,
     authorizationExpiresAtUnixSeconds: 1_000,
     preparationBytes: encodeCtfRangeOrderPreparationArtifact({ version: 1 }),

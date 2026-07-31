@@ -1119,6 +1119,7 @@ components:
         - side
         - price
         - amountSubunits
+        - minimumFillAmountSubunits
         - baseAsset
         - collateralUnit
         - timeInForce
@@ -1149,6 +1150,14 @@ components:
           minimum: 1
           description: >
             Conditional-token face amount in the market collateral sub-unit.
+        minimumFillAmountSubunits:
+          allOf:
+            - $ref: '#/components/schemas/CollateralSubunits'
+          minimum: 1
+          description: >
+            Minimum aggregate conditional-token face amount that this order
+            accepts in one matching round. It must not exceed amountSubunits
+            and must be a whole tradable unit for the market divisibility.
         baseAsset:
           $ref: '#/components/schemas/BaseAsset'
           description: >
