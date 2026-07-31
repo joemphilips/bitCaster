@@ -31,6 +31,7 @@ import {
   decodeDurableCtfRangeResultEnvelopeBytes,
   DURABLE_CTF_RANGE_RESULT_BYTES_MAX,
   deriveDurableCtfRangeFeeBounds,
+  deriveDurableCtfRangeSettledFaceAmount,
   deriveDurableCtfRangeRefundOperationId,
   deriveDurableCtfRangeRefundRequestFingerprint,
   deriveDurableCtfResidualDecision,
@@ -676,6 +677,10 @@ test('shared range custody binding and NUT-07 helpers preserve exact authority',
 
 test('shared range custody mapping is exact and rejects over-bound results before mapping', async () => {
   const { operation, prepared, staged } = await stagedSharedRangeResult()
+  assert.equal(
+    deriveDurableCtfRangeSettledFaceAmount(operation, prepared.result),
+    prepared.result.receive.reduce((total, proof) => total + Number(proof.amount), 0),
+  )
   assert.equal(
     matchDurableCtfRangeExactStagedResult(staged, prepared.authority)?.fingerprint,
     prepared.resultFingerprint,

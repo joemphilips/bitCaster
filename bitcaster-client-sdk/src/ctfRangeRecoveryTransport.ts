@@ -28,6 +28,7 @@ import {
   buildDurableCtfRangeRecoveryQuery,
   classifyDurableCtfRangeRecovery,
   decodeDurableCtfRangeOperation,
+  decodeDurableCtfRangeResultEnvelope,
   decodeDurableCtfRangeResultEnvelopeBytes,
   type DurableCtfRangeAllManifestRecovery,
   type DurableCtfRangeKeysetResolver,
@@ -39,9 +40,14 @@ import {
 } from './durableCtfRangeOperation.ts'
 import {
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+  assertDurableCustodyArtifactMatchesReference,
   canonicalDurableCustodyKeysetIdentity,
   decodeCanonicalMintOrigin,
   deriveDurableCustodyKeysetFingerprint,
+  deriveDurableCustodyArtifactFingerprint,
+  prepareDurableCustodyExactArtifact,
+  type DurableCustodyArtifactReference,
+  type DurableCustodyExactArtifact,
   type DurableCustodyRecord,
 } from './durableCustody.ts'
 import {
@@ -95,6 +101,33 @@ export interface CtfRangeEngineResultAuthority {
   readonly operation: DurableCtfRangeOperation
   readonly reference: SettlementCapabilityReference
   readonly previouslyPersistedRequestDigest?: string
+}
+
+export function assertCtfRangeEngineResultMatchesPersistedArtifact(
+  result: CtfRangeEngineResult,
+  persisted: {
+    readonly reference: DurableCustodyArtifactReference
+    readonly exactResult: DurableCustodyExactArtifact
+  },
+): void {
+  const exactResult = prepareDurableCustodyExactArtifact(persisted.exactResult.artifact)
+  assertDurableCustodyArtifactMatchesReference(persisted.reference, exactResult)
+  const artifact = exactResult.artifact
+  if (typeof artifact !== 'object' || artifact === null || Array.isArray(artifact)) {
+    throw new Error('persisted CTF range engine result is invalid')
+  }
+  const record = artifact as Record<string, unknown>
+  if (record.schemaVersion !== 1 || !Object.hasOwn(record, 'envelope')) {
+    throw new Error('persisted CTF range engine result has no transport envelope')
+  }
+  const envelope = decodeDurableCtfRangeResultEnvelope(record.envelope)
+  if (
+    envelope.requestDigest !== result.requestDigest ||
+    deriveDurableCustodyArtifactFingerprint(envelope) !==
+      deriveDurableCustodyArtifactFingerprint(result.envelope)
+  ) {
+    throw new Error('CTF range engine result differs from the persisted exact result')
+  }
 }
 
 export interface CtfRangeMintClient extends CtfRangeProofStateClient {
@@ -293,6 +326,8 @@ export async function acknowledgeCtfRangeEngineResult(
   if (
     acknowledged.resultId !== result.resultId ||
     acknowledged.version !== result.version + 1 ||
+    acknowledged.settlementGroupId !== result.settlementGroupId ||
+    acknowledged.settlementGroupRevision !== result.settlementGroupRevision ||
     acknowledged.acknowledgedAt === null
   ) {
     throw new Error('CTF range engine result acknowledgement is foreign')

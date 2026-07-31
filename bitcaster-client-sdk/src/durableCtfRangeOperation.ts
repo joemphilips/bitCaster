@@ -239,6 +239,31 @@ export interface DurableCtfRangeRecoveredResult {
   change: Proof[]
 }
 
+export function deriveDurableCtfRangeSettledFaceAmount(
+  operationInput: DurableCtfRangeOperation,
+  result: DurableCtfRangeRecoveredResult,
+): number {
+  const operation = decodeDurableCtfRangeOperation(operationInput)
+  if (
+    result.operationId !== operation.operationId ||
+    result.authorizationId !== operation.authorizationId
+  ) {
+    throw new Error('CTF range settled amount authority is foreign')
+  }
+  let amount: bigint
+  if (operation.receiveAsset.kind === 'conditional') {
+    amount = sumProofAmounts(result.receive)
+  } else if (operation.offerAsset.kind === 'conditional') {
+    amount = sumProofAmounts(operation.inputs) - sumProofAmounts(result.change)
+  } else {
+    throw new Error('CTF range operation has no conditional settlement leg')
+  }
+  if (amount <= 0n || amount > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('CTF range settled face amount is invalid')
+  }
+  return Number(amount)
+}
+
 export type DurableCtfRangeRecoveryDecision =
   | { kind: 'confirmed'; result: DurableCtfRangeRecoveredResult }
   | { kind: 'waiting' }
@@ -2700,6 +2725,12 @@ function requireRangeKeysetPublicKeys(value: unknown): Record<string, string> {
     keys[amount] = publicKey
   }
   return keys
+}
+
+function sumProofAmounts(
+  proofs: readonly { readonly amount: string | { toString(): string } }[],
+): bigint {
+  return proofs.reduce((total, proof) => total + BigInt(proof.amount.toString()), 0n)
 }
 
 function concatenateBytes(...values: readonly Uint8Array[]): Uint8Array {

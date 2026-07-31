@@ -2,6 +2,10 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import {
+  createDurableCustodyArtifactReference,
+  prepareDurableCustodyExactArtifact,
+} from '../src/durableCustody.ts'
+import {
   createBlindSignature,
   createCtfAuthorizationOutputs,
   createCtfRangeManifest,
@@ -43,6 +47,7 @@ import {
   CtfRangeMintRecoveryAdapter,
   CtfRangeRecoveryResponseError,
   acknowledgeCtfRangeEngineResult,
+  assertCtfRangeEngineResultMatchesPersistedArtifact,
   checkCtfRangeInputProofStates,
   decodeCtfRangeEngineResult,
   fetchCtfRangeEngineResultByOperation,
@@ -156,6 +161,74 @@ test('engine result acknowledgement validates the exact versioned response', asy
   assert.deepEqual(calls, [{ resultId: response.resultId, expectedVersion: response.version }])
   assert.equal(acknowledged.version, response.version + 1)
   assert.equal(acknowledged.acknowledgedAt, '2026-08-01T00:00:00.000Z')
+
+  await assert.rejects(
+    acknowledgeCtfRangeEngineResult(
+      {
+        async acknowledgeSettlementCapabilityResult() {
+          return {
+            ...response,
+            version: response.version + 1,
+            acknowledgedAt: '2026-08-01T00:00:00.000Z',
+            settlementGroup: {
+              ...response.settlementGroup,
+              groupId: '77777777-7777-4777-8777-777777777777',
+            },
+          }
+        },
+      },
+      authority,
+      result,
+    ),
+    /acknowledgement is foreign/,
+  )
+})
+
+test('engine result replay matches the exact persisted transport envelope', () => {
+  const operation = createRangeOperation()
+  const requestDigest = 'ef'.repeat(32)
+  const response = engineResult(
+    operation.operationId,
+    requestDigest,
+    new TextEncoder().encode(
+      JSON.stringify({
+        schemaVersion: 1,
+        operationId: operation.operationId,
+        authorizationId: operation.authorizationId,
+        requestDigest,
+        selection: '01',
+        signatures: [],
+      }),
+    ),
+  )
+  const result = decodeCtfRangeEngineResult(response, {
+    operation,
+    reference: response.reference,
+  })
+  const exactResult = prepareDurableCustodyExactArtifact({
+    schemaVersion: 1,
+    envelope: result.envelope,
+    allManifestRecovery: {},
+    proofs: { receive: [], change: [] },
+  })
+  const reference = createDurableCustodyArtifactReference('exact-result', exactResult)
+
+  assert.doesNotThrow(() =>
+    assertCtfRangeEngineResultMatchesPersistedArtifact(result, { reference, exactResult }),
+  )
+  const foreignDigest = 'ab'.repeat(32)
+  assert.throws(
+    () =>
+      assertCtfRangeEngineResultMatchesPersistedArtifact(
+        {
+          ...result,
+          requestDigest: foreignDigest,
+          envelope: { ...result.envelope, requestDigest: foreignDigest },
+        },
+        { reference, exactResult },
+      ),
+    /differs from the persisted exact result/,
+  )
 })
 
 test('engine result decoder rejects noncanonical base64, digest mismatch, and oversized input', () => {
