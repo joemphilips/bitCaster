@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   BitcasterEngineClient,
+  decodeSettlementGroupStateChangedDelta,
   decodeSubmitOrderResponse,
   EngineClientError,
   isDefinitiveOrderSubmissionError,
@@ -83,6 +84,34 @@ test('isKind89NostrEvent validates oracle attestation event shape from SDK', () 
   assert.equal(isKind89NostrEvent(event), true)
   assert.equal(isKind89NostrEvent({ ...event, kind: 1 }), false)
   assert.equal(isKind89NostrEvent({ ...event, tags: ['d', 'condition-1'] }), false)
+})
+
+test('decodeSettlementGroupStateChangedDelta enforces the exact owner notification contract', () => {
+  const value = {
+    orderId: '44444444-4444-4444-8444-444444444444',
+    marketId: 'condition-yes',
+    settlementGroup: {
+      groupId: '55555555-5555-4555-8555-555555555555',
+      status: 'Confirmed',
+      revision: 1,
+      coalescingDeadline: '2026-08-01T00:00:00.000Z',
+      frozenAt: '2026-08-01T00:00:01.000Z',
+    },
+  }
+
+  assert.deepEqual(decodeSettlementGroupStateChangedDelta(value), value)
+  assert.throws(
+    () => decodeSettlementGroupStateChangedDelta({ ...value, foreign: true }),
+    /fields are invalid/,
+  )
+  assert.throws(
+    () =>
+      decodeSettlementGroupStateChangedDelta({
+        ...value,
+        settlementGroup: { ...value.settlementGroup, status: 'Bogus' },
+      }),
+    /status is invalid/,
+  )
 })
 
 test('submitEphemeralPubkey includes conditionId in the request URL and auth input', async () => {

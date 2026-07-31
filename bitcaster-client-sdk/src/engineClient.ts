@@ -193,6 +193,12 @@ export interface SettlementGroupSummary {
   frozenAt: string | null
 }
 
+export interface SettlementGroupStateChangedDelta {
+  readonly orderId: string
+  readonly marketId: string
+  readonly settlementGroup: SettlementGroupSummary
+}
+
 export interface SubmitOrderResponse {
   orderId: string
   status: OrderLifecycleStatus
@@ -1080,6 +1086,21 @@ function decodeSettlementGroup(value: unknown): SettlementGroupSummary {
     revision: group.revision as number,
     coalescingDeadline: group.coalescingDeadline as string,
     frozenAt: group.frozenAt as string | null,
+  }
+}
+
+export function decodeSettlementGroupStateChangedDelta(
+  value: unknown,
+): SettlementGroupStateChangedDelta {
+  const delta = exactEngineRecord(value, ['orderId', 'marketId', 'settlementGroup'])
+  requireUuid(delta.orderId, 'settlement group order id')
+  if (typeof delta.marketId !== 'string' || delta.marketId.length === 0) {
+    throw new Error('settlement group market id is invalid')
+  }
+  return {
+    orderId: delta.orderId,
+    marketId: delta.marketId,
+    settlementGroup: decodeSettlementGroup(delta.settlementGroup),
   }
 }
 
