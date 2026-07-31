@@ -1,4 +1,5 @@
 import type { Notification } from "@/stores/notifications";
+import type { components } from "@/generated/api";
 
 interface OrderSubmitNotificationInput {
   add: (notification: Notification) => void;
@@ -7,7 +8,7 @@ interface OrderSubmitNotificationInput {
   requestedAmountSubunits: number;
   remainingAmountSubunits: number;
   fillCount: number;
-  status?: string;
+  status?: components["schemas"]["OrderLifecycleStatus"];
   now?: number;
 }
 
@@ -37,7 +38,7 @@ export function addOrderSubmitNotifications({
   if (fillCount <= 0 || filledAmountSubunits <= 0) return;
 
   const fullyFilled = remainingAmountSubunits <= 0;
-  if (status === "Matched") {
+  if (status === "matched") {
     add({
       id: `${orderId}-matched-${fillCount}`,
       kind: "Matched",

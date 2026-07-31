@@ -61,7 +61,7 @@ describe("addOrderSubmitNotifications", () => {
       requestedAmountSubunits: 100,
       remainingAmountSubunits: 0,
       fillCount: 1,
-      status: "Matched",
+      status: "matched",
       now: 123,
     });
 
