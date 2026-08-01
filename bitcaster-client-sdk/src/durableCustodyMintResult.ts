@@ -426,6 +426,7 @@ function assertSupportedOperation(operation: DurableCustodyProofOperationInput):
     (operation.kind !== 'wallet-send' &&
       operation.kind !== 'wallet-receive' &&
       operation.kind !== 'conditional-keyset-swap' &&
+      operation.kind !== 'ctf-split' &&
       operation.kind !== 'ctf-range-refund') ||
     operation.inputs.length === 0 ||
     Object.values(operation.outputs).every((outputs) => outputs.length === 0)

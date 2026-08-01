@@ -175,6 +175,37 @@ test('accepts an exact CTF range refund as a mint-verified operation', () => {
   assert.equal(authority.facts.binding.stage, 'refund')
 })
 
+test('accepts and verifies an exact CTF split operation', () => {
+  const send = preparedSend('ctf-split:1')
+  const operation = { ...send.operation, kind: 'ctf-split' as const }
+  const authority = prepareDurableCustodyMintOperationAuthority({
+    operation,
+    keysets: send.authority.keysets,
+  })
+  const record = createDurableCustodyProofOperation({
+    scope: SCOPE,
+    operation,
+    facts: authority.facts,
+    inventoryAccountId: SCOPE.inventoryAccountId,
+    exactBoundary: {
+      method: 'POST',
+      path: '/v1/ctf/convert',
+      idempotencyKey: operation.operationId,
+      requestBody: authority.exactRequest,
+      output: authority.exactOutput,
+      privateMaterial: authority.exactAuthority,
+    },
+  })
+  const result = prepareDurableCustodyVerifiedMintResult({
+    record,
+    exactAuthority: authority.exactAuthority,
+    result: { keep: [proofForOutput(send.output)] },
+  })
+
+  assert.equal(authority.facts.binding.stage, 'ctf-split')
+  assert.equal(result.proofs.length, 1)
+})
+
 test('accepts and verifies an exact wallet receive operation', () => {
   const send = preparedSend('receive:1')
   const operation = { ...send.operation, kind: 'wallet-receive' as const }
