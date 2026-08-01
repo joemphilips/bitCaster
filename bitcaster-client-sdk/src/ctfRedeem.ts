@@ -22,7 +22,7 @@ import {
   DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX,
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
 } from './durableCustody.ts'
-import { amountToNumber } from './proofSelection.ts'
+import { amountToNumber, computeInputFeeSatsForProofs, sumProofs } from './proofSelection.ts'
 import {
   canonicalProofOperationMintIdentity,
   proofAuthority,
@@ -94,6 +94,12 @@ export interface RedeemOutcomeLegResult {
   losing: boolean
 }
 
+export interface CtfRedeemInputKeysetAuthority {
+  readonly id: string
+  readonly unit: string
+  readonly input_fee_ppk?: number
+}
+
 interface RedeemOutcomeLegWithOperationParams {
   mintUrl: string
   operationId: string
@@ -101,13 +107,28 @@ interface RedeemOutcomeLegWithOperationParams {
   proofOperationStore: CtfProofOperationStore
   conditionId: string
   outcome: string
+  outcomeSetId?: string
   outcomeKeysetId?: string
   unit: string
   oracleWitness: string
   proofs: Proof[]
+  outcomeKeyset?: CtfRedeemInputKeysetAuthority
   regularKeyset?: MintKeys
   restoreOutputGroups?: RestoreOutputGroups
   onLosingLeg?: (inputs: Proof[]) => Promise<void>
+}
+
+export class UneconomicCtfRedeemError extends Error {
+  readonly code = 'CTF_REDEEM_UNECONOMIC' as const
+  readonly grossInputSubunits: number
+  readonly inputFeeSubunits: number
+
+  constructor(grossInputSubunits: number, inputFeeSubunits: number) {
+    super('CTF redeem input fee consumes the selected proof page')
+    this.name = 'UneconomicCtfRedeemError'
+    this.grossInputSubunits = grossInputSubunits
+    this.inputFeeSubunits = inputFeeSubunits
+  }
 }
 
 export type RestoreOutputGroups = (
@@ -124,34 +145,36 @@ export async function redeemOutcomeLegWithOperation(
     throw new Error('CTF redeem input proof limit exceeded')
   }
   const inputs = normalizeProofArray(params.proofs)
-  const amountSubunits = inputs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0)
-  if (!Number.isSafeInteger(amountSubunits) || amountSubunits <= 0) {
+  const grossInputSubunits = sumProofs(inputs)
+  if (!Number.isSafeInteger(grossInputSubunits) || grossInputSubunits <= 0) {
     throw new Error('CTF redeem inputs must have a positive safe-integer total')
   }
 
   const existing = await params.proofOperationStore.getProofOperation(params.operationId)
   if (existing) {
-    return resumeExistingCtfRedeem(params, existing, inputs, amountSubunits)
+    return resumeExistingCtfRedeem(params, existing, inputs, grossInputSubunits)
   }
 
-  return prepareAndExecuteCtfRedeem(params, inputs, amountSubunits)
+  return prepareAndExecuteCtfRedeem(params, inputs, grossInputSubunits)
 }
 
 async function resumeExistingCtfRedeem(
   params: RedeemOutcomeLegWithOperationParams,
   existing: CtfProofOperationRecord,
   inputs: Proof[],
-  amountSubunits: number,
+  grossInputSubunits: number,
 ): Promise<RedeemOutcomeLegResult> {
   const persistedOracleWitness = requireMatchingCtfRedeemOperation(existing, {
     operationId: params.operationId,
     mintUrl: params.mintUrl,
     conditionId: params.conditionId,
     outcome: params.outcome,
+    outcomeSetId: params.outcomeSetId,
     outcomeKeysetId: params.outcomeKeysetId,
+    outcomeInputFeePpk: params.outcomeKeyset?.input_fee_ppk,
     regularKeysetId: params.regularKeyset?.id,
     unit: params.unit,
-    amountSubunits,
+    grossInputSubunits,
     inputs,
     oracleWitness: params.oracleWitness,
   })
@@ -169,12 +192,30 @@ async function resumeExistingCtfRedeem(
 async function prepareAndExecuteCtfRedeem(
   params: RedeemOutcomeLegWithOperationParams,
   inputs: Proof[],
-  amountSubunits: number,
+  grossInputSubunits: number,
 ): Promise<RedeemOutcomeLegResult> {
   await params.wallet.loadMint()
+  const outcomeKeyset =
+    params.outcomeKeyset ??
+    (await getExactKeyset(params.wallet, params.outcomeKeysetId ?? inputs[0]!.id, params.unit))
   const regularKeyset =
     params.regularKeyset ?? (await getActiveRegularKeyset(params.wallet, params.unit))
-  const outputData = OutputData.createRandomData(Amount.from(amountSubunits), regularKeyset)
+  const outcomeInputFeePpk = requireInputFeePpk(outcomeKeyset, 'CTF redeem outcome keyset')
+  if (
+    outcomeKeyset.id !== (params.outcomeKeysetId ?? inputs[0]!.id) ||
+    outcomeKeyset.unit !== params.unit ||
+    inputs.some(({ id }) => id !== outcomeKeyset.id)
+  ) {
+    throw new Error('CTF redeem outcome keyset authority is foreign')
+  }
+  const inputFeeSubunits = computeInputFeeSatsForProofs(inputs, {
+    [outcomeKeyset.id]: outcomeInputFeePpk,
+  })
+  const netOutputSubunits = grossInputSubunits - inputFeeSubunits
+  if (netOutputSubunits <= 0) {
+    throw new UneconomicCtfRedeemError(grossInputSubunits, inputFeeSubunits)
+  }
+  const outputData = OutputData.createRandomData(Amount.from(netOutputSubunits), regularKeyset)
 
   await prepareBoundedCtfProofOperation(params.proofOperationStore, {
     operationId: params.operationId,
@@ -185,7 +226,11 @@ async function prepareAndExecuteCtfRedeem(
     metadata: {
       conditionId: params.conditionId,
       outcome: params.outcome,
-      amountSubunits,
+      ...(params.outcomeSetId === undefined ? {} : { outcomeSetId: params.outcomeSetId }),
+      grossInputSubunits,
+      inputFeeSubunits,
+      netOutputSubunits,
+      outcomeInputFeePpk,
       outcomeKeysetId: params.outcomeKeysetId ?? inputs[0]!.id,
       regularKeysetId: regularKeyset.id,
       unit: params.unit,
@@ -203,6 +248,22 @@ async function prepareAndExecuteCtfRedeem(
     oracleWitness: params.oracleWitness,
     onLosingLeg: params.onLosingLeg,
   })
+}
+
+async function getExactKeyset(
+  wallet: Pick<RedeemWallet, 'mint'>,
+  keysetId: string,
+  unit: string,
+): Promise<MintKeys> {
+  if (!wallet.mint?.getKeys) {
+    throw new Error('Cashu wallet adapter does not expose mint keyset lookup')
+  }
+  const response = await wallet.mint.getKeys(keysetId)
+  const keyset = response.keysets.find((candidate) => candidate.id === keysetId)
+  if (!keyset || keyset.unit !== unit) {
+    throw new Error(`Mint did not return exact ${unit} keyset ${keysetId}`)
+  }
+  return keyset
 }
 
 export function buildKeysetRedeemOperationId(params: {
@@ -248,10 +309,12 @@ function requireMatchingCtfRedeemOperation(
     mintUrl: string
     conditionId: string
     outcome: string
+    outcomeSetId?: string
     outcomeKeysetId?: string
+    outcomeInputFeePpk?: number
     regularKeysetId?: string
     unit: string
-    amountSubunits: number
+    grossInputSubunits: number
     inputs: Proof[]
     oracleWitness: string
   },
@@ -263,24 +326,58 @@ function requireMatchingCtfRedeemOperation(
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
     throw new Error(`proof operation ${entry.operationId} has invalid CTF redeem metadata`)
   }
-  const storedOutcomeKeysetId =
-    typeof metadata.outcomeKeysetId === 'string' ? metadata.outcomeKeysetId : null
+  const storedConditionId = requireText(
+    metadata.conditionId,
+    'stored CTF redeem conditionId',
+  ).toLowerCase()
+  const storedOutcomeKeysetId = requireText(
+    metadata.outcomeKeysetId,
+    'stored CTF redeem outcome keyset',
+  )
   const storedRegularKeysetId =
     typeof metadata.regularKeysetId === 'string' ? metadata.regularKeysetId : null
   const storedOracleWitness = requireBoundedOracleWitness(metadata.oracleWitness)
+  const storedGross = requirePositiveSafeInteger(
+    metadata.grossInputSubunits,
+    'stored CTF redeem gross input',
+  )
+  const storedFeePpk = requireNonnegativeSafeInteger(
+    metadata.outcomeInputFeePpk,
+    'stored CTF redeem input fee ppk',
+  )
+  const storedFee = requireNonnegativeSafeInteger(
+    metadata.inputFeeSubunits,
+    'stored CTF redeem input fee',
+  )
+  const storedNet = requirePositiveSafeInteger(
+    metadata.netOutputSubunits,
+    'stored CTF redeem net output',
+  )
+  if (
+    storedFee !==
+    computeInputFeeSatsForProofs(entry.inputs, { [storedOutcomeKeysetId]: storedFeePpk })
+  ) {
+    throw new Error(`proof operation ${entry.operationId} has invalid persisted CTF redeem fee`)
+  }
+  if (storedNet !== storedGross - storedFee) {
+    throw new Error(
+      `proof operation ${entry.operationId} has invalid persisted CTF redeem net output`,
+    )
+  }
   const storedAuthority = {
     operationId: entry.operationId,
     kind: entry.kind,
     mintUrl: canonicalProofOperationMintIdentity(entry.mintUrl),
-    conditionId: requireText(metadata.conditionId, 'stored CTF redeem conditionId').toLowerCase(),
+    conditionId: storedConditionId,
     outcome: requireText(metadata.outcome, 'stored CTF redeem outcome'),
-    outcomeKeysetId: requireText(storedOutcomeKeysetId, 'stored CTF redeem outcome keyset'),
+    outcomeSetId: optionalText(metadata.outcomeSetId, 'stored CTF redeem outcome set'),
+    outcomeKeysetId: storedOutcomeKeysetId,
     regularKeysetId: requireText(storedRegularKeysetId, 'stored CTF redeem regular keyset'),
     unit: requireText(metadata.unit, 'stored CTF redeem unit'),
-    amountSubunits: requirePositiveSafeInteger(
-      metadata.amountSubunits,
-      'stored CTF redeem amountSubunits',
-    ),
+    grossInputSubunits: storedGross,
+    inputFeeSubunits: storedFee,
+    netOutputSubunits: storedNet,
+    outcomeInputFeePpk: storedFeePpk,
     oracleWitness: storedOracleWitness,
     inputs: canonicalRedeemInputAuthority(entry.inputs),
   }
@@ -290,15 +387,35 @@ function requireMatchingCtfRedeemOperation(
     mintUrl: canonicalProofOperationMintIdentity(request.mintUrl),
     conditionId: request.conditionId.toLowerCase(),
     outcome: request.outcome,
+    outcomeSetId: request.outcomeSetId ?? storedAuthority.outcomeSetId,
     outcomeKeysetId: request.outcomeKeysetId ?? request.inputs[0]!.id,
     regularKeysetId: request.regularKeysetId ?? storedRegularKeysetId,
     unit: request.unit,
-    amountSubunits: request.amountSubunits,
+    grossInputSubunits: request.grossInputSubunits,
+    inputFeeSubunits: storedFee,
+    netOutputSubunits: storedNet,
+    outcomeInputFeePpk: request.outcomeInputFeePpk ?? storedFeePpk,
     oracleWitness: request.oracleWitness,
     inputs: canonicalRedeemInputAuthority(request.inputs),
   }
   requireSameOperationAuthority(storedAuthority, requestAuthority, entry.operationId)
   return storedOracleWitness
+}
+
+function optionalText(value: unknown, context: string): string | null {
+  if (value === undefined) return null
+  return requireText(value, context)
+}
+
+function requireNonnegativeSafeInteger(value: unknown, context: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`${context} must be a non-negative safe integer`)
+  }
+  return value as number
+}
+
+function requireInputFeePpk(keyset: CtfRedeemInputKeysetAuthority, context: string): number {
+  return requireNonnegativeSafeInteger(keyset.input_fee_ppk ?? 0, `${context} input_fee_ppk`)
 }
 
 function canonicalRedeemInputAuthority(proofs: readonly Proof[]): Record<string, unknown>[] {
@@ -381,8 +498,9 @@ async function resumeCtfRedeem(params: {
   )
   if (allStates(states, CheckStateEnum.SPENT)) {
     const restored = await params.restoreOutputGroups(params.mintUrl, entry.outputs)
-    const final = requireNonemptyCtfRedeemProofs(
+    const final = requireExactCtfRedeemProofs(
       restored.regular,
+      redeemOutputs(entry),
       `restored CTF redeem ${entry.operationId}`,
     )
     await params.proofOperationStore.markProofOperationCompleted(
@@ -421,10 +539,40 @@ function requireCompletedCtfRedeemProofs(entry: CtfProofOperationRecord): Proof[
   ) {
     throw new Error(`completed CTF redeem ${entry.operationId} has invalid regular proofs`)
   }
-  return requireNonemptyCtfRedeemProofs(
+  return requireExactCtfRedeemProofs(
     resultProofs.regular,
+    redeemOutputs(entry),
     `completed CTF redeem ${entry.operationId}`,
   )
+}
+
+function redeemOutputs(entry: CtfProofOperationRecord): OutputDataLike[] {
+  const groups = deserializeOutputGroups(entry.outputs)
+  if (
+    Object.keys(groups).length !== 1 ||
+    !Array.isArray(groups.regular) ||
+    groups.regular.length === 0
+  ) {
+    throw new Error(`CTF redeem ${entry.operationId} has invalid regular outputs`)
+  }
+  return groups.regular
+}
+
+function requireExactCtfRedeemProofs(
+  value: unknown,
+  outputs: readonly OutputDataLike[],
+  context: string,
+): Proof[] {
+  const proofs = requireNonemptyCtfRedeemProofs(value, context)
+  const keysetIds = new Set(outputs.map(({ blindedMessage }) => blindedMessage.id))
+  const outputAmount = outputs.reduce(
+    (sum, { blindedMessage }) => sum + amountToNumber(blindedMessage.amount),
+    0,
+  )
+  if (proofs.some(({ id }) => !keysetIds.has(id)) || sumProofs(proofs) !== outputAmount) {
+    throw new Error(`${context} does not match persisted output authority`)
+  }
+  return proofs
 }
 
 function requireNonemptyCtfRedeemProofs(value: unknown, context: string): Proof[] {
@@ -449,8 +597,9 @@ async function executeCtfRedeem(params: {
       inputs: withOracleWitness(params.inputs, params.oracleWitness),
       outputs: params.outputData,
     })
-    const final = requireNonemptyCtfRedeemProofs(
+    const final = requireExactCtfRedeemProofs(
       settled,
+      params.outputData,
       `mint result for CTF redeem ${params.operationId}`,
     )
     await params.proofOperationStore.markProofOperationCompleted(

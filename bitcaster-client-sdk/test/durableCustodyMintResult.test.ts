@@ -512,6 +512,7 @@ async function captureTerminalRedeemEvidence(
     unit: 'sat',
     oracleWitness: '{}',
     proofs: [proofForOutput(OutputData.createSingleData(1, KEYSET_ID, 'capture-input', 17n))],
+    outcomeKeyset: regularKeyset,
     regularKeyset,
   })
   if (evidence === null) throw new Error('terminal redeem evidence was not captured')

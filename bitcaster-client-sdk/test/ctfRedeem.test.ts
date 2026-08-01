@@ -8,6 +8,7 @@ import {
   ORACLE_NOT_ATTESTED_OUTCOME_CODE,
   readAuthenticatedCtfRedeemTerminalEvidence,
   redeemOutcomeLegWithOperation,
+  UneconomicCtfRedeemError,
   type AuthenticatedCtfRedeemTerminalEvidence,
   type RedeemWallet,
 } from '../src/ctfRedeem.ts'
@@ -80,6 +81,7 @@ test('redeemOutcomeLegWithOperation prepares, redeems, and marks completed', asy
     unit: 'sat',
     oracleWitness: '{"attested":true}',
     proofs: inputProofs,
+    outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
     restoreOutputGroups: async () => {
       throw new Error('restore should not be called')
@@ -100,6 +102,70 @@ test('redeemOutcomeLegWithOperation prepares, redeems, and marks completed', asy
   assert.deepEqual(entry?.resultProofs?.regular, settledProofs)
 })
 
+test('redeemOutcomeLegWithOperation persists exact NUT-02 fee authority and mints only net value', async () => {
+  const store = new MemoryProofOperationStore()
+  const inputs = [proof('ctf-keyset', 'fee-a', 2), proof('ctf-keyset', 'fee-b', 3)]
+  const settled = [proof('regular-keyset', 'fee-net', 3)]
+  const wallet = new FakeRedeemWallet({ settledProofs: settled, expectedOutputAmount: 3 })
+
+  await redeemOutcomeLegWithOperation({
+    mintUrl: 'https://mint.example',
+    operationId: 'redeem:fee',
+    wallet,
+    proofOperationStore: store,
+    conditionId: 'condition',
+    outcome: 'YES',
+    outcomeSetId: 'YES',
+    unit: 'sat',
+    oracleWitness: 'witness',
+    proofs: inputs,
+    outcomeKeyset: outcomeKeyset(600),
+    regularKeyset: regularKeyset(),
+  })
+
+  assert.deepEqual((await store.getProofOperation('redeem:fee'))?.metadata, {
+    conditionId: 'condition',
+    outcome: 'YES',
+    outcomeSetId: 'YES',
+    grossInputSubunits: 5,
+    inputFeeSubunits: 2,
+    netOutputSubunits: 3,
+    outcomeInputFeePpk: 600,
+    outcomeKeysetId: 'ctf-keyset',
+    regularKeysetId: 'regular-keyset',
+    unit: 'sat',
+    oracleWitness: 'witness',
+  })
+})
+
+test('redeemOutcomeLegWithOperation rejects an uneconomic page before persistence or mint effect', async () => {
+  const store = new MemoryProofOperationStore()
+  const wallet = new FakeRedeemWallet()
+
+  await assert.rejects(
+    () =>
+      redeemOutcomeLegWithOperation({
+        mintUrl: 'https://mint.example',
+        operationId: 'redeem:uneconomic',
+        wallet,
+        proofOperationStore: store,
+        conditionId: 'condition',
+        outcome: 'YES',
+        unit: 'sat',
+        oracleWitness: 'witness',
+        proofs: [proof('ctf-keyset', 'fee-consumed', 1)],
+        outcomeKeyset: outcomeKeyset(1_000),
+        regularKeyset: regularKeyset(),
+      }),
+    (error) =>
+      error instanceof UneconomicCtfRedeemError &&
+      error.grossInputSubunits === 1 &&
+      error.inputFeeSubunits === 1,
+  )
+  assert.equal(await store.getProofOperation('redeem:uneconomic'), null)
+  assert.equal(wallet.redeemCalls.length, 0)
+})
+
 test('redeemOutcomeLegWithOperation terminally records losing legs', async () => {
   const store = new MemoryProofOperationStore()
   const wallet = new FakeRedeemWallet({ error: { code: ORACLE_NOT_ATTESTED_OUTCOME_CODE } })
@@ -114,6 +180,7 @@ test('redeemOutcomeLegWithOperation terminally records losing legs', async () =>
     unit: 'sat',
     oracleWitness: 'witness',
     proofs: [proof('ctf-keyset', 'loser', 3)],
+    outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
     restoreOutputGroups: async () => ({}),
   })
@@ -143,6 +210,7 @@ test('redeemOutcomeLegWithOperation terminally records losing legs', async () =>
     unit: 'sat',
     oracleWitness: 'witness',
     proofs: [proof('ctf-keyset', 'loser', 3)],
+    outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
     restoreOutputGroups: async () => ({}),
   })
@@ -166,6 +234,7 @@ test('redeemOutcomeLegWithOperation returns a completed exact retry before mint 
     unit: 'sat',
     oracleWitness: 'persisted-witness',
     proofs: inputs,
+    outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
   })
 
@@ -180,6 +249,7 @@ test('redeemOutcomeLegWithOperation returns a completed exact retry before mint 
     unit: 'sat',
     oracleWitness: 'persisted-witness',
     proofs: inputs,
+    outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
   })
 
@@ -204,7 +274,10 @@ test('redeemOutcomeLegWithOperation rejects malformed completion before mint I/O
       outcomeKeysetId: 'ctf-keyset',
       regularKeysetId: 'regular-keyset',
       unit: 'sat',
-      amountSubunits: 2,
+      grossInputSubunits: 2,
+      inputFeeSubunits: 0,
+      netOutputSubunits: 2,
+      outcomeInputFeePpk: 0,
       oracleWitness: 'persisted-witness',
     },
   })
@@ -226,6 +299,7 @@ test('redeemOutcomeLegWithOperation rejects malformed completion before mint I/O
         unit: 'sat',
         oracleWitness: 'persisted-witness',
         proofs: inputs,
+        outcomeKeyset: outcomeKeyset(),
         regularKeyset: regularKeyset(),
       }),
     /invalid regular proofs/,
@@ -251,6 +325,7 @@ test('redeemOutcomeLegWithOperation restores outputs when prepared inputs are sp
     unit: 'sat',
     oracleWitness: 'witness',
     proofs: inputs,
+    outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
     restoreOutputGroups: async () => ({}),
   }).catch(() => undefined)
@@ -267,6 +342,7 @@ test('redeemOutcomeLegWithOperation restores outputs when prepared inputs are sp
     unit: 'sat',
     oracleWitness: 'witness',
     proofs: inputs,
+    outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
     restoreOutputGroups: async () => ({ regular: restored }),
   })
@@ -290,6 +366,7 @@ test('redeemOutcomeLegWithOperation re-executes prepared operations when inputs 
     unit: 'sat',
     oracleWitness: 'witness',
     proofs: inputs,
+    outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
     restoreOutputGroups: async () => ({}),
   }).catch(() => undefined)
@@ -309,6 +386,7 @@ test('redeemOutcomeLegWithOperation re-executes prepared operations when inputs 
     unit: 'sat',
     oracleWitness: 'witness',
     proofs: inputs,
+    outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
     restoreOutputGroups: async () => ({}),
   })
@@ -334,6 +412,7 @@ test('redeemOutcomeLegWithOperation rejects witness substitution before mint I/O
     unit: 'sat',
     oracleWitness: 'persisted-witness',
     proofs: inputs,
+    outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
   }).catch(() => undefined)
 
@@ -353,6 +432,7 @@ test('redeemOutcomeLegWithOperation rejects witness substitution before mint I/O
         unit: 'sat',
         oracleWitness: 'substituted-witness',
         proofs: inputs,
+        outcomeKeyset: outcomeKeyset(),
         regularKeyset: regularKeyset(),
       }),
     /does not match the current request/,
@@ -378,6 +458,7 @@ test('redeemOutcomeLegWithOperation rejects an oversized witness before persiste
         unit: 'sat',
         oracleWitness: 'w'.repeat(DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX + 1),
         proofs: [proof('ctf-keyset', 'oversized-witness-input', 1)],
+        outcomeKeyset: outcomeKeyset(),
         regularKeyset: regularKeyset(),
       }),
     /record byte limit exceeded/,
@@ -404,6 +485,7 @@ test('redeemOutcomeLegWithOperation accepts the exact witness byte boundary', as
         unit: 'sat',
         oracleWitness: witness,
         proofs: [proof('ctf-keyset', 'bounded-witness-input', 1)],
+        outcomeKeyset: outcomeKeyset(),
         regularKeyset: regularKeyset(),
       }),
     /transient/,
@@ -431,7 +513,10 @@ test('redeemOutcomeLegWithOperation rejects a legacy record without a witness be
       outcomeKeysetId: 'ctf-keyset',
       regularKeysetId: 'regular-keyset',
       unit: 'sat',
-      amountSubunits: 1,
+      grossInputSubunits: 1,
+      inputFeeSubunits: 0,
+      netOutputSubunits: 1,
+      outcomeInputFeePpk: 0,
     },
   })
   const wallet = new FakeRedeemWallet()
@@ -448,6 +533,7 @@ test('redeemOutcomeLegWithOperation rejects a legacy record without a witness be
         unit: 'sat',
         oracleWitness: 'current-witness',
         proofs: inputs,
+        outcomeKeyset: outcomeKeyset(),
         regularKeyset: regularKeyset(),
       }),
     /oracle witness must be a non-empty string/,
@@ -471,6 +557,7 @@ test('redeemOutcomeLegWithOperation rejects request substitution before mint eff
     unit: 'sat',
     oracleWitness: 'witness',
     proofs: original,
+    outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
   }).catch(() => undefined)
 
@@ -488,6 +575,7 @@ test('redeemOutcomeLegWithOperation rejects request substitution before mint eff
         unit: 'sat',
         oracleWitness: 'witness',
         proofs: [proof('ctf-keyset', 'substituted-input', 5)],
+        outcomeKeyset: outcomeKeyset(),
         regularKeyset: regularKeyset(),
       }),
     /does not match the current request/,
@@ -526,7 +614,10 @@ test('redeemOutcomeLegWithOperation refuses non-losing failed records', async ()
       outcomeKeysetId: 'ctf-keyset',
       regularKeysetId: 'regular-keyset',
       unit: 'sat',
-      amountSubunits: 1,
+      grossInputSubunits: 1,
+      inputFeeSubunits: 0,
+      netOutputSubunits: 1,
+      outcomeInputFeePpk: 0,
       oracleWitness: 'witness',
     },
   })
@@ -549,6 +640,7 @@ test('redeemOutcomeLegWithOperation refuses non-losing failed records', async ()
         unit: 'sat',
         oracleWitness: 'witness',
         proofs: [proof('ctf-keyset', 'input', 1)],
+        outcomeKeyset: outcomeKeyset(),
         regularKeyset: regularKeyset(),
         restoreOutputGroups: async () => ({}),
       }),
@@ -574,6 +666,14 @@ function regularKeyset(): MintKeys {
   } as unknown as MintKeys
 }
 
+function outcomeKeyset(inputFeePpk = 0): MintKeys {
+  return {
+    ...regularKeyset(),
+    id: 'ctf-keyset',
+    input_fee_ppk: inputFeePpk,
+  }
+}
+
 class FakeRedeemWallet implements RedeemWallet {
   loadMintCalls = 0
   checkProofStateCalls = 0
@@ -582,6 +682,7 @@ class FakeRedeemWallet implements RedeemWallet {
     settledProofs?: Proof[]
     states?: ProofState[]
     error?: unknown
+    expectedOutputAmount?: number
   }
 
   constructor(
@@ -589,6 +690,7 @@ class FakeRedeemWallet implements RedeemWallet {
       settledProofs?: Proof[]
       states?: ProofState[]
       error?: unknown
+      expectedOutputAmount?: number
     } = {},
   ) {
     this.script = script
@@ -601,6 +703,16 @@ class FakeRedeemWallet implements RedeemWallet {
   async redeemOutcomeProofs(options: { inputs: Proof[]; outputs: unknown[] }): Promise<Proof[]> {
     this.redeemCalls.push(options)
     if (this.script.error) throw this.script.error
+    if (this.script.expectedOutputAmount !== undefined) {
+      assert.equal(
+        options.outputs.reduce(
+          (sum, output) =>
+            sum + Number((output as { blindedMessage: { amount: number } }).blindedMessage.amount),
+          0,
+        ),
+        this.script.expectedOutputAmount,
+      )
+    }
     return this.script.settledProofs ?? []
   }
 
