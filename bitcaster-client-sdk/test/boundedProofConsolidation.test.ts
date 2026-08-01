@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { planBoundedProofConsolidation } from '../src/boundedProofConsolidation.ts'
+import {
+  planBoundedProofConsolidation,
+  planProofConsolidationRound,
+} from '../src/boundedProofConsolidation.ts'
 
 const KEYS = Object.fromEntries(
   Array.from({ length: 21 }, (_, exponent) => [String(2 ** exponent), `key-${exponent}`]),
@@ -49,6 +52,49 @@ test('handles a 10,000-proof inventory as denomination counts', () => {
   if (result.kind !== 'ready') return
   assert.ok(result.consolidationRounds.length <= 256)
   assert.ok(result.selectedInputs.length <= 64)
+})
+
+test('plans one bounded manual sweep round from at most 64 proof bodies', () => {
+  assert.deepEqual(
+    planProofConsolidationRound({
+      inventory: [{ amount: '1', count: 64 }],
+      inputFeePpk: 1,
+      maxInputs: 64,
+      keysetKeys: KEYS,
+    }),
+    {
+      kind: 'ready',
+      round: {
+        inputs: Array.from({ length: 64 }, () => '1'),
+        outputs: ['32', '16', '8', '4', '2', '1'],
+        fee: '1',
+      },
+    },
+  )
+})
+
+test('manual sweep reports groups that are already compact or cannot be reduced', () => {
+  assert.equal(
+    planProofConsolidationRound({
+      inventory: [{ amount: '8', count: 1 }],
+      inputFeePpk: 1,
+      maxInputs: 64,
+      keysetKeys: KEYS,
+    }).kind,
+    'not-needed',
+  )
+  assert.equal(
+    planProofConsolidationRound({
+      inventory: [
+        { amount: '8', count: 1 },
+        { amount: '4', count: 1 },
+      ],
+      inputFeePpk: 1_000,
+      maxInputs: 64,
+      keysetKeys: { '1': 'key-0' },
+    }).kind,
+    'not-reducible',
+  )
 })
 
 test('returns the smallest fee-aware sufficient prefix instead of maxInputs', () => {

@@ -140,6 +140,10 @@
       "types": "./dist/ctfRangeConsolidationOperation.d.ts",
       "import": "./dist/ctfRangeConsolidationOperation.js"
     },
+    "./proofConsolidationOperation": {
+      "types": "./dist/proofConsolidationOperation.d.ts",
+      "import": "./dist/proofConsolidationOperation.js"
+    },
     "./ctfRangeSourceRecovery": {
       "types": "./dist/ctfRangeSourceRecovery.d.ts",
       "import": "./dist/ctfRangeSourceRecovery.js"

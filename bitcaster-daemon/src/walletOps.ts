@@ -16,6 +16,7 @@ import {
   type ProofState,
   type SerializedBlindedMessage,
   type SerializedBlindedSignature,
+  type ConditionalSwapPreview,
   type SwapPreview,
 } from '@cashu/cashu-ts'
 import { createHash, randomUUID } from 'node:crypto'
@@ -75,6 +76,12 @@ export interface CashuWalletLike {
     outputConfig?: unknown,
   ): Promise<SwapPreview>
   completeSwap?(swapPreview: SwapPreview): Promise<{ keep: Proof[]; send: Proof[] }>
+  prepareConditionalSwap?(options: {
+    keysetId: string
+    inputs: Proof[]
+    outputs: [{ label: 'consolidated'; kind: 'random'; amount: number }]
+  }): Promise<ConditionalSwapPreview>
+  completeConditionalSwap?(preview: ConditionalSwapPreview): Promise<Record<string, Proof[]>>
   checkProofsStates?(proofs: Array<Pick<Proof, 'id' | 'secret'>>): Promise<ProofState[]>
   selectProofsToSend?(
     proofs: Proof[],
@@ -770,7 +777,9 @@ export async function recoverPreparedWalletSends(
     (entry) =>
       (entry.kind === 'wallet-send' &&
         entry.state === 'prepared' &&
-        entry.metadata.purpose !== 'ctf-range-authorization-source') ||
+        entry.metadata.purpose !== 'ctf-range-authorization-source' &&
+        entry.metadata.purpose !== 'ctf-range-authorization-consolidation' &&
+        entry.metadata.purpose !== 'wallet-proof-consolidation') ||
       (entry.kind === 'ctf-consolidation' &&
         (entry.state === 'prepared' ||
           (entry.state === 'completed' &&
@@ -926,7 +935,7 @@ function walletSendResult(
   }
 }
 
-function createWallet(
+export function createWallet(
   mintUrl: string,
   secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies,

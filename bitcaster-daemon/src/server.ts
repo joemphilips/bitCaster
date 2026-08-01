@@ -93,6 +93,11 @@ import {
 import { readDaemonTokenHoldings } from './walletHoldings.ts'
 import { readDaemonWalletBalance } from './walletBalance.ts'
 import type { WalletSeedRecoveryParams, WalletSeedRecoveryResult } from './protocol.ts'
+import type { CustodyScopeFence } from './profileFencing.ts'
+import {
+  consolidateWalletProofs,
+  recoverWalletProofConsolidations,
+} from './walletProofConsolidation.ts'
 
 export interface DaemonServerOptions {
   host?: string
@@ -103,6 +108,10 @@ export interface DaemonServerOptions {
   recoverWalletFromSeed?: (input: WalletSeedRecoveryParams) => Promise<WalletSeedRecoveryResult>
   prepareSettlementCapability?: PrepareSettlementCapability
   triggerSettlementRecovery?: () => void
+  getCustodyFence?: () => CustodyScopeFence
+  isCustodyReady?: () => boolean
+  markCustodyReady?: () => void
+  startTradeRuntime?: boolean
 }
 
 export interface SwapRecoveryExecutor {
@@ -269,6 +278,9 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   swapExecutor?: SwapRecoveryExecutor
   recoverWalletFromSeed?: (input: WalletSeedRecoveryParams) => Promise<WalletSeedRecoveryResult>
   triggerSettlementRecovery?: () => void
+  getCustodyFence?: () => CustodyScopeFence
+  isCustodyReady?: () => boolean
+  markCustodyReady?: () => void
 }
 
 const ctfProofOperationStore: CtfProofOperationStore = {
@@ -281,7 +293,7 @@ const ctfProofOperationStore: CtfProofOperationStore = {
 }
 
 export async function startDaemonServer(options: DaemonServerOptions = {}): Promise<Server> {
-  if (options.tradeRuntime && (await readProfile())) {
+  if (options.startTradeRuntime !== false && options.tradeRuntime && (await readProfile())) {
     await startTradeRuntimeBestEffort(options.tradeRuntime)
   }
   const socketPath =
@@ -301,6 +313,9 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
       recoverWalletFromSeed: options.recoverWalletFromSeed,
       prepareSettlementCapability: options.prepareSettlementCapability,
       triggerSettlementRecovery: options.triggerSettlementRecovery,
+      getCustodyFence: options.getCustodyFence,
+      isCustodyReady: options.isCustodyReady,
+      markCustodyReady: options.markCustodyReady,
     })
   })
   if (socketPath) {
@@ -371,6 +386,13 @@ export async function dispatch(
   command: DaemonCommand,
   deps: DispatchDependencies = {},
 ): Promise<DaemonResponse> {
+  if (deps.isCustodyReady?.() === false && requiresReadyCustody(command.method)) {
+    return {
+      ok: false,
+      code: 'custody-recovery-pending',
+      error: 'wallet recovery must complete before this command can use funds',
+    }
+  }
   switch (command.method) {
     case 'health':
       return {
@@ -379,7 +401,11 @@ export async function dispatch(
           status: 'ok',
           service: 'bitcaster-daemon',
           sdk: '@bitcaster-market/client-sdk',
-          state: (await readProfile()) ? 'ready' : 'missing-profile',
+          state: (await readProfile())
+            ? deps.isCustodyReady?.() === false
+              ? 'custody-recovery-pending'
+              : 'ready'
+            : 'missing-profile',
         } satisfies DaemonHealth,
       }
     case 'daemon.status': {
@@ -610,6 +636,27 @@ export async function dispatch(
         deps,
       })
     }
+    case 'wallet.consolidateProofs': {
+      if (!(await readProfile())) {
+        return { ok: false, error: 'daemon profile is not initialized' }
+      }
+      const secrets = await readSecrets()
+      if (!secrets) {
+        return { ok: false, error: 'daemon secrets are not initialized' }
+      }
+      if (!deps.getCustodyFence) {
+        return { ok: false, error: 'wallet proof consolidation requires custody authority' }
+      }
+      const getCustodyFence = deps.getCustodyFence
+      return {
+        ok: true,
+        result: await consolidateWalletProofs({
+          secrets,
+          mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
+          dependencies: deps,
+        }),
+      }
+    }
     case 'wallet.recover': {
       if (!(await readProfile())) {
         return { ok: false, error: 'daemon profile is not initialized' }
@@ -618,9 +665,22 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
+      const wallet = await recoverPreparedWalletSends(secrets, deps)
+      if (!deps.getCustodyFence) return { ok: true, result: wallet }
+      const getCustodyFence = deps.getCustodyFence
+      const consolidation = await recoverWalletProofConsolidations({
+        secrets,
+        mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
+        dependencies: deps,
+      })
+      const result = {
+        recovered: [...wallet.recovered, ...consolidation.recovered],
+        pending: [...wallet.pending, ...consolidation.pending],
+      }
+      if (result.pending.length === 0) deps.markCustodyReady?.()
       return {
         ok: true,
-        result: await recoverPreparedWalletSends(secrets, deps),
+        result,
       }
     }
     case 'wallet.seedRecovery': {
@@ -998,7 +1058,7 @@ export async function dispatch(
             marketUnit?.divisibility,
           )
         : null
-      if (local) {
+      if (local && deps.isCustodyReady?.() !== false) {
         await startTradeRuntimeBestEffort(deps.tradeRuntime)
       }
       return {
@@ -1070,6 +1130,20 @@ export async function dispatch(
       }
     }
   }
+}
+
+function requiresReadyCustody(method: DaemonCommand['method']): boolean {
+  return (
+    method === 'market.create' ||
+    method === 'wallet.receive' ||
+    method === 'wallet.send' ||
+    method === 'wallet.splitCompleteSet' ||
+    method === 'wallet.consolidateMarket' ||
+    method === 'wallet.consolidateProofs' ||
+    method === 'wallet.seedRecovery' ||
+    method === 'order.submit' ||
+    method === 'trade.recover'
+  )
 }
 
 async function ensureDaemonParticipationScoreForNextMatch(input: {

@@ -461,6 +461,18 @@ function registerWalletCommand(program: Command): void {
     )
 
   registerWalletSplitCommand(wallet, 'split')
+  wallet
+    .command('consolidate-proofs')
+    .description('Consolidate available Cashu proofs through durable bounded mint operations.')
+    .option('--dry-run', 'Validate and print the proof-consolidation request')
+    .addHelpText('after', '\nExample:\n  bitcaster-cli wallet consolidate-proofs')
+    .action(async (options: { dryRun?: boolean }) => {
+      if (isDryRun(options)) {
+        printDryRun({})
+        return
+      }
+      await printDaemonResult(callDaemon({ method: 'wallet.consolidateProofs' }))
+    })
   registerConsolidateCommand(wallet, 'consolidate')
 
   wallet

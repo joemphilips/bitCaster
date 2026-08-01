@@ -16,6 +16,7 @@ export type DaemonCommand =
     }
   | { method: 'wallet.splitCompleteSet'; params: WalletSplitCompleteSetParams }
   | { method: 'wallet.consolidateMarket'; params: WalletConsolidateMarketParams }
+  | { method: 'wallet.consolidateProofs'; params?: undefined }
   | { method: 'wallet.operations'; params?: { kind?: string; state?: string } }
   | { method: 'wallet.recover'; params?: undefined }
   | { method: 'wallet.seedRecovery'; params: WalletSeedRecoveryParams }
@@ -141,5 +142,5 @@ export interface DaemonHealth {
   status: 'ok'
   service: 'bitcaster-daemon'
   sdk: '@bitcaster-market/client-sdk'
-  state: 'ready' | 'missing-profile'
+  state: 'ready' | 'custody-recovery-pending' | 'missing-profile'
 }

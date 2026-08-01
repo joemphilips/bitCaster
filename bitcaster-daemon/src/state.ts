@@ -122,6 +122,27 @@ export interface AvailableWalletProofPage {
   readonly nextCursor: WalletProofPageCursor | null
 }
 
+export interface WalletProofGroupCursor {
+  readonly mintUrl: string
+  readonly unit: 'sat' | 'msat'
+  readonly assetKind: 'sats' | 'outcome'
+  readonly conditionId: string | null
+  readonly outcomeSetId: string | null
+  readonly keysetId: string
+}
+
+export interface AvailableWalletProofGroup {
+  readonly mintUrl: string
+  readonly keysetId: string
+  readonly asset: StoredProofAsset
+  readonly proofCount: number
+}
+
+export interface AvailableWalletProofGroupPage {
+  readonly groups: AvailableWalletProofGroup[]
+  readonly nextCursor: WalletProofGroupCursor | null
+}
+
 export interface ProofOperationPageCursor {
   readonly updatedAt: number
   readonly operationId: string
@@ -1573,6 +1594,65 @@ export async function readAvailableWalletProofPage(input: {
   })
 }
 
+export async function readAvailableWalletProofGroupPage(input: {
+  readonly after?: WalletProofGroupCursor
+  readonly limit: number
+}): Promise<AvailableWalletProofGroupPage> {
+  const limit = boundedPageLimit(input.limit)
+  return withProfileStorageAccess(async () => {
+    const database = await openDaemonStateSqlite(profileDir())
+    try {
+      const scopeId = readScopeId(database)
+      const afterClause =
+        input.after === undefined
+          ? ''
+          : `WHERE (normalized_mint, unit, asset_kind,
+                    COALESCE(condition_id, ''), COALESCE(outcome_set_id, ''), keyset_id)
+                   > (?, ?, ?, ?, ?, ?)`
+      const bindings: Array<string | number> = [scopeId]
+      if (input.after !== undefined) {
+        validateWalletProofGroupCursor(input.after)
+        bindings.push(
+          input.after.mintUrl,
+          input.after.unit,
+          input.after.assetKind,
+          input.after.conditionId ?? '',
+          input.after.outcomeSetId ?? '',
+          input.after.keysetId,
+        )
+      }
+      bindings.push(limit + 1)
+      const fetched = database
+        .prepare(
+          `WITH available_groups AS (
+             SELECT normalized_mint, unit, asset_kind, condition_id, outcome_set_id,
+                    keyset_id, COUNT(*) AS proof_count
+             FROM target_wallet_proofs
+             WHERE scope_id = ? AND state = 'available'
+             GROUP BY normalized_mint, unit, asset_kind, condition_id, outcome_set_id, keyset_id
+           )
+           SELECT * FROM available_groups
+           ${afterClause}
+           ORDER BY normalized_mint, unit, asset_kind,
+                    COALESCE(condition_id, ''), COALESCE(outcome_set_id, ''), keyset_id
+           LIMIT ?`,
+        )
+        .all(...bindings) as Array<Record<string, unknown>>
+      const rows = fetched.slice(0, limit)
+      const groups = rows.map(decodeAvailableWalletProofGroup)
+      return {
+        groups,
+        nextCursor:
+          fetched.length > limit && rows.length > 0
+            ? walletProofGroupCursor(rows[rows.length - 1]!)
+            : null,
+      }
+    } finally {
+      database.close()
+    }
+  })
+}
+
 function readAvailableWalletProofPageFromDatabase(
   database: DatabaseSync,
   input: {
@@ -1628,6 +1708,7 @@ export async function readProofOperationsByPurposePage(input: {
   readonly purpose: string
   readonly after?: ProofOperationPageCursor
   readonly limit: number
+  readonly recoverableOnly?: true
 }): Promise<ProofOperationPage> {
   const purpose = requireOperationPurpose(input.purpose)
   const limit = boundedPageLimit(input.limit)
@@ -1638,7 +1719,20 @@ export async function readProofOperationsByPurposePage(input: {
       const afterClause =
         input.after === undefined
           ? ''
-          : 'AND (updated_at_ms > ? OR (updated_at_ms = ? AND operation_id > ?))'
+          : 'AND (operation.updated_at_ms > ? OR (operation.updated_at_ms = ? AND operation.operation_id > ?))'
+      const recoverableClause =
+        input.recoverableOnly === true
+          ? `AND (
+               operation.state = 'prepared'
+               OR EXISTS (
+                 SELECT 1 FROM target_wallet_proofs AS proof
+                 WHERE proof.scope_id = operation.scope_id
+                   AND proof.normalized_mint = operation.normalized_mint
+                   AND proof.state = 'reserved'
+                   AND proof.reserved_by = operation.reservation_id
+               )
+             )`
+          : ''
       const bindings: Array<string | number> = [scopeId, purpose]
       if (input.after !== undefined) {
         validateProofOperationPageCursor(input.after)
@@ -1647,10 +1741,11 @@ export async function readProofOperationsByPurposePage(input: {
       bindings.push(limit + 1)
       const fetched = database
         .prepare(
-          `SELECT * FROM target_proof_operations
-           WHERE scope_id = ? AND purpose = ?
+          `SELECT operation.* FROM target_proof_operations AS operation
+           WHERE operation.scope_id = ? AND operation.purpose = ?
+             ${recoverableClause}
              ${afterClause}
-           ORDER BY updated_at_ms, operation_id
+           ORDER BY operation.updated_at_ms, operation.operation_id
            LIMIT ?`,
         )
         .all(...bindings) as Array<Record<string, unknown>>
@@ -2084,6 +2179,79 @@ function validateWalletProofPageCursor(cursor: WalletProofPageCursor): void {
   ) {
     throw new Error('wallet proof page cursor is invalid')
   }
+}
+
+function validateWalletProofGroupCursor(cursor: WalletProofGroupCursor): void {
+  const assetIsSats =
+    cursor.assetKind === 'sats' && cursor.conditionId === null && cursor.outcomeSetId === null
+  const assetIsOutcome =
+    cursor.assetKind === 'outcome' &&
+    cursor.unit === 'msat' &&
+    cursor.conditionId !== null &&
+    cursor.outcomeSetId !== null
+  if (
+    cursor.mintUrl.length < 1 ||
+    cursor.mintUrl.length > 2_048 ||
+    (cursor.unit !== 'sat' && cursor.unit !== 'msat') ||
+    (!assetIsSats && !assetIsOutcome) ||
+    cursor.keysetId.length < 1 ||
+    cursor.keysetId.length > 1_024
+  ) {
+    throw new Error('wallet proof group cursor is invalid')
+  }
+}
+
+function decodeAvailableWalletProofGroup(raw: Record<string, unknown>): AvailableWalletProofGroup {
+  const cursor = walletProofGroupCursor(raw)
+  const proofCount = requireInteger(raw.proof_count, 'proof group count')
+  if (proofCount < 1) throw new Error('proof group count is invalid')
+  const asset = availableWalletProofGroupAsset(cursor)
+  return {
+    mintUrl: cursor.mintUrl,
+    keysetId: cursor.keysetId,
+    asset,
+    proofCount,
+  }
+}
+
+function availableWalletProofGroupAsset(cursor: WalletProofGroupCursor): StoredProofAsset {
+  if (cursor.assetKind === 'sats') {
+    return { kind: 'sats', baseAsset: 'sat', unit: cursor.unit }
+  }
+  if (cursor.conditionId === null || cursor.outcomeSetId === null) {
+    throw new Error('proof group outcome asset is invalid')
+  }
+  return {
+    kind: 'Outcome',
+    conditionId: cursor.conditionId,
+    outcomeSetId: cursor.outcomeSetId,
+    baseAsset: 'sat',
+    unit: 'msat',
+  }
+}
+
+function walletProofGroupCursor(raw: Record<string, unknown>): WalletProofGroupCursor {
+  const assetKind = raw.asset_kind
+  const unit = requireCashuUnit(raw.unit, 'proof group unit')
+  const cursor: WalletProofGroupCursor = {
+    mintUrl: requireText(raw.normalized_mint, 'proof group mint'),
+    unit,
+    assetKind:
+      assetKind === 'sats' || assetKind === 'outcome'
+        ? assetKind
+        : (() => {
+            throw new Error('proof group asset kind is invalid')
+          })(),
+    conditionId:
+      raw.condition_id === null ? null : requireText(raw.condition_id, 'proof group condition'),
+    outcomeSetId:
+      raw.outcome_set_id === null
+        ? null
+        : requireText(raw.outcome_set_id, 'proof group outcome set'),
+    keysetId: requireText(raw.keyset_id, 'proof group keyset'),
+  }
+  validateWalletProofGroupCursor(cursor)
+  return cursor
 }
 
 function validateProofOperationPageCursor(cursor: ProofOperationPageCursor): void {

@@ -15,6 +15,7 @@ import {
   ensureState,
   markProofOperationCompletedFenced,
   prepareProofOperationWithExactReservation,
+  readAvailableWalletProofGroupPage,
   readAvailableWalletProofPage,
   readState,
   updateState,
@@ -263,6 +264,61 @@ test('wallet proof selection pages and exact reservation stay row-scoped', async
       /stale or expired authority/,
     )
     assert.equal((await readState())?.proofOperations['page-reservation']?.state, 'prepared')
+  })
+})
+
+test('available proof groups page without loading proof bodies', async () => {
+  await withProfile(async () => {
+    const state = emptyDaemonState()
+    for (let index = 0; index < 10_000; index += 1) {
+      state.wallet.proofs.push({
+        proof: {
+          id: 'regular-keyset',
+          amount: 1,
+          secret: `regular-secret-${index}`,
+          C: `regular-signature-${index}`,
+        },
+        mintUrl: 'http://localhost:8086',
+        state: 'available',
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      })
+    }
+    state.wallet.proofs.push({
+      proof: {
+        id: 'conditional-keyset',
+        amount: 4,
+        secret: 'conditional-secret',
+        C: 'conditional-signature',
+      },
+      mintUrl: 'http://localhost:8086',
+      state: 'available',
+      asset: {
+        kind: 'Outcome',
+        conditionId: 'condition-1',
+        outcomeSetId: 'YES',
+        baseAsset: 'sat',
+        unit: 'msat',
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+    await writeState(state)
+
+    const first = await readAvailableWalletProofGroupPage({ limit: 1 })
+    assert.equal(first.groups.length, 1)
+    assert.ok(first.nextCursor)
+    const second = await readAvailableWalletProofGroupPage({
+      limit: 1,
+      after: first.nextCursor ?? undefined,
+    })
+    assert.equal(second.groups.length, 1)
+    assert.equal(second.nextCursor, null)
+    assert.deepEqual(
+      [...first.groups, ...second.groups].map(({ proofCount }) => proofCount).sort((a, b) => a - b),
+      [1, 10_000],
+    )
   })
 })
 

@@ -55,6 +55,7 @@ switch (command) {
     const { readProfile } = await import('./profile.ts')
     const { readSecrets } = await import('./secrets.ts')
     const { recoverPreparedWalletSends } = await import('./walletOps.ts')
+    const { recoverWalletProofConsolidations } = await import('./walletProofConsolidation.ts')
     const { DaemonCtfRangeOrderCoordinator } = await import('./ctfRangeOrderCoordinator.ts')
     const { createCtfRangeRecoveryLoop } = await import('./ctfRangeRecoveryLoop.ts')
     const { recoverDaemonWalletFromSeed } = await import('./emergencySeedRecovery.ts')
@@ -259,9 +260,47 @@ switch (command) {
         },
       })
       rangeRecoveryLoop.accept(initialRangeRecovery)
+      const consolidationRecovery = await recoverWalletProofConsolidations({
+        secrets,
+        mutation: () => ({ fence: currentFence(), observedAtMs: Date.now() }),
+      })
+      const walletRecovery = await recoverPreparedWalletSends(secrets)
+      const pendingWalletOperations = [...consolidationRecovery.pending, ...walletRecovery.pending]
+      let custodyReady = pendingWalletOperations.length === 0
+      if (!custodyReady) {
+        process.stderr.write(
+          `Wallet recovery remains pending for ${pendingWalletOperations
+            .map(({ operationId }) => operationId)
+            .join(', ')}\n`,
+        )
+      }
+      const recoveredWalletOperations = [
+        ...consolidationRecovery.recovered,
+        ...walletRecovery.recovered,
+      ]
+      if (recoveredWalletOperations.length > 0) {
+        process.stderr.write(
+          `Recovered wallet operations: ${recoveredWalletOperations.join(', ')}\n`,
+        )
+      }
+      let runtimeStarted = false
+      const startRuntimeWhenReady = async () => {
+        if (!custodyReady || runtimeStarted || !runtime) return
+        runtimeStarted = true
+        await runtime.start(await ensureState())
+        await executor?.resumeActiveSwaps(await ensureState())
+      }
+      const markCustodyReady = () => {
+        custodyReady = true
+        void startRuntimeWhenReady().catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err)
+          process.stderr.write(`bitcaster-daemon trade runtime start failed: ${message}\n`)
+        })
+      }
       currentFence()
       const server = await startDaemonServer({
         tradeRuntime: runtime,
+        startTradeRuntime: false,
         swapExecutor: executor,
         recoverWalletFromSeed: (input) =>
           recoverDaemonWalletFromSeed(input, {
@@ -271,6 +310,9 @@ switch (command) {
         prepareSettlementCapability: (input, client) =>
           rangeOrderCoordinator.prepare(input, client),
         triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
+        getCustodyFence: currentFence,
+        isCustodyReady: () => custodyReady,
+        markCustodyReady,
       })
       try {
         currentFence()
@@ -279,7 +321,7 @@ switch (command) {
         await closeServer(server)
         throw error
       }
-      void runtime?.start(await ensureState()).catch((err: unknown) => {
+      void startRuntimeWhenReady().catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
         process.stderr.write(
           `bitcaster-daemon trade runtime start failed; RPC will remain available: ${message}\n`,
@@ -288,29 +330,6 @@ switch (command) {
     } catch (err) {
       await releaseResources().catch(() => undefined)
       throw err
-    }
-    if (secrets) {
-      void recoverPreparedWalletSends(secrets)
-        .then((result) => {
-          if (result.recovered.length > 0) {
-            process.stderr.write(`Recovered wallet operations: ${result.recovered.join(', ')}\n`)
-          }
-          for (const pending of result.pending) {
-            process.stderr.write(
-              `Wallet operation ${pending.operationId} remains pending: ${pending.error}\n`,
-            )
-          }
-        })
-        .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err)
-          process.stderr.write(`Wallet recovery sweep failed: ${message}\n`)
-        })
-    }
-    if (executor) {
-      void executor.resumeActiveSwaps(await ensureState()).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err)
-        process.stderr.write(`Swap recovery sweep failed: ${message}\n`)
-      })
     }
     break
   }

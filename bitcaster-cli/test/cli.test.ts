@@ -160,6 +160,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       'prepared',
     ])
     await runCli(daemonUrl, ['wallet', 'recover'])
+    await runCli(daemonUrl, ['wallet', 'consolidate-proofs'])
     await runCli(daemonUrl, ['wallet', 'consolidate', 'cond-YES', '--strategy', 'sweep'])
     await runCli(daemonUrl, [
       'order',
@@ -271,6 +272,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
         params: { kind: 'wallet-send', state: 'prepared' },
       },
       { method: 'wallet.recover' },
+      { method: 'wallet.consolidateProofs' },
       {
         method: 'wallet.consolidateMarket',
         params: { marketId: 'cond-YES', type: 't2' },

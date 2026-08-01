@@ -32,6 +32,43 @@ export type BoundedProofConsolidationPlan =
       readonly consolidationRounds: ProofConsolidationRound[]
     }
 
+export type ProofConsolidationRoundPlan =
+  | { readonly kind: 'ready'; readonly round: ProofConsolidationRound }
+  | { readonly kind: 'not-needed' }
+  | { readonly kind: 'not-reducible' }
+  | { readonly kind: 'fee-exhausted' }
+
+/**
+ * Plans one exact proof-count reduction from a bounded page of one proof
+ * group. The caller must keep mint, unit, asset, and input keyset constant.
+ */
+export function planProofConsolidationRound(input: {
+  readonly inventory: readonly ProofAmountCount[]
+  readonly inputFeePpk: number
+  readonly maxInputs: number
+  readonly keysetKeys: Readonly<Record<string, string>>
+}): ProofConsolidationRoundPlan {
+  const inputFeePpk = positiveInteger(input.inputFeePpk, 'consolidation input fee')
+  const maxInputs = boundedInteger(input.maxInputs, 2, 64, 'consolidation input limit')
+  const selected = takeLargest(inventoryCounts(input.inventory), maxInputs)
+  if (selected.length < 2) return { kind: 'not-needed' }
+  const fee = feeForInputs(inputFeePpk, selected.length)
+  const outputAmount = sum(selected) - fee
+  if (outputAmount <= 0n) return { kind: 'fee-exhausted' }
+  const outputs = splitAmount(outputAmount, { ...input.keysetKeys }).map((amount) =>
+    BigInt(amount.toString()),
+  )
+  if (outputs.length >= selected.length) return { kind: 'not-reducible' }
+  return {
+    kind: 'ready',
+    round: {
+      inputs: selected.map(String),
+      outputs: outputs.map(String),
+      fee: fee.toString(),
+    },
+  }
+}
+
 export function planBoundedProofConsolidation(input: {
   readonly inventory: readonly ProofAmountCount[]
   readonly target: string
