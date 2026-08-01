@@ -12,19 +12,34 @@ import {
   pointFromHex,
   pointFromHexG1,
   type Proof,
+  type MintKeys,
 } from '@cashu/cashu-ts'
 import {
+  applyDurableCustodyTransaction,
+  isDurableCustodyProofReservationActive,
   deriveDurableCustodyScopeId,
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyScopeState,
 } from '../src/durableCustody.ts'
 import {
+  prepareDurableCustodyAuthenticatedTerminalMintRejection,
   prepareDurableCustodyMintOperationAuthority,
   prepareDurableCustodyVerifiedMintResult,
   readDurableCustodyVerifiedMintResult,
+  reconcileDurableCustodyAuthenticatedTerminalMintRejection,
   stageDurableCustodyPreparedMintResult,
 } from '../src/durableCustodyMintResult.ts'
 import { serializeDurableCustodyOutput } from '../src/durableCustodyProofOperation.ts'
+import {
+  redeemOutcomeLegWithOperation,
+  type AuthenticatedCtfRedeemTerminalEvidence,
+} from '../src/ctfRedeem.ts'
+import type {
+  CtfPrepareProofOperationInput,
+  CtfProofOperationCompletion,
+  CtfProofOperationRecord,
+  CtfProofOperationStore,
+} from '../src/ctfSplit.ts'
 import {
   bindDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
@@ -206,6 +221,125 @@ test('accepts and verifies an exact CTF split operation', () => {
   assert.equal(result.proofs.length, 1)
 })
 
+test('reconciles exact authenticated CTF redeem rejection without successors', async () => {
+  const prepared = preparedCtfRedeem('redeem:losing')
+  const adapter = new FaultInjectingDurableCustodyAdapter(scopeState())
+  adapter.run((transaction) =>
+    bindDurableCustodyProofOperation(transaction, prepared.record, prepared.artifacts),
+  )
+  const rejection = prepareDurableCustodyAuthenticatedTerminalMintRejection({
+    record: adapter.readOperation()!,
+    exactAuthority: prepared.exactAuthority,
+    evidence: await captureTerminalRedeemEvidence(prepared.operation.operationId, MINT_URL),
+  })
+  adapter.run((transaction) =>
+    applyDurableCustodyTransaction(
+      transaction,
+      {
+        scope: SCOPE,
+        owner: OWNER,
+        operationRows: [
+          {
+            operationId: prepared.record.operation.operationId,
+            expectedRevision: adapter.readOperation()!.revision,
+          },
+        ],
+      },
+      (selected) =>
+        reconcileDurableCustodyAuthenticatedTerminalMintRejection({
+          transaction: selected,
+          record: adapter.readOperation()!,
+          prepared: rejection,
+          authorization: OWNER,
+        }),
+    ),
+  )
+  const terminal = adapter.readOperation()!
+
+  assert.equal(terminal.operation.state, 'aborted')
+  assert.equal(terminal.operation.result.state, 'none')
+  assert.equal(terminal.operation.terminalMintRejection?.code, 13015)
+  assert.equal(terminal.operation.terminalMintRejection?.predecessorDisposition, 'retain')
+  assert.equal(rejection.authority.predecessorDisposition, 'retain')
+  assert.deepEqual(terminal.operation.terminalMintRejection?.selectedSuccessorProofIds, [])
+  assert.equal(terminal.operation.proofStorage.lineage.successorAdmission, null)
+  assert.equal(isDurableCustodyProofReservationActive(terminal), false)
+
+  const revision = terminal.revision
+  adapter.run((transaction) =>
+    reconcileDurableCustodyAuthenticatedTerminalMintRejection({
+      transaction,
+      record: terminal,
+      prepared: rejection,
+      authorization: OWNER,
+    }),
+  )
+  assert.equal(adapter.readOperation()?.revision, revision)
+})
+
+test('rejects foreign terminal mint rejections and leaves unknown failures active', async () => {
+  const redeem = preparedCtfRedeem('redeem:strict')
+  const send = preparedSend('send:not-redeem')
+  const evidence = await captureTerminalRedeemEvidence(redeem.operation.operationId, MINT_URL)
+  const sendEvidence = await captureTerminalRedeemEvidence('redeem:foreign', MINT_URL)
+  const foreignMintEvidence = await captureTerminalRedeemEvidence(
+    redeem.operation.operationId,
+    'https://foreign-mint.example',
+  )
+  assert.throws(
+    () =>
+      prepareDurableCustodyAuthenticatedTerminalMintRejection({
+        record: redeem.record,
+        exactAuthority: redeem.exactAuthority,
+        evidence: {
+          transportProvenance: 'authenticated-mint-transport',
+          rejectionBody: { code: 13014 },
+        } as unknown as AuthenticatedCtfRedeemTerminalEvidence,
+      }),
+    /terminal evidence is invalid/,
+  )
+  assert.throws(
+    () =>
+      prepareDurableCustodyAuthenticatedTerminalMintRejection({
+        record: redeem.record,
+        exactAuthority: redeem.exactAuthority,
+        evidence: new Error(
+          'transport failed',
+        ) as unknown as AuthenticatedCtfRedeemTerminalEvidence,
+      }),
+    /terminal evidence is invalid/,
+  )
+  assert.throws(
+    () =>
+      prepareDurableCustodyAuthenticatedTerminalMintRejection({
+        record: send.record,
+        exactAuthority: send.exactAuthority,
+        evidence,
+      }),
+    /only valid for CTF redeem/,
+  )
+  assert.throws(
+    () =>
+      prepareDurableCustodyAuthenticatedTerminalMintRejection({
+        record: redeem.record,
+        exactAuthority: redeem.exactAuthority,
+        evidence: sendEvidence,
+      }),
+    /transport authority is foreign/,
+  )
+  assert.throws(
+    () =>
+      prepareDurableCustodyAuthenticatedTerminalMintRejection({
+        record: redeem.record,
+        exactAuthority: redeem.exactAuthority,
+        evidence: foreignMintEvidence,
+      }),
+    /transport authority is foreign/,
+  )
+  assert.equal(redeem.record.operation.state, 'dispatch-intent')
+  assert.equal(isDurableCustodyProofReservationActive(redeem.record), true)
+})
+
 test('accepts and verifies an exact wallet receive operation', () => {
   const send = preparedSend('receive:1')
   const operation = { ...send.operation, kind: 'wallet-receive' as const }
@@ -303,6 +437,85 @@ function preparedSend(
     },
   })
   return { ...authority, artifacts, record, operation, output }
+}
+
+function preparedCtfRedeem(operationId: string) {
+  const send = preparedSend(operationId)
+  const operation = { ...send.operation, kind: 'ctf-redeem' as const }
+  const authority = prepareDurableCustodyMintOperationAuthority({
+    operation,
+    keysets: send.authority.keysets,
+  })
+  const artifacts = {
+    requestBody: authority.exactRequest,
+    output: authority.exactOutput,
+    privateMaterial: authority.exactAuthority,
+  }
+  const record = createDurableCustodyProofOperation({
+    scope: SCOPE,
+    operation,
+    facts: authority.facts,
+    inventoryAccountId: SCOPE.inventoryAccountId,
+    exactBoundary: {
+      method: 'POST',
+      path: '/v1/ctf/redeem',
+      idempotencyKey: operationId,
+      ...artifacts,
+    },
+  })
+  return { ...authority, artifacts, operation, record }
+}
+
+async function captureTerminalRedeemEvidence(
+  operationId: string,
+  mintUrl: string,
+): Promise<AuthenticatedCtfRedeemTerminalEvidence> {
+  let record: CtfProofOperationRecord | null = null
+  let evidence: AuthenticatedCtfRedeemTerminalEvidence | null = null
+  const store: CtfProofOperationStore = {
+    getProofOperation: async () => record,
+    prepareProofOperation: async (input: CtfPrepareProofOperationInput) => {
+      record = { ...input, state: 'prepared', createdAt: 1, updatedAt: 1 }
+      return record
+    },
+    markProofOperationCompleted: async (
+      _operationId: string,
+      _completion: CtfProofOperationCompletion,
+    ) => {
+      throw new Error('terminal rejection must not complete the operation')
+    },
+    markProofOperationFailed: async (_operationId, _message, terminalEvidence) => {
+      evidence = terminalEvidence
+      record = { ...record!, state: 'Failed', failureCode: 13015, updatedAt: 2 }
+      return record
+    },
+  }
+  const regularKeyset: MintKeys = {
+    id: KEYSET_ID,
+    unit: 'sat',
+    active: true,
+    input_fee_ppk: 0,
+    keys: KEYS,
+  }
+  await redeemOutcomeLegWithOperation({
+    mintUrl,
+    operationId,
+    wallet: {
+      loadMint: async () => undefined,
+      redeemOutcomeProofs: async () => {
+        throw { code: 13015 }
+      },
+    },
+    proofOperationStore: store,
+    conditionId: 'condition-1',
+    outcome: 'losing-outcome',
+    unit: 'sat',
+    oracleWitness: '{}',
+    proofs: [proofForOutput(OutputData.createSingleData(1, KEYSET_ID, 'capture-input', 17n))],
+    regularKeyset,
+  })
+  if (evidence === null) throw new Error('terminal redeem evidence was not captured')
+  return evidence
 }
 
 function proofForBlsOutput(output: OutputData): Proof {

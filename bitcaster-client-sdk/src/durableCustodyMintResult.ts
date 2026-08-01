@@ -1,15 +1,22 @@
 import { Keyset, isBlsKeyset, verifyProofsForReceive, type Proof } from '@cashu/cashu-ts'
 import {
   assertDurableCustodyArtifactMatchesReference,
+  assertDurableCustodyImmutableAuthorityMatches,
   canonicalDurableCustodyKeysetIdentity,
   createDurableProofOperationFacts,
   prepareDurableCustodyExactArtifact,
   type DurableCustodyExactArtifact,
+  type DurableCustodyAuthenticatedTerminalMintRejectionAuthority,
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyRecord,
   type DurableCustodyTransaction,
   type DurableProofOperationFacts,
 } from './durableCustody.ts'
+import {
+  ORACLE_NOT_ATTESTED_OUTCOME_CODE,
+  readAuthenticatedCtfRedeemTerminalEvidence,
+  type AuthenticatedCtfRedeemTerminalEvidence,
+} from './ctfRedeem.ts'
 import {
   createDurableCustodyProofMaterialRecord,
   deserializeDurableCustodyProofArtifact,
@@ -55,6 +62,9 @@ export interface DurableCustodyVerifiedMintProof {
 }
 
 const verifiedMintResultBrand: unique symbol = Symbol('verified custody mint result')
+const authenticatedTerminalMintRejectionBrand: unique symbol = Symbol(
+  'authenticated terminal custody mint rejection',
+)
 
 export interface DurableCustodyVerifiedMintResult {
   readonly [verifiedMintResultBrand]: true
@@ -62,6 +72,14 @@ export interface DurableCustodyVerifiedMintResult {
   readonly resultFingerprint: string
   readonly selectedSuccessorProofIds: readonly string[]
   readonly proofs: readonly DurableCustodyVerifiedMintProof[]
+}
+
+export interface DurableCustodyPreparedAuthenticatedTerminalMintRejection {
+  readonly [authenticatedTerminalMintRejectionBrand]: true
+  readonly authority: DurableCustodyAuthenticatedTerminalMintRejectionAuthority
+  readonly exactRejection: DurableCustodyExactArtifact
+  readonly rejectionFingerprint: string
+  readonly code: typeof ORACLE_NOT_ATTESTED_OUTCOME_CODE
 }
 
 export function prepareDurableCustodyMintOperationAuthority(input: {
@@ -99,6 +117,122 @@ export function prepareDurableCustodyVerifiedMintResult(input: {
     selectedSuccessorProofIds: proofs.map(({ material }) => material.proofId),
     proofs,
   }
+}
+
+/**
+ * Prepare exact terminal authority from an authenticated mint response.
+ * Transport errors and every code except the CTF losing-leg code remain
+ * uncertain and must not pass through this boundary.
+ */
+export function prepareDurableCustodyAuthenticatedTerminalMintRejection(input: {
+  readonly record: DurableCustodyRecord
+  readonly exactAuthority: DurableCustodyExactArtifact
+  readonly evidence: AuthenticatedCtfRedeemTerminalEvidence
+}): DurableCustodyPreparedAuthenticatedTerminalMintRejection {
+  const operation = assertDurableCustodyMintOperationAuthority(
+    input.record,
+    input.exactAuthority,
+  ).operation
+  if (operation.kind !== 'ctf-redeem' || input.record.operation.semanticKind !== 'ctf-redeem') {
+    throw new Error('custody terminal mint rejection is only valid for CTF redeem')
+  }
+  const evidence = readAuthenticatedCtfRedeemTerminalEvidence(input.evidence)
+  if (
+    evidence.operationId !== operation.operationId ||
+    evidence.normalizedMint !== input.record.operation.custodyContext.normalizedMint
+  ) {
+    throw new Error('custody terminal mint rejection transport authority is foreign')
+  }
+  const authority: DurableCustodyAuthenticatedTerminalMintRejectionAuthority = {
+    schemaVersion: 1,
+    kind: 'authenticated-terminal-mint-rejection',
+    operationId: input.record.operation.operationId,
+    semanticKind: 'ctf-redeem',
+    normalizedMint: input.record.operation.custodyContext.normalizedMint,
+    requestFingerprint: input.record.operation.exactRequest.requestFingerprint,
+    code: ORACLE_NOT_ATTESTED_OUTCOME_CODE,
+    transportProvenance: evidence.transportProvenance,
+    transportOperationId: evidence.operationId,
+    rejectionBody: evidence.rejectionBody,
+    predecessorDisposition: 'retain',
+    selectedSuccessorProofIds: [],
+  }
+  const exactRejection = prepareDurableCustodyExactArtifact(authority)
+  return {
+    [authenticatedTerminalMintRejectionBrand]: true,
+    authority,
+    exactRejection,
+    rejectionFingerprint: exactRejection.fingerprint,
+    code: ORACLE_NOT_ATTESTED_OUTCOME_CODE,
+  }
+}
+
+export function reconcileDurableCustodyAuthenticatedTerminalMintRejection(input: {
+  readonly transaction: DurableCustodyTransaction
+  readonly record: DurableCustodyRecord
+  readonly prepared: DurableCustodyPreparedAuthenticatedTerminalMintRejection
+  readonly authorization: DurableCustodyOwnerAuthorization
+}): void {
+  assertPreparedTerminalMintRejection(input.prepared)
+  const operationId = input.record.operation.operationId
+  if (input.prepared.authority.operationId !== operationId) {
+    throw new Error('custody terminal mint rejection operation is foreign')
+  }
+  const current = input.transaction.getOperation(operationId)
+  if (current === null) throw new Error('custody terminal mint rejection operation is absent')
+  assertDurableCustodyImmutableAuthorityMatches(current, input.record)
+  const existing = current.operation.terminalMintRejection
+  if (existing !== null) {
+    if (
+      existing.code !== input.prepared.code ||
+      existing.rejectionFingerprint !== input.prepared.rejectionFingerprint ||
+      existing.selectedSuccessorProofIds.length !== 0
+    ) {
+      throw new Error('custody terminal mint rejection retry conflicts with persisted authority')
+    }
+    assertDurableCustodyArtifactMatchesReference(
+      existing.exactRejection,
+      input.prepared.exactRejection,
+    )
+    return
+  }
+  if (current.revision !== input.record.revision) {
+    throw new Error('custody terminal mint rejection operation revision is stale')
+  }
+  const reconcile = input.transaction.reconcileAuthenticatedTerminalMintRejection
+  if (reconcile === undefined) {
+    throw new Error('custody adapter does not support terminal mint rejection')
+  }
+  reconcile({
+    operationId,
+    expectedRevision: current.revision,
+    authorization: input.authorization,
+    rejectionHandle: `mint-terminal-rejection:${input.prepared.rejectionFingerprint}`,
+    rejectionFingerprint: input.prepared.rejectionFingerprint,
+    exactRejection: input.prepared.exactRejection,
+    code: input.prepared.code,
+    predecessorDisposition: 'retain',
+  })
+}
+
+export function readDurableCustodyAuthenticatedTerminalMintRejection(input: {
+  readonly record: DurableCustodyRecord
+  readonly exactRejection: DurableCustodyExactArtifact
+}): DurableCustodyAuthenticatedTerminalMintRejectionAuthority {
+  const persisted = input.record.operation.terminalMintRejection
+  if (persisted === null) throw new Error('custody terminal mint rejection authority is absent')
+  assertDurableCustodyArtifactMatchesReference(persisted.exactRejection, input.exactRejection)
+  const authority = decodeAuthenticatedTerminalMintRejection(input.exactRejection.artifact)
+  if (
+    authority.operationId !== input.record.operation.operationId ||
+    authority.transportOperationId !== input.record.operation.retainedOperationKey ||
+    authority.normalizedMint !== input.record.operation.custodyContext.normalizedMint ||
+    authority.requestFingerprint !== input.record.operation.exactRequest.requestFingerprint ||
+    authority.code !== persisted.code
+  ) {
+    throw new Error('custody terminal mint rejection authority is foreign')
+  }
+  return authority
 }
 
 export function assertDurableCustodyMintOperationAuthority(
@@ -393,6 +527,68 @@ function assertMintOperationRecord(
   }
 }
 
+function assertPreparedTerminalMintRejection(
+  prepared: DurableCustodyPreparedAuthenticatedTerminalMintRejection,
+): void {
+  if (
+    prepared[authenticatedTerminalMintRejectionBrand] !== true ||
+    prepared.code !== ORACLE_NOT_ATTESTED_OUTCOME_CODE ||
+    prepared.exactRejection.fingerprint !== prepared.rejectionFingerprint
+  ) {
+    throw new Error('custody prepared terminal mint rejection is inconsistent')
+  }
+  const authority = decodeAuthenticatedTerminalMintRejection(prepared.exactRejection.artifact)
+  if (JSON.stringify(authority) !== JSON.stringify(prepared.authority)) {
+    throw new Error('custody prepared terminal mint rejection authority is foreign')
+  }
+}
+
+function decodeAuthenticatedTerminalMintRejection(
+  value: unknown,
+): DurableCustodyAuthenticatedTerminalMintRejectionAuthority {
+  if (!isRecord(value)) throw new Error('custody terminal mint rejection is invalid')
+  exactKeys(value, [
+    'schemaVersion',
+    'kind',
+    'operationId',
+    'semanticKind',
+    'normalizedMint',
+    'requestFingerprint',
+    'code',
+    'transportProvenance',
+    'transportOperationId',
+    'rejectionBody',
+    'predecessorDisposition',
+    'selectedSuccessorProofIds',
+  ])
+  if (
+    value.schemaVersion !== 1 ||
+    value.kind !== 'authenticated-terminal-mint-rejection' ||
+    value.semanticKind !== 'ctf-redeem' ||
+    value.code !== ORACLE_NOT_ATTESTED_OUTCOME_CODE ||
+    value.transportProvenance !== 'authenticated-mint-transport' ||
+    typeof value.transportOperationId !== 'string' ||
+    value.transportOperationId.length === 0 ||
+    !isRecord(value.rejectionBody) ||
+    value.rejectionBody.code !== ORACLE_NOT_ATTESTED_OUTCOME_CODE ||
+    Object.keys(value.rejectionBody).length !== 1 ||
+    value.predecessorDisposition !== 'retain' ||
+    typeof value.operationId !== 'string' ||
+    value.operationId.length === 0 ||
+    typeof value.normalizedMint !== 'string' ||
+    value.normalizedMint.length === 0 ||
+    typeof value.requestFingerprint !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(value.requestFingerprint) ||
+    !Array.isArray(value.selectedSuccessorProofIds) ||
+    value.selectedSuccessorProofIds.length !== 0
+  ) {
+    throw new Error('custody terminal mint rejection is invalid')
+  }
+  return structuredClone(
+    value,
+  ) as unknown as DurableCustodyAuthenticatedTerminalMintRejectionAuthority
+}
+
 function canonicalResult(result: Readonly<Record<string, readonly Proof[]>>) {
   return Object.fromEntries(
     Object.entries(result).map(([group, proofs]) => [
@@ -427,6 +623,7 @@ function assertSupportedOperation(operation: DurableCustodyProofOperationInput):
       operation.kind !== 'wallet-receive' &&
       operation.kind !== 'conditional-keyset-swap' &&
       operation.kind !== 'ctf-split' &&
+      operation.kind !== 'ctf-redeem' &&
       operation.kind !== 'ctf-range-refund') ||
     operation.inputs.length === 0 ||
     Object.values(operation.outputs).every((outputs) => outputs.length === 0)

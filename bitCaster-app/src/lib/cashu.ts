@@ -45,6 +45,7 @@ import {
 } from "@bitcaster/client-sdk/ctfSplit";
 import {
   buildKeysetRedeemOperationId,
+  readAuthenticatedCtfRedeemTerminalEvidence,
   redeemOutcomeLegWithOperation,
 } from "@bitcaster/client-sdk/ctfRedeem";
 import {
@@ -1226,9 +1227,10 @@ function ctfRedeemProofOperationStore(): CtfProofOperationStore {
       (await prepareProofOperation(input)) as CtfProofOperationRecord,
     markProofOperationCompleted: async (operationId, completion) =>
       (await markProofOperationCompleted(operationId, completion)) as CtfProofOperationRecord,
-    markProofOperationFailed: async (operationId, message, failureCode) => {
-      const error = new Error(message) as Error & { code?: number };
-      error.code = failureCode;
+    markProofOperationFailed: async (operationId, message, terminalEvidence) => {
+      const evidence = readAuthenticatedCtfRedeemTerminalEvidence(terminalEvidence);
+      const error = new Error(message) as Error & { code: number };
+      error.code = evidence.rejectionBody.code;
       return (await markProofOperationFailed(operationId, error)) as CtfProofOperationRecord;
     },
   };

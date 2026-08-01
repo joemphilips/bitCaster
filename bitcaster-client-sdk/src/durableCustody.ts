@@ -118,6 +118,29 @@ export interface DurableCustodySuccessorAdmissionEvidence {
     admittedRevision: number
   }>
 }
+export interface DurableCustodyAuthenticatedTerminalMintRejectionAuthority {
+  schemaVersion: 1
+  kind: 'authenticated-terminal-mint-rejection'
+  operationId: string
+  semanticKind: 'ctf-redeem'
+  normalizedMint: string
+  requestFingerprint: string
+  code: 13015
+  transportProvenance: 'authenticated-mint-transport'
+  transportOperationId: string
+  rejectionBody: { code: 13015 }
+  predecessorDisposition: 'retain'
+  selectedSuccessorProofIds: []
+}
+export interface DurableCustodyTerminalMintRejection {
+  kind: 'authenticated-terminal-mint-rejection'
+  code: 13015
+  rejectionHandle: string
+  rejectionFingerprint: string
+  exactRejection: DurableCustodyArtifactReference
+  predecessorDisposition: 'retain'
+  selectedSuccessorProofIds: []
+}
 export type DurableCustodyStorageClass =
   | 'pinned-operation-bound-deterministic'
   | 'terminal-replay-retained'
@@ -224,6 +247,7 @@ export interface DurableCustodyRecord {
       outputPlanFingerprint: string | null
       exactResult: DurableCustodyArtifactReference | null
     }
+    terminalMintRejection: DurableCustodyTerminalMintRejection | null
     proofStorage: DurableCustodyProofStorageAuthority
     delivery:
       | {
@@ -330,6 +354,16 @@ export type DurableCustodyTransition =
       successorAdmission: DurableCustodySuccessorAdmissionEvidence
     }
   | {
+      kind: 'reconcile-authenticated-terminal-mint-rejection'
+      authorization: DurableCustodyOwnerAuthorization
+      expectedRevision: number
+      rejectionHandle: string
+      rejectionFingerprint: string
+      exactRejection: DurableCustodyExactArtifact
+      code: 13015
+      predecessorDisposition: 'retain'
+    }
+  | {
       kind: 'abort'
       authorization: DurableCustodyOwnerAuthorization
       expectedRevision: number
@@ -422,6 +456,20 @@ export interface DurableCustodyTransaction {
     resultHandle: string
     resultFingerprint: string
     successorAdmission: DurableCustodySuccessorAdmissionEvidence
+  }): void
+  reconcileAuthenticatedTerminalMintRejection?(input: {
+    /**
+     * Adapter capability: CAS the operation, persist the exact rejection, and
+     * terminally condemn every reserved predecessor in one transaction.
+     */
+    operationId: string
+    expectedRevision: number
+    authorization: DurableCustodyOwnerAuthorization
+    rejectionHandle: string
+    rejectionFingerprint: string
+    exactRejection: DurableCustodyExactArtifact
+    code: 13015
+    predecessorDisposition: 'retain'
   }): void
   rebuildActiveWorkIndex(input: {
     /** Nonempty exact subset of the enclosing transaction selection. */
@@ -884,6 +932,7 @@ export function createDurableCustodyDispatchIntent(input: {
         outputPlanFingerprint: null,
         exactResult: null,
       },
+      terminalMintRejection: null,
       proofStorage: {
         storageClass: 'pinned-operation-bound-deterministic',
         pinReasons: ['active-reservation'],
@@ -945,6 +994,7 @@ export function decodeDurableCustodyRecord(value: unknown): DurableCustodyRecord
     'outputPlan',
     'privateMaterial',
     'result',
+    'terminalMintRejection',
     'proofStorage',
     'delivery',
     'verification',
@@ -1220,6 +1270,21 @@ export function applyDurableCustodyTransaction<T>(
       )
       transaction.applyVerifiedResult(input)
     },
+    reconcileAuthenticatedTerminalMintRejection(input) {
+      const record = requireSelected(input.operationId, input.expectedRevision)
+      requireOwner(input.authorization)
+      if (record === null) {
+        throw new Error('custody terminal mint rejection operation is absent')
+      }
+      if (input.predecessorDisposition !== 'retain') {
+        throw new Error('custody terminal mint rejection predecessor disposition is invalid')
+      }
+      const reconcile = transaction.reconcileAuthenticatedTerminalMintRejection
+      if (reconcile === undefined) {
+        throw new Error('custody adapter does not support terminal mint rejection')
+      }
+      reconcile(input)
+    },
     rebuildActiveWorkIndex(input) {
       const operationIds = new Set(input.operationRows.map(({ operationId }) => operationId))
       if (
@@ -1414,6 +1479,45 @@ export function reduceDurableCustodyState(
       operation.operation.proofStorage.lineage.successorAdmission = structuredClone(
         transition.successorAdmission,
       )
+      break
+    case 'reconcile-authenticated-terminal-mint-rejection':
+      if (
+        (operation.operation.state !== 'dispatch-intent' &&
+          operation.operation.state !== 'transport-attempted') ||
+        operation.operation.result.state !== 'none' ||
+        operation.operation.terminalMintRejection !== null
+      ) {
+        throw new Error('custody terminal mint rejection transition is invalid')
+      }
+      validateAuthenticatedTerminalMintRejectionAuthority(
+        transition.exactRejection,
+        operation,
+        transition.code,
+        transition.predecessorDisposition,
+      )
+      if (transition.exactRejection.fingerprint !== transition.rejectionFingerprint) {
+        throw new Error('custody terminal mint rejection body is foreign')
+      }
+      requireText(transition.rejectionHandle, 'terminal mint rejection handle')
+      operation.operation.state = 'aborted'
+      operation.operation.terminalMintRejection = {
+        kind: 'authenticated-terminal-mint-rejection',
+        code: transition.code,
+        rejectionHandle: transition.rejectionHandle,
+        rejectionFingerprint: transition.rejectionFingerprint,
+        exactRejection: createDurableCustodyArtifactReference(
+          `artifact:${operation.operation.operationId}:terminal-mint-rejection`,
+          transition.exactRejection,
+        ),
+        predecessorDisposition: transition.predecessorDisposition,
+        selectedSuccessorProofIds: [],
+      }
+      operation.operation.retry = {
+        attempt: 0,
+        nextAttemptAtMs: null,
+        reason: 'none',
+      }
+      setStoragePins(operation, [])
       break
     case 'abort':
       if (operation.operation.state !== 'dispatch-intent') {
@@ -1832,6 +1936,7 @@ function validateOperationDetails(
   ) {
     throw new Error('custody result body is not exact')
   }
+  validateTerminalMintRejection(operation.terminalMintRejection, operation, scope)
   validateProofStorage(operation.proofStorage, operation, scope)
   validateDelivery(operation.delivery)
   validateVerification(operation.verification, outputPlan.outputPlanFingerprint)
@@ -1969,6 +2074,9 @@ export function durableCustodyArtifactReferences(
     record.operation.outputPlan.exactOutput,
     record.operation.privateMaterial.exactPrivateMaterial,
     ...(record.operation.result.exactResult === null ? [] : [record.operation.result.exactResult]),
+    ...(record.operation.terminalMintRejection === null
+      ? []
+      : [record.operation.terminalMintRejection.exactRejection]),
     ...(record.operation.delivery.deliveryKind === 'outbox'
       ? [record.operation.delivery.exactPayload]
       : []),
@@ -2310,6 +2418,88 @@ function validateDelivery(value: unknown): void {
   }
 }
 
+function validateTerminalMintRejection(
+  value: unknown,
+  operation: Record<string, unknown>,
+  _scope: DurableCustodyScope,
+): void {
+  if (value === null) return
+  if (!isRecord(value)) throw new Error('custody terminal mint rejection is invalid')
+  exactKeys(value, [
+    'kind',
+    'code',
+    'rejectionHandle',
+    'rejectionFingerprint',
+    'exactRejection',
+    'predecessorDisposition',
+    'selectedSuccessorProofIds',
+  ])
+  if (
+    value.kind !== 'authenticated-terminal-mint-rejection' ||
+    value.code !== 13015 ||
+    operation.semanticKind !== 'ctf-redeem' ||
+    operation.state !== 'aborted' ||
+    value.predecessorDisposition !== 'retain' ||
+    !Array.isArray(value.selectedSuccessorProofIds) ||
+    value.selectedSuccessorProofIds.length !== 0
+  ) {
+    throw new Error('custody terminal mint rejection authority is invalid')
+  }
+  requireText(value.rejectionHandle, 'terminal mint rejection handle')
+  requireFingerprint(value.rejectionFingerprint, 'terminal mint rejection fingerprint')
+  validateArtifactReference(value.exactRejection)
+  if (value.exactRejection.fingerprint !== value.rejectionFingerprint) {
+    throw new Error('custody terminal mint rejection reference is foreign')
+  }
+}
+
+function validateAuthenticatedTerminalMintRejectionAuthority(
+  exactRejection: DurableCustodyExactArtifact,
+  record: DurableCustodyRecord,
+  code: 13015,
+  predecessorDisposition: 'retain',
+): void {
+  validateExactArtifact(exactRejection)
+  const value = exactRejection.artifact
+  if (!isRecord(value)) throw new Error('custody terminal mint rejection body is invalid')
+  exactKeys(value, [
+    'schemaVersion',
+    'kind',
+    'operationId',
+    'semanticKind',
+    'normalizedMint',
+    'requestFingerprint',
+    'code',
+    'transportProvenance',
+    'transportOperationId',
+    'rejectionBody',
+    'predecessorDisposition',
+    'selectedSuccessorProofIds',
+  ])
+  if (
+    value.schemaVersion !== 1 ||
+    value.kind !== 'authenticated-terminal-mint-rejection' ||
+    value.operationId !== record.operation.operationId ||
+    value.semanticKind !== 'ctf-redeem' ||
+    record.operation.semanticKind !== 'ctf-redeem' ||
+    value.normalizedMint !== record.operation.custodyContext.normalizedMint ||
+    value.requestFingerprint !== record.operation.exactRequest.requestFingerprint ||
+    value.code !== 13015 ||
+    value.transportProvenance !== 'authenticated-mint-transport' ||
+    value.transportOperationId !== record.operation.retainedOperationKey ||
+    !isRecord(value.rejectionBody) ||
+    value.rejectionBody.code !== 13015 ||
+    Object.keys(value.rejectionBody).length !== 1 ||
+    value.predecessorDisposition !== 'retain' ||
+    code !== 13015 ||
+    predecessorDisposition !== 'retain' ||
+    !Array.isArray(value.selectedSuccessorProofIds) ||
+    value.selectedSuccessorProofIds.length !== 0
+  ) {
+    throw new Error('custody terminal mint rejection body is foreign')
+  }
+}
+
 function validateTerminalTombstone(value: unknown, operation: Record<string, unknown>): void {
   if (value === null) return
   if (!isRecord(value)) throw new Error('custody terminal tombstone is invalid')
@@ -2340,6 +2530,7 @@ function validateLifecycleCoherence(operation: Record<string, unknown>): void {
     string,
     unknown
   >
+  const terminalMintRejection = operation.terminalMintRejection
   if (
     (operation.state === 'reconciled') !== (result.state === 'applied') ||
     (operation.state === 'reconciled') !== (lineage.successorAdmission !== null) ||
@@ -2347,6 +2538,17 @@ function validateLifecycleCoherence(operation: Record<string, unknown>): void {
       (result.state !== 'none' || delivery.deliveryKind !== 'none' || retry.reason !== 'none'))
   ) {
     throw new Error('custody operation lifecycle is incoherent')
+  }
+  if (
+    terminalMintRejection !== null &&
+    (operation.state !== 'aborted' ||
+      result.state !== 'none' ||
+      lineage.selectedSuccessorProofIds !== null ||
+      lineage.successorAdmission !== null ||
+      delivery.deliveryKind !== 'none' ||
+      retry.reason !== 'none')
+  ) {
+    throw new Error('custody terminal mint rejection lifecycle is incoherent')
   }
   const reserved = (reservation.inputs as Array<Record<string, unknown>>).map(
     ({ proofId }) => proofId,

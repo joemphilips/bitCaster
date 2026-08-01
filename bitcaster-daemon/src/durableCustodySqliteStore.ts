@@ -465,6 +465,7 @@ export class DurableCustodySqliteStore {
               ? null
               : this.#artifactReference(row.scopeId, row.resultArtifactId),
         },
+        terminalMintRejection: null,
         proofStorage: {
           storageClass: row.proofStorageClass,
           pinReasons: this.#pinReasons(row.scopeId, operationId),

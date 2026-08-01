@@ -37,6 +37,46 @@ import {
  */
 export const ORACLE_NOT_ATTESTED_OUTCOME_CODE = 13015
 
+const authenticatedCtfRedeemTerminalEvidenceBrand: unique symbol = Symbol(
+  'authenticated CTF redeem terminal evidence',
+)
+
+export interface AuthenticatedCtfRedeemTerminalEvidence {
+  readonly [authenticatedCtfRedeemTerminalEvidenceBrand]: true
+  readonly transportProvenance: 'authenticated-mint-transport'
+  readonly operationId: string
+  readonly normalizedMint: string
+  readonly rejectionBody: { readonly code: typeof ORACLE_NOT_ATTESTED_OUTCOME_CODE }
+}
+
+export function readAuthenticatedCtfRedeemTerminalEvidence(
+  evidence: AuthenticatedCtfRedeemTerminalEvidence,
+): {
+  transportProvenance: 'authenticated-mint-transport'
+  operationId: string
+  normalizedMint: string
+  rejectionBody: { code: typeof ORACLE_NOT_ATTESTED_OUTCOME_CODE }
+} {
+  if (
+    evidence?.[authenticatedCtfRedeemTerminalEvidenceBrand] !== true ||
+    evidence.transportProvenance !== 'authenticated-mint-transport' ||
+    typeof evidence.operationId !== 'string' ||
+    evidence.operationId.length === 0 ||
+    evidence.normalizedMint !== canonicalProofOperationMintIdentity(evidence.normalizedMint) ||
+    evidence.rejectionBody?.code !== ORACLE_NOT_ATTESTED_OUTCOME_CODE ||
+    Object.keys(evidence).length !== 4 ||
+    Object.keys(evidence.rejectionBody).length !== 1
+  ) {
+    throw new Error('authenticated CTF redeem terminal evidence is invalid')
+  }
+  return {
+    transportProvenance: evidence.transportProvenance,
+    operationId: evidence.operationId,
+    normalizedMint: evidence.normalizedMint,
+    rejectionBody: { code: evidence.rejectionBody.code },
+  }
+}
+
 export interface RedeemWallet {
   loadMint(): Promise<void>
   mint?: {
@@ -127,6 +167,7 @@ export async function redeemOutcomeLegWithOperation(params: {
   })
 
   return executeCtfRedeem({
+    mintUrl: params.mintUrl,
     wallet: params.wallet,
     proofOperationStore: params.proofOperationStore,
     operationId: params.operationId,
@@ -205,10 +246,7 @@ function requireMatchingCtfRedeemOperation(
     conditionId: requireText(metadata.conditionId, 'stored CTF redeem conditionId').toLowerCase(),
     outcome: requireText(metadata.outcome, 'stored CTF redeem outcome'),
     outcomeKeysetId: requireText(storedOutcomeKeysetId, 'stored CTF redeem outcome keyset'),
-    regularKeysetId: requireText(
-      storedRegularKeysetId,
-      'stored CTF redeem regular keyset',
-    ),
+    regularKeysetId: requireText(storedRegularKeysetId, 'stored CTF redeem regular keyset'),
     unit: requireText(metadata.unit, 'stored CTF redeem unit'),
     amountSubunits: requirePositiveSafeInteger(
       metadata.amountSubunits,
@@ -286,7 +324,7 @@ async function resumeCtfRedeem(params: {
     }
   }
   if (entry.state === 'Failed') {
-    if (entry.failureCode === undefined || entry.failureCode === ORACLE_NOT_ATTESTED_OUTCOME_CODE) {
+    if (entry.failureCode === ORACLE_NOT_ATTESTED_OUTCOME_CODE) {
       return { proofs: [], losing: true }
     }
     throw new Error(
@@ -315,6 +353,7 @@ async function resumeCtfRedeem(params: {
       throw new Error(`proof operation ${entry.operationId} has no redeem outputs`)
     }
     return executeCtfRedeem({
+      mintUrl: params.mintUrl,
       wallet: params.wallet,
       proofOperationStore: params.proofOperationStore,
       operationId: entry.operationId,
@@ -329,6 +368,7 @@ async function resumeCtfRedeem(params: {
 }
 
 async function executeCtfRedeem(params: {
+  mintUrl: string
   wallet: RedeemWallet
   proofOperationStore: CtfProofOperationStore
   operationId: string
@@ -357,12 +397,29 @@ async function executeCtfRedeem(params: {
       await params.proofOperationStore.markProofOperationFailed(
         params.operationId,
         'losing leg: mint returned OracleNotAttestedOutcome (13015)',
-        ORACLE_NOT_ATTESTED_OUTCOME_CODE,
+        captureAuthenticatedCtfRedeemTerminalEvidence(error, params.operationId, params.mintUrl),
       )
       return { proofs: [], losing: true }
     }
     throw error
   }
+}
+
+function captureAuthenticatedCtfRedeemTerminalEvidence(
+  error: unknown,
+  operationId: string,
+  mintUrl: string,
+): AuthenticatedCtfRedeemTerminalEvidence {
+  if (!isLosingLegError(error)) {
+    throw new Error('CTF redeem error is not an authenticated terminal rejection')
+  }
+  return Object.freeze({
+    [authenticatedCtfRedeemTerminalEvidenceBrand]: true as const,
+    transportProvenance: 'authenticated-mint-transport' as const,
+    operationId,
+    normalizedMint: canonicalProofOperationMintIdentity(mintUrl),
+    rejectionBody: Object.freeze({ code: ORACLE_NOT_ATTESTED_OUTCOME_CODE }),
+  })
 }
 
 function withOracleWitness(proofs: Proof[], witnessJson: string): Proof[] {

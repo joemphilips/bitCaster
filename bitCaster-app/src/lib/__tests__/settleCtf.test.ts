@@ -62,9 +62,7 @@ vi.mock("@/stores/proof-db", () => {
     markProofOperationCompleted: vi.fn(async (operationId: string, completion: any) => {
       const existing = proofDbState.operations.get(operationId);
       const resultProofs =
-        completion &&
-        typeof completion === "object" &&
-        "resultProofs" in completion
+        completion && typeof completion === "object" && "resultProofs" in completion
           ? completion.resultProofs
           : completion;
       const updated = { ...existing, state: "completed", resultProofs };
@@ -487,7 +485,7 @@ describe("settleCtfPosition — per-keyset redeem", () => {
     expect(cashuState.redeemCalls).toHaveLength(0);
   });
 
-  it("preserves legacy failed CTF redeem behavior when no failure code was stored", async () => {
+  it("rejects a failed CTF redeem when exact terminal code authority is absent", async () => {
     mockAttestation("A");
     const { settleCtfPosition } = await import("@/lib/cashu");
 
@@ -520,16 +518,17 @@ describe("settleCtfPosition — per-keyset redeem", () => {
       updatedAt: Date.now(),
     });
 
-    const result = await settleCtfPosition({
-      conditionId: CONDITION_ID,
-      amountSats: 100,
-      proofs: [proof],
-      mintUrl: "http://mint.test",
-      baseAsset: "sat",
-    });
+    await expect(
+      settleCtfPosition({
+        conditionId: CONDITION_ID,
+        amountSats: 100,
+        proofs: [proof],
+        mintUrl: "http://mint.test",
+        baseAsset: "sat",
+      }),
+    ).rejects.toThrow(/non-losing failure code unknown/);
 
-    expect(result).toEqual([]);
-    expect(proofDbState.removedSecrets).toEqual(["sA"]);
+    expect(proofDbState.removedSecrets).toEqual([]);
   });
 
   it('singular "A" maker claim still redeems the single keyset', async () => {

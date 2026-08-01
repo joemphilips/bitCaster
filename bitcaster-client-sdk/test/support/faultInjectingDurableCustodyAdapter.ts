@@ -115,6 +115,25 @@ function createTransaction(
       draft.admittedProofIds = input.successorAdmission.proofRows.map(({ proofId }) => proofId)
       trip('apply-result')
     },
+    reconcileAuthenticatedTerminalMintRejection: (input) => {
+      applyTransition(draft, {
+        kind: 'reconcile-authenticated-terminal-mint-rejection',
+        authorization: input.authorization,
+        expectedRevision: input.expectedRevision,
+        rejectionHandle: input.rejectionHandle,
+        rejectionFingerprint: input.rejectionFingerprint,
+        exactRejection: input.exactRejection,
+        code: input.code,
+        predecessorDisposition: input.predecessorDisposition,
+      })
+      const reference = draft.operation!.operation.terminalMintRejection!.exactRejection
+      draft.artifacts.set(reference.artifactId, {
+        reference,
+        artifact: structuredClone(input.exactRejection),
+        revision: 0,
+      })
+      trip('reconcile-terminal-mint-rejection')
+    },
     rebuildActiveWorkIndex: () => trip('rebuild-index'),
   }
 }

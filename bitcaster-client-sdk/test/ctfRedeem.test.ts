@@ -6,7 +6,9 @@ import {
   getActiveRegularKeyset,
   isLosingLegError,
   ORACLE_NOT_ATTESTED_OUTCOME_CODE,
+  readAuthenticatedCtfRedeemTerminalEvidence,
   redeemOutcomeLegWithOperation,
+  type AuthenticatedCtfRedeemTerminalEvidence,
   type RedeemWallet,
 } from '../src/ctfRedeem.ts'
 import type {
@@ -118,6 +120,15 @@ test('redeemOutcomeLegWithOperation terminally records losing legs', async () =>
   const entry = await store.getProofOperation('redeem:losing')
   assert.equal(entry?.state, 'Failed')
   assert.equal(entry?.failureCode, ORACLE_NOT_ATTESTED_OUTCOME_CODE)
+  assert.deepEqual(
+    readAuthenticatedCtfRedeemTerminalEvidence(store.terminalEvidence.get('redeem:losing')!),
+    {
+      transportProvenance: 'authenticated-mint-transport',
+      operationId: 'redeem:losing',
+      normalizedMint: 'https://mint.example',
+      rejectionBody: { code: ORACLE_NOT_ATTESTED_OUTCOME_CODE },
+    },
+  )
 })
 
 test('redeemOutcomeLegWithOperation restores outputs when prepared inputs are spent', async () => {
@@ -139,6 +150,8 @@ test('redeemOutcomeLegWithOperation restores outputs when prepared inputs are sp
     regularKeyset: regularKeyset(),
     restoreOutputGroups: async () => ({}),
   }).catch(() => undefined)
+  assert.equal(store.terminalEvidence.has('redeem:restore'), false)
+  assert.equal((await store.getProofOperation('redeem:restore'))?.state, 'prepared')
 
   const result = await redeemOutcomeLegWithOperation({
     mintUrl: 'https://mint.example',
@@ -272,7 +285,12 @@ test('redeemOutcomeLegWithOperation refuses non-losing failed records', async ()
       amountSubunits: 1,
     },
   })
-  await store.markProofOperationFailed?.('redeem:failed', 'boom', 999)
+  store.records.set('redeem:failed', {
+    ...(await store.getProofOperation('redeem:failed'))!,
+    state: 'Failed',
+    lastError: 'boom',
+    failureCode: 999,
+  })
 
   await assert.rejects(
     () =>
@@ -347,6 +365,7 @@ class FakeRedeemWallet implements RedeemWallet {
 
 class MemoryProofOperationStore implements CtfProofOperationStore {
   readonly records = new Map<string, CtfProofOperationRecord>()
+  readonly terminalEvidence = new Map<string, AuthenticatedCtfRedeemTerminalEvidence>()
 
   async getProofOperation(operationId: string): Promise<CtfProofOperationRecord | null> {
     return this.records.get(operationId) ?? null
@@ -387,7 +406,7 @@ class MemoryProofOperationStore implements CtfProofOperationStore {
   async markProofOperationFailed(
     operationId: string,
     message: string,
-    failureCode?: number,
+    terminalEvidence: AuthenticatedCtfRedeemTerminalEvidence,
   ): Promise<CtfProofOperationRecord> {
     const existing = this.records.get(operationId)
     if (!existing) throw new Error(`missing operation ${operationId}`)
@@ -395,10 +414,11 @@ class MemoryProofOperationStore implements CtfProofOperationStore {
       ...existing,
       state: 'Failed',
       lastError: message,
-      failureCode,
+      failureCode: readAuthenticatedCtfRedeemTerminalEvidence(terminalEvidence).rejectionBody.code,
       updatedAt: existing.updatedAt + 1,
     }
     this.records.set(operationId, failed)
+    this.terminalEvidence.set(operationId, terminalEvidence)
     return failed
   }
 }

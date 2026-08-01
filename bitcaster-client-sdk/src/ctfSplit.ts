@@ -52,6 +52,7 @@ export {
 } from './ctfProofOperationAuthority.ts'
 export type { CtfProofOperationCompletion } from './ctfProofOperationAuthority.ts'
 import type { CtfProofOperationCompletion } from './ctfProofOperationAuthority.ts'
+import type { AuthenticatedCtfRedeemTerminalEvidence } from './ctfRedeem.ts'
 
 const ROOT_PARENT_COLLECTION_ID = '0'.repeat(64)
 
@@ -137,7 +138,7 @@ export interface CtfProofOperationStore {
   markProofOperationFailed?(
     operationId: string,
     message: string,
-    failureCode?: number,
+    terminalEvidence: AuthenticatedCtfRedeemTerminalEvidence,
   ): Promise<CtfProofOperationRecord>
 }
 
