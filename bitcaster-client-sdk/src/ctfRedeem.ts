@@ -18,7 +18,10 @@ import {
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
 } from './ctfSplit.ts'
-import { DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX } from './durableCustody.ts'
+import {
+  DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX,
+  DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+} from './durableCustody.ts'
 import { amountToNumber } from './proofSelection.ts'
 import {
   canonicalProofOperationMintIdentity,
@@ -91,12 +94,7 @@ export interface RedeemOutcomeLegResult {
   losing: boolean
 }
 
-export type RestoreOutputGroups = (
-  mintUrl: string,
-  outputs: CtfProofOperationRecord['outputs'],
-) => Promise<Record<string, Proof[]>>
-
-export async function redeemOutcomeLegWithOperation(params: {
+interface RedeemOutcomeLegWithOperationParams {
   mintUrl: string
   operationId: string
   wallet: RedeemWallet
@@ -110,8 +108,18 @@ export async function redeemOutcomeLegWithOperation(params: {
   regularKeyset?: MintKeys
   restoreOutputGroups?: RestoreOutputGroups
   onLosingLeg?: (inputs: Proof[]) => Promise<void>
-}): Promise<RedeemOutcomeLegResult> {
+}
+
+export type RestoreOutputGroups = (
+  mintUrl: string,
+  outputs: CtfProofOperationRecord['outputs'],
+) => Promise<Record<string, Proof[]>>
+
+export async function redeemOutcomeLegWithOperation(
+  params: RedeemOutcomeLegWithOperationParams,
+): Promise<RedeemOutcomeLegResult> {
   if (params.proofs.length === 0) return { proofs: [], losing: false }
+  requireBoundedOracleWitness(params.oracleWitness)
   if (params.proofs.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX) {
     throw new Error('CTF redeem input proof limit exceeded')
   }
@@ -121,31 +129,49 @@ export async function redeemOutcomeLegWithOperation(params: {
     throw new Error('CTF redeem inputs must have a positive safe-integer total')
   }
 
-  await params.wallet.loadMint()
   const existing = await params.proofOperationStore.getProofOperation(params.operationId)
   if (existing) {
-    requireMatchingCtfRedeemOperation(existing, {
-      operationId: params.operationId,
-      mintUrl: params.mintUrl,
-      conditionId: params.conditionId,
-      outcome: params.outcome,
-      outcomeKeysetId: params.outcomeKeysetId,
-      regularKeysetId: params.regularKeyset?.id,
-      unit: params.unit,
-      amountSubunits,
-      inputs,
-    })
-    return resumeCtfRedeem({
-      mintUrl: params.mintUrl,
-      wallet: params.wallet,
-      proofOperationStore: params.proofOperationStore,
-      oracleWitness: params.oracleWitness,
-      onLosingLeg: params.onLosingLeg,
-      entry: existing,
-      restoreOutputGroups: params.restoreOutputGroups ?? defaultRestoreOutputGroups,
-    })
+    return resumeExistingCtfRedeem(params, existing, inputs, amountSubunits)
   }
 
+  return prepareAndExecuteCtfRedeem(params, inputs, amountSubunits)
+}
+
+async function resumeExistingCtfRedeem(
+  params: RedeemOutcomeLegWithOperationParams,
+  existing: CtfProofOperationRecord,
+  inputs: Proof[],
+  amountSubunits: number,
+): Promise<RedeemOutcomeLegResult> {
+  const persistedOracleWitness = requireMatchingCtfRedeemOperation(existing, {
+    operationId: params.operationId,
+    mintUrl: params.mintUrl,
+    conditionId: params.conditionId,
+    outcome: params.outcome,
+    outcomeKeysetId: params.outcomeKeysetId,
+    regularKeysetId: params.regularKeyset?.id,
+    unit: params.unit,
+    amountSubunits,
+    inputs,
+    oracleWitness: params.oracleWitness,
+  })
+  return resumeCtfRedeem({
+    mintUrl: params.mintUrl,
+    wallet: params.wallet,
+    proofOperationStore: params.proofOperationStore,
+    oracleWitness: persistedOracleWitness,
+    onLosingLeg: params.onLosingLeg,
+    entry: existing,
+    restoreOutputGroups: params.restoreOutputGroups ?? defaultRestoreOutputGroups,
+  })
+}
+
+async function prepareAndExecuteCtfRedeem(
+  params: RedeemOutcomeLegWithOperationParams,
+  inputs: Proof[],
+  amountSubunits: number,
+): Promise<RedeemOutcomeLegResult> {
+  await params.wallet.loadMint()
   const regularKeyset =
     params.regularKeyset ?? (await getActiveRegularKeyset(params.wallet, params.unit))
   const outputData = OutputData.createRandomData(Amount.from(amountSubunits), regularKeyset)
@@ -163,6 +189,7 @@ export async function redeemOutcomeLegWithOperation(params: {
       outcomeKeysetId: params.outcomeKeysetId ?? inputs[0]!.id,
       regularKeysetId: regularKeyset.id,
       unit: params.unit,
+      oracleWitness: params.oracleWitness,
     },
   })
 
@@ -226,8 +253,9 @@ function requireMatchingCtfRedeemOperation(
     unit: string
     amountSubunits: number
     inputs: Proof[]
+    oracleWitness: string
   },
-): void {
+): string {
   if (entry.kind !== 'ctf-redeem') {
     throw new Error(`proof operation ${entry.operationId} is not a CTF redeem`)
   }
@@ -239,6 +267,7 @@ function requireMatchingCtfRedeemOperation(
     typeof metadata.outcomeKeysetId === 'string' ? metadata.outcomeKeysetId : null
   const storedRegularKeysetId =
     typeof metadata.regularKeysetId === 'string' ? metadata.regularKeysetId : null
+  const storedOracleWitness = requireBoundedOracleWitness(metadata.oracleWitness)
   const storedAuthority = {
     operationId: entry.operationId,
     kind: entry.kind,
@@ -252,6 +281,7 @@ function requireMatchingCtfRedeemOperation(
       metadata.amountSubunits,
       'stored CTF redeem amountSubunits',
     ),
+    oracleWitness: storedOracleWitness,
     inputs: canonicalRedeemInputAuthority(entry.inputs),
   }
   const requestAuthority = {
@@ -264,9 +294,11 @@ function requireMatchingCtfRedeemOperation(
     regularKeysetId: request.regularKeysetId ?? storedRegularKeysetId,
     unit: request.unit,
     amountSubunits: request.amountSubunits,
+    oracleWitness: request.oracleWitness,
     inputs: canonicalRedeemInputAuthority(request.inputs),
   }
   requireSameOperationAuthority(storedAuthority, requestAuthority, entry.operationId)
+  return storedOracleWitness
 }
 
 function canonicalRedeemInputAuthority(proofs: readonly Proof[]): Record<string, unknown>[] {
@@ -294,6 +326,14 @@ function requirePositiveSafeInteger(value: unknown, context: string): number {
   return value as number
 }
 
+function requireBoundedOracleWitness(value: unknown): string {
+  const witness = requireText(value, 'CTF redeem oracle witness')
+  if (new TextEncoder().encode(witness).length > DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX) {
+    throw new Error('CTF redeem oracle witness record byte limit exceeded')
+  }
+  return witness
+}
+
 export function isLosingLegError(error: unknown): boolean {
   if (error && typeof error === 'object') {
     const e = error as { code?: unknown }
@@ -319,7 +359,7 @@ async function resumeCtfRedeem(params: {
   }
   if (entry.state === 'completed') {
     return {
-      proofs: normalizeProofArray(entry.resultProofs?.regular ?? []),
+      proofs: requireCompletedCtfRedeemProofs(entry),
       losing: false,
     }
   }
@@ -331,6 +371,7 @@ async function resumeCtfRedeem(params: {
       `CTF redeem ${entry.operationId} failed with non-losing failure code ${entry.failureCode ?? 'unknown'}; refusing to condemn proofs`,
     )
   }
+  await params.wallet.loadMint()
   if (!params.wallet.checkProofsStates) {
     throw new Error('Cashu wallet adapter does not support proof-state recovery checks')
   }
@@ -340,7 +381,10 @@ async function resumeCtfRedeem(params: {
   )
   if (allStates(states, CheckStateEnum.SPENT)) {
     const restored = await params.restoreOutputGroups(params.mintUrl, entry.outputs)
-    const final = normalizeProofArray(restored.regular ?? [])
+    const final = requireNonemptyCtfRedeemProofs(
+      restored.regular,
+      `restored CTF redeem ${entry.operationId}`,
+    )
     await params.proofOperationStore.markProofOperationCompleted(
       entry.operationId,
       createCtfProofOperationCompletion('ctf-redeem', { regular: final }),
@@ -367,6 +411,29 @@ async function resumeCtfRedeem(params: {
   throw new Error(`Proof operation ${entry.operationId} is still pending at the mint`)
 }
 
+function requireCompletedCtfRedeemProofs(entry: CtfProofOperationRecord): Proof[] {
+  const resultProofs = entry.resultProofs
+  if (
+    resultProofs === undefined ||
+    !Array.isArray(resultProofs.regular) ||
+    resultProofs.regular.length === 0 ||
+    Object.keys(resultProofs).length !== 1
+  ) {
+    throw new Error(`completed CTF redeem ${entry.operationId} has invalid regular proofs`)
+  }
+  return requireNonemptyCtfRedeemProofs(
+    resultProofs.regular,
+    `completed CTF redeem ${entry.operationId}`,
+  )
+}
+
+function requireNonemptyCtfRedeemProofs(value: unknown, context: string): Proof[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${context} has invalid regular proofs`)
+  }
+  return normalizeProofArray(value)
+}
+
 async function executeCtfRedeem(params: {
   mintUrl: string
   wallet: RedeemWallet
@@ -382,7 +449,10 @@ async function executeCtfRedeem(params: {
       inputs: withOracleWitness(params.inputs, params.oracleWitness),
       outputs: params.outputData,
     })
-    const final = normalizeProofArray(settled)
+    const final = requireNonemptyCtfRedeemProofs(
+      settled,
+      `mint result for CTF redeem ${params.operationId}`,
+    )
     await params.proofOperationStore.markProofOperationCompleted(
       params.operationId,
       createCtfProofOperationCompletion('ctf-redeem', { regular: final }),
