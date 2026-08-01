@@ -175,6 +175,38 @@ test('accepts an exact CTF range refund as a mint-verified operation', () => {
   assert.equal(authority.facts.binding.stage, 'refund')
 })
 
+test('accepts and verifies an exact wallet receive operation', () => {
+  const send = preparedSend('receive:1')
+  const operation = { ...send.operation, kind: 'wallet-receive' as const }
+  const authority = prepareDurableCustodyMintOperationAuthority({
+    operation,
+    keysets: send.authority.keysets,
+  })
+  const record = createDurableCustodyProofOperation({
+    scope: SCOPE,
+    operation,
+    facts: authority.facts,
+    inventoryAccountId: SCOPE.inventoryAccountId,
+    exactBoundary: {
+      method: 'POST',
+      path: '/v1/swap',
+      idempotencyKey: operation.operationId,
+      requestBody: authority.exactRequest,
+      output: authority.exactOutput,
+      privateMaterial: authority.exactAuthority,
+    },
+  })
+  const result = prepareDurableCustodyVerifiedMintResult({
+    record,
+    exactAuthority: authority.exactAuthority,
+    result: { keep: [proofForOutput(send.output)] },
+  })
+
+  assert.equal(authority.authority.operation.kind, 'wallet-receive')
+  assert.equal(authority.facts.binding.stage, 'receive')
+  assert.equal(result.proofs.length, 1)
+})
+
 test('verifies an exact persisted BLS output without secp DLEQ material', () => {
   const prepared = preparedSend('send:bls', {
     id: BLS_KEYSET_ID,

@@ -424,6 +424,7 @@ function assertExactGroups(
 function assertSupportedOperation(operation: DurableCustodyProofOperationInput): void {
   if (
     (operation.kind !== 'wallet-send' &&
+      operation.kind !== 'wallet-receive' &&
       operation.kind !== 'conditional-keyset-swap' &&
       operation.kind !== 'ctf-range-refund') ||
     operation.inputs.length === 0 ||
