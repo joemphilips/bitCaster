@@ -136,6 +136,10 @@
       "types": "./dist/boundedProofConsolidation.d.ts",
       "import": "./dist/boundedProofConsolidation.js"
     },
+    "./ctfRangeConsolidationOperation": {
+      "types": "./dist/ctfRangeConsolidationOperation.d.ts",
+      "import": "./dist/ctfRangeConsolidationOperation.js"
+    },
     "./ctfRangeSourceRecovery": {
       "types": "./dist/ctfRangeSourceRecovery.d.ts",
       "import": "./dist/ctfRangeSourceRecovery.js"

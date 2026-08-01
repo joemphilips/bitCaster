@@ -8,6 +8,7 @@ import {
 import {
   decodeDurableCustodyProofOperationInput,
   deserializeDurableCustodyOutput,
+  serializeDurableCustodyProofInput,
   serializeDurableCustodyOutput,
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
@@ -203,7 +204,7 @@ function sourceOperation(
     operationId: preparation.sourceOperationId,
     kind,
     mintUrl: preparation.mintUrl,
-    inputs: preview.inputs.map(serializeProof),
+    inputs: preview.inputs.map(serializeDurableCustodyProofInput),
     outputs: {
       authorization: output.authorization.map(serializeDurableCustodyOutput),
       keep: output.keep.map(serializeDurableCustodyOutput),
@@ -218,20 +219,6 @@ function sourceOperation(
       keysetId: output.keysetId,
     },
   }
-}
-
-function serializeProof(proof: Proof): DurableCustodyProofOperationInput['inputs'][number] {
-  return Object.fromEntries(
-    Object.entries({
-      id: proof.id,
-      amount: amountToNumber(proof.amount),
-      secret: proof.secret,
-      C: proof.C,
-      dleq: structuredClone(proof.dleq),
-      p2pk_e: proof.p2pk_e,
-      witness: structuredClone(proof.witness),
-    }).filter(([, value]) => value !== undefined),
-  ) as DurableCustodyProofOperationInput['inputs'][number]
 }
 
 function deserializeOutputs(

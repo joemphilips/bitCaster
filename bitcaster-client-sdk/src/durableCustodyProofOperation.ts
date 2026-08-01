@@ -1,6 +1,6 @@
 // Generic proof-operation authority re-authored from 7e1385c; protocol-bound
 // variants and catalogue/migration concerns are intentionally outside this API.
-import { OutputData, type OutputDataLike } from '@cashu/cashu-ts'
+import { OutputData, type OutputDataLike, type Proof } from '@cashu/cashu-ts'
 import {
   createDurableProofOperationFacts,
   encodeBoundedDurableArtifact,
@@ -62,6 +62,22 @@ export interface DurableCustodyProofOperationInput {
 
 export type DurableCustodyPlannedOutput =
   DurableCustodyProofOperationInput['outputs'][string][number]
+
+export function serializeDurableCustodyProofInput(
+  proof: Proof,
+): DurableCustodyProofOperationInput['inputs'][number] {
+  return Object.fromEntries(
+    Object.entries({
+      id: proof.id,
+      amount: amountToNumber(proof.amount),
+      secret: proof.secret,
+      C: proof.C,
+      dleq: structuredClone(proof.dleq),
+      p2pk_e: proof.p2pk_e,
+      witness: structuredClone(proof.witness),
+    }).filter(([, value]) => value !== undefined),
+  ) as DurableCustodyProofOperationInput['inputs'][number]
+}
 
 export function serializeDurableCustodyOutput(output: OutputDataLike): DurableCustodyPlannedOutput {
   const serialized = OutputData.serialize(output)
