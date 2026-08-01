@@ -1,6 +1,18 @@
 // Exact persisted wallet-operation contract re-authored from 7e1385c with
 // wallet-scope and fail-closed authority corrections from f1cb65b/b683120.
 import {
+  Amount,
+  CheckStateEnum,
+  hashToCurve,
+  hashToCurveBls,
+  isBlsKeyset,
+  type OutputDataLike,
+  type OutputData,
+  type Proof,
+  type ProofState,
+  type SwapPreview,
+} from '@cashu/cashu-ts'
+import {
   DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
   DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX,
@@ -9,7 +21,12 @@ import {
   decodeCanonicalMintOrigin,
   encodeBoundedDurableArtifact,
 } from './durableCustody.ts'
-import type { DurableCustodyProofOperationInput } from './durableCustodyProofOperation.ts'
+import {
+  deserializeDurableCustodyOutput,
+  serializeDurableCustodyOutput,
+  type DurableCustodyProofOperationInput,
+} from './durableCustodyProofOperation.ts'
+import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from './durableCustodyProofImport.ts'
 import {
   addDurableWalletProofTransitionMetadata,
   createDurableWalletProofTransition,
@@ -18,6 +35,7 @@ import {
 export const DURABLE_WALLET_OPERATION_SCHEMA_VERSION = 1 as const
 export const DURABLE_WALLET_OPERATION_ARRAY_LENGTH_MAX = DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX
 export const DURABLE_WALLET_OPERATION_METADATA_KEY = 'durableWalletOperation'
+const DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX = DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX
 
 export type DurableWalletOperationKind =
   | 'wallet-mint'
@@ -32,8 +50,12 @@ export interface DurableWalletProof {
   C: string
   dleq: null | { e: string; s: string; r: string | null }
   p2pkE: string | null
-  witness: string | null
+  witness: DurableWalletProofWitness | null
 }
+type DurableWalletProofWitness =
+  | string
+  | { signatures?: string[] }
+  | { preimage: string; signatures?: string[] }
 export interface DurableWalletOutputData {
   blindedMessage: { amount: string; id: string; B_: string }
   blindingFactor: string
@@ -109,6 +131,42 @@ export interface DurableWalletOperationAuthority {
   outputPlanFingerprint: string
 }
 
+export interface DurableWalletReceiveOperationSnapshot {
+  readonly operation: DurableWalletReceiveOperation
+  readonly state: 'prepared' | 'completed' | 'external-applied'
+  /** A terminal result was verified against the persisted operation and mint keys. */
+  readonly result: { readonly receive: readonly Proof[] } | null
+}
+
+export interface DurableWalletReceiveOperationStore {
+  loadOperation(operationId: string): Promise<DurableWalletReceiveOperationSnapshot | null>
+  /** Verify and persist this exact result before this function returns. */
+  persistCompletedResult(input: {
+    readonly operation: DurableWalletReceiveOperation
+    readonly result: { readonly receive: readonly Proof[] }
+  }): Promise<'completed' | 'external-applied'>
+}
+
+interface DurableWalletReceiveExecutionInput {
+  readonly mode: 'execute' | 'recover'
+  readonly operationId: string
+  readonly store: DurableWalletReceiveOperationStore
+  readonly wallet: {
+    checkProofsStates(proofs: Array<Pick<Proof, 'id' | 'secret'>>): Promise<readonly ProofState[]>
+    completeSwap(preview: SwapPreview): Promise<{ readonly keep: Proof[]; readonly send: Proof[] }>
+  }
+  /** Restore and verify only the supplied output plan. */
+  readonly restoreExactOutputs: (input: {
+    readonly mintUrl: string
+    readonly outputs: readonly DurableWalletOutputData[]
+  }) => Promise<Readonly<Record<string, readonly Proof[]>>>
+  readonly currentPreview?: SwapPreview
+}
+
+type DurableWalletReceiveExecutionResult =
+  | { readonly state: 'completed' | 'external-applied'; readonly proofs: Proof[] }
+  | { readonly state: 'nonterminal'; readonly proofs: readonly [] }
+
 export function decodeDurableWalletOperation(value: unknown): DurableWalletOperation {
   if (!isRecord(value)) throw new Error('durable wallet operation is invalid')
   exactKeys(value, ['schemaVersion', 'operationId', 'kind', 'mintUrl', 'unit', 'preview'])
@@ -127,8 +185,11 @@ export function decodeDurableWalletOperation(value: unknown): DurableWalletOpera
   }
   switch (value.kind) {
     case 'wallet-send':
-    case 'wallet-receive':
       decodeSwapPreview(value.preview)
+      break
+    case 'wallet-receive':
+      decodeSwapPreview(value.preview, DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX)
+      requireReceivePreview(value.preview)
       break
     case 'wallet-mint':
       decodeMintPreview(value.preview)
@@ -262,7 +323,224 @@ export function deriveDurableWalletOperationAuthority(
   }
 }
 
-function decodeSwapPreview(value: Record<string, unknown>): void {
+export function serializeDurableWalletReceiveOperation(input: {
+  readonly operationId: string
+  readonly mintUrl: string
+  readonly unit: string
+  readonly preview: SwapPreview
+}): DurableWalletReceiveOperation {
+  return requireReceiveOperation(
+    decodeDurableWalletOperation({
+      schemaVersion: DURABLE_WALLET_OPERATION_SCHEMA_VERSION,
+      operationId: input.operationId,
+      kind: 'wallet-receive',
+      mintUrl: input.mintUrl,
+      unit: input.unit,
+      preview: serializeReceivePreview(input.preview),
+    }),
+  )
+}
+
+function serializeReceivePreview(preview: SwapPreview): DurableWalletSwapPreview {
+  requireReceivePreviewCounts(preview.inputs, preview.sendOutputs, preview.keepOutputs)
+  if ((preview.unselectedProofs?.length ?? 0) !== 0) {
+    throw new Error('durable wallet receive cannot contain unselected proofs')
+  }
+  return {
+    amount: Amount.from(preview.amount).toString(),
+    fees: Amount.from(preview.fees).toString(),
+    keysetId: preview.keysetId,
+    inputs: preview.inputs.map(serializeProof),
+    sendOutputs: [],
+    keepOutputs: (preview.keepOutputs ?? []).map(serializeOutput),
+    unselectedProofs: [],
+  }
+}
+
+function hydrateDurableWalletReceivePreview(input: DurableWalletReceiveOperation): SwapPreview {
+  const operation = requireReceiveOperation(decodeDurableWalletOperation(input))
+  return {
+    amount: Amount.from(operation.preview.amount),
+    fees: Amount.from(operation.preview.fees),
+    keysetId: operation.preview.keysetId,
+    inputs: operation.preview.inputs.map(hydrateProof),
+    sendOutputs: [],
+    keepOutputs: operation.preview.keepOutputs.map(hydrateOutput),
+    unselectedProofs: [],
+  }
+}
+
+export async function runDurableWalletReceiveOperation(
+  input: DurableWalletReceiveExecutionInput,
+): Promise<DurableWalletReceiveExecutionResult> {
+  if (input.mode !== 'execute' && input.mode !== 'recover') {
+    throw new Error('durable wallet receive mode is invalid')
+  }
+  const snapshot = await loadExactReceiveSnapshot(input)
+  const terminal = terminalReceiveResult(snapshot)
+  if (terminal !== null) return terminal
+  if (input.mode === 'execute') return submitPersistedReceive(input, snapshot.operation)
+  const states = await input.wallet.checkProofsStates(
+    snapshot.operation.preview.inputs.map(({ id, secret }) => ({ id, secret })),
+  )
+  switch (classifyExactReceiveInputStates(snapshot.operation, states)) {
+    case 'spent':
+      return restorePersistedReceive(input, snapshot.operation)
+    case 'unspent':
+      return submitPersistedReceive(input, snapshot.operation)
+    case 'nonterminal':
+      return { state: 'nonterminal', proofs: [] }
+  }
+}
+
+function classifyExactReceiveInputStates(
+  operation: DurableWalletReceiveOperation,
+  states: readonly ProofState[],
+): 'spent' | 'unspent' | 'nonterminal' {
+  const receive = requireReceiveOperation(decodeDurableWalletOperation(operation))
+  const expectedYs = receive.preview.inputs.map(proofY)
+  if (states.length !== expectedYs.length) {
+    throw new Error('durable wallet receive proof-state response is incomplete')
+  }
+  const observed = new Map(states.map((state) => [state.Y, state.state]))
+  if (observed.size !== states.length || expectedYs.some((Y) => !observed.has(Y))) {
+    throw new Error('durable wallet receive proof-state authority is foreign')
+  }
+  const exactStates = expectedYs.map((Y) => observed.get(Y))
+  if (exactStates.every((state) => state === CheckStateEnum.SPENT)) return 'spent'
+  if (exactStates.every((state) => state === CheckStateEnum.UNSPENT)) return 'unspent'
+  return 'nonterminal'
+}
+
+async function loadExactReceiveSnapshot(
+  input: DurableWalletReceiveExecutionInput,
+): Promise<DurableWalletReceiveOperationSnapshot> {
+  const snapshot = await input.store.loadOperation(input.operationId)
+  if (snapshot === null) throw new Error('durable wallet receive operation is absent')
+  const operation = requireReceiveOperation(decodeDurableWalletOperation(snapshot.operation))
+  if (operation.operationId !== input.operationId) {
+    throw new Error('durable wallet receive operation identity is foreign')
+  }
+  assertCurrentReceiveAuthority(operation, input.currentPreview)
+  return validateReceiveSnapshot({ ...snapshot, operation })
+}
+
+function assertCurrentReceiveAuthority(
+  persisted: DurableWalletReceiveOperation,
+  currentPreview: SwapPreview | undefined,
+): void {
+  if (
+    currentPreview !== undefined &&
+    deriveDurableCustodyArtifactFingerprint(serializeReceivePreview(currentPreview)) !==
+      deriveDurableCustodyArtifactFingerprint(persisted.preview)
+  ) {
+    throw new Error('current wallet receive request conflicts with persisted authority')
+  }
+}
+
+function validateReceiveSnapshot(
+  snapshot: DurableWalletReceiveOperationSnapshot,
+): DurableWalletReceiveOperationSnapshot {
+  switch (snapshot.state) {
+    case 'prepared':
+      if (snapshot.result !== null) throw new Error('prepared wallet receive has a result')
+      break
+    case 'completed':
+    case 'external-applied':
+      if (snapshot.result === null) throw new Error('terminal wallet receive result is absent')
+      break
+    default:
+      throw new Error('durable wallet receive state is invalid')
+  }
+  return snapshot
+}
+
+function terminalReceiveResult(
+  snapshot: DurableWalletReceiveOperationSnapshot,
+): DurableWalletReceiveExecutionResult | null {
+  if (snapshot.state === 'prepared') return null
+  return {
+    state: snapshot.state,
+    proofs: requireExactReceiveResult(snapshot.operation, snapshot.result!),
+  }
+}
+
+async function submitPersistedReceive(
+  input: DurableWalletReceiveExecutionInput,
+  operation: DurableWalletReceiveOperation,
+): Promise<DurableWalletReceiveExecutionResult> {
+  const result = await input.wallet.completeSwap(hydrateDurableWalletReceivePreview(operation))
+  if (result.send.length !== 0) {
+    throw new Error('durable wallet receive mint result contains a foreign send group')
+  }
+  return persistExactReceiveResult(input.store, operation, { receive: result.keep })
+}
+
+async function restorePersistedReceive(
+  input: DurableWalletReceiveExecutionInput,
+  operation: DurableWalletReceiveOperation,
+): Promise<DurableWalletReceiveExecutionResult> {
+  const restored = await input.restoreExactOutputs({
+    mintUrl: operation.mintUrl,
+    outputs: operation.preview.keepOutputs.map((output) => structuredClone(output)),
+  })
+  return persistExactReceiveResult(input.store, operation, restored)
+}
+
+async function persistExactReceiveResult(
+  store: DurableWalletReceiveOperationStore,
+  operation: DurableWalletReceiveOperation,
+  result: Readonly<Record<string, readonly Proof[]>>,
+): Promise<DurableWalletReceiveExecutionResult> {
+  const receive = requireExactReceiveResult(operation, result)
+  const state = await store.persistCompletedResult({ operation, result: { receive } })
+  if (state !== 'completed' && state !== 'external-applied') {
+    throw new Error('persisted wallet receive result was not completed')
+  }
+  return { state, proofs: receive }
+}
+
+function requireExactReceiveResult(
+  operation: DurableWalletReceiveOperation,
+  result: Readonly<Record<string, readonly Proof[]>>,
+): Proof[] {
+  if (Object.keys(result).length !== 1 || !Array.isArray(result.receive)) {
+    throw new Error('durable wallet receive result group is invalid')
+  }
+  if (result.receive.length > DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX) {
+    throw new Error('durable wallet receive result proof limit exceeded')
+  }
+  if (result.receive.length !== operation.preview.keepOutputs.length) {
+    throw new Error('durable wallet receive result does not match its exact output plan')
+  }
+  const bySecret = new Map(result.receive.map((proof) => [proof.secret, serializeProof(proof)]))
+  if (bySecret.size !== result.receive.length) {
+    throw new Error('durable wallet receive result contains duplicate proofs')
+  }
+  return operation.preview.keepOutputs.map((output) =>
+    requirePlannedReceiveProof(output, bySecret.get(output.secret)),
+  )
+}
+
+function requirePlannedReceiveProof(
+  output: DurableWalletOutputData,
+  proof: DurableWalletProof | undefined,
+): Proof {
+  if (
+    proof === undefined ||
+    proof.id !== output.blindedMessage.id ||
+    proof.amount !== output.blindedMessage.amount
+  ) {
+    throw new Error('durable wallet receive result does not match its exact output plan')
+  }
+  return hydrateProof(proof)
+}
+
+function decodeSwapPreview(
+  value: Record<string, unknown>,
+  maximumProofs = DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+): void {
+  const receiveBounded = maximumProofs === DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX
   exactKeys(value, [
     'amount',
     'fees',
@@ -275,24 +553,24 @@ function decodeSwapPreview(value: Record<string, unknown>): void {
   requireAmount(value.amount, 'amount', false)
   requireAmount(value.fees, 'fees', true)
   requireText(value.keysetId, 'keyset id')
-  decodeArray(value.inputs, decodeProof, 'inputs', DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX)
+  decodeArray(value.inputs, decodeProof, 'inputs', maximumProofs)
   decodeArray(
     value.sendOutputs,
     decodeOutput,
     'send outputs',
-    DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
+    receiveBounded ? maximumProofs : DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   )
   decodeArray(
     value.keepOutputs,
     decodeOutput,
     'keep outputs',
-    DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
+    receiveBounded ? maximumProofs : DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   )
   decodeArray(
     value.unselectedProofs,
     decodeProof,
     'unselected proofs',
-    DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX,
+    receiveBounded ? maximumProofs : DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX,
   )
   if ((value.inputs as unknown[]).length === 0) {
     throw new Error('durable wallet swap inputs are empty')
@@ -312,6 +590,26 @@ function decodeSwapPreview(value: Record<string, unknown>): void {
     ...(value.inputs as Record<string, unknown>[]),
     ...(value.unselectedProofs as Record<string, unknown>[]),
   ])
+}
+
+function requireReceivePreview(value: Record<string, unknown>): void {
+  const keepOutputs = value.keepOutputs as Record<string, unknown>[]
+  if (
+    (value.sendOutputs as unknown[]).length !== 0 ||
+    (value.unselectedProofs as unknown[]).length !== 0 ||
+    keepOutputs.length === 0
+  ) {
+    throw new Error('durable wallet receive preview has foreign output groups')
+  }
+  if (
+    keepOutputs.some(
+      (output) =>
+        typeof output.blindingFactor !== 'string' ||
+        !/^(0|[1-9][0-9]*)$/.test(output.blindingFactor),
+    )
+  ) {
+    throw new Error('durable wallet receive blinding factor is invalid')
+  }
 }
 
 function decodeMintPreview(value: Record<string, unknown>): void {
@@ -398,7 +696,29 @@ function decodeProof(value: unknown): void {
     if (value.dleq.r !== null) requireText(value.dleq.r, 'DLEQ r')
   }
   if (value.p2pkE !== null) requireText(value.p2pkE, 'proof p2pk value')
-  if (value.witness !== null) requireText(value.witness, 'proof witness')
+  if (value.witness !== null) decodeProofWitness(value.witness)
+}
+
+function decodeProofWitness(value: unknown): asserts value is DurableWalletProofWitness {
+  if (typeof value === 'string') {
+    requireText(value, 'proof witness')
+    return
+  }
+  if (!isRecord(value)) throw new Error('durable wallet proof witness is invalid')
+  const allowed = new Set(['preimage', 'signatures'])
+  if (Object.keys(value).some((key) => !allowed.has(key))) {
+    throw new Error('durable wallet proof witness contains foreign fields')
+  }
+  if ('preimage' in value) requireText(value.preimage, 'proof witness preimage')
+  if ('signatures' in value) {
+    decodeArray(
+      value.signatures,
+      (signature) => requireText(signature, 'proof witness signature'),
+      'proof witness signatures',
+      DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX,
+    )
+  }
+  encodeBoundedDurableArtifact(value, DURABLE_CUSTODY_ARTIFACT_BYTES_MAX)
 }
 
 function decodeOutput(value: unknown): void {
@@ -416,6 +736,103 @@ function decodeBlindedMessage(value: unknown): void {
   requireAmount(value.amount, 'blinded amount', false)
   requireText(value.id, 'blinded keyset id')
   requireText(value.B_, 'blinded message')
+}
+
+function serializeProof(proof: Proof): DurableWalletProof {
+  const serialized: DurableWalletProof = {
+    id: proof.id,
+    amount: Amount.from(proof.amount).toString(),
+    secret: proof.secret,
+    C: proof.C,
+    dleq:
+      proof.dleq === undefined
+        ? null
+        : { e: proof.dleq.e, s: proof.dleq.s, r: proof.dleq.r ?? null },
+    p2pkE: proof.p2pk_e ?? null,
+    witness:
+      proof.witness === undefined
+        ? null
+        : (structuredClone(proof.witness) as DurableWalletProofWitness),
+  }
+  decodeProof(serialized)
+  return serialized
+}
+
+function hydrateProof(proof: DurableWalletProof): Proof {
+  return {
+    id: proof.id,
+    amount: Amount.from(proof.amount),
+    secret: proof.secret,
+    C: proof.C,
+    ...(proof.dleq === null
+      ? {}
+      : {
+          dleq: {
+            e: proof.dleq.e,
+            s: proof.dleq.s,
+            ...(proof.dleq.r === null ? {} : { r: proof.dleq.r }),
+          },
+        }),
+    ...(proof.p2pkE === null ? {} : { p2pk_e: proof.p2pkE }),
+    ...(proof.witness === null
+      ? {}
+      : { witness: structuredClone(proof.witness) as Proof['witness'] }),
+  }
+}
+
+function serializeOutput(output: OutputDataLike): DurableWalletOutputData {
+  const serialized = serializeDurableCustodyOutput(output)
+  const durable: DurableWalletOutputData = {
+    blindedMessage: {
+      amount: Amount.from(output.blindedMessage.amount).toString(),
+      id: serialized.blindedMessage.id,
+      B_: serialized.blindedMessage.B_,
+    },
+    blindingFactor: serialized.blindingFactor,
+    secret: serialized.secret,
+    ephemeralE: serialized.ephemeralE ?? null,
+  }
+  decodeOutput(durable)
+  return durable
+}
+
+function hydrateOutput(output: DurableWalletOutputData): OutputData {
+  return deserializeDurableCustodyOutput({
+    blindedMessage: { ...output.blindedMessage },
+    blindingFactor: output.blindingFactor,
+    secret: output.secret,
+    ...(output.ephemeralE === null ? {} : { ephemeralE: output.ephemeralE }),
+  })
+}
+
+function requireReceivePreviewCounts(
+  inputs: readonly Proof[],
+  sendOutputs: readonly OutputDataLike[] | undefined,
+  keepOutputs: readonly OutputDataLike[] | undefined,
+): void {
+  if (
+    inputs.length === 0 ||
+    inputs.length > DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX ||
+    (sendOutputs?.length ?? 0) !== 0 ||
+    (keepOutputs?.length ?? 0) === 0 ||
+    (keepOutputs?.length ?? 0) > DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX
+  ) {
+    throw new Error('durable wallet receive preview exceeds its 128-proof limit')
+  }
+}
+
+function requireReceiveOperation(operation: DurableWalletOperation): DurableWalletReceiveOperation {
+  if (operation.kind !== 'wallet-receive') {
+    throw new Error('durable wallet operation is not a receive')
+  }
+  return operation
+}
+
+function proofY(proof: DurableWalletProof): string {
+  const secret = new TextEncoder().encode(proof.secret)
+  return isBlsKeyset(proof.id)
+    ? hashToCurveBls(secret).toHex(true)
+    : hashToCurve(secret).toHex(true)
 }
 
 function toCustodyProof(proof: DurableWalletProof) {
