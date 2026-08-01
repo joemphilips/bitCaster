@@ -25,7 +25,6 @@ import {
   priceNumeratorToPercent,
   signTradeComment,
   submitEphemeralPubkey,
-  submitOrder,
   windowPriceHistory,
   type MarketPriceHistoryResponse,
   type MarketCommentsResponse,
@@ -77,6 +76,7 @@ import {
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { buildIndexedDbTokenHoldings } from "@/lib/walletHoldings";
+import { submitBrowserCtfRangeOrder } from "@/lib/browserCtfRangeOrderSubmission";
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
@@ -1595,10 +1595,15 @@ export function MarketDetailPage() {
         const signedComment = comment?.trim()
           ? await signTradeComment(latestMarket.id, comment.trim())
           : undefined;
-        const response = await submitOrder(ticket.marketId, {
-          ...ticket.request,
+        const walletState = useWalletStore.getState();
+        if (!activeMintUrl) throw new Error("The active mint is unavailable.");
+        const response = await submitBrowserCtfRangeOrder({
+          market: latestMarket,
+          ticket,
           clientOrderId,
-          ...(signedComment ? { comment: signedComment } : {}),
+          mintUrl: activeMintUrl,
+          mnemonic: walletState.mnemonic,
+          comment: signedComment ?? null,
         });
         const acceptedBaseAsset = normalizeMarketBaseAsset(response.baseAsset);
         const acceptedDivisibility = normalizeMarketDivisibility(
@@ -1684,6 +1689,7 @@ export function MarketDetailPage() {
       tradeSide,
       orderType,
       limitPrice,
+      activeMintUrl,
       loadMarket,
       addPendingTrade,
     ],
@@ -2043,19 +2049,17 @@ export function MarketDetailPage() {
         onTimeframeChange={handleTimeframeChange}
         onTradeSelect={(selection) => {
           setTradeSelection(selection);
-          setTradeSubmitStatus(null);
         }}
         onTradeClear={() => {
           setTradeSelection(null);
           setTradeAmount(0);
-          setTradeSubmitStatus(null);
         }}
         onAmountChange={(amount) => {
           setTradeAmount(amount);
-          setTradeSubmitStatus(null);
         }}
         onTradeConfirm={handleTradeConfirm}
         tradeSubmitStatus={tradeSubmitStatus}
+        onTradeSubmitStatusDismiss={() => setTradeSubmitStatus(null)}
         tradeFeasibility={tradeFeasibility}
         isTradeSubmitting={isTradeSubmitting}
         onShare={handleShare}

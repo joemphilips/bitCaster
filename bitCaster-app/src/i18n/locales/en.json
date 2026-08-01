@@ -679,6 +679,26 @@
   "loading": {
     "tagline": "Finance wants to be free | Fake must be expensive"
   },
+  "walletRecovery": {
+    "title": "Wallet recovery alerts",
+    "orderFailure": "Order was not completed",
+    "fundsRecovery": "Funds recovery needs attention",
+    "operation": "Operation: {{operationId}}",
+    "dismiss": "Dismiss this wallet alert",
+    "morePending": "More wallet alerts are waiting. Close an alert to see the next one.",
+    "errors": {
+      "invalid-order-type": "This browser supports only immediate FAK or FOK orders.",
+      "insufficient-funds": "The wallet has insufficient selectable funds.",
+      "source-preparation-failed": "The wallet could not prepare the authorization.",
+      "mint-source-uncertain": "The mint result is uncertain. Funds recovery is pending.",
+      "custody-commit-failed": "The wallet could not save the durable operation.",
+      "capability-creation-failed": "The engine did not confirm the settlement capability.",
+      "capability-validation-failed": "The engine returned an invalid settlement capability.",
+      "order-submission-rejected": "The engine rejected the order. The wallet will not retry it.",
+      "order-submission-uncertain": "The order result is uncertain. The wallet will not submit it again.",
+      "recovery-pending": "The durable wallet operation still needs funds recovery."
+    }
+  },
   "notification": {
     "empty": "No notifications yet.",
     "accepted": "Order accepted on {{market}}",

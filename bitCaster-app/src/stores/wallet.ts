@@ -10,8 +10,19 @@ import {
 } from "@cashu/cashu-ts";
 import { useLiveQuery } from "dexie-react-hooks";
 import * as bip39 from "@/lib/bip39";
+import {
+  activeBrowserWalletScopeId,
+  browserWalletScopeIdFromMnemonic,
+  setActiveBrowserWalletProfile,
+} from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
-import { db, getUnitProofs, isCtfProof, type StoredProof } from "./proof-db";
+import {
+  activateBrowserWalletDatabase,
+  getProofs,
+  getUnitProofs,
+  isCtfProof,
+  type StoredProof,
+} from "./proof-db";
 import type { MintConnectionTestStatus } from "@/types/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
@@ -83,12 +94,12 @@ export const DEFAULT_MINT_URL = normalizeUrl(
 
 let _walletCache: Map<string, CashuWallet> = new Map();
 
-function walletCacheKey(mintUrl: string, baseAsset: MarketBaseAsset): string {
-  return `${mintUrl}::${defaultCollateralUnit(baseAsset)}`;
+function walletCacheKey(scopeId: string, mintUrl: string, baseAsset: MarketBaseAsset): string {
+  return `${scopeId}::${mintUrl}::${defaultCollateralUnit(baseAsset)}`;
 }
 
-function walletUnitCacheKey(mintUrl: string, unit: string): string {
-  return `${mintUrl}::unit:${unit}`;
+function walletUnitCacheKey(scopeId: string, mintUrl: string, unit: string): string {
+  return `${scopeId}::${mintUrl}::unit:${unit}`;
 }
 
 function getSeedBytes(mnemonic: string): Uint8Array | undefined {
@@ -98,10 +109,13 @@ function getSeedBytes(mnemonic: string): Uint8Array | undefined {
 
 async function createWallet(url: string, unit: string, mnemonic: string): Promise<CashuWallet> {
   const seedBytes = getSeedBytes(mnemonic);
+  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  if (!seedBytes || scopeId === null) throw new Error("The wallet profile is unavailable.");
   const mint = new CashuMint(url);
   const wallet = new CashuWallet(mint, {
     unit,
-    ...(seedBytes ? { bip39seed: seedBytes, counterSource: _counterSource } : {}),
+    bip39seed: seedBytes,
+    counterSource: new SeedBoundCounterSource(scopeId),
   });
   await wallet.loadMint();
   return wallet;
@@ -147,6 +161,46 @@ class ZustandCounterSource implements CounterSource {
 }
 
 const _counterSource = new ZustandCounterSource();
+
+function activateWalletProfile(mnemonic: string): void {
+  setActiveBrowserWalletProfile(mnemonic);
+  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  if (scopeId !== null) activateBrowserWalletDatabase(scopeId);
+}
+
+class SeedBoundCounterSource implements CounterSource {
+  readonly #scopeId: string;
+
+  constructor(scopeId: string) {
+    this.#scopeId = scopeId;
+  }
+
+  #requireCurrentProfile(): void {
+    if (activeBrowserWalletScopeId() !== this.#scopeId) {
+      throw new Error("The wallet profile changed during funded work.");
+    }
+  }
+
+  async reserve(keysetId: string, n: number): Promise<CounterRange> {
+    this.#requireCurrentProfile();
+    return _counterSource.reserve(keysetId, n);
+  }
+
+  async advanceToAtLeast(keysetId: string, minNext: number): Promise<void> {
+    this.#requireCurrentProfile();
+    await _counterSource.advanceToAtLeast(keysetId, minNext);
+  }
+
+  async setNext(keysetId: string, next: number): Promise<void> {
+    this.#requireCurrentProfile();
+    await _counterSource.setNext(keysetId, next);
+  }
+
+  async snapshot(): Promise<Record<string, number>> {
+    this.#requireCurrentProfile();
+    return _counterSource.snapshot();
+  }
+}
 
 /**
  * Shared body of `_addMint` and `_addMintWithoutActivating`. The `activate`
@@ -200,15 +254,20 @@ export const useWalletStore = create<WalletState>()(
       mintConnectionStatuses: {},
 
       generateMnemonic: () => {
+        if (get().mnemonic) {
+          throw new Error("Seed switching requires an acknowledged encrypted backup.");
+        }
         const words = bip39.generate();
+        const mnemonic = words.join(" ");
         _walletCache = new Map();
+        activateWalletProfile(mnemonic);
         // Clear deterministic counter state — the new seed has its own
         // counter space; reusing the previous wallet's counters or
         // recovered-flags would either skip required recovery for the new
         // seed or apply a stale counter to the wrong keyset (P8 codex
         // adversarial review #6).
         set({
-          mnemonic: words.join(" "),
+          mnemonic,
           walletBackupState: "needs_backup",
           keysetCounters: {},
           keysetCountersRecovered: {},
@@ -247,11 +306,24 @@ export const useWalletStore = create<WalletState>()(
           return { valid: false, error: "Invalid seed phrase" };
         }
         _walletCache = new Map();
+        const mnemonic = words.join(" ");
+        const currentMnemonic = get().mnemonic.trim();
+        if (currentMnemonic === mnemonic) {
+          set({ walletBackupState: "confirmed" });
+          return { valid: true };
+        }
+        if (currentMnemonic) {
+          return {
+            valid: false,
+            error: "Seed switching requires an acknowledged encrypted backup.",
+          };
+        }
+        activateWalletProfile(mnemonic);
         // See generateMnemonic — clear counter state on seed change so the
         // recovered-flag idempotency doesn't suppress a needed scan for the
         // new seed.
         set({
-          mnemonic: words.join(" "),
+          mnemonic,
           walletBackupState: "confirmed",
           keysetCounters: {},
           keysetCountersRecovered: {},
@@ -331,23 +403,33 @@ export const useWalletStore = create<WalletState>()(
         baseAsset: MarketBaseAsset,
       ): Promise<CashuWallet> => {
         const url = normalizeUrl(mintUrl ?? get().activeMintUrl);
-        const cacheKey = walletCacheKey(url, baseAsset);
+        const mnemonic = get().mnemonic;
+        const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+        if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) {
+          throw new Error("The wallet profile is unavailable.");
+        }
+        const cacheKey = walletCacheKey(scopeId, url, baseAsset);
         const cached = _walletCache.get(cacheKey);
         if (cached) return cached;
 
         const unit = defaultCollateralUnit(baseAsset);
-        const wallet = await createWallet(url, unit, get().mnemonic);
+        const wallet = await createWallet(url, unit, mnemonic);
         _walletCache.set(cacheKey, wallet);
         return wallet;
       },
 
       getWalletForUnit: async (mintUrl: string | undefined, unit: string): Promise<CashuWallet> => {
         const url = normalizeUrl(mintUrl ?? get().activeMintUrl);
-        const cacheKey = walletUnitCacheKey(url, unit);
+        const mnemonic = get().mnemonic;
+        const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+        if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) {
+          throw new Error("The wallet profile is unavailable.");
+        }
+        const cacheKey = walletUnitCacheKey(scopeId, url, unit);
         const cached = _walletCache.get(cacheKey);
         if (cached) return cached;
 
-        const wallet = await createWallet(url, unit, get().mnemonic);
+        const wallet = await createWallet(url, unit, mnemonic);
         _walletCache.set(cacheKey, wallet);
         return wallet;
       },
@@ -367,9 +449,33 @@ export const useWalletStore = create<WalletState>()(
         // App.tsx will correct any stale value on the next app load.
         mintConnectionStatuses: state.mintConnectionStatuses,
       }),
+      onRehydrateStorage: () => (state) => {
+        activateWalletProfile(state?.mnemonic ?? "");
+      },
     },
   ),
 );
+
+export async function getWalletForMnemonicUnit(
+  mintUrl: string,
+  unit: string,
+  mnemonic: string,
+): Promise<CashuWallet> {
+  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) {
+    throw new Error("The wallet profile changed during funded work.");
+  }
+  const url = normalizeUrl(mintUrl);
+  const cacheKey = walletUnitCacheKey(scopeId, url, unit);
+  const cached = _walletCache.get(cacheKey);
+  if (cached) return cached;
+  const wallet = await createWallet(url, unit, mnemonic);
+  if (activeBrowserWalletScopeId() !== scopeId) {
+    throw new Error("The wallet profile changed during funded work.");
+  }
+  _walletCache.set(cacheKey, wallet);
+  return wallet;
+}
 
 export function useBalance(
   mintUrl?: string,
@@ -377,11 +483,10 @@ export function useBalance(
 ): number {
   const normalized = mintUrl ? normalizeUrl(mintUrl) : undefined;
   const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
+  const mnemonic = useWalletStore((state) => state.mnemonic);
   const balance = useLiveQuery(
     async () => {
-      const proofs = normalized
-        ? await db.proofs.where("mintUrl").equals(normalized).toArray()
-        : await db.proofs.toArray();
+      const proofs = await getProofs(normalized);
       return proofs
         .filter((p) => !isCtfProof(p) && normalizeMarketBaseAsset(p.baseAsset) === baseAsset)
         .reduce((sum, p) => {
@@ -389,7 +494,7 @@ export function useBalance(
           return unit ? sum + cashuAmountToMarketSubunits(amountToNumber(p.amount), unit) : sum;
         }, 0);
     },
-    [normalized, baseAsset],
+    [normalized, baseAsset, mnemonic],
     0,
   );
   return balance ?? 0;

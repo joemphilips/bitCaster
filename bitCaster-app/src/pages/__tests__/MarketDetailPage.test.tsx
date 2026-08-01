@@ -16,7 +16,8 @@ import {
   shouldPromptForFundedActionBackup,
 } from "@/pages/MarketDetailPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
-import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
+import { fetchMarketDetail, fetchOrderBook } from "@/lib/markets";
+import { submitBrowserCtfRangeOrder } from "@/lib/browserCtfRangeOrderSubmission";
 import { onOrderBookUpdated, onTradeExecuted } from "@/lib/marketHub";
 import type {
   MarketStatusChanged,
@@ -37,6 +38,8 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   routeParams: { id: "condition-yesno" } as { id?: string },
   walletState: {
+    mnemonic:
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
     setupComplete: false,
     walletBackupState: "confirmed",
     activeMintUrl: null as string | null,
@@ -136,8 +139,11 @@ vi.mock("@/lib/markets", () => ({
   priceNumeratorToPercent: (price: number, divisibility = 100) => (price / divisibility) * 100,
   signTradeComment: vi.fn(),
   submitEphemeralPubkey: vi.fn(),
-  submitOrder: vi.fn(),
   windowPriceHistory: mocks.windowPriceHistory,
+}));
+
+vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
+  submitBrowserCtfRangeOrder: vi.fn(),
 }));
 
 vi.mock("@bitcaster/client-sdk/engineClient", () => ({
@@ -257,7 +263,7 @@ function fundedSatYesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDeta
 }
 
 function mockAcceptedOrder() {
-  vi.mocked(submitOrder).mockResolvedValue({
+  vi.mocked(submitBrowserCtfRangeOrder).mockResolvedValue({
     orderId: "order-auto-1",
     status: "filled",
     remainingAmountSubunits: 0,
@@ -318,7 +324,7 @@ describe("fetchMarketDetailWithBooks", () => {
   beforeEach(() => {
     vi.mocked(fetchMarketDetail).mockReset();
     vi.mocked(fetchOrderBook).mockReset();
-    vi.mocked(submitOrder).mockReset();
+    vi.mocked(submitBrowserCtfRangeOrder).mockReset();
     mocks.windowPriceHistory.mockClear();
     mocks.liveStatusHandlers.length = 0;
     mocks.routeParams.id = "condition-yesno";
@@ -345,7 +351,7 @@ describe("MarketDetailPage live market status", () => {
   beforeEach(() => {
     vi.mocked(fetchMarketDetail).mockReset();
     vi.mocked(fetchOrderBook).mockReset();
-    vi.mocked(submitOrder).mockReset();
+    vi.mocked(submitBrowserCtfRangeOrder).mockReset();
     mocks.buildIndexedDbTokenHoldings.mockReset();
     mocks.getBalance.mockReset();
     mocks.liveStatusHandlers.length = 0;
@@ -392,14 +398,14 @@ describe("MarketDetailPage live market status", () => {
     }
 
     fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
-    expect(submitOrder).not.toHaveBeenCalled();
+    expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 
   it("classifies needs_backup wallets as requiring the funded-action backup prompt", () => {
     expect(shouldPromptForFundedActionBackup("needs_backup")).toBe(true);
     expect(shouldPromptForFundedActionBackup("none")).toBe(false);
     expect(shouldPromptForFundedActionBackup("confirmed")).toBe(false);
-    expect(submitOrder).not.toHaveBeenCalled();
+    expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 
   it("throws from the submit guard when the market is closed", () => {
@@ -546,14 +552,21 @@ describe("MarketDetailPage live market status", () => {
     mocks.getBalance.mockResolvedValue(10_000);
     fireEvent.click(await screen.findByTestId("top-up-success"));
 
-    await waitFor(() => expect(submitOrder).toHaveBeenCalledTimes(1));
-    expect(submitOrder).toHaveBeenCalledWith(
-      "condition-yesno-Yes",
+    await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledWith(
       expect.objectContaining({
-        amountSubunits: 10_000,
-        outcomeId: "Yes",
-        side: "Buy",
-        timeInForce: "FAK",
+        clientOrderId: expect.any(String),
+        mintUrl: "https://mint.example",
+        mnemonic: mocks.walletState.mnemonic,
+        ticket: expect.objectContaining({
+          marketId: "condition-yesno-Yes",
+          request: expect.objectContaining({
+            amountSubunits: 10_000,
+            outcomeId: "Yes",
+            side: "Buy",
+            timeInForce: "FAK",
+          }),
+        }),
       }),
     );
   });
@@ -591,7 +604,7 @@ describe("MarketDetailPage live market status", () => {
     await screen.findAllByText(
       "Top-up completed, but the wallet balance is still below the order requirement.",
     );
-    expect(submitOrder).not.toHaveBeenCalled();
+    expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 
   it("drops a pending sat market order intent when order details change during top-up", async () => {
@@ -630,7 +643,7 @@ describe("MarketDetailPage live market status", () => {
     await screen.findAllByText(
       "Order details changed during top-up. Review the order and confirm again.",
     );
-    expect(submitOrder).not.toHaveBeenCalled();
+    expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 });
 

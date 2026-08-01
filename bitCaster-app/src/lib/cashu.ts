@@ -21,7 +21,11 @@ import {
   type Token,
   type OperationCounters,
 } from "@cashu/cashu-ts";
-import { useWalletStore } from "@/stores/wallet";
+import { getWalletForMnemonicUnit, useWalletStore } from "@/stores/wallet";
+import {
+  activeBrowserWalletScopeId,
+  browserWalletScopeIdFromMnemonic,
+} from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
 import {
   addProofs,
@@ -300,6 +304,7 @@ export interface KeysetRecoveryResult {
   /** Keyset IDs that were scanned (regardless of whether anything new was
    *  found). Empty means recovery couldn't run (e.g. mint unreachable). */
   scannedKeysets: string[];
+  complete: boolean;
 }
 
 type RecoverableMintKeyset = {
@@ -357,7 +362,14 @@ export async function recoverKeysetCountersForMint(
 ): Promise<KeysetRecoveryResult> {
   const url = normalizeUrl(mintUrl);
   const store = useWalletStore.getState();
-  if (!store.mnemonic) return { scannedKeysets: [] };
+  if (!store.mnemonic) return { scannedKeysets: [], complete: true };
+  const scopeId = browserWalletScopeIdFromMnemonic(store.mnemonic);
+  if (scopeId === null) return { scannedKeysets: [], complete: true };
+  const requireCapturedProfile = () => {
+    if (activeBrowserWalletScopeId() !== scopeId) {
+      throw new Error("The wallet profile changed during counter recovery.");
+    }
+  };
   const requestedBaseAsset =
     opts.baseAsset === undefined || opts.baseAsset === null
       ? null
@@ -369,6 +381,7 @@ export async function recoverKeysetCountersForMint(
   // store can be days behind; the duplicate-error path needs to scan
   // whatever keyset the wallet is actually trying to mint against right now.
   const fresh = await discoveryWallet.mint.getKeySets().catch(() => null);
+  requireCapturedProfile();
   const keysets: RecoverableMintKeyset[] =
     fresh?.keysets ?? store.mints.find((m) => m.url === url)?.keysets ?? [];
   const units = Array.from(
@@ -383,6 +396,7 @@ export async function recoverKeysetCountersForMint(
     ),
   );
   const scanned: string[] = [];
+  let complete = fresh !== null || keysets.length > 0;
   for (const unit of units) {
     const wallet =
       unit === discoveryUnit
@@ -398,6 +412,7 @@ export async function recoverKeysetCountersForMint(
           0,
           keyset.id,
         );
+        requireCapturedProfile();
         const next = lastCounterWithSignature !== undefined ? lastCounterWithSignature + 1 : 0;
         const current = useWalletStore.getState().keysetCounters[keyset.id] ?? 0;
         const advanced = Math.max(current, next);
@@ -415,6 +430,7 @@ export async function recoverKeysetCountersForMint(
           // `keysetCountersRecovered` false so startup retries rather than
           // permanently suppressing proofs it could not safely classify.
           const grouped = await wallet.groupProofsByState(proofs);
+          requireCapturedProfile();
           const safe = grouped.unspent;
           if (safe.length > 0) {
             const stored: StoredProof[] = safe.map((p) => ({
@@ -424,6 +440,7 @@ export async function recoverKeysetCountersForMint(
               unit,
             }));
             await addProofs(stored);
+            requireCapturedProfile();
           }
         }
         // Mark the scan complete only after every recovered UNSPENT proof is
@@ -440,10 +457,11 @@ export async function recoverKeysetCountersForMint(
         // Best-effort: if this keyset's recovery fails (mint unreachable,
         // keyset rotated, etc.) leave the flag unset so the next trip
         // retries. Fall through to the next keyset.
+        complete = false;
       }
     }
   }
-  return { scannedKeysets: scanned };
+  return { scannedKeysets: scanned, complete };
 }
 
 /** Encode proofs as a cashuV4 token string ready to share. */
@@ -632,13 +650,23 @@ export async function receiveAndStoreTokenRecoverably(
 }
 
 /** Recover every nonterminal external-token receive from its exact counter range. */
-export async function recoverPendingTokenReceives(): Promise<void> {
+export async function recoverPendingTokenReceives(): Promise<{ pending: number }> {
+  const mnemonic = useWalletStore.getState().mnemonic;
+  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  if (scopeId === null) return { pending: 0 };
+  const requireCapturedProfile = () => {
+    if (activeBrowserWalletScopeId() !== scopeId) {
+      throw new Error("The wallet profile changed during token recovery.");
+    }
+  };
   const operations = await getProofOperations({
     states: ["prepared"],
     kinds: ["token-receive"],
   });
+  let pending = 0;
   for (const operation of operations) {
     try {
+      requireCapturedProfile();
       const unit = requireCashuProofUnit(
         requiredReceiveMetadataString(operation.metadata.unit, "unit"),
       );
@@ -656,12 +684,14 @@ export async function recoverPendingTokenReceives(): Promise<void> {
         "counterCount",
         1,
       );
-      const wallet = await getWalletForUnit(operation.mintUrl, unit);
+      const wallet = await getWalletForMnemonicUnit(operation.mintUrl, unit, mnemonic);
       const restored = await wallet.restore(counterStart, counterCount, {
         keysetId,
       });
+      requireCapturedProfile();
       if (restored.proofs.length > 0) {
         const states = await wallet.groupProofsByState(restored.proofs);
+        requireCapturedProfile();
         if (states.unspent.length > 0) {
           const enrichedProofs = await proofsWithOptionalConditionalMetadata({
             mintUrl: operation.mintUrl,
@@ -675,11 +705,14 @@ export async function recoverPendingTokenReceives(): Promise<void> {
               unit,
             })),
           );
+          requireCapturedProfile();
         }
         if (states.pending.length === 0) {
           await markProofOperationCompleted(operation.operationId, {
             receive: restored.proofs,
           });
+        } else {
+          pending += 1;
         }
         continue;
       }
@@ -689,12 +722,15 @@ export async function recoverPendingTokenReceives(): Promise<void> {
       // UNSPENT answer: the mint may commit immediately afterward. The small
       // prepared record remains retryable until NUT-09 yields successors.
       await wallet.groupProofsByState(operation.inputs);
+      pending += 1;
     } catch {
       // Keep the prepared journal. Startup will retry; custody recovery must
       // never become terminal merely because the mint or IndexedDB is
       // temporarily unavailable.
+      pending += 1;
     }
   }
+  return { pending };
 }
 
 function requiredReceiveMetadataString(value: unknown, field: string): string {

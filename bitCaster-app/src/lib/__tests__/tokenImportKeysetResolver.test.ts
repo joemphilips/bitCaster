@@ -108,7 +108,7 @@ describe("resolveTokenImportKeysets", () => {
     );
 
     await expect(resolveTokenImportKeysets(request([REGULAR_ID]))).rejects.toThrow(
-      "Mint keyset response byte limit exceeded",
+      "JSON response byte limit exceeded",
     );
   });
 

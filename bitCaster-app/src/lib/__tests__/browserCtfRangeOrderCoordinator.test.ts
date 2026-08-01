@@ -331,7 +331,7 @@ describe("browser CTF range order coordinator", () => {
     const recovered = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
     expect(recovered.recoveredOperationIds).toEqual([]);
-    expect(recovered.pending).toEqual([
+    expect(recovered.pending).toMatchObject([
       { operationId: preparation.operationId, code: "recovery-pending" },
     ]);
     expect(completeCalls).toBe(2);
@@ -383,7 +383,7 @@ describe("browser CTF range order coordinator", () => {
     const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
     expect(recovery.recoveredOperationIds).toEqual([]);
-    expect(recovery.pending).toEqual([
+    expect(recovery.pending).toMatchObject([
       { operationId: preparation.operationId, code: "recovery-pending" },
     ]);
     expect(completeCalls).toBe(1);
@@ -516,7 +516,7 @@ describe("browser CTF range order coordinator", () => {
 
     const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
-    expect(recovery.pending).toEqual([
+    expect(recovery.pending).toMatchObject([
       { operationId: preparation.operationId, code: "recovery-pending" },
     ]);
     expect(engine.createCalls).toBe(1);
@@ -531,6 +531,49 @@ describe("browser CTF range order coordinator", () => {
         ({ reservedBy }) => reservedBy === custodyOperationId(preparation.operationId),
       ),
     ).toBe(true);
+  });
+
+  it("retries only the exact persisted capability request after a lost response", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-capability-lost");
+    const requests: CreateSettlementCapabilityRequest[] = [];
+    let failResponse = true;
+    const engine = engineMock({
+      onCreate: async (request) => {
+        requests.push(structuredClone(request));
+        if (failResponse) {
+          failResponse = false;
+          throw new Error("lost capability response");
+        }
+      },
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      }),
+    ).rejects.toMatchObject({ code: "capability-creation-failed" });
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("capability-requested");
+
+    const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+
+    expect(recovery.pending).toMatchObject([
+      { operationId: preparation.operationId, code: "recovery-pending" },
+    ]);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    expect(engine.createCalls).toBe(2);
+    expect(engine.submitCalls).toBe(0);
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("capability-bound");
   });
 
   it("isolates a transient outer recovery failure from the next page record", async () => {
@@ -596,7 +639,7 @@ describe("browser CTF range order coordinator", () => {
     const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
     expect(recovery.recoveredOperationIds).toEqual([]);
-    expect(recovery.pending).toEqual([
+    expect(recovery.pending).toMatchObject([
       { operationId: first.operationId, code: "recovery-pending" },
       { operationId: second.operationId, code: "recovery-pending" },
     ]);
@@ -623,10 +666,17 @@ describe("browser CTF range order coordinator", () => {
       preparation.operationId,
       database,
     );
-    expect(journal?.lifecycleState).toBe("prepared");
+    expect(journal?.lifecycleState).toBe("capability-requested");
     expect(journal?.capability).toBeNull();
-    expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
-      pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
+    await expect(coordinator.recoverPage({ seed: SEED, limit: 8 })).resolves.toMatchObject({
+      recoveredOperationIds: [],
+      pending: [
+        {
+          operationId: preparation.operationId,
+          revision: 1,
+          code: "capability-validation-failed",
+        },
+      ],
     });
     expect(
       (await database.proofs.toArray()).every(
@@ -838,7 +888,7 @@ describe("browser CTF range order coordinator", () => {
     let now = 20_000;
     let refundTransportUnavailable = true;
     const wallet = sourceWallet();
-    const engine = engineMock();
+    const engine = engineMock({ resultFailure: true });
     const recoveryOptions = {
       now: () => now,
       createMintRecovery: refundableRecovery(preparation),
@@ -896,6 +946,41 @@ describe("browser CTF range order coordinator", () => {
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
     ).toBe("terminal");
+  });
+
+  it("uses exact mint recovery after expiry when the engine result is malformed", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-malformed-engine-result");
+    let now = 20_000;
+    const engine = engineMock({
+      result: () => ({ resultId: "foreign" }) as SettlementCapabilityResultResponse,
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine, {
+      now: () => now,
+      createMintRecovery: refundableRecovery(preparation),
+      executeRefundSwap: async (_mintUrl, request) => ({
+        signatures: request.outputs.map(signBlindedMessage),
+      }),
+    });
+    await coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: [sourceProof(preparation.offerKeyset.id)],
+    });
+
+    now = preparation.expiry * 1_000;
+    expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      recoveredOperationIds: [preparation.operationId],
+      pending: [],
+    });
+    expect(
+      (
+        await new BrowserDurableCustodyAdapter(database).readOperation(
+          walletScope(),
+          custodyOperationId(preparation.operationId),
+        )
+      )?.operation.state,
+    ).toBe("aborted");
   });
 
   it("rolls back outer refund completion and restores the exact refund after restart", async () => {
@@ -1360,6 +1445,7 @@ function engineMock(
     restingOrderResponse?: boolean;
     submitResponse?: Partial<SubmitOrderResponse>;
     result?: () => SettlementCapabilityResultResponse | null;
+    resultFailure?: boolean;
     acknowledgeFailureOnce?: boolean;
   } = {},
 ): BrowserCtfRangeEngine & {
@@ -1401,6 +1487,7 @@ function engineMock(
       return input.orderStatus ?? null;
     },
     async getSettlementCapabilityResultByOperation() {
+      if (input.resultFailure === true) throw new Error("engine result transport is offline");
       return input.result?.() ?? null;
     },
     async acknowledgeSettlementCapabilityResult(resultId, request) {
@@ -1468,10 +1555,17 @@ function discoveredOrderStatus(): OrderStatusResponse {
     remainingAmountSubunits: 10_000,
     filledAmountSubunits: 0,
     fills: [],
+    amountSubunits: 10_000,
+    outcomeId: "YES",
+    side: "Buy",
+    price: 2,
+    placedAt: "2026-07-31T09:00:00.000Z",
+    timeInForce: "FAK",
     tokenSide: "Outcome",
     baseAsset: "sat",
     divisibility: 10_000,
     activeSettlementGroup: null,
+    continuation: null,
   };
 }
 
@@ -1695,9 +1789,13 @@ function createDatabase(
 ): BitcasterDB {
   const database = new BitcasterDB(`bitcaster-browser-range-${crypto.randomUUID()}`);
   database.on("populate", (transaction) =>
-    transaction
-      .table("proofs")
-      .bulkAdd(proofs.map((proof) => ({ ...proof, amount: amountToNumber(proof.amount) }))),
+    transaction.table("proofs").bulkAdd(
+      proofs.map((proof) => ({
+        ...proof,
+        scopeId: walletScopeId(),
+        amount: amountToNumber(proof.amount),
+      })),
+    ),
   );
   openDatabases.push(database);
   return database;

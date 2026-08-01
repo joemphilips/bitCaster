@@ -275,6 +275,9 @@ export interface MarketDetailProps {
     message: string;
   } | null;
 
+  /** Explicitly dismiss the latest order-submit status. */
+  onTradeSubmitStatusDismiss?: () => void;
+
   /** UX-only wallet feasibility gate for local wallet backing checks. */
   tradeFeasibility?: {
     canBack: boolean;

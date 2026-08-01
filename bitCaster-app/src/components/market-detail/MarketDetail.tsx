@@ -69,6 +69,7 @@ export function MarketDetail({
   onAmountChange,
   onTradeConfirm,
   tradeSubmitStatus,
+  onTradeSubmitStatusDismiss,
   tradeFeasibility,
   isTradeSubmitting,
   onShare,
@@ -167,6 +168,7 @@ export function MarketDetail({
                 onAmountChange={onAmountChange}
                 onTradeConfirm={onTradeConfirm}
                 tradeSubmitStatus={tradeSubmitStatus}
+                onTradeSubmitStatusDismiss={onTradeSubmitStatusDismiss}
                 tradeFeasibility={tradeFeasibility}
                 isTradeSubmitting={isTradeSubmitting}
                 onCommentPost={onCommentPost}
@@ -287,6 +289,7 @@ export function MarketDetail({
                 onAmountChange={onAmountChange}
                 onTradeConfirm={onTradeConfirm}
                 tradeSubmitStatus={tradeSubmitStatus}
+                onTradeSubmitStatusDismiss={onTradeSubmitStatusDismiss}
                 tradeFeasibility={tradeFeasibility}
                 isTradeSubmitting={isTradeSubmitting}
                 onCommentPost={onCommentPost}

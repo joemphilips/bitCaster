@@ -624,6 +624,42 @@ describe("TradingPanel", () => {
     expect(amountInput).toHaveValue(null);
   });
 
+  it("keeps an order error visible across input changes until explicit dismissal", async () => {
+    const dismiss = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={2}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="limit"
+        limitPrice={40}
+        tradeSubmitStatus={{ kind: "error", message: "Mint is unavailable." }}
+        onTradeSubmitStatusDismiss={dismiss}
+      />,
+    );
+
+    rerender(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={3}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="limit"
+        limitPrice={40}
+        tradeSubmitStatus={{ kind: "error", message: "Mint is unavailable." }}
+        onTradeSubmitStatusDismiss={dismiss}
+      />,
+    );
+
+    expect(screen.getByTestId("trade-submit-status")).toHaveTextContent("Mint is unavailable.");
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(dismiss).toHaveBeenCalledOnce();
+  });
+
   it("respects price ticks for D=10000 and D=1000000", () => {
     const preview: LimitOrderPreview = {
       limitPrice: 3_000,

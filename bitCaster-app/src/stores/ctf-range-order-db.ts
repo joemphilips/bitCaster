@@ -19,6 +19,14 @@ export interface CtfRangePreparationPage {
   nextCursor: CtfRangeOrderPreparationPageCursor | null;
 }
 
+const ACTIVE_PREPARATION_STATES = [
+  "prepared",
+  "capability-requested",
+  "capability-bound",
+  "order-submitted",
+  "submission-rejected",
+] as const satisfies readonly CtfRangeOrderPreparationLifecycle[];
+
 export async function insertCtfRangePreparation(
   input: CtfRangeOrderPreparationIdentity,
   database: BitcasterDB = db,
@@ -132,25 +140,35 @@ export async function pageActiveCtfRangePreparations(
 ): Promise<CtfRangePreparationPage> {
   const limit = decodeCtfRangeOrderPreparationPageLimit(input.limit);
   const after = input.after ? decodeCtfRangeOrderPreparationPageCursor(input.after) : undefined;
-  const lower: readonly unknown[] = after
-    ? [input.scopeId, after.updatedAtMs, after.rangeOperationId]
-    : [input.scopeId];
-  // IndexedDB orders array keys after numeric timestamp keys. This prefix
-  // bound includes every record in the scope without an Infinity sentinel.
-  const upper: readonly unknown[] = [input.scopeId, []];
-  const rows = await database.ctfRangePreparations
-    .where("[scopeId+updatedAtMs+rangeOperationId]")
-    .between(lower, upper, after === undefined, true)
-    .filter((record) => record.lifecycleState !== "terminal")
-    .limit(limit + 1)
-    .toArray();
+  const rows = (
+    await Promise.all(
+      ACTIVE_PREPARATION_STATES.map((lifecycleState) => {
+        const lower: readonly unknown[] = after
+          ? [input.scopeId, lifecycleState, after.createdAtMs, after.rangeOperationId]
+          : [input.scopeId, lifecycleState];
+        const upper: readonly unknown[] = [input.scopeId, lifecycleState, []];
+        return database.ctfRangePreparations
+          .where("[scopeId+lifecycleState+createdAtMs+rangeOperationId]")
+          .between(lower, upper, after === undefined, true)
+          .limit(limit + 1)
+          .toArray();
+      }),
+    )
+  )
+    .flat()
+    .sort(
+      (left, right) =>
+        left.createdAtMs - right.createdAtMs ||
+        left.rangeOperationId.localeCompare(right.rangeOperationId),
+    )
+    .slice(0, limit + 1);
   const page = rows.slice(0, limit).map(decodeCtfRangeOrderPreparationRecord);
   const last = page.at(-1);
   return {
     preparations: page,
     nextCursor:
       rows.length > limit && last
-        ? { updatedAtMs: last.updatedAtMs, rangeOperationId: last.rangeOperationId }
+        ? { createdAtMs: last.createdAtMs, rangeOperationId: last.rangeOperationId }
         : null,
   };
 }

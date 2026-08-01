@@ -37,6 +37,8 @@ import {
   type DurableCtfRangeVerifiedResultPreparation,
 } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import {
+  acknowledgeCtfRangeEngineResult,
+  assertCtfRangeEngineResultMatchesPersistedArtifact,
   CtfRangeRecoveryTransportError,
   CtfRangeMintRecoveryAdapter,
   decodeCtfRangeEngineResult,
@@ -58,6 +60,7 @@ import { restoreOutputGroups, type StoredOutputData } from "@bitcaster/client-sd
 import {
   buildPersistedCtfRangeOrderPreparation,
   createCtfRangeSettlementCapabilityRequest,
+  createCtfRangeOrderPreparationKeysetResolver,
   decodeSettlementCoordinatorPublicKey,
   decodeCtfRangeOrderPreparationFromRecord,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
@@ -86,6 +89,7 @@ import {
   browserOwnerAt,
   browserPersistedSourceResult,
   browserRangeJournalIdentity,
+  browserRangeCapabilityRequestFromSnapshot,
   browserRangeOperationFromSnapshot,
   browserRangeRefundProofRows,
   browserRangeRefundStoredProofs,
@@ -148,7 +152,9 @@ export interface BrowserCtfRangeEngine {
 }
 
 export interface BrowserCtfRangeOrderCoordinatorDependencies {
-  readonly wallet: BrowserCtfRangeWallet;
+  readonly wallet:
+    | BrowserCtfRangeWallet
+    | ((mintUrl: string) => BrowserCtfRangeWallet | Promise<BrowserCtfRangeWallet>);
   readonly engine: BrowserCtfRangeEngine;
   readonly database?: BitcasterDB;
   readonly lockManager?: WalletLockManager;
@@ -169,21 +175,28 @@ export interface BrowserCtfRangeOrderCoordinatorDependencies {
 
 export interface BrowserCtfRangeRecoveryPage {
   readonly recoveredOperationIds: readonly string[];
-  readonly pending: readonly { operationId: string; code: BrowserCtfRangeOrderErrorCode }[];
+  readonly pending: readonly {
+    operationId: string;
+    revision: number;
+    code: BrowserCtfRangeOrderErrorCode;
+  }[];
   readonly nextCursor: CtfRangeOrderPreparationPageCursor | null;
 }
 
-export type BrowserCtfRangeOrderErrorCode =
-  | "invalid-order-type"
-  | "insufficient-funds"
-  | "source-preparation-failed"
-  | "mint-source-uncertain"
-  | "custody-commit-failed"
-  | "capability-creation-failed"
-  | "capability-validation-failed"
-  | "order-submission-rejected"
-  | "order-submission-uncertain"
-  | "recovery-pending";
+export const BROWSER_CTF_RANGE_ORDER_ERROR_CODES = [
+  "invalid-order-type",
+  "insufficient-funds",
+  "source-preparation-failed",
+  "mint-source-uncertain",
+  "custody-commit-failed",
+  "capability-creation-failed",
+  "capability-validation-failed",
+  "order-submission-rejected",
+  "order-submission-uncertain",
+  "recovery-pending",
+] as const;
+
+export type BrowserCtfRangeOrderErrorCode = (typeof BROWSER_CTF_RANGE_ORDER_ERROR_CODES)[number];
 
 interface AppliedSourceCommitInput {
   readonly scope: DurableCustodyScope;
@@ -226,7 +239,7 @@ export function buildBrowserCtfRangeOrderPreparation(input: {
 }
 
 export class BrowserCtfRangeOrderCoordinator {
-  readonly #wallet: BrowserCtfRangeWallet;
+  readonly #walletForMint: (mintUrl: string) => Promise<BrowserCtfRangeWallet>;
   readonly #engine: BrowserCtfRangeEngine;
   readonly #database: BitcasterDB;
   readonly #custody: BrowserDurableCustodyAdapter;
@@ -246,7 +259,9 @@ export class BrowserCtfRangeOrderCoordinator {
   ) => Promise<{ signatures: SerializedBlindedSignature[] }>;
 
   constructor(input: BrowserCtfRangeOrderCoordinatorDependencies) {
-    this.#wallet = input.wallet;
+    const wallet = input.wallet;
+    this.#walletForMint =
+      typeof wallet === "function" ? async (mintUrl) => wallet(mintUrl) : async () => wallet;
     this.#engine = input.engine;
     this.#database = input.database ?? db;
     this.#custody = new BrowserDurableCustodyAdapter(this.#database);
@@ -318,22 +333,47 @@ export class BrowserCtfRangeOrderCoordinator {
           const recoveredOperationIds: string[] = [];
           const pending: Array<{
             operationId: string;
+            revision: number;
             code: BrowserCtfRangeOrderErrorCode;
           }> = [];
           for (const record of page.preparations) {
             try {
               const recovered = await this.#recoverRecord(record, input.seed, scope, owner);
               if (recovered) recoveredOperationIds.push(record.rangeOperationId);
-              else pending.push({ operationId: record.rangeOperationId, code: "recovery-pending" });
+              else {
+                const current = await this.#currentPreparation(record);
+                pending.push({
+                  operationId: record.rangeOperationId,
+                  revision: current.revision,
+                  code: "recovery-pending",
+                });
+              }
             } catch (error) {
-              if (!isPendingRecoveryError(error)) throw error;
-              pending.push({ operationId: record.rangeOperationId, code: error.code });
+              if (!(error instanceof BrowserCtfRangeOrderError)) throw error;
+              const current = await this.#currentPreparation(record);
+              pending.push({
+                operationId: record.rangeOperationId,
+                revision: current.revision,
+                code: error.code,
+              });
             }
           }
           return { recoveredOperationIds, pending, nextCursor: page.nextCursor };
         }),
       this.#lockManager,
     );
+  }
+
+  async #currentPreparation(
+    record: Awaited<ReturnType<typeof pageActiveCtfRangePreparations>>["preparations"][number],
+  ) {
+    const current = await readCtfRangePreparation(
+      record.scopeId,
+      record.rangeOperationId,
+      this.#database,
+    );
+    if (current === null) throw new Error("browser range journal disappeared during recovery");
+    return current;
   }
 
   async #recoverRecord(
@@ -348,6 +388,19 @@ export class BrowserCtfRangeOrderCoordinator {
         if (sourceReleased) return true;
         break;
       }
+      case "capability-requested":
+        try {
+          await this.#recoverRequestedCapability(record, scope);
+        } catch (error) {
+          const preparation = decodeCtfRangeOrderPreparationFromRecord(record);
+          if (
+            !(error instanceof BrowserCtfRangeOrderError) ||
+            Math.floor(this.#now() / 1_000) < preparation.expiry
+          ) {
+            throw error;
+          }
+        }
+        break;
       case "capability-bound":
         await this.#discoverBoundOrder(record);
         break;
@@ -380,6 +433,19 @@ export class BrowserCtfRangeOrderCoordinator {
     );
     if (snapshot === null) throw rangeError("recovery-pending");
     const operation = browserRangeOperationFromSnapshot(snapshot.record, snapshot.artifacts);
+    if (
+      snapshot.record.operation.result.state === "verified-staged" ||
+      snapshot.record.operation.result.state === "applied"
+    ) {
+      await this.#resumePersistedOuterResult(
+        journalRecord,
+        scope,
+        owner,
+        snapshot.record,
+        operation,
+      );
+      return true;
+    }
     const existingRefund = await this.#database.proofOperations.get(
       deriveDurableCtfRangeRefundOperationId(operation.operationId),
     );
@@ -403,20 +469,12 @@ export class BrowserCtfRangeOrderCoordinator {
           ? null
           : await this.#engine.getSettlementCapabilityResultByOperation(operation.operationId);
     } catch (error) {
-      throw rangeError("recovery-pending", error);
-    }
-    if (snapshot.record.operation.result.state === "applied") {
-      if (response !== null) {
-        const engineResult = decodeCtfRangeEngineResult(response, {
-          operation,
-          reference: requireCapabilityReference(journalRecord),
-        });
-        await this.#acknowledgeEngineResult(operation, journalRecord, engineResult);
+      if (Math.floor(this.#now() / 1_000) < operation.expiry) {
+        throw rangeError("recovery-pending", error);
       }
-      await this.#terminalizeRecoveredJournal(journalRecord);
-      return true;
+      response = null;
     }
-    let prepared: DurableCtfRangeVerifiedResultPreparation;
+    let prepared: DurableCtfRangeVerifiedResultPreparation | null = null;
     let resolveKeyset: DurableCtfRangeKeysetResolver;
     let engineResult: ReturnType<typeof decodeCtfRangeEngineResult> | null = null;
     if (response === null) {
@@ -464,19 +522,58 @@ export class BrowserCtfRangeOrderCoordinator {
         recovery.loadExactVerificationContext(snapshot.record),
       );
       resolveKeyset = verification.resolveKeyset;
-      engineResult = decodeCtfRangeEngineResult(response, {
-        operation,
-        reference: requireCapabilityReference(journalRecord),
-      });
-      prepared = prepareDurableCtfRangeVerifiedResult({
-        record: snapshot.record,
-        operation,
-        envelope: engineResult.envelope,
-        allManifestRecovery: verification.allManifestRecovery,
-        resolveKeyset: verification.resolveKeyset,
-      });
+      try {
+        engineResult = decodeCtfRangeEngineResult(response, {
+          operation,
+          reference: requireCapabilityReference(journalRecord),
+        });
+      } catch (error) {
+        if (Math.floor(this.#now() / 1_000) < operation.expiry) throw error;
+        const observed = await this.#pendingOnRecoveryTransport(() =>
+          recovery.loadUncertainRecoveryObservation({
+            record: snapshot.record,
+            selection: null,
+            now: Math.floor(this.#now() / 1_000),
+          }),
+        );
+        prepared = prepareDurableCtfRangeRecoveredResult({
+          record: snapshot.record,
+          operation,
+          observation: observed.observation,
+          resolveKeyset: observed.resolveKeyset,
+        });
+        resolveKeyset = observed.resolveKeyset;
+        const decision = classifyDurableCtfRangeRecovery({
+          record: snapshot.record,
+          operation,
+          observation: observed.observation,
+          resolveKeyset: observed.resolveKeyset,
+        });
+        if (decision.kind === "refundable") {
+          await this.#startOuterRefund(
+            journalRecord,
+            seed,
+            scope,
+            owner,
+            snapshot.record,
+            operation,
+          );
+          return true;
+        }
+        if (decision.kind !== "confirmed") throw rangeError("recovery-pending");
+        engineResult = null;
+      }
+      if (engineResult !== null) {
+        prepared = prepareDurableCtfRangeVerifiedResult({
+          record: snapshot.record,
+          operation,
+          envelope: engineResult.envelope,
+          allManifestRecovery: verification.allManifestRecovery,
+          resolveKeyset: verification.resolveKeyset,
+        });
+      }
     }
-    if (prepared.kind !== "confirmed") throw rangeError("recovery-pending");
+    if (prepared === null || prepared.kind !== "confirmed") throw rangeError("recovery-pending");
     await this.#commitRecoveredOuterResult(
       scope,
       owner,
@@ -492,36 +589,79 @@ export class BrowserCtfRangeOrderCoordinator {
     return true;
   }
 
+  async #resumePersistedOuterResult(
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+    record: DurableCustodyRecord,
+    operation: DurableCtfRangeOperation,
+  ): Promise<void> {
+    const exactResult = await this.#readExactResultArtifact(scope, record);
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(journalRecord);
+    const resolveKeyset = createCtfRangeOrderPreparationKeysetResolver(preparation);
+    const result = recoverDurableCtfRangeVerifiedResultArtifact({
+      record,
+      operation,
+      exactResult,
+      resolveKeyset,
+    });
+    if (record.operation.result.state === "verified-staged") {
+      await this.#applyRecoveredOuterResult(scope, owner, record, operation, result);
+    }
+    if (isMintRecoveredRangeResult(exactResult.artifact)) {
+      await this.#terminalizeRecoveredJournal(journalRecord);
+      return;
+    }
+    let response: SettlementCapabilityResultResponse | null;
+    try {
+      response = await this.#engine.getSettlementCapabilityResultByOperation(operation.operationId);
+    } catch (error) {
+      throw rangeError("recovery-pending", error);
+    }
+    if (response === null) throw rangeError("recovery-pending");
+    const engineResult = decodeCtfRangeEngineResult(response, {
+      operation,
+      reference: requireCapabilityReference(journalRecord),
+    });
+    await this.#assertPersistedEngineResult(scope, record, engineResult);
+    await this.#acknowledgeEngineResult(operation, journalRecord, engineResult);
+    await this.#terminalizeRecoveredJournal(journalRecord);
+  }
+
   async #acknowledgeEngineResult(
     operation: DurableCtfRangeOperation,
     journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
     result: ReturnType<typeof decodeCtfRangeEngineResult>,
   ): Promise<void> {
-    if (result.acknowledgedAt !== null) return;
-    let acknowledgedResponse: SettlementCapabilityResultResponse | null;
     try {
-      acknowledgedResponse = await this.#engine.acknowledgeSettlementCapabilityResult(
-        result.resultId,
-        { expectedVersion: result.version },
+      await acknowledgeCtfRangeEngineResult(
+        this.#engine,
+        {
+          operation,
+          reference: requireCapabilityReference(journalRecord),
+          previouslyPersistedRequestDigest: result.requestDigest,
+        },
+        result,
       );
     } catch (error) {
-      throw rangeError("recovery-pending", error);
+      if (error instanceof CtfRangeRecoveryTransportError) {
+        throw rangeError("recovery-pending", error);
+      }
+      throw error;
     }
-    if (acknowledgedResponse === null) {
-      throw rangeError("recovery-pending");
-    }
-    const acknowledged = decodeCtfRangeEngineResult(acknowledgedResponse, {
-      operation,
-      reference: requireCapabilityReference(journalRecord),
-      previouslyPersistedRequestDigest: result.requestDigest,
+  }
+
+  async #assertPersistedEngineResult(
+    scope: DurableCustodyScope,
+    record: DurableCustodyRecord,
+    result: ReturnType<typeof decodeCtfRangeEngineResult>,
+  ): Promise<void> {
+    const reference = record.operation.result.exactResult;
+    if (reference === null) throw new Error("browser range result artifact is missing");
+    assertCtfRangeEngineResultMatchesPersistedArtifact(result, {
+      reference,
+      exactResult: await this.#readExactResultArtifact(scope, record),
     });
-    if (
-      acknowledged.resultId !== result.resultId ||
-      acknowledged.version !== result.version + 1 ||
-      acknowledged.acknowledgedAt === null
-    ) {
-      throw new Error("browser range result acknowledgement is foreign");
-    }
   }
 
   async #pendingOnRecoveryTransport<T>(action: () => Promise<T>): Promise<T> {
@@ -552,7 +692,7 @@ export class BrowserCtfRangeOrderCoordinator {
       operation = await prepareCtfRangeSourceOperation({
         preparation: input.preparation,
         seed: input.seed,
-        wallet: this.#wallet,
+        wallet: await this.#walletForMint(input.preparation.mintUrl),
         candidates: input.candidates,
       });
     } catch (error) {
@@ -636,7 +776,10 @@ export class BrowserCtfRangeOrderCoordinator {
     const attempted = await this.#markSourceAttempted(scope, owner, sourceCustodyOperationId);
     let result: CtfRangeSourceResult;
     try {
-      result = await completeValidatedCtfRangeSourceOperation(validatedSource, this.#wallet);
+      result = await completeValidatedCtfRangeSourceOperation(
+        validatedSource,
+        await this.#walletForMint(preparation.mintUrl),
+      );
     } catch {
       throw rangeError("mint-source-uncertain");
     }
@@ -804,7 +947,9 @@ export class BrowserCtfRangeOrderCoordinator {
     }));
     let states: ProofState[];
     try {
-      states = await this.#wallet.checkProofsStates(proofIdentities);
+      states = await (
+        await this.#walletForMint(preparation.mintUrl)
+      ).checkProofsStates(proofIdentities);
     } catch {
       throw rangeError("recovery-pending");
     }
@@ -1018,12 +1163,28 @@ export class BrowserCtfRangeOrderCoordinator {
     request: CreateSettlementCapabilityRequest,
     comment: NostrKind1Event | null,
   ): Promise<SubmitOrderResponse> {
+    let requested: Awaited<ReturnType<typeof transitionCtfRangePreparation>>;
+    try {
+      requested = await transitionCtfRangePreparation(
+        {
+          scopeId,
+          rangeOperationId: preparation.operationId,
+          expectedRevision: 0,
+          from: "prepared",
+          to: "capability-requested",
+          updatedAtMs: this.#now(),
+        },
+        this.#database,
+      );
+    } catch {
+      throw rangeError("capability-creation-failed");
+    }
     const capability = await this.#createVerifiedCapability(preparation, operation, request);
     const bound = await bindCtfRangePreparationCapability(
       {
         scopeId,
         rangeOperationId: preparation.operationId,
-        expectedRevision: 0,
+        expectedRevision: requested.revision,
         capability,
         updatedAtMs: this.#now(),
       },
@@ -1032,10 +1193,56 @@ export class BrowserCtfRangeOrderCoordinator {
     return this.#submitBoundCapability(preparation, capability, bound, comment);
   }
 
+  async #recoverRequestedCapability(
+    record: Awaited<ReturnType<typeof pageActiveCtfRangePreparations>>["preparations"][number],
+    scope: DurableCustodyScope,
+  ): Promise<void> {
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(record);
+    const snapshot = await this.#custody.readOperationSnapshot(
+      scope,
+      browserCustodyOperationId(scope, preparation.operationId),
+    );
+    if (snapshot === null) throw rangeError("recovery-pending");
+    const operation = browserRangeOperationFromSnapshot(snapshot.record, snapshot.artifacts);
+    const expectedRequest = createCtfRangeSettlementCapabilityRequest(preparation, operation);
+    const request = browserRangeCapabilityRequestFromSnapshot(
+      snapshot.record,
+      snapshot.artifacts,
+      expectedRequest,
+    );
+    let capability: ReturnType<typeof validateAndProjectCtfRangeSettlementCapabilityResponse>;
+    try {
+      capability = await this.#createVerifiedCapability(preparation, operation, request, true);
+    } catch (error) {
+      if (
+        error instanceof BrowserCtfRangeOrderError &&
+        error.code === "capability-creation-failed"
+      ) {
+        throw rangeError("recovery-pending", error);
+      }
+      throw error;
+    }
+    try {
+      await bindCtfRangePreparationCapability(
+        {
+          scopeId: record.scopeId,
+          rangeOperationId: record.rangeOperationId,
+          expectedRevision: record.revision,
+          capability,
+          updatedAtMs: this.#now(),
+        },
+        this.#database,
+      );
+    } catch (error) {
+      throw rangeError("recovery-pending", error);
+    }
+  }
+
   async #createVerifiedCapability(
     preparation: PersistedCtfRangeOrderPreparation,
     operation: DurableCtfRangeOperation,
     request: CreateSettlementCapabilityRequest,
+    recovering = false,
   ): Promise<ReturnType<typeof validateAndProjectCtfRangeSettlementCapabilityResponse>> {
     let response: SettlementCapabilityResponse;
     try {
@@ -1049,7 +1256,7 @@ export class BrowserCtfRangeOrderCoordinator {
         capability: response,
         preparation,
         operation,
-        recovering: false,
+        recovering,
       });
     } catch {
       throw rangeError("capability-validation-failed");
@@ -1222,7 +1429,7 @@ export class BrowserCtfRangeOrderCoordinator {
     if (refund.state !== "completed") {
       let states: ProofState[];
       try {
-        states = await this.#wallet.checkProofsStates(refund.inputs);
+        states = await (await this.#walletForMint(refund.mintUrl)).checkProofsStates(refund.inputs);
       } catch (error) {
         throw rangeError("recovery-pending", error);
       }
@@ -1611,6 +1818,7 @@ function requireImmediateOrder(preparation: PersistedCtfRangeOrderPreparation): 
     case "FOK":
       return;
     case "GTC":
+    case "GTD":
       throw rangeError("invalid-order-type");
     default:
       return assertNever(preparation.request.timeInForce);
@@ -1640,6 +1848,22 @@ function rangeError(
   code: BrowserCtfRangeOrderErrorCode,
   cause?: unknown,
 ): BrowserCtfRangeOrderError {
+  const error = new BrowserCtfRangeOrderError(code, browserCtfRangeOrderErrorMessage(code));
+  if (cause !== undefined) Object.defineProperty(error, "cause", { value: cause });
+  return error;
+}
+
+function isMintRecoveredRangeResult(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).schemaVersion === 2 &&
+    (value as Record<string, unknown>).source === "mint-recovery"
+  );
+}
+
+export function browserCtfRangeOrderErrorMessage(code: BrowserCtfRangeOrderErrorCode): string {
   const messages: Record<BrowserCtfRangeOrderErrorCode, string> = {
     "invalid-order-type": "The browser supports only immediate FAK or FOK range orders.",
     "insufficient-funds": "The wallet has insufficient selectable funds for this order.",
@@ -1652,18 +1876,7 @@ function rangeError(
     "order-submission-uncertain": "The order acknowledgement is uncertain. It will not retry.",
     "recovery-pending": "The durable range operation still requires funds recovery.",
   };
-  const error = new BrowserCtfRangeOrderError(code, messages[code]);
-  if (cause !== undefined) Object.defineProperty(error, "cause", { value: cause });
-  return error;
-}
-
-function isPendingRecoveryError(error: unknown): error is BrowserCtfRangeOrderError & {
-  code: "mint-source-uncertain" | "recovery-pending";
-} {
-  return (
-    error instanceof BrowserCtfRangeOrderError &&
-    (error.code === "mint-source-uncertain" || error.code === "recovery-pending")
-  );
+  return messages[code];
 }
 
 function requireSourceKeysetId(value: string | undefined): string {

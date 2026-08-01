@@ -24,6 +24,9 @@ type AnyProof = {
 
 const store = new Map<string, AnyProof>();
 const txCallbacks: Array<() => Promise<void>> = [];
+vi.mock("@/lib/browserWalletProfile", () => ({
+  browserWalletDatabaseName: () => "bitcaster-wallet-test",
+}));
 
 vi.mock("dexie", () => {
   class FakeTable {
@@ -49,21 +52,34 @@ vi.mock("dexie", () => {
     }
     where(field: string) {
       return {
-        equals: (v: string | [string, string, string]) => ({
-          toArray: async () =>
+        equals: (v: string | string[]) => {
+          const matching = () =>
             Array.from(store.values()).filter((r) => {
               if (field === "mintUrl") return r.mintUrl === v;
               if (field === "[mintUrl+conditionId+outcomeCollection]") {
-                const [mintUrl, conditionId, outcomeCollection] = v as [string, string, string];
+                const [mintUrl, conditionId, outcomeCollection] = v as string[];
                 return (
                   r.mintUrl === mintUrl &&
                   r.conditionId === conditionId &&
                   r.outcomeCollection === outcomeCollection
                 );
               }
+              if (field === "[mintUrl+unit+id]") {
+                const [mintUrl, unit, id] = v as string[];
+                return r.mintUrl === mintUrl && r.unit === unit && r.id === id;
+              }
               return false;
+            });
+          return {
+            toArray: async () => matching(),
+            each: async (callback: (row: AnyProof) => void) => {
+              for (const row of matching()) callback(row);
+            },
+            filter: (predicate: (row: AnyProof) => boolean) => ({
+              toArray: async () => matching().filter(predicate),
             }),
-        }),
+          };
+        },
       };
     }
     async put(row: AnyProof): Promise<void> {
@@ -106,6 +122,7 @@ import {
   getProofs,
   getUnitProofs,
   getReservedProofs,
+  getSelectableUnitProofsForKeyset,
   normalizeStoredMintUrls,
   getProofOperation,
   markProofOperationCompleted,
@@ -307,6 +324,84 @@ describe("proof-db normalization", () => {
       "legacy-sat",
       "msat-proof",
     ]);
+  });
+
+  it("selects one keyset and proof class for range funding", async () => {
+    await addProofs([
+      {
+        secret: "regular-exact",
+        amount: Amount.from(100),
+        id: "exact-keyset",
+        C: "C1",
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "msat",
+      },
+      {
+        secret: "conditional-exact",
+        amount: Amount.from(100),
+        id: "exact-keyset",
+        C: "C2",
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "msat",
+        conditionId: "condition-1",
+        outcomeCollection: "YES",
+      },
+      {
+        secret: "foreign-keyset",
+        amount: Amount.from(100),
+        id: "other-keyset",
+        C: "C3",
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "msat",
+      },
+    ]);
+    const options = {
+      unit: "msat",
+      keysetId: "exact-keyset",
+      limit: 64,
+    } as const;
+    expect(
+      (
+        await getSelectableUnitProofsForKeyset("https://mint.example", {
+          ...options,
+          conditional: false,
+        })
+      ).map(({ secret }) => secret),
+    ).toEqual(["regular-exact"]);
+    expect(
+      (
+        await getSelectableUnitProofsForKeyset("https://mint.example", {
+          ...options,
+          conditional: true,
+        })
+      ).map(({ secret }) => secret),
+    ).toEqual(["conditional-exact"]);
+  });
+
+  it("keeps only the largest bounded range-funding candidates", async () => {
+    await addProofs(
+      [1, 8, 2, 16, 4].map((amount) => ({
+        secret: `proof-${amount}`,
+        amount: Amount.from(amount),
+        id: "exact-keyset",
+        C: `C-${amount}`,
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "msat" as const,
+      })),
+    );
+
+    const selected = await getSelectableUnitProofsForKeyset("https://mint.example", {
+      unit: "msat",
+      keysetId: "exact-keyset",
+      conditional: false,
+      limit: 3,
+    });
+
+    expect(selected.map(({ amount }) => amountToNumber(amount))).toEqual([16, 8, 4]);
   });
 
   it("requires an exact unit on every new proof write", async () => {

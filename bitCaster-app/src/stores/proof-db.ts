@@ -9,6 +9,7 @@ import {
 } from "@bitcaster/client-sdk/marketUnits";
 import type { CtfProofOperationCompletion } from "@bitcaster/client-sdk/ctfSplit";
 import type { CtfRangeOrderPreparationRecord } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
+import { browserWalletDatabaseName } from "../lib/browserWalletProfile";
 import { normalizeUrl } from "../lib/url";
 import type {
   BrowserCustodyActiveWorkRow,
@@ -123,6 +124,17 @@ export interface CtfRangePreparationConsolidationLinkRow {
   reservationId: string;
 }
 
+export interface BrowserCtfRangeMessageRow {
+  scopeId: string;
+  operationId: string;
+  revision: number;
+  code: string;
+  kind: "order" | "funds";
+  status: "active" | "acknowledged";
+  observedAtMs: number;
+  acknowledgedAtMs: number | null;
+}
+
 export class BitcasterDB extends Dexie {
   proofs!: Table<StoredProofRow>;
   proofOperations!: Table<ProofOperationRecord>;
@@ -132,6 +144,7 @@ export class BitcasterDB extends Dexie {
     CtfRangePreparationConsolidationLinkRow,
     [string, string, number]
   >;
+  ctfRangeMessages!: Table<BrowserCtfRangeMessageRow, [string, string, number, string]>;
   custodyScopes!: Table<BrowserCustodyScopeRow, string>;
   custodyOperations!: Table<BrowserCustodyOperationRow, [string, string]>;
   custodyArtifacts!: Table<BrowserCustodyArtifactRow, [string, string, string]>;
@@ -184,10 +197,37 @@ export class BitcasterDB extends Dexie {
         "&[scopeId+proofId], [scopeId+operationId], &[scopeId+operationId+inputPosition]",
       custodyActiveWork: "&[scopeId+operationId], [scopeId+nextAttemptAtMs+operationId]",
     });
+    this.version(7).stores({
+      proofs:
+        "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+unit+id], [mintUrl+conditionId+outcomeCollection]",
+      proofOperations: "operationId, state, kind, mintUrl, updatedAt",
+      ctfRangePreparations:
+        "&[scopeId+rangeOperationId], scopeId, [scopeId+clientOrderId], [scopeId+lifecycleState+createdAtMs+rangeOperationId]",
+      ctfRangePreparationSources: "&[scopeId+rangeOperationId], &[scopeId+sourceOperationId]",
+      ctfRangePreparationConsolidations:
+        "&[scopeId+rangeOperationId+round], &[scopeId+operationId]",
+      ctfRangeMessages:
+        "&[scopeId+operationId+revision+code], [scopeId+status+observedAtMs+operationId+revision+code]",
+      custodyScopes: "&scopeId",
+      custodyOperations: "&[scopeId+operationId], [scopeId+operationState]",
+      custodyArtifacts: "&[scopeId+operationId+artifactId], [scopeId+operationId]",
+      custodyProofs:
+        "&[scopeId+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability]",
+      custodyReservations:
+        "&[scopeId+proofId], [scopeId+operationId], &[scopeId+operationId+inputPosition]",
+      custodyActiveWork: "&[scopeId+operationId], [scopeId+nextAttemptAtMs+operationId]",
+    });
   }
 }
 
-export const db = new BitcasterDB();
+export let db = new BitcasterDB("bitcaster-wallet-uninitialized");
+
+export function activateBrowserWalletDatabase(scopeId: string): void {
+  const databaseName = browserWalletDatabaseName(scopeId);
+  if (db.name === databaseName) return;
+  db.close();
+  db = new BitcasterDB(databaseName);
+}
 
 export async function getProofs(
   mintUrl?: string,
@@ -233,6 +273,40 @@ export async function getUnitProofs(
     includeReserved: options.includeReserved,
   });
   return proofs.filter((p) => !isCtfProof(p) && normalizeStoredProofUnit(p) === unit);
+}
+
+export async function getSelectableUnitProofsForKeyset(
+  mintUrl: string,
+  options: {
+    unit: CashuProofUnit | string;
+    keysetId: string;
+    conditional: boolean;
+    limit: number;
+  },
+): Promise<StoredProof[]> {
+  const unit = parseCashuProofUnit(options.unit);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
+  if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 256) {
+    throw new Error("Range proof selection limit is invalid");
+  }
+  const selected: StoredProof[] = [];
+  await db.proofs
+    .where("[mintUrl+unit+id]")
+    .equals([normalizeUrl(mintUrl), unit, options.keysetId])
+    .each((row) => {
+      const proof = normalizeStoredProof(row);
+      if (proof.reservedBy || isCtfProof(proof) !== options.conditional) {
+        return;
+      }
+      selected.push(proof);
+      selected.sort(
+        (left, right) =>
+          amountToNumber(right.amount) - amountToNumber(left.amount) ||
+          left.secret.localeCompare(right.secret),
+      );
+      if (selected.length > options.limit) selected.pop();
+    });
+  return selected;
 }
 
 export async function selectAndReserveUnitProofs(

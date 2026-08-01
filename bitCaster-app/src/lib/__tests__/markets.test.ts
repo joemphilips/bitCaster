@@ -464,7 +464,21 @@ describe("submitOrder", () => {
   beforeEach(() => {
     originalFetch = globalThis.fetch;
     fetchMock = vi.fn(() =>
-      Promise.resolve(new Response(JSON.stringify({ orderId: "order-1" }), { status: 200 })),
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            orderId: "bfe9f76c-0993-47c1-a301-a7d4022f8272",
+            status: "resting",
+            remainingAmountSubunits: 10_000,
+            fills: [],
+            pendingPubkeySubmissions: [],
+            baseAsset: "sat",
+            divisibility: 10_000,
+            activeSettlementGroup: null,
+          }),
+          { status: 200 },
+        ),
+      ),
     );
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
   });

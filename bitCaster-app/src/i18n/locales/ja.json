@@ -679,6 +679,26 @@
   "loading": {
     "tagline": "金融は自由であるべきだ | 偽物こそ高価でなければならない"
   },
+  "walletRecovery": {
+    "title": "ウォレット復旧アラート",
+    "orderFailure": "注文は完了しませんでした",
+    "fundsRecovery": "資金の復旧を確認してください",
+    "operation": "操作: {{operationId}}",
+    "dismiss": "このウォレットアラートを閉じる",
+    "morePending": "ほかのウォレットアラートがあります。次を表示するにはアラートを閉じてください。",
+    "errors": {
+      "invalid-order-type": "このブラウザーは即時 FAK または FOK 注文のみをサポートします。",
+      "insufficient-funds": "使用できるウォレット残高が不足しています。",
+      "source-preparation-failed": "ウォレットは認可を準備できませんでした。",
+      "mint-source-uncertain": "ミントの結果を確認できません。資金の復旧を続けています。",
+      "custody-commit-failed": "ウォレットは永続操作を保存できませんでした。",
+      "capability-creation-failed": "エンジンは決済ケイパビリティーを確認しませんでした。",
+      "capability-validation-failed": "エンジンから無効な決済ケイパビリティーが返されました。",
+      "order-submission-rejected": "エンジンが注文を拒否しました。ウォレットは再送信しません。",
+      "order-submission-uncertain": "注文結果を確認できません。ウォレットは注文を再送信しません。",
+      "recovery-pending": "永続ウォレット操作では、まだ資金の復旧が必要です。"
+    }
+  },
   "notification": {
     "empty": "通知はまだありません。",
     "accepted": "{{market}} の注文が受理されました",

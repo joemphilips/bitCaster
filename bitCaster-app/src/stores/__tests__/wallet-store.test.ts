@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useWalletStore } from "../wallet";
 import * as bip39 from "@/lib/bip39";
+import { setActiveBrowserWalletProfile } from "@/lib/browserWalletProfile";
+import { db } from "../proof-db";
 
 const cashuMocks = vi.hoisted(() => ({
   loadMint: vi.fn().mockResolvedValue(undefined),
@@ -111,27 +113,41 @@ describe("useWalletStore", () => {
       expect(result.error).toContain("12 words");
     });
 
-    it("clears keysetCounters and keysetCountersRecovered when seed changes (codex review #6)", () => {
-      // Pre-existing wallet had counters and a recovery flag. Switching to
-      // a new seed via recoverFromMnemonic must NOT carry those over —
-      // otherwise the new seed is treated as already-recovered against the
-      // mint and counter collisions are not caught.
+    it("blocks a different seed until the encrypted-backup handoff exists", () => {
       useWalletStore.setState({
         mnemonic: "old seed words placeholder",
         keysetCounters: { k1: 42 },
         keysetCountersRecovered: { k1: true },
       });
       const words = bip39.generate();
-      useWalletStore.getState().recoverFromMnemonic(words);
+      const result = useWalletStore.getState().recoverFromMnemonic(words);
 
       const state = useWalletStore.getState();
-      expect(state.mnemonic).toBe(words.join(" "));
-      expect(state.keysetCounters).toEqual({});
-      expect(state.keysetCountersRecovered).toEqual({});
+      expect(result).toEqual({
+        valid: false,
+        error: "Seed switching requires an acknowledged encrypted backup.",
+      });
+      expect(state.mnemonic).toBe("old seed words placeholder");
+      expect(state.keysetCounters).toEqual({ k1: 42 });
+      expect(state.keysetCountersRecovered).toEqual({ k1: true });
+    });
+
+    it("reopens the current seed without resetting its counters", () => {
+      const words = bip39.generate();
+      const mnemonic = words.join(" ");
+      useWalletStore.setState({
+        mnemonic,
+        keysetCounters: { k1: 42 },
+        keysetCountersRecovered: { k1: true },
+      });
+
+      expect(useWalletStore.getState().recoverFromMnemonic(words)).toEqual({ valid: true });
+      expect(useWalletStore.getState().keysetCounters).toEqual({ k1: 42 });
+      expect(useWalletStore.getState().keysetCountersRecovered).toEqual({ k1: true });
     });
   });
 
-  describe("generateMnemonic — also clears counter state (codex review #6)", () => {
+  describe("generateMnemonic", () => {
     it("resets keysetCounters and keysetCountersRecovered on new mnemonic", () => {
       useWalletStore.setState({
         keysetCounters: { k1: 99 },
@@ -143,6 +159,7 @@ describe("useWalletStore", () => {
       expect(state.mnemonic.split(" ")).toHaveLength(12);
       expect(state.keysetCounters).toEqual({});
       expect(state.keysetCountersRecovered).toEqual({});
+      expect(db.name).toMatch(/^bitcaster-wallet-[0-9a-f]{64}$/);
     });
   });
 
@@ -181,6 +198,19 @@ describe("useWalletStore", () => {
         "msat",
         "sat",
       ]);
+    });
+
+    it("rejects counter mutation through a wallet from the previous seed", async () => {
+      useWalletStore.getState().generateMnemonic();
+      await useWalletStore.getState().getWalletForUnit("http://localhost:8085", "msat");
+      const oldCounterSource = cashuMocks.walletConstructor.mock.calls.at(-1)?.[1]
+        ?.counterSource as { reserve(keysetId: string, count: number): Promise<unknown> };
+
+      setActiveBrowserWalletProfile(bip39.generate().join(" "));
+
+      await expect(oldCounterSource.reserve("keyset-1", 1)).rejects.toThrow(
+        /wallet profile changed/,
+      );
     });
   });
 

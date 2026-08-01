@@ -9,7 +9,6 @@ import type { MeltQuoteResponse, MintQuoteResponse } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db } from "@/stores/proof-db";
 import {
   createMintQuote,
   mintProofs,
@@ -27,6 +26,7 @@ import {
 import { useToastStore } from "@/stores/toast";
 import {
   getUnitProofs,
+  getProofs,
   addProofs,
   removeProofs,
   isCtfProof,
@@ -142,12 +142,13 @@ export function useDepositWithdrawState(
 ): DepositWithdrawState {
   const storeMints = useWalletStore((s) => s.mints);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
+  const walletMnemonic = useWalletStore((s) => s.mnemonic);
 
   // Reactive balances for all mints via a single live query
   const mintUrls = storeMints.map((m) => m.url);
   const balancesByMint = useLiveQuery(
     async () => {
-      const proofs = await db.proofs.toArray();
+      const proofs = await getProofs();
       const map: Record<string, number> = {};
       for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
         const unit = requireCashuProofUnit(p.unit);
@@ -156,7 +157,7 @@ export function useDepositWithdrawState(
       }
       return map;
     },
-    [mintUrls.join(",")],
+    [mintUrls.join(","), walletMnemonic],
     {} as Record<string, number>,
   );
 

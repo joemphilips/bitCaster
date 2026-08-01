@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db, isCtfProof } from "@/stores/proof-db";
+import { getProofs, isCtfProof } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
@@ -191,9 +191,10 @@ export function usePortfolioState(): PortfolioState & {
   // Positions and funds are both wallet-local. CTF proofs are market
   // positions; base proofs are spendable ecash funds.
   const storeMints = useWalletStore((s) => s.mints);
+  const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const positionsFromDb = useLiveQuery(
     async () => {
-      const proofs = await db.proofs.toArray();
+      const proofs = await getProofs();
       const byOutcome = new Map<
         string,
         {
@@ -305,13 +306,13 @@ export function usePortfolioState(): PortfolioState & {
         };
       });
     },
-    [],
+    [walletMnemonic],
     [] as Position[],
   );
   const positions: Position[] = positionsFromDb ?? [];
   const fundsFromDb = useLiveQuery(
     async () => {
-      const proofs = await db.proofs.toArray();
+      const proofs = await getProofs();
       const balanceByMintAndUnit: Record<
         string,
         { mintUrl: string; baseAsset: MarketBaseAsset; amount: number }
@@ -341,7 +342,7 @@ export function usePortfolioState(): PortfolioState & {
         };
       });
     },
-    [storeMints],
+    [storeMints, walletMnemonic],
     [] as (Fund & { mintName: string })[],
   );
   const funds: Fund[] = fundsFromDb;

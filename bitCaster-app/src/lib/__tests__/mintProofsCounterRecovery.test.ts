@@ -85,6 +85,7 @@ vi.mock("@/stores/wallet", () => ({
     getState: () => mocks.store,
     setState: mocks.setStateImpl,
   },
+  getWalletForMnemonicUnit: mocks.getWallet,
 }));
 
 vi.mock("@/stores/proof-db", () => ({
@@ -103,6 +104,10 @@ vi.mock("@/stores/proof-db", () => ({
 // module's `getWallet` via a vitest spy in beforeEach.
 
 import * as cashu from "../cashu";
+import { setActiveBrowserWalletProfile } from "../browserWalletProfile";
+
+const VALID_MNEMONIC =
+  "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 // `MintOperationError`-shape helper: real cashu-ts errors carry `.name`,
 // `.code` and `.status`. The structural sanity check in
@@ -145,12 +150,14 @@ beforeEach(() => {
   mocks.store.keysetCountersRecovered = {};
   mocks.store.activeMintUrl = "https://mint.test";
   mocks.store.mints = [{ url: "https://mint.test", keysets: [{ id: "k1" }] }];
-  mocks.store.mnemonic = "seed words";
-  mocks.addProofs.mockClear();
+  mocks.store.mnemonic = VALID_MNEMONIC;
+  setActiveBrowserWalletProfile(VALID_MNEMONIC);
+  mocks.addProofs.mockReset();
   mocks.addProofs.mockResolvedValue(undefined);
-  mocks.prepareProofOperation.mockClear();
-  mocks.markProofOperationCompleted.mockClear();
-  mocks.markProofOperationFailed.mockClear();
+  mocks.prepareProofOperation.mockReset();
+  mocks.prepareProofOperation.mockImplementation(async (record: unknown) => record);
+  mocks.markProofOperationCompleted.mockReset();
+  mocks.markProofOperationFailed.mockReset();
   mocks.getProofOperations.mockReset();
   mocks.getProofOperations.mockResolvedValue([]);
   mocks.getWallet.mockClear();

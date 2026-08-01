@@ -93,6 +93,8 @@ export function browserRangeJournalIdentity(
     priceSubunits: preparation.priceNumerator,
     amountSubunits: preparation.amountSubunits,
     minimumFillAmountSubunits: preparation.request.minimumFillAmountSubunits,
+    continueAfterPartialFill: false,
+    continuation: null,
     divisibility: preparation.divisibility,
     authorizationExpiresAtUnixSeconds: preparation.expiry,
     preparationBytes: encodePersistedCtfRangeOrderPreparation(preparation),
@@ -226,6 +228,24 @@ export function browserRangeOperationFromSnapshot(
   const operation = decodeDurableCtfRangeOperation(row.artifact.artifact);
   assertDurableCtfRangeCustodyAuthority(record, operation);
   return operation;
+}
+
+export function browserRangeCapabilityRequestFromSnapshot(
+  record: DurableCustodyRecord,
+  artifacts: readonly { reference: { artifactId: string }; artifact: { artifact: unknown } }[],
+  expected: CreateSettlementCapabilityRequest,
+): CreateSettlementCapabilityRequest {
+  const reference = record.operation.exactRequest.body;
+  const row = findArtifact(artifacts, reference.artifactId, "range capability request");
+  const persisted = prepareDurableCustodyExactArtifact(row.artifact.artifact);
+  const currentAuthority = prepareDurableCustodyExactArtifact(expected);
+  if (
+    persisted.fingerprint !== reference.fingerprint ||
+    persisted.fingerprint !== currentAuthority.fingerprint
+  ) {
+    throw new Error("range capability request authority is foreign");
+  }
+  return structuredClone(row.artifact.artifact) as CreateSettlementCapabilityRequest;
 }
 
 export function browserRangeSuccessorProofRows(

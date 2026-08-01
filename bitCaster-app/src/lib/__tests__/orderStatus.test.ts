@@ -29,7 +29,25 @@ describe("fetchOrderStatus", () => {
   });
 
   it("signs the private order-status poll with NIP-98", async () => {
-    const body = orderStatusWithTradeFills("trade-a");
+    const body: OrderStatusResponse = {
+      orderId: "bfe9f76c-0993-47c1-a301-a7d4022f8272",
+      marketId: "deadbeef-YES",
+      status: "resting",
+      remainingAmountSubunits: 100,
+      filledAmountSubunits: 0,
+      fills: [],
+      amountSubunits: 100,
+      outcomeId: "YES",
+      side: "Buy",
+      price: 5_000,
+      placedAt: "2026-07-31T00:00:00Z",
+      timeInForce: "FAK",
+      tokenSide: "Outcome",
+      baseAsset: "sat",
+      divisibility: 10_000,
+      activeSettlementGroup: null,
+      continuation: null,
+    };
     const fetchMock = vi.fn(
       async () =>
         new Response(JSON.stringify(body), {

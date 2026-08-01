@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
-import { AppShell } from "@/components/shell";
+import { AppShell, DurableWalletErrors } from "@/components/shell";
 import { MarketsPage } from "@/pages/MarketsPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import { PortfolioPage } from "@/pages/PortfolioPage";
@@ -28,8 +28,11 @@ import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
 import { sweepElapsedPartialLockFailures } from "@/lib/partialLockRecovery";
 import { installE2EDiagnostics } from "@/lib/e2eDiagnostics";
 import { reconcileAcceptedLocalWalletPayments } from "@/lib/pendingLocalWalletPayments";
+import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
 
 installE2EDiagnostics();
+
+const RANGE_RECOVERY_RETRY_MS = 15_000;
 
 /**
  * Paths that render full-window wizards without the app shell. Keeping
@@ -91,6 +94,7 @@ function ShellRoutes() {
       }}
       onCreateClick={() => navigate("/creator")}
     >
+      <DurableWalletErrors />
       <Routes>
         <Route path="/" element={<MarketsPage />} />
         <Route path="/markets" element={<MarketsPage />} />
@@ -126,6 +130,8 @@ function AppRoutes() {
   usePendingTradesPoller();
   useLikedMarketCloseReconcile();
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
+  const walletMnemonic = useWalletStore((s) => s.mnemonic);
+  const walletMintUrls = useWalletStore((s) => s.mints.map(({ url }) => url).join("\n"));
   const [nostrSignerReady, setNostrSignerReady] = useState(false);
   useTradeSettlement(nostrSignerReady && nostrSignerMode !== "none");
 
@@ -148,10 +154,10 @@ function AppRoutes() {
   // breaking the buy gate on market detail.
   const proofMigrationAttempted = useRef(false);
   useEffect(() => {
-    if (proofMigrationAttempted.current) return;
+    if (!walletMnemonic || proofMigrationAttempted.current) return;
     proofMigrationAttempted.current = true;
     normalizeStoredMintUrls().catch(() => {});
-  }, []);
+  }, [walletMnemonic]);
 
   // P8 follow-up: cashu-ts deterministic counter recovery.
   //
@@ -169,35 +175,80 @@ function AppRoutes() {
   // explicit unit, so startup does not fan out across every mint unit.
   // Idempotent via `keysetCountersRecovered`. Runs ONCE per (mint, keyset)
   // at startup, gated on persist hydration so the mints / mnemonic are loaded.
-  const counterRecoveryAttempted = useRef(false);
   useEffect(() => {
-    if (counterRecoveryAttempted.current) return;
-    const runRecovery = () => {
-      if (counterRecoveryAttempted.current) return;
-      counterRecoveryAttempted.current = true;
-      const { mints, mnemonic } = useWalletStore.getState();
-      if (!mnemonic) return;
-      void (async () => {
-        // Exact write-ahead receive journals own custody recovery and must
-        // finish before the broader counter migration touches the same proof
-        // secrets. Both paths now persist exact keyset units, but sequencing
-        // also prevents a stale generic row from winning a concurrent bulkPut.
-        await recoverPendingTokenReceives().catch(() => {});
-        for (const m of mints) {
-          await recoverKeysetCountersForMint(m.url, {
-            baseAsset: "sat",
-          }).catch(() => {});
-        }
-      })();
+    if (!walletMnemonic || !nostrSignerReady) return;
+    const mintUrls = walletMintUrls.split("\n").filter(Boolean);
+    let cancelled = false;
+    let running = false;
+    let rerunRequested = false;
+    let receivesRecovered = false;
+    let countersRecovered = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const schedule = () => {
+      if (cancelled || timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        void runRecovery();
+      }, RANGE_RECOVERY_RETRY_MS);
     };
-    if (useWalletStore.persist.hasHydrated()) runRecovery();
-    else {
-      const unsub = useWalletStore.persist.onFinishHydration(() => {
-        runRecovery();
-        unsub();
-      });
-    }
-  }, []);
+    const runRecovery = async () => {
+      if (running) {
+        rerunRequested = true;
+        return;
+      }
+      running = true;
+      let retryRequired = false;
+      try {
+        if (!receivesRecovered) {
+          try {
+            const result = await recoverPendingTokenReceives();
+            receivesRecovered = result.pending === 0;
+            retryRequired ||= !receivesRecovered;
+          } catch {
+            retryRequired = true;
+          }
+        }
+        try {
+          const result = await recoverBrowserCtfRangeOrders({
+            mnemonic: walletMnemonic,
+            mintUrls,
+          });
+          retryRequired ||= result.pending.length > 0;
+        } catch {
+          retryRequired = true;
+        }
+        if (!countersRecovered) {
+          try {
+            let complete = true;
+            for (const mintUrl of mintUrls) {
+              const result = await recoverKeysetCountersForMint(mintUrl, { baseAsset: "sat" });
+              complete &&= result.complete;
+            }
+            countersRecovered = complete;
+            retryRequired ||= !complete;
+          } catch {
+            retryRequired = true;
+          }
+        }
+      } finally {
+        running = false;
+        if (retryRequired) schedule();
+        if (rerunRequested && !cancelled) {
+          rerunRequested = false;
+          void runRecovery();
+        }
+      }
+    };
+    const onOnline = () => void runRecovery();
+    window.addEventListener("online", onOnline);
+    void runRecovery();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [nostrSignerReady, walletMnemonic, walletMintUrls]);
 
   const partialLockSweepAttempted = useRef(false);
   useEffect(() => {
@@ -218,7 +269,7 @@ function AppRoutes() {
 
   const pendingWalletPaymentReconcileAttempted = useRef(false);
   useEffect(() => {
-    if (pendingWalletPaymentReconcileAttempted.current) return;
+    if (!walletMnemonic || pendingWalletPaymentReconcileAttempted.current) return;
     pendingWalletPaymentReconcileAttempted.current = true;
     reconcileAcceptedLocalWalletPayments()
       .then((remaining) => setPendingWalletWarning(remaining.length > 0))
@@ -226,7 +277,7 @@ function AppRoutes() {
         console.warn("[wallet] pending local-wallet payment reconciliation failed", error);
         setPendingWalletWarning(true);
       });
-  }, []);
+  }, [walletMnemonic]);
 
   // Continuous NIP-17 listener so inbound payment-request DMs are
   // processed regardless of which route is mounted. The per-view

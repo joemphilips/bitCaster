@@ -37,6 +37,7 @@ interface TradingPanelProps {
     kind: "info" | "success" | "error";
     message: string;
   } | null;
+  onTradeSubmitStatusDismiss?: () => void;
   tradeFeasibility?: {
     canBack: boolean;
     reason?: "funds" | "outcome-tokens";
@@ -627,6 +628,7 @@ export function TradingPanel({
   onCommentPost,
   userHoldings,
   tradeSubmitStatus,
+  onTradeSubmitStatusDismiss,
   tradeFeasibility,
   isTradeSubmitting = false,
   onTradeSideChange,
@@ -954,7 +956,19 @@ export function TradingPanel({
                     : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
               }`}
             >
-              {tradeSubmitStatus.message}
+              <div className="flex items-start gap-2">
+                <span className="min-w-0 flex-1">{tradeSubmitStatus.message}</span>
+                {onTradeSubmitStatusDismiss && (
+                  <button
+                    type="button"
+                    onClick={onTradeSubmitStatusDismiss}
+                    aria-label={t("common.close")}
+                    className="rounded p-0.5 hover:bg-black/5 dark:hover:bg-white/10"
+                  >
+                    <X className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
