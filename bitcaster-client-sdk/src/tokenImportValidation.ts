@@ -95,6 +95,14 @@ export function canonicalizeTokenImportMintUrl(
   return canonicalizeMintUrl(mintUrl, allowInsecureLoopbackHttp)
 }
 
+/**
+ * Returns one persistent mint identity without applying a network target policy.
+ * Callers must apply their own transport allowlist before making network requests.
+ */
+export function canonicalizeMintIdentityUrl(mintUrl: string): string {
+  return canonicalizeMintIdentity(mintUrl)
+}
+
 export type TokenImportJsonResponse = AllocationBoundedJsonResponse
 
 export interface SelectTokenImportKeysetCandidatesInput {
@@ -876,6 +884,12 @@ function isLegacyKeysetId(value: string): boolean {
 }
 
 function canonicalizeMintUrl(value: unknown, allowInsecureLoopbackHttp: boolean): string {
+  const canonical = canonicalizeMintIdentity(value)
+  enforceMintTargetPolicy(new URL(canonical), allowInsecureLoopbackHttp)
+  return canonical
+}
+
+function canonicalizeMintIdentity(value: unknown): string {
   if (typeof value !== 'string' || !value) fail('invalid_token', 'token mint URL is missing')
   let url: URL
   try {
@@ -899,7 +913,9 @@ function canonicalizeMintUrl(value: unknown, allowInsecureLoopbackHttp: boolean)
     if (!canonicalHostname) fail('invalid_token', 'token mint URL has no hostname')
     url.hostname = canonicalHostname
   }
-  enforceMintTargetPolicy(url, allowInsecureLoopbackHttp)
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    fail('insecure_mint_url', 'mint URL must use HTTP or HTTPS')
+  }
   const path = url.pathname.replace(/\/+$/, '')
   return `${url.origin}${path === '' ? '' : path}`
 }

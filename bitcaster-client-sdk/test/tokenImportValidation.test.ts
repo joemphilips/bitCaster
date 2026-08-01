@@ -5,6 +5,7 @@ import {
   DEFAULT_TOKEN_IMPORT_BOUNDS,
   TokenImportValidationError,
   assertTokenImportResolverRequestLive,
+  canonicalizeMintIdentityUrl,
   classifyExactTokenImportKeysets,
   decodeTokenImportLocally,
   readBoundedTokenImportJsonResponse,
@@ -67,6 +68,22 @@ function matchingResolver(
       ? lookup([metadata(fullId, unit, active)])
       : lookup([], [metadata(fullId, unit, active)])
 }
+
+test('canonicalizes one persistent mint identity without applying transport policy', () => {
+  assert.equal(
+    canonicalizeMintIdentityUrl('HTTPS://MINT.EXAMPLE./path///'),
+    'https://mint.example/path',
+  )
+  assert.equal(
+    canonicalizeMintIdentityUrl('http://mint-bitcaster-production/'),
+    'http://mint-bitcaster-production',
+  )
+  assert.throws(() => canonicalizeMintIdentityUrl('file:///tmp/mint'), /HTTP or HTTPS/)
+  assert.throws(
+    () => canonicalizeMintIdentityUrl('https://user:secret@mint.example'),
+    /admissible mint identity/,
+  )
+})
 
 async function expectCode(promise: Promise<unknown>, code: TokenImportValidationError['code']) {
   await assert.rejects(promise, (error) => {
