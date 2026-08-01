@@ -12,7 +12,9 @@ import {
 import {
   applyDurableCustodyProofImport,
   bindDurableCustodyProofImport,
+  DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
   prepareDurableCustodyProofImport,
+  stageDurableCustodyProofImport,
   type PreparedDurableCustodyProofImport,
 } from '../src/durableCustodyProofImport.ts'
 import { FaultInjectingDurableCustodyAdapter } from './support/faultInjectingDurableCustodyAdapter.ts'
@@ -36,7 +38,7 @@ const KEYSET = {
 }
 
 describe('durable custody completed proof import', () => {
-  it('binds discoverable work and atomically applies exact successor proofs', () => {
+  it('binds discoverable work, stages the result, and atomically applies exact successor proofs', () => {
     const prepared = prepareImport()
     const adapter = createAdapter()
     let indexedOperationId: string | null = null
@@ -50,7 +52,9 @@ describe('durable custody completed proof import', () => {
         prepared,
       }),
     )
-    const applied = adapter.run((transaction) => applyImport(transaction, prepared, 20))
+    adapter.run((transaction) => stageImport(transaction, prepared, 20))
+    adapter.run((transaction) => applyImport(transaction, prepared, 20))
+    const applied = adapter.readOperation()!
 
     assert.equal(indexedOperationId, prepared.record.operation.operationId)
     assert.equal(applied.operation.result.state, 'applied')
@@ -61,11 +65,30 @@ describe('durable custody completed proof import', () => {
     const prepared = prepareImport()
     const adapter = createAdapter()
     adapter.run((transaction) => bindDurableCustodyProofImport({ transaction, prepared }))
-    const first = adapter.run((transaction) => applyImport(transaction, prepared, 20))
-    const second = adapter.reopen().run((transaction) => applyImport(transaction, prepared, 30))
+    adapter.run((transaction) => stageImport(transaction, prepared, 20))
+    adapter.run((transaction) => applyImport(transaction, prepared, 20))
+    const first = adapter.readOperation()!
+    const restarted = adapter.reopen()
+    restarted.run((transaction) => applyImport(transaction, prepared, 30))
+    const second = restarted.readOperation()!
 
     assert.equal(second.revision, first.revision)
     assert.equal(second.operation.result.resultFingerprint, prepared.artifacts.result.fingerprint)
+    assert.throws(
+      () =>
+        restarted.run((transaction) =>
+          applyDurableCustodyProofImport({
+            transaction,
+            prepared,
+            authorization: owner(40),
+            successorAdmission: {
+              ...admission(prepared),
+              admissionId: 'changed-admission',
+            },
+          }),
+        ),
+      /successor admission/,
+    )
   })
 
   it('rejects a changed canonical proof body under the same source operation', () => {
@@ -84,6 +107,94 @@ describe('durable custody completed proof import', () => {
     assert.notEqual(changed.artifacts.result.fingerprint, prepared.artifacts.result.fingerprint)
   })
 
+  it('binds a bounded full-batch authority into the exact request', () => {
+    const authority = {
+      rootSourceOperationId: 'deposit:one',
+      proofSetFingerprint: 'ab'.repeat(32),
+      proofCount: 1,
+      pageCount: 1,
+      pageIndex: 0,
+    }
+    const prepared = prepareImport({ batchAuthority: authority })
+    const changed = prepareImport({
+      batchAuthority: { ...authority, proofSetFingerprint: 'cd'.repeat(32) },
+    })
+    const adapter = createAdapter()
+    adapter.run((transaction) => bindDurableCustodyProofImport({ transaction, prepared }))
+
+    assert.throws(
+      () =>
+        adapter.run((transaction) =>
+          bindDurableCustodyProofImport({ transaction, prepared: changed }),
+        ),
+      /immutable authority/,
+    )
+    assert.notEqual(
+      changed.artifacts.requestBody.fingerprint,
+      prepared.artifacts.requestBody.fingerprint,
+    )
+  })
+
+  it('rejects inconsistent proof import batch bounds and current page sizes', () => {
+    const authority = {
+      rootSourceOperationId: 'deposit:one',
+      proofSetFingerprint: 'ab'.repeat(32),
+      proofCount: 513,
+      pageCount: 2,
+      pageIndex: 0,
+    }
+
+    assert.throws(() => prepareImport({ batchAuthority: authority }), /batch bounds/)
+    assert.throws(
+      () =>
+        prepareImport({
+          batchAuthority: { ...authority, proofCount: 1, pageCount: 2 },
+        }),
+      /batch bounds/,
+    )
+    assert.throws(
+      () =>
+        prepareImport({
+          batchAuthority: {
+            ...authority,
+            proofCount: 1,
+            pageCount: 1,
+            pageIndex: 1,
+          },
+        }),
+      /batch bounds/,
+    )
+  })
+
+  it('keeps one maximum proof-import page within durable bind and stage bounds', () => {
+    const keyset = {
+      ...KEYSET,
+      publicKeys: Object.fromEntries(
+        Array.from({ length: 20 }, (_, index) => [(1 << index).toString(), `02${'22'.repeat(32)}`]),
+      ),
+    }
+    const proofs = Array.from(
+      { length: DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX },
+      (_, index) => proof({ secret: `bounded-proof-${index}` }),
+    )
+    const prepared = prepareImport({ keysets: [keyset], proofs })
+    const adapter = createAdapter()
+
+    adapter.run((transaction) => bindDurableCustodyProofImport({ transaction, prepared }))
+    adapter.run((transaction) => stageImport(transaction, prepared, 20))
+    assert.equal(adapter.readOperation()?.operation.result.state, 'verified-staged')
+    adapter.run((transaction) => applyImport(transaction, prepared, 20))
+    assert.equal(adapter.readOperation()?.operation.result.state, 'applied')
+    assert.throws(
+      () =>
+        prepareImport({
+          keysets: [keyset],
+          proofs: [...proofs, proof({ secret: 'one-proof-over-page' })],
+        }),
+      /count/,
+    )
+  })
+
   it('resumes one exact staged result after restart', () => {
     const prepared = prepareImport()
     const adapter = createAdapter()
@@ -91,7 +202,8 @@ describe('durable custody completed proof import', () => {
     adapter.run((transaction) => stageImport(transaction, prepared, 20))
 
     const restarted = adapter.reopen()
-    const applied = restarted.run((transaction) => applyImport(transaction, prepared, 30))
+    restarted.run((transaction) => applyImport(transaction, prepared, 30))
+    const applied = restarted.readOperation()!
 
     assert.equal(applied.operation.result.state, 'applied')
     assert.deepEqual(restarted.readAdmittedProofIds(), prepared.successorProofIds)
@@ -144,15 +256,15 @@ describe('durable custody completed proof import', () => {
     assert.throws(
       () =>
         adapter.run((transaction) =>
-          applyDurableCustodyProofImport({
+          stageDurableCustodyProofImport({
             transaction,
             prepared,
             authorization: { ...owner(20), incarnationId: 'foreign-owner' },
-            successorAdmission: admission(prepared),
           }),
         ),
       /authorization/,
     )
+    adapter.run((transaction) => stageImport(transaction, prepared, 20))
     assert.throws(
       () =>
         adapter.run((transaction) =>
@@ -170,7 +282,7 @@ describe('durable custody completed proof import', () => {
         ),
       /successor admission/,
     )
-    assert.equal(adapter.readOperation()?.operation.result.state, 'none')
+    assert.equal(adapter.readOperation()?.operation.result.state, 'verified-staged')
   })
 
   it('rolls back bind and apply fault boundaries and succeeds on exact retry', () => {
@@ -187,13 +299,16 @@ describe('durable custody completed proof import', () => {
     assert.equal(adapter.readOperation(), null)
 
     adapter.run((transaction) => bindDurableCustodyProofImport({ transaction, prepared }))
+    adapter.run((transaction) => stageImport(transaction, prepared, 20))
     assert.throws(
       () => adapter.run((transaction) => applyImport(transaction, prepared, 20), 'apply-result'),
       /injected fault/,
     )
-    assert.equal(adapter.readOperation()?.operation.result.state, 'none')
+    assert.equal(adapter.readOperation()?.operation.result.state, 'verified-staged')
 
-    const applied = adapter.reopen().run((transaction) => applyImport(transaction, prepared, 30))
+    const restarted = adapter.reopen()
+    restarted.run((transaction) => applyImport(transaction, prepared, 30))
+    const applied = restarted.readOperation()!
     assert.equal(applied.operation.result.state, 'applied')
   })
 
@@ -283,17 +398,10 @@ function stageImport(
   prepared: PreparedDurableCustodyProofImport,
   observedAtMs: number,
 ): void {
-  const record = transaction.getOperation(prepared.record.operation.operationId)
-  if (record === null) throw new Error('test import operation is absent')
-  transaction.stageVerifiedResult({
-    operationId: record.operation.operationId,
-    expectedRevision: record.revision,
+  stageDurableCustodyProofImport({
+    transaction,
+    prepared,
     authorization: owner(observedAtMs),
-    outputPlanFingerprint: record.operation.outputPlan.outputPlanFingerprint,
-    resultHandle: `proof-import-result:${prepared.artifacts.result.fingerprint}`,
-    resultFingerprint: prepared.artifacts.result.fingerprint,
-    exactResult: prepared.artifacts.result,
-    selectedSuccessorProofIds: prepared.successorProofIds,
   })
 }
 

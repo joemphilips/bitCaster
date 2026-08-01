@@ -4,7 +4,6 @@ import {
   createDurableCustodyArtifactReference,
   createDurableCustodyDispatchIntent,
   createDurableProofOperationFacts,
-  DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX,
   prepareDurableCustodyExactArtifact,
   type DurableCustodyExactArtifact,
   type DurableCustodyOwnerAuthorization,
@@ -26,6 +25,18 @@ export type DurableCustodyProofImportKeyset = Omit<
   'usedByInputs' | 'usedByOutputs'
 >
 
+export interface DurableCustodyProofImportBatchAuthority {
+  readonly rootSourceOperationId: string
+  readonly proofSetFingerprint: string
+  readonly proofCount: number
+  readonly pageCount: number
+  readonly pageIndex: number
+}
+
+export const DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX = 128
+export const DURABLE_CUSTODY_PROOF_IMPORT_BATCH_PROOF_LIMIT_MAX =
+  DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX * 512
+
 export interface PreparedDurableCustodyProofImport {
   readonly record: DurableCustodyRecord
   readonly artifacts: {
@@ -45,6 +56,7 @@ export interface DurableCustodyProofImportInput {
   readonly inventoryAccountId: string | null
   readonly keysets: readonly DurableCustodyProofImportKeyset[]
   readonly proofs: readonly Proof[]
+  readonly batchAuthority?: DurableCustodyProofImportBatchAuthority
 }
 
 interface CanonicalImportProof {
@@ -151,6 +163,9 @@ function createImportArtifacts(
       sourceOperationId: input.sourceOperationId,
       normalizedMint: input.normalizedMint,
       unit: input.unit,
+      ...(input.batchAuthority === undefined
+        ? {}
+        : { batchAuthority: structuredClone(input.batchAuthority) }),
     }),
     output: prepareDurableCustodyExactArtifact({
       proofs: proofs.map(({ material }) => ({
@@ -179,32 +194,48 @@ export function bindDurableCustodyProofImport(input: {
   return requiredOperation(transaction, prepared.record.operation.operationId)
 }
 
+export function stageDurableCustodyProofImport(input: {
+  readonly transaction: DurableCustodyTransaction
+  readonly prepared: PreparedDurableCustodyProofImport
+  readonly authorization: DurableCustodyOwnerAuthorization
+}): void {
+  const { transaction, prepared, authorization } = input
+  const operationId = prepared.record.operation.operationId
+  const current = requiredOperation(transaction, operationId)
+  assertDurableCustodyImmutableAuthorityMatches(current, prepared.record)
+  if (current.operation.result.state !== 'none') {
+    assertPreparedResultAuthority(transaction, current, prepared)
+    return
+  }
+  transaction.stageVerifiedResult({
+    operationId,
+    expectedRevision: current.revision,
+    authorization,
+    outputPlanFingerprint: current.operation.outputPlan.outputPlanFingerprint,
+    resultHandle: `proof-import-result:${prepared.artifacts.result.fingerprint}`,
+    resultFingerprint: prepared.artifacts.result.fingerprint,
+    exactResult: prepared.artifacts.result,
+    selectedSuccessorProofIds: prepared.successorProofIds,
+  })
+}
+
 export function applyDurableCustodyProofImport(input: {
   readonly transaction: DurableCustodyTransaction
   readonly prepared: PreparedDurableCustodyProofImport
   readonly authorization: DurableCustodyOwnerAuthorization
   readonly successorAdmission: DurableCustodySuccessorAdmissionEvidence
-}): DurableCustodyRecord {
+}): void {
   const { transaction, prepared, authorization, successorAdmission } = input
   const operationId = prepared.record.operation.operationId
-  let current = requiredOperation(transaction, operationId)
+  const current = requiredOperation(transaction, operationId)
   assertDurableCustodyImmutableAuthorityMatches(current, prepared.record)
-  if (current.operation.result.state !== 'none') {
-    assertPreparedResultAuthority(transaction, current, prepared)
-  }
   if (current.operation.result.state === 'none') {
-    transaction.stageVerifiedResult({
-      operationId,
-      expectedRevision: current.revision,
-      authorization,
-      outputPlanFingerprint: current.operation.outputPlan.outputPlanFingerprint,
-      resultHandle: `proof-import-result:${prepared.artifacts.result.fingerprint}`,
-      resultFingerprint: prepared.artifacts.result.fingerprint,
-      exactResult: prepared.artifacts.result,
-      selectedSuccessorProofIds: prepared.successorProofIds,
-    })
-    current = requiredOperation(transaction, operationId)
-    assertPreparedResultAuthority(transaction, current, prepared)
+    throw new Error('custody proof import result is not staged')
+  }
+  assertPreparedResultAuthority(transaction, current, prepared)
+  if (current.operation.result.state === 'applied') {
+    assertExactSuccessorAdmission(current, successorAdmission)
+    return
   }
   if (current.operation.result.state === 'verified-staged') {
     const resultHandle = current.operation.result.resultHandle
@@ -221,22 +252,78 @@ export function applyDurableCustodyProofImport(input: {
       resultFingerprint,
       successorAdmission,
     })
-    current = requiredOperation(transaction, operationId)
   }
-  if (current.operation.result.state !== 'applied') {
-    throw new Error('custody proof import did not reach its applied state')
+}
+
+function assertExactSuccessorAdmission(
+  record: DurableCustodyRecord,
+  candidate: DurableCustodySuccessorAdmissionEvidence,
+): void {
+  const expected = record.operation.proofStorage.lineage.successorAdmission
+  if (
+    expected === null ||
+    expected.scopeId !== candidate.scopeId ||
+    expected.operationId !== candidate.operationId ||
+    expected.admissionId !== candidate.admissionId ||
+    expected.proofRows.length !== candidate.proofRows.length ||
+    expected.proofRows.some((row, index) => {
+      const other = candidate.proofRows[index]
+      return (
+        other === undefined ||
+        row.proofId !== other.proofId ||
+        row.expectedRevision !== other.expectedRevision ||
+        row.admittedRevision !== other.admittedRevision
+      )
+    })
+  ) {
+    throw new Error('custody proof import successor admission is foreign')
   }
-  assertPreparedResultAuthority(transaction, current, prepared)
-  return current
 }
 
 function validateImportInput(input: {
   readonly sourceOperationId: string
   readonly proofs: readonly Proof[]
+  readonly batchAuthority?: DurableCustodyProofImportBatchAuthority
 }): void {
   requireText(input.sourceOperationId, 'proof import source operation id')
-  if (input.proofs.length === 0 || input.proofs.length > DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX) {
+  if (
+    input.proofs.length === 0 ||
+    input.proofs.length > DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX
+  ) {
     throw new Error('custody proof import count is invalid')
+  }
+  if (input.batchAuthority !== undefined) {
+    validateBatchAuthority(input.batchAuthority, input.proofs.length)
+  }
+}
+
+function validateBatchAuthority(
+  authority: DurableCustodyProofImportBatchAuthority,
+  currentPageProofCount: number,
+): void {
+  requireText(authority.rootSourceOperationId, 'proof import root source operation id')
+  if (!/^[0-9a-f]{64}$/.test(authority.proofSetFingerprint)) {
+    throw new Error('custody proof import batch fingerprint is invalid')
+  }
+  const expectedPageCount = Math.ceil(
+    authority.proofCount / DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
+  )
+  const expectedCurrentPageProofCount = Math.min(
+    DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
+    authority.proofCount - authority.pageIndex * DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
+  )
+  if (
+    !Number.isSafeInteger(authority.proofCount) ||
+    authority.proofCount < 1 ||
+    authority.proofCount > DURABLE_CUSTODY_PROOF_IMPORT_BATCH_PROOF_LIMIT_MAX ||
+    !Number.isSafeInteger(authority.pageCount) ||
+    authority.pageCount !== expectedPageCount ||
+    !Number.isSafeInteger(authority.pageIndex) ||
+    authority.pageIndex < 0 ||
+    authority.pageIndex >= authority.pageCount ||
+    currentPageProofCount !== expectedCurrentPageProofCount
+  ) {
+    throw new Error('custody proof import batch bounds are invalid')
   }
 }
 
