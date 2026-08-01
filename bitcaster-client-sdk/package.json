@@ -35,6 +35,10 @@
       "types": "./dist/durableCustodyProofMaterial.d.ts",
       "import": "./dist/durableCustodyProofMaterial.js"
     },
+    "./durableCustodyProofImport": {
+      "types": "./dist/durableCustodyProofImport.d.ts",
+      "import": "./dist/durableCustodyProofImport.js"
+    },
     "./durableCustodyMintResult": {
       "types": "./dist/durableCustodyMintResult.d.ts",
       "import": "./dist/durableCustodyMintResult.js"
