@@ -13,6 +13,7 @@ import {
   resolveComplementaryOutcomeLegs,
   resolveInputFeePpkByProofKeyset,
   resolveMintOutcomeSetKey,
+  resumeExactPersistedCtfSplit,
   selectRootPartitionKeysets,
   splitRegularProofsWithOperation,
   splitCompleteSetWithOperation,
@@ -699,6 +700,80 @@ test('splitCompleteSetWithOperation replays completed operations without mint ca
   })
   result.YES[0].secret = 'mutated'
   assert.equal(completed.records.get('op-completed')?.resultProofs?.YES[0].secret, 'stored-proof')
+  assert.equal(transport.posted.length, 0)
+})
+
+test('exact persisted split resume validates authority and makes no mint call when completed', async () => {
+  const store = new MemoryProofOperationStore()
+  store.records.set('op-exact-completed', completedSplitRecord('op-exact-completed'))
+  const transport = new FakeSplitTransport()
+
+  const result = await resumeExactPersistedCtfSplit({
+    mintUrl: 'https://mint.example',
+    operationId: 'op-exact-completed',
+    conditionId: CONDITION_ID,
+    collateralProofs: [proof('input-keyset', 100, 'input-secret')],
+    amountSubunits: 100,
+    baseAsset: 'sat',
+    transport,
+    proofOperationStore: store,
+  })
+
+  assert.deepEqual(result, completedSplitRecord('op-exact-completed').resultProofs)
+  assert.equal(transport.keyLookups.length, 0)
+  assert.equal(transport.rootPartitionLookups, 0)
+  assert.equal(transport.posted.length, 0)
+
+  await assert.rejects(
+    () =>
+      resumeExactPersistedCtfSplit({
+        mintUrl: 'https://mint.example',
+        operationId: 'op-exact-completed',
+        conditionId: CONDITION_ID,
+        collateralProofs: [proof('input-keyset', 100, 'different-input')],
+        amountSubunits: 100,
+        baseAsset: 'sat',
+        transport,
+        proofOperationStore: store,
+      }),
+    /authority|differ|conflict|does not match/,
+  )
+  assert.equal(transport.keyLookups.length, 0)
+  assert.equal(transport.rootPartitionLookups, 0)
+  assert.equal(transport.posted.length, 0)
+})
+
+test('exact prepared split resume uses persisted keysets without root rediscovery', async () => {
+  const store = new MemoryProofOperationStore()
+  const prepared = structuredClone(completedSplitRecord('op-exact-prepared'))
+  prepared.state = 'prepared'
+  delete prepared.resultProofs
+  delete prepared.resultProofsDigest
+  store.records.set('op-exact-prepared', prepared)
+  const transport = new FakeSplitTransport()
+
+  await assert.rejects(
+    () =>
+      resumeExactPersistedCtfSplit({
+        mintUrl: 'https://mint.example',
+        operationId: 'op-exact-prepared',
+        conditionId: CONDITION_ID,
+        collateralProofs: [proof('input-keyset', 100, 'input-secret')],
+        amountSubunits: 100,
+        baseAsset: 'sat',
+        transport,
+        proofOperationStore: store,
+        proofStateChecker: {
+          checkProofsStates: async () => [
+            { Y: 'Y-input', state: CheckStateEnum.PENDING, witness: null },
+          ],
+        },
+      }),
+    ProofOperationPendingError,
+  )
+
+  assert.deepEqual(transport.keyLookups.sort(), ['input-keyset', 'keyset-no', 'keyset-yes'])
+  assert.equal(transport.rootPartitionLookups, 0)
   assert.equal(transport.posted.length, 0)
 })
 
@@ -1409,6 +1484,7 @@ class FakeSplitTransport implements CtfSplitTransport {
   private readonly unitByKeysetId: Record<string, string>
 
   readonly keyLookups: string[] = []
+  rootPartitionLookups = 0
   readonly posted: Array<Parameters<CtfSplitTransport['postSplit']>[0]> = []
   readonly converted: Array<Parameters<NonNullable<CtfSplitTransport['postConvert']>>[0]> = []
 
@@ -1427,6 +1503,7 @@ class FakeSplitTransport implements CtfSplitTransport {
   }
 
   async getRootPartitionKeysets(): Promise<Record<string, string>> {
+    this.rootPartitionLookups += 1
     return { YES: 'keyset-yes', NO: 'keyset-no' }
   }
 

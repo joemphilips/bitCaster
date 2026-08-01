@@ -1340,6 +1340,76 @@ async function executeCtfMergeToRegular(params: {
   )
 }
 
+/** Confirm that a current request names the same exact persisted CTF split. */
+export function assertExactPersistedCtfSplitRequest(input: {
+  operation: CtfProofOperationRecord
+  mintUrl: string
+  operationId: string
+  conditionId: string
+  collateralProofs: Proof[]
+  amountSubunits: number
+  baseAsset: CtfCollateralBaseAsset
+  parentCollectionId?: unknown
+}): void {
+  const metadata = requireRecordMetadata(input.operation, 'ctf-split')
+  requireMatchingCtfSplitOperation(
+    input.operation,
+    {
+      operationId: input.operationId,
+      mintUrl: input.mintUrl,
+      conditionId: input.conditionId,
+      collateralProofs: input.collateralProofs,
+      amountSubunits: input.amountSubunits,
+      outcomeCollectionKeysets: requireStringMapping(
+        metadata.outcomeCollectionKeysets,
+        'CTF split outcome keysets',
+      ),
+    },
+    requireProductCtfPolicy(input.baseAsset, input.parentCollectionId, 'CTF split operation'),
+  )
+}
+
+/** Resume one exact persisted CTF split without rebuilding its request authority. */
+export async function resumeExactPersistedCtfSplit(input: {
+  mintUrl: string
+  operationId: string
+  conditionId: string
+  collateralProofs: Proof[]
+  amountSubunits: number
+  baseAsset: CtfCollateralBaseAsset
+  parentCollectionId?: unknown
+  transport: CtfSplitTransport
+  proofOperationStore: CtfProofOperationStore
+  proofStateChecker?: Pick<RegularSplitWallet, 'checkProofsStates'>
+  restoreOutputGroups?: (
+    mintUrl: string,
+    outputs: Record<string, StoredOutputData[]>,
+  ) => Promise<Record<string, Proof[]>>
+}): Promise<Record<string, Proof[]>> {
+  const operation = await input.proofOperationStore.getProofOperation(input.operationId)
+  if (operation === null) {
+    throw new Error(`proof operation ${input.operationId} is absent`)
+  }
+  assertExactPersistedCtfSplitRequest({
+    operation,
+    mintUrl: input.mintUrl,
+    operationId: input.operationId,
+    conditionId: input.conditionId,
+    collateralProofs: input.collateralProofs,
+    amountSubunits: input.amountSubunits,
+    baseAsset: input.baseAsset,
+    parentCollectionId: input.parentCollectionId,
+  })
+  return resumeCtfSplit(
+    input.mintUrl,
+    operation,
+    input.transport,
+    input.proofOperationStore,
+    input.proofStateChecker,
+    input.restoreOutputGroups,
+  )
+}
+
 async function resumeCtfSplit(
   mintUrl: string,
   entry: CtfProofOperationRecord,
@@ -1554,6 +1624,7 @@ function canonicalProofSetAuthority(proofs: Proof[]): Record<string, unknown>[] 
 export async function restoreOutputGroups(
   mintUrl: string,
   outputs: Record<string, StoredOutputData[]>,
+  exactKeysets?: readonly MintKeys[],
 ): Promise<Record<string, Proof[]>> {
   const mint = new CashuMint(mintUrl)
   const rows = Object.entries(deserializeCtfOutputGroups(outputs)).flatMap(
@@ -1572,10 +1643,13 @@ export async function restoreOutputGroups(
     signaturesByOutput.set(blindedMessageKey(output), response.signatures[index])
   })
 
-  const keysets = new Map<string, MintKeys>()
+  const keysets = new Map(exactKeysets?.map((keyset) => [keyset.id, keyset]) ?? [])
   const getKeyset = async (keysetId: string): Promise<MintKeys> => {
     const cached = keysets.get(keysetId)
     if (cached) return cached
+    if (exactKeysets !== undefined) {
+      throw new Error(`persisted restore keyset ${keysetId} is absent`)
+    }
     const keysetResponse = await mint.getKeys(keysetId)
     const keyset = keysetResponse.keysets.find((candidate) => candidate.id === keysetId)
     if (!keyset) throw new Error(`Mint did not return keys for keyset ${keysetId}`)
