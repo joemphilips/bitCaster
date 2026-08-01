@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '0f0c5ad6bd38854668ac0dc509d17d9f22350f75b721e2061cc3ca14ce35cb2c'
+  '960dd8f50b2dc25dd493460bbce52faa5775b2ca17277848a7010d538807a36c'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -292,7 +292,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ),
     lifecycle_state TEXT NOT NULL CHECK (
       lifecycle_state IN (
-        'prepared', 'capability-bound', 'order-submitted', 'submission-rejected', 'terminal'
+        'prepared', 'capability-requested', 'capability-bound',
+        'order-submitted', 'submission-rejected', 'terminal'
       )
     ),
     revision INTEGER NOT NULL CHECK (revision >= 0),
@@ -382,7 +383,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       )
     ),
     CHECK (
-      (lifecycle_state = 'prepared' AND capability_artifact_id IS NULL)
+      (lifecycle_state IN ('prepared', 'capability-requested')
+        AND capability_artifact_id IS NULL)
       OR
       (lifecycle_state IN ('capability-bound', 'order-submitted', 'submission-rejected')
         AND capability_artifact_id IS NOT NULL)
@@ -1295,7 +1297,7 @@ export function getFinalProfileSchemaManifest(): ProfileSchemaManifest {
     })
     const digest = createHash('sha256').update(JSON.stringify(captured)).digest('hex')
     if (digest !== FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST) {
-      throw new Error('frozen daemon profile schema manifest digest changed')
+      throw new Error(`frozen daemon profile schema manifest digest changed: ${digest}`)
     }
     cachedManifest = deepFreeze(captured)
   } finally {

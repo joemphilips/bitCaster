@@ -583,9 +583,22 @@ function LimitOrderPreviewSection({
           {t("trade.quotePayment")}
         </span>
         <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="limit-total-cost">
-          {formatAmount(preview.totalCost)}
+          {formatAmount(preview.totalCost - preview.mintFee)}
         </span>
       </div>
+      {preview.mintFee > 0 && (
+        <div className="flex justify-between text-sm">
+          <span className="text-slate-500 dark:text-slate-400" title={t("trade.mintFeeTooltip")}>
+            {t("trade.mintFee")}
+          </span>
+          <span
+            className="font-medium text-slate-600 dark:text-slate-300"
+            data-testid="limit-mint-fee"
+          >
+            {formatAmount(preview.mintFee)}
+          </span>
+        </div>
+      )}
       <div className="flex justify-between text-sm">
         <span className="text-slate-500 dark:text-slate-400">
           {t("trade.estimatedSettlementFee")}
@@ -904,9 +917,25 @@ export function TradingPanel({
                       className="font-bold text-blue-600 dark:text-blue-400"
                       data-testid="trade-total-cost"
                     >
-                      {formatAmount(tradePreview.totalCost)}
+                      {formatAmount(tradePreview.totalCost - tradePreview.mintFee)}
                     </span>
                   </div>
+                  {tradePreview.mintFee > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span
+                        className="text-slate-500 dark:text-slate-400"
+                        title={t("trade.mintFeeTooltip")}
+                      >
+                        {t("trade.mintFee")}
+                      </span>
+                      <span
+                        className="font-medium text-slate-600 dark:text-slate-300"
+                        data-testid="trade-mint-fee"
+                      >
+                        {formatAmount(tradePreview.mintFee)}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex justify-between text-sm">
                     <span className="text-slate-500 dark:text-slate-400">
                       {t("trade.estimatedSettlementFee")}

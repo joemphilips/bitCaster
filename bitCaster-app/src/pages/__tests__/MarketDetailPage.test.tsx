@@ -17,7 +17,10 @@ import {
 } from "@/pages/MarketDetailPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import { fetchMarketDetail, fetchOrderBook } from "@/lib/markets";
-import { submitBrowserCtfRangeOrder } from "@/lib/browserCtfRangeOrderSubmission";
+import {
+  previewBrowserCtfRangeOrderFees,
+  submitBrowserCtfRangeOrder,
+} from "@/lib/browserCtfRangeOrderSubmission";
 import { onOrderBookUpdated, onTradeExecuted } from "@/lib/marketHub";
 import type {
   MarketStatusChanged,
@@ -36,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   buildIndexedDbTokenHoldings: vi.fn(),
   getBalance: vi.fn(),
   navigate: vi.fn(),
+  previewBrowserCtfRangeOrderFees: vi.fn(),
   routeParams: { id: "condition-yesno" } as { id?: string },
   walletState: {
     mnemonic:
@@ -143,6 +147,7 @@ vi.mock("@/lib/markets", () => ({
 }));
 
 vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
+  previewBrowserCtfRangeOrderFees: mocks.previewBrowserCtfRangeOrderFees,
   submitBrowserCtfRangeOrder: vi.fn(),
 }));
 
@@ -325,6 +330,11 @@ describe("fetchMarketDetailWithBooks", () => {
     vi.mocked(fetchMarketDetail).mockReset();
     vi.mocked(fetchOrderBook).mockReset();
     vi.mocked(submitBrowserCtfRangeOrder).mockReset();
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockReset();
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockResolvedValue({
+      consolidationFeeSubunits: 0,
+      sourceFeeSubunits: 0,
+    });
     mocks.windowPriceHistory.mockClear();
     mocks.liveStatusHandlers.length = 0;
     mocks.routeParams.id = "condition-yesno";
@@ -352,6 +362,11 @@ describe("MarketDetailPage live market status", () => {
     vi.mocked(fetchMarketDetail).mockReset();
     vi.mocked(fetchOrderBook).mockReset();
     vi.mocked(submitBrowserCtfRangeOrder).mockReset();
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockReset();
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockResolvedValue({
+      consolidationFeeSubunits: 0,
+      sourceFeeSubunits: 0,
+    });
     mocks.buildIndexedDbTokenHoldings.mockReset();
     mocks.getBalance.mockReset();
     mocks.liveStatusHandlers.length = 0;
@@ -485,6 +500,43 @@ describe("MarketDetailPage live market status", () => {
     );
     expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled();
     expect(screen.getAllByText("Insufficient funds").length).toBeGreaterThan(0);
+  });
+
+  it("adds the exact proof consolidation cost to the trade pane mint fee", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+      baseUnitProofs: 20_000,
+      outcomeProofsByOutcomeSetId: {},
+    });
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockResolvedValue({
+      consolidationFeeSubunits: 1_500,
+      sourceFeeSubunits: 0,
+    });
+    const market = fundedSatYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
+    );
+    mockAcceptedOrder();
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+
+    const mintFees = await screen.findAllByTestId("trade-mint-fee");
+    expect(mintFees[0]).toHaveTextContent("1.5 sats");
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+    await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedConsolidationFeeSubunits: 1_500 }),
+    );
   });
 
   it("opens the trade top-up overlay from the page-level buy top-up button", async () => {

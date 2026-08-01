@@ -5,6 +5,7 @@ import {
   completeCtfRangeConsolidationOperation,
   prepareCtfRangeConsolidationOperation,
   validateCtfRangeConsolidationOperation,
+  validateCtfRangeConsolidationProofs,
 } from '../src/ctfRangeConsolidationOperation.ts'
 
 const KEYSET_ID = 'keyset-1'
@@ -31,7 +32,7 @@ test('prepares and completes one exact regular range consolidation', async () =>
     }),
     completeSwap: async () => {
       completed = true
-      return { keep: [], send: [proof('consolidated', 8193)] }
+      return { keep: [], send: outputs.map(proofFromOutput) }
     },
     prepareConditionalSwap: async () => {
       throw new Error('unexpected conditional consolidation')
@@ -60,7 +61,10 @@ test('prepares and completes one exact regular range consolidation', async () =>
   assert.deepEqual(validateCtfRangeConsolidationOperation(operation).operation, operation)
   const result = await completeCtfRangeConsolidationOperation(operation, wallet)
   assert.equal(completed, true)
-  assert.equal(result[0]?.secret, 'consolidated')
+  assert.deepEqual(
+    result.map(({ amount }) => Number(amount)),
+    [8192, 1],
+  )
 })
 
 test('prepares a conditional consolidation with the same exact plan', async () => {
@@ -75,7 +79,7 @@ test('prepares a conditional consolidation with the same exact plan', async () =
       inputs: input.inputs,
       outputDataByLabel: { consolidated: outputs },
     }),
-    completeConditionalSwap: async () => ({ consolidated: [proof('conditional-result', 8193)] }),
+    completeConditionalSwap: async () => ({ consolidated: outputs.map(proofFromOutput) }),
   }
   const operation = await prepareCtfRangeConsolidationOperation({
     operationId: 'source:consolidation:0',
@@ -91,7 +95,58 @@ test('prepares a conditional consolidation with the same exact plan', async () =
 
   assert.equal(operation.kind, 'conditional-keyset-swap')
   const result = await completeCtfRangeConsolidationOperation(operation, wallet)
-  assert.equal(result[0]?.secret, 'conditional-result')
+  assert.deepEqual(
+    result.map(({ amount }) => Number(amount)),
+    [8192, 1],
+  )
+})
+
+test('rejects incomplete, duplicate, and foreign consolidation results', async () => {
+  const outputs = outputData(ROUND.outputs)
+  const exact = outputs.map(proofFromOutput)
+  const wallet = {
+    prepareSwapToSend: async (amount: number, inputs: Proof[]) => ({
+      amount: Amount.from(amount),
+      fees: Amount.from(1),
+      keysetId: KEYSET_ID,
+      inputs,
+      sendOutputs: outputs,
+      keepOutputs: [],
+      unselectedProofs: [],
+    }),
+    completeSwap: async () => ({ keep: [], send: exact }),
+    prepareConditionalSwap: async (input: { inputs: Proof[] }) => ({
+      keysetId: KEYSET_ID,
+      inputs: input.inputs,
+      outputDataByLabel: { consolidated: outputs },
+    }),
+    completeConditionalSwap: async () => ({ consolidated: exact }),
+  }
+  for (const conditional of [false, true]) {
+    const operation = await prepareCtfRangeConsolidationOperation({
+      operationId: `source:consolidation:${conditional ? 1 : 0}`,
+      rangeOperationId: 'range-1',
+      mintUrl: MINT_URL,
+      keysetId: KEYSET_ID,
+      inputs: INPUTS,
+      conditional,
+      inputFeePpk: 100,
+      plannedRound: ROUND,
+      wallet,
+    })
+    for (const invalid of [
+      undefined,
+      [],
+      exact.slice(0, 1),
+      [exact[0]!, exact[0]!],
+      [exact[0]!, proof('foreign', 1)],
+    ]) {
+      assert.throws(
+        () => validateCtfRangeConsolidationProofs(operation, invalid),
+        /incomplete|differs/,
+      )
+    }
+  }
 })
 
 test('rejects wallet substitution before the operation is exposed', async () => {
@@ -135,4 +190,13 @@ function outputData(amounts: readonly string[]): OutputData[] {
   return amounts.map((amount, index) =>
     OutputData.createSingleData(Number(amount), KEYSET_ID, `output-${index}`, BigInt(index + 1)),
   )
+}
+
+function proofFromOutput(output: OutputData): Proof {
+  return {
+    id: output.blindedMessage.id,
+    amount: output.blindedMessage.amount,
+    secret: new TextDecoder().decode(output.secret),
+    C: 'C-result',
+  }
 }

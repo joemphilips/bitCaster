@@ -10,10 +10,14 @@ import {
   type CtfRangeMintMetadataClient,
 } from "@bitcaster/client-sdk/ctfRangeMintMetadata";
 import type { TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
+import { planCtfRangeSourceConsolidation } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
 import { toSeed } from "@/lib/bip39";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import type { MarketDetail } from "@/types/market-detail";
-import { getSelectableUnitProofsForKeyset } from "@/stores/proof-db";
+import {
+  getProofAmountInventoryForKeyset,
+  getSelectableUnitProofsForAmounts,
+} from "@/stores/proof-db";
 import { getWalletForMnemonicUnit } from "@/stores/wallet";
 import {
   BrowserCtfRangeOrderCoordinator,
@@ -27,10 +31,22 @@ import { recordBrowserCtfRangeMessage } from "@/stores/ctf-range-order-messages"
 
 const MINT_METADATA_CACHE_TTL_MS = 30_000;
 const MINT_METADATA_CACHE_LIMIT = 64;
+const ADMISSION_POLICY_CACHE_TTL_MS = 30_000;
+const BROWSER_CONSOLIDATION_ROUNDS_MAX = 256;
 const mintMetadataCache = new Map<
   string,
   { expiresAtMs: number; value: ReturnType<typeof loadCtfRangeMintMetadata> }
 >();
+let admissionPolicyCache:
+  | {
+      expiresAtMs: number;
+      value: ReturnType<
+        ReturnType<
+          typeof createAuthenticatedBrowserEngineClient
+        >["getSettlementCapabilityAdmissionPolicy"]
+      >;
+    }
+  | undefined;
 
 export interface BrowserCtfRangeOrderSubmission {
   readonly market: MarketDetail;
@@ -39,6 +55,34 @@ export interface BrowserCtfRangeOrderSubmission {
   readonly mintUrl: string;
   readonly mnemonic: string;
   readonly comment?: NostrKind1Event | null;
+  readonly expectedConsolidationFeeSubunits: number;
+}
+
+export interface BrowserCtfRangeOrderFeePreview {
+  readonly consolidationFeeSubunits: number;
+  readonly sourceFeeSubunits: number;
+}
+
+export async function previewBrowserCtfRangeOrderFees(input: {
+  readonly market: MarketDetail;
+  readonly ticket: TradeTicket;
+  readonly mintUrl: string;
+}): Promise<BrowserCtfRangeOrderFeePreview> {
+  const { preparation } = await loadBrowserRangePreparation({
+    ...input,
+    clientOrderId: crypto.randomUUID(),
+  });
+  const plan = await loadBrowserRangeConsolidationPlan(preparation);
+  if (plan.kind !== "ready") {
+    throw new BrowserCtfRangeOrderError(
+      plan.kind === "insufficient" ? "insufficient-funds" : "source-preparation-failed",
+      consolidationPlanMessage(plan.kind),
+    );
+  }
+  return {
+    consolidationFeeSubunits: safeFeeSubunits(plan.consolidationFee),
+    sourceFeeSubunits: safeFeeSubunits(plan.sourceFee),
+  };
 }
 
 export async function submitBrowserCtfRangeOrder(
@@ -50,51 +94,19 @@ export async function submitBrowserCtfRangeOrder(
   const seed = toSeed(words);
   const scopeId = browserWalletScopeIdFromMnemonic(input.mnemonic);
   if (scopeId === null) throw new Error("The wallet profile is unavailable.");
-  const engine = createAuthenticatedBrowserEngineClient();
-  const mint = new CashuMint(input.mintUrl) as unknown as CtfRangeMintMetadataClient;
-  const [policy, mintFacts] = await Promise.all([
-    engine.getSettlementCapabilityAdmissionPolicy(),
-    loadCachedMintMetadata({
-      mint,
-      mintUrl: input.mintUrl,
-      conditionId: input.market.id,
-      observedAt: Math.floor(Date.now() / 1_000),
-      allowInsecureLoopbackHttp: isLoopbackMint(input.mintUrl),
-    }),
-  ]);
-  const preparation = buildBrowserCtfRangeOrderPreparation({
-    request: {
-      ...input.ticket.request,
-      clientOrderId: input.clientOrderId,
-      marketId: input.ticket.marketId,
-      conditionId: input.market.id,
-      minimumFillAmountSubunits: input.market.divisibility,
-      baseAsset: "sat",
-      collateralUnit: "msat",
-      divisibility: input.market.divisibility,
-      timeInForce:
-        input.ticket.request.timeInForce === "GTC" ? "FOK" : input.ticket.request.timeInForce,
-      expiresAt: null,
-      mintUrl: input.mintUrl,
-    },
-    policy,
-    mintFacts,
-    market: input.market,
-    nowUnixSeconds: Math.floor(Date.now() / 1_000),
-    randomId: () => crypto.randomUUID(),
-  });
-  const candidates = await getSelectableUnitProofsForKeyset(input.mintUrl, {
-    unit: "msat",
-    keysetId: preparation.offerKeyset.id,
-    conditional: preparation.side === "Sell",
-    limit: preparation.maxInputs,
-  });
+  const { engine, preparation } = await loadBrowserRangePreparation(input);
   const coordinator = createBrowserCtfRangeCoordinator(
     engine,
     input.mnemonic,
     isLoopbackMint(input.mintUrl),
   );
   try {
+    const candidates = await consolidateBrowserRangeSource({
+      coordinator,
+      seed,
+      preparation,
+      expectedConsolidationFeeSubunits: input.expectedConsolidationFeeSubunits,
+    });
     return await coordinator.prepareAndSubmit({
       seed,
       preparation,
@@ -115,6 +127,144 @@ export async function submitBrowserCtfRangeOrder(
       }
     }
     throw error;
+  }
+}
+
+async function consolidateBrowserRangeSource(input: {
+  coordinator: BrowserCtfRangeOrderCoordinator;
+  seed: Uint8Array;
+  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+  expectedConsolidationFeeSubunits: number;
+}) {
+  const conditional = input.preparation.side === "Sell";
+  const plan = await loadBrowserRangeConsolidationPlan(input.preparation);
+  if (plan.kind !== "ready") {
+    const code = plan.kind === "insufficient" ? "insufficient-funds" : "source-preparation-failed";
+    throw new BrowserCtfRangeOrderError(code, consolidationPlanMessage(plan.kind));
+  }
+  const consolidationFee = safeFeeSubunits(plan.consolidationFee);
+  if (input.expectedConsolidationFeeSubunits !== consolidationFee) {
+    throw new BrowserCtfRangeOrderError(
+      "source-preparation-failed",
+      "Wallet proof fees changed. Review the updated trade cost and try again.",
+    );
+  }
+  for (const [round, plannedRound] of plan.consolidationRounds.entries()) {
+    const proofs = await getSelectableUnitProofsForAmounts(input.preparation.mintUrl, {
+      unit: "msat",
+      keysetId: input.preparation.offerKeyset.id,
+      conditional,
+      amounts: plannedRound.inputs,
+    });
+    await input.coordinator.consolidateRound({
+      seed: input.seed,
+      preparation: input.preparation,
+      round,
+      inputs: proofs,
+      plannedRound,
+    });
+  }
+  return getSelectableUnitProofsForAmounts(input.preparation.mintUrl, {
+    unit: "msat",
+    keysetId: input.preparation.offerKeyset.id,
+    conditional,
+    amounts: plan.selectedInputs,
+  });
+}
+
+async function loadBrowserRangePreparation(input: {
+  readonly market: MarketDetail;
+  readonly ticket: TradeTicket;
+  readonly clientOrderId: string;
+  readonly mintUrl: string;
+}) {
+  const engine = createAuthenticatedBrowserEngineClient();
+  const mint = new CashuMint(input.mintUrl) as unknown as CtfRangeMintMetadataClient;
+  const [policy, mintFacts] = await Promise.all([
+    loadCachedAdmissionPolicy(engine),
+    loadCachedMintMetadata({
+      mint,
+      mintUrl: input.mintUrl,
+      conditionId: input.market.id,
+      observedAt: Math.floor(Date.now() / 1_000),
+      allowInsecureLoopbackHttp: isLoopbackMint(input.mintUrl),
+    }),
+  ]);
+  return {
+    engine,
+    preparation: buildBrowserCtfRangeOrderPreparation({
+      request: {
+        ...input.ticket.request,
+        clientOrderId: input.clientOrderId,
+        marketId: input.ticket.marketId,
+        conditionId: input.market.id,
+        minimumFillAmountSubunits: input.market.divisibility,
+        baseAsset: "sat",
+        collateralUnit: "msat",
+        divisibility: input.market.divisibility,
+        timeInForce:
+          input.ticket.request.timeInForce === "GTC" ? "FOK" : input.ticket.request.timeInForce,
+        expiresAt: null,
+        mintUrl: input.mintUrl,
+      },
+      policy,
+      mintFacts,
+      market: input.market,
+      nowUnixSeconds: Math.floor(Date.now() / 1_000),
+      randomId: () => crypto.randomUUID(),
+    }),
+  };
+}
+
+function loadCachedAdmissionPolicy(
+  engine: ReturnType<typeof createAuthenticatedBrowserEngineClient>,
+) {
+  const nowMs = Date.now();
+  if (admissionPolicyCache && admissionPolicyCache.expiresAtMs > nowMs) {
+    return admissionPolicyCache.value;
+  }
+  const value = engine.getSettlementCapabilityAdmissionPolicy().catch((error: unknown) => {
+    if (admissionPolicyCache?.value === value) admissionPolicyCache = undefined;
+    throw error;
+  });
+  admissionPolicyCache = { expiresAtMs: nowMs + ADMISSION_POLICY_CACHE_TTL_MS, value };
+  return value;
+}
+
+async function loadBrowserRangeConsolidationPlan(
+  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+) {
+  const inventory = await getProofAmountInventoryForKeyset(preparation.mintUrl, {
+    unit: "msat",
+    keysetId: preparation.offerKeyset.id,
+    conditional: preparation.side === "Sell",
+  });
+  return planCtfRangeSourceConsolidation({
+    preparation,
+    inventory,
+    maxRounds: BROWSER_CONSOLIDATION_ROUNDS_MAX,
+  });
+}
+
+function safeFeeSubunits(value: string): number {
+  const fee = Number(value);
+  if (!Number.isSafeInteger(fee) || fee < 0) {
+    throw new BrowserCtfRangeOrderError(
+      "source-preparation-failed",
+      "The wallet proof fee is invalid.",
+    );
+  }
+  return fee;
+}
+
+function consolidationPlanMessage(kind: "insufficient" | "not-reducible" | "round-limit"): string {
+  switch (kind) {
+    case "insufficient":
+      return "The wallet does not have enough exact funds for this order.";
+    case "not-reducible":
+      return "The wallet proofs cannot be reduced under the mint input limit.";
+    case "round-limit":
+      return "The wallet proof consolidation exceeded its safe round limit.";
   }
 }
 

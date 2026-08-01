@@ -5,6 +5,7 @@ import {
   type ProofState,
   type SerializedBlindedSignature,
   type SwapRequest,
+  type SwapPreview,
 } from "@cashu/cashu-ts";
 import {
   prepareDurableCustodyExactArtifact,
@@ -53,10 +54,22 @@ import {
   type CtfRangeSourceWallet,
 } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
 import {
+  completeCtfRangeConsolidationOperation,
+  prepareCtfRangeConsolidationOperation,
+  validateCtfRangeConsolidationOperation,
+  validateCtfRangeConsolidationProofs,
+  type CtfRangeConsolidationWallet,
+} from "@bitcaster/client-sdk/ctfRangeConsolidationOperation";
+import type { ProofConsolidationRound } from "@bitcaster/client-sdk/boundedProofConsolidation";
+import {
   classifyCtfRangeSourceRecovery,
   type CtfRangeSourceRecoveryDecision,
 } from "@bitcaster/client-sdk/ctfRangeSourceRecovery";
-import { restoreOutputGroups, type StoredOutputData } from "@bitcaster/client-sdk/ctfSplit";
+import {
+  restoreOutputGroups,
+  serializeOutputDataArray,
+  type StoredOutputData,
+} from "@bitcaster/client-sdk/ctfSplit";
 import {
   buildPersistedCtfRangeOrderPreparation,
   createCtfRangeSettlementCapabilityRequest,
@@ -108,14 +121,19 @@ import {
 } from "./browserCtfRangeOrderSource";
 import {
   bindCtfRangePreparationCapability,
+  appendCtfRangePreparationConsolidation,
   insertCtfRangePreparation,
   pageActiveCtfRangePreparations,
   readCtfRangePreparation,
+  readCtfRangePreparationConsolidations,
   transitionCtfRangePreparation,
 } from "../stores/ctf-range-order-db";
 import {
   db,
+  getProofOperation,
+  markProofOperationCompleted,
   normalizeAndValidateStoredProof,
+  prepareProofOperation,
   storedProofFromRow,
   storedProofRow,
   type BitcasterDB,
@@ -128,7 +146,15 @@ const SCOPE_LEASE_MS = 10 * 60 * 1_000;
 const RECOVERY_PAGE_LIMIT_DEFAULT = 64;
 
 type WalletLockManager = Pick<LockManager, "request">;
-type BrowserCtfRangeWallet = CtfRangeSourceWallet & {
+type BrowserCtfRangeWallet = Omit<CtfRangeSourceWallet, "prepareSwapToSend"> & {
+  prepareSwapToSend(
+    amount: number,
+    proofs: Proof[],
+    config: { includeFees: false; keysetId: string },
+    outputConfig:
+      | Parameters<CtfRangeSourceWallet["prepareSwapToSend"]>[3]
+      | Parameters<CtfRangeConsolidationWallet["prepareSwapToSend"]>[3],
+  ): Promise<SwapPreview>;
   checkProofsStates(proofs: Array<Pick<Proof, "id" | "secret">>): Promise<ProofState[]>;
 };
 type BrowserCtfRangeMintRecovery = Pick<
@@ -306,6 +332,29 @@ export class BrowserCtfRangeOrderCoordinator {
             completed.operation,
             completed.capabilityRequest,
             input.comment ?? null,
+          );
+        }),
+      this.#lockManager,
+    );
+  }
+
+  async consolidateRound(input: {
+    readonly seed: Uint8Array;
+    readonly preparation: PersistedCtfRangeOrderPreparation;
+    readonly round: number;
+    readonly inputs: readonly Proof[];
+    readonly plannedRound: ProofConsolidationRound;
+  }): Promise<void> {
+    const scope = browserWalletScope(input.seed);
+    await withWalletProfileLock(
+      scope.scopeId,
+      () =>
+        this.#withScopeOwner(scope, async () => {
+          const operation = await this.#prepareAndPersistConsolidation(input, scope);
+          await this.#completeAndCommitConsolidation(
+            input.preparation,
+            operation,
+            operation.operationId,
           );
         }),
       this.#lockManager,
@@ -675,6 +724,150 @@ export class BrowserCtfRangeOrderCoordinator {
     }
   }
 
+  async #prepareAndPersistConsolidation(
+    input: {
+      readonly preparation: PersistedCtfRangeOrderPreparation;
+      readonly round: number;
+      readonly inputs: readonly Proof[];
+      readonly plannedRound: ProofConsolidationRound;
+    },
+    scope: DurableCustodyScope,
+  ): Promise<DurableCustodyProofOperationInput> {
+    const operationId = `${input.preparation.sourceOperationId}:consolidation:${input.round}`;
+    let operation: DurableCustodyProofOperationInput;
+    try {
+      operation = await prepareCtfRangeConsolidationOperation({
+        operationId,
+        rangeOperationId: input.preparation.operationId,
+        mintUrl: input.preparation.mintUrl,
+        keysetId: input.preparation.offerKeyset.id,
+        inputs: input.inputs,
+        conditional: input.preparation.side === "Sell",
+        inputFeePpk: input.preparation.offerKeyset.inputFeePpk,
+        plannedRound: input.plannedRound,
+        wallet: await this.#walletForMint(input.preparation.mintUrl),
+      });
+    } catch (error) {
+      throw rangeError("source-preparation-failed", error);
+    }
+    await this.#persistPreparedConsolidation(scope, input.preparation, input.round, operation);
+    return operation;
+  }
+
+  async #persistPreparedConsolidation(
+    scope: DurableCustodyScope,
+    preparation: PersistedCtfRangeOrderPreparation,
+    round: number,
+    operation: DurableCustodyProofOperationInput,
+  ): Promise<void> {
+    const validated = validateCtfRangeConsolidationOperation(operation);
+    const reservationId = operation.operationId;
+    const predecessors = operation.inputs.map(
+      (proof) =>
+        browserSourceProofRows(
+          scope,
+          preparation,
+          { authorization: [proof as Proof], keep: [] },
+          this.#now(),
+        )[0]!.proof,
+    );
+    try {
+      await this.#database.transaction("rw", this.#transactionTables(true), async () => {
+        await insertCtfRangePreparation(
+          await this.#journalIdentity(scope, preparation),
+          this.#database,
+        );
+        await prepareProofOperation(
+          {
+            operationId: operation.operationId,
+            kind: rangeConsolidationKind(operation.kind),
+            mintUrl: operation.mintUrl,
+            inputs: operation.inputs as Proof[],
+            outputs: { consolidated: serializeOutputDataArray(validated.outputs) },
+            metadata: {
+              ...structuredClone(operation.metadata),
+              exactOperation: structuredClone(operation),
+            },
+          },
+          this.#database,
+        );
+        await appendCtfRangePreparationConsolidation(
+          {
+            scopeId: scope.scopeId,
+            rangeOperationId: preparation.operationId,
+            round,
+            operationId: operation.operationId,
+            reservationId,
+          },
+          this.#database,
+        );
+        await this.#reserveLegacySourceProofs(
+          scope,
+          preparation,
+          reservationId,
+          operation.inputs,
+          predecessors,
+        );
+      });
+    } catch (error) {
+      throw rangeError("custody-commit-failed", error);
+    }
+  }
+
+  async #completeAndCommitConsolidation(
+    preparation: PersistedCtfRangeOrderPreparation,
+    operation: DurableCustodyProofOperationInput,
+    reservationId: string,
+  ): Promise<void> {
+    let proofs: readonly Proof[];
+    try {
+      proofs = await completeCtfRangeConsolidationOperation(
+        operation,
+        await this.#walletForMint(preparation.mintUrl),
+      );
+    } catch (error) {
+      throw rangeError("mint-source-uncertain", error);
+    }
+    await this.#commitConsolidationResult(preparation, operation, reservationId, proofs);
+  }
+
+  async #commitConsolidationResult(
+    preparation: PersistedCtfRangeOrderPreparation,
+    operation: DurableCustodyProofOperationInput,
+    reservationId: string,
+    proofs: readonly Proof[],
+  ): Promise<void> {
+    const successors = proofs.map((proof) => legacySourceProof(preparation, proof, this.#now()));
+    try {
+      await this.#database.transaction("rw", this.#transactionTables(false), async () => {
+        await markProofOperationCompleted(
+          operation.operationId,
+          { consolidated: [...proofs] },
+          this.#database,
+        );
+        await this.#replaceLegacyReservedProofs(
+          operation.inputs.map(({ secret }) => secret),
+          reservationId,
+          successors,
+        );
+      });
+    } catch (error) {
+      throw rangeError("custody-commit-failed", error);
+    }
+  }
+
+  async #journalIdentity(
+    scope: DurableCustodyScope,
+    preparation: PersistedCtfRangeOrderPreparation,
+  ) {
+    const existing = await readCtfRangePreparation(
+      scope.scopeId,
+      preparation.operationId,
+      this.#database,
+    );
+    return browserRangeJournalIdentity(scope, preparation, existing?.createdAtMs ?? this.#now());
+  }
+
   async #prepareAndPersistSource(
     input: {
       readonly seed: Uint8Array;
@@ -734,7 +927,7 @@ export class BrowserCtfRangeOrderCoordinator {
     try {
       await this.#database.transaction("rw", this.#transactionTables(true), async () => {
         await insertCtfRangePreparation(
-          browserRangeJournalIdentity(scope, preparation, this.#now()),
+          await this.#journalIdentity(scope, preparation),
           this.#database,
         );
         await this.#custody.transact(
@@ -801,7 +994,9 @@ export class BrowserCtfRangeOrderCoordinator {
       preparation.sourceOperationId,
     );
     const snapshot = await this.#custody.readOperationSnapshot(scope, sourceCustodyOperationId);
-    if (snapshot === null) throw rangeError("recovery-pending");
+    if (snapshot === null) {
+      return this.#recoverConsolidationOnlyPreparation(journalRecord, preparation);
+    }
     const source = browserSourceOperationFromSnapshot(snapshot.record, snapshot.artifacts);
     switch (snapshot.record.operation.result.state) {
       case "none":
@@ -834,6 +1029,105 @@ export class BrowserCtfRangeOrderCoordinator {
       default:
         throw rangeError("recovery-pending");
     }
+  }
+
+  async #recoverConsolidationOnlyPreparation(
+    journalRecord: Awaited<
+      ReturnType<typeof pageActiveCtfRangePreparations>
+    >["preparations"][number],
+    preparation: PersistedCtfRangeOrderPreparation,
+  ): Promise<boolean> {
+    const links = await readCtfRangePreparationConsolidations(
+      journalRecord.scopeId,
+      journalRecord.rangeOperationId,
+      this.#database,
+    );
+    if (links.length === 0) throw rangeError("recovery-pending");
+    for (const link of links) {
+      await this.#resumeConsolidation(preparation, link.operationId, link.reservationId);
+    }
+    await transitionCtfRangePreparation(
+      {
+        scopeId: journalRecord.scopeId,
+        rangeOperationId: journalRecord.rangeOperationId,
+        expectedRevision: journalRecord.revision,
+        from: "prepared",
+        to: "terminal",
+        updatedAtMs: this.#now(),
+      },
+      this.#database,
+    );
+    return true;
+  }
+
+  async #resumeConsolidation(
+    preparation: PersistedCtfRangeOrderPreparation,
+    operationId: string,
+    reservationId: string,
+  ): Promise<void> {
+    const record = await getProofOperation(operationId, this.#database);
+    if (record === null) throw rangeError("recovery-pending");
+    if (record.state === "Failed") {
+      throw new Error(
+        `Range consolidation ${operationId} failed: ${record.lastError ?? "unknown"}`,
+      );
+    }
+    if (record.state === "completed") return;
+    const operation = persistedRangeConsolidationOperation(record);
+    const decision = await this.#classifyUncertainConsolidation(preparation, operation);
+    let proofs: readonly Proof[];
+    switch (decision.kind) {
+      case "replay-exact-persisted-operation":
+        try {
+          proofs = await completeCtfRangeConsolidationOperation(
+            operation,
+            await this.#walletForMint(preparation.mintUrl),
+          );
+        } catch (error) {
+          throw rangeError("recovery-pending", error);
+        }
+        break;
+      case "restore-exact-persisted-outputs": {
+        let restored: Record<string, Proof[]>;
+        try {
+          restored = await this.#restoreOutputs(preparation.mintUrl, record.outputs);
+          if (Object.keys(restored).some((label) => label !== "consolidated")) {
+            throw new Error("Range consolidation restore returned a foreign proof group");
+          }
+          proofs = validateCtfRangeConsolidationProofs(operation, restored.consolidated);
+        } catch (error) {
+          throw rangeError("recovery-pending", error);
+        }
+        break;
+      }
+      case "remain-pending":
+        throw rangeError("recovery-pending");
+      default:
+        throw new Error("Range consolidation recovery state is invalid");
+    }
+    await this.#commitConsolidationResult(preparation, operation, reservationId, proofs);
+  }
+
+  async #classifyUncertainConsolidation(
+    preparation: PersistedCtfRangeOrderPreparation,
+    operation: DurableCustodyProofOperationInput,
+  ): Promise<CtfRangeSourceRecoveryDecision> {
+    let states: ProofState[];
+    try {
+      states = await (
+        await this.#walletForMint(preparation.mintUrl)
+      ).checkProofsStates(
+        operation.inputs.map(({ id, secret }) => ({ id: requireSourceKeysetId(id), secret })),
+      );
+    } catch {
+      throw rangeError("recovery-pending");
+    }
+    return classifyCtfRangeSourceRecovery({
+      journalKind: "consolidation",
+      journalState: "prepared",
+      inputStates: states.map(({ state }) => state),
+      now: Math.floor(this.#now() / 1_000),
+    });
   }
 
   async #recoverUncertainSource(input: {
@@ -1800,6 +2094,7 @@ export class BrowserCtfRangeOrderCoordinator {
   #transactionTables(includeJournal: boolean) {
     return [
       ...(includeJournal ? [this.#database.ctfRangePreparations] : []),
+      this.#database.ctfRangePreparationConsolidations,
       this.#database.proofs,
       this.#database.proofOperations,
       this.#database.custodyScopes,
@@ -1823,6 +2118,38 @@ function requireImmediateOrder(preparation: PersistedCtfRangeOrderPreparation): 
     default:
       return assertNever(preparation.request.timeInForce);
   }
+}
+
+function rangeConsolidationKind(
+  value: ProofOperationRecord["kind"] | DurableCustodyProofOperationInput["kind"],
+): "wallet-send" | "conditional-keyset-swap" {
+  if (value === "wallet-send" || value === "conditional-keyset-swap") return value;
+  throw new Error("Range consolidation operation kind is invalid");
+}
+
+function persistedRangeConsolidationOperation(
+  record: ProofOperationRecord,
+): DurableCustodyProofOperationInput {
+  const exact = record.metadata.exactOperation;
+  const validated = validateCtfRangeConsolidationOperation(
+    exact as DurableCustodyProofOperationInput,
+  );
+  const operation = validated.operation;
+  if (
+    operation.operationId !== record.operationId ||
+    operation.kind !== rangeConsolidationKind(record.kind) ||
+    operation.mintUrl !== record.mintUrl ||
+    canonicalJson(operation.inputs) !== canonicalJson(record.inputs) ||
+    canonicalJson({ consolidated: serializeOutputDataArray(validated.outputs) }) !==
+      canonicalJson(record.outputs)
+  ) {
+    throw new Error("Range consolidation journal differs from its exact operation");
+  }
+  return operation;
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item));
 }
 
 function requireImmediateSubmitResponse(

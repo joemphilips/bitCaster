@@ -103,7 +103,7 @@ const ORDER_ID = '00000000-0000-8000-8000-000000000001'
 const CAPABILITY_ARTIFACT_ID = '00000000-0000-4000-8000-000000000002'
 const SETTLEMENT_GROUP_ID = '00000000-0000-4000-8000-000000000004'
 
-test('daemon recovers funds without recreating an unacknowledged capability', async () => {
+test('daemon retries the exact capability request after its acknowledgement is lost', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
@@ -120,11 +120,8 @@ test('daemon recovers funds without recreating an unacknowledged capability', as
       const client = fakeEngineClient((request) => {
         posted.push(structuredClone(request))
         createAttempts += 1
-        throw new Error(
-          createAttempts === 1
-            ? 'capability acknowledgement lost'
-            : 'capability creation must not be retried during recovery',
-        )
+        if (createAttempts === 1) throw new Error('capability acknowledgement lost')
+        return boundCapability(request)
       })
       const ids = ['range-operation-1', 'range-authorization-1']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
@@ -152,11 +149,12 @@ test('daemon recovers funds without recreating an unacknowledged capability', as
       assert.deepEqual(committed?.orders, {})
 
       const recovered = await coordinator.recover(WALLET_SEED_HEX, client)
-      assert.deepEqual(recovered.recovered, [])
-      assert.equal(recovered.pending.length, 1)
-      assert.match(recovered.pending[0]!.error, /unsubmitted range authorization remains unspent/)
+      assert.deepEqual(recovered.recovered, ['range-operation-1:source'])
+      assert.deepEqual(recovered.pending, [])
       assert.equal(wallet.completeCalls, 1)
-      assert.equal(posted.length, 1)
+      assert.equal(posted.length, 2)
+      assert.deepEqual(posted[1], posted[0])
+      assert.equal(JSON.stringify(posted[0]), canonicalJson(posted[0]))
       const database = await openDaemonStateSqlite(directory)
       const custodyRows = database
         .prepare(
@@ -177,7 +175,7 @@ test('daemon recovers funds without recreating an unacknowledged capability', as
       assert.equal(waiting.pending.length, 1)
       assert.match(waiting.pending[0]!.error, /remains unspent before expiry/)
       assert.deepEqual(await rangeRecoverySnapshot(directory), beforePendingRecovery)
-      assert.equal(posted.length, 1)
+      assert.equal(posted.length, 2)
       await assertSeedAbsentFromArtifacts(directory)
     },
   )
@@ -201,13 +199,7 @@ test('daemon resumes exact bounded consolidation without recreating its range ca
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(3),
         createWallet: () => wallet,
-        restoreOutputs: async (_mintUrl, groups) =>
-          Object.fromEntries(
-            Object.entries(deserializeOutputGroups(groups)).map(([label, outputs]) => [
-              label,
-              outputs.map(signedProof),
-            ]),
-          ),
+        restoreOutputs: async () => ({}),
         now: () => 10_000,
         randomId: () => ids.shift()!,
       })
@@ -223,7 +215,31 @@ test('daemon resumes exact bounded consolidation without recreating its range ca
         3,
       )
 
-      const recoveredPass = await coordinator.recover(WALLET_SEED_HEX, client)
+      const incompletePass = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.deepEqual(incompletePass.recovered, [])
+      assert.equal(incompletePass.pending.length, 1)
+      assert.match(incompletePass.pending[0]!.error, /consolidation result is incomplete/)
+      const stillReserved = await readState()
+      assert.equal(stillReserved?.proofOperations[consolidationId]?.state, 'prepared')
+      assert.equal(
+        stillReserved?.wallet.proofs.filter(({ state: proofState }) => proofState === 'reserved')
+          .length,
+        3,
+      )
+
+      const recoveredCoordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(3),
+        createWallet: () => wallet,
+        restoreOutputs: async (_mintUrl, groups) =>
+          Object.fromEntries(
+            Object.entries(deserializeOutputGroups(groups)).map(([label, outputs]) => [
+              label,
+              outputs.map(signedProof),
+            ]),
+          ),
+        now: () => 10_000,
+      })
+      const recoveredPass = await recoveredCoordinator.recover(WALLET_SEED_HEX, client)
       assert.deepEqual(recoveredPass.recovered, [])
       assert.equal(recoveredPass.pending.length, 1)
       assert.match(
@@ -1521,6 +1537,19 @@ function testScopeId(): string {
 
 function regularAsset(): StoredProofAsset {
   return { kind: 'sats', baseAsset: 'sat', unit: 'msat' }
+}
+
+function canonicalJson(value: unknown): string {
+  const canonicalize = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(canonicalize)
+    if (item === null || typeof item !== 'object') return item
+    return Object.fromEntries(
+      Object.entries(item as Record<string, unknown>)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, child]) => [key, canonicalize(child)]),
+    )
+  }
+  return JSON.stringify(canonicalize(value))
 }
 
 function outcomeAsset(): StoredProofAsset {

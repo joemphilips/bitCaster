@@ -12,7 +12,7 @@ import {
   type CtfRangeOrderPreparationPageCursor,
   type CtfRangeOrderPreparationRecord,
 } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
-import { db, type BitcasterDB } from "./proof-db";
+import { db, type BitcasterDB, type CtfRangePreparationConsolidationLinkRow } from "./proof-db";
 
 export interface CtfRangePreparationPage {
   preparations: readonly CtfRangeOrderPreparationRecord[];
@@ -73,6 +73,41 @@ export async function readActiveCtfRangePreparationByClientOrderId(
     throw new Error("browser CTF range client order has overlapping active preparations");
   }
   return rows[0] ? decodeCtfRangeOrderPreparationRecord(rows[0]) : null;
+}
+
+export async function appendCtfRangePreparationConsolidation(
+  input: CtfRangePreparationConsolidationLinkRow,
+  database: BitcasterDB = db,
+): Promise<CtfRangePreparationConsolidationLinkRow> {
+  if (!Number.isSafeInteger(input.round) || input.round < 0 || input.round > 4_095) {
+    throw new Error("browser CTF range consolidation round is invalid");
+  }
+  return database.transaction("rw", database.ctfRangePreparationConsolidations, async () => {
+    const key: [string, string, number] = [input.scopeId, input.rangeOperationId, input.round];
+    const existing = await database.ctfRangePreparationConsolidations.get(key);
+    if (existing) {
+      if (
+        existing.operationId !== input.operationId ||
+        existing.reservationId !== input.reservationId
+      ) {
+        throw new Error("browser CTF range consolidation conflicts with its persisted link");
+      }
+      return existing;
+    }
+    await database.ctfRangePreparationConsolidations.add(input);
+    return input;
+  });
+}
+
+export async function readCtfRangePreparationConsolidations(
+  scopeId: string,
+  rangeOperationId: string,
+  database: BitcasterDB = db,
+): Promise<CtfRangePreparationConsolidationLinkRow[]> {
+  return database.ctfRangePreparationConsolidations
+    .where("[scopeId+rangeOperationId+round]")
+    .between([scopeId, rangeOperationId], [scopeId, rangeOperationId, []], true, true)
+    .sortBy("round");
 }
 
 export async function bindCtfRangePreparationCapability(

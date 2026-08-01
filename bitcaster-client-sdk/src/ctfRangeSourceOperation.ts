@@ -13,6 +13,12 @@ import {
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
 import { prepareCtfRangeOrderAuthorization } from './ctfRangeOrderPreparation.ts'
+import { planCtfRangeOrderAuthorization } from './ctfRangeOrderAuthorization.ts'
+import {
+  planBoundedProofConsolidation,
+  type BoundedProofConsolidationPlan,
+  type ProofAmountCount,
+} from './boundedProofConsolidation.ts'
 import type { PersistedCtfRangeOrderPreparation } from './ctfRangeOrderProtocol.ts'
 import {
   amountToNumber,
@@ -55,6 +61,32 @@ export interface CtfRangeSourceWallet {
 export interface CtfRangeSourceResult {
   readonly authorization: readonly Proof[]
   readonly keep: readonly Proof[]
+}
+
+export function planCtfRangeSourceConsolidation(input: {
+  readonly preparation: PersistedCtfRangeOrderPreparation
+  readonly inventory: readonly ProofAmountCount[]
+  readonly maxRounds: number
+}): BoundedProofConsolidationPlan {
+  const preparation = input.preparation
+  const authorization = planCtfRangeOrderAuthorization({
+    side: preparation.side,
+    priceNumerator: preparation.priceNumerator,
+    amountSubunits: preparation.amountSubunits,
+    divisibility: preparation.divisibility,
+    inputFeePpk: preparation.offerKeyset.inputFeePpk,
+    offerKeysetKeys: preparation.offerKeyset.keys,
+    maxPoolEntries: preparation.maxPoolEntries,
+    maxInputs: preparation.maxInputs,
+  })
+  return planBoundedProofConsolidation({
+    inventory: input.inventory,
+    target: authorization.inputAmount,
+    inputFeePpk: preparation.offerKeyset.inputFeePpk,
+    maxInputs: preparation.maxInputs,
+    maxRounds: input.maxRounds,
+    keysetKeys: preparation.offerKeyset.keys,
+  })
 }
 
 export async function prepareCtfRangeSourceOperation(input: {

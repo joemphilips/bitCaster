@@ -123,7 +123,7 @@ export async function completeCtfRangeConsolidationOperation(
       inputs: operation.inputs as Proof[],
       outputDataByLabel: { consolidated: validated.outputs },
     })
-    return result.consolidated ?? []
+    return validateCtfRangeConsolidationProofs(validated, result.consolidated)
   }
   const result = await wallet.completeSwap({
     amount: Amount.from(metadataNumber(operation, 'amount')),
@@ -137,7 +137,42 @@ export async function completeCtfRangeConsolidationOperation(
   if (result.keep.length > 0) {
     throw new Error('range consolidation returned unexpected keep proofs')
   }
-  return result.send
+  return validateCtfRangeConsolidationProofs(validated, result.send)
+}
+
+export function validateCtfRangeConsolidationProofs(
+  value: DurableCustodyProofOperationInput | ValidatedCtfRangeConsolidationOperation,
+  proofs: readonly Proof[] | undefined,
+): readonly Proof[] {
+  const validated = isValidated(value)
+    ? value
+    : validateCtfRangeConsolidationOperation(value as DurableCustodyProofOperationInput)
+  if (proofs === undefined || proofs.length !== validated.outputs.length) {
+    throw new Error('range consolidation result is incomplete')
+  }
+  const expected = new Map(
+    validated.outputs.map((output) => [new TextDecoder().decode(output.secret), output] as const),
+  )
+  if (expected.size !== validated.outputs.length) {
+    throw new Error('range consolidation outputs contain duplicate secrets')
+  }
+  const observed = new Set<string>()
+  for (const proof of proofs) {
+    const output = expected.get(proof.secret)
+    if (
+      output === undefined ||
+      observed.has(proof.secret) ||
+      proof.id !== output.blindedMessage.id ||
+      amountToNumber(proof.amount) !== amountToNumber(output.blindedMessage.amount)
+    ) {
+      throw new Error('range consolidation result differs from its exact outputs')
+    }
+    observed.add(proof.secret)
+  }
+  if (observed.size !== expected.size) {
+    throw new Error('range consolidation result is incomplete')
+  }
+  return proofs
 }
 
 export function validateCtfRangeConsolidationOperation(

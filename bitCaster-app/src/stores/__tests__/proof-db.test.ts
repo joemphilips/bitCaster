@@ -122,6 +122,8 @@ import {
   getProofs,
   getUnitProofs,
   getReservedProofs,
+  getProofAmountInventoryForKeyset,
+  getSelectableUnitProofsForAmounts,
   getSelectableUnitProofsForKeyset,
   normalizeStoredMintUrls,
   getProofOperation,
@@ -402,6 +404,41 @@ describe("proof-db normalization", () => {
     });
 
     expect(selected.map(({ amount }) => amountToNumber(amount))).toEqual([16, 8, 4]);
+  });
+
+  it("counts fragmented inventory and selects one exact planned amount page", async () => {
+    await addProofs(
+      [1, 1, 2, 4, 8, 16].map((amount, index) => ({
+        secret: `proof-${amount}-${index}`,
+        amount: Amount.from(amount),
+        id: "exact-keyset",
+        C: `C-${amount}-${index}`,
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "msat" as const,
+        ...(index === 5 ? { reservedBy: "other-operation" } : {}),
+      })),
+    );
+
+    await expect(
+      getProofAmountInventoryForKeyset("https://mint.example", {
+        unit: "msat",
+        keysetId: "exact-keyset",
+        conditional: false,
+      }),
+    ).resolves.toEqual([
+      { amount: "8", count: 1 },
+      { amount: "4", count: 1 },
+      { amount: "2", count: 1 },
+      { amount: "1", count: 2 },
+    ]);
+    const selected = await getSelectableUnitProofsForAmounts("https://mint.example", {
+      unit: "msat",
+      keysetId: "exact-keyset",
+      conditional: false,
+      amounts: ["4", "1", "1"],
+    });
+    expect(selected.map(({ amount }) => amountToNumber(amount))).toEqual([4, 1, 1]);
   });
 
   it("requires an exact unit on every new proof write", async () => {

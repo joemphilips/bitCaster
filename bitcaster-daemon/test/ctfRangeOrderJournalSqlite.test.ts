@@ -321,10 +321,18 @@ test('active recovery pages use lifecycle and retain submitted orders until term
       preparationInput(`range-${suffix}`, `source-${suffix}`, `client-${suffix}`, 20 + index),
     )
   }
-  bindRangePreparationCapability(database, {
+  transitionRangePreparation(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: 'range-b',
     expectedRevision: 0,
+    from: 'prepared',
+    to: 'capability-requested',
+    updatedAtMs: 29,
+  })
+  bindRangePreparationCapability(database, {
+    scopeId: SCOPE_ID,
+    rangeOperationId: 'range-b',
+    expectedRevision: 1,
     capability: CAPABILITY,
     updatedAtMs: 30,
   })
@@ -344,7 +352,7 @@ test('active recovery pages use lifecycle and retain submitted orders until term
   })
   assert.deepEqual(
     page.preparations.map(({ rangeOperationId }) => rangeOperationId),
-    ['range-a', 'range-d', 'range-b'],
+    ['range-a', 'range-b', 'range-d'],
   )
   assert.equal(page.nextCursor, null)
   assert.equal(
@@ -383,26 +391,34 @@ test('capability binding and lifecycle transitions use revision CAS', (t) => {
   t.after(() => database.close())
   const input = preparationInput('range-transition', 'source-transition', 'client-transition', 5)
   insertRangePreparation(database, input)
+  transitionRangePreparation(database, {
+    scopeId: SCOPE_ID,
+    rangeOperationId: input.rangeOperationId,
+    expectedRevision: 0,
+    from: 'prepared',
+    to: 'capability-requested',
+    updatedAtMs: 5,
+  })
 
   const bound = bindRangePreparationCapability(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: input.rangeOperationId,
-    expectedRevision: 0,
+    expectedRevision: 1,
     capability: CAPABILITY,
     updatedAtMs: 6,
   })
   assert.equal(bound.lifecycleState, 'capability-bound')
-  assert.equal(bound.revision, 1)
-  assert.equal(insertRangePreparation(database, input).revision, 1)
+  assert.equal(bound.revision, 2)
+  assert.equal(insertRangePreparation(database, input).revision, 2)
   const submitted = transitionRangePreparation(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: input.rangeOperationId,
-    expectedRevision: 1,
+    expectedRevision: 2,
     from: 'capability-bound',
     to: 'order-submitted',
     updatedAtMs: 7,
   })
-  assert.equal(submitted.revision, 2)
+  assert.equal(submitted.revision, 3)
   assert.throws(
     () =>
       transitionRangePreparation(database, {
@@ -418,10 +434,18 @@ test('capability binding and lifecycle transitions use revision CAS', (t) => {
 
   const rejectedInput = preparationInput('range-rejected', 'source-rejected', 'client-rejected', 9)
   insertRangePreparation(database, rejectedInput)
-  bindRangePreparationCapability(database, {
+  transitionRangePreparation(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: rejectedInput.rangeOperationId,
     expectedRevision: 0,
+    from: 'prepared',
+    to: 'capability-requested',
+    updatedAtMs: 9,
+  })
+  bindRangePreparationCapability(database, {
+    scopeId: SCOPE_ID,
+    rangeOperationId: rejectedInput.rangeOperationId,
+    expectedRevision: 1,
     capability: {
       ...CAPABILITY,
       artifactId: '55555555-5555-4555-8555-555555555555',
@@ -432,7 +456,7 @@ test('capability binding and lifecycle transitions use revision CAS', (t) => {
   const rejected = transitionRangePreparation(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: rejectedInput.rangeOperationId,
-    expectedRevision: 1,
+    expectedRevision: 2,
     from: 'capability-bound',
     to: 'submission-rejected',
     updatedAtMs: 11,
@@ -441,7 +465,7 @@ test('capability binding and lifecycle transitions use revision CAS', (t) => {
   const terminal = transitionRangePreparation(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: rejectedInput.rangeOperationId,
-    expectedRevision: 2,
+    expectedRevision: 3,
     from: 'submission-rejected',
     to: 'terminal',
     updatedAtMs: 12,

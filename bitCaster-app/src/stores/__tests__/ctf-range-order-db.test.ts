@@ -10,10 +10,12 @@ import {
   type CtfRangeOrderPreparationIdentity,
 } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import {
+  appendCtfRangePreparationConsolidation,
   bindCtfRangePreparationCapability,
   insertCtfRangePreparation,
   pageActiveCtfRangePreparations,
   readActiveCtfRangePreparationByClientOrderId,
+  readCtfRangePreparationConsolidations,
   readCtfRangePreparation,
   transitionCtfRangePreparation,
 } from "../ctf-range-order-db";
@@ -156,6 +158,31 @@ describe("browser CTF range order journal", () => {
     expect(
       await readActiveCtfRangePreparationByClientOrderId(records[0]!.scopeId, "client-b", database),
     ).toBeNull();
+  });
+
+  it("links ordered consolidation rounds idempotently and rejects substitution", async () => {
+    const database = createDatabase();
+    const input = identity("range-consolidated", "client-consolidated", 30);
+    await insertCtfRangePreparation(input, database);
+    const link = {
+      scopeId: input.scopeId,
+      rangeOperationId: input.rangeOperationId,
+      round: 0,
+      operationId: `${input.sourceOperationId}:consolidation:0`,
+      reservationId: `ctf-range-consolidation:${input.sourceOperationId}:consolidation:0`,
+    };
+
+    await expect(appendCtfRangePreparationConsolidation(link, database)).resolves.toEqual(link);
+    await expect(appendCtfRangePreparationConsolidation(link, database)).resolves.toEqual(link);
+    await expect(
+      appendCtfRangePreparationConsolidation(
+        { ...link, operationId: `${input.sourceOperationId}:substituted` },
+        database,
+      ),
+    ).rejects.toThrow(/conflicts with its persisted link/);
+    await expect(
+      readCtfRangePreparationConsolidations(input.scopeId, input.rangeOperationId, database),
+    ).resolves.toEqual([link]);
   });
 });
 

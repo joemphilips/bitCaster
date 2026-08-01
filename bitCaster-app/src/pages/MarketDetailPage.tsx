@@ -76,7 +76,10 @@ import {
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { buildIndexedDbTokenHoldings } from "@/lib/walletHoldings";
-import { submitBrowserCtfRangeOrder } from "@/lib/browserCtfRangeOrderSubmission";
+import {
+  previewBrowserCtfRangeOrderFees,
+  submitBrowserCtfRangeOrder,
+} from "@/lib/browserCtfRangeOrderSubmission";
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
@@ -945,6 +948,10 @@ export function MarketDetailPage() {
     message?: string;
   } | null>(null);
   const [isTradeSubmitting, setIsTradeSubmitting] = useState(false);
+  const [rangeFeePreview, setRangeFeePreview] = useState<{
+    key: string;
+    consolidationFeeSubunits: number;
+  } | null>(null);
   const tradeSubmitInFlightRef = useRef(false);
 
   // Top-up flow state — surfaced only when the user tries to confirm a trade
@@ -1308,6 +1315,49 @@ export function MarketDetailPage() {
     marketDivisibility,
   );
 
+  const currentTradeTicket = useMemo(() => {
+    if (!market || !tradeSelection || tradeAmount <= 0) return null;
+    try {
+      const tradeBooks = resolveTradeOrderBooks(market, tradeSelection);
+      if (!tradeBooks) return null;
+      return buildTradeTicket({
+        market,
+        selection: tradeSelection,
+        amountSubunits: tradeFaceAmountSubunits,
+        side: tradeSide,
+        orderType,
+        limitPrice,
+        orderBook: tradeBooks.selectedBook,
+        complementaryOrderBook: tradeBooks.complementBook,
+      });
+    } catch {
+      return null;
+    }
+  }, [
+    market,
+    tradeSelection,
+    tradeAmount,
+    tradeFaceAmountSubunits,
+    tradeSide,
+    orderType,
+    limitPrice,
+  ]);
+  const rangeFeePreviewKey = useMemo(
+    () =>
+      currentTradeTicket && activeMintUrl
+        ? JSON.stringify({
+            conditionId: market?.id,
+            mintUrl: activeMintUrl,
+            ticket: currentTradeTicket,
+          })
+        : null,
+    [activeMintUrl, currentTradeTicket, market?.id],
+  );
+  const displayedConsolidationFee =
+    rangeFeePreviewKey !== null && rangeFeePreview?.key === rangeFeePreviewKey
+      ? rangeFeePreview.consolidationFeeSubunits
+      : 0;
+
   // Computed trade preview (market orders). `tradeAmount` is the user-entered
   // whole-share count; the wire face amount is derived only at protocol
   // boundaries.
@@ -1362,11 +1412,11 @@ export function MarketDetailPage() {
       executableShares: quotePreview.executableDisplayShares,
       hasExecutableLiquidity: true,
       quoteSubunits: cost.quoteSubunits,
-      mintFee: cost.mintFee,
+      mintFee: cost.mintFee + displayedConsolidationFee,
       potentialPayout: quotePreview.filledFaceSubunits,
       creatorFee: cost.creatorFee,
       engineScoreFeeSats,
-      totalCost: cost.totalCost,
+      totalCost: cost.totalCost + displayedConsolidationFee,
     };
   }, [
     tradeSelection,
@@ -1379,6 +1429,7 @@ export function MarketDetailPage() {
     marketDivisibility,
     tradeFaceAmountSubunits,
     engineScoreFeeSats,
+    displayedConsolidationFee,
   ]);
 
   // Computed limit order preview.
@@ -1402,10 +1453,10 @@ export function MarketDetailPage() {
       sharesIfFilled: tradeAmount,
       quoteSubunits: cost.quoteSubunits,
       creatorFee: cost.creatorFee,
-      mintFee: cost.mintFee,
+      mintFee: cost.mintFee + displayedConsolidationFee,
       engineScoreFeeSats,
       potentialPayout: tradeFaceAmountSubunits,
-      totalCost: cost.totalCost,
+      totalCost: cost.totalCost + displayedConsolidationFee,
     };
   }, [
     tradeSelection,
@@ -1418,10 +1469,19 @@ export function MarketDetailPage() {
     marketDivisibility,
     tradeFaceAmountSubunits,
     engineScoreFeeSats,
+    displayedConsolidationFee,
   ]);
 
   useEffect(() => {
-    if (!walletReady || !activeMintUrl || !market || !tradeSelection || tradeAmount <= 0) {
+    if (
+      !walletReady ||
+      !activeMintUrl ||
+      !market ||
+      !tradeSelection ||
+      tradeAmount <= 0 ||
+      !currentTradeTicket ||
+      !rangeFeePreviewKey
+    ) {
       setTradeFeasibility(null);
       return;
     }
@@ -1429,21 +1489,6 @@ export function MarketDetailPage() {
     let cancelled = false;
     const evaluate = async () => {
       try {
-        const tradeBooks = resolveTradeOrderBooks(market, tradeSelection);
-        if (!tradeBooks) {
-          setTradeFeasibility(null);
-          return;
-        }
-        const ticket = buildTradeTicket({
-          market,
-          selection: tradeSelection,
-          amountSubunits: tradeFaceAmountSubunits,
-          side: tradeSide,
-          orderType,
-          limitPrice,
-          orderBook: tradeBooks.selectedBook,
-          complementaryOrderBook: tradeBooks.complementBook,
-        });
         const holdings = await buildIndexedDbTokenHoldings({
           mintUrl: activeMintUrl ?? undefined,
           conditionId: market.id,
@@ -1453,7 +1498,7 @@ export function MarketDetailPage() {
         const canBack = canBackOrder(
           {
             side: tradeSide === "Buy" ? "bid" : "ask",
-            sizeSubunits: ticket.request.amountSubunits,
+            sizeSubunits: currentTradeTicket.request.amountSubunits,
             shareFaceSubunits: marketDivisibility,
           },
           holdings,
@@ -1461,6 +1506,16 @@ export function MarketDetailPage() {
           marketDivisibility,
         ).canBack;
         if (canBack) {
+          const feePreview = await previewBrowserCtfRangeOrderFees({
+            market,
+            ticket: currentTradeTicket,
+            mintUrl: activeMintUrl,
+          });
+          if (cancelled) return;
+          setRangeFeePreview({
+            key: rangeFeePreviewKey,
+            consolidationFeeSubunits: feePreview.consolidationFeeSubunits,
+          });
           setTradeFeasibility({ canBack: true });
           return;
         }
@@ -1483,11 +1538,9 @@ export function MarketDetailPage() {
     market,
     tradeSelection,
     tradeAmount,
-    tradeFaceAmountSubunits,
-    tradeSide,
-    orderType,
-    limitPrice,
     marketDivisibility,
+    currentTradeTicket,
+    rangeFeePreviewKey,
   ]);
 
   // Submit the order. Assumes wallet is set up and balance has been checked —
@@ -1597,6 +1650,30 @@ export function MarketDetailPage() {
           : undefined;
         const walletState = useWalletStore.getState();
         if (!activeMintUrl) throw new Error("The active mint is unavailable.");
+        const exactFeePreviewKey = JSON.stringify({
+          conditionId: latestMarket.id,
+          mintUrl: activeMintUrl,
+          ticket,
+        });
+        let expectedConsolidationFeeSubunits =
+          rangeFeePreview?.key === exactFeePreviewKey
+            ? rangeFeePreview.consolidationFeeSubunits
+            : null;
+        if (expectedConsolidationFeeSubunits === null) {
+          const feePreview = await previewBrowserCtfRangeOrderFees({
+            market: latestMarket,
+            ticket,
+            mintUrl: activeMintUrl,
+          });
+          expectedConsolidationFeeSubunits = feePreview.consolidationFeeSubunits;
+          setRangeFeePreview({
+            key: exactFeePreviewKey,
+            consolidationFeeSubunits: expectedConsolidationFeeSubunits,
+          });
+          if (expectedConsolidationFeeSubunits > 0) {
+            throw new Error("Wallet proof fees changed. Review the updated trade cost and retry.");
+          }
+        }
         const response = await submitBrowserCtfRangeOrder({
           market: latestMarket,
           ticket,
@@ -1604,6 +1681,7 @@ export function MarketDetailPage() {
           mintUrl: activeMintUrl,
           mnemonic: walletState.mnemonic,
           comment: signedComment ?? null,
+          expectedConsolidationFeeSubunits,
         });
         const acceptedBaseAsset = normalizeMarketBaseAsset(response.baseAsset);
         const acceptedDivisibility = normalizeMarketDivisibility(
@@ -1692,6 +1770,7 @@ export function MarketDetailPage() {
       activeMintUrl,
       loadMarket,
       addPendingTrade,
+      rangeFeePreview,
     ],
   );
 

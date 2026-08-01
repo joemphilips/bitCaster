@@ -15,6 +15,7 @@ import { DurableCustodySqliteStore } from './durableCustodySqliteStore.ts'
 export interface DaemonDurableCtfRangeAuthority {
   readonly record: DurableCustodyRecord
   readonly operation: DurableCtfRangeOperation
+  readonly requestBody: unknown
 }
 
 export function loadDaemonDurableCtfRangeAuthority(
@@ -33,12 +34,21 @@ export function loadDaemonDurableCtfRangeAuthority(
   if (privateMaterial === null) {
     throw new Error('durable CTF range private authority is missing')
   }
+  const requestBody = store.getArtifact({
+    scopeId: record.scope.scopeId,
+    operationId: custodyOperationId,
+    expectedOperationRevision: record.revision,
+    reference: record.operation.exactRequest.body,
+  })
+  if (requestBody === null) {
+    throw new Error('durable CTF range request authority is missing')
+  }
   const operation = assertDurableCtfRangeCustodyAuthority(
     record,
     decodeDurableCtfRangeOperation(privateMaterial.artifact.artifact),
   )
   assertPersistedProofRows(store, record, operation)
-  return { record, operation }
+  return { record, operation, requestBody: requestBody.artifact.artifact }
 }
 
 function assertRangeRecordIdentity(record: DurableCustodyRecord, custodyOperationId: string): void {

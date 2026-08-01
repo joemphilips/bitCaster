@@ -208,7 +208,7 @@ describe("TradingPanel", () => {
     expect(onTradeConfirm).toHaveBeenCalledTimes(1);
   });
 
-  it("uses market preview totalCost for expected cost when fees are non-zero", () => {
+  it("shows a non-zero mint fee separately from the market quote payment", () => {
     const tradePreview: TradePreview = {
       amount: 50,
       predictedOdds: 50,
@@ -236,7 +236,9 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getByTestId("trade-total-cost")).toHaveTextContent("0.25 sats");
+    expect(screen.getByTestId("trade-total-cost")).toHaveTextContent("0.15 sats");
+    expect(screen.getByTestId("trade-mint-fee")).toHaveTextContent("0.1 sats");
+    expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("10.25 sats");
   });
 
   it("formats sat-denominated limit preview as price plus quote payment and estimated settlement fee", () => {
@@ -311,8 +313,8 @@ describe("TradingPanel", () => {
 
     expect(screen.getByText("1 share = 10 sats")).toBeInTheDocument();
     expect(screen.getByText("0.10 sats (1.00%)")).toBeInTheDocument();
-    expect(screen.getByTestId("limit-total-cost")).toHaveTextContent(/^0\.101 sats$/);
-    expect(screen.getByTestId("limit-total-cost")).not.toHaveTextContent(/^101 sats$/);
+    expect(screen.getByTestId("limit-total-cost")).toHaveTextContent(/^0\.1 sats$/);
+    expect(screen.getByTestId("limit-mint-fee")).toHaveTextContent(/^0\.001 sats$/);
   });
 
   it("displays sat-market limit prices as sats, not raw msat subunits", () => {
@@ -377,7 +379,7 @@ describe("TradingPanel", () => {
     expect(screen.getByText("1 share = 10 sats")).toBeInTheDocument();
   });
 
-  it("does not show fee rows in the simplified limit preview", () => {
+  it("shows only the non-zero mint fee in the simplified limit preview", () => {
     const preview: LimitOrderPreview = {
       limitPrice: 30,
       amount: 50,
@@ -408,14 +410,14 @@ describe("TradingPanel", () => {
       screen.queryByTitle("Paid to the market creator as a reward for creating this market"),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByTitle("Charged by the Cashu mint for processing the transaction"),
-    ).not.toBeInTheDocument();
+      screen.getByTitle("Charged by the Cashu mint for processing the transaction"),
+    ).toBeInTheDocument();
     expect(
       screen.queryByTitle("Charged by the matching engine for order execution"),
     ).not.toBeInTheDocument();
   });
 
-  it("uses limit preview totalCost for expected cost when fees are non-zero", () => {
+  it("shows a non-zero mint fee separately from the limit quote payment", () => {
     const preview: LimitOrderPreview = {
       limitPrice: 30,
       amount: 50,
@@ -442,7 +444,9 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getByTestId("limit-total-cost")).toHaveTextContent("2.25 sats");
+    expect(screen.getByTestId("limit-total-cost")).toHaveTextContent("2 sats");
+    expect(screen.getByTestId("limit-mint-fee")).toHaveTextContent("0.25 sats");
+    expect(screen.getByTestId("limit-grand-total")).toHaveTextContent("12.25 sats");
   });
 
   it("keeps the share input as an integer of at least one on blur", async () => {

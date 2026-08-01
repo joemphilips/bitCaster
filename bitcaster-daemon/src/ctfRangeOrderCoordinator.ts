@@ -18,6 +18,7 @@ import {
   deriveDurableCustodyOperationId,
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
+  type DurableCustodyProofOperationInput,
   type DurableCustodyScope,
 } from '@bitcaster-market/client-sdk'
 import {
@@ -79,6 +80,12 @@ import {
   type BoundedProofConsolidationPlan,
   type ProofConsolidationRound,
 } from '@bitcaster-market/client-sdk/boundedProofConsolidation'
+import {
+  completeCtfRangeConsolidationOperation,
+  prepareCtfRangeConsolidationOperation,
+  validateCtfRangeConsolidationOperation,
+  validateCtfRangeConsolidationProofs,
+} from '@bitcaster-market/client-sdk/ctfRangeConsolidationOperation'
 import type {
   CreateSettlementCapabilityRequest,
   OrderStatusResponse,
@@ -270,11 +277,17 @@ export class DaemonCtfRangeOrderCoordinator {
       proofStateClient: authority.mint,
       observedAtMs: nowMs,
     })
+    await this.#markCapabilityRequested(operation.operationId)
+    const exactCapabilityRequest = await this.#exactCapabilityRequest(
+      request.walletSeedHex,
+      operation.operationId,
+      capabilityRequest,
+    )
     const createCapability = client.createSettlementCapability
     if (createCapability === undefined) {
       throw new Error('engine client does not support settlement capability creation')
     }
-    const capability = await createCapability.call(client, capabilityRequest)
+    const capability = await createCapability.call(client, exactCapabilityRequest)
     const projectedCapability = validateAndProjectCtfRangeSettlementCapabilityResponse({
       capability,
       preparation: authority.preparationInput,
@@ -359,6 +372,7 @@ export class DaemonCtfRangeOrderCoordinator {
           client,
         )
         return
+      case 'capability-requested':
       case 'prepared':
         break
       case 'terminal':
@@ -447,23 +461,72 @@ export class DaemonCtfRangeOrderCoordinator {
       await rangeCoordinator.bindPreparedSource(bindInput)
     }
     if (preparationInput.sourceKind === 'residual-change') {
-      await this.#submitRecoveredResidual(preparationInput, operation, capabilityRequest, client)
+      await this.#submitRecoveredResidual(
+        preparationInput,
+        operation,
+        capabilityRequest,
+        walletSeedHex,
+        client,
+      )
+      return
+    }
+    if (preparationRecord.lifecycleState === 'capability-requested') {
+      await this.#recoverRequestedCapability(
+        preparationInput,
+        operation,
+        capabilityRequest,
+        walletSeedHex,
+        client,
+      )
       return
     }
     await this.#recoverUnsubmittedAuthorization(preparationInput, walletSeedHex)
   }
 
-  async #submitRecoveredResidual(
+  async #recoverRequestedCapability(
     input: PersistedPreparationInput,
     operation: DurableCtfRangeOperation,
     request: CreateSettlementCapabilityRequest,
+    walletSeedHex: string,
     client: EngineClientLike,
   ): Promise<void> {
     const createCapability = client.createSettlementCapability
     if (createCapability === undefined) {
       throw new Error('engine client does not support settlement capability creation')
     }
-    const response = await createCapability.call(client, request)
+    const exactRequest = await this.#exactCapabilityRequest(
+      walletSeedHex,
+      operation.operationId,
+      request,
+    )
+    const response = await createCapability.call(client, exactRequest)
+    const capability = validateAndProjectCtfRangeSettlementCapabilityResponse({
+      capability: response,
+      preparation: input,
+      operation,
+      recovering: true,
+    })
+    await this.#bindCapability(operation.operationId, capability)
+  }
+
+  async #submitRecoveredResidual(
+    input: PersistedPreparationInput,
+    operation: DurableCtfRangeOperation,
+    request: CreateSettlementCapabilityRequest,
+    walletSeedHex: string,
+    client: EngineClientLike,
+  ): Promise<void> {
+    await this.#markCapabilityRequested(operation.operationId)
+    const createCapability = client.createSettlementCapability
+    if (createCapability === undefined) {
+      throw new Error('engine client does not support settlement capability creation')
+    }
+    const exactRequest = await this.#exactCapabilityRequest(
+      walletSeedHex,
+      operation.operationId,
+      request,
+    )
+    const response = await createCapability.call(client, exactRequest)
     if (
       request.continuation === null ||
       response.orderId === request.continuation.predecessorOrderId
@@ -517,6 +580,21 @@ export class DaemonCtfRangeOrderCoordinator {
       walletSeedHex,
       client,
     )
+  }
+
+  async #exactCapabilityRequest(
+    walletSeedHex: string,
+    rangeOperationId: string,
+    expected: CreateSettlementCapabilityRequest,
+  ): Promise<CreateSettlementCapabilityRequest> {
+    const coordinator = new DaemonCtfRangeCoordinator(this.#directory, this.#getFence())
+    const authority = await coordinator.load(
+      rangeCustodyOperationId(walletSeedHex, rangeOperationId),
+    )
+    if (authority === null || !isDeepStrictEqual(authority.requestBody, expected)) {
+      throw new Error('daemon CTF range exact capability request authority is missing or foreign')
+    }
+    return structuredClone(authority.requestBody) as CreateSettlementCapabilityRequest
   }
 
   async #recoverUnsubmittedAuthorization(
@@ -790,7 +868,7 @@ export class DaemonCtfRangeOrderCoordinator {
         const current = readRangePreparation(database, mutation.fence.scopeId, rangeOperationId)
         if (current === null) throw new Error('daemon CTF range preparation is missing')
         const expected = capability
-        if (current.lifecycleState !== 'prepared') {
+        if (current.lifecycleState !== 'capability-requested') {
           if (current.capability === null || !isDeepStrictEqual(current.capability, expected)) {
             throw new Error('daemon CTF range capability conflicts with its journal')
           }
@@ -801,6 +879,31 @@ export class DaemonCtfRangeOrderCoordinator {
           rangeOperationId,
           expectedRevision: current.revision,
           capability: expected,
+          updatedAtMs: mutation.observedAtMs,
+        })
+      },
+    )
+  }
+
+  async #markCapabilityRequested(rangeOperationId: string): Promise<void> {
+    const mutation = this.#mutation()
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      mutation.fence,
+      mutation.observedAtMs,
+      (database) => {
+        const current = readRangePreparation(database, mutation.fence.scopeId, rangeOperationId)
+        if (current === null) throw new Error('daemon CTF range preparation is missing')
+        if (current.lifecycleState === 'capability-requested') return
+        if (current.lifecycleState !== 'prepared') {
+          throw new Error('daemon CTF range capability request conflicts with its journal')
+        }
+        transitionRangePreparation(database, {
+          scopeId: mutation.fence.scopeId,
+          rangeOperationId,
+          expectedRevision: current.revision,
+          from: 'prepared',
+          to: 'capability-requested',
           updatedAtMs: mutation.observedAtMs,
         })
       },
@@ -1760,7 +1863,6 @@ async function prepareOrResumeSource(
       throw new Error('range authorization exceeded the bounded consolidation round limit')
     }
     const page = await availableSourceProofs(authority)
-    assertPlannedConsolidationInputs(page.proofs, plannedRound.inputs)
     await consolidateSourceProofs(
       authority,
       wallet,
@@ -2001,16 +2103,6 @@ function consolidationPlanError(
   }
 }
 
-function assertPlannedConsolidationInputs(
-  proofs: readonly Proof[],
-  expectedAmounts: readonly string[],
-): void {
-  const actual = proofs.map(({ amount }) => String(amountToNumber(amount)))
-  if (!isDeepStrictEqual(actual, expectedAmounts)) {
-    throw new Error('range proof inventory changed after consolidation planning')
-  }
-}
-
 async function consolidateSourceProofs(
   authority: PreparedMintAuthority,
   wallet: CtfRangeWalletLike,
@@ -2022,59 +2114,47 @@ async function consolidateSourceProofs(
   if (inputs.length < 2) {
     throw new Error('mint range input cap cannot support proof consolidation')
   }
-  const fees = computeInputFeeSatsForProofs(inputs, {
-    [authority.preparation.offerKeysetId]: authority.preparationInput.offerKeyset.inputFeePpk,
-  })
-  const outputAmount = sumProofs(inputs) - fees
-  if (outputAmount <= 0) {
-    throw new Error('range proof consolidation fee consumes its complete input')
-  }
-  if (String(fees) !== planned.fee) {
-    throw new Error('range proof consolidation fee differs from its preflight plan')
-  }
-  const prepared = await prepareConsolidation(authority, wallet, inputs, outputAmount, fees)
-  if (prepared.outputs.length >= prepared.inputs.length) {
-    throw new Error('range proof consolidation would not reduce the proof count')
-  }
-  assertPlannedConsolidationOutputs(prepared.outputs, planned.outputs)
-  await persistAndCompleteConsolidation(
-    authority,
-    wallet,
-    round,
+  const operation = await prepareCtfRangeConsolidationOperation({
     operationId,
-    outputAmount,
-    fees,
-    prepared,
-  )
+    rangeOperationId: authority.preparation.operationId,
+    mintUrl: authority.preparation.mintUrl,
+    keysetId: authority.preparation.offerKeysetId,
+    inputs,
+    conditional: authority.preparationInput.side === 'Sell',
+    inputFeePpk: authority.preparationInput.offerKeyset.inputFeePpk,
+    plannedRound: planned,
+    wallet,
+  })
+  await persistAndCompleteConsolidation(authority, wallet, round, operation)
 }
 
 async function persistAndCompleteConsolidation(
   authority: PreparedMintAuthority,
   wallet: CtfRangeWalletLike,
   round: number,
-  operationId: string,
-  outputAmount: number,
-  fees: number,
-  prepared: PreparedConsolidation,
+  operation: ReturnType<typeof validateCtfRangeConsolidationOperation>['operation'],
 ): Promise<void> {
+  const validated = validateCtfRangeConsolidationOperation(operation)
+  const operationId = operation.operationId
   const reservationId = sourceConsolidationReservationId(operationId)
   const mutation = authority.mutation()
   await prepareProofOperationWithExactReservation(
     {
       operationId,
-      kind: prepared.kind,
+      kind: rangeConsolidationKind(operation.kind),
       mintUrl: authority.preparation.mintUrl,
-      inputs: prepared.inputs,
-      outputs: { consolidated: serializeOutputDataArray(prepared.outputs) },
+      inputs: operation.inputs.map(toProof),
+      outputs: { consolidated: serializeOutputDataArray(validated.outputs) },
       metadata: {
         purpose: CONSOLIDATION_PURPOSE,
         rangeOperationId: authority.preparation.operationId,
         sourceOperationId: authority.preparation.sourceOperationId,
         reservationId,
         unit: 'msat',
-        amount: outputAmount,
-        fees,
-        keysetId: prepared.keysetId,
+        amount: consolidationMetadataNumber(operation, 'amount'),
+        fees: consolidationMetadataNumber(operation, 'fees'),
+        keysetId: consolidationMetadataText(operation, 'keysetId'),
+        exactOperation: structuredClone(operation),
       },
       reservationId,
       asset: authority.offerAsset,
@@ -2089,13 +2169,10 @@ async function persistAndCompleteConsolidation(
         reservationId,
       }),
   )
-  const result =
-    prepared.kind === 'wallet-send'
-      ? await completeRegularConsolidation(prepared.preview, wallet)
-      : ((await wallet.completeConditionalSwap(prepared.preview)).consolidated ?? [])
+  const result = await completeCtfRangeConsolidationOperation(validated, wallet)
   await markProofOperationCompletedFenced(
     operationId,
-    { consolidated: result },
+    { consolidated: [...result] },
     authority.mutation(),
   )
   await finalizeCompletedProofReservation(
@@ -2109,115 +2186,31 @@ async function persistAndCompleteConsolidation(
   )
 }
 
-function prepareConsolidation(
-  authority: PreparedMintAuthority,
-  wallet: CtfRangeWalletLike,
-  inputs: Proof[],
-  outputAmount: number,
-  fees: number,
-): Promise<PreparedConsolidation> {
-  return authority.preparationInput.side === 'Buy'
-    ? prepareRegularConsolidation(authority, wallet, inputs, outputAmount)
-    : prepareConditionalConsolidation(authority, wallet, inputs, outputAmount, fees)
+function rangeConsolidationKind(value: unknown): 'wallet-send' | 'conditional-keyset-swap' {
+  if (value === 'wallet-send' || value === 'conditional-keyset-swap') return value
+  throw new Error('range consolidation operation kind is invalid')
 }
 
-function assertPlannedConsolidationOutputs(
-  outputs: readonly OutputData[],
-  expectedAmounts: readonly string[],
-): void {
-  const actual = outputs
-    .map(({ blindedMessage }) => String(amountToNumber(blindedMessage.amount)))
-    .sort(compareDecimalStringsDescending)
-  const expected = [...expectedAmounts].sort(compareDecimalStringsDescending)
-  if (!isDeepStrictEqual(actual, expected)) {
-    throw new Error('cashu wallet changed the planned consolidation denominations')
+function consolidationMetadataText(
+  operation: ReturnType<typeof validateCtfRangeConsolidationOperation>['operation'],
+  field: string,
+): string {
+  const value = operation.metadata?.[field]
+  if (typeof value !== 'string' || value.length < 1) {
+    throw new Error(`range consolidation ${field} is invalid`)
   }
+  return value
 }
 
-function compareDecimalStringsDescending(left: string, right: string): number {
-  const leftValue = BigInt(left)
-  const rightValue = BigInt(right)
-  return leftValue > rightValue ? -1 : leftValue < rightValue ? 1 : 0
-}
-
-type PreparedConsolidation =
-  | {
-      readonly kind: 'wallet-send'
-      readonly preview: SwapPreview
-      readonly inputs: Proof[]
-      readonly outputs: OutputData[]
-      readonly keysetId: string
-    }
-  | {
-      readonly kind: 'conditional-keyset-swap'
-      readonly preview: ConditionalSwapPreview
-      readonly inputs: Proof[]
-      readonly outputs: OutputData[]
-      readonly keysetId: string
-    }
-
-async function prepareRegularConsolidation(
-  authority: PreparedMintAuthority,
-  wallet: CtfRangeWalletLike,
-  inputs: Proof[],
-  outputAmount: number,
-): Promise<PreparedConsolidation> {
-  const preview = await wallet.prepareSwapToSend(
-    outputAmount,
-    inputs,
-    { includeFees: false, keysetId: authority.preparation.offerKeysetId },
-    { send: { type: 'random' }, keep: { type: 'random' } },
-  )
-  assertExactInputProofs(preview.inputs, inputs)
-  if ((preview.unselectedProofs ?? []).length > 0 || (preview.keepOutputs ?? []).length > 0) {
-    throw new Error('regular proof consolidation did not consume its exact input page')
+function consolidationMetadataNumber(
+  operation: ReturnType<typeof validateCtfRangeConsolidationOperation>['operation'],
+  field: string,
+): number {
+  const value = operation.metadata?.[field]
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`range consolidation ${field} is invalid`)
   }
-  return {
-    kind: 'wallet-send',
-    preview,
-    inputs: preview.inputs,
-    outputs: preview.sendOutputs ?? [],
-    keysetId: preview.keysetId,
-  }
-}
-
-async function prepareConditionalConsolidation(
-  authority: PreparedMintAuthority,
-  wallet: CtfRangeWalletLike,
-  inputs: Proof[],
-  outputAmount: number,
-  fees: number,
-): Promise<PreparedConsolidation> {
-  const preview = await wallet.prepareConditionalSwap({
-    keysetId: authority.preparation.offerKeysetId,
-    inputs,
-    outputs: [{ label: 'consolidated', kind: 'random', amount: outputAmount }],
-  })
-  assertExactInputProofs(preview.inputs, inputs)
-  if (
-    sumProofs(preview.inputs) - fees !==
-    amountToNumber(OutputData.sumOutputAmounts(preview.outputDataByLabel.consolidated ?? []))
-  ) {
-    throw new Error('conditional proof consolidation changed its exact net amount')
-  }
-  return {
-    kind: 'conditional-keyset-swap',
-    preview,
-    inputs: preview.inputs,
-    outputs: preview.outputDataByLabel.consolidated ?? [],
-    keysetId: preview.keysetId,
-  }
-}
-
-async function completeRegularConsolidation(
-  preview: SwapPreview,
-  wallet: CtfRangeWalletLike,
-): Promise<Proof[]> {
-  const result = await wallet.completeSwap(preview)
-  if (result.keep.length > 0) {
-    throw new Error('regular proof consolidation returned unexpected keep proofs')
-  }
-  return result.send
+  return value as number
 }
 
 async function resumeConsolidationOperation(
@@ -2227,6 +2220,7 @@ async function resumeConsolidationOperation(
   dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
 ): Promise<void> {
   assertConsolidationOperation(entry)
+  const operation = persistedRangeConsolidationOperation(entry)
   let result = completedConsolidationResult(entry)
   if (entry.state === 'prepared') {
     const states = await wallet.checkProofsStates(
@@ -2246,11 +2240,11 @@ async function resumeConsolidationOperation(
           entry.mintUrl,
           entry.outputs,
         )
-        result = restored.consolidated ?? []
+        result = [...validateCtfRangeConsolidationProofs(operation, restored.consolidated)]
         break
       }
       case 'replay-exact-persisted-operation':
-        result = await completePersistedConsolidation(entry, wallet)
+        result = [...(await completeCtfRangeConsolidationOperation(operation, wallet))]
         break
       case 'remain-pending':
         throw new Error(
@@ -2273,33 +2267,6 @@ async function resumeConsolidationOperation(
       asset: authority.offerAsset,
     },
     authority.mutation(),
-  )
-}
-
-async function completePersistedConsolidation(
-  entry: ProofOperationRecord,
-  wallet: CtfRangeWalletLike,
-): Promise<Proof[]> {
-  const outputs = deserializeOutputGroups(entry.outputs)
-  if (entry.kind === 'conditional-keyset-swap') {
-    const result = await wallet.completeConditionalSwap({
-      keysetId: readSourceText(entry, 'keysetId'),
-      inputs: entry.inputs.map(toProof),
-      outputDataByLabel: outputs,
-    })
-    return result.consolidated ?? []
-  }
-  return completeRegularConsolidation(
-    {
-      amount: Amount.from(readSourceNumber(entry, 'amount')),
-      fees: Amount.from(readSourceNumber(entry, 'fees')),
-      keysetId: readSourceText(entry, 'keysetId'),
-      inputs: entry.inputs.map(toProof),
-      sendOutputs: outputs.consolidated ?? [],
-      keepOutputs: [],
-      unselectedProofs: [],
-    },
-    wallet,
   )
 }
 
@@ -2526,6 +2493,25 @@ function assertConsolidationOperation(entry: ProofOperationRecord): void {
   requireText(entry.metadata.rangeOperationId, 'range operation id')
   requireText(entry.metadata.sourceOperationId, 'range source operation id')
   requireText(entry.metadata.reservationId, 'consolidation reservation')
+}
+
+function persistedRangeConsolidationOperation(
+  entry: ProofOperationRecord,
+): DurableCustodyProofOperationInput {
+  const validated = validateCtfRangeConsolidationOperation(
+    entry.metadata.exactOperation as DurableCustodyProofOperationInput,
+  )
+  const operation = validated.operation
+  if (
+    operation.operationId !== entry.operationId ||
+    operation.kind !== rangeConsolidationKind(entry.kind) ||
+    operation.mintUrl !== entry.mintUrl ||
+    !isDeepStrictEqual(operation.inputs, entry.inputs) ||
+    !isDeepStrictEqual({ consolidated: serializeOutputDataArray(validated.outputs) }, entry.outputs)
+  ) {
+    throw new Error('daemon range consolidation journal differs from its exact operation')
+  }
+  return operation
 }
 
 async function createRangeBinding(
@@ -2808,18 +2794,6 @@ async function sourceConsolidationSummary(sourceOperationId: string): Promise<{
     }
   }
   return { operationIds, feeSubunits }
-}
-
-function assertExactInputProofs(actual: readonly Proof[], expected: readonly Proof[]): void {
-  const identity = ({ id, amount, secret, C }: Proof) => ({
-    id,
-    amount: amountToNumber(amount),
-    secret,
-    C,
-  })
-  if (!isDeepStrictEqual(actual.map(identity), expected.map(identity))) {
-    throw new Error('cashu wallet substituted exact consolidation inputs')
-  }
 }
 
 function toProof(value: CashuProofRecord): Proof {

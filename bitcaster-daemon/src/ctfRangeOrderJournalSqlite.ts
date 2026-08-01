@@ -293,7 +293,7 @@ export function bindRangePreparationCapability(
            capability_artifact_digest = ?, engine_order_id = ?,
            revision = revision + 1, updated_at_ms = ?
        WHERE scope_id = ? AND range_operation_id = ?
-         AND lifecycle_state = 'prepared' AND revision = ?`,
+         AND lifecycle_state = 'capability-requested' AND revision = ?`,
     )
     .run(
       capability.artifactId,
@@ -365,15 +365,15 @@ export function pageActiveRangePreparations(
     input.after === undefined
       ? ''
       : `AND (
-           preparation.updated_at_ms > ?
+           preparation.created_at_ms > ?
            OR (
-             preparation.updated_at_ms = ?
+             preparation.created_at_ms = ?
              AND preparation.range_operation_id > ?
            )
          )`
   const parameters: Array<string | number> = [input.scopeId]
   if (input.after !== undefined) {
-    parameters.push(input.after.updatedAtMs, input.after.updatedAtMs, input.after.rangeOperationId)
+    parameters.push(input.after.createdAtMs, input.after.createdAtMs, input.after.rangeOperationId)
   }
   parameters.push(input.limit + 1)
   const rows = database
@@ -383,7 +383,7 @@ export function pageActiveRangePreparations(
        WHERE preparation.scope_id = ?
          AND preparation.lifecycle_state <> 'terminal'
          ${cursorSql}
-       ORDER BY preparation.updated_at_ms, preparation.range_operation_id
+       ORDER BY preparation.created_at_ms, preparation.range_operation_id
        LIMIT ?`,
     )
     .all(...parameters) as Array<Record<string, unknown>>
@@ -398,7 +398,7 @@ export function pageActiveRangePreparations(
     nextCursor:
       deferredCount > 0 && last !== undefined
         ? {
-            updatedAtMs: requireSafeInteger(last.updated_at_ms, 'updated time'),
+            createdAtMs: requireSafeInteger(last.created_at_ms, 'created time'),
             rangeOperationId: requireText(last.range_operation_id, 'range operation id'),
           }
         : null,

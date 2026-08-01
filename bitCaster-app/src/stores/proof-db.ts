@@ -63,6 +63,7 @@ export type ProofOperationKind =
   | "ctf-merge"
   | "ctf-redeem"
   | "ctf-condition-registration"
+  | "wallet-send"
   | "regular-split"
   | "proof-split"
   | "token-receive";
@@ -307,6 +308,76 @@ export async function getSelectableUnitProofsForKeyset(
       if (selected.length > options.limit) selected.pop();
     });
   return selected;
+}
+
+export async function getProofAmountInventoryForKeyset(
+  mintUrl: string,
+  options: {
+    unit: CashuProofUnit | string;
+    keysetId: string;
+    conditional: boolean;
+  },
+): Promise<readonly { amount: string; count: number }[]> {
+  const unit = parseCashuProofUnit(options.unit);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
+  const counts = new Map<number, number>();
+  await db.proofs
+    .where("[mintUrl+unit+id]")
+    .equals([normalizeUrl(mintUrl), unit, options.keysetId])
+    .each((row) => {
+      if (row.reservedBy || isCtfProof(row) !== options.conditional) return;
+      const amount = amountToNumber(row.amount);
+      const count = (counts.get(amount) ?? 0) + 1;
+      if (!Number.isSafeInteger(count)) throw new Error("Proof amount count is too large");
+      counts.set(amount, count);
+    });
+  return [...counts]
+    .sort(([left], [right]) => right - left)
+    .map(([amount, count]) => ({ amount: String(amount), count }));
+}
+
+export async function getSelectableUnitProofsForAmounts(
+  mintUrl: string,
+  options: {
+    unit: CashuProofUnit | string;
+    keysetId: string;
+    conditional: boolean;
+    amounts: readonly string[];
+  },
+): Promise<StoredProof[]> {
+  const unit = parseCashuProofUnit(options.unit);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
+  if (options.amounts.length < 1 || options.amounts.length > 256) {
+    throw new Error("Proof amount selection limit is invalid");
+  }
+  const wanted = new Map<number, number>();
+  for (const rawAmount of options.amounts) {
+    if (!/^[1-9][0-9]*$/.test(rawAmount)) throw new Error("Proof amount selection is invalid");
+    const amount = Number(rawAmount);
+    if (!Number.isSafeInteger(amount)) throw new Error("Proof amount selection is invalid");
+    wanted.set(amount, (wanted.get(amount) ?? 0) + 1);
+  }
+  const selected: StoredProof[] = [];
+  await db.proofs
+    .where("[mintUrl+unit+id]")
+    .equals([normalizeUrl(mintUrl), unit, options.keysetId])
+    .each((row) => {
+      if (row.reservedBy || isCtfProof(row) !== options.conditional) return;
+      const amount = amountToNumber(row.amount);
+      const remaining = wanted.get(amount) ?? 0;
+      if (remaining < 1) return;
+      selected.push(normalizeStoredProof(row));
+      if (remaining === 1) wanted.delete(amount);
+      else wanted.set(amount, remaining - 1);
+    });
+  if (wanted.size > 0 || selected.length !== options.amounts.length) {
+    throw new Error("Proof inventory changed after consolidation planning");
+  }
+  return selected.sort(
+    (left, right) =>
+      amountToNumber(right.amount) - amountToNumber(left.amount) ||
+      left.secret.localeCompare(right.secret),
+  );
 }
 
 export async function selectAndReserveUnitProofs(
@@ -582,8 +653,11 @@ function validateStoredProofUnitInvariant(proof: StoredProof): StoredProof {
   return proof;
 }
 
-export async function getProofOperation(operationId: string): Promise<ProofOperationRecord | null> {
-  return (await db.proofOperations.get(operationId)) ?? null;
+export async function getProofOperation(
+  operationId: string,
+  database: BitcasterDB = db,
+): Promise<ProofOperationRecord | null> {
+  return (await database.proofOperations.get(operationId)) ?? null;
 }
 
 export async function getProofOperations(
@@ -617,8 +691,9 @@ export async function getProofOperations(
 
 export async function prepareProofOperation(
   input: PrepareProofOperationInput,
+  database: BitcasterDB = db,
 ): Promise<ProofOperationRecord> {
-  const existing = await getProofOperation(input.operationId);
+  const existing = await getProofOperation(input.operationId, database);
   if (existing) {
     assertCompatibleProofOperation(existing, input);
     return existing;
@@ -640,15 +715,16 @@ export async function prepareProofOperation(
     createdAt: now,
     updatedAt: now,
   };
-  await db.proofOperations.put(record);
+  await database.proofOperations.put(record);
   return record;
 }
 
 export async function markProofOperationCompleted(
   operationId: string,
   completion: Record<string, Proof[]> | CtfProofOperationCompletion,
+  database: BitcasterDB = db,
 ): Promise<ProofOperationRecord> {
-  const existing = await getRequiredProofOperation(operationId);
+  const existing = await getRequiredProofOperation(operationId, database);
   const ctfCompletion = isCtfProofOperationCompletion(completion);
   if (isSdkCtfProofOperationKind(existing.kind) && !ctfCompletion) {
     throw new Error(`Proof operation ${operationId} requires an SDK completion`);
@@ -671,7 +747,7 @@ export async function markProofOperationCompleted(
     failureCode: undefined,
     updatedAt: Date.now(),
   };
-  await db.proofOperations.put(updated);
+  await database.proofOperations.put(updated);
   return updated;
 }
 
@@ -720,8 +796,11 @@ function mintErrorCode(error: unknown): number | undefined {
   return typeof code === "number" ? code : undefined;
 }
 
-async function getRequiredProofOperation(operationId: string): Promise<ProofOperationRecord> {
-  const existing = await getProofOperation(operationId);
+async function getRequiredProofOperation(
+  operationId: string,
+  database: BitcasterDB = db,
+): Promise<ProofOperationRecord> {
+  const existing = await getProofOperation(operationId, database);
   if (!existing) throw new Error(`Missing proof operation ${operationId}`);
   return existing;
 }
@@ -733,7 +812,9 @@ function assertCompatibleProofOperation(
   if (
     existing.kind !== input.kind ||
     existing.mintUrl !== normalizeUrl(input.mintUrl) ||
-    JSON.stringify(existing.inputs) !== JSON.stringify(input.inputs)
+    JSON.stringify(existing.inputs) !== JSON.stringify(input.inputs) ||
+    JSON.stringify(existing.outputs) !== JSON.stringify(input.outputs) ||
+    JSON.stringify(existing.metadata) !== JSON.stringify(input.metadata ?? {})
   ) {
     throw new Error(`Proof operation ${input.operationId} already exists with different inputs`);
   }

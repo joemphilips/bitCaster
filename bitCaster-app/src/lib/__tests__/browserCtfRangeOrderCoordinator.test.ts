@@ -26,7 +26,7 @@ import {
   CtfRangeRecoveryTransportError,
   restoreDurableCtfRangeRefundOutputs,
 } from "@bitcaster/client-sdk/ctfRangeRecoveryTransport";
-import type { restoreOutputGroups } from "@bitcaster/client-sdk/ctfSplit";
+import { deserializeOutputGroups, type restoreOutputGroups } from "@bitcaster/client-sdk/ctfSplit";
 import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyOperationId,
@@ -67,8 +67,11 @@ import {
 } from "../browserCtfRangeOrderCoordinator";
 import { decodeBrowserPersistedSourceResult } from "../browserCtfRangeOrderSource";
 import { BrowserDurableCustodyAdapter } from "../../stores/durable-custody-db";
-import { readCtfRangePreparation } from "../../stores/ctf-range-order-db";
-import { BitcasterDB, type StoredProof } from "../../stores/proof-db";
+import {
+  readCtfRangePreparation,
+  readCtfRangePreparationConsolidations,
+} from "../../stores/ctf-range-order-db";
+import { BitcasterDB, getProofOperation, type StoredProof } from "../../stores/proof-db";
 
 const CONDITION_ID = "ab".repeat(32);
 const OUTCOME_COLLECTION = "YES";
@@ -123,6 +126,107 @@ afterEach(async () => {
 });
 
 describe("browser CTF range order coordinator", () => {
+  it("durably consolidates one exact fragmented proof page", async () => {
+    const preparation = persistedPreparation("range-consolidation");
+    const inputs = [
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-a"),
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-b"),
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-c"),
+    ];
+    const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock());
+
+    await coordinator.consolidateRound({
+      seed: SEED,
+      preparation,
+      round: 0,
+      inputs,
+      plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+    });
+
+    const operationId = `${preparation.sourceOperationId}:consolidation:0`;
+    expect(await getProofOperation(operationId, database)).toMatchObject({ state: "completed" });
+    expect(
+      await readCtfRangePreparationConsolidations(
+        walletScopeId(),
+        preparation.operationId,
+        database,
+      ),
+    ).toEqual([expect.objectContaining({ round: 0, operationId, reservationId: operationId })]);
+    expect(
+      (await database.proofs.toArray())
+        .map(({ amount }) => amountToNumber(amount))
+        .sort((left, right) => right - left),
+    ).toEqual([4, 1]);
+  });
+
+  it("restores an exact committed consolidation after local completion is interrupted", async () => {
+    const preparation = persistedPreparation("range-consolidation-recovery");
+    const inputs = [
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-a"),
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-b"),
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-c"),
+    ];
+    const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
+    const interrupted = createCoordinator(
+      database,
+      sourceWallet({ onComplete: async () => Promise.reject(new Error("local crash")) }),
+      engineMock(),
+    );
+
+    await expect(
+      interrupted.consolidateRound({
+        seed: SEED,
+        preparation,
+        round: 0,
+        inputs,
+        plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+      }),
+    ).rejects.toMatchObject({ code: "mint-source-uncertain" });
+
+    const incomplete = createCoordinator(
+      database,
+      sourceWallet({ inputState: "SPENT" }),
+      engineMock(),
+      { restoreOutputs: async () => ({}) },
+    );
+    await expect(incomplete.recoverPage({ seed: SEED, limit: 8 })).resolves.toMatchObject({
+      recoveredOperationIds: [],
+      pending: [expect.objectContaining({ operationId: preparation.operationId })],
+    });
+    expect(await getProofOperation(`${preparation.sourceOperationId}:consolidation:0`, database))
+      .toMatchObject({ state: "prepared" });
+    expect((await database.proofs.toArray()).filter(({ reservedBy }) => reservedBy).length).toBe(3);
+
+    const recovered = createCoordinator(
+      database,
+      sourceWallet({ inputState: "SPENT" }),
+      engineMock(),
+      {
+        restoreOutputs: async (_mintUrl, groups) =>
+          Object.fromEntries(
+            Object.entries(deserializeOutputGroups(groups)).map(([label, outputs]) => [
+              label,
+              outputs.map(signOutput),
+            ]),
+          ),
+      },
+    );
+    await expect(recovered.recoverPage({ seed: SEED, limit: 8 })).resolves.toMatchObject({
+      recoveredOperationIds: [preparation.operationId],
+      pending: [],
+    });
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("terminal");
+    expect(
+      (await database.proofs.toArray())
+        .map(({ amount }) => amountToNumber(amount))
+        .sort((left, right) => right - left),
+    ).toEqual([4, 1]);
+  });
+
   it("persists exact source authority before mint I/O and submits one verified capability", async () => {
     const database = createDatabase();
     const custody = new BrowserDurableCustodyAdapter(database);
@@ -1234,7 +1338,10 @@ function sourceWallet(
       amount: number,
       proofs: Proof[],
       config: { includeFees: false; keysetId: string },
-      outputs: { send: { type: "custom"; data: OutputData[] }; keep: { type: "random" } },
+      outputs: {
+        send: { type: "custom"; data: OutputData[] } | { type: "random" };
+        keep: { type: "random" };
+      },
     ): Promise<SwapPreview> {
       const inputTotal = proofs.reduce((total, proof) => total + amountToNumber(proof.amount), 0);
       const keepAmount = inputTotal - amount - 1;
@@ -1243,7 +1350,13 @@ function sourceWallet(
         fees: Amount.from(1),
         keysetId: config.keysetId,
         inputs: proofs,
-        sendOutputs: outputs.send.data,
+        sendOutputs:
+          outputs.send.type === "custom"
+            ? outputs.send.data
+            : OutputData.createRandomData(Amount.from(amount), {
+                id: config.keysetId,
+                keys: KEYS,
+              }),
         keepOutputs:
           keepAmount > 0
             ? OutputData.createRandomData(Amount.from(keepAmount), {
