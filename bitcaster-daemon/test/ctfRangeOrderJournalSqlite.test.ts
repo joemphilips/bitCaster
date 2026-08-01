@@ -41,6 +41,7 @@ test('range preparation insert is exact and canonical bytes fail closed', (t) =>
   assert.equal(inserted.rangeOperationId, input.rangeOperationId)
   assert.equal(replayed.revision, 0)
   assert.equal(restored?.clientOrderId, input.clientOrderId)
+  assert.equal(restored?.consolidateProofs, false)
   assert.equal(
     Buffer.from(restored?.preparationBytes ?? []).toString('utf8'),
     '{"authorizationId":"authorization-range-1","rangeOperationId":"range-1"}',
@@ -50,6 +51,14 @@ test('range preparation insert is exact and canonical bytes fail closed', (t) =>
       insertRangePreparation(database, {
         ...input,
         amountSubunits: input.amountSubunits * 2,
+      }),
+    /conflicts with its persisted authority/,
+  )
+  assert.throws(
+    () =>
+      insertRangePreparation(database, {
+        ...input,
+        consolidateProofs: true,
       }),
     /conflicts with its persisted authority/,
   )
@@ -96,14 +105,14 @@ test('range preparation schema rejects partial capability and loose authority', 
        predecessor_range_operation_id, authorization_id,
        client_order_id, order_route_id, normalized_mint, condition_id, unit,
        token_side, side, price_subunits, amount_subunits,
-       minimum_fill_amount_subunits, continue_after_partial_fill,
+       minimum_fill_amount_subunits, continue_after_partial_fill, consolidate_proofs,
        continuation_predecessor_order_id, continuation_settlement_group_id,
        continuation_settlement_group_revision, continuation_revision, divisibility,
        authorization_expires_at_unix_seconds, preparation_body, lifecycle_state, revision,
        capability_artifact_id, capability_binding_digest, capability_artifact_digest,
        engine_order_id, created_at_ms, updated_at_ms
      ) VALUES (
-       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
      )`,
   )
   const insertPrepared = (candidate: ReturnType<typeof preparationInput>) =>
@@ -511,6 +520,7 @@ function preparationInput(
     amountSubunits: 10_000,
     minimumFillAmountSubunits: 10_000,
     continueAfterPartialFill: false,
+    consolidateProofs: false,
     continuation: null,
     divisibility: 10_000,
     authorizationExpiresAtUnixSeconds: 2_000_000_000,
@@ -542,6 +552,7 @@ function preparationValues(input: ReturnType<typeof preparationInput>): unknown[
     input.amountSubunits,
     input.minimumFillAmountSubunits,
     input.continueAfterPartialFill ? 1 : 0,
+    input.consolidateProofs ? 1 : 0,
     input.continuation?.predecessorOrderId ?? null,
     input.continuation?.settlementGroupId ?? null,
     input.continuation?.settlementGroupRevision ?? null,

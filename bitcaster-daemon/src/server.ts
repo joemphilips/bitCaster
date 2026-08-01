@@ -153,6 +153,7 @@ export interface PrepareSettlementCapabilityInput {
   amountSubunits: number
   minimumFillAmountSubunits: number
   continueAfterPartialFill: boolean
+  consolidateProofs: boolean
   baseAsset: 'sat'
   collateralUnit: 'msat'
   divisibility: number
@@ -774,6 +775,12 @@ export async function dispatch(
         return { ok: false, error: 'Order rejected: continuation policy must be boolean' }
       }
       if (
+        orderParams.consolidateProofs !== undefined &&
+        typeof orderParams.consolidateProofs !== 'boolean'
+      ) {
+        return { ok: false, error: 'Order rejected: proof consolidation policy must be boolean' }
+      }
+      if (
         orderParams.continueAfterPartialFill === true &&
         orderParams.timeInForce !== 'GTC' &&
         orderParams.timeInForce !== 'GTD'
@@ -853,6 +860,7 @@ export async function dispatch(
             amountSubunits,
             minimumFillAmountSubunits,
             continueAfterPartialFill: orderParams.continueAfterPartialFill === true,
+            consolidateProofs: orderParams.consolidateProofs === true,
             baseAsset: marketUnit.baseAsset,
             collateralUnit: 'msat',
             divisibility: marketUnit.divisibility,

@@ -37,6 +37,7 @@ export interface SubmitOrderParams {
   amountSubunits: number
   minimumFillAmountSubunits?: number
   continueAfterPartialFill?: boolean
+  consolidateProofs?: boolean
   timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
   expiresAt?: string | null
   /**

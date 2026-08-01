@@ -1307,6 +1307,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               amountSubunits: 20_000,
               minimumFillAmountSubunits: 10_000,
               continueAfterPartialFill: true,
+              consolidateProofs: true,
               timeInForce: 'GTC',
             },
           },
@@ -1349,6 +1350,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           amountSubunits: 20_000,
           minimumFillAmountSubunits: 10_000,
           continueAfterPartialFill: true,
+          consolidateProofs: true,
           baseAsset: 'sat',
           collateralUnit: 'msat',
           divisibility: 10_000,
@@ -1452,6 +1454,10 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         assert.equal(
           (capturedPreparation as unknown as PrepareSettlementCapabilityInput)
             .continueAfterPartialFill,
+          false,
+        )
+        assert.equal(
+          (capturedPreparation as unknown as PrepareSettlementCapabilityInput).consolidateProofs,
           false,
         )
       },
@@ -2067,6 +2073,15 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               price: 4_200,
               amountSubunits: 10_000,
               continueAfterPartialFill: 'yes',
+              timeInForce: 'GTC',
+            },
+            {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              side: 'Buy',
+              price: 4_200,
+              amountSubunits: 10_000,
+              consolidateProofs: 'yes',
               timeInForce: 'GTC',
             },
             {

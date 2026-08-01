@@ -638,6 +638,10 @@ function registerOrderCommand(program: Command): void {
       '--continue-after-partial-fill',
       'Create a fresh successor order after a confirmed partial resting-order fill',
     )
+    .option(
+      '--consolidate-proofs',
+      'Allow bounded proof consolidation before this order (default: off)',
+    )
     .option('--tif <tif>', 'Time in force: GTC, GTD, FAK, or FOK', parseTimeInForce, 'GTC')
     .option('--expires-at <time>', 'Required ISO 8601 UTC expiry for GTD', parseIsoDateTime)
     .option('--token-side <side>', 'Token side: Outcome or Complement', parseTokenSide)
@@ -714,6 +718,7 @@ interface OrderSubmitOptions {
   amount?: number
   minFill?: number
   continueAfterPartialFill?: boolean
+  consolidateProofs?: boolean
   tif: 'FAK' | 'FOK' | 'GTC' | 'GTD'
   expiresAt?: string
   tokenSide?: 'Outcome' | 'Complement'
@@ -730,6 +735,7 @@ interface OrderSubmitParams {
   amountSubunits: number
   minimumFillAmountSubunits?: number
   continueAfterPartialFill: boolean
+  consolidateProofs: boolean
   timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
   expiresAt: string | null
   preflightSplit: boolean
@@ -756,6 +762,7 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     amountSubunits: requiredParsedOption(options.amount, 'amount subunits'),
     ...(minimumFillAmountSubunits === undefined ? {} : { minimumFillAmountSubunits }),
     continueAfterPartialFill: options.continueAfterPartialFill === true,
+    consolidateProofs: options.consolidateProofs === true,
     timeInForce: options.tif,
     expiresAt: options.expiresAt ?? null,
     preflightSplit: options.preflightSplit,

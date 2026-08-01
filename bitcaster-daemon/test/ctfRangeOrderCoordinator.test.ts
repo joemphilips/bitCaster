@@ -181,6 +181,48 @@ test('daemon retries the exact capability request after its acknowledgement is l
   )
 })
 
+test('daemon does not consolidate fragmented order funds unless the caller opts in', async () => {
+  const sourceProofs = [4_096, 4_096, 2, 2, 2].map((amount) =>
+    signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
+  )
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-consolidation-off-',
+      incarnationId: 'range-consolidation-off-test',
+      proofs: sourceProofs,
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet(sourceProofs)
+      let capabilityCalls = 0
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(3),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: () => 'range-operation-consolidation-off',
+      })
+      const client = fakeEngineClient((request) => {
+        capabilityCalls += 1
+        return boundCapability(request)
+      })
+
+      await assert.rejects(
+        coordinator.prepare({ ...orderRequest(), price: 8_193 }, client),
+        /proofs exceed the mint input limit; retry with proof consolidation enabled/,
+      )
+
+      assert.equal(wallet.completeCalls, 0)
+      assert.equal(capabilityCalls, 0)
+      const state = await readState()
+      assert.deepEqual(state?.proofOperations, {})
+      assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
+        recovered: [],
+        pending: [],
+      })
+    },
+  )
+})
+
 test('daemon resumes exact bounded consolidation without recreating its range capability', async () => {
   const sourceProofs = [4_096, 4_096, 2, 2, 2].map((amount) =>
     signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
@@ -203,7 +245,7 @@ test('daemon resumes exact bounded consolidation without recreating its range ca
         now: () => 10_000,
         randomId: () => ids.shift()!,
       })
-      const request = { ...orderRequest(), price: 8_193 }
+      const request = { ...orderRequest(), price: 8_193, consolidateProofs: true }
 
       await assert.rejects(coordinator.prepare(request, client), /mint swap acknowledgement lost/)
       const interrupted = await readState()
@@ -1457,7 +1499,7 @@ test('daemon consolidates conditional CTF inventory with the same bounded source
       })
 
       const prepared = await coordinator.prepare(
-        { ...orderRequest(), side: 'Sell', price: 5_000 },
+        { ...orderRequest(), side: 'Sell', price: 5_000, consolidateProofs: true },
         fakeEngineClient(boundCapability),
       )
 
@@ -2023,6 +2065,7 @@ function orderRequest(): PrepareSettlementCapabilityInput {
     amountSubunits: 10_000,
     minimumFillAmountSubunits: 10_000,
     continueAfterPartialFill: false,
+    consolidateProofs: false,
     baseAsset: 'sat',
     collateralUnit: 'msat',
     divisibility: 10_000,

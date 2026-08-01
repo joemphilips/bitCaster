@@ -52,7 +52,7 @@ import {
   createCtfRangeOrderPreparationKeysetResolver,
   createCtfRangeSettlementCapabilityRequest,
   ctfRangeOrderPreparationKeysetLookup,
-  decodeCtfRangeOrderPreparationFromRecord as preparationFromJournal,
+  decodeCtfRangeOrderPreparationFromRecord as decodePreparationFromJournal,
   decodeSettlementCoordinatorPublicKey as requireCoordinatorKey,
   encodePersistedCtfRangeOrderPreparation as encodeCanonicalRangePreparation,
   exactCtfRangeOrderPreparationMintKeysets,
@@ -123,6 +123,7 @@ import {
   readResidualRangePreparationByPredecessor,
   readRangeSuccessorIntent,
   readRangePreparation,
+  toSdkRangePreparationRecord,
   transitionRangePreparation,
   type RangePreparationCapability,
   type RangePreparationPageCursor,
@@ -207,15 +208,30 @@ interface PreparedMintAuthority {
   readonly mintKeysets: ReadonlyMap<string, DurableCtfRangeMintKeyset>
   readonly offerAsset: StoredProofAsset
   readonly mint: CtfRangeMintLike
+  readonly consolidateProofs: boolean
   readonly mutation: () => FencedStateMutation
 }
 
 type PersistedPreparationInput = PersistedCtfRangeOrderPreparation
 
+function preparationFromJournal(
+  record: RangePreparationRecord,
+  expectedRequest?: Parameters<typeof decodePreparationFromJournal>[1],
+): PersistedPreparationInput {
+  return decodePreparationFromJournal(toSdkRangePreparationRecord(record), expectedRequest)
+}
+
 class RangeSourceReleasedError extends Error {
   constructor(operationId: string) {
     super(`Range source operation ${operationId} expired before mint commitment`)
     this.name = 'RangeSourceReleasedError'
+  }
+}
+
+class ProofConsolidationRequiredError extends Error {
+  constructor() {
+    super('range-order proofs exceed the mint input limit; retry with proof consolidation enabled')
+    this.name = 'ProofConsolidationRequiredError'
   }
 }
 
@@ -252,7 +268,7 @@ export class DaemonCtfRangeOrderCoordinator {
     client: EngineClientLike,
   ): Promise<PreparedSettlementCapability> {
     const authority = await this.#prepareMintAuthority(request, client)
-    const source = await prepareOrResumeSource(authority, request.walletSeedHex, this.#dependencies)
+    const source = await this.#prepareWalletSource(authority, request.walletSeedHex)
     const operation = completeCtfRangeOrderAuthorization({
       preparation: authority.preparation,
       inputs: source.authorization,
@@ -384,6 +400,7 @@ export class DaemonCtfRangeOrderCoordinator {
       preparationInput,
       walletSeedHex,
       this.#createMint(preparationInput.mintUrl),
+      preparationRecord.consolidateProofs,
       this.#mutation.bind(this),
     )
     let sourceResult: SourceResult
@@ -414,12 +431,7 @@ export class DaemonCtfRangeOrderCoordinator {
         }) as CtfRangeWalletLike)
       await wallet.loadMint()
       try {
-        sourceResult = await prepareOrResumeSource(
-          authority,
-          walletSeedHex,
-          this.#dependencies,
-          wallet,
-        )
+        sourceResult = await this.#prepareWalletSource(authority, walletSeedHex, wallet)
       } catch (error) {
         if (error instanceof RangeSourceReleasedError) return
         throw error
@@ -716,6 +728,7 @@ export class DaemonCtfRangeOrderCoordinator {
         persisted,
         request.walletSeedHex,
         this.#createMint(persisted.mintUrl),
+        request.consolidateProofs,
         this.#mutation.bind(this),
       )
     }
@@ -746,12 +759,14 @@ export class DaemonCtfRangeOrderCoordinator {
     const durablePreparation = await this.#persistPreparation(
       preparationInput,
       request.continueAfterPartialFill,
+      request.consolidateProofs,
     )
     return preparedMintAuthority(
       durablePreparation,
       request.walletSeedHex,
       metadata,
       mint,
+      request.consolidateProofs,
       this.#mutation.bind(this),
     )
   }
@@ -773,9 +788,10 @@ export class DaemonCtfRangeOrderCoordinator {
         if (record === null) return null
         if (
           record.continueAfterPartialFill !== request.continueAfterPartialFill ||
+          record.consolidateProofs !== request.consolidateProofs ||
           record.continuation !== null
         ) {
-          throw new Error('daemon CTF range continuation policy conflicts with its journal')
+          throw new Error('daemon CTF range preparation policy conflicts with its journal')
         }
         return preparationFromJournal(record, persistedOrderRequest(request))
       },
@@ -785,6 +801,7 @@ export class DaemonCtfRangeOrderCoordinator {
   async #persistPreparation(
     input: PersistedPreparationInput,
     continueAfterPartialFill: boolean,
+    consolidateProofs: boolean,
   ): Promise<PersistedPreparationInput> {
     const mutation = this.#mutation()
     return withDurableCustodyUnitOfWork(
@@ -800,9 +817,10 @@ export class DaemonCtfRangeOrderCoordinator {
         if (existing !== null) {
           if (
             existing.continueAfterPartialFill !== continueAfterPartialFill ||
+            existing.consolidateProofs !== consolidateProofs ||
             existing.continuation !== null
           ) {
-            throw new Error('daemon CTF range continuation policy conflicts with its journal')
+            throw new Error('daemon CTF range preparation policy conflicts with its journal')
           }
           return preparationFromJournal(existing, input.request)
         }
@@ -825,6 +843,7 @@ export class DaemonCtfRangeOrderCoordinator {
             amountSubunits: input.amountSubunits,
             minimumFillAmountSubunits: input.request.minimumFillAmountSubunits,
             continueAfterPartialFill,
+            consolidateProofs,
             continuation: null,
             divisibility: input.divisibility as 10_000 | 1_000_000,
             authorizationExpiresAtUnixSeconds: input.expiry,
@@ -1521,6 +1540,7 @@ export class DaemonCtfRangeOrderCoordinator {
           amountSubunits: proposed.amountSubunits,
           minimumFillAmountSubunits: proposed.request.minimumFillAmountSubunits,
           continueAfterPartialFill: true,
+          consolidateProofs: false,
           continuation,
           divisibility: proposed.divisibility as 10_000 | 1_000_000,
           authorizationExpiresAtUnixSeconds: proposed.expiry,
@@ -1583,6 +1603,21 @@ export class DaemonCtfRangeOrderCoordinator {
         })
       },
     )
+  }
+
+  async #prepareWalletSource(
+    authority: PreparedMintAuthority,
+    walletSeedHex: string,
+    wallet?: CtfRangeWalletLike,
+  ): Promise<SourceResult> {
+    try {
+      return await prepareOrResumeSource(authority, walletSeedHex, this.#dependencies, wallet)
+    } catch (error) {
+      if (error instanceof ProofConsolidationRequiredError) {
+        await this.#markTerminal(authority.preparationInput.operationId)
+      }
+      throw error
+    }
   }
 
   async #markResidualPredecessorTerminal(input: PersistedPreparationInput): Promise<void> {
@@ -1732,6 +1767,7 @@ function preparedMintAuthority(
   walletSeedHex: string,
   metadata: LoadedMintMetadata,
   mint: CtfRangeMintLike,
+  consolidateProofs: boolean,
   mutation: () => FencedStateMutation,
 ): PreparedMintAuthority {
   return {
@@ -1745,6 +1781,7 @@ function preparedMintAuthority(
     mintKeysets: exactCtfRangeOrderPreparationMintKeysets(preparationInput),
     offerAsset: assetForKeyset(preparationInput.offerKeyset),
     mint,
+    consolidateProofs,
     mutation,
   }
 }
@@ -1768,7 +1805,12 @@ async function loadMintMetadata(
 function persistedOrderRequest(
   input: PrepareSettlementCapabilityInput,
 ): PersistedPreparationInput['request'] {
-  const { walletSeedHex: _, continueAfterPartialFill: __, ...request } = input
+  const {
+    walletSeedHex: _,
+    continueAfterPartialFill: __,
+    consolidateProofs: ___,
+    ...request
+  } = input
   return structuredClone(request) as PersistedPreparationInput['request']
 }
 
@@ -1798,6 +1840,7 @@ function persistedMintAuthority(
   input: PersistedPreparationInput,
   walletSeedHex: string,
   mint: CtfRangeMintLike,
+  consolidateProofs: boolean,
   mutation: () => FencedStateMutation,
 ): PreparedMintAuthority {
   const preparation = prepareCtfRangeOrderAuthorization({
@@ -1812,6 +1855,7 @@ function persistedMintAuthority(
     mintKeysets: exactCtfRangeOrderPreparationMintKeysets(input),
     offerAsset: assetForKeyset(input.offerKeyset),
     mint,
+    consolidateProofs,
     mutation,
   }
 }
@@ -1855,6 +1899,9 @@ async function prepareOrResumeSource(
   const prepared = await prepareSourceOperation(authority, wallet, candidates.proofs)
   if (prepared !== null) return completeNewSource(authority, prepared, wallet)
   if (!candidates.hasMore) throw new Error('daemon has insufficient exact range-order funds')
+  if (!authority.consolidateProofs) {
+    throw new ProofConsolidationRequiredError()
+  }
 
   const plan = await planSourceConsolidation(authority, MAX_CONSOLIDATION_ROUNDS - round)
   if (plan.kind !== 'ready') throw consolidationPlanError(plan.kind)

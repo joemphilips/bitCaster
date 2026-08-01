@@ -27,8 +27,12 @@ const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
 
 export type RangePreparationLifecycle = CtfRangeOrderPreparationLifecycle
 export type RangePreparationCapability = CtfRangeOrderPreparationCapability
-export type InsertRangePreparation = CtfRangeOrderPreparationIdentity
-export type RangePreparationRecord = CtfRangeOrderPreparationRecord
+export type InsertRangePreparation = CtfRangeOrderPreparationIdentity & {
+  readonly consolidateProofs: boolean
+}
+export type RangePreparationRecord = CtfRangeOrderPreparationRecord & {
+  readonly consolidateProofs: boolean
+}
 export type RangePreparationPageCursor = CtfRangeOrderPreparationPageCursor
 
 export interface RangePreparationPage {
@@ -75,7 +79,8 @@ export function insertRangePreparation(
   database: DatabaseSync,
   input: InsertRangePreparation,
 ): RangePreparationRecord {
-  decodeCtfRangeOrderPreparationIdentity(input)
+  const sdkIdentity = withoutConsolidationPolicy(input)
+  decodeCtfRangeOrderPreparationIdentity(sdkIdentity)
   database
     .prepare(
       `INSERT INTO daemon_ctf_range_preparations (
@@ -83,14 +88,14 @@ export function insertRangePreparation(
          predecessor_range_operation_id, authorization_id,
          client_order_id, order_route_id, normalized_mint, condition_id, unit,
          token_side, side, price_subunits, amount_subunits,
-         minimum_fill_amount_subunits, continue_after_partial_fill,
+         minimum_fill_amount_subunits, continue_after_partial_fill, consolidate_proofs,
          continuation_predecessor_order_id, continuation_settlement_group_id,
          continuation_settlement_group_revision, continuation_revision, divisibility,
          authorization_expires_at_unix_seconds, preparation_body, lifecycle_state, revision,
          capability_artifact_id, capability_binding_digest, capability_artifact_digest,
          engine_order_id, created_at_ms, updated_at_ms
        ) VALUES (
-         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'msat', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', 0,
+         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'msat', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', 0,
          NULL, NULL, NULL, NULL, ?, ?
        )
        ON CONFLICT DO NOTHING`,
@@ -112,6 +117,7 @@ export function insertRangePreparation(
       input.amountSubunits,
       input.minimumFillAmountSubunits,
       input.continueAfterPartialFill ? 1 : 0,
+      input.consolidateProofs ? 1 : 0,
       input.continuation?.predecessorOrderId ?? null,
       input.continuation?.settlementGroupId ?? null,
       input.continuation?.settlementGroupRevision ?? null,
@@ -123,10 +129,27 @@ export function insertRangePreparation(
       input.createdAtMs,
     )
   const record = readRangePreparation(database, input.scopeId, input.rangeOperationId)
-  if (record === null || !sameCtfRangeOrderPreparationIdentity(record, input)) {
+  if (
+    record === null ||
+    record.consolidateProofs !== input.consolidateProofs ||
+    !sameCtfRangeOrderPreparationIdentity(withoutConsolidationPolicy(record), sdkIdentity)
+  ) {
     throw new Error('daemon CTF range preparation conflicts with its persisted authority')
   }
   return record
+}
+
+function withoutConsolidationPolicy<T extends { readonly consolidateProofs: boolean }>(
+  value: T,
+): Omit<T, 'consolidateProofs'> {
+  const { consolidateProofs: _, ...sdkValue } = value
+  return sdkValue
+}
+
+export function toSdkRangePreparationRecord(
+  record: RangePreparationRecord,
+): CtfRangeOrderPreparationRecord {
+  return withoutConsolidationPolicy(record)
 }
 
 export function readRangePreparation(
@@ -279,7 +302,10 @@ export function bindRangePreparationCapability(
   requireRevision(input.expectedRevision)
   requireTimestamp(input.updatedAtMs, 'updated time')
   const current = requirePreparation(database, input.scopeId, input.rangeOperationId)
-  const next = bindCtfRangeOrderPreparationCapability({ current, ...input })
+  const next = bindCtfRangeOrderPreparationCapability({
+    current: toSdkRangePreparationRecord(current),
+    ...input,
+  })
   if (next.revision === current.revision) return current
   const capability = next.capability
   if (capability === null) {
@@ -505,7 +531,7 @@ export function readRangePreparationOperationLinks(
 }
 
 function decodePreparationRow(row: Record<string, unknown>): RangePreparationRecord {
-  return decodeCtfRangeOrderPreparationRecord({
+  const record = decodeCtfRangeOrderPreparationRecord({
     scopeId: requireText(row.scope_id, 'scope id'),
     rangeOperationId: requireText(row.range_operation_id, 'range operation id'),
     sourceOperationId: requireText(row.source_operation_id, 'source operation id'),
@@ -539,6 +565,10 @@ function decodePreparationRow(row: Record<string, unknown>): RangePreparationRec
     capability: decodeCapability(row),
     updatedAtMs: row.updated_at_ms,
   })
+  return {
+    ...record,
+    consolidateProofs: decodeSqliteBoolean(row.consolidate_proofs, 'proof consolidation policy'),
+  }
 }
 
 function decodeContinuation(row: Record<string, unknown>): RangePreparationRecord['continuation'] {
