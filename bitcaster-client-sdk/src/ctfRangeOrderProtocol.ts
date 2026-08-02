@@ -416,9 +416,10 @@ export function exactCtfRangeOrderPreparationMintKeysets(
 ): ReadonlyMap<string, DurableCtfRangeMintKeyset> {
   const preparation = decodePersistedCtfRangeOrderPreparation(input)
   return new Map(
-    [preparation.offerKeyset, preparation.receiveKeyset, preparation.complementKeyset].map(
-      (keyset) => [keyset.id, durableMintKeyset(keyset)],
-    ),
+    [preparation.offerKeyset, preparation.receiveKeyset].map((keyset) => [
+      keyset.id,
+      durableMintKeyset(keyset),
+    ]),
   )
 }
 

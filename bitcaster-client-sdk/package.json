@@ -152,6 +152,14 @@
       "types": "./dist/ctfRangeConsolidationOperation.d.ts",
       "import": "./dist/ctfRangeConsolidationOperation.js"
     },
+    "./ctfRangeCapabilitySourcePlan": {
+      "types": "./dist/ctfRangeCapabilitySourcePlan.d.ts",
+      "import": "./dist/ctfRangeCapabilitySourcePlan.js"
+    },
+    "./ctfRangeCollateralSourceOperation": {
+      "types": "./dist/ctfRangeCollateralSourceOperation.d.ts",
+      "import": "./dist/ctfRangeCollateralSourceOperation.js"
+    },
     "./proofConsolidationOperation": {
       "types": "./dist/proofConsolidationOperation.d.ts",
       "import": "./dist/proofConsolidationOperation.js"
