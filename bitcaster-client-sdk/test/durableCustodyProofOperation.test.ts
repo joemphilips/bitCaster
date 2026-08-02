@@ -92,14 +92,17 @@ test('proof-operation facts bind exact wallet unit, scope, and real mint keys', 
     durableCustodyProofOperationSemanticKind('conditional-keyset-swap'),
     'conditional-keyset-swap',
   )
-  assert.equal(durableCustodyProofOperationSemanticKind('ctf-range-regular-source'), 'wallet-send')
+  assert.equal(
+    durableCustodyProofOperationSemanticKind('ctf-range-regular-source'),
+    'ctf-range-regular-source',
+  )
   assert.equal(
     durableCustodyProofOperationSemanticKind('ctf-range-conditional-source'),
-    'conditional-keyset-swap',
+    'ctf-range-conditional-source',
   )
   assert.equal(
     durableCustodyProofOperationSemanticKind('ctf-range-collateral-convert'),
-    'ctf-split',
+    'ctf-range-collateral-convert',
   )
 })
 

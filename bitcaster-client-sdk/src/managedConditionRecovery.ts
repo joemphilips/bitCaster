@@ -142,10 +142,10 @@ export function classifyManagedConditionRecoveryBoundary(
   if (!record(value)) throw new Error('managed condition recovery boundary is invalid')
   exactKeys(
     value,
-    ['durableKind', 'semanticKind', 'stage', 'method', 'path'],
+    ['semanticKind', 'stage', 'method', 'path'],
     'managed condition recovery boundary',
   )
-  const key = [value.durableKind, value.semanticKind, value.stage, value.method, value.path]
+  const key = [value.semanticKind, value.stage, value.method, value.path]
     .map((part) => text(part, 'managed condition recovery boundary field'))
     .join('\0')
   const kind = RECOVERY_BOUNDARIES.get(key)
@@ -524,26 +524,20 @@ const RECOVERY_CLASSES: readonly ManagedConditionRecoveryClass[] = [
   'inventory-retirement',
 ]
 const RECOVERY_BOUNDARIES = new Map<string, ManagedConditionRecoveryOperationKind>([
-  ['wallet-receive\0generic-receive\0receive\0POST\0/v1/swap', 'receive'],
-  ['ctf-range-regular-source\0wallet-send\0send\0POST\0/v1/swap', 'capability-preparation'],
+  ['generic-receive\0receive\0POST\0/v1/swap', 'receive'],
+  ['ctf-range-regular-source\0capability-preparation\0POST\0/v1/swap', 'capability-preparation'],
   [
-    'ctf-range-conditional-source\0conditional-keyset-swap\0send\0POST\0/v1/swap',
+    'ctf-range-conditional-source\0capability-preparation\0POST\0/v1/swap',
     'capability-preparation',
   ],
   [
-    'ctf-range-collateral-convert\0ctf-split\0ctf-split\0POST\0/v1/ctf/convert',
+    'ctf-range-collateral-convert\0capability-preparation\0POST\0/v1/ctf/convert',
     'capability-preparation',
   ],
-  [
-    'ctf-range-authorization\0conditional-keyset-swap\0send\0POST\0/internal/settlement-capabilities',
-    'range-settlement',
-  ],
-  ['ctf-range-refund\0swap-refund\0refund\0POST\0/v1/swap', 'range-refund'],
-  [
-    'ctf-consolidation\0ctf-merge\0ctf-merge\0POST\0/v1/ctf/convert',
-    'condition-linked-consolidation',
-  ],
-  ['ctf-redeem\0ctf-redeem\0ctf-redeem\0POST\0/v1/redeem_outcome', 'inventory-retirement'],
+  ['conditional-keyset-swap\0send\0POST\0/internal/settlement-capabilities', 'range-settlement'],
+  ['swap-refund\0refund\0POST\0/v1/swap', 'range-refund'],
+  ['ctf-merge\0ctf-merge\0POST\0/v1/ctf/convert', 'condition-linked-consolidation'],
+  ['ctf-redeem\0ctf-redeem\0POST\0/v1/redeem_outcome', 'inventory-retirement'],
 ])
 const INDEX_KEYS = [
   'schemaVersion',

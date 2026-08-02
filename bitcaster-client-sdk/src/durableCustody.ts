@@ -29,6 +29,9 @@ export type DurableCustodySemanticKind =
   | 'generic-receive'
   | 'generic-send'
   | 'wallet-send'
+  | 'ctf-range-regular-source'
+  | 'ctf-range-conditional-source'
+  | 'ctf-range-collateral-convert'
   | 'ctf-split'
   | 'ctf-merge'
   | 'ctf-redeem'
@@ -44,6 +47,7 @@ export type DurableCustodyWalletStage =
   | 'refund'
   | 'receive'
   | 'send'
+  | 'capability-preparation'
   | 'ctf-split'
   | 'ctf-merge'
   | 'ctf-redeem'
@@ -2643,6 +2647,7 @@ function validateBinding(value: unknown): asserts value is DurableCustodyBinding
     value.stage !== 'claim' &&
     value.stage !== 'refund' &&
     value.stage !== 'send' &&
+    value.stage !== 'capability-preparation' &&
     value.stage !== 'ctf-split' &&
     value.stage !== 'ctf-merge' &&
     value.stage !== 'ctf-redeem'
@@ -2660,6 +2665,9 @@ function requireSemantic(value: unknown): asserts value is DurableCustodySemanti
     value !== 'generic-receive' &&
     value !== 'generic-send' &&
     value !== 'wallet-send' &&
+    value !== 'ctf-range-regular-source' &&
+    value !== 'ctf-range-conditional-source' &&
+    value !== 'ctf-range-collateral-convert' &&
     value !== 'ctf-split' &&
     value !== 'ctf-merge' &&
     value !== 'ctf-redeem'
@@ -2674,6 +2682,9 @@ function requiresTerminalReplay(kind: DurableCustodySemanticKind): boolean {
     case 'swap-claim':
     case 'swap-refund':
     case 'conditional-keyset-swap':
+    case 'ctf-range-regular-source':
+    case 'ctf-range-conditional-source':
+    case 'ctf-range-collateral-convert':
       return true
     case 'generic-receive':
     case 'generic-send':
@@ -2697,6 +2708,10 @@ function semanticStage(kind: DurableCustodySemanticKind): DurableCustodyWalletSt
     case 'generic-send':
     case 'wallet-send':
       return 'send'
+    case 'ctf-range-regular-source':
+    case 'ctf-range-conditional-source':
+    case 'ctf-range-collateral-convert':
+      return 'capability-preparation'
     case 'generic-receive':
       return 'receive'
     case 'ctf-split':

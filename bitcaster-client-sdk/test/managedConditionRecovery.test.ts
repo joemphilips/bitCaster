@@ -52,44 +52,24 @@ test('operation kinds map exhaustively to dependency classes', () => {
   assert.throws(() => classifyManagedConditionRecoveryOperation('future-kind'), /unknown/)
 })
 
-for (const [kind, durableKind, semanticKind, stage, path] of [
-  ['receive', 'wallet-receive', 'generic-receive', 'receive', '/v1/swap'],
-  ['capability-preparation', 'ctf-range-regular-source', 'wallet-send', 'send', '/v1/swap'],
-  [
-    'capability-preparation',
-    'ctf-range-conditional-source',
-    'conditional-keyset-swap',
-    'send',
-    '/v1/swap',
-  ],
+for (const [kind, semanticKind, stage, path] of [
+  ['receive', 'generic-receive', 'receive', '/v1/swap'],
+  ['capability-preparation', 'ctf-range-regular-source', 'capability-preparation', '/v1/swap'],
+  ['capability-preparation', 'ctf-range-conditional-source', 'capability-preparation', '/v1/swap'],
   [
     'capability-preparation',
     'ctf-range-collateral-convert',
-    'ctf-split',
-    'ctf-split',
+    'capability-preparation',
     '/v1/ctf/convert',
   ],
-  [
-    'range-settlement',
-    'ctf-range-authorization',
-    'conditional-keyset-swap',
-    'send',
-    '/internal/settlement-capabilities',
-  ],
-  ['range-refund', 'ctf-range-refund', 'swap-refund', 'refund', '/v1/swap'],
-  [
-    'condition-linked-consolidation',
-    'ctf-consolidation',
-    'ctf-merge',
-    'ctf-merge',
-    '/v1/ctf/convert',
-  ],
-  ['inventory-retirement', 'ctf-redeem', 'ctf-redeem', 'ctf-redeem', '/v1/redeem_outcome'],
+  ['range-settlement', 'conditional-keyset-swap', 'send', '/internal/settlement-capabilities'],
+  ['range-refund', 'swap-refund', 'refund', '/v1/swap'],
+  ['condition-linked-consolidation', 'ctf-merge', 'ctf-merge', '/v1/ctf/convert'],
+  ['inventory-retirement', 'ctf-redeem', 'ctf-redeem', '/v1/redeem_outcome'],
 ] as const) {
   test(`maps the exact ${kind} durable boundary`, () => {
     assert.equal(
       classifyManagedConditionRecoveryBoundary({
-        durableKind,
         semanticKind,
         stage,
         method: 'POST',
@@ -105,7 +85,6 @@ test('rejects familiar durable semantics on a foreign recovery boundary', () => 
     () =>
       classifyManagedConditionRecoveryBoundary({
         semanticKind: 'generic-receive',
-        durableKind: 'wallet-receive',
         stage: 'receive',
         method: 'POST',
         path: '/v1/foreign',
