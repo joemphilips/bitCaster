@@ -17,6 +17,9 @@ export type DurableCustodyProofOperationKind =
   | 'ctf-consolidation'
   | 'ctf-condition-registration'
   | 'ctf-range-authorization'
+  | 'ctf-range-regular-source'
+  | 'ctf-range-conditional-source'
+  | 'ctf-range-collateral-convert'
   | 'ctf-range-refund'
   | 'regular-split'
   | 'proof-split'
@@ -266,6 +269,12 @@ export function durableCustodyProofOperationSemanticKind(
       return kind
     case 'ctf-consolidation':
       return 'ctf-merge'
+    case 'ctf-range-collateral-convert':
+      return 'ctf-split'
+    case 'ctf-range-regular-source':
+      return 'wallet-send'
+    case 'ctf-range-conditional-source':
+      return 'conditional-keyset-swap'
     case 'ctf-range-authorization':
       return 'conditional-keyset-swap'
     case 'ctf-range-refund':

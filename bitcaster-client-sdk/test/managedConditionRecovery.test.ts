@@ -29,7 +29,10 @@ const SCOPE_ID = deriveDurableCustodyScopeId({
 
 test('operation kinds map exhaustively to dependency classes', () => {
   assert.equal(classifyManagedConditionRecoveryOperation('receive'), 'receive')
-  assert.equal(classifyManagedConditionRecoveryOperation('funding'), 'funding')
+  assert.equal(
+    classifyManagedConditionRecoveryOperation('capability-preparation'),
+    'capability-preparation',
+  )
   assert.equal(
     classifyManagedConditionRecoveryOperation('range-settlement'),
     'range-settlement-or-refund',
@@ -49,18 +52,49 @@ test('operation kinds map exhaustively to dependency classes', () => {
   assert.throws(() => classifyManagedConditionRecoveryOperation('future-kind'), /unknown/)
 })
 
-for (const [kind, semanticKind, stage, path] of [
-  ['receive', 'generic-receive', 'receive', '/v1/swap'],
-  ['funding', 'ctf-split', 'ctf-split', '/v1/ctf/convert'],
-  ['range-settlement', 'wallet-send', 'send', '/v1/swap'],
-  ['range-settlement', 'conditional-keyset-swap', 'send', '/internal/settlement-capabilities'],
-  ['range-refund', 'swap-refund', 'refund', '/v1/swap'],
-  ['condition-linked-consolidation', 'ctf-merge', 'ctf-merge', '/v1/ctf/convert'],
-  ['inventory-retirement', 'ctf-redeem', 'ctf-redeem', '/v1/redeem_outcome'],
+for (const [kind, durableKind, semanticKind, stage, path] of [
+  ['receive', 'wallet-receive', 'generic-receive', 'receive', '/v1/swap'],
+  ['capability-preparation', 'ctf-range-regular-source', 'wallet-send', 'send', '/v1/swap'],
+  [
+    'capability-preparation',
+    'ctf-range-conditional-source',
+    'conditional-keyset-swap',
+    'send',
+    '/v1/swap',
+  ],
+  [
+    'capability-preparation',
+    'ctf-range-collateral-convert',
+    'ctf-split',
+    'ctf-split',
+    '/v1/ctf/convert',
+  ],
+  [
+    'range-settlement',
+    'ctf-range-authorization',
+    'conditional-keyset-swap',
+    'send',
+    '/internal/settlement-capabilities',
+  ],
+  ['range-refund', 'ctf-range-refund', 'swap-refund', 'refund', '/v1/swap'],
+  [
+    'condition-linked-consolidation',
+    'ctf-consolidation',
+    'ctf-merge',
+    'ctf-merge',
+    '/v1/ctf/convert',
+  ],
+  ['inventory-retirement', 'ctf-redeem', 'ctf-redeem', 'ctf-redeem', '/v1/redeem_outcome'],
 ] as const) {
   test(`maps the exact ${kind} durable boundary`, () => {
     assert.equal(
-      classifyManagedConditionRecoveryBoundary({ semanticKind, stage, method: 'POST', path }),
+      classifyManagedConditionRecoveryBoundary({
+        durableKind,
+        semanticKind,
+        stage,
+        method: 'POST',
+        path,
+      }),
       kind,
     )
   })
@@ -71,6 +105,7 @@ test('rejects familiar durable semantics on a foreign recovery boundary', () => 
     () =>
       classifyManagedConditionRecoveryBoundary({
         semanticKind: 'generic-receive',
+        durableKind: 'wallet-receive',
         stage: 'receive',
         method: 'POST',
         path: '/v1/foreign',
@@ -104,9 +139,16 @@ test('the lowest dependency class blocks later due work before due-time filterin
 test('the runner processes exact operations in dependency order and stops when blocked', async () => {
   const calls: string[] = []
   const exactBodies = new Map<string, unknown>()
-  const entries = [entry('receive', 0), entry('funding', 0), entry('range-refund', 0)]
+  const entries = [
+    entry('receive', 0),
+    entry('capability-preparation', 0),
+    entry('range-refund', 0),
+  ]
   const customHandlers = handlers(calls, {
-    funding: { kind: 'blocked', wake: { kind: 'external-signal', source: 'mint', signalId: 'm1' } },
+    capabilityPreparation: {
+      kind: 'blocked',
+      wake: { kind: 'external-signal', source: 'mint', signalId: 'm1' },
+    },
   })
   const result = await runManagedConditionRecoveryPass({
     scopeId: SCOPE_ID,
@@ -115,7 +157,7 @@ test('the runner processes exact operations in dependency order and stops when b
     handlers: customHandlers,
   })
 
-  assert.deepEqual(calls, ['receive', 'funding'])
+  assert.deepEqual(calls, ['receive', 'capability-preparation'])
   assert.equal(result.kind, 'blocked')
   assert.equal(result.processedCount, 1)
   assert.equal(result.processedBytes, entries[0]!.envelopeByteLength)
@@ -228,7 +270,7 @@ test('handler retry and invalid store order return typed scheduler results', asy
   const orderResult = await runManagedConditionRecoveryPass({
     scopeId: SCOPE_ID,
     nowMs: 100,
-    store: store([entry('funding', 0), entry('receive', 0)]),
+    store: store([entry('capability-preparation', 0), entry('receive', 0)]),
     handlers: handlers([]),
   })
   assert.equal(orderResult.kind, 'blocked')
@@ -286,14 +328,14 @@ function handlers(
   calls: string[],
   results: Partial<
     Record<
-      'receive' | 'funding' | 'range' | 'consolidation' | 'retirement',
+      'receive' | 'capabilityPreparation' | 'range' | 'consolidation' | 'retirement',
       ManagedConditionRecoveryHandlerResult
     >
   > = {},
 ): ManagedConditionRecoveryHandlers {
   return {
     receive: handler('receive', calls, results.receive),
-    funding: handler('funding', calls, results.funding),
+    capabilityPreparation: handler('capability-preparation', calls, results.capabilityPreparation),
     rangeSettlementOrRefund: handler('range', calls, results.range),
     conditionLinkedConsolidation: handler('consolidation', calls, results.consolidation),
     inventoryRetirement: handler('retirement', calls, results.retirement),

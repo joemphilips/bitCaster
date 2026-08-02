@@ -128,7 +128,7 @@ export async function completeValidatedCtfRangeSourceOperation(
   wallet: CtfRangeSourceWallet,
 ): Promise<CtfRangeSourceResult> {
   const operation = validated.operation
-  if (operation.kind === 'conditional-keyset-swap') {
+  if (sourceMode(operation) === 'conditional-keyset-swap') {
     const result = await wallet.completeConditionalSwap({
       keysetId: metadataText(operation, 'keysetId'),
       inputs: operation.inputs as Proof[],
@@ -219,7 +219,7 @@ async function prepareConditionalSource(
 
 function sourceOperation(
   preparation: PersistedCtfRangeOrderPreparation,
-  kind: 'wallet-send' | 'conditional-keyset-swap',
+  sourceMode: 'wallet-send' | 'conditional-keyset-swap',
   preview: SwapPreview | ConditionalSwapPreview,
   output: {
     authorization: OutputData[]
@@ -234,7 +234,8 @@ function sourceOperation(
   }
   return {
     operationId: preparation.sourceOperationId,
-    kind,
+    kind:
+      sourceMode === 'wallet-send' ? 'ctf-range-regular-source' : 'ctf-range-conditional-source',
     mintUrl: preparation.mintUrl,
     inputs: preview.inputs.map(serializeDurableCustodyProofInput),
     outputs: {
@@ -245,7 +246,7 @@ function sourceOperation(
       purpose: SOURCE_PURPOSE,
       rangeOperationId: preparation.operationId,
       unit: 'msat',
-      sourceMode: kind,
+      sourceMode,
       amount: output.amount,
       fees: output.fees,
       keysetId: output.keysetId,
@@ -265,13 +266,25 @@ function deserializeOutputs(
 }
 
 function assertSourceOperation(operation: DurableCustodyProofOperationInput): void {
+  const mode = sourceMode(operation)
   if (
-    (operation.kind !== 'wallet-send' && operation.kind !== 'conditional-keyset-swap') ||
+    ((operation.kind !== 'ctf-range-regular-source' || mode !== 'wallet-send') &&
+      (operation.kind !== 'ctf-range-conditional-source' || mode !== 'conditional-keyset-swap')) ||
     operation.metadata?.purpose !== SOURCE_PURPOSE ||
     operation.metadata.unit !== 'msat'
   ) {
     throw new Error('persisted range source operation is invalid')
   }
+}
+
+function sourceMode(
+  operation: DurableCustodyProofOperationInput,
+): 'wallet-send' | 'conditional-keyset-swap' {
+  const value = operation.metadata?.sourceMode
+  if (value !== 'wallet-send' && value !== 'conditional-keyset-swap') {
+    throw new Error('persisted range source mode is invalid')
+  }
+  return value
 }
 
 function metadataText(operation: DurableCustodyProofOperationInput, field: string): string {

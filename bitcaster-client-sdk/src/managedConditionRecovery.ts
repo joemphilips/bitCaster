@@ -10,7 +10,7 @@ const RECOVERY_HEAD_LIMIT = MANAGED_CONDITION_RECOVERY_PASS_LIMIT + 1
 
 export type ManagedConditionRecoveryOperationKind =
   | 'receive'
-  | 'funding'
+  | 'capability-preparation'
   | 'range-settlement'
   | 'range-refund'
   | 'condition-linked-consolidation'
@@ -18,7 +18,7 @@ export type ManagedConditionRecoveryOperationKind =
 
 export type ManagedConditionRecoveryClass =
   | 'receive'
-  | 'funding'
+  | 'capability-preparation'
   | 'range-settlement-or-refund'
   | 'condition-linked-consolidation'
   | 'inventory-retirement'
@@ -71,7 +71,7 @@ export interface ManagedConditionRecoveryHandlers {
   receive(
     operation: ManagedConditionRecoveryOperation,
   ): Promise<ManagedConditionRecoveryHandlerResult>
-  funding(
+  capabilityPreparation(
     operation: ManagedConditionRecoveryOperation,
   ): Promise<ManagedConditionRecoveryHandlerResult>
   rangeSettlementOrRefund(
@@ -121,8 +121,8 @@ export function classifyManagedConditionRecoveryOperation(
   switch (value) {
     case 'receive':
       return 'receive'
-    case 'funding':
-      return 'funding'
+    case 'capability-preparation':
+      return 'capability-preparation'
     case 'range-settlement':
     case 'range-refund':
       return 'range-settlement-or-refund'
@@ -142,10 +142,10 @@ export function classifyManagedConditionRecoveryBoundary(
   if (!record(value)) throw new Error('managed condition recovery boundary is invalid')
   exactKeys(
     value,
-    ['semanticKind', 'stage', 'method', 'path'],
+    ['durableKind', 'semanticKind', 'stage', 'method', 'path'],
     'managed condition recovery boundary',
   )
-  const key = [value.semanticKind, value.stage, value.method, value.path]
+  const key = [value.durableKind, value.semanticKind, value.stage, value.method, value.path]
     .map((part) => text(part, 'managed condition recovery boundary field'))
     .join('\0')
   const kind = RECOVERY_BOUNDARIES.get(key)
@@ -320,8 +320,8 @@ function dispatch(
   switch (entry.recoveryClass) {
     case 'receive':
       return handlers.receive(operation)
-    case 'funding':
-      return handlers.funding(operation)
+    case 'capability-preparation':
+      return handlers.capabilityPreparation(operation)
     case 'range-settlement-or-refund':
       return handlers.rangeSettlementOrRefund(operation)
     case 'condition-linked-consolidation':
@@ -518,21 +518,32 @@ function record(value: unknown): value is Record<string, unknown> {
 
 const RECOVERY_CLASSES: readonly ManagedConditionRecoveryClass[] = [
   'receive',
-  'funding',
+  'capability-preparation',
   'range-settlement-or-refund',
   'condition-linked-consolidation',
   'inventory-retirement',
 ]
 const RECOVERY_BOUNDARIES = new Map<string, ManagedConditionRecoveryOperationKind>([
-  ['generic-receive\0receive\0POST\0/v1/swap', 'receive'],
-  ['ctf-split\0ctf-split\0POST\0/v1/ctf/convert', 'funding'],
-  ['wallet-send\0send\0POST\0/v1/swap', 'range-settlement'],
-  ['wallet-send\0send\0POST\0/internal/settlement-capabilities', 'range-settlement'],
-  ['conditional-keyset-swap\0send\0POST\0/v1/swap', 'range-settlement'],
-  ['conditional-keyset-swap\0send\0POST\0/internal/settlement-capabilities', 'range-settlement'],
-  ['swap-refund\0refund\0POST\0/v1/swap', 'range-refund'],
-  ['ctf-merge\0ctf-merge\0POST\0/v1/ctf/convert', 'condition-linked-consolidation'],
-  ['ctf-redeem\0ctf-redeem\0POST\0/v1/redeem_outcome', 'inventory-retirement'],
+  ['wallet-receive\0generic-receive\0receive\0POST\0/v1/swap', 'receive'],
+  ['ctf-range-regular-source\0wallet-send\0send\0POST\0/v1/swap', 'capability-preparation'],
+  [
+    'ctf-range-conditional-source\0conditional-keyset-swap\0send\0POST\0/v1/swap',
+    'capability-preparation',
+  ],
+  [
+    'ctf-range-collateral-convert\0ctf-split\0ctf-split\0POST\0/v1/ctf/convert',
+    'capability-preparation',
+  ],
+  [
+    'ctf-range-authorization\0conditional-keyset-swap\0send\0POST\0/internal/settlement-capabilities',
+    'range-settlement',
+  ],
+  ['ctf-range-refund\0swap-refund\0refund\0POST\0/v1/swap', 'range-refund'],
+  [
+    'ctf-consolidation\0ctf-merge\0ctf-merge\0POST\0/v1/ctf/convert',
+    'condition-linked-consolidation',
+  ],
+  ['ctf-redeem\0ctf-redeem\0ctf-redeem\0POST\0/v1/redeem_outcome', 'inventory-retirement'],
 ])
 const INDEX_KEYS = [
   'schemaVersion',

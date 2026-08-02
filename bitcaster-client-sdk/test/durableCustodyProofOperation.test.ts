@@ -92,6 +92,15 @@ test('proof-operation facts bind exact wallet unit, scope, and real mint keys', 
     durableCustodyProofOperationSemanticKind('conditional-keyset-swap'),
     'conditional-keyset-swap',
   )
+  assert.equal(durableCustodyProofOperationSemanticKind('ctf-range-regular-source'), 'wallet-send')
+  assert.equal(
+    durableCustodyProofOperationSemanticKind('ctf-range-conditional-source'),
+    'conditional-keyset-swap',
+  )
+  assert.equal(
+    durableCustodyProofOperationSemanticKind('ctf-range-collateral-convert'),
+    'ctf-split',
+  )
 })
 
 test('proof-operation bounds and curve-specific mint keys fail closed', async () => {

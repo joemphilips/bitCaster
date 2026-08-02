@@ -463,7 +463,7 @@ test('prepares one exact persisted range source through the shared wallet bounda
   })
 
   assert.ok(operation)
-  assert.equal(operation.kind, 'wallet-send')
+  assert.equal(operation.kind, 'ctf-range-regular-source')
   assert.equal(operation.operationId, preparation.sourceOperationId)
   assert.equal(operation.inputs[0]?.secret, candidate.secret)
   assert.equal(operation.metadata?.purpose, 'ctf-range-authorization-source')

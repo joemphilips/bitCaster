@@ -623,6 +623,9 @@ function assertSupportedOperation(operation: DurableCustodyProofOperationInput):
       operation.kind !== 'wallet-receive' &&
       operation.kind !== 'conditional-keyset-swap' &&
       operation.kind !== 'ctf-split' &&
+      operation.kind !== 'ctf-range-regular-source' &&
+      operation.kind !== 'ctf-range-conditional-source' &&
+      operation.kind !== 'ctf-range-collateral-convert' &&
       operation.kind !== 'ctf-redeem' &&
       operation.kind !== 'ctf-range-refund') ||
     operation.inputs.length === 0 ||
