@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  classifyManagedConditionRecoveryBoundary,
   classifyManagedConditionRecoveryOperation,
   runManagedConditionRecoveryPass,
   type ManagedConditionRecoveryHandlerResult,
@@ -46,6 +47,36 @@ test('operation kinds map exhaustively to dependency classes', () => {
     'inventory-retirement',
   )
   assert.throws(() => classifyManagedConditionRecoveryOperation('future-kind'), /unknown/)
+})
+
+for (const [kind, semanticKind, stage, path] of [
+  ['receive', 'generic-receive', 'receive', '/v1/swap'],
+  ['funding', 'ctf-split', 'ctf-split', '/v1/ctf/convert'],
+  ['range-settlement', 'wallet-send', 'send', '/v1/swap'],
+  ['range-settlement', 'conditional-keyset-swap', 'send', '/internal/settlement-capabilities'],
+  ['range-refund', 'swap-refund', 'refund', '/v1/swap'],
+  ['condition-linked-consolidation', 'ctf-merge', 'ctf-merge', '/v1/ctf/convert'],
+  ['inventory-retirement', 'ctf-redeem', 'ctf-redeem', '/v1/redeem_outcome'],
+] as const) {
+  test(`maps the exact ${kind} durable boundary`, () => {
+    assert.equal(
+      classifyManagedConditionRecoveryBoundary({ semanticKind, stage, method: 'POST', path }),
+      kind,
+    )
+  })
+}
+
+test('rejects familiar durable semantics on a foreign recovery boundary', () => {
+  assert.throws(
+    () =>
+      classifyManagedConditionRecoveryBoundary({
+        semanticKind: 'generic-receive',
+        stage: 'receive',
+        method: 'POST',
+        path: '/v1/foreign',
+      }),
+    /unknown/,
+  )
 })
 
 test('the lowest dependency class blocks later due work before due-time filtering', async () => {

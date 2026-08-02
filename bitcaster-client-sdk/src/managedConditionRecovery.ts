@@ -135,6 +135,24 @@ export function classifyManagedConditionRecoveryOperation(
   }
 }
 
+/** Map the exact durable request boundary to the shared recovery operation kind. */
+export function classifyManagedConditionRecoveryBoundary(
+  value: unknown,
+): ManagedConditionRecoveryOperationKind {
+  if (!record(value)) throw new Error('managed condition recovery boundary is invalid')
+  exactKeys(
+    value,
+    ['semanticKind', 'stage', 'method', 'path'],
+    'managed condition recovery boundary',
+  )
+  const key = [value.semanticKind, value.stage, value.method, value.path]
+    .map((part) => text(part, 'managed condition recovery boundary field'))
+    .join('\0')
+  const kind = RECOVERY_BOUNDARIES.get(key)
+  if (kind !== undefined) return kind
+  throw new Error('managed condition recovery boundary is unknown')
+}
+
 export async function runManagedConditionRecoveryPass(input: {
   readonly scopeId: string
   readonly nowMs: number
@@ -505,6 +523,17 @@ const RECOVERY_CLASSES: readonly ManagedConditionRecoveryClass[] = [
   'condition-linked-consolidation',
   'inventory-retirement',
 ]
+const RECOVERY_BOUNDARIES = new Map<string, ManagedConditionRecoveryOperationKind>([
+  ['generic-receive\0receive\0POST\0/v1/swap', 'receive'],
+  ['ctf-split\0ctf-split\0POST\0/v1/ctf/convert', 'funding'],
+  ['wallet-send\0send\0POST\0/v1/swap', 'range-settlement'],
+  ['wallet-send\0send\0POST\0/internal/settlement-capabilities', 'range-settlement'],
+  ['conditional-keyset-swap\0send\0POST\0/v1/swap', 'range-settlement'],
+  ['conditional-keyset-swap\0send\0POST\0/internal/settlement-capabilities', 'range-settlement'],
+  ['swap-refund\0refund\0POST\0/v1/swap', 'range-refund'],
+  ['ctf-merge\0ctf-merge\0POST\0/v1/ctf/convert', 'condition-linked-consolidation'],
+  ['ctf-redeem\0ctf-redeem\0POST\0/v1/redeem_outcome', 'inventory-retirement'],
+])
 const INDEX_KEYS = [
   'schemaVersion',
   'scopeId',
