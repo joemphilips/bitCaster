@@ -23,6 +23,10 @@
       "types": "./dist/durableCustody.d.ts",
       "import": "./dist/durableCustody.js"
     },
+    "./managedConditionInventory": {
+      "types": "./dist/managedConditionInventory.d.ts",
+      "import": "./dist/managedConditionInventory.js"
+    },
     "./durableCustodyProofOperation": {
       "types": "./dist/durableCustodyProofOperation.d.ts",
       "import": "./dist/durableCustodyProofOperation.js"
