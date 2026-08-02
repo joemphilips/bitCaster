@@ -3,7 +3,11 @@ import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { decode } from 'cborg'
-import { deriveDurableCustodyProofId, deriveDurableCustodyScopeId } from './durableCustody.ts'
+import {
+  deriveDurableCustodyProofId,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from './durableCustody.ts'
 import {
   ORACLE_NOT_ATTESTED_OUTCOME_CODE,
   readAuthenticatedCtfRedeemTerminalEvidence,
@@ -38,6 +42,12 @@ import {
   requireIssuedEncryptedWalletBackupKeyHandle,
 } from './encryptedWalletBackupKeyAuthority.ts'
 import { issuePreparedEncryptedWalletBackupUploadAuthority } from './encryptedWalletBackupPlanningAuthority.ts'
+import { registerEncryptedWalletBackupPreparedRecordValidator } from './encryptedWalletBackupPreparedRecordValidation.ts'
+import {
+  ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+  issuePreparedEncryptedWalletBackupRecord,
+  type PreparedEncryptedWalletBackupRecord,
+} from './encryptedWalletBackupRecord.ts'
 import {
   issueCoordinatedEncryptedWalletBackupCasAttempt,
   readCoordinatedEncryptedWalletBackupCasAuthority,
@@ -90,6 +100,11 @@ export {
   ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
 } from './encryptedWalletBackupManifestHead.ts'
 export { ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES } from './encryptedWalletBackupLimits.ts'
+export {
+  ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+  type EncryptedWalletBackupRecordKindCode,
+  type PreparedEncryptedWalletBackupRecord,
+} from './encryptedWalletBackupRecord.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION = 1 as const
 export const ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND = 1 as const
@@ -390,7 +405,7 @@ export interface EncryptedWalletBackupProofInput {
   proofSnapshotStore: EncryptedWalletBackupProofSnapshotStore
 }
 
-export interface PreparedEncryptedWalletBackupProof {
+export interface PreparedEncryptedWalletBackupProof extends PreparedEncryptedWalletBackupRecord {
   readonly proofId: string
   readonly commitment: string
 }
@@ -891,6 +906,12 @@ export async function createEncryptedWalletBackupKeyHandle(input: {
     ROOT_SALT,
     encodeCanonical([1, 'request-auth-root', realm]),
   )
+  const preparationPersistenceKey = await hkdf(
+    runtime.subtle,
+    encryptionRoot,
+    ROOT_SALT,
+    encodeCanonical([1, 'preparation-persistence', realm]),
+  )
   const vaultIdBytes = await hkdf(
     runtime.subtle,
     encryptionRoot,
@@ -905,7 +926,11 @@ export async function createEncryptedWalletBackupKeyHandle(input: {
     vaultId: bytesToHex(vaultIdBytes),
     requestAuthPublicKey,
   })
-  registerEncryptedWalletBackupKeyHandle(handle)
+  registerEncryptedWalletBackupKeyHandle(handle, {
+    walletId: deriveDurableCustodyWalletId(seed),
+    preparationPersistenceKey,
+    subtle: runtime.subtle,
+  })
   KEY_AUTHORITIES.set(handle, {
     realm,
     seedDigest: sha256(seed),
@@ -1557,7 +1582,27 @@ export async function prepareEncryptedWalletBackupProof(
     updatedAtUnixSeconds: updatedAt,
     recordBytes,
   })
-  return handle
+  return issuePreparedEncryptedWalletBackupRecord(handle, {
+    recordId: proofId,
+    commitment,
+    recordKindCode: ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+    keyHandle: input.keyHandle,
+    canonicalRecord: recordBytes,
+    snapshotId: committedSnapshot.row.snapshotId,
+    snapshotRevision: committedSnapshot.row.revision,
+    canonicalManifestEntry: encodeCanonical([
+      ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+      hexToBytes(proofId),
+      hexToBytes(commitment),
+      mint,
+      unit,
+      amount,
+      proofKindCode,
+      ctfMetadata,
+      createdAt,
+      updatedAt,
+    ]),
+  })
 }
 
 function requireBackupEligibleClassification(
@@ -5102,6 +5147,128 @@ function decodeProofRecord(
     createdAtUnixSeconds: createdAt,
     updatedAtUnixSeconds: updatedAt,
     proof,
+  }
+}
+
+registerEncryptedWalletBackupPreparedRecordValidator({
+  validate: validatePreparedRecordPersistence,
+  rehydrate: rehydratePreparedRecordPersistence,
+})
+
+function validatePreparedRecordPersistence(input: {
+  readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly seed: Uint8Array
+  readonly canonicalRecord: Uint8Array
+  readonly canonicalManifestEntry: Uint8Array
+}) {
+  const decoded = decodePreparedRecordPersistence(input)
+  return Object.freeze({
+    recordId: decoded.proof.proofId,
+    commitment: decoded.proof.commitment,
+    recordKindCode: ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+  })
+}
+
+function rehydratePreparedRecordPersistence(input: {
+  readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly seed: Uint8Array
+  readonly canonicalRecord: Uint8Array
+  readonly canonicalManifestEntry: Uint8Array
+  readonly snapshotId: string
+  readonly snapshotRevision: number
+}): PreparedEncryptedWalletBackupProof {
+  const decoded = decodePreparedRecordPersistence(input)
+  const proof = decoded.proof
+  const handle = Object.freeze({ proofId: proof.proofId, commitment: proof.commitment })
+  PREPARED_PROOF_AUTHORITIES.set(handle, {
+    keyAuthority: decoded.keyAuthority,
+    proofId: proof.proofId,
+    commitment: proof.commitment,
+    snapshotId: requireBoundedText(input.snapshotId, 128, 'prepared snapshot id'),
+    snapshotRevision: requireNonNegativeSafeInteger(
+      input.snapshotRevision,
+      'prepared snapshot revision',
+    ),
+    mint: proof.mint,
+    unit: proof.unit,
+    amount: proof.proof.amount,
+    proofKindCode: proof.encodedProofKind,
+    ctfMetadata: decoded.raw[11] as EncryptedWalletBackupCtfWire | null,
+    createdAtUnixSeconds: proof.createdAtUnixSeconds,
+    updatedAtUnixSeconds: proof.updatedAtUnixSeconds,
+    recordBytes: decoded.canonicalRecord,
+  })
+  return issuePreparedEncryptedWalletBackupRecord(handle, {
+    recordId: proof.proofId,
+    commitment: proof.commitment,
+    recordKindCode: ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+    keyHandle: input.keyHandle,
+    canonicalRecord: decoded.canonicalRecord,
+    snapshotId: input.snapshotId,
+    snapshotRevision: input.snapshotRevision,
+    canonicalManifestEntry: decoded.canonicalManifestEntry,
+  })
+}
+
+function decodePreparedRecordPersistence(input: {
+  readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly seed: Uint8Array
+  readonly canonicalRecord: Uint8Array
+  readonly canonicalManifestEntry: Uint8Array
+}): {
+  readonly keyAuthority: KeyAuthority
+  readonly proof: UnverifiedEncryptedWalletBackupProof
+  readonly raw: readonly unknown[]
+  readonly canonicalRecord: Uint8Array
+  readonly canonicalManifestEntry: Uint8Array
+} {
+  const keyAuthority = requireKeyAuthority(input.keyHandle)
+  const seed = requireSeed(input.seed)
+  if (!equalBytes(keyAuthority.seedDigest, sha256(seed))) {
+    throw new Error('backup seed does not match key handle')
+  }
+  const canonicalRecord = requireBytesRange(
+    input.canonicalRecord,
+    1,
+    ENCRYPTED_WALLET_BACKUP_PROOF_CBOR_MAX_BYTES,
+    'prepared record',
+  )
+  const raw = decode(canonicalRecord)
+  if (!Array.isArray(raw) || !equalBytes(canonicalRecord, encodeCanonical(raw))) {
+    throw new Error('prepared backup record is not canonical CBOR')
+  }
+  const scopeId = deriveDurableCustodyScopeId({
+    scopeKind: 'wallet',
+    walletId: bytesToHex(keyAuthority.vaultIdBytes),
+  })
+  const proof = decodeProofRecord(raw, seed, scopeId, new Map())
+  const expectedManifestEntry = encodeCanonical([
+    ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+    raw[0],
+    raw[1],
+    raw[2],
+    raw[3],
+    raw[5],
+    raw[10],
+    raw[11],
+    raw[12],
+    raw[13],
+  ])
+  const canonicalManifestEntry = requireBytesRange(
+    input.canonicalManifestEntry,
+    1,
+    ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES,
+    'prepared manifest entry',
+  )
+  if (!equalBytes(canonicalManifestEntry, expectedManifestEntry)) {
+    throw new Error('prepared backup manifest metadata changed')
+  }
+  return {
+    keyAuthority,
+    proof,
+    raw,
+    canonicalRecord,
+    canonicalManifestEntry,
   }
 }
 
