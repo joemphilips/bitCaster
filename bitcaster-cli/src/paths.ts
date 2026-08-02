@@ -1,6 +1,5 @@
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dataDir } from '@bitcaster-market/daemon/dataDir'
 
 export function cliHomeDir(): string {
-  return process.env.BITCASTER_CLI_HOME || join(homedir(), '.bitcaster-cli')
+  return dataDir()
 }

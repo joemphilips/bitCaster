@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 
 export const DAEMON_PROFILE_DATABASE = 'daemon-state.sqlite'
+export const DAEMON_CONFIG_FILE = 'config.json'
 
 export const LEGACY_DAEMON_PROFILE_ARTIFACTS = [
   'daemon-profile.json',
@@ -19,13 +20,18 @@ export const DAEMON_PROFILE_SIDECARS = [
 
 export const DAEMON_RUN_LOCK = 'daemon-run.lock'
 export const DAEMON_RPC_SOCKET = 'daemon.sock'
+export const DAEMON_LOG_FILE = 'daemon.log'
+export const DAEMON_PID_FILE = 'daemon-autostart.pid'
 
 const recognizedProfileArtifacts = new Set<string>([
   DAEMON_PROFILE_DATABASE,
+  DAEMON_CONFIG_FILE,
   ...LEGACY_DAEMON_PROFILE_ARTIFACTS,
   ...DAEMON_PROFILE_SIDECARS,
   DAEMON_RUN_LOCK,
   DAEMON_RPC_SOCKET,
+  DAEMON_LOG_FILE,
+  DAEMON_PID_FILE,
 ])
 
 export type ProfileArtifactKind = 'file' | 'directory' | 'symbolic-link' | 'socket' | 'other'

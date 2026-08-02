@@ -5,7 +5,7 @@ import { readBootstrappedRpcToken } from './profileBootstrap.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
 
 export function rpcSocketPath(): string {
-  return process.env.BITCASTER_DAEMON_SOCKET || join(profileDir(), 'daemon.sock')
+  return join(profileDir(), 'daemon.sock')
 }
 
 export function rpcTokenPath(): string {

@@ -1,8 +1,9 @@
 import type { DaemonCommand, DaemonResponse } from '@bitcaster-market/daemon/protocol'
 import { readRpcToken, rpcSocketPath } from '@bitcaster-market/daemon/rpcAuth'
+import { dataDir } from '@bitcaster-market/daemon/dataDir'
 import { execFile, spawn } from 'node:child_process'
-import { closeSync, openSync } from 'node:fs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { closeSync, constants, openSync } from 'node:fs'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,6 +19,7 @@ interface DaemonPidFile {
   pid: number
   startedAt?: string
   daemonMain?: string
+  dataDir?: string
 }
 
 export class DaemonNotReachableError extends Error {
@@ -172,25 +174,42 @@ function throwDaemonConnectionError(err: unknown, address: string): never {
 export async function startDaemonProcess(): Promise<void> {
   const dir = cliHomeDir()
   await mkdir(dir, { recursive: true, mode: 0o700 })
-  const logFd = openSync(daemonLogPath(), 'a', 0o600)
+  const logFd = openSync(
+    daemonLogPath(),
+    constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
+    0o600,
+  )
   const daemonMain = fileURLToPath(import.meta.resolve('@bitcaster-market/daemon'))
-  const child = spawn(process.execPath, ['--experimental-strip-types', daemonMain, 'run'], {
-    detached: true,
-    env: process.env,
-    stdio: ['ignore', logFd, logFd],
-  })
+  const child = spawn(
+    process.execPath,
+    ['--experimental-strip-types', daemonMain, `--datadir=${dataDir()}`, 'run'],
+    {
+      detached: true,
+      env: process.env,
+      stdio: ['ignore', logFd, logFd],
+    },
+  )
   closeSync(logFd)
   if (child.pid) {
     const startedAt = await readProcessStartTime(child.pid)
+    const pidPath = daemonPidPath()
+    const tempPidPath = `${pidPath}.${process.pid}.${child.pid}.tmp`
     await writeFile(
-      daemonPidPath(),
+      tempPidPath,
       `${JSON.stringify({
         pid: child.pid,
         ...(startedAt ? { startedAt } : {}),
         daemonMain,
+        dataDir: dataDir(),
       })}\n`,
-      { mode: 0o600 },
+      { mode: 0o600, flag: 'wx' },
     )
+    try {
+      await rename(tempPidPath, pidPath)
+    } catch (error) {
+      await rm(tempPidPath, { force: true })
+      throw error
+    }
   }
   child.unref()
 }
@@ -290,12 +309,18 @@ async function readDaemonPidFile(): Promise<DaemonPidFile | null> {
     return { pid: numericPid }
   }
   try {
-    const parsed = JSON.parse(text) as { pid?: unknown; startedAt?: unknown; daemonMain?: unknown }
+    const parsed = JSON.parse(text) as {
+      pid?: unknown
+      startedAt?: unknown
+      daemonMain?: unknown
+      dataDir?: unknown
+    }
     if (Number.isSafeInteger(parsed.pid) && Number(parsed.pid) > 0) {
       return {
         pid: Number(parsed.pid),
         ...(typeof parsed.startedAt === 'string' ? { startedAt: parsed.startedAt } : {}),
         ...(typeof parsed.daemonMain === 'string' ? { daemonMain: parsed.daemonMain } : {}),
+        ...(typeof parsed.dataDir === 'string' ? { dataDir: parsed.dataDir } : {}),
       }
     }
   } catch {
@@ -323,26 +348,28 @@ async function pidStartTimeMatches(pidFile: DaemonPidFile): Promise<boolean> {
 }
 
 async function isBitcasterDaemonProcess(pidFile: DaemonPidFile): Promise<boolean> {
-  const cmdline = await readProcessCommandLine(pidFile.pid)
-  if (!cmdline) return false
-  const daemonMainMatches = pidFile.daemonMain ? cmdline.includes(pidFile.daemonMain) : false
+  if (pidFile.dataDir !== dataDir()) return false
+  const args = await readProcessArguments(pidFile.pid)
+  if (!args) return false
+  const daemonMainMatches = pidFile.daemonMain ? args.includes(pidFile.daemonMain) : false
   return (
-    (daemonMainMatches || cmdline.includes('@bitcaster-market/daemon')) &&
-    /(?:^|\s)run(?:\s|$)/.test(cmdline)
+    (daemonMainMatches || args.some((arg) => arg.includes('@bitcaster-market/daemon'))) &&
+    args.includes(`--datadir=${pidFile.dataDir}`) &&
+    args.includes('run')
   )
 }
 
-async function readProcessCommandLine(pid: number): Promise<string | null> {
+async function readProcessArguments(pid: number): Promise<string[] | null> {
   if (process.platform === 'linux') {
     try {
-      return (await readFile(`/proc/${pid}/cmdline`, 'utf8')).replace(/\0/g, ' ').trim()
+      return (await readFile(`/proc/${pid}/cmdline`, 'utf8')).split('\0').filter(Boolean)
     } catch {
       return null
     }
   }
   try {
     const result = await execFileAsync('ps', ['-p', String(pid), '-o', 'args='])
-    return result.stdout.trim()
+    return result.stdout.trim().split(/\s+/).filter(Boolean)
   } catch {
     return null
   }

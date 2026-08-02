@@ -1749,6 +1749,8 @@ function fakeMint(
             supported: true,
             partial_fill: true,
             max_inputs: maxInputs,
+            max_outputs: 512,
+            max_request_bytes: 16 * 1_024 * 1_024,
             max_pool_entries: 32,
             max_expiry_seconds: maxExpirySeconds,
           },

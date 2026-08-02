@@ -309,13 +309,16 @@ async function runMain(
   args: string[],
   extraEnv: NodeJS.ProcessEnv = {},
 ): Promise<void> {
-  await execFileAsync(process.execPath, ['--experimental-strip-types', mainPath, ...args], {
-    env: {
-      ...process.env,
-      ...extraEnv,
-      BITCASTER_DAEMON_HOME: home,
+  await execFileAsync(
+    process.execPath,
+    ['--experimental-strip-types', mainPath, '--datadir', home, ...args],
+    {
+      env: {
+        ...process.env,
+        ...extraEnv,
+      },
     },
-  })
+  )
 }
 
 async function createSecretSource(input: {

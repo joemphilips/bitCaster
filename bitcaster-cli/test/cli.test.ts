@@ -870,6 +870,8 @@ test('bitcaster-cli daemon init delegates file-based setup/import to bitcaster-d
       [
         '--experimental-strip-types',
         join(import.meta.dirname, '..', 'src', 'main.ts'),
+        '--datadir',
+        daemonHome,
         'daemon',
         'init',
         '--wallet-seed-hex-file',
@@ -884,8 +886,6 @@ test('bitcaster-cli daemon init delegates file-based setup/import to bitcaster-d
       {
         env: {
           ...process.env,
-          BITCASTER_DAEMON_HOME: daemonHome,
-          BITCASTER_CLI_HOME: home,
         },
       },
     )
@@ -899,14 +899,36 @@ test('bitcaster-cli daemon init delegates file-based setup/import to bitcaster-d
   }
 })
 
+test('bitcaster-daemon --datadir initializes only the selected directory', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-datadir-'))
+  const selected = join(home, 'selected')
+  const ignored = join(home, 'ignored')
+  try {
+    const result = await execFileAsync(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        join(import.meta.dirname, '..', '..', 'bitcaster-daemon', 'src', 'main.ts'),
+        '--datadir',
+        selected,
+        'init',
+      ],
+      { env: { ...process.env, BITCASTER_DAEMON_HOME: ignored } },
+    )
+
+    assert.match(result.stdout, /profile initialized/)
+    assert.equal((await readdir(selected)).includes('daemon-state.sqlite'), true)
+    await assert.rejects(() => readdir(ignored), /ENOENT/)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('bitcaster-cli auto-starts default local daemon when RPC is unavailable', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-autostart-'))
-  const daemonHome = join(home, 'daemon-profile')
   const port = 44_000 + Math.floor(Math.random() * 10_000)
   const env = {
     ...process.env,
-    BITCASTER_DAEMON_HOME: daemonHome,
-    BITCASTER_CLI_HOME: home,
     BITCASTER_DAEMON_PORT: String(port),
     BITCASTER_CLI_AUTOSTART_DAEMON: '1',
   }
@@ -918,6 +940,8 @@ test('bitcaster-cli auto-starts default local daemon when RPC is unavailable', a
       [
         '--experimental-strip-types',
         join(import.meta.dirname, '..', 'src', 'main.ts'),
+        '--datadir',
+        home,
         'daemon',
         'init',
       ],
@@ -926,16 +950,21 @@ test('bitcaster-cli auto-starts default local daemon when RPC is unavailable', a
 
     const result = await execFileAsync(
       process.execPath,
-      ['--experimental-strip-types', join(import.meta.dirname, '..', 'src', 'main.ts'), 'health'],
+      [
+        '--experimental-strip-types',
+        join(import.meta.dirname, '..', 'src', 'main.ts'),
+        '--datadir',
+        home,
+        'health',
+      ],
       { env },
     )
 
     assert.equal(JSON.parse(result.stdout).ok, true)
-    const profileArtifacts = await readdir(daemonHome)
+    const profileArtifacts = await readdir(home)
     assert.equal(profileArtifacts.includes('config.json'), false)
-    assert.equal(profileArtifacts.includes('daemon.log'), false)
-    assert.equal(profileArtifacts.includes('daemon-autostart.pid'), false)
-    assert.ok(await fileExists(join(home, 'daemon.log')))
+    assert.equal(profileArtifacts.includes('daemon.log'), true)
+    assert.equal(profileArtifacts.includes('daemon-autostart.pid'), true)
     daemonPid = JSON.parse((await readFile(join(home, 'daemon-autostart.pid'), 'utf8')).trim())
       .pid as number
     assert.equal(Number.isSafeInteger(daemonPid), true)
@@ -955,16 +984,12 @@ test('bitcaster-cli daemon stop refuses a stale pid file when process start time
         pid: process.pid,
         startedAt: 'definitely-not-this-process-start-time',
         daemonMain: process.argv[1] ?? 'bitcaster-cli-test',
+        dataDir: home,
       }) + '\n',
     )
 
     await assert.rejects(
-      () =>
-        runCliWithEnv(['daemon', 'stop'], {
-          ...process.env,
-          BITCASTER_DAEMON_HOME: join(home, 'daemon-profile'),
-          BITCASTER_CLI_HOME: home,
-        }),
+      () => runCliWithEnv(['--datadir', home, 'daemon', 'stop'], process.env),
       (err: unknown) => {
         assert.equal((err as { code?: unknown }).code, 1)
         assert.match(
@@ -976,6 +1001,46 @@ test('bitcaster-cli daemon stop refuses a stale pid file when process start time
     )
     assert.ok(await fileExists(pidPath), 'stale pid file should not be removed')
   } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli daemon stop does not signal a daemon for another data directory', async () => {
+  if (process.platform === 'win32') return
+
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-pid-datadir-'))
+  const selected = join(home, 'selected')
+  const other = `${selected}-other`
+  const daemonMain = join(home, 'node_modules', '@bitcaster-market', 'daemon', 'dist', 'main.js')
+  let childPid: number | undefined
+  try {
+    await mkdir(join(home, 'node_modules', '@bitcaster-market', 'daemon', 'dist'), {
+      recursive: true,
+    })
+    await mkdir(selected, { recursive: true })
+    await writeFile(daemonMain, 'setInterval(() => {}, 1000)\n')
+    const child = spawn(process.execPath, [daemonMain, `--datadir=${other}`, 'run'], {
+      stdio: 'ignore',
+    })
+    assert.ok(child.pid)
+    childPid = child.pid
+    await waitForProcessStartTime(childPid)
+    await writeFile(
+      join(selected, 'daemon-autostart.pid'),
+      JSON.stringify({
+        pid: childPid,
+        startedAt: await processStartTime(childPid),
+        daemonMain,
+        dataDir: other,
+      }) + '\n',
+    )
+
+    const result = await runCliWithEnv(['--datadir', selected, 'daemon', 'stop'], process.env)
+
+    assert.equal(result.stdout, 'daemon is not running\n')
+    assert.equal(isProcessAliveForTest(childPid), true)
+  } finally {
+    if (childPid !== undefined) await terminateProcess(childPid)
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -992,7 +1057,7 @@ test('bitcaster-cli daemon stop fails and keeps pid file when daemon ignores SIG
       recursive: true,
     })
     await writeFile(daemonMain, "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);\n")
-    const child = spawn(process.execPath, [daemonMain, 'run'], {
+    const child = spawn(process.execPath, [daemonMain, `--datadir=${home}`, 'run'], {
       stdio: 'ignore',
     })
     assert.ok(child.pid)
@@ -1004,16 +1069,12 @@ test('bitcaster-cli daemon stop fails and keeps pid file when daemon ignores SIG
         pid: childPid,
         startedAt: await processStartTime(childPid),
         daemonMain,
+        dataDir: home,
       }) + '\n',
     )
 
     await assert.rejects(
-      () =>
-        runCliWithEnv(['daemon', 'stop'], {
-          ...process.env,
-          BITCASTER_DAEMON_HOME: join(home, 'daemon-profile'),
-          BITCASTER_CLI_HOME: home,
-        }),
+      () => runCliWithEnv(['--datadir', home, 'daemon', 'stop'], process.env),
       (err: unknown) => {
         assert.equal((err as { code?: unknown }).code, 1)
         assert.match(
@@ -1117,14 +1178,51 @@ test('P47-1: bitcaster-cli config is a top-level command', async () => {
 test('P47-1: bitcaster-cli config path shows config file location', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-config-path-'))
   try {
-    const result = await runCliWithEnv(['config', 'path'], {
+    const result = await runCliWithEnv(['--datadir', home, 'config', 'path'], {
       ...process.env,
-      BITCASTER_DAEMON_HOME: home,
     })
     assert.match(result.stdout, /config\.json/)
   } finally {
     await rm(home, { recursive: true, force: true })
   }
+})
+
+test('bitcaster-cli --datadir selects the shared config directory', async () => {
+  const selected = await mkdtemp(join(tmpdir(), 'bitcaster-cli-datadir-'))
+  const ignored = await mkdtemp(join(tmpdir(), 'bitcaster-cli-home-'))
+  try {
+    const result = await runCliWithEnv(['--datadir', selected, 'config', 'path'], {
+      ...process.env,
+      BITCASTER_DAEMON_HOME: ignored,
+      BITCASTER_CLI_HOME: ignored,
+    })
+    assert.equal(result.stdout, `${join(selected, 'config.json')}\n`)
+  } finally {
+    await rm(selected, { recursive: true, force: true })
+    await rm(ignored, { recursive: true, force: true })
+  }
+})
+
+test('CLI and daemon reject missing or blank data-directory values', async () => {
+  const cliMain = join(import.meta.dirname, '..', 'src', 'main.ts')
+  const daemonMain = join(import.meta.dirname, '..', '..', 'bitcaster-daemon', 'src', 'main.ts')
+
+  await assert.rejects(
+    () =>
+      execFileAsync(process.execPath, [
+        '--experimental-strip-types',
+        cliMain,
+        '--datadir',
+        '',
+        'config',
+        'path',
+      ]),
+    /data directory must not be empty/,
+  )
+  await assert.rejects(
+    () => execFileAsync(process.execPath, ['--experimental-strip-types', daemonMain, '--datadir']),
+    /Missing value for --datadir/,
+  )
 })
 
 test('bitcaster-cli config list drops unknown config keys and preserves private file mode', async () => {
@@ -2569,14 +2667,22 @@ async function runCliWithEnv(
   args: string[],
   env: NodeJS.ProcessEnv,
 ): Promise<{ stdout: string; stderr: string }> {
+  const effectiveArgs = [...args]
+  const selectedDataDir = env.BITCASTER_DAEMON_HOME ?? env.BITCASTER_CLI_HOME
+  if (selectedDataDir !== undefined && !effectiveArgs.includes('--datadir')) {
+    effectiveArgs.unshift('--datadir', selectedDataDir)
+  }
   const effectiveEnv = {
     ...env,
-    BITCASTER_CLI_HOME: env.BITCASTER_CLI_HOME ?? env.BITCASTER_DAEMON_HOME,
     NODE_NO_WARNINGS: '1',
   }
   return execFileAsync(
     process.execPath,
-    ['--experimental-strip-types', join(import.meta.dirname, '..', 'src', 'main.ts'), ...args],
+    [
+      '--experimental-strip-types',
+      join(import.meta.dirname, '..', 'src', 'main.ts'),
+      ...effectiveArgs,
+    ],
     { env: effectiveEnv },
   )
 }
@@ -2650,6 +2756,15 @@ async function waitForProcessStartTime(pid: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
   throw new Error(`process ${pid} did not expose start time`)
+}
+
+function isProcessAliveForTest(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function terminateProcess(pid: number): Promise<void> {

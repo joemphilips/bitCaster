@@ -1,4 +1,3 @@
-import { homedir } from 'node:os'
 import { lstat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -7,6 +6,7 @@ import { DAEMON_PROFILE_DATABASE, validateDaemonProfileSchema } from './profileS
 import { getFinalProfileSchemaManifest } from './profileSchemaManifest.ts'
 import { withDaemonStateSqliteTransaction } from './stateSqlite.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
+import { dataDir } from './dataDir.ts'
 
 export interface DaemonProfile {
   engineBaseUrl: string
@@ -16,7 +16,7 @@ export interface DaemonProfile {
 }
 
 export function profileDir(): string {
-  return process.env.BITCASTER_DAEMON_HOME || join(homedir(), '.bitcaster')
+  return dataDir()
 }
 
 export function profileDatabasePath(): string {

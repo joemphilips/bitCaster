@@ -12,11 +12,13 @@ import { assertDaemonProfileStorageComplete, profileDir } from './profile.ts'
 import { createDaemonSecrets, createDaemonSecretsFromImport } from './secrets.ts'
 import { bootstrapFreshDaemonProfile } from './profileBootstrap.ts'
 import type { CtfRangeRecoveryLoop } from './ctfRangeRecoveryLoop.ts'
+import { configureDataDir } from './dataDir.ts'
 
 const MAX_SECRET_HEX_FILE_BYTES = 256
 const SECRET_FILE_READ_CHUNK_BYTES = 128
 
-const [, , command = 'run', ...args] = process.argv
+const { command, args, dataDir } = parseInvocation(process.argv.slice(2))
+configureDataDir(dataDir)
 
 switch (command) {
   case 'init': {
@@ -336,12 +338,33 @@ switch (command) {
   default:
     process.stderr.write(`Unknown command: ${command}\n`)
     process.stderr.write(`Usage:
-  bitcaster-daemon init [--wallet-seed-hex-file <path>]
+  bitcaster-daemon [--datadir <path>] init [--wallet-seed-hex-file <path>]
                          [--nostr-secret-key-hex-file <path>]
                          [--engine-url <url>] [--mint-url <url>]
-  bitcaster-daemon run
+  bitcaster-daemon [--datadir <path>] run
 `)
     process.exitCode = 1
+}
+
+function parseInvocation(argv: string[]): {
+  command: string
+  args: string[]
+  dataDir?: string
+} {
+  const args = [...argv]
+  let dataDir: string | undefined
+  if (args[0]?.startsWith('--datadir=')) {
+    dataDir = requiredArg(args[0].slice('--datadir='.length), '--datadir')
+    args.splice(0, 1)
+  } else if (args[0] === '--datadir') {
+    dataDir = requiredArg(args[1], '--datadir')
+    args.splice(0, 2)
+  }
+  return {
+    command: args.shift() ?? 'run',
+    args,
+    ...(dataDir === undefined ? {} : { dataDir }),
+  }
 }
 
 function parseInitOptions(args: string[]): {

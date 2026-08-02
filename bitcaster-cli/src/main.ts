@@ -16,6 +16,7 @@ import {
   validateMarketCreateEngineUrl,
 } from '@bitcaster-market/client-sdk'
 import { Command, CommanderError, Option } from 'commander'
+import { configureDataDir, dataDir } from '@bitcaster-market/daemon/dataDir'
 import {
   callDaemon,
   daemonLogPath,
@@ -75,6 +76,7 @@ async function main(): Promise<void> {
     .name('bitcaster-cli')
     .description('Command-line client for bitCaster markets.')
     .version(packageJson.version ?? '0.0.0', '-V, --version')
+    .option('--datadir <path>', 'Use one directory for config, wallet state, and daemon files')
     .option('--engine-url <url>', 'Override the matching engine URL for CLI-side reads')
     .option('--mint-url <url>', 'Override the mint URL for CLI-side operations')
     .option('--dry-run', 'Validate and print the intended operation without executing it')
@@ -99,9 +101,11 @@ Long-running wallet and swap operations are delegated to bitcaster-daemon.`,
     const opts = program.opts<{
       engineUrl?: string
       mintUrl?: string
+      datadir?: string
       dryRun?: boolean
       json?: boolean
     }>()
+    configureDataDir(opts.datadir)
     globalEngineUrl = resolveEngineUrl(opts.engineUrl)
     globalMintUrl = resolveMintUrl(opts.mintUrl)
     globalDryRun = opts.dryRun === true
@@ -1616,7 +1620,7 @@ async function runDaemonCommand(args: string[]): Promise<void> {
   const daemonMain = fileURLToPath(import.meta.resolve('@bitcaster-market/daemon'))
   const result = await execFileAsync(
     process.execPath,
-    ['--experimental-strip-types', daemonMain, ...args],
+    ['--experimental-strip-types', daemonMain, `--datadir=${dataDir()}`, ...args],
     { env: process.env },
   )
   process.stdout.write(result.stdout)

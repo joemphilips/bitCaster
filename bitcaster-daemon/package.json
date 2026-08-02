@@ -21,6 +21,10 @@
     "./rpcAuth": {
       "types": "./dist/rpcAuth.d.ts",
       "import": "./dist/rpcAuth.js"
+    },
+    "./dataDir": {
+      "types": "./dist/dataDir.d.ts",
+      "import": "./dist/dataDir.js"
     }
   },
   "files": [
@@ -35,7 +39,7 @@
     "build": "tsc -p tsconfig.build.json",
     "postbuild": "node ../scripts/rewrite-dts-imports.mjs dist",
     "prepack": "npm run build",
-    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test": "node --experimental-strip-types --import ./test/dataDirTestSetup.ts --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
