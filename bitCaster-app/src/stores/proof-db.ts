@@ -19,6 +19,7 @@ import type {
   BrowserCustodyReservationRow,
   BrowserCustodyScopeRow,
 } from "./durable-custody-types";
+import type { BrowserProofBackupAuthorityRow } from "./browser-proof-backup-authority";
 
 interface StoredProofMetadata {
   mintUrl: string;
@@ -154,6 +155,7 @@ export class BitcasterDB extends Dexie {
   custodyProofs!: Table<BrowserCustodyProofRow, [string, string]>;
   custodyReservations!: Table<BrowserCustodyReservationRow, [string, string]>;
   custodyActiveWork!: Table<BrowserCustodyActiveWorkRow, [string, string]>;
+  custodyProofBackupAuthorities!: Table<BrowserProofBackupAuthorityRow, [string, string]>;
 
   constructor(databaseName = "bitcaster") {
     super(databaseName);
@@ -220,6 +222,30 @@ export class BitcasterDB extends Dexie {
         "&[scopeId+proofId], [scopeId+operationId], &[scopeId+operationId+inputPosition]",
       custodyActiveWork: "&[scopeId+operationId], [scopeId+nextAttemptAtMs+operationId]",
     });
+    this.version(8)
+      .stores({
+        custodyProofBackupAuthorities:
+          "&[scopeId+proofId], [scopeId+backupState+proofId], [scopeId+proofState+proofId], &backupRecordId",
+      })
+      .upgrade(async (transaction) => {
+        await Promise.all(
+          [
+            "proofs",
+            "proofOperations",
+            "ctfRangePreparations",
+            "ctfRangePreparationSources",
+            "ctfRangePreparationConsolidations",
+            "ctfRangeMessages",
+            "custodyScopes",
+            "custodyOperations",
+            "custodyArtifacts",
+            "custodyProofs",
+            "custodyReservations",
+            "custodyActiveWork",
+            "custodyProofBackupAuthorities",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
   }
 }
 

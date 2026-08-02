@@ -1823,6 +1823,7 @@ export class BrowserCtfRangeOrderCoordinator {
         scopeId: scope.scopeId,
         operationId: record.operation.operationId,
         refundProofs: custodyProofs,
+        observedAtMs: authorization.observedAtMs,
       });
       await this.#replaceLegacyReservedProofs(
         operation.inputs.map(({ secret }) => secret),
@@ -2102,6 +2103,7 @@ export class BrowserCtfRangeOrderCoordinator {
       this.#database.custodyOperations,
       this.#database.custodyArtifacts,
       this.#database.custodyProofs,
+      this.#database.custodyProofBackupAuthorities,
       this.#database.custodyReservations,
       this.#database.custodyActiveWork,
     ] as const;

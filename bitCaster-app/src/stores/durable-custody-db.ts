@@ -33,6 +33,11 @@ import {
   decodeDurableCustodyProofMaterialRecord,
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { db, type BitcasterDB } from "./proof-db";
+import {
+  advanceBrowserProofBackupAuthorityRow,
+  createBrowserProofBackupAuthorityRow,
+  requireBrowserProofBackupAuthorityForProof,
+} from "./browser-proof-backup-authority";
 import type {
   BrowserCustodyActiveWorkRow,
   BrowserCustodyArtifactRow,
@@ -236,6 +241,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       this.#database.custodyProofs,
       this.#database.custodyReservations,
       this.#database.custodyActiveWork,
+      this.#database.custodyProofBackupAuthorities,
     ];
     const result = await this.#database.transaction("rw", tables, async () => {
       const scope = (await this.#requiredScope(selection.scope.scopeId)).state;
@@ -271,6 +277,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     scopeId: string;
     operationId: string;
     refundProofs: readonly BrowserCustodyProofRow[];
+    observedAtMs: number;
   }): Promise<void> {
     await this.#database.transaction(
       "rw",
@@ -278,6 +285,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         this.#database.custodyOperations,
         this.#database.custodyProofs,
         this.#database.custodyReservations,
+        this.#database.custodyProofBackupAuthorities,
       ],
       async () => {
         const operationRow = await this.#database.custodyOperations.get([
@@ -335,11 +343,11 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         ) {
           throw new Error("browser refund proof authority is invalid");
         }
-        await this.#database.custodyProofs.bulkPut(retired);
+        await this.#persistProofRowsWithBackupAuthority(retired, input.observedAtMs);
         await this.#database.custodyReservations.bulkDelete(
           expectedProofIds.map((proofId) => [input.scopeId, proofId]),
         );
-        await this.#database.custodyProofs.bulkAdd(refunds);
+        await this.#persistProofRowsWithBackupAuthority(refunds, input.observedAtMs);
       },
     );
   }
@@ -353,8 +361,23 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   }
 
   async readProof(scopeId: string, proofId: string): Promise<BrowserCustodyProofRow | null> {
-    const row = await this.#database.custodyProofs.get([scopeId, proofId]);
-    return row ? decodeBrowserCustodyProofRow(row) : null;
+    return this.#database.transaction(
+      "r",
+      [this.#database.custodyProofs, this.#database.custodyProofBackupAuthorities],
+      async () => {
+        const [row, authority] = await Promise.all([
+          this.#database.custodyProofs.get([scopeId, proofId]),
+          this.#database.custodyProofBackupAuthorities.get([scopeId, proofId]),
+        ]);
+        if (!row) {
+          if (authority) throw new Error("browser proof backup authority has no proof body");
+          return null;
+        }
+        const proof = decodeBrowserCustodyProofRow(row);
+        requireBrowserProofBackupAuthorityForProof(authority, proof);
+        return proof;
+      },
+    );
   }
 
   async readOperationSnapshot(
@@ -531,16 +554,20 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       ...successorCandidates.map(({ proofId }) => proofId),
     ]);
     const keys = [...proofIds].map((proofId) => [scopeId, proofId] as [string, string]);
-    const [proofRows, reservationRows] = await Promise.all([
+    const [proofRows, reservationRows, backupAuthorities] = await Promise.all([
       this.#database.custodyProofs.bulkGet(keys),
       this.#database.custodyReservations.bulkGet(keys),
+      this.#database.custodyProofBackupAuthorities.bulkGet(keys),
     ]);
     const proofs = new Map<string, BrowserCustodyProofRow>();
     const reservations = new Map<string, BrowserCustodyReservationRow>();
-    proofRows.forEach((row) => {
+    proofRows.forEach((row, index) => {
       if (row) {
         const decoded = decodeBrowserCustodyProofRow(row);
+        requireBrowserProofBackupAuthorityForProof(backupAuthorities[index], decoded);
         proofs.set(decoded.proofId, decoded);
+      } else if (backupAuthorities[index]) {
+        throw new Error("browser proof backup authority has no proof body");
       }
     });
     reservationRows.forEach((row) => {
@@ -567,7 +594,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   ): Promise<void> {
     await this.#persistChangedOperations(transaction);
     await this.#persistChangedArtifacts(transaction);
-    await this.#persistChangedProofs(transaction);
+    await this.#persistChangedProofs(transaction, selection.owner.observedAtMs);
     await this.#persistReservations(selection.scope.scopeId, transaction);
     await this.#rebuildActiveWork(selection, transaction);
     await this.#persistEffectiveClock(selection, transaction.scopeState);
@@ -589,11 +616,44 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     }
   }
 
-  async #persistChangedProofs(transaction: StagedBrowserCustodyTransaction): Promise<void> {
+  async #persistChangedProofs(
+    transaction: StagedBrowserCustodyTransaction,
+    observedAtMs: number,
+  ): Promise<void> {
+    const changed: BrowserCustodyProofRow[] = [];
     for (const proofId of transaction.changedProofIds) {
       const proof = transaction.proofs.get(proofId);
       if (!proof) throw new Error("browser custody changed proof is absent");
-      await this.#database.custodyProofs.put(decodeBrowserCustodyProofRow(proof));
+      changed.push(decodeBrowserCustodyProofRow(proof));
+    }
+    await this.#persistProofRowsWithBackupAuthority(changed, observedAtMs);
+  }
+
+  async #persistProofRowsWithBackupAuthority(
+    proofs: readonly BrowserCustodyProofRow[],
+    observedAtMs: number,
+  ): Promise<void> {
+    for (const proof of proofs) {
+      const key: [string, string] = [proof.scopeId, proof.proofId];
+      const [currentProofRow, currentAuthority] = await Promise.all([
+        this.#database.custodyProofs.get(key),
+        this.#database.custodyProofBackupAuthorities.get(key),
+      ]);
+      if ((currentProofRow === undefined) !== (currentAuthority === undefined)) {
+        throw new Error("browser proof and backup authority are incomplete");
+      }
+      const authority = currentAuthority
+        ? advanceBrowserProofBackupAuthorityRow(
+            requireBrowserProofBackupAuthorityForProof(
+              currentAuthority,
+              decodeBrowserCustodyProofRow(currentProofRow),
+            ),
+            proof,
+            observedAtMs,
+          )
+        : createBrowserProofBackupAuthorityRow(proof, observedAtMs);
+      await this.#database.custodyProofs.put(proof);
+      await this.#database.custodyProofBackupAuthorities.put(authority);
     }
   }
 

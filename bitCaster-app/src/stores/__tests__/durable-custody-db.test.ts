@@ -77,6 +77,14 @@ describe("browser durable custody adapter", () => {
     expect(locked?.selectability).toBe("locked");
     expect(locked?.reservationOperationId).toBe(source.record.operation.operationId);
     expect(await database.custodyReservations.count()).toBe(1);
+    expect(
+      await database.custodyProofBackupAuthorities.get([scope.scopeId, predecessor.proofId]),
+    ).toMatchObject({
+      proofFingerprint: predecessor.proofFingerprint,
+      proofRevision: 1,
+      proofState: "locked",
+      backupState: "local-only",
+    });
   });
 
   it("rolls back every row when the local transaction fails before commit", async () => {
@@ -109,6 +117,7 @@ describe("browser durable custody adapter", () => {
     expect(await adapter.readOperation(scope, source.record.operation.operationId)).toBeNull();
     expect(await adapter.readProof(scope.scopeId, predecessor.proofId)).toBeNull();
     expect(await database.custodyReservations.count()).toBe(0);
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
   });
 
   it("keeps an exact committed intent after an acknowledgement fault", async () => {
@@ -145,6 +154,7 @@ describe("browser durable custody adapter", () => {
     expect((await restarted.readProof(scope.scopeId, predecessor.proofId))?.selectability).toBe(
       "locked",
     );
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(1);
   });
 
   it("rejects foreign and oversized proof option collections before mutation", async () => {
@@ -321,11 +331,10 @@ describe("browser durable custody adapter", () => {
           },
         },
       ),
-    ).rejects.toThrow(/successor proof CAS is stale/);
-    expect(await adapter.readProof(scope.scopeId, successor.proofId)).toMatchObject({
-      selectability: "locked",
-      reservationOperationId: "foreign-operation",
-    });
+    ).rejects.toThrow(/proof backup authority is (invalid|stale)/);
+    await expect(adapter.readProof(scope.scopeId, successor.proofId)).rejects.toThrow(
+      /proof backup authority is invalid/,
+    );
   });
 
   it("fails closed when a referenced artifact is missing after restart", async () => {
