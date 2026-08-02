@@ -8,6 +8,7 @@ import {
   isBlsKeyset,
   type OutputDataLike,
   type OutputData,
+  type MintPreview,
   type Proof,
   type ProofState,
   type SwapPreview,
@@ -341,6 +342,66 @@ export function serializeDurableWalletReceiveOperation(input: {
   )
 }
 
+export function serializeDurableWalletMintOperation(input: {
+  readonly operationId: string
+  readonly mintUrl: string
+  readonly unit: string
+  readonly preview: MintPreview<Pick<{ quote: string; expiry?: number | null }, 'quote' | 'expiry'>>
+}): DurableWalletMintOperation {
+  const expiry = input.preview.quote.expiry
+  const operation = decodeDurableWalletOperation({
+    schemaVersion: DURABLE_WALLET_OPERATION_SCHEMA_VERSION,
+    operationId: input.operationId,
+    kind: 'wallet-mint',
+    mintUrl: input.mintUrl,
+    unit: input.unit,
+    preview: {
+      method: input.preview.method,
+      quoteExpiryUnixSeconds: expiry === undefined ? null : expiry,
+      payload: {
+        quote: input.preview.payload.quote,
+        outputs: input.preview.outputData.map((output) => ({
+          amount: Amount.from(output.blindedMessage.amount).toString(),
+          id: output.blindedMessage.id,
+          B_: output.blindedMessage.B_,
+        })),
+        signature: input.preview.payload.signature ?? null,
+      },
+      outputData: input.preview.outputData.map(serializeOutput),
+      keysetId: input.preview.keysetId,
+    },
+  })
+  if (operation.kind !== 'wallet-mint') throw new Error('durable wallet operation is not a mint')
+  return operation
+}
+
+/** Rebuild the exact cashu-ts mint preview from persisted SDK authority. */
+export function hydrateDurableWalletMintPreview(
+  input: DurableWalletMintOperation,
+): MintPreview<{ quote: string; expiry?: number | null }> {
+  const operation = decodeDurableWalletOperation(input)
+  if (operation.kind !== 'wallet-mint') throw new Error('durable wallet operation is not a mint')
+  const outputData = operation.preview.outputData.map(hydrateOutput)
+  return {
+    method: operation.preview.method,
+    payload: {
+      quote: operation.preview.payload.quote,
+      outputs: outputData.map((output) => output.blindedMessage),
+      ...(operation.preview.payload.signature === null
+        ? {}
+        : { signature: operation.preview.payload.signature }),
+    },
+    outputData,
+    keysetId: operation.preview.keysetId,
+    quote: {
+      quote: operation.preview.payload.quote,
+      ...(operation.preview.quoteExpiryUnixSeconds === null
+        ? {}
+        : { expiry: operation.preview.quoteExpiryUnixSeconds }),
+    },
+  }
+}
+
 function serializeReceivePreview(preview: SwapPreview): DurableWalletSwapPreview {
   requireReceivePreviewCounts(preview.inputs, preview.sendOutputs, preview.keepOutputs)
   if ((preview.unselectedProofs?.length ?? 0) !== 0) {
@@ -643,6 +704,17 @@ function decodeMintPreview(value: Record<string, unknown>): void {
   )
   assertOutputKeyset(value.outputData as Record<string, unknown>[], value.keysetId)
   assertDistinctOutputs(value.outputData as Record<string, unknown>[])
+  const payloadOutputs = value.payload.outputs as Record<string, unknown>[]
+  const outputData = value.outputData as Array<{ blindedMessage: Record<string, unknown> }>
+  if (
+    payloadOutputs.length !== outputData.length ||
+    payloadOutputs.some(
+      (output, index) =>
+        JSON.stringify(output) !== JSON.stringify(outputData[index]?.blindedMessage),
+    )
+  ) {
+    throw new Error('durable wallet mint payload conflicts with output authority')
+  }
 }
 
 function decodeMeltPreview(value: Record<string, unknown>): void {

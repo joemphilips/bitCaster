@@ -9,6 +9,7 @@ import {
   isBlsKeyset,
   type Proof,
   type ProofState,
+  type MintPreview,
   type SwapPreview,
 } from '@cashu/cashu-ts'
 import {
@@ -16,11 +17,61 @@ import {
   deriveDurableWalletOperationAuthority,
   requireDurableWalletOperationFromCustody,
   runDurableWalletReceiveOperation,
+  hydrateDurableWalletMintPreview,
+  serializeDurableWalletMintOperation,
   serializeDurableWalletReceiveOperation,
   toDurableCustodyProofOperationInput,
   type DurableWalletReceiveOperationSnapshot,
   type DurableWalletReceiveOperationStore,
 } from '../src/durableWalletOperation.ts'
+
+test('wallet mint preview roundtrips exact request and private output authority', () => {
+  const output = OutputData.createSingleData('2', 'keyset-1', 'mint-output', 3n)
+  const preview: MintPreview<{ quote: string; expiry: number }> = {
+    method: 'bolt11',
+    payload: {
+      quote: 'quote-1',
+      outputs: [output.blindedMessage],
+      signature: 'quote-signature',
+    },
+    outputData: [output],
+    keysetId: 'keyset-1',
+    quote: { quote: 'quote-1', expiry: 123 },
+  }
+  const operation = serializeDurableWalletMintOperation({
+    operationId: 'wallet-mint-1',
+    mintUrl: 'https://mint.example',
+    unit: 'sat',
+    preview,
+  })
+
+  const hydrated = hydrateDurableWalletMintPreview(operation)
+
+  assert.deepEqual(
+    serializeDurableWalletMintOperation({
+      operationId: operation.operationId,
+      mintUrl: operation.mintUrl,
+      unit: operation.unit,
+      preview: hydrated,
+    }),
+    operation,
+  )
+  assert.equal(hydrated.outputData[0] instanceof OutputData, true)
+  assert.throws(
+    () =>
+      decodeDurableWalletOperation({
+        ...operation,
+        preview: {
+          ...operation.preview,
+          payload: {
+            ...operation.preview.payload,
+            outputs: [{ ...operation.preview.payload.outputs[0], B_: 'foreign' }],
+          },
+        },
+      }),
+    /conflicts/,
+  )
+})
 
 function walletSend() {
   return {
