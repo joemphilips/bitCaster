@@ -57,6 +57,12 @@ Nostr 経由の公開は監査可能性のために有用ですが、bitCaster �
 - これらのecashトークンは、ミントに応じてステーブルコイン建てまたはBTC建てのいずれかになります。
 - BTC建てトークンは、Lightningで出金することでさらに実際のビットコインに償還できます。
 
+### ネイティブ daemon の在庫リタイア
+
+ネイティブ daemon は、ユーザーがリタイアを承認するまで、結果確定済み condition の proof を保持します。アクションと mint 手数料を確認するには、`bitcaster-cli wallet retire-condition <condition-id>` を実行します。勝利 proof を償還するには、`--acknowledge` を追加します。daemon は、敗北 proof または経済的に償還できない proof を監査記録として表示可能な状態で保持します。
+
+`~/.bitcaster/config.json` で `daemon.autoRetireResolvedConditionInventory` を `true` に設定できます。この設定は、daemon が検証済み oracle attestation を受信したときに、同じ永続的なリタイアフローを承認します。既定値は `false` です。設定の変更後には再起動が必要です。
+
 ## さらに読む
 
 - [DLCオラクルNostrアナウンスメント（Kind 88）](/ja/technical/dlc-oracle/nostr-kind-88/) — オラクルがイベントをアナウンスしアテステーションを公開する方法

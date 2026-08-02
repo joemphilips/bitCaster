@@ -47,7 +47,7 @@ switch (command) {
     break
   }
   case 'run': {
-    freezeNativeConfigAtStartup()
+    const nativeConfig = freezeNativeConfigAtStartup().config
     await assertDaemonProfileStorageComplete()
     const { acquireDaemonRunLock } = await import('./runLock.ts')
     const { startDaemonServer } = await import('./server.ts')
@@ -64,6 +64,10 @@ switch (command) {
     const { DaemonCtfRangeOrderCoordinator } = await import('./ctfRangeOrderCoordinator.ts')
     const { createCtfRangeRecoveryLoop } = await import('./ctfRangeRecoveryLoop.ts')
     const { recoverDaemonWalletFromSeed } = await import('./emergencySeedRecovery.ts')
+    const { resumeDaemonConditionRetirements, retireResolvedDaemonConditions } =
+      await import('./managedConditionRetirement.ts')
+    const { BitcasterEngineClient } = await import('@bitcaster-market/client-sdk/engineClient')
+    const { signNip98 } = await import('./nostrAuth.ts')
     const { ensureState, recordSwapMessage, recordTradeCreated, recordTradeStateChanged } =
       await import('./state.ts')
     const runLock = await acquireDaemonRunLock()
@@ -97,6 +101,7 @@ switch (command) {
     }
     let renewal: LeaseRenewal | undefined
     let rangeRecoveryLoop: CtfRangeRecoveryLoop | undefined
+    let retirementRetryTimer: NodeJS.Timeout | undefined
     let leaseFailure: Error | undefined
     let shutdown: ((reason: string, exitCode?: number) => Promise<void>) | undefined
     const currentFence = () => {
@@ -109,6 +114,7 @@ switch (command) {
       resourcesReleased = true
       renewal?.stop()
       rangeRecoveryLoop?.stop()
+      if (retirementRetryTimer !== undefined) clearTimeout(retirementRetryTimer)
       try {
         await releaseCustodyScopeLease(profileDir(), fence, Date.now())
       } finally {
@@ -128,6 +134,29 @@ switch (command) {
     })
     let executor: InstanceType<typeof DaemonSwapExecutor> | undefined
     let runtime: InstanceType<typeof DaemonTradeRuntime> | undefined
+    const retirementEngine = new BitcasterEngineClient({
+      baseUrl: profile.engineBaseUrl,
+      authorization: ({ url, method, bodyText, payloadHash }) =>
+        signNip98({ privateKeyHex: secrets.nostrSecretKeyHex }, url, method, bodyText, payloadHash),
+    })
+    const runAutomaticRetirementScan = async () => {
+      const resumed = await resumeDaemonConditionRetirements({
+        profile,
+        secrets,
+        fence: currentFence(),
+      })
+      if (!nativeConfig.daemon.autoRetireResolvedConditionInventory) return resumed
+      const discovered = await retireResolvedDaemonConditions({
+        profile,
+        secrets,
+        fence: currentFence(),
+        engine: retirementEngine,
+      })
+      return mergeRetirementResults(resumed, discovered)
+    }
+    let wakeManagedConditionRetirements = async () => {
+      await runAutomaticRetirementScan()
+    }
     const tradeHub =
       profile && secrets
         ? new SignalRTradeHubConnection({
@@ -195,6 +224,18 @@ switch (command) {
         ? new SignalRMarketHubConnection({
             engineBaseUrl: profile.engineBaseUrl,
             nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+            onMarketStatusChanged: async (status) => {
+              if (
+                status.state !== 'closed' ||
+                !nativeConfig.daemon.autoRetireResolvedConditionInventory
+              ) {
+                return
+              }
+              await wakeManagedConditionRetirements()
+            },
+            onReconnected: async () => {
+              await wakeManagedConditionRetirements()
+            },
             onError: (err: Error) => {
               process.stderr.write(`MarketHub event error: ${err.message}\n`)
             },
@@ -227,8 +268,6 @@ switch (command) {
       const rangeOrderCoordinator = new DaemonCtfRangeOrderCoordinator(profileDir(), currentFence, {
         allowInsecureLoopbackHttp: isLoopbackHttpUrl(profile.mintUrl),
       })
-      const { BitcasterEngineClient } = await import('@bitcaster-market/client-sdk/engineClient')
-      const { signNip98 } = await import('./nostrAuth.ts')
       const rangeRecoveryClient = new BitcasterEngineClient({
         baseUrl: profile.engineBaseUrl,
         authorization: ({ url, method, bodyText, payloadHash }) =>
@@ -259,7 +298,13 @@ switch (command) {
       logRangeRecovery(initialRangeRecovery)
       rangeRecoveryLoop = createCtfRangeRecoveryLoop({
         recover: recoverRangeOrders,
-        onResult: logRangeRecovery,
+        onResult: (result) => {
+          logRangeRecovery(result)
+          void wakeManagedConditionRetirements().catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error)
+            process.stderr.write(`Condition retirement wake failed: ${message}\n`)
+          })
+        },
         onError: (error: Error) => {
           process.stderr.write(`Range recovery sweep failed: ${error.message}\n`)
         },
@@ -270,7 +315,18 @@ switch (command) {
         mutation: () => ({ fence: currentFence(), observedAtMs: Date.now() }),
       })
       const walletRecovery = await recoverPreparedWalletSends(secrets)
-      const pendingWalletOperations = [...consolidationRecovery.pending, ...walletRecovery.pending]
+      const retirementRecovery = await runAutomaticRetirementScan()
+      const pendingRetirements = retirementRecovery
+        .filter((entry) => entry.error !== null)
+        .map((entry) => ({
+          operationId: `condition-retirement:${entry.conditionId}`,
+          error: entry.error!,
+        }))
+      const pendingWalletOperations = [
+        ...consolidationRecovery.pending,
+        ...walletRecovery.pending,
+        ...pendingRetirements,
+      ]
       let custodyReady = pendingWalletOperations.length === 0
       if (!custodyReady) {
         process.stderr.write(
@@ -292,8 +348,12 @@ switch (command) {
       const startRuntimeWhenReady = async () => {
         if (!custodyReady || runtimeStarted || !runtime) return
         runtimeStarted = true
-        await runtime.start(await ensureState())
-        await executor?.resumeActiveSwaps(await ensureState())
+        const state = await ensureState()
+        if (nativeConfig.daemon.autoRetireResolvedConditionInventory && marketHub) {
+          await trackManagedConditionMarkets(marketHub, state)
+        }
+        await runtime.start(state)
+        await executor?.resumeActiveSwaps(state)
       }
       const markCustodyReady = () => {
         custodyReady = true
@@ -302,6 +362,35 @@ switch (command) {
           process.stderr.write(`bitcaster-daemon trade runtime start failed: ${message}\n`)
         })
       }
+      const scheduleRetirementRetry = () => {
+        if (retirementRetryTimer !== undefined) return
+        retirementRetryTimer = setTimeout(() => {
+          retirementRetryTimer = undefined
+          void wakeManagedConditionRetirements().catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error)
+            process.stderr.write(`Condition retirement retry failed: ${message}\n`)
+            scheduleRetirementRetry()
+          })
+        }, 30_000)
+        retirementRetryTimer.unref()
+      }
+      wakeManagedConditionRetirements = async () => {
+        const retirements = await runAutomaticRetirementScan()
+        const pending = retirements.filter((entry) => entry.error !== null)
+        if (pending.length > 0) {
+          for (const entry of pending) {
+            process.stderr.write(
+              `Condition retirement ${entry.conditionId} remains pending: ${entry.error}\n`,
+            )
+          }
+          scheduleRetirementRetry()
+          return
+        }
+        if (consolidationRecovery.pending.length === 0 && walletRecovery.pending.length === 0) {
+          markCustodyReady()
+        }
+      }
+      if (pendingRetirements.length > 0) scheduleRetirementRetry()
       currentFence()
       const server = await startDaemonServer({
         tradeRuntime: runtime,
@@ -318,6 +407,16 @@ switch (command) {
         getCustodyFence: currentFence,
         isCustodyReady: () => custodyReady,
         markCustodyReady,
+        onOutcomeProofsReceived: async (conditionId, outcomeSetId) => {
+          if (!nativeConfig.daemon.autoRetireResolvedConditionInventory || !marketHub) return
+          try {
+            await trackManagedConditionMarket(marketHub, conditionId, outcomeSetId)
+            await wakeManagedConditionRetirements()
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            process.stderr.write(`Condition retirement rescan failed: ${message}\n`)
+          }
+        },
       })
       try {
         currentFence()
@@ -366,6 +465,59 @@ function parseInvocation(argv: string[]): {
     command: args.shift() ?? 'run',
     args,
     ...(dataDir === undefined ? {} : { dataDir }),
+  }
+}
+
+function mergeRetirementResults(
+  ...groups: ReadonlyArray<ReadonlyArray<{ conditionId: string; error: string | null }>>
+): Array<{ conditionId: string; error: string | null }> {
+  const results = new Map<string, string | null>()
+  for (const group of groups) {
+    for (const entry of group) {
+      results.set(entry.conditionId, entry.error)
+    }
+  }
+  return [...results]
+    .map(([conditionId, error]) => ({ conditionId, error }))
+    .sort((left, right) => left.conditionId.localeCompare(right.conditionId))
+}
+
+async function trackManagedConditionMarkets(
+  hub: { trackMarket(marketId: string): Promise<void> },
+  state: {
+    readonly wallet: {
+      readonly proofs: ReadonlyArray<{
+        readonly asset:
+          | { readonly kind: 'sats' }
+          | {
+              readonly kind: 'Outcome'
+              readonly conditionId: string
+              readonly outcomeSetId: string
+            }
+      }>
+    }
+  },
+): Promise<void> {
+  const marketIds = new Set<string>()
+  for (const proof of state.wallet.proofs) {
+    if (proof.asset.kind !== 'Outcome') continue
+    for (const outcome of proof.asset.outcomeSetId.split('|')) {
+      if (outcome.length > 0) marketIds.add(`${proof.asset.conditionId}-${outcome}`)
+    }
+  }
+  for (const marketId of [...marketIds].sort()) await hub.trackMarket(marketId)
+}
+
+async function trackManagedConditionMarket(
+  hub: { trackMarket(marketId: string): Promise<void> },
+  conditionId: string,
+  outcomeSetId: string,
+): Promise<void> {
+  for (const outcome of outcomeSetId
+    .split('|')
+    .filter((value) => value.length > 0)
+    .sort()) {
+    await hub.trackMarket(`${conditionId}-${outcome}`)
   }
 }
 

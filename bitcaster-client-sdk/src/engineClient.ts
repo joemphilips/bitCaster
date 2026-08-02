@@ -14,6 +14,7 @@ export type EngineFetch = typeof fetch
 export const SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX = 384 * 1_024
 export const SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX = 64 * 1_024
 export const SUBMIT_ORDER_RESPONSE_BYTES_MAX = 1024 * 1024
+export const CONDITION_ATTESTATION_RESPONSE_BYTES_MAX = 64 * 1_024
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS = 10_000
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS_MAX = 60_000
 
@@ -124,6 +125,13 @@ export interface SettlementCapabilityResponse {
 
 export interface SettlementCapabilityAdmissionPolicyResponse {
   coordinatorPubkey: string
+}
+
+export interface ConditionAttestationResponse {
+  readonly conditionId: string
+  readonly attestedOutcome: string
+  readonly oracleWitness: unknown
+  readonly registeredAuthority: unknown
 }
 
 export interface SettlementCapabilityResultResponse {
@@ -704,6 +712,29 @@ export class BitcasterEngineClient {
       pageSize: 1,
     })
     return response.markets[0] ?? null
+  }
+
+  async getConditionAttestation(conditionId: string): Promise<ConditionAttestationResponse | null> {
+    const response = await this.request(
+      `/api/v1/conditions/${encodePathSegment(conditionId)}/attestation`,
+      {},
+      undefined,
+      true,
+    )
+    if (response.status === 404) return null
+    const value = exactEngineRecord(
+      await readAllocationBoundedJsonResponse(response, CONDITION_ATTESTATION_RESPONSE_BYTES_MAX),
+      ['conditionId', 'attestedOutcome', 'oracleWitness', 'registeredAuthority'],
+    )
+    if (typeof value.conditionId !== 'string' || typeof value.attestedOutcome !== 'string') {
+      throw new Error('condition attestation response is invalid')
+    }
+    return {
+      conditionId: value.conditionId,
+      attestedOutcome: value.attestedOutcome,
+      oracleWitness: value.oracleWitness,
+      registeredAuthority: value.registeredAuthority,
+    }
   }
 
   private async getOptional<T>(path: string): Promise<T | null> {

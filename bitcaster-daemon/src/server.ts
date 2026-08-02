@@ -21,6 +21,7 @@ import {
   type SettlementCapabilityResultResponse,
   type SubmitOrderRequest,
   type SubmitOrderResponse,
+  type ConditionAttestationResponse,
 } from '@bitcaster-market/client-sdk/engineClient'
 import {
   createMarketViaEngine,
@@ -98,6 +99,10 @@ import {
   consolidateWalletProofs,
   recoverWalletProofConsolidations,
 } from './walletProofConsolidation.ts'
+import {
+  resumeDaemonConditionRetirements,
+  retireDaemonConditionInventory,
+} from './managedConditionRetirement.ts'
 
 export interface DaemonServerOptions {
   host?: string
@@ -111,6 +116,7 @@ export interface DaemonServerOptions {
   getCustodyFence?: () => CustodyScopeFence
   isCustodyReady?: () => boolean
   markCustodyReady?: () => void
+  onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
   startTradeRuntime?: boolean
 }
 
@@ -133,6 +139,7 @@ export interface EngineClientLike {
     paymentId?: string,
   ): Promise<PayParticipationScoreEcashResponse>
   getMarket?(conditionId: string): Promise<unknown | null>
+  getConditionAttestation?(conditionId: string): Promise<ConditionAttestationResponse | null>
   createSettlementCapability?(
     request: CreateSettlementCapabilityRequest,
   ): Promise<SettlementCapabilityResponse>
@@ -281,6 +288,7 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   getCustodyFence?: () => CustodyScopeFence
   isCustodyReady?: () => boolean
   markCustodyReady?: () => void
+  onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
 }
 
 const ctfProofOperationStore: CtfProofOperationStore = {
@@ -316,6 +324,7 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
       getCustodyFence: options.getCustodyFence,
       isCustodyReady: options.isCustodyReady,
       markCustodyReady: options.markCustodyReady,
+      onOutcomeProofsReceived: options.onOutcomeProofsReceived,
     })
   })
   if (socketPath) {
@@ -518,16 +527,20 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      return {
-        ok: true,
-        result: await receiveWalletToken(
-          command.params.token,
-          profile,
-          secrets,
-          deps,
-          command.params,
-        ),
+      const received = await receiveWalletToken(
+        command.params.token,
+        profile,
+        secrets,
+        deps,
+        command.params,
+      )
+      if (received.asset.kind === 'Outcome') {
+        await deps.onOutcomeProofsReceived?.(
+          received.asset.conditionId,
+          received.asset.outcomeSetId,
+        )
       }
+      return { ok: true, result: received }
     }
     case 'wallet.send': {
       const profile = await readProfile()
@@ -595,7 +608,8 @@ export async function dispatch(
       })
     }
     case 'wallet.consolidateProofs': {
-      if (!(await readProfile())) {
+      const profile = await readProfile()
+      if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
       }
       const secrets = await readSecrets()
@@ -615,8 +629,38 @@ export async function dispatch(
         }),
       }
     }
+    case 'wallet.retireCondition': {
+      const profile = await readProfile()
+      if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
+      const secrets = await readSecrets()
+      if (!secrets) return { ok: false, error: 'daemon secrets are not initialized' }
+      if (!deps.getCustodyFence) {
+        return { ok: false, error: 'condition retirement requires custody authority' }
+      }
+      const client = createEngineClient(deps, {
+        baseUrl: profile.engineBaseUrl,
+        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      })
+      if (!client.getConditionAttestation) {
+        return { ok: false, error: 'engine client does not support condition attestation' }
+      }
+      return {
+        ok: true,
+        result: await retireDaemonConditionInventory({
+          conditionId: command.params.conditionId,
+          acknowledge: command.params.acknowledge,
+          intentKind: 'explicit-user-command',
+          profile,
+          secrets,
+          fence: deps.getCustodyFence(),
+          engine: { getConditionAttestation: (id) => client.getConditionAttestation!(id) },
+          walletDependencies: deps,
+        }),
+      }
+    }
     case 'wallet.recover': {
-      if (!(await readProfile())) {
+      const profile = await readProfile()
+      if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
       }
       const secrets = await readSecrets()
@@ -631,9 +675,28 @@ export async function dispatch(
         mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
         dependencies: deps,
       })
+      const retirements = await resumeDaemonConditionRetirements({
+        profile,
+        secrets,
+        fence: getCustodyFence(),
+        walletDependencies: deps,
+      })
       const result = {
-        recovered: [...wallet.recovered, ...consolidation.recovered],
-        pending: [...wallet.pending, ...consolidation.pending],
+        recovered: [
+          ...wallet.recovered,
+          ...consolidation.recovered,
+          ...retirements.filter((entry) => entry.error === null).map((entry) => entry.conditionId),
+        ],
+        pending: [
+          ...wallet.pending,
+          ...consolidation.pending,
+          ...retirements
+            .filter((entry) => entry.error !== null)
+            .map((entry) => ({
+              operationId: `condition-retirement:${entry.conditionId}`,
+              error: entry.error!,
+            })),
+        ],
       }
       if (result.pending.length === 0) deps.markCustodyReady?.()
       return {
@@ -1098,6 +1161,7 @@ function requiresReadyCustody(method: DaemonCommand['method']): boolean {
     method === 'wallet.splitCompleteSet' ||
     method === 'wallet.consolidateMarket' ||
     method === 'wallet.consolidateProofs' ||
+    method === 'wallet.retireCondition' ||
     method === 'wallet.seedRecovery' ||
     method === 'order.submit' ||
     method === 'trade.recover'

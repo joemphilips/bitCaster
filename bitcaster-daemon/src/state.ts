@@ -7,6 +7,10 @@ import {
   type CtfProofOperationCompletion,
 } from '@bitcaster-market/client-sdk/ctfSplit'
 import {
+  readAuthenticatedCtfRedeemTerminalEvidence,
+  type AuthenticatedCtfRedeemTerminalEvidence,
+} from '@bitcaster-market/client-sdk/ctfRedeem'
+import {
   decideSwapMessage,
   decideTradeCreated,
   decideTradeStateChanged,
@@ -18,6 +22,11 @@ import {
   normalizeMarketDivisibility,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import type {
+  ManagedConditionInventoryBinding,
+  ManagedConditionInventoryMutation,
+  PersistedManagedConditionOperationAuthority,
+} from '@bitcaster-market/client-sdk/managedConditionInventory'
 import type { PartialLockHeldRecord, SwapFailure } from '@bitcaster-market/client-sdk/swapFailure'
 import { profileDatabasePath, profileDir } from './profile.ts'
 import { readSecrets } from './secrets.ts'
@@ -25,6 +34,7 @@ import { openDaemonStateSqlite, withDaemonStateSqliteTransaction } from './state
 import { withDurableCustodyUnitOfWork } from './durableCustodyUnitOfWork.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
+import { assertManagedConditionMutationFromDatabase } from './managedConditionInventorySqlite.ts'
 
 export interface CashuProofRecord {
   id?: string
@@ -669,6 +679,7 @@ function prepareExactProofOperation(
     readonly asset: StoredProofAsset
   },
 ): ProofOperationRecord {
+  assertManagedConditionProofOperation(database, input)
   const existing = readDaemonProofOperationFromDatabase(database, input.operationId)
   if (existing !== null) {
     assertCompatibleProofOperation(existing, input)
@@ -765,6 +776,199 @@ export async function markProofOperationCompletedFenced(
     mutation.observedAtMs,
     (database) => completeProofOperation(database, operationId, completion, mutation.observedAtMs),
   )
+}
+
+export async function completeManagedConditionRedeemFenced(
+  operationId: string,
+  completion: CtfProofOperationCompletion,
+  mutation: FencedStateMutation,
+): Promise<ProofOperationRecord> {
+  return withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const before = requireManagedConditionRedeemOperation(database, operationId)
+      const completed = completeProofOperation(
+        database,
+        operationId,
+        completion,
+        mutation.observedAtMs,
+      )
+      const regular = completed.resultProofs?.regular ?? []
+      if (before.state === 'prepared') {
+        const reserved = readDaemonReservedWalletProofsFromDatabase(
+          database,
+          requireText(before.metadata.reservationId, 'retirement reservation id'),
+        )
+        assertExactReservedProofRows(reserved, {
+          operationId: before.operationId,
+          kind: before.kind,
+          mintUrl: before.mintUrl,
+          inputs: before.inputs,
+          outputs: before.outputs,
+          metadata: before.metadata,
+          reservationId: requireText(before.metadata.reservationId, 'retirement reservation id'),
+          asset: reserved[0]?.asset ?? retirementOutcomeAsset(before),
+        })
+        const removed = database
+          .prepare(
+            `DELETE FROM target_wallet_proofs
+             WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?`,
+          )
+          .run(
+            readScopeId(database),
+            requireText(before.metadata.reservationId, 'retirement reservation id'),
+          )
+        if (removed.changes !== before.inputs.length) {
+          throw new Error('managed condition redeem inputs changed before completion')
+        }
+      }
+      admitExactAvailableWalletProofsFromDatabase(database, {
+        mintUrl: completed.mintUrl,
+        proofs: regular,
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+        nowMs: mutation.observedAtMs,
+      })
+      return completed
+    },
+  )
+}
+
+export async function failManagedConditionRedeemFenced(
+  operationId: string,
+  message: string,
+  terminalEvidence: AuthenticatedCtfRedeemTerminalEvidence,
+  mutation: FencedStateMutation,
+): Promise<ProofOperationRecord> {
+  const evidence = readAuthenticatedCtfRedeemTerminalEvidence(terminalEvidence)
+  return withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const operation = requireManagedConditionRedeemOperation(database, operationId)
+      if (
+        evidence.operationId !== operation.operationId ||
+        evidence.normalizedMint !== operation.mintUrl ||
+        message.length < 1 ||
+        message.length > 1_024
+      ) {
+        throw new Error('managed condition terminal redeem evidence is foreign')
+      }
+      if (operation.state === 'Failed') {
+        if (operation.lastError !== message) {
+          throw new Error('managed condition redeem failed with a different result')
+        }
+        return operation
+      }
+      if (operation.state !== 'prepared') {
+        throw new Error('managed condition redeem is already completed')
+      }
+      const reservationId = requireText(
+        operation.metadata.reservationId,
+        'retirement reservation id',
+      )
+      const retained = database
+        .prepare(
+          `UPDATE target_wallet_proofs
+           SET state = 'locked', updated_at_ms = MAX(created_at_ms, ?)
+           WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?`,
+        )
+        .run(mutation.observedAtMs, readScopeId(database), reservationId)
+      if (retained.changes !== operation.inputs.length) {
+        throw new Error('managed condition losing proofs changed before retention')
+      }
+      const failed = database
+        .prepare(
+          `UPDATE target_proof_operations
+           SET state = 'failed', last_error = ?, updated_at_ms = MAX(created_at_ms, ?)
+           WHERE scope_id = ? AND operation_id = ? AND state = 'prepared'`,
+        )
+        .run(message, mutation.observedAtMs, readScopeId(database), operation.operationId)
+      if (failed.changes !== 1) throw new Error('managed condition redeem failure CAS lost')
+      return { ...operation, state: 'Failed', lastError: message, updatedAt: mutation.observedAtMs }
+    },
+  )
+}
+
+export async function retainUneconomicConditionProofsFenced(input: {
+  readonly proofs: readonly CashuProofRecord[]
+  readonly mintUrl: string
+  readonly asset: Extract<StoredProofAsset, { kind: 'Outcome' }>
+  readonly retentionId: string
+  readonly mutation: FencedStateMutation
+}): Promise<void> {
+  await withDurableCustodyUnitOfWork(
+    profileDir(),
+    input.mutation.fence,
+    input.mutation.observedAtMs,
+    (database) => {
+      assertManagedConditionMutationFromDatabase(
+        database,
+        managedConditionBinding(database, input.mintUrl, input.asset),
+        { kind: 'proof-retention-or-audit' },
+      )
+      const scopeId = readScopeId(database)
+      for (const proof of input.proofs) {
+        const raw = database
+          .prepare(
+            `SELECT * FROM target_wallet_proofs
+             WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+          )
+          .get(scopeId, input.mintUrl, proof.secret) as Record<string, unknown> | undefined
+        if (raw === undefined) throw new Error('uneconomic condition proof is absent')
+        const current = decodeWalletProofRow(raw)
+        if (
+          current.state !== 'available' ||
+          !isDeepStrictEqual(current.proof, normalizeCashuProofRecord(proof)) ||
+          !isDeepStrictEqual(current.asset, normalizeProofAsset(input.asset))
+        ) {
+          throw new Error('uneconomic condition proof authority changed')
+        }
+        const changed = database
+          .prepare(
+            `UPDATE target_wallet_proofs
+             SET state = 'locked', reserved_by = ?, updated_at_ms = MAX(created_at_ms, ?)
+             WHERE scope_id = ? AND proof_id = ? AND state = 'available'`,
+          )
+          .run(
+            input.retentionId,
+            input.mutation.observedAtMs,
+            scopeId,
+            requireText(raw.proof_id, 'proof id'),
+          )
+        if (changed.changes !== 1) throw new Error('uneconomic condition proof retention raced')
+      }
+    },
+  )
+}
+
+function requireManagedConditionRedeemOperation(
+  database: DatabaseSync,
+  operationId: string,
+): ProofOperationRecord {
+  const operation = readDaemonProofOperationFromDatabase(database, operationId)
+  if (
+    operation === null ||
+    operation.kind !== 'ctf-redeem' ||
+    operation.metadata.purpose !== 'managed-condition-retirement'
+  ) {
+    throw new Error('managed condition redeem operation authority is invalid')
+  }
+  return operation
+}
+
+function retirementOutcomeAsset(
+  operation: ProofOperationRecord,
+): Extract<StoredProofAsset, { kind: 'Outcome' }> {
+  return {
+    kind: 'Outcome',
+    conditionId: requireText(operation.metadata.conditionId, 'retirement condition id'),
+    outcomeSetId: requireText(operation.metadata.outcomeSetId, 'retirement outcome set'),
+    baseAsset: 'sat',
+    unit: 'msat',
+  }
 }
 
 export async function releasePreparedProofReservationFenced(
@@ -2006,6 +2210,7 @@ function attachProofOperationResultDigest(
 
 export function writeDaemonStateToDatabase(database: DatabaseSync, state: DaemonState): void {
   const scopeId = readScopeId(database)
+  assertManagedConditionStateRewrite(database, scopeId, state.wallet.proofs)
   const priorTargetArtifactIds = collectTargetArtifactIds(database, scopeId)
   database.prepare('DELETE FROM target_proof_operations WHERE scope_id = ?').run(scopeId)
   database.prepare('DELETE FROM target_wallet_proofs WHERE scope_id = ?').run(scopeId)
@@ -2041,6 +2246,95 @@ export function writeDaemonStateToDatabase(database: DatabaseSync, state: Daemon
   deleteUnreferencedMissingSwaps(database, scopeId, new Set(Object.keys(state.swaps)))
   deleteUnreferencedMissingOrders(database, scopeId, new Set(Object.keys(state.orders)))
   deleteGloballyUnreferencedArtifacts(database, scopeId, priorTargetArtifactIds)
+}
+
+function assertManagedConditionStateRewrite(
+  database: DatabaseSync,
+  scopeId: string,
+  nextProofs: readonly StoredProofRecord[],
+): void {
+  const rows = database
+    .prepare(
+      `SELECT normalized_mint, condition_id
+       FROM daemon_managed_condition_inventory
+       WHERE scope_id = ?`,
+    )
+    .all(scopeId) as Array<{ normalized_mint: unknown; condition_id: unknown }>
+  for (const row of rows) {
+    const mintUrl = requireText(row.normalized_mint, 'managed condition mint')
+    const conditionId = requireText(row.condition_id, 'managed condition id')
+    const current = (
+      database
+        .prepare(
+          `SELECT * FROM target_wallet_proofs
+           WHERE scope_id = ? AND normalized_mint = ?
+             AND asset_kind = 'outcome' AND condition_id = ?
+           ORDER BY proof_id`,
+        )
+        .all(scopeId, mintUrl, conditionId) as Record<string, unknown>[]
+    ).map(decodeWalletProofRow)
+    const next = nextProofs
+      .filter(
+        (proof) =>
+          proof.mintUrl === mintUrl &&
+          proof.asset.kind === 'Outcome' &&
+          proof.asset.conditionId === conditionId,
+      )
+      .map((proof) => structuredClone(proof))
+      .sort((left, right) => left.proof.secret.localeCompare(right.proof.secret))
+    const orderedCurrent = current.sort((left, right) =>
+      left.proof.secret.localeCompare(right.proof.secret),
+    )
+    if (isDeepStrictEqual(orderedCurrent, next)) continue
+    assertManagedConditionMutationFromDatabase(
+      database,
+      {
+        scopeId,
+        normalizedMint: mintUrl,
+        unit: 'msat',
+        conditionId,
+        canonicalParentCollectionId: null,
+      },
+      { kind: 'new-economic-intent' },
+    )
+  }
+}
+
+function assertManagedConditionProofOperation(
+  database: DatabaseSync,
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly asset: StoredProofAsset
+  },
+): void {
+  if (input.asset.kind !== 'Outcome') return
+  const authority = input.metadata?.managedConditionOperationAuthority
+  const mutation: ManagedConditionInventoryMutation =
+    input.metadata?.purpose === 'managed-condition-retirement'
+      ? {
+          kind: 'retirement-redemption',
+          authority: authority as PersistedManagedConditionOperationAuthority,
+        }
+      : { kind: 'new-economic-intent' }
+  assertManagedConditionMutationFromDatabase(
+    database,
+    managedConditionBinding(database, input.mintUrl, input.asset),
+    mutation,
+  )
+}
+
+function managedConditionBinding(
+  database: DatabaseSync,
+  mintUrl: string,
+  asset: Extract<StoredProofAsset, { kind: 'Outcome' }>,
+): ManagedConditionInventoryBinding {
+  return {
+    scopeId: readScopeId(database),
+    normalizedMint: mintUrl,
+    unit: 'msat',
+    conditionId: asset.conditionId,
+    canonicalParentCollectionId: null,
+  }
 }
 
 function insertWalletProof(

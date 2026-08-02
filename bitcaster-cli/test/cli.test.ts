@@ -162,6 +162,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
     await runCli(daemonUrl, ['wallet', 'recover'])
     await runCli(daemonUrl, ['wallet', 'consolidate-proofs'])
     await runCli(daemonUrl, ['wallet', 'consolidate', 'cond-YES', '--strategy', 'sweep'])
+    await runCli(daemonUrl, ['wallet', 'retire-condition', 'ab'.repeat(32)])
+    await runCli(daemonUrl, ['wallet', 'retire-condition', 'cd'.repeat(32), '--acknowledge'])
     await runCli(daemonUrl, [
       'order',
       'submit',
@@ -269,6 +271,14 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       {
         method: 'wallet.consolidateMarket',
         params: { marketId: 'cond-YES', type: 't2' },
+      },
+      {
+        method: 'wallet.retireCondition',
+        params: { conditionId: 'ab'.repeat(32), acknowledge: false },
+      },
+      {
+        method: 'wallet.retireCondition',
+        params: { conditionId: 'cd'.repeat(32), acknowledge: true },
       },
       {
         method: 'order.submit',

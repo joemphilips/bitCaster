@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { handleMatchedForMaker } from '../src/marketHubConnection.ts'
+import { handleMatchedForMaker, parseMarketStatusChanged } from '../src/marketHubConnection.ts'
 
 const matchedDelta = {
   marketId: 'cond-with-dash-YES',
@@ -116,4 +116,43 @@ test('handleMatchedForMaker rejects incomplete product facts before every effect
     assert.equal(keyCalls, 0, field)
     assert.equal(submitCalls, 0, field)
   }
+})
+
+test('MarketStatusChanged requires one exact closed-condition identity', () => {
+  const conditionId = 'ab'.repeat(32)
+  assert.deepEqual(
+    parseMarketStatusChanged({
+      conditionId: conditionId.toUpperCase(),
+      state: 'closed',
+      closedAt: '2026-08-02T00:00:00.000Z',
+      finalOutcome: 'YES',
+    }),
+    {
+      conditionId,
+      state: 'closed',
+      closedAt: '2026-08-02T00:00:00.000Z',
+      finalOutcome: 'YES',
+    },
+  )
+  assert.throws(
+    () =>
+      parseMarketStatusChanged({
+        conditionId,
+        state: 'closed',
+        closedAt: null,
+        finalOutcome: 'YES',
+      }),
+    /lifecycle fields/,
+  )
+  assert.throws(
+    () =>
+      parseMarketStatusChanged({
+        conditionId,
+        state: 'closed',
+        closedAt: '2026-08-02T00:00:00.000Z',
+        finalOutcome: 'YES',
+        ignored: true,
+      }),
+    /payload fields/,
+  )
 })

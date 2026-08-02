@@ -42,6 +42,25 @@ test('BitcasterEngineClient.getMarket reads one catalogue row through query ids'
   ])
 })
 
+test('BitcasterEngineClient reads one bounded condition attestation', async () => {
+  const conditionId = 'ab'.repeat(32)
+  const body = {
+    conditionId,
+    attestedOutcome: 'YES',
+    oracleWitness: { oracle_sigs: [] },
+    registeredAuthority: { eventId: 'event-1' },
+  }
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+  })
+  assert.deepEqual(await client.getConditionAttestation(conditionId), body)
+})
+
 test('BitcasterEngineClient.queryMarkets uses OpenAPI query parameter names', async () => {
   const requests: string[] = []
   const client = new BitcasterEngineClient({

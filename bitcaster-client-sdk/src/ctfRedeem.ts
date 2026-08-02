@@ -31,6 +31,8 @@ import {
   requireSameOperationAuthority,
 } from './ctfProofOperationAuthority.ts'
 
+export { canonicalProofOperationMintIdentity } from './ctfProofOperationAuthority.ts'
+
 /**
  * Shared NUT-CTF redeem helpers.
  *

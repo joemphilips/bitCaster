@@ -56,6 +56,12 @@ Redeeming converts your conditional tokens (CTF tokens locked to an outcome) bac
 - Those ecash tokens can be either stablecoin-denominated or BTC-denominated, depending on the mint.
 - BTC-denominated tokens can be further redeemed for actual bitcoin by withdrawing over Lightning.
 
+### Native daemon retirement
+
+The native daemon keeps resolved condition proofs until you authorize retirement. Run `bitcaster-cli wallet retire-condition <condition-id>` to preview the action and mint fee. Add `--acknowledge` to redeem winning proofs. The daemon retains losing or uneconomic proofs as visible audit records.
+
+You can set `daemon.autoRetireResolvedConditionInventory` to `true` in `~/.bitcaster/config.json`. This setting authorizes the same durable retirement flow when the daemon receives a verified oracle attestation. The default is `false`. A restart is required after a configuration change.
+
 ## Further reading
 
 - [DLC Oracle Nostr Announcements (Kind 88)](/technical/dlc-oracle/nostr-kind-88/) — how oracles announce events and publish attestations

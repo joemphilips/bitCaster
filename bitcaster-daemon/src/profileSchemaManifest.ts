@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '9f1e3dc4f18fd000282e131817e8bd4ccda68a313752f237bbc96a5d7d640585'
+  'fe065d6e9655cf25c7f6066add1252f55dfa737a2bda3f82b92317acc10b24f0'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -111,6 +111,61 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     scope_id TEXT PRIMARY KEY NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     schema_version INTEGER NOT NULL CHECK (schema_version = 1)
   ) STRICT`,
+  `CREATE TABLE daemon_managed_condition_inventory (
+    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
+    unit TEXT NOT NULL CHECK (unit = 'msat'),
+    condition_id TEXT NOT NULL CHECK (
+      length(condition_id) = 64 AND condition_id NOT GLOB '*[^0-9a-f]*'
+    ),
+    parent_collection_id TEXT NOT NULL CHECK (
+      parent_collection_id = '' OR (
+        length(parent_collection_id) = 64
+        AND parent_collection_id NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
+    state TEXT NOT NULL CHECK (state IN ('retiring', 'retired')),
+    revision INTEGER NOT NULL CHECK (revision IN (1, 2)),
+    condition_identity TEXT NOT NULL CHECK (
+      length(condition_identity) = 64 AND condition_identity NOT GLOB '*[^0-9a-f]*'
+    ),
+    announcement_identities BLOB NOT NULL CHECK (
+      length(announcement_identities) BETWEEN 3 AND 16384
+    ),
+    attestation_identity TEXT NOT NULL CHECK (
+      length(attestation_identity) = 64 AND attestation_identity NOT GLOB '*[^0-9a-f]*'
+    ),
+    resolved_outcome TEXT NOT NULL CHECK (length(resolved_outcome) BETWEEN 1 AND 16384),
+    authority_id TEXT NOT NULL CHECK (
+      length(authority_id) = 64 AND authority_id NOT GLOB '*[^0-9a-f]*'
+    ),
+    evidence_fingerprint TEXT NOT NULL CHECK (
+      length(evidence_fingerprint) = 64 AND evidence_fingerprint NOT GLOB '*[^0-9a-f]*'
+    ),
+    oracle_witness BLOB NOT NULL CHECK (length(oracle_witness) BETWEEN 1 AND 65536),
+    retirement_intent_kind TEXT NOT NULL CHECK (
+      retirement_intent_kind IN ('daemon-standing-policy', 'explicit-user-command')
+    ),
+    retirement_intent_id TEXT NOT NULL CHECK (length(retirement_intent_id) BETWEEN 1 AND 16384),
+    retirement_intent_created_at_ms INTEGER NOT NULL CHECK (
+      retirement_intent_created_at_ms >= 0
+    ),
+    retirement_started_at_ms INTEGER NOT NULL CHECK (
+      retirement_started_at_ms >= retirement_intent_created_at_ms
+    ),
+    retirement_completed_at_ms INTEGER CHECK (
+      retirement_completed_at_ms IS NULL
+      OR retirement_completed_at_ms >= retirement_started_at_ms
+    ),
+    PRIMARY KEY (scope_id, normalized_mint, unit, condition_id, parent_collection_id),
+    CHECK (
+      (state = 'retiring' AND revision = 1 AND retirement_completed_at_ms IS NULL)
+      OR
+      (state = 'retired' AND revision = 2 AND retirement_completed_at_ms IS NOT NULL)
+    )
+  ) STRICT`,
+  `CREATE INDEX daemon_managed_condition_inventory_state_idx
+    ON daemon_managed_condition_inventory(scope_id, state, condition_id)`,
   `CREATE TABLE target_wallet_proofs (
     proof_id TEXT PRIMARY KEY NOT NULL CHECK (
       length(proof_id) = 64 AND proof_id NOT GLOB '*[^0-9a-f]*'

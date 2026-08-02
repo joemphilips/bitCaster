@@ -478,6 +478,28 @@ function registerWalletCommand(program: Command): void {
   registerConsolidateCommand(wallet, 'consolidate')
 
   wallet
+    .command('retire-condition <conditionId>')
+    .description('Redeem winning condition proofs and retain losing proofs for audit.')
+    .option(
+      '--acknowledge',
+      'Acknowledge the current condition, action, and estimated mint fee, then execute.',
+    )
+    .option('--dry-run', 'Print the retirement request without calling the daemon')
+    .addHelpText(
+      'after',
+      '\nRun without --acknowledge to preview the current action and fee.\n' +
+        'Example:\n  bitcaster-cli wallet retire-condition <condition-id>',
+    )
+    .action(async (conditionId: string, options: { acknowledge?: boolean; dryRun?: boolean }) => {
+      const params = { conditionId, acknowledge: options.acknowledge === true }
+      if (isDryRun(options)) {
+        printDryRun(params)
+        return
+      }
+      await printDaemonResult(callDaemon({ method: 'wallet.retireCondition', params }))
+    })
+
+  wallet
     .command('operations')
     .description('List prepared or recoverable wallet operations.')
     .option('--kind <kind>', 'Operation kind')

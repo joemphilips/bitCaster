@@ -20,6 +20,7 @@ import {
   type CtfRangeOrderPreparationPageCursor,
   type CtfRangeOrderPreparationRecord,
 } from '@bitcaster-market/client-sdk/ctfRangeOrderJournal'
+import { assertManagedConditionMutationFromDatabase } from './managedConditionInventorySqlite.ts'
 
 const ID_BYTES_MAX = 16_384
 const SOURCE_PURPOSE = 'ctf-range-authorization-source'
@@ -81,6 +82,17 @@ export function insertRangePreparation(
 ): RangePreparationRecord {
   const sdkIdentity = withoutConsolidationPolicy(input)
   decodeCtfRangeOrderPreparationIdentity(sdkIdentity)
+  assertManagedConditionMutationFromDatabase(
+    database,
+    {
+      scopeId: input.scopeId,
+      normalizedMint: input.normalizedMint,
+      unit: 'msat',
+      conditionId: input.conditionId,
+      canonicalParentCollectionId: null,
+    },
+    { kind: 'new-economic-intent' },
+  )
   database
     .prepare(
       `INSERT INTO daemon_ctf_range_preparations (

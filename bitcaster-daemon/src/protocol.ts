@@ -16,6 +16,7 @@ export type DaemonCommand =
   | { method: 'wallet.splitCompleteSet'; params: WalletSplitCompleteSetParams }
   | { method: 'wallet.consolidateMarket'; params: WalletConsolidateMarketParams }
   | { method: 'wallet.consolidateProofs'; params?: undefined }
+  | { method: 'wallet.retireCondition'; params: WalletRetireConditionParams }
   | { method: 'wallet.operations'; params?: { kind?: string; state?: string } }
   | { method: 'wallet.recover'; params?: undefined }
   | { method: 'wallet.seedRecovery'; params: WalletSeedRecoveryParams }
@@ -109,6 +110,24 @@ export interface WalletConsolidateMarketParams {
   marketId: string
   // CLI strategy names: merge→t1, sweep→t2, reclaim→t3
   type: 't1' | 't2' | 't3'
+}
+
+export interface WalletRetireConditionParams {
+  conditionId: string
+  acknowledge: boolean
+}
+
+export interface WalletRetireConditionResult {
+  conditionId: string
+  state: 'preview' | 'retired'
+  action: 'redeem-winning-and-retain-losing'
+  proofCount: number
+  redeemableProofCount: number
+  retainedProofCount: number
+  grossAmountSubunits: number
+  retainedAmountSubunits: number
+  estimatedInputFeeSubunits: number
+  netAmountSubunits: number
 }
 
 export interface WalletConsolidationProofSummary {
