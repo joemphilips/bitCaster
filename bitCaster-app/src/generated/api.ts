@@ -791,6 +791,18 @@ export interface components {
             /** @description The single outcome attested by the DLC oracle. */
             attestedOutcome: string;
             oracleWitness: components["schemas"]["OracleWitness"];
+            registeredAuthority: components["schemas"]["RegisteredConditionAuthority"];
+        };
+        RegisteredConditionAuthority: {
+            eventId: string;
+            outcomes: string[];
+            threshold: number;
+            oracles: components["schemas"]["RegisteredConditionOracle"][];
+        };
+        RegisteredConditionOracle: {
+            oraclePublicKey: string;
+            noncePoint: string;
+            announcementIdentity: string;
         };
         ConditionAttestationProblem: {
             /** @enum {string} */

@@ -761,11 +761,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class ConditionAttestationResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public ConditionAttestationResponse(string @attestedOutcome, string @conditionId, OracleWitness @oracleWitness)
+        public ConditionAttestationResponse(string @attestedOutcome, string @conditionId, OracleWitness @oracleWitness, RegisteredConditionAuthority @registeredAuthority)
         {
             this.ConditionId = @conditionId;
             this.AttestedOutcome = @attestedOutcome;
             this.OracleWitness = @oracleWitness;
+            this.RegisteredAuthority = @registeredAuthority;
         }
 
         /// <summary>
@@ -782,6 +783,75 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Text.Json.Serialization.JsonPropertyName("oracleWitness")]
         public OracleWitness OracleWitness { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("registeredAuthority")]
+        public RegisteredConditionAuthority RegisteredAuthority { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RegisteredConditionAuthority
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RegisteredConditionAuthority(string @eventId, System.Collections.Generic.List<RegisteredConditionOracle> @oracles, System.Collections.Generic.List<string> @outcomes, int @threshold)
+        {
+            this.EventId = @eventId;
+            this.Outcomes = @outcomes;
+            this.Threshold = @threshold;
+            this.Oracles = @oracles;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("eventId")]
+        public string EventId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
+        public System.Collections.Generic.List<string> Outcomes { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("threshold")]
+        public int Threshold { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("oracles")]
+        public System.Collections.Generic.List<RegisteredConditionOracle> Oracles { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RegisteredConditionOracle
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RegisteredConditionOracle(string @announcementIdentity, string @noncePoint, string @oraclePublicKey)
+        {
+            this.OraclePublicKey = @oraclePublicKey;
+            this.NoncePoint = @noncePoint;
+            this.AnnouncementIdentity = @announcementIdentity;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("oraclePublicKey")]
+        public string OraclePublicKey { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("noncePoint")]
+        public string NoncePoint { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("announcementIdentity")]
+        public string AnnouncementIdentity { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 

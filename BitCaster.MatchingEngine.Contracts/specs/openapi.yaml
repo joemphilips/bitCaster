@@ -1694,6 +1694,7 @@ components:
         - conditionId
         - attestedOutcome
         - oracleWitness
+        - registeredAuthority
       properties:
         conditionId:
           type: string
@@ -1703,6 +1704,49 @@ components:
           description: The single outcome attested by the DLC oracle.
         oracleWitness:
           $ref: '#/components/schemas/OracleWitness'
+        registeredAuthority:
+          $ref: '#/components/schemas/RegisteredConditionAuthority'
+
+    RegisteredConditionAuthority:
+      type: object
+      required:
+        - eventId
+        - outcomes
+        - threshold
+        - oracles
+      properties:
+        eventId:
+          type: string
+        outcomes:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        threshold:
+          type: integer
+          minimum: 1
+        oracles:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RegisteredConditionOracle'
+
+    RegisteredConditionOracle:
+      type: object
+      required:
+        - oraclePublicKey
+        - noncePoint
+        - announcementIdentity
+      properties:
+        oraclePublicKey:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        noncePoint:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        announcementIdentity:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
 
     ConditionAttestationProblem:
       type: object
