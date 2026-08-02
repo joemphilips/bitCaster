@@ -27,6 +27,7 @@ export interface ManagedConditionRecoveryIndexEntry {
   readonly schemaVersion: 1
   readonly scopeId: string
   readonly operationId: string
+  readonly operationRevision: number
   readonly operationKind: string
   /** Complete record and artifact envelope bytes. */
   readonly envelopeByteLength: number
@@ -340,6 +341,7 @@ function decodeIndexEntry(value: unknown, scopeId: string): ManagedConditionReco
     schemaVersion: 1,
     scopeId,
     operationId: decodeDurableCustodyOperationId(value.operationId, scopeId),
+    operationRevision: count(value.operationRevision, 'managed condition recovery revision'),
     operationKind: text(value.operationKind, 'managed condition recovery operation kind'),
     envelopeByteLength: boundedBytes(value.envelopeByteLength),
     nextAttemptAtMs: count(value.nextAttemptAtMs, 'managed condition recovery retry time'),
@@ -507,6 +509,7 @@ const INDEX_KEYS = [
   'schemaVersion',
   'scopeId',
   'operationId',
+  'operationRevision',
   'operationKind',
   'envelopeByteLength',
   'nextAttemptAtMs',

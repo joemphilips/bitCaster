@@ -218,6 +218,7 @@ function entry(
       retainedOperationKey: `recovery-${suffix}`,
       binding: { kind: 'wallet', activityId: `recovery-${suffix}`, stage: 'receive' },
     }),
+    operationRevision: 0,
     operationKind,
     envelopeByteLength,
     nextAttemptAtMs,
