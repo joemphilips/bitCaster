@@ -11,7 +11,7 @@ import {
   type EngineClientLike,
   type PrepareSettlementCapabilityInput,
 } from '../src/server.ts'
-import { profileDir, readProfile, updateProfile } from '../src/profile.ts'
+import { profileDir, readProfile } from '../src/profile.ts'
 import { createDaemonSecrets, readSecrets } from '../src/secrets.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import {
@@ -317,140 +317,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         assert.equal(restored?.proofOperations['ctf-native-op']?.resultProofs?.lock[0].amount, 100)
       },
     )
-
-    await t.test(
-      'daemon.config updates engine and mint URLs without replacing identity',
-      async () => {
-        await writeState(emptyDaemonState())
-        const response = await dispatch({
-          method: 'daemon.config',
-          params: {
-            engineUrl: 'http://engine.example/',
-            mintUrl: 'https://mint.example/',
-          },
-        })
-
-        assert.equal(response.ok, true)
-        assert.deepEqual(response.result, {
-          profile: {
-            ...profile,
-            engineBaseUrl: 'http://engine.example',
-            mintUrl: 'https://mint.example',
-          },
-          restartRequired: true,
-          reason:
-            'restart bitcaster-daemon to reconnect long-lived TradeHub runtime with updated endpoints',
-        })
-
-        const status = await dispatch({ method: 'daemon.status' })
-        assert.equal(status.ok, true)
-        assert.equal(
-          (status.result as { profile: { nostrPublicKey?: string } }).profile.nostrPublicKey,
-          profile.nostrPublicKey,
-        )
-        assert.equal(
-          (status.result as { profile: { engineBaseUrl: string } }).profile.engineBaseUrl,
-          'http://engine.example',
-        )
-        await updateProfile({
-          engineBaseUrl: profile.engineBaseUrl,
-          mintUrl: profile.mintUrl,
-        })
-      },
-    )
-
-    await t.test('daemon.config refuses endpoint changes after durable state exists', async () => {
-      for (const buildState of [
-        () => {
-          const state = emptyDaemonState()
-          state.wallet.proofs.push(
-            proofRecord(
-              'https://mint-a.example',
-              1,
-              'available',
-              { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
-              'config-proof',
-            ),
-          )
-          return state
-        },
-        () => {
-          const state = emptyDaemonState()
-          state.proofOperations['config-op'] = {
-            operationId: 'config-op',
-            kind: 'wallet-send',
-            state: 'prepared',
-            mintUrl: 'https://mint-a.example',
-            inputs: [{ amount: 1, secret: 'config-op-secret', C: 'C-config' }],
-            outputs: {},
-            metadata: {},
-            createdAt: 1,
-            updatedAt: 2,
-          }
-          return state
-        },
-        () => {
-          const state = emptyDaemonState()
-          state.orders['config-order'] = {
-            orderId: 'config-order',
-            marketId: 'cond-YES',
-            status: 'resting',
-            tradeIds: [],
-            createdAt: '2026-05-21T00:00:00.000Z',
-            updatedAt: '2026-05-21T00:00:00.000Z',
-          }
-          return state
-        },
-        () => {
-          const state = emptyDaemonState()
-          state.swaps['config-trade'] = {
-            tradeId: 'config-trade',
-            marketId: 'cond-YES',
-            messages: {},
-            step: 'seller-opened',
-            createdAt: '2026-05-21T00:00:00.000Z',
-            updatedAt: '2026-05-21T00:00:00.000Z',
-          }
-          return state
-        },
-      ]) {
-        await writeState(buildState())
-        const response = await dispatch({
-          method: 'daemon.config',
-          params: { mintUrl: 'http://mint.example' },
-        })
-
-        assert.equal(response.ok, false)
-        assert.match(
-          response.error ?? '',
-          /cannot be changed after wallet, proof-operation, order, or swap state exists/,
-        )
-        assert.equal((await readProfile())?.mintUrl, profile.mintUrl)
-      }
-    })
-
-    await t.test('daemon.config allows no-op endpoint updates with durable state', async () => {
-      const state = emptyDaemonState()
-      state.orders['config-noop-order'] = {
-        orderId: 'config-noop-order',
-        marketId: 'cond-YES',
-        status: 'resting',
-        tradeIds: [],
-        createdAt: '2026-05-21T00:00:00.000Z',
-        updatedAt: '2026-05-21T00:00:00.000Z',
-      }
-      await writeState(state)
-
-      const response = await dispatch({
-        method: 'daemon.config',
-        params: {
-          engineUrl: `${profile.engineBaseUrl}/`,
-        },
-      })
-
-      assert.equal(response.ok, true)
-      assert.deepEqual((response.result as { profile: typeof profile }).profile, profile)
-    })
 
     await t.test('wallet.receive redeems token proofs into daemon state', async () => {
       await writeState(emptyDaemonState())

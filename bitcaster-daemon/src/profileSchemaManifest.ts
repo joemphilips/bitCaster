@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'b7cf905e298fd6e4e098deb777ba6fdf25896dff5af462e4607fbb60f128fa0d'
+  '9f1e3dc4f18fd000282e131817e8bd4ccda68a313752f237bbc96a5d7d640585'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -30,8 +30,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   ) STRICT`,
   `CREATE TABLE daemon_profile (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
-    engine_base_url TEXT NOT NULL CHECK (length(engine_base_url) BETWEEN 1 AND 2048),
-    mint_url TEXT NOT NULL CHECK (length(mint_url) BETWEEN 1 AND 2048),
     nostr_public_key_hex TEXT NOT NULL CHECK (
       length(nostr_public_key_hex) = 64
       AND nostr_public_key_hex NOT GLOB '*[^0-9a-f]*'

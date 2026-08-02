@@ -4,9 +4,12 @@ import { pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { DAEMON_PROFILE_DATABASE, validateDaemonProfileSchema } from './profileSchema.ts'
 import { getFinalProfileSchemaManifest } from './profileSchemaManifest.ts'
-import { withDaemonStateSqliteTransaction } from './stateSqlite.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
 import { dataDir } from './dataDir.ts'
+import { normalizeEndpointUrl } from './endpoint.ts'
+import { activeNativeConfig, defaultNativeConfig, type NativeConfig } from './nativeConfig.ts'
+
+export { normalizeEndpointUrl } from './endpoint.ts'
 
 export interface DaemonProfile {
   engineBaseUrl: string
@@ -49,14 +52,13 @@ export async function readProfile(): Promise<DaemonProfile | null> {
     try {
       const row = database
         .prepare(
-          `SELECT engine_base_url AS engineBaseUrl, mint_url AS mintUrl,
-            nostr_public_key_hex AS nostrPublicKey,
+          `SELECT nostr_public_key_hex AS nostrPublicKey,
             initialized_at_ms AS initializedAtMs
            FROM daemon_profile WHERE singleton = 1`,
         )
         .get() as ProfileRow | undefined
       if (row === undefined) throw new Error('daemon profile row is missing')
-      return decodeProfileRow(row)
+      return decodeProfileRow(row, activeNativeConfig().config)
     } finally {
       database.close()
     }
@@ -67,41 +69,11 @@ export async function writeProfile(_profile: DaemonProfile): Promise<void> {
   throw new Error('daemon profile creation is only supported by fresh atomic init')
 }
 
-export async function updateProfile(
-  update: Partial<Pick<DaemonProfile, 'engineBaseUrl' | 'mintUrl'>>,
-): Promise<DaemonProfile> {
-  return withDaemonStateSqliteTransaction(profileDir(), (database) => {
-    const current = database
-      .prepare(
-        `SELECT engine_base_url AS engineBaseUrl, mint_url AS mintUrl,
-          nostr_public_key_hex AS nostrPublicKey,
-          initialized_at_ms AS initializedAtMs
-         FROM daemon_profile WHERE singleton = 1`,
-      )
-      .get() as ProfileRow | undefined
-    if (current === undefined) throw new Error('daemon profile is not initialized')
-    const engineBaseUrl =
-      update.engineBaseUrl === undefined
-        ? current.engineBaseUrl
-        : normalizeEndpointUrl(update.engineBaseUrl, 'engine URL')
-    const mintUrl =
-      update.mintUrl === undefined
-        ? current.mintUrl
-        : normalizeEndpointUrl(update.mintUrl, 'mint URL')
-    database
-      .prepare(
-        `UPDATE daemon_profile SET engine_base_url = ?, mint_url = ?
-         WHERE singleton = 1`,
-      )
-      .run(engineBaseUrl, mintUrl)
-    return decodeProfileRow({ ...current, engineBaseUrl, mintUrl })
-  })
-}
-
 export function defaultProfile(): DaemonProfile {
+  const config = defaultNativeConfig()
   return {
-    engineBaseUrl: process.env.BITCASTER_ENGINE_URL || 'http://localhost:5000',
-    mintUrl: process.env.BITCASTER_MINT_URL || 'http://localhost:8085',
+    engineBaseUrl: config.daemon.engineUrl,
+    mintUrl: config.daemon.mintUrl,
     initializedAt: new Date().toISOString(),
   }
 }
@@ -125,19 +97,6 @@ export function profileFromPublicKey(
   }
 }
 
-export function normalizeEndpointUrl(value: string, name: string): string {
-  let url: URL
-  try {
-    url = new URL(value)
-  } catch {
-    throw new Error(`Invalid ${name}: ${value}`)
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`Invalid ${name}: expected http or https URL`)
-  }
-  return value.replace(/\/+$/, '')
-}
-
 export function openProfileDatabase(): DatabaseSync {
   const url = pathToFileURL(profileDatabasePath())
   url.searchParams.set('mode', 'rw')
@@ -155,16 +114,12 @@ export async function profileDatabaseExists(): Promise<boolean> {
 }
 
 interface ProfileRow {
-  readonly engineBaseUrl: string
-  readonly mintUrl: string
   readonly nostrPublicKey: string
   readonly initializedAtMs: number
 }
 
-function decodeProfileRow(row: ProfileRow): DaemonProfile {
+function decodeProfileRow(row: ProfileRow, config: NativeConfig): DaemonProfile {
   if (
-    typeof row.engineBaseUrl !== 'string' ||
-    typeof row.mintUrl !== 'string' ||
     !/^[0-9a-f]{64}$/.test(row.nostrPublicKey) ||
     !Number.isSafeInteger(row.initializedAtMs) ||
     row.initializedAtMs < 0
@@ -172,8 +127,8 @@ function decodeProfileRow(row: ProfileRow): DaemonProfile {
     throw new Error('daemon profile row is invalid')
   }
   return {
-    engineBaseUrl: normalizeEndpointUrl(row.engineBaseUrl, 'engine URL'),
-    mintUrl: normalizeEndpointUrl(row.mintUrl, 'mint URL'),
+    engineBaseUrl: config.daemon.engineUrl,
+    mintUrl: config.daemon.mintUrl,
     nostrPublicKey: row.nostrPublicKey,
     initializedAt: new Date(row.initializedAtMs).toISOString(),
   }

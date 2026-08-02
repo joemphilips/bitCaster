@@ -29,6 +29,12 @@ import {
   type ProtectedSecretBody,
   unlockInitialProfileSecrets,
 } from './profileSecretProtection.ts'
+import {
+  assertNativeConfigSourceAdmissible,
+  defaultNativeConfig,
+  ensureNativeConfig,
+  removeNativeConfigIfRevisionMatches,
+} from './nativeConfig.ts'
 
 export type ProfileBootstrapFaultPhase =
   | 'database-reserved'
@@ -67,6 +73,7 @@ export async function bootstrapFreshDaemonProfile(
   input: FreshDaemonProfileBootstrapInput,
 ): Promise<FreshDaemonProfileBootstrapResult> {
   assertDaemonProfilePlatformSupported()
+  assertNativeConfigSourceAdmissible(input.directory)
   const initialInventory = await inventoryDaemonProfile(input.directory)
   assertFreshDaemonProfileInventory(initialInventory)
 
@@ -99,7 +106,9 @@ export async function bootstrapFreshDaemonProfile(
   let reservation: Awaited<ReturnType<typeof open>> | undefined
   let database: DatabaseSync | undefined
   let committed = false
+  let createdConfigRevision: string | null = null
   try {
+    createdConfigRevision = prepareBootstrapConfig(input.directory, engineBaseUrl, mintUrl)
     reservation = await open(databasePath, 'wx', 0o600)
     const stat = await reservation.stat({ bigint: true })
     reservedIdentity = { dev: stat.dev, ino: stat.ino }
@@ -121,8 +130,6 @@ export async function bootstrapFreshDaemonProfile(
       input.injectFault?.('schema-created')
       await assertPathHasIdentity(databasePath, reservedIdentity)
       writeAuthorityRows(database, {
-        engineBaseUrl,
-        mintUrl,
         walletScopeId: walletIdentity.walletScopeId,
         walletId: walletIdentity.walletId,
         walletSeedDigest: walletIdentity.walletSeedDigest,
@@ -185,6 +192,13 @@ export async function bootstrapFreshDaemonProfile(
         }
       }
     }
+    if (createdConfigRevision !== null) {
+      try {
+        removeNativeConfigIfRevisionMatches(createdConfigRevision, input.directory)
+      } catch {
+        // Preserve the initiating failure. A retained non-secret config is safe.
+      }
+    }
     if (createdDirectory) {
       try {
         if ((await readdir(input.directory)).length === 0) {
@@ -196,6 +210,22 @@ export async function bootstrapFreshDaemonProfile(
     }
     throw error
   }
+}
+
+function prepareBootstrapConfig(
+  directory: string,
+  engineUrl: string,
+  mintUrl: string,
+): string | null {
+  const defaults = defaultNativeConfig()
+  const result = ensureNativeConfig(
+    {
+      ...defaults,
+      daemon: { ...defaults.daemon, engineUrl, mintUrl },
+    },
+    directory,
+  )
+  return result.created ? result.snapshot.revision : null
 }
 
 export async function readBootstrappedProfileSecrets(
@@ -289,8 +319,6 @@ function openImmutableProfileDatabase(directory: string): DatabaseSync {
 function writeAuthorityRows(
   database: DatabaseSync,
   input: {
-    readonly engineBaseUrl: string
-    readonly mintUrl: string
     readonly walletScopeId: string
     readonly walletId: string
     readonly walletSeedDigest: string
@@ -318,17 +346,10 @@ function writeAuthorityRows(
   database
     .prepare(
       `INSERT INTO daemon_profile
-        (singleton, engine_base_url, mint_url, nostr_public_key_hex,
-         wallet_scope_id, initialized_at_ms)
-       VALUES (1, ?, ?, ?, ?, ?)`,
+        (singleton, nostr_public_key_hex, wallet_scope_id, initialized_at_ms)
+       VALUES (1, ?, ?, ?)`,
     )
-    .run(
-      input.engineBaseUrl,
-      input.mintUrl,
-      input.secrets.nostrPublicKeyHex,
-      input.walletScopeId,
-      input.initializedAtMs,
-    )
+    .run(input.secrets.nostrPublicKeyHex, input.walletScopeId, input.initializedAtMs)
   const protectedBody = input.protectedSecrets
   database
     .prepare(

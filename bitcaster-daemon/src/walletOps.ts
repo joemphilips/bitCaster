@@ -28,6 +28,7 @@ import {
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
 } from '@bitcaster-market/client-sdk/ctfSplit'
+import { isLoopbackHttpUrl } from '@bitcaster-market/client-sdk'
 import {
   COLLATERAL_COLLECTION,
   type CtfConsolidationPlan,
@@ -1305,14 +1306,6 @@ function requireCanonicalOptionalText(value: string | undefined, name: string): 
   if (value === undefined) return undefined
   if (!value || value !== value.trim()) throw new Error(`${name} must be canonical non-empty text`)
   return value
-}
-
-function isLoopbackHttpUrl(value: string): boolean {
-  const url = new URL(value)
-  return (
-    url.protocol === 'http:' &&
-    (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]')
-  )
 }
 
 async function getConditionKeysetIds(

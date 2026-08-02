@@ -435,10 +435,15 @@ export function assertFreshDaemonProfileInventory(inventory: DaemonProfileInvent
   if (inventory.legacyArtifacts.length > 0) {
     throw new ProfileSchemaRefusalError('legacy-artifact')
   }
-  if (inventory.artifacts.length > 0) {
+  const config = inventory.artifacts.find((artifact) => artifact.name === DAEMON_CONFIG_FILE)
+  if (config !== undefined && config.kind !== 'file') {
+    throw new ProfileSchemaRefusalError('profile-permission-invalid')
+  }
+  if (inventory.artifacts.some((artifact) => artifact.name !== DAEMON_CONFIG_FILE)) {
     throw new ProfileSchemaRefusalError('profile-not-fresh')
   }
   assertOwnerOnlyDirectory(inventory)
+  assertOwnerOnlyProfile(inventory)
 }
 
 export function normalizeSqliteSchemaSql(sql: string): string {

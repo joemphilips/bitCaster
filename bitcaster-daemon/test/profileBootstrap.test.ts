@@ -35,6 +35,7 @@ import {
   finalProfileSchemaManifestDigest,
   getFinalProfileSchemaManifest,
 } from '../src/profileSchemaManifest.ts'
+import { createNativeConfig, defaultNativeConfig } from '../src/nativeConfig.ts'
 import {
   ProfileSecretProtectionError,
   protectTargetEphemeralPrivateKey,
@@ -71,10 +72,16 @@ test('fresh bootstrap atomically creates the exact frozen owner-only profile', a
 
   assert.equal((await stat(directory)).mode & 0o777, 0o700)
   assert.equal((await stat(join(directory, DAEMON_PROFILE_DATABASE))).mode & 0o777, 0o600)
-  assert.deepEqual(await readdir(directory), [DAEMON_PROFILE_DATABASE])
+  assert.deepEqual(await readdir(directory), ['config.json', DAEMON_PROFILE_DATABASE])
 
   const database = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE))
   try {
+    const profileColumns = database
+      .prepare('PRAGMA table_info(daemon_profile)')
+      .all()
+      .map((row) => (row as { name: string }).name)
+    assert.equal(profileColumns.includes('engine_base_url'), false)
+    assert.equal(profileColumns.includes('mint_url'), false)
     assert.equal(
       (database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode,
       'wal',
@@ -428,6 +435,8 @@ test('every injected bootstrap fault removes only this invocation artifacts', as
   }
 
   const existing = await freshProfileDirectory('fault-existing')
+  createNativeConfig(defaultNativeConfig(), existing)
+  const existingConfig = await readFile(join(existing, 'config.json'), 'utf8')
   await assert.rejects(
     bootstrapFreshDaemonProfile({
       ...bootstrapInput(existing),
@@ -437,7 +446,8 @@ test('every injected bootstrap fault removes only this invocation artifacts', as
     }),
     /existing-dir-fault/,
   )
-  assert.deepEqual(await readdir(existing), [])
+  assert.deepEqual(await readdir(existing), ['config.json'])
+  assert.equal(await readFile(join(existing, 'config.json'), 'utf8'), existingConfig)
 })
 
 test('unlock rederives and compares every persisted public and wallet binding', async () => {

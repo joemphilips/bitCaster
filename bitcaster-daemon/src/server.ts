@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { createConnection } from 'node:net'
-import { readFile, unlink } from 'node:fs/promises'
+import { chmod, readFile, unlink } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { Amount, OutputData, type Proof } from '@cashu/cashu-ts'
 import {
@@ -61,7 +61,7 @@ import {
 import { canBackOrder, type TokenHoldings } from '@bitcaster-market/client-sdk/tradingClient'
 import { signNip98 } from './nostrAuth.ts'
 import type { DaemonCommand, DaemonHealth, DaemonResponse } from './protocol.ts'
-import { normalizeEndpointUrl, profileDir, readProfile, updateProfile } from './profile.ts'
+import { profileDir, readProfile } from './profile.ts'
 import { bearerToken, readRpcToken, rpcSocketPath, tokenMatches } from './rpcAuth.ts'
 import { readSecrets } from './secrets.ts'
 import {
@@ -321,6 +321,13 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
   if (socketPath) {
     await unlinkStaleSocket(socketPath)
     await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+    try {
+      await chmod(socketPath, 0o600)
+    } catch (error) {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await unlink(socketPath).catch(() => undefined)
+      throw error
+    }
     server.once('close', () => {
       void unlink(socketPath).catch(() => undefined)
     })
@@ -328,7 +335,7 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
     return server
   }
 
-  const port = options.port ?? Number(process.env.BITCASTER_DAEMON_PORT || 42871)
+  const port = options.port ?? 42871
   await new Promise<void>((resolve) => server.listen(port, host, resolve))
   const address = server.address()
   const boundPort = typeof address === 'object' && address ? address.port : port
@@ -428,49 +435,6 @@ export async function dispatch(
         },
       }
     }
-    case 'daemon.config': {
-      if (!command.params.engineUrl && !command.params.mintUrl) {
-        return {
-          ok: false,
-          error: 'at least one of engineUrl or mintUrl is required',
-        }
-      }
-      const currentProfile = await readProfile()
-      if (!currentProfile) {
-        return { ok: false, error: 'daemon profile is not initialized' }
-      }
-      const nextEngineBaseUrl = command.params.engineUrl
-        ? normalizeEndpointUrl(command.params.engineUrl, 'engine URL')
-        : currentProfile.engineBaseUrl
-      const nextMintUrl = command.params.mintUrl
-        ? normalizeEndpointUrl(command.params.mintUrl, 'mint URL')
-        : currentProfile.mintUrl
-      const state = await ensureState()
-      if (
-        !daemonStateIsEmpty(state) &&
-        (nextEngineBaseUrl !== currentProfile.engineBaseUrl ||
-          nextMintUrl !== currentProfile.mintUrl)
-      ) {
-        return {
-          ok: false,
-          error:
-            'daemon profile endpoints cannot be changed after wallet, proof-operation, order, or swap state exists',
-        }
-      }
-      const profile = await updateProfile({
-        ...(command.params.engineUrl !== undefined ? { engineBaseUrl: nextEngineBaseUrl } : {}),
-        ...(command.params.mintUrl !== undefined ? { mintUrl: nextMintUrl } : {}),
-      })
-      return {
-        ok: true,
-        result: {
-          profile,
-          restartRequired: true,
-          reason:
-            'restart bitcaster-daemon to reconnect long-lived TradeHub runtime with updated endpoints',
-        },
-      }
-    }
     case 'market.create': {
       const profile = await readProfile()
       if (!profile) {
@@ -480,10 +444,7 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      const engineUrlValidation = validateMarketCreateEngineUrl(
-        profile.engineBaseUrl,
-        process.env.BITCASTER_ALLOW_INSECURE_ENGINE === '1',
-      )
+      const engineUrlValidation = validateMarketCreateEngineUrl(profile.engineBaseUrl, true)
       if (!engineUrlValidation.ok) {
         return {
           ok: false,
@@ -520,10 +481,7 @@ export async function dispatch(
       if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
       }
-      const engineUrlValidation = validateMarketCreateEngineUrl(
-        profile.engineBaseUrl,
-        process.env.BITCASTER_ALLOW_INSECURE_ENGINE === '1',
-      )
+      const engineUrlValidation = validateMarketCreateEngineUrl(profile.engineBaseUrl, true)
       if (!engineUrlValidation.ok) {
         return {
           ok: false,
@@ -1527,16 +1485,6 @@ function requiredBuyCollateral(input: {
       Math.ceil((input.amountSubunits * input.price) / input.divisibility)
 }
 
-function daemonStateIsEmpty(state: Awaited<ReturnType<typeof ensureState>>): boolean {
-  return (
-    state.wallet.proofs.length === 0 &&
-    Object.keys(state.wallet.keysetCounters).length === 0 &&
-    Object.keys(state.proofOperations).length === 0 &&
-    Object.keys(state.orders).length === 0 &&
-    Object.keys(state.swaps).length === 0
-  )
-}
-
 async function startTradeRuntimeBestEffort(tradeRuntime: TradeRuntime | undefined): Promise<void> {
   if (!tradeRuntime) return
   try {
@@ -1611,7 +1559,6 @@ function isLoopbackBindHost(host: string): boolean {
 
 function defaultRpcSocketPath(): string | undefined {
   if (process.platform === 'win32') return undefined
-  if (process.env.BITCASTER_DAEMON_PORT) return undefined
   return rpcSocketPath()
 }
 

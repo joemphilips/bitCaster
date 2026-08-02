@@ -1,6 +1,9 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'node:fs'
-import { join, dirname } from 'node:path'
-import { cliHomeDir } from './paths.ts'
+import {
+  nativeConfigPath,
+  readNativeConfig,
+  updateNativeConfig,
+  type NativeConfig,
+} from '@bitcaster-market/daemon/nativeConfig'
 
 export interface CliConfig {
   engineUrl?: string
@@ -9,75 +12,36 @@ export interface CliConfig {
 }
 
 export function configFilePath(): string {
-  return join(cliHomeDir(), 'config.json')
+  return nativeConfigPath()
 }
 
-export function readConfig(): CliConfig {
-  const path = configFilePath()
-  if (!existsSync(path)) return emptyConfig()
-  let parsed: unknown
-  let raw: string
-  try {
-    raw = readFileSync(path, 'utf8')
-    parsed = JSON.parse(raw)
-  } catch {
-    return emptyConfig()
+export function readConfig(allowMissing = false): CliConfig {
+  return toCliConfig(readNativeConfig(allowMissing).config)
+}
+
+export function updateConfig(update: (current: CliConfig) => CliConfig): CliConfig {
+  const snapshot = updateNativeConfig((current) =>
+    toNativeConfig(current, update(toCliConfig(current))),
+  )
+  return toCliConfig(snapshot.config)
+}
+
+function toNativeConfig(current: NativeConfig, update: CliConfig): NativeConfig {
+  return {
+    ...current,
+    daemon: {
+      ...current.daemon,
+      ...(update.engineUrl === undefined ? {} : { engineUrl: update.engineUrl }),
+      ...(update.mintUrl === undefined ? {} : { mintUrl: update.mintUrl }),
+    },
+    cli: { trustedEngineUrls: update.trustedEngineUrls },
   }
-  const config = sanitizeConfig(parsed)
-  const sanitizedText = configText(config)
-  if (sanitizedText !== raw) {
-    try {
-      writeConfig(config)
-    } catch {
-      // Reading should still succeed even when an existing config cannot be rewritten.
-    }
+}
+
+function toCliConfig(config: NativeConfig): CliConfig {
+  return {
+    engineUrl: config.daemon.engineUrl,
+    mintUrl: config.daemon.mintUrl,
+    trustedEngineUrls: [...config.cli.trustedEngineUrls],
   }
-  return config
-}
-
-export function writeConfig(config: CliConfig): void {
-  const path = configFilePath()
-  const dir = dirname(path)
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
-  const tmp = `${path}.${process.pid}.tmp`
-  writeFileSync(tmp, configText(config), { mode: 0o600 })
-  renameSync(tmp, path)
-}
-
-function sanitizeConfig(value: unknown): CliConfig {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return emptyConfig()
-  const source = value as Record<string, unknown>
-  const config: Partial<CliConfig> = {}
-  if (typeof source.engineUrl === 'string') config.engineUrl = source.engineUrl
-  if (typeof source.mintUrl === 'string') config.mintUrl = source.mintUrl
-  let trustedEngineUrls: string[] = []
-  if (Array.isArray(source.trustedEngineUrls)) {
-    trustedEngineUrls = Array.from(
-      new Set(source.trustedEngineUrls.filter((url): url is string => typeof url === 'string')),
-    )
-  }
-  return { ...config, trustedEngineUrls }
-}
-
-function emptyConfig(): CliConfig {
-  return { trustedEngineUrls: [] }
-}
-
-function configText(config: CliConfig): string {
-  return JSON.stringify(sanitizeConfig(config), null, 2) + '\n'
-}
-
-export function setConfigValue(key: 'engineUrl' | 'mintUrl', value: string): CliConfig {
-  const config = readConfig()
-  config[key] = value
-  writeConfig(config)
-  return config
-}
-
-export function resolveEngineUrl(cliFlag?: string): string | undefined {
-  return cliFlag || process.env.BITCASTER_ENGINE_URL || readConfig().engineUrl
-}
-
-export function resolveMintUrl(cliFlag?: string): string | undefined {
-  return cliFlag || process.env.BITCASTER_MINT_URL || readConfig().mintUrl
 }

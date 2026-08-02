@@ -8,6 +8,19 @@ import test from 'node:test'
 test('recover-seed accepts only acknowledged owner-private seed-file input', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-recovery-'))
   try {
+    await writeFile(
+      join(home, 'config.json'),
+      `${JSON.stringify({
+        version: 1,
+        daemon: {
+          engineUrl: 'http://localhost:5000',
+          mintUrl: 'http://localhost:8085',
+          autoRetireResolvedConditionInventory: false,
+        },
+        cli: { trustedEngineUrls: [] },
+      })}\n`,
+      { mode: 0o600 },
+    )
     const seedPath = join(home, 'wallet-seed.hex')
     const seed = 'ab'.repeat(32)
     await writeFile(seedPath, `${seed}\n`, { mode: 0o600 })
@@ -119,7 +132,13 @@ async function runCli(
   const stderrFile = await open(stderrPath, 'wx', 0o600)
   const child = spawn(
     process.execPath,
-    ['--experimental-strip-types', join(import.meta.dirname, '..', 'src', 'main.ts'), ...args],
+    [
+      '--experimental-strip-types',
+      join(import.meta.dirname, '..', 'src', 'main.ts'),
+      '--datadir',
+      home,
+      ...args,
+    ],
     {
       cwd: join(import.meta.dirname, '..'),
       env: childEnv,

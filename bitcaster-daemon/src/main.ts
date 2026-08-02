@@ -7,12 +7,14 @@ import { open } from 'node:fs/promises'
 import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
+  isLoopbackHttpUrl,
 } from '@bitcaster-market/client-sdk'
 import { assertDaemonProfileStorageComplete, profileDir } from './profile.ts'
 import { createDaemonSecrets, createDaemonSecretsFromImport } from './secrets.ts'
 import { bootstrapFreshDaemonProfile } from './profileBootstrap.ts'
 import type { CtfRangeRecoveryLoop } from './ctfRangeRecoveryLoop.ts'
 import { configureDataDir } from './dataDir.ts'
+import { freezeNativeConfigAtStartup, readNativeConfig } from './nativeConfig.ts'
 
 const MAX_SECRET_HEX_FILE_BYTES = 256
 const SECRET_FILE_READ_CHUNK_BYTES = 128
@@ -23,6 +25,7 @@ configureDataDir(dataDir)
 switch (command) {
   case 'init': {
     const initOptions = parseInitOptions(args)
+    const config = readNativeConfig(true).config
     const importedSecrets = await resolveImportedSecrets(initOptions)
     const secrets =
       importedSecrets === null
@@ -33,9 +36,8 @@ switch (command) {
           })
     await bootstrapFreshDaemonProfile({
       directory: profileDir(),
-      engineBaseUrl:
-        initOptions.engineUrl ?? process.env.BITCASTER_ENGINE_URL ?? 'http://localhost:5000',
-      mintUrl: initOptions.mintUrl ?? process.env.BITCASTER_MINT_URL ?? 'http://localhost:8085',
+      engineBaseUrl: config.daemon.engineUrl,
+      mintUrl: config.daemon.mintUrl,
       walletSeedHex: secrets.walletSeedHex,
       nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       nostrPublicKeyHex: secrets.nostrPublicKeyHex,
@@ -45,6 +47,7 @@ switch (command) {
     break
   }
   case 'run': {
+    freezeNativeConfigAtStartup()
     await assertDaemonProfileStorageComplete()
     const { acquireDaemonRunLock } = await import('./runLock.ts')
     const { startDaemonServer } = await import('./server.ts')
@@ -222,7 +225,7 @@ switch (command) {
       : undefined
     try {
       const rangeOrderCoordinator = new DaemonCtfRangeOrderCoordinator(profileDir(), currentFence, {
-        allowInsecureLoopbackHttp: process.env.BITCASTER_ALLOW_INSECURE_LOOPBACK_HTTP === '1',
+        allowInsecureLoopbackHttp: isLoopbackHttpUrl(profile.mintUrl),
       })
       const { BitcasterEngineClient } = await import('@bitcaster-market/client-sdk/engineClient')
       const { signNip98 } = await import('./nostrAuth.ts')
@@ -340,7 +343,6 @@ switch (command) {
     process.stderr.write(`Usage:
   bitcaster-daemon [--datadir <path>] init [--wallet-seed-hex-file <path>]
                          [--nostr-secret-key-hex-file <path>]
-                         [--engine-url <url>] [--mint-url <url>]
   bitcaster-daemon [--datadir <path>] run
 `)
     process.exitCode = 1
@@ -370,14 +372,10 @@ function parseInvocation(argv: string[]): {
 function parseInitOptions(args: string[]): {
   walletSeedHexFile?: string
   nostrSecretKeyHexFile?: string
-  engineUrl?: string
-  mintUrl?: string
 } {
   const options: {
     walletSeedHexFile?: string
     nostrSecretKeyHexFile?: string
-    engineUrl?: string
-    mintUrl?: string
   } = {}
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]
@@ -385,10 +383,6 @@ function parseInitOptions(args: string[]): {
       options.walletSeedHexFile = requiredArg(args[++i], '--wallet-seed-hex-file')
     } else if (arg === '--nostr-secret-key-hex-file') {
       options.nostrSecretKeyHexFile = requiredArg(args[++i], '--nostr-secret-key-hex-file')
-    } else if (arg === '--engine-url') {
-      options.engineUrl = requiredArg(args[++i], '--engine-url')
-    } else if (arg === '--mint-url') {
-      options.mintUrl = requiredArg(args[++i], '--mint-url')
     } else {
       throw new Error(`Unknown init option: ${arg}`)
     }

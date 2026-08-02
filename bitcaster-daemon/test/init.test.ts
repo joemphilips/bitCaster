@@ -37,15 +37,15 @@ test('fresh init publishes one complete SQLite authority', async () => {
     await runDaemonInit(home, {
       walletSeedHex,
       nostrSecretKeyHex,
-      engineUrl: 'http://engine.example/',
-      mintUrl: 'http://mint.example/',
+      engineUrl: 'https://engine.example/',
+      mintUrl: 'https://mint.example/',
     })
 
     await withDaemonHome(home, async () => {
       const profile = await readProfile()
       const secrets = await readSecrets()
-      assert.equal(profile?.engineBaseUrl, 'http://engine.example')
-      assert.equal(profile?.mintUrl, 'http://mint.example')
+      assert.equal(profile?.engineBaseUrl, 'https://engine.example')
+      assert.equal(profile?.mintUrl, 'https://mint.example')
       assert.equal(
         profile?.nostrPublicKey,
         '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
@@ -58,7 +58,7 @@ test('fresh init publishes one complete SQLite authority', async () => {
       assert.equal(profilePath(), rpcTokenPath())
     })
 
-    assert.deepEqual(await readdir(home), ['daemon-state.sqlite'])
+    assert.deepEqual(await readdir(home), ['config.json', 'daemon-state.sqlite'])
     if (process.platform !== 'win32') {
       assert.equal((await stat(home)).mode & 0o777, 0o700)
       assert.equal((await stat(join(home, 'daemon-state.sqlite'))).mode & 0o777, 0o600)
@@ -68,7 +68,10 @@ test('fresh init publishes one complete SQLite authority', async () => {
 
 test('fresh init defaults endpoints and generates identity', async () => {
   await withFreshHome(async (home) => {
-    await runDaemonInit(home)
+    await runMain(home, ['init'], {
+      BITCASTER_ENGINE_URL: 'https://ignored-engine.example',
+      BITCASTER_MINT_URL: 'https://ignored-mint.example',
+    })
     await withDaemonHome(home, async () => {
       const profile = await readProfile()
       const secrets = await readSecrets()
@@ -202,7 +205,7 @@ test('separate authority writers cannot recreate legacy files', async () => {
         /immutable after fresh atomic init/,
       )
     })
-    assert.deepEqual(await readdir(home), ['daemon-state.sqlite'])
+    assert.deepEqual(await readdir(home), ['config.json', 'daemon-state.sqlite'])
   })
 })
 
@@ -289,6 +292,26 @@ async function runDaemonInit(
   }
   const source = await createSecretSource(secrets)
   try {
+    if (secrets.engineUrl !== undefined || secrets.mintUrl !== undefined) {
+      await mkdir(home, { mode: 0o700 })
+      await writeFile(
+        join(home, 'config.json'),
+        `${JSON.stringify(
+          {
+            version: 1,
+            daemon: {
+              engineUrl: secrets.engineUrl ?? 'http://localhost:5000',
+              mintUrl: secrets.mintUrl ?? 'http://localhost:8085',
+              autoRetireResolvedConditionInventory: false,
+            },
+            cli: { trustedEngineUrls: [] },
+          },
+          null,
+          2,
+        )}\n`,
+        { mode: 0o600 },
+      )
+    }
     const args = [
       'init',
       '--wallet-seed-hex-file',
@@ -296,8 +319,6 @@ async function runDaemonInit(
       '--nostr-secret-key-hex-file',
       source.nostrSecretKeyFile,
     ]
-    if (secrets.engineUrl) args.push('--engine-url', secrets.engineUrl)
-    if (secrets.mintUrl) args.push('--mint-url', secrets.mintUrl)
     await runMain(home, args, extraEnv)
   } finally {
     await rm(source.directory, { recursive: true, force: true })

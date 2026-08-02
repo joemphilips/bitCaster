@@ -3,7 +3,6 @@ import type { OracleNostrEvent } from '@bitcaster-market/client-sdk'
 export type DaemonCommand =
   | { method: 'health'; params?: undefined }
   | { method: 'daemon.status'; params?: undefined }
-  | { method: 'daemon.config'; params: { engineUrl?: string; mintUrl?: string } }
   | { method: 'market.create'; params: MarketCreateParams }
   | { method: 'market.close'; params: MarketCloseParams }
   | { method: 'markets.query'; params: QueryMarketsParams }

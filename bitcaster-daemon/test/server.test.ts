@@ -68,9 +68,7 @@ test('startDaemonServer serves default Unix socket RPC on Unix', async () => {
 
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-server-socket-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
-  const previousPort = process.env.BITCASTER_DAEMON_PORT
   process.env.BITCASTER_DAEMON_HOME = home
-  delete process.env.BITCASTER_DAEMON_PORT
   const server = await startDaemonServer()
   try {
     const response = await postSocketJson(join(home, 'daemon.sock'), {
@@ -91,8 +89,6 @@ test('startDaemonServer serves default Unix socket RPC on Unix', async () => {
     await once(server, 'close')
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
-    if (previousPort === undefined) delete process.env.BITCASTER_DAEMON_PORT
-    else process.env.BITCASTER_DAEMON_PORT = previousPort
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -102,9 +98,7 @@ test('startDaemonServer refuses to replace a live Unix socket daemon', async () 
 
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-live-socket-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
-  const previousPort = process.env.BITCASTER_DAEMON_PORT
   process.env.BITCASTER_DAEMON_HOME = home
-  delete process.env.BITCASTER_DAEMON_PORT
   const server = await startDaemonServer()
   try {
     await assert.rejects(() => startDaemonServer(), /RPC socket is already in use/)
@@ -113,8 +107,6 @@ test('startDaemonServer refuses to replace a live Unix socket daemon', async () 
     await once(server, 'close')
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
-    if (previousPort === undefined) delete process.env.BITCASTER_DAEMON_PORT
-    else process.env.BITCASTER_DAEMON_PORT = previousPort
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -124,9 +116,7 @@ test('startDaemonServer removes stale Unix socket before restart', async () => {
 
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-stale-socket-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
-  const previousPort = process.env.BITCASTER_DAEMON_PORT
   process.env.BITCASTER_DAEMON_HOME = home
-  delete process.env.BITCASTER_DAEMON_PORT
   const socketPath = join(home, 'daemon.sock')
   const stale = spawn(
     process.execPath,
@@ -160,8 +150,6 @@ test('startDaemonServer removes stale Unix socket before restart', async () => {
     if (!stale.killed) stale.kill('SIGKILL')
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
-    if (previousPort === undefined) delete process.env.BITCASTER_DAEMON_PORT
-    else process.env.BITCASTER_DAEMON_PORT = previousPort
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -205,124 +193,6 @@ test('startDaemonServer requires initialized RPC token for non-health commands',
     await once(server, 'close')
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
-    await rm(home, { recursive: true, force: true })
-  }
-})
-
-test('market.create refuses insecure daemon profile engine URL before engine RPC', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-market-create-http-'))
-  const previousHome = process.env.BITCASTER_DAEMON_HOME
-  const previousAllowInsecure = process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-  process.env.BITCASTER_DAEMON_HOME = home
-  delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-  const secrets = createDaemonSecrets()
-  await bootstrapFreshDaemonProfile({
-    directory: home,
-    engineBaseUrl: 'http://engine.example',
-    mintUrl: 'http://localhost:8085',
-    walletSeedHex: secrets.walletSeedHex,
-    nostrSecretKeyHex: secrets.nostrSecretKeyHex,
-    nostrPublicKeyHex: secrets.nostrPublicKeyHex,
-  })
-  const token = (await readRpcToken())!
-  const server = await startDaemonServer({ host: '127.0.0.1', port: 0 })
-  try {
-    const address = server.address()
-    assert.equal(typeof address, 'object')
-    assert.ok(address)
-    const response = await fetch(`http://127.0.0.1:${address.port}/rpc`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        method: 'market.create',
-        params: {
-          conditionId: 'cond-1',
-          title: 'Market',
-          description: 'Description',
-          outcomes: ['YES', 'NO'],
-        },
-      }),
-    })
-
-    assert.equal(response.status, 200)
-    assert.deepEqual(await response.json(), {
-      ok: false,
-      error:
-        'market.create requires https engine URL (or BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost)',
-      code: 'insecure-engine-url',
-    })
-  } finally {
-    server.close()
-    await once(server, 'close')
-    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
-    else process.env.BITCASTER_DAEMON_HOME = previousHome
-    if (previousAllowInsecure === undefined) delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-    else process.env.BITCASTER_ALLOW_INSECURE_ENGINE = previousAllowInsecure
-    await rm(home, { recursive: true, force: true })
-  }
-})
-
-test('market.close refuses insecure daemon profile engine URL before engine RPC', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-market-close-http-'))
-  const previousHome = process.env.BITCASTER_DAEMON_HOME
-  const previousAllowInsecure = process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-  process.env.BITCASTER_DAEMON_HOME = home
-  delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-  const secrets = createDaemonSecrets()
-  await bootstrapFreshDaemonProfile({
-    directory: home,
-    engineBaseUrl: 'http://engine.example',
-    mintUrl: 'http://localhost:8085',
-    walletSeedHex: secrets.walletSeedHex,
-    nostrSecretKeyHex: secrets.nostrSecretKeyHex,
-    nostrPublicKeyHex: secrets.nostrPublicKeyHex,
-  })
-  const token = (await readRpcToken())!
-  const server = await startDaemonServer({ host: '127.0.0.1', port: 0 })
-  try {
-    const address = server.address()
-    assert.equal(typeof address, 'object')
-    assert.ok(address)
-    const response = await fetch(`http://127.0.0.1:${address.port}/rpc`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        method: 'market.close',
-        params: {
-          conditionId: 'cond-1',
-          attestationEvent: {
-            id: 'e'.repeat(64),
-            pubkey: 'p'.repeat(64),
-            createdAt: 1_718_000_000,
-            kind: 89,
-            tags: [['d', 'cond-1']],
-            content: '{}',
-            sig: 's'.repeat(128),
-          },
-        },
-      }),
-    })
-
-    assert.equal(response.status, 200)
-    assert.deepEqual(await response.json(), {
-      ok: false,
-      error:
-        'market.create requires https engine URL (or BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost)',
-      code: 'insecure-engine-url',
-    })
-  } finally {
-    server.close()
-    await once(server, 'close')
-    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
-    else process.env.BITCASTER_DAEMON_HOME = previousHome
-    if (previousAllowInsecure === undefined) delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-    else process.env.BITCASTER_ALLOW_INSECURE_ENGINE = previousAllowInsecure
     await rm(home, { recursive: true, force: true })
   }
 })

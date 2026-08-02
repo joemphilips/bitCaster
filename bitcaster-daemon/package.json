@@ -25,6 +25,10 @@
     "./dataDir": {
       "types": "./dist/dataDir.d.ts",
       "import": "./dist/dataDir.js"
+    },
+    "./nativeConfig": {
+      "types": "./dist/nativeConfig.d.ts",
+      "import": "./dist/nativeConfig.js"
     }
   },
   "files": [

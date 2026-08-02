@@ -26,16 +26,8 @@ import {
   restartDaemon,
   stopDaemon,
 } from './rpc.ts'
-import {
-  configFilePath,
-  readConfig,
-  resolveEngineUrl,
-  resolveMintUrl,
-  writeConfig,
-  type CliConfig,
-} from './config.ts'
+import { configFilePath, readConfig, updateConfig } from './config.ts'
 import type {
-  DaemonCommand,
   DaemonResponse,
   MarketCloseParams,
   MarketCreateParams,
@@ -60,7 +52,6 @@ let globalEngineUrl: string | undefined
 let globalMintUrl: string | undefined
 let globalDryRun = false
 let globalJson = false
-let rootProgram: Command | undefined
 
 const DIRECT_ENGINE_READ_TIMEOUT_MS = 5_000
 const MAX_CASHU_TOKEN_FILE_BYTES = 4 * 1_024 * 1_024
@@ -71,24 +62,16 @@ await main()
 
 async function main(): Promise<void> {
   const program = new Command()
-  rootProgram = program
   program
     .name('bitcaster-cli')
     .description('Command-line client for bitCaster markets.')
     .version(packageJson.version ?? '0.0.0', '-V, --version')
     .option('--datadir <path>', 'Use one directory for config, wallet state, and daemon files')
-    .option('--engine-url <url>', 'Override the matching engine URL for CLI-side reads')
-    .option('--mint-url <url>', 'Override the mint URL for CLI-side operations')
     .option('--dry-run', 'Validate and print the intended operation without executing it')
     .option('--json', 'Print JSON output (currently the default)')
     .addHelpText(
       'after',
-      `
-Environment:
-  BITCASTER_DAEMON_URL   Override daemon RPC base URL.
-  BITCASTER_DAEMON_PORT  Override default daemon RPC port.
-
-Long-running wallet and swap operations are delegated to bitcaster-daemon.`,
+      '\nLong-running wallet and swap operations are delegated to bitcaster-daemon.',
     )
     .exitOverride()
     .configureOutput({
@@ -97,17 +80,16 @@ Long-running wallet and swap operations are delegated to bitcaster-daemon.`,
       outputError: (str, write) => write(str),
     })
 
-  program.hook('preAction', () => {
+  program.hook('preAction', (_thisCommand, actionCommand) => {
     const opts = program.opts<{
-      engineUrl?: string
-      mintUrl?: string
       datadir?: string
       dryRun?: boolean
       json?: boolean
     }>()
     configureDataDir(opts.datadir)
-    globalEngineUrl = resolveEngineUrl(opts.engineUrl)
-    globalMintUrl = resolveMintUrl(opts.mintUrl)
+    const config = readConfig(commandAllowsMissingConfig(actionCommand))
+    globalEngineUrl = config.engineUrl
+    globalMintUrl = config.mintUrl
     globalDryRun = opts.dryRun === true
     globalJson = opts.json === true
     void globalEngineUrl
@@ -136,6 +118,22 @@ Long-running wallet and swap operations are delegated to bitcaster-daemon.`,
     }
     throw err
   }
+}
+
+function commandAllowsMissingConfig(command: Command): boolean {
+  const names: string[] = []
+  for (let current: Command | null = command; current?.parent; current = current.parent) {
+    names.unshift(current.name())
+  }
+  const path = names.join(' ')
+  return (
+    path === 'completion' ||
+    path === 'config path' ||
+    path === 'config set' ||
+    path === 'daemon init' ||
+    path === 'daemon config' ||
+    path === 'daemon stop'
+  )
 }
 
 function registerCommands(program: Command): void {
@@ -186,7 +184,7 @@ function registerMarketCommand(program: Command): void {
     .option('--cursor <cursor>', 'Pagination cursor')
     .addHelpText(
       'after',
-      '\nExamples:\n  bitcaster-cli market list --state Open --sort Trending\n  bitcaster-cli --engine-url https://engine.example market list --tag sports',
+      '\nExamples:\n  bitcaster-cli market list --state Open --sort Trending\n  bitcaster-cli market list --tag sports',
     )
     .action(async (options: MarketListOptions) => {
       await queryMarkets(options)
@@ -714,10 +712,7 @@ function registerOrderCommand(program: Command): void {
   order
     .command('book <marketId>')
     .description('Show the order book for one market.')
-    .addHelpText(
-      'after',
-      '\nExample:\n  bitcaster-cli --engine-url https://engine.example order book <market-id>',
-    )
+    .addHelpText('after', '\nExample:\n  bitcaster-cli order book <market-id>')
     .action(async (marketId: string) => {
       await printDirectEngineResultOrDaemon(
         () => fetchOrderBookFromEngine(marketId),
@@ -881,10 +876,7 @@ function registerDaemonCommand(program: Command): void {
       '\nExample:\n  bitcaster-cli daemon config --engine-url <url> --mint-url <url>',
     )
     .action(async (options: { engineUrl?: string; mintUrl?: string }) => {
-      const params = daemonConfigParams(options)
-      const response = await callDaemon({ method: 'daemon.config', params })
-      await printDaemonResult(Promise.resolve(response))
-      await handleRestartRequired(response)
+      await setCliConfig(options)
     })
 
   daemon
@@ -924,27 +916,17 @@ function registerDaemonCommand(program: Command): void {
     .description('Initialize daemon profile, wallet seed, Nostr key, and endpoints.')
     .option('--wallet-seed-hex-file <path>', 'File containing wallet seed hex')
     .option('--nostr-secret-key-hex-file <path>', 'File containing Nostr secret key hex')
-    .option('--engine-url <url>', 'Engine URL')
-    .option('--mint-url <url>', 'Mint URL')
     .option('--force', 'Overwrite existing daemon profile')
-    .addHelpText(
-      'after',
-      '\nExample:\n  bitcaster-cli daemon init --engine-url <url> --mint-url <url>',
-    )
+    .addHelpText('after', '\nExample:\n  bitcaster-cli daemon init')
     .action(
       async (options: {
         walletSeedHexFile?: string
         nostrSecretKeyHexFile?: string
-        engineUrl?: string
-        mintUrl?: string
         force?: boolean
       }) => {
         const passthrough = ['init']
         pushOption(passthrough, '--wallet-seed-hex-file', options.walletSeedHexFile)
         pushOption(passthrough, '--nostr-secret-key-hex-file', options.nostrSecretKeyHexFile)
-        const rootOptions = rootProgram?.opts<{ engineUrl?: string; mintUrl?: string }>() ?? {}
-        pushOption(passthrough, '--engine-url', options.engineUrl ?? rootOptions.engineUrl)
-        pushOption(passthrough, '--mint-url', options.mintUrl ?? rootOptions.mintUrl)
         if (options.force === true) passthrough.push('--force')
         await runDaemonCommand(passthrough)
         process.stdout.write(`Config: ${configFilePath()}\n`)
@@ -1003,10 +985,9 @@ function daemonConfigParams(options: { engineUrl?: string; mintUrl?: string }): 
   engineUrl?: string
   mintUrl?: string
 } {
-  const rootOptions = rootProgram?.opts<{ engineUrl?: string; mintUrl?: string }>() ?? {}
   const params: { engineUrl?: string; mintUrl?: string } = {}
-  const engineUrl = options.engineUrl ?? rootOptions.engineUrl
-  const mintUrl = options.mintUrl ?? rootOptions.mintUrl
+  const engineUrl = options.engineUrl
+  const mintUrl = options.mintUrl
   if (engineUrl !== undefined) params.engineUrl = engineUrl
   if (mintUrl !== undefined) params.mintUrl = mintUrl
   if (!params.engineUrl && !params.mintUrl) {
@@ -1030,59 +1011,18 @@ function printConfigValue(key?: string): void {
 
 async function setCliConfig(options: { engineUrl?: string; mintUrl?: string }): Promise<void> {
   const params = daemonConfigParams(options)
-  const config: CliConfig = readConfig()
-  if (params.engineUrl !== undefined) config.engineUrl = params.engineUrl
-  if (params.mintUrl !== undefined) config.mintUrl = params.mintUrl
-  writeConfig(config)
-
-  try {
-    const response = await callDaemonWithoutAutostart({ method: 'daemon.config', params })
-    await printDaemonResult(Promise.resolve(response))
-    await handleRestartRequired(response)
-  } catch {
-    process.stderr.write(
-      `daemon not reachable; config.json updated. Run 'bitcaster daemon init' to initialize the daemon. Config written to ${configFilePath()}.\n`,
-    )
-    process.stdout.write(
-      `${JSON.stringify({ ok: true, result: { config, daemonUpdated: false } }, null, 2)}\n`,
-    )
-  }
-}
-
-async function handleRestartRequired(response: unknown): Promise<void> {
-  if (!daemonRestartRequired(response)) return
+  const config = updateConfig((current) => ({
+    ...current,
+    ...(params.engineUrl === undefined ? {} : { engineUrl: params.engineUrl }),
+    ...(params.mintUrl === undefined ? {} : { mintUrl: params.mintUrl }),
+  }))
   if (await isCliSpawnedDaemonRunning()) {
     await restartDaemon()
-    process.stderr.write('daemon config updated; daemon restarted\n')
-    return
+    process.stderr.write('config.json updated; daemon restarted\n')
+  } else {
+    process.stderr.write('config.json updated; restart bitcaster-daemon to apply changes\n')
   }
-  process.stderr.write('daemon config updated; restart bitcaster-daemon to apply changes\n')
-}
-
-function daemonRestartRequired(response: unknown): boolean {
-  if (!response || typeof response !== 'object') return false
-  const daemonResponse = response as { ok?: unknown; result?: unknown }
-  if (
-    daemonResponse.ok !== true ||
-    !daemonResponse.result ||
-    typeof daemonResponse.result !== 'object'
-  ) {
-    return false
-  }
-  return (daemonResponse.result as { restartRequired?: unknown }).restartRequired === true
-}
-
-async function callDaemonWithoutAutostart<T = unknown>(
-  command: DaemonCommand,
-): Promise<DaemonResponse<T>> {
-  const previous = process.env.BITCASTER_CLI_AUTOSTART_DAEMON
-  process.env.BITCASTER_CLI_AUTOSTART_DAEMON = '0'
-  try {
-    return await callDaemon<T>(command)
-  } finally {
-    if (previous === undefined) delete process.env.BITCASTER_CLI_AUTOSTART_DAEMON
-    else process.env.BITCASTER_CLI_AUTOSTART_DAEMON = previous
-  }
+  process.stdout.write(`${JSON.stringify({ ok: true, result: { config } }, null, 2)}\n`)
 }
 
 interface ConsolidateArgs {
@@ -1466,10 +1406,10 @@ async function ensureTrustedAuthedEngineUrl(trustEngineUrl: boolean): Promise<vo
       throwValidation(`Engine URL was not trusted: ${globalEngineUrl}`)
     }
   }
-  writeConfig({
-    ...config,
-    trustedEngineUrls: Array.from(new Set([...config.trustedEngineUrls, normalizedEngineUrl])),
-  })
+  updateConfig((current) => ({
+    ...current,
+    trustedEngineUrls: Array.from(new Set([...current.trustedEngineUrls, normalizedEngineUrl])),
+  }))
 }
 
 function normalizeTrustedEngineUrl(value: string): string {
@@ -1483,13 +1423,10 @@ function validateAuthedEngineUrl(value: string): void {
   } catch {
     throwValidation(`Invalid engine URL: ${value}`)
   }
-  const validation = validateMarketCreateEngineUrl(
-    url.toString(),
-    process.env.BITCASTER_ALLOW_INSECURE_ENGINE === '1',
-  )
+  const validation = validateMarketCreateEngineUrl(url.toString(), true)
   if (validation.ok) return
   throwValidation(
-    `Refusing insecure engine URL for market create: ${value}. Use https://, or set BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost only.`,
+    `Refusing insecure engine URL for market create: ${value}. Use https:// or a loopback URL.`,
   )
 }
 

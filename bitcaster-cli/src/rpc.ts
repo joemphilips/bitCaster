@@ -12,6 +12,7 @@ import { cliHomeDir } from './paths.ts'
 
 const DAEMON_STARTUP_TIMEOUT_MS = 10_000
 const DAEMON_STARTUP_POLL_MS = 100
+const TEST_DAEMON_URL = Symbol.for('bitcaster.test.daemon-url')
 const execFileAsync = promisify(execFile)
 let rpcTokenPromise: Promise<string | null> | undefined
 
@@ -24,7 +25,7 @@ interface DaemonPidFile {
 
 export class DaemonNotReachableError extends Error {
   readonly address: string
-  readonly hint = "Run 'bitcaster daemon init' or set BITCASTER_DAEMON_URL."
+  readonly hint = "Run 'bitcaster daemon init' and verify the selected --datadir."
 
   constructor(address: string, options?: { cause?: unknown }) {
     super(`daemon not reachable at ${address}`, options)
@@ -39,8 +40,7 @@ export function daemonUrl(): string {
 }
 
 export function daemonSocketPath(): string | null {
-  if (process.env.BITCASTER_DAEMON_URL) return null
-  if (process.env.BITCASTER_DAEMON_PORT) return null
+  if (injectedDaemonBaseUrl() !== undefined) return null
   if (process.platform === 'win32') return null
   return rpcSocketPath()
 }
@@ -66,11 +66,16 @@ export function daemonAttemptAddress(): string {
 }
 
 function daemonBaseUrl(): string {
-  return process.env.BITCASTER_DAEMON_URL || defaultDaemonBaseUrl()
+  return injectedDaemonBaseUrl() ?? defaultDaemonBaseUrl()
 }
 
 function defaultDaemonBaseUrl(): string {
-  return `http://127.0.0.1:${process.env.BITCASTER_DAEMON_PORT || '42871'}`
+  return 'http://127.0.0.1:42871'
+}
+
+function injectedDaemonBaseUrl(): string | undefined {
+  const value = (globalThis as Record<symbol, unknown>)[TEST_DAEMON_URL]
+  return typeof value === 'string' ? value : undefined
 }
 
 async function sendDaemonCommand<T = unknown>(command: DaemonCommand): Promise<DaemonResponse<T>> {
@@ -133,8 +138,7 @@ function sendDaemonCommandOverSocket<T = unknown>(
 }
 
 function shouldAutoStartDaemon(err: unknown): boolean {
-  if (process.env.BITCASTER_CLI_AUTOSTART_DAEMON === '0') return false
-  if (process.env.BITCASTER_DAEMON_URL) return false
+  if (injectedDaemonBaseUrl() !== undefined) return false
   if (!isNetworkFailure(err)) return false
   const socketPath = daemonSocketPath()
   return Boolean(socketPath) || daemonBaseUrl() === defaultDaemonBaseUrl()
