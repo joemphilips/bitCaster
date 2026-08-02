@@ -888,11 +888,7 @@ export function createDurableCustodyDispatchIntent(input: {
       binding: structuredClone(input.facts.binding),
       semanticKind: input.semanticKind,
       state: 'dispatch-intent',
-      terminalReplayEvidenceRequired:
-        input.semanticKind === 'swap-lock' ||
-        input.semanticKind === 'swap-claim' ||
-        input.semanticKind === 'swap-refund' ||
-        input.semanticKind === 'conditional-keyset-swap',
+      terminalReplayEvidenceRequired: requiresTerminalReplay(input.semanticKind),
       custodyContext: {
         normalizedMint: input.normalizedMint,
         unit: input.facts.unit,
