@@ -7,6 +7,7 @@ interface EncryptedWalletBackupKeyBinding {
 }
 
 const ISSUED_BACKUP_KEY_HANDLES = new WeakMap<object, EncryptedWalletBackupKeyBinding>()
+const IMPORTED_PREPARATION_KEYS = new WeakMap<object, Promise<CryptoKey>>()
 
 /** Internal capability registry; deliberately absent from package exports. */
 export function registerEncryptedWalletBackupKeyHandle(
@@ -20,6 +21,7 @@ export function registerEncryptedWalletBackupKeyHandle(
       preparationPersistenceKey: binding.preparationPersistenceKey.slice(),
     }),
   )
+  IMPORTED_PREPARATION_KEYS.delete(handle)
 }
 
 export function requireEncryptedWalletBackupKeyWalletId(
@@ -33,7 +35,7 @@ export async function signEncryptedWalletBackupPreparationCapability(
   payload: Uint8Array,
 ): Promise<Uint8Array> {
   const binding = requireKeyBinding(handle)
-  const key = await importHmacKey(binding)
+  const key = await importHmacKey(handle, binding)
   return new Uint8Array(await binding.subtle.sign('HMAC', key, asArrayBuffer(payload)))
 }
 
@@ -46,7 +48,7 @@ export async function verifyEncryptedWalletBackupPreparationCapability(
   if (authenticationTag.byteLength !== 32) {
     throw new Error('backup preparation capability authentication failed')
   }
-  const key = await importHmacKey(binding)
+  const key = await importHmacKey(handle, binding)
   if (
     !(await binding.subtle.verify(
       'HMAC',
@@ -73,14 +75,21 @@ function requireKeyBinding(value: unknown): EncryptedWalletBackupKeyBinding {
   return ISSUED_BACKUP_KEY_HANDLES.get(handle)!
 }
 
-async function importHmacKey(binding: EncryptedWalletBackupKeyBinding): Promise<CryptoKey> {
-  return binding.subtle.importKey(
+async function importHmacKey(
+  handle: EncryptedWalletBackupKeyHandle,
+  binding: EncryptedWalletBackupKeyBinding,
+): Promise<CryptoKey> {
+  const cached = IMPORTED_PREPARATION_KEYS.get(handle)
+  if (cached !== undefined) return cached
+  const imported = binding.subtle.importKey(
     'raw',
     asArrayBuffer(binding.preparationPersistenceKey),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign', 'verify'],
   )
+  IMPORTED_PREPARATION_KEYS.set(handle, imported)
+  return imported
 }
 
 function asArrayBuffer(value: Uint8Array): ArrayBuffer {
