@@ -67,6 +67,7 @@ const mocks = vi.hoisted(() => {
   const markProofOperationCompleted = vi.fn(async () => undefined);
   const markProofOperationFailed = vi.fn(async () => undefined);
   const getProofOperations = vi.fn(async () => []);
+  const admitBrowserReceivedProofs = vi.fn(async () => undefined);
   return {
     wallet,
     store,
@@ -77,8 +78,13 @@ const mocks = vi.hoisted(() => {
     markProofOperationCompleted,
     markProofOperationFailed,
     getProofOperations,
+    admitBrowserReceivedProofs,
   };
 });
+
+vi.mock("@/lib/browserCustodyProofReceive", () => ({
+  admitBrowserReceivedProofs: mocks.admitBrowserReceivedProofs,
+}));
 
 vi.mock("@/stores/wallet", () => ({
   useWalletStore: {
@@ -160,6 +166,8 @@ beforeEach(() => {
   mocks.markProofOperationFailed.mockReset();
   mocks.getProofOperations.mockReset();
   mocks.getProofOperations.mockResolvedValue([]);
+  mocks.admitBrowserReceivedProofs.mockReset();
+  mocks.admitBrowserReceivedProofs.mockResolvedValue(undefined);
   mocks.getWallet.mockClear();
   mocks.getWallet.mockResolvedValue(mocks.wallet);
   mocks.store.getWallet = mocks.getWallet;
@@ -216,6 +224,14 @@ describe("recoverable external-token receive journal", () => {
 
     await cashu.receiveAndStoreTokenRecoverably("cashuB-token", mintUrl, "sat", "sat");
 
+    expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mintUrl,
+        sourceOperationId: expect.stringMatching(/^token-receive:/),
+        unit: "sat",
+        proofs: [expect.objectContaining({ secret: "conditional-output" })],
+      }),
+    );
     expect(mocks.addProofs).toHaveBeenCalledWith([
       expect.objectContaining({
         secret: "conditional-output",
@@ -267,6 +283,9 @@ describe("recoverable external-token receive journal", () => {
       expect(mocks.prepareProofOperation.mock.invocationCallOrder[0]).toBeLessThan(
         mocks.wallet.completeSwap.mock.invocationCallOrder[0],
       );
+      expect(mocks.admitBrowserReceivedProofs.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.addProofs.mock.invocationCallOrder[0],
+      );
 
       mocks.getProofOperations.mockResolvedValueOnce([
         {
@@ -290,6 +309,7 @@ describe("recoverable external-token receive journal", () => {
 
       await cashu.recoverPendingTokenReceives();
 
+      expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledTimes(2);
       expect(mocks.wallet.restore).toHaveBeenCalledWith(7, 2, {
         keysetId: `keyset-${unit}`,
       });

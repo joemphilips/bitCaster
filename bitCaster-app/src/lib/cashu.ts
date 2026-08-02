@@ -59,6 +59,8 @@ import {
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import { proofsWithOptionalConditionalMetadata } from "@/lib/conditionalKeysetMetadata";
+import { admitBrowserReceivedProofs } from "@/lib/browserCustodyProofReceive";
+import { toSeed } from "@/lib/bip39";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -645,6 +647,16 @@ export async function receiveAndStoreTokenRecoverably(
     baseAsset: normalizedBaseAsset,
     unit,
   }));
+  const mnemonic = useWalletStore.getState().mnemonic;
+  if (!mnemonic) throw new Error("The wallet profile is unavailable");
+  await admitBrowserReceivedProofs({
+    seed: toSeed(mnemonic.split(" ")),
+    sourceOperationId: operationId,
+    mintUrl: normalizedMintUrl,
+    unit,
+    wallet,
+    proofs: stored,
+  });
   await addProofs(stored);
   await markProofOperationCompleted(operationId, { receive: keep });
   return stored;
@@ -698,14 +710,21 @@ export async function recoverPendingTokenReceives(): Promise<{ pending: number }
             mintUrl: operation.mintUrl,
             proofs: states.unspent,
           });
-          await addProofs(
-            enrichedProofs.map((proof) => ({
-              ...proof,
-              mintUrl: operation.mintUrl,
-              baseAsset,
-              unit,
-            })),
-          );
+          const stored = enrichedProofs.map((proof) => ({
+            ...proof,
+            mintUrl: operation.mintUrl,
+            baseAsset,
+            unit,
+          }));
+          await admitBrowserReceivedProofs({
+            seed: toSeed(mnemonic.split(" ")),
+            sourceOperationId: operation.operationId,
+            mintUrl: operation.mintUrl,
+            unit,
+            wallet,
+            proofs: stored,
+          });
+          await addProofs(stored);
           requireCapturedProfile();
         }
         if (states.pending.length === 0) {
