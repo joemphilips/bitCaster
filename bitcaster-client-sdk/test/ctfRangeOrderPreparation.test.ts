@@ -11,7 +11,10 @@ import {
   deriveKeysetId,
   parseCtfPayToUnlockCondition,
   pointFromHex,
+  type CtfConvertRequest,
   type Proof,
+  type SerializedBlindedMessage,
+  type SerializedBlindedSignature,
 } from '@cashu/cashu-ts'
 import {
   completeCtfRangeOrderAuthorization,
@@ -42,6 +45,7 @@ import {
 } from '../src/ctfRangeSourceOperation.ts'
 import { planCtfRangeCapabilitySource } from '../src/ctfRangeCapabilitySourcePlan.ts'
 import {
+  completeCtfRangeCollateralSourceOperation,
   prepareCtfRangeCollateralSourceOperation,
   validateCtfRangeCollateralSourceOperation,
 } from '../src/ctfRangeCollateralSourceOperation.ts'
@@ -515,7 +519,7 @@ test('prepares one exact persisted range source through the shared wallet bounda
   )
 })
 
-test('prepares one exact collateral conversion with locked offer and ordinary complement', () => {
+test('prepares one exact collateral conversion with locked offer and ordinary complement', async () => {
   const preparation = persistedPreparation('range-operation-collateral', 'Sell')
   const authorization = prepareCtfRangeOrderAuthorization({
     seed: new Uint8Array(64).fill(7),
@@ -553,6 +557,33 @@ test('prepares one exact collateral conversion with locked offer and ordinary co
   assert.ok((operation.outputs.authorization?.length ?? 0) > 0)
   assert.ok((operation.outputs.complement?.length ?? 0) > 0)
   assert.deepEqual(validateCtfRangeCollateralSourceOperation(operation, preparation), operation)
+  let request: CtfConvertRequest | null = null
+  const completed = await completeCtfRangeCollateralSourceOperation({
+    operation,
+    preparation,
+    transport: {
+      postConvert: async (value) => {
+        request = value
+        return {
+          signatures: Object.fromEntries(
+            Object.entries(value.outputs).map(([collection, outputs]) => [
+              collection,
+              outputs.map(signBlindedMessage),
+            ]),
+          ),
+        }
+      },
+    },
+  })
+  assert.deepEqual(Object.keys(request!.inputs), ['*'])
+  assert.deepEqual(Object.keys(request!.outputs).sort(), [
+    '*',
+    COMPLEMENT_COLLECTION,
+    OUTCOME_COLLECTION,
+  ])
+  assert.equal(completed.authorization.reduce(sumProofAmount, 0), 10_000)
+  assert.equal(completed.complement.reduce(sumProofAmount, 0), 10_000)
+  assert.equal(completed.collateralChange.reduce(sumProofAmount, 0), 9_999)
   assert.throws(
     () =>
       validateCtfRangeCollateralSourceOperation(
@@ -873,4 +904,19 @@ function signOutput(output: OutputData): Proof {
     },
     { id: output.blindedMessage.id, keys: KEYS },
   )
+}
+
+function signBlindedMessage(output: SerializedBlindedMessage): SerializedBlindedSignature {
+  const signature = createBlindSignature(pointFromHex(output.B_), MINT_PRIVATE_KEY, output.id)
+  const dleq = createDLEQProof(pointFromHex(output.B_), MINT_PRIVATE_KEY)
+  return {
+    id: signature.id,
+    amount: Amount.from(output.amount),
+    C_: signature.C_.toHex(true),
+    dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
+  }
+}
+
+function sumProofAmount(sum: number, proof: Proof): number {
+  return sum + Number(proof.amount)
 }

@@ -1,4 +1,13 @@
-import { Amount, OutputData, type MintKeys } from '@cashu/cashu-ts'
+import {
+  Amount,
+  OutputData,
+  type CtfConvertRequest,
+  type CtfConvertResponse,
+  type MintKeys,
+  type Proof,
+  type SerializedBlindedMessage,
+  type SerializedBlindedSignature,
+} from '@cashu/cashu-ts'
 import type { CtfRangeCapabilitySourcePlan } from './ctfRangeCapabilitySourcePlan.ts'
 import {
   prepareCtfRangeOrderAuthorization,
@@ -32,6 +41,16 @@ const METADATA_KEYS = [
 ] as const
 
 type CollateralPlan = Extract<CtfRangeCapabilitySourcePlan, { kind: 'collateral-ctf-convert' }>
+
+export interface CtfRangeCollateralSourceTransport {
+  postConvert(request: CtfConvertRequest): Promise<CtfConvertResponse>
+}
+
+export interface CtfRangeCollateralSourceResult {
+  readonly authorization: readonly Proof[]
+  readonly complement: readonly Proof[]
+  readonly collateralChange: readonly Proof[]
+}
 
 /** Build one exact, persistable CTF conversion without performing mint I/O. */
 export function prepareCtfRangeCollateralSourceOperation(input: {
@@ -125,6 +144,55 @@ export function validateCtfRangeCollateralSourceOperation(
   return operation
 }
 
+/** Execute one exact persisted collateral conversion without deriving fresh outputs. */
+export async function completeCtfRangeCollateralSourceOperation(input: {
+  readonly operation: DurableCustodyProofOperationInput
+  readonly preparation: PersistedCtfRangeOrderPreparation
+  readonly transport: CtfRangeCollateralSourceTransport
+}): Promise<CtfRangeCollateralSourceResult> {
+  const operation = validateCtfRangeCollateralSourceOperation(input.operation, input.preparation)
+  const metadata = operation.metadata!
+  const groups = {
+    authorization: outputs(operation, 'authorization'),
+    complement: outputs(operation, 'complement'),
+    collateralChange: outputs(operation, 'collateral-change'),
+  }
+  const response = await input.transport.postConvert({
+    condition_id: text(metadata.conditionId, 'condition'),
+    parent_collection_id: text(metadata.parentCollectionId, 'parent collection'),
+    inputs: { '*': operation.inputs.map(toProof) },
+    outputs: {
+      [text(metadata.offeredCollection, 'offered collection')]: wireOutputs(groups.authorization),
+      [text(metadata.complementCollection, 'complement collection')]: wireOutputs(
+        groups.complement,
+      ),
+      ...(groups.collateralChange.length === 0
+        ? {}
+        : { '*': wireOutputs(groups.collateralChange) }),
+    },
+  })
+  return {
+    authorization: completeGroup(
+      'authorization',
+      groups.authorization,
+      response.signatures[text(metadata.offeredCollection, 'offered collection')],
+      mintKeys(input.preparation.offerKeyset),
+    ),
+    complement: completeGroup(
+      'complement',
+      groups.complement,
+      response.signatures[text(metadata.complementCollection, 'complement collection')],
+      mintKeys(input.preparation.complementKeyset),
+    ),
+    collateralChange: completeGroup(
+      'collateral-change',
+      groups.collateralChange,
+      response.signatures['*'],
+      mintKeys(input.preparation.receiveKeyset),
+    ),
+  }
+}
+
 function assertPreparation(
   operation: DurableCustodyProofOperationInput,
   preparation: PersistedCtfRangeOrderPreparation,
@@ -154,6 +222,58 @@ function randomOutputs(amounts: readonly number[], keyset: ActiveCtfRangeMintKey
   const outputs = OutputData.createRandomData(Amount.from(sumAmounts(amounts)), mintKeys(keyset))
   assertAmounts(outputs, amounts, 'random')
   return outputs
+}
+
+function completeGroup(
+  label: string,
+  planned: readonly OutputData[],
+  signatures: readonly SerializedBlindedSignature[] | undefined,
+  keyset: MintKeys,
+): Proof[] {
+  if (planned.length === 0) {
+    if (signatures !== undefined && signatures.length !== 0) {
+      throw new Error(`mint returned unexpected collateral range ${label} signatures`)
+    }
+    return []
+  }
+  if (signatures === undefined || signatures.length !== planned.length) {
+    throw new Error(`mint returned the wrong collateral range ${label} signature count`)
+  }
+  return planned.map((output, index) => {
+    const signature = signatures[index]!
+    if (
+      signature.id !== output.blindedMessage.id ||
+      amountToNumber(signature.amount) !== amountToNumber(output.blindedMessage.amount)
+    ) {
+      throw new Error(`mint returned a foreign collateral range ${label} signature`)
+    }
+    return normalizeProof(
+      output.toProof({ ...signature, amount: output.blindedMessage.amount }, keyset),
+    )
+  })
+}
+
+function wireOutputs(values: readonly OutputData[]): SerializedBlindedMessage[] {
+  return values.map(({ blindedMessage }) => ({
+    ...blindedMessage,
+    amount: amountToNumber(blindedMessage.amount),
+  })) as unknown as SerializedBlindedMessage[]
+}
+
+function toProof(value: DurableCustodyProofOperationInput['inputs'][number]): Proof {
+  return {
+    id: text(value.id, 'input keyset'),
+    amount: amountToNumber(value.amount) as never,
+    secret: value.secret,
+    C: text(value.C, 'input commitment'),
+    ...(value.dleq === undefined ? {} : { dleq: structuredClone(value.dleq) as never }),
+    ...(value.p2pk_e === undefined ? {} : { p2pk_e: value.p2pk_e }),
+    ...(value.witness === undefined ? {} : { witness: structuredClone(value.witness) as never }),
+  }
+}
+
+function normalizeProof(proof: Proof): Proof {
+  return { ...proof, amount: amountToNumber(proof.amount) as never }
 }
 
 function mintKeys(keyset: ActiveCtfRangeMintKeyset): MintKeys {
