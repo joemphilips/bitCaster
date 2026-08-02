@@ -61,6 +61,7 @@ export interface CtfRangeCapabilityOutputAllocation {
 export interface CtfRangeCapabilityParentMeasureInput {
   readonly kind: 'same-keyset-swap' | 'collateral-ctf-convert'
   readonly sourceKeysetId: string
+  readonly sourceKeyset: CtfRangeCapabilitySourceKeyset
   readonly children: readonly CtfRangeCapabilityBatchChild[]
   readonly inputs: readonly Proof[]
   readonly inputFee: number
@@ -318,7 +319,15 @@ function probeParent(
   const change = checkedSubtract(sumProofs(inputs), target + inputFee, 'parent change')
   const outputs = parentOutputs(kind, children, keyset, change)
   if (outputs.length > limits.maxOutputs) return { kind: 'rejected', reason: 'output limit' }
-  const candidate = { kind, sourceKeysetId: keyset.id, children, inputs, inputFee, outputs }
+  const candidate = {
+    kind,
+    sourceKeysetId: keyset.id,
+    sourceKeyset: keyset,
+    children,
+    inputs,
+    inputFee,
+    outputs,
+  }
   const requestBytes = positiveLimit(measure(candidate), 'measured request byte')
   if (requestBytes > limits.maxRequestBytes) {
     return { kind: 'rejected', reason: 'request byte limit' }
@@ -550,6 +559,7 @@ function digestParent(value: CtfRangeCapabilityParentMeasureInput, requestBytes:
   return digestValue({
     kind: value.kind,
     sourceKeysetId: value.sourceKeysetId,
+    sourceKeyset: value.sourceKeyset,
     children: value.children.map(normalizedChildAuthority),
     inputs: value.inputs.map(proofAuthority),
     inputFee: value.inputFee,

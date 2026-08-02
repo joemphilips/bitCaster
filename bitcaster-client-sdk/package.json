@@ -160,6 +160,10 @@
       "types": "./dist/ctfRangeCapabilityBatchPlan.d.ts",
       "import": "./dist/ctfRangeCapabilityBatchPlan.js"
     },
+    "./ctfRangeCapabilityParentOperation": {
+      "types": "./dist/ctfRangeCapabilityParentOperation.d.ts",
+      "import": "./dist/ctfRangeCapabilityParentOperation.js"
+    },
     "./ctfRangeCollateralSourceOperation": {
       "types": "./dist/ctfRangeCollateralSourceOperation.d.ts",
       "import": "./dist/ctfRangeCollateralSourceOperation.js"
