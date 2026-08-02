@@ -5,6 +5,8 @@ import {
   canonicalDurableCustodyKeysetIdentity,
   createDurableProofOperationFacts,
   prepareDurableCustodyExactArtifact,
+  readPreparedDurableCustodyArtifactBytes,
+  DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
   type DurableCustodyExactArtifact,
   type DurableCustodyAuthenticatedTerminalMintRejectionAuthority,
   type DurableCustodyOwnerAuthorization,
@@ -51,6 +53,12 @@ export interface DurableCustodyMintOperationAuthority {
   readonly schemaVersion: 1
   readonly operation: DurableCustodyProofOperationInput
   readonly keysets: readonly DurableCustodyMintKeysetAuthority[]
+  readonly transportRequest: {
+    readonly encoding: 'canonical-json'
+    readonly fingerprint: string
+    readonly byteLength: number
+  }
+  readonly applicationAuthority: unknown | null
 }
 
 export interface DurableCustodyVerifiedMintProof {
@@ -85,6 +93,8 @@ export interface DurableCustodyPreparedAuthenticatedTerminalMintRejection {
 export function prepareDurableCustodyMintOperationAuthority(input: {
   readonly operation: DurableCustodyProofOperationInput
   readonly keysets: readonly DurableCustodyMintKeysetAuthority[]
+  readonly exactTransportRequest?: DurableCustodyExactArtifact
+  readonly applicationAuthority?: unknown
 }): {
   readonly authority: DurableCustodyMintOperationAuthority
   readonly exactAuthority: DurableCustodyExactArtifact
@@ -92,11 +102,23 @@ export function prepareDurableCustodyMintOperationAuthority(input: {
   readonly exactOutput: DurableCustodyExactArtifact
   readonly facts: DurableProofOperationFacts
 } {
-  const authority = decodeDurableCustodyMintOperationAuthority({ schemaVersion: 1, ...input })
+  const operation = canonicalMintOperation(decodeDurableCustodyProofOperationInput(input.operation))
+  const exactRequest = input.exactTransportRequest ?? prepareDurableCustodyExactArtifact(operation)
+  const authority = decodeDurableCustodyMintOperationAuthority({
+    schemaVersion: 1,
+    operation,
+    keysets: input.keysets,
+    transportRequest: {
+      encoding: exactRequest.encoding,
+      fingerprint: exactRequest.fingerprint,
+      byteLength: readPreparedDurableCustodyArtifactBytes(exactRequest).length,
+    },
+    applicationAuthority: input.applicationAuthority ?? null,
+  })
   return {
     authority,
     exactAuthority: prepareDurableCustodyExactArtifact(authority),
-    exactRequest: prepareDurableCustodyExactArtifact(authority.operation),
+    exactRequest,
     exactOutput: prepareDurableCustodyExactArtifact(authority.operation.outputs),
     facts: factsForAuthority(authority),
   }
@@ -304,12 +326,28 @@ export function decodeDurableCustodyMintOperationAuthority(
   if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.keysets)) {
     throw new Error('custody mint operation authority is invalid')
   }
-  exactKeys(value, ['schemaVersion', 'operation', 'keysets'])
+  exactKeys(value, [
+    'schemaVersion',
+    'operation',
+    'keysets',
+    'transportRequest',
+    'applicationAuthority',
+  ])
   const operation = canonicalMintOperation(decodeDurableCustodyProofOperationInput(value.operation))
   assertSupportedOperation(operation)
   const keysets = value.keysets.map(decodeKeyset)
   assertExactKeysetAuthority(operation, keysets)
-  return { schemaVersion: 1, operation, keysets }
+  const transportRequest = decodeTransportRequestAuthority(value.transportRequest)
+  if (value.applicationAuthority === undefined) {
+    throw new Error('custody mint application authority is invalid')
+  }
+  return {
+    schemaVersion: 1,
+    operation,
+    keysets,
+    transportRequest,
+    applicationAuthority: structuredClone(value.applicationAuthority),
+  }
 }
 
 function verifyAndMapMintProofs(
@@ -513,17 +551,40 @@ function assertMintOperationRecord(
   authority: DurableCustodyMintOperationAuthority,
 ): void {
   const facts = factsForAuthority(authority)
-  const expectedRequest = prepareDurableCustodyExactArtifact(authority.operation)
   const expectedOutput = prepareDurableCustodyExactArtifact(authority.operation.outputs)
   const { outputPlanFingerprint: _, ...verification } = record.operation.verification
   if (
     record.operation.retainedOperationKey !== authority.operation.operationId ||
     JSON.stringify(record.operation.binding) !== JSON.stringify(facts.binding) ||
-    record.operation.exactRequest.body.fingerprint !== expectedRequest.fingerprint ||
+    record.operation.exactRequest.body.encoding !== authority.transportRequest.encoding ||
+    record.operation.exactRequest.body.fingerprint !== authority.transportRequest.fingerprint ||
+    record.operation.exactRequest.body.byteLength !== authority.transportRequest.byteLength ||
     record.operation.outputPlan.exactOutput.fingerprint !== expectedOutput.fingerprint ||
     JSON.stringify(verification) !== JSON.stringify(facts.verification)
   ) {
     throw new Error('custody mint operation record authority is foreign')
+  }
+}
+
+function decodeTransportRequestAuthority(
+  value: unknown,
+): DurableCustodyMintOperationAuthority['transportRequest'] {
+  if (!isRecord(value)) throw new Error('custody mint transport request authority is invalid')
+  exactKeys(value, ['encoding', 'fingerprint', 'byteLength'])
+  if (
+    value.encoding !== 'canonical-json' ||
+    typeof value.fingerprint !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(value.fingerprint) ||
+    !Number.isSafeInteger(value.byteLength) ||
+    (value.byteLength as number) < 1 ||
+    (value.byteLength as number) > DURABLE_CUSTODY_ARTIFACT_BYTES_MAX
+  ) {
+    throw new Error('custody mint transport request authority is invalid')
+  }
+  return {
+    encoding: 'canonical-json',
+    fingerprint: value.fingerprint,
+    byteLength: value.byteLength as number,
   }
 }
 

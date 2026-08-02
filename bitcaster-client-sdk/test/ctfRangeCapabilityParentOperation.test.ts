@@ -18,6 +18,7 @@ import {
   createCtfRangeCapabilityParentRequestMeasurer,
   prepareCtfRangeCapabilityParentOperation,
   readCtfRangeCapabilityParentReplay,
+  restoreCtfRangeCapabilityParentOperation,
   validateCtfRangeCapabilityParentOperation,
 } from '../src/ctfRangeCapabilityParentOperation.ts'
 import {
@@ -91,6 +92,19 @@ test('prepares and replays one exact mixed collateral parent', () => {
         ({ childOperationId, clientOrderId }) =>
           childOperationId === null && clientOrderId === null,
       ),
+  )
+  const restored = restoreCtfRangeCapabilityParentOperation({
+    operation: structuredClone(prepared.operation),
+    exactRequest: {
+      ...prepared.exactRequest,
+      artifact: structuredClone(prepared.exactRequest.artifact),
+    },
+    applicationAuthority: structuredClone(prepared.exactAllocations.artifact),
+    preparations,
+  })
+  assert.deepEqual(
+    readCtfRangeCapabilityParentReplay(restored).body,
+    readCtfRangeCapabilityParentReplay(prepared).body,
   )
 
   const request = prepared.exactRequest.artifact as {

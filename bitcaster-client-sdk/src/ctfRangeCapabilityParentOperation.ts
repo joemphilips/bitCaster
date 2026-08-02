@@ -271,6 +271,40 @@ export function readCtfRangeCapabilityParentReplay(
   }
 }
 
+export function restoreCtfRangeCapabilityParentOperation(input: {
+  readonly operation: DurableCustodyProofOperationInput
+  readonly exactRequest: DurableCustodyExactArtifact
+  readonly applicationAuthority: unknown
+  readonly preparations: readonly PersistedCtfRangeOrderPreparation[]
+}): PreparedCtfRangeCapabilityParentOperation {
+  const exactAllocations = prepareDurableCustodyExactArtifact(input.applicationAuthority)
+  const value = exactAllocations.artifact
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    value.parentOperationId !== input.operation.operationId ||
+    !isRecord(value.parent) ||
+    !Array.isArray(value.allocations) ||
+    !Array.isArray(value.children)
+  ) {
+    throw new Error('CTF range parent application authority is invalid')
+  }
+  const metadata = parentMetadata(input.operation)
+  const prepared = {
+    parent: value.parent as unknown as CtfRangeCapabilityBatchParent,
+    operation: input.operation,
+    requestKind: metadata.sourceMode,
+    method: 'POST' as const,
+    path: parentPath(metadata.sourceMode),
+    idempotencyKey: input.operation.operationId,
+    exactRequest: input.exactRequest,
+    exactAllocations,
+    allocations: value.allocations as unknown as readonly CtfRangeCapabilityParentAllocation[],
+    children: value.children as unknown as readonly CtfRangeCapabilityParentChild[],
+  }
+  return validateCtfRangeCapabilityParentOperation(prepared, input.preparations)
+}
+
 /** Maps the mint response. The caller must pass the result through the durable mint-result gate. */
 export function mapCtfRangeCapabilityParentResponseToUnverifiedResult(input: {
   readonly prepared: PreparedCtfRangeCapabilityParentOperation
@@ -354,6 +388,10 @@ function canonicalParent(parent: CtfRangeCapabilityBatchParent): CtfRangeCapabil
     inputs: parent.inputs.map(toWireProof),
   }
   return JSON.parse(JSON.stringify(value)) as CtfRangeCapabilityBatchParent
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 interface ParentContext {
