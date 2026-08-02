@@ -11,6 +11,7 @@ import {
   decodePersistedRegisteredDlcConditionAuthority,
   deriveDlcConditionId,
   persistVerifiedConditionResolution,
+  prepareDlcConditionResolutionEvidence,
   startManagedConditionInventoryRetirement,
   verifyDlcConditionResolution,
   type DlcConditionResolutionEvidence,
@@ -68,6 +69,55 @@ test('SDK verifies and binds exact DLC resolution evidence', () => {
   const persisted = persistVerifiedConditionResolution(verified)
   assert.equal(Object.getOwnPropertySymbols(persisted).length, 0)
   assert.equal(persisted.evidenceFingerprint, verified.evidenceFingerprint)
+})
+
+test('SDK canonicalizes the mint oracle witness before verification and persistence', () => {
+  const signature = signOutcome('YES', PRIVATE_KEY)
+  const prepared = prepareDlcConditionResolutionEvidence('YES', {
+    oracle_sigs: [
+      {
+        oracle_pubkey: ORACLE_PUBLIC_KEY,
+        oracle_sig: signature,
+        outcome: 'YES',
+      },
+    ],
+  })
+
+  assert.deepEqual(prepared.evidence, {
+    schemaVersion: 1,
+    source: 'dlc-oracle-attestation',
+    attestations: [{ oraclePublicKey: ORACLE_PUBLIC_KEY, signature }],
+    resolvedOutcome: 'YES',
+  })
+  assert.equal(
+    prepared.canonicalOracleWitness,
+    JSON.stringify({
+      oracle_sigs: [{ oracle_pubkey: ORACLE_PUBLIC_KEY, oracle_sig: signature, outcome: 'YES' }],
+    }),
+  )
+  assert.doesNotThrow(() =>
+    verifyDlcConditionResolution(
+      BINDING,
+      registeredAuthority(prepared.evidence),
+      prepared.evidence,
+    ),
+  )
+})
+
+test('SDK rejects a witness whose signed outcome differs from retirement', () => {
+  assert.throws(
+    () =>
+      prepareDlcConditionResolutionEvidence('YES', {
+        oracle_sigs: [
+          {
+            oracle_pubkey: ORACLE_PUBLIC_KEY,
+            oracle_sig: signOutcome('NO', PRIVATE_KEY),
+            outcome: 'NO',
+          },
+        ],
+      }),
+    /outcome is foreign/,
+  )
 })
 
 test('DLC resolution uses the independently restored oracle threshold', () => {

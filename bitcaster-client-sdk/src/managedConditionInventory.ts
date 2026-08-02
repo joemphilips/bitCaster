@@ -34,6 +34,11 @@ export interface DlcConditionResolutionEvidence {
   readonly resolvedOutcome: string
 }
 
+export interface PreparedDlcConditionResolutionEvidence {
+  readonly evidence: DlcConditionResolutionEvidence
+  readonly canonicalOracleWitness: string
+}
+
 export interface PersistedRegisteredDlcConditionAuthority extends ManagedConditionInventoryBinding {
   readonly schemaVersion: 1
   readonly eventId: string
@@ -156,6 +161,51 @@ export function verifyDlcConditionResolution(
     authorityId: fingerprintAuthority(authority),
     evidenceFingerprint: exact.fingerprint,
   })
+}
+
+/** Decode and canonicalize the mint's enum-outcome oracle witness. */
+export function prepareDlcConditionResolutionEvidence(
+  resolvedOutcome: string,
+  value: unknown,
+): PreparedDlcConditionResolutionEvidence {
+  const outcome = canonicalText(resolvedOutcome, 'resolved outcome')
+  if (!record(value)) throw new Error('condition oracle witness is invalid')
+  exactKeys(value, ['oracle_sigs'], 'condition oracle witness')
+  if (!Array.isArray(value.oracle_sigs)) throw new Error('condition oracle witness is invalid')
+  const signatures = value.oracle_sigs.map((entry) => {
+    if (!record(entry)) throw new Error('condition oracle witness signature is invalid')
+    exactKeys(
+      entry,
+      ['oracle_pubkey', 'oracle_sig', 'outcome'],
+      'condition oracle witness signature',
+    )
+    if (canonicalText(entry.outcome, 'condition oracle witness outcome') !== outcome) {
+      throw new Error('condition oracle witness outcome is foreign')
+    }
+    return {
+      oraclePublicKey: hex(entry.oracle_pubkey, 64, 'oracle public key'),
+      signature: hex(entry.oracle_sig, 128, 'oracle signature'),
+    }
+  })
+  const evidence = decodeDlcEvidence({
+    schemaVersion: 1,
+    source: 'dlc-oracle-attestation',
+    attestations: signatures,
+    resolvedOutcome: outcome,
+  })
+  const ordered = [...evidence.attestations].sort((left, right) =>
+    left.oraclePublicKey.localeCompare(right.oraclePublicKey),
+  )
+  return {
+    evidence: { ...evidence, attestations: ordered },
+    canonicalOracleWitness: JSON.stringify({
+      oracle_sigs: ordered.map(({ oraclePublicKey, signature }) => ({
+        oracle_pubkey: oraclePublicKey,
+        oracle_sig: signature,
+        outcome,
+      })),
+    }),
+  }
 }
 
 /** Decode exact condition registration facts loaded by the trusted local custody transaction. */
