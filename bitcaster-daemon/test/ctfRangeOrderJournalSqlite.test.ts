@@ -587,7 +587,7 @@ function seedProofOperation(
     .run(
       operationId,
       SCOPE_ID,
-      purpose === 'source' ? 'wallet-send' : 'ctf-consolidation',
+      purpose === 'source' ? 'wallet-send' : 'proof-consolidation',
       purpose === 'source'
         ? 'ctf-range-authorization-source'
         : 'ctf-range-authorization-consolidation',

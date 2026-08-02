@@ -864,8 +864,8 @@ function metadataTextValue(value: unknown, label: string): string {
   return value
 }
 
-function consolidationKind(value: unknown): 'wallet-send' | 'conditional-keyset-swap' {
-  if (value === 'wallet-send' || value === 'conditional-keyset-swap') return value
+function consolidationKind(value: unknown): 'proof-consolidation' {
+  if (value === 'proof-consolidation') return value
   throw new Error('proof consolidation operation kind is invalid')
 }
 

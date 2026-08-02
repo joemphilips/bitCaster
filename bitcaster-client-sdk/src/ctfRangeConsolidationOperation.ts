@@ -16,6 +16,8 @@ import {
 import { amountToNumber, computeInputFeeSatsForProofs } from './proofSelection.ts'
 
 const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
+const REGULAR_CONSOLIDATION_TRANSPORT = 'wallet-send'
+const CONDITIONAL_CONSOLIDATION_TRANSPORT = 'conditional-keyset-swap'
 declare const VALIDATED_CONSOLIDATION: unique symbol
 declare const VALIDATED_EXACT_CONSOLIDATION: unique symbol
 
@@ -113,12 +115,15 @@ export async function prepareExactProofConsolidationOperation(input: {
   }
   return {
     operationId: requireText(input.operationId, 'operation id'),
-    kind: input.conditional ? 'conditional-keyset-swap' : 'wallet-send',
+    kind: 'proof-consolidation',
     mintUrl: requireText(input.mintUrl, 'mint URL'),
     inputs: preview.inputs.map(serializeDurableCustodyProofInput),
     outputs: { consolidated: outputs.map(serializeDurableCustodyOutput) },
     metadata: {
       purpose: requireText(input.purpose, 'purpose'),
+      transportKind: input.conditional
+        ? CONDITIONAL_CONSOLIDATION_TRANSPORT
+        : REGULAR_CONSOLIDATION_TRANSPORT,
       bindingId: requireText(input.bindingId, 'binding id'),
       unit: input.unit,
       amount: outputAmount,
@@ -198,7 +203,7 @@ export async function completeExactProofConsolidationOperation(
 ): Promise<readonly Proof[]> {
   const validated = validateExactProofConsolidationOperation(unwrapOperation(value), expected)
   const operation = validated.operation
-  if (operation.kind === 'conditional-keyset-swap') {
+  if (consolidationTransportKind(operation) === CONDITIONAL_CONSOLIDATION_TRANSPORT) {
     const result = await wallet.completeConditionalSwap({
       keysetId: metadataText(operation, 'keysetId'),
       inputs: operation.inputs as Proof[],
@@ -295,11 +300,14 @@ export function validateExactProofConsolidationOperation(
   const operation = decodeDurableCustodyProofOperationInput(value)
   const purpose = requireText(expected.purpose, 'expected purpose')
   const unit = operation.metadata?.unit
+  const transportKind = operation.metadata?.transportKind
   if (
-    (operation.kind !== 'wallet-send' && operation.kind !== 'conditional-keyset-swap') ||
+    operation.kind !== 'proof-consolidation' ||
+    (transportKind !== REGULAR_CONSOLIDATION_TRANSPORT &&
+      transportKind !== CONDITIONAL_CONSOLIDATION_TRANSPORT) ||
     operation.metadata?.purpose !== purpose ||
     (unit !== 'sat' && unit !== 'msat') ||
-    (operation.kind === 'conditional-keyset-swap' && unit !== 'msat') ||
+    (transportKind === CONDITIONAL_CONSOLIDATION_TRANSPORT && unit !== 'msat') ||
     operation.inputs.length < 2 ||
     operation.inputs.length > 64 ||
     Object.keys(operation.outputs).join('\0') !== 'consolidated'
@@ -309,7 +317,7 @@ export function validateExactProofConsolidationOperation(
   metadataText(operation, 'bindingId')
   const inputKeysetId = metadataText(operation, 'inputKeysetId')
   const outputKeysetId = metadataText(operation, 'keysetId')
-  if (operation.kind === 'conditional-keyset-swap' && inputKeysetId !== outputKeysetId) {
+  if (transportKind === CONDITIONAL_CONSOLIDATION_TRANSPORT && inputKeysetId !== outputKeysetId) {
     throw new Error('conditional proof consolidation cannot rotate keysets')
   }
   const amount = positiveMetadataNumber(operation, 'amount')
@@ -332,6 +340,16 @@ export function validateExactProofConsolidationOperation(
     throw new Error('persisted proof consolidation output value is invalid')
   }
   return { operation, outputs } as ValidatedExactProofConsolidationOperation
+}
+
+function consolidationTransportKind(
+  operation: DurableCustodyProofOperationInput,
+): typeof REGULAR_CONSOLIDATION_TRANSPORT | typeof CONDITIONAL_CONSOLIDATION_TRANSPORT {
+  const value = operation.metadata?.transportKind
+  if (value === REGULAR_CONSOLIDATION_TRANSPORT || value === CONDITIONAL_CONSOLIDATION_TRANSPORT) {
+    return value
+  }
+  throw new Error('persisted proof consolidation transport is invalid')
 }
 
 function consolidationOutputs(

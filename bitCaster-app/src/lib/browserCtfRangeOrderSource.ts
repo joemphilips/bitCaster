@@ -71,6 +71,20 @@ export function browserCustodyOperationId(
   });
 }
 
+export function browserSourceCustodyOperationId(
+  scope: DurableCustodyScope,
+  retainedOperationKey: string,
+): string {
+  return deriveDurableCustodyOperationId(scope.scopeId, {
+    retainedOperationKey,
+    binding: {
+      kind: "wallet",
+      activityId: retainedOperationKey,
+      stage: "capability-preparation",
+    },
+  });
+}
+
 export function browserRangeJournalIdentity(
   scope: DurableCustodyScope,
   preparation: PersistedCtfRangeOrderPreparation,

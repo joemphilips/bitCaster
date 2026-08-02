@@ -2233,8 +2233,8 @@ async function persistAndCompleteConsolidation(
   )
 }
 
-function rangeConsolidationKind(value: unknown): 'wallet-send' | 'conditional-keyset-swap' {
-  if (value === 'wallet-send' || value === 'conditional-keyset-swap') return value
+function rangeConsolidationKind(value: unknown): 'proof-consolidation' {
+  if (value === 'proof-consolidation') return value
   throw new Error('range consolidation operation kind is invalid')
 }
 
@@ -2533,7 +2533,7 @@ function assertConsolidationOperation(entry: ProofOperationRecord): void {
   if (
     entry.metadata.purpose !== CONSOLIDATION_PURPOSE ||
     entry.metadata.unit !== 'msat' ||
-    (entry.kind !== 'wallet-send' && entry.kind !== 'conditional-keyset-swap')
+    entry.kind !== 'proof-consolidation'
   ) {
     throw new Error(`Proof operation ${entry.operationId} is not a range consolidation`)
   }

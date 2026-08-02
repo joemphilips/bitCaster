@@ -61,6 +61,8 @@ export type ProofOperationKind =
   | "swap-refund"
   | "ctf-split"
   | "ctf-merge"
+  | "ctf-consolidation"
+  | "proof-consolidation"
   | "ctf-redeem"
   | "ctf-condition-registration"
   | "wallet-send"

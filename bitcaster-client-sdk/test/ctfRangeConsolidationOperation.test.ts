@@ -56,7 +56,8 @@ test('prepares and completes one exact regular range consolidation', async () =>
     wallet,
   })
 
-  assert.equal(operation.kind, 'wallet-send')
+  assert.equal(operation.kind, 'proof-consolidation')
+  assert.equal(operation.metadata?.transportKind, 'wallet-send')
   assert.equal(operation.metadata?.purpose, 'ctf-range-authorization-consolidation')
   assert.deepEqual(
     operation.outputs.consolidated?.map((output) => output.blindedMessage.amount),
@@ -97,7 +98,8 @@ test('prepares a conditional consolidation with the same exact plan', async () =
     wallet,
   })
 
-  assert.equal(operation.kind, 'conditional-keyset-swap')
+  assert.equal(operation.kind, 'proof-consolidation')
+  assert.equal(operation.metadata?.transportKind, 'conditional-keyset-swap')
   const result = await completeCtfRangeConsolidationOperation(operation, wallet)
   assert.deepEqual(
     result.map(({ amount }) => Number(amount)),

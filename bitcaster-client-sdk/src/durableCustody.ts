@@ -34,6 +34,7 @@ export type DurableCustodySemanticKind =
   | 'ctf-range-collateral-convert'
   | 'ctf-split'
   | 'ctf-merge'
+  | 'proof-consolidation'
   | 'ctf-redeem'
 export type DurableCustodyOperationState =
   | 'dispatch-intent'
@@ -50,6 +51,7 @@ export type DurableCustodyWalletStage =
   | 'capability-preparation'
   | 'ctf-split'
   | 'ctf-merge'
+  | 'proof-consolidation'
   | 'ctf-redeem'
 
 export type DurableCustodyScope =
@@ -2646,6 +2648,7 @@ function validateBinding(value: unknown): asserts value is DurableCustodyBinding
     value.stage !== 'capability-preparation' &&
     value.stage !== 'ctf-split' &&
     value.stage !== 'ctf-merge' &&
+    value.stage !== 'proof-consolidation' &&
     value.stage !== 'ctf-redeem'
   ) {
     throw new Error('custody binding stage is invalid')
@@ -2666,6 +2669,7 @@ function requireSemantic(value: unknown): asserts value is DurableCustodySemanti
     value !== 'ctf-range-collateral-convert' &&
     value !== 'ctf-split' &&
     value !== 'ctf-merge' &&
+    value !== 'proof-consolidation' &&
     value !== 'ctf-redeem'
   ) {
     throw new Error('custody semantic kind is invalid')
@@ -2687,6 +2691,7 @@ function requiresTerminalReplay(kind: DurableCustodySemanticKind): boolean {
     case 'wallet-send':
     case 'ctf-split':
     case 'ctf-merge':
+    case 'proof-consolidation':
     case 'ctf-redeem':
       return false
   }
@@ -2712,6 +2717,7 @@ function semanticStage(kind: DurableCustodySemanticKind): DurableCustodyWalletSt
       return 'receive'
     case 'ctf-split':
     case 'ctf-merge':
+    case 'proof-consolidation':
     case 'ctf-redeem':
       return kind
   }

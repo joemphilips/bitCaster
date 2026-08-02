@@ -238,7 +238,7 @@ describe("browser CTF range order coordinator", () => {
         calls.push("mint-source");
         const source = await custody.readOperation(
           walletScope(),
-          custodyOperationId(preparation.sourceOperationId),
+          sourceCustodyOperationId(preparation.sourceOperationId),
         );
         expect(source?.operation.state).toBe("transport-attempted");
         expect(
@@ -246,7 +246,7 @@ describe("browser CTF range order coordinator", () => {
             ?.lifecycleState,
         ).toBe("prepared");
         expect(await database.proofs.get("source-proof")).toMatchObject({
-          reservedBy: custodyOperationId(preparation.sourceOperationId),
+          reservedBy: sourceCustodyOperationId(preparation.sourceOperationId),
         });
       },
     });
@@ -257,7 +257,7 @@ describe("browser CTF range order coordinator", () => {
           (
             await custody.readOperation(
               walletScope(),
-              custodyOperationId(preparation.sourceOperationId),
+              sourceCustodyOperationId(preparation.sourceOperationId),
             )
           )?.operation.state,
         ).toBe("reconciled");
@@ -283,7 +283,7 @@ describe("browser CTF range order coordinator", () => {
       (
         await custody.readOperation(
           walletScope(),
-          custodyOperationId(preparation.sourceOperationId),
+          sourceCustodyOperationId(preparation.sourceOperationId),
         )
       )?.operation.state,
     ).toBe("reconciled");
@@ -391,7 +391,7 @@ describe("browser CTF range order coordinator", () => {
       (
         await custody.readOperation(
           walletScope(),
-          custodyOperationId(preparation.sourceOperationId),
+          sourceCustodyOperationId(preparation.sourceOperationId),
         )
       )?.operation.result.state,
     ).toBe("verified-staged");
@@ -399,7 +399,7 @@ describe("browser CTF range order coordinator", () => {
       await custody.readOperation(walletScope(), custodyOperationId(preparation.operationId)),
     ).toBeNull();
     expect(await database.proofs.get("source-proof")).toMatchObject({
-      reservedBy: custodyOperationId(preparation.sourceOperationId),
+      reservedBy: sourceCustodyOperationId(preparation.sourceOperationId),
     });
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
@@ -446,7 +446,7 @@ describe("browser CTF range order coordinator", () => {
       (
         await custody.readOperation(
           walletScope(),
-          custodyOperationId(preparation.sourceOperationId),
+          sourceCustodyOperationId(preparation.sourceOperationId),
         )
       )?.operation.state,
     ).toBe("reconciled");
@@ -498,7 +498,7 @@ describe("browser CTF range order coordinator", () => {
       (
         await custody.readOperation(
           walletScope(),
-          custodyOperationId(preparation.sourceOperationId),
+          sourceCustodyOperationId(preparation.sourceOperationId),
         )
       )?.operation.state,
     ).toBe("reconciled");
@@ -535,7 +535,7 @@ describe("browser CTF range order coordinator", () => {
       (
         await new BrowserDurableCustodyAdapter(database).readOperation(
           walletScope(),
-          custodyOperationId(preparation.sourceOperationId),
+          sourceCustodyOperationId(preparation.sourceOperationId),
         )
       )?.operation.state,
     ).toBe("aborted");
@@ -583,7 +583,7 @@ describe("browser CTF range order coordinator", () => {
       (
         await custody.readOperation(
           walletScope(),
-          custodyOperationId(preparation.sourceOperationId),
+          sourceCustodyOperationId(preparation.sourceOperationId),
         )
       )?.operation.state,
     ).toBe("transport-attempted");
@@ -592,7 +592,7 @@ describe("browser CTF range order coordinator", () => {
       "locked",
     ]);
     expect(await database.proofs.get("source-proof")).toMatchObject({
-      reservedBy: custodyOperationId(preparation.sourceOperationId),
+      reservedBy: sourceCustodyOperationId(preparation.sourceOperationId),
     });
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
@@ -1863,6 +1863,18 @@ function custodyOperationId(retainedOperationKey: string): string {
   return deriveDurableCustodyOperationId(scope.scopeId, {
     retainedOperationKey,
     binding: { kind: "wallet", activityId: retainedOperationKey, stage: "send" },
+  });
+}
+
+function sourceCustodyOperationId(retainedOperationKey: string): string {
+  const scope = walletScope();
+  return deriveDurableCustodyOperationId(scope.scopeId, {
+    retainedOperationKey,
+    binding: {
+      kind: "wallet",
+      activityId: retainedOperationKey,
+      stage: "capability-preparation",
+    },
   });
 }
 

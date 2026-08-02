@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '42d40723de0749a8ae4ba22110b467a3acb7511cc0049d656aa2d19bdef13c28'
+  'b7cf905e298fd6e4e098deb777ba6fdf25896dff5af462e4607fbb60f128fa0d'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -159,7 +159,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     kind TEXT NOT NULL CHECK (kind IN (
       'swap-lock', 'swap-claim', 'conditional-keyset-swap',
-      'ctf-split', 'ctf-merge', 'ctf-consolidation', 'ctf-redeem',
+      'ctf-split', 'ctf-merge', 'ctf-consolidation', 'proof-consolidation', 'ctf-redeem',
       'regular-split', 'wallet-send', 'proof-split', 'swap-refund'
     )),
     purpose TEXT NOT NULL CHECK (length(purpose) <= 256),
@@ -589,14 +589,17 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     semantic_kind TEXT NOT NULL CHECK (semantic_kind IN (
       'swap-lock', 'swap-claim', 'swap-refund', 'conditional-keyset-swap',
       'generic-receive', 'generic-send', 'wallet-send',
-      'ctf-split', 'ctf-merge', 'ctf-redeem'
+      'ctf-split', 'ctf-merge', 'proof-consolidation', 'ctf-redeem'
     )),
     operation_state TEXT NOT NULL CHECK (
       operation_state IN ('dispatch-intent', 'transport-attempted', 'reconciled', 'aborted')
     ),
     activity_id TEXT NOT NULL CHECK (length(activity_id) BETWEEN 1 AND 1024),
     wallet_stage TEXT NOT NULL CHECK (
-      wallet_stage IN ('lock', 'claim', 'refund', 'receive', 'send', 'ctf-split', 'ctf-merge', 'ctf-redeem')
+      wallet_stage IN (
+        'lock', 'claim', 'refund', 'receive', 'send', 'ctf-split', 'ctf-merge',
+        'proof-consolidation', 'ctf-redeem'
+      )
     ),
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
     unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),

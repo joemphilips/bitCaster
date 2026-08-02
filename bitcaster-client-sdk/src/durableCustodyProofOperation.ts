@@ -15,6 +15,7 @@ import { amountToNumber } from './proofSelection.ts'
 export type DurableCustodyProofOperationKind =
   | DurableCustodySemanticKind
   | 'ctf-consolidation'
+  | 'proof-consolidation'
   | 'ctf-condition-registration'
   | 'ctf-range-authorization'
   | 'ctf-range-refund'
@@ -269,6 +270,8 @@ export function durableCustodyProofOperationSemanticKind(
       return kind
     case 'ctf-consolidation':
       return 'ctf-merge'
+    case 'proof-consolidation':
+      return 'proof-consolidation'
     case 'ctf-range-authorization':
       return 'conditional-keyset-swap'
     case 'ctf-range-refund':
@@ -306,6 +309,7 @@ function stageForSemantic(
       return 'receive'
     case 'ctf-split':
     case 'ctf-merge':
+    case 'proof-consolidation':
     case 'ctf-redeem':
       return kind
     case 'conditional-keyset-swap':

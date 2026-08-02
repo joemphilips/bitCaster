@@ -98,6 +98,7 @@ import { withWalletProfileLock } from "./walletProfileLock";
 import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
 import {
   browserCustodyOperationId,
+  browserSourceCustodyOperationId,
   browserCustodySelection,
   browserOwnerAt,
   browserPersistedSourceResult,
@@ -973,8 +974,8 @@ export class BrowserCtfRangeOrderCoordinator {
         validatedSource,
         await this.#walletForMint(preparation.mintUrl),
       );
-    } catch {
-      throw rangeError("mint-source-uncertain");
+    } catch (error) {
+      throw rangeError("mint-source-uncertain", error);
     }
     const staged = await this.#stageSourceResult(scope, owner, preparation, attempted, result);
     return this.#applySourceAndBindRange(scope, owner, preparation, seed, source, staged, result);
@@ -989,7 +990,7 @@ export class BrowserCtfRangeOrderCoordinator {
     owner: DurableCustodyOwnerAuthorization,
   ): Promise<boolean> {
     const preparation = decodeCtfRangeOrderPreparationFromRecord(journalRecord);
-    const sourceCustodyOperationId = browserCustodyOperationId(
+    const sourceCustodyOperationId = browserSourceCustodyOperationId(
       scope,
       preparation.sourceOperationId,
     );
@@ -2122,8 +2123,8 @@ function requireImmediateOrder(preparation: PersistedCtfRangeOrderPreparation): 
 
 function rangeConsolidationKind(
   value: ProofOperationRecord["kind"] | DurableCustodyProofOperationInput["kind"],
-): "wallet-send" | "conditional-keyset-swap" {
-  if (value === "wallet-send" || value === "conditional-keyset-swap") return value;
+): "proof-consolidation" {
+  if (value === "proof-consolidation") return value;
   throw new Error("Range consolidation operation kind is invalid");
 }
 

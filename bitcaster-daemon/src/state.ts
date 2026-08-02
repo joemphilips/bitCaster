@@ -54,6 +54,7 @@ export type ProofOperationKind =
   | 'ctf-split'
   | 'ctf-merge'
   | 'ctf-consolidation'
+  | 'proof-consolidation'
   | 'ctf-redeem'
   | 'regular-split'
   | 'wallet-send'
@@ -3189,6 +3190,7 @@ function isProofOperationKind(value: unknown): value is ProofOperationKind {
     value === 'ctf-split' ||
     value === 'ctf-merge' ||
     value === 'ctf-consolidation' ||
+    value === 'proof-consolidation' ||
     value === 'ctf-redeem' ||
     value === 'regular-split' ||
     value === 'wallet-send' ||

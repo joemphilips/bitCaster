@@ -97,6 +97,18 @@ const RECEIVE_KEYSET_ID = deriveConditionalKeysetId({
   conditionId: CONDITION_ID,
   outcomeCollectionId: OUTCOME_COLLECTION_ID,
 })
+const COMPLEMENT_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
+  conditionId: CONDITION_ID,
+  outcomeCollection: 'NO',
+})
+const COMPLEMENT_KEYSET_ID = deriveConditionalKeysetId({
+  keys: KEYS,
+  unit: 'msat',
+  input_fee_ppk: INPUT_FEE_PPK,
+  final_expiry: FINAL_EXPIRY,
+  conditionId: CONDITION_ID,
+  outcomeCollectionId: COMPLEMENT_COLLECTION_ID,
+})
 const WALLET_SEED_HEX = '11'.repeat(32)
 const MINT_URL = 'https://mint.example'
 const ORDER_ID = '00000000-0000-8000-8000-000000000001'
@@ -1682,7 +1694,7 @@ class FakeWallet {
           ? group.data
           : OutputData.createRandomData(
               Amount.from(group.amount),
-              options.keysetId === RECEIVE_KEYSET_ID ? conditionalMintKeys() : mintKeys(),
+              conditionalMintKeys(options.keysetId),
             ),
       ]),
     )
@@ -1772,14 +1784,28 @@ function fakeMint(
           outcome_collection: 'YES',
           outcome_collection_id: OUTCOME_COLLECTION_ID,
         },
+        {
+          id: COMPLEMENT_KEYSET_ID,
+          unit: 'msat',
+          active: true,
+          input_fee_ppk: INPUT_FEE_PPK,
+          final_expiry: FINAL_EXPIRY,
+          condition_id: CONDITION_ID,
+          outcome_collection: 'NO',
+          outcome_collection_id: COMPLEMENT_COLLECTION_ID,
+        },
       ],
     }),
     getCtfCondition: async () => ({
       condition_id: CONDITION_ID,
-      keysets: { YES: RECEIVE_KEYSET_ID },
+      keysets: { NO: COMPLEMENT_KEYSET_ID, YES: RECEIVE_KEYSET_ID },
     }),
     getKeys: async (keysetId?: string) => ({
-      keysets: [keysetId === RECEIVE_KEYSET_ID ? conditionalMintKeys() : mintKeys()],
+      keysets: [
+        keysetId === RECEIVE_KEYSET_ID || keysetId === COMPLEMENT_KEYSET_ID
+          ? conditionalMintKeys(keysetId)
+          : mintKeys(),
+      ],
     }),
     restore: async ({ outputs }: { outputs: SerializedBlindedMessage[] }) => {
       const selected = restoredOutputs?.() ?? new Set<string>()
@@ -2087,14 +2113,15 @@ function mintKeys(): MintKeys {
   }
 }
 
-function conditionalMintKeys(): MintKeys {
+function conditionalMintKeys(keysetId = RECEIVE_KEYSET_ID): MintKeys {
+  const complement = keysetId === COMPLEMENT_KEYSET_ID
   return {
     ...mintKeys(),
-    id: RECEIVE_KEYSET_ID,
+    id: keysetId,
     conditional: {
       condition_id: CONDITION_ID,
-      outcome_collection: 'YES',
-      outcome_collection_id: OUTCOME_COLLECTION_ID,
+      outcome_collection: complement ? 'NO' : 'YES',
+      outcome_collection_id: complement ? COMPLEMENT_COLLECTION_ID : OUTCOME_COLLECTION_ID,
     },
   }
 }
@@ -2116,7 +2143,10 @@ function signedProof(output: OutputData): Proof {
         s: Buffer.from(dleq.s).toString('hex'),
       },
     },
-    output.blindedMessage.id === RECEIVE_KEYSET_ID ? conditionalMintKeys() : mintKeys(),
+    output.blindedMessage.id === RECEIVE_KEYSET_ID ||
+      output.blindedMessage.id === COMPLEMENT_KEYSET_ID
+      ? conditionalMintKeys(output.blindedMessage.id)
+      : mintKeys(),
   )
 }
 
