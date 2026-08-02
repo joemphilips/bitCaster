@@ -27,6 +27,10 @@
       "types": "./dist/managedConditionInventory.d.ts",
       "import": "./dist/managedConditionInventory.js"
     },
+    "./managedConditionRecovery": {
+      "types": "./dist/managedConditionRecovery.d.ts",
+      "import": "./dist/managedConditionRecovery.js"
+    },
     "./durableCustodyProofOperation": {
       "types": "./dist/durableCustodyProofOperation.d.ts",
       "import": "./dist/durableCustodyProofOperation.js"
