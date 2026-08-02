@@ -56,6 +56,7 @@ const PREPARATION_FIELDS = [
   'divisibility',
   'offerKeyset',
   'receiveKeyset',
+  'complementKeyset',
   'expiryObservation',
   'expiry',
   'maxPoolEntries',
@@ -159,6 +160,7 @@ export interface PersistedCtfRangeOrderPreparation {
   readonly divisibility: MarketDivisibility
   readonly offerKeyset: ActiveCtfRangeMintKeyset
   readonly receiveKeyset: ActiveCtfRangeMintKeyset
+  readonly complementKeyset: CtfRangeConditionalMintKeyset
   readonly expiryObservation: DurableCtfRangeExpiryObservation
   readonly expiry: number
   readonly maxPoolEntries: number
@@ -180,10 +182,15 @@ export function buildPersistedCtfRangeOrderPreparation(input: {
   const request = decodeCtfRangeOrderRequest(input.request)
   const coordinatorPublicKey = decodeCoordinatorPublicKey(input.coordinatorPublicKey)
   const selectedCollection = selectedOutcomeCollection(input.market, request)
-  const { regular, conditional } = selectPreparationKeysets(
+  const complementCollection = complementOutcomeSetId(
+    parseMarketOutcomes(input.market).map(({ label }) => label),
+    selectedCollection,
+  )
+  const { regular, conditional, complement } = selectPreparationKeysets(
     input.mintFacts,
     request.conditionId,
     selectedCollection,
+    complementCollection,
   )
   const nowUnixSeconds = requireNonnegativeSafeInteger(
     input.nowUnixSeconds,
@@ -208,6 +215,7 @@ export function buildPersistedCtfRangeOrderPreparation(input: {
     divisibility: request.divisibility,
     offerKeyset: request.side === 'Buy' ? regular : conditional,
     receiveKeyset: request.side === 'Buy' ? conditional : regular,
+    complementKeyset: complement,
     expiryObservation: input.mintFacts.observation,
     expiry,
     maxPoolEntries: input.mintFacts.maxPoolEntries,
@@ -242,6 +250,10 @@ export function decodePersistedCtfRangeOrderPreparation(
   const conditionId = requireText(input.conditionId, 'range preparation condition id')
   const offerKeyset = decodeActiveKeyset(input.offerKeyset, mintUrl)
   const receiveKeyset = decodeActiveKeyset(input.receiveKeyset, mintUrl)
+  const complementKeyset = decodeActiveKeyset(input.complementKeyset, mintUrl)
+  if (!hasConditionalMetadata(complementKeyset)) {
+    throw new Error('range preparation complement keyset is not conditional')
+  }
   const preparation: PersistedCtfRangeOrderPreparation = {
     version: requireExact(input.version, 1, 'range preparation version'),
     operationId,
@@ -261,6 +273,7 @@ export function decodePersistedCtfRangeOrderPreparation(
     divisibility: requireDivisibility(input.divisibility),
     offerKeyset,
     receiveKeyset,
+    complementKeyset,
     expiryObservation: decodeExpiryObservation(input.expiryObservation, mintUrl, conditionId),
     expiry: requirePositiveSafeInteger(input.expiry, 'range preparation expiry'),
     maxPoolEntries: requirePositiveSafeInteger(
@@ -403,10 +416,9 @@ export function exactCtfRangeOrderPreparationMintKeysets(
 ): ReadonlyMap<string, DurableCtfRangeMintKeyset> {
   const preparation = decodePersistedCtfRangeOrderPreparation(input)
   return new Map(
-    [preparation.offerKeyset, preparation.receiveKeyset].map((keyset) => [
-      keyset.id,
-      durableMintKeyset(keyset),
-    ]),
+    [preparation.offerKeyset, preparation.receiveKeyset, preparation.complementKeyset].map(
+      (keyset) => [keyset.id, durableMintKeyset(keyset)],
+    ),
   )
 }
 
@@ -479,7 +491,12 @@ function selectPreparationKeysets(
   facts: CtfRangeReviewedMintFacts,
   conditionId: string,
   selectedCollection: string,
-): { regular: ActiveCtfRangeMintKeyset; conditional: CtfRangeConditionalMintKeyset } {
+  complementCollection: string,
+): {
+  regular: ActiveCtfRangeMintKeyset
+  conditional: CtfRangeConditionalMintKeyset
+  complement: CtfRangeConditionalMintKeyset
+} {
   const regular = [...facts.regular].sort(compareKeysetPreference)[0]
   const conditional = facts.conditional.find(
     (keyset) =>
@@ -487,10 +504,16 @@ function selectPreparationKeysets(
       keyset.outcomeCollection === selectedCollection &&
       keyset.active,
   )
-  if (regular === undefined || conditional === undefined) {
+  const complement = facts.conditional.find(
+    (keyset) =>
+      keyset.conditionId === conditionId &&
+      keyset.outcomeCollection === complementCollection &&
+      keyset.active,
+  )
+  if (regular === undefined || conditional === undefined || complement === undefined) {
     throw new Error('mint does not expose the selected active range keysets')
   }
-  return { regular, conditional }
+  return { regular, conditional, complement }
 }
 
 function compareKeysetPreference(
@@ -786,6 +809,7 @@ function assertPreparationConsistency(input: PersistedCtfRangeOrderPreparation):
     : receiveIsConditional
       ? input.receiveKeyset
       : null
+  const complement = input.complementKeyset
   if (
     input.conditionId !== input.request.conditionId ||
     input.mintUrl !== input.request.mintUrl ||
@@ -798,6 +822,9 @@ function assertPreparationConsistency(input: PersistedCtfRangeOrderPreparation):
     offerIsConditional === receiveIsConditional ||
     conditional === null ||
     conditional.conditionId !== input.conditionId ||
+    complement.conditionId !== input.conditionId ||
+    complement.id === conditional.id ||
+    complement.outcomeCollection === conditional.outcomeCollection ||
     (input.side === 'Buy' && offerIsConditional) ||
     (input.side === 'Sell' && !offerIsConditional) ||
     input.expiry <= input.expiryObservation.observedAt

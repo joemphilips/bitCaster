@@ -40,9 +40,15 @@ import {
   prepareCtfRangeSourceOperation,
   validateCtfRangeSourceCompletionOperation,
 } from '../src/ctfRangeSourceOperation.ts'
+import { planCtfRangeCapabilitySource } from '../src/ctfRangeCapabilitySourcePlan.ts'
+import {
+  prepareCtfRangeCollateralSourceOperation,
+  validateCtfRangeCollateralSourceOperation,
+} from '../src/ctfRangeCollateralSourceOperation.ts'
 
 const CONDITION_ID = 'ab'.repeat(32)
 const OUTCOME_COLLECTION = 'YES'
+const COMPLEMENT_COLLECTION = 'NO'
 const COORDINATOR_PUBLIC_KEY = 'f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9'
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(MINT_PRIVATE_KEY, true))
@@ -55,6 +61,10 @@ const MINT_URL = 'https://mint.example'
 const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
   outcomeCollection: OUTCOME_COLLECTION,
+})
+const COMPLEMENT_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
+  conditionId: CONDITION_ID,
+  outcomeCollection: COMPLEMENT_COLLECTION,
 })
 const REGULAR_KEYSET_ID = deriveKeysetId(KEYS, {
   unit: 'msat',
@@ -84,6 +94,14 @@ const REVIEWED_OUTCOME_KEYSET_ID = deriveConditionalKeysetId({
   final_expiry: REVIEWED_FINAL_EXPIRY,
   conditionId: CONDITION_ID,
   outcomeCollectionId: OUTCOME_COLLECTION_ID,
+})
+const REVIEWED_COMPLEMENT_KEYSET_ID = deriveConditionalKeysetId({
+  keys: KEYS,
+  unit: 'msat',
+  input_fee_ppk: INPUT_FEE_PPK,
+  final_expiry: REVIEWED_FINAL_EXPIRY,
+  conditionId: CONDITION_ID,
+  outcomeCollectionId: COMPLEMENT_COLLECTION_ID,
 })
 
 test('prepares exact PAY_TO_UNLOCK material and completes one durable buy authorization', () => {
@@ -186,6 +204,7 @@ test('builds, canonically persists, and verifies one exact range preparation rec
   assert.equal(persisted.coordinatorPublicKey, COORDINATOR_PUBLIC_KEY)
   assert.equal(persisted.offerKeyset.id, REVIEWED_REGULAR_KEYSET_ID)
   assert.equal(persisted.receiveKeyset.id, REVIEWED_OUTCOME_KEYSET_ID)
+  assert.equal(persisted.complementKeyset.id, REVIEWED_COMPLEMENT_KEYSET_ID)
   assert.equal(persisted.expiry, 700)
   assert.deepEqual(decodePersistedCtfRangeOrderPreparationBytes(preparationBytes), persisted)
   assert.deepEqual(decodeCtfRangeOrderPreparationFromRecord(record, request), persisted)
@@ -496,6 +515,57 @@ test('prepares one exact persisted range source through the shared wallet bounda
   )
 })
 
+test('prepares one exact collateral conversion with locked offer and ordinary complement', () => {
+  const preparation = persistedPreparation('range-operation-collateral', 'Sell')
+  const authorization = prepareCtfRangeOrderAuthorization({
+    seed: new Uint8Array(64).fill(7),
+    ...withoutPersistedRequest(preparation),
+  }).authorizationOutputs
+  const collateral: Proof = {
+    id: preparation.receiveKeyset.id,
+    amount: 20_000,
+    secret: 'collateral-source-proof',
+    C: MINT_PUBLIC_KEY,
+  }
+  const plan = planCtfRangeCapabilitySource({
+    side: 'Sell',
+    authorizationAmounts: authorization.map(({ blindedMessage }) =>
+      blindedMessage.amount.toString(),
+    ),
+    offeredKeyset: preparation.offerKeyset,
+    collateralKeyset: preparation.receiveKeyset,
+    complementKeyset: preparation.complementKeyset,
+    offeredCandidates: [],
+    collateralCandidates: [collateral],
+    maxInputs: preparation.maxInputs,
+    maxOutputs: 256,
+  })
+  assert.equal(plan.kind, 'collateral-ctf-convert')
+  if (plan.kind !== 'collateral-ctf-convert') return
+
+  const operation = prepareCtfRangeCollateralSourceOperation({
+    preparation,
+    seed: new Uint8Array(64).fill(7),
+    plan,
+  })
+  assert.equal(operation.kind, 'ctf-range-collateral-convert')
+  assert.equal(operation.inputs[0]?.secret, collateral.secret)
+  assert.ok((operation.outputs.authorization?.length ?? 0) > 0)
+  assert.ok((operation.outputs.complement?.length ?? 0) > 0)
+  assert.deepEqual(validateCtfRangeCollateralSourceOperation(operation, preparation), operation)
+  assert.throws(
+    () =>
+      validateCtfRangeCollateralSourceOperation(
+        {
+          ...operation,
+          metadata: { ...operation.metadata, complementKeysetId: 'foreign-keyset' },
+        },
+        preparation,
+      ),
+    /value authority|preparation is foreign/,
+  )
+})
+
 test('rejects wallet substitution of exact range authorization outputs', async () => {
   const preparation = persistedPreparation('range-operation-substitution')
   await assert.rejects(
@@ -646,12 +716,20 @@ function reviewedMintFacts() {
   const observation = {
     ...expiryObservation(),
     maxExpirySeconds: REVIEWED_FINAL_EXPIRY,
-    conditionKeysetIds: [REVIEWED_OUTCOME_KEYSET_ID],
-    conditionalKeysets: expiryObservation().conditionalKeysets.map((keyset) => ({
-      ...keyset,
-      keysetId: REVIEWED_OUTCOME_KEYSET_ID,
-      finalExpiry: REVIEWED_FINAL_EXPIRY,
-    })),
+    conditionKeysetIds: [REVIEWED_OUTCOME_KEYSET_ID, REVIEWED_COMPLEMENT_KEYSET_ID],
+    conditionalKeysets: [
+      ...expiryObservation().conditionalKeysets.map((keyset) => ({
+        ...keyset,
+        keysetId: REVIEWED_OUTCOME_KEYSET_ID,
+        finalExpiry: REVIEWED_FINAL_EXPIRY,
+      })),
+      {
+        ...expiryObservation().conditionalKeysets[0]!,
+        keysetId: REVIEWED_COMPLEMENT_KEYSET_ID,
+        finalExpiry: REVIEWED_FINAL_EXPIRY,
+        outcomeCollectionId: COMPLEMENT_COLLECTION_ID,
+      },
+    ],
   }
   return {
     regular: [
@@ -670,6 +748,14 @@ function reviewedMintFacts() {
         outcomeCollection: OUTCOME_COLLECTION,
         outcomeCollectionId: OUTCOME_COLLECTION_ID,
       },
+      {
+        ...outcomeKeyset(),
+        id: REVIEWED_COMPLEMENT_KEYSET_ID,
+        finalExpiry: REVIEWED_FINAL_EXPIRY,
+        conditionId: CONDITION_ID,
+        outcomeCollection: COMPLEMENT_COLLECTION,
+        outcomeCollectionId: COMPLEMENT_COLLECTION_ID,
+      },
     ],
     maxInputs: 64,
     maxPoolEntries: 128,
@@ -682,9 +768,9 @@ function sequentialId(...ids: string[]): () => string {
   return () => ids[index++] ?? 'unexpected-id'
 }
 
-function persistedPreparation(operationId: string) {
+function persistedPreparation(operationId: string, side: 'Buy' | 'Sell' = 'Buy') {
   return buildPersistedCtfRangeOrderPreparation({
-    request: rangeOrderRequest(),
+    request: { ...rangeOrderRequest(), side },
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
     mintFacts: reviewedMintFacts(),
     market: {
@@ -696,6 +782,11 @@ function persistedPreparation(operationId: string) {
     nowUnixSeconds: 20,
     randomId: sequentialId(operationId, `${operationId}:authorization`),
   })
+}
+
+function withoutPersistedRequest(preparation: ReturnType<typeof persistedPreparation>) {
+  const { version: _, request: _request, complementKeyset: _complement, ...input } = preparation
+  return input
 }
 
 function preparationRecord(
