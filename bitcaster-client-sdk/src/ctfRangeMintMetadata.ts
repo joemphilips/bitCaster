@@ -1,5 +1,13 @@
 import type { GetInfoResponse, MintKeys, MintKeyset } from '@cashu/cashu-ts'
 import type { ActiveCtfRangeMintKeyset } from './ctfRangeOrderPreparation.ts'
+import {
+  CTF_RANGE_BATCH_INPUT_LIMIT_MAX,
+  CTF_RANGE_BATCH_POOL_ENTRY_LIMIT_MAX,
+} from './ctfRangeCapabilityBatchPlan.ts'
+import {
+  DURABLE_ARTIFACT_BYTES_LIMIT_MAX,
+  DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
+} from './durableCustody.ts'
 import type { CtfRangeReviewedMintFacts } from './ctfRangeOrderProtocol.ts'
 import type {
   DurableCtfRangeExpiryObservation,
@@ -8,8 +16,6 @@ import type {
 import { canonicalizeTokenImportMintUrl } from './tokenImportValidation.ts'
 
 const MINT_KEYSET_CANDIDATE_LIMIT = 256
-const SETTLEMENT_INPUT_LIMIT = 64
-const SETTLEMENT_POOL_ENTRY_LIMIT = 128
 
 export interface CtfRangeMintMetadataClient {
   getInfo(): Promise<GetInfoResponse>
@@ -47,6 +53,8 @@ export interface CtfRangeMintMetadata extends CtfRangeReviewedMintFacts {
   >
   readonly conditionKeysetIds: string[]
   readonly maxInputs: number
+  readonly maxOutputs: number
+  readonly maxRequestBytes: number
   readonly maxPoolEntries: number
   readonly maxExpirySeconds: number
   readonly observation: DurableCtfRangeExpiryObservation
@@ -258,6 +266,8 @@ function resolvedKeyset(
 
 function settlementLimits(info: GetInfoResponse): {
   readonly maxInputs: number
+  readonly maxOutputs: number
+  readonly maxRequestBytes: number
   readonly maxPoolEntries: number
   readonly maxExpirySeconds: number
 } {
@@ -269,11 +279,19 @@ function settlementLimits(info: GetInfoResponse): {
   return {
     maxInputs: Math.min(
       positiveInteger(setting.max_inputs, 'mint settlement input limit'),
-      SETTLEMENT_INPUT_LIMIT,
+      CTF_RANGE_BATCH_INPUT_LIMIT_MAX,
+    ),
+    maxOutputs: Math.min(
+      positiveInteger(setting.max_outputs, 'mint settlement output limit'),
+      DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
+    ),
+    maxRequestBytes: Math.min(
+      positiveInteger(setting.max_request_bytes, 'mint settlement request byte limit'),
+      DURABLE_ARTIFACT_BYTES_LIMIT_MAX,
     ),
     maxPoolEntries: Math.min(
       positiveInteger(setting.max_pool_entries, 'mint settlement pool limit'),
-      SETTLEMENT_POOL_ENTRY_LIMIT,
+      CTF_RANGE_BATCH_POOL_ENTRY_LIMIT_MAX,
     ),
     maxExpirySeconds: positiveInteger(setting.max_expiry_seconds, 'mint settlement expiry limit'),
   }

@@ -1,13 +1,33 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  computeInputFeeSatsForProofs,
   computeInputFeeSubunitsFromPpk,
+  sumProofs,
   takeProofsForLock,
   keysetToOutcomeCollection,
 } from '../src/proofSelection.ts'
 
 test('computeInputFeeSubunitsFromPpk returns NUT-02 proof-count fee in keyset subunits', () => {
   assert.equal(computeInputFeeSubunitsFromPpk(10 * 1), 1)
+})
+
+test('sumProofs rejects an unsafe amount sum', () => {
+  assert.throws(
+    () => sumProofs([{ amount: Number.MAX_SAFE_INTEGER }, { amount: 1 }]),
+    /safe integer range/i,
+  )
+})
+
+test('computeInputFeeSatsForProofs rejects an unsafe fee sum', () => {
+  const proof = (secret: string) => ({ amount: 1, id: 'keyset', secret, C: secret })
+  assert.throws(
+    () =>
+      computeInputFeeSatsForProofs([proof('a'), proof('b')], {
+        keyset: Number.MAX_SAFE_INTEGER,
+      }),
+    /safe integer range/i,
+  )
 })
 
 test('takeProofsForLock treats input fees as subunits when computing spendable proof amount', () => {
