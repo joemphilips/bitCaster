@@ -19,6 +19,7 @@ import type { EncryptedWalletBackupKeyHandle } from './encryptedWalletBackup.ts'
 export const ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_ROW_MAX = 256 as const
 export const ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_MAX_BYTES = 1_048_576 as const
 export const ENCRYPTED_WALLET_BACKUP_SNAPSHOT_PROOF_APPEND_MAX = 127 as const
+export const ENCRYPTED_WALLET_BACKUP_SNAPSHOT_RECORD_MAX = 524_288 as const
 
 export interface PersistedEncryptedWalletBackupFrozenSnapshot {
   readonly schemaVersion: 1
@@ -32,6 +33,10 @@ export interface PersistedEncryptedWalletBackupFrozenSnapshot {
   readonly snapshotNonce: string
   readonly snapshotId: string
   readonly snapshotRevision: number
+  readonly state: 'populating'
+  readonly recordCount: number
+  readonly canonicalPinBytes: number
+  readonly sealRunRevision: number
   readonly version: number
 }
 
@@ -114,13 +119,19 @@ export async function beginEncryptedWalletBackupFrozenSnapshot(input: {
   readonly store: EncryptedWalletBackupSnapshotPersistenceStore
   readonly control: EncryptedWalletBackupFrozenSnapshotControl
 }): Promise<PersistedEncryptedWalletBackupFrozenSnapshot> {
-  return appendExactSnapshotPage({ ...input, expectedVersion: 0, sources: [] })
+  const authority = requireEncryptedWalletBackupFrozenSnapshotControl(input.control)
+  const snapshot = controlRow(authority, 1)
+  return commitSnapshotPage({
+    store: input.store,
+    reservation: reserve(authority, 0, null, snapshot, [], []),
+    snapshot,
+  })
 }
 
 export async function appendEncryptedWalletBackupFrozenSnapshotProofPage(input: {
   readonly store: EncryptedWalletBackupSnapshotPersistenceStore
   readonly control: EncryptedWalletBackupFrozenSnapshotControl
-  readonly expectedVersion: number
+  readonly current: PersistedEncryptedWalletBackupFrozenSnapshot
   readonly keyHandle: EncryptedWalletBackupKeyHandle
   readonly seed: Uint8Array
   readonly preparedRecords: readonly PersistedPreparedEncryptedWalletBackupRecord[]
@@ -133,43 +144,56 @@ export async function appendEncryptedWalletBackupFrozenSnapshotProofPage(input: 
   ) {
     throw new Error('backup snapshot proof page exceeds its capacity')
   }
+  const authority = requireEncryptedWalletBackupFrozenSnapshotControl(input.control)
+  const current = requireCurrentControl(authority, input.current)
+  if (
+    input.preparedRecords.length >
+    ENCRYPTED_WALLET_BACKUP_SNAPSHOT_RECORD_MAX - current.recordCount
+  )
+    throw new Error('backup snapshot record count exceeds its capacity')
+  const expectedControl = encodeControl(current).slice()
   const sources = await authenticatePreparedEncryptedWalletBackupSources({
     keyHandle: input.keyHandle,
     seed: input.seed,
     persisted: input.preparedRecords,
     snapshotStore: input.preparedSnapshotStore,
   })
-  return appendExactSnapshotPage({
+  const exactSources = sources.map(readAuthenticatedPreparedEncryptedWalletBackupSource)
+  const pins = exactSources.map((source) => pinRow(authority, source))
+  requireUniquePins(pins)
+  const encodedPins = pins.map(encodePin)
+  const snapshot = advanceControl(current, encodedPins)
+  return commitSnapshotPage({
     store: input.store,
-    control: input.control,
-    expectedVersion: input.expectedVersion,
-    sources: sources.map(readAuthenticatedPreparedEncryptedWalletBackupSource),
+    reservation: reserve(
+      authority,
+      current.version,
+      expectedControl,
+      snapshot,
+      exactSources,
+      encodedPins,
+    ),
+    snapshot,
   })
 }
 
-async function appendExactSnapshotPage(input: {
+async function commitSnapshotPage(input: {
   readonly store: EncryptedWalletBackupSnapshotPersistenceStore
-  readonly control: EncryptedWalletBackupFrozenSnapshotControl
-  readonly expectedVersion: number
-  readonly sources: readonly Uint8Array[]
+  readonly reservation: Reservation
+  readonly snapshot: PersistedEncryptedWalletBackupFrozenSnapshot
 }): Promise<PersistedEncryptedWalletBackupFrozenSnapshot> {
-  const authority = requireEncryptedWalletBackupFrozenSnapshotControl(input.control)
-  const expectedVersion = integer(input.expectedVersion, 'snapshot version')
-  const snapshot = controlRow(authority, expectedVersion + 1)
-  const pins = input.sources.map((source) => pinRow(authority, source))
-  requireUniquePins(pins)
-  const reservation = reserve(authority, expectedVersion, snapshot, input.sources, pins)
-  return exactTransaction(input.store, reservation, async (transaction) => {
-    const actualControl = await transaction.readSnapshotControl(reservation.scope)
-    requireExactControl(actualControl, reservation.expectedControl)
-    if (reservation.expectedControl === null)
-      await transaction.insertSnapshotControl(reservation.control)
-    else await transaction.writeSnapshotControl(reservation.control)
-    await transaction.insertSnapshotPins({
-      sourceDescriptors: reservation.sources,
-      pins: reservation.pins,
-    })
-    return snapshot
+  return exactTransaction(input.store, input.reservation, async (transaction) => {
+    const actualControl = await transaction.readSnapshotControl(input.reservation.scope)
+    requireExactControl(actualControl, input.reservation.expectedControl)
+    if (input.reservation.expectedControl === null)
+      await transaction.insertSnapshotControl(input.reservation.control)
+    else await transaction.writeSnapshotControl(input.reservation.control)
+    if (input.reservation.pins.length > 0)
+      await transaction.insertSnapshotPins({
+        sourceDescriptors: input.reservation.sources,
+        pins: input.reservation.pins,
+      })
+    return input.snapshot
   })
 }
 
@@ -189,21 +213,20 @@ type Reservation = Readonly<{
 function reserve(
   authority: ReturnType<typeof requireEncryptedWalletBackupFrozenSnapshotControl>,
   expectedVersion: number,
+  expectedControl: Uint8Array | null,
   snapshot: PersistedEncryptedWalletBackupFrozenSnapshot,
   sources: readonly Uint8Array[],
-  pins: readonly PersistedEncryptedWalletBackupSnapshotPin[],
+  pins: readonly Uint8Array[],
 ): Reservation {
   if (pins.length > ENCRYPTED_WALLET_BACKUP_SNAPSHOT_PROOF_APPEND_MAX) {
     throw new Error('backup snapshot proof page exceeds its capacity')
   }
   const scope = encodeScope(authority)
-  const expectedControl =
-    expectedVersion === 0 ? null : encodeControl(controlRow(authority, expectedVersion))
   const control = encodeControl(snapshot)
   const exactSources = sources.map((source) => source.slice())
-  const encodedPins = pins.map(encodePin)
   const reads = exactSources
-  const writes = [control, ...encodedPins]
+  const exactPins = pins.map((pin) => pin.slice())
+  const writes = [control, ...exactPins]
   const readBytes = scope.byteLength + (expectedControl?.byteLength ?? 0) + sum(reads)
   const writeBytes = sum(writes)
   if (reads.length + 1 + writes.length > ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_ROW_MAX) {
@@ -215,10 +238,10 @@ function reserve(
   return Object.freeze({
     scope,
     expectedVersion,
-    expectedControl,
+    expectedControl: expectedControl?.slice() ?? null,
     control,
     sources: Object.freeze(exactSources),
-    pins: Object.freeze(encodedPins),
+    pins: Object.freeze(exactPins),
     readRows: reads.length + 1,
     readBytes,
     writeRows: writes.length,
@@ -242,7 +265,55 @@ function controlRow(
     snapshotNonce: authority.snapshotNonce,
     snapshotId: authority.snapshotId,
     snapshotRevision: authority.snapshotRevision,
+    state: 'populating',
+    recordCount: 0,
+    canonicalPinBytes: 0,
+    sealRunRevision: 0,
     version,
+  })
+}
+
+function requireCurrentControl(
+  authority: ReturnType<typeof requireEncryptedWalletBackupFrozenSnapshotControl>,
+  value: PersistedEncryptedWalletBackupFrozenSnapshot,
+): PersistedEncryptedWalletBackupFrozenSnapshot {
+  const current = requireControl(value)
+  if (!sameSnapshotAuthority(authority, current) || current.state !== 'populating')
+    throw new Error('backup snapshot control is invalid')
+  return current
+}
+
+function sameSnapshotAuthority(
+  authority: ReturnType<typeof requireEncryptedWalletBackupFrozenSnapshotControl>,
+  control: PersistedEncryptedWalletBackupFrozenSnapshot,
+): boolean {
+  return (
+    authority.realm === control.realm &&
+    authority.vaultId === control.vaultId &&
+    authority.enrollmentEpoch === control.enrollmentEpoch &&
+    authority.parentGeneration === control.parentGeneration &&
+    authority.parentManifestDigest === control.parentManifestDigest &&
+    authority.parentReferenceSetDigest === control.parentReferenceSetDigest &&
+    authority.generation === control.generation &&
+    authority.snapshotNonce === control.snapshotNonce &&
+    authority.snapshotId === control.snapshotId &&
+    authority.snapshotRevision === control.snapshotRevision
+  )
+}
+
+function advanceControl(
+  current: PersistedEncryptedWalletBackupFrozenSnapshot,
+  pins: readonly Uint8Array[],
+): PersistedEncryptedWalletBackupFrozenSnapshot {
+  const recordCount = current.recordCount + pins.length
+  if (recordCount > ENCRYPTED_WALLET_BACKUP_SNAPSHOT_RECORD_MAX)
+    throw new Error('backup snapshot record count exceeds its capacity')
+  const canonicalPinBytes = safeAdd(current.canonicalPinBytes, sum(pins), 'snapshot pin bytes')
+  return Object.freeze({
+    ...current,
+    recordCount,
+    canonicalPinBytes,
+    version: positive(current.version + 1, 'snapshot version'),
   })
 }
 
@@ -338,8 +409,7 @@ export function decodeEncryptedWalletBackupFrozenSnapshot(
   value: Uint8Array,
 ): PersistedEncryptedWalletBackupFrozenSnapshot {
   const raw = canonicalArray(value, 'backup snapshot control')
-  if (raw.length !== 13 || raw[0] !== 1 || raw[11] !== 0)
-    throw new Error('backup snapshot control is invalid')
+  if (raw.length !== 16 || raw[0] !== 1) throw new Error('backup snapshot control is invalid')
   const parentGeneration = raw[4] === null ? null : positive(raw[4], 'parent generation')
   const parentManifestDigest = raw[5] === null ? null : fingerprint(raw[5], 'parent manifest')
   const generation = positive(raw[7], 'snapshot generation')
@@ -365,7 +435,11 @@ export function decodeEncryptedWalletBackupFrozenSnapshot(
     snapshotNonce: fingerprintBytes(raw[8], 16, 'snapshot nonce'),
     snapshotId: requireUtf8Text(raw[9], 128, 'snapshot id'),
     snapshotRevision: integer(raw[10], 'snapshot revision'),
-    version: positive(raw[12], 'snapshot version'),
+    state: snapshotState(raw[11]),
+    recordCount: recordCount(raw[12]),
+    canonicalPinBytes: integer(raw[13], 'snapshot pin bytes'),
+    sealRunRevision: integer(raw[14], 'snapshot seal run revision'),
+    version: positive(raw[15], 'snapshot version'),
   })
 }
 
@@ -383,7 +457,10 @@ function encodeControl(value: PersistedEncryptedWalletBackupFrozenSnapshot): Uin
     hexBytes(control.snapshotNonce),
     control.snapshotId,
     control.snapshotRevision,
-    0,
+    control.state,
+    control.recordCount,
+    control.canonicalPinBytes,
+    control.sealRunRevision,
     control.version,
   ])
 }
@@ -511,6 +588,10 @@ function requireControl(
     snapshotNonce: hexBytesValue(control.snapshotNonce, 16, 'snapshot nonce'),
     snapshotId: requireUtf8Text(control.snapshotId, 128, 'snapshot id'),
     snapshotRevision: integer(control.snapshotRevision, 'snapshot revision'),
+    state: snapshotState(control.state),
+    recordCount: recordCount(control.recordCount),
+    canonicalPinBytes: integer(control.canonicalPinBytes, 'snapshot pin bytes'),
+    sealRunRevision: integer(control.sealRunRevision, 'snapshot seal run revision'),
     version: positive(control.version, 'snapshot version'),
   })
 }
@@ -547,6 +628,10 @@ const controlFields = [
   'snapshotNonce',
   'snapshotId',
   'snapshotRevision',
+  'state',
+  'recordCount',
+  'canonicalPinBytes',
+  'sealRunRevision',
   'version',
 ] as const
 
@@ -602,6 +687,16 @@ function positive(value: unknown, name: string): number {
   if (result === 0) throw new Error(`backup ${name} is invalid`)
   return result
 }
+function recordCount(value: unknown): number {
+  const result = integer(value, 'snapshot record count')
+  if (result > ENCRYPTED_WALLET_BACKUP_SNAPSHOT_RECORD_MAX)
+    throw new Error('backup snapshot record count exceeds its capacity')
+  return result
+}
+function snapshotState(value: unknown): 'populating' {
+  if (value !== 'populating') throw new Error('backup snapshot state is invalid')
+  return value
+}
 function fingerprint(value: unknown, name: string): string {
   return fingerprintBytes(value, 32, name)
 }
@@ -627,8 +722,17 @@ function hexBytes(value: string): Uint8Array {
 }
 function sum(values: readonly Uint8Array[]): number {
   let total = 0
-  for (const value of values) total += value.byteLength
+  for (const value of values) total = safeAdd(total, value.byteLength, 'snapshot bytes')
   return total
+}
+function safeAdd(left: number, right: number, name: string): number {
+  if (
+    !Number.isSafeInteger(left) ||
+    !Number.isSafeInteger(right) ||
+    left > Number.MAX_SAFE_INTEGER - right
+  )
+    throw new Error(`backup ${name} is invalid`)
+  return left + right
 }
 function equalBytes(left: Uint8Array | null, right: Uint8Array | null): boolean {
   if (left === null || right === null) return left === right

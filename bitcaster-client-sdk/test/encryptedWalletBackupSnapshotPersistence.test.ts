@@ -35,6 +35,7 @@ import {
   decodeEncryptedWalletBackupSnapshotPin,
   encodeEncryptedWalletBackupFrozenSnapshot,
   encodeEncryptedWalletBackupSnapshotPin,
+  ENCRYPTED_WALLET_BACKUP_SNAPSHOT_RECORD_MAX,
   ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_ROW_MAX,
   validateEncryptedWalletBackupSnapshotSourcePinBinding,
@@ -100,7 +101,11 @@ test('a not-found control creates a bounded persisted snapshot row', async () =>
   const control = await controlFor(fixture.keyHandle, 'local-1')
   const snapshot = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
   assert.equal(snapshot.generation, 1)
-  assert.equal(Object.keys(snapshot).length, 12)
+  assert.equal(snapshot.state, 'populating')
+  assert.equal(snapshot.recordCount, 0)
+  assert.equal(snapshot.canonicalPinBytes, 0)
+  assert.equal(snapshot.sealRunRevision, 0)
+  assert.equal(Object.keys(snapshot).length, 16)
   assert.equal(store.last?.controlReads, 1)
   assert.equal(store.last?.sourceReads, 0)
   assert.equal(store.last?.pinWrites, 0)
@@ -113,8 +118,11 @@ test('a proof append uses exact control, source, and pin reservations', async ()
   const store = new StrictStore()
   store.addSource(fixture.descriptor)
   const control = await controlFor(fixture.keyHandle, 'append-1')
-  const snapshot = await appendPage(store, control, fixture)
-  assert.equal(snapshot.version, 1)
+  const current = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
+  const snapshot = await appendPage(store, control, fixture, current)
+  assert.equal(snapshot.version, 2)
+  assert.equal(snapshot.recordCount, 1)
+  assert.equal(snapshot.canonicalPinBytes, store.firstPin().byteLength)
   assert.equal(store.last?.controlReads, 1)
   assert.equal(store.last?.sourceReads, 1)
   assert.equal(store.last?.pinWrites, 1)
@@ -132,9 +140,11 @@ test('the strict adapter rejects missing, stale, substituted, and failed source 
     if (fault === 'stale') store.mutateSource(fixture.descriptor)
     if (fault === 'substituted')
       store.substituteSource(fixture.descriptor, alternateDescriptor(fixture.descriptor))
-    await assert.rejects(appendPage(store, control, fixture))
-    assert.equal(store.controlCount(), 0)
+    const current = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
+    await assert.rejects(appendPage(store, control, fixture, current))
+    assert.equal(store.controlCount(), 1)
     assert.equal(store.pinCount(), 0)
+    assertPopulationTotals(store.controlSnapshot(`fault-${fault}`), 0, 0)
     assert.equal(store.last?.controlReads, 1)
     assert.equal(store.last?.sourceReads, 1)
   }
@@ -145,6 +155,7 @@ test('source mutation after authentication is rejected at the atomic pin', async
   const store = new StrictStore()
   store.addSource(fixture.descriptor)
   const control = await controlFor(fixture.keyHandle, 'mutated-source')
+  const current = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
   const preparedSnapshotStore = exactSnapshotStore(fixture.snapshot, () => {
     store.mutateSource(fixture.descriptor)
   })
@@ -152,15 +163,16 @@ test('source mutation after authentication is rejected at the atomic pin', async
     appendEncryptedWalletBackupFrozenSnapshotProofPage({
       store,
       control,
-      expectedVersion: 0,
+      current,
       keyHandle: fixture.keyHandle,
       seed: fixture.seed,
       preparedRecords: [fixture.persisted],
       preparedSnapshotStore,
     }),
   )
-  assert.equal(store.controlCount(), 0)
+  assert.equal(store.controlCount(), 1)
   assert.equal(store.pinCount(), 0)
+  assertPopulationTotals(store.controlSnapshot('mutated-source'), 0, 0)
 })
 
 test('stale controls, duplicate pins, and concurrent versions fully roll back', async () => {
@@ -168,21 +180,64 @@ test('stale controls, duplicate pins, and concurrent versions fully roll back', 
   const store = new StrictStore()
   store.addSource(fixture.descriptor)
   const control = await controlFor(fixture.keyHandle, 'same-snapshot')
-  await appendPage(store, control, fixture)
-  await assert.rejects(appendPage(store, control, fixture, 0), /control changed/)
-  await assert.rejects(appendPage(store, control, fixture, 1), /pin is duplicated/)
-  assert.equal(store.controlVersion('same-snapshot'), 1)
+  const started = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
+  const appended = await appendPage(store, control, fixture, started)
+  await assert.rejects(appendPage(store, control, fixture, started), /control changed/)
+  await assert.rejects(appendPage(store, control, fixture, appended), /pin is duplicated/)
+  assert.equal(store.controlVersion('same-snapshot'), 2)
   assert.equal(store.pinCount(), 1)
+  assertPopulationTotals(store.controlSnapshot('same-snapshot'), 1, appended.canonicalPinBytes)
 })
 
 test('a proof can pin once in each distinct snapshot namespace', async () => {
   const fixture = await proofFixture()
   const store = new StrictStore()
   store.addSource(fixture.descriptor)
-  await appendPage(store, await controlFor(fixture.keyHandle, 'namespace-a'), fixture)
-  await appendPage(store, await controlFor(fixture.keyHandle, 'namespace-b'), fixture)
+  const controlA = await controlFor(fixture.keyHandle, 'namespace-a')
+  const controlB = await controlFor(fixture.keyHandle, 'namespace-b')
+  await appendPage(
+    store,
+    controlA,
+    fixture,
+    await beginEncryptedWalletBackupFrozenSnapshot({ store, control: controlA }),
+  )
+  await appendPage(
+    store,
+    controlB,
+    fixture,
+    await beginEncryptedWalletBackupFrozenSnapshot({ store, control: controlB }),
+  )
   assert.equal(store.pinCount(), 2)
   assert.throws(() => store.deletePreparedSource(fixture.descriptor), /deletion is blocked/)
+})
+
+test('successive proof pages accumulate exact control totals', async () => {
+  const fixture = await proofPageFixture(2)
+  const store = new StrictStore()
+  for (const descriptor of fixture.descriptors) store.addSource(descriptor)
+  const control = await controlFor(fixture.keyHandle, 'totals')
+  const started = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
+  const first = await appendEncryptedWalletBackupFrozenSnapshotProofPage({
+    store,
+    control,
+    current: started,
+    keyHandle: fixture.keyHandle,
+    seed: fixture.seed,
+    preparedRecords: [fixture.records[0]!],
+    preparedSnapshotStore: fixture.snapshotStore,
+  })
+  const second = await appendEncryptedWalletBackupFrozenSnapshotProofPage({
+    store,
+    control,
+    current: first,
+    keyHandle: fixture.keyHandle,
+    seed: fixture.seed,
+    preparedRecords: [fixture.records[1]!],
+    preparedSnapshotStore: fixture.snapshotStore,
+  })
+  assertPopulationTotals(first, 1, first.canonicalPinBytes)
+  assertPopulationTotals(second, 2, store.pinBytes())
+  assert.equal(second.sealRunRevision, 0)
 })
 
 test('transaction callbacks must be exact across resolve, reject, and late invocation faults', async () => {
@@ -221,11 +276,13 @@ test('proof pages above 127 reject before prepared-source authentication or tran
     { length: 128 },
     () => null,
   ) as unknown as PersistedPreparedEncryptedWalletBackupRecord[]
+  const current = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
+  const transactions = store.transactions
   await assert.rejects(
     appendEncryptedWalletBackupFrozenSnapshotProofPage({
       store,
       control,
-      expectedVersion: 0,
+      current,
       keyHandle: fixture.keyHandle,
       seed: fixture.seed,
       preparedRecords: records,
@@ -234,19 +291,19 @@ test('proof pages above 127 reject before prepared-source authentication or tran
     /capacity/,
   )
   assert.equal(sourceStoreCalls, 0)
-  assert.equal(store.transactions, 0)
+  assert.equal(store.transactions, transactions)
 })
 
 test('the reservation ledger rejects under- and over-declaration without commit', async () => {
   for (const fault of ['under', 'over'] as const) {
     const fixture = await proofFixture()
     const store = new StrictStore()
-    store.reservationFault = fault
     store.addSource(fixture.descriptor)
-    await assert.rejects(
-      appendPage(store, await controlFor(fixture.keyHandle, `ledger-${fault}`), fixture),
-    )
-    assert.equal(store.controlCount(), 0)
+    const control = await controlFor(fixture.keyHandle, `ledger-${fault}`)
+    const current = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
+    store.reservationFault = fault
+    await assert.rejects(appendPage(store, control, fixture, current))
+    assert.equal(store.controlCount(), 1)
     assert.equal(store.pinCount(), 0)
   }
 })
@@ -255,16 +312,17 @@ test('a maximum proof page uses one bounded transaction and batch callback', asy
   const fixture = await proofPageFixture(127)
   const store = new StrictStore()
   for (const descriptor of fixture.descriptors) store.addSource(descriptor)
+  const control = await controlFor(fixture.keyHandle, 'maximum-page')
   const snapshot = await appendEncryptedWalletBackupFrozenSnapshotProofPage({
     store,
-    control: await controlFor(fixture.keyHandle, 'maximum-page'),
-    expectedVersion: 0,
+    control,
+    current: await beginEncryptedWalletBackupFrozenSnapshot({ store, control }),
     keyHandle: fixture.keyHandle,
     seed: fixture.seed,
     preparedRecords: fixture.records,
     preparedSnapshotStore: fixture.snapshotStore,
   })
-  assert.equal(snapshot.version, 1)
+  assert.equal(snapshot.version, 2)
   assert.equal(fixture.batchCalls, 1)
   assert.equal(store.last?.pinBatches, 1)
   assert.equal(store.last?.rows, 256)
@@ -272,6 +330,7 @@ test('a maximum proof page uses one bounded transaction and batch callback', asy
     (store.last?.bytes ?? Infinity) <= ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_MAX_BYTES,
   )
   assert.equal(store.pinCount(), 127)
+  assertPopulationTotals(snapshot, 127, store.pinBytes())
 })
 
 test('snapshot control and pin codecs reject invalid fields while accepting 128-character IDs', async () => {
@@ -279,20 +338,19 @@ test('snapshot control and pin codecs reject invalid fields while accepting 128-
   const store = new StrictStore()
   store.addSource(fixture.descriptor)
   const control = await controlFor(fixture.keyHandle, 's'.repeat(128))
-  const snapshot = await appendPage(store, control, fixture)
+  const snapshot = await appendPage(
+    store,
+    control,
+    fixture,
+    await beginEncryptedWalletBackupFrozenSnapshot({ store, control }),
+  )
   const controlBytes = encodeEncryptedWalletBackupFrozenSnapshot(snapshot)
   assert.equal(decodeEncryptedWalletBackupFrozenSnapshot(controlBytes).snapshotId.length, 128)
   const pin = store.firstPin()
   assert.equal(decodeEncryptedWalletBackupSnapshotPin(pin).snapshotId.length, 128)
   assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes)
   assertCodecRejects(decodeEncryptedWalletBackupSnapshotPin, pin)
-  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 4, 1)
-  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 5, new Uint8Array(32))
-  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 7, 2)
-  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 12, 0)
-  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 6, new Uint8Array(32))
-  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 1, 'UPPER')
-  assertCodecRejects(decodeEncryptedWalletBackupSnapshotPin, pin, 5, 1)
+  assertControlWireFieldRejections(controlBytes, pin)
   assert.throws(
     () => encodeEncryptedWalletBackupFrozenSnapshot({ ...snapshot, vaultId: 'g'.repeat(64) }),
     /invalid/,
@@ -300,7 +358,64 @@ test('snapshot control and pin codecs reject invalid fields while accepting 128-
   await assert.rejects(controlFor(fixture.keyHandle, 'é'.repeat(65)))
   await assert.rejects(controlFor(fixture.keyHandle, 'bad\u0001id'))
   await assert.rejects(controlFor(fixture.keyHandle, '\ud800'))
+  assertNewControlWireFieldsReject(controlBytes)
   assertEncodedRecordRejections(snapshot, pin)
+})
+
+function assertControlWireFieldRejections(controlBytes: Uint8Array, pin: Uint8Array): void {
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 4, 1)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 5, new Uint8Array(32))
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 7, 2)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 11, 'sealing')
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 11, 0)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 12, -1)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 12, 'wrong')
+  assertCodecRejects(
+    decodeEncryptedWalletBackupFrozenSnapshot,
+    controlBytes,
+    12,
+    Number.MAX_SAFE_INTEGER + 1,
+  )
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 13, -1)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 13, 'wrong')
+  assertCodecRejects(
+    decodeEncryptedWalletBackupFrozenSnapshot,
+    controlBytes,
+    13,
+    Number.MAX_SAFE_INTEGER + 1,
+  )
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 14, -1)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 14, 'wrong')
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 15, 0)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 6, new Uint8Array(32))
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 1, 'UPPER')
+  assertCodecRejects(decodeEncryptedWalletBackupSnapshotPin, pin, 5, 1)
+}
+
+test('append rejects non-populating and overflowing current controls before a transaction', async () => {
+  const fixture = await proofFixture()
+  const store = new StrictStore()
+  store.addSource(fixture.descriptor)
+  const control = await controlFor(fixture.keyHandle, 'invalid-current')
+  const current = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
+  const transactions = store.transactions
+  await assert.rejects(
+    appendPage(store, control, fixture, { ...current, state: 'sealing' } as never),
+  )
+  await assert.rejects(
+    appendPage(store, control, fixture, {
+      ...current,
+      recordCount: ENCRYPTED_WALLET_BACKUP_SNAPSHOT_RECORD_MAX,
+    } as never),
+  )
+  await assert.rejects(
+    appendPage(store, control, fixture, {
+      ...current,
+      canonicalPinBytes: Number.MAX_SAFE_INTEGER,
+    } as never),
+  )
+  assert.equal(store.transactions, transactions)
+  assertPopulationTotals(store.controlSnapshot('invalid-current'), 0, 0)
 })
 
 function assertEncodedRecordRejections(
@@ -311,6 +426,7 @@ function assertEncodedRecordRejections(
     () => encodeEncryptedWalletBackupFrozenSnapshot({ ...snapshot, version: 0 }),
     /invalid/,
   )
+  assertNewControlObjectRejections(snapshot)
   assert.throws(
     () =>
       encodeEncryptedWalletBackupFrozenSnapshot({
@@ -334,6 +450,67 @@ function assertEncodedRecordRejections(
   )
 }
 
+function assertNewControlObjectRejections(
+  snapshot: PersistedEncryptedWalletBackupFrozenSnapshot,
+): void {
+  assertMissingControlFields(snapshot)
+  for (const [field, value] of [
+    ['state', 0],
+    ['recordCount', 'wrong'],
+    ['canonicalPinBytes', 'wrong'],
+    ['sealRunRevision', 'wrong'],
+  ] as const) {
+    assert.throws(
+      () => encodeEncryptedWalletBackupFrozenSnapshot({ ...snapshot, [field]: value } as never),
+      /invalid/,
+    )
+  }
+  assertInvalidControlValues(snapshot)
+}
+
+function assertMissingControlFields(snapshot: PersistedEncryptedWalletBackupFrozenSnapshot): void {
+  for (const field of ['state', 'recordCount', 'canonicalPinBytes', 'sealRunRevision'] as const) {
+    const incomplete = { ...snapshot } as Record<string, unknown>
+    delete incomplete[field]
+    assert.throws(() => encodeEncryptedWalletBackupFrozenSnapshot(incomplete as never), /invalid/)
+  }
+}
+
+function assertInvalidControlValues(snapshot: PersistedEncryptedWalletBackupFrozenSnapshot): void {
+  assert.throws(
+    () =>
+      encodeEncryptedWalletBackupFrozenSnapshot({
+        ...snapshot,
+        state: 'sealing',
+      } as unknown as PersistedEncryptedWalletBackupFrozenSnapshot),
+    /invalid/,
+  )
+  assert.throws(
+    () =>
+      encodeEncryptedWalletBackupFrozenSnapshot({
+        ...snapshot,
+        recordCount: -1,
+      } as PersistedEncryptedWalletBackupFrozenSnapshot),
+    /invalid/,
+  )
+  assert.throws(
+    () =>
+      encodeEncryptedWalletBackupFrozenSnapshot({
+        ...snapshot,
+        canonicalPinBytes: Number.MAX_SAFE_INTEGER + 1,
+      } as PersistedEncryptedWalletBackupFrozenSnapshot),
+    /invalid/,
+  )
+  assert.throws(
+    () =>
+      encodeEncryptedWalletBackupFrozenSnapshot({
+        ...snapshot,
+        sealRunRevision: -1,
+      } as PersistedEncryptedWalletBackupFrozenSnapshot),
+    /invalid/,
+  )
+}
+
 function assertCodecRejects(
   decodeValue: (value: Uint8Array) => unknown,
   value: Uint8Array,
@@ -346,16 +523,35 @@ function assertCodecRejects(
   assert.throws(() => decodeValue(encodeCanonical(raw)))
 }
 
+function assertNewControlWireFieldsReject(value: Uint8Array): void {
+  for (const index of [11, 12, 13, 14]) {
+    const raw = decode(value) as unknown[]
+    raw.splice(index, 1)
+    assert.throws(() => decodeEncryptedWalletBackupFrozenSnapshot(encodeCanonical(raw)))
+  }
+}
+
+function assertPopulationTotals(
+  snapshot: PersistedEncryptedWalletBackupFrozenSnapshot,
+  recordCount: number,
+  canonicalPinBytes: number,
+): void {
+  assert.equal(snapshot.state, 'populating')
+  assert.equal(snapshot.recordCount, recordCount)
+  assert.equal(snapshot.canonicalPinBytes, canonicalPinBytes)
+  assert.equal(snapshot.sealRunRevision, 0)
+}
+
 async function appendPage(
   store: StrictStore,
   control: Awaited<ReturnType<typeof controlFor>>,
   fixture: Awaited<ReturnType<typeof proofFixture>>,
-  expectedVersion = 0,
+  current: PersistedEncryptedWalletBackupFrozenSnapshot,
 ): Promise<PersistedEncryptedWalletBackupFrozenSnapshot> {
   return appendEncryptedWalletBackupFrozenSnapshotProofPage({
     store,
     control,
-    expectedVersion,
+    current,
     keyHandle: fixture.keyHandle,
     seed: fixture.seed,
     preparedRecords: [fixture.persisted],
@@ -424,11 +620,19 @@ class StrictStore implements EncryptedWalletBackupSnapshotPersistenceStore {
   }
 
   controlVersion(snapshotId: string): number {
+    return this.controlSnapshot(snapshotId).version
+  }
+
+  controlSnapshot(snapshotId: string): PersistedEncryptedWalletBackupFrozenSnapshot {
     for (const value of this.controls.values()) {
       const control = decodeEncryptedWalletBackupFrozenSnapshot(value)
-      if (control.snapshotId === snapshotId) return control.version
+      if (control.snapshotId === snapshotId) return control
     }
     throw new Error('control is missing')
+  }
+
+  pinBytes(): number {
+    return sum([...this.pins.values()].map((entry) => entry.pin))
   }
 
   async withExactVersionTransaction<T>(
