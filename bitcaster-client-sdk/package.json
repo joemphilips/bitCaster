@@ -79,6 +79,10 @@
       "types": "./dist/encryptedWalletBackupPackPersistence.d.ts",
       "import": "./dist/encryptedWalletBackupPackPersistence.js"
     },
+    "./encryptedWalletBackupSnapshotPersistence": {
+      "types": "./dist/encryptedWalletBackupSnapshotPersistence.d.ts",
+      "import": "./dist/encryptedWalletBackupSnapshotPersistence.js"
+    },
     "./managedConditionInventory": {
       "types": "./dist/managedConditionInventory.d.ts",
       "import": "./dist/managedConditionInventory.js"

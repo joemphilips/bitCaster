@@ -1,4 +1,7 @@
 import { deriveDurableCustodyWalletId } from './durableCustody.ts'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
+import { decode } from 'cborg'
 import {
   ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_PROOF_CBOR_MAX_BYTES,
@@ -21,6 +24,7 @@ import {
   type EncryptedWalletBackupRecordKindCode,
   type PreparedEncryptedWalletBackupRecord,
 } from './encryptedWalletBackupRecord.ts'
+import { requireRealm, requireUtf8Text } from './encryptedWalletBackupServerValidation.ts'
 
 export interface PersistedPreparedEncryptedWalletBackupRecord {
   readonly schemaVersion: 1
@@ -63,6 +67,89 @@ export interface EncryptedWalletBackupPreparedRecordSnapshotBatchStore {
     recordIds: readonly string[],
     read: (rows: readonly EncryptedWalletBackupPreparedRecordSnapshot[]) => T,
   ): Promise<T>
+}
+
+declare const authenticatedPreparedEncryptedWalletBackupSourceBrand: unique symbol
+
+export interface AuthenticatedPreparedEncryptedWalletBackupSource {
+  readonly [authenticatedPreparedEncryptedWalletBackupSourceBrand]: true
+}
+
+const AUTHENTICATED_SOURCES = new WeakMap<object, Uint8Array>()
+
+export interface EncryptedWalletBackupPreparedSourceDescriptor {
+  readonly realm: string
+  readonly vaultId: string
+  readonly bodyReference: string
+  readonly revision: number
+  readonly recordKindCode: 0
+  readonly recordId: string
+  readonly commitment: string
+}
+
+export function encodeEncryptedWalletBackupPreparedSourceDescriptor(
+  value: PersistedPreparedEncryptedWalletBackupRecord,
+): Uint8Array {
+  const persisted = requirePersistedRecord(value)
+  const descriptor = descriptorFromPersisted(persisted)
+  return encodeCanonical([
+    1,
+    'prepared-proof-source',
+    descriptor.realm,
+    hexBytes(descriptor.vaultId),
+    hexBytes(descriptor.bodyReference),
+    descriptor.revision,
+    descriptor.recordKindCode,
+    hexBytes(descriptor.recordId),
+    hexBytes(descriptor.commitment),
+  ])
+}
+
+export function decodeEncryptedWalletBackupPreparedSourceDescriptor(
+  value: Uint8Array,
+): EncryptedWalletBackupPreparedSourceDescriptor {
+  if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > 1_024) {
+    throw new Error('prepared backup source descriptor is invalid')
+  }
+  const decoded = decode(value)
+  if (
+    !Array.isArray(decoded) ||
+    decoded.length !== 9 ||
+    !equalBytes(value, encodeCanonical(decoded))
+  ) {
+    throw new Error('prepared backup source descriptor is invalid')
+  }
+  if (decoded[0] !== 1 || decoded[1] !== 'prepared-proof-source' || decoded[6] !== 0) {
+    throw new Error('prepared backup source descriptor is invalid')
+  }
+  return Object.freeze({
+    realm: requireRealm(decoded[2]),
+    vaultId: bytesFingerprint(decoded[3], 'source vault id'),
+    bodyReference: bytesFingerprint(decoded[4], 'source body reference'),
+    revision: requireInteger(decoded[5], 'source revision'),
+    recordKindCode: 0,
+    recordId: bytesFingerprint(decoded[7], 'source record id'),
+    commitment: bytesFingerprint(decoded[8], 'source commitment'),
+  })
+}
+
+export async function authenticatePreparedEncryptedWalletBackupSources(input: {
+  readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly seed: Uint8Array
+  readonly persisted: readonly PersistedPreparedEncryptedWalletBackupRecord[]
+  readonly snapshotStore: EncryptedWalletBackupPreparedRecordSnapshotBatchStore
+}): Promise<readonly AuthenticatedPreparedEncryptedWalletBackupSource[]> {
+  const candidates = await authenticatePreparedRecordBatch(input)
+  return Object.freeze(candidates.map((candidate) => issueAuthenticatedSource(candidate)))
+}
+
+export function readAuthenticatedPreparedEncryptedWalletBackupSource(
+  value: AuthenticatedPreparedEncryptedWalletBackupSource,
+): Uint8Array {
+  const descriptor =
+    typeof value === 'object' && value !== null ? AUTHENTICATED_SOURCES.get(value) : undefined
+  if (descriptor === undefined) throw new Error('authenticated prepared backup source is invalid')
+  return descriptor.slice()
 }
 
 export async function sealPreparedEncryptedWalletBackupRecord(input: {
@@ -118,6 +205,27 @@ export async function rehydratePreparedEncryptedWalletBackupRecordBatch(input: {
   readonly persisted: readonly PersistedPreparedEncryptedWalletBackupRecord[]
   readonly snapshotStore: EncryptedWalletBackupPreparedRecordSnapshotBatchStore
 }): Promise<readonly PreparedEncryptedWalletBackupProof[]> {
+  const persisted = await authenticatePreparedRecordBatch(input)
+  return Object.freeze(
+    persisted.map((record) =>
+      rehydrateValidatedPreparedEncryptedWalletBackupRecord({
+        keyHandle: input.keyHandle,
+        seed: input.seed,
+        canonicalRecord: record.canonicalRecord,
+        canonicalManifestEntry: record.canonicalManifestEntry,
+        snapshotId: record.snapshotId,
+        snapshotRevision: record.snapshotRevision,
+      }),
+    ),
+  )
+}
+
+async function authenticatePreparedRecordBatch(input: {
+  readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly seed: Uint8Array
+  readonly persisted: readonly PersistedPreparedEncryptedWalletBackupRecord[]
+  readonly snapshotStore: EncryptedWalletBackupPreparedRecordSnapshotBatchStore
+}): Promise<readonly PersistedPreparedEncryptedWalletBackupRecord[]> {
   if (
     !Array.isArray(input.persisted) ||
     input.persisted.length < 1 ||
@@ -139,18 +247,7 @@ export async function rehydratePreparedEncryptedWalletBackupRecordBatch(input: {
     }),
   )
   await requireCommittedSnapshotBatch(input.snapshotStore, persisted.map(snapshotOf))
-  return Object.freeze(
-    persisted.map((record) =>
-      rehydrateValidatedPreparedEncryptedWalletBackupRecord({
-        keyHandle,
-        seed: input.seed,
-        canonicalRecord: record.canonicalRecord,
-        canonicalManifestEntry: record.canonicalManifestEntry,
-        snapshotId: record.snapshotId,
-        snapshotRevision: record.snapshotRevision,
-      }),
-    ),
-  )
+  return Object.freeze(persisted)
 }
 
 type CapabilityCandidate = Omit<PersistedPreparedEncryptedWalletBackupRecord, 'authenticationTag'>
@@ -163,7 +260,7 @@ function candidateFromAuthority(
     schemaVersion: 1,
     realm: keyHandle.realm,
     vaultId: keyHandle.vaultId,
-    snapshotId: requireText(authority.snapshotId, 128, 'snapshot id'),
+    snapshotId: requireUtf8Text(authority.snapshotId, 128, 'snapshot id'),
     snapshotRevision: requireInteger(authority.snapshotRevision, 'snapshot revision'),
     recordId: requireFingerprint(authority.recordId, 'record id'),
     commitment: requireFingerprint(authority.commitment, 'record commitment'),
@@ -215,9 +312,9 @@ function requirePersistedRecord(
 function candidateFromPersistedRecord(record: Record<string, unknown>): CapabilityCandidate {
   return Object.freeze({
     schemaVersion: 1,
-    realm: requireText(record.realm, 64, 'realm'),
+    realm: requireRealm(record.realm),
     vaultId: requireFingerprint(record.vaultId, 'vault id'),
-    snapshotId: requireText(record.snapshotId, 128, 'snapshot id'),
+    snapshotId: requireUtf8Text(record.snapshotId, 128, 'snapshot id'),
     snapshotRevision: requireInteger(record.snapshotRevision, 'snapshot revision'),
     recordId: requireFingerprint(record.recordId, 'record id'),
     commitment: requireFingerprint(record.commitment, 'record commitment'),
@@ -279,6 +376,47 @@ function capabilityPayload(value: CapabilityCandidate): Uint8Array {
     value.canonicalRecord,
     value.canonicalManifestEntry,
   ])
+}
+
+function issueAuthenticatedSource(
+  value: PersistedPreparedEncryptedWalletBackupRecord,
+): AuthenticatedPreparedEncryptedWalletBackupSource {
+  const descriptor = encodeEncryptedWalletBackupPreparedSourceDescriptor(value)
+  const handle = Object.freeze({})
+  AUTHENTICATED_SOURCES.set(handle, descriptor)
+  return handle as AuthenticatedPreparedEncryptedWalletBackupSource
+}
+
+function descriptorFromPersisted(
+  value: PersistedPreparedEncryptedWalletBackupRecord,
+): EncryptedWalletBackupPreparedSourceDescriptor {
+  const bodyReference = bytesToHex(
+    sha256(
+      encodeCanonical([
+        1,
+        'prepared-proof-body',
+        value.realm,
+        hexBytes(value.vaultId),
+        value.snapshotId,
+        value.snapshotRevision,
+        hexBytes(value.recordId),
+        hexBytes(value.commitment),
+        value.recordKindCode,
+        value.canonicalRecord,
+        value.canonicalManifestEntry,
+        value.authenticationTag,
+      ]),
+    ),
+  )
+  return Object.freeze({
+    realm: value.realm,
+    vaultId: value.vaultId,
+    bodyReference,
+    revision: value.snapshotRevision,
+    recordKindCode: 0,
+    recordId: value.recordId,
+    commitment: value.commitment,
+  })
 }
 
 function snapshotOf(value: CapabilityCandidate): EncryptedWalletBackupPreparedRecordSnapshot {
@@ -376,7 +514,7 @@ function requireStrictSnapshot(value: unknown): EncryptedWalletBackupPreparedRec
   }
   return Object.freeze({
     schemaVersion: 1,
-    snapshotId: requireText(record.snapshotId, 128, 'snapshot id'),
+    snapshotId: requireUtf8Text(record.snapshotId, 128, 'snapshot id'),
     snapshotRevision: requireInteger(record.snapshotRevision, 'snapshot revision'),
     recordId: requireFingerprint(record.recordId, 'record id'),
     commitment: requireFingerprint(record.commitment, 'record commitment'),
@@ -406,18 +544,6 @@ function requireKeyBinding(
   if (persisted.realm !== keyHandle.realm || persisted.vaultId !== keyHandle.vaultId) {
     throw new Error('persisted prepared backup record belongs to a foreign vault')
   }
-}
-
-function requireText(value: unknown, maximum: number, name: string): string {
-  if (
-    typeof value !== 'string' ||
-    value.length < 1 ||
-    value.length > maximum ||
-    value.trim() !== value
-  ) {
-    throw new Error(`prepared backup ${name} is invalid`)
-  }
-  return value
 }
 
 function requireInteger(value: unknown, name: string): number {
@@ -466,4 +592,19 @@ function hexBytes(value: string): Uint8Array {
     result[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16)
   }
   return result
+}
+
+function bytesFingerprint(value: unknown, name: string): string {
+  if (!(value instanceof Uint8Array) || value.byteLength !== 32) {
+    throw new Error(`prepared backup ${name} is invalid`)
+  }
+  return bytesToHex(value)
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false
+  }
+  return true
 }

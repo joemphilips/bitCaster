@@ -49,6 +49,13 @@ import {
   type PreparedEncryptedWalletBackupRecord,
 } from './encryptedWalletBackupRecord.ts'
 import {
+  ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
+  issueEncryptedWalletBackupFrozenSnapshotControl,
+  type EncryptedWalletBackupFrozenSnapshotControl,
+} from './encryptedWalletBackupSnapshotAuthority.ts'
+import { requireRealm, requireUtf8Text } from './encryptedWalletBackupServerValidation.ts'
+export type { EncryptedWalletBackupFrozenSnapshotControl } from './encryptedWalletBackupSnapshotAuthority.ts'
+import {
   issueCoordinatedEncryptedWalletBackupCasAttempt,
   readCoordinatedEncryptedWalletBackupCasAuthority,
 } from './encryptedWalletBackupCasAuthority.ts'
@@ -120,7 +127,6 @@ export const ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES_RESERVED =
   ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES
 
 const ROOT_SALT = new TextEncoder().encode('bitcaster/encrypted-wallet-backup/hkdf-salt/v1')
-const REALM_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/
 const SECP256K1_ORDER = secp256k1.Point.Fn.ORDER
 const UINT64_MAX = 18_446_744_073_709_551_615n
 const REQUEST_SCALAR_ATTEMPTS = 256
@@ -552,6 +558,54 @@ export interface AuthenticatedEncryptedWalletBackupHeadEvidence {
   readonly state: 'authenticated'
   readonly enrollmentEpoch: number
   readonly head: EncryptedWalletBackupManifestHead | null
+}
+
+export interface EncryptedWalletBackupFrozenSnapshotControlInput {
+  readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence
+  readonly snapshotNonce: string
+  readonly snapshotId: string
+  readonly snapshotRevision: number
+}
+
+export function prepareEncryptedWalletBackupFrozenSnapshotControl(
+  input: EncryptedWalletBackupFrozenSnapshotControlInput,
+): EncryptedWalletBackupFrozenSnapshotControl {
+  const keyAuthority = requireKeyAuthority(input.keyHandle)
+  const observation =
+    typeof input.headEvidence === 'object' && input.headEvidence !== null
+      ? AUTHENTICATED_HEAD_OBSERVATIONS.get(input.headEvidence)
+      : undefined
+  if (
+    observation === undefined ||
+    observation.keyAuthority !== keyAuthority ||
+    input.headEvidence.state !== 'authenticated' ||
+    input.headEvidence.enrollmentEpoch < 1
+  ) {
+    throw new Error('backup frozen snapshot head evidence is invalid')
+  }
+  const head = observation.head
+  const parentGeneration = head === null ? null : head.generation
+  const parentReferenceSetDigest =
+    head === null ? ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST : head.referenceSetDigest
+  const handle = Object.freeze({})
+  return issueEncryptedWalletBackupFrozenSnapshotControl(handle, {
+    realm: keyAuthority.realm,
+    vaultId: bytesToHex(keyAuthority.vaultIdBytes),
+    enrollmentEpoch: input.headEvidence.enrollmentEpoch,
+    parentGeneration,
+    parentManifestDigest: head === null ? null : head.manifestDigest,
+    parentReferenceSetDigest,
+    generation: parentGeneration === null ? 1 : parentGeneration + 1,
+    snapshotNonce: requireLowerHex(input.snapshotNonce, 16, 'snapshot nonce'),
+    snapshotId: requireUtf8Text(input.snapshotId, 128, 'snapshot id'),
+    snapshotRevision: requireInteger(
+      input.snapshotRevision,
+      0,
+      Number.MAX_SAFE_INTEGER,
+      'snapshot revision',
+    ),
+  })
 }
 
 interface AuthenticatedHeadObservationAuthority {
@@ -5924,31 +5978,7 @@ function requireNormalizedMint(value: unknown): string {
 }
 
 function requireBoundedText(value: unknown, maxBytes: number, name: string): string {
-  if (typeof value !== 'string' || value.length === 0 || hasInvalidText(value)) {
-    throw new Error(`${name} is invalid`)
-  }
-  const bytes = new TextEncoder().encode(value)
-  if (bytes.byteLength > maxBytes) throw new Error(`${name} is invalid`)
-  return value
-}
-
-function hasInvalidText(value: string): boolean {
-  if (/[\u0000-\u001f\u007f-\u009f]/.test(value)) return true
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index)
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1)
-      if (next < 0xdc00 || next > 0xdfff) return true
-      index += 1
-    } else if (code >= 0xdc00 && code <= 0xdfff) return true
-  }
-  return false
-}
-
-function requireRealm(value: unknown): string {
-  if (typeof value !== 'string' || !REALM_PATTERN.test(value))
-    throw new Error('backup realm is invalid')
-  return value
+  return requireUtf8Text(value, maxBytes, name)
 }
 
 function requireRequestMethod(value: unknown): EncryptedWalletBackupRequestMethod {

@@ -14,12 +14,15 @@ import {
   deriveDurableCustodyWalletId,
 } from '../src/durableCustody.ts'
 import {
+  decodeEncryptedWalletBackupPreparedSourceDescriptor,
+  encodeEncryptedWalletBackupPreparedSourceDescriptor,
   rehydratePreparedEncryptedWalletBackupRecord,
   sealPreparedEncryptedWalletBackupRecord,
   type EncryptedWalletBackupPreparedRecordSnapshot,
   type EncryptedWalletBackupPreparedRecordSnapshotStore,
   type PersistedPreparedEncryptedWalletBackupRecord,
 } from '../src/encryptedWalletBackupPreparedRecordPersistence.ts'
+import { encodeCanonicalBackupCbor } from '../src/encryptedWalletBackupCbor.ts'
 
 const vector = JSON.parse(
   await readFile(
@@ -107,6 +110,15 @@ test('changed capability fields and stale snapshots fail closed', async () => {
       row.realm = 'foreign-realm'
     },
     (row) => {
+      row.realm = 'Upper-Realm'
+    },
+    (row) => {
+      row.realm = 'bad\u0001realm'
+    },
+    (row) => {
+      row.snapshotId = 'é'.repeat(65)
+    },
+    (row) => {
       row.recordId = '13'.repeat(32)
     },
     (row) => {
@@ -150,6 +162,72 @@ test('changed capability fields and stale snapshots fail closed', async () => {
     /snapshot changed/,
   )
 })
+
+test('prepared source descriptor is canonical, strict, and changes with its body', async () => {
+  const fixture = await preparedProofFixture()
+  const persisted = await sealPreparedEncryptedWalletBackupRecord(fixture)
+  const descriptor = encodeEncryptedWalletBackupPreparedSourceDescriptor(persisted)
+  const decoded = decodeEncryptedWalletBackupPreparedSourceDescriptor(descriptor)
+  assert.equal(decoded.realm, persisted.realm)
+  assert.equal(decoded.vaultId, persisted.vaultId)
+  assert.equal(decoded.revision, persisted.snapshotRevision)
+  assert.equal(decoded.recordId, persisted.recordId)
+  assert.equal(decoded.commitment, persisted.commitment)
+  const changed = structuredClone(persisted)
+  changed.authenticationTag[0]! ^= 1
+  const changedDescriptor = encodeEncryptedWalletBackupPreparedSourceDescriptor(changed)
+  assert.notEqual(
+    decoded.bodyReference,
+    decodeEncryptedWalletBackupPreparedSourceDescriptor(changedDescriptor).bodyReference,
+  )
+  for (const invalid of [Uint8Array.of(1), Uint8Array.from([...descriptor, 0])]) {
+    assert.throws(() => decodeEncryptedWalletBackupPreparedSourceDescriptor(invalid))
+  }
+})
+
+test('prepared source descriptor rejects every closed-field violation', async () => {
+  const fixture = await preparedProofFixture()
+  const persisted = await sealPreparedEncryptedWalletBackupRecord(fixture)
+  const descriptor = decodeEncryptedWalletBackupPreparedSourceDescriptor(
+    encodeEncryptedWalletBackupPreparedSourceDescriptor(persisted),
+  )
+  const valid = sourceWire(descriptor)
+  const cases: readonly unknown[][] = [
+    [2, ...valid.slice(1)],
+    [1, 'wrong-domain', ...valid.slice(2)],
+    [1, valid[1], valid[2], valid[3], valid[4], valid[5], 1, valid[7], valid[8]],
+    [1, valid[1], '', ...valid.slice(3)],
+    [1, valid[1], 'x'.repeat(65), ...valid.slice(3)],
+    [1, valid[1], new Uint8Array(31), ...valid.slice(3)],
+    [1, valid[1], valid[2], new Uint8Array(31), ...valid.slice(4)],
+    [1, valid[1], valid[2], valid[3], -1, ...valid.slice(5)],
+    [1, valid[1], valid[2], valid[3], 1.5, ...valid.slice(5)],
+    [1, valid[1], valid[2], valid[3], valid[4], valid[5], valid[6], new Uint8Array(31), valid[8]],
+    [1, valid[1], valid[2], valid[3], valid[4], valid[5], valid[6], valid[7], new Uint8Array(31)],
+    [...valid, 0],
+  ]
+  for (const wire of cases) {
+    assert.throws(() =>
+      decodeEncryptedWalletBackupPreparedSourceDescriptor(encodeCanonicalBackupCbor(wire)),
+    )
+  }
+})
+
+function sourceWire(
+  value: ReturnType<typeof decodeEncryptedWalletBackupPreparedSourceDescriptor>,
+): unknown[] {
+  return [
+    1,
+    'prepared-proof-source',
+    value.realm,
+    fromHex(value.vaultId),
+    fromHex(value.bodyReference),
+    value.revision,
+    value.recordKindCode,
+    fromHex(value.recordId),
+    fromHex(value.commitment),
+  ]
+}
 
 async function preparedProofFixture() {
   const seed = fromHex(vector.inputs.seedHex)

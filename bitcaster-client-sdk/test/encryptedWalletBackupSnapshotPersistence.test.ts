@@ -1,0 +1,1022 @@
+import assert from 'node:assert/strict'
+import { webcrypto } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { test } from 'node:test'
+import * as Cashu from '@cashu/cashu-ts'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
+import { decode, encode, rfc8949EncodeOptions } from 'cborg'
+import {
+  createEncryptedWalletBackupKeyHandle,
+  prepareEncryptedWalletBackupFrozenSnapshotControl,
+  prepareEncryptedWalletBackupProof,
+  prepareEncryptedWalletBackupRequestProof,
+  readAuthenticatedEncryptedWalletBackupHead,
+} from '../src/encryptedWalletBackup.ts'
+import {
+  deriveDurableCustodyProofId,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from '../src/durableCustody.ts'
+import { encodeCanonicalBackupCbor as encodeCanonical } from '../src/encryptedWalletBackupCbor.ts'
+import {
+  sealPreparedEncryptedWalletBackupRecord,
+  decodeEncryptedWalletBackupPreparedSourceDescriptor,
+  encodeEncryptedWalletBackupPreparedSourceDescriptor,
+  type EncryptedWalletBackupPreparedRecordSnapshot,
+  type EncryptedWalletBackupPreparedRecordSnapshotBatchStore,
+  type EncryptedWalletBackupPreparedRecordSnapshotStore,
+  type PersistedPreparedEncryptedWalletBackupRecord,
+} from '../src/encryptedWalletBackupPreparedRecordPersistence.ts'
+import {
+  appendEncryptedWalletBackupFrozenSnapshotProofPage,
+  beginEncryptedWalletBackupFrozenSnapshot,
+  decodeEncryptedWalletBackupFrozenSnapshot,
+  decodeEncryptedWalletBackupSnapshotPin,
+  encodeEncryptedWalletBackupFrozenSnapshot,
+  encodeEncryptedWalletBackupSnapshotPin,
+  ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_MAX_BYTES,
+  ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_ROW_MAX,
+  validateEncryptedWalletBackupSnapshotSourcePinBinding,
+  type EncryptedWalletBackupSnapshotPersistenceStore,
+  type EncryptedWalletBackupSnapshotPersistenceTransaction,
+  type EncryptedWalletBackupSnapshotSourceIdentity,
+  type PersistedEncryptedWalletBackupFrozenSnapshot,
+  type PersistedEncryptedWalletBackupSnapshotPin,
+} from '../src/encryptedWalletBackupSnapshotPersistence.ts'
+
+type Vector = Readonly<{
+  inputs: Readonly<{
+    seedHex: string
+    realm: string
+    proof: Readonly<{
+      mint: string
+      unit: string
+      counter: number
+      keysetId: string
+      amount: string
+      signatureHex: string
+      dleq: Readonly<{ e: string; s: string; r: string }>
+      createdAtUnixSeconds: number
+      updatedAtUnixSeconds: number
+    }>
+  }>
+  expected: Readonly<{ derivedSecretHex: string; proofIdHex: string; commitmentHex: string }>
+}>
+
+type Expectation = Readonly<{
+  scope: Uint8Array
+  expectedVersion: number
+  reservedReadRows: number
+  reservedReadBytes: number
+  reservedWriteRows: number
+  reservedWriteBytes: number
+}>
+
+type AdapterMode =
+  | 'normal'
+  | 'fail-pin'
+  | 'no-callback'
+  | 'twice'
+  | 'substitute-result'
+  | 'after-settlement'
+  | 'reject-then-late'
+
+const vector = JSON.parse(
+  await readFile(
+    new URL('../../test-vectors/encrypted-wallet-backup-v1.json', import.meta.url),
+    'utf8',
+  ),
+) as Vector
+
+const runtime = {
+  subtle: webcrypto.subtle,
+  getRandomValues: (target: Uint8Array) => webcrypto.getRandomValues(target),
+}
+
+test('a not-found control creates a bounded persisted snapshot row', async () => {
+  const fixture = await proofFixture()
+  const store = new StrictStore()
+  const control = await controlFor(fixture.keyHandle, 'local-1')
+  const snapshot = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
+  assert.equal(snapshot.generation, 1)
+  assert.equal(Object.keys(snapshot).length, 12)
+  assert.equal(store.last?.controlReads, 1)
+  assert.equal(store.last?.sourceReads, 0)
+  assert.equal(store.last?.pinWrites, 0)
+  assert.equal(store.last?.rows, 2)
+  assert.ok((store.last?.bytes ?? 0) <= ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_MAX_BYTES)
+})
+
+test('a proof append uses exact control, source, and pin reservations', async () => {
+  const fixture = await proofFixture()
+  const store = new StrictStore()
+  store.addSource(fixture.descriptor)
+  const control = await controlFor(fixture.keyHandle, 'append-1')
+  const snapshot = await appendPage(store, control, fixture)
+  assert.equal(snapshot.version, 1)
+  assert.equal(store.last?.controlReads, 1)
+  assert.equal(store.last?.sourceReads, 1)
+  assert.equal(store.last?.pinWrites, 1)
+  assert.equal(store.last?.rows, 4)
+  assert.ok(store.last!.bytes <= ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_MAX_BYTES)
+  assert.equal(store.pinCount(), 1)
+})
+
+test('the strict adapter rejects missing, stale, substituted, and failed source pins atomically', async () => {
+  for (const fault of ['missing', 'stale', 'substituted', 'fail-pin'] as const) {
+    const fixture = await proofFixture()
+    const store = new StrictStore(fault === 'fail-pin' ? 'fail-pin' : 'normal')
+    const control = await controlFor(fixture.keyHandle, `fault-${fault}`)
+    if (fault !== 'missing') store.addSource(fixture.descriptor)
+    if (fault === 'stale') store.mutateSource(fixture.descriptor)
+    if (fault === 'substituted')
+      store.substituteSource(fixture.descriptor, alternateDescriptor(fixture.descriptor))
+    await assert.rejects(appendPage(store, control, fixture))
+    assert.equal(store.controlCount(), 0)
+    assert.equal(store.pinCount(), 0)
+    assert.equal(store.last?.controlReads, 1)
+    assert.equal(store.last?.sourceReads, 1)
+  }
+})
+
+test('source mutation after authentication is rejected at the atomic pin', async () => {
+  const fixture = await proofFixture()
+  const store = new StrictStore()
+  store.addSource(fixture.descriptor)
+  const control = await controlFor(fixture.keyHandle, 'mutated-source')
+  const preparedSnapshotStore = exactSnapshotStore(fixture.snapshot, () => {
+    store.mutateSource(fixture.descriptor)
+  })
+  await assert.rejects(
+    appendEncryptedWalletBackupFrozenSnapshotProofPage({
+      store,
+      control,
+      expectedVersion: 0,
+      keyHandle: fixture.keyHandle,
+      seed: fixture.seed,
+      preparedRecords: [fixture.persisted],
+      preparedSnapshotStore,
+    }),
+  )
+  assert.equal(store.controlCount(), 0)
+  assert.equal(store.pinCount(), 0)
+})
+
+test('stale controls, duplicate pins, and concurrent versions fully roll back', async () => {
+  const fixture = await proofFixture()
+  const store = new StrictStore()
+  store.addSource(fixture.descriptor)
+  const control = await controlFor(fixture.keyHandle, 'same-snapshot')
+  await appendPage(store, control, fixture)
+  await assert.rejects(appendPage(store, control, fixture, 0), /control changed/)
+  await assert.rejects(appendPage(store, control, fixture, 1), /pin is duplicated/)
+  assert.equal(store.controlVersion('same-snapshot'), 1)
+  assert.equal(store.pinCount(), 1)
+})
+
+test('a proof can pin once in each distinct snapshot namespace', async () => {
+  const fixture = await proofFixture()
+  const store = new StrictStore()
+  store.addSource(fixture.descriptor)
+  await appendPage(store, await controlFor(fixture.keyHandle, 'namespace-a'), fixture)
+  await appendPage(store, await controlFor(fixture.keyHandle, 'namespace-b'), fixture)
+  assert.equal(store.pinCount(), 2)
+  assert.throws(() => store.deletePreparedSource(fixture.descriptor), /deletion is blocked/)
+})
+
+test('transaction callbacks must be exact across resolve, reject, and late invocation faults', async () => {
+  for (const mode of [
+    'no-callback',
+    'twice',
+    'substitute-result',
+    'after-settlement',
+    'reject-then-late',
+  ] as const) {
+    const fixture = await proofFixture()
+    const store = new StrictStore(mode)
+    const control = await controlFor(fixture.keyHandle, `callback-${mode}`)
+    const operation = beginEncryptedWalletBackupFrozenSnapshot({ store, control })
+    if (mode === 'after-settlement') await operation
+    else await assert.rejects(operation)
+    await delay()
+    if (mode === 'after-settlement' || mode === 'reject-then-late')
+      assert.equal(store.lateErrors, 1)
+    assert.equal(store.controlCount(), mode === 'after-settlement' ? 1 : 0)
+  }
+})
+
+test('proof pages above 127 reject before prepared-source authentication or transactions', async () => {
+  const fixture = await proofFixture()
+  const store = new StrictStore()
+  const control = await controlFor(fixture.keyHandle, 'too-many')
+  let sourceStoreCalls = 0
+  const preparedSnapshotStore: EncryptedWalletBackupPreparedRecordSnapshotBatchStore = {
+    async withCommittedPreparedRecordSnapshotBatch(_recordIds, _read) {
+      sourceStoreCalls += 1
+      throw new Error('source store must not run')
+    },
+  }
+  const records = Array.from(
+    { length: 128 },
+    () => null,
+  ) as unknown as PersistedPreparedEncryptedWalletBackupRecord[]
+  await assert.rejects(
+    appendEncryptedWalletBackupFrozenSnapshotProofPage({
+      store,
+      control,
+      expectedVersion: 0,
+      keyHandle: fixture.keyHandle,
+      seed: fixture.seed,
+      preparedRecords: records,
+      preparedSnapshotStore,
+    }),
+    /capacity/,
+  )
+  assert.equal(sourceStoreCalls, 0)
+  assert.equal(store.transactions, 0)
+})
+
+test('the reservation ledger rejects under- and over-declaration without commit', async () => {
+  for (const fault of ['under', 'over'] as const) {
+    const fixture = await proofFixture()
+    const store = new StrictStore()
+    store.reservationFault = fault
+    store.addSource(fixture.descriptor)
+    await assert.rejects(
+      appendPage(store, await controlFor(fixture.keyHandle, `ledger-${fault}`), fixture),
+    )
+    assert.equal(store.controlCount(), 0)
+    assert.equal(store.pinCount(), 0)
+  }
+})
+
+test('a maximum proof page uses one bounded transaction and batch callback', async () => {
+  const fixture = await proofPageFixture(127)
+  const store = new StrictStore()
+  for (const descriptor of fixture.descriptors) store.addSource(descriptor)
+  const snapshot = await appendEncryptedWalletBackupFrozenSnapshotProofPage({
+    store,
+    control: await controlFor(fixture.keyHandle, 'maximum-page'),
+    expectedVersion: 0,
+    keyHandle: fixture.keyHandle,
+    seed: fixture.seed,
+    preparedRecords: fixture.records,
+    preparedSnapshotStore: fixture.snapshotStore,
+  })
+  assert.equal(snapshot.version, 1)
+  assert.equal(fixture.batchCalls, 1)
+  assert.equal(store.last?.pinBatches, 1)
+  assert.equal(store.last?.rows, 256)
+  assert.ok(
+    (store.last?.bytes ?? Infinity) <= ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_MAX_BYTES,
+  )
+  assert.equal(store.pinCount(), 127)
+})
+
+test('snapshot control and pin codecs reject invalid fields while accepting 128-character IDs', async () => {
+  const fixture = await proofFixture()
+  const store = new StrictStore()
+  store.addSource(fixture.descriptor)
+  const control = await controlFor(fixture.keyHandle, 's'.repeat(128))
+  const snapshot = await appendPage(store, control, fixture)
+  const controlBytes = encodeEncryptedWalletBackupFrozenSnapshot(snapshot)
+  assert.equal(decodeEncryptedWalletBackupFrozenSnapshot(controlBytes).snapshotId.length, 128)
+  const pin = store.firstPin()
+  assert.equal(decodeEncryptedWalletBackupSnapshotPin(pin).snapshotId.length, 128)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes)
+  assertCodecRejects(decodeEncryptedWalletBackupSnapshotPin, pin)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 4, 1)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 5, new Uint8Array(32))
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 7, 2)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 12, 0)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 6, new Uint8Array(32))
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 1, 'UPPER')
+  assertCodecRejects(decodeEncryptedWalletBackupSnapshotPin, pin, 5, 1)
+  assert.throws(
+    () => encodeEncryptedWalletBackupFrozenSnapshot({ ...snapshot, vaultId: 'g'.repeat(64) }),
+    /invalid/,
+  )
+  await assert.rejects(controlFor(fixture.keyHandle, 'é'.repeat(65)))
+  await assert.rejects(controlFor(fixture.keyHandle, 'bad\u0001id'))
+  await assert.rejects(controlFor(fixture.keyHandle, '\ud800'))
+  assertEncodedRecordRejections(snapshot, pin)
+})
+
+function assertEncodedRecordRejections(
+  snapshot: PersistedEncryptedWalletBackupFrozenSnapshot,
+  pin: Uint8Array,
+): void {
+  assert.throws(
+    () => encodeEncryptedWalletBackupFrozenSnapshot({ ...snapshot, version: 0 }),
+    /invalid/,
+  )
+  assert.throws(
+    () =>
+      encodeEncryptedWalletBackupFrozenSnapshot({
+        ...snapshot,
+        extra: true,
+      } as unknown as PersistedEncryptedWalletBackupFrozenSnapshot),
+    /invalid/,
+  )
+  const decodedPin = decodeEncryptedWalletBackupSnapshotPin(pin)
+  assert.throws(
+    () =>
+      encodeEncryptedWalletBackupSnapshotPin({
+        ...decodedPin,
+        extra: true,
+      } as unknown as PersistedEncryptedWalletBackupSnapshotPin),
+    /invalid/,
+  )
+  assert.throws(
+    () => encodeEncryptedWalletBackupSnapshotPin({ ...decodedPin, recordId: 'g'.repeat(64) }),
+    /invalid/,
+  )
+}
+
+function assertCodecRejects(
+  decodeValue: (value: Uint8Array) => unknown,
+  value: Uint8Array,
+  index?: number,
+  replacement?: unknown,
+): void {
+  const raw = decode(value) as unknown[]
+  if (index === undefined) raw.push(true)
+  else raw[index] = replacement
+  assert.throws(() => decodeValue(encodeCanonical(raw)))
+}
+
+async function appendPage(
+  store: StrictStore,
+  control: Awaited<ReturnType<typeof controlFor>>,
+  fixture: Awaited<ReturnType<typeof proofFixture>>,
+  expectedVersion = 0,
+): Promise<PersistedEncryptedWalletBackupFrozenSnapshot> {
+  return appendEncryptedWalletBackupFrozenSnapshotProofPage({
+    store,
+    control,
+    expectedVersion,
+    keyHandle: fixture.keyHandle,
+    seed: fixture.seed,
+    preparedRecords: [fixture.persisted],
+    preparedSnapshotStore: exactSnapshotStore(fixture.snapshot),
+  })
+}
+
+class StrictStore implements EncryptedWalletBackupSnapshotPersistenceStore {
+  readonly controls = new Map<string, Uint8Array>()
+  readonly sources = new Map<string, Uint8Array>()
+  readonly pins = new Map<
+    string,
+    Readonly<{ pin: Uint8Array; source: EncryptedWalletBackupSnapshotSourceIdentity }>
+  >()
+  readonly mode: AdapterMode
+  last: Readonly<{
+    controlReads: number
+    sourceReads: number
+    pinWrites: number
+    pinBatches: number
+    rows: number
+    bytes: number
+  }> | null = null
+  lateErrors = 0
+  transactions = 0
+  reservationFault: 'under' | 'over' | null = null
+
+  constructor(mode: AdapterMode = 'normal') {
+    this.mode = mode
+  }
+
+  addSource(descriptor: Uint8Array): void {
+    this.sources.set(sourceKey(descriptor), descriptor.slice())
+  }
+
+  mutateSource(descriptor: Uint8Array): void {
+    const raw = decode(descriptor) as unknown[]
+    raw[5] = (raw[5] as number) + 1
+    this.sources.set(sourceKey(descriptor), encodeCanonical(raw))
+  }
+
+  substituteSource(descriptor: Uint8Array, replacement: Uint8Array): void {
+    this.sources.set(sourceKey(descriptor), replacement.slice())
+  }
+
+  deletePreparedSource(descriptor: Uint8Array): void {
+    const source = decodeEncryptedWalletBackupPreparedSourceDescriptor(descriptor)
+    const identity = sourceIdentityKey(source)
+    if ([...this.pins.values()].some((pin) => sourceIdentityKey(pin.source) === identity))
+      throw new Error('prepared source deletion is blocked by a committed pin')
+    this.sources.delete(sourceKey(descriptor))
+  }
+
+  controlCount(): number {
+    return this.controls.size
+  }
+
+  pinCount(): number {
+    return this.pins.size
+  }
+
+  firstPin(): Uint8Array {
+    const value = this.pins.values().next().value
+    if (value === undefined) throw new Error('pin is missing')
+    return value.pin.slice()
+  }
+
+  controlVersion(snapshotId: string): number {
+    for (const value of this.controls.values()) {
+      const control = decodeEncryptedWalletBackupFrozenSnapshot(value)
+      if (control.snapshotId === snapshotId) return control.version
+    }
+    throw new Error('control is missing')
+  }
+
+  async withExactVersionTransaction<T>(
+    expected: Expectation,
+    use: (transaction: EncryptedWalletBackupSnapshotPersistenceTransaction) => Promise<T>,
+  ): Promise<unknown> {
+    this.transactions += 1
+    const declared = this.declaredReservation(expected)
+    reserveBeforeBuffers(declared)
+    if (this.mode === 'no-callback') return Object.freeze({})
+    const transaction = this.transaction(declared)
+    if (this.mode === 'reject-then-late') return this.rejectThenCall(use, transaction)
+    try {
+      const result = await use(transaction)
+      if (this.mode === 'twice') await use(transaction)
+      if (this.mode === 'substitute-result') return Object.freeze({})
+      if (this.mode === 'after-settlement') this.callLate(use, transaction)
+      this.commit(transaction)
+      return result
+    } catch (error) {
+      this.last = transaction.counts()
+      throw error
+    }
+  }
+
+  private transaction(expected: Expectation): StrictTransaction {
+    return new StrictTransaction(this, expected)
+  }
+
+  private declaredReservation(expected: Expectation): Expectation {
+    if (this.reservationFault === null) return expected
+    const delta = this.reservationFault === 'under' ? -1 : 1
+    return Object.freeze({ ...expected, reservedWriteBytes: expected.reservedWriteBytes + delta })
+  }
+
+  private commit(transaction: StrictTransaction): void {
+    transaction.finish()
+    if (transaction.control !== null)
+      this.controls.set(hex(transaction.scope), transaction.control.slice())
+    for (const [key, value] of transaction.pendingPins)
+      this.pins.set(key, Object.freeze({ pin: value.pin.slice(), source: value.source }))
+    this.last = transaction.counts()
+  }
+
+  private rejectThenCall<T>(
+    use: (transaction: EncryptedWalletBackupSnapshotPersistenceTransaction) => Promise<T>,
+    transaction: StrictTransaction,
+  ): Promise<never> {
+    this.callLate(use, transaction)
+    return Promise.reject(new Error('adapter rejected'))
+  }
+
+  private callLate<T>(
+    use: (transaction: EncryptedWalletBackupSnapshotPersistenceTransaction) => Promise<T>,
+    transaction: StrictTransaction,
+  ): void {
+    setTimeout(() => {
+      void use(transaction).catch(() => {
+        this.lateErrors += 1
+      })
+    }, 0)
+  }
+}
+
+class StrictTransaction implements EncryptedWalletBackupSnapshotPersistenceTransaction {
+  readonly scope: Uint8Array
+  readonly expected: Expectation
+  readonly pendingPins = new Map<
+    string,
+    Readonly<{ pin: Uint8Array; source: EncryptedWalletBackupSnapshotSourceIdentity }>
+  >()
+  control: Uint8Array | null
+  private readonly store: StrictStore
+  private readonly initialControlBytes: number
+  private readonly ledger: ReservationLedger
+  private controlReads = 0
+  private sourceReads = 0
+  private sourceReadBytes = 0
+  private pinWrites = 0
+  private pinBatches = 0
+
+  constructor(store: StrictStore, expected: Expectation) {
+    this.store = store
+    this.expected = expected
+    this.scope = expected.scope
+    this.control = store.controls.get(hex(expected.scope)) ?? null
+    this.initialControlBytes = this.control?.byteLength ?? 0
+    this.ledger = new ReservationLedger(expected)
+  }
+
+  async readSnapshotControl(scope: Uint8Array): Promise<Uint8Array | null> {
+    if (!equalBytes(scope, this.scope)) throw new Error('control scope changed')
+    this.ledger.read(this.scope.byteLength + this.initialControlBytes)
+    this.controlReads += 1
+    return this.control?.slice() ?? null
+  }
+
+  async insertSnapshotControl(control: Uint8Array): Promise<void> {
+    this.writeControl(control)
+  }
+
+  async writeSnapshotControl(control: Uint8Array): Promise<void> {
+    this.writeControl(control)
+  }
+
+  async insertSnapshotPins(
+    input: Readonly<{ sourceDescriptors: readonly Uint8Array[]; pins: readonly Uint8Array[] }>,
+  ): Promise<void> {
+    if (input.sourceDescriptors.length !== input.pins.length) throw new Error('pin count changed')
+    this.pinBatches += 1
+    const rows = input.sourceDescriptors.map((source, index) =>
+      this.pin(source, input.pins[index]!),
+    )
+    if (this.store.mode === 'fail-pin') throw new Error('pin write failed')
+    for (const row of rows) this.pendingPins.set(row.key, row.value)
+  }
+
+  finish(): void {
+    this.ledger.complete()
+    const counts = this.counts()
+    if (counts.controlReads !== 1 || counts.sourceReads !== this.pinWrites)
+      throw new Error('adapter read count is invalid')
+    if (counts.rows !== this.expected.reservedReadRows + this.expected.reservedWriteRows)
+      throw new Error('adapter row reservation is invalid')
+    if (counts.bytes !== this.expected.reservedReadBytes + this.expected.reservedWriteBytes)
+      throw new Error('adapter byte reservation is invalid')
+  }
+
+  counts(): Readonly<{
+    controlReads: number
+    sourceReads: number
+    pinWrites: number
+    pinBatches: number
+    rows: number
+    bytes: number
+  }> {
+    const pinBytes = [...this.pendingPins.values()].map((entry) => entry.pin)
+    const controlBytes = this.control?.byteLength ?? 0
+    return Object.freeze({
+      controlReads: this.controlReads,
+      sourceReads: this.sourceReads,
+      pinWrites: this.pinWrites,
+      pinBatches: this.pinBatches,
+      rows: this.controlReads + this.sourceReads + (this.control === null ? 0 : 1) + this.pinWrites,
+      bytes:
+        this.scope.byteLength +
+        this.initialControlBytes +
+        this.sourceReadBytes +
+        controlBytes +
+        sum(pinBytes),
+    })
+  }
+
+  private writeControl(value: Uint8Array): void {
+    this.ledger.write(value.byteLength)
+    this.control = value
+  }
+
+  private pin(
+    source: Uint8Array,
+    pin: Uint8Array,
+  ): Readonly<{
+    key: string
+    value: Readonly<{ pin: Uint8Array; source: EncryptedWalletBackupSnapshotSourceIdentity }>
+  }> {
+    this.ledger.read(source.byteLength)
+    this.sourceReads += 1
+    this.sourceReadBytes += source.byteLength
+    const binding = validateEncryptedWalletBackupSnapshotSourcePinBinding({
+      sourceDescriptor: source,
+      pin,
+    })
+    const current = this.store.sources.get(sourceKey(source))
+    if (current === undefined) throw new Error('prepared source is missing')
+    if (!equalBytes(current, source)) throw new Error('prepared source descriptor changed')
+    const key = `${hex(this.scope)}:${binding.pin.recordId}:${binding.pin.commitment}`
+    if (this.store.pins.has(key) || this.pendingPins.has(key))
+      throw new Error('backup snapshot pin is duplicated')
+    this.ledger.write(pin.byteLength)
+    this.pinWrites += 1
+    return Object.freeze({
+      key,
+      value: Object.freeze({ pin, source: binding.source }),
+    })
+  }
+}
+
+function reserveBeforeBuffers(expected: Expectation): void {
+  const rows = expected.reservedReadRows + expected.reservedWriteRows
+  const bytes = expected.reservedReadBytes + expected.reservedWriteBytes
+  if (
+    !(expected.scope instanceof Uint8Array) ||
+    rows > ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_ROW_MAX ||
+    bytes > ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_MAX_BYTES
+  )
+    throw new Error('adapter reservation is invalid')
+}
+
+class ReservationLedger {
+  private readRows: number
+  private readBytes: number
+  private writeRows: number
+  private writeBytes: number
+
+  constructor(expected: Expectation) {
+    this.readRows = expected.reservedReadRows
+    this.readBytes = expected.reservedReadBytes
+    this.writeRows = expected.reservedWriteRows
+    this.writeBytes = expected.reservedWriteBytes
+  }
+
+  read(bytes: number): void {
+    this.debit('read', bytes)
+  }
+
+  write(bytes: number): void {
+    this.debit('write', bytes)
+  }
+
+  complete(): void {
+    if (
+      this.readRows !== 0 ||
+      this.readBytes !== 0 ||
+      this.writeRows !== 0 ||
+      this.writeBytes !== 0
+    )
+      throw new Error('adapter reservation is over-declared')
+  }
+
+  private debit(kind: 'read' | 'write', bytes: number): void {
+    if (kind === 'read') {
+      if (this.readRows < 1 || this.readBytes < bytes)
+        throw new Error('adapter reservation is under-declared')
+      this.readRows -= 1
+      this.readBytes -= bytes
+      return
+    }
+    if (this.writeRows < 1 || this.writeBytes < bytes)
+      throw new Error('adapter reservation is under-declared')
+    this.writeRows -= 1
+    this.writeBytes -= bytes
+  }
+}
+
+async function controlFor(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  snapshotId: string,
+) {
+  const requestProof = await prepareEncryptedWalletBackupRequestProof({
+    keyHandle,
+    enrollmentEpoch: 1,
+    method: 'GET',
+    url: 'https://backup.example.test/v1/head',
+    issuedAtUnixSeconds: 1,
+    expiresAtUnixSeconds: 2,
+    payload: new Uint8Array(),
+    signal: new AbortController().signal,
+    runtime,
+  })
+  const headEvidence = await readAuthenticatedEncryptedWalletBackupHead({
+    keyHandle,
+    enrollmentEpoch: 1,
+    requestProof,
+    remote: {
+      async readCurrentHead() {
+        return { status: 'not-found' as const }
+      },
+    },
+  })
+  return prepareEncryptedWalletBackupFrozenSnapshotControl({
+    keyHandle,
+    headEvidence,
+    snapshotNonce: '22'.repeat(16),
+    snapshotId,
+    snapshotRevision: 0,
+  })
+}
+
+async function proofFixture() {
+  const seed = fromHex(vector.inputs.seedHex)
+  const keyHandle = await createEncryptedWalletBackupKeyHandle({
+    seed,
+    realm: vector.inputs.realm,
+    runtime,
+  })
+  const snapshot = preparedSnapshot()
+  const persisted = await prepareFixtureRecord(keyHandle, seed, snapshot)
+  return Object.freeze({
+    keyHandle,
+    seed,
+    snapshot,
+    persisted,
+    descriptor: encodeEncryptedWalletBackupPreparedSourceDescriptor(persisted),
+  })
+}
+
+function preparedSnapshot(): EncryptedWalletBackupPreparedRecordSnapshot {
+  return Object.freeze({
+    schemaVersion: 1,
+    snapshotId: 'proof-snapshot',
+    snapshotRevision: 1,
+    recordId: vector.expected.proofIdHex,
+    commitment: vector.expected.commitmentHex,
+    recordKindCode: 0,
+  })
+}
+
+async function prepareFixtureRecord(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  seed: Uint8Array,
+  snapshot: EncryptedWalletBackupPreparedRecordSnapshot,
+): Promise<PersistedPreparedEncryptedWalletBackupRecord> {
+  const proof = vector.inputs.proof
+  const record = await prepareEncryptedWalletBackupProof({
+    keyHandle,
+    seed,
+    mint: proof.mint,
+    unit: proof.unit,
+    counter: proof.counter,
+    proof: {
+      id: proof.keysetId,
+      amount: proof.amount,
+      secret: vector.expected.derivedSecretHex,
+      C: proof.signatureHex,
+      dleq: proof.dleq,
+    },
+    proofKind: 'ordinary',
+    ctfMetadata: null,
+    terminalEvidence: null,
+    effectiveNowUnixSeconds: proof.createdAtUnixSeconds,
+    createdAtUnixSeconds: proof.createdAtUnixSeconds,
+    updatedAtUnixSeconds: proof.updatedAtUnixSeconds,
+    proofSnapshotStore: {
+      async withCommittedProofSnapshot(_id, read) {
+        return read(proofSnapshot(snapshot))
+      },
+    },
+  })
+  const persisted = await sealPreparedEncryptedWalletBackupRecord({
+    keyHandle,
+    seed,
+    record,
+    snapshotStore: exactSingleSnapshotStore(snapshot),
+  })
+  return persisted
+}
+
+async function proofPageFixture(count: number) {
+  const seed = fromHex(vector.inputs.seedHex)
+  const keyHandle = await createEncryptedWalletBackupKeyHandle({
+    seed,
+    realm: vector.inputs.realm,
+    runtime,
+  })
+  const snapshots = new Map<string, EncryptedWalletBackupPreparedRecordSnapshot>()
+  const records: PersistedPreparedEncryptedWalletBackupRecord[] = []
+  for (let counter = 0; counter < count; counter += 1) {
+    const prepared = await prepareCounterProof(
+      keyHandle,
+      seed,
+      vector.inputs.proof.counter + counter,
+      snapshots,
+    )
+    records.push(
+      await sealPreparedEncryptedWalletBackupRecord({
+        keyHandle,
+        seed,
+        record: prepared,
+        snapshotStore: pageSnapshotStore(snapshots),
+      }),
+    )
+  }
+  let batchCalls = 0
+  const snapshotStore: EncryptedWalletBackupPreparedRecordSnapshotBatchStore = {
+    async withCommittedPreparedRecordSnapshotBatch(ids, read) {
+      batchCalls += 1
+      return read(ids.map((id) => snapshots.get(id)!))
+    },
+  }
+  return Object.freeze({
+    seed,
+    keyHandle,
+    records: Object.freeze(records),
+    descriptors: Object.freeze(records.map(encodeEncryptedWalletBackupPreparedSourceDescriptor)),
+    snapshotStore,
+    get batchCalls() {
+      return batchCalls
+    },
+  })
+}
+
+async function prepareCounterProof(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  seed: Uint8Array,
+  counter: number,
+  snapshots: Map<string, EncryptedWalletBackupPreparedRecordSnapshot>,
+) {
+  const proof = vector.inputs.proof
+  const secret = counterSecret(seed, proof.keysetId, counter)
+  const recordId = counterRecordId(seed, proof, secret)
+  const commitment = counterCommitment(proof, secret, counter)
+  const snapshot = Object.freeze({
+    schemaVersion: 1 as const,
+    snapshotId: 'proof-page',
+    snapshotRevision: 1,
+    recordId,
+    commitment,
+    recordKindCode: 0 as const,
+  })
+  snapshots.set(recordId, snapshot)
+  return prepareEncryptedWalletBackupProof({
+    keyHandle,
+    seed,
+    mint: proof.mint,
+    unit: proof.unit,
+    counter,
+    proof: {
+      id: proof.keysetId,
+      amount: proof.amount,
+      secret,
+      C: proof.signatureHex,
+      dleq: proof.dleq,
+    },
+    proofKind: 'ordinary',
+    ctfMetadata: null,
+    terminalEvidence: null,
+    effectiveNowUnixSeconds: proof.createdAtUnixSeconds,
+    createdAtUnixSeconds: proof.createdAtUnixSeconds,
+    updatedAtUnixSeconds: proof.updatedAtUnixSeconds,
+    proofSnapshotStore: {
+      async withCommittedProofSnapshot(id, read) {
+        return read(proofSnapshot(snapshots.get(id)!))
+      },
+    },
+  })
+}
+
+function counterSecret(seed: Uint8Array, keysetId: string, counter: number): string {
+  const derive = (
+    Cashu as unknown as {
+      createSecretAndBlindingFactorDeriver(
+        seed: Uint8Array,
+        keyset: string,
+      ): (index: number) => { secret: Uint8Array }
+    }
+  ).createSecretAndBlindingFactorDeriver(seed, keysetId)
+  return bytesToHex(derive(counter).secret)
+}
+
+function counterRecordId(
+  seed: Uint8Array,
+  proof: (typeof vector)['inputs']['proof'],
+  secret: string,
+): string {
+  return deriveDurableCustodyProofId({
+    scopeId: deriveDurableCustodyScopeId({
+      scopeKind: 'wallet',
+      walletId: deriveDurableCustodyWalletId(seed),
+    }),
+    normalizedMint: proof.mint,
+    unit: proof.unit,
+    keysetId: proof.keysetId,
+    secret,
+  })
+}
+
+function counterCommitment(
+  proof: (typeof vector)['inputs']['proof'],
+  secret: string,
+  counter: number,
+): string {
+  return bytesToHex(
+    sha256(
+      encode(
+        [
+          1,
+          'proof-record-commitment',
+          proof.mint,
+          proof.unit,
+          [2, proof.keysetId],
+          proof.amount,
+          new TextEncoder().encode(secret),
+          fromHex(proof.signatureHex),
+          [fromHex(proof.dleq.e), fromHex(proof.dleq.s), fromHex(proof.dleq.r)],
+          counter,
+          0,
+          null,
+          proof.createdAtUnixSeconds,
+          proof.updatedAtUnixSeconds,
+        ],
+        rfc8949EncodeOptions,
+      ),
+    ),
+  )
+}
+
+function pageSnapshotStore(
+  snapshots: ReadonlyMap<string, EncryptedWalletBackupPreparedRecordSnapshot>,
+): EncryptedWalletBackupPreparedRecordSnapshotStore {
+  return {
+    async withCommittedPreparedRecordSnapshot(id, read) {
+      return read(snapshots.get(id)!)
+    },
+  }
+}
+
+function proofSnapshot(snapshot: EncryptedWalletBackupPreparedRecordSnapshot) {
+  return Object.freeze({
+    schemaVersion: 1 as const,
+    snapshotId: snapshot.snapshotId,
+    revision: snapshot.snapshotRevision,
+    proofId: snapshot.recordId,
+    proofCommitment: snapshot.commitment,
+    proofKind: 'ordinary' as const,
+    ctfMetadata: null,
+    terminalOperationId: null,
+    conditionalKeysetEvidence: null,
+    provenance: 'wallet-seed' as const,
+    operationBinding: 'terminally-unlinked' as const,
+    reserved: false,
+    ambiguousMintOperation: false,
+    proofPins: {
+      openOrderCollateral: 'absent',
+      outbox: 'absent',
+      retryCursor: 'absent',
+      replayTombstone: 'absent',
+      dependentWork: 'absent',
+    },
+    derivationLocator: 'committed' as const,
+  })
+}
+
+function exactSingleSnapshotStore(
+  snapshot: EncryptedWalletBackupPreparedRecordSnapshot,
+): EncryptedWalletBackupPreparedRecordSnapshotStore {
+  return {
+    async withCommittedPreparedRecordSnapshot(_id, read) {
+      return read(snapshot)
+    },
+  }
+}
+
+function exactSnapshotStore(
+  snapshot: EncryptedWalletBackupPreparedRecordSnapshot,
+  afterRead?: () => void,
+): EncryptedWalletBackupPreparedRecordSnapshotBatchStore {
+  return {
+    async withCommittedPreparedRecordSnapshotBatch(_ids, read) {
+      const value = read([snapshot])
+      afterRead?.()
+      return value
+    },
+  }
+}
+
+function alternateDescriptor(descriptor: Uint8Array): Uint8Array {
+  const raw = decode(descriptor) as unknown[]
+  const bodyReference = raw[4] as Uint8Array
+  bodyReference[0] = bodyReference[0]! ^ 1
+  return encodeCanonical(raw)
+}
+
+function sourceKey(value: Uint8Array): string {
+  return sourceIdentityKey(decodeEncryptedWalletBackupPreparedSourceDescriptor(value))
+}
+
+function sourceIdentityKey(source: EncryptedWalletBackupSnapshotSourceIdentity): string {
+  return `${source.realm}:${source.vaultId}:${source.recordId}:${source.commitment}:${source.bodyReference}:${source.revision}`
+}
+
+function fromHex(value: string): Uint8Array {
+  if (!/^[0-9a-f]+$/.test(value) || value.length % 2 !== 0) throw new Error('hex is invalid')
+  return Uint8Array.from(value.match(/../g)!, (part) => Number.parseInt(part, 16))
+}
+
+function sum(values: readonly Uint8Array[]): number {
+  return values.reduce((total, value) => total + value.byteLength, 0)
+}
+
+function hex(value: Uint8Array): string {
+  return bytesToHex(value)
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false
+  return left.every((item, index) => item === right[index])
+}
+
+async function delay(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+}
