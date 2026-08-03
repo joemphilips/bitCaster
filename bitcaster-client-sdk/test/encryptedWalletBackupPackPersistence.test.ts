@@ -9,7 +9,11 @@ import * as Cashu from '@cashu/cashu-ts'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { encode, rfc8949EncodeOptions } from 'cborg'
-import { deriveDurableCustodyProofId, deriveDurableCustodyScopeId } from '../src/durableCustody.ts'
+import {
+  deriveDurableCustodyProofId,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from '../src/durableCustody.ts'
 import {
   createEncryptedWalletBackupKeyHandle,
   prepareEncryptedWalletBackupProof,
@@ -756,7 +760,7 @@ async function prepareProof(
   const recordId = deriveDurableCustodyProofId({
     scopeId: deriveDurableCustodyScopeId({
       scopeKind: 'wallet',
-      walletId: keyHandle.vaultId,
+      walletId: deriveDurableCustodyWalletId(SEED),
     }),
     normalizedMint: proof.mint,
     unit: proof.unit,

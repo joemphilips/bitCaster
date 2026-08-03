@@ -36,7 +36,11 @@ import {
   ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX,
   prepareEncryptedWalletBackupUploadPlan,
 } from '../src/encryptedWalletBackupSync.ts'
-import { deriveDurableCustodyProofId, deriveDurableCustodyScopeId } from '../src/durableCustody.ts'
+import {
+  deriveDurableCustodyProofId,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from '../src/durableCustody.ts'
 import { encodeCanonicalBackupCbor as encodeCanonical } from '../src/encryptedWalletBackupCbor.ts'
 
 const vector = JSON.parse(
@@ -215,7 +219,7 @@ test('real prepared 255-chunk plus 3-page target is capability-planned below 64 
   const proof = vector.inputs.proof
   const scopeId = deriveDurableCustodyScopeId({
     scopeKind: 'wallet',
-    walletId: keyHandle.vaultId,
+    walletId: deriveDurableCustodyWalletId(seed),
   })
   const derive = (
     Cashu as unknown as {
@@ -474,7 +478,7 @@ test('real child replacement peak accepts 127 chunks and rejects 128 chunks', as
   const proof = vector.inputs.proof
   const scopeId = deriveDurableCustodyScopeId({
     scopeKind: 'wallet',
-    walletId: keyHandle.vaultId,
+    walletId: deriveDurableCustodyWalletId(seed),
   })
   const derive = (
     Cashu as unknown as {

@@ -20,6 +20,7 @@ import { encodeCanonicalBackupCbor } from '../../src/encryptedWalletBackupCbor.t
 import {
   deriveDurableCustodyProofId,
   deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
 } from '../../src/durableCustody.ts'
 
 const CTF_KEYSET_ID = '0170110f06b9bb85565a6746ca5715f877b99db14d87219f6e9030cb529f61e6ea'
@@ -497,7 +498,7 @@ async function bindProofStore(
   const proofId = deriveDurableCustodyProofId({
     scopeId: deriveDurableCustodyScopeId({
       scopeKind: 'wallet',
-      walletId: input.keyHandle.vaultId,
+      walletId: deriveDurableCustodyWalletId(input.seed),
     }),
     normalizedMint: input.mint,
     unit: input.unit,

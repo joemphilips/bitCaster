@@ -1497,10 +1497,7 @@ export async function prepareEncryptedWalletBackupProof(
     throw new Error('proof secret does not match deterministic derivation')
   }
   const proofId = deriveDurableCustodyProofId({
-    scopeId: deriveDurableCustodyScopeId({
-      scopeKind: 'wallet',
-      walletId: bytesToHex(authority.vaultIdBytes),
-    }),
+    scopeId: deriveEncryptedWalletBackupDurableCustodyScopeId(seed),
     normalizedMint: mint,
     unit,
     keysetId: keyset.identityText,
@@ -5048,10 +5045,7 @@ async function decryptProofChunk(input: {
   const decoded = decode(canonical)
   const reencoded = encodeCanonical(decoded)
   if (!equalBytes(canonical, reencoded)) throw new Error('noncanonical cbor')
-  const scopeId = deriveDurableCustodyScopeId({
-    scopeKind: 'wallet',
-    walletId: bytesToHex(authority.vaultIdBytes),
-  })
+  const scopeId = deriveEncryptedWalletBackupDurableCustodyScopeId(seed)
   return decodeProofChunkRecords(decoded, seed, scopeId, input.cooperativeYield)
 }
 
@@ -5292,10 +5286,7 @@ function decodePreparedRecordPersistence(input: {
   if (!Array.isArray(raw) || !equalBytes(canonicalRecord, encodeCanonical(raw))) {
     throw new Error('prepared backup record is not canonical CBOR')
   }
-  const scopeId = deriveDurableCustodyScopeId({
-    scopeKind: 'wallet',
-    walletId: bytesToHex(keyAuthority.vaultIdBytes),
-  })
+  const scopeId = deriveEncryptedWalletBackupDurableCustodyScopeId(seed)
   const proof = decodeProofRecord(raw, seed, scopeId, new Map())
   const expectedManifestEntry = encodeCanonical([
     ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
@@ -6058,6 +6049,13 @@ function encodeBackupRequestPreimage(input: {
     input.payloadLength,
     input.payloadDigest,
   ])
+}
+
+function deriveEncryptedWalletBackupDurableCustodyScopeId(seed: Uint8Array): string {
+  return deriveDurableCustodyScopeId({
+    scopeKind: 'wallet',
+    walletId: deriveDurableCustodyWalletId(seed),
+  })
 }
 
 function requireSeed(value: unknown): Uint8Array {

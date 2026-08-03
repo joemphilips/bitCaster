@@ -9,6 +9,11 @@ import {
   prepareEncryptedWalletBackupProof,
 } from '../src/encryptedWalletBackup.ts'
 import {
+  deriveDurableCustodyProofId,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from '../src/durableCustody.ts'
+import {
   rehydratePreparedEncryptedWalletBackupRecord,
   sealPreparedEncryptedWalletBackupRecord,
   type EncryptedWalletBackupPreparedRecordSnapshot,
@@ -46,6 +51,18 @@ const vector = JSON.parse(
 
 test('a deterministic proof preparation survives a process restart', async () => {
   const fixture = await preparedProofFixture()
+  const proof = vector.inputs.proof
+  const expectedProofId = deriveDurableCustodyProofId({
+    scopeId: deriveDurableCustodyScopeId({
+      scopeKind: 'wallet',
+      walletId: deriveDurableCustodyWalletId(fixture.seed),
+    }),
+    normalizedMint: proof.mint,
+    unit: proof.unit,
+    keysetId: proof.keysetId,
+    secret: vector.expected.derivedSecretHex,
+  })
+  assert.equal(fixture.record.proofId, expectedProofId)
   const persisted = await sealPreparedEncryptedWalletBackupRecord(fixture)
   const child = spawnSync(
     process.execPath,
@@ -72,12 +89,14 @@ test('a deterministic proof preparation survives a process restart', async () =>
     },
   )
   assert.equal(child.status, 0, child.stderr || child.stdout)
-  assert.deepEqual(JSON.parse(child.stdout), [
+  const rehydrated = JSON.parse(child.stdout) as Array<{ proofId: string; commitment: string }>
+  assert.deepEqual(rehydrated, [
     {
       proofId: fixture.snapshot.recordId,
       commitment: fixture.snapshot.commitment,
     },
   ])
+  assert.equal(rehydrated[0]!.proofId, expectedProofId)
 })
 
 test('changed capability fields and stale snapshots fail closed', async () => {

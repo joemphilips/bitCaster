@@ -30,6 +30,7 @@ import {
 import {
   deriveDurableCustodyProofId,
   deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
 } from "@bitcaster/client-sdk/durableCustody";
 import { browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import { EncryptedWalletBackupPackDexieStore } from "../encrypted-wallet-backup-pack-db";
@@ -40,6 +41,10 @@ const REALM = "pack-dexie-test";
 const BUILD_ID = "build-a";
 const PACK_ID = "pack-a";
 const SNAPSHOT_ID = "pack-snapshot";
+const WALLET_SCOPE_ID = deriveDurableCustodyScopeId({
+  scopeKind: "wallet",
+  walletId: deriveDurableCustodyWalletId(SEED),
+});
 const openDatabases: BitcasterDB[] = [];
 
 afterEach(async () => {
@@ -101,7 +106,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
       () =>
         new EncryptedWalletBackupPackDexieStore({
           database,
-          scopeId: walletScopeId(fixture.keyHandle.vaultId),
+          scopeId: WALLET_SCOPE_ID,
           realm: REALM,
           vaultId: fixture.keyHandle.vaultId,
         }),
@@ -112,7 +117,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
 
   it("rejects wrong realm or vault before a version-zero callback can write rows", async () => {
     const fixture = await preparedFixture(1);
-    const database = createDatabase(walletScopeId(fixture.keyHandle.vaultId));
+    const database = createDatabase(WALLET_SCOPE_ID);
     const store = storeFor(database, fixture);
     for (const wrongScope of [
       { ...expected(fixture, 0, 0), realm: "foreign-realm" },
@@ -133,7 +138,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
 
   it("appends, freezes, prepares, stages, and restarts using one concrete database", async () => {
     const fixture = await preparedFixture(2);
-    const database = createDatabase(walletScopeId(fixture.keyHandle.vaultId));
+    const database = createDatabase(WALLET_SCOPE_ID);
     const store = storeFor(database, fixture);
     const appended = await append(store, fixture, 0, 0);
     const frozen = await freezeEncryptedWalletBackupPack(packInput(store, fixture, 1, 1));
@@ -166,7 +171,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
 
   it("rolls back an injected callback failure", async () => {
     const fixture = await preparedFixture(1);
-    const database = createDatabase(walletScopeId(fixture.keyHandle.vaultId));
+    const database = createDatabase(WALLET_SCOPE_ID);
     const store = storeFor(database, fixture);
     await expect(
       store.withExactVersionTransaction(expected(fixture, 0, 0), async (transaction) => {
@@ -181,7 +186,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
 
   it("rejects stale expected versions before it invokes the callback", async () => {
     const fixture = await preparedFixture(1);
-    const store = storeFor(createDatabase(walletScopeId(fixture.keyHandle.vaultId)), fixture);
+    const store = storeFor(createDatabase(WALLET_SCOPE_ID), fixture);
     await append(store, fixture, 0, 0);
     let calls = 0;
     await expect(
@@ -195,7 +200,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
 
   it("returns defensive clones of persisted control rows", async () => {
     const fixture = await preparedFixture(1);
-    const store = storeFor(createDatabase(walletScopeId(fixture.keyHandle.vaultId)), fixture);
+    const store = storeFor(createDatabase(WALLET_SCOPE_ID), fixture);
     await append(store, fixture, 0, 0);
     const controls = await store.withExactVersionTransaction(
       expected(fixture, 1, 1),
@@ -211,7 +216,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
 
   it("uses immutable inserts with database-enforced prepared and binding identities", async () => {
     const fixture = await preparedFixture(1);
-    const database = createDatabase(walletScopeId(fixture.keyHandle.vaultId));
+    const database = createDatabase(WALLET_SCOPE_ID);
     const store = storeFor(database, fixture);
     const prepared = buildRecord(fixture.records[0]!);
     const binding = bindingFor(prepared, 0);
@@ -236,7 +241,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
 
   it("uses record-id keyset pages and stops before exact serialized-byte limits", async () => {
     const fixture = await preparedFixture(2);
-    const database = createDatabase(walletScopeId(fixture.keyHandle.vaultId));
+    const database = createDatabase(WALLET_SCOPE_ID);
     const store = storeFor(database, fixture);
     await append(store, fixture, 0, 0);
     const controls = await controlsOf(database);
@@ -284,7 +289,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
 
   it("does not scan into a lexically later foreign pack after the current pack is exhausted", async () => {
     const fixture = await preparedFixture(1);
-    const database = createDatabase(walletScopeId(fixture.keyHandle.vaultId));
+    const database = createDatabase(WALLET_SCOPE_ID);
     const store = storeFor(database, fixture);
     await append(store, fixture, 0, 0);
     const controls = await controlsOf(database);
@@ -305,7 +310,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
 
   it("fails closed when a pack binding loses its prepared-row join and returns the exact callback result", async () => {
     const fixture = await preparedFixture(1);
-    const database = createDatabase(walletScopeId(fixture.keyHandle.vaultId));
+    const database = createDatabase(WALLET_SCOPE_ID);
     const store = storeFor(database, fixture);
     await append(store, fixture, 0, 0);
     const controls = await controlsOf(database);
@@ -347,7 +352,7 @@ function createDatabase(scopeId = walletScopeId("11".repeat(32))): BitcasterDB {
 function storeFor(database: BitcasterDB, fixture: Fixture): EncryptedWalletBackupPackDexieStore {
   return new EncryptedWalletBackupPackDexieStore({
     database,
-    scopeId: walletScopeId(fixture.keyHandle.vaultId),
+    scopeId: WALLET_SCOPE_ID,
     realm: REALM,
     vaultId: fixture.keyHandle.vaultId,
   });
@@ -516,7 +521,7 @@ async function preparedRecord(
   ).createSecretAndBlindingFactorDeriver(SEED, keysetId);
   const secret = bytesToHex(deriver(counter).secret);
   const recordId = deriveDurableCustodyProofId({
-    scopeId: deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId: keyHandle.vaultId }),
+    scopeId: WALLET_SCOPE_ID,
     normalizedMint: "https://mint.example",
     unit: "sat",
     keysetId,

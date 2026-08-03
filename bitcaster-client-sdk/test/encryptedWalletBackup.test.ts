@@ -47,7 +47,11 @@ import {
   type EncryptedWalletBackupRuntime,
 } from '../src/encryptedWalletBackup.ts'
 import { preflightEncryptedProofChunkCbor } from '../src/encryptedWalletBackupCbor.ts'
-import { deriveDurableCustodyProofId, deriveDurableCustodyScopeId } from '../src/durableCustody.ts'
+import {
+  deriveDurableCustodyProofId,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from '../src/durableCustody.ts'
 import {
   validateEncryptedWalletBackupAggregateCasLifecycle,
   validateEncryptedWalletBackupCasState,
@@ -2718,7 +2722,7 @@ test('coordinator atomically journals deterministic CAS work and completes the a
     uploadAttemptId: acknowledged.claim.record.attemptId,
     targetManifestDigest: acknowledged.claim.record.targetManifestDigest,
   })
-  assert.equal(expectedCasId, '2fe2ed71860681e35acdacb23fc86f59')
+  assert.equal(expectedCasId, '4a8a1bdab0b4287332d047c6bff0be93')
   const separatedIds = new Set([
     expectedCasId,
     deriveEncryptedWalletBackupCasAttemptId({
@@ -5410,6 +5414,18 @@ test('realm separation and exact-object capability provenance fail closed', asyn
   })
   assert.notEqual(first.vaultId, second.vaultId)
   assert.notEqual(first.requestAuthPublicKey, second.requestAuthPublicKey)
+  const expectedProofId = deriveProofIdForTest(
+    SEED,
+    vector.inputs.proof.mint,
+    vector.inputs.proof.unit,
+    vector.inputs.proof.keysetId,
+    SECRET,
+  )
+  const firstPreparedProof = await prepareEncryptedWalletBackupProof(proofInput(first))
+  const secondPreparedProof = await prepareEncryptedWalletBackupProof(proofInput(second))
+  assert.equal(firstPreparedProof.proofId, expectedProofId)
+  assert.equal(secondPreparedProof.proofId, expectedProofId)
+  assert.equal(firstPreparedProof.proofId, secondPreparedProof.proofId)
   const firstInput = proofInput(first)
   await assert.rejects(
     () =>
@@ -5419,7 +5435,7 @@ test('realm separation and exact-object capability provenance fail closed', asyn
       }),
     /backup key handle is invalid/,
   )
-  const proof = await prepareEncryptedWalletBackupProof(proofInput(first))
+  const proof = firstPreparedProof
   assert.throws(
     () => packEncryptedWalletBackupProofChunk([{ ...proof }]),
     /proof handle is invalid/,
@@ -6094,6 +6110,14 @@ test('capacity: manifest restore crosses page boundaries with bounded sequential
 
 test('restored proof becomes durable only after membership, keyset, signature, NUT-07, and exact commit', async () => {
   const fixture = await createVerifiableRestoreFixtureForTest()
+  const expectedProofId = deriveProofIdForTest(
+    SEED,
+    fixture.mint,
+    'sat',
+    fixture.keysetId,
+    fixture.secret,
+  )
+  assert.equal(fixture.prepared.proofId, expectedProofId)
   const controller = new AbortController()
   const observedSignals: AbortSignal[] = []
   let persisted: readonly Record<string, unknown>[] = []
@@ -6152,6 +6176,7 @@ test('restored proof becomes durable only after membership, keyset, signature, N
     proofCount: 1,
     proofIds: [fixture.prepared.proofId],
   })
+  assert.equal(result.proofIds[0], expectedProofId)
   assert.equal(observedSignals.length, 3)
   assert.equal(
     observedSignals.every((signal) => signal === controller.signal),
@@ -7732,7 +7757,7 @@ function withProofStore(
       : 0
   const identityKeyset = keysetKind === 0 ? `legacy:${toHex(fromBase64(keysetId))}` : keysetId
   const proofId = deriveProofIdForTest(
-    input.keyHandle.vaultId,
+    input.seed,
     input.mint,
     input.unit,
     identityKeyset,
@@ -7857,14 +7882,17 @@ function verifiedConditionalEvidence() {
 }
 
 function deriveProofIdForTest(
-  walletId: string,
+  seed: Uint8Array,
   mint: string,
   unit: string,
   keysetId: string,
   secret: string,
 ): string {
   return deriveDurableCustodyProofId({
-    scopeId: deriveDurableCustodyScopeId({ scopeKind: 'wallet', walletId }),
+    scopeId: deriveDurableCustodyScopeId({
+      scopeKind: 'wallet',
+      walletId: deriveDurableCustodyWalletId(seed),
+    }),
     normalizedMint: mint,
     unit,
     keysetId,
