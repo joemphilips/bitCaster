@@ -720,6 +720,15 @@ export interface EncryptedWalletBackupManifestRestoreCursor {
   readonly complete: boolean
 }
 
+/** One exact page reference from an authenticated current manifest head. */
+export interface AuthenticatedEncryptedWalletBackupManifestPageReference {
+  readonly state: 'authenticated'
+  readonly pageIndex: number
+  readonly objectId: string
+  readonly objectDigest: string
+  readonly generation: number
+}
+
 interface ManifestRestoreCursorAuthority {
   readonly keyAuthority: KeyAuthority
   readonly head: EncryptedWalletBackupManifestHead
@@ -3627,6 +3636,40 @@ export function beginEncryptedWalletBackupManifestRestore(input: {
     restoredEntryCount: 0,
     lastProofId: null,
     consumed: false,
+  })
+}
+
+/**
+ * Reads one exact page reference without exposing the whole authenticated
+ * reference set. The reference is suitable for one authenticated object GET.
+ */
+export function readAuthenticatedEncryptedWalletBackupManifestPageReference(input: {
+  headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence
+  pageIndex: number
+}): AuthenticatedEncryptedWalletBackupManifestPageReference {
+  const observation = AUTHENTICATED_HEAD_OBSERVATIONS.get(input.headEvidence)
+  const authenticated = AUTHENTICATED_MANIFEST_HEADS.get(input.headEvidence)
+  if (
+    observation === undefined ||
+    observation.head === null ||
+    authenticated === undefined ||
+    authenticated.keyAuthority !== observation.keyAuthority ||
+    authenticated.head !== observation.head
+  ) {
+    throw new Error('backup manifest page head is not authenticated')
+  }
+  const referenceSet = decode(authenticated.canonicalReferenceSet)
+  const pages =
+    Array.isArray(referenceSet) && referenceSet.length === 4 ? referenceSet[2] : undefined
+  const references = decodeObjectReferences(pages, 'manifest page references')
+  const pageIndex = requireInteger(input.pageIndex, 0, references.length - 1, 'manifest page index')
+  const reference = references[pageIndex]!
+  return Object.freeze({
+    state: 'authenticated' as const,
+    pageIndex,
+    objectId: reference.objectId,
+    objectDigest: reference.digest,
+    generation: observation.head.generation,
   })
 }
 

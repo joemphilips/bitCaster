@@ -58,8 +58,11 @@ import {
 } from '../src/encryptedWalletBackupCasState.ts'
 import {
   classifyDurableWalletStorage,
+  decideDurableWalletStoragePurge,
   deriveDurableWalletBackupSnapshotId,
   prepareDurableWalletAcknowledgedBackupSnapshot,
+  type DurableWalletAcknowledgedBackupSnapshotEvidence,
+  type DurableWalletAuthenticatedBackupReceiptEvidence,
 } from '../src/recoverableWalletStorage.ts'
 import { planEncryptedWalletBackupRetry } from '../src/encryptedWalletBackupRetrySchedule.ts'
 import {
@@ -85,6 +88,7 @@ import {
   abandonEncryptedWalletBackupUploadAttempt as sdkAbandonEncryptedWalletBackupUploadAttempt,
   claimEncryptedWalletBackupUploadAttempt,
   cleanUpRejectedEncryptedWalletBackupFork as sdkCleanUpRejectedEncryptedWalletBackupFork,
+  recoverCompleteEncryptedWalletBackupJournal,
   deriveEncryptedWalletBackupCasAttemptId,
   ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX,
   prepareEncryptedWalletBackupUploadPlan,
@@ -6000,112 +6004,317 @@ test('bounded manifest restore advances exact authenticated pages without materi
   )
 })
 
-test('capacity: manifest restore crosses page boundaries with bounded sequential preparation', async () => {
-  const keyHandle = await createEncryptedWalletBackupKeyHandle({
-    seed: SEED,
-    realm: 'restore-capacity',
-  })
-  const proofs = []
-  for (let counter = 0; counter < 513; counter += 1) {
-    proofs.push(await prepareEncryptedWalletBackupProof(proofInputAtCounter(keyHandle, counter)))
-  }
-  proofs.sort((left, right) => compareLowerHex(left.proofId, right.proofId))
-  const chunks = [
-    packEncryptedWalletBackupProofChunk(proofs.slice(0, 256)),
-    packEncryptedWalletBackupProofChunk(proofs.slice(256)),
-  ]
-  const chunkObjects = []
-  for (let index = 0; index < chunks.length; index += 1) {
-    chunkObjects.push(
-      await prepareEncryptedWalletBackupObject({
-        keyHandle,
-        chunk: chunks[index]!,
-        generation: 1,
-        runtime: deterministicRuntime([
-          new Uint8Array(16).fill(208 + index),
-          new Uint8Array(12).fill(220 + index),
-        ]),
-      }),
-    )
-  }
-  const manifestRandom = []
-  for (let index = 0; index < 16; index += 1) {
-    manifestRandom.push(
-      index % 2 === 0 ? new Uint8Array(16).fill(16 + index) : new Uint8Array(12).fill(16 + index),
-    )
-  }
-  const manifest = await prepareEncryptedWalletBackupManifest({
-    keyHandle,
-    generation: 1,
-    snapshotNonce: new Uint8Array(16).fill(230),
-    chunks: chunks.map((chunk, index) => ({
-      chunk,
-      object: chunkObjects[index]!,
-    })),
-    snapshotStore: acceptingSnapshotSealStore(),
-    runtime: deterministicRuntime(manifestRandom),
-  })
-  assert.ok(manifest.pages.length > 1)
-  const head = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest,
-    parent: null,
-  })
-  const requestProof = await prepareEncryptedWalletBackupRequestProof({
-    keyHandle,
-    enrollmentEpoch: 1,
-    method: 'GET',
-    url: 'https://backup.example.test/v1/vault/capacity-head',
-    issuedAtUnixSeconds: 1_700_000_000,
-    expiresAtUnixSeconds: 1_700_000_030,
-    payload: new Uint8Array(),
-    runtime: deterministicRuntime([new Uint8Array(16).fill(240), new Uint8Array(32).fill(241)]),
-  })
-  const authenticated = await readAuthenticatedEncryptedWalletBackupHead({
-    keyHandle,
-    enrollmentEpoch: 1,
-    requestProof,
-    remote: {
-      async readCurrentHead() {
-        return {
-          status: 'found' as const,
-          enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(head),
-        }
-      },
-    },
-  })
-  let cursor = beginEncryptedWalletBackupManifestRestore({
-    headEvidence: authenticated,
-  })
-  const outOfOrderPage = await decryptEncryptedWalletBackupManifestPage({
-    keyHandle,
-    seed: SEED,
-    object: readPreparedEncryptedWalletBackupObject(manifest.pages[1]!),
-    headEvidence: authenticated,
+test('journal recovery handles one bounded page per invocation and resumes an exact checkpoint', async () => {
+  const fixture = await createVerifiableRestoreFixtureForTest({ count: 40, longMint: true })
+  assert.ok(fixture.pages.length > 1)
+  let restoreCursor = beginEncryptedWalletBackupManifestRestore({
+    headEvidence: fixture.authenticated,
   })
   assert.throws(
     () =>
       advanceEncryptedWalletBackupManifestRestore({
-        cursor,
-        manifestPage: outOfOrderPage,
+        cursor: restoreCursor,
+        manifestPage: fixture.pages[1]!,
       }),
     /foreign or out of order/,
   )
-  for (const object of manifest.pages) {
-    const page = await decryptEncryptedWalletBackupManifestPage({
-      keyHandle,
-      seed: SEED,
-      object: readPreparedEncryptedWalletBackupObject(object),
-      headEvidence: authenticated,
-    })
-    cursor = advanceEncryptedWalletBackupManifestRestore({
-      cursor,
+  for (const page of fixture.pages) {
+    restoreCursor = advanceEncryptedWalletBackupManifestRestore({
+      cursor: restoreCursor,
       manifestPage: page,
     })
   }
-  assert.equal(cursor.complete, true)
-  assert.equal(cursor.restoredEntryCount, 513)
+  assert.equal(restoreCursor.complete, true)
+  const membership = fixture.pages.flatMap((page) =>
+    page.entries.map((entry) => ({ proofId: entry.proofId, proofCommitment: entry.commitment })),
+  )
+  const projection = recoveryProjectionStore({ failAfterFirstCommit: true })
+  const input = recoveryInputForTest(fixture, membership, projection)
+  await assert.rejects(() => invokeRecoveryForTest(input, projection), /checkpoint crash/)
+  assert.deepEqual(
+    recoveryProofPurgeDecisionForTest(
+      membership[0]!.proofId,
+      membership[0]!.proofCommitment,
+      projection.receipts[0]!,
+      projection.currentSnapshot,
+    ),
+    { kind: 'retain' },
+  )
+
+  let result: Awaited<ReturnType<typeof recoverCompleteEncryptedWalletBackupJournal>>
+  do {
+    result = await invokeRecoveryForTest(
+      {
+        ...input,
+        signal: AbortSignal.timeout(60_000),
+      },
+      projection,
+    )
+  } while (result.state === 'recovery-in-progress')
+
+  assert.deepEqual(result, { state: 'projection-refreshed' })
+  assert.equal(projection.cursor?.complete, true)
+  assert.equal(projection.receiptCount, membership.length)
+  assert.ok(projection.commits.slice(0, -1).every((commit) => !commit.complete))
+  assert.equal(projection.commits.at(-1)?.complete, true)
+  assert.equal(projection.idempotentReplays, 0)
+  // The bound is constant per step and does not depend on wallet inventory size.
+  assert.equal(projection.headReads, projection.objectReads)
+  assert.equal(projection.headReads, projection.writes)
+})
+
+test('completed recovery makes an ordinary proof evictable only with its receipt and current snapshot', async () => {
+  const fixture = await createVerifiableRestoreFixtureForTest({ count: 1 })
+  const membership = fixture.pages[0]!.entries.map((entry) => ({
+    proofId: entry.proofId,
+    proofCommitment: entry.commitment,
+  }))
+  const projection = recoveryProjectionStore()
+  assert.deepEqual(
+    recoveryProofPurgeDecisionForTest(
+      membership[0]!.proofId,
+      membership[0]!.proofCommitment,
+      null,
+      null,
+    ),
+    { kind: 'retain' },
+  )
+  const result = await invokeRecoveryForTest(
+    recoveryInputForTest(fixture, membership, projection),
+    projection,
+  )
+  assert.deepEqual(result, { state: 'projection-refreshed' })
+  assert.deepEqual(
+    recoveryProofPurgeDecisionForTest(
+      membership[0]!.proofId,
+      membership[0]!.proofCommitment,
+      projection.receipts[0]!,
+      projection.currentSnapshot,
+    ),
+    { kind: 'evict-proof-body' },
+  )
+})
+
+test('journal recovery returns rebuild-required without build or remote object authority', async () => {
+  const fixture = await createVerifiableRestoreFixtureForTest({ count: 1 })
+  const membership = fixture.pages[0]!.entries.map((entry) => ({
+    proofId: entry.proofId,
+    proofCommitment: entry.commitment,
+  }))
+  const projection = recoveryProjectionStore()
+  const absent = await recoverCompleteEncryptedWalletBackupJournal({
+    ...recoveryInputForTest(fixture, membership, projection),
+    remote: {
+      async readCurrentHead() {
+        return { status: 'not-found' as const }
+      },
+      async getObject() {
+        throw new Error('absent head must not read an object')
+      },
+    },
+  })
+  assert.equal(absent.state, 'rebuild-required')
+  assert.equal(absent.parent, 'absent')
+
+  const different = await recoverCompleteEncryptedWalletBackupJournal(
+    recoveryInputForTest(
+      fixture,
+      [{ ...membership[0]!, proofCommitment: 'aa'.repeat(32) }],
+      projection,
+    ),
+  )
+  assert.equal(different.state, 'rebuild-required')
+  assert.equal(different.parent, 'authenticated')
+})
+
+test('journal recovery fails closed for surviving or malformed journal state before HEAD', async () => {
+  const fixture = await createVerifiableRestoreFixtureForTest({ count: 1 })
+  const membership = fixture.pages[0]!.entries.map((entry) => ({
+    proofId: entry.proofId,
+    proofCommitment: entry.commitment,
+  }))
+  for (const state of [
+    { state: 'surviving-state' as const },
+    {
+      state: 'complete-loss' as const,
+      buildJournal: {},
+      uploadAggregate: null,
+      uploadBatches: null,
+      casJournal: null,
+    },
+  ]) {
+    let heads = 0
+    await assert.rejects(() =>
+      recoverCompleteEncryptedWalletBackupJournal({
+        ...recoveryInputForTest(fixture, membership, recoveryProjectionStore()),
+        journalStore: {
+          async readJournalRecoveryState(read) {
+            return read(state as never)
+          },
+        },
+        remote: {
+          async readCurrentHead() {
+            heads += 1
+            return { status: 'not-found' as const }
+          },
+          async getObject() {
+            throw new Error('unexpected object read')
+          },
+        },
+      }),
+    )
+    assert.equal(heads, 0)
+  }
+})
+
+test('journal recovery resets a stale or out-of-range projection cursor before one fresh page checkpoint', async () => {
+  const fixture = await createVerifiableRestoreFixtureForTest({ count: 1 })
+  const membership = fixture.pages[0]!.entries.map((entry) => ({
+    proofId: entry.proofId,
+    proofCommitment: entry.commitment,
+  }))
+  const projection = recoveryProjectionStore({
+    initialCursor: {
+      generation: fixture.headWire.generation,
+      manifestDigest: fixture.headWire.manifestDigest,
+      snapshotId: 'recovery-snapshot',
+      snapshotRevision: 1,
+      nextRemotePageIndex: 99,
+      restoredEntryCount: 1,
+      lastRemoteProofId: 'ee'.repeat(32),
+      complete: false,
+    },
+  })
+  const result = await invokeRecoveryForTest(
+    recoveryInputForTest(fixture, membership, projection),
+    projection,
+  )
+  assert.deepEqual(result, { state: 'projection-refreshed' })
+  assert.equal(projection.cursor?.complete, true)
+  assert.equal(projection.receiptCount, 1)
+})
+
+test('journal recovery bounds synthetic 257-entry local snapshots without backup write activity', async () => {
+  const fixture = await createVerifiableRestoreFixtureForTest({ count: 257 })
+  const membership = fixture.pages.flatMap((page) =>
+    page.entries.map((entry) => ({ proofId: entry.proofId, proofCommitment: entry.commitment })),
+  )
+  assert.equal(membership.length, 257)
+  const projection = recoveryProjectionStore()
+  const snapshot = recoverySnapshotStore(membership)
+  const activity = { encryptions: 0 }
+  const runtime = recoveryRuntimeWithoutEncryptionForTest(activity)
+  const input = {
+    ...recoveryInputForTest(fixture, membership, projection),
+    runtime,
+    snapshotStore: snapshot,
+  }
+
+  let result: Awaited<ReturnType<typeof recoverCompleteEncryptedWalletBackupJournal>>
+  do {
+    const before = {
+      headReads: projection.headReads,
+      objectReads: projection.objectReads,
+      snapshotPageReads: snapshot.pageReads,
+      writes: projection.writes,
+    }
+    result = await invokeRecoveryForTest(input, projection)
+    assert.equal(projection.headReads - before.headReads, 1)
+    assert.equal(projection.objectReads - before.objectReads, 1)
+    assert.equal(projection.writes - before.writes, 1)
+    assert.ok(snapshot.pageReads - before.snapshotPageReads <= 3)
+  } while (result.state === 'recovery-in-progress')
+
+  assert.deepEqual(result, { state: 'projection-refreshed' })
+  assert.deepEqual(activity, { encryptions: 0 })
+})
+
+test('journal recovery resumes an exact durable checkpoint when an abort wins its pending acknowledgement', async () => {
+  const fixture = await createVerifiableRestoreFixtureForTest({ count: 1 })
+  const membership = fixture.pages[0]!.entries.map((entry) => ({
+    proofId: entry.proofId,
+    proofCommitment: entry.commitment,
+  }))
+  const checkpointDurable = deferredForTest<void>()
+  const acknowledgement = deferredForTest<void>()
+  const projection = recoveryProjectionStore({
+    afterDurableCommit: () => {
+      checkpointDurable.resolve()
+      return acknowledgement.promise
+    },
+  })
+  const controller = new AbortController()
+  const first = invokeRecoveryForTest(
+    {
+      ...recoveryInputForTest(fixture, membership, projection),
+      signal: controller.signal,
+    },
+    projection,
+  )
+  await checkpointDurable.promise
+  const committedCursor = structuredClone(projection.cursor)
+  assert.equal(projection.receiptCount, 1)
+  controller.abort()
+  await assert.rejects(first, EncryptedWalletBackupDeadlineError)
+
+  acknowledgement.resolve()
+  await Promise.resolve()
+  const resumed = await invokeRecoveryForTest(
+    recoveryInputForTest(fixture, membership, projection),
+    projection,
+  )
+  assert.deepEqual(resumed, { state: 'projection-refreshed' })
+  assert.deepEqual(projection.cursor, committedCursor)
+  assert.equal(projection.receiptCount, 1)
+  assert.equal(projection.idempotentReplays, 0)
+})
+
+test('journal recovery retries one page when an abort happens before durable checkpoint commit', async () => {
+  const fixture = await createVerifiableRestoreFixtureForTest({ count: 1 })
+  const membership = fixture.pages[0]!.entries.map((entry) => ({
+    proofId: entry.proofId,
+    proofCommitment: entry.commitment,
+  }))
+  const attempted = deferredForTest<void>()
+  const blocked = deferredForTest<void>()
+  const firstAttemptSettled = deferredForTest<void>()
+  let blockCommit = true
+  const projection = recoveryProjectionStore({
+    beforeDurableCommit: () => {
+      attempted.resolve()
+      return blockCommit ? blocked.promise : Promise.resolve()
+    },
+    afterCommitAttemptSettled: () => {
+      firstAttemptSettled.resolve()
+    },
+  })
+  const controller = new AbortController()
+  const first = invokeRecoveryForTest(
+    {
+      ...recoveryInputForTest(fixture, membership, projection),
+      signal: controller.signal,
+    },
+    projection,
+  )
+  await attempted.promise
+  controller.abort()
+  await assert.rejects(first, EncryptedWalletBackupDeadlineError)
+  assert.equal(projection.cursor, null)
+  assert.equal(projection.receiptCount, 0)
+
+  blocked.resolve()
+  await firstAttemptSettled.promise
+  assert.equal(projection.cursor, null)
+  assert.equal(projection.receiptCount, 0)
+
+  blockCommit = false
+  const retried = await invokeRecoveryForTest(
+    recoveryInputForTest(fixture, membership, projection),
+    projection,
+  )
+  assert.deepEqual(retried, { state: 'projection-refreshed' })
+  assert.equal(projection.cursor?.complete, true)
+  assert.equal(projection.receiptCount, 1)
 })
 
 test('restored proof becomes durable only after membership, keyset, signature, NUT-07, and exact commit', async () => {
@@ -8324,6 +8533,7 @@ async function createVerifiableRestoreFixtureForTest(
     verifiedLosingCounter?: number
     cloneTerminalEvidence?: boolean
     generationTwoFromActive?: boolean
+    longMint?: boolean
   } = {},
 ) {
   const cashu = Cashu as unknown as {
@@ -8369,7 +8579,7 @@ async function createVerifiableRestoreFixtureForTest(
     seed: SEED,
     realm: options.ctf ? 'restore-ctf' : 'restore-ordinary',
   })
-  const mint = 'https://restore-mint.example'
+  const mint = options.longMint ? longRecoveryMintForTest() : 'https://restore-mint.example'
   const privateKey = new Uint8Array(32)
   privateKey[31] = 2
   const conditionId = 'ab'.repeat(32)
@@ -8409,7 +8619,7 @@ async function createVerifiableRestoreFixtureForTest(
     mintKeys = { id: keysetId, unit: 'sat', keys }
   }
   const count = options.count ?? 1
-  if (!Number.isInteger(count) || count < 1 || count > 256)
+  if (!Number.isInteger(count) || count < 1 || count > 512)
     throw new Error('restore fixture count is invalid')
   const ctfMetadata = options.ctf
     ? {
@@ -8611,7 +8821,9 @@ async function createVerifiableRestoreFixtureForTest(
       snapshotNonce: new Uint8Array(16).fill(203),
       chunks: [{ chunk, object: chunkObject }],
       snapshotStore: acceptingSnapshotSealStore(),
-      runtime: deterministicRuntime([new Uint8Array(16).fill(204), new Uint8Array(12).fill(205)]),
+      runtime: options.longMint
+        ? deterministicRecoveryRuntime()
+        : deterministicRuntime([new Uint8Array(16).fill(204), new Uint8Array(12).fill(205)]),
     })
     head = prepareEncryptedWalletBackupManifestHead({
       keyHandle,
@@ -8661,10 +8873,320 @@ async function createVerifiableRestoreFixtureForTest(
     prepared,
     preparedProofs,
     authenticated,
+    headWire,
     page,
     pages,
+    manifestPageObjects: manifest.pages.map(readPreparedEncryptedWalletBackupObject),
     decryptedChunk,
   }
+}
+
+function completeJournalLossStore() {
+  return {
+    async readJournalRecoveryState<T>(
+      read: (state: {
+        state: 'complete-loss'
+        buildJournal: null
+        uploadAggregate: null
+        uploadBatches: null
+        casJournal: null
+      }) => T,
+    ): Promise<T> {
+      return read({
+        state: 'complete-loss',
+        buildJournal: null,
+        uploadAggregate: null,
+        uploadBatches: null,
+        casJournal: null,
+      })
+    },
+  }
+}
+
+function recoverySnapshotStore(
+  entries: readonly Readonly<{ proofId: string; proofCommitment: string }>[],
+) {
+  const pages = Array.from({ length: Math.ceil(entries.length / 256) }, (_, pageIndex) =>
+    entries.slice(pageIndex * 256, (pageIndex + 1) * 256),
+  )
+  const snapshot = {
+    snapshotId: 'recovery-snapshot',
+    snapshotRevision: 1,
+    proofCount: entries.length,
+  }
+  let pageReads = 0
+  return {
+    get pageReads() {
+      return pageReads
+    },
+    async readSealedRecoverySnapshot<T>(read: (value: typeof snapshot) => T): Promise<T> {
+      return read(snapshot)
+    },
+    async readSealedRecoverySnapshotPage<T>(
+      _sealed: typeof snapshot,
+      pageIndex: number,
+      read: (value: {
+        snapshotId: string
+        snapshotRevision: number
+        pageIndex: number
+        entries: readonly Readonly<{ proofId: string; proofCommitment: string }>[]
+      }) => T,
+    ): Promise<T> {
+      pageReads += 1
+      const entries = pages[pageIndex]
+      if (entries === undefined) throw new Error('unexpected recovery snapshot page')
+      return read({ ...snapshot, pageIndex, entries })
+    },
+  }
+}
+
+function recoveryProjectionStore(
+  options: {
+    afterCommitAttemptSettled?: () => void
+    afterDurableCommit?: () => Promise<void>
+    beforeDurableCommit?: () => Promise<void>
+    failAfterFirstCommit?: boolean
+    initialCursor?: Record<string, unknown>
+  } = {},
+) {
+  let cursor: Record<string, unknown> | null = options.initialCursor ?? null
+  let receiptCount = 0
+  let headReads = 0
+  let objectReads = 0
+  let fail = options.failAfterFirstCommit ?? false
+  let idempotentReplays = 0
+  const commits: Array<{ complete: boolean }> = []
+  const receipts: ReturnType<typeof deriveDurableWalletEncryptedBackupReceipt>[] = []
+  let currentSnapshot: ReturnType<typeof acknowledgeDurableWalletBackupSnapshot> | null = null
+  let writes = 0
+  return {
+    get cursor() {
+      return cursor as { complete: boolean } | null
+    },
+    get receiptCount() {
+      return receiptCount
+    },
+    get headReads() {
+      return headReads
+    },
+    get objectReads() {
+      return objectReads
+    },
+    get idempotentReplays() {
+      return idempotentReplays
+    },
+    get writes() {
+      return writes
+    },
+    get currentSnapshot() {
+      return currentSnapshot
+    },
+    commits,
+    receipts,
+    countHeadRead() {
+      headReads += 1
+    },
+    countObjectRead() {
+      objectReads += 1
+    },
+    store: {
+      async readRecoveryProjectionCursor<T>(read: (value: never) => T): Promise<T> {
+        return read(cursor as never)
+      },
+      async commitRecoveryProjectionCheckpoint<T>(
+        input: {
+          expectedCursor: Record<string, unknown> | null
+          nextCursor: Record<string, unknown>
+          snapshot: ReturnType<typeof acknowledgeDurableWalletBackupSnapshot>
+          receipts: readonly unknown[]
+        },
+        commit: () => T,
+      ): Promise<T> {
+        writes += 1
+        try {
+          if (options.beforeDurableCommit !== undefined) await options.beforeDurableCommit()
+          const sameNext = JSON.stringify(cursor) === JSON.stringify(input.nextCursor)
+          if (!sameNext && JSON.stringify(cursor) !== JSON.stringify(input.expectedCursor)) {
+            throw new Error('unexpected recovery checkpoint compare-and-swap')
+          }
+          const result = commit()
+          if (!sameNext) {
+            cursor = input.nextCursor
+            receiptCount += input.receipts.length
+            commits.push({ complete: input.nextCursor.complete === true })
+            receipts.push(
+              ...(input.receipts as ReturnType<typeof deriveDurableWalletEncryptedBackupReceipt>[]),
+            )
+            if (input.nextCursor.complete) currentSnapshot = input.snapshot
+          } else {
+            idempotentReplays += 1
+          }
+          if (options.afterDurableCommit !== undefined) await options.afterDurableCommit()
+          if (fail) {
+            fail = false
+            throw new Error('checkpoint crash')
+          }
+          return result
+        } finally {
+          options.afterCommitAttemptSettled?.()
+        }
+      },
+    },
+  }
+}
+
+function deferredForTest<T>(): Readonly<{
+  promise: Promise<T>
+  resolve: (value: T extends void ? void : T) => void
+}> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return Object.freeze({
+    promise,
+    resolve: resolve as (value: T extends void ? void : T) => void,
+  })
+}
+
+function recoveryRuntimeWithoutEncryptionForTest(activity: { encryptions: number }) {
+  const runtime = deterministicRecoveryRuntime()
+  return {
+    ...runtime,
+    subtle: new Proxy(webcrypto.subtle, {
+      get(target, property) {
+        if (property === 'encrypt') {
+          return () => {
+            activity.encryptions += 1
+            throw new Error('journal recovery must not encrypt')
+          }
+        }
+        const value = Reflect.get(target, property, target)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    }) as SubtleCrypto,
+  } satisfies EncryptedWalletBackupRuntime
+}
+
+function recoveryProofPurgeDecisionForTest(
+  proofId: string,
+  proofCommitment: string,
+  backupReceiptEvidence: DurableWalletAuthenticatedBackupReceiptEvidence | null,
+  currentSnapshot: DurableWalletAcknowledgedBackupSnapshotEvidence | null,
+) {
+  const classification = classifyDurableWalletStorage({
+    schemaVersion: 1,
+    recordId: proofId,
+    kind: 'deterministic-proof',
+    provenance: 'wallet-seed',
+    proofKind: 'ordinary',
+    ctfMetadata: null,
+    effectiveNowUnixSeconds: 1_700_000_000,
+    operationBinding: 'terminally-unlinked',
+    reserved: false,
+    ambiguousMintOperation: false,
+    proofPins: {
+      openOrderCollateral: 'absent',
+      outbox: 'absent',
+      retryCursor: 'absent',
+      replayTombstone: 'absent',
+      dependentWork: 'absent',
+    },
+    derivationLocator: 'committed',
+    proofCommitment: { state: 'verified', digest: proofCommitment },
+    backupReceiptEvidence,
+  })
+  return decideDurableWalletStoragePurge(classification, {
+    effectiveNowMs: 1_700_000_000_000,
+    encryptedProofEvictionEnabled: true,
+    preparedCurrentSnapshot:
+      currentSnapshot === null
+        ? null
+        : prepareDurableWalletAcknowledgedBackupSnapshot(currentSnapshot),
+  })
+}
+
+async function invokeRecoveryForTest(
+  input: Parameters<typeof recoverCompleteEncryptedWalletBackupJournal>[0],
+  projection: ReturnType<typeof recoveryProjectionStore>,
+) {
+  const before = {
+    headReads: projection.headReads,
+    objectReads: projection.objectReads,
+    writes: projection.writes,
+  }
+  try {
+    return await recoverCompleteEncryptedWalletBackupJournal(input)
+  } finally {
+    assert.ok(projection.headReads - before.headReads <= 1)
+    assert.ok(projection.objectReads - before.objectReads <= 1)
+    assert.ok(projection.writes - before.writes <= 1)
+  }
+}
+
+function recoveryInputForTest(
+  fixture: Awaited<ReturnType<typeof createVerifiableRestoreFixtureForTest>>,
+  membership: readonly Readonly<{ proofId: string; proofCommitment: string }>[],
+  projection: ReturnType<typeof recoveryProjectionStore>,
+) {
+  return {
+    keyHandle: fixture.keyHandle,
+    seed: SEED,
+    enrollmentEpoch: 1,
+    headUrl: 'https://backup.example.test/v1/vault/head',
+    manifestObjectUrl: (objectId: string) =>
+      `https://backup.example.test/v1/vault/objects/${objectId}`,
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    signal: AbortSignal.timeout(60_000),
+    runtime: deterministicRecoveryRuntime(),
+    journalStore: completeJournalLossStore(),
+    snapshotStore: recoverySnapshotStore(membership),
+    projectionStore: projection.store,
+    remote: {
+      async readCurrentHead() {
+        projection.countHeadRead()
+        return {
+          status: 'found' as const,
+          enrollmentEpoch: 1,
+          head: structuredClone(fixture.headWire),
+        }
+      },
+      async getObject(input: { expectedObjectDigest: string; currentHeadGeneration: number }) {
+        projection.countObjectRead()
+        const object = fixture.manifestPageObjects.find(
+          (candidate) => candidate.digest === input.expectedObjectDigest,
+        )
+        if (object === undefined) throw new Error('unexpected recovery manifest page')
+        return {
+          status: 'found' as const,
+          kindCode: object.kindCode,
+          realm: object.realm,
+          vaultId: object.vaultId,
+          objectId: object.objectId,
+          generation: input.currentHeadGeneration,
+          paddedLength: object.paddedLength,
+          objectDigest: object.digest,
+          aad: object.aad,
+          encryptedBody: object.body,
+        }
+      },
+    },
+  }
+}
+
+function deterministicRecoveryRuntime(): EncryptedWalletBackupRuntime {
+  let next = 1
+  return {
+    subtle: webcrypto.subtle,
+    getRandomValues(target) {
+      target.fill(next++)
+      return target
+    },
+  }
+}
+
+function longRecoveryMintForTest(): string {
+  return `https://${Array.from({ length: 28 }, () => 'a'.repeat(60)).join('.')}.example`
 }
 
 async function createVerifiedLosingEvidenceForTest(input: {

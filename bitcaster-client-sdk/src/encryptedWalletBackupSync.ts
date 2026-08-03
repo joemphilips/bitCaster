@@ -4,6 +4,8 @@ import { decode } from 'cborg'
 import {
   ENCRYPTED_WALLET_BACKUP_BODY_BYTES,
   ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX,
   ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES,
   ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX,
@@ -13,11 +15,20 @@ import {
   type EncryptedWalletBackupRequestProof,
   type EncryptedWalletBackupRuntime,
   type EncryptedWalletBackupClock,
+  type AuthenticatedEncryptedWalletBackupHeadEvidence,
+  type DecryptedEncryptedWalletBackupManifestPage,
+  type EncryptedWalletBackupHeadRemotePort,
   type EncryptedWalletBackupManifestHead,
   type EncryptedWalletBackupSyncAttemptRecord,
   type EncryptedWalletBackupSyncAttemptStore,
   type SealedEncryptedWalletBackupSyncAttempt,
+  acknowledgeDurableWalletBackupSnapshot,
+  beginEncryptedWalletBackupManifestRestore,
+  decryptEncryptedWalletBackupManifestPage,
+  deriveDurableWalletEncryptedBackupReceipt,
   prepareEncryptedWalletBackupRequestProof,
+  readAuthenticatedEncryptedWalletBackupHead,
+  readAuthenticatedEncryptedWalletBackupManifestPageReference,
   readPreparedEncryptedWalletBackupManifestTarget,
   readPreparedEncryptedWalletBackupObject,
 } from './encryptedWalletBackup.ts'
@@ -539,6 +550,660 @@ export interface EncryptedWalletBackupObjectRemotePort {
       retryAfterSeconds?: number | null
     }>
   >
+}
+
+export interface EncryptedWalletBackupObjectGetInput {
+  readonly requestProof: EncryptedWalletBackupRequestProof
+  readonly expectedKindCode: 1 | 2
+  readonly expectedObjectDigest: string
+  readonly currentHeadGeneration: number
+  readonly signal?: AbortSignal
+}
+
+export type EncryptedWalletBackupObjectGetResult =
+  | Readonly<{
+      status: 'found'
+      kindCode: 1 | 2
+      realm: string
+      vaultId: string
+      objectId: string
+      generation: number
+      paddedLength: 65_536 | 262_144
+      objectDigest: string
+      aad: Uint8Array
+      encryptedBody: Uint8Array
+    }>
+  | Readonly<{ status: 'not-found' }>
+  | Readonly<{
+      status: 'unauthorized' | 'rate-limited' | 'overloaded' | 'unavailable'
+      retryAfterSeconds?: number | null
+    }>
+
+/** Typed absence is the only journal state that permits a new backup build. */
+export interface EncryptedWalletBackupCompleteJournalLoss {
+  readonly state: 'complete-loss'
+  readonly buildJournal: null
+  readonly uploadAggregate: null
+  readonly uploadBatches: null
+  readonly casJournal: null
+}
+
+/** Any surviving row is a restart concern. It is not cache-loss authority. */
+export interface EncryptedWalletBackupSurvivingJournalState {
+  readonly state: 'surviving-state'
+}
+
+export type EncryptedWalletBackupJournalRecoveryState =
+  | EncryptedWalletBackupCompleteJournalLoss
+  | EncryptedWalletBackupSurvivingJournalState
+
+export interface EncryptedWalletBackupJournalRecoveryStore {
+  /**
+   * Read all build, aggregate, batch, and CAS rows in one transaction. The
+   * adapter must report complete loss only when every typed row class is absent.
+   */
+  readJournalRecoveryState<T>(
+    read: (state: EncryptedWalletBackupJournalRecoveryState) => T,
+  ): Promise<T>
+}
+
+export interface EncryptedWalletBackupRecoveryMembership {
+  readonly proofId: string
+  readonly proofCommitment: string
+}
+
+export interface EncryptedWalletBackupRecoverySnapshot {
+  readonly snapshotId: string
+  readonly snapshotRevision: number
+  readonly proofCount: number
+}
+
+export interface EncryptedWalletBackupRecoverySnapshotPage {
+  readonly snapshotId: string
+  readonly snapshotRevision: number
+  readonly pageIndex: number
+  readonly entries: readonly EncryptedWalletBackupRecoveryMembership[]
+}
+
+export interface EncryptedWalletBackupRecoverySnapshotStore {
+  /** Reads one transactionally sealed local snapshot. */
+  readSealedRecoverySnapshot<T>(
+    read: (snapshot: EncryptedWalletBackupRecoverySnapshot) => T,
+  ): Promise<T>
+  /** Reads one bounded page from that exact sealed snapshot. */
+  readSealedRecoverySnapshotPage<T>(
+    snapshot: EncryptedWalletBackupRecoverySnapshot,
+    pageIndex: number,
+    read: (page: EncryptedWalletBackupRecoverySnapshotPage) => T,
+  ): Promise<T>
+}
+
+export interface EncryptedWalletBackupRecoveryObjectRemotePort {
+  getObject(
+    input: EncryptedWalletBackupObjectGetInput,
+  ): Promise<EncryptedWalletBackupObjectGetResult>
+}
+
+export interface EncryptedWalletBackupRecoveryProjectionStore {
+  readRecoveryProjectionCursor<T>(
+    read: (cursor: EncryptedWalletBackupRecoveryProjectionCursor | null) => T,
+  ): Promise<T>
+  /**
+   * Atomically appends one page to the current projection. It accepts an exact
+   * replay of the same checkpoint. A partial projection is not eviction authority.
+   */
+  commitRecoveryProjectionCheckpoint<T>(
+    input: Readonly<{
+      expectedCursor: EncryptedWalletBackupRecoveryProjectionCursor | null
+      nextCursor: EncryptedWalletBackupRecoveryProjectionCursor
+      snapshot: ReturnType<typeof acknowledgeDurableWalletBackupSnapshot>
+      receipts: readonly ReturnType<typeof deriveDurableWalletEncryptedBackupReceipt>[]
+    }>,
+    commit: () => T,
+  ): Promise<T>
+}
+
+export interface EncryptedWalletBackupRecoveryProjectionCursor {
+  readonly generation: number
+  readonly manifestDigest: string
+  readonly snapshotId: string
+  readonly snapshotRevision: number
+  readonly nextRemotePageIndex: number
+  readonly restoredEntryCount: number
+  readonly lastRemoteProofId: string | null
+  readonly complete: boolean
+}
+
+const ENCRYPTED_WALLET_BACKUP_RECOVERY_SNAPSHOT_PAGE_ENTRY_COUNT = 256
+
+export type EncryptedWalletBackupJournalRecoveryResult =
+  | Readonly<{ state: 'recovery-in-progress' }>
+  | Readonly<{ state: 'projection-refreshed' }>
+  | Readonly<{
+      state: 'rebuild-required'
+      parent: 'absent' | 'authenticated'
+      headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence
+      snapshot: EncryptedWalletBackupRecoverySnapshot
+    }>
+
+/**
+ * Recovers only a completely lost backup journal. It authenticates the current
+ * head before it requires a rebuild. One call handles at most one remote page.
+ */
+export async function recoverCompleteEncryptedWalletBackupJournal(input: {
+  keyHandle: EncryptedWalletBackupKeyHandle
+  seed: Uint8Array
+  enrollmentEpoch: number
+  headUrl: string
+  manifestObjectUrl: (objectId: string) => string
+  clock: EncryptedWalletBackupClock
+  signal: AbortSignal
+  runtime?: EncryptedWalletBackupRuntime
+  journalStore: EncryptedWalletBackupJournalRecoveryStore
+  snapshotStore: EncryptedWalletBackupRecoverySnapshotStore
+  projectionStore: EncryptedWalletBackupRecoveryProjectionStore
+  remote: EncryptedWalletBackupHeadRemotePort & EncryptedWalletBackupRecoveryObjectRemotePort
+}): Promise<EncryptedWalletBackupJournalRecoveryResult> {
+  const signal = requireEncryptedWalletBackupCycleSignal(input.signal)
+  throwIfEncryptedWalletBackupCycleAborted(signal)
+  await requireCompleteJournalLoss(input.journalStore)
+  const snapshot = await readRecoverySnapshot(input.snapshotStore)
+  const headEvidence = await readRecoveryHead(input, signal)
+  if (headEvidence.head === null) {
+    return rebuildRequired('absent', headEvidence, snapshot, signal)
+  }
+  if (snapshot.proofCount !== headEvidence.head.proofCount) {
+    return rebuildRequired('authenticated', headEvidence, snapshot, signal)
+  }
+  const manifestCursor = beginEncryptedWalletBackupManifestRestore({ headEvidence })
+  const recoveryCursor = await readRecoveryCursor(
+    input.projectionStore,
+    headEvidence,
+    snapshot,
+    manifestCursor.pageCount,
+  )
+  const cursor = recoveryCursor.effective
+  if (cursor.complete) return Object.freeze({ state: 'projection-refreshed' as const })
+  if (manifestCursor.complete) {
+    await commitRecoveryCheckpoint(
+      input.projectionStore,
+      recoveryCursor.persisted,
+      Object.freeze({ ...cursor, complete: true }),
+      headEvidence,
+      [],
+      signal,
+    )
+    return Object.freeze({ state: 'projection-refreshed' as const })
+  }
+  const page = await readRecoveryManifestPage(
+    input,
+    signal,
+    headEvidence,
+    cursor.nextRemotePageIndex,
+  )
+  if (!(await recoveryPageMatches(input.snapshotStore, snapshot, cursor, page))) {
+    return rebuildRequired('authenticated', headEvidence, snapshot, signal)
+  }
+  throwIfEncryptedWalletBackupCycleAborted(signal)
+  const next = nextRecoveryCursor(cursor, page, snapshot.proofCount)
+  if (next.complete && next.restoredEntryCount !== snapshot.proofCount) {
+    return rebuildRequired('authenticated', headEvidence, snapshot, signal)
+  }
+  const receipts = page.entries.map((entry) =>
+    deriveDurableWalletEncryptedBackupReceipt({
+      headEvidence,
+      manifestPage: page,
+      proofId: entry.proofId,
+      proofCommitment: entry.commitment,
+    }),
+  )
+  await commitRecoveryCheckpoint(
+    input.projectionStore,
+    recoveryCursor.persisted,
+    next,
+    headEvidence,
+    receipts,
+    signal,
+  )
+  return next.complete
+    ? Object.freeze({ state: 'projection-refreshed' as const })
+    : Object.freeze({ state: 'recovery-in-progress' as const })
+}
+
+async function requireCompleteJournalLoss(
+  store: EncryptedWalletBackupJournalRecoveryStore,
+): Promise<void> {
+  if (
+    typeof store !== 'object' ||
+    store === null ||
+    typeof store.readJournalRecoveryState !== 'function'
+  )
+    throw new Error('backup journal recovery store is invalid')
+  const marker = Object.freeze({})
+  let calls = 0
+  const returned = await store.readJournalRecoveryState((state) => {
+    if (calls++ !== 0) throw new Error('backup journal recovery callback is invalid')
+    if (
+      typeof state !== 'object' ||
+      state === null ||
+      state.state !== 'complete-loss' ||
+      state.buildJournal !== null ||
+      state.uploadAggregate !== null ||
+      state.uploadBatches !== null ||
+      state.casJournal !== null
+    ) {
+      throw new Error('backup journal recovery requires complete typed loss')
+    }
+    return marker
+  })
+  if (calls !== 1 || returned !== marker)
+    throw new Error('backup journal recovery must be synchronous and exact')
+}
+
+async function readRecoverySnapshot(
+  store: EncryptedWalletBackupRecoverySnapshotStore,
+): Promise<EncryptedWalletBackupRecoverySnapshot> {
+  if (
+    typeof store !== 'object' ||
+    store === null ||
+    typeof store.readSealedRecoverySnapshot !== 'function'
+  )
+    throw new Error('backup recovery snapshot store is invalid')
+  let calls = 0
+  let issued: EncryptedWalletBackupRecoverySnapshot | undefined
+  const returned = await store.readSealedRecoverySnapshot((snapshot) => {
+    if (calls++ !== 0) throw new Error('backup recovery snapshot callback is invalid')
+    if (
+      typeof snapshot.snapshotId !== 'string' ||
+      snapshot.snapshotId.length === 0 ||
+      new TextEncoder().encode(snapshot.snapshotId).byteLength > 256 ||
+      !Number.isSafeInteger(snapshot.snapshotRevision) ||
+      snapshot.snapshotRevision < 0 ||
+      !Number.isSafeInteger(snapshot.proofCount) ||
+      snapshot.proofCount < 0 ||
+      snapshot.proofCount > ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX
+    ) {
+      throw new Error('backup recovery snapshot is invalid')
+    }
+    issued = snapshot
+    return issued
+  })
+  if (calls !== 1 || issued === undefined || returned !== issued)
+    throw new Error('backup recovery snapshot read must be synchronous and exact')
+  return issued
+}
+
+async function readRecoveryHead(
+  input: Parameters<typeof recoverCompleteEncryptedWalletBackupJournal>[0],
+  signal: AbortSignal,
+): Promise<AuthenticatedEncryptedWalletBackupHeadEvidence> {
+  const issuedAtUnixSeconds = requireInteger(
+    input.clock.nowUnixSeconds(),
+    0,
+    Number.MAX_SAFE_INTEGER,
+    'request issue time',
+  )
+  const requestProof = await prepareEncryptedWalletBackupRequestProof({
+    keyHandle: input.keyHandle,
+    enrollmentEpoch: requireInteger(
+      input.enrollmentEpoch,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      'enrollment epoch',
+    ),
+    method: 'GET',
+    url: input.headUrl,
+    issuedAtUnixSeconds,
+    expiresAtUnixSeconds: issuedAtUnixSeconds + 60,
+    payload: new Uint8Array(),
+    signal,
+    runtime: input.runtime,
+  })
+  return readAuthenticatedEncryptedWalletBackupHead({
+    keyHandle: input.keyHandle,
+    enrollmentEpoch: input.enrollmentEpoch,
+    requestProof,
+    remote: input.remote,
+  })
+}
+
+async function readRecoveryManifestPage(
+  input: Parameters<typeof recoverCompleteEncryptedWalletBackupJournal>[0],
+  signal: AbortSignal,
+  headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence,
+  pageIndex: number,
+): Promise<DecryptedEncryptedWalletBackupManifestPage> {
+  if (headEvidence.head === null) throw new Error('backup recovery head is absent')
+  const reference = readAuthenticatedEncryptedWalletBackupManifestPageReference({
+    headEvidence,
+    pageIndex,
+  })
+  const issuedAtUnixSeconds = requireInteger(
+    input.clock.nowUnixSeconds(),
+    0,
+    Number.MAX_SAFE_INTEGER,
+    'request issue time',
+  )
+  const requestProof = await prepareEncryptedWalletBackupRequestProof({
+    keyHandle: input.keyHandle,
+    enrollmentEpoch: requireInteger(
+      input.enrollmentEpoch,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      'enrollment epoch',
+    ),
+    method: 'GET',
+    url: input.manifestObjectUrl(reference.objectId),
+    issuedAtUnixSeconds,
+    expiresAtUnixSeconds: issuedAtUnixSeconds + 60,
+    payload: new Uint8Array(),
+    signal,
+    runtime: input.runtime,
+  })
+  const result = await awaitEncryptedWalletBackupCycle(
+    input.remote.getObject({
+      requestProof,
+      expectedKindCode: ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
+      expectedObjectDigest: reference.objectDigest,
+      currentHeadGeneration: reference.generation,
+      signal,
+    }),
+    signal,
+  )
+  const object = mapRecoveryManifestObject(result)
+  return decryptEncryptedWalletBackupManifestPage({
+    keyHandle: input.keyHandle,
+    seed: input.seed,
+    object,
+    headEvidence,
+  })
+}
+
+function mapRecoveryManifestObject(result: EncryptedWalletBackupObjectGetResult) {
+  switch (result.status) {
+    case 'found':
+      return {
+        formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
+        kindCode: result.kindCode,
+        realm: result.realm,
+        vaultId: result.vaultId,
+        objectId: result.objectId,
+        generation: result.generation,
+        paddedLength: result.paddedLength,
+        digest: result.objectDigest,
+        aad: result.aad.slice(),
+        body: result.encryptedBody.slice(),
+      }
+    case 'not-found':
+      throw new Error('authenticated backup manifest page is missing')
+    case 'unauthorized':
+      throw new Error('encrypted backup object read failed: unauthorized')
+    case 'rate-limited':
+    case 'overloaded':
+    case 'unavailable':
+      throw new EncryptedWalletBackupRemoteBackoffError(result.status, result.retryAfterSeconds)
+    default:
+      return assertNeverObjectGetStatus(result)
+  }
+}
+
+function assertNeverObjectGetStatus(value: never): never {
+  throw new Error(`encrypted backup object read status is invalid: ${String(value)}`)
+}
+
+async function readRecoverySnapshotPage(
+  store: EncryptedWalletBackupRecoverySnapshotStore,
+  snapshot: EncryptedWalletBackupRecoverySnapshot,
+  pageIndex: number,
+): Promise<EncryptedWalletBackupRecoverySnapshotPage> {
+  if (typeof store.readSealedRecoverySnapshotPage !== 'function')
+    throw new Error('backup recovery snapshot store is invalid')
+  let calls = 0
+  let issued: EncryptedWalletBackupRecoverySnapshotPage | undefined
+  const returned = await store.readSealedRecoverySnapshotPage(snapshot, pageIndex, (page) => {
+    if (calls++ !== 0) throw new Error('backup recovery snapshot page callback is invalid')
+    if (
+      page.snapshotId !== snapshot.snapshotId ||
+      page.snapshotRevision !== snapshot.snapshotRevision ||
+      page.pageIndex !== pageIndex ||
+      !Number.isSafeInteger(pageIndex) ||
+      pageIndex < 0 ||
+      pageIndex >= recoverySnapshotPageCount(snapshot) ||
+      page.entries.length !==
+        Math.min(
+          ENCRYPTED_WALLET_BACKUP_RECOVERY_SNAPSHOT_PAGE_ENTRY_COUNT,
+          snapshot.proofCount -
+            pageIndex * ENCRYPTED_WALLET_BACKUP_RECOVERY_SNAPSHOT_PAGE_ENTRY_COUNT,
+        ) ||
+      page.entries.some(
+        (entry, index) =>
+          !/^[0-9a-f]{64}$/.test(entry.proofId) ||
+          !/^[0-9a-f]{64}$/.test(entry.proofCommitment) ||
+          (index > 0 && page.entries[index - 1]!.proofId >= entry.proofId),
+      )
+    ) {
+      throw new Error('backup recovery snapshot page is invalid')
+    }
+    issued = page
+    return issued
+  })
+  if (calls !== 1 || issued === undefined || returned !== issued)
+    throw new Error('backup recovery snapshot page read must be synchronous and exact')
+  return issued
+}
+
+async function readRecoveryCursor(
+  store: EncryptedWalletBackupRecoveryProjectionStore,
+  headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence,
+  snapshot: EncryptedWalletBackupRecoverySnapshot,
+  remotePageCount: number,
+): Promise<
+  Readonly<{
+    persisted: EncryptedWalletBackupRecoveryProjectionCursor | null
+    effective: EncryptedWalletBackupRecoveryProjectionCursor
+  }>
+> {
+  const head = headEvidence.head!
+  const initial = Object.freeze({
+    generation: head.generation,
+    manifestDigest: head.manifestDigest,
+    snapshotId: snapshot.snapshotId,
+    snapshotRevision: snapshot.snapshotRevision,
+    nextRemotePageIndex: 0,
+    restoredEntryCount: 0,
+    lastRemoteProofId: null,
+    complete: false,
+  })
+  if (
+    typeof store !== 'object' ||
+    store === null ||
+    typeof store.readRecoveryProjectionCursor !== 'function'
+  )
+    throw new Error('backup recovery projection store is invalid')
+  const marker = Object.freeze({})
+  let calls = 0
+  let persisted: EncryptedWalletBackupRecoveryProjectionCursor | null = null
+  const returned = await store.readRecoveryProjectionCursor((value) => {
+    if (calls++ !== 0) throw new Error('backup recovery cursor callback is invalid')
+    persisted = value
+    return marker
+  })
+  if (calls !== 1 || returned !== marker)
+    throw new Error('backup recovery cursor read must be synchronous and exact')
+  const effective =
+    persisted !== null &&
+    validRecoveryCursor(persisted, initial, remotePageCount, snapshot.proofCount)
+      ? persisted
+      : initial
+  return Object.freeze({ persisted, effective })
+}
+
+async function recoveryPageMatches(
+  store: EncryptedWalletBackupRecoverySnapshotStore,
+  snapshot: EncryptedWalletBackupRecoverySnapshot,
+  cursor: EncryptedWalletBackupRecoveryProjectionCursor,
+  page: DecryptedEncryptedWalletBackupManifestPage,
+): Promise<boolean> {
+  if (page.pageIndex !== cursor.nextRemotePageIndex || page.entries.length === 0) return false
+  const position = recoveryLocalPosition(snapshot.proofCount, cursor.restoredEntryCount)
+  let localPageIndex = position.pageIndex
+  let localEntryIndex = position.entryIndex
+  let local = await readRecoverySnapshotPage(store, snapshot, localPageIndex)
+  for (const entry of page.entries) {
+    while (localEntryIndex === local.entries.length) {
+      localPageIndex += 1
+      if (localPageIndex >= recoverySnapshotPageCount(snapshot)) return false
+      local = await readRecoverySnapshotPage(store, snapshot, localPageIndex)
+      localEntryIndex = 0
+    }
+    const current = local.entries[localEntryIndex++]!
+    if (
+      current.proofId !== entry.proofId ||
+      current.proofCommitment !== entry.commitment ||
+      (cursor.lastRemoteProofId !== null && cursor.lastRemoteProofId >= entry.proofId)
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+function nextRecoveryCursor(
+  cursor: EncryptedWalletBackupRecoveryProjectionCursor,
+  page: DecryptedEncryptedWalletBackupManifestPage,
+  snapshotProofCount: number,
+): EncryptedWalletBackupRecoveryProjectionCursor {
+  const restoredEntryCount = cursor.restoredEntryCount + page.entries.length
+  const complete = page.pageIndex + 1 === page.pageCount
+  if (
+    restoredEntryCount > snapshotProofCount ||
+    (complete && restoredEntryCount !== snapshotProofCount) ||
+    (!complete && restoredEntryCount >= snapshotProofCount)
+  ) {
+    throw new Error('backup recovery cursor is invalid')
+  }
+  return Object.freeze({
+    ...cursor,
+    nextRemotePageIndex: page.pageIndex + 1,
+    restoredEntryCount,
+    lastRemoteProofId: page.entries.at(-1)!.proofId,
+    complete,
+  })
+}
+
+async function commitRecoveryCheckpoint(
+  store: EncryptedWalletBackupRecoveryProjectionStore,
+  expectedCursor: EncryptedWalletBackupRecoveryProjectionCursor | null,
+  nextCursor: EncryptedWalletBackupRecoveryProjectionCursor,
+  headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence,
+  receipts: readonly ReturnType<typeof deriveDurableWalletEncryptedBackupReceipt>[],
+  signal: AbortSignal,
+): Promise<void> {
+  if (typeof store.commitRecoveryProjectionCheckpoint !== 'function')
+    throw new Error('backup recovery projection store is invalid')
+  throwIfEncryptedWalletBackupCycleAborted(signal)
+  const marker = Object.freeze({})
+  let calls = 0
+  let open = true
+  let returned: unknown
+  try {
+    returned = await awaitEncryptedWalletBackupCycle(
+      store.commitRecoveryProjectionCheckpoint(
+        Object.freeze({
+          expectedCursor,
+          nextCursor,
+          snapshot: acknowledgeDurableWalletBackupSnapshot({ headEvidence }),
+          receipts: Object.freeze([...receipts]),
+        }),
+        () => {
+          if (!open || calls++ !== 0)
+            throw new Error('backup recovery checkpoint callback is invalid')
+          return marker
+        },
+      ),
+      signal,
+    )
+  } finally {
+    open = false
+  }
+  if (calls !== 1 || returned !== marker)
+    throw new Error('backup recovery checkpoint must be synchronous and exact')
+}
+
+function sameRecoveryCursorScope(
+  left: EncryptedWalletBackupRecoveryProjectionCursor,
+  right: EncryptedWalletBackupRecoveryProjectionCursor,
+): boolean {
+  return (
+    left.generation === right.generation &&
+    left.manifestDigest === right.manifestDigest &&
+    left.snapshotId === right.snapshotId &&
+    left.snapshotRevision === right.snapshotRevision
+  )
+}
+
+function validRecoveryCursor(
+  cursor: EncryptedWalletBackupRecoveryProjectionCursor,
+  initial: EncryptedWalletBackupRecoveryProjectionCursor,
+  remotePageCount: number,
+  snapshotProofCount: number,
+): boolean {
+  if (
+    !sameRecoveryCursorScope(cursor, initial) ||
+    !Number.isSafeInteger(cursor.nextRemotePageIndex) ||
+    cursor.nextRemotePageIndex < 0 ||
+    cursor.nextRemotePageIndex > remotePageCount ||
+    !Number.isSafeInteger(cursor.restoredEntryCount) ||
+    cursor.restoredEntryCount < 0 ||
+    cursor.restoredEntryCount > snapshotProofCount ||
+    typeof cursor.complete !== 'boolean' ||
+    (cursor.lastRemoteProofId !== null && !/^[0-9a-f]{64}$/.test(cursor.lastRemoteProofId))
+  ) {
+    return false
+  }
+  return (
+    (cursor.restoredEntryCount === 0) === (cursor.lastRemoteProofId === null) &&
+    cursor.complete ===
+      (cursor.nextRemotePageIndex === remotePageCount &&
+        cursor.restoredEntryCount === snapshotProofCount)
+  )
+}
+
+function recoverySnapshotPageCount(snapshot: EncryptedWalletBackupRecoverySnapshot): number {
+  return Math.ceil(snapshot.proofCount / ENCRYPTED_WALLET_BACKUP_RECOVERY_SNAPSHOT_PAGE_ENTRY_COUNT)
+}
+
+function recoveryLocalPosition(
+  snapshotProofCount: number,
+  restoredEntryCount: number,
+): Readonly<{ pageIndex: number; entryIndex: number }> {
+  if (snapshotProofCount === 0) return Object.freeze({ pageIndex: 0, entryIndex: 0 })
+  if (
+    restoredEntryCount === snapshotProofCount &&
+    restoredEntryCount % ENCRYPTED_WALLET_BACKUP_RECOVERY_SNAPSHOT_PAGE_ENTRY_COUNT === 0
+  ) {
+    return Object.freeze({
+      pageIndex:
+        restoredEntryCount / ENCRYPTED_WALLET_BACKUP_RECOVERY_SNAPSHOT_PAGE_ENTRY_COUNT - 1,
+      entryIndex: ENCRYPTED_WALLET_BACKUP_RECOVERY_SNAPSHOT_PAGE_ENTRY_COUNT,
+    })
+  }
+  return Object.freeze({
+    pageIndex: Math.floor(
+      restoredEntryCount / ENCRYPTED_WALLET_BACKUP_RECOVERY_SNAPSHOT_PAGE_ENTRY_COUNT,
+    ),
+    entryIndex: restoredEntryCount % ENCRYPTED_WALLET_BACKUP_RECOVERY_SNAPSHOT_PAGE_ENTRY_COUNT,
+  })
+}
+
+function rebuildRequired(
+  parent: 'absent' | 'authenticated',
+  headEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence,
+  snapshot: EncryptedWalletBackupRecoverySnapshot,
+  signal: AbortSignal,
+): EncryptedWalletBackupJournalRecoveryResult {
+  throwIfEncryptedWalletBackupCycleAborted(signal)
+  return Object.freeze({ state: 'rebuild-required' as const, parent, headEvidence, snapshot })
 }
 
 export interface EncryptedWalletBackupUploadAbortRemotePort {

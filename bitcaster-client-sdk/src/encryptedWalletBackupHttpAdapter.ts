@@ -22,7 +22,10 @@ import {
   type EncryptedWalletBackupHttpResponseContext,
 } from './encryptedWalletBackupHttpCodec.ts'
 import type {
+  EncryptedWalletBackupObjectGetInput,
+  EncryptedWalletBackupObjectGetResult,
   EncryptedWalletBackupObjectRemotePort,
+  EncryptedWalletBackupRecoveryObjectRemotePort,
   EncryptedWalletBackupUploadAbortRemotePort,
 } from './encryptedWalletBackupSync.ts'
 import {
@@ -75,35 +78,13 @@ export interface EncryptedWalletBackupHttpCallOptions {
   readonly signal?: AbortSignal
 }
 
-export interface EncryptedWalletBackupHttpObjectGetInput extends EncryptedWalletBackupHttpCallOptions {
-  readonly requestProof: EncryptedWalletBackupRequestProof
-  readonly expectedKindCode: 1 | 2
-  readonly expectedObjectDigest: string
-  readonly currentHeadGeneration: number
-}
+export type EncryptedWalletBackupHttpObjectGetInput = EncryptedWalletBackupObjectGetInput
 
 export interface EncryptedWalletBackupHttpObjectDeleteInput extends EncryptedWalletBackupHttpCallOptions {
   readonly requestProof: EncryptedWalletBackupRequestProof
 }
 
-export type EncryptedWalletBackupHttpObjectGetResult =
-  | Readonly<{
-      status: 'found'
-      kindCode: 1 | 2
-      realm: string
-      vaultId: string
-      objectId: string
-      generation: number
-      paddedLength: 65_536 | 262_144
-      objectDigest: string
-      aad: Uint8Array
-      encryptedBody: Uint8Array
-    }>
-  | Readonly<{ status: 'not-found' }>
-  | Readonly<{
-      status: 'unauthorized' | 'rate-limited' | 'overloaded' | 'unavailable'
-      retryAfterSeconds?: number | null
-    }>
+export type EncryptedWalletBackupHttpObjectGetResult = EncryptedWalletBackupObjectGetResult
 
 export type EncryptedWalletBackupHttpObjectDeleteResult =
   | Readonly<{ status: 'deleted' | 'already-deleted' }>
@@ -119,6 +100,7 @@ export class EncryptedWalletBackupHttpAdapter
     EncryptedWalletBackupHeadRemotePort,
     EncryptedWalletBackupCasRemotePort,
     EncryptedWalletBackupObjectRemotePort,
+    EncryptedWalletBackupRecoveryObjectRemotePort,
     EncryptedWalletBackupUploadAbortRemotePort
 {
   readonly #origin: string
