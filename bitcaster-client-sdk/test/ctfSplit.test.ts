@@ -23,11 +23,13 @@ import {
   type CtfProofOperationCompletion,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
+  type CtfSplitMakeOutputsInput,
   type CtfSplitOutputData,
   type CtfSplitTransport,
 } from '../src/ctfSplit.ts'
 import type {
   MintKeys,
+  CounterSource,
   Proof,
   SerializedBlindedMessage,
   SerializedBlindedSignature,
@@ -194,6 +196,27 @@ test('CTF split enforces input, group, and blinded-output bounds before effects'
   )
   assert.deepEqual(groupTransport.keyLookups, [])
   assert.equal(groupStore.prepareCalls, 0)
+
+  const deterministicGroupStore = new MemoryProofOperationStore()
+  const deterministicCounter = new CountingCounterSource()
+  const deterministicGroupTransport = new DeterministicSplitTransport(deterministicCounter)
+  await assert.rejects(
+    splitCompleteSetWithOperation({
+      ...deterministicSplitRequest(
+        'deterministic-group-bound',
+        deterministicGroupStore,
+        deterministicGroupTransport,
+        deterministicCounter,
+      ),
+      outcomeCollectionKeysets: Object.fromEntries(
+        Array.from({ length: 17 }, (_, index) => [`group-${index}`, DETERMINISTIC_KEYSET_A]),
+      ),
+    }),
+    /group limit/,
+  )
+  assert.deepEqual(deterministicGroupTransport.keyLookups, [])
+  assert.deepEqual(deterministicCounter.calls, [])
+  assert.equal(deterministicGroupStore.prepareCalls, 0)
 
   const outputStore = new MemoryProofOperationStore()
   const outputTransport = new FakeSplitTransport()
@@ -528,6 +551,465 @@ test('splitCompleteSetWithOperation prepares outputs before posting and complete
   })
 })
 
+test('seed-derived CTF split reserves stable collection plans before mint I/O and reuses them', async () => {
+  const counter = new CountingCounterSource()
+  const store = new MemoryProofOperationStore()
+  const transport = new DeterministicSplitTransport(counter)
+  const request = deterministicSplitRequest('seed-split', store, transport, counter)
+
+  await assert.rejects(() => splitCompleteSetWithOperation(request), /stop after prepared split/)
+  assert.deepEqual(counter.calls, [
+    { keysetId: DETERMINISTIC_KEYSET_A, count: 3 },
+    { keysetId: DETERMINISTIC_KEYSET_B, count: 3 },
+  ])
+  assert.equal(transport.posted.length, 1)
+  const prepared = store.records.get('seed-split')
+  assert.equal(prepared?.metadata.outputMode, 'seed-derived')
+  assert.deepEqual(Object.keys(prepared?.metadata.outputDescriptors as object).sort(), [
+    'Alpha',
+    'Beta',
+  ])
+  assert.equal('outputPlans' in (prepared?.metadata ?? {}), false)
+  const preparedReplayKeyLookups = transport.keyLookups.length
+
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        ...request,
+        proofStateChecker: { checkProofsStates: async () => pendingInputState() },
+      }),
+    ProofOperationPendingError,
+  )
+  assert.equal(counter.calls.length, 2)
+  assert.equal(transport.posted.length, 1)
+  assert.equal(transport.keyLookups.length - preparedReplayKeyLookups, 2)
+})
+
+test('seed-derived CTF split rejects a substituted persisted descriptor before proof-state or mint I/O', async () => {
+  const counter = new CountingCounterSource()
+  const store = new MemoryProofOperationStore()
+  const transport = new DeterministicSplitTransport(counter)
+  const request = deterministicSplitRequest('seed-split-substituted', store, transport, counter)
+  await assert.rejects(() => splitCompleteSetWithOperation(request), /stop after prepared split/)
+  const record = store.records.get('seed-split-substituted')!
+  const descriptors = record.metadata.outputDescriptors as Record<string, { counterStart: number }>
+  descriptors.Alpha!.counterStart += 1
+  let proofStateCalls = 0
+
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        ...request,
+        proofStateChecker: {
+          checkProofsStates: async () => {
+            proofStateCalls += 1
+            return pendingInputState()
+          },
+        },
+      }),
+    /does not match/,
+  )
+  assert.equal(proofStateCalls, 0)
+  assert.equal(transport.posted.length, 1)
+  assert.equal(counter.calls.length, 2)
+})
+
+test('seed-derived CTF split rejects a wrong seed before returning completed outputs', async () => {
+  const counter = new CountingCounterSource()
+  const store = new MemoryProofOperationStore()
+  const transport = new DeterministicSplitTransport(counter)
+  const request = deterministicSplitRequest('seed-split-wrong-seed', store, transport, counter)
+  await assert.rejects(() => splitCompleteSetWithOperation(request), /stop after prepared split/)
+  const record = store.records.get('seed-split-wrong-seed')!
+  record.state = 'completed'
+  record.resultProofs = Object.fromEntries(
+    Object.entries(record.outputs).map(([group, outputs]) => [
+      group,
+      outputs.map((output) =>
+        completedProof(
+          output.blindedMessage.id,
+          output.blindedMessage.amount,
+          Buffer.from(output.secret, 'hex').toString('utf8'),
+        ),
+      ),
+    ]),
+  )
+  record.resultProofsDigest = completedProofAuthorityDigest(record.resultProofs)
+
+  const terminalReplayKeyLookups = transport.keyLookups.length
+
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        ...request,
+        outputMode: {
+          kind: 'seed-derived',
+          seed: Uint8Array.from(DETERMINISTIC_SEED, (value) => value ^ 0xff),
+          counterSource: counter,
+        },
+      }),
+    /does not match/,
+  )
+  assert.equal(transport.posted.length, 1)
+  assert.equal(counter.calls.length, 2)
+  assert.equal(transport.keyLookups.length, terminalReplayKeyLookups)
+})
+
+test('legacy and custom split output authority reject a seed-derived replay request', async () => {
+  for (const outputMode of [undefined, 'custom'] as const) {
+    const operationId = `split-output-authority-${outputMode ?? 'legacy'}`
+    const store = new MemoryProofOperationStore()
+    const record = completedSplitRecord(operationId)
+    if (outputMode !== undefined) record.metadata.outputMode = outputMode
+    store.records.set(operationId, record)
+    const transport = new FakeSplitTransport()
+
+    await assert.rejects(
+      () =>
+        splitCompleteSetWithOperation({
+          ...splitReplayRequest(operationId, store, transport),
+          outputMode: {
+            kind: 'seed-derived',
+            seed: DETERMINISTIC_SEED,
+            counterSource: new CountingCounterSource(),
+          },
+        }),
+      /output authority differs/,
+    )
+    assert.equal(transport.posted.length, 0)
+    assert.equal(transport.keyLookups.length, 0)
+  }
+})
+
+test('split output mode rejects malformed discriminants before fresh or replay effects', async () => {
+  const malformedOutputMode = { kind: 'malformed' } as never
+  const freshStore = new MemoryProofOperationStore()
+  const freshTransport = new FakeSplitTransport()
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        ...splitReplayRequest('split-malformed-fresh', freshStore, freshTransport),
+        outputMode: malformedOutputMode,
+      }),
+    /output mode is invalid/,
+  )
+  assert.equal(freshStore.prepareCalls, 0)
+  assert.equal(freshTransport.posted.length, 0)
+
+  const replayStore = new MemoryProofOperationStore()
+  replayStore.records.set('split-malformed-replay', completedSplitRecord('split-malformed-replay'))
+  const replayTransport = new FakeSplitTransport()
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        ...splitReplayRequest('split-malformed-replay', replayStore, replayTransport),
+        outputMode: malformedOutputMode,
+      }),
+    /output mode is invalid/,
+  )
+  assert.equal(replayStore.completedCalls, 0)
+  assert.equal(replayTransport.keyLookups.length, 0)
+  assert.equal(replayTransport.posted.length, 0)
+})
+
+test('legacy split output descriptors reject replay before mint effects', async () => {
+  const operationId = 'split-legacy-descriptors'
+  const store = new MemoryProofOperationStore()
+  const record = completedSplitRecord(operationId)
+  record.metadata.outputDescriptors = {}
+  store.records.set(operationId, record)
+  const transport = new FakeSplitTransport()
+
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        ...splitReplayRequest(operationId, store, transport),
+        makeOutputs: ({ collection, amountSubunits, keyset }) => [
+          output(collection, amountSubunits, keyset.id),
+        ],
+      }),
+    /output authority differs/,
+  )
+  assert.equal(transport.posted.length, 0)
+  assert.equal(transport.keyLookups.length, 0)
+})
+
+test('16 deterministic groups with 80 outputs fit the durable operation authority bound', async () => {
+  const counter = new CountingCounterSource()
+  const store = new MemoryProofOperationStore()
+  const keysets = Object.fromEntries(
+    Array.from({ length: 16 }, (_, index) => [
+      `group-${index.toString().padStart(2, '0')}`,
+      `01${index.toString(16).padStart(2, '0')}${'e'.repeat(62)}`,
+    ]),
+  )
+  const firstKeyset = Object.values(keysets)[0]!
+  const transport: CtfSplitTransport = {
+    getKeys: async (id) =>
+      ({
+        id,
+        unit: 'msat',
+        keys: { 1: '02', 2: '02', 4: '02', 8: '02', 16: '02' },
+        input_fee_ppk: 0,
+      }) as MintKeys,
+    getRootPartitionKeysets: async () => keysets,
+    postSplit: async () => {
+      throw new Error('stop after prepared split')
+    },
+  }
+
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
+        operationId: 'seed-split-16-groups',
+        transport,
+        conditionId: CONDITION_ID,
+        collateralProofs: [proof(firstKeyset, 31, 'input-secret')],
+        outcomeCollectionKeysets: keysets,
+        amountSubunits: 31,
+        proofOperationStore: store,
+        outputMode: { kind: 'seed-derived', seed: DETERMINISTIC_SEED, counterSource: counter },
+      }),
+    /stop after prepared split/,
+  )
+  const prepared = store.records.get('seed-split-16-groups')!
+  assert.equal(Object.values(prepared.outputs).flat().length, 80)
+  assert.equal('outputPlans' in prepared.metadata, false)
+  assert.ok(new TextEncoder().encode(JSON.stringify(prepared)).byteLength <= 64 * 1024)
+})
+
+test('cumulative record limit rejects 16 deterministic groups with 256 outputs before reservation', async () => {
+  const counter = new CountingCounterSource()
+  let posts = 0
+  const groups = Object.fromEntries(
+    Array.from({ length: 16 }, (_, index) => {
+      const suffix = index.toString(16).padStart(2, '0')
+      return [`${suffix}${'a'.repeat(62)}`, `01${suffix}${'e'.repeat(62)}`]
+    }),
+  )
+  const firstKeyset = Object.values(groups)[0]!
+  const transport: CtfSplitTransport = {
+    getKeys: async (id) =>
+      ({
+        id,
+        unit: 'msat',
+        keys: Object.fromEntries(
+          Array.from({ length: 16 }, (_, index) => [String(2 ** index), '02']),
+        ),
+        input_fee_ppk: 0,
+      }) as MintKeys,
+    getRootPartitionKeysets: async () => groups,
+    postSplit: async () => {
+      posts += 1
+      throw new Error('must not post an oversized deterministic split')
+    },
+  }
+  const store = new MemoryProofOperationStore()
+
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
+        operationId: 'seed-split-256-outputs',
+        transport,
+        conditionId: CONDITION_ID,
+        collateralProofs: [proof(firstKeyset, 65_535, 'input-secret')],
+        outcomeCollectionKeysets: groups,
+        amountSubunits: 65_535,
+        proofOperationStore: store,
+        outputMode: { kind: 'seed-derived', seed: DETERMINISTIC_SEED, counterSource: counter },
+      }),
+    /byte limit/,
+  )
+  assert.deepEqual(counter.calls, [])
+  assert.equal(posts, 0)
+  assert.equal(store.prepareCalls, 0)
+})
+
+test('conservative 16-by-9 deterministic split record rejects before reservation', async () => {
+  const counter = new CountingCounterSource()
+  const store = new MemoryProofOperationStore()
+  let posts = 0
+  const keysets = Object.fromEntries(
+    Array.from({ length: 16 }, (_, index) => [
+      `group-${index.toString().padStart(2, '0')}`,
+      `01${index.toString(16).padStart(2, '0')}${'e'.repeat(62)}`,
+    ]),
+  )
+  const firstKeyset = Object.values(keysets)[0]!
+  const transport: CtfSplitTransport = {
+    getKeys: async (id) =>
+      ({
+        id,
+        unit: 'msat',
+        keys: Object.fromEntries(
+          Array.from({ length: 9 }, (_, index) => [String(2 ** index), '02']),
+        ),
+        input_fee_ppk: 0,
+      }) as MintKeys,
+    getRootPartitionKeysets: async () => keysets,
+    postSplit: async () => {
+      posts += 1
+      throw new Error('must not post an oversized deterministic split')
+    },
+  }
+
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
+        operationId: 'seed-split-16-by-9',
+        transport,
+        conditionId: CONDITION_ID,
+        collateralProofs: [proof(firstKeyset, 511, 'input-secret')],
+        outcomeCollectionKeysets: keysets,
+        amountSubunits: 511,
+        proofOperationStore: store,
+        outputMode: { kind: 'seed-derived', seed: DETERMINISTIC_SEED, counterSource: counter },
+      }),
+    /byte limit/,
+  )
+  assert.deepEqual(counter.calls, [])
+  assert.equal(store.prepareCalls, 0)
+  assert.equal(posts, 0)
+})
+
+test('seed-derived split rejects a non-msat output keyset before reservation', async () => {
+  const counter = new CountingCounterSource()
+  const store = new MemoryProofOperationStore()
+  let posts = 0
+  const transport: CtfSplitTransport = {
+    getKeys: async (id) => ({ id, unit: 'sat', keys: { 1: '02' } }) as MintKeys,
+    getRootPartitionKeysets: async () => ({}),
+    postSplit: async () => {
+      posts += 1
+      throw new Error('must not post')
+    },
+  }
+
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
+        operationId: 'seed-split-wrong-unit',
+        transport,
+        conditionId: CONDITION_ID,
+        collateralProofs: [proof(DETERMINISTIC_KEYSET_A, 1, 'input-secret')],
+        outcomeCollectionKeysets: { Alpha: DETERMINISTIC_KEYSET_A, Beta: DETERMINISTIC_KEYSET_B },
+        amountSubunits: 1,
+        proofOperationStore: store,
+        outputMode: { kind: 'seed-derived', seed: DETERMINISTIC_SEED, counterSource: counter },
+      }),
+    /unit must be exactly msat/,
+  )
+  assert.deepEqual(counter.calls, [])
+  assert.equal(store.prepareCalls, 0)
+  assert.equal(posts, 0)
+})
+
+test('fresh seed-derived split rejects an input-only substituted keyset before reservation', async () => {
+  const counter = new CountingCounterSource()
+  const store = new MemoryProofOperationStore()
+  const transport = new FakeSplitTransport({}, { 'input-keyset': 'foreign-keyset' })
+
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
+        operationId: 'seed-split-substituted-input-keyset',
+        transport,
+        conditionId: CONDITION_ID,
+        collateralProofs: [proof('input-keyset', 1, 'input-secret')],
+        outcomeCollectionKeysets: { Alpha: DETERMINISTIC_KEYSET_A, Beta: DETERMINISTIC_KEYSET_B },
+        amountSubunits: 1,
+        proofOperationStore: store,
+        outputMode: { kind: 'seed-derived', seed: DETERMINISTIC_SEED, counterSource: counter },
+      }),
+    /keyset input-keyset was not returned exactly/,
+  )
+  assert.deepEqual(counter.calls, [])
+  assert.equal(store.prepareCalls, 0)
+  assert.equal(transport.posted.length, 0)
+})
+
+test('near-bound deterministic merge record rejects before counter reservation', async () => {
+  const counter = new CountingCounterSource()
+  const store = new MemoryProofOperationStore()
+  const transport = new DeterministicSplitTransport(counter)
+  const conditionalProofsByCollection = Object.fromEntries(
+    Array.from({ length: 16 }, (_, index) => [
+      `group-${index.toString().padStart(2, '0')}`,
+      [proof(DETERMINISTIC_KEYSET_A, 1, 's'.repeat(1_100))],
+    ]),
+  )
+
+  await assert.rejects(
+    () =>
+      mergeCompleteSetToRegularWithOperation({
+        mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
+        operationId: 'seed-merge-oversized-record',
+        transport,
+        conditionId: CONDITION_ID,
+        conditionalProofsByCollection,
+        outputAmountSubunits: 1,
+        regularKeyset: {
+          id: DETERMINISTIC_KEYSET_C,
+          unit: 'msat',
+          keys: { 1: '02' },
+          input_fee_ppk: 0,
+        } as MintKeys,
+        proofOperationStore: store,
+        outputMode: { kind: 'seed-derived', seed: DETERMINISTIC_SEED, counterSource: counter },
+      }),
+    /byte limit/,
+  )
+  assert.deepEqual(counter.calls, [])
+  assert.equal(transport.converted.length, 0)
+  assert.equal(store.prepareCalls, 0)
+})
+
+test('split dispatch guard runs after preparation on fresh execution and exact UNSPENT replay', async () => {
+  const store = new MemoryProofOperationStore()
+  const transport = new FakeSplitTransport()
+  const request = {
+    ...splitReplayRequest('split-dispatch-guard', store, transport),
+    makeOutputs: ({ collection, amountSubunits, keyset }: CtfSplitMakeOutputsInput) => [
+      canonicalOutput(collection, amountSubunits, keyset.id),
+    ],
+  }
+  const guardStates: Array<string | undefined> = []
+  const rejectDispatch = async () => {
+    guardStates.push(store.records.get('split-dispatch-guard')?.state)
+    throw new Error('dispatch blocked')
+  }
+
+  await assert.rejects(
+    () => splitCompleteSetWithOperation({ ...request, beforeMintMutation: rejectDispatch }),
+    /dispatch blocked/,
+  )
+  await assert.rejects(
+    () =>
+      resumeExactPersistedCtfSplit({
+        ...request,
+        proofStateChecker: {
+          checkProofsStates: async () => [{ Y: 'Y-input', state: CheckStateEnum.UNSPENT }],
+        },
+        beforeMintMutation: rejectDispatch,
+      }),
+    /dispatch blocked/,
+  )
+  assert.deepEqual(guardStates, ['prepared', 'prepared'])
+  assert.equal(transport.posted.length, 0)
+  assert.equal(store.records.get('split-dispatch-guard')?.state, 'prepared')
+})
+
 test('splitCompleteSetWithOperation rejects malformed root parents before store or mint effects', async () => {
   const invalidParents = [null, '', '0'.repeat(63), '1'.repeat(64), '0'.repeat(64) + ' ']
   for (const [index, parentCollectionId] of invalidParents.entries()) {
@@ -777,6 +1259,37 @@ test('exact prepared split resume uses persisted keysets without root rediscover
   assert.equal(transport.posted.length, 0)
 })
 
+test('prepared split replay fetches each keyset once through UNSPENT execution', async () => {
+  const store = new MemoryProofOperationStore()
+  const prepared = structuredClone(completedSplitRecord('op-exact-unspent'))
+  prepared.state = 'prepared'
+  delete prepared.resultProofs
+  delete prepared.resultProofsDigest
+  store.records.set('op-exact-unspent', prepared)
+  const transport = new FakeSplitTransport()
+
+  await assert.rejects(
+    () =>
+      resumeExactPersistedCtfSplit({
+        mintUrl: 'https://mint.example',
+        operationId: 'op-exact-unspent',
+        conditionId: CONDITION_ID,
+        collateralProofs: [proof('input-keyset', 100, 'input-secret')],
+        amountSubunits: 100,
+        baseAsset: 'sat',
+        transport,
+        proofOperationStore: store,
+        proofStateChecker: {
+          checkProofsStates: async () => [{ Y: 'Y-input', state: CheckStateEnum.UNSPENT }],
+        },
+      }),
+    /invalid signature/,
+  )
+
+  assert.deepEqual(transport.keyLookups.sort(), ['input-keyset', 'keyset-no', 'keyset-yes'])
+  assert.equal(transport.posted.length, 1)
+})
+
 test('splitCompleteSetWithOperation fails closed for failed existing operations', async () => {
   const failed = new MemoryProofOperationStore()
   failed.records.set('op-failed', {
@@ -844,6 +1357,118 @@ test('mergeCompleteSetToRegularWithOperation prepares conditional inputs and reg
   assert.equal(store.records.get('merge-op-1')?.metadata.baseAsset, 'sat')
 })
 
+test('new CTF merge operations require explicit output authority', async () => {
+  const transport = new FakeSplitTransport()
+  const store = new MemoryProofOperationStore()
+
+  await assert.rejects(
+    () =>
+      mergeCompleteSetToRegularWithOperation(
+        mergeReplayRequest('merge-no-output-mode', store, transport),
+      ),
+    /requires an explicit output mode/,
+  )
+  assert.equal(transport.converted.length, 0)
+  assert.equal(store.prepareCalls, 0)
+})
+
+test('seed-derived CTF merge reserves one persisted plan before mint I/O and reuses it', async () => {
+  const counter = new CountingCounterSource()
+  const store = new MemoryProofOperationStore()
+  const transport = new DeterministicSplitTransport(counter)
+  const request = deterministicMergeRequest('seed-merge', store, transport, counter)
+
+  await assert.rejects(
+    () => mergeCompleteSetToRegularWithOperation(request),
+    /stop after prepared merge/,
+  )
+  assert.deepEqual(counter.calls, [{ keysetId: DETERMINISTIC_KEYSET_C, count: 3 }])
+  assert.equal(transport.converted.length, 1)
+  assert.equal(store.records.get('seed-merge')?.metadata.outputMode, 'seed-derived')
+  store.records.get('seed-merge')!.state = 'Failed'
+  store.records.get('seed-merge')!.lastError = 'mint transport stopped after preparation'
+
+  await assert.rejects(
+    () => mergeCompleteSetToRegularWithOperation(request),
+    /previously failed: mint transport stopped after preparation/,
+  )
+  assert.equal(counter.calls.length, 1)
+  assert.equal(transport.converted.length, 1)
+})
+
+test('seed-derived CTF merge rejects a substituted output before recovery exposure', async () => {
+  const counter = new CountingCounterSource()
+  const store = new MemoryProofOperationStore()
+  const transport = new DeterministicSplitTransport(counter)
+  const request = deterministicMergeRequest('seed-merge-substituted', store, transport, counter)
+  await assert.rejects(
+    () => mergeCompleteSetToRegularWithOperation(request),
+    /stop after prepared merge/,
+  )
+  store.records.get('seed-merge-substituted')!.outputs['*']![0]!.secret = '00'
+
+  await assert.rejects(() => mergeCompleteSetToRegularWithOperation(request), /does not match/)
+  assert.equal(counter.calls.length, 1)
+  assert.equal(transport.converted.length, 1)
+})
+
+test('legacy and custom merge output authority reject a seed-derived replay request', async () => {
+  for (const outputMode of [undefined, 'custom'] as const) {
+    const operationId = `merge-output-authority-${outputMode ?? 'legacy'}`
+    const store = new MemoryProofOperationStore()
+    const record = completedMergeRecord(operationId)
+    if (outputMode !== undefined) record.metadata.outputMode = outputMode
+    store.records.set(operationId, record)
+    const transport = new FakeSplitTransport()
+
+    await assert.rejects(
+      () =>
+        mergeCompleteSetToRegularWithOperation({
+          ...mergeReplayRequest(operationId, store, transport),
+          outputMode: {
+            kind: 'seed-derived',
+            seed: DETERMINISTIC_SEED,
+            counterSource: new CountingCounterSource(),
+          },
+        }),
+      /output authority differs/,
+    )
+    assert.equal(transport.converted.length, 0)
+    assert.equal(transport.keyLookups.length, 0)
+  }
+})
+
+test('merge output mode rejects malformed discriminants before fresh or replay effects', async () => {
+  const malformedOutputMode = { kind: 'malformed' } as never
+  const freshStore = new MemoryProofOperationStore()
+  const freshTransport = new FakeSplitTransport()
+  await assert.rejects(
+    () =>
+      mergeCompleteSetToRegularWithOperation({
+        ...mergeReplayRequest('merge-malformed-fresh', freshStore, freshTransport),
+        outputMode: malformedOutputMode,
+      }),
+    /output mode is invalid/,
+  )
+  assert.equal(freshStore.prepareCalls, 0)
+  assert.equal(freshTransport.converted.length, 0)
+
+  const replayStore = new MemoryProofOperationStore()
+  replayStore.records.set('merge-malformed-replay', completedMergeRecord('merge-malformed-replay'))
+  const replayTransport = new FakeSplitTransport()
+  await assert.rejects(
+    () =>
+      mergeCompleteSetToRegularWithOperation({
+        ...mergeReplayRequest('merge-malformed-replay', replayStore, replayTransport),
+        outputMode: malformedOutputMode,
+      }),
+    /output mode is invalid/,
+  )
+  assert.equal(replayStore.completedCalls, 0)
+  assert.equal(replayTransport.keyLookups.length, 0)
+  assert.equal(replayTransport.converted.length, 0)
+})
+
 test('mergeCompleteSetToRegularWithOperation replays completed operations without mint calls', async () => {
   const store = new MemoryProofOperationStore()
   store.records.set('merge-op-completed', completedMergeRecord('merge-op-completed'))
@@ -867,6 +1492,104 @@ test('mergeCompleteSetToRegularWithOperation replays completed operations withou
   assert.deepEqual(result.spentConditionalProofsByCollection, {
     Alpha: [proof('keyset-alpha', 10, 'alpha')],
   })
+  assert.equal(transport.converted.length, 0)
+})
+
+test('merge dispatch guard runs after preparation on fresh execution and UNSPENT replay', async () => {
+  const store = new MemoryProofOperationStore()
+  const transport = new FakeSplitTransport()
+  const request = {
+    ...mergeReplayRequest('merge-dispatch-guard', store, transport),
+    makeRegularOutputs: ({ amountSubunits, keyset }: { amountSubunits: number; keyset: MintKeys }) => [
+      canonicalOutput('*', amountSubunits, keyset.id),
+    ],
+  }
+  const guardStates: Array<string | undefined> = []
+  const rejectDispatch = async () => {
+    guardStates.push(store.records.get('merge-dispatch-guard')?.state)
+    throw new Error('dispatch blocked')
+  }
+
+  await assert.rejects(
+    () => mergeCompleteSetToRegularWithOperation({ ...request, beforeMintMutation: rejectDispatch }),
+    /dispatch blocked/,
+  )
+  await assert.rejects(
+    () =>
+      mergeCompleteSetToRegularWithOperation({
+        ...request,
+        proofStateChecker: {
+          checkProofsStates: async () => [{ Y: 'Y-alpha', state: CheckStateEnum.UNSPENT }],
+        },
+        beforeMintMutation: rejectDispatch,
+      }),
+    /dispatch blocked/,
+  )
+  assert.deepEqual(guardStates, ['prepared', 'prepared'])
+  assert.equal(transport.converted.length, 0)
+  assert.equal(store.records.get('merge-dispatch-guard')?.state, 'prepared')
+})
+
+test('merge dispatch guard skips terminal, spent restore, and pending replay paths', async () => {
+  let guardCalls = 0
+  const beforeMintMutation = async () => {
+    guardCalls += 1
+    throw new Error('dispatch must not run')
+  }
+  const transport = new FakeSplitTransport()
+  const request = (operationId: string, store: MemoryProofOperationStore) => ({
+    ...mergeReplayRequest(operationId, store, transport),
+    beforeMintMutation,
+  })
+
+  const completedStore = new MemoryProofOperationStore()
+  completedStore.records.set('merge-guard-completed', completedMergeRecord('merge-guard-completed'))
+  await mergeCompleteSetToRegularWithOperation(request('merge-guard-completed', completedStore))
+
+  const failedStore = new MemoryProofOperationStore()
+  failedStore.records.set('merge-guard-failed', {
+    ...completedMergeRecord('merge-guard-failed'),
+    state: 'Failed',
+    resultProofs: undefined,
+    lastError: 'mint refused merge',
+  })
+  await assert.rejects(
+    () => mergeCompleteSetToRegularWithOperation(request('merge-guard-failed', failedStore)),
+    /previously failed/,
+  )
+
+  const spentStore = new MemoryProofOperationStore()
+  const spent = completedMergeRecord('merge-guard-spent')
+  spent.state = 'prepared'
+  delete spent.resultProofs
+  delete spent.resultProofsDigest
+  spentStore.records.set('merge-guard-spent', spent)
+  await mergeCompleteSetToRegularWithOperation({
+    ...request('merge-guard-spent', spentStore),
+    proofStateChecker: {
+      checkProofsStates: async () => [{ Y: 'Y-alpha', state: CheckStateEnum.SPENT }],
+    },
+    restoreOutputGroups: async () => ({ regular: [completedProof('regular-keyset', 9, 'restored')] }),
+  })
+
+  const pendingStore = new MemoryProofOperationStore()
+  const pending = completedMergeRecord('merge-guard-pending')
+  pending.state = 'prepared'
+  delete pending.resultProofs
+  delete pending.resultProofsDigest
+  pendingStore.records.set('merge-guard-pending', pending)
+  await assert.rejects(
+    () =>
+      mergeCompleteSetToRegularWithOperation({
+        ...request('merge-guard-pending', pendingStore),
+        proofStateChecker: {
+          checkProofsStates: async () => [{ Y: 'Y-alpha', state: CheckStateEnum.PENDING }],
+        },
+      }),
+    ProofOperationPendingError,
+  )
+
+  assert.equal(guardCalls, 0)
   assert.equal(transport.converted.length, 0)
 })
 
@@ -1007,6 +1730,62 @@ test('prepared CTF replay validates persisted keysets before proof-state or mint
   )
   assert.equal(proofStateCalls, 0)
   assert.equal(transport.posted.length, 0)
+  assert.equal(store.completedCalls, 0)
+})
+
+test('prepared split replay rejects a substituted keyset identity before proof-state or mint mutation', async () => {
+  const store = new MemoryProofOperationStore()
+  const record = completedSplitRecord('replay-substituted-split-keyset')
+  record.state = 'prepared'
+  delete record.resultProofs
+  delete record.resultProofsDigest
+  store.records.set(record.operationId, record)
+  const transport = new FakeSplitTransport({}, { 'keyset-yes': 'foreign-keyset' })
+  let proofStateCalls = 0
+
+  await assert.rejects(
+    () =>
+      splitCompleteSetWithOperation({
+        ...splitReplayRequest(record.operationId, store, transport),
+        proofStateChecker: {
+          checkProofsStates: async () => {
+            proofStateCalls += 1
+            return []
+          },
+        },
+      }),
+    /keyset keyset-yes was not returned exactly/,
+  )
+  assert.equal(proofStateCalls, 0)
+  assert.equal(transport.posted.length, 0)
+  assert.equal(store.completedCalls, 0)
+})
+
+test('prepared merge replay rejects a substituted keyset identity before proof-state or mint mutation', async () => {
+  const store = new MemoryProofOperationStore()
+  const record = completedMergeRecord('replay-substituted-merge-keyset')
+  record.state = 'prepared'
+  delete record.resultProofs
+  delete record.resultProofsDigest
+  store.records.set(record.operationId, record)
+  const transport = new FakeSplitTransport({}, { 'keyset-alpha': 'foreign-keyset' })
+  let proofStateCalls = 0
+
+  await assert.rejects(
+    () =>
+      mergeCompleteSetToRegularWithOperation({
+        ...mergeReplayRequest(record.operationId, store, transport),
+        proofStateChecker: {
+          checkProofsStates: async () => {
+            proofStateCalls += 1
+            return []
+          },
+        },
+      }),
+    /keyset keyset-alpha was not returned exactly/,
+  )
+  assert.equal(proofStateCalls, 0)
+  assert.equal(transport.converted.length, 0)
   assert.equal(store.completedCalls, 0)
 })
 
@@ -1364,6 +2143,51 @@ test('splitRegularProofsWithOperation turns a larger regular proof into an exact
   assert.equal(store.records.get('regular-op-210')?.metadata.baseAsset, 'sat')
 })
 
+test('regular split dispatch guard runs after preparation on fresh execution and UNSPENT replay', async () => {
+  const store = new MemoryProofOperationStore()
+  const wallet = new FakeRegularSplitWallet({
+    preview: {
+      amount: 100,
+      fees: 0,
+      keysetId: 'regular-keyset',
+      inputs: [proof('regular-keyset', 210, 'input-210')],
+      sendOutputs: [new OutputData({ amount: 100, id: 'regular-keyset', B_: 'B-send' }, 1n, new Uint8Array([1]))],
+      keepOutputs: [new OutputData({ amount: 110, id: 'regular-keyset', B_: 'B-keep' }, 2n, new Uint8Array([2]))],
+      unselectedProofs: [],
+    },
+    result: {
+      send: [proof('regular-keyset', 100, 'send-100')],
+      keep: [proof('regular-keyset', 110, 'keep-110')],
+    },
+  })
+  const request = {
+    mintUrl: 'https://mint.example',
+    baseAsset: 'sat' as const,
+    operationId: 'regular-dispatch-guard',
+    wallet,
+    proofs: [proof('regular-keyset', 210, 'input-210')],
+    amountSubunits: 100,
+    proofOperationStore: store,
+  }
+  const guardStates: Array<string | undefined> = []
+  const rejectDispatch = async () => {
+    guardStates.push(store.records.get('regular-dispatch-guard')?.state)
+    throw new Error('dispatch blocked')
+  }
+
+  await assert.rejects(
+    () => splitRegularProofsWithOperation({ ...request, beforeMintMutation: rejectDispatch }),
+    /dispatch blocked/,
+  )
+  await assert.rejects(
+    () => splitRegularProofsWithOperation({ ...request, beforeMintMutation: rejectDispatch }),
+    /dispatch blocked/,
+  )
+  assert.deepEqual(guardStates, ['prepared', 'prepared'])
+  assert.equal(wallet.completeCalls, 0)
+  assert.equal(store.records.get('regular-dispatch-guard')?.state, 'prepared')
+})
+
 test('splitRegularProofsWithOperation replays completed regular splits without mint calls', async () => {
   const store = new MemoryProofOperationStore()
   store.records.set('regular-op-completed', {
@@ -1479,23 +2303,141 @@ test('computeGrossCtfInputAmountSubunits handles F greater than 1 for many proof
 })
 
 const CONDITION_ID = 'a'.repeat(64)
+const DETERMINISTIC_KEYSET_A = `01${'b'.repeat(64)}`
+const DETERMINISTIC_KEYSET_B = `01${'c'.repeat(64)}`
+const DETERMINISTIC_KEYSET_C = `01${'d'.repeat(64)}`
+const DETERMINISTIC_SEED = Uint8Array.from({ length: 64 }, (_, index) => index + 1)
 
-class FakeSplitTransport implements CtfSplitTransport {
-  private readonly unitByKeysetId: Record<string, string>
+class CountingCounterSource implements CounterSource {
+  readonly calls: Array<{ keysetId: string; count: number }> = []
+  #next = 0
 
+  async reserve(keysetId: string, count: number) {
+    this.calls.push({ keysetId, count })
+    const start = this.#next
+    this.#next += count
+    return { start, count }
+  }
+
+  async advanceToAtLeast(): Promise<void> {}
+}
+
+class DeterministicSplitTransport implements CtfSplitTransport {
   readonly keyLookups: string[] = []
-  rootPartitionLookups = 0
   readonly posted: Array<Parameters<CtfSplitTransport['postSplit']>[0]> = []
   readonly converted: Array<Parameters<NonNullable<CtfSplitTransport['postConvert']>>[0]> = []
+  private readonly counter: CountingCounterSource
 
-  constructor(unitByKeysetId: Record<string, string> = {}) {
-    this.unitByKeysetId = unitByKeysetId
+  constructor(counter: CountingCounterSource) {
+    this.counter = counter
   }
 
   async getKeys(keysetId: string): Promise<MintKeys> {
     this.keyLookups.push(keysetId)
     return {
       id: keysetId,
+      unit: 'msat',
+      keys: { 1: '02', 4: '02', 32: '02', 64: '02' },
+      input_fee_ppk: 0,
+    } as MintKeys
+  }
+
+  async getRootPartitionKeysets(): Promise<Record<string, string>> {
+    throw new Error('root partition discovery is not used')
+  }
+
+  async postSplit(
+    request: Parameters<CtfSplitTransport['postSplit']>[0],
+  ): ReturnType<CtfSplitTransport['postSplit']> {
+    if (this.counter.calls.length !== 2)
+      throw new Error('split counters were not reserved before mint I/O')
+    this.posted.push(request)
+    throw new Error('stop after prepared split')
+  }
+
+  async postConvert(
+    request: Parameters<NonNullable<CtfSplitTransport['postConvert']>>[0],
+  ): ReturnType<NonNullable<CtfSplitTransport['postConvert']>> {
+    if (this.counter.calls.length !== 1)
+      throw new Error('merge counter was not reserved before mint I/O')
+    this.converted.push(request)
+    throw new Error('stop after prepared merge')
+  }
+}
+
+function deterministicSplitRequest(
+  operationId: string,
+  proofOperationStore: CtfProofOperationStore,
+  transport: CtfSplitTransport,
+  counterSource: CounterSource,
+): Parameters<typeof splitCompleteSetWithOperation>[0] {
+  return {
+    mintUrl: 'https://mint.example',
+    baseAsset: 'sat',
+    operationId,
+    transport,
+    conditionId: CONDITION_ID,
+    collateralProofs: [proof(DETERMINISTIC_KEYSET_A, 100, 'input-secret')],
+    outcomeCollectionKeysets: { Beta: DETERMINISTIC_KEYSET_B, Alpha: DETERMINISTIC_KEYSET_A },
+    amountSubunits: 100,
+    proofOperationStore,
+    outputMode: { kind: 'seed-derived', seed: DETERMINISTIC_SEED, counterSource },
+  }
+}
+
+function deterministicMergeRequest(
+  operationId: string,
+  proofOperationStore: CtfProofOperationStore,
+  transport: CtfSplitTransport,
+  counterSource: CounterSource,
+): Parameters<typeof mergeCompleteSetToRegularWithOperation>[0] {
+  return {
+    mintUrl: 'https://mint.example',
+    baseAsset: 'sat',
+    operationId,
+    transport,
+    conditionId: CONDITION_ID,
+    conditionalProofsByCollection: {
+      Alpha: [proof(DETERMINISTIC_KEYSET_A, 100, 'alpha')],
+      Beta: [proof(DETERMINISTIC_KEYSET_B, 100, 'beta')],
+    },
+    outputAmountSubunits: 100,
+    regularKeyset: {
+      id: DETERMINISTIC_KEYSET_C,
+      unit: 'msat',
+      keys: { 1: '02', 4: '02', 32: '02', 64: '02' },
+      input_fee_ppk: 0,
+    } as MintKeys,
+    proofOperationStore,
+    outputMode: { kind: 'seed-derived', seed: DETERMINISTIC_SEED, counterSource },
+  }
+}
+
+function pendingInputState(): ProofState[] {
+  return [{ Y: 'Y-input', state: CheckStateEnum.PENDING, witness: null }]
+}
+
+class FakeSplitTransport implements CtfSplitTransport {
+  private readonly unitByKeysetId: Record<string, string>
+  private readonly returnedIdByKeysetId: Record<string, string>
+
+  readonly keyLookups: string[] = []
+  rootPartitionLookups = 0
+  readonly posted: Array<Parameters<CtfSplitTransport['postSplit']>[0]> = []
+  readonly converted: Array<Parameters<NonNullable<CtfSplitTransport['postConvert']>>[0]> = []
+
+  constructor(
+    unitByKeysetId: Record<string, string> = {},
+    returnedIdByKeysetId: Record<string, string> = {},
+  ) {
+    this.unitByKeysetId = unitByKeysetId
+    this.returnedIdByKeysetId = returnedIdByKeysetId
+  }
+
+  async getKeys(keysetId: string): Promise<MintKeys> {
+    this.keyLookups.push(keysetId)
+    return {
+      id: this.returnedIdByKeysetId[keysetId] ?? keysetId,
       unit: this.unitByKeysetId[keysetId] ?? 'msat',
       keys: {},
       input_fee_ppk: 0,
@@ -1635,6 +2577,14 @@ function output(collection: string, amount: number, keysetId: string): CtfSplitO
     secret: new TextEncoder().encode(`secret-${collection}`),
     toProof: (sig) => proof(sig.id, sig.amount, `proof-${collection}`),
   }
+}
+
+function canonicalOutput(collection: string, amount: number, keysetId: string): CtfSplitOutputData {
+  return new OutputData(
+    { amount, id: keysetId, B_: SECP256K1_GENERATOR },
+    1n,
+    new TextEncoder().encode(`secret-${collection}`),
+  )
 }
 
 type SplitReplayRequest = Parameters<typeof splitCompleteSetWithOperation>[0]

@@ -45,6 +45,21 @@ import {
   validateMergeStoredOutputAuthority,
   validateSplitStoredOutputAuthority,
 } from './ctfProofOperationAuthority.ts'
+import {
+  planSeedDerivedCompleteSetMergeOutputs,
+  persistedCompleteSetOutputModeMetadata,
+  planSeedDerivedCompleteSetSplitOutputs,
+  reserveSeedDerivedCompleteSetMergeOutputs,
+  reserveSeedDerivedCompleteSetSplitOutputs,
+  resolveCompleteSetOutputMode,
+  seedDerivedOutputDescriptorsFromPlans,
+  validatePersistedCompleteSetOutputAuthority,
+  validateSeedDerivedCompleteSetReplay,
+  type CompleteSetOutputMode,
+  type PlannedSeedDerivedOutputGroup,
+  type PreparedSeedDerivedOutputGroup,
+  type SeedDerivedCompleteSetOutputMode,
+} from './ctfCompleteSetOutputMode.ts'
 
 export {
   completedProofAuthorityDigest,
@@ -237,8 +252,19 @@ export interface CtfSplitMakeOutputsInput {
 
 export type CtfSplitMakeOutputs = (input: CtfSplitMakeOutputsInput) => CtfSplitOutputData[]
 
+export type CtfMergeMakeOutputs = (input: {
+  amountSubunits: number
+  keyset: MintKeys
+}) => CtfSplitOutputData[]
+
+export type CtfOperationOutputMode = CompleteSetOutputMode<CtfSplitMakeOutputs>
+export type CtfMergeOutputMode = CompleteSetOutputMode<CtfMergeMakeOutputs>
+export type { SeedDerivedCompleteSetOutputMode }
+
 export interface CtfSplitOptions {
   makeOutputs?: CtfSplitMakeOutputs
+  /** Reuse keysets validated while deterministic outputs were prepared. */
+  prefetchedOutputKeysets?: ReadonlyMap<string, MintKeys>
   baseAsset: CtfCollateralBaseAsset
   parentCollectionId?: unknown
   onPrepared?: (prepared: {
@@ -246,6 +272,8 @@ export interface CtfSplitOptions {
     outputsByCollection: Record<string, CtfSplitOutputData[]>
     requestOutputs: Record<string, SerializedBlindedMessage[]>
   }) => Promise<void>
+  /** Run after durable preparation and immediately before the mint request. */
+  beforeMintMutation?: () => Promise<void>
 }
 
 export interface RegularSplitWallet {
@@ -291,6 +319,8 @@ export async function splitRegularProofsWithOperation(params: {
     mintUrl: string,
     outputs: Record<string, StoredOutputData[]>,
   ) => Promise<Record<string, Proof[]>>
+  /** Run after durable preparation and immediately before the mint request. */
+  beforeMintMutation?: () => Promise<void>
 }): Promise<RegularProofSplitResult> {
   const amountSubunits = requirePositiveSafeInteger(
     params.amountSubunits ?? params.amountSats,
@@ -312,6 +342,7 @@ export async function splitRegularProofsWithOperation(params: {
       params.wallet,
       params.proofOperationStore,
       params.restoreOutputGroups,
+      params.beforeMintMutation,
     )
   }
   const normalizedProofs = requireProofArray(
@@ -355,6 +386,7 @@ export async function splitRegularProofsWithOperation(params: {
     },
   })
 
+  await params.beforeMintMutation?.()
   const result = await params.wallet.completeSwap(preview)
   const completed = {
     send: result.send.map(normalizeProof),
@@ -514,14 +546,17 @@ export async function splitRootCompleteSetForSwap(params: {
     proofOperationStore: params.proofOperationStore,
     proofStateChecker: params.proofStateChecker,
     restoreOutputGroups: params.restoreOutputGroups,
-    makeOutputs: ({ collection, amountSubunits, keyset }) => {
-      if (lockCollections.has(collection)) {
-        return RegularOutputData.createP2PKData(params.p2pk, Amount.from(amountSubunits), keyset)
-      }
-      if (keepCollections.has(collection)) {
-        return RegularOutputData.createRandomData(Amount.from(amountSubunits), keyset)
-      }
-      throw new Error(`CTF split has no lock/keep branch for outcome collection ${collection}`)
+    outputMode: {
+      kind: 'custom',
+      makeOutputs: ({ collection, amountSubunits, keyset }) => {
+        if (lockCollections.has(collection)) {
+          return RegularOutputData.createP2PKData(params.p2pk, Amount.from(amountSubunits), keyset)
+        }
+        if (keepCollections.has(collection)) {
+          return RegularOutputData.createRandomData(Amount.from(amountSubunits), keyset)
+        }
+        throw new Error(`CTF split has no lock/keep branch for outcome collection ${collection}`)
+      },
     },
   })
 
@@ -585,8 +620,11 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
     baseAsset: params.baseAsset,
     parentCollectionId: params.parentCollectionId,
     proofOperationStore: params.proofOperationStore,
-    makeOutputs: ({ amountSubunits, keyset }) =>
-      RegularOutputData.createRandomData(Amount.from(amountSubunits), keyset),
+    outputMode: {
+      kind: 'custom',
+      makeOutputs: ({ amountSubunits, keyset }) =>
+        RegularOutputData.createRandomData(Amount.from(amountSubunits), keyset),
+    },
   })
 
   return {
@@ -737,20 +775,23 @@ export async function splitCompleteSet(
   options: CtfSplitOptions,
 ): Promise<Record<string, Proof[]>> {
   const policy = requireProductCtfPolicy(options.baseAsset, options.parentCollectionId, 'CTF split')
-  const normalizedInputs = requireProofArray(
+  const { normalizedInputs, boundedKeysets } = validateCompleteSetSplitPreparation(
+    conditionId,
     inputs,
-    'CTF split input proofs',
-    DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+    outcomeCollectionKeysets,
+    amountSubunits,
   )
-  const boundedKeysets = requireStringMapping(outcomeCollectionKeysets, 'CTF split outcome keysets')
-  validateSplitInput(conditionId, normalizedInputs, boundedKeysets, amountSubunits)
 
   const makeOutputs = options.makeOutputs ?? defaultMakeOutputs
-  const keysetsById = new Map<string, MintKeys>()
+  const keysetsById = new Map<string, MintKeys>(options.prefetchedOutputKeysets)
   const getCachedKeys = async (keysetId: string): Promise<MintKeys> => {
     const cached = keysetsById.get(keysetId)
-    if (cached) return cached
+    if (cached) {
+      requireExactCtfKeysetIdentity(cached, keysetId)
+      return cached
+    }
     const keyset = await transport.getKeys(keysetId)
+    requireExactCtfKeysetIdentity(keyset, keysetId)
     keysetsById.set(keysetId, keyset)
     return keyset
   }
@@ -762,8 +803,13 @@ export async function splitCompleteSet(
   const requestOutputs: Record<string, SerializedBlindedMessage[]> = {}
 
   let outputCount = 0
-  for (const [collection, keysetId] of Object.entries(boundedKeysets)) {
+  for (const [collection, keysetId] of Object.entries(boundedKeysets).sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0,
+  )) {
     const keyset = await getCachedKeys(keysetId)
+    if (keyset.id !== keysetId) {
+      throw new Error(`CTF split output keyset ${keysetId} was not returned exactly`)
+    }
     validateCtfKeysetUnit(keyset, `CTF split output keyset ${keysetId} for ${collection}`)
     keysetsByCollection.set(collection, keyset)
     const outputs = makeOutputs({
@@ -788,6 +834,7 @@ export async function splitCompleteSet(
     outputsByCollection,
     requestOutputs,
   })
+  await options.beforeMintMutation?.()
 
   const response = await transport.postSplit({
     condition_id: conditionId,
@@ -905,11 +952,12 @@ export async function splitCompleteSetWithOperation(params: {
     mintUrl: string,
     outputs: Record<string, StoredOutputData[]>,
   ) => Promise<Record<string, Proof[]>>
-  makeOutputs: (input: {
-    collection: string
-    amountSubunits: number
-    keyset: MintKeys
-  }) => CtfSplitOutputData[]
+  /** Run after durable preparation and immediately before the mint request. */
+  beforeMintMutation?: () => Promise<void>
+  /** Explicit output authority for this operation. */
+  outputMode?: CtfOperationOutputMode
+  /** @deprecated Use outputMode. Legacy custom outputs remain custom authority. */
+  makeOutputs?: CtfSplitMakeOutputs
 }): Promise<Record<string, Proof[]>> {
   const policy = requireProductCtfPolicy(
     params.baseAsset,
@@ -917,8 +965,13 @@ export async function splitCompleteSetWithOperation(params: {
     'CTF split operation',
   )
   const existing = await params.proofOperationStore.getProofOperation(params.operationId)
+  const outputMode = resolveCompleteSetOutputMode({
+    outputMode: params.outputMode,
+    legacyMakeOutputs: params.makeOutputs,
+    operation: 'split',
+  })
   if (existing) {
-    requireMatchingCtfSplitOperation(existing, params, policy)
+    requireMatchingCtfSplitOperation(existing, params, policy, outputMode)
     return resumeCtfSplit(
       params.mintUrl,
       existing,
@@ -926,53 +979,11 @@ export async function splitCompleteSetWithOperation(params: {
       params.proofOperationStore,
       params.proofStateChecker,
       params.restoreOutputGroups,
+      outputMode,
+      params.beforeMintMutation,
     )
   }
-
-  const result = await splitCompleteSet(
-    params.transport,
-    params.conditionId,
-    params.collateralProofs,
-    params.outcomeCollectionKeysets,
-    params.amountSubunits,
-    {
-      ...policy,
-      makeOutputs: params.makeOutputs,
-      onPrepared: async (prepared) => {
-        const preparedOutputs = Object.fromEntries(
-          Object.entries(prepared.outputsByCollection).map(([collection, outputs]) => [
-            collection,
-            serializeOutputDataArray(outputs),
-          ]),
-        )
-        await prepareBoundedCtfProofOperation(params.proofOperationStore, {
-          operationId: params.operationId,
-          kind: 'ctf-split',
-          mintUrl: params.mintUrl,
-          inputs: prepared.inputs,
-          outputs: preparedOutputs,
-          metadata: {
-            conditionId: params.conditionId,
-            amountSubunits: params.amountSubunits,
-            baseAsset: policy.baseAsset,
-            unit: CTF_COLLATERAL_UNIT,
-            parentCollectionId: policy.parentCollectionId,
-            outcomeCollectionKeysets: params.outcomeCollectionKeysets,
-          },
-        })
-      },
-    },
-  )
-
-  try {
-    await params.proofOperationStore.markProofOperationCompleted(
-      params.operationId,
-      createCtfProofOperationCompletion('ctf-split', result),
-    )
-  } catch {
-    throw new ProofOperationPendingError(params.operationId)
-  }
-  return result
+  return executeFreshCtfSplitOperation(params, policy, outputMode)
 }
 
 export async function mergeCompleteSetToRegularWithOperation(params: {
@@ -986,7 +997,17 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
   outputAmountSubunits: number
   regularKeyset: MintKeys
   proofOperationStore: CtfProofOperationStore
-  makeRegularOutputs?: (input: { amountSubunits: number; keyset: MintKeys }) => CtfSplitOutputData[]
+  proofStateChecker?: Pick<RegularSplitWallet, 'checkProofsStates'>
+  restoreOutputGroups?: (
+    mintUrl: string,
+    outputs: Record<string, StoredOutputData[]>,
+  ) => Promise<Record<string, Proof[]>>
+  /** Run after durable preparation and immediately before the mint request. */
+  beforeMintMutation?: () => Promise<void>
+  /** Explicit output authority for this operation. */
+  outputMode?: CtfMergeOutputMode
+  /** @deprecated Use outputMode. Legacy custom outputs remain custom authority. */
+  makeRegularOutputs?: CtfMergeMakeOutputs
 }): Promise<MergeCompleteSetToRegularResult> {
   const policy = requireProductCtfPolicy(
     params.baseAsset,
@@ -1009,18 +1030,28 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     ),
   )
   const existing = await params.proofOperationStore.getProofOperation(params.operationId)
+  const outputMode = resolveCompleteSetOutputMode({
+    outputMode: params.outputMode,
+    legacyMakeOutputs: params.makeRegularOutputs,
+    operation: 'merge',
+  })
   if (existing) {
     const spentConditionalProofsByCollection = requireMatchingCtfMergeOperation(
       existing,
       normalizedInputsByCollection,
       params,
       policy,
+      outputMode,
     )
     const regularProofs = await resumeCtfMergeToRegular(
       params.mintUrl,
       existing,
       params.transport,
       params.proofOperationStore,
+      outputMode,
+      params.proofStateChecker,
+      params.restoreOutputGroups,
+      params.beforeMintMutation,
     )
     return {
       regularProofs,
@@ -1029,46 +1060,170 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     }
   }
 
+  return executeFreshCtfMergeOperation(params, policy, normalizedInputsByCollection, outputMode)
+}
+
+async function executeFreshCtfSplitOperation(
+  params: Parameters<typeof splitCompleteSetWithOperation>[0],
+  policy: ProductCtfPolicy,
+  outputMode: CtfOperationOutputMode | null,
+): Promise<Record<string, Proof[]>> {
+  const preparation = validateCompleteSetSplitPreparation(
+    params.conditionId,
+    params.collateralProofs,
+    params.outcomeCollectionKeysets,
+    params.amountSubunits,
+  )
+  const keysets = createReplayKeysetCache(params.transport)
+  await validateInputBalance(
+    preparation.normalizedInputs,
+    params.amountSubunits,
+    keysets.getKeys,
+  )
+  const outputPreparation = await prepareFreshCtfSplitOutputs(
+    params,
+    policy,
+    outputMode,
+    keysets.getKeys,
+  )
+  const result = await splitCompleteSet(
+    params.transport,
+    params.conditionId,
+    params.collateralProofs,
+    params.outcomeCollectionKeysets,
+    params.amountSubunits,
+    {
+      ...policy,
+      makeOutputs: outputPreparation.makeOutputs,
+      prefetchedOutputKeysets: keysets.keysets,
+      onPrepared: async (prepared) => {
+        const outputs = Object.fromEntries(
+          Object.entries(prepared.outputsByCollection).map(([collection, group]) => [
+            collection,
+            serializeOutputDataArray(group),
+          ]),
+        )
+        await prepareBoundedCtfProofOperation(params.proofOperationStore, {
+          operationId: params.operationId,
+          kind: 'ctf-split',
+          mintUrl: params.mintUrl,
+          inputs: prepared.inputs,
+          outputs,
+          metadata: {
+            conditionId: params.conditionId,
+            amountSubunits: params.amountSubunits,
+            baseAsset: policy.baseAsset,
+            unit: CTF_COLLATERAL_UNIT,
+            parentCollectionId: policy.parentCollectionId,
+            outcomeCollectionKeysets: params.outcomeCollectionKeysets,
+            ...persistedCompleteSetOutputModeMetadata(
+              outputMode,
+              outputPreparation.deterministicGroups ?? {},
+            ),
+          },
+        })
+      },
+      beforeMintMutation: params.beforeMintMutation,
+    },
+  )
+  try {
+    await params.proofOperationStore.markProofOperationCompleted(
+      params.operationId,
+      createCtfProofOperationCompletion('ctf-split', result),
+    )
+  } catch {
+    throw new ProofOperationPendingError(params.operationId)
+  }
+  return result
+}
+
+async function prepareFreshCtfSplitOutputs(
+  params: Parameters<typeof splitCompleteSetWithOperation>[0],
+  policy: ProductCtfPolicy,
+  outputMode: CtfOperationOutputMode | null,
+  getKeys: (keysetId: string) => Promise<MintKeys>,
+): Promise<{
+  makeOutputs: CtfSplitMakeOutputs
+  deterministicGroups?: Record<string, PreparedSeedDerivedOutputGroup>
+}> {
+  if (outputMode === null) {
+    throw new Error('CTF split operation requires an explicit output mode')
+  }
+  if (outputMode.kind === 'custom') return { makeOutputs: outputMode.makeOutputs }
+
+  const plans = await planSeedDerivedCompleteSetSplitOutputs({
+    amountSubunits: params.amountSubunits,
+    outcomeCollectionKeysets: validateCompleteSetSplitPreparation(
+      params.conditionId,
+      params.collateralProofs,
+      params.outcomeCollectionKeysets,
+      params.amountSubunits,
+    ).boundedKeysets,
+    getKeys,
+  })
+  assertDeterministicSplitPreparationFits(params, policy, plans)
+  const deterministicGroups = await reserveSeedDerivedCompleteSetSplitOutputs({
+    mode: outputMode,
+    groups: plans,
+  })
+  return {
+    makeOutputs: ({ collection }) => {
+      const group = deterministicGroups[collection]
+      if (group === undefined) {
+        throw new Error(`CTF split output collection ${collection} was not prepared`)
+      }
+      return [...group.outputData]
+    },
+    deterministicGroups,
+  }
+}
+
+async function executeFreshCtfMergeOperation(
+  params: Parameters<typeof mergeCompleteSetToRegularWithOperation>[0],
+  policy: ProductCtfPolicy,
+  inputsByCollection: Record<string, Proof[]>,
+  outputMode: CtfMergeOutputMode | null,
+): Promise<MergeCompleteSetToRegularResult> {
   await validateProofKeysetUnits(
     params.transport,
-    flattenProofs(normalizedInputsByCollection),
+    flattenProofs(inputsByCollection),
     'CTF merge input keyset',
   )
-  const outputData =
-    params.makeRegularOutputs?.({
-      amountSubunits: params.outputAmountSubunits,
-      keyset: params.regularKeyset,
-    }) ??
-    RegularOutputData.createRandomData(
-      Amount.from(params.outputAmountSubunits),
-      params.regularKeyset,
-    )
-  if (outputData.length > DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX) {
-    throw new Error('CTF merge blinded output limit exceeded')
-  }
+  const outputPreparation = await prepareFreshCtfMergeOutputs(
+    params,
+    policy,
+    inputsByCollection,
+    outputMode,
+  )
   await prepareBoundedCtfProofOperation(params.proofOperationStore, {
     operationId: params.operationId,
     kind: 'ctf-merge',
     mintUrl: params.mintUrl,
-    inputs: flattenProofs(normalizedInputsByCollection),
-    outputs: { '*': serializeOutputDataArray(outputData) },
+    inputs: flattenProofs(inputsByCollection),
+    outputs: { '*': serializeOutputDataArray(outputPreparation.outputData) },
     metadata: {
       conditionId: params.conditionId,
       outputAmountSubunits: params.outputAmountSubunits,
       baseAsset: policy.baseAsset,
       unit: CTF_COLLATERAL_UNIT,
       parentCollectionId: policy.parentCollectionId,
-      inputsByCollection: normalizedInputsByCollection,
+      inputsByCollection,
+      ...persistedCompleteSetOutputModeMetadata(
+        outputMode,
+        outputPreparation.deterministicGroup === null
+          ? {}
+          : { '*': outputPreparation.deterministicGroup },
+      ),
     },
   })
-
   const regularProofs = await executeCtfMergeToRegular({
     transport: params.transport,
     conditionId: params.conditionId,
-    inputsByCollection: normalizedInputsByCollection,
-    outputData,
+    inputsByCollection,
+    outputData: outputPreparation.outputData,
     regularKeyset: params.regularKeyset,
     parentCollectionId: policy.parentCollectionId,
+    beforeMintMutation: params.beforeMintMutation,
   })
   await params.proofOperationStore.markProofOperationCompleted(
     params.operationId,
@@ -1076,9 +1231,43 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
   )
   return {
     regularProofs,
-    spentConditionalProofsByCollection: normalizedInputsByCollection,
+    spentConditionalProofsByCollection: inputsByCollection,
     outputAmountSubunits: sumProofs(regularProofs),
   }
+}
+
+async function prepareFreshCtfMergeOutputs(
+  params: Parameters<typeof mergeCompleteSetToRegularWithOperation>[0],
+  policy: ProductCtfPolicy,
+  inputsByCollection: Record<string, Proof[]>,
+  outputMode: CtfMergeOutputMode | null,
+): Promise<{
+  outputData: CtfSplitOutputData[]
+  deterministicGroup: PreparedSeedDerivedOutputGroup | null
+}> {
+  if (outputMode === null) {
+    throw new Error('CTF merge operation requires an explicit output mode')
+  }
+  if (outputMode.kind === 'custom') {
+    const outputData = outputMode.makeOutputs({
+      amountSubunits: params.outputAmountSubunits,
+      keyset: params.regularKeyset,
+    })
+    if (outputData.length > DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX) {
+      throw new Error('CTF merge blinded output limit exceeded')
+    }
+    return { outputData, deterministicGroup: null }
+  }
+  const plan = planSeedDerivedCompleteSetMergeOutputs({
+    amountSubunits: params.outputAmountSubunits,
+    keyset: params.regularKeyset,
+  })
+  assertDeterministicMergePreparationFits(params, policy, inputsByCollection, plan)
+  const deterministicGroup = await reserveSeedDerivedCompleteSetMergeOutputs({
+    mode: outputMode,
+    group: plan,
+  })
+  return { outputData: [...deterministicGroup.outputData], deterministicGroup }
 }
 
 export function selectCompleteSetMergeInputs(params: {
@@ -1136,16 +1325,56 @@ export function selectCompleteSetMergeInputs(params: {
   return null
 }
 
+function validateSeedDerivedSplitReplayOutputs(
+  entry: CtfProofOperationRecord,
+  outputMode: CtfOperationOutputMode | null,
+): void {
+  const metadata = requireRecordMetadata(entry, 'ctf-split')
+  const keysets = requireStringMapping(
+    metadata.outcomeCollectionKeysets,
+    'CTF split outcome keysets',
+  )
+  validateSeedDerivedCompleteSetReplay({
+    metadata,
+    outputGroups: entry.outputs,
+    labels: Object.keys(keysets),
+    requestedMode: outputMode,
+  })
+}
+
+function validateSeedDerivedMergeReplayOutputs(
+  entry: CtfProofOperationRecord,
+  outputMode: CtfMergeOutputMode | null,
+): void {
+  validateSeedDerivedCompleteSetReplay({
+    metadata: requireRecordMetadata(entry, 'ctf-merge'),
+    outputGroups: entry.outputs,
+    labels: ['*'],
+    requestedMode: outputMode,
+  })
+}
+
 async function resumeCtfMergeToRegular(
   mintUrl: string,
   entry: CtfProofOperationRecord,
   transport: CtfSplitTransport,
   proofOperationStore: CtfProofOperationStore,
+  outputMode: CtfMergeOutputMode | null,
+  proofStateChecker?: Pick<RegularSplitWallet, 'checkProofsStates'>,
+  restoreOutputGroupsOverride?: (
+    mintUrl: string,
+    outputs: Record<string, StoredOutputData[]>,
+  ) => Promise<Record<string, Proof[]>>,
+  beforeMintMutation?: () => Promise<void>,
 ): Promise<Proof[]> {
   if (entry.kind !== 'ctf-merge') {
     throw new Error(`proof operation ${entry.operationId} is not a CTF merge`)
   }
   const policy = requireOperationCtfPolicy(entry.metadata, 'CTF merge proof operation')
+  const hasSeedDerivedOutputs = entry.metadata.outputMode === 'seed-derived'
+  if (hasSeedDerivedOutputs) {
+    validateSeedDerivedMergeReplayOutputs(entry, outputMode)
+  }
   if (entry.state === 'completed') {
     return (entry.resultProofs?.regular ?? []).map(normalizeProof)
   }
@@ -1154,22 +1383,27 @@ async function resumeCtfMergeToRegular(
       `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`,
     )
   }
-  await validateProofKeysetUnits(transport, entry.inputs, 'CTF merge replay input keyset')
-  await validateStoredOutputKeysetUnits(transport, entry.outputs, 'CTF merge replay output keyset')
+  const keysets = createReplayKeysetCache(transport)
+  await validateProofKeysetUnits(keysets, entry.inputs, 'CTF merge replay input keyset')
+  await validateStoredOutputKeysetUnits(keysets, entry.outputs, 'CTF merge replay output keyset')
 
-  const wallet = new CashuWallet(new CashuMint(mintUrl), {
-    unit: CTF_COLLATERAL_UNIT,
-  })
-  await wallet.loadMint()
-  if (!wallet.checkProofsStates) {
+  let proofStateWallet = proofStateChecker
+  if (!proofStateWallet) {
+    const wallet = new CashuWallet(new CashuMint(mintUrl), {
+      unit: CTF_COLLATERAL_UNIT,
+    })
+    await wallet.loadMint()
+    proofStateWallet = wallet
+  }
+  if (!proofStateWallet.checkProofsStates) {
     throw new Error('Cashu wallet adapter does not support proof-state recovery checks')
   }
-  const states = await wallet.checkProofsStates(
+  const states = await proofStateWallet.checkProofsStates(
     entry.inputs.map(({ id, secret }) => ({ id, secret })),
   )
   let completed: Proof[]
   if (allStates(states, CheckStateEnum.SPENT)) {
-    const restored = await restoreOutputGroups(mintUrl, entry.outputs)
+    const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(mintUrl, entry.outputs)
     completed = (restored['*'] ?? restored.regular ?? []).map(normalizeProof)
   } else if (allStates(states, CheckStateEnum.UNSPENT)) {
     const metadata = entry.metadata as {
@@ -1184,7 +1418,7 @@ async function resumeCtfMergeToRegular(
     if (outputData.length === 0) {
       throw new Error(`proof operation ${entry.operationId} has no regular merge outputs`)
     }
-    const regularKeyset = await transport.getKeys(outputData[0].blindedMessage.id)
+    const regularKeyset = await keysets.getKeys(outputData[0].blindedMessage.id)
     validateCtfKeysetUnit(regularKeyset, 'CTF merge replay regular output keyset')
     completed = await executeCtfMergeToRegular({
       transport,
@@ -1193,6 +1427,7 @@ async function resumeCtfMergeToRegular(
       outputData,
       regularKeyset,
       parentCollectionId: policy.parentCollectionId,
+      beforeMintMutation,
     })
   } else {
     throw new ProofOperationPendingError(entry.operationId)
@@ -1212,6 +1447,7 @@ interface CtfSplitReplayRequest {
   collateralProofs: Proof[]
   outcomeCollectionKeysets: Record<string, string>
   amountSubunits: number
+  outputMode?: CtfOperationOutputMode
 }
 
 interface CtfMergeReplayRequest {
@@ -1220,12 +1456,14 @@ interface CtfMergeReplayRequest {
   conditionId: string
   outputAmountSubunits: number
   regularKeyset: MintKeys
+  outputMode?: CtfMergeOutputMode
 }
 
 function requireMatchingCtfSplitOperation(
   entry: CtfProofOperationRecord,
   request: CtfSplitReplayRequest,
   policy: ProductCtfPolicy,
+  outputMode: CtfOperationOutputMode | null,
 ): void {
   const metadata = requireRecordMetadata(entry, 'ctf-split')
   const storedMapping = requireStringMapping(
@@ -1260,6 +1498,12 @@ function requireMatchingCtfSplitOperation(
   }
   requireSameOperationAuthority(storedAuthority, requestAuthority, entry.operationId)
   validateSplitStoredOutputAuthority(entry, storedMapping, request.amountSubunits)
+  validatePersistedCompleteSetOutputAuthority({
+    metadata,
+    outputGroups: entry.outputs,
+    labels: Object.keys(storedMapping),
+    requestedMode: outputMode,
+  })
 }
 
 function requireMatchingCtfMergeOperation(
@@ -1267,6 +1511,7 @@ function requireMatchingCtfMergeOperation(
   currentInputsByCollection: Record<string, Proof[]>,
   request: CtfMergeReplayRequest,
   policy: ProductCtfPolicy,
+  outputMode: CtfMergeOutputMode | null,
 ): Record<string, Proof[]> {
   const metadata = requireRecordMetadata(entry, 'ctf-merge')
   const storedInputsByCollection = requireProofGroups(
@@ -1307,6 +1552,12 @@ function requireMatchingCtfMergeOperation(
   }
   requireSameOperationAuthority(storedAuthority, requestAuthority, entry.operationId)
   validateMergeStoredOutputAuthority(entry, request.regularKeyset.id, request.outputAmountSubunits)
+  validatePersistedCompleteSetOutputAuthority({
+    metadata,
+    outputGroups: entry.outputs,
+    labels: ['*'],
+    requestedMode: outputMode,
+  })
   return storedInputsByCollection
 }
 
@@ -1317,10 +1568,12 @@ async function executeCtfMergeToRegular(params: {
   outputData: CtfSplitOutputData[]
   regularKeyset: MintKeys
   parentCollectionId: string
+  beforeMintMutation?: () => Promise<void>
 }): Promise<Proof[]> {
   if (!params.transport.postConvert) {
     throw new Error('CTF transport does not support conditional merge convert')
   }
+  await params.beforeMintMutation?.()
   const response = await params.transport.postConvert({
     condition_id: params.conditionId,
     parent_collection_id: params.parentCollectionId,
@@ -1358,6 +1611,7 @@ export function assertExactPersistedCtfSplitRequest(input: {
   amountSubunits: number
   baseAsset: CtfCollateralBaseAsset
   parentCollectionId?: unknown
+  outputMode?: CtfOperationOutputMode
 }): void {
   const metadata = requireRecordMetadata(input.operation, 'ctf-split')
   requireMatchingCtfSplitOperation(
@@ -1374,6 +1628,7 @@ export function assertExactPersistedCtfSplitRequest(input: {
       ),
     },
     requireProductCtfPolicy(input.baseAsset, input.parentCollectionId, 'CTF split operation'),
+    input.outputMode ?? null,
   )
 }
 
@@ -1393,6 +1648,9 @@ export async function resumeExactPersistedCtfSplit(input: {
     mintUrl: string,
     outputs: Record<string, StoredOutputData[]>,
   ) => Promise<Record<string, Proof[]>>
+  outputMode?: CtfOperationOutputMode
+  /** Run after durable preparation and immediately before the mint request. */
+  beforeMintMutation?: () => Promise<void>
 }): Promise<Record<string, Proof[]>> {
   const operation = await input.proofOperationStore.getProofOperation(input.operationId)
   if (operation === null) {
@@ -1407,6 +1665,7 @@ export async function resumeExactPersistedCtfSplit(input: {
     amountSubunits: input.amountSubunits,
     baseAsset: input.baseAsset,
     parentCollectionId: input.parentCollectionId,
+    outputMode: input.outputMode,
   })
   return resumeCtfSplit(
     input.mintUrl,
@@ -1415,6 +1674,8 @@ export async function resumeExactPersistedCtfSplit(input: {
     input.proofOperationStore,
     input.proofStateChecker,
     input.restoreOutputGroups,
+    input.outputMode ?? null,
+    input.beforeMintMutation,
   )
 }
 
@@ -1428,11 +1689,17 @@ async function resumeCtfSplit(
     mintUrl: string,
     outputs: Record<string, StoredOutputData[]>,
   ) => Promise<Record<string, Proof[]>>,
+  outputMode: CtfOperationOutputMode | null = null,
+  beforeMintMutation?: () => Promise<void>,
 ): Promise<Record<string, Proof[]>> {
   if (entry.kind !== 'ctf-split') {
     throw new Error(`proof operation ${entry.operationId} is not a CTF split`)
   }
   const policy = requireOperationCtfPolicy(entry.metadata, 'CTF split proof operation')
+  const hasSeedDerivedOutputs = entry.metadata.outputMode === 'seed-derived'
+  if (hasSeedDerivedOutputs) {
+    validateSeedDerivedSplitReplayOutputs(entry, outputMode)
+  }
   if (entry.state === 'completed') {
     return structuredClone(entry.resultProofs ?? {})
   }
@@ -1441,8 +1708,9 @@ async function resumeCtfSplit(
       `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`,
     )
   }
-  await validateProofKeysetUnits(transport, entry.inputs, 'CTF split replay input keyset')
-  await validateStoredOutputKeysetUnits(transport, entry.outputs, 'CTF split replay output keyset')
+  const keysets = createReplayKeysetCache(transport)
+  await validateProofKeysetUnits(keysets, entry.inputs, 'CTF split replay input keyset')
+  await validateStoredOutputKeysetUnits(keysets, entry.outputs, 'CTF split replay output keyset')
 
   let proofStateWallet = proofStateChecker
   if (!proofStateWallet) {
@@ -1492,6 +1760,8 @@ async function resumeCtfSplit(
         baseAsset: policy.baseAsset,
         parentCollectionId: policy.parentCollectionId,
         makeOutputs: ({ collection }) => outputDataByCollection[collection] ?? [],
+        prefetchedOutputKeysets: keysets.keysets,
+        beforeMintMutation,
       },
     )
     await proofOperationStore.markProofOperationCompleted(
@@ -1513,6 +1783,7 @@ async function resumeRegularSplit(
     mintUrl: string,
     outputs: Record<string, StoredOutputData[]>,
   ) => Promise<Record<string, Proof[]>>,
+  beforeMintMutation?: () => Promise<void>,
 ): Promise<RegularProofSplitResult> {
   if (entry.kind !== 'regular-split') {
     throw new Error(`proof operation ${entry.operationId} is not a regular split`)
@@ -1551,6 +1822,7 @@ async function resumeRegularSplit(
     if (!wallet.completeSwap) {
       throw new Error('Cashu wallet adapter does not support prepared split completion')
     }
+    await beforeMintMutation?.()
     const result = await wallet.completeSwap(entryToSwapPreview(entry))
     completed = {
       send: result.send.map(normalizeProof),
@@ -1996,6 +2268,24 @@ function validateCtfKeysetUnit(keyset: { id: string; unit?: unknown }, context: 
   requireCtfCollateralUnit(keyset.unit, `${context} unit`)
 }
 
+function createReplayKeysetCache(transport: Pick<CtfSplitTransport, 'getKeys'>): {
+  readonly keysets: Map<string, MintKeys>
+  readonly getKeys: (keysetId: string) => Promise<MintKeys>
+} {
+  const keysets = new Map<string, MintKeys>()
+  return {
+    keysets,
+    getKeys: async (keysetId) => {
+      const cached = keysets.get(keysetId)
+      if (cached) return cached
+      const keyset = await transport.getKeys(keysetId)
+      requireExactCtfKeysetIdentity(keyset, keysetId)
+      keysets.set(keysetId, keyset)
+      return keyset
+    },
+  }
+}
+
 async function validateProofKeysetUnits(
   transport: Pick<CtfSplitTransport, 'getKeys'>,
   proofs: readonly Proof[],
@@ -2003,6 +2293,7 @@ async function validateProofKeysetUnits(
 ): Promise<void> {
   for (const keysetId of new Set(proofs.map((proof) => proof.id))) {
     const keyset = await transport.getKeys(keysetId)
+    requireExactCtfKeysetIdentity(keyset, keysetId)
     validateCtfKeysetUnit(keyset, `${context} ${keysetId}`)
   }
 }
@@ -2017,7 +2308,17 @@ async function validateStoredOutputKeysetUnits(
   )
   for (const keysetId of new Set(keysetIds)) {
     const keyset = await transport.getKeys(keysetId)
+    requireExactCtfKeysetIdentity(keyset, keysetId)
     validateCtfKeysetUnit(keyset, `${context} ${keysetId}`)
+  }
+}
+
+function requireExactCtfKeysetIdentity(
+  keyset: Pick<MintKeys, 'id'>,
+  requestedKeysetId: string,
+): void {
+  if (keyset.id !== requestedKeysetId) {
+    throw new Error(`CTF keyset ${requestedKeysetId} was not returned exactly`)
   }
 }
 
@@ -2052,6 +2353,117 @@ function validateSplitInput(
       throw new Error(`CTF split keyset id is missing for outcome collection ${collection}`)
     }
   }
+}
+
+function validateCompleteSetSplitPreparation(
+  conditionId: string,
+  inputs: Proof[],
+  outcomeCollectionKeysets: Record<string, string>,
+  amountSubunits: number,
+): { readonly normalizedInputs: Proof[]; readonly boundedKeysets: Record<string, string> } {
+  const normalizedInputs = requireProofArray(
+    inputs,
+    'CTF split input proofs',
+    DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+  )
+  const boundedKeysets = requireStringMapping(outcomeCollectionKeysets, 'CTF split outcome keysets')
+  validateSplitInput(conditionId, normalizedInputs, boundedKeysets, amountSubunits)
+  return { normalizedInputs, boundedKeysets }
+}
+
+/** Enforce the cumulative 64 KiB operation-record limit before counter reservation. */
+function assertDeterministicSplitPreparationFits(
+  params: Pick<
+    Parameters<typeof splitCompleteSetWithOperation>[0],
+    | 'operationId'
+    | 'mintUrl'
+    | 'conditionId'
+    | 'collateralProofs'
+    | 'outcomeCollectionKeysets'
+    | 'amountSubunits'
+  >,
+  policy: ProductCtfPolicy,
+  groups: Record<string, PlannedSeedDerivedOutputGroup>,
+): void {
+  const preparation = validateCompleteSetSplitPreparation(
+    params.conditionId,
+    params.collateralProofs,
+    params.outcomeCollectionKeysets,
+    params.amountSubunits,
+  )
+  requireBoundedCtfProofOperationPreparation({
+    operationId: params.operationId,
+    kind: 'ctf-split',
+    mintUrl: params.mintUrl,
+    inputs: preparation.normalizedInputs,
+    outputs: conservativeDeterministicOutputs(groups),
+    metadata: {
+      conditionId: params.conditionId,
+      amountSubunits: params.amountSubunits,
+      baseAsset: policy.baseAsset,
+      unit: CTF_COLLATERAL_UNIT,
+      parentCollectionId: policy.parentCollectionId,
+      outcomeCollectionKeysets: preparation.boundedKeysets,
+      outputMode: 'seed-derived',
+      outputDescriptors: seedDerivedOutputDescriptorsFromPlans(groups),
+    },
+  })
+}
+
+/** Enforce the cumulative 64 KiB operation-record limit before counter reservation. */
+function assertDeterministicMergePreparationFits(
+  params: Pick<
+    Parameters<typeof mergeCompleteSetToRegularWithOperation>[0],
+    | 'operationId'
+    | 'mintUrl'
+    | 'conditionId'
+    | 'outputAmountSubunits'
+    | 'regularKeyset'
+  >,
+  policy: ProductCtfPolicy,
+  inputsByCollection: Record<string, Proof[]>,
+  group: PlannedSeedDerivedOutputGroup,
+): void {
+  const normalizedInputsByCollection = normalizeProofGroups(
+    requireProofGroups(
+      inputsByCollection,
+      'CTF merge input groups',
+      DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+    ),
+  )
+  const groups = { '*': group }
+  requireBoundedCtfProofOperationPreparation({
+    operationId: params.operationId,
+    kind: 'ctf-merge',
+    mintUrl: params.mintUrl,
+    inputs: flattenProofs(normalizedInputsByCollection),
+    outputs: conservativeDeterministicOutputs(groups),
+    metadata: {
+      conditionId: params.conditionId,
+      outputAmountSubunits: params.outputAmountSubunits,
+      baseAsset: policy.baseAsset,
+      unit: CTF_COLLATERAL_UNIT,
+      parentCollectionId: policy.parentCollectionId,
+      inputsByCollection: normalizedInputsByCollection,
+      outputMode: 'seed-derived',
+      outputDescriptors: seedDerivedOutputDescriptorsFromPlans(groups),
+    },
+  })
+}
+
+function conservativeDeterministicOutputs(
+  groups: Record<string, PlannedSeedDerivedOutputGroup>,
+): Record<string, StoredOutputData[]> {
+  return Object.fromEntries(
+    Object.entries(groups).map(([label, group]) => [
+      label,
+      group.amounts.map((amount) => ({
+        blindedMessage: { amount, id: group.keyset.id, B_: 'f'.repeat(96) },
+        blindingFactor: 'f'.repeat(64),
+        secret: 'f'.repeat(128),
+      })),
+    ]),
+  )
 }
 
 async function validateInputBalance(
