@@ -12,6 +12,7 @@ import {
   parseCtfPayToUnlockCondition,
   pointFromHex,
   type CtfConvertRequest,
+  type CounterSource,
   type Proof,
   type SerializedBlindedMessage,
   type SerializedBlindedSignature,
@@ -40,9 +41,11 @@ import {
   deriveSettlementCapabilityArtifactDigest,
 } from '../src/settlementCapabilityArtifact.ts'
 import {
+  ctfRangeSourceKeepDerivationLocators,
   prepareCtfRangeSourceOperation,
   validateCtfRangeSourceCompletionOperation,
 } from '../src/ctfRangeSourceOperation.ts'
+import { deserializeDurableCustodyOutput } from '../src/durableCustodyProofOperation.ts'
 import { planCtfRangeCapabilitySource } from '../src/ctfRangeCapabilitySourcePlan.ts'
 import {
   completeCtfRangeCollateralSourceOperation,
@@ -457,15 +460,18 @@ test('builds one capability request and validates its exact engine projection', 
 
 test('prepares one exact persisted range source through the shared wallet boundary', async () => {
   const preparation = persistedPreparation('range-operation-source')
+  const reservations: Array<{ keysetId: string; count: number }> = []
   const candidate: Proof = {
     id: preparation.offerKeyset.id,
-    amount: 4,
+    amount: 16,
     secret: 'source-proof',
     C: MINT_PUBLIC_KEY,
   }
+  const seed = new Uint8Array(64).fill(7)
   const operation = await prepareCtfRangeSourceOperation({
     preparation,
-    seed: new Uint8Array(64).fill(7),
+    seed,
+    counterSource: counterSource(41, reservations),
     candidates: [candidate],
     wallet: {
       prepareSwapToSend: async (amount, proofs, config, outputs) => ({
@@ -474,7 +480,7 @@ test('prepares one exact persisted range source through the shared wallet bounda
         keysetId: config.keysetId,
         inputs: proofs,
         sendOutputs: outputs.send.data,
-        keepOutputs: [],
+        keepOutputs: outputs.keep.data,
         unselectedProofs: [],
       }),
       completeSwap: async () => ({ keep: [], send: [] }),
@@ -491,7 +497,54 @@ test('prepares one exact persisted range source through the shared wallet bounda
   assert.equal(operation.inputs[0]?.secret, candidate.secret)
   assert.equal(operation.metadata?.purpose, 'ctf-range-authorization-source')
   assert.ok((operation.outputs.authorization?.length ?? 0) > 0)
-  assert.deepEqual(validateCtfRangeSourceCompletionOperation(operation).operation, operation)
+  assert.ok((operation.outputs.keep?.length ?? 0) > 0)
+  assert.deepEqual(reservations, [
+    { keysetId: preparation.offerKeyset.id, count: operation.outputs.keep!.length },
+  ])
+  assert.deepEqual(
+    validateCtfRangeSourceCompletionOperation(operation, {
+      seed,
+      keyset: preparation.offerKeyset,
+    }).operation,
+    operation,
+  )
+  const keepProofs = operation.outputs.keep!.map((value) => {
+    const output = deserializeDurableCustodyOutput(value)
+    return {
+      id: output.blindedMessage.id,
+      amount: output.blindedMessage.amount,
+      secret: new TextDecoder().decode(output.secret),
+      C: MINT_PUBLIC_KEY,
+    }
+  })
+  const locators = ctfRangeSourceKeepDerivationLocators(operation, keepProofs)
+  assert.deepEqual(
+    locators,
+    keepProofs.map((_, index) => ({
+      derivationKeysetId: preparation.offerKeyset.id,
+      derivationCounter: 41 + index,
+    })),
+  )
+  assert.deepEqual(
+    ctfRangeSourceKeepDerivationLocators(operation, [...keepProofs].reverse()),
+    [...locators].reverse(),
+  )
+  assert.equal(reservations.length, 1)
+  const keepPlan = operation.metadata?.keepPlan as { counterStart: number }
+  assert.throws(
+    () =>
+      validateCtfRangeSourceCompletionOperation(
+        {
+          ...operation,
+          metadata: {
+            ...operation.metadata,
+            keepPlan: { ...keepPlan, counterStart: keepPlan.counterStart + 1 },
+          },
+        },
+        { seed, keyset: preparation.offerKeyset },
+      ),
+    /does not match deterministic derivation/,
+  )
   assert.throws(
     () =>
       validateCtfRangeSourceCompletionOperation({
@@ -517,6 +570,80 @@ test('prepares one exact persisted range source through the shared wallet bounda
       }),
     /does not match its exact private material/,
   )
+})
+
+test('reserves conditional range change once and persists an exact keep plan', async () => {
+  const preparation = persistedPreparation('range-operation-conditional-source', 'Sell')
+  const reservations: Array<{ keysetId: string; count: number }> = []
+  const operation = await prepareCtfRangeSourceOperation({
+    preparation,
+    seed: new Uint8Array(64).fill(7),
+    counterSource: counterSource(9, reservations),
+    candidates: [
+      {
+        id: preparation.offerKeyset.id,
+        amount: 20_000,
+        secret: 'conditional-source-proof',
+        C: MINT_PUBLIC_KEY,
+      },
+    ],
+    wallet: {
+      prepareSwapToSend: async () => {
+        throw new Error('unexpected regular source')
+      },
+      completeSwap: async () => ({ keep: [], send: [] }),
+      prepareConditionalSwap: async ({ keysetId, inputs, outputs }) => ({
+        keysetId,
+        inputs,
+        outputDataByLabel: Object.fromEntries(
+          outputs.map((output) => [output.label, output.kind === 'custom' ? output.data : []]),
+        ),
+      }),
+      completeConditionalSwap: async () => ({}),
+    },
+  })
+
+  assert.ok(operation)
+  assert.equal(operation.kind, 'ctf-range-conditional-source')
+  assert.ok((operation.outputs.keep?.length ?? 0) > 0)
+  assert.deepEqual(reservations, [
+    { keysetId: preparation.offerKeyset.id, count: operation.outputs.keep!.length },
+  ])
+  assert.equal((operation.metadata?.keepPlan as { counterStart: number }).counterStart, 9)
+})
+
+test('does not reserve a counter range for zero source change', async () => {
+  const preparation = persistedPreparation('range-operation-zero-change')
+  const reservations: Array<{ keysetId: string; count: number }> = []
+  const operation = await prepareCtfRangeSourceOperation({
+    preparation,
+    seed: new Uint8Array(64).fill(7),
+    counterSource: counterSource(0, reservations),
+    candidates: [
+      { id: preparation.offerKeyset.id, amount: 4, secret: 'source-proof', C: MINT_PUBLIC_KEY },
+    ],
+    wallet: {
+      prepareSwapToSend: async (amount, proofs, config, outputs) => ({
+        amount: Amount.from(amount),
+        fees: Amount.from(1),
+        keysetId: config.keysetId,
+        inputs: proofs,
+        sendOutputs: outputs.send.data,
+        keepOutputs: outputs.keep.data,
+        unselectedProofs: [],
+      }),
+      completeSwap: async () => ({ keep: [], send: [] }),
+      prepareConditionalSwap: async () => {
+        throw new Error('unexpected conditional source')
+      },
+      completeConditionalSwap: async () => ({}),
+    },
+  })
+
+  assert.ok(operation)
+  assert.deepEqual(reservations, [])
+  assert.deepEqual(operation.outputs.keep, [])
+  assert.equal(operation.metadata?.keepPlan, null)
 })
 
 test('prepares one exact collateral conversion with locked offer and ordinary complement', async () => {
@@ -603,6 +730,7 @@ test('rejects wallet substitution of exact range authorization outputs', async (
     prepareCtfRangeSourceOperation({
       preparation,
       seed: new Uint8Array(64).fill(7),
+      counterSource: counterSource(),
       candidates: [
         { id: preparation.offerKeyset.id, amount: 4, secret: 'source-proof', C: MINT_PUBLIC_KEY },
       ],
@@ -626,6 +754,24 @@ test('rejects wallet substitution of exact range authorization outputs', async (
     /changed exact authorization outputs/,
   )
 })
+
+function counterSource(
+  start = 0,
+  calls: Array<{ keysetId: string; count: number }> = [],
+): CounterSource {
+  let next = start
+  return {
+    reserve: async (keysetId, count) => {
+      calls.push({ keysetId, count })
+      const reservation = { start: next, count }
+      next += count
+      return reservation
+    },
+    advanceToAtLeast: async (_keysetId, minNext) => {
+      next = Math.max(next, minNext)
+    },
+  }
+}
 
 function preparationInput() {
   return {

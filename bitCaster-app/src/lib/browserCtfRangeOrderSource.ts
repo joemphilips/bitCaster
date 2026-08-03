@@ -33,7 +33,11 @@ import {
   completeCtfRangeOrderAuthorization,
   prepareCtfRangeOrderAuthorization,
 } from "@bitcaster/client-sdk/ctfRangeOrderPreparation";
-import type { CtfRangeSourceResult } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
+import {
+  ctfRangeSourceKeepDerivationLocators,
+  validateCtfRangeSourceCompletionOperation,
+  type CtfRangeSourceResult,
+} from "@bitcaster/client-sdk/ctfRangeSourceOperation";
 import {
   ctfRangeOrderPreparationKeysetLookup,
   encodePersistedCtfRangeOrderPreparation,
@@ -119,8 +123,13 @@ export function browserRangeJournalIdentity(
 export async function createBrowserRangeSourceBinding(
   scope: DurableCustodyScope,
   preparation: PersistedCtfRangeOrderPreparation,
+  seed: Uint8Array,
   operation: DurableCustodyProofOperationInput,
 ) {
+  validateCtfRangeSourceCompletionOperation(operation, {
+    seed,
+    keyset: preparation.offerKeyset,
+  });
   const facts = await resolveFacts(
     operation,
     exactCtfRangeOrderPreparationMintKeysets(preparation),
@@ -198,6 +207,30 @@ export function browserSourceProofRows(
     expectedRevision: null,
     derivationLocator: null,
   }));
+}
+
+export function browserSourceCompletionProofRows(
+  scope: DurableCustodyScope,
+  preparation: PersistedCtfRangeOrderPreparation,
+  operation: DurableCustodyProofOperationInput,
+  result: CtfRangeSourceResult,
+  receivedAtMs: number,
+): StagedBrowserCustodyProof[] {
+  const keepLocators = ctfRangeSourceKeepDerivationLocators(operation, result.keep);
+  const authorization = result.authorization.map((proof) => ({
+    proof: createProofRow(scope, preparation, proof, receivedAtMs),
+    expectedRevision: null,
+    derivationLocator: null,
+  }));
+  const keep = result.keep.map((proof, index) => ({
+    proof: createProofRow(scope, preparation, proof, receivedAtMs),
+    expectedRevision: null,
+    derivationLocator: {
+      keysetId: keepLocators[index]!.derivationKeysetId,
+      counter: keepLocators[index]!.derivationCounter,
+    },
+  }));
+  return [...authorization, ...keep];
 }
 
 export function browserPersistedSourceResult(result: CtfRangeSourceResult) {

@@ -1,6 +1,7 @@
 import {
   Mint as CashuMint,
   OutputData,
+  type CounterSource,
   type Proof,
   type ProofState,
   type SerializedBlindedSignature,
@@ -99,6 +100,7 @@ import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
 import {
   browserCustodyOperationId,
   browserSourceCustodyOperationId,
+  browserSourceCompletionProofRows,
   browserCustodySelection,
   browserOwnerAt,
   browserPersistedSourceResult,
@@ -120,6 +122,7 @@ import {
   requireBrowserCustodyOperation,
   requireBrowserStagedResult,
 } from "./browserCtfRangeOrderSource";
+import { createBrowserWalletCounterSource } from "../stores/wallet";
 import {
   bindCtfRangePreparationCapability,
   appendCtfRangePreparationConsolidation,
@@ -198,6 +201,7 @@ export interface BrowserCtfRangeOrderCoordinatorDependencies {
     mintUrl: string,
     request: SwapRequest,
   ) => Promise<{ signatures: SerializedBlindedSignature[] }>;
+  readonly createCounterSource?: (scopeId: string) => CounterSource;
 }
 
 export interface BrowserCtfRangeRecoveryPage {
@@ -284,6 +288,7 @@ export class BrowserCtfRangeOrderCoordinator {
     mintUrl: string,
     request: SwapRequest,
   ) => Promise<{ signatures: SerializedBlindedSignature[] }>;
+  readonly #createCounterSource: (scopeId: string) => CounterSource;
 
   constructor(input: BrowserCtfRangeOrderCoordinatorDependencies) {
     const wallet = input.wallet;
@@ -304,6 +309,7 @@ export class BrowserCtfRangeOrderCoordinator {
       input.createMintRecovery ?? ((operation) => new CtfRangeMintRecoveryAdapter(operation));
     this.#executeRefundSwap =
       input.executeRefundSwap ?? ((mintUrl, request) => new CashuMint(mintUrl).swap(request));
+    this.#createCounterSource = input.createCounterSource ?? createBrowserWalletCounterSource;
   }
 
   async prepareAndSubmit(input: {
@@ -886,6 +892,7 @@ export class BrowserCtfRangeOrderCoordinator {
       operation = await prepareCtfRangeSourceOperation({
         preparation: input.preparation,
         seed: input.seed,
+        counterSource: this.#createCounterSource(scope.scopeId),
         wallet: await this.#walletForMint(input.preparation.mintUrl),
         candidates: input.candidates,
       });
@@ -893,7 +900,12 @@ export class BrowserCtfRangeOrderCoordinator {
       throw rangeError("source-preparation-failed", error);
     }
     if (operation === null) throw rangeError("insufficient-funds");
-    const binding = await createBrowserRangeSourceBinding(scope, input.preparation, operation);
+    const binding = await createBrowserRangeSourceBinding(
+      scope,
+      input.preparation,
+      input.seed,
+      operation,
+    );
     const custodyOperationId = binding.record.operation.operationId;
     const predecessors = operation.inputs.map(
       (proof) =>
@@ -966,7 +978,10 @@ export class BrowserCtfRangeOrderCoordinator {
     operation: DurableCtfRangeOperation;
     capabilityRequest: CreateSettlementCapabilityRequest;
   }> {
-    const validatedSource = validateCtfRangeSourceCompletionOperation(source);
+    const validatedSource = validateCtfRangeSourceCompletionOperation(source, {
+      seed,
+      keyset: preparation.offerKeyset,
+    });
     const attempted = await this.#markSourceAttempted(scope, owner, sourceCustodyOperationId);
     let result: CtfRangeSourceResult;
     try {
@@ -977,7 +992,14 @@ export class BrowserCtfRangeOrderCoordinator {
     } catch (error) {
       throw rangeError("mint-source-uncertain", error);
     }
-    const staged = await this.#stageSourceResult(scope, owner, preparation, attempted, result);
+    const staged = await this.#stageSourceResult(
+      scope,
+      owner,
+      preparation,
+      source,
+      attempted,
+      result,
+    );
     return this.#applySourceAndBindRange(scope, owner, preparation, seed, source, staged, result);
   }
 
@@ -1156,11 +1178,12 @@ export class BrowserCtfRangeOrderCoordinator {
         );
         return false;
       case "restore-exact-persisted-outputs": {
-        const result = await this.#restoreExactSource(input.preparation, input.source);
+        const result = await this.#restoreExactSource(input.preparation, input.seed, input.source);
         const staged = await this.#stageSourceResult(
           input.scope,
           input.owner,
           input.preparation,
+          input.source,
           input.sourceRecord,
           result,
         );
@@ -1259,9 +1282,13 @@ export class BrowserCtfRangeOrderCoordinator {
 
   async #restoreExactSource(
     preparation: PersistedCtfRangeOrderPreparation,
+    seed: Uint8Array,
     source: DurableCustodyProofOperationInput,
   ): Promise<CtfRangeSourceResult> {
-    const validatedSource = validateCtfRangeSourceCompletionOperation(source);
+    const validatedSource = validateCtfRangeSourceCompletionOperation(source, {
+      seed,
+      keyset: preparation.offerKeyset,
+    });
     const outputs = structuredClone(validatedSource.operation.outputs) as Record<
       string,
       StoredOutputData[]
@@ -1317,11 +1344,18 @@ export class BrowserCtfRangeOrderCoordinator {
     scope: DurableCustodyScope,
     owner: DurableCustodyOwnerAuthorization,
     preparation: PersistedCtfRangeOrderPreparation,
+    sourceOperation: DurableCustodyProofOperationInput,
     current: DurableCustodyRecord,
     result: CtfRangeSourceResult,
   ): Promise<DurableCustodyRecord> {
     const exactResult = prepareDurableCustodyExactArtifact(browserPersistedSourceResult(result));
-    const successors = browserSourceProofRows(scope, preparation, result, this.#now());
+    const successors = browserSourceCompletionProofRows(
+      scope,
+      preparation,
+      sourceOperation,
+      result,
+      this.#now(),
+    );
     const authorization = browserOwnerAt(owner, this.#now());
     await this.#custody.transact(
       browserCustodySelection(
@@ -1373,7 +1407,13 @@ export class BrowserCtfRangeOrderCoordinator {
       operation,
       capabilityRequest,
     );
-    const successors = browserSourceProofRows(scope, preparation, result, this.#now());
+    const successors = browserSourceCompletionProofRows(
+      scope,
+      preparation,
+      sourceOperation,
+      result,
+      this.#now(),
+    );
     const authorization = browserOwnerAt(owner, this.#now());
     const resultAuthority = requireBrowserStagedResult(source);
     await this.#commitAppliedSource({

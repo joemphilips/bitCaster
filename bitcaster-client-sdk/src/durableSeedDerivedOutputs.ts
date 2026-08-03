@@ -58,6 +58,12 @@ export interface ReconstructedDurableSeedDerivedOutputs {
 export async function reserveDurableSeedDerivedOutputs(
   input: ReserveDurableSeedDerivedOutputsInput,
 ): Promise<DurableSeedDerivedOutputPlan> {
+  return (await reserveAndConstructDurableSeedDerivedOutputs(input)).plan
+}
+
+export async function reserveAndConstructDurableSeedDerivedOutputs(
+  input: ReserveDurableSeedDerivedOutputsInput,
+): Promise<ReconstructedDurableSeedDerivedOutputs> {
   const validated = validateAllocationInput(input, true)
   if (validated === null) throw new Error('durable seed-derived output input is invalid')
 
@@ -76,7 +82,10 @@ export async function reserveDurableSeedDerivedOutputs(
 
   const outputs = createOutputs(validated, reservation.start)
   if (outputs === null) throw new Error('durable seed-derived output construction failed')
-  return createPlan(validated.keyset.id, reservation.start, outputs)
+  return {
+    plan: createPlan(validated.keyset.id, reservation.start, outputs),
+    outputData: outputs,
+  }
 }
 
 export function reconstructDurableSeedDerivedOutputs(
@@ -97,6 +106,11 @@ export function reconstructDurableSeedDerivedOutputs(
     throw new Error('durable seed-derived output plan does not match deterministic derivation')
   }
   return { plan, outputData }
+}
+
+/** Decode one persisted output plan before it becomes wallet authority. */
+export function decodeDurableSeedDerivedOutputPlan(value: unknown): DurableSeedDerivedOutputPlan {
+  return decodePlan(value)
 }
 
 interface ValidatedAllocationInput {

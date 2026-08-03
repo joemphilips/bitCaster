@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useWalletStore } from "../wallet";
+import { createBrowserWalletCounterSource, useWalletStore } from "../wallet";
 import * as bip39 from "@/lib/bip39";
-import { setActiveBrowserWalletProfile } from "@/lib/browserWalletProfile";
+import {
+  browserWalletScopeIdFromMnemonic,
+  setActiveBrowserWalletProfile,
+} from "@/lib/browserWalletProfile";
 import { db } from "../proof-db";
 
 const cashuMocks = vi.hoisted(() => ({
@@ -184,6 +187,23 @@ describe("useWalletStore", () => {
   });
 
   describe("getWallet cache units", () => {
+    it("blocks funded counter reservation until the exact keyset scan completes", async () => {
+      const mnemonic = bip39.generate().join(" ");
+      useWalletStore.setState({ mnemonic });
+      setActiveBrowserWalletProfile(mnemonic);
+      const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+      expect(scopeId).not.toBeNull();
+      const counterSource = createBrowserWalletCounterSource(scopeId!);
+
+      await expect(counterSource.reserve("keyset-1", 1)).rejects.toThrow(
+        /counter recovery is incomplete/,
+      );
+      expect(useWalletStore.getState().keysetCounters).toEqual({});
+
+      useWalletStore.setState({ keysetCountersRecovered: { "keyset-1": true } });
+      await expect(counterSource.reserve("keyset-1", 1)).resolves.toEqual({ start: 0, count: 1 });
+    });
+
     it("does not reuse a base-asset sat msat wallet for a raw-unit sat wallet", async () => {
       useWalletStore.getState().generateMnemonic();
 

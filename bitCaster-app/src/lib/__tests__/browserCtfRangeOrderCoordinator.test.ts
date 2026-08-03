@@ -14,6 +14,7 @@ import {
   pointFromHex,
   selectCtfRangeAmounts,
   type ConditionalSwapPreview,
+  type CounterSource,
   type Proof,
   type ProofState,
   type SerializedBlindedMessage,
@@ -194,8 +195,9 @@ describe("browser CTF range order coordinator", () => {
       recoveredOperationIds: [],
       pending: [expect.objectContaining({ operationId: preparation.operationId })],
     });
-    expect(await getProofOperation(`${preparation.sourceOperationId}:consolidation:0`, database))
-      .toMatchObject({ state: "prepared" });
+    expect(
+      await getProofOperation(`${preparation.sourceOperationId}:consolidation:0`, database),
+    ).toMatchObject({ state: "prepared" });
     expect((await database.proofs.toArray()).filter(({ reservedBy }) => reservedBy).length).toBe(3);
 
     const recovered = createCoordinator(
@@ -339,9 +341,31 @@ describe("browser CTF range order coordinator", () => {
     expect(legacyProofs.map(({ secret }) => secret)).not.toContain("sell-source-a");
     expect(legacyProofs.map(({ secret }) => secret)).not.toContain("sell-source-b");
     const custodyProofs = await database.custodyProofs.toArray();
+    const backupAuthorities = new Map(
+      (await database.custodyProofBackupAuthorities.toArray()).map((row) => [row.proofId, row]),
+    );
     expect(custodyProofs.filter(({ selectability }) => selectability === "spent")).toHaveLength(2);
     expect(custodyProofs.some(({ selectability }) => selectability === "locked")).toBe(true);
     expect(custodyProofs.some(({ selectability }) => selectability === "selectable")).toBe(true);
+    expect(
+      custodyProofs
+        .filter(({ selectability }) => selectability === "locked")
+        .every(({ proofId }) => {
+          const authority = backupAuthorities.get(proofId);
+          return authority?.derivationKeysetId === null && authority.derivationCounter === null;
+        }),
+    ).toBe(true);
+    expect(
+      custodyProofs
+        .filter(({ selectability }) => selectability === "selectable")
+        .every(({ proofId }) => {
+          const authority = backupAuthorities.get(proofId);
+          return (
+            authority?.derivationKeysetId === preparation.offerKeyset.id &&
+            Number.isSafeInteger(authority.derivationCounter)
+          );
+        }),
+    ).toBe(true);
   });
 
   it("rolls back durable source preparation when the legacy proof mirror is missing", async () => {
@@ -410,8 +434,9 @@ describe("browser CTF range order coordinator", () => {
   });
 
   it("recovers an exact uncertain mint source without creating or submitting a capability", async () => {
-    const database = createDatabase();
     const preparation = persistedPreparation("range-uncertain");
+    const candidate = sourceProof(preparation.offerKeyset.id, 16);
+    const database = createDatabase([storedSourceProof(candidate)]);
     let completeCalls = 0;
     const wallet = sourceWallet({
       onComplete: async () => {
@@ -420,17 +445,23 @@ describe("browser CTF range order coordinator", () => {
       },
     });
     const engine = engineMock();
-    const coordinator = createCoordinator(database, wallet, engine);
+    let reservations = 0;
+    const coordinator = createCoordinator(database, wallet, engine, {
+      counterSource: inMemoryCounterSource(() => {
+        reservations += 1;
+      }),
+    });
 
     await expect(
       coordinator.prepareAndSubmit({
         seed: SEED,
         preparation,
-        candidates: [sourceProof(preparation.offerKeyset.id)],
+        candidates: [candidate],
       }),
     ).rejects.toMatchObject({ code: "mint-source-uncertain" });
     expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(0);
+    expect(reservations).toBe(1);
 
     const recovered = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
@@ -441,6 +472,7 @@ describe("browser CTF range order coordinator", () => {
     expect(completeCalls).toBe(2);
     expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(0);
+    expect(reservations).toBe(1);
     const custody = new BrowserDurableCustodyAdapter(database);
     expect(
       (
@@ -458,6 +490,30 @@ describe("browser CTF range order coordinator", () => {
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
     ).toBe("prepared");
+  });
+
+  it("does not persist a source operation before counter recovery is ready", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-counter-recovery-pending");
+    const engine = engineMock();
+    const counterSource = inMemoryCounterSource();
+    counterSource.reserve = async () => {
+      throw new Error("The wallet counter recovery is incomplete.");
+    };
+    const coordinator = createCoordinator(database, sourceWallet(), engine, { counterSource });
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id, 16)],
+      }),
+    ).rejects.toMatchObject({ code: "source-preparation-failed" });
+
+    expect(await database.ctfRangePreparations.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(engine.createCalls).toBe(0);
+    expect(engine.submitCalls).toBe(0);
   });
 
   it("restores exact persisted outputs when uncertain source inputs are spent", async () => {
@@ -1277,6 +1333,7 @@ function createCoordinator(
     createMintRecovery?: BrowserCtfRangeOrderCoordinatorDependencies["createMintRecovery"];
     executeRefundSwap?: BrowserCtfRangeOrderCoordinatorDependencies["executeRefundSwap"];
     now?: () => number;
+    counterSource?: CounterSource;
   } = {},
 ) {
   let now = 20_000;
@@ -1287,6 +1344,7 @@ function createCoordinator(
     now: options.now ?? (() => now++),
     randomId: () => crypto.randomUUID(),
     lockManager: options.lockManager ?? immediateLockManager(),
+    createCounterSource: () => options.counterSource ?? inMemoryCounterSource(),
     ...(options.isDefinitiveOrderRejection === undefined
       ? {}
       : { isDefinitiveOrderRejection: options.isDefinitiveOrderRejection }),
@@ -1327,6 +1385,21 @@ function createCoordinator(
   });
 }
 
+function inMemoryCounterSource(onReserve: () => void = () => {}): CounterSource {
+  const next = new Map<string, number>();
+  return {
+    async reserve(keysetId, count) {
+      onReserve();
+      const start = next.get(keysetId) ?? 0;
+      next.set(keysetId, start + count);
+      return { start, count };
+    },
+    async advanceToAtLeast(keysetId, minNext) {
+      next.set(keysetId, Math.max(next.get(keysetId) ?? 0, minNext));
+    },
+  };
+}
+
 function sourceWallet(
   input: {
     onComplete?: () => Promise<void>;
@@ -1340,7 +1413,7 @@ function sourceWallet(
       config: { includeFees: false; keysetId: string },
       outputs: {
         send: { type: "custom"; data: OutputData[] } | { type: "random" };
-        keep: { type: "random" };
+        keep: { type: "custom"; data: OutputData[] } | { type: "random" };
       },
     ): Promise<SwapPreview> {
       const inputTotal = proofs.reduce((total, proof) => total + amountToNumber(proof.amount), 0);
@@ -1359,10 +1432,12 @@ function sourceWallet(
               }),
         keepOutputs:
           keepAmount > 0
-            ? OutputData.createRandomData(Amount.from(keepAmount), {
-                id: config.keysetId,
-                keys: KEYS,
-              })
+            ? outputs.keep.type === "custom"
+              ? outputs.keep.data
+              : OutputData.createRandomData(Amount.from(keepAmount), {
+                  id: config.keysetId,
+                  keys: KEYS,
+                })
             : [],
         unselectedProofs: [],
       };

@@ -170,9 +170,11 @@ function activateWalletProfile(mnemonic: string): void {
 
 class SeedBoundCounterSource implements CounterSource {
   readonly #scopeId: string;
+  readonly #requireRecovered: boolean;
 
-  constructor(scopeId: string) {
+  constructor(scopeId: string, requireRecovered = false) {
     this.#scopeId = scopeId;
+    this.#requireRecovered = requireRecovered;
   }
 
   #requireCurrentProfile(): void {
@@ -183,6 +185,12 @@ class SeedBoundCounterSource implements CounterSource {
 
   async reserve(keysetId: string, n: number): Promise<CounterRange> {
     this.#requireCurrentProfile();
+    if (
+      this.#requireRecovered &&
+      useWalletStore.getState().keysetCountersRecovered[keysetId] !== true
+    ) {
+      throw new Error("The wallet counter recovery is incomplete.");
+    }
     return _counterSource.reserve(keysetId, n);
   }
 
@@ -200,6 +208,11 @@ class SeedBoundCounterSource implements CounterSource {
     this.#requireCurrentProfile();
     return _counterSource.snapshot();
   }
+}
+
+/** Create a counter source that stays bound to one active wallet profile. */
+export function createBrowserWalletCounterSource(scopeId: string): CounterSource {
+  return new SeedBoundCounterSource(scopeId, true);
 }
 
 /**
