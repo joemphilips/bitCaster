@@ -927,15 +927,13 @@ export function createDeterministicDurableCtfRangeRefundOutputs(input: {
   if (!(input.seed instanceof Uint8Array) || input.seed.length < 32 || input.seed.length > 64) {
     throw new Error('CTF range refund seed is invalid')
   }
-  if (input.keyset.id !== source.offerKeysetId) {
-    throw new Error('CTF range refund keyset is foreign')
-  }
   const identity = new TextEncoder().encode(
     canonicalJson({
       schemaVersion: 1,
       rangeOperationId: source.operationId,
       authorizationId: source.authorizationId,
       refundOperationId,
+      refundKeysetId: input.keyset.id,
     }),
   )
   const domain = new TextEncoder().encode('bitcaster/ctf-range-refund-output/v1\0')

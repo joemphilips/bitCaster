@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import {
   Amount,
@@ -30,7 +30,9 @@ import {
 import {
   createDurableCtfRangeCustodyBinding,
   createDurableCtfRangeRefundOperation,
+  createDeterministicDurableCtfRangeRefundOutputs,
   deriveDurableCtfRangeFeeBounds,
+  deriveDurableCtfRangeRefundOperationId,
   deriveDurableCtfResidualDecision,
   deriveDurableCtfRangeSelectionRemainingAmount,
   toDurableCtfRangeProofOperationInput,
@@ -619,12 +621,15 @@ export class DaemonCtfRangeOrderCoordinator {
     const loaded = await coordinator.load(custodyOperationId)
     if (loaded === null) throw new Error('daemon CTF range custody authority is missing')
     const mint = this.#createMint(input.mintUrl) as CtfRangeMintLike & CtfRangeMintClient
-    const existingRefund = await getProofOperation(rangeRefundOperationId(input.operationId))
+    const existingRefund = await getProofOperation(
+      deriveDurableCtfRangeRefundOperationId(input.operationId),
+    )
     if (existingRefund !== null) {
       await this.#resumeOrCreateRefund(
         coordinator,
         custodyOperationId,
         loaded.operation,
+        walletSeedHex,
         mint,
         existingRefund,
       )
@@ -654,6 +659,7 @@ export class DaemonCtfRangeOrderCoordinator {
           coordinator,
           custodyOperationId,
           loaded.operation,
+          walletSeedHex,
           mint,
           null,
         )
@@ -1026,7 +1032,7 @@ export class DaemonCtfRangeOrderCoordinator {
       )
     }
     const mint = this.#createMint(input.mintUrl) as CtfRangeMintLike & CtfRangeMintClient
-    const refundOperationId = rangeRefundOperationId(input.operationId)
+    const refundOperationId = deriveDurableCtfRangeRefundOperationId(input.operationId)
     const existingRefund = response === null ? await getProofOperation(refundOperationId) : null
     if (existingRefund !== null) {
       await this.#cancelRestingOrderBeforeRefund(input, capability, status, client)
@@ -1034,6 +1040,7 @@ export class DaemonCtfRangeOrderCoordinator {
         coordinator,
         custodyOperationId,
         loaded.operation,
+        walletSeedHex,
         mint,
         existingRefund,
       )
@@ -1084,6 +1091,7 @@ export class DaemonCtfRangeOrderCoordinator {
           coordinator,
           custodyOperationId,
           loaded.operation,
+          walletSeedHex,
           mint,
           null,
         )
@@ -1134,11 +1142,13 @@ export class DaemonCtfRangeOrderCoordinator {
     coordinator: DaemonCtfRangeCoordinator,
     custodyOperationId: string,
     source: DurableCtfRangeOperation,
+    walletSeedHex: string,
     mint: CtfRangeMintLike & CtfRangeMintClient,
     existing: ProofOperationRecord | null,
   ): Promise<void> {
     const refund =
-      existing ?? (await this.#prepareRefundOperation(custodyOperationId, source, mint))
+      existing ??
+      (await this.#prepareRefundOperation(custodyOperationId, source, walletSeedHex, mint))
     assertRangeRefundOperation(refund, custodyOperationId, source)
     const refundKeysetId = readSourceText(refund, 'refundKeysetId')
     const keyset = await loadExactMintKeyset(mint, refundKeysetId)
@@ -1190,6 +1200,7 @@ export class DaemonCtfRangeOrderCoordinator {
   async #prepareRefundOperation(
     custodyOperationId: string,
     source: DurableCtfRangeOperation,
+    walletSeedHex: string,
     mint: CtfRangeMintLike,
   ): Promise<ProofOperationRecord> {
     const keyset = await selectRangeRefundKeyset(
@@ -1202,14 +1213,22 @@ export class DaemonCtfRangeOrderCoordinator {
       source.inputs.reduce((total, proof) => total + Amount.from(proof.amount).toBigInt(), 0n) -
       deriveDurableCtfRangeFeeBounds(source).maximumFee
     if (refundAmount <= 0n) throw new Error('range refund amount is fee-dominated')
-    const outputs = OutputData.createRandomData(Amount.from(refundAmount), keyset)
+    const operationId = deriveDurableCtfRangeRefundOperationId(source.operationId)
+    const outputs = createDeterministicDurableCtfRangeRefundOutputs({
+      seed: walletSeed(walletSeedHex),
+      source,
+      refundOperationId: operationId,
+      amount: refundAmount,
+      keyset,
+    })
     const prepared = createDurableCtfRangeRefundOperation({
-      operationId: rangeRefundOperationId(source.operationId),
+      operationId,
       source,
       refundKeysetId: keyset.id,
       resolveKeysetAsset: (id) => (id === keyset.id ? source.offerAsset : undefined),
-      outputs: outputs.map(OutputData.serialize),
+      outputs,
     })
+    const persistedOutputs = outputs.map(OutputData.deserialize)
     const mutation = this.#mutation()
     return withDurableCustodyUnitOfWork(
       this.#storage,
@@ -1229,7 +1248,7 @@ export class DaemonCtfRangeOrderCoordinator {
             kind: 'swap-refund',
             mintUrl: prepared.operation.mintUrl,
             inputs: prepared.request.inputs,
-            outputs: { refund: serializeOutputDataArray(outputs) },
+            outputs: { refund: serializeOutputDataArray(persistedOutputs) },
             metadata: {
               ...prepared.operation.metadata,
               purpose: CTF_RANGE_REFUND_PURPOSE,
@@ -2711,7 +2730,7 @@ function assertRangeRefundOperation(
   source: DurableCtfRangeOperation,
 ): void {
   if (
-    refund.operationId !== rangeRefundOperationId(source.operationId) ||
+    refund.operationId !== deriveDurableCtfRangeRefundOperationId(source.operationId) ||
     refund.kind !== 'swap-refund' ||
     refund.mintUrl !== source.mintUrl ||
     refund.metadata.purpose !== CTF_RANGE_REFUND_PURPOSE ||
@@ -2803,13 +2822,6 @@ function assertRangeRefundSourceLocked(
   ) {
     throw new Error('range refund source custody authority is not locked')
   }
-}
-
-function rangeRefundOperationId(rangeOperationId: string): string {
-  return `ctf-range-refund:${createHash('sha256')
-    .update('bitcaster/ctf-range-refund/v1\0')
-    .update(rangeOperationId)
-    .digest('hex')}`
 }
 
 function assertExactOutputs(actual: readonly OutputData[], expected: readonly OutputData[]): void {

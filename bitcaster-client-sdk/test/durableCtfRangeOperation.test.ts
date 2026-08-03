@@ -77,6 +77,13 @@ const ROOT_PARENT = '0'.repeat(64)
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(MINT_PRIVATE_KEY, true))
 const KEYS = { '1': MINT_PUBLIC_KEY, '2': MINT_PUBLIC_KEY, '4': MINT_PUBLIC_KEY }
+const ROTATED_MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 2])
+const ROTATED_MINT_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(ROTATED_MINT_PRIVATE_KEY, true))
+const ROTATED_KEYS = {
+  '1': ROTATED_MINT_PUBLIC_KEY,
+  '2': ROTATED_MINT_PUBLIC_KEY,
+  '4': ROTATED_MINT_PUBLIC_KEY,
+}
 const INPUT_FEE_PPK = 100
 const FINAL_EXPIRY = 200
 const COORDINATOR_PUBLIC_KEY = 'f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9'
@@ -91,6 +98,12 @@ const SECOND_OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   outcomeCollection: 'NO',
 })
 const OFFER_KEYSET = deriveKeysetId(KEYS, {
+  unit: 'msat',
+  input_fee_ppk: INPUT_FEE_PPK,
+  expiry: FINAL_EXPIRY,
+  versionByte: 1,
+})
+const ROTATED_OFFER_KEYSET = deriveKeysetId(ROTATED_KEYS, {
   unit: 'msat',
   input_fee_ppk: INPUT_FEE_PPK,
   expiry: FINAL_EXPIRY,
@@ -1551,6 +1564,42 @@ test('refund outputs reconstruct exactly from seed after local origin loss', () 
     outputs: [...prepared.request.outputs],
   }
   assert.notEqual(deriveDurableCtfRangeRefundRequestFingerprint(mutated), fingerprint)
+})
+
+test('refund outputs bind to a rotated same-class keyset', () => {
+  const operation = fixture()
+  const refundOperationId = deriveDurableCtfRangeRefundOperationId(operation.operationId)
+  const derive = () =>
+    createDeterministicDurableCtfRangeRefundOutputs({
+      seed: SEED,
+      source: operation,
+      refundOperationId,
+      amount: '3',
+      keyset: { id: ROTATED_OFFER_KEYSET, keys: ROTATED_KEYS },
+    })
+  const outputs = derive()
+  assert.deepEqual(derive(), outputs)
+  assert.notDeepEqual(
+    outputs,
+    createDeterministicDurableCtfRangeRefundOutputs({
+      seed: SEED,
+      source: operation,
+      refundOperationId,
+      amount: '3',
+      keyset: { id: OFFER_KEYSET, keys: KEYS },
+    }),
+  )
+  const refund = createDurableCtfRangeRefundOperation({
+    operationId: refundOperationId,
+    source: operation,
+    refundKeysetId: ROTATED_OFFER_KEYSET,
+    resolveKeysetAsset: (id) => (id === ROTATED_OFFER_KEYSET ? operation.offerAsset : undefined),
+    outputs,
+  })
+  assert.equal(
+    refund.request.outputs.every(({ id }) => id === ROTATED_OFFER_KEYSET),
+    true,
+  )
 })
 
 test('range response admission is bounded before JSON parsing or cryptography', () => {

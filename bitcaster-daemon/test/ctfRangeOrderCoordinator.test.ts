@@ -24,6 +24,9 @@ import {
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk'
 import {
+  createDeterministicDurableCtfRangeRefundOutputs,
+  deriveDurableCtfRangeFeeBounds,
+  deriveDurableCtfRangeRefundOperationId,
   createDurableCtfRangeResultEnvelope,
   deriveRootCtfOutcomeCollectionId,
   type DurableCtfRangeOperation,
@@ -60,6 +63,8 @@ const COORDINATOR_KEY = 'f9308a019258c31049344f85f89d5229b531c845836f99b08601f11
 const ROTATED_COORDINATOR_KEY = 'c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5'
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = `02${'79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'}`
+const ROTATED_MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 2])
+const ROTATED_MINT_PUBLIC_KEY = '02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5'
 const KEYS = {
   '1': MINT_PUBLIC_KEY,
   '2': MINT_PUBLIC_KEY,
@@ -77,9 +82,32 @@ const KEYS = {
   '8192': MINT_PUBLIC_KEY,
   '16384': MINT_PUBLIC_KEY,
 }
+const ROTATED_KEYS = {
+  '1': ROTATED_MINT_PUBLIC_KEY,
+  '2': ROTATED_MINT_PUBLIC_KEY,
+  '4': ROTATED_MINT_PUBLIC_KEY,
+  '8': ROTATED_MINT_PUBLIC_KEY,
+  '16': ROTATED_MINT_PUBLIC_KEY,
+  '32': ROTATED_MINT_PUBLIC_KEY,
+  '64': ROTATED_MINT_PUBLIC_KEY,
+  '128': ROTATED_MINT_PUBLIC_KEY,
+  '256': ROTATED_MINT_PUBLIC_KEY,
+  '512': ROTATED_MINT_PUBLIC_KEY,
+  '1024': ROTATED_MINT_PUBLIC_KEY,
+  '2048': ROTATED_MINT_PUBLIC_KEY,
+  '4096': ROTATED_MINT_PUBLIC_KEY,
+  '8192': ROTATED_MINT_PUBLIC_KEY,
+  '16384': ROTATED_MINT_PUBLIC_KEY,
+}
 const INPUT_FEE_PPK = 100
 const FINAL_EXPIRY = 2_000
 const OFFER_KEYSET_ID = deriveKeysetId(KEYS, {
+  unit: 'msat',
+  input_fee_ppk: INPUT_FEE_PPK,
+  expiry: FINAL_EXPIRY,
+  versionByte: 1,
+})
+const ROTATED_OFFER_KEYSET_ID = deriveKeysetId(ROTATED_KEYS, {
   unit: 'msat',
   input_fee_ppk: INPUT_FEE_PPK,
   expiry: FINAL_EXPIRY,
@@ -805,9 +833,10 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
       let activeFence = fence
       let nowMs = 10_000
       let refundCommitted = false
+      let rotatedRefundKeysetActive = false
       const refundRequests: SwapRequest[] = []
       const mint = {
-        ...fakeMint(),
+        ...fakeMint(64, 1_000, undefined, () => rotatedRefundKeysetActive),
         check: async ({ Ys }: { Ys: string[] }) => ({
           states: Ys.map((Y) => ({
             Y,
@@ -872,6 +901,7 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
       )
       assert.ok(loaded)
       nowMs = (loaded.operation.expiry + 1) * 1_000
+      rotatedRefundKeysetActive = true
       activeFence = await claimCustodyScopeLease(directory, {
         scopeId: testScopeId(),
         incarnationId: 'range-refund-after-expiry',
@@ -893,6 +923,32 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
       assert.deepEqual(
         preparedRefund?.inputs.map(exactProofSnapshot),
         refundRequests[0]!.inputs.map(exactProofSnapshot),
+      )
+      assert.ok(preparedRefund)
+      const refundOperationId = deriveDurableCtfRangeRefundOperationId(loaded.operation.operationId)
+      const refundAmount =
+        loaded.operation.inputs.reduce((total, proof) => total + BigInt(proof.amount), 0n) -
+        deriveDurableCtfRangeFeeBounds(loaded.operation).maximumFee
+      const outputs = createDeterministicDurableCtfRangeRefundOutputs({
+        seed: Buffer.from(WALLET_SEED_HEX, 'hex'),
+        source: loaded.operation,
+        refundOperationId,
+        amount: refundAmount,
+        keyset: rotatedMintKeys(),
+      })
+      assert.equal(preparedRefund.operationId, refundOperationId)
+      assert.equal(preparedRefund.metadata.refundKeysetId, ROTATED_OFFER_KEYSET_ID)
+      assert.deepEqual(
+        (deserializeOutputGroups(preparedRefund.outputs).refund ?? []).map(OutputData.serialize),
+        outputs,
+      )
+      assert.deepEqual(
+        refundRequests[0]!.outputs.map(({ amount, B_, id }) => ({
+          amount: amountToNumber(amount).toString(),
+          B_,
+          id,
+        })),
+        outputs.map(({ blindedMessage }) => blindedMessage),
       )
       const interruptedDatabase = await openDaemonStateSqlite(directory)
       const locked = interruptedDatabase
@@ -1734,6 +1790,7 @@ function fakeMint(
   maxInputs = 64,
   maxExpirySeconds = 1_000,
   restoredOutputs?: () => ReadonlySet<string>,
+  includeRotatedRegularKeyset: () => boolean = () => false,
 ) {
   return {
     getInfo: async () =>
@@ -1765,6 +1822,17 @@ function fakeMint(
           input_fee_ppk: INPUT_FEE_PPK,
           final_expiry: FINAL_EXPIRY,
         },
+        ...(includeRotatedRegularKeyset()
+          ? [
+              {
+                id: ROTATED_OFFER_KEYSET_ID,
+                unit: 'msat',
+                active: true,
+                input_fee_ppk: INPUT_FEE_PPK,
+                final_expiry: FINAL_EXPIRY,
+              },
+            ]
+          : []),
         {
           id: '00deadbeef000000',
           unit: 'msat',
@@ -1804,9 +1872,11 @@ function fakeMint(
     }),
     getKeys: async (keysetId?: string) => ({
       keysets: [
-        keysetId === RECEIVE_KEYSET_ID || keysetId === COMPLEMENT_KEYSET_ID
-          ? conditionalMintKeys(keysetId)
-          : mintKeys(),
+        keysetId === ROTATED_OFFER_KEYSET_ID
+          ? rotatedMintKeys()
+          : keysetId === RECEIVE_KEYSET_ID || keysetId === COMPLEMENT_KEYSET_ID
+            ? conditionalMintKeys(keysetId)
+            : mintKeys(),
       ],
     }),
     restore: async ({ outputs }: { outputs: SerializedBlindedMessage[] }) => {
@@ -2115,6 +2185,14 @@ function mintKeys(): MintKeys {
   }
 }
 
+function rotatedMintKeys(): MintKeys {
+  return {
+    ...mintKeys(),
+    id: ROTATED_OFFER_KEYSET_ID,
+    keys: ROTATED_KEYS,
+  }
+}
+
 function conditionalMintKeys(keysetId = RECEIVE_KEYSET_ID): MintKeys {
   const complement = keysetId === COMPLEMENT_KEYSET_ID
   return {
@@ -2129,12 +2207,16 @@ function conditionalMintKeys(keysetId = RECEIVE_KEYSET_ID): MintKeys {
 }
 
 function signedProof(output: OutputData): Proof {
+  const privateKey =
+    output.blindedMessage.id === ROTATED_OFFER_KEYSET_ID
+      ? ROTATED_MINT_PRIVATE_KEY
+      : MINT_PRIVATE_KEY
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
-    MINT_PRIVATE_KEY,
+    privateKey,
     output.blindedMessage.id,
   )
-  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), MINT_PRIVATE_KEY)
+  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), privateKey)
   return output.toProof(
     {
       id: signature.id,
@@ -2145,15 +2227,33 @@ function signedProof(output: OutputData): Proof {
         s: Buffer.from(dleq.s).toString('hex'),
       },
     },
-    output.blindedMessage.id === RECEIVE_KEYSET_ID ||
-      output.blindedMessage.id === COMPLEMENT_KEYSET_ID
-      ? conditionalMintKeys(output.blindedMessage.id)
-      : mintKeys(),
+    output.blindedMessage.id === ROTATED_OFFER_KEYSET_ID
+      ? rotatedMintKeys()
+      : output.blindedMessage.id === RECEIVE_KEYSET_ID ||
+          output.blindedMessage.id === COMPLEMENT_KEYSET_ID
+        ? conditionalMintKeys(output.blindedMessage.id)
+        : mintKeys(),
   )
 }
 
-function amountToNumber(amount: Proof['amount']): number {
-  return amount.toNumber()
+function amountToNumber(amount: unknown): number {
+  if (
+    typeof amount === 'object' &&
+    amount !== null &&
+    'toNumber' in amount &&
+    typeof amount.toNumber === 'function'
+  ) {
+    return amount.toNumber()
+  }
+  if (
+    typeof amount === 'object' &&
+    amount !== null &&
+    'value' in amount &&
+    typeof amount.value === 'bigint'
+  ) {
+    return Number(amount.value)
+  }
+  return Number(amount)
 }
 
 function exactProofSnapshot(proof: {
@@ -2167,18 +2267,7 @@ function exactProofSnapshot(proof: {
 }) {
   return {
     id: proof.id,
-    amount:
-      typeof proof.amount === 'object' &&
-      proof.amount !== null &&
-      'toNumber' in proof.amount &&
-      typeof proof.amount.toNumber === 'function'
-        ? proof.amount.toNumber()
-        : typeof proof.amount === 'object' &&
-            proof.amount !== null &&
-            'value' in proof.amount &&
-            typeof proof.amount.value === 'bigint'
-          ? Number(proof.amount.value)
-          : Number(proof.amount),
+    amount: amountToNumber(proof.amount),
     secret: proof.secret,
     C: proof.C,
     dleq: proof.dleq ?? null,
