@@ -33,7 +33,6 @@ import type {
   MarketCreateParams,
   QueryMarketsParams,
   WalletConsolidationResult,
-  WalletSeedRecoveryParams,
 } from '@bitcaster-market/daemon/protocol'
 
 const execFileAsync = promisify(execFile)
@@ -55,7 +54,7 @@ let globalJson = false
 
 const DIRECT_ENGINE_READ_TIMEOUT_MS = 5_000
 const MAX_CASHU_TOKEN_FILE_BYTES = 4 * 1_024 * 1_024
-const MAX_WALLET_SEED_FILE_BYTES = 128
+const MAX_WALLET_SEED_FILE_BYTES = 256
 const TOKEN_FILE_READ_CHUNK_BYTES = 64 * 1_024
 
 await main()
@@ -381,9 +380,12 @@ function registerWalletCommand(program: Command): void {
     .description('Run one explicitly acknowledged ordinary seed-recovery invocation.')
     .requiredOption(
       '--wallet-seed-hex-file <path>',
-      'Owner-only file containing the 32-byte wallet seed as hex',
+      'Owner-only file containing the 64-byte wallet seed as lowercase hex',
     )
-    .requiredOption('--recovery-id <id>', 'Unique recovery invocation id')
+    .requiredOption(
+      '--recovery-id <id>',
+      'Stable recovery job id. Reuse it for later invocations until recovery completes',
+    )
     .requiredOption('--mint <url>', 'Canonical mint origin')
     .requiredOption('--unit <unit>', 'Mint unit: sat or msat')
     .requiredOption('--keyset-id <id>', 'Mint keyset id')
@@ -409,25 +411,31 @@ function registerWalletCommand(program: Command): void {
         if (options.unit !== 'sat' && options.unit !== 'msat') {
           throwUsage('wallet recover-seed unit must be sat or msat')
         }
-        const walletSeedHex = await readPrivateWalletSeedFile(options.walletSeedHexFile)
-        const params = {
-          recoveryId: options.recoveryId,
-          mintUrl: options.mint,
-          unit: options.unit as WalletSeedRecoveryParams['unit'],
-          keysetId: options.keysetId,
-          walletSeedHex,
-          disclosureAcknowledged: true as const,
-        } satisfies WalletSeedRecoveryParams
         if (isDryRun(options)) {
-          printDryRun(params)
+          printDryRun({
+            recoveryId: options.recoveryId,
+            mintUrl: options.mint,
+            unit: options.unit,
+            keysetId: options.keysetId,
+            walletSeedHex: await readPrivateWalletSeedFile(options.walletSeedHexFile),
+            disclosureAcknowledged: true,
+          })
           return
         }
-        await printDaemonResult(
-          callDaemon({
-            method: 'wallet.seedRecovery',
-            params,
-          }),
-        )
+        await runDaemonCommand([
+          'recover-seed',
+          '--wallet-seed-hex-file',
+          options.walletSeedHexFile,
+          '--recovery-id',
+          options.recoveryId,
+          '--mint',
+          options.mint,
+          '--unit',
+          options.unit,
+          '--keyset-id',
+          options.keysetId,
+          '--acknowledge-seed-disclosure',
+        ])
       },
     )
 
@@ -1275,8 +1283,8 @@ async function readPrivateWalletSeedFile(path: string): Promise<string> {
       throw new Error(`--wallet-seed-hex-file exceeds ${MAX_WALLET_SEED_FILE_BYTES} bytes`)
     }
     const seed = (await file.readFile('utf8')).trim()
-    if (!/^[0-9a-f]{64}$/.test(seed)) {
-      throw new Error('--wallet-seed-hex-file must contain exactly 64 lowercase hex characters')
+    if (!/^[0-9a-f]{128}$/.test(seed)) {
+      throw new Error('--wallet-seed-hex-file must contain exactly 128 lowercase hex characters')
     }
     return seed
   } finally {

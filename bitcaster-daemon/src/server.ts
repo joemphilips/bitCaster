@@ -84,7 +84,6 @@ import {
 } from './walletOps.ts'
 import { readDaemonTokenHoldings } from './walletHoldings.ts'
 import { readDaemonWalletBalance } from './walletBalance.ts'
-import type { WalletSeedRecoveryParams, WalletSeedRecoveryResult } from './protocol.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
   consolidateWalletProofs,
@@ -101,7 +100,6 @@ export interface DaemonServerOptions {
   socketPath?: string
   tradeRuntime?: TradeRuntime
   swapExecutor?: SwapRecoveryExecutor
-  recoverWalletFromSeed?: (input: WalletSeedRecoveryParams) => Promise<WalletSeedRecoveryResult>
   prepareSettlementCapability?: PrepareSettlementCapability
   triggerSettlementRecovery?: () => void
   getCustodyFence?: () => CustodyScopeFence
@@ -204,7 +202,6 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   prepareSettlementCapability?: PrepareSettlementCapability
   tradeRuntime?: TradeRuntime
   swapExecutor?: SwapRecoveryExecutor
-  recoverWalletFromSeed?: (input: WalletSeedRecoveryParams) => Promise<WalletSeedRecoveryResult>
   triggerSettlementRecovery?: () => void
   getCustodyFence?: () => CustodyScopeFence
   isCustodyReady?: () => boolean
@@ -231,7 +228,6 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
     void handleRequest(req, res, expectedToken, {
       tradeRuntime: options.tradeRuntime,
       swapExecutor: options.swapExecutor,
-      recoverWalletFromSeed: options.recoverWalletFromSeed,
       prepareSettlementCapability: options.prepareSettlementCapability,
       triggerSettlementRecovery: options.triggerSettlementRecovery,
       getCustodyFence: options.getCustodyFence,
@@ -630,28 +626,6 @@ export async function dispatch(
       return {
         ok: true,
         result,
-      }
-    }
-    case 'wallet.seedRecovery': {
-      const profile = await readProfile()
-      if (!profile) {
-        return { ok: false, error: 'daemon profile is not initialized' }
-      }
-      if (command.params.disclosureAcknowledged !== true) {
-        return {
-          ok: false,
-          error: 'seed recovery requires explicit disclosure acknowledgement',
-        }
-      }
-      if (command.params.mintUrl !== profile.mintUrl) {
-        return { ok: false, error: 'seed recovery mint does not match the profile' }
-      }
-      if (!deps.recoverWalletFromSeed) {
-        return { ok: false, error: 'seed recovery is unavailable in this daemon runtime' }
-      }
-      return {
-        ok: true,
-        result: await deps.recoverWalletFromSeed(command.params),
       }
     }
     case 'wallet.operations': {
@@ -1090,7 +1064,6 @@ function requiresReadyCustody(method: DaemonCommand['method']): boolean {
     method === 'wallet.consolidateMarket' ||
     method === 'wallet.consolidateProofs' ||
     method === 'wallet.retireCondition' ||
-    method === 'wallet.seedRecovery' ||
     method === 'order.submit' ||
     method === 'trade.recover'
   )

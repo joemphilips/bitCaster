@@ -19,7 +19,6 @@ export type DaemonCommand =
   | { method: 'wallet.retireCondition'; params: WalletRetireConditionParams }
   | { method: 'wallet.operations'; params?: { kind?: string; state?: string } }
   | { method: 'wallet.recover'; params?: undefined }
-  | { method: 'wallet.seedRecovery'; params: WalletSeedRecoveryParams }
   | { method: 'order.submit'; params: SubmitOrderParams }
   | { method: 'order.status'; params: { marketId: string; orderId: string } }
   | { method: 'order.list'; params?: { marketId?: string; status?: string } }
@@ -81,22 +80,6 @@ export interface WalletReceiveParams {
   token: string
   conditionId?: string
   outcomeSetId?: string
-}
-
-export interface WalletSeedRecoveryParams {
-  recoveryId: string
-  mintUrl: string
-  unit: 'sat' | 'msat'
-  keysetId: string
-  walletSeedHex: string
-  disclosureAcknowledged: true
-}
-
-export interface WalletSeedRecoveryResult {
-  recoveryId: string
-  state: 'active' | 'completed'
-  nextCounter: number
-  batchesProcessed: number
 }
 
 export interface WalletSplitCompleteSetParams {

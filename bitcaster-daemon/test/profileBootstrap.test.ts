@@ -25,6 +25,7 @@ import {
   ScopeLeaseRefusalError,
 } from '../src/profileFencing.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
+import { createDaemonStateSqliteSession } from '../src/stateSqlite.ts'
 import {
   DAEMON_PROFILE_DATABASE,
   ProfileSchemaRefusalError,
@@ -188,7 +189,6 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     'target_ephemeral_keys',
     'seed_recovery_jobs',
     'seed_recovery_keysets',
-    'seed_recovery_pending_proofs',
   ]) {
     assert.ok(names.has(required), required)
   }
@@ -630,6 +630,42 @@ test('scope fencing tolerates clock rollback and takeover advances epoch', async
   assert.equal(
     renewedAfterForwardJump.leaseExpiresAtMs,
     second.leaseExpiresAtMs + CUSTODY_SCOPE_LEASE_DURATION_MS + 1,
+  )
+})
+
+test('session-backed lease renewals validate the profile only once', async () => {
+  const directory = await freshProfileDirectory('lease-session')
+  const { walletScopeId } = await bootstrap(directory)
+  const claimed = await claimCustodyScopeLease(directory, {
+    scopeId: walletScopeId,
+    incarnationId: 'session-validation-owner',
+    observedAtMs: initializedAtMs,
+  })
+  const storage = createDaemonStateSqliteSession(directory)
+  const first = await renewCustodyScopeLease(
+    storage,
+    claimed,
+    initializedAtMs + CUSTODY_SCOPE_RENEW_INTERVAL_MS,
+  )
+  const database = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE))
+  try {
+    database.exec('CREATE TABLE session_validation_probe (value INTEGER)')
+  } finally {
+    database.close()
+  }
+  const second = await renewCustodyScopeLease(
+    storage,
+    first,
+    initializedAtMs + CUSTODY_SCOPE_RENEW_INTERVAL_MS * 2,
+  )
+  assert.equal(second.fencingEpoch, first.fencingEpoch)
+  await assert.rejects(
+    renewCustodyScopeLease(
+      directory,
+      second,
+      initializedAtMs + CUSTODY_SCOPE_RENEW_INTERVAL_MS * 3,
+    ),
+    ProfileSchemaRefusalError,
   )
 })
 

@@ -406,7 +406,10 @@ async function executeManualRound(
     inputFeePpk: prepared.inputFeePpk,
     plannedRound: prepared.plannedRound,
     seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
-    counterSource: createDaemonCounterSource(input.mutation),
+    counterSource: createDaemonCounterSource(input.mutation, {
+      normalizedMint: input.group.mintUrl,
+      unit: input.group.asset.unit,
+    }),
     wallet: prepared.wallet,
   })
   const validated = validateExactProofConsolidationOperation(exactOperation, {

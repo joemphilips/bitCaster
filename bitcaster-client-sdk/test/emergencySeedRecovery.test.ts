@@ -27,6 +27,7 @@ test('ordinary seed recovery advances exactly and stops after the trailing gap',
     startCounter: 0,
     requestedCount: 300,
     lastCounterWithSignature: 298,
+    scanThroughCounter: 300,
   })
   assert.deepEqual(
     {
@@ -42,6 +43,7 @@ test('ordinary seed recovery advances exactly and stops after the trailing gap',
     startCounter: 300,
     requestedCount: 300,
     lastCounterWithSignature: null,
+    scanThroughCounter: 600,
   })
   assert.deepEqual(
     {
@@ -53,6 +55,35 @@ test('ordinary seed recovery advances exactly and stops after the trailing gap',
   )
 })
 
+test('ordinary seed recovery stays active until it reaches the scan-through target', () => {
+  let active = cursor()
+  for (const startCounter of [0, 300, 600, 900]) {
+    active = advanceEmergencySeedRecoveryCursor(active, {
+      expectedRevision: active.revision,
+      startCounter,
+      requestedCount: 300,
+      lastCounterWithSignature: null,
+      scanThroughCounter: 1_500,
+    })
+  }
+  assert.deepEqual(
+    {
+      nextCounter: active.nextCounter,
+      trailingEmptyCounters: active.trailingEmptyCounters,
+      state: active.state,
+    },
+    { nextCounter: 1_200, trailingEmptyCounters: 1_200, state: 'active' },
+  )
+  const completed = advanceEmergencySeedRecoveryCursor(active, {
+    expectedRevision: active.revision,
+    startCounter: 1_200,
+    requestedCount: 300,
+    lastCounterWithSignature: null,
+    scanThroughCounter: 1_500,
+  })
+  assert.equal(completed.state, 'completed')
+})
+
 test('ordinary seed recovery rejects stale, oversized, and inconsistent cursors', () => {
   assert.throws(
     () =>
@@ -61,6 +92,7 @@ test('ordinary seed recovery rejects stale, oversized, and inconsistent cursors'
         startCounter: 0,
         requestedCount: 1,
         lastCounterWithSignature: null,
+        scanThroughCounter: 1,
       }),
     /revision is stale/,
   )
@@ -71,6 +103,7 @@ test('ordinary seed recovery rejects stale, oversized, and inconsistent cursors'
         startCounter: 300,
         requestedCount: 300,
         lastCounterWithSignature: null,
+        scanThroughCounter: 300,
       }),
     /stale counter/,
   )
@@ -81,6 +114,7 @@ test('ordinary seed recovery rejects stale, oversized, and inconsistent cursors'
         startCounter: 0,
         requestedCount: 301,
         lastCounterWithSignature: null,
+        scanThroughCounter: 301,
       }),
     /batch size/,
   )
@@ -99,6 +133,48 @@ test('ordinary seed recovery rejects stale, oversized, and inconsistent cursors'
         foreignAuthority: true,
       } as never),
     /foreign fields/,
+  )
+})
+
+test('completed recovery continues only to satisfy a higher scan-through target', () => {
+  const completed = advanceEmergencySeedRecoveryCursor(cursor(), {
+    expectedRevision: 0,
+    startCounter: 0,
+    requestedCount: 300,
+    lastCounterWithSignature: null,
+    scanThroughCounter: 300,
+  })
+  assert.throws(
+    () =>
+      advanceEmergencySeedRecoveryCursor(completed, {
+        expectedRevision: 1,
+        startCounter: 300,
+        requestedCount: 1,
+        lastCounterWithSignature: null,
+        scanThroughCounter: 300,
+      }),
+    /already completed/,
+  )
+  assert.equal(
+    advanceEmergencySeedRecoveryCursor(completed, {
+      expectedRevision: 1,
+      startCounter: 300,
+      requestedCount: 300,
+      lastCounterWithSignature: null,
+      scanThroughCounter: 600,
+    }).nextCounter,
+    600,
+  )
+  assert.throws(
+    () =>
+      advanceEmergencySeedRecoveryCursor(cursor(), {
+        expectedRevision: 0,
+        startCounter: 0,
+        requestedCount: 1,
+        lastCounterWithSignature: null,
+        scanThroughCounter: -1,
+      }),
+    /scan-through counter/,
   )
 })
 
@@ -169,6 +245,7 @@ test('recovery co-commit binds live fencing, exact cursor CAS, and proof batch',
       startCounter: 0,
       requestedCount: 2,
       lastCounterWithSignature: 1,
+      scanThroughCounter: 2,
     },
     recoveredProofIds: ['1'.repeat(64), '2'.repeat(64)],
     recoveryJobId: 'recovery-job-1',

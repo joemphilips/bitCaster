@@ -2175,7 +2175,10 @@ async function consolidateSourceProofs(
     inputFeePpk: authority.preparationInput.offerKeyset.inputFeePpk,
     plannedRound: planned,
     seed: walletSeed(walletSeedHex),
-    counterSource: createDaemonCounterSource(authority.mutation),
+    counterSource: createDaemonCounterSource(authority.mutation, {
+      normalizedMint: authority.preparation.mintUrl,
+      unit: 'msat',
+    }),
     wallet,
   })
   await persistAndCompleteConsolidation(authority, wallet, round, operation)

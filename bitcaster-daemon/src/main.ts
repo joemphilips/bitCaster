@@ -46,6 +46,13 @@ switch (command) {
     process.stdout.write('bitcaster-daemon profile initialized\n')
     break
   }
+  case 'recover-seed': {
+    const options = parseRecoverSeedOptions(args)
+    const { runOfflineDaemonSeedRecovery } = await import('./emergencySeedRecovery.ts')
+    const result = await runOfflineDaemonSeedRecovery(options)
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    break
+  }
   case 'run': {
     const nativeConfig = freezeNativeConfigAtStartup().config
     await assertDaemonProfileStorageComplete()
@@ -66,7 +73,6 @@ switch (command) {
       await import('./startupRecovery.ts')
     const { DaemonCtfRangeOrderCoordinator } = await import('./ctfRangeOrderCoordinator.ts')
     const { createCtfRangeRecoveryLoop } = await import('./ctfRangeRecoveryLoop.ts')
-    const { recoverDaemonWalletFromSeed } = await import('./emergencySeedRecovery.ts')
     const { resumeDaemonConditionRetirements, retireResolvedDaemonConditions } =
       await import('./managedConditionRetirement.ts')
     const { BitcasterEngineClient } = await import('@bitcaster-market/client-sdk/engineClient')
@@ -418,11 +424,6 @@ switch (command) {
         tradeRuntime: runtime,
         startTradeRuntime: false,
         swapExecutor: executor,
-        recoverWalletFromSeed: (input) =>
-          recoverDaemonWalletFromSeed(input, {
-            directory: profileDir(),
-            getFence: currentFence,
-          }),
         prepareSettlementCapability: (input, client) =>
           rangeOrderCoordinator.prepare(input, client),
         triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
@@ -468,9 +469,54 @@ switch (command) {
     process.stderr.write(`Usage:
   bitcaster-daemon [--datadir <path>] init [--wallet-seed-hex-file <path>]
                          [--nostr-secret-key-hex-file <path>]
+  bitcaster-daemon [--datadir <path>] recover-seed --wallet-seed-hex-file <path>
+                         --recovery-id <id> --mint <url> --unit <sat|msat>
+                         --keyset-id <id> --acknowledge-seed-disclosure
   bitcaster-daemon [--datadir <path>] run
 `)
     process.exitCode = 1
+}
+
+function parseRecoverSeedOptions(args: readonly string[]): {
+  recoveryId: string
+  mintUrl: string
+  unit: 'sat' | 'msat'
+  keysetId: string
+  walletSeedHexFile: string
+  disclosureAcknowledged: true
+} {
+  let recoveryId: string | undefined
+  let mintUrl: string | undefined
+  let unit: 'sat' | 'msat' | undefined
+  let keysetId: string | undefined
+  let walletSeedHexFile: string | undefined
+  let disclosureAcknowledged = false
+  for (let index = 0; index < args.length; index += 1) {
+    const option = args[index]
+    if (option === '--acknowledge-seed-disclosure') {
+      disclosureAcknowledged = true
+      continue
+    }
+    const value = requiredArg(args[++index], option ?? 'recover-seed option')
+    if (option === '--recovery-id') recoveryId = value
+    else if (option === '--mint') mintUrl = value
+    else if (option === '--unit' && (value === 'sat' || value === 'msat')) unit = value
+    else if (option === '--keyset-id') keysetId = value
+    else if (option === '--wallet-seed-hex-file') walletSeedHexFile = value
+    else throw new Error(`Unknown recover-seed option: ${option}`)
+  }
+  if (!disclosureAcknowledged) {
+    throw new Error('recover-seed requires --acknowledge-seed-disclosure')
+  }
+  if (unit === undefined) throw new Error('recover-seed unit must be sat or msat')
+  return {
+    recoveryId: requiredArg(recoveryId, '--recovery-id'),
+    mintUrl: requiredArg(mintUrl, '--mint'),
+    unit,
+    keysetId: requiredArg(keysetId, '--keyset-id'),
+    walletSeedHexFile: requiredArg(walletSeedHexFile, '--wallet-seed-hex-file'),
+    disclosureAcknowledged: true,
+  }
 }
 
 function parseInvocation(argv: string[]): {

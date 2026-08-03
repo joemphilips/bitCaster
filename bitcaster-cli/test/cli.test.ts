@@ -37,7 +37,7 @@ async function ensureRpcToken(): Promise<string> {
       directory,
       engineBaseUrl: 'https://engine.example',
       mintUrl: 'https://mint.example',
-      walletSeedHex: 'ab'.repeat(32),
+      walletSeedHex: 'ab'.repeat(64),
       nostrSecretKeyHex: '01'.padStart(64, '0'),
     })
   ).rpcToken
@@ -856,7 +856,7 @@ test('bitcaster-cli daemon init rejects secrets passed through argv', async () =
 test('bitcaster-cli daemon init delegates file-based setup/import to bitcaster-daemon', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-daemon-init-files-'))
   const daemonHome = join(home, 'daemon-profile')
-  const walletSeedHex = 'ab'.repeat(32)
+  const walletSeedHex = 'ab'.repeat(64)
   const nostrSecretKeyHex = '01'.padStart(64, '0')
   const walletSeedFile = join(home, 'wallet-seed.hex')
   const nostrSecretKeyFile = join(home, 'nostr-secret-key.hex')

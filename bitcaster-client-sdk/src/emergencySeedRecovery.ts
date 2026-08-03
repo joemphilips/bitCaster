@@ -25,6 +25,7 @@ export interface EmergencySeedRecoveryBatchObservation {
   startCounter: number
   requestedCount: number
   lastCounterWithSignature: number | null
+  scanThroughCounter: number
 }
 
 export interface EmergencySeedRecoveryLeaseAuthority {
@@ -86,7 +87,10 @@ export function advanceEmergencySeedRecoveryCursor(
   observation: EmergencySeedRecoveryBatchObservation,
 ): EmergencySeedRecoveryCursor {
   const cursor = validateEmergencySeedRecoveryCursor(input)
-  if (cursor.state !== 'active') {
+  if (!safeNonnegativeInteger(observation.scanThroughCounter)) {
+    throw new Error('emergency seed recovery scan-through counter is invalid')
+  }
+  if (cursor.state !== 'active' && observation.scanThroughCounter <= cursor.nextCounter) {
     throw new Error('emergency seed recovery cursor is already completed')
   }
   if (observation.expectedRevision !== cursor.revision) {
@@ -111,7 +115,8 @@ export function advanceEmergencySeedRecoveryCursor(
     trailingEmptyCounters: advanced.consecutiveEmptyOutputs,
     revision: cursor.revision + 1,
     state:
-      advanced.consecutiveEmptyOutputs >= EMERGENCY_SEED_RECOVERY_GAP_LIMIT
+      advanced.consecutiveEmptyOutputs >= EMERGENCY_SEED_RECOVERY_GAP_LIMIT &&
+      advanced.nextCounter >= observation.scanThroughCounter
         ? 'completed'
         : 'active',
   }
@@ -206,8 +211,12 @@ export function validateEmergencySeedRecoveryCoCommit(
     'startCounter',
     'requestedCount',
     'lastCounterWithSignature',
+    'scanThroughCounter',
   ])
   const observation = value.observation as unknown as EmergencySeedRecoveryBatchObservation
+  if (!safeNonnegativeInteger(observation.scanThroughCounter)) {
+    throw new Error('emergency seed recovery scan-through counter is invalid')
+  }
   if (
     value.expectedCursorRevision !== expected.revision ||
     observation.expectedRevision !== expected.revision ||
@@ -303,13 +312,13 @@ export function validateEmergencySeedRecoveryCursor(value: unknown): EmergencySe
       throw new Error(`emergency seed recovery ${label} is invalid`)
     }
   }
-  const completed = (value.trailingEmptyCounters as number) >= EMERGENCY_SEED_RECOVERY_GAP_LIMIT
   if ((value.trailingEmptyCounters as number) > (value.nextCounter as number)) {
     throw new Error('emergency seed recovery cursor counters are inconsistent')
   }
   if (
     (value.state !== 'active' && value.state !== 'completed') ||
-    (value.state === 'completed') !== completed
+    (value.state === 'completed' &&
+      (value.trailingEmptyCounters as number) < EMERGENCY_SEED_RECOVERY_GAP_LIMIT)
   ) {
     throw new Error('emergency seed recovery completion state is inconsistent')
   }

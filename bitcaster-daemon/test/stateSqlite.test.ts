@@ -40,6 +40,7 @@ import {
 
 const walletSeedHex = '11'.repeat(64)
 const nostrSecretKeyHex = '22'.repeat(32)
+const COUNTER_BINDING = { normalizedMint: 'http://localhost:8086', unit: 'msat' as const }
 
 test('target-v1 state round-trips through typed SQLite rows and artifacts', async () => {
   await withProfile(async () => {
@@ -195,47 +196,135 @@ test('ensureState initializes once without queue deadlock and survives restart',
 test('keyset counter rows reserve adjacent ranges and advance monotonically', async () => {
   await withProfile(async (home) => {
     const mutation = await claimMutation(home, 'counter-ranges')
-    assert.deepEqual(await reserveDaemonKeysetCounter('untouched-keyset', 0, mutation), {
-      start: 0,
-      count: 0,
-    })
-    assert.deepEqual(await readDaemonKeysetCounters(), {})
-    assert.deepEqual(await reserveDaemonKeysetCounter('legacy-keyset', 2, mutation), {
-      start: 0,
-      count: 2,
-    })
-    assert.deepEqual(await reserveDaemonKeysetCounter('legacy-keyset', 3, mutation), {
-      start: 2,
-      count: 3,
-    })
-    assert.deepEqual(await reserveDaemonKeysetCounter('legacy-keyset', 0, mutation), {
-      start: 5,
-      count: 0,
-    })
-    await advanceDaemonKeysetCounter('legacy-keyset', 8, mutation)
-    await advanceDaemonKeysetCounter('legacy-keyset', 6, mutation)
-    assert.deepEqual(await reserveDaemonKeysetCounter('legacy-keyset', 1, mutation), {
-      start: 8,
-      count: 1,
-    })
-    assert.deepEqual(await reserveDaemonKeysetCounter('maximum-batch', 256, mutation), {
-      start: 0,
-      count: 256,
-    })
+    assert.deepEqual(
+      await reserveDaemonKeysetCounter('untouched-keyset', 0, mutation, COUNTER_BINDING),
+      {
+        start: 0,
+        count: 0,
+      },
+    )
+    assert.deepEqual(await readDaemonKeysetCounters(COUNTER_BINDING), {})
+    assert.deepEqual(
+      await reserveDaemonKeysetCounter('legacy-keyset', 2, mutation, COUNTER_BINDING),
+      {
+        start: 0,
+        count: 2,
+      },
+    )
+    assert.deepEqual(
+      await reserveDaemonKeysetCounter('legacy-keyset', 3, mutation, COUNTER_BINDING),
+      {
+        start: 2,
+        count: 3,
+      },
+    )
+    assert.deepEqual(
+      await reserveDaemonKeysetCounter('legacy-keyset', 0, mutation, COUNTER_BINDING),
+      {
+        start: 5,
+        count: 0,
+      },
+    )
+    await advanceDaemonKeysetCounter('legacy-keyset', 8, mutation, COUNTER_BINDING)
+    await advanceDaemonKeysetCounter('legacy-keyset', 6, mutation, COUNTER_BINDING)
+    assert.deepEqual(
+      await reserveDaemonKeysetCounter('legacy-keyset', 1, mutation, COUNTER_BINDING),
+      {
+        start: 8,
+        count: 1,
+      },
+    )
+    assert.deepEqual(
+      await reserveDaemonKeysetCounter('maximum-batch', 256, mutation, COUNTER_BINDING),
+      {
+        start: 0,
+        count: 256,
+      },
+    )
     const concurrent = await Promise.all([
-      reserveDaemonKeysetCounter('concurrent-keyset', 1, mutation),
-      reserveDaemonKeysetCounter('concurrent-keyset', 1, mutation),
-      reserveDaemonKeysetCounter('concurrent-keyset', 1, mutation),
+      reserveDaemonKeysetCounter('concurrent-keyset', 1, mutation, COUNTER_BINDING),
+      reserveDaemonKeysetCounter('concurrent-keyset', 1, mutation, COUNTER_BINDING),
+      reserveDaemonKeysetCounter('concurrent-keyset', 1, mutation, COUNTER_BINDING),
     ])
     assert.deepEqual(
       concurrent.map(({ start }) => start).sort((left, right) => left - right),
       [0, 1, 2],
     )
-    assert.deepEqual(await readDaemonKeysetCounters(), {
+    assert.deepEqual(await readDaemonKeysetCounters(COUNTER_BINDING), {
       'concurrent-keyset': 3,
       'legacy-keyset': 9,
       'maximum-batch': 256,
     })
+  })
+})
+
+test('keyset counters bind the mint and unit and fail closed on a split authority', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'counter-binding')
+    const sat = { normalizedMint: 'https://mint.example', unit: 'sat' as const }
+    const msat = { normalizedMint: 'https://mint.example', unit: 'msat' as const }
+    assert.deepEqual(await reserveDaemonKeysetCounter('shared-keyset', 2, mutation, sat), {
+      start: 0,
+      count: 2,
+    })
+    assert.deepEqual(await reserveDaemonKeysetCounter('shared-keyset', 3, mutation, msat), {
+      start: 0,
+      count: 3,
+    })
+    assert.deepEqual(await readDaemonKeysetCounters(sat), { 'shared-keyset': 2 })
+    assert.deepEqual(await readDaemonKeysetCounters(msat), { 'shared-keyset': 3 })
+
+    const database = await openDaemonStateSqlite(home)
+    try {
+      database
+        .prepare(
+          `DELETE FROM custody_keyset_counters
+           WHERE scope_id = ? AND normalized_mint = ? AND unit = ? AND keyset_id = ?`,
+        )
+        .run(mutation.fence.scopeId, sat.normalizedMint, sat.unit, 'shared-keyset')
+    } finally {
+      database.close()
+    }
+    await assert.rejects(
+      () => reserveDaemonKeysetCounter('shared-keyset', 1, mutation, sat),
+      /one-sided or mismatched/,
+    )
+  })
+})
+
+test('nonterminal swap recovery lookup uses its partial index', async () => {
+  await withProfile(async (home) => {
+    const database = await openDaemonStateSqlite(home)
+    try {
+      const scopeId = (
+        database.prepare('SELECT scope_id AS scopeId FROM custody_scopes').get() as {
+          scopeId: string
+        }
+      ).scopeId
+      const insertSwap = database.prepare(
+        `INSERT INTO daemon_swaps (
+           trade_id, scope_id, base_asset, divisibility, step, revision,
+           created_at_ms, updated_at_ms
+         ) VALUES (?, ?, 'sat', 10000, ?, 0, 0, 0)`,
+      )
+      for (let index = 0; index < 32; index += 1) {
+        insertSwap.run(`terminal-${index}`, scopeId, 'confirmed')
+      }
+      insertSwap.run('active-swap', scopeId, 'settling')
+      database.exec('ANALYZE daemon_swaps')
+      const plan = database
+        .prepare(
+          `EXPLAIN QUERY PLAN SELECT 1 FROM daemon_swaps
+           WHERE scope_id = ? AND step NOT IN ('confirmed', 'refunded', 'failed') LIMIT 1`,
+        )
+        .all(scopeId) as Array<{ detail: string }>
+      assert.ok(
+        plan.some(({ detail }) => detail.includes('daemon_swaps_nonterminal_recovery_idx')),
+        JSON.stringify(plan),
+      )
+    } finally {
+      database.close()
+    }
   })
 })
 
@@ -244,28 +333,31 @@ test('keyset counter rows reject invalid ranges and immutable-row mutation', asy
     const mutation = await claimMutation(home, 'counter-bounds')
     for (const count of [-1, 1.5, 257, Number.MAX_SAFE_INTEGER]) {
       await assert.rejects(
-        () => reserveDaemonKeysetCounter('legacy-keyset', count, mutation),
+        () => reserveDaemonKeysetCounter('legacy-keyset', count, mutation, COUNTER_BINDING),
         /input is invalid/,
       )
     }
     for (const keysetId of ['', 'x'.repeat(1_025)]) {
       await assert.rejects(
-        () => reserveDaemonKeysetCounter(keysetId, 1, mutation),
+        () => reserveDaemonKeysetCounter(keysetId, 1, mutation, COUNTER_BINDING),
         /input is invalid/,
       )
       await assert.rejects(
-        () => advanceDaemonKeysetCounter(keysetId, 1, mutation),
+        () => advanceDaemonKeysetCounter(keysetId, 1, mutation, COUNTER_BINDING),
         /input is invalid/,
       )
     }
-    await advanceDaemonKeysetCounter('last-usable-keyset', 2_147_483_647, mutation)
-    assert.deepEqual(await reserveDaemonKeysetCounter('last-usable-keyset', 1, mutation), {
-      start: 2_147_483_647,
-      count: 1,
-    })
-    await advanceDaemonKeysetCounter('legacy-keyset', 2_147_483_648, mutation)
+    await advanceDaemonKeysetCounter('last-usable-keyset', 2_147_483_647, mutation, COUNTER_BINDING)
+    assert.deepEqual(
+      await reserveDaemonKeysetCounter('last-usable-keyset', 1, mutation, COUNTER_BINDING),
+      {
+        start: 2_147_483_647,
+        count: 1,
+      },
+    )
+    await advanceDaemonKeysetCounter('legacy-keyset', 2_147_483_648, mutation, COUNTER_BINDING)
     await assert.rejects(
-      () => reserveDaemonKeysetCounter('legacy-keyset', 1, mutation),
+      () => reserveDaemonKeysetCounter('legacy-keyset', 1, mutation, COUNTER_BINDING),
       /exceeds its range/,
     )
     const database = await openDaemonStateSqlite(process.env.BITCASTER_DAEMON_HOME!)
@@ -296,30 +388,33 @@ test('keyset counter rows reject invalid ranges and immutable-row mutation', asy
 test('keyset counter rows reject a fence after custody takeover', async () => {
   await withProfile(async (home) => {
     const stale = await claimMutation(home, 'counter-stale-owner')
-    await reserveDaemonKeysetCounter('legacy-keyset', 2, stale)
+    await reserveDaemonKeysetCounter('legacy-keyset', 2, stale, COUNTER_BINDING)
     const successorFence = await claimCustodyScopeLease(home, {
       scopeId: stale.fence.scopeId,
       incarnationId: 'counter-successor-owner',
       observedAtMs: stale.fence.leaseExpiresAtMs,
     })
     await assert.rejects(
-      () => reserveDaemonKeysetCounter('legacy-keyset', 1, stale),
+      () => reserveDaemonKeysetCounter('legacy-keyset', 1, stale, COUNTER_BINDING),
       /stale or expired authority/,
     )
     await assert.rejects(
-      () => advanceDaemonKeysetCounter('legacy-keyset', 8, stale),
+      () => advanceDaemonKeysetCounter('legacy-keyset', 8, stale, COUNTER_BINDING),
       /stale or expired authority/,
     )
     const current: FencedStateMutation = {
       fence: successorFence,
       observedAtMs: successorFence.leaseExpiresAtMs,
     }
-    assert.deepEqual(await reserveDaemonKeysetCounter('legacy-keyset', 1, current), {
-      start: 2,
-      count: 1,
-    })
-    await advanceDaemonKeysetCounter('legacy-keyset', 8, current)
-    assert.equal((await readDaemonKeysetCounters())['legacy-keyset'], 8)
+    assert.deepEqual(
+      await reserveDaemonKeysetCounter('legacy-keyset', 1, current, COUNTER_BINDING),
+      {
+        start: 2,
+        count: 1,
+      },
+    )
+    await advanceDaemonKeysetCounter('legacy-keyset', 8, current, COUNTER_BINDING)
+    assert.equal((await readDaemonKeysetCounters(COUNTER_BINDING))['legacy-keyset'], 8)
   })
 })
 
@@ -337,14 +432,14 @@ test('whole-state rewrites preserve monotonic counter rows and unrelated proof r
     })
     state.proofOperations['preserved-operation'] = preservedProofOperation()
     await writeState(state)
-    await reserveDaemonKeysetCounter('legacy-keyset', 9, mutation)
+    await reserveDaemonKeysetCounter('legacy-keyset', 9, mutation, COUNTER_BINDING)
     assert.equal((await readState())?.proofOperations['preserved-operation']?.state, 'completed')
     const rewrite = emptyDaemonState()
     rewrite.wallet.keysetCounters['legacy-keyset'] = 4
     rewrite.wallet.proofs = state.wallet.proofs
     await writeState(rewrite)
     assert.equal((await readState())?.wallet.proofs[0]?.proof.secret, 'preserved-secret')
-    assert.equal((await readDaemonKeysetCounters())['legacy-keyset'], 9)
+    assert.equal((await readDaemonKeysetCounters(COUNTER_BINDING))['legacy-keyset'], 9)
   })
 })
 

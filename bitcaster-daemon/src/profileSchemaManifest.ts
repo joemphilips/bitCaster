@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '32c54d7a747deaf4e38a29a5c9ac430d76095e626d7fcb28bbca1af9bee2c5a9'
+  'af1179d4f015c407b66960936e77d674023a2b1163ba6aae9462aaad60d8c66b'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -202,10 +202,12 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   ) STRICT`,
   `CREATE TABLE target_keyset_counters (
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
+    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
     keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
     next_counter INTEGER NOT NULL CHECK (next_counter BETWEEN 0 AND 2147483648),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
-    PRIMARY KEY (scope_id, keyset_id)
+    PRIMARY KEY (scope_id, normalized_mint, unit, keyset_id)
   ) STRICT`,
   `CREATE TABLE target_proof_operations (
     operation_id TEXT PRIMARY KEY NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 16384),
@@ -1236,6 +1238,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE TABLE seed_recovery_jobs (
     recovery_id TEXT PRIMARY KEY NOT NULL CHECK (length(recovery_id) BETWEEN 1 AND 1024),
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
     invocation_id TEXT NOT NULL UNIQUE CHECK (length(invocation_id) BETWEEN 1 AND 1024),
     disclosure_acknowledged INTEGER NOT NULL CHECK (disclosure_acknowledged = 1),
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
@@ -1247,12 +1250,12 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
     UNIQUE (recovery_id, scope_id),
-    UNIQUE (scope_id, normalized_mint, unit)
+    UNIQUE (recovery_id, keyset_id),
+    UNIQUE (recovery_id, scope_id, keyset_id)
   ) STRICT`,
   `CREATE TABLE seed_recovery_keysets (
-    recovery_id TEXT NOT NULL REFERENCES seed_recovery_jobs(recovery_id) ON DELETE RESTRICT,
+    recovery_id TEXT NOT NULL,
     keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
-    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 255),
     next_counter INTEGER NOT NULL CHECK (next_counter >= 0),
     trailing_empty_counters INTEGER NOT NULL CHECK (
       trailing_empty_counters BETWEEN 0 AND 9007199254740991
@@ -1260,30 +1263,12 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     revision INTEGER NOT NULL CHECK (revision >= 0),
     state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
     PRIMARY KEY (recovery_id, keyset_id),
-    UNIQUE (recovery_id, ordinal),
+    FOREIGN KEY (recovery_id, keyset_id)
+      REFERENCES seed_recovery_jobs(recovery_id, keyset_id) ON DELETE RESTRICT,
     CHECK (
-      (state = 'active' AND trailing_empty_counters < 300)
+      state = 'active'
       OR (state = 'completed' AND trailing_empty_counters >= 300)
     )
-  ) STRICT`,
-  `CREATE TABLE seed_recovery_pending_proofs (
-    recovery_id TEXT NOT NULL,
-    keyset_id TEXT NOT NULL,
-    proof_y TEXT NOT NULL CHECK (length(proof_y) BETWEEN 1 AND 1024),
-    proof_position INTEGER NOT NULL CHECK (proof_position BETWEEN 0 AND 299),
-    scope_id TEXT NOT NULL,
-    normalized_mint TEXT NOT NULL,
-    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
-    curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
-    proof_body BLOB NOT NULL CHECK (length(proof_body) BETWEEN 1 AND ${recordBytesMax}),
-    retained_reason TEXT NOT NULL CHECK (retained_reason = 'PENDING'),
-    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-    PRIMARY KEY (recovery_id, keyset_id, proof_y),
-    UNIQUE (recovery_id, keyset_id, proof_position),
-    FOREIGN KEY (recovery_id, keyset_id)
-      REFERENCES seed_recovery_keysets(recovery_id, keyset_id) ON DELETE RESTRICT,
-    FOREIGN KEY (recovery_id, scope_id)
-      REFERENCES seed_recovery_jobs(recovery_id, scope_id) ON DELETE RESTRICT
   ) STRICT`,
   `CREATE INDEX custody_proofs_selection_idx
     ON custody_proofs (
@@ -1308,6 +1293,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ON target_proof_operations (
       scope_id, purpose, state, updated_at_ms, operation_id
     )`,
+  `CREATE INDEX target_proof_operations_prepared_idx
+    ON target_proof_operations (scope_id, state, operation_id)`,
   `CREATE INDEX daemon_complete_set_recovery_roots_active_idx
     ON daemon_complete_set_recovery_roots (scope_id, updated_at_ms, root_operation_id)`,
   `CREATE INDEX daemon_ctf_range_active_recovery_idx
@@ -1324,6 +1311,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ON custody_operations (scope_id, updated_at_ms DESC, operation_id DESC)`,
   `CREATE INDEX custody_operations_retry_idx
     ON custody_operations (scope_id, operation_state, next_attempt_at_ms, operation_id)`,
+  `CREATE INDEX custody_proof_reservations_scope_idx
+    ON custody_proof_reservations (scope_id, proof_id)`,
   `CREATE INDEX custody_active_work_page_idx
     ON custody_active_work (scope_id, next_attempt_at_ms, operation_id)`,
   `CREATE INDEX custody_deliveries_pending_idx
@@ -1334,6 +1323,9 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ON order_collateral_pins (scope_id, pin_state, order_id, pin_id)`,
   `CREATE INDEX daemon_swaps_listing_idx
     ON daemon_swaps (scope_id, market_id, step, updated_at_ms DESC, trade_id)`,
+  `CREATE INDEX daemon_swaps_nonterminal_recovery_idx
+    ON daemon_swaps (scope_id, trade_id)
+    WHERE step NOT IN ('confirmed', 'refunded', 'failed')`,
   `CREATE INDEX daemon_swaps_order_idx
     ON daemon_swaps (scope_id, order_id, updated_at_ms DESC, trade_id)`,
   `CREATE INDEX swap_operation_links_operation_idx
@@ -1342,8 +1334,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ON target_ephemeral_keys (scope_id, trade_id, order_id)`,
   `CREATE INDEX seed_recovery_jobs_active_idx
     ON seed_recovery_jobs (scope_id, state, updated_at_ms, recovery_id)`,
-  `CREATE INDEX seed_recovery_pending_idx
-    ON seed_recovery_pending_proofs (scope_id, normalized_mint, unit, recovery_id, keyset_id)`,
   `CREATE TRIGGER profile_schema_marker_no_update
     BEFORE UPDATE ON profile_schema_marker
     BEGIN
@@ -1367,8 +1357,9 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       SELECT RAISE(ABORT, 'keyset counter cannot decrease');
     END`,
   `CREATE TRIGGER target_keyset_counters_no_rekey
-    BEFORE UPDATE OF scope_id, keyset_id ON target_keyset_counters
-    WHEN NEW.scope_id <> OLD.scope_id OR NEW.keyset_id <> OLD.keyset_id
+    BEFORE UPDATE OF scope_id, normalized_mint, unit, keyset_id ON target_keyset_counters
+    WHEN NEW.scope_id <> OLD.scope_id OR NEW.normalized_mint <> OLD.normalized_mint
+      OR NEW.unit <> OLD.unit OR NEW.keyset_id <> OLD.keyset_id
     BEGIN
       SELECT RAISE(ABORT, 'keyset counter identity is immutable');
     END`,

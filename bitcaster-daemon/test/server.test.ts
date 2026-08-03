@@ -56,16 +56,29 @@ test('complete-set conversion binds its deterministic counters to the live custo
       incarnationId: 'complete-set-test',
       observedAtMs: 1,
     })
-    const mode = createDaemonCompleteSetOutputMode('11'.repeat(64), {
-      getCustodyFence: () => fence,
+    const mode = createDaemonCompleteSetOutputMode({
+      walletSeedHex: '11'.repeat(64),
+      deps: { getCustodyFence: () => fence },
+      mintUrl: 'https://mint.example',
     })
 
     assert.deepEqual(await mode.counterSource.reserve(`01${'a'.repeat(64)}`, 3), {
       start: 0,
       count: 3,
     })
-    assert.deepEqual(await readDaemonKeysetCounters(), { [`01${'a'.repeat(64)}`]: 3 })
-    assert.throws(() => createDaemonCompleteSetOutputMode('11'.repeat(64), {}), /authority/)
+    assert.deepEqual(
+      await readDaemonKeysetCounters({ normalizedMint: 'https://mint.example', unit: 'msat' }),
+      { [`01${'a'.repeat(64)}`]: 3 },
+    )
+    assert.throws(
+      () =>
+        createDaemonCompleteSetOutputMode({
+          walletSeedHex: '11'.repeat(64),
+          deps: {},
+          mintUrl: 'https://mint.example',
+        }),
+      /authority/,
+    )
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome

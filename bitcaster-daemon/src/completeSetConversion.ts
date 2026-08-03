@@ -70,21 +70,22 @@ type CompleteSetSplitResult = {
   outcomeProofCounts: Record<string, number>
 }
 
-export function createDaemonCompleteSetOutputMode(
-  walletSeedHex: string,
-  deps: Pick<WalletOpsDependencies, 'getCustodyFence'>,
-) {
-  if (!deps.getCustodyFence) {
+export function createDaemonCompleteSetOutputMode(input: {
+  readonly walletSeedHex: string
+  readonly deps: Pick<WalletOpsDependencies, 'getCustodyFence'>
+  readonly mintUrl: string
+}) {
+  if (!input.deps.getCustodyFence) {
     throw new Error('complete-set conversion requires custody authority')
   }
-  const getCustodyFence = deps.getCustodyFence
+  const getCustodyFence = input.deps.getCustodyFence
   return {
     kind: 'seed-derived' as const,
-    seed: Buffer.from(walletSeedHex, 'hex'),
-    counterSource: createDaemonCounterSource(() => ({
-      fence: getCustodyFence(),
-      observedAtMs: Date.now(),
-    })),
+    seed: Buffer.from(input.walletSeedHex, 'hex'),
+    counterSource: createDaemonCounterSource(
+      () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
+      { normalizedMint: input.mintUrl, unit: 'msat' },
+    ),
   }
 }
 
@@ -145,7 +146,11 @@ async function startCompleteSetSplit(
     amountSubunits: input.amountSats,
     proofOperationStore: ctfAuthority.store,
     beforeMintMutation: ctfAuthority.beforeMintMutation,
-    outputMode: createDaemonCompleteSetOutputMode(input.secrets.walletSeedHex, input.deps),
+    outputMode: createDaemonCompleteSetOutputMode({
+      walletSeedHex: input.secrets.walletSeedHex,
+      deps: input.deps,
+      mintUrl: input.mintUrl,
+    }),
   })
   return completeSetResponse(input, proofsByCollection)
 }
@@ -211,7 +216,11 @@ async function resumeExistingCompleteSetSplit(
     proofOperationStore: ctfAuthority.store,
     proofStateChecker: resumeDependencies?.proofStateChecker,
     restoreOutputGroups: resumeDependencies?.restoreOutputGroups,
-    outputMode: createDaemonCompleteSetOutputMode(input.secrets.walletSeedHex, input.deps),
+    outputMode: createDaemonCompleteSetOutputMode({
+      walletSeedHex: input.secrets.walletSeedHex,
+      deps: input.deps,
+      mintUrl: input.mintUrl,
+    }),
     beforeMintMutation: ctfAuthority.beforeMintMutation,
   })
   return completeSetResponse(input, proofsByCollection)

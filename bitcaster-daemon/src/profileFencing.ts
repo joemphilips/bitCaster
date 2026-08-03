@@ -1,9 +1,6 @@
-import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { decodeDurableCustodyScopeId } from '@bitcaster-market/client-sdk'
-import { DAEMON_PROFILE_DATABASE, validateDaemonProfileSchema } from './profileSchema.ts'
-import { getFinalProfileSchemaManifest } from './profileSchemaManifest.ts'
-import { withProfileStorageAccess } from './profileAccess.ts'
+import { type DaemonStateSqliteSession, withDaemonStateSqliteTransaction } from './stateSqlite.ts'
 
 export const CUSTODY_SCOPE_LEASE_DURATION_MS = 60_000
 export const CUSTODY_SCOPE_RENEW_INTERVAL_MS = 20_000
@@ -39,7 +36,7 @@ export interface CustodyScopeFence {
 }
 
 export async function claimCustodyScopeLease(
-  directory: string,
+  storage: string | DaemonStateSqliteSession,
   input: {
     readonly scopeId: string
     readonly incarnationId: string
@@ -47,7 +44,7 @@ export async function claimCustodyScopeLease(
   },
 ): Promise<CustodyScopeFence> {
   validateLeaseIdentity(input)
-  return withFencingTransaction(directory, (database) => {
+  return withFencingTransaction(storage, (database) => {
     const state = readScopeState(database, input.scopeId)
     if (
       state.ownerIncarnationId !== null &&
@@ -90,12 +87,12 @@ export async function claimCustodyScopeLease(
 }
 
 export async function renewCustodyScopeLease(
-  directory: string,
+  storage: string | DaemonStateSqliteSession,
   fence: CustodyScopeFence,
   observedAtMs: number,
 ): Promise<CustodyScopeFence> {
   validateLeaseIdentity({ ...fence, observedAtMs })
-  return withFencingTransaction(directory, (database) => {
+  return withFencingTransaction(storage, (database) => {
     const state = readScopeState(database, fence.scopeId)
     assertCurrentFence(state, fence)
     if (state.leaseExpiresAtMs === null) throw new ScopeLeaseRefusalError('stale-fence')
@@ -119,12 +116,12 @@ export async function renewCustodyScopeLease(
 }
 
 export async function releaseCustodyScopeLease(
-  directory: string,
+  storage: string | DaemonStateSqliteSession,
   fence: CustodyScopeFence,
   observedAtMs: number,
 ): Promise<void> {
   validateLeaseIdentity({ ...fence, observedAtMs })
-  await withFencingTransaction(directory, (database) => {
+  await withFencingTransaction(storage, (database) => {
     const state = readScopeState(database, fence.scopeId)
     assertCurrentFence(state, fence)
     if (state.leaseExpiresAtMs === null) throw new ScopeLeaseRefusalError('stale-fence')
@@ -146,36 +143,13 @@ export async function releaseCustodyScopeLease(
 }
 
 async function withFencingTransaction<T>(
-  directory: string,
+  storage: string | DaemonStateSqliteSession,
   action: (database: DatabaseSync) => T,
 ): Promise<T> {
-  return withProfileStorageAccess(async () => {
-    await validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest())
-    const database = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE))
-    try {
-      database.exec(`
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = FULL;
-        PRAGMA foreign_keys = ON;
-        PRAGMA busy_timeout = 5000;
-        BEGIN IMMEDIATE;
-      `)
-      try {
-        const result = action(database)
-        database.exec('COMMIT')
-        return result
-      } catch (error) {
-        try {
-          database.exec('ROLLBACK')
-        } catch {
-          // BEGIN or COMMIT may not have completed.
-        }
-        throw error
-      }
-    } finally {
-      database.close()
-    }
-  })
+  if (typeof storage === 'string') {
+    return withDaemonStateSqliteTransaction(storage, action)
+  }
+  return storage.transaction(action)
 }
 
 interface ScopeStateRow {

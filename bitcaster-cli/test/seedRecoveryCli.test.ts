@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { chmod, mkdtemp, open, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -22,7 +23,7 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
       { mode: 0o600 },
     )
     const seedPath = join(home, 'wallet-seed.hex')
-    const seed = 'ab'.repeat(32)
+    const seed = 'ab'.repeat(64)
     await writeFile(seedPath, `${seed}\n`, { mode: 0o600 })
     const result = await runCli(home, [
       '--dry-run',
@@ -44,6 +45,11 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
     assert.match(result.stdout, /"recoveryId": "recovery-1"/)
     assert.doesNotMatch(result.stdout, /walletSeedHex/)
     assert.doesNotMatch(result.stdout, new RegExp(seed))
+
+    const offline = await recoveryCli(home, seedPath, false)
+    assert.notEqual(offline.code, 0)
+    assert.doesNotMatch(`${offline.stdout}\n${offline.stderr}`, /daemon not reachable/i)
+    assert.equal(existsSync(join(home, 'daemon-autostart.pid')), false)
 
     const noAcknowledgement = await runCli(home, [
       '--dry-run',
@@ -101,9 +107,21 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
   }
 })
 
-async function recoveryCli(home: string, seedPath: string) {
+test('recover-seed help requires a stable recovery job id across invocations', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-recovery-help-'))
+  try {
+    const result = await runCli(home, ['wallet', 'recover-seed', '--help'])
+    assert.equal(result.code, 0)
+    assert.match(result.stdout, /Stable recovery job id/)
+    assert.match(result.stdout, /Reuse it for later\s+invocations until recovery completes/)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+async function recoveryCli(home: string, seedPath: string, dryRun = true) {
   return runCli(home, [
-    '--dry-run',
+    ...(dryRun ? ['--dry-run'] : []),
     'wallet',
     'recover-seed',
     '--wallet-seed-hex-file',

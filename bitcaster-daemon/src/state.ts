@@ -461,10 +461,16 @@ export async function updateState<T>(update: (state: DaemonState, now: string) =
 
 const DAEMON_COUNTER_MAX_NEXT = 2_147_483_648
 
+export interface CounterBinding {
+  readonly normalizedMint: string
+  readonly unit: 'sat' | 'msat'
+}
+
 export async function reserveDaemonKeysetCounter(
   keysetId: string,
   count: number,
   mutation: FencedStateMutation,
+  binding: CounterBinding,
 ): Promise<{ start: number; count: number }> {
   assertDaemonCounterInput(keysetId, count, 256)
   if (count === 0) {
@@ -479,6 +485,7 @@ export async function reserveDaemonKeysetCounter(
           keysetId,
           count,
           mutation.observedAtMs,
+          binding,
         ),
     )
   }
@@ -493,6 +500,7 @@ export async function reserveDaemonKeysetCounter(
         keysetId,
         count,
         mutation.observedAtMs,
+        binding,
       ),
   )
 }
@@ -501,6 +509,7 @@ export async function advanceDaemonKeysetCounter(
   keysetId: string,
   minimum: number,
   mutation: FencedStateMutation,
+  binding: CounterBinding,
 ): Promise<void> {
   assertDaemonCounterInput(keysetId, minimum, DAEMON_COUNTER_MAX_NEXT)
   await withDurableCustodyUnitOfWork(
@@ -514,6 +523,7 @@ export async function advanceDaemonKeysetCounter(
         keysetId,
         minimum,
         mutation.observedAtMs,
+        binding,
       ),
   )
 }
@@ -524,17 +534,12 @@ export function advanceDaemonKeysetCounterFromDatabase(
   keysetId: string,
   minimum: number,
   updatedAtMs: number,
+  binding: CounterBinding,
 ): void {
   assertDaemonCounterInput(keysetId, minimum, DAEMON_COUNTER_MAX_NEXT)
-  database
-    .prepare(
-      `INSERT INTO target_keyset_counters (scope_id, keyset_id, next_counter, updated_at_ms)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(scope_id, keyset_id) DO UPDATE SET
-         next_counter = MAX(target_keyset_counters.next_counter, excluded.next_counter),
-         updated_at_ms = excluded.updated_at_ms`,
-    )
-    .run(scopeId, keysetId, minimum, updatedAtMs)
+  const current = readExactBoundCounter(database, scopeId, keysetId, binding)
+  if (minimum > current)
+    writeExactBoundCounter(database, scopeId, keysetId, binding, minimum, updatedAtMs)
 }
 
 function reserveDaemonKeysetCounterFromDatabase(
@@ -543,41 +548,106 @@ function reserveDaemonKeysetCounterFromDatabase(
   keysetId: string,
   count: number,
   updatedAtMs: number,
+  binding: CounterBinding,
 ): { start: number; count: number } {
+  const current = readExactBoundCounter(database, scopeId, keysetId, binding)
   if (count === 0) {
-    const row = database
-      .prepare(
-        'SELECT next_counter AS nextCounter FROM target_keyset_counters WHERE scope_id = ? AND keyset_id = ?',
-      )
-      .get(scopeId, keysetId) as { nextCounter: number } | undefined
-    return { start: row?.nextCounter ?? 0, count }
+    return { start: current, count }
   }
-  const row = database
-    .prepare(
-      `INSERT INTO target_keyset_counters (scope_id, keyset_id, next_counter, updated_at_ms)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(scope_id, keyset_id) DO UPDATE SET
-         next_counter = target_keyset_counters.next_counter + excluded.next_counter,
-         updated_at_ms = excluded.updated_at_ms
-       WHERE target_keyset_counters.next_counter <= ${DAEMON_COUNTER_MAX_NEXT} - excluded.next_counter
-       RETURNING next_counter - ? AS start`,
-    )
-    .get(scopeId, keysetId, count, updatedAtMs, count) as { start: number } | undefined
-  if (row === undefined) throw new Error('daemon keyset counter reservation exceeds its range')
-  return { start: row.start, count }
+  if (current > DAEMON_COUNTER_MAX_NEXT - count) {
+    throw new Error('daemon keyset counter reservation exceeds its range')
+  }
+  writeExactBoundCounter(database, scopeId, keysetId, binding, current + count, updatedAtMs)
+  return { start: current, count }
 }
 
-export async function readDaemonKeysetCounters(): Promise<Record<string, number>> {
+export function readExactBoundCounter(
+  database: DatabaseSync,
+  scopeId: string,
+  keysetId: string,
+  binding: CounterBinding,
+): number {
+  const target = database
+    .prepare(
+      `SELECT next_counter AS nextCounter FROM target_keyset_counters
+       WHERE scope_id = ? AND normalized_mint = ? AND unit = ? AND keyset_id = ?`,
+    )
+    .get(scopeId, binding.normalizedMint, binding.unit, keysetId) as
+    | { nextCounter: number }
+    | undefined
+  const custody = database
+    .prepare(
+      `SELECT next_counter AS nextCounter FROM custody_keyset_counters
+       WHERE scope_id = ? AND normalized_mint = ? AND unit = ? AND keyset_id = ?`,
+    )
+    .get(scopeId, binding.normalizedMint, binding.unit, keysetId) as
+    | { nextCounter: number }
+    | undefined
+  if (target === undefined && custody === undefined) return 0
+  if (target === undefined || custody === undefined || target.nextCounter !== custody.nextCounter) {
+    throw new Error('daemon keyset counter authority is one-sided or mismatched')
+  }
+  return target.nextCounter
+}
+
+function writeExactBoundCounter(
+  database: DatabaseSync,
+  scopeId: string,
+  keysetId: string,
+  binding: CounterBinding,
+  nextCounter: number,
+  updatedAtMs: number,
+): void {
+  database
+    .prepare(
+      `INSERT INTO target_keyset_counters (
+         scope_id, normalized_mint, unit, keyset_id, next_counter, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(scope_id, normalized_mint, unit, keyset_id) DO UPDATE SET
+         next_counter = excluded.next_counter, updated_at_ms = excluded.updated_at_ms`,
+    )
+    .run(scopeId, binding.normalizedMint, binding.unit, keysetId, nextCounter, updatedAtMs)
+  database
+    .prepare(
+      `INSERT INTO custody_keyset_counters (
+         scope_id, normalized_mint, unit, keyset_id, next_counter, revision, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, 0, ?)
+       ON CONFLICT(scope_id, normalized_mint, unit, keyset_id) DO UPDATE SET
+         next_counter = excluded.next_counter, revision = custody_keyset_counters.revision + 1,
+         updated_at_ms = excluded.updated_at_ms`,
+    )
+    .run(scopeId, binding.normalizedMint, binding.unit, keysetId, nextCounter, updatedAtMs)
+}
+
+export async function readDaemonKeysetCounters(
+  binding: CounterBinding,
+): Promise<Record<string, number>> {
   return withProfileStorageAccess(async () => {
     const database = await openDaemonStateSqlite(profileDir())
     try {
       const scopeId = readScopeId(database)
       const rows = database
         .prepare(
-          'SELECT keyset_id AS keysetId, next_counter AS nextCounter FROM target_keyset_counters WHERE scope_id = ?',
+          `SELECT keyset_id AS keysetId FROM target_keyset_counters
+           WHERE scope_id = ? AND normalized_mint = ? AND unit = ?
+           UNION
+           SELECT keyset_id AS keysetId FROM custody_keyset_counters
+           WHERE scope_id = ? AND normalized_mint = ? AND unit = ?`,
         )
-        .all(scopeId) as Array<{ keysetId: string; nextCounter: number }>
-      return Object.fromEntries(rows.map(({ keysetId, nextCounter }) => [keysetId, nextCounter]))
+        .all(
+          scopeId,
+          binding.normalizedMint,
+          binding.unit,
+          scopeId,
+          binding.normalizedMint,
+          binding.unit,
+        ) as Array<{ keysetId: string }>
+      return Object.fromEntries(
+        rows.map(({ keysetId }) => [
+          keysetId,
+          readExactBoundCounter(database, scopeId, keysetId, binding),
+        ]),
+      )
     } finally {
       database.close()
     }
@@ -1011,6 +1081,49 @@ export function admitExactAvailableWalletProofsFromDatabase(
       updatedAt: timestamp,
     })
   }
+}
+
+/**
+ * Admit a recovered regular proof without weakening an existing target state.
+ * A matching row in any target state is already the local projection authority.
+ */
+export function admitRecoveredRegularWalletProofFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly mintUrl: string
+    readonly proof: CashuProofRecord
+    readonly asset: StoredProofAsset
+    readonly nowMs: number
+  },
+): void {
+  const scopeId = readScopeId(database)
+  const expectedProof = normalizeCashuProofRecord(input.proof)
+  const expectedAsset = normalizeProofAsset(input.asset)
+  const raw = database
+    .prepare(
+      `SELECT * FROM target_wallet_proofs
+       WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+    )
+    .get(scopeId, input.mintUrl, expectedProof.secret) as Record<string, unknown> | undefined
+  if (raw !== undefined) {
+    const existing = decodeWalletProofRow(raw)
+    if (
+      !isDeepStrictEqual(existing.proof, expectedProof) ||
+      !isDeepStrictEqual(normalizeProofAsset(existing.asset), expectedAsset)
+    ) {
+      throw new Error('recovered proof conflicts with local wallet projection authority')
+    }
+    return
+  }
+  const timestamp = new Date(input.nowMs).toISOString()
+  insertWalletProof(database, scopeId, {
+    proof: expectedProof,
+    mintUrl: input.mintUrl,
+    state: 'available',
+    asset: expectedAsset,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  })
 }
 
 function admitRegularSplitHandoffSuccessors(
@@ -2423,14 +2536,6 @@ export function readDaemonStateFromDatabase(database: DatabaseSync): DaemonState
     .prepare('SELECT * FROM target_wallet_proofs WHERE scope_id = ? ORDER BY proof_id')
     .all(scopeId) as Array<Record<string, unknown>>) {
     state.wallet.proofs.push(decodeWalletProofRow(raw))
-  }
-  for (const raw of database
-    .prepare('SELECT keyset_id, next_counter FROM target_keyset_counters WHERE scope_id = ?')
-    .all(scopeId) as Array<Record<string, unknown>>) {
-    state.wallet.keysetCounters[requireText(raw.keyset_id, 'counter keyset')] = requireInteger(
-      raw.next_counter,
-      'counter value',
-    )
   }
   for (const raw of database
     .prepare('SELECT * FROM target_proof_operations WHERE scope_id = ?')

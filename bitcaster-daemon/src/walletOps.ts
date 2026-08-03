@@ -983,31 +983,42 @@ export function createWallet(
   return new CashuWallet(new CashuMint(mintUrl), {
     unit,
     bip39seed: Buffer.from(secrets.walletSeedHex, 'hex'),
-    counterSource: createDaemonCounterSource(mutation),
+    counterSource: createDaemonCounterSource(mutation, { normalizedMint: mintUrl, unit }),
   }) as CashuWalletLike
 }
 
-export function createDaemonCounterSource(mutation: () => FencedStateMutation): CounterSource {
-  return new DaemonCounterSource(mutation)
+export function createDaemonCounterSource(
+  mutation: () => FencedStateMutation,
+  binding: { normalizedMint: string; unit: 'sat' | 'msat' },
+): CounterSource {
+  return new DaemonCounterSource(mutation, binding)
 }
 
 class DaemonCounterSource implements CounterSource {
   readonly #mutation: () => FencedStateMutation
+  readonly #binding: { normalizedMint: string; unit: 'sat' | 'msat' }
 
-  constructor(mutation: () => FencedStateMutation) {
+  constructor(
+    mutation: () => FencedStateMutation,
+    binding: { normalizedMint: string; unit: 'sat' | 'msat' },
+  ) {
     this.#mutation = mutation
+    this.#binding = {
+      normalizedMint: canonicalizeTokenImportMintUrl(binding.normalizedMint),
+      unit: binding.unit,
+    }
   }
 
   async reserve(keysetId: string, n: number): Promise<CounterRange> {
-    return reserveDaemonKeysetCounter(keysetId, n, this.#mutation())
+    return reserveDaemonKeysetCounter(keysetId, n, this.#mutation(), this.#binding)
   }
 
   async advanceToAtLeast(keysetId: string, minNext: number): Promise<void> {
-    await advanceDaemonKeysetCounter(keysetId, minNext, this.#mutation())
+    await advanceDaemonKeysetCounter(keysetId, minNext, this.#mutation(), this.#binding)
   }
 
   async snapshot(): Promise<Record<string, number>> {
-    return readDaemonKeysetCounters()
+    return readDaemonKeysetCounters(this.#binding)
   }
 }
 

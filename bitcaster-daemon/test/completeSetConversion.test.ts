@@ -51,6 +51,7 @@ const OUTCOME_B_KEYSET = `01${'e'.repeat(64)}`
 const CURRENT_PLANNING_KEYSET = `01${'f'.repeat(64)}`
 const SECP256K1_GENERATOR = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
 const SAT_ASSET: StoredProofAsset = { kind: 'sats', baseAsset: 'sat', unit: 'msat' }
+const COUNTER_BINDING = { normalizedMint: MINT_URL, unit: 'msat' as const }
 
 test('recovers a regular-prepared complete-set split from persisted collateral amount', async () => {
   await withProfile(async ({ mutation, fence }) => {
@@ -182,8 +183,8 @@ test('recovers a CTF-prepared complete-set split with its exact deterministic ou
     const source = proof(SOURCE_KEYSET, 101, 'ctf-prepared-source')
     const handoff = proof(HANDOFF_KEYSET, 101, 'ctf-prepared-handoff')
     await initializeRegularHandoff(root, source, handoff, mutation)
-    await reserveDaemonKeysetCounter(OUTCOME_A_KEYSET, 7, mutation)
-    await reserveDaemonKeysetCounter(OUTCOME_B_KEYSET, 11, mutation)
+    await reserveDaemonKeysetCounter(OUTCOME_A_KEYSET, 7, mutation, COUNTER_BINDING)
+    await reserveDaemonKeysetCounter(OUTCOME_B_KEYSET, 11, mutation, COUNTER_BINDING)
 
     const preparationTransport = new FakeCtfTransport({ failPostSplit: true })
     await assert.rejects(
@@ -198,15 +199,17 @@ test('recovers a CTF-prepared complete-set split with its exact deterministic ou
           outcomeCollectionKeysets: outcomeKeysets(),
           amountSubunits: root.amountSats,
           proofOperationStore: createCtfStore(root, mutation),
-          outputMode: createDaemonCompleteSetOutputMode('11'.repeat(64), {
-            getCustodyFence: () => fence,
+          outputMode: createDaemonCompleteSetOutputMode({
+            walletSeedHex: '11'.repeat(64),
+            deps: { getCustodyFence: () => fence },
+            mintUrl: MINT_URL,
           }),
         }),
       /stop after prepared CTF split/,
     )
     const prepared = await readProofOperationFenced(ctfOperationId(root), mutation)
     assert.equal(prepared?.state, 'prepared')
-    const counterAfterPreparation = await readDaemonKeysetCounters()
+    const counterAfterPreparation = await readDaemonKeysetCounters(COUNTER_BINDING)
 
     const recoveryTransport = new FakeCtfTransport()
     const result = await recoverCompleteSetSplits({
@@ -222,7 +225,7 @@ test('recovers a CTF-prepared complete-set split with its exact deterministic ou
 
     assert.deepEqual(result, { recovered: [root.rootOperationId], recoveredCount: 1, pending: [] })
     assertExactHandoff(recoveryTransport, handoff)
-    assert.deepEqual(await readDaemonKeysetCounters(), counterAfterPreparation)
+    assert.deepEqual(await readDaemonKeysetCounters(COUNTER_BINDING), counterAfterPreparation)
     await assertCompletedAndFinalized(root, mutation)
   })
 })
@@ -244,7 +247,7 @@ test('rejects a completed CTF replay from a different mint before recovery I/O',
       'https://other-mint.example',
     )
     await writeState(state)
-    const countersBefore = await readDaemonKeysetCounters()
+    const countersBefore = await readDaemonKeysetCounters(COUNTER_BINDING)
     const inventoryBefore = proofInventory(await readState())
     const secrets = (await readSecrets())!
     let transportFactoryCalls = 0
@@ -275,7 +278,7 @@ test('rejects a completed CTF replay from a different mint before recovery I/O',
 
     assert.equal(transportFactoryCalls, 0)
     assert.equal(resumeFactoryCalls, 0)
-    assert.deepEqual(await readDaemonKeysetCounters(), countersBefore)
+    assert.deepEqual(await readDaemonKeysetCounters(COUNTER_BINDING), countersBefore)
     assert.deepEqual(proofInventory(await readState()), inventoryBefore)
     assert.equal(
       (await readProofOperationFenced(ctfOperationId(root), mutation))?.state,
