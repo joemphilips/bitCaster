@@ -95,6 +95,19 @@ test('the logical root binds the exact source body and revision', async () => {
     commitment: 'aa'.repeat(32),
     sourceBodyReference: 'ff'.repeat(32),
     sourceRevision: 1,
+    canonicalManifestEntryBytes: 1,
+  })
+  const first = await sealFixture(pins)
+  const second = await sealFixture([changed])
+  assert.notEqual(first.recordSetRoot, second.recordSetRoot)
+})
+
+test('the logical root binds canonical manifest entry length', async () => {
+  const pins = pinsFor(1)
+  const original = decodeEncryptedWalletBackupSnapshotPin(pins[0]!)
+  const changed = encodeEncryptedWalletBackupSnapshotPin({
+    ...original,
+    canonicalManifestEntryBytes: original.canonicalManifestEntryBytes + 1,
   })
   const first = await sealFixture(pins)
   const second = await sealFixture([changed])
@@ -271,6 +284,7 @@ function pinAt(index: number): Uint8Array {
     commitment: 'aa'.repeat(32),
     sourceBodyReference: (index + 1).toString(16).padStart(64, '0'),
     sourceRevision: 0,
+    canonicalManifestEntryBytes: 1,
   })
 }
 

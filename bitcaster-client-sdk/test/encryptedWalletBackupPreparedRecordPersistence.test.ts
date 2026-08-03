@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import {
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES,
   createEncryptedWalletBackupKeyHandle,
   prepareEncryptedWalletBackupProof,
 } from '../src/encryptedWalletBackup.ts'
@@ -163,6 +164,24 @@ test('changed capability fields and stale snapshots fail closed', async () => {
   )
 })
 
+test('changed manifest entry length without a new authentication tag fails closed', async () => {
+  const fixture = await preparedProofFixture()
+  const persisted = await sealPreparedEncryptedWalletBackupRecord(fixture)
+  const changed = structuredClone(persisted)
+  const manifest = new Uint8Array(persisted.canonicalManifestEntry.byteLength + 1)
+  manifest.set(persisted.canonicalManifestEntry)
+  changed.canonicalManifestEntry = manifest
+  await assert.rejects(
+    rehydratePreparedEncryptedWalletBackupRecord({
+      keyHandle: fixture.keyHandle,
+      seed: fixture.seed,
+      persisted: changed,
+      snapshotStore: fixture.snapshotStore,
+    }),
+    /capability/,
+  )
+})
+
 test('prepared source descriptor is canonical, strict, and changes with its body', async () => {
   const fixture = await preparedProofFixture()
   const persisted = await sealPreparedEncryptedWalletBackupRecord(fixture)
@@ -173,6 +192,7 @@ test('prepared source descriptor is canonical, strict, and changes with its body
   assert.equal(decoded.revision, persisted.snapshotRevision)
   assert.equal(decoded.recordId, persisted.recordId)
   assert.equal(decoded.commitment, persisted.commitment)
+  assert.equal(decoded.canonicalManifestEntryBytes, persisted.canonicalManifestEntry.byteLength)
   const changed = structuredClone(persisted)
   changed.authenticationTag[0]! ^= 1
   const changedDescriptor = encodeEncryptedWalletBackupPreparedSourceDescriptor(changed)
@@ -195,15 +215,15 @@ test('prepared source descriptor rejects every closed-field violation', async ()
   const cases: readonly unknown[][] = [
     [2, ...valid.slice(1)],
     [1, 'wrong-domain', ...valid.slice(2)],
-    [1, valid[1], valid[2], valid[3], valid[4], valid[5], 1, valid[7], valid[8]],
+    [...valid.slice(0, 6), 1, ...valid.slice(7)],
     [1, valid[1], '', ...valid.slice(3)],
     [1, valid[1], 'x'.repeat(65), ...valid.slice(3)],
     [1, valid[1], new Uint8Array(31), ...valid.slice(3)],
     [1, valid[1], valid[2], new Uint8Array(31), ...valid.slice(4)],
     [1, valid[1], valid[2], valid[3], -1, ...valid.slice(5)],
     [1, valid[1], valid[2], valid[3], 1.5, ...valid.slice(5)],
-    [1, valid[1], valid[2], valid[3], valid[4], valid[5], valid[6], new Uint8Array(31), valid[8]],
-    [1, valid[1], valid[2], valid[3], valid[4], valid[5], valid[6], valid[7], new Uint8Array(31)],
+    [...valid.slice(0, 7), new Uint8Array(31), ...valid.slice(8)],
+    [...valid.slice(0, 8), new Uint8Array(31), ...valid.slice(9)],
     [...valid, 0],
   ]
   for (const wire of cases) {
@@ -211,6 +231,35 @@ test('prepared source descriptor rejects every closed-field violation', async ()
       decodeEncryptedWalletBackupPreparedSourceDescriptor(encodeCanonicalBackupCbor(wire)),
     )
   }
+})
+
+test('prepared source descriptors require bounded manifest entry lengths', async () => {
+  const fixture = await preparedProofFixture()
+  const persisted = await sealPreparedEncryptedWalletBackupRecord(fixture)
+  const descriptor = decodeEncryptedWalletBackupPreparedSourceDescriptor(
+    encodeEncryptedWalletBackupPreparedSourceDescriptor(persisted),
+  )
+  const valid = sourceWire(descriptor)
+  for (const entryBytes of [
+    undefined,
+    'wrong',
+    0,
+    Number.MAX_SAFE_INTEGER + 1,
+    ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES + 1,
+  ] as const) {
+    const wire = valid.slice()
+    if (entryBytes === undefined) wire.pop()
+    else wire[9] = entryBytes
+    assert.throws(() =>
+      decodeEncryptedWalletBackupPreparedSourceDescriptor(encodeCanonicalBackupCbor(wire)),
+    )
+  }
+  assert.throws(() =>
+    encodeEncryptedWalletBackupPreparedSourceDescriptor({
+      ...persisted,
+      canonicalManifestEntry: new Uint8Array(ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES + 1),
+    }),
+  )
 })
 
 function sourceWire(
@@ -226,6 +275,7 @@ function sourceWire(
     value.recordKindCode,
     fromHex(value.recordId),
     fromHex(value.commitment),
+    value.canonicalManifestEntryBytes,
   ]
 }
 

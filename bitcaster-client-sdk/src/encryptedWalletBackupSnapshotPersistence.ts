@@ -14,7 +14,10 @@ import {
   type EncryptedWalletBackupFrozenSnapshotControl,
 } from './encryptedWalletBackupSnapshotAuthority.ts'
 import { requireRealm, requireUtf8Text } from './encryptedWalletBackupServerValidation.ts'
-import type { EncryptedWalletBackupKeyHandle } from './encryptedWalletBackup.ts'
+import {
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES,
+  type EncryptedWalletBackupKeyHandle,
+} from './encryptedWalletBackup.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_ROW_MAX = 256 as const
 export const ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_MAX_BYTES = 1_048_576 as const
@@ -54,6 +57,7 @@ export interface PersistedEncryptedWalletBackupSnapshotPin {
   readonly commitment: string
   readonly sourceBodyReference: string
   readonly sourceRevision: number
+  readonly canonicalManifestEntryBytes: number
 }
 
 export interface EncryptedWalletBackupSnapshotSourceIdentity {
@@ -102,7 +106,8 @@ export interface EncryptedWalletBackupSnapshotPersistenceTransaction {
 export interface EncryptedWalletBackupSnapshotPersistenceStore {
   /**
    * Scope every control and pin by `(realm,vaultId,snapshotId,snapshotRevision)`.
-   * Enforce pin uniqueness by that scope plus `(kind,recordId,commitment)`.
+   * Enforce a unique pin `(realm,vaultId,snapshotId,snapshotRevision,recordKindCode,recordId)`.
+   * Enforce a unique pin `(realm,vaultId,snapshotId,snapshotRevision,recordKindCode,commitment)`.
    * Reserve every declared application row and byte before any buffer copy.
    */
   withExactVersionTransaction<T>(
@@ -375,15 +380,18 @@ function pinRow(
     commitment: source.commitment,
     sourceBodyReference: source.bodyReference,
     sourceRevision: source.revision,
+    canonicalManifestEntryBytes: source.canonicalManifestEntryBytes,
   })
 }
 
 function requireUniquePins(pins: readonly PersistedEncryptedWalletBackupSnapshotPin[]): void {
-  const seen = new Set<string>()
+  const recordIds = new Set<string>()
+  const commitments = new Set<string>()
   for (const pin of pins) {
-    const key = `${pin.recordId}:${pin.commitment}`
-    if (seen.has(key)) throw new Error('backup snapshot pin is duplicated')
-    seen.add(key)
+    if (recordIds.has(pin.recordId) || commitments.has(pin.commitment))
+      throw new Error('backup snapshot pin is duplicated')
+    recordIds.add(pin.recordId)
+    commitments.add(pin.commitment)
   }
 }
 
@@ -579,6 +587,7 @@ function encodePin(value: PersistedEncryptedWalletBackupSnapshotPin): Uint8Array
     hexBytes(pin.commitment),
     hexBytes(pin.sourceBodyReference),
     pin.sourceRevision,
+    pin.canonicalManifestEntryBytes,
   ])
 }
 
@@ -586,7 +595,7 @@ export function decodeEncryptedWalletBackupSnapshotPin(
   value: Uint8Array,
 ): PersistedEncryptedWalletBackupSnapshotPin {
   const raw = canonicalArray(value, 'backup snapshot pin')
-  if (raw.length !== 10 || raw[0] !== 1 || raw[5] !== 0)
+  if (raw.length !== 11 || raw[0] !== 1 || raw[5] !== 0)
     throw new Error('backup snapshot pin is invalid')
   return Object.freeze({
     schemaVersion: 1,
@@ -599,6 +608,7 @@ export function decodeEncryptedWalletBackupSnapshotPin(
     commitment: fingerprint(raw[7], 'pin commitment'),
     sourceBodyReference: fingerprint(raw[8], 'pin body reference'),
     sourceRevision: integer(raw[9], 'pin source revision'),
+    canonicalManifestEntryBytes: manifestEntryBytes(raw[10]),
   })
 }
 
@@ -623,7 +633,8 @@ export function validateEncryptedWalletBackupSnapshotSourcePinBinding(
     source.recordId !== pin.recordId ||
     source.commitment !== pin.commitment ||
     source.bodyReference !== pin.sourceBodyReference ||
-    source.revision !== pin.sourceRevision
+    source.revision !== pin.sourceRevision ||
+    source.canonicalManifestEntryBytes !== pin.canonicalManifestEntryBytes
   )
     throw new Error('backup snapshot pin source binding is invalid')
   return Object.freeze({
@@ -708,6 +719,7 @@ function requirePin(
     commitment: hexBytesValue(pin.commitment, 32, 'pin commitment'),
     sourceBodyReference: hexBytesValue(pin.sourceBodyReference, 32, 'pin body reference'),
     sourceRevision: integer(pin.sourceRevision, 'pin source revision'),
+    canonicalManifestEntryBytes: manifestEntryBytes(pin.canonicalManifestEntryBytes),
   })
 }
 
@@ -742,6 +754,7 @@ const pinFields = [
   'commitment',
   'sourceBodyReference',
   'sourceRevision',
+  'canonicalManifestEntryBytes',
 ] as const
 
 function strictObject(
@@ -787,6 +800,12 @@ function recordCount(value: unknown): number {
   const result = integer(value, 'snapshot record count')
   if (result > ENCRYPTED_WALLET_BACKUP_SNAPSHOT_RECORD_MAX)
     throw new Error('backup snapshot record count exceeds its capacity')
+  return result
+}
+function manifestEntryBytes(value: unknown): number {
+  const result = integer(value, 'manifest entry bytes')
+  if (result < 1 || result > ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES)
+    throw new Error('backup manifest entry bytes is invalid')
   return result
 }
 function snapshotState(value: unknown): EncryptedWalletBackupFrozenSnapshotState {

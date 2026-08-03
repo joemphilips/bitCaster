@@ -311,6 +311,7 @@ function bindingBytes(pin: PersistedEncryptedWalletBackupSnapshotPin): Uint8Arra
     hexBytes(pin.commitment),
     hexBytes(pin.sourceBodyReference),
     pin.sourceRevision,
+    pin.canonicalManifestEntryBytes,
   ])
 }
 

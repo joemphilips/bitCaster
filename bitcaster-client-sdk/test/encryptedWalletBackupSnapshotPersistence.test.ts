@@ -7,6 +7,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { decode, encode, rfc8949EncodeOptions } from 'cborg'
 import {
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES,
   createEncryptedWalletBackupKeyHandle,
   prepareEncryptedWalletBackupFrozenSnapshotControl,
   prepareEncryptedWalletBackupProof,
@@ -34,6 +35,7 @@ import {
   decodeEncryptedWalletBackupFrozenSnapshot,
   decodeEncryptedWalletBackupSnapshotPin,
   encodeEncryptedWalletBackupFrozenSnapshot,
+  encodeEncryptedWalletBackupFrozenSnapshotScope,
   encodeEncryptedWalletBackupSnapshotPin,
   ENCRYPTED_WALLET_BACKUP_SNAPSHOT_RECORD_MAX,
   ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_MAX_BYTES,
@@ -41,6 +43,7 @@ import {
   validateEncryptedWalletBackupSnapshotSourcePinBinding,
   type EncryptedWalletBackupSnapshotPersistenceStore,
   type EncryptedWalletBackupSnapshotPersistenceTransaction,
+  type EncryptedWalletBackupSnapshotPinIdentity,
   type EncryptedWalletBackupSnapshotSourceIdentity,
   type PersistedEncryptedWalletBackupFrozenSnapshot,
   type PersistedEncryptedWalletBackupSnapshotPin,
@@ -72,6 +75,12 @@ type Expectation = Readonly<{
   reservedReadBytes: number
   reservedWriteRows: number
   reservedWriteBytes: number
+}>
+
+type StoredPin = Readonly<{
+  pin: Uint8Array
+  source: EncryptedWalletBackupSnapshotSourceIdentity
+  identity: EncryptedWalletBackupSnapshotPinIdentity
 }>
 
 type AdapterMode =
@@ -190,6 +199,36 @@ test('stale controls, duplicate pins, and concurrent versions fully roll back', 
   assertPopulationTotals(store.controlSnapshot('same-snapshot'), 1, appended.canonicalPinBytes)
 })
 
+test('separate record and commitment conflicts roll back successive appends', async () => {
+  for (const conflict of [
+    { name: 'a repeated record ID with a changed commitment', changed: 'commitment' },
+    { name: 'a repeated commitment with a changed record ID', changed: 'record id' },
+  ] as const) {
+    const fixture = await proofFixture()
+    const store = new StrictStore()
+    const snapshotId = `unique-${conflict.changed}`
+    const control = await controlFor(fixture.keyHandle, snapshotId)
+    const source = fixture.descriptor
+    const started = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
+    const firstPin = pinForSource(started, source)
+    store.addSource(source)
+    const first = await appendRawPin(store, control, started, source, firstPin)
+    const conflictingSource = changedSourceIdentity(source, conflict.changed)
+    const conflictingPin = pinForSource(first, conflictingSource)
+    store.addSource(conflictingSource)
+    const pins = store.pinCount()
+    const bytes = store.pinBytes()
+    await assert.rejects(
+      appendRawPin(store, control, first, conflictingSource, conflictingPin),
+      /duplicated/,
+    )
+    assert.equal(store.pinCount(), pins)
+    assert.equal(store.pinBytes(), bytes)
+    assert.equal(store.controlVersion(snapshotId), first.version, conflict.name)
+    assertPopulationTotals(store.controlSnapshot(snapshotId), 1, bytes)
+  }
+})
+
 test('a proof can pin once in each distinct snapshot namespace', async () => {
   const fixture = await proofFixture()
   const store = new StrictStore()
@@ -210,6 +249,31 @@ test('a proof can pin once in each distinct snapshot namespace', async () => {
   )
   assert.equal(store.pinCount(), 2)
   assert.throws(() => store.deletePreparedSource(fixture.descriptor), /deletion is blocked/)
+})
+
+test('a proof can pin once in each distinct snapshot revision', async () => {
+  const fixture = await proofFixture()
+  const store = new StrictStore()
+  store.addSource(fixture.descriptor)
+  const controlA = await controlFor(fixture.keyHandle, 'revision-namespace', 0)
+  const controlB = await controlFor(fixture.keyHandle, 'revision-namespace', 1)
+  const first = await beginEncryptedWalletBackupFrozenSnapshot({ store, control: controlA })
+  const second = await beginEncryptedWalletBackupFrozenSnapshot({ store, control: controlB })
+  await appendRawPin(
+    store,
+    controlA,
+    first,
+    fixture.descriptor,
+    pinForSource(first, fixture.descriptor),
+  )
+  await appendRawPin(
+    store,
+    controlB,
+    second,
+    fixture.descriptor,
+    pinForSource(second, fixture.descriptor),
+  )
+  assert.equal(store.pinCount(), 2)
 })
 
 test('successive proof pages accumulate exact control totals', async () => {
@@ -352,6 +416,7 @@ test('snapshot control and pin codecs reject invalid fields while accepting 128-
   assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes)
   assertCodecRejects(decodeEncryptedWalletBackupSnapshotPin, pin)
   assertControlWireFieldRejections(controlBytes, pin)
+  assertPinManifestEntryBytesRejections(pin)
   assert.throws(
     () => encodeEncryptedWalletBackupFrozenSnapshot({ ...snapshot, vaultId: 'g'.repeat(64) }),
     /invalid/,
@@ -393,6 +458,53 @@ function assertControlWireFieldRejections(controlBytes: Uint8Array, pin: Uint8Ar
   assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 1, 'UPPER')
   assertCodecRejects(decodeEncryptedWalletBackupSnapshotPin, pin, 5, 1)
 }
+
+function assertPinManifestEntryBytesRejections(pin: Uint8Array): void {
+  const decoded = decodeEncryptedWalletBackupSnapshotPin(pin)
+  for (const value of [
+    'wrong',
+    0,
+    Number.MAX_SAFE_INTEGER + 1,
+    ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES + 1,
+  ] as const)
+    assertCodecRejects(decodeEncryptedWalletBackupSnapshotPin, pin, 10, value)
+  const missing = decode(pin) as unknown[]
+  missing.pop()
+  assert.throws(() => decodeEncryptedWalletBackupSnapshotPin(encodeCanonical(missing)))
+  for (const value of [
+    'wrong',
+    0,
+    Number.MAX_SAFE_INTEGER + 1,
+    ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES + 1,
+  ] as const)
+    assert.throws(() =>
+      encodeEncryptedWalletBackupSnapshotPin({
+        ...decoded,
+        canonicalManifestEntryBytes: value,
+      } as never),
+    )
+  const incomplete = { ...decoded } as Record<string, unknown>
+  delete incomplete.canonicalManifestEntryBytes
+  assert.throws(() => encodeEncryptedWalletBackupSnapshotPin(incomplete as never))
+}
+
+test('source and pin manifest entry lengths must match', async () => {
+  const fixture = await proofFixture()
+  const store = new StrictStore()
+  const control = await controlFor(fixture.keyHandle, 'pin-length')
+  const snapshot = await beginEncryptedWalletBackupFrozenSnapshot({ store, control })
+  const pin = pinForSource(snapshot, fixture.descriptor)
+  const changed = decode(pin) as unknown[]
+  changed[10] = (changed[10] as number) + 1
+  assert.throws(
+    () =>
+      validateEncryptedWalletBackupSnapshotSourcePinBinding({
+        sourceDescriptor: fixture.descriptor,
+        pin: encodeCanonical(changed),
+      }),
+    /binding/,
+  )
+})
 
 test('append rejects non-populating and overflowing current controls before a transaction', async () => {
   const fixture = await proofFixture()
@@ -577,13 +689,77 @@ async function appendPage(
   })
 }
 
+async function appendRawPin(
+  store: StrictStore,
+  control: Awaited<ReturnType<typeof controlFor>>,
+  current: PersistedEncryptedWalletBackupFrozenSnapshot,
+  source: Uint8Array,
+  pin: Uint8Array,
+): Promise<PersistedEncryptedWalletBackupFrozenSnapshot> {
+  const scope = encodeEncryptedWalletBackupFrozenSnapshotScope(control)
+  const expectedControl = encodeEncryptedWalletBackupFrozenSnapshot(current)
+  const next = Object.freeze({
+    ...current,
+    recordCount: current.recordCount + 1,
+    canonicalPinBytes: current.canonicalPinBytes + pin.byteLength,
+    version: current.version + 1,
+  })
+  const nextControl = encodeEncryptedWalletBackupFrozenSnapshot(next)
+  const expected = Object.freeze({
+    scope,
+    expectedVersion: current.version,
+    reservedReadRows: 2,
+    reservedReadBytes: scope.byteLength + expectedControl.byteLength + source.byteLength,
+    reservedWriteRows: 2,
+    reservedWriteBytes: nextControl.byteLength + pin.byteLength,
+  })
+  return store.withExactVersionTransaction(expected, async (transaction) => {
+    assert.ok(equalBytes(await transaction.readSnapshotControl(scope), expectedControl))
+    await transaction.writeSnapshotControl(nextControl)
+    await transaction.insertSnapshotPins({ sourceDescriptors: [source], pins: [pin] })
+    return next
+  }) as Promise<PersistedEncryptedWalletBackupFrozenSnapshot>
+}
+
+function pinForSource(
+  snapshot: PersistedEncryptedWalletBackupFrozenSnapshot,
+  descriptor: Uint8Array,
+): Uint8Array {
+  const source = decodeEncryptedWalletBackupPreparedSourceDescriptor(descriptor)
+  return encodeEncryptedWalletBackupSnapshotPin({
+    schemaVersion: 1,
+    realm: source.realm,
+    vaultId: source.vaultId,
+    snapshotId: snapshot.snapshotId,
+    snapshotRevision: snapshot.snapshotRevision,
+    recordKindCode: source.recordKindCode,
+    recordId: source.recordId,
+    commitment: source.commitment,
+    sourceBodyReference: source.bodyReference,
+    sourceRevision: source.revision,
+    canonicalManifestEntryBytes: source.canonicalManifestEntryBytes,
+  })
+}
+
+function changedSourceIdentity(
+  descriptor: Uint8Array,
+  field: 'record id' | 'commitment',
+): Uint8Array {
+  const raw = decode(descriptor) as unknown[]
+  const index = field === 'record id' ? 7 : 8
+  const value = raw[index] as Uint8Array
+  const changed = value.slice()
+  changed[0] = changed[0]! ^ 1
+  raw[index] = changed
+  return encodeCanonical(raw)
+}
+
 class StrictStore implements EncryptedWalletBackupSnapshotPersistenceStore {
   readonly controls = new Map<string, Uint8Array>()
   readonly sources = new Map<string, Uint8Array>()
-  readonly pins = new Map<
-    string,
-    Readonly<{ pin: Uint8Array; source: EncryptedWalletBackupSnapshotSourceIdentity }>
-  >()
+  readonly pins = new Map<string, StoredPin>()
+  readonly pinnedRecordIds = new Set<string>()
+  readonly pinnedCommitments = new Set<string>()
   readonly mode: AdapterMode
   last: Readonly<{
     controlReads: number
@@ -688,11 +864,30 @@ class StrictStore implements EncryptedWalletBackupSnapshotPersistenceStore {
 
   private commit(transaction: StrictTransaction): void {
     transaction.finish()
+    this.requireAvailablePinIndexes(transaction)
     if (transaction.control !== null)
       this.controls.set(hex(transaction.scope), transaction.control.slice())
-    for (const [key, value] of transaction.pendingPins)
-      this.pins.set(key, Object.freeze({ pin: value.pin.slice(), source: value.source }))
+    for (const [key, value] of transaction.pendingPins) {
+      const stored: StoredPin = Object.freeze({
+        pin: value.pin.slice(),
+        source: value.source,
+        identity: value.identity,
+      })
+      this.pins.set(key, stored)
+      this.pinnedRecordIds.add(recordIdPinKey(value.identity))
+      this.pinnedCommitments.add(commitmentPinKey(value.identity))
+    }
     this.last = transaction.counts()
+  }
+
+  private requireAvailablePinIndexes(transaction: StrictTransaction): void {
+    for (const value of transaction.pendingPins.values()) {
+      if (
+        this.pinnedRecordIds.has(recordIdPinKey(value.identity)) ||
+        this.pinnedCommitments.has(commitmentPinKey(value.identity))
+      )
+        throw new Error('backup snapshot pin is duplicated')
+    }
   }
 
   private rejectThenCall<T>(
@@ -718,10 +913,9 @@ class StrictStore implements EncryptedWalletBackupSnapshotPersistenceStore {
 class StrictTransaction implements EncryptedWalletBackupSnapshotPersistenceTransaction {
   readonly scope: Uint8Array
   readonly expected: Expectation
-  readonly pendingPins = new Map<
-    string,
-    Readonly<{ pin: Uint8Array; source: EncryptedWalletBackupSnapshotSourceIdentity }>
-  >()
+  readonly pendingPins = new Map<string, StoredPin>()
+  readonly pendingRecordIds = new Set<string>()
+  readonly pendingCommitments = new Set<string>()
   control: Uint8Array | null
   private readonly store: StrictStore
   private readonly initialControlBytes: number
@@ -827,13 +1021,22 @@ class StrictTransaction implements EncryptedWalletBackupSnapshotPersistenceTrans
     if (current === undefined) throw new Error('prepared source is missing')
     if (!equalBytes(current, source)) throw new Error('prepared source descriptor changed')
     const key = `${hex(this.scope)}:${binding.pin.recordId}:${binding.pin.commitment}`
-    if (this.store.pins.has(key) || this.pendingPins.has(key))
+    const recordIdKey = recordIdPinKey(binding.pin)
+    const commitmentKey = commitmentPinKey(binding.pin)
+    if (
+      this.store.pinnedRecordIds.has(recordIdKey) ||
+      this.store.pinnedCommitments.has(commitmentKey) ||
+      this.pendingRecordIds.has(recordIdKey) ||
+      this.pendingCommitments.has(commitmentKey)
+    )
       throw new Error('backup snapshot pin is duplicated')
     this.ledger.write(pin.byteLength)
     this.pinWrites += 1
+    this.pendingRecordIds.add(recordIdKey)
+    this.pendingCommitments.add(commitmentKey)
     return Object.freeze({
       key,
-      value: Object.freeze({ pin, source: binding.source }),
+      value: Object.freeze({ pin, source: binding.source, identity: binding.pin }),
     })
   }
 }
@@ -898,6 +1101,7 @@ class ReservationLedger {
 async function controlFor(
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
   snapshotId: string,
+  snapshotRevision = 0,
 ) {
   const requestProof = await prepareEncryptedWalletBackupRequestProof({
     keyHandle,
@@ -925,7 +1129,7 @@ async function controlFor(
     headEvidence,
     snapshotNonce: '22'.repeat(16),
     snapshotId,
-    snapshotRevision: 0,
+    snapshotRevision,
   })
 }
 
@@ -1211,6 +1415,14 @@ function alternateDescriptor(descriptor: Uint8Array): Uint8Array {
   const bodyReference = raw[4] as Uint8Array
   bodyReference[0] = bodyReference[0]! ^ 1
   return encodeCanonical(raw)
+}
+
+function recordIdPinKey(value: EncryptedWalletBackupSnapshotPinIdentity): string {
+  return `${value.realm}:${value.vaultId}:${value.snapshotId}:${value.snapshotRevision}:${value.recordKindCode}:${value.recordId}`
+}
+
+function commitmentPinKey(value: EncryptedWalletBackupSnapshotPinIdentity): string {
+  return `${value.realm}:${value.vaultId}:${value.snapshotId}:${value.snapshotRevision}:${value.recordKindCode}:${value.commitment}`
 }
 
 function sourceKey(value: Uint8Array): string {

@@ -85,6 +85,7 @@ export interface EncryptedWalletBackupPreparedSourceDescriptor {
   readonly recordKindCode: 0
   readonly recordId: string
   readonly commitment: string
+  readonly canonicalManifestEntryBytes: number
 }
 
 export function encodeEncryptedWalletBackupPreparedSourceDescriptor(
@@ -102,6 +103,7 @@ export function encodeEncryptedWalletBackupPreparedSourceDescriptor(
     descriptor.recordKindCode,
     hexBytes(descriptor.recordId),
     hexBytes(descriptor.commitment),
+    descriptor.canonicalManifestEntryBytes,
   ])
 }
 
@@ -114,7 +116,7 @@ export function decodeEncryptedWalletBackupPreparedSourceDescriptor(
   const decoded = decode(value)
   if (
     !Array.isArray(decoded) ||
-    decoded.length !== 9 ||
+    decoded.length !== 10 ||
     !equalBytes(value, encodeCanonical(decoded))
   ) {
     throw new Error('prepared backup source descriptor is invalid')
@@ -130,6 +132,7 @@ export function decodeEncryptedWalletBackupPreparedSourceDescriptor(
     recordKindCode: 0,
     recordId: bytesFingerprint(decoded[7], 'source record id'),
     commitment: bytesFingerprint(decoded[8], 'source commitment'),
+    canonicalManifestEntryBytes: requireManifestEntryBytes(decoded[9]),
   })
 }
 
@@ -416,6 +419,7 @@ function descriptorFromPersisted(
     recordKindCode: 0,
     recordId: value.recordId,
     commitment: value.commitment,
+    canonicalManifestEntryBytes: value.canonicalManifestEntry.byteLength,
   })
 }
 
@@ -551,6 +555,12 @@ function requireInteger(value: unknown, name: string): number {
     throw new Error(`prepared backup ${name} is invalid`)
   }
   return value as number
+}
+function requireManifestEntryBytes(value: unknown): number {
+  const result = requireInteger(value, 'manifest entry bytes')
+  if (result < 1 || result > ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES)
+    throw new Error('prepared backup manifest entry bytes is invalid')
+  return result
 }
 
 function requireFingerprint(value: unknown, name: string): string {
