@@ -21,6 +21,8 @@ export const ENCRYPTED_WALLET_BACKUP_SNAPSHOT_TRANSACTION_MAX_BYTES = 1_048_576 
 export const ENCRYPTED_WALLET_BACKUP_SNAPSHOT_PROOF_APPEND_MAX = 127 as const
 export const ENCRYPTED_WALLET_BACKUP_SNAPSHOT_RECORD_MAX = 524_288 as const
 
+export type EncryptedWalletBackupFrozenSnapshotState = 'populating' | 'sealing' | 'sealed'
+
 export interface PersistedEncryptedWalletBackupFrozenSnapshot {
   readonly schemaVersion: 1
   readonly realm: string
@@ -33,10 +35,11 @@ export interface PersistedEncryptedWalletBackupFrozenSnapshot {
   readonly snapshotNonce: string
   readonly snapshotId: string
   readonly snapshotRevision: number
-  readonly state: 'populating'
+  readonly state: EncryptedWalletBackupFrozenSnapshotState
   readonly recordCount: number
   readonly canonicalPinBytes: number
   readonly sealRunRevision: number
+  readonly recordSetRoot: string | null
   readonly version: number
 }
 
@@ -269,6 +272,7 @@ function controlRow(
     recordCount: 0,
     canonicalPinBytes: 0,
     sealRunRevision: 0,
+    recordSetRoot: null,
     version,
   })
 }
@@ -277,8 +281,43 @@ function requireCurrentControl(
   authority: ReturnType<typeof requireEncryptedWalletBackupFrozenSnapshotControl>,
   value: PersistedEncryptedWalletBackupFrozenSnapshot,
 ): PersistedEncryptedWalletBackupFrozenSnapshot {
+  const current = requireAuthenticatedControl(authority, value)
+  if (current.state !== 'populating') throw new Error('backup snapshot control is invalid')
+  return current
+}
+
+export function requireAuthenticatedEncryptedWalletBackupFrozenSnapshot(
+  control: EncryptedWalletBackupFrozenSnapshotControl,
+  value: PersistedEncryptedWalletBackupFrozenSnapshot,
+): PersistedEncryptedWalletBackupFrozenSnapshot {
+  return requireAuthenticatedControl(
+    requireEncryptedWalletBackupFrozenSnapshotControl(control),
+    value,
+  )
+}
+
+export function decodeAuthenticatedEncryptedWalletBackupFrozenSnapshot(
+  control: EncryptedWalletBackupFrozenSnapshotControl,
+  value: Uint8Array,
+): PersistedEncryptedWalletBackupFrozenSnapshot {
+  return requireAuthenticatedEncryptedWalletBackupFrozenSnapshot(
+    control,
+    decodeEncryptedWalletBackupFrozenSnapshot(value),
+  )
+}
+
+export function encodeEncryptedWalletBackupFrozenSnapshotScope(
+  control: EncryptedWalletBackupFrozenSnapshotControl,
+): Uint8Array {
+  return encodeScope(requireEncryptedWalletBackupFrozenSnapshotControl(control))
+}
+
+function requireAuthenticatedControl(
+  authority: ReturnType<typeof requireEncryptedWalletBackupFrozenSnapshotControl>,
+  value: PersistedEncryptedWalletBackupFrozenSnapshot,
+): PersistedEncryptedWalletBackupFrozenSnapshot {
   const current = requireControl(value)
-  if (!sameSnapshotAuthority(authority, current) || current.state !== 'populating')
+  if (!sameSnapshotAuthority(authority, current))
     throw new Error('backup snapshot control is invalid')
   return current
 }
@@ -409,10 +448,13 @@ export function decodeEncryptedWalletBackupFrozenSnapshot(
   value: Uint8Array,
 ): PersistedEncryptedWalletBackupFrozenSnapshot {
   const raw = canonicalArray(value, 'backup snapshot control')
-  if (raw.length !== 16 || raw[0] !== 1) throw new Error('backup snapshot control is invalid')
+  if (raw.length !== 17 || raw[0] !== 1) throw new Error('backup snapshot control is invalid')
   const parentGeneration = raw[4] === null ? null : positive(raw[4], 'parent generation')
   const parentManifestDigest = raw[5] === null ? null : fingerprint(raw[5], 'parent manifest')
   const generation = positive(raw[7], 'snapshot generation')
+  const state = snapshotState(raw[11])
+  const sealRunRevision = integer(raw[14], 'snapshot seal run revision')
+  const recordSetRoot = raw[15] === null ? null : fingerprint(raw[15], 'snapshot record set root')
   if (
     (parentGeneration === null &&
       (parentManifestDigest !== null ||
@@ -423,23 +465,81 @@ export function decodeEncryptedWalletBackupFrozenSnapshot(
       (parentManifestDigest === null || generation !== parentGeneration + 1))
   )
     throw new Error('backup snapshot control is invalid')
+  requireSealState(state, sealRunRevision, recordSetRoot)
+  return decodedControl(raw, {
+    parentGeneration,
+    parentManifestDigest,
+    generation,
+    state,
+    sealRunRevision,
+    recordSetRoot,
+  })
+}
+
+function decodedControl(
+  raw: readonly unknown[],
+  input: {
+    readonly parentGeneration: number | null
+    readonly parentManifestDigest: string | null
+    readonly generation: number
+    readonly state: EncryptedWalletBackupFrozenSnapshotState
+    readonly sealRunRevision: number
+    readonly recordSetRoot: string | null
+  },
+): PersistedEncryptedWalletBackupFrozenSnapshot {
   return Object.freeze({
     schemaVersion: 1,
     realm: requireRealm(raw[1]),
     vaultId: fingerprint(raw[2], 'snapshot vault'),
     enrollmentEpoch: positive(raw[3], 'snapshot epoch'),
-    parentGeneration,
-    parentManifestDigest,
+    parentGeneration: input.parentGeneration,
+    parentManifestDigest: input.parentManifestDigest,
     parentReferenceSetDigest: fingerprint(raw[6], 'parent reference set'),
-    generation,
+    generation: input.generation,
     snapshotNonce: fingerprintBytes(raw[8], 16, 'snapshot nonce'),
     snapshotId: requireUtf8Text(raw[9], 128, 'snapshot id'),
     snapshotRevision: integer(raw[10], 'snapshot revision'),
-    state: snapshotState(raw[11]),
+    state: input.state,
     recordCount: recordCount(raw[12]),
     canonicalPinBytes: integer(raw[13], 'snapshot pin bytes'),
-    sealRunRevision: integer(raw[14], 'snapshot seal run revision'),
-    version: positive(raw[15], 'snapshot version'),
+    sealRunRevision: input.sealRunRevision,
+    recordSetRoot: input.recordSetRoot,
+    version: positive(raw[16], 'snapshot version'),
+  })
+}
+
+function validatedControl(input: {
+  readonly control: Record<string, unknown>
+  readonly parentGeneration: number | null
+  readonly parentManifestDigest: string | null
+  readonly generation: number
+  readonly state: EncryptedWalletBackupFrozenSnapshotState
+  readonly sealRunRevision: number
+  readonly recordSetRoot: string | null
+}): PersistedEncryptedWalletBackupFrozenSnapshot {
+  const { control } = input
+  return Object.freeze({
+    schemaVersion: 1,
+    realm: requireRealm(control.realm),
+    vaultId: hexBytesValue(control.vaultId, 32, 'snapshot vault'),
+    enrollmentEpoch: positive(control.enrollmentEpoch, 'snapshot epoch'),
+    parentGeneration: input.parentGeneration,
+    parentManifestDigest: input.parentManifestDigest,
+    parentReferenceSetDigest: hexBytesValue(
+      control.parentReferenceSetDigest,
+      32,
+      'parent reference set',
+    ),
+    generation: input.generation,
+    snapshotNonce: hexBytesValue(control.snapshotNonce, 16, 'snapshot nonce'),
+    snapshotId: requireUtf8Text(control.snapshotId, 128, 'snapshot id'),
+    snapshotRevision: integer(control.snapshotRevision, 'snapshot revision'),
+    state: input.state,
+    recordCount: recordCount(control.recordCount),
+    canonicalPinBytes: integer(control.canonicalPinBytes, 'snapshot pin bytes'),
+    sealRunRevision: input.sealRunRevision,
+    recordSetRoot: input.recordSetRoot,
+    version: positive(control.version, 'snapshot version'),
   })
 }
 
@@ -461,6 +561,7 @@ function encodeControl(value: PersistedEncryptedWalletBackupFrozenSnapshot): Uin
     control.recordCount,
     control.canonicalPinBytes,
     control.sealRunRevision,
+    control.recordSetRoot === null ? null : hexBytes(control.recordSetRoot),
     control.version,
   ])
 }
@@ -562,6 +663,12 @@ function requireControl(
       ? null
       : hexBytesValue(control.parentManifestDigest, 32, 'parent manifest')
   const generation = positive(control.generation, 'snapshot generation')
+  const state = snapshotState(control.state)
+  const sealRunRevision = integer(control.sealRunRevision, 'snapshot seal run revision')
+  const recordSetRoot =
+    control.recordSetRoot === null
+      ? null
+      : hexBytesValue(control.recordSetRoot, 32, 'snapshot record set root')
   if (
     control.schemaVersion !== 1 ||
     (parentGeneration === null &&
@@ -572,27 +679,15 @@ function requireControl(
       (parentManifestDigest === null || generation !== parentGeneration + 1))
   )
     throw new Error('backup snapshot control is invalid')
-  return Object.freeze({
-    schemaVersion: 1,
-    realm: requireRealm(control.realm),
-    vaultId: hexBytesValue(control.vaultId, 32, 'snapshot vault'),
-    enrollmentEpoch: positive(control.enrollmentEpoch, 'snapshot epoch'),
+  requireSealState(state, sealRunRevision, recordSetRoot)
+  return validatedControl({
+    control,
     parentGeneration,
     parentManifestDigest,
-    parentReferenceSetDigest: hexBytesValue(
-      control.parentReferenceSetDigest,
-      32,
-      'parent reference set',
-    ),
     generation,
-    snapshotNonce: hexBytesValue(control.snapshotNonce, 16, 'snapshot nonce'),
-    snapshotId: requireUtf8Text(control.snapshotId, 128, 'snapshot id'),
-    snapshotRevision: integer(control.snapshotRevision, 'snapshot revision'),
-    state: snapshotState(control.state),
-    recordCount: recordCount(control.recordCount),
-    canonicalPinBytes: integer(control.canonicalPinBytes, 'snapshot pin bytes'),
-    sealRunRevision: integer(control.sealRunRevision, 'snapshot seal run revision'),
-    version: positive(control.version, 'snapshot version'),
+    state,
+    sealRunRevision,
+    recordSetRoot,
   })
 }
 
@@ -632,6 +727,7 @@ const controlFields = [
   'recordCount',
   'canonicalPinBytes',
   'sealRunRevision',
+  'recordSetRoot',
   'version',
 ] as const
 
@@ -693,9 +789,22 @@ function recordCount(value: unknown): number {
     throw new Error('backup snapshot record count exceeds its capacity')
   return result
 }
-function snapshotState(value: unknown): 'populating' {
-  if (value !== 'populating') throw new Error('backup snapshot state is invalid')
+function snapshotState(value: unknown): EncryptedWalletBackupFrozenSnapshotState {
+  if (value !== 'populating' && value !== 'sealing' && value !== 'sealed')
+    throw new Error('backup snapshot state is invalid')
   return value
+}
+function requireSealState(
+  state: EncryptedWalletBackupFrozenSnapshotState,
+  sealRunRevision: number,
+  recordSetRoot: string | null,
+): void {
+  if (
+    (state === 'populating' && (sealRunRevision !== 0 || recordSetRoot !== null)) ||
+    (state === 'sealing' && (sealRunRevision === 0 || recordSetRoot !== null)) ||
+    (state === 'sealed' && (sealRunRevision === 0 || recordSetRoot === null))
+  )
+    throw new Error('backup snapshot control is invalid')
 }
 function fingerprint(value: unknown, name: string): string {
   return fingerprintBytes(value, 32, name)

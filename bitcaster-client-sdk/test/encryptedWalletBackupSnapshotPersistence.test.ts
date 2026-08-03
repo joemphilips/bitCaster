@@ -105,7 +105,8 @@ test('a not-found control creates a bounded persisted snapshot row', async () =>
   assert.equal(snapshot.recordCount, 0)
   assert.equal(snapshot.canonicalPinBytes, 0)
   assert.equal(snapshot.sealRunRevision, 0)
-  assert.equal(Object.keys(snapshot).length, 16)
+  assert.equal(snapshot.recordSetRoot, null)
+  assert.equal(Object.keys(snapshot).length, 17)
   assert.equal(store.last?.controlReads, 1)
   assert.equal(store.last?.sourceReads, 0)
   assert.equal(store.last?.pinWrites, 0)
@@ -387,6 +388,7 @@ function assertControlWireFieldRejections(controlBytes: Uint8Array, pin: Uint8Ar
   assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 14, -1)
   assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 14, 'wrong')
   assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 15, 0)
+  assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 16, 0)
   assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 6, new Uint8Array(32))
   assertCodecRejects(decodeEncryptedWalletBackupFrozenSnapshot, controlBytes, 1, 'UPPER')
   assertCodecRejects(decodeEncryptedWalletBackupSnapshotPin, pin, 5, 1)
@@ -459,6 +461,7 @@ function assertNewControlObjectRejections(
     ['recordCount', 'wrong'],
     ['canonicalPinBytes', 'wrong'],
     ['sealRunRevision', 'wrong'],
+    ['recordSetRoot', 'wrong'],
   ] as const) {
     assert.throws(
       () => encodeEncryptedWalletBackupFrozenSnapshot({ ...snapshot, [field]: value } as never),
@@ -469,7 +472,13 @@ function assertNewControlObjectRejections(
 }
 
 function assertMissingControlFields(snapshot: PersistedEncryptedWalletBackupFrozenSnapshot): void {
-  for (const field of ['state', 'recordCount', 'canonicalPinBytes', 'sealRunRevision'] as const) {
+  for (const field of [
+    'state',
+    'recordCount',
+    'canonicalPinBytes',
+    'sealRunRevision',
+    'recordSetRoot',
+  ] as const) {
     const incomplete = { ...snapshot } as Record<string, unknown>
     delete incomplete[field]
     assert.throws(() => encodeEncryptedWalletBackupFrozenSnapshot(incomplete as never), /invalid/)
@@ -507,6 +516,15 @@ function assertInvalidControlValues(snapshot: PersistedEncryptedWalletBackupFroz
         ...snapshot,
         sealRunRevision: -1,
       } as PersistedEncryptedWalletBackupFrozenSnapshot),
+    /invalid/,
+  )
+  assert.throws(
+    () =>
+      encodeEncryptedWalletBackupFrozenSnapshot({
+        ...snapshot,
+        state: 'sealed',
+        sealRunRevision: 1,
+      }),
     /invalid/,
   )
 }
