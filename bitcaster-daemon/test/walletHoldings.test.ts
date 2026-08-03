@@ -18,7 +18,7 @@ test('indexed wallet holdings aggregate more than ten thousand proofs without lo
       directory,
       engineBaseUrl: 'https://engine.example',
       mintUrl: MINT_URL,
-      walletSeedHex: '11'.repeat(32),
+      walletSeedHex: '11'.repeat(64),
       nostrSecretKeyHex: '22'.repeat(32),
       initializedAtMs: 1,
     })

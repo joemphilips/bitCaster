@@ -182,7 +182,7 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
 
     let ctfConvertCalls = 0
     const recovery = await recoverPreparedWalletSends(
-      { walletSeedHex: '00'.repeat(32) },
+      { walletSeedHex: '00'.repeat(64) },
       {
         ctfConvert: async (mintUrl, request, outputsByCollection) => {
           ctfConvertCalls += 1
@@ -243,7 +243,7 @@ test('wallet recovery sweep finalizes completed CTF consolidation operations', a
     })
 
     const recovery = await recoverPreparedWalletSends(
-      { walletSeedHex: '00'.repeat(32) },
+      { walletSeedHex: '00'.repeat(64) },
       {
         ctfConvert: async () => {
           throw new Error('completed operation should not call ctfConvert')

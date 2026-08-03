@@ -42,7 +42,7 @@ export function normalizeInitialProfileSecrets(input: {
   readonly nostrSecretKeyHex: string
   readonly nostrPublicKeyHex?: string
 }): InitialProfileSecrets {
-  const walletSeedHex = exactPrivateHex(input.walletSeedHex)
+  const walletSeedHex = exactWalletSeedHex(input.walletSeedHex)
   const nostrSecretKeyHex = exactPrivateHex(input.nostrSecretKeyHex)
   const nostrPublicKeyHex = deriveNostrPublicKey(nostrSecretKeyHex)
   if (input.nostrPublicKeyHex !== undefined && input.nostrPublicKeyHex !== nostrPublicKeyHex) {
@@ -253,6 +253,13 @@ function exactPrivateHex(value: string): string {
     throw new ProfileSecretProtectionError('secret-body-invalid')
   }
   return normalized
+}
+
+function exactWalletSeedHex(value: string): string {
+  if (!/^[0-9a-f]{128}$/.test(value)) {
+    throw new ProfileSecretProtectionError('secret-body-invalid')
+  }
+  return value
 }
 
 function deriveNostrPublicKey(privateKeyHex: string): string {

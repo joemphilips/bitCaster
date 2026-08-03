@@ -644,7 +644,7 @@ async function writeState(state: DaemonState): Promise<void> {
       directory: profileDir(),
       engineBaseUrl: 'http://localhost:5000',
       mintUrl: 'http://localhost:8085',
-      walletSeedHex: 'ab'.repeat(32),
+      walletSeedHex: 'ab'.repeat(64),
       nostrSecretKeyHex: '01'.padStart(64, '0'),
     })
   }

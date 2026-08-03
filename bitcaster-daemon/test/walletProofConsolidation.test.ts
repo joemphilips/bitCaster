@@ -8,7 +8,6 @@ import {
   hashToCurve,
   MintOperationError,
   OutputData,
-  splitAmount,
   type MintKeys,
   type Proof,
   type ProofState,
@@ -28,7 +27,9 @@ import {
 } from '../src/walletProofConsolidation.ts'
 
 const MINT_URL = 'https://mint.example'
-const SEED = '11'.repeat(32)
+const SEED = '11'.repeat(64)
+const REGULAR_ACTIVE_KEYSET_ID = `01${'a'.repeat(64)}`
+const OUTCOME_ACTIVE_KEYSET_ID = `01${'b'.repeat(64)}`
 const KEYS = Object.fromEntries(
   Array.from({ length: 21 }, (_, exponent) => [String(2 ** exponent), `key-${exponent}`]),
 )
@@ -45,7 +46,7 @@ test('manual proof consolidation journals separate regular and CTF groups', asyn
     } as const
     const state = emptyDaemonState()
     addProofs(state, 'regular-old', regularAsset, 'regular')
-    addProofs(state, 'outcome-active', outcomeAsset, 'outcome')
+    addProofs(state, OUTCOME_ACTIVE_KEYSET_ID, outcomeAsset, 'outcome')
     await writeState(state)
     const observedAtMs = Date.now()
     const fence = await claimCustodyScopeLease(directory, {
@@ -83,13 +84,13 @@ test('manual proof consolidation journals separate regular and CTF groups', asyn
     assert.equal(
       persisted.wallet.proofs
         .filter(({ asset }) => asset.kind === 'sats')
-        .every(({ proof }) => proof.id === 'regular-active'),
+        .every(({ proof }) => proof.id === REGULAR_ACTIVE_KEYSET_ID),
       true,
     )
     assert.equal(
       persisted.wallet.proofs
         .filter(({ asset }) => asset.kind === 'Outcome')
-        .every(({ proof }) => proof.id === 'outcome-active'),
+        .every(({ proof }) => proof.id === OUTCOME_ACTIVE_KEYSET_ID),
       true,
     )
   })
@@ -564,7 +565,7 @@ test('spent-input recovery validates exact restore before replacing predecessors
     const interrupted = await consolidateWalletProofs({
       secrets: { walletSeedHex: SEED },
       mutation: () => ({
-        fence: ++mutationCall === 1 ? fence : staleFence,
+        fence: ++mutationCall <= 2 ? fence : staleFence,
         observedAtMs,
       }),
       dependencies: mint.dependencies,
@@ -578,7 +579,9 @@ test('spent-input recovery validates exact restore before replacing predecessors
 
     const invalid = fakeDependencies({
       inputState: 'SPENT',
-      restoreProofs: [{ id: 'regular-active', amount: 1, secret: 'foreign', C: 'C-foreign' }],
+      restoreProofs: [
+        { id: REGULAR_ACTIVE_KEYSET_ID, amount: 1, secret: 'foreign', C: 'C-foreign' },
+      ],
     })
     const pending = await recoverWalletProofConsolidations({
       secrets: { walletSeedHex: SEED },
@@ -617,7 +620,7 @@ test('recovery finalizes a completed journal without another mint effect', async
     const interrupted = await consolidateWalletProofs({
       secrets: { walletSeedHex: SEED },
       mutation: () => ({
-        fence: ++mutationCall < 3 ? fence : staleFence,
+        fence: ++mutationCall < 4 ? fence : staleFence,
         observedAtMs: observedAtMs + mutationCall,
       }),
       dependencies: mint.dependencies,
@@ -677,23 +680,29 @@ function fakeDependencies(
 ) {
   const calls = { prepare: 0, complete: 0, check: 0, restore: 0 }
   const keysets: Record<string, MintKeys> = {
-    'regular-active': { id: 'regular-active', unit: 'sat', keys: KEYS },
-    'outcome-active': { id: 'outcome-active', unit: 'msat', keys: KEYS },
+    [REGULAR_ACTIVE_KEYSET_ID]: { id: REGULAR_ACTIVE_KEYSET_ID, unit: 'sat', keys: KEYS },
+    [OUTCOME_ACTIVE_KEYSET_ID]: { id: OUTCOME_ACTIVE_KEYSET_ID, unit: 'msat', keys: KEYS },
   }
   const dependencies = {
     createCashuWallet: (_mintUrl: string, unit: 'sat' | 'msat' = 'sat') => ({
       loadMint: async () => undefined,
       receive: async () => [],
       send: async () => ({ keep: [], send: [] }),
-      getKeyset: () => keysets[unit === 'sat' ? 'regular-active' : 'outcome-active']!,
-      prepareSwapToSend: async (amount: number, inputs: Proof[], config: { keysetId: string }) => {
+      getKeyset: () =>
+        keysets[unit === 'sat' ? REGULAR_ACTIVE_KEYSET_ID : OUTCOME_ACTIVE_KEYSET_ID]!,
+      prepareSwapToSend: async (
+        amount: number,
+        inputs: Proof[],
+        config: { keysetId: string },
+        outputConfig: { send: { data: OutputData[] } },
+      ) => {
         calls.prepare += 1
         return {
           amount: Amount.from(amount),
           fees: Amount.from(1),
           keysetId: config.keysetId,
           inputs,
-          sendOutputs: outputs(amount, keysets[config.keysetId]!),
+          sendOutputs: outputConfig.send.data,
           keepOutputs: [],
           unselectedProofs: [],
         }
@@ -721,12 +730,12 @@ function fakeDependencies(
       prepareConditionalSwap: async (input: {
         keysetId: string
         inputs: Proof[]
-        outputs: [{ amount: number }]
+        outputs: [{ data: OutputData[] }]
       }) => ({
         keysetId: input.keysetId,
         inputs: input.inputs,
         outputDataByLabel: {
-          consolidated: outputs(input.outputs[0].amount, keysets[input.keysetId]!),
+          consolidated: input.outputs[0].data,
         },
       }),
       completeConditionalSwap: async (preview: {
@@ -744,7 +753,7 @@ function fakeDependencies(
     }),
     resolveInputFeePpkByKeyset: async (_mintUrl: string, keysetIds: string[]) =>
       Object.fromEntries(keysetIds.map((keysetId) => [keysetId, 1])),
-    resolveOutputKeysetByCollection: async () => ({ YES: 'outcome-active' }),
+    resolveOutputKeysetByCollection: async () => ({ YES: OUTCOME_ACTIVE_KEYSET_ID }),
     resolveMintKeysByKeyset: async (_mintUrl: string, keysetIds: string[]) =>
       Object.fromEntries(keysetIds.map((keysetId) => [keysetId, keysets[keysetId]!])),
     restoreOutputGroups: async () => {
@@ -772,17 +781,6 @@ async function testFence(directory: string, incarnationId: string) {
     observedAtMs,
   })
   return { fence, observedAtMs }
-}
-
-function outputs(amount: number, keyset: MintKeys): OutputData[] {
-  return splitAmount(amount, keyset.keys).map((part, index) =>
-    OutputData.createSingleData(
-      Number(part),
-      keyset.id,
-      `${keyset.id}-${amount}-${index}`,
-      BigInt(index + 1),
-    ),
-  )
 }
 
 function proofFromOutput(output: OutputData): Proof {

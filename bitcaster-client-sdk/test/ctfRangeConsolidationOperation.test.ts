@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Amount, OutputData, type Proof } from '@cashu/cashu-ts'
+import { Amount, OutputData, type CounterSource, type Proof } from '@cashu/cashu-ts'
 import {
   classifyExactProofConsolidationReplayFailure,
   completeCtfRangeConsolidationOperation,
@@ -10,9 +10,20 @@ import {
   validateCtfRangeConsolidationOperation,
   validateCtfRangeConsolidationProofs,
   validateExactProofConsolidationOperation,
+  type ExactProofConsolidationWallet,
 } from '../src/ctfRangeConsolidationOperation.ts'
 
-const KEYSET_ID = 'keyset-1'
+type RegularOutputConfig = Parameters<ExactProofConsolidationWallet['prepareSwapToSend']>[3]
+type ConditionalOutputConfig = Parameters<
+  ExactProofConsolidationWallet['prepareConditionalSwap']
+>[0]
+
+const KEYSET_ID = `01${'a'.repeat(64)}`
+const KEYSET = {
+  id: KEYSET_ID,
+  keys: { '1': '02', '2': '02', '4096': '02', '8192': '02' },
+}
+const SEED = new Uint8Array(64).fill(7)
 const MINT_URL = 'https://mint.example'
 const INPUTS = [proof('a', 4096), proof('b', 4096), proof('c', 2)]
 const ROUND = {
@@ -22,27 +33,8 @@ const ROUND = {
 }
 
 test('prepares and completes one exact regular range consolidation', async () => {
-  const outputs = outputData(ROUND.outputs)
-  let completed = false
-  const wallet = {
-    prepareSwapToSend: async (amount: number, inputs: Proof[]) => ({
-      amount: Amount.from(amount),
-      fees: Amount.from(1),
-      keysetId: KEYSET_ID,
-      inputs,
-      sendOutputs: outputs,
-      keepOutputs: [],
-      unselectedProofs: [],
-    }),
-    completeSwap: async () => {
-      completed = true
-      return { keep: [], send: outputs.map(proofFromOutput) }
-    },
-    prepareConditionalSwap: async () => {
-      throw new Error('unexpected conditional consolidation')
-    },
-    completeConditionalSwap: async () => ({}),
-  }
+  const counter = countedCounterSource()
+  const fixture = completingRegularWallet()
 
   const operation = await prepareCtfRangeConsolidationOperation({
     operationId: 'source:consolidation:0',
@@ -53,9 +45,11 @@ test('prepares and completes one exact regular range consolidation', async () =>
     conditional: false,
     inputFeePpk: 100,
     plannedRound: ROUND,
-    wallet,
+    ...deterministicInput(counter.source),
+    wallet: fixture.wallet,
   })
 
+  assert.equal(counter.count(), 1)
   assert.equal(operation.kind, 'proof-consolidation')
   assert.equal(operation.metadata?.transportKind, 'wallet-send')
   assert.equal(operation.metadata?.purpose, 'ctf-range-authorization-consolidation')
@@ -64,8 +58,9 @@ test('prepares and completes one exact regular range consolidation', async () =>
     ['8192', '1'],
   )
   assert.deepEqual(validateCtfRangeConsolidationOperation(operation).operation, operation)
-  const result = await completeCtfRangeConsolidationOperation(operation, wallet)
-  assert.equal(completed, true)
+  const result = await completeCtfRangeConsolidationOperation(operation, fixture.wallet)
+  assert.equal(counter.count(), 1)
+  assert.equal(fixture.completed(), true)
   assert.deepEqual(
     result.map(({ amount }) => Number(amount)),
     [8192, 1],
@@ -73,18 +68,18 @@ test('prepares and completes one exact regular range consolidation', async () =>
 })
 
 test('prepares a conditional consolidation with the same exact plan', async () => {
-  const outputs = outputData(ROUND.outputs)
-  const wallet = {
+  let plannedOutputs: OutputData[] = []
+  const wallet: ExactProofConsolidationWallet = {
     prepareSwapToSend: async () => {
       throw new Error('unexpected regular consolidation')
     },
     completeSwap: async () => ({ keep: [], send: [] }),
-    prepareConditionalSwap: async (input: { inputs: Proof[] }) => ({
+    prepareConditionalSwap: async (input: ConditionalOutputConfig) => ({
       keysetId: KEYSET_ID,
       inputs: input.inputs,
-      outputDataByLabel: { consolidated: outputs },
+      outputDataByLabel: { consolidated: (plannedOutputs = input.outputs[0].data) },
     }),
-    completeConditionalSwap: async () => ({ consolidated: outputs.map(proofFromOutput) }),
+    completeConditionalSwap: async () => ({ consolidated: plannedOutputs.map(proofFromOutput) }),
   }
   const operation = await prepareCtfRangeConsolidationOperation({
     operationId: 'source:consolidation:0',
@@ -95,6 +90,7 @@ test('prepares a conditional consolidation with the same exact plan', async () =
     conditional: true,
     inputFeePpk: 100,
     plannedRound: ROUND,
+    ...deterministicInput(),
     wallet,
   })
 
@@ -108,22 +104,27 @@ test('prepares a conditional consolidation with the same exact plan', async () =
 })
 
 test('generic exact consolidation spends an inactive keyset into an active keyset', async () => {
-  const outputKeysetId = 'keyset-active'
-  const outputs = outputDataForKeyset(ROUND.outputs, outputKeysetId)
-  const wallet = {
-    prepareSwapToSend: async (amount: number, inputs: Proof[], config: { keysetId: string }) => {
+  const outputKeysetId = `02${'b'.repeat(64)}`
+  let plannedOutputs: OutputData[] = []
+  const wallet: ExactProofConsolidationWallet = {
+    prepareSwapToSend: async (
+      amount: number,
+      inputs: Proof[],
+      config: { keysetId: string },
+      outputConfig: RegularOutputConfig,
+    ) => {
       assert.equal(config.keysetId, outputKeysetId)
       return {
         amount: Amount.from(amount),
         fees: Amount.from(1),
         keysetId: outputKeysetId,
         inputs,
-        sendOutputs: outputs,
+        sendOutputs: (plannedOutputs = outputConfig.send.data),
         keepOutputs: [],
         unselectedProofs: [],
       }
     },
-    completeSwap: async () => ({ keep: [], send: outputs.map(proofFromOutput) }),
+    completeSwap: async () => ({ keep: [], send: plannedOutputs.map(proofFromOutput) }),
     prepareConditionalSwap: async () => {
       throw new Error('unexpected conditional consolidation')
     },
@@ -137,10 +138,13 @@ test('generic exact consolidation spends an inactive keyset into an active keyse
     unit: 'sat',
     inputKeysetId: KEYSET_ID,
     outputKeysetId,
+    outputKeyset: { ...KEYSET, id: outputKeysetId },
     inputs: INPUTS,
     conditional: false,
     inputFeePpk: 100,
     plannedRound: ROUND,
+    seed: SEED,
+    counterSource: counterSource(),
     wallet,
   })
 
@@ -160,23 +164,28 @@ test('generic exact consolidation spends an inactive keyset into an active keyse
 })
 
 test('rejects incomplete, duplicate, and foreign consolidation results', async () => {
-  const outputs = outputData(ROUND.outputs)
-  const exact = outputs.map(proofFromOutput)
-  const wallet = {
-    prepareSwapToSend: async (amount: number, inputs: Proof[]) => ({
+  let outputs: OutputData[] = []
+  let exact: Proof[] = []
+  const wallet: ExactProofConsolidationWallet = {
+    prepareSwapToSend: async (
+      amount: number,
+      inputs: Proof[],
+      _config: unknown,
+      config: RegularOutputConfig,
+    ) => ({
       amount: Amount.from(amount),
       fees: Amount.from(1),
       keysetId: KEYSET_ID,
       inputs,
-      sendOutputs: outputs,
+      sendOutputs: (outputs = config.send.data),
       keepOutputs: [],
       unselectedProofs: [],
     }),
     completeSwap: async () => ({ keep: [], send: exact }),
-    prepareConditionalSwap: async (input: { inputs: Proof[] }) => ({
+    prepareConditionalSwap: async (input: ConditionalOutputConfig) => ({
       keysetId: KEYSET_ID,
       inputs: input.inputs,
-      outputDataByLabel: { consolidated: outputs },
+      outputDataByLabel: { consolidated: (outputs = input.outputs[0].data) },
     }),
     completeConditionalSwap: async () => ({ consolidated: exact }),
   }
@@ -190,8 +199,10 @@ test('rejects incomplete, duplicate, and foreign consolidation results', async (
       conditional,
       inputFeePpk: 100,
       plannedRound: ROUND,
+      ...deterministicInput(),
       wallet,
     })
+    exact = outputs.map(proofFromOutput)
     for (const invalid of [
       undefined,
       [],
@@ -234,6 +245,7 @@ test('rejects wallet substitution before the operation is exposed', async () => 
       conditional: false,
       inputFeePpk: 100,
       plannedRound: ROUND,
+      ...deterministicInput(),
       wallet,
     }),
     /substituted exact proof consolidation inputs/,
@@ -257,9 +269,10 @@ test('rejects duplicate and predecessor output secrets before mint completion', 
           conditional,
           inputFeePpk: 100,
           plannedRound: ROUND,
+          ...deterministicInput(),
           wallet,
         }),
-        /output secrets are not fresh and unique/,
+        /substituted exact proof consolidation outputs/,
       )
     }
   }
@@ -273,7 +286,8 @@ test('rejects duplicate and predecessor output secrets before mint completion', 
     conditional: false,
     inputFeePpk: 100,
     plannedRound: ROUND,
-    wallet: regularWallet(outputData(ROUND.outputs)),
+    ...deterministicInput(),
+    wallet: regularWallet(),
   })
   const [first, second] = operation.outputs.consolidated ?? []
   assert.ok(first)
@@ -285,6 +299,46 @@ test('rejects duplicate and predecessor output secrets before mint completion', 
         outputs: { consolidated: [first, { ...second, secret: first.secret }] },
       }),
     /does not match its exact private material|output secrets are not fresh and unique/,
+  )
+})
+
+test('rejects a substituted deterministic blinding factor before persistence', async () => {
+  const wallet: ExactProofConsolidationWallet = {
+    prepareSwapToSend: async (amount, inputs, _config, outputConfig) => {
+      const [first] = outputConfig.send.data
+      assert.ok(first)
+      Reflect.set(first, 'blindingFactor', first.blindingFactor + 1n)
+      return {
+        amount: Amount.from(amount),
+        fees: Amount.from(1),
+        keysetId: KEYSET_ID,
+        inputs,
+        sendOutputs: outputConfig.send.data,
+        keepOutputs: [],
+        unselectedProofs: [],
+      }
+    },
+    completeSwap: async () => ({ keep: [], send: [] }),
+    prepareConditionalSwap: async () => {
+      throw new Error('unexpected conditional consolidation')
+    },
+    completeConditionalSwap: async () => ({}),
+  }
+
+  await assert.rejects(
+    prepareCtfRangeConsolidationOperation({
+      operationId: 'source:consolidation:substituted-blinding-factor',
+      rangeOperationId: 'range-1',
+      mintUrl: MINT_URL,
+      keysetId: KEYSET_ID,
+      inputs: INPUTS,
+      conditional: false,
+      inputFeePpk: 100,
+      plannedRound: ROUND,
+      ...deterministicInput(),
+      wallet,
+    }),
+    /substituted exact proof consolidation outputs/,
   )
 })
 
@@ -318,7 +372,8 @@ test('rejects duplicate input secrets before mint completion', async () => {
       conditional: false,
       inputFeePpk: 100,
       plannedRound: ROUND,
-      wallet: regularWallet(outputData(ROUND.outputs)),
+      ...deterministicInput(),
+      wallet: regularWallet(),
     }),
     /input secrets are not unique/,
   )
@@ -347,24 +402,86 @@ function outputDataWithSecrets(
   )
 }
 
-function regularWallet(outputs: OutputData[]) {
+function regularWallet(outputs?: OutputData[]): ExactProofConsolidationWallet {
   return {
-    prepareSwapToSend: async (amount: number, inputs: Proof[]) => ({
+    prepareSwapToSend: async (
+      amount: number,
+      inputs: Proof[],
+      _config: unknown,
+      config: RegularOutputConfig,
+    ) => ({
       amount: Amount.from(amount),
       fees: Amount.from(1),
       keysetId: KEYSET_ID,
       inputs,
-      sendOutputs: outputs,
+      sendOutputs: outputs ?? config.send.data,
       keepOutputs: [],
       unselectedProofs: [],
     }),
-    completeSwap: async () => ({ keep: [], send: outputs.map(proofFromOutput) }),
-    prepareConditionalSwap: async (input: { inputs: Proof[] }) => ({
+    completeSwap: async () => ({ keep: [], send: [] }),
+    prepareConditionalSwap: async (input: ConditionalOutputConfig) => ({
       keysetId: KEYSET_ID,
       inputs: input.inputs,
-      outputDataByLabel: { consolidated: outputs },
+      outputDataByLabel: { consolidated: outputs ?? input.outputs[0].data },
     }),
-    completeConditionalSwap: async () => ({ consolidated: outputs.map(proofFromOutput) }),
+    completeConditionalSwap: async () => ({ consolidated: [] }),
+  }
+}
+
+function completingRegularWallet(): {
+  readonly wallet: ExactProofConsolidationWallet
+  readonly completed: () => boolean
+} {
+  let plannedOutputs: OutputData[] = []
+  let completed = false
+  return {
+    wallet: {
+      prepareSwapToSend: async (amount, inputs, _config, outputConfig) => ({
+        amount: Amount.from(amount),
+        fees: Amount.from(1),
+        keysetId: KEYSET_ID,
+        inputs,
+        sendOutputs: (plannedOutputs = outputConfig.send.data),
+        keepOutputs: [],
+        unselectedProofs: [],
+      }),
+      completeSwap: async () => {
+        completed = true
+        return { keep: [], send: plannedOutputs.map(proofFromOutput) }
+      },
+      prepareConditionalSwap: async () => {
+        throw new Error('unexpected conditional consolidation')
+      },
+      completeConditionalSwap: async () => ({}),
+    },
+    completed: () => completed,
+  }
+}
+
+function deterministicInput(source = counterSource()) {
+  return { outputKeyset: KEYSET, seed: SEED, counterSource: source }
+}
+
+function counterSource(onReserve: () => void = () => undefined): CounterSource {
+  let next = 0
+  return {
+    reserve: async (_keysetId, count) => {
+      onReserve()
+      const start = next
+      next += count
+      return { start, count }
+    },
+    advanceToAtLeast: async () => undefined,
+  }
+}
+
+function countedCounterSource(): { readonly source: CounterSource; readonly count: () => number } {
+  let reservations = 0
+  return {
+    source: counterSource(() => {
+      reservations += 1
+    }),
+    count: () => reservations,
   }
 }
 

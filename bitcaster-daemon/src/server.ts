@@ -213,6 +213,7 @@ async function splitWalletCompleteSet(input: {
   amountSats: number
   operationId: string
   secrets: Awaited<ReturnType<typeof readSecrets>>
+  deps: WalletOpsDependencies
 }): Promise<{
   operationId: string
   conditionId: string
@@ -225,6 +226,7 @@ async function splitWalletCompleteSet(input: {
     input.mintUrl,
     `${input.operationId}:regular-split`,
     input.secrets,
+    input.deps,
   )
   const transport = new CashuMintCtfSplitTransport(input.mintUrl)
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(input.conditionId)
@@ -582,6 +584,7 @@ export async function dispatch(
             command.params.operationId ??
             `wallet-split-complete-set:${command.params.conditionId}:${Date.now()}`,
           secrets,
+          deps,
         }),
       }
     }

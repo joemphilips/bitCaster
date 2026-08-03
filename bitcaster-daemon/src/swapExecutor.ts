@@ -177,7 +177,7 @@ export interface DaemonSwapOps {
 export interface DaemonSwapExecutorOptions {
   connection: TradeRuntimeConnection
   ops?: DaemonSwapOps
-  walletOpsDeps?: WalletOpsDependencies
+  walletOpsDeps: WalletOpsDependencies
   retryDelayMs?: number
   maxRetryAttempts?: number
 }
@@ -195,7 +195,7 @@ export class DaemonSwapExecutor {
   constructor(options: DaemonSwapExecutorOptions) {
     this.connection = options.connection
     this.ops = options.ops ?? unsupportedSwapOps()
-    this.walletOpsDeps = options.walletOpsDeps ?? {}
+    this.walletOpsDeps = options.walletOpsDeps
     this.retryDelayMs = options.retryDelayMs ?? RETRYABLE_SWAP_STEP_RETRY_DELAY_MS
     this.maxRetryAttempts = options.maxRetryAttempts ?? RETRYABLE_SWAP_STEP_MAX_ATTEMPTS
   }

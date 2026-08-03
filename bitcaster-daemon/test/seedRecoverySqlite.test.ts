@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 import { deriveDurableCustodyScopeId } from '@bitcaster-market/client-sdk/durableCustody'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
@@ -15,47 +16,26 @@ import {
   type SeedRecoveryObservedProof,
 } from '../src/seedRecoverySqlite.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
-import type { CustodyProofSqliteRow } from '../src/durableCustodySqliteStore.ts'
+import {
+  DurableCustodySqliteStore,
+  type CustodyProofSqliteRow,
+} from '../src/durableCustodySqliteStore.ts'
 import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
+import { reserveDaemonKeysetCounter } from '../src/state.ts'
 
 test('explicit ordinary recovery co-commits selectable, pending, spent, cursor, and job', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-'))
   try {
-    const profile = await bootstrapFreshDaemonProfile({
+    const fixture = await createRecoveryFixture({
       directory,
-      engineBaseUrl: 'https://engine.example',
-      mintUrl: 'https://mint.example',
-      walletSeedHex: '11'.repeat(32),
+      walletSeedHex: '11'.repeat(64),
       nostrSecretKeyHex: '22'.repeat(32),
-      initializedAtMs: 1,
-    })
-    const fence = await claimCustodyScopeLease(directory, {
-      scopeId: profile.walletScopeId,
       incarnationId: 'recovery-incarnation',
-      observedAtMs: 2,
-    })
-    const store = new SeedRecoverySqliteStore({
-      directory,
-      fence,
       invocationId: 'invocation-1',
-      observedAtMs: 3,
     })
-    const cursor = await runExplicitEmergencySeedRecovery({
+    const cursor = await runRecovery(fixture, {
       recoveryId: 'recovery-1',
-      walletScopeId: profile.walletScopeId,
-      mintUrl: 'https://mint.example',
-      unit: 'sat',
-      keysetId: 'keyset-1',
       disclosureAcknowledged: true,
-      authority: {
-        walletScopeId: profile.walletScopeId,
-        incarnationId: fence.incarnationId,
-        fencingEpoch: fence.fencingEpoch,
-        observedAtMs: 3,
-        leaseExpiresAtMs: fence.leaseExpiresAtMs,
-        effectiveClockHighWaterMarkMs: 2,
-      },
-      store,
       batches: [
         {
           observation: {
@@ -65,53 +45,65 @@ test('explicit ordinary recovery co-commits selectable, pending, spent, cursor, 
             lastCounterWithSignature: 2,
           },
           proofs: [
-            observed(profile.walletScopeId, 'a', 'UNSPENT', 'selectable'),
-            observed(profile.walletScopeId, 'b', 'PENDING', 'retained'),
-            observed(profile.walletScopeId, 'c', 'SPENT', 'spent'),
+            observed(fixture.profile.walletScopeId, 'a', 'UNSPENT', 'selectable'),
+            observed(fixture.profile.walletScopeId, 'b', 'PENDING', 'retained'),
+            observed(fixture.profile.walletScopeId, 'c', 'SPENT', 'spent'),
           ],
         },
       ],
     })
     assert.equal(cursor.nextCounter, 3)
     assert.equal(cursor.revision, 1)
-    const database = await openDaemonStateSqlite(directory)
-    try {
+    await withRecoveryDatabase(directory, async (database) => {
+      assert.deepEqual(readRecoveryJob(database, 'recovery-1'), {
+        importedProofs: 1,
+        ignoredSpentProofs: 1,
+        revision: 1,
+        state: 'active',
+      })
+      assert.equal(readRowCount(database, 'custody_proofs'), 1)
+      assert.equal(readRowCount(database, 'seed_recovery_pending_proofs'), 1)
+    })
+    await withDaemonHome(directory, async () => {
       assert.deepEqual(
-        {
-          ...(database
-            .prepare(
-              `SELECT imported_proofs AS importedProofs,
-                 ignored_spent_proofs AS ignoredSpentProofs, revision, state
-               FROM seed_recovery_jobs WHERE recovery_id = 'recovery-1'`,
-            )
-            .get() as Record<string, unknown>),
-        },
-        {
-          importedProofs: 1,
-          ignoredSpentProofs: 1,
-          revision: 1,
-          state: 'active',
-        },
+        await reserveDaemonKeysetCounter('keyset-1', 1, {
+          fence: fixture.fence,
+          observedAtMs: 4,
+        }),
+        { start: 3, count: 1 },
       )
-      assert.equal(
-        (
-          database.prepare('SELECT count(*) AS count FROM custody_proofs').get() as {
-            count: number
-          }
-        ).count,
-        1,
-      )
-      assert.equal(
-        (
-          database.prepare('SELECT count(*) AS count FROM seed_recovery_pending_proofs').get() as {
-            count: number
-          }
-        ).count,
-        1,
-      )
-    } finally {
-      database.close()
-    }
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('recovery commit rolls its counter back with a failed proof insert', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-counter-atomic-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: '77'.repeat(64),
+      nostrSecretKeyHex: '88'.repeat(32),
+      incarnationId: 'recovery-counter-atomic',
+      invocationId: 'recovery-counter-atomic',
+    })
+    const duplicate = observed(fixture.profile.walletScopeId, 'duplicate', 'UNSPENT', 'selectable')
+    await withRecoveryDatabase(directory, async (database) => {
+      new DurableCustodySqliteStore(database).putProofCas(duplicate.proof, null)
+    })
+    await assert.rejects(() =>
+      runRecovery(fixture, {
+        recoveryId: 'recovery-counter-atomic',
+        disclosureAcknowledged: true,
+        batches: [{ observation: oneProofObservation(), proofs: [duplicate] }],
+      }),
+    )
+    await withRecoveryDatabase(directory, async (database) => {
+      assert.equal(readRowCount(database, 'seed_recovery_jobs'), 0)
+      assert.equal(readRowCount(database, 'custody_proofs'), 1)
+      assert.equal(readRowCount(database, 'target_keyset_counters'), 0)
+    })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -124,7 +116,7 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
       directory,
       engineBaseUrl: 'https://engine.example',
       mintUrl: 'https://mint.example',
-      walletSeedHex: '33'.repeat(32),
+      walletSeedHex: '33'.repeat(64),
       nostrSecretKeyHex: '44'.repeat(32),
       initializedAtMs: 1,
     })
@@ -250,7 +242,7 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
 test('typed recovery runner performs one bounded mint scan and fenced commit', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-runner-'))
   try {
-    const walletSeedHex = '55'.repeat(32)
+    const walletSeedHex = '55'.repeat(64)
     const profile = await bootstrapFreshDaemonProfile({
       directory,
       engineBaseUrl: 'https://engine.example',
@@ -308,6 +300,104 @@ test('typed recovery runner performs one bounded mint scan and fenced commit', a
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+type RecoveryFixture = {
+  readonly directory: string
+  readonly profile: Awaited<ReturnType<typeof bootstrapFreshDaemonProfile>>
+  readonly fence: Awaited<ReturnType<typeof claimCustodyScopeLease>>
+  readonly store: SeedRecoverySqliteStore
+}
+
+type RecoveryFixtureInput = {
+  readonly directory: string
+  readonly walletSeedHex: string
+  readonly nostrSecretKeyHex: string
+  readonly incarnationId: string
+  readonly invocationId: string
+}
+
+type RecoveryRequest = Parameters<typeof runExplicitEmergencySeedRecovery>[0]
+
+async function createRecoveryFixture(input: RecoveryFixtureInput): Promise<RecoveryFixture> {
+  const profile = await bootstrapFreshDaemonProfile({
+    directory: input.directory,
+    engineBaseUrl: 'https://engine.example',
+    mintUrl: 'https://mint.example',
+    walletSeedHex: input.walletSeedHex,
+    nostrSecretKeyHex: input.nostrSecretKeyHex,
+    initializedAtMs: 1,
+  })
+  const fence = await claimCustodyScopeLease(input.directory, {
+    scopeId: profile.walletScopeId,
+    incarnationId: input.incarnationId,
+    observedAtMs: 2,
+  })
+  return {
+    directory: input.directory,
+    profile,
+    fence,
+    store: new SeedRecoverySqliteStore({
+      directory: input.directory,
+      fence,
+      invocationId: input.invocationId,
+      observedAtMs: 3,
+    }),
+  }
+}
+
+function runRecovery(
+  fixture: RecoveryFixture,
+  input: Omit<
+    RecoveryRequest,
+    'walletScopeId' | 'mintUrl' | 'unit' | 'keysetId' | 'authority' | 'store'
+  >,
+): Promise<Awaited<ReturnType<typeof runExplicitEmergencySeedRecovery>>> {
+  return runExplicitEmergencySeedRecovery({
+    ...input,
+    walletScopeId: fixture.profile.walletScopeId,
+    mintUrl: 'https://mint.example',
+    unit: 'sat',
+    keysetId: 'keyset-1',
+    authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
+    store: fixture.store,
+  })
+}
+
+async function withRecoveryDatabase(
+  directory: string,
+  run: (database: DatabaseSync) => void | Promise<void>,
+): Promise<void> {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    await run(database)
+  } finally {
+    database.close()
+  }
+}
+
+function readRecoveryJob(database: DatabaseSync, recoveryId: string): Record<string, unknown> {
+  return {
+    ...(database
+      .prepare(
+        `SELECT imported_proofs AS importedProofs,
+           ignored_spent_proofs AS ignoredSpentProofs, revision, state
+         FROM seed_recovery_jobs WHERE recovery_id = ?`,
+      )
+      .get(recoveryId) as Record<string, unknown>),
+  }
+}
+
+function readRowCount(
+  database: DatabaseSync,
+  table:
+    | 'custody_proofs'
+    | 'seed_recovery_jobs'
+    | 'seed_recovery_pending_proofs'
+    | 'target_keyset_counters',
+): number {
+  return (database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number })
+    .count
+}
 
 function observed(
   scopeId: string,
@@ -367,6 +457,31 @@ function oneProofObservation() {
     startCounter: 0,
     requestedCount: 1,
     lastCounterWithSignature: 0,
+  }
+}
+
+function recoveryAuthority(
+  walletScopeId: string,
+  fence: Awaited<ReturnType<typeof claimCustodyScopeLease>>,
+) {
+  return {
+    walletScopeId,
+    incarnationId: fence.incarnationId,
+    fencingEpoch: fence.fencingEpoch,
+    observedAtMs: 3,
+    leaseExpiresAtMs: fence.leaseExpiresAtMs,
+    effectiveClockHighWaterMarkMs: 2,
+  }
+}
+
+async function withDaemonHome(directory: string, run: () => Promise<void>): Promise<void> {
+  const previous = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = directory
+  try {
+    await run()
+  } finally {
+    if (previous === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previous
   }
 }
 

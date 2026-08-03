@@ -29,7 +29,7 @@ import {
 
 const execFileAsync = promisify(execFile)
 const mainPath = join(import.meta.dirname, '..', 'src', 'main.ts')
-const walletSeedHex = 'ab'.repeat(32)
+const walletSeedHex = 'ab'.repeat(64)
 const nostrSecretKeyHex = '01'.padStart(64, '0')
 
 test('fresh init publishes one complete SQLite authority', async () => {
@@ -66,6 +66,14 @@ test('fresh init publishes one complete SQLite authority', async () => {
   })
 })
 
+test('runtime swap executor receives the live custody fence for default wallets', async () => {
+  const source = await readFile(mainPath, 'utf8')
+  assert.match(
+    source,
+    /new DaemonSwapExecutor\(\{[\s\S]*?walletOpsDeps: \{ getCustodyFence: currentFence \}/,
+  )
+})
+
 test('fresh init defaults endpoints and generates identity', async () => {
   await withFreshHome(async (home) => {
     await runMain(home, ['init'], {
@@ -77,10 +85,30 @@ test('fresh init defaults endpoints and generates identity', async () => {
       const secrets = await readSecrets()
       assert.equal(profile?.engineBaseUrl, 'http://localhost:5000')
       assert.equal(profile?.mintUrl, 'http://localhost:8085')
-      assert.match(secrets?.walletSeedHex ?? '', /^[0-9a-f]{64}$/)
+      assert.match(secrets?.walletSeedHex ?? '', /^[0-9a-f]{128}$/)
       assert.match(secrets?.nostrSecretKeyHex ?? '', /^[0-9a-f]{64}$/)
     })
   })
+})
+
+test('wallet seed import requires 64 lowercase bytes while the Nostr key remains 32 bytes', () => {
+  assert.throws(
+    () =>
+      createDaemonSecretsFromImport({
+        walletSeedHex: 'ab'.repeat(32),
+        nostrSecretKeyHex,
+      }),
+    /wallet seed must be exactly 64 bytes of hex/,
+  )
+  assert.throws(
+    () =>
+      createDaemonSecretsFromImport({
+        walletSeedHex: walletSeedHex.toUpperCase(),
+        nostrSecretKeyHex,
+      }),
+    /wallet seed must be exactly 64 bytes of hex/,
+  )
+  assert.doesNotThrow(() => createDaemonSecretsFromImport({ walletSeedHex, nostrSecretKeyHex }))
 })
 
 test('init refuses argv secrets and incomplete secret-file imports', async () => {
@@ -148,7 +176,7 @@ test('init never overwrites or migrates an existing profile', async () => {
     await assert.rejects(
       () =>
         runDaemonInit(home, {
-          walletSeedHex: 'cd'.repeat(32),
+          walletSeedHex: 'cd'.repeat(64),
           nostrSecretKeyHex: '02'.padStart(64, '0'),
         }),
       /profile-not-fresh|fresh daemon profile/,

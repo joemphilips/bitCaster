@@ -16,7 +16,7 @@ async function bootstrapTestProfile(directory: string): Promise<void> {
     directory,
     engineBaseUrl: 'https://engine.example',
     mintUrl: 'https://mint.example',
-    walletSeedHex: '11'.repeat(32),
+    walletSeedHex: '11'.repeat(64),
     nostrSecretKeyHex: '22'.repeat(32),
   })
 }

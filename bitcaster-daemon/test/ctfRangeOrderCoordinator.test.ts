@@ -109,7 +109,7 @@ const COMPLEMENT_KEYSET_ID = deriveConditionalKeysetId({
   conditionId: CONDITION_ID,
   outcomeCollectionId: COMPLEMENT_COLLECTION_ID,
 })
-const WALLET_SEED_HEX = '11'.repeat(32)
+const WALLET_SEED_HEX = '11'.repeat(64)
 const MINT_URL = 'https://mint.example'
 const ORDER_ID = '00000000-0000-8000-8000-000000000001'
 const CAPABILITY_ARTIFACT_ID = '00000000-0000-4000-8000-000000000002'

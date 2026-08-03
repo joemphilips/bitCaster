@@ -54,7 +54,7 @@ export function createDaemonSecrets(now = new Date().toISOString()): DaemonSecre
   nostr.generateKeys()
   return createDaemonSecretsFromImport(
     {
-      walletSeedHex: randomBytes(32).toString('hex'),
+      walletSeedHex: randomBytes(64).toString('hex'),
       nostrSecretKeyHex: nostr.getPrivateKey('hex'),
     },
     now,
@@ -65,7 +65,7 @@ export function createDaemonSecretsFromImport(
   input: { walletSeedHex: string; nostrSecretKeyHex: string },
   now = new Date().toISOString(),
 ): DaemonSecrets {
-  const walletSeedHex = normalizeHexSecret(input.walletSeedHex, 'wallet seed')
+  const walletSeedHex = normalizeWalletSeedHex(input.walletSeedHex)
   const nostrSecretKeyHex = normalizeSecp256k1PrivateKeyHex(input.nostrSecretKeyHex)
   const nostr = createECDH('secp256k1')
   try {
@@ -312,12 +312,11 @@ function assertIdentityUnchanged(current: DaemonSecrets, next: DaemonSecrets): v
   }
 }
 
-function normalizeHexSecret(value: string, label: string): string {
-  const normalized = value.trim().replace(/^0x/i, '').toLowerCase()
-  if (!/^[0-9a-f]{64}$/.test(normalized)) {
-    throw new Error(`${label} must be exactly 32 bytes of hex`)
+function normalizeWalletSeedHex(value: string): string {
+  if (!/^[0-9a-f]{128}$/.test(value)) {
+    throw new Error('wallet seed must be exactly 64 bytes of hex')
   }
-  return normalized
+  return value
 }
 
 function normalizeIsoTime(value: string): string {

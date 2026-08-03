@@ -50,19 +50,24 @@ import {
 } from '@bitcaster-market/client-sdk/tokenImportValidation'
 import {
   addAvailableProofs,
+  advanceDaemonKeysetCounter,
   completeReservedSatSend,
   ensureState,
   getProofOperation,
   markProofOperationCompleted,
   prepareProofOperation,
+  readDaemonKeysetCounters,
   releaseProofReservation,
+  reserveDaemonKeysetCounter,
   reserveAvailableSatProofsForSend,
   updateState,
+  type FencedStateMutation,
   type ProofOperationRecord,
   type StoredOutputData,
   type StoredProofAsset,
 } from './state.ts'
 import type { DaemonProfile } from './profile.ts'
+import type { CustodyScopeFence } from './profileFencing.ts'
 import type { WalletConsolidationProofSummary, WalletConsolidationResult } from './protocol.ts'
 import { createDaemonTokenImportKeysetResolver } from './tokenImportKeysetResolver.ts'
 
@@ -100,6 +105,7 @@ export interface CashuWalletLike {
 
 export interface WalletOpsDependencies {
   createCashuWallet?: (mintUrl: string, unit?: TokenImportUnit) => CashuWalletLike
+  getCustodyFence?: () => CustodyScopeFence
   resolveTokenImportKeysets?: ResolveTokenImportKeysets
   ctfConvert?: (
     mintUrl: string,
@@ -942,54 +948,50 @@ export function createWallet(
   deps: WalletOpsDependencies,
   baseAsset: 'sat',
   exactUnit?: TokenImportUnit,
+  counterMutation?: () => FencedStateMutation,
 ): CashuWalletLike {
   const unit = exactUnit ?? defaultCollateralUnit(baseAsset)
   if (deps.createCashuWallet) return deps.createCashuWallet(mintUrl, unit)
+  const mutation = counterMutation ?? mutationFromRuntimeFence(deps.getCustodyFence)
+  if (!mutation) {
+    throw new Error('default Cashu wallet requires a runtime custody fence provider')
+  }
   return new CashuWallet(new CashuMint(mintUrl), {
     unit,
     bip39seed: Buffer.from(secrets.walletSeedHex, 'hex'),
-    counterSource: new DaemonCounterSource(),
+    counterSource: createDaemonCounterSource(mutation),
   }) as CashuWalletLike
 }
 
+export function createDaemonCounterSource(mutation: () => FencedStateMutation): CounterSource {
+  return new DaemonCounterSource(mutation)
+}
+
 class DaemonCounterSource implements CounterSource {
+  readonly #mutation: () => FencedStateMutation
+
+  constructor(mutation: () => FencedStateMutation) {
+    this.#mutation = mutation
+  }
+
   async reserve(keysetId: string, n: number): Promise<CounterRange> {
-    if (!Number.isInteger(n) || n < 0) {
-      throw new Error(`invalid counter reservation size: ${n}`)
-    }
-    return updateState((state) => {
-      const start = state.wallet.keysetCounters[keysetId] ?? 0
-      if (n > 0) {
-        state.wallet.keysetCounters[keysetId] = start + n
-      }
-      return { start, count: n }
-    })
+    return reserveDaemonKeysetCounter(keysetId, n, this.#mutation())
   }
 
   async advanceToAtLeast(keysetId: string, minNext: number): Promise<void> {
-    if (!Number.isInteger(minNext) || minNext < 0) {
-      throw new Error(`invalid counter advance target: ${minNext}`)
-    }
-    await updateState((state) => {
-      const current = state.wallet.keysetCounters[keysetId] ?? 0
-      if (minNext > current) {
-        state.wallet.keysetCounters[keysetId] = minNext
-      }
-    })
-  }
-
-  async setNext(keysetId: string, next: number): Promise<void> {
-    if (!Number.isInteger(next) || next < 0) {
-      throw new Error(`invalid counter value: ${next}`)
-    }
-    await updateState((state) => {
-      state.wallet.keysetCounters[keysetId] = next
-    })
+    await advanceDaemonKeysetCounter(keysetId, minNext, this.#mutation())
   }
 
   async snapshot(): Promise<Record<string, number>> {
-    return { ...(await ensureState()).wallet.keysetCounters }
+    return readDaemonKeysetCounters()
   }
+}
+
+function mutationFromRuntimeFence(
+  getCustodyFence: (() => CustodyScopeFence) | undefined,
+): (() => FencedStateMutation) | undefined {
+  if (!getCustodyFence) return undefined
+  return () => ({ fence: getCustodyFence(), observedAtMs: Date.now() })
 }
 
 function sumProofs(proofs: Proof[]): number {

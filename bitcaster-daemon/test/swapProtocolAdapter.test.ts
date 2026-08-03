@@ -18,7 +18,7 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       directory: home,
       engineBaseUrl: 'https://engine.example',
       mintUrl: 'https://mint.example',
-      walletSeedHex: '11'.repeat(32),
+      walletSeedHex: '11'.repeat(64),
       nostrSecretKeyHex: '22'.repeat(32),
     })
     const ops = createRealDaemonSwapOps({

@@ -30,8 +30,15 @@ import type {
 import type { PartialLockHeldRecord, SwapFailure } from '@bitcaster-market/client-sdk/swapFailure'
 import { profileDatabasePath, profileDir } from './profile.ts'
 import { readSecrets } from './secrets.ts'
-import { openDaemonStateSqlite, withDaemonStateSqliteTransaction } from './stateSqlite.ts'
-import { withDurableCustodyUnitOfWork } from './durableCustodyUnitOfWork.ts'
+import {
+  createDaemonStateSqliteSession,
+  openDaemonStateSqlite,
+  withDaemonStateSqliteTransaction,
+} from './stateSqlite.ts'
+import {
+  withDurableCustodyFencedRead,
+  withDurableCustodyUnitOfWork,
+} from './durableCustodyUnitOfWork.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
 import { assertManagedConditionMutationFromDatabase } from './managedConditionInventorySqlite.ts'
@@ -394,6 +401,131 @@ export async function updateState<T>(update: (state: DaemonState, now: string) =
       writeDaemonStateToDatabase(database, normalizeState(state))
       return result
     })
+  })
+}
+
+const DAEMON_COUNTER_MAX_NEXT = 2_147_483_648
+
+export async function reserveDaemonKeysetCounter(
+  keysetId: string,
+  count: number,
+  mutation: FencedStateMutation,
+): Promise<{ start: number; count: number }> {
+  assertDaemonCounterInput(keysetId, count, 256)
+  if (count === 0) {
+    return withDurableCustodyFencedRead(
+      createDaemonStateSqliteSession(profileDir()),
+      mutation.fence,
+      mutation.observedAtMs,
+      (database) =>
+        reserveDaemonKeysetCounterFromDatabase(
+          database,
+          mutation.fence.scopeId,
+          keysetId,
+          count,
+          mutation.observedAtMs,
+        ),
+    )
+  }
+  return withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) =>
+      reserveDaemonKeysetCounterFromDatabase(
+        database,
+        mutation.fence.scopeId,
+        keysetId,
+        count,
+        mutation.observedAtMs,
+      ),
+  )
+}
+
+export async function advanceDaemonKeysetCounter(
+  keysetId: string,
+  minimum: number,
+  mutation: FencedStateMutation,
+): Promise<void> {
+  assertDaemonCounterInput(keysetId, minimum, DAEMON_COUNTER_MAX_NEXT)
+  await withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) =>
+      advanceDaemonKeysetCounterFromDatabase(
+        database,
+        mutation.fence.scopeId,
+        keysetId,
+        minimum,
+        mutation.observedAtMs,
+      ),
+  )
+}
+
+export function advanceDaemonKeysetCounterFromDatabase(
+  database: DatabaseSync,
+  scopeId: string,
+  keysetId: string,
+  minimum: number,
+  updatedAtMs: number,
+): void {
+  assertDaemonCounterInput(keysetId, minimum, DAEMON_COUNTER_MAX_NEXT)
+  database
+    .prepare(
+      `INSERT INTO target_keyset_counters (scope_id, keyset_id, next_counter, updated_at_ms)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(scope_id, keyset_id) DO UPDATE SET
+         next_counter = MAX(target_keyset_counters.next_counter, excluded.next_counter),
+         updated_at_ms = excluded.updated_at_ms`,
+    )
+    .run(scopeId, keysetId, minimum, updatedAtMs)
+}
+
+function reserveDaemonKeysetCounterFromDatabase(
+  database: DatabaseSync,
+  scopeId: string,
+  keysetId: string,
+  count: number,
+  updatedAtMs: number,
+): { start: number; count: number } {
+  if (count === 0) {
+    const row = database
+      .prepare(
+        'SELECT next_counter AS nextCounter FROM target_keyset_counters WHERE scope_id = ? AND keyset_id = ?',
+      )
+      .get(scopeId, keysetId) as { nextCounter: number } | undefined
+    return { start: row?.nextCounter ?? 0, count }
+  }
+  const row = database
+    .prepare(
+      `INSERT INTO target_keyset_counters (scope_id, keyset_id, next_counter, updated_at_ms)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(scope_id, keyset_id) DO UPDATE SET
+         next_counter = target_keyset_counters.next_counter + excluded.next_counter,
+         updated_at_ms = excluded.updated_at_ms
+       WHERE target_keyset_counters.next_counter <= ${DAEMON_COUNTER_MAX_NEXT} - excluded.next_counter
+       RETURNING next_counter - ? AS start`,
+    )
+    .get(scopeId, keysetId, count, updatedAtMs, count) as { start: number } | undefined
+  if (row === undefined) throw new Error('daemon keyset counter reservation exceeds its range')
+  return { start: row.start, count }
+}
+
+export async function readDaemonKeysetCounters(): Promise<Record<string, number>> {
+  return withProfileStorageAccess(async () => {
+    const database = await openDaemonStateSqlite(profileDir())
+    try {
+      const scopeId = readScopeId(database)
+      const rows = database
+        .prepare(
+          'SELECT keyset_id AS keysetId, next_counter AS nextCounter FROM target_keyset_counters WHERE scope_id = ?',
+        )
+        .all(scopeId) as Array<{ keysetId: string; nextCounter: number }>
+      return Object.fromEntries(rows.map(({ keysetId, nextCounter }) => [keysetId, nextCounter]))
+    } finally {
+      database.close()
+    }
   })
 }
 
@@ -2214,7 +2346,6 @@ export function writeDaemonStateToDatabase(database: DatabaseSync, state: Daemon
   const priorTargetArtifactIds = collectTargetArtifactIds(database, scopeId)
   database.prepare('DELETE FROM target_proof_operations WHERE scope_id = ?').run(scopeId)
   database.prepare('DELETE FROM target_wallet_proofs WHERE scope_id = ?').run(scopeId)
-  database.prepare('DELETE FROM target_keyset_counters WHERE scope_id = ?').run(scopeId)
   database
     .prepare(
       `INSERT INTO target_state_metadata (scope_id, schema_version) VALUES (?, 1)
@@ -2223,16 +2354,8 @@ export function writeDaemonStateToDatabase(database: DatabaseSync, state: Daemon
     .run(scopeId)
 
   for (const proof of state.wallet.proofs) insertWalletProof(database, scopeId, proof)
-  const now = Date.now()
-  for (const [keysetId, nextCounter] of Object.entries(state.wallet.keysetCounters)) {
-    database
-      .prepare(
-        `INSERT INTO target_keyset_counters (
-           scope_id, keyset_id, next_counter, updated_at_ms
-         ) VALUES (?, ?, ?, ?)`,
-      )
-      .run(scopeId, keysetId, nextCounter, now)
-  }
+  // Keyset counters have a fenced, row-scoped write path. This compatibility
+  // serializer must preserve those rows without mutating them.
   for (const operation of Object.values(state.proofOperations)) {
     insertProofOperation(database, scopeId, operation)
   }
@@ -3150,9 +3273,7 @@ function normalizeState(value: unknown): DaemonState {
       isRecord(value.wallet) && Array.isArray(value.wallet.proofs)
         ? {
             proofs: (value.wallet.proofs as StoredProofRecord[]).map(normalizeStoredProofRecord),
-            keysetCounters: isRecord(value.wallet.keysetCounters)
-              ? normalizeCounterMap(value.wallet.keysetCounters)
-              : {},
+            keysetCounters: {},
           }
         : { proofs: [], keysetCounters: {} },
     proofOperations: isRecord(value.proofOperations)
@@ -3214,15 +3335,6 @@ function normalizeProofAssetBaseAsset(asset: StoredProofAsset | undefined): 'sat
 function normalizeProofAssetUnit(asset: StoredProofAsset | undefined): 'sat' | 'msat' {
   if (asset?.unit === 'sat' || asset?.unit === 'msat') return asset.unit
   throw new Error('proof asset unit must be exactly sat or msat')
-}
-
-function normalizeCounterMap(value: Record<string, unknown>): Record<string, number> {
-  return Object.fromEntries(
-    Object.entries(value).filter(
-      (entry): entry is [string, number] =>
-        typeof entry[1] === 'number' && Number.isInteger(entry[1]) && entry[1] >= 0,
-    ),
-  )
 }
 
 function normalizeProofOperations(
@@ -3571,6 +3683,19 @@ function requireText(value: unknown, label: string): string {
     throw new Error(`${label} is invalid`)
   }
   return value
+}
+
+function assertDaemonCounterInput(keysetId: string, value: number, maximum: number): void {
+  if (
+    typeof keysetId !== 'string' ||
+    keysetId.length < 1 ||
+    keysetId.length > 1024 ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > maximum
+  ) {
+    throw new Error('daemon keyset counter input is invalid')
+  }
 }
 
 function requireSatBaseAsset(value: unknown, label: string): 'sat' {

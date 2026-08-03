@@ -27,7 +27,7 @@ test('daemon previews then atomically retires one verified condition inventory',
   roots.push(root)
   const directory = join(root, 'profile')
   process.env.BITCASTER_DAEMON_HOME = directory
-  const seed = '11'.repeat(32)
+  const seed = '11'.repeat(64)
   const bootstrap = await bootstrapFreshDaemonProfile({
     directory,
     engineBaseUrl: 'https://engine.example',

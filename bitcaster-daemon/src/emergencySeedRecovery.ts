@@ -115,8 +115,8 @@ export async function recoverDaemonWalletFromSeed(
     invocationId?: () => string
   },
 ): Promise<WalletSeedRecoveryResult> {
-  if (!/^[0-9a-fA-F]{64}$/.test(input.walletSeedHex)) {
-    throw new Error('wallet seed must be a 32-byte hex value')
+  if (!/^[0-9a-f]{128}$/.test(input.walletSeedHex)) {
+    throw new Error('wallet seed must be a 64-byte lowercase hex value')
   }
   const seed = Uint8Array.from(Buffer.from(input.walletSeedHex, 'hex'))
   const derivedScopeId = deriveDurableCustodyScopeId({

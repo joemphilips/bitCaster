@@ -136,6 +136,7 @@ import {
 } from './durableCustodyUnitOfWork.ts'
 import { createDaemonStateSqliteSession, type DaemonStateSqliteSession } from './stateSqlite.ts'
 import {
+  createDaemonCounterSource,
   deserializeOutputGroups,
   restoreOutputGroups,
   serializeOutputDataArray,
@@ -163,7 +164,7 @@ interface CtfRangeWalletLike {
     config: { includeFees: false; keysetId: string },
     outputConfig: {
       send: { type: 'custom'; data: OutputData[] } | { type: 'random' }
-      keep: { type: 'random' }
+      keep: { type: 'custom'; data: OutputData[] } | { type: 'random' }
     },
   ): Promise<SwapPreview>
   completeSwap(preview: SwapPreview): Promise<{ keep: Proof[]; send: Proof[] }>
@@ -1913,6 +1914,7 @@ async function prepareOrResumeSource(
     await consolidateSourceProofs(
       authority,
       wallet,
+      walletSeedHex,
       page.proofs,
       round,
       sourceConsolidationId(authority.preparation.sourceOperationId, round),
@@ -2153,6 +2155,7 @@ function consolidationPlanError(
 async function consolidateSourceProofs(
   authority: PreparedMintAuthority,
   wallet: CtfRangeWalletLike,
+  walletSeedHex: string,
   inputs: Proof[],
   round: number,
   operationId: string,
@@ -2166,10 +2169,13 @@ async function consolidateSourceProofs(
     rangeOperationId: authority.preparation.operationId,
     mintUrl: authority.preparation.mintUrl,
     keysetId: authority.preparation.offerKeysetId,
+    outputKeyset: authority.preparationInput.offerKeyset,
     inputs,
     conditional: authority.preparationInput.side === 'Sell',
     inputFeePpk: authority.preparationInput.offerKeyset.inputFeePpk,
     plannedRound: planned,
+    seed: walletSeed(walletSeedHex),
+    counterSource: createDaemonCounterSource(authority.mutation),
     wallet,
   })
   await persistAndCompleteConsolidation(authority, wallet, round, operation)
@@ -2856,7 +2862,7 @@ function toProof(value: CashuProofRecord): Proof {
 }
 
 function walletSeed(value: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/i.test(value)) throw new Error('wallet seed must be 32-byte hex')
+  if (!/^[0-9a-f]{128}$/.test(value)) throw new Error('wallet seed must be 64-byte lowercase hex')
   return Buffer.from(value, 'hex')
 }
 

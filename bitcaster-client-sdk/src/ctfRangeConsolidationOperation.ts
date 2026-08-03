@@ -1,6 +1,7 @@
 import {
   Amount,
   OutputData,
+  type CounterSource,
   type ConditionalSwapPreview,
   type Proof,
   type SwapPreview,
@@ -13,6 +14,12 @@ import {
   serializeDurableCustodyProofInput,
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
+import {
+  assertDurableSeedDerivedOutputPlanMatchesOutputs,
+  reserveAndConstructDurableSeedDerivedOutputs,
+  type DurableSeedDerivedOutputKeyset,
+  type DurableSeedDerivedOutputPlan,
+} from './durableSeedDerivedOutputs.ts'
 import { amountToNumber, computeInputFeeSatsForProofs } from './proofSelection.ts'
 
 const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
@@ -27,15 +34,15 @@ export interface ExactProofConsolidationWallet {
     proofs: Proof[],
     config: { includeFees: false; keysetId: string },
     outputConfig: {
-      send: { type: 'random' }
-      keep: { type: 'random' }
+      send: { type: 'custom'; data: OutputData[] }
+      keep: { type: 'custom'; data: OutputData[] }
     },
   ): Promise<SwapPreview>
   completeSwap(preview: SwapPreview): Promise<{ keep: Proof[]; send: Proof[] }>
   prepareConditionalSwap(options: {
     keysetId: string
     inputs: Proof[]
-    outputs: [{ label: 'consolidated'; kind: 'random'; amount: number }]
+    outputs: [{ label: 'consolidated'; kind: 'custom'; data: OutputData[] }]
   }): Promise<ConditionalSwapPreview>
   completeConditionalSwap(preview: ConditionalSwapPreview): Promise<Record<string, Proof[]>>
 }
@@ -58,6 +65,24 @@ export interface ExactProofConsolidationValidation {
   readonly purpose: string
 }
 
+interface ExactProofConsolidationPreparationInput {
+  readonly operationId: string
+  readonly bindingId: string
+  readonly purpose: string
+  readonly mintUrl: string
+  readonly unit: 'sat' | 'msat'
+  readonly inputKeysetId: string
+  readonly outputKeysetId: string
+  readonly outputKeyset: DurableSeedDerivedOutputKeyset
+  readonly inputs: readonly Proof[]
+  readonly conditional: boolean
+  readonly inputFeePpk: number
+  readonly plannedRound: ProofConsolidationRound
+  readonly seed: Uint8Array
+  readonly counterSource: CounterSource
+  readonly wallet: ExactProofConsolidationWallet
+}
+
 export type ExactProofConsolidationReplayFailureDisposition =
   | 'release-exact-unspent-inputs'
   | 'remain-pending'
@@ -73,46 +98,32 @@ export function classifyExactProofConsolidationReplayFailure(input: {
     : 'remain-pending'
 }
 
-export async function prepareExactProofConsolidationOperation(input: {
-  readonly operationId: string
-  readonly bindingId: string
-  readonly purpose: string
-  readonly mintUrl: string
-  readonly unit: 'sat' | 'msat'
-  readonly inputKeysetId: string
-  readonly outputKeysetId: string
-  readonly inputs: readonly Proof[]
-  readonly conditional: boolean
-  readonly inputFeePpk: number
-  readonly plannedRound: ProofConsolidationRound
-  readonly wallet: ExactProofConsolidationWallet
-}): Promise<DurableCustodyProofOperationInput> {
-  if (input.conditional && input.inputKeysetId !== input.outputKeysetId) {
-    throw new Error('conditional proof consolidation cannot rotate keysets')
-  }
-  assertPlannedInputs(input.inputs, input.plannedRound.inputs)
-  assertInputKeyset(input.inputs, input.inputKeysetId)
-  const fees = computeInputFeeSatsForProofs(input.inputs, {
-    [input.inputKeysetId]: input.inputFeePpk,
+export async function prepareExactProofConsolidationOperation(
+  input: ExactProofConsolidationPreparationInput,
+): Promise<DurableCustodyProofOperationInput> {
+  const { fees, outputAmount, plannedAmounts } = validateConsolidationPreparation(input)
+  const planned = await reserveAndConstructDurableSeedDerivedOutputs({
+    seed: input.seed,
+    counterSource: input.counterSource,
+    keyset: input.outputKeyset,
+    amounts: plannedAmounts,
   })
-  if (String(fees) !== input.plannedRound.fee) {
-    throw new Error('proof consolidation fee differs from its plan')
-  }
-  const outputAmount = checkedProofSum(input.inputs) - fees
-  if (outputAmount <= 0) throw new Error('proof consolidation fee consumes its inputs')
 
-  const preview = await prepareExactConsolidationPreview(input, outputAmount)
-  const outputs = consolidationOutputs(preview, input.conditional)
-  assertExactProofs(preview.inputs, input.inputs)
-  assertPlannedOutputs(outputs, input.plannedRound.outputs)
-  assertOutputKeyset(outputs, input.outputKeysetId)
-  assertFreshOutputSecrets(outputs, input.inputs)
-  if (outputs.length >= preview.inputs.length) {
-    throw new Error('proof consolidation does not reduce the proof count')
-  }
-  if (!input.conditional && regularPreviewHasRemainder(preview as SwapPreview)) {
-    throw new Error('proof consolidation did not consume its exact inputs')
-  }
+  const preview = await prepareExactConsolidationPreview(input, outputAmount, planned.outputData)
+  const outputs = validateConsolidationPreview(input, preview, planned.plan)
+  return buildExactConsolidationOperation(input, preview, outputs, planned.plan, {
+    fees,
+    outputAmount,
+  })
+}
+
+function buildExactConsolidationOperation(
+  input: ExactProofConsolidationPreparationInput,
+  preview: SwapPreview | ConditionalSwapPreview,
+  outputs: readonly OutputData[],
+  outputPlan: DurableSeedDerivedOutputPlan,
+  amounts: { readonly fees: number; readonly outputAmount: number },
+): DurableCustodyProofOperationInput {
   return {
     operationId: requireText(input.operationId, 'operation id'),
     kind: 'proof-consolidation',
@@ -126,10 +137,11 @@ export async function prepareExactProofConsolidationOperation(input: {
         : REGULAR_CONSOLIDATION_TRANSPORT,
       bindingId: requireText(input.bindingId, 'binding id'),
       unit: input.unit,
-      amount: outputAmount,
-      fees,
+      amount: amounts.outputAmount,
+      fees: amounts.fees,
       inputKeysetId: requireText(input.inputKeysetId, 'input keyset id'),
       keysetId: requireText(input.outputKeysetId, 'output keyset id'),
+      outputPlan,
     },
   }
 }
@@ -139,10 +151,13 @@ export async function prepareCtfRangeConsolidationOperation(input: {
   readonly rangeOperationId: string
   readonly mintUrl: string
   readonly keysetId: string
+  readonly outputKeyset: DurableSeedDerivedOutputKeyset
   readonly inputs: readonly Proof[]
   readonly conditional: boolean
   readonly inputFeePpk: number
   readonly plannedRound: ProofConsolidationRound
+  readonly seed: Uint8Array
+  readonly counterSource: CounterSource
   readonly wallet: CtfRangeConsolidationWallet
 }): Promise<DurableCustodyProofOperationInput> {
   const operation = await prepareExactProofConsolidationOperation({
@@ -153,10 +168,13 @@ export async function prepareCtfRangeConsolidationOperation(input: {
     unit: 'msat',
     inputKeysetId: input.keysetId,
     outputKeysetId: input.keysetId,
+    outputKeyset: input.outputKeyset,
     inputs: input.inputs,
     conditional: input.conditional,
     inputFeePpk: input.inputFeePpk,
     plannedRound: input.plannedRound,
+    seed: input.seed,
+    counterSource: input.counterSource,
     wallet: input.wallet,
   })
   return {
@@ -168,21 +186,70 @@ export async function prepareCtfRangeConsolidationOperation(input: {
   }
 }
 
+function validateConsolidationPreparation(input: ExactProofConsolidationPreparationInput): {
+  readonly fees: number
+  readonly outputAmount: number
+  readonly plannedAmounts: readonly number[]
+} {
+  if (input.conditional && input.inputKeysetId !== input.outputKeysetId) {
+    throw new Error('conditional proof consolidation cannot rotate keysets')
+  }
+  assertPlannedInputs(input.inputs, input.plannedRound.inputs)
+  assertInputKeyset(input.inputs, input.inputKeysetId)
+  const fees = computeInputFeeSatsForProofs(input.inputs, {
+    [input.inputKeysetId]: input.inputFeePpk,
+  })
+  if (String(fees) !== input.plannedRound.fee) {
+    throw new Error('proof consolidation fee differs from its plan')
+  }
+  const outputAmount = checkedProofSum(input.inputs) - fees
+  if (outputAmount <= 0) throw new Error('proof consolidation fee consumes its inputs')
+  if (input.outputKeyset.id !== input.outputKeysetId) {
+    throw new Error('proof consolidation output keyset authority is invalid')
+  }
+  return {
+    fees,
+    outputAmount,
+    plannedAmounts: plannedOutputAmounts(input.plannedRound.outputs, outputAmount),
+  }
+}
+
+function validateConsolidationPreview(
+  input: ExactProofConsolidationPreparationInput,
+  preview: SwapPreview | ConditionalSwapPreview,
+  outputPlan: DurableSeedDerivedOutputPlan,
+): OutputData[] {
+  const outputs = consolidationOutputs(preview, input.conditional)
+  assertExactProofs(preview.inputs, input.inputs)
+  assertPlannedOutputs(outputs, input.plannedRound.outputs)
+  assertOutputKeyset(outputs, input.outputKeysetId)
+  assertExactOutputsMatchPlan(outputs, outputPlan, input.outputKeysetId)
+  assertFreshOutputSecrets(outputs, input.inputs)
+  if (outputs.length >= preview.inputs.length) {
+    throw new Error('proof consolidation does not reduce the proof count')
+  }
+  if (!input.conditional && regularPreviewHasRemainder(preview as SwapPreview)) {
+    throw new Error('proof consolidation did not consume its exact inputs')
+  }
+  return outputs
+}
+
 function prepareExactConsolidationPreview(
-  input: Parameters<typeof prepareExactProofConsolidationOperation>[0],
+  input: ExactProofConsolidationPreparationInput,
   outputAmount: number,
+  outputs: readonly OutputData[],
 ): Promise<SwapPreview | ConditionalSwapPreview> {
   return input.conditional
     ? input.wallet.prepareConditionalSwap({
         keysetId: input.outputKeysetId,
         inputs: [...input.inputs],
-        outputs: [{ label: 'consolidated', kind: 'random', amount: outputAmount }],
+        outputs: [{ label: 'consolidated', kind: 'custom', data: [...outputs] }],
       })
     : input.wallet.prepareSwapToSend(
         outputAmount,
         [...input.inputs],
         { includeFees: false, keysetId: input.outputKeysetId },
-        { send: { type: 'random' }, keep: { type: 'random' } },
+        { send: { type: 'custom', data: [...outputs] }, keep: { type: 'custom', data: [] } },
       )
 }
 
@@ -332,6 +399,11 @@ export function validateExactProofConsolidationOperation(
     throw new Error('proof consolidation does not reduce the proof count')
   }
   assertOutputKeyset(outputs, outputKeysetId)
+  assertDurableSeedDerivedOutputPlanMatchesOutputs({
+    plan: operation.metadata?.outputPlan,
+    keysetId: outputKeysetId,
+    outputs,
+  })
   assertFreshOutputSecrets(outputs, inputs)
   const outputTotal = checkedAmountSum(
     outputs.map(({ blindedMessage }) => amountToNumber(blindedMessage.amount)),
@@ -379,6 +451,38 @@ function assertPlannedOutputs(outputs: readonly OutputData[], planned: readonly 
   const expected = [...planned].sort(compareDecimalStringsDescending)
   if (canonical(actual) !== canonical(expected)) {
     throw new Error('proof consolidation outputs differ from its plan')
+  }
+}
+
+function plannedOutputAmounts(planned: readonly string[], expectedTotal: number): number[] {
+  if (planned.length === 0 || planned.length > 256) {
+    throw new Error('proof consolidation output plan is invalid')
+  }
+  const amounts = planned.map((value) => {
+    if (!/^[1-9][0-9]*$/.test(value)) {
+      throw new Error('proof consolidation output plan is invalid')
+    }
+    const amount = Number(value)
+    if (!Number.isSafeInteger(amount) || amount < 1) {
+      throw new Error('proof consolidation output plan is invalid')
+    }
+    return amount
+  })
+  if (checkedAmountSum(amounts) !== expectedTotal) {
+    throw new Error('proof consolidation output plan differs from its input value')
+  }
+  return amounts
+}
+
+function assertExactOutputsMatchPlan(
+  outputs: readonly OutputData[],
+  outputPlan: DurableSeedDerivedOutputPlan,
+  keysetId: string,
+): void {
+  try {
+    assertDurableSeedDerivedOutputPlanMatchesOutputs({ plan: outputPlan, keysetId, outputs })
+  } catch {
+    throw new Error('wallet substituted exact proof consolidation outputs')
   }
 }
 

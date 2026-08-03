@@ -733,6 +733,7 @@ export class BrowserCtfRangeOrderCoordinator {
 
   async #prepareAndPersistConsolidation(
     input: {
+      readonly seed: Uint8Array;
       readonly preparation: PersistedCtfRangeOrderPreparation;
       readonly round: number;
       readonly inputs: readonly Proof[];
@@ -748,10 +749,13 @@ export class BrowserCtfRangeOrderCoordinator {
         rangeOperationId: input.preparation.operationId,
         mintUrl: input.preparation.mintUrl,
         keysetId: input.preparation.offerKeyset.id,
+        outputKeyset: input.preparation.offerKeyset,
         inputs: input.inputs,
         conditional: input.preparation.side === "Sell",
         inputFeePpk: input.preparation.offerKeyset.inputFeePpk,
         plannedRound: input.plannedRound,
+        seed: input.seed,
+        counterSource: this.#createCounterSource(scope.scopeId),
         wallet: await this.#walletForMint(input.preparation.mintUrl),
       });
     } catch (error) {

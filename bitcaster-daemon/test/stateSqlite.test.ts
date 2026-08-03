@@ -9,20 +9,26 @@ import {
 } from '@bitcaster-market/client-sdk'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
+import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { getOrCreateOrderEphemeralKeypair, readSecrets } from '../src/secrets.ts'
 import {
+  advanceDaemonKeysetCounter,
   emptyDaemonState,
   ensureState,
   markProofOperationCompletedFenced,
   prepareProofOperationWithExactReservation,
   readAvailableWalletProofGroupPage,
   readAvailableWalletProofPage,
+  readDaemonKeysetCounters,
   readState,
+  reserveDaemonKeysetCounter,
   updateState,
   writeState,
+  type FencedStateMutation,
+  type ProofOperationRecord,
 } from '../src/state.ts'
 
-const walletSeedHex = '11'.repeat(32)
+const walletSeedHex = '11'.repeat(64)
 const nostrSecretKeyHex = '22'.repeat(32)
 
 test('target-v1 state round-trips through typed SQLite rows and artifacts', async () => {
@@ -43,7 +49,6 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:01.000Z',
     })
-    state.wallet.keysetCounters['keyset-1'] = 9
     state.proofOperations['operation-1'] = {
       operationId: 'operation-1',
       kind: 'ctf-consolidation',
@@ -151,7 +156,7 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
     await writeState(state)
     const restored = await readState()
     assert.equal(restored?.wallet.proofs[0].proof.id, 'keyset-1')
-    assert.equal(restored?.wallet.keysetCounters['keyset-1'], 9)
+    assert.deepEqual(restored?.wallet.keysetCounters, {})
     assert.equal(restored?.proofOperations['operation-1'].kind, 'ctf-consolidation')
     assert.equal(restored?.orders['order-1'].preflightSplit?.lockOutcomeSetId, 'YES')
     assert.equal(restored?.orders['order-1'].ephemeralPubkey, `02${'44'.repeat(32)}`)
@@ -174,6 +179,162 @@ test('ensureState initializes once without queue deadlock and survives restart',
     assert.equal(initialized.version, 1)
     assert.equal((await ensureState()).version, 1)
     assert.equal((await readState())?.version, 1)
+  })
+})
+
+test('keyset counter rows reserve adjacent ranges and advance monotonically', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'counter-ranges')
+    assert.deepEqual(await reserveDaemonKeysetCounter('untouched-keyset', 0, mutation), {
+      start: 0,
+      count: 0,
+    })
+    assert.deepEqual(await readDaemonKeysetCounters(), {})
+    assert.deepEqual(await reserveDaemonKeysetCounter('legacy-keyset', 2, mutation), {
+      start: 0,
+      count: 2,
+    })
+    assert.deepEqual(await reserveDaemonKeysetCounter('legacy-keyset', 3, mutation), {
+      start: 2,
+      count: 3,
+    })
+    assert.deepEqual(await reserveDaemonKeysetCounter('legacy-keyset', 0, mutation), {
+      start: 5,
+      count: 0,
+    })
+    await advanceDaemonKeysetCounter('legacy-keyset', 8, mutation)
+    await advanceDaemonKeysetCounter('legacy-keyset', 6, mutation)
+    assert.deepEqual(await reserveDaemonKeysetCounter('legacy-keyset', 1, mutation), {
+      start: 8,
+      count: 1,
+    })
+    assert.deepEqual(await reserveDaemonKeysetCounter('maximum-batch', 256, mutation), {
+      start: 0,
+      count: 256,
+    })
+    const concurrent = await Promise.all([
+      reserveDaemonKeysetCounter('concurrent-keyset', 1, mutation),
+      reserveDaemonKeysetCounter('concurrent-keyset', 1, mutation),
+      reserveDaemonKeysetCounter('concurrent-keyset', 1, mutation),
+    ])
+    assert.deepEqual(
+      concurrent.map(({ start }) => start).sort((left, right) => left - right),
+      [0, 1, 2],
+    )
+    assert.deepEqual(await readDaemonKeysetCounters(), {
+      'concurrent-keyset': 3,
+      'legacy-keyset': 9,
+      'maximum-batch': 256,
+    })
+  })
+})
+
+test('keyset counter rows reject invalid ranges and immutable-row mutation', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'counter-bounds')
+    for (const count of [-1, 1.5, 257, Number.MAX_SAFE_INTEGER]) {
+      await assert.rejects(
+        () => reserveDaemonKeysetCounter('legacy-keyset', count, mutation),
+        /input is invalid/,
+      )
+    }
+    for (const keysetId of ['', 'x'.repeat(1_025)]) {
+      await assert.rejects(
+        () => reserveDaemonKeysetCounter(keysetId, 1, mutation),
+        /input is invalid/,
+      )
+      await assert.rejects(
+        () => advanceDaemonKeysetCounter(keysetId, 1, mutation),
+        /input is invalid/,
+      )
+    }
+    await advanceDaemonKeysetCounter('last-usable-keyset', 2_147_483_647, mutation)
+    assert.deepEqual(await reserveDaemonKeysetCounter('last-usable-keyset', 1, mutation), {
+      start: 2_147_483_647,
+      count: 1,
+    })
+    await advanceDaemonKeysetCounter('legacy-keyset', 2_147_483_648, mutation)
+    await assert.rejects(
+      () => reserveDaemonKeysetCounter('legacy-keyset', 1, mutation),
+      /exceeds its range/,
+    )
+    const database = await openDaemonStateSqlite(process.env.BITCASTER_DAEMON_HOME!)
+    try {
+      const scopeId = deriveDurableCustodyScopeId({
+        scopeKind: 'wallet',
+        walletId: deriveDurableCustodyWalletId(Buffer.from(walletSeedHex, 'hex')),
+      })
+      assert.throws(
+        () => database.prepare('UPDATE target_keyset_counters SET next_counter = 1').run(),
+        /cannot decrease/,
+      )
+      assert.throws(
+        () => database.prepare("UPDATE target_keyset_counters SET keyset_id = 'other'").run(),
+        /identity is immutable/,
+      )
+      assert.throws(
+        () =>
+          database.prepare('DELETE FROM target_keyset_counters WHERE scope_id = ?').run(scopeId),
+        /cannot be deleted/,
+      )
+    } finally {
+      database.close()
+    }
+  })
+})
+
+test('keyset counter rows reject a fence after custody takeover', async () => {
+  await withProfile(async (home) => {
+    const stale = await claimMutation(home, 'counter-stale-owner')
+    await reserveDaemonKeysetCounter('legacy-keyset', 2, stale)
+    const successorFence = await claimCustodyScopeLease(home, {
+      scopeId: stale.fence.scopeId,
+      incarnationId: 'counter-successor-owner',
+      observedAtMs: stale.fence.leaseExpiresAtMs,
+    })
+    await assert.rejects(
+      () => reserveDaemonKeysetCounter('legacy-keyset', 1, stale),
+      /stale or expired authority/,
+    )
+    await assert.rejects(
+      () => advanceDaemonKeysetCounter('legacy-keyset', 8, stale),
+      /stale or expired authority/,
+    )
+    const current: FencedStateMutation = {
+      fence: successorFence,
+      observedAtMs: successorFence.leaseExpiresAtMs,
+    }
+    assert.deepEqual(await reserveDaemonKeysetCounter('legacy-keyset', 1, current), {
+      start: 2,
+      count: 1,
+    })
+    await advanceDaemonKeysetCounter('legacy-keyset', 8, current)
+    assert.equal((await readDaemonKeysetCounters())['legacy-keyset'], 8)
+  })
+})
+
+test('whole-state rewrites preserve monotonic counter rows and unrelated proof rows', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'counter-state-rewrite')
+    const state = emptyDaemonState()
+    state.wallet.proofs.push({
+      proof: { id: 'legacy-keyset', amount: 1, secret: 'preserved-secret', C: 'preserved-C' },
+      mintUrl: 'http://localhost:8086',
+      state: 'available',
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+    state.proofOperations['preserved-operation'] = preservedProofOperation()
+    await writeState(state)
+    await reserveDaemonKeysetCounter('legacy-keyset', 9, mutation)
+    assert.equal((await readState())?.proofOperations['preserved-operation']?.state, 'completed')
+    const rewrite = emptyDaemonState()
+    rewrite.wallet.keysetCounters['legacy-keyset'] = 4
+    rewrite.wallet.proofs = state.wallet.proofs
+    await writeState(rewrite)
+    assert.equal((await readState())?.wallet.proofs[0]?.proof.secret, 'preserved-secret')
+    assert.equal((await readDaemonKeysetCounters())['legacy-keyset'], 9)
   })
 })
 
@@ -446,5 +607,50 @@ async function withProfile(run: (home: string) => Promise<void>): Promise<void> 
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
+  }
+}
+
+async function claimMutation(home: string, incarnationId: string): Promise<FencedStateMutation> {
+  const fence = await claimCustodyScopeLease(home, {
+    scopeId: deriveDurableCustodyScopeId({
+      scopeKind: 'wallet',
+      walletId: deriveDurableCustodyWalletId(Buffer.from(walletSeedHex, 'hex')),
+    }),
+    incarnationId: `${incarnationId}-incarnation`,
+    observedAtMs: Date.now(),
+  })
+  return { fence, observedAtMs: Date.now() }
+}
+
+function preservedProofOperation(): ProofOperationRecord {
+  return {
+    operationId: 'preserved-operation',
+    kind: 'ctf-consolidation',
+    state: 'completed',
+    mintUrl: 'http://localhost:8086',
+    inputs: [{ amount: 1, secret: 'preserved-secret', C: 'preserved-C' }],
+    outputs: {
+      send: [
+        {
+          blindedMessage: { amount: 1, id: 'legacy-keyset', B_: 'preserved-blind' },
+          blindingFactor: 'preserved-factor',
+          secret: 'preserved-output-secret',
+        },
+      ],
+    },
+    metadata: { conditionId: 'condition-1', attempt: 1 },
+    resultProofs: {
+      send: [
+        {
+          id: 'legacy-keyset',
+          amount: 1,
+          secret: 'preserved-result-secret',
+          C: 'preserved-result-C',
+        },
+      ],
+    },
+    lastError: null,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
   }
 }

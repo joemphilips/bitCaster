@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'fe065d6e9655cf25c7f6066add1252f55dfa737a2bda3f82b92317acc10b24f0'
+  '6ef58f580708e69ea2abf286502e09b0d39e7ac6430324b1b392913db8d9da42'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -203,7 +203,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE TABLE target_keyset_counters (
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
-    next_counter INTEGER NOT NULL CHECK (next_counter >= 0),
+    next_counter INTEGER NOT NULL CHECK (next_counter BETWEEN 0 AND 2147483648),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
     PRIMARY KEY (scope_id, keyset_id)
   ) STRICT`,
@@ -1281,6 +1281,23 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     WHEN NEW.fencing_epoch < OLD.fencing_epoch
     BEGIN
       SELECT RAISE(ABORT, 'custody fencing epoch cannot decrease');
+    END`,
+  `CREATE TRIGGER target_keyset_counters_no_lowering
+    BEFORE UPDATE OF next_counter ON target_keyset_counters
+    WHEN NEW.next_counter < OLD.next_counter
+    BEGIN
+      SELECT RAISE(ABORT, 'keyset counter cannot decrease');
+    END`,
+  `CREATE TRIGGER target_keyset_counters_no_rekey
+    BEFORE UPDATE OF scope_id, keyset_id ON target_keyset_counters
+    WHEN NEW.scope_id <> OLD.scope_id OR NEW.keyset_id <> OLD.keyset_id
+    BEGIN
+      SELECT RAISE(ABORT, 'keyset counter identity is immutable');
+    END`,
+  `CREATE TRIGGER target_keyset_counters_no_delete
+    BEFORE DELETE ON target_keyset_counters
+    BEGIN
+      SELECT RAISE(ABORT, 'keyset counter cannot be deleted');
     END`,
 ] as const
 

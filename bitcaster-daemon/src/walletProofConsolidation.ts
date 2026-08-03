@@ -25,6 +25,7 @@ import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import type { DurableCustodyProofOperationInput } from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
 import {
   createWallet,
+  createDaemonCounterSource,
   resolveCtfConsolidationInputFees,
   resolveCtfConsolidationOutputKeysets,
   resolveMintKeysByKeyset,
@@ -358,7 +359,13 @@ async function prepareManualRound(
   })
   const proofs = page.proofs.map(({ proof }) => toProof(proof))
   if (proofs.length < 2) return { kind: 'not-needed' }
-  const wallet = await walletFor(input.group, input.secrets, input.dependencies, input.wallets)
+  const wallet = await walletFor(
+    input.group,
+    input.secrets,
+    input.dependencies,
+    input.mutation,
+    input.wallets,
+  )
   const outputKeyset = await resolveOutputKeyset(input.group, wallet, input.dependencies)
   if (input.group.asset.kind === 'Outcome' && outputKeyset.id !== input.group.keysetId) {
     return { kind: 'inactive-conditional-keyset' }
@@ -393,10 +400,13 @@ async function executeManualRound(
     unit: input.group.asset.unit,
     inputKeysetId: input.group.keysetId,
     outputKeysetId: prepared.outputKeyset.id,
+    outputKeyset: prepared.outputKeyset,
     inputs: prepared.exactInputs,
     conditional: input.group.asset.kind === 'Outcome',
     inputFeePpk: prepared.inputFeePpk,
     plannedRound: prepared.plannedRound,
+    seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
+    counterSource: createDaemonCounterSource(input.mutation),
     wallet: prepared.wallet,
   })
   const validated = validateExactProofConsolidationOperation(exactOperation, {
@@ -524,6 +534,7 @@ async function recoverPreparedProofs(
     },
     input.secrets,
     input.dependencies ?? {},
+    input.mutation,
     wallets,
   )
   const stateWallet = wallet as ExactProofConsolidationWallet & {
@@ -664,12 +675,20 @@ async function walletFor(
   group: AvailableWalletProofGroup,
   secrets: WalletOpsSecrets,
   dependencies: WalletOpsDependencies,
+  mutation: () => FencedStateMutation,
   cache: Map<string, ExactProofConsolidationWallet>,
 ): Promise<ExactProofConsolidationWallet> {
   const cacheKey = `${group.mintUrl}\0${group.asset.unit}`
   const cached = cache.get(cacheKey)
   if (cached) return cached
-  const wallet = createWallet(group.mintUrl, secrets, dependencies, 'sat', group.asset.unit)
+  const wallet = createWallet(
+    group.mintUrl,
+    secrets,
+    dependencies,
+    'sat',
+    group.asset.unit,
+    mutation,
+  )
   await wallet.loadMint()
   const exact = requireExactWallet(wallet)
   cache.set(cacheKey, exact)

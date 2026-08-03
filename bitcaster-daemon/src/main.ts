@@ -144,6 +144,7 @@ switch (command) {
         profile,
         secrets,
         fence: currentFence(),
+        walletDependencies: { getCustodyFence: currentFence },
       })
       if (!nativeConfig.daemon.autoRetireResolvedConditionInventory) return resumed
       const discovered = await retireResolvedDaemonConditions({
@@ -151,6 +152,7 @@ switch (command) {
         secrets,
         fence: currentFence(),
         engine: retirementEngine,
+        walletDependencies: { getCustodyFence: currentFence },
       })
       return mergeRetirementResults(resumed, discovered)
     }
@@ -248,6 +250,7 @@ switch (command) {
       ? new DaemonSwapExecutor({
           connection: tradeHub,
           ops: createRealDaemonSwapOps(),
+          walletOpsDeps: { getCustodyFence: currentFence },
         })
       : undefined
     runtime = runtimeConnection
@@ -314,7 +317,9 @@ switch (command) {
         secrets,
         mutation: () => ({ fence: currentFence(), observedAtMs: Date.now() }),
       })
-      const walletRecovery = await recoverPreparedWalletSends(secrets)
+      const walletRecovery = await recoverPreparedWalletSends(secrets, {
+        getCustodyFence: currentFence,
+      })
       const retirementRecovery = await runAutomaticRetirementScan()
       const pendingRetirements = retirementRecovery
         .filter((entry) => entry.error !== null)

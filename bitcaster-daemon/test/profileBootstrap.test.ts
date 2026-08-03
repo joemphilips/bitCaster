@@ -47,7 +47,7 @@ after(async () => {
   await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })))
 })
 
-const seed = '11'.repeat(32)
+const seed = '11'.repeat(64)
 const nostrSecret = '22'.repeat(32)
 const rpcToken = 'R'.repeat(43)
 const initializedAtMs = 1_700_000_000_000
