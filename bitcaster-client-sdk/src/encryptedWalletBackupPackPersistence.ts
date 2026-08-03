@@ -125,24 +125,27 @@ export interface EncryptedWalletBackupPackSerializedPage {
 }
 
 export interface EncryptedWalletBackupPackPersistenceTransaction {
-  readBuildCursor(buildId: string): PersistedEncryptedWalletBackupBuildCursor | null
-  readPackControl(buildId: string, packId: string): PersistedEncryptedWalletBackupPackControl | null
+  readBuildCursor(buildId: string): Promise<PersistedEncryptedWalletBackupBuildCursor | null>
+  readPackControl(
+    buildId: string,
+    packId: string,
+  ): Promise<PersistedEncryptedWalletBackupPackControl | null>
   readPackRecordPage(
     buildId: string,
     packId: string,
     afterRecordId: string | null,
     limit: number,
     maxBytes: number,
-  ): EncryptedWalletBackupPackSerializedPage
+  ): Promise<EncryptedWalletBackupPackSerializedPage>
   readStagedObject(
     buildId: string,
     packId: string,
-  ): PersistedEncryptedWalletBackupStagedObject | null
-  insertPreparedRecord(row: PersistedEncryptedWalletBackupPreparedBuildRecord): void
-  insertPackBinding(row: PersistedEncryptedWalletBackupPackBinding): void
-  writeBuildCursor(row: PersistedEncryptedWalletBackupBuildCursor): void
-  writePackControl(row: PersistedEncryptedWalletBackupPackControl): void
-  insertStagedObject(row: PersistedEncryptedWalletBackupStagedObject): void
+  ): Promise<PersistedEncryptedWalletBackupStagedObject | null>
+  insertPreparedRecord(row: PersistedEncryptedWalletBackupPreparedBuildRecord): Promise<void>
+  insertPackBinding(row: PersistedEncryptedWalletBackupPackBinding): Promise<void>
+  writeBuildCursor(row: PersistedEncryptedWalletBackupBuildCursor): Promise<void>
+  writePackControl(row: PersistedEncryptedWalletBackupPackControl): Promise<void>
+  insertStagedObject(row: PersistedEncryptedWalletBackupStagedObject): Promise<void>
 }
 
 export interface EncryptedWalletBackupPackPersistenceStore {
@@ -150,8 +153,9 @@ export interface EncryptedWalletBackupPackPersistenceStore {
    * Runs one physical exact-version CAS transaction. The adapter enforces the
    * normalized unique keys `(buildId, recordId)` and
    * `(buildId, packId, recordId)`. A thrown callback must atomically roll back
-   * every insert and control-row write. It invokes `use` synchronously exactly
-   * once and returns its exact value; it must not commit a substituted value.
+   * every insert and control-row write. It invokes `use` exactly once and
+   * returns its exact value after the transaction commits; it must not commit
+   * a substituted value.
    * `readPackRecordPage` performs a keyset read of the canonical persisted row
    * bytes and stops before `maxBytes`; it must not materialize a larger
    * structured page and trim it afterward.
@@ -167,7 +171,7 @@ export interface EncryptedWalletBackupPackPersistenceStore {
       snapshotId: string
       snapshotRevision: number
     }>,
-    use: (transaction: EncryptedWalletBackupPackPersistenceTransaction) => T,
+    use: (transaction: EncryptedWalletBackupPackPersistenceTransaction) => Promise<T>,
   ): Promise<unknown>
 }
 
@@ -239,33 +243,25 @@ type ExactVersionExpectation = Readonly<{
 async function exactVersionTransaction<T>(
   store: EncryptedWalletBackupPackPersistenceStore,
   expected: ExactVersionExpectation,
-  use: (transaction: EncryptedWalletBackupPackPersistenceTransaction) => T,
+  use: (transaction: EncryptedWalletBackupPackPersistenceTransaction) => Promise<T>,
 ): Promise<T> {
   if (!store || typeof store.withExactVersionTransaction !== 'function')
     throw new Error('backup pack persistence store is invalid')
   const sentinel = Object.freeze({ exactPackCommit: true })
   let calls = 0
-  let synchronous = true
+  let storeResolved = false
   let value: T | undefined
-  const pending = store.withExactVersionTransaction(expected, (transaction) => {
-    if (!synchronous || calls++ !== 0)
+  const pending = store.withExactVersionTransaction(expected, async (transaction) => {
+    if (storeResolved || calls++ !== 0)
       throw new Error('backup pack transaction callback is invalid')
-    value = use(transaction)
-    if (isThenable(value)) throw new Error('backup pack transaction callback must be synchronous')
+    value = await use(transaction)
     return sentinel
   })
-  synchronous = false
   const returned = await pending
+  storeResolved = true
   if (calls !== 1 || returned !== sentinel)
     throw new Error('backup pack transaction callback must be exact')
   return value as T
-}
-
-function isThenable(value: unknown): boolean {
-  return (
-    ((typeof value === 'object' && value !== null) || typeof value === 'function') &&
-    typeof (value as { then?: unknown }).then === 'function'
-  )
 }
 
 export async function appendEncryptedWalletBackupPreparedRecordPage(input: {
@@ -353,12 +349,12 @@ export async function freezeEncryptedWalletBackupPack(input: {
   const result = await exactVersionTransaction(
     input.store,
     expectation(input),
-    (rawTransaction) => {
+    async (rawTransaction) => {
       const transaction = new AccountedTransaction(rawTransaction)
-      const build = requireExistingBuild(transaction.readBuildCursor(input.buildId), input)
+      const build = requireExistingBuild(await transaction.readBuildCursor(input.buildId), input)
       requireOpenBuild(build, input.packId)
       const pack = requireExistingPack(
-        transaction.readPackControl(input.buildId, input.packId),
+        await transaction.readPackControl(input.buildId, input.packId),
         input,
         'open',
       )
@@ -375,8 +371,8 @@ export async function freezeEncryptedWalletBackupPack(input: {
         canonicalBytes: seal.canonicalBytes,
         membershipDigest: seal.membershipDigest,
       })
-      transaction.writeBuildCursor(nextBuild)
-      transaction.writePackControl(nextPack)
+      await transaction.writeBuildCursor(nextBuild)
+      await transaction.writePackControl(nextPack)
       return {
         buildCursor: nextBuild,
         packControl: nextPack,
@@ -499,7 +495,7 @@ export async function stageEncryptedWalletBackupPackObject(input: {
       snapshotId: authority.snapshotId,
       snapshotRevision: authority.snapshotRevision,
     },
-    (transaction) => commitStage(transaction, input, authority, candidate),
+    async (transaction) => commitStage(transaction, input, authority, candidate),
   )
 }
 
@@ -529,7 +525,7 @@ function stagedCandidate(
   })
 }
 
-function commitStage(
+async function commitStage(
   rawTransaction: EncryptedWalletBackupPackPersistenceTransaction,
   input: { expectedBuildVersion: number; expectedPackVersion: number },
   authority: PreparedPackObjectAuthority,
@@ -537,27 +533,30 @@ function commitStage(
 ) {
   const transaction = new AccountedTransaction(rawTransaction)
   const stateInput = { ...input, ...authority }
-  const build = requireExistingBuild(transaction.readBuildCursor(authority.buildId), stateInput)
+  const build = requireExistingBuild(
+    await transaction.readBuildCursor(authority.buildId),
+    stateInput,
+  )
   const pack = requireExistingPack(
-    transaction.readPackControl(authority.buildId, authority.packId),
+    await transaction.readPackControl(authority.buildId, authority.packId),
     stateInput,
     ['frozen', 'staged'],
   )
   requireClosedBuild(build)
   requireFrozenSeal(pack, authority)
   if (pack.state === 'staged') return requireIdempotentStage(transaction, build, pack, candidate)
-  if (transaction.readStagedObject(authority.buildId, authority.packId) !== null)
+  if ((await transaction.readStagedObject(authority.buildId, authority.packId)) !== null)
     throw new Error('backup staged object exists before its pack link')
   return insertStage(transaction, input, build, pack, candidate)
 }
 
-function requireIdempotentStage(
+async function requireIdempotentStage(
   transaction: AccountedTransaction,
   build: PersistedEncryptedWalletBackupBuildCursor,
   pack: PersistedEncryptedWalletBackupPackControl,
   candidate: PersistedEncryptedWalletBackupStagedObject,
 ) {
-  const existing = transaction.readStagedObject(pack.buildId, pack.packId)
+  const existing = await transaction.readStagedObject(pack.buildId, pack.packId)
   if (
     pack.stagedObjectId !== candidate.objectId ||
     pack.stagedObjectDigest !== candidate.digest ||
@@ -574,14 +573,14 @@ function requireIdempotentStage(
   })
 }
 
-function insertStage(
+async function insertStage(
   transaction: AccountedTransaction,
   input: { expectedBuildVersion: number; expectedPackVersion: number },
   build: PersistedEncryptedWalletBackupBuildCursor,
   pack: PersistedEncryptedWalletBackupPackControl,
   candidate: PersistedEncryptedWalletBackupStagedObject,
 ) {
-  transaction.insertStagedObject(candidate)
+  await transaction.insertStagedObject(candidate)
   const nextBuild = Object.freeze({
     ...build,
     version: input.expectedBuildVersion + 1,
@@ -593,8 +592,8 @@ function insertStage(
     stagedObjectId: candidate.objectId,
     stagedObjectDigest: candidate.digest,
   })
-  transaction.writeBuildCursor(nextBuild)
-  transaction.writePackControl(nextPack)
+  await transaction.writeBuildCursor(nextBuild)
+  await transaction.writePackControl(nextPack)
   return Object.freeze({
     buildCursor: nextBuild,
     packControl: nextPack,
@@ -604,7 +603,7 @@ function insertStage(
   })
 }
 
-function commitAppend(
+async function commitAppend(
   rawTransaction: EncryptedWalletBackupPackPersistenceTransaction,
   input: {
     buildId: string
@@ -620,14 +619,14 @@ function commitAppend(
 ) {
   const transaction = new AccountedTransaction(rawTransaction)
   const build = requireExpectedBuild(
-    transaction.readBuildCursor(input.buildId),
+    await transaction.readBuildCursor(input.buildId),
     input.buildId,
     input.packId,
     input.expectedBuildVersion,
     input,
   )
   const pack = requireExpectedOpenPack(
-    transaction.readPackControl(input.buildId, input.packId),
+    await transaction.readPackControl(input.buildId, input.packId),
     input.buildId,
     input.packId,
     input.expectedPackVersion,
@@ -636,7 +635,7 @@ function commitAppend(
   )
   const appendedPersistedRowBytes = appendPersistedRowBytes(input, pack.recordCount)
   requireAppendCapacityAndOrder(pack, input.records, appendedPersistedRowBytes)
-  insertAppendRows(transaction, input, pack.recordCount)
+  await insertAppendRows(transaction, input, pack.recordCount)
   const nextBuild = Object.freeze({
     ...build,
     version: input.expectedBuildVersion + 1,
@@ -657,8 +656,8 @@ function commitAppend(
     ...nextPack,
     canonicalBytes: canonicalChunkBytes(nextPack.recordCount, nextPack.recordCanonicalBytes),
   })
-  transaction.writeBuildCursor(nextBuild)
-  transaction.writePackControl(exactNextPack)
+  await transaction.writeBuildCursor(nextBuild)
+  await transaction.writePackControl(exactNextPack)
   return Object.freeze({
     buildCursor: nextBuild,
     packControl: exactNextPack,
@@ -691,7 +690,7 @@ function requireAppendCapacityAndOrder(
     throw new Error('backup pack persisted rows exceed the limit')
 }
 
-function insertAppendRows(
+async function insertAppendRows(
   transaction: AccountedTransaction,
   input: {
     buildId: string
@@ -702,8 +701,8 @@ function insertAppendRows(
 ) {
   for (let index = 0; index < input.records.length; index += 1) {
     const record = input.records[index]!
-    transaction.insertPreparedRecord(record)
-    transaction.insertPackBinding(packBinding(record, input.packId, firstOrdinal + index))
+    await transaction.insertPreparedRecord(record)
+    await transaction.insertPackBinding(packBinding(record, input.packId, firstOrdinal + index))
   }
 }
 
@@ -768,8 +767,8 @@ class AccountedTransaction {
     })
   }
 
-  readBuildCursor(buildId: string) {
-    const row = this.#transaction.readBuildCursor(buildId)
+  async readBuildCursor(buildId: string) {
+    const row = await this.#transaction.readBuildCursor(buildId)
     if (row === null) {
       this.assertBound()
       return null
@@ -780,8 +779,8 @@ class AccountedTransaction {
     return exact
   }
 
-  readPackControl(buildId: string, packId: string) {
-    const row = this.#transaction.readPackControl(buildId, packId)
+  async readPackControl(buildId: string, packId: string) {
+    const row = await this.#transaction.readPackControl(buildId, packId)
     if (row === null) {
       this.assertBound()
       return null
@@ -792,14 +791,14 @@ class AccountedTransaction {
     return exact
   }
 
-  readPackRecordPage(
+  async readPackRecordPage(
     buildId: string,
     packId: string,
     afterRecordId: string | null,
     expectedCount: number,
   ) {
     const remainingBytes = ENCRYPTED_WALLET_BACKUP_PACK_TRANSACTION_MAX_BYTES - this.totalBytes
-    const page = this.#transaction.readPackRecordPage(
+    const page = await this.#transaction.readPackRecordPage(
       buildId,
       packId,
       afterRecordId,
@@ -815,8 +814,8 @@ class AccountedTransaction {
     return rows
   }
 
-  readStagedObject(buildId: string, packId: string) {
-    const row = this.#transaction.readStagedObject(buildId, packId)
+  async readStagedObject(buildId: string, packId: string) {
+    const row = await this.#transaction.readStagedObject(buildId, packId)
     if (row === null) return null
     const exact = requireStagedObject(row)
     this.#readRows.push(serializeEncryptedWalletBackupStagedObject(exact))
@@ -824,35 +823,35 @@ class AccountedTransaction {
     return exact
   }
 
-  insertPreparedRecord(row: PersistedEncryptedWalletBackupPreparedBuildRecord) {
+  async insertPreparedRecord(row: PersistedEncryptedWalletBackupPreparedBuildRecord) {
     this.#writtenRows.push(serializeEncryptedWalletBackupPreparedBuildRecord(row))
     this.assertBound()
-    this.#transaction.insertPreparedRecord(row)
+    await this.#transaction.insertPreparedRecord(row)
   }
 
-  insertPackBinding(row: PersistedEncryptedWalletBackupPackBinding) {
+  async insertPackBinding(row: PersistedEncryptedWalletBackupPackBinding) {
     this.#writtenRows.push(serializeEncryptedWalletBackupPackBinding(row))
     this.assertBound()
-    this.#transaction.insertPackBinding(row)
+    await this.#transaction.insertPackBinding(row)
   }
 
-  writeBuildCursor(row: PersistedEncryptedWalletBackupBuildCursor) {
+  async writeBuildCursor(row: PersistedEncryptedWalletBackupBuildCursor) {
     this.#writtenRows.push(serializeEncryptedWalletBackupBuildCursor(row))
     this.assertBound()
-    this.#transaction.writeBuildCursor(row)
+    await this.#transaction.writeBuildCursor(row)
   }
 
-  writePackControl(row: PersistedEncryptedWalletBackupPackControl) {
+  async writePackControl(row: PersistedEncryptedWalletBackupPackControl) {
     this.#writtenRows.push(serializeEncryptedWalletBackupPackControl(row))
     this.assertBound()
-    this.#transaction.writePackControl(row)
+    await this.#transaction.writePackControl(row)
   }
 
-  insertStagedObject(row: PersistedEncryptedWalletBackupStagedObject) {
+  async insertStagedObject(row: PersistedEncryptedWalletBackupStagedObject) {
     const exact = requireStagedObject(row)
     this.#writtenRows.push(serializeEncryptedWalletBackupStagedObject(exact))
     this.assertBound()
-    this.#transaction.insertStagedObject(exact)
+    await this.#transaction.insertStagedObject(exact)
   }
 
   private assertBound() {
@@ -983,13 +982,13 @@ async function readPersistedPackPage(
   afterRecordId: string | null,
   recordsRead: number,
 ) {
-  return exactVersionTransaction(input.store, expectation(input), (rawTransaction) => {
+  return exactVersionTransaction(input.store, expectation(input), async (rawTransaction) => {
     const transaction = new AccountedTransaction(rawTransaction)
-    const build = requireExistingBuild(transaction.readBuildCursor(input.buildId), input)
+    const build = requireExistingBuild(await transaction.readBuildCursor(input.buildId), input)
     if (input.requiredState === 'open') requireOpenBuild(build, input.packId)
     else requireClosedBuild(build)
     const pack = requireExistingPack(
-      transaction.readPackControl(input.buildId, input.packId),
+      await transaction.readPackControl(input.buildId, input.packId),
       input,
       input.requiredState,
     )
@@ -997,7 +996,12 @@ async function readPersistedPackPage(
       ENCRYPTED_WALLET_BACKUP_PACK_READ_RECORD_MAX,
       pack.recordCount - recordsRead,
     )
-    const rows = transaction.readPackRecordPage(input.buildId, input.packId, afterRecordId, count)
+    const rows = await transaction.readPackRecordPage(
+      input.buildId,
+      input.packId,
+      afterRecordId,
+      count,
+    )
     return { build, pack, rows }
   })
 }
@@ -1070,17 +1074,17 @@ async function readExactStagedObject(
     membershipDigest: string
   },
 ) {
-  return exactVersionTransaction(input.store, expectation(input), (rawTransaction) => {
+  return exactVersionTransaction(input.store, expectation(input), async (rawTransaction) => {
     const transaction = new AccountedTransaction(rawTransaction)
-    const build = requireExistingBuild(transaction.readBuildCursor(input.buildId), input)
+    const build = requireExistingBuild(await transaction.readBuildCursor(input.buildId), input)
     const pack = requireExistingPack(
-      transaction.readPackControl(input.buildId, input.packId),
+      await transaction.readPackControl(input.buildId, input.packId),
       input,
       'staged',
     )
     requireClosedBuild(build)
     requireFrozenSeal(pack, seal)
-    const staged = transaction.readStagedObject(input.buildId, input.packId)
+    const staged = await transaction.readStagedObject(input.buildId, input.packId)
     if (
       staged === null ||
       staged.snapshotId !== pack.snapshotId ||

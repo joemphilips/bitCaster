@@ -65,9 +65,9 @@ const store: EncryptedWalletBackupPackPersistenceStore = {
     )
       throw new Error('restart CAS identity changed')
     const transaction: EncryptedWalletBackupPackPersistenceTransaction = {
-      readBuildCursor: () => structuredClone(wire.build),
-      readPackControl: () => structuredClone(wire.pack),
-      readPackRecordPage: (_buildId, _packId, afterRecordId, limit, maxBytes) => {
+      readBuildCursor: async () => structuredClone(wire.build),
+      readPackControl: async () => structuredClone(wire.pack),
+      readPackRecordPage: async (_buildId, _packId, afterRecordId, limit, maxBytes) => {
         const result: { binding: Uint8Array; prepared: Uint8Array }[] = []
         let serializedBytes = 0
         for (const row of wire.rows) {
@@ -83,20 +83,20 @@ const store: EncryptedWalletBackupPackPersistenceStore = {
         }
         return { rows: result, serializedBytes }
       },
-      readStagedObject: () => structuredClone(staged),
-      insertPreparedRecord: () => {
+      readStagedObject: async () => structuredClone(staged),
+      insertPreparedRecord: async () => {
         throw new Error('restart attempted a write')
       },
-      insertPackBinding: () => {
+      insertPackBinding: async () => {
         throw new Error('restart attempted a write')
       },
-      writeBuildCursor: () => {
+      writeBuildCursor: async () => {
         throw new Error('restart attempted a write')
       },
-      writePackControl: () => {
+      writePackControl: async () => {
         throw new Error('restart attempted a write')
       },
-      insertStagedObject: () => {
+      insertStagedObject: async () => {
         throw new Error('restart attempted a write')
       },
     }

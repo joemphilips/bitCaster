@@ -124,15 +124,43 @@ test('serialized page byte evidence rejects overflow before row decoding', () =>
   )
 })
 
-test('exact-version transaction rejects missing, repeated, deferred, and substituted callbacks', async () => {
+test('exact-version transaction rejects missing, repeated, and substituted callbacks', async () => {
   const fixture = await preparedFixture(1)
-  for (const mode of ['never', 'double', 'deferred', 'substituted'] as const) {
+  for (const mode of ['never', 'double', 'substituted'] as const) {
     const store = new MemoryPackStore()
     store.callbackMode = mode
     const before = store.snapshot()
     await assert.rejects(appendPage(fixture, store, fixture.records, 0, 0), /callback|exact/)
     assertStoreSnapshot(store, before)
   }
+})
+
+test('exact-version transactions preserve callback result and atomicity across microtasks', async () => {
+  const fixture = await preparedFixture(1)
+  const store = new MemoryPackStore()
+  store.callbackMode = 'deferred'
+  store.crossMicrotask = true
+  const appended = await appendPage(fixture, store, fixture.records, 0, 0)
+
+  assert.equal(appended.packControl.version, 1)
+  assert.equal(store.build?.version, 1)
+  assert.equal(store.pack?.version, 1)
+  assert.equal(store.prepared.size, 1)
+  assert.equal(store.bindings.size, 1)
+  const frozen = await freezeEncryptedWalletBackupPack({
+    ...packInput(fixture, store, fixture.keyHandle, 1, 1),
+  })
+  const prepared = await preparePack(fixture, store, fixture.keyHandle, 2, 2)
+  const staged = await stageEncryptedWalletBackupPackObject({
+    store,
+    prepared,
+    expectedBuildVersion: 2,
+    expectedPackVersion: 2,
+  })
+
+  assert.equal(frozen.packControl.state, 'frozen')
+  assert.equal(staged.idempotent, false)
+  assert.equal(store.staged.size, 1)
 })
 
 test('prepared snapshot batches reject missing, repeated, deferred, and substituted callbacks', async () => {
@@ -308,7 +336,8 @@ test('fake adapter stops canonical row acquisition at maxBytes before decoding',
       snapshotId: 'pack-snapshot',
       snapshotRevision: 1,
     },
-    (transaction) => transaction.readPackRecordPage('build-a', 'pack-a', null, 256, firstRowBytes),
+    async (transaction) =>
+      transaction.readPackRecordPage('build-a', 'pack-a', null, 256, firstRowBytes),
   )) as { rows: readonly unknown[]; serializedBytes: number }
   assert.equal(page.rows.length, 1)
   assert.equal(page.serializedBytes, firstRowBytes)
@@ -889,6 +918,7 @@ class MemoryPackStore implements EncryptedWalletBackupPackPersistenceStore {
   failOnPackWrite = false
   failOnStagedInsert = false
   callbackMode: TransactionCallbackMode = 'exact'
+  crossMicrotask = false
   controlMutationAfterFirstPage: 'pack' | 'build' | null = null
   aliasControlRows = false
   pageRowsConsidered = 0
@@ -912,7 +942,7 @@ class MemoryPackStore implements EncryptedWalletBackupPackPersistenceStore {
       snapshotId: string
       snapshotRevision: number
     }>,
-    use: (transaction: EncryptedWalletBackupPackPersistenceTransaction) => T,
+    use: (transaction: EncryptedWalletBackupPackPersistenceTransaction) => Promise<T>,
   ): Promise<unknown> {
     this.expectations.push({
       realm: expected.realm,
@@ -927,19 +957,21 @@ class MemoryPackStore implements EncryptedWalletBackupPackPersistenceStore {
     const working = this.transactionSnapshot()
     let inserts = 0
     const transaction: EncryptedWalletBackupPackPersistenceTransaction = {
-      readBuildCursor: (buildId) =>
-        working.build?.buildId === buildId
+      readBuildCursor: async (buildId) =>
+        (await this.transactionBoundary(), working.build?.buildId === buildId)
           ? this.aliasControlRows
             ? working.build
             : structuredClone(working.build)
           : null,
-      readPackControl: (buildId, packId) =>
-        working.pack?.buildId === buildId && working.pack.packId === packId
+      readPackControl: async (buildId, packId) =>
+        (await this.transactionBoundary(),
+        working.pack?.buildId === buildId && working.pack.packId === packId)
           ? this.aliasControlRows
             ? working.pack
             : structuredClone(working.pack)
           : null,
-      readPackRecordPage: (buildId, packId, afterRecordId, limit, maxBytes) => {
+      readPackRecordPage: async (buildId, packId, afterRecordId, limit, maxBytes) => {
+        await this.transactionBoundary()
         this.pageLimits.push(limit)
         const candidates = [...working.bindings.values()]
           .filter(
@@ -986,11 +1018,13 @@ class MemoryPackStore implements EncryptedWalletBackupPackPersistenceStore {
         }
         return { rows: exact, serializedBytes }
       },
-      readStagedObject: (buildId, packId) => {
+      readStagedObject: async (buildId, packId) => {
+        await this.transactionBoundary()
         const row = working.staged.get(`${buildId}:${packId}`)
         return row === undefined ? null : structuredClone(row)
       },
-      insertPreparedRecord: (row) => {
+      insertPreparedRecord: async (row) => {
+        await this.transactionBoundary()
         const key = `${row.buildId}:${row.recordId}`
         if (working.prepared.has(key)) throw new Error('unique build/record constraint')
         const exact = structuredClone(row)
@@ -999,21 +1033,25 @@ class MemoryPackStore implements EncryptedWalletBackupPackPersistenceStore {
         if (this.failAfterFirstInsert && ++inserts === 1)
           throw new Error('injected transaction failure')
       },
-      insertPackBinding: (row) => {
+      insertPackBinding: async (row) => {
+        await this.transactionBoundary()
         const key = `${row.buildId}:${row.packId}:${row.recordId}`
         if (working.bindings.has(key)) throw new Error('unique build/pack/record constraint')
         const exact = structuredClone(row)
         working.bindings.set(key, exact)
         working.bindingBytes.set(key, serializeEncryptedWalletBackupPackBinding(exact))
       },
-      writeBuildCursor: (row) => {
+      writeBuildCursor: async (row) => {
+        await this.transactionBoundary()
         working.build = structuredClone(row)
       },
-      writePackControl: (row) => {
+      writePackControl: async (row) => {
+        await this.transactionBoundary()
         if (this.failOnPackWrite) throw new Error('injected pack-control write failure')
         working.pack = structuredClone(row)
       },
-      insertStagedObject: (row) => {
+      insertStagedObject: async (row) => {
+        await this.transactionBoundary()
         if (this.failOnStagedInsert) throw new Error('injected staged-object write failure')
         const key = `${row.buildId}:${row.packId}`
         if (working.staged.has(key)) throw new Error('unique staged object constraint')
@@ -1021,9 +1059,14 @@ class MemoryPackStore implements EncryptedWalletBackupPackPersistenceStore {
       },
     }
     if (this.callbackMode === 'never') return Object.freeze({ skipped: true })
-    if (this.callbackMode === 'deferred') return Promise.resolve().then(() => use(transaction))
-    const result = use(transaction)
-    if (this.callbackMode === 'double') use(transaction)
+    if (this.callbackMode === 'deferred') {
+      await Promise.resolve()
+      const result = await use(transaction)
+      this.restore(working)
+      return result
+    }
+    const result = await use(transaction)
+    if (this.callbackMode === 'double') await use(transaction)
     if (this.callbackMode === 'substituted') return Object.freeze({ substituted: true })
     this.restore(working)
     return result
@@ -1051,6 +1094,10 @@ class MemoryPackStore implements EncryptedWalletBackupPackPersistenceStore {
       bindingBytes: new Map(this.bindingBytes),
       staged: new Map(this.staged),
     }
+  }
+
+  private async transactionBoundary(): Promise<void> {
+    if (this.crossMicrotask) await Promise.resolve()
   }
 
   restore(value: ReturnType<MemoryPackStore['snapshot']>) {
