@@ -52,6 +52,44 @@ export interface EncryptedWalletBackupSnapshotSealLeafMetadata {
   readonly leafDigest: string
 }
 
+export interface EncryptedWalletBackupSnapshotSealMetadataPage {
+  readonly pins: readonly Uint8Array[]
+  readonly nextExclusiveAfter: Uint8Array | null
+}
+
+/** Read one authenticated metadata-only page from a sealing or sealed snapshot. */
+export async function readEncryptedWalletBackupSnapshotSealMetadataPage(input: {
+  readonly store: EncryptedWalletBackupFrozenSnapshotSealStore
+  readonly control: EncryptedWalletBackupFrozenSnapshotControl
+  readonly current: PersistedEncryptedWalletBackupFrozenSnapshot
+  readonly exclusiveAfter: Uint8Array | null
+  readonly maximumPins?: number
+}): Promise<EncryptedWalletBackupSnapshotSealMetadataPage> {
+  const current = requireAuthenticatedEncryptedWalletBackupFrozenSnapshot(
+    input.control,
+    input.current,
+  )
+  if (current.state !== 'sealing' && current.state !== 'sealed')
+    throw new Error('backup snapshot is not available for metadata scan')
+  const maximumPins = input.maximumPins ?? ENCRYPTED_WALLET_BACKUP_SNAPSHOT_SEAL_PAGE_MAX
+  if (
+    !Number.isSafeInteger(maximumPins) ||
+    maximumPins < 1 ||
+    maximumPins > ENCRYPTED_WALLET_BACKUP_SNAPSHOT_SEAL_PAGE_MAX
+  )
+    throw new Error('backup snapshot seal page exceeds its capacity')
+  const after = input.exclusiveAfter?.slice() ?? null
+  return sealTransaction(input.store, input.control, current, null, after, maximumPins, (pins) => {
+    requirePageOrder(current, after, pins)
+    const detached = pins.map((pin) => pin.slice())
+    const next = detached.length === 0 ? after : pinKey(decodePinInScope(current, detached.at(-1)!))
+    return Object.freeze({
+      pins: Object.freeze(detached),
+      nextExclusiveAfter: next?.slice() ?? null,
+    })
+  })
+}
+
 export async function sealEncryptedWalletBackupFrozenSnapshot(input: {
   readonly store: EncryptedWalletBackupFrozenSnapshotSealStore
   readonly control: EncryptedWalletBackupFrozenSnapshotControl
@@ -180,18 +218,14 @@ async function readSealPage(
   sealing: PersistedEncryptedWalletBackupFrozenSnapshot,
   after: Uint8Array | null,
 ): Promise<readonly Uint8Array[]> {
-  return sealTransaction(
-    store,
-    control,
-    sealing,
-    null,
-    after,
-    ENCRYPTED_WALLET_BACKUP_SNAPSHOT_SEAL_PAGE_MAX,
-    (pins) => {
-      requirePageOrder(sealing, after, pins)
-      return pins.map((pin) => pin.slice())
-    },
-  )
+  return (
+    await readEncryptedWalletBackupSnapshotSealMetadataPage({
+      store,
+      control,
+      current: sealing,
+      exclusiveAfter: after,
+    })
+  ).pins
 }
 
 function requirePageOrder(
