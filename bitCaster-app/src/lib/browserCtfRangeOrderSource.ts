@@ -196,6 +196,7 @@ export function browserSourceProofRows(
   return [...result.authorization, ...result.keep].map((proof) => ({
     proof: createProofRow(scope, preparation, proof, receivedAtMs),
     expectedRevision: null,
+    derivationLocator: null,
   }));
 }
 
@@ -287,6 +288,7 @@ export function browserRangeSuccessorProofRows(
       receivedAtMs,
     }),
     expectedRevision: null,
+    derivationLocator: null,
   }));
 }
 

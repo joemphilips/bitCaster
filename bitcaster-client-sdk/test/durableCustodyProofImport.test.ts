@@ -81,6 +81,7 @@ describe('durable custody completed proof import', () => {
             transaction,
             prepared,
             authorization: owner(40),
+            inventoryAuthorityFingerprint: 'ab'.repeat(32),
             successorAdmission: {
               ...admission(prepared),
               admissionId: 'changed-admission',
@@ -272,6 +273,7 @@ describe('durable custody completed proof import', () => {
             transaction,
             prepared,
             authorization: owner(20),
+            inventoryAuthorityFingerprint: 'ab'.repeat(32),
             successorAdmission: {
               ...admission(prepared),
               proofRows: [
@@ -335,6 +337,7 @@ function prepareImport(
     inventoryAccountId: SCOPE.inventoryAccountId,
     keysets: [KEYSET],
     proofs: [proof()],
+    inventoryAuthorityFingerprint: 'ab'.repeat(32),
     ...override,
   })
 }
@@ -390,6 +393,7 @@ function applyImport(
     prepared,
     authorization: owner(observedAtMs),
     successorAdmission: admission(prepared),
+    inventoryAuthorityFingerprint: 'ab'.repeat(32),
   })
 }
 

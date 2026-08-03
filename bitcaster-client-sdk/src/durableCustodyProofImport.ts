@@ -56,6 +56,7 @@ export interface DurableCustodyProofImportInput {
   readonly inventoryAccountId: string | null
   readonly keysets: readonly DurableCustodyProofImportKeyset[]
   readonly proofs: readonly Proof[]
+  readonly inventoryAuthorityFingerprint: string
   readonly batchAuthority?: DurableCustodyProofImportBatchAuthority
 }
 
@@ -168,6 +169,7 @@ function createImportArtifacts(
         : { batchAuthority: structuredClone(input.batchAuthority) }),
     }),
     output: prepareDurableCustodyExactArtifact({
+      inventoryAuthorityFingerprint: input.inventoryAuthorityFingerprint,
       proofs: proofs.map(({ material }) => ({
         proofId: material.proofId,
         proofFingerprint: material.proofFingerprint,
@@ -224,8 +226,15 @@ export function applyDurableCustodyProofImport(input: {
   readonly prepared: PreparedDurableCustodyProofImport
   readonly authorization: DurableCustodyOwnerAuthorization
   readonly successorAdmission: DurableCustodySuccessorAdmissionEvidence
+  readonly inventoryAuthorityFingerprint: string
 }): void {
-  const { transaction, prepared, authorization, successorAdmission } = input
+  const {
+    transaction,
+    prepared,
+    authorization,
+    successorAdmission,
+    inventoryAuthorityFingerprint,
+  } = input
   const operationId = prepared.record.operation.operationId
   const current = requiredOperation(transaction, operationId)
   assertDurableCustodyImmutableAuthorityMatches(current, prepared.record)
@@ -233,6 +242,7 @@ export function applyDurableCustodyProofImport(input: {
     throw new Error('custody proof import result is not staged')
   }
   assertPreparedResultAuthority(transaction, current, prepared)
+  assertInventoryAuthority(transaction, current, prepared, inventoryAuthorityFingerprint)
   if (current.operation.result.state === 'applied') {
     assertExactSuccessorAdmission(current, successorAdmission)
     return
@@ -283,9 +293,13 @@ function assertExactSuccessorAdmission(
 function validateImportInput(input: {
   readonly sourceOperationId: string
   readonly proofs: readonly Proof[]
+  readonly inventoryAuthorityFingerprint: string
   readonly batchAuthority?: DurableCustodyProofImportBatchAuthority
 }): void {
   requireText(input.sourceOperationId, 'proof import source operation id')
+  if (!/^[0-9a-f]{64}$/.test(input.inventoryAuthorityFingerprint)) {
+    throw new Error('custody proof import inventory authority is invalid')
+  }
   if (
     input.proofs.length === 0 ||
     input.proofs.length > DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX
@@ -356,6 +370,57 @@ function canonicalImportProof(
     throw new Error('custody proof import keyset authority is foreign')
   }
   return { exactProof, material }
+}
+
+function assertInventoryAuthority(
+  transaction: DurableCustodyTransaction,
+  record: DurableCustodyRecord,
+  prepared: PreparedDurableCustodyProofImport,
+  candidate: string,
+): void {
+  if (!/^[0-9a-f]{64}$/.test(candidate)) {
+    throw new Error('custody proof import candidate authority is invalid')
+  }
+  const reference = record.operation.outputPlan.exactOutput
+  const expected = createDurableCustodyArtifactReference(
+    `artifact:${record.operation.operationId}:output`,
+    prepared.artifacts.output,
+  )
+  if (!sameReference(reference, expected)) {
+    throw new Error('custody proof import inventory authority is foreign')
+  }
+  const row = transaction.getArtifact({
+    scopeId: record.scope.scopeId,
+    operationId: record.operation.operationId,
+    expectedOperationRevision: record.revision,
+    reference,
+  })
+  if (row === null) throw new Error('custody proof import inventory authority is absent')
+  assertDurableCustodyArtifactMatchesReference(reference, row.artifact)
+  assertDurableCustodyArtifactMatchesReference(expected, row.artifact)
+  const artifact = decodeInventoryAuthorityArtifact(row.artifact.artifact)
+  if (candidate !== artifact.inventoryAuthorityFingerprint) {
+    throw new Error('custody proof import candidate authority is foreign')
+  }
+}
+
+function decodeInventoryAuthorityArtifact(value: unknown): {
+  inventoryAuthorityFingerprint: string
+} {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(',') !== 'inventoryAuthorityFingerprint,proofs'
+  ) {
+    throw new Error('custody proof import inventory authority is invalid')
+  }
+  const fingerprint = (value as { inventoryAuthorityFingerprint?: unknown })
+    .inventoryAuthorityFingerprint
+  if (typeof fingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(fingerprint)) {
+    throw new Error('custody proof import inventory authority is invalid')
+  }
+  return { inventoryAuthorityFingerprint: fingerprint }
 }
 
 function assertPreparedResultAuthority(

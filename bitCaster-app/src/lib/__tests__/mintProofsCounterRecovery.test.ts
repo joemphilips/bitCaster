@@ -139,14 +139,15 @@ import { setActiveBrowserWalletProfile } from "../browserWalletProfile";
 const VALID_MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const MINT_PROOFS = [{ id: "k1", amount: 100, secret: "s1", C: "C1" }] as never;
+const MODERN_KEYSET_ID = `01${"44".repeat(32)}`;
 
-function mintPreview() {
-  const output = OutputData.createSingleData("100", "k1", "s1", 3n);
+function mintPreview(keysetId = "k1") {
+  const output = OutputData.createSingleData("100", keysetId, "s1", 3n);
   return {
     method: "bolt11",
     payload: { quote: "q1", outputs: [output.blindedMessage] },
     outputData: [output],
-    keysetId: "k1",
+    keysetId,
     quote: { quote: "q1" },
   } as never;
 }
@@ -305,16 +306,19 @@ describe("recoverable external-token receive journal", () => {
     "restores exact %s/%s successors after post-swap proof persistence fails",
     async (baseAsset, unit) => {
       const inputs = [{ id: `input-${unit}`, amount: 8, secret: `in-${unit}`, C: "Cin" }];
-      const successors = [{ id: `keyset-${unit}`, amount: 7, secret: `out-${unit}`, C: "Cout" }];
+      const successors = [
+        { id: MODERN_KEYSET_ID, amount: 7, secret: `out-${unit}-0`, C: "Cout0" },
+        { id: MODERN_KEYSET_ID, amount: 7, secret: `out-${unit}-1`, C: "Cout1" },
+      ];
       mocks.wallet.prepareSwapToReceive.mockImplementationOnce(
         async (_token: string, config: { onCountersReserved?: (value: unknown) => void }) => {
           config.onCountersReserved?.({
-            keysetId: `keyset-${unit}`,
+            keysetId: MODERN_KEYSET_ID,
             start: 7,
             count: 2,
             next: 9,
           });
-          return { inputs, keysetId: `keyset-${unit}`, keepOutputs: [] };
+          return { inputs, keysetId: MODERN_KEYSET_ID, keepOutputs: [] };
         },
       );
       mocks.wallet.completeSwap.mockResolvedValueOnce({ keep: successors, send: [] });
@@ -331,7 +335,7 @@ describe("recoverable external-token receive journal", () => {
       expect(prepared.metadata).toMatchObject({
         baseAsset,
         unit,
-        keysetId: `keyset-${unit}`,
+        keysetId: MODERN_KEYSET_ID,
         counterStart: 7,
         counterCount: 2,
       });
@@ -366,21 +370,85 @@ describe("recoverable external-token receive journal", () => {
 
       expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledTimes(2);
       expect(mocks.wallet.restore).toHaveBeenCalledWith(7, 2, {
-        keysetId: `keyset-${unit}`,
+        keysetId: MODERN_KEYSET_ID,
       });
-      expect(mocks.addProofs).toHaveBeenLastCalledWith([
+      expect(mocks.admitBrowserReceivedProofs).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          secret: `out-${unit}`,
-          mintUrl: "https://mint.test",
-          baseAsset,
-          unit,
+          proofs: expect.arrayContaining([
+            expect.objectContaining({ secret: `out-${unit}-0` }),
+            expect.objectContaining({ secret: `out-${unit}-1` }),
+          ]),
+          derivationRangeProofs: successors,
+          derivationAuthority: {
+            keysetId: MODERN_KEYSET_ID,
+            counterStart: 7,
+            counterCount: 2,
+          },
         }),
-      ]);
+      );
+      expect(mocks.addProofs).toHaveBeenLastCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({
+            secret: `out-${unit}-0`,
+            mintUrl: "https://mint.test",
+            baseAsset,
+            unit,
+          }),
+        ]),
+      );
       expect(mocks.markProofOperationCompleted).toHaveBeenCalledWith(prepared.operationId, {
         receive: successors,
       });
     },
   );
+
+  it("admits only unspent modern range proofs while retaining the exact restored range", async () => {
+    const restored = [
+      { id: MODERN_KEYSET_ID, amount: 7, secret: "spent", C: "Cspent" },
+      { id: MODERN_KEYSET_ID, amount: 7, secret: "pending", C: "Cpending" },
+      { id: MODERN_KEYSET_ID, amount: 7, secret: "unspent", C: "Cunspent" },
+    ];
+    const operation = {
+      operationId: "token-receive:mixed-states",
+      kind: "token-receive",
+      state: "prepared",
+      mintUrl: "https://mint.test",
+      inputs: [],
+      outputs: {},
+      metadata: {
+        baseAsset: "sat",
+        unit: "sat",
+        keysetId: MODERN_KEYSET_ID,
+        counterStart: 41,
+        counterCount: 3,
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    mocks.getProofOperations.mockResolvedValueOnce([operation] as never);
+    mocks.wallet.restore.mockResolvedValueOnce({ proofs: restored });
+    mocks.wallet.groupProofsByState.mockResolvedValueOnce({
+      spent: [restored[0]],
+      pending: [restored[1]],
+      unspent: [restored[2]],
+    });
+
+    await expect(cashu.recoverPendingTokenReceives()).resolves.toEqual({ pending: 1 });
+
+    expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        proofs: [expect.objectContaining({ secret: "unspent" })],
+        derivationRangeProofs: restored,
+        derivationAuthority: {
+          keysetId: MODERN_KEYSET_ID,
+          counterStart: 41,
+          counterCount: 3,
+        },
+      }),
+    );
+    expect(mocks.addProofs).toHaveBeenCalledWith([expect.objectContaining({ secret: "unspent" })]);
+    expect(mocks.markProofOperationCompleted).not.toHaveBeenCalled();
+  });
 
   it("keeps an unsigned journal retryable instead of racing a late mint commit", async () => {
     const operation = {
@@ -608,7 +676,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
 
 describe("recoverPendingWalletMints — exact restart recovery", () => {
   it("replays the persisted mint preview after a crash without preparing fresh outputs", async () => {
-    const preview = mintPreview();
+    const preview = mintPreview(MODERN_KEYSET_ID);
     const operation = serializeDurableWalletMintOperation({
       operationId: "wallet-mint:restart",
       mintUrl: "https://mint.test",
@@ -623,12 +691,21 @@ describe("recoverPendingWalletMints — exact restart recovery", () => {
       mintUrl: operation.mintUrl,
       inputs: [],
       outputs: custody.outputs,
-      metadata: { ...custody.metadata, baseAsset: "sat" },
+      metadata: {
+        ...custody.metadata,
+        baseAsset: "sat",
+        keysetId: MODERN_KEYSET_ID,
+        counterStart: 0,
+        counterCount: 1,
+      },
       createdAt: 1,
       updatedAt: 1,
     };
     mocks.proofOperations.set(operation.operationId, record);
     mocks.getProofOperations.mockResolvedValueOnce([record] as never);
+    mocks.wallet.completeMint.mockResolvedValueOnce([
+      { id: MODERN_KEYSET_ID, amount: 100, secret: "s1", C: "C1" },
+    ]);
 
     const result = await cashu.recoverPendingWalletMints();
 
@@ -644,6 +721,15 @@ describe("recoverPendingWalletMints — exact restart recovery", () => {
       operation.preview.payload.outputs[0].amount,
     );
     expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledBefore(mocks.addProofs);
+    expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        derivationAuthority: {
+          keysetId: MODERN_KEYSET_ID,
+          counterStart: 0,
+          counterCount: 1,
+        },
+      }),
+    );
     expect(mocks.addProofs).toHaveBeenCalledBefore(mocks.markProofOperationCompleted);
     const completed = mocks.markProofOperationCompleted.mock.calls[0];
     expect(completed?.[0]).toBe(operation.operationId);
@@ -679,15 +765,24 @@ describe("recoverPendingWalletMints — exact restart recovery", () => {
     const record = preparedMintRecord("wallet-mint:profile-switch");
     mocks.proofOperations.set(record.operationId, record);
     mocks.getProofOperations.mockResolvedValueOnce([record] as never);
-    mocks.admitBrowserReceivedProofs.mockImplementationOnce(async () => {
+    mocks.wallet.completeMint.mockResolvedValueOnce([
+      { id: MODERN_KEYSET_ID, amount: 100, secret: "s1", C: "C1" },
+    ]);
+    const switchProfile = vi.fn(() => {
       mocks.store.mnemonic =
         "legal winner thank year wave sausage worth useful legal winner thank yellow";
       setActiveBrowserWalletProfile(mocks.store.mnemonic);
+    });
+    mocks.admitBrowserReceivedProofs.mockImplementationOnce(async () => {
+      switchProfile();
     });
 
     const result = await cashu.recoverPendingWalletMints();
 
     expect(result).toEqual({ pending: 1 });
+    expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledOnce();
+    expect(switchProfile).toHaveBeenCalledOnce();
+    expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledBefore(switchProfile);
     expect(mocks.addProofs).not.toHaveBeenCalled();
     expect(mocks.markProofOperationCompleted).not.toHaveBeenCalled();
   });
@@ -708,7 +803,7 @@ describe("recoverPendingWalletMints — exact restart recovery", () => {
 });
 
 function preparedMintRecord(operationId: string) {
-  const preview = mintPreview();
+  const preview = mintPreview(MODERN_KEYSET_ID);
   const operation = serializeDurableWalletMintOperation({
     operationId,
     mintUrl: "https://mint.test",
@@ -723,7 +818,13 @@ function preparedMintRecord(operationId: string) {
     mintUrl: operation.mintUrl,
     inputs: [],
     outputs: custody.outputs,
-    metadata: { ...custody.metadata, baseAsset: "sat" },
+    metadata: {
+      ...custody.metadata,
+      baseAsset: "sat",
+      keysetId: MODERN_KEYSET_ID,
+      counterStart: 0,
+      counterCount: 1,
+    },
     createdAt: 1,
     updatedAt: 1,
   };

@@ -232,7 +232,9 @@ describe("browser durable custody adapter", () => {
       },
       {
         successorProofs: {
-          [source.record.operation.operationId]: [{ proof: successor, expectedRevision: null }],
+          [source.record.operation.operationId]: [
+            { proof: successor, expectedRevision: null, derivationLocator: null },
+          ],
         },
       },
     );
@@ -327,7 +329,9 @@ describe("browser durable custody adapter", () => {
           }),
         {
           successorProofs: {
-            [source.record.operation.operationId]: [{ proof: candidate, expectedRevision: 1 }],
+            [source.record.operation.operationId]: [
+              { proof: candidate, expectedRevision: 1, derivationLocator: null },
+            ],
           },
         },
       ),

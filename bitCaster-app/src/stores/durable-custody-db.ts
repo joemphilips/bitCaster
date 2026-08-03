@@ -36,7 +36,10 @@ import { db, type BitcasterDB } from "./proof-db";
 import {
   advanceBrowserProofBackupAuthorityRow,
   createBrowserProofBackupAuthorityRow,
+  requireBrowserProofDerivationLocator,
   requireBrowserProofBackupAuthorityForProof,
+  sameBrowserProofDerivationLocator,
+  type BrowserProofDerivationLocatorAuthority,
 } from "./browser-proof-backup-authority";
 import type {
   BrowserCustodyActiveWorkRow,
@@ -68,6 +71,12 @@ export type BrowserCustodyProofAsset =
 export interface StagedBrowserCustodyProof {
   readonly proof: BrowserCustodyProofRow;
   readonly expectedRevision: number | null;
+  readonly derivationLocator: BrowserProofDerivationLocatorAuthority;
+}
+
+interface PersistedBrowserCustodyProof {
+  readonly proof: BrowserCustodyProofRow;
+  readonly derivationLocator: BrowserProofDerivationLocatorAuthority | undefined;
 }
 
 export interface BrowserCustodyTransactionOptions {
@@ -343,11 +352,17 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         ) {
           throw new Error("browser refund proof authority is invalid");
         }
-        await this.#persistProofRowsWithBackupAuthority(retired, input.observedAtMs);
+        await this.#persistProofRowsWithBackupAuthority(
+          retired.map((proof) => ({ proof, derivationLocator: undefined })),
+          input.observedAtMs,
+        );
         await this.#database.custodyReservations.bulkDelete(
           expectedProofIds.map((proofId) => [input.scopeId, proofId]),
         );
-        await this.#persistProofRowsWithBackupAuthority(refunds, input.observedAtMs);
+        await this.#persistProofRowsWithBackupAuthority(
+          refunds.map((proof) => ({ proof, derivationLocator: null })),
+          input.observedAtMs,
+        );
       },
     );
   }
@@ -560,12 +575,20 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       this.#database.custodyProofBackupAuthorities.bulkGet(keys),
     ]);
     const proofs = new Map<string, BrowserCustodyProofRow>();
+    const authorities = new Map<
+      string,
+      ReturnType<typeof requireBrowserProofBackupAuthorityForProof>
+    >();
     const reservations = new Map<string, BrowserCustodyReservationRow>();
     proofRows.forEach((row, index) => {
       if (row) {
         const decoded = decodeBrowserCustodyProofRow(row);
-        requireBrowserProofBackupAuthorityForProof(backupAuthorities[index], decoded);
+        const authority = requireBrowserProofBackupAuthorityForProof(
+          backupAuthorities[index],
+          decoded,
+        );
         proofs.set(decoded.proofId, decoded);
+        authorities.set(decoded.proofId, authority);
       } else if (backupAuthorities[index]) {
         throw new Error("browser proof backup authority has no proof body");
       }
@@ -585,6 +608,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         proofs.set(candidate.proofId, candidate);
       }
     }
+    assertStagedSuccessorLocatorReplays(options.successorProofs, authorities);
     return { proofs, reservations };
   }
 
@@ -620,20 +644,24 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     transaction: StagedBrowserCustodyTransaction,
     observedAtMs: number,
   ): Promise<void> {
-    const changed: BrowserCustodyProofRow[] = [];
+    const changed: PersistedBrowserCustodyProof[] = [];
     for (const proofId of transaction.changedProofIds) {
       const proof = transaction.proofs.get(proofId);
       if (!proof) throw new Error("browser custody changed proof is absent");
-      changed.push(decodeBrowserCustodyProofRow(proof));
+      changed.push({
+        proof: decodeBrowserCustodyProofRow(proof),
+        derivationLocator: transaction.derivationLocatorForProof(proofId),
+      });
     }
     await this.#persistProofRowsWithBackupAuthority(changed, observedAtMs);
   }
 
   async #persistProofRowsWithBackupAuthority(
-    proofs: readonly BrowserCustodyProofRow[],
+    proofs: readonly PersistedBrowserCustodyProof[],
     observedAtMs: number,
   ): Promise<void> {
-    for (const proof of proofs) {
+    for (const staged of proofs) {
+      const proof = staged.proof;
       const key: [string, string] = [proof.scopeId, proof.proofId];
       const [currentProofRow, currentAuthority] = await Promise.all([
         this.#database.custodyProofs.get(key),
@@ -642,16 +670,19 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       if ((currentProofRow === undefined) !== (currentAuthority === undefined)) {
         throw new Error("browser proof and backup authority are incomplete");
       }
-      const authority = currentAuthority
-        ? advanceBrowserProofBackupAuthorityRow(
-            requireBrowserProofBackupAuthorityForProof(
-              currentAuthority,
-              decodeBrowserCustodyProofRow(currentProofRow),
-            ),
-            proof,
-            observedAtMs,
+      const current = currentAuthority
+        ? requireBrowserProofBackupAuthorityForProof(
+            currentAuthority,
+            decodeBrowserCustodyProofRow(currentProofRow),
           )
-        : createBrowserProofBackupAuthorityRow(proof, observedAtMs);
+        : null;
+      const locator =
+        staged.derivationLocator === undefined
+          ? authorityLocator(current)
+          : staged.derivationLocator;
+      const authority = current
+        ? advanceBrowserProofBackupAuthorityRow(current, proof, observedAtMs, locator)
+        : createBrowserProofBackupAuthorityRow(proof, observedAtMs, locator);
       await this.#database.custodyProofs.put(proof);
       await this.#database.custodyProofBackupAuthorities.put(authority);
     }
@@ -727,6 +758,7 @@ class StagedBrowserCustodyTransaction implements DurableCustodyTransaction {
   readonly deletedReservationIds = new Set<string>();
   readonly rebuildOperationIds = new Set<string>();
   readonly #successorProofs: Readonly<Record<string, readonly StagedBrowserCustodyProof[]>>;
+  readonly #derivationLocators: ReadonlyMap<string, BrowserProofDerivationLocatorAuthority>;
 
   constructor(input: {
     scopeState: DurableCustodyScopeState;
@@ -747,6 +779,7 @@ class StagedBrowserCustodyTransaction implements DurableCustodyTransaction {
     this.proofs = new Map(input.proofs);
     this.reservations = new Map(input.reservations);
     this.#successorProofs = input.successorProofs;
+    this.#derivationLocators = stagedDerivationLocators(input.successorProofs);
   }
 
   getScopeState(): DurableCustodyScopeState {
@@ -916,6 +949,10 @@ class StagedBrowserCustodyTransaction implements DurableCustodyTransaction {
     input: Parameters<DurableCustodyTransaction["rebuildActiveWorkIndex"]>[0],
   ): void {
     input.operationRows.forEach(({ operationId }) => this.rebuildOperationIds.add(operationId));
+  }
+
+  derivationLocatorForProof(proofId: string): BrowserProofDerivationLocatorAuthority | undefined {
+    return this.#derivationLocators.get(proofId);
   }
 
   #reserveProof(operation: DurableCustodyRecord, proofId: string, inputPosition: number): void {
@@ -1115,10 +1152,46 @@ function collectTransactionProofs(
       ) {
         throw new Error("browser custody proof option revision is invalid");
       }
+      requireBrowserProofDerivationLocator(row.derivationLocator);
       successorCandidates.push(decodeBrowserCustodyProofRow(row.proof));
     }
   }
   return { predecessorCandidates, successorCandidates };
+}
+
+function assertStagedSuccessorLocatorReplays(
+  successorProofs: Readonly<Record<string, readonly StagedBrowserCustodyProof[]>> | undefined,
+  authorities: ReadonlyMap<string, ReturnType<typeof requireBrowserProofBackupAuthorityForProof>>,
+): void {
+  for (const successors of Object.values(successorProofs ?? {})) {
+    for (const staged of successors) {
+      const authority = authorities.get(staged.proof.proofId);
+      if (
+        authority &&
+        !sameBrowserProofDerivationLocator(authorityLocator(authority), staged.derivationLocator)
+      ) {
+        throw new Error("browser custody proof derivation locator conflicts");
+      }
+    }
+  }
+}
+
+function stagedDerivationLocators(
+  successorProofs: Readonly<Record<string, readonly StagedBrowserCustodyProof[]>>,
+): ReadonlyMap<string, BrowserProofDerivationLocatorAuthority> {
+  const locators = new Map<string, BrowserProofDerivationLocatorAuthority>();
+  for (const successors of Object.values(successorProofs)) {
+    for (const staged of successors) {
+      if (locators.has(staged.proof.proofId)) {
+        throw new Error("browser custody proof derivation locator is duplicated");
+      }
+      locators.set(
+        staged.proof.proofId,
+        requireBrowserProofDerivationLocator(staged.derivationLocator),
+      );
+    }
+  }
+  return locators;
 }
 
 function validateProofOptionRows(
@@ -1477,6 +1550,20 @@ function operationBytes(record: DurableCustodyRecord): number {
 
 function artifactKey(operationId: string, artifactId: string): string {
   return `${operationId}\u0000${artifactId}`;
+}
+
+function authorityLocator(
+  authority: {
+    readonly derivationKeysetId: string | null;
+    readonly derivationCounter: number | null;
+  } | null,
+): BrowserProofDerivationLocatorAuthority {
+  return authority === null
+    ? null
+    : requireBrowserProofDerivationLocator({
+        keysetId: authority.derivationKeysetId,
+        counter: authority.derivationCounter,
+      });
 }
 
 function incrementRevision(value: number, label: string): number {

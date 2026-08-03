@@ -549,6 +549,11 @@ async function persistBrowserMintProofs(input: {
     baseAsset: input.baseAsset,
     unit: input.unit,
   }));
+  const derivationAuthority = await persistedDerivationAuthority(
+    input.operationId,
+    input.context.database,
+  );
+  input.context.requireCapturedProfile();
   await admitBrowserReceivedProofs({
     seed: input.context.seed,
     sourceOperationId: input.operationId,
@@ -556,6 +561,7 @@ async function persistBrowserMintProofs(input: {
     unit: input.unit,
     wallet: input.wallet,
     proofs: stored,
+    derivationAuthority,
     database: input.context.database,
   });
   input.context.requireCapturedProfile();
@@ -567,6 +573,24 @@ async function persistBrowserMintProofs(input: {
     input.context.database,
   );
   input.context.requireCapturedProfile();
+}
+
+async function persistedDerivationAuthority(operationId: string, database: BitcasterDB) {
+  const operation = await getProofOperation(operationId, database);
+  if (!operation) throw new Error("wallet mint recovery authority is missing");
+  return {
+    keysetId: requiredReceiveMetadataString(operation.metadata.keysetId, "keysetId"),
+    counterStart: requiredReceiveMetadataInteger(
+      operation.metadata.counterStart,
+      "counterStart",
+      0,
+    ),
+    counterCount: requiredReceiveMetadataInteger(
+      operation.metadata.counterCount,
+      "counterCount",
+      1,
+    ),
+  };
 }
 
 function collateralSubunitsFromBaseAmount(
@@ -959,6 +983,7 @@ export async function receiveAndStoreTokenRecoverably(
   }));
   const mnemonic = useWalletStore.getState().mnemonic;
   if (!mnemonic) throw new Error("The wallet profile is unavailable");
+  const derivationAuthority = await persistedDerivationAuthority(operationId, db);
   await admitBrowserReceivedProofs({
     seed: toSeed(mnemonic.split(" ")),
     sourceOperationId: operationId,
@@ -966,6 +991,7 @@ export async function receiveAndStoreTokenRecoverably(
     unit,
     wallet,
     proofs: stored,
+    derivationAuthority,
   });
   await addProofs(stored);
   await markProofOperationCompleted(operationId, { receive: keep });
@@ -1033,6 +1059,8 @@ export async function recoverPendingTokenReceives(): Promise<{ pending: number }
             unit,
             wallet,
             proofs: stored,
+            derivationRangeProofs: restored.proofs,
+            derivationAuthority: { keysetId, counterStart, counterCount },
           });
           await addProofs(stored);
           requireCapturedProfile();
