@@ -23,6 +23,10 @@
       "types": "./dist/durableCustody.d.ts",
       "import": "./dist/durableCustody.js"
     },
+    "./durableSeedDerivedOutputs": {
+      "types": "./dist/durableSeedDerivedOutputs.d.ts",
+      "import": "./dist/durableSeedDerivedOutputs.js"
+    },
     "./recoverableWalletStorage": {
       "types": "./dist/recoverableWalletStorage.d.ts",
       "import": "./dist/recoverableWalletStorage.js"
