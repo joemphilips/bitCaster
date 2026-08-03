@@ -7,14 +7,19 @@ import {
 } from '@cashu/cashu-ts'
 import {
   DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
-  DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX,
   DURABLE_CUSTODY_RECORD_BYTES_MAX,
   encodeBoundedDurableArtifact,
 } from './durableCustody.ts'
+import {
+  fitsDurableSeedDerivedCounterRange,
+  isCanonicalModernNut02KeysetId,
+  isDurableSeedDerivedCounter,
+  isDurableSeedDerivedCount,
+  isNonArrayRecord,
+} from './durableSeedDerivedPolicy.ts'
 
 const DURABLE_SEED_DERIVED_OUTPUT_SCHEMA_VERSION = 1 as const
-const COUNTER_MAX = 2_147_483_647
 
 export { DURABLE_SEED_DERIVED_OUTPUT_SCHEMA_VERSION }
 
@@ -111,17 +116,22 @@ function validateAllocationInput(
   },
   requireCounterSource: boolean,
 ): ValidatedAllocationInput | null {
-  if (!isRecord(input) || !(input.seed instanceof Uint8Array) || input.seed.byteLength !== 64) {
+  if (
+    !isNonArrayRecord(input) ||
+    !(input.seed instanceof Uint8Array) ||
+    input.seed.byteLength !== 64
+  ) {
     return null
   }
   if (
     requireCounterSource &&
-    (!isRecord(input.counterSource) || typeof input.counterSource.reserve !== 'function')
+    (!isNonArrayRecord(input.counterSource) || typeof input.counterSource.reserve !== 'function')
   ) {
     return null
   }
-  if (!Array.isArray(input.amounts) || input.amounts.length === 0) return null
-  if (input.amounts.length > DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX) return null
+  if (!Array.isArray(input.amounts) || !isDurableSeedDerivedCount(input.amounts.length)) {
+    return null
+  }
 
   const keyset = validateKeyset(input.keyset, input.amounts)
   if (keyset === null) return null
@@ -134,7 +144,7 @@ function validateAllocationInput(
   return {
     seed: input.seed.slice(),
     counterSource:
-      isRecord(input.counterSource) && typeof input.counterSource.reserve === 'function'
+      isNonArrayRecord(input.counterSource) && typeof input.counterSource.reserve === 'function'
         ? (input.counterSource as unknown as CounterSource)
         : null,
     keyset,
@@ -144,9 +154,9 @@ function validateAllocationInput(
 }
 
 function validateKeyset(value: unknown, amounts: readonly number[]): HasKeysetKeys | null {
-  if (!isRecord(value) || !isRecord(value.keys)) return null
-  const id = decodeCanonicalNUT02KeysetId(value.id)
-  if (id === null) return null
+  if (!isNonArrayRecord(value) || !isNonArrayRecord(value.keys)) return null
+  if (!isCanonicalModernNut02KeysetId(value.id)) return null
+  const id = value.id
   const entries = Object.entries(value.keys)
   if (entries.length === 0 || entries.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
     return null
@@ -165,10 +175,12 @@ function isExactReservation(
   value: unknown,
   expectedCount: number,
 ): value is { start: number; count: number } {
-  if (!isRecord(value) || value.count !== expectedCount) return false
-  if (!isCounter(value.start)) return false
-  const lastCounter = value.start + expectedCount - 1
-  return Number.isSafeInteger(lastCounter) && lastCounter <= COUNTER_MAX
+  return (
+    isNonArrayRecord(value) &&
+    value.count === expectedCount &&
+    isDurableSeedDerivedCounter(value.start) &&
+    fitsDurableSeedDerivedCounterRange(value.start, expectedCount)
+  )
 }
 
 function createOutputs(input: ValidatedAllocationInput, counterStart: number): OutputData[] | null {
@@ -215,28 +227,30 @@ function createPlan(
 }
 
 function decodePlan(value: unknown): DurableSeedDerivedOutputPlan {
-  if (!isRecord(value)) throw new Error('durable seed-derived output plan is invalid')
+  if (!isNonArrayRecord(value)) throw new Error('durable seed-derived output plan is invalid')
   requireExactKeys(value, ['schemaVersion', 'keysetId', 'counterStart', 'counterCount', 'outputs'])
-  const keysetId = decodeCanonicalNUT02KeysetId(value.keysetId)
-  if (value.schemaVersion !== DURABLE_SEED_DERIVED_OUTPUT_SCHEMA_VERSION || keysetId === null) {
+  if (
+    value.schemaVersion !== DURABLE_SEED_DERIVED_OUTPUT_SCHEMA_VERSION ||
+    !isCanonicalModernNut02KeysetId(value.keysetId)
+  ) {
     throw new Error('durable seed-derived output plan is invalid')
   }
   if (
-    !isCounter(value.counterStart) ||
-    !isCount(value.counterCount) ||
+    !isDurableSeedDerivedCounter(value.counterStart) ||
+    !isDurableSeedDerivedCount(value.counterCount) ||
     !Array.isArray(value.outputs)
   ) {
     throw new Error('durable seed-derived output plan is invalid')
   }
   if (
     value.outputs.length !== value.counterCount ||
-    !counterRangeFits(value.counterStart, value.counterCount)
+    !fitsDurableSeedDerivedCounterRange(value.counterStart, value.counterCount)
   ) {
     throw new Error('durable seed-derived output plan is invalid')
   }
   const plan: DurableSeedDerivedOutputPlan = {
     schemaVersion: DURABLE_SEED_DERIVED_OUTPUT_SCHEMA_VERSION,
-    keysetId,
+    keysetId: value.keysetId,
     counterStart: value.counterStart,
     counterCount: value.counterCount,
     outputs: value.outputs.map(decodeSerializedOutput),
@@ -248,9 +262,9 @@ function decodePlan(value: unknown): DurableSeedDerivedOutputPlan {
 }
 
 function decodeSerializedOutput(value: unknown): SerializedOutputData {
-  if (!isRecord(value)) throw new Error('durable seed-derived output plan is invalid')
+  if (!isNonArrayRecord(value)) throw new Error('durable seed-derived output plan is invalid')
   requireExactKeys(value, ['blindedMessage', 'blindingFactor', 'secret', 'ephemeralE'], true)
-  if (!isRecord(value.blindedMessage))
+  if (!isNonArrayRecord(value.blindedMessage))
     throw new Error('durable seed-derived output plan is invalid')
   requireExactKeys(value.blindedMessage, ['amount', 'id', 'B_'])
   if (
@@ -323,34 +337,8 @@ function cloneSerializedOutput(value: SerializedOutputData): SerializedOutputDat
   }
 }
 
-function counterRangeFits(start: number, count: number): boolean {
-  const lastCounter = start + count - 1
-  return Number.isSafeInteger(lastCounter) && lastCounter <= COUNTER_MAX
-}
-
-function isCount(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isSafeInteger(value) &&
-    value >= 1 &&
-    value <= DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX
-  )
-}
-
-function isCounter(value: unknown): value is number {
-  return (
-    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= COUNTER_MAX
-  )
-}
-
 function isText(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
-}
-
-function decodeCanonicalNUT02KeysetId(value: unknown): string | null {
-  if (!isText(value)) return null
-  if (/^(?:01|02)[0-9a-f]{64}$/.test(value)) return value
-  return null
 }
 
 function isPositiveSafeIntegerText(value: string): boolean {
@@ -366,10 +354,6 @@ function fitsDurableArtifact(value: unknown, maximumBytes: number): boolean {
   } catch {
     return false
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function requireExactKeys(

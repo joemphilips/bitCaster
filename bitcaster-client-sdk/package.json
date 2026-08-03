@@ -27,6 +27,10 @@
       "types": "./dist/durableSeedDerivedOutputs.d.ts",
       "import": "./dist/durableSeedDerivedOutputs.js"
     },
+    "./durableSeedDerivedProofLineage": {
+      "types": "./dist/durableSeedDerivedProofLineage.d.ts",
+      "import": "./dist/durableSeedDerivedProofLineage.js"
+    },
     "./recoverableWalletStorage": {
       "types": "./dist/recoverableWalletStorage.d.ts",
       "import": "./dist/recoverableWalletStorage.js"
