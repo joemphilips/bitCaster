@@ -20,6 +20,13 @@ import type {
   BrowserCustodyScopeRow,
 } from "./durable-custody-types";
 import type { BrowserProofBackupAuthorityRow } from "./browser-proof-backup-authority";
+import type {
+  PersistedEncryptedWalletBackupBuildCursor,
+  PersistedEncryptedWalletBackupPackBinding,
+  PersistedEncryptedWalletBackupPackControl,
+  PersistedEncryptedWalletBackupPreparedBuildRecord,
+  PersistedEncryptedWalletBackupStagedObject,
+} from "@bitcaster/client-sdk/encryptedWalletBackupPackPersistence";
 
 interface StoredProofMetadata {
   mintUrl: string;
@@ -157,6 +164,23 @@ export class BitcasterDB extends Dexie {
   custodyReservations!: Table<BrowserCustodyReservationRow, [string, string]>;
   custodyActiveWork!: Table<BrowserCustodyActiveWorkRow, [string, string]>;
   custodyProofBackupAuthorities!: Table<BrowserProofBackupAuthorityRow, [string, string]>;
+  encryptedWalletBackupBuildCursors!: Table<PersistedEncryptedWalletBackupBuildCursor, string>;
+  encryptedWalletBackupPackControls!: Table<
+    PersistedEncryptedWalletBackupPackControl,
+    [string, string]
+  >;
+  encryptedWalletBackupPreparedRecords!: Table<
+    PersistedEncryptedWalletBackupPreparedBuildRecord,
+    [string, string]
+  >;
+  encryptedWalletBackupPackBindings!: Table<
+    PersistedEncryptedWalletBackupPackBinding,
+    [string, string, string]
+  >;
+  encryptedWalletBackupStagedObjects!: Table<
+    PersistedEncryptedWalletBackupStagedObject,
+    [string, string]
+  >;
 
   constructor(databaseName = "bitcaster") {
     super(databaseName);
@@ -247,6 +271,13 @@ export class BitcasterDB extends Dexie {
           ].map((tableName) => transaction.table(tableName).clear()),
         );
       });
+    this.version(9).stores({
+      encryptedWalletBackupBuildCursors: "&buildId",
+      encryptedWalletBackupPackControls: "&[buildId+packId]",
+      encryptedWalletBackupPreparedRecords: "&[buildId+recordId]",
+      encryptedWalletBackupPackBindings: "&[buildId+packId+recordId], &[buildId+packId+ordinal]",
+      encryptedWalletBackupStagedObjects: "&[buildId+packId]",
+    });
   }
 }
 

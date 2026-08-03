@@ -20,7 +20,7 @@ describe("browser wallet databases", () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(8);
+    expect(db.verno).toBe(9);
     expect(db.custodyProofBackupAuthorities.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofBackupAuthorities.schema.indexes.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
@@ -29,6 +29,29 @@ describe("browser wallet databases", () => {
         "backupRecordId",
       ]),
     );
+    expect(db.encryptedWalletBackupBuildCursors.schema.primKey.keyPath).toBe("buildId");
+    expect(db.encryptedWalletBackupPackControls.schema.primKey.keyPath).toEqual([
+      "buildId",
+      "packId",
+    ]);
+    expect(db.encryptedWalletBackupPreparedRecords.schema.primKey.keyPath).toEqual([
+      "buildId",
+      "recordId",
+    ]);
+    expect(db.encryptedWalletBackupPackBindings.schema.primKey.keyPath).toEqual([
+      "buildId",
+      "packId",
+      "recordId",
+    ]);
+    expect(
+      db.encryptedWalletBackupPackBindings.schema.indexes.find(
+        ({ name }) => name === "[buildId+packId+ordinal]",
+      )?.unique,
+    ).toBe(true);
+    expect(db.encryptedWalletBackupStagedObjects.schema.primKey.keyPath).toEqual([
+      "buildId",
+      "packId",
+    ]);
   });
 
   it("clears the undeployed wallet schema instead of inferring backup authority", async () => {
