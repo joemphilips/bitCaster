@@ -674,20 +674,32 @@ test('prepares one exact collateral conversion with locked offer and ordinary co
   assert.equal(plan.kind, 'collateral-ctf-convert')
   if (plan.kind !== 'collateral-ctf-convert') return
 
-  const operation = prepareCtfRangeCollateralSourceOperation({
+  const reservations: Array<{ keysetId: string; count: number }> = []
+  const operation = await prepareCtfRangeCollateralSourceOperation({
     preparation,
     seed: new Uint8Array(64).fill(7),
+    counterSource: counterSource(11, reservations),
     plan,
   })
   assert.equal(operation.kind, 'ctf-range-collateral-convert')
   assert.equal(operation.inputs[0]?.secret, collateral.secret)
   assert.ok((operation.outputs.authorization?.length ?? 0) > 0)
   assert.ok((operation.outputs.complement?.length ?? 0) > 0)
+  assert.deepEqual(reservations, [
+    { keysetId: preparation.complementKeyset.id, count: operation.outputs.complement!.length },
+    {
+      keysetId: preparation.receiveKeyset.id,
+      count: operation.outputs['collateral-change']!.length,
+    },
+  ])
+  assert.equal(operation.metadata?.complementPlan === null, false)
+  assert.equal(operation.metadata?.collateralChangePlan === null, false)
   assert.deepEqual(validateCtfRangeCollateralSourceOperation(operation, preparation), operation)
   let request: CtfConvertRequest | null = null
   const completed = await completeCtfRangeCollateralSourceOperation({
     operation,
     preparation,
+    seed: new Uint8Array(64).fill(7),
     transport: {
       postConvert: async (value) => {
         request = value
@@ -720,7 +732,7 @@ test('prepares one exact collateral conversion with locked offer and ordinary co
         },
         preparation,
       ),
-    /value authority|preparation is foreign/,
+    /value authority|preparation is foreign|plan is invalid/,
   )
 })
 

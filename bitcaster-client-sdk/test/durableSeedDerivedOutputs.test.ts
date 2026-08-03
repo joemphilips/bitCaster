@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { CounterRange, CounterSource } from '@cashu/cashu-ts'
+import { OutputData, type CounterRange, type CounterSource } from '@cashu/cashu-ts'
 import {
+  matchDurableSeedDerivedProofsToPlan,
   reconstructDurableSeedDerivedOutputs,
   reserveDurableSeedDerivedOutputs,
   type DurableSeedDerivedOutputPlan,
@@ -357,6 +358,40 @@ test('leaves an accepted abandoned reservation as a monotonic counter gap', asyn
   })
   assert.equal(next.counterStart, 2)
   assert.equal(source.next, 3)
+})
+
+test('maps exact proofs to plan order and rejects duplicate or foreign identities', async () => {
+  const plan = await reserveDurableSeedDerivedOutputs({
+    seed: SEED,
+    counterSource: new MemoryCounterSource(),
+    keyset: KEYSET,
+    amounts: [2, 3],
+  })
+  const proofs = plan.outputs.map((output) => {
+    const value = OutputData.deserialize(output)
+    return {
+      id: value.blindedMessage.id,
+      amount: Number(value.blindedMessage.amount),
+      secret: new TextDecoder().decode(value.secret),
+    }
+  })
+
+  assert.deepEqual(
+    matchDurableSeedDerivedProofsToPlan({ plan, proofs: [...proofs].reverse() }),
+    proofs,
+  )
+  assert.throws(
+    () => matchDurableSeedDerivedProofsToPlan({ plan, proofs: [proofs[0]!, proofs[0]!] }),
+    /duplicated/,
+  )
+  assert.throws(
+    () =>
+      matchDurableSeedDerivedProofsToPlan({
+        plan,
+        proofs: [{ ...proofs[0]!, secret: 'foreign' }, proofs[1]!],
+      }),
+    /foreign/,
+  )
 })
 
 function changedOutput(

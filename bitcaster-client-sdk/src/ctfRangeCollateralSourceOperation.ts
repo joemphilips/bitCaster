@@ -1,8 +1,8 @@
 import {
-  Amount,
   OutputData,
   type CtfConvertRequest,
   type CtfConvertResponse,
+  type CounterSource,
   type MintKeys,
   type Proof,
   type SerializedBlindedMessage,
@@ -22,14 +22,23 @@ import {
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
 import { amountToNumber } from './proofSelection.ts'
+import {
+  assertDurableSeedDerivedOutputPlanMatchesOutputs,
+  matchDurableSeedDerivedProofsToPlan,
+  reconstructDurableSeedDerivedOutputs,
+  reserveAndConstructLabeledDurableSeedDerivedOutputs,
+  type DurableSeedDerivedOutputPlan,
+} from './durableSeedDerivedOutputs.ts'
 
 const ROOT_PARENT_COLLECTION_ID = '0'.repeat(64)
 const SOURCE_PURPOSE = 'ctf-range-authorization-source'
 const METADATA_KEYS = [
   'amount',
   'collateralKeysetId',
+  'collateralChangePlan',
   'complementCollection',
   'complementKeysetId',
+  'complementPlan',
   'conditionId',
   'fees',
   'offeredCollection',
@@ -53,11 +62,12 @@ export interface CtfRangeCollateralSourceResult {
 }
 
 /** Build one exact, persistable CTF conversion without performing mint I/O. */
-export function prepareCtfRangeCollateralSourceOperation(input: {
+export async function prepareCtfRangeCollateralSourceOperation(input: {
   readonly preparation: PersistedCtfRangeOrderPreparation
   readonly seed: Uint8Array
+  readonly counterSource: CounterSource
   readonly plan: CollateralPlan
-}): DurableCustodyProofOperationInput {
+}): Promise<DurableCustodyProofOperationInput> {
   const preparation = input.preparation
   if (preparation.side !== 'Sell') {
     throw new Error('collateral range source is only valid for a conditional sell')
@@ -70,8 +80,18 @@ export function prepareCtfRangeCollateralSourceOperation(input: {
     ...withoutRequest(preparation),
   }).authorizationOutputs
   assertAmounts(authorization, input.plan.authorizationAmounts, 'authorization')
-  const complementOutputs = randomOutputs(input.plan.complementAmounts, complement)
-  const collateralChange = randomOutputs(input.plan.collateralChangeAmounts, collateral)
+  const [complementOutputs, collateralChange] = await reserveOutputGroups({
+    seed: input.seed,
+    counterSource: input.counterSource,
+    groups: [
+      { label: 'complement', keyset: complement, amounts: input.plan.complementAmounts },
+      {
+        label: 'collateral-change',
+        keyset: collateral,
+        amounts: input.plan.collateralChangeAmounts,
+      },
+    ],
+  })
   const operation: DurableCustodyProofOperationInput = {
     operationId: preparation.sourceOperationId,
     kind: 'ctf-range-collateral-convert',
@@ -79,8 +99,8 @@ export function prepareCtfRangeCollateralSourceOperation(input: {
     inputs: input.plan.inputs.map(serializeDurableCustodyProofInput),
     outputs: {
       authorization: authorization.map(serializeDurableCustodyOutput),
-      complement: complementOutputs.map(serializeDurableCustodyOutput),
-      'collateral-change': collateralChange.map(serializeDurableCustodyOutput),
+      complement: complementOutputs.outputs.map(serializeDurableCustodyOutput),
+      'collateral-change': collateralChange.outputs.map(serializeDurableCustodyOutput),
     },
     metadata: {
       purpose: SOURCE_PURPOSE,
@@ -95,6 +115,8 @@ export function prepareCtfRangeCollateralSourceOperation(input: {
       complementCollection: complement.outcomeCollection,
       collateralKeysetId: collateral.id,
       complementKeysetId: complement.id,
+      complementPlan: complementOutputs.plan,
+      collateralChangePlan: collateralChange.plan,
     },
   }
   validateCtfRangeCollateralSourceOperation(operation, preparation)
@@ -126,6 +148,8 @@ export function validateCtfRangeCollateralSourceOperation(
   const authorization = outputs(operation, 'authorization')
   const complement = outputs(operation, 'complement')
   const change = outputs(operation, 'collateral-change')
+  assertOutputPlan(metadata.complementPlan, complement, complementKeysetId, 'complement')
+  assertOutputPlan(metadata.collateralChangePlan, change, collateralKeysetId, 'collateral change')
   if (
     operation.inputs.length === 0 ||
     operation.inputs.some(({ id }) => id !== collateralKeysetId) ||
@@ -148,14 +172,25 @@ export function validateCtfRangeCollateralSourceOperation(
 export async function completeCtfRangeCollateralSourceOperation(input: {
   readonly operation: DurableCustodyProofOperationInput
   readonly preparation: PersistedCtfRangeOrderPreparation
+  readonly seed: Uint8Array
   readonly transport: CtfRangeCollateralSourceTransport
 }): Promise<CtfRangeCollateralSourceResult> {
   const operation = validateCtfRangeCollateralSourceOperation(input.operation, input.preparation)
   const metadata = operation.metadata!
   const groups = {
     authorization: outputs(operation, 'authorization'),
-    complement: outputs(operation, 'complement'),
-    collateralChange: outputs(operation, 'collateral-change'),
+    complement: reconstructOutputGroup({
+      seed: input.seed,
+      keyset: input.preparation.complementKeyset,
+      outputs: outputs(operation, 'complement'),
+      plan: metadata.complementPlan,
+    }),
+    collateralChange: reconstructOutputGroup({
+      seed: input.seed,
+      keyset: input.preparation.receiveKeyset,
+      outputs: outputs(operation, 'collateral-change'),
+      plan: metadata.collateralChangePlan,
+    }),
   }
   const response = await input.transport.postConvert({
     condition_id: text(metadata.conditionId, 'condition'),
@@ -177,18 +212,21 @@ export async function completeCtfRangeCollateralSourceOperation(input: {
       groups.authorization,
       response.signatures[text(metadata.offeredCollection, 'offered collection')],
       mintKeys(input.preparation.offerKeyset),
+      null,
     ),
     complement: completeGroup(
       'complement',
       groups.complement,
       response.signatures[text(metadata.complementCollection, 'complement collection')],
       mintKeys(input.preparation.complementKeyset),
+      metadata.complementPlan,
     ),
     collateralChange: completeGroup(
       'collateral-change',
       groups.collateralChange,
       response.signatures['*'],
       mintKeys(input.preparation.receiveKeyset),
+      metadata.collateralChangePlan,
     ),
   }
 }
@@ -217,11 +255,64 @@ function assertPreparation(
   }
 }
 
-function randomOutputs(amounts: readonly number[], keyset: ActiveCtfRangeMintKeyset): OutputData[] {
-  if (amounts.length === 0) return []
-  const outputs = OutputData.createRandomData(Amount.from(sumAmounts(amounts)), mintKeys(keyset))
-  assertAmounts(outputs, amounts, 'random')
-  return outputs
+async function reserveOutputGroups(input: {
+  readonly seed: Uint8Array
+  readonly counterSource: CounterSource
+  readonly groups: readonly {
+    readonly label: string
+    readonly keyset: ActiveCtfRangeMintKeyset
+    readonly amounts: readonly number[]
+  }[]
+}): Promise<
+  readonly {
+    readonly outputs: readonly OutputData[]
+    readonly plan: DurableSeedDerivedOutputPlan | null
+  }[]
+> {
+  const active = input.groups.filter(({ amounts }) => amounts.length > 0)
+  const reserved = await reserveAndConstructLabeledDurableSeedDerivedOutputs({
+    seed: input.seed,
+    counterSource: input.counterSource,
+    groups: active,
+  })
+  return input.groups.map((group) => {
+    const value = reserved.find(({ label }) => label === group.label)
+    return value === undefined
+      ? { outputs: [], plan: null }
+      : { outputs: value.outputData, plan: value.plan }
+  })
+}
+
+function reconstructOutputGroup(input: {
+  readonly seed: Uint8Array
+  readonly keyset: ActiveCtfRangeMintKeyset
+  readonly outputs: readonly OutputData[]
+  readonly plan: unknown
+}): readonly OutputData[] {
+  if (input.plan === null) return []
+  return reconstructDurableSeedDerivedOutputs({
+    seed: input.seed,
+    keyset: input.keyset,
+    amounts: input.outputs.map(({ blindedMessage }) => amountToNumber(blindedMessage.amount)),
+    plan: input.plan,
+  }).outputData
+}
+
+function assertOutputPlan(
+  value: unknown,
+  outputs: readonly OutputData[],
+  keysetId: string,
+  label: string,
+): void {
+  if (value === null) {
+    if (outputs.length !== 0) throw new Error(`persisted collateral range ${label} plan is invalid`)
+    return
+  }
+  try {
+    assertDurableSeedDerivedOutputPlanMatchesOutputs({ plan: value, keysetId, outputs })
+  } catch {
+    throw new Error(`persisted collateral range ${label} plan is invalid`)
+  }
 }
 
 function completeGroup(
@@ -229,6 +320,7 @@ function completeGroup(
   planned: readonly OutputData[],
   signatures: readonly SerializedBlindedSignature[] | undefined,
   keyset: MintKeys,
+  plan: unknown,
 ): Proof[] {
   if (planned.length === 0) {
     if (signatures !== undefined && signatures.length !== 0) {
@@ -239,7 +331,7 @@ function completeGroup(
   if (signatures === undefined || signatures.length !== planned.length) {
     throw new Error(`mint returned the wrong collateral range ${label} signature count`)
   }
-  return planned.map((output, index) => {
+  const proofs = planned.map((output, index) => {
     const signature = signatures[index]!
     if (
       signature.id !== output.blindedMessage.id ||
@@ -251,6 +343,7 @@ function completeGroup(
       output.toProof({ ...signature, amount: output.blindedMessage.amount }, keyset),
     )
   })
+  return plan === null ? proofs : [...matchDurableSeedDerivedProofsToPlan({ plan, proofs })]
 }
 
 function wireOutputs(values: readonly OutputData[]): SerializedBlindedMessage[] {

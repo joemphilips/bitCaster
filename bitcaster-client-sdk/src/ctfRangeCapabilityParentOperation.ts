@@ -1,10 +1,10 @@
 import {
-  Amount,
   OutputData,
   isBlsKeyset,
   splitAmount,
   type CtfConvertRequest,
   type CtfConvertResponse,
+  type CounterSource,
   type MintKeys,
   type Proof,
   type SerializedBlindedMessage,
@@ -40,6 +40,13 @@ import type {
 import { CTF_RANGE_BATCH_INPUT_LIMIT_MAX } from './ctfRangeCapabilityBatchPlan.ts'
 import { prepareMintInputProofs } from './mintInputProof.ts'
 import { amountToNumber, computeInputFeeSatsForProofs, sumProofs } from './proofSelection.ts'
+import {
+  assertDurableSeedDerivedOutputPlanMatchesOutputs,
+  matchDurableSeedDerivedProofsToPlan,
+  reconstructDurableSeedDerivedOutputs,
+  reserveAndConstructLabeledDurableSeedDerivedOutputs,
+  type DurableSeedDerivedOutputPlan,
+} from './durableSeedDerivedOutputs.ts'
 
 const ROOT_PARENT_COLLECTION_ID = '0'.repeat(64)
 const PARENT_PURPOSE = 'ctf-range-capability-parent'
@@ -104,18 +111,24 @@ export function createCtfRangeCapabilityParentRequestMeasurer(input: {
   }
 }
 
-export function prepareCtfRangeCapabilityParentOperation(input: {
+export async function prepareCtfRangeCapabilityParentOperation(input: {
   readonly parentOperationId: string
   readonly parent: CtfRangeCapabilityBatchParent
   readonly preparations: readonly PersistedCtfRangeOrderPreparation[]
   readonly seed: Uint8Array
-}): PreparedCtfRangeCapabilityParentOperation {
+  readonly counterSource: CounterSource
+}): Promise<PreparedCtfRangeCapabilityParentOperation> {
   const parentOperationId = requiredText(input.parentOperationId, 'parent operation id')
   const preparations = preparationMap(input.preparations)
   const context = validateParentContext(input.parent, preparations)
-  const outputs = materializeOutputs(input.parent, context, input.seed)
+  const materialized = await materializeOutputs(
+    input.parent,
+    context,
+    input.seed,
+    input.counterSource,
+  )
   const provisional = wireAllocations(parentOperationId, input.parent, context, '0'.repeat(64))
-  const request = wireRequest(input.parent, provisional, outputs, context.conditionId)
+  const request = wireRequest(input.parent, provisional, materialized.outputs, context.conditionId)
   const exactRequest = prepareDurableCustodyExactArtifact(request)
   const requestBytes = readPreparedDurableCustodyArtifactBytes(exactRequest).length
   if (requestBytes !== input.parent.requestBytes) {
@@ -140,7 +153,8 @@ export function prepareCtfRangeCapabilityParentOperation(input: {
     parent: input.parent,
     canonical,
     context,
-    outputs,
+    outputs: materialized.outputs,
+    outputPlans: materialized.outputPlans,
     exactRequest,
     exactAllocations,
     requestBytes,
@@ -156,6 +170,7 @@ function finalizePreparedParentOperation(input: {
   canonical: CtfRangeCapabilityBatchParent
   context: ParentContext
   outputs: readonly OutputData[]
+  outputPlans: Readonly<Record<string, DurableSeedDerivedOutputPlan>>
   exactRequest: DurableCustodyExactArtifact
   exactAllocations: DurableCustodyExactArtifact
   requestBytes: number
@@ -168,6 +183,7 @@ function finalizePreparedParentOperation(input: {
     parent: input.parent,
     context: input.context,
     outputs: input.outputs,
+    outputPlans: input.outputPlans,
     exactRequest: input.exactRequest,
     exactAllocations: input.exactAllocations,
     requestBytes: input.requestBytes,
@@ -230,6 +246,7 @@ export function validateCtfRangeCapabilityParentOperation(
     throw new Error('CTF range parent allocation artifact changed')
   }
   const outputs = operation.outputs.successors!.map(deserializeDurableCustodyOutput)
+  assertParentOutputPlans(value.parent.outputs, outputs, metadata.outputPlans, context)
   const expectedRequest = wireRequest(value.parent, allocations, outputs, context.conditionId)
   const expectedArtifact = prepareDurableCustodyExactArtifact(expectedRequest)
   if (
@@ -309,10 +326,11 @@ export function restoreCtfRangeCapabilityParentOperation(input: {
 export function mapCtfRangeCapabilityParentResponseToUnverifiedResult(input: {
   readonly prepared: PreparedCtfRangeCapabilityParentOperation
   readonly preparations: readonly PersistedCtfRangeOrderPreparation[]
+  readonly seed: Uint8Array
   readonly response: SwapResponse | CtfConvertResponse
 }): UnverifiedCtfRangeCapabilityParentResult {
   const prepared = validateCtfRangeCapabilityParentOperation(input.prepared, input.preparations)
-  const outputs = prepared.operation.outputs.successors!.map(deserializeDurableCustodyOutput)
+  const outputs = reconstructParentOutputs(prepared, input.preparations, input.seed)
   const signatures = responseSignatures(prepared, input.response)
   const keysets = exactKeysets(input.preparations)
   const proofs = outputs.map((output, outputIndex) => {
@@ -324,7 +342,7 @@ export function mapCtfRangeCapabilityParentResponseToUnverifiedResult(input: {
     return normalizeProof(output.toProof(signature, keyset))
   })
   return Object.freeze({
-    result: Object.freeze({ successors: Object.freeze(proofs) }),
+    result: Object.freeze({ successors: Object.freeze(orderParentProofs(prepared, proofs)) }),
     allocations: prepared.allocations,
   })
 }
@@ -334,6 +352,7 @@ function parentOperation(input: {
   parent: CtfRangeCapabilityBatchParent
   context: ParentContext
   outputs: readonly OutputData[]
+  outputPlans: Readonly<Record<string, DurableSeedDerivedOutputPlan>>
   exactRequest: DurableCustodyExactArtifact
   exactAllocations: DurableCustodyExactArtifact
   requestBytes: number
@@ -360,6 +379,7 @@ function parentOperation(input: {
       requestBytes: input.requestBytes,
       inputFee: input.parent.inputFee,
       childCount: input.parent.children.length,
+      outputPlans: input.outputPlans,
     },
   })
 }
@@ -586,57 +606,66 @@ function assertChildAuthority(
   }
 }
 
-function materializeOutputs(
+async function materializeOutputs(
   parent: CtfRangeCapabilityBatchParent,
   context: ParentContext,
   seed: Uint8Array,
-): OutputData[] {
-  const authorization = new Map<string, OutputData[]>()
-  for (const child of parent.children) {
-    const preparation = context.preparations.get(child.clientOrderId)!
-    authorization.set(
-      child.clientOrderId,
-      prepareCtfRangeOrderAuthorization({ seed, ...withoutRequest(preparation) })
-        .authorizationOutputs,
-    )
-  }
-  const random = randomOutputGroups(parent.outputs, context)
+  counterSource: CounterSource,
+): Promise<{
+  readonly outputs: readonly OutputData[]
+  readonly outputPlans: Readonly<Record<string, DurableSeedDerivedOutputPlan>>
+}> {
+  const authorization = authorizationOutputGroups(parent, context, seed)
+  const deterministic = await deterministicOutputGroups(
+    parent.outputs,
+    context,
+    seed,
+    counterSource,
+  )
   const cursors = new Map<string, number>()
-  return parent.outputs.map((allocation) => takeOutput(allocation, authorization, random, cursors))
+  return {
+    outputs: parent.outputs.map((allocation) =>
+      takeOutput(allocation, authorization, deterministic.outputs, cursors),
+    ),
+    outputPlans: deterministic.plans,
+  }
 }
 
-function randomOutputGroups(
+async function deterministicOutputGroups(
   allocations: readonly CtfRangeCapabilityOutputAllocation[],
   context: ParentContext,
-): ReadonlyMap<string, OutputData[]> {
-  const groups = new Map<string, CtfRangeCapabilityOutputAllocation[]>()
-  for (const row of allocations) {
-    if (row.role === 'authorization') continue
-    const key = `${row.role}\0${row.clientOrderId ?? ''}\0${row.keysetId}`
-    const values = groups.get(key)
-    if (values === undefined) groups.set(key, [row])
-    else values.push(row)
+  seed: Uint8Array,
+  counterSource: CounterSource,
+): Promise<{
+  readonly outputs: ReadonlyMap<string, readonly OutputData[]>
+  readonly plans: Readonly<Record<string, DurableSeedDerivedOutputPlan>>
+}> {
+  const groups = deterministicAllocationGroups(allocations)
+  const reserved = await reserveAndConstructLabeledDurableSeedDerivedOutputs({
+    seed,
+    counterSource,
+    groups: [...groups].map(([label, rows]) => ({
+      label,
+      keyset: keysetForAllocation(rows[0]!, context),
+      amounts: rows.map(({ amount }) => amount),
+    })),
+  })
+  return {
+    outputs: new Map(reserved.map(({ label, outputData }) => [label, outputData])),
+    plans: Object.fromEntries(reserved.map(({ label, plan }) => [label, plan])),
   }
-  return new Map(
-    [...groups].map(([key, rows]) => {
-      const keyset = keysetForAllocation(rows[0]!, context)
-      const amounts = rows.map(({ amount }) => Amount.from(amount))
-      const total = rows.reduce((sum, { amount }) => sum + amount, 0)
-      return [key, OutputData.createRandomData(Amount.from(total), mintKeys(keyset), amounts)]
-    }),
-  )
 }
 
 function takeOutput(
   allocation: CtfRangeCapabilityOutputAllocation,
-  authorization: ReadonlyMap<string, OutputData[]>,
-  random: ReadonlyMap<string, OutputData[]>,
+  authorization: ReadonlyMap<string, readonly OutputData[]>,
+  random: ReadonlyMap<string, readonly OutputData[]>,
   cursors: Map<string, number>,
 ): OutputData {
   const key =
     allocation.role === 'authorization'
       ? `authorization\0${allocation.clientOrderId}`
-      : `${allocation.role}\0${allocation.clientOrderId ?? ''}\0${allocation.keysetId}`
+      : allocation.keysetId
   const values =
     allocation.role === 'authorization'
       ? authorization.get(allocation.clientOrderId!)
@@ -652,6 +681,109 @@ function takeOutput(
   }
   cursors.set(key, index + 1)
   return output
+}
+
+function assertParentOutputPlans(
+  allocations: readonly CtfRangeCapabilityOutputAllocation[],
+  outputs: readonly OutputData[],
+  plans: Readonly<Record<string, unknown>>,
+  context: ParentContext,
+): void {
+  const groups = deterministicAllocationGroups(allocations)
+  if (!sameStrings(Object.keys(plans).sort(compareText), [...groups.keys()].sort(compareText))) {
+    throw new Error('CTF range parent output plans are invalid')
+  }
+  for (const [label, rows] of groups) {
+    const keyset = keysetForAllocation(rows[0]!, context)
+    try {
+      assertDurableSeedDerivedOutputPlanMatchesOutputs({
+        plan: plans[label],
+        keysetId: keyset.id,
+        outputs: rows.map(({ outputIndex }) => outputs[outputIndex]!),
+      })
+    } catch {
+      throw new Error('CTF range parent output plan is invalid')
+    }
+  }
+}
+
+function reconstructParentOutputs(
+  prepared: PreparedCtfRangeCapabilityParentOperation,
+  preparations: readonly PersistedCtfRangeOrderPreparation[],
+  seed: Uint8Array,
+): readonly OutputData[] {
+  const context = validateParentContext(prepared.parent, preparationMap(preparations))
+  const persisted = prepared.operation.outputs.successors!.map(deserializeDurableCustodyOutput)
+  const metadata = parentMetadata(prepared.operation)
+  assertParentOutputPlans(prepared.parent.outputs, persisted, metadata.outputPlans, context)
+  const authorization = authorizationOutputGroups(prepared.parent, context, seed)
+  const deterministic = new Map<string, readonly OutputData[]>()
+  for (const [label, rows] of deterministicAllocationGroups(prepared.parent.outputs)) {
+    const keyset = keysetForAllocation(rows[0]!, context)
+    const outputs = rows.map(({ outputIndex }) => persisted[outputIndex]!)
+    deterministic.set(
+      label,
+      reconstructDurableSeedDerivedOutputs({
+        seed,
+        keyset,
+        amounts: outputs.map(({ blindedMessage }) => amountToNumber(blindedMessage.amount)),
+        plan: metadata.outputPlans[label],
+      }).outputData,
+    )
+  }
+  const cursors = new Map<string, number>()
+  const reconstructed = prepared.parent.outputs.map((allocation) =>
+    takeOutput(allocation, authorization, deterministic, cursors),
+  )
+  return reconstructed
+}
+
+function orderParentProofs(
+  prepared: PreparedCtfRangeCapabilityParentOperation,
+  proofs: readonly Proof[],
+): readonly Proof[] {
+  const metadata = parentMetadata(prepared.operation)
+  const ordered = [...proofs]
+  for (const [keysetId, rows] of deterministicAllocationGroups(prepared.parent.outputs)) {
+    const matches = matchDurableSeedDerivedProofsToPlan({
+      plan: metadata.outputPlans[keysetId],
+      proofs: rows.map(({ outputIndex }) => proofs[outputIndex]!),
+    })
+    rows.forEach(({ outputIndex }, index) => {
+      ordered[outputIndex] = matches[index]!
+    })
+  }
+  return ordered
+}
+
+function authorizationOutputGroups(
+  parent: CtfRangeCapabilityBatchParent,
+  context: ParentContext,
+  seed: Uint8Array,
+): ReadonlyMap<string, readonly OutputData[]> {
+  return new Map(
+    parent.children.map((child) => [
+      child.clientOrderId,
+      prepareCtfRangeOrderAuthorization({
+        seed,
+        ...withoutRequest(context.preparations.get(child.clientOrderId)!),
+      }).authorizationOutputs,
+    ]),
+  )
+}
+
+function deterministicAllocationGroups(
+  allocations: readonly CtfRangeCapabilityOutputAllocation[],
+): ReadonlyMap<string, CtfRangeCapabilityOutputAllocation[]> {
+  const groups = new Map<string, CtfRangeCapabilityOutputAllocation[]>()
+  for (const row of allocations) {
+    if (row.role === 'authorization') continue
+    const label = row.keysetId
+    const group = groups.get(label)
+    if (group === undefined) groups.set(label, [row])
+    else group.push(row)
+  }
+  return groups
 }
 
 function wireAllocations(
@@ -854,6 +986,9 @@ function parentMetadata(operation: DurableCustodyProofOperationInput) {
     throw new Error('CTF range parent operation metadata is invalid')
   }
   const sourceMode: CtfRangeCapabilityBatchParent['kind'] = metadata.sourceMode
+  if (!isRecord(metadata.outputPlans)) {
+    throw new Error('CTF range parent operation metadata is invalid')
+  }
   return {
     sourceMode,
     conditionId: requiredText(metadata.conditionId, 'condition id'),
@@ -864,6 +999,7 @@ function parentMetadata(operation: DurableCustodyProofOperationInput) {
     requestBytes: positiveInteger(metadata.requestBytes, 'request bytes'),
     inputFee: positiveInteger(metadata.inputFee, 'input fee'),
     childCount: positiveInteger(metadata.childCount, 'child count'),
+    outputPlans: metadata.outputPlans,
   }
 }
 

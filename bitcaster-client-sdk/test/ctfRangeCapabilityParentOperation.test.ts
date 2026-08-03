@@ -9,6 +9,7 @@ import {
   deriveConditionalKeysetId,
   deriveKeysetId,
   pointFromHex,
+  type CounterSource,
   type Proof,
   type SerializedBlindedMessage,
   type SerializedBlindedSignature,
@@ -60,18 +61,20 @@ const REGULAR_KEYSET_ID = deriveKeysetId(KEYS, {
 const YES_KEYSET_ID = conditionalKeysetId(YES_COLLECTION_ID)
 const NO_KEYSET_ID = conditionalKeysetId(NO_COLLECTION_ID)
 
-test('prepares and replays one exact mixed collateral parent', () => {
+test('prepares and replays one exact mixed collateral parent', async () => {
   const preparations = [preparation('buy', 'Buy'), preparation('sell', 'Sell')]
   const plan = batchPlan(preparations, [proof(REGULAR_KEYSET_ID, 16_384)], [])
   assert.equal(plan.parents.length, 1)
   const parent = plan.parents[0]!
   assert.equal(parent.kind, 'collateral-ctf-convert')
 
-  const prepared = prepareCtfRangeCapabilityParentOperation({
+  const reservations: Array<{ keysetId: string; count: number }> = []
+  const prepared = await prepareCtfRangeCapabilityParentOperation({
     parentOperationId: 'parent-collateral-1',
     parent,
     preparations,
     seed: new Uint8Array(64).fill(7),
+    counterSource: counterSource(reservations),
   })
   const replay = readCtfRangeCapabilityParentReplay(prepared)
   assert.equal(replay.path, '/v1/ctf/convert')
@@ -84,6 +87,23 @@ test('prepares and replays one exact mixed collateral parent', () => {
         ({ childOperationId, clientOrderId }) =>
           childOperationId !== null && clientOrderId !== null,
       ),
+  )
+  assert.deepEqual(
+    reservations.sort((left, right) => (left.keysetId < right.keysetId ? -1 : 1)),
+    [
+      ...new Set(
+        parent.outputs
+          .filter(({ role }) => role !== 'authorization')
+          .map(({ keysetId }) => keysetId),
+      ),
+    ]
+      .sort()
+      .map((keysetId) => ({
+        keysetId,
+        count: parent.outputs.filter(
+          (output) => output.role !== 'authorization' && output.keysetId === keysetId,
+        ).length,
+      })),
   )
   assert.ok(
     prepared.allocations
@@ -113,6 +133,7 @@ test('prepares and replays one exact mixed collateral parent', () => {
   const completed = mapCtfRangeCapabilityParentResponseToUnverifiedResult({
     prepared,
     preparations,
+    seed: new Uint8Array(64).fill(7),
     response: {
       signatures: Object.fromEntries(
         Object.entries(request.outputs).map(([group, outputs]) => [group, outputs.map(signOutput)]),
@@ -126,19 +147,36 @@ test('prepares and replays one exact mixed collateral parent', () => {
   )
 })
 
-test('reuses two conditional children in one exact same-keyset parent', () => {
+test('reuses two conditional children in one exact same-keyset parent', async () => {
   const preparations = [preparation('sell-one', 'Sell'), preparation('sell-two', 'Sell')]
   const plan = batchPlan(preparations, [], [proof(YES_KEYSET_ID, 32_768)])
   assert.equal(plan.parents.length, 1)
   const parent = plan.parents[0]!
   assert.equal(parent.kind, 'same-keyset-swap')
 
-  const prepared = prepareCtfRangeCapabilityParentOperation({
+  const reservations: Array<{ keysetId: string; count: number }> = []
+  const prepared = await prepareCtfRangeCapabilityParentOperation({
     parentOperationId: 'parent-same-keyset-1',
     parent,
     preparations,
     seed: new Uint8Array(64).fill(9),
+    counterSource: counterSource(reservations),
   })
+  assert.deepEqual(
+    reservations,
+    [
+      ...new Set(
+        parent.outputs
+          .filter(({ role }) => role !== 'authorization')
+          .map(({ keysetId }) => keysetId),
+      ),
+    ].map((keysetId) => ({
+      keysetId,
+      count: parent.outputs.filter(
+        (output) => output.role !== 'authorization' && output.keysetId === keysetId,
+      ).length,
+    })),
+  )
   const request = prepared.exactRequest.artifact as { outputs: SerializedBlindedMessage[] }
   const restarted = JSON.parse(JSON.stringify(prepared)) as typeof prepared
   assert.deepEqual(
@@ -148,6 +186,7 @@ test('reuses two conditional children in one exact same-keyset parent', () => {
   const completed = mapCtfRangeCapabilityParentResponseToUnverifiedResult({
     prepared: restarted,
     preparations,
+    seed: new Uint8Array(64).fill(9),
     response: { signatures: request.outputs.map(signOutput) },
   })
   assert.equal(readCtfRangeCapabilityParentReplay(prepared).path, '/v1/swap')
@@ -158,14 +197,15 @@ test('reuses two conditional children in one exact same-keyset parent', () => {
   assert.equal(completed.result.successors.length, parent.outputs.length)
 })
 
-test('rejects allocation, request, and response substitution', () => {
+test('rejects allocation, request, and response substitution', async () => {
   const preparations = [preparation('sell-tamper', 'Sell')]
   const plan = batchPlan(preparations, [proof(REGULAR_KEYSET_ID, 16_384)], [])
-  const prepared = prepareCtfRangeCapabilityParentOperation({
+  const prepared = await prepareCtfRangeCapabilityParentOperation({
     parentOperationId: 'parent-tamper-1',
     parent: plan.parents[0]!,
     preparations,
     seed: new Uint8Array(64).fill(11),
+    counterSource: counterSource(),
   })
   assert.throws(
     () =>
@@ -215,6 +255,7 @@ test('rejects allocation, request, and response substitution', () => {
       mapCtfRangeCapabilityParentResponseToUnverifiedResult({
         prepared,
         preparations,
+        seed: new Uint8Array(64).fill(11),
         response: { signatures: { ...signatures, foreign: [] } },
       }),
     /response groups are invalid/,
@@ -234,6 +275,7 @@ test('rejects allocation, request, and response substitution', () => {
       mapCtfRangeCapabilityParentResponseToUnverifiedResult({
         prepared,
         preparations,
+        seed: new Uint8Array(64).fill(11),
         response: { signatures: foreignKeyset },
       }),
     /mint signature is foreign/,
@@ -244,6 +286,7 @@ test('rejects allocation, request, and response substitution', () => {
       mapCtfRangeCapabilityParentResponseToUnverifiedResult({
         prepared,
         preparations,
+        seed: new Uint8Array(64).fill(11),
         response: { signatures },
       }),
     /signature count/,
@@ -461,5 +504,20 @@ function signOutput(output: SerializedBlindedMessage): SerializedBlindedSignatur
     amount: Amount.from(output.amount),
     C_: signature.C_.toHex(true),
     dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
+  }
+}
+
+function counterSource(calls: Array<{ keysetId: string; count: number }> = []): CounterSource {
+  let next = 0
+  return {
+    reserve: async (keysetId, count) => {
+      calls.push({ keysetId, count })
+      const reservation = { start: next, count }
+      next += count
+      return reservation
+    },
+    advanceToAtLeast: async (_keysetId, minimum) => {
+      next = Math.max(next, minimum)
+    },
   }
 }

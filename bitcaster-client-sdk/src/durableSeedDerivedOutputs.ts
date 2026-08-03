@@ -3,6 +3,7 @@ import {
   OutputData,
   type CounterSource,
   type HasKeysetKeys,
+  type Proof,
   type SerializedOutputData,
 } from '@cashu/cashu-ts'
 import {
@@ -18,6 +19,8 @@ import {
   isDurableSeedDerivedCount,
   isNonArrayRecord,
 } from './durableSeedDerivedPolicy.ts'
+
+export { isCanonicalModernNut02KeysetId, isDurableSeedDerivedCount, isDurableSeedDerivedCounter }
 
 const DURABLE_SEED_DERIVED_OUTPUT_SCHEMA_VERSION = 1 as const
 
@@ -55,6 +58,16 @@ export interface ReconstructedDurableSeedDerivedOutputs {
   readonly outputData: readonly OutputData[]
 }
 
+export interface LabeledDurableSeedDerivedOutputInput {
+  readonly label: string
+  readonly keyset: DurableSeedDerivedOutputKeyset
+  readonly amounts: readonly number[]
+}
+
+export interface LabeledDurableSeedDerivedOutputs extends ReconstructedDurableSeedDerivedOutputs {
+  readonly label: string
+}
+
 export async function reserveDurableSeedDerivedOutputs(
   input: ReserveDurableSeedDerivedOutputsInput,
 ): Promise<DurableSeedDerivedOutputPlan> {
@@ -88,6 +101,34 @@ export async function reserveAndConstructDurableSeedDerivedOutputs(
   }
 }
 
+/** Reserve and construct independent exact output groups in caller-defined label order. */
+export async function reserveAndConstructLabeledDurableSeedDerivedOutputs(input: {
+  readonly seed: Uint8Array
+  readonly counterSource: CounterSource
+  readonly groups: readonly LabeledDurableSeedDerivedOutputInput[]
+}): Promise<readonly LabeledDurableSeedDerivedOutputs[]> {
+  const labels = new Set<string>()
+  for (const group of input.groups) {
+    if (!isText(group.label) || labels.has(group.label) || group.amounts.length === 0) {
+      throw new Error('durable seed-derived output group is invalid')
+    }
+    labels.add(group.label)
+  }
+  const result: LabeledDurableSeedDerivedOutputs[] = []
+  for (const group of input.groups) {
+    result.push({
+      label: group.label,
+      ...(await reserveAndConstructDurableSeedDerivedOutputs({
+        seed: input.seed,
+        counterSource: input.counterSource,
+        keyset: group.keyset,
+        amounts: group.amounts,
+      })),
+    })
+  }
+  return result
+}
+
 export function reconstructDurableSeedDerivedOutputs(
   input: ReconstructDurableSeedDerivedOutputsInput,
 ): ReconstructedDurableSeedDerivedOutputs {
@@ -106,6 +147,45 @@ export function reconstructDurableSeedDerivedOutputs(
     throw new Error('durable seed-derived output plan does not match deterministic derivation')
   }
   return { plan, outputData }
+}
+
+export function assertDurableSeedDerivedOutputPlanMatchesOutputs(input: {
+  readonly plan: unknown
+  readonly keysetId: string
+  readonly outputs: readonly OutputData[]
+}): DurableSeedDerivedOutputPlan {
+  const plan = decodePlan(input.plan)
+  if (plan.keysetId !== input.keysetId || !serializedOutputsMatch(plan.outputs, input.outputs)) {
+    throw new Error('durable seed-derived output plan does not match persisted outputs')
+  }
+  return plan
+}
+
+export function matchDurableSeedDerivedProofsToPlan<
+  T extends Pick<Proof, 'id' | 'amount' | 'secret'>,
+>(input: { readonly plan: unknown; readonly proofs: readonly T[] }): readonly T[] {
+  const plan = decodePlan(input.plan)
+  if (input.proofs.length !== plan.outputs.length) {
+    throw new Error('durable seed-derived proof count does not match')
+  }
+  const byIdentity = new Map<string, T>()
+  for (const proof of input.proofs) {
+    const identity = outputProofIdentity(proof.id, proof.amount.toString(), proof.secret)
+    if (byIdentity.has(identity)) throw new Error('durable seed-derived proof is duplicated')
+    byIdentity.set(identity, proof)
+  }
+  return plan.outputs.map((output) => {
+    const outputData = OutputData.deserialize(output)
+    const proof = byIdentity.get(
+      outputProofIdentity(
+        outputData.blindedMessage.id,
+        outputData.blindedMessage.amount.toString(),
+        new TextDecoder().decode(outputData.secret),
+      ),
+    )
+    if (proof === undefined) throw new Error('durable seed-derived proof is foreign')
+    return proof
+  })
 }
 
 /** Decode one persisted output plan before it becomes wallet authority. */
@@ -325,6 +405,10 @@ function serializedOutputsMatch(
       serializedOutputMatches(output, OutputData.serialize(expected[index]!)),
     )
   )
+}
+
+function outputProofIdentity(keysetId: string, amount: string, secret: string): string {
+  return `${keysetId}\0${amount}\0${secret}`
 }
 
 function serializedOutputMatches(left: SerializedOutputData, right: SerializedOutputData): boolean {
