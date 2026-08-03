@@ -61,6 +61,9 @@ switch (command) {
     const { readSecrets } = await import('./secrets.ts')
     const { recoverPreparedWalletSends } = await import('./walletOps.ts')
     const { recoverWalletProofConsolidations } = await import('./walletProofConsolidation.ts')
+    const { recoverCompleteSetSplits } = await import('./completeSetConversion.ts')
+    const { composeStartupCustodyRecovery, createCustodyReadinessTracker } =
+      await import('./startupRecovery.ts')
     const { DaemonCtfRangeOrderCoordinator } = await import('./ctfRangeOrderCoordinator.ts')
     const { createCtfRangeRecoveryLoop } = await import('./ctfRangeRecoveryLoop.ts')
     const { recoverDaemonWalletFromSeed } = await import('./emergencySeedRecovery.ts')
@@ -320,6 +323,15 @@ switch (command) {
       const walletRecovery = await recoverPreparedWalletSends(secrets, {
         getCustodyFence: currentFence,
       })
+      const completeSetRecovery = await recoverCompleteSetSplits({
+        secrets,
+        deps: { getCustodyFence: currentFence },
+      })
+      const nonRetirementRecovery = composeStartupCustodyRecovery([
+        consolidationRecovery,
+        walletRecovery,
+        completeSetRecovery,
+      ])
       const retirementRecovery = await runAutomaticRetirementScan()
       const pendingRetirements = retirementRecovery
         .filter((entry) => entry.error !== null)
@@ -327,31 +339,29 @@ switch (command) {
           operationId: `condition-retirement:${entry.conditionId}`,
           error: entry.error!,
         }))
-      const pendingWalletOperations = [
-        ...consolidationRecovery.pending,
-        ...walletRecovery.pending,
-        ...pendingRetirements,
-      ]
-      let custodyReady = pendingWalletOperations.length === 0
-      if (!custodyReady) {
-        process.stderr.write(
-          `Wallet recovery remains pending for ${pendingWalletOperations
-            .map(({ operationId }) => operationId)
-            .join(', ')}\n`,
-        )
+      const startupRecovery = composeStartupCustodyRecovery([
+        nonRetirementRecovery,
+        { recovered: [], pending: pendingRetirements },
+      ])
+      const pendingWalletOperations = startupRecovery.pending
+      const readiness = createCustodyReadinessTracker({
+        nonRetirementPending: nonRetirementRecovery.pending.length > 0,
+        retirementPending: pendingRetirements.length > 0,
+      })
+      if (!readiness.isReady()) {
+        const pendingSample = pendingWalletOperations
+          .slice(0, 64)
+          .map(({ operationId }) => operationId)
+        process.stderr.write(`Wallet recovery remains pending for ${pendingSample.join(', ')}\n`)
       }
-      const recoveredWalletOperations = [
-        ...consolidationRecovery.recovered,
-        ...walletRecovery.recovered,
-      ]
-      if (recoveredWalletOperations.length > 0) {
+      if (startupRecovery.recoveredCount > 0) {
         process.stderr.write(
-          `Recovered wallet operations: ${recoveredWalletOperations.join(', ')}\n`,
+          `Recovered ${startupRecovery.recoveredCount} wallet operations: ${startupRecovery.recovered.join(', ')}\n`,
         )
       }
       let runtimeStarted = false
       const startRuntimeWhenReady = async () => {
-        if (!custodyReady || runtimeStarted || !runtime) return
+        if (!readiness.isReady() || runtimeStarted || !runtime) return
         runtimeStarted = true
         const state = await ensureState()
         if (nativeConfig.daemon.autoRetireResolvedConditionInventory && marketHub) {
@@ -361,7 +371,6 @@ switch (command) {
         await executor?.resumeActiveSwaps(state)
       }
       const markCustodyReady = () => {
-        custodyReady = true
         void startRuntimeWhenReady().catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err)
           process.stderr.write(`bitcaster-daemon trade runtime start failed: ${message}\n`)
@@ -374,25 +383,33 @@ switch (command) {
           void wakeManagedConditionRetirements().catch((error: unknown) => {
             const message = error instanceof Error ? error.message : String(error)
             process.stderr.write(`Condition retirement retry failed: ${message}\n`)
-            scheduleRetirementRetry()
           })
         }, 30_000)
         retirementRetryTimer.unref()
       }
       wakeManagedConditionRetirements = async () => {
-        const retirements = await runAutomaticRetirementScan()
-        const pending = retirements.filter((entry) => entry.error !== null)
-        if (pending.length > 0) {
-          for (const entry of pending) {
-            process.stderr.write(
-              `Condition retirement ${entry.conditionId} remains pending: ${entry.error}\n`,
-            )
+        const generation = readiness.beginAutomaticRetirementScan()
+        try {
+          const retirements = await runAutomaticRetirementScan()
+          const pending = retirements.filter((entry) => entry.error !== null)
+          if (!readiness.completeAutomaticRetirementScan(generation, pending.length > 0)) return
+          if (pending.length > 0) {
+            for (const entry of pending) {
+              process.stderr.write(
+                `Condition retirement ${entry.conditionId} remains pending: ${entry.error}\n`,
+              )
+            }
+            scheduleRetirementRetry()
+            return
           }
-          scheduleRetirementRetry()
-          return
-        }
-        if (consolidationRecovery.pending.length === 0 && walletRecovery.pending.length === 0) {
-          markCustodyReady()
+          if (retirementRetryTimer !== undefined) {
+            clearTimeout(retirementRetryTimer)
+            retirementRetryTimer = undefined
+          }
+          if (readiness.isReady()) markCustodyReady()
+        } catch (error) {
+          if (readiness.completeAutomaticRetirementScan(generation, true)) scheduleRetirementRetry()
+          throw error
         }
       }
       if (pendingRetirements.length > 0) scheduleRetirementRetry()
@@ -410,8 +427,12 @@ switch (command) {
           rangeOrderCoordinator.prepare(input, client),
         triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
         getCustodyFence: currentFence,
-        isCustodyReady: () => custodyReady,
+        isCustodyReady: () => readiness.isReady(),
         markCustodyReady,
+        onManualCustodyRecoveryStatus: (status) => {
+          readiness.updateManualRecovery(status)
+          if (readiness.isReady()) markCustodyReady()
+        },
         onOutcomeProofsReceived: async (conditionId, outcomeSetId) => {
           if (!nativeConfig.daemon.autoRetireResolvedConditionInventory || !marketHub) return
           try {

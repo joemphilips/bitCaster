@@ -48,12 +48,6 @@ import {
   type CtfConsolidationStrategy,
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import {
-  CashuMintCtfSplitTransport,
-  splitCompleteSetWithOperation,
-  type CtfProofOperationRecord,
-  type CtfProofOperationStore,
-} from '@bitcaster-market/client-sdk/ctfSplit'
-import {
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
   quotePaymentSubunits,
@@ -61,23 +55,21 @@ import {
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { canBackOrder, type TokenHoldings } from '@bitcaster-market/client-sdk/tradingClient'
 import { signNip98 } from './nostrAuth.ts'
+import { recoverCompleteSetSplits, splitWalletCompleteSet } from './completeSetConversion.ts'
+import { composeStartupCustodyRecovery } from './startupRecovery.ts'
+import type { ManualCustodyRecoveryStatus } from './startupRecovery.ts'
 import type { DaemonCommand, DaemonHealth, DaemonResponse } from './protocol.ts'
 import { profileDir, readProfile } from './profile.ts'
 import { bearerToken, readRpcToken, rpcSocketPath, tokenMatches } from './rpcAuth.ts'
 import { readSecrets } from './secrets.ts'
 import {
   ensureState,
-  getProofOperation,
   listProofOperations,
   listLocalOrders,
   listLocalSwaps,
-  markProofOperationCompleted,
-  prepareProofOperation,
   readState,
   recordSubmittedOrder,
   recordOrderStatus,
-  updateState,
-  type CashuProofRecord,
 } from './state.ts'
 import type { TradeRuntime } from './tradeRuntime.ts'
 import {
@@ -88,7 +80,6 @@ import {
   resolveCtfConsolidationInputFees,
   resolveCtfConsolidationOutputKeysets,
   resolveMintKeysByKeyset,
-  splitAvailableSatProofsForCtfCollateral,
   type WalletOpsDependencies,
 } from './walletOps.ts'
 import { readDaemonTokenHoldings } from './walletHoldings.ts'
@@ -116,6 +107,7 @@ export interface DaemonServerOptions {
   getCustodyFence?: () => CustodyScopeFence
   isCustodyReady?: () => boolean
   markCustodyReady?: () => void
+  onManualCustodyRecoveryStatus?: (status: ManualCustodyRecoveryStatus) => void
   onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
   startTradeRuntime?: boolean
 }
@@ -207,79 +199,6 @@ type DaemonParticipationScorePreflightResult =
 
 const SCORE_PAYMENT_ATTEMPTS = 3
 
-async function splitWalletCompleteSet(input: {
-  mintUrl: string
-  conditionId: string
-  amountSats: number
-  operationId: string
-  secrets: Awaited<ReturnType<typeof readSecrets>>
-  deps: WalletOpsDependencies
-}): Promise<{
-  operationId: string
-  conditionId: string
-  amountSats: number
-  outcomeProofCounts: Record<string, number>
-}> {
-  if (!input.secrets) throw new Error('daemon secrets are not initialized')
-  const collateral = await splitAvailableSatProofsForCtfCollateral(
-    input.amountSats,
-    input.mintUrl,
-    `${input.operationId}:regular-split`,
-    input.secrets,
-    input.deps,
-  )
-  const transport = new CashuMintCtfSplitTransport(input.mintUrl)
-  const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(input.conditionId)
-  const proofsByCollection = await splitCompleteSetWithOperation({
-    mintUrl: input.mintUrl,
-    baseAsset: 'sat',
-    operationId: `${input.operationId}:ctf-split`,
-    transport,
-    conditionId: input.conditionId,
-    collateralProofs: collateral.inputs,
-    outcomeCollectionKeysets,
-    amountSubunits: input.amountSats,
-    proofOperationStore: ctfProofOperationStore,
-    makeOutputs: ({ amountSubunits, keyset }) =>
-      OutputData.createRandomData(Amount.from(amountSubunits), keyset),
-  })
-  await updateState((state, now) => {
-    removeProofsBySecretFromState(state, input.mintUrl, [...collateral.spent, ...collateral.inputs])
-    addProofsToState(
-      state,
-      input.mintUrl,
-      collateral.keep,
-      'available',
-      { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-      now,
-    )
-    for (const [outcomeSetId, proofs] of Object.entries(proofsByCollection)) {
-      addProofsToState(
-        state,
-        input.mintUrl,
-        proofs,
-        'available',
-        {
-          kind: 'Outcome',
-          conditionId: input.conditionId,
-          outcomeSetId,
-          baseAsset: 'sat',
-          unit: 'msat',
-        },
-        now,
-      )
-    }
-  })
-  return {
-    operationId: input.operationId,
-    conditionId: input.conditionId,
-    amountSats: input.amountSats,
-    outcomeProofCounts: Object.fromEntries(
-      Object.entries(proofsByCollection).map(([outcome, proofs]) => [outcome, proofs.length]),
-    ),
-  }
-}
-
 export interface DispatchDependencies extends WalletOpsDependencies {
   createEngineClient?: (options: { baseUrl: string; nostrSecretKeyHex: string }) => EngineClientLike
   prepareSettlementCapability?: PrepareSettlementCapability
@@ -290,16 +209,8 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   getCustodyFence?: () => CustodyScopeFence
   isCustodyReady?: () => boolean
   markCustodyReady?: () => void
+  onManualCustodyRecoveryStatus?: (status: ManualCustodyRecoveryStatus) => void
   onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
-}
-
-const ctfProofOperationStore: CtfProofOperationStore = {
-  getProofOperation: async (operationId) =>
-    (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
-  prepareProofOperation: async (input) =>
-    (await prepareProofOperation(input)) as CtfProofOperationRecord,
-  markProofOperationCompleted: async (operationId, completion) =>
-    (await markProofOperationCompleted(operationId, completion)) as CtfProofOperationRecord,
 }
 
 export async function startDaemonServer(options: DaemonServerOptions = {}): Promise<Server> {
@@ -326,6 +237,7 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
       getCustodyFence: options.getCustodyFence,
       isCustodyReady: options.isCustodyReady,
       markCustodyReady: options.markCustodyReady,
+      onManualCustodyRecoveryStatus: options.onManualCustodyRecoveryStatus,
       onOutcomeProofsReceived: options.onOutcomeProofsReceived,
     })
   })
@@ -398,6 +310,17 @@ function normalizeRpcError(err: unknown): DaemonResponse {
   const cause = 'cause' in err && err.cause instanceof Error ? err.cause.message : undefined
   const detail = [err.message, status ? `status=${status}` : null, cause].filter(Boolean).join('; ')
   return { ok: false, error: detail || err.message }
+}
+
+function retirementPending(
+  retirements: ReadonlyArray<{ readonly conditionId: string; readonly error: string | null }>,
+): Array<{ operationId: string; error: string }> {
+  return retirements
+    .filter((entry) => entry.error !== null)
+    .map((entry) => ({
+      operationId: `condition-retirement:${entry.conditionId}`,
+      error: entry.error!,
+    }))
 }
 
 export async function dispatch(
@@ -678,30 +601,32 @@ export async function dispatch(
         mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
         dependencies: deps,
       })
+      const completeSets = await recoverCompleteSetSplits({ secrets, deps })
       const retirements = await resumeDaemonConditionRetirements({
         profile,
         secrets,
         fence: getCustodyFence(),
         walletDependencies: deps,
       })
-      const result = {
-        recovered: [
-          ...wallet.recovered,
-          ...consolidation.recovered,
-          ...retirements.filter((entry) => entry.error === null).map((entry) => entry.conditionId),
-        ],
-        pending: [
-          ...wallet.pending,
-          ...consolidation.pending,
-          ...retirements
-            .filter((entry) => entry.error !== null)
-            .map((entry) => ({
-              operationId: `condition-retirement:${entry.conditionId}`,
-              error: entry.error!,
-            })),
-        ],
+      const retired = retirements
+        .filter((entry) => entry.error === null)
+        .map((entry) => entry.conditionId)
+      const result = composeStartupCustodyRecovery([
+        wallet,
+        consolidation,
+        completeSets,
+        { recovered: retired, pending: retirementPending(retirements) },
+      ])
+      deps.onManualCustodyRecoveryStatus?.({
+        nonRetirementPending:
+          wallet.pending.length > 0 ||
+          consolidation.pending.length > 0 ||
+          completeSets.pending.length > 0,
+        retirementPending: retirements.some((entry) => entry.error !== null),
+      })
+      if (!deps.onManualCustodyRecoveryStatus && result.pending.length === 0) {
+        deps.markCustodyReady?.()
       }
-      if (result.pending.length === 0) deps.markCustodyReady?.()
       return {
         ok: true,
         result,
@@ -1428,47 +1353,6 @@ async function loadMarketUnit(
       'sat',
     ),
   }
-}
-
-function addProofsToState(
-  state: Awaited<ReturnType<typeof ensureState>>,
-  mintUrl: string,
-  proofs: CashuProofRecord[],
-  proofState: 'available' | 'reserved' | 'locked',
-  asset: Awaited<ReturnType<typeof ensureState>>['wallet']['proofs'][number]['asset'],
-  now: string,
-  reservedBy?: string,
-): void {
-  const existingSecrets = new Set(
-    state.wallet.proofs
-      .filter((record) => record.mintUrl === mintUrl)
-      .map((record) => record.proof.secret),
-  )
-  for (const proof of proofs) {
-    if (existingSecrets.has(proof.secret)) continue
-    existingSecrets.add(proof.secret)
-    state.wallet.proofs.push({
-      proof: structuredClone(proof),
-      mintUrl,
-      state: proofState,
-      reservedBy,
-      asset,
-      createdAt: now,
-      updatedAt: now,
-    })
-  }
-}
-
-function removeProofsBySecretFromState(
-  state: Awaited<ReturnType<typeof ensureState>>,
-  mintUrl: string,
-  proofs: CashuProofRecord[],
-): void {
-  const secrets = new Set(proofs.map((proof) => proof.secret))
-  if (secrets.size === 0) return
-  state.wallet.proofs = state.wallet.proofs.filter(
-    (record) => record.mintUrl !== mintUrl || !secrets.has(record.proof.secret),
-  )
 }
 
 function assertPreparedSettlementCapability(

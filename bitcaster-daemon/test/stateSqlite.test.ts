@@ -7,16 +7,25 @@ import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk'
+import { createCtfProofOperationCompletion } from '@bitcaster-market/client-sdk/ctfSplit'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { getOrCreateOrderEphemeralKeypair, readSecrets } from '../src/secrets.ts'
 import {
   advanceDaemonKeysetCounter,
+  assertPreparedProofOperationDispatchFenced,
+  completeCompleteSetCtfProofOperationFenced,
+  completeRegularSplitWithCompleteSetHandoffFenced,
+  COMPLETE_SET_RECOVERY_ROOT_PAGE_SQL,
   emptyDaemonState,
   ensureState,
   markProofOperationCompletedFenced,
+  prepareCompleteSetCtfProofOperationFenced,
+  prepareCompleteSetRegularProofOperationFenced,
   prepareProofOperationWithExactReservation,
+  readAvailableWalletProofsFenced,
+  readRecoverableCompleteSetProofOperationPage,
   readAvailableWalletProofGroupPage,
   readAvailableWalletProofPage,
   readDaemonKeysetCounters,
@@ -25,6 +34,7 @@ import {
   updateState,
   writeState,
   type FencedStateMutation,
+  type ExactProofOperationAuthority,
   type ProofOperationRecord,
 } from '../src/state.ts'
 
@@ -393,6 +403,22 @@ test('wallet proof selection pages and exact reservation stay row-scoped', async
       },
       { fence, observedAtMs },
     )
+    const database = await openDaemonStateSqlite(home)
+    try {
+      const plan = database
+        .prepare(
+          `EXPLAIN QUERY PLAN SELECT * FROM target_wallet_proofs
+           WHERE scope_id = ? AND normalized_mint = ?
+             AND reserved_by = ? AND state = 'reserved'
+           ORDER BY proof_id`,
+        )
+        .all(fence.scopeId, 'http://localhost:8086', 'page-reservation-id') as Array<{
+        detail: string
+      }>
+      assert.ok(plan.some(({ detail }) => detail.includes('target_wallet_proofs_reservation_idx')))
+    } finally {
+      database.close()
+    }
 
     const second = await readAvailableWalletProofPage({
       mintUrl: 'http://localhost:8086',
@@ -425,6 +451,433 @@ test('wallet proof selection pages and exact reservation stay row-scoped', async
       /stale or expired authority/,
     )
     assert.equal((await readState())?.proofOperations['page-reservation']?.state, 'prepared')
+  })
+})
+
+test('regular split hands off its exact send successor without an available window', async () => {
+  await withProfile(async (home) => {
+    const input = proof('regular-predecessor', 100)
+    const send = proof('regular-send', 30)
+    const keep = proof('regular-keep', 70)
+    await writeState(walletStateWithProofs([input]))
+    const mutation = await claimMutation(home, 'regular-before-ctf')
+    const regularAuthority = regularSplitAuthority()
+    const ctfAuthority = completeSetAuthority()
+    const root = completeSetRoot('complete-set-root:regular-split', null)
+    await prepareCompleteSetRegularProofOperationFenced(
+      {
+        ...exactPreparation(
+          'complete-set-root:regular-split',
+          'regular-split',
+          [input],
+          regularAuthority,
+        ),
+        metadata: completeSetMetadata(regularAuthority, root),
+        root,
+      },
+      mutation,
+    )
+    const schemaDatabase = await openDaemonStateSqlite(home)
+    try {
+      assert.throws(
+        () =>
+          schemaDatabase
+            .prepare(
+              `INSERT INTO daemon_complete_set_recovery_roots (
+                 scope_id, root_operation_id, normalized_mint, condition_id, amount_sats,
+                 regular_operation_id, ctf_operation_id, state, created_at_ms, updated_at_ms
+               ) VALUES (?, ?, ?, ?, ?, NULL, ?, 'ctf-handoff', ?, ?)`,
+            )
+            .run(
+              mutation.fence.scopeId,
+              'invalid-handoff-root',
+              'http://localhost:8086',
+              'condition-1',
+              30,
+              'invalid-handoff-ctf',
+              mutation.observedAtMs,
+              mutation.observedAtMs,
+            ),
+        /CHECK constraint failed/,
+      )
+      assert.throws(
+        () =>
+          schemaDatabase
+            .prepare(
+              `INSERT INTO daemon_complete_set_recovery_roots (
+                 scope_id, root_operation_id, normalized_mint, condition_id, amount_sats,
+                 regular_operation_id, regular_reservation_id, regular_purpose,
+                 ctf_operation_id, ctf_reservation_id, ctf_purpose,
+                 state, created_at_ms, updated_at_ms
+               ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, 'ctf-prepared', ?, ?)`,
+            )
+            .run(
+              mutation.fence.scopeId,
+              'tuple-root',
+              'http://localhost:8086',
+              'condition-1',
+              30,
+              'tuple-root:regular-split',
+              'tuple-root:ctf-split',
+              'tuple-root:ctf-split:reservation',
+              'daemon-complete-set-ctf-split',
+              mutation.observedAtMs,
+              mutation.observedAtMs,
+            ),
+        /CHECK constraint failed/,
+      )
+    } finally {
+      schemaDatabase.close()
+    }
+    const completion = createCtfProofOperationCompletion('regular-split', {
+      send: [send],
+      keep: [keep],
+    })
+    await assert.rejects(
+      () =>
+        completeRegularSplitWithCompleteSetHandoffFenced(
+          {
+            operationId: 'complete-set-root:regular-split',
+            completion: createCtfProofOperationCompletion('regular-split', { send: [send] }),
+            regularAuthority,
+            ctfAuthority,
+            root,
+          },
+          mutation,
+        ),
+      /successor groups differ/,
+    )
+    const rolledBack = await readState()
+    assert.equal(rolledBack?.proofOperations['complete-set-root:regular-split']?.state, 'prepared')
+    assert.equal(
+      rolledBack?.wallet.proofs.find(({ proof: value }) => value.secret === input.secret)?.state,
+      'reserved',
+    )
+    await completeRegularSplitWithCompleteSetHandoffFenced(
+      {
+        operationId: 'complete-set-root:regular-split',
+        completion,
+        regularAuthority,
+        ctfAuthority,
+        root,
+      },
+      mutation,
+    )
+    await updateState((state) => state.wallet.proofs.length)
+    const handoffPage = await readRecoverableCompleteSetProofOperationPage({
+      regularPurpose: 'daemon-complete-set-regular-split',
+      ctfPurpose: 'daemon-complete-set-ctf-split',
+      limit: 64,
+    })
+    assert.deepEqual(
+      handoffPage.roots.map(({ operationId }) => operationId),
+      ['complete-set-root:regular-split'],
+    )
+    assert.equal(
+      (await readState())?.wallet.proofs.find(({ proof: value }) => value.secret === send.secret)
+        ?.state,
+      'reserved',
+    )
+    await assert.rejects(
+      () =>
+        prepareProofOperationWithExactReservation(
+          exactPreparation('concurrent-operation', 'ctf-split', [send], {
+            ...ctfAuthority,
+            reservationId: 'concurrent-reservation',
+          }),
+          mutation,
+        ),
+      /exact input is unavailable/,
+    )
+    await prepareCompleteSetCtfProofOperationFenced(
+      {
+        ...exactPreparation('complete-set-root:ctf-split', 'ctf-split', [send], ctfAuthority),
+        metadata: completeSetMetadata(ctfAuthority, root),
+        root,
+      },
+      mutation,
+    )
+    await assertPreparedProofOperationDispatchFenced(
+      'complete-set-root:ctf-split',
+      ctfAuthority,
+      mutation,
+    )
+    await completeRegularSplitWithCompleteSetHandoffFenced(
+      {
+        operationId: 'complete-set-root:regular-split',
+        completion,
+        regularAuthority,
+        ctfAuthority,
+        root,
+      },
+      mutation,
+    )
+    const state = await readState()
+    assert.equal(
+      state?.wallet.proofs.find(({ proof: value }) => value.secret === keep.secret)?.state,
+      'available',
+    )
+    assert.equal(
+      state?.wallet.proofs.find(({ proof: value }) => value.secret === send.secret)?.state,
+      'reserved',
+    )
+    await updateState((current, now) => {
+      current.wallet.proofs.push({
+        proof: proof('outcome-a', 30),
+        mintUrl: 'http://localhost:8086',
+        state: 'available',
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+        createdAt: now,
+        updatedAt: now,
+      })
+    })
+    await assert.rejects(
+      () =>
+        completeCompleteSetCtfProofOperationFenced(
+          {
+            operationId: 'complete-set-root:ctf-split',
+            completion: completeSetCompletion(),
+            authority: ctfAuthority,
+            root,
+          },
+          mutation,
+        ),
+      /conflicts with local wallet authority/,
+    )
+    const ctfRolledBack = await readState()
+    assert.equal(ctfRolledBack?.proofOperations['complete-set-root:ctf-split']?.state, 'prepared')
+    assert.equal(
+      ctfRolledBack?.wallet.proofs.find(({ proof: value }) => value.secret === send.secret)?.state,
+      'reserved',
+    )
+    await updateState((current) => {
+      current.wallet.proofs = current.wallet.proofs.filter(
+        ({ proof: value }) => value.secret !== 'outcome-a',
+      )
+    })
+    await completeCompleteSetCtfProofOperationFenced(
+      {
+        operationId: 'complete-set-root:ctf-split',
+        completion: completeSetCompletion(),
+        authority: ctfAuthority,
+        root,
+      },
+      mutation,
+    )
+    await completeCompleteSetCtfProofOperationFenced(
+      {
+        operationId: 'complete-set-root:ctf-split',
+        completion: completeSetCompletion(),
+        authority: ctfAuthority,
+        root,
+      },
+      mutation,
+    )
+    const page = await readRecoverableCompleteSetProofOperationPage({
+      regularPurpose: 'daemon-complete-set-regular-split',
+      ctfPurpose: 'daemon-complete-set-ctf-split',
+      limit: 64,
+    })
+    assert.equal(page.roots.length, 0)
+  })
+})
+
+test('stale custody authority cannot complete a regular-to-CTF handoff', async () => {
+  await withProfile(async (home) => {
+    const input = proof('stale-regular-predecessor', 100)
+    await writeState(walletStateWithProofs([input]))
+    const mutation = await claimMutation(home, 'stale-regular-handoff')
+    const regularAuthority = regularSplitAuthority()
+    const ctfAuthority = completeSetAuthority()
+    const root = completeSetRoot('complete-set-root:regular-split', null)
+    await prepareCompleteSetRegularProofOperationFenced(
+      {
+        ...exactPreparation(
+          'complete-set-root:regular-split',
+          'regular-split',
+          [input],
+          regularAuthority,
+        ),
+        metadata: completeSetMetadata(regularAuthority, root),
+        root,
+      },
+      mutation,
+    )
+    await claimCustodyScopeLease(home, {
+      scopeId: mutation.fence.scopeId,
+      incarnationId: 'complete-set-takeover',
+      observedAtMs: mutation.fence.leaseExpiresAtMs,
+    })
+
+    await assert.rejects(
+      () =>
+        completeRegularSplitWithCompleteSetHandoffFenced(
+          {
+            operationId: 'complete-set-root:regular-split',
+            completion: createCtfProofOperationCompletion('regular-split', {
+              send: [proof('stale-send', 30)],
+              keep: [proof('stale-keep', 70)],
+            }),
+            regularAuthority,
+            ctfAuthority,
+            root,
+          },
+          mutation,
+        ),
+      /stale or expired authority/,
+    )
+    assert.equal(
+      (await readState())?.proofOperations['complete-set-root:regular-split']?.state,
+      'prepared',
+    )
+  })
+})
+
+test('bounded complete-set recovery selection excludes completed CTF history', async () => {
+  await withProfile(async (home) => {
+    const state = emptyDaemonState()
+    for (let index = 0; index < 65; index += 1) {
+      state.proofOperations[`historic-${index}:ctf-split`] = completeSetOperationRecord(
+        `historic-${index}:ctf-split`,
+        'daemon-complete-set-ctf-split',
+        'completed',
+      )
+    }
+    state.proofOperations['paired:regular-split'] = completeSetOperationRecord(
+      'paired:regular-split',
+      'daemon-complete-set-regular-split',
+      'completed',
+    )
+    state.proofOperations['paired:ctf-split'] = completeSetOperationRecord(
+      'paired:ctf-split',
+      'daemon-complete-set-ctf-split',
+      'completed',
+    )
+    state.proofOperations['orphan:regular-split'] = completeSetOperationRecord(
+      'orphan:regular-split',
+      'daemon-complete-set-regular-split',
+      'completed',
+    )
+    state.proofOperations['active:ctf-split'] = completeSetOperationRecord(
+      'active:ctf-split',
+      'daemon-complete-set-ctf-split',
+      'prepared',
+    )
+    await writeState(state)
+
+    const page = await readRecoverableCompleteSetProofOperationPage({
+      regularPurpose: 'daemon-complete-set-regular-split',
+      ctfPurpose: 'daemon-complete-set-ctf-split',
+      limit: 64,
+    })
+
+    assert.deepEqual(
+      page.roots.map(({ operationId }) => operationId),
+      ['active:ctf-split', 'orphan:regular-split'],
+    )
+    assert.equal(page.hasMore, false)
+    const scopeId = deriveDurableCustodyScopeId({
+      scopeKind: 'wallet',
+      walletId: deriveDurableCustodyWalletId(Buffer.from(walletSeedHex, 'hex')),
+    })
+    const database = await openDaemonStateSqlite(home)
+    try {
+      const plan = database
+        .prepare(`EXPLAIN QUERY PLAN ${COMPLETE_SET_RECOVERY_ROOT_PAGE_SQL}`)
+        .all(scopeId, 65) as Array<{ detail: string }>
+      const details = plan.map(({ detail }) => detail).join('\n')
+      assert.match(details, /daemon_complete_set_recovery_roots_active_idx/)
+      assert.doesNotMatch(details, /SCAN target_proof_operations|USE TEMP B-TREE/)
+    } finally {
+      database.close()
+    }
+  })
+})
+
+test('complete-set recovery permits more than one bounded page of active roots', async () => {
+  await withProfile(async () => {
+    const state = emptyDaemonState()
+    for (let index = 0; index < 65; index += 1) {
+      state.proofOperations[`active-${index}:ctf-split`] = completeSetOperationRecord(
+        `active-${index}:ctf-split`,
+        'daemon-complete-set-ctf-split',
+        'prepared',
+      )
+    }
+    await writeState(state)
+
+    const page = await readRecoverableCompleteSetProofOperationPage({
+      regularPurpose: 'daemon-complete-set-regular-split',
+      ctfPurpose: 'daemon-complete-set-ctf-split',
+      limit: 64,
+    })
+
+    assert.equal(page.roots.length, 64)
+    assert.equal(page.hasMore, true)
+  })
+})
+
+test('available wallet proof reads require the exact base asset', async () => {
+  await withProfile(async (home) => {
+    const state = emptyDaemonState()
+    state.wallet.proofs.push({
+      proof: { id: 'keyset-1', amount: 1, secret: 'wrong-base-asset', C: 'signature' },
+      mintUrl: 'http://localhost:8086',
+      state: 'available',
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+    await writeState(state)
+
+    const database = await openDaemonStateSqlite(home)
+    try {
+      database.exec('PRAGMA ignore_check_constraints = ON')
+      database
+        .prepare("UPDATE target_wallet_proofs SET base_asset = 'other' WHERE secret = ?")
+        .run('wrong-base-asset')
+      database.exec('PRAGMA ignore_check_constraints = OFF')
+    } finally {
+      database.close()
+    }
+
+    const proofs = await readAvailableWalletProofsFenced({
+      mintUrl: 'http://localhost:8086',
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      mutation: await claimMutation(home, 'exact-proof-asset'),
+    })
+
+    assert.equal(proofs.length, 0)
+  })
+})
+
+test('whole-state complete-set serialization rejects malformed and duplicate authorities', async () => {
+  await withProfile(async () => {
+    const malformed = emptyDaemonState()
+    malformed.proofOperations['malformed:regular-split'] = completeSetOperationRecord(
+      'malformed:regular-split',
+      'daemon-complete-set-regular-split',
+      'prepared',
+    )
+    delete malformed.proofOperations['malformed:regular-split']!.metadata.conditionId
+    await assert.rejects(() => writeState(malformed), /complete-set operation metadata is invalid/)
+
+    const duplicate = emptyDaemonState()
+    duplicate.proofOperations['duplicate-a:regular-split'] = completeSetOperationRecord(
+      'duplicate-a:regular-split',
+      'daemon-complete-set-regular-split',
+      'prepared',
+    )
+    duplicate.proofOperations['duplicate-b:regular-split'] = completeSetOperationRecord(
+      'duplicate-b:regular-split',
+      'daemon-complete-set-regular-split',
+      'prepared',
+    )
+    duplicate.proofOperations['duplicate-a:regular-split']!.metadata.rootOperationId =
+      'duplicate-root'
+    duplicate.proofOperations['duplicate-b:regular-split']!.metadata.rootOperationId =
+      'duplicate-root'
+    await assert.rejects(() => writeState(duplicate), /duplicate regular authority/)
   })
 })
 
@@ -653,4 +1106,194 @@ function preservedProofOperation(): ProofOperationRecord {
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
   }
+}
+
+function completeSetAuthority(): ExactProofOperationAuthority {
+  return {
+    purpose: 'daemon-complete-set-ctf-split',
+    reservationId: 'complete-set-root:ctf-split:reservation',
+    inputAsset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+    successorAssets: {
+      A: {
+        kind: 'Outcome',
+        conditionId: 'condition-1',
+        outcomeSetId: 'A',
+        baseAsset: 'sat',
+        unit: 'msat',
+      },
+      B: {
+        kind: 'Outcome',
+        conditionId: 'condition-1',
+        outcomeSetId: 'B',
+        baseAsset: 'sat',
+        unit: 'msat',
+      },
+      C: {
+        kind: 'Outcome',
+        conditionId: 'condition-1',
+        outcomeSetId: 'C',
+        baseAsset: 'sat',
+        unit: 'msat',
+      },
+    },
+  }
+}
+
+function completeSetRoot(
+  regularOperationId: string,
+  ctfOperationId: string | null,
+): {
+  rootOperationId: string
+  mintUrl: string
+  conditionId: string
+  amountSats: number
+  regularOperationId: string
+  ctfOperationId: string | null
+} {
+  return {
+    rootOperationId: 'complete-set-root',
+    mintUrl: 'http://localhost:8086',
+    conditionId: 'condition-1',
+    amountSats: 30,
+    regularOperationId,
+    ctfOperationId,
+  }
+}
+
+function completeSetMetadata(
+  authority: ExactProofOperationAuthority,
+  root: ReturnType<typeof completeSetRoot>,
+) {
+  return {
+    purpose: authority.purpose,
+    reservationId: authority.reservationId,
+    inputAsset: authority.inputAsset,
+    successorAssets: authority.successorAssets,
+    rootOperationId: root.rootOperationId,
+    conditionId: root.conditionId,
+    amountSats: root.amountSats,
+  }
+}
+
+function regularSplitAuthority(): ExactProofOperationAuthority {
+  const asset = { kind: 'sats', baseAsset: 'sat', unit: 'msat' } as const
+  return {
+    purpose: 'daemon-complete-set-regular-split',
+    reservationId: 'complete-set-root:regular-split:reservation',
+    inputAsset: asset,
+    successorAssets: { send: asset, keep: asset },
+  }
+}
+
+function exactPreparation(
+  operationId: string,
+  kind: 'ctf-split' | 'regular-split',
+  inputs: Array<{ id: string; amount: number; secret: string; C: string }>,
+  authority: ExactProofOperationAuthority,
+) {
+  return {
+    operationId,
+    kind,
+    mintUrl: 'http://localhost:8086',
+    inputs,
+    outputs: Object.fromEntries(
+      Object.keys(authority.successorAssets).map((group) => [
+        group,
+        [
+          {
+            blindedMessage: { amount: 30, id: `keyset-${group}`, B_: `blind-${group}` },
+            blindingFactor: `factor-${group}`,
+            secret: `output-${group}`,
+          },
+        ],
+      ]),
+    ),
+    metadata: {
+      purpose: authority.purpose,
+      reservationId: authority.reservationId,
+      inputAsset: authority.inputAsset,
+      successorAssets: authority.successorAssets,
+    },
+    reservationId: authority.reservationId,
+    asset: authority.inputAsset,
+  }
+}
+
+function completeSetCompletion() {
+  return createCtfProofOperationCompletion('ctf-split', {
+    A: [proof('outcome-a', 30)],
+    B: [proof('outcome-b', 30)],
+    C: [proof('outcome-c', 30)],
+  })
+}
+
+function completeSetOperationRecord(
+  operationId: string,
+  purpose: 'daemon-complete-set-regular-split' | 'daemon-complete-set-ctf-split',
+  state: 'prepared' | 'completed',
+): ProofOperationRecord {
+  const completion = completeSetCompletion()
+  const rootOperationId = operationId.replace(/:(regular|ctf)-split$/, '')
+  const kind = purpose.endsWith('regular-split') ? 'regular-split' : 'ctf-split'
+  const inputAsset = { kind: 'sats', baseAsset: 'sat', unit: 'msat' } as const
+  const successorAssets =
+    kind === 'regular-split'
+      ? { send: inputAsset, keep: inputAsset }
+      : {
+          A: {
+            kind: 'Outcome',
+            conditionId: 'condition-1',
+            outcomeSetId: 'A',
+            baseAsset: 'sat',
+            unit: 'msat',
+          },
+        }
+  return {
+    operationId,
+    kind,
+    state,
+    mintUrl: 'http://localhost:8086',
+    inputs: [{ id: 'keyset-1', amount: 30, secret: `${operationId}:input`, C: 'C-input' }],
+    outputs: {},
+    metadata: {
+      purpose,
+      rootOperationId,
+      conditionId: 'condition-1',
+      amountSats: 30,
+      amountSubunits: 30,
+      reservationId: `${operationId}:reservation`,
+      inputAsset,
+      successorAssets,
+    },
+    ...(state === 'completed'
+      ? {
+          resultProofs: completion.resultProofs,
+          ...(kind === 'ctf-split' ? { resultProofsDigest: completion.resultProofsDigest } : {}),
+        }
+      : {}),
+    lastError: null,
+    createdAt: 1,
+    updatedAt: 1,
+  }
+}
+
+function walletStateWithProofs(
+  proofs: Array<{ id: string; amount: number; secret: string; C: string }>,
+) {
+  const state = emptyDaemonState()
+  state.wallet.proofs.push(
+    ...proofs.map((value) => ({
+      proof: value,
+      mintUrl: 'http://localhost:8086',
+      state: 'available' as const,
+      asset: { kind: 'sats' as const, baseAsset: 'sat' as const, unit: 'msat' as const },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    })),
+  )
+  return state
+}
+
+function proof(secret: string, amount: number) {
+  return { id: 'keyset-1', amount, secret, C: `C-${secret}` }
 }

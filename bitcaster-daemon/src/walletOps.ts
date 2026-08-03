@@ -180,6 +180,12 @@ export interface PreparedCtfCollateralResult {
   keep: Proof[]
 }
 
+export interface CtfCollateralOperationAuthority {
+  readonly proofOperationStore: CtfProofOperationStore
+  readonly beforeMintMutation: () => Promise<void>
+  readonly readAvailableProofs: () => Promise<Proof[]>
+}
+
 export interface ExecuteCtfConsolidationPlanInput {
   marketId: string
   conditionId: string
@@ -318,40 +324,31 @@ export async function splitAvailableSatProofsForCtfCollateral(
   secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies = {},
   baseAssetInput?: string | null,
+  operationAuthority?: CtfCollateralOperationAuthority,
 ): Promise<PreparedCtfCollateralResult> {
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
+  const proofOperationStore =
+    operationAuthority?.proofOperationStore ?? DAEMON_CTF_PROOF_OPERATION_STORE
+  const existing = await proofOperationStore.getProofOperation(operationId)
   const wallet = createWallet(mintUrl, secrets, deps, baseAsset)
-  await wallet.loadMint()
-  const existing = await getProofOperation(operationId)
   if (existing) {
-    const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(mintUrl, wallet, deps)
-    const grossCtfInputSats = computeGrossCtfInputAmountSats({
-      faceAmountSats: amountSats,
-      keyset: grossPlanningKeyset,
-    })
+    if (existing.state !== 'completed') await wallet.loadMint()
     const split = await splitRegularProofsWithOperation({
       mintUrl,
       baseAsset,
       operationId,
       wallet,
       proofs: [],
-      amountSats: grossCtfInputSats,
-      proofOperationStore: DAEMON_CTF_PROOF_OPERATION_STORE,
+      amountSats: requirePersistedCtfCollateralAmount(existing),
+      proofOperationStore,
+      beforeMintMutation: operationAuthority?.beforeMintMutation,
     })
     const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountSats, deps)
     return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
   }
+  await wallet.loadMint()
 
-  const available = (await ensureState()).wallet.proofs
-    .filter(
-      (record) =>
-        record.mintUrl === mintUrl &&
-        record.state === 'available' &&
-        record.asset.kind === 'sats' &&
-        normalizeMarketBaseAsset(record.asset.baseAsset) === baseAsset &&
-        record.asset.unit === 'msat',
-    )
-    .map((record) => record.proof as Proof)
+  const available = await readAvailableCollateralProofs(mintUrl, baseAsset, operationAuthority)
 
   try {
     const exact = await validateExactCtfCollateralFromProofs(mintUrl, available, amountSats, deps)
@@ -386,10 +383,37 @@ export async function splitAvailableSatProofsForCtfCollateral(
     wallet,
     proofs: selected.send,
     amountSats: grossCtfInputSats,
-    proofOperationStore: DAEMON_CTF_PROOF_OPERATION_STORE,
+    proofOperationStore,
+    beforeMintMutation: operationAuthority?.beforeMintMutation,
   })
   const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountSats, deps)
   return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
+}
+
+function requirePersistedCtfCollateralAmount(operation: CtfProofOperationRecord): number {
+  const amount = operation.metadata.amount
+  if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount <= 0) {
+    throw new Error('persisted CTF collateral operation amount is invalid')
+  }
+  return amount
+}
+
+async function readAvailableCollateralProofs(
+  mintUrl: string,
+  baseAsset: 'sat',
+  operationAuthority: CtfCollateralOperationAuthority | undefined,
+): Promise<Proof[]> {
+  if (operationAuthority) return operationAuthority.readAvailableProofs()
+  return (await ensureState()).wallet.proofs
+    .filter(
+      (record) =>
+        record.mintUrl === mintUrl &&
+        record.state === 'available' &&
+        record.asset.kind === 'sats' &&
+        normalizeMarketBaseAsset(record.asset.baseAsset) === baseAsset &&
+        record.asset.unit === 'msat',
+    )
+    .map((record) => record.proof as Proof)
 }
 
 async function resolveGrossCtfInputPlanningKeyset(

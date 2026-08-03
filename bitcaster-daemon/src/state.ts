@@ -130,6 +130,27 @@ export interface FencedStateMutation {
   readonly observedAtMs: number
 }
 
+export interface ExactProofOperationAuthority {
+  readonly purpose: string
+  readonly reservationId: string
+  readonly inputAsset: StoredProofAsset
+  readonly successorAssets: Readonly<Record<string, StoredProofAsset>>
+}
+
+export interface CompleteSetHandoffAuthority {
+  readonly reservationId: string
+  readonly inputAsset: StoredProofAsset
+}
+
+export interface CompleteSetRecoveryRoot {
+  readonly rootOperationId: string
+  readonly mintUrl: string
+  readonly conditionId: string
+  readonly amountSats: number
+  readonly regularOperationId: string | null
+  readonly ctfOperationId: string | null
+}
+
 export interface WalletProofPageCursor {
   readonly amount: number
   readonly proofId: string
@@ -170,6 +191,40 @@ export interface ProofOperationPage {
   readonly operations: ProofOperationRecord[]
   readonly nextCursor: ProofOperationPageCursor | null
 }
+
+export interface RecoverableCompleteSetProofOperationPage {
+  readonly roots: RecoverableCompleteSetRecoveryRoot[]
+  readonly hasMore: boolean
+}
+
+export interface RecoverableCompleteSetRecoveryRoot {
+  readonly root: CompleteSetRecoveryRoot
+  readonly rootState: CompleteSetRecoveryRootState
+  readonly operationId: string
+  readonly operationKind: 'regular-split' | 'ctf-split'
+  readonly operationPurpose: string
+  readonly operationState: 'prepared' | 'completed'
+  readonly reservationId: string
+  readonly mintUrl: string
+}
+
+export const COMPLETE_SET_RECOVERY_PAGE_SAMPLE_LIMIT = 64
+
+export const COMPLETE_SET_RECOVERY_ROOT_PAGE_SQL = `SELECT
+    root.scope_id, root.root_operation_id, root.normalized_mint, root.condition_id,
+    root.amount_sats, root.regular_operation_id, root.ctf_operation_id, root.state,
+    operation.operation_id, operation.kind, operation.purpose, operation.state AS operation_state,
+    operation.normalized_mint AS operation_mint, operation.reservation_id
+  FROM daemon_complete_set_recovery_roots AS root
+  JOIN target_proof_operations AS operation
+    ON operation.scope_id = root.scope_id
+    AND operation.operation_id = CASE
+      WHEN root.state = 'ctf-prepared' THEN root.ctf_operation_id
+      ELSE root.regular_operation_id
+    END
+  WHERE root.scope_id = ?
+  ORDER BY root.updated_at_ms, root.root_operation_id
+  LIMIT ?`
 
 export interface StoredProofRecord {
   proof: CashuProofRecord
@@ -706,6 +761,216 @@ export async function prepareProofOperationWithExactReservation(
   )
 }
 
+export async function readAvailableWalletProofsFenced(input: {
+  readonly mintUrl: string
+  readonly asset: StoredProofAsset
+  readonly mutation: FencedStateMutation
+}): Promise<StoredProofRecord[]> {
+  const asset = normalizeProofAsset(input.asset)
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    input.mutation.fence,
+    input.mutation.observedAtMs,
+    (database) => readAvailableWalletProofsFromDatabase(database, input.mintUrl, asset),
+  )
+}
+
+export async function readProofOperationFenced(
+  operationId: string,
+  mutation: FencedStateMutation,
+): Promise<ProofOperationRecord | null> {
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => readDaemonProofOperationFromDatabase(database, operationId),
+  )
+}
+
+export async function assertPreparedProofOperationDispatchFenced(
+  operationId: string,
+  authority: ExactProofOperationAuthority,
+  mutation: FencedStateMutation,
+): Promise<ProofOperationRecord> {
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const operation = requireExactProofOperationAuthority(database, operationId, authority)
+      if (operation.state !== 'prepared') {
+        throw new Error(`Proof operation ${operationId} is not prepared for mint dispatch`)
+      }
+      assertExactReservedProofRows(
+        readDaemonReservedWalletProofsFromDatabase(
+          database,
+          operation.mintUrl,
+          authority.reservationId,
+        ),
+        exactReservationInput(operation, authority),
+      )
+      return operation
+    },
+  )
+}
+
+export async function prepareCompleteSetRegularProofOperationFenced(
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly asset: StoredProofAsset
+    readonly root: CompleteSetRecoveryRoot
+  },
+  mutation: FencedStateMutation,
+): Promise<ProofOperationRecord> {
+  return withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const operation = prepareExactProofOperation(database, input)
+      upsertCompleteSetRecoveryRoot(database, input.root, 'regular-prepared', mutation.observedAtMs)
+      return operation
+    },
+  )
+}
+
+export async function prepareCompleteSetCtfProofOperationFenced(
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly asset: StoredProofAsset
+    readonly root: CompleteSetRecoveryRoot
+  },
+  mutation: FencedStateMutation,
+): Promise<ProofOperationRecord> {
+  return withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const root = readCompleteSetRecoveryRoot(database, input.root.rootOperationId)
+      if (root !== null && root.state === 'regular-prepared') {
+        throw new Error('complete-set CTF preparation requires a durable handoff')
+      }
+      const operation =
+        root?.state === 'ctf-handoff'
+          ? prepareAdoptedExactProofOperation(database, input)
+          : prepareExactProofOperation(database, input)
+      upsertCompleteSetRecoveryRoot(
+        database,
+        root === null
+          ? { ...input.root, regularOperationId: null, ctfOperationId: input.operationId }
+          : { ...root, ctfOperationId: input.operationId },
+        'ctf-prepared',
+        mutation.observedAtMs,
+      )
+      return operation
+    },
+  )
+}
+
+export async function completeRegularSplitWithCompleteSetHandoffFenced(
+  input: {
+    readonly operationId: string
+    readonly completion: CtfProofOperationCompletion
+    readonly regularAuthority: ExactProofOperationAuthority
+    readonly ctfAuthority: CompleteSetHandoffAuthority
+    readonly root: CompleteSetRecoveryRoot
+  },
+  mutation: FencedStateMutation,
+): Promise<ProofOperationRecord> {
+  return withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const before = requireExactProofOperationAuthority(
+        database,
+        input.operationId,
+        input.regularAuthority,
+      )
+      assertExactSuccessorGroups(
+        input.completion.resultProofs,
+        input.regularAuthority.successorAssets,
+        input.operationId,
+      )
+      const root = readCompleteSetRecoveryRoot(database, input.root.rootOperationId)
+      if (root === null) {
+        throw new Error('complete-set regular handoff authority is absent')
+      }
+      const completed = completeProofOperation(
+        database,
+        input.operationId,
+        input.completion,
+        mutation.observedAtMs,
+      )
+      if (before.state === 'prepared') {
+        removeExactReservedPredecessors(database, before, input.regularAuthority)
+        admitRegularSplitHandoffSuccessors(
+          database,
+          completed,
+          input.regularAuthority,
+          input.ctfAuthority,
+          mutation.observedAtMs,
+        )
+        upsertCompleteSetRecoveryRoot(database, input.root, 'ctf-handoff', mutation.observedAtMs)
+      } else {
+        assertCompletedExactReservationFinalized(database, before, input.regularAuthority)
+        assertRegularSplitHandoffSuccessors(
+          database,
+          completed,
+          input.regularAuthority,
+          input.ctfAuthority,
+        )
+      }
+      return completed
+    },
+  )
+}
+
+export async function completeCompleteSetCtfProofOperationFenced(
+  input: {
+    readonly operationId: string
+    readonly completion: CtfProofOperationCompletion
+    readonly authority: ExactProofOperationAuthority
+    readonly root: CompleteSetRecoveryRoot
+  },
+  mutation: FencedStateMutation,
+): Promise<ProofOperationRecord> {
+  return withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const before = requireExactProofOperationAuthority(
+        database,
+        input.operationId,
+        input.authority,
+      )
+      assertExactSuccessorGroups(
+        input.completion.resultProofs,
+        input.authority.successorAssets,
+        input.operationId,
+      )
+      const root = readCompleteSetRecoveryRoot(database, input.root.rootOperationId)
+      if (before.state === 'prepared' && (root === null || root.state !== 'ctf-prepared')) {
+        throw new Error('complete-set CTF completion authority is absent')
+      }
+      const completed = completeProofOperation(
+        database,
+        input.operationId,
+        input.completion,
+        mutation.observedAtMs,
+      )
+      if (before.state === 'prepared')
+        removeExactReservedPredecessors(database, before, input.authority)
+      else assertCompletedExactReservationFinalized(database, before, input.authority)
+      admitExactSuccessorGroups(database, completed, input.authority, mutation.observedAtMs)
+      deleteCompleteSetRecoveryRoot(database, input.root.rootOperationId)
+      return completed
+    },
+  )
+}
+
 export function admitExactAvailableWalletProofsFromDatabase(
   database: DatabaseSync,
   input: {
@@ -746,6 +1011,161 @@ export function admitExactAvailableWalletProofsFromDatabase(
       updatedAt: timestamp,
     })
   }
+}
+
+function admitRegularSplitHandoffSuccessors(
+  database: DatabaseSync,
+  operation: ProofOperationRecord,
+  regularAuthority: ExactProofOperationAuthority,
+  ctfAuthority: CompleteSetHandoffAuthority,
+  nowMs: number,
+): void {
+  const resultProofs = operation.resultProofs
+  if (resultProofs === undefined) throw new Error('complete-set regular result proofs are missing')
+  const keep = resultProofs.keep
+  const send = resultProofs.send
+  if (keep === undefined || send === undefined) {
+    throw new Error('complete-set regular result groups are missing')
+  }
+  admitExactAvailableWalletProofsFromDatabase(database, {
+    mintUrl: operation.mintUrl,
+    proofs: keep,
+    asset: requireSuccessorAsset(regularAuthority, 'keep', operation.operationId),
+    nowMs,
+  })
+  admitExactReservedWalletProofsFromDatabase(database, {
+    mintUrl: operation.mintUrl,
+    proofs: send,
+    asset: ctfAuthority.inputAsset,
+    reservationId: ctfAuthority.reservationId,
+    nowMs,
+  })
+}
+
+function assertRegularSplitHandoffSuccessors(
+  database: DatabaseSync,
+  operation: ProofOperationRecord,
+  regularAuthority: ExactProofOperationAuthority,
+  ctfAuthority: CompleteSetHandoffAuthority,
+): void {
+  const resultProofs = operation.resultProofs
+  if (resultProofs === undefined) throw new Error('complete-set regular result proofs are missing')
+  assertExactAvailableWalletProofsFromDatabase(
+    database,
+    operation.mintUrl,
+    resultProofs.keep ?? [],
+    requireSuccessorAsset(regularAuthority, 'keep', operation.operationId),
+  )
+  assertExactReservedWalletProofsFromDatabase(
+    database,
+    operation.mintUrl,
+    resultProofs.send ?? [],
+    ctfAuthority.inputAsset,
+    ctfAuthority.reservationId,
+  )
+}
+
+function requireSuccessorAsset(
+  authority: ExactProofOperationAuthority,
+  group: string,
+  operationId: string,
+): StoredProofAsset {
+  const asset = authority.successorAssets[group]
+  if (asset === undefined)
+    throw new Error(`Proof operation ${operationId} successor asset is missing`)
+  return asset
+}
+
+function admitExactReservedWalletProofsFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly mintUrl: string
+    readonly proofs: readonly CashuProofRecord[]
+    readonly asset: StoredProofAsset
+    readonly reservationId: string
+    readonly nowMs: number
+  },
+): void {
+  const scopeId = readScopeId(database)
+  const expectedAsset = normalizeProofAsset(input.asset)
+  const timestamp = new Date(input.nowMs).toISOString()
+  for (const proof of input.proofs) {
+    const normalizedProof = normalizeCashuProofRecord(proof)
+    const raw = database
+      .prepare(
+        `SELECT * FROM target_wallet_proofs
+         WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+      )
+      .get(scopeId, input.mintUrl, normalizedProof.secret) as Record<string, unknown> | undefined
+    if (raw !== undefined) {
+      const existing = decodeWalletProofRow(raw)
+      if (
+        existing.state !== 'reserved' ||
+        existing.reservedBy !== input.reservationId ||
+        !isDeepStrictEqual(existing.proof, normalizedProof) ||
+        !isDeepStrictEqual(normalizeProofAsset(existing.asset), expectedAsset)
+      ) {
+        throw new Error('complete-set handoff proof conflicts with local wallet authority')
+      }
+      continue
+    }
+    insertWalletProof(database, scopeId, {
+      proof: normalizedProof,
+      mintUrl: input.mintUrl,
+      state: 'reserved',
+      reservedBy: input.reservationId,
+      asset: expectedAsset,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    })
+  }
+}
+
+function assertExactAvailableWalletProofsFromDatabase(
+  database: DatabaseSync,
+  mintUrl: string,
+  proofs: readonly CashuProofRecord[],
+  asset: StoredProofAsset,
+): void {
+  const scopeId = readScopeId(database)
+  const expectedAsset = normalizeProofAsset(asset)
+  for (const proof of proofs) {
+    const raw = database
+      .prepare(
+        `SELECT * FROM target_wallet_proofs
+         WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+      )
+      .get(scopeId, mintUrl, proof.secret) as Record<string, unknown> | undefined
+    if (raw === undefined) throw new Error('complete-set handoff successor is missing')
+    const record = decodeWalletProofRow(raw)
+    if (
+      record.state !== 'available' ||
+      !isDeepStrictEqual(record.proof, normalizeCashuProofRecord(proof)) ||
+      !isDeepStrictEqual(normalizeProofAsset(record.asset), expectedAsset)
+    ) {
+      throw new Error('complete-set handoff successor differs from durable authority')
+    }
+  }
+}
+
+function assertExactReservedWalletProofsFromDatabase(
+  database: DatabaseSync,
+  mintUrl: string,
+  proofs: readonly CashuProofRecord[],
+  asset: StoredProofAsset,
+  reservationId: string,
+): void {
+  const reserved = readDaemonReservedWalletProofsFromDatabase(database, mintUrl, reservationId)
+  assertExactReservedProofRows(reserved, {
+    operationId: reservationId,
+    kind: 'ctf-split',
+    mintUrl,
+    inputs: proofs.map(normalizeCashuProofRecord),
+    outputs: {},
+    metadata: {},
+    reservationId,
+    asset,
+  })
 }
 
 export function prepareCtfRangeRefundProofOperationFromDatabase(
@@ -804,6 +1224,179 @@ function assertCtfRangeRefundProofOperationInput(input: PrepareProofOperationInp
   }
 }
 
+function readAvailableWalletProofsFromDatabase(
+  database: DatabaseSync,
+  mintUrl: string,
+  asset: StoredProofAsset,
+): StoredProofRecord[] {
+  const rows = database
+    .prepare(
+      `SELECT * FROM target_wallet_proofs
+       WHERE scope_id = ? AND normalized_mint = ? AND state = 'available'
+         AND unit = ? AND asset_kind = ?
+         AND condition_id IS ? AND outcome_set_id IS ? AND base_asset = ?`,
+    )
+    .all(
+      readScopeId(database),
+      mintUrl,
+      asset.unit,
+      asset.kind === 'Outcome' ? 'outcome' : 'sats',
+      asset.kind === 'Outcome' ? asset.conditionId : null,
+      asset.kind === 'Outcome' ? asset.outcomeSetId : null,
+      asset.baseAsset,
+    ) as Array<Record<string, unknown>>
+  return rows.map(decodeWalletProofRow)
+}
+
+function requireExactProofOperationAuthority(
+  database: DatabaseSync,
+  operationId: string,
+  authority: ExactProofOperationAuthority,
+): ProofOperationRecord {
+  const operation = readDaemonProofOperationFromDatabase(database, operationId)
+  if (operation === null) throw new Error(`Missing proof operation ${operationId}`)
+  const storedInputAsset = operation.metadata.inputAsset
+  const storedSuccessorAssets = operation.metadata.successorAssets
+  if (
+    operation.metadata.purpose !== authority.purpose ||
+    operation.metadata.reservationId !== authority.reservationId ||
+    storedInputAsset === undefined ||
+    storedSuccessorAssets === undefined ||
+    !isDeepStrictEqual(
+      normalizeProofAsset(storedInputAsset as StoredProofAsset),
+      normalizeProofAsset(authority.inputAsset),
+    ) ||
+    !isDeepStrictEqual(
+      normalizeSuccessorAssets(storedSuccessorAssets),
+      normalizeSuccessorAssets(authority.successorAssets),
+    )
+  ) {
+    throw new Error(`Proof operation ${operationId} exact custody authority is incompatible`)
+  }
+  return operation
+}
+
+function normalizeSuccessorAssets(value: unknown): Record<string, StoredProofAsset> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('proof operation successor assets are invalid')
+  }
+  const entries = Object.entries(value).map(([group, asset]) => {
+    if (group.length === 0) throw new Error('proof operation successor group is invalid')
+    return [group, normalizeProofAsset(asset as StoredProofAsset)] as const
+  })
+  if (entries.length === 0) throw new Error('proof operation successor assets are empty')
+  return Object.fromEntries(
+    entries.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+  )
+}
+
+function exactReservationInput(
+  operation: ProofOperationRecord,
+  authority: ExactProofOperationAuthority,
+): PrepareProofOperationInput & { reservationId: string; asset: StoredProofAsset } {
+  return {
+    operationId: operation.operationId,
+    kind: operation.kind,
+    mintUrl: operation.mintUrl,
+    inputs: operation.inputs,
+    outputs: operation.outputs,
+    metadata: operation.metadata,
+    reservationId: authority.reservationId,
+    asset: authority.inputAsset,
+  }
+}
+
+function assertExactSuccessorGroups(
+  resultProofs: Record<string, CashuProofRecord[]>,
+  successorAssets: Readonly<Record<string, StoredProofAsset>>,
+  operationId: string,
+): void {
+  const expected = Object.keys(normalizeSuccessorAssets(successorAssets)).sort()
+  const actual = Object.keys(resultProofs).sort()
+  if (!isDeepStrictEqual(actual, expected)) {
+    throw new Error(`Proof operation ${operationId} completion successor groups differ`)
+  }
+}
+
+function removeExactReservedPredecessors(
+  database: DatabaseSync,
+  operation: ProofOperationRecord,
+  authority: ExactProofOperationAuthority,
+): void {
+  assertExactReservedProofRows(
+    readDaemonReservedWalletProofsFromDatabase(
+      database,
+      operation.mintUrl,
+      authority.reservationId,
+    ),
+    exactReservationInput(operation, authority),
+  )
+  const removed = database
+    .prepare(
+      `DELETE FROM target_wallet_proofs
+       WHERE scope_id = ? AND normalized_mint = ?
+         AND state = 'reserved' AND reserved_by = ?`,
+    )
+    .run(readScopeId(database), operation.mintUrl, authority.reservationId)
+  if (removed.changes !== operation.inputs.length) {
+    throw new Error('exact proof operation predecessors changed before completion')
+  }
+}
+
+function assertCompletedExactReservationFinalized(
+  database: DatabaseSync,
+  operation: ProofOperationRecord,
+  authority: ExactProofOperationAuthority,
+): void {
+  if (operation.state !== 'completed') {
+    throw new Error(
+      `Proof operation ${operation.operationId} cannot complete from ${operation.state}`,
+    )
+  }
+  if (
+    readDaemonReservedWalletProofsFromDatabase(database, operation.mintUrl, authority.reservationId)
+      .length !== 0
+  ) {
+    throw new Error('completed exact proof operation retains a reservation')
+  }
+  for (const input of operation.inputs) {
+    const stale = database
+      .prepare(
+        `SELECT 1 FROM target_wallet_proofs
+         WHERE scope_id = ? AND normalized_mint = ? AND secret = ? LIMIT 1`,
+      )
+      .get(readScopeId(database), operation.mintUrl, input.secret)
+    if (stale !== undefined) {
+      throw new Error('completed exact proof operation retains a predecessor')
+    }
+  }
+}
+
+function admitExactSuccessorGroups(
+  database: DatabaseSync,
+  operation: ProofOperationRecord,
+  authority: ExactProofOperationAuthority,
+  nowMs: number,
+): void {
+  const resultProofs = operation.resultProofs
+  if (resultProofs === undefined) {
+    throw new Error(`Proof operation ${operation.operationId} result proofs are missing`)
+  }
+  assertExactSuccessorGroups(resultProofs, authority.successorAssets, operation.operationId)
+  for (const [group, proofs] of Object.entries(resultProofs)) {
+    const asset = authority.successorAssets[group]
+    if (asset === undefined) {
+      throw new Error(`Proof operation ${operation.operationId} successor asset is missing`)
+    }
+    admitExactAvailableWalletProofsFromDatabase(database, {
+      mintUrl: operation.mintUrl,
+      proofs,
+      asset,
+      nowMs,
+    })
+  }
+}
+
 function prepareExactProofOperation(
   database: DatabaseSync,
   input: PrepareProofOperationInput & {
@@ -816,7 +1409,7 @@ function prepareExactProofOperation(
   if (existing !== null) {
     assertCompatibleProofOperation(existing, input)
     assertExactReservedProofRows(
-      readDaemonReservedWalletProofsFromDatabase(database, input.reservationId),
+      readDaemonReservedWalletProofsFromDatabase(database, input.mintUrl, input.reservationId),
       input,
     )
     return existing
@@ -828,6 +1421,32 @@ function prepareExactProofOperation(
   const record = newPreparedProofOperation(input, timestamp)
   insertProofOperation(database, scopeId, record)
   return record
+}
+
+function prepareAdoptedExactProofOperation(
+  database: DatabaseSync,
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly asset: StoredProofAsset
+  },
+): ProofOperationRecord {
+  assertManagedConditionProofOperation(database, input)
+  const existing = readDaemonProofOperationFromDatabase(database, input.operationId)
+  if (existing !== null) {
+    assertCompatibleProofOperation(existing, input)
+  } else {
+    assertValidExactInputs(input)
+    insertProofOperation(
+      database,
+      readScopeId(database),
+      newPreparedProofOperation(input, Date.now()),
+    )
+  }
+  assertExactReservedProofRows(
+    readDaemonReservedWalletProofsFromDatabase(database, input.mintUrl, input.reservationId),
+    input,
+  )
+  return existing ?? readDaemonProofOperationFromDatabase(database, input.operationId)!
 }
 
 function reserveExactProofRow(
@@ -931,6 +1550,7 @@ export async function completeManagedConditionRedeemFenced(
       if (before.state === 'prepared') {
         const reserved = readDaemonReservedWalletProofsFromDatabase(
           database,
+          before.mintUrl,
           requireText(before.metadata.reservationId, 'retirement reservation id'),
         )
         assertExactReservedProofRows(reserved, {
@@ -1151,7 +1771,10 @@ export function releasePreparedProofReservationFromDatabase(
     if (operation.lastError !== input.reason) {
       throw new Error('prepared proof reservation failed with a different reason')
     }
-    if (readDaemonReservedWalletProofsFromDatabase(database, input.reservationId).length !== 0) {
+    if (
+      readDaemonReservedWalletProofsFromDatabase(database, operation.mintUrl, input.reservationId)
+        .length !== 0
+    ) {
       throw new Error('failed proof reservation still owns wallet proofs')
     }
     return operation
@@ -1159,7 +1782,11 @@ export function releasePreparedProofReservationFromDatabase(
   if (operation.state !== 'prepared') {
     throw new Error('only a prepared proof reservation can be released')
   }
-  const reserved = readDaemonReservedWalletProofsFromDatabase(database, input.reservationId)
+  const reserved = readDaemonReservedWalletProofsFromDatabase(
+    database,
+    operation.mintUrl,
+    input.reservationId,
+  )
   assertExactReservedProofRows(reserved, {
     operationId: operation.operationId,
     kind: operation.kind,
@@ -1894,6 +2521,7 @@ export function readDaemonProofOperationFromDatabase(
 
 export function readDaemonReservedWalletProofsFromDatabase(
   database: DatabaseSync,
+  mintUrl: string,
   reservationId: string,
 ): StoredProofRecord[] {
   const scopeId = readScopeId(database)
@@ -1901,10 +2529,11 @@ export function readDaemonReservedWalletProofsFromDatabase(
     database
       .prepare(
         `SELECT * FROM target_wallet_proofs
-         WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?
+         WHERE scope_id = ? AND normalized_mint = ?
+           AND state = 'reserved' AND reserved_by = ?
          ORDER BY proof_id`,
       )
-      .all(scopeId, reservationId) as Array<Record<string, unknown>>
+      .all(scopeId, mintUrl, reservationId) as Array<Record<string, unknown>>
   ).map(decodeWalletProofRow)
 }
 
@@ -2104,6 +2733,265 @@ export async function readProofOperationsByPurposePage(input: {
   })
 }
 
+export async function readRecoverableCompleteSetProofOperationPage(input: {
+  readonly regularPurpose: string
+  readonly ctfPurpose: string
+  readonly limit: number
+}): Promise<RecoverableCompleteSetProofOperationPage> {
+  const limit = boundedPageLimit(input.limit)
+  if (limit > COMPLETE_SET_RECOVERY_PAGE_SAMPLE_LIMIT) {
+    throw new Error(
+      `complete-set recovery page limit must not exceed ${COMPLETE_SET_RECOVERY_PAGE_SAMPLE_LIMIT}`,
+    )
+  }
+  const regularPurpose = requireOperationPurpose(input.regularPurpose)
+  const ctfPurpose = requireOperationPurpose(input.ctfPurpose)
+  return withProfileStorageAccess(async () => {
+    const database = await openDaemonStateSqlite(profileDir())
+    try {
+      const scopeId = readScopeId(database)
+      const fetched = database
+        .prepare(COMPLETE_SET_RECOVERY_ROOT_PAGE_SQL)
+        .all(scopeId, limit + 1) as Array<Record<string, unknown>>
+      return {
+        roots: fetched
+          .slice(0, limit)
+          .map((row) => decodeRecoverableCompleteSetRecoveryRoot(row, regularPurpose, ctfPurpose)),
+        hasMore: fetched.length > limit,
+      }
+    } finally {
+      database.close()
+    }
+  })
+}
+
+function decodeRecoverableCompleteSetRecoveryRoot(
+  rawRoot: Record<string, unknown>,
+  regularPurpose: string,
+  ctfPurpose: string,
+): RecoverableCompleteSetRecoveryRoot {
+  const root = decodeCompleteSetRecoveryRoot(rawRoot)
+  const operationId = root.state === 'ctf-prepared' ? root.ctfOperationId : root.regularOperationId
+  if (operationId === null)
+    throw new Error('complete-set recovery root operation reference is absent')
+  const expected =
+    root.state === 'ctf-prepared'
+      ? { purpose: ctfPurpose, state: 'prepared' as const, kind: 'ctf-split' as const }
+      : root.state === 'ctf-handoff'
+        ? { purpose: regularPurpose, state: 'completed' as const, kind: 'regular-split' as const }
+        : { purpose: regularPurpose, state: 'prepared' as const, kind: 'regular-split' as const }
+  const operationKind = rawRoot.kind
+  const operationPurpose = requireOperationPurpose(rawRoot.purpose)
+  const operationState = rawRoot.operation_state
+  const mintUrl = requireText(rawRoot.operation_mint, 'complete-set operation mint')
+  const reservationId =
+    rawRoot.reservation_id === null
+      ? null
+      : requireText(rawRoot.reservation_id, 'complete-set operation reservation')
+  if (
+    requireText(rawRoot.operation_id, 'complete-set operation id') !== operationId ||
+    operationKind !== expected.kind ||
+    operationPurpose !== expected.purpose ||
+    operationState !== expected.state ||
+    mintUrl !== root.mintUrl ||
+    reservationId !== `${operationId}:reservation`
+  ) {
+    throw new Error('complete-set recovery root operation authority is invalid')
+  }
+  return {
+    root,
+    rootState: root.state,
+    operationId,
+    operationKind: expected.kind,
+    operationPurpose,
+    operationState: expected.state,
+    reservationId: `${operationId}:reservation`,
+    mintUrl,
+  }
+}
+
+type CompleteSetRecoveryRootState = 'regular-prepared' | 'ctf-handoff' | 'ctf-prepared'
+
+function readCompleteSetRecoveryRoot(
+  database: DatabaseSync,
+  rootOperationId: string,
+): (CompleteSetRecoveryRoot & { readonly state: CompleteSetRecoveryRootState }) | null {
+  const raw = database
+    .prepare(
+      `SELECT * FROM daemon_complete_set_recovery_roots
+       WHERE scope_id = ? AND root_operation_id = ?`,
+    )
+    .get(readScopeId(database), rootOperationId) as Record<string, unknown> | undefined
+  return raw === undefined ? null : decodeCompleteSetRecoveryRoot(raw)
+}
+
+function decodeCompleteSetRecoveryRoot(
+  raw: Record<string, unknown>,
+): CompleteSetRecoveryRoot & { readonly state: CompleteSetRecoveryRootState } {
+  const state = raw.state
+  if (state !== 'regular-prepared' && state !== 'ctf-handoff' && state !== 'ctf-prepared') {
+    throw new Error('complete-set recovery root state is invalid')
+  }
+  return {
+    rootOperationId: requireText(raw.root_operation_id, 'complete-set root id'),
+    mintUrl: requireText(raw.normalized_mint, 'complete-set root mint'),
+    conditionId: requireText(raw.condition_id, 'complete-set root condition'),
+    amountSats: requireInteger(raw.amount_sats, 'complete-set root amount'),
+    regularOperationId:
+      raw.regular_operation_id === null
+        ? null
+        : requireText(raw.regular_operation_id, 'complete-set regular operation id'),
+    ctfOperationId:
+      raw.ctf_operation_id === null
+        ? null
+        : requireText(raw.ctf_operation_id, 'complete-set CTF operation id'),
+    state,
+  }
+}
+
+function upsertCompleteSetRecoveryRoot(
+  database: DatabaseSync,
+  root: CompleteSetRecoveryRoot,
+  state: CompleteSetRecoveryRootState,
+  observedAtMs: number,
+): void {
+  assertCompleteSetRecoveryRoot(root)
+  assertCompleteSetRecoveryRootState(root, state)
+  const scopeId = readScopeId(database)
+  const existing = readCompleteSetRecoveryRoot(database, root.rootOperationId)
+  if (existing !== null && !sameCompleteSetRecoveryRoot(existing, root)) {
+    throw new Error('complete-set recovery root conflicts with durable authority')
+  }
+  if (existing !== null && !canTransitionCompleteSetRecoveryRoot(existing.state, state)) {
+    throw new Error('complete-set recovery root state regressed')
+  }
+  const createdAtMs =
+    existing === null
+      ? observedAtMs
+      : readCompleteSetRecoveryRootCreatedAt(database, root.rootOperationId)
+  const updatedAtMs = Math.max(createdAtMs, observedAtMs)
+  database
+    .prepare(
+      `INSERT INTO daemon_complete_set_recovery_roots (
+         scope_id, root_operation_id, normalized_mint, condition_id, amount_sats,
+         regular_operation_id, regular_reservation_id, regular_purpose,
+         ctf_operation_id, ctf_reservation_id, ctf_purpose, state, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(scope_id, root_operation_id) DO UPDATE SET
+         state = excluded.state,
+         ctf_operation_id = COALESCE(
+           daemon_complete_set_recovery_roots.ctf_operation_id, excluded.ctf_operation_id
+         ),
+         ctf_reservation_id = COALESCE(
+           daemon_complete_set_recovery_roots.ctf_reservation_id, excluded.ctf_reservation_id
+         ),
+         ctf_purpose = COALESCE(
+           daemon_complete_set_recovery_roots.ctf_purpose, excluded.ctf_purpose
+         ),
+         updated_at_ms = MAX(daemon_complete_set_recovery_roots.updated_at_ms, excluded.updated_at_ms)`,
+    )
+    .run(
+      scopeId,
+      root.rootOperationId,
+      root.mintUrl,
+      root.conditionId,
+      root.amountSats,
+      root.regularOperationId,
+      root.regularOperationId === null ? null : `${root.regularOperationId}:reservation`,
+      root.regularOperationId === null ? null : 'daemon-complete-set-regular-split',
+      root.ctfOperationId,
+      root.ctfOperationId === null ? null : `${root.ctfOperationId}:reservation`,
+      root.ctfOperationId === null ? null : 'daemon-complete-set-ctf-split',
+      state,
+      createdAtMs,
+      updatedAtMs,
+    )
+}
+
+function assertCompleteSetRecoveryRootState(
+  root: CompleteSetRecoveryRoot,
+  state: CompleteSetRecoveryRootState,
+): void {
+  const regularOperationId = `${root.rootOperationId}:regular-split`
+  const ctfOperationId = `${root.rootOperationId}:ctf-split`
+  if (
+    (root.regularOperationId !== null && root.regularOperationId !== regularOperationId) ||
+    (root.ctfOperationId !== null && root.ctfOperationId !== ctfOperationId) ||
+    ((state === 'regular-prepared' || state === 'ctf-handoff') &&
+      (root.regularOperationId !== regularOperationId || root.ctfOperationId !== null)) ||
+    (state === 'ctf-prepared' && root.ctfOperationId !== ctfOperationId)
+  ) {
+    throw new Error('complete-set recovery root authority is invalid')
+  }
+}
+
+function canTransitionCompleteSetRecoveryRoot(
+  current: CompleteSetRecoveryRootState,
+  next: CompleteSetRecoveryRootState,
+): boolean {
+  return (
+    current === next ||
+    (current === 'regular-prepared' && next === 'ctf-handoff') ||
+    (current === 'ctf-handoff' && next === 'ctf-prepared')
+  )
+}
+
+function readCompleteSetRecoveryRootCreatedAt(
+  database: DatabaseSync,
+  rootOperationId: string,
+): number {
+  const raw = database
+    .prepare(
+      `SELECT created_at_ms FROM daemon_complete_set_recovery_roots
+       WHERE scope_id = ? AND root_operation_id = ?`,
+    )
+    .get(readScopeId(database), rootOperationId) as Record<string, unknown> | undefined
+  if (raw === undefined) throw new Error('complete-set recovery root is absent')
+  return requireInteger(raw.created_at_ms, 'complete-set root creation time')
+}
+
+function deleteCompleteSetRecoveryRoot(database: DatabaseSync, rootOperationId: string): void {
+  database
+    .prepare(
+      `DELETE FROM daemon_complete_set_recovery_roots
+       WHERE scope_id = ? AND root_operation_id = ?`,
+    )
+    .run(readScopeId(database), rootOperationId)
+}
+
+function assertCompleteSetRecoveryRoot(root: CompleteSetRecoveryRoot): void {
+  if (
+    root.rootOperationId.length < 1 ||
+    root.rootOperationId.length > 16_358 ||
+    (root.ctfOperationId !== null &&
+      (root.ctfOperationId.length < 1 || root.ctfOperationId.length > 16_384)) ||
+    root.mintUrl.length < 1 ||
+    root.mintUrl.length > 2_048 ||
+    root.conditionId.length < 1 ||
+    root.conditionId.length > 1_024 ||
+    !Number.isSafeInteger(root.amountSats) ||
+    root.amountSats < 1 ||
+    (root.regularOperationId !== null &&
+      (root.regularOperationId.length < 1 || root.regularOperationId.length > 16_384))
+  ) {
+    throw new Error('complete-set recovery root is invalid')
+  }
+}
+
+function sameCompleteSetRecoveryRoot(
+  left: CompleteSetRecoveryRoot,
+  right: CompleteSetRecoveryRoot,
+): boolean {
+  return (
+    left.rootOperationId === right.rootOperationId &&
+    left.mintUrl === right.mintUrl &&
+    left.conditionId === right.conditionId &&
+    left.amountSats === right.amountSats &&
+    left.regularOperationId === right.regularOperationId &&
+    (left.ctfOperationId === null || left.ctfOperationId === right.ctfOperationId)
+  )
+}
+
 export async function hasSubmittedClientOrder(clientOrderId: string): Promise<boolean> {
   if (clientOrderId.length === 0) throw new Error('client order id must not be empty')
   return withProfileStorageAccess(async () => {
@@ -2186,7 +3074,11 @@ export async function finalizeCompletedProofReservation(
       if (result === undefined) {
         throw new Error('completed proof reservation result group is missing')
       }
-      const reserved = readDaemonReservedWalletProofsFromDatabase(database, input.reservationId)
+      const reserved = readDaemonReservedWalletProofsFromDatabase(
+        database,
+        operation.mintUrl,
+        input.reservationId,
+      )
       if (reserved.length > 0) {
         assertExactReservedProofRows(reserved, {
           operationId: operation.operationId,
@@ -2344,6 +3236,7 @@ export function writeDaemonStateToDatabase(database: DatabaseSync, state: Daemon
   const scopeId = readScopeId(database)
   assertManagedConditionStateRewrite(database, scopeId, state.wallet.proofs)
   const priorTargetArtifactIds = collectTargetArtifactIds(database, scopeId)
+  database.prepare('DELETE FROM daemon_complete_set_recovery_roots WHERE scope_id = ?').run(scopeId)
   database.prepare('DELETE FROM target_proof_operations WHERE scope_id = ?').run(scopeId)
   database.prepare('DELETE FROM target_wallet_proofs WHERE scope_id = ?').run(scopeId)
   database
@@ -2359,6 +3252,7 @@ export function writeDaemonStateToDatabase(database: DatabaseSync, state: Daemon
   for (const operation of Object.values(state.proofOperations)) {
     insertProofOperation(database, scopeId, operation)
   }
+  synchronizeCompleteSetRecoveryRootsFromState(database, state)
   for (const order of Object.values(state.orders)) {
     database
       .prepare('DELETE FROM daemon_order_trades WHERE scope_id = ? AND order_id = ?')
@@ -2369,6 +3263,119 @@ export function writeDaemonStateToDatabase(database: DatabaseSync, state: Daemon
   deleteUnreferencedMissingSwaps(database, scopeId, new Set(Object.keys(state.swaps)))
   deleteUnreferencedMissingOrders(database, scopeId, new Set(Object.keys(state.orders)))
   deleteGloballyUnreferencedArtifacts(database, scopeId, priorTargetArtifactIds)
+}
+
+function synchronizeCompleteSetRecoveryRootsFromState(
+  database: DatabaseSync,
+  state: DaemonState,
+): void {
+  const { regularByRoot, ctfByRoot } = indexCompleteSetRecoveryOperations(state)
+  synchronizeRegularCompleteSetRecoveryRoots(database, regularByRoot, ctfByRoot)
+  synchronizePreparedCtfCompleteSetRecoveryRoots(database, regularByRoot, ctfByRoot)
+}
+
+function indexCompleteSetRecoveryOperations(state: DaemonState): {
+  regularByRoot: Map<string, ProofOperationRecord>
+  ctfByRoot: Map<string, ProofOperationRecord>
+} {
+  const regularByRoot = new Map<string, ProofOperationRecord>()
+  const ctfByRoot = new Map<string, ProofOperationRecord>()
+  for (const operation of Object.values(state.proofOperations)) {
+    const rootOperationId = completeSetRootOperationId(operation)
+    if (rootOperationId === null) continue
+    if (operation.metadata.purpose === 'daemon-complete-set-regular-split') {
+      if (regularByRoot.has(rootOperationId)) {
+        throw new Error('complete-set recovery root has duplicate regular authority')
+      }
+      regularByRoot.set(rootOperationId, operation)
+    } else {
+      if (ctfByRoot.has(rootOperationId)) {
+        throw new Error('complete-set recovery root has duplicate CTF authority')
+      }
+      ctfByRoot.set(rootOperationId, operation)
+    }
+  }
+  return { regularByRoot, ctfByRoot }
+}
+
+function synchronizeRegularCompleteSetRecoveryRoots(
+  database: DatabaseSync,
+  regularByRoot: ReadonlyMap<string, ProofOperationRecord>,
+  ctfByRoot: ReadonlyMap<string, ProofOperationRecord>,
+): void {
+  for (const [rootOperationId, regular] of regularByRoot) {
+    const ctf = ctfByRoot.get(rootOperationId)
+    if (regular.state === 'prepared') {
+      upsertCompleteSetRecoveryRoot(
+        database,
+        completeSetRecoveryRootFromOperation(regular, regular.operationId, null),
+        'regular-prepared',
+        regular.updatedAt,
+      )
+    } else if (regular.state === 'completed' && ctf === undefined) {
+      upsertCompleteSetRecoveryRoot(
+        database,
+        completeSetRecoveryRootFromOperation(regular, regular.operationId, null),
+        'ctf-handoff',
+        regular.updatedAt,
+      )
+    }
+  }
+}
+
+function synchronizePreparedCtfCompleteSetRecoveryRoots(
+  database: DatabaseSync,
+  regularByRoot: ReadonlyMap<string, ProofOperationRecord>,
+  ctfByRoot: ReadonlyMap<string, ProofOperationRecord>,
+): void {
+  for (const [rootOperationId, ctf] of ctfByRoot) {
+    if (ctf.state !== 'prepared') continue
+    const regular = regularByRoot.get(rootOperationId)
+    upsertCompleteSetRecoveryRoot(
+      database,
+      completeSetRecoveryRootFromOperation(ctf, regular?.operationId ?? null, ctf.operationId),
+      'ctf-prepared',
+      ctf.updatedAt,
+    )
+  }
+}
+
+function completeSetRootOperationId(operation: ProofOperationRecord): string | null {
+  const purpose = operation.metadata.purpose
+  const amountSats = operation.metadata.amountSats
+  if (
+    purpose !== 'daemon-complete-set-regular-split' &&
+    purpose !== 'daemon-complete-set-ctf-split'
+  ) {
+    return null
+  }
+  if (
+    typeof operation.metadata.rootOperationId !== 'string' ||
+    operation.metadata.rootOperationId.length === 0 ||
+    typeof operation.metadata.conditionId !== 'string' ||
+    operation.metadata.conditionId.length === 0 ||
+    typeof amountSats !== 'number' ||
+    !Number.isSafeInteger(amountSats) ||
+    amountSats <= 0
+  ) {
+    throw new Error('complete-set operation metadata is invalid')
+  }
+  return operation.metadata.rootOperationId
+}
+
+function completeSetRecoveryRootFromOperation(
+  operation: ProofOperationRecord,
+  regularOperationId: string | null,
+  ctfOperationId: string | null,
+): CompleteSetRecoveryRoot {
+  return {
+    rootOperationId: operation.metadata.rootOperationId as string,
+    mintUrl: operation.mintUrl,
+    conditionId: operation.metadata.conditionId as string,
+    amountSats: operation.metadata.amountSats as number,
+    regularOperationId,
+    ctfOperationId,
+  }
 }
 
 function assertManagedConditionStateRewrite(

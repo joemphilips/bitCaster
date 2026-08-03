@@ -30,7 +30,11 @@ export function commitDaemonCtfRangeSource(
   const results = requireSourceResults(source)
   const authorization = results.authorization ?? []
   assertExactAuthorizationProofs(authorization, operation)
-  const reserved = readDaemonReservedWalletProofsFromDatabase(database, reservationId)
+  const reserved = readDaemonReservedWalletProofsFromDatabase(
+    database,
+    operation.mintUrl,
+    reservationId,
+  )
   if (
     reserved.length !== source.inputs.length ||
     !source.inputs.every((inputProof) =>

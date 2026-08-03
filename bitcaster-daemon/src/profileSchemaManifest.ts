@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '6ef58f580708e69ea2abf286502e09b0d39e7ac6430324b1b392913db8d9da42'
+  '32c54d7a747deaf4e38a29a5c9ac430d76095e626d7fcb28bbca1af9bee2c5a9'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -240,6 +240,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
     UNIQUE (scope_id, operation_id),
     UNIQUE (scope_id, operation_id, reservation_id, purpose),
+    UNIQUE (scope_id, operation_id, reservation_id, purpose, normalized_mint),
     FOREIGN KEY (scope_id, request_artifact_id)
       REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT
       DEFERRABLE INITIALLY DEFERRED,
@@ -265,6 +266,81 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       ((kind NOT IN ('ctf-split', 'ctf-merge') OR state <> 'completed')
         AND result_proofs_digest IS NULL)
     )
+  ) STRICT`,
+  `CREATE TABLE daemon_complete_set_recovery_roots (
+    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    root_operation_id TEXT NOT NULL CHECK (length(root_operation_id) BETWEEN 1 AND 16358),
+    normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
+    condition_id TEXT NOT NULL CHECK (length(condition_id) BETWEEN 1 AND 1024),
+    amount_sats INTEGER NOT NULL CHECK (amount_sats BETWEEN 1 AND 9007199254740991),
+    regular_operation_id TEXT CHECK (length(regular_operation_id) BETWEEN 1 AND 16384),
+    regular_reservation_id TEXT CHECK (length(regular_reservation_id) BETWEEN 1 AND 16384),
+    regular_purpose TEXT CHECK (
+      regular_purpose IS NULL OR regular_purpose = 'daemon-complete-set-regular-split'
+    ),
+    ctf_operation_id TEXT CHECK (length(ctf_operation_id) BETWEEN 1 AND 16384),
+    ctf_reservation_id TEXT CHECK (length(ctf_reservation_id) BETWEEN 1 AND 16384),
+    ctf_purpose TEXT CHECK (
+      ctf_purpose IS NULL OR ctf_purpose = 'daemon-complete-set-ctf-split'
+    ),
+    state TEXT NOT NULL CHECK (state IN ('regular-prepared', 'ctf-handoff', 'ctf-prepared')),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
+    PRIMARY KEY (scope_id, root_operation_id),
+    UNIQUE (scope_id, regular_operation_id),
+    UNIQUE (scope_id, ctf_operation_id),
+    FOREIGN KEY (
+      scope_id, regular_operation_id, regular_reservation_id, regular_purpose, normalized_mint
+    ) REFERENCES target_proof_operations(
+      scope_id, operation_id, reservation_id, purpose, normalized_mint
+    ) ON DELETE RESTRICT
+      DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (
+      scope_id, ctf_operation_id, ctf_reservation_id, ctf_purpose, normalized_mint
+    ) REFERENCES target_proof_operations(
+      scope_id, operation_id, reservation_id, purpose, normalized_mint
+    ) ON DELETE RESTRICT
+      DEFERRABLE INITIALLY DEFERRED,
+    CHECK (
+      (state IN ('regular-prepared', 'ctf-handoff')
+        AND regular_operation_id IS NOT NULL
+        AND regular_reservation_id IS NOT NULL
+        AND regular_purpose IS NOT NULL
+        AND ctf_operation_id IS NULL
+        AND ctf_reservation_id IS NULL
+        AND ctf_purpose IS NULL)
+      OR (state = 'ctf-prepared'
+        AND ctf_operation_id IS NOT NULL
+        AND ctf_reservation_id IS NOT NULL
+        AND ctf_purpose IS NOT NULL)
+    ),
+    CHECK (
+      (regular_operation_id IS NULL AND regular_reservation_id IS NULL AND regular_purpose IS NULL)
+      OR
+      (regular_operation_id IS NOT NULL AND regular_reservation_id IS NOT NULL AND regular_purpose IS NOT NULL)
+    ),
+    CHECK (
+      (ctf_operation_id IS NULL AND ctf_reservation_id IS NULL AND ctf_purpose IS NULL)
+      OR
+      (ctf_operation_id IS NOT NULL AND ctf_reservation_id IS NOT NULL AND ctf_purpose IS NOT NULL)
+    ),
+    CHECK (
+      regular_operation_id IS NULL OR regular_operation_id = root_operation_id || ':regular-split'
+    ),
+    CHECK (
+      regular_reservation_id IS NULL
+      OR regular_reservation_id = root_operation_id || ':regular-split:reservation'
+    ),
+    CHECK (
+      ctf_operation_id IS NULL OR ctf_operation_id = root_operation_id || ':ctf-split'
+    ),
+    CHECK (
+      ctf_reservation_id IS NULL
+      OR ctf_reservation_id = root_operation_id || ':ctf-split:reservation'
+    ),
+    CHECK (ctf_operation_id IS NULL OR root_operation_id <> ctf_operation_id),
+    CHECK (regular_operation_id IS NULL OR root_operation_id <> regular_operation_id),
+    CHECK (regular_operation_id IS NULL OR regular_operation_id <> ctf_operation_id)
   ) STRICT`,
   `CREATE TABLE daemon_ctf_range_preparations (
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
@@ -1232,6 +1308,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ON target_proof_operations (
       scope_id, purpose, state, updated_at_ms, operation_id
     )`,
+  `CREATE INDEX daemon_complete_set_recovery_roots_active_idx
+    ON daemon_complete_set_recovery_roots (scope_id, updated_at_ms, root_operation_id)`,
   `CREATE INDEX daemon_ctf_range_active_recovery_idx
     ON daemon_ctf_range_preparations (
       scope_id, updated_at_ms, range_operation_id, client_order_id
