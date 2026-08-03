@@ -27,6 +27,7 @@ import {
   type EncryptedWalletBackupFrozenSnapshotSealStore,
   type EncryptedWalletBackupFrozenSnapshotSealTransaction,
 } from '../src/encryptedWalletBackupSnapshotSeal.ts'
+import { finalManifestEntryBytes } from '../src/encryptedWalletBackupManifestPageAuthority.ts'
 
 test('Pass-A plans empty and bounded inventory pages', async () => {
   for (const count of [0, 1, 511, 512, 513]) {
@@ -66,6 +67,36 @@ test('Pass-A sizing equals canonical CBOR at integer and array-header edges', ()
       }
     }
   }
+})
+
+test('Pass-A page sizing measures the final 11-field prepared-record entry', () => {
+  const finalEntry = finalManifestEntryBytes(
+    encodeCanonical([
+      0,
+      new Uint8Array(32),
+      new Uint8Array(32),
+      'https://mint.example',
+      'sat',
+      '1',
+      0,
+      null,
+      1,
+      1,
+    ]),
+    new Uint8Array(16),
+    new Uint8Array(32),
+  )
+  const actual = encodeCanonical([1, 2, 1, new Uint8Array(16), 0, 1, [decode(finalEntry)]])
+  assert.equal(
+    measureEncryptedWalletBackupManifestPageCbor({
+      generation: 1,
+      pageIndex: 0,
+      pageCount: 1,
+      entryCount: 1,
+      canonicalEntryBytes: finalEntry.byteLength,
+    }),
+    actual.byteLength,
+  )
 })
 
 test('Pass-A rejects singleton pages that exceed the canonical page capacity', async () => {

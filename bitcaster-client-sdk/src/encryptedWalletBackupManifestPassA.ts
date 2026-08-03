@@ -21,11 +21,21 @@ import {
   readEncryptedWalletBackupSnapshotSealMetadataPage,
   type EncryptedWalletBackupFrozenSnapshotSealStore,
 } from './encryptedWalletBackupSnapshotSeal.ts'
+import {
+  readEncryptedWalletBackupManifestPassABoundary,
+  registerEncryptedWalletBackupManifestPassABoundaries,
+  type EncryptedWalletBackupManifestPageBoundary,
+} from './encryptedWalletBackupManifestPageAuthority.ts'
 import type { EncryptedWalletBackupFrozenSnapshotControl } from './encryptedWalletBackupSnapshotAuthority.ts'
 import { requireRealm, requireUtf8Text } from './encryptedWalletBackupServerValidation.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_PASS_A_PAGE_MAX_BYTES = 65_532 as const
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_PASS_A_RESULT_MAX_BYTES = 65_535 as const
+
+export {
+  readEncryptedWalletBackupManifestPassABoundary,
+  type EncryptedWalletBackupManifestPageBoundary,
+}
 
 export interface EncryptedWalletBackupManifestPassABoundary {
   readonly entryCount: number
@@ -110,7 +120,27 @@ export async function planEncryptedWalletBackupManifestPassA(input: {
   const planner = new ManifestPassAPlanner(input.store, input.control, current)
   const result = await planner.plan()
   await persistManifestPassAResult(input.store, input.control, current, result)
+  registerManifestPassABoundaries(result)
   return result
+}
+
+function registerManifestPassABoundaries(
+  result: PersistedEncryptedWalletBackupManifestPassAResult,
+): void {
+  registerEncryptedWalletBackupManifestPassABoundaries({
+    result,
+    resultDigest: bytesToHex(sha256(encodeEncryptedWalletBackupManifestPassAResult(result))),
+    realm: result.realm,
+    vaultId: result.vaultId,
+    snapshotId: result.snapshotId,
+    snapshotRevision: result.snapshotRevision,
+    sealedControlVersion: result.sealedControlVersion,
+    sealRunRevision: result.sealRunRevision,
+    sealedControlDigest: result.sealedControlDigest,
+    generation: result.generation,
+    snapshotNonce: result.snapshotNonce,
+    boundaries: result.boundaries,
+  })
 }
 
 export function encodeEncryptedWalletBackupManifestPassAResult(

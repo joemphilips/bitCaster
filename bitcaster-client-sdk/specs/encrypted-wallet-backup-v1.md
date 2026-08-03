@@ -267,6 +267,19 @@ Each entry is the closed 11-item tuple:
 ]
 ```
 
+The prepared proof source stores a canonical 10-item entry template. It has a
+leading record-kind item. The SDK removes that item and inserts fixed-width
+`chunkObjectId16` and `chunkDigest32` references. Its pinned
+`canonicalManifestEntryBytes` value is the exact byte length of this final
+11-item entry. The SDK uses zero-filled fixed-width references for this size.
+It does not use the 10-item template length.
+
+The bounded page creator accepts only SDK proof, chunk-object, and Pass-A
+boundary capabilities. It does not accept raw canonical page bytes, a raw
+boundary tuple, key material, generation, nonce, page index, or page count.
+It checks every deterministic binding before it allocates an object ID or uses
+encryption randomness.
+
 `proofKind` is `0` for ordinary or `1` for CTF. Its CTF tuple, optional compact
 terminal seal, and all
 mint/unit/amount/time bounds are identical to the proof record. Ordinary

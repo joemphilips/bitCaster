@@ -24,6 +24,7 @@ import {
   type PersistedPreparedEncryptedWalletBackupRecord,
 } from '../src/encryptedWalletBackupPreparedRecordPersistence.ts'
 import { encodeCanonicalBackupCbor } from '../src/encryptedWalletBackupCbor.ts'
+import { finalManifestEntryBytes } from '../src/encryptedWalletBackupManifestPageAuthority.ts'
 
 const vector = JSON.parse(
   await readFile(
@@ -192,7 +193,13 @@ test('prepared source descriptor is canonical, strict, and changes with its body
   assert.equal(decoded.revision, persisted.snapshotRevision)
   assert.equal(decoded.recordId, persisted.recordId)
   assert.equal(decoded.commitment, persisted.commitment)
-  assert.equal(decoded.canonicalManifestEntryBytes, persisted.canonicalManifestEntry.byteLength)
+  const finalEntry = finalManifestEntryBytes(
+    persisted.canonicalManifestEntry,
+    new Uint8Array(16),
+    new Uint8Array(32),
+  )
+  assert.equal(decoded.canonicalManifestEntryBytes, finalEntry.byteLength)
+  assert.notEqual(decoded.canonicalManifestEntryBytes, persisted.canonicalManifestEntry.byteLength)
   const changed = structuredClone(persisted)
   changed.authenticationTag[0]! ^= 1
   const changedDescriptor = encodeEncryptedWalletBackupPreparedSourceDescriptor(changed)

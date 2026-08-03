@@ -49,6 +49,12 @@ import {
   type PreparedEncryptedWalletBackupRecord,
 } from './encryptedWalletBackupRecord.ts'
 import {
+  finalManifestEntryBytes,
+  issueEncryptedWalletBackupManifestPageProvenance,
+  requireEncryptedWalletBackupManifestPageBoundary,
+  type EncryptedWalletBackupManifestPageBoundary,
+} from './encryptedWalletBackupManifestPageAuthority.ts'
+import {
   ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
   issueEncryptedWalletBackupFrozenSnapshotControl,
   type EncryptedWalletBackupFrozenSnapshotControl,
@@ -430,6 +436,7 @@ interface PreparedProofAuthority {
   readonly createdAtUnixSeconds: number
   readonly updatedAtUnixSeconds: number
   readonly recordBytes: Uint8Array
+  readonly canonicalManifestEntry: Uint8Array
 }
 
 const PREPARED_PROOF_AUTHORITIES = new WeakMap<object, PreparedProofAuthority>()
@@ -466,6 +473,8 @@ export interface PreparedEncryptedWalletBackupObject {
     | typeof ENCRYPTED_WALLET_BACKUP_MANIFEST_FRAME_BYTES
   readonly digest: string
 }
+
+export type { EncryptedWalletBackupManifestPageBoundary } from './encryptedWalletBackupManifestPageAuthority.ts'
 
 export interface EncryptedWalletBackupWireObject extends PreparedEncryptedWalletBackupObject {
   readonly aad: Uint8Array
@@ -1626,6 +1635,18 @@ export async function prepareEncryptedWalletBackupProof(
     throw new Error('backup proof record exceeds the encoded size limit')
   }
   const recordBytes = encodeCanonical(record)
+  const canonicalManifestEntry = encodeCanonical([
+    ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
+    hexToBytes(proofId),
+    hexToBytes(commitment),
+    mint,
+    unit,
+    amount,
+    proofKindCode,
+    ctfMetadata,
+    createdAt,
+    updatedAt,
+  ])
   const handle = Object.freeze({ proofId, commitment })
   PREPARED_PROOF_AUTHORITIES.set(handle, {
     keyAuthority: authority,
@@ -1641,6 +1662,7 @@ export async function prepareEncryptedWalletBackupProof(
     createdAtUnixSeconds: createdAt,
     updatedAtUnixSeconds: updatedAt,
     recordBytes,
+    canonicalManifestEntry,
   })
   return issuePreparedEncryptedWalletBackupRecord(handle, {
     recordId: proofId,
@@ -1650,18 +1672,7 @@ export async function prepareEncryptedWalletBackupProof(
     canonicalRecord: recordBytes,
     snapshotId: committedSnapshot.row.snapshotId,
     snapshotRevision: committedSnapshot.row.revision,
-    canonicalManifestEntry: encodeCanonical([
-      ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
-      hexToBytes(proofId),
-      hexToBytes(commitment),
-      mint,
-      unit,
-      amount,
-      proofKindCode,
-      ctfMetadata,
-      createdAt,
-      updatedAt,
-    ]),
+    canonicalManifestEntry,
   })
 }
 
@@ -2263,6 +2274,170 @@ export async function rehydratePreparedEncryptedWalletBackupProofObject(input: {
   } catch {
     throw new Error('persisted encrypted wallet backup proof object is invalid')
   }
+}
+
+export async function prepareEncryptedWalletBackupManifestPage(input: {
+  readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly boundary: EncryptedWalletBackupManifestPageBoundary
+  readonly entries: readonly Readonly<{
+    proof: PreparedEncryptedWalletBackupProof
+    chunkObject: PreparedEncryptedWalletBackupObject
+  }>[]
+  readonly runtime?: EncryptedWalletBackupRuntime
+  readonly objectIdExists?: (objectId: string) => boolean | Promise<boolean>
+}): Promise<PreparedEncryptedWalletBackupObject> {
+  const authority = requireKeyAuthority(input.keyHandle)
+  const boundary = requireEncryptedWalletBackupManifestPageBoundary(input.boundary)
+  requireManifestPageScope(authority, boundary)
+  const page = validateManifestPageEntries(authority, boundary, input.entries)
+  const canonical = encodeCanonical([
+    1,
+    ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
+    boundary.generation,
+    hexToBytes(boundary.snapshotNonce),
+    boundary.pageIndex,
+    boundary.pageCount,
+    page,
+  ])
+  requireManifestPageBytes(boundary, canonical)
+  const runtime = input.runtime === undefined ? authority.runtime : requireRuntime(input.runtime)
+  const prepared = await prepareManifestObject({
+    authority,
+    generation: boundary.generation,
+    canonical,
+    runtime,
+    objectIdExists: input.objectIdExists,
+  })
+  issueEncryptedWalletBackupManifestPageProvenance({
+    page: prepared,
+    boundary: input.boundary,
+    canonicalPage: canonical,
+  })
+  return prepared
+}
+
+function requireManifestPageScope(
+  authority: KeyAuthority,
+  boundary: ReturnType<typeof requireEncryptedWalletBackupManifestPageBoundary>,
+): void {
+  if (authority.realm !== boundary.realm || bytesToHex(authority.vaultIdBytes) !== boundary.vaultId)
+    throw new Error('manifest page belongs to a foreign snapshot')
+}
+
+function validateManifestPageEntries(
+  authority: KeyAuthority,
+  boundary: ReturnType<typeof requireEncryptedWalletBackupManifestPageBoundary>,
+  entries: readonly Readonly<{
+    proof: PreparedEncryptedWalletBackupProof
+    chunkObject: PreparedEncryptedWalletBackupObject
+  }>[],
+): readonly unknown[] {
+  if (
+    !Array.isArray(entries) ||
+    entries.length < 1 ||
+    entries.length > ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX
+  )
+    throw new Error('manifest page entry count is invalid')
+  const values: unknown[] = []
+  const commitments = new Set<string>()
+  let entryBytes = 0
+  let priorProofId: string | undefined
+  for (const entry of entries) {
+    const finalEntry = validateManifestPageEntry(
+      authority,
+      boundary,
+      entry,
+      priorProofId,
+      commitments,
+    )
+    priorProofId = requireProofAuthority(entry.proof).proofId
+    entryBytes = safeManifestPageAdd(entryBytes, finalEntry.byteLength)
+    values.push(decode(finalEntry))
+  }
+  if (entries.length !== boundary.entryCount || entryBytes !== boundary.canonicalEntryBytes)
+    throw new Error('manifest page does not match its Pass-A boundary')
+  return Object.freeze(values)
+}
+
+function validateManifestPageEntry(
+  authority: KeyAuthority,
+  boundary: ReturnType<typeof requireEncryptedWalletBackupManifestPageBoundary>,
+  entry: Readonly<{
+    proof: PreparedEncryptedWalletBackupProof
+    chunkObject: PreparedEncryptedWalletBackupObject
+  }>,
+  priorProofId: string | undefined,
+  commitments: Set<string>,
+): Uint8Array {
+  const proof = requireProofAuthority(entry?.proof)
+  const object = requirePreparedObjectAuthority(entry?.chunkObject)
+  const chunk = object.sourceChunk === null ? undefined : requireChunkAuthority(object.sourceChunk)
+  if (
+    !isValidManifestPageBinding(
+      authority,
+      boundary,
+      proof,
+      chunk,
+      entry.chunkObject,
+      priorProofId,
+      commitments,
+    )
+  )
+    throw new Error('manifest page proof binding is invalid')
+  commitments.add(proof.commitment)
+  return finalManifestEntryBytes(
+    proof.canonicalManifestEntry,
+    hexToBytes(entry.chunkObject.objectId),
+    hexToBytes(entry.chunkObject.digest),
+  )
+}
+
+function isValidManifestPageBinding(
+  authority: KeyAuthority,
+  boundary: ReturnType<typeof requireEncryptedWalletBackupManifestPageBoundary>,
+  proof: PreparedProofAuthority,
+  chunk: PreparedChunkAuthority | undefined,
+  object: PreparedEncryptedWalletBackupObject,
+  priorProofId: string | undefined,
+  commitments: ReadonlySet<string>,
+): boolean {
+  return (
+    chunk !== undefined &&
+    proof.keyAuthority === authority &&
+    chunk.keyAuthority === authority &&
+    chunk.snapshotId === boundary.snapshotId &&
+    chunk.snapshotRevision === boundary.snapshotRevision &&
+    chunk.proofs.includes(proof) &&
+    object.kindCode === ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND &&
+    object.realm === authority.realm &&
+    object.vaultId === bytesToHex(authority.vaultIdBytes) &&
+    object.generation <= boundary.generation &&
+    (priorProofId === undefined || compareHex(priorProofId, proof.proofId) < 0) &&
+    !commitments.has(proof.commitment)
+  )
+}
+
+function requireManifestPageBytes(
+  boundary: ReturnType<typeof requireEncryptedWalletBackupManifestPageBoundary>,
+  canonical: Uint8Array,
+): void {
+  if (
+    canonical.byteLength > boundary.plannedCanonicalPageBytes ||
+    canonical.byteLength > ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES
+  )
+    throw new Error('manifest page exceeds its planned size')
+  preflightManifestPage(canonical)
+}
+
+function safeManifestPageAdd(left: number, right: number): number {
+  if (
+    !Number.isSafeInteger(left) ||
+    !Number.isSafeInteger(right) ||
+    right < 0 ||
+    left > Number.MAX_SAFE_INTEGER - right
+  )
+    throw new Error('manifest page entry size is invalid')
+  return left + right
 }
 
 export async function prepareEncryptedWalletBackupManifest(input: {
@@ -5343,6 +5518,7 @@ function rehydratePreparedRecordPersistence(input: {
     createdAtUnixSeconds: proof.createdAtUnixSeconds,
     updatedAtUnixSeconds: proof.updatedAtUnixSeconds,
     recordBytes: decoded.canonicalRecord,
+    canonicalManifestEntry: decoded.canonicalManifestEntry,
   })
   return issuePreparedEncryptedWalletBackupRecord(handle, {
     recordId: proof.proofId,
@@ -5646,19 +5822,15 @@ function manifestEntryWire(
   proof: PreparedProofAuthority,
   object: PreparedEncryptedWalletBackupObject,
 ): unknown[] {
-  return [
-    hexToBytes(proof.proofId),
-    hexToBytes(proof.commitment),
-    hexToBytes(object.objectId),
-    hexToBytes(object.digest),
-    proof.mint,
-    proof.unit,
-    proof.amount,
-    proof.proofKindCode,
-    proof.ctfMetadata,
-    proof.createdAtUnixSeconds,
-    proof.updatedAtUnixSeconds,
-  ]
+  const value = decode(
+    finalManifestEntryBytes(
+      proof.canonicalManifestEntry,
+      hexToBytes(object.objectId),
+      hexToBytes(object.digest),
+    ),
+  )
+  if (!Array.isArray(value) || value.length !== 11) throw new Error('manifest entry is invalid')
+  return value
 }
 
 function manifestEntryValue(entry: EncryptedWalletBackupManifestEntry): unknown[] {

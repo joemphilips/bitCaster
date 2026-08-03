@@ -26,6 +26,7 @@ import {
   discoverEncryptedWalletBackupEnrollmentEpoch,
   packEncryptedWalletBackupProofChunk,
   prepareEncryptedWalletBackupManifest,
+  prepareEncryptedWalletBackupManifestPage,
   prepareIncrementalEncryptedWalletBackupManifest,
   prepareEncryptedWalletBackupManifestHead,
   prepareEncryptedWalletBackupObject,
@@ -46,6 +47,15 @@ import {
   type VerifiedEncryptedWalletBackupConditionalKeyset,
   type EncryptedWalletBackupRuntime,
 } from '../src/encryptedWalletBackup.ts'
+import {
+  measureEncryptedWalletBackupManifestPageCbor,
+  readEncryptedWalletBackupManifestPassABoundary,
+} from '../src/encryptedWalletBackupManifestPassA.ts'
+import { requirePreparedEncryptedWalletBackupRecord } from '../src/encryptedWalletBackupRecord.ts'
+import {
+  finalManifestEntryBytes,
+  registerEncryptedWalletBackupManifestPassABoundaries,
+} from '../src/encryptedWalletBackupManifestPageAuthority.ts'
 import { preflightEncryptedProofChunkCbor } from '../src/encryptedWalletBackupCbor.ts'
 import {
   deriveDurableCustodyProofId,
@@ -833,6 +843,160 @@ test('manifest pages flatten interleaved immutable chunks into one sorted privat
     new Set(chunkObjects.map((object) => object.digest)),
   )
 })
+
+test('bounded manifest page creation reproduces the v1 manifest-page vector', async () => {
+  const fixture = await createManifestPageVectorFixture()
+  const page = await prepareEncryptedWalletBackupManifestPage({
+    ...fixture,
+    runtime: deterministicRuntime([new Uint8Array(16).fill(21), new Uint8Array(12).fill(31)]),
+  })
+  const wire = readPreparedEncryptedWalletBackupObject(page)
+  assert.equal(wire.objectId, vector.expected.manifestPageObjectIdHex)
+  assert.equal(wire.digest, vector.expected.manifestPageDigestHex)
+  assert.equal(toHex(wire.aad), vector.expected.manifestPageAadHex)
+  assert.equal(toHex(await sha256(wire.body)), vector.expected.manifestPageBodySha256Hex)
+  assert.equal('registerEncryptedWalletBackupManifestPassABoundaries' in BackupModule, false)
+})
+
+test('bounded manifest page creation rejects invalid authority before randomness', async () => {
+  const fixture = await createManifestPageVectorFixture()
+  const noRandomness = runtimeThatRejectsRandomness()
+  await rejectInvalidManifestPageInputs(fixture, noRandomness)
+  const foreignKey = await createEncryptedWalletBackupKeyHandle({
+    seed: fromHex('99'.repeat(64)),
+    realm: vector.inputs.realm,
+    runtime: deterministicRuntime([]),
+  })
+  await assert.rejects(() =>
+    prepareEncryptedWalletBackupManifestPage({
+      ...fixture,
+      keyHandle: foreignKey,
+      runtime: noRandomness,
+    }),
+  )
+})
+
+async function createManifestPageVectorFixture() {
+  const keyHandle = await createEncryptedWalletBackupKeyHandle({
+    seed: SEED,
+    realm: vector.inputs.realm,
+    runtime: deterministicRuntime([]),
+  })
+  const entries = await createManifestPageVectorEntries(keyHandle)
+  return { keyHandle, boundary: issueManifestPageBoundaryForTest(keyHandle, entries), entries }
+}
+
+async function createManifestPageVectorEntries(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+) {
+  const proofs = await Promise.all(
+    [0, 1, 2, 3].map((counter) =>
+      prepareEncryptedWalletBackupProof(proofInputAtCounter(keyHandle, counter)),
+    ),
+  )
+  const sorted = [...proofs].sort((left, right) => compareLowerHex(left.proofId, right.proofId))
+  const chunks = [
+    packEncryptedWalletBackupProofChunk([sorted[0]!, sorted[2]!]),
+    packEncryptedWalletBackupProofChunk([sorted[1]!, sorted[3]!]),
+  ]
+  const objects = await Promise.all(
+    chunks.map((chunk, index) =>
+      prepareEncryptedWalletBackupObject({
+        keyHandle,
+        chunk,
+        generation: 1,
+        runtime: deterministicRuntime([
+          new Uint8Array(16).fill(index + 1),
+          new Uint8Array(12).fill(index + 11),
+        ]),
+      }),
+    ),
+  )
+  const entries = sorted.map((proof, index) => ({
+    proof,
+    chunkObject: objects[index % 2 === 0 ? 0 : 1]!,
+  }))
+  return entries
+}
+
+function issueManifestPageBoundaryForTest(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  entries: Awaited<ReturnType<typeof createManifestPageVectorEntries>>,
+) {
+  const entryBytes = manifestPageEntryBytes(entries)
+  const result = Object.freeze({})
+  registerEncryptedWalletBackupManifestPassABoundaries({
+    result,
+    resultDigest: '11'.repeat(32),
+    realm: keyHandle.realm,
+    vaultId: keyHandle.vaultId,
+    snapshotId: 'test-snapshot',
+    snapshotRevision: 1,
+    sealedControlVersion: 1,
+    sealRunRevision: 1,
+    sealedControlDigest: '22'.repeat(32),
+    generation: 1,
+    snapshotNonce: '21'.repeat(16),
+    boundaries: [
+      {
+        entryCount: entries.length,
+        canonicalEntryBytes: entryBytes,
+        plannedCanonicalPageBytes: measureEncryptedWalletBackupManifestPageCbor({
+          generation: 1,
+          pageIndex: 0,
+          pageCount: 1,
+          entryCount: entries.length,
+          canonicalEntryBytes: entryBytes,
+        }),
+      },
+    ],
+  })
+  return readEncryptedWalletBackupManifestPassABoundary(result, 0)
+}
+
+function manifestPageEntryBytes(
+  entries: Awaited<ReturnType<typeof createManifestPageVectorEntries>>,
+): number {
+  return entries.reduce((total, entry) => {
+    const record = requirePreparedEncryptedWalletBackupRecord(entry.proof)
+    const bytes = finalManifestEntryBytes(
+      record.canonicalManifestEntry,
+      fromHex(entry.chunkObject.objectId),
+      fromHex(entry.chunkObject.digest),
+    )
+    return total + bytes.byteLength
+  }, 0)
+}
+
+function runtimeThatRejectsRandomness(): EncryptedWalletBackupRuntime {
+  return {
+    subtle: webcrypto.subtle,
+    getRandomValues() {
+      throw new Error('randomness used before deterministic validation')
+    },
+  }
+}
+
+async function rejectInvalidManifestPageInputs(
+  fixture: Awaited<ReturnType<typeof createManifestPageVectorFixture>>,
+  noRandomness: EncryptedWalletBackupRuntime,
+): Promise<void> {
+  const { boundary, entries, keyHandle } = fixture
+  const invalidInputs = [
+    { boundary: {} as typeof boundary, entries },
+    { boundary, entries: [...entries].reverse() },
+    { boundary, entries: [...entries, entries[0]!] },
+    { boundary, entries: entries.slice(0, -1) },
+    { boundary, entries: Array.from({ length: 513 }, () => entries[0]!) },
+    { boundary, entries: [{ ...entries[0]!, proof: { ...entries[0]!.proof } }] },
+    { boundary, entries: [{ ...entries[0]!, chunkObject: { ...entries[0]!.chunkObject } }] },
+  ]
+  for (const invalid of invalidInputs) {
+    await assert.rejects(() =>
+      prepareEncryptedWalletBackupManifestPage({ keyHandle, ...invalid, runtime: noRandomness }),
+    )
+  }
+}
 
 test('incremental manifests and upload-ledger recovery remain exact', async () => {
   const { keyHandle, sorted, chunks, chunkObjects, manifest, head, headWire, authenticated, page } =

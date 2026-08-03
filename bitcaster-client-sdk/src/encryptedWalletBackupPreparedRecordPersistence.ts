@@ -9,6 +9,7 @@ import {
   type PreparedEncryptedWalletBackupProof,
 } from './encryptedWalletBackup.ts'
 import { encodeCanonicalBackupCbor as encodeCanonical } from './encryptedWalletBackupCbor.ts'
+import { measureFinalManifestEntryBytes } from './encryptedWalletBackupManifestPageAuthority.ts'
 import {
   requireEncryptedWalletBackupKeyWalletId,
   requireIssuedEncryptedWalletBackupKeyHandle,
@@ -419,7 +420,7 @@ function descriptorFromPersisted(
     recordKindCode: 0,
     recordId: value.recordId,
     commitment: value.commitment,
-    canonicalManifestEntryBytes: value.canonicalManifestEntry.byteLength,
+    canonicalManifestEntryBytes: measureFinalManifestEntryBytes(value.canonicalManifestEntry),
   })
 }
 
