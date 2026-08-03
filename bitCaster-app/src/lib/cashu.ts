@@ -20,6 +20,7 @@ import {
   type PartialMintQuoteResponse,
   type Token,
   type OperationCounters,
+  verifyProofsForReceive,
 } from "@cashu/cashu-ts";
 import { getWalletForMnemonicUnit, useWalletStore } from "@/stores/wallet";
 import {
@@ -36,6 +37,8 @@ import {
   markProofOperationFailed,
   prepareProofOperation,
   removeProofs,
+  db,
+  type BitcasterDB,
   type StoredProof,
 } from "@/stores/proof-db";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
@@ -61,6 +64,14 @@ import {
 import { proofsWithOptionalConditionalMetadata } from "@/lib/conditionalKeysetMetadata";
 import { admitBrowserReceivedProofs } from "@/lib/browserCustodyProofReceive";
 import { toSeed } from "@/lib/bip39";
+import {
+  hydrateDurableWalletMintPreview,
+  isDurableWalletMintDuplicateOutputsError,
+  requireDurableWalletMintJournal,
+  runDurableWalletMintOperation,
+  serializeDurableWalletMintOperation,
+  toDurableCustodyProofOperationInput,
+} from "@bitcaster/client-sdk/durableWalletOperation";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -184,30 +195,120 @@ export async function mintProofs(
   mintUrl: string | undefined,
   baseAsset: MarketBaseAsset,
 ): Promise<Proof[]> {
-  const wallet = await getWallet(mintUrl, baseAsset);
-  const amountSubunits = collateralSubunitsFromBaseAmount(amountSats, baseAsset);
+  const unit = defaultCollateralUnit(baseAsset);
+  return mintAndStoreProofs({
+    amount: collateralSubunitsFromBaseAmount(amountSats, baseAsset),
+    quote,
+    mintUrl,
+    baseAsset,
+    unit,
+  });
+}
+
+interface MintAndStoreProofsInput {
+  readonly amount: number;
+  readonly quote: MintQuoteResponse;
+  readonly mintUrl: string | undefined;
+  readonly baseAsset: MarketBaseAsset;
+  readonly unit: CashuProofUnit;
+}
+
+interface BrowserMintPersistenceContext {
+  readonly activeMintUrl: string;
+  readonly database: BitcasterDB;
+  readonly seed: Uint8Array;
+  readonly scopeId: string;
+  requireCapturedProfile(): void;
+}
+
+async function mintAndStoreProofs(input: MintAndStoreProofsInput): Promise<Proof[]> {
+  const { amount, quote, mintUrl, baseAsset, unit } = input;
+  const context = captureBrowserMintPersistenceContext();
+  const normalizedMintUrl = normalizeUrl(mintUrl ?? context.activeMintUrl);
+  const wallet = await getWalletForMnemonicUnit(normalizedMintUrl, unit, context.mnemonic);
+  context.requireCapturedProfile();
+  let latestOperationId: string | null = null;
   const mintOnce = async (): Promise<Proof[]> => {
     const beforeCounters = snapshotCountersForSuccessfulMintRepair();
-    const proofs = await wallet.mintProofs(amountSubunits, quote.quote);
+    let counters: OperationCounters | undefined;
+    context.requireCapturedProfile();
+    const preview = await wallet.prepareMint("bolt11", amount, quote, {
+      onCountersReserved: (reserved) => {
+        counters = reserved;
+      },
+    });
+    context.requireCapturedProfile();
+    if (!counters || counters.count <= 0) {
+      throw new Error("Cashu mint did not reserve a deterministic recovery range");
+    }
+    const operationId = `wallet-mint:${crypto.randomUUID()}`;
+    latestOperationId = operationId;
+    const durable = serializeDurableWalletMintOperation({
+      operationId,
+      mintUrl: normalizedMintUrl,
+      unit,
+      preview,
+    });
+    const custody = toDurableCustodyProofOperationInput(durable);
+    context.requireCapturedProfile();
+    await prepareProofOperation(
+      {
+        operationId,
+        kind: "wallet-mint",
+        mintUrl: normalizedMintUrl,
+        inputs: [],
+        outputs: structuredClone(custody.outputs) as unknown as Record<
+          string,
+          import("@/stores/proof-db").StoredOutputData[]
+        >,
+        metadata: {
+          ...custody.metadata,
+          baseAsset,
+          keysetId: counters.keysetId,
+          counterStart: counters.start,
+          counterCount: counters.count,
+        },
+      },
+      context.database,
+    );
+    context.requireCapturedProfile();
+    const result = await runDurableWalletMintOperation({
+      mode: "execute",
+      operationId,
+      currentPreview: preview,
+      wallet,
+      store: browserDurableWalletMintStore({ baseAsset, context, unit, wallet }),
+      restoreExactOutputs: (recovery) => restoreExactMintOutputs(wallet, recovery),
+    });
+    context.requireCapturedProfile();
+    if (result.state === "nonterminal")
+      throw new Error("wallet mint did not reach a terminal state");
+    const proofs = result.proofs;
+    context.requireCapturedProfile();
     repairCountersAfterSuccessfulMint(proofs, beforeCounters);
+    context.requireCapturedProfile();
     return proofs;
   };
   try {
     return await mintOnce();
   } catch (err) {
-    if (!isCdkDuplicateOutputsError(err)) throw err;
-    // Anonymous (no-mnemonic) wallets cannot have deterministic counter
-    // collisions — their secrets are random. Re-throw so the caller sees
-    // the real error rather than a swallowed retry.
-    if (!useWalletStore.getState().mnemonic) throw err;
-    const url = normalizeUrl(mintUrl ?? useWalletStore.getState().activeMintUrl);
+    if (!isDurableWalletMintDuplicateOutputsError(err)) throw err;
+    if (latestOperationId !== null) {
+      context.requireCapturedProfile();
+      await markProofOperationFailed(latestOperationId, err, context.database);
+      context.requireCapturedProfile();
+    }
+    context.requireCapturedProfile();
+    const url = normalizeUrl(mintUrl ?? context.activeMintUrl);
     const result = await recoverKeysetCountersForMint(url, { force: true, baseAsset });
+    context.requireCapturedProfile();
     if (!result.scannedKeysets.length) {
       // Recovery couldn't scan the active unit (network down, restore not
       // supported for that unit, stale keyset metadata). Skip a bounded
       // deterministic counter window before the one allowed retry so local
       // wallets can still escape a stale counter without looping forever.
       const bumped = await bumpActiveKeysetCounter(wallet, baseAsset).catch(() => false);
+      context.requireCapturedProfile();
       if (!bumped) throw err;
     }
     // ZustandCounterSource.reserve() reads from the live store on every
@@ -217,6 +318,27 @@ export async function mintProofs(
   }
 }
 
+function captureBrowserMintPersistenceContext(): BrowserMintPersistenceContext & {
+  readonly mnemonic: string;
+} {
+  const state = useWalletStore.getState();
+  const mnemonic = state.mnemonic;
+  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  if (scopeId === null || !mnemonic) throw new Error("The wallet profile is unavailable");
+  return {
+    activeMintUrl: state.activeMintUrl,
+    database: db,
+    mnemonic,
+    seed: toSeed(mnemonic.trim().split(/\s+/)),
+    scopeId,
+    requireCapturedProfile: () => {
+      if (activeBrowserWalletScopeId() !== scopeId) {
+        throw new Error("The wallet profile changed during mint recovery.");
+      }
+    },
+  };
+}
+
 /** Mint proofs for an explicit Cashu unit, without market-collateral scaling. */
 export async function mintProofsForUnit(
   amount: number,
@@ -224,8 +346,227 @@ export async function mintProofsForUnit(
   mintUrl: string | undefined,
   unit: CashuProofUnit | string,
 ): Promise<Proof[]> {
-  const wallet = await getWalletForUnit(mintUrl, unit);
-  return wallet.mintProofs(amount, quote.quote);
+  const proofUnit = requireCashuProofUnit(unit);
+  return mintAndStoreProofs({
+    amount,
+    quote,
+    mintUrl,
+    baseAsset: COLLATERAL_UNIT_REGISTRY[proofUnit].baseAsset,
+    unit: proofUnit,
+  });
+}
+
+function browserDurableWalletMintStore(input: {
+  readonly baseAsset: MarketBaseAsset;
+  readonly context: BrowserMintPersistenceContext;
+  readonly unit: CashuProofUnit;
+  readonly wallet: CashuWallet;
+}) {
+  return {
+    loadOperation: async (operationId: string) => {
+      input.context.requireCapturedProfile();
+      const record = await getProofOperation(operationId, input.context.database);
+      input.context.requireCapturedProfile();
+      if (!record) return null;
+      const operation = requireDurableWalletMintJournal({
+        operationId: record.operationId,
+        kind: record.kind,
+        mintUrl: record.mintUrl,
+        unit: record.metadata.unit,
+        outputs: record.outputs,
+        metadata: record.metadata,
+      });
+      return mintSnapshotFromRecord(operation, record);
+    },
+    persistCompletedResult: async ({
+      operation,
+      result,
+    }: {
+      operation: ReturnType<typeof requireDurableWalletMintJournal>;
+      result: { receive: readonly Proof[] };
+    }) => {
+      input.context.requireCapturedProfile();
+      await persistBrowserMintProofs({
+        operationId: operation.operationId,
+        mintUrl: operation.mintUrl,
+        baseAsset: input.baseAsset,
+        unit: input.unit,
+        wallet: input.wallet,
+        proofs: result.receive,
+        context: input.context,
+      });
+      input.context.requireCapturedProfile();
+      return "completed" as const;
+    },
+  };
+}
+
+function mintSnapshotFromRecord(
+  operation: ReturnType<typeof requireDurableWalletMintJournal>,
+  record: Awaited<ReturnType<typeof getProofOperation>> & {},
+) {
+  if (record === null) throw new Error("durable wallet mint operation is absent");
+  switch (record.state as string) {
+    case "prepared":
+      return { operation, state: "prepared", result: null } as const;
+    case "completed": {
+      const receive = record.resultProofs?.receive;
+      return { operation, state: "completed", result: receive ? { receive } : null } as const;
+    }
+    case "Failed":
+      throw new Error("durable wallet mint was abandoned");
+    default:
+      throw new Error("durable wallet mint state is invalid");
+  }
+}
+
+async function restoreExactMintOutputs(
+  wallet: CashuWallet,
+  input: {
+    readonly mintUrl: string;
+    readonly unit: string;
+    readonly outputs: readonly {
+      blindedMessage: { amount: string; id: string; B_: string };
+      blindingFactor: string;
+      secret: string;
+      ephemeralE: string | null;
+    }[];
+  },
+): Promise<Proof[]> {
+  const preview = hydrateDurableWalletMintPreview({
+    schemaVersion: 1,
+    operationId: "restore-only",
+    kind: "wallet-mint",
+    mintUrl: input.mintUrl,
+    unit: input.unit,
+    preview: {
+      method: "bolt11",
+      quoteExpiryUnixSeconds: null,
+      payload: {
+        quote: "restore-only",
+        outputs: input.outputs.map((output) => output.blindedMessage),
+        signature: null,
+      },
+      outputData: [...input.outputs],
+      keysetId: input.outputs[0]?.blindedMessage.id ?? "",
+    },
+  });
+  const response = await wallet.mint.restore({
+    outputs: preview.outputData.map((output) => output.blindedMessage),
+  });
+  if (response.outputs.length !== response.signatures.length) {
+    throw new Error("mint restore response is incomplete");
+  }
+  const signatures = new Map(
+    response.outputs.map((output, index) => [output.B_, response.signatures[index]]),
+  );
+  if (
+    signatures.size !== response.outputs.length ||
+    response.outputs.length !== preview.outputData.length
+  ) {
+    throw new Error("mint restore response conflicts with persisted outputs");
+  }
+  const keyset = wallet.getKeyset(preview.keysetId);
+  if (keyset.unit !== input.unit || !keyset.verify())
+    throw new Error("mint restore keyset is invalid");
+  const proofs = preview.outputData.map((output) => {
+    const signature = signatures.get(output.blindedMessage.B_);
+    if (!signature) throw new Error("mint restore response omits a persisted output");
+    return output.toProof(signature, keyset);
+  });
+  return proofs;
+}
+
+/** Recover only persisted Lightning mints. Never create fresh blinded outputs at startup. */
+export async function recoverPendingWalletMints(): Promise<{ pending: number }> {
+  let context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+  try {
+    context = captureBrowserMintPersistenceContext();
+  } catch {
+    return { pending: 0 };
+  }
+  const records = await getProofOperations(
+    { states: ["prepared"], kinds: ["wallet-mint"] },
+    context.database,
+  );
+  context.requireCapturedProfile();
+  let pending = 0;
+  for (const record of records) {
+    try {
+      context.requireCapturedProfile();
+      const operation = requireDurableWalletMintJournal({
+        operationId: record.operationId,
+        kind: record.kind,
+        mintUrl: record.mintUrl,
+        unit: record.metadata.unit,
+        outputs: record.outputs,
+        metadata: record.metadata,
+      });
+      const unit = requireCashuProofUnit(operation.unit);
+      const baseAsset = normalizeMarketBaseAsset(record.metadata.baseAsset as string);
+      if (COLLATERAL_UNIT_REGISTRY[unit].baseAsset !== baseAsset) {
+        throw new Error("durable wallet mint unit is incompatible with its base asset");
+      }
+      const wallet = await getWalletForMnemonicUnit(operation.mintUrl, unit, context.mnemonic);
+      context.requireCapturedProfile();
+      await runDurableWalletMintOperation({
+        mode: "recover",
+        operationId: operation.operationId,
+        wallet,
+        store: browserDurableWalletMintStore({
+          baseAsset,
+          context,
+          unit,
+          wallet,
+        }),
+        restoreExactOutputs: (input) => restoreExactMintOutputs(wallet, input),
+      });
+      context.requireCapturedProfile();
+    } catch {
+      pending += 1;
+    }
+  }
+  return { pending };
+}
+
+async function persistBrowserMintProofs(input: {
+  readonly operationId: string;
+  readonly mintUrl: string;
+  readonly baseAsset: MarketBaseAsset;
+  readonly unit: CashuProofUnit;
+  readonly wallet: CashuWallet;
+  readonly proofs: readonly Proof[];
+  readonly context: BrowserMintPersistenceContext;
+}): Promise<void> {
+  input.context.requireCapturedProfile();
+  verifyProofsForReceive([...input.proofs], (keysetId) => input.wallet.getKeyset(keysetId), {
+    requireDleq: true,
+  });
+  input.context.requireCapturedProfile();
+  const stored = input.proofs.map((proof) => ({
+    ...proof,
+    mintUrl: input.mintUrl,
+    baseAsset: input.baseAsset,
+    unit: input.unit,
+  }));
+  await admitBrowserReceivedProofs({
+    seed: input.context.seed,
+    sourceOperationId: input.operationId,
+    mintUrl: input.mintUrl,
+    unit: input.unit,
+    wallet: input.wallet,
+    proofs: stored,
+    database: input.context.database,
+  });
+  input.context.requireCapturedProfile();
+  await addProofs(stored, input.context.database);
+  input.context.requireCapturedProfile();
+  await markProofOperationCompleted(
+    input.operationId,
+    { receive: [...input.proofs] },
+    input.context.database,
+  );
+  input.context.requireCapturedProfile();
 }
 
 function collateralSubunitsFromBaseAmount(
@@ -270,37 +611,6 @@ function repairCountersAfterSuccessfulMint(
     }
     return changed ? { keysetCounters: nextCounters } : s;
   });
-}
-
-/**
- * Match CDK's database-duplicate mint response precisely. This is typically a
- * deterministic-output / counter collision, NOT an actual payment-state issue.
- * We match on known literal detail strings AND cashu-ts's `MintOperationError`
- * shape (a 400 with a numeric `code`); both must match so a stray bare
- * `Error(...)` from app code can't trip the recovery path. NOTE: matching on
- * `code` alone is unsafe — older CDK used `20006` for both genuine paid-quote
- * cases and database duplicates — so we use the message as the discriminator
- * and the code/status as a structural sanity check.
- */
-function isCdkDuplicateOutputsError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const e = err as {
-    message?: unknown;
-    code?: unknown;
-    status?: unknown;
-    name?: unknown;
-  };
-  const msg = typeof e.message === "string" ? e.message : "";
-  if (
-    !msg.includes("Invoice already paid or pending") &&
-    !msg.includes("Blinded message already signed or pending")
-  ) {
-    return false;
-  }
-  // Structural sanity check: cashu-ts surfaces this as `MintOperationError`
-  // with status 400. If neither shape matches, the error is some other code
-  // path (e.g. a wrapped fetch failure) using the same human string — skip.
-  return e.name === "MintOperationError" || e.status === 400 || typeof e.code === "number";
 }
 
 export interface KeysetRecoveryResult {

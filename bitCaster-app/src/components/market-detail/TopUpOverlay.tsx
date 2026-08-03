@@ -13,7 +13,6 @@ import {
   type MintQuoteWaitResult,
 } from "@/lib/cashu";
 import { decodeWalletIngressToken, ingressReceiveCashuToken } from "@/lib/walletOps";
-import { addProofs, type StoredProof } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 import type { MintQuoteResponse } from "@cashu/cashu-ts";
 import {
@@ -205,16 +204,9 @@ export function TopUpOverlay({
   const handlePaidQuote = useCallback(
     async (quote: MintQuoteResponse, requested: number) => {
       try {
-        const proofs = proofUnitInput
-          ? await mintProofsForUnit(requested, quote, activeMintUrl, proofUnit)
-          : await mintProofs(requested, quote, activeMintUrl, baseAsset);
-        const stored: StoredProof[] = proofs.map((p) => ({
-          ...p,
-          mintUrl: activeMintUrl,
-          baseAsset,
-          unit: proofUnit,
-        }));
-        await addProofs(stored);
+        await (proofUnitInput
+          ? mintProofsForUnit(requested, quote, activeMintUrl, proofUnit)
+          : mintProofs(requested, quote, activeMintUrl, baseAsset));
         if (cancelledRef.current) return;
         setStatus("paid");
         // Small delay so the user sees "Payment received!" before the overlay vanishes.

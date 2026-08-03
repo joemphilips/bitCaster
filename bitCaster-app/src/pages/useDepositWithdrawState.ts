@@ -304,13 +304,6 @@ export function useDepositWithdrawState(
           unit: defaultCollateralUnit(baseAsset),
           extra: { requested, baseAsset },
         });
-        const stored: StoredProof[] = proofs.map((p) => ({
-          ...p,
-          mintUrl,
-          baseAsset,
-          unit: defaultCollateralUnit(baseAsset),
-        }));
-        await addProofs(stored);
         setInvoiceStatus("paid");
         const requestedSubunits = depositInputAmountToActivitySubunits(requested, baseAsset);
         useActivityLogStore.getState().addActivity({

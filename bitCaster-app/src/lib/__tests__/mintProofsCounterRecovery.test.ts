@@ -21,6 +21,11 @@
  *    are not swallowed by the recovery path.
  */
 
+import { OutputData } from "@cashu/cashu-ts";
+import {
+  serializeDurableWalletMintOperation,
+  toDurableCustodyProofOperationInput,
+} from "@bitcaster/client-sdk/durableWalletOperation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoisted mocks — the cashu-ts wallet, the wallet store, and the proof DB
@@ -28,7 +33,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   const wallet = {
     createMintQuote: vi.fn(),
-    mintProofs: vi.fn(),
+    prepareMint: vi.fn(),
+    completeMint: vi.fn(),
     send: vi.fn(),
     batchRestore: vi.fn(),
     prepareSwapToReceive: vi.fn(),
@@ -63,11 +69,19 @@ const mocks = vi.hoisted(() => {
     }
   });
   const addProofs = vi.fn(async (_p: unknown[]) => {});
-  const prepareProofOperation = vi.fn(async (record: unknown) => record);
-  const markProofOperationCompleted = vi.fn(async () => undefined);
+  const proofOperations = new Map<string, any>();
+  const prepareProofOperation = vi.fn(async (record: any) => {
+    const prepared = { ...record, state: "prepared", metadata: record.metadata ?? {} };
+    proofOperations.set(record.operationId, prepared);
+    return prepared;
+  });
+  const markProofOperationCompleted = vi.fn(
+    async (_operationId: string, _completion: { receive: { secret: string }[] }) => undefined,
+  );
   const markProofOperationFailed = vi.fn(async () => undefined);
   const getProofOperations = vi.fn(async () => []);
   const admitBrowserReceivedProofs = vi.fn(async () => undefined);
+  const verifyProofsForReceive = vi.fn();
   return {
     wallet,
     store,
@@ -75,12 +89,19 @@ const mocks = vi.hoisted(() => {
     addProofs,
     getWallet,
     prepareProofOperation,
+    proofOperations,
     markProofOperationCompleted,
     markProofOperationFailed,
     getProofOperations,
     admitBrowserReceivedProofs,
+    verifyProofsForReceive,
   };
 });
+
+vi.mock("@cashu/cashu-ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@cashu/cashu-ts")>()),
+  verifyProofsForReceive: mocks.verifyProofsForReceive,
+}));
 
 vi.mock("@/lib/browserCustodyProofReceive", () => ({
   admitBrowserReceivedProofs: mocks.admitBrowserReceivedProofs,
@@ -95,9 +116,12 @@ vi.mock("@/stores/wallet", () => ({
 }));
 
 vi.mock("@/stores/proof-db", () => ({
+  db: {},
   addProofs: mocks.addProofs,
   getProofOperations: mocks.getProofOperations,
-  getProofOperation: vi.fn(),
+  getProofOperation: vi.fn(
+    async (operationId: string) => mocks.proofOperations.get(operationId) ?? null,
+  ),
   prepareProofOperation: mocks.prepareProofOperation,
   markProofOperationCompleted: mocks.markProofOperationCompleted,
   markProofOperationFailed: mocks.markProofOperationFailed,
@@ -114,6 +138,18 @@ import { setActiveBrowserWalletProfile } from "../browserWalletProfile";
 
 const VALID_MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const MINT_PROOFS = [{ id: "k1", amount: 100, secret: "s1", C: "C1" }] as never;
+
+function mintPreview() {
+  const output = OutputData.createSingleData("100", "k1", "s1", 3n);
+  return {
+    method: "bolt11",
+    payload: { quote: "q1", outputs: [output.blindedMessage] },
+    outputData: [output],
+    keysetId: "k1",
+    quote: { quote: "q1" },
+  } as never;
+}
 
 // `MintOperationError`-shape helper: real cashu-ts errors carry `.name`,
 // `.code` and `.status`. The structural sanity check in
@@ -133,7 +169,8 @@ function cdkDuplicateError(message = "Blinded message already signed or pending"
 
 beforeEach(() => {
   mocks.wallet.createMintQuote.mockReset();
-  mocks.wallet.mintProofs.mockReset();
+  mocks.wallet.prepareMint.mockReset();
+  mocks.wallet.completeMint.mockReset();
   mocks.wallet.send.mockReset();
   mocks.wallet.batchRestore.mockReset();
   mocks.wallet.prepareSwapToReceive.mockReset();
@@ -141,7 +178,19 @@ beforeEach(() => {
   mocks.wallet.restore.mockReset();
   mocks.wallet.groupProofsByState.mockReset();
   mocks.wallet.getKeyset.mockReset();
-  mocks.wallet.getKeyset.mockReturnValue({ id: "k1" });
+  mocks.wallet.getKeyset.mockReturnValue({ id: "k1", unit: "msat", verify: () => true, keys: {} });
+  mocks.wallet.prepareMint.mockImplementation(
+    async (
+      _method: string,
+      _amount: number,
+      _quote: unknown,
+      config?: { onCountersReserved?: (value: unknown) => void },
+    ) => {
+      config?.onCountersReserved?.({ keysetId: "k1", start: 0, count: 1, next: 1 });
+      return mintPreview();
+    },
+  );
+  mocks.wallet.completeMint.mockResolvedValue(MINT_PROOFS);
   // Default: every recovered proof is treated as UNSPENT unless a test
   // overrides — keeps existing tests behaving the same as before the
   // spent-filter landed.
@@ -161,13 +210,19 @@ beforeEach(() => {
   mocks.addProofs.mockReset();
   mocks.addProofs.mockResolvedValue(undefined);
   mocks.prepareProofOperation.mockReset();
-  mocks.prepareProofOperation.mockImplementation(async (record: unknown) => record);
+  mocks.proofOperations.clear();
+  mocks.prepareProofOperation.mockImplementation(async (record: any) => {
+    const prepared = { ...record, state: "prepared", metadata: record.metadata ?? {} };
+    mocks.proofOperations.set(record.operationId, prepared);
+    return prepared;
+  });
   mocks.markProofOperationCompleted.mockReset();
   mocks.markProofOperationFailed.mockReset();
   mocks.getProofOperations.mockReset();
   mocks.getProofOperations.mockResolvedValue([]);
   mocks.admitBrowserReceivedProofs.mockReset();
   mocks.admitBrowserReceivedProofs.mockResolvedValue(undefined);
+  mocks.verifyProofsForReceive.mockReset();
   mocks.getWallet.mockClear();
   mocks.getWallet.mockResolvedValue(mocks.wallet);
   mocks.store.getWallet = mocks.getWallet;
@@ -362,7 +417,7 @@ describe("recoverable external-token receive journal", () => {
 
 describe("mintProofs — CDK duplicate-output recovery", () => {
   const QUOTE = { quote: "q1", request: "lnbc1..." } as never;
-  const PROOFS = [{ id: "k1", amount: 100, secret: "s1", C: "C1" }] as never;
+  const PROOFS = MINT_PROOFS;
 
   it("scales sat-market mint quote requests into msat collateral subunits", async () => {
     const quote = { quote: "q-msat", request: "lnbc1...", unit: "msat" };
@@ -378,13 +433,16 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
   });
 
   it("scales sat-market mintProofs requests into msat collateral subunits", async () => {
-    mocks.wallet.mintProofs.mockResolvedValueOnce(PROOFS);
-
     const satAmount = 13;
     await cashu.mintProofs(satAmount, QUOTE, "https://mint.test", "sat");
 
     // Physical invariant: 1 sat = 1000 msat.
-    expect(mocks.wallet.mintProofs).toHaveBeenCalledWith(satAmount * 1_000, "q1");
+    expect(mocks.wallet.prepareMint).toHaveBeenCalledWith(
+      "bolt11",
+      satAmount * 1_000,
+      QUOTE,
+      expect.any(Object),
+    );
   });
 
   it("sends regular sat proofs through the explicit sat wallet", async () => {
@@ -402,17 +460,15 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
   });
 
   it("advances persisted counters after a successful deterministic mint even when the wallet adapter did not persist the reservation", async () => {
-    mocks.wallet.mintProofs.mockResolvedValueOnce(PROOFS);
-
     const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
-    expect(result).toEqual(PROOFS);
+    expect(result.map((proof) => proof.secret)).toEqual(["s1"]);
     expect(mocks.store.keysetCounters.k1).toBe(1);
   });
 
   it("does not double-advance counters when cashu-ts already reserved the minted output range", async () => {
     mocks.store.keysetCounters = { k1: 7 };
-    mocks.wallet.mintProofs.mockImplementationOnce(async () => {
+    mocks.wallet.completeMint.mockImplementationOnce(async () => {
       mocks.store.keysetCounters = { k1: 8 };
       return PROOFS;
     });
@@ -423,7 +479,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
   });
 
   it("retries mintProofs once after running counter recovery on CDK duplicate error", async () => {
-    mocks.wallet.mintProofs
+    mocks.wallet.completeMint
       .mockRejectedValueOnce(cdkDuplicateError("Invoice already paid or pending"))
       .mockResolvedValueOnce(PROOFS);
     mocks.wallet.batchRestore.mockResolvedValueOnce({
@@ -433,17 +489,19 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
 
     const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
-    expect(result).toEqual(PROOFS);
+    expect(result.map((proof) => proof.secret)).toEqual(["s1"]);
     // Counter advanced past the highest known signature and the retry mint.
     expect(mocks.store.keysetCounters.k1).toBe(9);
     // Recovery flag set so the next mintProofs call doesn't re-run batchRestore.
     expect(mocks.store.keysetCountersRecovered.k1).toBe(true);
-    expect(mocks.wallet.mintProofs).toHaveBeenCalledTimes(2);
+    expect(mocks.wallet.completeMint).toHaveBeenCalledTimes(2);
     expect(mocks.wallet.batchRestore).toHaveBeenCalledTimes(1);
+    expect(mocks.prepareProofOperation).toHaveBeenCalledTimes(2);
+    expect(mocks.markProofOperationFailed).toHaveBeenCalledTimes(1);
   });
 
   it("also retries the current CDK blinded-message duplicate detail", async () => {
-    mocks.wallet.mintProofs
+    mocks.wallet.completeMint
       .mockRejectedValueOnce(cdkDuplicateError("Blinded message already signed or pending"))
       .mockResolvedValueOnce(PROOFS);
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
@@ -456,13 +514,13 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
 
     const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
-    expect(result).toEqual(PROOFS);
+    expect(result.map((proof) => proof.secret)).toEqual(["s1"]);
     expect(mocks.store.keysetCounters.k1).toBe(13);
-    expect(mocks.wallet.mintProofs).toHaveBeenCalledTimes(2);
+    expect(mocks.wallet.completeMint).toHaveBeenCalledTimes(2);
   });
 
   it("falls back to a bounded active-keyset counter bump when duplicate recovery cannot scan the unit", async () => {
-    mocks.wallet.mintProofs
+    mocks.wallet.completeMint
       .mockRejectedValueOnce(cdkDuplicateError("Blinded message already signed or pending"))
       .mockResolvedValueOnce(PROOFS);
     mocks.wallet.getKeyset.mockReturnValue({ id: "usd-keyset" });
@@ -473,14 +531,14 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
 
     const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
-    expect(result).toEqual(PROOFS);
+    expect(result.map((proof) => proof.secret)).toEqual(["s1"]);
     expect(mocks.wallet.batchRestore).toHaveBeenCalledOnce();
     expect(mocks.store.keysetCounters["usd-keyset"]).toBe(100);
-    expect(mocks.wallet.mintProofs).toHaveBeenCalledTimes(2);
+    expect(mocks.wallet.completeMint).toHaveBeenCalledTimes(2);
   });
 
   it("persists any proofs that batchRestore recovers (so the user does not lose ecash)", async () => {
-    mocks.wallet.mintProofs
+    mocks.wallet.completeMint
       .mockRejectedValueOnce(cdkDuplicateError())
       .mockResolvedValueOnce(PROOFS);
     const recoveredProofs = [{ id: "k1", amount: 50, secret: "rs1", C: "rC1" }] as never;
@@ -494,7 +552,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
 
     await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
-    expect(mocks.addProofs).toHaveBeenCalledOnce();
+    expect(mocks.addProofs).toHaveBeenCalledTimes(2);
     expect(mocks.addProofs).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({
@@ -507,13 +565,18 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
   });
 
   it("does NOT swallow non-CDK-duplicate errors (real LN payment failures must propagate)", async () => {
-    mocks.wallet.mintProofs.mockRejectedValueOnce(new Error("Lightning payment timeout"));
+    mocks.wallet.completeMint.mockRejectedValueOnce(new Error("Lightning payment timeout"));
 
-    await expect(cashu.mintProofs(100, QUOTE, "https://mint.test", "sat")).rejects.toThrow(
-      "Lightning payment timeout",
-    );
+    await expect(
+      cashu.mintProofs(
+        100,
+        { quote: "q1", request: "lnbc1..." } as never,
+        "https://mint.test",
+        "sat",
+      ),
+    ).rejects.toThrow("Lightning payment timeout");
     expect(mocks.wallet.batchRestore).not.toHaveBeenCalled();
-    expect(mocks.wallet.mintProofs).toHaveBeenCalledTimes(1);
+    expect(mocks.wallet.completeMint).toHaveBeenCalledTimes(1);
   });
 
   it("does not retry indefinitely — second CDK duplicate propagates", async () => {
@@ -521,7 +584,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
     // stale internal counter that the next reserve() pulls before
     // ZustandCounterSource sees the update. Bail with the original error
     // rather than spinning.
-    mocks.wallet.mintProofs.mockRejectedValue(cdkDuplicateError());
+    mocks.wallet.completeMint.mockRejectedValue(cdkDuplicateError());
     mocks.wallet.batchRestore.mockResolvedValueOnce({
       proofs: [],
       lastCounterWithSignature: 5,
@@ -530,7 +593,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
     await expect(cashu.mintProofs(100, QUOTE, "https://mint.test", "sat")).rejects.toThrow(
       "Blinded message already signed or pending",
     );
-    expect(mocks.wallet.mintProofs).toHaveBeenCalledTimes(2); // one retry, no more
+    expect(mocks.wallet.completeMint).toHaveBeenCalledTimes(2); // one retry, no more
   });
 
   // Note on the anonymous-wallet (no-mnemonic) corner case: the
@@ -542,6 +605,129 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
   // bypasses the mocked store's `getWallet` and constructs a fresh wallet
   // that calls `loadMint()` over HTTP — out of scope for a vitest mock.
 });
+
+describe("recoverPendingWalletMints — exact restart recovery", () => {
+  it("replays the persisted mint preview after a crash without preparing fresh outputs", async () => {
+    const preview = mintPreview();
+    const operation = serializeDurableWalletMintOperation({
+      operationId: "wallet-mint:restart",
+      mintUrl: "https://mint.test",
+      unit: "msat",
+      preview,
+    });
+    const custody = toDurableCustodyProofOperationInput(operation);
+    const record = {
+      operationId: operation.operationId,
+      kind: "wallet-mint",
+      state: "prepared",
+      mintUrl: operation.mintUrl,
+      inputs: [],
+      outputs: custody.outputs,
+      metadata: { ...custody.metadata, baseAsset: "sat" },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    mocks.proofOperations.set(operation.operationId, record);
+    mocks.getProofOperations.mockResolvedValueOnce([record] as never);
+
+    const result = await cashu.recoverPendingWalletMints();
+
+    expect(result).toEqual({ pending: 0 });
+    expect(mocks.wallet.prepareMint).not.toHaveBeenCalled();
+    expect(mocks.wallet.completeMint).toHaveBeenCalledTimes(1);
+    const replayed = mocks.wallet.completeMint.mock.calls[0]?.[0];
+    expect(new TextDecoder().decode(replayed.outputData[0].secret)).toBe(
+      operation.preview.outputData[0].secret,
+    );
+    expect(replayed.payload.outputs[0].B_).toBe(operation.preview.payload.outputs[0].B_);
+    expect(replayed.payload.outputs[0].amount.toString()).toBe(
+      operation.preview.payload.outputs[0].amount,
+    );
+    expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledBefore(mocks.addProofs);
+    expect(mocks.addProofs).toHaveBeenCalledBefore(mocks.markProofOperationCompleted);
+    const completed = mocks.markProofOperationCompleted.mock.calls[0];
+    expect(completed?.[0]).toBe(operation.operationId);
+    expect(completed?.[1]?.receive[0]?.secret).toBe("s1");
+  });
+
+  it("keeps a mint prepared when shared DLEQ verification rejects its result", async () => {
+    mocks.verifyProofsForReceive.mockImplementationOnce(() => {
+      throw new Error("Token contains proofs with invalid or missing DLEQ");
+    });
+
+    await expect(
+      cashu.mintProofs(
+        100,
+        { quote: "q1", request: "lnbc1..." } as never,
+        "https://mint.test",
+        "sat",
+      ),
+    ).rejects.toThrow("invalid or missing DLEQ");
+
+    expect(mocks.verifyProofsForReceive).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.any(Function),
+      { requireDleq: true },
+    );
+    expect(mocks.admitBrowserReceivedProofs).not.toHaveBeenCalled();
+    expect(mocks.addProofs).not.toHaveBeenCalled();
+    expect(mocks.markProofOperationCompleted).not.toHaveBeenCalled();
+    expect(mocks.prepareProofOperation).toHaveBeenCalledOnce();
+  });
+
+  it("does not write a switched profile after canonical custody admission", async () => {
+    const record = preparedMintRecord("wallet-mint:profile-switch");
+    mocks.proofOperations.set(record.operationId, record);
+    mocks.getProofOperations.mockResolvedValueOnce([record] as never);
+    mocks.admitBrowserReceivedProofs.mockImplementationOnce(async () => {
+      mocks.store.mnemonic =
+        "legal winner thank year wave sausage worth useful legal winner thank yellow";
+      setActiveBrowserWalletProfile(mocks.store.mnemonic);
+    });
+
+    const result = await cashu.recoverPendingWalletMints();
+
+    expect(result).toEqual({ pending: 1 });
+    expect(mocks.addProofs).not.toHaveBeenCalled();
+    expect(mocks.markProofOperationCompleted).not.toHaveBeenCalled();
+  });
+
+  it("fails an unknown journal state without mint or persistence effects", async () => {
+    const record = { ...preparedMintRecord("wallet-mint:unknown"), state: "unknown" };
+    mocks.proofOperations.set(record.operationId, record);
+    mocks.getProofOperations.mockResolvedValueOnce([record] as never);
+
+    const result = await cashu.recoverPendingWalletMints();
+
+    expect(result).toEqual({ pending: 1 });
+    expect(mocks.wallet.completeMint).not.toHaveBeenCalled();
+    expect(mocks.admitBrowserReceivedProofs).not.toHaveBeenCalled();
+    expect(mocks.addProofs).not.toHaveBeenCalled();
+    expect(mocks.markProofOperationCompleted).not.toHaveBeenCalled();
+  });
+});
+
+function preparedMintRecord(operationId: string) {
+  const preview = mintPreview();
+  const operation = serializeDurableWalletMintOperation({
+    operationId,
+    mintUrl: "https://mint.test",
+    unit: "msat",
+    preview,
+  });
+  const custody = toDurableCustodyProofOperationInput(operation);
+  return {
+    operationId: operation.operationId,
+    kind: "wallet-mint",
+    state: "prepared",
+    mintUrl: operation.mintUrl,
+    inputs: [],
+    outputs: custody.outputs,
+    metadata: { ...custody.metadata, baseAsset: "sat" },
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
 
 describe("recoverKeysetCountersForMint — idempotency", () => {
   it("skips keysets already marked recovered", async () => {

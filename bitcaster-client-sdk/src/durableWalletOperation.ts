@@ -148,6 +148,22 @@ export interface DurableWalletReceiveOperationStore {
   }): Promise<'completed' | 'external-applied'>
 }
 
+export interface DurableWalletMintOperationSnapshot {
+  readonly operation: DurableWalletMintOperation
+  readonly state: 'prepared' | 'completed' | 'external-applied'
+  /** A terminal result was verified against the persisted operation and mint keys. */
+  readonly result: { readonly receive: readonly Proof[] } | null
+}
+
+export interface DurableWalletMintOperationStore {
+  loadOperation(operationId: string): Promise<DurableWalletMintOperationSnapshot | null>
+  /** Admit the verified proofs before recording this exact operation as terminal. */
+  persistCompletedResult(input: {
+    readonly operation: DurableWalletMintOperation
+    readonly result: { readonly receive: readonly Proof[] }
+  }): Promise<'completed' | 'external-applied'>
+}
+
 interface DurableWalletReceiveExecutionInput {
   readonly mode: 'execute' | 'recover'
   readonly operationId: string
@@ -164,7 +180,29 @@ interface DurableWalletReceiveExecutionInput {
   readonly currentPreview?: SwapPreview
 }
 
+interface DurableWalletMintExecutionInput {
+  readonly mode: 'execute' | 'recover'
+  readonly operationId: string
+  readonly store: DurableWalletMintOperationStore
+  readonly wallet: {
+    completeMint(preview: MintPreview<{ quote: string; expiry?: number | null }>): Promise<Proof[]>
+  }
+  /** Restore and verify only the persisted blinded-output plan. */
+  readonly restoreExactOutputs: (input: {
+    readonly mintUrl: string
+    readonly unit: string
+    readonly outputs: readonly DurableWalletOutputData[]
+  }) => Promise<readonly Proof[]>
+  readonly currentPreview?: MintPreview<
+    Pick<{ quote: string; expiry?: number | null }, 'quote' | 'expiry'>
+  >
+}
+
 type DurableWalletReceiveExecutionResult =
+  | { readonly state: 'completed' | 'external-applied'; readonly proofs: Proof[] }
+  | { readonly state: 'nonterminal'; readonly proofs: readonly [] }
+
+export type DurableWalletMintExecutionResult =
   | { readonly state: 'completed' | 'external-applied'; readonly proofs: Proof[] }
   | { readonly state: 'nonterminal'; readonly proofs: readonly [] }
 
@@ -313,6 +351,36 @@ export function requireDurableWalletOperationFromCustody(
   return operation
 }
 
+/** Validate the browser journal fields that bind a mint to its persisted SDK authority. */
+export function requireDurableWalletMintJournal(input: {
+  readonly operationId: string
+  readonly kind: string
+  readonly mintUrl: string
+  readonly unit: unknown
+  readonly outputs: DurableCustodyProofOperationInput['outputs']
+  readonly metadata: Readonly<Record<string, unknown>>
+}): DurableWalletMintOperation {
+  const operation = requireMintOperation(
+    decodeDurableWalletOperation(input.metadata[DURABLE_WALLET_OPERATION_METADATA_KEY]),
+  )
+  if (
+    input.kind !== operation.kind ||
+    input.operationId !== operation.operationId ||
+    input.mintUrl !== operation.mintUrl ||
+    input.unit !== operation.unit
+  ) {
+    throw new Error('durable wallet mint journal identity is foreign')
+  }
+  const expected = toDurableCustodyProofOperationInput(operation)
+  if (
+    deriveDurableCustodyArtifactFingerprint(input.outputs) !==
+    deriveDurableCustodyArtifactFingerprint(expected.outputs)
+  ) {
+    throw new Error('durable wallet mint journal outputs conflict with persisted authority')
+  }
+  return operation
+}
+
 export function deriveDurableWalletOperationAuthority(
   input: DurableWalletOperation,
 ): DurableWalletOperationAuthority {
@@ -400,6 +468,143 @@ export function hydrateDurableWalletMintPreview(
         : { expiry: operation.preview.quoteExpiryUnixSeconds }),
     },
   }
+}
+
+/** Execute or recover a persisted mint without selecting fresh outputs. */
+export async function runDurableWalletMintOperation(
+  input: DurableWalletMintExecutionInput,
+): Promise<DurableWalletMintExecutionResult> {
+  if (input.mode !== 'execute' && input.mode !== 'recover') {
+    throw new Error('durable wallet mint mode is invalid')
+  }
+  const snapshot = await loadExactMintSnapshot(input)
+  const terminal = terminalMintResult(snapshot)
+  if (terminal !== null) return terminal
+  try {
+    const proofs = await input.wallet.completeMint(
+      hydrateDurableWalletMintPreview(snapshot.operation),
+    )
+    return persistExactMintResult(input.store, snapshot.operation, proofs)
+  } catch (error) {
+    if (input.mode !== 'recover' || !isDurableWalletMintDuplicateOutputsError(error)) throw error
+    const proofs = await input.restoreExactOutputs({
+      mintUrl: snapshot.operation.mintUrl,
+      unit: snapshot.operation.unit,
+      outputs: snapshot.operation.preview.outputData.map((output) => structuredClone(output)),
+    })
+    return persistExactMintResult(input.store, snapshot.operation, proofs)
+  }
+}
+
+/** Match only the CDK response which proves our exact output plan is already signed. */
+export function isDurableWalletMintDuplicateOutputsError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const candidate = error as { message?: unknown; name?: unknown; status?: unknown; code?: unknown }
+  const message = typeof candidate.message === 'string' ? candidate.message : ''
+  if (
+    !message.includes('Invoice already paid or pending') &&
+    !message.includes('Blinded message already signed or pending')
+  ) {
+    return false
+  }
+  return (
+    candidate.name === 'MintOperationError' ||
+    candidate.status === 400 ||
+    typeof candidate.code === 'number'
+  )
+}
+
+function loadExactMintSnapshot(
+  input: DurableWalletMintExecutionInput,
+): Promise<DurableWalletMintOperationSnapshot> {
+  return input.store.loadOperation(input.operationId).then((snapshot) => {
+    if (snapshot === null) throw new Error('durable wallet mint operation is absent')
+    const operation = requireMintOperation(decodeDurableWalletOperation(snapshot.operation))
+    if (operation.operationId !== input.operationId) {
+      throw new Error('durable wallet mint operation identity is foreign')
+    }
+    assertCurrentMintAuthority(operation, input.currentPreview)
+    return validateMintSnapshot({ ...snapshot, operation })
+  })
+}
+
+function assertCurrentMintAuthority(
+  persisted: DurableWalletMintOperation,
+  currentPreview: DurableWalletMintExecutionInput['currentPreview'],
+): void {
+  if (
+    currentPreview !== undefined &&
+    deriveDurableCustodyArtifactFingerprint(
+      serializeDurableWalletMintOperation({
+        operationId: persisted.operationId,
+        mintUrl: persisted.mintUrl,
+        unit: persisted.unit,
+        preview: currentPreview,
+      }).preview,
+    ) !== deriveDurableCustodyArtifactFingerprint(persisted.preview)
+  ) {
+    throw new Error('current wallet mint request conflicts with persisted authority')
+  }
+}
+
+function validateMintSnapshot(
+  snapshot: DurableWalletMintOperationSnapshot,
+): DurableWalletMintOperationSnapshot {
+  switch (snapshot.state) {
+    case 'prepared':
+      if (snapshot.result !== null) throw new Error('prepared wallet mint has a result')
+      break
+    case 'completed':
+    case 'external-applied':
+      if (snapshot.result === null) throw new Error('terminal wallet mint result is absent')
+      break
+    default:
+      throw new Error('durable wallet mint state is invalid')
+  }
+  return snapshot
+}
+
+function terminalMintResult(
+  snapshot: DurableWalletMintOperationSnapshot,
+): DurableWalletMintExecutionResult | null {
+  if (snapshot.state === 'prepared') return null
+  return {
+    state: snapshot.state,
+    proofs: requireExactMintResult(snapshot.operation, snapshot.result!.receive),
+  }
+}
+
+async function persistExactMintResult(
+  store: DurableWalletMintOperationStore,
+  operation: DurableWalletMintOperation,
+  result: readonly Proof[],
+): Promise<DurableWalletMintExecutionResult> {
+  const receive = requireExactMintResult(operation, result)
+  const state = await store.persistCompletedResult({ operation, result: { receive } })
+  if (state !== 'completed' && state !== 'external-applied') {
+    throw new Error('persisted wallet mint result was not completed')
+  }
+  return { state, proofs: receive }
+}
+
+function requireExactMintResult(
+  operation: DurableWalletMintOperation,
+  result: readonly Proof[],
+): Proof[] {
+  if (
+    result.length === 0 ||
+    result.length > DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX ||
+    result.length !== operation.preview.outputData.length
+  ) {
+    throw new Error('durable wallet mint result does not match its exact output plan')
+  }
+  const bySecret = new Map(result.map((proof) => [proof.secret, serializeProof(proof)]))
+  if (bySecret.size !== result.length) {
+    throw new Error('durable wallet mint result contains duplicate proofs')
+  }
+  return operation.preview.outputData.map((output) =>
+    requirePlannedReceiveProof(output, bySecret.get(output.secret)),
+  )
 }
 
 function serializeReceivePreview(preview: SwapPreview): DurableWalletSwapPreview {
@@ -896,6 +1101,13 @@ function requireReceivePreviewCounts(
 function requireReceiveOperation(operation: DurableWalletOperation): DurableWalletReceiveOperation {
   if (operation.kind !== 'wallet-receive') {
     throw new Error('durable wallet operation is not a receive')
+  }
+  return operation
+}
+
+function requireMintOperation(operation: DurableWalletOperation): DurableWalletMintOperation {
+  if (operation.kind !== 'wallet-mint') {
+    throw new Error('durable wallet operation is not a mint')
   }
   return operation
 }

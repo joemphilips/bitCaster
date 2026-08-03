@@ -69,6 +69,7 @@ export type ProofOperationKind =
   | "wallet-send"
   | "regular-split"
   | "proof-split"
+  | "wallet-mint"
   | "token-receive";
 export type ProofOperationState = "prepared" | "completed" | "Failed";
 
@@ -535,7 +536,7 @@ export async function getConditionCtfProofs(
 // from a decoded token or a raw wallet config. Normalizing on write means
 // the balance query (`getProofs(activeMintUrl)`) never has to worry about
 // trailing-slash / protocol-case drift.
-export async function addProofs(proofs: StoredProof[]): Promise<void> {
+export async function addProofs(proofs: StoredProof[], database: BitcasterDB = db): Promise<void> {
   const now = Date.now();
   const stamped = proofs.map((p) =>
     normalizeAndValidateStoredProof({
@@ -543,7 +544,7 @@ export async function addProofs(proofs: StoredProof[]): Promise<void> {
       receivedAt: p.receivedAt ?? now,
     }),
   );
-  await db.proofs.bulkPut(stamped.map(storedProofRow));
+  await database.proofs.bulkPut(stamped.map(storedProofRow));
 }
 
 export async function removeProofs(secrets: string[]): Promise<void> {
@@ -695,12 +696,13 @@ export async function getProofOperations(
     kinds?: ProofOperationKind[];
     operationIdPrefix?: string;
   } = {},
+  database: BitcasterDB = db,
 ): Promise<ProofOperationRecord[]> {
   const mintUrl = input.mintUrl ? normalizeUrl(input.mintUrl) : undefined;
   const stateSet = input.states ? new Set(input.states) : null;
   const kindSet = input.kinds ? new Set(input.kinds) : null;
   return (
-    await db.proofOperations
+    await database.proofOperations
       .filter((operation) => {
         if (mintUrl && operation.mintUrl !== mintUrl) return false;
         if (stateSet && !stateSet.has(operation.state)) return false;
@@ -803,8 +805,9 @@ function isSdkCtfProofOperationKind(kind: ProofOperationKind): boolean {
 export async function markProofOperationFailed(
   operationId: string,
   error: unknown,
+  database: BitcasterDB = db,
 ): Promise<ProofOperationRecord> {
-  const existing = await getRequiredProofOperation(operationId);
+  const existing = await getRequiredProofOperation(operationId, database);
   const updated: ProofOperationRecord = {
     ...existing,
     state: "Failed",
@@ -812,7 +815,7 @@ export async function markProofOperationFailed(
     failureCode: mintErrorCode(error),
     updatedAt: Date.now(),
   };
-  await db.proofOperations.put(updated);
+  await database.proofOperations.put(updated);
   return updated;
 }
 

@@ -16,11 +16,14 @@ import {
   decodeDurableWalletOperation,
   deriveDurableWalletOperationAuthority,
   requireDurableWalletOperationFromCustody,
+  runDurableWalletMintOperation,
   runDurableWalletReceiveOperation,
   hydrateDurableWalletMintPreview,
   serializeDurableWalletMintOperation,
   serializeDurableWalletReceiveOperation,
   toDurableCustodyProofOperationInput,
+  type DurableWalletMintOperationSnapshot,
+  type DurableWalletMintOperationStore,
   type DurableWalletReceiveOperationSnapshot,
   type DurableWalletReceiveOperationStore,
 } from '../src/durableWalletOperation.ts'
@@ -72,6 +75,138 @@ test('wallet mint preview roundtrips exact request and private output authority'
     /conflicts/,
   )
 })
+
+test('wallet mint restart replays only the persisted preview', async () => {
+  const operation = mintOperation('restart')
+  const result = mintResult(operation)
+  const harness = mintHarness({ operation, result })
+
+  const settled = await runDurableWalletMintOperation({
+    mode: 'recover',
+    operationId: operation.operationId,
+    store: harness.store,
+    wallet: harness.wallet,
+    restoreExactOutputs: harness.restoreExactOutputs,
+  })
+
+  assert.equal(settled.state, 'completed')
+  assert.equal(harness.calls.completes, 1)
+  assert.equal(harness.calls.restores, 0)
+  assert.equal(harness.calls.persists, 1)
+  assert.equal(
+    new TextDecoder().decode(harness.completedPreview!.outputData[0]!.secret),
+    operation.preview.outputData[0]!.secret,
+  )
+  assert.equal(
+    harness.completedPreview!.payload.outputs[0]!.B_,
+    operation.preview.payload.outputs[0]!.B_,
+  )
+})
+
+test('wallet mint duplicate-output recovery restores only persisted outputs', async () => {
+  const operation = mintOperation('restore')
+  const result = mintResult(operation)
+  const harness = mintHarness({
+    operation,
+    result,
+    completeError: duplicateMintOutputError(),
+    restore: result,
+  })
+
+  await runDurableWalletMintOperation({
+    mode: 'recover',
+    operationId: operation.operationId,
+    store: harness.store,
+    wallet: harness.wallet,
+    restoreExactOutputs: harness.restoreExactOutputs,
+  })
+
+  assert.equal(harness.calls.completes, 1)
+  assert.equal(harness.calls.restores, 1)
+  assert.equal(harness.calls.persists, 1)
+  assert.equal(harness.restoredOutputs![0]!.secret, operation.preview.outputData[0]!.secret)
+})
+
+function mintOperation(suffix: string) {
+  const output = OutputData.createSingleData('2', 'keyset-1', `mint-output-${suffix}`, 3n)
+  return serializeDurableWalletMintOperation({
+    operationId: `wallet-mint-${suffix}`,
+    mintUrl: 'https://mint.example',
+    unit: 'sat',
+    preview: {
+      method: 'bolt11',
+      payload: { quote: `quote-${suffix}`, outputs: [output.blindedMessage] },
+      outputData: [output],
+      keysetId: 'keyset-1',
+      quote: { quote: `quote-${suffix}` },
+    },
+  })
+}
+
+function mintResult(operation: ReturnType<typeof mintOperation>): Proof[] {
+  return operation.preview.outputData.map((output, index) => ({
+    id: output.blindedMessage.id,
+    amount: Amount.from(output.blindedMessage.amount),
+    secret: output.secret,
+    C: `mint-signature-${index}`,
+  }))
+}
+
+function duplicateMintOutputError(): Error {
+  return Object.assign(new Error('Blinded message already signed or pending'), {
+    name: 'MintOperationError',
+    status: 400,
+  })
+}
+
+function mintHarness(input: {
+  operation: ReturnType<typeof mintOperation>
+  result: Proof[]
+  completeError?: Error
+  restore?: Proof[]
+}) {
+  const calls = { loads: 0, completes: 0, restores: 0, persists: 0 }
+  let completedPreview: MintPreview<{ quote: string; expiry?: number | null }> | null = null
+  let restoredOutputs: readonly { secret: string }[] | null = null
+  const snapshot: DurableWalletMintOperationSnapshot = {
+    operation: input.operation,
+    state: 'prepared',
+    result: null,
+  }
+  const store: DurableWalletMintOperationStore = {
+    loadOperation: async () => {
+      calls.loads += 1
+      return snapshot
+    },
+    persistCompletedResult: async () => {
+      calls.persists += 1
+      return 'completed'
+    },
+  }
+  return {
+    calls,
+    store,
+    wallet: {
+      completeMint: async (preview: MintPreview<{ quote: string; expiry?: number | null }>) => {
+        calls.completes += 1
+        completedPreview = preview
+        if (input.completeError) throw input.completeError
+        return input.result
+      },
+    },
+    restoreExactOutputs: async ({ outputs }: { outputs: readonly { secret: string }[] }) => {
+      calls.restores += 1
+      restoredOutputs = outputs
+      return input.restore ?? input.result
+    },
+    get completedPreview() {
+      return completedPreview
+    },
+    get restoredOutputs() {
+      return restoredOutputs
+    },
+  }
+}
 
 function walletSend() {
   return {

@@ -20,7 +20,11 @@ import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
-import { recoverKeysetCountersForMint, recoverPendingTokenReceives } from "@/lib/cashu";
+import {
+  recoverKeysetCountersForMint,
+  recoverPendingTokenReceives,
+  recoverPendingWalletMints,
+} from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import { refreshMintInfoWithoutActivating, userAddAndSelectMint } from "@/lib/walletOps";
@@ -182,6 +186,7 @@ function AppRoutes() {
     let running = false;
     let rerunRequested = false;
     let receivesRecovered = false;
+    let mintsRecovered = false;
     let countersRecovered = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -205,6 +210,15 @@ function AppRoutes() {
             const result = await recoverPendingTokenReceives();
             receivesRecovered = result.pending === 0;
             retryRequired ||= !receivesRecovered;
+          } catch {
+            retryRequired = true;
+          }
+        }
+        if (!mintsRecovered) {
+          try {
+            const result = await recoverPendingWalletMints();
+            mintsRecovered = result.pending === 0;
+            retryRequired ||= !mintsRecovered;
           } catch {
             retryRequired = true;
           }
