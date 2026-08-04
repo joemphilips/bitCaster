@@ -28,7 +28,7 @@ import {
   prepareEncryptedWalletBackupManifest,
   prepareEncryptedWalletBackupManifestPage,
   prepareIncrementalEncryptedWalletBackupManifest,
-  prepareEncryptedWalletBackupManifestHead,
+  prepareEncryptedWalletBackupManifestHead as sdkPrepareEncryptedWalletBackupManifestHead,
   prepareBoundedEncryptedWalletBackupManifestTarget as prepareBoundedEncryptedWalletBackupManifestTargetRaw,
   prepareEncryptedWalletBackupObject,
   prepareEncryptedWalletBackupProof,
@@ -38,6 +38,7 @@ import {
   restoreEncryptedWalletBackupProofs,
   verifyEncryptedWalletBackupConditionalKeyset,
   readPreparedEncryptedWalletBackupObject,
+  readPreparedEncryptedWalletBackupManifestTarget,
   rehydratePreparedEncryptedWalletBackupManifestPage,
   readPreparedEncryptedWalletBackupManifestHead,
   readAuthenticatedEncryptedWalletBackupHead,
@@ -50,6 +51,7 @@ import {
   type EncryptedWalletBackupRestoreProofRow,
   type VerifiedEncryptedWalletBackupConditionalKeyset,
   type EncryptedWalletBackupRuntime,
+  type EncryptedWalletBackupWireObject,
 } from '../src/encryptedWalletBackup.ts'
 import { issueBoundedManifestTargetCapabilityForTest } from '../src/encryptedWalletBackupManifestTargetAuthority.ts'
 import {
@@ -109,17 +111,16 @@ import {
 } from '../src/encryptedWalletBackupEnrollment.ts'
 import {
   abandonEncryptedWalletBackupUploadAttempt as sdkAbandonEncryptedWalletBackupUploadAttempt,
-  claimEncryptedWalletBackupUploadAttempt,
+  claimBoundedEncryptedWalletBackupUploadAttempt,
   cleanUpRejectedEncryptedWalletBackupFork as sdkCleanUpRejectedEncryptedWalletBackupFork,
   recoverCompleteEncryptedWalletBackupJournal,
   deriveEncryptedWalletBackupCasAttemptId,
-  ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX,
-  prepareEncryptedWalletBackupUploadPlan,
+  planAndSealBoundedEncryptedWalletBackupUploadBatch,
   sealOrRehydrateEncryptedWalletBackupCasAttempt,
   rehydrateEncryptedWalletBackupUploadBatch,
-  sealEncryptedWalletBackupUploadAttempt,
-  sealEncryptedWalletBackupUploadBatch,
+  sealBoundedEncryptedWalletBackupUploadAttempt,
   uploadEncryptedWalletBackupBatch as sdkUploadEncryptedWalletBackupBatch,
+  type EncryptedWalletBackupBoundedUploadObjectSource,
   type EncryptedWalletBackupUploadBatchRecord,
 } from '../src/encryptedWalletBackupSync.ts'
 
@@ -178,6 +179,184 @@ const cleanUpRejectedEncryptedWalletBackupFork = (
   input: OptionalTestSignal<Parameters<typeof sdkCleanUpRejectedEncryptedWalletBackupFork>[0]>,
 ) => sdkCleanUpRejectedEncryptedWalletBackupFork(withTestCycleSignal(input))
 
+type BoundedUploadTestSetup = Readonly<{
+  target: Awaited<ReturnType<typeof prepareBoundedEncryptedWalletBackupManifestTarget>>
+  objects: readonly EncryptedWalletBackupWireObject[]
+}>
+
+const BOUNDED_UPLOAD_OBJECTS_BY_HEAD = new WeakMap<
+  object,
+  readonly PreparedEncryptedWalletBackupObject[]
+>()
+
+function prepareEncryptedWalletBackupManifestHead(
+  input: Parameters<typeof sdkPrepareEncryptedWalletBackupManifestHead>[0],
+) {
+  const head = sdkPrepareEncryptedWalletBackupManifestHead(input)
+  registerBoundedUploadTestSetup(head, [...input.manifest.pages, ...input.manifest.chunkObjects])
+  return head
+}
+
+async function openBoundedUploadForTest(input: {
+  attemptId: string
+  ownerId: string
+  leaseDurationMilliseconds: number
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
+  targetHead: Parameters<typeof readPreparedEncryptedWalletBackupManifestTarget>[0]['head']
+  store: InMemoryUploadBatchStore
+}) {
+  const setup = await boundedUploadTestSetup(input.keyHandle, input.targetHead)
+  input.store.registerBoundedUploadObjects(setup.objects)
+  const claim = await sealBoundedEncryptedWalletBackupUploadAttempt({
+    attemptId: input.attemptId,
+    ownerId: input.ownerId,
+    leaseDurationMilliseconds: input.leaseDurationMilliseconds,
+    keyHandle: input.keyHandle,
+    target: setup.target,
+    store: input.store,
+  })
+  return claim
+}
+
+async function resumeBoundedUploadForTest(input: {
+  ownerId: string
+  leaseDurationMilliseconds: number
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
+  store: InMemoryUploadBatchStore
+}) {
+  return claimBoundedEncryptedWalletBackupUploadAttempt(input)
+}
+
+async function prepareNextBoundedBatchForTest(input: {
+  claim: Awaited<ReturnType<typeof sealBoundedEncryptedWalletBackupUploadAttempt>>
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
+  store: InMemoryUploadBatchStore
+}) {
+  if (input.claim.record.activeBatchId !== null) {
+    return rehydrateEncryptedWalletBackupUploadBatch({
+      batchId: input.claim.record.activeBatchId,
+      keyHandle: input.keyHandle,
+      store: input.store,
+    })
+  }
+  const batch = await planAndSealBoundedEncryptedWalletBackupUploadBatch({
+    claim: input.claim,
+    keyHandle: input.keyHandle,
+    store: input.store,
+    source: input.store,
+  })
+  if (batch === null) throw new Error('bounded upload test target has no remaining batch')
+  return batch
+}
+
+type InMemoryUploadBatchStore = ReturnType<typeof inMemoryUploadBatchStore>
+
+async function boundedUploadTestSetup(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  targetHead: Parameters<typeof readPreparedEncryptedWalletBackupManifestTarget>[0]['head'],
+): Promise<BoundedUploadTestSetup> {
+  const registered = BOUNDED_UPLOAD_OBJECTS_BY_HEAD.get(targetHead)
+  if (registered === undefined)
+    throw new Error('bounded upload test setup was not registered with its fixture')
+  return createBoundedUploadTestSetup(keyHandle, targetHead, registered)
+}
+
+function registerBoundedUploadTestSetup(
+  targetHead: ReturnType<typeof sdkPrepareEncryptedWalletBackupManifestHead>,
+  objects: readonly PreparedEncryptedWalletBackupObject[],
+): void {
+  BOUNDED_UPLOAD_OBJECTS_BY_HEAD.set(targetHead, Object.freeze([...objects]))
+}
+
+async function createBoundedUploadTestSetup(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  targetHead: ReturnType<typeof sdkPrepareEncryptedWalletBackupManifestHead>,
+  preparedObjects: readonly PreparedEncryptedWalletBackupObject[],
+): Promise<BoundedUploadTestSetup> {
+  const target = readPreparedEncryptedWalletBackupManifestTarget({ keyHandle, head: targetHead })
+  const objects = preparedObjects.map(readPreparedEncryptedWalletBackupObject)
+  const references = decode(target.wire.canonicalReferenceSet) as unknown[]
+  const chunkReferences = (references[3] as Uint8Array[][]).map((reference) => ({
+    objectId: toHex(reference[0]!),
+    digest: toHex(reference[1]!),
+  }))
+  const parentEvidence = await boundedParentEvidenceForTest(keyHandle, target.canonicalParentHead)
+  const control = issueEncryptedWalletBackupFrozenSnapshotControl(
+    {},
+    {
+      realm: targetHead.realm,
+      vaultId: targetHead.vaultId,
+      enrollmentEpoch: 1,
+      parentGeneration: targetHead.parent?.generation ?? null,
+      parentManifestDigest: targetHead.parent?.manifestDigest ?? null,
+      parentReferenceSetDigest:
+        parentEvidence.head?.referenceSetDigest ??
+        ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
+      generation: targetHead.generation,
+      snapshotNonce: targetHead.snapshotNonce,
+      snapshotId: target.localSnapshotId,
+      snapshotRevision: target.localSnapshotRevision,
+    },
+  )
+  const boundedTarget = prepareBoundedEncryptedWalletBackupManifestTarget({
+    keyHandle,
+    control,
+    parentEvidence,
+    pages: objects.filter((object) => object.kindCode === 2),
+    chunkReferences,
+    proofCount: targetHead.proofCount,
+  })
+  if (
+    boundedTarget.head.manifestDigest !== targetHead.manifestDigest ||
+    !equalBytesForTest(boundedTarget.wire.canonicalHead, target.wire.canonicalHead) ||
+    !equalBytesForTest(boundedTarget.wire.canonicalReferenceSet, target.wire.canonicalReferenceSet)
+  ) {
+    throw new Error('bounded upload test target changed the prepared manifest')
+  }
+  return Object.freeze({ target: boundedTarget, objects })
+}
+
+async function boundedParentEvidenceForTest(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  canonicalParentHead: Uint8Array | null,
+): Promise<AuthenticatedEncryptedWalletBackupHeadEvidence> {
+  const requestProof = await prepareEncryptedWalletBackupRequestProof({
+    keyHandle,
+    enrollmentEpoch: 1,
+    method: 'GET',
+    url: 'https://backup.example.test/bounded-parent',
+    issuedAtUnixSeconds: 1_700_000_000,
+    expiresAtUnixSeconds: 1_700_000_030,
+    payload: new Uint8Array(),
+  })
+  return readAuthenticatedEncryptedWalletBackupHead({
+    keyHandle,
+    enrollmentEpoch: 1,
+    requestProof,
+    remote: {
+      async readCurrentHead() {
+        return canonicalParentHead === null
+          ? { status: 'not-found' as const }
+          : {
+              status: 'found' as const,
+              enrollmentEpoch: 1,
+              head: manifestHeadWireFromCanonicalForTest(canonicalParentHead),
+            }
+      },
+    },
+  })
+}
+
+function manifestHeadWireFromCanonicalForTest(canonicalHead: Uint8Array) {
+  const value = decode(canonicalHead) as unknown[]
+  const pageReferences = value[8] as unknown[]
+  const chunkReferences = value[9] as unknown[]
+  return {
+    canonicalHead: canonicalHead.slice(),
+    canonicalReferenceSet: encodeCanonical([1, 'reference-set', pageReferences, chunkReferences]),
+  }
+}
+
 type CasHandoffFixture = Readonly<{
   state: 'cas-journaled'
   targetManifestDigest: string
@@ -186,14 +365,14 @@ type CasHandoffFixture = Readonly<{
   localSnapshotRevision: number
   objectCount: number
   casAttempt: Awaited<ReturnType<typeof sealOrRehydrateEncryptedWalletBackupCasAttempt>>
-  claim: Awaited<ReturnType<typeof sealEncryptedWalletBackupUploadAttempt>>
+  claim: Awaited<ReturnType<typeof openBoundedUploadForTest>>
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
   store: ReturnType<typeof inMemoryUploadBatchStore>
 }>
 
 async function journalEncryptedWalletBackupCasHandoffForTest(input: {
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
-  claim: Awaited<ReturnType<typeof sealEncryptedWalletBackupUploadAttempt>>
+  claim: Awaited<ReturnType<typeof openBoundedUploadForTest>>
   store: ReturnType<typeof inMemoryUploadBatchStore>
 }): Promise<CasHandoffFixture> {
   const casAttempt = await sealOrRehydrateEncryptedWalletBackupCasAttempt(input)
@@ -219,7 +398,7 @@ async function rehydrateEncryptedWalletBackupCasHandoffForTest(input: {
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
   store: ReturnType<typeof inMemoryUploadBatchStore>
 }): Promise<CasHandoffFixture> {
-  const claim = await claimEncryptedWalletBackupUploadAttempt({
+  const claim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle: input.keyHandle,
@@ -998,36 +1177,6 @@ test('persisted Pass-B page restores after local-origin loss through an authenti
     chunkReferences: readEncryptedWalletBackupManifestPageProvenance(page).chunkReferences,
     proofCount: 4,
   })
-  const emptyTarget = prepareBoundedEncryptedWalletBackupManifestTarget({
-    keyHandle: fixture.keyHandle,
-    control,
-    parentEvidence: noParent,
-    pages: [],
-    chunkReferences: [],
-    proofCount: 0,
-  })
-  for (const targetHead of [target.head, emptyTarget.head]) {
-    assert.throws(
-      () =>
-        prepareEncryptedWalletBackupUploadPlan({
-          attemptId: '01'.repeat(16),
-          keyHandle: fixture.keyHandle,
-          targetHead,
-        }),
-      /prepared manifest target is invalid/,
-    )
-    await assert.rejects(
-      sealEncryptedWalletBackupUploadAttempt({
-        attemptId: '02'.repeat(16),
-        ownerId: 'bounded-target',
-        leaseDurationMilliseconds: 1,
-        keyHandle: fixture.keyHandle,
-        targetHead,
-        store: {} as never,
-      }),
-      /prepared manifest target is invalid/,
-    )
-  }
   const originLostKey = await createEncryptedWalletBackupKeyHandle({
     seed: SEED,
     realm: vector.inputs.realm,
@@ -1730,23 +1879,17 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
     carriedUploadStore,
     '6b'.repeat(16),
   )
-  const carriedUpload = await sealEncryptedWalletBackupUploadBatch({
-    batchId: '6a'.repeat(16),
+  const carriedUpload = await prepareNextBoundedBatchForTest({
     claim: carriedClaim,
     keyHandle,
-    plannedBatch: plannedUploadBatchForTest(keyHandle, carriedHead, carriedClaim.record.attemptId),
     store: carriedUploadStore,
   })
   assert.equal(carriedUpload.record.items.length, carriedManifest.pages.length)
   await assert.rejects(
     () =>
-      sealEncryptedWalletBackupUploadBatch({
-        batchId: '6c'.repeat(16),
+      prepareNextBoundedBatchForTest({
         claim: carriedClaim,
         keyHandle,
-        plannedBatch: {
-          ...plannedUploadBatchForTest(keyHandle, carriedHead, carriedClaim.record.attemptId),
-        },
         store: inMemoryUploadBatchStore(),
       }),
     /backup upload attempt claim is invalid/,
@@ -1772,7 +1915,7 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
       prepareEncryptedWalletBackupObject({
         keyHandle,
         chunk,
-        generation: 1,
+        generation: 2,
         runtime: deterministicRuntime([
           new Uint8Array(16).fill(110 + index),
           new Uint8Array(12).fill(120 + index),
@@ -1813,19 +1956,13 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
     repackedStore,
     '6f'.repeat(16),
   )
-  const repackedBatch = await sealEncryptedWalletBackupUploadBatch({
-    batchId: '6e'.repeat(16),
+  const repackedBatch = await prepareNextBoundedBatchForTest({
     claim: repackedClaim,
     keyHandle,
-    plannedBatch: plannedUploadBatchForTest(
-      keyHandle,
-      repackedHead,
-      repackedClaim.record.attemptId,
-    ),
     store: repackedStore,
   })
   assert.equal(repackedBatch.record.items.length, 5)
-  assert.equal(repackedBatch.record.repackedChunkCount, 2)
+  assert.equal(repackedBatch.record.repackedChunkCount, 4)
 
   const emptyChildManifest = await prepareIncrementalEncryptedWalletBackupManifest({
     keyHandle,
@@ -1981,7 +2118,7 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
       }),
     /aggregate batch partition|batch set is invalid/,
   )
-  const currentEmptyClaim = await claimEncryptedWalletBackupUploadAttempt({
+  const currentEmptyClaim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle: emptyRestartKey,
@@ -2055,7 +2192,7 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
     seed: SEED,
     realm: keyHandle.realm,
   })
-  const emptyAbortRestartClaim = await claimEncryptedWalletBackupUploadAttempt({
+  const emptyAbortRestartClaim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle: emptyAbortRestartKey,
@@ -2147,14 +2284,12 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
   } = await createManifestUploadFixtureForTest()
   const uploadStore = inMemoryUploadBatchStore()
   const uploadClaim = await uploadAttemptClaimForTest(keyHandle, head, uploadStore, '72'.repeat(16))
-  const uploadBatch = await sealEncryptedWalletBackupUploadBatch({
-    batchId: '71'.repeat(16),
+  const uploadBatch = await prepareNextBoundedBatchForTest({
     claim: uploadClaim,
     keyHandle,
-    plannedBatch: plannedUploadBatchForTest(keyHandle, head, uploadClaim.record.attemptId),
     store: uploadStore,
   })
-  assert.equal(uploadBatch.record.repackedChunkCount, 0)
+  assert.equal(uploadBatch.record.repackedChunkCount, 2)
   uploadBatch.record.items[0]!.canonicalPutPayload[0] ^= 1
   let activeUploads = 0
   let maximumUploads = 0
@@ -2179,7 +2314,7 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
         activeUploads += 1
         maximumUploads = Math.max(maximumUploads, activeUploads)
         const persisted = await rehydrateEncryptedWalletBackupUploadBatch({
-          batchId: '71'.repeat(16),
+          batchId: uploadBatch.record.batchId,
           keyHandle,
           store: uploadStore,
         })
@@ -2205,11 +2340,9 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
     retryUploadStore,
     '76'.repeat(16),
   )
-  const retryUploadBatch = await sealEncryptedWalletBackupUploadBatch({
-    batchId: '75'.repeat(16),
+  const retryUploadBatch = await prepareNextBoundedBatchForTest({
     claim: retryUploadClaim,
     keyHandle,
-    plannedBatch: plannedUploadBatchForTest(keyHandle, head, retryUploadClaim.record.attemptId),
     store: retryUploadStore,
   })
   const firstPayloads: string[] = []
@@ -2239,7 +2372,7 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
     /connection lost/,
   )
   const persistedRetryBatch = await rehydrateEncryptedWalletBackupUploadBatch({
-    batchId: '75'.repeat(16),
+    batchId: retryUploadBatch.record.batchId,
     keyHandle,
     store: retryUploadStore,
   })
@@ -2251,7 +2384,7 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
   await assert.rejects(
     () =>
       rehydrateEncryptedWalletBackupUploadBatch({
-        batchId: '75'.repeat(16),
+        batchId: retryUploadBatch.record.batchId,
         keyHandle,
         store: uploadBatchReadOnlyStore(
           corruptedUploadRecord as unknown as Record<string, unknown>,
@@ -2275,7 +2408,7 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
     await assert.rejects(
       () =>
         rehydrateEncryptedWalletBackupUploadBatch({
-          batchId: '75'.repeat(16),
+          batchId: retryUploadBatch.record.batchId,
           keyHandle,
           store: uploadBatchReadOnlyStore(mismatch),
         }),
@@ -2298,7 +2431,7 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
   await assert.rejects(
     () =>
       rehydrateEncryptedWalletBackupUploadBatch({
-        batchId: '75'.repeat(16),
+        batchId: retryUploadBatch.record.batchId,
         keyHandle,
         store: uploadBatchReadOnlyStore(futureChunk),
       }),
@@ -2307,7 +2440,7 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
   retryUploadStore.setNowUnixMilliseconds(
     persistedRetryBatch.record.executionLeaseExpiresAtUnixMilliseconds!,
   )
-  const retryUploadClaimRenewed = await claimEncryptedWalletBackupUploadAttempt({
+  const retryUploadClaimRenewed = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -2352,11 +2485,9 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
     abandonedStore,
     '78'.repeat(16),
   )
-  const abandonedBatch = await sealEncryptedWalletBackupUploadBatch({
-    batchId: '77'.repeat(16),
+  const abandonedBatch = await prepareNextBoundedBatchForTest({
     claim: abandonedClaim,
     keyHandle,
-    plannedBatch: plannedUploadBatchForTest(keyHandle, head, abandonedClaim.record.attemptId),
     store: abandonedStore,
   })
   const abandoned = await abandonEncryptedWalletBackupUploadAttempt({
@@ -2384,21 +2515,8 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
     attempts: 0,
     batches: 0,
     casAttempts: 0,
+    cursors: 0,
   })
-  await assert.rejects(
-    () =>
-      sealEncryptedWalletBackupUploadBatch({
-        batchId: '73'.repeat(16),
-        claim: uploadClaim,
-        keyHandle,
-        plannedBatch: {
-          ...plannedUploadBatchForTest(keyHandle, head, uploadClaim.record.attemptId),
-          repackedChunkCount: 5,
-        },
-        store: inMemoryUploadBatchStore(),
-      }),
-    /backup upload attempt claim is invalid/,
-  )
   assert.equal(
     page.entries.every((entry) => entry.mint === vector.inputs.proof.mint),
     true,
@@ -2596,7 +2714,6 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
   const duplicateDigestBundle = await finalizeTargetUploadsForTest({
     keyHandle,
     targetHead: head,
-    batchId: 'ed'.repeat(16),
     attemptId: 'ec'.repeat(16),
   })
   const duplicateDigestRaw = await duplicateDigestBundle.store.inspectUploadAttemptPartition(
@@ -2706,7 +2823,6 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
   const substitutedFinalize = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: nextHead,
-    batchId: 'ef'.repeat(16),
     attemptId: 'ee'.repeat(16),
   })
   const originalSubstitutedHandoff = substitutedFinalize.store.sealOrReadLinkedCasAttempt
@@ -2778,7 +2894,6 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
   const finalizeWins = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: nextHead,
-    batchId: 'f1'.repeat(16),
     attemptId: 'f2'.repeat(16),
   })
   let staleAbortCalls = 0
@@ -2812,7 +2927,6 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
   const abortWins = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: nextHead,
-    batchId: 'f3'.repeat(16),
     attemptId: 'f4'.repeat(16),
   })
   let uncertainAbortCalls = 0
@@ -2858,7 +2972,7 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
     keyHandle: restartedKeyHandle,
     store: abortWins.store,
   })
-  const restartedAbortClaim = await claimEncryptedWalletBackupUploadAttempt({
+  const restartedAbortClaim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle: restartedKeyHandle,
@@ -2888,49 +3002,16 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
   assert.equal(uncertainAbortCalls, 2)
 
   const multiBatchTarget = await createMultiBatchTargetForTest(keyHandle)
-  const partitionPlan = prepareEncryptedWalletBackupUploadPlan({
-    attemptId: 'f6'.repeat(16),
-    keyHandle,
-    targetHead: multiBatchTarget.head,
-  })
-  assert.deepEqual(
-    partitionPlan.batches.map((batch) => batch.objectCount),
-    [16, 2],
-  )
-  const partitionPagePayloadLength = preparedPutPayloadLengthForTest(
-    'f6'.repeat(16),
-    multiBatchTarget.objects[0]!,
-  )
-  const partitionChunkPayloadLength = preparedPutPayloadLengthForTest(
-    'f6'.repeat(16),
-    multiBatchTarget.objects[1]!,
-  )
-  assert.deepEqual(
-    partitionPlan.batches.map((batch) => batch.uploadedBytes),
-    [
-      partitionPagePayloadLength + 15 * partitionChunkPayloadLength,
-      2 * partitionChunkPayloadLength,
-    ],
-  )
-  assert.equal(
-    partitionPlan.batches.reduce((total, batch) => total + batch.objectCount, 0),
-    partitionPlan.objectCount,
-  )
-  assert.equal(partitionPlan.batches[0]!.objectCount, ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX)
   const partitionStore = inMemoryUploadBatchStore()
   const partitionFirst = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: multiBatchTarget.head,
-    batchId: 'f5'.repeat(16),
     attemptId: 'f6'.repeat(16),
     store: partitionStore,
-    batchIndex: 0,
   })
-  const partitionSecondSealed = await sealEncryptedWalletBackupUploadBatch({
-    batchId: 'f7'.repeat(16),
+  const partitionSecondSealed = await prepareNextBoundedBatchForTest({
     claim: partitionFirst.claim,
     keyHandle,
-    plannedBatch: partitionPlan.batches[1]!,
     store: partitionStore,
   })
   await assert.rejects(
@@ -2964,7 +3045,7 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
   partitionStore.setNowUnixMilliseconds(
     partitionRestartBatch.record.executionLeaseExpiresAtUnixMilliseconds!,
   )
-  const partitionRestartClaim = await claimEncryptedWalletBackupUploadAttempt({
+  const partitionRestartClaim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle: partitionRestartKey,
@@ -2984,8 +3065,45 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
       },
     },
   })
+  const partitionAcknowledged = [partitionFirst.acknowledged, partitionSecondAcknowledged]
+  let partitionFinalClaim = partitionRestartClaim!
+  let partitionAcknowledgedObjectCount = partitionAcknowledged.reduce(
+    (count, batch) => count + batch.record.items.length,
+    0,
+  )
+  while (partitionAcknowledgedObjectCount < multiBatchTarget.objects.length) {
+    const claim = await resumeBoundedUploadForTest({
+      ownerId: 'test-owner',
+      leaseDurationMilliseconds: 60_000,
+      keyHandle: partitionRestartKey,
+      store: partitionStore,
+    })
+    const batch = await prepareNextBoundedBatchForTest({
+      claim: claim!,
+      keyHandle: partitionRestartKey,
+      store: partitionStore,
+    })
+    const acknowledged = await uploadEncryptedWalletBackupBatch({
+      batch,
+      claim: claim!,
+      store: partitionStore,
+      keyHandle: partitionRestartKey,
+      enrollmentEpoch: 1,
+      clock: { nowUnixSeconds: () => 1_700_000_001 },
+      objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
+      remote: {
+        async putObject() {
+          return { status: 'already-stored' as const }
+        },
+      },
+    })
+    partitionAcknowledged.push(acknowledged)
+    partitionAcknowledgedObjectCount += acknowledged.record.items.length
+    partitionFinalClaim = claim!
+  }
   assert.deepEqual(
-    [...partitionFirst.acknowledged.record.items, ...partitionSecondAcknowledged.record.items]
+    partitionAcknowledged
+      .flatMap((batch) => batch.record.items)
       .map((item) => item.objectId)
       .sort(),
     multiBatchTarget.objects.map((object) => object.objectId).sort(),
@@ -2993,7 +3111,7 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
   let crossRowAbortCalls = 0
   const partitionFinalize = journalEncryptedWalletBackupCasHandoffForTest({
     keyHandle: partitionRestartKey,
-    claim: partitionRestartClaim!,
+    claim: partitionFinalClaim,
     store: partitionStore,
   })
   const partitionStaleAbort = abandonEncryptedWalletBackupUploadAttempt({
@@ -3022,19 +3140,15 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
   const abortPartitionFirst = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: multiBatchTarget.head,
-    batchId: 'f8'.repeat(16),
     attemptId: 'f9'.repeat(16),
     store: abortPartitionStore,
-    batchIndex: 0,
   })
   const abortPartitionSecond = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: multiBatchTarget.head,
-    batchId: 'fa'.repeat(16),
     attemptId: 'f9'.repeat(16),
     store: abortPartitionStore,
     claim: abortPartitionFirst.claim,
-    batchIndex: 1,
   })
   const crossRowAbortFirst = abandonEncryptedWalletBackupUploadAttempt({
     claim: abortPartitionFirst.claim,
@@ -3073,24 +3187,9 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
   const duplicateFirst = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: multiBatchTarget.head,
-    batchId: 'fb'.repeat(16),
     attemptId: 'fc'.repeat(16),
     store: duplicatePartitionStore,
-    batchIndex: 0,
   })
-  await assert.rejects(
-    () =>
-      acknowledgeTargetUploadsForTest({
-        keyHandle,
-        targetHead: multiBatchTarget.head,
-        batchId: 'fd'.repeat(16),
-        attemptId: 'fc'.repeat(16),
-        store: duplicatePartitionStore,
-        claim: duplicateFirst.claim,
-        batchIndex: 0,
-      }),
-    /duplicated/,
-  )
   const rolledBackDuplicate = await rehydrateEncryptedWalletBackupUploadBatch({
     batchId: duplicateFirst.batchId,
     keyHandle,
@@ -3136,7 +3235,7 @@ test('upload ownership and execution leases survive takeover boundaries', async 
     await createManifestUploadFixtureForTest()
 
   const leaseStore = inMemoryUploadBatchStore()
-  const staleOwnerClaim = await sealEncryptedWalletBackupUploadAttempt({
+  const staleOwnerClaim = await openBoundedUploadForTest({
     attemptId: '67'.repeat(16),
     ownerId: 'owner-one',
     leaseDurationMilliseconds: 10,
@@ -3145,7 +3244,7 @@ test('upload ownership and execution leases survive takeover boundaries', async 
     store: leaseStore,
   })
   leaseStore.setNowUnixMilliseconds(staleOwnerClaim.record.leaseExpiresAtUnixMilliseconds)
-  const takeover = await claimEncryptedWalletBackupUploadAttempt({
+  const takeover = await resumeBoundedUploadForTest({
     ownerId: 'owner-two',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -3154,20 +3253,16 @@ test('upload ownership and execution leases survive takeover boundaries', async 
   assert.equal(takeover!.record.ownerEpoch, staleOwnerClaim.record.ownerEpoch + 1)
   await assert.rejects(
     () =>
-      sealEncryptedWalletBackupUploadBatch({
-        batchId: '66'.repeat(16),
+      prepareNextBoundedBatchForTest({
         claim: staleOwnerClaim,
         keyHandle,
-        plannedBatch: plannedUploadBatchForTest(keyHandle, head, staleOwnerClaim.record.attemptId),
         store: leaseStore,
       }),
     /stale backup upload owner claim/,
   )
-  const takeoverBatch = await sealEncryptedWalletBackupUploadBatch({
-    batchId: '65'.repeat(16),
+  const takeoverBatch = await prepareNextBoundedBatchForTest({
     claim: takeover!,
     keyHandle,
-    plannedBatch: plannedUploadBatchForTest(keyHandle, head, takeover!.record.attemptId),
     store: leaseStore,
   })
   let staleOwnerNetworkCalls = 0
@@ -3193,7 +3288,7 @@ test('upload ownership and execution leases survive takeover boundaries', async 
   assert.equal(staleOwnerNetworkCalls, 0)
 
   const uniquenessStore = inMemoryUploadBatchStore()
-  const firstVaultAttempt = await sealEncryptedWalletBackupUploadAttempt({
+  const firstVaultAttempt = await openBoundedUploadForTest({
     attemptId: '61'.repeat(16),
     ownerId: 'single-owner',
     leaseDurationMilliseconds: 60_000,
@@ -3203,7 +3298,7 @@ test('upload ownership and execution leases survive takeover boundaries', async 
   })
   await assert.rejects(
     () =>
-      sealEncryptedWalletBackupUploadAttempt({
+      openBoundedUploadForTest({
         attemptId: '60'.repeat(16),
         ownerId: 'single-owner',
         leaseDurationMilliseconds: 60_000,
@@ -3213,7 +3308,7 @@ test('upload ownership and execution leases survive takeover boundaries', async 
       }),
     /live backup upload attempt already exists/,
   )
-  const restartedSingle = await claimEncryptedWalletBackupUploadAttempt({
+  const restartedSingle = await resumeBoundedUploadForTest({
     ownerId: 'single-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -3221,7 +3316,7 @@ test('upload ownership and execution leases survive takeover boundaries', async 
   })
   assert.equal(restartedSingle!.record.attemptId, firstVaultAttempt.record.attemptId)
   assert.equal(restartedSingle!.record.ownerEpoch, firstVaultAttempt.record.ownerEpoch + 1)
-  const renewedSingle = await claimEncryptedWalletBackupUploadAttempt({
+  const renewedSingle = await resumeBoundedUploadForTest({
     ownerId: 'single-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -3230,11 +3325,9 @@ test('upload ownership and execution leases survive takeover boundaries', async 
   assert.equal(renewedSingle!.record.ownerEpoch, restartedSingle!.record.ownerEpoch + 1)
   await assert.rejects(
     () =>
-      sealEncryptedWalletBackupUploadBatch({
-        batchId: '5f'.repeat(16),
+      prepareNextBoundedBatchForTest({
         claim: restartedSingle!,
         keyHandle,
-        plannedBatch: plannedUploadBatchForTest(keyHandle, head, restartedSingle!.record.attemptId),
         store: uniquenessStore,
       }),
     /stale backup upload owner claim/,
@@ -3248,34 +3341,26 @@ test('upload ownership and execution leases survive takeover boundaries', async 
     '63'.repeat(16),
   )
   const idempotentInput = {
-    batchId: '62'.repeat(16),
     claim: idempotentClaim,
     keyHandle,
-    plannedBatch: plannedUploadBatchForTest(keyHandle, head, idempotentClaim.record.attemptId),
     store: idempotentStore,
   }
-  const idempotentFirst = await sealEncryptedWalletBackupUploadBatch(idempotentInput)
-  const idempotentRetry = await sealEncryptedWalletBackupUploadBatch(idempotentInput)
+  const idempotentFirst = await prepareNextBoundedBatchForTest(idempotentInput)
+  const idempotentRetryClaim = await resumeBoundedUploadForTest({
+    ownerId: 'test-owner',
+    leaseDurationMilliseconds: 60_000,
+    keyHandle,
+    store: idempotentStore,
+  })
+  const idempotentRetry = await prepareNextBoundedBatchForTest({
+    claim: idempotentRetryClaim!,
+    keyHandle,
+    store: idempotentStore,
+  })
   assert.equal(
     isDeepStrictEqual(idempotentRetry.record, idempotentFirst.record),
     true,
     'idempotent batch retry must return the exact persisted record',
-  )
-  await assert.rejects(
-    () =>
-      sealEncryptedWalletBackupUploadBatch({
-        ...idempotentInput,
-        plannedBatch: { ...idempotentInput.plannedBatch },
-      }),
-    /prepared backup upload batch is invalid/,
-  )
-  await assert.rejects(
-    () =>
-      sealEncryptedWalletBackupUploadBatch({
-        ...idempotentInput,
-        batchId: '5e'.repeat(16),
-      }),
-    /prepared backup upload batch is invalid/,
   )
 
   const executionStore = inMemoryUploadBatchStore()
@@ -3285,11 +3370,9 @@ test('upload ownership and execution leases survive takeover boundaries', async 
     executionStore,
     '5d'.repeat(16),
   )
-  const executionBatch = await sealEncryptedWalletBackupUploadBatch({
-    batchId: '5c'.repeat(16),
+  const executionBatch = await prepareNextBoundedBatchForTest({
     claim: executionClaim,
     keyHandle,
-    plannedBatch: plannedUploadBatchForTest(keyHandle, head, executionClaim.record.attemptId),
     store: executionStore,
   })
   let releaseFirstExecution!: () => void
@@ -3359,7 +3442,7 @@ test('upload ownership and execution leases survive takeover boundaries', async 
   assert.equal((await firstExecution).record.state, 'acknowledged')
 
   const delayedStore = inMemoryUploadBatchStore()
-  const delayedClaim = await sealEncryptedWalletBackupUploadAttempt({
+  const delayedClaim = await openBoundedUploadForTest({
     attemptId: '5b'.repeat(16),
     ownerId: 'signing-owner',
     leaseDurationMilliseconds: 10,
@@ -3367,11 +3450,9 @@ test('upload ownership and execution leases survive takeover boundaries', async 
     targetHead: head,
     store: delayedStore,
   })
-  const delayedBatch = await sealEncryptedWalletBackupUploadBatch({
-    batchId: '5a'.repeat(16),
+  const delayedBatch = await prepareNextBoundedBatchForTest({
     claim: delayedClaim,
     keyHandle,
-    plannedBatch: plannedUploadBatchForTest(keyHandle, head, delayedClaim.record.attemptId),
     store: delayedStore,
   })
   let releaseSigning!: () => void
@@ -3419,7 +3500,7 @@ test('upload ownership and execution leases survive takeover boundaries', async 
   })
   await signingStarted
   delayedStore.setNowUnixMilliseconds(delayedClaim.record.leaseExpiresAtUnixMilliseconds)
-  const delayedTakeover = await claimEncryptedWalletBackupUploadAttempt({
+  const delayedTakeover = await resumeBoundedUploadForTest({
     ownerId: 'signing-takeover',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -3476,7 +3557,7 @@ test('delayed CAS and abort signing cannot dispatch after owner takeover', async
   casFixture.finalizedBundle.store.setNowUnixMilliseconds(
     casFixture.finalizedNextUploads.claim.record.leaseExpiresAtUnixMilliseconds,
   )
-  const casTakeover = await claimEncryptedWalletBackupUploadAttempt({
+  const casTakeover = await resumeBoundedUploadForTest({
     ownerId: 'cas-takeover',
     leaseDurationMilliseconds: 60_000,
     keyHandle: casFixture.keyHandle,
@@ -3507,7 +3588,7 @@ test('delayed CAS and abort signing cannot dispatch after owner takeover', async
   })
   await preAbortDelay.signingStarted
   preAbort.store.setNowUnixMilliseconds(preAbort.claim.record.leaseExpiresAtUnixMilliseconds)
-  const abortTakeover = await claimEncryptedWalletBackupUploadAttempt({
+  const abortTakeover = await resumeBoundedUploadForTest({
     ownerId: 'abort-takeover',
     leaseDurationMilliseconds: 60_000,
     keyHandle: preAbort.keyHandle,
@@ -3540,7 +3621,7 @@ test('delayed CAS and abort signing cannot dispatch after owner takeover', async
   cleanupFixture.finalizedBundle.store.setNowUnixMilliseconds(
     cleanupFixture.finalizedNextUploads.claim.record.leaseExpiresAtUnixMilliseconds,
   )
-  const cleanupTakeover = await claimEncryptedWalletBackupUploadAttempt({
+  const cleanupTakeover = await resumeBoundedUploadForTest({
     ownerId: 'cleanup-takeover',
     leaseDurationMilliseconds: 60_000,
     keyHandle: cleanupFixture.keyHandle,
@@ -3557,7 +3638,6 @@ test('coordinator atomically journals deterministic CAS work and completes the a
   const acknowledged = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: head,
-    batchId: '6a'.repeat(16),
     attemptId: '6b'.repeat(16),
   })
   const expectedCasId = deriveEncryptedWalletBackupCasAttemptId({
@@ -3619,7 +3699,7 @@ test('coordinator atomically journals deterministic CAS work and completes the a
   )
   await assert.rejects(
     () =>
-      sealEncryptedWalletBackupUploadAttempt({
+      openBoundedUploadForTest({
         attemptId: '6c'.repeat(16),
         ownerId: 'other-owner',
         leaseDurationMilliseconds: 60_000,
@@ -3629,7 +3709,7 @@ test('coordinator atomically journals deterministic CAS work and completes the a
       }),
     /live backup upload attempt already exists/,
   )
-  const restartedClaim = await claimEncryptedWalletBackupUploadAttempt({
+  const restartedClaim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -3668,8 +3748,9 @@ test('coordinator atomically journals deterministic CAS work and completes the a
     attempts: 0,
     batches: 0,
     casAttempts: 0,
+    cursors: 0,
   })
-  await sealEncryptedWalletBackupUploadAttempt({
+  await openBoundedUploadForTest({
     attemptId: '6c'.repeat(16),
     ownerId: 'other-owner',
     leaseDurationMilliseconds: 60_000,
@@ -3684,7 +3765,6 @@ test('CAS signing and dispatch use only private persisted payload bytes', async 
   const fixture = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: head,
-    batchId: '7a'.repeat(16),
     attemptId: '7b'.repeat(16),
   })
   const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
@@ -3736,7 +3816,6 @@ test('acknowledged CAS completion validates the exact finalized batch partition 
   const fixture = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: head,
-    batchId: '7e'.repeat(16),
     attemptId: '7f'.repeat(16),
   })
   const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
@@ -3788,7 +3867,6 @@ test('terminal CAS adapter callback faults roll back transition and deletion', a
       const fixture = await acknowledgeTargetUploadsForTest({
         keyHandle,
         targetHead: head,
-        batchId: '8c'.repeat(16),
         attemptId: '8d'.repeat(16),
       })
       const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
@@ -3889,7 +3967,6 @@ test('coordinator handoff rolls back and deterministic CAS collisions fail close
   const rollback = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: head,
-    batchId: '6d'.repeat(16),
     attemptId: '6e'.repeat(16),
   })
   const originalRollbackHandoff = rollback.store.sealOrReadLinkedCasAttempt
@@ -3939,7 +4016,7 @@ test('coordinator handoff rolls back and deterministic CAS collisions fail close
   rollback.store.mutateCasAttempt(cas.record.attemptId, (record) => {
     record.localSnapshotRevision = Number(record.localSnapshotRevision) + 1
   })
-  const restartedClaim = await claimEncryptedWalletBackupUploadAttempt({
+  const restartedClaim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -3962,7 +4039,6 @@ test('coordinator rejects aggregate authority mutation during a linked CAS trans
   const fixture = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: head,
-    batchId: '71'.repeat(16),
     attemptId: '72'.repeat(16),
   })
   const originalHostileTransition = fixture.store.transitionLinkedCasAttempt
@@ -4030,7 +4106,7 @@ test('foreign-head cleanup retains the slot and already-finalized releases it wi
   assert.equal(fenced.lifecycle, 'fork-cleanup-uncertain')
   await assert.rejects(
     () =>
-      sealEncryptedWalletBackupUploadAttempt({
+      openBoundedUploadForTest({
         attemptId: '73'.repeat(16),
         ownerId: 'other-owner',
         leaseDurationMilliseconds: 60_000,
@@ -4092,7 +4168,7 @@ test('foreign-head cleanup retains the slot and already-finalized releases it wi
   })
   assert.equal(cleaned.state, 'complete')
   assert.equal(cleaned.receiptAuthority, 'none')
-  await sealEncryptedWalletBackupUploadAttempt({
+  await openBoundedUploadForTest({
     attemptId: '73'.repeat(16),
     ownerId: 'other-owner',
     leaseDurationMilliseconds: 60_000,
@@ -4288,6 +4364,7 @@ test('zero-delta fork cleanup is automatic and deletes terminal coordinator rows
     attempts: 0,
     batches: 0,
     casAttempts: 0,
+    cursors: 0,
   })
 })
 
@@ -4357,7 +4434,7 @@ test('linked CAS retry, crash rehydration, and DB-time exhaustion remain exact',
     attempt: finalizedNextUploads.casAttempt,
     event: { type: 'cas-dispatched' },
   })
-  const restartClaim = await claimEncryptedWalletBackupUploadAttempt({
+  const restartClaim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -4429,7 +4506,7 @@ test('linked CAS retry, crash rehydration, and DB-time exhaustion remain exact',
   )
   assert.ok(secondBoundary > firstBoundary + 5_000)
 
-  const secondRestartClaim = await claimEncryptedWalletBackupUploadAttempt({
+  const secondRestartClaim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -4500,7 +4577,7 @@ test('head-CAS quota rejection persists backoff before observing the head', asyn
   })
   assert.equal(notReady.record.state, 'retry-exhausted')
   assert.equal(notReady.record.casAttempts, 1)
-  const restartClaim = await claimEncryptedWalletBackupUploadAttempt({
+  const restartClaim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -4594,7 +4671,7 @@ test('CAS backoff survives a failed head read and restart reconciles before redi
   assert.ok(boundary >= 1_700_000_017_000)
   assert.ok(boundary <= 1_700_000_020_400)
 
-  const restartClaim = await claimEncryptedWalletBackupUploadAttempt({
+  const restartClaim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -4751,7 +4828,6 @@ test('persisted CAS state/count and aggregate lifecycle combinations are exhaust
   const fixture = await acknowledgeTargetUploadsForTest({
     keyHandle,
     targetHead: head,
-    batchId: '7c'.repeat(16),
     attemptId: '7d'.repeat(16),
   })
   const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
@@ -4897,7 +4973,6 @@ test('CAS rehydration rejects missing, foreign, and multiple persisted links', a
     const fixture = await acknowledgeTargetUploadsForTest({
       keyHandle,
       targetHead: head,
-      batchId: suffix.repeat(16),
       attemptId: (Number.parseInt(suffix, 16) + 1).toString(16).padStart(2, '0').repeat(16),
     })
     const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
@@ -4924,7 +4999,7 @@ test('CAS rehydration rejects missing, foreign, and multiple persisted links', a
   foreign.fixture.store.mutateUploadAttempt(foreign.fixture.claim.record.attemptId, (attempt) => {
     attempt.casAttemptId = 'ff'.repeat(16)
   })
-  const foreignClaim = await claimEncryptedWalletBackupUploadAttempt({
+  const foreignClaim = await resumeBoundedUploadForTest({
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
     keyHandle,
@@ -4956,8 +5031,9 @@ test('CAS rehydration rejects missing, foreign, and multiple persisted links', a
 
 test('upload claim capabilities are bound to their exact originating store', async () => {
   const { keyHandle, head } = await createManifestUploadFixtureForTest()
-  const originatingStore = inMemoryUploadBatchStore()
-  const claim = await uploadAttemptClaimForTest(keyHandle, head, originatingStore, '87'.repeat(16))
+  const fixture = await finalizeTargetUploadsForTest({ keyHandle, targetHead: head })
+  const originatingStore = fixture.store
+  const claim = fixture.claim
   let delegatedCalls = 0
   const foreignStore = {
     ...originatingStore,
@@ -5004,11 +5080,9 @@ test('rehydration rejects impossible execution history and quota-sized hostile h
   const { keyHandle, head } = await createManifestUploadFixtureForTest()
   const store = inMemoryUploadBatchStore()
   const claim = await uploadAttemptClaimForTest(keyHandle, head, store, '41'.repeat(16))
-  const sealed = await sealEncryptedWalletBackupUploadBatch({
-    batchId: '42'.repeat(16),
+  const sealed = await prepareNextBoundedBatchForTest({
     claim,
     keyHandle,
-    plannedBatch: plannedUploadBatchForTest(keyHandle, head, claim.record.attemptId),
     store,
   })
   const impossibleFinalized = structuredClone(sealed.record)
@@ -5113,21 +5187,21 @@ test('persisted child parent authority is exact and rejects corruption', async (
   )
   await assert.rejects(
     () =>
-      claimEncryptedWalletBackupUploadAttempt({
+      resumeBoundedUploadForTest({
         ownerId: 'test-owner',
         leaseDurationMilliseconds: 60_000,
         keyHandle: fixture.keyHandle,
         store: {
           ...store,
-          async claimActiveUploadAttempt<T>(
+          async claimActiveUploadAttemptAndCursor<T>(
             query: Record<string, unknown>,
             read: (value: never) => T,
           ): Promise<T> {
-            return store.claimActiveUploadAttempt(query, (raw: never) => {
+            return store.claimActiveUploadAttemptAndCursor(query, (raw: never) => {
               const changed = structuredClone(raw) as {
-                canonicalParentHead: Uint8Array
+                attempt: { canonicalParentHead: Uint8Array }
               }
-              changed.canonicalParentHead[0] ^= 1
+              changed.attempt.canonicalParentHead[0] ^= 1
               return read(changed as never)
             })
           },
@@ -5248,7 +5322,7 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
   const mutatedBase = inMemoryUploadBatchStore()
   await assert.rejects(
     () =>
-      sealEncryptedWalletBackupUploadAttempt({
+      openBoundedUploadForTest({
         attemptId: '43'.repeat(16),
         ownerId: 'expected-owner',
         leaseDurationMilliseconds: 60_000,
@@ -5256,20 +5330,23 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
         targetHead: head,
         store: {
           ...mutatedBase,
-          async sealActiveUploadAttempt<T>(
-            candidate: Record<string, unknown>,
-            lease: number,
+          async sealActiveUploadAttemptAndCursor<T>(
+            input: {
+              candidate: Record<string, unknown>
+              initialCursor: Uint8Array
+              leaseDurationMilliseconds: number
+            },
             seal: (value: never) => T,
           ): Promise<T> {
-            candidate.ownerId = 'mutated-owner'
-            return mutatedBase.sealActiveUploadAttempt(candidate, lease, seal)
+            input.candidate.ownerId = 'mutated-owner'
+            return mutatedBase.sealActiveUploadAttemptAndCursor(input, seal)
           },
         },
       }),
     /sealed upload attempt changed/,
   )
   assert.equal(
-    await claimEncryptedWalletBackupUploadAttempt({
+    await resumeBoundedUploadForTest({
       ownerId: 'expected-owner',
       leaseDurationMilliseconds: 60_000,
       keyHandle,
@@ -5281,7 +5358,7 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
   const repeatedBase = inMemoryUploadBatchStore()
   await assert.rejects(
     () =>
-      sealEncryptedWalletBackupUploadAttempt({
+      openBoundedUploadForTest({
         attemptId: '44'.repeat(16),
         ownerId: 'repeated-owner',
         leaseDurationMilliseconds: 60_000,
@@ -5289,12 +5366,15 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
         targetHead: head,
         store: {
           ...repeatedBase,
-          async sealActiveUploadAttempt<T>(
-            candidate: Record<string, unknown>,
-            lease: number,
+          async sealActiveUploadAttemptAndCursor<T>(
+            input: {
+              candidate: Record<string, unknown>
+              initialCursor: Uint8Array
+              leaseDurationMilliseconds: number
+            },
             seal: (value: never) => T,
           ): Promise<T> {
-            return repeatedBase.sealActiveUploadAttempt(candidate, lease, (record: never) => {
+            return repeatedBase.sealActiveUploadAttemptAndCursor(input, (record: never) => {
               const first = seal(record)
               seal(record)
               return first
@@ -5305,7 +5385,7 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
     /callback is invalid/,
   )
   assert.equal(
-    await claimEncryptedWalletBackupUploadAttempt({
+    await resumeBoundedUploadForTest({
       ownerId: 'repeated-owner',
       leaseDurationMilliseconds: 60_000,
       keyHandle,
@@ -5318,7 +5398,7 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
   let lateCandidate: Record<string, unknown> | undefined
   await assert.rejects(
     () =>
-      sealEncryptedWalletBackupUploadAttempt({
+      openBoundedUploadForTest({
         attemptId: '45'.repeat(16),
         ownerId: 'late-owner',
         leaseDurationMilliseconds: 60_000,
@@ -5326,12 +5406,18 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
         targetHead: head,
         store: {
           ...inMemoryUploadBatchStore(),
-          async sealActiveUploadAttempt<T>(
-            candidate: Record<string, unknown>,
-            _lease: number,
+          async sealActiveUploadAttemptAndCursor<T>(
+            input: {
+              candidate: Record<string, unknown>
+              initialCursor: Uint8Array
+              leaseDurationMilliseconds: number
+            },
             seal: (value: never) => T,
           ): Promise<T> {
-            lateCandidate = structuredClone(candidate)
+            lateCandidate = {
+              attempt: structuredClone(input.candidate),
+              cursor: input.initialCursor.slice(),
+            }
             lateCallback = seal
             return {} as T
           },
@@ -5343,7 +5429,7 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
 
   await assert.rejects(
     () =>
-      sealEncryptedWalletBackupUploadAttempt({
+      openBoundedUploadForTest({
         attemptId: '46'.repeat(16),
         ownerId: 'wrong-return-owner',
         leaseDurationMilliseconds: 60_000,
@@ -5351,21 +5437,24 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
         targetHead: head,
         store: {
           ...inMemoryUploadBatchStore(),
-          async sealActiveUploadAttempt<T>(
-            candidate: Record<string, unknown>,
-            lease: number,
+          async sealActiveUploadAttemptAndCursor<T>(
+            input: {
+              candidate: Record<string, unknown>
+              initialCursor: Uint8Array
+              leaseDurationMilliseconds: number
+            },
             seal: (value: never) => T,
           ): Promise<T> {
             const committed = {
-              ...structuredClone(candidate),
+              ...structuredClone(input.candidate),
               ownerEpoch: 1,
-              leaseExpiresAtUnixMilliseconds: 1_700_000_000_000 + lease,
+              leaseExpiresAtUnixMilliseconds: 1_700_000_000_000 + input.leaseDurationMilliseconds,
               batchIds: [],
               activeBatchId: null,
               casAttemptId: null,
               lifecycle: 'active',
             }
-            seal(committed as never)
+            seal({ attempt: committed, cursor: input.initialCursor.slice() } as never)
             return {} as T
           },
         },
@@ -5375,14 +5464,12 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
 
   const batchBase = inMemoryUploadBatchStore()
   const batchClaim = await uploadAttemptClaimForTest(keyHandle, head, batchBase, '47'.repeat(16))
-  const plannedBatch = plannedUploadBatchForTest(keyHandle, head, batchClaim.record.attemptId)
-  const originalHostileSeal = batchBase.sealUploadBatch
-  batchBase.sealUploadBatch = async function <T>(
-    claimRecord: Record<string, unknown>,
-    batch: Record<string, unknown>,
+  const originalHostileSeal = batchBase.sealUploadBatchAndAdvanceCursor
+  batchBase.sealUploadBatchAndAdvanceCursor = async function <T>(
+    input: Record<string, unknown>,
     seal: (value: never) => T,
   ): Promise<T> {
-    return originalHostileSeal(claimRecord, batch, (raw: never) => {
+    return originalHostileSeal.call(batchBase, input as never, (raw: never) => {
       const changed = structuredClone(raw) as {
         batch: Record<string, unknown>
       }
@@ -5392,21 +5479,17 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
   }
   await assert.rejects(
     () =>
-      sealEncryptedWalletBackupUploadBatch({
-        batchId: '48'.repeat(16),
+      prepareNextBoundedBatchForTest({
         claim: batchClaim,
         keyHandle,
-        plannedBatch,
         store: batchBase,
       }),
     /execution history is invalid/,
   )
-  batchBase.sealUploadBatch = originalHostileSeal
-  const retriedAfterRollback = await sealEncryptedWalletBackupUploadBatch({
-    batchId: '48'.repeat(16),
+  batchBase.sealUploadBatchAndAdvanceCursor = originalHostileSeal
+  const retriedAfterRollback = await prepareNextBoundedBatchForTest({
     claim: batchClaim,
     keyHandle,
-    plannedBatch,
     store: batchBase,
   })
   assert.equal(retriedAfterRollback.record.state, 'sealed')
@@ -5421,17 +5504,17 @@ test('every upload mutation callback port fails closed and rolls back', async (t
         fixture.store.setNowUnixMilliseconds(fixture.claim.record.leaseExpiresAtUnixMilliseconds)
         await assert.rejects(
           () =>
-            claimEncryptedWalletBackupUploadAttempt({
+            resumeBoundedUploadForTest({
               ownerId: 'renewed-owner',
               leaseDurationMilliseconds: 60_000,
               keyHandle: fixture.keyHandle,
               store: {
                 ...fixture.store,
-                async claimActiveUploadAttempt<T>(
+                async claimActiveUploadAttemptAndCursor<T>(
                   query: Record<string, unknown>,
                   claim: (value: never) => T,
                 ): Promise<T> {
-                  return fixture.store.claimActiveUploadAttempt(query, (record: never) => {
+                  return fixture.store.claimActiveUploadAttemptAndCursor(query, (record: never) => {
                     const first = claim(record)
                     claim(record)
                     return first
@@ -5441,7 +5524,7 @@ test('every upload mutation callback port fails closed and rolls back', async (t
             }),
           /callback is invalid/,
         )
-        const renewed = await claimEncryptedWalletBackupUploadAttempt({
+        const renewed = await resumeBoundedUploadForTest({
           ownerId: 'renewed-owner',
           leaseDurationMilliseconds: 60_000,
           keyHandle: fixture.keyHandle,
@@ -5617,7 +5700,7 @@ test('every upload mutation callback port fails closed and rolls back', async (t
             }),
           /lost abort response/,
         )
-        const reclaimed = await claimEncryptedWalletBackupUploadAttempt({
+        const reclaimed = await resumeBoundedUploadForTest({
           ownerId: 'test-owner',
           leaseDurationMilliseconds: 60_000,
           keyHandle: fixture.keyHandle,
@@ -5760,7 +5843,6 @@ test('every linked CAS callback port rejects wrong, multiple, and late callbacks
       const fixture = await acknowledgeTargetUploadsForTest({
         keyHandle,
         targetHead: head,
-        batchId: '91'.repeat(16),
         attemptId: '92'.repeat(16),
       })
       const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
@@ -9030,7 +9112,6 @@ async function finalizeTargetUploadsForTest(input: {
 }) {
   const acknowledgedBundle = await acknowledgeTargetUploadsForTest({
     ...input,
-    batchId: 'e1'.repeat(16),
     attemptId: 'e2'.repeat(16),
   })
   const finalized = await journalEncryptedWalletBackupCasHandoffForTest({
@@ -9044,9 +9125,7 @@ async function finalizeTargetUploadsForTest(input: {
 async function acknowledgeTargetUploadsForTest(input: {
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
   targetHead: ReturnType<typeof prepareEncryptedWalletBackupManifestHead>
-  batchId: string
   attemptId: string
-  batchIndex?: number
   store?: ReturnType<typeof inMemoryUploadBatchStore>
   claim?: Awaited<ReturnType<typeof uploadAttemptClaimForTest>>
 }) {
@@ -9054,16 +9133,9 @@ async function acknowledgeTargetUploadsForTest(input: {
   const claim =
     input.claim ??
     (await uploadAttemptClaimForTest(input.keyHandle, input.targetHead, store, input.attemptId))
-  const batch = await sealEncryptedWalletBackupUploadBatch({
-    batchId: input.batchId,
+  const batch = await prepareNextBoundedBatchForTest({
     claim,
     keyHandle: input.keyHandle,
-    plannedBatch: plannedUploadBatchForTest(
-      input.keyHandle,
-      input.targetHead,
-      claim.record.attemptId,
-      input.batchIndex ?? 0,
-    ),
     store,
   })
   const acknowledged = await uploadEncryptedWalletBackupBatch({
@@ -9095,7 +9167,7 @@ async function uploadAttemptClaimForTest(
   store: ReturnType<typeof inMemoryUploadBatchStore>,
   attemptId: string,
 ) {
-  return sealEncryptedWalletBackupUploadAttempt({
+  return openBoundedUploadForTest({
     attemptId,
     ownerId: 'test-owner',
     leaseDurationMilliseconds: 60_000,
@@ -9103,46 +9175,6 @@ async function uploadAttemptClaimForTest(
     targetHead,
     store,
   })
-}
-
-function plannedUploadBatchForTest(
-  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
-  targetHead: ReturnType<typeof prepareEncryptedWalletBackupManifestHead>,
-  attemptId: string,
-  batchIndex = 0,
-) {
-  const plan = prepareEncryptedWalletBackupUploadPlan({
-    attemptId,
-    keyHandle,
-    targetHead,
-  })
-  const batch = plan.batches[batchIndex]
-  if (batch === undefined) throw new Error('test target has no upload batch')
-  return batch
-}
-
-function preparedPutPayloadLengthForTest(
-  attemptId: string,
-  prepared: Awaited<ReturnType<typeof prepareEncryptedWalletBackupObject>>,
-): number {
-  const object = readPreparedEncryptedWalletBackupObject(prepared)
-  return encode(
-    [
-      1,
-      'object-put',
-      fromHex(attemptId),
-      object.kindCode,
-      object.realm,
-      fromHex(object.vaultId),
-      fromHex(object.objectId),
-      object.generation,
-      object.paddedLength,
-      fromHex(object.digest),
-      object.aad,
-      object.body,
-    ],
-    rfc8949EncodeOptions,
-  ).byteLength
 }
 
 function uploadBatchReadSubstitutionStore(
@@ -9263,11 +9295,9 @@ async function createSealedUploadMutationFixtureForTest(suffix: string) {
   const store = inMemoryUploadBatchStore()
   const attemptId = suffix.repeat(16)
   const claim = await uploadAttemptClaimForTest(fixture.keyHandle, fixture.head, store, attemptId)
-  const batch = await sealEncryptedWalletBackupUploadBatch({
-    batchId: `${suffix[1]}${suffix[0]}`.repeat(16),
+  const batch = await prepareNextBoundedBatchForTest({
     claim,
     keyHandle: fixture.keyHandle,
-    plannedBatch: plannedUploadBatchForTest(fixture.keyHandle, fixture.head, attemptId),
     store,
   })
   return { ...fixture, store, claim, batch }
@@ -10348,6 +10378,8 @@ function assertExactPersistedRecord(actual: unknown, expected: unknown, boundary
 function inMemoryUploadBatchStore() {
   const batches = new Map<string, Record<string, unknown>>()
   const attempts = new Map<string, Record<string, unknown>>()
+  const cursors = new Map<string, Uint8Array>()
+  const objects = new Map<string, EncryptedWalletBackupWireObject>()
   const casAttempts = new Map<string, Record<string, unknown>>()
   let databaseNow = 1_700_000_000_000
   const partition = (attemptId: unknown, targetManifestDigest: unknown) =>
@@ -10356,8 +10388,143 @@ function inMemoryUploadBatchStore() {
         record.attemptId === attemptId && record.targetManifestDigest === targetManifestDigest,
     )
   return {
+    registerBoundedUploadObjects(rows: readonly EncryptedWalletBackupWireObject[]) {
+      for (const row of rows) objects.set(`${row.objectId}:${row.digest}`, structuredClone(row))
+    },
+    async readManifestPageObject(
+      input: Parameters<
+        EncryptedWalletBackupBoundedUploadObjectSource['readManifestPageObject']
+      >[0],
+    ) {
+      return readBoundedStoreObject(objects, input, 2)
+    },
+    async readProofChunkObject(
+      input: Parameters<EncryptedWalletBackupBoundedUploadObjectSource['readProofChunkObject']>[0],
+    ) {
+      return readBoundedStoreObject(objects, input, 1)
+    },
     setNowUnixMilliseconds(value: number) {
       databaseNow = value
+    },
+    async sealActiveUploadAttemptAndCursor<T>(
+      input: {
+        candidate: Record<string, unknown>
+        initialCursor: Uint8Array
+        leaseDurationMilliseconds: number
+      },
+      seal: (value: never) => T,
+    ): Promise<T> {
+      const attemptId = String(input.candidate.attemptId)
+      const existing = attempts.get(attemptId)
+      if (existing !== undefined) {
+        const cursor = cursors.get(attemptId)
+        if (
+          cursor === undefined ||
+          existing.ownerEpoch !== 1 ||
+          existing.lifecycle !== 'active' ||
+          existing.activeBatchId !== null ||
+          (existing.batchIds as readonly unknown[]).length !== 0 ||
+          existing.casAttemptId !== null ||
+          !isDeepStrictEqual(existing, {
+            ...input.candidate,
+            ownerEpoch: existing.ownerEpoch,
+            leaseExpiresAtUnixMilliseconds: existing.leaseExpiresAtUnixMilliseconds,
+            batchIds: existing.batchIds,
+            activeBatchId: existing.activeBatchId,
+            casAttemptId: existing.casAttemptId,
+            lifecycle: existing.lifecycle,
+          })
+        ) {
+          throw new Error('backup upload attempt conflicts with different content')
+        }
+        return seal({ attempt: structuredClone(existing), cursor: cursor.slice() } as never)
+      }
+      if (
+        [...attempts.values()].some(
+          (value) =>
+            value.realm === input.candidate.realm &&
+            value.vaultId === input.candidate.vaultId &&
+            value.lifecycle !== 'abandoned' &&
+            value.lifecycle !== 'complete',
+        )
+      ) {
+        throw new Error('live backup upload attempt already exists')
+      }
+      const attempt = {
+        ...structuredClone(input.candidate),
+        ownerEpoch: 1,
+        leaseExpiresAtUnixMilliseconds: databaseNow + input.leaseDurationMilliseconds,
+        batchIds: [],
+        activeBatchId: null,
+        casAttemptId: null,
+        lifecycle: 'active',
+      }
+      attempts.set(attemptId, attempt)
+      cursors.set(attemptId, input.initialCursor.slice())
+      try {
+        return seal({
+          attempt: structuredClone(attempt),
+          cursor: input.initialCursor.slice(),
+        } as never)
+      } catch (error) {
+        attempts.delete(attemptId)
+        cursors.delete(attemptId)
+        throw error
+      }
+    },
+    async claimActiveUploadAttemptAndCursor<T>(
+      input: Record<string, unknown>,
+      claim: (value: never) => T,
+    ): Promise<T> {
+      return this.claimActiveUploadAttempt(input, (attempt: Record<string, unknown> | null) => {
+        if (attempt === null) return claim({ attempt: null, cursor: null } as never)
+        const cursor = cursors.get(String(attempt.attemptId))
+        if (cursor === undefined) throw new Error('bounded upload cursor is absent')
+        return claim({ attempt, cursor: cursor.slice() } as never)
+      })
+    },
+    async sealUploadBatchAndAdvanceCursor<T>(
+      input: {
+        claim: Record<string, unknown>
+        expectedCursor: Uint8Array
+        batch: Record<string, unknown>
+        nextCursor: Uint8Array
+      },
+      seal: (value: never) => T,
+    ): Promise<T> {
+      const attemptId = String(input.claim.attemptId)
+      const currentCursor = cursors.get(attemptId)
+      const existing = batches.get(String(input.batch.batchId))
+      if (
+        existing !== undefined &&
+        currentCursor !== undefined &&
+        isDeepStrictEqual(attempts.get(attemptId), input.claim) &&
+        attempts.get(attemptId)?.activeBatchId === input.batch.batchId &&
+        (attempts.get(attemptId)?.batchIds as readonly unknown[]).includes(input.batch.batchId) &&
+        equalBytesForTest(currentCursor, input.nextCursor) &&
+        isDeepStrictEqual(existing, input.batch)
+      ) {
+        return seal({
+          attempt: structuredClone(attempts.get(attemptId)),
+          cursor: currentCursor.slice(),
+          batch: structuredClone(existing),
+        } as never)
+      }
+      if (currentCursor === undefined || !equalBytesForTest(currentCursor, input.expectedCursor))
+        throw new Error('bounded upload cursor is stale')
+      return this.sealUploadBatch(
+        input.claim,
+        input.batch,
+        (committed: Record<string, unknown>) => {
+          cursors.set(attemptId, input.nextCursor.slice())
+          try {
+            return seal({ ...committed, cursor: input.nextCursor.slice() } as never)
+          } catch (error) {
+            cursors.set(attemptId, currentCursor)
+            throw error
+          }
+        },
+      )
     },
     async sealActiveUploadAttempt<T>(
       candidate: Record<string, unknown>,
@@ -10634,6 +10801,7 @@ function inMemoryUploadBatchStore() {
           batches: structuredClone(next),
         } as never)
         attempts.delete(String(claimRecord.attemptId))
+        cursors.delete(String(claimRecord.attemptId))
         for (const row of next) batches.delete(String(row.batchId))
         return result
       } catch (error) {
@@ -10801,6 +10969,7 @@ function inMemoryUploadBatchStore() {
           casAttempts: structuredClone(linkedCasRows(attemptId)),
         } as never)
         attempts.delete(attemptId)
+        cursors.delete(attemptId)
         casAttempts.delete(casId)
         for (const row of rows) batches.delete(String(row.batchId))
         return result
@@ -10884,6 +11053,7 @@ function inMemoryUploadBatchStore() {
           casAttempts: structuredClone(linkedCasRows(attemptId)),
         } as never)
         attempts.delete(attemptId)
+        cursors.delete(attemptId)
         casAttempts.delete(String(attempt.casAttemptId))
         for (const row of nextRows) batches.delete(String(row.batchId))
         return result
@@ -10935,6 +11105,7 @@ function inMemoryUploadBatchStore() {
         attempts: attempts.size,
         batches: batches.size,
         casAttempts: casAttempts.size,
+        cursors: cursors.size,
       }
     },
   }
@@ -11102,6 +11273,42 @@ function concat(...values: Uint8Array[]) {
     offset += value.byteLength
   }
   return result
+}
+
+function equalBytesForTest(left: Uint8Array, right: Uint8Array): boolean {
+  return (
+    left.byteLength === right.byteLength && left.every((value, index) => value === right[index])
+  )
+}
+
+function readBoundedStoreObject(
+  rows: ReadonlyMap<string, EncryptedWalletBackupWireObject>,
+  input: Readonly<{
+    realm: string
+    vaultId: string
+    generation: number
+    objectId: string
+    digest: string
+    maximumRows: 1
+    maximumBytes: 1_048_576
+  }>,
+  kindCode: 1 | 2,
+): EncryptedWalletBackupWireObject {
+  if (input.maximumRows !== 1 || input.maximumBytes !== 1_048_576)
+    throw new Error('bounded upload source reservation is invalid')
+  const object = rows.get(`${input.objectId}:${input.digest}`)
+  if (
+    object === undefined ||
+    object.realm !== input.realm ||
+    object.vaultId !== input.vaultId ||
+    object.generation !== input.generation ||
+    object.kindCode !== kindCode ||
+    object.objectId !== input.objectId ||
+    object.digest !== input.digest
+  ) {
+    throw new Error('bounded upload source object is absent')
+  }
+  return structuredClone(object)
 }
 
 function fromHex(value: string) {
