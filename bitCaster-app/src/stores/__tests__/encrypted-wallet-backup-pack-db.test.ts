@@ -5,7 +5,7 @@ import Dexie from "dexie";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { encode, rfc8949EncodeOptions } from "cborg";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createEncryptedWalletBackupKeyHandle,
   prepareEncryptedWalletBackupProof,
@@ -21,6 +21,7 @@ import {
   type PersistedEncryptedWalletBackupPreparedBuildRecord,
 } from "@bitcaster/client-sdk/encryptedWalletBackupPackPersistence";
 import {
+  encodeEncryptedWalletBackupPreparedSourceDescriptor,
   sealPreparedEncryptedWalletBackupRecord,
   type EncryptedWalletBackupPreparedRecordSnapshot,
   type EncryptedWalletBackupPreparedRecordSnapshotBatchStore,
@@ -34,6 +35,7 @@ import {
 } from "@bitcaster/client-sdk/durableCustody";
 import { browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import { EncryptedWalletBackupPackDexieStore } from "../encrypted-wallet-backup-pack-db";
+import { EncryptedWalletBackupPreparedSourceDexieStore } from "../encrypted-wallet-backup-prepared-source-db";
 import { BitcasterDB } from "../proof-db";
 
 const SEED = Uint8Array.from({ length: 64 }, (_, index) => index);
@@ -57,7 +59,7 @@ afterEach(async () => {
 describe("encrypted wallet backup Dexie pack store", () => {
   it("defines normalized primary keys and preserves the existing wallet schema", () => {
     const database = createDatabase();
-    expect(database.verno).toBe(9);
+    expect(database.verno).toBe(10);
     expect(database.proofs.schema.primKey.keyPath).toBe("secret");
     expect(database.encryptedWalletBackupBuildCursors.schema.primKey.keyPath).toBe("buildId");
     expect(database.encryptedWalletBackupPackControls.schema.primKey.keyPath).toEqual([
@@ -82,6 +84,32 @@ describe("encrypted wallet backup Dexie pack store", () => {
       "buildId",
       "packId",
     ]);
+    expect(database.encryptedWalletBackupPreparedSources.schema.primKey.keyPath).toEqual([
+      "realm",
+      "vaultId",
+      "recordKindCode",
+      "recordId",
+      "revision",
+      "bodyReference",
+    ]);
+    expect(
+      database.encryptedWalletBackupSnapshotPins.schema.indexes.find(
+        (index) =>
+          index.name === "[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+commitment]",
+      )?.unique,
+    ).toBe(true);
+    expect(
+      database.encryptedWalletBackupSnapshotPins.schema.indexes.find(
+        (index) =>
+          index.name ===
+          "[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+recordId+commitment]",
+      )?.unique,
+    ).toBe(false);
+    expect(
+      database.encryptedWalletBackupManifestPages.schema.indexes.find(
+        (index) => index.name === "[realm+vaultId+generation+objectId+digest]",
+      )?.unique,
+    ).toBe(true);
   });
 
   it("keeps existing v8 wallet rows when it installs the undeployed schema", async () => {
@@ -96,6 +124,125 @@ describe("encrypted wallet backup Dexie pack store", () => {
     openDatabases.push(database);
     expect(await database.proofs.get("v8-proof")).toMatchObject({ secret: "v8-proof", amount: 1 });
     expect(await database.encryptedWalletBackupBuildCursors.count()).toBe(0);
+  });
+
+  it("adds prepared-source and snapshot-pin tables to a version-nine wallet database", async () => {
+    const name = `backup-source-v9-${crypto.randomUUID()}`;
+    const legacy = new Dexie(name);
+    legacy.version(9).stores({ proofs: "secret" });
+    await legacy.open();
+    await legacy.table("proofs").add({ secret: "v9-proof", amount: 1 });
+    legacy.close();
+
+    const database = new BitcasterDB(name);
+    openDatabases.push(database);
+    expect(await database.proofs.get("v9-proof")).toMatchObject({ secret: "v9-proof", amount: 1 });
+    expect(await database.encryptedWalletBackupPreparedSources.count()).toBe(0);
+    expect(await database.encryptedWalletBackupSnapshotPins.count()).toBe(0);
+  });
+
+  it("accepts an exact prepared-source retry and reads its committed snapshot", async () => {
+    const fixture = await preparedFixture(1);
+    const database = createDatabase(WALLET_SCOPE_ID);
+    const store = new EncryptedWalletBackupPreparedSourceDexieStore({
+      database,
+      scopeId: WALLET_SCOPE_ID,
+      realm: REALM,
+      vaultId: fixture.keyHandle.vaultId,
+    });
+    const record = fixture.records[0]!;
+    await store.insertPreparedSource(record);
+    await store.insertPreparedSource(record);
+    expect(await database.encryptedWalletBackupPreparedSources.count()).toBe(1);
+    const snapshot = await store.withCommittedPreparedRecordSnapshot(record.recordId, (row) => row);
+    expect(snapshot).toMatchObject({
+      snapshotId: record.snapshotId,
+      snapshotRevision: record.snapshotRevision,
+      recordId: record.recordId,
+      commitment: record.commitment,
+    });
+  });
+
+  it("reads a 64-row exact prepared-source snapshot batch with one bounded bulk request", async () => {
+    const fixture = await preparedFixture(64);
+    const database = createDatabase(WALLET_SCOPE_ID);
+    const store = new EncryptedWalletBackupPreparedSourceDexieStore({
+      database,
+      scopeId: WALLET_SCOPE_ID,
+      realm: REALM,
+      vaultId: fixture.keyHandle.vaultId,
+    });
+    for (const record of fixture.records) await store.insertPreparedSource(record);
+
+    const bulkGet = database.encryptedWalletBackupPreparedSources.bulkGet.bind(
+      database.encryptedWalletBackupPreparedSources,
+    );
+    const pointGet = database.encryptedWalletBackupPreparedSources.get.bind(
+      database.encryptedWalletBackupPreparedSources,
+    );
+    let bulkRequests = 0;
+    let bulkRows = 0;
+    let pointRequests = 0;
+    vi.spyOn(database.encryptedWalletBackupPreparedSources, "bulkGet").mockImplementation(
+      (keys) => {
+        bulkRequests += 1;
+        bulkRows += keys.length;
+        return bulkGet(keys);
+      },
+    );
+    vi.spyOn(database.encryptedWalletBackupPreparedSources, "get").mockImplementation((...args) => {
+      pointRequests += 1;
+      return pointGet(...args);
+    });
+
+    const snapshots = await store.withCommittedPreparedRecordSnapshotBatch(
+      fixture.records.map((record) => record.recordId),
+      (rows) => rows,
+      fixture.records.map(encodeEncryptedWalletBackupPreparedSourceDescriptor),
+    );
+
+    expect(snapshots.map((row) => row.recordId)).toEqual(
+      fixture.records.map((record) => record.recordId),
+    );
+    expect(bulkRequests).toBe(1);
+    expect(bulkRows).toBe(64);
+    expect(pointRequests).toBe(0);
+  });
+
+  it("keeps old and replacement prepared sources for one proof", async () => {
+    const fixture = await preparedFixture(1);
+    const database = createDatabase(WALLET_SCOPE_ID);
+    const store = new EncryptedWalletBackupPreparedSourceDexieStore({
+      database,
+      scopeId: WALLET_SCOPE_ID,
+      realm: REALM,
+      vaultId: fixture.keyHandle.vaultId,
+    });
+    const original = fixture.records[0]!;
+    const replacement = { ...original, snapshotRevision: original.snapshotRevision + 1 };
+    await store.insertPreparedSource(original);
+    await store.insertPreparedSource(replacement);
+
+    expect(await database.encryptedWalletBackupPreparedSources.count()).toBe(2);
+  });
+
+  it("rejects an ambiguous prepared-source fallback without a source descriptor", async () => {
+    const fixture = await preparedFixture(1);
+    const database = createDatabase(WALLET_SCOPE_ID);
+    const store = new EncryptedWalletBackupPreparedSourceDexieStore({
+      database,
+      scopeId: WALLET_SCOPE_ID,
+      realm: REALM,
+      vaultId: fixture.keyHandle.vaultId,
+    });
+    const original = fixture.records[0]!;
+    const replacement = { ...original, snapshotRevision: original.snapshotRevision + 1 };
+    await store.insertPreparedSource(original);
+    await store.insertPreparedSource(replacement);
+
+    await expect(
+      store.withCommittedPreparedRecordSnapshot(original.recordId, (row) => row),
+    ).rejects.toThrow(/requires an exact source descriptor/);
   });
 
   it("rejects a database that does not belong to the bound wallet scope", async () => {
@@ -229,6 +376,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
     expect(await database.encryptedWalletBackupPreparedRecords.count()).toBe(0);
 
     await store.withExactVersionTransaction(expected(fixture, 0, 0), async (transaction) => {
+      await transaction.insertPreparedRecord(prepared);
       await transaction.insertPackBinding(binding);
       return "binding";
     });
@@ -255,9 +403,11 @@ describe("encrypted wallet backup Dexie pack store", () => {
       firstBinding.recordId,
     ]);
     if (!firstPrepared) throw new Error("missing test prepared record");
+    const { preparedRecordSerializedBytes: _bindingBytes, ...canonicalBinding } = firstBinding;
+    const { preparedRecordSerializedBytes: _preparedBytes, ...canonicalPrepared } = firstPrepared;
     const firstBytes =
-      serializeEncryptedWalletBackupPackBinding(firstBinding).byteLength +
-      serializeEncryptedWalletBackupPreparedBuildRecord(firstPrepared).byteLength;
+      serializeEncryptedWalletBackupPackBinding(canonicalBinding).byteLength +
+      serializeEncryptedWalletBackupPreparedBuildRecord(canonicalPrepared).byteLength;
 
     const exact = await store.withExactVersionTransaction(
       expected(fixture, controls.build.version, controls.pack.version),
@@ -298,6 +448,8 @@ describe("encrypted wallet backup Dexie pack store", () => {
       ...bindingFor(current, 0),
       packId: "pack-z",
       recordId: "f".repeat(64),
+      preparedRecordSerializedBytes:
+        serializeEncryptedWalletBackupPreparedBuildRecord(current).byteLength,
     });
 
     const page = await store.withExactVersionTransaction(

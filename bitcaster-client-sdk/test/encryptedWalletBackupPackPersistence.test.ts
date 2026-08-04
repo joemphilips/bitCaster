@@ -167,9 +167,9 @@ test('exact-version transactions preserve callback result and atomicity across m
   assert.equal(store.staged.size, 1)
 })
 
-test('prepared snapshot batches reject missing, repeated, deferred, and substituted callbacks', async () => {
+test('prepared snapshot batches reject missing, repeated, and substituted callbacks', async () => {
   const fixture = await preparedFixture(1)
-  for (const mode of ['never', 'double', 'deferred', 'substituted'] as const) {
+  for (const mode of ['never', 'double', 'substituted'] as const) {
     const snapshotStore = maliciousBatchSnapshotStore(fixture.snapshotStore, mode)
     await assert.rejects(
       appendEncryptedWalletBackupPreparedRecordPage({
@@ -179,6 +179,17 @@ test('prepared snapshot batches reject missing, repeated, deferred, and substitu
       /snapshot batch callback|synchronous and exact/,
     )
   }
+})
+
+test('prepared snapshot batches accept a callback before its Promise settles', async () => {
+  const fixture = await preparedFixture(1)
+  const store = new MemoryPackStore()
+  const snapshotStore = maliciousBatchSnapshotStore(fixture.snapshotStore, 'deferred')
+  await appendEncryptedWalletBackupPreparedRecordPage({
+    ...packInput({ ...fixture, snapshotStore }, store, fixture.keyHandle, 0, 0),
+    records: fixture.records,
+  })
+  assert.equal(store.prepared.size, 1)
 })
 
 test('append authenticates and persists one synchronous caller-owned snapshot', async () => {

@@ -54,6 +54,7 @@ export interface EncryptedWalletBackupPreparedRecordSnapshotStore {
   withCommittedPreparedRecordSnapshot<T>(
     recordId: string,
     read: (row: EncryptedWalletBackupPreparedRecordSnapshot) => T,
+    sourceDescriptor?: Uint8Array,
   ): Promise<T>
 }
 
@@ -61,12 +62,13 @@ export const ENCRYPTED_WALLET_BACKUP_PREPARED_RECORD_SNAPSHOT_BATCH_MAX = 256 as
 
 export interface EncryptedWalletBackupPreparedRecordSnapshotBatchStore {
   /**
-   * Invokes `read` synchronously exactly once with the ordered exact rows and
-   * returns the exact callback value.
+   * Invokes `read` exactly once while the returned Promise is pending. The
+   * callback must return a non-thenable exact value for the ordered exact rows.
    */
   withCommittedPreparedRecordSnapshotBatch<T>(
     recordIds: readonly string[],
     read: (rows: readonly EncryptedWalletBackupPreparedRecordSnapshot[]) => T,
+    sourceDescriptors?: readonly Uint8Array[],
   ): Promise<T>
 }
 
@@ -192,7 +194,11 @@ export async function rehydratePreparedEncryptedWalletBackupRecord(input: {
     persisted.authenticationTag,
   )
   validateCandidate(persisted, keyHandle, input.seed)
-  await requireCommittedSnapshot(input.snapshotStore, snapshotOf(persisted))
+  await requireCommittedSnapshot(
+    input.snapshotStore,
+    snapshotOf(persisted),
+    encodeEncryptedWalletBackupPreparedSourceDescriptor(persisted),
+  )
   return rehydrateValidatedPreparedEncryptedWalletBackupRecord({
     keyHandle,
     seed: input.seed,
@@ -250,7 +256,11 @@ async function authenticatePreparedRecordBatch(input: {
       return exact
     }),
   )
-  await requireCommittedSnapshotBatch(input.snapshotStore, persisted.map(snapshotOf))
+  await requireCommittedSnapshotBatch(
+    input.snapshotStore,
+    persisted.map(snapshotOf),
+    persisted.map(encodeEncryptedWalletBackupPreparedSourceDescriptor),
+  )
   return Object.freeze(persisted)
 }
 
@@ -438,47 +448,68 @@ function snapshotOf(value: CapabilityCandidate): EncryptedWalletBackupPreparedRe
 async function requireCommittedSnapshot(
   store: EncryptedWalletBackupPreparedRecordSnapshotStore,
   expected: EncryptedWalletBackupPreparedRecordSnapshot,
+  sourceDescriptor?: Uint8Array,
 ): Promise<void> {
   if (!store || typeof store.withCommittedPreparedRecordSnapshot !== 'function') {
     throw new Error('prepared backup snapshot store is invalid')
   }
   const sentinel = Object.freeze({ committed: true })
   let calls = 0
-  const returned = await store.withCommittedPreparedRecordSnapshot(expected.recordId, (raw) => {
-    if (calls++ !== 0) {
-      throw new Error('prepared backup snapshot callback is invalid')
-    }
-    requireExactSnapshot(expected, raw)
-    return sentinel
-  })
+  let open = true
+  let returned: unknown
+  try {
+    returned = await store.withCommittedPreparedRecordSnapshot(
+      expected.recordId,
+      (raw) => {
+        if (!open || calls++ !== 0) throw new Error('prepared backup snapshot callback is invalid')
+        requireExactSnapshot(expected, raw)
+        return sentinel
+      },
+      sourceDescriptor,
+    )
+  } finally {
+    open = false
+  }
   if (calls !== 1 || returned !== sentinel) {
-    throw new Error('prepared backup snapshot callback must be synchronous and exact')
+    throw new Error(
+      'prepared backup snapshot callback must run before settlement and return exactly',
+    )
   }
 }
 
 async function requireCommittedSnapshotBatch(
   store: EncryptedWalletBackupPreparedRecordSnapshotBatchStore,
   expected: readonly EncryptedWalletBackupPreparedRecordSnapshot[],
+  sourceDescriptors?: readonly Uint8Array[],
 ): Promise<void> {
   if (!store || typeof store.withCommittedPreparedRecordSnapshotBatch !== 'function')
     throw new Error('prepared backup snapshot batch store is invalid')
   const recordIds = Object.freeze(expected.map(({ recordId }) => recordId))
   const sentinel = Object.freeze({ committed: true })
   let calls = 0
-  let synchronous = true
-  const pending = store.withCommittedPreparedRecordSnapshotBatch(recordIds, (rows) => {
-    if (!synchronous || calls++ !== 0)
-      throw new Error('prepared backup snapshot batch callback is invalid')
-    if (!Array.isArray(rows) || rows.length !== expected.length)
-      throw new Error('committed prepared backup snapshot batch changed')
-    for (let index = 0; index < expected.length; index += 1)
-      requireExactSnapshot(expected[index]!, rows[index]!)
-    return sentinel
-  })
-  synchronous = false
-  const returned = await pending
+  let open = true
+  let returned: unknown
+  try {
+    returned = await store.withCommittedPreparedRecordSnapshotBatch(
+      recordIds,
+      (rows) => {
+        if (!open || calls++ !== 0)
+          throw new Error('prepared backup snapshot batch callback is invalid')
+        if (!Array.isArray(rows) || rows.length !== expected.length)
+          throw new Error('committed prepared backup snapshot batch changed')
+        for (let index = 0; index < expected.length; index += 1)
+          requireExactSnapshot(expected[index]!, rows[index]!)
+        return sentinel
+      },
+      sourceDescriptors,
+    )
+  } finally {
+    open = false
+  }
   if (calls !== 1 || returned !== sentinel)
-    throw new Error('prepared backup snapshot batch callback must be synchronous and exact')
+    throw new Error(
+      'prepared backup snapshot batch callback must run before settlement and return exactly',
+    )
 }
 
 function requireExactSnapshot(

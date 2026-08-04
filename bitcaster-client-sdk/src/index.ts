@@ -19,12 +19,18 @@ export * from './encryptedWalletBackupRetrySchedule.ts'
 export * from './encryptedWalletBackupServerCodec.ts'
 export * from './encryptedWalletBackupDelegatedServerCodec.ts'
 export * from './encryptedWalletBackupSync.ts'
+export type {
+  EncryptedWalletBackupCoordinatorPersistencePort,
+  EncryptedWalletBackupCoordinatorPersistenceReservation,
+  EncryptedWalletBackupCoordinatorPersistenceTransaction,
+} from './encryptedWalletBackupCoordinatorPersistence.ts'
 export * from './encryptedWalletBackupPreparedRecordPersistence.ts'
 export * from './encryptedWalletBackupPackPersistence.ts'
 export * from './encryptedWalletBackupSnapshotPersistence.ts'
 export * from './encryptedWalletBackupSnapshotSeal.ts'
 export * from './encryptedWalletBackupManifestPassA.ts'
 export * from './encryptedWalletBackupManifestPagePersistence.ts'
+export * from './encryptedWalletBackupManifestSourceJoin.ts'
 export * from './encryptedWalletBackupUploadPlanningPersistence.ts'
 export {
   ENCRYPTED_WALLET_BACKUP_MANIFEST_FINALIZATION_READ_BYTES_MAX,

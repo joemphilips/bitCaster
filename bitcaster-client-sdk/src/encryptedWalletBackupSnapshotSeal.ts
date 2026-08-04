@@ -3,6 +3,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { encodeCanonicalBackupCbor as encodeCanonical } from './encryptedWalletBackupCbor.ts'
 import {
   decodeEncryptedWalletBackupSnapshotPin,
+  encodeEncryptedWalletBackupSnapshotPinOrderKey,
   encodeEncryptedWalletBackupFrozenSnapshot,
   encodeEncryptedWalletBackupFrozenSnapshotScope,
   requireAuthenticatedEncryptedWalletBackupFrozenSnapshot,
@@ -516,7 +517,7 @@ function sealPinByteCapacity(
 }
 
 function pinKey(pin: PersistedEncryptedWalletBackupSnapshotPin): Uint8Array {
-  return encodeCanonical([pin.recordKindCode, hexBytes(pin.recordId), hexBytes(pin.commitment)])
+  return encodeEncryptedWalletBackupSnapshotPinOrderKey(pin)
 }
 
 function digest(value: Uint8Array): string {

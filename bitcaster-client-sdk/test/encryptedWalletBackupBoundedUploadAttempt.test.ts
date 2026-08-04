@@ -3,6 +3,7 @@ import { webcrypto } from 'node:crypto'
 import { test } from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+import { decode } from 'cborg'
 import {
   createEncryptedWalletBackupKeyHandle,
   prepareBoundedEncryptedWalletBackupManifestTarget,
@@ -13,7 +14,10 @@ import {
 } from '../src/encryptedWalletBackup.ts'
 import { issueBoundedManifestTargetCapabilityForTest } from '../src/encryptedWalletBackupManifestTargetAuthority.ts'
 import {
+  ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX,
+  ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX,
   claimBoundedEncryptedWalletBackupUploadAttempt,
+  measureEncryptedWalletBackupUploadBatchRecordBytes,
   planAndSealBoundedEncryptedWalletBackupUploadBatch,
   rehydrateEncryptedWalletBackupUploadBatch,
   runBoundedEncryptedWalletBackupUploadCycle,
@@ -165,8 +169,8 @@ test('bounded upload planning reads the persisted page then chunk and completes 
   assert.equal(cursor.version, 2)
   assert.equal(store.batchReservation?.readRows, 3)
   assert.equal(store.batchReservation?.writeRows, 3)
-  assert.equal(store.batchReservation?.readBytes, 5_242_880)
-  assert.equal(store.batchReservation?.writeBytes, 5_242_880)
+  assert.equal(store.batchReservation?.readBytes, 1_048_576)
+  assert.equal(store.batchReservation?.writeBytes, 1_048_576)
   store.acknowledgeActiveBatch(claim.record.attemptId)
   const restarted = await claimBoundedEncryptedWalletBackupUploadAttempt({
     ownerId: 'owner',
@@ -271,18 +275,21 @@ test('bounded upload planning advances 16 pages and five chunks in canonical bou
     store,
     source,
   })
-  assert.equal(first?.record.items.length, 16)
+  assert.equal(first?.record.items.length, 15)
   assert.equal(first?.record.repackedChunkCount, 0)
   assert.deepEqual(
     first!.record.items.map((item) => item.objectId),
-    Array.from({ length: 16 }, (_value, index) => objectIdFor(index + 1)),
+    Array.from({ length: 15 }, (_value, index) => objectIdFor(index + 1)),
   )
-  assert.ok(first!.record.uploadedBytes <= 4 * 1_024 * 1_024)
-  // Four chunks are below the 4 MiB cap. The four-chunk cap binds first.
-  assert.equal(sourceReads, 16)
+  assert.ok(first!.record.uploadedBytes <= ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX)
+  assert.ok(
+    measureEncryptedWalletBackupUploadBatchRecordBytes(first!.record) <=
+      ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX,
+  )
+  assert.equal(sourceReads, 15)
   let cursor = decodeEncryptedWalletBackupUploadCursor(store.cursors.get(claim.record.attemptId)!)
-  assert.equal(cursor.phase, 'chunks')
-  assert.equal(cursor.nextPageIndex, 16)
+  assert.equal(cursor.phase, 'pages')
+  assert.equal(cursor.nextPageIndex, 15)
   assert.equal(cursor.exclusiveChunkObjectId, null)
   assert.equal(cursor.nextBatchOrdinal, 1)
   assert.equal(cursor.version, 2)
@@ -302,17 +309,21 @@ test('bounded upload planning advances 16 pages and five chunks in canonical bou
     source,
   })
   assert.equal(second?.record.items.length, 4)
-  assert.equal(second?.record.repackedChunkCount, 4)
+  assert.equal(second?.record.repackedChunkCount, 3)
   assert.deepEqual(
     second!.record.items.map((item) => item.objectId),
-    Array.from({ length: 4 }, (_value, index) => objectIdFor(index + 33)),
+    [objectIdFor(16), objectIdFor(33), objectIdFor(34), objectIdFor(35)],
   )
-  assert.ok(second!.record.uploadedBytes <= 4 * 1_024 * 1_024)
-  assert.equal(sourceReads, 20)
+  assert.ok(second!.record.uploadedBytes <= ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX)
+  assert.ok(
+    measureEncryptedWalletBackupUploadBatchRecordBytes(second!.record) <=
+      ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX,
+  )
+  assert.equal(sourceReads, 19)
   cursor = decodeEncryptedWalletBackupUploadCursor(store.cursors.get(claim.record.attemptId)!)
   assert.equal(cursor.phase, 'chunks')
   assert.equal(cursor.nextPageIndex, 16)
-  assert.equal(cursor.exclusiveChunkObjectId, objectIdFor(36))
+  assert.equal(cursor.exclusiveChunkObjectId, objectIdFor(35))
   assert.equal(cursor.nextBatchOrdinal, 2)
   assert.equal(cursor.version, 3)
 
@@ -330,9 +341,13 @@ test('bounded upload planning advances 16 pages and five chunks in canonical bou
     store,
     source,
   })
-  assert.equal(third?.record.items.length, 1)
-  assert.equal(third?.record.repackedChunkCount, 1)
-  assert.ok(third!.record.uploadedBytes <= 4 * 1_024 * 1_024)
+  assert.equal(third?.record.items.length, 2)
+  assert.equal(third?.record.repackedChunkCount, 2)
+  assert.ok(third!.record.uploadedBytes <= ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX)
+  assert.ok(
+    measureEncryptedWalletBackupUploadBatchRecordBytes(third!.record) <=
+      ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX,
+  )
   assert.equal(sourceReads, 21)
   cursor = decodeEncryptedWalletBackupUploadCursor(store.cursors.get(claim.record.attemptId)!)
   assert.equal(cursor.phase, 'complete')
@@ -370,6 +385,63 @@ test('bounded upload planning cannot replace an active batch before acknowledgem
   assert.equal(store.batches.size, 1)
   assert.equal(equalBytes(store.cursors.get(claim.record.attemptId)!, cursor), true)
   assert.equal(store.attempts.get(claim.record.attemptId)?.activeBatchId, first?.record.batchId)
+})
+
+test('near-maximum target authority progresses across cycles without source rereads', async () => {
+  const fixture = await boundedTargetFixture(false, { pageCount: 255, chunkCount: 1 })
+  const store = new AtomicAttemptCursorStore()
+  const claim = await sealBoundedEncryptedWalletBackupUploadAttempt({
+    attemptId: '2a'.repeat(16),
+    ownerId: 'owner',
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: fixture.keyHandle,
+    target: fixture.target,
+    store,
+  })
+  assert.ok(
+    claim.record.canonicalTargetHead.byteLength +
+      claim.record.canonicalTargetReferenceSet.byteLength +
+      claim.record.canonicalInheritedReferenceSet.byteLength >
+      16 * 1_024,
+  )
+  let current = claim
+  let cycles = 0
+  let sourceReads = 0
+  const sourceObjectIds = new Set<string>()
+  const source = boundedObjectSource(fixture.keyHandle, (input) => {
+    sourceReads += 1
+    sourceObjectIds.add(input.objectId)
+  })
+  while (cycles < 64) {
+    const batch = await planAndSealBoundedEncryptedWalletBackupUploadBatch({
+      claim: current,
+      keyHandle: fixture.keyHandle,
+      store,
+      source,
+    })
+    assert.notEqual(batch, null)
+    assert.ok(
+      measureEncryptedWalletBackupUploadBatchRecordBytes(batch!.record) <=
+        ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX,
+    )
+    cycles += 1
+    store.acknowledgeActiveBatch(current.record.attemptId)
+    const cursor = decodeEncryptedWalletBackupUploadCursor(
+      store.cursors.get(current.record.attemptId)!,
+    )
+    if (cursor.phase === 'complete') break
+    const next = await claimBoundedEncryptedWalletBackupUploadAttempt({
+      ownerId: 'owner',
+      leaseDurationMilliseconds: 60_000,
+      keyHandle: fixture.keyHandle,
+      store,
+    })
+    assert.notEqual(next, null)
+    current = next!
+  }
+  assert.ok(cycles < 64)
+  assert.equal(sourceReads, 256)
+  assert.equal(sourceObjectIds.size, 256)
 })
 
 test('bounded upload planning rejects a source body tampered after its target digest', async () => {
@@ -412,7 +484,6 @@ test('bounded upload planning rejects a source body tampered after its target di
 
 test('bounded upload planning rolls back hostile transaction callbacks', async (t) => {
   for (const mode of [
-    'batch-deferred',
     'batch-repeated',
     'batch-substituted',
     'batch-unknown',
@@ -446,6 +517,26 @@ test('bounded upload planning rolls back hostile transaction callbacks', async (
       )
     })
   }
+})
+
+test('bounded upload planning accepts a callback in a Promise microtask before settlement', async () => {
+  const fixture = await boundedTargetFixture(false)
+  const store = new AtomicAttemptCursorStore('batch-deferred')
+  const claim = await sealBoundedEncryptedWalletBackupUploadAttempt({
+    attemptId: '28'.repeat(16),
+    ownerId: 'owner',
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: fixture.keyHandle,
+    target: fixture.target,
+    store,
+  })
+  const batch = await planAndSealBoundedEncryptedWalletBackupUploadBatch({
+    claim,
+    keyHandle: fixture.keyHandle,
+    store,
+    source: boundedObjectSource(fixture.keyHandle),
+  })
+  assert.equal(batch?.record.items.length, 2)
 })
 
 test('bounded upload planning rehydrates an exact batch after an uncertain commit', async () => {
@@ -537,11 +628,11 @@ test('bounded upload attempt retries exactly and the paired claim API restarts i
   assert.equal(store.cursors.size, 1)
 })
 
-test('bounded paired claim rejects missing, malformed, mismatched, and deferred cursor callbacks', async (t) => {
+test('bounded paired claim rejects missing, malformed, and mismatched cursor callbacks', async (t) => {
   const fixture = await boundedTargetFixture(false)
-  for (const mode of ['missing', 'malformed', 'mismatched', 'deferred'] as const) {
+  for (const mode of ['missing', 'malformed', 'mismatched'] as const) {
     await t.test(mode, async () => {
-      const store = new AtomicAttemptCursorStore(mode === 'deferred' ? 'claim-deferred' : 'normal')
+      const store = new AtomicAttemptCursorStore('normal')
       const sealed = await sealBoundedEncryptedWalletBackupUploadAttempt({
         attemptId: '35'.repeat(16),
         ownerId: 'owner',
@@ -574,6 +665,26 @@ test('bounded paired claim rejects missing, malformed, mismatched, and deferred 
       )
     })
   }
+})
+
+test('bounded paired claim accepts a callback in a Promise microtask before settlement', async () => {
+  const fixture = await boundedTargetFixture(false)
+  const store = new AtomicAttemptCursorStore('claim-deferred')
+  const sealed = await sealBoundedEncryptedWalletBackupUploadAttempt({
+    attemptId: '35'.repeat(16),
+    ownerId: 'owner',
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: fixture.keyHandle,
+    target: fixture.target,
+    store,
+  })
+  const claimed = await claimBoundedEncryptedWalletBackupUploadAttempt({
+    ownerId: 'owner',
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: fixture.keyHandle,
+    store,
+  })
+  assert.equal(claimed?.record.attemptId, sealed.record.attemptId)
 })
 
 test('bounded paired claim rejects forged page, chunk, and complete cursor positions', async (t) => {
@@ -727,8 +838,8 @@ test('bounded upload cycle journals CAS only after every bounded batch is acknow
   assert.equal(store.casAttempts.size, 1)
 })
 
-test('a 16-item bounded upload cycle sends four PUTs concurrently and never five', async () => {
-  const fixture = await boundedTargetFixture(false, { pageCount: 15, chunkCount: 1 })
+test('a bounded upload cycle sends four PUTs concurrently and never five', async () => {
+  const fixture = await boundedTargetFixture(false, { pageCount: 1, chunkCount: 3 })
   const store = new AtomicAttemptCursorStore()
   const release = deferred<void>()
   let putCalls = 0
@@ -754,16 +865,16 @@ test('a 16-item bounded upload cycle sends four PUTs concurrently and never five
   release.resolve()
   const result = await cycle
   assert.equal(result.state, 'cas-sealed')
-  assert.equal(putCalls, 16)
+  assert.equal(putCalls, 4)
   assert.equal(maximumInFlight, 4)
-  assertBoundedUploadCycleCallShape(store, { combinedAttemptBatchValidation: 16, total: 23 })
+  assertBoundedUploadCycleCallShape(store, { combinedAttemptBatchValidation: 4, total: 11 })
 })
 
-test('fixed 54,000-proof workload executes 249 current objects in 36 bounded cycles', async () => {
+test('fixed 54,000-proof workload executes 249 current objects in 45 bounded cycles', async () => {
   const pageCount = 142
   const chunkCount = 107
   const objectCount = pageCount + chunkCount
-  const batchCount = 36
+  const batchCount = 45
   const fixture = await boundedTargetFixture(false, {
     pageCount,
     chunkCount,
@@ -805,26 +916,52 @@ test('fixed 54,000-proof workload executes 249 current objects in 36 bounded cyc
       (batch) =>
         batch.state === 'finalized' &&
         batch.items.length <= 16 &&
-        batch.uploadedBytes <= 4 * 1_024 * 1_024 &&
+        batch.uploadedBytes <= ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX &&
+        measureEncryptedWalletBackupUploadBatchRecordBytes(batch) <=
+          ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX &&
         batch.repackedChunkCount <= 4,
     ),
     true,
   )
   assert.deepEqual(store.methodCalls, {
-    pairedAttemptClaim: 36,
+    pairedAttemptClaim: 45,
     pairedAttemptSeal: 1,
-    batchCursorSeal: 36,
-    initialAttemptValidation: 36,
+    batchCursorSeal: 45,
+    initialAttemptValidation: 45,
     activeBatchRead: 0,
-    executionClaim: 36,
+    executionClaim: 45,
     combinedAttemptBatchValidation: 249,
-    acknowledgementTransition: 36,
+    acknowledgementTransition: 45,
     casSeal: 1,
   })
   assert.equal(
     Object.values(store.methodCalls).reduce((total, calls) => total + calls, 0),
-    431,
+    476,
   )
+})
+
+test('derived 3,000-CTF-proof capacity fixture stays within bounded upload capacity', async () => {
+  const fixture = await boundedTargetFixture(false, {
+    pageCount: 15,
+    chunkCount: 7,
+    proofCount: 3_000,
+  })
+  const head = decode(fixture.target.wire.canonicalHead) as unknown[]
+  assert.equal(head[11], 2_818_664)
+  assert.equal(15 + 7, 22)
+  const store = new AtomicAttemptCursorStore()
+  let cycles = 0
+  let result: Awaited<ReturnType<typeof runBoundedUploadCycleForTest>>
+  do {
+    result = await runBoundedUploadCycleForTest({
+      fixture,
+      store,
+      initialAttempt: cycles === 0 ? undefined : null,
+    })
+    cycles += 1
+  } while (result.state === 'upload-pending' && cycles < 64)
+  assert.equal(result.state, 'cas-sealed')
+  assert.ok(cycles <= 64)
 })
 
 test('bounded upload attempt rejects incomplete, changed, foreign, and malformed atomic callbacks', async (t) => {
@@ -840,7 +977,6 @@ test('bounded upload attempt rejects incomplete, changed, foreign, and malformed
     'substituted',
     'thenable',
     'over-return',
-    'deferred',
     'reservation-mismatch',
   ] as const) {
     await t.test(mode, async () => {
@@ -859,6 +995,20 @@ test('bounded upload attempt rejects incomplete, changed, foreign, and malformed
       assert.equal(store.cursors.size, 0)
     })
   }
+})
+
+test('bounded upload attempt accepts a callback in a Promise microtask before settlement', async () => {
+  const fixture = await boundedTargetFixture(false)
+  const store = new AtomicAttemptCursorStore('deferred')
+  const sealed = await sealBoundedEncryptedWalletBackupUploadAttempt({
+    attemptId: '44'.repeat(16),
+    ownerId: 'owner',
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: fixture.keyHandle,
+    target: fixture.target,
+    store,
+  })
+  assert.equal(sealed.record.attemptId, '44'.repeat(16))
 })
 
 test('bounded upload attempt rejects a legacy head', async () => {

@@ -14,7 +14,11 @@ import {
   type PersistedEncryptedWalletBackupStagedObject,
 } from "@bitcaster/client-sdk/encryptedWalletBackupPackPersistence";
 import { browserWalletDatabaseName } from "../lib/browserWalletProfile";
-import type { BitcasterDB } from "./proof-db";
+import type {
+  BitcasterDB,
+  EncryptedWalletBackupDexiePackBindingRow,
+  EncryptedWalletBackupDexiePreparedRecordRow,
+} from "./proof-db";
 
 type ExactVersionExpectation = Readonly<{
   buildId: string;
@@ -103,6 +107,7 @@ function requireBoundProfile(
 class DexiePackTransaction implements EncryptedWalletBackupPackPersistenceTransaction {
   readonly #database: BitcasterDB;
   readonly #expected: ExactVersionExpectation;
+  readonly #preparedRecordSerializedBytes = new Map<string, number>();
 
   constructor(database: BitcasterDB, expected: ExactVersionExpectation) {
     this.#database = database;
@@ -154,8 +159,10 @@ class DexiePackTransaction implements EncryptedWalletBackupPackPersistenceTransa
       requirePreparedScope(prepared, this.#expected);
       if (prepared.recordId !== binding.recordId)
         throw new Error("backup pack binding prepared record identity is invalid");
-      const serializedBinding = serializeEncryptedWalletBackupPackBinding(binding);
-      const serializedPrepared = serializeEncryptedWalletBackupPreparedBuildRecord(prepared);
+      const serializedBinding = serializeEncryptedWalletBackupPackBinding(bindingRecord(binding));
+      const serializedPrepared = serializeEncryptedWalletBackupPreparedBuildRecord(
+        preparedRecord(prepared),
+      );
       const nextBytes = serializedBinding.byteLength + serializedPrepared.byteLength;
       if (serializedBytes + nextBytes > maxBytes) break;
       rows.push({ binding: serializedBinding.slice(), prepared: serializedPrepared.slice() });
@@ -180,14 +187,32 @@ class DexiePackTransaction implements EncryptedWalletBackupPackPersistenceTransa
     row: PersistedEncryptedWalletBackupPreparedBuildRecord,
   ): Promise<void> {
     requirePreparedScope(row, this.#expected);
-    void serializeEncryptedWalletBackupPreparedBuildRecord(row);
-    await this.#database.encryptedWalletBackupPreparedRecords.add(clone(row));
+    const preparedRecordSerializedBytes =
+      serializeEncryptedWalletBackupPreparedBuildRecord(row).byteLength;
+    const persisted: EncryptedWalletBackupDexiePreparedRecordRow = {
+      ...clone(row),
+      preparedRecordSerializedBytes,
+    };
+    await this.#database.encryptedWalletBackupPreparedRecords.add(persisted);
+    this.#preparedRecordSerializedBytes.set(
+      preparedRecordKey(row.buildId, row.recordId),
+      preparedRecordSerializedBytes,
+    );
   }
 
   async insertPackBinding(row: PersistedEncryptedWalletBackupPackBinding): Promise<void> {
     requireBindingScope(row, this.#expected);
     void serializeEncryptedWalletBackupPackBinding(row);
-    await this.#database.encryptedWalletBackupPackBindings.add(clone(row));
+    const preparedRecordSerializedBytes = this.#preparedRecordSerializedBytes.get(
+      preparedRecordKey(row.buildId, row.recordId),
+    );
+    if (preparedRecordSerializedBytes === undefined)
+      throw new Error("backup pack binding has no prepared record size");
+    const persisted: EncryptedWalletBackupDexiePackBindingRow = {
+      ...clone(row),
+      preparedRecordSerializedBytes,
+    };
+    await this.#database.encryptedWalletBackupPackBindings.add(persisted);
   }
 
   async writeBuildCursor(row: PersistedEncryptedWalletBackupBuildCursor): Promise<void> {
@@ -221,6 +246,24 @@ class DexiePackTransaction implements EncryptedWalletBackupPackPersistenceTransa
       .between([buildId, packId, afterRecordId], [buildId, packId, Dexie.maxKey], false, true)
       .first();
   }
+}
+
+function preparedRecordKey(buildId: string, recordId: string): string {
+  return `${buildId.length}:${buildId}${recordId.length}:${recordId}`;
+}
+
+function preparedRecord(
+  row: EncryptedWalletBackupDexiePreparedRecordRow,
+): PersistedEncryptedWalletBackupPreparedBuildRecord {
+  const { preparedRecordSerializedBytes: _preparedRecordSerializedBytes, ...record } = row;
+  return record;
+}
+
+function bindingRecord(
+  row: EncryptedWalletBackupDexiePackBindingRow,
+): PersistedEncryptedWalletBackupPackBinding {
+  const { preparedRecordSerializedBytes: _preparedRecordSerializedBytes, ...record } = row;
+  return record;
 }
 
 function requireExpectedBuild(

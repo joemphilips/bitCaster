@@ -20,13 +20,15 @@ import {
 } from './encryptedWalletBackupPreparedRecordPersistence.ts'
 import {
   decodeEncryptedWalletBackupSnapshotPin,
+  encodeEncryptedWalletBackupSnapshotPinOrderKey,
   validateEncryptedWalletBackupSnapshotSourcePinBinding,
 } from './encryptedWalletBackupSnapshotPersistence.ts'
 import type { EncryptedWalletBackupKeyHandle } from './encryptedWalletBackup.ts'
 
-export const ENCRYPTED_WALLET_BACKUP_MANIFEST_SOURCE_JOIN_PHYSICAL_ROW_MAX = 255 as const
+/** Each logical join reads one pin, source, pack binding, and prepared record. */
+export const ENCRYPTED_WALLET_BACKUP_MANIFEST_SOURCE_JOIN_PHYSICAL_ROW_MAX = 256 as const
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_SOURCE_JOIN_PHYSICAL_MAX_BYTES = 1_048_576 as const
-export const ENCRYPTED_WALLET_BACKUP_MANIFEST_SOURCE_JOIN_LOGICAL_ROW_MAX = 512 as const
+export const ENCRYPTED_WALLET_BACKUP_MANIFEST_SOURCE_JOIN_LOGICAL_ROW_MAX = 64 as const
 
 export interface EncryptedWalletBackupManifestSourceJoinRow {
   readonly pin: Uint8Array
@@ -139,7 +141,7 @@ async function readCompactSourceRows(
   let cursor = cloneKey(input.exclusiveAfter)
   while (rows.length < limits.entryCount) {
     const requested = Math.min(
-      ENCRYPTED_WALLET_BACKUP_MANIFEST_SOURCE_JOIN_PHYSICAL_ROW_MAX,
+      ENCRYPTED_WALLET_BACKUP_MANIFEST_SOURCE_JOIN_LOGICAL_ROW_MAX,
       limits.entryCount - rows.length,
     )
     const page = await input.store.readSourcePage(
@@ -170,7 +172,7 @@ function requirePhysicalPage(
     value.serializedBytes < (value.rows.length === 0 ? 0 : 1) ||
     value.serializedBytes > ENCRYPTED_WALLET_BACKUP_MANIFEST_SOURCE_JOIN_PHYSICAL_MAX_BYTES ||
     value.rows.length > requested ||
-    value.rows.length > ENCRYPTED_WALLET_BACKUP_MANIFEST_SOURCE_JOIN_PHYSICAL_ROW_MAX
+    value.rows.length > ENCRYPTED_WALLET_BACKUP_MANIFEST_SOURCE_JOIN_LOGICAL_ROW_MAX
   )
     throw new Error('backup manifest source page is invalid')
   const measured = value.rows.reduce(
@@ -439,5 +441,5 @@ function requireSourceScope(
 }
 
 function pinOrderKey(pin: ReturnType<typeof decodeEncryptedWalletBackupSnapshotPin>): Uint8Array {
-  return encodeCanonical([pin.recordKindCode, hexToBytes(pin.recordId), hexToBytes(pin.commitment)])
+  return encodeEncryptedWalletBackupSnapshotPinOrderKey(pin)
 }

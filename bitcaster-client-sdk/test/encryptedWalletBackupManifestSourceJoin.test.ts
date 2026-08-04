@@ -22,7 +22,7 @@ import {
   stagedPackFixture,
 } from './helpers/encryptedWalletBackupManifestFixture.ts'
 
-test('source join rejects a 256-row physical page before authentication', async () => {
+test('source join rejects a 256-row source page before authentication', async () => {
   const fixture = await sourceFixture()
   const rows = Array.from({ length: 256 }, () => copyRow(fixture.row))
   let requested = 0
@@ -40,7 +40,7 @@ test('source join rejects a 256-row physical page before authentication', async 
           throw new Error('pack provider reached')
         },
       },
-      boundary: boundaryFor(fixture, 256, 256 * fixture.entryBytes),
+      boundary: boundaryFor(fixture, 64, 64 * fixture.entryBytes),
       keyHandle: fixture.keyHandle,
       seed: fixture.seed,
       snapshotStore: fixture.snapshotStore,
@@ -48,7 +48,7 @@ test('source join rejects a 256-row physical page before authentication', async 
     }),
     /source page is invalid/,
   )
-  assert.equal(requested, 255)
+  assert.equal(requested, 64)
 })
 
 test('source join rejects byte-limit and keyset-order failures before staged-pack access', async () => {
@@ -256,8 +256,8 @@ test('source join capabilities prepare their exact manifest page', async () => {
   assert.equal(page.generation, 1)
 })
 
-test('source join streams 256 exact rows as 255+1 and preserves output pin-key order', async () => {
-  const fixture = await sourcePageFixture(256)
+test('source join streams one bounded 64-row logical page and preserves output pin-key order', async () => {
+  const fixture = await sourcePageFixture(64)
   const staged = await stagedPackFixture(fixture, fixture.rows, 'build-a', 'pack-a')
   const limits: number[] = []
   const cursors: Array<Uint8Array | null> = []
@@ -279,20 +279,19 @@ test('source join streams 256 exact rows as 255+1 and preserves output pin-key o
     snapshotStore: fixture.snapshotStore,
     exclusiveAfter: null,
   })
-  assert.deepEqual(limits, [255, 1])
+  assert.deepEqual(limits, [64])
   assert.equal(cursors[0], null)
-  assert.equal(bytesEqual(cursors[1]!, fixture.pinKeys[254]!), true, 'physical cursor changed')
   assert.equal(
     bytesEqual(result.evidence.firstPinKey!, fixture.pinKeys[0]!),
     true,
     'first pin key changed',
   )
   assert.equal(
-    bytesEqual(result.evidence.lastPinKey!, fixture.pinKeys[255]!),
+    bytesEqual(result.evidence.lastPinKey!, fixture.pinKeys[63]!),
     true,
     'last pin key changed',
   )
-  assert.equal(result.entries.length, 256)
+  assert.equal(result.entries.length, 64)
   for (let index = 0; index < result.entries.length; index += 1) {
     assert.equal(
       bytesEqual(

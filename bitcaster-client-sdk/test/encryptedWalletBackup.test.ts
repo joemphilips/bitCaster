@@ -1939,8 +1939,8 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
     keyHandle,
     store: repackedStore,
   })
-  assert.equal(repackedBatch.record.items.length, 5)
-  assert.equal(repackedBatch.record.repackedChunkCount, 4)
+  assert.equal(repackedBatch.record.items.length, 4)
+  assert.equal(repackedBatch.record.repackedChunkCount, 3)
 
   const emptyChildTarget = await prepareBoundedChildTargetForTest({
     fixture,
@@ -3912,7 +3912,7 @@ test('terminal CAS adapter callback faults roll back transition and deletion', a
               },
             },
           }),
-        /callback is invalid|synchronous and exact|lifecycles are inconsistent|partition|snapshot revision/,
+        /callback is invalid|synchronous and exact|before settlement|lifecycles are inconsistent|partition|snapshot revision/,
       )
       assert.deepEqual(fixture.store.coordinatorRecordCounts(), retained)
       const persistedCas = await fixture.store.readCasAttempt(
@@ -4266,7 +4266,7 @@ test('fork cleanup binds immutable CAS identity and rejects callback protocol fa
           },
         },
       }),
-    /synchronous and exact/,
+    /synchronous and exact|before settlement/,
   )
   assert.throws(() => lateCallback!(lateRaw!), /callback is invalid/)
   assert.deepEqual(repeatedStore.coordinatorRecordCounts(), retainedCounts)
@@ -5406,7 +5406,7 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
           },
         },
       }),
-    /synchronous and exact/,
+    /synchronous and exact|before settlement/,
   )
   assert.throws(() => lateCallback!(lateCandidate as never), /callback is invalid/)
 
@@ -5442,7 +5442,7 @@ test('upload mutation adapters reject mutation, repeated, late, and wrong callba
           },
         },
       }),
-    /synchronous and exact/,
+    /synchronous and exact|before settlement/,
   )
 
   const batchBase = inMemoryUploadBatchStore()
@@ -5599,7 +5599,7 @@ test('every upload mutation callback port fails closed and rolls back', async (t
                 },
               },
             }),
-          /synchronous and exact/,
+          /synchronous and exact|before settlement/,
         )
         fixture.store.transitionUploadBatch = originalTransition
         assert.equal(
@@ -5731,7 +5731,7 @@ test('every upload mutation callback port fails closed and rolls back', async (t
                 },
               },
             }),
-          /synchronous and exact/,
+          /synchronous and exact|before settlement/,
         )
         fixture.store.completeUploadAttemptAbort = originalAbortCompletion
         const durableAbortUncertainPartition = await fixture.store.inspectUploadAttemptPartition(
@@ -5891,7 +5891,7 @@ test('every linked CAS callback port rejects wrong, multiple, and late callbacks
               },
             },
           }),
-        /state and attempt count|callback is invalid|synchronous and exact/,
+        /state and attempt count|callback is invalid|synchronous and exact|before settlement/,
       )
       assert.equal(remoteCalls, 0)
       if (mode === 'late') assert.throws(() => lateCallback!(lateRaw!), /callback is invalid/)
@@ -5949,7 +5949,7 @@ test('every linked CAS callback port rejects wrong, multiple, and late callbacks
               },
             },
           }),
-        /exactly one linked CAS row|callback is invalid|synchronous and exact/,
+        /exactly one linked CAS row|callback is invalid|synchronous and exact|before settlement/,
       )
       assert.equal(remoteCalls, 0)
       if (mode === 'late') assert.throws(() => lateCallback!(lateRaw!), /callback is invalid/)
@@ -6023,7 +6023,7 @@ test('every linked CAS callback port rejects wrong, multiple, and late callbacks
               observation: fixture.authenticated,
             },
           }),
-        /state and attempt count|callback is invalid|synchronous and exact/,
+        /state and attempt count|callback is invalid|synchronous and exact|before settlement/,
       )
       if (mode === 'late') assert.throws(() => lateCallback!(lateRaw!), /callback is invalid/)
       const persisted = await store.readCasAttempt(
@@ -6082,7 +6082,7 @@ test('every linked CAS callback port rejects wrong, multiple, and late callbacks
       }
       await assert.rejects(
         () => resumeEncryptedWalletBackupSyncAttempt({ attempt: exhausted }),
-        /resumed CAS attempt changed|callback is invalid|synchronous and exact/,
+        /resumed CAS attempt changed|callback is invalid|synchronous and exact|before settlement/,
       )
       if (mode === 'late') assert.throws(() => lateCallback!(lateRaw!), /callback is invalid/)
       const persisted = await store.readCasAttempt(

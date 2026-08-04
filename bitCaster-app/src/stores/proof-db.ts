@@ -27,6 +27,102 @@ import type {
   PersistedEncryptedWalletBackupPreparedBuildRecord,
   PersistedEncryptedWalletBackupStagedObject,
 } from "@bitcaster/client-sdk/encryptedWalletBackupPackPersistence";
+import type {
+  EncryptedWalletBackupActiveUploadAttemptRecord,
+  EncryptedWalletBackupUploadBatchRecord,
+} from "@bitcaster/client-sdk/encryptedWalletBackupSync";
+import type { EncryptedWalletBackupSyncAttemptRecord } from "@bitcaster/client-sdk/encryptedWalletBackup";
+
+/** Canonical encrypted wallet-backup control row. The SDK owns its CBOR codec. */
+export interface EncryptedWalletBackupDexieControlRow {
+  scopeKey: string;
+  realm: string;
+  vaultId: string;
+  snapshotId: string;
+  snapshotRevision: number;
+  canonical: Uint8Array;
+}
+
+/** Canonical encrypted wallet-backup snapshot pin. The SDK owns its CBOR codec. */
+export interface EncryptedWalletBackupDexieSnapshotPinRow {
+  realm: string;
+  vaultId: string;
+  snapshotId: string;
+  snapshotRevision: number;
+  recordKindCode: 0;
+  recordId: string;
+  commitment: string;
+  canonical: Uint8Array;
+}
+
+/** Immutable prepared source. It is re-read before a snapshot pin is written. */
+export interface EncryptedWalletBackupDexiePreparedSourceRow {
+  realm: string;
+  vaultId: string;
+  recordKindCode: 0;
+  recordId: string;
+  commitment: string;
+  bodyReference: string;
+  revision: number;
+  snapshotId: string;
+  snapshotRevision: number;
+  canonicalDescriptor: Uint8Array;
+}
+
+/** Prepared build row with an adapter-private exact canonical size. */
+export interface EncryptedWalletBackupDexiePreparedRecordRow extends PersistedEncryptedWalletBackupPreparedBuildRecord {
+  preparedRecordSerializedBytes: number;
+}
+
+/** Pack binding with the exact canonical size of its prepared build row. */
+export interface EncryptedWalletBackupDexiePackBindingRow extends PersistedEncryptedWalletBackupPackBinding {
+  preparedRecordSerializedBytes: number;
+}
+
+/** Canonical encrypted wallet-backup manifest page. The SDK owns its CBOR codec. */
+export interface EncryptedWalletBackupDexieManifestPageRow {
+  realm: string;
+  vaultId: string;
+  snapshotId: string;
+  snapshotRevision: number;
+  pageIndex: number;
+  generation: number;
+  objectId: string;
+  digest: string;
+  canonical: Uint8Array;
+}
+
+/** Opaque SDK-owned upload aggregate. The indexed fields support bounded reads. */
+export interface EncryptedWalletBackupDexieUploadAttemptRow {
+  attemptId: string;
+  realm: string;
+  vaultId: string;
+  record: EncryptedWalletBackupActiveUploadAttemptRecord;
+}
+
+/** Opaque SDK-owned upload cursor. */
+export interface EncryptedWalletBackupDexieUploadCursorRow {
+  attemptId: string;
+  canonicalCursor: Uint8Array;
+}
+
+/** Opaque SDK-owned upload batch. The attempt ID is its bounded partition key. */
+export interface EncryptedWalletBackupDexieUploadBatchRow {
+  batchId: string;
+  attemptId: string;
+  authorityDigest: string;
+  record: Omit<
+    EncryptedWalletBackupUploadBatchRecord,
+    "canonicalTargetHead" | "canonicalTargetReferenceSet" | "canonicalInheritedReferenceSet"
+  >;
+}
+
+/** Opaque SDK-owned CAS retry record. uploadAttemptId is unique by schema. */
+export interface EncryptedWalletBackupDexieUploadCasAttemptRow {
+  attemptId: string;
+  uploadAttemptId: string;
+  record: EncryptedWalletBackupSyncAttemptRecord;
+}
 
 interface StoredProofMetadata {
   mintUrl: string;
@@ -170,16 +266,38 @@ export class BitcasterDB extends Dexie {
     [string, string]
   >;
   encryptedWalletBackupPreparedRecords!: Table<
-    PersistedEncryptedWalletBackupPreparedBuildRecord,
+    EncryptedWalletBackupDexiePreparedRecordRow,
     [string, string]
   >;
   encryptedWalletBackupPackBindings!: Table<
-    PersistedEncryptedWalletBackupPackBinding,
+    EncryptedWalletBackupDexiePackBindingRow,
     [string, string, string]
   >;
   encryptedWalletBackupStagedObjects!: Table<
     PersistedEncryptedWalletBackupStagedObject,
     [string, string]
+  >;
+  encryptedWalletBackupSnapshotControls!: Table<EncryptedWalletBackupDexieControlRow, string>;
+  encryptedWalletBackupPreparedSources!: Table<
+    EncryptedWalletBackupDexiePreparedSourceRow,
+    [string, string, number, string, number, string]
+  >;
+  encryptedWalletBackupSnapshotPins!: Table<
+    EncryptedWalletBackupDexieSnapshotPinRow,
+    [string, string, string, number, number, string]
+  >;
+  encryptedWalletBackupManifestPassAResults!: Table<EncryptedWalletBackupDexieControlRow, string>;
+  encryptedWalletBackupManifestCursors!: Table<EncryptedWalletBackupDexieControlRow, string>;
+  encryptedWalletBackupManifestPages!: Table<
+    EncryptedWalletBackupDexieManifestPageRow,
+    [string, string, string, number, number]
+  >;
+  encryptedWalletBackupUploadAttempts!: Table<EncryptedWalletBackupDexieUploadAttemptRow, string>;
+  encryptedWalletBackupUploadCursors!: Table<EncryptedWalletBackupDexieUploadCursorRow, string>;
+  encryptedWalletBackupUploadBatches!: Table<EncryptedWalletBackupDexieUploadBatchRow, string>;
+  encryptedWalletBackupUploadCasAttempts!: Table<
+    EncryptedWalletBackupDexieUploadCasAttemptRow,
+    string
   >;
 
   constructor(databaseName = "bitcaster") {
@@ -277,6 +395,29 @@ export class BitcasterDB extends Dexie {
       encryptedWalletBackupPreparedRecords: "&[buildId+recordId]",
       encryptedWalletBackupPackBindings: "&[buildId+packId+recordId], &[buildId+packId+ordinal]",
       encryptedWalletBackupStagedObjects: "&[buildId+packId]",
+    });
+    this.version(10).stores({
+      encryptedWalletBackupPreparedRecords: "&[buildId+recordId], recordId",
+      encryptedWalletBackupPackBindings:
+        "&[buildId+packId+recordId], &[buildId+packId+ordinal], [realm+vaultId+snapshotId+snapshotRevision+recordId]",
+      encryptedWalletBackupStagedObjects:
+        "&[buildId+packId], [realm+vaultId+generation+objectId+digest]",
+      encryptedWalletBackupSnapshotControls:
+        "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision]",
+      encryptedWalletBackupPreparedSources:
+        "&[realm+vaultId+recordKindCode+recordId+revision+bodyReference], &[realm+vaultId+recordKindCode+commitment+revision+bodyReference], [realm+vaultId+recordKindCode+recordId]",
+      encryptedWalletBackupSnapshotPins:
+        "&[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+recordId], &[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+commitment], [realm+vaultId+snapshotId+snapshotRevision+recordKindCode+recordId+commitment]",
+      encryptedWalletBackupManifestPassAResults:
+        "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision]",
+      encryptedWalletBackupManifestCursors:
+        "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision]",
+      encryptedWalletBackupManifestPages:
+        "&[realm+vaultId+snapshotId+snapshotRevision+pageIndex], &[realm+vaultId+generation+objectId+digest], [realm+vaultId+snapshotId+snapshotRevision+pageIndex+objectId]",
+      encryptedWalletBackupUploadAttempts: "&attemptId, &[realm+vaultId]",
+      encryptedWalletBackupUploadCursors: "&attemptId",
+      encryptedWalletBackupUploadBatches: "&batchId, attemptId",
+      encryptedWalletBackupUploadCasAttempts: "&attemptId, &uploadAttemptId",
     });
   }
 }

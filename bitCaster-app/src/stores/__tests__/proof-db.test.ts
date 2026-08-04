@@ -100,7 +100,9 @@ vi.mock("dexie", () => {
           for (const name of Object.keys(schema)) {
             if (!self[name]) self[name] = new FakeTable();
           }
-          return self;
+          return {
+            upgrade: (_callback: unknown) => undefined,
+          };
         },
       };
     }

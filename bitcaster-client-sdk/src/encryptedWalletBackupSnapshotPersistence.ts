@@ -317,6 +317,19 @@ export function encodeEncryptedWalletBackupFrozenSnapshotScope(
   return encodeScope(requireEncryptedWalletBackupFrozenSnapshotControl(control))
 }
 
+export function decodeEncryptedWalletBackupFrozenSnapshotScope(
+  value: Uint8Array,
+): Readonly<{ realm: string; vaultId: string; snapshotId: string; snapshotRevision: number }> {
+  const raw = canonicalArray(value, 'backup snapshot scope')
+  if (raw.length !== 5 || raw[0] !== 1) throw new Error('backup snapshot scope is invalid')
+  return Object.freeze({
+    realm: requireRealm(raw[1]),
+    vaultId: fingerprint(raw[2], 'snapshot scope vault'),
+    snapshotId: requireUtf8Text(raw[3], 128, 'snapshot scope id'),
+    snapshotRevision: integer(raw[4], 'snapshot scope revision'),
+  })
+}
+
 function requireAuthenticatedControl(
   authority: ReturnType<typeof requireEncryptedWalletBackupFrozenSnapshotControl>,
   value: PersistedEncryptedWalletBackupFrozenSnapshot,
@@ -365,7 +378,7 @@ function pinRow(
   authority: ReturnType<typeof requireEncryptedWalletBackupFrozenSnapshotControl>,
   sourceDescriptor: Uint8Array,
 ): PersistedEncryptedWalletBackupSnapshotPin {
-  const source = decodeSource(sourceDescriptor)
+  const source = decodeEncryptedWalletBackupPreparedSourceDescriptor(sourceDescriptor)
   if (source.realm !== authority.realm || source.vaultId !== authority.vaultId) {
     throw new Error('backup snapshot source belongs to a foreign scope')
   }
@@ -618,6 +631,35 @@ export function encodeEncryptedWalletBackupSnapshotPin(
   return encodePin(value)
 }
 
+/** Encodes the canonical database ordering key for one snapshot pin. */
+export function encodeEncryptedWalletBackupSnapshotPinOrderKey(
+  value: PersistedEncryptedWalletBackupSnapshotPin,
+): Uint8Array {
+  const pin = requirePin(value)
+  return encodeCanonical([pin.recordKindCode, hexBytes(pin.recordId), hexBytes(pin.commitment)])
+}
+
+/** Decodes a canonical database ordering key without accepting loose CBOR. */
+export function decodeEncryptedWalletBackupSnapshotPinOrderKey(
+  value: Uint8Array,
+): Readonly<{ recordKindCode: 0; recordId: string; commitment: string }> {
+  const raw = canonicalArray(value, 'backup snapshot pin order key')
+  if (raw.length !== 3 || raw[0] !== 0) throw new Error('backup snapshot pin order key is invalid')
+  const decoded = Object.freeze({
+    recordKindCode: 0 as const,
+    recordId: fingerprint(raw[1], 'pin order record'),
+    commitment: fingerprint(raw[2], 'pin order commitment'),
+  })
+  if (
+    !equalBytes(
+      value,
+      encodeCanonical([0, hexBytes(decoded.recordId), hexBytes(decoded.commitment)]),
+    )
+  )
+    throw new Error('backup snapshot pin order key is invalid')
+  return decoded
+}
+
 export function validateEncryptedWalletBackupSnapshotSourcePinBinding(
   input: Readonly<{
     readonly sourceDescriptor: Uint8Array
@@ -658,8 +700,6 @@ export function validateEncryptedWalletBackupSnapshotSourcePinBinding(
     }),
   })
 }
-
-const decodeSource = decodeEncryptedWalletBackupPreparedSourceDescriptor
 
 function requireControl(
   value: PersistedEncryptedWalletBackupFrozenSnapshot,

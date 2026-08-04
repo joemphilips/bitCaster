@@ -64,9 +64,14 @@ import { ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX } from './encryptedWalletBacku
 import { requireEncryptedWalletBackupObjectAad } from './encryptedWalletBackupObjectAad.ts'
 import { encryptedWalletBackupObjectDigest } from './encryptedWalletBackupObjectDigest.ts'
 import { measureEncryptedWalletBackupObjectPutPayload } from './encryptedWalletBackupObjectPutSize.ts'
+import {
+  createEncryptedWalletBackupCoordinatorStoreInternal,
+  type EncryptedWalletBackupCoordinatorPersistencePort,
+} from './encryptedWalletBackupCoordinatorPersistence.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX = 16 as const
-export const ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX = 4 * 1_024 * 1_024
+/** Leave control-row space inside the strict 1 MiB persisted batch transaction. */
+export const ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX = 1_000_000 as const
 export const ENCRYPTED_WALLET_BACKUP_CYCLE_PARALLEL_MAX = 4 as const
 export const ENCRYPTED_WALLET_BACKUP_CYCLE_REPACK_MAX = 4 as const
 export const ENCRYPTED_WALLET_BACKUP_ATTEMPT_BATCH_MAX = 64 as const
@@ -78,7 +83,7 @@ export const ENCRYPTED_WALLET_BACKUP_UPLOAD_ATTEMPT_CURSOR_WRITE_ROWS_MAX = 2 as
 export const ENCRYPTED_WALLET_BACKUP_UPLOAD_ATTEMPT_CURSOR_BYTES_MAX = 1_048_576 as const
 export const ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_READ_ROWS_MAX = 3 as const
 export const ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_WRITE_ROWS_MAX = 3 as const
-export const ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX = 5_242_880 as const
+export const ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX = 1_048_576 as const
 
 export interface EncryptedWalletBackupUploadItemRecord {
   readonly objectId: string
@@ -111,11 +116,84 @@ export interface EncryptedWalletBackupUploadBatchRecord {
     | 'abandoned'
 }
 
+/** Measures the canonical data that one persisted sealed upload batch retains. */
+export function measureEncryptedWalletBackupUploadBatchRecordBytes(
+  value: EncryptedWalletBackupUploadBatchRecord,
+): number {
+  return encodeCanonical([
+    1,
+    'encrypted-wallet-backup-upload-batch',
+    value.schemaVersion,
+    value.batchId,
+    value.attemptId,
+    value.targetManifestDigest,
+    value.canonicalTargetHead,
+    value.canonicalTargetReferenceSet,
+    value.canonicalInheritedReferenceSet,
+    value.localSnapshotId,
+    value.localSnapshotRevision,
+    value.repackedChunkCount,
+    value.uploadedBytes,
+    value.executionEpoch,
+    value.executionLeaseExpiresAtUnixMilliseconds,
+    value.items.map((item) => [
+      item.objectId,
+      item.objectDigest,
+      item.payloadLength,
+      item.canonicalPutPayload,
+    ]),
+    value.state,
+  ]).byteLength
+}
+
+/** Measures one complete coordinator persistence row in canonical CBOR. */
+export function measureEncryptedWalletBackupCoordinatorPersistenceRowBytes(value: unknown): number {
+  try {
+    requireMeasurableCoordinatorRowValue(value, new Set())
+    const measured = encodeCanonical(value).byteLength
+    if (!Number.isSafeInteger(measured) || measured < 0)
+      throw new Error('backup upload coordinator row size is invalid')
+    return measured
+  } catch {
+    throw new Error('backup upload coordinator row is not measurable')
+  }
+}
+
+function requireMeasurableCoordinatorRowValue(value: unknown, parents: Set<object>): void {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new Error('backup upload coordinator number is invalid')
+    return
+  }
+  if (value instanceof Uint8Array) return
+  if (Array.isArray(value)) {
+    if (parents.has(value)) throw new Error('backup upload coordinator row is cyclic')
+    parents.add(value)
+    try {
+      for (const item of value) requireMeasurableCoordinatorRowValue(item, parents)
+    } finally {
+      parents.delete(value)
+    }
+    return
+  }
+  if (typeof value !== 'object' || value === undefined)
+    throw new Error('backup upload coordinator row value is invalid')
+  if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
+    throw new Error('backup upload coordinator row object is invalid')
+  if (parents.has(value)) throw new Error('backup upload coordinator row is cyclic')
+  parents.add(value)
+  try {
+    for (const entry of Object.values(value)) requireMeasurableCoordinatorRowValue(entry, parents)
+  } finally {
+    parents.delete(value)
+  }
+}
+
 export interface EncryptedWalletBackupUploadBatchStore {
   /**
    * Every mutation method is one database transaction. The adapter must invoke
-   * its callback synchronously exactly once, return that exact callback value,
-   * and roll back all writes when the callback throws or rejects its result.
+   * its callback once before its Promise settles, return that exact callback
+   * value, and roll back all writes when the callback throws or rejects it.
    */
   validateUploadAttemptClaim<T>(
     claim: EncryptedWalletBackupActiveUploadAttemptRecord,
@@ -232,8 +310,8 @@ export type EncryptedWalletBackupBoundedUploadBatchCommit = Readonly<{
 export type EncryptedWalletBackupUploadBatchReservation = Readonly<{
   readonly readRows: 3
   readonly writeRows: 3
-  readonly readBytes: 5_242_880
-  readonly writeBytes: 5_242_880
+  readonly readBytes: 1_048_576
+  readonly writeBytes: 1_048_576
 }>
 
 /** Reads one persisted immutable object. It must not materialize target state. */
@@ -267,8 +345,8 @@ export interface EncryptedWalletBackupUploadAttemptCursorStore extends Encrypted
   /**
    * Use one physical transaction. Insert both rows or read both exact rows.
    * Permit an exact retry only. Reject another active attempt in this scope.
-   * Invoke the callback synchronously once. Return its exact value. Roll back
-   * both rows when the callback fails.
+   * Invoke the callback once before settlement. Return its exact value. Roll
+   * back both rows when the callback fails.
    */
   sealActiveUploadAttemptAndCursor<T>(
     input: Readonly<{
@@ -430,6 +508,26 @@ export interface EncryptedWalletBackupCoordinatorStore extends EncryptedWalletBa
       }>,
     ) => T,
   ): Promise<T>
+}
+
+/** Creates the SDK-owned upload coordinator over storage-only transactions. */
+export function createEncryptedWalletBackupCoordinatorStore(
+  port: EncryptedWalletBackupCoordinatorPersistencePort,
+): EncryptedWalletBackupUploadAttemptCursorStore & EncryptedWalletBackupCoordinatorStore {
+  return createEncryptedWalletBackupCoordinatorStoreInternal(port, {
+    decodeActiveUploadAttemptRecord,
+    decodeCoordinatorCasRecord,
+    decodeExactLinkedCasAttempt,
+    decodeUploadBatchRecord,
+    equalActiveUploadAttempt,
+    equalCoordinatorCasIdentity,
+    equalCoordinatorCasRecord,
+    equalUploadBatch,
+    freezeUploadBatch,
+    validateAggregatePartition,
+    validateFinalizedTargetDelta,
+    validateUploadBatchTransition,
+  })
 }
 
 export interface EncryptedWalletBackupUploadAttemptClaim {
@@ -1220,7 +1318,6 @@ export async function sealBoundedEncryptedWalletBackupUploadAttempt(input: {
         return issued
       },
     )
-    open = false
     if (!isThenable(transaction))
       throw new Error('bounded upload attempt seal must return a transaction promise')
     returned = await transaction
@@ -1228,7 +1325,9 @@ export async function sealBoundedEncryptedWalletBackupUploadAttempt(input: {
     open = false
   }
   if (issued === undefined || returned !== issued || calls !== 1)
-    throw new Error('bounded upload attempt seal must be synchronous and exact')
+    throw new Error(
+      'bounded upload attempt seal must run once before settlement and return exactly',
+    )
   return issued
 }
 
@@ -1277,7 +1376,6 @@ export async function claimBoundedEncryptedWalletBackupUploadAttempt(input: {
         return issued
       },
     )
-    open = false
     if (!isThenable(transaction))
       throw new Error('bounded upload attempt claim must return a transaction promise')
     returned = await transaction
@@ -1285,7 +1383,9 @@ export async function claimBoundedEncryptedWalletBackupUploadAttempt(input: {
     open = false
   }
   if (issued === undefined || returned !== issued || calls !== 1)
-    throw new Error('bounded upload attempt claim must be synchronous and exact')
+    throw new Error(
+      'bounded upload attempt claim must run once before settlement and return exactly',
+    )
   return issued
 }
 
@@ -1315,7 +1415,8 @@ export async function planAndSealBoundedEncryptedWalletBackupUploadBatch(input: 
     keyHandle: input.keyHandle,
     target,
     references,
-    attemptId: claim.record.attemptId,
+    attempt: claim.record,
+    cursor,
   })
   const nextCursor = advanceBoundedUploadCursor(cursor, target, inherited, selected)
   const batch = boundedUploadBatchRecord(claim.record, cursor, selected)
@@ -1356,7 +1457,6 @@ export async function planAndSealBoundedEncryptedWalletBackupUploadBatch(input: 
         return issued
       },
     )
-    open = false
     if (!isThenable(transaction))
       throw new Error('bounded upload batch must return a transaction promise')
     returned = await transaction
@@ -1364,7 +1464,7 @@ export async function planAndSealBoundedEncryptedWalletBackupUploadBatch(input: 
     open = false
   }
   if (issued === undefined || returned !== issued || calls !== 1)
-    throw new Error('bounded upload batch must be synchronous and exact')
+    throw new Error('bounded upload batch must run once before settlement and return exactly')
   if (committedAttemptAuthority === undefined)
     throw new Error('bounded upload batch omitted attempt authority')
   UPLOAD_ATTEMPT_CLAIMS.set(input.claim, {
@@ -1403,7 +1503,7 @@ export async function rehydrateEncryptedWalletBackupUploadBatch(input: {
     callbackOpen = false
   }
   if (isThenable(returned) || issued === undefined || returned !== issued || callbackCalls !== 1) {
-    throw new Error('backup upload read must be synchronous and exact')
+    throw new Error('backup upload read must run once before settlement and return exactly')
   }
   return issued as SealedEncryptedWalletBackupUploadBatch
 }
@@ -1797,7 +1897,7 @@ export async function sealOrRehydrateEncryptedWalletBackupCasAttempt(input: {
     open = false
   }
   if (isThenable(returned) || issued === undefined || returned !== issued || calls !== 1) {
-    throw new Error('backup CAS handoff must be synchronous and exact')
+    throw new Error('backup CAS handoff must run once before settlement and return exactly')
   }
   if (committedAttempt === undefined)
     throw new Error('backup CAS handoff did not commit aggregate authority')
@@ -2024,7 +2124,7 @@ export async function cleanUpRejectedEncryptedWalletBackupFork(input: {
     open = false
   }
   if (isThenable(returned) || committed === undefined || returned !== committed || calls !== 1) {
-    throw new Error('backup fork cleanup must be synchronous and exact')
+    throw new Error('backup fork cleanup must run once before settlement and return exactly')
   }
   UPLOAD_ATTEMPT_CLAIMS.set(input.claim, {
     keyHandle: input.keyHandle,
@@ -2063,7 +2163,7 @@ async function readCurrentForkCleanupCasAttempt(
     open = false
   }
   if (isThenable(returned) || committed === undefined || returned !== committed || calls !== 1) {
-    throw new Error('backup fork cleanup read must be synchronous and exact')
+    throw new Error('backup fork cleanup read must run once before settlement and return exactly')
   }
   return committed
 }
@@ -2107,7 +2207,7 @@ async function persistAttemptAbortState(
     open = false
   }
   if (isThenable(returned) || committed === undefined || returned !== committed || calls !== 1)
-    throw new Error('backup abort aggregate must be synchronous and exact')
+    throw new Error('backup abort aggregate must run once before settlement and return exactly')
   return committed
 }
 
@@ -2534,7 +2634,7 @@ function bindCoordinatorCasStore(
         returned !== callbackValue ||
         calls !== 1
       ) {
-        throw new Error('linked CAS read must be synchronous and exact')
+        throw new Error('linked CAS read must run once before settlement and return exactly')
       }
       return callbackValue
     },
@@ -2606,7 +2706,7 @@ function bindCoordinatorCasStore(
         calls !== 1 ||
         committedAggregate === undefined
       ) {
-        throw new Error('linked CAS transition must be synchronous and exact')
+        throw new Error('linked CAS transition must run once before settlement and return exactly')
       }
       commitAggregate(committedAggregate)
       return callbackValue
@@ -2649,7 +2749,7 @@ function bindCoordinatorCasStore(
         calls !== 1 ||
         committedAggregate === undefined
       ) {
-        throw new Error('linked CAS exhaustion must be synchronous and exact')
+        throw new Error('linked CAS exhaustion must run once before settlement and return exactly')
       }
       commitAggregate(committedAggregate)
       return callbackValue
@@ -2700,7 +2800,7 @@ function bindCoordinatorCasStore(
         calls !== 1 ||
         committedAggregate === undefined
       ) {
-        throw new Error('linked CAS resume must be synchronous and exact')
+        throw new Error('linked CAS resume must run once before settlement and return exactly')
       }
       commitAggregate(committedAggregate)
       return { state: 'committed', value: callbackValue }
@@ -3223,7 +3323,7 @@ function decodeUploadBatchRecord(value: unknown): EncryptedWalletBackupUploadBat
   ) {
     throw new Error('backup upload execution history is invalid')
   }
-  return freezeUploadBatch({
+  const batch = freezeUploadBatch({
     schemaVersion: 1,
     batchId: requireLowerHex(raw.batchId, 16, 'backup upload batch id'),
     attemptId,
@@ -3250,6 +3350,12 @@ function decodeUploadBatchRecord(value: unknown): EncryptedWalletBackupUploadBat
     items,
     state,
   })
+  if (
+    measureEncryptedWalletBackupUploadBatchRecordBytes(batch) >
+    ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX
+  )
+    throw new Error('backup upload batch exceeds the persisted transaction byte limit')
+  return batch
 }
 
 function decodeActiveUploadAttemptRecord(
@@ -3603,7 +3709,7 @@ async function validateCurrentUploadAttemptClaim(
     open = false
   }
   if (isThenable(returned) || marker === undefined || returned !== marker || calls !== 1)
-    throw new Error('upload claim validation must be synchronous and exact')
+    throw new Error('upload claim validation must run once before settlement and return exactly')
 }
 
 type UploadAttemptCandidate = Omit<
@@ -3814,7 +3920,8 @@ async function readBoundedUploadBatchObjects(input: {
   readonly keyHandle: EncryptedWalletBackupKeyHandle
   readonly target: ReturnType<typeof validateTargetHead>
   readonly references: readonly BoundedUploadReference[]
-  readonly attemptId: string
+  readonly attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+  readonly cursor: PersistedEncryptedWalletBackupUploadCursor
 }): Promise<readonly BoundedUploadSelection[]> {
   const selected: BoundedUploadSelection[] = []
   let bytes = 0
@@ -3824,24 +3931,62 @@ async function readBoundedUploadBatchObjects(input: {
     if (reference.kindCode === 1 && chunks === ENCRYPTED_WALLET_BACKUP_CYCLE_REPACK_MAX) break
     const maximumPayloadBytes = maximumBoundedCanonicalPutBytes(input, reference)
     if (bytes + maximumPayloadBytes > ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX) break
+    if (!fitsConservativePersistedBatch(input, selected, reference, maximumPayloadBytes)) break
     const object = await readBoundedUploadObject(input, reference)
-    const payload = canonicalBoundedPutPayload(input.attemptId, object)
-    selected.push(
-      Object.freeze({
-        reference,
-        item: Object.freeze({
-          objectId: reference.objectId,
-          objectDigest: reference.digest,
-          payloadLength: payload.byteLength,
-          canonicalPutPayload: payload,
-        }),
+    const payload = canonicalBoundedPutPayload(input.attempt.attemptId, object)
+    const candidate = Object.freeze({
+      reference,
+      item: Object.freeze({
+        objectId: reference.objectId,
+        objectDigest: reference.digest,
+        payloadLength: payload.byteLength,
+        canonicalPutPayload: payload,
       }),
+    })
+    if (
+      measureEncryptedWalletBackupUploadBatchRecordBytes(
+        boundedUploadBatchRecord(input.attempt, input.cursor, [...selected, candidate]),
+      ) > ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX
     )
+      throw new Error('bounded upload object exceeds its persisted batch reservation')
+    selected.push(candidate)
     bytes += payload.byteLength
     if (reference.kindCode === 1) chunks += 1
   }
   if (selected.length === 0) throw new Error('bounded upload object cannot fit a cycle')
   return Object.freeze(selected)
+}
+
+/** Bounds one candidate without allocating a maximum-size payload body. */
+function fitsConservativePersistedBatch(
+  input: Parameters<typeof readBoundedUploadBatchObjects>[0],
+  selected: readonly BoundedUploadSelection[],
+  reference: BoundedUploadReference,
+  maximumPayloadBytes: number,
+): boolean {
+  const candidate = Object.freeze({
+    reference,
+    item: Object.freeze({
+      objectId: reference.objectId,
+      objectDigest: reference.digest,
+      payloadLength: maximumPayloadBytes,
+      canonicalPutPayload: new Uint8Array(),
+    }),
+  })
+  const baseline = measureEncryptedWalletBackupUploadBatchRecordBytes(
+    boundedUploadBatchRecord(input.attempt, input.cursor, [...selected, candidate]),
+  )
+  const measured =
+    baseline - canonicalByteStringBytes(0) + canonicalByteStringBytes(maximumPayloadBytes)
+  return measured <= ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX
+}
+
+function canonicalByteStringBytes(length: number): number {
+  if (length < 24) return length + 1
+  if (length <= 0xff) return length + 2
+  if (length <= 0xffff) return length + 3
+  if (length <= 0xffffffff) return length + 5
+  throw new Error('bounded upload payload length is invalid')
 }
 
 async function readBoundedUploadObject(
@@ -4165,7 +4310,9 @@ async function claimUploadBatchExecution(
     callbackOpen = false
   }
   if (isThenable(returned) || issued === undefined || returned !== issued || callbackCalls !== 1) {
-    throw new Error('backup upload execution claim must be synchronous and exact')
+    throw new Error(
+      'backup upload execution claim must run once before settlement and return exactly',
+    )
   }
   return issued
 }
@@ -4204,7 +4351,9 @@ async function validateCurrentUploadBatchExecution(
     open = false
   }
   if (isThenable(returned) || marker === undefined || returned !== marker || calls !== 1) {
-    throw new Error('upload execution validation must be synchronous and exact')
+    throw new Error(
+      'upload execution validation must run once before settlement and return exactly',
+    )
   }
 }
 
@@ -4249,7 +4398,7 @@ async function transitionUploadBatch(
     callbackOpen = false
   }
   if (isThenable(returned) || issued === undefined || returned !== issued || callbackCalls !== 1) {
-    throw new Error('backup upload transition must be synchronous and exact')
+    throw new Error('backup upload transition must run once before settlement and return exactly')
   }
   if (committedAttemptAuthority === undefined)
     throw new Error('backup upload transition omitted aggregate authority')
