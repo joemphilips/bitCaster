@@ -36,6 +36,7 @@ import {
 } from '../src/durableCustody.ts'
 import { encodeCanonicalBackupCbor as encodeCanonical } from '../src/encryptedWalletBackupCbor.ts'
 import { issueBoundedManifestTargetCapabilityForTest } from '../src/encryptedWalletBackupManifestTargetAuthority.ts'
+import { validatePreparedEncryptedWalletBackupRecord } from '../src/encryptedWalletBackupPreparedRecordValidation.ts'
 import {
   finalManifestEntryBytes,
   issueEncryptedWalletBackupManifestEntryCapability,
@@ -63,6 +64,7 @@ const vector = JSON.parse(
       unit: string
       keysetId: string
       amount: string
+      counter: number
       signatureHex: string
       dleq: { e: string; s: string; r: string }
       createdAtUnixSeconds: number
@@ -89,7 +91,7 @@ test('50k ordinary proofs plus four CTF proofs in 1k markets fit the 64 MiB life
     const record = structuredClone(template)
     record[0] = proofId
     record[1] = commitment
-    record[9] = index
+    bindSyntheticNut13Locator(record, index)
     if (ctfIndex >= 0) {
       const marketIndex = Math.floor(ctfIndex / 4)
       const outcomeIndex = ctfIndex % 4
@@ -202,19 +204,63 @@ test('50k ordinary proofs plus four CTF proofs in 1k markets fit the 64 MiB life
       lifecyclePeakBytes,
     },
     {
-      chunks: 107,
+      chunks: 108,
       pages: 142,
-      currentObjects: 249,
-      replacementObjects: 253,
-      referenceSetBytes: 12_968,
-      currentStoredBytes: 37_362_492,
-      lifecyclePeakBytes: 47_721_268,
+      currentObjects: 250,
+      replacementObjects: 254,
+      referenceSetBytes: 13_020,
+      currentStoredBytes: 37_624_664,
+      lifecyclePeakBytes: 47_983_440,
     },
   )
   assert.ok(currentObjects <= ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX)
   assert.ok(replacementObjects <= ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX)
   assert.ok(referenceSetBytes <= ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES)
   assert.ok(lifecyclePeakBytes <= 64 * 1_024 * 1_024)
+})
+
+test('production prepared-record decoder accepts ordinary and CTF NUT-13 record shapes', async () => {
+  const seed = fromHex(vector.inputs.seedHex)
+  const keyHandle = await createEncryptedWalletBackupKeyHandle({
+    seed,
+    realm: 'capacity-record-decoder',
+  })
+  const root = decode(fromHex(vector.expected.canonicalCborHex)) as unknown[]
+  const template = structuredClone((root[2] as unknown[][])[0]!)
+  const ordinary = representativeCapacityRecord(template, vector.inputs.proof.counter, null)
+  const ctf = representativeCapacityRecord(template, vector.inputs.proof.counter, [
+    indexedBytes(71_001, 32),
+    'OUTCOME-0',
+    indexedBytes(71_002, 32),
+    1_700_000_000,
+    1_800_000_000,
+    null,
+  ])
+
+  for (const record of [ordinary, ctf]) {
+    const canonicalRecord = encodeCanonical(record)
+    const canonicalManifestEntry = encodeCanonical([
+      0,
+      record[0],
+      record[1],
+      record[2],
+      record[3],
+      record[5],
+      record[10],
+      record[11],
+      record[12],
+      record[13],
+    ])
+    const decoded = validatePreparedEncryptedWalletBackupRecord({
+      keyHandle,
+      seed,
+      canonicalRecord,
+      canonicalManifestEntry,
+    })
+    assert.equal(decoded.recordId, bytesToHex(record[0] as Uint8Array))
+    assert.equal(decoded.commitment, bytesToHex(record[1] as Uint8Array))
+    assert.equal(decoded.recordKindCode, 0)
+  }
 })
 
 test('real prepared 255-chunk plus 3-page target fits below the stored-byte quota', async () => {
@@ -239,6 +285,12 @@ test('real prepared 255-chunk plus 3-page target fits below the stored-byte quot
   const preparedProofs: Awaited<ReturnType<typeof prepareEncryptedWalletBackupProof>>[] = []
   for (let counter = 0; counter < 1_537; counter += 1) {
     const secret = bytesToHex(derive(counter).secret)
+    const derivationLocator = Object.freeze({
+      schemaVersion: 1 as const,
+      kind: 'nut13' as const,
+      keysetId: proof.keysetId,
+      counter,
+    })
     const proofId = deriveDurableCustodyProofId({
       scopeId,
       normalizedMint: proof.mint,
@@ -272,7 +324,7 @@ test('real prepared 255-chunk plus 3-page target fits below the stored-byte quot
         replayTombstone: 'absent' as const,
         dependentWork: 'absent' as const,
       },
-      derivationLocator: 'committed' as const,
+      derivationLocator,
     })
     preparedProofs.push(
       await prepareEncryptedWalletBackupProof({
@@ -280,6 +332,7 @@ test('real prepared 255-chunk plus 3-page target fits below the stored-byte quot
         seed,
         mint: proof.mint,
         unit: proof.unit,
+        derivationLocator,
         counter,
         proof: {
           id: proof.keysetId,
@@ -430,6 +483,12 @@ test('real child replacement peak accepts 127 chunks and rejects 128 chunks', as
   const preparedProofs: Awaited<ReturnType<typeof prepareEncryptedWalletBackupProof>>[] = []
   for (let counter = 0; counter < 128; counter += 1) {
     const secret = bytesToHex(derive(counter).secret)
+    const derivationLocator = Object.freeze({
+      schemaVersion: 1 as const,
+      kind: 'nut13' as const,
+      keysetId: proof.keysetId,
+      counter,
+    })
     const proofId = deriveDurableCustodyProofId({
       scopeId,
       normalizedMint: proof.mint,
@@ -459,7 +518,7 @@ test('real child replacement peak accepts 127 chunks and rejects 128 chunks', as
         replayTombstone: 'absent' as const,
         dependentWork: 'absent' as const,
       },
-      derivationLocator: 'committed' as const,
+      derivationLocator,
     })
     preparedProofs.push(
       await prepareEncryptedWalletBackupProof({
@@ -467,6 +526,7 @@ test('real child replacement peak accepts 127 chunks and rejects 128 chunks', as
         seed,
         mint: proof.mint,
         unit: proof.unit,
+        derivationLocator,
         counter,
         proof: {
           id: proof.keysetId,
@@ -842,7 +902,7 @@ function capacityProofCommitment(input: {
           hexToBytes(input.proof.dleq.s),
           hexToBytes(input.proof.dleq.r),
         ],
-        input.counter,
+        [1, 0, input.proof.keysetId, input.counter],
         0,
         null,
         input.proof.createdAtUnixSeconds,
@@ -850,6 +910,44 @@ function capacityProofCommitment(input: {
       ]),
     ),
   )
+}
+
+function bindSyntheticNut13Locator(record: unknown[], counter: number): void {
+  const keyset = record[4]
+  if (!Array.isArray(keyset) || typeof keyset[1] !== 'string') {
+    throw new Error('capacity record keyset is invalid')
+  }
+  record[9] = [1, 0, keyset[1], counter]
+}
+
+function representativeCapacityRecord(
+  template: unknown[],
+  counter: number,
+  ctf: readonly unknown[] | null,
+): unknown[] {
+  const record = structuredClone(template)
+  bindSyntheticNut13Locator(record, counter)
+  record[10] = ctf === null ? 0 : 1
+  record[11] = ctf
+  record[1] = sha256(
+    encodeCanonical([
+      1,
+      'proof-record-commitment',
+      record[2],
+      record[3],
+      record[4],
+      record[5],
+      record[6],
+      record[7],
+      record[8],
+      record[9],
+      record[10],
+      record[11],
+      record[12],
+      record[13],
+    ]),
+  )
+  return record
 }
 
 function deterministicCapacityRuntime(values: readonly Uint8Array[]): EncryptedWalletBackupRuntime {

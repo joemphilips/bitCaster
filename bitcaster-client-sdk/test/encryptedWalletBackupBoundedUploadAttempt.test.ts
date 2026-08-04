@@ -2,17 +2,29 @@ import assert from 'node:assert/strict'
 import { webcrypto } from 'node:crypto'
 import { test } from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
+import * as Cashu from '@cashu/cashu-ts'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { decode } from 'cborg'
 import {
   createEncryptedWalletBackupKeyHandle,
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES,
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_PROOF_CBOR_MAX_BYTES,
+  ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX,
   prepareBoundedEncryptedWalletBackupManifestTarget,
   prepareEncryptedWalletBackupRequestProof,
   readAuthenticatedEncryptedWalletBackupHead,
   type EncryptedWalletBackupKeyHandle,
   type PreparedEncryptedWalletBackupManifestTarget,
 } from '../src/encryptedWalletBackup.ts'
+import {
+  deriveDurableCustodyProofId,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from '../src/durableCustody.ts'
 import { issueBoundedManifestTargetCapabilityForTest } from '../src/encryptedWalletBackupManifestTargetAuthority.ts'
+import { validatePreparedEncryptedWalletBackupRecord } from '../src/encryptedWalletBackupPreparedRecordValidation.ts'
 import {
   ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX,
   ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX,
@@ -870,11 +882,10 @@ test('a bounded upload cycle sends four PUTs concurrently and never five', async
   assertBoundedUploadCycleCallShape(store, { combinedAttemptBatchValidation: 4, total: 11 })
 })
 
-test('fixed 54,000-proof workload executes 249 current objects in 45 bounded cycles', async () => {
+test('fixed 54,000-proof workload executes 250 current objects in 46 bounded cycles', async () => {
   const pageCount = 142
-  const chunkCount = 107
+  const chunkCount = 108
   const objectCount = pageCount + chunkCount
-  const batchCount = 45
   const fixture = await boundedTargetFixture(false, {
     pageCount,
     chunkCount,
@@ -888,16 +899,20 @@ test('fixed 54,000-proof workload executes 249 current objects in 45 bounded cyc
     sourceObjectIds.add(input.objectId)
   })
 
-  for (let cycleIndex = 0; cycleIndex < batchCount; cycleIndex += 1) {
-    const result = await runBoundedUploadCycleForTest({
+  let batchCount = 0
+  let result: Awaited<ReturnType<typeof runBoundedUploadCycleForTest>>
+  do {
+    result = await runBoundedUploadCycleForTest({
       fixture,
       store,
-      initialAttempt: cycleIndex === 0 ? undefined : null,
+      initialAttempt: batchCount === 0 ? undefined : null,
       source,
     })
-    assert.equal(result.state, cycleIndex === batchCount - 1 ? 'cas-sealed' : 'upload-pending')
-  }
+    batchCount += 1
+  } while (result.state === 'upload-pending' && batchCount < 64)
 
+  assert.equal(result.state, 'cas-sealed')
+  assert.equal(batchCount, 46)
   assert.equal(sourceReads, objectCount)
   assert.equal(sourceObjectIds.size, objectCount)
   assert.equal(store.batches.size, batchCount)
@@ -924,31 +939,39 @@ test('fixed 54,000-proof workload executes 249 current objects in 45 bounded cyc
     true,
   )
   assert.deepEqual(store.methodCalls, {
-    pairedAttemptClaim: 45,
+    pairedAttemptClaim: 46,
     pairedAttemptSeal: 1,
-    batchCursorSeal: 45,
-    initialAttemptValidation: 45,
+    batchCursorSeal: 46,
+    initialAttemptValidation: 46,
     activeBatchRead: 0,
-    executionClaim: 45,
-    combinedAttemptBatchValidation: 249,
-    acknowledgementTransition: 45,
+    executionClaim: 46,
+    combinedAttemptBatchValidation: 250,
+    acknowledgementTransition: 46,
     casSeal: 1,
   })
   assert.equal(
     Object.values(store.methodCalls).reduce((total, calls) => total + calls, 0),
-    476,
+    482,
   )
 })
 
 test('derived 3,000-CTF-proof capacity fixture stays within bounded upload capacity', async () => {
-  const fixture = await boundedTargetFixture(false, {
-    pageCount: 15,
-    chunkCount: 7,
+  await validateStreamingCtfRepresentative()
+  const capacity = streamingCtfCapacityFixture()
+  assert.deepEqual(capacity, {
+    conditionCount: 100,
     proofCount: 3_000,
+    pageCount: 12,
+    chunkCount: 7,
+  })
+  const fixture = await boundedTargetFixture(false, {
+    pageCount: capacity.pageCount,
+    chunkCount: capacity.chunkCount,
+    proofCount: capacity.proofCount,
   })
   const head = decode(fixture.target.wire.canonicalHead) as unknown[]
-  assert.equal(head[11], 2_818_664)
-  assert.equal(15 + 7, 22)
+  assert.equal(head[11], 2_621_972)
+  assert.equal(fixture.target.head.objectCount, capacity.pageCount + capacity.chunkCount)
   const store = new AtomicAttemptCursorStore()
   let cycles = 0
   let result: Awaited<ReturnType<typeof runBoundedUploadCycleForTest>>
@@ -961,7 +984,22 @@ test('derived 3,000-CTF-proof capacity fixture stays within bounded upload capac
     cycles += 1
   } while (result.state === 'upload-pending' && cycles < 64)
   assert.equal(result.state, 'cas-sealed')
-  assert.ok(cycles <= 64)
+  assert.equal(cycles, 4)
+  assert.deepEqual(store.methodCalls, {
+    pairedAttemptClaim: 4,
+    pairedAttemptSeal: 1,
+    batchCursorSeal: 4,
+    initialAttemptValidation: 4,
+    activeBatchRead: 0,
+    executionClaim: 4,
+    combinedAttemptBatchValidation: 19,
+    acknowledgementTransition: 4,
+    casSeal: 1,
+  })
+  assert.equal(
+    Object.values(store.methodCalls).reduce((total, calls) => total + calls, 0),
+    41,
+  )
 })
 
 test('bounded upload attempt rejects incomplete, changed, foreign, and malformed atomic callbacks', async (t) => {
@@ -1769,4 +1807,201 @@ async function boundedTargetFixture(
     }),
   })
   return { keyHandle, target }
+}
+
+const STREAMING_CTF_KEYSET_ID = `01${'11'.repeat(32)}`
+const STREAMING_CTF_SECRET = new TextEncoder().encode('a'.repeat(64))
+const STREAMING_CTF_SIGNATURE = new Uint8Array(33).fill(2)
+const STREAMING_CTF_DLEQ = [new Uint8Array(32), new Uint8Array(32), new Uint8Array(32)]
+
+type StreamingCapacityBucket = { completed: number; itemCount: number; itemBytes: number }
+
+function streamingCtfCapacityFixture(): Readonly<{
+  conditionCount: number
+  proofCount: number
+  pageCount: number
+  chunkCount: number
+}> {
+  const conditionCount = 100
+  const proofCount = 3_000
+  const proofsPerCondition = proofCount / conditionCount
+  const chunks: StreamingCapacityBucket = { completed: 0, itemCount: 0, itemBytes: 0 }
+  const pages: StreamingCapacityBucket = { completed: 0, itemCount: 0, itemBytes: 0 }
+  for (let index = 0; index < proofCount; index += 1) {
+    const record = streamingCtfRecord({ index, proofsPerCondition })
+    appendStreamingProofRecord(chunks, encodeCanonicalBackupCbor(record).byteLength)
+    appendStreamingManifestEntry(
+      pages,
+      encodeCanonicalBackupCbor(streamingCtfManifestEntry(record, chunks.completed)).byteLength,
+    )
+  }
+  return Object.freeze({
+    conditionCount,
+    proofCount,
+    pageCount: pages.completed + 1,
+    chunkCount: chunks.completed + 1,
+  })
+}
+
+function appendStreamingProofRecord(bucket: StreamingCapacityBucket, recordBytes: number): void {
+  const count = bucket.itemCount + 1
+  const bytes = bucket.itemBytes + recordBytes
+  const total =
+    encodeCanonicalBackupCbor([1, 1, []]).byteLength - 1 + cborArrayHeaderBytes(count) + bytes
+  if (
+    count > ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX ||
+    total > ENCRYPTED_WALLET_BACKUP_PROOF_CBOR_MAX_BYTES
+  ) {
+    assert.ok(bucket.itemCount > 0)
+    bucket.completed += 1
+    bucket.itemCount = 1
+    bucket.itemBytes = recordBytes
+    return
+  }
+  bucket.itemCount = count
+  bucket.itemBytes = bytes
+}
+
+function appendStreamingManifestEntry(bucket: StreamingCapacityBucket, entryBytes: number): void {
+  const count = bucket.itemCount + 1
+  const bytes = bucket.itemBytes + entryBytes
+  const total =
+    streamingManifestPageFixedBytes(bucket.completed) + cborArrayHeaderBytes(count) + bytes
+  if (
+    count > ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX ||
+    total > ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES
+  ) {
+    assert.ok(bucket.itemCount > 0)
+    bucket.completed += 1
+    bucket.itemCount = 1
+    bucket.itemBytes = entryBytes
+    return
+  }
+  bucket.itemCount = count
+  bucket.itemBytes = bytes
+}
+
+function streamingCtfRecord(input: {
+  readonly index: number
+  readonly proofsPerCondition: number
+  readonly proofId?: Uint8Array
+  readonly commitment?: Uint8Array
+  readonly secret?: Uint8Array
+}): unknown[] {
+  const conditionIndex = Math.floor(input.index / input.proofsPerCondition)
+  return [
+    input.proofId ?? streamingCapacityBytes(input.index + 1, 32),
+    input.commitment ?? streamingCapacityBytes(input.index + 3_001, 32),
+    'https://mint.example.test',
+    'sat',
+    [2, STREAMING_CTF_KEYSET_ID],
+    '1',
+    input.secret ?? STREAMING_CTF_SECRET,
+    STREAMING_CTF_SIGNATURE,
+    STREAMING_CTF_DLEQ,
+    [1, 0, STREAMING_CTF_KEYSET_ID, input.index],
+    1,
+    [
+      streamingCapacityBytes(conditionIndex + 1, 32),
+      `OUTCOME-${input.index % 4}`,
+      streamingCapacityBytes(conditionIndex + 10_001, 32),
+      1_700_000_000,
+      1_800_000_000,
+      null,
+    ],
+    1_700_000_000,
+    1_700_000_001,
+  ]
+}
+
+async function validateStreamingCtfRepresentative(): Promise<void> {
+  const seed = new Uint8Array(64).fill(9)
+  const keyHandle = await createEncryptedWalletBackupKeyHandle({
+    seed,
+    realm: 'streaming-ctf-capacity',
+  })
+  const derive = (
+    Cashu as unknown as {
+      createSecretAndBlindingFactorDeriver(
+        seed: Uint8Array,
+        keyset: string,
+      ): (counter: number) => { secret: Uint8Array }
+    }
+  ).createSecretAndBlindingFactorDeriver(seed, STREAMING_CTF_KEYSET_ID)
+  const secret = bytesToHex(derive(0).secret)
+  const scopeId = deriveDurableCustodyScopeId({
+    scopeKind: 'wallet',
+    walletId: deriveDurableCustodyWalletId(seed),
+  })
+  const record = streamingCtfRecord({
+    index: 0,
+    proofsPerCondition: 30,
+    secret: new TextEncoder().encode(secret),
+    proofId: hexToBytes(
+      deriveDurableCustodyProofId({
+        scopeId,
+        normalizedMint: 'https://mint.example.test',
+        unit: 'sat',
+        keysetId: STREAMING_CTF_KEYSET_ID,
+        secret,
+      }),
+    ),
+  })
+  record[1] = sha256(encodeCanonicalBackupCbor([1, 'proof-record-commitment', ...record.slice(2)]))
+  const decoded = validatePreparedEncryptedWalletBackupRecord({
+    keyHandle,
+    seed,
+    canonicalRecord: encodeCanonicalBackupCbor(record),
+    canonicalManifestEntry: encodeCanonicalBackupCbor([
+      0,
+      record[0],
+      record[1],
+      record[2],
+      record[3],
+      record[5],
+      record[10],
+      record[11],
+      record[12],
+      record[13],
+    ]),
+  })
+  assert.equal(decoded.recordId, bytesToHex(record[0] as Uint8Array))
+}
+
+function streamingCtfManifestEntry(
+  record: readonly unknown[],
+  chunkIndex: number,
+): readonly unknown[] {
+  return [
+    record[0],
+    record[1],
+    streamingCapacityBytes(chunkIndex + 1, 16),
+    streamingCapacityBytes(chunkIndex + 10_001, 32),
+    record[2],
+    record[3],
+    record[5],
+    record[10],
+    record[11],
+    record[12],
+    record[13],
+  ]
+}
+
+function streamingCapacityBytes(value: number, length: number): Uint8Array {
+  const result = new Uint8Array(length)
+  new DataView(result.buffer).setUint32(length - 4, value, false)
+  return result
+}
+
+function streamingManifestPageFixedBytes(pageIndex: number): number {
+  return (
+    encodeCanonicalBackupCbor([1, 2, 1, new Uint8Array(16), pageIndex, 1_024, []]).byteLength - 1
+  )
+}
+
+function cborArrayHeaderBytes(length: number): number {
+  if (length < 24) return 1
+  if (length <= 0xff) return 2
+  if (length <= 0xffff) return 3
+  return 5
 }
