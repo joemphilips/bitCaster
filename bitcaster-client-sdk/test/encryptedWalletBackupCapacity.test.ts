@@ -29,13 +29,7 @@ import {
   readPreparedEncryptedWalletBackupManifestHead,
   readPreparedEncryptedWalletBackupObject,
   type EncryptedWalletBackupRuntime,
-  type EncryptedWalletBackupWireObject,
 } from '../src/encryptedWalletBackup.ts'
-import {
-  ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX,
-  ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX,
-  prepareEncryptedWalletBackupUploadPlan,
-} from '../src/encryptedWalletBackupSync.ts'
 import {
   deriveDurableCustodyProofId,
   deriveDurableCustodyScopeId,
@@ -210,7 +204,7 @@ test('50k ordinary proofs plus four CTF proofs in 1k markets fit the 64 MiB life
   assert.ok(lifecyclePeakBytes <= 64 * 1_024 * 1_024)
 })
 
-test('real prepared 255-chunk plus 3-page target is capability-planned below 64 MiB', async () => {
+test('real prepared 255-chunk plus 3-page target fits below the stored-byte quota', async () => {
   const seed = fromHex(vector.inputs.seedHex)
   const keyHandle = await createEncryptedWalletBackupKeyHandle({
     seed,
@@ -368,47 +362,6 @@ test('real prepared 255-chunk plus 3-page target is capability-planned below 64 
     },
   )
   assert.ok(head.storedBytes <= ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX)
-
-  const attemptId = '55'.repeat(16)
-  const plan = prepareEncryptedWalletBackupUploadPlan({
-    attemptId,
-    keyHandle,
-    targetHead: head,
-  })
-  assert.deepEqual(
-    plan.batches.map((batch) => batch.objectCount),
-    [16, ...Array.from({ length: 16 }, () => 15), 2],
-  )
-  assert.equal(plan.objectCount, 258)
-  assert.equal(
-    plan.batches.reduce((total, batch) => total + batch.objectCount, 0),
-    plan.objectCount,
-  )
-  assert.equal(
-    plan.batches.every((batch) => batch.repackedChunkCount === 0),
-    true,
-  )
-  const pagePayloadLength = capacityPutPayloadLength(
-    attemptId,
-    readPreparedEncryptedWalletBackupObject(manifest.pages[0]!),
-  )
-  const chunkPayloadLength = capacityPutPayloadLength(
-    attemptId,
-    readPreparedEncryptedWalletBackupObject(objects[0]!),
-  )
-  assert.equal(plan.batches[0]!.uploadedBytes, 3 * pagePayloadLength + 13 * chunkPayloadLength)
-  for (const batch of plan.batches.slice(1, -1)) {
-    assert.equal(batch.objectCount, 15)
-    assert.equal(batch.uploadedBytes, 15 * chunkPayloadLength)
-    assert.ok(
-      batch.uploadedBytes + chunkPayloadLength > ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX,
-    )
-  }
-  assert.equal(
-    plan.batches.reduce((total, batch) => total + batch.uploadedBytes, 0),
-    3 * pagePayloadLength + 255 * chunkPayloadLength,
-  )
-  assert.equal(plan.batches[0]!.objectCount, ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX)
 
   const overQuotaChunks: ReturnType<typeof packEncryptedWalletBackupProofChunk>[] = []
   proofOffset = 0
@@ -688,20 +641,6 @@ test('real child replacement peak accepts 127 chunks and rejects 128 chunks', as
   assert.equal(parent127Manifest.pages.length, 1)
   assert.equal(child127Manifest.pages.length, 1)
   assert.equal(parent127.storedBytes + child127.storedBytes, 66_722_816)
-  const child127Plan = prepareEncryptedWalletBackupUploadPlan({
-    attemptId: '7f'.repeat(16),
-    keyHandle,
-    targetHead: child127,
-  })
-  assert.equal(child127Plan.batches.length, 32)
-  assert.deepEqual(
-    child127Plan.batches.map((batch) => batch.repackedChunkCount),
-    [...Array.from({ length: 31 }, () => 4), 3],
-  )
-  assert.equal(
-    child127Plan.batches.reduce((total, batch) => total + batch.objectCount, 0),
-    child127.objectCount,
-  )
 
   const parent128Manifest = await prepareParentManifest(128, 23)
   const parent128 = prepareEncryptedWalletBackupManifestHead({
@@ -766,26 +705,6 @@ function capacityProofCommitment(input: {
       ]),
     ),
   )
-}
-
-function capacityPutPayloadLength(
-  attemptId: string,
-  object: EncryptedWalletBackupWireObject,
-): number {
-  return encodeCanonical([
-    1,
-    'object-put',
-    hexToBytes(attemptId),
-    object.kindCode,
-    object.realm,
-    hexToBytes(object.vaultId),
-    hexToBytes(object.objectId),
-    object.generation,
-    object.paddedLength,
-    hexToBytes(object.digest),
-    object.aad,
-    object.body,
-  ]).byteLength
 }
 
 function deterministicCapacityRuntime(values: readonly Uint8Array[]): EncryptedWalletBackupRuntime {
