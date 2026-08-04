@@ -728,6 +728,74 @@ test('a 16-item bounded upload cycle sends four PUTs concurrently and never five
   assertBoundedUploadCycleCallShape(store, { combinedAttemptBatchValidation: 16, total: 23 })
 })
 
+test('fixed 54,000-proof workload executes 249 current objects in 36 bounded cycles', async () => {
+  const pageCount = 142
+  const chunkCount = 107
+  const objectCount = pageCount + chunkCount
+  const batchCount = 36
+  const fixture = await boundedTargetFixture(false, {
+    pageCount,
+    chunkCount,
+    proofCount: 54_000,
+  })
+  const store = new AtomicAttemptCursorStore()
+  let sourceReads = 0
+  const sourceObjectIds = new Set<string>()
+  const source = boundedObjectSource(fixture.keyHandle, (input) => {
+    sourceReads += 1
+    sourceObjectIds.add(input.objectId)
+  })
+
+  for (let cycleIndex = 0; cycleIndex < batchCount; cycleIndex += 1) {
+    const result = await runBoundedUploadCycleForTest({
+      fixture,
+      store,
+      initialAttempt: cycleIndex === 0 ? undefined : null,
+      source,
+    })
+    assert.equal(result.state, cycleIndex === batchCount - 1 ? 'cas-sealed' : 'upload-pending')
+  }
+
+  assert.equal(sourceReads, objectCount)
+  assert.equal(sourceObjectIds.size, objectCount)
+  assert.equal(store.batches.size, batchCount)
+  const attempt = store.attempts.get('61'.repeat(16))
+  assert.notEqual(attempt, undefined)
+  const batchIds = new Set(store.batches.keys())
+  assert.equal(attempt!.batchIds.length, batchCount)
+  assert.deepEqual([...attempt!.batchIds].sort(), [...batchIds].sort())
+  assert.equal(attempt!.activeBatchId, null)
+  assert.equal(attempt!.lifecycle, 'cas-journaled')
+  assert.notEqual(attempt!.casAttemptId, null)
+  assert.equal(store.casAttempts.size, 1)
+  assert.equal(store.casAttempts.has(attempt!.casAttemptId!), true)
+  assert.equal(
+    [...store.batches.values()].every(
+      (batch) =>
+        batch.state === 'finalized' &&
+        batch.items.length <= 16 &&
+        batch.uploadedBytes <= 4 * 1_024 * 1_024 &&
+        batch.repackedChunkCount <= 4,
+    ),
+    true,
+  )
+  assert.deepEqual(store.methodCalls, {
+    pairedAttemptClaim: 36,
+    pairedAttemptSeal: 1,
+    batchCursorSeal: 36,
+    initialAttemptValidation: 36,
+    activeBatchRead: 0,
+    executionClaim: 36,
+    combinedAttemptBatchValidation: 249,
+    acknowledgementTransition: 36,
+    casSeal: 1,
+  })
+  assert.equal(
+    Object.values(store.methodCalls).reduce((total, calls) => total + calls, 0),
+    431,
+  )
+})
+
 test('bounded upload attempt rejects incomplete, changed, foreign, and malformed atomic callbacks', async (t) => {
   const fixture = await boundedTargetFixture(false)
   for (const mode of [
@@ -1405,7 +1473,7 @@ function boundedObjectSource(
 
 async function boundedTargetFixture(
   empty: boolean,
-  counts?: Readonly<{ pageCount: number; chunkCount: number }>,
+  counts?: Readonly<{ pageCount: number; chunkCount: number; proofCount?: number }>,
 ): Promise<{
   keyHandle: EncryptedWalletBackupKeyHandle
   target: PreparedEncryptedWalletBackupManifestTarget
@@ -1473,8 +1541,9 @@ async function boundedTargetFixture(
       digest: boundedObjectDigest(keyHandle, 2, objectId, 65_536),
     }
   })
+  const firstChunkObjectId = Math.max(33, pageCount + 1)
   const chunkReferences = Array.from({ length: chunkCount }, (_value, index) => {
-    const objectId = objectIdFor(index + 33)
+    const objectId = objectIdFor(index + firstChunkObjectId)
     return {
       objectId,
       digest: boundedObjectDigest(keyHandle, 1, objectId, 262_144),
@@ -1488,7 +1557,7 @@ async function boundedTargetFixture(
       parentEvidence,
       pages,
       chunkReferences,
-      proofCount: Math.max(pageCount, chunkCount),
+      proofCount: counts?.proofCount ?? Math.max(pageCount, chunkCount),
     }),
   })
   return { keyHandle, target }
