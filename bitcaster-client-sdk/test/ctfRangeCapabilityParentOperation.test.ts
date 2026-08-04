@@ -448,7 +448,9 @@ function reviewedMintFacts() {
         unit: 'msat',
         inputFeePpk: INPUT_FEE_PPK,
         finalExpiry: FINAL_EXPIRY,
+        outcomeCollection: keyset.outcomeCollection,
         outcomeCollectionId: keyset.outcomeCollectionId,
+        registeredAt: 10,
         keys: KEYS,
       })),
     },
@@ -473,6 +475,7 @@ function conditionalKeyset(id: string, outcomeCollection: string, outcomeCollect
     conditionId: CONDITION_ID,
     outcomeCollection,
     outcomeCollectionId,
+    registeredAt: 10,
   }
 }
 

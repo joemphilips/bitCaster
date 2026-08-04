@@ -1,4 +1,4 @@
-import type { ProofState } from '@cashu/cashu-ts'
+import { OutputData, type ProofState } from '@cashu/cashu-ts'
 import {
   assertDurableCtfRangeCustodyAuthority,
   requireDurableCtfRangeOperationFromCustody,
@@ -23,6 +23,7 @@ import {
   type DurableCustodyProofMaterial,
   type DurableCustodyProofMaterialRecord,
 } from './durableCustodyProofMaterial.ts'
+import type { DurableWalletProofDerivationLocator } from './durableWalletProofDerivationLocator.ts'
 
 export interface DurableCtfRangeStagedResultAuthority {
   readonly record: DurableCustodyRecord
@@ -38,6 +39,10 @@ export interface NormalizedDurableCtfRangeSuccessorProof {
   readonly material: DurableCustodyProofMaterialRecord
   readonly keysetFingerprint: string
   readonly dleqState: 'not-present' | 'verified'
+  readonly derivationLocator: Extract<
+    DurableWalletProofDerivationLocator,
+    { kind: 'ctf-range-manifest' }
+  >
   readonly classification: {
     readonly conditionId: string | null
     readonly outcomeSetId: string | null
@@ -209,13 +214,21 @@ export function mapDurableCtfRangeSuccessorProofs<T>(
     throw new Error('CTF range successor authority is foreign')
   }
   const bindings = outputVerificationBindings(record)
+  const manifestIndexes = manifestProofIndexes(operation)
   const byId = new Map<string, NormalizedDurableCtfRangeSuccessorProof>()
   for (const [proofs, asset] of [
     [input.result.receive, operation.receiveAsset],
     [input.result.change, operation.offerAsset],
   ] as const) {
     for (const proof of proofs) {
-      const normalized = normalizeSuccessorProof(record, proof, asset, bindings)
+      const normalized = normalizeSuccessorProof(
+        record,
+        operation,
+        proof,
+        asset,
+        bindings,
+        manifestIndexes,
+      )
       if (byId.has(normalized.material.proofId)) {
         throw new Error('CTF range successor proof is duplicated')
       }
@@ -234,12 +247,14 @@ export function mapDurableCtfRangeSuccessorProofs<T>(
 
 function normalizeSuccessorProof(
   record: DurableCustodyRecord,
+  operation: DurableCtfRangeOperation,
   proof: DurableCtfRangeRecoveredResult['receive'][number],
   asset: DurableCtfRangeAsset,
   bindings: ReadonlyMap<
     string,
     DurableCustodyRecord['operation']['verification']['keysetBindings'][number]
   >,
+  manifestIndexes: ReadonlyMap<string, number>,
 ): NormalizedDurableCtfRangeSuccessorProof {
   const normalizedProof: DurableCustodyProofMaterial = {
     id: proof.id,
@@ -264,13 +279,32 @@ function normalizeSuccessorProof(
   ) {
     throw new Error('CTF range successor proof verification authority is foreign')
   }
+  const manifestIndex = manifestIndexes.get(normalizedProof.secret)
+  if (manifestIndex === undefined)
+    throw new Error('CTF range successor proof is outside the manifest')
   return {
     proof: normalizedProof,
     material,
     keysetFingerprint: binding.keysetFingerprint,
     dleqState: dleqState(material.dleqPresence),
+    derivationLocator: Object.freeze({
+      schemaVersion: 1,
+      kind: 'ctf-range-manifest',
+      rangeOperationId: operation.operationId,
+      manifestIndex,
+    }),
     classification: classifyAsset(asset),
   }
+}
+
+function manifestProofIndexes(operation: DurableCtfRangeOperation): ReadonlyMap<string, number> {
+  const indexes = new Map<string, number>()
+  for (const [manifestIndex, entry] of operation.manifest.entries.entries()) {
+    const secret = new TextDecoder().decode(OutputData.deserialize(entry.outputData).secret)
+    if (indexes.has(secret)) throw new Error('CTF range manifest output secret is duplicated')
+    indexes.set(secret, manifestIndex)
+  }
+  return indexes
 }
 
 function outputVerificationBindings(

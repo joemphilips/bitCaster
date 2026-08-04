@@ -127,6 +127,38 @@ afterEach(async () => {
 });
 
 describe("browser CTF range order coordinator", () => {
+  it("rejects a conditional keyset without final expiry before mint dispatch", async () => {
+    const preparation = persistedPreparation("range-missing-final-expiry");
+    const unsupported = {
+      ...preparation,
+      receiveKeyset: { ...preparation.receiveKeyset, finalExpiry: null },
+    } as PersistedCtfRangeOrderPreparation;
+    let mintCalls = 0;
+    const engine = engineMock();
+    const database = createDatabase([storedSourceProof(sourceProof(unsupported.offerKeyset.id))]);
+    const coordinator = createCoordinator(
+      database,
+      sourceWallet({
+        onComplete: async () => {
+          mintCalls += 1;
+        },
+      }),
+      engine,
+    );
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation: unsupported,
+        candidates: [sourceProof(unsupported.offerKeyset.id)],
+      }),
+    ).rejects.toMatchObject({ code: "source-preparation-failed" });
+
+    expect(mintCalls).toBe(0);
+    expect(engine.createCalls).toBe(0);
+    expect(await database.proofOperations.count()).toBe(0);
+  });
+
   it("durably consolidates one exact fragmented proof page", async () => {
     const preparation = persistedPreparation("range-consolidation");
     const inputs = [
@@ -352,7 +384,7 @@ describe("browser CTF range order coordinator", () => {
         .filter(({ selectability }) => selectability === "locked")
         .every(({ proofId }) => {
           const authority = backupAuthorities.get(proofId);
-          return authority?.derivationKeysetId === null && authority.derivationCounter === null;
+          return authority?.derivationLocator === null;
         }),
     ).toBe(true);
     expect(
@@ -361,8 +393,9 @@ describe("browser CTF range order coordinator", () => {
         .every(({ proofId }) => {
           const authority = backupAuthorities.get(proofId);
           return (
-            authority?.derivationKeysetId === preparation.offerKeyset.id &&
-            Number.isSafeInteger(authority.derivationCounter)
+            authority?.derivationLocator?.kind === "nut13" &&
+            authority.derivationLocator.keysetId === preparation.offerKeyset.id &&
+            Number.isSafeInteger(authority.derivationLocator.counter)
           );
         }),
     ).toBe(true);
@@ -1822,6 +1855,7 @@ function reviewedMintFacts() {
         conditionId: CONDITION_ID,
         outcomeCollection: OUTCOME_COLLECTION,
         outcomeCollectionId: OUTCOME_COLLECTION_ID,
+        registeredAt: 10,
       },
       {
         canonicalMintUrl: MINT_URL,
@@ -1834,6 +1868,7 @@ function reviewedMintFacts() {
         conditionId: CONDITION_ID,
         outcomeCollection: COMPLEMENT_COLLECTION,
         outcomeCollectionId: COMPLEMENT_COLLECTION_ID,
+        registeredAt: 10,
       },
     ],
     maxInputs: 64,
@@ -1852,6 +1887,8 @@ function reviewedMintFacts() {
           inputFeePpk: INPUT_FEE_PPK,
           finalExpiry: FINAL_EXPIRY,
           outcomeCollectionId: OUTCOME_COLLECTION_ID,
+          outcomeCollection: OUTCOME_COLLECTION,
+          registeredAt: 10,
           keys: KEYS,
         },
         {
@@ -1861,6 +1898,8 @@ function reviewedMintFacts() {
           inputFeePpk: INPUT_FEE_PPK,
           finalExpiry: FINAL_EXPIRY,
           outcomeCollectionId: COMPLEMENT_COLLECTION_ID,
+          outcomeCollection: COMPLEMENT_COLLECTION,
+          registeredAt: 10,
           keys: KEYS,
         },
       ],

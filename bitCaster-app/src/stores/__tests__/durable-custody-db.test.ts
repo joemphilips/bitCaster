@@ -19,6 +19,10 @@ import {
   deriveDurableCustodyProofResultFingerprint,
 } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import { BrowserDurableCustodyAdapter, createBrowserCustodyProofRow } from "../durable-custody-db";
+import {
+  bindBrowserProofBackupAuthorityTerminalOperation,
+  createBrowserProofBackupAuthorityRow,
+} from "../browser-proof-backup-authority";
 import { BitcasterDB } from "../proof-db";
 
 const MINT = "https://mint.example";
@@ -85,6 +89,39 @@ describe("browser durable custody adapter", () => {
       proofState: "locked",
       backupState: "local-only",
     });
+  });
+
+  it("rejects reservation of a proof with terminal CTF authority", async () => {
+    const database = createDatabase();
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const scope = walletScope();
+    const owner = await claim(adapter, scope, 15);
+    const source = operationBinding(scope, "source-terminal", proof("terminal"), "output-terminal");
+    const predecessor = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: source.operation.inputs[0] as Proof,
+      asset: { kind: "conditional", conditionId: "aa".repeat(32), outcomeCollection: "A" },
+      receivedAtMs: 1,
+    });
+    const authority = bindBrowserProofBackupAuthorityTerminalOperation(
+      createBrowserProofBackupAuthorityRow(predecessor, 2, null, "admission-terminal"),
+      "redeem-terminal",
+      3,
+    );
+    await database.custodyProofs.put(predecessor);
+    await database.custodyProofBackupAuthorities.put(authority);
+
+    await expect(
+      adapter.transact(
+        selection(scope, owner, source.record.operation.operationId, null),
+        (transaction) =>
+          bindDurableCustodyProofOperation(transaction, source.record, source.artifacts),
+        { predecessorProofs: { [source.record.operation.operationId]: [predecessor] } },
+      ),
+    ).rejects.toThrow("terminal proof cannot be reserved");
+    expect(await database.custodyReservations.count()).toBe(0);
   });
 
   it("rolls back every row when the local transaction fails before commit", async () => {

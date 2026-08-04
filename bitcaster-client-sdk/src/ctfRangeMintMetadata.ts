@@ -49,6 +49,7 @@ export interface CtfRangeMintMetadata extends CtfRangeReviewedMintFacts {
       readonly conditionId: string
       readonly outcomeCollection: string
       readonly outcomeCollectionId: string
+      readonly registeredAt: number
     }
   >
   readonly conditionKeysetIds: string[]
@@ -171,13 +172,21 @@ function buildLoadedMintMetadata(input: {
   const regular = input.regularResponse
     .filter((keyset) => keyset.active && keyset.unit === 'msat')
     .map((keyset) => activeKeyset(input.canonicalMintUrl, keyset, input.keys))
-  const allConditional = input.conditionEntries.map((keyset) => ({
-    ...resolvedKeyset(input.canonicalMintUrl, keyset, input.keys),
-    active: keyset.active,
-    conditionId: keyset.condition_id,
-    outcomeCollection: keyset.outcome_collection,
-    outcomeCollectionId: keyset.outcome_collection_id,
-  }))
+  const allConditional = input.conditionEntries.map((keyset) => {
+    const registeredAt = keyset.registered_at
+    if (!Number.isSafeInteger(registeredAt) || (registeredAt as number) < 0) {
+      throw new Error('conditional keyset registration time is invalid')
+    }
+    const exactRegisteredAt = registeredAt as number
+    return {
+      ...resolvedKeyset(input.canonicalMintUrl, keyset, input.keys),
+      active: keyset.active,
+      conditionId: keyset.condition_id,
+      outcomeCollection: keyset.outcome_collection,
+      outcomeCollectionId: keyset.outcome_collection_id,
+      registeredAt: exactRegisteredAt,
+    }
+  })
   const conditional = allConditional
     .filter((keyset) => keyset.active)
     .map((keyset) => ({ ...keyset, active: true as const }))
@@ -200,6 +209,7 @@ function loadedExpiryObservation(
       readonly conditionId: string
       readonly outcomeCollection: string
       readonly outcomeCollectionId: string
+      readonly registeredAt: number
     }
   >,
 ): DurableCtfRangeExpiryObservation {
@@ -216,6 +226,8 @@ function loadedExpiryObservation(
       inputFeePpk: keyset.inputFeePpk,
       ...(keyset.finalExpiry === null ? {} : { finalExpiry: keyset.finalExpiry }),
       outcomeCollectionId: keyset.outcomeCollectionId,
+      outcomeCollection: keyset.outcomeCollection,
+      registeredAt: keyset.registeredAt,
       keys: { ...keyset.keys },
     })),
   }

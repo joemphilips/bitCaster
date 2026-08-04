@@ -25,11 +25,12 @@ import {
 import { bindDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import {
   classifyDurableCtfRangeRecovery,
-  createDeterministicDurableCtfRangeRefundOutputs,
+  createDeterministicDurableCtfRangeRefundOutputsWithLocators,
   createDurableCtfRangeRefundOperation,
   deriveDurableCtfRangeFeeBounds,
   deriveDurableCtfRangeRefundOperationId,
   deriveDurableCtfRangeRefundRequestFingerprint,
+  matchDeterministicDurableCtfRangeRefundProofLocators,
   prepareDurableCtfRangeRecoveredResult,
   prepareDurableCtfRangeVerifiedResult,
   recoverDurableCtfRangeVerifiedResultArtifact,
@@ -319,6 +320,7 @@ export class BrowserCtfRangeOrderCoordinator {
     readonly comment?: NostrKind1Event | null;
   }): Promise<SubmitOrderResponse> {
     requireImmediateOrder(input.preparation);
+    requireBackupCompatibleConditionalKeysets(input.preparation);
     const scope = browserWalletScope(input.seed);
     return withWalletProfileLock(
       scope.scopeId,
@@ -508,6 +510,7 @@ export class BrowserCtfRangeOrderCoordinator {
     if (existingRefund !== undefined) {
       await this.#resumeOuterRefund(
         journalRecord,
+        seed,
         scope,
         owner,
         snapshot.record,
@@ -911,15 +914,16 @@ export class BrowserCtfRangeOrderCoordinator {
       operation,
     );
     const custodyOperationId = binding.record.operation.operationId;
-    const predecessors = operation.inputs.map(
+    const stagedPredecessors = operation.inputs.map(
       (proof) =>
         browserSourceProofRows(
           scope,
           input.preparation,
           { authorization: [proof as Proof], keep: [] },
           this.#now(),
-        )[0]!.proof,
+        )[0]!,
     );
+    const predecessors = stagedPredecessors.map(({ proof }) => proof);
     await this.#persistPreparedSource(
       scope,
       owner,
@@ -927,6 +931,7 @@ export class BrowserCtfRangeOrderCoordinator {
       binding,
       custodyOperationId,
       predecessors,
+      stagedPredecessors,
       operation.inputs,
     );
     return { operation, custodyOperationId };
@@ -939,6 +944,7 @@ export class BrowserCtfRangeOrderCoordinator {
     binding: Awaited<ReturnType<typeof createBrowserRangeSourceBinding>>,
     custodyOperationId: string,
     predecessors: ReturnType<typeof browserSourceProofRows>[number]["proof"][],
+    stagedPredecessors: readonly ReturnType<typeof browserSourceProofRows>[number][],
     sourceProofs: DurableCustodyProofOperationInput["inputs"],
   ): Promise<void> {
     try {
@@ -956,7 +962,16 @@ export class BrowserCtfRangeOrderCoordinator {
           ),
           (transaction) =>
             bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
-          { predecessorProofs: { [custodyOperationId]: predecessors } },
+          {
+            predecessorProofs: { [custodyOperationId]: predecessors },
+            conditionalKeysets: Object.fromEntries(
+              stagedPredecessors.flatMap((staged) =>
+                staged.conditionalKeyset === undefined
+                  ? []
+                  : [[staged.proof.proofId, staged.conditionalKeyset]],
+              ),
+            ),
+          },
         );
         await this.#reserveLegacySourceProofs(
           scope,
@@ -1713,7 +1728,7 @@ export class BrowserCtfRangeOrderCoordinator {
       deriveDurableCtfRangeFeeBounds(operation).maximumFee;
     if (refundAmount <= 0n) throw new Error("browser range refund is fee-dominated");
     const operationId = deriveDurableCtfRangeRefundOperationId(operation.operationId);
-    const outputs = createDeterministicDurableCtfRangeRefundOutputs({
+    const deterministicOutputs = createDeterministicDurableCtfRangeRefundOutputsWithLocators({
       seed,
       source: operation,
       refundOperationId: operationId,
@@ -1726,7 +1741,7 @@ export class BrowserCtfRangeOrderCoordinator {
       refundKeysetId: preparation.offerKeyset.id,
       resolveKeysetAsset: (keysetId) =>
         keysetId === preparation.offerKeyset.id ? operation.offerAsset : undefined,
-      outputs,
+      outputs: deterministicOutputs.map(({ output }) => output),
     });
     const now = this.#now();
     const refund: ProofOperationRecord = {
@@ -1751,11 +1766,12 @@ export class BrowserCtfRangeOrderCoordinator {
       if (existing !== undefined) throw new Error("browser range refund identity already exists");
       await this.#database.proofOperations.add(refund);
     });
-    await this.#resumeOuterRefund(journalRecord, scope, owner, record, operation, refund);
+    await this.#resumeOuterRefund(journalRecord, seed, scope, owner, record, operation, refund);
   }
 
   async #resumeOuterRefund(
     journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    seed: Uint8Array,
     scope: DurableCustodyScope,
     owner: DurableCustodyOwnerAuthorization,
     record: DurableCustodyRecord,
@@ -1813,11 +1829,21 @@ export class BrowserCtfRangeOrderCoordinator {
     if (proofs === undefined || proofs.length === 0) {
       throw new Error("browser range refund proofs are incomplete");
     }
-    await this.#commitOuterRefund(journalRecord, scope, owner, record, operation, refund, proofs);
+    await this.#commitOuterRefund(
+      journalRecord,
+      seed,
+      scope,
+      owner,
+      record,
+      operation,
+      refund,
+      proofs,
+    );
   }
 
   async #commitOuterRefund(
     journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    seed: Uint8Array,
     scope: DurableCustodyScope,
     owner: DurableCustodyOwnerAuthorization,
     record: DurableCustodyRecord,
@@ -1831,10 +1857,24 @@ export class BrowserCtfRangeOrderCoordinator {
       proofs,
       authorization.observedAtMs,
     );
+    const preparation = decodeCtfRangeOrderPreparationFromRecord(journalRecord);
+    const deterministicOutputs = createDeterministicDurableCtfRangeRefundOutputsWithLocators({
+      seed,
+      source: operation,
+      refundOperationId: refund.operationId,
+      amount:
+        operation.inputs.reduce((total, proof) => total + BigInt(proof.amount), 0n) -
+        deriveDurableCtfRangeFeeBounds(operation).maximumFee,
+      keyset: { id: preparation.offerKeyset.id, keys: preparation.offerKeyset.keys },
+    });
     const custodyProofs = browserRangeRefundProofRows(
       record,
       operation,
       proofs,
+      matchDeterministicDurableCtfRangeRefundProofLocators({
+        outputs: deterministicOutputs,
+        proofs,
+      }),
       authorization.observedAtMs,
     );
     await this.#database.transaction("rw", this.#transactionTables(true), async () => {
@@ -2148,9 +2188,23 @@ export class BrowserCtfRangeOrderCoordinator {
       this.#database.custodyArtifacts,
       this.#database.custodyProofs,
       this.#database.custodyProofBackupAuthorities,
+      this.#database.custodyConditionalKeysets,
       this.#database.custodyReservations,
       this.#database.custodyActiveWork,
     ] as const;
+  }
+}
+
+function requireBackupCompatibleConditionalKeysets(
+  preparation: PersistedCtfRangeOrderPreparation,
+): void {
+  for (const keyset of [preparation.offerKeyset, preparation.receiveKeyset]) {
+    if ("conditionId" in keyset && keyset.finalExpiry === null) {
+      throw rangeError(
+        "source-preparation-failed",
+        new Error("browser conditional keyset requires a final expiry"),
+      );
+    }
   }
 }
 

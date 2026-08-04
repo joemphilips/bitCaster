@@ -1,11 +1,11 @@
-import { OutputData } from '@cashu/cashu-ts'
+import { assertCanonicalKeysetId, OutputData } from '@cashu/cashu-ts'
 import {
   fitsDurableSeedDerivedCounterRange,
-  isCanonicalModernNut02KeysetId,
   isDurableSeedDerivedCounter,
   isDurableSeedDerivedCount,
   isNonArrayRecord,
 } from './durableSeedDerivedPolicy.ts'
+import type { DurableWalletProofDerivationLocator } from './durableWalletProofDerivationLocator.ts'
 
 const TEXT_DECODER = new TextDecoder()
 
@@ -22,9 +22,10 @@ export interface LocateSeedDerivedProofLineageInput {
   readonly proofs: readonly SeedDerivedProofLineageProof[]
 }
 
-export interface SeedDerivedProofLocator {
-  readonly keysetId: string
-  readonly counter: number
+export interface SeedDerivedProofLocator extends Extract<
+  DurableWalletProofDerivationLocator,
+  { kind: 'nut13' }
+> {
   readonly secret: string
 }
 
@@ -57,7 +58,13 @@ export function locateSeedDerivedProofLineage(
   }
   return Object.freeze(
     derived.map(({ counter, secret }) =>
-      Object.freeze({ keysetId: validated.keysetId, counter, secret }),
+      Object.freeze({
+        schemaVersion: 1,
+        kind: 'nut13',
+        keysetId: validated.keysetId,
+        counter,
+        secret,
+      }),
     ),
   )
 }
@@ -71,7 +78,7 @@ function validateInput(input: unknown): ValidatedInput | null {
     return null
   }
   if (
-    !isCanonicalModernNut02KeysetId(input.keysetId) ||
+    !isCanonicalNut13KeysetId(input.keysetId) ||
     !isDurableSeedDerivedCounter(input.counterStart)
   ) {
     return null
@@ -90,6 +97,16 @@ function validateInput(input: unknown): ValidatedInput | null {
     counterStart: input.counterStart,
     counterCount: input.counterCount,
     proofSecrets,
+  }
+}
+
+function isCanonicalNut13KeysetId(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  try {
+    assertCanonicalKeysetId(value, 'seed-derived keyset id')
+    return true
+  } catch {
+    return false
   }
 }
 

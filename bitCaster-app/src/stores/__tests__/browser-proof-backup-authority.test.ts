@@ -7,70 +7,94 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   advanceBrowserProofBackupAuthorityRow,
+  bindBrowserProofBackupAuthorityTerminalOperation,
   createBrowserProofBackupAuthorityRow,
   requireBrowserProofBackupAuthorityRow,
-  requireBrowserProofBackupAuthorityForProof,
 } from "../browser-proof-backup-authority";
 import { createBrowserCustodyProofRow } from "../durable-custody-db";
 
 const MINT = "https://mint.example";
 const DERIVATION_KEYSET = `01${"11".repeat(32)}`;
 const FOREIGN_KEYSET = `02${"22".repeat(32)}`;
+const nut13 = (keysetId: string, counter: number) => ({
+  schemaVersion: 1 as const,
+  kind: "nut13" as const,
+  keysetId,
+  counter,
+});
 
 describe("browser proof backup authority", () => {
   it("preserves an exact locator replay and rejects a conflicting replay", () => {
     const proof = custodyProof();
-    const locator = { keysetId: DERIVATION_KEYSET, counter: 7 };
-    const authority = createBrowserProofBackupAuthorityRow(proof, 2, locator);
+    const locator = nut13(DERIVATION_KEYSET, 7);
+    const authority = createBrowserProofBackupAuthorityRow(proof, 2, locator, "admission-a");
 
-    expect(advanceBrowserProofBackupAuthorityRow(authority, proof, 3, locator)).toMatchObject({
-      derivationKeysetId: DERIVATION_KEYSET,
-      derivationCounter: 7,
+    expect(
+      advanceBrowserProofBackupAuthorityRow(authority, proof, 3, locator, "admission-a"),
+    ).toMatchObject({
+      derivationLocator: locator,
     });
     expect(() =>
-      advanceBrowserProofBackupAuthorityRow(authority, proof, 3, {
-        keysetId: DERIVATION_KEYSET,
-        counter: 8,
-      }),
+      advanceBrowserProofBackupAuthorityRow(
+        authority,
+        proof,
+        3,
+        {
+          ...nut13(DERIVATION_KEYSET, 8),
+        },
+        "admission-a",
+      ),
     ).toThrow("derivation locator conflicts");
     expect(authority).toMatchObject({
-      derivationKeysetId: DERIVATION_KEYSET,
-      derivationCounter: 7,
+      derivationLocator: locator,
       proofRevision: 0,
     });
   });
 
-  it("rejects a locator that does not match the proof keyset", () => {
+  it("accepts any strict SDK locator without applying a local keyset policy", () => {
     const proof = custodyProof();
-    const locator = { keysetId: DERIVATION_KEYSET, counter: 7 };
-    const authority = createBrowserProofBackupAuthorityRow(proof, 2, locator);
+    expect(
+      createBrowserProofBackupAuthorityRow(proof, 2, nut13(FOREIGN_KEYSET, 7), "admission-a"),
+    ).toMatchObject({ derivationLocator: nut13(FOREIGN_KEYSET, 7) });
+  });
+
+  it("binds one terminal operation and preserves an exact replay", () => {
+    const proof = custodyProof();
+    const authority = createBrowserProofBackupAuthorityRow(proof, 2_001, null, "admission-a");
+
+    const bound = bindBrowserProofBackupAuthorityTerminalOperation(authority, "terminal-a", 5_999);
+
+    expect(bound).toMatchObject({
+      terminalOperationId: "terminal-a",
+      recordCreatedAtUnixSeconds: 2,
+      recordUpdatedAtUnixSeconds: 5,
+      updatedAtMs: 5_999,
+      derivationLocator: null,
+      admissionOperationId: "admission-a",
+      proofFingerprint: authority.proofFingerprint,
+    });
+    expect(
+      bindBrowserProofBackupAuthorityTerminalOperation(bound, "terminal-a", 6_000),
+    ).toStrictEqual(bound);
+    expect(() =>
+      bindBrowserProofBackupAuthorityTerminalOperation(bound, "terminal-b", 6_000),
+    ).toThrow("terminal operation conflicts");
+  });
+
+  it("rejects a terminal classification time before the current authority", () => {
+    const proof = custodyProof();
+    const authority = createBrowserProofBackupAuthorityRow(proof, 2_000, null, "admission-a");
 
     expect(() =>
-      createBrowserProofBackupAuthorityRow(proof, 2, { keysetId: FOREIGN_KEYSET, counter: 7 }),
-    ).toThrow("derivation locator keyset is foreign");
-    expect(() =>
-      advanceBrowserProofBackupAuthorityRow(
-        { ...authority, derivationKeysetId: FOREIGN_KEYSET },
-        proof,
-        3,
-        locator,
-      ),
-    ).toThrow("derivation locator keyset is foreign");
-    expect(() =>
-      requireBrowserProofBackupAuthorityForProof(
-        { ...authority, derivationKeysetId: FOREIGN_KEYSET },
-        proof,
-      ),
-    ).toThrow("derivation locator keyset is foreign");
+      bindBrowserProofBackupAuthorityTerminalOperation(authority, "terminal-a", 1_999),
+    ).toThrow("terminal classification time is stale");
   });
 
   it.each([
-    { derivationKeysetId: DERIVATION_KEYSET, derivationCounter: null },
-    { derivationKeysetId: null, derivationCounter: 0 },
-    { derivationKeysetId: `00${"11".repeat(7)}`, derivationCounter: 0 },
-    { derivationKeysetId: `01${"AA".repeat(32)}`, derivationCounter: 0 },
-    { derivationKeysetId: DERIVATION_KEYSET, derivationCounter: -1 },
-    { derivationKeysetId: DERIVATION_KEYSET, derivationCounter: 2_147_483_648 },
+    { derivationLocator: { ...nut13(DERIVATION_KEYSET, 0), keysetId: `01${"AA".repeat(32)}` } },
+    { derivationLocator: { ...nut13(DERIVATION_KEYSET, -1) } },
+    { derivationLocator: { ...nut13(DERIVATION_KEYSET, 2_147_483_648) } },
+    { derivationLocator: { ...nut13(DERIVATION_KEYSET, 0), extra: true } },
   ])("fails closed for an invalid derivation locator row", (locator) => {
     expect(() => requireBrowserProofBackupAuthorityRow(authorityRow(locator))).toThrow(
       "derivation locator is invalid",
@@ -95,19 +119,20 @@ function custodyProof() {
   });
 }
 
-function authorityRow(locator: {
-  derivationKeysetId: string | null;
-  derivationCounter: number | null;
-}) {
+function authorityRow(locator: { derivationLocator: unknown }) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 3,
     scopeId: walletScope().scopeId,
     proofId: "44".repeat(32),
     proofFingerprint: "55".repeat(32),
     proofRevision: 0,
     proofState: "selectable",
+    admissionOperationId: "admission-a",
+    terminalOperationId: null,
+    recordCreatedAtUnixSeconds: 0,
+    recordUpdatedAtUnixSeconds: 0,
     backupState: "local-only",
-    ...locator,
+    derivationLocator: locator.derivationLocator,
     backupRecordId: null,
     updatedAtMs: 1,
   };

@@ -24,6 +24,7 @@ import {
   createEncryptedWalletBackupKeyHandle,
   decryptEncryptedWalletBackupManifestPage,
   decryptEncryptedWalletBackupProofChunk,
+  deriveEncryptedWalletBackupProofCommitment,
   deriveDurableWalletEncryptedBackupReceipt,
   discoverEncryptedWalletBackupEnrollmentEpoch,
   packEncryptedWalletBackupProofChunk,
@@ -70,6 +71,7 @@ import {
   registerEncryptedWalletBackupManifestPassABoundaries,
 } from '../src/encryptedWalletBackupManifestPageAuthority.ts'
 import { preflightEncryptedProofChunkCbor } from '../src/encryptedWalletBackupCbor.ts'
+import { encodeDurableWalletProofDerivationLocatorCbor } from '../src/durableWalletProofDerivationLocator.ts'
 import {
   deriveDurableCustodyProofId,
   deriveDurableCustodyScopeId,
@@ -373,7 +375,7 @@ const vector = JSON.parse(
 
 const SEED = fromHex(vector.inputs.seedHex)
 const SECRET = vector.expected.derivedSecretHex
-const CTF_KEYSET_ID = '0170110f06b9bb85565a6746ca5715f877b99db14d87219f6e9030cb529f61e6ea'
+const CTF_KEYSET_ID = '01e9c2aad6d0fdad988a3b58ef6940416c9bb12b3dd344b5320d7a3f28e919284c'
 const CTF_MINT_KEYS = {
   id: CTF_KEYSET_ID,
   unit: 'sat',
@@ -388,10 +390,14 @@ const CTF_MINT_KEYS = {
 const CTF_CONDITIONAL_METADATA = {
   conditionId: 'aa'.repeat(32),
   outcomeCollection: 'YES',
-  outcomeCollectionId: 'cc'.repeat(32),
+  outcomeCollectionId: 'def71b1ff5a53597a8175729a718b1bf931d12c2a76500f208ab450c12444c4e',
   registeredAt: 1_700_000_000,
 }
 type UnboundProofInput = Omit<EncryptedWalletBackupProofInput, 'proofSnapshotStore'>
+
+function nut13(keysetId: string, counter: number) {
+  return { schemaVersion: 1 as const, kind: 'nut13' as const, keysetId, counter }
+}
 
 test('crypto conversion exposes only the exact byte view', () => {
   const expected = new Uint8Array([1, 2, 3])
@@ -3623,7 +3629,7 @@ test('coordinator atomically journals deterministic CAS work and completes the a
     uploadAttemptId: acknowledged.claim.record.attemptId,
     targetManifestDigest: acknowledged.claim.record.targetManifestDigest,
   })
-  assert.equal(expectedCasId, 'ad5a3ce0c3cef25c711ff5f8743b5e97')
+  assert.equal(expectedCasId, '0cbb87e693a3a88932eca500711ddb69')
   const separatedIds = new Set([
     expectedCasId,
     deriveEncryptedWalletBackupCasAttemptId({
@@ -6430,7 +6436,7 @@ test('request-auth scalar derivation rejects zero and out-of-range candidates an
   assert.equal(exhausted.scalarCalls(), 256)
 })
 
-test('preparation validates seed, counter, classifier facts, proof class, fields, and keyset wire', async () => {
+test('preparation validates seed, locator, classifier facts, proof class, fields, and keyset wire', async () => {
   const keyHandle = await createEncryptedWalletBackupKeyHandle({
     seed: SEED,
     realm: 'test',
@@ -6447,7 +6453,7 @@ test('preparation validates seed, counter, classifier facts, proof class, fields
     () =>
       prepareEncryptedWalletBackupProof({
         ...proofInput(keyHandle),
-        counter: 8,
+        derivationLocator: nut13(vector.inputs.proof.keysetId, 8),
       }),
     /proof secret does not match deterministic derivation/,
   )
@@ -6458,7 +6464,6 @@ test('preparation validates seed, counter, classifier facts, proof class, fields
     { operationBinding: 'unknown' },
     { reserved: true },
     { ambiguousMintOperation: true },
-    { derivationLocator: 'missing' },
   ]) {
     await assert.rejects(
       () =>
@@ -6466,6 +6471,13 @@ test('preparation validates seed, counter, classifier facts, proof class, fields
       /proof is not backup eligible/,
     )
   }
+  await assert.rejects(
+    () =>
+      prepareEncryptedWalletBackupProof(
+        withProofStore(proofInput(keyHandle), null, { derivationLocator: 'missing' }),
+      ),
+    /derivation locator is invalid/,
+  )
   await assert.rejects(
     () =>
       prepareEncryptedWalletBackupProof({
@@ -6491,23 +6503,11 @@ test('preparation validates seed, counter, classifier facts, proof class, fields
     /unresolved short modern keyset/,
   )
 
-  for (const keysetId of ['009a1f293253e41e', '9mlfd5vCzgGl']) {
-    const input = proofInputForKeyset(keyHandle, keysetId)
-    const prepared = await prepareEncryptedWalletBackupProof(input)
-    assert.match(prepared.proofId, /^[0-9a-f]{64}$/)
-  }
-
-  const padded = proofInputForKeyset(keyHandle, 'AQIDBA==')
-  const unpadded = proofInputForKeyset(keyHandle, 'AQIDBA')
-  assert.equal(padded.proof.secret, unpadded.proof.secret)
-  const paddedPrepared = await prepareEncryptedWalletBackupProof(padded)
-  const unpaddedPrepared = await prepareEncryptedWalletBackupProof(unpadded)
-  assert.equal(paddedPrepared.proofId, unpaddedPrepared.proofId)
-  assert.throws(
-    () => packEncryptedWalletBackupProofChunk([paddedPrepared, unpaddedPrepared]),
-    /proof id is duplicated/,
+  const legacyV1 = await prepareEncryptedWalletBackupProof(
+    proofInputForKeyset(keyHandle, '009a1f293253e41e'),
   )
-  assert.throws(() => proofInputForKeyset(keyHandle, '+___'), /Unrecognized|mixes Base64 alphabets/)
+  assert.match(legacyV1.proofId, /^[0-9a-f]{64}$/)
+  assert.throws(() => proofInputForKeyset(keyHandle, '9mlfd5vCzgGl'), /NUT-13 keyset id/)
 })
 
 test('CTF requires complete metadata, permits expired retention, and ordinary proof forbids it', async () => {
@@ -7326,7 +7326,7 @@ test('active CTF restore verifies conditional metadata and commits a selectable 
   assert.deepEqual(persistedProof.ctfMetadata, {
     conditionId: 'ab'.repeat(32),
     outcomeLabel: 'YES',
-    outcomeCollectionId: 'cd'.repeat(32),
+    outcomeCollectionId: '6ffb74672b18de551df75ce03cbe1c1abe49fa38da54c563fc4a3f7b7af37de6',
     registeredAtUnixSeconds: 1_700_000_000,
     finalExpiryUnixSeconds: fixture.finalExpiry,
   })
@@ -7821,7 +7821,15 @@ test('restore transaction rejects reserved, nonterminal, stale-binding, and conf
                       mode === 'reserved' || mode === 'nonterminal' ? pinned : stale,
                     proof:
                       mode === 'conflicting-proof'
-                        ? { ...row.proof, counter: row.proof.counter + 1 }
+                        ? {
+                            ...row.proof,
+                            derivationLocator: nut13(
+                              row.proof.proof.id,
+                              row.proof.derivationLocator.kind === 'nut13'
+                                ? row.proof.derivationLocator.counter + 1
+                                : 0,
+                            ),
+                          }
                         : null,
                   },
                 ])
@@ -8389,8 +8397,8 @@ test('proof field, curve, amount, time, and keyset boundaries fail closed', asyn
     { ...base, unit: '' },
     { ...base, unit: 'sat\u0000' },
     { ...base, unit: 'x'.repeat(65) },
-    { ...base, counter: -1 },
-    { ...base, counter: 2_147_483_648 },
+    { ...base, derivationLocator: nut13(base.proof.id, -1) },
+    { ...base, derivationLocator: nut13(base.proof.id, 2_147_483_648) },
     { ...base, createdAtUnixSeconds: -1 },
     { ...base, updatedAtUnixSeconds: base.createdAtUnixSeconds - 1 },
     { ...base, updatedAtUnixSeconds: Number.MAX_SAFE_INTEGER + 1 },
@@ -8606,6 +8614,65 @@ test('a crypto failure releases its synchronous object-id reservation', async ()
   assert.equal(prepared.objectId, toHex(reusableId))
 })
 
+test('proof commitment accepts only ordinary and CTF proof kinds at runtime', async () => {
+  const proof = vector.inputs.proof
+  const scopeId = deriveDurableCustodyScopeId({
+    scopeKind: 'wallet',
+    walletId: deriveDurableCustodyWalletId(SEED),
+  })
+  const input = {
+    scopeId,
+    mint: proof.mint,
+    unit: proof.unit,
+    derivationLocator: nut13(proof.keysetId, proof.counter),
+    proof: {
+      id: proof.keysetId,
+      amount: proof.amount,
+      secret: SECRET,
+      C: proof.signatureHex,
+      dleq: { ...proof.dleq },
+    },
+    ctfMetadata: null,
+    terminalEvidence: null,
+    createdAtUnixSeconds: proof.createdAtUnixSeconds,
+    updatedAtUnixSeconds: proof.updatedAtUnixSeconds,
+  }
+
+  assert.match(
+    deriveEncryptedWalletBackupProofCommitment({ ...input, proofKind: 'ordinary' }).commitment,
+    /^[0-9a-f]{64}$/,
+  )
+  const ctfInput = ctfProofInput(
+    await createEncryptedWalletBackupKeyHandle({ seed: SEED, realm: 'proof-kind' }),
+  )
+  assert.notEqual(
+    deriveEncryptedWalletBackupProofCommitment({
+      scopeId,
+      mint: ctfInput.mint,
+      unit: ctfInput.unit,
+      derivationLocator: ctfInput.derivationLocator,
+      proof: ctfInput.proof,
+      proofKind: 'ctf',
+      ctfMetadata: ctfInput.ctfMetadata,
+      terminalEvidence: ctfInput.terminalEvidence,
+      createdAtUnixSeconds: ctfInput.createdAtUnixSeconds,
+      updatedAtUnixSeconds: ctfInput.updatedAtUnixSeconds,
+    }).ctfWire,
+    null,
+  )
+
+  for (const proofKind of ['p2pk', 'htlc', 'unknown', 'ordinary ', 'CTF', null, undefined]) {
+    assert.throws(
+      () =>
+        deriveEncryptedWalletBackupProofCommitment({
+          ...input,
+          proofKind: proofKind as never,
+        }),
+      /backup proof kind is invalid/,
+    )
+  }
+})
+
 test('decrypt rejects metadata, body, AAD, tamper, truncation, padding, and noncanonical CBOR generically', async () => {
   const runtime = deterministicRuntime([
     fromHex(vector.inputs.objectIdHex),
@@ -8753,7 +8820,7 @@ function proofInput(keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBa
     seed: SEED,
     mint: proof.mint,
     unit: proof.unit,
-    counter: proof.counter,
+    derivationLocator: nut13(proof.keysetId, proof.counter),
     proof: {
       id: proof.keysetId,
       amount: proof.amount,
@@ -8787,7 +8854,7 @@ function proofInputAtCounter(
   ).createSecretAndBlindingFactorDeriver(SEED, base.proof.id)
   const input = {
     ...base,
-    counter,
+    derivationLocator: nut13(base.proof.id, counter),
     proof: {
       ...base.proof,
       secret: toHex(derive(counter).secret),
@@ -8811,7 +8878,7 @@ function proofInputForKeyset(
   ).createSecretAndBlindingFactorDeriver(SEED, keysetId)
   const input = {
     ...proofInput(keyHandle),
-    counter,
+    derivationLocator: nut13(keysetId, counter),
     proof: {
       ...proofInput(keyHandle).proof,
       id: keysetId,
@@ -8907,7 +8974,7 @@ function withProofStore(
           new TextEncoder().encode(input.proof.secret),
           signature,
           dleq,
-          input.counter,
+          encodeDurableWalletProofDerivationLocatorCbor(input.derivationLocator),
           input.proofKind === 'ordinary' ? 0 : 1,
           ctf,
           input.createdAtUnixSeconds,
@@ -8938,7 +9005,7 @@ function withProofStore(
       replayTombstone: 'absent' as const,
       dependentWork: 'absent' as const,
     },
-    derivationLocator: 'committed' as const,
+    derivationLocator: input.derivationLocator,
     ...rowOverrides,
   })
   return {
@@ -9485,7 +9552,7 @@ async function createVerifiableRestoreFixtureForTest(
   const privateKey = new Uint8Array(32)
   privateKey[31] = 2
   const conditionId = 'ab'.repeat(32)
-  const outcomeCollectionId = 'cd'.repeat(32)
+  const outcomeCollectionId = '6ffb74672b18de551df75ce03cbe1c1abe49fa38da54c563fc4a3f7b7af37de6'
   const finalExpiry = 1_700_001_000
   let keysetId: string
   let mintKeys: Record<string, unknown>
@@ -9580,7 +9647,7 @@ async function createVerifiableRestoreFixtureForTest(
       seed: SEED,
       mint,
       unit: 'sat',
-      counter,
+      derivationLocator: nut13(keysetId, counter),
       proof: {
         id: keysetId,
         amount: '1',
@@ -10253,7 +10320,7 @@ async function createVerifiedLosingEvidenceForTest(input: {
       },
       async loadMint() {},
       async redeemOutcomeProofs() {
-        throw { code: 13_015 }
+        throw new Cashu.MintOperationError(13_015, 'oracle not attested')
       },
     },
     proofOperationStore: store,
@@ -10328,7 +10395,7 @@ function activePredecessorRestoreState(
           new TextEncoder().encode(proofWithoutCommitment.proof.secret),
           fromHex(proofWithoutCommitment.proof.C),
           dleq === undefined ? null : [fromHex(dleq.e), fromHex(dleq.s), fromHex(dleq.r)],
-          proofWithoutCommitment.counter,
+          encodeDurableWalletProofDerivationLocatorCbor(proofWithoutCommitment.derivationLocator),
           1,
           [
             fromHex(metadata.conditionId),

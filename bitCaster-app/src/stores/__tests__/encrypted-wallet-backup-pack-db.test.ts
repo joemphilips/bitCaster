@@ -33,6 +33,7 @@ import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
 } from "@bitcaster/client-sdk/durableCustody";
+import { encodeDurableWalletProofDerivationLocatorCbor } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import { EncryptedWalletBackupPackDexieStore } from "../encrypted-wallet-backup-pack-db";
 import { EncryptedWalletBackupPreparedSourceDexieStore } from "../encrypted-wallet-backup-prepared-source-db";
@@ -57,9 +58,9 @@ afterEach(async () => {
 });
 
 describe("encrypted wallet backup Dexie pack store", () => {
-  it("defines normalized primary keys and preserves the existing wallet schema", () => {
+  it("defines normalized primary keys in the current undeployed wallet schema", () => {
     const database = createDatabase();
-    expect(database.verno).toBe(10);
+    expect(database.verno).toBe(14);
     expect(database.proofs.schema.primKey.keyPath).toBe("secret");
     expect(database.encryptedWalletBackupBuildCursors.schema.primKey.keyPath).toBe("buildId");
     expect(database.encryptedWalletBackupPackControls.schema.primKey.keyPath).toEqual([
@@ -112,7 +113,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
     ).toBe(true);
   });
 
-  it("keeps existing v8 wallet rows when it installs the undeployed schema", async () => {
+  it("clears obsolete v8 wallet rows when it installs the undeployed schema", async () => {
     const name = `backup-pack-v8-${crypto.randomUUID()}`;
     const legacy = new Dexie(name);
     legacy.version(8).stores({ proofs: "secret" });
@@ -122,11 +123,11 @@ describe("encrypted wallet backup Dexie pack store", () => {
 
     const database = new BitcasterDB(name);
     openDatabases.push(database);
-    expect(await database.proofs.get("v8-proof")).toMatchObject({ secret: "v8-proof", amount: 1 });
+    expect(await database.proofs.get("v8-proof")).toBeUndefined();
     expect(await database.encryptedWalletBackupBuildCursors.count()).toBe(0);
   });
 
-  it("adds prepared-source and snapshot-pin tables to a version-nine wallet database", async () => {
+  it("clears obsolete v9 wallet rows when it adds the current backup tables", async () => {
     const name = `backup-source-v9-${crypto.randomUUID()}`;
     const legacy = new Dexie(name);
     legacy.version(9).stores({ proofs: "secret" });
@@ -136,7 +137,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
 
     const database = new BitcasterDB(name);
     openDatabases.push(database);
-    expect(await database.proofs.get("v9-proof")).toMatchObject({ secret: "v9-proof", amount: 1 });
+    expect(await database.proofs.get("v9-proof")).toBeUndefined();
     expect(await database.encryptedWalletBackupPreparedSources.count()).toBe(0);
     expect(await database.encryptedWalletBackupSnapshotPins.count()).toBe(0);
   });
@@ -161,6 +162,53 @@ describe("encrypted wallet backup Dexie pack store", () => {
       recordId: record.recordId,
       commitment: record.commitment,
     });
+  });
+
+  it("inserts one 64-record prepared-source page in one Dexie transaction", async () => {
+    const fixture = await preparedFixture(64);
+    const database = createDatabase(WALLET_SCOPE_ID);
+    const store = new EncryptedWalletBackupPreparedSourceDexieStore({
+      database,
+      scopeId: WALLET_SCOPE_ID,
+      realm: REALM,
+      vaultId: fixture.keyHandle.vaultId,
+    });
+    const transaction = vi.spyOn(database, "transaction");
+    const bulkGet = vi.spyOn(database.encryptedWalletBackupPreparedSources, "bulkGet");
+    const bulkAdd = vi.spyOn(database.encryptedWalletBackupPreparedSources, "bulkAdd");
+
+    await store.insertPreparedSourceBatch(fixture.records);
+    await store.insertPreparedSourceBatch(fixture.records);
+
+    expect(await database.encryptedWalletBackupPreparedSources.count()).toBe(64);
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(bulkGet).toHaveBeenCalledTimes(2);
+    expect(bulkAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a conflicting prepared-source batch without adding its other rows", async () => {
+    const fixture = await preparedFixture(2);
+    const database = createDatabase(WALLET_SCOPE_ID);
+    const store = new EncryptedWalletBackupPreparedSourceDexieStore({
+      database,
+      scopeId: WALLET_SCOPE_ID,
+      realm: REALM,
+      vaultId: fixture.keyHandle.vaultId,
+    });
+    const first = fixture.records[0]!;
+    await store.insertPreparedSource(first);
+    const existing = await database.encryptedWalletBackupPreparedSources.toCollection().first();
+    if (!existing) throw new Error("prepared source is absent");
+    await database.encryptedWalletBackupPreparedSources.put({
+      ...existing,
+      snapshotId: "conflicting-snapshot",
+    });
+
+    await expect(store.insertPreparedSourceBatch([fixture.records[1]!, first])).rejects.toThrow(
+      "prepared source conflicts with existing content",
+    );
+
+    expect(await database.encryptedWalletBackupPreparedSources.count()).toBe(1);
   });
 
   it("reads a 64-row exact prepared-source snapshot batch with one bounded bulk request", async () => {
@@ -692,7 +740,12 @@ async function preparedRecord(
           new TextEncoder().encode(secret),
           fromHex("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
           [fromHex("22".repeat(32)), fromHex("33".repeat(32)), fromHex("44".repeat(32))],
-          counter,
+          encodeDurableWalletProofDerivationLocatorCbor({
+            schemaVersion: 1,
+            kind: "nut13",
+            keysetId,
+            counter,
+          }),
           0,
           null,
           1_700_000_000,
@@ -715,7 +768,7 @@ async function preparedRecord(
     seed: SEED,
     mint: "https://mint.example",
     unit: "sat",
-    counter,
+    derivationLocator: { schemaVersion: 1, kind: "nut13", keysetId, counter },
     proof: {
       id: keysetId,
       amount: "1",
@@ -754,7 +807,7 @@ async function preparedRecord(
             replayTombstone: "absent",
             dependentWork: "absent",
           },
-          derivationLocator: "committed",
+          derivationLocator: { schemaVersion: 1, kind: "nut13", keysetId, counter },
         });
       },
     },

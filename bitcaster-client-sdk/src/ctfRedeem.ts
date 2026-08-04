@@ -1,6 +1,7 @@
 import {
   Amount,
   CheckStateEnum,
+  MintOperationError,
   OutputData,
   type MintKeys,
   type OutputDataLike,
@@ -492,13 +493,7 @@ function requireBoundedOracleWitness(value: unknown): string {
 }
 
 export function isLosingLegError(error: unknown): boolean {
-  if (error && typeof error === 'object') {
-    const e = error as { code?: unknown }
-    if (typeof e.code === 'number' && e.code === ORACLE_NOT_ATTESTED_OUTCOME_CODE) {
-      return true
-    }
-  }
-  return false
+  return error instanceof MintOperationError && error.code === ORACLE_NOT_ATTESTED_OUTCOME_CODE
 }
 
 async function resumeCtfRedeem(params: {
@@ -632,21 +627,12 @@ async function executeCtfRedeem(params: {
   oracleWitness: string
   onLosingLeg?: (inputs: Proof[]) => Promise<void>
 }): Promise<RedeemOutcomeLegResult> {
+  let settled: Proof[]
   try {
-    const settled = await params.wallet.redeemOutcomeProofs({
+    settled = await params.wallet.redeemOutcomeProofs({
       inputs: withOracleWitness(params.inputs, params.oracleWitness),
       outputs: params.outputData,
     })
-    const final = requireExactCtfRedeemProofs(
-      settled,
-      params.outputData,
-      `mint result for CTF redeem ${params.operationId}`,
-    )
-    await params.proofOperationStore.markProofOperationCompleted(
-      params.operationId,
-      createCtfProofOperationCompletion('ctf-redeem', { regular: final }),
-    )
-    return { proofs: final, losing: false }
   } catch (error) {
     if (isLosingLegError(error)) {
       if (!params.proofOperationStore.markProofOperationFailed) {
@@ -662,6 +648,16 @@ async function executeCtfRedeem(params: {
     }
     throw error
   }
+  const final = requireExactCtfRedeemProofs(
+    settled,
+    params.outputData,
+    `mint result for CTF redeem ${params.operationId}`,
+  )
+  await params.proofOperationStore.markProofOperationCompleted(
+    params.operationId,
+    createCtfProofOperationCompletion('ctf-redeem', { regular: final }),
+  )
+  return { proofs: final, losing: false }
 }
 
 function captureAuthenticatedCtfRedeemTerminalEvidence(

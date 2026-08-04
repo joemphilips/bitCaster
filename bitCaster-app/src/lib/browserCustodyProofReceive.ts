@@ -1,6 +1,7 @@
 import { isBlsKeyset, type Proof, type Wallet as CashuWallet } from "@cashu/cashu-ts";
 import {
   deriveDurableCustodyArtifactFingerprint,
+  decodeCanonicalMintOrigin,
   type DurableCustodyOwnerAuthorization,
 } from "@bitcaster/client-sdk/durableCustody";
 import {
@@ -11,6 +12,7 @@ import {
 } from "@bitcaster/client-sdk/durableCustodyProofImport";
 import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
+import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { commitBrowserCustodyProofImport } from "../stores/browser-custody-proof-import";
@@ -19,13 +21,13 @@ import {
   createBrowserCustodyProofRow,
   type BrowserCustodyProofAsset,
 } from "../stores/durable-custody-db";
+import type { BrowserCustodyConditionalKeysetAuthority } from "../stores/durable-custody-types";
 import { db, type BitcasterDB, type StoredProof } from "../stores/proof-db";
 
 const SCOPE_LEASE_MS = 10 * 60 * 1_000;
-const DERIVATION_COUNTER_MAX = 2_147_483_647;
 type BrowserProofLocatorMap = ReadonlyMap<
   string,
-  { readonly keysetId: string; readonly counter: number }
+  Extract<DurableWalletProofDerivationLocator, { kind: "nut13" }>
 > | null;
 
 export interface AdmitBrowserReceivedProofsInput {
@@ -62,7 +64,12 @@ export async function admitBrowserReceivedProofs(
   const now = input.now ?? Date.now;
   const randomId = input.randomId ?? (() => crypto.randomUUID());
   const scope = browserWalletScope(input.seed);
-  const keysets = resolveImportKeysets(input.wallet, input.proofs, input.unit);
+  const keysets = resolveImportKeysets(
+    input.wallet,
+    input.proofs,
+    input.unit,
+    decodeCanonicalMintOrigin(input.mintUrl),
+  );
   const derivationLocators = deriveProofLocators(input);
   const proofSetFingerprint = deriveDurableCustodyArtifactFingerprint(
     input.proofs.map(serializeDurableCustodyProofArtifact),
@@ -111,7 +118,10 @@ interface CommitImportPageInput {
   readonly owner: DurableCustodyOwnerAuthorization;
   readonly keysets: ReadonlyMap<
     string,
-    DurableCustodyProofImportKeyset & { readonly asset: BrowserCustodyProofAsset }
+    DurableCustodyProofImportKeyset & {
+      readonly asset: BrowserCustodyProofAsset;
+      readonly conditionalKeyset: BrowserCustodyConditionalKeysetAuthority | undefined;
+    }
   >;
   readonly pageIndex: number;
   readonly pageCount: number;
@@ -145,6 +155,7 @@ function commitImportPage(pageInput: CommitImportPageInput): Promise<void> {
       pageInput.derivationLocators === null
         ? null
         : requiredDerivationLocator(pageInput.derivationLocators, proof.secret),
+    conditionalKeyset: pageInput.keysets.get(proof.id)?.conditionalKeyset,
   }));
   const prepared = prepareDurableCustodyProofImport({
     scope,
@@ -181,44 +192,30 @@ function deriveProofLocators(input: AdmitBrowserReceivedProofsInput): BrowserPro
   const { keysetId, counterStart, counterCount } = input.derivationAuthority;
   const rangeProofs = input.derivationRangeProofs ?? input.proofs;
   if (
-    typeof keysetId !== "string" ||
-    keysetId.length === 0 ||
-    keysetId.length > 128 ||
-    !Number.isSafeInteger(counterStart) ||
-    counterStart < 0 ||
-    !Number.isSafeInteger(counterCount) ||
-    counterCount < 1 ||
-    counterStart + counterCount - 1 > DERIVATION_COUNTER_MAX ||
     counterCount !== rangeProofs.length ||
     rangeProofs.some((proof) => proof.id !== keysetId) ||
     input.proofs.some((proof) => proof.id !== keysetId)
   ) {
     throw new Error("Browser proof derivation keyset is invalid");
   }
-  if (/^(?:01|02)[0-9a-f]{64}$/.test(keysetId)) {
-    const locators = locateSeedDerivedProofLineage({
-      seed: input.seed,
-      keysetId,
-      counterStart,
-      counterCount,
-      proofs: rangeProofs,
-    });
-    const locatorsBySecret = new Map(locators.map(({ secret, ...locator }) => [secret, locator]));
-    if (input.proofs.some((proof) => !locatorsBySecret.has(proof.secret))) {
-      throw new Error("Browser proof derivation locator is missing");
-    }
-    return locatorsBySecret;
+  const locators = locateSeedDerivedProofLineage({
+    seed: input.seed,
+    keysetId,
+    counterStart,
+    counterCount,
+    proofs: rangeProofs,
+  });
+  const locatorsBySecret = new Map(locators.map(({ secret, ...locator }) => [secret, locator]));
+  if (input.proofs.some((proof) => !locatorsBySecret.has(proof.secret))) {
+    throw new Error("Browser proof derivation locator is missing");
   }
-  if (keysetId.startsWith("01") || keysetId.startsWith("02")) {
-    throw new Error("Browser proof derivation keyset is invalid");
-  }
-  return null;
+  return locatorsBySecret;
 }
 
 function requiredDerivationLocator(
-  locators: ReadonlyMap<string, { readonly keysetId: string; readonly counter: number }>,
+  locators: ReadonlyMap<string, Extract<DurableWalletProofDerivationLocator, { kind: "nut13" }>>,
   secret: string,
-): { readonly keysetId: string; readonly counter: number } {
+): Extract<DurableWalletProofDerivationLocator, { kind: "nut13" }> {
   const locator = locators.get(secret);
   if (!locator) throw new Error("Browser proof derivation locator is missing");
   return locator;
@@ -238,13 +235,20 @@ function resolveImportKeysets(
   wallet: CashuWallet,
   proofs: readonly Proof[],
   unit: "sat" | "msat",
+  inputMint: string,
 ): ReadonlyMap<
   string,
-  DurableCustodyProofImportKeyset & { readonly asset: BrowserCustodyProofAsset }
+  DurableCustodyProofImportKeyset & {
+    readonly asset: BrowserCustodyProofAsset;
+    readonly conditionalKeyset: BrowserCustodyConditionalKeysetAuthority | undefined;
+  }
 > {
   const authorities = new Map<
     string,
-    DurableCustodyProofImportKeyset & { readonly asset: BrowserCustodyProofAsset }
+    DurableCustodyProofImportKeyset & {
+      readonly asset: BrowserCustodyProofAsset;
+      readonly conditionalKeyset: BrowserCustodyConditionalKeysetAuthority | undefined;
+    }
   >();
   for (const keysetId of new Set(proofs.map((proof) => proof.id))) {
     const keyset = wallet.getKeyset(keysetId);
@@ -264,6 +268,7 @@ function resolveImportKeysets(
       keysetExpiryMs,
       requireDleq: false,
       asset: verifiedKeysetAsset(keyset.conditional),
+      conditionalKeyset: conditionalKeysetAuthority(keyset, unit, inputMint),
     });
   }
   return authorities;
@@ -273,7 +278,10 @@ function proofAsset(
   proof: StoredProof,
   keysets: ReadonlyMap<
     string,
-    DurableCustodyProofImportKeyset & { readonly asset: BrowserCustodyProofAsset }
+    DurableCustodyProofImportKeyset & {
+      readonly asset: BrowserCustodyProofAsset;
+      readonly conditionalKeyset: BrowserCustodyConditionalKeysetAuthority | undefined;
+    }
   >,
 ): BrowserCustodyProofAsset {
   const keyset = keysets.get(proof.id);
@@ -303,15 +311,48 @@ function pageKeysetFacts(
   keysetIds: ReadonlySet<string>,
   keysets: ReadonlyMap<
     string,
-    DurableCustodyProofImportKeyset & { readonly asset: BrowserCustodyProofAsset }
+    DurableCustodyProofImportKeyset & {
+      readonly asset: BrowserCustodyProofAsset;
+      readonly conditionalKeyset: BrowserCustodyConditionalKeysetAuthority | undefined;
+    }
   >,
 ): DurableCustodyProofImportKeyset[] {
   return [...keysetIds].map((keysetId) => {
     const authority = keysets.get(keysetId);
     if (!authority) throw new Error("Browser proof import keyset authority is missing");
-    const { asset: _, ...facts } = authority;
+    const { asset: _, conditionalKeyset: __, ...facts } = authority;
     return facts;
   });
+}
+
+function conditionalKeysetAuthority(
+  keyset: ReturnType<CashuWallet["getKeyset"]>,
+  unit: "sat" | "msat",
+  normalizedMint: string,
+): BrowserCustodyConditionalKeysetAuthority | undefined {
+  const conditional = keyset.conditional;
+  if (!conditional) return undefined;
+  if (
+    keyset.expiry === undefined ||
+    conditional.registeredAt === undefined ||
+    keyset.id.startsWith("02")
+  ) {
+    throw new Error("Browser conditional keyset authority is incomplete");
+  }
+  return {
+    schemaVersion: 1,
+    normalizedMint,
+    unit,
+    keysetId: keyset.id,
+    denominationPublicKeys: Object.fromEntries(Object.entries(keyset.keys)),
+    inputFeePpk: keyset.fee,
+    conditionId: conditional.conditionId,
+    outcomeCollection: conditional.outcomeCollection,
+    outcomeCollectionId: conditional.outcomeCollectionId,
+    registeredAtUnixSeconds: conditional.registeredAt,
+    finalExpiryUnixSeconds: keyset.expiry,
+    curve: "secp256k1",
+  };
 }
 
 function verifiedKeysetAsset(

@@ -64,6 +64,14 @@ import {
 } from './encryptedWalletBackupSnapshotAuthority.ts'
 import { requireEncryptedWalletBackupObjectAad } from './encryptedWalletBackupObjectAad.ts'
 import { encryptedWalletBackupObjectDigest } from './encryptedWalletBackupObjectDigest.ts'
+import {
+  decodeDurableWalletProofDerivationLocator,
+  decodeDurableWalletProofDerivationLocatorCbor,
+  deriveDurableWalletProofSecret,
+  durableWalletProofDerivationLocatorsEqual,
+  encodeDurableWalletProofDerivationLocatorCbor,
+  type DurableWalletProofDerivationLocator,
+} from './durableWalletProofDerivationLocator.ts'
 import { requireRealm, requireUtf8Text } from './encryptedWalletBackupServerValidation.ts'
 import {
   requireBoundedManifestTargetCapability,
@@ -148,11 +156,6 @@ const SECP256K1_ORDER = secp256k1.Point.Fn.ORDER
 const UINT64_MAX = 18_446_744_073_709_551_615n
 const REQUEST_SCALAR_ATTEMPTS = 256
 const OBJECT_ID_COLLISION_ATTEMPTS = 8
-
-type SecretDeriver = (counter: number) => {
-  secret: Uint8Array
-  blindingFactor: Uint8Array
-}
 
 export interface EncryptedWalletBackupRuntime {
   subtle: SubtleCrypto
@@ -297,7 +300,6 @@ interface KeyAuthority {
   readonly requestAuthRoot: Uint8Array
   readonly vaultIdBytes: Uint8Array
   readonly runtime: EncryptedWalletBackupRuntime
-  readonly derivers: Map<string, SecretDeriver>
   readonly preparedObjectIds: Set<string>
 }
 
@@ -361,7 +363,7 @@ export interface EncryptedWalletBackupCommittedProofSnapshot {
   readonly reserved: boolean
   readonly ambiguousMintOperation: boolean
   readonly proofPins: EncryptedWalletBackupProofPins
-  readonly derivationLocator: 'committed' | 'missing'
+  readonly derivationLocator: DurableWalletProofDerivationLocator
 }
 
 type EncryptedWalletBackupProofKind = 'ordinary' | 'ctf' | 'p2pk' | 'htlc' | 'unknown'
@@ -392,7 +394,7 @@ export interface EncryptedWalletBackupProofInput {
   seed: Uint8Array
   mint: string
   unit: string
-  counter: number
+  derivationLocator: DurableWalletProofDerivationLocator
   proof: {
     id: string
     amount: string
@@ -811,7 +813,7 @@ interface UnverifiedEncryptedWalletBackupProof {
   readonly commitment: string
   readonly mint: string
   readonly unit: string
-  readonly counter: number
+  readonly derivationLocator: DurableWalletProofDerivationLocator
   readonly encodedProofKind: 0 | 1
   readonly ctfMetadata: EncryptedWalletBackupCtfMetadata | null
   readonly terminalEvidence: EncryptedWalletBackupCtfTerminalEvidence | null
@@ -901,7 +903,7 @@ export interface EncryptedWalletBackupRestoreProofRecord {
   readonly proofCommitment: string
   readonly mint: string
   readonly unit: string
-  readonly counter: number
+  readonly derivationLocator: DurableWalletProofDerivationLocator
   readonly proofKind: 'ordinary' | 'ctf'
   readonly ctfMetadata: EncryptedWalletBackupCtfMetadata | null
   readonly terminalEvidence: EncryptedWalletBackupCtfTerminalEvidence | null
@@ -1006,7 +1008,6 @@ export async function createEncryptedWalletBackupKeyHandle(input: {
     requestAuthRoot,
     vaultIdBytes,
     runtime,
-    derivers: new Map(),
     preparedObjectIds: new Set(),
   })
   return handle
@@ -1525,6 +1526,127 @@ export function verifyEncryptedWalletBackupConditionalKeyset(input: {
   return handle
 }
 
+/** Derive the canonical deterministic proof record commitment. */
+export function deriveEncryptedWalletBackupProofCommitment(input: {
+  scopeId: string
+  mint: string
+  unit: string
+  derivationLocator: DurableWalletProofDerivationLocator
+  proof: unknown
+  proofKind: EncryptedWalletBackupProofKind
+  ctfMetadata: EncryptedWalletBackupCtfMetadata | null
+  terminalEvidence: AuthenticatedCtfRedeemTerminalEvidence | null
+  createdAtUnixSeconds: number
+  updatedAtUnixSeconds: number
+}): {
+  readonly proofId: string
+  readonly commitment: string
+  readonly ctfWire: EncryptedWalletBackupCtfWire | null
+  readonly keysetId: string
+  readonly curve: 'secp256k1' | 'bls12-381'
+} {
+  return deriveEncryptedWalletBackupProofCommitmentFromNormalized(
+    input,
+    normalizeEncryptedWalletBackupProof(input.proof),
+  )
+}
+
+interface NormalizedEncryptedWalletBackupProof {
+  readonly keyset: KeysetId
+  readonly amount: string
+  readonly secret: string
+  readonly signature: Uint8Array
+  readonly dleq: null | [Uint8Array, Uint8Array, Uint8Array]
+}
+
+function encodeEncryptedWalletBackupProofKind(value: EncryptedWalletBackupProofKind): 0 | 1 {
+  switch (value) {
+    case 'ordinary':
+      return 0
+    case 'ctf':
+      return 1
+    default:
+      throw new Error('backup proof kind is invalid')
+  }
+}
+
+function normalizeEncryptedWalletBackupProof(value: unknown): NormalizedEncryptedWalletBackupProof {
+  const proof = requireRecord(value, 'backup proof')
+  requireKnownFields(proof, ['id', 'amount', 'secret', 'C'], ['dleq', 'witness', 'p2pk_e'])
+  if (proof.witness !== undefined || proof.p2pk_e !== undefined)
+    throw new Error('unsupported proof field')
+  const keyset = decodeKeysetId(proof.id)
+  return {
+    keyset,
+    amount: requireAmount(proof.amount),
+    secret: requireLowerHexSecret(proof.secret),
+    signature: requireSignature(proof.C, keyset.curve),
+    dleq: requireDleq(proof.dleq, keyset.curve),
+  }
+}
+
+function deriveEncryptedWalletBackupProofCommitmentFromNormalized(
+  input: {
+    scopeId: string
+    mint: string
+    unit: string
+    derivationLocator: DurableWalletProofDerivationLocator
+    proofKind: EncryptedWalletBackupProofKind
+    ctfMetadata: EncryptedWalletBackupCtfMetadata | null
+    terminalEvidence: AuthenticatedCtfRedeemTerminalEvidence | null
+    createdAtUnixSeconds: number
+    updatedAtUnixSeconds: number
+  },
+  normalized: NormalizedEncryptedWalletBackupProof,
+): {
+  readonly proofId: string
+  readonly commitment: string
+  readonly ctfWire: EncryptedWalletBackupCtfWire | null
+  readonly keysetId: string
+  readonly curve: 'secp256k1' | 'bls12-381'
+} {
+  const mint = requireNormalizedMint(input.mint)
+  const unit = requireBoundedText(input.unit, 64, 'backup proof unit')
+  const derivationLocator = decodeDurableWalletProofDerivationLocator(input.derivationLocator)
+  const { keyset, amount, secret, signature, dleq } = normalized
+  const createdAt = requireNonNegativeSafeInteger(input.createdAtUnixSeconds, 'proof creation time')
+  const updatedAt = requireNonNegativeSafeInteger(input.updatedAtUnixSeconds, 'proof update time')
+  if (updatedAt < createdAt) throw new Error('proof timestamps are invalid')
+  const proofKindCode = encodeEncryptedWalletBackupProofKind(input.proofKind)
+  const ctfBase = decodeCtfMetadata(input.ctfMetadata, proofKindCode)
+  const terminalSeal = prepareCtfTerminalSeal(input, mint, keyset.text, ctfBase)
+  const ctfWire: EncryptedWalletBackupCtfWire | null =
+    ctfBase === null ? null : [...ctfBase, terminalSeal]
+  const proofId = deriveDurableCustodyProofId({
+    scopeId: requireBoundedText(input.scopeId, 512, 'backup proof scope id'),
+    normalizedMint: mint,
+    unit,
+    keysetId: keyset.identityText,
+    secret,
+  })
+  const commitment = bytesToHex(
+    sha256(
+      encodeCanonical([
+        1,
+        'proof-record-commitment',
+        mint,
+        unit,
+        [keyset.kindCode, keyset.text],
+        amount,
+        new TextEncoder().encode(secret),
+        signature,
+        dleq,
+        encodeDurableWalletProofDerivationLocatorCbor(derivationLocator),
+        proofKindCode,
+        ctfWire,
+        createdAt,
+        updatedAt,
+      ]),
+    ),
+  )
+  return Object.freeze({ proofId, commitment, ctfWire, keysetId: keyset.text, curve: keyset.curve })
+}
+
 export async function prepareEncryptedWalletBackupProof(
   input: EncryptedWalletBackupProofInput,
 ): Promise<PreparedEncryptedWalletBackupProof> {
@@ -1535,7 +1657,7 @@ export async function prepareEncryptedWalletBackupProof(
   }
   const mint = requireNormalizedMint(input.mint)
   const unit = requireBoundedText(input.unit, 64, 'backup proof unit')
-  const counter = requireInteger(input.counter, 0, 2_147_483_647, 'backup proof counter')
+  const derivationLocator = decodeDurableWalletProofDerivationLocator(input.derivationLocator)
   const proof = requireRecord(input.proof, 'backup proof')
   requireKnownFields(proof, ['id', 'amount', 'secret', 'C'], ['dleq', 'witness', 'p2pk_e'])
   if (proof.witness !== undefined || proof.p2pk_e !== undefined) {
@@ -1546,31 +1668,20 @@ export async function prepareEncryptedWalletBackupProof(
   const secret = requireLowerHexSecret(proof.secret)
   const signature = requireSignature(proof.C, keyset.curve)
   const dleq = requireDleq(proof.dleq, keyset.curve)
-  let deriver = authority.derivers.get(keyset.text)
-  if (deriver === undefined) {
-    try {
-      deriver = cashuSecretDeriver(seed, keyset.text)
-    } catch {
-      throw new Error('backup proof keyset is invalid')
-    }
-    authority.derivers.set(keyset.text, deriver)
-  }
-  let derivedSecret: Uint8Array
+  let derivedSecret: string
   try {
-    derivedSecret = deriver(counter).secret
+    derivedSecret = deriveDurableWalletProofSecret({
+      seed,
+      locator: derivationLocator,
+      proofKeysetId: keyset.text,
+      proofAmount: amount,
+    })
   } catch {
     throw new Error('backup proof derivation failed')
   }
-  if (bytesToHex(derivedSecret) !== secret) {
+  if (derivedSecret !== secret) {
     throw new Error('proof secret does not match deterministic derivation')
   }
-  const proofId = deriveDurableCustodyProofId({
-    scopeId: deriveEncryptedWalletBackupDurableCustodyScopeId(seed),
-    normalizedMint: mint,
-    unit,
-    keysetId: keyset.identityText,
-    secret,
-  })
   const effectiveNow = requireNonNegativeSafeInteger(
     input.effectiveNowUnixSeconds,
     'backup preparation effective time',
@@ -1578,29 +1689,25 @@ export async function prepareEncryptedWalletBackupProof(
   const createdAt = requireNonNegativeSafeInteger(input.createdAtUnixSeconds, 'proof creation time')
   const updatedAt = requireNonNegativeSafeInteger(input.updatedAtUnixSeconds, 'proof update time')
   if (updatedAt < createdAt) throw new Error('proof timestamps are invalid')
-  const proofKindCode = input.proofKind === 'ordinary' ? 0 : 1
-  const ctfBase = decodeCtfMetadata(input.ctfMetadata, proofKindCode)
-  const terminalSeal = prepareCtfTerminalSeal(input, mint, keyset.text, ctfBase)
-  const ctfMetadata: EncryptedWalletBackupCtfWire | null =
-    ctfBase === null ? null : [...ctfBase, terminalSeal]
+  const commitmentAuthority = deriveEncryptedWalletBackupProofCommitmentFromNormalized(
+    {
+      scopeId: deriveEncryptedWalletBackupDurableCustodyScopeId(seed),
+      mint,
+      unit,
+      derivationLocator,
+      proofKind: input.proofKind,
+      ctfMetadata: input.ctfMetadata,
+      terminalEvidence: input.terminalEvidence,
+      createdAtUnixSeconds: createdAt,
+      updatedAtUnixSeconds: updatedAt,
+    },
+    { keyset, amount, secret, signature, dleq },
+  )
+  const proofId = commitmentAuthority.proofId
+  const proofKindCode = encodeEncryptedWalletBackupProofKind(input.proofKind)
+  const ctfMetadata = commitmentAuthority.ctfWire
   const keysetWire = [keyset.kindCode, keyset.text]
-  const commitmentPreimage = [
-    1,
-    'proof-record-commitment',
-    mint,
-    unit,
-    keysetWire,
-    amount,
-    new TextEncoder().encode(secret),
-    signature,
-    dleq,
-    counter,
-    proofKindCode,
-    ctfMetadata,
-    createdAt,
-    updatedAt,
-  ]
-  const commitment = bytesToHex(sha256(encodeCanonical(commitmentPreimage)))
+  const commitment = commitmentAuthority.commitment
   const committedSnapshot = await requireAuthoritativeStorageSnapshot(
     input,
     proofId,
@@ -1621,7 +1728,7 @@ export async function prepareEncryptedWalletBackupProof(
     new TextEncoder().encode(secret),
     signature,
     dleq,
-    counter,
+    encodeDurableWalletProofDerivationLocatorCbor(derivationLocator),
     proofKindCode,
     ctfMetadata,
     createdAt,
@@ -1707,7 +1814,7 @@ function requireBackupEligibleClassification(
     reserved: input.reserved,
     ambiguousMintOperation: input.ambiguousMintOperation,
     proofPins: input.proofPins,
-    derivationLocator: input.derivationLocator,
+    derivationLocator: 'committed',
     proofCommitment: { state: 'verified', digest: commitment },
     backupReceiptEvidence: null,
   })
@@ -1796,6 +1903,9 @@ async function requireAuthoritativeStorageSnapshot(
   }
   if (row.proofKind !== input.proofKind)
     throw new Error('proof does not match authoritative storage snapshot')
+  if (!durableWalletProofDerivationLocatorsEqual(row.derivationLocator, input.derivationLocator)) {
+    throw new Error('proof derivation locator does not match authoritative storage snapshot')
+  }
   const metadata = ctfTuple === null ? null : ctfTupleToMetadata(ctfTuple)
   if (!equalCtfMetadata(row.ctfMetadata, metadata)) {
     throw new Error('proof does not match authoritative storage snapshot')
@@ -1915,11 +2025,7 @@ function decodeCommittedProofSnapshot(value: unknown): EncryptedWalletBackupComm
     reserved: requireBoolean(row.reserved, 'stored reservation'),
     ambiguousMintOperation: requireBoolean(row.ambiguousMintOperation, 'stored ambiguity'),
     proofPins: decodeProofPins(row.proofPins),
-    derivationLocator: requireOneOfValue(
-      row.derivationLocator,
-      ['committed', 'missing'],
-      'stored derivation locator',
-    ),
+    derivationLocator: decodeDurableWalletProofDerivationLocator(row.derivationLocator),
   })
 }
 
@@ -3896,7 +4002,7 @@ export async function restoreEncryptedWalletBackupProofs(input: {
         proofCommitment: record.commitment,
         mint: record.mint,
         unit: record.unit,
-        counter: record.counter,
+        derivationLocator: record.derivationLocator,
         proofKind: record.encodedProofKind === 0 ? 'ordinary' : 'ctf',
         ctfMetadata: record.ctfMetadata,
         terminalEvidence: record.terminalEvidence,
@@ -4461,7 +4567,7 @@ function decodeRestoreProofRecord(value: unknown): EncryptedWalletBackupRestoreP
     'proofCommitment',
     'mint',
     'unit',
-    'counter',
+    'derivationLocator',
     'proofKind',
     'ctfMetadata',
     'terminalEvidence',
@@ -4563,7 +4669,7 @@ function decodeRestoreProofRecord(value: unknown): EncryptedWalletBackupRestoreP
     proofCommitment: requireLowerHex(record.proofCommitment, 32, 'restored proof commitment'),
     mint: requireNormalizedMint(record.mint),
     unit: requireBoundedText(record.unit, 64, 'restored proof unit'),
-    counter: requireInteger(record.counter, 0, 2_147_483_647, 'restored counter'),
+    derivationLocator: decodeDurableWalletProofDerivationLocator(record.derivationLocator),
     proofKind,
     ctfMetadata: ctf === null ? null : ctfTupleToMetadata(ctf),
     terminalEvidence,
@@ -4636,7 +4742,10 @@ function isExactActiveToVerifiedLosingCtfProof(
     current.proofId === candidate.proofId &&
     current.mint === candidate.mint &&
     current.unit === candidate.unit &&
-    current.counter === candidate.counter &&
+    durableWalletProofDerivationLocatorsEqual(
+      current.derivationLocator,
+      candidate.derivationLocator,
+    ) &&
     equalCtfMetadata(current.ctfMetadata, candidate.ctfMetadata) &&
     current.createdAtUnixSeconds === candidate.createdAtUnixSeconds &&
     current.updatedAtUnixSeconds <= candidate.updatedAtUnixSeconds &&
@@ -4681,7 +4790,7 @@ function deriveRestoreProofCommitment(
         new TextEncoder().encode(record.proof.secret),
         requireSignature(record.proof.C, keyset.curve),
         dleq,
-        record.counter,
+        encodeDurableWalletProofDerivationLocatorCbor(record.derivationLocator),
         proofKindCode,
         ctf,
         record.createdAtUnixSeconds,
@@ -4709,7 +4818,7 @@ function equalRestoreProofAuthority(
     left.proofCommitment === right.proofCommitment &&
     left.mint === right.mint &&
     left.unit === right.unit &&
-    left.counter === right.counter &&
+    durableWalletProofDerivationLocatorsEqual(left.derivationLocator, right.derivationLocator) &&
     left.proofKind === right.proofKind &&
     equalCtfMetadata(left.ctfMetadata, right.ctfMetadata) &&
     equalCtfTerminalEvidence(left.terminalEvidence, right.terminalEvidence) &&
@@ -5008,11 +5117,10 @@ async function decodeProofChunkRecords(
   )
     throw new Error('root')
   const records = value[2]
-  const derivers = new Map<string, SecretDeriver>()
   const restored: UnverifiedEncryptedWalletBackupProof[] = []
   const yieldToHost = cooperativeYield ?? defaultCooperativeYield
   for (let index = 0; index < records.length; index += 1) {
-    restored.push(decodeProofRecord(records[index], seed, scopeId, derivers))
+    restored.push(decodeProofRecord(records[index], seed, scopeId))
     // Four-record work slices keep legacy BIP-32 derivation comfortably below
     // a browser long-task budget on the measured corpus; this is a work bound,
     // not a latency guarantee.
@@ -5030,7 +5138,6 @@ function decodeProofRecord(
   value: unknown,
   seed: Uint8Array,
   scopeId: string,
-  derivers: Map<string, SecretDeriver>,
 ): UnverifiedEncryptedWalletBackupProof {
   if (!Array.isArray(value) || value.length !== 14) throw new Error('record')
   const [
@@ -5043,7 +5150,7 @@ function decodeProofRecord(
     secretRaw,
     signatureRaw,
     dleqRaw,
-    counterRaw,
+    derivationLocatorRaw,
     proofKindRaw,
     ctfRaw,
     createdRaw,
@@ -5060,19 +5167,23 @@ function decodeProofRecord(
   requireLowerHexSecret(secret)
   const signature = requireSignatureBytes(signatureRaw, keyset.curve)
   const dleq = requireDleqBytes(dleqRaw, keyset.curve)
-  const counter = requireInteger(counterRaw, 0, 2_147_483_647, 'counter')
+  const derivationLocator = decodeDurableWalletProofDerivationLocatorCbor(derivationLocatorRaw)
   if (proofKindRaw !== 0 && proofKindRaw !== 1) throw new Error('proof kind')
   const effectiveNow = 0
   const ctf = decodeCtfWire(ctfRaw, proofKindRaw, effectiveNow, false)
   const createdAt = requireNonNegativeSafeInteger(createdRaw, 'created')
   const updatedAt = requireNonNegativeSafeInteger(updatedRaw, 'updated')
   if (updatedAt < createdAt) throw new Error('timestamps')
-  let deriver = derivers.get(keyset.text)
-  if (deriver === undefined) {
-    deriver = cashuSecretDeriver(seed, keyset.text)
-    derivers.set(keyset.text, deriver)
+  if (
+    deriveDurableWalletProofSecret({
+      seed,
+      locator: derivationLocator,
+      proofKeysetId: keyset.text,
+      proofAmount: amount,
+    }) !== secret
+  ) {
+    throw new Error('secret derivation')
   }
-  if (bytesToHex(deriver(counter).secret) !== secret) throw new Error('secret derivation')
   const expectedProofId = deriveDurableCustodyProofId({
     scopeId,
     normalizedMint: mint,
@@ -5092,7 +5203,7 @@ function decodeProofRecord(
     secretBytes,
     signature,
     dleq,
-    counter,
+    encodeDurableWalletProofDerivationLocatorCbor(derivationLocator),
     proofKindRaw,
     ctf,
     createdAt,
@@ -5122,7 +5233,7 @@ function decodeProofRecord(
     commitment: bytesToHex(expectedCommitment),
     mint,
     unit,
-    counter,
+    derivationLocator,
     encodedProofKind: proofKindRaw,
     ctfMetadata:
       ctf === null
@@ -5230,7 +5341,7 @@ function decodePreparedRecordPersistence(input: {
     throw new Error('prepared backup record is not canonical CBOR')
   }
   const scopeId = deriveEncryptedWalletBackupDurableCustodyScopeId(seed)
-  const proof = decodeProofRecord(raw, seed, scopeId, new Map())
+  const proof = decodeProofRecord(raw, seed, scopeId)
   const expectedManifestEntry = encodeCanonical([
     ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
     raw[0],
@@ -5596,7 +5707,7 @@ function isCashuLegacyBase64(value: string): boolean {
 }
 
 function prepareCtfTerminalSeal(
-  input: EncryptedWalletBackupProofInput,
+  input: Pick<EncryptedWalletBackupProofInput, 'terminalEvidence' | 'updatedAtUnixSeconds'>,
   mint: string,
   keysetId: string,
   ctf: EncryptedWalletBackupCtfBase | null,
@@ -6518,16 +6629,6 @@ function randomBytes(runtime: EncryptedWalletBackupRuntime, length: number): Uin
   if (returned !== result || result.byteLength !== length)
     throw new Error('crypto runtime returned invalid randomness')
   return result
-}
-
-function cashuSecretDeriver(seed: Uint8Array, keysetId: string): SecretDeriver {
-  const create = (
-    Cashu as unknown as {
-      createSecretAndBlindingFactorDeriver(seed: Uint8Array, keysetId: string): SecretDeriver
-    }
-  ).createSecretAndBlindingFactorDeriver
-  if (typeof create !== 'function') throw new Error('cashu derivation is unavailable')
-  return create(seed, keysetId)
 }
 
 function requireRecord(value: unknown, name: string): Record<string, unknown> {

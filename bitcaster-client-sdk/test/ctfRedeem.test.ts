@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { CheckStateEnum, type MintKeys, type Proof, type ProofState } from '@cashu/cashu-ts'
+import {
+  CheckStateEnum,
+  MintOperationError,
+  type MintKeys,
+  type Proof,
+  type ProofState,
+} from '@cashu/cashu-ts'
 import {
   buildKeysetRedeemOperationId,
   getActiveRegularKeyset,
@@ -21,8 +27,14 @@ import type {
 import { DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX } from '../src/durableCustody.ts'
 
 test('isLosingLegError recognizes the mint oracle-not-attested error code', () => {
-  assert.equal(isLosingLegError({ code: ORACLE_NOT_ATTESTED_OUTCOME_CODE }), true)
-  assert.equal(isLosingLegError({ code: 13014 }), false)
+  assert.equal(
+    isLosingLegError(
+      new MintOperationError(ORACLE_NOT_ATTESTED_OUTCOME_CODE, 'oracle not attested'),
+    ),
+    true,
+  )
+  assert.equal(isLosingLegError(new MintOperationError(13014, 'other mint error')), false)
+  assert.equal(isLosingLegError({ code: ORACLE_NOT_ATTESTED_OUTCOME_CODE }), false)
   assert.equal(isLosingLegError(new Error('oracle not attested outcome')), false)
   assert.equal(isLosingLegError(null), false)
 })
@@ -168,7 +180,9 @@ test('redeemOutcomeLegWithOperation rejects an uneconomic page before persistenc
 
 test('redeemOutcomeLegWithOperation terminally records losing legs', async () => {
   const store = new MemoryProofOperationStore()
-  const wallet = new FakeRedeemWallet({ error: { code: ORACLE_NOT_ATTESTED_OUTCOME_CODE } })
+  const wallet = new FakeRedeemWallet({
+    error: new MintOperationError(ORACLE_NOT_ATTESTED_OUTCOME_CODE, 'oracle not attested'),
+  })
 
   const result = await redeemOutcomeLegWithOperation({
     mintUrl: 'https://mint.example',

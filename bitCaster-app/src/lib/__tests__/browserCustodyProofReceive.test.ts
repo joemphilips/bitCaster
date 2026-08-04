@@ -42,8 +42,7 @@ describe("browser custody proof receive", () => {
     expect(await database.custodyProofs.count()).toBe(130);
     expect(await database.custodyProofBackupAuthorities.count()).toBe(130);
     expect((await database.custodyProofBackupAuthorities.toArray())[0]).toMatchObject({
-      derivationKeysetId: null,
-      derivationCounter: null,
+      derivationLocator: null,
     });
     expect(await database.custodyOperations.count()).toBe(2);
     expect(
@@ -76,20 +75,22 @@ describe("browser custody proof receive", () => {
 
     expect(
       (await database.custodyProofBackupAuthorities.toArray())
-        .map((row) => row.derivationCounter)
+        .map((row) =>
+          row.derivationLocator?.kind === "nut13" ? row.derivationLocator.counter : null,
+        )
         .sort(),
     ).toEqual([0, 2]);
   });
 
-  it("keeps a verified legacy receive locally when it has a persisted counter authority", async () => {
+  it("persists an SDK nut13 locator for a verified legacy receive", async () => {
     database = new BitcasterDB(`proof-receive-legacy-${crypto.randomUUID()}`);
     await admitBrowserReceivedProofs({
-      seed: new Uint8Array(32).fill(7),
+      seed: MODERN_SEED,
       sourceOperationId: "receive:legacy",
       mintUrl: "https://mint.example",
       unit: "sat",
       wallet: wallet(),
-      proofs: [proof(0)],
+      proofs: [legacyProof(4)],
       derivationAuthority: { keysetId: KEYSET_ID, counterStart: 4, counterCount: 1 },
       database,
       lockManager: immediateLockManager(),
@@ -97,8 +98,12 @@ describe("browser custody proof receive", () => {
     });
 
     expect((await database.custodyProofBackupAuthorities.toArray())[0]).toMatchObject({
-      derivationKeysetId: null,
-      derivationCounter: null,
+      derivationLocator: {
+        schemaVersion: 1,
+        kind: "nut13",
+        keysetId: KEYSET_ID,
+        counter: 4,
+      },
     });
   });
 
@@ -120,7 +125,7 @@ describe("browser custody proof receive", () => {
         database,
         lockManager: immediateLockManager(),
       }),
-    ).rejects.toThrow(/derivation keyset/);
+    ).rejects.toThrow(/(?:Browser proof derivation keyset|seed-derived proof lineage input)/);
     expect(await database.custodyProofs.count()).toBe(0);
     expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
   });
@@ -140,7 +145,7 @@ describe("browser custody proof receive", () => {
         database,
         lockManager: immediateLockManager(),
       }),
-    ).rejects.toThrow(/derivation keyset/);
+    ).rejects.toThrow(/seed-derived proof lineage input/);
     expect(await database.custodyProofs.count()).toBe(0);
   });
 
@@ -181,6 +186,15 @@ function modernProof(counter: number): StoredProof {
     id: MODERN_KEYSET_ID,
     secret: new TextDecoder().decode(
       OutputData.createSingleDeterministicData(1, MODERN_SEED, counter, MODERN_KEYSET_ID).secret,
+    ),
+  };
+}
+
+function legacyProof(counter: number): StoredProof {
+  return {
+    ...proof(counter),
+    secret: new TextDecoder().decode(
+      OutputData.createSingleDeterministicData(1, MODERN_SEED, counter, KEYSET_ID).secret,
     ),
   };
 }

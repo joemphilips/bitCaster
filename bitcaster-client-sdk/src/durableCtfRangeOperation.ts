@@ -7,6 +7,7 @@ import {
   computeCtfManifestCommitment,
   deriveConditionalKeysetId,
   deriveCtfRangeRecoverySelection,
+  deriveSecretAndBlindingFactor,
   hashToCurve,
   hashToCurveBls,
   isBlsKeyset,
@@ -67,8 +68,9 @@ import type {
   TokenImportKeysetLookup,
   TokenImportKeysetSource,
 } from './tokenImportValidation.ts'
+import type { DurableWalletProofDerivationLocator } from './durableWalletProofDerivationLocator.ts'
 
-export const DURABLE_CTF_RANGE_OPERATION_SCHEMA_VERSION = 2 as const
+export const DURABLE_CTF_RANGE_OPERATION_SCHEMA_VERSION = 3 as const
 export const DURABLE_CTF_RANGE_OPERATION_METADATA_KEY = 'durableCtfRangeOperation'
 export const DURABLE_CTF_RANGE_RESULT_BYTES_MAX = 256 * 1_024
 export const CTF_RANGE_PRODUCT_UNIT = 'msat' as const
@@ -122,6 +124,8 @@ export interface DurableCtfRangeKeysetAuthority {
   conditionId: string | null
   outcomeCollection: string | null
   outcomeCollectionId: string | null
+  denominationPublicKeys: Readonly<Record<string, string>> | null
+  registeredAt: number | null
 }
 
 export interface DurableCtfRangeMintKeyset {
@@ -146,6 +150,8 @@ export interface DurableCtfRangeExpiryObservation {
     inputFeePpk: unknown
     finalExpiry?: unknown
     outcomeCollectionId: unknown
+    outcomeCollection: unknown
+    registeredAt: unknown
     keys: unknown
   }[]
 }
@@ -164,7 +170,7 @@ export interface DurableCtfRangeExpiryAuthority {
 }
 
 export interface DurableCtfRangeOperation {
-  schemaVersion: 2
+  schemaVersion: 3
   operationId: string
   sourceOperationId: string
   authorizationId: string
@@ -331,8 +337,8 @@ export type DurableCtfResidualDecision =
 export function createDurableCtfRangeOperation(
   input: CreateDurableCtfRangeOperationInput,
 ): DurableCtfRangeOperation {
-  const keysetAuthority = classifyRangeKeysetAuthority(input)
   const expiryAuthority = createRangeExpiryAuthority(input)
+  const keysetAuthority = classifyRangeKeysetAuthority(input)
   const {
     keysetLookup: _,
     expiryObservation: __,
@@ -919,6 +925,49 @@ export function createDeterministicDurableCtfRangeRefundOutputs(input: {
   amount: string | bigint | number
   keyset: { id: string; keys: Readonly<Record<string, string>> }
 }): SerializedOutputData[] {
+  return createDeterministicDurableCtfRangeRefundOutputsWithLocators(input).map(
+    ({ output }) => output,
+  )
+}
+
+/** Match each verified refund proof to its SDK-derived deterministic locator. */
+export function matchDeterministicDurableCtfRangeRefundProofLocators(input: {
+  readonly outputs: readonly DeterministicDurableCtfRangeRefundOutput[]
+  readonly proofs: readonly Proof[]
+}): readonly Extract<DurableWalletProofDerivationLocator, { kind: 'ctf-range-refund' }>[] {
+  if (input.outputs.length === 0 || input.outputs.length !== input.proofs.length) {
+    throw new Error('CTF range refund proof locator count is invalid')
+  }
+  const locatorsBySecret = new Map<string, DeterministicDurableCtfRangeRefundOutput['locator']>()
+  for (const { output, locator } of input.outputs) {
+    const secret = new TextDecoder().decode(OutputData.deserialize(output).secret)
+    if (locatorsBySecret.has(secret))
+      throw new Error('CTF range refund output secret is duplicated')
+    locatorsBySecret.set(secret, locator)
+  }
+  const observed = new Set<string>()
+  return input.proofs.map((proof) => {
+    const locator = locatorsBySecret.get(proof.secret)
+    if (locator === undefined || observed.has(proof.secret)) {
+      throw new Error('CTF range refund proof is outside the deterministic output plan')
+    }
+    observed.add(proof.secret)
+    return locator
+  })
+}
+
+export interface DeterministicDurableCtfRangeRefundOutput {
+  readonly output: SerializedOutputData
+  readonly locator: Extract<DurableWalletProofDerivationLocator, { kind: 'ctf-range-refund' }>
+}
+
+export function createDeterministicDurableCtfRangeRefundOutputsWithLocators(input: {
+  seed: Uint8Array
+  source: DurableCtfRangeOperation
+  refundOperationId: string
+  amount: string | bigint | number
+  keyset: { id: string; keys: Readonly<Record<string, string>> }
+}): readonly DeterministicDurableCtfRangeRefundOutput[] {
   const source = decodeDurableCtfRangeOperation(input.source)
   const refundOperationId = requireBoundedText(input.refundOperationId, 'refund operation id')
   if (refundOperationId !== deriveDurableCtfRangeRefundOperationId(source.operationId)) {
@@ -939,18 +988,61 @@ export function createDeterministicDurableCtfRangeRefundOutputs(input: {
   const domain = new TextEncoder().encode('bitcaster/ctf-range-refund-output/v1\0')
   const outputSeed = hmac(sha256, input.seed, concatenateBytes(domain, identity))
   for (let attempt = 0; attempt < 128; attempt += 1) {
+    let outputs: OutputData[]
     try {
-      return OutputData.createDeterministicData(
+      outputs = OutputData.createDeterministicData(
         Amount.from(input.amount),
         outputSeed,
         attempt * 256,
         input.keyset,
-      ).map(OutputData.serialize)
+      )
     } catch {
       // Invalid scalar derivations are rare. The next disjoint counter page is deterministic.
+      continue
     }
+    return createRefundOutputLocators(
+      outputs,
+      outputSeed,
+      input.keyset.id,
+      attempt,
+      source.operationId,
+      source.authorizationId,
+      refundOperationId,
+    )
   }
   throw new Error('CTF range refund output derivation failed')
+}
+
+function createRefundOutputLocators(
+  outputs: readonly OutputData[],
+  outputSeed: Uint8Array,
+  keysetId: string,
+  attempt: number,
+  rangeOperationId: string,
+  authorizationId: string,
+  refundOperationId: string,
+): readonly DeterministicDurableCtfRangeRefundOutput[] {
+  if (outputs.length === 0 || outputs.length > DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX) {
+    throw new Error('CTF range refund output limit is invalid')
+  }
+  return outputs.map((output, outputIndex) => {
+    const counter = attempt * 256 + outputIndex
+    const secret = bytesToHex(deriveSecretAndBlindingFactor(outputSeed, keysetId, counter).secret)
+    if (new TextDecoder().decode(output.secret) !== secret) {
+      throw new Error('CTF range refund output secret is invalid')
+    }
+    return Object.freeze({
+      output: OutputData.serialize(output),
+      locator: Object.freeze({
+        schemaVersion: 1 as const,
+        kind: 'ctf-range-refund' as const,
+        rangeOperationId,
+        authorizationId,
+        refundOperationId,
+        counter,
+      }),
+    })
+  })
 }
 
 export function deriveDurableCtfRangeRefundRequestFingerprint(request: SwapRequest): string {
@@ -1205,7 +1297,16 @@ function verifyFreshConditionExpiryKeysets(
     if (!isRecord(entry)) throw new Error('CTF range condition expiry keyset is invalid')
     exactKeysWithOptional(
       entry,
-      ['keysetId', 'conditionId', 'unit', 'inputFeePpk', 'outcomeCollectionId', 'keys'],
+      [
+        'keysetId',
+        'conditionId',
+        'unit',
+        'inputFeePpk',
+        'outcomeCollectionId',
+        'outcomeCollection',
+        'registeredAt',
+        'keys',
+      ],
       ['finalExpiry'],
     )
     const keysetId = requireConditionalKeysetId(entry.keysetId, 'condition expiry keyset id')
@@ -1224,6 +1325,16 @@ function verifyFreshConditionExpiryKeysets(
       entry.outcomeCollectionId,
       'condition keyset outcome collection id',
     )
+    const outcomeCollection = requireBoundedText(
+      entry.outcomeCollection,
+      'condition keyset outcome collection',
+    )
+    requireNonnegativeSafeInteger(entry.registeredAt, 'condition keyset registration')
+    if (
+      deriveRootCtfOutcomeCollectionId({ conditionId, outcomeCollection }) !== outcomeCollectionId
+    ) {
+      throw new Error('CTF range condition expiry outcome collection is inconsistent')
+    }
     const keys = requireRangeKeysetPublicKeys(entry.keys)
     if (
       deriveConditionalKeysetId({
@@ -1570,8 +1681,8 @@ function classifyRangeKeysetAuthority(
     allowInsecureLoopbackHttp: input.allowInsecureLoopbackHttp,
   })
   return {
-    offer: rangeKeysetAuthority(offer!, 'offer', input.conditionId),
-    receive: rangeKeysetAuthority(receive!, 'receive', input.conditionId),
+    offer: rangeKeysetAuthority(offer!, 'offer', input.conditionId, input.expiryObservation),
+    receive: rangeKeysetAuthority(receive!, 'receive', input.conditionId, input.expiryObservation),
   }
 }
 
@@ -1579,6 +1690,7 @@ function rangeKeysetAuthority(
   value: ClassifiedExactTokenImportKeyset,
   role: 'offer' | 'receive',
   conditionId: string,
+  observation: DurableCtfRangeExpiryObservation,
 ): DurableCtfRangeKeysetAuthority {
   if (value.activity !== 'active') throw new Error(`CTF range ${role} keyset is inactive`)
   const inputFeePpk = requirePositiveSafeInteger(
@@ -1607,6 +1719,8 @@ function rangeKeysetAuthority(
       conditionId: null,
       outcomeCollection: null,
       outcomeCollectionId: null,
+      denominationPublicKeys: null,
+      registeredAt: null,
     }
   }
   if (requireHash(value.conditionId, 'conditional keyset condition') !== conditionId) {
@@ -1628,6 +1742,21 @@ function rangeKeysetAuthority(
   ) {
     throw new Error('CTF range conditional keyset outcome collection id is inconsistent')
   }
+  const matching = observation.conditionalKeysets.filter(
+    (entry) => entry.keysetId === value.keysetId,
+  )
+  if (matching.length !== 1)
+    throw new Error('CTF range conditional keyset observation is incomplete')
+  const observed = matching[0]!
+  if (
+    observed.conditionId !== conditionId ||
+    observed.outcomeCollection !== outcomeCollection ||
+    observed.outcomeCollectionId !== outcomeCollectionId ||
+    observed.inputFeePpk !== inputFeePpk ||
+    optionalPositiveSafeInteger(observed.finalExpiry, 'observed conditional keyset expiry') !==
+      finalExpiry
+  )
+    throw new Error('CTF range conditional keyset observation is foreign')
   return {
     keysetId: value.keysetId,
     unit: CTF_RANGE_PRODUCT_UNIT,
@@ -1638,6 +1767,11 @@ function rangeKeysetAuthority(
     conditionId,
     outcomeCollection,
     outcomeCollectionId,
+    denominationPublicKeys: requireRangeKeysetPublicKeys(observed.keys),
+    registeredAt: requireNonnegativeSafeInteger(
+      observed.registeredAt,
+      'conditional keyset registration',
+    ),
   }
 }
 
@@ -1657,6 +1791,8 @@ function decodeRangeKeysetAuthority(
     'conditionId',
     'outcomeCollection',
     'outcomeCollectionId',
+    'denominationPublicKeys',
+    'registeredAt',
   ])
   if (value.keysetId !== keysetId || value.unit !== CTF_RANGE_PRODUCT_UNIT) {
     throw new Error('CTF range persisted keyset authority is foreign')
@@ -1673,11 +1809,25 @@ function decodeRangeKeysetAuthority(
     if (
       value.conditionId !== null ||
       value.outcomeCollection !== null ||
-      value.outcomeCollectionId !== null
+      value.outcomeCollectionId !== null ||
+      value.denominationPublicKeys !== null ||
+      value.registeredAt !== null
     ) {
       throw new Error('CTF range regular keyset has conditional metadata')
     }
-    return value as unknown as DurableCtfRangeKeysetAuthority
+    return {
+      keysetId,
+      unit: CTF_RANGE_PRODUCT_UNIT,
+      source: 'regular',
+      activity: 'active',
+      inputFeePpk: requirePositiveSafeInteger(value.inputFeePpk, 'persisted keyset input fee'),
+      finalExpiry: optionalPositiveSafeInteger(value.finalExpiry, 'persisted keyset final expiry'),
+      conditionId: null,
+      outcomeCollection: null,
+      outcomeCollectionId: null,
+      denominationPublicKeys: null,
+      registeredAt: null,
+    }
   }
   if (requireHash(value.conditionId, 'persisted keyset condition') !== conditionId) {
     throw new Error('CTF range conditional keyset authority is foreign')
@@ -1698,7 +1848,44 @@ function decodeRangeKeysetAuthority(
   ) {
     throw new Error('CTF range persisted conditional keyset authority is inconsistent')
   }
-  return value as unknown as DurableCtfRangeKeysetAuthority
+  const keys = requireRangeKeysetPublicKeys(value.denominationPublicKeys)
+  const inputFeePpk = requirePositiveSafeInteger(value.inputFeePpk, 'persisted keyset input fee')
+  const finalExpiry = optionalPositiveSafeInteger(
+    value.finalExpiry,
+    'persisted keyset final expiry',
+  )
+  const registeredAt = requireNonnegativeSafeInteger(
+    value.registeredAt,
+    'persisted conditional keyset registration',
+  )
+  if (finalExpiry !== null && finalExpiry <= registeredAt) {
+    throw new Error('CTF range conditional keyset expiry precedes registration')
+  }
+  if (
+    deriveConditionalKeysetId({
+      keys,
+      input_fee_ppk: inputFeePpk,
+      ...(finalExpiry === null ? {} : { final_expiry: finalExpiry }),
+      unit: CTF_RANGE_PRODUCT_UNIT,
+      conditionId,
+      outcomeCollectionId,
+    }) !== keysetId
+  ) {
+    throw new Error('CTF range persisted conditional keyset identity is inconsistent')
+  }
+  return {
+    keysetId,
+    unit: CTF_RANGE_PRODUCT_UNIT,
+    source: 'conditional',
+    activity: 'active',
+    inputFeePpk,
+    finalExpiry,
+    conditionId,
+    outcomeCollection,
+    outcomeCollectionId,
+    denominationPublicKeys: keys,
+    registeredAt,
+  }
 }
 
 function assetFromKeysetAuthority(authority: DurableCtfRangeKeysetAuthority): DurableCtfRangeAsset {
@@ -2012,7 +2199,9 @@ function verifyRangeKeysetIdentity(
     resolved.unit !== authority.unit ||
     resolved.inputFeePpk !== authority.inputFeePpk ||
     resolved.finalExpiry !== authority.finalExpiry ||
-    Object.keys(resolved.keys).length === 0
+    Object.keys(resolved.keys).length === 0 ||
+    (authority.source === 'conditional' &&
+      !sameRangeKeysetPublicKeys(authority.denominationPublicKeys, resolved.keys))
   ) {
     throw new Error('CTF range mint keyset metadata is foreign')
   }
@@ -2034,6 +2223,26 @@ function verifyRangeKeysetIdentity(
   if (!identityIsValid) {
     throw new Error('CTF range mint keyset identity is inconsistent')
   }
+}
+
+function sameRangeKeysetPublicKeys(
+  expected: Readonly<Record<string, string>> | null,
+  actual: Readonly<Record<string, string>>,
+): boolean {
+  if (expected === null) return false
+  const expectedEntries = Object.entries(expected).sort(([left], [right]) =>
+    compareCanonicalText(left, right),
+  )
+  const actualEntries = Object.entries(actual).sort(([left], [right]) =>
+    compareCanonicalText(left, right),
+  )
+  return (
+    expectedEntries.length === actualEntries.length &&
+    expectedEntries.every(
+      ([amount, publicKey], index) =>
+        actualEntries[index]?.[0] === amount && actualEntries[index]?.[1] === publicKey,
+    )
+  )
 }
 
 export function assertDurableCtfRangeCustodyAuthority(
@@ -2639,6 +2848,13 @@ function requireConditionalKeysetId(value: unknown, field: string): string {
 
 function requirePositiveSafeInteger(value: unknown, field: string): number {
   if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw new Error(`${field} is invalid`)
+  }
+  return value as number
+}
+
+function requireNonnegativeSafeInteger(value: unknown, field: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
     throw new Error(`${field} is invalid`)
   }
   return value as number

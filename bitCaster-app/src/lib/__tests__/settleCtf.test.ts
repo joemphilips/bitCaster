@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Proof } from "@cashu/cashu-ts";
+import { MintOperationError, type Proof } from "@cashu/cashu-ts";
 import { buildKeysetRedeemOperationId } from "@bitcaster/client-sdk/ctfRedeem";
 
 // ---------------------------------------------------------------------------
@@ -9,9 +9,12 @@ import { buildKeysetRedeemOperationId } from "@bitcaster/client-sdk/ctfRedeem";
 const proofDbState = vi.hoisted(() => ({
   store: new Map<string, any>(),
   operations: new Map<string, any>(),
+  proofOperationReads: 0,
   addedProofs: [] as any[],
   removedSecrets: [] as string[],
   failNextMarkFailed: false,
+  failNextTerminalBinding: false,
+  terminalBindings: [] as Array<{ operationId: string; secrets: string[] }>,
 }));
 
 const cashuState = vi.hoisted(() => ({
@@ -44,6 +47,7 @@ vi.mock("@/stores/proof-db", () => {
       }
     }),
     getProofOperation: vi.fn(async (operationId: string) => {
+      proofDbState.proofOperationReads++;
       return proofDbState.operations.get(operationId) ?? null;
     }),
     prepareProofOperation: vi.fn(async (input: any) => {
@@ -90,8 +94,41 @@ vi.mock("@/stores/proof-db", () => {
       proofDbState.operations.set(operationId, updated);
       return updated;
     }),
+    markCtfRedeemTerminalFailure: vi.fn(
+      async (operationId: string, message: string, terminalEvidence: unknown) => {
+        if (proofDbState.failNextMarkFailed) {
+          proofDbState.failNextMarkFailed = false;
+          throw new Error("simulated crash before terminal operation state");
+        }
+        const existing = proofDbState.operations.get(operationId);
+        const evidence = terminalEvidence as { rejectionBody: { code: number } };
+        const updated = {
+          ...existing,
+          state: "Failed",
+          lastError: message,
+          failureCode: evidence.rejectionBody.code,
+        };
+        proofDbState.operations.set(operationId, updated);
+        return updated;
+      },
+    ),
   };
 });
+
+vi.mock("@/stores/browser-ctf-terminal-binding", () => ({
+  bindBrowserCtfRedeemTerminalProofs: vi.fn(
+    async (input: { operationId: string; proofs: Proof[] }) => {
+      if (proofDbState.failNextTerminalBinding) {
+        proofDbState.failNextTerminalBinding = false;
+        throw new Error("simulated crash after terminal operation persistence");
+      }
+      proofDbState.terminalBindings.push({
+        operationId: input.operationId,
+        secrets: input.proofs.map((proof) => proof.secret),
+      });
+    },
+  ),
+}));
 
 // ---------------------------------------------------------------------------
 // cashu-ts mock — only the surface settleCtfPosition touches
@@ -141,7 +178,19 @@ vi.mock("@cashu/cashu-ts", async (importOriginal) => {
     constructor(url: string) {
       this.url = url;
     }
-    async getKeys() {
+    async getKeys(keysetId?: string) {
+      if (keysetId) {
+        return {
+          keysets: [
+            {
+              id: keysetId,
+              unit: "msat",
+              active: true,
+              keys: { 1: "02".padEnd(66, "1") },
+            },
+          ],
+        };
+      }
       return {
         keysets: [
           {
@@ -188,15 +237,7 @@ vi.mock("@cashu/cashu-ts", async (importOriginal) => {
         }
         // The mint condemns a non-winning leg with the terminal NUT-CTF
         // code 13015 (OracleNotAttestedOutcome), surfaced as MintOperationError.
-        const err = new Error("Oracle has not attested to this outcome collection") as Error & {
-          code: number;
-          status: number;
-          name: string;
-        };
-        err.name = "MintOperationError";
-        err.code = 13015;
-        err.status = 400;
-        throw err;
+        throw new MintOperationError(13015, "Oracle has not attested to this outcome collection");
       }
       return outputs.map((o) => o.toProof({ C_: "02".padEnd(66, "7") }));
     }
@@ -217,6 +258,11 @@ vi.mock("@/stores/wallet", () => ({
     getState: () => ({ mnemonic: undefined, activeMintUrl: "http://mint.test" }),
   },
 }));
+
+vi.mock("@/lib/browserWalletProfile", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/browserWalletProfile")>();
+  return { ...actual, activeBrowserWalletScopeId: () => "browser-test-scope" };
+});
 
 const CONDITION_ID = "a".repeat(64);
 
@@ -259,9 +305,12 @@ describe("settleCtfPosition — per-keyset redeem", () => {
     originalFetch = globalThis.fetch;
     proofDbState.store.clear();
     proofDbState.operations.clear();
+    proofDbState.proofOperationReads = 0;
     proofDbState.addedProofs.length = 0;
     proofDbState.removedSecrets.length = 0;
     proofDbState.failNextMarkFailed = false;
+    proofDbState.failNextTerminalBinding = false;
+    proofDbState.terminalBindings.length = 0;
     cashuState.winningKeysets.clear();
     cashuState.transientFailKeysets.clear();
     cashuState.redeemCalls.length = 0;
@@ -273,7 +322,7 @@ describe("settleCtfPosition — per-keyset redeem", () => {
     vi.restoreAllMocks();
   });
 
-  it('composite "A|B" stored per-primitive: redeems A leg; B leg is removed ONLY after the mint condemns it (never on label alone)', async () => {
+  it('composite "A|B" stored per-primitive: redeems A and binds B only after the mint condemns it', async () => {
     // 3-outcome market A/B/C; taker holds composite "A|B" across keysets A and B.
     // Stored per-primitive: A-keyset proof labelled "A", B-keyset proof labelled "B".
     // B2 LOW: even though B's stored label ("B") excludes the attested outcome,
@@ -301,8 +350,32 @@ describe("settleCtfPosition — per-keyset redeem", () => {
       "keyset-A",
       "keyset-B",
     ]);
-    // Both legs removed locally (A spent, B condemned by the mint).
-    expect(proofDbState.removedSecrets.sort()).toEqual(["sA", "sB"]);
+    // The winning proof is spent. The condemned proof body stays local.
+    expect(proofDbState.removedSecrets).toEqual(["sA"]);
+    expect(proofDbState.terminalBindings).toHaveLength(1);
+    expect(proofDbState.terminalBindings[0]?.secrets).toEqual(["sB"]);
+  });
+
+  it("reads the committed losing operation once for a multi-proof terminal binding", async () => {
+    mockAttestation("A");
+    const { settleCtfPosition } = await import("@/lib/cashu");
+    const proofs = [makeProof("sB-1", 50, "keyset-B", "B"), makeProof("sB-2", 50, "keyset-B", "B")];
+
+    await expect(
+      settleCtfPosition({
+        conditionId: CONDITION_ID,
+        amountSats: 100,
+        proofs,
+        mintUrl: "http://mint.test",
+        baseAsset: "sat",
+      }),
+    ).resolves.toEqual([]);
+
+    // Initial lookup, SDK resume check, then one committed-operation read.
+    expect(proofDbState.proofOperationReads).toBe(3);
+    expect(proofDbState.terminalBindings).toEqual([
+      expect.objectContaining({ secrets: ["sB-1", "sB-2"] }),
+    ]);
   });
 
   it("B2 LOW: a MISLABELLED would-be-winning proof is NOT destroyed — the mint redeems it despite the wrong stored label", async () => {
@@ -363,52 +436,47 @@ describe("settleCtfPosition — per-keyset redeem", () => {
     expect(losingOp?.state).toBe("prepared");
   });
 
-  it("resumes when a crash happens after discarding a losing leg but before marking it failed", async () => {
-    cashuState.winningKeysets.add("keyset-A");
+  it("repairs a terminal binding after a crash without another losing-leg mint call", async () => {
     mockAttestation("A");
     const { settleCtfPosition } = await import("@/lib/cashu");
 
-    const proofs = [
-      makeProof("sA", 100, "keyset-A", "A|B"),
-      makeProof("sB", 100, "keyset-B", "A|B"),
-    ];
-    proofDbState.failNextMarkFailed = true;
+    const proofs = [makeProof("sB", 100, "keyset-B", "B")];
+    proofDbState.failNextTerminalBinding = true;
 
     await expect(
       settleCtfPosition({
         conditionId: CONDITION_ID,
-        amountSats: 200,
+        amountSats: 100,
         proofs,
         mintUrl: "http://mint.test",
         baseAsset: "sat",
       }),
-    ).rejects.toThrow(/simulated crash/);
+    ).rejects.toThrow(/simulated crash after terminal operation persistence/);
 
-    const losingOpAfterCrash = Array.from(proofDbState.operations.values()).find(
-      (op) => op.metadata?.outcomeKeysetId === "keyset-B",
-    );
-    expect(losingOpAfterCrash?.state).toBe("prepared");
-    expect(proofDbState.removedSecrets.sort()).toEqual(["sA", "sB"]);
+    const losingOpAfterCrash = Array.from(proofDbState.operations.values())[0];
+    expect(losingOpAfterCrash?.state).toBe("Failed");
+    expect(losingOpAfterCrash?.failureCode).toBe(13015);
+    expect(proofDbState.removedSecrets).toEqual([]);
+    expect(cashuState.redeemCalls).toHaveLength(1);
 
-    const regular = await settleCtfPosition({
-      conditionId: CONDITION_ID,
-      amountSats: 200,
-      proofs,
-      mintUrl: "http://mint.test",
-      baseAsset: "sat",
-    });
+    await expect(
+      settleCtfPosition({
+        conditionId: CONDITION_ID,
+        amountSats: 100,
+        proofs,
+        mintUrl: "http://mint.test",
+        baseAsset: "sat",
+      }),
+    ).resolves.toEqual([]);
 
-    expect(regular.reduce((s, p) => s + Number(p.amount), 0)).toBe(100);
-    const losingOpAfterResume = Array.from(proofDbState.operations.values()).find(
-      (op) => op.metadata?.outcomeKeysetId === "keyset-B",
-    );
-    expect(losingOpAfterResume?.state).toBe("Failed");
-    expect(proofDbState.removedSecrets.filter((secret) => secret === "sB")).toHaveLength(2);
+    expect(cashuState.redeemCalls).toHaveLength(1);
+    expect(proofDbState.terminalBindings).toHaveLength(1);
+    expect(proofDbState.terminalBindings[0]?.secrets).toEqual(["sB"]);
   });
 
-  it('composite "A|B" stored under composite label: B leg attempted then removed terminally, no error', async () => {
+  it('composite "A|B" stored under composite label: B leg is attempted then bound terminally', async () => {
     // Composite-label storage: BOTH legs carry label "A|B" → both look like winners.
-    // The B-keyset redeem fails terminally at the mint; we remove it silently.
+    // The B-keyset redeem fails terminally at the mint and remains local.
     cashuState.winningKeysets.add("keyset-A");
     mockAttestation("A");
     const { settleCtfPosition } = await import("@/lib/cashu");
@@ -428,8 +496,8 @@ describe("settleCtfPosition — per-keyset redeem", () => {
     expect(regular.reduce((s, p) => s + Number(p.amount), 0)).toBe(100);
     // Both keysets were attempted at the mint (composite label can't pre-classify).
     expect(cashuState.redeemCalls).toHaveLength(2);
-    // Both legs removed locally; losing leg surfaced NO error (resolved fine).
-    expect(proofDbState.removedSecrets.sort()).toEqual(["sA", "sB"]);
+    // The winner is spent. The losing proof stays bound to its terminal operation.
+    expect(proofDbState.removedSecrets).toEqual(["sA"]);
     const losingOp = Array.from(proofDbState.operations.values()).find(
       (op) => op.metadata?.outcomeKeysetId === "keyset-B",
     );
@@ -463,7 +531,11 @@ describe("settleCtfPosition — per-keyset redeem", () => {
         outcomeKeysetId: "keyset-A",
         regularKeysetId: "regular-keyset",
         unit: "msat",
-        amountSubunits: 100,
+        grossInputSubunits: 100,
+        outcomeInputFeePpk: 0,
+        inputFeeSubunits: 0,
+        netOutputSubunits: 100,
+        oracleWitness: JSON.stringify({ oracle_sig: "deadbeef" }),
       },
       lastError: "mint rejected duplicate outputs",
       failureCode: 20006,
@@ -511,7 +583,11 @@ describe("settleCtfPosition — per-keyset redeem", () => {
         outcomeKeysetId: "keyset-A",
         regularKeysetId: "regular-keyset",
         unit: "msat",
-        amountSubunits: 100,
+        grossInputSubunits: 100,
+        outcomeInputFeePpk: 0,
+        inputFeeSubunits: 0,
+        netOutputSubunits: 100,
+        oracleWitness: JSON.stringify({ oracle_sig: "deadbeef" }),
       },
       lastError: "legacy losing leg",
       createdAt: Date.now(),

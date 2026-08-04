@@ -24,11 +24,15 @@ test('loads one bounded exact range-settlement authority for every client', asyn
   assert.equal(metadata.regular[0]?.id, REGULAR_KEYSET_ID)
   assert.equal(metadata.conditional[0]?.id, CONDITIONAL_KEYSET_ID)
   assert.equal(metadata.conditional[0]?.conditionId, CONDITION_ID)
+  assert.equal(metadata.conditional[0]?.outcomeCollection, 'YES')
+  assert.equal(metadata.conditional[0]?.registeredAt, 0)
   assert.equal(metadata.maxInputs, 64)
   assert.equal(metadata.maxOutputs, 256)
   assert.equal(metadata.maxRequestBytes, 2_097_152)
   assert.equal(metadata.maxPoolEntries, 128)
   assert.deepEqual(metadata.observation.conditionKeysetIds, [CONDITIONAL_KEYSET_ID])
+  assert.equal(metadata.observation.conditionalKeysets[0]?.outcomeCollection, 'YES')
+  assert.equal(metadata.observation.conditionalKeysets[0]?.registeredAt, 0)
 })
 
 test('clamps mint limits to durable output and artifact authority bounds', async () => {
@@ -111,6 +115,36 @@ test('rejects missing or unsafe authenticated settlement limits', async () => {
   }
 })
 
+test('rejects missing or invalid conditional keyset registration times', async () => {
+  for (const registeredAt of [undefined, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const invalid = mint()
+    invalid.getConditionalKeysets = async () => ({
+      keysets: [
+        {
+          id: CONDITIONAL_KEYSET_ID,
+          unit: 'msat',
+          active: true,
+          input_fee_ppk: 100,
+          registered_at: registeredAt,
+          condition_id: CONDITION_ID,
+          outcome_collection: 'YES',
+          outcome_collection_id: 'collection-yes',
+        },
+      ],
+    })
+    await assert.rejects(
+      loadCtfRangeMintMetadata({
+        mint: invalid,
+        mintUrl: MINT_URL,
+        conditionId: CONDITION_ID,
+        observedAt: 1_000,
+        allowInsecureLoopbackHttp: false,
+      }),
+      /registration time is invalid/,
+    )
+  }
+})
+
 function mint(): CtfRangeMintMetadataClient {
   return {
     getInfo: async () =>
@@ -144,6 +178,7 @@ function mint(): CtfRangeMintMetadataClient {
           unit: 'msat',
           active: true,
           input_fee_ppk: 100,
+          registered_at: 0,
           condition_id: CONDITION_ID,
           outcome_collection: 'YES',
           outcome_collection_id: 'collection-yes',

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Amount } from "@cashu/cashu-ts";
+import { Amount, MintOperationError } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 
 // Mock Dexie before importing the module under test — we don't need a real
@@ -13,6 +13,7 @@ type AnyProof = {
   C?: string;
   receivedAt?: number;
   reservedBy?: string;
+  terminalOperationId?: string;
   conditionId?: string;
   condition_id?: string;
   outcomeCollection?: string;
@@ -51,6 +52,10 @@ vi.mock("dexie", () => {
       };
     }
     where(field: string) {
+      const conditionPrefix = (value: string[]) =>
+        Array.from(store.values()).filter(
+          (row) => row.mintUrl === value[0] && row.conditionId === value[1],
+        );
       return {
         equals: (v: string | string[]) => {
           const matching = () =>
@@ -80,6 +85,10 @@ vi.mock("dexie", () => {
             }),
           };
         },
+        between: (lower: string[]) => ({
+          toArray: async () =>
+            field === "[mintUrl+conditionId+outcomeCollection]" ? conditionPrefix(lower) : [],
+        }),
       };
     }
     async put(row: AnyProof): Promise<void> {
@@ -130,6 +139,7 @@ import {
   normalizeStoredMintUrls,
   getProofOperation,
   markProofOperationCompleted,
+  markProofOperationFailed,
   prepareProofOperation,
   releaseProofReservation,
   releaseProofReservationsBySecret,
@@ -255,6 +265,7 @@ describe("proof-db normalization", () => {
         C: "C2",
         mintUrl: "http://m",
         conditionId: "cond-yes",
+        outcomeCollection: "YES",
         baseAsset: "sat",
         unit: "msat",
       } as never,
@@ -749,8 +760,10 @@ describe("proof-db normalization", () => {
         baseAsset: "sat",
         unit: "msat",
         conditionId: "cond",
+        outcomeCollection: "YES",
       },
     ]);
+    txCallbacks.length = 0;
 
     const selected = await selectAndReserveUnitProofs("http://m/", { unit: "msat" }, "pay-1");
 
@@ -760,6 +773,30 @@ describe("proof-db normalization", () => {
     expect(
       (await getUnitProofs("http://m", { unit: "msat" })).map((proof) => proof.secret),
     ).toEqual([]);
+  });
+
+  it("preserves terminal authority when a losing CTF proof is re-imported", async () => {
+    const proof = {
+      secret: "terminal",
+      amount: Amount.from(100),
+      id: "id-terminal",
+      C: "C-terminal",
+      mintUrl: "http://m",
+      conditionId: "cond",
+      outcomeCollection: "YES",
+      baseAsset: "sat",
+      unit: "msat" as const,
+    };
+    await addProofs([{ ...proof, terminalOperationId: "ctf-redeem:terminal" }]);
+    await addProofs([proof]);
+
+    await expect(
+      getOutcomeProofs("http://m", "cond", "YES", { baseAsset: "sat" }),
+    ).resolves.toEqual([]);
+    await expect(reserveProofs([proof.secret], "order-1")).rejects.toThrow(
+      "Terminal proof cannot be reserved",
+    );
+    expect(store.get(proof.secret)?.terminalOperationId).toBe("ctf-redeem:terminal");
   });
 
   it("fails atomic unit proof selection when the selected proofs cannot satisfy the requested amount", async () => {
@@ -838,5 +875,24 @@ describe("proof-db normalization", () => {
     });
 
     expect(completed.resultProofsDigest).toBeUndefined();
+  });
+
+  it("rejects generic terminal classification for a CTF redeem", async () => {
+    await prepareProofOperation({
+      operationId: "ctf-redeem:terminal",
+      kind: "ctf-redeem",
+      mintUrl: "https://mint.example",
+      inputs: [],
+      outputs: {},
+      metadata: { unit: "msat" },
+    });
+
+    await expect(
+      markProofOperationFailed(
+        "ctf-redeem:terminal",
+        new MintOperationError(13015, "oracle not attested"),
+      ),
+    ).rejects.toThrow("requires authenticated mint evidence");
+    expect((await getProofOperation("ctf-redeem:terminal"))?.state).toBe("prepared");
   });
 });

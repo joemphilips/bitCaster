@@ -29,6 +29,7 @@ import {
   type DurableCtfRangeRecoveredResult,
 } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import { mapDurableCtfRangeSuccessorProofs } from "@bitcaster/client-sdk/durableCtfRangeCustody";
+import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import {
   completeCtfRangeOrderAuthorization,
   prepareCtfRangeOrderAuthorization,
@@ -41,6 +42,7 @@ import {
 import {
   ctfRangeOrderPreparationKeysetLookup,
   encodePersistedCtfRangeOrderPreparation,
+  type CtfRangeConditionalMintKeyset,
   exactCtfRangeOrderPreparationMintKeysets,
   type PersistedCtfRangeOrderPreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
@@ -51,7 +53,10 @@ import {
   type BrowserDurableCustodyAdapter,
   type StagedBrowserCustodyProof,
 } from "../stores/durable-custody-db";
-import type { BrowserCustodyProofRow } from "../stores/durable-custody-types";
+import type {
+  BrowserCustodyConditionalKeysetAuthority,
+  BrowserCustodyProofRow,
+} from "../stores/durable-custody-types";
 import { normalizeAndValidateStoredProof, type StoredProof } from "../stores/proof-db";
 
 export function browserWalletScope(
@@ -206,6 +211,7 @@ export function browserSourceProofRows(
     proof: createProofRow(scope, preparation, proof, receivedAtMs),
     expectedRevision: null,
     derivationLocator: null,
+    conditionalKeyset: preparationConditionalKeyset(preparation, proof),
   }));
 }
 
@@ -221,14 +227,13 @@ export function browserSourceCompletionProofRows(
     proof: createProofRow(scope, preparation, proof, receivedAtMs),
     expectedRevision: null,
     derivationLocator: null,
+    conditionalKeyset: preparationConditionalKeyset(preparation, proof),
   }));
   const keep = result.keep.map((proof, index) => ({
     proof: createProofRow(scope, preparation, proof, receivedAtMs),
     expectedRevision: null,
-    derivationLocator: {
-      keysetId: keepLocators[index]!.derivationKeysetId,
-      counter: keepLocators[index]!.derivationCounter,
-    },
+    derivationLocator: keepLocators[index]!,
+    conditionalKeyset: preparationConditionalKeyset(preparation, proof),
   }));
   return [...authorization, ...keep];
 }
@@ -321,7 +326,8 @@ export function browserRangeSuccessorProofRows(
       receivedAtMs,
     }),
     expectedRevision: null,
-    derivationLocator: null,
+    derivationLocator: authority.derivationLocator,
+    conditionalKeyset: operationConditionalKeyset(operation, authority.proof.id),
   }));
 }
 
@@ -354,11 +360,14 @@ export function browserRangeRefundProofRows(
   record: DurableCustodyRecord,
   operation: DurableCtfRangeOperation,
   proofs: readonly Proof[],
+  locators: readonly Extract<DurableWalletProofDerivationLocator, { kind: "ctf-range-refund" }>[],
   receivedAtMs: number,
-): BrowserCustodyProofRow[] {
+): StagedBrowserCustodyProof[] {
+  if (proofs.length !== locators.length)
+    throw new Error("browser refund proof locator count is invalid");
   const asset = browserCustodyAssetFromRangeAsset(operation.offerAsset);
-  return proofs.map((proof) =>
-    createBrowserCustodyProofRow({
+  return proofs.map((proof, index) => ({
+    proof: createBrowserCustodyProofRow({
       scopeId: record.scope.scopeId,
       normalizedMint: operation.mintUrl,
       unit: "msat",
@@ -366,7 +375,10 @@ export function browserRangeRefundProofRows(
       asset,
       receivedAtMs,
     }),
-  );
+    expectedRevision: null,
+    derivationLocator: locators[index]!,
+    conditionalKeyset: operationConditionalKeyset(operation, proof.id),
+  }));
 }
 
 function browserCustodyAssetFromRangeAsset(asset: DurableCtfRangeAsset): BrowserCustodyProofAsset {
@@ -487,6 +499,104 @@ function conditionalSourceAsset(
     kind: "conditional",
     conditionId: keyset.conditionId,
     outcomeCollection: keyset.outcomeCollection,
+  };
+}
+
+function preparationConditionalKeyset(
+  preparation: PersistedCtfRangeOrderPreparation,
+  proof: Proof,
+): BrowserCustodyConditionalKeysetAuthority | undefined {
+  const keyset = preparation.offerKeyset;
+  if (!isConditionalPreparationKeyset(keyset)) return undefined;
+  if (proof.id !== keyset.id) {
+    throw new Error("conditional range source proof keyset is foreign");
+  }
+  return browserConditionalKeysetAuthority({
+    normalizedMint: preparation.mintUrl,
+    keysetId: keyset.id,
+    denominationPublicKeys: keyset.keys,
+    inputFeePpk: keyset.inputFeePpk,
+    conditionId: keyset.conditionId,
+    outcomeCollection: keyset.outcomeCollection,
+    outcomeCollectionId: keyset.outcomeCollectionId,
+    registeredAtUnixSeconds: keyset.registeredAt,
+    finalExpiryUnixSeconds: keyset.finalExpiry,
+  });
+}
+
+function isConditionalPreparationKeyset(
+  value: PersistedCtfRangeOrderPreparation["offerKeyset"],
+): value is CtfRangeConditionalMintKeyset {
+  return (
+    "conditionId" in value &&
+    typeof value.conditionId === "string" &&
+    "outcomeCollection" in value &&
+    typeof value.outcomeCollection === "string" &&
+    "outcomeCollectionId" in value &&
+    typeof value.outcomeCollectionId === "string" &&
+    "registeredAt" in value &&
+    typeof value.registeredAt === "number"
+  );
+}
+
+function operationConditionalKeyset(
+  operation: DurableCtfRangeOperation,
+  proofKeysetId: string,
+): BrowserCustodyConditionalKeysetAuthority | undefined {
+  const authority = [operation.keysetAuthority.offer, operation.keysetAuthority.receive].find(
+    (candidate) => candidate.keysetId === proofKeysetId,
+  );
+  if (authority === undefined) {
+    throw new Error("browser range successor keyset authority is unavailable");
+  }
+  if (authority.source === "regular") return undefined;
+  return browserConditionalKeysetAuthority({
+    normalizedMint: operation.mintUrl,
+    keysetId: authority.keysetId,
+    denominationPublicKeys: authority.denominationPublicKeys,
+    inputFeePpk: authority.inputFeePpk,
+    conditionId: authority.conditionId,
+    outcomeCollection: authority.outcomeCollection,
+    outcomeCollectionId: authority.outcomeCollectionId,
+    registeredAtUnixSeconds: authority.registeredAt,
+    finalExpiryUnixSeconds: authority.finalExpiry,
+  });
+}
+
+function browserConditionalKeysetAuthority(input: {
+  readonly normalizedMint: string;
+  readonly keysetId: string;
+  readonly denominationPublicKeys: Readonly<Record<string, string>> | null;
+  readonly inputFeePpk: number;
+  readonly conditionId: string | null;
+  readonly outcomeCollection: string | null;
+  readonly outcomeCollectionId: string | null;
+  readonly registeredAtUnixSeconds: number | null;
+  readonly finalExpiryUnixSeconds: number | null;
+}): BrowserCustodyConditionalKeysetAuthority {
+  if (
+    input.denominationPublicKeys === null ||
+    input.conditionId === null ||
+    input.outcomeCollection === null ||
+    input.outcomeCollectionId === null ||
+    input.registeredAtUnixSeconds === null ||
+    input.finalExpiryUnixSeconds === null
+  ) {
+    throw new Error("browser conditional keyset authority is incomplete");
+  }
+  return {
+    schemaVersion: 1,
+    normalizedMint: input.normalizedMint,
+    unit: "msat",
+    keysetId: input.keysetId,
+    denominationPublicKeys: { ...input.denominationPublicKeys },
+    inputFeePpk: input.inputFeePpk,
+    conditionId: input.conditionId,
+    outcomeCollection: input.outcomeCollection,
+    outcomeCollectionId: input.outcomeCollectionId,
+    registeredAtUnixSeconds: input.registeredAtUnixSeconds,
+    finalExpiryUnixSeconds: input.finalExpiryUnixSeconds,
+    curve: "secp256k1",
   };
 }
 

@@ -212,6 +212,9 @@ test('builds, canonically persists, and verifies one exact range preparation rec
   assert.equal(persisted.offerKeyset.id, REVIEWED_REGULAR_KEYSET_ID)
   assert.equal(persisted.receiveKeyset.id, REVIEWED_OUTCOME_KEYSET_ID)
   assert.equal(persisted.complementKeyset.id, REVIEWED_COMPLEMENT_KEYSET_ID)
+  assert.equal(persisted.version, 2)
+  assert.equal(persisted.receiveKeyset.registeredAt, 10)
+  assert.equal(persisted.expiryObservation.conditionalKeysets[0]?.registeredAt, 10)
   assert.equal(persisted.expiry, 700)
   assert.deepEqual(decodePersistedCtfRangeOrderPreparationBytes(preparationBytes), persisted)
   assert.deepEqual(decodeCtfRangeOrderPreparationFromRecord(record, request), persisted)
@@ -248,6 +251,17 @@ test('builds, canonically persists, and verifies one exact range preparation rec
     },
     {
       ...persisted,
+      version: 1,
+    },
+    {
+      ...persisted,
+      receiveKeyset: (() => {
+        const { registeredAt: _, ...keyset } = persisted.receiveKeyset
+        return keyset
+      })(),
+    },
+    {
+      ...persisted,
       expiryObservation: { ...persisted.expiryObservation, unknown: true },
     },
     {
@@ -255,7 +269,12 @@ test('builds, canonically persists, and verifies one exact range preparation rec
       expiryObservation: {
         ...persisted.expiryObservation,
         conditionalKeysets: persisted.expiryObservation.conditionalKeysets.map((keyset, index) =>
-          index === 0 ? { ...keyset, unknown: true } : keyset,
+          index === 0
+            ? (() => {
+                const { outcomeCollection: _, ...observed } = keyset
+                return observed
+              })()
+            : keyset,
         ),
       },
     },
@@ -265,7 +284,7 @@ test('builds, canonically persists, and verifies one exact range preparation rec
         decodePersistedCtfRangeOrderPreparationBytes(
           encodeCtfRangeOrderPreparationArtifact(candidate),
         ),
-      /fields are invalid/,
+      /fields are invalid|version is invalid/,
     )
   }
   for (const nowUnixSeconds of [Number.NaN, -1, Number.MAX_SAFE_INTEGER + 1]) {
@@ -521,8 +540,10 @@ test('prepares one exact persisted range source through the shared wallet bounda
   assert.deepEqual(
     locators,
     keepProofs.map((_, index) => ({
-      derivationKeysetId: preparation.offerKeyset.id,
-      derivationCounter: 41 + index,
+      schemaVersion: 1,
+      kind: 'nut13',
+      keysetId: preparation.offerKeyset.id,
+      counter: 41 + index,
     })),
   )
   assert.deepEqual(
@@ -829,6 +850,7 @@ function outcomeKeyset() {
     keys: KEYS,
     inputFeePpk: INPUT_FEE_PPK,
     finalExpiry: FINAL_EXPIRY,
+    registeredAt: 10,
   }
 }
 
@@ -846,7 +868,9 @@ function expiryObservation() {
         unit: 'msat',
         inputFeePpk: INPUT_FEE_PPK,
         finalExpiry: FINAL_EXPIRY,
+        outcomeCollection: OUTCOME_COLLECTION,
         outcomeCollectionId: OUTCOME_COLLECTION_ID,
+        registeredAt: 10,
         keys: KEYS,
       },
     ],
@@ -916,6 +940,7 @@ function reviewedMintFacts() {
         ...expiryObservation().conditionalKeysets[0]!,
         keysetId: REVIEWED_COMPLEMENT_KEYSET_ID,
         finalExpiry: REVIEWED_FINAL_EXPIRY,
+        outcomeCollection: COMPLEMENT_COLLECTION,
         outcomeCollectionId: COMPLEMENT_COLLECTION_ID,
       },
     ],
@@ -936,6 +961,7 @@ function reviewedMintFacts() {
         conditionId: CONDITION_ID,
         outcomeCollection: OUTCOME_COLLECTION,
         outcomeCollectionId: OUTCOME_COLLECTION_ID,
+        registeredAt: 10,
       },
       {
         ...outcomeKeyset(),
@@ -944,6 +970,7 @@ function reviewedMintFacts() {
         conditionId: CONDITION_ID,
         outcomeCollection: COMPLEMENT_COLLECTION,
         outcomeCollectionId: COMPLEMENT_COLLECTION_ID,
+        registeredAt: 10,
       },
     ],
     maxInputs: 64,

@@ -113,7 +113,7 @@ export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
     )
       throw new Error('dleq shape')
     if (dleq.major === 4) for (const item of dleq.children) requireBytes(item, 32, 32, 'dleq value')
-    requireUnsigned(record.children[9], 'counter')
+    requireProofDerivationLocator(record.children[9])
     const proofKind = record.children[10]
     if (proofKind?.major !== 0 || (proofKind.value !== 0 && proofKind.value !== 1)) {
       throw new Error('proof kind')
@@ -133,6 +133,38 @@ export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
     }
     requireUnsigned(record.children[12], 'created')
     requireUnsigned(record.children[13], 'updated')
+  }
+}
+
+function requireProofDerivationLocator(value: CborShape | undefined): void {
+  if (value?.major !== 4 || value.value === null) {
+    throw new Error('proof derivation locator shape')
+  }
+  const version = value.children[0]
+  const kind = value.children[1]
+  if (version?.major !== 0 || version.value !== 1 || kind?.major !== 0) {
+    throw new Error('proof derivation locator shape')
+  }
+  switch (kind.value) {
+    case 0:
+      if (value.value !== 4) throw new Error('NUT-13 derivation locator shape')
+      requireText(value.children[2], 1, 128, 'NUT-13 keyset id')
+      requireUnsigned(value.children[3], 'NUT-13 counter')
+      return
+    case 1:
+      if (value.value !== 4) throw new Error('range manifest derivation locator shape')
+      requireText(value.children[2], 1, 1_024, 'range operation id')
+      requireUnsigned(value.children[3], 'range manifest index')
+      return
+    case 2:
+      if (value.value !== 6) throw new Error('range refund derivation locator shape')
+      requireText(value.children[2], 1, 1_024, 'range operation id')
+      requireText(value.children[3], 1, 1_024, 'range authorization id')
+      requireText(value.children[4], 1, 1_024, 'range refund operation id')
+      requireUnsigned(value.children[5], 'range refund counter')
+      return
+    default:
+      throw new Error('proof derivation locator shape')
   }
 }
 

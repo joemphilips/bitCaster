@@ -10,6 +10,8 @@ import {
 import { browserWalletDatabaseName } from "../lib/browserWalletProfile";
 import type { BitcasterDB, EncryptedWalletBackupDexiePreparedSourceRow } from "./proof-db";
 
+const PREPARED_SOURCE_INSERT_BATCH_MAX = 64;
+
 export interface EncryptedWalletBackupPreparedSourceDatabaseProfile {
   readonly database: BitcasterDB;
   readonly scopeId: string;
@@ -38,25 +40,37 @@ export class EncryptedWalletBackupPreparedSourceDexieStore
   }
 
   async insertPreparedSource(record: PersistedPreparedEncryptedWalletBackupRecord): Promise<void> {
-    const row = sourceRow(record, this.#realm, this.#vaultId);
+    await this.insertPreparedSourceBatch([record]);
+  }
+
+  async insertPreparedSourceBatch(
+    records: readonly PersistedPreparedEncryptedWalletBackupRecord[],
+  ): Promise<void> {
+    if (
+      !Array.isArray(records) ||
+      records.length < 1 ||
+      records.length > PREPARED_SOURCE_INSERT_BATCH_MAX
+    ) {
+      throw new Error("prepared source insert batch is invalid");
+    }
+    const rows = records.map((record) => sourceRow(record, this.#realm, this.#vaultId));
+    const unique = uniqueSourceRows(rows);
     await this.#database.transaction(
       "rw",
       this.#database.encryptedWalletBackupPreparedSources,
       async () => {
-        const existing = await this.#database.encryptedWalletBackupPreparedSources.get([
-          row.realm,
-          row.vaultId,
-          row.recordKindCode,
-          row.recordId,
-          row.revision,
-          row.bodyReference,
-        ]);
-        if (existing === undefined) {
-          await this.#database.encryptedWalletBackupPreparedSources.add(row);
-          return;
+        const existing = await this.#database.encryptedWalletBackupPreparedSources.bulkGet(
+          unique.map(sourceKey),
+        );
+        const missing: EncryptedWalletBackupDexiePreparedSourceRow[] = [];
+        for (const [index, row] of unique.entries()) {
+          const present = existing[index];
+          if (present === undefined) missing.push(row);
+          else if (!sameSource(present, row))
+            throw new Error("prepared source conflicts with existing content");
         }
-        if (!sameSource(existing, row))
-          throw new Error("prepared source conflicts with existing content");
+        if (missing.length > 0)
+          await this.#database.encryptedWalletBackupPreparedSources.bulkAdd(missing);
       },
     );
   }
@@ -172,6 +186,34 @@ function sameSource(
     left.snapshotRevision === right.snapshotRevision &&
     equalBytes(left.canonicalDescriptor, right.canonicalDescriptor)
   );
+}
+
+function uniqueSourceRows(
+  rows: readonly EncryptedWalletBackupDexiePreparedSourceRow[],
+): EncryptedWalletBackupDexiePreparedSourceRow[] {
+  const unique = new Map<string, EncryptedWalletBackupDexiePreparedSourceRow>();
+  for (const row of rows) {
+    const key = sourceKey(row).join("\u0000");
+    const prior = unique.get(key);
+    if (prior !== undefined && !sameSource(prior, row)) {
+      throw new Error("prepared source insert batch conflicts with itself");
+    }
+    unique.set(key, row);
+  }
+  return [...unique.values()];
+}
+
+function sourceKey(
+  row: EncryptedWalletBackupDexiePreparedSourceRow,
+): [string, string, number, string, number, string] {
+  return [
+    row.realm,
+    row.vaultId,
+    row.recordKindCode,
+    row.recordId,
+    row.revision,
+    row.bodyReference,
+  ];
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {

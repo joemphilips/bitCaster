@@ -52,6 +52,7 @@ import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
 } from "@bitcaster/client-sdk/durableCustody";
+import { encodeDurableWalletProofDerivationLocatorCbor } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import { EncryptedWalletBackupPreparedSourceDexieStore } from "../encrypted-wallet-backup-prepared-source-db";
 import { EncryptedWalletBackupPackDexieStore } from "../encrypted-wallet-backup-pack-db";
@@ -1067,7 +1068,12 @@ async function preparedRecord(
           new TextEncoder().encode(secret),
           hex("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
           [hex("22".repeat(32)), hex("33".repeat(32)), hex("44".repeat(32))],
-          counter,
+          encodeDurableWalletProofDerivationLocatorCbor({
+            schemaVersion: 1,
+            kind: "nut13",
+            keysetId,
+            counter,
+          }),
           0,
           null,
           1_700_000_000,
@@ -1083,7 +1089,7 @@ async function preparedRecord(
     seed: SEED,
     mint: "https://mint.example",
     unit: "sat",
-    counter,
+    derivationLocator: { schemaVersion: 1, kind: "nut13", keysetId, counter },
     proof: {
       id: keysetId,
       amount: "1",
@@ -1122,7 +1128,7 @@ async function preparedRecord(
             replayTombstone: "absent",
             dependentWork: "absent",
           },
-          derivationLocator: "committed",
+          derivationLocator: { schemaVersion: 1, kind: "nut13", keysetId, counter },
         });
       },
     },

@@ -34,6 +34,7 @@ import {
   getProofOperation,
   getProofOperations,
   markProofOperationCompleted,
+  markCtfRedeemTerminalFailure,
   markProofOperationFailed,
   prepareProofOperation,
   removeProofs,
@@ -41,6 +42,7 @@ import {
   type BitcasterDB,
   type StoredProof,
 } from "@/stores/proof-db";
+import { bindBrowserCtfRedeemTerminalProofs } from "@/stores/browser-ctf-terminal-binding";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   type CtfProofOperationRecord,
@@ -48,7 +50,9 @@ import {
 } from "@bitcaster/client-sdk/ctfSplit";
 import {
   buildKeysetRedeemOperationId,
+  ORACLE_NOT_ATTESTED_OUTCOME_CODE,
   readAuthenticatedCtfRedeemTerminalEvidence,
+  readVerifiedCtfLosingOutcomeEvidence,
   redeemOutcomeLegWithOperation,
 } from "@bitcaster/client-sdk/ctfRedeem";
 import {
@@ -1503,7 +1507,7 @@ interface RedeemKeysetLegInput {
 }
 
 /**
- * Redeem (or discard) one keyset leg of a CTF position.
+ * Redeem one keyset leg of a CTF position.
  *
  * EVERY leg is presented to the mint — we never pre-classify a leg as a loser
  * from its stored `outcomeCollection` label. The label can be stale or wrong
@@ -1513,11 +1517,9 @@ interface RedeemKeysetLegInput {
  * condemn a proof.
  *
  * Winning leg  → mint signs the redeem, credit regular proofs, remove inputs.
- *                Transient failures are forward-recoverable via the op-id.
- * Losing leg   → the mint AUTHORITATIVELY rejects it with the terminal
- *                `OracleNotAttestedOutcome` (13015) code. ONLY THEN do we remove
- *                the now-worthless proofs locally, and we surface NO error — a
- *                composite position legitimately carries a losing leg.
+ *                Transient failures are forward-recoverable by operation ID.
+ * Losing leg   → mint rejects the leg with `OracleNotAttestedOutcome` (13015).
+ *                The browser binds the retained proof bodies to that operation.
  */
 async function redeemKeysetLeg(input: RedeemKeysetLegInput): Promise<Proof[]> {
   const { conditionId, keysetId, proofs, mintUrl, witnessJson, baseAsset } = input;
@@ -1530,12 +1532,17 @@ async function redeemKeysetLeg(input: RedeemKeysetLegInput): Promise<Proof[]> {
     proofs,
   });
   const existing = (await getProofOperation(operationId)) as CtfProofOperationRecord | null;
+  const proofOperationStore = ctfRedeemProofOperationStore();
+  if (existing?.state === "Failed" && existing.failureCode === ORACLE_NOT_ATTESTED_OUTCOME_CODE) {
+    await bindTerminalCtfRedeemLeg(operationId, mintUrl, unit, proofs);
+    return [];
+  }
   const wallet = await getWallet(mintUrl, baseAsset);
   const result = await redeemOutcomeLegWithOperation({
     mintUrl,
     operationId,
     wallet,
-    proofOperationStore: ctfRedeemProofOperationStore(),
+    proofOperationStore,
     conditionId,
     outcome: keysetId,
     outcomeKeysetId: keysetId,
@@ -1543,15 +1550,10 @@ async function redeemKeysetLeg(input: RedeemKeysetLegInput): Promise<Proof[]> {
     oracleWitness: witnessJson,
     proofs,
     regularKeyset: await getFrontendRegularKeyset(wallet, baseAsset),
-    onLosingLeg: async (inputs) => {
-      await removeProofs(inputs.map((proof) => proof.secret));
-    },
   });
 
   if (result.losing) {
-    if (existing?.state === "Failed") {
-      await removeProofs(proofs.map((proof) => proof.secret));
-    }
+    await bindTerminalCtfRedeemLeg(operationId, mintUrl, unit, proofs);
     return [];
   }
   if (existing?.state !== "completed") {
@@ -1559,6 +1561,34 @@ async function redeemKeysetLeg(input: RedeemKeysetLegInput): Promise<Proof[]> {
     await removeProofs(proofs.map((proof) => proof.secret));
   }
   return result.proofs;
+}
+
+async function bindTerminalCtfRedeemLeg(
+  operationId: string,
+  mintUrl: string,
+  unit: CashuProofUnit,
+  proofs: readonly Proof[],
+): Promise<void> {
+  if (unit !== "msat") throw new Error("CTF redeem terminal proof unit is invalid");
+  const scopeId = activeBrowserWalletScopeId();
+  if (!scopeId) throw new Error("Browser wallet scope is unavailable");
+  const operation = (await getProofOperation(operationId)) as CtfProofOperationRecord | null;
+  if (!operation) throw new Error(`Missing proof operation ${operationId}`);
+  const committedStore = {
+    async withCommittedProofOperation<T>(
+      requestedOperationId: string,
+      read: (entry: CtfProofOperationRecord) => T,
+    ): Promise<T> {
+      if (requestedOperationId !== operationId) {
+        throw new Error("browser CTF terminal operation is foreign");
+      }
+      return read(operation);
+    },
+  };
+  for (const proof of proofs) {
+    await readVerifiedCtfLosingOutcomeEvidence({ store: committedStore, operationId, proof });
+  }
+  await bindBrowserCtfRedeemTerminalProofs({ operationId, mintUrl, scopeId, unit, proofs });
 }
 
 async function getFrontendRegularKeyset(
@@ -1585,10 +1615,12 @@ function ctfRedeemProofOperationStore(): CtfProofOperationStore {
     markProofOperationCompleted: async (operationId, completion) =>
       (await markProofOperationCompleted(operationId, completion)) as CtfProofOperationRecord,
     markProofOperationFailed: async (operationId, message, terminalEvidence) => {
-      const evidence = readAuthenticatedCtfRedeemTerminalEvidence(terminalEvidence);
-      const error = new Error(message) as Error & { code: number };
-      error.code = evidence.rejectionBody.code;
-      return (await markProofOperationFailed(operationId, error)) as CtfProofOperationRecord;
+      readAuthenticatedCtfRedeemTerminalEvidence(terminalEvidence);
+      return (await markCtfRedeemTerminalFailure(
+        operationId,
+        message,
+        terminalEvidence,
+      )) as CtfProofOperationRecord;
     },
   };
 }

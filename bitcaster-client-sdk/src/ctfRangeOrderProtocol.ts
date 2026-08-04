@@ -94,6 +94,7 @@ const CONDITIONAL_KEYSET_FIELDS = [
   'conditionId',
   'outcomeCollection',
   'outcomeCollectionId',
+  'registeredAt',
 ] as const
 const EXPIRY_OBSERVATION_FIELDS = [
   'canonicalMintUrl',
@@ -108,7 +109,9 @@ const OBSERVED_CONDITIONAL_KEYSET_FIELDS = [
   'conditionId',
   'unit',
   'inputFeePpk',
+  'outcomeCollection',
   'outcomeCollectionId',
+  'registeredAt',
   'keys',
 ] as const
 
@@ -134,6 +137,7 @@ export interface CtfRangeConditionalMintKeyset extends ActiveCtfRangeMintKeyset 
   readonly conditionId: string
   readonly outcomeCollection: string
   readonly outcomeCollectionId: string
+  readonly registeredAt: number
 }
 
 export interface CtfRangeReviewedMintFacts {
@@ -145,7 +149,7 @@ export interface CtfRangeReviewedMintFacts {
 }
 
 export interface PersistedCtfRangeOrderPreparation {
-  readonly version: 1
+  readonly version: 2
   readonly operationId: string
   readonly sourceOperationId: string
   readonly sourceKind: CtfRangeOrderPreparationSourceKind
@@ -200,7 +204,7 @@ export function buildPersistedCtfRangeOrderPreparation(input: {
   const operationId = requireText(input.randomId(), 'range preparation operation id')
   const sourceKind = input.sourceKind ?? 'wallet-prepared'
   return decodePersistedCtfRangeOrderPreparation({
-    version: 1,
+    version: 2,
     operationId,
     sourceOperationId: `${operationId}:source`,
     sourceKind,
@@ -255,7 +259,7 @@ export function decodePersistedCtfRangeOrderPreparation(
     throw new Error('range preparation complement keyset is not conditional')
   }
   const preparation: PersistedCtfRangeOrderPreparation = {
-    version: requireExact(input.version, 1, 'range preparation version'),
+    version: requireExact(input.version, 2, 'range preparation version'),
     operationId,
     sourceOperationId: requireText(
       input.sourceOperationId,
@@ -399,6 +403,7 @@ export function ctfRangeOrderPreparationKeysetLookup(
     conditionId: keyset.conditionId,
     outcomeCollection: keyset.outcomeCollection,
     outcomeCollectionId: keyset.outcomeCollectionId,
+    registeredAt: keyset.registeredAt,
   }))
   if (regularKeysets.length !== 1 || conditionalKeysets.length !== 1) {
     throw new Error('range preparation keyset source authority is incomplete')
@@ -691,6 +696,10 @@ function decodeActiveKeyset(
     conditionId: keyset.conditionId,
     outcomeCollection: keyset.outcomeCollection,
     outcomeCollectionId: keyset.outcomeCollectionId,
+    registeredAt: requireNonnegativeSafeInteger(
+      keyset.registeredAt,
+      'range preparation keyset registration',
+    ),
   }
 }
 
@@ -770,6 +779,14 @@ function decodeObservedConditionalKeyset(
     outcomeCollectionId: requireText(
       keyset.outcomeCollectionId,
       'range preparation observed collection id',
+    ),
+    outcomeCollection: requireText(
+      keyset.outcomeCollection,
+      'range preparation observed collection',
+    ),
+    registeredAt: requireNonnegativeSafeInteger(
+      keyset.registeredAt,
+      'range preparation observed keyset registration',
     ),
     keys: decodeKeysetKeys(keyset.keys),
   }
@@ -936,6 +953,7 @@ function hasConditionalMetadata(value: unknown): value is ActiveCtfRangeMintKeys
   conditionId: string
   outcomeCollection: string
   outcomeCollectionId: string
+  registeredAt: number
 } {
   if (value === null || typeof value !== 'object') return false
   const keyset = value as Record<string, unknown>
@@ -945,12 +963,19 @@ function hasConditionalMetadata(value: unknown): value is ActiveCtfRangeMintKeys
     typeof keyset.outcomeCollection === 'string' &&
     keyset.outcomeCollection.length > 0 &&
     typeof keyset.outcomeCollectionId === 'string' &&
-    keyset.outcomeCollectionId.length > 0
+    keyset.outcomeCollectionId.length > 0 &&
+    Number.isSafeInteger(keyset.registeredAt) &&
+    (keyset.registeredAt as number) >= 0
   )
 }
 
 function hasAnyConditionalMetadata(value: Record<string, unknown>): boolean {
-  return 'conditionId' in value || 'outcomeCollection' in value || 'outcomeCollectionId' in value
+  return (
+    'conditionId' in value ||
+    'outcomeCollection' in value ||
+    'outcomeCollectionId' in value ||
+    'registeredAt' in value
+  )
 }
 
 function durableMintKeyset(keyset: ActiveCtfRangeMintKeyset): DurableCtfRangeMintKeyset {

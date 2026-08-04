@@ -1,29 +1,31 @@
 import { decodeDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
+import {
+  decodeDurableWalletProofDerivationLocator,
+  durableWalletProofDerivationLocatorsEqual,
+  serializeDurableWalletProofDerivationLocator,
+  type DurableWalletProofDerivationLocator,
+  type SerializableDurableWalletProofDerivationLocator,
+} from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import type {
   BrowserCustodyProofRow,
   BrowserCustodyProofSelectability,
 } from "./durable-custody-types";
 
-const MODERN_KEYSET_ID = /^(?:01|02)[0-9a-f]{64}$/;
-const DERIVATION_COUNTER_MAX = 2_147_483_647;
-
-export interface BrowserProofDerivationLocator {
-  readonly keysetId: string;
-  readonly counter: number;
-}
-
-export type BrowserProofDerivationLocatorAuthority = BrowserProofDerivationLocator | null;
+export type BrowserProofDerivationLocatorAuthority = DurableWalletProofDerivationLocator | null;
 
 export interface BrowserProofBackupAuthorityRow {
-  schemaVersion: 1;
+  schemaVersion: 3;
   scopeId: string;
   proofId: string;
   proofFingerprint: string;
   proofRevision: number;
   proofState: BrowserCustodyProofSelectability;
+  admissionOperationId: string;
+  terminalOperationId: string | null;
+  recordCreatedAtUnixSeconds: number;
+  recordUpdatedAtUnixSeconds: number;
   backupState: "local-only";
-  derivationKeysetId: string | null;
-  derivationCounter: number | null;
+  derivationLocator: SerializableDurableWalletProofDerivationLocator | null;
   backupRecordId: null;
   updatedAtMs: number;
 }
@@ -32,20 +34,24 @@ export function createBrowserProofBackupAuthorityRow(
   proof: BrowserCustodyProofRow,
   observedAtMs: number,
   derivationLocator: BrowserProofDerivationLocatorAuthority,
+  admissionOperationId: string,
 ): BrowserProofBackupAuthorityRow {
   if (observedAtMs < proof.receivedAtMs) {
     throw new Error("browser proof backup authority time is stale");
   }
-  assertLocatorMatchesProof(requireBrowserProofDerivationLocator(derivationLocator), proof);
+  requireBrowserProofDerivationLocator(derivationLocator);
   return requireBrowserProofBackupAuthorityRow({
-    schemaVersion: 1,
+    schemaVersion: 3,
     scopeId: proof.scopeId,
     proofId: proof.proofId,
     proofFingerprint: proof.proofFingerprint,
     proofRevision: proof.revision,
     proofState: proof.selectability,
+    admissionOperationId: requireOperationId(admissionOperationId, "proof admission operation"),
+    terminalOperationId: null,
+    ...recordTimes(observedAtMs),
     backupState: "local-only",
-    ...derivationLocatorFields(derivationLocator),
+    derivationLocator: serializeBrowserProofDerivationLocator(derivationLocator),
     backupRecordId: null,
     updatedAtMs: observedAtMs,
   });
@@ -56,13 +62,18 @@ export function advanceBrowserProofBackupAuthorityRow(
   proof: BrowserCustodyProofRow,
   observedAtMs: number,
   derivationLocator: BrowserProofDerivationLocatorAuthority,
+  admissionOperationId: string,
 ): BrowserProofBackupAuthorityRow {
   const authority = requireBrowserProofBackupAuthorityRow(current);
   requireProofBinding(authority, proof);
+  if (
+    authority.admissionOperationId !==
+    requireOperationId(admissionOperationId, "proof admission operation")
+  ) {
+    throw new Error("browser proof backup admission operation conflicts");
+  }
   const currentLocator = derivationLocatorOf(authority);
   const requestedLocator = requireBrowserProofDerivationLocator(derivationLocator);
-  assertLocatorMatchesProof(currentLocator, proof);
-  assertLocatorMatchesProof(requestedLocator, proof);
   if (!sameBrowserProofDerivationLocator(currentLocator, requestedLocator)) {
     throw new Error("browser proof backup derivation locator conflicts");
   }
@@ -87,24 +98,68 @@ export function advanceBrowserProofBackupAuthorityRow(
   });
 }
 
+/** Bind one committed terminal operation without changing proof authority. */
+export function bindBrowserProofBackupAuthorityTerminalOperation(
+  current: BrowserProofBackupAuthorityRow,
+  terminalOperationId: string,
+  classifiedAtMs: number,
+): BrowserProofBackupAuthorityRow {
+  const authority = requireBrowserProofBackupAuthorityRow(current);
+  const terminal = requireOperationId(terminalOperationId, "proof terminal operation");
+  if (authority.terminalOperationId === terminal) return authority;
+  if (authority.terminalOperationId !== null) {
+    throw new Error("browser proof backup terminal operation conflicts");
+  }
+  const time = requireTime(classifiedAtMs, "proof terminal classification time");
+  if (time < authority.updatedAtMs) {
+    throw new Error("browser proof backup terminal classification time is stale");
+  }
+  const recordUpdatedAtUnixSeconds = Math.floor(time / 1_000);
+  if (recordUpdatedAtUnixSeconds < authority.recordUpdatedAtUnixSeconds) {
+    throw new Error("browser proof backup terminal classification time is stale");
+  }
+  return requireBrowserProofBackupAuthorityRow({
+    ...authority,
+    terminalOperationId: terminal,
+    recordUpdatedAtUnixSeconds,
+    updatedAtMs: time,
+  });
+}
+
 export function requireBrowserProofBackupAuthorityRow(
   value: unknown,
 ): BrowserProofBackupAuthorityRow {
   const row = requireAuthorityRecord(value);
   const proofState = requireProofState(row.proofState);
-  const derivationLocator = requireBrowserProofDerivationLocator({
-    keysetId: row.derivationKeysetId,
-    counter: row.derivationCounter,
-  });
+  const derivationLocator = requireBrowserProofDerivationLocator(row.derivationLocator);
+  const recordCreatedAtUnixSeconds = requireTime(
+    row.recordCreatedAtUnixSeconds,
+    "proof backup record creation time",
+  );
+  const recordUpdatedAtUnixSeconds = requireTime(
+    row.recordUpdatedAtUnixSeconds,
+    "proof backup record update time",
+  );
+  const terminalOperationId =
+    row.terminalOperationId === null
+      ? null
+      : requireOperationId(row.terminalOperationId, "proof terminal operation");
+  if (recordUpdatedAtUnixSeconds < recordCreatedAtUnixSeconds) {
+    throw new Error("browser proof backup authority is invalid");
+  }
   return {
-    schemaVersion: 1,
+    schemaVersion: 3,
     scopeId: decodeDurableCustodyScopeId(row.scopeId),
     proofId: requireFingerprint(row.proofId, "proof id"),
     proofFingerprint: requireFingerprint(row.proofFingerprint, "proof fingerprint"),
     proofRevision: requireRevision(row.proofRevision),
     proofState,
+    admissionOperationId: requireOperationId(row.admissionOperationId, "proof admission operation"),
+    terminalOperationId,
+    recordCreatedAtUnixSeconds,
+    recordUpdatedAtUnixSeconds,
     backupState: "local-only",
-    ...derivationLocatorFields(derivationLocator),
+    derivationLocator: serializeBrowserProofDerivationLocator(derivationLocator),
     backupRecordId: null,
     updatedAtMs: requireTime(row.updatedAtMs, "proof backup authority time"),
   };
@@ -122,14 +177,17 @@ function requireAuthorityRecord(value: unknown): Record<string, unknown> {
     "proofFingerprint",
     "proofRevision",
     "proofState",
+    "admissionOperationId",
+    "terminalOperationId",
+    "recordCreatedAtUnixSeconds",
+    "recordUpdatedAtUnixSeconds",
     "backupState",
-    "derivationKeysetId",
-    "derivationCounter",
+    "derivationLocator",
     "backupRecordId",
     "updatedAtMs",
   ];
   if (
-    row.schemaVersion !== 1 ||
+    row.schemaVersion !== 3 ||
     Object.keys(row).length !== fields.length ||
     fields.some((field) => !(field in row)) ||
     row.backupState !== "local-only" ||
@@ -140,22 +198,32 @@ function requireAuthorityRecord(value: unknown): Record<string, unknown> {
   return row;
 }
 
+function recordTimes(
+  observedAtMs: number,
+): Pick<
+  BrowserProofBackupAuthorityRow,
+  "recordCreatedAtUnixSeconds" | "recordUpdatedAtUnixSeconds"
+> {
+  const seconds = Math.floor(requireTime(observedAtMs, "proof backup authority time") / 1_000);
+  return { recordCreatedAtUnixSeconds: seconds, recordUpdatedAtUnixSeconds: seconds };
+}
+
+function requireOperationId(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 512) {
+    throw new Error(`browser ${label} is invalid`);
+  }
+  return value;
+}
+
 export function requireBrowserProofDerivationLocator(
   value: unknown,
 ): BrowserProofDerivationLocatorAuthority {
   if (value === null) return null;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  try {
+    return decodeDurableWalletProofDerivationLocator(value);
+  } catch {
     throw new Error("browser proof backup derivation locator is invalid");
   }
-  const locator = value as Record<string, unknown>;
-  if (Object.keys(locator).length !== 2 || !("keysetId" in locator) || !("counter" in locator)) {
-    throw new Error("browser proof backup derivation locator is invalid");
-  }
-  if (locator.keysetId === null && locator.counter === null) return null;
-  if (!isCanonicalDerivationKeysetId(locator.keysetId) || !isDerivationCounter(locator.counter)) {
-    throw new Error("browser proof backup derivation locator is invalid");
-  }
-  return { keysetId: locator.keysetId, counter: locator.counter };
 }
 
 export function requireBrowserProofBackupAuthorityForProof(
@@ -164,7 +232,6 @@ export function requireBrowserProofBackupAuthorityForProof(
 ): BrowserProofBackupAuthorityRow {
   const authority = requireBrowserProofBackupAuthorityRow(value);
   requireProofBinding(authority, proof);
-  assertLocatorMatchesProof(derivationLocatorOf(authority), proof);
   if (authority.proofRevision !== proof.revision || authority.proofState !== proof.selectability) {
     throw new Error("browser proof backup authority is stale");
   }
@@ -184,31 +251,17 @@ function requireProofBinding(
   }
 }
 
-function assertLocatorMatchesProof(
-  locator: BrowserProofDerivationLocatorAuthority,
-  proof: BrowserCustodyProofRow,
-): void {
-  if (locator !== null && locator.keysetId !== proof.keysetId) {
-    throw new Error("browser proof backup derivation locator keyset is foreign");
-  }
-}
-
 function derivationLocatorOf(
   authority: BrowserProofBackupAuthorityRow,
 ): BrowserProofDerivationLocatorAuthority {
-  return requireBrowserProofDerivationLocator({
-    keysetId: authority.derivationKeysetId,
-    counter: authority.derivationCounter,
-  });
+  return requireBrowserProofDerivationLocator(authority.derivationLocator);
 }
 
-function derivationLocatorFields(
+function serializeBrowserProofDerivationLocator(
   locator: BrowserProofDerivationLocatorAuthority,
-): Pick<BrowserProofBackupAuthorityRow, "derivationKeysetId" | "derivationCounter"> {
+): SerializableDurableWalletProofDerivationLocator | null {
   const required = requireBrowserProofDerivationLocator(locator);
-  return required === null
-    ? { derivationKeysetId: null, derivationCounter: null }
-    : { derivationKeysetId: required.keysetId, derivationCounter: required.counter };
+  return required === null ? null : serializeDurableWalletProofDerivationLocator(required);
 }
 
 export function sameBrowserProofDerivationLocator(
@@ -217,23 +270,7 @@ export function sameBrowserProofDerivationLocator(
 ): boolean {
   return (
     left === right ||
-    (left !== null &&
-      right !== null &&
-      left.keysetId === right.keysetId &&
-      left.counter === right.counter)
-  );
-}
-
-function isCanonicalDerivationKeysetId(value: unknown): value is string {
-  return typeof value === "string" && MODERN_KEYSET_ID.test(value);
-}
-
-function isDerivationCounter(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isSafeInteger(value) &&
-    value >= 0 &&
-    value <= DERIVATION_COUNTER_MAX
+    (left !== null && right !== null && durableWalletProofDerivationLocatorsEqual(left, right))
   );
 }
 

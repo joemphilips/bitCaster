@@ -23,6 +23,7 @@ import {
   buildDurableCtfRangeRecoveryQuery,
   classifyDurableCtfRangeRecovery,
   createDeterministicDurableCtfRangeRefundOutputs,
+  createDeterministicDurableCtfRangeRefundOutputsWithLocators,
   createDurableCtfRangeOperation,
   createDurableCtfRangeCustodyBinding,
   createDurableCtfRangeRefundOperation,
@@ -47,6 +48,10 @@ import {
   type DurableCtfRangeOperation,
   type DurableCtfRangeAllManifestRecovery,
 } from '../src/durableCtfRangeOperation.ts'
+import {
+  decodeDurableWalletProofDerivationLocator,
+  deriveDurableWalletProofSecret,
+} from '../src/durableWalletProofDerivationLocator.ts'
 import {
   assertDurableCtfRangeExactBinding,
   assertDurableCtfRangeExactCommittedBinding,
@@ -263,7 +268,9 @@ function conditionExpiryObservation(): DurableCtfRangeExpiryObservation {
         unit: 'msat',
         inputFeePpk: INPUT_FEE_PPK,
         finalExpiry: FINAL_EXPIRY,
+        outcomeCollection: OUTCOME_COLLECTION,
         outcomeCollectionId: OUTCOME_COLLECTION_ID,
+        registeredAt: 10,
         keys: KEYS,
       },
     ],
@@ -301,7 +308,9 @@ function conditionExpiryObservationWithSecondKeyset(
           unit: 'msat',
           inputFeePpk: INPUT_FEE_PPK,
           ...(reportedFinalExpiry === null ? {} : { finalExpiry: reportedFinalExpiry }),
+          outcomeCollection: SECOND_OUTCOME_COLLECTION,
           outcomeCollectionId: SECOND_OUTCOME_COLLECTION_ID,
+          registeredAt: 10,
           keys: KEYS,
         },
       ],
@@ -476,6 +485,8 @@ test('range operation preserves direct proof-operation authority and fee bounds'
       conditionId: null,
       outcomeCollection: null,
       outcomeCollectionId: null,
+      denominationPublicKeys: null,
+      registeredAt: null,
     },
     receive: {
       keysetId: RECEIVE_KEYSET,
@@ -487,9 +498,11 @@ test('range operation preserves direct proof-operation authority and fee bounds'
       conditionId: CONDITION_ID,
       outcomeCollection: OUTCOME_COLLECTION,
       outcomeCollectionId: OUTCOME_COLLECTION_ID,
+      denominationPublicKeys: KEYS,
+      registeredAt: 10,
     },
   })
-  assert.equal(operation.schemaVersion, 2)
+  assert.equal(operation.schemaVersion, 3)
   assert.equal(operation.coordinatorPublicKey, COORDINATOR_PUBLIC_KEY)
   assert.equal(decodeDurableCtfRangeOperation(operation).sourceOperationId, 'prepare-operation-1')
   assert.throws(
@@ -755,7 +768,7 @@ test('shared range custody mapping is exact and rejects over-bound results befor
         mapDurableCtfRangeSuccessorProofs({ record: staged, operation, result }, () => {
           invalidMapCalls += 1
         }),
-      /duplicated|foreign/,
+      /duplicated|foreign|outside the manifest/,
     )
     assert.equal(invalidMapCalls, 0)
   }
@@ -992,6 +1005,17 @@ test('range expiry authority covers every condition keyset and missing-expiry fa
   const base = conditionExpiryObservation()
   const earlier = conditionExpiryObservationWithSecondKeyset(99)
 
+  const zeroRegistration = fixture({
+    expiryObservation: {
+      ...base,
+      conditionalKeysets: base.conditionalKeysets.map((keyset) => ({
+        ...keyset,
+        registeredAt: 0,
+      })),
+    },
+  })
+  assert.equal(zeroRegistration.keysetAuthority.receive.registeredAt, 0)
+
   assert.throws(
     () => fixture({ expiryObservation: earlier.observation }),
     /effective condition keyset ceiling/,
@@ -1079,7 +1103,7 @@ test('range custody binding rejects mint keys inconsistent with persisted author
         requestBody: {},
       },
     })
-  assert.throws(() => bind(inconsistent), /keyset identity is inconsistent/)
+  assert.throws(() => bind(inconsistent), /mint keyset metadata is foreign/)
 
   const foreign = mintKeysetsFor(operation)
   foreign.set(OFFER_KEYSET, {
@@ -1273,7 +1297,7 @@ test('selected range result unblinds only the exact persisted subset', async () 
             ? { id, keys: { '1': otherMintKey, '2': otherMintKey, '4': otherMintKey } }
             : undefined,
       ),
-    /keyset identity is inconsistent/,
+    /mint keyset metadata is foreign/,
   )
   assert.throws(
     () =>
@@ -1564,6 +1588,35 @@ test('refund outputs reconstruct exactly from seed after local origin loss', () 
     outputs: [...prepared.request.outputs],
   }
   assert.notEqual(deriveDurableCtfRangeRefundRequestFingerprint(mutated), fingerprint)
+})
+
+test('refund output locators reproduce each exact proof secret', () => {
+  const operation = fixture()
+  const refundOperationId = deriveDurableCtfRangeRefundOperationId(operation.operationId)
+  const outputs = createDeterministicDurableCtfRangeRefundOutputsWithLocators({
+    seed: SEED,
+    source: operation,
+    refundOperationId,
+    amount: '3',
+    keyset: { id: OFFER_KEYSET, keys: KEYS },
+  })
+
+  assert.equal(outputs.length, 2)
+  outputs.forEach(({ output, locator }, outputIndex) => {
+    const decoded = decodeDurableWalletProofDerivationLocator(locator)
+    assert.equal(decoded.kind, 'ctf-range-refund')
+    assert.equal(decoded.counter, outputIndex)
+    assert.equal(decoded.refundOperationId, refundOperationId)
+    assert.equal(
+      deriveDurableWalletProofSecret({
+        seed: SEED,
+        locator,
+        proofKeysetId: output.blindedMessage.id,
+        proofAmount: output.blindedMessage.amount,
+      }),
+      new TextDecoder().decode(OutputData.deserialize(output).secret),
+    )
+  })
 })
 
 test('refund outputs bind to a rotated same-class keyset', () => {

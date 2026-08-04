@@ -72,8 +72,10 @@ export interface CtfRangeSourceResult {
 }
 
 export interface CtfRangeSourceKeepDerivationLocator {
-  readonly derivationKeysetId: string
-  readonly derivationCounter: number
+  readonly schemaVersion: 1
+  readonly kind: 'nut13'
+  readonly keysetId: string
+  readonly counter: number
 }
 
 export function planCtfRangeSourceConsolidation(input: {
@@ -232,7 +234,12 @@ export function ctfRangeSourceKeepDerivationLocators(
       throw new Error('range source keep proof does not match its exact output plan')
     }
     observed.add(identity)
-    return { derivationKeysetId: plan.keysetId, derivationCounter: plan.counterStart + index }
+    return {
+      schemaVersion: 1,
+      kind: 'nut13',
+      keysetId: plan.keysetId,
+      counter: plan.counterStart + index,
+    }
   })
 }
 

@@ -32,6 +32,7 @@ import {
   createDurableCustodyProofMaterialRecord,
   decodeDurableCustodyProofMaterialRecord,
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import { verifyEncryptedWalletBackupConditionalKeyset } from "@bitcaster/client-sdk/encryptedWalletBackup";
 import { db, type BitcasterDB } from "./proof-db";
 import {
   advanceBrowserProofBackupAuthorityRow,
@@ -44,13 +45,17 @@ import {
 import type {
   BrowserCustodyActiveWorkRow,
   BrowserCustodyArtifactRow,
+  BrowserCustodyConditionalKeysetRow,
   BrowserCustodyOperationRow,
   BrowserCustodyProofRow,
+  BrowserCustodyConditionalKeysetAuthority,
   BrowserCustodyProofSelectability,
   BrowserCustodyProofUnit,
   BrowserCustodyReservationRow,
   BrowserCustodyScopeRow,
 } from "./durable-custody-types";
+import { decodeBrowserCustodyConditionalKeysetAuthority } from "./durable-custody-types";
+import { decodeBrowserCustodyConditionalKeysetRow } from "./durable-custody-types";
 
 const ROW_TEXT_BYTES_MAX = 64 * 1_024;
 const TRANSACTION_PROOF_ROW_LIMIT_MAX =
@@ -72,6 +77,7 @@ export interface StagedBrowserCustodyProof {
   readonly proof: BrowserCustodyProofRow;
   readonly expectedRevision: number | null;
   readonly derivationLocator: BrowserProofDerivationLocatorAuthority;
+  readonly conditionalKeyset?: BrowserCustodyConditionalKeysetAuthority;
 }
 
 interface PersistedBrowserCustodyProof {
@@ -79,9 +85,24 @@ interface PersistedBrowserCustodyProof {
   readonly derivationLocator: BrowserProofDerivationLocatorAuthority | undefined;
 }
 
+interface PersistedBrowserCustodyProofRequest extends PersistedBrowserCustodyProof {
+  readonly key: [string, string];
+  readonly successorAdmissionOperationId: string | undefined;
+  readonly predecessorFallbackOperationId: string | undefined;
+  readonly conditionalKeyset: BrowserCustodyConditionalKeysetAuthority | undefined;
+}
+
+interface ConditionalKeysetWritePlan {
+  readonly key: [string, string, string, string];
+  readonly proofs: readonly PersistedBrowserCustodyProofRequest[];
+  readonly requested: BrowserCustodyConditionalKeysetAuthority | undefined;
+  readonly requiresPersistedAuthority: boolean;
+}
+
 export interface BrowserCustodyTransactionOptions {
   readonly predecessorProofs?: Readonly<Record<string, readonly BrowserCustodyProofRow[]>>;
   readonly successorProofs?: Readonly<Record<string, readonly StagedBrowserCustodyProof[]>>;
+  readonly conditionalKeysets?: Readonly<Record<string, BrowserCustodyConditionalKeysetAuthority>>;
   readonly injectFault?: "before-commit" | "after-commit";
 }
 
@@ -251,6 +272,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       this.#database.custodyReservations,
       this.#database.custodyActiveWork,
       this.#database.custodyProofBackupAuthorities,
+      this.#database.custodyConditionalKeysets,
     ];
     const result = await this.#database.transaction("rw", tables, async () => {
       const scope = (await this.#requiredScope(selection.scope.scopeId)).state;
@@ -267,7 +289,11 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         artifacts,
         proofs: proofState.proofs,
         reservations: proofState.reservations,
+        terminalProofIds: proofState.terminalProofIds,
         successorProofs: options.successorProofs ?? {},
+        successorAdmissionOperationIds: stagedSuccessorAdmissionOperationIds(options),
+        predecessorFallbackOperationIds: stagedPredecessorFallbackOperationIds(options),
+        conditionalKeysets: stagedConditionalKeysets(options),
       });
       const output = applyDurableCustodyTransaction(transaction, selection, apply);
       await this.#persistTransaction(selection, transaction);
@@ -285,8 +311,9 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   async retireAbortedInputsAndAdmitRefunds(input: {
     scopeId: string;
     operationId: string;
-    refundProofs: readonly BrowserCustodyProofRow[];
+    refundProofs: readonly StagedBrowserCustodyProof[];
     observedAtMs: number;
+    injectFault?: "before-commit" | "after-commit";
   }): Promise<void> {
     await this.#database.transaction(
       "rw",
@@ -295,6 +322,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         this.#database.custodyProofs,
         this.#database.custodyReservations,
         this.#database.custodyProofBackupAuthorities,
+        this.#database.custodyConditionalKeysets,
       ],
       async () => {
         const operationRow = await this.#database.custodyOperations.get([
@@ -341,10 +369,14 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
             reservationOperationId: null,
           });
         });
-        const refunds = input.refundProofs.map(decodeBrowserCustodyProofRow);
+        const refunds = input.refundProofs.map((staged) => ({
+          proof: decodeBrowserCustodyProofRow(staged.proof),
+          derivationLocator: requireBrowserProofDerivationLocator(staged.derivationLocator),
+          conditionalKeyset: staged.conditionalKeyset,
+        }));
         if (
           refunds.some(
-            (proof) =>
+            ({ proof }) =>
               proof.scopeId !== input.scopeId ||
               proof.selectability !== "selectable" ||
               proof.reservationOperationId !== null,
@@ -360,11 +392,18 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
           expectedProofIds.map((proofId) => [input.scopeId, proofId]),
         );
         await this.#persistProofRowsWithBackupAuthority(
-          refunds.map((proof) => ({ proof, derivationLocator: null })),
+          refunds,
           input.observedAtMs,
+          () => input.operationId,
         );
+        if (input.injectFault === "before-commit") {
+          throw new Error("injected browser refund custody fault before commit");
+        }
       },
     );
+    if (input.injectFault === "after-commit") {
+      throw new Error("injected browser refund custody fault after commit");
+    }
   }
 
   async readOperation(
@@ -556,6 +595,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   ): Promise<{
     proofs: Map<string, BrowserCustodyProofRow>;
     reservations: Map<string, BrowserCustodyReservationRow>;
+    terminalProofIds: ReadonlySet<string>;
   }> {
     const { predecessorCandidates, successorCandidates } = collectTransactionProofs(
       operations,
@@ -580,6 +620,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       ReturnType<typeof requireBrowserProofBackupAuthorityForProof>
     >();
     const reservations = new Map<string, BrowserCustodyReservationRow>();
+    const terminalProofIds = new Set<string>();
     proofRows.forEach((row, index) => {
       if (row) {
         const decoded = decodeBrowserCustodyProofRow(row);
@@ -589,6 +630,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         );
         proofs.set(decoded.proofId, decoded);
         authorities.set(decoded.proofId, authority);
+        if (authority.terminalOperationId !== null) terminalProofIds.add(decoded.proofId);
       } else if (backupAuthorities[index]) {
         throw new Error("browser proof backup authority has no proof body");
       }
@@ -609,7 +651,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       }
     }
     assertStagedSuccessorLocatorReplays(options.successorProofs, authorities);
-    return { proofs, reservations };
+    return { proofs, reservations, terminalProofIds };
   }
 
   async #persistTransaction(
@@ -653,39 +695,94 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         derivationLocator: transaction.derivationLocatorForProof(proofId),
       });
     }
-    await this.#persistProofRowsWithBackupAuthority(changed, observedAtMs);
+    await this.#persistProofRowsWithBackupAuthority(
+      changed,
+      observedAtMs,
+      (proofId) => transaction.successorAdmissionOperationIdForProof(proofId),
+      (proofId) => transaction.predecessorFallbackOperationIdForProof(proofId),
+      (proofId) => transaction.conditionalKeysetForProof(proofId),
+    );
   }
 
   async #persistProofRowsWithBackupAuthority(
     proofs: readonly PersistedBrowserCustodyProof[],
     observedAtMs: number,
+    admissionOperationIdForProof: (proofId: string) => string | undefined = () => undefined,
+    predecessorFallbackOperationIdForProof: (proofId: string) => string | undefined = () =>
+      undefined,
+    conditionalKeysetForProof: (
+      proofId: string,
+    ) => BrowserCustodyConditionalKeysetAuthority | undefined = () => undefined,
   ): Promise<void> {
-    for (const staged of proofs) {
-      const proof = staged.proof;
-      const key: [string, string] = [proof.scopeId, proof.proofId];
-      const [currentProofRow, currentAuthority] = await Promise.all([
-        this.#database.custodyProofs.get(key),
-        this.#database.custodyProofBackupAuthorities.get(key),
-      ]);
-      if ((currentProofRow === undefined) !== (currentAuthority === undefined)) {
+    const requests = persistedProofRequests(
+      proofs,
+      admissionOperationIdForProof,
+      predecessorFallbackOperationIdForProof,
+      conditionalKeysetForProof,
+    );
+    if (requests.length === 0) return;
+    const current = await this.#readCurrentProofBackupAuthorities(requests);
+    const authorities = requests.map((request) =>
+      nextProofBackupAuthority(request, current.get(proofIdentity(request.key)), observedAtMs),
+    );
+    const missingKeysets = await this.#prepareConditionalKeysetWrites(requests, current);
+    await Promise.all([
+      this.#database.custodyProofs.bulkPut(requests.map(({ proof }) => proof)),
+      this.#database.custodyProofBackupAuthorities.bulkPut(authorities),
+      missingKeysets.length === 0
+        ? Promise.resolve()
+        : this.#database.custodyConditionalKeysets.bulkAdd(missingKeysets),
+    ]);
+  }
+
+  async #readCurrentProofBackupAuthorities(
+    requests: readonly PersistedBrowserCustodyProofRequest[],
+  ): Promise<
+    ReadonlyMap<string, ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | null>
+  > {
+    const keys = requests.map(({ key }) => key);
+    const [proofRows, authorityRows] = await Promise.all([
+      this.#database.custodyProofs.bulkGet(keys),
+      this.#database.custodyProofBackupAuthorities.bulkGet(keys),
+    ]);
+    const current = new Map<
+      string,
+      ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | null
+    >();
+    requests.forEach((request, index) => {
+      const proofRow = proofRows[index];
+      const authorityRow = authorityRows[index];
+      if ((proofRow === undefined) !== (authorityRow === undefined)) {
         throw new Error("browser proof and backup authority are incomplete");
       }
-      const current = currentAuthority
-        ? requireBrowserProofBackupAuthorityForProof(
-            currentAuthority,
-            decodeBrowserCustodyProofRow(currentProofRow),
-          )
-        : null;
-      const locator =
-        staged.derivationLocator === undefined
-          ? authorityLocator(current)
-          : staged.derivationLocator;
-      const authority = current
-        ? advanceBrowserProofBackupAuthorityRow(current, proof, observedAtMs, locator)
-        : createBrowserProofBackupAuthorityRow(proof, observedAtMs, locator);
-      await this.#database.custodyProofs.put(proof);
-      await this.#database.custodyProofBackupAuthorities.put(authority);
-    }
+      current.set(
+        proofIdentity(request.key),
+        authorityRow === undefined
+          ? null
+          : requireBrowserProofBackupAuthorityForProof(
+              authorityRow,
+              decodeBrowserCustodyProofRow(proofRow),
+            ),
+      );
+    });
+    return current;
+  }
+
+  async #prepareConditionalKeysetWrites(
+    requests: readonly PersistedBrowserCustodyProofRequest[],
+    current: ReadonlyMap<
+      string,
+      ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | null
+    >,
+  ): Promise<readonly BrowserCustodyConditionalKeysetRow[]> {
+    const plans = conditionalKeysetWritePlans(requests, current);
+    if (plans.length === 0) return [];
+    const persisted = await this.#database.custodyConditionalKeysets.bulkGet(
+      plans.map(({ key }) => key),
+    );
+    return plans.flatMap((plan, index) =>
+      validateConditionalKeysetWritePlan(plan, persisted[index]),
+    );
   }
 
   async #persistReservations(
@@ -745,6 +842,204 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   }
 }
 
+function persistedProofRequests(
+  proofs: readonly PersistedBrowserCustodyProof[],
+  admissionOperationIdForProof: (proofId: string) => string | undefined,
+  predecessorFallbackOperationIdForProof: (proofId: string) => string | undefined,
+  conditionalKeysetForProof: (
+    proofId: string,
+  ) => BrowserCustodyConditionalKeysetAuthority | undefined,
+): readonly PersistedBrowserCustodyProofRequest[] {
+  if (proofs.length > TRANSACTION_PROOF_ROW_LIMIT_MAX) {
+    throw new Error("browser custody proof row limit is exceeded");
+  }
+  const identities = new Set<string>();
+  return proofs.map((staged) => {
+    const proof = decodeBrowserCustodyProofRow(staged.proof);
+    const key: [string, string] = [proof.scopeId, proof.proofId];
+    const identity = proofIdentity(key);
+    if (identities.has(identity))
+      throw new Error("browser custody proof write set duplicates a proof");
+    identities.add(identity);
+    const suppliedKeyset = conditionalKeysetForProof(proof.proofId);
+    return {
+      proof,
+      key,
+      derivationLocator:
+        staged.derivationLocator === undefined
+          ? undefined
+          : requireBrowserProofDerivationLocator(staged.derivationLocator),
+      successorAdmissionOperationId: admissionOperationIdForProof(proof.proofId),
+      predecessorFallbackOperationId: predecessorFallbackOperationIdForProof(proof.proofId),
+      conditionalKeyset:
+        suppliedKeyset === undefined
+          ? undefined
+          : decodeBrowserCustodyConditionalKeysetAuthority(suppliedKeyset),
+    };
+  });
+}
+
+function nextProofBackupAuthority(
+  request: PersistedBrowserCustodyProofRequest,
+  current: ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | null | undefined,
+  observedAtMs: number,
+) {
+  if (current === undefined) throw new Error("browser custody proof authority is missing");
+  const locator =
+    request.derivationLocator === undefined ? authorityLocator(current) : request.derivationLocator;
+  if (current !== null) {
+    return advanceBrowserProofBackupAuthorityRow(
+      current,
+      request.proof,
+      observedAtMs,
+      locator,
+      request.successorAdmissionOperationId ?? current.admissionOperationId,
+    );
+  }
+  return createBrowserProofBackupAuthorityRow(
+    request.proof,
+    observedAtMs,
+    locator,
+    requiredAdmissionOperationId(
+      request.successorAdmissionOperationId ?? request.predecessorFallbackOperationId,
+    ),
+  );
+}
+
+function conditionalKeysetWritePlans(
+  requests: readonly PersistedBrowserCustodyProofRequest[],
+  current: ReadonlyMap<
+    string,
+    ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | null
+  >,
+): readonly ConditionalKeysetWritePlan[] {
+  const plans = new Map<string, ConditionalKeysetWritePlan>();
+  for (const request of requests) {
+    const { proof, conditionalKeyset } = request;
+    if (proof.assetKind === "regular") {
+      if (conditionalKeyset !== undefined) {
+        throw new Error("ordinary proof has conditional keyset authority");
+      }
+      continue;
+    }
+    if (conditionalKeyset !== undefined && !matchesConditionalKeyset(proof, conditionalKeyset)) {
+      throw new Error("conditional proof keyset authority is missing or foreign");
+    }
+    const existing = current.get(proofIdentity(request.key));
+    if (existing === undefined) throw new Error("browser custody proof authority is missing");
+    if (existing === null && conditionalKeyset === undefined) {
+      throw new Error("conditional proof keyset authority is missing or foreign");
+    }
+    const key: [string, string, string, string] = [
+      proof.scopeId,
+      proof.normalizedMint,
+      proof.unit,
+      proof.keysetId,
+    ];
+    const identity = conditionalKeysetIdentity(key);
+    const plan = plans.get(identity);
+    if (!plan) {
+      plans.set(identity, {
+        key,
+        proofs: [request],
+        requested: conditionalKeyset,
+        requiresPersistedAuthority: existing !== null && conditionalKeyset === undefined,
+      });
+      continue;
+    }
+    if (
+      plan.requested !== undefined &&
+      conditionalKeyset !== undefined &&
+      !sameConditionalKeyset(plan.requested, conditionalKeyset)
+    ) {
+      throw new Error("conditional keyset authority conflicts");
+    }
+    plans.set(identity, {
+      ...plan,
+      proofs: [...plan.proofs, request],
+      requested: plan.requested ?? conditionalKeyset,
+      requiresPersistedAuthority:
+        plan.requiresPersistedAuthority || (existing !== null && conditionalKeyset === undefined),
+    });
+  }
+  return [...plans.values()];
+}
+
+function validateConditionalKeysetWritePlan(
+  plan: ConditionalKeysetWritePlan,
+  persisted: BrowserCustodyConditionalKeysetRow | undefined,
+): readonly BrowserCustodyConditionalKeysetRow[] {
+  if (persisted === undefined) {
+    if (plan.requested === undefined || plan.requiresPersistedAuthority) {
+      throw new Error("conditional proof keyset authority is missing");
+    }
+    verifyBrowserConditionalKeysetAuthority(plan.requested);
+    return [{ ...plan.requested, scopeId: plan.key[0] }];
+  }
+  const current = decodeBrowserCustodyConditionalKeysetRow(persisted);
+  if (!matchesConditionalKeysetKey(current, plan.key)) {
+    throw new Error("conditional proof keyset authority is foreign");
+  }
+  if (plan.proofs.some(({ proof }) => !matchesConditionalKeyset(proof, current))) {
+    throw new Error("conditional proof keyset authority is foreign");
+  }
+  if (plan.requested !== undefined && !sameConditionalKeyset(current, plan.requested)) {
+    throw new Error("conditional keyset authority conflicts");
+  }
+  verifyBrowserConditionalKeysetAuthority(current);
+  return [];
+}
+
+function proofIdentity(key: readonly [string, string]): string {
+  return JSON.stringify(key);
+}
+
+function conditionalKeysetIdentity(key: readonly [string, string, string, string]): string {
+  return JSON.stringify(key);
+}
+
+function matchesConditionalKeysetKey(
+  keyset: BrowserCustodyConditionalKeysetRow,
+  key: readonly [string, string, string, string],
+): boolean {
+  return (
+    keyset.scopeId === key[0] &&
+    keyset.normalizedMint === key[1] &&
+    keyset.unit === key[2] &&
+    keyset.keysetId === key[3]
+  );
+}
+
+function verifyBrowserConditionalKeysetAuthority(
+  keyset: BrowserCustodyConditionalKeysetAuthority,
+): void {
+  verifyEncryptedWalletBackupConditionalKeyset({
+    mint: keyset.normalizedMint,
+    unit: keyset.unit,
+    outcomeLabel: keyset.outcomeCollection,
+    registeredAtUnixSeconds: keyset.registeredAtUnixSeconds,
+    mintKeys: {
+      id: keyset.keysetId,
+      unit: keyset.unit,
+      keys: keyset.denominationPublicKeys,
+      input_fee_ppk: keyset.inputFeePpk,
+      final_expiry: keyset.finalExpiryUnixSeconds,
+      conditional: {
+        conditionId: keyset.conditionId,
+        outcomeCollection: keyset.outcomeCollection,
+        outcomeCollectionId: keyset.outcomeCollectionId,
+        registeredAt: keyset.registeredAtUnixSeconds,
+      },
+    },
+    conditionalMetadata: {
+      conditionId: keyset.conditionId,
+      outcomeCollection: keyset.outcomeCollection,
+      outcomeCollectionId: keyset.outcomeCollectionId,
+      registeredAt: keyset.registeredAtUnixSeconds,
+    },
+  });
+}
+
 class StagedBrowserCustodyTransaction implements DurableCustodyTransaction {
   readonly scopeState: DurableCustodyScopeState;
   readonly operations: Map<string, DurableCustodyRecord | null>;
@@ -759,6 +1054,10 @@ class StagedBrowserCustodyTransaction implements DurableCustodyTransaction {
   readonly rebuildOperationIds = new Set<string>();
   readonly #successorProofs: Readonly<Record<string, readonly StagedBrowserCustodyProof[]>>;
   readonly #derivationLocators: ReadonlyMap<string, BrowserProofDerivationLocatorAuthority>;
+  readonly #successorAdmissionOperationIds: ReadonlyMap<string, string>;
+  readonly #predecessorFallbackOperationIds: ReadonlyMap<string, string>;
+  readonly #conditionalKeysets: ReadonlyMap<string, BrowserCustodyConditionalKeysetAuthority>;
+  readonly #terminalProofIds: ReadonlySet<string>;
 
   constructor(input: {
     scopeState: DurableCustodyScopeState;
@@ -766,7 +1065,11 @@ class StagedBrowserCustodyTransaction implements DurableCustodyTransaction {
     artifacts: Map<string, BrowserCustodyArtifactRow>;
     proofs: Map<string, BrowserCustodyProofRow>;
     reservations: Map<string, BrowserCustodyReservationRow>;
+    terminalProofIds: ReadonlySet<string>;
     successorProofs: Readonly<Record<string, readonly StagedBrowserCustodyProof[]>>;
+    successorAdmissionOperationIds: ReadonlyMap<string, string>;
+    predecessorFallbackOperationIds: ReadonlyMap<string, string>;
+    conditionalKeysets: ReadonlyMap<string, BrowserCustodyConditionalKeysetAuthority>;
   }) {
     this.scopeState = decodeDurableCustodyScopeState(input.scopeState);
     this.operations = new Map(
@@ -778,8 +1081,12 @@ class StagedBrowserCustodyTransaction implements DurableCustodyTransaction {
     this.artifacts = new Map(input.artifacts);
     this.proofs = new Map(input.proofs);
     this.reservations = new Map(input.reservations);
+    this.#terminalProofIds = new Set(input.terminalProofIds);
     this.#successorProofs = input.successorProofs;
     this.#derivationLocators = stagedDerivationLocators(input.successorProofs);
+    this.#successorAdmissionOperationIds = input.successorAdmissionOperationIds;
+    this.#predecessorFallbackOperationIds = input.predecessorFallbackOperationIds;
+    this.#conditionalKeysets = input.conditionalKeysets;
   }
 
   getScopeState(): DurableCustodyScopeState {
@@ -955,10 +1262,25 @@ class StagedBrowserCustodyTransaction implements DurableCustodyTransaction {
     return this.#derivationLocators.get(proofId);
   }
 
+  successorAdmissionOperationIdForProof(proofId: string): string | undefined {
+    return this.#successorAdmissionOperationIds.get(proofId);
+  }
+
+  predecessorFallbackOperationIdForProof(proofId: string): string | undefined {
+    return this.#predecessorFallbackOperationIds.get(proofId);
+  }
+
+  conditionalKeysetForProof(proofId: string): BrowserCustodyConditionalKeysetAuthority | undefined {
+    return this.#conditionalKeysets.get(proofId);
+  }
+
   #reserveProof(operation: DurableCustodyRecord, proofId: string, inputPosition: number): void {
     const existingReservation = this.reservations.get(proofId);
     const proof = this.proofs.get(proofId);
     if (!proof) throw new Error("browser custody reserved proof is absent");
+    if (this.#terminalProofIds.has(proofId)) {
+      throw new Error("browser custody terminal proof cannot be reserved");
+    }
     if (
       proof.scopeId !== operation.scope.scopeId ||
       proof.normalizedMint !== operation.operation.custodyContext.normalizedMint ||
@@ -1157,6 +1479,117 @@ function collectTransactionProofs(
     }
   }
   return { predecessorCandidates, successorCandidates };
+}
+
+function stagedSuccessorAdmissionOperationIds(
+  options: BrowserCustodyTransactionOptions,
+): ReadonlyMap<string, string> {
+  const admissions = new Map<string, string>();
+  for (const [operationId, proofs] of Object.entries(options.successorProofs ?? {})) {
+    for (const { proof } of proofs)
+      recordAdmissionOperation(admissions, proof.proofId, operationId);
+  }
+  return admissions;
+}
+
+function stagedPredecessorFallbackOperationIds(
+  options: BrowserCustodyTransactionOptions,
+): ReadonlyMap<string, string> {
+  const fallbacks = new Map<string, string>();
+  for (const [operationId, proofs] of Object.entries(options.predecessorProofs ?? {})) {
+    for (const proof of proofs) recordAdmissionOperation(fallbacks, proof.proofId, operationId);
+  }
+  return fallbacks;
+}
+
+function stagedConditionalKeysets(
+  options: BrowserCustodyTransactionOptions,
+): ReadonlyMap<string, BrowserCustodyConditionalKeysetAuthority> {
+  const keysets = new Map(
+    Object.entries(options.conditionalKeysets ?? {}).map(([proofId, keyset]) => [
+      proofId,
+      decodeBrowserCustodyConditionalKeysetAuthority(keyset),
+    ]),
+  );
+  for (const proofs of Object.values(options.successorProofs ?? {})) {
+    for (const staged of proofs) {
+      if (staged.proof.assetKind === "conditional") {
+        if (!staged.conditionalKeyset) {
+          throw new Error("conditional proof keyset authority is missing");
+        }
+        const current = keysets.get(staged.proof.proofId);
+        if (current && !sameConditionalKeyset(current, staged.conditionalKeyset)) {
+          throw new Error("conditional proof keyset authority conflicts");
+        }
+        keysets.set(staged.proof.proofId, staged.conditionalKeyset);
+      } else if (staged.conditionalKeyset !== undefined) {
+        throw new Error("ordinary proof has conditional keyset authority");
+      }
+    }
+  }
+  return keysets;
+}
+
+function matchesConditionalKeyset(
+  proof: BrowserCustodyProofRow,
+  keyset: BrowserCustodyConditionalKeysetAuthority,
+): boolean {
+  return (
+    keyset.normalizedMint === proof.normalizedMint &&
+    keyset.unit === proof.unit &&
+    keyset.keysetId === proof.keysetId &&
+    keyset.conditionId === proof.conditionId &&
+    keyset.outcomeCollection === proof.outcomeCollection &&
+    keyset.curve === proof.curve
+  );
+}
+
+function sameConditionalKeyset(
+  left: BrowserCustodyConditionalKeysetAuthority & { scopeId?: string },
+  right: BrowserCustodyConditionalKeysetAuthority & { scopeId?: string },
+): boolean {
+  return (
+    left.normalizedMint === right.normalizedMint &&
+    left.unit === right.unit &&
+    left.keysetId === right.keysetId &&
+    left.conditionId === right.conditionId &&
+    left.outcomeCollection === right.outcomeCollection &&
+    left.outcomeCollectionId === right.outcomeCollectionId &&
+    left.registeredAtUnixSeconds === right.registeredAtUnixSeconds &&
+    left.finalExpiryUnixSeconds === right.finalExpiryUnixSeconds &&
+    left.curve === right.curve &&
+    left.inputFeePpk === right.inputFeePpk &&
+    sameTextRecord(left.denominationPublicKeys, right.denominationPublicKeys)
+  );
+}
+
+function sameTextRecord(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean {
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key])
+  );
+}
+
+function recordAdmissionOperation(
+  admissions: Map<string, string>,
+  proofId: string,
+  operationId: string,
+): void {
+  const current = admissions.get(proofId);
+  if (current !== undefined && current !== operationId) {
+    throw new Error("browser custody proof admission operation conflicts");
+  }
+  admissions.set(proofId, operationId);
+}
+
+function requiredAdmissionOperationId(value: string | undefined): string {
+  if (value === undefined) throw new Error("browser custody proof admission operation is missing");
+  return value;
 }
 
 function assertStagedSuccessorLocatorReplays(
@@ -1553,17 +1986,11 @@ function artifactKey(operationId: string, artifactId: string): string {
 }
 
 function authorityLocator(
-  authority: {
-    readonly derivationKeysetId: string | null;
-    readonly derivationCounter: number | null;
-  } | null,
+  authority: { readonly derivationLocator: unknown } | null,
 ): BrowserProofDerivationLocatorAuthority {
   return authority === null
     ? null
-    : requireBrowserProofDerivationLocator({
-        keysetId: authority.derivationKeysetId,
-        counter: authority.derivationCounter,
-      });
+    : requireBrowserProofDerivationLocator(authority.derivationLocator);
 }
 
 function incrementRevision(value: number, label: string): number {

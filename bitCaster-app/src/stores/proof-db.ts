@@ -8,6 +8,10 @@ import {
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
 import type { CtfProofOperationCompletion } from "@bitcaster/client-sdk/ctfSplit";
+import {
+  readAuthenticatedCtfRedeemTerminalEvidence,
+  type AuthenticatedCtfRedeemTerminalEvidence,
+} from "@bitcaster/client-sdk/ctfRedeem";
 import type { CtfRangeOrderPreparationRecord } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { browserWalletDatabaseName } from "../lib/browserWalletProfile";
 import { normalizeUrl } from "../lib/url";
@@ -146,6 +150,8 @@ interface StoredProofMetadata {
   mintUrl: string;
   /** Local-only reservation owner. Reserved proofs are hidden from spendable balances. */
   reservedBy?: string;
+  /** Exact terminal CTF redeem operation. Terminal proofs are never spendable. */
+  terminalOperationId?: string;
   /** NUT-CTF condition id when this proof is bound to a conditional keyset. */
   conditionId?: string;
   /** NUT-CTF outcome collection label, e.g. "YES" or "Alice|Bob". */
@@ -278,6 +284,10 @@ export class BitcasterDB extends Dexie {
   custodyReservations!: Table<BrowserCustodyReservationRow, [string, string]>;
   custodyActiveWork!: Table<BrowserCustodyActiveWorkRow, [string, string]>;
   custodyProofBackupAuthorities!: Table<BrowserProofBackupAuthorityRow, [string, string]>;
+  custodyConditionalKeysets!: Table<
+    import("./durable-custody-types").BrowserCustodyConditionalKeysetRow,
+    [string, string, string, string]
+  >;
   encryptedWalletBackupBuildCursors!: Table<PersistedEncryptedWalletBackupBuildCursor, string>;
   encryptedWalletBackupPackControls!: Table<
     PersistedEncryptedWalletBackupPackControl,
@@ -451,6 +461,85 @@ export class BitcasterDB extends Dexie {
     this.version(12).stores({
       encryptedWalletBackupRetrySchedulers: "&[scopeId+realm+vaultId]",
     });
+    this.version(13)
+      .stores({
+        custodyProofBackupAuthorities:
+          "&[scopeId+proofId], [scopeId+backupState+proofId], [scopeId+proofState+proofId], &backupRecordId, [scopeId+admissionOperationId]",
+        custodyConditionalKeysets: "&[scopeId+normalizedMint+unit+keysetId]",
+      })
+      .upgrade(async (transaction) => {
+        await Promise.all(
+          [
+            "proofs",
+            "proofOperations",
+            "ctfRangePreparations",
+            "ctfRangePreparationSources",
+            "ctfRangePreparationConsolidations",
+            "ctfRangeMessages",
+            "custodyScopes",
+            "custodyOperations",
+            "custodyArtifacts",
+            "custodyProofs",
+            "custodyReservations",
+            "custodyActiveWork",
+            "custodyProofBackupAuthorities",
+            "custodyConditionalKeysets",
+            "encryptedWalletBackupBuildCursors",
+            "encryptedWalletBackupPackControls",
+            "encryptedWalletBackupPreparedRecords",
+            "encryptedWalletBackupPackBindings",
+            "encryptedWalletBackupStagedObjects",
+            "encryptedWalletBackupSnapshotControls",
+            "encryptedWalletBackupPreparedSources",
+            "encryptedWalletBackupSnapshotPins",
+            "encryptedWalletBackupManifestPassAResults",
+            "encryptedWalletBackupManifestCursors",
+            "encryptedWalletBackupManifestPages",
+            "encryptedWalletBackupUploadAttempts",
+            "encryptedWalletBackupUploadCursors",
+            "encryptedWalletBackupUploadBatches",
+            "encryptedWalletBackupUploadCasAttempts",
+            "encryptedWalletBackupEnrollmentResults",
+            "encryptedWalletBackupRetrySchedulers",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
+    this.version(14)
+      .stores({
+        custodyProofBackupAuthorities:
+          "&[scopeId+proofId], [scopeId+backupState+proofId], [scopeId+proofState+proofId], &backupRecordId, [scopeId+admissionOperationId]",
+      })
+      .upgrade(async (transaction) => {
+        await Promise.all(
+          [
+            "custodyScopes",
+            "custodyOperations",
+            "custodyArtifacts",
+            "custodyProofs",
+            "custodyReservations",
+            "custodyActiveWork",
+            "custodyProofBackupAuthorities",
+            "custodyConditionalKeysets",
+            "encryptedWalletBackupBuildCursors",
+            "encryptedWalletBackupPackControls",
+            "encryptedWalletBackupPreparedRecords",
+            "encryptedWalletBackupPackBindings",
+            "encryptedWalletBackupStagedObjects",
+            "encryptedWalletBackupSnapshotControls",
+            "encryptedWalletBackupPreparedSources",
+            "encryptedWalletBackupSnapshotPins",
+            "encryptedWalletBackupManifestPassAResults",
+            "encryptedWalletBackupManifestCursors",
+            "encryptedWalletBackupManifestPages",
+            "encryptedWalletBackupUploadAttempts",
+            "encryptedWalletBackupUploadCursors",
+            "encryptedWalletBackupUploadBatches",
+            "encryptedWalletBackupUploadCasAttempts",
+            "encryptedWalletBackupEnrollmentResults",
+            "encryptedWalletBackupRetrySchedulers",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
   }
 }
 
@@ -465,16 +554,16 @@ export function activateBrowserWalletDatabase(scopeId: string): void {
 
 export async function getProofs(
   mintUrl?: string,
-  options: { includeReserved?: boolean } = {},
+  options: { includeReserved?: boolean; includeTerminal?: boolean } = {},
 ): Promise<StoredProof[]> {
   if (mintUrl) {
     const rows = await db.proofs.where("mintUrl").equals(normalizeUrl(mintUrl)).toArray();
     const normalized = rows.map(normalizeStoredProof);
-    return options.includeReserved ? normalized : normalized.filter((p) => !p.reservedBy);
+    return normalized.filter((proof) => isReadableStoredProof(proof, options));
   }
   const rows = await db.proofs.toArray();
   const normalized = rows.map(normalizeStoredProof);
-  return options.includeReserved ? normalized : normalized.filter((p) => !p.reservedBy);
+  return normalized.filter((proof) => isReadableStoredProof(proof, options));
 }
 
 /**
@@ -529,7 +618,7 @@ export async function getSelectableUnitProofsForKeyset(
     .equals([normalizeUrl(mintUrl), unit, options.keysetId])
     .each((row) => {
       const proof = normalizeStoredProof(row);
-      if (proof.reservedBy || isCtfProof(proof) !== options.conditional) {
+      if (!isSpendableStoredProof(proof) || isCtfProof(proof) !== options.conditional) {
         return;
       }
       selected.push(proof);
@@ -558,7 +647,8 @@ export async function getProofAmountInventoryForKeyset(
     .where("[mintUrl+unit+id]")
     .equals([normalizeUrl(mintUrl), unit, options.keysetId])
     .each((row) => {
-      if (row.reservedBy || isCtfProof(row) !== options.conditional) return;
+      const proof = normalizeStoredProof(row);
+      if (!isSpendableStoredProof(proof) || isCtfProof(proof) !== options.conditional) return;
       const amount = amountToNumber(row.amount);
       const count = (counts.get(amount) ?? 0) + 1;
       if (!Number.isSafeInteger(count)) throw new Error("Proof amount count is too large");
@@ -595,11 +685,12 @@ export async function getSelectableUnitProofsForAmounts(
     .where("[mintUrl+unit+id]")
     .equals([normalizeUrl(mintUrl), unit, options.keysetId])
     .each((row) => {
-      if (row.reservedBy || isCtfProof(row) !== options.conditional) return;
+      const proof = normalizeStoredProof(row);
+      if (!isSpendableStoredProof(proof) || isCtfProof(proof) !== options.conditional) return;
       const amount = amountToNumber(row.amount);
       const remaining = wanted.get(amount) ?? 0;
       if (remaining < 1) return;
-      selected.push(normalizeStoredProof(row));
+      selected.push(proof);
       if (remaining === 1) wanted.delete(amount);
       else wanted.set(amount, remaining - 1);
     });
@@ -632,7 +723,9 @@ export async function selectAndReserveUnitProofs(
       .map(normalizeStoredProof)
       .filter(
         (proof) =>
-          !proof.reservedBy && !isCtfProof(proof) && normalizeStoredProofUnit(proof) === unit,
+          isSpendableStoredProof(proof) &&
+          !isCtfProof(proof) &&
+          normalizeStoredProofUnit(proof) === unit,
       );
 
     const picked: StoredProof[] = [];
@@ -651,8 +744,8 @@ export async function selectAndReserveUnitProofs(
       throw new Error("Selected proof reservation failed: proof set changed");
     }
     const current = currentRows.map((row) => (row ? normalizeStoredProof(row) : undefined));
-    if (current.some((row) => !row || row.reservedBy)) {
-      throw new Error("Selected proof reservation failed: proof already reserved or missing");
+    if (current.some((row) => !row || !isSpendableStoredProof(row))) {
+      throw new Error("Selected proof reservation failed: proof is unavailable or missing");
     }
 
     selected = current.filter((row): row is StoredProof => !!row);
@@ -668,7 +761,7 @@ export async function getOutcomeProofs(
   mintUrl: string,
   conditionId: string,
   outcomeCollection: string,
-  options: { includeReserved?: boolean; baseAsset: string },
+  options: { includeReserved?: boolean; includeTerminal?: boolean; baseAsset: string },
 ): Promise<StoredProof[]> {
   const normalizedMintUrl = normalizeUrl(mintUrl);
   const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
@@ -684,7 +777,7 @@ export async function getOutcomeProofs(
           normalizeStoredProofBaseAsset(proof) === baseAsset &&
           normalizeStoredProofUnit(proof) === "msat",
       );
-    return options.includeReserved ? normalized : normalized.filter((proof) => !proof.reservedBy);
+    return normalized.filter((proof) => isReadableStoredProof(proof, options));
   }
 
   const proofs = await getProofs(normalizedMintUrl, options);
@@ -721,16 +814,21 @@ export async function getConditionCtfProofs(
   conditionId: string,
   options: { includeReserved?: boolean; baseAsset: string },
 ): Promise<StoredProof[]> {
-  const proofs = await getProofs(mintUrl, options);
+  const normalizedMintUrl = normalizeUrl(mintUrl);
+  const proofs = await db.proofs
+    .where("[mintUrl+conditionId+outcomeCollection]")
+    .between(
+      [normalizedMintUrl, conditionId, Dexie.minKey],
+      [normalizedMintUrl, conditionId, Dexie.maxKey],
+    )
+    .toArray();
   const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
-  return proofs.filter((p) => {
+  return proofs.map(normalizeStoredProof).filter((p) => {
     if (!isCtfProof(p)) return false;
-    const candidate = p as StoredProof & { condition_id?: string };
-    const proofConditionId = candidate.conditionId ?? candidate.condition_id;
     return (
-      proofConditionId === conditionId &&
       normalizeStoredProofBaseAsset(p) === baseAsset &&
-      normalizeStoredProofUnit(p) === "msat"
+      normalizeStoredProofUnit(p) === "msat" &&
+      isReadableStoredProof(p, { ...options, includeTerminal: true })
     );
   });
 }
@@ -742,13 +840,36 @@ export async function getConditionCtfProofs(
 // trailing-slash / protocol-case drift.
 export async function addProofs(proofs: StoredProof[], database: BitcasterDB = db): Promise<void> {
   const now = Date.now();
-  const stamped = proofs.map((p) =>
-    normalizeAndValidateStoredProof({
-      ...p,
-      receivedAt: p.receivedAt ?? now,
-    }),
+  const incomingRows = proofs.map((proof) =>
+    storedProofRow(
+      normalizeAndValidateStoredProof({
+        ...proof,
+        receivedAt: proof.receivedAt ?? now,
+      }),
+    ),
   );
-  await database.proofs.bulkPut(stamped.map(storedProofRow));
+  await database.transaction("rw", database.proofs, async () => {
+    const currentRows = await database.proofs.bulkGet(incomingRows.map((row) => row.secret));
+    const rows = incomingRows.map((row, index) =>
+      preserveStoredProofTerminalBinding(row, currentRows[index]),
+    );
+    await database.proofs.bulkPut(rows);
+  });
+}
+
+function preserveStoredProofTerminalBinding(
+  incoming: StoredProofRow,
+  current: StoredProofRow | undefined,
+): StoredProofRow {
+  const currentTerminalOperationId = current?.terminalOperationId;
+  if (currentTerminalOperationId === undefined) return incoming;
+  if (
+    incoming.terminalOperationId !== undefined &&
+    incoming.terminalOperationId !== currentTerminalOperationId
+  ) {
+    throw new Error("Stored proof terminal operation conflicts with existing authority");
+  }
+  return { ...incoming, terminalOperationId: currentTerminalOperationId };
 }
 
 export async function removeProofs(secrets: string[]): Promise<void> {
@@ -781,6 +902,9 @@ export async function reserveProofs(secrets: string[], reservedBy: string): Prom
   const secretSet = new Set(secrets);
   await db.transaction("rw", db.proofs, async () => {
     const rows = await db.proofs.bulkGet(secrets);
+    if (rows.some((row) => row && normalizeStoredProof(row).terminalOperationId !== undefined)) {
+      throw new Error("Terminal proof cannot be reserved");
+    }
     await db.proofs.bulkPut(
       rows
         .filter((row): row is StoredProofRow => !!row && secretSet.has(row.secret))
@@ -832,12 +956,23 @@ export function normalizeAndValidateStoredProof(proof: StoredProof): StoredProof
 }
 
 function normalizeStoredProof(proof: StoredProof | StoredProofRow): StoredProof {
+  const {
+    terminalOperationId: rawTerminalOperationId,
+    conditionId: _conditionId,
+    outcomeCollection: _outcomeCollection,
+    condition_id: _legacyConditionId,
+    outcome_collection: _legacyOutcomeCollection,
+    ...rest
+  } = proof as StoredProof & { condition_id?: string; outcome_collection?: string };
+  const terminalOperationId = normalizeStoredProofTerminalOperationId(rawTerminalOperationId);
   return {
-    ...proof,
+    ...rest,
+    ...normalizeStoredProofCtfMetadata(proof),
     amount: Amount.from(amountToNumber(proof.amount)),
     mintUrl: normalizeUrl(proof.mintUrl),
     baseAsset: normalizeStoredProofBaseAsset(proof),
     unit: normalizeStoredProofUnit(proof),
+    ...(terminalOperationId === undefined ? {} : { terminalOperationId }),
   };
 }
 
@@ -846,13 +981,70 @@ export function storedProofFromRow(proof: StoredProofRow): StoredProof {
 }
 
 export function storedProofRow(proof: StoredProof): StoredProofRow {
+  const {
+    terminalOperationId: rawTerminalOperationId,
+    conditionId: _conditionId,
+    outcomeCollection: _outcomeCollection,
+    condition_id: _legacyConditionId,
+    outcome_collection: _legacyOutcomeCollection,
+    ...rest
+  } = proof as StoredProof & { condition_id?: string; outcome_collection?: string };
+  const terminalOperationId = normalizeStoredProofTerminalOperationId(rawTerminalOperationId);
   return {
-    ...proof,
+    ...rest,
+    ...normalizeStoredProofCtfMetadata(proof),
     amount: amountToNumber(proof.amount),
     mintUrl: normalizeUrl(proof.mintUrl),
     baseAsset: normalizeStoredProofBaseAsset(proof),
     unit: normalizeStoredProofUnit(proof),
+    ...(terminalOperationId === undefined ? {} : { terminalOperationId }),
   };
+}
+
+function normalizeStoredProofCtfMetadata(proof: StoredProof | StoredProofRow): {
+  conditionId?: string;
+  outcomeCollection?: string;
+} {
+  const candidate = proof as StoredProof & {
+    condition_id?: string;
+    outcome_collection?: string;
+  };
+  const conditionId = candidate.conditionId ?? candidate.condition_id;
+  const outcomeCollection = candidate.outcomeCollection ?? candidate.outcome_collection;
+  if (
+    (candidate.conditionId !== undefined &&
+      candidate.condition_id !== undefined &&
+      candidate.conditionId !== candidate.condition_id) ||
+    (candidate.outcomeCollection !== undefined &&
+      candidate.outcome_collection !== undefined &&
+      candidate.outcomeCollection !== candidate.outcome_collection) ||
+    (conditionId === undefined) !== (outcomeCollection === undefined)
+  ) {
+    throw new Error("Stored proof CTF metadata is invalid");
+  }
+  return conditionId === undefined ? {} : { conditionId, outcomeCollection: outcomeCollection! };
+}
+
+function normalizeStoredProofTerminalOperationId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length < 1 || value.length > 512) {
+    throw new Error("Stored proof terminal operation is invalid");
+  }
+  return value;
+}
+
+function isReadableStoredProof(
+  proof: StoredProof,
+  options: { includeReserved?: boolean; includeTerminal?: boolean },
+): boolean {
+  return (
+    (options.includeReserved || !proof.reservedBy) &&
+    (options.includeTerminal || proof.terminalOperationId === undefined)
+  );
+}
+
+function isSpendableStoredProof(proof: StoredProof): boolean {
+  return !proof.reservedBy && proof.terminalOperationId === undefined;
 }
 
 function normalizeStoredProofBaseAsset(proof: StoredProof | StoredProofRow): string {
@@ -1012,11 +1204,49 @@ export async function markProofOperationFailed(
   database: BitcasterDB = db,
 ): Promise<ProofOperationRecord> {
   const existing = await getRequiredProofOperation(operationId, database);
+  if (existing.kind === "ctf-redeem" && mintErrorCode(error) === 13015) {
+    throw new Error("CTF redeem terminal failure requires authenticated mint evidence");
+  }
   const updated: ProofOperationRecord = {
     ...existing,
     state: "Failed",
     lastError: error instanceof Error ? error.message : String(error),
     failureCode: mintErrorCode(error),
+    updatedAt: Date.now(),
+  };
+  await database.proofOperations.put(updated);
+  return updated;
+}
+
+export async function markCtfRedeemTerminalFailure(
+  operationId: string,
+  message: string,
+  terminalEvidence: AuthenticatedCtfRedeemTerminalEvidence,
+  database: BitcasterDB = db,
+): Promise<ProofOperationRecord> {
+  const evidence = readAuthenticatedCtfRedeemTerminalEvidence(terminalEvidence);
+  const existing = await getRequiredProofOperation(operationId, database);
+  if (
+    existing.operationId !== evidence.operationId ||
+    existing.kind !== "ctf-redeem" ||
+    normalizeUrl(existing.mintUrl) !== evidence.normalizedMint
+  ) {
+    throw new Error("CTF redeem terminal evidence is foreign");
+  }
+  if (existing.state === "Failed") {
+    if (existing.failureCode !== evidence.rejectionBody.code) {
+      throw new Error("CTF redeem terminal failure conflicts");
+    }
+    return existing;
+  }
+  if (existing.state !== "prepared") {
+    throw new Error("CTF redeem terminal failure is stale");
+  }
+  const updated: ProofOperationRecord = {
+    ...existing,
+    state: "Failed",
+    lastError: message,
+    failureCode: evidence.rejectionBody.code,
     updatedAt: Date.now(),
   };
   await database.proofOperations.put(updated);

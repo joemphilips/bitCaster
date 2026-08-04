@@ -14,6 +14,7 @@ import {
   type EncryptedWalletBackupRuntime,
 } from '../../src/encryptedWalletBackup.ts'
 import { encodeCanonicalBackupCbor } from '../../src/encryptedWalletBackupCbor.ts'
+import { encodeDurableWalletProofDerivationLocatorCbor } from '../../src/durableWalletProofDerivationLocator.ts'
 import {
   deriveDurableCustodyProofId,
   deriveDurableCustodyScopeId,
@@ -21,7 +22,7 @@ import {
 } from '../../src/durableCustody.ts'
 import { buildBoundedEncryptedWalletBackupManifestVector } from './encryptedWalletBackupBoundedManifest.ts'
 
-const CTF_KEYSET_ID = '0170110f06b9bb85565a6746ca5715f877b99db14d87219f6e9030cb529f61e6ea'
+const CTF_KEYSET_ID = '01e9c2aad6d0fdad988a3b58ef6940416c9bb12b3dd344b5320d7a3f28e919284c'
 const CTF_MINT_KEYS = {
   id: CTF_KEYSET_ID,
   unit: 'sat',
@@ -36,7 +37,7 @@ const CTF_MINT_KEYS = {
 const CTF_METADATA = {
   conditionId: 'aa'.repeat(32),
   outcomeCollection: 'YES',
-  outcomeCollectionId: 'cc'.repeat(32),
+  outcomeCollectionId: 'def71b1ff5a53597a8175729a718b1bf931d12c2a76500f208ab450c12444c4e',
   registeredAt: 1_700_000_000,
 }
 type UnboundProofInput = Omit<EncryptedWalletBackupProofInput, 'proofSnapshotStore'>
@@ -155,7 +156,7 @@ async function exerciseManifestVector(
       await prepareEncryptedWalletBackupProof(
         await bindProofStore({
           ...base,
-          counter,
+          derivationLocator: nut13(base.proof.id, counter),
           proof: { ...base.proof, secret: toHex(derive(counter).secret) },
         }),
       ),
@@ -328,7 +329,7 @@ async function exerciseMaxLegacyRestoreScheduling(
   modeledChunks: number
   modeledWorkSlices: number
 }> {
-  const legacyKeyset = 'AQIDBA'
+  const legacyKeyset = '009a1f293253e41e'
   const derive = (
     Cashu as unknown as {
       createSecretAndBlindingFactorDeriver(
@@ -342,7 +343,7 @@ async function exerciseMaxLegacyRestoreScheduling(
     const base = baseProofInput(seed, keyHandle)
     const input = {
       ...base,
-      counter,
+      derivationLocator: nut13(legacyKeyset, counter),
       proof: {
         ...base.proof,
         id: legacyKeyset,
@@ -401,7 +402,7 @@ function baseProofInput(
     seed,
     mint: input.proof.mint,
     unit: input.proof.unit,
-    counter: input.proof.counter,
+    derivationLocator: nut13(input.proof.keysetId, input.proof.counter),
     proof: {
       id: input.proof.keysetId,
       amount: input.proof.amount,
@@ -456,7 +457,7 @@ async function bindProofStore(
         new TextEncoder().encode(input.proof.secret),
         fromHex(input.proof.C),
         dleq,
-        input.counter,
+        encodeDurableWalletProofDerivationLocatorCbor(input.derivationLocator),
         input.proofKind === 'ordinary' ? 0 : 1,
         ctf,
         input.createdAtUnixSeconds,
@@ -497,7 +498,7 @@ async function bindProofStore(
       replayTombstone: 'absent' as const,
       dependentWork: 'absent' as const,
     },
-    derivationLocator: 'committed' as const,
+    derivationLocator: input.derivationLocator,
   })
   return {
     ...input,
@@ -529,13 +530,17 @@ function proofInputForKeyset(
   ).createSecretAndBlindingFactorDeriver(seed, keysetId)
   return {
     ...baseProofInput(seed, keyHandle),
-    counter,
+    derivationLocator: nut13(keysetId, counter),
     proof: {
       ...baseProofInput(seed, keyHandle).proof,
       id: keysetId,
       secret: toHex(derive(counter).secret),
     },
   }
+}
+
+function nut13(keysetId: string, counter: number) {
+  return { schemaVersion: 1 as const, kind: 'nut13' as const, keysetId, counter }
 }
 
 function deterministicRuntime(values: Uint8Array[]): EncryptedWalletBackupRuntime {
