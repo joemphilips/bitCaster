@@ -20,10 +20,19 @@ import * as manifestPagePersistence from '../src/encryptedWalletBackupManifestPa
 import { encodeCanonicalBackupCbor as encodeCanonical } from '../src/encryptedWalletBackupCbor.ts'
 import {
   createEncryptedWalletBackupKeyHandle,
+  decryptEncryptedWalletBackupManifestPage,
   ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES,
+  prepareEncryptedWalletBackupRequestProof,
+  readAuthenticatedEncryptedWalletBackupHead,
+  readAuthenticatedEncryptedWalletBackupManifestPageReference,
   readPreparedEncryptedWalletBackupObject,
   type EncryptedWalletBackupRuntime,
 } from '../src/encryptedWalletBackup.ts'
+import {
+  finalizeBoundedEncryptedWalletBackupManifestTarget,
+  type EncryptedWalletBackupManifestFinalizationState,
+  type EncryptedWalletBackupManifestTargetFinalizationStore,
+} from '../src/encryptedWalletBackupManifestTargetFinalization.ts'
 import {
   ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
   issueEncryptedWalletBackupFrozenSnapshotControl,
@@ -454,11 +463,355 @@ test('Pass-B persistence exposes no target, upload, network, deletion, eviction,
     assert.equal(/target|upload|network|delete|evict|spend/i.test(name), false, name)
 })
 
+test('bounded finalization accepts complete ordered pages and rejects incomplete or unordered scans', async () => {
+  const fixture = await completedFinalizationFixture()
+  const target = await finalizeBoundedEncryptedWalletBackupManifestTarget({
+    ...fixture.input,
+    store: new FinalizationStore(fixture.state, fixture.rows),
+  })
+  assert.equal(target.head.proofCount, 2)
+  assert.equal(target.head.objectCount >= 3, true)
+  const originLostKey = await createEncryptedWalletBackupKeyHandle({
+    seed: fixture.input.seed,
+    realm: fixture.input.keyHandle.realm,
+    runtime: noRandomness,
+  })
+  const request = await prepareEncryptedWalletBackupRequestProof({
+    keyHandle: originLostKey,
+    enrollmentEpoch: 1,
+    method: 'GET',
+    url: 'https://backup.example.test/v1/vault/head',
+    issuedAtUnixSeconds: 1_700_000_000,
+    expiresAtUnixSeconds: 1_700_000_030,
+    payload: new Uint8Array(),
+    runtime: randomness(),
+    signal: AbortSignal.timeout(60_000),
+  })
+  const authenticated = await readAuthenticatedEncryptedWalletBackupHead({
+    keyHandle: originLostKey,
+    enrollmentEpoch: 1,
+    requestProof: request,
+    remote: {
+      async readCurrentHead() {
+        return { status: 'found' as const, enrollmentEpoch: 1, head: target.wire }
+      },
+    },
+  })
+  const reference = readAuthenticatedEncryptedWalletBackupManifestPageReference({
+    headEvidence: authenticated,
+    pageIndex: 0,
+  })
+  const persisted = decodeEncryptedWalletBackupManifestPageRow(fixture.rows[0]!)
+  assert.equal(reference.objectId, persisted.object.objectId)
+  const page = await decryptEncryptedWalletBackupManifestPage({
+    keyHandle: originLostKey,
+    seed: fixture.input.seed,
+    object: persisted.object,
+    headEvidence: authenticated,
+  })
+  assert.equal(page.entries.length > 0, true)
+  const reconstructed = await finalizeBoundedEncryptedWalletBackupManifestTarget({
+    ...fixture.input,
+    store: new FinalizationStore(fixture.state, fixture.rows),
+  })
+  assert.equal(bytesEqual(target.wire.canonicalHead, reconstructed.wire.canonicalHead), true)
+  assert.equal(
+    bytesEqual(target.wire.canonicalReferenceSet, reconstructed.wire.canonicalReferenceSet),
+    true,
+  )
+
+  for (const rows of [
+    fixture.rows.slice(0, 1),
+    [fixture.rows[0]!, fixture.rows[0]!],
+    [...fixture.rows].reverse(),
+    [...fixture.rows, fixture.rows[1]!],
+  ]) {
+    await assert.rejects(
+      finalizeBoundedEncryptedWalletBackupManifestTarget({
+        ...fixture.input,
+        store: new FinalizationStore(fixture.state, rows),
+      }),
+      /coverage|order|extra/,
+    )
+  }
+})
+
+test('bounded finalization requires reservation, an exact final exhaustion read, and page endpoints', async () => {
+  const fixture = await completedFinalizationFixture()
+  const store = new FinalizationStore(fixture.state, fixture.rows)
+  await finalizeBoundedEncryptedWalletBackupManifestTarget({ ...fixture.input, store })
+  assert.equal(
+    store.reads.every((read) => read.maximumRows <= 256 && read.maximumBytes === 1_048_576),
+    true,
+  )
+  assert.equal(store.reads.at(-1)?.exclusivePageIndex, 1)
+
+  const changed = fixture.rows[1]!.slice()
+  changed[changed.byteLength - 1] ^= 1
+  await assert.rejects(
+    finalizeBoundedEncryptedWalletBackupManifestTarget({
+      ...fixture.input,
+      store: new FinalizationStore(fixture.state, [fixture.rows[0]!, changed]),
+    }),
+    /page row is invalid/,
+  )
+})
+
+test('bounded finalization rejects a mismatched cursor row-digest tail after scanning', async () => {
+  const fixture = await completedFinalizationFixture()
+  const cursor = decodeEncryptedWalletBackupManifestPageCursor(fixture.state.cursor)
+  const state = {
+    control: fixture.state.control,
+    passAResult: fixture.state.passAResult,
+    cursor: encodeEncryptedWalletBackupManifestPageCursor({
+      ...cursor,
+      priorPageRowDigest: { state: 'present' as const, value: new Uint8Array(32) },
+    }),
+  }
+  const store = new FinalizationStore({ ...fixture.state, cursor: state.cursor }, fixture.rows)
+  await assert.rejects(
+    finalizeBoundedEncryptedWalletBackupManifestTarget({ ...fixture.input, store }),
+    /cursor is invalid/,
+  )
+  assert.equal(store.reads.at(-1)?.exclusivePageIndex, 1)
+})
+
+test('bounded finalization rejects a mismatched cursor source-pin tail after scanning', async () => {
+  const fixture = await completedFinalizationFixture()
+  const cursor = decodeEncryptedWalletBackupManifestPageCursor(fixture.state.cursor)
+  const state = {
+    control: fixture.state.control,
+    passAResult: fixture.state.passAResult,
+    cursor: encodeEncryptedWalletBackupManifestPageCursor({
+      ...cursor,
+      exclusiveSourcePinKey: { state: 'present' as const, value: new Uint8Array([255]) },
+    }),
+  }
+  const store = new FinalizationStore({ ...fixture.state, cursor: state.cursor }, fixture.rows)
+  await assert.rejects(
+    finalizeBoundedEncryptedWalletBackupManifestTarget({ ...fixture.input, store }),
+    /cursor is invalid/,
+  )
+  assert.equal(store.reads.at(-1)?.exclusivePageIndex, 1)
+})
+
+test('bounded finalization rejects finalization state with unknown or inherited required fields', async () => {
+  const fixture = await completedFinalizationFixture()
+  const finalizationState = {
+    control: fixture.state.control,
+    passAResult: fixture.state.passAResult,
+    cursor: fixture.state.cursor,
+  }
+  const unknownFieldState = { ...finalizationState, unexpected: true }
+  const inheritedControlState = Object.assign(
+    Object.create({ control: finalizationState.control }),
+    { passAResult: finalizationState.passAResult, cursor: finalizationState.cursor },
+  )
+  for (const state of [unknownFieldState, inheritedControlState]) {
+    await assert.rejects(
+      finalizeBoundedEncryptedWalletBackupManifestTarget({
+        ...fixture.input,
+        store: new UncheckedFinalizationStore(state, fixture.state, fixture.rows),
+      }),
+      /finalization state is invalid/,
+    )
+  }
+})
+
+test('bounded finalization supports an empty completed snapshot and rejects stale control state', async () => {
+  const fixture = await emptyFixture()
+  const pageStore = new EmptyPageStore(fixture.control, fixture.result)
+  await persistNextEncryptedWalletBackupManifestPage({
+    store: pageStore,
+    sourceStore: unusedSourceStore,
+    stagedPackProvider: unusedPackProvider,
+    snapshotStore: unusedSnapshotStore,
+    control: fixture.issued,
+    keyHandle: fixture.keyHandle,
+    seed: fixture.seed,
+    runtime: noRandomness,
+  })
+  const request = await prepareEncryptedWalletBackupRequestProof({
+    keyHandle: fixture.keyHandle,
+    enrollmentEpoch: 1,
+    method: 'GET',
+    url: 'https://backup.example.test/v1/vault/head',
+    issuedAtUnixSeconds: 1_700_000_000,
+    expiresAtUnixSeconds: 1_700_000_030,
+    payload: new Uint8Array(),
+    runtime: randomness(),
+    signal: AbortSignal.timeout(60_000),
+  })
+  const parentEvidence = await readAuthenticatedEncryptedWalletBackupHead({
+    keyHandle: fixture.keyHandle,
+    enrollmentEpoch: 1,
+    requestProof: request,
+    remote: {
+      async readCurrentHead() {
+        return { status: 'not-found' as const }
+      },
+    },
+  })
+  const state = {
+    control: fixture.control,
+    passAResult: fixture.result,
+    cursor: pageStore.cursor!,
+    currentPage: null,
+    priorPage: null,
+  }
+  const target = await finalizeBoundedEncryptedWalletBackupManifestTarget({
+    store: new FinalizationStore(state as never, []),
+    control: fixture.issued,
+    parentEvidence,
+    keyHandle: fixture.keyHandle,
+    seed: fixture.seed,
+  })
+  assert.equal(target.head.objectCount, 0)
+  await assert.rejects(
+    finalizeBoundedEncryptedWalletBackupManifestTarget({
+      store: new FinalizationStore({ ...state, control: new Uint8Array([1]) } as never, []),
+      control: fixture.issued,
+      parentEvidence,
+      keyHandle: fixture.keyHandle,
+      seed: fixture.seed,
+    }),
+    /invalid|foreign|incomplete/,
+  )
+})
+
 async function persistedFirstPage() {
   const fixture = await twoPageManifestFixture()
   const store = new OnePageStore(fixture.persistedControl, fixture.result)
   await persistOnePage(fixture, store, randomness())
   return { fixture, store }
+}
+
+async function completedFinalizationFixture() {
+  const fixture = await twoPageManifestFixture()
+  const first = new OnePageStore(fixture.persistedControl, fixture.result)
+  const runtime = randomness()
+  await persistOnePage(fixture, first, runtime)
+  const firstRow = first.priorPage!.slice()
+  const resumed = await restartFixture(fixture)
+  const second = new OnePageStore(fixture.persistedControl, fixture.result)
+  second.cursor = first.cursor!.slice()
+  second.priorPage = first.priorPage!.slice()
+  await persistOnePage(resumed, second, runtime)
+  const secondRow = second.priorPage!.slice()
+  await persistOnePage(resumed, second, noRandomness)
+  const request = await prepareEncryptedWalletBackupRequestProof({
+    keyHandle: resumed.keyHandle,
+    enrollmentEpoch: 1,
+    method: 'GET',
+    url: 'https://backup.example.test/v1/vault/head',
+    issuedAtUnixSeconds: 1_700_000_000,
+    expiresAtUnixSeconds: 1_700_000_030,
+    payload: new Uint8Array(),
+    runtime: randomness(),
+    signal: AbortSignal.timeout(60_000),
+  })
+  const parentEvidence = await readAuthenticatedEncryptedWalletBackupHead({
+    keyHandle: resumed.keyHandle,
+    enrollmentEpoch: 1,
+    requestProof: request,
+    remote: {
+      async readCurrentHead() {
+        return { status: 'not-found' as const }
+      },
+    },
+  })
+  return {
+    input: {
+      control: resumed.control,
+      parentEvidence,
+      keyHandle: resumed.keyHandle,
+      seed: resumed.seed,
+    },
+    state: {
+      control: second.control.slice(),
+      passAResult: second.passAResult.slice(),
+      cursor: second.cursor!.slice(),
+      currentPage: null,
+      priorPage: second.priorPage!.slice(),
+    },
+    rows: [firstRow, secondRow],
+  }
+}
+
+class FinalizationStore implements EncryptedWalletBackupManifestTargetFinalizationStore {
+  readonly reads: Array<{ exclusivePageIndex: number; maximumRows: number; maximumBytes: number }> =
+    []
+  readonly state: {
+    control: Uint8Array
+    passAResult: Uint8Array
+    cursor: Uint8Array
+    currentPage: Uint8Array | null
+    priorPage: Uint8Array
+  }
+  readonly rows: readonly Uint8Array[]
+  constructor(
+    state: {
+      control: Uint8Array
+      passAResult: Uint8Array
+      cursor: Uint8Array
+      currentPage: Uint8Array | null
+      priorPage: Uint8Array
+    },
+    rows: readonly Uint8Array[],
+  ) {
+    this.state = state
+    this.rows = rows
+  }
+  async readManifestFinalizationState(input: {
+    scope: Uint8Array
+    maximumRows: number
+    maximumBytes: number
+  }) {
+    assert.equal(input.maximumRows, 3)
+    assert.equal(input.maximumBytes, 1_048_576)
+    return {
+      control: this.state.control.slice(),
+      passAResult: this.state.passAResult.slice(),
+      cursor: this.state.cursor.slice(),
+    }
+  }
+  async readManifestFinalizationRows(input: {
+    scope: Uint8Array
+    exclusivePageIndex: number
+    maximumRows: number
+    maximumBytes: number
+  }) {
+    this.reads.push({
+      exclusivePageIndex: input.exclusivePageIndex,
+      maximumRows: input.maximumRows,
+      maximumBytes: input.maximumBytes,
+    })
+    const values = this.rows.slice(input.exclusivePageIndex + 1)
+    const output: Uint8Array[] = []
+    let bytes = 0
+    for (const value of values) {
+      if (output.length === input.maximumRows || bytes + value.byteLength > input.maximumBytes)
+        break
+      output.push(value.slice())
+      bytes += value.byteLength
+    }
+    return output
+  }
+}
+
+class UncheckedFinalizationStore extends FinalizationStore {
+  readonly finalizationState: unknown
+  constructor(
+    finalizationState: unknown,
+    state: ConstructorParameters<typeof FinalizationStore>[0],
+    rows: readonly Uint8Array[],
+  ) {
+    super(state, rows)
+    this.finalizationState = finalizationState
+  }
+  override async readManifestFinalizationState(): Promise<EncryptedWalletBackupManifestFinalizationState> {
+    return this.finalizationState as EncryptedWalletBackupManifestFinalizationState
+  }
 }
 
 async function restartFixture(fixture: Awaited<ReturnType<typeof twoPageManifestFixture>>) {
@@ -933,11 +1286,16 @@ const unusedSnapshotStore = {
 
 async function emptyFixture() {
   const seed = new Uint8Array(64).fill(7)
+  const keyHandle = await createEncryptedWalletBackupKeyHandle({
+    seed,
+    realm: 'backup.example.test',
+    runtime: noRandomness,
+  })
   const issued = issueEncryptedWalletBackupFrozenSnapshotControl(
     {},
     {
       realm: 'backup.example.test',
-      vaultId: '11'.repeat(32),
+      vaultId: keyHandle.vaultId,
       enrollmentEpoch: 1,
       parentGeneration: null,
       parentManifestDigest: null,
@@ -951,7 +1309,7 @@ async function emptyFixture() {
   const current = {
     schemaVersion: 1 as const,
     realm: 'backup.example.test',
-    vaultId: '11'.repeat(32),
+    vaultId: keyHandle.vaultId,
     enrollmentEpoch: 1,
     parentGeneration: null,
     parentManifestDigest: null,
@@ -985,11 +1343,6 @@ async function emptyFixture() {
     totalCanonicalManifestEntryBytes: 0,
     pageCount: 0,
     boundaries: [],
-  })
-  const keyHandle = await createEncryptedWalletBackupKeyHandle({
-    seed,
-    realm: current.realm,
-    runtime: noRandomness,
   })
   return { issued, control, result, seed, keyHandle }
 }

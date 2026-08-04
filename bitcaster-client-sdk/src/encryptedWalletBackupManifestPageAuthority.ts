@@ -44,6 +44,8 @@ export interface EncryptedWalletBackupManifestPageProvenance {
   readonly canonicalPageDigest: string
   readonly firstPinKey: Uint8Array
   readonly lastPinKey: Uint8Array
+  /** Distinct chunk references authenticated by the canonical page plaintext. */
+  readonly chunkReferences: readonly Readonly<{ objectId: string; digest: string }>[]
 }
 
 const RESULT_BOUNDARIES = new WeakMap<
@@ -236,6 +238,7 @@ export function readEncryptedWalletBackupManifestPassABoundaryLimits(
   snapshotRevision: number
   entryCount: number
   canonicalEntryBytes: number
+  plannedCanonicalPageBytes: number
 }> {
   const authority = requireEncryptedWalletBackupManifestPageBoundary(value)
   return Object.freeze({
@@ -245,6 +248,7 @@ export function readEncryptedWalletBackupManifestPassABoundaryLimits(
     snapshotRevision: authority.snapshotRevision,
     entryCount: authority.entryCount,
     canonicalEntryBytes: authority.canonicalEntryBytes,
+    plannedCanonicalPageBytes: authority.plannedCanonicalPageBytes,
   })
 }
 
@@ -261,6 +265,7 @@ export function issueEncryptedWalletBackupManifestPageProvenance(input: {
     !validPinEndpoints(input.firstPinKey, input.lastPinKey)
   )
     throw new Error('backup manifest page exceeds its planned size')
+  const chunkReferences = readCanonicalChunkReferences(input.canonicalPage)
   PAGE_PROVENANCE.set(
     input.page,
     Object.freeze({
@@ -269,6 +274,7 @@ export function issueEncryptedWalletBackupManifestPageProvenance(input: {
       canonicalPageDigest: bytesToHex(sha256(input.canonicalPage)),
       firstPinKey: input.firstPinKey.slice(),
       lastPinKey: input.lastPinKey.slice(),
+      chunkReferences,
     }),
   )
 }
@@ -283,7 +289,46 @@ export function readEncryptedWalletBackupManifestPageProvenance(
     ...provenance,
     firstPinKey: provenance.firstPinKey.slice(),
     lastPinKey: provenance.lastPinKey.slice(),
+    chunkReferences: provenance.chunkReferences.map((reference) => Object.freeze({ ...reference })),
   })
+}
+
+function readCanonicalChunkReferences(
+  canonicalPage: Uint8Array,
+): readonly Readonly<{ objectId: string; digest: string }>[] {
+  const decoded = decode(canonicalPage)
+  if (!Array.isArray(decoded) || decoded.length !== 7 || !Array.isArray(decoded[6]))
+    throw new Error('prepared manifest page provenance is invalid')
+  if (!equalBytes(canonicalPage, encodeCanonical(decoded)))
+    throw new Error('prepared manifest page provenance is invalid')
+  const byId = new Map<string, string>()
+  const byDigest = new Map<string, string>()
+  for (const entry of decoded[6]) {
+    if (!Array.isArray(entry) || entry.length !== 11) {
+      throw new Error('prepared manifest page provenance is invalid')
+    }
+    const objectId = entry[2]
+    const digest = entry[3]
+    requireReference(objectId, 16, 'chunk object id')
+    requireReference(digest, 32, 'chunk digest')
+    const objectIdHex = bytesToHex(objectId)
+    const digestHex = bytesToHex(digest)
+    const existingDigest = byId.get(objectIdHex)
+    const existingId = byDigest.get(digestHex)
+    if (
+      (existingDigest !== undefined && existingDigest !== digestHex) ||
+      (existingId !== undefined && existingId !== objectIdHex)
+    ) {
+      throw new Error('prepared manifest page provenance is invalid')
+    }
+    byId.set(objectIdHex, digestHex)
+    byDigest.set(digestHex, objectIdHex)
+  }
+  return Object.freeze(
+    [...byId.entries()]
+      .map(([objectId, digest]) => Object.freeze({ objectId, digest }))
+      .sort((left, right) => left.objectId.localeCompare(right.objectId)),
+  )
 }
 
 function validPinEndpoints(first: unknown, last: unknown): first is Uint8Array {

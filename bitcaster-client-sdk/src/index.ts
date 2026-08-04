@@ -25,6 +25,12 @@ export * from './encryptedWalletBackupSnapshotPersistence.ts'
 export * from './encryptedWalletBackupSnapshotSeal.ts'
 export * from './encryptedWalletBackupManifestPassA.ts'
 export * from './encryptedWalletBackupManifestPagePersistence.ts'
+export {
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_FINALIZATION_READ_BYTES_MAX,
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_FINALIZATION_READ_ROWS_MAX,
+  finalizeBoundedEncryptedWalletBackupManifestTarget,
+  type EncryptedWalletBackupManifestTargetFinalizationStore,
+} from './encryptedWalletBackupManifestTargetFinalization.ts'
 export * from './managedConditionInventory.ts'
 export * from './managedConditionRecovery.ts'
 export * from './durableCustodyProofOperation.ts'
