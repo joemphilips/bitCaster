@@ -13,6 +13,13 @@ export interface EncryptedWalletBackupManifestPageBoundary {
   readonly [encryptedWalletBackupManifestPageBoundaryBrand]: true
 }
 
+declare const encryptedWalletBackupManifestEntryBrand: unique symbol
+
+/** Opaque authority for one validated final manifest entry. */
+export interface EncryptedWalletBackupManifestEntryCapability {
+  readonly [encryptedWalletBackupManifestEntryBrand]: true
+}
+
 interface BoundaryAuthority {
   readonly realm: string
   readonly vaultId: string
@@ -43,6 +50,16 @@ const RESULT_BOUNDARIES = new WeakMap<
 >()
 const BOUNDARY_AUTHORITIES = new WeakMap<object, BoundaryAuthority>()
 const PAGE_PROVENANCE = new WeakMap<object, ManifestPageProvenance>()
+interface EntryCapabilityAuthority {
+  readonly finalEntry: Uint8Array
+  readonly boundary: EncryptedWalletBackupManifestPageBoundary
+  readonly ordinal: number
+  readonly pinKey: Uint8Array
+  readonly commitment: string
+  readonly chunkGeneration: number
+}
+
+const ENTRY_CAPABILITIES = new WeakMap<object, EntryCapabilityAuthority>()
 
 export function measureFinalManifestEntryBytes(canonicalPreparedEntry: Uint8Array): number {
   return finalManifestEntryBytes(canonicalPreparedEntry, new Uint8Array(16), new Uint8Array(32))
@@ -74,6 +91,91 @@ export function finalManifestEntryBytes(
     encodeCanonical([1, 2, 1, new Uint8Array(16), 0, 1, [decode(result)]]),
   )
   return result
+}
+
+/**
+ * Issue an entry only after the caller has authenticated its source rows.
+ * This module keeps the final bytes opaque to page callers.
+ */
+export function issueEncryptedWalletBackupManifestEntryCapability(input: {
+  readonly canonicalPreparedEntry: Uint8Array
+  readonly chunkObjectId: Uint8Array
+  readonly chunkDigest: Uint8Array
+  readonly boundary: EncryptedWalletBackupManifestPageBoundary
+  readonly ordinal: number
+  readonly pinKey: Uint8Array
+  readonly commitment: string
+  readonly chunkGeneration: number
+}): EncryptedWalletBackupManifestEntryCapability {
+  const boundary = requireEncryptedWalletBackupManifestPageBoundary(input.boundary)
+  if (
+    !Number.isSafeInteger(input.ordinal) ||
+    input.ordinal < 0 ||
+    input.ordinal >= boundary.entryCount ||
+    !(input.pinKey instanceof Uint8Array) ||
+    input.pinKey.byteLength < 1 ||
+    input.pinKey.byteLength > 1_024
+  )
+    throw new Error('backup manifest entry provenance is invalid')
+  if (
+    !/^[0-9a-f]{64}$/.test(input.commitment) ||
+    !Number.isSafeInteger(input.chunkGeneration) ||
+    input.chunkGeneration < 1 ||
+    input.chunkGeneration > boundary.generation
+  )
+    throw new Error('backup manifest entry provenance is invalid')
+  const finalEntry = finalManifestEntryBytes(
+    input.canonicalPreparedEntry,
+    input.chunkObjectId,
+    input.chunkDigest,
+  )
+  const capability = Object.freeze({})
+  ENTRY_CAPABILITIES.set(
+    capability,
+    Object.freeze({
+      finalEntry,
+      boundary: input.boundary,
+      ordinal: input.ordinal,
+      pinKey: input.pinKey.slice(),
+      commitment: input.commitment,
+      chunkGeneration: input.chunkGeneration,
+    }),
+  )
+  return capability as EncryptedWalletBackupManifestEntryCapability
+}
+
+/** Internal page-construction seam. It returns a detached canonical entry. */
+export function readEncryptedWalletBackupManifestEntryCapability(
+  value: EncryptedWalletBackupManifestEntryCapability,
+): Uint8Array {
+  const entry =
+    typeof value === 'object' && value !== null ? ENTRY_CAPABILITIES.get(value) : undefined
+  if (entry === undefined) throw new Error('backup manifest entry capability is invalid')
+  return entry.finalEntry.slice()
+}
+
+export function readEncryptedWalletBackupManifestEntryForPage(input: {
+  readonly value: EncryptedWalletBackupManifestEntryCapability
+  readonly boundary: EncryptedWalletBackupManifestPageBoundary
+  readonly ordinal: number
+}): Readonly<{ finalEntry: Uint8Array; pinKey: Uint8Array; commitment: string }> {
+  const entry =
+    typeof input.value === 'object' && input.value !== null
+      ? ENTRY_CAPABILITIES.get(input.value)
+      : undefined
+  const boundary = requireEncryptedWalletBackupManifestPageBoundary(input.boundary)
+  if (
+    entry === undefined ||
+    entry.boundary !== input.boundary ||
+    entry.ordinal !== input.ordinal ||
+    entry.chunkGeneration > boundary.generation
+  )
+    throw new Error('backup manifest entry capability is invalid')
+  return Object.freeze({
+    finalEntry: entry.finalEntry.slice(),
+    pinKey: entry.pinKey.slice(),
+    commitment: entry.commitment,
+  })
 }
 
 export function registerEncryptedWalletBackupManifestPassABoundaries(input: {
@@ -120,6 +222,28 @@ export function requireEncryptedWalletBackupManifestPageBoundary(
     typeof value === 'object' && value !== null ? BOUNDARY_AUTHORITIES.get(value) : undefined
   if (authority === undefined) throw new Error('backup manifest page boundary is invalid')
   return authority
+}
+
+/** Internal source-join seam. It exposes the exact sealed-page scope and limits. */
+export function readEncryptedWalletBackupManifestPassABoundaryLimits(
+  value: EncryptedWalletBackupManifestPageBoundary,
+): Readonly<{
+  realm: string
+  vaultId: string
+  snapshotId: string
+  snapshotRevision: number
+  entryCount: number
+  canonicalEntryBytes: number
+}> {
+  const authority = requireEncryptedWalletBackupManifestPageBoundary(value)
+  return Object.freeze({
+    realm: authority.realm,
+    vaultId: authority.vaultId,
+    snapshotId: authority.snapshotId,
+    snapshotRevision: authority.snapshotRevision,
+    entryCount: authority.entryCount,
+    canonicalEntryBytes: authority.canonicalEntryBytes,
+  })
 }
 
 export function issueEncryptedWalletBackupManifestPageProvenance(input: {

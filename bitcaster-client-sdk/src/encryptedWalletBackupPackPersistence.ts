@@ -8,6 +8,7 @@ import {
   packEncryptedWalletBackupProofChunk,
   prepareEncryptedWalletBackupObject,
   readPreparedEncryptedWalletBackupObject,
+  readPreparedEncryptedWalletBackupProofChunkManifestEntries,
   rehydratePreparedEncryptedWalletBackupProofObject,
   type EncryptedWalletBackupKeyHandle,
   type EncryptedWalletBackupRuntime,
@@ -181,6 +182,61 @@ export interface PreparedEncryptedWalletBackupPackObject {
   readonly chunk: PreparedEncryptedWalletBackupProofChunk
   readonly object: PreparedEncryptedWalletBackupObject
   readonly pageReadCount: number
+}
+
+/** Internal source-join seam. It reads identity from non-clonable pack authority. */
+export function readPreparedEncryptedWalletBackupPackObjectIdentity(
+  value: PreparedEncryptedWalletBackupPackObject,
+): Readonly<{
+  buildId: string
+  packId: string
+  realm: string
+  vaultId: string
+  snapshotId: string
+  snapshotRevision: number
+}> {
+  const authority = requirePreparedPackObject(value)
+  return Object.freeze({
+    buildId: authority.buildId,
+    packId: authority.packId,
+    realm: authority.realm,
+    vaultId: authority.vaultId,
+    snapshotId: authority.snapshotId,
+    snapshotRevision: authority.snapshotRevision,
+  })
+}
+
+/** Internal source-join seam. It retains no padded staged object body. */
+export function readPreparedEncryptedWalletBackupPackManifestEntries(
+  value: PreparedEncryptedWalletBackupPackObject,
+): readonly Readonly<{
+  readonly recordId: string
+  readonly commitment: string
+  readonly canonicalManifestEntry: Uint8Array
+  readonly objectId: string
+  readonly objectDigest: string
+  readonly objectGeneration: number
+}>[] {
+  const authority = requirePreparedPackObject(value)
+  const wire = readPreparedEncryptedWalletBackupObject(value.object)
+  if (
+    wire.kindCode !== ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND ||
+    wire.realm !== authority.realm ||
+    wire.vaultId !== authority.vaultId ||
+    wire.generation < 1
+  )
+    throw new Error('prepared backup pack object is invalid')
+  return Object.freeze(
+    readPreparedEncryptedWalletBackupProofChunkManifestEntries(value.chunk).map((entry) =>
+      Object.freeze({
+        ...entry,
+        canonicalManifestEntry: entry.canonicalManifestEntry.slice(),
+        objectId: wire.objectId,
+        objectDigest: wire.digest,
+        objectGeneration: wire.generation,
+      }),
+    ),
+  )
 }
 
 export interface FrozenEncryptedWalletBackupPack {
