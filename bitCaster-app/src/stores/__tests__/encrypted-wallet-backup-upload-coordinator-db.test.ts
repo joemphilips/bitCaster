@@ -28,8 +28,12 @@ import {
 } from "@bitcaster/client-sdk/encryptedWalletBackupSnapshotAuthority";
 import { issueBoundedManifestTargetCapabilityForTest } from "@bitcaster/client-sdk/encryptedWalletBackupManifestTargetAuthority";
 import {
+  clearEncryptedWalletBackupRetryScheduler,
   createEncryptedWalletBackupUploadCoordinatorDexieStore,
   EncryptedWalletBackupUploadCoordinatorDexiePort,
+  findEncryptedWalletBackupUploadAttemptId,
+  readEncryptedWalletBackupRetryScheduler,
+  scheduleEncryptedWalletBackupRetry,
 } from "../encrypted-wallet-backup-upload-coordinator-db";
 import { BitcasterDB } from "../proof-db";
 
@@ -43,7 +47,7 @@ afterEach(async () => {
 });
 
 describe("encrypted wallet backup Dexie upload coordinator", () => {
-  it("uses the public SDK factory for an exact retry and restart claim", async () => {
+  it("uses a read-only preflight before the public SDK restart claim", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-08-04T00:00:00.000Z"));
     try {
@@ -54,6 +58,15 @@ describe("encrypted wallet backup Dexie upload coordinator", () => {
       const sealed = await sealBoundedEncryptedWalletBackupUploadAttempt(input);
       const retried = await sealBoundedEncryptedWalletBackupUploadAttempt(input);
       expect(retried.record).toEqual(sealed.record);
+      expect(
+        await findEncryptedWalletBackupUploadAttemptId(database, {
+          realm: fixture.keyHandle.realm,
+          vaultId: fixture.keyHandle.vaultId,
+        }),
+      ).toBe(sealed.record.attemptId);
+      expect(
+        (await database.encryptedWalletBackupUploadAttempts.get(sealed.record.attemptId))?.record,
+      ).toEqual(sealed.record);
 
       database.close();
       const restarted = new BitcasterDB(database.name);
@@ -81,6 +94,68 @@ describe("encrypted wallet backup Dexie upload coordinator", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("fails closed when indexed preflight finds multiple durable attempts", async () => {
+    const fixture = await emptyTargetFixture();
+    const database = databaseFor();
+    const store = createEncryptedWalletBackupUploadCoordinatorDexieStore(database);
+    const sealed = await sealBoundedEncryptedWalletBackupUploadAttempt(
+      uploadInput(fixture, store, "55"),
+    );
+    const duplicateAttemptId = "66".repeat(16);
+    const preflightDatabase = {
+      encryptedWalletBackupUploadAttempts: {
+        where: () => ({
+          equals: () => ({
+            limit: () => ({
+              primaryKeys: async () => [sealed.record.attemptId, duplicateAttemptId],
+            }),
+          }),
+        }),
+      },
+    } as unknown as BitcasterDB;
+
+    await expect(
+      findEncryptedWalletBackupUploadAttemptId(preflightDatabase, {
+        realm: fixture.keyHandle.realm,
+        vaultId: fixture.keyHandle.vaultId,
+      }),
+    ).rejects.toThrow(/scope is invalid/);
+  });
+
+  it("keeps one strict durable retry schedule for each wallet vault", async () => {
+    const fixture = await emptyTargetFixture();
+    const database = databaseFor();
+    const identity = {
+      scopeId: "wallet-scope",
+      realm: fixture.keyHandle.realm,
+      vaultId: fixture.keyHandle.vaultId,
+    };
+    await scheduleEncryptedWalletBackupRetry(database, {
+      ...identity,
+      attemptId: "77".repeat(16),
+      minimumDelayMilliseconds: 5_000,
+    });
+    await scheduleEncryptedWalletBackupRetry(database, {
+      ...identity,
+      attemptId: "88".repeat(16),
+      minimumDelayMilliseconds: 5_000,
+    });
+
+    await expect(readEncryptedWalletBackupRetryScheduler(database, identity)).resolves.toEqual({
+      ...identity,
+      attemptId: "88".repeat(16),
+      retryStreak: 1,
+      retryNotBeforeUnixMilliseconds: expect.any(Number),
+    });
+    expect(await database.encryptedWalletBackupRetrySchedulers.count()).toBe(1);
+
+    await clearEncryptedWalletBackupRetryScheduler(database, {
+      ...identity,
+      attemptId: "88".repeat(16),
+    });
+    await expect(readEncryptedWalletBackupRetryScheduler(database, identity)).resolves.toBeNull();
   });
 
   it("rolls back raw writes, rejects a stale claim, and enforces unique live and CAS links", async () => {

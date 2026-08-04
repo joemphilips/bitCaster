@@ -3,6 +3,8 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, concatBytes } from "@noble/hashes/utils.js";
 import {
   createEncryptedWalletBackupCoordinatorStore,
+  decodeActiveUploadAttemptRecord,
+  decodeUploadBatchRecord,
   ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX,
   measureEncryptedWalletBackupCoordinatorPersistenceRowBytes,
   measureEncryptedWalletBackupUploadBatchRecordBytes,
@@ -11,6 +13,10 @@ import {
   type EncryptedWalletBackupUploadAttemptCursorStore,
   type EncryptedWalletBackupUploadBatchRecord,
 } from "@bitcaster/client-sdk/encryptedWalletBackupSync";
+import {
+  ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX,
+  planEncryptedWalletBackupRetry,
+} from "@bitcaster/client-sdk/encryptedWalletBackupRetrySchedule";
 import type {
   EncryptedWalletBackupCoordinatorPersistencePort,
   EncryptedWalletBackupCoordinatorPersistenceReservation,
@@ -23,6 +29,7 @@ import type {
   EncryptedWalletBackupDexieUploadBatchRow,
   EncryptedWalletBackupDexieUploadCasAttemptRow,
   EncryptedWalletBackupDexieUploadCursorRow,
+  EncryptedWalletBackupDexieRetrySchedulerRow,
 } from "./proof-db";
 
 /** Dexie-only mechanics for the SDK-owned upload coordinator. */
@@ -63,6 +70,226 @@ export function createEncryptedWalletBackupUploadCoordinatorDexieStore(
   return createEncryptedWalletBackupCoordinatorStore(
     new EncryptedWalletBackupUploadCoordinatorDexiePort(database),
   );
+}
+
+/**
+ * Reads one durable attempt without claiming or extending its lease.
+ * The upload cycle remains the only operation that can claim this attempt.
+ */
+export async function findEncryptedWalletBackupUploadAttemptId(
+  database: BitcasterDB,
+  input: Readonly<{ realm: string; vaultId: string }>,
+): Promise<string | null> {
+  const attemptIds = await database.encryptedWalletBackupUploadAttempts
+    .where("[realm+vaultId]")
+    .equals([input.realm, input.vaultId])
+    .limit(2)
+    .primaryKeys();
+  if (attemptIds.length > 1) throw new Error("backup upload attempt scope is invalid");
+  if (attemptIds.length === 0) return null;
+  const [attemptId] = attemptIds;
+  if (typeof attemptId !== "string" || !/^[0-9a-f]{32}$/.test(attemptId)) {
+    throw new Error("backup upload attempt scope key is invalid");
+  }
+  return attemptId;
+}
+
+export async function readEncryptedWalletBackupUploadAttemptSummary(
+  database: BitcasterDB,
+  input: Readonly<{ realm: string; vaultId: string; attemptId: string }>,
+): Promise<
+  Readonly<{
+    ownerId: string;
+    leaseExpiresAtUnixMilliseconds: number;
+    executionLeaseExpiresAtUnixMilliseconds: number | null;
+    lifecycle: EncryptedWalletBackupActiveUploadAttemptRecord["lifecycle"];
+  }>
+> {
+  return database.transaction(
+    "r",
+    database.encryptedWalletBackupUploadAttempts,
+    database.encryptedWalletBackupUploadBatches,
+    async () => {
+      const row = await database.encryptedWalletBackupUploadAttempts.get(input.attemptId);
+      if (row === undefined || row.realm !== input.realm || row.vaultId !== input.vaultId) {
+        throw new Error("backup upload attempt scope row is invalid");
+      }
+      const record = decodeActiveUploadAttemptRecord(row.record);
+      if (
+        record.realm !== input.realm ||
+        record.vaultId !== input.vaultId ||
+        record.attemptId !== input.attemptId
+      ) {
+        throw new Error("backup upload attempt scope row is invalid");
+      }
+      let executionLeaseExpiresAtUnixMilliseconds: number | null = null;
+      if (record.activeBatchId !== null) {
+        const batchRow = await database.encryptedWalletBackupUploadBatches.get(
+          record.activeBatchId,
+        );
+        if (batchRow === undefined) throw new Error("backup upload active batch is absent");
+        if (batchRow.authorityDigest !== batchAuthorityDigest(record)) {
+          throw new Error("backup upload active batch authority is invalid");
+        }
+        const batch = decodeUploadBatchRecord({
+          ...batchRow.record,
+          canonicalTargetHead: record.canonicalTargetHead,
+          canonicalTargetReferenceSet: record.canonicalTargetReferenceSet,
+          canonicalInheritedReferenceSet: record.canonicalInheritedReferenceSet,
+        });
+        if (batch.batchId !== record.activeBatchId || batch.attemptId !== record.attemptId) {
+          throw new Error("backup upload active batch scope is invalid");
+        }
+        executionLeaseExpiresAtUnixMilliseconds = batch.executionLeaseExpiresAtUnixMilliseconds;
+      }
+      return Object.freeze({
+        ownerId: record.ownerId,
+        leaseExpiresAtUnixMilliseconds: record.leaseExpiresAtUnixMilliseconds,
+        executionLeaseExpiresAtUnixMilliseconds,
+        lifecycle: record.lifecycle,
+      });
+    },
+  );
+}
+
+export async function readEncryptedWalletBackupRetryScheduler(
+  database: BitcasterDB,
+  input: Readonly<{ scopeId: string; realm: string; vaultId: string }>,
+): Promise<EncryptedWalletBackupDexieRetrySchedulerRow | null> {
+  const row = await database.encryptedWalletBackupRetrySchedulers.get([
+    input.scopeId,
+    input.realm,
+    input.vaultId,
+  ]);
+  if (row === undefined) return null;
+  return validateRetrySchedulerRow(row, input);
+}
+
+export async function clearEncryptedWalletBackupRetryScheduler(
+  database: BitcasterDB,
+  input: Readonly<{ scopeId: string; realm: string; vaultId: string; attemptId: string }>,
+): Promise<void> {
+  validateRetrySchedulerIdentity(input);
+  await database.transaction("rw", database.encryptedWalletBackupRetrySchedulers, async () => {
+    const current = await database.encryptedWalletBackupRetrySchedulers.get([
+      input.scopeId,
+      input.realm,
+      input.vaultId,
+    ]);
+    if (current?.attemptId === input.attemptId) {
+      await database.encryptedWalletBackupRetrySchedulers.delete([
+        input.scopeId,
+        input.realm,
+        input.vaultId,
+      ]);
+    }
+  });
+}
+
+export async function scheduleEncryptedWalletBackupRetry(
+  database: BitcasterDB,
+  input: Readonly<{
+    scopeId: string;
+    realm: string;
+    vaultId: string;
+    attemptId: string;
+    minimumDelayMilliseconds: number;
+  }>,
+): Promise<EncryptedWalletBackupDexieRetrySchedulerRow> {
+  validateRetrySchedulerIdentity(input);
+  if (!/^[0-9a-f]{32}$/.test(input.attemptId)) {
+    throw new Error("encrypted wallet backup retry scheduler attempt is invalid");
+  }
+  return database.transaction("rw", database.encryptedWalletBackupRetrySchedulers, async () => {
+    const current = await database.encryptedWalletBackupRetrySchedulers.get([
+      input.scopeId,
+      input.realm,
+      input.vaultId,
+    ]);
+    const now = Date.now();
+    const prior =
+      current?.attemptId === input.attemptId ? validateRetrySchedulerRow(current, input) : null;
+    if (prior !== null && prior.retryNotBeforeUnixMilliseconds > now) return prior;
+    const schedule = planEncryptedWalletBackupRetry({
+      realm: input.realm,
+      vaultId: input.vaultId,
+      attemptId: input.attemptId,
+      currentStreak: prior?.retryStreak ?? 0,
+      minimumDelayMilliseconds: Math.max(
+        input.minimumDelayMilliseconds,
+        prior === null ? 1 : Math.max(1, prior.retryNotBeforeUnixMilliseconds - now),
+      ),
+    });
+    const row = validateRetrySchedulerRow(
+      {
+        scopeId: input.scopeId,
+        realm: input.realm,
+        vaultId: input.vaultId,
+        attemptId: input.attemptId,
+        retryStreak: schedule.streak,
+        retryNotBeforeUnixMilliseconds: Math.max(
+          now + schedule.delayMilliseconds,
+          prior?.retryNotBeforeUnixMilliseconds ?? 0,
+        ),
+      },
+      input,
+    );
+    await database.encryptedWalletBackupRetrySchedulers.put(row);
+    return row;
+  });
+}
+
+function validateRetrySchedulerRow(
+  row: EncryptedWalletBackupDexieRetrySchedulerRow,
+  identity: Readonly<{ scopeId: string; realm: string; vaultId: string }>,
+): EncryptedWalletBackupDexieRetrySchedulerRow {
+  if (
+    typeof row !== "object" ||
+    row === null ||
+    Object.keys(row).length !== 6 ||
+    Object.keys(row).some(
+      (key) =>
+        key !== "scopeId" &&
+        key !== "realm" &&
+        key !== "vaultId" &&
+        key !== "attemptId" &&
+        key !== "retryStreak" &&
+        key !== "retryNotBeforeUnixMilliseconds",
+    )
+  ) {
+    throw new Error("encrypted wallet backup retry scheduler row is invalid");
+  }
+  validateRetrySchedulerIdentity(row);
+  if (
+    row.scopeId !== identity.scopeId ||
+    row.realm !== identity.realm ||
+    row.vaultId !== identity.vaultId ||
+    !/^[0-9a-f]{32}$/.test(row.attemptId) ||
+    !Number.isSafeInteger(row.retryStreak) ||
+    row.retryStreak < 0 ||
+    row.retryStreak > ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX ||
+    !Number.isSafeInteger(row.retryNotBeforeUnixMilliseconds) ||
+    row.retryNotBeforeUnixMilliseconds < 0
+  ) {
+    throw new Error("encrypted wallet backup retry scheduler row is invalid");
+  }
+  return Object.freeze({ ...row });
+}
+
+function validateRetrySchedulerIdentity(
+  input: Readonly<{
+    scopeId: string;
+    realm: string;
+    vaultId: string;
+  }>,
+): void {
+  if (
+    !/^[^\s]{1,128}$/.test(input.scopeId) ||
+    !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(input.realm) ||
+    !/^[0-9a-f]{64}$/.test(input.vaultId)
+  ) {
+    throw new Error("encrypted wallet backup retry scheduler identity is invalid");
+  }
 }
 
 class UploadCoordinatorTransaction implements EncryptedWalletBackupCoordinatorPersistenceTransaction {

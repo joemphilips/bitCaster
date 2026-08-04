@@ -10,7 +10,11 @@ let activeScopeId: string | null = null;
 export function browserWalletScopeIdFromMnemonic(mnemonic: string): string | null {
   const words = mnemonic.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return null;
-  const walletId = deriveDurableCustodyWalletId(toSeed(words));
+  return browserWalletScopeIdFromSeed(toSeed(words));
+}
+
+export function browserWalletScopeIdFromSeed(seed: Uint8Array): string {
+  const walletId = deriveDurableCustodyWalletId(seed);
   return deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId });
 }
 

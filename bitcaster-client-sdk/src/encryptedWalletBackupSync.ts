@@ -1661,11 +1661,17 @@ export async function uploadEncryptedWalletBackupBatch(input: {
 
 export type BoundedEncryptedWalletBackupUploadCycleResult =
   | Readonly<{
+      readonly state: 'fork-cleanup-pending'
+      readonly claim: EncryptedWalletBackupUploadAttemptClaim
+    }>
+  | Readonly<{
       readonly state: 'upload-pending'
+      readonly claim: EncryptedWalletBackupUploadAttemptClaim
       readonly batch: SealedEncryptedWalletBackupUploadBatch
     }>
   | Readonly<{
       readonly state: 'cas-sealed'
+      readonly claim: EncryptedWalletBackupUploadAttemptClaim
       readonly attempt: SealedEncryptedWalletBackupSyncAttempt
     }>
 
@@ -1693,6 +1699,9 @@ export async function runBoundedEncryptedWalletBackupUploadCycle(input: {
   readonly runtime?: EncryptedWalletBackupRuntime
 }): Promise<BoundedEncryptedWalletBackupUploadCycleResult> {
   const claim = await claimOrSealBoundedEncryptedWalletBackupUploadAttempt(input)
+  if (claim.record.lifecycle === 'fork-cleanup-uncertain') {
+    return Object.freeze({ state: 'fork-cleanup-pending' as const, claim })
+  }
   const batch = await rehydrateOrPlanBoundedEncryptedWalletBackupUploadBatch(input, claim)
   if (batch === null) return sealBoundedUploadCycleCasAttempt(input, claim)
   const acknowledged = await uploadEncryptedWalletBackupBatch({
@@ -1710,7 +1719,7 @@ export async function runBoundedEncryptedWalletBackupUploadCycle(input: {
   })
   if (requireBoundedUploadCursor(claim).phase === 'complete')
     return sealBoundedUploadCycleCasAttempt(input, claim)
-  return Object.freeze({ state: 'upload-pending' as const, batch: acknowledged })
+  return Object.freeze({ state: 'upload-pending' as const, claim, batch: acknowledged })
 }
 
 async function claimOrSealBoundedEncryptedWalletBackupUploadAttempt(input: {
@@ -1768,7 +1777,7 @@ async function sealBoundedUploadCycleCasAttempt(
     keyHandle: input.keyHandle,
     store: input.store,
   })
-  return Object.freeze({ state: 'cas-sealed' as const, attempt })
+  return Object.freeze({ state: 'cas-sealed' as const, claim, attempt })
 }
 
 export function deriveEncryptedWalletBackupCasAttemptId(input: {
@@ -3128,7 +3137,7 @@ function validatePutPayload(
   }
 }
 
-function decodeUploadBatchRecord(value: unknown): EncryptedWalletBackupUploadBatchRecord {
+export function decodeUploadBatchRecord(value: unknown): EncryptedWalletBackupUploadBatchRecord {
   const raw = requireRecord(value, 'backup upload batch')
   requireKnownFields(raw, [
     'schemaVersion',
@@ -3358,7 +3367,7 @@ function decodeUploadBatchRecord(value: unknown): EncryptedWalletBackupUploadBat
   return batch
 }
 
-function decodeActiveUploadAttemptRecord(
+export function decodeActiveUploadAttemptRecord(
   value: unknown,
 ): EncryptedWalletBackupActiveUploadAttemptRecord {
   const raw = requireRecord(value, 'active backup upload attempt')

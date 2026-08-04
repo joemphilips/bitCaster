@@ -32,6 +32,7 @@ import type {
   EncryptedWalletBackupUploadBatchRecord,
 } from "@bitcaster/client-sdk/encryptedWalletBackupSync";
 import type { EncryptedWalletBackupSyncAttemptRecord } from "@bitcaster/client-sdk/encryptedWalletBackup";
+import type { EncryptedWalletBackupAccountOperationResultRecord } from "@bitcaster/client-sdk/encryptedWalletBackupEnrollment";
 
 /** Canonical encrypted wallet-backup control row. The SDK owns its CBOR codec. */
 export interface EncryptedWalletBackupDexieControlRow {
@@ -122,6 +123,23 @@ export interface EncryptedWalletBackupDexieUploadCasAttemptRow {
   attemptId: string;
   uploadAttemptId: string;
   record: EncryptedWalletBackupSyncAttemptRecord;
+}
+
+/** The latest authenticated enrollment lifecycle receipt for one vault. */
+export interface EncryptedWalletBackupDexieEnrollmentResultRow {
+  realm: string;
+  vaultId: string;
+  record: EncryptedWalletBackupAccountOperationResultRecord;
+}
+
+/** One durable retry schedule for one wallet scope and encrypted-backup vault. */
+export interface EncryptedWalletBackupDexieRetrySchedulerRow {
+  scopeId: string;
+  realm: string;
+  vaultId: string;
+  attemptId: string;
+  retryStreak: number;
+  retryNotBeforeUnixMilliseconds: number;
 }
 
 interface StoredProofMetadata {
@@ -299,6 +317,14 @@ export class BitcasterDB extends Dexie {
     EncryptedWalletBackupDexieUploadCasAttemptRow,
     string
   >;
+  encryptedWalletBackupEnrollmentResults!: Table<
+    EncryptedWalletBackupDexieEnrollmentResultRow,
+    [string, string]
+  >;
+  encryptedWalletBackupRetrySchedulers!: Table<
+    EncryptedWalletBackupDexieRetrySchedulerRow,
+    [string, string, string]
+  >;
 
   constructor(databaseName = "bitcaster") {
     super(databaseName);
@@ -418,6 +444,12 @@ export class BitcasterDB extends Dexie {
       encryptedWalletBackupUploadCursors: "&attemptId",
       encryptedWalletBackupUploadBatches: "&batchId, attemptId",
       encryptedWalletBackupUploadCasAttempts: "&attemptId, &uploadAttemptId",
+    });
+    this.version(11).stores({
+      encryptedWalletBackupEnrollmentResults: "&[realm+vaultId]",
+    });
+    this.version(12).stores({
+      encryptedWalletBackupRetrySchedulers: "&[scopeId+realm+vaultId]",
     });
   }
 }

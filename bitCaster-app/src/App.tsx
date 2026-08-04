@@ -33,6 +33,7 @@ import { sweepElapsedPartialLockFailures } from "@/lib/partialLockRecovery";
 import { installE2EDiagnostics } from "@/lib/e2eDiagnostics";
 import { reconcileAcceptedLocalWalletPayments } from "@/lib/pendingLocalWalletPayments";
 import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
+import { useEncryptedWalletBackupDriver } from "@/hooks/useEncryptedWalletBackupDriver";
 
 installE2EDiagnostics();
 
@@ -138,6 +139,7 @@ function AppRoutes() {
   const walletMintUrls = useWalletStore((s) => s.mints.map(({ url }) => url).join("\n"));
   const [nostrSignerReady, setNostrSignerReady] = useState(false);
   useTradeSettlement(nostrSignerReady && nostrSignerMode !== "none");
+  useEncryptedWalletBackupDriver(nostrSignerReady && nostrSignerMode !== "none");
 
   useEffect(() => {
     document.title = titleForPath(location.pathname);

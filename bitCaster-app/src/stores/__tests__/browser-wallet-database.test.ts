@@ -16,11 +16,11 @@ afterEach(async () => {
 });
 
 describe("browser wallet databases", () => {
-  it("installs the one-to-one proof backup authority table", async () => {
+  it("installs the current wallet backup authority tables", async () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(10);
+    expect(db.verno).toBe(12);
     expect(db.custodyProofBackupAuthorities.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofBackupAuthorities.schema.indexes.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
@@ -51,6 +51,15 @@ describe("browser wallet databases", () => {
     expect(db.encryptedWalletBackupStagedObjects.schema.primKey.keyPath).toEqual([
       "buildId",
       "packId",
+    ]);
+    expect(db.encryptedWalletBackupEnrollmentResults.schema.primKey.keyPath).toEqual([
+      "realm",
+      "vaultId",
+    ]);
+    expect(db.encryptedWalletBackupRetrySchedulers.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "realm",
+      "vaultId",
     ]);
   });
 
@@ -86,6 +95,8 @@ describe("browser wallet databases", () => {
       await upgraded.open();
       expect(await upgraded.proofs.count()).toBe(0);
       expect(await upgraded.custodyProofBackupAuthorities.count()).toBe(0);
+      expect(await upgraded.encryptedWalletBackupEnrollmentResults.count()).toBe(0);
+      expect(await upgraded.encryptedWalletBackupRetrySchedulers.count()).toBe(0);
     } finally {
       upgraded.close();
       await Dexie.delete(name);
