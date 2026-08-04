@@ -752,15 +752,7 @@ test('object GET streams one exact bound object and returns parsed data without 
   const objectId = '15'.repeat(16)
   const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${VAULT_ID}/objects/${objectId}`
   const proof = fakeProof('GET', url, new Uint8Array())
-  const aad = encodeCanonicalBackupCbor([
-    1,
-    2,
-    REALM,
-    hexToBytes(VAULT_ID),
-    hexToBytes(objectId),
-    2,
-    65_536,
-  ])
+  const aad = manifestPageAad({ objectId, generation: 2 })
   const encryptedBody = new Uint8Array(65_564).fill(23)
   const objectDigest = framedDigest(aad, encryptedBody)
   const adapter = new EncryptedWalletBackupHttpAdapter({
@@ -1035,4 +1027,24 @@ function framedDigest(aad: Uint8Array, body: Uint8Array): string {
     aad.byteLength,
   )
   return bytesToHex(sha256.create().update(length).update(aad).update(body).digest())
+}
+
+function manifestPageAad(input: { objectId: string; generation: number }): Uint8Array {
+  return encodeCanonicalBackupCbor([
+    1,
+    'encrypted-wallet-backup-manifest-page-aad',
+    2,
+    REALM,
+    hexToBytes(VAULT_ID),
+    hexToBytes(input.objectId),
+    input.generation,
+    65_536,
+    'adapter-snapshot',
+    1,
+    hexToBytes('16'.repeat(32)),
+    hexToBytes('17'.repeat(32)),
+    0,
+    1,
+    new Uint8Array(32).fill(0x18),
+  ])
 }

@@ -61,6 +61,9 @@ import {
   throwIfEncryptedWalletBackupCycleAborted,
 } from './encryptedWalletBackupDeadline.ts'
 import { ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX } from './encryptedWalletBackupRetrySchedule.ts'
+import { requireEncryptedWalletBackupObjectAad } from './encryptedWalletBackupObjectAad.ts'
+import { encryptedWalletBackupObjectDigest } from './encryptedWalletBackupObjectDigest.ts'
+import { measureEncryptedWalletBackupObjectPutPayload } from './encryptedWalletBackupObjectPutSize.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX = 16 as const
 export const ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX = 4 * 1_024 * 1_024
@@ -2959,12 +2962,14 @@ function validatePutPayload(
     realm: string
     vaultId: string
     generation: number
+    pageReferences: readonly Readonly<{ objectId: string; digest: string }>[]
   }>,
 ): void {
   if (bytesToHex(requireBytes(value[2], 16, 'backup upload attempt id')) !== expected.attemptId) {
     throw new Error('backup PUT attempt does not match upload batch')
   }
-  const kind = requireInteger(value[3], 1, 2, 'backup object kind')
+  const kindValue = requireInteger(value[3], 1, 2, 'backup object kind')
+  const kind: 1 | 2 = kindValue === 1 ? 1 : 2
   const realm = value[4]
   if (typeof realm !== 'string' || !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(realm)) {
     throw new Error('backup object realm is invalid')
@@ -2994,11 +2999,31 @@ function validatePutPayload(
     throw new Error('backup object padded length is invalid')
   const aad = requireBytesRange(value[10], 1, 4_096, 'backup object AAD')
   const body = requireBytes(value[11], expectedBodyLength, 'backup object body')
-  const expectedAad = encodeCanonical([1, kind, realm, vaultId, objectId, generation, paddedLength])
-  if (
-    !equalBytes(aad, expectedAad) ||
-    bytesToHex(sha256(concatBytes(uint32Bytes(aad.byteLength), aad, body))) !== objectDigest
-  ) {
+  try {
+    const validatedAad = requireEncryptedWalletBackupObjectAad({
+      canonicalAad: aad,
+      kindCode: kind,
+      realm,
+      vaultId: bytesToHex(vaultId),
+      objectId: bytesToHex(objectId),
+      generation,
+      paddedLength: expectedPaddedLength,
+    })
+    if (validatedAad.kindCode === 2) {
+      const reference = expected.pageReferences[validatedAad.pageIndex]
+      if (
+        reference === undefined ||
+        reference.objectId !== bytesToHex(objectId) ||
+        reference.digest !== objectDigest ||
+        validatedAad.pageCount !== expected.pageReferences.length
+      ) {
+        throw new Error('manifest page AAD does not match target')
+      }
+    }
+  } catch {
+    throw new Error('backup object PUT digest is invalid')
+  }
+  if (bytesToHex(encryptedWalletBackupObjectDigest(aad, body)) !== objectDigest) {
     throw new Error('backup object PUT digest is invalid')
   }
 }
@@ -3134,6 +3159,7 @@ function decodeUploadBatchRecord(value: unknown): EncryptedWalletBackupUploadBat
         realm: target.realm,
         vaultId: target.vaultId,
         generation: target.generation,
+        pageReferences: target.pageReferences,
       })
     }
     if (!target.references.has(`${objectId}:${objectDigest}`)) {
@@ -3870,22 +3896,19 @@ function maximumBoundedCanonicalPutBytes(
   input: Parameters<typeof readBoundedUploadBatchObjects>[0],
   reference: BoundedUploadReference,
 ): number {
-  return canonicalBoundedPutPayload(input.attemptId, {
-    formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
+  const paddedLength = reference.kindCode === 2 ? 65_536 : 262_144
+  const bodyLength =
+    reference.kindCode === 2
+      ? ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES
+      : ENCRYPTED_WALLET_BACKUP_BODY_BYTES
+  return measureEncryptedWalletBackupObjectPutPayload({
     kindCode: reference.kindCode,
     realm: input.keyHandle.realm,
-    vaultId: input.keyHandle.vaultId,
-    objectId: reference.objectId,
     generation: input.target.generation,
-    paddedLength: reference.kindCode === 2 ? 65_536 : 262_144,
-    digest: reference.digest,
-    aad: new Uint8Array(4_096),
-    body: new Uint8Array(
-      reference.kindCode === 2
-        ? ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES
-        : ENCRYPTED_WALLET_BACKUP_BODY_BYTES,
-    ),
-  }).byteLength
+    paddedLength,
+    aadByteLength: 4_096,
+    bodyByteLength: bodyLength,
+  })
 }
 
 function canonicalBoundedPutPayload(
@@ -4484,20 +4507,4 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   for (let index = 0; index < left.byteLength; index += 1)
     difference |= left[index]! ^ right[index]!
   return difference === 0
-}
-
-function uint32Bytes(value: number): Uint8Array {
-  const result = new Uint8Array(4)
-  new DataView(result.buffer).setUint32(0, value, false)
-  return result
-}
-
-function concatBytes(...values: Uint8Array[]): Uint8Array {
-  const result = new Uint8Array(values.reduce((total, value) => total + value.byteLength, 0))
-  let offset = 0
-  for (const value of values) {
-    result.set(value, offset)
-    offset += value.byteLength
-  }
-  return result
 }

@@ -688,6 +688,17 @@ test('object PUT decoder binds route, fixed lengths, AAD, and framed digest', ()
   assert.equal(decoded.kindCode, 2)
   assert.equal(decoded.paddedLength, 65_536)
   assert.equal(decoded.encryptedBody.byteLength, 65_564)
+  assert.equal(
+    bytesToHex(decoded.canonicalAad),
+    bytesToHex(
+      manifestPageAad({
+        realm: REALM,
+        vaultId: VAULT_ID,
+        objectId: OBJECT_ID,
+        generation: 1,
+      }),
+    ),
+  )
 
   const mutations = [
     mutateTuple(valid.payload, 4, 'other'),
@@ -723,6 +734,69 @@ test('object PUT accepts the fixed proof-chunk kind-one shape', () => {
   assert.equal(decoded.kindCode, 1)
   assert.equal(decoded.paddedLength, 262_144)
   assert.equal(decoded.encryptedBody.byteLength, 262_172)
+})
+
+test('object PUT rejects each malformed manifest-page AAD field', () => {
+  const validAad = manifestPageAad({
+    realm: REALM,
+    vaultId: VAULT_ID,
+    objectId: OBJECT_ID,
+    generation: 1,
+  })
+  const malformed: readonly [number, unknown][] = [
+    [0, 2],
+    [1, 'other-aad'],
+    [2, 1],
+    [3, 'other-realm'],
+    [4, new Uint8Array(32).fill(0xff)],
+    [5, new Uint8Array(16).fill(0xff)],
+    [6, 2],
+    [7, 262_144],
+    [8, ''],
+    [9, -1],
+    [10, new Uint8Array(31)],
+    [11, new Uint8Array(31)],
+    [12, 1],
+    [13, 0],
+    [14, new Uint8Array(31)],
+  ]
+  for (const [fieldIndex, replacement] of malformed) {
+    const canonicalAad = mutateTuple(validAad, fieldIndex, replacement)
+    const payload = objectPutPayload({ canonicalAad }).payload
+    assert.throws(
+      () =>
+        decodeEncryptedWalletBackupObjectPutRequest({
+          canonicalPayload: payload,
+          routeRealm: REALM,
+          routeVaultId: VAULT_ID,
+          routeObjectId: OBJECT_ID,
+        }),
+      /object PUT request is invalid/,
+      `field ${fieldIndex} must fail AAD validation`,
+    )
+  }
+})
+
+test('object PUT rejects the legacy compact manifest-page AAD', () => {
+  const legacyAad = encodeCanonicalBackupCbor([
+    1,
+    2,
+    REALM,
+    hexToBytes(VAULT_ID),
+    hexToBytes(OBJECT_ID),
+    1,
+    65_536,
+  ])
+  assert.throws(
+    () =>
+      decodeEncryptedWalletBackupObjectPutRequest({
+        canonicalPayload: objectPutPayload({ canonicalAad: legacyAad }).payload,
+        routeRealm: REALM,
+        routeVaultId: VAULT_ID,
+        routeObjectId: OBJECT_ID,
+      }),
+    /object PUT request is invalid/,
+  )
 })
 
 test('object PUT route realm, vault, and object mismatches fail closed', () => {
@@ -1191,6 +1265,7 @@ function objectPutPayload(input?: {
   realm?: string
   vaultId?: string
   objectId?: string
+  canonicalAad?: Uint8Array
 }): { payload: Uint8Array } {
   const kindCode = input?.kindCode ?? 2
   const realm = input?.realm ?? REALM
@@ -1198,15 +1273,19 @@ function objectPutPayload(input?: {
   const objectId = input?.objectId ?? OBJECT_ID
   const paddedLength = kindCode === 1 ? 262_144 : 65_536
   const body = new Uint8Array(paddedLength + 28).fill(91)
-  const aad = encodeCanonicalBackupCbor([
-    1,
-    kindCode,
-    realm,
-    hexToBytes(vaultId),
-    hexToBytes(objectId),
-    1,
-    paddedLength,
-  ])
+  const aad =
+    input?.canonicalAad ??
+    (kindCode === 1
+      ? encodeCanonicalBackupCbor([
+          1,
+          kindCode,
+          realm,
+          hexToBytes(vaultId),
+          hexToBytes(objectId),
+          1,
+          paddedLength,
+        ])
+      : manifestPageAad({ realm, vaultId, objectId, generation: 1 }))
   const digest = framedDigest(aad, body)
   return {
     payload: encodeCanonicalBackupCbor([
@@ -1224,6 +1303,31 @@ function objectPutPayload(input?: {
       body,
     ]),
   }
+}
+
+function manifestPageAad(input: {
+  realm: string
+  vaultId: string
+  objectId: string
+  generation: number
+}): Uint8Array {
+  return encodeCanonicalBackupCbor([
+    1,
+    'encrypted-wallet-backup-manifest-page-aad',
+    2,
+    input.realm,
+    hexToBytes(input.vaultId),
+    hexToBytes(input.objectId),
+    input.generation,
+    65_536,
+    'server-ingress-snapshot',
+    1,
+    hexToBytes('16'.repeat(32)),
+    hexToBytes('17'.repeat(32)),
+    0,
+    1,
+    new Uint8Array(32).fill(0x18),
+  ])
 }
 
 function headCasPayload(input: {

@@ -262,7 +262,7 @@ test('a real one-page snapshot inserts its exact page and advances the cursor at
   assert.equal(result.recovered, false)
   assert.equal(store.currentPage, null)
   assert.equal(store.priorPage === null, false)
-  assert.equal(store.priorPage!.byteLength, 66_388)
+  assert.equal(store.priorPage!.byteLength, 66_277)
   assertOnePageRows(fixture, store)
   assertOnePageReservation(store)
 })

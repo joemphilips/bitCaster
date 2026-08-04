@@ -19,9 +19,9 @@ import {
   requireBytes,
   requireInteger,
   requireLowerHex,
-  requireObjectAad,
   requireRealm,
 } from './encryptedWalletBackupServerValidation.ts'
+import { requireEncryptedWalletBackupObjectAad } from './encryptedWalletBackupObjectAad.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_OBJECT_PUT_REQUEST_MAX_BYTES =
   ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES
@@ -247,7 +247,10 @@ function decodeObjectPutUnchecked(
   ) {
     throw new Error()
   }
-  requireObjectAad({ ...identity, canonicalAad: identity.canonicalAad })
+  requireEncryptedWalletBackupObjectAad({
+    ...identity,
+    canonicalAad: identity.canonicalAad,
+  })
   return Object.freeze({
     formatVersion: 1,
     uploadAttemptId: bytesToHex(requireBytes(decoded[2], 16, 16, 'object PUT attempt id')),

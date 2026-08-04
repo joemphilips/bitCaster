@@ -37,6 +37,22 @@ export function measureCanonicalBackupCbor(value: unknown): number {
   throw new Error('canonical CBOR value is invalid')
 }
 
+export function measureCanonicalBackupCborArrayHeader(itemCount: number): number {
+  requireMeasuredLength(itemCount)
+  return headerLength(itemCount)
+}
+
+export function measureCanonicalBackupCborByteString(byteLength: number): number {
+  requireMeasuredLength(byteLength)
+  return headerLength(byteLength) + byteLength
+}
+
+function requireMeasuredLength(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('canonical CBOR length is invalid')
+  }
+}
+
 export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
   if (bytes.byteLength < 1 || bytes.byteLength > PROOF_CBOR_MAX_BYTES) throw new Error('cbor input')
   const state = { offset: 0, tokens: 0 }
@@ -371,21 +387,34 @@ export function structurallyPreflightEncryptedBackupAttemptAbortCbor(bytes: Uint
 }
 
 export function preflightEncryptedBackupObjectAadCbor(bytes: Uint8Array): void {
-  const root = scanBoundedEnvelope(bytes, 256, 1, 12, 7)
-  if (
-    root.major !== 4 ||
-    root.value !== 7 ||
-    root.children[0]?.major !== 0 ||
-    root.children[0]?.value !== 1
-  ) {
+  const root = scanBoundedEnvelope(bytes, 4_096, 1, 19, 15)
+  if (root.major !== 4 || root.children[0]?.major !== 0 || root.children[0]?.value !== 1) {
     throw new Error('object AAD shape')
   }
-  requireUnsigned(root.children[1], 'object AAD kind')
-  requireText(root.children[2], 1, 64, 'object AAD realm')
-  requireBytes(root.children[3], 32, 32, 'object AAD vault id')
-  requireBytes(root.children[4], 16, 16, 'object AAD object id')
-  requireUnsigned(root.children[5], 'object AAD generation')
-  requireUnsigned(root.children[6], 'object AAD padded length')
+  if (root.value === 7) {
+    requireUnsigned(root.children[1], 'object AAD kind')
+    requireText(root.children[2], 1, 64, 'object AAD realm')
+    requireBytes(root.children[3], 32, 32, 'object AAD vault id')
+    requireBytes(root.children[4], 16, 16, 'object AAD object id')
+    requireUnsigned(root.children[5], 'object AAD generation')
+    requireUnsigned(root.children[6], 'object AAD padded length')
+    return
+  }
+  if (root.value !== 15) throw new Error('object AAD shape')
+  requireText(root.children[1], 41, 41, 'manifest page AAD discriminator')
+  requireUnsigned(root.children[2], 'manifest page AAD kind')
+  requireText(root.children[3], 1, 64, 'manifest page AAD realm')
+  requireBytes(root.children[4], 32, 32, 'manifest page AAD vault id')
+  requireBytes(root.children[5], 16, 16, 'manifest page AAD object id')
+  requireUnsigned(root.children[6], 'manifest page AAD generation')
+  requireUnsigned(root.children[7], 'manifest page AAD padded length')
+  requireText(root.children[8], 1, 128, 'manifest page AAD snapshot id')
+  requireUnsigned(root.children[9], 'manifest page AAD snapshot revision')
+  requireBytes(root.children[10], 32, 32, 'manifest page AAD control digest')
+  requireBytes(root.children[11], 32, 32, 'manifest page AAD result digest')
+  requireUnsigned(root.children[12], 'manifest page AAD index')
+  requireUnsigned(root.children[13], 'manifest page AAD count')
+  requireBytes(root.children[14], 32, 32, 'manifest page AAD source interval commitment')
 }
 
 /**

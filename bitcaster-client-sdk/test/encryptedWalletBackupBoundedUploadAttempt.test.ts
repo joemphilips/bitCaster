@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { webcrypto } from 'node:crypto'
 import { test } from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
-import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import {
   createEncryptedWalletBackupKeyHandle,
@@ -28,6 +27,7 @@ import {
   type EncryptedWalletBackupSyncAttemptRecord,
 } from '../src/encryptedWalletBackupSync.ts'
 import { encodeCanonicalBackupCbor } from '../src/encryptedWalletBackupCbor.ts'
+import { encryptedWalletBackupObjectDigest } from '../src/encryptedWalletBackupObjectDigest.ts'
 import {
   decodeEncryptedWalletBackupUploadCursor,
   encodeEncryptedWalletBackupUploadCursor,
@@ -58,6 +58,20 @@ type Mode =
   | 'batch-substituted'
   | 'batch-unknown'
   | 'batch-thrown'
+
+type BoundedManifestPageAadContext = Readonly<{
+  snapshotId: string
+  snapshotRevision: number
+  sealedControlDigest: string
+  resultDigest: string
+  pageCount: number
+  pageAadIndexByObjectId: ReadonlyMap<string, number>
+}>
+
+const BOUNDED_MANIFEST_PAGE_AAD_CONTEXTS = new WeakMap<
+  EncryptedWalletBackupKeyHandle,
+  BoundedManifestPageAadContext
+>()
 
 test('bounded upload attempt atomically seals a non-empty target and its pages cursor', async () => {
   const fixture = await boundedTargetFixture(false)
@@ -141,15 +155,7 @@ test('bounded upload planning reads the persisted page then chunk and completes 
     1,
     65_536,
     hexToBytes(batch!.record.items[0]!.objectDigest),
-    encodeCanonicalBackupCbor([
-      1,
-      2,
-      fixture.keyHandle.realm,
-      hexToBytes(fixture.keyHandle.vaultId),
-      hexToBytes(objectIdFor(1)),
-      1,
-      65_536,
-    ]),
+    boundedObjectAad(fixture.keyHandle, 2, objectIdFor(1), 65_536),
     new Uint8Array(65_564),
   ])
   assert.equal(equalBytes(batch!.record.items[0]!.canonicalPutPayload!, expectedPut), true)
@@ -205,6 +211,37 @@ test('bounded upload planning rejects a source object that exceeds its byte rese
       },
     }),
     /bounded upload object exceeds its source reservation/,
+  )
+  assert.equal(store.batches.size, 0)
+  assert.equal(
+    decodeEncryptedWalletBackupUploadCursor(store.cursors.get(claim.record.attemptId)!).version,
+    1,
+  )
+})
+
+test('bounded upload planning rejects a manifest page AAD with the wrong target index', async () => {
+  const fixture = await boundedTargetFixture(false, {
+    pageCount: 2,
+    chunkCount: 1,
+    pageAadIndexForPage: (pageIndex, pageCount) => pageCount - pageIndex - 1,
+  })
+  const store = new AtomicAttemptCursorStore()
+  const claim = await sealBoundedEncryptedWalletBackupUploadAttempt({
+    attemptId: '25'.repeat(16),
+    ownerId: 'owner',
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: fixture.keyHandle,
+    target: fixture.target,
+    store,
+  })
+  await assert.rejects(
+    planAndSealBoundedEncryptedWalletBackupUploadBatch({
+      claim,
+      keyHandle: fixture.keyHandle,
+      store,
+      source: boundedObjectSource(fixture.keyHandle),
+    }),
+    /backup object PUT digest is invalid/,
   )
   assert.equal(store.batches.size, 0)
   assert.equal(
@@ -446,7 +483,11 @@ test('bounded upload planning rehydrates an exact batch after an uncertain commi
     keyHandle: fixture.keyHandle,
     store,
   })
-  assert.deepEqual(rehydratedFromStore.record.items, store.batches.get(batchId)?.items)
+  assert.equal(
+    isDeepStrictEqual(rehydratedFromStore.record.items, store.batches.get(batchId)?.items),
+    true,
+    'rehydrated upload items must match the persisted batch',
+  )
   let freshClaimSourceReads = 0
   await assert.rejects(
     planAndSealBoundedEncryptedWalletBackupUploadBatch({
@@ -1391,21 +1432,50 @@ function boundedObjectDigest(
   objectId: string,
   paddedLength: 65_536 | 262_144,
 ): string {
-  const aad = encodeCanonicalBackupCbor([
+  const aad = boundedObjectAad(keyHandle, kindCode, objectId, paddedLength)
+  const body = new Uint8Array(kindCode === 2 ? 65_564 : 262_172)
+  return bytesToHex(encryptedWalletBackupObjectDigest(aad, body))
+}
+
+function boundedObjectAad(
+  keyHandle: EncryptedWalletBackupKeyHandle,
+  kindCode: 1 | 2,
+  objectId: string,
+  paddedLength: 65_536 | 262_144,
+): Uint8Array {
+  if (kindCode === 1) {
+    return encodeCanonicalBackupCbor([
+      1,
+      kindCode,
+      keyHandle.realm,
+      hexToBytes(keyHandle.vaultId),
+      hexToBytes(objectId),
+      1,
+      paddedLength,
+    ])
+  }
+  const context = BOUNDED_MANIFEST_PAGE_AAD_CONTEXTS.get(keyHandle)
+  const pageIndex = context?.pageAadIndexByObjectId.get(objectId)
+  if (context === undefined || pageIndex === undefined) {
+    throw new Error('bounded manifest page AAD context is absent')
+  }
+  return encodeCanonicalBackupCbor([
     1,
-    kindCode,
+    'encrypted-wallet-backup-manifest-page-aad',
+    2,
     keyHandle.realm,
     hexToBytes(keyHandle.vaultId),
     hexToBytes(objectId),
     1,
     paddedLength,
+    context.snapshotId,
+    context.snapshotRevision,
+    hexToBytes(context.sealedControlDigest),
+    hexToBytes(context.resultDigest),
+    pageIndex,
+    context.pageCount,
+    new Uint8Array(32).fill(0x18),
   ])
-  const body = new Uint8Array(kindCode === 2 ? 65_564 : 262_172)
-  const framed = new Uint8Array(4 + aad.byteLength + body.byteLength)
-  framed[3] = aad.byteLength
-  framed.set(aad, 4)
-  framed.set(body, 4 + aad.byteLength)
-  return bytesToHex(sha256(framed))
 }
 
 function boundedObjectSource(
@@ -1422,15 +1492,7 @@ function boundedObjectSource(
       generation: 1,
       paddedLength,
       digest: boundedObjectDigest(keyHandle, kindCode, objectId, paddedLength),
-      aad: encodeCanonicalBackupCbor([
-        1,
-        kindCode,
-        keyHandle.realm,
-        hexToBytes(keyHandle.vaultId),
-        hexToBytes(objectId),
-        1,
-        paddedLength,
-      ]),
+      aad: boundedObjectAad(keyHandle, kindCode, objectId, paddedLength),
       body: new Uint8Array(kindCode === 2 ? 65_564 : 262_172),
     })
   return {
@@ -1447,7 +1509,12 @@ function boundedObjectSource(
 
 async function boundedTargetFixture(
   empty: boolean,
-  counts?: Readonly<{ pageCount: number; chunkCount: number; proofCount?: number }>,
+  counts?: Readonly<{
+    pageCount: number
+    chunkCount: number
+    proofCount?: number
+    pageAadIndexForPage?: (pageIndex: number, pageCount: number) => number
+  }>,
 ): Promise<{
   keyHandle: EncryptedWalletBackupKeyHandle
   target: PreparedEncryptedWalletBackupManifestTarget
@@ -1502,8 +1569,25 @@ async function boundedTargetFixture(
   })
   const pageCount = empty ? 0 : (counts?.pageCount ?? 1)
   const chunkCount = empty ? 0 : (counts?.chunkCount ?? 1)
+  const pageObjectIds = Array.from({ length: pageCount }, (_value, index) => objectIdFor(index + 1))
+  BOUNDED_MANIFEST_PAGE_AAD_CONTEXTS.set(
+    keyHandle,
+    Object.freeze({
+      snapshotId: empty ? 'empty' : 'pages',
+      snapshotRevision: 1,
+      sealedControlDigest: '16'.repeat(32),
+      resultDigest: '17'.repeat(32),
+      pageCount,
+      pageAadIndexByObjectId: new Map(
+        pageObjectIds.map((objectId, pageIndex) => [
+          objectId,
+          counts?.pageAadIndexForPage?.(pageIndex, pageCount) ?? pageIndex,
+        ]),
+      ),
+    }),
+  )
   const pages = Array.from({ length: pageCount }, (_value, index) => {
-    const objectId = objectIdFor(index + 1)
+    const objectId = pageObjectIds[index]!
     return {
       formatVersion: 1 as const,
       kindCode: 2 as const,

@@ -40,15 +40,16 @@ import {
 import {
   registerEncryptedWalletBackupKeyHandle,
   requireIssuedEncryptedWalletBackupKeyHandle,
+  signEncryptedWalletBackupPreparationCapability,
 } from './encryptedWalletBackupKeyAuthority.ts'
 import { registerEncryptedWalletBackupPreparedRecordValidator } from './encryptedWalletBackupPreparedRecordValidation.ts'
+import { exactEncryptedWalletBackupArrayBuffer } from './encryptedWalletBackupBytes.ts'
 import {
   ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
   issuePreparedEncryptedWalletBackupRecord,
   type PreparedEncryptedWalletBackupRecord,
 } from './encryptedWalletBackupRecord.ts'
 import {
-  finalManifestEntryBytes,
   issueEncryptedWalletBackupManifestPageProvenance,
   readEncryptedWalletBackupManifestEntryForPage,
   requireEncryptedWalletBackupManifestPageBoundary,
@@ -61,6 +62,8 @@ import {
   requireEncryptedWalletBackupFrozenSnapshotControl,
   type EncryptedWalletBackupFrozenSnapshotControl,
 } from './encryptedWalletBackupSnapshotAuthority.ts'
+import { requireEncryptedWalletBackupObjectAad } from './encryptedWalletBackupObjectAad.ts'
+import { encryptedWalletBackupObjectDigest } from './encryptedWalletBackupObjectDigest.ts'
 import { requireRealm, requireUtf8Text } from './encryptedWalletBackupServerValidation.ts'
 import {
   requireBoundedManifestTargetCapability,
@@ -377,23 +380,6 @@ export interface EncryptedWalletBackupProofSnapshotStore {
   ): Promise<T>
 }
 
-export interface EncryptedWalletBackupCommittedSnapshotSeal {
-  readonly schemaVersion: 1
-  readonly snapshotId: string
-  readonly snapshotRevision: number
-  readonly proofCount: number
-  readonly proofSetDigest: string
-}
-
-export interface EncryptedWalletBackupSnapshotSealStore {
-  sealCommittedBackupSnapshot<T>(
-    expected: EncryptedWalletBackupCommittedSnapshotSeal,
-    seal: (committed: EncryptedWalletBackupCommittedSnapshotSeal) => T,
-  ): Promise<T>
-}
-
-const COMMITTED_SNAPSHOT_SEALS = new WeakMap<object, EncryptedWalletBackupCommittedSnapshotSeal>()
-
 interface TransactionProofSnapshotAuthority {
   readonly row: EncryptedWalletBackupCommittedProofSnapshot
   readonly conditionalKeyset: ConditionalKeysetAuthority | null
@@ -531,32 +517,6 @@ export interface EncryptedWalletBackupManifestEntry {
   readonly createdAtUnixSeconds: number
   readonly updatedAtUnixSeconds: number
 }
-
-export interface PreparedEncryptedWalletBackupManifest {
-  readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION
-  readonly generation: number
-  readonly snapshotNonce: string
-  readonly snapshotId: string
-  readonly snapshotRevision: number
-  readonly proofCount: number
-  readonly pageCount: number
-  readonly pages: readonly PreparedEncryptedWalletBackupObject[]
-  readonly chunkObjects: readonly PreparedEncryptedWalletBackupObject[]
-}
-
-interface PreparedManifestAuthority {
-  readonly keyHandle: EncryptedWalletBackupKeyHandle
-  readonly pages: readonly PreparedEncryptedWalletBackupObject[]
-  readonly chunkObjects: readonly PreparedEncryptedWalletBackupObject[]
-  readonly inheritedChunkReferences: readonly Readonly<{
-    objectId: string
-    digest: string
-  }>[]
-  readonly repackedSourceObjectIdsByObjectId: ReadonlyMap<string, ReadonlySet<string>>
-  readonly requiredParentHead: EncryptedWalletBackupManifestHead | null
-}
-
-const PREPARED_MANIFESTS = new WeakMap<object, PreparedManifestAuthority>()
 
 export interface EncryptedWalletBackupManifestHead {
   readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION
@@ -792,9 +752,6 @@ interface PreparedManifestHeadAuthority {
   readonly canonicalParentHead: Uint8Array | null
   readonly canonicalInheritedReferenceSet: Uint8Array
 }
-
-const PREPARED_MANIFEST_HEADS = new WeakMap<object, PreparedManifestHeadAuthority>()
-const BOUNDED_PREPARED_MANIFEST_HEADS = new WeakMap<object, PreparedManifestHeadAuthority>()
 
 export interface DecryptedEncryptedWalletBackupManifestPage {
   readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION
@@ -1906,85 +1863,6 @@ function requireProofSnapshotStore(value: unknown): EncryptedWalletBackupProofSn
   return value as EncryptedWalletBackupProofSnapshotStore
 }
 
-async function requireCommittedSnapshotSeal(
-  storeInput: unknown,
-  expected: EncryptedWalletBackupCommittedSnapshotSeal,
-): Promise<void> {
-  if (
-    typeof storeInput !== 'object' ||
-    storeInput === null ||
-    typeof (storeInput as { sealCommittedBackupSnapshot?: unknown }).sealCommittedBackupSnapshot !==
-      'function'
-  ) {
-    throw new Error('backup snapshot seal store is invalid')
-  }
-  const store = storeInput as EncryptedWalletBackupSnapshotSealStore
-  let callbackOpen = true
-  let callbackCalls = 0
-  let issued: object | undefined
-  let returned: unknown
-  try {
-    returned = await store.sealCommittedBackupSnapshot(expected, (rawSeal) => {
-      if (!callbackOpen || callbackCalls++ !== 0)
-        throw new Error('backup snapshot seal callback is invalid')
-      const seal = decodeCommittedSnapshotSeal(rawSeal)
-      if (
-        seal.snapshotId !== expected.snapshotId ||
-        seal.snapshotRevision !== expected.snapshotRevision ||
-        seal.proofCount !== expected.proofCount ||
-        seal.proofSetDigest !== expected.proofSetDigest
-      ) {
-        throw new Error('committed wallet snapshot changed')
-      }
-      const capability = Object.freeze({
-        snapshotId: seal.snapshotId,
-        revision: seal.snapshotRevision,
-      })
-      COMMITTED_SNAPSHOT_SEALS.set(capability, seal)
-      issued = capability
-      return capability
-    })
-  } finally {
-    callbackOpen = false
-  }
-  if (
-    isThenable(returned) ||
-    issued === undefined ||
-    returned !== issued ||
-    callbackCalls !== 1 ||
-    COMMITTED_SNAPSHOT_SEALS.get(issued) === undefined
-  ) {
-    throw new Error('backup snapshot seal must be synchronous and exact')
-  }
-}
-
-function decodeCommittedSnapshotSeal(value: unknown): EncryptedWalletBackupCommittedSnapshotSeal {
-  const seal = requireRecord(value, 'committed backup snapshot seal')
-  requireKnownFields(seal, [
-    'schemaVersion',
-    'snapshotId',
-    'snapshotRevision',
-    'proofCount',
-    'proofSetDigest',
-  ])
-  if (seal.schemaVersion !== 1) throw new Error('unsupported backup snapshot seal version')
-  return Object.freeze({
-    schemaVersion: 1,
-    snapshotId: requireBoundedText(seal.snapshotId, 128, 'sealed snapshot id'),
-    snapshotRevision: requireNonNegativeSafeInteger(
-      seal.snapshotRevision,
-      'sealed snapshot revision',
-    ),
-    proofCount: requireInteger(
-      seal.proofCount,
-      0,
-      ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX,
-      'sealed proof count',
-    ),
-    proofSetDigest: requireLowerHex(seal.proofSetDigest, 32, 'sealed proof-set digest'),
-  })
-}
-
 function decodeCommittedProofSnapshot(value: unknown): EncryptedWalletBackupCommittedProofSnapshot {
   const row = requireRecord(value, 'committed proof snapshot')
   requireKnownFields(row, [
@@ -2226,7 +2104,7 @@ export async function prepareEncryptedWalletBackupObject(input: {
       ),
     )
     const body = concatBytes(nonce, encrypted)
-    const digest = bytesToHex(sha256(concatBytes(uint32Bytes(aad.byteLength), aad, body)))
+    const digest = bytesToHex(encryptedWalletBackupObjectDigest(aad, body))
     const prepared = Object.freeze({
       formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
       kindCode: ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND,
@@ -2281,6 +2159,7 @@ export async function rehydratePreparedEncryptedWalletBackupProofObject(input: {
       throw new Error('foreign object kind')
     }
     const canonical = await decryptObjectFrame({
+      keyHandle: input.keyHandle,
       authority,
       object,
       kindCode: ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND,
@@ -2338,6 +2217,7 @@ export async function prepareEncryptedWalletBackupManifestPage(input: {
   requireManifestPageBytes(boundary, canonical)
   const runtime = input.runtime === undefined ? authority.runtime : requireRuntime(input.runtime)
   const prepared = await prepareManifestObject({
+    keyHandle: input.keyHandle,
     authority,
     generation: boundary.generation,
     canonical,
@@ -2385,6 +2265,7 @@ async function rehydratePersistedManifestPage(
   const object = requireManifestWireObject(input.object, authority)
   const endpoints = requireManifestPageEndpoints(input.sourceEvidence)
   const canonical = await decryptObjectFrame({
+    keyHandle: input.keyHandle,
     authority,
     object,
     kindCode: ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
@@ -2556,705 +2437,6 @@ function compareBytes(left: Uint8Array, right: Uint8Array): number {
     if (difference !== 0) return difference
   }
   return left.byteLength - right.byteLength
-}
-
-export async function prepareEncryptedWalletBackupManifest(input: {
-  keyHandle: EncryptedWalletBackupKeyHandle
-  generation: number
-  snapshotNonce: Uint8Array
-  chunks: readonly Readonly<{
-    chunk: PreparedEncryptedWalletBackupProofChunk
-    object: PreparedEncryptedWalletBackupObject
-  }>[]
-  emptySnapshot?: Readonly<{ snapshotId: string; snapshotRevision: number }>
-  snapshotStore: EncryptedWalletBackupSnapshotSealStore
-  runtime?: EncryptedWalletBackupRuntime
-  objectIdExists?: (objectId: string) => boolean | Promise<boolean>
-}): Promise<PreparedEncryptedWalletBackupManifest> {
-  const authority = requireKeyAuthority(input.keyHandle)
-  const generation = requireInteger(
-    input.generation,
-    1,
-    Number.MAX_SAFE_INTEGER,
-    'backup generation',
-  )
-  if (generation !== 1) {
-    throw new Error('non-genesis manifest requires authenticated parent provenance')
-  }
-  const snapshotNonce = requireBytes(input.snapshotNonce, 16, 'manifest snapshot nonce').slice()
-  if (!Array.isArray(input.chunks) || input.chunks.length > 1_024) {
-    throw new Error('manifest chunk count is invalid')
-  }
-  if ((input.chunks.length === 0) !== (input.emptySnapshot !== undefined)) {
-    throw new Error('empty manifest snapshot identity is invalid')
-  }
-  const seenObjectIds = new Set<string>()
-  const seenDigests = new Set<string>()
-  const bindings: Array<{
-    proof: PreparedProofAuthority
-    object: PreparedEncryptedWalletBackupObject
-  }> = []
-  let snapshotId: string | undefined
-  let snapshotRevision: number | undefined
-  for (const binding of input.chunks) {
-    const chunkAuthority = requireChunkAuthority(binding.chunk)
-    const objectAuthority = requirePreparedObjectAuthority(binding.object)
-    if (
-      objectAuthority.sourceChunk !== binding.chunk ||
-      chunkAuthority.keyAuthority !== authority ||
-      binding.object.kindCode !== ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND ||
-      binding.object.realm !== authority.realm ||
-      binding.object.vaultId !== bytesToHex(authority.vaultIdBytes) ||
-      binding.object.paddedLength !== ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES ||
-      binding.object.generation > generation
-    ) {
-      throw new Error('manifest chunk binding is invalid')
-    }
-    if (seenObjectIds.has(binding.object.objectId) || seenDigests.has(binding.object.digest)) {
-      throw new Error('manifest chunk reference is duplicated')
-    }
-    seenObjectIds.add(binding.object.objectId)
-    seenDigests.add(binding.object.digest)
-    snapshotId ??= chunkAuthority.snapshotId
-    snapshotRevision ??= chunkAuthority.snapshotRevision
-    if (
-      chunkAuthority.snapshotId !== snapshotId ||
-      chunkAuthority.snapshotRevision !== snapshotRevision
-    ) {
-      throw new Error('committed wallet snapshot changed')
-    }
-    for (const proof of chunkAuthority.proofs) bindings.push({ proof, object: binding.object })
-  }
-  bindings.sort((left, right) => compareHex(left.proof.proofId, right.proof.proofId))
-  const seenCommitments = new Set<string>()
-  for (let index = 1; index < bindings.length; index += 1) {
-    if (bindings[index - 1]!.proof.proofId === bindings[index]!.proof.proofId) {
-      throw new Error('manifest proof binding is duplicated')
-    }
-  }
-  for (const binding of bindings) {
-    if (seenCommitments.has(binding.proof.commitment)) {
-      throw new Error('manifest proof binding is duplicated')
-    }
-    seenCommitments.add(binding.proof.commitment)
-  }
-  if (input.emptySnapshot !== undefined) {
-    snapshotId = requireBoundedText(input.emptySnapshot.snapshotId, 128, 'empty snapshot id')
-    snapshotRevision = requireNonNegativeSafeInteger(
-      input.emptySnapshot.snapshotRevision,
-      'empty snapshot revision',
-    )
-  }
-  const proofSetDigest = bytesToHex(
-    sha256(
-      encodeCanonical([
-        1,
-        'eligible-proof-set',
-        bindings.map((binding) => [
-          hexToBytes(binding.proof.proofId),
-          hexToBytes(binding.proof.commitment),
-        ]),
-      ]),
-    ),
-  )
-  await requireCommittedSnapshotSeal(input.snapshotStore, {
-    schemaVersion: 1,
-    snapshotId: snapshotId!,
-    snapshotRevision: snapshotRevision!,
-    proofCount: bindings.length,
-    proofSetDigest,
-  })
-  const wireEntries = bindings.map(({ proof, object }) => manifestEntryWire(proof, object))
-  const pageEntries: unknown[][][] = []
-  let current: unknown[][] = []
-  for (const entry of wireEntries) {
-    const candidate = [...current, entry]
-    const provisional = [
-      1,
-      ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
-      generation,
-      snapshotNonce,
-      pageEntries.length,
-      1_024,
-      candidate,
-    ]
-    if (
-      candidate.length > ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX ||
-      measureCanonicalCbor(provisional) > ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES
-    ) {
-      if (current.length === 0) throw new Error('manifest entry exceeds the encoded size limit')
-      pageEntries.push(current)
-      current = [entry]
-    } else {
-      current = candidate
-    }
-  }
-  if (current.length > 0) pageEntries.push(current)
-  if (pageEntries.length > 1_024) {
-    throw new Error('manifest page count is invalid')
-  }
-  const runtime = input.runtime === undefined ? authority.runtime : requireRuntime(input.runtime)
-  const pages: PreparedEncryptedWalletBackupObject[] = []
-  for (let pageIndex = 0; pageIndex < pageEntries.length; pageIndex += 1) {
-    const canonical = encodeCanonical([
-      1,
-      ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
-      generation,
-      snapshotNonce,
-      pageIndex,
-      pageEntries.length,
-      pageEntries[pageIndex],
-    ])
-    if (canonical.byteLength > ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES) {
-      throw new Error('manifest page exceeds the canonical CBOR limit')
-    }
-    pages.push(
-      await prepareManifestObject({
-        authority,
-        generation,
-        canonical,
-        runtime,
-        objectIdExists: input.objectIdExists,
-      }),
-    )
-  }
-  const manifest = Object.freeze({
-    formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
-    generation,
-    snapshotNonce: bytesToHex(snapshotNonce),
-    snapshotId: snapshotId!,
-    snapshotRevision: snapshotRevision!,
-    proofCount: bindings.length,
-    pageCount: pages.length,
-    pages: Object.freeze(pages),
-    chunkObjects: Object.freeze(input.chunks.map((binding) => binding.object)),
-  })
-  PREPARED_MANIFESTS.set(manifest, {
-    keyHandle: input.keyHandle,
-    pages: manifest.pages,
-    chunkObjects: manifest.chunkObjects,
-    inheritedChunkReferences: Object.freeze([]),
-    repackedSourceObjectIdsByObjectId: new Map(),
-    requiredParentHead: null,
-  })
-  return manifest
-}
-
-/**
- * Builds an exact child from authenticated parent metadata plus newly prepared
- * proofs. Inherited entries remain opaque manifest metadata and never become
- * proof-selection authority.
- */
-export async function prepareIncrementalEncryptedWalletBackupManifest(input: {
-  keyHandle: EncryptedWalletBackupKeyHandle
-  generation: number
-  snapshotNonce: Uint8Array
-  parentEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence
-  parentPages: readonly DecryptedEncryptedWalletBackupManifestPage[]
-  chunks: readonly Readonly<{
-    chunk: PreparedEncryptedWalletBackupProofChunk
-    object: PreparedEncryptedWalletBackupObject
-  }>[]
-  removedProofIds: readonly string[]
-  snapshot: Readonly<{ snapshotId: string; snapshotRevision: number }>
-  snapshotStore: EncryptedWalletBackupSnapshotSealStore
-  runtime?: EncryptedWalletBackupRuntime
-  objectIdExists?: (objectId: string) => boolean | Promise<boolean>
-}): Promise<PreparedEncryptedWalletBackupManifest> {
-  const authority = requireKeyAuthority(input.keyHandle)
-  const observation =
-    typeof input.parentEvidence === 'object' && input.parentEvidence !== null
-      ? AUTHENTICATED_HEAD_OBSERVATIONS.get(input.parentEvidence)
-      : undefined
-  if (
-    observation === undefined ||
-    observation.keyAuthority !== authority ||
-    observation.head === null
-  ) {
-    throw new Error('incremental manifest parent is not authenticated')
-  }
-  const generation = requireInteger(
-    input.generation,
-    2,
-    Number.MAX_SAFE_INTEGER,
-    'backup generation',
-  )
-  if (generation !== observation.head.generation + 1) {
-    throw new Error('incremental manifest generation does not advance parent')
-  }
-  const snapshotNonce = requireBytes(input.snapshotNonce, 16, 'manifest snapshot nonce').slice()
-  const snapshotId = requireBoundedText(input.snapshot.snapshotId, 128, 'incremental snapshot id')
-  const snapshotRevision = requireNonNegativeSafeInteger(
-    input.snapshot.snapshotRevision,
-    'incremental snapshot revision',
-  )
-  if (
-    !Array.isArray(input.parentPages) ||
-    !Array.isArray(input.chunks) ||
-    input.chunks.length > 1_024 ||
-    !Array.isArray(input.removedProofIds) ||
-    input.removedProofIds.length > ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX
-  ) {
-    throw new Error('incremental manifest input is invalid')
-  }
-  const parentPages = [...input.parentPages].sort((left, right) => left.pageIndex - right.pageIndex)
-  if (
-    parentPages.length === 0
-      ? observation.head.proofCount !== 0
-      : parentPages.some((page, index) => {
-          const pageAuthority = DECRYPTED_MANIFEST_PAGE_AUTHORITIES.get(page)
-          return (
-            pageAuthority === undefined ||
-            pageAuthority.keyAuthority !== authority ||
-            pageAuthority.head !== observation.head ||
-            page.pageIndex !== index ||
-            page.pageCount !== parentPages.length
-          )
-        })
-  )
-    throw new Error('incremental manifest parent pages are incomplete or foreign')
-  const parentEntries = parentPages.flatMap((page) => page.entries)
-  if (parentEntries.length !== observation.head.proofCount) {
-    throw new Error('incremental manifest parent proof count changed')
-  }
-  const removed = new Set(
-    input.removedProofIds.map((proofId) => requireLowerHex(proofId, 32, 'removed backup proof id')),
-  )
-  if (removed.size !== input.removedProofIds.length)
-    throw new Error('removed backup proof id is duplicated')
-
-  const entries = new Map<string, EncryptedWalletBackupManifestEntry>()
-  const parentEntryByProofId = new Map(parentEntries.map((entry) => [entry.proofId, entry]))
-  for (const entry of parentEntries) {
-    if (removed.has(entry.proofId)) removed.delete(entry.proofId)
-    else entries.set(entry.proofId, entry)
-  }
-  const newChunkObjects: PreparedEncryptedWalletBackupObject[] = []
-  const newProofIds = new Set<string>()
-  const newObjectIds = new Set<string>()
-  const newObjectDigests = new Set<string>()
-  const repackedSourceObjectIdsByObjectId = new Map<string, ReadonlySet<string>>()
-  for (const binding of input.chunks) {
-    const chunkAuthority = requireChunkAuthority(binding.chunk)
-    const objectAuthority = requirePreparedObjectAuthority(binding.object)
-    if (
-      objectAuthority.sourceChunk !== binding.chunk ||
-      chunkAuthority.keyAuthority !== authority ||
-      binding.object.kindCode !== ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND ||
-      binding.object.generation > generation ||
-      chunkAuthority.snapshotId !== snapshotId ||
-      chunkAuthority.snapshotRevision !== snapshotRevision
-    ) {
-      throw new Error('incremental manifest chunk binding is invalid')
-    }
-    if (newObjectIds.has(binding.object.objectId) || newObjectDigests.has(binding.object.digest)) {
-      throw new Error('incremental manifest chunk object is duplicated')
-    }
-    newObjectIds.add(binding.object.objectId)
-    newObjectDigests.add(binding.object.digest)
-    newChunkObjects.push(binding.object)
-    const repackedSources = new Set<string>()
-    for (const proof of chunkAuthority.proofs) {
-      if (newProofIds.has(proof.proofId)) {
-        throw new Error('incremental manifest new proof id is duplicated')
-      }
-      newProofIds.add(proof.proofId)
-      const parentEntry = parentEntryByProofId.get(proof.proofId)
-      if (parentEntry !== undefined && parentEntry.chunkObjectId !== binding.object.objectId) {
-        repackedSources.add(parentEntry.chunkObjectId)
-      }
-      entries.set(proof.proofId, decodeManifestEntry(manifestEntryWire(proof, binding.object)))
-      removed.delete(proof.proofId)
-    }
-    repackedSourceObjectIdsByObjectId.set(binding.object.objectId, repackedSources)
-  }
-  if (removed.size !== 0)
-    throw new Error('removed backup proof is not present in parent or replacement')
-  const sortedEntries = [...entries.values()].sort((left, right) =>
-    compareHex(left.proofId, right.proofId),
-  )
-  for (const object of newChunkObjects) {
-    if (
-      !sortedEntries.some(
-        (entry) => entry.chunkObjectId === object.objectId && entry.chunkDigest === object.digest,
-      )
-    ) {
-      throw new Error('incremental manifest chunk contributes no final entry')
-    }
-  }
-  if (new Set(sortedEntries.map((entry) => entry.commitment)).size !== sortedEntries.length) {
-    throw new Error('incremental manifest proof binding is duplicated')
-  }
-  const proofSetDigest = bytesToHex(
-    sha256(
-      encodeCanonical([
-        1,
-        'eligible-proof-set',
-        sortedEntries.map((entry) => [hexToBytes(entry.proofId), hexToBytes(entry.commitment)]),
-      ]),
-    ),
-  )
-  await requireCommittedSnapshotSeal(input.snapshotStore, {
-    schemaVersion: 1,
-    snapshotId,
-    snapshotRevision,
-    proofCount: sortedEntries.length,
-    proofSetDigest,
-  })
-
-  const newChunkIds = new Set(newChunkObjects.map((object) => object.objectId))
-  const inheritedChunkReferences = new Map<string, string>()
-  for (const entry of sortedEntries) {
-    if (!newChunkIds.has(entry.chunkObjectId)) {
-      inheritedChunkReferences.set(entry.chunkObjectId, entry.chunkDigest)
-    }
-  }
-  const parentAuthority = AUTHENTICATED_MANIFEST_HEAD_VALUES.get(observation.head)
-  if (parentAuthority === undefined)
-    throw new Error('incremental manifest parent is not authenticated')
-  const parentReferenceSet = decode(parentAuthority.canonicalReferenceSet)
-  const parentChunks = decodeObjectReferences(
-    Array.isArray(parentReferenceSet) ? parentReferenceSet[3] : undefined,
-    'parent chunk references',
-  )
-  for (const [objectId, digest] of inheritedChunkReferences) {
-    if (
-      !parentChunks.some(
-        (reference) => reference.objectId === objectId && reference.digest === digest,
-      )
-    ) {
-      throw new Error('incremental manifest inherited reference is stale or foreign')
-    }
-  }
-
-  const pageEntryGroups: EncryptedWalletBackupManifestEntry[][] = []
-  let current: EncryptedWalletBackupManifestEntry[] = []
-  for (const entry of sortedEntries) {
-    const candidate = [...current, entry]
-    const provisional = [
-      1,
-      ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
-      generation,
-      snapshotNonce,
-      pageEntryGroups.length,
-      1_024,
-      candidate.map(manifestEntryValue),
-    ]
-    if (
-      candidate.length > ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX ||
-      measureCanonicalCbor(provisional) > ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES
-    ) {
-      if (current.length === 0) throw new Error('manifest entry exceeds the encoded size limit')
-      pageEntryGroups.push(current)
-      current = [entry]
-    } else current = candidate
-  }
-  if (current.length > 0) pageEntryGroups.push(current)
-  const runtime = input.runtime === undefined ? authority.runtime : requireRuntime(input.runtime)
-  const pages: PreparedEncryptedWalletBackupObject[] = []
-  for (let pageIndex = 0; pageIndex < pageEntryGroups.length; pageIndex += 1) {
-    pages.push(
-      await prepareManifestObject({
-        authority,
-        generation,
-        canonical: encodeCanonical([
-          1,
-          ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
-          generation,
-          snapshotNonce,
-          pageIndex,
-          pageEntryGroups.length,
-          pageEntryGroups[pageIndex]!.map(manifestEntryValue),
-        ]),
-        runtime,
-        objectIdExists: input.objectIdExists,
-      }),
-    )
-  }
-  const manifest = Object.freeze({
-    formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
-    generation,
-    snapshotNonce: bytesToHex(snapshotNonce),
-    snapshotId,
-    snapshotRevision,
-    proofCount: sortedEntries.length,
-    pageCount: pages.length,
-    pages: Object.freeze(pages),
-    chunkObjects: Object.freeze(newChunkObjects),
-  })
-  PREPARED_MANIFESTS.set(manifest, {
-    keyHandle: input.keyHandle,
-    pages: manifest.pages,
-    chunkObjects: manifest.chunkObjects,
-    inheritedChunkReferences: Object.freeze(
-      [...inheritedChunkReferences].map(([objectId, digest]) =>
-        Object.freeze({ objectId, digest }),
-      ),
-    ),
-    repackedSourceObjectIdsByObjectId,
-    requiredParentHead: observation.head,
-  })
-  return manifest
-}
-
-export function prepareEncryptedWalletBackupManifestHead(input: {
-  keyHandle: EncryptedWalletBackupKeyHandle
-  manifest: PreparedEncryptedWalletBackupManifest
-  parent: EncryptedWalletBackupManifestHead | null
-}): EncryptedWalletBackupManifestHead {
-  const authority = requireKeyAuthority(input.keyHandle)
-  const manifest = requirePreparedManifest(input.manifest, authority)
-  const manifestAuthority = PREPARED_MANIFESTS.get(manifest)!
-  const parentAuthority = input.parent === null ? null : requireManifestHeadAuthority(input.parent)
-  if (parentAuthority !== null && parentAuthority.keyAuthority !== authority) {
-    throw new Error('manifest parent belongs to a different backup key')
-  }
-  const parent = parentAuthority?.head ?? null
-  if (
-    (parent === null && manifest.generation !== 1) ||
-    (parent !== null && manifest.generation !== parent.generation + 1)
-  ) {
-    throw new Error('manifest generation does not advance its parent')
-  }
-  if (input.parent !== manifestAuthority.requiredParentHead) {
-    throw new Error('manifest parent is not the authenticated source head')
-  }
-  const pageReferences = manifest.pages.map((object) => objectReferenceWire(object))
-  const parentChunkReferences =
-    parentAuthority === null
-      ? []
-      : (() => {
-          const value = decode(parentAuthority.canonicalReferenceSet)
-          return decodeObjectReferences(
-            Array.isArray(value) ? value[3] : undefined,
-            'parent chunk references',
-          )
-        })()
-  const inheritedById = new Map(
-    manifestAuthority.inheritedChunkReferences.map((reference) => [
-      reference.objectId,
-      reference.digest,
-    ]),
-  )
-  for (const object of manifest.chunkObjects) {
-    if (
-      parentChunkReferences.some(
-        (reference) => reference.objectId === object.objectId && reference.digest === object.digest,
-      )
-    )
-      inheritedById.set(object.objectId, object.digest)
-  }
-  const inheritedChunkReferences = [...inheritedById].map(([objectId, digest]) => ({
-    objectId,
-    digest,
-  }))
-  const chunkReferenceRecords = [
-    ...inheritedChunkReferences,
-    ...manifest.chunkObjects
-      .filter((object) => !inheritedById.has(object.objectId))
-      .map((object) => ({ objectId: object.objectId, digest: object.digest })),
-  ].sort((left, right) => compareHex(left.objectId, right.objectId))
-  const chunkReferences = chunkReferenceRecords.map((reference) => [
-    hexToBytes(reference.objectId),
-    hexToBytes(reference.digest),
-  ])
-  const allObjectIds = [
-    ...manifest.pages.map((object) => object.objectId),
-    ...chunkReferenceRecords.map((reference) => reference.objectId),
-  ]
-  if (
-    allObjectIds.length > ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX ||
-    new Set(allObjectIds).size !== allObjectIds.length
-  ) {
-    throw new Error('manifest reference count is invalid')
-  }
-  const allObjectDigests = [
-    ...manifest.pages.map((object) => object.digest),
-    ...chunkReferenceRecords.map((reference) => reference.digest),
-  ]
-  if (new Set(allObjectDigests).size !== allObjectDigests.length) {
-    throw new Error('manifest object digest is duplicated')
-  }
-  if (
-    (manifest.proofCount === 0 && allObjectIds.length !== 0) ||
-    (manifest.proofCount > 0 &&
-      (manifest.pages.length === 0 || chunkReferenceRecords.length === 0)) ||
-    chunkReferenceRecords.length <
-      Math.ceil(manifest.proofCount / ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX) ||
-    chunkReferenceRecords.length > manifest.proofCount ||
-    manifest.pages.length <
-      Math.ceil(manifest.proofCount / ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX) ||
-    manifest.pages.length > manifest.proofCount
-  ) {
-    throw new Error('manifest proof count does not match reference bounds')
-  }
-  const referenceSet = [1, 'reference-set', pageReferences, chunkReferences]
-  const canonicalReferenceSet = encodeCanonical(referenceSet)
-  if (canonicalReferenceSet.byteLength > ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES) {
-    throw new Error('manifest reference metadata exceeds the byte limit')
-  }
-  const referenceSetDigest = sha256(canonicalReferenceSet)
-  const canonicalInheritedReferenceSet = encodeCanonical([
-    1,
-    'reference-set',
-    [],
-    inheritedChunkReferences
-      .slice()
-      .sort((left, right) => compareHex(left.objectId, right.objectId))
-      .map((reference) => [hexToBytes(reference.objectId), hexToBytes(reference.digest)]),
-  ])
-  const storedBytes =
-    manifest.pages.length * ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES +
-    chunkReferenceRecords.length * ENCRYPTED_WALLET_BACKUP_BODY_BYTES
-  if (storedBytes > ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX) {
-    throw new Error('manifest target exceeds the stored byte quota')
-  }
-  const inheritedReferenceKeys = new Set(
-    inheritedChunkReferences.map((reference) => `${reference.objectId}:${reference.digest}`),
-  )
-  const nonInheritedChunkCount = chunkReferenceRecords.filter(
-    (reference) => !inheritedReferenceKeys.has(`${reference.objectId}:${reference.digest}`),
-  ).length
-  const parentReachableStoredBytes = parent?.storedBytes ?? 0
-  const nonInheritedTargetDeltaStoredBytes =
-    manifest.pages.length * ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES +
-    nonInheritedChunkCount * ENCRYPTED_WALLET_BACKUP_BODY_BYTES
-  if (
-    parentReachableStoredBytes + nonInheritedTargetDeltaStoredBytes >
-    ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX
-  ) {
-    throw new Error('manifest parent and target delta exceed the stored byte quota')
-  }
-  const headCore = [
-    1,
-    'manifest-head',
-    authority.realm,
-    authority.vaultIdBytes,
-    hexToBytes(input.keyHandle.requestAuthPublicKey),
-    manifest.generation,
-    parent === null ? null : [parent.generation, hexToBytes(parent.manifestDigest)],
-    hexToBytes(manifest.snapshotNonce),
-    pageReferences,
-    chunkReferences,
-    manifest.proofCount,
-    storedBytes,
-    referenceSetDigest,
-  ]
-  const canonicalHead = encodeCanonical(headCore)
-  if (canonicalHead.byteLength > ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES) {
-    throw new Error('manifest head exceeds the byte limit')
-  }
-  const manifestDigest = bytesToHex(sha256(canonicalHead))
-  const head = Object.freeze({
-    formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
-    realm: authority.realm,
-    vaultId: bytesToHex(authority.vaultIdBytes),
-    backupPublicKey: input.keyHandle.requestAuthPublicKey,
-    generation: manifest.generation,
-    parent:
-      parent === null
-        ? null
-        : Object.freeze({
-            generation: parent.generation,
-            manifestDigest: parent.manifestDigest,
-          }),
-    snapshotNonce: manifest.snapshotNonce,
-    snapshotId: deriveDurableWalletBackupSnapshotId({
-      formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
-      realm: authority.realm,
-      backupPublicKey: input.keyHandle.requestAuthPublicKey,
-      generation: manifest.generation,
-      manifestDigest,
-    }),
-    manifestDigest,
-    referenceSetDigest: bytesToHex(referenceSetDigest),
-    objectCount: allObjectIds.length,
-    storedBytes,
-    proofCount: manifest.proofCount,
-  })
-  PREPARED_MANIFEST_HEADS.set(head, {
-    head,
-    keyAuthority: authority,
-    localSnapshotId: manifest.snapshotId,
-    localSnapshotRevision: manifest.snapshotRevision,
-    canonicalHead,
-    canonicalReferenceSet,
-    canonicalParentHead: parentAuthority?.canonicalHead.slice() ?? null,
-    canonicalInheritedReferenceSet,
-  })
-  return head
-}
-
-export function readPreparedEncryptedWalletBackupManifestHead(
-  head: EncryptedWalletBackupManifestHead,
-): EncryptedWalletBackupManifestHeadWire {
-  const authority =
-    typeof head === 'object' && head !== null ? PREPARED_MANIFEST_HEADS.get(head) : undefined
-  if (authority === undefined) throw new Error('prepared manifest head is invalid')
-  return Object.freeze({
-    canonicalHead: authority.canonicalHead.slice(),
-    canonicalReferenceSet: authority.canonicalReferenceSet.slice(),
-  })
-}
-
-export function readPreparedEncryptedWalletBackupManifestTarget(input: {
-  keyHandle: EncryptedWalletBackupKeyHandle
-  head: EncryptedWalletBackupManifestHead
-}): PreparedEncryptedWalletBackupManifestTarget {
-  const keyAuthority = requireKeyAuthority(input.keyHandle)
-  const authority =
-    typeof input.head === 'object' && input.head !== null
-      ? PREPARED_MANIFEST_HEADS.get(input.head)
-      : undefined
-  if (
-    authority === undefined ||
-    authority.keyAuthority !== keyAuthority ||
-    authority.localSnapshotId === null ||
-    authority.localSnapshotRevision === null
-  ) {
-    throw new Error('prepared manifest target is invalid')
-  }
-  return Object.freeze({
-    head: input.head,
-    wire: Object.freeze({
-      canonicalHead: authority.canonicalHead.slice(),
-      canonicalReferenceSet: authority.canonicalReferenceSet.slice(),
-    }),
-    localSnapshotId: authority.localSnapshotId,
-    localSnapshotRevision: authority.localSnapshotRevision,
-    canonicalParentHead: authority.canonicalParentHead?.slice() ?? null,
-    canonicalInheritedReferenceSet: authority.canonicalInheritedReferenceSet.slice(),
-  })
-}
-
-function readBoundedEncryptedWalletBackupManifestTarget(input: {
-  keyHandle: EncryptedWalletBackupKeyHandle
-  head: EncryptedWalletBackupManifestHead
-}): PreparedEncryptedWalletBackupManifestTarget {
-  const keyAuthority = requireKeyAuthority(input.keyHandle)
-  const authority =
-    typeof input.head === 'object' && input.head !== null
-      ? BOUNDED_PREPARED_MANIFEST_HEADS.get(input.head)
-      : undefined
-  if (
-    authority === undefined ||
-    authority.keyAuthority !== keyAuthority ||
-    authority.localSnapshotId === null ||
-    authority.localSnapshotRevision === null
-  ) {
-    throw new Error('bounded manifest target is invalid')
-  }
-  return Object.freeze({
-    head: input.head,
-    wire: Object.freeze({
-      canonicalHead: authority.canonicalHead.slice(),
-      canonicalReferenceSet: authority.canonicalReferenceSet.slice(),
-    }),
-    localSnapshotId: authority.localSnapshotId,
-    localSnapshotRevision: authority.localSnapshotRevision,
-    canonicalParentHead: authority.canonicalParentHead?.slice() ?? null,
-    canonicalInheritedReferenceSet: authority.canonicalInheritedReferenceSet.slice(),
-  })
 }
 
 /**
@@ -3543,13 +2725,14 @@ function registerBoundedManifestTarget(input: {
     storedBytes,
     proofCount: input.context.capability.proofCount,
   })
-  BOUNDED_PREPARED_MANIFEST_HEADS.set(head, {
-    keyAuthority,
+  return Object.freeze({
+    head,
+    wire: Object.freeze({
+      canonicalHead: canonicalHead.slice(),
+      canonicalReferenceSet: canonicalReferenceSet.slice(),
+    }),
     localSnapshotId: controlAuthority.snapshotId,
     localSnapshotRevision: controlAuthority.snapshotRevision,
-    head,
-    canonicalHead,
-    canonicalReferenceSet,
     canonicalParentHead: parentAuthority?.canonicalHead.slice() ?? null,
     canonicalInheritedReferenceSet: encodeCanonical([
       1,
@@ -3557,10 +2740,7 @@ function registerBoundedManifestTarget(input: {
       [],
       inherited.map((reference) => [hexToBytes(reference.objectId), hexToBytes(reference.digest)]),
     ]),
-    // Bounded finalization is a reconstructible cache. It keeps references,
-    // not page ciphertext, and must not grant the legacy upload authority.
   })
-  return readBoundedEncryptedWalletBackupManifestTarget({ keyHandle: input.input.keyHandle, head })
 }
 
 export async function resumeEncryptedWalletBackupSyncAttempt(input: {
@@ -4238,6 +3418,7 @@ export async function decryptEncryptedWalletBackupManifestPage(input: {
       pageReference,
     )
     const canonical = await decryptObjectFrame({
+      keyHandle: input.keyHandle,
       authority,
       object,
       kindCode: ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
@@ -5577,12 +4758,13 @@ function equalCtfTerminalEvidence(
 }
 
 async function prepareManifestObject(input: {
+  keyHandle: EncryptedWalletBackupKeyHandle
   authority: KeyAuthority
   generation: number
   canonical: Uint8Array
   runtime: EncryptedWalletBackupRuntime
   objectIdExists?: (objectId: string) => boolean | Promise<boolean>
-  pageAuthority?: ManifestPageAadAuthority
+  pageAuthority: ManifestPageAadAuthority
 }): Promise<PreparedEncryptedWalletBackupObject> {
   const { objectId, objectIdBytes } = await allocateObjectId(
     input.authority,
@@ -5591,7 +4773,8 @@ async function prepareManifestObject(input: {
   )
   try {
     const nonce = randomBytes(input.runtime, 12)
-    const aad = manifestObjectAad(
+    const aad = await manifestObjectAad(
+      input.keyHandle,
       input.authority,
       objectIdBytes,
       input.generation,
@@ -5632,7 +4815,7 @@ async function prepareManifestObject(input: {
       ),
     )
     const body = concatBytes(nonce, encrypted)
-    const digest = bytesToHex(sha256(concatBytes(uint32Bytes(aad.byteLength), aad, body)))
+    const digest = bytesToHex(encryptedWalletBackupObjectDigest(aad, body))
     const prepared = Object.freeze({
       formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
       kindCode: ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
@@ -5661,24 +4844,34 @@ type ManifestPageAadAuthority = Readonly<{
   lastPinKey: Uint8Array
 }>
 
-function manifestObjectAad(
+async function manifestObjectAad(
+  keyHandle: EncryptedWalletBackupKeyHandle,
   authority: KeyAuthority,
   objectId: Uint8Array,
   generation: number,
-  pageAuthority: ManifestPageAadAuthority | undefined,
-): Uint8Array {
-  if (pageAuthority === undefined)
-    return encodeCanonical([
+  pageAuthority: ManifestPageAadAuthority,
+): Promise<Uint8Array> {
+  const boundary = pageAuthority.boundary
+  if (generation !== boundary.generation) throw new Error('manifest page generation is invalid')
+  const sourceIntervalCommitment = await signEncryptedWalletBackupPreparationCapability(
+    keyHandle,
+    encodeCanonical([
       1,
-      ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
+      'manifest-page-source-interval',
       authority.realm,
       authority.vaultIdBytes,
       objectId,
       generation,
-      ENCRYPTED_WALLET_BACKUP_MANIFEST_FRAME_BYTES,
-    ])
-  const boundary = pageAuthority.boundary
-  if (generation !== boundary.generation) throw new Error('manifest page generation is invalid')
+      boundary.snapshotId,
+      boundary.snapshotRevision,
+      hexToBytes(boundary.sealedControlDigest),
+      hexToBytes(boundary.resultDigest),
+      boundary.pageIndex,
+      boundary.pageCount,
+      pageAuthority.firstPinKey,
+      pageAuthority.lastPinKey,
+    ]),
+  )
   return encodeCanonical([
     1,
     'encrypted-wallet-backup-manifest-page-aad',
@@ -5694,8 +4887,7 @@ function manifestObjectAad(
     hexToBytes(boundary.resultDigest),
     boundary.pageIndex,
     boundary.pageCount,
-    pageAuthority.firstPinKey,
-    pageAuthority.lastPinKey,
+    sourceIntervalCommitment,
   ])
 }
 
@@ -5748,9 +4940,7 @@ async function decryptProofChunk(input: {
     ENCRYPTED_WALLET_BACKUP_PROOF_FRAME_BYTES,
   ])
   if (!equalBytes(expectedAad, object.aad)) throw new Error('foreign aad')
-  const expectedDigest = bytesToHex(
-    sha256(concatBytes(uint32Bytes(object.aad.byteLength), object.aad, object.body)),
-  )
+  const expectedDigest = bytesToHex(encryptedWalletBackupObjectDigest(object.aad, object.body))
   if (expectedDigest !== object.digest) throw new Error('digest mismatch')
   const objectKey = await hkdf(
     authority.runtime.subtle,
@@ -6167,60 +5357,29 @@ function decodePersistedManifestPageAad(
   authority: KeyAuthority,
   object: EncryptedWalletBackupWireObject,
   reference: { pageIndex: number; pageCount: number; generation: number },
-): Uint8Array | undefined {
-  const decoded = decode(aad)
-  // Legacy whole-manifest pages use the original compact object AAD. Existing
-  // restore support remains separate from the new persisted Pass-B path.
-  if (!Array.isArray(decoded) || decoded[1] !== 'encrypted-wallet-backup-manifest-page-aad')
-    return undefined
-  if (!equalBytes(aad, encodeCanonical(decoded)) || decoded.length !== 16) {
-    throw new Error('persisted manifest page aad is invalid')
-  }
+): Uint8Array {
+  const decoded = requireEncryptedWalletBackupObjectAad({
+    canonicalAad: aad,
+    kindCode: ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND,
+    realm: authority.realm,
+    vaultId: bytesToHex(authority.vaultIdBytes),
+    objectId: object.objectId,
+    generation: object.generation,
+    paddedLength: ENCRYPTED_WALLET_BACKUP_MANIFEST_FRAME_BYTES,
+  })
   if (
-    decoded[0] !== 1 ||
-    decoded[2] !== ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND ||
-    decoded[3] !== authority.realm ||
-    !equalBytes(
-      requireBytes(decoded[4], 32, 'persisted manifest page vault id'),
-      authority.vaultIdBytes,
-    ) ||
-    !equalBytes(
-      requireBytes(decoded[5], 16, 'persisted manifest page object id'),
-      hexToBytes(object.objectId),
-    ) ||
-    decoded[6] !== object.generation ||
-    decoded[6] !== reference.generation ||
-    decoded[7] !== ENCRYPTED_WALLET_BACKUP_MANIFEST_FRAME_BYTES ||
-    (() => {
-      try {
-        requireUtf8Text(decoded[8], 128, 'persisted manifest page snapshot id')
-        return false
-      } catch {
-        return true
-      }
-    })() ||
-    !Number.isSafeInteger(decoded[9]) ||
-    decoded[9] < 0 ||
-    !(decoded[10] instanceof Uint8Array) ||
-    decoded[10].byteLength !== 32 ||
-    !(decoded[11] instanceof Uint8Array) ||
-    decoded[11].byteLength !== 32 ||
-    decoded[12] !== reference.pageIndex ||
-    decoded[13] !== reference.pageCount ||
-    !validManifestPagePin(decoded[14]) ||
-    !validManifestPagePin(decoded[15]) ||
-    compareBytes(decoded[14], decoded[15]) > 0
+    decoded.kindCode !== ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND ||
+    object.generation !== reference.generation ||
+    decoded.pageIndex !== reference.pageIndex ||
+    decoded.pageCount !== reference.pageCount
   ) {
     throw new Error('persisted manifest page aad is invalid')
   }
   return aad.slice()
 }
 
-function validManifestPagePin(value: unknown): value is Uint8Array {
-  return value instanceof Uint8Array && value.byteLength >= 1 && value.byteLength <= 1_024
-}
-
 async function decryptObjectFrame(input: {
+  keyHandle: EncryptedWalletBackupKeyHandle
   authority: KeyAuthority
   object: EncryptedWalletBackupWireObject
   kindCode: 1 | 2
@@ -6231,8 +5390,15 @@ async function decryptObjectFrame(input: {
 }): Promise<Uint8Array> {
   const objectId = hexToBytes(input.object.objectId)
   const expectedAad =
-    input.kindCode === ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND
-      ? manifestObjectAad(input.authority, objectId, input.object.generation, input.pageAuthority)
+    input.authenticatedAad ??
+    (input.kindCode === ENCRYPTED_WALLET_BACKUP_MANIFEST_KIND
+      ? await manifestObjectAad(
+          input.keyHandle,
+          input.authority,
+          objectId,
+          input.object.generation,
+          requireManifestPageAadAuthority(input.pageAuthority),
+        )
       : encodeCanonical([
           1,
           input.kindCode,
@@ -6241,13 +5407,10 @@ async function decryptObjectFrame(input: {
           objectId,
           input.object.generation,
           input.frameBytes,
-        ])
-  if (!equalBytes(input.authenticatedAad ?? expectedAad, input.object.aad))
-    throw new Error('foreign aad')
+        ]))
+  if (!equalBytes(expectedAad, input.object.aad)) throw new Error('foreign aad')
   const expectedDigest = bytesToHex(
-    sha256(
-      concatBytes(uint32Bytes(input.object.aad.byteLength), input.object.aad, input.object.body),
-    ),
+    encryptedWalletBackupObjectDigest(input.object.aad, input.object.body),
   )
   if (expectedDigest !== input.object.digest) throw new Error('digest mismatch')
   const objectKey = await hkdf(
@@ -6293,6 +5456,13 @@ async function decryptObjectFrame(input: {
     if (frame[index] !== 0) throw new Error('padding')
   }
   return frame.slice(4, 4 + cborLength)
+}
+
+function requireManifestPageAadAuthority(
+  value: ManifestPageAadAuthority | undefined,
+): ManifestPageAadAuthority {
+  if (value === undefined) throw new Error('manifest page authority is invalid')
+  return value
 }
 
 function decodeManifestPage(
@@ -6364,46 +5534,6 @@ function decodeManifestEntry(value: unknown): EncryptedWalletBackupManifestEntry
     createdAtUnixSeconds: createdAt,
     updatedAtUnixSeconds: updatedAt,
   })
-}
-
-function manifestEntryWire(
-  proof: PreparedProofAuthority,
-  object: PreparedEncryptedWalletBackupObject,
-): unknown[] {
-  const value = decode(
-    finalManifestEntryBytes(
-      proof.canonicalManifestEntry,
-      hexToBytes(object.objectId),
-      hexToBytes(object.digest),
-    ),
-  )
-  if (!Array.isArray(value) || value.length !== 11) throw new Error('manifest entry is invalid')
-  return value
-}
-
-function manifestEntryValue(entry: EncryptedWalletBackupManifestEntry): unknown[] {
-  return [
-    hexToBytes(entry.proofId),
-    hexToBytes(entry.commitment),
-    hexToBytes(entry.chunkObjectId),
-    hexToBytes(entry.chunkDigest),
-    entry.mint,
-    entry.unit,
-    entry.amount,
-    entry.proofKind === 'ordinary' ? 0 : 1,
-    entry.ctfMetadata === null
-      ? null
-      : [
-          hexToBytes(entry.ctfMetadata.conditionId),
-          entry.ctfMetadata.outcomeLabel,
-          hexToBytes(entry.ctfMetadata.outcomeCollectionId),
-          entry.ctfMetadata.registeredAtUnixSeconds,
-          entry.ctfMetadata.finalExpiryUnixSeconds,
-          ctfTerminalEvidenceToSeal(entry.terminalEvidence),
-        ],
-    entry.createdAtUnixSeconds,
-    entry.updatedAtUnixSeconds,
-  ]
 }
 
 interface KeysetId {
@@ -6895,36 +6025,6 @@ function requireChunkAuthority(value: unknown): PreparedChunkAuthority {
   return authority
 }
 
-function requirePreparedObjectAuthority(value: unknown): PreparedObjectAuthority {
-  if (typeof value !== 'object' || value === null)
-    throw new Error('prepared backup object is invalid')
-  const authority = PREPARED_OBJECT_AUTHORITIES.get(value)
-  if (authority === undefined) throw new Error('prepared backup object is invalid')
-  return authority
-}
-
-function requirePreparedManifest(
-  value: unknown,
-  keyAuthority: KeyAuthority,
-): PreparedEncryptedWalletBackupManifest {
-  if (typeof value !== 'object' || value === null) throw new Error('prepared manifest is invalid')
-  const authority = PREPARED_MANIFESTS.get(value)
-  if (authority === undefined || requireKeyAuthority(authority.keyHandle) !== keyAuthority) {
-    throw new Error('prepared manifest is invalid')
-  }
-  return value as PreparedEncryptedWalletBackupManifest
-}
-
-function requireManifestHeadAuthority(value: unknown): PreparedManifestHeadAuthority {
-  if (typeof value !== 'object' || value === null) {
-    throw new Error('manifest head is not authenticated')
-  }
-  const authority =
-    PREPARED_MANIFEST_HEADS.get(value) ?? AUTHENTICATED_MANIFEST_HEAD_VALUES.get(value)
-  if (authority === undefined) throw new Error('manifest head is not authenticated')
-  return authority
-}
-
 function requireSealedSyncAttempt(
   value: unknown,
   keyHandle: EncryptedWalletBackupKeyHandle,
@@ -7048,22 +6148,6 @@ function buildAuthenticatedReferenceIndex(
 
 function referenceKey(objectId: string, digest: string): string {
   return `${objectId}:${digest}`
-}
-
-function decodeObjectReferences(
-  value: unknown,
-  name: string,
-): Array<{ objectId: string; digest: string }> {
-  if (!Array.isArray(value) || value.length > ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX) {
-    throw new Error(`${name} are invalid`)
-  }
-  return value.map((raw) => {
-    if (!Array.isArray(raw) || raw.length !== 2) throw new Error(`${name} are invalid`)
-    return {
-      objectId: bytesToHex(requireBytes(raw[0], 16, 'referenced object id')),
-      digest: bytesToHex(requireBytes(raw[1], 32, 'referenced object digest')),
-    }
-  })
 }
 
 function requireAuthenticatedPageReference(
@@ -7366,12 +6450,6 @@ function assertNeverSyncEvent(value: never): never {
   throw new Error(`unsupported backup sync event: ${String(value)}`)
 }
 
-function objectReferenceWire(object: PreparedEncryptedWalletBackupObject): unknown[] {
-  if (!PREPARED_OBJECT_AUTHORITIES.has(object))
-    throw new Error('manifest object reference is invalid')
-  return [hexToBytes(object.objectId), hexToBytes(object.digest)]
-}
-
 async function allocateObjectId(
   authority: KeyAuthority,
   runtime: EncryptedWalletBackupRuntime,
@@ -7575,12 +6653,6 @@ function writeUint32(target: Uint8Array, offset: number, value: number): void {
   new DataView(target.buffer, target.byteOffset, target.byteLength).setUint32(offset, value, false)
 }
 
-function uint32Bytes(value: number): Uint8Array {
-  const result = new Uint8Array(4)
-  writeUint32(result, 0, value)
-  return result
-}
-
 function concatBytes(...values: Uint8Array[]): Uint8Array {
   const result = new Uint8Array(values.reduce((total, value) => total + value.byteLength, 0))
   let offset = 0
@@ -7591,9 +6663,7 @@ function concatBytes(...values: Uint8Array[]): Uint8Array {
   return result
 }
 
-function asArrayBuffer(value: Uint8Array): ArrayBuffer {
-  return value.slice().buffer
-}
+const asArrayBuffer = exactEncryptedWalletBackupArrayBuffer
 
 function base64Decode(value: string): Uint8Array {
   const padded = value + '='.repeat((4 - (value.length % 4)) % 4)

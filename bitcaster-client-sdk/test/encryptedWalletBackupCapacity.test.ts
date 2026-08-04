@@ -17,18 +17,17 @@ import {
   ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX,
   ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
-  decryptEncryptedWalletBackupManifestPage,
   packEncryptedWalletBackupProofChunk,
+  prepareBoundedEncryptedWalletBackupManifestTarget,
+  prepareEncryptedWalletBackupManifestPage,
   prepareEncryptedWalletBackupRequestProof,
-  prepareIncrementalEncryptedWalletBackupManifest,
-  prepareEncryptedWalletBackupManifest,
-  prepareEncryptedWalletBackupManifestHead,
   prepareEncryptedWalletBackupObject,
   prepareEncryptedWalletBackupProof,
+  readPreparedEncryptedWalletBackupProofChunkManifestEntries,
   readAuthenticatedEncryptedWalletBackupHead,
-  readPreparedEncryptedWalletBackupManifestHead,
-  readPreparedEncryptedWalletBackupObject,
   type EncryptedWalletBackupRuntime,
+  type PreparedEncryptedWalletBackupObject,
+  type PreparedEncryptedWalletBackupProof,
 } from '../src/encryptedWalletBackup.ts'
 import {
   deriveDurableCustodyProofId,
@@ -36,6 +35,20 @@ import {
   deriveDurableCustodyWalletId,
 } from '../src/durableCustody.ts'
 import { encodeCanonicalBackupCbor as encodeCanonical } from '../src/encryptedWalletBackupCbor.ts'
+import { issueBoundedManifestTargetCapabilityForTest } from '../src/encryptedWalletBackupManifestTargetAuthority.ts'
+import {
+  finalManifestEntryBytes,
+  issueEncryptedWalletBackupManifestEntryCapability,
+  registerEncryptedWalletBackupManifestPassABoundaries,
+} from '../src/encryptedWalletBackupManifestPageAuthority.ts'
+import {
+  measureEncryptedWalletBackupManifestPageCbor,
+  readEncryptedWalletBackupManifestPassABoundary,
+} from '../src/encryptedWalletBackupManifestPassA.ts'
+import {
+  ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
+  issueEncryptedWalletBackupFrozenSnapshotControl,
+} from '../src/encryptedWalletBackupSnapshotAuthority.ts'
 
 const vector = JSON.parse(
   await readFile(
@@ -321,37 +334,24 @@ test('real prepared 255-chunk plus 3-page target fits below the stored-byte quot
       }),
     )
   }
-  const manifestRandomness: Uint8Array[] = []
-  for (let index = 0; index < 8; index += 1) {
-    manifestRandomness.push(
-      indexedDomainBytes(3, index + 1, 16),
-      indexedDomainBytes(4, index + 1, 12),
-    )
-  }
-  const manifest = await prepareEncryptedWalletBackupManifest({
+  const target = await prepareBoundedCapacityTarget({
     keyHandle,
     generation: 1,
     snapshotNonce: indexedDomainBytes(5, 1, 16),
+    snapshotId: 'capacity-snapshot',
+    snapshotRevision: 1,
     chunks: chunks.map((chunk, index) => ({ chunk, object: objects[index]! })),
-    snapshotStore: {
-      async sealCommittedBackupSnapshot<T>(expected: unknown, seal: (value: never) => T) {
-        return seal(expected as never)
-      },
-    },
-    runtime: deterministicCapacityRuntime(manifestRandomness),
-  })
-  const head = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest,
-    parent: null,
+    parentEvidence: await authenticateNoBoundedParent(keyHandle, 3),
+    randomnessDomain: 4,
+    expectedPageCount: 3,
   })
   assert.deepEqual(
     {
-      proofCount: head.proofCount,
-      chunkCount: manifest.chunkObjects.length,
-      pageCount: manifest.pages.length,
-      objectCount: head.objectCount,
-      storedBytes: head.storedBytes,
+      proofCount: target.target.head.proofCount,
+      chunkCount: objects.length,
+      pageCount: target.pages.length,
+      objectCount: target.target.head.objectCount,
+      storedBytes: target.target.head.storedBytes,
     },
     {
       proofCount: 1_025,
@@ -361,7 +361,7 @@ test('real prepared 255-chunk plus 3-page target fits below the stored-byte quot
       storedBytes: 67_050_552,
     },
   )
-  assert.ok(head.storedBytes <= ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX)
+  assert.ok(target.target.head.storedBytes <= ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX)
 
   const overQuotaChunks: ReturnType<typeof packEncryptedWalletBackupProofChunk>[] = []
   proofOffset = 0
@@ -389,35 +389,21 @@ test('real prepared 255-chunk plus 3-page target fits below the stored-byte quot
       }),
     )
   }
-  const overQuotaManifest = await prepareEncryptedWalletBackupManifest({
-    keyHandle,
-    generation: 1,
-    snapshotNonce: indexedDomainBytes(8, 1, 16),
-    chunks: overQuotaChunks.map((chunk, index) => ({
-      chunk,
-      object: overQuotaObjects[index]!,
-    })),
-    snapshotStore: {
-      async sealCommittedBackupSnapshot<T>(expected: unknown, seal: (value: never) => T) {
-        return seal(expected as never)
-      },
-    },
-    runtime: deterministicCapacityRuntime(
-      Array.from({ length: 8 }, (_, index) => [
-        indexedDomainBytes(9, index + 1, 16),
-        indexedDomainBytes(10, index + 1, 12),
-      ]).flat(),
-    ),
-  })
-  assert.equal(overQuotaManifest.chunkObjects.length, 255)
-  assert.equal(overQuotaManifest.pages.length, 4)
-  assert.throws(
-    () =>
-      prepareEncryptedWalletBackupManifestHead({
-        keyHandle,
-        manifest: overQuotaManifest,
-        parent: null,
-      }),
+  await assert.rejects(
+    prepareBoundedCapacityTarget({
+      keyHandle,
+      generation: 1,
+      snapshotNonce: indexedDomainBytes(8, 1, 16),
+      snapshotId: 'capacity-snapshot',
+      snapshotRevision: 1,
+      chunks: overQuotaChunks.map((chunk, index) => ({
+        chunk,
+        object: overQuotaObjects[index]!,
+      })),
+      parentEvidence: await authenticateNoBoundedParent(keyHandle, 9),
+      randomnessDomain: 10,
+      expectedPageCount: 4,
+    }),
     /target exceeds the stored byte quota/,
   )
 })
@@ -534,138 +520,297 @@ test('real child replacement peak accepts 127 chunks and rejects 128 chunks', as
       }),
     )
   }
-  const prepareParentManifest = (count: number, domain: number) =>
-    prepareEncryptedWalletBackupManifest({
+  const prepareParentTarget = async (count: number, domain: number) =>
+    prepareBoundedCapacityTarget({
       keyHandle,
       generation: 1,
       snapshotNonce: indexedDomainBytes(domain, count, 16),
+      snapshotId: 'child-capacity-snapshot',
+      snapshotRevision: 1,
       chunks: chunks.slice(0, count).map((chunk, index) => ({
         chunk,
         object: parentObjects[index]!,
       })),
-      snapshotStore: {
-        async sealCommittedBackupSnapshot<T>(expected: unknown, seal: (value: never) => T) {
-          return seal(expected as never)
-        },
-      },
-      runtime: deterministicCapacityRuntime([
-        indexedDomainBytes(domain + 1, count, 16),
-        indexedDomainBytes(domain + 2, count, 12),
-      ]),
+      parentEvidence: await authenticateNoBoundedParent(keyHandle, domain + 1),
+      randomnessDomain: domain + 2,
     })
-  const authenticateParent = async (
-    head: ReturnType<typeof prepareEncryptedWalletBackupManifestHead>,
-    manifest: Awaited<ReturnType<typeof prepareEncryptedWalletBackupManifest>>,
-    domain: number,
-  ) => {
-    const requestProof = await prepareEncryptedWalletBackupRequestProof({
-      keyHandle,
-      enrollmentEpoch: 1,
-      method: 'GET',
-      url: `https://backup.example.test/capacity-parent-${domain}`,
-      issuedAtUnixSeconds: 1_700_000_000,
-      expiresAtUnixSeconds: 1_700_000_030,
-      payload: new Uint8Array(),
-      signal: AbortSignal.timeout(60_000),
-      runtime: deterministicCapacityRuntime([
-        indexedDomainBytes(domain, 1, 16),
-        indexedDomainBytes(domain + 1, 1, 32),
-      ]),
-    })
-    const evidence = await readAuthenticatedEncryptedWalletBackupHead({
-      keyHandle,
-      enrollmentEpoch: 1,
-      requestProof,
-      remote: {
-        async readCurrentHead() {
-          return {
-            status: 'found' as const,
-            enrollmentEpoch: 1,
-            head: readPreparedEncryptedWalletBackupManifestHead(head),
-          }
-        },
-      },
-    })
-    const page = await decryptEncryptedWalletBackupManifestPage({
-      keyHandle,
-      seed,
-      object: readPreparedEncryptedWalletBackupObject(manifest.pages[0]!),
-      headEvidence: evidence,
-    })
-    return { evidence, page }
-  }
-  const prepareChildManifest = (
+  const prepareChildTarget = async (
     count: number,
     domain: number,
-    parent: Awaited<ReturnType<typeof authenticateParent>>,
+    parent: Awaited<ReturnType<typeof prepareParentTarget>>,
   ) =>
-    prepareIncrementalEncryptedWalletBackupManifest({
+    prepareBoundedCapacityTarget({
       keyHandle,
       generation: 2,
       snapshotNonce: indexedDomainBytes(domain, count, 16),
-      parentEvidence: parent.evidence,
-      parentPages: [parent.page],
+      snapshotId: 'child-capacity-snapshot',
+      snapshotRevision: 1,
       chunks: chunks.slice(0, count).map((chunk, index) => ({
         chunk,
         object: childObjects[index]!,
       })),
-      removedProofIds: [],
-      snapshot: {
-        snapshotId: 'child-capacity-snapshot',
-        snapshotRevision: 1,
-      },
-      snapshotStore: {
-        async sealCommittedBackupSnapshot<T>(expected: unknown, seal: (value: never) => T) {
-          return seal(expected as never)
-        },
-      },
-      runtime: deterministicCapacityRuntime([
-        indexedDomainBytes(domain + 1, count, 16),
-        indexedDomainBytes(domain + 2, count, 12),
-      ]),
+      parentEvidence: await authenticateBoundedParent(keyHandle, parent.target, domain + 1),
+      randomnessDomain: domain + 2,
     })
+  const parent127 = await prepareParentTarget(127, 15)
+  const child127 = await prepareChildTarget(127, 20, parent127)
+  assert.equal(parent127.pages.length, 1)
+  assert.equal(child127.pages.length, 1)
+  assert.equal(parent127.target.head.storedBytes + child127.target.head.storedBytes, 66_722_816)
 
-  const parent127Manifest = await prepareParentManifest(127, 15)
-  const parent127 = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest: parent127Manifest,
-    parent: null,
-  })
-  const authenticated127 = await authenticateParent(parent127, parent127Manifest, 18)
-  const child127Manifest = await prepareChildManifest(127, 20, authenticated127)
-  const child127 = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest: child127Manifest,
-    parent: authenticated127.evidence.head,
-  })
-  assert.equal(parent127Manifest.pages.length, 1)
-  assert.equal(child127Manifest.pages.length, 1)
-  assert.equal(parent127.storedBytes + child127.storedBytes, 66_722_816)
-
-  const parent128Manifest = await prepareParentManifest(128, 23)
-  const parent128 = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest: parent128Manifest,
-    parent: null,
-  })
-  const authenticated128 = await authenticateParent(parent128, parent128Manifest, 26)
-  const child128Manifest = await prepareChildManifest(128, 28, authenticated128)
+  const parent128 = await prepareParentTarget(128, 23)
   assert.equal(
-    parent128.storedBytes +
+    parent128.target.head.storedBytes +
       128 * ENCRYPTED_WALLET_BACKUP_BODY_BYTES +
       ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES,
     67_247_160,
   )
-  assert.throws(
-    () =>
-      prepareEncryptedWalletBackupManifestHead({
-        keyHandle,
-        manifest: child128Manifest,
-        parent: authenticated128.evidence.head,
-      }),
+  await assert.rejects(
+    prepareChildTarget(128, 28, parent128),
     /parent and target delta exceed the stored byte quota/,
   )
 })
+
+type CapacityChunkBinding = Readonly<{
+  chunk: ReturnType<typeof packEncryptedWalletBackupProofChunk>
+  object: PreparedEncryptedWalletBackupObject
+}>
+
+type CapacityManifestEntry = Readonly<{
+  proofId: string
+  commitment: string
+  canonicalPreparedEntry: Uint8Array
+  object: PreparedEncryptedWalletBackupObject
+}>
+
+async function prepareBoundedCapacityTarget(input: {
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
+  generation: number
+  snapshotNonce: Uint8Array
+  snapshotId: string
+  snapshotRevision: number
+  chunks: readonly CapacityChunkBinding[]
+  parentEvidence: Awaited<ReturnType<typeof readAuthenticatedEncryptedWalletBackupHead>>
+  randomnessDomain: number
+  expectedPageCount?: number
+}) {
+  const pages = await prepareCapacityManifestPages(input)
+  if (input.expectedPageCount !== undefined) assert.equal(pages.length, input.expectedPageCount)
+  const parent = input.parentEvidence.head
+  const control = issueEncryptedWalletBackupFrozenSnapshotControl(
+    {},
+    {
+      realm: input.keyHandle.realm,
+      vaultId: input.keyHandle.vaultId,
+      enrollmentEpoch: 1,
+      parentGeneration: parent?.generation ?? null,
+      parentManifestDigest: parent?.manifestDigest ?? null,
+      parentReferenceSetDigest:
+        parent?.referenceSetDigest ?? ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
+      generation: input.generation,
+      snapshotNonce: bytesToHex(input.snapshotNonce),
+      snapshotId: input.snapshotId,
+      snapshotRevision: input.snapshotRevision,
+    },
+  )
+  const target = prepareBoundedEncryptedWalletBackupManifestTarget({
+    keyHandle: input.keyHandle,
+    capability: issueBoundedManifestTargetCapabilityForTest({
+      keyHandle: input.keyHandle,
+      control,
+      parentEvidence: input.parentEvidence,
+      pages,
+      chunkReferences: input.chunks.map(({ object }) => ({
+        objectId: object.objectId,
+        digest: object.digest,
+      })),
+      proofCount: capacityManifestEntries(input.chunks).length,
+    }),
+  })
+  return Object.freeze({ target, pages })
+}
+
+async function prepareCapacityManifestPages(input: {
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
+  generation: number
+  snapshotNonce: Uint8Array
+  snapshotId: string
+  snapshotRevision: number
+  chunks: readonly CapacityChunkBinding[]
+  randomnessDomain: number
+}): Promise<readonly PreparedEncryptedWalletBackupObject[]> {
+  const entries = capacityManifestEntries(input.chunks)
+  const groups = capacityManifestEntryGroups(entries, input.generation)
+  const result = Object.freeze({})
+  const snapshotNonce = bytesToHex(input.snapshotNonce)
+  registerEncryptedWalletBackupManifestPassABoundaries({
+    result,
+    resultDigest: '11'.repeat(32),
+    realm: input.keyHandle.realm,
+    vaultId: input.keyHandle.vaultId,
+    snapshotId: input.snapshotId,
+    snapshotRevision: input.snapshotRevision,
+    sealedControlVersion: 1,
+    sealRunRevision: 1,
+    sealedControlDigest: '22'.repeat(32),
+    generation: input.generation,
+    snapshotNonce,
+    boundaries: groups.map((group, pageIndex) => ({
+      entryCount: group.length,
+      canonicalEntryBytes: capacityManifestEntryBytes(group),
+      plannedCanonicalPageBytes: measureEncryptedWalletBackupManifestPageCbor({
+        generation: input.generation,
+        pageIndex,
+        pageCount: groups.length,
+        entryCount: group.length,
+        canonicalEntryBytes: capacityManifestEntryBytes(group),
+      }),
+    })),
+  })
+  const pages: PreparedEncryptedWalletBackupObject[] = []
+  for (const [pageIndex, group] of groups.entries()) {
+    const boundary = readCapacityManifestPageBoundary(result, pageIndex)
+    pages.push(
+      await prepareEncryptedWalletBackupManifestPage({
+        keyHandle: input.keyHandle,
+        boundary,
+        entries: group.map((entry, ordinal) =>
+          issueEncryptedWalletBackupManifestEntryCapability({
+            canonicalPreparedEntry: entry.canonicalPreparedEntry,
+            chunkObjectId: hexToBytes(entry.object.objectId),
+            chunkDigest: hexToBytes(entry.object.digest),
+            boundary,
+            ordinal,
+            pinKey: encodeCanonical([0, hexToBytes(entry.proofId), hexToBytes(entry.commitment)]),
+            commitment: entry.commitment,
+            chunkGeneration: entry.object.generation,
+          }),
+        ),
+        runtime: deterministicCapacityRuntime([
+          indexedDomainBytes(input.randomnessDomain, pageIndex + 1, 16),
+          indexedDomainBytes(input.randomnessDomain + 1, pageIndex + 1, 12),
+        ]),
+      }),
+    )
+  }
+  return Object.freeze(pages)
+}
+
+function capacityManifestEntries(chunks: readonly CapacityChunkBinding[]): CapacityManifestEntry[] {
+  const entries = chunks.flatMap(({ chunk, object }) =>
+    readPreparedEncryptedWalletBackupProofChunkManifestEntries(chunk).map((entry) =>
+      Object.freeze({
+        proofId: entry.recordId,
+        commitment: entry.commitment,
+        canonicalPreparedEntry: entry.canonicalManifestEntry,
+        object,
+      }),
+    ),
+  )
+  entries.sort((left, right) => compareCapacityHex(left.proofId, right.proofId))
+  return entries
+}
+
+function compareCapacityHex(left: string, right: string): number {
+  if (left < right) return -1
+  if (left > right) return 1
+  return 0
+}
+
+function capacityManifestEntryGroups(
+  entries: readonly CapacityManifestEntry[],
+  generation: number,
+): CapacityManifestEntry[][] {
+  const groups: CapacityManifestEntry[][] = []
+  let current: CapacityManifestEntry[] = []
+  for (const entry of entries) {
+    const candidate = [...current, entry]
+    const candidateBytes = capacityManifestEntryBytes(candidate)
+    if (
+      candidate.length > ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX ||
+      measureEncryptedWalletBackupManifestPageCbor({
+        generation,
+        pageIndex: groups.length,
+        pageCount: 1_024,
+        entryCount: candidate.length,
+        canonicalEntryBytes: candidateBytes,
+      }) > ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES
+    ) {
+      assert.ok(current.length > 0)
+      groups.push(current)
+      current = [entry]
+    } else {
+      current = candidate
+    }
+  }
+  if (current.length > 0) groups.push(current)
+  return groups
+}
+
+function capacityManifestEntryBytes(entries: readonly CapacityManifestEntry[]): number {
+  return entries.reduce(
+    (total, entry) =>
+      total +
+      finalManifestEntryBytes(
+        entry.canonicalPreparedEntry,
+        hexToBytes(entry.object.objectId),
+        hexToBytes(entry.object.digest),
+      ).byteLength,
+    0,
+  )
+}
+
+function readCapacityManifestPageBoundary(result: object, pageIndex: number) {
+  return readEncryptedWalletBackupManifestPassABoundary(result, pageIndex)
+}
+
+async function authenticateNoBoundedParent(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  domain: number,
+) {
+  return authenticateBoundedHead(keyHandle, null, domain)
+}
+
+async function authenticateBoundedParent(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  parent: ReturnType<typeof prepareBoundedEncryptedWalletBackupManifestTarget>,
+  domain: number,
+) {
+  return authenticateBoundedHead(keyHandle, parent.wire, domain)
+}
+
+async function authenticateBoundedHead(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  head: ReturnType<typeof prepareBoundedEncryptedWalletBackupManifestTarget>['wire'] | null,
+  domain: number,
+) {
+  const requestProof = await prepareEncryptedWalletBackupRequestProof({
+    keyHandle,
+    enrollmentEpoch: 1,
+    method: 'GET',
+    url: `https://backup.example.test/capacity-parent-${domain}`,
+    issuedAtUnixSeconds: 1_700_000_000,
+    expiresAtUnixSeconds: 1_700_000_030,
+    payload: new Uint8Array(),
+    signal: AbortSignal.timeout(60_000),
+    runtime: deterministicCapacityRuntime([
+      indexedDomainBytes(domain, 1, 16),
+      indexedDomainBytes(domain + 1, 1, 32),
+    ]),
+  })
+  return readAuthenticatedEncryptedWalletBackupHead({
+    keyHandle,
+    enrollmentEpoch: 1,
+    requestProof,
+    remote: {
+      async readCurrentHead() {
+        return head === null
+          ? { status: 'not-found' as const }
+          : { status: 'found' as const, enrollmentEpoch: 1, head }
+      },
+    },
+  })
+}
 
 function capacityProofCommitment(input: {
   counter: number

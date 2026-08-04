@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { Buffer } from 'node:buffer'
 import { readFile } from 'node:fs/promises'
 import { webcrypto } from 'node:crypto'
 import { test } from 'node:test'
@@ -6,6 +7,7 @@ import { isDeepStrictEqual } from 'node:util'
 import * as Cashu from '@cashu/cashu-ts'
 import * as BackupModule from '../src/encryptedWalletBackup.ts'
 import * as BackupSyncModule from '../src/encryptedWalletBackupSync.ts'
+import { exactEncryptedWalletBackupArrayBuffer } from '../src/encryptedWalletBackupBytes.ts'
 import { sha256 as nobleSha256 } from '@noble/hashes/sha2.js'
 import { decode, encode, rfc8949EncodeOptions } from 'cborg'
 import {
@@ -25,11 +27,8 @@ import {
   deriveDurableWalletEncryptedBackupReceipt,
   discoverEncryptedWalletBackupEnrollmentEpoch,
   packEncryptedWalletBackupProofChunk,
-  prepareEncryptedWalletBackupManifest,
+  readPreparedEncryptedWalletBackupProofChunkManifestEntries,
   prepareEncryptedWalletBackupManifestPage,
-  prepareIncrementalEncryptedWalletBackupManifest,
-  prepareEncryptedWalletBackupManifestHead as sdkPrepareEncryptedWalletBackupManifestHead,
-  prepareBoundedEncryptedWalletBackupManifestTarget as prepareBoundedEncryptedWalletBackupManifestTargetRaw,
   prepareEncryptedWalletBackupObject,
   prepareEncryptedWalletBackupProof,
   prepareEncryptedWalletBackupRequestProof as sdkPrepareEncryptedWalletBackupRequestProof,
@@ -38,13 +37,12 @@ import {
   restoreEncryptedWalletBackupProofs,
   verifyEncryptedWalletBackupConditionalKeyset,
   readPreparedEncryptedWalletBackupObject,
-  readPreparedEncryptedWalletBackupManifestTarget,
   rehydratePreparedEncryptedWalletBackupManifestPage,
-  readPreparedEncryptedWalletBackupManifestHead,
   readAuthenticatedEncryptedWalletBackupHead,
   resumeEncryptedWalletBackupSyncAttempt,
   verifyEncryptedWalletBackupRequestProof,
   type EncryptedWalletBackupProofInput,
+  type EncryptedWalletBackupManifestHead,
   type PreparedEncryptedWalletBackupObject,
   type AuthenticatedEncryptedWalletBackupHeadEvidence,
   type EncryptedWalletBackupRestoreStore,
@@ -53,7 +51,7 @@ import {
   type EncryptedWalletBackupRuntime,
   type EncryptedWalletBackupWireObject,
 } from '../src/encryptedWalletBackup.ts'
-import { issueBoundedManifestTargetCapabilityForTest } from '../src/encryptedWalletBackupManifestTargetAuthority.ts'
+import { prepareBoundedEncryptedWalletBackupTargetForTest } from './support/encryptedWalletBackupBoundedFixture.ts'
 import {
   ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
   issueEncryptedWalletBackupFrozenSnapshotControl,
@@ -139,20 +137,6 @@ const prepareEncryptedWalletBackupRequestProof = (
   input: OptionalTestSignal<Parameters<typeof sdkPrepareEncryptedWalletBackupRequestProof>[0]>,
 ) => sdkPrepareEncryptedWalletBackupRequestProof(withTestCycleSignal(input))
 
-function prepareBoundedEncryptedWalletBackupManifestTarget(input: {
-  keyHandle: Parameters<typeof prepareBoundedEncryptedWalletBackupManifestTargetRaw>[0]['keyHandle']
-  control: EncryptedWalletBackupFrozenSnapshotControl
-  parentEvidence: AuthenticatedEncryptedWalletBackupHeadEvidence
-  pages: readonly PreparedEncryptedWalletBackupObject[]
-  chunkReferences: readonly Readonly<{ objectId: string; digest: string }>[]
-  proofCount: number
-}) {
-  return prepareBoundedEncryptedWalletBackupManifestTargetRaw({
-    keyHandle: input.keyHandle,
-    capability: issueBoundedManifestTargetCapabilityForTest(input),
-  })
-}
-
 const prepareEncryptedWalletBackupEnrollmentEpochDiscoveryProof = (
   input: OptionalTestSignal<
     Parameters<typeof sdkPrepareEncryptedWalletBackupEnrollmentEpochDiscoveryProof>[0]
@@ -180,29 +164,22 @@ const cleanUpRejectedEncryptedWalletBackupFork = (
 ) => sdkCleanUpRejectedEncryptedWalletBackupFork(withTestCycleSignal(input))
 
 type BoundedUploadTestSetup = Readonly<{
-  target: Awaited<ReturnType<typeof prepareBoundedEncryptedWalletBackupManifestTarget>>
+  target: ReturnType<typeof prepareBoundedEncryptedWalletBackupTargetForTest>
   objects: readonly EncryptedWalletBackupWireObject[]
 }>
 
-const BOUNDED_UPLOAD_OBJECTS_BY_HEAD = new WeakMap<
+const BOUNDED_UPLOAD_OBJECTS_BY_HEAD = new WeakMap<object, BoundedUploadTestSetup>()
+const BOUNDED_TARGETS_BY_HEAD = new WeakMap<
   object,
-  readonly PreparedEncryptedWalletBackupObject[]
+  ReturnType<typeof prepareBoundedEncryptedWalletBackupTargetForTest>
 >()
-
-function prepareEncryptedWalletBackupManifestHead(
-  input: Parameters<typeof sdkPrepareEncryptedWalletBackupManifestHead>[0],
-) {
-  const head = sdkPrepareEncryptedWalletBackupManifestHead(input)
-  registerBoundedUploadTestSetup(head, [...input.manifest.pages, ...input.manifest.chunkObjects])
-  return head
-}
 
 async function openBoundedUploadForTest(input: {
   attemptId: string
   ownerId: string
   leaseDurationMilliseconds: number
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
-  targetHead: Parameters<typeof readPreparedEncryptedWalletBackupManifestTarget>[0]['head']
+  targetHead: EncryptedWalletBackupManifestHead
   store: InMemoryUploadBatchStore
 }) {
   const setup = await boundedUploadTestSetup(input.keyHandle, input.targetHead)
@@ -252,73 +229,34 @@ async function prepareNextBoundedBatchForTest(input: {
 type InMemoryUploadBatchStore = ReturnType<typeof inMemoryUploadBatchStore>
 
 async function boundedUploadTestSetup(
-  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
-  targetHead: Parameters<typeof readPreparedEncryptedWalletBackupManifestTarget>[0]['head'],
+  _keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+  targetHead: EncryptedWalletBackupManifestHead,
 ): Promise<BoundedUploadTestSetup> {
   const registered = BOUNDED_UPLOAD_OBJECTS_BY_HEAD.get(targetHead)
   if (registered === undefined)
     throw new Error('bounded upload test setup was not registered with its fixture')
-  return createBoundedUploadTestSetup(keyHandle, targetHead, registered)
+  return registered
 }
 
 function registerBoundedUploadTestSetup(
-  targetHead: ReturnType<typeof sdkPrepareEncryptedWalletBackupManifestHead>,
+  target: BoundedUploadTestSetup['target'],
   objects: readonly PreparedEncryptedWalletBackupObject[],
 ): void {
-  BOUNDED_UPLOAD_OBJECTS_BY_HEAD.set(targetHead, Object.freeze([...objects]))
-}
-
-async function createBoundedUploadTestSetup(
-  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
-  targetHead: ReturnType<typeof sdkPrepareEncryptedWalletBackupManifestHead>,
-  preparedObjects: readonly PreparedEncryptedWalletBackupObject[],
-): Promise<BoundedUploadTestSetup> {
-  const target = readPreparedEncryptedWalletBackupManifestTarget({ keyHandle, head: targetHead })
-  const objects = preparedObjects.map(readPreparedEncryptedWalletBackupObject)
-  const references = decode(target.wire.canonicalReferenceSet) as unknown[]
-  const chunkReferences = (references[3] as Uint8Array[][]).map((reference) => ({
-    objectId: toHex(reference[0]!),
-    digest: toHex(reference[1]!),
-  }))
-  const parentEvidence = await boundedParentEvidenceForTest(keyHandle, target.canonicalParentHead)
-  const control = issueEncryptedWalletBackupFrozenSnapshotControl(
-    {},
-    {
-      realm: targetHead.realm,
-      vaultId: targetHead.vaultId,
-      enrollmentEpoch: 1,
-      parentGeneration: targetHead.parent?.generation ?? null,
-      parentManifestDigest: targetHead.parent?.manifestDigest ?? null,
-      parentReferenceSetDigest:
-        parentEvidence.head?.referenceSetDigest ??
-        ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
-      generation: targetHead.generation,
-      snapshotNonce: targetHead.snapshotNonce,
-      snapshotId: target.localSnapshotId,
-      snapshotRevision: target.localSnapshotRevision,
-    },
+  BOUNDED_TARGETS_BY_HEAD.set(target.head, target)
+  const wireObjects = objects.map(readPreparedEncryptedWalletBackupObject)
+  BOUNDED_UPLOAD_OBJECTS_BY_HEAD.set(
+    target.head,
+    Object.freeze({
+      target,
+      objects: Object.freeze(wireObjects),
+    }),
   )
-  const boundedTarget = prepareBoundedEncryptedWalletBackupManifestTarget({
-    keyHandle,
-    control,
-    parentEvidence,
-    pages: objects.filter((object) => object.kindCode === 2),
-    chunkReferences,
-    proofCount: targetHead.proofCount,
-  })
-  if (
-    boundedTarget.head.manifestDigest !== targetHead.manifestDigest ||
-    !equalBytesForTest(boundedTarget.wire.canonicalHead, target.wire.canonicalHead) ||
-    !equalBytesForTest(boundedTarget.wire.canonicalReferenceSet, target.wire.canonicalReferenceSet)
-  ) {
-    throw new Error('bounded upload test target changed the prepared manifest')
-  }
-  return Object.freeze({ target: boundedTarget, objects })
 }
 
 async function boundedParentEvidenceForTest(
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
   canonicalParentHead: Uint8Array | null,
+  randomness: readonly [Uint8Array, Uint8Array],
 ): Promise<AuthenticatedEncryptedWalletBackupHeadEvidence> {
   const requestProof = await prepareEncryptedWalletBackupRequestProof({
     keyHandle,
@@ -328,6 +266,7 @@ async function boundedParentEvidenceForTest(
     issuedAtUnixSeconds: 1_700_000_000,
     expiresAtUnixSeconds: 1_700_000_030,
     payload: new Uint8Array(),
+    runtime: deterministicRuntime([...randomness]),
   })
   return readAuthenticatedEncryptedWalletBackupHead({
     keyHandle,
@@ -454,6 +393,21 @@ const CTF_CONDITIONAL_METADATA = {
 }
 type UnboundProofInput = Omit<EncryptedWalletBackupProofInput, 'proofSnapshotStore'>
 
+test('crypto conversion exposes only the exact byte view', () => {
+  const expected = new Uint8Array([1, 2, 3])
+  const bufferBacking = Buffer.alloc(5, 0xee)
+  bufferBacking.set(expected, 1)
+  const typedBacking = new Uint8Array([0xaa, ...expected, 0xbb])
+  const views = [expected, bufferBacking.subarray(1, 4), typedBacking.subarray(1, 4)]
+
+  for (const view of views) {
+    const exact = exactEncryptedWalletBackupArrayBuffer(view)
+    assert.equal(exact.byteLength, expected.byteLength)
+    assert.deepEqual([...new Uint8Array(exact)], [...expected])
+  }
+  assert.equal(exactEncryptedWalletBackupArrayBuffer(expected), expected.buffer)
+})
+
 test('raw upload descriptors are not public planner authority', () => {
   for (const name of [
     'planEncryptedWalletBackupUploadBatches',
@@ -461,6 +415,11 @@ test('raw upload descriptors are not public planner authority', () => {
     'sealEncryptedWalletBackupUploadAttempt',
     'claimEncryptedWalletBackupUploadAttempt',
     'sealEncryptedWalletBackupUploadBatch',
+    'prepareEncryptedWalletBackupManifest',
+    'prepareIncrementalEncryptedWalletBackupManifest',
+    'prepareEncryptedWalletBackupManifestHead',
+    'readPreparedEncryptedWalletBackupManifestHead',
+    'readPreparedEncryptedWalletBackupManifestTarget',
   ]) {
     assert.equal(name in BackupSyncModule, false, name)
   }
@@ -477,9 +436,21 @@ test('built backup package surfaces omit bounded target authority issuers', asyn
     'sealEncryptedWalletBackupUploadAttempt',
     'claimEncryptedWalletBackupUploadAttempt',
     'sealEncryptedWalletBackupUploadBatch',
+    'prepareEncryptedWalletBackupManifest',
+    'prepareIncrementalEncryptedWalletBackupManifest',
+    'prepareEncryptedWalletBackupManifestHead',
+    'readPreparedEncryptedWalletBackupManifestHead',
+    'readPreparedEncryptedWalletBackupManifestTarget',
   ]
   for (const module of [root, backup, sync]) {
     for (const name of issuerNames) assert.equal(name in module, false, name)
+    assert.equal(
+      Object.keys(module).some((name) =>
+        /(?:whole|unbounded).*(?:manifest|pack)|(?:manifest|pack).*(?:whole|unbounded)/i.test(name),
+      ),
+      false,
+      'whole-view backup reader must not be exported',
+    )
     assert.equal(
       Object.keys(module).some((name) =>
         /raw.*(?:page|chunk)|(?:page|chunk).*authority/i.test(name),
@@ -991,110 +962,6 @@ test('public vector freezes key derivation, canonical proof bytes, AEAD body, an
   assert.equal('proofKind' in restored, false)
 })
 
-test('manifest pages flatten interleaved immutable chunks into one sorted private index', async () => {
-  const keyHandle = await createEncryptedWalletBackupKeyHandle({
-    seed: SEED,
-    realm: vector.inputs.realm,
-    runtime: deterministicRuntime([]),
-  })
-  const proofs = await Promise.all(
-    [0, 1, 2, 3].map((counter) =>
-      prepareEncryptedWalletBackupProof(proofInputAtCounter(keyHandle, counter)),
-    ),
-  )
-  const sorted = [...proofs].sort((left, right) => compareLowerHex(left.proofId, right.proofId))
-  const chunks = [
-    packEncryptedWalletBackupProofChunk([sorted[0]!, sorted[2]!]),
-    packEncryptedWalletBackupProofChunk([sorted[1]!, sorted[3]!]),
-  ]
-  const chunkObjects = await Promise.all(
-    chunks.map((chunk, index) =>
-      prepareEncryptedWalletBackupObject({
-        keyHandle,
-        chunk,
-        generation: 1,
-        runtime: deterministicRuntime([
-          new Uint8Array(16).fill(index + 1),
-          new Uint8Array(12).fill(index + 11),
-        ]),
-      }),
-    ),
-  )
-  const manifest = await prepareEncryptedWalletBackupManifest({
-    keyHandle,
-    generation: 1,
-    snapshotNonce: new Uint8Array(16).fill(33),
-    chunks: chunks.map((chunk, index) => ({
-      chunk,
-      object: chunkObjects[index]!,
-    })),
-    snapshotStore: acceptingSnapshotSealStore(),
-    runtime: deterministicRuntime([new Uint8Array(16).fill(21), new Uint8Array(12).fill(31)]),
-  })
-  const head = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest,
-    parent: null,
-  })
-  const headWire = readPreparedEncryptedWalletBackupManifestHead(head)
-  assert.equal(toHex(headWire.canonicalHead), vector.expected.manifestCanonicalHeadHex)
-  assert.equal(
-    toHex(headWire.canonicalReferenceSet),
-    vector.expected.manifestCanonicalReferenceSetHex,
-  )
-  const manifestPageWire = readPreparedEncryptedWalletBackupObject(manifest.pages[0]!)
-  assert.equal(manifestPageWire.objectId, vector.expected.manifestPageObjectIdHex)
-  assert.equal(manifestPageWire.digest, vector.expected.manifestPageDigestHex)
-  assert.equal(toHex(manifestPageWire.aad), vector.expected.manifestPageAadHex)
-  assert.equal(
-    toHex(await sha256(manifestPageWire.body)),
-    vector.expected.manifestPageBodySha256Hex,
-  )
-  const headRequest = await prepareEncryptedWalletBackupRequestProof({
-    keyHandle,
-    enrollmentEpoch: 1,
-    method: 'GET',
-    url: 'https://backup.example.test/v1/vault/head',
-    issuedAtUnixSeconds: 1_700_000_000,
-    expiresAtUnixSeconds: 1_700_000_030,
-    payload: new Uint8Array(),
-    runtime: deterministicRuntime([new Uint8Array(16).fill(81), new Uint8Array(32).fill(82)]),
-  })
-  const authenticated = await readAuthenticatedEncryptedWalletBackupHead({
-    keyHandle,
-    enrollmentEpoch: 1,
-    requestProof: headRequest,
-    remote: {
-      async readCurrentHead() {
-        return {
-          status: 'found' as const,
-          enrollmentEpoch: 1,
-          head: structuredClone(headWire),
-        }
-      },
-    },
-  })
-
-  assert.equal(manifest.proofCount, 4)
-  assert.equal(manifest.pageCount, 1)
-  assert.equal(manifest.snapshotId, 'test-snapshot')
-  assert.equal(manifest.snapshotRevision, 1)
-  const page = await decryptEncryptedWalletBackupManifestPage({
-    keyHandle,
-    seed: SEED,
-    object: readPreparedEncryptedWalletBackupObject(manifest.pages[0]!),
-    headEvidence: authenticated,
-  })
-  assert.deepEqual(
-    page.entries.map((entry) => entry.proofId),
-    sorted.map((proof) => proof.proofId),
-  )
-  assert.deepEqual(
-    new Set(page.entries.map((entry) => entry.chunkDigest)),
-    new Set(chunkObjects.map((object) => object.digest)),
-  )
-})
-
 test('bounded manifest page creation reproduces the v1 manifest-page vector', async () => {
   const fixture = await createManifestPageVectorFixture()
   const page = await prepareEncryptedWalletBackupManifestPage({
@@ -1103,8 +970,9 @@ test('bounded manifest page creation reproduces the v1 manifest-page vector', as
   })
   const wire = readPreparedEncryptedWalletBackupObject(page)
   assert.equal(wire.objectId, vector.expected.manifestPageObjectIdHex)
-  assert.equal(wire.digest, vector.expected.manifestPassBPageDigestHex)
   assert.equal(toHex(wire.aad), vector.expected.manifestPassBPageAadHex)
+  await assertManifestSourceIntervalVector(page, wire.aad)
+  assert.equal(wire.digest, vector.expected.manifestPassBPageDigestHex)
   assert.equal(toHex(await sha256(wire.body)), vector.expected.manifestPassBPageBodySha256Hex)
   assert.equal('registerEncryptedWalletBackupManifestPassABoundaries' in BackupModule, false)
 })
@@ -1170,7 +1038,7 @@ test('persisted Pass-B page restores after local-origin loss through an authenti
     )
     assert.throws(
       () =>
-        prepareBoundedEncryptedWalletBackupManifestTarget({
+        prepareBoundedEncryptedWalletBackupTargetForTest({
           keyHandle: fixture.keyHandle,
           control: foreignControl,
           parentEvidence: noParent,
@@ -1181,7 +1049,7 @@ test('persisted Pass-B page restores after local-origin loss through an authenti
       /control belongs to a foreign vault/,
     )
   }
-  const target = prepareBoundedEncryptedWalletBackupManifestTarget({
+  const target = prepareBoundedEncryptedWalletBackupTargetForTest({
     keyHandle: fixture.keyHandle,
     control,
     parentEvidence: noParent,
@@ -1240,7 +1108,7 @@ test('persisted Pass-B page restores after local-origin loss through an authenti
     }))
   await assert.throws(
     () =>
-      prepareBoundedEncryptedWalletBackupManifestTarget({
+      prepareBoundedEncryptedWalletBackupTargetForTest({
         keyHandle: fixture.keyHandle,
         control,
         parentEvidence: noParent,
@@ -1252,7 +1120,7 @@ test('persisted Pass-B page restores after local-origin loss through an authenti
   )
   await assert.throws(
     () =>
-      prepareBoundedEncryptedWalletBackupManifestTarget({
+      prepareBoundedEncryptedWalletBackupTargetForTest({
         keyHandle: fixture.keyHandle,
         control,
         parentEvidence: noParent,
@@ -1264,7 +1132,7 @@ test('persisted Pass-B page restores after local-origin loss through an authenti
   )
   await assert.throws(
     () =>
-      prepareBoundedEncryptedWalletBackupManifestTarget({
+      prepareBoundedEncryptedWalletBackupTargetForTest({
         keyHandle: fixture.keyHandle,
         control,
         parentEvidence: head,
@@ -1344,7 +1212,7 @@ test('bounded target enforces parent coexistence and measures maximum reference 
   )
   await assert.throws(
     () =>
-      prepareBoundedEncryptedWalletBackupManifestTarget({
+      prepareBoundedEncryptedWalletBackupTargetForTest({
         keyHandle: fixture.keyHandle,
         control,
         parentEvidence,
@@ -1375,7 +1243,7 @@ test('bounded target enforces parent object identity and inherits exact parent c
   const pageReference = asText(parentPage)
   const chunkReference = asText(parentChunk)
   const target = (chunkReferences: readonly Readonly<{ objectId: string; digest: string }>[]) =>
-    prepareBoundedEncryptedWalletBackupManifestTarget({
+    prepareBoundedEncryptedWalletBackupTargetForTest({
       keyHandle: fixture.keyHandle,
       control: parent.control,
       parentEvidence: parent.parentEvidence,
@@ -1439,7 +1307,7 @@ test('bounded target rejects forged capabilities and duplicate page references',
   })
   assert.throws(
     () =>
-      prepareBoundedEncryptedWalletBackupManifestTargetRaw({
+      BackupModule.prepareBoundedEncryptedWalletBackupManifestTarget({
         keyHandle: fixture.keyHandle,
         capability: {
           control,
@@ -1454,7 +1322,7 @@ test('bounded target rejects forged capabilities and duplicate page references',
   )
   assert.throws(
     () =>
-      prepareBoundedEncryptedWalletBackupManifestTarget({
+      prepareBoundedEncryptedWalletBackupTargetForTest({
         keyHandle: fixture.keyHandle,
         control,
         parentEvidence,
@@ -1615,11 +1483,17 @@ async function createManifestPageVectorFixture() {
 
 async function prepareGenerationTwoManifestPage(
   fixture: Awaited<ReturnType<typeof createManifestPageVectorFixture>>,
+  overrides: Readonly<{ snapshotNonce: string; snapshotId: string; snapshotRevision: number }> = {
+    snapshotNonce: '21'.repeat(16),
+    snapshotId: 'test-snapshot-2',
+    snapshotRevision: 2,
+  },
 ) {
   const boundary = issueManifestPageBoundaryForTest(fixture.keyHandle, fixture.rawEntries, {
     generation: 2,
-    snapshotId: 'test-snapshot-2',
-    snapshotRevision: 2,
+    snapshotNonce: overrides.snapshotNonce,
+    snapshotId: overrides.snapshotId,
+    snapshotRevision: overrides.snapshotRevision,
   })
   const entries = fixture.rawEntries.map((entry, ordinal) => {
     const record = requirePreparedEncryptedWalletBackupRecord(entry.proof)
@@ -1638,8 +1512,18 @@ async function prepareGenerationTwoManifestPage(
     keyHandle: fixture.keyHandle,
     boundary,
     entries,
-    runtime: deterministicRuntime([new Uint8Array(16).fill(61), new Uint8Array(12).fill(62)]),
+    runtime: deterministicRuntime([
+      fromHex(overrides.snapshotNonce),
+      fromHex(overrides.snapshotNonce).slice(0, 12),
+    ]),
   })
+}
+
+function manifestHeadWireForTest(head: EncryptedWalletBackupManifestHead) {
+  const target = BOUNDED_TARGETS_BY_HEAD.get(head)
+  if (target === undefined)
+    throw new Error('bounded target head was not registered with its fixture')
+  return target.wire
 }
 
 function syntheticObjectReferences(chunkCount: number, pageCount: number) {
@@ -1756,6 +1640,7 @@ function issueManifestPageBoundaryForTest(
     resultDigest: string
     snapshotId: string
     snapshotRevision: number
+    snapshotNonce: string
     sealedControlDigest: string
     generation: number
   }> = {},
@@ -1773,13 +1658,13 @@ function issueManifestPageBoundaryForTest(
     sealRunRevision: 1,
     sealedControlDigest: overrides.sealedControlDigest ?? '22'.repeat(32),
     generation: overrides.generation ?? 1,
-    snapshotNonce: '21'.repeat(16),
+    snapshotNonce: overrides.snapshotNonce ?? '21'.repeat(16),
     boundaries: [
       {
         entryCount: entries.length,
         canonicalEntryBytes: entryBytes,
         plannedCanonicalPageBytes: measureEncryptedWalletBackupManifestPageCbor({
-          generation: 1,
+          generation: overrides.generation ?? 1,
           pageIndex: 0,
           pageCount: 1,
           entryCount: entries.length,
@@ -1789,6 +1674,125 @@ function issueManifestPageBoundaryForTest(
     ],
   })
   return readEncryptedWalletBackupManifestPassABoundary(result, 0)
+}
+
+async function prepareBoundedManifestPagesFromChunksForTest(input: {
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
+  bindings: readonly Readonly<{
+    chunk: ReturnType<typeof packEncryptedWalletBackupProofChunk>
+    object: PreparedEncryptedWalletBackupObject
+  }>[]
+  generation: number
+  snapshotNonce: string
+  snapshotId: string
+  snapshotRevision: number
+  runtime: EncryptedWalletBackupRuntime
+}) {
+  const entries = input.bindings
+    .flatMap(({ chunk, object }) =>
+      readPreparedEncryptedWalletBackupProofChunkManifestEntries(chunk).map((entry) => ({
+        ...entry,
+        object,
+      })),
+    )
+    .sort((left, right) => compareLowerHex(left.recordId, right.recordId))
+  const entryBytes = (entry: (typeof entries)[number]) =>
+    finalManifestEntryBytes(
+      entry.canonicalManifestEntry,
+      fromHex(entry.object.objectId),
+      fromHex(entry.object.digest),
+    ).byteLength
+  const partition = (pageCount: number) => {
+    const pages: Array<Array<(typeof entries)[number]>> = []
+    let current: Array<(typeof entries)[number]> = []
+    let currentBytes = 0
+    for (const entry of entries) {
+      const candidateBytes = currentBytes + entryBytes(entry)
+      const candidateCount = current.length + 1
+      const plannedBytes = measureEncryptedWalletBackupManifestPageCbor({
+        generation: input.generation,
+        pageIndex: pages.length,
+        pageCount,
+        entryCount: candidateCount,
+        canonicalEntryBytes: candidateBytes,
+      })
+      if (plannedBytes > ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES_RESERVED) {
+        if (current.length === 0) throw new Error('manifest entry exceeds the encoded size limit')
+        pages.push(current)
+        current = [entry]
+        currentBytes = entryBytes(entry)
+        continue
+      }
+      current.push(entry)
+      currentBytes = candidateBytes
+    }
+    if (current.length > 0) pages.push(current)
+    return pages
+  }
+  let pageCount = 1
+  let pages = partition(pageCount)
+  while (pages.length !== pageCount) {
+    pageCount = pages.length
+    pages = partition(pageCount)
+  }
+  const result = Object.freeze({})
+  registerEncryptedWalletBackupManifestPassABoundaries({
+    result,
+    resultDigest: '31'.repeat(32),
+    realm: input.keyHandle.realm,
+    vaultId: input.keyHandle.vaultId,
+    snapshotId: input.snapshotId,
+    snapshotRevision: input.snapshotRevision,
+    sealedControlVersion: 1,
+    sealRunRevision: 1,
+    sealedControlDigest: '32'.repeat(32),
+    generation: input.generation,
+    snapshotNonce: input.snapshotNonce,
+    boundaries: pages.map((page, pageIndex) => {
+      const canonicalEntryBytes = page.reduce((total, entry) => total + entryBytes(entry), 0)
+      return {
+        entryCount: page.length,
+        canonicalEntryBytes,
+        plannedCanonicalPageBytes: measureEncryptedWalletBackupManifestPageCbor({
+          generation: input.generation,
+          pageIndex,
+          pageCount,
+          entryCount: page.length,
+          canonicalEntryBytes,
+        }),
+      }
+    }),
+  })
+  return Promise.all(
+    pages.map((page, pageIndex) => {
+      const boundary = readEncryptedWalletBackupManifestPassABoundary(result, pageIndex)
+      return prepareEncryptedWalletBackupManifestPage({
+        keyHandle: input.keyHandle,
+        boundary,
+        entries: page.map((entry, ordinal) =>
+          issueEncryptedWalletBackupManifestEntryCapability({
+            canonicalPreparedEntry: entry.canonicalManifestEntry,
+            chunkObjectId: fromHex(entry.object.objectId),
+            chunkDigest: fromHex(entry.object.digest),
+            boundary,
+            ordinal,
+            pinKey: encodeCanonical([0, fromHex(entry.recordId), fromHex(entry.commitment)]),
+            commitment: entry.commitment,
+            chunkGeneration: entry.object.generation,
+          }),
+        ),
+        runtime: input.runtime,
+      })
+    }),
+  )
+}
+
+async function prepareBoundedManifestPageFromChunksForTest(
+  input: Parameters<typeof prepareBoundedManifestPagesFromChunksForTest>[0],
+) {
+  const pages = await prepareBoundedManifestPagesFromChunksForTest(input)
+  if (pages.length !== 1) throw new Error('bounded manifest fixture requires one page')
+  return pages[0]!
 }
 
 function manifestPageEntryBytes(
@@ -1836,54 +1840,18 @@ async function rejectInvalidManifestPageInputs(
 }
 
 test('incremental manifests and upload-ledger recovery remain exact', async () => {
-  const { keyHandle, sorted, chunks, chunkObjects, manifest, head, headWire, authenticated, page } =
-    await createManifestUploadFixtureForTest()
-  await assert.rejects(
-    () =>
-      prepareEncryptedWalletBackupManifest({
-        keyHandle,
-        generation: 2,
-        snapshotNonce: new Uint8Array(16).fill(88),
-        chunks: chunks.map((chunk, index) => ({
-          chunk,
-          object: chunkObjects[index]!,
-        })),
-        snapshotStore: acceptingSnapshotSealStore(),
-      }),
-    /non-genesis manifest requires authenticated parent provenance/,
-  )
-  assert.throws(
-    () =>
-      prepareEncryptedWalletBackupManifestHead({
-        keyHandle,
-        manifest,
-        parent: authenticated.head,
-      }),
-    /generation does not advance its parent/,
-  )
-  const carriedManifest = await prepareIncrementalEncryptedWalletBackupManifest({
-    keyHandle,
-    generation: 2,
-    snapshotNonce: new Uint8Array(16).fill(89),
-    parentEvidence: authenticated,
-    parentPages: [page],
-    chunks: [],
-    removedProofIds: [],
-    snapshot: { snapshotId: 'test-snapshot', snapshotRevision: 2 },
-    snapshotStore: acceptingSnapshotSealStore(),
-    runtime: deterministicRuntime([new Uint8Array(16).fill(90), new Uint8Array(12).fill(91)]),
+  const fixture = await createManifestUploadFixtureForTest()
+  const { keyHandle, sorted, head, authenticated, page, chunkObjects } = fixture
+  const carriedTarget = await prepareBoundedChildTargetForTest({
+    fixture,
+    snapshotNonce: 89,
+    snapshotId: 'test-snapshot',
+    snapshotRevision: 2,
   })
-  const carriedHead = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest: carriedManifest,
-    parent: authenticated.head!,
-  })
+  const carriedHead = carriedTarget.head
   assert.equal(carriedHead.proofCount, head.proofCount)
-  assert.equal(carriedManifest.chunkObjects.length, 0)
-  const carriedReferences = decode(
-    readPreparedEncryptedWalletBackupManifestHead(carriedHead).canonicalReferenceSet,
-  ) as unknown[]
-  assert.equal((carriedReferences[3] as unknown[]).length, chunkObjects.length)
+  const carriedReferences = decode(carriedTarget.wire.canonicalReferenceSet) as unknown[]
+  assert.equal((carriedReferences[3] as unknown[]).length, fixture.chunkObjects.length)
   const carriedUploadStore = inMemoryUploadBatchStore()
   const carriedClaim = await uploadAttemptClaimForTest(
     keyHandle,
@@ -1896,7 +1864,7 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
     keyHandle,
     store: carriedUploadStore,
   })
-  assert.equal(carriedUpload.record.items.length, carriedManifest.pages.length)
+  assert.equal(carriedUpload.record.items.length, 1)
   await assert.rejects(
     () =>
       prepareNextBoundedBatchForTest({
@@ -1905,21 +1873,6 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
         store: inMemoryUploadBatchStore(),
       }),
     /backup upload attempt claim is invalid/,
-  )
-  await assert.rejects(
-    () =>
-      prepareIncrementalEncryptedWalletBackupManifest({
-        keyHandle,
-        generation: 2,
-        snapshotNonce: new Uint8Array(16).fill(92),
-        parentEvidence: authenticated,
-        parentPages: [{ ...page }],
-        chunks: [],
-        removedProofIds: [],
-        snapshot: { snapshotId: 'test-snapshot', snapshotRevision: 2 },
-        snapshotStore: acceptingSnapshotSealStore(),
-      }),
-    /incomplete or foreign/,
   )
   const splitRepackedChunks = sorted.map((proof) => packEncryptedWalletBackupProofChunk([proof]))
   const repackedChunkObjects = await Promise.all(
@@ -1935,30 +1888,43 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
       }),
     ),
   )
-  const repackedManifest = await prepareIncrementalEncryptedWalletBackupManifest({
+  const repackedPage = await prepareBoundedManifestPageFromChunksForTest({
     keyHandle,
-    generation: 2,
-    snapshotNonce: new Uint8Array(16).fill(93),
-    parentEvidence: authenticated,
-    parentPages: [page],
-    chunks: splitRepackedChunks.map((chunk, index) => ({
+    bindings: splitRepackedChunks.map((chunk, index) => ({
       chunk,
       object: repackedChunkObjects[index]!,
     })),
-    removedProofIds: [],
-    snapshot: { snapshotId: 'test-snapshot', snapshotRevision: 1 },
-    snapshotStore: acceptingSnapshotSealStore(),
+    generation: 2,
+    snapshotNonce: '5d'.repeat(16),
+    snapshotId: 'test-snapshot',
+    snapshotRevision: 1,
     runtime: deterministicRuntime([new Uint8Array(16).fill(94), new Uint8Array(12).fill(95)]),
   })
-  const repackedHead = prepareEncryptedWalletBackupManifestHead({
+  const repackedControl = issueEncryptedWalletBackupFrozenSnapshotControl(
+    {},
+    {
+      realm: keyHandle.realm,
+      vaultId: keyHandle.vaultId,
+      enrollmentEpoch: 1,
+      parentGeneration: head.generation,
+      parentManifestDigest: head.manifestDigest,
+      parentReferenceSetDigest: head.referenceSetDigest,
+      generation: 2,
+      snapshotNonce: '5d'.repeat(16),
+      snapshotId: 'test-snapshot',
+      snapshotRevision: 1,
+    },
+  )
+  const repackedTarget = prepareBoundedEncryptedWalletBackupTargetForTest({
     keyHandle,
-    manifest: repackedManifest,
-    parent: authenticated.head!,
+    control: repackedControl,
+    parentEvidence: authenticated,
+    pages: [repackedPage],
+    chunkReferences: readEncryptedWalletBackupManifestPageProvenance(repackedPage).chunkReferences,
+    proofCount: sorted.length,
   })
-  const repackedTarget = BackupModule.readPreparedEncryptedWalletBackupManifestTarget({
-    keyHandle,
-    head: repackedHead,
-  })
+  registerBoundedUploadTestSetup(repackedTarget, [repackedPage, ...repackedChunkObjects])
+  const repackedHead = repackedTarget.head
   const repackedInherited = decode(repackedTarget.canonicalInheritedReferenceSet) as unknown[]
   assert.equal((repackedInherited[3] as unknown[]).length, 0)
   const repackedStore = inMemoryUploadBatchStore()
@@ -1976,28 +1942,18 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
   assert.equal(repackedBatch.record.items.length, 5)
   assert.equal(repackedBatch.record.repackedChunkCount, 4)
 
-  const emptyChildManifest = await prepareIncrementalEncryptedWalletBackupManifest({
-    keyHandle,
-    generation: 2,
-    snapshotNonce: new Uint8Array(16).fill(96),
-    parentEvidence: authenticated,
-    parentPages: [page],
-    chunks: [],
-    removedProofIds: page.entries.map((entry) => entry.proofId),
-    snapshot: { snapshotId: 'empty-snapshot', snapshotRevision: 2 },
-    snapshotStore: acceptingSnapshotSealStore(),
+  const emptyChildTarget = await prepareBoundedChildTargetForTest({
+    fixture,
+    snapshotNonce: 96,
+    snapshotId: 'empty-snapshot',
+    snapshotRevision: 2,
+    empty: true,
   })
-  const emptyChildHead = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest: emptyChildManifest,
-    parent: authenticated.head!,
-  })
+  const emptyChildHead = emptyChildTarget.head
   assert.equal(emptyChildHead.proofCount, 0)
   assert.equal(emptyChildHead.objectCount, 0)
   assert.equal(emptyChildHead.storedBytes, 0)
-  const emptyChildReferences = decode(
-    readPreparedEncryptedWalletBackupManifestHead(emptyChildHead).canonicalReferenceSet,
-  ) as unknown[]
+  const emptyChildReferences = decode(emptyChildTarget.wire.canonicalReferenceSet) as unknown[]
   assert.deepEqual(emptyChildReferences.slice(2), [[], []])
   const emptyHeadRequest = await prepareEncryptedWalletBackupRequestProof({
     keyHandle,
@@ -2018,7 +1974,7 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(emptyChildHead),
+          head: manifestHeadWireForTest(emptyChildHead),
         }
       },
     },
@@ -2164,7 +2120,7 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(emptyChildHead),
+          head: manifestHeadWireForTest(emptyChildHead),
         }
       },
     },
@@ -2281,11 +2237,60 @@ test('incremental manifests and upload-ledger recovery remain exact', async () =
   )
 })
 
+test('a real bounded manifest-page PUT keeps proof identifiers and commitments encrypted', async () => {
+  const fixture = await createManifestUploadPreparedFixtureForTest()
+  const store = inMemoryUploadBatchStore()
+  const claim = await uploadAttemptClaimForTest(
+    fixture.keyHandle,
+    fixture.head,
+    store,
+    '7d'.repeat(16),
+  )
+  const batch = await prepareNextBoundedBatchForTest({
+    claim,
+    keyHandle: fixture.keyHandle,
+    store,
+  })
+  const pageItem = batch.record.items.find((item) => {
+    const payload = decode(item.canonicalPutPayload!)
+    return Array.isArray(payload) && payload[3] === 2
+  })
+  if (pageItem === undefined) throw new Error('bounded manifest-page PUT is absent')
+
+  const payload = decode(pageItem.canonicalPutPayload!)
+  if (!Array.isArray(payload) || payload.length !== 12 || payload[1] !== 'object-put') {
+    throw new Error('bounded manifest-page PUT is invalid')
+  }
+  const canonicalAad = payload[10]
+  if (!(canonicalAad instanceof Uint8Array)) {
+    throw new Error('bounded manifest-page AAD is invalid')
+  }
+  const aad = decode(canonicalAad)
+  if (!Array.isArray(aad) || aad.length !== 15 || !(aad[14] instanceof Uint8Array)) {
+    throw new Error('bounded manifest-page AAD is invalid')
+  }
+  assert.equal(aad[1], 'encrypted-wallet-backup-manifest-page-aad')
+  assert.equal(aad[14].byteLength, 32)
+
+  const plaintext = encodeCanonical(payload.slice(0, 11))
+  for (const proof of fixture.proofs) {
+    assert.equal(
+      containsByteSequence(plaintext, fromHex(proof.proofId)),
+      false,
+      'proof ID must not appear in plaintext object fields',
+    )
+    assert.equal(
+      containsByteSequence(plaintext, fromHex(proof.commitment)),
+      false,
+      'proof commitment must not appear in plaintext object fields',
+    )
+  }
+})
+
 test('upload ledger execution, retry, abort, and rehydration are durable', async () => {
   const {
     keyHandle,
     sorted,
-    chunks,
     chunkObjects,
     manifest,
     head,
@@ -2555,10 +2560,6 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
   assert.equal(JSON.stringify(head).includes(sorted[0]!.proofId), false)
   assert.equal(JSON.stringify(head).includes(sorted[0]!.commitment), false)
   assert.equal(authenticated?.head.manifestDigest, head.manifestDigest)
-  assert.throws(
-    () => readPreparedEncryptedWalletBackupManifestHead({ ...head }),
-    /prepared manifest head is invalid/,
-  )
   const corruptedHeadWire = structuredClone(headWire)
   corruptedHeadWire.canonicalReferenceSet[corruptedHeadWire.canonicalReferenceSet.length - 1] ^= 1
   await assert.rejects(
@@ -2634,25 +2635,15 @@ test('upload ledger execution, retry, abort, and rehydration are durable', async
 })
 
 test('finalization, abort races, aggregate partitions, and CAS recovery fail closed', async () => {
-  const { keyHandle, chunks, chunkObjects, manifest, head, headRequest, authenticated, page } =
-    await createManifestUploadFixtureForTest()
-  const nextManifest = await prepareIncrementalEncryptedWalletBackupManifest({
-    keyHandle,
-    generation: 2,
-    snapshotNonce: new Uint8Array(16).fill(83),
-    parentEvidence: authenticated,
-    parentPages: [page],
-    chunks: [],
-    removedProofIds: [],
-    snapshot: { snapshotId: 'test-snapshot', snapshotRevision: 1 },
-    snapshotStore: acceptingSnapshotSealStore(),
-    runtime: deterministicRuntime([new Uint8Array(16).fill(84), new Uint8Array(12).fill(85)]),
+  const fixture = await createManifestUploadFixtureForTest()
+  const { keyHandle, head, headRequest, authenticated } = fixture
+  const nextTarget = await prepareBoundedChildTargetForTest({
+    fixture,
+    snapshotNonce: 83,
+    snapshotId: 'test-snapshot',
+    snapshotRevision: 1,
   })
-  const nextHead = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest: nextManifest,
-    parent: authenticated!.head,
-  })
+  const nextHead = nextTarget.head
   assert.deepEqual(nextHead.parent, {
     generation: 1,
     manifestDigest: head.manifestDigest,
@@ -2666,28 +2657,19 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(nextHead),
+          head: manifestHeadWireForTest(nextHead),
         }
       },
     },
   })
-  const foreignManifest = await prepareIncrementalEncryptedWalletBackupManifest({
-    keyHandle,
-    generation: 2,
-    snapshotNonce: new Uint8Array(16).fill(86),
-    parentEvidence: authenticated,
-    parentPages: [page],
-    chunks: [],
-    removedProofIds: [],
-    snapshot: { snapshotId: 'test-snapshot', snapshotRevision: 1 },
-    snapshotStore: acceptingSnapshotSealStore(),
-    runtime: deterministicRuntime([new Uint8Array(16).fill(87), new Uint8Array(12).fill(88)]),
-  })
-  const foreignHead = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest: foreignManifest,
-    parent: authenticated.head!,
-  })
+  const foreignHead = (
+    await prepareBoundedChildTargetForTest({
+      fixture,
+      snapshotNonce: 86,
+      snapshotId: 'test-snapshot',
+      snapshotRevision: 1,
+    })
+  ).head
   const foreignObservation = await readAuthenticatedEncryptedWalletBackupHead({
     keyHandle,
     enrollmentEpoch: 1,
@@ -2697,7 +2679,7 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(foreignHead),
+          head: manifestHeadWireForTest(foreignHead),
         }
       },
     },
@@ -3035,6 +3017,7 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
         keyHandle,
         enrollmentEpoch: 1,
         clock: { nowUnixSeconds: () => 1_700_000_000 },
+        runtime: deterministicRequestProofRuntimeForTest(41),
         objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
         remote: {
           async putObject() {
@@ -3070,6 +3053,7 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
     keyHandle: partitionRestartKey,
     enrollmentEpoch: 1,
     clock: { nowUnixSeconds: () => 1_700_000_001 },
+    runtime: deterministicRequestProofRuntimeForTest(42),
     objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
     remote: {
       async putObject() {
@@ -3102,6 +3086,7 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
       keyHandle: partitionRestartKey,
       enrollmentEpoch: 1,
       clock: { nowUnixSeconds: () => 1_700_000_001 },
+      runtime: deterministicRequestProofRuntimeForTest(43),
       objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
       remote: {
         async putObject() {
@@ -3243,8 +3228,7 @@ test('finalization, abort races, aggregate partitions, and CAS recovery fail clo
 })
 
 test('upload ownership and execution leases survive takeover boundaries', async () => {
-  const { keyHandle, head, authenticated, page, chunks, chunkObjects } =
-    await createManifestUploadFixtureForTest()
+  const { keyHandle, head } = await createManifestUploadFixtureForTest()
 
   const leaseStore = inMemoryUploadBatchStore()
   const staleOwnerClaim = await openBoundedUploadForTest({
@@ -3522,25 +3506,6 @@ test('upload ownership and execution leases survive takeover boundaries', async 
   releaseSigning()
   await assert.rejects(() => delayedUpload, /stale backup upload owner claim/)
   assert.equal(delayedPutCalls, 0)
-
-  await assert.rejects(
-    () =>
-      prepareIncrementalEncryptedWalletBackupManifest({
-        keyHandle,
-        generation: 2,
-        snapshotNonce: new Uint8Array(16).fill(111),
-        parentEvidence: authenticated,
-        parentPages: [page],
-        chunks: [
-          { chunk: chunks[0]!, object: chunkObjects[0]! },
-          { chunk: chunks[0]!, object: chunkObjects[0]! },
-        ],
-        removedProofIds: [],
-        snapshot: { snapshotId: 'test-snapshot', snapshotRevision: 1 },
-        snapshotStore: acceptingSnapshotSealStore(),
-      }),
-    /duplicated/,
-  )
 })
 
 test('delayed CAS and abort signing cannot dispatch after owner takeover', async () => {
@@ -3658,7 +3623,7 @@ test('coordinator atomically journals deterministic CAS work and completes the a
     uploadAttemptId: acknowledged.claim.record.attemptId,
     targetManifestDigest: acknowledged.claim.record.targetManifestDigest,
   })
-  assert.equal(expectedCasId, '4a8a1bdab0b4287332d047c6bff0be93')
+  assert.equal(expectedCasId, 'ad5a3ce0c3cef25c711ff5f8743b5e97')
   const separatedIds = new Set([
     expectedCasId,
     deriveEncryptedWalletBackupCasAttemptId({
@@ -3742,6 +3707,7 @@ test('coordinator atomically journals deterministic CAS work and completes the a
     casUrl: 'https://backup.example.test/v1/head:compare-and-swap',
     headUrl: 'https://backup.example.test/v1/head',
     clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: deterministicRequestProofRuntimeForTest(47),
     remote: {
       async compareAndSwapCurrentHead() {
         return { status: 'committed' as const }
@@ -3750,7 +3716,7 @@ test('coordinator atomically journals deterministic CAS work and completes the a
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(head),
+          head: manifestHeadWireForTest(head),
         }
       },
     },
@@ -3810,7 +3776,7 @@ test('CAS signing and dispatch use only private persisted payload bytes', async 
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(head),
+          head: manifestHeadWireForTest(head),
         }
       },
     },
@@ -3845,6 +3811,7 @@ test('acknowledged CAS completion validates the exact finalized batch partition 
         casUrl: 'https://backup.example.test/v1/head:compare-and-swap',
         headUrl: 'https://backup.example.test/v1/head',
         clock: { nowUnixSeconds: () => 1_700_000_000 },
+        runtime: deterministicRequestProofRuntimeForTest(44),
         remote: {
           async compareAndSwapCurrentHead() {
             fixture.store.mutateUploadBatch(fixture.batchId, (batch) => {
@@ -3856,7 +3823,7 @@ test('acknowledged CAS completion validates the exact finalized batch partition 
             return {
               status: 'found' as const,
               enrollmentEpoch: 1,
-              head: readPreparedEncryptedWalletBackupManifestHead(head),
+              head: manifestHeadWireForTest(head),
             }
           },
         },
@@ -3931,6 +3898,7 @@ test('terminal CAS adapter callback faults roll back transition and deletion', a
             casUrl: 'https://backup.example.test/v1/head:compare-and-swap',
             headUrl: 'https://backup.example.test/v1/head',
             clock: { nowUnixSeconds: () => 1_700_000_000 },
+            runtime: deterministicRequestProofRuntimeForTest(45),
             remote: {
               async compareAndSwapCurrentHead() {
                 return { status: 'committed' as const }
@@ -3939,7 +3907,7 @@ test('terminal CAS adapter callback faults roll back transition and deletion', a
                 return {
                   status: 'found' as const,
                   enrollmentEpoch: 1,
-                  head: readPreparedEncryptedWalletBackupManifestHead(head),
+                  head: manifestHeadWireForTest(head),
                 }
               },
             },
@@ -4151,6 +4119,7 @@ test('foreign-head cleanup retains the slot and already-finalized releases it wi
         enrollmentEpoch: 1,
         url: 'https://backup.example.test/v1/upload-attempts/cleanup',
         clock: { nowUnixSeconds: () => 1_700_000_000 },
+        runtime: deterministicRequestProofRuntimeForTest(54),
         remote: {
           async abortUploadAttempt() {
             throw new Error('network unavailable')
@@ -4172,6 +4141,7 @@ test('foreign-head cleanup retains the slot and already-finalized releases it wi
     enrollmentEpoch: 1,
     url: 'https://backup.example.test/v1/upload-attempts/cleanup',
     clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: deterministicRequestProofRuntimeForTest(55),
     remote: {
       async abortUploadAttempt() {
         return { status: 'already-finalized' as const }
@@ -4249,6 +4219,7 @@ test('fork cleanup binds immutable CAS identity and rejects callback protocol fa
         enrollmentEpoch: 1,
         url: 'https://backup.example.test/v1/upload-attempts/cleanup',
         clock: { nowUnixSeconds: () => 1_700_000_000 },
+        runtime: deterministicRequestProofRuntimeForTest(56),
         remote: {
           async abortUploadAttempt() {
             return { status: 'abandoned' as const }
@@ -4288,6 +4259,7 @@ test('fork cleanup binds immutable CAS identity and rejects callback protocol fa
         enrollmentEpoch: 1,
         url: 'https://backup.example.test/v1/upload-attempts/cleanup',
         clock: { nowUnixSeconds: () => 1_700_000_000 },
+        runtime: deterministicRequestProofRuntimeForTest(57),
         remote: {
           async abortUploadAttempt() {
             return { status: 'abandoned' as const }
@@ -4303,26 +4275,24 @@ test('fork cleanup binds immutable CAS identity and rejects callback protocol fa
 
 test('zero-delta fork cleanup is automatic and deletes terminal coordinator rows', async () => {
   const fixture = await createManifestUploadFixtureForTest()
-  const prepareEmptyChild = async (nonce: number) => {
-    const manifest = await prepareIncrementalEncryptedWalletBackupManifest({
-      keyHandle: fixture.keyHandle,
-      generation: 2,
-      snapshotNonce: new Uint8Array(16).fill(nonce),
-      parentEvidence: fixture.authenticated,
-      parentPages: [fixture.page],
-      chunks: [],
-      removedProofIds: fixture.page.entries.map((entry) => entry.proofId),
-      snapshot: { snapshotId: `empty-${nonce}`, snapshotRevision: nonce },
-      snapshotStore: acceptingSnapshotSealStore(),
+  const targetHead = (
+    await prepareBoundedChildTargetForTest({
+      fixture,
+      snapshotNonce: 91,
+      snapshotId: 'empty-91',
+      snapshotRevision: 91,
+      empty: true,
     })
-    return prepareEncryptedWalletBackupManifestHead({
-      keyHandle: fixture.keyHandle,
-      manifest,
-      parent: fixture.authenticated.head,
+  ).head
+  const foreignHead = (
+    await prepareBoundedChildTargetForTest({
+      fixture,
+      snapshotNonce: 92,
+      snapshotId: 'empty-92',
+      snapshotRevision: 92,
+      empty: true,
     })
-  }
-  const targetHead = await prepareEmptyChild(91)
-  const foreignHead = await prepareEmptyChild(92)
+  ).head
   assert.equal(targetHead.objectCount, 0)
   const foreignObservation = await readAuthenticatedEncryptedWalletBackupHead({
     keyHandle: fixture.keyHandle,
@@ -4333,7 +4303,7 @@ test('zero-delta fork cleanup is automatic and deletes terminal coordinator rows
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(foreignHead),
+          head: manifestHeadWireForTest(foreignHead),
         }
       },
     },
@@ -4365,6 +4335,7 @@ test('zero-delta fork cleanup is automatic and deletes terminal coordinator rows
     enrollmentEpoch: 1,
     url: 'https://backup.example.test/v1/upload-attempts/cleanup',
     clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: deterministicRequestProofRuntimeForTest(58),
     remote: {
       async abortUploadAttempt() {
         return { status: 'abandoned' as const }
@@ -4552,6 +4523,7 @@ test('head-CAS quota rejection persists backoff before observing the head', asyn
     casUrl: 'https://backup.example.test/v1/head:compare-and-swap',
     headUrl: 'https://backup.example.test/v1/head',
     clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: deterministicRequestProofRuntimeForTest(59),
     remote: {
       async compareAndSwapCurrentHead() {
         casCalls += 1
@@ -4562,7 +4534,7 @@ test('head-CAS quota rejection persists backoff before observing the head', asyn
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(head),
+          head: manifestHeadWireForTest(head),
         }
       },
     },
@@ -4623,6 +4595,7 @@ test('head-CAS rate limit persists the validated server hint using DB time', asy
     casUrl: 'https://backup.example.test/v1/head:compare-and-swap',
     headUrl: 'https://backup.example.test/v1/head',
     clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: deterministicRequestProofRuntimeForTest(60),
     remote: {
       async compareAndSwapCurrentHead() {
         return {
@@ -4634,7 +4607,7 @@ test('head-CAS rate limit persists the validated server hint using DB time', asy
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(head),
+          head: manifestHeadWireForTest(head),
         }
       },
     },
@@ -4668,6 +4641,7 @@ test('CAS backoff survives a failed head read and restart reconciles before redi
     casUrl: 'https://backup.example.test/v1/head:compare-and-swap',
     headUrl: 'https://backup.example.test/v1/head',
     clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: deterministicRequestProofRuntimeForTest(61),
     remote: {
       async compareAndSwapCurrentHead() {
         return { status: 'rate-limited' as const, retryAfterSeconds: 17 }
@@ -4704,6 +4678,7 @@ test('CAS backoff survives a failed head read and restart reconciles before redi
     casUrl: 'https://backup.example.test/v1/head:compare-and-swap',
     headUrl: 'https://backup.example.test/v1/head',
     clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: deterministicRequestProofRuntimeForTest(62),
     remote: {
       async compareAndSwapCurrentHead() {
         earlyCalls += 1
@@ -4728,6 +4703,7 @@ test('CAS backoff survives a failed head read and restart reconciles before redi
     casUrl: 'https://backup.example.test/v1/head:compare-and-swap',
     headUrl: 'https://backup.example.test/v1/head',
     clock: { nowUnixSeconds: () => 1_700_000_017 },
+    runtime: deterministicRequestProofRuntimeForTest(63),
     remote: {
       async compareAndSwapCurrentHead() {
         order.push('cas')
@@ -4739,7 +4715,7 @@ test('CAS backoff survives a failed head read and restart reconciles before redi
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(headCalls === 1 ? head : nextHead),
+          head: manifestHeadWireForTest(headCalls === 1 ? head : nextHead),
         }
       },
     },
@@ -4798,6 +4774,7 @@ test('one cycle deadline covers signing and every request across a CAS retry', a
       casUrl: 'https://backup.example.test/v1/head:compare-and-swap',
       headUrl: 'https://backup.example.test/v1/head',
       clock: { nowUnixSeconds: () => 1_700_000_000 },
+      runtime: deterministicRequestProofRuntimeForTest(64),
       signal: controller.signal,
       remote: {
         async compareAndSwapCurrentHead(input) {
@@ -4813,7 +4790,7 @@ test('one cycle deadline covers signing and every request across a CAS retry', a
           return {
             status: 'found' as const,
             enrollmentEpoch: 1,
-            head: readPreparedEncryptedWalletBackupManifestHead(head),
+            head: manifestHeadWireForTest(head),
           }
         },
       },
@@ -5109,7 +5086,7 @@ test('rehydration rejects impossible execution history and quota-sized hostile h
     /execution history is invalid/,
   )
 
-  const validBoundary = rewriteUploadBatchTargetReferenceCounts(sealed.record, 3, 255)
+  const validBoundary = rewriteUploadBatchTargetReferenceCounts(sealed.record, 1, 255)
   const valid = await rehydrateEncryptedWalletBackupUploadBatch({
     batchId: validBoundary.batchId,
     keyHandle,
@@ -5117,7 +5094,7 @@ test('rehydration rejects impossible execution history and quota-sized hostile h
   })
   assert.equal(valid.record.state, 'sealed')
 
-  const quotaOverflow = rewriteUploadBatchTargetReferenceCounts(sealed.record, 3, 256)
+  const quotaOverflow = rewriteUploadBatchTargetReferenceCounts(sealed.record, 1, 256)
   await assert.rejects(
     () =>
       rehydrateEncryptedWalletBackupUploadBatch({
@@ -5168,23 +5145,14 @@ test('coordinator rejects unknown persisted target and parent fields', async () 
 
 test('persisted child parent authority is exact and rejects corruption', async () => {
   const fixture = await createManifestUploadFixtureForTest()
-  const childManifest = await prepareIncrementalEncryptedWalletBackupManifest({
-    keyHandle: fixture.keyHandle,
-    generation: 2,
-    snapshotNonce: new Uint8Array(16).fill(39),
-    parentEvidence: fixture.authenticated,
-    parentPages: [fixture.page],
-    chunks: [],
-    removedProofIds: [],
-    snapshot: { snapshotId: 'test-snapshot', snapshotRevision: 1 },
-    snapshotStore: acceptingSnapshotSealStore(),
-    runtime: deterministicRuntime([new Uint8Array(16).fill(40), new Uint8Array(12).fill(41)]),
-  })
-  const childHead = prepareEncryptedWalletBackupManifestHead({
-    keyHandle: fixture.keyHandle,
-    manifest: childManifest,
-    parent: fixture.authenticated.head,
-  })
+  const childHead = (
+    await prepareBoundedChildTargetForTest({
+      fixture,
+      snapshotNonce: 39,
+      snapshotId: 'test-snapshot',
+      snapshotRevision: 1,
+    })
+  ).head
   const store = inMemoryUploadBatchStore()
   const claim = await uploadAttemptClaimForTest(
     fixture.keyHandle,
@@ -5235,6 +5203,7 @@ test('authoritative service quota refusal remains fail-closed after local planni
         store: fixture.store,
         enrollmentEpoch: 1,
         clock: { nowUnixSeconds: () => 1_700_000_000 },
+        runtime: deterministicRequestProofRuntimeForTest(65),
         objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
         remote: {
           async putObject() {
@@ -5284,6 +5253,7 @@ test('parallel upload failures reduce deterministically without hiding fatal err
     store: backoffFixture.store,
     enrollmentEpoch: 1,
     clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: deterministicRequestProofRuntimeForTest(66),
     objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
     remote: {
       async putObject() {
@@ -5314,6 +5284,7 @@ test('parallel upload failures reduce deterministically without hiding fatal err
     store: fatalFixture.store,
     enrollmentEpoch: 1,
     clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: deterministicRequestProofRuntimeForTest(67),
     objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
     remote: {
       async putObject() {
@@ -5569,6 +5540,7 @@ test('every upload mutation callback port fails closed and rolls back', async (t
               store: fixture.store,
               enrollmentEpoch: 1,
               clock: { nowUnixSeconds: () => 1_700_000_000 },
+              runtime: deterministicRequestProofRuntimeForTest(48),
               objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
               remote: {
                 async putObject() {
@@ -5619,6 +5591,7 @@ test('every upload mutation callback port fails closed and rolls back', async (t
               store: fixture.store,
               enrollmentEpoch: 1,
               clock: { nowUnixSeconds: () => 1_700_000_000 },
+              runtime: deterministicRequestProofRuntimeForTest(52),
               objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
               remote: {
                 async putObject() {
@@ -5668,6 +5641,7 @@ test('every upload mutation callback port fails closed and rolls back', async (t
               enrollmentEpoch: 1,
               url: 'https://backup.example.test/attempt:abort',
               clock: { nowUnixSeconds: () => 1_700_000_000 },
+              runtime: deterministicRequestProofRuntimeForTest(49),
               remote: {
                 async abortUploadAttempt() {
                   remoteCalls += 1
@@ -5704,6 +5678,7 @@ test('every upload mutation callback port fails closed and rolls back', async (t
               enrollmentEpoch: 1,
               url: 'https://backup.example.test/attempt:abort',
               clock: { nowUnixSeconds: () => 1_700_000_000 },
+              runtime: deterministicRequestProofRuntimeForTest(53),
               remote: {
                 async abortUploadAttempt() {
                   throw new Error('lost abort response')
@@ -5749,6 +5724,7 @@ test('every upload mutation callback port fails closed and rolls back', async (t
               enrollmentEpoch: 1,
               url: 'https://backup.example.test/attempt:abort',
               clock: { nowUnixSeconds: () => 1_700_000_001 },
+              runtime: deterministicRequestProofRuntimeForTest(50),
               remote: {
                 async abortUploadAttempt() {
                   return { status: 'already-abandoned' as const }
@@ -5801,6 +5777,7 @@ test('every upload mutation callback port fails closed and rolls back', async (t
           store: fixture.store,
           enrollmentEpoch: 1,
           clock: { nowUnixSeconds: () => 1_700_000_000 },
+          runtime: deterministicRequestProofRuntimeForTest(51),
           objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
           remote: {
             async putObject() {
@@ -5903,6 +5880,7 @@ test('every linked CAS callback port rejects wrong, multiple, and late callbacks
             casUrl: 'https://backup.example.test/v1/head:compare-and-swap',
             headUrl: 'https://backup.example.test/v1/head',
             clock: { nowUnixSeconds: () => 1_700_000_000 },
+            runtime: deterministicRequestProofRuntimeForTest(46),
             remote: {
               async compareAndSwapCurrentHead() {
                 remoteCalls += 1
@@ -6116,49 +6094,50 @@ test('every linked CAS callback port rejects wrong, multiple, and late callbacks
   }
 })
 
-test('generation-one empty wallet is canonical and transactionally snapshot-sealed', async () => {
+test('generation-one empty bounded target is canonical', async () => {
   const keyHandle = await createEncryptedWalletBackupKeyHandle({
     seed: SEED,
     realm: 'empty-wallet',
   })
-  let observedSeal: unknown
-  const manifest = await prepareEncryptedWalletBackupManifest({
-    keyHandle,
-    generation: 1,
-    snapshotNonce: new Uint8Array(16).fill(1),
-    chunks: [],
-    emptySnapshot: { snapshotId: 'empty-wallet-snapshot', snapshotRevision: 7 },
-    snapshotStore: {
-      async sealCommittedBackupSnapshot<T>(expected: unknown, seal: (value: never) => T) {
-        observedSeal = structuredClone(expected)
-        return seal(structuredClone(expected) as never)
-      },
+  const parentEvidence = await boundedParentEvidenceForTest(keyHandle, null, [
+    new Uint8Array(16).fill(41),
+    new Uint8Array(32).fill(42),
+  ])
+  const control = issueEncryptedWalletBackupFrozenSnapshotControl(
+    {},
+    {
+      realm: keyHandle.realm,
+      vaultId: keyHandle.vaultId,
+      enrollmentEpoch: 1,
+      parentGeneration: null,
+      parentManifestDigest: null,
+      parentReferenceSetDigest: ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
+      generation: 1,
+      snapshotNonce: '01'.repeat(16),
+      snapshotId: 'empty-wallet-snapshot',
+      snapshotRevision: 7,
     },
-  })
-  assert.deepEqual(observedSeal, {
-    schemaVersion: 1,
-    snapshotId: 'empty-wallet-snapshot',
-    snapshotRevision: 7,
-    proofCount: 0,
-    proofSetDigest: toHex(nobleSha256(encode([1, 'eligible-proof-set', []], rfc8949EncodeOptions))),
-  })
-  const head = prepareEncryptedWalletBackupManifestHead({
+  )
+  const target = prepareBoundedEncryptedWalletBackupTargetForTest({
     keyHandle,
-    manifest,
-    parent: null,
+    control,
+    parentEvidence,
+    pages: [],
+    chunkReferences: [],
+    proofCount: 0,
   })
   assert.deepEqual(
     {
-      generation: head.generation,
-      proofCount: head.proofCount,
-      objectCount: head.objectCount,
-      storedBytes: head.storedBytes,
+      generation: target.head.generation,
+      proofCount: target.head.proofCount,
+      objectCount: target.head.objectCount,
+      storedBytes: target.head.storedBytes,
     },
     { generation: 1, proofCount: 0, objectCount: 0, storedBytes: 0 },
   )
 })
 
-test('manifest preparation rejects rows from different committed wallet revisions', async () => {
+test('bounded target rejects a proof chunk used as a page', async () => {
   const keyHandle = await createEncryptedWalletBackupKeyHandle({
     seed: SEED,
     realm: vector.inputs.realm,
@@ -6182,64 +6161,37 @@ test('manifest preparation rejects rows from different committed wallet revision
       }),
     ),
   )
-  await assert.rejects(
-    () =>
-      prepareEncryptedWalletBackupManifest({
-        keyHandle,
-        generation: 1,
-        snapshotNonce: new Uint8Array(16).fill(61),
-        chunks: chunks.map((chunk, index) => ({
-          chunk,
-          object: objects[index]!,
-        })),
-        snapshotStore: acceptingSnapshotSealStore(),
-        runtime: deterministicRuntime([]),
-      }),
-    /committed wallet snapshot changed/,
+  const parentEvidence = await boundedParentEvidenceForTest(keyHandle, null, [
+    new Uint8Array(16).fill(43),
+    new Uint8Array(32).fill(44),
+  ])
+  const control = issueEncryptedWalletBackupFrozenSnapshotControl(
+    {},
+    {
+      realm: keyHandle.realm,
+      vaultId: keyHandle.vaultId,
+      enrollmentEpoch: 1,
+      parentGeneration: null,
+      parentManifestDigest: null,
+      parentReferenceSetDigest: ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
+      generation: 1,
+      snapshotNonce: '3d'.repeat(16),
+      snapshotId: 'revision-mismatch',
+      snapshotRevision: 1,
+    },
   )
-})
-
-test('manifest authority requires final transactional proof-set revalidation', async () => {
-  const keyHandle = await createEncryptedWalletBackupKeyHandle({
-    seed: SEED,
-    realm: 'snapshot-fence',
-  })
-  const proof = await prepareEncryptedWalletBackupProof(proofInputAtCounter(keyHandle, 0))
-  const chunk = packEncryptedWalletBackupProofChunk([proof])
-  const object = await prepareEncryptedWalletBackupObject({
-    keyHandle,
-    chunk,
-    generation: 1,
-    runtime: deterministicRuntime([new Uint8Array(16).fill(62), new Uint8Array(12).fill(63)]),
-  })
-  for (const mutate of [
-    (seal: Record<string, unknown>) => ({ ...seal, proofCount: 2 }),
-    (seal: Record<string, unknown>) => ({
-      ...seal,
-      proofSetDigest: 'ff'.repeat(32),
-    }),
-    (seal: Record<string, unknown>) => ({ ...seal, snapshotRevision: 2 }),
-  ]) {
-    await assert.rejects(
-      () =>
-        prepareEncryptedWalletBackupManifest({
-          keyHandle,
-          generation: 1,
-          snapshotNonce: new Uint8Array(16).fill(64),
-          chunks: [{ chunk, object }],
-          snapshotStore: {
-            async sealCommittedBackupSnapshot<T>(
-              expected: unknown,
-              seal: (value: never) => T,
-            ): Promise<T> {
-              return seal(mutate(expected as Record<string, unknown>) as never)
-            },
-          },
-          runtime: deterministicRuntime([]),
-        }),
-      /committed wallet snapshot changed/,
-    )
-  }
+  assert.throws(
+    () =>
+      prepareBoundedEncryptedWalletBackupTargetForTest({
+        keyHandle,
+        control,
+        parentEvidence,
+        pages: [objects[0]!],
+        chunkReferences: [],
+        proofCount: 0,
+      }),
+    /page is invalid/,
+  )
 })
 
 test('delegated request proof binds exact HTTPS target, method, epoch, time, nonce, and body', async () => {
@@ -9064,6 +9016,18 @@ function deterministicRuntime(values: Uint8Array[]): EncryptedWalletBackupRuntim
   }
 }
 
+function deterministicRequestProofRuntimeForTest(
+  firstByte: number,
+  requestCount = 16,
+): EncryptedWalletBackupRuntime {
+  return deterministicRuntime(
+    Array.from({ length: requestCount }, (_, index) => [
+      new Uint8Array(16).fill((firstByte + index * 2) & 0xff),
+      new Uint8Array(32).fill((firstByte + index * 2 + 1) & 0xff),
+    ]).flat(),
+  )
+}
+
 async function waitForArrayLength(values: readonly unknown[], expected: number): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     if (values.length === expected) return
@@ -9110,17 +9074,9 @@ function delayedSigningRuntimeForTest(): {
   }
 }
 
-function acceptingSnapshotSealStore() {
-  return {
-    async sealCommittedBackupSnapshot<T>(expected: unknown, seal: (value: never) => T): Promise<T> {
-      return seal(expected as never)
-    },
-  }
-}
-
 async function finalizeTargetUploadsForTest(input: {
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
-  targetHead: ReturnType<typeof prepareEncryptedWalletBackupManifestHead>
+  targetHead: EncryptedWalletBackupManifestHead
 }) {
   const acknowledgedBundle = await acknowledgeTargetUploadsForTest({
     ...input,
@@ -9136,7 +9092,7 @@ async function finalizeTargetUploadsForTest(input: {
 
 async function acknowledgeTargetUploadsForTest(input: {
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>
-  targetHead: ReturnType<typeof prepareEncryptedWalletBackupManifestHead>
+  targetHead: EncryptedWalletBackupManifestHead
   attemptId: string
   store?: ReturnType<typeof inMemoryUploadBatchStore>
   claim?: Awaited<ReturnType<typeof uploadAttemptClaimForTest>>
@@ -9175,7 +9131,7 @@ async function acknowledgeTargetUploadsForTest(input: {
 
 async function uploadAttemptClaimForTest(
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
-  targetHead: ReturnType<typeof prepareEncryptedWalletBackupManifestHead>,
+  targetHead: EncryptedWalletBackupManifestHead,
   store: ReturnType<typeof inMemoryUploadBatchStore>,
   attemptId: string,
 ) {
@@ -9281,25 +9237,45 @@ async function createMultiBatchTargetForTest(
       }),
     ),
   )
-  const manifest = await prepareEncryptedWalletBackupManifest({
+  const page = await prepareBoundedManifestPageFromChunksForTest({
     keyHandle,
+    bindings: chunks.map((chunk, index) => ({ chunk, object: objects[index]! })),
     generation: 1,
-    snapshotNonce: new Uint8Array(16).fill(190),
-    chunks: chunks.map((chunk, index) => ({
-      chunk,
-      object: objects[index]!,
-    })),
-    snapshotStore: acceptingSnapshotSealStore(),
+    snapshotNonce: 'be'.repeat(16),
+    snapshotId: 'multi-batch',
+    snapshotRevision: 1,
     runtime: deterministicRuntime([new Uint8Array(16).fill(191), new Uint8Array(12).fill(192)]),
   })
-  return {
-    head: prepareEncryptedWalletBackupManifestHead({
-      keyHandle,
-      manifest,
-      parent: null,
-    }),
-    objects: [...manifest.pages, ...objects],
-  }
+  const parentEvidence = await boundedParentEvidenceForTest(keyHandle, null, [
+    new Uint8Array(16).fill(45),
+    new Uint8Array(32).fill(46),
+  ])
+  const control = issueEncryptedWalletBackupFrozenSnapshotControl(
+    {},
+    {
+      realm: keyHandle.realm,
+      vaultId: keyHandle.vaultId,
+      enrollmentEpoch: 1,
+      parentGeneration: null,
+      parentManifestDigest: null,
+      parentReferenceSetDigest: ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
+      generation: 1,
+      snapshotNonce: 'be'.repeat(16),
+      snapshotId: 'multi-batch',
+      snapshotRevision: 1,
+    },
+  )
+  const target = prepareBoundedEncryptedWalletBackupTargetForTest({
+    keyHandle,
+    control,
+    parentEvidence,
+    pages: [page],
+    chunkReferences: readEncryptedWalletBackupManifestPageProvenance(page).chunkReferences,
+    proofCount: proofs.length,
+  })
+  const preparedObjects = [page, ...objects]
+  registerBoundedUploadTestSetup(target, preparedObjects)
+  return { target, head: target.head, objects: preparedObjects }
 }
 
 async function createSealedUploadMutationFixtureForTest(suffix: string) {
@@ -9316,52 +9292,53 @@ async function createSealedUploadMutationFixtureForTest(suffix: string) {
 }
 
 async function createManifestUploadFixtureForTest() {
-  const keyHandle = await createEncryptedWalletBackupKeyHandle({
+  const fixture = await createManifestUploadPreparedFixtureForTest()
+  const decryptedPage = await decryptEncryptedWalletBackupManifestPage({
+    keyHandle: fixture.keyHandle,
     seed: SEED,
-    realm: vector.inputs.realm,
+    object: readPreparedEncryptedWalletBackupObject(fixture.preparedPage),
+    headEvidence: fixture.authenticated,
   })
-  const proofs = await Promise.all(
-    [0, 1, 2, 3].map((counter) =>
-      prepareEncryptedWalletBackupProof(proofInputAtCounter(keyHandle, counter)),
-    ),
-  )
-  const sorted = [...proofs].sort((left, right) => compareLowerHex(left.proofId, right.proofId))
-  const chunks = [
-    packEncryptedWalletBackupProofChunk([sorted[0]!, sorted[2]!]),
-    packEncryptedWalletBackupProofChunk([sorted[1]!, sorted[3]!]),
-  ]
-  const chunkObjects = await Promise.all(
-    chunks.map((chunk, index) =>
-      prepareEncryptedWalletBackupObject({
-        keyHandle,
-        chunk,
-        generation: 1,
-        runtime: deterministicRuntime([
-          new Uint8Array(16).fill(index + 1),
-          new Uint8Array(12).fill(index + 11),
-        ]),
-      }),
-    ),
-  )
-  const manifest = await prepareEncryptedWalletBackupManifest({
-    keyHandle,
-    generation: 1,
-    snapshotNonce: new Uint8Array(16).fill(33),
-    chunks: chunks.map((chunk, index) => ({
-      chunk,
-      object: chunkObjects[index]!,
-    })),
-    snapshotStore: acceptingSnapshotSealStore(),
+  return { ...fixture, page: decryptedPage }
+}
+
+async function createManifestUploadPreparedFixtureForTest() {
+  const fixture = await createManifestPageVectorFixture()
+  const page = await prepareEncryptedWalletBackupManifestPage({
+    ...fixture,
     runtime: deterministicRuntime([new Uint8Array(16).fill(21), new Uint8Array(12).fill(31)]),
   })
-  const head = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest,
-    parent: null,
+  const chunkObjects = [...new Set(fixture.rawEntries.map((entry) => entry.chunkObject))]
+  const parentEvidence = await boundedParentEvidenceForTest(fixture.keyHandle, null, [
+    new Uint8Array(16).fill(47),
+    new Uint8Array(32).fill(48),
+  ])
+  const control = issueEncryptedWalletBackupFrozenSnapshotControl(
+    {},
+    {
+      realm: fixture.keyHandle.realm,
+      vaultId: fixture.keyHandle.vaultId,
+      enrollmentEpoch: 1,
+      parentGeneration: null,
+      parentManifestDigest: null,
+      parentReferenceSetDigest: ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
+      generation: 1,
+      snapshotNonce: '21'.repeat(16),
+      snapshotId: 'test-snapshot',
+      snapshotRevision: 1,
+    },
+  )
+  const target = prepareBoundedEncryptedWalletBackupTargetForTest({
+    keyHandle: fixture.keyHandle,
+    control,
+    parentEvidence,
+    pages: [page],
+    chunkReferences: readEncryptedWalletBackupManifestPageProvenance(page).chunkReferences,
+    proofCount: fixture.rawEntries.length,
   })
-  const headWire = readPreparedEncryptedWalletBackupManifestHead(head)
+  registerBoundedUploadTestSetup(target, [page, ...chunkObjects])
   const requestProof = await prepareEncryptedWalletBackupRequestProof({
-    keyHandle,
+    keyHandle: fixture.keyHandle,
     enrollmentEpoch: 1,
     method: 'GET',
     url: 'https://backup.example.test/v1/vault/head',
@@ -9371,7 +9348,7 @@ async function createManifestUploadFixtureForTest() {
     runtime: deterministicRuntime([new Uint8Array(16).fill(81), new Uint8Array(32).fill(82)]),
   })
   const authenticated = await readAuthenticatedEncryptedWalletBackupHead({
-    keyHandle,
+    keyHandle: fixture.keyHandle,
     enrollmentEpoch: 1,
     requestProof,
     remote: {
@@ -9379,30 +9356,73 @@ async function createManifestUploadFixtureForTest() {
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: structuredClone(headWire),
+          head: structuredClone(target.wire),
         }
       },
     },
   })
-  const page = await decryptEncryptedWalletBackupManifestPage({
-    keyHandle,
-    seed: SEED,
-    object: readPreparedEncryptedWalletBackupObject(manifest.pages[0]!),
-    headEvidence: authenticated,
-  })
   return {
-    keyHandle,
-    proofs,
-    sorted,
-    chunks,
+    keyHandle: fixture.keyHandle,
+    proofs: fixture.rawEntries.map((entry) => entry.proof),
+    sorted: [...fixture.rawEntries.map((entry) => entry.proof)].sort((left, right) =>
+      compareLowerHex(left.proofId, right.proofId),
+    ),
     chunkObjects,
-    manifest,
-    head,
-    headWire,
+    manifest: { pages: [page] },
+    target,
+    head: target.head,
+    headWire: target.wire,
     headRequest: requestProof,
     authenticated,
-    page,
+    preparedPage: page,
+    pageFixture: fixture,
   }
+}
+
+async function prepareBoundedChildTargetForTest(input: {
+  fixture: Awaited<ReturnType<typeof createManifestUploadFixtureForTest>>
+  snapshotNonce: number
+  snapshotId: string
+  snapshotRevision: number
+  empty?: boolean
+}) {
+  const { fixture, snapshotNonce, snapshotId, snapshotRevision } = input
+  const pages = input.empty
+    ? []
+    : [
+        await prepareGenerationTwoManifestPage(fixture.pageFixture, {
+          snapshotNonce: snapshotNonce.toString(16).padStart(2, '0').repeat(16),
+          snapshotId,
+          snapshotRevision,
+        }),
+      ]
+  const control = issueEncryptedWalletBackupFrozenSnapshotControl(
+    {},
+    {
+      realm: fixture.keyHandle.realm,
+      vaultId: fixture.keyHandle.vaultId,
+      enrollmentEpoch: 1,
+      parentGeneration: fixture.target.head.generation,
+      parentManifestDigest: fixture.target.head.manifestDigest,
+      parentReferenceSetDigest: fixture.target.head.referenceSetDigest,
+      generation: 2,
+      snapshotNonce: snapshotNonce.toString(16).padStart(2, '0').repeat(16),
+      snapshotId,
+      snapshotRevision,
+    },
+  )
+  const target = prepareBoundedEncryptedWalletBackupTargetForTest({
+    keyHandle: fixture.keyHandle,
+    control,
+    parentEvidence: fixture.authenticated,
+    pages,
+    chunkReferences: input.empty
+      ? []
+      : readEncryptedWalletBackupManifestPageProvenance(pages[0]!).chunkReferences,
+    proofCount: input.empty ? 0 : fixture.target.head.proofCount,
+  })
+  registerBoundedUploadTestSetup(target, [...pages, ...fixture.chunkObjects])
+  return target
 }
 
 async function createVerifiableRestoreFixtureForTest(
@@ -9630,8 +9650,8 @@ async function createVerifiableRestoreFixtureForTest(
     generation: options.generationTwoFromActive ? 2 : 1,
     runtime: deterministicRuntime([new Uint8Array(16).fill(201), new Uint8Array(12).fill(202)]),
   })
-  let manifest
-  let head
+  let target
+  let manifestPageObjects: PreparedEncryptedWalletBackupObject[]
   if (options.generationTwoFromActive) {
     const activeChunk = packEncryptedWalletBackupProofChunk(activePreparedProofs)
     const activeChunkObject = await prepareEncryptedWalletBackupObject({
@@ -9640,20 +9660,44 @@ async function createVerifiableRestoreFixtureForTest(
       generation: 1,
       runtime: deterministicRuntime([new Uint8Array(16).fill(208), new Uint8Array(12).fill(209)]),
     })
-    const activeManifest = await prepareEncryptedWalletBackupManifest({
+    const activePages = await prepareBoundedManifestPagesFromChunksForTest({
       keyHandle,
+      bindings: [{ chunk: activeChunk, object: activeChunkObject }],
       generation: 1,
-      snapshotNonce: new Uint8Array(16).fill(210),
-      chunks: [{ chunk: activeChunk, object: activeChunkObject }],
-      snapshotStore: acceptingSnapshotSealStore(),
+      snapshotNonce: 'd2'.repeat(16),
+      snapshotId: 'active-snapshot',
+      snapshotRevision: 1,
       runtime: deterministicRuntime([new Uint8Array(16).fill(211), new Uint8Array(12).fill(212)]),
     })
-    const activeHead = prepareEncryptedWalletBackupManifestHead({
+    const activeParentEvidence = await boundedParentEvidenceForTest(keyHandle, null, [
+      new Uint8Array(16).fill(49),
+      new Uint8Array(32).fill(50),
+    ])
+    const activeControl = issueEncryptedWalletBackupFrozenSnapshotControl(
+      {},
+      {
+        realm: keyHandle.realm,
+        vaultId: keyHandle.vaultId,
+        enrollmentEpoch: 1,
+        parentGeneration: null,
+        parentManifestDigest: null,
+        parentReferenceSetDigest: ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
+        generation: 1,
+        snapshotNonce: 'd2'.repeat(16),
+        snapshotId: 'active-snapshot',
+        snapshotRevision: 1,
+      },
+    )
+    const activeTarget = prepareBoundedEncryptedWalletBackupTargetForTest({
       keyHandle,
-      manifest: activeManifest,
-      parent: null,
+      control: activeControl,
+      parentEvidence: activeParentEvidence,
+      pages: activePages,
+      chunkReferences: activePages.flatMap(
+        (page) => readEncryptedWalletBackupManifestPageProvenance(page).chunkReferences,
+      ),
+      proofCount: activePreparedProofs.length,
     })
-    const activeHeadWire = readPreparedEncryptedWalletBackupManifestHead(activeHead)
     const activeAuthenticated = await readAuthenticatedEncryptedWalletBackupHead({
       keyHandle,
       enrollmentEpoch: 1,
@@ -9663,57 +9707,90 @@ async function createVerifiableRestoreFixtureForTest(
           return {
             status: 'found' as const,
             enrollmentEpoch: 1,
-            head: structuredClone(activeHeadWire),
+            head: structuredClone(activeTarget.wire),
           }
         },
       },
     })
-    const activePages = []
-    for (const pageObject of activeManifest.pages) {
-      activePages.push(
-        await decryptEncryptedWalletBackupManifestPage({
-          keyHandle,
-          seed: SEED,
-          object: readPreparedEncryptedWalletBackupObject(pageObject),
-          headEvidence: activeAuthenticated,
-        }),
-      )
-    }
-    manifest = await prepareIncrementalEncryptedWalletBackupManifest({
+    const pages = await prepareBoundedManifestPagesFromChunksForTest({
       keyHandle,
+      bindings: [{ chunk, object: chunkObject }],
       generation: 2,
-      snapshotNonce: new Uint8Array(16).fill(203),
-      parentEvidence: activeAuthenticated,
-      parentPages: activePages,
-      chunks: [{ chunk, object: chunkObject }],
-      removedProofIds: [],
-      snapshot: { snapshotId: 'test-snapshot', snapshotRevision: 1 },
-      snapshotStore: acceptingSnapshotSealStore(),
+      snapshotNonce: 'cb'.repeat(16),
+      snapshotId: 'test-snapshot',
+      snapshotRevision: 1,
       runtime: deterministicRuntime([new Uint8Array(16).fill(204), new Uint8Array(12).fill(205)]),
     })
-    head = prepareEncryptedWalletBackupManifestHead({
+    const control = issueEncryptedWalletBackupFrozenSnapshotControl(
+      {},
+      {
+        realm: keyHandle.realm,
+        vaultId: keyHandle.vaultId,
+        enrollmentEpoch: 1,
+        parentGeneration: activeTarget.head.generation,
+        parentManifestDigest: activeTarget.head.manifestDigest,
+        parentReferenceSetDigest: activeTarget.head.referenceSetDigest,
+        generation: 2,
+        snapshotNonce: 'cb'.repeat(16),
+        snapshotId: 'test-snapshot',
+        snapshotRevision: 1,
+      },
+    )
+    target = prepareBoundedEncryptedWalletBackupTargetForTest({
       keyHandle,
-      manifest,
-      parent: activeAuthenticated.head,
+      control,
+      parentEvidence: activeAuthenticated,
+      pages,
+      chunkReferences: pages.flatMap(
+        (page) => readEncryptedWalletBackupManifestPageProvenance(page).chunkReferences,
+      ),
+      proofCount: preparedProofs.length,
     })
+    manifestPageObjects = pages
   } else {
-    manifest = await prepareEncryptedWalletBackupManifest({
+    const pages = await prepareBoundedManifestPagesFromChunksForTest({
       keyHandle,
+      bindings: [{ chunk, object: chunkObject }],
       generation: 1,
-      snapshotNonce: new Uint8Array(16).fill(203),
-      chunks: [{ chunk, object: chunkObject }],
-      snapshotStore: acceptingSnapshotSealStore(),
+      snapshotNonce: 'cb'.repeat(16),
+      snapshotId: 'test-snapshot',
+      snapshotRevision: 1,
       runtime: options.longMint
         ? deterministicRecoveryRuntime()
         : deterministicRuntime([new Uint8Array(16).fill(204), new Uint8Array(12).fill(205)]),
     })
-    head = prepareEncryptedWalletBackupManifestHead({
+    const parentEvidence = await boundedParentEvidenceForTest(keyHandle, null, [
+      new Uint8Array(16).fill(51),
+      new Uint8Array(32).fill(52),
+    ])
+    const control = issueEncryptedWalletBackupFrozenSnapshotControl(
+      {},
+      {
+        realm: keyHandle.realm,
+        vaultId: keyHandle.vaultId,
+        enrollmentEpoch: 1,
+        parentGeneration: null,
+        parentManifestDigest: null,
+        parentReferenceSetDigest: ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
+        generation: 1,
+        snapshotNonce: 'cb'.repeat(16),
+        snapshotId: 'test-snapshot',
+        snapshotRevision: 1,
+      },
+    )
+    target = prepareBoundedEncryptedWalletBackupTargetForTest({
       keyHandle,
-      manifest,
-      parent: null,
+      control,
+      parentEvidence,
+      pages,
+      chunkReferences: pages.flatMap(
+        (page) => readEncryptedWalletBackupManifestPageProvenance(page).chunkReferences,
+      ),
+      proofCount: preparedProofs.length,
     })
+    manifestPageObjects = pages
   }
-  const headWire = readPreparedEncryptedWalletBackupManifestHead(head)
+  const headWire = target.wire
   const authenticated = await readAuthenticatedEncryptedWalletBackupHead({
     keyHandle,
     enrollmentEpoch: 1,
@@ -9729,7 +9806,7 @@ async function createVerifiableRestoreFixtureForTest(
     },
   })
   const pages = []
-  for (const pageObject of manifest.pages) {
+  for (const pageObject of manifestPageObjects) {
     pages.push(
       await decryptEncryptedWalletBackupManifestPage({
         keyHandle,
@@ -9758,7 +9835,7 @@ async function createVerifiableRestoreFixtureForTest(
     headWire,
     page,
     pages,
-    manifestPageObjects: manifest.pages.map(readPreparedEncryptedWalletBackupObject),
+    manifestPageObjects: manifestPageObjects.map(readPreparedEncryptedWalletBackupObject),
     decryptedChunk,
   }
 }
@@ -10292,23 +10369,13 @@ function activePredecessorRestoreState(
 
 async function createCasRecoveryFixtureForTest() {
   const fixture = await createManifestUploadFixtureForTest()
-  const nextManifest = await prepareIncrementalEncryptedWalletBackupManifest({
-    keyHandle: fixture.keyHandle,
-    generation: 2,
-    snapshotNonce: new Uint8Array(16).fill(83),
-    parentEvidence: fixture.authenticated,
-    parentPages: [fixture.page],
-    chunks: [],
-    removedProofIds: [],
-    snapshot: { snapshotId: 'test-snapshot', snapshotRevision: 1 },
-    snapshotStore: acceptingSnapshotSealStore(),
-    runtime: deterministicRuntime([new Uint8Array(16).fill(84), new Uint8Array(12).fill(85)]),
+  const nextTarget = await prepareBoundedChildTargetForTest({
+    fixture,
+    snapshotNonce: 83,
+    snapshotId: 'test-snapshot',
+    snapshotRevision: 1,
   })
-  const nextHead = prepareEncryptedWalletBackupManifestHead({
-    keyHandle: fixture.keyHandle,
-    manifest: nextManifest,
-    parent: fixture.authenticated.head,
-  })
+  const nextHead = nextTarget.head
   const targetObservation = await readAuthenticatedEncryptedWalletBackupHead({
     keyHandle: fixture.keyHandle,
     enrollmentEpoch: 1,
@@ -10318,28 +10385,19 @@ async function createCasRecoveryFixtureForTest() {
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(nextHead),
+          head: manifestHeadWireForTest(nextHead),
         }
       },
     },
   })
-  const foreignManifest = await prepareIncrementalEncryptedWalletBackupManifest({
-    keyHandle: fixture.keyHandle,
-    generation: 2,
-    snapshotNonce: new Uint8Array(16).fill(86),
-    parentEvidence: fixture.authenticated,
-    parentPages: [fixture.page],
-    chunks: [],
-    removedProofIds: [],
-    snapshot: { snapshotId: 'test-snapshot', snapshotRevision: 1 },
-    snapshotStore: acceptingSnapshotSealStore(),
-    runtime: deterministicRuntime([new Uint8Array(16).fill(87), new Uint8Array(12).fill(88)]),
-  })
-  const foreignHead = prepareEncryptedWalletBackupManifestHead({
-    keyHandle: fixture.keyHandle,
-    manifest: foreignManifest,
-    parent: fixture.authenticated.head,
-  })
+  const foreignHead = (
+    await prepareBoundedChildTargetForTest({
+      fixture,
+      snapshotNonce: 86,
+      snapshotId: 'test-snapshot',
+      snapshotRevision: 1,
+    })
+  ).head
   const foreignObservation = await readAuthenticatedEncryptedWalletBackupHead({
     keyHandle: fixture.keyHandle,
     enrollmentEpoch: 1,
@@ -10349,7 +10407,7 @@ async function createCasRecoveryFixtureForTest() {
         return {
           status: 'found' as const,
           enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(foreignHead),
+          head: manifestHeadWireForTest(foreignHead),
         }
       },
     },
@@ -11216,6 +11274,16 @@ function equalBytesForTest(left: Uint8Array, right: Uint8Array): boolean {
   )
 }
 
+function containsByteSequence(haystack: Uint8Array, needle: Uint8Array): boolean {
+  if (needle.byteLength === 0 || needle.byteLength > haystack.byteLength) return false
+  for (let start = 0; start <= haystack.byteLength - needle.byteLength; start += 1) {
+    let index = 0
+    while (index < needle.byteLength && haystack[start + index] === needle[index]) index += 1
+    if (index === needle.byteLength) return true
+  }
+  return false
+}
+
 function readBoundedStoreObject(
   rows: ReadonlyMap<string, EncryptedWalletBackupWireObject>,
   input: Readonly<{
@@ -11248,6 +11316,58 @@ function readBoundedStoreObject(
 
 function fromHex(value: string) {
   return Uint8Array.from(value.match(/../g) ?? [], (byte) => Number.parseInt(byte, 16))
+}
+
+async function assertManifestSourceIntervalVector(
+  page: Awaited<ReturnType<typeof prepareEncryptedWalletBackupManifestPage>>,
+  canonicalAad: Uint8Array,
+): Promise<void> {
+  const aad = decode(canonicalAad)
+  if (!Array.isArray(aad) || aad.length !== 15) throw new Error('manifest page AAD is invalid')
+  const provenance = readEncryptedWalletBackupManifestPageProvenance(page)
+  const preimage = encodeCanonical([
+    1,
+    'manifest-page-source-interval',
+    ...aad.slice(3, 7),
+    ...aad.slice(8, 14),
+    provenance.firstPinKey,
+    provenance.lastPinKey,
+  ])
+  assert.equal(toHex(preimage), vector.expected.manifestPassBSourceIntervalPreimageCborHex)
+  const preparationKey = await derivePreparationPersistenceKeyForVector()
+  assert.equal(toHex(preparationKey), vector.expected.preparationPersistenceKeyHex)
+  const hmacKey = await webcrypto.subtle.importKey(
+    'raw',
+    preparationKey,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const commitment = new Uint8Array(await webcrypto.subtle.sign('HMAC', hmacKey, preimage))
+  assert.equal(toHex(commitment), vector.expected.manifestPassBSourceIntervalCommitmentHex)
+  assert.equal(toHex(aad[14] as Uint8Array), toHex(commitment))
+}
+
+async function derivePreparationPersistenceKeyForVector(): Promise<Uint8Array> {
+  const encryptionRoot = await webcrypto.subtle.importKey(
+    'raw',
+    fromHex(vector.expected.encryptionRootHex),
+    'HKDF',
+    false,
+    ['deriveBits'],
+  )
+  return new Uint8Array(
+    await webcrypto.subtle.deriveBits(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: new TextEncoder().encode('bitcaster/encrypted-wallet-backup/hkdf-salt/v1'),
+        info: encodeCanonical([1, 'preparation-persistence', vector.inputs.realm]),
+      },
+      encryptionRoot,
+      256,
+    ),
+  )
 }
 
 function toHex(value: Uint8Array) {
@@ -11290,6 +11410,8 @@ interface BackupVector {
   }
   expected: Record<string, string | number> & {
     derivedSecretHex: string
+    encryptionRootHex: string
+    preparationPersistenceKeyHex: string
     vaultIdHex: string
     requestAuthPublicKeyHex: string
     proofIdHex: string
@@ -11301,5 +11423,7 @@ interface BackupVector {
     objectKeyHex: string
     tagHex: string
     bodyLength: number
+    manifestPassBSourceIntervalPreimageCborHex: string
+    manifestPassBSourceIntervalCommitmentHex: string
   }
 }

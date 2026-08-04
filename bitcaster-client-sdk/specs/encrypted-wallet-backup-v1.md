@@ -41,6 +41,8 @@ encryptionRoot = HKDF(seed64, rootSalt,
                       CBOR([1,"encryption-root",realm]), 32)
 requestRoot    = HKDF(seed64, rootSalt,
                       CBOR([1,"request-auth-root",realm]), 32)
+preparationPersistenceKey = HKDF(encryptionRoot, rootSalt,
+                      CBOR([1,"preparation-persistence",realm]), 32)
 vaultId        = HKDF(encryptionRoot, rootSalt,
                       CBOR([1,"vault-id",realm]), 32)
 objectKey      = HKDF(encryptionRoot, objectId16,
@@ -112,10 +114,13 @@ Fields are:
 10. `counter`: unsigned integer `0..2147483647`.
 11. `proofKind`: `0` ordinary, `1` CTF. Activity is a temporal disposition,
     not a structural proof kind and is not encoded here.
-12. `ctfMetadata`: null for ordinary. CTF uses the closed tuple
-    `[conditionId,outcomeLabel,outcomeCollectionId,registeredAt,finalExpiry,
-    terminalSeal]`:
-    both IDs are 32 bytes; outcome label is UTF-8 text 1..256 bytes with no
+12. `ctfMetadata`: null for ordinary. CTF uses this closed tuple:
+
+    ```text
+    [conditionId,outcomeLabel,outcomeCollectionId,registeredAt,finalExpiry,terminalSeal]
+    ```
+
+    Both IDs are 32 bytes. The outcome label is UTF-8 text 1..256 bytes with no
     controls or lone surrogates; `registeredAt` is a nonnegative safe Unix
     second; `finalExpiry` is a nonnegative safe Unix second. The identical
     committed record is valid on either side of that expiry boundary.
@@ -138,6 +143,7 @@ Fields are:
     A caller-supplied losing flag, naked error code, changed witness, or cloned
     capability has no authority. The compact seal can only make the proof
     nonselectable; it cannot authorize deletion or spend.
+
 13. `createdAt`: nonnegative safe Unix seconds.
 14. `updatedAt`: nonnegative safe Unix seconds not before `createdAt`.
 
@@ -290,12 +296,58 @@ one immutable chunk. Independently packed chunks may interleave; pages flatten
 all bindings into proof-ID order and may refer to the same chunk from different
 pages.
 
-Manifest pages use the same object-key derivation with kind `2`, a 65536-byte
-zero-padded frame, and AAD:
+Manifest pages use the same object-key derivation with kind `2` and a
+65536-byte zero-padded frame. A persisted Pass-B page uses this AAD:
 
 ```text
-[1,2,realm,vaultId32,objectId16,generation,65536]
+[
+  1,
+  "encrypted-wallet-backup-manifest-page-aad",
+  2,
+  realm,
+  vaultId32,
+  objectId16,
+  generation,
+  65536,
+  snapshotId,
+  snapshotRevision,
+  sealedControlDigest32,
+  passAResultDigest32,
+  pageIndex,
+  pageCount,
+  sourceIntervalCommitment32
+]
 ```
+
+The AAD binds the page to its frozen snapshot, sealed control, Pass-A result,
+page boundary, and exact source-pin interval. `pageIndex` is less than
+`pageCount`. `sourceIntervalCommitment32` is HMAC-SHA-256 with
+`preparationPersistenceKey` over this canonical tuple:
+
+```text
+[
+  1,
+  "manifest-page-source-interval",
+  realm,
+  vaultId32,
+  objectId16,
+  generation,
+  snapshotId,
+  snapshotRevision,
+  sealedControlDigest32,
+  passAResultDigest32,
+  pageIndex,
+  pageCount,
+  firstPinKey,
+  lastPinKey
+]
+```
+
+Each local source pin contains 1..1024 bytes. The first pin is not after the
+last pin. The backup service receives only the opaque keyed commitment. The
+random object ID prevents correlation of the same interval across rebuilt
+pages. A proof chunk continues to use the compact seven-item object AAD. Kind
+`2` does not accept that compact AAD.
 
 The digest algorithm is unchanged. A changed page receives a fresh object ID
 and nonce. The service sees only the encrypted object and public reference.
@@ -455,20 +507,29 @@ or delta scalar is authoritative. The service's authenticated-account-wide
 quota remains authoritative and may still reject an upload that passes this
 per-vault client lower bound.
 
-Every non-empty child writes new manifest pages at exactly the child generation.
-The parentless manifest builder is a generation-one-only capability. Every
-later generation, including a full one-for-one replacement, must be constructed
-through the authenticated-parent incremental builder, and the resulting head
-accepts only the exact authenticated parent captured by that builder.
-Proof-chunk generation may be less than or equal to the child generation. An
-exact `(objectId,digest)` found in the authenticated exact parent is inherited;
-every other chunk is part of the current attempt's uploaded delta. The child
-reference set is the union of its new pages, newly packed chunks, and the
-selected intersection with the exact parent chunk references. Removed or
-repacked proofs remove their old chunk reference when no retained entry uses it. The final transactional
-snapshot seal authenticates the exact union of new prepared proof bindings and
-selected inherited `(proofId,commitment)` stubs; inherited metadata never creates
-a spendable or selectable proof capability.
+The client creates every manifest target through one persisted bounded
+pipeline. It freezes one exact local proof snapshot. It seals that snapshot
+before manifest construction. Pass A reads the sealed source in bounded order
+and persists the exact page boundaries. Pass B creates and persists one page at
+a time. It advances an exact durable cursor in the same transaction. The
+finalizer scans the complete persisted page set in order. It requires one exact
+exhaustion read before it issues the target.
+
+Genesis uses authenticated not-found head evidence. Every later generation
+uses the exact authenticated parent head. Every non-empty child writes new
+manifest pages at exactly the child generation. Proof-chunk generation may be
+less than or equal to the child generation. An exact `(objectId,digest)` found
+in the authenticated parent is inherited. Every other chunk is part of the
+current attempt's uploaded delta. The child reference set contains its new
+pages, newly packed chunks, and the selected intersection with the exact parent
+chunk references. Removed or repacked proofs remove an old chunk reference when
+no retained entry uses it.
+
+The frozen-snapshot seal authenticates the exact union of prepared proof
+bindings and selected inherited `(proofId,commitment)` stubs. Inherited metadata
+never creates a spendable or selectable proof capability. The package exports
+no whole-view manifest builder, incremental whole-view builder, or process-local
+prepared-head lookup.
 
 An empty wallet is a canonical head with zero proofs, pages, chunks, objects,
 and stored bytes. It is valid both at generation one and as the exact child that
@@ -749,25 +810,32 @@ all of these independently:
 - at most four concurrent requests;
 - at most four distinct parent chunks used as repack sources.
 
-Fifteen maximum proof-chunk PUTs fit the byte budget; the request-count limit
+Fifteen maximum proof-chunk PUTs fit the byte budget. The request-count limit
 does not weaken the byte limit. These are per-cycle limits, not cumulative
-limits for the target. Planning consumes an SDK-issued prepared-head
-capability, not caller-provided object descriptors, byte counts, target totals,
-or repack flags. The capability contains the real prepared page/chunk objects
-and exact non-inherited delta. For each newly prepared chunk, incremental
-manifest construction records the distinct exact-parent chunk IDs from which
-retained proofs moved; genesis and wholly new proofs have no repack source. A
-cycle's repack count is the union of those source IDs across its selected
-chunks. The stable planner greedily fills every nonfinal cycle until no
-remaining prepared object can fit its request, byte, and source-union
-capacities, and creates at most 64 cycles. The 64-cycle ledger limit is defense
-in depth: 256 maximum proof chunks already exceed the 64 MiB stored-object
-ceiling, while 255 proof chunks plus three manifest pages fit. The planner
-rejects a target whose exact head `storedBytes` (including inherited objects)
-exceeds that ceiling, whose parent-plus-new-delta lower bound exceeds that
-ceiling, or whose capability omits the new-object delta;
-canonical PUT payload bytes are counted
-separately against each cycle's 4 MiB transport limit.
+limits for the target.
+
+Planning consumes the persisted bounded target and its paired upload cursor.
+It does not consume caller-provided object descriptors, byte counts, target
+totals, or repack flags. The attempt and cursor are created in one adapter
+transaction before network I/O. The cursor advances through new manifest pages
+and then new proof chunks. It reaches `complete` only after it covers every
+non-inherited target object.
+
+The planner reads and validates one persisted source object at a time. It seals
+only the next batch and its successor cursor in one transaction. It greedily
+fills each nonfinal batch until another object cannot fit the request, byte, or
+repack-source limit. For each newly prepared chunk, persisted construction
+records the distinct exact-parent chunk IDs from which retained proofs moved.
+Genesis and wholly new proofs have no repack source. A cycle's repack count is
+the union of those source IDs across its selected chunks.
+
+The planner creates at most 64 batches. This limit is defense in depth. The
+64 MiB stored-object ceiling already limits a target to at most 255 proof chunks
+plus three manifest pages. The planner rejects a target whose exact head
+`storedBytes` exceeds that ceiling. It also rejects a child whose parent plus
+new-delta lower bound exceeds that ceiling. Canonical PUT payload bytes are
+counted separately against each cycle's 4 MiB transport limit. The adapter has
+no cursorless attempt or batch mutation surface.
 CAS handoff separately validates the complete target-wide batch ledger,
 reference delta, independent ID/digest uniqueness, and quota-bound target;
 per-cycle bounds never weaken those whole-target checks. Each post-expiry
@@ -949,14 +1017,14 @@ absence, deletion, receipt, or eviction authority. Account and head-CAS
 Before materializing a response, the client enforces these inclusive operation-
 specific body limits:
 
-| response operation | maximum bytes |
-| --- | ---: |
-| account lifecycle | 256 |
-| enrollment epoch | 128 |
-| current head | 132096 |
-| object GET | 266272 |
-| object PUT/DELETE, attempt abort, head CAS | 128 |
-| any error | 128 |
+| response operation                         | maximum bytes |
+| ------------------------------------------ | ------------: |
+| account lifecycle                          |           256 |
+| enrollment epoch                           |           128 |
+| current head                               |        132096 |
+| object GET                                 |        278528 |
+| object PUT/DELETE, attempt abort, head CAS |           128 |
+| any error                                  |           128 |
 
 Every response must be one exact flat tuple. Maps, tags, floats, negative
 integers, indefinite items, non-minimal integer/length encodings, invalid UTF-8,
@@ -993,16 +1061,16 @@ bodies or emitted as log/metric labels.
 
 The HTTP status, error code, and operation matrix is closed:
 
-| HTTP | permitted code | permitted operations |
-| ---: | --- | --- |
-| 200 | exact operation-specific success tuple above | only its named operation |
-| 400 | `invalid-request` | all operations |
-| 401 | `unauthorized` | all operations |
-| 404 | `not-found` | all operations; always fatal/non-authoritative |
-| 409 | `conflict`, `replay-rejected` | all operations |
-| 429 | `rate-limited` | all operations |
-| 429 | `quota-exceeded` | account enrollment, object PUT, and head CAS only |
-| 503 | `overloaded`, `unavailable` | all operations |
+| HTTP | permitted code                               | permitted operations                              |
+| ---: | -------------------------------------------- | ------------------------------------------------- |
+|  200 | exact operation-specific success tuple above | only its named operation                          |
+|  400 | `invalid-request`                            | all operations                                    |
+|  401 | `unauthorized`                               | all operations                                    |
+|  404 | `not-found`                                  | all operations; always fatal/non-authoritative    |
+|  409 | `conflict`, `replay-rejected`                | all operations                                    |
+|  429 | `rate-limited`                               | all operations                                    |
+|  429 | `quota-exceeded`                             | account enrollment, object PUT, and head CAS only |
+|  503 | `overloaded`, `unavailable`                  | all operations                                    |
 
 No other operation/status/code combination is valid. `retryAfterSecondsOrNull`
 must be null for `invalid-request`, `unauthorized`, `not-found`, `conflict`,

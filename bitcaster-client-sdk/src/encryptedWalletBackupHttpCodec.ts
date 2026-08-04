@@ -1,18 +1,18 @@
-import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { decode } from 'cborg'
 import {
   encodeCanonicalBackupCbor,
   preflightEncryptedBackupHttpResponseCbor,
-  preflightEncryptedBackupObjectAadCbor,
 } from './encryptedWalletBackupCbor.ts'
 import { validateEncryptedWalletBackupManifestHeadUnit } from './encryptedWalletBackupManifestHead.ts'
+import { requireEncryptedWalletBackupObjectAad } from './encryptedWalletBackupObjectAad.ts'
+import { encryptedWalletBackupObjectDigest } from './encryptedWalletBackupObjectDigest.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_HTTP_ERROR_RESPONSE_MAX_BYTES = 128
 export const ENCRYPTED_WALLET_BACKUP_HTTP_ACCOUNT_RESPONSE_MAX_BYTES = 256
 export const ENCRYPTED_WALLET_BACKUP_HTTP_EPOCH_RESPONSE_MAX_BYTES = 128
 export const ENCRYPTED_WALLET_BACKUP_HTTP_HEAD_RESPONSE_MAX_BYTES = 132_096
-export const ENCRYPTED_WALLET_BACKUP_HTTP_OBJECT_RESPONSE_MAX_BYTES = 266_272
+export const ENCRYPTED_WALLET_BACKUP_HTTP_OBJECT_RESPONSE_MAX_BYTES = 272 * 1_024
 export const ENCRYPTED_WALLET_BACKUP_HTTP_MUTATION_RESPONSE_MAX_BYTES = 128
 
 export type EncryptedWalletBackupHttpOperation =
@@ -353,7 +353,7 @@ export function encodeEncryptedWalletBackupHttpResponse(
       const generation = requirePositiveInteger(raw.generation, 'object generation')
       const paddedLength = requirePaddedLength(raw.paddedLength)
       const objectDigest = requireLowerHex(raw.objectDigest, 32, 'object digest')
-      const aad = requireBytes(raw.aad, 1, 256, 'object AAD')
+      const aad = requireBytes(raw.aad, 1, 4_096, 'object AAD')
       const encryptedBody = requireBytes(
         raw.encryptedBody,
         65_564,
@@ -606,7 +606,7 @@ function decodeObjectResult(
   const generation = requirePositiveInteger(tuple[8], 'object generation')
   const paddedLength = requirePaddedLength(tuple[9])
   const objectDigest = bytesToHex(requireExactBytes(tuple[10], 32, 'object digest'))
-  const aad = requireBytes(tuple[11], 1, 256, 'object AAD')
+  const aad = requireBytes(tuple[11], 1, 4_096, 'object AAD')
   const encryptedBody = requireBytes(tuple[12], 65_564, 262_172, 'encrypted object body')
   const expectedKind = requireKindCode(context.expectedKindCode)
   const expectedRealm = requireRealm(context.expectedRealm)
@@ -837,20 +837,17 @@ function requireObjectAad(input: {
   generation: number
   paddedLength: 65_536 | 262_144
 }): void {
-  preflightEncryptedBackupObjectAadCbor(input.aad)
-  const decoded = decode(input.aad) as unknown
-  if (
-    !equalBytes(input.aad, encodeCanonicalBackupCbor(decoded)) ||
-    !Array.isArray(decoded) ||
-    decoded.length !== 7 ||
-    decoded[0] !== 1 ||
-    decoded[1] !== input.kindCode ||
-    decoded[2] !== input.realm ||
-    bytesToHex(requireExactBytes(decoded[3], 32, 'AAD vault id')) !== input.vaultId ||
-    bytesToHex(requireExactBytes(decoded[4], 16, 'AAD object id')) !== input.objectId ||
-    decoded[5] !== input.generation ||
-    decoded[6] !== input.paddedLength
-  ) {
+  try {
+    requireEncryptedWalletBackupObjectAad({
+      canonicalAad: input.aad,
+      kindCode: input.kindCode,
+      realm: input.realm,
+      vaultId: input.vaultId,
+      objectId: input.objectId,
+      generation: input.generation,
+      paddedLength: input.paddedLength,
+    })
+  } catch {
     throw new Error('object response AAD does not match metadata')
   }
 }
@@ -1068,13 +1065,7 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 function framedObjectDigest(aad: Uint8Array, body: Uint8Array): string {
-  return bytesToHex(
-    sha256.create().update(uint32be(aad.byteLength)).update(aad).update(body).digest(),
-  )
-}
-
-function uint32be(value: number): Uint8Array {
-  return Uint8Array.of(value >>> 24, value >>> 16, value >>> 8, value)
+  return bytesToHex(encryptedWalletBackupObjectDigest(aad, body))
 }
 
 function assertNever(value: never): never {

@@ -16,6 +16,7 @@ import {
   type PreparedEncryptedWalletBackupObject,
 } from './encryptedWalletBackup.ts'
 import { encodeCanonicalBackupCbor as encodeCanonical } from './encryptedWalletBackupCbor.ts'
+import { encryptedWalletBackupObjectDigest } from './encryptedWalletBackupObjectDigest.ts'
 import {
   rehydratePreparedEncryptedWalletBackupRecordBatch,
   type EncryptedWalletBackupPreparedRecordSnapshotBatchStore,
@@ -1547,9 +1548,7 @@ function requireStagedObject(
     value.body.byteLength !== 262_172
   )
     throw new Error('persisted backup staged object is invalid')
-  const digest = bytesToHex(
-    sha256(concatBytes(uint32Bytes(value.aad.byteLength), value.aad, value.body)),
-  )
+  const digest = bytesToHex(encryptedWalletBackupObjectDigest(value.aad, value.body))
   if (digest !== value.digest) throw new Error('persisted backup staged object digest is invalid')
   return Object.freeze({
     ...value,
@@ -2168,20 +2167,4 @@ function equalBytes(left: Uint8Array, right: Uint8Array) {
   for (let index = 0; index < left.byteLength; index += 1)
     difference |= left[index]! ^ right[index]!
   return difference === 0
-}
-
-function concatBytes(...values: readonly Uint8Array[]) {
-  const result = new Uint8Array(values.reduce((sum, value) => sum + value.byteLength, 0))
-  let offset = 0
-  for (const value of values) {
-    result.set(value, offset)
-    offset += value.byteLength
-  }
-  return result
-}
-
-function uint32Bytes(value: number) {
-  const result = new Uint8Array(4)
-  new DataView(result.buffer).setUint32(0, value, false)
-  return result
 }

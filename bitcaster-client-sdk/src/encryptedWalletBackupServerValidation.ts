@@ -1,15 +1,10 @@
 import { schnorr } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
-import { decode } from 'cborg'
 import type {
   EncryptedWalletBackupReplayStore,
   EncryptedWalletBackupRequestMethod,
 } from './encryptedWalletBackup.ts'
-import {
-  encodeCanonicalBackupCbor,
-  preflightEncryptedBackupObjectAadCbor,
-} from './encryptedWalletBackupCbor.ts'
 
 export function requireBytes(
   value: unknown,
@@ -179,35 +174,6 @@ export function framedEncryptedObjectDigest(
     .update(aad)
     .update(encryptedBody)
     .digest()
-}
-
-export function requireObjectAad(
-  input: Readonly<{
-    canonicalAad: Uint8Array
-    kindCode: 1 | 2
-    realm: string
-    vaultId: string
-    objectId: string
-    generation: number
-    paddedLength: 65_536 | 262_144
-  }>,
-): void {
-  preflightEncryptedBackupObjectAadCbor(input.canonicalAad)
-  const decoded = decode(input.canonicalAad)
-  if (
-    !equalBytes(input.canonicalAad, encodeCanonicalBackupCbor(decoded)) ||
-    !Array.isArray(decoded) ||
-    decoded.length !== 7 ||
-    decoded[0] !== 1 ||
-    decoded[1] !== input.kindCode ||
-    decoded[2] !== input.realm ||
-    bytesToHex(requireBytes(decoded[3], 32, 32, 'AAD vault id')) !== input.vaultId ||
-    bytesToHex(requireBytes(decoded[4], 16, 16, 'AAD object id')) !== input.objectId ||
-    decoded[5] !== input.generation ||
-    decoded[6] !== input.paddedLength
-  ) {
-    throw new Error('encrypted backup object AAD is invalid')
-  }
 }
 
 export function assertNever(value: never): never {

@@ -567,6 +567,42 @@ test('object GET strictly binds AAD, identity, digest, and head generation', () 
     'found',
   )
 
+  if (manifest.kind !== 'object-result' || manifest.result !== 'found') {
+    throw new Error('manifest fixture is invalid')
+  }
+  const malformedManifestAad = encodeCanonicalBackupCbor([
+    1,
+    'encrypted-wallet-backup-manifest-page-aad',
+    2,
+    REALM,
+    hexToBytes(VAULT_ID),
+    hexToBytes(OBJECT_ID),
+    2,
+    65_536,
+    'codec-snapshot',
+    1,
+    hexToBytes('16'.repeat(32)),
+    hexToBytes('17'.repeat(32)),
+    1,
+    1,
+    new Uint8Array(32).fill(0x18),
+  ])
+  const malformedManifestDigest = framedDigest(malformedManifestAad, manifest.encryptedBody)
+  assert.throws(
+    () =>
+      decodeEncryptedWalletBackupHttpResponse({
+        ...objectContext({ kindCode: 2, currentHeadGeneration: 2 }),
+        expectedObjectDigest: malformedManifestDigest,
+        httpStatus: 200,
+        body: encodeRawFoundObjectResponse({
+          ...manifest,
+          aad: malformedManifestAad,
+          objectDigest: malformedManifestDigest,
+        }),
+      }),
+    /AAD/,
+  )
+
   const failures: readonly [
     string,
     EncryptedWalletBackupHttpResponseValue,
@@ -1102,15 +1138,18 @@ function objectResponse(input: {
 }): EncryptedWalletBackupHttpResponseValue {
   void input.currentHeadGeneration
   const paddedLength = input.kindCode === 1 ? 262_144 : 65_536
-  const aad = encodeCanonicalBackupCbor([
-    1,
-    input.kindCode,
-    REALM,
-    hexToBytes(VAULT_ID),
-    hexToBytes(OBJECT_ID),
-    input.generation,
-    paddedLength,
-  ])
+  const aad =
+    input.kindCode === 1
+      ? encodeCanonicalBackupCbor([
+          1,
+          input.kindCode,
+          REALM,
+          hexToBytes(VAULT_ID),
+          hexToBytes(OBJECT_ID),
+          input.generation,
+          paddedLength,
+        ])
+      : manifestPageAad(input.generation)
   const encryptedBody = new Uint8Array(paddedLength + 28).fill(0x31)
   const objectDigest = framedDigest(aad, encryptedBody)
   return {
@@ -1127,6 +1166,26 @@ function objectResponse(input: {
     aad,
     encryptedBody,
   }
+}
+
+function manifestPageAad(generation: number): Uint8Array {
+  return encodeCanonicalBackupCbor([
+    1,
+    'encrypted-wallet-backup-manifest-page-aad',
+    2,
+    REALM,
+    hexToBytes(VAULT_ID),
+    hexToBytes(OBJECT_ID),
+    generation,
+    65_536,
+    'codec-snapshot',
+    1,
+    hexToBytes('16'.repeat(32)),
+    hexToBytes('17'.repeat(32)),
+    0,
+    1,
+    new Uint8Array(32).fill(0x18),
+  ])
 }
 
 function encodeRawFoundObjectResponse(

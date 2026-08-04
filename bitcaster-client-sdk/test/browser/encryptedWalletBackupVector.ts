@@ -5,13 +5,10 @@ import {
   decryptEncryptedWalletBackupProofChunk,
   encodeEncryptedWalletBackupRequestProof,
   packEncryptedWalletBackupProofChunk,
-  prepareEncryptedWalletBackupManifest,
-  prepareEncryptedWalletBackupManifestHead,
   prepareEncryptedWalletBackupObject,
   prepareEncryptedWalletBackupProof,
   prepareEncryptedWalletBackupRequestProof,
   verifyEncryptedWalletBackupConditionalKeyset,
-  readPreparedEncryptedWalletBackupManifestHead,
   readPreparedEncryptedWalletBackupObject,
   type EncryptedWalletBackupProofInput,
   type EncryptedWalletBackupRuntime,
@@ -22,6 +19,7 @@ import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
 } from '../../src/durableCustody.ts'
+import { buildBoundedEncryptedWalletBackupManifestVector } from './encryptedWalletBackupBoundedManifest.ts'
 
 const CTF_KEYSET_ID = '0170110f06b9bb85565a6746ca5715f877b99db14d87219f6e9030cb529f61e6ea'
 const CTF_MINT_KEYS = {
@@ -164,60 +162,33 @@ async function exerciseManifestVector(
     )
   }
   proofs.sort((left, right) => left.proofId.localeCompare(right.proofId))
-  const chunks = [
-    packEncryptedWalletBackupProofChunk([proofs[0]!, proofs[2]!]),
-    packEncryptedWalletBackupProofChunk([proofs[1]!, proofs[3]!]),
-  ]
-  const chunkObjects = await Promise.all(
-    chunks.map((chunk, index) =>
-      prepareEncryptedWalletBackupObject({
-        keyHandle,
-        chunk,
-        generation: 1,
-        runtime: deterministicRuntime([
-          new Uint8Array(16).fill(index + 1),
-          new Uint8Array(12).fill(index + 11),
-        ]),
-      }),
-    ),
-  )
-  const manifest = await prepareEncryptedWalletBackupManifest({
+  const manifest = await buildBoundedEncryptedWalletBackupManifestVector({
+    seed,
     keyHandle,
-    generation: 1,
-    snapshotNonce: new Uint8Array(16).fill(33),
-    chunks: chunks.map((chunk, index) => ({
-      chunk,
-      object: chunkObjects[index]!,
-    })),
-    snapshotStore: {
-      async sealCommittedBackupSnapshot<T>(
-        expected: unknown,
-        seal: (value: never) => T,
-      ): Promise<T> {
-        return seal(expected as never)
-      },
-    },
-    runtime: deterministicRuntime([new Uint8Array(16).fill(21), new Uint8Array(12).fill(31)]),
+    proofs,
+    packRuntimes: [
+      deterministicRuntime([new Uint8Array(16).fill(1), new Uint8Array(12).fill(11)]),
+      deterministicRuntime([new Uint8Array(16).fill(2), new Uint8Array(12).fill(12)]),
+    ],
+    pageRuntime: deterministicRuntime([new Uint8Array(16).fill(21), new Uint8Array(12).fill(31)]),
   })
-  const head = prepareEncryptedWalletBackupManifestHead({
-    keyHandle,
-    manifest,
-    parent: null,
-  })
-  const headWire = readPreparedEncryptedWalletBackupManifestHead(head)
-  const pageWire = readPreparedEncryptedWalletBackupObject(manifest.pages[0]!)
-  equal(toHex(headWire.canonicalHead), vector.expected.manifestCanonicalHeadHex, 'manifest head')
+  const pageWire = readPreparedEncryptedWalletBackupObject(manifest.page)
+  equal(toHex(manifest.head), vector.expected.manifestPipelineCanonicalHeadHex, 'manifest head')
   equal(
-    toHex(headWire.canonicalReferenceSet),
-    vector.expected.manifestCanonicalReferenceSetHex,
+    toHex(manifest.references),
+    vector.expected.manifestPipelineCanonicalReferenceSetHex,
     'manifest reference set',
   )
-  equal(pageWire.objectId, vector.expected.manifestPageObjectIdHex, 'manifest page object id')
-  equal(pageWire.digest, vector.expected.manifestPageDigestHex, 'manifest page digest')
-  equal(toHex(pageWire.aad), vector.expected.manifestPageAadHex, 'manifest page AAD')
+  equal(
+    pageWire.objectId,
+    vector.expected.manifestPipelinePageObjectIdHex,
+    'manifest page object id',
+  )
+  equal(pageWire.digest, vector.expected.manifestPipelinePageDigestHex, 'manifest page digest')
+  equal(toHex(pageWire.aad), vector.expected.manifestPipelinePageAadHex, 'manifest page AAD')
   equal(
     toHex(await digest(pageWire.body)),
-    vector.expected.manifestPageBodySha256Hex,
+    vector.expected.manifestPipelinePageBodySha256Hex,
     'manifest page body digest',
   )
 }
@@ -632,7 +603,11 @@ async function rejects(action: () => unknown | Promise<unknown>, field: string):
 }
 
 function equal(actual: unknown, expected: unknown, field: string): void {
-  if (actual !== expected) throw new Error(`vector mismatch: ${field}`)
+  if (actual !== expected) {
+    throw new Error(
+      `vector mismatch: ${field}; actual=${String(actual)}; expected=${String(expected)}`,
+    )
+  }
 }
 
 async function digest(value: Uint8Array): Promise<Uint8Array> {
