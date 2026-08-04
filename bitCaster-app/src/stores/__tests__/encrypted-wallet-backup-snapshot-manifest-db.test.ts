@@ -952,6 +952,7 @@ describe("encrypted wallet backup Dexie snapshot and manifest store", () => {
       "revision",
       "snapshotId",
       "snapshotRevision",
+      "generation",
       "canonicalDescriptor",
     ]);
 
@@ -985,6 +986,7 @@ function preparedSourceStore(database: BitcasterDB, keyHandle: EncryptedWalletBa
     scopeId: WALLET_SCOPE_ID,
     realm: REALM,
     vaultId: keyHandle.vaultId,
+    generation: 1,
   });
 }
 

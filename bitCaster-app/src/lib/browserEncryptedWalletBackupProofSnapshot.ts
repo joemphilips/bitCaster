@@ -102,6 +102,7 @@ function createStores(input: BuildBrowserEncryptedWalletBackupProofSnapshotInput
       scopeId: input.scopeId,
       realm: input.keyHandle.realm,
       vaultId: input.keyHandle.vaultId,
+      generation: authority.generation,
     }),
     snapshot: new EncryptedWalletBackupSnapshotManifestDexieStore({
       database: input.database,

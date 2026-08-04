@@ -1,7 +1,7 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   createEncryptedWalletBackupKeyHandle,
   EncryptedWalletBackupDeadlineError,
@@ -13,6 +13,7 @@ import {
   type EncryptedWalletBackupRequestProof,
 } from "@bitcaster/client-sdk/encryptedWalletBackup";
 import { EncryptedWalletBackupHttpTransportError } from "@bitcaster/client-sdk/encryptedWalletBackupHttpAdapter";
+import { decodeEncryptedWalletBackupSnapshotCleanupJob } from "@bitcaster/client-sdk/encryptedWalletBackupSnapshotCleanup";
 import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
 import { encodeEncryptedWalletBackupHttpResponse } from "@bitcaster/client-sdk/encryptedWalletBackupHttpCodec";
 import { encryptedWalletBackupObjectDigest } from "@bitcaster/client-sdk/encryptedWalletBackupObjectDigest";
@@ -33,6 +34,7 @@ import {
 } from "../encryptedWalletBackupDriver";
 import { EncryptedWalletBackupEnrollmentDexieStore } from "../../stores/encrypted-wallet-backup-enrollment-db";
 import { createEncryptedWalletBackupUploadCoordinatorDexieStore } from "../../stores/encrypted-wallet-backup-upload-coordinator-db";
+import { runEncryptedWalletBackupSnapshotCleanupPage } from "../../stores/encrypted-wallet-backup-snapshot-cleanup-db";
 import { BitcasterDB } from "../../stores/proof-db";
 
 const realm = "bitcaster.local";
@@ -44,13 +46,20 @@ const scopeId = deriveDurableCustodyScopeId({
   walletId: deriveDurableCustodyWalletId(seed),
 });
 const databases: BitcasterDB[] = [];
+const walletLockManager = {
+  request: async (_name: string, _options: LockOptions, action: () => Promise<unknown>) => action(),
+};
+
+beforeEach(() => {
+  vi.stubGlobal("navigator", { locks: walletLockManager });
+});
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const database of databases.splice(0)) {
-    database.close();
-    await database.delete();
-  }
+  vi.unstubAllGlobals();
+  const opened = databases.splice(0);
+  for (const database of opened) database.close();
+  for (const database of opened) await database.delete();
 });
 
 it("reopens a durable attempt and performs bounded object PUTs plus one head CAS", async () => {
@@ -141,14 +150,128 @@ it("reopens a durable attempt and performs bounded object PUTs plus one head CAS
     attemptId: "77".repeat(16),
     vaultId: fixture.keyHandle.vaultId,
   });
-  expect(observed.requests).toEqual([
-    ...objectPaths.map((path) => `PUT ${path}`),
-    `POST ${casPath}`,
-    `GET ${headPath}`,
-  ]);
+  expect(observed.requests).toHaveLength(objectPaths.length + 2);
+  expect(observed.requests).toEqual(
+    expect.arrayContaining([
+      ...objectPaths.map((path) => `PUT ${path}`),
+      `POST ${casPath}`,
+      `GET ${headPath}`,
+    ]),
+  );
   expect(observed.maximumInFlight).toBeLessThanOrEqual(4);
   expect(observed.putBytes).toBeLessThanOrEqual(1_048_576);
   expect(observed.putBytes).toBeGreaterThan(0);
+  expect(
+    (
+      await restarted.encryptedWalletBackupSnapshotCleanupJobs.get([
+        realm,
+        fixture.keyHandle.vaultId,
+      ])
+    )?.job,
+  ).toMatchObject({
+    acknowledgedGeneration: 1,
+    localSnapshotId: "driver-test",
+    localSnapshotRevision: 1,
+    phase: "prepared-sources",
+    cursor: null,
+  });
+});
+
+it("continues cleanup pages without network work or a remount", async () => {
+  const database = openDatabase();
+  const fixture = await targetFixture();
+  await database.encryptedWalletBackupSnapshotCleanupJobs.put({
+    realm,
+    vaultId: fixture.keyHandle.vaultId,
+    job: decodeEncryptedWalletBackupSnapshotCleanupJob({
+      schemaVersion: 1,
+      realm,
+      vaultId: fixture.keyHandle.vaultId,
+      acknowledgedGeneration: 2,
+      localSnapshotId: "current",
+      localSnapshotRevision: 1,
+      phase: "manifest-pages",
+      cursor: null,
+    }),
+  });
+  await database.encryptedWalletBackupManifestPages.bulkAdd(
+    Array.from({ length: 300 }, (_, pageIndex) => ({
+      realm,
+      vaultId: fixture.keyHandle.vaultId,
+      snapshotId: "obsolete",
+      snapshotRevision: 0,
+      generation: 1,
+      pageIndex,
+      objectId: objectId(100 + pageIndex),
+      digest: "aa".repeat(32),
+      canonical: new Uint8Array(32),
+    })),
+  );
+  const fetch = vi.fn(async () => {
+    throw new Error("cleanup must not use the network");
+  });
+  const input = {
+    configuration: { realm, signedOrigin, transportOrigin },
+    database,
+    scopeId,
+    keyHandle: fixture.keyHandle,
+    ownerId: "cleanup-owner",
+    signal: AbortSignal.timeout(60_000),
+    fetch,
+  };
+  expect(await runEncryptedWalletBackupDriverCycle(input)).toEqual({ state: "cleanup-pending" });
+  expect(await runEncryptedWalletBackupDriverCycle(input)).toEqual({ state: "cleanup-pending" });
+  expect(await runEncryptedWalletBackupDriverCycle(input)).toEqual({
+    state: "idle-needs-snapshot",
+  });
+  expect(await database.encryptedWalletBackupManifestPages.count()).toBe(0);
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("keeps an SDK-decoded active upload snapshot tuple", async () => {
+  const database = openDatabase();
+  const fixture = await targetFixture();
+  await sealBoundedEncryptedWalletBackupUploadAttempt({
+    attemptId: "99".repeat(16),
+    ownerId: "active-owner",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: fixture.keyHandle,
+    target: fixture.target,
+    store: createEncryptedWalletBackupUploadCoordinatorDexieStore(database),
+  });
+  await database.encryptedWalletBackupSnapshotCleanupJobs.put({
+    realm,
+    vaultId: fixture.keyHandle.vaultId,
+    job: decodeEncryptedWalletBackupSnapshotCleanupJob({
+      schemaVersion: 1,
+      realm,
+      vaultId: fixture.keyHandle.vaultId,
+      acknowledgedGeneration: 2,
+      localSnapshotId: "current",
+      localSnapshotRevision: 1,
+      phase: "manifest-pages",
+      cursor: null,
+    }),
+  });
+  await database.encryptedWalletBackupManifestPages.add({
+    realm,
+    vaultId: fixture.keyHandle.vaultId,
+    snapshotId: "driver-test",
+    snapshotRevision: 1,
+    generation: 1,
+    pageIndex: 0,
+    objectId: objectId(400),
+    digest: "aa".repeat(32),
+    canonical: new Uint8Array(32),
+  });
+  await runEncryptedWalletBackupSnapshotCleanupPage({
+    database,
+    scopeId,
+    realm,
+    vaultId: fixture.keyHandle.vaultId,
+  });
+  expect(await database.encryptedWalletBackupManifestPages.count()).toBe(1);
+  expect(await database.encryptedWalletBackupUploadAttempts.count()).toBe(1);
 });
 
 it("resumes rejected-fork cleanup after abort backoff and deletes its partition", async () => {

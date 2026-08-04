@@ -37,6 +37,7 @@ import type {
 } from "@bitcaster/client-sdk/encryptedWalletBackupSync";
 import type { EncryptedWalletBackupSyncAttemptRecord } from "@bitcaster/client-sdk/encryptedWalletBackup";
 import type { EncryptedWalletBackupAccountOperationResultRecord } from "@bitcaster/client-sdk/encryptedWalletBackupEnrollment";
+import type { EncryptedWalletBackupSnapshotCleanupJob } from "@bitcaster/client-sdk/encryptedWalletBackupSnapshotCleanup";
 
 /** Canonical encrypted wallet-backup control row. The SDK owns its CBOR codec. */
 export interface EncryptedWalletBackupDexieControlRow {
@@ -45,6 +46,7 @@ export interface EncryptedWalletBackupDexieControlRow {
   vaultId: string;
   snapshotId: string;
   snapshotRevision: number;
+  generation: number;
   canonical: Uint8Array;
 }
 
@@ -54,9 +56,12 @@ export interface EncryptedWalletBackupDexieSnapshotPinRow {
   vaultId: string;
   snapshotId: string;
   snapshotRevision: number;
+  generation: number;
   recordKindCode: 0;
   recordId: string;
   commitment: string;
+  sourceRevision: number;
+  sourceBodyReference: string;
   canonical: Uint8Array;
 }
 
@@ -71,6 +76,7 @@ export interface EncryptedWalletBackupDexiePreparedSourceRow {
   revision: number;
   snapshotId: string;
   snapshotRevision: number;
+  generation: number;
   canonicalDescriptor: Uint8Array;
 }
 
@@ -144,6 +150,13 @@ export interface EncryptedWalletBackupDexieRetrySchedulerRow {
   attemptId: string;
   retryStreak: number;
   retryNotBeforeUnixMilliseconds: number;
+}
+
+/** One resumable metadata cleanup job for one encrypted-backup vault. */
+export interface EncryptedWalletBackupDexieSnapshotCleanupRow {
+  realm: string;
+  vaultId: string;
+  job: EncryptedWalletBackupSnapshotCleanupJob;
 }
 
 interface StoredProofMetadata {
@@ -334,6 +347,10 @@ export class BitcasterDB extends Dexie {
   encryptedWalletBackupRetrySchedulers!: Table<
     EncryptedWalletBackupDexieRetrySchedulerRow,
     [string, string, string]
+  >;
+  encryptedWalletBackupSnapshotCleanupJobs!: Table<
+    EncryptedWalletBackupDexieSnapshotCleanupRow,
+    [string, string]
   >;
 
   constructor(databaseName = "bitcaster") {
@@ -537,6 +554,46 @@ export class BitcasterDB extends Dexie {
             "encryptedWalletBackupUploadCasAttempts",
             "encryptedWalletBackupEnrollmentResults",
             "encryptedWalletBackupRetrySchedulers",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
+    this.version(15)
+      .stores({
+        encryptedWalletBackupSnapshotControls:
+          "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision], [realm+vaultId+generation+snapshotId+snapshotRevision]",
+        encryptedWalletBackupSnapshotPins:
+          "&[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+recordId], &[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+commitment], [realm+vaultId+snapshotId+snapshotRevision+recordKindCode+recordId+commitment], [realm+vaultId+generation+snapshotId+snapshotRevision+recordKindCode+recordId+commitment], [realm+vaultId+recordKindCode+recordId+sourceRevision+sourceBodyReference]",
+        encryptedWalletBackupPreparedSources:
+          "&[realm+vaultId+recordKindCode+recordId+revision+bodyReference], &[realm+vaultId+recordKindCode+commitment+revision+bodyReference], [realm+vaultId+recordKindCode+recordId], [realm+vaultId+generation+snapshotId+snapshotRevision+recordKindCode+recordId+revision+bodyReference]",
+        encryptedWalletBackupManifestPassAResults:
+          "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision], [realm+vaultId+generation+snapshotId+snapshotRevision]",
+        encryptedWalletBackupManifestCursors:
+          "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision], [realm+vaultId+generation+snapshotId+snapshotRevision]",
+        encryptedWalletBackupManifestPages:
+          "&[realm+vaultId+snapshotId+snapshotRevision+pageIndex], &[realm+vaultId+generation+objectId+digest], [realm+vaultId+snapshotId+snapshotRevision+pageIndex+objectId], [realm+vaultId+generation+snapshotId+snapshotRevision+pageIndex]",
+        encryptedWalletBackupSnapshotCleanupJobs: "&[realm+vaultId]",
+      })
+      .upgrade(async (transaction) => {
+        await Promise.all(
+          [
+            "encryptedWalletBackupBuildCursors",
+            "encryptedWalletBackupPackControls",
+            "encryptedWalletBackupPreparedRecords",
+            "encryptedWalletBackupPackBindings",
+            "encryptedWalletBackupStagedObjects",
+            "encryptedWalletBackupSnapshotControls",
+            "encryptedWalletBackupPreparedSources",
+            "encryptedWalletBackupSnapshotPins",
+            "encryptedWalletBackupManifestPassAResults",
+            "encryptedWalletBackupManifestCursors",
+            "encryptedWalletBackupManifestPages",
+            "encryptedWalletBackupUploadAttempts",
+            "encryptedWalletBackupUploadCursors",
+            "encryptedWalletBackupUploadBatches",
+            "encryptedWalletBackupUploadCasAttempts",
+            "encryptedWalletBackupEnrollmentResults",
+            "encryptedWalletBackupRetrySchedulers",
+            "encryptedWalletBackupSnapshotCleanupJobs",
           ].map((tableName) => transaction.table(tableName).clear()),
         );
       });

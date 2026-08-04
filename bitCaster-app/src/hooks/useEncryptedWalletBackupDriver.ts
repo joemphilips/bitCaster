@@ -49,6 +49,9 @@ export function useEncryptedWalletBackupDriver(nostrSignerReady: boolean): void 
         switch (result.state) {
           case "idle-needs-snapshot":
             return;
+          case "cleanup-pending":
+            retry = setTimeout(() => void run(), 0);
+            return;
           case "lease-pending":
             retry = setTimeout(
               () => void run(),
@@ -72,6 +75,7 @@ export function useEncryptedWalletBackupDriver(nostrSignerReady: boolean): void 
             );
             return;
           case "committed":
+            retry = setTimeout(() => void run(), 0);
             return;
         }
       } catch {

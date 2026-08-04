@@ -17,6 +17,7 @@ export interface EncryptedWalletBackupPreparedSourceDatabaseProfile {
   readonly scopeId: string;
   readonly realm: string;
   readonly vaultId: string;
+  readonly generation: number;
 }
 
 /**
@@ -31,12 +32,14 @@ export class EncryptedWalletBackupPreparedSourceDexieStore
   readonly #database: BitcasterDB;
   readonly #realm: string;
   readonly #vaultId: string;
+  readonly #generation: number;
 
   constructor(profile: EncryptedWalletBackupPreparedSourceDatabaseProfile) {
     requireProfile(profile);
     this.#database = profile.database;
     this.#realm = profile.realm;
     this.#vaultId = profile.vaultId;
+    this.#generation = profile.generation;
   }
 
   async insertPreparedSource(record: PersistedPreparedEncryptedWalletBackupRecord): Promise<void> {
@@ -53,7 +56,9 @@ export class EncryptedWalletBackupPreparedSourceDexieStore
     ) {
       throw new Error("prepared source insert batch is invalid");
     }
-    const rows = records.map((record) => sourceRow(record, this.#realm, this.#vaultId));
+    const rows = records.map((record) =>
+      sourceRow(record, this.#realm, this.#vaultId, this.#generation),
+    );
     const unique = uniqueSourceRows(rows);
     await this.#database.transaction(
       "rw",
@@ -184,6 +189,7 @@ function sameSource(
     left.revision === right.revision &&
     left.snapshotId === right.snapshotId &&
     left.snapshotRevision === right.snapshotRevision &&
+    left.generation === right.generation &&
     equalBytes(left.canonicalDescriptor, right.canonicalDescriptor)
   );
 }
@@ -231,6 +237,8 @@ function requireProfile(profile: EncryptedWalletBackupPreparedSourceDatabaseProf
     profile.realm.length < 1 ||
     profile.realm.length > 64 ||
     !/^[0-9a-f]{64}$/.test(profile.vaultId) ||
+    !Number.isSafeInteger(profile.generation) ||
+    profile.generation < 1 ||
     profile.database.name !== browserWalletDatabaseName(profile.scopeId)
   ) {
     throw new Error("encrypted wallet backup prepared source database profile is invalid");
@@ -241,6 +249,7 @@ function sourceRow(
   record: PersistedPreparedEncryptedWalletBackupRecord,
   realm: string,
   vaultId: string,
+  generation: number,
 ): EncryptedWalletBackupDexiePreparedSourceRow {
   const canonicalDescriptor = encodeEncryptedWalletBackupPreparedSourceDescriptor(record);
   const descriptor = decodeEncryptedWalletBackupPreparedSourceDescriptor(canonicalDescriptor);
@@ -256,6 +265,7 @@ function sourceRow(
     revision: descriptor.revision,
     snapshotId: record.snapshotId,
     snapshotRevision: record.snapshotRevision,
+    generation,
     canonicalDescriptor: canonicalDescriptor.slice(),
   };
 }
@@ -272,6 +282,8 @@ function snapshotOf(
     descriptor.bodyReference !== row.bodyReference ||
     descriptor.revision !== row.revision ||
     row.snapshotId.length < 1 ||
+    !Number.isSafeInteger(row.generation) ||
+    row.generation < 1 ||
     !Number.isSafeInteger(row.snapshotRevision) ||
     row.snapshotRevision < 0
   ) {

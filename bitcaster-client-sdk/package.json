@@ -87,6 +87,10 @@
       "types": "./dist/encryptedWalletBackupSnapshotPersistence.d.ts",
       "import": "./dist/encryptedWalletBackupSnapshotPersistence.js"
     },
+    "./encryptedWalletBackupSnapshotCleanup": {
+      "types": "./dist/encryptedWalletBackupSnapshotCleanup.d.ts",
+      "import": "./dist/encryptedWalletBackupSnapshotCleanup.js"
+    },
     "./encryptedWalletBackupManifestPagePersistence": {
       "types": "./dist/encryptedWalletBackupManifestPagePersistence.d.ts",
       "import": "./dist/encryptedWalletBackupManifestPagePersistence.js"

@@ -685,7 +685,9 @@ class SnapshotTransaction implements EncryptedWalletBackupSnapshotPersistenceTra
         sourceDescriptor: entry.sourceDescriptor,
         pin: entry.canonicalPin,
       });
-      return pinRow(entry.pin);
+      const control = this.#currentControl;
+      if (control === undefined) throw new Error("backup snapshot control is absent");
+      return pinRow(entry.pin, control.generation);
     });
     await this.#database.encryptedWalletBackupSnapshotPins.bulkAdd(rows);
   }
@@ -1186,21 +1188,26 @@ function scopedCanonicalRow(
     vaultId: value.vaultId,
     snapshotId: value.snapshotId,
     snapshotRevision: value.snapshotRevision,
+    generation: value.generation,
     canonical: canonical.slice(),
   };
 }
 
 function pinRow(
   value: ReturnType<typeof decodeEncryptedWalletBackupSnapshotPin>,
+  generation: number,
 ): EncryptedWalletBackupDexieSnapshotPinRow {
   return {
     realm: value.realm,
     vaultId: value.vaultId,
     snapshotId: value.snapshotId,
     snapshotRevision: value.snapshotRevision,
+    generation,
     recordKindCode: 0,
     recordId: value.recordId,
     commitment: value.commitment,
+    sourceRevision: value.sourceRevision,
+    sourceBodyReference: value.sourceBodyReference,
     canonical: encodeEncryptedWalletBackupSnapshotPin(value),
   };
 }

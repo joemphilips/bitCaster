@@ -32,6 +32,7 @@ import {
 import { getNdk } from "./nostr";
 import { EncryptedWalletBackupEnrollmentDexieStore } from "../stores/encrypted-wallet-backup-enrollment-db";
 import { EncryptedWalletBackupSnapshotManifestDexieStore } from "../stores/encrypted-wallet-backup-snapshot-manifest-db";
+import { runEncryptedWalletBackupSnapshotCleanupPage } from "../stores/encrypted-wallet-backup-snapshot-cleanup-db";
 import {
   clearEncryptedWalletBackupRetryScheduler,
   createEncryptedWalletBackupUploadCoordinatorDexieStore,
@@ -53,6 +54,7 @@ type BackupRemote = EncryptedWalletBackupAccountOperationRemotePort &
 
 export type EncryptedWalletBackupDriverCycleResult =
   | Readonly<{ state: "idle-needs-snapshot" }>
+  | Readonly<{ state: "cleanup-pending" }>
   | Readonly<{ state: "lease-pending"; wakeAtUnixMilliseconds: number }>
   | Readonly<{ state: "upload-pending"; attemptId: string; vaultId: string }>
   | Readonly<{
@@ -82,6 +84,8 @@ export interface EncryptedWalletBackupDriverInput {
   readonly remote?: BackupRemote;
   /** Test seam. Production calls use the active Dexie-backed source. */
   readonly source?: EncryptedWalletBackupBoundedUploadObjectSource;
+  /** Test seam. Production uses the browser wallet-profile lock. */
+  readonly lockManager?: Pick<LockManager, "request">;
 }
 
 /**
@@ -97,7 +101,18 @@ export async function runEncryptedWalletBackupDriverCycle(
     realm: keyHandle.realm,
     vaultId: keyHandle.vaultId,
   });
-  if (attemptId === null) return Object.freeze({ state: "idle-needs-snapshot" });
+  if (attemptId === null) {
+    const cleanup = await runEncryptedWalletBackupSnapshotCleanupPage({
+      database: input.database,
+      scopeId: input.scopeId,
+      realm: keyHandle.realm,
+      vaultId: keyHandle.vaultId,
+      lockManager: input.lockManager,
+    });
+    return cleanup.state === "progress" && cleanup.job !== null
+      ? Object.freeze({ state: "cleanup-pending" })
+      : Object.freeze({ state: "idle-needs-snapshot" });
+  }
   const attempt = await readEncryptedWalletBackupUploadAttemptSummary(input.database, {
     realm: keyHandle.realm,
     vaultId: keyHandle.vaultId,
@@ -215,6 +230,14 @@ export async function runEncryptedWalletBackupDriverCycle(
         });
       case "acknowledged":
         await clearRetryScheduler(input, attemptId);
+        await runEncryptedWalletBackupSnapshotCleanupPage({
+          database: input.database,
+          scopeId: input.scopeId,
+          realm: keyHandle.realm,
+          vaultId: keyHandle.vaultId,
+          acknowledgedAttempt: synchronized,
+          lockManager: input.lockManager,
+        });
         return Object.freeze({ state: "committed", attemptId, vaultId: keyHandle.vaultId });
       case "sealed":
       case "cas-uncertain":

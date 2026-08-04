@@ -60,7 +60,7 @@ afterEach(async () => {
 describe("encrypted wallet backup Dexie pack store", () => {
   it("defines normalized primary keys in the current undeployed wallet schema", () => {
     const database = createDatabase();
-    expect(database.verno).toBe(14);
+    expect(database.verno).toBe(15);
     expect(database.proofs.schema.primKey.keyPath).toBe("secret");
     expect(database.encryptedWalletBackupBuildCursors.schema.primKey.keyPath).toBe("buildId");
     expect(database.encryptedWalletBackupPackControls.schema.primKey.keyPath).toEqual([
@@ -150,6 +150,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
       scopeId: WALLET_SCOPE_ID,
       realm: REALM,
       vaultId: fixture.keyHandle.vaultId,
+      generation: 1,
     });
     const record = fixture.records[0]!;
     await store.insertPreparedSource(record);
@@ -172,6 +173,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
       scopeId: WALLET_SCOPE_ID,
       realm: REALM,
       vaultId: fixture.keyHandle.vaultId,
+      generation: 1,
     });
     const transaction = vi.spyOn(database, "transaction");
     const bulkGet = vi.spyOn(database.encryptedWalletBackupPreparedSources, "bulkGet");
@@ -194,6 +196,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
       scopeId: WALLET_SCOPE_ID,
       realm: REALM,
       vaultId: fixture.keyHandle.vaultId,
+      generation: 1,
     });
     const first = fixture.records[0]!;
     await store.insertPreparedSource(first);
@@ -219,6 +222,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
       scopeId: WALLET_SCOPE_ID,
       realm: REALM,
       vaultId: fixture.keyHandle.vaultId,
+      generation: 1,
     });
     for (const record of fixture.records) await store.insertPreparedSource(record);
 
@@ -265,6 +269,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
       scopeId: WALLET_SCOPE_ID,
       realm: REALM,
       vaultId: fixture.keyHandle.vaultId,
+      generation: 1,
     });
     const original = fixture.records[0]!;
     const replacement = { ...original, snapshotRevision: original.snapshotRevision + 1 };
@@ -282,6 +287,7 @@ describe("encrypted wallet backup Dexie pack store", () => {
       scopeId: WALLET_SCOPE_ID,
       realm: REALM,
       vaultId: fixture.keyHandle.vaultId,
+      generation: 1,
     });
     const original = fixture.records[0]!;
     const replacement = { ...original, snapshotRevision: original.snapshotRevision + 1 };
