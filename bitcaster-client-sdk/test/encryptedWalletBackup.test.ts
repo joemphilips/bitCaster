@@ -455,7 +455,15 @@ const CTF_CONDITIONAL_METADATA = {
 type UnboundProofInput = Omit<EncryptedWalletBackupProofInput, 'proofSnapshotStore'>
 
 test('raw upload descriptors are not public planner authority', () => {
-  assert.equal('planEncryptedWalletBackupUploadBatches' in BackupSyncModule, false)
+  for (const name of [
+    'planEncryptedWalletBackupUploadBatches',
+    'prepareEncryptedWalletBackupUploadPlan',
+    'sealEncryptedWalletBackupUploadAttempt',
+    'claimEncryptedWalletBackupUploadAttempt',
+    'sealEncryptedWalletBackupUploadBatch',
+  ]) {
+    assert.equal(name in BackupSyncModule, false, name)
+  }
 })
 
 test('built backup package surfaces omit bounded target authority issuers', async () => {
@@ -465,6 +473,10 @@ test('built backup package surfaces omit bounded target authority issuers', asyn
   const issuerNames = [
     'issueBoundedManifestTargetCapability',
     'issueBoundedManifestTargetCapabilityForTest',
+    'prepareEncryptedWalletBackupUploadPlan',
+    'sealEncryptedWalletBackupUploadAttempt',
+    'claimEncryptedWalletBackupUploadAttempt',
+    'sealEncryptedWalletBackupUploadBatch',
   ]
   for (const module of [root, backup, sync]) {
     for (const name of issuerNames) assert.equal(name in module, false, name)
@@ -10476,12 +10488,35 @@ function inMemoryUploadBatchStore() {
       input: Record<string, unknown>,
       claim: (value: never) => T,
     ): Promise<T> {
-      return this.claimActiveUploadAttempt(input, (attempt: Record<string, unknown> | null) => {
-        if (attempt === null) return claim({ attempt: null, cursor: null } as never)
-        const cursor = cursors.get(String(attempt.attemptId))
-        if (cursor === undefined) throw new Error('bounded upload cursor is absent')
-        return claim({ attempt, cursor: cursor.slice() } as never)
-      })
+      const eligible = [...attempts.values()].filter(
+        (record) =>
+          record.realm === input.realm &&
+          record.vaultId === input.vaultId &&
+          ['active', 'abort-uncertain', 'cas-journaled', 'fork-cleanup-uncertain'].includes(
+            String(record.lifecycle),
+          ),
+      )
+      if (eligible.length > 1) throw new Error('multiple live backup upload attempts')
+      const record = eligible[0]
+      if (
+        record === undefined ||
+        (record.ownerId !== input.ownerId &&
+          databaseNow < Number(record.leaseExpiresAtUnixMilliseconds))
+      ) {
+        return claim({ attempt: null, cursor: null } as never)
+      }
+      const cursor = cursors.get(String(record.attemptId))
+      if (cursor === undefined) throw new Error('bounded upload cursor is absent')
+      const before = structuredClone(record)
+      record.ownerEpoch = Number(record.ownerEpoch) + 1
+      record.ownerId = input.ownerId
+      record.leaseExpiresAtUnixMilliseconds = databaseNow + Number(input.leaseDurationMilliseconds)
+      try {
+        return claim({ attempt: structuredClone(record), cursor: cursor.slice() } as never)
+      } catch (error) {
+        attempts.set(String(before.attemptId), before)
+        throw error
+      }
     },
     async sealUploadBatchAndAdvanceCursor<T>(
       input: {
@@ -10512,83 +10547,48 @@ function inMemoryUploadBatchStore() {
       }
       if (currentCursor === undefined || !equalBytesForTest(currentCursor, input.expectedCursor))
         throw new Error('bounded upload cursor is stale')
-      return this.sealUploadBatch(
-        input.claim,
-        input.batch,
-        (committed: Record<string, unknown>) => {
-          cursors.set(attemptId, input.nextCursor.slice())
-          try {
-            return seal({ ...committed, cursor: input.nextCursor.slice() } as never)
-          } catch (error) {
-            cursors.set(attemptId, currentCursor)
-            throw error
-          }
-        },
-      )
-    },
-    async sealActiveUploadAttempt<T>(
-      candidate: Record<string, unknown>,
-      lease: number,
-      seal: (value: never) => T,
-    ): Promise<T> {
+      validateClaim(input.claim, ['active'])
+      if (existing !== undefined) {
+        throw new Error('backup upload batch id conflicts with different content')
+      }
+      const attempt = attempts.get(attemptId)!
+      if (attempt.activeBatchId !== null)
+        throw new Error('backup upload foreground batch is active')
       if (
-        [...attempts.values()].some(
-          (value) =>
-            value.realm === candidate.realm &&
-            value.vaultId === candidate.vaultId &&
-            value.lifecycle !== 'abandoned' &&
-            value.lifecycle !== 'complete',
+        partition(input.batch.attemptId, input.batch.targetManifestDigest).some((record) =>
+          ['abort-uncertain', 'finalized', 'abandoned'].includes(String(record.state)),
         )
       ) {
-        throw new Error('live backup upload attempt already exists')
+        throw new Error('backup upload attempt is fenced')
       }
-      const record = {
-        ...structuredClone(candidate),
-        ownerEpoch: 1,
-        leaseExpiresAtUnixMilliseconds: databaseNow + lease,
-        batchIds: [],
-        activeBatchId: null,
-        casAttemptId: null,
-        lifecycle: 'active',
+      const existingItems = partition(
+        input.batch.attemptId,
+        input.batch.targetManifestDigest,
+      ).flatMap((record) => record.items as Array<{ objectId: string; objectDigest: string }>)
+      for (const item of input.batch.items as Array<{ objectId: string; objectDigest: string }>) {
+        if (
+          existingItems.some(
+            (value) => value.objectId === item.objectId || value.objectDigest === item.objectDigest,
+          )
+        )
+          throw new Error('backup attempt object is duplicated')
       }
-      const attemptId = String(record.attemptId)
-      attempts.set(attemptId, record)
+      const batch = structuredClone(input.batch)
+      const beforeAttempt = structuredClone(attempt)
+      batches.set(String(batch.batchId), batch)
+      attempt.batchIds = [...(attempt.batchIds as string[]), String(batch.batchId)]
+      attempt.activeBatchId = String(batch.batchId)
+      cursors.set(attemptId, input.nextCursor.slice())
       try {
-        return seal(structuredClone(record) as never)
+        return seal({
+          attempt: structuredClone(attempt),
+          cursor: input.nextCursor.slice(),
+          batch: structuredClone(batch),
+        } as never)
       } catch (error) {
-        attempts.delete(attemptId)
-        throw error
-      }
-    },
-    async claimActiveUploadAttempt<T>(
-      query: Record<string, unknown>,
-      claim: (value: never) => T,
-    ): Promise<T> {
-      const eligible = [...attempts.values()].filter(
-        (record) =>
-          record.realm === query.realm &&
-          record.vaultId === query.vaultId &&
-          ['active', 'abort-uncertain', 'cas-journaled', 'fork-cleanup-uncertain'].includes(
-            String(record.lifecycle),
-          ),
-      )
-      if (eligible.length > 1) throw new Error('multiple live backup upload attempts')
-      const record = eligible[0]
-      if (
-        record === undefined ||
-        (record.ownerId !== query.ownerId &&
-          databaseNow < Number(record.leaseExpiresAtUnixMilliseconds))
-      ) {
-        return claim(null as never)
-      }
-      const before = structuredClone(record)
-      record.ownerEpoch = Number(record.ownerEpoch) + 1
-      record.ownerId = query.ownerId
-      record.leaseExpiresAtUnixMilliseconds = databaseNow + Number(query.leaseDurationMilliseconds)
-      try {
-        return claim(structuredClone(record) as never)
-      } catch (error) {
-        attempts.set(String(before.attemptId), before)
+        batches.delete(String(batch.batchId))
+        attempts.set(String(beforeAttempt.attemptId), beforeAttempt)
+        cursors.set(attemptId, currentCursor)
         throw error
       }
     },
@@ -10603,62 +10603,6 @@ function inMemoryUploadBatchStore() {
         'fork-cleanup-uncertain',
       ])
       return read(structuredClone(attempts.get(String(claimRecord.attemptId))) as never)
-    },
-    async sealUploadBatch<T>(
-      claimRecord: Record<string, unknown>,
-      batch: Record<string, unknown>,
-      seal: (value: never) => T,
-    ): Promise<T> {
-      validateClaim(claimRecord, ['active'])
-      const existing = batches.get(String(batch.batchId))
-      if (existing !== undefined) {
-        if (!isDeepStrictEqual(existing, batch)) {
-          throw new Error('backup upload batch id conflicts with different content')
-        }
-        return seal({
-          attempt: structuredClone(attempts.get(String(batch.attemptId))),
-          batch: structuredClone(existing),
-        } as never)
-      }
-      const attempt = attempts.get(String(batch.attemptId))!
-      if (attempt.activeBatchId !== null)
-        throw new Error('backup upload foreground batch is active')
-      if (
-        partition(batch.attemptId, batch.targetManifestDigest).some((record) =>
-          ['abort-uncertain', 'finalized', 'abandoned'].includes(String(record.state)),
-        )
-      ) {
-        throw new Error('backup upload attempt is fenced')
-      }
-      const existingItems = partition(batch.attemptId, batch.targetManifestDigest).flatMap(
-        (record) => record.items as Array<{ objectId: string; objectDigest: string }>,
-      )
-      for (const item of batch.items as Array<{
-        objectId: string
-        objectDigest: string
-      }>) {
-        if (
-          existingItems.some(
-            (value) => value.objectId === item.objectId || value.objectDigest === item.objectDigest,
-          )
-        )
-          throw new Error('backup attempt object is duplicated')
-      }
-      const copy = structuredClone(batch)
-      const beforeAttempt = structuredClone(attempt)
-      batches.set(String(copy.batchId), copy)
-      attempt.batchIds = [...(attempt.batchIds as string[]), String(copy.batchId)]
-      attempt.activeBatchId = String(copy.batchId)
-      try {
-        return seal({
-          attempt: structuredClone(attempt),
-          batch: structuredClone(copy),
-        } as never)
-      } catch (error) {
-        batches.delete(String(copy.batchId))
-        attempts.set(String(beforeAttempt.attemptId), beforeAttempt)
-        throw error
-      }
     },
     async readUploadBatch<T>(batchId: string, read: (value: never) => T): Promise<T> {
       const batch = batches.get(batchId)
@@ -11126,12 +11070,6 @@ function inMemoryUploadBatchStore() {
 
 function uploadBatchReadOnlyStore(record: Record<string, unknown>) {
   return {
-    async sealActiveUploadAttempt() {
-      throw new Error('unused')
-    },
-    async claimActiveUploadAttempt() {
-      throw new Error('unused')
-    },
     async claimUploadBatchExecution() {
       throw new Error('unused')
     },
@@ -11139,9 +11077,6 @@ function uploadBatchReadOnlyStore(record: Record<string, unknown>) {
       throw new Error('unused')
     },
     async validateUploadAttemptClaim() {
-      throw new Error('unused')
-    },
-    async sealUploadBatch() {
       throw new Error('unused')
     },
     async readUploadBatch<T>(_batchId: string, read: (value: never) => T): Promise<T> {

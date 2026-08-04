@@ -14,7 +14,6 @@ import {
 } from '../src/encryptedWalletBackup.ts'
 import { issueBoundedManifestTargetCapabilityForTest } from '../src/encryptedWalletBackupManifestTargetAuthority.ts'
 import {
-  claimEncryptedWalletBackupUploadAttempt,
   claimBoundedEncryptedWalletBackupUploadAttempt,
   planAndSealBoundedEncryptedWalletBackupUploadBatch,
   rehydrateEncryptedWalletBackupUploadBatch,
@@ -495,15 +494,6 @@ test('bounded upload attempt retries exactly and the paired claim API restarts i
   )
   assert.equal(store.attempts.size, 1)
   assert.equal(store.cursors.size, 1)
-  await assert.rejects(
-    claimEncryptedWalletBackupUploadAttempt({
-      ownerId: 'owner',
-      leaseDurationMilliseconds: 60_000,
-      keyHandle: fixture.keyHandle,
-      store,
-    }),
-    /legacy upload attempt claim cannot read a bounded cursor store/,
-  )
 })
 
 test('bounded paired claim rejects missing, malformed, mismatched, and deferred cursor callbacks', async (t) => {
@@ -940,16 +930,6 @@ class AtomicAttemptCursorStore implements EncryptedWalletBackupUploadAttemptCurs
     }
   }
 
-  async claimActiveUploadAttempt<T>(
-    query: { realm: string; vaultId: string; ownerId: string; leaseDurationMilliseconds: number },
-    claim: (record: EncryptedWalletBackupActiveUploadAttemptRecord | null) => T,
-  ): Promise<T> {
-    const record = [...this.attempts.values()].find(
-      (value) => value.realm === query.realm && value.vaultId === query.vaultId,
-    )
-    return claim(record ?? null)
-  }
-
   async claimActiveUploadAttemptAndCursor<T>(
     _input: Parameters<
       EncryptedWalletBackupUploadAttemptCursorStore['claimActiveUploadAttemptAndCursor']
@@ -1065,12 +1045,6 @@ class AtomicAttemptCursorStore implements EncryptedWalletBackupUploadAttemptCurs
     if (current === undefined || !isDeepStrictEqual(current, claim))
       throw new Error('stale upload attempt claim')
     return read(structuredClone(current))
-  }
-  async sealActiveUploadAttempt<T>(): Promise<T> {
-    throw new Error('unused')
-  }
-  async sealUploadBatch<T>(): Promise<T> {
-    throw new Error('unused')
   }
   async readUploadBatch<T>(
     batchId: string,

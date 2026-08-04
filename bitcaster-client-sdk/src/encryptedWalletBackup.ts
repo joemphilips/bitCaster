@@ -41,7 +41,6 @@ import {
   registerEncryptedWalletBackupKeyHandle,
   requireIssuedEncryptedWalletBackupKeyHandle,
 } from './encryptedWalletBackupKeyAuthority.ts'
-import { issuePreparedEncryptedWalletBackupUploadAuthority } from './encryptedWalletBackupPlanningAuthority.ts'
 import { registerEncryptedWalletBackupPreparedRecordValidator } from './encryptedWalletBackupPreparedRecordValidation.ts'
 import {
   ENCRYPTED_WALLET_BACKUP_DETERMINISTIC_PROOF_RECORD,
@@ -792,8 +791,6 @@ interface PreparedManifestHeadAuthority {
   readonly canonicalReferenceSet: Uint8Array
   readonly canonicalParentHead: Uint8Array | null
   readonly canonicalInheritedReferenceSet: Uint8Array
-  readonly pageObjects: readonly PreparedEncryptedWalletBackupObject[]
-  readonly chunkObjects: readonly PreparedEncryptedWalletBackupObject[]
 }
 
 const PREPARED_MANIFEST_HEADS = new WeakMap<object, PreparedManifestHeadAuthority>()
@@ -3184,18 +3181,7 @@ export function prepareEncryptedWalletBackupManifestHead(input: {
     canonicalReferenceSet,
     canonicalParentHead: parentAuthority?.canonicalHead.slice() ?? null,
     canonicalInheritedReferenceSet,
-    pageObjects: manifest.pages,
-    chunkObjects: manifest.chunkObjects,
   })
-  const uploadChunkObjects = manifest.chunkObjects.filter(
-    (object) => !inheritedById.has(object.objectId),
-  )
-  issuePreparedEncryptedWalletBackupUploadAuthority(
-    head,
-    input.keyHandle,
-    [...manifest.pages, ...uploadChunkObjects],
-    manifestAuthority.repackedSourceObjectIdsByObjectId,
-  )
   return head
 }
 
@@ -3573,8 +3559,6 @@ function registerBoundedManifestTarget(input: {
     ]),
     // Bounded finalization is a reconstructible cache. It keeps references,
     // not page ciphertext, and must not grant the legacy upload authority.
-    pageObjects: Object.freeze([]),
-    chunkObjects: Object.freeze([]),
   })
   return readBoundedEncryptedWalletBackupManifestTarget({ keyHandle: input.input.keyHandle, head })
 }
@@ -4146,8 +4130,6 @@ export async function readAuthenticatedEncryptedWalletBackupHead(input: {
         canonicalReferenceSet: decoded.canonicalReferenceSet,
         canonicalParentHead: null,
         canonicalInheritedReferenceSet: encodeCanonical([1, 'reference-set', [], []]),
-        pageObjects: Object.freeze([]),
-        chunkObjects: Object.freeze([]),
         referenceIndex: decoded.referenceIndex,
       }
       AUTHENTICATED_MANIFEST_HEADS.set(evidence, authenticated)
@@ -7029,8 +7011,6 @@ function decodeManifestHeadWire(
     canonicalReferenceSet,
     canonicalParentHead: null,
     canonicalInheritedReferenceSet: encodeCanonical([1, 'reference-set', [], []]),
-    pageObjects: Object.freeze([]),
-    chunkObjects: Object.freeze([]),
     referenceIndex,
   }
 }

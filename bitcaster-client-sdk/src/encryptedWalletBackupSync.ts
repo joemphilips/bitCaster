@@ -31,8 +31,6 @@ import {
   prepareEncryptedWalletBackupRequestProof,
   readAuthenticatedEncryptedWalletBackupHead,
   readAuthenticatedEncryptedWalletBackupManifestPageReference,
-  readPreparedEncryptedWalletBackupManifestTarget,
-  readPreparedEncryptedWalletBackupObject,
 } from './encryptedWalletBackup.ts'
 import {
   decodeEncryptedWalletBackupUploadCursor,
@@ -48,7 +46,6 @@ import {
   validateEncryptedWalletBackupCasState,
 } from './encryptedWalletBackupCasState.ts'
 import { deriveDurableWalletBackupSnapshotId } from './recoverableWalletStorage.ts'
-import { readPreparedEncryptedWalletBackupUploadAuthority } from './encryptedWalletBackupPlanningAuthority.ts'
 import {
   encodeCanonicalBackupCbor as encodeCanonical,
   structurallyPreflightEncryptedBackupAttemptAbortCbor,
@@ -79,159 +76,6 @@ export const ENCRYPTED_WALLET_BACKUP_UPLOAD_ATTEMPT_CURSOR_BYTES_MAX = 1_048_576
 export const ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_READ_ROWS_MAX = 3 as const
 export const ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_WRITE_ROWS_MAX = 3 as const
 export const ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX = 5_242_880 as const
-
-export interface PreparedEncryptedWalletBackupUploadBatch {
-  readonly state: 'planned'
-  readonly batchIndex: number
-  readonly objectCount: number
-  readonly uploadedBytes: number
-  readonly repackedChunkCount: number
-}
-
-export interface PreparedEncryptedWalletBackupUploadPlan {
-  readonly state: 'planned'
-  readonly attemptId: string
-  readonly targetManifestDigest: string
-  readonly objectCount: number
-  readonly batches: readonly PreparedEncryptedWalletBackupUploadBatch[]
-}
-
-interface PlannedUploadBatchAuthority {
-  readonly keyHandle: EncryptedWalletBackupKeyHandle
-  readonly attemptId: string
-  readonly targetManifestDigest: string
-  readonly items: readonly EncryptedWalletBackupUploadItemRecord[]
-  readonly repackedChunkCount: number
-  boundBatchId: string | null
-}
-
-const PLANNED_UPLOAD_BATCHES = new WeakMap<object, PlannedUploadBatchAuthority>()
-
-/** Plans exact PUT payloads from a prepared manifest target capability. */
-export function prepareEncryptedWalletBackupUploadPlan(input: {
-  readonly attemptId: string
-  readonly keyHandle: EncryptedWalletBackupKeyHandle
-  readonly targetHead: EncryptedWalletBackupManifestHead
-}): PreparedEncryptedWalletBackupUploadPlan {
-  const attemptId = requireLowerHex(input.attemptId, 16, 'backup attempt id')
-  const target = readPreparedEncryptedWalletBackupManifestTarget({
-    keyHandle: input.keyHandle,
-    head: input.targetHead,
-  })
-  const authority = readPreparedEncryptedWalletBackupUploadAuthority(
-    input.targetHead,
-    input.keyHandle,
-  )
-  const references = decodeReferenceSet(target.wire.canonicalReferenceSet)
-  const inheritedReferences = decodeReferenceSet(target.canonicalInheritedReferenceSet)
-  const expectedDelta = new Set(
-    [...references].filter((reference) => !inheritedReferences.has(reference)),
-  )
-  const seen = new Set<string>()
-  const seenDigests = new Set<string>()
-  const remaining = authority.objects.map((prepared) => {
-    const object = readPreparedEncryptedWalletBackupObject(prepared)
-    if (object.realm !== input.keyHandle.realm || object.vaultId !== input.keyHandle.vaultId) {
-      throw new Error('backup upload object belongs to a foreign vault')
-    }
-    if (object.kindCode === 2 && object.generation !== target.head.generation) {
-      throw new Error('backup manifest page generation does not match target head')
-    }
-    if (object.kindCode === 1 && object.generation > target.head.generation) {
-      throw new Error('backup proof chunk generation exceeds target head')
-    }
-    const referenceKey = `${object.objectId}:${object.digest}`
-    if (!expectedDelta.delete(referenceKey)) {
-      throw new Error('backup upload object is not in the exact target delta')
-    }
-    if (seen.has(object.objectId)) throw new Error('backup upload object is duplicated')
-    if (seenDigests.has(object.digest)) throw new Error('backup upload object digest is duplicated')
-    seen.add(object.objectId)
-    seenDigests.add(object.digest)
-    const canonicalPutPayload = encodeCanonical([
-      ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
-      'object-put',
-      hexToBytes(attemptId),
-      object.kindCode,
-      object.realm,
-      hexToBytes(object.vaultId),
-      hexToBytes(object.objectId),
-      object.generation,
-      object.paddedLength,
-      hexToBytes(object.digest),
-      object.aad,
-      object.body,
-    ])
-    if (canonicalPutPayload.byteLength > ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES) {
-      throw new Error('backup object upload exceeds the request byte limit')
-    }
-    return {
-      item: Object.freeze({
-        objectId: object.objectId,
-        objectDigest: object.digest,
-        payloadLength: canonicalPutPayload.byteLength,
-        canonicalPutPayload,
-      }),
-      repackedSources: new Set(
-        authority.repackedSourceObjectIdsByObjectId.get(object.objectId) ?? [],
-      ),
-    }
-  })
-  if (expectedDelta.size !== 0) {
-    throw new Error('prepared backup upload omits target delta objects')
-  }
-  const batches: PreparedEncryptedWalletBackupUploadBatch[] = []
-  while (remaining.length > 0) {
-    if (batches.length >= ENCRYPTED_WALLET_BACKUP_ATTEMPT_BATCH_MAX)
-      throw new Error('backup upload target exceeds the batch ledger limit')
-    const selected: typeof remaining = []
-    let uploadedBytes = 0
-    const repackedSources = new Set<string>()
-    for (let index = 0; index < remaining.length; ) {
-      const candidate = remaining[index]!
-      const candidateRepackedSources = new Set([...repackedSources, ...candidate.repackedSources])
-      const fits =
-        selected.length < ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX &&
-        uploadedBytes + candidate.item.payloadLength <=
-          ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX &&
-        candidateRepackedSources.size <= ENCRYPTED_WALLET_BACKUP_CYCLE_REPACK_MAX
-      if (!fits) {
-        index += 1
-        continue
-      }
-      selected.push(candidate)
-      uploadedBytes += candidate.item.payloadLength
-      for (const sourceId of candidate.repackedSources) {
-        repackedSources.add(sourceId)
-      }
-      remaining.splice(index, 1)
-    }
-    if (selected.length === 0) throw new Error('backup upload object cannot fit a foreground cycle')
-    const evidence = Object.freeze({
-      state: 'planned' as const,
-      batchIndex: batches.length,
-      objectCount: selected.length,
-      uploadedBytes,
-      repackedChunkCount: repackedSources.size,
-    })
-    PLANNED_UPLOAD_BATCHES.set(evidence, {
-      keyHandle: input.keyHandle,
-      attemptId,
-      targetManifestDigest: target.head.manifestDigest,
-      items: Object.freeze(selected.map((candidate) => candidate.item)),
-      repackedChunkCount: repackedSources.size,
-      boundBatchId: null,
-    })
-    batches.push(evidence)
-  }
-  return Object.freeze({
-    state: 'planned' as const,
-    attemptId,
-    targetManifestDigest: target.head.manifestDigest,
-    objectCount: authority.objects.length,
-    batches: Object.freeze(batches),
-  })
-}
 
 export interface EncryptedWalletBackupUploadItemRecord {
   readonly objectId: string
@@ -270,41 +114,9 @@ export interface EncryptedWalletBackupUploadBatchStore {
    * its callback synchronously exactly once, return that exact callback value,
    * and roll back all writes when the callback throws or rejects its result.
    */
-  sealActiveUploadAttempt<T>(
-    candidate: Omit<
-      EncryptedWalletBackupActiveUploadAttemptRecord,
-      | 'ownerEpoch'
-      | 'leaseExpiresAtUnixMilliseconds'
-      | 'batchIds'
-      | 'activeBatchId'
-      | 'casAttemptId'
-      | 'lifecycle'
-    >,
-    leaseDurationMilliseconds: number,
-    seal: (committed: EncryptedWalletBackupActiveUploadAttemptRecord) => T,
-  ): Promise<T>
-  claimActiveUploadAttempt<T>(
-    query: Readonly<{
-      realm: string
-      vaultId: string
-      ownerId: string
-      leaseDurationMilliseconds: number
-    }>,
-    claim: (committed: EncryptedWalletBackupActiveUploadAttemptRecord | null) => T,
-  ): Promise<T>
   validateUploadAttemptClaim<T>(
     claim: EncryptedWalletBackupActiveUploadAttemptRecord,
     read: (current: EncryptedWalletBackupActiveUploadAttemptRecord) => T,
-  ): Promise<T>
-  sealUploadBatch<T>(
-    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
-    batch: EncryptedWalletBackupUploadBatchRecord,
-    seal: (
-      committed: Readonly<{
-        attempt: EncryptedWalletBackupActiveUploadAttemptRecord
-        batch: EncryptedWalletBackupUploadBatchRecord
-      }>,
-    ) => T,
   ): Promise<T>
   readUploadBatch<T>(
     batchId: string,
@@ -447,7 +259,7 @@ export interface EncryptedWalletBackupBoundedUploadObjectSource {
   ): Promise<EncryptedWalletBackupWireObject>
 }
 
-/** Extends the legacy store with the bounded attempt and cursor transaction. */
+/** Adds paired attempt/cursor transactions to the persisted upload batch store. */
 export interface EncryptedWalletBackupUploadAttemptCursorStore extends EncryptedWalletBackupUploadBatchStore {
   /**
    * Use one physical transaction. Insert both rows or read both exact rows.
@@ -1346,81 +1158,6 @@ export interface EncryptedWalletBackupUploadAbortRemotePort {
   >
 }
 
-export async function sealEncryptedWalletBackupUploadAttempt(input: {
-  attemptId: string
-  ownerId: string
-  leaseDurationMilliseconds: number
-  keyHandle: EncryptedWalletBackupKeyHandle
-  targetHead: EncryptedWalletBackupManifestHead
-  store: EncryptedWalletBackupUploadBatchStore
-}): Promise<EncryptedWalletBackupUploadAttemptClaim> {
-  const target = readPreparedEncryptedWalletBackupManifestTarget({
-    keyHandle: input.keyHandle,
-    head: input.targetHead,
-  })
-  const expectedCandidate = createUploadAttemptCandidate({
-    attemptId: input.attemptId,
-    ownerId: input.ownerId,
-    keyHandle: input.keyHandle,
-    target,
-  })
-  const adapterCandidate = cloneUploadAttemptCandidate(expectedCandidate)
-  const lease = requireInteger(
-    input.leaseDurationMilliseconds,
-    1,
-    300_000,
-    'backup upload lease duration',
-  )
-  requireUploadStore(input.store)
-  if (isBoundedUploadAttemptCursorStore(input.store))
-    throw new Error('legacy upload attempt seal cannot use a bounded cursor store')
-  let issued: EncryptedWalletBackupUploadAttemptClaim | undefined
-  let calls = 0
-  let open = true
-  let returned: unknown
-  try {
-    returned = await input.store.sealActiveUploadAttempt(adapterCandidate, lease, (raw) => {
-      if (!open || calls++ !== 0) throw new Error('upload attempt seal callback is invalid')
-      const record = decodeActiveUploadAttemptRecord(raw)
-      if (
-        record.attemptId !== expectedCandidate.attemptId ||
-        record.targetManifestDigest !== expectedCandidate.targetManifestDigest ||
-        record.ownerId !== expectedCandidate.ownerId ||
-        record.lifecycle !== 'active' ||
-        record.batchIds.length !== 0 ||
-        record.activeBatchId !== null ||
-        record.casAttemptId !== null ||
-        record.realm !== expectedCandidate.realm ||
-        record.vaultId !== expectedCandidate.vaultId ||
-        record.parentManifestDigest !== expectedCandidate.parentManifestDigest ||
-        (record.canonicalParentHead === null || expectedCandidate.canonicalParentHead === null
-          ? record.canonicalParentHead !== expectedCandidate.canonicalParentHead
-          : !equalBytes(record.canonicalParentHead, expectedCandidate.canonicalParentHead)) ||
-        record.localSnapshotId !== expectedCandidate.localSnapshotId ||
-        record.localSnapshotRevision !== expectedCandidate.localSnapshotRevision ||
-        !equalBytes(record.canonicalTargetHead, expectedCandidate.canonicalTargetHead) ||
-        !equalBytes(
-          record.canonicalTargetReferenceSet,
-          expectedCandidate.canonicalTargetReferenceSet,
-        ) ||
-        !equalBytes(
-          record.canonicalInheritedReferenceSet,
-          expectedCandidate.canonicalInheritedReferenceSet,
-        )
-      ) {
-        throw new Error('sealed upload attempt changed')
-      }
-      issued = issueUploadAttemptClaim(record, input.keyHandle, input.store)
-      return issued
-    })
-  } finally {
-    open = false
-  }
-  if (isThenable(returned) || issued === undefined || returned !== issued || calls !== 1)
-    throw new Error('upload attempt seal must be synchronous and exact')
-  return issued
-}
-
 /** Seals a finalizer-issued bounded target and its first upload cursor together. */
 export async function sealBoundedEncryptedWalletBackupUploadAttempt(input: {
   readonly attemptId: string
@@ -1635,179 +1372,6 @@ export async function planAndSealBoundedEncryptedWalletBackupUploadBatch(input: 
   BOUNDED_UPLOAD_CURSORS.set(input.claim, nextCursor)
   if (nextCursor.phase === 'complete') INCOMPLETE_BOUNDED_UPLOAD_ATTEMPT_CLAIMS.delete(input.claim)
   return issued
-}
-
-export async function claimEncryptedWalletBackupUploadAttempt(input: {
-  ownerId: string
-  leaseDurationMilliseconds: number
-  keyHandle: EncryptedWalletBackupKeyHandle
-  store: EncryptedWalletBackupUploadBatchStore
-}): Promise<EncryptedWalletBackupUploadAttemptClaim | null> {
-  requireUploadStore(input.store)
-  if (isBoundedUploadAttemptCursorStore(input.store))
-    throw new Error('legacy upload attempt claim cannot read a bounded cursor store')
-  const ownerId = requireBoundedText(input.ownerId, 128, 'backup upload owner id')
-  let issued: EncryptedWalletBackupUploadAttemptClaim | null | undefined
-  let calls = 0
-  let open = true
-  let returned: unknown
-  try {
-    returned = await input.store.claimActiveUploadAttempt(
-      {
-        realm: input.keyHandle.realm,
-        vaultId: input.keyHandle.vaultId,
-        ownerId,
-        leaseDurationMilliseconds: requireInteger(
-          input.leaseDurationMilliseconds,
-          1,
-          300_000,
-          'backup upload lease duration',
-        ),
-      },
-      (raw) => {
-        if (!open || calls++ !== 0) throw new Error('upload attempt claim callback is invalid')
-        if (raw === null) {
-          issued = null
-          return null
-        }
-        const record = decodeActiveUploadAttemptRecord(raw)
-        if (
-          record.realm !== input.keyHandle.realm ||
-          record.vaultId !== input.keyHandle.vaultId ||
-          record.ownerId !== ownerId ||
-          (record.lifecycle !== 'active' &&
-            record.lifecycle !== 'abort-uncertain' &&
-            record.lifecycle !== 'cas-journaled' &&
-            record.lifecycle !== 'fork-cleanup-uncertain')
-        ) {
-          throw new Error('upload attempt claim returned foreign authority')
-        }
-        issued = issueUploadAttemptClaim(record, input.keyHandle, input.store)
-        return issued
-      },
-    )
-  } finally {
-    open = false
-  }
-  if (isThenable(returned) || issued === undefined || returned !== issued || calls !== 1)
-    throw new Error('upload attempt claim must be synchronous and exact')
-  return issued
-}
-
-export async function sealEncryptedWalletBackupUploadBatch(input: {
-  batchId: string
-  claim: EncryptedWalletBackupUploadAttemptClaim
-  keyHandle: EncryptedWalletBackupKeyHandle
-  plannedBatch: PreparedEncryptedWalletBackupUploadBatch
-  store: EncryptedWalletBackupUploadBatchStore
-}): Promise<SealedEncryptedWalletBackupUploadBatch> {
-  const batchId = requireLowerHex(input.batchId, 16, 'backup upload batch id')
-  const claim = requireUploadAttemptClaim(input.claim, input.keyHandle, input.store)
-  const attemptId = claim.record.attemptId
-  const target = decodePersistedTarget(claim.record)
-  const snapshotId = target.localSnapshotId
-  const snapshotRevision = target.localSnapshotRevision
-  const plannedAuthority =
-    typeof input.plannedBatch === 'object' && input.plannedBatch !== null
-      ? PLANNED_UPLOAD_BATCHES.get(input.plannedBatch)
-      : undefined
-  if (
-    plannedAuthority === undefined ||
-    plannedAuthority.keyHandle !== input.keyHandle ||
-    plannedAuthority.attemptId !== attemptId ||
-    plannedAuthority.targetManifestDigest !== claim.record.targetManifestDigest ||
-    (plannedAuthority.boundBatchId !== null && plannedAuthority.boundBatchId !== batchId)
-  ) {
-    throw new Error('prepared backup upload batch is invalid')
-  }
-  const repackedChunkCount = plannedAuthority.repackedChunkCount
-  const items = plannedAuthority.items.map((item) =>
-    Object.freeze({
-      objectId: item.objectId,
-      objectDigest: item.objectDigest,
-      payloadLength: item.payloadLength,
-      canonicalPutPayload: item.canonicalPutPayload?.slice() ?? null,
-    }),
-  )
-  const targetWire = target.wire
-  const uploadedBytes = items.reduce((total, item) => total + item.payloadLength, 0)
-  if (uploadedBytes > ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX) {
-    throw new Error('backup upload batch exceeds the cycle byte limit')
-  }
-  const expectedRecord = freezeUploadBatch({
-    schemaVersion: 1,
-    batchId,
-    attemptId,
-    targetManifestDigest: requireLowerHex(
-      claim.record.targetManifestDigest,
-      32,
-      'target manifest digest',
-    ),
-    canonicalTargetHead: targetWire.canonicalHead,
-    canonicalTargetReferenceSet: targetWire.canonicalReferenceSet,
-    canonicalInheritedReferenceSet: target.canonicalInheritedReferenceSet,
-    localSnapshotId: snapshotId,
-    localSnapshotRevision: snapshotRevision,
-    repackedChunkCount,
-    uploadedBytes,
-    executionEpoch: 0,
-    executionLeaseExpiresAtUnixMilliseconds: null,
-    items,
-    state: 'sealed',
-  })
-  validateUploadBatchKey(expectedRecord, input.keyHandle)
-  requireUploadStore(input.store)
-  let callbackOpen = true
-  let callbackCalls = 0
-  let issued: object | undefined
-  let committedAttemptAuthority: EncryptedWalletBackupActiveUploadAttemptRecord | undefined
-  let returned: unknown
-  try {
-    returned = await input.store.sealUploadBatch(
-      cloneActiveUploadAttemptRecord(claim.record),
-      freezeUploadBatch(expectedRecord),
-      (raw) => {
-        if (!callbackOpen || callbackCalls++ !== 0)
-          throw new Error('backup upload seal callback is invalid')
-        const committedAttempt = decodeActiveUploadAttemptRecord(raw.attempt)
-        const committed = decodeUploadBatchRecord(raw.batch)
-        if (!equalUploadBatch(committed, expectedRecord))
-          throw new Error('sealed backup upload batch changed')
-        if (
-          !equalActiveUploadAttempt(
-            {
-              ...claim.record,
-              batchIds: claim.record.batchIds.includes(expectedRecord.batchId)
-                ? claim.record.batchIds
-                : [...claim.record.batchIds, expectedRecord.batchId],
-              activeBatchId: expectedRecord.batchId,
-            },
-            committedAttempt,
-          )
-        ) {
-          throw new Error('sealed backup upload attempt changed')
-        }
-        committedAttemptAuthority = committedAttempt
-        const evidence = authorizeUploadBatch(committed, input.keyHandle)
-        issued = evidence
-        return evidence
-      },
-    )
-  } finally {
-    callbackOpen = false
-  }
-  if (isThenable(returned) || issued === undefined || returned !== issued || callbackCalls !== 1) {
-    throw new Error('backup upload seal must be synchronous and exact')
-  }
-  if (committedAttemptAuthority === undefined)
-    throw new Error('backup upload seal omitted aggregate authority')
-  UPLOAD_ATTEMPT_CLAIMS.set(input.claim, {
-    keyHandle: input.keyHandle,
-    store: input.store,
-    record: committedAttemptAuthority,
-  })
-  plannedAuthority.boundBatchId = batchId
-  return issued as SealedEncryptedWalletBackupUploadBatch
 }
 
 export async function rehydrateEncryptedWalletBackupUploadBatch(input: {
@@ -4016,24 +3580,6 @@ async function validateCurrentUploadAttemptClaim(
     throw new Error('upload claim validation must be synchronous and exact')
 }
 
-function decodePersistedTarget(record: EncryptedWalletBackupActiveUploadAttemptRecord) {
-  const target = validateTargetHead(
-    record.canonicalTargetHead,
-    record.canonicalTargetReferenceSet,
-    record.targetManifestDigest,
-  )
-  return {
-    head: { generation: target.generation },
-    wire: {
-      canonicalHead: record.canonicalTargetHead,
-      canonicalReferenceSet: record.canonicalTargetReferenceSet,
-    },
-    localSnapshotId: record.localSnapshotId,
-    localSnapshotRevision: record.localSnapshotRevision,
-    canonicalInheritedReferenceSet: record.canonicalInheritedReferenceSet,
-  }
-}
-
 type UploadAttemptCandidate = Omit<
   EncryptedWalletBackupActiveUploadAttemptRecord,
   | 'ownerEpoch'
@@ -4791,17 +4337,12 @@ function requireUploadStore(
   if (
     typeof value !== 'object' ||
     value === null ||
-    typeof (value as EncryptedWalletBackupUploadBatchStore).sealActiveUploadAttempt !==
-      'function' ||
-    typeof (value as EncryptedWalletBackupUploadBatchStore).claimActiveUploadAttempt !==
-      'function' ||
     typeof (value as EncryptedWalletBackupUploadBatchStore).validateUploadAttemptClaim !==
       'function' ||
     typeof (value as EncryptedWalletBackupUploadBatchStore).claimUploadBatchExecution !==
       'function' ||
     typeof (value as EncryptedWalletBackupUploadBatchStore).validateUploadBatchExecution !==
       'function' ||
-    typeof (value as EncryptedWalletBackupUploadBatchStore).sealUploadBatch !== 'function' ||
     typeof (value as EncryptedWalletBackupUploadBatchStore).readUploadBatch !== 'function' ||
     typeof (value as EncryptedWalletBackupUploadBatchStore).transitionUploadBatch !== 'function' ||
     typeof (value as EncryptedWalletBackupUploadBatchStore).fenceUploadAttemptForAbort !==
@@ -4827,15 +4368,6 @@ function requireUploadAttemptCursorStore(
   ) {
     throw new Error('backup upload attempt cursor store is invalid')
   }
-}
-
-function isBoundedUploadAttemptCursorStore(
-  value: EncryptedWalletBackupUploadBatchStore,
-): value is EncryptedWalletBackupUploadAttemptCursorStore {
-  return (
-    typeof (value as EncryptedWalletBackupUploadAttemptCursorStore)
-      .claimActiveUploadAttemptAndCursor === 'function'
-  )
 }
 
 function requireRealm(value: unknown): string {
