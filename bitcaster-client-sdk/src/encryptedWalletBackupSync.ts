@@ -19,6 +19,7 @@ import {
   type DecryptedEncryptedWalletBackupManifestPage,
   type EncryptedWalletBackupHeadRemotePort,
   type EncryptedWalletBackupManifestHead,
+  type EncryptedWalletBackupWireObject,
   type PreparedEncryptedWalletBackupManifestTarget,
   type EncryptedWalletBackupSyncAttemptRecord,
   type EncryptedWalletBackupSyncAttemptStore,
@@ -75,6 +76,9 @@ export const ENCRYPTED_WALLET_BACKUP_MANIFEST_PAGE_STORED_BYTES =
 export const ENCRYPTED_WALLET_BACKUP_UPLOAD_ATTEMPT_CURSOR_READ_ROWS_MAX = 2 as const
 export const ENCRYPTED_WALLET_BACKUP_UPLOAD_ATTEMPT_CURSOR_WRITE_ROWS_MAX = 2 as const
 export const ENCRYPTED_WALLET_BACKUP_UPLOAD_ATTEMPT_CURSOR_BYTES_MAX = 1_048_576 as const
+export const ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_READ_ROWS_MAX = 3 as const
+export const ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_WRITE_ROWS_MAX = 3 as const
+export const ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX = 5_242_880 as const
 
 export interface PreparedEncryptedWalletBackupUploadBatch {
   readonly state: 'planned'
@@ -404,6 +408,45 @@ export type EncryptedWalletBackupActiveUploadAttemptCursorCommit = Readonly<{
   readonly cursor: Uint8Array | null
 }>
 
+export type EncryptedWalletBackupBoundedUploadBatchCommit = Readonly<{
+  readonly attempt: EncryptedWalletBackupActiveUploadAttemptRecord | null
+  readonly cursor: Uint8Array | null
+  readonly batch: EncryptedWalletBackupUploadBatchRecord | null
+}>
+
+export type EncryptedWalletBackupUploadBatchReservation = Readonly<{
+  readonly readRows: 3
+  readonly writeRows: 3
+  readonly readBytes: 5_242_880
+  readonly writeBytes: 5_242_880
+}>
+
+/** Reads one persisted immutable object. It must not materialize target state. */
+export interface EncryptedWalletBackupBoundedUploadObjectSource {
+  readManifestPageObject(
+    input: Readonly<{
+      readonly realm: string
+      readonly vaultId: string
+      readonly generation: number
+      readonly objectId: string
+      readonly digest: string
+      readonly maximumRows: 1
+      readonly maximumBytes: 1_048_576
+    }>,
+  ): Promise<EncryptedWalletBackupWireObject>
+  readProofChunkObject(
+    input: Readonly<{
+      readonly realm: string
+      readonly vaultId: string
+      readonly generation: number
+      readonly objectId: string
+      readonly digest: string
+      readonly maximumRows: 1
+      readonly maximumBytes: 1_048_576
+    }>,
+  ): Promise<EncryptedWalletBackupWireObject>
+}
+
 /** Extends the legacy store with the bounded attempt and cursor transaction. */
 export interface EncryptedWalletBackupUploadAttemptCursorStore extends EncryptedWalletBackupUploadBatchStore {
   /**
@@ -438,6 +481,22 @@ export interface EncryptedWalletBackupUploadAttemptCursorStore extends Encrypted
       readonly reservation: EncryptedWalletBackupUploadAttemptCursorReservation
     }>,
     claim: (committed: EncryptedWalletBackupActiveUploadAttemptCursorCommit) => T,
+  ): Promise<T>
+  /**
+   * Use one physical transaction. Persist the attempt, cursor, and batch
+   * together. Require the persisted attempt has no active batch before a new
+   * batch. An exact retry after an uncertain commit may return the same active
+   * batch and its committed cursor. Reject a conflicting retry.
+   */
+  sealUploadBatchAndAdvanceCursor<T>(
+    input: Readonly<{
+      readonly claim: EncryptedWalletBackupActiveUploadAttemptRecord
+      readonly expectedCursor: Uint8Array
+      readonly batch: EncryptedWalletBackupUploadBatchRecord
+      readonly nextCursor: Uint8Array
+      readonly reservation: EncryptedWalletBackupUploadBatchReservation
+    }>,
+    seal: (committed: EncryptedWalletBackupBoundedUploadBatchCommit) => T,
   ): Promise<T>
 }
 
@@ -579,6 +638,7 @@ interface UploadAttemptClaimAuthority {
 }
 const UPLOAD_ATTEMPT_CLAIMS = new WeakMap<object, UploadAttemptClaimAuthority>()
 const INCOMPLETE_BOUNDED_UPLOAD_ATTEMPT_CLAIMS = new WeakSet<object>()
+const BOUNDED_UPLOAD_CURSORS = new WeakMap<object, PersistedEncryptedWalletBackupUploadCursor>()
 
 export interface SealedEncryptedWalletBackupUploadBatch {
   readonly state: 'sealed'
@@ -1486,6 +1546,94 @@ export async function claimBoundedEncryptedWalletBackupUploadAttempt(input: {
   }
   if (issued === undefined || returned !== issued || calls !== 1)
     throw new Error('bounded upload attempt claim must be synchronous and exact')
+  return issued
+}
+
+/** Plans one bounded object prefix and seals its exact bytes with the next cursor. */
+export async function planAndSealBoundedEncryptedWalletBackupUploadBatch(input: {
+  readonly claim: EncryptedWalletBackupUploadAttemptClaim
+  readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly store: EncryptedWalletBackupUploadAttemptCursorStore
+  readonly source: EncryptedWalletBackupBoundedUploadObjectSource
+}): Promise<SealedEncryptedWalletBackupUploadBatch | null> {
+  const claim = requireUploadAttemptClaim(input.claim, input.keyHandle, input.store)
+  if (claim.record.activeBatchId !== null)
+    throw new Error('bounded upload attempt already has an active batch')
+  const cursor = requireBoundedUploadCursor(input.claim)
+  requireUploadAttemptCursorStore(input.store)
+  requireBoundedUploadObjectSource(input.source)
+  const target = validateTargetHead(
+    claim.record.canonicalTargetHead,
+    claim.record.canonicalTargetReferenceSet,
+    claim.record.targetManifestDigest,
+  )
+  const inherited = decodeReferenceSet(claim.record.canonicalInheritedReferenceSet)
+  const references = boundedUploadReferences(target, inherited, cursor)
+  if (references.length === 0) return null
+  const selected = await readBoundedUploadBatchObjects({
+    source: input.source,
+    keyHandle: input.keyHandle,
+    target,
+    references,
+    attemptId: claim.record.attemptId,
+  })
+  const nextCursor = advanceBoundedUploadCursor(cursor, target, inherited, selected)
+  const batch = boundedUploadBatchRecord(claim.record, cursor, selected)
+  const expectedCursor = encodeEncryptedWalletBackupUploadCursor(cursor)
+  const encodedNextCursor = encodeEncryptedWalletBackupUploadCursor(nextCursor)
+  let issued: SealedEncryptedWalletBackupUploadBatch | undefined
+  let committedAttemptAuthority: EncryptedWalletBackupActiveUploadAttemptRecord | undefined
+  let calls = 0
+  let open = true
+  let returned: unknown
+  try {
+    const transaction = input.store.sealUploadBatchAndAdvanceCursor(
+      {
+        claim: cloneActiveUploadAttemptRecord(claim.record),
+        expectedCursor: expectedCursor.slice(),
+        batch: freezeUploadBatch(batch),
+        nextCursor: encodedNextCursor.slice(),
+        reservation: uploadBatchReservation,
+      },
+      (raw) => {
+        if (!open || calls++ !== 0) throw new Error('bounded upload batch callback is invalid')
+        const committed = requireBoundedUploadBatchCommit(raw)
+        if (committed.attempt === null || committed.cursor === null || committed.batch === null)
+          throw new Error('bounded upload batch callback is incomplete')
+        const committedAttempt = decodeActiveUploadAttemptRecord(committed.attempt)
+        const committedCursor = decodeEncryptedWalletBackupUploadCursor(committed.cursor)
+        const committedBatch = decodeUploadBatchRecord(committed.batch)
+        requireExactBoundedBatchCommit(
+          claim.record,
+          batch,
+          nextCursor,
+          committedAttempt,
+          committedBatch,
+          committedCursor,
+        )
+        committedAttemptAuthority = committedAttempt
+        issued = authorizeUploadBatch(committedBatch, input.keyHandle)
+        return issued
+      },
+    )
+    open = false
+    if (!isThenable(transaction))
+      throw new Error('bounded upload batch must return a transaction promise')
+    returned = await transaction
+  } finally {
+    open = false
+  }
+  if (issued === undefined || returned !== issued || calls !== 1)
+    throw new Error('bounded upload batch must be synchronous and exact')
+  if (committedAttemptAuthority === undefined)
+    throw new Error('bounded upload batch omitted attempt authority')
+  UPLOAD_ATTEMPT_CLAIMS.set(input.claim, {
+    keyHandle: input.keyHandle,
+    store: input.store,
+    record: committedAttemptAuthority,
+  })
+  BOUNDED_UPLOAD_CURSORS.set(input.claim, nextCursor)
+  if (nextCursor.phase === 'complete') INCOMPLETE_BOUNDED_UPLOAD_ATTEMPT_CLAIMS.delete(input.claim)
   return issued
 }
 
@@ -3619,8 +3767,17 @@ function issueBoundedUploadAttemptClaim(
   store: EncryptedWalletBackupUploadAttemptCursorStore,
 ): EncryptedWalletBackupUploadAttemptClaim {
   const claim = issueUploadAttemptClaim(record, keyHandle, store)
+  BOUNDED_UPLOAD_CURSORS.set(claim, cursor)
   if (cursor.phase !== 'complete') INCOMPLETE_BOUNDED_UPLOAD_ATTEMPT_CLAIMS.add(claim)
   return claim
+}
+
+function requireBoundedUploadCursor(
+  claim: EncryptedWalletBackupUploadAttemptClaim,
+): PersistedEncryptedWalletBackupUploadCursor {
+  const cursor = BOUNDED_UPLOAD_CURSORS.get(claim)
+  if (cursor === undefined) throw new Error('bounded upload cursor authority is invalid')
+  return cursor
 }
 
 function requireBoundedClaimPair(
@@ -3784,6 +3941,13 @@ const uploadAttemptCursorReservation: EncryptedWalletBackupUploadAttemptCursorRe
     writeBytes: ENCRYPTED_WALLET_BACKUP_UPLOAD_ATTEMPT_CURSOR_BYTES_MAX,
   })
 
+const uploadBatchReservation: EncryptedWalletBackupUploadBatchReservation = Object.freeze({
+  readRows: ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_READ_ROWS_MAX,
+  writeRows: ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_WRITE_ROWS_MAX,
+  readBytes: ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX,
+  writeBytes: ENCRYPTED_WALLET_BACKUP_UPLOAD_BATCH_BYTES_MAX,
+})
+
 function createUploadAttemptCandidate(input: {
   readonly attemptId: string
   readonly ownerId: string
@@ -3902,6 +4066,307 @@ function equalUploadCursor(
     left.nextBatchOrdinal === right.nextBatchOrdinal &&
     left.version === right.version
   )
+}
+
+type BoundedUploadReference = Readonly<{
+  readonly kindCode: 1 | 2
+  readonly objectId: string
+  readonly digest: string
+}>
+
+type BoundedUploadSelection = Readonly<{
+  readonly reference: BoundedUploadReference
+  readonly item: EncryptedWalletBackupUploadItemRecord
+}>
+
+function requireBoundedUploadObjectSource(
+  value: unknown,
+): asserts value is EncryptedWalletBackupBoundedUploadObjectSource {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    typeof (value as EncryptedWalletBackupBoundedUploadObjectSource).readManifestPageObject !==
+      'function' ||
+    typeof (value as EncryptedWalletBackupBoundedUploadObjectSource).readProofChunkObject !==
+      'function'
+  ) {
+    throw new Error('bounded upload object source is invalid')
+  }
+}
+
+function boundedUploadReferences(
+  target: ReturnType<typeof validateTargetHead>,
+  inherited: Set<string>,
+  cursor: PersistedEncryptedWalletBackupUploadCursor,
+): readonly BoundedUploadReference[] {
+  const pages = target.pageReferences.map((reference) =>
+    Object.freeze({ kindCode: 2 as const, objectId: reference.objectId, digest: reference.digest }),
+  )
+  const chunks = target.chunkReferences
+    .filter((reference) => !inherited.has(`${reference.objectId}:${reference.digest}`))
+    .map((reference) =>
+      Object.freeze({
+        kindCode: 1 as const,
+        objectId: reference.objectId,
+        digest: reference.digest,
+      }),
+    )
+  switch (cursor.phase) {
+    case 'pages':
+      return Object.freeze([...pages.slice(cursor.nextPageIndex), ...chunks])
+    case 'chunks': {
+      const start =
+        cursor.exclusiveChunkObjectId === null
+          ? 0
+          : chunks.findIndex((item) => item.objectId === cursor.exclusiveChunkObjectId) + 1
+      return Object.freeze(chunks.slice(start))
+    }
+    case 'complete':
+      return Object.freeze([])
+  }
+}
+
+async function readBoundedUploadBatchObjects(input: {
+  readonly source: EncryptedWalletBackupBoundedUploadObjectSource
+  readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly target: ReturnType<typeof validateTargetHead>
+  readonly references: readonly BoundedUploadReference[]
+  readonly attemptId: string
+}): Promise<readonly BoundedUploadSelection[]> {
+  const selected: BoundedUploadSelection[] = []
+  let bytes = 0
+  let chunks = 0
+  for (const reference of input.references) {
+    if (selected.length === ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX) break
+    if (reference.kindCode === 1 && chunks === ENCRYPTED_WALLET_BACKUP_CYCLE_REPACK_MAX) break
+    const maximumPayloadBytes = maximumBoundedCanonicalPutBytes(input, reference)
+    if (bytes + maximumPayloadBytes > ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX) break
+    const object = await readBoundedUploadObject(input, reference)
+    const payload = canonicalBoundedPutPayload(input.attemptId, object)
+    selected.push(
+      Object.freeze({
+        reference,
+        item: Object.freeze({
+          objectId: reference.objectId,
+          objectDigest: reference.digest,
+          payloadLength: payload.byteLength,
+          canonicalPutPayload: payload,
+        }),
+      }),
+    )
+    bytes += payload.byteLength
+    if (reference.kindCode === 1) chunks += 1
+  }
+  if (selected.length === 0) throw new Error('bounded upload object cannot fit a cycle')
+  return Object.freeze(selected)
+}
+
+async function readBoundedUploadObject(
+  input: Parameters<typeof readBoundedUploadBatchObjects>[0],
+  reference: BoundedUploadReference,
+): Promise<EncryptedWalletBackupWireObject> {
+  const query = Object.freeze({
+    realm: input.keyHandle.realm,
+    vaultId: input.keyHandle.vaultId,
+    generation: input.target.generation,
+    objectId: reference.objectId,
+    digest: reference.digest,
+    maximumRows: 1 as const,
+    maximumBytes: 1_048_576 as const,
+  })
+  const object =
+    reference.kindCode === 2
+      ? await input.source.readManifestPageObject(query)
+      : await input.source.readProofChunkObject(query)
+  if (
+    object.formatVersion !== ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION ||
+    object.kindCode !== reference.kindCode ||
+    object.realm !== query.realm ||
+    object.vaultId !== query.vaultId ||
+    object.generation !== query.generation ||
+    object.objectId !== query.objectId ||
+    object.digest !== query.digest ||
+    object.paddedLength !== (reference.kindCode === 2 ? 65_536 : 262_144)
+  ) {
+    throw new Error('bounded upload object does not match its target reference')
+  }
+  const bodyMaximum =
+    reference.kindCode === 2
+      ? ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES
+      : ENCRYPTED_WALLET_BACKUP_BODY_BYTES
+  if (
+    !(object.aad instanceof Uint8Array) ||
+    !(object.body instanceof Uint8Array) ||
+    object.aad.byteLength < 1 ||
+    object.aad.byteLength > 4_096 ||
+    object.body.byteLength < 1 ||
+    object.body.byteLength > bodyMaximum ||
+    object.aad.byteLength + object.body.byteLength > query.maximumBytes
+  ) {
+    throw new Error('bounded upload object exceeds its source reservation')
+  }
+  return Object.freeze({ ...object, aad: object.aad.slice(), body: object.body.slice() })
+}
+
+/** Reserves bytes before a source read, so every read object is selected. */
+function maximumBoundedCanonicalPutBytes(
+  input: Parameters<typeof readBoundedUploadBatchObjects>[0],
+  reference: BoundedUploadReference,
+): number {
+  return canonicalBoundedPutPayload(input.attemptId, {
+    formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
+    kindCode: reference.kindCode,
+    realm: input.keyHandle.realm,
+    vaultId: input.keyHandle.vaultId,
+    objectId: reference.objectId,
+    generation: input.target.generation,
+    paddedLength: reference.kindCode === 2 ? 65_536 : 262_144,
+    digest: reference.digest,
+    aad: new Uint8Array(4_096),
+    body: new Uint8Array(
+      reference.kindCode === 2
+        ? ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES
+        : ENCRYPTED_WALLET_BACKUP_BODY_BYTES,
+    ),
+  }).byteLength
+}
+
+function canonicalBoundedPutPayload(
+  attemptId: string,
+  object: EncryptedWalletBackupWireObject,
+): Uint8Array {
+  const payload = encodeCanonical([
+    ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
+    'object-put',
+    hexToBytes(attemptId),
+    object.kindCode,
+    object.realm,
+    hexToBytes(object.vaultId),
+    hexToBytes(object.objectId),
+    object.generation,
+    object.paddedLength,
+    hexToBytes(object.digest),
+    object.aad,
+    object.body,
+  ])
+  if (payload.byteLength > ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES)
+    throw new Error('bounded upload object exceeds the request byte limit')
+  return payload
+}
+
+function advanceBoundedUploadCursor(
+  cursor: PersistedEncryptedWalletBackupUploadCursor,
+  target: ReturnType<typeof validateTargetHead>,
+  inherited: Set<string>,
+  selected: readonly BoundedUploadSelection[],
+): PersistedEncryptedWalletBackupUploadCursor {
+  const pageCount = target.pageReferences.length
+  const nonInheritedChunks = target.chunkReferences.filter(
+    (reference) => !inherited.has(`${reference.objectId}:${reference.digest}`),
+  )
+  const selectedPages = selected.filter((entry) => entry.reference.kindCode === 2).length
+  const selectedChunks = selected.filter((entry) => entry.reference.kindCode === 1)
+  const nextPageIndex = cursor.nextPageIndex + selectedPages
+  const exclusiveChunkObjectId =
+    selectedChunks.at(-1)?.reference.objectId ?? cursor.exclusiveChunkObjectId
+  const chunkComplete = exclusiveChunkObjectId === nonInheritedChunks.at(-1)?.objectId
+  const phase =
+    nextPageIndex < pageCount
+      ? 'pages'
+      : chunkComplete || nonInheritedChunks.length === 0
+        ? 'complete'
+        : 'chunks'
+  if (
+    cursor.nextBatchOrdinal >= ENCRYPTED_WALLET_BACKUP_ATTEMPT_BATCH_MAX ||
+    cursor.version >= ENCRYPTED_WALLET_BACKUP_ATTEMPT_BATCH_MAX + 1
+  ) {
+    throw new Error('bounded upload cursor exceeds its batch limit')
+  }
+  return Object.freeze({
+    ...cursor,
+    phase,
+    nextPageIndex,
+    exclusiveChunkObjectId: phase === 'pages' ? null : exclusiveChunkObjectId,
+    nextBatchOrdinal: cursor.nextBatchOrdinal + 1,
+    version: cursor.version + 1,
+  }) as PersistedEncryptedWalletBackupUploadCursor
+}
+
+function boundedUploadBatchRecord(
+  attempt: EncryptedWalletBackupActiveUploadAttemptRecord,
+  cursor: PersistedEncryptedWalletBackupUploadCursor,
+  selected: readonly BoundedUploadSelection[],
+): EncryptedWalletBackupUploadBatchRecord {
+  const items = selected.map((entry) => entry.item)
+  return freezeUploadBatch({
+    schemaVersion: 1,
+    batchId: bytesToHex(
+      sha256(
+        encodeCanonical([
+          1,
+          'bounded-upload-batch',
+          hexToBytes(attempt.attemptId),
+          cursor.nextBatchOrdinal,
+        ]),
+      ).slice(0, 16),
+    ),
+    attemptId: attempt.attemptId,
+    targetManifestDigest: attempt.targetManifestDigest,
+    canonicalTargetHead: attempt.canonicalTargetHead,
+    canonicalTargetReferenceSet: attempt.canonicalTargetReferenceSet,
+    canonicalInheritedReferenceSet: attempt.canonicalInheritedReferenceSet,
+    localSnapshotId: attempt.localSnapshotId,
+    localSnapshotRevision: attempt.localSnapshotRevision,
+    repackedChunkCount: selected.filter((entry) => entry.reference.kindCode === 1).length,
+    uploadedBytes: items.reduce((total, item) => total + item.payloadLength, 0),
+    executionEpoch: 0,
+    executionLeaseExpiresAtUnixMilliseconds: null,
+    items,
+    state: 'sealed',
+  })
+}
+
+function requireBoundedUploadBatchCommit(
+  value: unknown,
+): EncryptedWalletBackupBoundedUploadBatchCommit {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Object.getPrototypeOf(value) !== Object.prototype ||
+    Reflect.ownKeys(value).length !== 3 ||
+    !Object.hasOwn(value, 'attempt') ||
+    !Object.hasOwn(value, 'cursor') ||
+    !Object.hasOwn(value, 'batch')
+  )
+    throw new Error('bounded upload batch callback is invalid')
+  return value as EncryptedWalletBackupBoundedUploadBatchCommit
+}
+
+function requireExactBoundedBatchCommit(
+  prior: EncryptedWalletBackupActiveUploadAttemptRecord,
+  batch: EncryptedWalletBackupUploadBatchRecord,
+  nextCursor: PersistedEncryptedWalletBackupUploadCursor,
+  attempt: EncryptedWalletBackupActiveUploadAttemptRecord,
+  committedBatch: EncryptedWalletBackupUploadBatchRecord,
+  cursor: PersistedEncryptedWalletBackupUploadCursor,
+): void {
+  if (prior.activeBatchId !== null)
+    throw new Error('bounded upload attempt already has an active batch')
+  const expectedAttempt = cloneActiveUploadAttemptRecord({
+    ...prior,
+    batchIds: Object.freeze(
+      prior.batchIds.includes(batch.batchId)
+        ? [...prior.batchIds]
+        : [...prior.batchIds, batch.batchId],
+    ),
+    activeBatchId: batch.batchId,
+  })
+  if (
+    !equalActiveUploadAttempt(expectedAttempt, attempt) ||
+    !equalUploadBatch(batch, committedBatch) ||
+    !equalUploadCursor(nextCursor, cursor)
+  )
+    throw new Error('bounded upload batch commit changed')
 }
 
 function freezeUploadBatch(
@@ -4245,7 +4710,9 @@ function requireUploadAttemptCursorStore(
     typeof (value as EncryptedWalletBackupUploadAttemptCursorStore)
       .sealActiveUploadAttemptAndCursor !== 'function' ||
     typeof (value as EncryptedWalletBackupUploadAttemptCursorStore)
-      .claimActiveUploadAttemptAndCursor !== 'function'
+      .claimActiveUploadAttemptAndCursor !== 'function' ||
+    typeof (value as EncryptedWalletBackupUploadAttemptCursorStore)
+      .sealUploadBatchAndAdvanceCursor !== 'function'
   ) {
     throw new Error('backup upload attempt cursor store is invalid')
   }
