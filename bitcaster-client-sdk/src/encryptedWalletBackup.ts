@@ -68,6 +68,7 @@ import {
   type BoundedManifestTargetCapability,
   type BoundedManifestTargetAuthority,
 } from './encryptedWalletBackupManifestTargetAuthority.ts'
+import { registerBoundedEncryptedWalletBackupUploadAttemptTarget } from './encryptedWalletBackupBoundedUploadAttemptAuthority.ts'
 export type { EncryptedWalletBackupFrozenSnapshotControl } from './encryptedWalletBackupSnapshotAuthority.ts'
 import {
   issueCoordinatedEncryptedWalletBackupCasAttempt,
@@ -3290,7 +3291,12 @@ export function prepareBoundedEncryptedWalletBackupManifestTarget(input: {
     references,
     proofCount: context.capability.proofCount,
   })
-  return registerBoundedManifestTarget({ input, context, references, target })
+  const prepared = registerBoundedManifestTarget({ input, context, references, target })
+  registerBoundedEncryptedWalletBackupUploadAttemptTarget({
+    keyHandle: input.keyHandle,
+    target: prepared,
+  })
+  return prepared
 }
 
 type BoundedManifestPageReference = BoundedManifestTargetAuthority['pages'][number]
