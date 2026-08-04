@@ -37,6 +37,7 @@ import {
   restoreEncryptedWalletBackupProofs,
   verifyEncryptedWalletBackupConditionalKeyset,
   readPreparedEncryptedWalletBackupObject,
+  rehydratePreparedEncryptedWalletBackupManifestPage,
   readPreparedEncryptedWalletBackupManifestHead,
   readAuthenticatedEncryptedWalletBackupHead,
   resumeEncryptedWalletBackupSyncAttempt,
@@ -56,6 +57,7 @@ import { encodeCanonicalBackupCbor as encodeCanonical } from '../src/encryptedWa
 import {
   finalManifestEntryBytes,
   issueEncryptedWalletBackupManifestEntryCapability,
+  readEncryptedWalletBackupManifestPageProvenance,
   registerEncryptedWalletBackupManifestPassABoundaries,
 } from '../src/encryptedWalletBackupManifestPageAuthority.ts'
 import { preflightEncryptedProofChunkCbor } from '../src/encryptedWalletBackupCbor.ts'
@@ -854,10 +856,77 @@ test('bounded manifest page creation reproduces the v1 manifest-page vector', as
   })
   const wire = readPreparedEncryptedWalletBackupObject(page)
   assert.equal(wire.objectId, vector.expected.manifestPageObjectIdHex)
-  assert.equal(wire.digest, vector.expected.manifestPageDigestHex)
-  assert.equal(toHex(wire.aad), vector.expected.manifestPageAadHex)
-  assert.equal(toHex(await sha256(wire.body)), vector.expected.manifestPageBodySha256Hex)
+  assert.equal(wire.digest, vector.expected.manifestPassBPageDigestHex)
+  assert.equal(toHex(wire.aad), vector.expected.manifestPassBPageAadHex)
+  assert.equal(toHex(await sha256(wire.body)), vector.expected.manifestPassBPageBodySha256Hex)
   assert.equal('registerEncryptedWalletBackupManifestPassABoundaries' in BackupModule, false)
+})
+
+test('bounded manifest pages reject cross-snapshot substitution and forged pin endpoints', async () => {
+  const fixture = await createManifestPageVectorFixture()
+  const page = await prepareEncryptedWalletBackupManifestPage({
+    ...fixture,
+    runtime: deterministicRuntime([new Uint8Array(16).fill(21), new Uint8Array(12).fill(31)]),
+  })
+  const provenance = readEncryptedWalletBackupManifestPageProvenance(page)
+  const object = readPreparedEncryptedWalletBackupObject(page)
+  assert.equal(provenance.firstPinKey.byteLength > 0, true)
+  assert.equal(provenance.lastPinKey.byteLength > 0, true)
+  for (const boundary of [
+    issueManifestPageBoundaryForTest(fixture.keyHandle, fixture.rawEntries, {
+      snapshotId: 'other-snapshot',
+    }),
+    issueManifestPageBoundaryForTest(fixture.keyHandle, fixture.rawEntries, {
+      snapshotRevision: 2,
+    }),
+    issueManifestPageBoundaryForTest(fixture.keyHandle, fixture.rawEntries, {
+      sealedControlDigest: '44'.repeat(32),
+    }),
+    issueManifestPageBoundaryForTest(fixture.keyHandle, fixture.rawEntries, {
+      resultDigest: '55'.repeat(32),
+    }),
+  ]) {
+    await assert.rejects(
+      rehydratePreparedEncryptedWalletBackupManifestPage({
+        keyHandle: fixture.keyHandle,
+        seed: SEED,
+        boundary,
+        object,
+        sourceEvidence: provenance,
+      }),
+      /persisted encrypted wallet backup manifest page is invalid/,
+    )
+  }
+  await assert.rejects(
+    rehydratePreparedEncryptedWalletBackupManifestPage({
+      keyHandle: fixture.keyHandle,
+      seed: SEED,
+      boundary: fixture.boundary,
+      object,
+      sourceEvidence: { ...provenance, lastPinKey: new Uint8Array([255]) },
+    }),
+    /persisted encrypted wallet backup manifest page is invalid/,
+  )
+  await assert.rejects(
+    rehydratePreparedEncryptedWalletBackupManifestPage({
+      keyHandle: fixture.keyHandle,
+      seed: SEED,
+      boundary: fixture.boundary,
+      object,
+      sourceEvidence: { ...provenance, firstPinKey: new Uint8Array([0]) },
+    }),
+    /persisted encrypted wallet backup manifest page is invalid/,
+  )
+  const rehydrated = await rehydratePreparedEncryptedWalletBackupManifestPage({
+    keyHandle: fixture.keyHandle,
+    seed: SEED,
+    boundary: issueManifestPageBoundaryForTest(fixture.keyHandle, fixture.rawEntries),
+    object,
+    sourceEvidence: provenance,
+  })
+  const recoveredProvenance = readEncryptedWalletBackupManifestPageProvenance(rehydrated)
+  assert.equal(toHex(recoveredProvenance.firstPinKey), toHex(provenance.firstPinKey))
+  assert.equal(toHex(recoveredProvenance.lastPinKey), toHex(provenance.lastPinKey))
 })
 
 test('bounded manifest page creation rejects invalid authority before randomness', async () => {
@@ -976,19 +1045,25 @@ async function createManifestPageVectorEntries(
 function issueManifestPageBoundaryForTest(
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
   entries: Awaited<ReturnType<typeof createManifestPageVectorEntries>>,
+  overrides: Partial<{
+    resultDigest: string
+    snapshotId: string
+    snapshotRevision: number
+    sealedControlDigest: string
+  }> = {},
 ) {
   const entryBytes = manifestPageEntryBytes(entries)
   const result = Object.freeze({})
   registerEncryptedWalletBackupManifestPassABoundaries({
     result,
-    resultDigest: '11'.repeat(32),
+    resultDigest: overrides.resultDigest ?? '11'.repeat(32),
     realm: keyHandle.realm,
     vaultId: keyHandle.vaultId,
-    snapshotId: 'test-snapshot',
-    snapshotRevision: 1,
+    snapshotId: overrides.snapshotId ?? 'test-snapshot',
+    snapshotRevision: overrides.snapshotRevision ?? 1,
     sealedControlVersion: 1,
     sealRunRevision: 1,
-    sealedControlDigest: '22'.repeat(32),
+    sealedControlDigest: overrides.sealedControlDigest ?? '22'.repeat(32),
     generation: 1,
     snapshotNonce: '21'.repeat(16),
     boundaries: [

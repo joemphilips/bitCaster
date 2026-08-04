@@ -38,10 +38,12 @@ interface BoundaryAuthority {
   readonly plannedCanonicalPageBytes: number
 }
 
-interface ManifestPageProvenance {
+export interface EncryptedWalletBackupManifestPageProvenance {
   readonly boundary: EncryptedWalletBackupManifestPageBoundary
   readonly canonicalPageBytes: number
   readonly canonicalPageDigest: string
+  readonly firstPinKey: Uint8Array
+  readonly lastPinKey: Uint8Array
 }
 
 const RESULT_BOUNDARIES = new WeakMap<
@@ -49,7 +51,7 @@ const RESULT_BOUNDARIES = new WeakMap<
   readonly EncryptedWalletBackupManifestPageBoundary[]
 >()
 const BOUNDARY_AUTHORITIES = new WeakMap<object, BoundaryAuthority>()
-const PAGE_PROVENANCE = new WeakMap<object, ManifestPageProvenance>()
+const PAGE_PROVENANCE = new WeakMap<object, EncryptedWalletBackupManifestPageProvenance>()
 interface EntryCapabilityAuthority {
   readonly finalEntry: Uint8Array
   readonly boundary: EncryptedWalletBackupManifestPageBoundary
@@ -250,9 +252,14 @@ export function issueEncryptedWalletBackupManifestPageProvenance(input: {
   readonly page: object
   readonly boundary: EncryptedWalletBackupManifestPageBoundary
   readonly canonicalPage: Uint8Array
+  readonly firstPinKey: Uint8Array
+  readonly lastPinKey: Uint8Array
 }): void {
   const authority = requireEncryptedWalletBackupManifestPageBoundary(input.boundary)
-  if (input.canonicalPage.byteLength > authority.plannedCanonicalPageBytes)
+  if (
+    input.canonicalPage.byteLength > authority.plannedCanonicalPageBytes ||
+    !validPinEndpoints(input.firstPinKey, input.lastPinKey)
+  )
     throw new Error('backup manifest page exceeds its planned size')
   PAGE_PROVENANCE.set(
     input.page,
@@ -260,17 +267,35 @@ export function issueEncryptedWalletBackupManifestPageProvenance(input: {
       boundary: input.boundary,
       canonicalPageBytes: input.canonicalPage.byteLength,
       canonicalPageDigest: bytesToHex(sha256(input.canonicalPage)),
+      firstPinKey: input.firstPinKey.slice(),
+      lastPinKey: input.lastPinKey.slice(),
     }),
   )
 }
 
-/** Internal rehydration seam. It never exposes the boundary tuple. */
+/** Read authenticated page provenance with detached source-pin endpoints. */
 export function readEncryptedWalletBackupManifestPageProvenance(
   value: object,
-): ManifestPageProvenance {
+): EncryptedWalletBackupManifestPageProvenance {
   const provenance = PAGE_PROVENANCE.get(value)
   if (provenance === undefined) throw new Error('prepared manifest page provenance is invalid')
-  return provenance
+  return Object.freeze({
+    ...provenance,
+    firstPinKey: provenance.firstPinKey.slice(),
+    lastPinKey: provenance.lastPinKey.slice(),
+  })
+}
+
+function validPinEndpoints(first: unknown, last: unknown): first is Uint8Array {
+  return (
+    first instanceof Uint8Array &&
+    last instanceof Uint8Array &&
+    first.byteLength >= 1 &&
+    last.byteLength >= 1 &&
+    first.byteLength <= 1_024 &&
+    last.byteLength <= 1_024 &&
+    compareBytes(first, last) <= 0
+  )
 }
 
 function issueBoundary(
@@ -333,4 +358,12 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return (
     left.byteLength === right.byteLength && left.every((value, index) => value === right[index])
   )
+}
+
+function compareBytes(left: Uint8Array, right: Uint8Array): number {
+  for (let index = 0; index < Math.min(left.byteLength, right.byteLength); index += 1) {
+    const difference = left[index]! - right[index]!
+    if (difference !== 0) return difference
+  }
+  return left.byteLength - right.byteLength
 }

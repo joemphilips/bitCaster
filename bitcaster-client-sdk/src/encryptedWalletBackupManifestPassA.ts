@@ -210,6 +210,35 @@ export function decodeEncryptedWalletBackupManifestPassAResult(
   })
 }
 
+/** Reissue opaque Pass-A boundaries only from the exact sealed snapshot row. */
+export function rehydrateEncryptedWalletBackupManifestPassAResult(input: {
+  readonly control: EncryptedWalletBackupFrozenSnapshotControl
+  readonly current: PersistedEncryptedWalletBackupFrozenSnapshot
+  readonly persisted: Uint8Array
+}): PersistedEncryptedWalletBackupManifestPassAResult {
+  const sealed = requireSealedControl(input.control, input.current)
+  const result = decodeEncryptedWalletBackupManifestPassAResult(input.persisted)
+  if (
+    result.realm !== sealed.realm ||
+    result.vaultId !== sealed.vaultId ||
+    result.snapshotId !== sealed.snapshotId ||
+    result.snapshotRevision !== sealed.snapshotRevision ||
+    result.sealedControlVersion !== sealed.version ||
+    result.sealRunRevision !== sealed.sealRunRevision ||
+    result.sealedControlDigest !==
+      bytesToHex(sha256(encodeEncryptedWalletBackupFrozenSnapshot(sealed))) ||
+    result.recordSetRoot !== sealed.recordSetRoot ||
+    result.generation !== sealed.generation ||
+    result.snapshotNonce !== sealed.snapshotNonce ||
+    result.recordCount !== sealed.recordCount ||
+    result.canonicalPinBytes !== sealed.canonicalPinBytes
+  ) {
+    throw new Error('backup manifest Pass-A result belongs to a foreign snapshot')
+  }
+  registerManifestPassABoundaries(result)
+  return result
+}
+
 class ManifestPassAPlanner {
   #after: Uint8Array | null = null
   #recordCount = 0
