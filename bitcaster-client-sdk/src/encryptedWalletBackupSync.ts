@@ -1915,7 +1915,6 @@ export async function uploadEncryptedWalletBackupBatch(input: {
       const item = authority.record.items[index]
       if (item === undefined) return
       try {
-        await validateCurrentUploadAttemptClaim(input.store, claim.record, ['active'])
         if (item.canonicalPutPayload === null)
           throw new Error('backup PUT payload was compacted too early')
         const issuedAt = requireInteger(
@@ -1991,6 +1990,118 @@ export async function uploadEncryptedWalletBackupBatch(input: {
     }),
     input.keyHandle,
   )
+}
+
+export type BoundedEncryptedWalletBackupUploadCycleResult =
+  | Readonly<{
+      readonly state: 'upload-pending'
+      readonly batch: SealedEncryptedWalletBackupUploadBatch
+    }>
+  | Readonly<{
+      readonly state: 'cas-sealed'
+      readonly attempt: SealedEncryptedWalletBackupSyncAttempt
+    }>
+
+/**
+ * Runs one durable bounded upload cycle. Repeat after `upload-pending` until
+ * the persisted cursor is complete. An active batch always wins over planning.
+ */
+export async function runBoundedEncryptedWalletBackupUploadCycle(input: {
+  readonly initialAttempt?: Readonly<{
+    readonly attemptId: string
+    readonly target: PreparedEncryptedWalletBackupManifestTarget
+  }> | null
+  readonly ownerId: string
+  readonly leaseDurationMilliseconds: number
+  readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly store: EncryptedWalletBackupUploadAttemptCursorStore &
+    EncryptedWalletBackupCoordinatorStore
+  readonly source: EncryptedWalletBackupBoundedUploadObjectSource
+  readonly enrollmentEpoch: number
+  readonly clock: EncryptedWalletBackupClock
+  readonly objectUrl: (objectId: string) => string
+  readonly remote: EncryptedWalletBackupObjectRemotePort
+  readonly signal: AbortSignal
+  readonly executionLeaseDurationMilliseconds?: number
+  readonly runtime?: EncryptedWalletBackupRuntime
+}): Promise<BoundedEncryptedWalletBackupUploadCycleResult> {
+  const claim = await claimOrSealBoundedEncryptedWalletBackupUploadAttempt(input)
+  const batch = await rehydrateOrPlanBoundedEncryptedWalletBackupUploadBatch(input, claim)
+  if (batch === null) return sealBoundedUploadCycleCasAttempt(input, claim)
+  const acknowledged = await uploadEncryptedWalletBackupBatch({
+    batch,
+    claim,
+    store: input.store,
+    keyHandle: input.keyHandle,
+    enrollmentEpoch: input.enrollmentEpoch,
+    clock: input.clock,
+    objectUrl: input.objectUrl,
+    remote: input.remote,
+    signal: input.signal,
+    executionLeaseDurationMilliseconds: input.executionLeaseDurationMilliseconds,
+    runtime: input.runtime,
+  })
+  if (requireBoundedUploadCursor(claim).phase === 'complete')
+    return sealBoundedUploadCycleCasAttempt(input, claim)
+  return Object.freeze({ state: 'upload-pending' as const, batch: acknowledged })
+}
+
+async function claimOrSealBoundedEncryptedWalletBackupUploadAttempt(input: {
+  readonly initialAttempt?: Readonly<{
+    readonly attemptId: string
+    readonly target: PreparedEncryptedWalletBackupManifestTarget
+  }> | null
+  readonly ownerId: string
+  readonly leaseDurationMilliseconds: number
+  readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly store: EncryptedWalletBackupUploadAttemptCursorStore
+}): Promise<EncryptedWalletBackupUploadAttemptClaim> {
+  const claimed = await claimBoundedEncryptedWalletBackupUploadAttempt(input)
+  if (claimed !== null) return claimed
+  if (input.initialAttempt === null || input.initialAttempt === undefined)
+    throw new Error('bounded upload cycle has no active attempt or initial target')
+  return sealBoundedEncryptedWalletBackupUploadAttempt({
+    ...input,
+    attemptId: input.initialAttempt.attemptId,
+    target: input.initialAttempt.target,
+  })
+}
+
+async function rehydrateOrPlanBoundedEncryptedWalletBackupUploadBatch(
+  input: Readonly<{
+    readonly keyHandle: EncryptedWalletBackupKeyHandle
+    readonly store: EncryptedWalletBackupUploadAttemptCursorStore
+    readonly source: EncryptedWalletBackupBoundedUploadObjectSource
+  }>,
+  claim: EncryptedWalletBackupUploadAttemptClaim,
+): Promise<SealedEncryptedWalletBackupUploadBatch | null> {
+  if (claim.record.activeBatchId !== null)
+    return rehydrateEncryptedWalletBackupUploadBatch({
+      batchId: claim.record.activeBatchId,
+      keyHandle: input.keyHandle,
+      store: input.store,
+    })
+  return planAndSealBoundedEncryptedWalletBackupUploadBatch({
+    claim,
+    keyHandle: input.keyHandle,
+    store: input.store,
+    source: input.source,
+  })
+}
+
+async function sealBoundedUploadCycleCasAttempt(
+  input: Readonly<{
+    readonly keyHandle: EncryptedWalletBackupKeyHandle
+    readonly store: EncryptedWalletBackupCoordinatorStore
+  }>,
+  claim: EncryptedWalletBackupUploadAttemptClaim,
+): Promise<BoundedEncryptedWalletBackupUploadCycleResult> {
+  const attempt = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim,
+    keyHandle: input.keyHandle,
+    store: input.store,
+  })
+  return Object.freeze({ state: 'cas-sealed' as const, attempt })
 }
 
 export function deriveEncryptedWalletBackupCasAttemptId(input: {

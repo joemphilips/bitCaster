@@ -18,12 +18,15 @@ import {
   claimBoundedEncryptedWalletBackupUploadAttempt,
   planAndSealBoundedEncryptedWalletBackupUploadBatch,
   rehydrateEncryptedWalletBackupUploadBatch,
+  runBoundedEncryptedWalletBackupUploadCycle,
   sealBoundedEncryptedWalletBackupUploadAttempt,
   sealOrRehydrateEncryptedWalletBackupCasAttempt,
   type EncryptedWalletBackupActiveUploadAttemptRecord,
   type EncryptedWalletBackupBoundedUploadObjectSource,
   type EncryptedWalletBackupUploadBatchRecord,
   type EncryptedWalletBackupUploadAttemptCursorStore,
+  type EncryptedWalletBackupCoordinatorStore,
+  type EncryptedWalletBackupSyncAttemptRecord,
 } from '../src/encryptedWalletBackupSync.ts'
 import { encodeCanonicalBackupCbor } from '../src/encryptedWalletBackupCbor.ts'
 import {
@@ -612,6 +615,119 @@ test('a non-empty bounded upload claim cannot authorize a premature CAS', async 
   )
 })
 
+test('bounded upload cycle rehydrates an active uncertain batch and replays its exact bytes', async () => {
+  const fixture = await boundedTargetFixture(false)
+  const store = new AtomicAttemptCursorStore()
+  let sourceReads = 0
+  const source = boundedObjectSource(fixture.keyHandle, () => {
+    sourceReads += 1
+  })
+  const firstPutPayloads: Uint8Array[] = []
+  let replay = false
+  await assert.rejects(
+    runBoundedUploadCycleForTest({
+      fixture,
+      store,
+      source,
+      remote: {
+        async putObject(input) {
+          firstPutPayloads.push(input.canonicalPutPayload.slice())
+          if (!replay) throw new Error('remote PUT outcome is unknown')
+          return { status: 'already-stored' as const }
+        },
+      },
+    }),
+    /remote PUT outcome is unknown/,
+  )
+  const batchId = store.attempts.get('61'.repeat(16))?.activeBatchId
+  assert.notEqual(batchId, null)
+  const persistedPayloads = store.batches
+    .get(batchId!)!
+    .items.map((item) => item.canonicalPutPayload!)
+  assert.equal(sourceReads, 2)
+  assert.equal(firstPutPayloads.length, 2)
+  assert.equal(
+    firstPutPayloads.every((payload) =>
+      persistedPayloads.some((sealed) => equalBytes(sealed, payload)),
+    ),
+    true,
+  )
+
+  replay = true
+  const result = await runBoundedUploadCycleForTest({
+    fixture,
+    store,
+    initialAttempt: null,
+    source,
+    remote: {
+      async putObject(input) {
+        assert.equal(
+          persistedPayloads.some((payload) => equalBytes(payload, input.canonicalPutPayload)),
+          true,
+        )
+        return { status: 'already-stored' as const }
+      },
+    },
+  })
+  assert.equal(result.state, 'cas-sealed')
+  assert.equal(sourceReads, 2)
+  assert.equal(store.attempts.get('61'.repeat(16))?.activeBatchId, null)
+})
+
+test('bounded upload cycle validates the attempt once and execution before each PUT', async () => {
+  const fixture = await boundedTargetFixture(false)
+  const store = new AtomicAttemptCursorStore()
+  const result = await runBoundedUploadCycleForTest({ fixture, store })
+  assert.equal(result.state, 'cas-sealed')
+  assertBoundedUploadCycleCallShape(store, { combinedAttemptBatchValidation: 2, total: 9 })
+})
+
+test('bounded upload cycle journals CAS only after every bounded batch is acknowledged', async () => {
+  const fixture = await boundedTargetFixture(false, { pageCount: 16, chunkCount: 5 })
+  const store = new AtomicAttemptCursorStore()
+  const first = await runBoundedUploadCycleForTest({ fixture, store })
+  assert.equal(first.state, 'upload-pending')
+  assert.equal(store.casAttempts.size, 0)
+  const second = await runBoundedUploadCycleForTest({ fixture, store, initialAttempt: null })
+  assert.equal(second.state, 'upload-pending')
+  assert.equal(store.casAttempts.size, 0)
+  const third = await runBoundedUploadCycleForTest({ fixture, store, initialAttempt: null })
+  assert.equal(third.state, 'cas-sealed')
+  assert.equal(store.casAttempts.size, 1)
+})
+
+test('a 16-item bounded upload cycle sends four PUTs concurrently and never five', async () => {
+  const fixture = await boundedTargetFixture(false, { pageCount: 15, chunkCount: 1 })
+  const store = new AtomicAttemptCursorStore()
+  const release = deferred<void>()
+  let putCalls = 0
+  let inFlight = 0
+  let maximumInFlight = 0
+  const cycle = runBoundedUploadCycleForTest({
+    fixture,
+    store,
+    remote: {
+      async putObject() {
+        putCalls += 1
+        inFlight += 1
+        maximumInFlight = Math.max(maximumInFlight, inFlight)
+        await release.promise
+        inFlight -= 1
+        return { status: 'stored' as const }
+      },
+    },
+  })
+  await waitForPutCalls(() => putCalls)
+  assert.equal(putCalls, 4)
+  assert.equal(maximumInFlight, 4)
+  release.resolve()
+  const result = await cycle
+  assert.equal(result.state, 'cas-sealed')
+  assert.equal(putCalls, 16)
+  assert.equal(maximumInFlight, 4)
+  assertBoundedUploadCycleCallShape(store, { combinedAttemptBatchValidation: 16, total: 23 })
+})
+
 test('bounded upload attempt rejects incomplete, changed, foreign, and malformed atomic callbacks', async (t) => {
   const fixture = await boundedTargetFixture(false)
   for (const mode of [
@@ -665,6 +781,18 @@ class AtomicAttemptCursorStore implements EncryptedWalletBackupUploadAttemptCurs
   readonly attempts = new Map<string, EncryptedWalletBackupActiveUploadAttemptRecord>()
   readonly cursors = new Map<string, Uint8Array>()
   readonly batches = new Map<string, EncryptedWalletBackupUploadBatchRecord>()
+  readonly casAttempts = new Map<string, EncryptedWalletBackupSyncAttemptRecord>()
+  readonly methodCalls = {
+    pairedAttemptClaim: 0,
+    pairedAttemptSeal: 0,
+    batchCursorSeal: 0,
+    initialAttemptValidation: 0,
+    activeBatchRead: 0,
+    executionClaim: 0,
+    combinedAttemptBatchValidation: 0,
+    acknowledgementTransition: 0,
+    casSeal: 0,
+  }
   reservation:
     | Parameters<
         EncryptedWalletBackupUploadAttemptCursorStore['sealActiveUploadAttemptAndCursor']
@@ -691,6 +819,7 @@ class AtomicAttemptCursorStore implements EncryptedWalletBackupUploadAttemptCurs
       cursor: Uint8Array | null
     }) => T,
   ): Promise<T> {
+    this.methodCalls.pairedAttemptSeal += 1
     this.reservation = input.reservation
     if (this.mode === 'reservation-mismatch') {
       this.reservation = { ...input.reservation, readRows: 1 } as never
@@ -761,6 +890,7 @@ class AtomicAttemptCursorStore implements EncryptedWalletBackupUploadAttemptCurs
       EncryptedWalletBackupUploadAttemptCursorStore['claimActiveUploadAttemptAndCursor']
     >[1],
   ): Promise<T> {
+    this.methodCalls.pairedAttemptClaim += 1
     const record = [...this.attempts.values()][0] ?? null
     const cursor = record === null ? null : (this.cursors.get(record.attemptId)?.slice() ?? null)
     const committed = { attempt: record, cursor }
@@ -776,6 +906,7 @@ class AtomicAttemptCursorStore implements EncryptedWalletBackupUploadAttemptCurs
       EncryptedWalletBackupUploadAttemptCursorStore['sealUploadBatchAndAdvanceCursor']
     >[1],
   ): Promise<T> {
+    this.methodCalls.batchCursorSeal += 1
     this.batchReservation = input.reservation
     const current = this.attempts.get(input.claim.attemptId)
     const cursor = this.cursors.get(input.claim.attemptId)
@@ -858,10 +989,14 @@ class AtomicAttemptCursorStore implements EncryptedWalletBackupUploadAttemptCurs
   }
 
   async validateUploadAttemptClaim<T>(
-    _claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
     read: (record: EncryptedWalletBackupActiveUploadAttemptRecord) => T,
   ): Promise<T> {
-    throw new Error(`unused ${read}`)
+    this.methodCalls.initialAttemptValidation += 1
+    const current = this.attempts.get(claim.attemptId)
+    if (current === undefined || !isDeepStrictEqual(current, claim))
+      throw new Error('stale upload attempt claim')
+    return read(structuredClone(current))
   }
   async sealActiveUploadAttempt<T>(): Promise<T> {
     throw new Error('unused')
@@ -873,23 +1008,149 @@ class AtomicAttemptCursorStore implements EncryptedWalletBackupUploadAttemptCurs
     batchId: string,
     read: (record: EncryptedWalletBackupUploadBatchRecord) => T,
   ): Promise<T> {
+    this.methodCalls.activeBatchRead += 1
     const batch = this.batches.get(batchId)
     if (batch === undefined) throw new Error('batch is absent')
     return read(structuredClone(batch))
   }
-  async claimUploadBatchExecution<T>(): Promise<T> {
-    throw new Error('unused')
+  async claimUploadBatchExecution<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    batch: EncryptedWalletBackupUploadBatchRecord,
+    _leaseDurationMilliseconds: number,
+    commit: (value: {
+      attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+      batch: EncryptedWalletBackupUploadBatchRecord
+    }) => T,
+  ): Promise<T> {
+    this.methodCalls.executionClaim += 1
+    const current = this.batches.get(batch.batchId)
+    if (
+      current === undefined ||
+      !isDeepStrictEqual(this.attempts.get(claim.attemptId), claim) ||
+      !isDeepStrictEqual(current, batch)
+    ) {
+      throw new Error('stale upload execution claim')
+    }
+    const next = structuredClone({
+      ...current,
+      state: 'put-uncertain' as const,
+      executionEpoch: current.executionEpoch + 1,
+      executionLeaseExpiresAtUnixMilliseconds: 1_700_000_060_000,
+    })
+    this.batches.set(next.batchId, next)
+    return commit({ attempt: structuredClone(claim), batch: structuredClone(next) })
   }
-  async validateUploadBatchExecution<T>(): Promise<T> {
-    throw new Error('unused')
+  async validateUploadBatchExecution<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    batch: EncryptedWalletBackupUploadBatchRecord,
+    read: (value: {
+      attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+      batch: EncryptedWalletBackupUploadBatchRecord
+    }) => T,
+  ): Promise<T> {
+    this.methodCalls.combinedAttemptBatchValidation += 1
+    const current = this.batches.get(batch.batchId)
+    if (
+      current === undefined ||
+      !isDeepStrictEqual(this.attempts.get(claim.attemptId), claim) ||
+      !isDeepStrictEqual(current, batch)
+    ) {
+      throw new Error('stale upload execution validation')
+    }
+    return read({ attempt: structuredClone(claim), batch: structuredClone(current) })
   }
-  async transitionUploadBatch<T>(): Promise<T> {
-    throw new Error('unused')
+  async transitionUploadBatch<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    expected: EncryptedWalletBackupUploadBatchRecord,
+    next: EncryptedWalletBackupUploadBatchRecord,
+    commit: (value: {
+      attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+      batch: EncryptedWalletBackupUploadBatchRecord
+    }) => T,
+  ): Promise<T> {
+    this.methodCalls.acknowledgementTransition += 1
+    const current = this.batches.get(expected.batchId)
+    const attempt = this.attempts.get(claim.attemptId)
+    if (
+      current === undefined ||
+      attempt === undefined ||
+      !isDeepStrictEqual(attempt, claim) ||
+      !isDeepStrictEqual(current, expected)
+    ) {
+      throw new Error('stale upload batch transition')
+    }
+    const committedAttempt = Object.freeze({
+      ...attempt,
+      activeBatchId: next.state === 'acknowledged' ? null : attempt.activeBatchId,
+    })
+    this.attempts.set(committedAttempt.attemptId, committedAttempt)
+    this.batches.set(next.batchId, structuredClone(next))
+    return commit({ attempt: structuredClone(committedAttempt), batch: structuredClone(next) })
   }
   async fenceUploadAttemptForAbort<T>(): Promise<T> {
     throw new Error('unused')
   }
   async completeUploadAttemptAbort<T>(): Promise<T> {
+    throw new Error('unused')
+  }
+
+  async sealOrReadLinkedCasAttempt<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    candidate: EncryptedWalletBackupSyncAttemptRecord,
+    commit: (value: {
+      attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+      batches: readonly EncryptedWalletBackupUploadBatchRecord[]
+      casAttempts: readonly EncryptedWalletBackupSyncAttemptRecord[]
+    }) => T,
+  ): Promise<T> {
+    this.methodCalls.casSeal += 1
+    const attempt = this.attempts.get(claim.attemptId)
+    if (
+      attempt === undefined ||
+      !isDeepStrictEqual(attempt, claim) ||
+      attempt.activeBatchId !== null
+    )
+      throw new Error('CAS handoff has an active batch')
+    const rows = [...this.batches.values()].filter((batch) => batch.attemptId === claim.attemptId)
+    if (rows.some((batch) => batch.state !== 'acknowledged' && batch.state !== 'finalized'))
+      throw new Error('CAS handoff has an unacknowledged batch')
+    const casAttempt = this.casAttempts.get(candidate.attemptId) ?? structuredClone(candidate)
+    this.casAttempts.set(casAttempt.attemptId, casAttempt)
+    const finalizedRows = rows.map((batch) =>
+      structuredClone({ ...batch, state: 'finalized' as const }),
+    )
+    for (const batch of finalizedRows) this.batches.set(batch.batchId, batch)
+    const committedAttempt = Object.freeze({
+      ...attempt,
+      casAttemptId: casAttempt.attemptId,
+      lifecycle: 'cas-journaled' as const,
+    })
+    this.attempts.set(committedAttempt.attemptId, committedAttempt)
+    return commit({
+      attempt: structuredClone(committedAttempt),
+      batches: finalizedRows,
+      casAttempts: [structuredClone(casAttempt)],
+    })
+  }
+  async readLinkedCasAttempts<T>(): Promise<T> {
+    throw new Error('unused')
+  }
+  async validateLinkedCasAttempt<T>(): Promise<T> {
+    throw new Error('unused')
+  }
+  async transitionLinkedCasAttempt<T>(): Promise<T> {
+    throw new Error('unused')
+  }
+  async completeLinkedCasAttempt<T>(): Promise<T> {
+    throw new Error('unused')
+  }
+  async exhaustLinkedCasAttempt<T>(): Promise<T> {
+    throw new Error('unused')
+  }
+  async resumeLinkedCasAttempt<T>(): Promise<T> {
+    throw new Error('unused')
+  }
+  async completeForkCleanup<T>(): Promise<T> {
     throw new Error('unused')
   }
 
@@ -993,6 +1254,83 @@ class AtomicAttemptCursorStore implements EncryptedWalletBackupUploadAttemptCurs
     for (const [key, value] of attempts) this.attempts.set(key, value)
     for (const [key, value] of cursors) this.cursors.set(key, value)
   }
+}
+
+function assertBoundedUploadCycleCallShape(
+  store: AtomicAttemptCursorStore,
+  input: Readonly<{ combinedAttemptBatchValidation: number; total: number }>,
+): void {
+  assert.deepEqual(store.methodCalls, {
+    pairedAttemptClaim: 1,
+    pairedAttemptSeal: 1,
+    batchCursorSeal: 1,
+    initialAttemptValidation: 1,
+    activeBatchRead: 0,
+    executionClaim: 1,
+    combinedAttemptBatchValidation: input.combinedAttemptBatchValidation,
+    acknowledgementTransition: 1,
+    casSeal: 1,
+  })
+  assert.equal(
+    Object.values(store.methodCalls).reduce((total, calls) => total + calls, 0),
+    input.total,
+  )
+}
+
+async function runBoundedUploadCycleForTest(input: {
+  readonly fixture: Awaited<ReturnType<typeof boundedTargetFixture>>
+  readonly store: AtomicAttemptCursorStore
+  readonly initialAttempt?: Parameters<
+    typeof runBoundedEncryptedWalletBackupUploadCycle
+  >[0]['initialAttempt']
+  readonly source?: EncryptedWalletBackupBoundedUploadObjectSource
+  readonly remote?: Parameters<typeof runBoundedEncryptedWalletBackupUploadCycle>[0]['remote']
+}) {
+  return runBoundedEncryptedWalletBackupUploadCycle({
+    initialAttempt:
+      input.initialAttempt === undefined
+        ? { attemptId: '61'.repeat(16), target: input.fixture.target }
+        : input.initialAttempt,
+    ownerId: 'owner',
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: input.fixture.keyHandle,
+    store: input.store as unknown as EncryptedWalletBackupUploadAttemptCursorStore &
+      EncryptedWalletBackupCoordinatorStore,
+    source: input.source ?? boundedObjectSource(input.fixture.keyHandle),
+    enrollmentEpoch: 1,
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    objectUrl: (objectId) => `https://backup.example.test/v1/vault/objects/${objectId}`,
+    remote:
+      input.remote ??
+      ({
+        async putObject() {
+          return { status: 'stored' as const }
+        },
+      } satisfies Parameters<typeof runBoundedEncryptedWalletBackupUploadCycle>[0]['remote']),
+    signal: AbortSignal.timeout(60_000),
+    runtime: {
+      subtle: webcrypto.subtle,
+      getRandomValues(value) {
+        return webcrypto.getRandomValues(value)
+      },
+    },
+  })
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((complete) => {
+    resolve = complete
+  })
+  return { promise, resolve }
+}
+
+async function waitForPutCalls(read: () => number): Promise<void> {
+  for (let index = 0; index < 100; index += 1) {
+    if (read() >= 4) return
+    await new Promise<void>((resolve) => setTimeout(resolve, 1))
+  }
+  throw new Error('four concurrent PUTs did not start')
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
