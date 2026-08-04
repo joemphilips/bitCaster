@@ -237,7 +237,7 @@ describe("browser encrypted wallet backup proof snapshot store", () => {
     expect(restarted.items.map(({ snapshot }) => snapshot.proofId)).toEqual([second.proof.proofId]);
   });
 
-  it("stops at 64 candidates and preserves the next proof cursor", async () => {
+  it("stops at 42 candidates and preserves the next proof cursor", async () => {
     const first = await committedOrdinaryProof({ counter: 1 });
     database = first.database;
     const fixtures = [first];
@@ -253,11 +253,14 @@ describe("browser encrypted wallet backup proof snapshot store", () => {
     }
     const store = snapshotStore(first);
     const page = await store.listEligibleCommittedProofSnapshotPage(null);
-    expect(page.items).toHaveLength(64);
+    expect(page.items).toHaveLength(42);
     expect(page.nextCursor).toBe(page.items.at(-1)!.snapshot.proofId);
     const resumed = await store.listEligibleCommittedProofSnapshotPage(page.nextCursor);
     expect(resumed.items.map(({ snapshot }) => snapshot.proofId)).toEqual(
-      fixtures.map(({ proof }) => proof.proofId).filter((id) => id > page.nextCursor!),
+      fixtures
+        .map(({ proof }) => proof.proofId)
+        .filter((id) => id > page.nextCursor!)
+        .sort(),
     );
   });
 
@@ -321,11 +324,11 @@ describe("browser encrypted wallet backup proof snapshot store", () => {
     const reservationBulkGet = vi.spyOn(first.database.custodyReservations, "bulkGet");
     const operationBulkGet = vi.spyOn(first.database.custodyOperations, "bulkGet");
     const page = await snapshotStore(first).listEligibleCommittedProofSnapshotPage(null);
-    expect(page.items).toHaveLength(64);
-    expect(requestedLimit).toBe(64);
-    expect(proofBulkGet.mock.calls[0]![0]).toHaveLength(64);
-    expect(reservationBulkGet.mock.calls[0]![0]).toHaveLength(64);
-    expect(operationBulkGet.mock.calls[0]![0]).toHaveLength(64);
+    expect(page.items).toHaveLength(42);
+    expect(requestedLimit).toBe(42);
+    expect(proofBulkGet.mock.calls[0]![0]).toHaveLength(42);
+    expect(reservationBulkGet.mock.calls[0]![0]).toHaveLength(42);
+    expect(operationBulkGet.mock.calls[0]![0]).toHaveLength(42);
   }, 20_000);
 
   it("refuses a persisted reservation pin and malformed authority", async () => {

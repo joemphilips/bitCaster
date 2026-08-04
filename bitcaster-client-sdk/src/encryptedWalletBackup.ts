@@ -929,9 +929,11 @@ export interface EncryptedWalletBackupRestoreProofRow {
 export interface EncryptedWalletBackupRestoreCurrentProofState {
   readonly proofId: string
   /**
-   * Both nullable fields may be null only when this global proof identity is
-   * absent from every proof, reservation, operation-link, pin, and tombstone
-   * authority in the same physical transaction.
+   * Both nullable fields may be null only when this admitted or current proof
+   * identity is absent from every proof, reservation, operation-link, pin, and
+   * tombstone authority in the same physical transaction. This rule excludes
+   * fresh prospective successors. Deterministic counter and lineage uniqueness
+   * make those future identities disjoint from authenticated backup identities.
    */
   readonly storageClassification: DurableWalletStorageClassification | null
   readonly proof: EncryptedWalletBackupRestoreProofRecord | null

@@ -38,6 +38,8 @@ import type {
 import type { EncryptedWalletBackupSyncAttemptRecord } from "@bitcaster/client-sdk/encryptedWalletBackup";
 import type { EncryptedWalletBackupAccountOperationResultRecord } from "@bitcaster/client-sdk/encryptedWalletBackupEnrollment";
 import type { EncryptedWalletBackupSnapshotCleanupJob } from "@bitcaster/client-sdk/encryptedWalletBackupSnapshotCleanup";
+import type { EncryptedWalletBackupRestoreProofRecord } from "@bitcaster/client-sdk/encryptedWalletBackup";
+import type { DurableWalletStorageClassification } from "@bitcaster/client-sdk/recoverableWalletStorage";
 
 /** Canonical encrypted wallet-backup control row. The SDK owns its CBOR codec. */
 export interface EncryptedWalletBackupDexieControlRow {
@@ -157,6 +159,14 @@ export interface EncryptedWalletBackupDexieSnapshotCleanupRow {
   realm: string;
   vaultId: string;
   job: EncryptedWalletBackupSnapshotCleanupJob;
+}
+
+/** Exact SDK-owned restored-proof authority for one browser wallet scope. */
+export interface EncryptedWalletBackupDexieRestoreProofRow {
+  scopeId: string;
+  proofId: string;
+  storageClassification: DurableWalletStorageClassification;
+  proof: EncryptedWalletBackupRestoreProofRecord | null;
 }
 
 interface StoredProofMetadata {
@@ -350,6 +360,10 @@ export class BitcasterDB extends Dexie {
   >;
   encryptedWalletBackupSnapshotCleanupJobs!: Table<
     EncryptedWalletBackupDexieSnapshotCleanupRow,
+    [string, string]
+  >;
+  encryptedWalletBackupRestoreProofs!: Table<
+    EncryptedWalletBackupDexieRestoreProofRow,
     [string, string]
   >;
 
@@ -594,6 +608,49 @@ export class BitcasterDB extends Dexie {
             "encryptedWalletBackupEnrollmentResults",
             "encryptedWalletBackupRetrySchedulers",
             "encryptedWalletBackupSnapshotCleanupJobs",
+          ].map((tableName) => transaction.table(tableName).clear()),
+        );
+      });
+    this.version(16)
+      .stores({
+        encryptedWalletBackupRestoreProofs: "&[scopeId+proofId]",
+      })
+      .upgrade(async (transaction) => {
+        await Promise.all(
+          [
+            "proofs",
+            "proofOperations",
+            "ctfRangePreparations",
+            "ctfRangePreparationSources",
+            "ctfRangePreparationConsolidations",
+            "ctfRangeMessages",
+            "custodyScopes",
+            "custodyOperations",
+            "custodyArtifacts",
+            "custodyProofs",
+            "custodyReservations",
+            "custodyActiveWork",
+            "custodyProofBackupAuthorities",
+            "custodyConditionalKeysets",
+            "encryptedWalletBackupBuildCursors",
+            "encryptedWalletBackupPackControls",
+            "encryptedWalletBackupPreparedRecords",
+            "encryptedWalletBackupPackBindings",
+            "encryptedWalletBackupStagedObjects",
+            "encryptedWalletBackupSnapshotControls",
+            "encryptedWalletBackupPreparedSources",
+            "encryptedWalletBackupSnapshotPins",
+            "encryptedWalletBackupManifestPassAResults",
+            "encryptedWalletBackupManifestCursors",
+            "encryptedWalletBackupManifestPages",
+            "encryptedWalletBackupUploadAttempts",
+            "encryptedWalletBackupUploadCursors",
+            "encryptedWalletBackupUploadBatches",
+            "encryptedWalletBackupUploadCasAttempts",
+            "encryptedWalletBackupEnrollmentResults",
+            "encryptedWalletBackupRetrySchedulers",
+            "encryptedWalletBackupSnapshotCleanupJobs",
+            "encryptedWalletBackupRestoreProofs",
           ].map((tableName) => transaction.table(tableName).clear()),
         );
       });

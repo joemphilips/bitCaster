@@ -20,7 +20,7 @@ describe("browser wallet databases", () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(15);
+    expect(db.verno).toBe(16);
     expect(db.custodyProofBackupAuthorities.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofBackupAuthorities.schema.indexes.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
@@ -71,6 +71,10 @@ describe("browser wallet databases", () => {
     expect(db.encryptedWalletBackupSnapshotCleanupJobs.schema.primKey.keyPath).toEqual([
       "realm",
       "vaultId",
+    ]);
+    expect(db.encryptedWalletBackupRestoreProofs.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "proofId",
     ]);
   });
 
@@ -175,6 +179,51 @@ describe("browser wallet databases", () => {
       expect(await upgraded.custodyProofs.count()).toBe(0);
       expect(await upgraded.custodyProofBackupAuthorities.count()).toBe(0);
       expect(await upgraded.encryptedWalletBackupPreparedRecords.count()).toBe(0);
+    } finally {
+      upgraded.close();
+      await Dexie.delete(name);
+    }
+  });
+
+  it("clears incompatible proof backup authority rows when upgrading from version 15", async () => {
+    const name = `bitcaster-wallet-v15-upgrade-${crypto.randomUUID()}`;
+    const legacy = new Dexie(name);
+    legacy.version(15).stores({
+      proofs: "secret",
+      proofOperations: "operationId",
+      custodyProofs: "&[scopeId+proofId]",
+      custodyReservations: "&[scopeId+proofId]",
+      custodyProofBackupAuthorities: "&[scopeId+proofId], &backupRecordId",
+      encryptedWalletBackupSnapshotControls: "&scopeKey",
+    });
+    await legacy.open();
+    await Promise.all([
+      legacy.table("proofs").put({ secret: "legacy-proof" }),
+      legacy.table("proofOperations").put({ operationId: "legacy-operation" }),
+      legacy.table("custodyProofs").put({ scopeId: "scope", proofId: "proof" }),
+      legacy.table("custodyReservations").put({ scopeId: "scope", proofId: "proof" }),
+      legacy.table("custodyProofBackupAuthorities").put({
+        scopeId: "scope",
+        proofId: "proof",
+        backupState: "local-only",
+        admissionOperationId: "legacy-operation",
+      }),
+      legacy.table("encryptedWalletBackupSnapshotControls").put({ scopeKey: "scope" }),
+    ]);
+    legacy.close();
+
+    const upgraded = new BitcasterDB(name);
+    try {
+      await upgraded.open();
+      await Promise.all([
+        expect(upgraded.proofs.count()).resolves.toBe(0),
+        expect(upgraded.proofOperations.count()).resolves.toBe(0),
+        expect(upgraded.custodyProofs.count()).resolves.toBe(0),
+        expect(upgraded.custodyReservations.count()).resolves.toBe(0),
+        expect(upgraded.custodyProofBackupAuthorities.count()).resolves.toBe(0),
+        expect(upgraded.encryptedWalletBackupSnapshotControls.count()).resolves.toBe(0),
+        expect(upgraded.encryptedWalletBackupRestoreProofs.count()).resolves.toBe(0),
+      ]);
     } finally {
       upgraded.close();
       await Dexie.delete(name);

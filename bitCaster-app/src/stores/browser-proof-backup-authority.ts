@@ -13,21 +13,74 @@ import type {
 
 export type BrowserProofDerivationLocatorAuthority = DurableWalletProofDerivationLocator | null;
 
-export interface BrowserProofBackupAuthorityRow {
+interface BrowserProofBackupAuthorityBase {
   schemaVersion: 3;
   scopeId: string;
   proofId: string;
   proofFingerprint: string;
   proofRevision: number;
   proofState: BrowserCustodyProofSelectability;
-  admissionOperationId: string;
   terminalOperationId: string | null;
   recordCreatedAtUnixSeconds: number;
   recordUpdatedAtUnixSeconds: number;
-  backupState: "local-only";
   derivationLocator: SerializableDurableWalletProofDerivationLocator | null;
-  backupRecordId: null;
   updatedAtMs: number;
+}
+
+export interface BrowserLocalProofBackupAuthorityRow extends BrowserProofBackupAuthorityBase {
+  admissionOperationId: string;
+  backupState: "local-only";
+  backupRecordId: null;
+  backupRecordCommitment: null;
+}
+
+export interface BrowserRemoteProofBackupAuthorityRow extends BrowserProofBackupAuthorityBase {
+  admissionOperationId: null;
+  backupState: "remote-backed";
+  backupRecordId: string;
+  backupRecordCommitment: string;
+}
+
+export type BrowserProofBackupAuthorityRow =
+  | BrowserLocalProofBackupAuthorityRow
+  | BrowserRemoteProofBackupAuthorityRow;
+
+/** Bind a selectable proof to its exact encrypted-backup restore authority. */
+export function createBrowserRemoteProofBackupAuthorityRow(input: {
+  readonly proof: BrowserCustodyProofRow;
+  readonly observedAtMs: number;
+  readonly derivationLocator: BrowserProofDerivationLocatorAuthority;
+  readonly restoreProofId: string;
+  readonly restoreProofCommitment: string;
+}): BrowserRemoteProofBackupAuthorityRow {
+  const proof = input.proof;
+  if (input.observedAtMs < proof.receivedAtMs) {
+    throw new Error("browser restored proof authority time is stale");
+  }
+  requireBrowserProofDerivationLocator(input.derivationLocator);
+  const authority = requireBrowserProofBackupAuthorityRow({
+    schemaVersion: 3 as const,
+    scopeId: proof.scopeId,
+    proofId: proof.proofId,
+    proofFingerprint: proof.proofFingerprint,
+    proofRevision: proof.revision,
+    proofState: proof.selectability,
+    admissionOperationId: null,
+    terminalOperationId: null,
+    ...recordTimes(input.observedAtMs),
+    backupState: "remote-backed",
+    derivationLocator: serializeBrowserProofDerivationLocator(input.derivationLocator),
+    backupRecordId: requireFingerprint(input.restoreProofId, "restore proof id"),
+    backupRecordCommitment: requireFingerprint(
+      input.restoreProofCommitment,
+      "restore proof commitment",
+    ),
+    updatedAtMs: input.observedAtMs,
+  });
+  if (authority.backupState !== "remote-backed") {
+    throw new Error("browser restored proof authority is invalid");
+  }
+  return authority;
 }
 
 export function createBrowserProofBackupAuthorityRow(
@@ -41,7 +94,7 @@ export function createBrowserProofBackupAuthorityRow(
   }
   requireBrowserProofDerivationLocator(derivationLocator);
   return requireBrowserProofBackupAuthorityRow({
-    schemaVersion: 3,
+    schemaVersion: 3 as const,
     scopeId: proof.scopeId,
     proofId: proof.proofId,
     proofFingerprint: proof.proofFingerprint,
@@ -53,6 +106,7 @@ export function createBrowserProofBackupAuthorityRow(
     backupState: "local-only",
     derivationLocator: serializeBrowserProofDerivationLocator(derivationLocator),
     backupRecordId: null,
+    backupRecordCommitment: null,
     updatedAtMs: observedAtMs,
   });
 }
@@ -65,6 +119,9 @@ export function advanceBrowserProofBackupAuthorityRow(
   admissionOperationId: string,
 ): BrowserProofBackupAuthorityRow {
   const authority = requireBrowserProofBackupAuthorityRow(current);
+  if (authority.backupState !== "local-only") {
+    throw new Error("browser proof backup authority is remote-backed");
+  }
   requireProofBinding(authority, proof);
   if (
     authority.admissionOperationId !==
@@ -96,6 +153,40 @@ export function advanceBrowserProofBackupAuthorityRow(
     proofState: proof.selectability,
     updatedAtMs: time,
   });
+}
+
+/** Advance local proof state without changing the encrypted-backup origin. */
+export function advanceBrowserRemoteProofBackupAuthorityRow(
+  current: BrowserRemoteProofBackupAuthorityRow,
+  proof: BrowserCustodyProofRow,
+  observedAtMs: number,
+  derivationLocator: BrowserProofDerivationLocatorAuthority,
+): BrowserRemoteProofBackupAuthorityRow {
+  const authority = requireBrowserProofBackupAuthorityRow(current);
+  if (authority.backupState !== "remote-backed") {
+    throw new Error("browser proof backup authority is local-only");
+  }
+  requireProofBinding(authority, proof);
+  if (!sameBrowserProofDerivationLocator(derivationLocatorOf(authority), derivationLocator)) {
+    throw new Error("browser proof backup derivation locator conflicts");
+  }
+  const time = requireTime(observedAtMs, "proof backup authority time");
+  if (time < proof.receivedAtMs) throw new Error("browser proof backup authority time is stale");
+  if (proof.revision === authority.proofRevision) {
+    if (proof.selectability !== authority.proofState) {
+      throw new Error("browser proof backup authority state conflicts");
+    }
+    return authority;
+  }
+  if (proof.revision !== authority.proofRevision + 1 || time < authority.updatedAtMs) {
+    throw new Error("browser proof backup authority revision is stale");
+  }
+  return requireBrowserProofBackupAuthorityRow({
+    ...authority,
+    proofRevision: proof.revision,
+    proofState: proof.selectability,
+    updatedAtMs: time,
+  }) as BrowserRemoteProofBackupAuthorityRow;
 }
 
 /** Bind one committed terminal operation without changing proof authority. */
@@ -147,22 +238,57 @@ export function requireBrowserProofBackupAuthorityRow(
   if (recordUpdatedAtUnixSeconds < recordCreatedAtUnixSeconds) {
     throw new Error("browser proof backup authority is invalid");
   }
-  return {
-    schemaVersion: 3,
+  const admissionOperationId =
+    row.admissionOperationId === null
+      ? null
+      : requireOperationId(row.admissionOperationId, "proof admission operation");
+  const backupState = requireBackupState(row.backupState);
+  const backupRecordId =
+    row.backupRecordId === null ? null : requireFingerprint(row.backupRecordId, "backup record id");
+  const backupRecordCommitment =
+    row.backupRecordCommitment === null
+      ? null
+      : requireFingerprint(row.backupRecordCommitment, "backup record commitment");
+  if (
+    (backupState === "local-only" &&
+      (admissionOperationId === null ||
+        backupRecordId !== null ||
+        backupRecordCommitment !== null)) ||
+    (backupState === "remote-backed" &&
+      (admissionOperationId !== null ||
+        backupRecordId !== row.proofId ||
+        backupRecordCommitment === null))
+  ) {
+    throw new Error("browser proof backup authority is invalid");
+  }
+  const base = {
+    schemaVersion: 3 as const,
     scopeId: decodeDurableCustodyScopeId(row.scopeId),
     proofId: requireFingerprint(row.proofId, "proof id"),
     proofFingerprint: requireFingerprint(row.proofFingerprint, "proof fingerprint"),
     proofRevision: requireRevision(row.proofRevision),
     proofState,
-    admissionOperationId: requireOperationId(row.admissionOperationId, "proof admission operation"),
     terminalOperationId,
     recordCreatedAtUnixSeconds,
     recordUpdatedAtUnixSeconds,
-    backupState: "local-only",
     derivationLocator: serializeBrowserProofDerivationLocator(derivationLocator),
-    backupRecordId: null,
     updatedAtMs: requireTime(row.updatedAtMs, "proof backup authority time"),
   };
+  return backupState === "local-only"
+    ? {
+        ...base,
+        admissionOperationId: admissionOperationId!,
+        backupState,
+        backupRecordId: null,
+        backupRecordCommitment: null,
+      }
+    : {
+        ...base,
+        admissionOperationId: null,
+        backupState,
+        backupRecordId: backupRecordId!,
+        backupRecordCommitment: backupRecordCommitment!,
+      };
 }
 
 function requireAuthorityRecord(value: unknown): Record<string, unknown> {
@@ -184,18 +310,25 @@ function requireAuthorityRecord(value: unknown): Record<string, unknown> {
     "backupState",
     "derivationLocator",
     "backupRecordId",
+    "backupRecordCommitment",
     "updatedAtMs",
   ];
   if (
     row.schemaVersion !== 3 ||
     Object.keys(row).length !== fields.length ||
     fields.some((field) => !(field in row)) ||
-    row.backupState !== "local-only" ||
-    row.backupRecordId !== null
+    (row.backupState !== "local-only" && row.backupState !== "remote-backed")
   ) {
     throw new Error("browser proof backup authority is invalid");
   }
   return row;
+}
+
+function requireBackupState(value: unknown): "local-only" | "remote-backed" {
+  if (value !== "local-only" && value !== "remote-backed") {
+    throw new Error("browser proof backup authority state is invalid");
+  }
+  return value;
 }
 
 function recordTimes(

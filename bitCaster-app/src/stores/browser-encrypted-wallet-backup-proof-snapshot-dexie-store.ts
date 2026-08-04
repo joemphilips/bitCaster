@@ -3,6 +3,7 @@ import {
   verifyEncryptedWalletBackupConditionalKeyset,
   type EncryptedWalletBackupCommittedProofSnapshot,
   type EncryptedWalletBackupProofInput,
+  type EncryptedWalletBackupRestoreProofRecord,
   type EncryptedWalletBackupProofSnapshotStore,
 } from "@bitcaster/client-sdk/encryptedWalletBackup";
 import {
@@ -21,6 +22,7 @@ import Dexie from "dexie";
 import { browserWalletDatabaseName } from "../lib/browserWalletProfile";
 import { decodeDurableCustodyRecord } from "@bitcaster/client-sdk/durableCustody";
 import { decodeDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import { decodeDurableWalletStorageClassification } from "@bitcaster/client-sdk/recoverableWalletStorage";
 import { decodeBrowserCustodyProofRow } from "./durable-custody-db";
 import { requireBrowserProofBackupAuthorityForProof } from "./browser-proof-backup-authority";
 import type {
@@ -28,9 +30,10 @@ import type {
   BrowserCustodyConditionalKeysetRow,
 } from "./durable-custody-types";
 import { decodeBrowserCustodyConditionalKeysetRow } from "./durable-custody-types";
-import type { BitcasterDB } from "./proof-db";
+import type { BitcasterDB, EncryptedWalletBackupDexieRestoreProofRow } from "./proof-db";
 
-const PROOF_SNAPSHOT_PAGE_CANDIDATE_LIMIT = 64;
+/** At most 42 physical candidates. Each candidate can require six application rows. */
+const PROOF_SNAPSHOT_PAGE_CANDIDATE_LIMIT = 42;
 const PROOF_SNAPSHOT_PAGE_ROW_LIMIT = 256;
 const PROOF_SNAPSHOT_PAGE_BYTES_LIMIT = 1024 * 1024;
 
@@ -91,6 +94,7 @@ export class BrowserEncryptedWalletBackupProofSnapshotDexieStore implements Encr
         this.#database.custodyReservations,
         this.#database.custodyConditionalKeysets,
         this.#database.proofOperations,
+        this.#database.encryptedWalletBackupRestoreProofs,
       ],
       async () => {
         const row = await this.#read(stableProofId);
@@ -120,6 +124,7 @@ export class BrowserEncryptedWalletBackupProofSnapshotDexieStore implements Encr
         this.#database.custodyReservations,
         this.#database.custodyConditionalKeysets,
         this.#database.proofOperations,
+        this.#database.encryptedWalletBackupRestoreProofs,
       ],
       () => this.#listPage(exclusiveProofId),
     );
@@ -139,6 +144,7 @@ export class BrowserEncryptedWalletBackupProofSnapshotDexieStore implements Encr
         this.#database.custodyReservations,
         this.#database.custodyConditionalKeysets,
         this.#database.proofOperations,
+        this.#database.encryptedWalletBackupRestoreProofs,
       ],
       async () => {
         const page = await this.#listPage(exclusiveProofId);
@@ -152,21 +158,36 @@ export class BrowserEncryptedWalletBackupProofSnapshotDexieStore implements Encr
   }
 
   async #read(stableProofId: string): Promise<EncryptedWalletBackupCommittedProofSnapshot> {
-    const [rawProof, rawAuthority, reservation] = await Promise.all([
+    const [rawProof, rawAuthority, reservation, rawRestore] = await Promise.all([
       this.#database.custodyProofs.get([this.#scopeId, stableProofId]),
       this.#database.custodyProofBackupAuthorities.get([this.#scopeId, stableProofId]),
       this.#database.custodyReservations.get([this.#scopeId, stableProofId]),
+      this.#database.encryptedWalletBackupRestoreProofs.get([this.#scopeId, stableProofId]),
     ]);
-    const candidate = decodeCandidate({ rawProof, rawAuthority, reservation }, this.#scopeId);
+    const candidate = decodeCandidate(
+      { rawProof, rawAuthority, reservation, rawRestore },
+      this.#scopeId,
+    );
+    const conditional = await this.#conditionalEvidence(candidate.proof);
+    if (candidate.remote !== null) {
+      const terminalOperation = await this.#terminalOperation(candidate);
+      const terminalEvidence = await this.#terminalEvidence(candidate, terminalOperation);
+      return (
+        createRemoteEligibleSnapshotItem({
+          candidate,
+          conditional,
+          terminalEvidence,
+          snapshotId: this.#snapshotId,
+          snapshotRevision: this.#snapshotRevision,
+        })?.snapshot ?? failMissingRemoteSuccessor(candidate)
+      );
+    }
     const operation = await this.#database.custodyOperations.get([
       this.#scopeId,
-      candidate.authority.admissionOperationId,
+      localAdmissionOperationId(candidate),
     ]);
     const admission = decodeExactAdmission(operation, candidate);
-    const [conditional, terminalOperation] = await Promise.all([
-      this.#conditionalEvidence(candidate.proof),
-      this.#terminalOperation(candidate),
-    ]);
+    const terminalOperation = await this.#terminalOperation(candidate);
     const terminalEvidence = await this.#terminalEvidence(candidate, terminalOperation);
     return createEligibleSnapshotItem({
       candidate,
@@ -189,23 +210,27 @@ export class BrowserEncryptedWalletBackupProofSnapshotDexieStore implements Encr
 
   async #readPageCandidates(exclusiveProofId: string | null): Promise<ProofSnapshotCandidate[]> {
     const lower: readonly unknown[] =
-      exclusiveProofId === null
-        ? [this.#scopeId, "local-only", Dexie.minKey]
-        : [this.#scopeId, "local-only", exclusiveProofId];
+      exclusiveProofId === null ? [this.#scopeId, Dexie.minKey] : [this.#scopeId, exclusiveProofId];
     const authorities = await this.#database.custodyProofBackupAuthorities
-      .where("[scopeId+backupState+proofId]")
-      .between(lower, [this.#scopeId, "local-only", Dexie.maxKey], exclusiveProofId === null, true)
+      .where("[scopeId+proofId]")
+      .between(lower, [this.#scopeId, Dexie.maxKey], exclusiveProofId === null, true)
       .limit(PROOF_SNAPSHOT_PAGE_CANDIDATE_LIMIT)
       .toArray();
     const proofIds = authorities.map(authorityProofId);
     const keys = proofIds.map((proofId) => [this.#scopeId, proofId] as [string, string]);
-    const [proofs, reservations] = await Promise.all([
+    const [proofs, reservations, restores] = await Promise.all([
       this.#database.custodyProofs.bulkGet(keys),
       this.#database.custodyReservations.bulkGet(keys),
+      this.#database.encryptedWalletBackupRestoreProofs.bulkGet(keys),
     ]);
     const candidates = authorities.map((rawAuthority, index) =>
       decodeCandidate(
-        { rawAuthority, rawProof: proofs[index], reservation: reservations[index] },
+        {
+          rawAuthority,
+          rawProof: proofs[index],
+          reservation: reservations[index],
+          rawRestore: restores[index],
+        },
         this.#scopeId,
       ),
     );
@@ -216,7 +241,7 @@ export class BrowserEncryptedWalletBackupProofSnapshotDexieStore implements Encr
     const operationIds = new Set<string>();
     const terminalOperationIds = new Set<string>();
     for (const candidate of candidates) {
-      operationIds.add(candidate.authority.admissionOperationId);
+      if (candidate.remote === null) operationIds.add(localAdmissionOperationId(candidate));
       if (candidate.authority.terminalOperationId !== null) {
         terminalOperationIds.add(candidate.authority.terminalOperationId);
       }
@@ -271,40 +296,53 @@ export class BrowserEncryptedWalletBackupProofSnapshotDexieStore implements Encr
     const consumedKeysets = new Set<string>();
     let cursor = exclusiveProofId;
     for (const candidate of selected.candidates) {
-      const operationId = candidate.authority.admissionOperationId;
+      const operationId = candidate.remote === null ? localAdmissionOperationId(candidate) : null;
       const terminalOperationId = candidate.authority.terminalOperationId;
       const key = candidate.proof.assetKind === "conditional" ? keysetKey(candidate.proof) : null;
       const candidateRows = [
         candidate.authority,
         candidate.proof,
         candidate.reservation,
-        ...(consumedOperations.has(operationId) ? [] : [joins.operations.get(operationId)]),
+        ...(candidate.remote === null ? [] : [candidate.remote]),
+        ...(candidate.remote === null && !consumedOperations.has(operationId!)
+          ? [joins.operations.get(operationId!)]
+          : []),
         ...(terminalOperationId === null || consumedTerminalOperations.has(terminalOperationId)
           ? []
           : [joins.terminalOperations.get(terminalOperationId)]),
         ...(key === null || consumedKeysets.has(key) ? [] : [joins.keysets.get(key)]),
       ];
-      const admission = decodeExactAdmission(joins.operations.get(operationId), candidate);
       const conditional =
         candidate.proof.assetKind === "regular"
           ? await this.#conditionalEvidence(candidate.proof)
           : verifiedKeysets.get(key!)!;
-      const terminalEvidence = await this.#terminalEvidence(
-        candidate,
-        terminalOperationId === null
-          ? undefined
-          : joins.terminalOperations.get(terminalOperationId),
-      );
-      const item = isFirstSnapshotEligible(candidate, admission)
-        ? createEligibleSnapshotItem({
-            candidate,
-            admission,
-            conditional,
-            terminalEvidence,
-            snapshotId: this.#snapshotId,
-            snapshotRevision: this.#snapshotRevision,
-          })
-        : null;
+      const item =
+        candidate.remote !== null
+          ? createRemoteEligibleSnapshotItem({
+              candidate,
+              conditional,
+              terminalEvidence: await this.#terminalEvidence(
+                candidate,
+                terminalOperationId === null
+                  ? undefined
+                  : joins.terminalOperations.get(terminalOperationId),
+              ),
+              snapshotId: this.#snapshotId,
+              snapshotRevision: this.#snapshotRevision,
+            })
+          : createLocalEligibleSnapshotItem({
+              candidate,
+              admission: decodeExactAdmission(joins.operations.get(operationId!), candidate),
+              conditional,
+              terminalEvidence: await this.#terminalEvidence(
+                candidate,
+                terminalOperationId === null
+                  ? undefined
+                  : joins.terminalOperations.get(terminalOperationId),
+              ),
+              snapshotId: this.#snapshotId,
+              snapshotRevision: this.#snapshotRevision,
+            });
       const nextBytes =
         bytes + canonicalBytes(candidateRows) + (item === null ? 0 : canonicalBytes(item));
       if (nextBytes > PROOF_SNAPSHOT_PAGE_BYTES_LIMIT) {
@@ -314,7 +352,7 @@ export class BrowserEncryptedWalletBackupProofSnapshotDexieStore implements Encr
       }
       bytes = nextBytes;
       cursor = candidate.proof.proofId;
-      consumedOperations.add(operationId);
+      if (operationId !== null) consumedOperations.add(operationId);
       if (terminalOperationId !== null) consumedTerminalOperations.add(terminalOperationId);
       if (key !== null) consumedKeysets.add(key);
       if (item !== null) items.push(item);
@@ -445,6 +483,8 @@ interface ProofSnapshotCandidate {
   readonly proof: ReturnType<typeof decodeBrowserCustodyProofRow>;
   readonly authority: ReturnType<typeof requireBrowserProofBackupAuthorityForProof>;
   readonly reservation: { readonly operationId: string } | null;
+  /** Exact indexed restore row. It is source data and part of page accounting. */
+  readonly remote: EncryptedWalletBackupDexieRestoreProofRow | null;
 }
 
 interface PageCandidateSelection {
@@ -465,9 +505,13 @@ function selectPageCandidates(
   const operationIds = new Set<string>();
   const terminalOperationIds = new Set<string>();
   const conditionalKeys = new Set<string>();
-  let rows = candidates.length * 3;
+  let rows = candidates.reduce(
+    (total, candidate) => total + 3 + (candidate.remote === null ? 0 : 1),
+    0,
+  );
   for (const candidate of candidates) {
-    const operationAdded = operationIds.has(candidate.authority.admissionOperationId) ? 0 : 1;
+    const operationId = candidate.remote === null ? localAdmissionOperationId(candidate) : null;
+    const operationAdded = operationId === null || operationIds.has(operationId) ? 0 : 1;
     const terminalOperationId = candidate.authority.terminalOperationId;
     const terminalOperationAdded =
       terminalOperationId !== null && !terminalOperationIds.has(terminalOperationId) ? 1 : 0;
@@ -480,7 +524,7 @@ function selectPageCandidates(
       break;
     }
     rows += operationAdded + terminalOperationAdded + keysetAdded;
-    operationIds.add(candidate.authority.admissionOperationId);
+    if (operationId !== null) operationIds.add(operationId);
     if (terminalOperationId !== null) terminalOperationIds.add(terminalOperationId);
     if (key !== null) conditionalKeys.add(key);
     selected.push(candidate);
@@ -496,6 +540,7 @@ function decodeCandidate(
     readonly rawProof: unknown;
     readonly rawAuthority: unknown;
     readonly reservation: unknown;
+    readonly rawRestore: unknown;
   },
   scopeId: string,
 ): ProofSnapshotCandidate {
@@ -514,7 +559,112 @@ function decodeCandidate(
   ) {
     throw new Error("proof snapshot reservation authority is stale");
   }
-  return { proof, authority, reservation };
+  return {
+    proof,
+    authority,
+    reservation,
+    remote:
+      authority.backupState === "remote-backed"
+        ? decodeRemoteRestore(input.rawRestore, proof, authority)
+        : null,
+  };
+}
+
+function localAdmissionOperationId(candidate: ProofSnapshotCandidate): string {
+  if (
+    candidate.authority.backupState !== "local-only" ||
+    candidate.authority.admissionOperationId === null
+  ) {
+    throw new Error("remote-backed proof has no local admission operation");
+  }
+  return candidate.authority.admissionOperationId;
+}
+
+function decodeRemoteRestore(
+  value: unknown,
+  proof: ReturnType<typeof decodeBrowserCustodyProofRow>,
+  authority: ReturnType<typeof requireBrowserProofBackupAuthorityForProof>,
+): EncryptedWalletBackupDexieRestoreProofRow {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("remote-backed proof restore authority is missing");
+  }
+  const row = value as Record<string, unknown>;
+  if (
+    Object.keys(row).length !== 4 ||
+    !["scopeId", "proofId", "storageClassification", "proof"].every((field) => field in row)
+  ) {
+    throw new Error("remote-backed proof restore authority is foreign");
+  }
+  const classification = decodeDurableWalletStorageClassification(row.storageClassification);
+  const restore = row.proof as EncryptedWalletBackupRestoreProofRecord | null;
+  if (
+    row.scopeId !== proof.scopeId ||
+    row.proofId !== proof.proofId ||
+    restore === null ||
+    typeof restore !== "object" ||
+    restore.proofId !== proof.proofId ||
+    restore.disposition !== "selectable" ||
+    restore.nonselectableReason !== null ||
+    restore.terminalEvidence !== null ||
+    classification.recordId !== proof.proofId ||
+    classification.recordKind !== "deterministic-proof" ||
+    classification.storageClass !== "remotely-backed-deterministic-proof" ||
+    classification.proofCommitment !== restore.proofCommitment ||
+    authority.backupRecordId !== proof.proofId ||
+    authority.backupRecordCommitment !== restore.proofCommitment ||
+    authority.recordCreatedAtUnixSeconds !== restore.createdAtUnixSeconds ||
+    (authority.terminalOperationId === null &&
+      authority.recordUpdatedAtUnixSeconds !== restore.updatedAtUnixSeconds) ||
+    (authority.terminalOperationId !== null &&
+      authority.recordUpdatedAtUnixSeconds < restore.updatedAtUnixSeconds) ||
+    !sameSnapshotValue(authority.derivationLocator, restore.derivationLocator) ||
+    !sameRemoteProofBody(proof, restore)
+  ) {
+    throw new Error("remote-backed proof restore authority is foreign");
+  }
+  return row as unknown as EncryptedWalletBackupDexieRestoreProofRow;
+}
+
+function sameRemoteProofBody(
+  proof: ReturnType<typeof decodeBrowserCustodyProofRow>,
+  restore: EncryptedWalletBackupRestoreProofRecord,
+): boolean {
+  const body = decodeDurableCustodyProofMaterialRecord(proof).proof;
+  return (
+    proof.normalizedMint === restore.mint &&
+    proof.unit === restore.unit &&
+    body.id === restore.proof.id &&
+    body.amount === restore.proof.amount &&
+    body.secret === restore.proof.secret &&
+    body.C === restore.proof.C &&
+    sameSnapshotValue(body.dleq, restore.proof.dleq ?? null)
+  );
+}
+
+function sameSnapshotValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) {
+    return false;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((item, index) => sameSnapshotValue(item, right[index]))
+    );
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) =>
+        key === rightKeys[index] && sameSnapshotValue(leftRecord[key], rightRecord[key]),
+    )
+  );
 }
 
 function decodeReservation(
@@ -607,6 +757,146 @@ function isFirstSnapshotEligible(
     !hasEffectiveProofPin(admission) &&
     classifyDurableCustodyActiveWork(admission) === "none"
   );
+}
+
+function createLocalEligibleSnapshotItem(input: {
+  readonly candidate: ProofSnapshotCandidate;
+  readonly admission: ReturnType<typeof decodeDurableCustodyRecord>;
+  readonly conditional: ConditionalEvidence | null;
+  readonly terminalEvidence: AuthenticatedCtfRedeemTerminalEvidence | null;
+  readonly snapshotId: string;
+  readonly snapshotRevision: number;
+}): BrowserEncryptedWalletBackupProofSnapshotPageItem | null {
+  return isFirstSnapshotEligible(input.candidate, input.admission)
+    ? createEligibleSnapshotItem(input)
+    : null;
+}
+
+function createRemoteEligibleSnapshotItem(input: {
+  readonly candidate: ProofSnapshotCandidate;
+  readonly conditional: ConditionalEvidence | null;
+  readonly terminalEvidence: AuthenticatedCtfRedeemTerminalEvidence | null;
+  readonly snapshotId: string;
+  readonly snapshotRevision: number;
+}): BrowserEncryptedWalletBackupProofSnapshotPageItem | null {
+  const remote = input.candidate.remote;
+  if (remote === null || remote.proof === null) {
+    throw new Error("remote-backed proof snapshot is not eligible");
+  }
+  const restore = remote.proof;
+  if (input.candidate.proof.selectability === "spent") return null;
+  if (
+    input.candidate.proof.selectability !== "selectable" &&
+    input.candidate.proof.selectability !== "locked"
+  ) {
+    throw new Error("remote-backed proof snapshot state is invalid");
+  }
+  if (
+    (input.candidate.proof.selectability === "locked") !==
+    (input.candidate.reservation !== null)
+  ) {
+    throw new Error("remote-backed proof snapshot reservation is stale");
+  }
+  const ctfMetadata = remoteCtfMetadata(input.candidate, restore, input.conditional);
+  if (
+    (input.candidate.authority.terminalOperationId === null) !==
+    (input.terminalEvidence === null)
+  ) {
+    throw new Error("remote-backed proof terminal authority is stale");
+  }
+  const committed = deriveEncryptedWalletBackupProofCommitment({
+    scopeId: input.candidate.proof.scopeId,
+    mint: restore.mint,
+    unit: restore.unit,
+    derivationLocator: restore.derivationLocator,
+    proof: restore.proof,
+    proofKind: restore.proofKind,
+    ctfMetadata,
+    terminalEvidence: input.terminalEvidence,
+    createdAtUnixSeconds: input.candidate.authority.recordCreatedAtUnixSeconds,
+    updatedAtUnixSeconds: input.candidate.authority.recordUpdatedAtUnixSeconds,
+  });
+  if (committed.proofId !== restore.proofId) {
+    throw new Error("remote-backed proof commitment is foreign");
+  }
+  if (
+    input.candidate.authority.terminalOperationId === null &&
+    committed.commitment !== restore.proofCommitment
+  ) {
+    throw new Error("remote-backed proof commitment is foreign");
+  }
+  const snapshot = Object.freeze({
+    schemaVersion: 1,
+    snapshotId: input.snapshotId,
+    revision: input.snapshotRevision,
+    proofId: restore.proofId,
+    proofCommitment: committed.commitment,
+    proofKind: restore.proofKind,
+    ctfMetadata,
+    terminalOperationId: input.candidate.authority.terminalOperationId,
+    conditionalKeysetEvidence: input.conditional?.evidence ?? null,
+    provenance: "wallet-seed",
+    operationBinding: "terminally-unlinked",
+    reserved: false,
+    ambiguousMintOperation: false,
+    proofPins: absentPins(),
+    derivationLocator: restore.derivationLocator,
+  });
+  return Object.freeze({
+    snapshot,
+    proofInput: Object.freeze({
+      mint: restore.mint,
+      unit: restore.unit,
+      derivationLocator: restore.derivationLocator,
+      proof: Object.freeze({ ...restore.proof }),
+      proofKind: restore.proofKind,
+      ctfMetadata,
+      terminalEvidence: input.terminalEvidence,
+      createdAtUnixSeconds: input.candidate.authority.recordCreatedAtUnixSeconds,
+      updatedAtUnixSeconds: input.candidate.authority.recordUpdatedAtUnixSeconds,
+    }),
+  });
+}
+
+function failMissingRemoteSuccessor(candidate: ProofSnapshotCandidate): never {
+  if (candidate.proof.selectability === "spent") {
+    throw new Error("spent remote-backed proof requires a successor snapshot page");
+  }
+  throw new Error("remote-backed proof snapshot is not eligible");
+}
+
+function remoteCtfMetadata(
+  candidate: ProofSnapshotCandidate,
+  restore: EncryptedWalletBackupRestoreProofRecord,
+  conditional: ConditionalEvidence | null,
+) {
+  if (restore.proofKind === "ordinary") {
+    if (
+      restore.ctfMetadata !== null ||
+      conditional !== null ||
+      candidate.proof.assetKind !== "regular"
+    ) {
+      throw new Error("remote-backed ordinary proof metadata is foreign");
+    }
+    return null;
+  }
+  if (
+    restore.ctfMetadata === null ||
+    conditional === null ||
+    candidate.proof.assetKind !== "conditional"
+  ) {
+    throw new Error("remote-backed CTF proof metadata is foreign");
+  }
+  if (
+    restore.ctfMetadata.conditionId !== candidate.proof.conditionId ||
+    restore.ctfMetadata.outcomeLabel !== candidate.proof.outcomeCollection ||
+    restore.ctfMetadata.outcomeCollectionId !== conditional.tuple.outcomeCollectionId ||
+    restore.ctfMetadata.registeredAtUnixSeconds !== conditional.tuple.registeredAtUnixSeconds ||
+    restore.ctfMetadata.finalExpiryUnixSeconds !== conditional.tuple.finalExpiryUnixSeconds
+  ) {
+    throw new Error("remote-backed CTF proof metadata is foreign");
+  }
+  return restore.ctfMetadata;
 }
 
 function hasEffectiveProofPin(admission: ReturnType<typeof decodeDurableCustodyRecord>): boolean {

@@ -36,6 +36,7 @@ import { verifyEncryptedWalletBackupConditionalKeyset } from "@bitcaster/client-
 import { db, type BitcasterDB } from "./proof-db";
 import {
   advanceBrowserProofBackupAuthorityRow,
+  advanceBrowserRemoteProofBackupAuthorityRow,
   createBrowserProofBackupAuthorityRow,
   requireBrowserProofDerivationLocator,
   requireBrowserProofBackupAuthorityForProof,
@@ -888,6 +889,14 @@ function nextProofBackupAuthority(
   const locator =
     request.derivationLocator === undefined ? authorityLocator(current) : request.derivationLocator;
   if (current !== null) {
+    if (current.backupState === "remote-backed") {
+      return advanceBrowserRemoteProofBackupAuthorityRow(
+        current,
+        request.proof,
+        observedAtMs,
+        locator,
+      );
+    }
     return advanceBrowserProofBackupAuthorityRow(
       current,
       request.proof,

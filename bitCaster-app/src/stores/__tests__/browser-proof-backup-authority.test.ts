@@ -7,8 +7,10 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   advanceBrowserProofBackupAuthorityRow,
+  advanceBrowserRemoteProofBackupAuthorityRow,
   bindBrowserProofBackupAuthorityTerminalOperation,
   createBrowserProofBackupAuthorityRow,
+  createBrowserRemoteProofBackupAuthorityRow,
   requireBrowserProofBackupAuthorityRow,
 } from "../browser-proof-backup-authority";
 import { createBrowserCustodyProofRow } from "../durable-custody-db";
@@ -56,6 +58,60 @@ describe("browser proof backup authority", () => {
     expect(
       createBrowserProofBackupAuthorityRow(proof, 2, nut13(FOREIGN_KEYSET, 7), "admission-a"),
     ).toMatchObject({ derivationLocator: nut13(FOREIGN_KEYSET, 7) });
+  });
+
+  it("creates a remote-backed authority without a local admission operation", () => {
+    const proof = custodyProof();
+    expect(
+      createBrowserRemoteProofBackupAuthorityRow({
+        proof,
+        observedAtMs: 2,
+        derivationLocator: nut13(DERIVATION_KEYSET, 7),
+        restoreProofId: proof.proofId,
+        restoreProofCommitment: "66".repeat(32),
+      }),
+    ).toMatchObject({
+      backupState: "remote-backed",
+      admissionOperationId: null,
+      backupRecordId: proof.proofId,
+      backupRecordCommitment: "66".repeat(32),
+    });
+  });
+
+  it("advances remote-backed proof state without changing its restore authority", () => {
+    const proof = custodyProof();
+    const locator = nut13(DERIVATION_KEYSET, 7);
+    const authority = createBrowserRemoteProofBackupAuthorityRow({
+      proof,
+      observedAtMs: 2,
+      derivationLocator: locator,
+      restoreProofId: proof.proofId,
+      restoreProofCommitment: "66".repeat(32),
+    });
+    const locked = {
+      ...proof,
+      revision: 1,
+      selectability: "locked" as const,
+      reservationOperationId: "operation-a",
+    };
+    expect(
+      advanceBrowserRemoteProofBackupAuthorityRow(authority, locked, 3, locator),
+    ).toMatchObject({
+      backupState: "remote-backed",
+      admissionOperationId: null,
+      backupRecordId: proof.proofId,
+      backupRecordCommitment: "66".repeat(32),
+      proofRevision: 1,
+      proofState: "locked",
+    });
+    expect(() =>
+      advanceBrowserRemoteProofBackupAuthorityRow(
+        authority,
+        locked,
+        3,
+        nut13(DERIVATION_KEYSET, 8),
+      ),
+    ).toThrow("derivation locator conflicts");
   });
 
   it("binds one terminal operation and preserves an exact replay", () => {
@@ -134,6 +190,7 @@ function authorityRow(locator: { derivationLocator: unknown }) {
     backupState: "local-only",
     derivationLocator: locator.derivationLocator,
     backupRecordId: null,
+    backupRecordCommitment: null,
     updatedAtMs: 1,
   };
 }
