@@ -6,6 +6,8 @@ test('public SDK modules are available from standard root and subpath package im
   const tokenImportSubpath = await import('@bitcaster-market/client-sdk/tokenImportValidation')
   const manifestPageSubpath =
     await import('@bitcaster-market/client-sdk/encryptedWalletBackupManifestPagePersistence')
+  const uploadPlanningSubpath =
+    await import('@bitcaster-market/client-sdk/encryptedWalletBackupUploadPlanningPersistence')
 
   assert.equal(typeof root.validateTokenImport, 'function')
   assert.equal(root.validateTokenImport, tokenImportSubpath.validateTokenImport)
@@ -14,5 +16,10 @@ test('public SDK modules are available from standard root and subpath package im
   assert.equal(
     root.persistNextEncryptedWalletBackupManifestPage,
     manifestPageSubpath.persistNextEncryptedWalletBackupManifestPage,
+  )
+  assert.equal(typeof root.decodeEncryptedWalletBackupUploadCursor, 'function')
+  assert.equal(
+    root.decodeEncryptedWalletBackupUploadCursor,
+    uploadPlanningSubpath.decodeEncryptedWalletBackupUploadCursor,
   )
 })

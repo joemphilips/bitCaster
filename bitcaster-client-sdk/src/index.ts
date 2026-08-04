@@ -25,6 +25,7 @@ export * from './encryptedWalletBackupSnapshotPersistence.ts'
 export * from './encryptedWalletBackupSnapshotSeal.ts'
 export * from './encryptedWalletBackupManifestPassA.ts'
 export * from './encryptedWalletBackupManifestPagePersistence.ts'
+export * from './encryptedWalletBackupUploadPlanningPersistence.ts'
 export {
   ENCRYPTED_WALLET_BACKUP_MANIFEST_FINALIZATION_READ_BYTES_MAX,
   ENCRYPTED_WALLET_BACKUP_MANIFEST_FINALIZATION_READ_ROWS_MAX,
