@@ -118,10 +118,16 @@ describe("PortfolioPage wallet setup", () => {
     expect(screen.getByRole("button", { name: /restore wallet/i })).toBeInTheDocument();
   });
 
-  it("imports a seed phrase through recoverFromMnemonic and stays on the portfolio page", async () => {
-    recoverFromMnemonic.mockImplementation(() => {
+  it("awaits an imported seed phrase before completing wallet setup", async () => {
+    let resolveRecovery: ((value: { valid: boolean }) => void) | undefined;
+    recoverFromMnemonic.mockImplementation(
+      () =>
+        new Promise<{ valid: boolean }>((resolve) => {
+          resolveRecovery = resolve;
+        }),
+    );
+    ensureImplicitWallet.mockImplementation(async () => {
       mockWalletState = "ready";
-      return { valid: true };
     });
     const words =
       "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -133,7 +139,12 @@ describe("PortfolioPage wallet setup", () => {
     await userEvent.type(screen.getByLabelText(/enter your seedphrase/i), words);
     await userEvent.click(screen.getByRole("button", { name: /restore wallet/i }));
 
-    expect(recoverFromMnemonic).toHaveBeenCalledWith(words.split(" "));
+    await waitFor(() => expect(recoverFromMnemonic).toHaveBeenCalledWith(words.split(" ")));
+    expect(screen.getByRole("heading", { name: /wallet setup/i })).toBeInTheDocument();
+    expect(ensureImplicitWallet).not.toHaveBeenCalled();
+
+    resolveRecovery?.({ valid: true });
+
     await waitFor(() => {
       expect(screen.queryByRole("heading", { name: /wallet setup/i })).not.toBeInTheDocument();
     });

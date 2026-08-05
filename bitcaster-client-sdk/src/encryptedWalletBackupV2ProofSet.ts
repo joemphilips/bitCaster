@@ -78,6 +78,122 @@ export interface EncryptedWalletBackupV2UnverifiedProofSet {
   readonly counterHighWaterMarks: readonly EncryptedWalletBackupV2CounterHighWaterMark[]
 }
 
+export interface EncryptedWalletBackupV2RestoreKeyset {
+  readonly mintUrl: string
+  readonly unit: 'sat' | 'msat'
+  readonly keysetId: string
+  readonly keyset: unknown
+  readonly requireDleq: boolean
+  verify(): boolean
+}
+
+export interface EncryptedWalletBackupV2RestoreVerificationPort {
+  resolveKeyset(input: {
+    readonly mintUrl: string
+    readonly unit: 'sat' | 'msat'
+    readonly keysetId: string
+  }): Promise<EncryptedWalletBackupV2RestoreKeyset>
+  verifyProofs(input: {
+    readonly proofs: readonly Proof[]
+    readonly keysets: ReadonlyMap<string, EncryptedWalletBackupV2RestoreKeyset>
+  }): void
+  checkProofStates(input: {
+    readonly mintUrl: string
+    readonly proofs: readonly {
+      readonly proofId: string
+      readonly id: string
+      readonly secret: string
+    }[]
+  }): Promise<readonly { readonly proofId: string; readonly state: string }[]>
+}
+
+export interface EncryptedWalletBackupV2VerifiedProofSet extends EncryptedWalletBackupV2UnverifiedProofSet {
+  readonly verified: true
+}
+
+const VERIFIED_RESTORED_PROOF_SETS = new WeakMap<object, EncryptedWalletBackupV2VerifiedProofSet>()
+
+export function requireEncryptedWalletBackupV2VerifiedProofSet(
+  value: unknown,
+): EncryptedWalletBackupV2VerifiedProofSet {
+  if (typeof value !== 'object' || value === null || !VERIFIED_RESTORED_PROOF_SETS.has(value))
+    throw new Error('encrypted backup V2 verified proof set is invalid')
+  return VERIFIED_RESTORED_PROOF_SETS.get(value)!
+}
+
+/** Verify detached V2 material before a client can persist it as custody. */
+export async function verifyEncryptedWalletBackupV2RestoredProofSet(input: {
+  readonly seed: Uint8Array
+  readonly expectedAsset: EncryptedWalletBackupV2AssetIdentity
+  readonly unverified: EncryptedWalletBackupV2UnverifiedProofSet
+  readonly port: EncryptedWalletBackupV2RestoreVerificationPort
+}): Promise<EncryptedWalletBackupV2VerifiedProofSet> {
+  const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.expectedAsset)
+  const seed = input.seed
+  const decoded = validateProofSet({
+    seed,
+    proofs: input.unverified.proofs.map(withoutProofId),
+    counterHighWaterMarks: input.unverified.counterHighWaterMarks,
+  })
+  assertProofSetAsset(decoded.proofs, asset)
+  const keysets = await resolveRestoreKeysets(decoded.proofs, input.port)
+  input.port.verifyProofs({ proofs: decoded.proofs.map(({ proof }) => proof), keysets })
+  await requireUnspentRestoreProofs(decoded.proofs, input.port)
+  const verified = freezeVerifiedProofSet(decoded)
+  VERIFIED_RESTORED_PROOF_SETS.set(verified, verified)
+  return verified
+}
+
+function withoutProofId(entry: EncryptedWalletBackupV2UnverifiedProofSet['proofs'][number]) {
+  const { proofId: _proofId, ...encoded } = entry
+  return encoded
+}
+
+async function resolveRestoreKeysets(
+  proofs: readonly DecodedProofEntry[],
+  port: EncryptedWalletBackupV2RestoreVerificationPort,
+) {
+  const keysets = new Map<string, EncryptedWalletBackupV2RestoreKeyset>()
+  for (const proof of proofs) {
+    if (keysets.has(proof.proof.id)) continue
+    const keyset = await port.resolveKeyset({
+      mintUrl: proof.mintUrl,
+      unit: proof.unit,
+      keysetId: proof.proof.id,
+    })
+    if (
+      keyset.mintUrl !== proof.mintUrl ||
+      keyset.unit !== proof.unit ||
+      keyset.keysetId !== proof.proof.id ||
+      !keyset.verify()
+    )
+      throw new Error('encrypted backup V2 restored keyset is invalid')
+    keysets.set(proof.proof.id, keyset)
+  }
+  return keysets
+}
+
+async function requireUnspentRestoreProofs(
+  proofs: readonly DecodedProofEntry[],
+  port: EncryptedWalletBackupV2RestoreVerificationPort,
+): Promise<void> {
+  const states = await port.checkProofStates({
+    mintUrl: proofs[0]!.mintUrl,
+    proofs: proofs.map(({ proof, proofId }) => ({ proofId, id: proof.id, secret: proof.secret })),
+  })
+  if (states.length !== proofs.length)
+    throw new Error('encrypted backup V2 restored proof state is invalid')
+  const expected = new Set(proofs.map(({ proofId }) => proofId))
+  const observed = new Set<string>()
+  for (const { proofId, state } of states) {
+    if (!expected.has(proofId) || observed.has(proofId) || state !== 'UNSPENT')
+      throw new Error('encrypted backup V2 restored proof state is not unspent')
+    observed.add(proofId)
+  }
+  if (observed.size !== expected.size)
+    throw new Error('encrypted backup V2 restored proof state is invalid')
+}
+
 /** Encrypts deterministic proof material. The result is not proof admission authority. */
 export async function prepareEncryptedWalletBackupV2ProofSetBundle(input: {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle
@@ -527,6 +643,36 @@ function cloneUnverifiedProofSet(
       value.counterHighWaterMarks.map((counter) => Object.freeze({ ...counter })),
     ),
   })
+}
+
+/** Creates the immutable snapshot that the verified-runtime brand authorizes. */
+function freezeVerifiedProofSet(value: DecodedProofSet): EncryptedWalletBackupV2VerifiedProofSet {
+  return deepFreeze({
+    verified: true as const,
+    proofs: value.proofs.map((proof) => ({
+      mintUrl: proof.mintUrl,
+      unit: proof.unit,
+      asset: structuredClone(proof.asset),
+      proof: deserializeDurableCustodyProofArtifact(
+        serializeDurableCustodyProofArtifact(proof.proof),
+      ),
+      locator: structuredClone(proof.locator),
+      proofId: proof.proofId,
+    })),
+    counterHighWaterMarks: value.counterHighWaterMarks.map((counter) => ({ ...counter })),
+  })
+}
+
+function deepFreeze<T>(value: T): T {
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Object.isFrozen(value) ||
+    ArrayBuffer.isView(value)
+  )
+    return value
+  for (const item of Object.values(value as Record<string, unknown>)) deepFreeze(item)
+  return Object.freeze(value)
 }
 
 function snapshotDescriptor(

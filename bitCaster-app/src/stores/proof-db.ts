@@ -669,6 +669,10 @@ export class BitcasterDB extends Dexie {
       encryptedWalletBackupSnapshotCleanupJobs: null,
       encryptedWalletBackupRestoreProofs: null,
     });
+    this.version(22).stores({
+      custodyProofs:
+        "&[scopeId+proofId], [scopeId+selectability], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]",
+    });
   }
 }
 

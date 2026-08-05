@@ -115,6 +115,16 @@ interface ConditionalKeysetWritePlan {
   readonly requiresPersistedAuthority: boolean;
 }
 
+interface ConditionalKeysetWriteResult {
+  readonly additions: readonly BrowserCustodyConditionalKeysetRow[];
+  readonly authorities: ReadonlyMap<string, BrowserCustodyConditionalKeysetRow>;
+}
+
+interface BrowserCustodyProofPersistenceResult {
+  readonly changes: readonly BrowserCustodyProofBackupPayloadChange[];
+  readonly conditionalKeysets: ReadonlyMap<string, BrowserCustodyConditionalKeysetRow>;
+}
+
 export interface BrowserCustodyTransactionOptions {
   readonly predecessorProofs?: Readonly<Record<string, readonly BrowserCustodyProofRow[]>>;
   readonly successorProofs?: Readonly<Record<string, readonly StagedBrowserCustodyProof[]>>;
@@ -340,14 +350,14 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         ) {
           throw new Error("browser refund proof authority is invalid");
         }
-        const retiredChanges = await this.#persistProofRowsWithBackupAuthority(
+        const retiredPersistence = await this.#persistProofRowsWithBackupAuthority(
           retired.map((proof) => ({ proof, derivationLocator: undefined })),
           input.observedAtMs,
         );
         await this.#database.custodyReservations.bulkDelete(
           expectedProofIds.map((proofId) => [input.scopeId, proofId]),
         );
-        const refundChanges = await this.#persistProofRowsWithBackupAuthority(
+        const refundsPersisted = await this.#persistProofRowsWithBackupAuthority(
           refunds,
           input.observedAtMs,
           () => input.operationId,
@@ -355,7 +365,11 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         await advanceBrowserV2DesiredAssetsForProofChanges(
           this.#database,
           input.scopeId,
-          [...retiredChanges, ...refundChanges].map(desiredAssetProofChange),
+          [...retiredPersistence.changes, ...refundsPersisted.changes].map(desiredAssetProofChange),
+          conditionalKeysetLookup(
+            retiredPersistence.conditionalKeysets,
+            refundsPersisted.conditionalKeysets,
+          ),
         );
         if (input.injectFault === "before-commit") {
           throw new Error("injected browser refund custody fault before commit");
@@ -621,15 +635,16 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   ): Promise<void> {
     await this.#persistChangedOperations(transaction);
     await this.#persistChangedArtifacts(transaction);
-    const proofChanges = await this.#persistChangedProofs(
+    const proofPersistence = await this.#persistChangedProofs(
       transaction,
       selection.owner.observedAtMs,
     );
-    if (proofChanges.length > 0) {
+    if (proofPersistence.changes.length > 0) {
       await advanceBrowserV2DesiredAssetsForProofChanges(
         this.#database,
         selection.scope.scopeId,
-        proofChanges.map(desiredAssetProofChange),
+        proofPersistence.changes.map(desiredAssetProofChange),
+        conditionalKeysetLookup(proofPersistence.conditionalKeysets),
       );
     }
     await this.#persistReservations(selection.scope.scopeId, transaction);
@@ -656,7 +671,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   async #persistChangedProofs(
     transaction: StagedBrowserCustodyTransaction,
     observedAtMs: number,
-  ): Promise<readonly BrowserCustodyProofBackupPayloadChange[]> {
+  ): Promise<BrowserCustodyProofPersistenceResult> {
     const changed: PersistedBrowserCustodyProof[] = [];
     for (const proofId of transaction.changedProofIds) {
       const proof = transaction.proofs.get(proofId);
@@ -684,14 +699,14 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     conditionalKeysetForProof: (
       proofId: string,
     ) => BrowserCustodyConditionalKeysetAuthority | undefined = () => undefined,
-  ): Promise<readonly BrowserCustodyProofBackupPayloadChange[]> {
+  ): Promise<BrowserCustodyProofPersistenceResult> {
     const requests = persistedProofRequests(
       proofs,
       admissionOperationIdForProof,
       predecessorFallbackOperationIdForProof,
       conditionalKeysetForProof,
     );
-    if (requests.length === 0) return [];
+    if (requests.length === 0) return { changes: [], conditionalKeysets: new Map() };
     const current = await this.#readCurrentProofBackupAuthorities(requests);
     const authorities = requests.map((request) =>
       nextProofBackupAuthority(
@@ -700,15 +715,15 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         observedAtMs,
       ),
     );
-    const missingKeysets = await this.#prepareConditionalKeysetWrites(requests, current);
+    const keysets = await this.#prepareConditionalKeysetWrites(requests, current);
     await Promise.all([
       this.#database.custodyProofs.bulkPut(requests.map(({ proof }) => proof)),
       this.#database.custodyProofBackupAuthorities.bulkPut(authorities),
-      missingKeysets.length === 0
+      keysets.additions.length === 0
         ? Promise.resolve()
-        : this.#database.custodyConditionalKeysets.bulkAdd(missingKeysets),
+        : this.#database.custodyConditionalKeysets.bulkAdd(keysets.additions),
     ]);
-    return requests.map((request, index) => {
+    const changes = requests.map((request, index) => {
       const before = current.authorities.get(proofIdentity(request.key));
       const after = authorities[index];
       if (before === undefined || after === undefined) {
@@ -722,6 +737,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         afterLocator: requireBrowserProofDerivationLocator(after.derivationLocator),
       };
     });
+    return { changes, conditionalKeysets: keysets.authorities };
   }
 
   async #readCurrentProofBackupAuthorities(
@@ -764,15 +780,20 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   async #prepareConditionalKeysetWrites(
     requests: readonly PersistedBrowserCustodyProofRequest[],
     current: BrowserCustodyProofBackupAuthorityState,
-  ): Promise<readonly BrowserCustodyConditionalKeysetRow[]> {
+  ): Promise<ConditionalKeysetWriteResult> {
     const plans = conditionalKeysetWritePlans(requests, current.authorities);
-    if (plans.length === 0) return [];
+    if (plans.length === 0) return { additions: [], authorities: new Map() };
     const persisted = await this.#database.custodyConditionalKeysets.bulkGet(
       plans.map(({ key }) => key),
     );
-    return plans.flatMap((plan, index) =>
-      validateConditionalKeysetWritePlan(plan, persisted[index]),
-    );
+    const additions: BrowserCustodyConditionalKeysetRow[] = [];
+    const authorities = new Map<string, BrowserCustodyConditionalKeysetRow>();
+    plans.forEach((plan, index) => {
+      const result = validateConditionalKeysetWritePlan(plan, persisted[index]);
+      if (result.add) additions.push(result.authority);
+      authorities.set(conditionalKeysetIdentity(plan.key), result.authority);
+    });
+    return { additions, authorities };
   }
 
   async #persistReservations(
@@ -966,13 +987,13 @@ function conditionalKeysetWritePlans(
 function validateConditionalKeysetWritePlan(
   plan: ConditionalKeysetWritePlan,
   persisted: BrowserCustodyConditionalKeysetRow | undefined,
-): readonly BrowserCustodyConditionalKeysetRow[] {
+): { readonly authority: BrowserCustodyConditionalKeysetRow; readonly add: boolean } {
   if (persisted === undefined) {
     if (plan.requested === undefined || plan.requiresPersistedAuthority) {
       throw new Error("conditional proof keyset authority is missing");
     }
     verifyBrowserConditionalKeysetAuthority(plan.requested);
-    return [{ ...plan.requested, scopeId: plan.key[0] }];
+    return { authority: { ...plan.requested, scopeId: plan.key[0] }, add: true };
   }
   const current = decodeBrowserCustodyConditionalKeysetRow(persisted);
   if (!matchesConditionalKeysetKey(current, plan.key)) {
@@ -985,7 +1006,26 @@ function validateConditionalKeysetWritePlan(
     throw new Error("conditional keyset authority conflicts");
   }
   verifyBrowserConditionalKeysetAuthority(current);
-  return [];
+  return { authority: current, add: false };
+}
+
+function conditionalKeysetLookup(
+  ...sources: readonly ReadonlyMap<string, BrowserCustodyConditionalKeysetRow>[]
+) {
+  return (proof: BrowserCustodyProofRow): BrowserCustodyConditionalKeysetRow | undefined => {
+    if (proof.assetKind === "regular") return undefined;
+    const identity = conditionalKeysetIdentity([
+      proof.scopeId,
+      proof.normalizedMint,
+      proof.unit,
+      proof.keysetId,
+    ]);
+    for (const source of sources) {
+      const keyset = source.get(identity);
+      if (keyset !== undefined) return keyset;
+    }
+    return undefined;
+  };
 }
 
 function proofIdentity(key: readonly [string, string]): string {

@@ -27,7 +27,6 @@ import {
   serializeDurableCustodyOutput,
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
-import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from './durableCustodyProofImport.ts'
 import {
   addDurableWalletProofTransitionMetadata,
   createDurableWalletProofTransition,
@@ -36,7 +35,7 @@ import {
 export const DURABLE_WALLET_OPERATION_SCHEMA_VERSION = 1 as const
 export const DURABLE_WALLET_OPERATION_ARRAY_LENGTH_MAX = DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX
 export const DURABLE_WALLET_OPERATION_METADATA_KEY = 'durableWalletOperation'
-const DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX = DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX
+const DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX = 128
 
 export type DurableWalletOperationKind =
   | 'wallet-mint'

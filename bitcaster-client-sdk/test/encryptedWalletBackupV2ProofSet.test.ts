@@ -7,6 +7,9 @@ import {
   decryptEncryptedWalletBackupV2ProofSetBundle,
   encryptedWalletBackupV2LocalAssetKey,
   prepareEncryptedWalletBackupV2ProofSetBundle,
+  requireEncryptedWalletBackupV2VerifiedProofSet,
+  verifyEncryptedWalletBackupV2RestoredProofSet,
+  type EncryptedWalletBackupV2RestoreVerificationPort,
   type EncryptedWalletBackupV2ProofSetProof,
 } from '../src/encryptedWalletBackupV2ProofSet.ts'
 import {
@@ -316,6 +319,150 @@ test('v2 proof set rejects wrong seed, duplicate proofs, and low counters before
     /duplicated/,
   )
 })
+
+test('v2 restored proof verifier accepts ordinary and CTF proof sets', async () => {
+  const ordinary = await restored([proof(0, { kind: 'ordinary' })])
+  const ctf = await restored([proof(0, ctfAsset(), true)])
+  const verified = await verifyEncryptedWalletBackupV2RestoredProofSet(ordinary)
+  assert.equal(requireEncryptedWalletBackupV2VerifiedProofSet(verified), verified)
+  assert.throws(
+    () => requireEncryptedWalletBackupV2VerifiedProofSet({ ...verified }),
+    /verified proof set is invalid/,
+  )
+  await assert.doesNotReject(() => verifyEncryptedWalletBackupV2RestoredProofSet(ctf))
+})
+
+test('v2 restored proof verifier binds immutable nested proof evidence', async () => {
+  const entry = proof(1, ctfAsset(), true)
+  const unverified = {
+    proofs: [{ ...entry, proofId: '11'.repeat(32) }],
+    counterHighWaterMarks: [counter(2)],
+  }
+  const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
+    seed: SEED,
+    expectedAsset: proofSetAsset(entry),
+    unverified,
+    port: verificationPort(),
+  })
+  const source = unverified.proofs[0]!
+  ;(source.proof as { C: string; dleq: { e: string; s: string } }).C = `03${'33'.repeat(32)}`
+  ;(source.proof as { dleq: { e: string; s: string } }).dleq.e = '44'.repeat(32)
+  ;(source.locator as { counter: number }).counter = 99
+  ;(source.asset as { outcomeLabel: string }).outcomeLabel = 'NO'
+  unverified.counterHighWaterMarks[0]!.nextCounter = 99
+
+  const snapshot = requireEncryptedWalletBackupV2VerifiedProofSet(verified)
+  const snapshotProof = snapshot.proofs[0]!
+  assert.equal(snapshotProof.proof.C, `02${'11'.repeat(32)}`)
+  assert.equal(snapshotProof.proof.dleq?.e, '11'.repeat(32))
+  assert.equal((snapshotProof.locator as { counter: number }).counter, 1)
+  assert.equal((snapshotProof.asset as { outcomeLabel: string }).outcomeLabel, 'YES')
+  assert.equal(snapshot.counterHighWaterMarks[0]!.nextCounter, 2)
+  assert.equal(Object.isFrozen(snapshotProof.proof), true)
+  assert.equal(Object.isFrozen(snapshotProof.locator), true)
+  assert.equal(Object.isFrozen(snapshotProof.asset), true)
+  assert.equal(Object.isFrozen(snapshot.counterHighWaterMarks[0]!), true)
+})
+
+test('v2 restored proof verifier rejects invalid keysets and proof verification', async () => {
+  const input = await restored([proof(0, { kind: 'ordinary' })])
+  await assert.rejects(
+    () =>
+      verifyEncryptedWalletBackupV2RestoredProofSet({
+        ...input,
+        port: verificationPort({ verify: false }),
+      }),
+    /keyset is invalid/,
+  )
+  await assert.rejects(
+    () =>
+      verifyEncryptedWalletBackupV2RestoredProofSet({
+        ...input,
+        port: verificationPort({ signatures: false }),
+      }),
+    /signature failed/,
+  )
+})
+
+test('v2 restored proof verifier requires an exact all-unspent NUT-07 result', async () => {
+  const input = await restored([proof(0, { kind: 'ordinary' }), proof(1, { kind: 'ordinary' })])
+  for (const states of [
+    [{ proofId: input.unverified.proofs[0]!.proofId, state: 'PENDING' }],
+    [{ proofId: input.unverified.proofs[0]!.proofId, state: 'SPENT' }],
+    [{ proofId: input.unverified.proofs[0]!.proofId, state: 'UNSPENT' }],
+    [
+      { proofId: input.unverified.proofs[0]!.proofId, state: 'UNSPENT' },
+      { proofId: input.unverified.proofs[0]!.proofId, state: 'UNSPENT' },
+    ],
+    [
+      { proofId: input.unverified.proofs[0]!.proofId, state: 'UNSPENT' },
+      { proofId: '00'.repeat(32), state: 'UNSPENT' },
+    ],
+  ]) {
+    await assert.rejects(
+      () =>
+        verifyEncryptedWalletBackupV2RestoredProofSet({
+          ...input,
+          port: verificationPort({ states }),
+        }),
+      /proof state/,
+    )
+  }
+})
+
+async function restored(proofs: readonly EncryptedWalletBackupV2ProofSetProof[]) {
+  const keyHandle = await handle()
+  const asset = proofSetAsset(proofs[0]!)
+  const prepared = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    asset,
+    proofs,
+    custodyRevision: 1n,
+    counterHighWaterMarks: proofs[0]!.locator.kind === 'nut13' ? [counter(proofs.length)] : [],
+    runtime: webcrypto,
+  })
+  return {
+    seed: SEED,
+    expectedAsset: asset,
+    unverified: await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle,
+      seed: SEED,
+      expectedAsset: asset,
+      custodyRevision: 1n,
+      runtime: webcrypto,
+      ...prepared,
+    }),
+    port: verificationPort(),
+  }
+}
+
+function verificationPort(
+  options: {
+    verify?: boolean
+    signatures?: boolean
+    states?: readonly { readonly proofId: string; readonly state: string }[]
+  } = {},
+): EncryptedWalletBackupV2RestoreVerificationPort {
+  return {
+    async resolveKeyset({ mintUrl, unit, keysetId }) {
+      return {
+        mintUrl,
+        unit,
+        keysetId,
+        keyset: {},
+        requireDleq: true,
+        verify: () => options.verify !== false,
+      }
+    },
+    verifyProofs() {
+      if (options.signatures === false) throw new Error('signature failed')
+    },
+    async checkProofStates({ proofs }) {
+      return options.states ?? proofs.map(({ proofId }) => ({ proofId, state: 'UNSPENT' }))
+    },
+  }
+}
 
 async function prepare(input: {
   keyHandle: Awaited<ReturnType<typeof handle>>

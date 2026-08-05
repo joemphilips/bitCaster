@@ -3,6 +3,7 @@ import "fake-indexeddb/auto";
 import { createBrowserWalletCounterSource, useWalletStore } from "../wallet";
 import * as bip39 from "@/lib/bip39";
 import {
+  activeBrowserWalletScopeId,
   browserWalletScopeIdFromMnemonic,
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
@@ -11,6 +12,17 @@ import { activateBrowserWalletDatabase, db } from "../proof-db";
 const cashuMocks = vi.hoisted(() => ({
   loadMint: vi.fn().mockResolvedValue(undefined),
   walletConstructor: vi.fn(),
+}));
+
+const persistenceMocks = vi.hoisted(() => ({ request: vi.fn() }));
+const seedHandoffMocks = vi.hoisted(() => ({ handoff: vi.fn() }));
+
+vi.mock("@/lib/browserWalletStoragePersistence", () => ({
+  requestBrowserWalletStoragePersistence: persistenceMocks.request,
+}));
+
+vi.mock("@/lib/browserEncryptedWalletBackupV2SeedHandoff", () => ({
+  handoffBrowserEncryptedWalletBackupV2Seed: seedHandoffMocks.handoff,
 }));
 
 vi.mock("@cashu/cashu-ts", () => {
@@ -57,6 +69,7 @@ const initialAddMintWithoutActivating = useWalletStore.getState()._addMintWithou
 // Reset store state before each test
 beforeEach(() => {
   vi.clearAllMocks();
+  seedHandoffMocks.handoff.mockResolvedValue(undefined);
   useWalletStore.setState({
     mnemonic: "",
     setupComplete: false,
@@ -78,6 +91,14 @@ describe("useWalletStore", () => {
     expect(persisted).not.toHaveProperty("keysetCountersRecovered");
   });
 
+  it("does not request browser persistence during Zustand hydration", () => {
+    const hydrate = useWalletStore.persist.getOptions().onRehydrateStorage!(
+      useWalletStore.getState(),
+    );
+    hydrate?.({ mnemonic: bip39.generate().join(" ") } as never, undefined);
+    expect(persistenceMocks.request).not.toHaveBeenCalled();
+  });
+
   describe("generateMnemonic", () => {
     it("produces 12 valid BIP-39 English words", () => {
       useWalletStore.getState().generateMnemonic();
@@ -85,19 +106,21 @@ describe("useWalletStore", () => {
       const words = mnemonic.split(" ");
       expect(words).toHaveLength(12);
       expect(bip39.validate(words)).toBe(true);
+      expect(persistenceMocks.request).toHaveBeenCalledOnce();
     });
   });
 
   describe("recoverFromMnemonic", () => {
-    it("accepts a valid phrase", () => {
+    it("accepts a valid phrase", async () => {
       const words = bip39.generate();
-      const result = useWalletStore.getState().recoverFromMnemonic(words);
+      const result = await useWalletStore.getState().recoverFromMnemonic(words);
       expect(result.valid).toBe(true);
       expect(useWalletStore.getState().mnemonic).toBe(words.join(" "));
+      expect(persistenceMocks.request).toHaveBeenCalledOnce();
     });
 
-    it("rejects invalid phrase", () => {
-      const result = useWalletStore
+    it("rejects invalid phrase", async () => {
+      const result = await useWalletStore
         .getState()
         .recoverFromMnemonic([
           "zoo",
@@ -117,31 +140,96 @@ describe("useWalletStore", () => {
       expect(result.error).toBeDefined();
     });
 
-    it("rejects wrong word count", () => {
-      const result = useWalletStore.getState().recoverFromMnemonic(["abandon", "abandon"]);
+    it("rejects wrong word count", async () => {
+      const result = await useWalletStore.getState().recoverFromMnemonic(["abandon", "abandon"]);
       expect(result.valid).toBe(false);
       expect(result.error).toContain("12 words");
     });
 
-    it("blocks a different seed until the encrypted-backup handoff exists", () => {
-      useWalletStore.setState({ mnemonic: "old seed words placeholder" });
-      const words = bip39.generate();
-      const result = useWalletStore.getState().recoverFromMnemonic(words);
+    it("hands off a different seed only after activating the new profile", async () => {
+      const oldMnemonic = bip39.generate().join(" ");
+      const newWords = bip39.generate();
+      const oldScopeId = browserWalletScopeIdFromMnemonic(oldMnemonic);
+      expect(oldScopeId).not.toBeNull();
+      useWalletStore.setState({ mnemonic: oldMnemonic, walletBackupState: "confirmed" });
+      setActiveBrowserWalletProfile(oldMnemonic);
+      activateBrowserWalletDatabase(oldScopeId!);
+      const oldDatabase = db;
 
-      const state = useWalletStore.getState();
-      expect(result).toEqual({
-        valid: false,
-        error: "Seed switching requires an acknowledged encrypted backup.",
+      let mnemonicDuringActivation = "";
+      let profileWasCurrentDuringHandoff = false;
+      let stateDuringPersistence: { mnemonic: string; walletBackupState: string } | undefined;
+      persistenceMocks.request.mockImplementationOnce(() => {
+        const state = useWalletStore.getState();
+        stateDuringPersistence = {
+          mnemonic: state.mnemonic,
+          walletBackupState: state.walletBackupState,
+        };
       });
-      expect(state.mnemonic).toBe("old seed words placeholder");
+      seedHandoffMocks.handoff.mockImplementationOnce(
+        async (input: {
+          invalidateOldProfile: () => void;
+          activateNewProfile: () => Promise<void>;
+          isCurrentProfile: () => boolean;
+        }) => {
+          profileWasCurrentDuringHandoff = input.isCurrentProfile();
+          input.invalidateOldProfile();
+          mnemonicDuringActivation = useWalletStore.getState().mnemonic;
+          await input.activateNewProfile();
+        },
+      );
+
+      const result = await useWalletStore.getState().recoverFromMnemonic(newWords);
+
+      expect(result).toEqual({ valid: true });
+      expect(seedHandoffMocks.handoff).toHaveBeenCalledWith(
+        expect.objectContaining({
+          database: oldDatabase,
+          scopeId: oldScopeId,
+          isCurrentProfile: expect.any(Function),
+        }),
+      );
+      expect(profileWasCurrentDuringHandoff).toBe(true);
+      expect(mnemonicDuringActivation).toBe(oldMnemonic);
+      expect(useWalletStore.getState().mnemonic).toBe(newWords.join(" "));
+      expect(useWalletStore.getState().walletBackupState).toBe("confirmed");
+      expect(activeBrowserWalletScopeId()).toBe(
+        browserWalletScopeIdFromMnemonic(newWords.join(" ")),
+      );
+      expect(stateDuringPersistence).toEqual({
+        mnemonic: newWords.join(" "),
+        walletBackupState: "confirmed",
+      });
+      expect(persistenceMocks.request).toHaveBeenCalledOnce();
     });
 
-    it("reopens the current seed without changing the profile", () => {
+    it("keeps the old Zustand mnemonic when the seed handoff rejects", async () => {
+      const oldMnemonic = bip39.generate().join(" ");
+      const newWords = bip39.generate();
+      const oldScopeId = browserWalletScopeIdFromMnemonic(oldMnemonic);
+      expect(oldScopeId).not.toBeNull();
+      useWalletStore.setState({ mnemonic: oldMnemonic, walletBackupState: "confirmed" });
+      setActiveBrowserWalletProfile(oldMnemonic);
+      activateBrowserWalletDatabase(oldScopeId!);
+      seedHandoffMocks.handoff.mockRejectedValueOnce(new Error("backup is incomplete"));
+
+      const result = await useWalletStore.getState().recoverFromMnemonic(newWords);
+
+      expect(result).toEqual({ valid: false, error: "backup is incomplete" });
+      expect(useWalletStore.getState().mnemonic).toBe(oldMnemonic);
+      expect(activeBrowserWalletScopeId()).toBe(oldScopeId);
+      expect(persistenceMocks.request).not.toHaveBeenCalled();
+    });
+
+    it("reopens the current seed without handing off or changing the profile", async () => {
       const words = bip39.generate();
       const mnemonic = words.join(" ");
       useWalletStore.setState({ mnemonic });
 
-      expect(useWalletStore.getState().recoverFromMnemonic(words)).toEqual({ valid: true });
+      await expect(useWalletStore.getState().recoverFromMnemonic(words)).resolves.toEqual({
+        valid: true,
+      });
+      expect(seedHandoffMocks.handoff).not.toHaveBeenCalled();
     });
   });
 

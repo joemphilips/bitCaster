@@ -58,7 +58,7 @@ export function PortfolioPage() {
       setWalletSetupCreating(true);
       setWalletSetupError(null);
       try {
-        const result = useWalletStore.getState().recoverFromMnemonic(words);
+        const result = await useWalletStore.getState().recoverFromMnemonic(words);
         if (!result.valid) {
           setWalletSetupError(result.error ?? t("seed.invalidMnemonic"));
           return;

@@ -33,9 +33,8 @@ export interface DurableCustodyProofImportBatchAuthority {
   readonly pageIndex: number
 }
 
-export const DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX = 128
-export const DURABLE_CUSTODY_PROOF_IMPORT_BATCH_PROOF_LIMIT_MAX =
-  DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX * 512
+export const DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX = 32
+export const DURABLE_CUSTODY_PROOF_IMPORT_BATCH_PROOF_LIMIT_MAX = 65_536
 
 export interface PreparedDurableCustodyProofImport {
   readonly record: DurableCustodyRecord

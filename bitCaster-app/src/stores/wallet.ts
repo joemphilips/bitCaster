@@ -15,6 +15,8 @@ import {
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
+import { requestBrowserWalletStoragePersistence } from "@/lib/browserWalletStoragePersistence";
+import { handoffBrowserEncryptedWalletBackupV2Seed } from "@/lib/browserEncryptedWalletBackupV2SeedHandoff";
 import {
   activateBrowserWalletDatabase,
   db,
@@ -53,7 +55,7 @@ interface WalletState {
   generateMnemonic: () => void;
   ensureImplicitWallet: () => Promise<void>;
   markWalletBackupConfirmed: () => void;
-  recoverFromMnemonic: (words: string[]) => { valid: boolean; error?: string };
+  recoverFromMnemonic: (words: string[]) => Promise<{ valid: boolean; error?: string }>;
   testMintConnection: (url: string) => Promise<MintConnectionTestStatus>;
   /**
    * Internal walletOps primitive. Registers a mint and SETS it as active.
@@ -110,6 +112,11 @@ function activateWalletProfile(mnemonic: string): void {
   setActiveBrowserWalletProfile(mnemonic);
   const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
   if (scopeId !== null) activateBrowserWalletDatabase(scopeId);
+}
+
+function requestWalletStoragePersistence(mnemonic: string): void {
+  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  if (scopeId !== null) requestBrowserWalletStoragePersistence(scopeId);
 }
 
 /** Create a counter source that stays bound to one active wallet profile. */
@@ -178,6 +185,7 @@ export const useWalletStore = create<WalletState>()(
         const mnemonic = words.join(" ");
         _walletCache = new Map();
         activateWalletProfile(mnemonic);
+        requestWalletStoragePersistence(mnemonic);
         set({
           mnemonic,
           walletBackupState: "needs_backup",
@@ -208,7 +216,7 @@ export const useWalletStore = create<WalletState>()(
 
       markWalletBackupConfirmed: () => set({ walletBackupState: "confirmed" }),
 
-      recoverFromMnemonic: (words: string[]) => {
+      recoverFromMnemonic: async (words: string[]) => {
         if (words.length !== 12) {
           return { valid: false, error: "Seed phrase must be 12 words" };
         }
@@ -220,19 +228,38 @@ export const useWalletStore = create<WalletState>()(
         const currentMnemonic = get().mnemonic.trim();
         if (currentMnemonic === mnemonic) {
           set({ walletBackupState: "confirmed" });
+          requestWalletStoragePersistence(mnemonic);
           return { valid: true };
         }
         if (currentMnemonic) {
-          return {
-            valid: false,
-            error: "Seed switching requires an acknowledged encrypted backup.",
-          };
+          const oldScopeId = browserWalletScopeIdFromMnemonic(currentMnemonic);
+          if (oldScopeId === null) {
+            return { valid: false, error: "The wallet profile is unavailable." };
+          }
+          const oldDatabase = db;
+          try {
+            await handoffBrowserEncryptedWalletBackupV2Seed({
+              database: oldDatabase,
+              scopeId: oldScopeId,
+              isCurrentProfile: () => activeBrowserWalletScopeId() === oldScopeId,
+              invalidateOldProfile: () => setActiveBrowserWalletProfile(""),
+              activateNewProfile: async () => activateWalletProfile(mnemonic),
+              restoreOldProfile: async () => activateWalletProfile(currentMnemonic),
+            });
+          } catch (error) {
+            return {
+              valid: false,
+              error: error instanceof Error ? error.message : "The wallet profile is unavailable.",
+            };
+          }
+        } else {
+          activateWalletProfile(mnemonic);
         }
-        activateWalletProfile(mnemonic);
         set({
           mnemonic,
           walletBackupState: "confirmed",
         });
+        requestWalletStoragePersistence(mnemonic);
         return { valid: true };
       },
 

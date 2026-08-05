@@ -12,7 +12,10 @@ import {
 } from "@bitcaster/client-sdk/durableCustodyProofImport";
 import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
-import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
+import {
+  decodeDurableWalletProofDerivationLocator,
+  type DurableWalletProofDerivationLocator,
+} from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { commitBrowserCustodyProofImport } from "../stores/browser-custody-proof-import";
@@ -25,10 +28,7 @@ import type { BrowserCustodyConditionalKeysetAuthority } from "../stores/durable
 import { db, type BitcasterDB, type StoredProof } from "../stores/proof-db";
 
 const SCOPE_LEASE_MS = 10 * 60 * 1_000;
-type BrowserProofLocatorMap = ReadonlyMap<
-  string,
-  Extract<DurableWalletProofDerivationLocator, { kind: "nut13" }>
-> | null;
+type BrowserProofLocatorMap = ReadonlyMap<string, DurableWalletProofDerivationLocator> | null;
 
 export interface AdmitBrowserReceivedProofsInput {
   readonly seed: Uint8Array;
@@ -44,6 +44,8 @@ export interface AdmitBrowserReceivedProofsInput {
     readonly counterStart: number;
     readonly counterCount: number;
   } | null;
+  /** Exact SDK-restored locators. This is mutually exclusive with a derived range. */
+  readonly proofLocators?: ReadonlyMap<string, DurableWalletProofDerivationLocator>;
   readonly database?: BitcasterDB;
   readonly lockManager?: Pick<LockManager, "request">;
   readonly now?: () => number;
@@ -88,23 +90,32 @@ export async function admitBrowserReceivedProofs(
         observedAtMs: claimedAtMs,
         leaseExpiresAtMs: claimedAtMs + SCOPE_LEASE_MS,
       });
+      let importFailure: unknown;
       try {
         for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+          const observedAtMs = now();
           await commitImportPage({
             input,
             database,
             scope,
-            owner: ownerAt(owner, now()),
+            owner: ownerAt(owner, observedAtMs),
             keysets,
             pageIndex,
             pageCount,
             proofSetFingerprint,
             derivationLocators,
-            receivedAtMs: now(),
+            receivedAtMs: observedAtMs,
           });
         }
+      } catch (error) {
+        importFailure = error;
+        throw error;
       } finally {
-        await adapter.releaseScope(scope, ownerAt(owner, now()));
+        try {
+          await adapter.releaseScope(scope, ownerAt(owner, now()));
+        } catch (releaseError) {
+          if (importFailure === undefined) throw releaseError;
+        }
       }
     },
     input.lockManager,
@@ -188,6 +199,20 @@ function commitImportPage(pageInput: CommitImportPageInput): Promise<void> {
 }
 
 function deriveProofLocators(input: AdmitBrowserReceivedProofsInput): BrowserProofLocatorMap {
+  if (input.proofLocators !== undefined && input.derivationAuthority !== null) {
+    throw new Error("Browser proof locator authorities conflict");
+  }
+  if (input.proofLocators !== undefined) {
+    if (input.proofLocators.size !== input.proofs.length) {
+      throw new Error("Browser proof derivation locator is incomplete");
+    }
+    const proofSecrets = new Set(input.proofs.map(({ secret }) => secret));
+    for (const [secret, locator] of input.proofLocators) {
+      if (!proofSecrets.has(secret)) throw new Error("Browser proof derivation locator is foreign");
+      decodeDurableWalletProofDerivationLocator(locator);
+    }
+    return input.proofLocators;
+  }
   if (input.derivationAuthority === null) return null;
   const { keysetId, counterStart, counterCount } = input.derivationAuthority;
   const rangeProofs = input.derivationRangeProofs ?? input.proofs;
@@ -213,9 +238,9 @@ function deriveProofLocators(input: AdmitBrowserReceivedProofsInput): BrowserPro
 }
 
 function requiredDerivationLocator(
-  locators: ReadonlyMap<string, Extract<DurableWalletProofDerivationLocator, { kind: "nut13" }>>,
+  locators: ReadonlyMap<string, DurableWalletProofDerivationLocator>,
   secret: string,
-): Extract<DurableWalletProofDerivationLocator, { kind: "nut13" }> {
+): DurableWalletProofDerivationLocator {
   const locator = locators.get(secret);
   if (!locator) throw new Error("Browser proof derivation locator is missing");
   return locator;

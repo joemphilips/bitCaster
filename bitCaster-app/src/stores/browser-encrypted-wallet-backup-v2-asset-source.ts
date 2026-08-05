@@ -3,6 +3,7 @@ import {
   deserializeDurableCustodyProofArtifact,
   prepareEncryptedWalletBackupV2ProofSetBundle,
   verifyEncryptedWalletBackupConditionalKeyset,
+  type EncryptedWalletBackupV2AssetIdentity,
   type EncryptedWalletBackupV2CounterHighWaterMark,
   type EncryptedWalletBackupV2KeyHandle,
   type EncryptedWalletBackupV2PreparedTransportBundle,
@@ -13,6 +14,7 @@ import {
 import { decodeDurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { requireBrowserProofBackupAuthorityRow } from "./browser-proof-backup-authority";
 import {
+  createEncryptedWalletBackupV2DesiredAssetRow,
   decodeEncryptedWalletBackupV2DesiredAssetRow,
   type EncryptedWalletBackupV2DesiredAssetRow,
 } from "./browser-encrypted-wallet-backup-v2-desired-asset";
@@ -40,6 +42,25 @@ export async function readBrowserEncryptedWalletBackupV2AssetSnapshot(
   input: BrowserEncryptedWalletBackupV2AssetSourceInput,
 ): Promise<BrowserEncryptedWalletBackupV2AssetSnapshot> {
   return materializeAssetSnapshot(await readRawAssetSnapshot(input));
+}
+
+/** Reads exact selectable and locked rows for one V2 asset without broad mint scanning. */
+export async function readBrowserEncryptedWalletBackupV2ExactLocalProofRows(input: {
+  readonly database: BitcasterDB;
+  readonly scopeId: string;
+  readonly asset: EncryptedWalletBackupV2AssetIdentity;
+}): Promise<readonly ReturnType<typeof decodeBrowserCustodyProofRow>[]> {
+  const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId: input.scopeId,
+    asset: input.asset,
+    custodyRevision: 0n,
+    activeProofCount: 0,
+  });
+  const context = desired.assetIdentity.startsWith("ctf:")
+    ? await ctfContext(input.database, desired, true)
+    : null;
+  if (desired.assetIdentity.startsWith("ctf:") && context === null) return [];
+  return activeRows(input.database, desired, context?.first ?? null);
 }
 
 async function readRawAssetSnapshot(input: BrowserEncryptedWalletBackupV2AssetSourceInput) {
@@ -154,7 +175,11 @@ async function activeRows(
   return rows;
 }
 
-async function ctfContext(database: BitcasterDB, desired: EncryptedWalletBackupV2DesiredAssetRow) {
+async function ctfContext(
+  database: BitcasterDB,
+  desired: EncryptedWalletBackupV2DesiredAssetRow,
+  allowAbsent = false,
+) {
   const identity = desired.assetIdentity.split(":");
   if (identity.length !== 3 || identity[0] !== "ctf")
     throw new Error("browser V2 CTF asset identity is invalid");
@@ -167,6 +192,7 @@ async function ctfContext(database: BitcasterDB, desired: EncryptedWalletBackupV
   if (keysets.length > 16)
     throw new Error("browser V2 conditional keyset context exceeds the limit");
   const first = keysets[0];
+  if (first === undefined && allowAbsent) return null;
   if (
     first === undefined ||
     keysets.some((row) => row.outcomeCollection !== first.outcomeCollection)

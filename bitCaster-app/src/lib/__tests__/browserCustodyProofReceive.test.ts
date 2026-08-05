@@ -1,6 +1,7 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import { OutputData, type Wallet as CashuWallet } from "@cashu/cashu-ts";
+import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from "@bitcaster/client-sdk/durableCustodyProofImport";
 import { afterEach, describe, expect, it } from "vitest";
 import { BitcasterDB, type StoredProof } from "../../stores/proof-db";
 import { admitBrowserReceivedProofs } from "../browserCustodyProofReceive";
@@ -44,7 +45,8 @@ describe("browser custody proof receive", () => {
     expect((await database.custodyProofBackupAuthorities.toArray())[0]).toMatchObject({
       derivationLocator: null,
     });
-    expect(await database.custodyOperations.count()).toBe(2);
+    const pageCount = Math.ceil(proofs.length / DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX);
+    expect(await database.custodyOperations.count()).toBe(pageCount);
     expect(
       (await database.custodyOperations.toArray())
         .map((row) =>
@@ -53,7 +55,10 @@ describe("browser custody proof receive", () => {
             : null,
         )
         .sort(),
-    ).toEqual(["receive:large", "receive:large:page:1"]);
+    ).toEqual([
+      "receive:large",
+      ...Array.from({ length: pageCount - 1 }, (_, index) => `receive:large:page:${index + 1}`),
+    ]);
   });
 
   it("maps a reordered subset from the verified modern range to exact counters", async () => {

@@ -155,16 +155,27 @@ export async function advanceBrowserV2DesiredAssetsForProofChanges(
   database: BitcasterDB,
   scopeId: string,
   changes: readonly BrowserV2DesiredAssetProofChange[],
+  conditionalKeysetForProof?: (
+    proof: BrowserCustodyProofRow,
+  ) => ReturnType<typeof decodeBrowserCustodyConditionalKeysetRow> | undefined,
 ): Promise<void> {
   const updates = new Map<string, DesiredAssetUpdate>();
   for (const change of changes) {
     if (!change.payloadChanged) continue;
     const before = change.beforeProof;
     if (before && isActive(before)) {
-      addDesiredAssetUpdate(updates, await assetForProof(database, before), -1);
+      addDesiredAssetUpdate(
+        updates,
+        await assetForProof(database, before, conditionalKeysetForProof),
+        -1,
+      );
     }
     if (isActive(change.afterProof)) {
-      addDesiredAssetUpdate(updates, await assetForProof(database, change.afterProof), 1);
+      addDesiredAssetUpdate(
+        updates,
+        await assetForProof(database, change.afterProof, conditionalKeysetForProof),
+        1,
+      );
     }
   }
   await persistDesiredAssetUpdates(database, scopeId, updates);
@@ -265,6 +276,9 @@ function isActive(proof: BrowserCustodyProofRow): boolean {
 async function assetForProof(
   database: BitcasterDB,
   proof: BrowserCustodyProofRow,
+  conditionalKeysetForProof?: (
+    proof: BrowserCustodyProofRow,
+  ) => ReturnType<typeof decodeBrowserCustodyConditionalKeysetRow> | undefined,
 ): Promise<EncryptedWalletBackupV2AssetIdentity> {
   if (proof.assetKind === "regular") {
     return createEncryptedWalletBackupV2AssetIdentity({
@@ -273,12 +287,14 @@ async function assetForProof(
       asset: { kind: "ordinary" },
     });
   }
-  const raw = await database.custodyConditionalKeysets.get([
-    proof.scopeId,
-    proof.normalizedMint,
-    proof.unit,
-    proof.keysetId,
-  ]);
+  const raw = conditionalKeysetForProof
+    ? conditionalKeysetForProof(proof)
+    : await database.custodyConditionalKeysets.get([
+        proof.scopeId,
+        proof.normalizedMint,
+        proof.unit,
+        proof.keysetId,
+      ]);
   if (raw === undefined)
     throw new Error("browser V2 desired asset conditional authority is missing");
   const keyset = decodeBrowserCustodyConditionalKeysetRow(raw);

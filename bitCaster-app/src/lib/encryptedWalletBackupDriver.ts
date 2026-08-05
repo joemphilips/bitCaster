@@ -129,7 +129,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       });
       if (!this.#isActive()) return;
       await (this.#input.leadership ?? browserLeadership()).hold(
-        vaultLockName(requireKeyHandle(this.#keyHandle)),
+        encryptedWalletBackupV2VaultLockName(requireKeyHandle(this.#keyHandle)),
         this.#lifetimeSignal,
         async () => {
           if (!this.#isActive()) return;
@@ -657,8 +657,12 @@ function browserLeadership(): BrowserEncryptedWalletBackupLeadership {
   };
 }
 
-function vaultLockName(keyHandle: EncryptedWalletBackupV2KeyHandle): string {
-  return `bitcaster/encrypted-wallet-backup/v2/${keyHandle.realm}/${keyHandle.vaultId}`;
+/** Returns the canonical Web Lock name for one encrypted-backup vault. */
+export function encryptedWalletBackupV2VaultLockName(input: {
+  readonly realm: string;
+  readonly vaultId: string;
+}): string {
+  return `bitcaster/encrypted-wallet-backup/v2/${input.realm}/${input.vaultId}`;
 }
 
 function retryAttemptId(keyHandle: EncryptedWalletBackupV2KeyHandle): string {
