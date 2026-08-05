@@ -71,6 +71,22 @@
       "types": "./dist/encryptedWalletBackupV2ServiceCodec.d.ts",
       "import": "./dist/encryptedWalletBackupV2ServiceCodec.js"
     },
+    "./encryptedWalletBackupV2HttpCodec": {
+      "types": "./dist/encryptedWalletBackupV2HttpCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupV2HttpCodec.js"
+    },
+    "./encryptedWalletBackupV2DelegatedServerCodec": {
+      "types": "./dist/encryptedWalletBackupV2DelegatedServerCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupV2DelegatedServerCodec.js"
+    },
+    "./encryptedWalletBackupV2HttpAdapter": {
+      "types": "./dist/encryptedWalletBackupV2HttpAdapter.d.ts",
+      "import": "./dist/encryptedWalletBackupV2HttpAdapter.js"
+    },
+    "./encryptedWalletBackupV2RequestProof": {
+      "types": "./dist/encryptedWalletBackupV2RequestProof.d.ts",
+      "import": "./dist/encryptedWalletBackupV2RequestProof.js"
+    },
     "./encryptedWalletBackupV2ProofSet": {
       "types": "./dist/encryptedWalletBackupV2ProofSet.d.ts",
       "import": "./dist/encryptedWalletBackupV2ProofSet.js"

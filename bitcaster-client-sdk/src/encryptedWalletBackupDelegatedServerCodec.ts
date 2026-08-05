@@ -207,9 +207,13 @@ export function decodeEncryptedWalletBackupAuthorizationHeader(
 /** Strict public decoder for canonical delegated request-proof claims. */
 export function decodeEncryptedWalletBackupRequestProofClaims(
   canonicalProof: Uint8Array,
+  maximumPayloadBytes: number = ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
 ): DecodedEncryptedWalletBackupRequestProofClaims {
   try {
-    return decodeRequestProofClaimsUnchecked(canonicalProof)
+    return decodeRequestProofClaimsUnchecked(
+      canonicalProof,
+      requireRequestProofPayloadMaximum(maximumPayloadBytes),
+    )
   } catch {
     throw new Error('encrypted backup request proof is invalid')
   }
@@ -341,6 +345,7 @@ function decodeAuthorizationHeaderUnchecked(rawHeaderValues: readonly string[]):
 
 function decodeRequestProofClaimsUnchecked(
   canonicalProof: Uint8Array,
+  maximumPayloadBytes: number,
 ): DecodedEncryptedWalletBackupRequestProofClaims {
   const proofBytes = requireBytes(
     canonicalProof,
@@ -373,12 +378,16 @@ function decodeRequestProofClaimsUnchecked(
     payloadLength: requireBoundedInteger(
       decoded[11],
       0,
-      ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
+      maximumPayloadBytes,
       'request payload length',
     ),
     payloadDigest: bytesToHex(requireBytes(decoded[12], 32, 32, 'request payload digest')),
     signature: bytesToHex(requireBytes(decoded[13], 64, 64, 'request signature')),
   })
+}
+
+function requireRequestProofPayloadMaximum(value: unknown): number {
+  return requireBoundedInteger(value, 0, 4 * 1_024 * 1_024, 'request payload maximum')
 }
 
 function requireDelegatedRequestContext(

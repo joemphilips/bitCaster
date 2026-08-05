@@ -1170,14 +1170,11 @@ export function verifyEncryptedWalletBackupRequestProofEvidence(input: {
   expectedUrl: string
   payload: Uint8Array
   serverNowUnixSeconds: number
+  maximumPayloadBytes?: number
 }): VerifiedEncryptedWalletBackupRequestProofEvidence {
-  const proof = decodeBackupRequestProof(input.proof)
-  const payload = requireBytesRange(
-    input.payload,
-    0,
-    ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
-    'request payload',
-  )
+  const maximumPayloadBytes = requireRequestPayloadMaximum(input.maximumPayloadBytes)
+  const proof = decodeBackupRequestProof(input.proof, maximumPayloadBytes)
+  const payload = requireBytesRange(input.payload, 0, maximumPayloadBytes, 'request payload')
   const now = requireNonNegativeSafeInteger(input.serverNowUnixSeconds, 'server time')
   if (
     proof.method !== requireRequestMethod(input.expectedMethod) ||
@@ -1230,8 +1227,9 @@ export function verifyEncryptedWalletBackupRequestProofEvidence(input: {
 
 export function encodeEncryptedWalletBackupRequestProof(
   value: EncryptedWalletBackupRequestProof,
+  maximumPayloadBytes: number = ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
 ): Uint8Array {
-  const proof = decodeBackupRequestProof(value)
+  const proof = decodeBackupRequestProof(value, requireRequestPayloadMaximum(maximumPayloadBytes))
   return encodeCanonical([
     ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
     'backup-request-proof',
@@ -1257,8 +1255,9 @@ export function encodeEncryptedWalletBackupRequestProof(
  */
 export function encryptedWalletBackupRequestDigest(
   value: EncryptedWalletBackupRequestProof,
+  maximumPayloadBytes: number = ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
 ): string {
-  const proof = decodeBackupRequestProof(value)
+  const proof = decodeBackupRequestProof(value, requireRequestPayloadMaximum(maximumPayloadBytes))
   return bytesToHex(
     sha256(
       encodeBackupRequestPreimage({
@@ -5951,7 +5950,11 @@ function requireRequestMethod(value: unknown): EncryptedWalletBackupRequestMetho
   return value
 }
 
-function decodeBackupRequestProof(value: unknown): EncryptedWalletBackupRequestProof {
+function decodeBackupRequestProof(
+  value: unknown,
+  maximumPayloadBytes: number = ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
+): EncryptedWalletBackupRequestProof {
+  const payloadMaximum = requireRequestPayloadMaximum(maximumPayloadBytes)
   if (value instanceof Uint8Array) {
     preflightEncryptedBackupRequestProofCbor(value)
     const decoded = decode(value)
@@ -6021,15 +6024,19 @@ function decodeBackupRequestProof(value: unknown): EncryptedWalletBackupRequestP
       'request expiry time',
     ),
     replayNonce: requireLowerHex(raw.replayNonce, 16, 'replay nonce'),
-    payloadLength: requireInteger(
-      raw.payloadLength,
-      0,
-      ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
-      'payload length',
-    ),
+    payloadLength: requireInteger(raw.payloadLength, 0, payloadMaximum, 'payload length'),
     payloadDigest: requireLowerHex(raw.payloadDigest, 32, 'payload digest'),
     signature: requireLowerHex(raw.signature, 64, 'request signature'),
   })
+}
+
+function requireRequestPayloadMaximum(value: unknown): number {
+  return requireInteger(
+    value ?? ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
+    0,
+    4 * 1_024 * 1_024,
+    'request payload maximum',
+  )
 }
 
 function requireExactHttpsUrl(value: unknown): string {

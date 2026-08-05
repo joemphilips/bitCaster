@@ -37,8 +37,10 @@ import {
   requireBytes,
   requireLowerHex,
 } from './encryptedWalletBackupServerValidation.ts'
+import { ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES } from './encryptedWalletBackupV2Limits.ts'
 
-export const ENCRYPTED_WALLET_BACKUP_V2_UPLOAD_GROUP_MAX_BYTES = 4 * 1_024 * 1_024
+export const ENCRYPTED_WALLET_BACKUP_V2_UPLOAD_GROUP_MAX_BYTES =
+  ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES
 const PAGE_MAX_BYTES = 65_536
 const RECEIPT_MAX_BYTES = 65_536
 const OBJECT_WIRE_MAX_BYTES = 300_000
