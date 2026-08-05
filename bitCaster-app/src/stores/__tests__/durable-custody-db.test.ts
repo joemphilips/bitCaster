@@ -51,6 +51,43 @@ describe("browser durable custody adapter", () => {
     await expect(adapter.ensureScope(reordered, 2)).resolves.toBeUndefined();
   });
 
+  it("does not advance the backup dirty revision for a transaction without proof changes", async () => {
+    const database = createDatabase();
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const scope = walletScope();
+    const owner = await claim(adapter, scope, 5);
+    const source = operationBinding(
+      scope,
+      "source-no-proof-change",
+      proof("input-no-proof-change"),
+      "output",
+    );
+    const predecessor = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: source.operation.inputs[0] as Proof,
+      asset: { kind: "regular" },
+      receivedAtMs: 1,
+    });
+    await adapter.transact(
+      selection(scope, owner, source.record.operation.operationId, null),
+      (transaction) =>
+        bindDurableCustodyProofOperation(transaction, source.record, source.artifacts),
+      { predecessorProofs: { [source.record.operation.operationId]: [predecessor] } },
+    );
+
+    await adapter.transact(
+      selection(scope, observedOwner(owner, 6), source.record.operation.operationId, 0),
+      () => undefined,
+    );
+
+    expect(await database.encryptedWalletBackupV2DirtyRevisions.get(scope.scopeId)).toEqual({
+      scopeId: scope.scopeId,
+      revision: 1,
+    });
+  });
+
   it("atomically inserts an exact operation and locks its selected proof", async () => {
     const database = createDatabase();
     const adapter = new BrowserDurableCustodyAdapter(database);
@@ -81,6 +118,10 @@ describe("browser durable custody adapter", () => {
     expect(locked?.selectability).toBe("locked");
     expect(locked?.reservationOperationId).toBe(source.record.operation.operationId);
     expect(await database.custodyReservations.count()).toBe(1);
+    expect(await database.encryptedWalletBackupV2DirtyRevisions.get(scope.scopeId)).toEqual({
+      scopeId: scope.scopeId,
+      revision: 1,
+    });
     expect(
       await database.custodyProofBackupAuthorities.get([scope.scopeId, predecessor.proofId]),
     ).toMatchObject({
@@ -155,6 +196,7 @@ describe("browser durable custody adapter", () => {
     expect(await adapter.readProof(scope.scopeId, predecessor.proofId)).toBeNull();
     expect(await database.custodyReservations.count()).toBe(0);
     expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
+    expect(await database.encryptedWalletBackupV2DirtyRevisions.get(scope.scopeId)).toBeUndefined();
   });
 
   it("keeps an exact committed intent after an acknowledgement fault", async () => {
@@ -192,6 +234,66 @@ describe("browser durable custody adapter", () => {
       "locked",
     );
     expect(await database.custodyProofBackupAuthorities.count()).toBe(1);
+    expect(await database.encryptedWalletBackupV2DirtyRevisions.get(scope.scopeId)).toEqual({
+      scopeId: scope.scopeId,
+      revision: 1,
+    });
+  });
+
+  it("advances the dirty revision once for the specialized refund admission", async () => {
+    const database = createDatabase();
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const scope = walletScope();
+    const owner = await claim(adapter, scope, 26);
+    const source = operationBinding(scope, "source-refund", proof("input-refund"), "output");
+    const predecessor = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: source.operation.inputs[0] as Proof,
+      asset: { kind: "regular" },
+      receivedAtMs: 1,
+    });
+    await adapter.transact(
+      selection(scope, owner, source.record.operation.operationId, null),
+      (transaction) =>
+        bindDurableCustodyProofOperation(transaction, source.record, source.artifacts),
+      { predecessorProofs: { [source.record.operation.operationId]: [predecessor] } },
+    );
+    const abortOwner = observedOwner(owner, 27);
+    await adapter.transact(
+      selection(scope, abortOwner, source.record.operation.operationId, 0),
+      (transaction) =>
+        transaction.transitionOperation({
+          operationId: source.record.operation.operationId,
+          expectedRevision: 0,
+          transition: {
+            kind: "abort",
+            authorization: abortOwner,
+            expectedRevision: 0,
+          },
+        }),
+    );
+    const refund = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: proof("refund-successor"),
+      asset: { kind: "regular" },
+      receivedAtMs: 2,
+    });
+
+    await adapter.retireAbortedInputsAndAdmitRefunds({
+      scopeId: scope.scopeId,
+      operationId: source.record.operation.operationId,
+      refundProofs: [{ proof: refund, expectedRevision: null, derivationLocator: null }],
+      observedAtMs: 28,
+    });
+
+    expect(await database.encryptedWalletBackupV2DirtyRevisions.get(scope.scopeId)).toEqual({
+      scopeId: scope.scopeId,
+      revision: 2,
+    });
   });
 
   it("rejects foreign and oversized proof option collections before mutation", async () => {

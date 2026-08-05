@@ -169,6 +169,63 @@ export interface EncryptedWalletBackupDexieRestoreProofRow {
   proof: EncryptedWalletBackupRestoreProofRecord | null;
 }
 
+/** V2-only backup revision. It advances atomically with custody proof changes. */
+export interface EncryptedWalletBackupV2DirtyRevisionRow {
+  scopeId: string;
+  revision: number;
+}
+
+/** One immutable prepared V2 mutation for one scoped vault authority. */
+export interface EncryptedWalletBackupV2PreparedMutationRow {
+  scopeId: string;
+  realm: string;
+  vaultId: string;
+  enrollmentEpoch: number;
+  mutationId: string;
+  requestDigest: string;
+  localRevision: number;
+  canonicalUploadGroup: Uint8Array;
+  createdAtUnixMilliseconds: number;
+}
+
+/** One accepted V2 current head for one scoped vault authority. */
+export interface EncryptedWalletBackupV2AcceptedHeadRow {
+  scopeId: string;
+  realm: string;
+  vaultId: string;
+  enrollmentEpoch: number;
+  headVersion: number;
+  activeBundleCount: number;
+  activeObjectCount: number;
+  activeSetDigest: string;
+  canonicalCurrentHead: Uint8Array;
+}
+
+/** One verified V2 receipt for one scoped vault authority. */
+export interface EncryptedWalletBackupV2ReceiptRow {
+  scopeId: string;
+  realm: string;
+  vaultId: string;
+  enrollmentEpoch: number;
+  mutationId: string;
+  requestDigest: string;
+  acknowledgedLocalRevision: number;
+  canonicalSignedReceipt: Uint8Array;
+}
+
+/** One active V2 bundle descriptor for one scoped vault authority. */
+export interface EncryptedWalletBackupV2ActiveDescriptorRow {
+  scopeId: string;
+  realm: string;
+  vaultId: string;
+  enrollmentEpoch: number;
+  bundleId: string;
+  operationLocator: string;
+  payloadCommitment: string;
+  objectCount: number;
+  canonicalDescriptor: Uint8Array;
+}
+
 interface StoredProofMetadata {
   mintUrl: string;
   /** Local-only reservation owner. Reserved proofs are hidden from spendable balances. */
@@ -365,6 +422,23 @@ export class BitcasterDB extends Dexie {
   encryptedWalletBackupRestoreProofs!: Table<
     EncryptedWalletBackupDexieRestoreProofRow,
     [string, string]
+  >;
+  encryptedWalletBackupV2DirtyRevisions!: Table<EncryptedWalletBackupV2DirtyRevisionRow, string>;
+  encryptedWalletBackupV2PreparedMutations!: Table<
+    EncryptedWalletBackupV2PreparedMutationRow,
+    [string, string, string, number]
+  >;
+  encryptedWalletBackupV2AcceptedHeads!: Table<
+    EncryptedWalletBackupV2AcceptedHeadRow,
+    [string, string, string, number]
+  >;
+  encryptedWalletBackupV2Receipts!: Table<
+    EncryptedWalletBackupV2ReceiptRow,
+    [string, string, string, number]
+  >;
+  encryptedWalletBackupV2ActiveDescriptors!: Table<
+    EncryptedWalletBackupV2ActiveDescriptorRow,
+    [string, string, string, number, string]
   >;
 
   constructor(databaseName = "bitcaster") {
@@ -654,6 +728,14 @@ export class BitcasterDB extends Dexie {
           ].map((tableName) => transaction.table(tableName).clear()),
         );
       });
+    this.version(17).stores({
+      encryptedWalletBackupV2DirtyRevisions: "&scopeId",
+      encryptedWalletBackupV2PreparedMutations: "&[scopeId+realm+vaultId+enrollmentEpoch]",
+      encryptedWalletBackupV2AcceptedHeads: "&[scopeId+realm+vaultId+enrollmentEpoch]",
+      encryptedWalletBackupV2Receipts: "&[scopeId+realm+vaultId+enrollmentEpoch]",
+      encryptedWalletBackupV2ActiveDescriptors:
+        "&[scopeId+realm+vaultId+enrollmentEpoch+bundleId], [scopeId+realm+vaultId+enrollmentEpoch]",
+    });
   }
 }
 

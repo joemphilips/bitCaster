@@ -274,6 +274,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       this.#database.custodyActiveWork,
       this.#database.custodyProofBackupAuthorities,
       this.#database.custodyConditionalKeysets,
+      this.#database.encryptedWalletBackupV2DirtyRevisions,
     ];
     const result = await this.#database.transaction("rw", tables, async () => {
       const scope = (await this.#requiredScope(selection.scope.scopeId)).state;
@@ -324,6 +325,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         this.#database.custodyReservations,
         this.#database.custodyProofBackupAuthorities,
         this.#database.custodyConditionalKeysets,
+        this.#database.encryptedWalletBackupV2DirtyRevisions,
       ],
       async () => {
         const operationRow = await this.#database.custodyOperations.get([
@@ -397,6 +399,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
           input.observedAtMs,
           () => input.operationId,
         );
+        await this.#advanceDirtyRevision(input.scopeId);
         if (input.injectFault === "before-commit") {
           throw new Error("injected browser refund custody fault before commit");
         }
@@ -662,6 +665,9 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     await this.#persistChangedOperations(transaction);
     await this.#persistChangedArtifacts(transaction);
     await this.#persistChangedProofs(transaction, selection.owner.observedAtMs);
+    if (transaction.changedProofIds.size > 0) {
+      await this.#advanceDirtyRevision(selection.scope.scopeId);
+    }
     await this.#persistReservations(selection.scope.scopeId, transaction);
     await this.#rebuildActiveWork(selection, transaction);
     await this.#persistEffectiveClock(selection, transaction.scopeState);
@@ -673,6 +679,22 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       if (!record) throw new Error("browser custody changed operation is absent");
       await this.#database.custodyOperations.put(operationRow(record));
     }
+  }
+
+  async #advanceDirtyRevision(scopeId: string): Promise<void> {
+    decodeDurableCustodyScopeId(scopeId);
+    const current = await this.#database.encryptedWalletBackupV2DirtyRevisions.get(scopeId);
+    if (
+      current !== undefined &&
+      (current.scopeId !== scopeId ||
+        !Number.isSafeInteger(current.revision) ||
+        current.revision < 0)
+    ) {
+      throw new Error("browser custody backup dirty revision is invalid");
+    }
+    const revision =
+      current === undefined ? 1 : incrementRevision(current.revision, "backup dirty");
+    await this.#database.encryptedWalletBackupV2DirtyRevisions.put({ scopeId, revision });
   }
 
   async #persistChangedArtifacts(transaction: StagedBrowserCustodyTransaction): Promise<void> {
