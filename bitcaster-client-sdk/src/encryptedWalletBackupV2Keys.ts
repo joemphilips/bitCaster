@@ -15,7 +15,6 @@ export const ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION = 2 as const
 const MINT_URL_MAX_BYTES = 2_048
 const UNIT_MAX_BYTES = 64
 const ASSET_ID_MAX_BYTES = 256
-const OPERATION_ID_MAX_BYTES = 256
 
 export interface EncryptedWalletBackupV2Runtime {
   readonly subtle: Pick<SubtleCrypto, 'deriveBits' | 'importKey'>
@@ -74,49 +73,22 @@ export async function deriveEncryptedWalletBackupV2AssetLocator(input: {
   )
 }
 
-export async function deriveEncryptedWalletBackupV2OperationLocator(input: {
-  keyHandle: EncryptedWalletBackupV2KeyHandle
-  operationId: string
-}): Promise<string> {
-  const authority = requireEncryptedWalletBackupV2KeyAuthority(input.keyHandle)
-  const operationId = requireUtf8Text(
-    input.operationId,
-    OPERATION_ID_MAX_BYTES,
-    'encrypted backup operation id',
-  )
-  return toLowerHex(
-    await deriveEncryptedWalletBackupV2Hkdf(
-      authority.runtime,
-      authority.operationLocatorRoot,
-      locatorInfo('operation-locator', input.keyHandle.realm, operationId),
-    ),
-  )
-}
-
 async function deriveKeyAuthority(
   seed: Uint8Array,
   realm: string,
   runtime: EncryptedWalletBackupV2Runtime,
 ): Promise<EncryptedWalletBackupV2KeyAuthority> {
-  const [
-    encryptionRoot,
-    vaultIdRoot,
-    requestAuthRoot,
-    assetLocatorRoot,
-    operationLocatorRoot,
-  ] = await Promise.all([
+  const [encryptionRoot, vaultIdRoot, requestAuthRoot, assetLocatorRoot] = await Promise.all([
     deriveRoot(seed, realm, 'encryption-root', runtime),
     deriveRoot(seed, realm, 'vault-id-root', runtime),
     deriveRoot(seed, realm, 'request-auth-root', runtime),
     deriveRoot(seed, realm, 'asset-locator-root', runtime),
-    deriveRoot(seed, realm, 'operation-locator-root', runtime),
   ])
   return Object.freeze({
     encryptionRoot,
     vaultIdRoot,
     requestAuthRoot,
     assetLocatorRoot,
-    operationLocatorRoot,
     runtime,
   })
 }

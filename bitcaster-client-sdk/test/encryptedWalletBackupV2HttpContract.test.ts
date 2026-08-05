@@ -27,6 +27,7 @@ import {
   encodeEncryptedWalletBackupV2EnrollmentEpochResult,
 } from '../src/encryptedWalletBackupV2HttpCodec.ts'
 import {
+  collectEncryptedWalletBackupV2DescriptorPages,
   createEncryptedWalletBackupV2CurrentHead,
   enumerateEncryptedWalletBackupV2DescriptorPages,
 } from '../src/encryptedWalletBackupV2Head.ts'
@@ -491,8 +492,9 @@ test('V2 request authentication accepts one maximum fifteen-object upload group'
   ])
   const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle: key,
-    operationId: 'http-maximum',
-    assets: [{ mintUrl: 'https://mint.example', unit: 'sat', assetIdentity: 'maximum' }],
+    asset: { mintUrl: 'https://mint.example', unit: 'sat', assetIdentity: 'maximum' },
+    declaredAmount: 1n,
+    custodyRevision: 1n,
     canonicalPayload: new Uint8Array(262_112 + 262_128 * 14),
     runtime: { subtle: webcrypto.subtle, getRandomValues: random.getRandomValues },
   })
@@ -505,7 +507,9 @@ test('V2 request authentication accepts one maximum fifteen-object upload group'
   })
   const mutation = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
     keyHandle: key,
-    expectedHead: head,
+    expectedHeadEvidence: collectEncryptedWalletBackupV2DescriptorPages(
+      enumerateEncryptedWalletBackupV2DescriptorPages({ head, bundles: [] }),
+    ),
     addedBundle: prepared.descriptor,
     supersededBundleIds: [],
     runtime: deterministic(['31'.repeat(16), '32'.repeat(32)]),
@@ -545,14 +549,17 @@ async function createV2HttpOperationFixture() {
   const random = deterministic(['01'.repeat(16), '02'.repeat(12)])
   const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle: key,
-    operationId: 'http',
-    assets: [{ mintUrl: 'https://mint.example', unit: 'sat', assetIdentity: 'x' }],
+    asset: { mintUrl: 'https://mint.example', unit: 'sat', assetIdentity: 'x' },
+    declaredAmount: 1n,
+    custodyRevision: 1n,
     canonicalPayload: Uint8Array.of(1),
     runtime: { subtle: webcrypto.subtle, getRandomValues: random.getRandomValues },
   })
   const mutation = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
     keyHandle: key,
-    expectedHead: initial,
+    expectedHeadEvidence: collectEncryptedWalletBackupV2DescriptorPages(
+      enumerateEncryptedWalletBackupV2DescriptorPages({ head: initial, bundles: [] }),
+    ),
     addedBundle: prepared.descriptor,
     supersededBundleIds: [],
     runtime: deterministic(['03'.repeat(16), '04'.repeat(32)]),

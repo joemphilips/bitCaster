@@ -4,10 +4,12 @@ import {
   decryptEncryptedWalletBackupV2TransportBundle,
   prepareEncryptedWalletBackupV2TransportBundle,
   type EncryptedWalletBackupV2BundleDescriptor,
+  type EncryptedWalletBackupV2AssetIdentity,
   type EncryptedWalletBackupV2BundleObjectWire,
   type EncryptedWalletBackupV2BundleRuntime,
   type EncryptedWalletBackupV2PreparedTransportBundle,
 } from './encryptedWalletBackupV2Bundle.ts'
+import { ENCRYPTED_WALLET_BACKUP_V2_UINT64_MAX } from './encryptedWalletBackupV2Descriptor.ts'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
 import { deriveDurableCustodyScopeId, deriveDurableCustodyWalletId } from './durableCustody.ts'
 import {
@@ -24,7 +26,6 @@ import {
 } from './durableWalletProofDerivationLocator.ts'
 import {
   deriveEncryptedWalletBackupV2AssetLocator,
-  deriveEncryptedWalletBackupV2OperationLocator,
   type EncryptedWalletBackupV2KeyHandle,
 } from './encryptedWalletBackupV2Keys.ts'
 import { requireEncryptedWalletBackupV2SeedHandleMatch } from './encryptedWalletBackupV2KeyAuthority.ts'
@@ -81,8 +82,9 @@ export interface EncryptedWalletBackupV2UnverifiedProofSet {
 export async function prepareEncryptedWalletBackupV2ProofSetBundle(input: {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle
   readonly seed: Uint8Array
-  readonly operationId: string
+  readonly asset: EncryptedWalletBackupV2AssetIdentity
   readonly proofs: readonly EncryptedWalletBackupV2ProofSetProof[]
+  readonly custodyRevision: bigint
   readonly counterHighWaterMarks: readonly EncryptedWalletBackupV2CounterHighWaterMark[]
   readonly runtime: EncryptedWalletBackupV2BundleRuntime
   readonly bundleIdExists?: (bundleId: string) => boolean | Promise<boolean>
@@ -93,12 +95,16 @@ export async function prepareEncryptedWalletBackupV2ProofSetBundle(input: {
     proofs: input.proofs,
     counterHighWaterMarks: input.counterHighWaterMarks,
   })
+  const asset = validateAssetIdentity(input.asset)
+  assertProofSetAsset(decoded.proofs, asset)
+  const declaredAmount = sumProofAmounts(decoded.proofs)
   const canonicalPayload = encodeProofSetPayload(decoded)
   preflightProofSetPayload(canonicalPayload)
   return prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle: input.keyHandle,
-    operationId: requireUtf8Text(input.operationId, 256, 'encrypted backup operation id'),
-    assets: transportAssets(decoded.proofs),
+    asset,
+    declaredAmount,
+    custodyRevision: input.custodyRevision,
     canonicalPayload,
     runtime: input.runtime,
     bundleIdExists: input.bundleIdExists,
@@ -109,21 +115,23 @@ export async function prepareEncryptedWalletBackupV2ProofSetBundle(input: {
 export async function decryptEncryptedWalletBackupV2ProofSetBundle(input: {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle
   readonly seed: Uint8Array
-  readonly operationId: string
+  readonly expectedAsset: EncryptedWalletBackupV2AssetIdentity
+  readonly custodyRevision: bigint
   readonly runtime: EncryptedWalletBackupV2BundleRuntime
   readonly descriptor: EncryptedWalletBackupV2BundleDescriptor
   readonly objects: readonly EncryptedWalletBackupV2BundleObjectWire[]
 }): Promise<EncryptedWalletBackupV2UnverifiedProofSet> {
   const descriptor = snapshotDescriptor(input.descriptor)
   const seed = await requireEncryptedWalletBackupV2SeedHandleMatch(input)
-  const operationId = requireUtf8Text(input.operationId, 256, 'encrypted backup operation id')
-  const expectedOperationLocator = await deriveEncryptedWalletBackupV2OperationLocator({
+  const expectedAsset = validateAssetIdentity(input.expectedAsset)
+  const expectedAssetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
     keyHandle: input.keyHandle,
-    operationId,
+    ...expectedAsset,
   })
-  if (expectedOperationLocator !== descriptor.operationLocator) {
-    throw new Error('encrypted backup proof set operation is foreign')
-  }
+  if (expectedAssetLocator !== descriptor.assetLocator)
+    throw new Error('encrypted backup proof set asset is foreign')
+  if (descriptor.custodyRevision !== input.custodyRevision)
+    throw new Error('encrypted backup proof set custody metadata is foreign')
   const payload = await decryptEncryptedWalletBackupV2TransportBundle({
     keyHandle: input.keyHandle,
     runtime: input.runtime,
@@ -131,14 +139,9 @@ export async function decryptEncryptedWalletBackupV2ProofSetBundle(input: {
     objects: input.objects,
   })
   const decoded = decodeProofSetPayload(payload, seed)
-  const expectedAssets = await Promise.all(
-    transportAssets(decoded.proofs).map((asset) =>
-      deriveEncryptedWalletBackupV2AssetLocator({ keyHandle: input.keyHandle, ...asset }),
-    ),
-  )
-  if (!sameStrings([...new Set(expectedAssets)].sort(), descriptor.assetLocators)) {
-    throw new Error('encrypted backup proof set assets are foreign')
-  }
+  assertProofSetAsset(decoded.proofs, expectedAsset)
+  if (sumProofAmounts(decoded.proofs) !== descriptor.declaredAmount)
+    throw new Error('encrypted backup proof set declared amount is invalid')
   return cloneUnverifiedProofSet(decoded)
 }
 
@@ -204,7 +207,15 @@ function decodeProofEntry(value: unknown, seed: Uint8Array, scopeId: string): De
   })
   if (proof.secret !== expectedSecret)
     throw new Error('encrypted backup proof provenance is foreign')
-  return Object.freeze({ mintUrl, unit, asset, proof, locator, proofId: material.proofId })
+  return Object.freeze({
+    mintUrl,
+    unit,
+    asset,
+    proof,
+    locator,
+    proofId: material.proofId,
+    amount: BigInt(material.amount),
+  })
 }
 
 function decodeCounter(value: unknown): EncryptedWalletBackupV2CounterHighWaterMark {
@@ -388,23 +399,39 @@ function decodeAssetWire(value: unknown): EncryptedWalletBackupV2ProofSetAsset {
   throw new Error('encrypted backup proof set asset is invalid')
 }
 
-function transportAssets(
+function validateAssetIdentity(value: unknown): EncryptedWalletBackupV2AssetIdentity {
+  if (!isRecord(value) || !exactKeys(value, ['mintUrl', 'unit', 'assetIdentity']))
+    throw new Error('encrypted backup proof set asset is invalid')
+  return Object.freeze({
+    mintUrl: requireCanonicalMint(value.mintUrl),
+    unit: requireUnit(value.unit),
+    assetIdentity: requireUtf8Text(value.assetIdentity, 256, 'encrypted backup asset identity'),
+  })
+}
+
+function assertProofSetAsset(
   proofs: readonly DecodedProofEntry[],
-): readonly { mintUrl: string; unit: string; assetIdentity: string }[] {
-  const unique = new Map<string, { mintUrl: string; unit: string; assetIdentity: string }>()
-  for (const proof of proofs) {
-    const asset = {
-      mintUrl: proof.mintUrl,
-      unit: proof.unit,
-      assetIdentity: assetIdentity(proof.asset),
-    }
-    unique.set(`${asset.mintUrl}\u0000${asset.unit}\u0000${asset.assetIdentity}`, asset)
-  }
-  return Object.freeze(
-    [...unique.entries()]
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([, asset]) => asset),
+  asset: EncryptedWalletBackupV2AssetIdentity,
+): void {
+  if (
+    proofs.some(
+      (proof) =>
+        proof.mintUrl !== asset.mintUrl ||
+        proof.unit !== asset.unit ||
+        assetIdentity(proof.asset) !== asset.assetIdentity,
+    )
   )
+    throw new Error('encrypted backup proof set asset is foreign')
+}
+
+function sumProofAmounts(proofs: readonly DecodedProofEntry[]): bigint {
+  let total = 0n
+  for (const proof of proofs) {
+    total += proof.amount
+    if (total > ENCRYPTED_WALLET_BACKUP_V2_UINT64_MAX)
+      throw new Error('encrypted backup proof set declared amount is invalid')
+  }
+  return total
 }
 
 function assetIdentity(asset: EncryptedWalletBackupV2ProofSetAsset): string {
@@ -446,10 +473,6 @@ function counterTuple(value: { mintUrl: string; unit: string; keysetId: string }
   return `${value.mintUrl}\u0000${value.unit}\u0000${value.keysetId}`
 }
 
-function sameStrings(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index])
-}
-
 function cloneUnverifiedProofSet(
   value: DecodedProofSet,
 ): EncryptedWalletBackupV2UnverifiedProofSet {
@@ -478,7 +501,6 @@ function snapshotDescriptor(
   value: EncryptedWalletBackupV2BundleDescriptor,
 ): EncryptedWalletBackupV2BundleDescriptor {
   const snapshot = Object.fromEntries(Object.entries(value)) as Record<string, unknown>
-  if (Array.isArray(snapshot.assetLocators)) snapshot.assetLocators = [...snapshot.assetLocators]
   if (Array.isArray(snapshot.objects)) {
     snapshot.objects = snapshot.objects.map((object) =>
       isRecord(object) ? Object.fromEntries(Object.entries(object)) : object,
@@ -500,6 +522,7 @@ function exactKeys(value: Record<string, unknown>, fields: readonly string[]): b
 
 interface DecodedProofEntry extends EncryptedWalletBackupV2ProofSetProof {
   readonly proofId: string
+  readonly amount: bigint
 }
 interface DecodedProofSet {
   readonly proofs: readonly DecodedProofEntry[]

@@ -42,6 +42,7 @@ const vector = JSON.parse(
 
 test('v2 descriptor codec is canonical and tamper-sensitive', () => {
   const value = descriptor(1)
+  const originalAssetLocator = value.assetLocator
   const decoded = decodeEncryptedWalletBackupV2BundleDescriptor(value, {
     realm: REALM,
     vaultId: VAULT,
@@ -52,10 +53,10 @@ test('v2 descriptor codec is canonical and tamper-sensitive', () => {
   )
   assert.notEqual(
     digestEncryptedWalletBackupV2BundleDescriptor(decoded),
-    digestEncryptedWalletBackupV2BundleDescriptor({ ...value, operationLocator: 'ff'.repeat(32) }),
+    digestEncryptedWalletBackupV2BundleDescriptor({ ...value, assetLocator: 'ff'.repeat(32) }),
   )
-  value.assetLocators[0] = 'ff'.repeat(32)
-  assert.equal(decoded.assetLocators[0], '21'.repeat(32))
+  value.assetLocator = 'ff'.repeat(32)
+  assert.equal(decoded.assetLocator, originalAssetLocator)
   for (const invalid of [
     { ...descriptor(1), unexpected: true },
     { ...descriptor(1), realm: 'INVALID REALM' },
@@ -63,6 +64,19 @@ test('v2 descriptor codec is canonical and tamper-sensitive', () => {
     { ...descriptor(1), objects: [descriptor(1).objects[0]!, descriptor(1).objects[0]!] },
   ])
     assert.throws(() => decodeEncryptedWalletBackupV2BundleDescriptor(invalid))
+})
+
+test('v2 descriptor binds one asset locator and exact uint64 metadata', () => {
+  const value = {
+    ...descriptor(1),
+    assetLocator: '21'.repeat(32),
+    declaredAmount: 18_446_744_073_709_551_615n,
+    custodyRevision: 18_446_744_073_709_551_615n,
+  }
+  const decoded = decodeEncryptedWalletBackupV2BundleDescriptor(value)
+  assert.equal(decoded.assetLocator, '21'.repeat(32))
+  assert.equal(decoded.declaredAmount, 18_446_744_073_709_551_615n)
+  assert.equal(decoded.custodyRevision, 18_446_744_073_709_551_615n)
 })
 
 test('v2 descriptor wire decoder accepts canonical wire and rejects tampering', () => {
@@ -88,16 +102,14 @@ test('v2 descriptor wire decoder accepts canonical wire and rejects tampering', 
 test('v2 descriptor and page decoders snapshot accessor-backed collections once', () => {
   const assets = descriptor(1)
   let assetReads = 0
-  Object.defineProperty(assets, 'assetLocators', {
+  Object.defineProperty(assets, 'assetLocator', {
     enumerable: true,
     get: () => {
       assetReads += 1
-      return assetReads === 1
-        ? ['21'.repeat(32)]
-        : Array.from({ length: 65 }, () => '21'.repeat(32))
+      return assetReads === 1 ? '21'.repeat(32) : '22'.repeat(32)
     },
   })
-  assert.equal(decodeEncryptedWalletBackupV2BundleDescriptor(assets).assetLocators.length, 1)
+  assert.equal(decodeEncryptedWalletBackupV2BundleDescriptor(assets).assetLocator, '21'.repeat(32))
   assert.equal(assetReads, 1)
 
   const objects = descriptor(2)
@@ -232,9 +244,9 @@ test('v2 head pages enumerate and collect empty, page limits, and 256 bundles', 
   assert.equal(collected.head.activeObjectCount, 256)
 })
 
-test('v2 head rejects duplicate operations or objects and page cursor tampering', () => {
+test('v2 head rejects duplicate assets or objects and page cursor tampering', () => {
   const first = descriptor(1)
-  const duplicateOperation = { ...descriptor(2), operationLocator: first.operationLocator }
+  const duplicateAsset = { ...descriptor(2), assetLocator: first.assetLocator }
   assert.throws(
     () =>
       createEncryptedWalletBackupV2CurrentHead({
@@ -242,9 +254,9 @@ test('v2 head rejects duplicate operations or objects and page cursor tampering'
         vaultId: VAULT,
         enrollmentEpoch: 1,
         headVersion: 1,
-        bundles: [first, duplicateOperation],
+        bundles: [first, duplicateAsset],
       }),
-    /operation locator/,
+    /asset locator/,
   )
   assert.throws(
     () =>
@@ -257,15 +269,16 @@ test('v2 head rejects duplicate operations or objects and page cursor tampering'
       }),
     /unordered or duplicated/,
   )
-  assert.equal(
-    createEncryptedWalletBackupV2CurrentHead({
-      realm: REALM,
-      vaultId: VAULT,
-      enrollmentEpoch: 1,
-      headVersion: 1,
-      bundles: [first, { ...descriptor(2), assetLocators: first.assetLocators }],
-    }).activeBundleCount,
-    2,
+  assert.throws(
+    () =>
+      createEncryptedWalletBackupV2CurrentHead({
+        realm: REALM,
+        vaultId: VAULT,
+        enrollmentEpoch: 1,
+        headVersion: 1,
+        bundles: [first, { ...descriptor(2), assetLocator: first.assetLocator }],
+      }),
+    /asset locator/,
   )
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
@@ -384,7 +397,33 @@ test('v2 head collector fails closed for compact page corruption cases', () => {
     assert.throws(() => collectEncryptedWalletBackupV2DescriptorPages(value))
 })
 
-test('v2 head matches the shared deterministic vector', () => {
+test('v2 head commits sorted bundle and descriptor digest pairs', () => {
+  const bundles = Array.from({ length: 16 }, (_, index) => descriptor(index + 1))
+  const head = createEncryptedWalletBackupV2CurrentHead({
+    realm: REALM,
+    vaultId: VAULT,
+    enrollmentEpoch: 1,
+    headVersion: 1,
+    bundles,
+  })
+  const pages = enumerateEncryptedWalletBackupV2DescriptorPages({ head, bundles })
+  assert.equal(
+    head.activeSetDigest,
+    digestEncryptedWalletBackupV2ActiveSet({
+      realm: REALM,
+      vaultId: VAULT,
+      enrollmentEpoch: 1,
+      bundles,
+    }),
+  )
+  assert.deepEqual(
+    pages.map((page) => page.bundles.length),
+    [15, 1],
+  )
+  assert.equal(collectEncryptedWalletBackupV2DescriptorPages(pages).bundles.length, 16)
+})
+
+test('v2 head golden vector fixes descriptor, active-set, and cursor values', () => {
   const bundles = Array.from({ length: vector.inputs.descriptorCount }, (_, index) =>
     descriptor(index + 1),
   )
@@ -399,7 +438,7 @@ test('v2 head matches the shared deterministic vector', () => {
     vector.expected.emptyActiveSetDigest,
   )
   assert.equal(head.activeSetDigest, vector.expected.activeSetDigest)
-  assert.equal(JSON.stringify(head), JSON.stringify(vector.expected.head))
+  assert.deepEqual(head, vector.expected.head)
   assert.deepEqual(
     pages.map((page) => page.bundles.length),
     vector.expected.pageBundleCounts,
@@ -408,7 +447,6 @@ test('v2 head matches the shared deterministic vector', () => {
     pages.map((page) => page.nextAfterBundleId),
     vector.expected.pageCursors,
   )
-  assert.equal(collectEncryptedWalletBackupV2DescriptorPages(pages).bundles.length, 16)
 })
 
 function descriptor(index: number, objectCount = 1) {
@@ -418,8 +456,9 @@ function descriptor(index: number, objectCount = 1) {
     realm: REALM,
     vaultId: VAULT,
     bundleId,
-    operationLocator: (index + 16).toString(16).padStart(64, '0'),
-    assetLocators: ['21'.repeat(32)],
+    assetLocator: (index + 16).toString(16).padStart(64, '0'),
+    declaredAmount: BigInt(index),
+    custodyRevision: BigInt(index),
     payloadCommitment: (index + 32).toString(16).padStart(64, '0'),
     objects: Array.from({ length: objectCount }, (_, objectIndex) => ({
       objectId: (index * 16 + objectIndex + 48).toString(16).padStart(32, '0'),

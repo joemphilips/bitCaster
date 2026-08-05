@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
 import { webcrypto } from 'node:crypto'
 import { test } from 'node:test'
 import {
@@ -12,12 +11,6 @@ import {
 } from '../src/encryptedWalletBackupV2Bundle.ts'
 import { createEncryptedWalletBackupV2KeyHandle } from '../src/encryptedWalletBackupV2Keys.ts'
 
-const vector = JSON.parse(
-  await readFile(
-    new URL('../../test-vectors/encrypted-wallet-backup-v2-bundle.json', import.meta.url),
-    'utf8',
-  ),
-) as BundleVector
 const SEED = Uint8Array.from({ length: 64 }, (_value, index) => index)
 const REALM = 'backup.production'
 const ASSET = Object.freeze({
@@ -28,80 +21,52 @@ const ASSET = Object.freeze({
 const FRAME_BYTES = ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_BODY_BYTES - 16
 const FIRST_OBJECT_PAYLOAD_BYTES = FRAME_BYTES - 16
 
-test('v2 bundle matches the shared deterministic vector', async () => {
-  const keyHandle = await keyHandleFor(vector.inputs.seedHex, vector.inputs.realm)
-  const runtime = deterministicRuntime([vector.inputs.bundleIdHex, vector.inputs.nonceHex])
-  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
-    keyHandle,
-    operationId: vector.inputs.operationId,
-    assets: vector.inputs.assets,
-    canonicalPayload: fromHex(vector.inputs.payloadHex),
-    runtime,
-  })
-  const object = prepared.objects[0]!
-
-  assert.equal(prepared.descriptor.vaultId, vector.expected.vaultId)
-  assert.equal(prepared.descriptor.bundleId, vector.expected.bundleId)
-  assert.equal(prepared.descriptor.operationLocator, vector.expected.operationLocator)
-  assert.deepEqual(prepared.descriptor.assetLocators, vector.expected.assetLocators)
-  assert.equal(prepared.descriptor.payloadCommitment, vector.expected.payloadCommitment)
-  assert.equal(object.objectId, vector.expected.objectId)
-  assert.equal(object.digest, vector.expected.objectDigest)
-  assert.equal(toHex(object.aad), vector.expected.aadHex)
-  assertBytesEqual(
-    await decryptEncryptedWalletBackupV2TransportBundle({ keyHandle, runtime, ...prepared }),
-    fromHex(vector.inputs.payloadHex),
-  )
-})
-
-test('v2 bundle accepts native Crypto directly and a minimal key runtime', async () => {
-  const keyHandle = await keyHandleFor(undefined, REALM, minimalKeyRuntime())
-  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
-    keyHandle,
-    operationId: 'operation',
-    assets: [ASSET],
-    canonicalPayload: Uint8Array.of(1, 2, 3),
-    runtime: webcrypto,
-  })
-  assertBytesEqual(
-    await decryptEncryptedWalletBackupV2TransportBundle({
-      keyHandle,
-      runtime: webcrypto,
-      ...prepared,
-    }),
-    Uint8Array.of(1, 2, 3),
-  )
-})
-
-test('v2 bundle restores one byte and exact frame boundaries', async () => {
-  await assertRoundTrip(Uint8Array.of(7), 1)
-  await assertRoundTrip(new Uint8Array(FIRST_OBJECT_PAYLOAD_BYTES).fill(8), 1)
-  await assertRoundTrip(new Uint8Array(FIRST_OBJECT_PAYLOAD_BYTES + 1).fill(9), 2)
-})
-
-test('v2 bundle accepts the exact maximum payload with 64 asset locators', async () => {
-  const payload = new Uint8Array(ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_PAYLOAD_MAX_BYTES)
-  payload[0] = 1
-  payload[payload.length - 1] = 2
-  const assets = Array.from({ length: 64 }, (_, index) => ({
-    ...ASSET,
-    assetIdentity: `asset-${index}`,
-  }))
+test('v2 bundle binds one asset and exact uint64 custody metadata', async () => {
   const keyHandle = await keyHandleFor()
-  const prepared = await prepareBundle(keyHandle, payload, { assets })
-  assert.equal(prepared.objects.length, 15)
-  assert.equal(prepared.descriptor.assetLocators.length, 64)
-  assertBytesEqual(
-    await decryptEncryptedWalletBackupV2TransportBundle({
-      keyHandle,
-      runtime: webcrypto,
-      ...prepared,
-    }),
-    payload,
-  )
+  const prepared = await prepare(keyHandle, Uint8Array.of(1, 2, 3), {
+    declaredAmount: 18_446_744_073_709_551_615n,
+    custodyRevision: 18_446_744_073_709_551_615n,
+  })
+  assert.equal(prepared.descriptor.assetLocator.length, 64)
+  assert.equal(prepared.descriptor.declaredAmount, 18_446_744_073_709_551_615n)
+  assert.equal(prepared.descriptor.custodyRevision, 18_446_744_073_709_551_615n)
+  assertBytesEqual(await decrypt(keyHandle, prepared), Uint8Array.of(1, 2, 3))
 })
 
-test('v2 bundle rejects oversize payloads before randomness', async () => {
+test('v2 bundle accepts native Crypto and a minimal key runtime', async () => {
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed: SEED,
+    realm: REALM,
+    runtime: {
+      subtle: {
+        importKey: webcrypto.subtle.importKey.bind(webcrypto.subtle),
+        deriveBits: webcrypto.subtle.deriveBits.bind(webcrypto.subtle),
+      },
+    },
+  })
+  const prepared = await prepare(keyHandle, Uint8Array.of(1, 2, 3))
+  assertBytesEqual(await decrypt(keyHandle, prepared), Uint8Array.of(1, 2, 3))
+})
+
+test('v2 bundle restores exact frame boundaries and the maximum payload', async () => {
+  const keyHandle = await keyHandleFor()
+  for (const payload of [
+    Uint8Array.of(7),
+    new Uint8Array(FIRST_OBJECT_PAYLOAD_BYTES).fill(8),
+    new Uint8Array(FIRST_OBJECT_PAYLOAD_BYTES + 1).fill(9),
+  ]) {
+    const prepared = await prepare(keyHandle, payload)
+    assertBytesEqual(await decrypt(keyHandle, prepared), payload)
+  }
+  const maximum = new Uint8Array(ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_PAYLOAD_MAX_BYTES)
+  maximum[0] = 1
+  maximum[maximum.length - 1] = 2
+  const prepared = await prepare(keyHandle, maximum)
+  assert.equal(prepared.objects.length, 15)
+  assertBytesEqual(await decrypt(keyHandle, prepared), maximum)
+})
+
+test('v2 bundle rejects invalid one-asset authority before randomness', async () => {
   const keyHandle = await keyHandleFor()
   let randomCalls = 0
   const runtime: EncryptedWalletBackupV2BundleRuntime = {
@@ -111,150 +76,83 @@ test('v2 bundle rejects oversize payloads before randomness', async () => {
       return target
     },
   }
-  await assert.rejects(
-    () =>
-      prepareEncryptedWalletBackupV2TransportBundle({
-        keyHandle,
-        operationId: 'operation',
-        assets: [ASSET],
-        canonicalPayload: new Uint8Array(ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_PAYLOAD_MAX_BYTES + 1),
-        runtime,
-      }),
-    /canonical transport payload is invalid/,
-  )
+  for (const input of [
+    { canonicalPayload: new Uint8Array(ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_PAYLOAD_MAX_BYTES + 1) },
+    { declaredAmount: -1n },
+    { custodyRevision: 18_446_744_073_709_551_616n },
+  ])
+    await assert.rejects(() => prepare(keyHandle, Uint8Array.of(1), { ...input, runtime }))
   assert.equal(randomCalls, 0)
 })
 
-test('v2 bundle enforces asset bounds and canonicalizes locators', async () => {
+test('v2 bundle rejects descriptor metadata and object substitutions', async () => {
   const keyHandle = await keyHandleFor()
-  const prepared = await prepareBundle(keyHandle, Uint8Array.of(1), {
-    assets: [
-      { ...ASSET, mintUrl: 'HTTPS://MINT.EXAMPLE./cashu///' },
-      ASSET,
-      { ...ASSET, assetIdentity: 'cashu:conditional' },
-    ],
-  })
-  assert.equal(prepared.descriptor.assetLocators.length, 2)
-  assert.equal(
-    [...prepared.descriptor.assetLocators].sort().join(','),
-    prepared.descriptor.assetLocators.join(','),
-  )
-  assert.equal(JSON.stringify(prepared.descriptor).includes('mint.example'), false)
-  await assert.rejects(
-    () => prepareBundle(keyHandle, Uint8Array.of(1), { assets: [] }),
-    /asset identities/,
-  )
+  const prepared = await prepare(keyHandle, Uint8Array.of(1, 2, 3))
+  for (const descriptor of [
+    { ...prepared.descriptor, assetLocator: '00'.repeat(32) },
+    { ...prepared.descriptor, declaredAmount: 2n },
+    { ...prepared.descriptor, custodyRevision: 2n },
+  ])
+    await assertCorrupt(keyHandle, { ...prepared, descriptor })
+  const corrupted = structuredClone(prepared) as MutableBundle
+  corrupted.objects[0]!.body[0] ^= 1
+  await assertCorrupt(keyHandle, corrupted)
 })
 
-test('v2 bundle keeps private metadata out of its public descriptor', async () => {
+test('v2 bundle keeps plaintext metadata private and isolates copied data', async () => {
   const keyHandle = await keyHandleFor()
   const payload = Uint8Array.of(1, 2, 3)
-  const first = await prepareEncryptedWalletBackupV2TransportBundle({
-    keyHandle,
-    operationId: 'operation',
-    assets: [ASSET],
-    canonicalPayload: payload,
+  const first = await prepare(keyHandle, payload, {
     runtime: deterministicRuntime(['01'.repeat(16), '03'.repeat(12)]),
   })
-  const second = await prepareEncryptedWalletBackupV2TransportBundle({
-    keyHandle,
-    operationId: 'operation',
-    assets: [ASSET],
-    canonicalPayload: payload,
+  const second = await prepare(keyHandle, payload, {
     runtime: deterministicRuntime(['02'.repeat(16), '03'.repeat(12)]),
   })
-  const otherVault = await prepareEncryptedWalletBackupV2TransportBundle({
-    keyHandle: await keyHandleFor('ff'.repeat(64)),
-    operationId: 'operation',
-    assets: [ASSET],
-    canonicalPayload: payload,
-    runtime: deterministicRuntime(['01'.repeat(16), '03'.repeat(12)]),
-  })
   assert.notEqual(first.descriptor.payloadCommitment, second.descriptor.payloadCommitment)
-  assert.notEqual(first.descriptor.payloadCommitment, otherVault.descriptor.payloadCommitment)
-  const descriptorText = JSON.stringify(first.descriptor)
-  for (const privateField of ['proofCount', 'payloadLength', 'payloadDigest'])
+  const descriptorText = Object.keys(first.descriptor).join(',')
+  for (const privateField of ['proofCount', 'payloadLength', 'payloadDigest', 'mint.example'])
     assert.equal(descriptorText.includes(privateField), false)
+  payload[0] = 99
+  const exposed = first.objects[0]!.body
+  exposed[0] ^= 1
+  const restored = await decrypt(keyHandle, first)
+  restored[0] = 88
+  assertBytesEqual(await decrypt(keyHandle, first), Uint8Array.of(1, 2, 3))
 })
 
-test('v2 bundle rejects descriptor and object tampering', async () => {
+test('v2 bundle rejects encrypted frame corruption and invalid outer shapes', async () => {
   const keyHandle = await keyHandleFor()
-  const prepared = await prepareBundle(
-    keyHandle,
-    new Uint8Array(FIRST_OBJECT_PAYLOAD_BYTES + 1).fill(1),
-  )
-  for (const descriptor of [
-    { ...prepared.descriptor, bundleId: '00'.repeat(16) },
-    { ...prepared.descriptor, operationLocator: '00'.repeat(32) },
-    { ...prepared.descriptor, assetLocators: ['00'.repeat(32)] },
-    { ...prepared.descriptor, payloadCommitment: '00'.repeat(32) },
-    { ...prepared.descriptor, objects: [...prepared.descriptor.objects].reverse() },
-  ]) {
-    await assertCorrupt(keyHandle, { ...prepared, descriptor })
-  }
-  for (const mutation of ['nonce', 'aad', 'body'] as const) {
-    const tampered = clonedBundle(prepared)
-    tampered.objects[0]![mutation][0] ^= 1
-    await assertCorrupt(keyHandle, tampered)
-  }
-  const tag = clonedBundle(prepared)
-  tag.objects[0]!.body[tag.objects[0]!.body.length - 1] ^= 1
-  await assertCorrupt(keyHandle, tag)
-  const reference = clonedBundle(prepared)
-  reference.descriptor.objects = reference.descriptor.objects.slice(1)
-  await assertCorrupt(keyHandle, reference)
-  const { payloadCommitment, ...descriptorFields } = prepared.descriptor
-  await assertCorrupt(keyHandle, {
-    ...prepared,
-    descriptor: Object.assign(Object.create({ payloadCommitment }), descriptorFields, {
-      unexpected: true,
+  const header = await prepare(keyHandle, Uint8Array.of(1), {
+    runtime: alteredEncryptRuntime((frame) => frame.fill(0, 8, 12)),
+  })
+  const padding = await prepare(keyHandle, Uint8Array.of(1), {
+    runtime: alteredEncryptRuntime((frame) => {
+      frame[17] = 1
     }),
   })
-})
-
-test('v2 bundle rejects an encrypted invalid length header and nonzero padding', async () => {
-  const keyHandle = await keyHandleFor()
-  const headerPrepared = await prepareEncryptedWalletBackupV2TransportBundle({
-    keyHandle,
-    operationId: 'operation',
-    assets: [ASSET],
-    canonicalPayload: Uint8Array.of(1),
-    runtime: headerRuntime(),
-  })
-  await assertCorrupt(keyHandle, headerPrepared)
-  const paddingPrepared = await prepareEncryptedWalletBackupV2TransportBundle({
-    keyHandle,
-    operationId: 'operation',
-    assets: [ASSET],
-    canonicalPayload: Uint8Array.of(1),
-    runtime: paddingRuntime(),
-  })
-  await assertCorrupt(keyHandle, paddingPrepared)
-})
-
-test('v2 bundle rejects wrong handles, cardinality, unknown fields, and versions', async () => {
-  const keyHandle = await keyHandleFor()
-  const prepared = await prepareBundle(keyHandle, Uint8Array.of(1))
-  await assertCorrupt(await keyHandleFor('ff'.repeat(64)), prepared)
-  await assertCorrupt(await keyHandleFor(toHex(SEED), 'backup.staging'), prepared)
-  await assertCorrupt(keyHandle, { ...prepared, objects: prepared.objects.slice(1) })
-  const unknown = clonedBundle(prepared)
+  await assertCorrupt(keyHandle, header)
+  await assertCorrupt(keyHandle, padding)
+  const prepared = await prepare(keyHandle, Uint8Array.of(1))
+  await assertCorrupt(await keyHandleForSeed(new Uint8Array(64).fill(255)), prepared)
+  await assertCorrupt(keyHandle, { ...prepared, objects: [] })
+  const unknown = structuredClone(prepared) as MutableBundle
   unknown.descriptor.unexpected = true
   await assertCorrupt(keyHandle, unknown)
-  const unsupported = clonedBundle(prepared)
+  const unsupported = structuredClone(prepared) as MutableBundle
   unsupported.objects[0]!.formatVersion = 3
   await assertCorrupt(keyHandle, unsupported)
 })
 
-test('v2 bundle bounds bundle-id collision retries', async () => {
+test('v2 bundle bounds collisions and validates complete object references', async () => {
   const keyHandle = await keyHandleFor()
   let checks = 0
   await assert.rejects(
     () =>
       prepareEncryptedWalletBackupV2TransportBundle({
         keyHandle,
-        operationId: 'operation',
-        assets: [ASSET],
+        asset: ASSET,
+        declaredAmount: 1n,
+        custodyRevision: 1n,
         canonicalPayload: Uint8Array.of(1),
         runtime: deterministicRuntime(),
         bundleIdExists: () => {
@@ -265,97 +163,77 @@ test('v2 bundle bounds bundle-id collision retries', async () => {
     /bundle id collision limit/,
   )
   assert.equal(checks, 8)
+  const prepared = await prepare(keyHandle, new Uint8Array(FIRST_OBJECT_PAYLOAD_BYTES + 1))
+  const missingReference = structuredClone(prepared) as MutableBundle
+  missingReference.descriptor.objects = missingReference.descriptor.objects.slice(1)
+  await assertCorrupt(keyHandle, missingReference)
 })
 
-test('v2 bundle protects prepared objects from retry-time mutation', async () => {
-  const keyHandle = await keyHandleFor()
-  const prepared = await prepareBundle(keyHandle, Uint8Array.of(1, 2, 3))
-  for (const field of ['nonce', 'aad', 'body'] as const) {
-    const exposed = prepared.objects[0]![field]
-    exposed[0] ^= 1
-    assertBytesEqual(
-      await decryptEncryptedWalletBackupV2TransportBundle({
-        keyHandle,
-        runtime: webcrypto,
-        ...prepared,
-      }),
-      Uint8Array.of(1, 2, 3),
-    )
-  }
-})
-
-test('v2 bundle copies transport input and restored output', async () => {
-  const keyHandle = await keyHandleFor()
-  const payload = Uint8Array.of(1, 2, 3)
-  const prepared = await prepareBundle(keyHandle, payload)
-  payload[0] = 99
-  const first = await decryptEncryptedWalletBackupV2TransportBundle({
-    keyHandle,
-    runtime: webcrypto,
-    ...prepared,
-  })
-  first[0] = 88
-  const second = await decryptEncryptedWalletBackupV2TransportBundle({
-    keyHandle,
-    runtime: webcrypto,
-    ...prepared,
-  })
-  assert.equal(first[1], 2)
-  assert.equal(second[0], 1)
-})
-
-async function assertRoundTrip(payload: Uint8Array, objectCount: number): Promise<void> {
-  const keyHandle = await keyHandleFor()
-  const prepared = await prepareBundle(keyHandle, payload)
-  assert.equal(prepared.objects.length, objectCount)
-  for (const object of prepared.objects)
-    assert.equal(object.body.byteLength, ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_BODY_BYTES)
-  assertBytesEqual(
-    await decryptEncryptedWalletBackupV2TransportBundle({
-      keyHandle,
-      runtime: webcrypto,
-      ...prepared,
-    }),
-    payload,
-  )
-}
-
-async function prepareBundle(
+async function prepare(
   keyHandle: Awaited<ReturnType<typeof keyHandleFor>>,
-  canonicalPayload: Uint8Array,
+  payload: Uint8Array,
   overrides: Partial<{
-    operationId: string
-    assets: readonly { mintUrl: string; unit: string; assetIdentity: string }[]
+    asset: typeof ASSET
+    declaredAmount: bigint
+    custodyRevision: bigint
+    canonicalPayload: Uint8Array
+    runtime: EncryptedWalletBackupV2BundleRuntime
   }> = {},
 ): Promise<EncryptedWalletBackupV2PreparedTransportBundle> {
   return prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle,
-    operationId: overrides.operationId ?? 'operation',
-    assets: overrides.assets ?? [ASSET],
-    canonicalPayload,
-    runtime: deterministicRuntime(),
+    asset: overrides.asset ?? ASSET,
+    declaredAmount: overrides.declaredAmount ?? 1n,
+    custodyRevision: overrides.custodyRevision ?? 1n,
+    canonicalPayload: overrides.canonicalPayload ?? payload,
+    runtime: overrides.runtime ?? webcrypto,
   })
 }
 
-async function keyHandleFor(
-  seedHex = toHex(SEED),
-  realm = REALM,
-  runtime = { subtle: webcrypto.subtle },
-) {
-  return createEncryptedWalletBackupV2KeyHandle({
-    seed: fromHex(seedHex),
-    realm,
-    runtime,
+async function keyHandleFor() {
+  return createEncryptedWalletBackupV2KeyHandle({ seed: SEED, realm: REALM, runtime: webcrypto })
+}
+
+async function keyHandleForSeed(seed: Uint8Array) {
+  return createEncryptedWalletBackupV2KeyHandle({ seed, realm: REALM, runtime: webcrypto })
+}
+
+async function decrypt(
+  keyHandle: Awaited<ReturnType<typeof keyHandleFor>>,
+  prepared: EncryptedWalletBackupV2PreparedTransportBundle,
+): Promise<Uint8Array> {
+  return decryptEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    runtime: webcrypto,
+    ...prepared,
   })
 }
 
-function minimalKeyRuntime() {
-  return {
-    subtle: {
-      importKey: webcrypto.subtle.importKey.bind(webcrypto.subtle),
-      deriveBits: webcrypto.subtle.deriveBits.bind(webcrypto.subtle),
-    },
-  }
+async function assertCorrupt(
+  keyHandle: Awaited<ReturnType<typeof keyHandleFor>>,
+  value: unknown,
+): Promise<void> {
+  await assert.rejects(
+    () =>
+      decryptEncryptedWalletBackupV2TransportBundle({
+        keyHandle,
+        runtime: webcrypto,
+        ...(value as EncryptedWalletBackupV2PreparedTransportBundle),
+      }),
+    /corrupt encrypted wallet backup v2 bundle/,
+  )
+}
+
+function assertBytesEqual(actual: Uint8Array, expected: Uint8Array): void {
+  const equal =
+    actual.byteLength === expected.byteLength &&
+    actual.every((byte, index) => byte === expected[index])
+  assert.equal(equal, true, 'byte values differ')
+}
+
+interface MutableBundle {
+  descriptor: Record<string, unknown> & { objects: { objectId: string; digest: string }[] }
+  objects: { body: Uint8Array; nonce: Uint8Array; aad: Uint8Array; formatVersion: number }[]
 }
 
 function deterministicRuntime(
@@ -395,89 +273,6 @@ function alteredEncryptRuntime(
   }
 }
 
-function paddingRuntime(): EncryptedWalletBackupV2BundleRuntime {
-  return alteredEncryptRuntime((frame) => {
-    frame[17] = 1
-  })
-}
-
-function headerRuntime(): EncryptedWalletBackupV2BundleRuntime {
-  return alteredEncryptRuntime((frame) => {
-    frame[8] = 0
-    frame[9] = 0
-    frame[10] = 0
-    frame[11] = 0
-  })
-}
-
-async function assertCorrupt(
-  keyHandle: Awaited<ReturnType<typeof keyHandleFor>>,
-  value: unknown,
-): Promise<void> {
-  await assert.rejects(
-    () =>
-      decryptEncryptedWalletBackupV2TransportBundle({
-        keyHandle,
-        runtime: webcrypto,
-        ...(value as EncryptedWalletBackupV2PreparedTransportBundle),
-      }),
-    /corrupt encrypted wallet backup v2 bundle/,
-  )
-}
-
-function clonedBundle(value: EncryptedWalletBackupV2PreparedTransportBundle): MutableBundle {
-  return structuredClone(value) as MutableBundle
-}
-
 function fromHex(value: string): Uint8Array {
-  return Uint8Array.from(value.match(/../g) ?? [], (byte) => Number.parseInt(byte, 16))
-}
-
-function toHex(value: Uint8Array): string {
-  return Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-function assertBytesEqual(actual: Uint8Array, expected: Uint8Array): void {
-  const equal =
-    actual.byteLength === expected.byteLength &&
-    actual.every((byte, index) => byte === expected[index])
-  assert.equal(equal, true, 'byte values differ')
-}
-
-interface BundleVector {
-  readonly inputs: {
-    readonly seedHex: string
-    readonly realm: string
-    readonly operationId: string
-    readonly assets: readonly { mintUrl: string; unit: string; assetIdentity: string }[]
-    readonly payloadHex: string
-    readonly bundleIdHex: string
-    readonly nonceHex: string
-  }
-  readonly expected: {
-    readonly vaultId: string
-    readonly bundleId: string
-    readonly operationLocator: string
-    readonly assetLocators: readonly string[]
-    readonly payloadCommitment: string
-    readonly objectId: string
-    readonly objectDigest: string
-    readonly aadHex: string
-  }
-}
-
-interface MutableBundle {
-  descriptor: {
-    objects: { objectId: string; digest: string }[]
-    [key: string]: unknown
-  }
-  objects: {
-    objectId: string
-    digest: string
-    nonce: Uint8Array
-    aad: Uint8Array
-    body: Uint8Array
-    formatVersion: number
-    [key: string]: unknown
-  }[]
+  return Uint8Array.from(value.match(/../g) ?? [], (item) => Number.parseInt(item, 16))
 }

@@ -1,7 +1,6 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { decode } from 'cborg'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
-import { preflightEncryptedWalletBackupV2CborTuple } from './encryptedWalletBackupV2Cbor.ts'
 import {
   equalBytes,
   hexToBytesStrict,
@@ -13,7 +12,7 @@ import {
 export const ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX = 256 as const
 export const ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_OBJECT_REFERENCE_MAX = 256 as const
 export const ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX = 15 as const
-export const ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_ASSET_MAX = 64 as const
+export const ENCRYPTED_WALLET_BACKUP_V2_UINT64_MAX = 18_446_744_073_709_551_615n
 
 export interface EncryptedWalletBackupV2ObjectReference {
   readonly objectId: string
@@ -25,8 +24,9 @@ export interface EncryptedWalletBackupV2BundleDescriptor {
   readonly realm: string
   readonly vaultId: string
   readonly bundleId: string
-  readonly operationLocator: string
-  readonly assetLocators: readonly string[]
+  readonly assetLocator: string
+  readonly declaredAmount: bigint
+  readonly custodyRevision: bigint
   readonly payloadCommitment: string
   readonly objects: readonly EncryptedWalletBackupV2ObjectReference[]
 }
@@ -37,7 +37,7 @@ const DESCRIPTOR_PREFLIGHT = {
   maximumBytes: DESCRIPTOR_MAX_BYTES,
   maximumDepth: 3,
   maximumTokens: 128,
-  maximumArrayLength: 64,
+  maximumArrayLength: 15,
   maximumItemLength: DESCRIPTOR_MAX_BYTES,
   fields: [
     { major: 0, exact: 2 },
@@ -45,7 +45,8 @@ const DESCRIPTOR_PREFLIGHT = {
     { major: 2, minimum: 32, maximum: 32 },
     { major: 2, minimum: 16, maximum: 16 },
     { major: 2, minimum: 32, maximum: 32 },
-    { major: 4, minimum: 1, maximum: ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_ASSET_MAX },
+    { major: 0 },
+    { major: 0 },
     { major: 2, minimum: 32, maximum: 32 },
     { major: 4, minimum: 1, maximum: ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX },
   ],
@@ -60,8 +61,9 @@ export function decodeEncryptedWalletBackupV2BundleDescriptor(
     'realm',
     'vaultId',
     'bundleId',
-    'operationLocator',
-    'assetLocators',
+    'assetLocator',
+    'declaredAmount',
+    'custodyRevision',
     'payloadCommitment',
     'objects',
   ])
@@ -70,16 +72,6 @@ export function decodeEncryptedWalletBackupV2BundleDescriptor(
   const vaultId = requireLowerHex(record.vaultId, 32, 'vault id')
   if (expected !== undefined && (realm !== expected.realm || vaultId !== expected.vaultId))
     throw new Error('encrypted backup v2 descriptor is foreign')
-  const assetLocatorValues = record.assetLocators
-  if (
-    !Array.isArray(assetLocatorValues) ||
-    assetLocatorValues.length < 1 ||
-    assetLocatorValues.length > ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_ASSET_MAX
-  )
-    throw new Error('encrypted backup v2 descriptor assets are invalid')
-  const assetLocators = assetLocatorValues.map((item) => requireLowerHex(item, 32, 'asset locator'))
-  if (assetLocators.some((item, index) => index > 0 && item <= assetLocators[index - 1]!))
-    throw new Error('encrypted backup v2 descriptor assets are invalid')
   const objectValues = record.objects
   if (
     !Array.isArray(objectValues) ||
@@ -101,8 +93,9 @@ export function decodeEncryptedWalletBackupV2BundleDescriptor(
     realm,
     vaultId,
     bundleId: requireLowerHex(record.bundleId, 16, 'bundle id'),
-    operationLocator: requireLowerHex(record.operationLocator, 32, 'operation locator'),
-    assetLocators: Object.freeze(assetLocators),
+    assetLocator: requireLowerHex(record.assetLocator, 32, 'asset locator'),
+    declaredAmount: requireUint64(record.declaredAmount, 'declared amount'),
+    custodyRevision: requireUint64(record.custodyRevision, 'custody revision'),
     payloadCommitment: requireLowerHex(record.payloadCommitment, 32, 'payload commitment'),
     objects: Object.freeze(objects),
   })
@@ -115,8 +108,9 @@ export function encodeEncryptedWalletBackupV2BundleDescriptor(value: unknown): U
     descriptor.realm,
     hexToBytesStrict(descriptor.vaultId, 32, 'vault id'),
     hexToBytesStrict(descriptor.bundleId, 16, 'bundle id'),
-    hexToBytesStrict(descriptor.operationLocator, 32, 'operation locator'),
-    descriptor.assetLocators.map((item) => hexToBytesStrict(item, 32, 'asset locator')),
+    hexToBytesStrict(descriptor.assetLocator, 32, 'asset locator'),
+    descriptor.declaredAmount,
+    descriptor.custodyRevision,
     hexToBytesStrict(descriptor.payloadCommitment, 32, 'payload commitment'),
     descriptor.objects.map((item) => [
       hexToBytesStrict(item.objectId, 16, 'object id'),
@@ -130,7 +124,7 @@ export function decodeEncryptedWalletBackupV2BundleDescriptorWire(
   bytes: Uint8Array,
   expected?: { readonly realm: string; readonly vaultId: string },
 ): EncryptedWalletBackupV2BundleDescriptor {
-  preflightEncryptedWalletBackupV2CborTuple(bytes, DESCRIPTOR_PREFLIGHT)
+  preflightDescriptorWire(bytes)
   let decoded: unknown
   try {
     decoded = decode(bytes)
@@ -145,10 +139,11 @@ export function decodeEncryptedWalletBackupV2BundleDescriptorWire(
       realm: decoded[1],
       vaultId: toHex(requireBytes(decoded[2], 32, 32, 'vault id')),
       bundleId: toHex(requireBytes(decoded[3], 16, 16, 'bundle id')),
-      operationLocator: toHex(requireBytes(decoded[4], 32, 32, 'operation locator')),
-      assetLocators: decodeFixedHexArray(decoded[5], 32, 'asset locator'),
-      payloadCommitment: toHex(requireBytes(decoded[6], 32, 32, 'payload commitment')),
-      objects: decodeObjectReferences(decoded[7]),
+      assetLocator: toHex(requireBytes(decoded[4], 32, 32, 'asset locator')),
+      declaredAmount: requireUint64(decoded[5], 'declared amount'),
+      custodyRevision: requireUint64(decoded[6], 'custody revision'),
+      payloadCommitment: toHex(requireBytes(decoded[7], 32, 32, 'payload commitment')),
+      objects: decodeObjectReferences(decoded[8]),
     },
     expected,
   )
@@ -182,11 +177,6 @@ function exactRecord(value: unknown, fields: readonly string[]): Record<string, 
   return record
 }
 
-function decodeFixedHexArray(value: unknown, bytes: number, name: string): readonly string[] {
-  if (!Array.isArray(value)) throw new Error(`encrypted backup v2 ${name} list is invalid`)
-  return value.map((item) => toHex(requireBytes(item, bytes, bytes, name)))
-}
-
 function decodeObjectReferences(value: unknown): readonly EncryptedWalletBackupV2ObjectReference[] {
   if (!Array.isArray(value)) throw new Error('encrypted backup v2 descriptor objects are invalid')
   return value.map((item) => {
@@ -197,6 +187,86 @@ function decodeObjectReferences(value: unknown): readonly EncryptedWalletBackupV
       digest: toHex(requireBytes(item[1], 32, 32, 'object digest')),
     }
   })
+}
+
+function requireUint64(value: unknown, name: string): bigint {
+  if (typeof value === 'bigint') {
+    if (value < 0n || value > ENCRYPTED_WALLET_BACKUP_V2_UINT64_MAX)
+      throw new Error(`encrypted backup v2 ${name} is invalid`)
+    return value
+  }
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value)
+  throw new Error(`encrypted backup v2 ${name} is invalid`)
+}
+
+function preflightDescriptorWire(bytes: Uint8Array): void {
+  if (
+    !(bytes instanceof Uint8Array) ||
+    bytes.byteLength < 1 ||
+    bytes.byteLength > DESCRIPTOR_MAX_BYTES
+  )
+    throw new Error('encrypted backup v2 descriptor wire is invalid')
+  const state = { offset: 0, tokens: 0 }
+  const root = readDescriptorItem(bytes, state, 0)
+  if (
+    root.major !== 4 ||
+    root.value !== BigInt(DESCRIPTOR_PREFLIGHT.fields.length) ||
+    state.offset !== bytes.byteLength
+  )
+    throw new Error('encrypted backup v2 descriptor wire is invalid')
+}
+
+function readDescriptorItem(
+  bytes: Uint8Array,
+  state: { offset: number; tokens: number },
+  depth: number,
+): { readonly major: number; readonly value: bigint } {
+  if (
+    depth > DESCRIPTOR_PREFLIGHT.maximumDepth ||
+    state.offset >= bytes.byteLength ||
+    ++state.tokens > DESCRIPTOR_PREFLIGHT.maximumTokens
+  )
+    throw new Error('encrypted backup v2 descriptor wire is invalid')
+  const first = bytes[state.offset++]!
+  const major = first >>> 5
+  const additional = first & 31
+  if (major === 1 || major === 5 || major === 6 || major === 7 || additional === 31)
+    throw new Error('encrypted backup v2 descriptor wire is invalid')
+  const value = readDescriptorArgument(bytes, state, additional)
+  if (major === 4) {
+    if (value > BigInt(DESCRIPTOR_PREFLIGHT.maximumArrayLength))
+      throw new Error('encrypted backup v2 descriptor wire is invalid')
+    for (let index = 0n; index < value; index += 1n) readDescriptorItem(bytes, state, depth + 1)
+  } else if (major === 2 || major === 3) {
+    if (
+      value > BigInt(DESCRIPTOR_PREFLIGHT.maximumItemLength) ||
+      value > BigInt(bytes.byteLength - state.offset)
+    )
+      throw new Error('encrypted backup v2 descriptor wire is invalid')
+    state.offset += Number(value)
+  } else if (major !== 0) {
+    throw new Error('encrypted backup v2 descriptor wire is invalid')
+  }
+  return { major, value }
+}
+
+function readDescriptorArgument(
+  bytes: Uint8Array,
+  state: { offset: number },
+  additional: number,
+): bigint {
+  if (additional < 24) return BigInt(additional)
+  const width = ({ 24: 1, 25: 2, 26: 4, 27: 8 } as Record<number, number>)[additional]
+  if (width === undefined || state.offset + width > bytes.byteLength)
+    throw new Error('encrypted backup v2 descriptor wire is invalid')
+  let value = 0n
+  for (let index = 0; index < width; index += 1)
+    value = (value << 8n) | BigInt(bytes[state.offset++]!)
+  const minimum = ({ 1: 24n, 2: 256n, 4: 65_536n, 8: 4_294_967_296n } as Record<number, bigint>)[
+    width
+  ]!
+  if (value < minimum) throw new Error('encrypted backup v2 descriptor wire is noncanonical')
+  return value
 }
 
 function toHex(value: Uint8Array): string {

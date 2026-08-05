@@ -240,7 +240,9 @@ export interface EncryptedWalletBackupV2ActiveDescriptorRow {
   vaultId: string;
   enrollmentEpoch: number;
   bundleId: string;
-  operationLocator: string;
+  assetLocator: string;
+  declaredAmount: string;
+  custodyRevision: string;
   payloadCommitment: string;
   objectCount: number;
   canonicalDescriptor: Uint8Array;

@@ -489,7 +489,9 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     const decoded = this.#descriptorRow(row.canonicalDescriptor);
     if (
       decoded.bundleId !== row.bundleId ||
-      decoded.operationLocator !== row.operationLocator ||
+      decoded.assetLocator !== row.assetLocator ||
+      decoded.declaredAmount !== requireDecimalUint64(row.declaredAmount) ||
+      decoded.custodyRevision !== requireDecimalUint64(row.custodyRevision) ||
       decoded.payloadCommitment !== row.payloadCommitment ||
       decoded.objectCount !== row.objectCount
     ) {
@@ -587,7 +589,9 @@ const descriptorFields = [
   "vaultId",
   "enrollmentEpoch",
   "bundleId",
-  "operationLocator",
+  "assetLocator",
+  "declaredAmount",
+  "custodyRevision",
   "payloadCommitment",
   "objectCount",
   "canonicalDescriptor",
@@ -621,7 +625,9 @@ function descriptorRow(
   return {
     ...identity,
     bundleId: descriptor.bundleId,
-    operationLocator: descriptor.operationLocator,
+    assetLocator: descriptor.assetLocator,
+    declaredAmount: decimalUint64(descriptor.declaredAmount),
+    custodyRevision: decimalUint64(descriptor.custodyRevision),
     payloadCommitment: descriptor.payloadCommitment,
     objectCount: descriptor.objects.length,
     canonicalDescriptor,
@@ -648,6 +654,18 @@ function requireBytes(value: unknown, minimum: number, maximum: number): Uint8Ar
 function requireHex(value: unknown, bytes: number, label: string): string {
   if (!isHex(value, bytes)) throw new Error(`encrypted wallet backup v2 ${label} is invalid`);
   return value;
+}
+
+function decimalUint64(value: bigint): string {
+  if (value < 0n || value > 18_446_744_073_709_551_615n)
+    throw new Error("encrypted wallet backup v2 uint64 is invalid");
+  return value.toString();
+}
+
+function requireDecimalUint64(value: unknown): string {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value))
+    throw new Error("encrypted wallet backup v2 uint64 is invalid");
+  return decimalUint64(BigInt(value));
 }
 
 function isHex(value: unknown, bytes: number): value is string {
@@ -684,7 +702,9 @@ function sameDescriptorRows(
   return sortedLeft.every(
     (row, index) =>
       row.bundleId === sortedRight[index]?.bundleId &&
-      row.operationLocator === sortedRight[index]?.operationLocator &&
+      row.assetLocator === sortedRight[index]?.assetLocator &&
+      row.declaredAmount === sortedRight[index]?.declaredAmount &&
+      row.custodyRevision === sortedRight[index]?.custodyRevision &&
       row.payloadCommitment === sortedRight[index]?.payloadCommitment &&
       row.objectCount === sortedRight[index]?.objectCount &&
       sameBytes(row.canonicalDescriptor, sortedRight[index]!.canonicalDescriptor),

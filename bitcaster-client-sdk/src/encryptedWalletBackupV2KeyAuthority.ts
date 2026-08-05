@@ -16,7 +16,6 @@ export interface EncryptedWalletBackupV2KeyAuthority {
   readonly vaultIdRoot: Uint8Array
   readonly requestAuthRoot: Uint8Array
   readonly assetLocatorRoot: Uint8Array
-  readonly operationLocatorRoot: Uint8Array
   readonly runtime: EncryptedWalletBackupV2Runtime
 }
 

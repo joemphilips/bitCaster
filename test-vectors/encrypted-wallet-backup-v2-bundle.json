@@ -2,20 +2,11 @@
   "inputs": {
     "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
     "realm": "backup.production",
-    "operationId": "deposit:01",
-    "assets": [
-      {
-        "mintUrl": "HTTPS://MINT.EXAMPLE./cashu///",
-        "unit": "sat",
-        "assetIdentity": "cashu:ordinary"
-      },
-      { "mintUrl": "https://mint.example/cashu", "unit": "sat", "assetIdentity": "cashu:ordinary" },
-      {
-        "mintUrl": "https://mint.example/cashu",
-        "unit": "sat",
-        "assetIdentity": "cashu:conditional"
-      }
-    ],
+    "asset": {
+      "mintUrl": "HTTPS://MINT.EXAMPLE./cashu///",
+      "unit": "sat",
+      "assetIdentity": "cashu:ordinary"
+    },
     "payloadHex": "01020304",
     "bundleIdHex": "00112233445566778899aabbccddeeff",
     "nonceHex": "f0f1f2f3f4f5f6f7f8f9fafb"
@@ -23,14 +14,18 @@
   "expected": {
     "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
     "bundleId": "00112233445566778899aabbccddeeff",
-    "operationLocator": "df4c0267aff6a0493ebcae589ecd4262308df5e5872a3ca01014410238e45f6e",
-    "assetLocators": [
-      "957580076c0cd0714951e7bf9bf274ee3a26ce1ac2f1403b5bb2a01d70cabad7",
-      "d5856ca354c4d4af47116443462f2d1cb9aca458be1149815956a64ab6a6755c"
-    ],
+    "assetLocator": "d5856ca354c4d4af47116443462f2d1cb9aca458be1149815956a64ab6a6755c",
+    "declaredAmount": 1,
+    "custodyRevision": 1,
     "payloadCommitment": "874e04a64a7492cc9e9d48f27f1d5ec24dd6e5aee3b844e472419773b1b16df1",
     "objectId": "144cca16c66fcecf01e9cc981f6df2fb",
-    "objectDigest": "9115086729de7074a6ea083390cd37a06e95877262780d7968f44f22ae31da0c",
-    "aadHex": "8b027828656e637279707465642d77616c6c65742d6261636b75702d76322d62756e646c652d6f626a656374716261636b75702e70726f64756374696f6e58205ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e5000112233445566778899aabbccddeeff5820df4c0267aff6a0493ebcae589ecd4262308df5e5872a3ca01014410238e45f6e825820957580076c0cd0714951e7bf9bf274ee3a26ce1ac2f1403b5bb2a01d70cabad75820d5856ca354c4d4af47116443462f2d1cb9aca458be1149815956a64ab6a6755c5820874e04a64a7492cc9e9d48f27f1d5ec24dd6e5aee3b844e472419773b1b16df150144cca16c66fcecf01e9cc981f6df2fb0001"
+    "descriptorWireHex": "8902716261636b75702e70726f64756374696f6e58205ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e5000112233445566778899aabbccddeeff5820d5856ca354c4d4af47116443462f2d1cb9aca458be1149815956a64ab6a6755c01015820874e04a64a7492cc9e9d48f27f1d5ec24dd6e5aee3b844e472419773b1b16df1818250144cca16c66fcecf01e9cc981f6df2fb582093d341af01af75b7b371ee93fb37414bb3a3c4246b7e81f571094efd809b78ba",
+    "descriptorDigest": "4008e18a2774f1323440a7c0c4f6c7f0496be47ab32dc090fc1c49d54b5f3dca",
+    "objectDigest": "93d341af01af75b7b371ee93fb37414bb3a3c4246b7e81f571094efd809b78ba",
+    "aadHex": "8c027828656e637279707465642d77616c6c65742d6261636b75702d76322d62756e646c652d6f626a656374716261636b75702e70726f64756374696f6e58205ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e5000112233445566778899aabbccddeeff5820d5856ca354c4d4af47116443462f2d1cb9aca458be1149815956a64ab6a6755c01015820874e04a64a7492cc9e9d48f27f1d5ec24dd6e5aee3b844e472419773b1b16df150144cca16c66fcecf01e9cc981f6df2fb0001",
+    "bodySha256": "bb9361e2fa42c4d47a494345be32397d046b12d03e22e783c75f717dcd764804",
+    "tagHex": "02659ea53d97a16b5da299693948a855",
+    "bodyLength": 262144,
+    "objectWireSha256": "fa8932d134ecf00d5d8d80e03b0ddfbee606e80a26788758ab950e16217af2a2"
   }
 }

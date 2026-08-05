@@ -25,19 +25,23 @@ const KEYSET = deriveKeysetId(
 )
 const MINT = 'https://mint.example'
 
-test('v2 proof set restores ordinary and CTF proof material', async () => {
+test('v2 proof set restores one asset proof material', async () => {
   const keyHandle = await handle()
-  const proofs = [proof(0, { kind: 'ordinary' }), proof(1, ctfAsset())]
+  const proofs = [proof(0, { kind: 'ordinary' }), proof(1, { kind: 'ordinary' })]
   const prepared = await prepareEncryptedWalletBackupV2ProofSetBundle({
     keyHandle,
     seed: SEED,
-    operationId: 'backup:proof-set',
+    asset: proofSetAsset(proofs[0]!),
+    custodyRevision: 1n,
     proofs,
     counterHighWaterMarks: [{ mintUrl: MINT, unit: 'sat', keysetId: KEYSET, nextCounter: 2 }],
     runtime: webcrypto,
   })
-  assert.equal(JSON.stringify(prepared.descriptor).includes(MINT), false)
-  const descriptorText = JSON.stringify(prepared.descriptor)
+  assert.equal(
+    Object.values(prepared.descriptor).some((value) => value === MINT),
+    false,
+  )
+  const descriptorText = Object.keys(prepared.descriptor).join(',')
   for (const privateValue of [
     MINT,
     'YES',
@@ -46,20 +50,59 @@ test('v2 proof set restores ordinary and CTF proof material', async () => {
     proofs[0]!.proof.secret,
     'proofCount',
     'payloadLength',
-  ])
+  ].filter((value) => value.length > 0))
     assert.equal(descriptorText.includes(privateValue), false)
   const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
     keyHandle,
     seed: SEED,
-    operationId: 'backup:proof-set',
+    expectedAsset: proofSetAsset(proofs[0]!),
+    custodyRevision: 1n,
     runtime: webcrypto,
     ...prepared,
   })
   assert.equal(restored.proofs.length, 2)
-  assert.equal(restored.proofs[1]!.asset.kind, 'ctf')
+  assert.equal(restored.proofs[1]!.asset.kind, 'ordinary')
   assert.equal(restored.counterHighWaterMarks[0]!.nextCounter, 2)
   restored.proofs[0]!.proof.secret = '00'.repeat(32)
   assert.notEqual(restored.proofs[0]!.proof.secret, proof(0, { kind: 'ordinary' }).proof.secret)
+})
+
+test('v2 proof set derives the declared amount from every retained proof', async () => {
+  const keyHandle = await handle()
+  const change = proof(0, { kind: 'ordinary' }, false, 3)
+  const retained = proof(1, { kind: 'ordinary' }, false, 7)
+  const asset = proofSetAsset(change)
+  const prepared = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    asset,
+    custodyRevision: 2n,
+    proofs: [change, retained],
+    counterHighWaterMarks: [counter(2)],
+    runtime: webcrypto,
+  })
+  assert.equal(prepared.descriptor.declaredAmount, 10n)
+
+  const staleSuccessor = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset,
+    declaredAmount: 10n,
+    custodyRevision: 3n,
+    canonicalPayload: proofSetPayload([change], [counter(2)]),
+    runtime: webcrypto,
+  })
+  await assert.rejects(
+    () =>
+      decryptEncryptedWalletBackupV2ProofSetBundle({
+        keyHandle,
+        seed: SEED,
+        expectedAsset: asset,
+        custodyRevision: 3n,
+        runtime: webcrypto,
+        ...staleSuccessor,
+      }),
+    /declared amount/,
+  )
 })
 
 test('v2 proof set enforces proof and counter row bounds before randomness', async () => {
@@ -75,13 +118,18 @@ test('v2 proof set enforces proof and counter row bounds before randomness', asy
         [counter(65)],
         webcrypto,
       ),
-    /asset identities are invalid/,
+    /asset is foreign/,
   )
   const exactCounters = Array.from({ length: 512 }, (_, index) =>
     index === 0 ? counter(512) : counterForKeyset(keysetFor(index), 0),
   )
   const exactPrepared = await prepareWithRuntime(keyHandle, exactProofs, exactCounters, webcrypto)
-  const exactRestored = await restore(keyHandle, exactPrepared)
+  const exactRestored = await restore(
+    keyHandle,
+    exactPrepared,
+    proofSetAsset(exactProofs[0]!),
+    512n,
+  )
   assert.equal(exactRestored.proofs.length, 512)
   assert.equal(exactRestored.counterHighWaterMarks.length, 512)
   await assert.rejects(
@@ -114,100 +162,81 @@ test('v2 proof set accepts CTF range provenance without a NUT-13 counter row', a
   const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
     keyHandle,
     seed: SEED,
-    operationId: 'backup:proof-set',
+    expectedAsset: proofSetAsset(rangeProof),
+    custodyRevision: 1n,
     runtime: webcrypto,
     ...prepared,
   })
   assert.equal(restored.proofs[0]!.locator.kind, 'ctf-range-manifest')
 })
 
-test('v2 proof set rejects authenticated operation and asset locator mismatches', async () => {
+test('v2 proof set rejects authenticated asset and custody metadata mismatches', async () => {
   const keyHandle = await handle()
-  const proofs = [proof(0, { kind: 'ordinary' }), proof(1, ctfAsset())]
+  const proofs = [proof(0, { kind: 'ordinary' })]
   const payload = proofSetPayload(proofs, [counter(2)])
-  const ordinary = { mintUrl: MINT, unit: 'sat', assetIdentity: 'cashu:ordinary' }
-  const ctfValue = ctfAsset()
-  const ctf = {
-    mintUrl: MINT,
-    unit: 'sat',
-    assetIdentity: `ctf:${ctfValue.conditionId}:${ctfValue.outcomeCollectionId}`,
-  }
-  const otherOperation = await prepareEncryptedWalletBackupV2TransportBundle({
+  const ordinary = proofSetAsset(proofs[0]!)
+  const foreignAsset = await prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle,
-    operationId: 'backup:other-operation',
-    assets: [ordinary, ctf],
+    asset: { ...ordinary, assetIdentity: 'cashu:foreign' },
+    declaredAmount: 1n,
+    custodyRevision: 1n,
     canonicalPayload: payload,
     runtime: webcrypto,
   })
-  await assert.rejects(() => restore(keyHandle, otherOperation), /operation is foreign/)
-  for (const assets of [
-    [ordinary, { ...ctf, assetIdentity: `ctf:${'33'.repeat(32)}:${ctfValue.outcomeCollectionId}` }],
-    [
-      ordinary,
-      ctf,
-      { ...ctf, assetIdentity: `ctf:${'44'.repeat(32)}:${ctfValue.outcomeCollectionId}` },
-    ],
-  ]) {
-    const transport = await prepareEncryptedWalletBackupV2TransportBundle({
-      keyHandle,
-      operationId: 'backup:proof-set',
-      assets,
-      canonicalPayload: payload,
-      runtime: webcrypto,
-    })
-    await assert.rejects(() => restore(keyHandle, transport), /assets are foreign/)
-  }
+  await assert.rejects(() => restore(keyHandle, foreignAsset), /asset is foreign/)
+  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset: ordinary,
+    declaredAmount: 2n,
+    custodyRevision: 1n,
+    canonicalPayload: payload,
+    runtime: webcrypto,
+  })
+  await assert.rejects(
+    () =>
+      decryptEncryptedWalletBackupV2ProofSetBundle({
+        keyHandle,
+        seed: SEED,
+        expectedAsset: ordinary,
+        custodyRevision: 1n,
+        runtime: webcrypto,
+        ...prepared,
+      }),
+    /declared amount/,
+  )
 })
 
 test('v2 proof set snapshots accessor-backed descriptor bindings before await', async () => {
   const keyHandle = await handle()
   const entry = proof(0, { kind: 'ordinary' })
   const payload = proofSetPayload([entry], [counter(1)])
-  const ordinary = [{ mintUrl: MINT, unit: 'sat', assetIdentity: 'cashu:ordinary' }]
+  const ordinary = { mintUrl: MINT, unit: 'sat' as const, assetIdentity: 'cashu:ordinary' }
   const expected = await prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle,
-    operationId: 'backup:proof-set',
-    assets: ordinary,
+    asset: ordinary,
+    declaredAmount: 1n,
+    custodyRevision: 1n,
     canonicalPayload: payload,
     runtime: webcrypto,
   })
-  const foreignOperation = await prepareEncryptedWalletBackupV2TransportBundle({
+  const foreignAsset = await prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle,
-    operationId: 'backup:foreign-operation',
-    assets: ordinary,
+    asset: { ...ordinary, assetIdentity: 'cashu:foreign' },
+    declaredAmount: 1n,
+    custodyRevision: 1n,
     canonicalPayload: payload,
     runtime: webcrypto,
   })
   await assert.rejects(
     () =>
       restore(keyHandle, {
-        ...foreignOperation,
-        descriptor: accessorDescriptor(foreignOperation.descriptor, 'operationLocator', [
-          expected.descriptor.operationLocator,
-          foreignOperation.descriptor.operationLocator,
+        ...foreignAsset,
+        descriptor: accessorDescriptor(foreignAsset.descriptor, 'assetLocator', [
+          expected.descriptor.assetLocator,
+          foreignAsset.descriptor.assetLocator,
         ]),
       }),
-    /operation is foreign|corrupt encrypted/,
-  )
-  const foreignAssets = await prepareEncryptedWalletBackupV2TransportBundle({
-    keyHandle,
-    operationId: 'backup:proof-set',
-    assets: [
-      { mintUrl: MINT, unit: 'sat', assetIdentity: `ctf:${'55'.repeat(32)}:${'66'.repeat(32)}` },
-    ],
-    canonicalPayload: payload,
-    runtime: webcrypto,
-  })
-  await assert.rejects(
-    () =>
-      restore(keyHandle, {
-        ...foreignAssets,
-        descriptor: accessorDescriptor(foreignAssets.descriptor, 'assetLocators', [
-          foreignAssets.descriptor.assetLocators,
-          expected.descriptor.assetLocators,
-        ]),
-      }),
-    /assets are foreign/,
+    /asset is foreign|corrupt encrypted/,
   )
 })
 
@@ -220,8 +249,9 @@ test('v2 proof set rejects noncanonical authenticated payloads', async () => {
   noncanonical.set(canonical.subarray(2), 3)
   const transport = await prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle,
-    operationId: 'backup:proof-set',
-    assets: [{ mintUrl: MINT, unit: 'sat', assetIdentity: 'cashu:ordinary' }],
+    asset: { mintUrl: MINT, unit: 'sat', assetIdentity: 'cashu:ordinary' },
+    declaredAmount: 1n,
+    custodyRevision: 1n,
     canonicalPayload: noncanonical,
     runtime: webcrypto,
   })
@@ -275,7 +305,8 @@ function prepareWithRuntime(
   return prepareEncryptedWalletBackupV2ProofSetBundle({
     keyHandle,
     seed,
-    operationId: 'backup:proof-set',
+    asset: proofSetAsset(proofs[0]!),
+    custodyRevision: 1n,
     proofs,
     counterHighWaterMarks: counters,
     runtime,
@@ -285,20 +316,34 @@ function prepareWithRuntime(
 function restore(
   keyHandle: Awaited<ReturnType<typeof handle>>,
   prepared: EncryptedWalletBackupV2PreparedTransportBundle,
+  expectedAsset = { mintUrl: MINT, unit: 'sat' as const, assetIdentity: 'cashu:ordinary' },
 ) {
   return decryptEncryptedWalletBackupV2ProofSetBundle({
     keyHandle,
     seed: SEED,
-    operationId: 'backup:proof-set',
+    expectedAsset,
+    custodyRevision: 1n,
     runtime: webcrypto,
     ...prepared,
   })
+}
+
+function proofSetAsset(value: EncryptedWalletBackupV2ProofSetProof) {
+  return {
+    mintUrl: value.mintUrl,
+    unit: value.unit,
+    assetIdentity:
+      value.asset.kind === 'ordinary'
+        ? 'cashu:ordinary'
+        : `ctf:${value.asset.conditionId}:${value.asset.outcomeCollectionId}`,
+  }
 }
 
 function proof(
   counter: number,
   asset: EncryptedWalletBackupV2ProofSetProof['asset'],
   includeProofMetadata = false,
+  amount = 1,
 ): EncryptedWalletBackupV2ProofSetProof {
   const locator = { schemaVersion: 1 as const, kind: 'nut13' as const, keysetId: KEYSET, counter }
   return {
@@ -308,12 +353,12 @@ function proof(
     locator,
     proof: {
       id: KEYSET,
-      amount: 1,
+      amount,
       secret: deriveDurableWalletProofSecret({
         seed: SEED,
         locator,
         proofKeysetId: KEYSET,
-        proofAmount: 1,
+        proofAmount: amount,
       }),
       C: `02${'11'.repeat(32)}`,
       ...(includeProofMetadata
@@ -354,7 +399,7 @@ function proofSetPayload(
   ])
 }
 
-function accessorDescriptor<Field extends 'operationLocator' | 'assetLocators'>(
+function accessorDescriptor<Field extends 'assetLocator'>(
   descriptor: EncryptedWalletBackupV2PreparedTransportBundle['descriptor'],
   field: Field,
   values: readonly EncryptedWalletBackupV2PreparedTransportBundle['descriptor'][Field][],

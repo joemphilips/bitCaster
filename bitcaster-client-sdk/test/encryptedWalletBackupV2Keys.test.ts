@@ -4,7 +4,6 @@ import { test } from 'node:test'
 import {
   createEncryptedWalletBackupV2KeyHandle,
   deriveEncryptedWalletBackupV2AssetLocator,
-  deriveEncryptedWalletBackupV2OperationLocator,
   ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
   type EncryptedWalletBackupV2Runtime,
 } from '../src/encryptedWalletBackupV2Keys.ts'
@@ -23,10 +22,6 @@ test('v2 key hierarchy has stable golden outputs and separates roots', async () 
     unit: 'sat',
     assetIdentity: 'cashu:ordinary',
   })
-  const operation = await deriveEncryptedWalletBackupV2OperationLocator({
-    keyHandle: first,
-    operationId: 'deposit:01',
-  })
 
   assert.deepEqual(first, second)
   assert.equal(first.formatVersion, ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION)
@@ -36,9 +31,7 @@ test('v2 key hierarchy has stable golden outputs and separates roots', async () 
     '8941fb08484ecf59ea6d3e331eb7a38736f80ddf5c27cd009b5326c9950baa94',
   )
   assert.equal(asset, 'd5856ca354c4d4af47116443462f2d1cb9aca458be1149815956a64ab6a6755c')
-  assert.equal(operation, 'df4c0267aff6a0493ebcae589ecd4262308df5e5872a3ca01014410238e45f6e')
   assert.notEqual(first.vaultId, first.requestAuthPublicKey)
-  assert.notEqual(asset, operation)
 })
 
 test('v2 key hierarchy separates seed and realm', async () => {
@@ -65,17 +58,15 @@ test('v2 key hierarchy separates seed and realm', async () => {
     unit: 'sat',
     assetIdentity: 'cashu:ordinary',
   })
-  const otherRealmOperation = await deriveEncryptedWalletBackupV2OperationLocator({
+  const otherRealmAsset = await deriveEncryptedWalletBackupV2AssetLocator({
     keyHandle: otherRealm,
-    operationId: 'deposit:01',
-  })
-  const baselineOperation = await deriveEncryptedWalletBackupV2OperationLocator({
-    keyHandle: baseline,
-    operationId: 'deposit:01',
+    mintUrl: MINT_URL,
+    unit: 'sat',
+    assetIdentity: 'cashu:ordinary',
   })
 
   assert.notEqual(baselineAsset, otherSeedAsset)
-  assert.notEqual(baselineOperation, otherRealmOperation)
+  assert.notEqual(baselineAsset, otherRealmAsset)
 })
 
 test('v2 locators are opaque and bind their exact input tuple', async () => {
@@ -98,19 +89,12 @@ test('v2 locators are opaque and bind their exact input tuple', async () => {
     unit: 'sat',
     assetIdentity: 'cashu:conditional',
   })
-  const operation = await deriveEncryptedWalletBackupV2OperationLocator({
-    keyHandle,
-    operationId: 'cashu:ordinary',
-  })
 
   assert.match(asset, /^[0-9a-f]{64}$/)
-  assert.match(operation, /^[0-9a-f]{64}$/)
   assert.notEqual(asset, changedUnit)
   assert.notEqual(asset, changedAsset)
-  assert.notEqual(asset, operation)
   assert.equal(asset.includes('mint.example'), false)
   assert.equal(asset.includes('cashu:ordinary'), false)
-  assert.equal(operation.includes('cashu:ordinary'), false)
 })
 
 test('v2 hierarchy rejects forged handles, wrong seed length, and invalid realms', async () => {
@@ -119,11 +103,23 @@ test('v2 hierarchy rejects forged handles, wrong seed length, and invalid realms
   const cloned = structuredClone(keyHandle)
 
   await assert.rejects(
-    () => deriveEncryptedWalletBackupV2OperationLocator({ keyHandle: forged, operationId: 'op' }),
+    () =>
+      deriveEncryptedWalletBackupV2AssetLocator({
+        keyHandle: forged,
+        mintUrl: MINT_URL,
+        unit: 'sat',
+        assetIdentity: 'asset',
+      }),
     /key handle is invalid/,
   )
   await assert.rejects(
-    () => deriveEncryptedWalletBackupV2OperationLocator({ keyHandle: cloned, operationId: 'op' }),
+    () =>
+      deriveEncryptedWalletBackupV2AssetLocator({
+        keyHandle: cloned,
+        mintUrl: MINT_URL,
+        unit: 'sat',
+        assetIdentity: 'asset',
+      }),
     /key handle is invalid/,
   )
   await assert.rejects(
@@ -206,10 +202,6 @@ test('v2 locators reject empty identifiers', async () => {
       }),
     /asset identity is invalid/,
   )
-  await assert.rejects(
-    () => deriveEncryptedWalletBackupV2OperationLocator({ keyHandle, operationId: '' }),
-    /operation id is invalid/,
-  )
 })
 
 test('v2 locators enforce ASCII identifier byte boundaries', async () => {
@@ -221,9 +213,6 @@ test('v2 locators enforce ASCII identifier byte boundaries', async () => {
       unit: 'u'.repeat(64),
       assetIdentity: 'a'.repeat(256),
     }),
-  )
-  await assert.doesNotReject(
-    deriveEncryptedWalletBackupV2OperationLocator({ keyHandle, operationId: 'o'.repeat(256) }),
   )
   await assert.rejects(
     () =>
@@ -245,11 +234,6 @@ test('v2 locators enforce ASCII identifier byte boundaries', async () => {
       }),
     /asset identity is invalid/,
   )
-  await assert.rejects(
-    () =>
-      deriveEncryptedWalletBackupV2OperationLocator({ keyHandle, operationId: 'o'.repeat(257) }),
-    /operation id is invalid/,
-  )
 })
 
 test('v2 locators use UTF-8 byte boundaries for multibyte identifiers', async () => {
@@ -261,9 +245,6 @@ test('v2 locators use UTF-8 byte boundaries for multibyte identifiers', async ()
       unit: 'é'.repeat(32),
       assetIdentity: 'é'.repeat(128),
     }),
-  )
-  await assert.doesNotReject(
-    deriveEncryptedWalletBackupV2OperationLocator({ keyHandle, operationId: 'é'.repeat(128) }),
   )
   await assert.rejects(
     () =>
@@ -284,11 +265,6 @@ test('v2 locators use UTF-8 byte boundaries for multibyte identifiers', async ()
         assetIdentity: 'é'.repeat(129),
       }),
     /asset identity is invalid/,
-  )
-  await assert.rejects(
-    () =>
-      deriveEncryptedWalletBackupV2OperationLocator({ keyHandle, operationId: 'é'.repeat(129) }),
-    /operation id is invalid/,
   )
 })
 

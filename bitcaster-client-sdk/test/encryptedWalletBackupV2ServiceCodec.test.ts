@@ -11,6 +11,7 @@ import {
 } from '../src/encryptedWalletBackupV2Bundle.ts'
 import { encodeCanonicalBackupCbor } from '../src/encryptedWalletBackupCbor.ts'
 import {
+  collectEncryptedWalletBackupV2DescriptorPages,
   createEncryptedWalletBackupV2CurrentHead,
   enumerateEncryptedWalletBackupV2DescriptorPages,
 } from '../src/encryptedWalletBackupV2Head.ts'
@@ -39,7 +40,6 @@ const vector = JSON.parse(
     'utf8',
   ),
 ) as { readonly expected: Record<string, string> }
-
 test('v2 service codecs produce canonical object, group, page, and receipt wires', async () => {
   const fixture = await createFixture()
   const object = fixture.prepared.objects[0]!
@@ -94,12 +94,12 @@ test('v2 service codecs produce canonical object, group, page, and receipt wires
   const receiptWire = encodeEncryptedWalletBackupV2BundleSupersessionReceipt(receipt)
   const decodedReceipt = decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire(receiptWire)
   assert.equal(decodedReceipt.signature, receipt.signature)
-  assert.equal(receipt.signature, vector.expected.receiptSignature)
   assert.equal(
     bytesEqual(receiptWire, encodeEncryptedWalletBackupV2BundleSupersessionReceipt(decodedReceipt)),
     true,
   )
   assert.equal(toHex(sha256(receiptWire)), vector.expected.receiptWireSha256)
+  assert.equal(receipt.signature, vector.expected.receiptSignature)
   assert.equal(
     verifyEncryptedWalletBackupV2BundleSupersessionReceipt({
       receipt: decodedReceipt,
@@ -219,10 +219,9 @@ async function createFixture(objectCount = 1) {
   payload[0] = 7
   const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle,
-    operationId: `service-codec-${objectCount}`,
-    assets: [
-      { mintUrl: 'https://mint.example/cashu', unit: 'sat', assetIdentity: 'cashu:ordinary' },
-    ],
+    asset: { mintUrl: 'https://mint.example/cashu', unit: 'sat', assetIdentity: 'cashu:ordinary' },
+    declaredAmount: BigInt(objectCount),
+    custodyRevision: BigInt(objectCount),
     canonicalPayload: payload,
     runtime: deterministicBundleRuntime(objectCount),
   })
@@ -236,7 +235,9 @@ async function createFixture(objectCount = 1) {
   const scope = { realm: REALM, vaultId: keyHandle.vaultId, enrollmentEpoch: 1 }
   const envelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
     keyHandle,
-    expectedHead: initialHead,
+    expectedHeadEvidence: collectEncryptedWalletBackupV2DescriptorPages(
+      enumerateEncryptedWalletBackupV2DescriptorPages({ head: initialHead, bundles: [] }),
+    ),
     addedBundle: prepared.descriptor,
     supersededBundleIds: [],
     runtime: deterministicRandom(['11'.repeat(16), '12'.repeat(32)]),

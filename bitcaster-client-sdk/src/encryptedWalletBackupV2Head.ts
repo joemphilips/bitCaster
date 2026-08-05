@@ -244,15 +244,15 @@ function decodeBundleSet(
   const bundles = value.map((bundle) =>
     decodeEncryptedWalletBackupV2BundleDescriptor(bundle, context),
   )
-  const operations = new Set<string>()
+  const assets = new Set<string>()
   const objects = new Set<string>()
   for (let index = 0; index < bundles.length; index += 1) {
     const bundle = bundles[index]!
     if (index > 0 && bundle.bundleId <= bundles[index - 1]!.bundleId)
       throw new Error('encrypted backup v2 active bundles are unordered or duplicated')
-    if (operations.has(bundle.operationLocator))
-      throw new Error('encrypted backup v2 operation locator is duplicated')
-    operations.add(bundle.operationLocator)
+    if (assets.has(bundle.assetLocator))
+      throw new Error('encrypted backup v2 asset locator is duplicated')
+    assets.add(bundle.assetLocator)
     for (const object of bundle.objects) {
       if (objects.has(object.objectId))
         throw new Error('encrypted backup v2 object id is duplicated')

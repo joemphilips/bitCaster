@@ -8,7 +8,10 @@ import {
   ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX,
   ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_OBJECT_REFERENCE_MAX,
 } from './encryptedWalletBackupV2Descriptor.ts'
-import type { EncryptedWalletBackupV2CurrentHead } from './encryptedWalletBackupV2Head.ts'
+import {
+  requireEncryptedWalletBackupV2CollectedHeadEvidence,
+  type EncryptedWalletBackupV2CollectedHeadEvidence,
+} from './encryptedWalletBackupV2Head.ts'
 import {
   deriveEncryptedWalletBackupV2RequestAuthScalar,
   requireEncryptedWalletBackupV2KeyAuthority,
@@ -59,7 +62,7 @@ const VERIFIED_MUTATIONS = new WeakSet<object>()
 
 export async function prepareEncryptedWalletBackupV2BundleSupersessionMutation(input: {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle
-  readonly expectedHead: EncryptedWalletBackupV2CurrentHead
+  readonly expectedHeadEvidence: EncryptedWalletBackupV2CollectedHeadEvidence
   readonly addedBundle: EncryptedWalletBackupV2BundleDescriptor | null
   readonly supersededBundleIds: readonly string[]
   readonly runtime: EncryptedWalletBackupV2MutationRuntime
@@ -155,7 +158,7 @@ export function decodeEncryptedWalletBackupV2SignedBundleSupersessionMutation(
 
 function snapshotPreparationInput(input: {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle
-  readonly expectedHead: EncryptedWalletBackupV2CurrentHead
+  readonly expectedHeadEvidence: EncryptedWalletBackupV2CollectedHeadEvidence
   readonly addedBundle: EncryptedWalletBackupV2BundleDescriptor | null
   readonly supersededBundleIds: readonly string[]
   readonly runtime: EncryptedWalletBackupV2MutationRuntime
@@ -163,12 +166,15 @@ function snapshotPreparationInput(input: {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle
   readonly context: ExpectedHeadContext
   readonly requestAuthPublicKey: string
-  readonly addedBundle: unknown
-  readonly supersededBundleIds: unknown
+  readonly addedBundle: EncryptedWalletBackupV2BundleDescriptor | null
+  readonly supersededBundleIds: readonly string[]
   readonly runtime: EncryptedWalletBackupV2MutationRuntime
 } {
   const keyHandle = input.keyHandle
-  const expectedHead = input.expectedHead
+  const expectedHeadEvidence = requireEncryptedWalletBackupV2CollectedHeadEvidence(
+    input.expectedHeadEvidence,
+  )
+  const expectedHead = expectedHeadEvidence.head
   const addedBundle = input.addedBundle
   const supersededBundleIds = input.supersededBundleIds
   const runtime = requireMutationRuntime(input.runtime)
@@ -176,13 +182,46 @@ function snapshotPreparationInput(input: {
   const context = decodeExpectedHead(expectedHead)
   if (context.realm !== key.realm || context.vaultId !== key.vaultId)
     throw new Error('encrypted backup mutation context is invalid')
+  const decodedAddedBundle =
+    addedBundle === null
+      ? null
+      : decodeEncryptedWalletBackupV2BundleDescriptor(addedBundle, context)
+  const decodedSupersededBundleIds = decodeSupersededBundleIds(supersededBundleIds)
+  requireExactAssetReplacement(
+    decodedAddedBundle,
+    decodedSupersededBundleIds,
+    expectedHeadEvidence.bundles,
+  )
   return {
     keyHandle,
     context,
     requestAuthPublicKey: key.requestAuthPublicKey,
-    addedBundle,
-    supersededBundleIds,
+    addedBundle: decodedAddedBundle,
+    supersededBundleIds: decodedSupersededBundleIds,
     runtime,
+  }
+}
+
+function requireExactAssetReplacement(
+  addedBundle: EncryptedWalletBackupV2BundleDescriptor | null,
+  supersededBundleIds: readonly string[],
+  currentBundles: readonly EncryptedWalletBackupV2BundleDescriptor[],
+): void {
+  const superseded = supersededBundleIds
+  const currentIds = new Set(currentBundles.map((bundle) => bundle.bundleId))
+  if (superseded.some((bundleId) => !currentIds.has(bundleId)))
+    throw new Error('encrypted backup mutation predecessor is not current')
+  if (addedBundle === null) return
+  const matching = currentBundles.filter(
+    (bundle) => bundle.assetLocator === addedBundle.assetLocator,
+  )
+  if (matching.length === 0) {
+    if (superseded.length !== 0)
+      throw new Error('encrypted backup mutation addition has a predecessor')
+    return
+  }
+  if (matching.length !== 1 || superseded.length !== 1 || superseded[0] !== matching[0]!.bundleId) {
+    throw new Error('encrypted backup mutation replacement predecessor is invalid')
   }
 }
 

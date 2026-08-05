@@ -9,14 +9,13 @@ import {
 } from './encryptedWalletBackupV2KeyAuthority.ts'
 import {
   decodeEncryptedWalletBackupV2BundleDescriptor,
-  ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_ASSET_MAX,
   ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX,
+  ENCRYPTED_WALLET_BACKUP_V2_UINT64_MAX,
 } from './encryptedWalletBackupV2Descriptor.ts'
 export type { EncryptedWalletBackupV2BundleDescriptor } from './encryptedWalletBackupV2Descriptor.ts'
 import type { EncryptedWalletBackupV2BundleDescriptor } from './encryptedWalletBackupV2Descriptor.ts'
 import {
   deriveEncryptedWalletBackupV2AssetLocator,
-  deriveEncryptedWalletBackupV2OperationLocator,
   ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
   type EncryptedWalletBackupV2KeyHandle,
   type EncryptedWalletBackupV2Runtime,
@@ -32,8 +31,6 @@ import {
 export const ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_BODY_BYTES = 262_144 as const
 export const ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_OBJECT_MAX =
   ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX
-export const ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_ASSET_MAX =
-  ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_ASSET_MAX
 
 const GCM_TAG_BYTES = 16
 const GCM_NONCE_BYTES = 12
@@ -49,7 +46,6 @@ export const ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_PAYLOAD_MAX_BYTES =
   PAYLOAD_FRAME_BYTES * ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_OBJECT_MAX - HEADER_BYTES
 const UNIT_MAX_BYTES = 64
 const ASSET_ID_MAX_BYTES = 256
-const OPERATION_ID_MAX_BYTES = 256
 const BUNDLE_ID_COLLISION_ATTEMPTS = 8
 
 export interface EncryptedWalletBackupV2BundleRuntime extends EncryptedWalletBackupV2Runtime {
@@ -151,8 +147,9 @@ const OBJECT_WIRE_PREFLIGHT = {
 /** Encrypts canonical transport bytes. A later compiler owns restore-completeness authority. */
 export async function prepareEncryptedWalletBackupV2TransportBundle(input: {
   keyHandle: EncryptedWalletBackupV2KeyHandle
-  operationId: string
-  assets: readonly EncryptedWalletBackupV2AssetIdentity[]
+  asset: EncryptedWalletBackupV2AssetIdentity
+  declaredAmount: bigint
+  custodyRevision: bigint
   canonicalPayload: Uint8Array
   runtime: EncryptedWalletBackupV2BundleRuntime
   bundleIdExists?: (bundleId: string) => boolean | Promise<boolean>
@@ -160,16 +157,13 @@ export async function prepareEncryptedWalletBackupV2TransportBundle(input: {
   const authority = requireEncryptedWalletBackupV2KeyAuthority(input.keyHandle)
   const payload = requireCanonicalTransportPayload(input.canonicalPayload)
   const runtime = requireBundleRuntime(input.runtime)
-  const operationId = requireUtf8Text(
-    input.operationId,
-    OPERATION_ID_MAX_BYTES,
-    'encrypted backup operation id',
-  )
-  const assetLocators = await deriveAssetLocators(input.keyHandle, input.assets)
-  const operationLocator = await deriveEncryptedWalletBackupV2OperationLocator({
+  const asset = requireAssetIdentity(input.asset)
+  const assetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
     keyHandle: input.keyHandle,
-    operationId,
+    ...asset,
   })
+  const declaredAmount = requireUint64(input.declaredAmount, 'declared amount')
+  const custodyRevision = requireUint64(input.custodyRevision, 'custody revision')
   const bundleId = await allocateBundleId(runtime, input.bundleIdExists)
   const payloadDigest = sha256(payload)
   const payloadCommitment = await derivePayloadCommitment(
@@ -182,8 +176,9 @@ export async function prepareEncryptedWalletBackupV2TransportBundle(input: {
     realm: input.keyHandle.realm,
     vaultId: input.keyHandle.vaultId,
     bundleId: toHex(bundleId),
-    operationLocator,
-    assetLocators,
+    assetLocator,
+    declaredAmount,
+    custodyRevision,
     payloadCommitment: toHex(payloadCommitment),
   }
   const objectCount = objectCountForPayload(payload.byteLength)
@@ -228,26 +223,6 @@ export async function decryptEncryptedWalletBackupV2TransportBundle(input: {
   } catch {
     throw new Error('corrupt encrypted wallet backup v2 bundle')
   }
-}
-
-async function deriveAssetLocators(
-  keyHandle: EncryptedWalletBackupV2KeyHandle,
-  assets: readonly EncryptedWalletBackupV2AssetIdentity[],
-): Promise<readonly string[]> {
-  if (
-    !Array.isArray(assets) ||
-    assets.length < 1 ||
-    assets.length > ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_ASSET_MAX
-  ) {
-    throw new Error('encrypted backup asset identities are invalid')
-  }
-  const locators = await Promise.all(
-    assets.map(async (asset) => {
-      const tuple = requireAssetIdentity(asset)
-      return deriveEncryptedWalletBackupV2AssetLocator({ keyHandle, ...tuple })
-    }),
-  )
-  return Object.freeze([...new Set(locators)].sort())
 }
 
 function requireAssetIdentity(value: unknown): EncryptedWalletBackupV2AssetIdentity {
@@ -404,8 +379,9 @@ function encodeObjectAad(input: {
     input.descriptorBase.realm,
     fromHex(input.descriptorBase.vaultId, 32),
     input.bundleId,
-    fromHex(input.descriptorBase.operationLocator, 32),
-    input.descriptorBase.assetLocators.map((locator) => fromHex(locator, 32)),
+    fromHex(input.descriptorBase.assetLocator, 32),
+    input.descriptorBase.declaredAmount,
+    input.descriptorBase.custodyRevision,
     fromHex(input.descriptorBase.payloadCommitment, 32),
     input.objectId,
     input.index,
@@ -431,7 +407,6 @@ function freezePreparedBundle(
   const descriptor = Object.freeze({
     formatVersion: ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
     ...descriptorBase,
-    assetLocators: Object.freeze([...descriptorBase.assetLocators]),
     objects: Object.freeze(
       objects.map((object) => Object.freeze({ objectId: object.objectId, digest: object.digest })),
     ),
@@ -773,9 +748,16 @@ interface DescriptorBase {
   readonly realm: string
   readonly vaultId: string
   readonly bundleId: string
-  readonly operationLocator: string
-  readonly assetLocators: readonly string[]
+  readonly assetLocator: string
+  readonly declaredAmount: bigint
+  readonly custodyRevision: bigint
   readonly payloadCommitment: string
+}
+
+function requireUint64(value: unknown, name: string): bigint {
+  if (typeof value !== 'bigint' || value < 0n || value > ENCRYPTED_WALLET_BACKUP_V2_UINT64_MAX)
+    throw new Error(`encrypted backup ${name} is invalid`)
+  return value
 }
 
 interface DescriptorObject {

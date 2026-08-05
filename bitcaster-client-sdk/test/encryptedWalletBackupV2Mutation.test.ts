@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { webcrypto } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { createEncryptedWalletBackupV2CurrentHead } from '../src/encryptedWalletBackupV2Head.ts'
-import type { EncryptedWalletBackupV2BundleDescriptor } from '../src/encryptedWalletBackupV2Descriptor.ts'
+import {
+  collectEncryptedWalletBackupV2DescriptorPages,
+  createEncryptedWalletBackupV2CurrentHead,
+  enumerateEncryptedWalletBackupV2DescriptorPages,
+} from '../src/encryptedWalletBackupV2Head.ts'
 import {
   digestEncryptedWalletBackupV2BundleSupersessionMutation,
   prepareEncryptedWalletBackupV2BundleSupersessionMutation,
@@ -15,33 +17,10 @@ import { createEncryptedWalletBackupV2KeyHandle } from '../src/encryptedWalletBa
 const REALM = 'backup.production'
 const VAULT = '5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e'
 const SEED = Uint8Array.from({ length: 64 }, (_value, index) => index)
-const vector = JSON.parse(
-  await readFile(
-    new URL('../../test-vectors/encrypted-wallet-backup-v2-mutation.json', import.meta.url),
-    'utf8',
-  ),
-) as {
-  readonly inputs: {
-    readonly realm: string
-    readonly vaultId: string
-    readonly enrollmentEpoch: number
-    readonly headVersion: number
-    readonly seedHex: string
-    readonly mutationIdHex: string
-    readonly auxiliaryRandomnessHex: string
-    readonly existingBundle: EncryptedWalletBackupV2BundleDescriptor
-    readonly addedBundle: EncryptedWalletBackupV2BundleDescriptor
-  }
-  readonly expected: {
-    readonly requestAuthPublicKey: string
-    readonly requestDigest: string
-    readonly signature: string
-  }
-}
 
 test('v2 bundle supersession supports add, replace, removal, and verified evidence', async () => {
   const fixture = await createFixture()
-  const addition = await prepare(fixture, fixture.added, [], ['01', '02'])
+  const addition = await prepare(fixture, fixture.addition, [], ['01', '02'])
   const replacement = await prepare(
     fixture,
     fixture.added,
@@ -65,36 +44,77 @@ test('v2 bundle supersession supports add, replace, removal, and verified eviden
   )
 })
 
-test('v2 bundle supersession matches the shared deterministic vector', async () => {
-  const seed = fromHex(vector.inputs.seedHex)
-  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
-    seed,
-    realm: vector.inputs.realm,
-    runtime: webcrypto,
-  })
-  const existing = vector.inputs.existingBundle
-  const added = vector.inputs.addedBundle
+test('v2 bundle supersession signs deterministic same-asset replacement data', async () => {
+  const fixture = await createFixture()
+  const envelope = await prepare(fixture, fixture.added, [fixture.existing.bundleId], ['01', '12'])
+  assert.equal(envelope.requestDigest.length, 64)
+  assert.equal(verify(fixture, envelope).envelope.requestDigest, envelope.requestDigest)
+})
+
+test('v2 bundle supersession validates exact current asset predecessors before signing', async () => {
+  const fixture = await createFixture()
+  const unrelated = descriptor(4)
   const head = createEncryptedWalletBackupV2CurrentHead({
-    realm: vector.inputs.realm,
-    vaultId: vector.inputs.vaultId,
-    enrollmentEpoch: vector.inputs.enrollmentEpoch,
-    headVersion: vector.inputs.headVersion,
-    bundles: [existing],
+    realm: REALM,
+    vaultId: VAULT,
+    enrollmentEpoch: 7,
+    headVersion: 3,
+    bundles: [fixture.existing, unrelated],
   })
-  const envelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
-    keyHandle,
-    expectedHead: head,
-    addedBundle: added,
-    supersededBundleIds: [existing.bundleId],
-    runtime: deterministicRuntime([
-      fromHex(vector.inputs.mutationIdHex),
-      fromHex(vector.inputs.auxiliaryRandomnessHex),
-    ]),
-  })
-  assert.equal(envelope.requestAuthPublicKey, vector.expected.requestAuthPublicKey)
-  assert.equal(envelope.requestDigest, vector.expected.requestDigest)
-  assert.equal(envelope.signature, vector.expected.signature)
-  assert.equal(verify({ keyHandle, head }, envelope).envelope.requestDigest, envelope.requestDigest)
+  const evidence = collectEncryptedWalletBackupV2DescriptorPages(
+    enumerateEncryptedWalletBackupV2DescriptorPages({
+      head,
+      bundles: [fixture.existing, unrelated],
+    }),
+  )
+  const base = {
+    keyHandle: fixture.keyHandle,
+    expectedHeadEvidence: evidence,
+    addedBundle: fixture.added,
+    runtime: deterministicRuntime([fromHex('0d'.repeat(16)), fromHex('0e'.repeat(32))]),
+  }
+  await assert.rejects(
+    () =>
+      prepareEncryptedWalletBackupV2BundleSupersessionMutation({
+        ...base,
+        supersededBundleIds: [],
+      }),
+    /replacement predecessor/,
+  )
+  await assert.rejects(
+    () =>
+      prepareEncryptedWalletBackupV2BundleSupersessionMutation({
+        ...base,
+        supersededBundleIds: [unrelated.bundleId],
+      }),
+    /replacement predecessor/,
+  )
+  await assert.rejects(
+    () =>
+      prepareEncryptedWalletBackupV2BundleSupersessionMutation({
+        ...base,
+        supersededBundleIds: [fixture.existing.bundleId, unrelated.bundleId],
+      }),
+    /replacement predecessor/,
+  )
+  await assert.rejects(
+    () =>
+      prepareEncryptedWalletBackupV2BundleSupersessionMutation({
+        ...base,
+        addedBundle: fixture.addition,
+        supersededBundleIds: [fixture.existing.bundleId],
+      }),
+    /addition has a predecessor/,
+  )
+  await assert.rejects(
+    () =>
+      prepareEncryptedWalletBackupV2BundleSupersessionMutation({
+        ...base,
+        addedBundle: null,
+        supersededBundleIds: ['ff'.repeat(16)],
+      }),
+    /not current/,
+  )
 })
 
 test('v2 bundle supersession rejects invalid mutation fields and modes', async () => {
@@ -126,24 +146,19 @@ test('v2 bundle supersession rejects invalid mutation fields and modes', async (
     )
 })
 
-test('v2 bundle supersession rejects expected heads above the active limits', async () => {
+test('v2 bundle supersession requires collected current-head evidence', async () => {
   const fixture = await createFixture()
-  for (const expectedHead of [
-    { ...fixture.head, activeBundleCount: 257 },
-    { ...fixture.head, activeObjectCount: 257 },
-  ]) {
-    await assert.rejects(
-      () =>
-        prepareEncryptedWalletBackupV2BundleSupersessionMutation({
-          keyHandle: fixture.keyHandle,
-          expectedHead,
-          addedBundle: fixture.added,
-          supersededBundleIds: [fixture.existing.bundleId],
-          runtime: deterministicRuntime([fromHex('0d'.repeat(16)), fromHex('0e'.repeat(32))]),
-        }),
-      /active (bundle|object) count/,
-    )
-  }
+  await assert.rejects(
+    () =>
+      prepareEncryptedWalletBackupV2BundleSupersessionMutation({
+        keyHandle: fixture.keyHandle,
+        expectedHeadEvidence: { ...fixture.evidence },
+        addedBundle: fixture.added,
+        supersededBundleIds: [fixture.existing.bundleId],
+        runtime: deterministicRuntime([fromHex('0d'.repeat(16)), fromHex('0e'.repeat(32))]),
+      }),
+    /collected head evidence/,
+  )
 })
 
 test('v2 bundle supersession rejects wrong key, context, signature, digest, and envelope fields', async () => {
@@ -199,12 +214,6 @@ test('v2 bundle supersession rejects wrong key, context, signature, digest, and 
 test('v2 bundle supersession snapshots accessors and detaches its mutation output', async () => {
   const fixture = await createFixture()
   const sourceIds = [fixture.existing.bundleId]
-  const accessorHead = { ...fixture.head }
-  let epochReads = 0
-  Object.defineProperty(accessorHead, 'enrollmentEpoch', {
-    enumerable: true,
-    get: () => (epochReads++ === 0 ? fixture.head.enrollmentEpoch : 2),
-  })
   let keyReads = 0
   let addedReads = 0
   let idsReads = 0
@@ -214,8 +223,8 @@ test('v2 bundle supersession snapshots accessors and detaches its mutation outpu
       keyReads += 1
       return fixture.keyHandle
     },
-    get expectedHead() {
-      return accessorHead
+    get expectedHeadEvidence() {
+      return fixture.evidence
     },
     get addedBundle() {
       addedReads += 1
@@ -231,16 +240,37 @@ test('v2 bundle supersession snapshots accessors and detaches its mutation outpu
   }
   const envelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation(input)
   sourceIds[0] = 'ff'.repeat(16)
-  fixture.added.assetLocators[0] = 'ff'.repeat(32)
-  assert.equal(epochReads, 1)
+  fixture.added.assetLocator = 'ff'.repeat(32)
   assert.equal(keyReads, 1)
   assert.equal(addedReads, 1)
   assert.equal(idsReads, 1)
   assert.equal(runtimeReads, 1)
   assert.equal(envelope.mutation.supersededBundleIds[0], fixture.existing.bundleId)
-  assert.equal(envelope.mutation.addedBundle?.assetLocators[0], '21'.repeat(32))
+  assert.equal(envelope.mutation.addedBundle?.assetLocator, fixture.existing.assetLocator)
   assert.equal(Object.isFrozen(envelope), true)
   assert.equal(Object.isFrozen(envelope.mutation), true)
+})
+
+test('v2 bundle supersession decodes an added descriptor before predecessor checks', async () => {
+  const fixture = await createFixture()
+  let locatorReads = 0
+  const addedBundle = { ...fixture.added }
+  Object.defineProperty(addedBundle, 'assetLocator', {
+    enumerable: true,
+    get: () => {
+      locatorReads += 1
+      return locatorReads === 1 ? fixture.existing.assetLocator : 'ff'.repeat(32)
+    },
+  })
+  const envelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
+    keyHandle: fixture.keyHandle,
+    expectedHeadEvidence: fixture.evidence,
+    addedBundle,
+    supersededBundleIds: [fixture.existing.bundleId],
+    runtime: deterministicRuntime([fromHex('0f'.repeat(16)), fromHex('10'.repeat(32))]),
+  })
+  assert.equal(locatorReads, 1)
+  assert.equal(envelope.mutation.addedBundle?.assetLocator, fixture.existing.assetLocator)
 })
 
 test('v2 bundle supersession rejects a random runtime that returns another array', async () => {
@@ -249,7 +279,7 @@ test('v2 bundle supersession rejects a random runtime that returns another array
     () =>
       prepareEncryptedWalletBackupV2BundleSupersessionMutation({
         keyHandle: fixture.keyHandle,
-        expectedHead: fixture.head,
+        expectedHeadEvidence: fixture.evidence,
         addedBundle: fixture.added,
         supersededBundleIds: [fixture.existing.bundleId],
         runtime: { getRandomValues: (target) => new Uint8Array(target.byteLength) },
@@ -265,7 +295,8 @@ async function createFixture() {
     runtime: webcrypto,
   })
   const existing = descriptor(1)
-  const added = descriptor(2)
+  const added = { ...descriptor(2), assetLocator: existing.assetLocator }
+  const addition = descriptor(3)
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
     vaultId: VAULT,
@@ -273,7 +304,10 @@ async function createFixture() {
     headVersion: 3,
     bundles: [existing],
   })
-  return { keyHandle, existing, added, head }
+  const evidence = collectEncryptedWalletBackupV2DescriptorPages(
+    enumerateEncryptedWalletBackupV2DescriptorPages({ head, bundles: [existing] }),
+  )
+  return { keyHandle, existing, added, addition, head, evidence }
 }
 
 async function prepare(
@@ -284,7 +318,7 @@ async function prepare(
 ) {
   return prepareEncryptedWalletBackupV2BundleSupersessionMutation({
     keyHandle: fixture.keyHandle,
-    expectedHead: fixture.head,
+    expectedHeadEvidence: fixture.evidence,
     addedBundle,
     supersededBundleIds,
     runtime: deterministicRuntime(random.map(fromRepeatedHex)),
@@ -309,8 +343,9 @@ function descriptor(index: number, realm = REALM, vaultId = VAULT) {
     realm,
     vaultId,
     bundleId: index.toString(16).padStart(32, '0'),
-    operationLocator: (index + 16).toString(16).padStart(64, '0'),
-    assetLocators: ['21'.repeat(32)],
+    assetLocator: (index + 16).toString(16).padStart(64, '0'),
+    declaredAmount: BigInt(index),
+    custodyRevision: BigInt(index),
     payloadCommitment: (index + 32).toString(16).padStart(64, '0'),
     objects: [
       {

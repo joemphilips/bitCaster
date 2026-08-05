@@ -368,8 +368,9 @@ function fixture() {
 async function nextPreparedFixture(previous: Awaited<ReturnType<typeof preparedFixture>>) {
   const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle: previous.keyHandle,
-    operationId: "v2-dexie-newer-test",
-    assets: [{ mintUrl: "https://mint.example", unit: "sat", assetIdentity: "cashu:ordinary" }],
+    asset: { mintUrl: "https://mint.example", unit: "sat", assetIdentity: "cashu:newer" },
+    declaredAmount: 1n,
+    custodyRevision: 2n,
     canonicalPayload: encodeCanonicalBackupCbor(["newer"]),
     runtime: {
       subtle: crypto.subtle,
@@ -378,7 +379,7 @@ async function nextPreparedFixture(previous: Awaited<ReturnType<typeof preparedF
   });
   const envelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
     keyHandle: previous.keyHandle,
-    expectedHead: previous.resultHead,
+    expectedHeadEvidence: previous.collectedHeadEvidence,
     addedBundle: prepared.descriptor,
     supersededBundleIds: [],
     runtime: { getRandomValues: queuedRandom([hex(12, 16), hex(13, 32)]) },
@@ -474,8 +475,9 @@ async function preparedFixture(variant = 1) {
   });
   const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle,
-    operationId: "v2-dexie-prepared-test",
-    assets: [{ mintUrl: "https://mint.example", unit: "sat", assetIdentity: "cashu:ordinary" }],
+    asset: { mintUrl: "https://mint.example", unit: "sat", assetIdentity: "cashu:ordinary" },
+    declaredAmount: 1n,
+    custodyRevision: 1n,
     canonicalPayload: encodeCanonicalBackupCbor(["test"]),
     runtime: {
       subtle: crypto.subtle,
@@ -495,7 +497,7 @@ async function preparedFixture(variant = 1) {
   });
   const envelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
     keyHandle,
-    expectedHead: head,
+    expectedHeadEvidence: collectedEvidence(head, []),
     addedBundle: prepared.descriptor,
     supersededBundleIds: [],
     runtime: { getRandomValues: queuedRandom([hex(variant + 2, 16), hex(variant + 3, 32)]) },
