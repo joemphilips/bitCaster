@@ -2,7 +2,6 @@ import { schnorr } from '@noble/curves/secp256k1.js'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
 import {
   deriveEncryptedWalletBackupV2Hkdf,
-  deriveEncryptedWalletBackupV2PortfolioReportingScalar,
   deriveEncryptedWalletBackupV2RequestAuthScalar,
   registerEncryptedWalletBackupV2KeyHandle,
   requireEncryptedWalletBackupV2KeyAuthority,
@@ -27,7 +26,6 @@ export interface EncryptedWalletBackupV2KeyHandle {
   readonly realm: string
   readonly vaultId: string
   readonly requestAuthPublicKey: string
-  readonly portfolioReportingPublicKey: string
 }
 
 export async function createEncryptedWalletBackupV2KeyHandle(input: {
@@ -43,17 +41,11 @@ export async function createEncryptedWalletBackupV2KeyHandle(input: {
   const requestAuthPublicKey = toLowerHex(
     schnorr.getPublicKey(await deriveEncryptedWalletBackupV2RequestAuthScalar(authority, realm)),
   )
-  const portfolioReportingPublicKey = toLowerHex(
-    schnorr.getPublicKey(
-      await deriveEncryptedWalletBackupV2PortfolioReportingScalar(authority, realm),
-    ),
-  )
   const handle = Object.freeze({
     formatVersion: ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
     realm,
     vaultId,
     requestAuthPublicKey,
-    portfolioReportingPublicKey,
   })
   registerEncryptedWalletBackupV2KeyHandle(handle, authority)
   return handle
@@ -110,14 +102,12 @@ async function deriveKeyAuthority(
     encryptionRoot,
     vaultIdRoot,
     requestAuthRoot,
-    portfolioReportingRoot,
     assetLocatorRoot,
     operationLocatorRoot,
   ] = await Promise.all([
     deriveRoot(seed, realm, 'encryption-root', runtime),
     deriveRoot(seed, realm, 'vault-id-root', runtime),
     deriveRoot(seed, realm, 'request-auth-root', runtime),
-    deriveRoot(seed, realm, 'portfolio-reporting-root', runtime),
     deriveRoot(seed, realm, 'asset-locator-root', runtime),
     deriveRoot(seed, realm, 'operation-locator-root', runtime),
   ])
@@ -125,7 +115,6 @@ async function deriveKeyAuthority(
     encryptionRoot,
     vaultIdRoot,
     requestAuthRoot,
-    portfolioReportingRoot,
     assetLocatorRoot,
     operationLocatorRoot,
     runtime,

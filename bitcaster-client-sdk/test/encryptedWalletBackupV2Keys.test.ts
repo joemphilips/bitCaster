@@ -35,15 +35,9 @@ test('v2 key hierarchy has stable golden outputs and separates roots', async () 
     first.requestAuthPublicKey,
     '8941fb08484ecf59ea6d3e331eb7a38736f80ddf5c27cd009b5326c9950baa94',
   )
-  assert.equal(
-    first.portfolioReportingPublicKey,
-    '6c9ebf3cb343a7ee9efc1f13fc10f0c0416ab97d3be76d0dbaeed75dc6a4575a',
-  )
   assert.equal(asset, 'd5856ca354c4d4af47116443462f2d1cb9aca458be1149815956a64ab6a6755c')
   assert.equal(operation, 'df4c0267aff6a0493ebcae589ecd4262308df5e5872a3ca01014410238e45f6e')
   assert.notEqual(first.vaultId, first.requestAuthPublicKey)
-  assert.notEqual(first.vaultId, first.portfolioReportingPublicKey)
-  assert.notEqual(first.requestAuthPublicKey, first.portfolioReportingPublicKey)
   assert.notEqual(asset, operation)
 })
 
@@ -57,10 +51,8 @@ test('v2 key hierarchy separates seed and realm', async () => {
 
   assert.notEqual(baseline.vaultId, otherSeed.vaultId)
   assert.notEqual(baseline.requestAuthPublicKey, otherSeed.requestAuthPublicKey)
-  assert.notEqual(baseline.portfolioReportingPublicKey, otherSeed.portfolioReportingPublicKey)
   assert.notEqual(baseline.vaultId, otherRealm.vaultId)
   assert.notEqual(baseline.requestAuthPublicKey, otherRealm.requestAuthPublicKey)
-  assert.notEqual(baseline.portfolioReportingPublicKey, otherRealm.portfolioReportingPublicKey)
   const baselineAsset = await deriveEncryptedWalletBackupV2AssetLocator({
     keyHandle: baseline,
     mintUrl: MINT_URL,

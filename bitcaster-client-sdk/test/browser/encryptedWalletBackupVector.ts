@@ -94,7 +94,6 @@ const V2_KEY_VECTOR = Object.freeze({
   operationId: 'deposit:01',
   vaultId: '5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e',
   requestAuthPublicKey: '8941fb08484ecf59ea6d3e331eb7a38736f80ddf5c27cd009b5326c9950baa94',
-  portfolioReportingPublicKey: '6c9ebf3cb343a7ee9efc1f13fc10f0c0416ab97d3be76d0dbaeed75dc6a4575a',
   assetLocator: 'd5856ca354c4d4af47116443462f2d1cb9aca458be1149815956a64ab6a6755c',
   operationLocator: 'df4c0267aff6a0493ebcae589ecd4262308df5e5872a3ca01014410238e45f6e',
 })
@@ -514,11 +513,6 @@ async function exerciseV2KeyVector(): Promise<void> {
   })
   equal(keyHandle.vaultId, V2_KEY_VECTOR.vaultId, 'v2 vault id')
   equal(keyHandle.requestAuthPublicKey, V2_KEY_VECTOR.requestAuthPublicKey, 'v2 request key')
-  equal(
-    keyHandle.portfolioReportingPublicKey,
-    V2_KEY_VECTOR.portfolioReportingPublicKey,
-    'v2 portfolio key',
-  )
   equal(
     await deriveEncryptedWalletBackupV2AssetLocator({
       keyHandle,

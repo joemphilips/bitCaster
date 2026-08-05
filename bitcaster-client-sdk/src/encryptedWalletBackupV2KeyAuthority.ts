@@ -15,7 +15,6 @@ export interface EncryptedWalletBackupV2KeyAuthority {
   readonly encryptionRoot: Uint8Array
   readonly vaultIdRoot: Uint8Array
   readonly requestAuthRoot: Uint8Array
-  readonly portfolioReportingRoot: Uint8Array
   readonly assetLocatorRoot: Uint8Array
   readonly operationLocatorRoot: Uint8Array
   readonly runtime: EncryptedWalletBackupV2Runtime
@@ -83,18 +82,6 @@ export async function deriveEncryptedWalletBackupV2RequestAuthScalar(
   )
 }
 
-export async function deriveEncryptedWalletBackupV2PortfolioReportingScalar(
-  authority: EncryptedWalletBackupV2KeyAuthority,
-  realm: string,
-): Promise<Uint8Array> {
-  return deriveEncryptedWalletBackupV2Scalar(
-    authority,
-    authority.portfolioReportingRoot,
-    realm,
-    'portfolio-reporting-scalar',
-  )
-}
-
 /** Confirms private seed authority without exposing the seed or a seed digest. */
 export async function requireEncryptedWalletBackupV2SeedHandleMatch(input: {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle
@@ -125,7 +112,7 @@ async function deriveEncryptedWalletBackupV2Scalar(
   authority: EncryptedWalletBackupV2KeyAuthority,
   root: Uint8Array,
   realm: string,
-  domain: 'portfolio-reporting-scalar' | 'request-auth-scalar',
+  domain: 'request-auth-scalar',
 ): Promise<Uint8Array> {
   for (let counter = 0; counter < SCALAR_ATTEMPTS; counter += 1) {
     const candidate = await deriveEncryptedWalletBackupV2Hkdf(
