@@ -5,6 +5,8 @@ import {
   type EncryptedWalletBackupKeyHandle,
 } from './encryptedWalletBackup.ts'
 import { requireIssuedEncryptedWalletBackupKeyHandle } from './encryptedWalletBackupKeyAuthority.ts'
+import { requireEncryptedWalletBackupV2KeyAuthority } from './encryptedWalletBackupV2KeyAuthority.ts'
+import type { EncryptedWalletBackupV2KeyHandle } from './encryptedWalletBackupV2Keys.ts'
 import {
   encodeCanonicalBackupCbor as encodeCanonical,
   structurallyPreflightEncryptedBackupAccountRequestCbor,
@@ -75,6 +77,8 @@ interface AccountOperationAuthority {
   readonly cycleSignal: AbortSignal
 }
 
+type AccountOperationKeyHandle = EncryptedWalletBackupKeyHandle | EncryptedWalletBackupV2KeyHandle
+
 const ACCOUNT_OPERATION_AUTHORITIES = new WeakMap<object, AccountOperationAuthority>()
 
 /**
@@ -84,7 +88,7 @@ const ACCOUNT_OPERATION_AUTHORITIES = new WeakMap<object, AccountOperationAuthor
  * uses delegated epoch discovery and does not mutate the enrollment.
  */
 export async function prepareEncryptedWalletBackupAccountOperation(input: {
-  keyHandle: EncryptedWalletBackupKeyHandle
+  keyHandle: AccountOperationKeyHandle
   action: EncryptedWalletBackupAccountOperationAction
   url: string
   operationId: string
@@ -434,7 +438,14 @@ function decodeAccountOperationResult(
   })
 }
 
-function requireKeyHandle(value: unknown): EncryptedWalletBackupKeyHandle {
+function requireKeyHandle(value: unknown): AccountOperationKeyHandle {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('backup key handle is invalid')
+  }
+  if ((value as { readonly formatVersion?: unknown }).formatVersion === 2) {
+    requireEncryptedWalletBackupV2KeyAuthority(value)
+    return value as EncryptedWalletBackupV2KeyHandle
+  }
   return requireIssuedEncryptedWalletBackupKeyHandle(value)
 }
 
