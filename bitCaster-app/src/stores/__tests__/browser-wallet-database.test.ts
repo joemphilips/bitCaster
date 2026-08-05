@@ -11,55 +11,41 @@ const scopes = ["11".repeat(32), "22".repeat(32)].map((walletId) =>
   deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId }),
 );
 
+const v1TableNames = [
+  "encryptedWalletBackupBuildCursors",
+  "encryptedWalletBackupPackControls",
+  "encryptedWalletBackupPreparedRecords",
+  "encryptedWalletBackupPackBindings",
+  "encryptedWalletBackupStagedObjects",
+  "encryptedWalletBackupSnapshotControls",
+  "encryptedWalletBackupPreparedSources",
+  "encryptedWalletBackupSnapshotPins",
+  "encryptedWalletBackupManifestPassAResults",
+  "encryptedWalletBackupManifestCursors",
+  "encryptedWalletBackupManifestPages",
+  "encryptedWalletBackupUploadAttempts",
+  "encryptedWalletBackupUploadCursors",
+  "encryptedWalletBackupUploadBatches",
+  "encryptedWalletBackupUploadCasAttempts",
+  "encryptedWalletBackupSnapshotCleanupJobs",
+  "encryptedWalletBackupRestoreProofs",
+] as const;
+
 afterEach(async () => {
   db.close();
   await Promise.all(scopes.map((scopeId) => Dexie.delete(browserWalletDatabaseName(scopeId))));
 });
 
 describe("browser wallet databases", () => {
-  it("installs the current wallet backup authority tables", async () => {
+  it("installs version 21 without V1 tables and keeps V2, enrollment, retry, and custody authorities", async () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(20);
-    expect(db.custodyProofBackupAuthorities.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
-    expect(db.custodyProofBackupAuthorities.schema.indexes.map(({ name }) => name)).toEqual(
-      expect.arrayContaining([
-        "[scopeId+backupState+proofId]",
-        "[scopeId+proofState+proofId]",
-        "[scopeId+admissionOperationId]",
-        "backupRecordId",
-      ]),
+    expect(db.verno).toBe(21);
+    expect(db.tables.map(({ name }) => name)).not.toEqual(
+      expect.arrayContaining([...v1TableNames]),
     );
-    expect(db.encryptedWalletBackupBuildCursors.schema.primKey.keyPath).toBe("buildId");
-    expect(db.encryptedWalletBackupPackControls.schema.primKey.keyPath).toEqual([
-      "buildId",
-      "packId",
-    ]);
-    expect(db.encryptedWalletBackupPreparedRecords.schema.primKey.keyPath).toEqual([
-      "buildId",
-      "recordId",
-    ]);
-    expect(db.encryptedWalletBackupPackBindings.schema.primKey.keyPath).toEqual([
-      "buildId",
-      "packId",
-      "recordId",
-    ]);
-    expect(
-      db.encryptedWalletBackupPackBindings.schema.indexes.find(
-        ({ name }) => name === "[buildId+packId+ordinal]",
-      )?.unique,
-    ).toBe(true);
-    expect(db.custodyConditionalKeysets.schema.primKey.keyPath).toEqual([
-      "scopeId",
-      "normalizedMint",
-      "unit",
-      "keysetId",
-    ]);
-    expect(db.encryptedWalletBackupStagedObjects.schema.primKey.keyPath).toEqual([
-      "buildId",
-      "packId",
-    ]);
+    expect(db.custodyProofBackupAuthorities.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.encryptedWalletBackupEnrollmentResults.schema.primKey.keyPath).toEqual([
       "realm",
       "vaultId",
@@ -69,35 +55,17 @@ describe("browser wallet databases", () => {
       "realm",
       "vaultId",
     ]);
-    expect(db.encryptedWalletBackupSnapshotCleanupJobs.schema.primKey.keyPath).toEqual([
-      "realm",
-      "vaultId",
-    ]);
-    expect(db.encryptedWalletBackupRestoreProofs.schema.primKey.keyPath).toEqual([
-      "scopeId",
-      "proofId",
-    ]);
-    expect(db.walletCounterCursors.schema.primKey.keyPath).toEqual(["scopeId", "keysetId"]);
-    expect(db.walletCounterAssociations.schema.primKey.keyPath).toEqual([
-      "scopeId",
-      "normalizedMint",
-      "unit",
-      "keysetId",
-    ]);
     expect(db.encryptedWalletBackupV2DesiredAssets.schema.primKey.keyPath).toEqual([
       "scopeId",
       "localAssetKey",
     ]);
-    expect(
-      db.encryptedWalletBackupV2DesiredAssets.schema.indexes.map(({ name }) => name),
-    ).toContain("[scopeId+syncState+localAssetKey]");
-    expect(db.custodyProofs.schema.indexes.map(({ name }) => name)).toEqual(
-      expect.arrayContaining([
-        "[scopeId+normalizedMint+unit+assetKind+selectability]",
-        "[scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]",
-      ]),
-    );
     expect(db.encryptedWalletBackupV2PreparedMutations.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "realm",
+      "vaultId",
+      "enrollmentEpoch",
+    ]);
+    expect(db.encryptedWalletBackupV2AcceptedHeads.schema.primKey.keyPath).toEqual([
       "scopeId",
       "realm",
       "vaultId",
@@ -110,12 +78,82 @@ describe("browser wallet databases", () => {
       "enrollmentEpoch",
       "localAssetKey",
     ]);
-    expect(db.tables.map(({ name }) => name)).not.toEqual(
-      expect.arrayContaining([
-        "encryptedWalletBackupV2DirtyRevisions",
-        "encryptedWalletBackupV2Receipts",
-      ]),
-    );
+    expect(db.encryptedWalletBackupV2ActiveDescriptors.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "realm",
+      "vaultId",
+      "enrollmentEpoch",
+      "bundleId",
+    ]);
+  });
+
+  it("deletes V1 tables from a version-20 database and retains V2, enrollment, retry, and custody data", async () => {
+    const name = `bitcaster-wallet-v20-upgrade-${crypto.randomUUID()}`;
+    const legacy = new Dexie(name);
+    legacy.version(20).stores(version20Stores());
+    await legacy.open();
+    await Promise.all([
+      legacy.table("custodyProofBackupAuthorities").put({ scopeId: "scope", proofId: "proof" }),
+      legacy
+        .table("encryptedWalletBackupEnrollmentResults")
+        .put({ realm: "backup.example.test", vaultId: "11".repeat(32) }),
+      legacy.table("encryptedWalletBackupRetrySchedulers").put({
+        scopeId: "scope",
+        realm: "backup.example.test",
+        vaultId: "11".repeat(32),
+      }),
+      legacy
+        .table("encryptedWalletBackupV2DesiredAssets")
+        .put({ scopeId: "scope", localAssetKey: "asset" }),
+      legacy.table("encryptedWalletBackupV2PreparedMutations").put({
+        scopeId: "scope",
+        realm: "backup.example.test",
+        vaultId: "11".repeat(32),
+        enrollmentEpoch: 1,
+      }),
+      legacy.table("encryptedWalletBackupV2AcceptedHeads").put({
+        scopeId: "scope",
+        realm: "backup.example.test",
+        vaultId: "11".repeat(32),
+        enrollmentEpoch: 1,
+      }),
+      legacy.table("encryptedWalletBackupV2AssetReceipts").put({
+        scopeId: "scope",
+        realm: "backup.example.test",
+        vaultId: "11".repeat(32),
+        enrollmentEpoch: 1,
+        localAssetKey: "asset",
+      }),
+      legacy.table("encryptedWalletBackupV2ActiveDescriptors").put({
+        scopeId: "scope",
+        realm: "backup.example.test",
+        vaultId: "11".repeat(32),
+        enrollmentEpoch: 1,
+        bundleId: "bundle",
+      }),
+    ]);
+    legacy.close();
+
+    const upgraded = new BitcasterDB(name);
+    try {
+      await upgraded.open();
+      expect(upgraded.tables.map(({ name }) => name)).not.toEqual(
+        expect.arrayContaining([...v1TableNames]),
+      );
+      await Promise.all([
+        expect(upgraded.custodyProofBackupAuthorities.count()).resolves.toBe(1),
+        expect(upgraded.encryptedWalletBackupEnrollmentResults.count()).resolves.toBe(1),
+        expect(upgraded.encryptedWalletBackupRetrySchedulers.count()).resolves.toBe(1),
+        expect(upgraded.encryptedWalletBackupV2DesiredAssets.count()).resolves.toBe(1),
+        expect(upgraded.encryptedWalletBackupV2PreparedMutations.count()).resolves.toBe(1),
+        expect(upgraded.encryptedWalletBackupV2AcceptedHeads.count()).resolves.toBe(1),
+        expect(upgraded.encryptedWalletBackupV2AssetReceipts.count()).resolves.toBe(1),
+        expect(upgraded.encryptedWalletBackupV2ActiveDescriptors.count()).resolves.toBe(1),
+      ]);
+    } finally {
+      upgraded.close();
+      await Dexie.delete(name);
+    }
   });
 
   it("seeds one ordinary desired asset when upgrading an active V2 custody row", async () => {
@@ -273,9 +311,12 @@ describe("browser wallet databases", () => {
     try {
       await upgraded.open();
       await Promise.all(
-        clearedVersion12TableNames.map(async (tableName) => {
+        clearedVersion12RetainedTableNames.map(async (tableName) => {
           expect(await upgraded.table(tableName).count()).toBe(0);
         }),
+      );
+      expect(upgraded.tables.map(({ name }) => name)).not.toEqual(
+        expect.arrayContaining([...v1TableNames]),
       );
     } finally {
       upgraded.close();
@@ -307,7 +348,9 @@ describe("browser wallet databases", () => {
       await upgraded.open();
       expect(await upgraded.custodyProofs.count()).toBe(0);
       expect(await upgraded.custodyProofBackupAuthorities.count()).toBe(0);
-      expect(await upgraded.encryptedWalletBackupPreparedRecords.count()).toBe(0);
+      expect(upgraded.tables.map(({ name }) => name)).not.toEqual(
+        expect.arrayContaining([...v1TableNames]),
+      );
     } finally {
       upgraded.close();
       await Dexie.delete(name);
@@ -350,9 +393,10 @@ describe("browser wallet databases", () => {
         expect(upgraded.custodyProofs.count()).resolves.toBe(0),
         expect(upgraded.custodyReservations.count()).resolves.toBe(0),
         expect(upgraded.custodyProofBackupAuthorities.count()).resolves.toBe(0),
-        expect(upgraded.encryptedWalletBackupSnapshotControls.count()).resolves.toBe(0),
-        expect(upgraded.encryptedWalletBackupRestoreProofs.count()).resolves.toBe(0),
       ]);
+      expect(upgraded.tables.map(({ name }) => name)).not.toEqual(
+        expect.arrayContaining([...v1TableNames]),
+      );
     } finally {
       upgraded.close();
       await Dexie.delete(name);
@@ -383,7 +427,7 @@ describe("browser wallet databases", () => {
   });
 });
 
-const clearedVersion12TableNames = [
+const clearedVersion12RetainedTableNames = [
   "proofs",
   "proofOperations",
   "ctfRangePreparations",
@@ -398,26 +442,11 @@ const clearedVersion12TableNames = [
   "custodyActiveWork",
   "custodyProofBackupAuthorities",
   "custodyConditionalKeysets",
-  "encryptedWalletBackupBuildCursors",
-  "encryptedWalletBackupPackControls",
-  "encryptedWalletBackupPreparedRecords",
-  "encryptedWalletBackupPackBindings",
-  "encryptedWalletBackupStagedObjects",
-  "encryptedWalletBackupSnapshotControls",
-  "encryptedWalletBackupPreparedSources",
-  "encryptedWalletBackupSnapshotPins",
-  "encryptedWalletBackupManifestPassAResults",
-  "encryptedWalletBackupManifestCursors",
-  "encryptedWalletBackupManifestPages",
-  "encryptedWalletBackupUploadAttempts",
-  "encryptedWalletBackupUploadCursors",
-  "encryptedWalletBackupUploadBatches",
-  "encryptedWalletBackupUploadCasAttempts",
   "encryptedWalletBackupEnrollmentResults",
   "encryptedWalletBackupRetrySchedulers",
 ] as const;
 
-function version12Stores() {
+function version12Stores(): Record<string, string> {
   return {
     proofs:
       "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+unit+id], [mintUrl+conditionId+outcomeCollection]",
@@ -464,11 +493,52 @@ function version12Stores() {
   };
 }
 
-function version13Stores() {
+function version13Stores(): Record<string, string> {
   return {
     ...version12Stores(),
     custodyProofBackupAuthorities:
       "&[scopeId+proofId], [scopeId+backupState+proofId], [scopeId+proofState+proofId], &backupRecordId, [scopeId+admissionOperationId]",
     custodyConditionalKeysets: "&[scopeId+normalizedMint+unit+keysetId]",
+  };
+}
+
+function version20Stores(): Record<string, string> {
+  return {
+    encryptedWalletBackupBuildCursors: "&buildId",
+    encryptedWalletBackupPackControls: "&[buildId+packId]",
+    encryptedWalletBackupPreparedRecords: "&[buildId+recordId], recordId",
+    encryptedWalletBackupPackBindings:
+      "&[buildId+packId+recordId], &[buildId+packId+ordinal], [realm+vaultId+snapshotId+snapshotRevision+recordId]",
+    encryptedWalletBackupStagedObjects:
+      "&[buildId+packId], [realm+vaultId+generation+objectId+digest]",
+    encryptedWalletBackupSnapshotControls:
+      "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision], [realm+vaultId+generation+snapshotId+snapshotRevision]",
+    encryptedWalletBackupPreparedSources:
+      "&[realm+vaultId+recordKindCode+recordId+revision+bodyReference], &[realm+vaultId+recordKindCode+commitment+revision+bodyReference], [realm+vaultId+recordKindCode+recordId], [realm+vaultId+generation+snapshotId+snapshotRevision+recordKindCode+recordId+revision+bodyReference]",
+    encryptedWalletBackupSnapshotPins:
+      "&[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+recordId], &[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+commitment], [realm+vaultId+snapshotId+snapshotRevision+recordKindCode+recordId+commitment], [realm+vaultId+generation+snapshotId+snapshotRevision+recordKindCode+recordId+commitment], [realm+vaultId+recordKindCode+recordId+sourceRevision+sourceBodyReference]",
+    encryptedWalletBackupManifestPassAResults:
+      "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision], [realm+vaultId+generation+snapshotId+snapshotRevision]",
+    encryptedWalletBackupManifestCursors:
+      "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision], [realm+vaultId+generation+snapshotId+snapshotRevision]",
+    encryptedWalletBackupManifestPages:
+      "&[realm+vaultId+snapshotId+snapshotRevision+pageIndex], &[realm+vaultId+generation+objectId+digest], [realm+vaultId+snapshotId+snapshotRevision+pageIndex+objectId], [realm+vaultId+generation+snapshotId+snapshotRevision+pageIndex]",
+    encryptedWalletBackupUploadAttempts: "&attemptId, &[realm+vaultId]",
+    encryptedWalletBackupUploadCursors: "&attemptId",
+    encryptedWalletBackupUploadBatches: "&batchId, attemptId",
+    encryptedWalletBackupUploadCasAttempts: "&attemptId, &uploadAttemptId",
+    encryptedWalletBackupSnapshotCleanupJobs: "&[realm+vaultId]",
+    encryptedWalletBackupRestoreProofs: "&[scopeId+proofId]",
+    custodyProofBackupAuthorities:
+      "&[scopeId+proofId], [scopeId+backupState+proofId], [scopeId+proofState+proofId], &backupRecordId, [scopeId+admissionOperationId]",
+    encryptedWalletBackupEnrollmentResults: "&[realm+vaultId]",
+    encryptedWalletBackupRetrySchedulers: "&[scopeId+realm+vaultId]",
+    encryptedWalletBackupV2DesiredAssets:
+      "&[scopeId+localAssetKey], [scopeId+mintUrl+unit+assetIdentity], [scopeId+localAssetKey], [scopeId+syncState+localAssetKey]",
+    encryptedWalletBackupV2PreparedMutations: "&[scopeId+realm+vaultId+enrollmentEpoch]",
+    encryptedWalletBackupV2AcceptedHeads: "&[scopeId+realm+vaultId+enrollmentEpoch]",
+    encryptedWalletBackupV2AssetReceipts: "&[scopeId+realm+vaultId+enrollmentEpoch+localAssetKey]",
+    encryptedWalletBackupV2ActiveDescriptors:
+      "&[scopeId+realm+vaultId+enrollmentEpoch+bundleId], [scopeId+realm+vaultId+enrollmentEpoch]",
   };
 }

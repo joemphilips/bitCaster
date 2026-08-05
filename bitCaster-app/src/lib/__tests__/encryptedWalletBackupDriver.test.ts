@@ -31,6 +31,7 @@ const configuration = {
 } as const;
 
 const databases: BitcasterDB[] = [];
+let nextSeedByte = 8;
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -380,7 +381,7 @@ it("cancels a pending retry when cleanup stops the driver", async () => {
 });
 
 async function enrollmentFixture() {
-  const seed = new Uint8Array(64).fill(8);
+  const seed = new Uint8Array(64).fill(nextSeedByte++);
   const scopeId = deriveDurableCustodyScopeId({
     scopeKind: "wallet",
     walletId: deriveDurableCustodyWalletId(seed),

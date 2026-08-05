@@ -27,7 +27,7 @@ import {
   clearEncryptedWalletBackupRetryScheduler,
   readEncryptedWalletBackupRetryScheduler,
   scheduleEncryptedWalletBackupRetry,
-} from "../stores/encrypted-wallet-backup-upload-coordinator-db";
+} from "../stores/encrypted-wallet-backup-retry-db";
 import type { BitcasterDB } from "../stores/proof-db";
 
 export const ENCRYPTED_WALLET_BACKUP_BACKGROUND_CYCLE_DEADLINE_MILLISECONDS = 300_000;
@@ -237,8 +237,9 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         isCurrentProfile: () => this.#isLeaderActive(),
       });
       if (!this.#isLeaderActive()) return;
-      this.#initialized = true;
       await this.#clearRetrySchedule();
+      if (!this.#isLeaderActive()) return;
+      this.#initialized = true;
       if (this.#pendingDesiredAssetCount > 0) this.#requestCycle();
     } catch (error) {
       if (!this.#isLeaderActive()) return;

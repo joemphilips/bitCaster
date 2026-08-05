@@ -31,22 +31,7 @@ import type {
   BrowserCustodyScopeRow,
 } from "./durable-custody-types";
 import type { BrowserProofBackupAuthorityRow } from "./browser-proof-backup-authority";
-import type {
-  PersistedEncryptedWalletBackupBuildCursor,
-  PersistedEncryptedWalletBackupPackBinding,
-  PersistedEncryptedWalletBackupPackControl,
-  PersistedEncryptedWalletBackupPreparedBuildRecord,
-  PersistedEncryptedWalletBackupStagedObject,
-} from "@bitcaster/client-sdk/encryptedWalletBackupPackPersistence";
-import type {
-  EncryptedWalletBackupActiveUploadAttemptRecord,
-  EncryptedWalletBackupUploadBatchRecord,
-} from "@bitcaster/client-sdk/encryptedWalletBackupSync";
-import type { EncryptedWalletBackupSyncAttemptRecord } from "@bitcaster/client-sdk/encryptedWalletBackup";
 import type { EncryptedWalletBackupAccountOperationResultRecord } from "@bitcaster/client-sdk/encryptedWalletBackupEnrollment";
-import type { EncryptedWalletBackupSnapshotCleanupJob } from "@bitcaster/client-sdk/encryptedWalletBackupSnapshotCleanup";
-import type { EncryptedWalletBackupRestoreProofRecord } from "@bitcaster/client-sdk/encryptedWalletBackup";
-import type { DurableWalletStorageClassification } from "@bitcaster/client-sdk/recoverableWalletStorage";
 import {
   BrowserWalletCounterDexieStore,
   type BrowserWalletCounterAdvanceResult,
@@ -57,102 +42,6 @@ import {
   decodeBrowserCustodyConditionalKeysetRow,
   decodeBrowserCustodyProofRow,
 } from "./durable-custody-types";
-
-/** Canonical encrypted wallet-backup control row. The SDK owns its CBOR codec. */
-export interface EncryptedWalletBackupDexieControlRow {
-  scopeKey: string;
-  realm: string;
-  vaultId: string;
-  snapshotId: string;
-  snapshotRevision: number;
-  generation: number;
-  canonical: Uint8Array;
-}
-
-/** Canonical encrypted wallet-backup snapshot pin. The SDK owns its CBOR codec. */
-export interface EncryptedWalletBackupDexieSnapshotPinRow {
-  realm: string;
-  vaultId: string;
-  snapshotId: string;
-  snapshotRevision: number;
-  generation: number;
-  recordKindCode: 0;
-  recordId: string;
-  commitment: string;
-  sourceRevision: number;
-  sourceBodyReference: string;
-  canonical: Uint8Array;
-}
-
-/** Immutable prepared source. It is re-read before a snapshot pin is written. */
-export interface EncryptedWalletBackupDexiePreparedSourceRow {
-  realm: string;
-  vaultId: string;
-  recordKindCode: 0;
-  recordId: string;
-  commitment: string;
-  bodyReference: string;
-  revision: number;
-  snapshotId: string;
-  snapshotRevision: number;
-  generation: number;
-  canonicalDescriptor: Uint8Array;
-}
-
-/** Prepared build row with an adapter-private exact canonical size. */
-export interface EncryptedWalletBackupDexiePreparedRecordRow extends PersistedEncryptedWalletBackupPreparedBuildRecord {
-  preparedRecordSerializedBytes: number;
-}
-
-/** Pack binding with the exact canonical size of its prepared build row. */
-export interface EncryptedWalletBackupDexiePackBindingRow extends PersistedEncryptedWalletBackupPackBinding {
-  preparedRecordSerializedBytes: number;
-}
-
-/** Canonical encrypted wallet-backup manifest page. The SDK owns its CBOR codec. */
-export interface EncryptedWalletBackupDexieManifestPageRow {
-  realm: string;
-  vaultId: string;
-  snapshotId: string;
-  snapshotRevision: number;
-  pageIndex: number;
-  generation: number;
-  objectId: string;
-  digest: string;
-  canonical: Uint8Array;
-}
-
-/** Opaque SDK-owned upload aggregate. The indexed fields support bounded reads. */
-export interface EncryptedWalletBackupDexieUploadAttemptRow {
-  attemptId: string;
-  realm: string;
-  vaultId: string;
-  record: EncryptedWalletBackupActiveUploadAttemptRecord;
-}
-
-/** Opaque SDK-owned upload cursor. */
-export interface EncryptedWalletBackupDexieUploadCursorRow {
-  attemptId: string;
-  canonicalCursor: Uint8Array;
-}
-
-/** Opaque SDK-owned upload batch. The attempt ID is its bounded partition key. */
-export interface EncryptedWalletBackupDexieUploadBatchRow {
-  batchId: string;
-  attemptId: string;
-  authorityDigest: string;
-  record: Omit<
-    EncryptedWalletBackupUploadBatchRecord,
-    "canonicalTargetHead" | "canonicalTargetReferenceSet" | "canonicalInheritedReferenceSet"
-  >;
-}
-
-/** Opaque SDK-owned CAS retry record. uploadAttemptId is unique by schema. */
-export interface EncryptedWalletBackupDexieUploadCasAttemptRow {
-  attemptId: string;
-  uploadAttemptId: string;
-  record: EncryptedWalletBackupSyncAttemptRecord;
-}
 
 /** The latest authenticated enrollment lifecycle receipt for one vault. */
 export interface EncryptedWalletBackupDexieEnrollmentResultRow {
@@ -169,21 +58,6 @@ export interface EncryptedWalletBackupDexieRetrySchedulerRow {
   attemptId: string;
   retryStreak: number;
   retryNotBeforeUnixMilliseconds: number;
-}
-
-/** One resumable metadata cleanup job for one encrypted-backup vault. */
-export interface EncryptedWalletBackupDexieSnapshotCleanupRow {
-  realm: string;
-  vaultId: string;
-  job: EncryptedWalletBackupSnapshotCleanupJob;
-}
-
-/** Exact SDK-owned restored-proof authority for one browser wallet scope. */
-export interface EncryptedWalletBackupDexieRestoreProofRow {
-  scopeId: string;
-  proofId: string;
-  storageClassification: DurableWalletStorageClassification;
-  proof: EncryptedWalletBackupRestoreProofRecord | null;
 }
 
 /** One authoritative NUT-13 allocation cursor for one wallet scope and keyset. */
@@ -404,45 +278,6 @@ export class BitcasterDB extends Dexie {
     import("./durable-custody-types").BrowserCustodyConditionalKeysetRow,
     [string, string, string, string]
   >;
-  encryptedWalletBackupBuildCursors!: Table<PersistedEncryptedWalletBackupBuildCursor, string>;
-  encryptedWalletBackupPackControls!: Table<
-    PersistedEncryptedWalletBackupPackControl,
-    [string, string]
-  >;
-  encryptedWalletBackupPreparedRecords!: Table<
-    EncryptedWalletBackupDexiePreparedRecordRow,
-    [string, string]
-  >;
-  encryptedWalletBackupPackBindings!: Table<
-    EncryptedWalletBackupDexiePackBindingRow,
-    [string, string, string]
-  >;
-  encryptedWalletBackupStagedObjects!: Table<
-    PersistedEncryptedWalletBackupStagedObject,
-    [string, string]
-  >;
-  encryptedWalletBackupSnapshotControls!: Table<EncryptedWalletBackupDexieControlRow, string>;
-  encryptedWalletBackupPreparedSources!: Table<
-    EncryptedWalletBackupDexiePreparedSourceRow,
-    [string, string, number, string, number, string]
-  >;
-  encryptedWalletBackupSnapshotPins!: Table<
-    EncryptedWalletBackupDexieSnapshotPinRow,
-    [string, string, string, number, number, string]
-  >;
-  encryptedWalletBackupManifestPassAResults!: Table<EncryptedWalletBackupDexieControlRow, string>;
-  encryptedWalletBackupManifestCursors!: Table<EncryptedWalletBackupDexieControlRow, string>;
-  encryptedWalletBackupManifestPages!: Table<
-    EncryptedWalletBackupDexieManifestPageRow,
-    [string, string, string, number, number]
-  >;
-  encryptedWalletBackupUploadAttempts!: Table<EncryptedWalletBackupDexieUploadAttemptRow, string>;
-  encryptedWalletBackupUploadCursors!: Table<EncryptedWalletBackupDexieUploadCursorRow, string>;
-  encryptedWalletBackupUploadBatches!: Table<EncryptedWalletBackupDexieUploadBatchRow, string>;
-  encryptedWalletBackupUploadCasAttempts!: Table<
-    EncryptedWalletBackupDexieUploadCasAttemptRow,
-    string
-  >;
   encryptedWalletBackupEnrollmentResults!: Table<
     EncryptedWalletBackupDexieEnrollmentResultRow,
     [string, string]
@@ -450,14 +285,6 @@ export class BitcasterDB extends Dexie {
   encryptedWalletBackupRetrySchedulers!: Table<
     EncryptedWalletBackupDexieRetrySchedulerRow,
     [string, string, string]
-  >;
-  encryptedWalletBackupSnapshotCleanupJobs!: Table<
-    EncryptedWalletBackupDexieSnapshotCleanupRow,
-    [string, string]
-  >;
-  encryptedWalletBackupRestoreProofs!: Table<
-    EncryptedWalletBackupDexieRestoreProofRow,
-    [string, string]
   >;
   encryptedWalletBackupV2DesiredAssets!: Table<
     EncryptedWalletBackupV2DesiredAssetRow,
@@ -823,6 +650,25 @@ export class BitcasterDB extends Dexie {
         }
         await seedEncryptedWalletBackupV2DesiredAssets(transaction);
       });
+    this.version(21).stores({
+      encryptedWalletBackupBuildCursors: null,
+      encryptedWalletBackupPackControls: null,
+      encryptedWalletBackupPreparedRecords: null,
+      encryptedWalletBackupPackBindings: null,
+      encryptedWalletBackupStagedObjects: null,
+      encryptedWalletBackupSnapshotControls: null,
+      encryptedWalletBackupPreparedSources: null,
+      encryptedWalletBackupSnapshotPins: null,
+      encryptedWalletBackupManifestPassAResults: null,
+      encryptedWalletBackupManifestCursors: null,
+      encryptedWalletBackupManifestPages: null,
+      encryptedWalletBackupUploadAttempts: null,
+      encryptedWalletBackupUploadCursors: null,
+      encryptedWalletBackupUploadBatches: null,
+      encryptedWalletBackupUploadCasAttempts: null,
+      encryptedWalletBackupSnapshotCleanupJobs: null,
+      encryptedWalletBackupRestoreProofs: null,
+    });
   }
 }
 
