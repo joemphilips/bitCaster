@@ -43,6 +43,10 @@
       "types": "./dist/encryptedWalletBackup.d.ts",
       "import": "./dist/encryptedWalletBackup.js"
     },
+    "./encryptedWalletBackupV2Keys": {
+      "types": "./dist/encryptedWalletBackupV2Keys.d.ts",
+      "import": "./dist/encryptedWalletBackupV2Keys.js"
+    },
     "./encryptedWalletBackupEnrollment": {
       "types": "./dist/encryptedWalletBackupEnrollment.d.ts",
       "import": "./dist/encryptedWalletBackupEnrollment.js"

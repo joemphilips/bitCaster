@@ -13,6 +13,11 @@ import {
   type EncryptedWalletBackupProofInput,
   type EncryptedWalletBackupRuntime,
 } from '../../src/encryptedWalletBackup.ts'
+import {
+  createEncryptedWalletBackupV2KeyHandle,
+  deriveEncryptedWalletBackupV2AssetLocator,
+  deriveEncryptedWalletBackupV2OperationLocator,
+} from '../../src/encryptedWalletBackupV2Keys.ts'
 import { encodeCanonicalBackupCbor } from '../../src/encryptedWalletBackupCbor.ts'
 import { encodeDurableWalletProofDerivationLocatorCbor } from '../../src/durableWalletProofDerivationLocator.ts'
 import {
@@ -40,6 +45,18 @@ const CTF_METADATA = {
   outcomeCollectionId: 'def71b1ff5a53597a8175729a718b1bf931d12c2a76500f208ab450c12444c4e',
   registeredAt: 1_700_000_000,
 }
+const V2_KEY_VECTOR = Object.freeze({
+  realm: 'backup.production',
+  mintUrl: 'https://mint.example/cashu',
+  unit: 'sat',
+  assetIdentity: 'cashu:ordinary',
+  operationId: 'deposit:01',
+  vaultId: '5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e',
+  requestAuthPublicKey: '8941fb08484ecf59ea6d3e331eb7a38736f80ddf5c27cd009b5326c9950baa94',
+  portfolioReportingPublicKey: '6c9ebf3cb343a7ee9efc1f13fc10f0c0416ab97d3be76d0dbaeed75dc6a4575a',
+  assetLocator: 'd5856ca354c4d4af47116443462f2d1cb9aca458be1149815956a64ab6a6755c',
+  operationLocator: 'df4c0267aff6a0493ebcae589ecd4262308df5e5872a3ca01014410238e45f6e',
+})
 type UnboundProofInput = Omit<EncryptedWalletBackupProofInput, 'proofSnapshotStore'>
 
 declare global {
@@ -130,10 +147,43 @@ async function run(): Promise<{
   equal(restored.recordCount, 1, 'decoded record count')
   equal(JSON.stringify(restored).includes(expected.derivedSecretHex), false, 'decoded opacity')
 
+  await exerciseV2KeyVector()
   await exerciseManifestVector(seed, keyHandle)
   await exerciseBlsAndCtf(seed, keyHandle)
   await exerciseFailureCases(seed, keyHandle, prepared, wire)
   return exerciseMaxLegacyRestoreScheduling(seed, keyHandle)
+}
+
+async function exerciseV2KeyVector(): Promise<void> {
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed: Uint8Array.from({ length: 64 }, (_value, index) => index),
+    realm: V2_KEY_VECTOR.realm,
+  })
+  equal(keyHandle.vaultId, V2_KEY_VECTOR.vaultId, 'v2 vault id')
+  equal(keyHandle.requestAuthPublicKey, V2_KEY_VECTOR.requestAuthPublicKey, 'v2 request key')
+  equal(
+    keyHandle.portfolioReportingPublicKey,
+    V2_KEY_VECTOR.portfolioReportingPublicKey,
+    'v2 portfolio key',
+  )
+  equal(
+    await deriveEncryptedWalletBackupV2AssetLocator({
+      keyHandle,
+      mintUrl: V2_KEY_VECTOR.mintUrl,
+      unit: V2_KEY_VECTOR.unit,
+      assetIdentity: V2_KEY_VECTOR.assetIdentity,
+    }),
+    V2_KEY_VECTOR.assetLocator,
+    'v2 asset locator',
+  )
+  equal(
+    await deriveEncryptedWalletBackupV2OperationLocator({
+      keyHandle,
+      operationId: V2_KEY_VECTOR.operationId,
+    }),
+    V2_KEY_VECTOR.operationLocator,
+    'v2 operation locator',
+  )
 }
 
 async function exerciseManifestVector(
