@@ -3,30 +3,33 @@ import "fake-indexeddb/auto";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  deriveDurableCustodyScopeId,
-  createEncryptedWalletBackupV2KeyHandle,
-  createEncryptedWalletBackupV2CurrentHead,
   collectEncryptedWalletBackupV2DescriptorPages,
-  enumerateEncryptedWalletBackupV2DescriptorPages,
-  encodeEncryptedWalletBackupV2BundleDescriptor,
-  encodeEncryptedWalletBackupV2BundleSupersessionReceipt,
-  encodeEncryptedWalletBackupV2UploadGroup,
+  createEncryptedWalletBackupV2AssetIdentity,
+  createEncryptedWalletBackupV2CurrentHead,
+  createEncryptedWalletBackupV2KeyHandle,
   decodeEncryptedWalletBackupV2UploadGroup,
+  encodeEncryptedWalletBackupV2BundleSupersessionReceipt,
+  encodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire,
+  encodeEncryptedWalletBackupV2UploadGroup,
+  enumerateEncryptedWalletBackupV2DescriptorPages,
   issueEncryptedWalletBackupV2BundleSupersessionReceipt,
   prepareEncryptedWalletBackupV2BundleSupersessionMutation,
   prepareEncryptedWalletBackupV2TransportBundle,
   verifyEncryptedWalletBackupV2BundleSupersessionReceipt,
 } from "@bitcaster/client-sdk";
+import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
 import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
+import { browserWalletDatabaseName } from "../../lib/browserWalletProfile";
+import { createEncryptedWalletBackupV2DesiredAssetRow } from "../browser-encrypted-wallet-backup-v2-desired-asset";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../encrypted-wallet-backup-v2-db";
 import { BitcasterDB } from "../proof-db";
-import { browserWalletDatabaseName } from "../../lib/browserWalletProfile";
 
 const REALM = "backup.example";
-const VAULT_ID = "11".repeat(32);
-const REQUEST_AUTH_PUBLIC_KEY = "22".repeat(32);
+const SIGNING_KEY_ID = "55".repeat(16);
+const SIGNING_PRIVATE_KEY = fromHex("03".repeat(32));
+const SIGNING_PUBLIC_KEY = toHex(schnorr.getPublicKey(SIGNING_PRIVATE_KEY));
 const openDatabases: BitcasterDB[] = [];
-let fixtureSequence = 0;
+let sequence = 0;
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -36,432 +39,166 @@ afterEach(async () => {
   }
 });
 
-describe("encrypted wallet backup V2 Dexie authority store", () => {
-  it("rejects an authority profile for a different seed database", () => {
-    const { identity } = fixture();
-    const database = new BitcasterDB(`foreign-${crypto.randomUUID()}`);
-    openDatabases.push(database);
-    expect(
-      () =>
-        new EncryptedWalletBackupV2DexieAuthorityStore({
-          database,
-          scopeId: identity.scopeId,
-          realm: REALM,
-          vaultId: VAULT_ID,
-          enrollmentEpoch: 1,
-          requestAuthPublicKey: REQUEST_AUTH_PUBLIC_KEY,
-        }),
-    ).toThrow(/authority profile is invalid/);
-  });
-
-  it("keeps one exact accepted head and rejects a mismatched canonical mirror", async () => {
-    const { store, database } = fixture();
-    const head = emptyHead();
-
-    await store.acceptCompetingHead({
-      collectedHeadEvidence: collectedEvidence(head, []),
-      stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
-    });
-    await store.acceptCompetingHead({
-      collectedHeadEvidence: collectedEvidence(head, []),
-      stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
-    });
-
-    expect(await database.encryptedWalletBackupV2AcceptedHeads.count()).toBe(1);
-    expect((await store.readAcceptedHead())?.headVersion).toBe(0);
-    await database.encryptedWalletBackupV2AcceptedHeads.put({
-      ...(await database.encryptedWalletBackupV2AcceptedHeads.toCollection().first())!,
-      activeSetDigest: "33".repeat(32),
-    });
-    await expect(store.readAcceptedHead()).rejects.toThrow(/accepted head wire is invalid/);
-  });
-
-  it("fails closed for malformed, foreign, and invalid dirty-revision rows", async () => {
-    const { store, database, identity } = fixture();
-    await database.encryptedWalletBackupV2DirtyRevisions.put({
-      scopeId: identity.scopeId,
-      revision: -1,
-    });
-    await expect(store.readDirtyRevision()).rejects.toThrow(/dirty revision row is invalid/);
-    await database.encryptedWalletBackupV2DirtyRevisions.put({
-      scopeId: identity.scopeId,
-      revision: 0,
-    });
-    await database.encryptedWalletBackupV2PreparedMutations.put({
-      scopeId: identity.scopeId,
-      realm: REALM,
-      vaultId: VAULT_ID,
-      enrollmentEpoch: 1,
-      mutationId: "66".repeat(16),
-      requestDigest: "77".repeat(32),
-      localRevision: 0,
-      canonicalUploadGroup: Uint8Array.of(0),
-      createdAtUnixMilliseconds: 1,
-    });
-    await expect(store.readPreparedMutation()).rejects.toThrow(/encrypted backup v2/);
-  });
-
-  it("adds one prepared mutation idempotently and deletes only its exact authority", async () => {
-    const prepared = await preparedFixture();
-    const input = {
-      mutationId: prepared.envelope.mutation.mutationId,
-      requestDigest: prepared.envelope.requestDigest,
-      localRevision: 7,
-      canonicalUploadGroup: prepared.group,
-      createdAtUnixMilliseconds: 1,
-    };
-
-    await expect(prepared.store.insertPreparedMutation(input)).resolves.toBe("inserted");
-    await expect(prepared.store.insertPreparedMutation(input)).resolves.toBe("existing");
+describe("encrypted wallet backup V2 Dexie authority", () => {
+  it("persists one exact prepared mutation only while desired state and head match", async () => {
+    const fixture = await preparedFixture();
     await expect(
-      prepared.store.insertPreparedMutation({ ...input, localRevision: input.localRevision + 1 }),
-    ).rejects.toThrow(/prepared mutation conflicts/);
-    expect(await prepared.database.encryptedWalletBackupV2PreparedMutations.count()).toBe(1);
-    expect((await prepared.store.readPreparedMutation())?.localRevision).toBe(input.localRevision);
-    await prepared.store.acceptCompetingHead({
-      collectedHeadEvidence: prepared.collectedHeadEvidence,
-      stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
+      fixture.store.insertPreparedMutationForDesired({
+        prepared: { ...fixture.insert.prepared, assetLocator: "ff".repeat(32) },
+        desired: { ...fixture.insert.desired, assetLocator: "ff".repeat(32) },
+      }),
+    ).rejects.toThrow(/prepared asset binding is invalid/);
+    await expect(fixture.store.insertPreparedMutationForDesired(fixture.insert)).resolves.toBe(
+      "inserted",
+    );
+    await expect(fixture.store.insertPreparedMutationForDesired(fixture.insert)).resolves.toBe(
+      "existing",
+    );
+
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
+      ...fixture.desired,
+      custodyRevision: "2",
     });
-    await expect(prepared.store.insertPreparedMutation(input)).rejects.toThrow(/head is stale/);
-    expect(await prepared.database.encryptedWalletBackupV2PreparedMutations.count()).toBe(1);
+    await expect(fixture.store.insertPreparedMutationForDesired(fixture.insert)).rejects.toThrow(
+      /desired asset is stale/,
+    );
+    expect((await fixture.store.readPreparedMutation())?.canonicalUploadGroup).toEqual(
+      fixture.group,
+    );
   });
 
-  it("atomically accepts a competing head and deletes only its exact prepared mutation", async () => {
-    const prepared = await preparedFixture();
-    const preparedInput = {
-      mutationId: prepared.envelope.mutation.mutationId,
-      requestDigest: prepared.envelope.requestDigest,
-      localRevision: 7,
-      canonicalUploadGroup: prepared.group,
-      createdAtUnixMilliseconds: 1,
-    };
-    await prepared.store.insertPreparedMutation(preparedInput);
+  it("accepts a complete competing head and deletes only the exact stale prepared row", async () => {
+    const fixture = await preparedFixture();
+    await fixture.store.insertPreparedMutationForDesired(fixture.insert);
 
     await expect(
-      prepared.store.acceptCompetingHead({
-        collectedHeadEvidence: prepared.collectedHeadEvidence,
+      fixture.store.acceptCompetingHead({
+        collectedHeadEvidence: fixture.resultEvidence,
         stalePreparedMutation: {
-          mutationId: preparedInput.mutationId,
+          mutationId: fixture.insert.prepared.mutationId,
           requestDigest: "aa".repeat(32),
         },
       }),
     ).resolves.toEqual({ deletedStalePreparedMutation: false });
-    expect(await prepared.store.readPreparedMutation()).not.toBeNull();
+    expect(await fixture.store.readPreparedMutation()).not.toBeNull();
+
     await expect(
-      prepared.store.acceptCompetingHead({
-        collectedHeadEvidence: prepared.collectedHeadEvidence,
-        stalePreparedMutation: {
-          mutationId: preparedInput.mutationId,
-          requestDigest: preparedInput.requestDigest,
-        },
+      fixture.store.acceptCompetingHead({
+        collectedHeadEvidence: fixture.resultEvidence,
+        stalePreparedMutation: fixture.insert.prepared,
       }),
     ).resolves.toEqual({ deletedStalePreparedMutation: true });
-    expect(await prepared.store.readPreparedMutation()).toBeNull();
-    expect((await prepared.store.readAcceptedHead())?.headVersion).toBe(1);
-    expect((await prepared.store.listActiveDescriptors()).length).toBe(1);
-    await expect(
-      prepared.store.acceptCompetingHead({
-        collectedHeadEvidence: prepared.emptyCollectedHeadEvidence,
-        stalePreparedMutation: {
-          mutationId: preparedInput.mutationId,
-          requestDigest: preparedInput.requestDigest,
-        },
-      }),
-    ).rejects.toThrow(/accepted head is stale/);
-
-    const equalVersionConflict = await preparedFixture(2);
-    const before = await prepared.store.readAcceptedHead();
-    const beforeDescriptors = await prepared.store.listActiveDescriptors();
-    await expect(
-      prepared.store.acceptCompetingHead({
-        collectedHeadEvidence: equalVersionConflict.collectedHeadEvidence,
-        stalePreparedMutation: {
-          mutationId: preparedInput.mutationId,
-          requestDigest: preparedInput.requestDigest,
-        },
-      }),
-    ).rejects.toThrow(/accepted head conflicts/);
-    expect((await prepared.store.readAcceptedHead())?.activeSetDigest).toBe(
-      before?.activeSetDigest,
-    );
-    expect((await prepared.store.listActiveDescriptors())[0]?.bundleId).toBe(
-      beforeDescriptors[0]?.bundleId,
-    );
+    expect(await fixture.store.readPreparedMutation()).toBeNull();
+    expect((await fixture.store.listActiveDescriptors()).map(({ bundleId }) => bundleId)).toEqual([
+      fixture.bundle.descriptor.bundleId,
+    ]);
   });
 
-  it("atomically commits a verified receipt and rolls back all authority rows on failure", async () => {
-    const committed = await preparedFixture();
-    const committedInput = preparedInput(committed);
-    await committed.store.insertPreparedMutation(committedInput);
-    const receipt = await verifiedReceiptFixture(committed);
-
+  it("commits the exact per-asset receipt and rolls every authority row back on failure", async () => {
+    const fixture = await preparedFixture();
+    await fixture.store.insertPreparedMutationForDesired(fixture.insert);
+    const receipt = await receiptFixture(fixture);
     await expect(
-      committed.store.commitVerifiedReceipt({
-        receipt: { ...receipt, acknowledgedLocalRevision: committedInput.localRevision },
-        collectedHeadEvidence: committed.collectedHeadEvidence,
-        preparedMutation: {
-          mutationId: committedInput.mutationId,
-          requestDigest: committedInput.requestDigest,
-        },
-      }),
-    ).resolves.toBeUndefined();
-    expect(await committed.store.readPreparedMutation()).toBeNull();
-    expect(await committed.store.readReceipt()).not.toBeNull();
-    expect((await committed.store.readAcceptedHead())?.headVersion).toBe(1);
-    expect((await committed.store.listActiveDescriptors()).length).toBe(1);
-
-    const missing = await preparedFixture();
-    const missingReceipt = await verifiedReceiptFixture(missing);
-    await expect(
-      missing.store.commitVerifiedReceipt({
-        receipt: { ...missingReceipt, acknowledgedLocalRevision: 7 },
-        collectedHeadEvidence: missing.collectedHeadEvidence,
-        preparedMutation: {
-          mutationId: missing.envelope.mutation.mutationId,
-          requestDigest: missing.envelope.requestDigest,
-        },
-      }),
-    ).rejects.toThrow(/prepared mutation is absent/);
-    expect(await missing.store.readReceipt()).toBeNull();
-    expect((await missing.store.readAcceptedHead())?.headVersion).toBe(0);
-
-    const mismatchedPrepared = await preparedFixture();
-    const mismatchedPreparedInput = preparedInput(mismatchedPrepared);
-    await mismatchedPrepared.store.insertPreparedMutation(mismatchedPreparedInput);
-    const mismatchedPreparedReceipt = await verifiedReceiptFixture(mismatchedPrepared);
-    await expect(
-      mismatchedPrepared.store.commitVerifiedReceipt({
-        receipt: {
-          ...mismatchedPreparedReceipt,
-          acknowledgedLocalRevision: mismatchedPreparedInput.localRevision,
-        },
-        collectedHeadEvidence: mismatchedPrepared.collectedHeadEvidence,
-        preparedMutation: {
-          mutationId: mismatchedPreparedInput.mutationId,
-          requestDigest: "aa".repeat(32),
-        },
+      fixture.store.commitVerifiedAssetReceipt({
+        ...receipt,
+        binding: { ...receipt.binding, custodyRevision: "2" },
       }),
     ).rejects.toThrow(/prepared receipt binding is invalid/);
-    expect(await mismatchedPrepared.store.readPreparedMutation()).not.toBeNull();
-    expect(await mismatchedPrepared.store.readReceipt()).toBeNull();
-
-    const mismatchedHead = await preparedFixture();
-    const mismatchedInput = preparedInput(mismatchedHead);
-    await mismatchedHead.store.insertPreparedMutation(mismatchedInput);
-    const mismatchedReceipt = await verifiedReceiptFixture(mismatchedHead);
-    await expect(
-      mismatchedHead.store.commitVerifiedReceipt({
-        receipt: { ...mismatchedReceipt, acknowledgedLocalRevision: mismatchedInput.localRevision },
-        collectedHeadEvidence: mismatchedHead.emptyCollectedHeadEvidence,
-        preparedMutation: {
-          mutationId: mismatchedInput.mutationId,
-          requestDigest: mismatchedInput.requestDigest,
-        },
-      }),
-    ).rejects.toThrow(/receipt result head is invalid/);
-    expect(await mismatchedHead.store.readPreparedMutation()).not.toBeNull();
-    expect(await mismatchedHead.store.readReceipt()).toBeNull();
-
-    const rolledBack = await preparedFixture();
-    const rollbackInput = preparedInput(rolledBack);
-    await rolledBack.store.insertPreparedMutation(rollbackInput);
-    const rollbackReceipt = await verifiedReceiptFixture(rolledBack);
     vi.spyOn(
-      rolledBack.database.encryptedWalletBackupV2ActiveDescriptors,
-      "bulkAdd",
-    ).mockRejectedValueOnce(new Error("quota exceeded"));
-    await expect(
-      rolledBack.store.commitVerifiedReceipt({
-        receipt: { ...rollbackReceipt, acknowledgedLocalRevision: rollbackInput.localRevision },
-        collectedHeadEvidence: rolledBack.collectedHeadEvidence,
-        preparedMutation: {
-          mutationId: rollbackInput.mutationId,
-          requestDigest: rollbackInput.requestDigest,
-        },
-      }),
-    ).rejects.toThrow(/quota exceeded/);
-    expect(await rolledBack.store.readPreparedMutation()).not.toBeNull();
-    expect(await rolledBack.store.readReceipt()).toBeNull();
-    expect((await rolledBack.store.readAcceptedHead())?.headVersion).toBe(0);
-    expect((await rolledBack.store.listActiveDescriptors()).length).toBe(0);
+      fixture.database.encryptedWalletBackupV2ActiveDescriptors,
+      "put",
+    ).mockRejectedValueOnce(new Error("local quota"));
+
+    await expect(fixture.store.commitVerifiedAssetReceipt(receipt)).rejects.toThrow(/local quota/);
+    expect(await fixture.store.readPreparedMutation()).not.toBeNull();
+    expect(await fixture.store.readAssetReceipt(fixture.desired.localAssetKey)).toBeNull();
+    expect((await fixture.store.readAcceptedHead())?.headVersion).toBe(0);
+
+    await fixture.store.commitVerifiedAssetReceipt(receipt);
+    const stored = await fixture.store.readAssetReceipt(fixture.desired.localAssetKey);
+    expect(stored?.custodyRevision).toBe("1");
+    expect(stored?.bundleId).toBe(fixture.bundle.descriptor.bundleId);
+    expect(await fixture.store.readPreparedMutation()).toBeNull();
+    expect((await fixture.store.readAcceptedHead())?.headVersion).toBe(1);
+    expect(
+      await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+        fixture.scopeId,
+        fixture.desired.localAssetKey,
+      ]),
+    ).toMatchObject({ syncState: "acknowledged" });
   });
 
-  it("rolls back a delayed stale receipt and retains its defensive prepared row", async () => {
-    const older = await preparedFixture();
-    const olderInput = preparedInput(older);
-    await older.store.insertPreparedMutation(olderInput);
-    const olderReceipt = await verifiedReceiptFixture(older);
-    await older.store.commitVerifiedReceipt({
-      receipt: { ...olderReceipt, acknowledgedLocalRevision: olderInput.localRevision },
-      collectedHeadEvidence: older.collectedHeadEvidence,
-      preparedMutation: {
-        mutationId: olderInput.mutationId,
-        requestDigest: olderInput.requestDigest,
-      },
+  it("removes an already-absent asset intent and its obsolete receipt atomically", async () => {
+    const fixture = await preparedFixture();
+    await fixture.store.insertPreparedMutationForDesired(fixture.insert);
+    await fixture.store.commitVerifiedAssetReceipt(await receiptFixture(fixture));
+    const removal = createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: fixture.scopeId,
+      asset: fixture.asset,
+      custodyRevision: 2n,
+      activeProofCount: 0,
+    });
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put(removal);
+
+    await fixture.store.acknowledgeAbsentRemoval({
+      localAssetKey: removal.localAssetKey,
+      assetLocator: fixture.bundle.descriptor.assetLocator,
+      custodyRevision: removal.custodyRevision,
+      desiredAction: "remove",
+      activeProofCount: 0,
     });
 
-    const newer = await nextPreparedFixture(older);
-    const newerInput = preparedInput(newer);
-    await older.store.insertPreparedMutation(newerInput);
-    const newerReceipt = await verifiedReceiptFixture(newer);
-    await older.store.commitVerifiedReceipt({
-      receipt: { ...newerReceipt, acknowledgedLocalRevision: newerInput.localRevision },
-      collectedHeadEvidence: newer.collectedHeadEvidence,
-      preparedMutation: {
-        mutationId: newerInput.mutationId,
-        requestDigest: newerInput.requestDigest,
-      },
-    });
-    const beforeHead = await older.store.readAcceptedHead();
-    const beforeReceipt = await older.store.readReceipt();
-    const beforeDescriptors = await older.store.listActiveDescriptors();
-    await older.database.encryptedWalletBackupV2PreparedMutations.put({
-      scopeId: older.scopeId,
+    expect(
+      await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+        fixture.scopeId,
+        removal.localAssetKey,
+      ]),
+    ).toBeUndefined();
+    expect(await fixture.store.readAssetReceipt(removal.localAssetKey)).toBeNull();
+  });
+
+  it("requeues acknowledged assets after accepting a competing head", async () => {
+    const fixture = await preparedFixture();
+    await fixture.store.insertPreparedMutationForDesired(fixture.insert);
+    await fixture.store.commitVerifiedAssetReceipt(await receiptFixture(fixture));
+    const competingHead = createEncryptedWalletBackupV2CurrentHead({
       realm: REALM,
-      vaultId: older.keyHandle.vaultId,
+      vaultId: fixture.keyHandle.vaultId,
       enrollmentEpoch: 1,
-      ...olderInput,
+      headVersion: 2,
+      bundles: [],
     });
 
-    await expect(
-      older.store.commitVerifiedReceipt({
-        receipt: { ...olderReceipt, acknowledgedLocalRevision: olderInput.localRevision },
-        collectedHeadEvidence: older.collectedHeadEvidence,
-        preparedMutation: {
-          mutationId: olderInput.mutationId,
-          requestDigest: olderInput.requestDigest,
-        },
-      }),
-    ).rejects.toThrow(/accepted head is stale/);
-    expect((await older.store.readAcceptedHead())?.activeSetDigest).toBe(
-      beforeHead?.activeSetDigest,
-    );
-    expect((await older.store.readReceipt())?.requestDigest).toBe(beforeReceipt?.requestDigest);
-    expect((await older.store.listActiveDescriptors()).length).toBe(beforeDescriptors.length);
-    expect((await older.store.readPreparedMutation())?.mutationId).toBe(olderInput.mutationId);
+    await fixture.store.acceptCompetingHead({
+      collectedHeadEvidence: evidence(competingHead, []),
+      stalePreparedMutation: {
+        mutationId: "00".repeat(16),
+        requestDigest: "00".repeat(32),
+      },
+    });
+
+    expect(
+      await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+        fixture.scopeId,
+        fixture.desired.localAssetKey,
+      ]),
+    ).toMatchObject({ syncState: "pending", custodyRevision: "1" });
+    expect(await fixture.store.listActiveDescriptors()).toEqual([]);
+    expect((await fixture.store.readAcceptedHead())?.headVersion).toBe(2);
   });
 });
 
-function fixture() {
-  const identity = {
-    scopeKind: "wallet" as const,
-    walletId: "88".repeat(32),
-  };
-  const scopeId = deriveDurableCustodyScopeId(identity);
-  const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
-  openDatabases.push(database);
-  return {
-    database,
-    scopeId,
-    identity: { ...identity, scopeId },
-    store: new EncryptedWalletBackupV2DexieAuthorityStore({
-      database,
-      scopeId,
-      realm: REALM,
-      vaultId: VAULT_ID,
-      enrollmentEpoch: 1,
-      requestAuthPublicKey: REQUEST_AUTH_PUBLIC_KEY,
-    }),
-  };
-}
-
-async function nextPreparedFixture(previous: Awaited<ReturnType<typeof preparedFixture>>) {
-  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
-    keyHandle: previous.keyHandle,
-    asset: { mintUrl: "https://mint.example", unit: "sat", assetIdentity: "cashu:newer" },
-    declaredAmount: 1n,
-    custodyRevision: 2n,
-    canonicalPayload: encodeCanonicalBackupCbor(["newer"]),
-    runtime: {
-      subtle: crypto.subtle,
-      getRandomValues: queuedRandom([hex(10, 16), hex(11, 12)]),
-    },
-  });
-  const envelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
-    keyHandle: previous.keyHandle,
-    expectedHeadEvidence: previous.collectedHeadEvidence,
-    addedBundle: prepared.descriptor,
-    supersededBundleIds: [],
-    runtime: { getRandomValues: queuedRandom([hex(12, 16), hex(13, 32)]) },
-  });
-  const resultHead = createEncryptedWalletBackupV2CurrentHead({
-    realm: REALM,
-    vaultId: previous.keyHandle.vaultId,
-    enrollmentEpoch: 1,
-    headVersion: 2,
-    bundles: [previous.prepared.descriptor, prepared.descriptor],
-  });
-  return {
-    ...previous,
-    prepared,
-    envelope,
-    resultHead,
-    collectedHeadEvidence: collectedEvidence(resultHead, [
-      previous.prepared.descriptor,
-      prepared.descriptor,
-    ]),
-    group: encodeEncryptedWalletBackupV2UploadGroup({ envelope, objects: prepared.objects }),
-  };
-}
-
-function emptyHead() {
-  return createEncryptedWalletBackupV2CurrentHead({
-    realm: REALM,
-    vaultId: VAULT_ID,
-    enrollmentEpoch: 1,
-    headVersion: 0,
-    bundles: [],
-  });
-}
-
-function preparedInput(prepared: Awaited<ReturnType<typeof preparedFixture>>) {
-  return {
-    mutationId: prepared.envelope.mutation.mutationId,
-    requestDigest: prepared.envelope.requestDigest,
-    localRevision: 7,
-    canonicalUploadGroup: prepared.group,
-    createdAtUnixMilliseconds: 1,
-  };
-}
-
-async function verifiedReceiptFixture(prepared: Awaited<ReturnType<typeof preparedFixture>>) {
-  const mutationEvidence = decodeEncryptedWalletBackupV2UploadGroup({
-    bytes: prepared.group,
-    expectedRequestAuthPublicKey: prepared.keyHandle.requestAuthPublicKey,
-    expectedContext: { realm: REALM, vaultId: prepared.keyHandle.vaultId, enrollmentEpoch: 1 },
-  }).mutationEvidence;
-  const receipt = await issueEncryptedWalletBackupV2BundleSupersessionReceipt({
-    mutationEvidence,
-    resultHead: prepared.resultHead,
-    signingKeyId: "55".repeat(16),
-    signingPublicKey: toHex(schnorr.getPublicKey(fromHex("03".repeat(32)))),
-    signDigest: (digest) => schnorr.sign(digest, fromHex("03".repeat(32))),
-  });
-  return {
-    canonicalSignedReceipt: encodeEncryptedWalletBackupV2BundleSupersessionReceipt(receipt),
-    verifiedReceipt: verifyEncryptedWalletBackupV2BundleSupersessionReceipt({
-      receipt,
-      mutationEvidence,
-      pinnedSigningKeys: [
-        {
-          keyId: "55".repeat(16),
-          publicKey: toHex(schnorr.getPublicKey(fromHex("03".repeat(32)))),
-        },
-      ],
-    }),
-  };
-}
-
-async function preparedFixture(variant = 1) {
-  fixtureSequence += 1;
+async function preparedFixture() {
+  sequence += 1;
+  const seed = new Uint8Array(64).fill(sequence);
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
-    seed: new Uint8Array(64).fill(9),
+    seed,
     realm: REALM,
     runtime: { subtle: crypto.subtle },
   });
   const scopeId = deriveDurableCustodyScopeId({
     scopeKind: "wallet",
-    walletId: fixtureSequence.toString(16).padStart(64, "9"),
+    walletId: sequence.toString(16).padStart(64, "8"),
   });
   const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
   openDatabases.push(database);
@@ -473,18 +210,19 @@ async function preparedFixture(variant = 1) {
     enrollmentEpoch: 1,
     requestAuthPublicKey: keyHandle.requestAuthPublicKey,
   });
-  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
-    keyHandle,
-    asset: { mintUrl: "https://mint.example", unit: "sat", assetIdentity: "cashu:ordinary" },
-    declaredAmount: 1n,
-    custodyRevision: 1n,
-    canonicalPayload: encodeCanonicalBackupCbor(["test"]),
-    runtime: {
-      subtle: crypto.subtle,
-      getRandomValues: queuedRandom([hex(variant, 16), hex(variant + 1, 12)]),
-    },
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: "https://mint.example",
+    unit: "sat",
+    asset: { kind: "ordinary" },
   });
-  const head = createEncryptedWalletBackupV2CurrentHead({
+  const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId,
+    asset,
+    custodyRevision: 1n,
+    activeProofCount: 1,
+  });
+  await database.encryptedWalletBackupV2DesiredAssets.put(desired);
+  const emptyHead = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
     vaultId: keyHandle.vaultId,
     enrollmentEpoch: 1,
@@ -492,39 +230,108 @@ async function preparedFixture(variant = 1) {
     bundles: [],
   });
   await store.acceptCompetingHead({
-    collectedHeadEvidence: collectedEvidence(head, []),
+    collectedHeadEvidence: evidence(emptyHead, []),
     stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
+  });
+  const bundle = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset,
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    canonicalPayload: encodeCanonicalBackupCbor(["proof"]),
+    runtime: {
+      subtle: crypto.subtle,
+      getRandomValues: queuedRandom([hex(10 + sequence, 16), hex(20 + sequence, 12)]),
+    },
   });
   const envelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
     keyHandle,
-    expectedHeadEvidence: collectedEvidence(head, []),
-    addedBundle: prepared.descriptor,
+    expectedHeadEvidence: evidence(emptyHead, []),
+    addedBundle: bundle.descriptor,
     supersededBundleIds: [],
-    runtime: { getRandomValues: queuedRandom([hex(variant + 2, 16), hex(variant + 3, 32)]) },
+    runtime: { getRandomValues: queuedRandom([hex(30 + sequence, 16), hex(40 + sequence, 32)]) },
+  });
+  const group = encodeEncryptedWalletBackupV2UploadGroup({
+    envelope,
+    objects: bundle.objects,
   });
   const resultHead = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
     vaultId: keyHandle.vaultId,
     enrollmentEpoch: 1,
     headVersion: 1,
-    bundles: [prepared.descriptor],
+    bundles: [bundle.descriptor],
   });
+  const binding = {
+    localAssetKey: desired.localAssetKey,
+    assetLocator: bundle.descriptor.assetLocator,
+    custodyRevision: desired.custodyRevision,
+    desiredAction: "replace" as const,
+    activeProofCount: 1,
+  };
   return {
-    store,
     database,
+    store,
     scopeId,
     keyHandle,
-    prepared,
+    asset,
+    desired,
+    bundle,
     envelope,
-    canonicalDescriptor: encodeEncryptedWalletBackupV2BundleDescriptor(prepared.descriptor),
+    group,
     resultHead,
-    emptyCollectedHeadEvidence: collectedEvidence(head, []),
-    collectedHeadEvidence: collectedEvidence(resultHead, [prepared.descriptor]),
-    group: encodeEncryptedWalletBackupV2UploadGroup({ envelope, objects: prepared.objects }),
+    resultEvidence: evidence(resultHead, [bundle.descriptor]),
+    insert: {
+      prepared: {
+        mutationId: envelope.mutation.mutationId,
+        requestDigest: envelope.requestDigest,
+        canonicalUploadGroup: group,
+        createdAtUnixMilliseconds: 1,
+        ...binding,
+      },
+      desired: binding,
+    },
   };
 }
 
-function collectedEvidence(
+async function receiptFixture(fixture: Awaited<ReturnType<typeof preparedFixture>>) {
+  const mutationEvidence = decodeEncryptedWalletBackupV2UploadGroup({
+    bytes: fixture.group,
+    expectedRequestAuthPublicKey: fixture.keyHandle.requestAuthPublicKey,
+    expectedContext: {
+      realm: REALM,
+      vaultId: fixture.keyHandle.vaultId,
+      enrollmentEpoch: 1,
+    },
+  }).mutationEvidence;
+  const receipt = await issueEncryptedWalletBackupV2BundleSupersessionReceipt({
+    mutationEvidence,
+    resultHead: fixture.resultHead,
+    signingKeyId: SIGNING_KEY_ID,
+    signingPublicKey: SIGNING_PUBLIC_KEY,
+    signDigest: (digest) => schnorr.sign(digest, SIGNING_PRIVATE_KEY),
+  });
+  return {
+    binding: {
+      ...fixture.insert.desired,
+      bundleId: fixture.bundle.descriptor.bundleId,
+      bundleDescriptorDigest: receipt.bundleDescriptorDigest,
+    },
+    canonicalSignedMutation: encodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire(
+      fixture.envelope,
+    ),
+    canonicalSignedReceipt: encodeEncryptedWalletBackupV2BundleSupersessionReceipt(receipt),
+    verifiedReceipt: verifyEncryptedWalletBackupV2BundleSupersessionReceipt({
+      receipt,
+      mutationEvidence,
+      pinnedSigningKeys: [{ keyId: SIGNING_KEY_ID, publicKey: SIGNING_PUBLIC_KEY }],
+    }),
+    collectedHeadEvidence: fixture.resultEvidence,
+    preparedMutation: fixture.insert.prepared,
+  };
+}
+
+function evidence(
   head: ReturnType<typeof createEncryptedWalletBackupV2CurrentHead>,
   bundles: Parameters<typeof enumerateEncryptedWalletBackupV2DescriptorPages>[0]["bundles"],
 ) {
@@ -533,9 +340,9 @@ function collectedEvidence(
   );
 }
 
-function queuedRandom(values: readonly string[]): (target: Uint8Array) => Uint8Array {
+function queuedRandom(values: readonly string[]) {
   const queue = values.map(fromHex);
-  return (target) => {
+  return (target: Uint8Array): Uint8Array => {
     const next = queue.shift();
     if (next === undefined || next.byteLength !== target.byteLength) throw new Error("test random");
     target.set(next);

@@ -51,7 +51,7 @@ describe("browser durable custody adapter", () => {
     await expect(adapter.ensureScope(reordered, 2)).resolves.toBeUndefined();
   });
 
-  it("does not advance the backup dirty revision for a transaction without proof changes", async () => {
+  it("does not advance the desired asset for a transaction without proof changes", async () => {
     const database = createDatabase();
     const adapter = new BrowserDurableCustodyAdapter(database);
     const scope = walletScope();
@@ -82,10 +82,6 @@ describe("browser durable custody adapter", () => {
       () => undefined,
     );
 
-    expect(await database.encryptedWalletBackupV2DirtyRevisions.get(scope.scopeId)).toEqual({
-      scopeId: scope.scopeId,
-      revision: 1,
-    });
     expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
       {
         scopeId: scope.scopeId,
@@ -129,10 +125,6 @@ describe("browser durable custody adapter", () => {
     expect(locked?.selectability).toBe("locked");
     expect(locked?.reservationOperationId).toBe(source.record.operation.operationId);
     expect(await database.custodyReservations.count()).toBe(1);
-    expect(await database.encryptedWalletBackupV2DirtyRevisions.get(scope.scopeId)).toEqual({
-      scopeId: scope.scopeId,
-      revision: 1,
-    });
     expect(
       await database.custodyProofBackupAuthorities.get([scope.scopeId, predecessor.proofId]),
     ).toMatchObject({
@@ -207,7 +199,6 @@ describe("browser durable custody adapter", () => {
     expect(await adapter.readProof(scope.scopeId, predecessor.proofId)).toBeNull();
     expect(await database.custodyReservations.count()).toBe(0);
     expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
-    expect(await database.encryptedWalletBackupV2DirtyRevisions.get(scope.scopeId)).toBeUndefined();
     expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
   });
 
@@ -246,13 +237,9 @@ describe("browser durable custody adapter", () => {
       "locked",
     );
     expect(await database.custodyProofBackupAuthorities.count()).toBe(1);
-    expect(await database.encryptedWalletBackupV2DirtyRevisions.get(scope.scopeId)).toEqual({
-      scopeId: scope.scopeId,
-      revision: 1,
-    });
   });
 
-  it("advances the dirty revision once for the specialized refund admission", async () => {
+  it("advances the desired asset once for the specialized refund admission", async () => {
     const database = createDatabase();
     const adapter = new BrowserDurableCustodyAdapter(database);
     const scope = walletScope();
@@ -302,10 +289,6 @@ describe("browser durable custody adapter", () => {
       observedAtMs: 28,
     });
 
-    expect(await database.encryptedWalletBackupV2DirtyRevisions.get(scope.scopeId)).toEqual({
-      scopeId: scope.scopeId,
-      revision: 2,
-    });
     expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
       {
         scopeId: scope.scopeId,

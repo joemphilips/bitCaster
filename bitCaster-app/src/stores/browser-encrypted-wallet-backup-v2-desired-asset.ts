@@ -23,6 +23,7 @@ export interface EncryptedWalletBackupV2DesiredAssetRow extends EncryptedWalletB
   readonly custodyRevision: string;
   readonly activeProofCount: number;
   readonly desiredAction: EncryptedWalletBackupV2DesiredAction;
+  readonly syncState: "pending" | "acknowledged";
 }
 
 export function createEncryptedWalletBackupV2DesiredAssetRow(input: {
@@ -39,6 +40,7 @@ export function createEncryptedWalletBackupV2DesiredAssetRow(input: {
     custodyRevision: decimalUint64(input.custodyRevision),
     activeProofCount: requireActiveProofCount(input.activeProofCount),
     desiredAction: input.activeProofCount === 0 ? "remove" : "replace",
+    syncState: "pending",
   });
 }
 
@@ -70,6 +72,7 @@ export function decodeEncryptedWalletBackupV2DesiredAssetRow(
     custodyRevision: decimalUint64(parseDecimalUint64(value.custodyRevision)),
     activeProofCount,
     desiredAction,
+    syncState: requireSyncState(value.syncState),
   };
 }
 
@@ -90,6 +93,7 @@ const rowFields = [
   "custodyRevision",
   "activeProofCount",
   "desiredAction",
+  "syncState",
 ] as const;
 const UINT64_MAX = (1n << 64n) - 1n;
 
@@ -112,6 +116,11 @@ function parseDecimalUint64(value: unknown): bigint {
 function requireAction(value: unknown): EncryptedWalletBackupV2DesiredAction {
   if (value === "replace" || value === "remove") return value;
   throw new Error("browser V2 desired asset action is invalid");
+}
+
+function requireSyncState(value: unknown): "pending" | "acknowledged" {
+  if (value === "pending" || value === "acknowledged") return value;
+  throw new Error("browser V2 desired asset sync state is invalid");
 }
 
 function requireActiveProofCount(value: unknown): number {
@@ -170,44 +179,34 @@ export async function advanceBrowserV2DesiredAssetsForCounter(input: {
 }): Promise<void> {
   const scopeId = decodeDurableCustodyScopeId(input.scopeId);
   const normalizedMint = decodeCanonicalMintOrigin(input.normalizedMint);
-  const selectable = await input.database.custodyProofs
-    .where("[scopeId+normalizedMint+unit+keysetId+selectability]")
-    .equals([scopeId, normalizedMint, input.unit, input.keysetId, "selectable"])
-    .limit(ENCRYPTED_WALLET_BACKUP_V2_PROOF_SET_MAX + 1)
-    .toArray();
-  const locked = await input.database.custodyProofs
-    .where("[scopeId+normalizedMint+unit+keysetId+selectability]")
-    .equals([scopeId, normalizedMint, input.unit, input.keysetId, "locked"])
-    .limit(ENCRYPTED_WALLET_BACKUP_V2_PROOF_SET_MAX + 1)
-    .toArray();
-  if (selectable.length + locked.length > ENCRYPTED_WALLET_BACKUP_V2_PROOF_SET_MAX) {
-    throw new Error("browser V2 desired asset active proof count is invalid");
-  }
-  const proofs = [...selectable, ...locked].map((row) =>
-    decodeActiveProofReference(row, { ...input, scopeId, normalizedMint }),
-  );
-  if (proofs.length === 0) return;
+  const active = await firstActiveProof(input.database, {
+    ...input,
+    scopeId,
+    normalizedMint,
+  });
+  if (active === null) return;
   const updates = new Map<string, DesiredAssetUpdate>();
-  addDesiredAssetUpdate(updates, await assetForCounterProofs(input.database, proofs), 0);
+  addDesiredAssetUpdate(updates, await assetForProof(input.database, active), 0);
   await persistDesiredAssetUpdates(input.database, scopeId, updates);
 }
 
-async function assetForCounterProofs(
+async function firstActiveProof(
   database: BitcasterDB,
-  proofs: readonly BrowserCustodyProofRow[],
-): Promise<EncryptedWalletBackupV2AssetIdentity> {
-  const first = proofs[0];
-  if (first === undefined) throw new Error("browser V2 desired asset counter proof is missing");
-  for (const proof of proofs.slice(1)) {
-    if (
-      proof.assetKind !== first.assetKind ||
-      proof.conditionId !== first.conditionId ||
-      proof.outcomeCollection !== first.outcomeCollection
-    ) {
-      throw new Error("browser V2 desired asset counter proof is foreign");
-    }
+  expected: {
+    readonly scopeId: string;
+    readonly normalizedMint: string;
+    readonly unit: BrowserCustodyProofUnit;
+    readonly keysetId: string;
+  },
+): Promise<BrowserCustodyProofRow | null> {
+  for (const state of ["selectable", "locked"] as const) {
+    const raw = await database.custodyProofs
+      .where("[scopeId+normalizedMint+unit+keysetId+selectability]")
+      .equals([expected.scopeId, expected.normalizedMint, expected.unit, expected.keysetId, state])
+      .first();
+    if (raw !== undefined) return decodeActiveProofReference(raw, expected);
   }
-  return assetForProof(database, first);
+  return null;
 }
 
 interface DesiredAssetUpdate {

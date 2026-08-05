@@ -186,12 +186,6 @@ export interface EncryptedWalletBackupDexieRestoreProofRow {
   proof: EncryptedWalletBackupRestoreProofRecord | null;
 }
 
-/** V2-only backup revision. It advances atomically with custody proof changes. */
-export interface EncryptedWalletBackupV2DirtyRevisionRow {
-  scopeId: string;
-  revision: number;
-}
-
 /** One authoritative NUT-13 allocation cursor for one wallet scope and keyset. */
 export interface BrowserWalletCounterCursorRow {
   scopeId: string;
@@ -216,9 +210,13 @@ export interface EncryptedWalletBackupV2PreparedMutationRow {
   enrollmentEpoch: number;
   mutationId: string;
   requestDigest: string;
-  localRevision: number;
   canonicalUploadGroup: Uint8Array;
   createdAtUnixMilliseconds: number;
+  localAssetKey: string;
+  assetLocator: string;
+  custodyRevision: string;
+  desiredAction: "replace" | "remove";
+  activeProofCount: number;
 }
 
 /** One accepted V2 current head for one scoped vault authority. */
@@ -234,15 +232,18 @@ export interface EncryptedWalletBackupV2AcceptedHeadRow {
   canonicalCurrentHead: Uint8Array;
 }
 
-/** One verified V2 receipt for one scoped vault authority. */
-export interface EncryptedWalletBackupV2ReceiptRow {
+/** One current verified V2 receipt for one opaque local asset. */
+export interface EncryptedWalletBackupV2AssetReceiptRow {
   scopeId: string;
   realm: string;
   vaultId: string;
   enrollmentEpoch: number;
-  mutationId: string;
-  requestDigest: string;
-  acknowledgedLocalRevision: number;
+  localAssetKey: string;
+  assetLocator: string;
+  custodyRevision: string;
+  bundleId: string;
+  bundleDescriptorDigest: string;
+  canonicalSignedMutation: Uint8Array;
   canonicalSignedReceipt: Uint8Array;
 }
 
@@ -458,7 +459,6 @@ export class BitcasterDB extends Dexie {
     EncryptedWalletBackupDexieRestoreProofRow,
     [string, string]
   >;
-  encryptedWalletBackupV2DirtyRevisions!: Table<EncryptedWalletBackupV2DirtyRevisionRow, string>;
   encryptedWalletBackupV2DesiredAssets!: Table<
     EncryptedWalletBackupV2DesiredAssetRow,
     [string, string]
@@ -476,9 +476,9 @@ export class BitcasterDB extends Dexie {
     EncryptedWalletBackupV2AcceptedHeadRow,
     [string, string, string, number]
   >;
-  encryptedWalletBackupV2Receipts!: Table<
-    EncryptedWalletBackupV2ReceiptRow,
-    [string, string, string, number]
+  encryptedWalletBackupV2AssetReceipts!: Table<
+    EncryptedWalletBackupV2AssetReceiptRow,
+    [string, string, string, number, string]
   >;
   encryptedWalletBackupV2ActiveDescriptors!: Table<
     EncryptedWalletBackupV2ActiveDescriptorRow,
@@ -776,7 +776,6 @@ export class BitcasterDB extends Dexie {
       encryptedWalletBackupV2DirtyRevisions: "&scopeId",
       encryptedWalletBackupV2PreparedMutations: "&[scopeId+realm+vaultId+enrollmentEpoch]",
       encryptedWalletBackupV2AcceptedHeads: "&[scopeId+realm+vaultId+enrollmentEpoch]",
-      encryptedWalletBackupV2Receipts: "&[scopeId+realm+vaultId+enrollmentEpoch]",
       encryptedWalletBackupV2ActiveDescriptors:
         "&[scopeId+realm+vaultId+enrollmentEpoch+bundleId], [scopeId+realm+vaultId+enrollmentEpoch]",
     });
@@ -787,12 +786,41 @@ export class BitcasterDB extends Dexie {
     });
     this.version(19)
       .stores({
+        encryptedWalletBackupV2DirtyRevisions: null,
         custodyProofs:
           "&[scopeId+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability]",
         encryptedWalletBackupV2DesiredAssets:
-          "&[scopeId+localAssetKey], [scopeId+mintUrl+unit+assetIdentity]",
+          "&[scopeId+localAssetKey], [scopeId+mintUrl+unit+assetIdentity], [scopeId+localAssetKey], [scopeId+syncState+localAssetKey]",
       })
       .upgrade(async (transaction) => {
+        await seedEncryptedWalletBackupV2DesiredAssets(transaction);
+      });
+    this.version(20)
+      .stores({
+        custodyProofs:
+          "&[scopeId+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]",
+        custodyConditionalKeysets:
+          "&[scopeId+normalizedMint+unit+keysetId], [scopeId+normalizedMint+unit+conditionId+outcomeCollectionId]",
+        encryptedWalletBackupV2PreparedMutations: "&[scopeId+realm+vaultId+enrollmentEpoch]",
+        encryptedWalletBackupV2DesiredAssets:
+          "&[scopeId+localAssetKey], [scopeId+mintUrl+unit+assetIdentity], [scopeId+localAssetKey], [scopeId+syncState+localAssetKey]",
+        encryptedWalletBackupV2AcceptedHeads: "&[scopeId+realm+vaultId+enrollmentEpoch]",
+        encryptedWalletBackupV2AssetReceipts:
+          "&[scopeId+realm+vaultId+enrollmentEpoch+localAssetKey], [scopeId+realm+vaultId+enrollmentEpoch]",
+        encryptedWalletBackupV2Receipts: null,
+        encryptedWalletBackupV2ActiveDescriptors:
+          "&[scopeId+realm+vaultId+enrollmentEpoch+bundleId], [scopeId+realm+vaultId+enrollmentEpoch]",
+      })
+      .upgrade(async (transaction) => {
+        for (const name of [
+          "encryptedWalletBackupV2DesiredAssets",
+          "encryptedWalletBackupV2PreparedMutations",
+          "encryptedWalletBackupV2AcceptedHeads",
+          "encryptedWalletBackupV2AssetReceipts",
+          "encryptedWalletBackupV2ActiveDescriptors",
+        ]) {
+          await transaction.table(name).clear();
+        }
         await seedEncryptedWalletBackupV2DesiredAssets(transaction);
       });
   }

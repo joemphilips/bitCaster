@@ -21,7 +21,7 @@ describe("browser wallet databases", () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(19);
+    expect(db.verno).toBe(20);
     expect(db.custodyProofBackupAuthorities.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofBackupAuthorities.schema.indexes.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
@@ -88,6 +88,34 @@ describe("browser wallet databases", () => {
       "scopeId",
       "localAssetKey",
     ]);
+    expect(
+      db.encryptedWalletBackupV2DesiredAssets.schema.indexes.map(({ name }) => name),
+    ).toContain("[scopeId+syncState+localAssetKey]");
+    expect(db.custodyProofs.schema.indexes.map(({ name }) => name)).toEqual(
+      expect.arrayContaining([
+        "[scopeId+normalizedMint+unit+assetKind+selectability]",
+        "[scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]",
+      ]),
+    );
+    expect(db.encryptedWalletBackupV2PreparedMutations.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "realm",
+      "vaultId",
+      "enrollmentEpoch",
+    ]);
+    expect(db.encryptedWalletBackupV2AssetReceipts.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "realm",
+      "vaultId",
+      "enrollmentEpoch",
+      "localAssetKey",
+    ]);
+    expect(db.tables.map(({ name }) => name)).not.toEqual(
+      expect.arrayContaining([
+        "encryptedWalletBackupV2DirtyRevisions",
+        "encryptedWalletBackupV2Receipts",
+      ]),
+    );
   });
 
   it("seeds one ordinary desired asset when upgrading an active V2 custody row", async () => {

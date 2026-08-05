@@ -228,7 +228,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       this.#database.custodyProofBackupAuthorities,
       this.#database.custodyConditionalKeysets,
       this.#database.encryptedWalletBackupV2DesiredAssets,
-      this.#database.encryptedWalletBackupV2DirtyRevisions,
     ];
     const result = await this.#database.transaction("rw", tables, async () => {
       const scope = (await this.#requiredScope(selection.scope.scopeId)).state;
@@ -280,7 +279,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         this.#database.custodyProofBackupAuthorities,
         this.#database.custodyConditionalKeysets,
         this.#database.encryptedWalletBackupV2DesiredAssets,
-        this.#database.encryptedWalletBackupV2DirtyRevisions,
       ],
       async () => {
         const operationRow = await this.#database.custodyOperations.get([
@@ -359,7 +357,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
           input.scopeId,
           [...retiredChanges, ...refundChanges].map(desiredAssetProofChange),
         );
-        await this.#advanceDirtyRevision(input.scopeId);
         if (input.injectFault === "before-commit") {
           throw new Error("injected browser refund custody fault before commit");
         }
@@ -634,7 +631,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         selection.scope.scopeId,
         proofChanges.map(desiredAssetProofChange),
       );
-      await this.#advanceDirtyRevision(selection.scope.scopeId);
     }
     await this.#persistReservations(selection.scope.scopeId, transaction);
     await this.#rebuildActiveWork(selection, transaction);
@@ -647,22 +643,6 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       if (!record) throw new Error("browser custody changed operation is absent");
       await this.#database.custodyOperations.put(operationRow(record));
     }
-  }
-
-  async #advanceDirtyRevision(scopeId: string): Promise<void> {
-    decodeDurableCustodyScopeId(scopeId);
-    const current = await this.#database.encryptedWalletBackupV2DirtyRevisions.get(scopeId);
-    if (
-      current !== undefined &&
-      (current.scopeId !== scopeId ||
-        !Number.isSafeInteger(current.revision) ||
-        current.revision < 0)
-    ) {
-      throw new Error("browser custody backup dirty revision is invalid");
-    }
-    const revision =
-      current === undefined ? 1 : incrementRevision(current.revision, "backup dirty");
-    await this.#database.encryptedWalletBackupV2DirtyRevisions.put({ scopeId, revision });
   }
 
   async #persistChangedArtifacts(transaction: StagedBrowserCustodyTransaction): Promise<void> {
@@ -1934,13 +1914,7 @@ function proofPayloadChanged(change: BrowserCustodyProofBackupPayloadChange): bo
     change.afterProof.selectability === "locked";
   if (beforeActive !== afterActive) return true;
   if (!beforeActive) return false;
-  if (
-    change.beforeProof === null ||
-    change.beforeLocator === null ||
-    change.afterLocator === null
-  ) {
-    throw new Error("browser custody active proof backup authority is incomplete");
-  }
+  if (change.beforeProof === null) return true;
   return !(
     change.beforeProof.proofId === change.afterProof.proofId &&
     sameBytes(change.beforeProof.proofBody, change.afterProof.proofBody) &&
@@ -1949,8 +1923,16 @@ function proofPayloadChanged(change: BrowserCustodyProofBackupPayloadChange): bo
     change.beforeProof.assetKind === change.afterProof.assetKind &&
     change.beforeProof.conditionId === change.afterProof.conditionId &&
     change.beforeProof.outcomeCollection === change.afterProof.outcomeCollection &&
-    sameBrowserProofDerivationLocator(change.beforeLocator, change.afterLocator)
+    sameNullableBrowserProofDerivationLocator(change.beforeLocator, change.afterLocator)
   );
+}
+
+function sameNullableBrowserProofDerivationLocator(
+  left: BrowserProofDerivationLocatorAuthority,
+  right: BrowserProofDerivationLocatorAuthority,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return sameBrowserProofDerivationLocator(left, right);
 }
 
 function desiredAssetProofChange(

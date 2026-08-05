@@ -91,6 +91,10 @@
       "types": "./dist/encryptedWalletBackupV2ProofSet.d.ts",
       "import": "./dist/encryptedWalletBackupV2ProofSet.js"
     },
+    "./encryptedWalletBackupV2Sync": {
+      "types": "./dist/encryptedWalletBackupV2Sync.d.ts",
+      "import": "./dist/encryptedWalletBackupV2Sync.js"
+    },
     "./encryptedWalletBackupEnrollment": {
       "types": "./dist/encryptedWalletBackupEnrollment.d.ts",
       "import": "./dist/encryptedWalletBackupEnrollment.js"

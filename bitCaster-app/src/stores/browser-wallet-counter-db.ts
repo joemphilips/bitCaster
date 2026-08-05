@@ -85,7 +85,6 @@ export class BrowserWalletCounterDexieStore {
         this.#database.custodyProofs,
         this.#database.custodyConditionalKeysets,
         this.#database.encryptedWalletBackupV2DesiredAssets,
-        this.#database.encryptedWalletBackupV2DirtyRevisions,
       ],
       async () => {
         const row = await this.#ensureAssociation(association, id);
@@ -113,7 +112,6 @@ export class BrowserWalletCounterDexieStore {
         this.#database.custodyProofs,
         this.#database.custodyConditionalKeysets,
         this.#database.encryptedWalletBackupV2DesiredAssets,
-        this.#database.encryptedWalletBackupV2DirtyRevisions,
       ],
       async () => {
         const row = await this.#ensureAssociation(association, id);
@@ -142,7 +140,6 @@ export class BrowserWalletCounterDexieStore {
         this.#database.custodyProofs,
         this.#database.custodyConditionalKeysets,
         this.#database.encryptedWalletBackupV2DesiredAssets,
-        this.#database.encryptedWalletBackupV2DirtyRevisions,
         this.#database.proofs,
       ],
       async () => {
@@ -164,9 +161,7 @@ export class BrowserWalletCounterDexieStore {
           });
           await this.#advanceDesiredAssetAuthority(association, id);
         }
-        const changed = counterChanged || recoveryChanged || admissionChangesWallet;
-        if (changed) await this.#advanceDirtyRevision();
-        return { changed, next };
+        return { changed: counterChanged || recoveryChanged || admissionChangesWallet, next };
       },
     );
   }
@@ -224,7 +219,6 @@ export class BrowserWalletCounterDexieStore {
     const next = requireCounter(current + count);
     await this.#database.walletCounterCursors.put({ scopeId: this.#scopeId, keysetId, next });
     await this.#advanceDesiredAssetAuthority(context, keysetId);
-    await this.#advanceDirtyRevision();
     return { start: current, count };
   }
 
@@ -238,7 +232,6 @@ export class BrowserWalletCounterDexieStore {
     if (next === current) return { changed: false, next };
     await this.#database.walletCounterCursors.put({ scopeId: this.#scopeId, keysetId, next });
     await this.#advanceDesiredAssetAuthority(context, keysetId);
-    await this.#advanceDirtyRevision();
     return { changed: true, next };
   }
 
@@ -282,15 +275,6 @@ export class BrowserWalletCounterDexieStore {
       "recovery_incomplete",
       "wallet counter recovery is incomplete",
     );
-  }
-
-  async #advanceDirtyRevision(): Promise<void> {
-    const current = await this.#database.encryptedWalletBackupV2DirtyRevisions.get(this.#scopeId);
-    const revision = current === undefined ? 1 : requireCounter(current.revision) + 1;
-    await this.#database.encryptedWalletBackupV2DirtyRevisions.put({
-      scopeId: this.#scopeId,
-      revision: requireCounter(revision),
-    });
   }
 
   async #advanceDesiredAssetAuthority(

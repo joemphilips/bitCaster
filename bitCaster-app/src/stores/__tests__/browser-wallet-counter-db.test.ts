@@ -39,10 +39,6 @@ function createStore(options: { current?: boolean; name?: string } = {}) {
   });
 }
 
-async function dirtyRevision(database: BitcasterDB): Promise<number> {
-  return (await database.encryptedWalletBackupV2DirtyRevisions.get(scopeId))?.revision ?? 0;
-}
-
 describe("browser wallet counter authority", () => {
   it("allocates unique concurrent ranges and shares a cursor across mint aliases", async () => {
     const counters = createStore();
@@ -113,9 +109,8 @@ describe("browser wallet counter authority", () => {
     await expect(source.reserve(keysetId, 1)).resolves.toEqual({ start: 1, count: 1 });
   });
 
-  it("keeps advances monotonic and changes the dirty revision once only when it moves", async () => {
+  it("keeps advances monotonic", async () => {
     const counters = createStore();
-    const database = databases.at(-1)!;
 
     expect(
       await counters.advanceToAtLeastInContext(
@@ -125,7 +120,6 @@ describe("browser wallet counter authority", () => {
         false,
       ),
     ).toEqual({ changed: true, next: 5 });
-    expect(await dirtyRevision(database)).toBe(1);
     expect(
       await counters.advanceToAtLeastInContext(
         { mintUrl: "https://mint.example", unit: "sat" },
@@ -142,7 +136,6 @@ describe("browser wallet counter authority", () => {
         false,
       ),
     ).toEqual({ start: 5, count: 0 });
-    expect(await dirtyRevision(database)).toBe(1);
   });
 
   it("advances only the active asset intent when a relevant counter moves", async () => {
@@ -273,7 +266,6 @@ describe("browser wallet counter authority", () => {
     ).rejects.toThrow("proof admission failed");
 
     expect(await counters.snapshot()).toEqual({ [keysetId]: 7 });
-    expect(await dirtyRevision(database)).toBe(1);
     expect(await database.proofs.get("rollback")).toBeUndefined();
     expect(
       await counters.restoreInContext(
@@ -284,7 +276,6 @@ describe("browser wallet counter authority", () => {
         () => undefined,
       ),
     ).toEqual({ changed: true, next: 7 });
-    expect(await dirtyRevision(database)).toBe(2);
     expect(
       await counters.restoreInContext(
         { mintUrl: "https://mint.example", unit: "sat" },
@@ -294,7 +285,6 @@ describe("browser wallet counter authority", () => {
         async () => database.proofs.put({ secret: "admitted" } as never),
       ),
     ).toEqual({ changed: true, next: 7 });
-    expect(await dirtyRevision(database)).toBe(3);
   });
 
   it("rolls back restored proofs when the profile changes during admission", async () => {
@@ -322,6 +312,5 @@ describe("browser wallet counter authority", () => {
     expect(await database.proofs.get("profile-change")).toBeUndefined();
     expect(await database.walletCounterCursors.count()).toBe(0);
     expect(await database.walletCounterAssociations.count()).toBe(0);
-    expect(await dirtyRevision(database)).toBe(0);
   });
 });

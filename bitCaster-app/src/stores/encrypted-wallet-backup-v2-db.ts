@@ -3,9 +3,11 @@ import { decodeDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustod
 import {
   decodeEncryptedWalletBackupV2BundleDescriptorWire,
   decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire,
+  decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire,
   decodeEncryptedWalletBackupV2UploadGroup,
   encodeEncryptedWalletBackupV2BundleDescriptor,
   encodeEncryptedWalletBackupV2BundleSupersessionReceipt,
+  encodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire,
   encodeEncryptedWalletBackupV2CurrentHead,
   ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX,
   requireEncryptedWalletBackupV2CollectedHeadEvidence,
@@ -18,9 +20,10 @@ import type {
   EncryptedWalletBackupV2AcceptedHeadRow,
   EncryptedWalletBackupV2ActiveDescriptorRow,
   EncryptedWalletBackupV2PreparedMutationRow,
-  EncryptedWalletBackupV2ReceiptRow,
+  EncryptedWalletBackupV2AssetReceiptRow,
 } from "./proof-db";
 import { browserWalletDatabaseName } from "../lib/browserWalletProfile";
+import { decodeEncryptedWalletBackupV2DesiredAssetRow } from "./browser-encrypted-wallet-backup-v2-desired-asset";
 
 export interface EncryptedWalletBackupV2DexieAuthorityProfile {
   readonly database: BitcasterDB;
@@ -34,20 +37,31 @@ export interface EncryptedWalletBackupV2DexieAuthorityProfile {
 export interface EncryptedWalletBackupV2PreparedMutationInput {
   readonly mutationId: string;
   readonly requestDigest: string;
-  readonly localRevision: number;
   readonly canonicalUploadGroup: Uint8Array;
   readonly createdAtUnixMilliseconds: number;
+  readonly localAssetKey: string;
+  readonly assetLocator: string;
+  readonly custodyRevision: string;
+  readonly desiredAction: "replace" | "remove";
+  readonly activeProofCount: number;
 }
 
-export interface EncryptedWalletBackupV2ReceiptInput {
-  readonly canonicalSignedReceipt: Uint8Array;
-  readonly acknowledgedLocalRevision: number;
-  readonly verifiedReceipt: unknown;
+export interface EncryptedWalletBackupV2PreparedDesiredBinding {
+  readonly localAssetKey: string;
+  readonly assetLocator: string;
+  readonly custodyRevision: string;
+  readonly desiredAction: "replace" | "remove";
+  readonly activeProofCount: number;
 }
 
 export interface EncryptedWalletBackupV2PreparedMutationMatch {
   readonly mutationId: string;
   readonly requestDigest: string;
+}
+
+export interface EncryptedWalletBackupV2AssetReceiptBinding extends EncryptedWalletBackupV2PreparedDesiredBinding {
+  readonly bundleId: string | null;
+  readonly bundleDescriptorDigest: string | null;
 }
 
 /** Strict V2-only Dexie primitives. This class never performs service I/O. */
@@ -69,19 +83,6 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     this.#requestAuthPublicKey = profile.requestAuthPublicKey;
   }
 
-  async readDirtyRevision(): Promise<number> {
-    const row = await this.#database.encryptedWalletBackupV2DirtyRevisions.get(this.#scopeId);
-    if (row === undefined) return 0;
-    if (
-      !isExactRecord(row, ["scopeId", "revision"]) ||
-      row.scopeId !== this.#scopeId ||
-      !isNonnegativeSafeInteger(row.revision)
-    ) {
-      throw new Error("encrypted wallet backup v2 dirty revision row is invalid");
-    }
-    return row.revision;
-  }
-
   async readPreparedMutation(): Promise<EncryptedWalletBackupV2PreparedMutationRow | null> {
     const row = await this.#database.encryptedWalletBackupV2PreparedMutations.get(
       this.#authorityKey(),
@@ -89,18 +90,39 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     return row === undefined ? null : this.#decodePreparedRow(row);
   }
 
-  /** Adds the one immutable prepared mutation or proves the exact replay is safe. */
-  async insertPreparedMutation(
-    input: EncryptedWalletBackupV2PreparedMutationInput,
-  ): Promise<"inserted" | "existing"> {
+  /** Deletes only one mutation that the service definitely rejected. */
+  async discardRejectedPreparedMutation(
+    input: EncryptedWalletBackupV2PreparedMutationMatch,
+  ): Promise<boolean> {
     this.#requireDatabaseBinding();
-    const next = this.#preparedRow(input);
     return this.#database.transaction(
       "rw",
       this.#database.encryptedWalletBackupV2PreparedMutations,
+      () => this.#deletePreparedIfMatch(input),
+    );
+  }
+
+  /** Persists exact upload bytes only while the exact desired asset and head still match. */
+  async insertPreparedMutationForDesired(input: {
+    readonly prepared: EncryptedWalletBackupV2PreparedMutationInput;
+    readonly desired: EncryptedWalletBackupV2PreparedDesiredBinding;
+  }): Promise<"inserted" | "existing"> {
+    this.#requireDatabaseBinding();
+    const next = this.#preparedRow(input.prepared);
+    const desired = requireDesiredBinding(input.desired);
+    return this.#database.transaction(
+      "rw",
+      this.#database.encryptedWalletBackupV2DesiredAssets,
+      this.#database.encryptedWalletBackupV2PreparedMutations,
       this.#database.encryptedWalletBackupV2AcceptedHeads,
       async () => {
-        await this.#requirePreparedMatchesAcceptedHead(input);
+        const rawDesired = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
+          this.#scopeId,
+          desired.localAssetKey,
+        ]);
+        if (rawDesired === undefined || !sameDesiredBinding(rawDesired, desired))
+          throw new Error("encrypted wallet backup v2 desired asset is stale");
+        await this.#requirePreparedMatchesAcceptedHead(input.prepared);
         const current = await this.#database.encryptedWalletBackupV2PreparedMutations.get(
           this.#authorityKey(),
         );
@@ -110,14 +132,14 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
         }
         const decoded = this.#decodePreparedRow(current);
         if (
-          decoded.mutationId !== next.mutationId ||
-          decoded.requestDigest !== next.requestDigest ||
-          decoded.localRevision !== next.localRevision ||
-          decoded.createdAtUnixMilliseconds !== next.createdAtUnixMilliseconds ||
-          !sameBytes(decoded.canonicalUploadGroup, next.canonicalUploadGroup)
-        ) {
+          !sameBytes(decoded.canonicalUploadGroup, next.canonicalUploadGroup) ||
+          decoded.localAssetKey !== next.localAssetKey ||
+          decoded.assetLocator !== next.assetLocator ||
+          decoded.custodyRevision !== next.custodyRevision ||
+          decoded.desiredAction !== next.desiredAction ||
+          decoded.activeProofCount !== next.activeProofCount
+        )
           throw new Error("encrypted wallet backup v2 prepared mutation conflicts");
-        }
         return "existing";
       },
     );
@@ -135,11 +157,13 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
       this.#database.encryptedWalletBackupV2AcceptedHeads,
       this.#database.encryptedWalletBackupV2ActiveDescriptors,
       this.#database.encryptedWalletBackupV2PreparedMutations,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
       async () => {
         if (await this.#mayReplaceAcceptedAuthority(authority)) {
           await this.#database.encryptedWalletBackupV2AcceptedHeads.put(authority.head);
           await this.#replaceDescriptorRows(authority.descriptors);
         }
+        await this.#requeueAcknowledgedDesiredAssets();
         return Object.freeze({
           deletedStalePreparedMutation: await this.#deletePreparedIfMatch(
             input.stalePreparedMutation,
@@ -154,55 +178,118 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     return row === undefined ? null : this.#decodeHeadRow(row);
   }
 
-  async readReceipt(): Promise<EncryptedWalletBackupV2ReceiptRow | null> {
-    const row = await this.#database.encryptedWalletBackupV2Receipts.get(this.#authorityKey());
-    return row === undefined ? null : this.#decodeReceiptRow(row);
+  async readAssetReceipt(
+    localAssetKey: string,
+  ): Promise<EncryptedWalletBackupV2AssetReceiptRow | null> {
+    const key = requireDesiredBinding({
+      localAssetKey,
+      assetLocator: "00".repeat(32),
+      custodyRevision: "0",
+      desiredAction: "remove",
+      activeProofCount: 0,
+    }).localAssetKey;
+    const row = await this.#database.encryptedWalletBackupV2AssetReceipts.get([
+      ...this.#authorityKey(),
+      key,
+    ]);
+    return row === undefined ? null : this.#decodeAssetReceiptRow(row);
   }
 
-  /** Atomically commits a verified receipt with its result head and active descriptors. */
-  async commitVerifiedReceipt(input: {
-    readonly receipt: EncryptedWalletBackupV2ReceiptInput;
+  async acknowledgeAbsentRemoval(
+    binding: EncryptedWalletBackupV2PreparedDesiredBinding,
+  ): Promise<void> {
+    const desired = requireDesiredBinding(binding);
+    if (desired.desiredAction !== "remove" || desired.activeProofCount !== 0)
+      throw new Error("encrypted wallet backup v2 removal intent is invalid");
+    return this.#database.transaction(
+      "rw",
+      this.#database.encryptedWalletBackupV2DesiredAssets,
+      this.#database.encryptedWalletBackupV2AssetReceipts,
+      async () => {
+        const raw = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
+          this.#scopeId,
+          desired.localAssetKey,
+        ]);
+        if (raw === undefined || !sameDesiredBinding(raw, desired))
+          throw new Error("encrypted wallet backup v2 desired asset is stale");
+        await this.#database.encryptedWalletBackupV2AssetReceipts.delete([
+          ...this.#authorityKey(),
+          desired.localAssetKey,
+        ]);
+        await this.#database.encryptedWalletBackupV2DesiredAssets.delete([
+          this.#scopeId,
+          desired.localAssetKey,
+        ]);
+      },
+    );
+  }
+
+  /** Commits the exact receipt artifact for one asset with the receipt-result head. */
+  async commitVerifiedAssetReceipt(input: {
+    readonly binding: EncryptedWalletBackupV2AssetReceiptBinding;
+    readonly canonicalSignedMutation: Uint8Array;
+    readonly canonicalSignedReceipt: Uint8Array;
+    readonly verifiedReceipt: unknown;
     readonly collectedHeadEvidence: unknown;
     readonly preparedMutation: EncryptedWalletBackupV2PreparedMutationMatch;
   }): Promise<void> {
     this.#requireDatabaseBinding();
+    const binding = requireAssetReceiptBinding(input.binding);
     const verified = requireEncryptedWalletBackupV2VerifiedBundleSupersessionReceipt(
-      input.receipt.verifiedReceipt,
+      input.verifiedReceipt,
     ).receipt;
-    const receipt = this.#receiptRow(input.receipt);
+    const mutation = decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire(
+      input.canonicalSignedMutation,
+    );
     if (
-      receipt.mutationId !== verified.mutationId ||
-      receipt.requestDigest !== verified.requestDigest ||
       !sameBytes(
-        receipt.canonicalSignedReceipt,
-        encodeEncryptedWalletBackupV2BundleSupersessionReceipt(verified),
+        input.canonicalSignedMutation,
+        encodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire(mutation),
       )
-    ) {
-      throw new Error("encrypted wallet backup v2 verified receipt is invalid");
-    }
+    )
+      throw new Error("encrypted wallet backup v2 signed mutation is invalid");
     const authority = this.#headAuthorityRows(input.collectedHeadEvidence);
     if (
       !sameBytes(
         encodeEncryptedWalletBackupV2CurrentHead(verified.resultHead),
         authority.head.canonicalCurrentHead,
       )
-    ) {
+    )
       throw new Error("encrypted wallet backup v2 receipt result head is invalid");
-    }
+    if (
+      mutation.mutation.mutationId !== input.preparedMutation.mutationId ||
+      mutation.requestDigest !== input.preparedMutation.requestDigest ||
+      verified.mutationId !== input.preparedMutation.mutationId ||
+      verified.requestDigest !== input.preparedMutation.requestDigest
+    )
+      throw new Error("encrypted wallet backup v2 receipt mutation binding is invalid");
+    const assetReceipt =
+      verified.bundleId === null
+        ? null
+        : this.#assetReceiptRow(
+            binding,
+            verified,
+            input.canonicalSignedMutation,
+            input.canonicalSignedReceipt,
+          );
     return this.#database.transaction(
       "rw",
-      this.#database.encryptedWalletBackupV2Receipts,
+      this.#database.encryptedWalletBackupV2AssetReceipts,
       this.#database.encryptedWalletBackupV2AcceptedHeads,
       this.#database.encryptedWalletBackupV2ActiveDescriptors,
       this.#database.encryptedWalletBackupV2PreparedMutations,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
       async () => {
-        await this.#requirePreparedReceiptBinding(input.preparedMutation, receipt);
-        await this.#database.encryptedWalletBackupV2Receipts.put(receipt);
-        if (await this.#mayReplaceAcceptedAuthority(authority)) {
-          await this.#database.encryptedWalletBackupV2AcceptedHeads.put(authority.head);
-          await this.#replaceDescriptorRows(authority.descriptors);
-        }
+        await this.#requirePreparedReceiptBinding(input.preparedMutation, binding);
+        if (assetReceipt === null)
+          await this.#database.encryptedWalletBackupV2AssetReceipts.delete([
+            ...this.#authorityKey(),
+            binding.localAssetKey,
+          ]);
+        else await this.#database.encryptedWalletBackupV2AssetReceipts.put(assetReceipt);
+        await this.#commitReceiptAuthority(authority, mutation.mutation);
         await this.#database.encryptedWalletBackupV2PreparedMutations.delete(this.#authorityKey());
+        await this.#acknowledgeExactDesiredAsset(binding);
       },
     );
   }
@@ -249,23 +336,33 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     if (
       mutation.mutationId !== mutationId ||
       group.mutationEvidence.envelope.requestDigest !== requestDigest ||
-      !isNonnegativeSafeInteger(input.localRevision) ||
       !isNonnegativeSafeInteger(input.createdAtUnixMilliseconds)
     ) {
       throw new Error("encrypted wallet backup v2 prepared mutation is invalid");
+    }
+    const binding = requireDesiredBinding(input);
+    const added = mutation.addedBundle;
+    if (
+      (binding.desiredAction === "remove" && added !== null) ||
+      (binding.desiredAction === "replace" &&
+        (added === null ||
+          added.assetLocator !== binding.assetLocator ||
+          added.custodyRevision.toString() !== binding.custodyRevision))
+    ) {
+      throw new Error("encrypted wallet backup v2 prepared asset binding is invalid");
     }
     return {
       ...this.#identity(),
       mutationId,
       requestDigest,
-      localRevision: input.localRevision,
       canonicalUploadGroup,
       createdAtUnixMilliseconds: input.createdAtUnixMilliseconds,
+      ...binding,
     };
   }
 
   #decodePreparedRow(value: unknown): EncryptedWalletBackupV2PreparedMutationRow {
-    if (!isExactRecord(value, preparedFields))
+    if (!isPreparedRecord(value))
       throw new Error("encrypted wallet backup v2 prepared row is invalid");
     const row = value as EncryptedWalletBackupV2PreparedMutationRow;
     this.#requireIdentity(row);
@@ -289,7 +386,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
 
   async #requirePreparedReceiptBinding(
     match: EncryptedWalletBackupV2PreparedMutationMatch,
-    receipt: EncryptedWalletBackupV2ReceiptRow,
+    binding: EncryptedWalletBackupV2AssetReceiptBinding,
   ): Promise<void> {
     const mutationId = requireHex(match.mutationId, 16, "mutation id");
     const requestDigest = requireHex(match.requestDigest, 32, "request digest");
@@ -302,9 +399,11 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     if (
       prepared.mutationId !== mutationId ||
       prepared.requestDigest !== requestDigest ||
-      receipt.mutationId !== mutationId ||
-      receipt.requestDigest !== requestDigest ||
-      receipt.acknowledgedLocalRevision !== prepared.localRevision
+      prepared.localAssetKey !== binding.localAssetKey ||
+      prepared.assetLocator !== binding.assetLocator ||
+      prepared.custodyRevision !== binding.custodyRevision ||
+      prepared.desiredAction !== binding.desiredAction ||
+      prepared.activeProofCount !== binding.activeProofCount
     ) {
       throw new Error("encrypted wallet backup v2 prepared receipt binding is invalid");
     }
@@ -388,44 +487,149 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     return decoded;
   }
 
-  #receiptRow(
-    input: Pick<
-      EncryptedWalletBackupV2ReceiptInput,
-      "canonicalSignedReceipt" | "acknowledgedLocalRevision"
-    >,
-  ): EncryptedWalletBackupV2ReceiptRow {
-    const canonicalSignedReceipt = requireBytes(input.canonicalSignedReceipt, 1, 65_536);
-    const receipt =
-      decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire(canonicalSignedReceipt);
-    this.#requireContext(receipt);
+  #assetReceiptRow(
+    binding: EncryptedWalletBackupV2AssetReceiptBinding,
+    receipt: ReturnType<
+      typeof requireEncryptedWalletBackupV2VerifiedBundleSupersessionReceipt
+    >["receipt"],
+    canonicalSignedMutation: Uint8Array,
+    canonicalSignedReceipt: Uint8Array,
+  ): EncryptedWalletBackupV2AssetReceiptRow {
     if (
-      !isNonnegativeSafeInteger(input.acknowledgedLocalRevision) ||
+      receipt.bundleId !== binding.bundleId ||
+      receipt.bundleDescriptorDigest !== binding.bundleDescriptorDigest ||
+      binding.bundleId === null ||
+      binding.bundleDescriptorDigest === null ||
       !sameBytes(
         canonicalSignedReceipt,
         encodeEncryptedWalletBackupV2BundleSupersessionReceipt(receipt),
       )
-    ) {
-      throw new Error("encrypted wallet backup v2 receipt row is invalid");
-    }
+    )
+      throw new Error("encrypted wallet backup v2 asset receipt is invalid");
     return {
       ...this.#identity(),
-      mutationId: receipt.mutationId,
-      requestDigest: receipt.requestDigest,
-      acknowledgedLocalRevision: input.acknowledgedLocalRevision,
-      canonicalSignedReceipt,
+      localAssetKey: binding.localAssetKey,
+      assetLocator: binding.assetLocator,
+      custodyRevision: binding.custodyRevision,
+      bundleId: binding.bundleId,
+      bundleDescriptorDigest: binding.bundleDescriptorDigest,
+      canonicalSignedMutation: canonicalSignedMutation.slice(),
+      canonicalSignedReceipt: canonicalSignedReceipt.slice(),
     };
   }
 
-  #decodeReceiptRow(value: unknown): EncryptedWalletBackupV2ReceiptRow {
-    if (!isExactRecord(value, receiptFields))
-      throw new Error("encrypted wallet backup v2 receipt row is invalid");
-    const row = value as EncryptedWalletBackupV2ReceiptRow;
+  #decodeAssetReceiptRow(value: unknown): EncryptedWalletBackupV2AssetReceiptRow {
+    if (!isExactRecord(value, assetReceiptFields))
+      throw new Error("encrypted wallet backup v2 asset receipt row is invalid");
+    const row = value as EncryptedWalletBackupV2AssetReceiptRow;
     this.#requireIdentity(row);
-    const decoded = this.#receiptRow(row);
-    if (decoded.mutationId !== row.mutationId || decoded.requestDigest !== row.requestDigest) {
-      throw new Error("encrypted wallet backup v2 receipt mirrors are invalid");
+    const binding = requireAssetReceiptBinding({
+      localAssetKey: row.localAssetKey,
+      assetLocator: row.assetLocator,
+      custodyRevision: row.custodyRevision,
+      desiredAction: "replace",
+      activeProofCount: 1,
+      bundleId: row.bundleId,
+      bundleDescriptorDigest: row.bundleDescriptorDigest,
+    });
+    const mutation = decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire(
+      row.canonicalSignedMutation,
+    );
+    const receipt = decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire(
+      row.canonicalSignedReceipt,
+    );
+    if (
+      mutation.mutation.addedBundle === null ||
+      mutation.mutation.addedBundle.assetLocator !== binding.assetLocator ||
+      mutation.mutation.addedBundle.custodyRevision.toString() !== binding.custodyRevision ||
+      receipt.bundleId !== binding.bundleId ||
+      receipt.bundleDescriptorDigest !== binding.bundleDescriptorDigest
+    )
+      throw new Error("encrypted wallet backup v2 asset receipt binding is invalid");
+    return {
+      ...row,
+      canonicalSignedMutation: row.canonicalSignedMutation.slice(),
+      canonicalSignedReceipt: row.canonicalSignedReceipt.slice(),
+    };
+  }
+
+  async #acknowledgeExactDesiredAsset(
+    binding: EncryptedWalletBackupV2AssetReceiptBinding,
+  ): Promise<void> {
+    const raw = await this.#database.encryptedWalletBackupV2DesiredAssets.get([
+      this.#scopeId,
+      binding.localAssetKey,
+    ]);
+    if (raw === undefined || !sameDesiredBinding(raw, binding)) return;
+    if (binding.desiredAction === "remove") {
+      await this.#database.encryptedWalletBackupV2DesiredAssets.delete([
+        this.#scopeId,
+        binding.localAssetKey,
+      ]);
+      return;
     }
-    return decoded;
+    const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+    await this.#database.encryptedWalletBackupV2DesiredAssets.put({
+      ...desired,
+      syncState: "acknowledged",
+    });
+  }
+
+  async #commitReceiptAuthority(
+    authority: {
+      readonly head: EncryptedWalletBackupV2AcceptedHeadRow;
+      readonly descriptors: readonly EncryptedWalletBackupV2ActiveDescriptorRow[];
+    },
+    mutation: ReturnType<
+      typeof decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire
+    >["mutation"],
+  ): Promise<void> {
+    const rawHead = await this.#database.encryptedWalletBackupV2AcceptedHeads.get(
+      this.#authorityKey(),
+    );
+    if (rawHead === undefined)
+      throw new Error("encrypted wallet backup v2 accepted head is absent");
+    const current = this.#decodeHeadRow(rawHead);
+    if (
+      mutation.expectedHeadVersion !== current.headVersion ||
+      mutation.expectedActiveSetDigest !== current.activeSetDigest ||
+      authority.head.headVersion !== current.headVersion + 1
+    ) {
+      throw new Error("encrypted wallet backup v2 receipt head is stale");
+    }
+    const supersededKeys: [string, string, string, number, string][] =
+      mutation.supersededBundleIds.map((bundleId) => [...this.#authorityKey(), bundleId]);
+    if (supersededKeys.length > 0) {
+      const superseded =
+        await this.#database.encryptedWalletBackupV2ActiveDescriptors.bulkGet(supersededKeys);
+      if (superseded.some((row) => row === undefined)) {
+        throw new Error("encrypted wallet backup v2 superseded descriptor is absent");
+      }
+      superseded.forEach((row) => this.#decodeDescriptorRow(row));
+      await this.#database.encryptedWalletBackupV2ActiveDescriptors.bulkDelete(supersededKeys);
+    }
+    if (mutation.addedBundle !== null) {
+      await this.#database.encryptedWalletBackupV2ActiveDescriptors.put(
+        this.#descriptorRow(encodeEncryptedWalletBackupV2BundleDescriptor(mutation.addedBundle)),
+      );
+    }
+    await this.#database.encryptedWalletBackupV2AcceptedHeads.put(authority.head);
+  }
+
+  async #requeueAcknowledgedDesiredAssets(): Promise<void> {
+    const rawRows = await this.#database.encryptedWalletBackupV2DesiredAssets
+      .where("[scopeId+localAssetKey]")
+      .between([this.#scopeId, Dexie.minKey], [this.#scopeId, Dexie.maxKey])
+      .limit(257)
+      .toArray();
+    if (rawRows.length > 256)
+      throw new Error("encrypted wallet backup v2 desired asset rows exceed the limit");
+    const rows = rawRows.map(decodeEncryptedWalletBackupV2DesiredAssetRow);
+    const acknowledged = rows.filter(({ syncState }) => syncState === "acknowledged");
+    if (acknowledged.length === 0) return;
+    await this.#database.encryptedWalletBackupV2DesiredAssets.bulkPut(
+      acknowledged.map((row) => ({ ...row, syncState: "pending" as const })),
+    );
   }
 
   #descriptorRow(canonicalDescriptor: Uint8Array): EncryptedWalletBackupV2ActiveDescriptorRow {
@@ -558,9 +762,13 @@ const preparedFields = [
   "enrollmentEpoch",
   "mutationId",
   "requestDigest",
-  "localRevision",
   "canonicalUploadGroup",
   "createdAtUnixMilliseconds",
+  "localAssetKey",
+  "assetLocator",
+  "custodyRevision",
+  "desiredAction",
+  "activeProofCount",
 ] as const;
 const headFields = [
   "scopeId",
@@ -572,16 +780,6 @@ const headFields = [
   "activeObjectCount",
   "activeSetDigest",
   "canonicalCurrentHead",
-] as const;
-const receiptFields = [
-  "scopeId",
-  "realm",
-  "vaultId",
-  "enrollmentEpoch",
-  "mutationId",
-  "requestDigest",
-  "acknowledgedLocalRevision",
-  "canonicalSignedReceipt",
 ] as const;
 const descriptorFields = [
   "scopeId",
@@ -595,6 +793,19 @@ const descriptorFields = [
   "payloadCommitment",
   "objectCount",
   "canonicalDescriptor",
+] as const;
+const assetReceiptFields = [
+  "scopeId",
+  "realm",
+  "vaultId",
+  "enrollmentEpoch",
+  "localAssetKey",
+  "assetLocator",
+  "custodyRevision",
+  "bundleId",
+  "bundleDescriptorDigest",
+  "canonicalSignedMutation",
+  "canonicalSignedReceipt",
 ] as const;
 
 function requireProfile(profile: EncryptedWalletBackupV2DexieAuthorityProfile): void {
@@ -642,6 +853,10 @@ function isExactRecord(value: unknown, fields: readonly string[]): boolean {
     Object.keys(value).length === fields.length &&
     fields.every((field) => Object.hasOwn(value, field))
   );
+}
+
+function isPreparedRecord(value: unknown): boolean {
+  return isExactRecord(value, preparedFields);
 }
 
 function requireBytes(value: unknown, minimum: number, maximum: number): Uint8Array {
@@ -709,4 +924,65 @@ function sameDescriptorRows(
       row.objectCount === sortedRight[index]?.objectCount &&
       sameBytes(row.canonicalDescriptor, sortedRight[index]!.canonicalDescriptor),
   );
+}
+
+function requireDesiredBinding(
+  value: EncryptedWalletBackupV2PreparedDesiredBinding,
+): EncryptedWalletBackupV2PreparedDesiredBinding {
+  if (
+    typeof value.localAssetKey !== "string" ||
+    value.localAssetKey.length < 1 ||
+    !isHex(value.assetLocator, 32) ||
+    !/^(?:0|[1-9][0-9]{0,19})$/.test(value.custodyRevision) ||
+    BigInt(value.custodyRevision) > 18_446_744_073_709_551_615n ||
+    (value.desiredAction !== "replace" && value.desiredAction !== "remove") ||
+    !isNonnegativeSafeInteger(value.activeProofCount) ||
+    value.activeProofCount > 512 ||
+    (value.activeProofCount === 0 ? "remove" : "replace") !== value.desiredAction
+  ) {
+    throw new Error("encrypted wallet backup v2 desired asset binding is invalid");
+  }
+  return {
+    localAssetKey: value.localAssetKey,
+    assetLocator: value.assetLocator,
+    custodyRevision: value.custodyRevision,
+    desiredAction: value.desiredAction,
+    activeProofCount: value.activeProofCount,
+  };
+}
+
+function sameDesiredBinding(
+  value: unknown,
+  expected: EncryptedWalletBackupV2PreparedDesiredBinding,
+): boolean {
+  let row: ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow>;
+  try {
+    row = decodeEncryptedWalletBackupV2DesiredAssetRow(value);
+  } catch {
+    return false;
+  }
+  return (
+    row.syncState === "pending" &&
+    row.localAssetKey === expected.localAssetKey &&
+    row.custodyRevision === expected.custodyRevision &&
+    row.desiredAction === expected.desiredAction &&
+    row.activeProofCount === expected.activeProofCount
+  );
+}
+
+function requireAssetReceiptBinding(
+  value: EncryptedWalletBackupV2AssetReceiptBinding,
+): EncryptedWalletBackupV2AssetReceiptBinding {
+  const desired = requireDesiredBinding(value);
+  if (
+    (value.bundleId === null) !== (value.bundleDescriptorDigest === null) ||
+    (value.bundleId !== null &&
+      (!isHex(value.bundleId, 16) || !isHex(value.bundleDescriptorDigest, 32)))
+  )
+    throw new Error("encrypted wallet backup v2 asset receipt binding is invalid");
+  return {
+    ...desired,
+    bundleId: value.bundleId,
+    bundleDescriptorDigest: value.bundleDescriptorDigest,
+  };
 }

@@ -2200,7 +2200,6 @@ export class BrowserCtfRangeOrderCoordinator {
       this.#database.encryptedWalletBackupV2DesiredAssets,
       this.#database.custodyReservations,
       this.#database.custodyActiveWork,
-      this.#database.encryptedWalletBackupV2DirtyRevisions,
     ] as const;
   }
 }

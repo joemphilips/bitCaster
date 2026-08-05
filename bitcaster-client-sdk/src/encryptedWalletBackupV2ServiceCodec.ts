@@ -320,6 +320,23 @@ function encodeSignedMutation(
   ])
 }
 
+/** Encodes one canonical signed mutation for local receipt verification after restart. */
+export function encodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire(
+  value: unknown,
+): Uint8Array {
+  return encodeSignedMutation(decodeEncryptedWalletBackupV2SignedBundleSupersessionMutation(value))
+}
+
+/** Decodes one canonical signed mutation retained with a local receipt. */
+export function decodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire(
+  bytes: Uint8Array,
+): EncryptedWalletBackupV2SignedBundleSupersessionMutation {
+  const mutation = decodeSignedMutation(bytes)
+  if (!equalBytes(bytes, encodeSignedMutation(mutation)))
+    throw new Error('encrypted backup v2 signed mutation wire is noncanonical')
+  return mutation
+}
+
 function decodeSignedMutation(
   bytes: Uint8Array,
 ): EncryptedWalletBackupV2SignedBundleSupersessionMutation {
