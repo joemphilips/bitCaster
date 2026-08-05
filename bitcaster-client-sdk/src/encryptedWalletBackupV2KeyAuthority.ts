@@ -1,3 +1,4 @@
+import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { exactEncryptedWalletBackupArrayBuffer } from './encryptedWalletBackupBytes.ts'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
 import { equalBytes } from './encryptedWalletBackupServerValidation.ts'
@@ -21,6 +22,8 @@ export interface EncryptedWalletBackupV2KeyAuthority {
 }
 
 const KEY_AUTHORITIES = new WeakMap<object, EncryptedWalletBackupV2KeyAuthority>()
+const SCALAR_ATTEMPTS = 256
+const SECP256K1_ORDER = secp256k1.Point.Fn.ORDER
 
 export function registerEncryptedWalletBackupV2KeyHandle(
   handle: EncryptedWalletBackupV2KeyHandle,
@@ -68,6 +71,30 @@ export async function deriveEncryptedWalletBackupV2Hkdf(
   return new Uint8Array(output)
 }
 
+export async function deriveEncryptedWalletBackupV2RequestAuthScalar(
+  authority: EncryptedWalletBackupV2KeyAuthority,
+  realm: string,
+): Promise<Uint8Array> {
+  return deriveEncryptedWalletBackupV2Scalar(
+    authority,
+    authority.requestAuthRoot,
+    realm,
+    'request-auth-scalar',
+  )
+}
+
+export async function deriveEncryptedWalletBackupV2PortfolioReportingScalar(
+  authority: EncryptedWalletBackupV2KeyAuthority,
+  realm: string,
+): Promise<Uint8Array> {
+  return deriveEncryptedWalletBackupV2Scalar(
+    authority,
+    authority.portfolioReportingRoot,
+    realm,
+    'portfolio-reporting-scalar',
+  )
+}
+
 /** Confirms private seed authority without exposing the seed or a seed digest. */
 export async function requireEncryptedWalletBackupV2SeedHandleMatch(input: {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle
@@ -86,4 +113,28 @@ export async function requireEncryptedWalletBackupV2SeedHandleMatch(input: {
     throw new Error('encrypted backup seed does not match the key handle')
   }
   return new Uint8Array(input.seed)
+}
+
+function bytesToBigInt(value: Uint8Array): bigint {
+  let result = 0n
+  for (const byte of value) result = (result << 8n) | BigInt(byte)
+  return result
+}
+
+async function deriveEncryptedWalletBackupV2Scalar(
+  authority: EncryptedWalletBackupV2KeyAuthority,
+  root: Uint8Array,
+  realm: string,
+  domain: 'portfolio-reporting-scalar' | 'request-auth-scalar',
+): Promise<Uint8Array> {
+  for (let counter = 0; counter < SCALAR_ATTEMPTS; counter += 1) {
+    const candidate = await deriveEncryptedWalletBackupV2Hkdf(
+      authority.runtime,
+      root,
+      encodeCanonicalBackupCbor([2, domain, realm, counter]),
+    )
+    const scalar = bytesToBigInt(candidate)
+    if (scalar > 0n && scalar < SECP256K1_ORDER) return candidate
+  }
+  throw new Error('encrypted backup scalar derivation exhausted')
 }

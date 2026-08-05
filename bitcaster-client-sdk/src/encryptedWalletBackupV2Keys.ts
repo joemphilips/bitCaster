@@ -1,7 +1,9 @@
-import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
+import { schnorr } from '@noble/curves/secp256k1.js'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
 import {
   deriveEncryptedWalletBackupV2Hkdf,
+  deriveEncryptedWalletBackupV2PortfolioReportingScalar,
+  deriveEncryptedWalletBackupV2RequestAuthScalar,
   registerEncryptedWalletBackupV2KeyHandle,
   requireEncryptedWalletBackupV2KeyAuthority,
   type EncryptedWalletBackupV2KeyAuthority,
@@ -11,8 +13,6 @@ import { canonicalizeMintIdentityUrl } from './tokenImportValidation.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION = 2 as const
 
-const SECP256K1_ORDER = secp256k1.Point.Fn.ORDER
-const SCALAR_ATTEMPTS = 256
 const MINT_URL_MAX_BYTES = 2_048
 const UNIT_MAX_BYTES = 64
 const ASSET_ID_MAX_BYTES = 256
@@ -41,18 +41,11 @@ export async function createEncryptedWalletBackupV2KeyHandle(input: {
   const authority = await deriveKeyAuthority(seed, realm, runtime)
   const vaultId = toLowerHex(await deriveVaultId(authority, realm))
   const requestAuthPublicKey = toLowerHex(
-    schnorr.getPublicKey(
-      await deriveScalar(authority.requestAuthRoot, realm, 'request-auth-scalar', runtime),
-    ),
+    schnorr.getPublicKey(await deriveEncryptedWalletBackupV2RequestAuthScalar(authority, realm)),
   )
   const portfolioReportingPublicKey = toLowerHex(
     schnorr.getPublicKey(
-      await deriveScalar(
-        authority.portfolioReportingRoot,
-        realm,
-        'portfolio-reporting-scalar',
-        runtime,
-      ),
+      await deriveEncryptedWalletBackupV2PortfolioReportingScalar(authority, realm),
     ),
   )
   const handle = Object.freeze({
@@ -159,35 +152,8 @@ function deriveVaultId(
   )
 }
 
-async function deriveScalar(
-  root: Uint8Array,
-  realm: string,
-  domain: 'portfolio-reporting-scalar' | 'request-auth-scalar',
-  runtime: EncryptedWalletBackupV2Runtime,
-): Promise<Uint8Array> {
-  for (let counter = 0; counter < SCALAR_ATTEMPTS; counter += 1) {
-    const candidate = await deriveEncryptedWalletBackupV2Hkdf(
-      runtime,
-      root,
-      scalarInfo(domain, realm, counter),
-    )
-    const scalar = bytesToBigInt(candidate)
-    if (scalar > 0n && scalar < SECP256K1_ORDER) return candidate
-  }
-  throw new Error('encrypted backup scalar derivation exhausted')
-}
-
 function rootInfo(domain: string, realm: string): Uint8Array {
   return encodeCanonicalBackupCbor([ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION, domain, realm])
-}
-
-function scalarInfo(domain: string, realm: string, counter: number): Uint8Array {
-  return encodeCanonicalBackupCbor([
-    ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
-    domain,
-    realm,
-    counter,
-  ])
 }
 
 function locatorInfo(domain: string, realm: string, ...identity: string[]): Uint8Array {
@@ -228,12 +194,6 @@ function canonicalizeMintIdentity(value: unknown): string {
   } catch {
     throw new Error('encrypted backup mint URL is invalid')
   }
-}
-
-function bytesToBigInt(value: Uint8Array): bigint {
-  let result = 0n
-  for (const byte of value) result = (result << 8n) | BigInt(byte)
-  return result
 }
 
 function toLowerHex(value: Uint8Array): string {

@@ -2,6 +2,7 @@ import vector from '../../../test-vectors/encrypted-wallet-backup-v1.json'
 import v2BundleVector from '../../../test-vectors/encrypted-wallet-backup-v2-bundle.json'
 import v2ProofSetVector from '../../../test-vectors/encrypted-wallet-backup-v2-proof-set.json'
 import v2HeadVector from '../../../test-vectors/encrypted-wallet-backup-v2-head.json'
+import v2MutationVector from '../../../test-vectors/encrypted-wallet-backup-v2-mutation.json'
 import * as Cashu from '@cashu/cashu-ts'
 import {
   createEncryptedWalletBackupKeyHandle,
@@ -29,13 +30,20 @@ import {
   decryptEncryptedWalletBackupV2ProofSetBundle,
   prepareEncryptedWalletBackupV2ProofSetBundle,
 } from '../../src/encryptedWalletBackupV2ProofSet.ts'
-import { digestEncryptedWalletBackupV2BundleDescriptor } from '../../src/encryptedWalletBackupV2Descriptor.ts'
+import {
+  digestEncryptedWalletBackupV2BundleDescriptor,
+  type EncryptedWalletBackupV2BundleDescriptor,
+} from '../../src/encryptedWalletBackupV2Descriptor.ts'
 import {
   collectEncryptedWalletBackupV2DescriptorPages,
   createEncryptedWalletBackupV2CurrentHead,
   digestEncryptedWalletBackupV2ActiveSet,
   enumerateEncryptedWalletBackupV2DescriptorPages,
 } from '../../src/encryptedWalletBackupV2Head.ts'
+import {
+  prepareEncryptedWalletBackupV2BundleSupersessionMutation,
+  verifyEncryptedWalletBackupV2BundleSupersessionMutation,
+} from '../../src/encryptedWalletBackupV2Mutation.ts'
 import { encodeCanonicalBackupCbor } from '../../src/encryptedWalletBackupCbor.ts'
 import { encodeDurableWalletProofDerivationLocatorCbor } from '../../src/durableWalletProofDerivationLocator.ts'
 import {
@@ -169,6 +177,7 @@ async function run(): Promise<{
   await exerciseV2BundleVector()
   await exerciseV2ProofSetVector()
   exerciseV2HeadVector()
+  await exerciseV2MutationVector()
   await exerciseManifestVector(seed, keyHandle)
   await exerciseBlsAndCtf(seed, keyHandle)
   await exerciseFailureCases(seed, keyHandle, prepared, wire)
@@ -228,6 +237,50 @@ function headVectorDescriptor(index: number) {
       },
     ],
   }
+}
+
+async function exerciseV2MutationVector(): Promise<void> {
+  const input = v2MutationVector.inputs
+  const expected = v2MutationVector.expected
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed: fromHex(input.seedHex),
+    realm: input.realm,
+  })
+  const existing = input.existingBundle as EncryptedWalletBackupV2BundleDescriptor
+  const added = input.addedBundle as EncryptedWalletBackupV2BundleDescriptor
+  const head = createEncryptedWalletBackupV2CurrentHead({
+    realm: input.realm,
+    vaultId: input.vaultId,
+    enrollmentEpoch: input.enrollmentEpoch,
+    headVersion: input.headVersion,
+    bundles: [existing],
+  })
+  const envelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
+    keyHandle,
+    expectedHead: head,
+    addedBundle: added,
+    supersededBundleIds: [existing.bundleId],
+    runtime: deterministicRuntime([
+      fromHex(input.mutationIdHex),
+      fromHex(input.auxiliaryRandomnessHex),
+    ]),
+  })
+  equal(envelope.requestAuthPublicKey, expected.requestAuthPublicKey, 'v2 mutation public key')
+  equal(envelope.requestDigest, expected.requestDigest, 'v2 mutation digest')
+  equal(envelope.signature, expected.signature, 'v2 mutation signature')
+  equal(
+    verifyEncryptedWalletBackupV2BundleSupersessionMutation({
+      envelope,
+      expectedRequestAuthPublicKey: keyHandle.requestAuthPublicKey,
+      expectedContext: {
+        realm: head.realm,
+        vaultId: head.vaultId,
+        enrollmentEpoch: head.enrollmentEpoch,
+      },
+    }).envelope.requestDigest,
+    expected.requestDigest,
+    'v2 mutation verification',
+  )
 }
 
 async function exerciseV2ProofSetVector(): Promise<void> {
