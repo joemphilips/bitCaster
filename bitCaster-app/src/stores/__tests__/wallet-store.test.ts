@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import "fake-indexeddb/auto";
 import { createBrowserWalletCounterSource, useWalletStore } from "../wallet";
 import * as bip39 from "@/lib/bip39";
 import {
   browserWalletScopeIdFromMnemonic,
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
-import { db } from "../proof-db";
+import { activateBrowserWalletDatabase, db } from "../proof-db";
 
 const cashuMocks = vi.hoisted(() => ({
   loadMint: vi.fn().mockResolvedValue(undefined),
@@ -62,8 +63,6 @@ beforeEach(() => {
     walletBackupState: "none",
     mints: [],
     activeMintUrl: "http://localhost:8085",
-    keysetCounters: {},
-    keysetCountersRecovered: {},
     mintConnectionStatuses: {},
     _addMint: initialAddMint,
     _addMintWithoutActivating: initialAddMintWithoutActivating,
@@ -71,6 +70,14 @@ beforeEach(() => {
 });
 
 describe("useWalletStore", () => {
+  it("does not persist superseded deterministic counter fields", () => {
+    const partialize = useWalletStore.persist.getOptions().partialize!;
+    const persisted = partialize(useWalletStore.getState());
+
+    expect(persisted).not.toHaveProperty("keysetCounters");
+    expect(persisted).not.toHaveProperty("keysetCountersRecovered");
+  });
+
   describe("generateMnemonic", () => {
     it("produces 12 valid BIP-39 English words", () => {
       useWalletStore.getState().generateMnemonic();
@@ -117,11 +124,7 @@ describe("useWalletStore", () => {
     });
 
     it("blocks a different seed until the encrypted-backup handoff exists", () => {
-      useWalletStore.setState({
-        mnemonic: "old seed words placeholder",
-        keysetCounters: { k1: 42 },
-        keysetCountersRecovered: { k1: true },
-      });
+      useWalletStore.setState({ mnemonic: "old seed words placeholder" });
       const words = bip39.generate();
       const result = useWalletStore.getState().recoverFromMnemonic(words);
 
@@ -131,37 +134,23 @@ describe("useWalletStore", () => {
         error: "Seed switching requires an acknowledged encrypted backup.",
       });
       expect(state.mnemonic).toBe("old seed words placeholder");
-      expect(state.keysetCounters).toEqual({ k1: 42 });
-      expect(state.keysetCountersRecovered).toEqual({ k1: true });
     });
 
-    it("reopens the current seed without resetting its counters", () => {
+    it("reopens the current seed without changing the profile", () => {
       const words = bip39.generate();
       const mnemonic = words.join(" ");
-      useWalletStore.setState({
-        mnemonic,
-        keysetCounters: { k1: 42 },
-        keysetCountersRecovered: { k1: true },
-      });
+      useWalletStore.setState({ mnemonic });
 
       expect(useWalletStore.getState().recoverFromMnemonic(words)).toEqual({ valid: true });
-      expect(useWalletStore.getState().keysetCounters).toEqual({ k1: 42 });
-      expect(useWalletStore.getState().keysetCountersRecovered).toEqual({ k1: true });
     });
   });
 
   describe("generateMnemonic", () => {
-    it("resets keysetCounters and keysetCountersRecovered on new mnemonic", () => {
-      useWalletStore.setState({
-        keysetCounters: { k1: 99 },
-        keysetCountersRecovered: { k1: true },
-      });
+    it("activates a seed-scoped canonical database", () => {
       useWalletStore.getState().generateMnemonic();
 
       const state = useWalletStore.getState();
       expect(state.mnemonic.split(" ")).toHaveLength(12);
-      expect(state.keysetCounters).toEqual({});
-      expect(state.keysetCountersRecovered).toEqual({});
       expect(db.name).toMatch(/^bitcaster-wallet-[0-9a-f]{64}$/);
     });
   });
@@ -187,21 +176,22 @@ describe("useWalletStore", () => {
   });
 
   describe("getWallet cache units", () => {
-    it("blocks funded counter reservation until the exact keyset scan completes", async () => {
+    it("blocks a profile-bound counter source before keyset recovery", async () => {
       const mnemonic = bip39.generate().join(" ");
       useWalletStore.setState({ mnemonic });
       setActiveBrowserWalletProfile(mnemonic);
       const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
       expect(scopeId).not.toBeNull();
-      const counterSource = createBrowserWalletCounterSource(scopeId!);
+      activateBrowserWalletDatabase(scopeId!);
+      const counterSource = createBrowserWalletCounterSource(
+        scopeId!,
+        "http://localhost:8085",
+        "sat",
+      );
 
       await expect(counterSource.reserve("keyset-1", 1)).rejects.toThrow(
         /counter recovery is incomplete/,
       );
-      expect(useWalletStore.getState().keysetCounters).toEqual({});
-
-      useWalletStore.setState({ keysetCountersRecovered: { "keyset-1": true } });
-      await expect(counterSource.reserve("keyset-1", 1)).resolves.toEqual({ start: 0, count: 1 });
     });
 
     it("does not reuse a base-asset sat msat wallet for a raw-unit sat wallet", async () => {

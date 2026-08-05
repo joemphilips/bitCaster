@@ -20,7 +20,7 @@ describe("browser wallet databases", () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(16);
+    expect(db.verno).toBe(18);
     expect(db.custodyProofBackupAuthorities.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofBackupAuthorities.schema.indexes.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
@@ -75,6 +75,13 @@ describe("browser wallet databases", () => {
     expect(db.encryptedWalletBackupRestoreProofs.schema.primKey.keyPath).toEqual([
       "scopeId",
       "proofId",
+    ]);
+    expect(db.walletCounterCursors.schema.primKey.keyPath).toEqual(["scopeId", "keysetId"]);
+    expect(db.walletCounterAssociations.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "normalizedMint",
+      "unit",
+      "keysetId",
     ]);
   });
 

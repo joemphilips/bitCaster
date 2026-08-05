@@ -82,7 +82,6 @@ beforeEach(() => {
     setupComplete: true,
     mints: [{ url: "http://localhost:8085", info: { name: "Test Mint" } }],
     activeMintUrl: "http://localhost:8085",
-    keysetCounters: {},
     mintConnectionStatuses: {},
   });
 });

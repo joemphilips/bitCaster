@@ -167,20 +167,14 @@ function AppRoutes() {
 
   // P8 follow-up: cashu-ts deterministic counter recovery.
   //
-  // CDK rejects re-used deterministic blinded outputs as a database duplicate
-  // and reports the misleadingly-named error "Invoice already paid or
-  // pending" (`cdk-common/src/error.rs:1017`). For wallets that existed
-  // before `ZustandCounterSource` (submodule commit `8711c73`, Apr 8) — or
-  // that were minted from a different device with the same seed — the local
-  // `keysetCounters` are missing or stale and the next `mintProofs` call
-  // collides at counter 0.
+  // CDK rejects re-used deterministic blinded outputs as a database duplicate.
+  // A different device can advance the same seed's mint-side cursor.
   //
   // Recovery walks `wallet.batchRestore(...)` for default sat keysets and
-  // advances `keysetCounters[keysetId]` past the highest signed output.
+  // advances the canonical keyset cursor past the highest signed output.
   // Non-default units recover on the duplicate-output repair path with an
   // explicit unit, so startup does not fan out across every mint unit.
-  // Idempotent via `keysetCountersRecovered`. Runs ONCE per (mint, keyset)
-  // at startup, gated on persist hydration so the mints / mnemonic are loaded.
+  // Each scan is monotonic. The effect runs once per mint at startup.
   useEffect(() => {
     if (!walletMnemonic || !nostrSignerReady) return;
     const mintUrls = walletMintUrls.split("\n").filter(Boolean);

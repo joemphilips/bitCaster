@@ -8,10 +8,7 @@
  *   pending"`; current builds expose `"Blinded message already signed or
  *   pending"` (`cdk-common/src/error.rs`, `Database(Duplicate)` →
  *   `ErrorCode::BlindedMessageAlreadySigned`).
- * - The `cdk-buy-yes` codex investigation (2026-05-06) traced this back to
- *   `ZustandCounterSource` lacking a migration for wallets that pre-existed
- *   commit `8711c73` — `keysetCounters[keysetId]` is `undefined`/0 while the
- *   mint already signed outputs at counter 0..N.
+ * - A stale deterministic counter can re-use outputs the mint already signed.
  *
  * The fix has two layers, both exercised here:
  *
@@ -49,16 +46,12 @@ const mocks = vi.hoisted(() => {
     mnemonic: string;
     activeMintUrl: string;
     mints: { url: string; keysets?: { id: string; unit?: string }[] }[];
-    keysetCounters: Record<string, number>;
-    keysetCountersRecovered: Record<string, boolean>;
     getWallet: (url?: string) => Promise<unknown>;
     getWalletForUnit: (url?: string, unit?: string) => Promise<unknown>;
   } = {
     mnemonic: "seed words",
     activeMintUrl: "https://mint.test",
     mints: [{ url: "https://mint.test", keysets: [{ id: "k1" }] }],
-    keysetCounters: {},
-    keysetCountersRecovered: {},
     getWallet,
     getWalletForUnit: getWallet,
   };
@@ -69,6 +62,29 @@ const mocks = vi.hoisted(() => {
     }
   });
   const addProofs = vi.fn(async (_p: unknown[]) => {});
+  const restoredCounters: Record<string, number> = {};
+  const restoreProofsAndAdvanceCounter = vi.fn(async (input: any) => {
+    await addProofs(input.proofs);
+    const current = restoredCounters[input.keysetId] ?? 0;
+    const next = Math.max(current, input.restoredNext);
+    restoredCounters[input.keysetId] = next;
+    return { changed: next !== current, next };
+  });
+  const isWalletCounterRecoveryComplete = vi.fn(async () => false);
+  const createBrowserWalletCounterSource = vi.fn(() => ({
+    reserve: async (keysetId: string, count: number) => {
+      const start = restoredCounters[keysetId] ?? 0;
+      restoredCounters[keysetId] = start + count;
+      return { start, count };
+    },
+  }));
+  const createActiveBrowserWalletCounterSource = vi.fn(() => ({
+    reserve: async (keysetId: string, count: number) => {
+      const start = restoredCounters[keysetId] ?? 0;
+      restoredCounters[keysetId] = start + count;
+      return { start, count };
+    },
+  }));
   const proofOperations = new Map<string, any>();
   const prepareProofOperation = vi.fn(async (record: any) => {
     const prepared = { ...record, state: "prepared", metadata: record.metadata ?? {} };
@@ -87,6 +103,11 @@ const mocks = vi.hoisted(() => {
     store,
     setStateImpl,
     addProofs,
+    restoreProofsAndAdvanceCounter,
+    isWalletCounterRecoveryComplete,
+    restoredCounters,
+    createBrowserWalletCounterSource,
+    createActiveBrowserWalletCounterSource,
     getWallet,
     prepareProofOperation,
     proofOperations,
@@ -112,12 +133,19 @@ vi.mock("@/stores/wallet", () => ({
     getState: () => mocks.store,
     setState: mocks.setStateImpl,
   },
+  createBrowserWalletCounterSource: mocks.createBrowserWalletCounterSource,
   getWalletForMnemonicUnit: mocks.getWallet,
+}));
+
+vi.mock("@/stores/browser-wallet-counter-db", () => ({
+  createActiveBrowserWalletCounterSource: mocks.createActiveBrowserWalletCounterSource,
 }));
 
 vi.mock("@/stores/proof-db", () => ({
   db: {},
   addProofs: mocks.addProofs,
+  restoreProofsAndAdvanceCounter: mocks.restoreProofsAndAdvanceCounter,
+  isWalletCounterRecoveryComplete: mocks.isWalletCounterRecoveryComplete,
   getProofOperations: mocks.getProofOperations,
   getProofOperation: vi.fn(
     async (operationId: string) => mocks.proofOperations.get(operationId) ?? null,
@@ -202,14 +230,17 @@ beforeEach(() => {
   }));
   mocks.wallet.mint.getKeySets.mockReset();
   mocks.wallet.mint.getKeySets.mockResolvedValue({ keysets: [{ id: "k1" }] });
-  mocks.store.keysetCounters = {};
-  mocks.store.keysetCountersRecovered = {};
+  for (const keysetId of Object.keys(mocks.restoredCounters))
+    delete mocks.restoredCounters[keysetId];
   mocks.store.activeMintUrl = "https://mint.test";
   mocks.store.mints = [{ url: "https://mint.test", keysets: [{ id: "k1" }] }];
   mocks.store.mnemonic = VALID_MNEMONIC;
   setActiveBrowserWalletProfile(VALID_MNEMONIC);
   mocks.addProofs.mockReset();
   mocks.addProofs.mockResolvedValue(undefined);
+  mocks.restoreProofsAndAdvanceCounter.mockClear();
+  mocks.isWalletCounterRecoveryComplete.mockReset();
+  mocks.isWalletCounterRecoveryComplete.mockResolvedValue(false);
   mocks.prepareProofOperation.mockReset();
   mocks.proofOperations.clear();
   mocks.prepareProofOperation.mockImplementation(async (record: any) => {
@@ -527,25 +558,6 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
     expect(mocks.wallet.send).toHaveBeenCalledWith(13, proofs);
   });
 
-  it("advances persisted counters after a successful deterministic mint even when the wallet adapter did not persist the reservation", async () => {
-    const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
-
-    expect(result.map((proof) => proof.secret)).toEqual(["s1"]);
-    expect(mocks.store.keysetCounters.k1).toBe(1);
-  });
-
-  it("does not double-advance counters when cashu-ts already reserved the minted output range", async () => {
-    mocks.store.keysetCounters = { k1: 7 };
-    mocks.wallet.completeMint.mockImplementationOnce(async () => {
-      mocks.store.keysetCounters = { k1: 8 };
-      return PROOFS;
-    });
-
-    await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
-
-    expect(mocks.store.keysetCounters.k1).toBe(8);
-  });
-
   it("retries mintProofs once after running counter recovery on CDK duplicate error", async () => {
     mocks.wallet.completeMint
       .mockRejectedValueOnce(cdkDuplicateError("Invoice already paid or pending"))
@@ -558,10 +570,9 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
     const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
     expect(result.map((proof) => proof.secret)).toEqual(["s1"]);
-    // Counter advanced past the highest known signature and the retry mint.
-    expect(mocks.store.keysetCounters.k1).toBe(9);
-    // Recovery flag set so the next mintProofs call doesn't re-run batchRestore.
-    expect(mocks.store.keysetCountersRecovered.k1).toBe(true);
+    expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
+      expect.objectContaining({ keysetId: "k1", restoredNext: 8 }),
+    );
     expect(mocks.wallet.completeMint).toHaveBeenCalledTimes(2);
     expect(mocks.wallet.batchRestore).toHaveBeenCalledTimes(1);
     expect(mocks.prepareProofOperation).toHaveBeenCalledTimes(2);
@@ -583,7 +594,9 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
     const result = await cashu.mintProofs(100, QUOTE, "https://mint.test", "sat");
 
     expect(result.map((proof) => proof.secret)).toEqual(["s1"]);
-    expect(mocks.store.keysetCounters.k1).toBe(13);
+    expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
+      expect.objectContaining({ keysetId: "k1", restoredNext: 12 }),
+    );
     expect(mocks.wallet.completeMint).toHaveBeenCalledTimes(2);
   });
 
@@ -601,7 +614,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
 
     expect(result.map((proof) => proof.secret)).toEqual(["s1"]);
     expect(mocks.wallet.batchRestore).toHaveBeenCalledOnce();
-    expect(mocks.store.keysetCounters["usd-keyset"]).toBe(100);
+    expect(mocks.createActiveBrowserWalletCounterSource).toHaveBeenCalledOnce();
     expect(mocks.wallet.completeMint).toHaveBeenCalledTimes(2);
   });
 
@@ -649,8 +662,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
 
   it("does not retry indefinitely — second CDK duplicate propagates", async () => {
     // After recovery, the retry STILL fails — could happen if cashu-ts has a
-    // stale internal counter that the next reserve() pulls before
-    // ZustandCounterSource sees the update. Bail with the original error
+    // stale cursor state. Bail with the original error
     // rather than spinning.
     mocks.wallet.completeMint.mockRejectedValue(cdkDuplicateError());
     mocks.wallet.batchRestore.mockResolvedValueOnce({
@@ -831,15 +843,38 @@ function preparedMintRecord(operationId: string) {
 }
 
 describe("recoverKeysetCountersForMint — idempotency", () => {
-  it("skips keysets already marked recovered", async () => {
-    mocks.store.keysetCountersRecovered = { k1: true };
+  it("limits forced duplicate repair to the collided keyset", async () => {
+    mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
+      keysets: [
+        { id: "collided", unit: "msat" },
+        { id: "unrelated", unit: "msat" },
+      ],
+    });
+    mocks.wallet.batchRestore.mockResolvedValueOnce({
+      proofs: [],
+      lastCounterWithSignature: 2,
+    });
+
+    const result = await cashu.recoverKeysetCountersForMint("https://mint.test", {
+      force: true,
+      unit: "msat",
+      keysetId: "collided",
+    });
+
+    expect(mocks.wallet.batchRestore).toHaveBeenCalledOnce();
+    expect(mocks.wallet.batchRestore).toHaveBeenCalledWith(300, 100, 0, "collided");
+    expect(result.scannedKeysets).toEqual(["collided"]);
+  });
+
+  it("skips an exact recovery-complete mint and unit association", async () => {
+    mocks.isWalletCounterRecoveryComplete.mockResolvedValueOnce(true);
 
     await cashu.recoverKeysetCountersForMint("https://mint.test");
 
     expect(mocks.wallet.batchRestore).not.toHaveBeenCalled();
   });
 
-  it("walks every keyset of the mint and marks each recovered", async () => {
+  it("walks every keyset and advances the canonical authority", async () => {
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
       keysets: [{ id: "k1" }, { id: "k2" }],
     });
@@ -849,8 +884,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
 
     const r = await cashu.recoverKeysetCountersForMint("https://mint.test");
 
-    expect(mocks.store.keysetCounters).toEqual({ k1: 5, k2: 10 });
-    expect(mocks.store.keysetCountersRecovered).toEqual({ k1: true, k2: true });
+    expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledTimes(2);
     expect(r.scannedKeysets).toEqual(["k1", "k2"]);
   });
 
@@ -869,7 +903,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
 
     expect(mocks.getWallet).toHaveBeenCalledWith("https://mint.test", "sat");
     expect(mocks.getWallet).toHaveBeenCalledWith("https://mint.test", "msat");
-    expect(mocks.store.keysetCounters).toEqual({ "sat-keyset": 3, "msat-keyset": 9 });
+    expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledTimes(2);
     expect(r.scannedKeysets).toEqual(["sat-keyset", "msat-keyset"]);
   });
 
@@ -912,7 +946,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
     ]);
   });
 
-  it("does not mark a keyset recovered when NUT-07 classification fails", async () => {
+  it("does not advance a keyset when NUT-07 classification fails", async () => {
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
       keysets: [{ id: "msat-keyset", unit: "msat" }],
     });
@@ -926,7 +960,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
       baseAsset: "sat",
     });
 
-    expect(mocks.store.keysetCountersRecovered["msat-keyset"]).toBeUndefined();
+    expect(mocks.restoreProofsAndAdvanceCounter).not.toHaveBeenCalled();
     expect(mocks.addProofs).not.toHaveBeenCalled();
     expect(result.scannedKeysets).toEqual([]);
   });
@@ -943,7 +977,9 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
     const r = await cashu.recoverKeysetCountersForMint("https://mint.test");
 
     expect(mocks.wallet.batchRestore).toHaveBeenCalledWith(300, 100, 0, "k2");
-    expect(mocks.store.keysetCounters.k2).toBe(3);
+    expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
+      expect.objectContaining({ keysetId: "k2", restoredNext: 3 }),
+    );
     expect(r.scannedKeysets).toEqual(["k2"]);
   });
 
@@ -960,18 +996,17 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
     expect(r.scannedKeysets).toEqual(["k1"]);
   });
 
-  it("honours { force: true } and rescans even when keysetCountersRecovered is true (codex review #2)", async () => {
-    mocks.store.keysetCountersRecovered = { k1: true };
+  it("rescans every keyset without a separate recovered-state flag", async () => {
     mocks.wallet.batchRestore.mockResolvedValueOnce({
       proofs: [],
       lastCounterWithSignature: 12,
     });
 
-    const r = await cashu.recoverKeysetCountersForMint("https://mint.test", { force: true });
+    const r = await cashu.recoverKeysetCountersForMint("https://mint.test");
 
-    // Counter was advanced despite the flag — proves the safety-net path
-    // can re-scan even after the startup migration already ran.
-    expect(mocks.store.keysetCounters.k1).toBe(13);
+    expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
+      expect.objectContaining({ keysetId: "k1", restoredNext: 13 }),
+    );
     expect(r.scannedKeysets).toEqual(["k1"]);
   });
 
@@ -1021,12 +1056,12 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
 
     await cashu.recoverKeysetCountersForMint("https://mint.test");
 
-    expect(mocks.store.keysetCounters.k1).toBe(0);
-    expect(mocks.store.keysetCountersRecovered.k1).toBe(true);
+    expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
+      expect.objectContaining({ keysetId: "k1", restoredNext: 0 }),
+    );
   });
 
-  it("does NOT lower an existing higher counter (max(current, recovered+1))", async () => {
-    mocks.store.keysetCounters = { k1: 100 };
+  it("delegates monotonic recovery to the canonical authority", async () => {
     mocks.wallet.batchRestore.mockResolvedValueOnce({
       proofs: [],
       lastCounterWithSignature: 5,
@@ -1034,6 +1069,8 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
 
     await cashu.recoverKeysetCountersForMint("https://mint.test");
 
-    expect(mocks.store.keysetCounters.k1).toBe(100);
+    expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
+      expect.objectContaining({ keysetId: "k1", restoredNext: 6 }),
+    );
   });
 });

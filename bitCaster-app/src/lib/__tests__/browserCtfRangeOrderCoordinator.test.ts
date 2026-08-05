@@ -167,7 +167,13 @@ describe("browser CTF range order coordinator", () => {
       sourceProof(preparation.offerKeyset.id, 2, "fragment-c"),
     ];
     const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
-    const coordinator = createCoordinator(database, sourceWallet(), engineMock());
+    const contexts: [string, string, string][] = [];
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock(), {
+      createCounterSource: (scopeId, mintUrl, unit) => {
+        contexts.push([scopeId, mintUrl, unit]);
+        return inMemoryCounterSource();
+      },
+    });
 
     await coordinator.consolidateRound({
       seed: SEED,
@@ -191,6 +197,9 @@ describe("browser CTF range order coordinator", () => {
         .map(({ amount }) => amountToNumber(amount))
         .sort((left, right) => right - left),
     ).toEqual([4, 1]);
+    expect(contexts).toEqual([
+      [walletScopeId(), preparation.mintUrl, preparation.offerKeyset.unit],
+    ]);
   });
 
   it("restores an exact committed consolidation after local completion is interrupted", async () => {
@@ -303,7 +312,13 @@ describe("browser CTF range order coordinator", () => {
         calls.push("submit");
       },
     });
-    const coordinator = createCoordinator(database, wallet, engine);
+    const contexts: [string, string, string][] = [];
+    const coordinator = createCoordinator(database, wallet, engine, {
+      createCounterSource: (scopeId, mintUrl, unit) => {
+        contexts.push([scopeId, mintUrl, unit]);
+        return inMemoryCounterSource();
+      },
+    });
 
     const response = await coordinator.prepareAndSubmit({
       seed: SEED,
@@ -313,6 +328,9 @@ describe("browser CTF range order coordinator", () => {
 
     expect(response.orderId).toBe("44444444-4444-4444-8444-444444444444");
     expect(calls).toEqual(["mint-source", "capability", "submit"]);
+    expect(contexts).toEqual([
+      [walletScopeId(), preparation.mintUrl, preparation.offerKeyset.unit],
+    ]);
     expect(
       (
         await custody.readOperation(
@@ -1367,6 +1385,7 @@ function createCoordinator(
     executeRefundSwap?: BrowserCtfRangeOrderCoordinatorDependencies["executeRefundSwap"];
     now?: () => number;
     counterSource?: CounterSource;
+    createCounterSource?: (scopeId: string, mintUrl: string, unit: string) => CounterSource;
   } = {},
 ) {
   let now = 20_000;
@@ -1377,7 +1396,8 @@ function createCoordinator(
     now: options.now ?? (() => now++),
     randomId: () => crypto.randomUUID(),
     lockManager: options.lockManager ?? immediateLockManager(),
-    createCounterSource: () => options.counterSource ?? inMemoryCounterSource(),
+    createCounterSource:
+      options.createCounterSource ?? (() => options.counterSource ?? inMemoryCounterSource()),
     ...(options.isDefinitiveOrderRejection === undefined
       ? {}
       : { isDefinitiveOrderRejection: options.isDefinitiveOrderRejection }),

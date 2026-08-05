@@ -6,7 +6,6 @@ import {
   type MintKeys,
   type MintKeyset,
   type CounterSource,
-  type CounterRange,
 } from "@cashu/cashu-ts";
 import { useLiveQuery } from "dexie-react-hooks";
 import * as bip39 from "@/lib/bip39";
@@ -18,11 +17,13 @@ import {
 import { normalizeUrl } from "@/lib/url";
 import {
   activateBrowserWalletDatabase,
+  db,
   getProofs,
   getUnitProofs,
   isCtfProof,
   type StoredProof,
 } from "./proof-db";
+import { createActiveBrowserWalletCounterSource } from "./browser-wallet-counter-db";
 import type { MintConnectionTestStatus } from "@/types/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
@@ -47,22 +48,6 @@ interface WalletState {
   walletBackupState: SecretBackupState;
   mints: StoredMint[];
   activeMintUrl: string;
-  keysetCounters: Record<string, number>;
-  /**
-   * Per-keyset flag indicating that the deterministic-output recovery scan
-   * (`batchRestore`) has been run against the mint at least once for this
-   * keyset. Without recovery, a wallet whose `keysetCounters` entry is
-   * missing or stale (e.g. because the wallet existed before the
-   * `ZustandCounterSource` landed in submodule commit `8711c73`, or proofs
-   * were minted from a different device with the same seed) re-uses
-   * deterministic blinded outputs starting at counter 0. CDK responds to
-   * the duplicate with the **misleadingly-named** error
-   * `"Invoice already paid or pending"` (per
-   * `cdk-common/src/error.rs:1017`, `Database(Duplicate)` →
-   * `ErrorCode::InvoiceAlreadyPaid`) — see
-   * `docs/TODO.md` "P8 follow-up: counter recovery".
-   */
-  keysetCountersRecovered: Record<string, boolean>;
   mintConnectionStatuses: Record<string, MintConnectionTestStatus>;
 
   generateMnemonic: () => void;
@@ -115,52 +100,11 @@ async function createWallet(url: string, unit: string, mnemonic: string): Promis
   const wallet = new CashuWallet(mint, {
     unit,
     bip39seed: seedBytes,
-    counterSource: new SeedBoundCounterSource(scopeId),
+    counterSource: createActiveBrowserWalletCounterSource(db, scopeId, { mintUrl: url, unit }),
   });
   await wallet.loadMint();
   return wallet;
 }
-
-/**
- * CounterSource backed by the Zustand wallet store's keysetCounters.
- * Persists deterministic output counters to localStorage so they survive
- * page reloads and prevent "Blinded Message already signed" collisions.
- */
-class ZustandCounterSource implements CounterSource {
-  async reserve(keysetId: string, n: number): Promise<CounterRange> {
-    if (n === 0) {
-      const current = useWalletStore.getState().keysetCounters[keysetId] ?? 0;
-      return { start: current, count: 0 };
-    }
-    let start = 0;
-    useWalletStore.setState((s) => {
-      start = s.keysetCounters[keysetId] ?? 0;
-      return { keysetCounters: { ...s.keysetCounters, [keysetId]: start + n } };
-    });
-    return { start, count: n };
-  }
-
-  async advanceToAtLeast(keysetId: string, minNext: number): Promise<void> {
-    useWalletStore.setState((s) => {
-      const current = s.keysetCounters[keysetId] ?? 0;
-      if (minNext <= current) return s;
-      return { keysetCounters: { ...s.keysetCounters, [keysetId]: minNext } };
-    });
-  }
-
-  async setNext(keysetId: string, next: number): Promise<void> {
-    useWalletStore.setState((s) => {
-      if ((s.keysetCounters[keysetId] ?? 0) === next) return s;
-      return { keysetCounters: { ...s.keysetCounters, [keysetId]: next } };
-    });
-  }
-
-  async snapshot(): Promise<Record<string, number>> {
-    return { ...useWalletStore.getState().keysetCounters };
-  }
-}
-
-const _counterSource = new ZustandCounterSource();
 
 function activateWalletProfile(mnemonic: string): void {
   setActiveBrowserWalletProfile(mnemonic);
@@ -168,51 +112,13 @@ function activateWalletProfile(mnemonic: string): void {
   if (scopeId !== null) activateBrowserWalletDatabase(scopeId);
 }
 
-class SeedBoundCounterSource implements CounterSource {
-  readonly #scopeId: string;
-  readonly #requireRecovered: boolean;
-
-  constructor(scopeId: string, requireRecovered = false) {
-    this.#scopeId = scopeId;
-    this.#requireRecovered = requireRecovered;
-  }
-
-  #requireCurrentProfile(): void {
-    if (activeBrowserWalletScopeId() !== this.#scopeId) {
-      throw new Error("The wallet profile changed during funded work.");
-    }
-  }
-
-  async reserve(keysetId: string, n: number): Promise<CounterRange> {
-    this.#requireCurrentProfile();
-    if (
-      this.#requireRecovered &&
-      useWalletStore.getState().keysetCountersRecovered[keysetId] !== true
-    ) {
-      throw new Error("The wallet counter recovery is incomplete.");
-    }
-    return _counterSource.reserve(keysetId, n);
-  }
-
-  async advanceToAtLeast(keysetId: string, minNext: number): Promise<void> {
-    this.#requireCurrentProfile();
-    await _counterSource.advanceToAtLeast(keysetId, minNext);
-  }
-
-  async setNext(keysetId: string, next: number): Promise<void> {
-    this.#requireCurrentProfile();
-    await _counterSource.setNext(keysetId, next);
-  }
-
-  async snapshot(): Promise<Record<string, number>> {
-    this.#requireCurrentProfile();
-    return _counterSource.snapshot();
-  }
-}
-
 /** Create a counter source that stays bound to one active wallet profile. */
-export function createBrowserWalletCounterSource(scopeId: string): CounterSource {
-  return new SeedBoundCounterSource(scopeId, true);
+export function createBrowserWalletCounterSource(
+  scopeId: string,
+  mintUrl: string,
+  unit: string,
+): CounterSource {
+  return createActiveBrowserWalletCounterSource(db, scopeId, { mintUrl, unit });
 }
 
 /**
@@ -262,8 +168,6 @@ export const useWalletStore = create<WalletState>()(
       walletBackupState: "none",
       mints: [],
       activeMintUrl: DEFAULT_MINT_URL,
-      keysetCounters: {},
-      keysetCountersRecovered: {},
       mintConnectionStatuses: {},
 
       generateMnemonic: () => {
@@ -274,16 +178,9 @@ export const useWalletStore = create<WalletState>()(
         const mnemonic = words.join(" ");
         _walletCache = new Map();
         activateWalletProfile(mnemonic);
-        // Clear deterministic counter state — the new seed has its own
-        // counter space; reusing the previous wallet's counters or
-        // recovered-flags would either skip required recovery for the new
-        // seed or apply a stale counter to the wrong keyset (P8 codex
-        // adversarial review #6).
         set({
           mnemonic,
           walletBackupState: "needs_backup",
-          keysetCounters: {},
-          keysetCountersRecovered: {},
         });
       },
 
@@ -332,14 +229,9 @@ export const useWalletStore = create<WalletState>()(
           };
         }
         activateWalletProfile(mnemonic);
-        // See generateMnemonic — clear counter state on seed change so the
-        // recovered-flag idempotency doesn't suppress a needed scan for the
-        // new seed.
         set({
           mnemonic,
           walletBackupState: "confirmed",
-          keysetCounters: {},
-          keysetCountersRecovered: {},
         });
         return { valid: true };
       },
@@ -455,8 +347,6 @@ export const useWalletStore = create<WalletState>()(
         walletBackupState: state.walletBackupState,
         mints: state.mints,
         activeMintUrl: state.activeMintUrl,
-        keysetCounters: state.keysetCounters,
-        keysetCountersRecovered: state.keysetCountersRecovered,
         // Persist connection statuses so the Settings green/grey indicator
         // doesn't reset to grey on every reload. A background refetch in
         // App.tsx will correct any stale value on the next app load.

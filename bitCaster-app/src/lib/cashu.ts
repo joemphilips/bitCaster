@@ -33,16 +33,19 @@ import {
   getUnitProofs,
   getProofOperation,
   getProofOperations,
+  isWalletCounterRecoveryComplete,
   markProofOperationCompleted,
   markCtfRedeemTerminalFailure,
   markProofOperationFailed,
   prepareProofOperation,
   removeProofs,
+  restoreProofsAndAdvanceCounter,
   db,
   type BitcasterDB,
   type StoredProof,
 } from "@/stores/proof-db";
 import { bindBrowserCtfRedeemTerminalProofs } from "@/stores/browser-ctf-terminal-binding";
+import { createActiveBrowserWalletCounterSource } from "@/stores/browser-wallet-counter-db";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   type CtfProofOperationRecord,
@@ -233,7 +236,6 @@ async function mintAndStoreProofs(input: MintAndStoreProofsInput): Promise<Proof
   context.requireCapturedProfile();
   let latestOperationId: string | null = null;
   const mintOnce = async (): Promise<Proof[]> => {
-    const beforeCounters = snapshotCountersForSuccessfulMintRepair();
     let counters: OperationCounters | undefined;
     context.requireCapturedProfile();
     const preview = await wallet.prepareMint("bolt11", amount, quote, {
@@ -289,7 +291,6 @@ async function mintAndStoreProofs(input: MintAndStoreProofsInput): Promise<Proof
       throw new Error("wallet mint did not reach a terminal state");
     const proofs = result.proofs;
     context.requireCapturedProfile();
-    repairCountersAfterSuccessfulMint(proofs, beforeCounters);
     context.requireCapturedProfile();
     return proofs;
   };
@@ -304,20 +305,26 @@ async function mintAndStoreProofs(input: MintAndStoreProofsInput): Promise<Proof
     }
     context.requireCapturedProfile();
     const url = normalizeUrl(mintUrl ?? context.activeMintUrl);
-    const result = await recoverKeysetCountersForMint(url, { force: true, baseAsset });
+    const keysetId = wallet.getKeyset()?.id;
+    const result =
+      keysetId === undefined
+        ? { scannedKeysets: [], complete: false }
+        : await recoverKeysetCountersForMint(url, { force: true, unit, keysetId });
     context.requireCapturedProfile();
     if (!result.scannedKeysets.length) {
       // Recovery couldn't scan the active unit (network down, restore not
       // supported for that unit, stale keyset metadata). Skip a bounded
       // deterministic counter window before the one allowed retry so local
       // wallets can still escape a stale counter without looping forever.
-      const bumped = await bumpActiveKeysetCounter(wallet, baseAsset).catch(() => false);
+      const bumped = await bumpActiveKeysetCounter(
+        wallet,
+        normalizedMintUrl,
+        unit,
+        baseAsset,
+      ).catch(() => false);
       context.requireCapturedProfile();
       if (!bumped) throw err;
     }
-    // ZustandCounterSource.reserve() reads from the live store on every
-    // call (`stores/wallet.ts:65`), so the cached cashu-ts wallet picks up
-    // the recovered counter on the retry without rebuilding the wallet.
     return await mintOnce();
   }
 }
@@ -610,37 +617,6 @@ function collateralSubunitsFromBaseAmount(
   return subunits;
 }
 
-function snapshotCountersForSuccessfulMintRepair(): Record<string, number> | null {
-  if (!useWalletStore.getState().mnemonic) return null;
-  return { ...useWalletStore.getState().keysetCounters };
-}
-
-function repairCountersAfterSuccessfulMint(
-  proofs: Proof[],
-  beforeCounters: Record<string, number> | null,
-): void {
-  if (!beforeCounters || proofs.length === 0) return;
-  const mintedByKeyset = new Map<string, number>();
-  for (const proof of proofs) {
-    if (!proof.id) continue;
-    mintedByKeyset.set(proof.id, (mintedByKeyset.get(proof.id) ?? 0) + 1);
-  }
-  if (mintedByKeyset.size === 0) return;
-  useWalletStore.setState((s) => {
-    let changed = false;
-    const nextCounters = { ...s.keysetCounters };
-    for (const [keysetId, mintedCount] of mintedByKeyset) {
-      const floor = (beforeCounters[keysetId] ?? 0) + mintedCount;
-      const current = nextCounters[keysetId] ?? 0;
-      if (current < floor) {
-        nextCounters[keysetId] = floor;
-        changed = true;
-      }
-    }
-    return changed ? { keysetCounters: nextCounters } : s;
-  });
-}
-
 export interface KeysetRecoveryResult {
   /** Keyset IDs that were scanned (regardless of whether anything new was
    *  found). Empty means recovery couldn't run (e.g. mint unreachable). */
@@ -661,19 +637,19 @@ function keysetCashuUnit(keyset: RecoverableMintKeyset): CashuProofUnit {
 
 async function bumpActiveKeysetCounter(
   wallet: CashuWallet,
+  mintUrl: string,
+  unit: CashuProofUnit,
   baseAsset?: MarketBaseAsset | string | null,
 ): Promise<boolean> {
   const keyset = wallet.getKeyset();
   if (!keyset?.id) return false;
-  useWalletStore.setState((s) => {
-    const current = s.keysetCounters[keyset.id] ?? 0;
-    return {
-      keysetCounters: {
-        ...s.keysetCounters,
-        [keyset.id]: current + COUNTER_RECOVERY_FALLBACK_SKIP,
-      },
-    };
-  });
+  const scopeId = activeBrowserWalletScopeId();
+  if (scopeId === null) return false;
+  await createActiveBrowserWalletCounterSource(db, scopeId, {
+    mintUrl,
+    unit,
+    requireRecoveryComplete: false,
+  }).reserve(keyset.id, COUNTER_RECOVERY_FALLBACK_SKIP);
   console.warn(
     `[cashu] counter recovery could not scan ${normalizeMarketBaseAsset(baseAsset)} keyset ${keyset.id}; advanced by ${COUNTER_RECOVERY_FALLBACK_SKIP}`,
   );
@@ -682,24 +658,20 @@ async function bumpActiveKeysetCounter(
 
 /**
  * Walk the mint's seen-outputs space (via cashu-ts `batchRestore`) for every
- * keyset of `mintUrl`, advance `keysetCounters[keysetId]` past the highest
- * existing signed output, persist any UNSPENT recovered proofs to IndexedDB,
- * and mark the keyset recovered.
- *
- * Two callers:
- *  - `App.tsx` startup migration — once per mint at app load. Skips keysets
- *    whose `keysetCountersRecovered[id]` flag is already set (idempotent).
- *  - `mintProofs` safety-net catch — passes `{ force: true }` so the flag
- *    is BYPASSED. The flag captures "we scanned at app start"; a duplicate
- *    error proves our counter is stale despite the flag (e.g. another
- *    device minted with the same seed since startup).
+ * keyset of `mintUrl`, advance its authoritative cursor past the highest
+ * signed output, and admit UNSPENT recovered proofs in the same transaction.
  *
  * Returns the list of keyset IDs that were actually scanned so the caller
  * can decide whether a retry is worthwhile.
  */
 export async function recoverKeysetCountersForMint(
   mintUrl: string,
-  opts: { force?: boolean; baseAsset?: MarketBaseAsset | string | null } = {},
+  opts: {
+    force?: boolean;
+    baseAsset?: MarketBaseAsset | string | null;
+    unit?: CashuProofUnit;
+    keysetId?: string;
+  } = {},
 ): Promise<KeysetRecoveryResult> {
   const url = normalizeUrl(mintUrl);
   const store = useWalletStore.getState();
@@ -715,6 +687,12 @@ export async function recoverKeysetCountersForMint(
     opts.baseAsset === undefined || opts.baseAsset === null
       ? null
       : normalizeMarketBaseAsset(opts.baseAsset);
+  if ((opts.unit === undefined) !== (opts.keysetId === undefined)) {
+    throw new Error("counter recovery selection is incomplete");
+  }
+  if (opts.keysetId !== undefined && opts.force !== true) {
+    throw new Error("counter recovery selection requires forced repair");
+  }
   const discoveryUnit = defaultCollateralUnit(requestedBaseAsset ?? DEFAULT_MARKET_BASE_ASSET);
   const discoveryWallet = (await store.getWalletForUnit(url, discoveryUnit)) as CashuWallet;
   // Use the wallet's freshly-loaded keysets via the underlying mint, not the
@@ -731,8 +709,9 @@ export async function recoverKeysetCountersForMint(
         .map(keysetCashuUnit)
         .filter(
           (unit) =>
-            requestedBaseAsset === null ||
-            COLLATERAL_UNIT_REGISTRY[unit].baseAsset === requestedBaseAsset,
+            (requestedBaseAsset === null ||
+              COLLATERAL_UNIT_REGISTRY[unit].baseAsset === requestedBaseAsset) &&
+            (opts.unit === undefined || unit === opts.unit),
         ),
     ),
   );
@@ -743,10 +722,24 @@ export async function recoverKeysetCountersForMint(
       unit === discoveryUnit
         ? discoveryWallet
         : ((await store.getWalletForUnit(url, unit)) as CashuWallet);
-    for (const keyset of keysets.filter((k) => keysetCashuUnit(k) === unit)) {
-      const recovered = useWalletStore.getState().keysetCountersRecovered[keyset.id];
-      if (!opts.force && recovered) continue;
+    for (const keyset of keysets.filter(
+      (keyset) =>
+        keysetCashuUnit(keyset) === unit &&
+        (opts.keysetId === undefined || keyset.id === opts.keysetId),
+    )) {
       try {
+        if (
+          !opts.force &&
+          (await isWalletCounterRecoveryComplete({
+            scopeId,
+            mintUrl: url,
+            unit,
+            keysetId: keyset.id,
+            isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+          }))
+        ) {
+          continue;
+        }
         const { proofs, lastCounterWithSignature } = await wallet.batchRestore(
           300,
           100,
@@ -755,49 +748,32 @@ export async function recoverKeysetCountersForMint(
         );
         requireCapturedProfile();
         const next = lastCounterWithSignature !== undefined ? lastCounterWithSignature + 1 : 0;
-        const current = useWalletStore.getState().keysetCounters[keyset.id] ?? 0;
-        const advanced = Math.max(current, next);
-        useWalletStore.setState((s) => ({
-          keysetCounters: { ...s.keysetCounters, [keyset.id]: advanced },
-        }));
         // CRITICAL: batchRestore returns ALL deterministic proofs the mint
         // ever signed for this seed, including SPENT ones. Persisting spent
         // proofs would inflate the displayed balance and cause spent-token
         // errors on the next spend. Filter via `groupProofsByState` and keep
         // only UNSPENT. PENDING is also excluded — those are mid-flight on
         // another device and will resolve to SPENT or UNSPENT shortly.
-        if (proofs.length > 0) {
-          // Classification failure is nonterminal. Let the outer catch keep
-          // `keysetCountersRecovered` false so startup retries rather than
-          // permanently suppressing proofs it could not safely classify.
-          const grouped = await wallet.groupProofsByState(proofs);
-          requireCapturedProfile();
-          const safe = grouped.unspent;
-          if (safe.length > 0) {
-            const stored: StoredProof[] = safe.map((p) => ({
-              ...p,
-              mintUrl: url,
-              baseAsset: COLLATERAL_UNIT_REGISTRY[unit].baseAsset,
-              unit,
-            }));
-            await addProofs(stored);
-            requireCapturedProfile();
-          }
-        }
-        // Mark the scan complete only after every recovered UNSPENT proof is
-        // durably stored. A quota/IndexedDB failure must leave this false so
-        // the next startup retries the same keyset.
-        useWalletStore.setState((s) => ({
-          keysetCountersRecovered: {
-            ...s.keysetCountersRecovered,
-            [keyset.id]: true,
-          },
+        const safe = proofs.length === 0 ? [] : (await wallet.groupProofsByState(proofs)).unspent;
+        requireCapturedProfile();
+        const stored: StoredProof[] = safe.map((proof) => ({
+          ...proof,
+          mintUrl: url,
+          baseAsset: COLLATERAL_UNIT_REGISTRY[unit].baseAsset,
+          unit,
         }));
+        await restoreProofsAndAdvanceCounter({
+          proofs: stored,
+          scopeId,
+          mintUrl: url,
+          unit,
+          keysetId: keyset.id,
+          restoredNext: next,
+          isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+        });
         scanned.push(keyset.id);
       } catch {
-        // Best-effort: if this keyset's recovery fails (mint unreachable,
-        // keyset rotated, etc.) leave the flag unset so the next trip
-        // retries. Fall through to the next keyset.
+        // Best-effort: retry a failed keyset scan on the next startup.
         complete = false;
       }
     }

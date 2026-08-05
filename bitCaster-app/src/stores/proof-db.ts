@@ -40,6 +40,10 @@ import type { EncryptedWalletBackupAccountOperationResultRecord } from "@bitcast
 import type { EncryptedWalletBackupSnapshotCleanupJob } from "@bitcaster/client-sdk/encryptedWalletBackupSnapshotCleanup";
 import type { EncryptedWalletBackupRestoreProofRecord } from "@bitcaster/client-sdk/encryptedWalletBackup";
 import type { DurableWalletStorageClassification } from "@bitcaster/client-sdk/recoverableWalletStorage";
+import {
+  BrowserWalletCounterDexieStore,
+  type BrowserWalletCounterAdvanceResult,
+} from "./browser-wallet-counter-db";
 
 /** Canonical encrypted wallet-backup control row. The SDK owns its CBOR codec. */
 export interface EncryptedWalletBackupDexieControlRow {
@@ -173,6 +177,22 @@ export interface EncryptedWalletBackupDexieRestoreProofRow {
 export interface EncryptedWalletBackupV2DirtyRevisionRow {
   scopeId: string;
   revision: number;
+}
+
+/** One authoritative NUT-13 allocation cursor for one wallet scope and keyset. */
+export interface BrowserWalletCounterCursorRow {
+  scopeId: string;
+  keysetId: string;
+  next: number;
+}
+
+/** One normalized mint and unit context that uses an authoritative keyset cursor. */
+export interface BrowserWalletCounterAssociationRow {
+  scopeId: string;
+  normalizedMint: string;
+  unit: CashuProofUnit;
+  keysetId: string;
+  recoveryComplete: boolean;
 }
 
 /** One immutable prepared V2 mutation for one scoped vault authority. */
@@ -424,6 +444,11 @@ export class BitcasterDB extends Dexie {
     [string, string]
   >;
   encryptedWalletBackupV2DirtyRevisions!: Table<EncryptedWalletBackupV2DirtyRevisionRow, string>;
+  walletCounterCursors!: Table<BrowserWalletCounterCursorRow, [string, string]>;
+  walletCounterAssociations!: Table<
+    BrowserWalletCounterAssociationRow,
+    [string, string, CashuProofUnit, string]
+  >;
   encryptedWalletBackupV2PreparedMutations!: Table<
     EncryptedWalletBackupV2PreparedMutationRow,
     [string, string, string, number]
@@ -736,6 +761,11 @@ export class BitcasterDB extends Dexie {
       encryptedWalletBackupV2ActiveDescriptors:
         "&[scopeId+realm+vaultId+enrollmentEpoch+bundleId], [scopeId+realm+vaultId+enrollmentEpoch]",
     });
+    this.version(18).stores({
+      walletCounterCursors: "&[scopeId+keysetId], scopeId",
+      walletCounterAssociations:
+        "&[scopeId+normalizedMint+unit+keysetId], scopeId, [scopeId+keysetId], [scopeId+normalizedMint+unit]",
+    });
   }
 }
 
@@ -1035,8 +1065,60 @@ export async function getConditionCtfProofs(
 // the balance query (`getProofs(activeMintUrl)`) never has to worry about
 // trailing-slash / protocol-case drift.
 export async function addProofs(proofs: StoredProof[], database: BitcasterDB = db): Promise<void> {
+  const incomingRows = normalizedStoredProofRows(proofs);
+  await database.transaction("rw", database.proofs, async () => {
+    await putNormalizedStoredProofRows(database, incomingRows);
+  });
+}
+
+/** Atomically admits restored proofs and advances their authoritative NUT-13 high-water mark. */
+export async function restoreProofsAndAdvanceCounter(
+  input: {
+    readonly proofs: StoredProof[];
+    readonly scopeId: string;
+    readonly mintUrl: string;
+    readonly unit: CashuProofUnit | string;
+    readonly keysetId: string;
+    readonly restoredNext: number;
+    readonly isCurrentProfile: () => boolean;
+  },
+  database: BitcasterDB = db,
+): Promise<BrowserWalletCounterAdvanceResult> {
+  const rows = normalizedStoredProofRows(input.proofs);
+  const counters = new BrowserWalletCounterDexieStore({
+    database,
+    scopeId: input.scopeId,
+    isCurrentProfile: input.isCurrentProfile,
+  });
+  return counters.restoreInContext(
+    { mintUrl: input.mintUrl, unit: input.unit },
+    input.keysetId,
+    input.restoredNext,
+    rows.length > 0,
+    () => putNormalizedStoredProofRows(database, rows),
+  );
+}
+
+export async function isWalletCounterRecoveryComplete(
+  input: {
+    readonly scopeId: string;
+    readonly mintUrl: string;
+    readonly unit: CashuProofUnit | string;
+    readonly keysetId: string;
+    readonly isCurrentProfile: () => boolean;
+  },
+  database: BitcasterDB = db,
+): Promise<boolean> {
+  return new BrowserWalletCounterDexieStore({
+    database,
+    scopeId: input.scopeId,
+    isCurrentProfile: input.isCurrentProfile,
+  }).isRecoveryComplete({ mintUrl: input.mintUrl, unit: input.unit }, input.keysetId);
+}
+
+function normalizedStoredProofRows(proofs: StoredProof[]): StoredProofRow[] {
   const now = Date.now();
-  const incomingRows = proofs.map((proof) =>
+  return proofs.map((proof) =>
     storedProofRow(
       normalizeAndValidateStoredProof({
         ...proof,
@@ -1044,13 +1126,18 @@ export async function addProofs(proofs: StoredProof[], database: BitcasterDB = d
       }),
     ),
   );
-  await database.transaction("rw", database.proofs, async () => {
-    const currentRows = await database.proofs.bulkGet(incomingRows.map((row) => row.secret));
-    const rows = incomingRows.map((row, index) =>
-      preserveStoredProofTerminalBinding(row, currentRows[index]),
-    );
-    await database.proofs.bulkPut(rows);
-  });
+}
+
+async function putNormalizedStoredProofRows(
+  database: BitcasterDB,
+  incomingRows: StoredProofRow[],
+): Promise<void> {
+  if (incomingRows.length === 0) return;
+  const currentRows = await database.proofs.bulkGet(incomingRows.map((row) => row.secret));
+  const rows = incomingRows.map((row, index) =>
+    preserveStoredProofTerminalBinding(row, currentRows[index]),
+  );
+  await database.proofs.bulkPut(rows);
 }
 
 function preserveStoredProofTerminalBinding(

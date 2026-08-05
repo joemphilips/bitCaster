@@ -202,7 +202,7 @@ export interface BrowserCtfRangeOrderCoordinatorDependencies {
     mintUrl: string,
     request: SwapRequest,
   ) => Promise<{ signatures: SerializedBlindedSignature[] }>;
-  readonly createCounterSource?: (scopeId: string) => CounterSource;
+  readonly createCounterSource?: (scopeId: string, mintUrl: string, unit: string) => CounterSource;
 }
 
 export interface BrowserCtfRangeRecoveryPage {
@@ -289,7 +289,7 @@ export class BrowserCtfRangeOrderCoordinator {
     mintUrl: string,
     request: SwapRequest,
   ) => Promise<{ signatures: SerializedBlindedSignature[] }>;
-  readonly #createCounterSource: (scopeId: string) => CounterSource;
+  readonly #createCounterSource: (scopeId: string, mintUrl: string, unit: string) => CounterSource;
 
   constructor(input: BrowserCtfRangeOrderCoordinatorDependencies) {
     const wallet = input.wallet;
@@ -758,7 +758,11 @@ export class BrowserCtfRangeOrderCoordinator {
         inputFeePpk: input.preparation.offerKeyset.inputFeePpk,
         plannedRound: input.plannedRound,
         seed: input.seed,
-        counterSource: this.#createCounterSource(scope.scopeId),
+        counterSource: this.#createCounterSource(
+          scope.scopeId,
+          input.preparation.mintUrl,
+          input.preparation.offerKeyset.unit,
+        ),
         wallet: await this.#walletForMint(input.preparation.mintUrl),
       });
     } catch (error) {
@@ -899,7 +903,11 @@ export class BrowserCtfRangeOrderCoordinator {
       operation = await prepareCtfRangeSourceOperation({
         preparation: input.preparation,
         seed: input.seed,
-        counterSource: this.#createCounterSource(scope.scopeId),
+        counterSource: this.#createCounterSource(
+          scope.scopeId,
+          input.preparation.mintUrl,
+          input.preparation.offerKeyset.unit,
+        ),
         wallet: await this.#walletForMint(input.preparation.mintUrl),
         candidates: input.candidates,
       });
@@ -2191,6 +2199,7 @@ export class BrowserCtfRangeOrderCoordinator {
       this.#database.custodyConditionalKeysets,
       this.#database.custodyReservations,
       this.#database.custodyActiveWork,
+      this.#database.encryptedWalletBackupV2DirtyRevisions,
     ] as const;
   }
 }
