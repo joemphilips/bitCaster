@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
 import { browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import { activateBrowserWalletDatabase, BitcasterDB, db } from "../proof-db";
+import { createBrowserCustodyProofRow } from "../durable-custody-db";
 
 const scopes = ["11".repeat(32), "22".repeat(32)].map((walletId) =>
   deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId }),
@@ -20,7 +21,7 @@ describe("browser wallet databases", () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(18);
+    expect(db.verno).toBe(19);
     expect(db.custodyProofBackupAuthorities.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofBackupAuthorities.schema.indexes.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
@@ -83,6 +84,99 @@ describe("browser wallet databases", () => {
       "unit",
       "keysetId",
     ]);
+    expect(db.encryptedWalletBackupV2DesiredAssets.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "localAssetKey",
+    ]);
+  });
+
+  it("seeds one ordinary desired asset when upgrading an active V2 custody row", async () => {
+    const name = `bitcaster-wallet-v18-upgrade-${crypto.randomUUID()}`;
+    const legacy = new Dexie(name);
+    legacy.version(18).stores({
+      custodyProofs:
+        "&[scopeId+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability]",
+      custodyConditionalKeysets: "&[scopeId+normalizedMint+unit+keysetId]",
+    });
+    await legacy.open();
+    await legacy.table("custodyProofs").put(
+      createBrowserCustodyProofRow({
+        scopeId: scopes[0],
+        normalizedMint: "https://mint.example",
+        unit: "sat",
+        proof: {
+          id: `01${"aa".repeat(32)}`,
+          amount: 1 as never,
+          secret: "migration-proof",
+          C: `02${"22".repeat(32)}`,
+        },
+        asset: { kind: "regular" },
+        receivedAtMs: 1,
+      }),
+    );
+    legacy.close();
+
+    const upgraded = new BitcasterDB(name);
+    try {
+      await upgraded.open();
+      expect(await upgraded.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
+        {
+          scopeId: scopes[0],
+          mintUrl: "https://mint.example",
+          unit: "sat",
+          assetIdentity: "cashu:ordinary",
+          custodyRevision: "1",
+          activeProofCount: 1,
+          desiredAction: "replace",
+        },
+      ]);
+    } finally {
+      upgraded.close();
+      await Dexie.delete(name);
+    }
+  });
+
+  it("fails closed when an active legacy CTF proof has no verified keyset authority", async () => {
+    const name = `bitcaster-wallet-v18-ctf-upgrade-${crypto.randomUUID()}`;
+    const legacy = new Dexie(name);
+    legacy.version(18).stores({
+      custodyProofs:
+        "&[scopeId+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability]",
+      custodyConditionalKeysets: "&[scopeId+normalizedMint+unit+keysetId]",
+    });
+    await legacy.open();
+    const conditional = createBrowserCustodyProofRow({
+      scopeId: scopes[0],
+      normalizedMint: "https://mint.example",
+      unit: "msat",
+      proof: {
+        id: `01${"aa".repeat(32)}`,
+        amount: 1 as never,
+        secret: "migration-ctf-proof",
+        C: `02${"22".repeat(32)}`,
+      },
+      asset: {
+        kind: "conditional",
+        conditionId: "11".repeat(32),
+        outcomeCollection: "Display label",
+      },
+      receivedAtMs: 1,
+    });
+    await legacy.table("custodyProofs").put({
+      ...conditional,
+      selectability: "locked",
+      reservationOperationId: "migration-lock",
+      revision: 1,
+    });
+    legacy.close();
+
+    const upgraded = new BitcasterDB(name);
+    try {
+      await expect(upgraded.open()).rejects.toThrow("conditional authority is missing");
+    } finally {
+      upgraded.close();
+      await Dexie.delete(name);
+    }
   });
 
   it("clears the undeployed wallet schema instead of inferring backup authority", async () => {

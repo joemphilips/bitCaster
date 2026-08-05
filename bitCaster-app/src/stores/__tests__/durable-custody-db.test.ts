@@ -86,6 +86,17 @@ describe("browser durable custody adapter", () => {
       scopeId: scope.scopeId,
       revision: 1,
     });
+    expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
+      {
+        scopeId: scope.scopeId,
+        mintUrl: MINT,
+        unit: "msat",
+        assetIdentity: "cashu:ordinary",
+        custodyRevision: "1",
+        activeProofCount: 1,
+        desiredAction: "replace",
+      },
+    ]);
   });
 
   it("atomically inserts an exact operation and locks its selected proof", async () => {
@@ -197,6 +208,7 @@ describe("browser durable custody adapter", () => {
     expect(await database.custodyReservations.count()).toBe(0);
     expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
     expect(await database.encryptedWalletBackupV2DirtyRevisions.get(scope.scopeId)).toBeUndefined();
+    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
   });
 
   it("keeps an exact committed intent after an acknowledgement fault", async () => {
@@ -294,6 +306,15 @@ describe("browser durable custody adapter", () => {
       scopeId: scope.scopeId,
       revision: 2,
     });
+    expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
+      {
+        scopeId: scope.scopeId,
+        assetIdentity: "cashu:ordinary",
+        custodyRevision: "2",
+        activeProofCount: 1,
+        desiredAction: "replace",
+      },
+    ]);
   });
 
   it("rejects foreign and oversized proof option collections before mutation", async () => {

@@ -3,8 +3,14 @@ import type {
   DurableCustodyRecord,
   DurableCustodyScopeState,
 } from "@bitcaster/client-sdk/durableCustody";
-import { decodeDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
-import type { DurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import {
+  decodeCanonicalMintOrigin,
+  decodeDurableCustodyScopeId,
+} from "@bitcaster/client-sdk/durableCustody";
+import {
+  decodeDurableCustodyProofMaterialRecord,
+  type DurableCustodyProofMaterialRecord,
+} from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 
 export type BrowserCustodyProofUnit = "sat" | "msat";
 export type BrowserCustodyProofSelectability = "selectable" | "locked" | "spent";
@@ -42,6 +48,130 @@ export interface BrowserCustodyProofRow extends DurableCustodyProofMaterialRecor
   selectability: BrowserCustodyProofSelectability;
   reservationOperationId: string | null;
   receivedAtMs: number;
+}
+
+/** Strictly decodes one authoritative browser custody proof row. */
+export function decodeBrowserCustodyProofRow(value: unknown): BrowserCustodyProofRow {
+  const row = proofRecord(value);
+  const scopeId = decodeDurableCustodyScopeId(row.scopeId);
+  const normalizedMint = decodeCanonicalMintOrigin(row.normalizedMint);
+  const unit = proofUnit(row.unit);
+  const asset = proofAsset(row, unit);
+  const material = decodeDurableCustodyProofMaterialRecord({
+    scopeId,
+    normalizedMint,
+    unit,
+    proofId: proofText(row.proofId),
+    keysetId: proofText(row.keysetId),
+    amount: positiveInteger(row.amount),
+    proofBody: proofBytes(row.proofBody),
+    proofFingerprint: proofText(row.proofFingerprint),
+    curve: proofCurve(row.curve),
+    dleqPresence: proofDleqPresence(row.dleqPresence),
+  }).record;
+  const selectability = proofSelectability(row.selectability);
+  const reservationOperationId =
+    row.reservationOperationId === null ? null : proofText(row.reservationOperationId);
+  if (
+    (selectability === "locked") !== (reservationOperationId !== null) ||
+    row.baseAsset !== "sat"
+  ) {
+    throw new Error("browser custody proof row is invalid");
+  }
+  return {
+    scopeId,
+    normalizedMint,
+    unit,
+    ...asset,
+    baseAsset: "sat",
+    ...material,
+    revision: nonnegativeInteger(row.revision),
+    selectability,
+    reservationOperationId,
+    receivedAtMs: nonnegativeInteger(row.receivedAtMs),
+  };
+}
+
+function proofRecord(value: unknown): Record<string, unknown> {
+  const fields =
+    "amount,assetKind,baseAsset,conditionId,curve,dleqPresence,keysetId,normalizedMint,outcomeCollection,proofBody,proofFingerprint,proofId,receivedAtMs,reservationOperationId,revision,scopeId,selectability,unit";
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !== fields
+  ) {
+    throw new Error("browser custody proof row is invalid");
+  }
+  return value as Record<string, unknown>;
+}
+
+function proofAsset(row: Record<string, unknown>, unit: BrowserCustodyProofUnit) {
+  if (row.assetKind === "regular" && row.conditionId === null && row.outcomeCollection === null) {
+    return { assetKind: "regular" as const, conditionId: null, outcomeCollection: null };
+  }
+  if (
+    row.assetKind === "conditional" &&
+    unit === "msat" &&
+    typeof row.conditionId === "string" &&
+    row.conditionId.length > 0 &&
+    typeof row.outcomeCollection === "string" &&
+    row.outcomeCollection.length > 0
+  ) {
+    return {
+      assetKind: "conditional" as const,
+      conditionId: row.conditionId,
+      outcomeCollection: row.outcomeCollection,
+    };
+  }
+  throw new Error("browser custody proof row is invalid");
+}
+
+function proofUnit(value: unknown): BrowserCustodyProofUnit {
+  if (value === "sat" || value === "msat") return value;
+  throw new Error("browser custody proof row is invalid");
+}
+
+function proofSelectability(value: unknown): BrowserCustodyProofSelectability {
+  if (value === "selectable" || value === "locked" || value === "spent") return value;
+  throw new Error("browser custody proof row is invalid");
+}
+
+function proofCurve(value: unknown): "secp256k1" | "bls12-381" {
+  if (value === "secp256k1" || value === "bls12-381") return value;
+  throw new Error("browser custody proof row is invalid");
+}
+
+function proofDleqPresence(value: unknown): "not-present" | "present" {
+  if (value === "not-present" || value === "present") return value;
+  throw new Error("browser custody proof row is invalid");
+}
+
+function proofText(value: unknown): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 64 * 1024) {
+    throw new Error("browser custody proof row is invalid");
+  }
+  return value;
+}
+
+function proofBytes(value: unknown): Uint8Array {
+  if (!(value instanceof Uint8Array) || value.byteLength < 1) {
+    throw new Error("browser custody proof row is invalid");
+  }
+  return value;
+}
+
+function positiveInteger(value: unknown): number {
+  const integer = nonnegativeInteger(value);
+  if (integer < 1) throw new Error("browser custody proof row is invalid");
+  return integer;
+}
+
+function nonnegativeInteger(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error("browser custody proof row is invalid");
+  }
+  return value as number;
 }
 
 /** Exact verified NUT-CTF keyset facts for one conditional proof admission. */

@@ -95,7 +95,7 @@ export async function prepareEncryptedWalletBackupV2ProofSetBundle(input: {
     proofs: input.proofs,
     counterHighWaterMarks: input.counterHighWaterMarks,
   })
-  const asset = validateAssetIdentity(input.asset)
+  const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.asset)
   assertProofSetAsset(decoded.proofs, asset)
   const declaredAmount = sumProofAmounts(decoded.proofs)
   const canonicalPayload = encodeProofSetPayload(decoded)
@@ -123,7 +123,7 @@ export async function decryptEncryptedWalletBackupV2ProofSetBundle(input: {
 }): Promise<EncryptedWalletBackupV2UnverifiedProofSet> {
   const descriptor = snapshotDescriptor(input.descriptor)
   const seed = await requireEncryptedWalletBackupV2SeedHandleMatch(input)
-  const expectedAsset = validateAssetIdentity(input.expectedAsset)
+  const expectedAsset = decodeEncryptedWalletBackupV2AssetIdentity(input.expectedAsset)
   const expectedAssetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
     keyHandle: input.keyHandle,
     ...expectedAsset,
@@ -399,14 +399,46 @@ function decodeAssetWire(value: unknown): EncryptedWalletBackupV2ProofSetAsset {
   throw new Error('encrypted backup proof set asset is invalid')
 }
 
-function validateAssetIdentity(value: unknown): EncryptedWalletBackupV2AssetIdentity {
+/** Creates the canonical asset identity used by one V2 proof-set bundle. */
+export function createEncryptedWalletBackupV2AssetIdentity(input: {
+  readonly mintUrl: string
+  readonly unit: string
+  readonly asset: EncryptedWalletBackupV2ProofSetAsset
+}): EncryptedWalletBackupV2AssetIdentity {
+  const asset = decodeAsset(input.asset)
+  return decodeEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: input.mintUrl,
+    unit: input.unit,
+    assetIdentity: assetIdentity(asset),
+  })
+}
+
+/** Encodes one canonical local asset key without delimiter ambiguity. */
+export function encryptedWalletBackupV2LocalAssetKey(value: unknown): string {
+  const asset = decodeEncryptedWalletBackupV2AssetIdentity(value)
+  return JSON.stringify([asset.mintUrl, asset.unit, asset.assetIdentity])
+}
+
+/** Strictly decodes a canonical V2 asset identity. */
+export function decodeEncryptedWalletBackupV2AssetIdentity(
+  value: unknown,
+): EncryptedWalletBackupV2AssetIdentity {
   if (!isRecord(value) || !exactKeys(value, ['mintUrl', 'unit', 'assetIdentity']))
     throw new Error('encrypted backup proof set asset is invalid')
+  const assetIdentity = requireAssetIdentity(value.assetIdentity)
   return Object.freeze({
     mintUrl: requireCanonicalMint(value.mintUrl),
     unit: requireUnit(value.unit),
-    assetIdentity: requireUtf8Text(value.assetIdentity, 256, 'encrypted backup asset identity'),
+    assetIdentity,
   })
+}
+
+function requireAssetIdentity(value: unknown): string {
+  const identity = requireUtf8Text(value, 256, 'encrypted backup asset identity')
+  if (identity === 'cashu:ordinary' || /^ctf:[0-9a-f]{64}:[0-9a-f]{64}$/.test(identity)) {
+    return identity
+  }
+  throw new Error('encrypted backup asset identity is invalid')
 }
 
 function assertProofSetAsset(

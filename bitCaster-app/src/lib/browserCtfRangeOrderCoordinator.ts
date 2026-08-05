@@ -2197,6 +2197,7 @@ export class BrowserCtfRangeOrderCoordinator {
       this.#database.custodyProofs,
       this.#database.custodyProofBackupAuthorities,
       this.#database.custodyConditionalKeysets,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
       this.#database.custodyReservations,
       this.#database.custodyActiveWork,
       this.#database.encryptedWalletBackupV2DirtyRevisions,

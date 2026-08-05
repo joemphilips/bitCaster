@@ -10,6 +10,9 @@ import {
   BROWSER_WALLET_COUNTER_ASSOCIATION_MAX,
   BROWSER_WALLET_COUNTER_SNAPSHOT_MAX,
 } from "../browser-wallet-counter-db";
+import { createBrowserCustodyProofRow } from "../durable-custody-db";
+import { createEncryptedWalletBackupV2DesiredAssetRow } from "../browser-encrypted-wallet-backup-v2-desired-asset";
+import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import { BitcasterDB } from "../proof-db";
 
 const scopeId = deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId: "11".repeat(32) });
@@ -140,6 +143,65 @@ describe("browser wallet counter authority", () => {
       ),
     ).toEqual({ start: 5, count: 0 });
     expect(await dirtyRevision(database)).toBe(1);
+  });
+
+  it("advances only the active asset intent when a relevant counter moves", async () => {
+    const counters = createStore();
+    const database = databases.at(-1)!;
+    await database.custodyProofs.add(
+      createBrowserCustodyProofRow({
+        scopeId,
+        normalizedMint: "https://mint.example",
+        unit: "sat",
+        proof: {
+          id: keysetId,
+          amount: 1 as never,
+          secret: "counter-active-proof",
+          C: `02${"22".repeat(32)}`,
+        },
+        asset: { kind: "regular" },
+        receivedAtMs: 1,
+      }),
+    );
+    await database.encryptedWalletBackupV2DesiredAssets.add(
+      createEncryptedWalletBackupV2DesiredAssetRow({
+        scopeId,
+        asset: createEncryptedWalletBackupV2AssetIdentity({
+          mintUrl: "https://mint.example",
+          unit: "sat",
+          asset: { kind: "ordinary" },
+        }),
+        custodyRevision: 1n,
+        activeProofCount: 1,
+      }),
+    );
+    const fullProofScan = vi.spyOn(database.custodyProofs, "toArray");
+
+    await counters.advanceToAtLeastInContext(
+      { mintUrl: "https://mint.example", unit: "sat" },
+      keysetId,
+      3,
+      false,
+    );
+    expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
+      {
+        scopeId,
+        assetIdentity: "cashu:ordinary",
+        custodyRevision: "2",
+        activeProofCount: 1,
+        desiredAction: "replace",
+      },
+    ]);
+    await counters.advanceToAtLeastInContext(
+      { mintUrl: "https://mint.example", unit: "sat" },
+      keysetId,
+      3,
+      false,
+    );
+    expect(
+      (await database.encryptedWalletBackupV2DesiredAssets.toArray())[0]?.custodyRevision,
+    ).toBe("2");
+    expect(fullProofScan).not.toHaveBeenCalled();
   });
 
   it("rejects stale profiles and foreign databases", async () => {

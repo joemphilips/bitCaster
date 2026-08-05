@@ -3,7 +3,9 @@ import { createCtfRangeManifest, deriveKeysetId } from '@cashu/cashu-ts'
 import { webcrypto } from 'node:crypto'
 import { test } from 'node:test'
 import {
+  createEncryptedWalletBackupV2AssetIdentity,
   decryptEncryptedWalletBackupV2ProofSetBundle,
+  encryptedWalletBackupV2LocalAssetKey,
   prepareEncryptedWalletBackupV2ProofSetBundle,
   type EncryptedWalletBackupV2ProofSetProof,
 } from '../src/encryptedWalletBackupV2ProofSet.ts'
@@ -24,6 +26,35 @@ const KEYSET = deriveKeysetId(
   { unit: 'sat', versionByte: 1 },
 )
 const MINT = 'https://mint.example'
+
+test('v2 proof-set asset identity keeps mint, unit, and verified CTF collection distinct', () => {
+  const ordinary = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: MINT,
+    unit: 'sat',
+    asset: { kind: 'ordinary' },
+  })
+  const ctf = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: MINT,
+    unit: 'msat',
+    asset: {
+      kind: 'ctf',
+      conditionId: '11'.repeat(32),
+      outcomeLabel: 'Display label',
+      outcomeCollectionId: '22'.repeat(32),
+      registeredAt: 1,
+      finalExpiry: 2,
+    },
+  })
+  assert.equal(ordinary.assetIdentity, 'cashu:ordinary')
+  assert.equal(ctf.assetIdentity, `ctf:${'11'.repeat(32)}:${'22'.repeat(32)}`)
+  assert.notEqual(
+    encryptedWalletBackupV2LocalAssetKey(ordinary),
+    encryptedWalletBackupV2LocalAssetKey(ctf),
+  )
+  assert.throws(() =>
+    encryptedWalletBackupV2LocalAssetKey({ ...ordinary, assetIdentity: 'ctf:Display label' }),
+  )
+})
 
 test('v2 proof set restores one asset proof material', async () => {
   const keyHandle = await handle()

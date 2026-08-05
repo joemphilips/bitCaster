@@ -3,6 +3,7 @@ import { decodeDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustod
 import { parseCashuProofUnit, type CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
 import { activeBrowserWalletScopeId, browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
+import { advanceBrowserV2DesiredAssetsForCounter } from "./browser-encrypted-wallet-backup-v2-desired-asset";
 import type { BitcasterDB } from "./proof-db";
 
 export const BROWSER_WALLET_COUNTER_ASSOCIATION_MAX = 256;
@@ -78,13 +79,18 @@ export class BrowserWalletCounterDexieStore {
     this.#requireCurrentProfile();
     return this.#database.transaction(
       "rw",
-      this.#database.walletCounterAssociations,
-      this.#database.walletCounterCursors,
-      this.#database.encryptedWalletBackupV2DirtyRevisions,
+      [
+        this.#database.walletCounterAssociations,
+        this.#database.walletCounterCursors,
+        this.#database.custodyProofs,
+        this.#database.custodyConditionalKeysets,
+        this.#database.encryptedWalletBackupV2DesiredAssets,
+        this.#database.encryptedWalletBackupV2DirtyRevisions,
+      ],
       async () => {
         const row = await this.#ensureAssociation(association, id);
         if (requireRecoveryComplete && !row.recoveryComplete) this.#throwRecoveryIncomplete();
-        return this.#reserveInTransaction(id, count);
+        return this.#reserveInTransaction(association, id, count);
       },
     );
   }
@@ -101,13 +107,18 @@ export class BrowserWalletCounterDexieStore {
     this.#requireCurrentProfile();
     return this.#database.transaction(
       "rw",
-      this.#database.walletCounterAssociations,
-      this.#database.walletCounterCursors,
-      this.#database.encryptedWalletBackupV2DirtyRevisions,
+      [
+        this.#database.walletCounterAssociations,
+        this.#database.walletCounterCursors,
+        this.#database.custodyProofs,
+        this.#database.custodyConditionalKeysets,
+        this.#database.encryptedWalletBackupV2DesiredAssets,
+        this.#database.encryptedWalletBackupV2DirtyRevisions,
+      ],
       async () => {
         const row = await this.#ensureAssociation(association, id);
         if (requireRecoveryComplete && !row.recoveryComplete) this.#throwRecoveryIncomplete();
-        return this.#advanceInTransaction(id, minimum);
+        return this.#advanceInTransaction(association, id, minimum);
       },
     );
   }
@@ -125,10 +136,15 @@ export class BrowserWalletCounterDexieStore {
     this.#requireCurrentProfile();
     return this.#database.transaction(
       "rw",
-      this.#database.walletCounterAssociations,
-      this.#database.walletCounterCursors,
-      this.#database.encryptedWalletBackupV2DirtyRevisions,
-      this.#database.proofs,
+      [
+        this.#database.walletCounterAssociations,
+        this.#database.walletCounterCursors,
+        this.#database.custodyProofs,
+        this.#database.custodyConditionalKeysets,
+        this.#database.encryptedWalletBackupV2DesiredAssets,
+        this.#database.encryptedWalletBackupV2DirtyRevisions,
+        this.#database.proofs,
+      ],
       async () => {
         const row = await this.#ensureAssociation(association, id);
         const current = await this.#currentNext(id);
@@ -146,6 +162,7 @@ export class BrowserWalletCounterDexieStore {
             keysetId: id,
             next,
           });
+          await this.#advanceDesiredAssetAuthority(association, id);
         }
         const changed = counterChanged || recoveryChanged || admissionChangesWallet;
         if (changed) await this.#advanceDirtyRevision();
@@ -197,16 +214,22 @@ export class BrowserWalletCounterDexieStore {
     return requireCounter(row.next);
   }
 
-  async #reserveInTransaction(keysetId: string, count: number): Promise<CounterRange> {
+  async #reserveInTransaction(
+    context: NormalizedBrowserWalletCounterContext,
+    keysetId: string,
+    count: number,
+  ): Promise<CounterRange> {
     const current = await this.#currentNext(keysetId);
     if (count === 0) return { start: current, count };
     const next = requireCounter(current + count);
     await this.#database.walletCounterCursors.put({ scopeId: this.#scopeId, keysetId, next });
+    await this.#advanceDesiredAssetAuthority(context, keysetId);
     await this.#advanceDirtyRevision();
     return { start: current, count };
   }
 
   async #advanceInTransaction(
+    context: NormalizedBrowserWalletCounterContext,
     keysetId: string,
     minimum: number,
   ): Promise<BrowserWalletCounterAdvanceResult> {
@@ -214,6 +237,7 @@ export class BrowserWalletCounterDexieStore {
     const next = Math.max(current, minimum);
     if (next === current) return { changed: false, next };
     await this.#database.walletCounterCursors.put({ scopeId: this.#scopeId, keysetId, next });
+    await this.#advanceDesiredAssetAuthority(context, keysetId);
     await this.#advanceDirtyRevision();
     return { changed: true, next };
   }
@@ -266,6 +290,19 @@ export class BrowserWalletCounterDexieStore {
     await this.#database.encryptedWalletBackupV2DirtyRevisions.put({
       scopeId: this.#scopeId,
       revision: requireCounter(revision),
+    });
+  }
+
+  async #advanceDesiredAssetAuthority(
+    context: NormalizedBrowserWalletCounterContext,
+    keysetId: string,
+  ): Promise<void> {
+    await advanceBrowserV2DesiredAssetsForCounter({
+      database: this.#database,
+      scopeId: this.#scopeId,
+      normalizedMint: context.normalizedMint,
+      unit: context.unit,
+      keysetId,
     });
   }
 

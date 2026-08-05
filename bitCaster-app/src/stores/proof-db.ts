@@ -1,5 +1,12 @@
-import Dexie, { type Table } from "dexie";
+import Dexie, { type Table, type Transaction } from "dexie";
 import { Amount, type Proof } from "@cashu/cashu-ts";
+import { decodeDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
+import {
+  createEncryptedWalletBackupV2AssetIdentity,
+  encryptedWalletBackupV2LocalAssetKey,
+  type EncryptedWalletBackupV2ProofSetAsset,
+} from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
+import { verifyEncryptedWalletBackupConditionalKeyset } from "@bitcaster/client-sdk/encryptedWalletBackup";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   COLLATERAL_UNIT_REGISTRY,
@@ -44,6 +51,12 @@ import {
   BrowserWalletCounterDexieStore,
   type BrowserWalletCounterAdvanceResult,
 } from "./browser-wallet-counter-db";
+import type { EncryptedWalletBackupV2DesiredAssetRow } from "./browser-encrypted-wallet-backup-v2-desired-asset";
+import { createEncryptedWalletBackupV2DesiredAssetRow } from "./browser-encrypted-wallet-backup-v2-desired-asset";
+import {
+  decodeBrowserCustodyConditionalKeysetRow,
+  decodeBrowserCustodyProofRow,
+} from "./durable-custody-types";
 
 /** Canonical encrypted wallet-backup control row. The SDK owns its CBOR codec. */
 export interface EncryptedWalletBackupDexieControlRow {
@@ -446,6 +459,10 @@ export class BitcasterDB extends Dexie {
     [string, string]
   >;
   encryptedWalletBackupV2DirtyRevisions!: Table<EncryptedWalletBackupV2DirtyRevisionRow, string>;
+  encryptedWalletBackupV2DesiredAssets!: Table<
+    EncryptedWalletBackupV2DesiredAssetRow,
+    [string, string]
+  >;
   walletCounterCursors!: Table<BrowserWalletCounterCursorRow, [string, string]>;
   walletCounterAssociations!: Table<
     BrowserWalletCounterAssociationRow,
@@ -768,7 +785,123 @@ export class BitcasterDB extends Dexie {
       walletCounterAssociations:
         "&[scopeId+normalizedMint+unit+keysetId], scopeId, [scopeId+keysetId], [scopeId+normalizedMint+unit]",
     });
+    this.version(19)
+      .stores({
+        custodyProofs:
+          "&[scopeId+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability]",
+        encryptedWalletBackupV2DesiredAssets:
+          "&[scopeId+localAssetKey], [scopeId+mintUrl+unit+assetIdentity]",
+      })
+      .upgrade(async (transaction) => {
+        await seedEncryptedWalletBackupV2DesiredAssets(transaction);
+      });
   }
+}
+
+async function seedEncryptedWalletBackupV2DesiredAssets(transaction: Transaction): Promise<void> {
+  const rawProofs = await transaction.table("custodyProofs").toArray();
+  const rows = new Map<string, EncryptedWalletBackupV2DesiredAssetRow>();
+  for (const rawProof of rawProofs) {
+    const proof = decodeBrowserCustodyProofRow(rawProof);
+    if (proof.selectability === "spent") continue;
+    const asset = await migrationAssetIdentity(transaction, proof);
+    const existing = rows.get(
+      JSON.stringify([proof.scopeId, encryptedWalletBackupV2LocalAssetKey(asset)]),
+    );
+    const row = createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: proof.scopeId,
+      asset,
+      custodyRevision: 1n,
+      activeProofCount: (existing?.activeProofCount ?? 0) + 1,
+    });
+    rows.set(JSON.stringify([row.scopeId, row.localAssetKey]), row);
+  }
+  if (rows.size > 0) {
+    await transaction.table("encryptedWalletBackupV2DesiredAssets").bulkPut([...rows.values()]);
+  }
+}
+
+async function migrationAssetIdentity(
+  transaction: Transaction,
+  proof: import("./durable-custody-types").BrowserCustodyProofRow,
+) {
+  const scopeId = decodeDurableCustodyScopeId(proof.scopeId);
+  if (typeof proof.normalizedMint !== "string" || typeof proof.unit !== "string") {
+    throw new Error("browser V2 desired asset migration proof is invalid");
+  }
+  if (proof.assetKind === "regular") {
+    if (proof.conditionId !== null || proof.outcomeCollection !== null) {
+      throw new Error("browser V2 desired asset migration ordinary proof is invalid");
+    }
+    return createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: proof.normalizedMint,
+      unit: proof.unit,
+      asset: { kind: "ordinary" },
+    });
+  }
+  if (
+    proof.assetKind !== "conditional" ||
+    typeof proof.keysetId !== "string" ||
+    typeof proof.conditionId !== "string" ||
+    typeof proof.outcomeCollection !== "string"
+  ) {
+    throw new Error("browser V2 desired asset migration proof is invalid");
+  }
+  const rawKeyset = await transaction
+    .table("custodyConditionalKeysets")
+    .get([scopeId, proof.normalizedMint, proof.unit, proof.keysetId]);
+  if (rawKeyset === undefined) {
+    throw new Error("browser V2 desired asset migration conditional authority is missing");
+  }
+  const keyset = decodeBrowserCustodyConditionalKeysetRow(rawKeyset);
+  if (
+    keyset.scopeId !== scopeId ||
+    keyset.normalizedMint !== proof.normalizedMint ||
+    keyset.unit !== proof.unit ||
+    keyset.keysetId !== proof.keysetId ||
+    keyset.conditionId !== proof.conditionId ||
+    keyset.outcomeCollection !== proof.outcomeCollection
+  ) {
+    throw new Error("browser V2 desired asset migration conditional authority is foreign");
+  }
+  verifyEncryptedWalletBackupConditionalKeyset({
+    mint: keyset.normalizedMint,
+    unit: keyset.unit,
+    outcomeLabel: keyset.outcomeCollection,
+    registeredAtUnixSeconds: keyset.registeredAtUnixSeconds,
+    mintKeys: {
+      id: keyset.keysetId,
+      unit: keyset.unit,
+      keys: keyset.denominationPublicKeys,
+      input_fee_ppk: keyset.inputFeePpk,
+      final_expiry: keyset.finalExpiryUnixSeconds,
+      conditional: {
+        conditionId: keyset.conditionId,
+        outcomeCollection: keyset.outcomeCollection,
+        outcomeCollectionId: keyset.outcomeCollectionId,
+        registeredAt: keyset.registeredAtUnixSeconds,
+      },
+    },
+    conditionalMetadata: {
+      conditionId: keyset.conditionId,
+      outcomeCollection: keyset.outcomeCollection,
+      outcomeCollectionId: keyset.outcomeCollectionId,
+      registeredAt: keyset.registeredAtUnixSeconds,
+    },
+  });
+  const asset: EncryptedWalletBackupV2ProofSetAsset = {
+    kind: "ctf",
+    conditionId: keyset.conditionId,
+    outcomeLabel: keyset.outcomeCollection,
+    outcomeCollectionId: keyset.outcomeCollectionId,
+    registeredAt: keyset.registeredAtUnixSeconds,
+    finalExpiry: keyset.finalExpiryUnixSeconds,
+  };
+  return createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: keyset.normalizedMint,
+    unit: keyset.unit,
+    asset,
+  });
 }
 
 export let db = new BitcasterDB("bitcaster-wallet-uninitialized");

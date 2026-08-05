@@ -28,10 +28,7 @@ import {
   type DurableCustodyTransactionSelection,
   type DurableCustodyTransition,
 } from "@bitcaster/client-sdk/durableCustody";
-import {
-  createDurableCustodyProofMaterialRecord,
-  decodeDurableCustodyProofMaterialRecord,
-} from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import { createDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { verifyEncryptedWalletBackupConditionalKeyset } from "@bitcaster/client-sdk/encryptedWalletBackup";
 import { db, type BitcasterDB } from "./proof-db";
 import {
@@ -50,13 +47,16 @@ import type {
   BrowserCustodyOperationRow,
   BrowserCustodyProofRow,
   BrowserCustodyConditionalKeysetAuthority,
-  BrowserCustodyProofSelectability,
   BrowserCustodyProofUnit,
   BrowserCustodyReservationRow,
   BrowserCustodyScopeRow,
 } from "./durable-custody-types";
 import { decodeBrowserCustodyConditionalKeysetAuthority } from "./durable-custody-types";
 import { decodeBrowserCustodyConditionalKeysetRow } from "./durable-custody-types";
+import { decodeBrowserCustodyProofRow } from "./durable-custody-types";
+import { advanceBrowserV2DesiredAssetsForProofChanges } from "./browser-encrypted-wallet-backup-v2-desired-asset";
+
+export { decodeBrowserCustodyProofRow } from "./durable-custody-types";
 
 const ROW_TEXT_BYTES_MAX = 64 * 1_024;
 const TRANSACTION_PROOF_ROW_LIMIT_MAX =
@@ -91,6 +91,21 @@ interface PersistedBrowserCustodyProofRequest extends PersistedBrowserCustodyPro
   readonly successorAdmissionOperationId: string | undefined;
   readonly predecessorFallbackOperationId: string | undefined;
   readonly conditionalKeyset: BrowserCustodyConditionalKeysetAuthority | undefined;
+}
+
+interface BrowserCustodyProofBackupAuthorityState {
+  readonly authorities: ReadonlyMap<
+    string,
+    ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | null
+  >;
+  readonly proofs: ReadonlyMap<string, BrowserCustodyProofRow>;
+}
+
+interface BrowserCustodyProofBackupPayloadChange {
+  readonly beforeProof: BrowserCustodyProofRow | null;
+  readonly beforeLocator: BrowserProofDerivationLocatorAuthority;
+  readonly afterProof: BrowserCustodyProofRow;
+  readonly afterLocator: BrowserProofDerivationLocatorAuthority;
 }
 
 interface ConditionalKeysetWritePlan {
@@ -146,68 +161,6 @@ export function createBrowserCustodyProofRow(input: {
     reservationOperationId: null,
     receivedAtMs: requireTime(input.receivedAtMs, "proof received time"),
   });
-}
-
-export function decodeBrowserCustodyProofRow(value: unknown): BrowserCustodyProofRow {
-  const row = exactRecord(value, [
-    "scopeId",
-    "normalizedMint",
-    "unit",
-    "assetKind",
-    "conditionId",
-    "outcomeCollection",
-    "baseAsset",
-    "proofId",
-    "keysetId",
-    "amount",
-    "proofBody",
-    "proofFingerprint",
-    "curve",
-    "dleqPresence",
-    "revision",
-    "selectability",
-    "reservationOperationId",
-    "receivedAtMs",
-  ]);
-  const scopeId = decodeDurableCustodyScopeId(row.scopeId);
-  const normalizedMint = decodeCanonicalMintOrigin(row.normalizedMint);
-  const unit = closedValue(row.unit, ["sat", "msat"], "proof unit");
-  const asset = decodeProofAsset(row, unit);
-  const material = decodeDurableCustodyProofMaterialRecord({
-    scopeId,
-    normalizedMint,
-    unit,
-    proofId: requiredText(row.proofId, "proof id"),
-    keysetId: requiredText(row.keysetId, "keyset id"),
-    amount: positiveSafeInteger(row.amount, "proof amount"),
-    proofBody: requireBytes(row.proofBody, "proof body"),
-    proofFingerprint: requiredText(row.proofFingerprint, "proof fingerprint"),
-    curve: closedValue(row.curve, ["secp256k1", "bls12-381"], "proof curve"),
-    dleqPresence: closedValue(row.dleqPresence, ["not-present", "present"], "DLEQ presence"),
-  }).record;
-  const selectability = closedValue(
-    row.selectability,
-    ["selectable", "locked", "spent"],
-    "proof selectability",
-  );
-  const reservationOperationId =
-    row.reservationOperationId === null
-      ? null
-      : requiredText(row.reservationOperationId, "proof reservation operation");
-  assertReservationState(selectability, reservationOperationId);
-  if (row.baseAsset !== "sat") throw new Error("browser custody proof base asset is invalid");
-  return {
-    scopeId,
-    normalizedMint,
-    unit,
-    ...asset,
-    baseAsset: "sat",
-    ...material,
-    revision: nonnegativeSafeInteger(row.revision, "proof revision"),
-    selectability,
-    reservationOperationId,
-    receivedAtMs: requireTime(row.receivedAtMs, "proof received time"),
-  };
 }
 
 export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
@@ -274,6 +227,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       this.#database.custodyActiveWork,
       this.#database.custodyProofBackupAuthorities,
       this.#database.custodyConditionalKeysets,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
       this.#database.encryptedWalletBackupV2DirtyRevisions,
     ];
     const result = await this.#database.transaction("rw", tables, async () => {
@@ -325,6 +279,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         this.#database.custodyReservations,
         this.#database.custodyProofBackupAuthorities,
         this.#database.custodyConditionalKeysets,
+        this.#database.encryptedWalletBackupV2DesiredAssets,
         this.#database.encryptedWalletBackupV2DirtyRevisions,
       ],
       async () => {
@@ -387,17 +342,22 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         ) {
           throw new Error("browser refund proof authority is invalid");
         }
-        await this.#persistProofRowsWithBackupAuthority(
+        const retiredChanges = await this.#persistProofRowsWithBackupAuthority(
           retired.map((proof) => ({ proof, derivationLocator: undefined })),
           input.observedAtMs,
         );
         await this.#database.custodyReservations.bulkDelete(
           expectedProofIds.map((proofId) => [input.scopeId, proofId]),
         );
-        await this.#persistProofRowsWithBackupAuthority(
+        const refundChanges = await this.#persistProofRowsWithBackupAuthority(
           refunds,
           input.observedAtMs,
           () => input.operationId,
+        );
+        await advanceBrowserV2DesiredAssetsForProofChanges(
+          this.#database,
+          input.scopeId,
+          [...retiredChanges, ...refundChanges].map(desiredAssetProofChange),
         );
         await this.#advanceDirtyRevision(input.scopeId);
         if (input.injectFault === "before-commit") {
@@ -664,8 +624,16 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   ): Promise<void> {
     await this.#persistChangedOperations(transaction);
     await this.#persistChangedArtifacts(transaction);
-    await this.#persistChangedProofs(transaction, selection.owner.observedAtMs);
-    if (transaction.changedProofIds.size > 0) {
+    const proofChanges = await this.#persistChangedProofs(
+      transaction,
+      selection.owner.observedAtMs,
+    );
+    if (proofChanges.length > 0) {
+      await advanceBrowserV2DesiredAssetsForProofChanges(
+        this.#database,
+        selection.scope.scopeId,
+        proofChanges.map(desiredAssetProofChange),
+      );
       await this.#advanceDirtyRevision(selection.scope.scopeId);
     }
     await this.#persistReservations(selection.scope.scopeId, transaction);
@@ -708,7 +676,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   async #persistChangedProofs(
     transaction: StagedBrowserCustodyTransaction,
     observedAtMs: number,
-  ): Promise<void> {
+  ): Promise<readonly BrowserCustodyProofBackupPayloadChange[]> {
     const changed: PersistedBrowserCustodyProof[] = [];
     for (const proofId of transaction.changedProofIds) {
       const proof = transaction.proofs.get(proofId);
@@ -718,7 +686,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         derivationLocator: transaction.derivationLocatorForProof(proofId),
       });
     }
-    await this.#persistProofRowsWithBackupAuthority(
+    return this.#persistProofRowsWithBackupAuthority(
       changed,
       observedAtMs,
       (proofId) => transaction.successorAdmissionOperationIdForProof(proofId),
@@ -736,17 +704,21 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     conditionalKeysetForProof: (
       proofId: string,
     ) => BrowserCustodyConditionalKeysetAuthority | undefined = () => undefined,
-  ): Promise<void> {
+  ): Promise<readonly BrowserCustodyProofBackupPayloadChange[]> {
     const requests = persistedProofRequests(
       proofs,
       admissionOperationIdForProof,
       predecessorFallbackOperationIdForProof,
       conditionalKeysetForProof,
     );
-    if (requests.length === 0) return;
+    if (requests.length === 0) return [];
     const current = await this.#readCurrentProofBackupAuthorities(requests);
     const authorities = requests.map((request) =>
-      nextProofBackupAuthority(request, current.get(proofIdentity(request.key)), observedAtMs),
+      nextProofBackupAuthority(
+        request,
+        current.authorities.get(proofIdentity(request.key)),
+        observedAtMs,
+      ),
     );
     const missingKeysets = await this.#prepareConditionalKeysetWrites(requests, current);
     await Promise.all([
@@ -756,19 +728,31 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         ? Promise.resolve()
         : this.#database.custodyConditionalKeysets.bulkAdd(missingKeysets),
     ]);
+    return requests.map((request, index) => {
+      const before = current.authorities.get(proofIdentity(request.key));
+      const after = authorities[index];
+      if (before === undefined || after === undefined) {
+        throw new Error("browser custody proof backup authority is missing");
+      }
+      return {
+        beforeProof: current.proofs.get(proofIdentity(request.key)) ?? null,
+        beforeLocator:
+          before === null ? null : requireBrowserProofDerivationLocator(before.derivationLocator),
+        afterProof: request.proof,
+        afterLocator: requireBrowserProofDerivationLocator(after.derivationLocator),
+      };
+    });
   }
 
   async #readCurrentProofBackupAuthorities(
     requests: readonly PersistedBrowserCustodyProofRequest[],
-  ): Promise<
-    ReadonlyMap<string, ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | null>
-  > {
+  ): Promise<BrowserCustodyProofBackupAuthorityState> {
     const keys = requests.map(({ key }) => key);
     const [proofRows, authorityRows] = await Promise.all([
       this.#database.custodyProofs.bulkGet(keys),
       this.#database.custodyProofBackupAuthorities.bulkGet(keys),
     ]);
-    const current = new Map<
+    const authorities = new Map<
       string,
       ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | null
     >();
@@ -778,7 +762,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       if ((proofRow === undefined) !== (authorityRow === undefined)) {
         throw new Error("browser proof and backup authority are incomplete");
       }
-      current.set(
+      authorities.set(
         proofIdentity(request.key),
         authorityRow === undefined
           ? null
@@ -788,17 +772,20 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
             ),
       );
     });
-    return current;
+    const proofs = new Map<string, BrowserCustodyProofRow>();
+    proofRows.forEach((row, index) => {
+      if (row !== undefined) {
+        proofs.set(proofIdentity(requests[index]!.key), decodeBrowserCustodyProofRow(row));
+      }
+    });
+    return { authorities, proofs };
   }
 
   async #prepareConditionalKeysetWrites(
     requests: readonly PersistedBrowserCustodyProofRequest[],
-    current: ReadonlyMap<
-      string,
-      ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | null
-    >,
+    current: BrowserCustodyProofBackupAuthorityState,
   ): Promise<readonly BrowserCustodyConditionalKeysetRow[]> {
-    const plans = conditionalKeysetWritePlans(requests, current);
+    const plans = conditionalKeysetWritePlans(requests, current.authorities);
     if (plans.length === 0) return [];
     const persisted = await this.#database.custodyConditionalKeysets.bulkGet(
       plans.map(({ key }) => key),
@@ -1889,31 +1876,6 @@ function normalizeProofAsset(
   }
 }
 
-function decodeProofAsset(
-  row: Record<string, unknown>,
-  unit: BrowserCustodyProofUnit,
-): Pick<BrowserCustodyProofRow, "assetKind" | "conditionId" | "outcomeCollection"> {
-  const kind = closedValue(row.assetKind, ["regular", "conditional"], "proof asset kind");
-  switch (kind) {
-    case "regular":
-      if (row.conditionId !== null || row.outcomeCollection !== null) {
-        throw new Error("regular browser custody proof has conditional metadata");
-      }
-      return normalizeProofAsset({ kind }, unit);
-    case "conditional":
-      return normalizeProofAsset(
-        {
-          kind,
-          conditionId: requiredText(row.conditionId, "condition"),
-          outcomeCollection: requiredText(row.outcomeCollection, "outcome collection"),
-        },
-        unit,
-      );
-    default:
-      return assertNever(kind);
-  }
-}
-
 function assertSameProofAuthority(
   existingValue: BrowserCustodyProofRow,
   expectedValue: BrowserCustodyProofRow,
@@ -1962,20 +1924,47 @@ function sameProofRow(
   );
 }
 
-function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
+function proofPayloadChanged(change: BrowserCustodyProofBackupPayloadChange): boolean {
+  const beforeActive =
+    change.beforeProof !== null &&
+    (change.beforeProof.selectability === "selectable" ||
+      change.beforeProof.selectability === "locked");
+  const afterActive =
+    change.afterProof.selectability === "selectable" ||
+    change.afterProof.selectability === "locked";
+  if (beforeActive !== afterActive) return true;
+  if (!beforeActive) return false;
+  if (
+    change.beforeProof === null ||
+    change.beforeLocator === null ||
+    change.afterLocator === null
+  ) {
+    throw new Error("browser custody active proof backup authority is incomplete");
+  }
+  return !(
+    change.beforeProof.proofId === change.afterProof.proofId &&
+    sameBytes(change.beforeProof.proofBody, change.afterProof.proofBody) &&
+    change.beforeProof.normalizedMint === change.afterProof.normalizedMint &&
+    change.beforeProof.unit === change.afterProof.unit &&
+    change.beforeProof.assetKind === change.afterProof.assetKind &&
+    change.beforeProof.conditionId === change.afterProof.conditionId &&
+    change.beforeProof.outcomeCollection === change.afterProof.outcomeCollection &&
+    sameBrowserProofDerivationLocator(change.beforeLocator, change.afterLocator)
+  );
 }
 
-function assertReservationState(
-  selectability: BrowserCustodyProofSelectability,
-  reservationOperationId: string | null,
-): void {
-  if (
-    (selectability === "locked" && reservationOperationId === null) ||
-    (selectability !== "locked" && reservationOperationId !== null)
-  ) {
-    throw new Error("browser custody proof reservation state is invalid");
-  }
+function desiredAssetProofChange(
+  change: BrowserCustodyProofBackupPayloadChange,
+): import("./browser-encrypted-wallet-backup-v2-desired-asset").BrowserV2DesiredAssetProofChange {
+  return {
+    beforeProof: change.beforeProof,
+    afterProof: change.afterProof,
+    payloadChanged: proofPayloadChanged(change),
+  };
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
 }
 
 function sameScope(left: DurableCustodyScope, right: DurableCustodyScope): boolean {
@@ -2089,13 +2078,6 @@ function requiredText(value: unknown, label: string): string {
   return value;
 }
 
-function requireBytes(value: unknown, label: string): Uint8Array {
-  if (!(value instanceof Uint8Array) || value.byteLength < 1) {
-    throw new Error(`browser custody ${label} is invalid`);
-  }
-  return value;
-}
-
 function requireTime(value: unknown, label: string): number {
   return nonnegativeSafeInteger(value, label);
 }
@@ -2111,17 +2093,6 @@ function nonnegativeSafeInteger(value: unknown, label: string): number {
     throw new Error(`browser custody ${label} is invalid`);
   }
   return value;
-}
-
-function closedValue<const T extends string>(
-  value: unknown,
-  allowed: readonly T[],
-  label: string,
-): T {
-  if (typeof value !== "string" || !allowed.includes(value as T)) {
-    throw new Error(`browser custody ${label} is invalid`);
-  }
-  return value as T;
 }
 
 function assertNever(value: never): never {
