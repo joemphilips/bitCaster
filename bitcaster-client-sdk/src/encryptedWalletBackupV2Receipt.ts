@@ -21,6 +21,7 @@ import {
 import {
   hexToBytesStrict,
   equalBytes,
+  requireBytes,
   requireLowerHex,
   requireRealm,
   requireValidXOnlyPublicKey,
@@ -139,8 +140,81 @@ export function digestEncryptedWalletBackupV2BundleSupersessionReceipt(value: un
   return receiptDigest(decodeReceipt(value))
 }
 
+/** Validates and snapshots one V2 bundle-supersession receipt. */
+export function decodeEncryptedWalletBackupV2BundleSupersessionReceipt(
+  value: unknown,
+): EncryptedWalletBackupV2BundleSupersessionReceipt {
+  return decodeReceipt(value)
+}
+
+/** Issues a receipt from verified request evidence without handling private key material. */
+export async function issueEncryptedWalletBackupV2BundleSupersessionReceipt(input: {
+  readonly mutationEvidence: unknown
+  readonly resultHead: unknown
+  readonly signingKeyId: string
+  readonly signingPublicKey: string
+  readonly signDigest: (digest: Uint8Array) => Uint8Array | Promise<Uint8Array>
+}): Promise<EncryptedWalletBackupV2BundleSupersessionReceipt> {
+  const envelope = requireMutation(input.mutationEvidence)
+  const resultHead = decodeEncryptedWalletBackupV2CurrentHead(input.resultHead)
+  const signingKeyId = requireLowerHex(input.signingKeyId, 16, 'receipt key id')
+  const signingPublicKey = requirePublicKey(input.signingPublicKey)
+  if (typeof input.signDigest !== 'function')
+    throw new Error('encrypted backup receipt signer is invalid')
+  const receipt = unsignedReceipt(envelope, resultHead, signingKeyId)
+  bindReceipt(receipt, envelope)
+  const digest = hexToBytesStrict(receiptDigest(receipt), 32, 'receipt digest')
+  const signature = await input.signDigest(digest.slice())
+  const signatureBytes = hexToBytesStrict(
+    toHex(requireSignature(signature)),
+    64,
+    'receipt signature',
+  )
+  if (
+    !schnorr.verify(
+      signatureBytes,
+      digest,
+      hexToBytesStrict(signingPublicKey, 32, 'receipt public key'),
+    )
+  )
+    throw new Error('encrypted backup receipt signer is invalid')
+  return freezeReceipt({ ...receipt, signature: toHex(signatureBytes) })
+}
+
 function requireMutation(value: unknown) {
   return requireEncryptedWalletBackupV2VerifiedBundleSupersessionMutation(value).envelope
+}
+
+function unsignedReceipt(
+  envelope: ReturnType<typeof requireMutation>,
+  resultHead: EncryptedWalletBackupV2CurrentHead,
+  signingKeyId: string,
+): EncryptedWalletBackupV2BundleSupersessionReceipt {
+  const added = envelope.mutation.addedBundle
+  return Object.freeze({
+    formatVersion: 2,
+    kind: 'bundle-supersession-receipt',
+    realm: envelope.mutation.realm,
+    vaultId: envelope.mutation.vaultId,
+    enrollmentEpoch: envelope.mutation.enrollmentEpoch,
+    requestAuthPublicKey: envelope.requestAuthPublicKey,
+    mutationId: envelope.mutation.mutationId,
+    requestDigest: envelope.requestDigest,
+    previousHeadVersion: envelope.mutation.expectedHeadVersion,
+    previousActiveSetDigest: envelope.mutation.expectedActiveSetDigest,
+    resultHead,
+    bundleId: added?.bundleId ?? null,
+    bundleDescriptorDigest:
+      added === null ? null : digestEncryptedWalletBackupV2BundleDescriptor(added),
+    finalizedObjects: added === null ? Object.freeze([]) : added.objects,
+    supersededBundleIds: envelope.mutation.supersededBundleIds,
+    signingKeyId,
+    signature: '00'.repeat(64),
+  })
+}
+
+function requireSignature(value: unknown): Uint8Array {
+  return new Uint8Array(requireBytes(value, 64, 64, 'receipt signature'))
 }
 
 function decodePins(value: unknown): readonly Pin[] {

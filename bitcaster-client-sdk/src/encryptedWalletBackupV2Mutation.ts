@@ -138,6 +138,21 @@ export function digestEncryptedWalletBackupV2BundleSupersessionMutation(input: {
   return mutationDigest(decodeMutation(mutationValue), requirePublicKey(requestAuthPublicKeyValue))
 }
 
+/** Validates and snapshots one signed V2 bundle-supersession mutation. */
+export function decodeEncryptedWalletBackupV2SignedBundleSupersessionMutation(
+  value: unknown,
+  expectedContext?: {
+    readonly realm: string
+    readonly vaultId: string
+    readonly enrollmentEpoch: number
+  },
+): EncryptedWalletBackupV2SignedBundleSupersessionMutation {
+  return decodeEnvelope(
+    value,
+    expectedContext === undefined ? undefined : decodeVerificationContext(expectedContext),
+  )
+}
+
 function snapshotPreparationInput(input: {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle
   readonly expectedHead: EncryptedWalletBackupV2CurrentHead
@@ -173,7 +188,7 @@ function snapshotPreparationInput(input: {
 
 function decodeEnvelope(
   value: unknown,
-  expected: MutationScope,
+  expected?: MutationScope,
 ): EncryptedWalletBackupV2SignedBundleSupersessionMutation {
   const record = exactRecord(value, [
     'mutation',

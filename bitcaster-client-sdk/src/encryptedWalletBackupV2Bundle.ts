@@ -1,6 +1,8 @@
 import { sha256 } from '@noble/hashes/sha2.js'
+import { decode } from 'cborg'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
 import { exactEncryptedWalletBackupArrayBuffer } from './encryptedWalletBackupBytes.ts'
+import { preflightEncryptedWalletBackupV2CborTuple } from './encryptedWalletBackupV2Cbor.ts'
 import {
   deriveEncryptedWalletBackupV2Hkdf,
   requireEncryptedWalletBackupV2KeyAuthority,
@@ -75,6 +77,76 @@ export interface EncryptedWalletBackupV2PreparedTransportBundle {
   readonly descriptor: EncryptedWalletBackupV2BundleDescriptor
   readonly objects: readonly EncryptedWalletBackupV2BundleObjectWire[]
 }
+
+/** Encodes the exact immutable object wire stored by the backup service. */
+export function encodeEncryptedWalletBackupV2BundleObjectWire(
+  value: unknown,
+  expectedDescriptor: unknown,
+): Uint8Array {
+  const descriptor = decodeEncryptedWalletBackupV2BundleDescriptor(expectedDescriptor)
+  const object = decodeEncryptedWalletBackupV2BundleObjectWireRecord(value, descriptor)
+  return encodeCanonicalBackupCbor([
+    ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
+    hexToBytesStrict(object.bundleId, BUNDLE_ID_BYTES, 'bundle id'),
+    hexToBytesStrict(object.objectId, OBJECT_ID_BYTES, 'object id'),
+    object.nonce,
+    object.aad,
+    object.body,
+    hexToBytesStrict(object.digest, 32, 'object digest'),
+  ])
+}
+
+/** Decodes one canonical immutable object wire without decrypting its body. */
+export function decodeEncryptedWalletBackupV2BundleObjectWire(
+  bytes: Uint8Array,
+  expectedDescriptor: unknown,
+): EncryptedWalletBackupV2BundleObjectWire {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > 300_000)
+    throw new Error('encrypted backup bundle object wire is invalid')
+  const descriptor = decodeEncryptedWalletBackupV2BundleDescriptor(expectedDescriptor)
+  preflightEncryptedWalletBackupV2CborTuple(bytes, OBJECT_WIRE_PREFLIGHT)
+  let decoded: unknown
+  try {
+    decoded = decode(bytes)
+  } catch {
+    throw new Error('encrypted backup bundle object wire is invalid')
+  }
+  if (!equalBytes(bytes, encodeCanonicalBackupCbor(decoded)))
+    throw new Error('encrypted backup bundle object wire is noncanonical')
+  if (!Array.isArray(decoded) || decoded.length !== 7)
+    throw new Error('encrypted backup bundle object wire is invalid')
+  return freezeWireObject(
+    decodeEncryptedWalletBackupV2BundleObjectWireRecord(
+      {
+        formatVersion: decoded[0],
+        bundleId: toHex(requireBytes(decoded[1], BUNDLE_ID_BYTES, BUNDLE_ID_BYTES, 'bundle id')),
+        objectId: toHex(requireBytes(decoded[2], OBJECT_ID_BYTES, OBJECT_ID_BYTES, 'object id')),
+        nonce: decoded[3],
+        aad: decoded[4],
+        body: decoded[5],
+        digest: toHex(requireBytes(decoded[6], 32, 32, 'object digest')),
+      },
+      descriptor,
+    ),
+  )
+}
+
+const OBJECT_WIRE_PREFLIGHT = {
+  maximumBytes: 300_000,
+  maximumDepth: 1,
+  maximumTokens: 8,
+  maximumArrayLength: 7,
+  maximumItemLength: ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_BODY_BYTES,
+  fields: [
+    { major: 0, exact: ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION },
+    { major: 2, exact: BUNDLE_ID_BYTES },
+    { major: 2, exact: OBJECT_ID_BYTES },
+    { major: 2, exact: GCM_NONCE_BYTES },
+    { major: 2, minimum: 1, maximum: 16_384 },
+    { major: 2, exact: ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_BODY_BYTES },
+    { major: 2, exact: 32 },
+  ],
+} as const
 
 /** Encrypts canonical transport bytes. A later compiler owns restore-completeness authority. */
 export async function prepareEncryptedWalletBackupV2TransportBundle(input: {
@@ -475,6 +547,16 @@ function decodeObject(
   descriptor: DecodedDescriptor,
   expected: DescriptorObject,
 ): DecodedObject {
+  const object = decodeEncryptedWalletBackupV2BundleObjectWireRecord(value, descriptor)
+  if (object.objectId !== expected.objectId || object.digest !== expected.digest)
+    throw new Error('object reference')
+  return object
+}
+
+function decodeEncryptedWalletBackupV2BundleObjectWireRecord(
+  value: unknown,
+  descriptor: DecodedDescriptor,
+): DecodedObject {
   const record = requireExactRecord(
     value,
     ['formatVersion', 'bundleId', 'objectId', 'nonce', 'aad', 'body', 'digest'],
@@ -483,25 +565,52 @@ function decodeObject(
   if (record.formatVersion !== ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION) throw new Error('version')
   const objectId = requireLowerHex(record.objectId, OBJECT_ID_BYTES, 'object id')
   const digest = requireLowerHex(record.digest, 32, 'object digest')
-  if (objectId !== expected.objectId || digest !== expected.digest)
-    throw new Error('object reference')
+  const index = descriptor.objects.findIndex((item) => item.objectId === objectId)
+  if (index < 0 || descriptor.objects[index]!.digest !== digest) throw new Error('object reference')
   const bundleId = requireLowerHex(record.bundleId, BUNDLE_ID_BYTES, 'bundle id')
   if (bundleId !== descriptor.bundleId) throw new Error('bundle id')
-  return {
+  const nonce = new Uint8Array(
+    requireBytes(record.nonce, GCM_NONCE_BYTES, GCM_NONCE_BYTES, 'nonce'),
+  )
+  const aad = new Uint8Array(requireBytes(record.aad, 1, 16_384, 'aad'))
+  const body = new Uint8Array(
+    requireBytes(
+      record.body,
+      ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_BODY_BYTES,
+      ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_BODY_BYTES,
+      'body',
+    ),
+  )
+  const expectedAad = encodeObjectAad({
+    descriptorBase: descriptor,
+    bundleId: fromHex(descriptor.bundleId, BUNDLE_ID_BYTES),
+    objectId: fromHex(objectId, OBJECT_ID_BYTES),
+    index,
+    objectCount: descriptor.objects.length,
+  })
+  if (!equalBytes(aad, expectedAad)) throw new Error('aad')
+  if (toHex(encryptedWalletBackupV2ObjectCommitment(nonce, aad, body)) !== digest)
+    throw new Error('object digest')
+  return Object.freeze({
     objectId,
     digest,
     bundleId,
-    nonce: new Uint8Array(requireBytes(record.nonce, GCM_NONCE_BYTES, GCM_NONCE_BYTES, 'nonce')),
-    aad: new Uint8Array(requireBytes(record.aad, 1, 16_384, 'aad')),
-    body: new Uint8Array(
-      requireBytes(
-        record.body,
-        ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_BODY_BYTES,
-        ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_BODY_BYTES,
-        'body',
-      ),
-    ),
-  }
+    nonce,
+    aad,
+    body,
+  })
+}
+
+function freezeWireObject(value: DecodedObject): EncryptedWalletBackupV2BundleObjectWire {
+  return Object.freeze({
+    formatVersion: ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
+    bundleId: value.bundleId,
+    objectId: value.objectId,
+    nonce: value.nonce.slice(),
+    aad: value.aad.slice(),
+    body: value.body.slice(),
+    digest: value.digest,
+  })
 }
 
 function objectCountForPayload(payloadLength: number): number {

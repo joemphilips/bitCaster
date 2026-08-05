@@ -4,6 +4,7 @@ import v2ProofSetVector from '../../../test-vectors/encrypted-wallet-backup-v2-p
 import v2HeadVector from '../../../test-vectors/encrypted-wallet-backup-v2-head.json'
 import v2MutationVector from '../../../test-vectors/encrypted-wallet-backup-v2-mutation.json'
 import v2ReceiptVector from '../../../test-vectors/encrypted-wallet-backup-v2-receipt.json'
+import v2ServiceCodecVector from '../../../test-vectors/encrypted-wallet-backup-v2-service-codec.json'
 import * as Cashu from '@cashu/cashu-ts'
 import {
   createEncryptedWalletBackupKeyHandle,
@@ -25,6 +26,8 @@ import {
 } from '../../src/encryptedWalletBackupV2Keys.ts'
 import {
   decryptEncryptedWalletBackupV2TransportBundle,
+  decodeEncryptedWalletBackupV2BundleObjectWire,
+  encodeEncryptedWalletBackupV2BundleObjectWire,
   prepareEncryptedWalletBackupV2TransportBundle,
 } from '../../src/encryptedWalletBackupV2Bundle.ts'
 import {
@@ -50,6 +53,12 @@ import {
   issueEncryptedWalletBackupV2BackupReachabilityEvidence,
   verifyEncryptedWalletBackupV2BundleSupersessionReceipt,
 } from '../../src/encryptedWalletBackupV2Receipt.ts'
+import {
+  decodeEncryptedWalletBackupV2DescriptorPage,
+  decodeEncryptedWalletBackupV2UploadGroup,
+  encodeEncryptedWalletBackupV2DescriptorPage,
+  encodeEncryptedWalletBackupV2UploadGroup,
+} from '../../src/encryptedWalletBackupV2ServiceCodec.ts'
 import { encodeCanonicalBackupCbor } from '../../src/encryptedWalletBackupCbor.ts'
 import { encodeDurableWalletProofDerivationLocatorCbor } from '../../src/durableWalletProofDerivationLocator.ts'
 import {
@@ -185,6 +194,7 @@ async function run(): Promise<{
   exerciseV2HeadVector()
   await exerciseV2MutationVector()
   exerciseV2ReceiptVector()
+  await exerciseV2ServiceCodecVector()
   await exerciseManifestVector(seed, keyHandle)
   await exerciseBlsAndCtf(seed, keyHandle)
   await exerciseFailureCases(seed, keyHandle, prepared, wire)
@@ -419,6 +429,81 @@ async function exerciseV2BundleVector(): Promise<void> {
     ),
     '07',
     'v2 native Crypto receiver',
+  )
+}
+
+async function exerciseV2ServiceCodecVector(): Promise<void> {
+  const input = v2ServiceCodecVector.inputs
+  const expected = v2ServiceCodecVector.expected
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed: fromHex(input.seedHex),
+    realm: input.realm,
+  })
+  const bundleRuntime = deterministicRuntime([fromHex(input.bundleIdHex), fromHex(input.nonceHex)])
+  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    operationId: input.operationId,
+    assets: [
+      { mintUrl: 'https://mint.example/cashu', unit: 'sat', assetIdentity: 'cashu:ordinary' },
+    ],
+    canonicalPayload: fromHex(input.payloadHex),
+    runtime: bundleRuntime,
+  })
+  const initialHead = createEncryptedWalletBackupV2CurrentHead({
+    realm: input.realm,
+    vaultId: keyHandle.vaultId,
+    enrollmentEpoch: 1,
+    headVersion: 0,
+    bundles: [],
+  })
+  const scope = { realm: input.realm, vaultId: keyHandle.vaultId, enrollmentEpoch: 1 }
+  const envelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
+    keyHandle,
+    expectedHead: initialHead,
+    addedBundle: prepared.descriptor,
+    supersededBundleIds: [],
+    runtime: deterministicRuntime([
+      fromHex(input.mutationIdHex),
+      fromHex(input.mutationAuxiliaryRandomnessHex),
+    ]),
+  })
+  const objectWire = encodeEncryptedWalletBackupV2BundleObjectWire(
+    prepared.objects[0]!,
+    prepared.descriptor,
+  )
+  equal(toHex(await digest(objectWire)), expected.objectWireSha256, 'v2 service object wire')
+  equal(
+    decodeEncryptedWalletBackupV2BundleObjectWire(objectWire, prepared.descriptor).digest,
+    prepared.objects[0]!.digest,
+    'v2 service object decode',
+  )
+  const group = encodeEncryptedWalletBackupV2UploadGroup({ envelope, objects: prepared.objects })
+  equal(toHex(await digest(group)), expected.uploadGroupSha256, 'v2 service upload group')
+  equal(
+    decodeEncryptedWalletBackupV2UploadGroup({
+      bytes: group,
+      expectedRequestAuthPublicKey: keyHandle.requestAuthPublicKey,
+      expectedContext: scope,
+    }).objects.length,
+    1,
+    'v2 service upload decode',
+  )
+  const resultHead = createEncryptedWalletBackupV2CurrentHead({
+    ...scope,
+    headVersion: 1,
+    bundles: [prepared.descriptor],
+  })
+  const pageWire = encodeEncryptedWalletBackupV2DescriptorPage(
+    enumerateEncryptedWalletBackupV2DescriptorPages({
+      head: resultHead,
+      bundles: [prepared.descriptor],
+    })[0]!,
+  )
+  equal(toHex(await digest(pageWire)), expected.descriptorPageSha256, 'v2 service page wire')
+  equal(
+    decodeEncryptedWalletBackupV2DescriptorPage(pageWire).head.activeSetDigest,
+    resultHead.activeSetDigest,
+    'v2 service page decode',
   )
 }
 
