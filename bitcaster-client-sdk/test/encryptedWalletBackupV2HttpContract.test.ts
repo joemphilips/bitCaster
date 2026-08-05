@@ -10,6 +10,8 @@ import {
   prepareEncryptedWalletBackupRequestProof,
   type EncryptedWalletBackupRequestProof,
 } from '../src/encryptedWalletBackup.ts'
+import { prepareEncryptedWalletBackupAccountOperation } from '../src/encryptedWalletBackupEnrollment.ts'
+import { encodeEncryptedWalletBackupHttpResponse } from '../src/encryptedWalletBackupHttpCodec.ts'
 import {
   authorizeVerifiedEncryptedWalletBackupV2DelegatedServerRequest,
   consumeEncryptedWalletBackupV2EnrollmentDiscoveryReplay,
@@ -53,6 +55,101 @@ import { ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES } from '../src/enc
 
 const ORIGIN = 'https://backup.example'
 const REALM = 'v2-http-test'
+
+test('V2 adapter forwards only the scheme-neutral enrollment lifecycle endpoint', async () => {
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed: new Uint8Array(64).fill(6),
+    realm: REALM,
+    runtime: webcrypto,
+  })
+  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults:enroll`
+  const operation = await prepareEncryptedWalletBackupAccountOperation({
+    keyHandle,
+    action: 'enroll',
+    url,
+    operationId: '11'.repeat(16),
+    expectedEnrollmentEpoch: 0,
+    authorizationPort: {
+      authorizeBackupAccountOperation: async () => ({
+        scheme: 'nip98-backup-intent-v1',
+        authorization: new Uint8Array([1]),
+      }),
+    },
+    signal: new AbortController().signal,
+  })
+  const adapter = new EncryptedWalletBackupV2HttpAdapter({
+    origin: ORIGIN,
+    fetch: async (input, init) => {
+      assert.equal(input, url)
+      assert.equal(init.method, 'POST')
+      assert.equal(new Headers(init.headers).get('authorization'), null)
+      return response(
+        url,
+        encodeEncryptedWalletBackupHttpResponse({
+          kind: 'account-result',
+          operationId: operation.operationId,
+          intentDigest: operation.intentDigest,
+          result: 'committed',
+          enrollmentEpoch: 1,
+          lifecycle: 'active',
+        }),
+      )
+    },
+  })
+  assert.deepEqual(
+    await adapter.executeAccountOperation({
+      operation,
+      canonicalRequest: operation.canonicalRequest,
+      signal: new AbortController().signal,
+    }),
+    {
+      status: 'committed',
+      operationId: operation.operationId,
+      intentDigest: operation.intentDigest,
+      enrollmentEpoch: 1,
+      lifecycle: 'active',
+    },
+  )
+})
+
+test('V2 adapter maps a redacted account transport failure and preserves dispatch uncertainty', async () => {
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed: new Uint8Array(64).fill(5),
+    realm: REALM,
+    runtime: webcrypto,
+  })
+  const operation = await prepareEncryptedWalletBackupAccountOperation({
+    keyHandle,
+    action: 'enroll',
+    url: `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults:enroll`,
+    operationId: '12'.repeat(16),
+    expectedEnrollmentEpoch: 0,
+    authorizationPort: {
+      authorizeBackupAccountOperation: async () => ({
+        scheme: 'nip98-backup-intent-v1',
+        authorization: new Uint8Array([1]),
+      }),
+    },
+    signal: new AbortController().signal,
+  })
+  const adapter = new EncryptedWalletBackupV2HttpAdapter({
+    origin: ORIGIN,
+    fetch: async () => Promise.reject(new Error('network details must not escape')),
+  })
+  await assert.rejects(
+    adapter.executeAccountOperation({
+      operation,
+      canonicalRequest: operation.canonicalRequest,
+      signal: new AbortController().signal,
+    }),
+    (error) =>
+      error instanceof EncryptedWalletBackupV2HttpTransportError &&
+      error.code === 'transport-failure' &&
+      error.dispatchState === 'uncertain' &&
+      error.retryAfterSeconds === null &&
+      !error.message.includes('network details'),
+  )
+})
 
 test('V2 descriptor routes bind the cursor, method, body, request digest, and V2 scope', async () => {
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
@@ -729,6 +826,11 @@ function response(url: string, body: Uint8Array, status = 200): Response {
   return {
     status,
     url,
+    redirected: false,
+    headers: new Headers({
+      'content-type': 'application/cbor',
+      'cache-control': 'private, no-store',
+    }),
     body: new ReadableStream({
       start(controller) {
         controller.enqueue(body)

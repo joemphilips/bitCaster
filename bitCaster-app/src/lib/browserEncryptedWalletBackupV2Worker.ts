@@ -37,7 +37,7 @@ export type BrowserEncryptedWalletBackupV2WorkerResult =
   | { readonly kind: "head-accepted" }
   | { readonly kind: "committed" }
   | { readonly kind: "conflict-recovered" }
-  | { readonly kind: "retry-pending" }
+  | { readonly kind: "retry-pending"; readonly minimumRetryDelayMilliseconds: number }
   | { readonly kind: "service-quota-pending" };
 
 export interface BrowserEncryptedWalletBackupV2WorkerInput {
@@ -281,8 +281,15 @@ async function recoverTransportError(
     error.code === "overloaded" ||
     error.code === "unavailable"
   )
-    return { kind: "retry-pending" };
+    return {
+      kind: "retry-pending",
+      minimumRetryDelayMilliseconds: minimumRetryDelayMilliseconds(error),
+    };
   throw error;
+}
+
+function minimumRetryDelayMilliseconds(error: EncryptedWalletBackupV2HttpTransportError): number {
+  return Math.max(5_000, (error.retryAfterSeconds ?? 0) * 1_000);
 }
 
 async function collectHead(input: BrowserEncryptedWalletBackupV2WorkerInput) {

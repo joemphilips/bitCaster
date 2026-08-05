@@ -1,774 +1,549 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
-  createEncryptedWalletBackupKeyHandle,
-  EncryptedWalletBackupDeadlineError,
-  EncryptedWalletBackupRemoteBackoffError,
-  encryptedWalletBackupRequestDigest,
-  prepareBoundedEncryptedWalletBackupManifestTarget,
-  prepareEncryptedWalletBackupRequestProof,
-  readAuthenticatedEncryptedWalletBackupHead,
-  type EncryptedWalletBackupRequestProof,
-} from "@bitcaster/client-sdk/encryptedWalletBackup";
-import { EncryptedWalletBackupHttpTransportError } from "@bitcaster/client-sdk/encryptedWalletBackupHttpAdapter";
-import { decodeEncryptedWalletBackupSnapshotCleanupJob } from "@bitcaster/client-sdk/encryptedWalletBackupSnapshotCleanup";
-import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
-import { encodeEncryptedWalletBackupHttpResponse } from "@bitcaster/client-sdk/encryptedWalletBackupHttpCodec";
-import { encryptedWalletBackupObjectDigest } from "@bitcaster/client-sdk/encryptedWalletBackupObjectDigest";
-import { sealBoundedEncryptedWalletBackupUploadAttempt } from "@bitcaster/client-sdk/encryptedWalletBackupSync";
+  createEncryptedWalletBackupV2AssetIdentity,
+  createEncryptedWalletBackupV2KeyHandle,
+  type EncryptedWalletBackupV2RemotePort,
+} from "@bitcaster/client-sdk";
 import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
 } from "@bitcaster/client-sdk/durableCustody";
-import { issueBoundedManifestTargetCapabilityForTest } from "../../../../bitcaster-client-sdk/src/encryptedWalletBackupManifestTargetAuthority";
-import {
-  ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
-  issueEncryptedWalletBackupFrozenSnapshotControl,
-} from "../../../../bitcaster-client-sdk/src/encryptedWalletBackupSnapshotAuthority";
-import { browserWalletDatabaseName } from "@/lib/browserWalletProfile";
-import {
-  retryMinimumDelayMilliseconds,
-  runEncryptedWalletBackupDriverCycle,
-} from "../encryptedWalletBackupDriver";
-import { EncryptedWalletBackupEnrollmentDexieStore } from "../../stores/encrypted-wallet-backup-enrollment-db";
-import { createEncryptedWalletBackupUploadCoordinatorDexieStore } from "../../stores/encrypted-wallet-backup-upload-coordinator-db";
-import { runEncryptedWalletBackupSnapshotCleanupPage } from "../../stores/encrypted-wallet-backup-snapshot-cleanup-db";
 import { BitcasterDB } from "../../stores/proof-db";
+import { browserWalletDatabaseName } from "../browserWalletProfile";
+import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
+import {
+  createBrowserEncryptedWalletBackupV2RuntimeDriver,
+  resolveEncryptedWalletBackupV2EnrollmentEpoch,
+} from "../encryptedWalletBackupDriver";
 
-const realm = "bitcaster.local";
-const signedOrigin = "https://encrypted-backup.local";
-const transportOrigin = "http://localhost:4970";
-const seed = new Uint8Array(64).fill(9);
-const scopeId = deriveDurableCustodyScopeId({
-  scopeKind: "wallet",
-  walletId: deriveDurableCustodyWalletId(seed),
-});
+const configuration = {
+  realm: "backup.example",
+  signedOrigin: "https://backup.example",
+  transportOrigin: "https://backup.example",
+  pinnedReceiptKeys: [
+    {
+      keyId: "55".repeat(16),
+      publicKey: "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+    },
+  ],
+} as const;
+
 const databases: BitcasterDB[] = [];
-const walletLockManager = {
-  request: async (_name: string, _options: LockOptions, action: () => Promise<unknown>) => action(),
-};
-
-beforeEach(() => {
-  vi.stubGlobal("navigator", { locks: walletLockManager });
-});
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-  const opened = databases.splice(0);
-  for (const database of opened) database.close();
-  for (const database of opened) await database.delete();
+  for (const database of databases.splice(0)) {
+    database.close();
+    await database.delete();
+  }
 });
 
-it("reopens a durable attempt and performs bounded object PUTs plus one head CAS", async () => {
-  const database = openDatabase();
-  const fixture = await targetFixture();
-  await seedEnrollment(database, fixture.keyHandle);
-  await sealBoundedEncryptedWalletBackupUploadAttempt({
-    attemptId: "77".repeat(16),
-    ownerId: "driver-owner",
-    leaseDurationMilliseconds: 60_000,
-    keyHandle: fixture.keyHandle,
-    target: fixture.target,
-    store: createEncryptedWalletBackupUploadCoordinatorDexieStore(database),
+it("discovers the delegated epoch even when a local enrollment receipt exists", async () => {
+  const fixture = await enrollmentFixture();
+  await fixture.database.encryptedWalletBackupEnrollmentResults.put({
+    realm: configuration.realm,
+    vaultId: fixture.keyHandle.vaultId,
+    record: enrollmentRecord(fixture.keyHandle, 7),
   });
+  const remote = {
+    discoverEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 9 }),
+    executeAccountOperation: vi.fn(),
+  };
+  await expect(resolveEpoch(fixture, remote)).resolves.toBe(9);
+  expect(remote.discoverEnrollmentEpoch).toHaveBeenCalledOnce();
+});
 
-  database.close();
-  const restarted = new BitcasterDB(database.name);
-  databases.push(restarted);
-  const objectPaths = fixture.objects.map(
-    (object) =>
-      `/v1/encrypted-wallet-backup/realms/${realm}/vaults/${fixture.keyHandle.vaultId}/objects/${object.objectId}`,
+it("uses an epoch-zero V2 discovery proof without an enrollment mutation when the vault is active", async () => {
+  const fixture = await enrollmentFixture();
+  const remote = {
+    discoverEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 4 }),
+    executeAccountOperation: vi.fn(),
+  };
+
+  await expect(resolveEpoch(fixture, remote)).resolves.toBe(4);
+  expect(remote.discoverEnrollmentEpoch).toHaveBeenCalledOnce();
+  expect(remote.discoverEnrollmentEpoch.mock.calls[0]?.[0].requestProof.enrollmentEpoch).toBe(0);
+  expect(remote.executeAccountOperation).not.toHaveBeenCalled();
+});
+
+it("enrolls once after V2 discovery reports an absent vault", async () => {
+  const fixture = await enrollmentFixture();
+  const remote = {
+    discoverEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "not-enrolled" }),
+    executeAccountOperation: vi.fn(async ({ operation }) => ({
+      status: "committed" as const,
+      operationId: operation.operationId,
+      intentDigest: operation.intentDigest,
+      enrollmentEpoch: 1,
+      lifecycle: "active" as const,
+    })),
+  };
+  const authorizationPort = {
+    authorizeBackupAccountOperation: vi.fn().mockResolvedValue({
+      scheme: "nip98-backup-intent-v1",
+      authorization: new Uint8Array([1]),
+    }),
+  };
+  await expect(resolveEpoch(fixture, remote, authorizationPort)).resolves.toBe(1);
+  expect(remote.executeAccountOperation).toHaveBeenCalledOnce();
+  expect(await fixture.database.encryptedWalletBackupEnrollmentResults.count()).toBe(1);
+});
+
+it("serializes wake cycles and immediately follows a head acceptance", async () => {
+  const fixture = await runtimeFixture();
+  let finishFirst: (() => void) | undefined;
+  const worker = vi
+    .fn()
+    .mockImplementationOnce(
+      () => new Promise((resolve) => (finishFirst = () => resolve({ kind: "head-accepted" }))),
+    )
+    .mockResolvedValue({ kind: "idle" });
+  const driver = createRuntime(fixture, worker);
+  await vi.waitFor(() => expect(worker).toHaveBeenCalledTimes(1));
+  finishFirst?.();
+  await vi.waitFor(() => expect(worker).toHaveBeenCalledTimes(2));
+  driver.stop();
+});
+
+it("waits before retry and stops at service quota until the pending count changes", async () => {
+  const fixture = await runtimeFixture();
+  const retries: (() => void)[] = [];
+  const delays: number[] = [];
+  const worker = vi
+    .fn()
+    .mockResolvedValueOnce({ kind: "retry-pending", minimumRetryDelayMilliseconds: 5_000 })
+    .mockResolvedValueOnce({ kind: "service-quota-pending" })
+    .mockResolvedValue({ kind: "idle" });
+  const driver = createRuntime(
+    fixture,
+    worker,
+    runtimeRemote(),
+    () => true,
+    (task, delay) => {
+      delays.push(delay);
+      expect(delay).toBeGreaterThanOrEqual(5_000);
+      retries.push(task);
+      return () => {
+        const index = retries.indexOf(task);
+        if (index >= 0) retries.splice(index, 1);
+      };
+    },
   );
-  const casPath = `/v1/encrypted-wallet-backup/realms/${realm}/vaults/${fixture.keyHandle.vaultId}/head:compare-and-swap`;
-  const headPath = `/v1/encrypted-wallet-backup/realms/${realm}/vaults/${fixture.keyHandle.vaultId}/head`;
-  const observed = { inFlight: 0, maximumInFlight: 0, putBytes: 0, requests: [] as string[] };
-  const result = await runEncryptedWalletBackupDriverCycle({
-    configuration: { realm, signedOrigin, transportOrigin },
-    database: restarted,
-    scopeId,
-    keyHandle: fixture.keyHandle,
-    ownerId: "driver-owner",
-    signal: AbortSignal.timeout(60_000),
-    clock: { nowUnixSeconds: () => 1_700_000_000 },
-    source: fixture.source,
-    fetch: async (resource, init) => {
-      const url = String(resource);
-      const pathname = new URL(url).pathname;
-      const requestDigest = digestFromAuthorization(init);
-      observed.requests.push(`${init?.method} ${pathname}`);
-      observed.inFlight += 1;
-      observed.maximumInFlight = Math.max(observed.maximumInFlight, observed.inFlight);
-      try {
-        await new Promise<void>((resolve) => setTimeout(resolve, 1));
-        if (init?.method === "PUT" && objectPaths.includes(pathname)) {
-          const body = init.body as Uint8Array;
-          observed.putBytes += body.byteLength;
-          return cborResponse(
-            url,
-            encodeEncryptedWalletBackupHttpResponse({
-              kind: "object-put-result",
-              requestDigest,
-              result: "stored",
-            }),
-          );
-        }
-        if (init?.method === "POST" && pathname === casPath) {
-          return cborResponse(
-            url,
-            encodeEncryptedWalletBackupHttpResponse({
-              kind: "head-cas-result",
-              requestDigest,
-              result: "committed",
-            }),
-          );
-        }
-        if (init?.method === "GET" && pathname === headPath) {
-          return cborResponse(
-            url,
-            encodeEncryptedWalletBackupHttpResponse({
-              kind: "head-result",
-              requestDigest,
-              result: "found",
-              enrollmentEpoch: 1,
-              canonicalHead: fixture.target.wire.canonicalHead,
-              canonicalReferenceSet: fixture.target.wire.canonicalReferenceSet,
-            }),
-          );
-        }
-        throw new Error(`unexpected backup network request: ${init?.method} ${pathname}`);
-      } finally {
-        observed.inFlight -= 1;
-      }
+  await vi.waitFor(() => expect(worker).toHaveBeenCalledTimes(1));
+  expect(worker).toHaveBeenCalledTimes(1);
+  expect(retries).toHaveLength(1);
+  expect(delays[0]).toBeGreaterThanOrEqual(5_000);
+  retries.shift()?.();
+  await vi.waitFor(() => expect(worker).toHaveBeenCalledTimes(2));
+  expect(worker).toHaveBeenCalledTimes(2);
+  expect(retries).toHaveLength(1);
+  expect(delays[1]).toBe(3_600_000);
+  await changeDesiredToRemoval(fixture.database, fixture.scopeId);
+  await vi.waitFor(() => expect(worker).toHaveBeenCalledTimes(3));
+  driver.stop();
+});
+
+it("honors Retry-After and increases the durable retry backoff", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(new Date("2026-08-06T00:00:00.000Z"));
+    const fixture = await runtimeFixture();
+    const retries: { task: () => void; delay: number }[] = [];
+    const worker = vi
+      .fn()
+      .mockResolvedValueOnce({ kind: "retry-pending", minimumRetryDelayMilliseconds: 60_000 })
+      .mockResolvedValueOnce({ kind: "retry-pending", minimumRetryDelayMilliseconds: 5_000 });
+    const driver = createRuntime(
+      fixture,
+      worker,
+      runtimeRemote(),
+      () => true,
+      (task, delay) => {
+        retries.push({ task, delay });
+        return () => undefined;
+      },
+    );
+    await vi.waitFor(() => expect(retries).toHaveLength(1));
+    expect(retries[0]?.delay).toBeGreaterThanOrEqual(60_000);
+    vi.setSystemTime(new Date(Date.now() + (retries[0]?.delay ?? 0)));
+    retries.shift()?.task();
+    await vi.waitFor(() => expect(retries).toHaveLength(1));
+    expect(retries[0]?.delay).toBeGreaterThan(5_000);
+    driver.stop();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("does not run another cycle while durable retry persistence is pending", async () => {
+  const fixture = await runtimeFixture();
+  const persisted = deferred<{
+    scopeId: string;
+    realm: string;
+    vaultId: string;
+    attemptId: string;
+    retryStreak: number;
+    retryNotBeforeUnixMilliseconds: number;
+  }>();
+  const timers: (() => void)[] = [];
+  const worker = vi
+    .fn()
+    .mockResolvedValueOnce({ kind: "retry-pending", minimumRetryDelayMilliseconds: 5_000 })
+    .mockResolvedValue({ kind: "idle" });
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    remote: runtimeRemote(),
+    runWorkerCycle: worker as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    scheduleDurableRetry: vi.fn().mockReturnValue(persisted.promise),
+    scheduleRetry: (task) => {
+      timers.push(task);
+      return () => undefined;
     },
   });
-
-  expect(result).toEqual({
-    state: "committed",
-    attemptId: "77".repeat(16),
+  await vi.waitFor(() => expect(worker).toHaveBeenCalledOnce());
+  await changeDesiredToRemoval(fixture.database, fixture.scopeId);
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  expect(worker).toHaveBeenCalledOnce();
+  persisted.resolve({
+    scopeId: fixture.scopeId,
+    realm: configuration.realm,
     vaultId: fixture.keyHandle.vaultId,
+    attemptId: fixture.keyHandle.vaultId.slice(0, 32),
+    retryStreak: 1,
+    retryNotBeforeUnixMilliseconds: Date.now() + 5_000,
   });
-  expect(observed.requests).toHaveLength(objectPaths.length + 2);
-  expect(observed.requests).toEqual(
-    expect.arrayContaining([
-      ...objectPaths.map((path) => `PUT ${path}`),
-      `POST ${casPath}`,
-      `GET ${headPath}`,
-    ]),
-  );
-  expect(observed.maximumInFlight).toBeLessThanOrEqual(4);
-  expect(observed.putBytes).toBeLessThanOrEqual(1_048_576);
-  expect(observed.putBytes).toBeGreaterThan(0);
-  expect(
-    (
-      await restarted.encryptedWalletBackupSnapshotCleanupJobs.get([
-        realm,
-        fixture.keyHandle.vaultId,
-      ])
-    )?.job,
-  ).toMatchObject({
-    acknowledgedGeneration: 1,
-    localSnapshotId: "driver-test",
-    localSnapshotRevision: 1,
-    phase: "prepared-sources",
-    cursor: null,
-  });
+  await vi.waitFor(() => expect(timers).toHaveLength(1));
+  expect(worker).toHaveBeenCalledOnce();
+  timers.shift()?.();
+  await vi.waitFor(() => expect(worker).toHaveBeenCalledTimes(2));
+  driver.stop();
 });
 
-it("continues cleanup pages without network work or a remount", async () => {
-  const database = openDatabase();
-  const fixture = await targetFixture();
-  await database.encryptedWalletBackupSnapshotCleanupJobs.put({
-    realm,
-    vaultId: fixture.keyHandle.vaultId,
-    job: decodeEncryptedWalletBackupSnapshotCleanupJob({
-      schemaVersion: 1,
-      realm,
-      vaultId: fixture.keyHandle.vaultId,
-      acknowledgedGeneration: 2,
-      localSnapshotId: "current",
-      localSnapshotRevision: 1,
-      phase: "manifest-pages",
-      cursor: null,
-    }),
+it("stops after durable retry persistence fails during a concurrent custody wake", async () => {
+  const fixture = await runtimeFixture();
+  const reportError = vi.fn();
+  const persistence = deferred<never>();
+  const worker = vi
+    .fn()
+    .mockResolvedValue({ kind: "retry-pending", minimumRetryDelayMilliseconds: 5_000 });
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    remote: runtimeRemote(),
+    runWorkerCycle: worker as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    scheduleDurableRetry: vi.fn().mockReturnValue(persistence.promise),
+    scheduleRetry: vi.fn(() => () => undefined),
+    reportError,
   });
-  await database.encryptedWalletBackupManifestPages.bulkAdd(
-    Array.from({ length: 300 }, (_, pageIndex) => ({
-      realm,
-      vaultId: fixture.keyHandle.vaultId,
-      snapshotId: "obsolete",
-      snapshotRevision: 0,
-      generation: 1,
-      pageIndex,
-      objectId: objectId(100 + pageIndex),
-      digest: "aa".repeat(32),
-      canonical: new Uint8Array(32),
-    })),
+  await vi.waitFor(() => expect(worker).toHaveBeenCalledOnce());
+  await changeDesiredToRemoval(fixture.database, fixture.scopeId);
+  persistence.reject(new Error("retry store failed"));
+  await vi.waitFor(() => expect(reportError).toHaveBeenCalledOnce());
+  expect(reportError.mock.calls[0]?.[0]).toEqual(new Error("retry store failed"));
+  expect(worker).toHaveBeenCalledOnce();
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  expect(worker).toHaveBeenCalledOnce();
+  driver.stop();
+});
+
+it("stops before work when the captured profile becomes stale", async () => {
+  const fixture = await runtimeFixture();
+  let current = true;
+  const discovery = deferred<{ status: "active"; enrollmentEpoch: number }>();
+  const remote = runtimeRemote(discovery.promise);
+  const worker = vi.fn().mockResolvedValue({ kind: "idle" });
+  const driver = createRuntime(fixture, worker, remote, () => current);
+  current = false;
+  discovery.resolve({ status: "active", enrollmentEpoch: 1 });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(worker).not.toHaveBeenCalled();
+  driver.stop();
+});
+
+it("allows one tab to write and transfers leadership after cleanup", async () => {
+  const fixture = await runtimeFixture();
+  const leadership = queuedLeadership();
+  const firstWorker = vi.fn().mockResolvedValue({ kind: "idle" });
+  const secondWorker = vi.fn().mockResolvedValue({ kind: "idle" });
+  const first = createRuntime(
+    fixture,
+    firstWorker,
+    runtimeRemote(),
+    () => true,
+    undefined,
+    leadership,
   );
-  const fetch = vi.fn(async () => {
-    throw new Error("cleanup must not use the network");
-  });
-  const input = {
-    configuration: { realm, signedOrigin, transportOrigin },
-    database,
-    scopeId,
-    keyHandle: fixture.keyHandle,
-    ownerId: "cleanup-owner",
-    signal: AbortSignal.timeout(60_000),
-    fetch,
+  const second = createRuntime(
+    fixture,
+    secondWorker,
+    runtimeRemote(),
+    () => true,
+    undefined,
+    leadership,
+  );
+  await vi.waitFor(() => expect(firstWorker).toHaveBeenCalledOnce());
+  expect(secondWorker).not.toHaveBeenCalled();
+  first.stop();
+  await vi.waitFor(() => expect(secondWorker).toHaveBeenCalled());
+  second.stop();
+});
+
+it("does not authorize or store enrollment after the profile becomes stale", async () => {
+  const fixture = await enrollmentFixture();
+  let current = true;
+  const remote = {
+    discoverEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "not-enrolled" }),
+    executeAccountOperation: vi.fn(async ({ operation }) => {
+      current = false;
+      return {
+        status: "committed" as const,
+        operationId: operation.operationId,
+        intentDigest: operation.intentDigest,
+        enrollmentEpoch: 1,
+        lifecycle: "active" as const,
+      };
+    }),
   };
-  expect(await runEncryptedWalletBackupDriverCycle(input)).toEqual({ state: "cleanup-pending" });
-  expect(await runEncryptedWalletBackupDriverCycle(input)).toEqual({ state: "cleanup-pending" });
-  expect(await runEncryptedWalletBackupDriverCycle(input)).toEqual({
-    state: "idle-needs-snapshot",
-  });
-  expect(await database.encryptedWalletBackupManifestPages.count()).toBe(0);
-  expect(fetch).not.toHaveBeenCalled();
-});
-
-it("keeps an SDK-decoded active upload snapshot tuple", async () => {
-  const database = openDatabase();
-  const fixture = await targetFixture();
-  await sealBoundedEncryptedWalletBackupUploadAttempt({
-    attemptId: "99".repeat(16),
-    ownerId: "active-owner",
-    leaseDurationMilliseconds: 60_000,
-    keyHandle: fixture.keyHandle,
-    target: fixture.target,
-    store: createEncryptedWalletBackupUploadCoordinatorDexieStore(database),
-  });
-  await database.encryptedWalletBackupSnapshotCleanupJobs.put({
-    realm,
-    vaultId: fixture.keyHandle.vaultId,
-    job: decodeEncryptedWalletBackupSnapshotCleanupJob({
-      schemaVersion: 1,
-      realm,
-      vaultId: fixture.keyHandle.vaultId,
-      acknowledgedGeneration: 2,
-      localSnapshotId: "current",
-      localSnapshotRevision: 1,
-      phase: "manifest-pages",
-      cursor: null,
+  const authorizationPort = {
+    authorizeBackupAccountOperation: vi.fn().mockResolvedValue({
+      scheme: "nip98-backup-intent-v1",
+      authorization: new Uint8Array([1]),
     }),
-  });
-  await database.encryptedWalletBackupManifestPages.add({
-    realm,
-    vaultId: fixture.keyHandle.vaultId,
-    snapshotId: "driver-test",
-    snapshotRevision: 1,
-    generation: 1,
-    pageIndex: 0,
-    objectId: objectId(400),
-    digest: "aa".repeat(32),
-    canonical: new Uint8Array(32),
-  });
-  await runEncryptedWalletBackupSnapshotCleanupPage({
-    database,
-    scopeId,
-    realm,
-    vaultId: fixture.keyHandle.vaultId,
-  });
-  expect(await database.encryptedWalletBackupManifestPages.count()).toBe(1);
-  expect(await database.encryptedWalletBackupUploadAttempts.count()).toBe(1);
-});
-
-it("resumes rejected-fork cleanup after abort backoff and deletes its partition", async () => {
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(new Date("2026-08-05T00:00:00.000Z"));
-  try {
-    const database = openDatabase();
-    const fixture = await targetFixture();
-    const competitor = await targetFixture({
-      snapshotNonce: "44".repeat(16),
-      snapshotId: "competing-snapshot",
-      objectOffset: 10,
-    });
-    await seedEnrollment(database, fixture.keyHandle);
-    const attemptId = "88".repeat(16);
-    await sealBoundedEncryptedWalletBackupUploadAttempt({
-      attemptId,
-      ownerId: "driver-owner",
-      leaseDurationMilliseconds: 60_000,
-      keyHandle: fixture.keyHandle,
-      target: fixture.target,
-      store: createEncryptedWalletBackupUploadCoordinatorDexieStore(database),
-    });
-    let aborts = 0;
-    let restarting = false;
-    const remote = {
-      async executeAccountOperation() {
-        throw new Error("unexpected enrollment");
-      },
-      async putObject() {
-        if (restarting) throw new Error("restart repeated object PUT");
-        return { status: "stored" as const };
-      },
-      async compareAndSwapCurrentHead() {
-        if (restarting) throw new Error("restart repeated CAS");
-        return { status: "conflict" as const };
-      },
-      async readCurrentHead() {
-        if (restarting) throw new Error("restart repeated head read");
-        return {
-          status: "found" as const,
-          enrollmentEpoch: 1,
-          head: competitor.target.wire,
-        };
-      },
-      async abortUploadAttempt({
-        requestProof,
-      }: Readonly<{ requestProof: EncryptedWalletBackupRequestProof }>) {
-        aborts += 1;
-        expect(requestProof.method).toBe("DELETE");
-        expect(requestProof.url).toBe(
-          `${signedOrigin}/v1/encrypted-wallet-backup/realms/${realm}/vaults/${fixture.keyHandle.vaultId}/upload-attempts/${attemptId}`,
-        );
-        return aborts === 1
-          ? { status: "unavailable" as const, retryAfterSeconds: 5 }
-          : { status: "abandoned" as const };
-      },
-    };
-    const cycleInput = {
-      configuration: { realm, signedOrigin, transportOrigin },
-      database,
-      scopeId,
-      keyHandle: fixture.keyHandle,
-      signal: AbortSignal.timeout(120_000),
-      clock: { nowUnixSeconds: () => 1_700_000_000 },
-      source: fixture.source,
-      remote,
-    };
-
-    const deferred = await runEncryptedWalletBackupDriverCycle({
-      ...cycleInput,
-      ownerId: "driver-owner",
-    });
-    expect(deferred.state).toBe("retry-pending");
-    if (deferred.state !== "retry-pending") {
-      throw new Error("expected durable cleanup backoff");
-    }
-    expect(await database.encryptedWalletBackupUploadAttempts.count()).toBe(1);
-    expect(await database.encryptedWalletBackupUploadCasAttempts.count()).toBe(1);
-
-    const persistedAttempt = await database.encryptedWalletBackupUploadAttempts.get(attemptId);
-    if (persistedAttempt === undefined) throw new Error("expected rejected upload attempt");
-    restarting = true;
-    vi.setSystemTime(
-      Math.max(
-        deferred.retryNotBeforeUnixMilliseconds,
-        persistedAttempt.record.leaseExpiresAtUnixMilliseconds,
-      ) + 1,
-    );
-    await expect(
-      runEncryptedWalletBackupDriverCycle({
-        ...cycleInput,
-        ownerId: "restart-owner",
-        signal: AbortSignal.timeout(120_000),
-      }),
-    ).resolves.toEqual({ state: "idle-needs-snapshot" });
-
-    expect(aborts).toBe(2);
-    expect(await database.encryptedWalletBackupUploadAttempts.count()).toBe(0);
-    expect(await database.encryptedWalletBackupUploadCursors.count()).toBe(0);
-    expect(await database.encryptedWalletBackupUploadBatches.count()).toBe(0);
-    expect(await database.encryptedWalletBackupUploadCasAttempts.count()).toBe(0);
-  } finally {
-    vi.useRealTimers();
-  }
-});
-
-it("leaves an empty wallet idle without enrollment, signing, or remote I/O", async () => {
-  const database = openDatabase();
-  const fetch = vi.fn<typeof globalThis.fetch>();
-  const enrollmentRead = vi.spyOn(EncryptedWalletBackupEnrollmentDexieStore.prototype, "read");
-
+  };
   await expect(
-    runEncryptedWalletBackupDriverCycle({
-      configuration: { realm, signedOrigin, transportOrigin },
-      database,
-      scopeId,
-      keyHandle: await createEncryptedWalletBackupKeyHandle({ seed, realm }),
-      ownerId: "driver-owner",
-      signal: AbortSignal.timeout(60_000),
-      fetch,
+    resolveEncryptedWalletBackupV2EnrollmentEpoch({
+      configuration,
+      ...fixture,
+      remote: remote as never,
+      runtime: crypto,
+      signal: new AbortController().signal,
+      authorizationPort,
+      isCurrentProfile: () => current,
     }),
-  ).resolves.toEqual({ state: "idle-needs-snapshot" });
-
-  expect(enrollmentRead).not.toHaveBeenCalled();
-  expect(fetch).not.toHaveBeenCalled();
+  ).rejects.toThrow(/profile is stale/);
+  expect(await fixture.database.encryptedWalletBackupEnrollmentResults.count()).toBe(0);
 });
 
-it("waits for a foreign live lease without enrollment or network I/O", async () => {
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(new Date("2026-08-05T00:00:00.000Z"));
-  try {
-    const database = openDatabase();
-    const fixture = await targetFixture();
-    await sealBoundedEncryptedWalletBackupUploadAttempt({
-      attemptId: "99".repeat(16),
-      ownerId: "other-owner",
-      leaseDurationMilliseconds: 60_000,
-      keyHandle: fixture.keyHandle,
-      target: fixture.target,
-      store: createEncryptedWalletBackupUploadCoordinatorDexieStore(database),
-    });
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const enrollmentRead = vi.spyOn(EncryptedWalletBackupEnrollmentDexieStore.prototype, "read");
-
-    await expect(
-      runEncryptedWalletBackupDriverCycle({
-        configuration: { realm, signedOrigin, transportOrigin },
-        database,
-        scopeId,
-        keyHandle: fixture.keyHandle,
-        ownerId: "new-owner",
-        signal: AbortSignal.timeout(60_000),
-        fetch,
-      }),
-    ).resolves.toEqual({
-      state: "lease-pending",
-      wakeAtUnixMilliseconds: Date.now() + 60_000,
-    });
-    expect(enrollmentRead).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
-  } finally {
-    vi.useRealTimers();
-  }
+it("does not authorize enrollment after discovery becomes stale", async () => {
+  const fixture = await enrollmentFixture();
+  let current = true;
+  const discovery = deferred<{ status: "not-enrolled" }>();
+  const authorizationPort = {
+    authorizeBackupAccountOperation: vi.fn(),
+  };
+  const promise = resolveEncryptedWalletBackupV2EnrollmentEpoch({
+    configuration,
+    ...fixture,
+    remote: {
+      discoverEnrollmentEpoch: vi.fn().mockReturnValue(discovery.promise),
+      executeAccountOperation: vi.fn(),
+    } as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    authorizationPort: authorizationPort as never,
+    isCurrentProfile: () => current,
+  });
+  current = false;
+  discovery.resolve({ status: "not-enrolled" });
+  await expect(promise).rejects.toThrow(/profile is stale/);
+  expect(authorizationPort.authorizeBackupAccountOperation).not.toHaveBeenCalled();
 });
 
-it("waits for the active PUT lease after a short remote backoff", async () => {
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(new Date("2026-08-05T00:00:00.000Z"));
-  try {
-    const database = openDatabase();
-    const fixture = await targetFixture();
-    await seedEnrollment(database, fixture.keyHandle);
-    await sealBoundedEncryptedWalletBackupUploadAttempt({
-      attemptId: "aa".repeat(16),
-      ownerId: "driver-owner",
-      leaseDurationMilliseconds: 60_000,
-      keyHandle: fixture.keyHandle,
-      target: fixture.target,
-      store: createEncryptedWalletBackupUploadCoordinatorDexieStore(database),
-    });
-    const remote = {
-      async executeAccountOperation() {
-        throw new Error("unexpected enrollment");
-      },
-      async putObject() {
-        return {
-          status: "rate-limited" as const,
-          retryAfterSeconds: 5,
-        };
-      },
-      async compareAndSwapCurrentHead() {
-        throw new Error("unexpected CAS");
-      },
-      async readCurrentHead() {
-        throw new Error("unexpected head read");
-      },
-      async abortUploadAttempt() {
-        throw new Error("unexpected abort");
-      },
-    };
-
-    const failed = await runEncryptedWalletBackupDriverCycle({
-      configuration: { realm, signedOrigin, transportOrigin },
-      database,
-      scopeId,
-      keyHandle: fixture.keyHandle,
-      ownerId: "driver-owner",
-      signal: AbortSignal.timeout(120_000),
-      clock: { nowUnixSeconds: () => 1_700_000_000 },
-      source: fixture.source,
-      remote,
-    });
-    expect(failed.state).toBe("retry-pending");
-    if (failed.state !== "retry-pending") {
-      throw new Error("expected a durable retry boundary");
-    }
-
-    vi.setSystemTime(failed.retryNotBeforeUnixMilliseconds + 1);
-    await expect(
-      runEncryptedWalletBackupDriverCycle({
-        configuration: { realm, signedOrigin, transportOrigin },
-        database,
-        scopeId,
-        keyHandle: fixture.keyHandle,
-        ownerId: "driver-owner",
-        signal: AbortSignal.timeout(120_000),
-        clock: { nowUnixSeconds: () => 1_700_000_000 },
-        source: fixture.source,
-        remote,
-      }),
-    ).resolves.toEqual({
-      state: "lease-pending",
-      wakeAtUnixMilliseconds: Date.parse("2026-08-05T00:00:00.000Z") + 60_000,
-    });
-  } finally {
-    vi.useRealTimers();
-  }
+it("cancels a pending retry when cleanup stops the driver", async () => {
+  const fixture = await runtimeFixture();
+  const cancel = vi.fn();
+  const driver = createRuntime(
+    fixture,
+    vi.fn().mockResolvedValue({ kind: "retry-pending", minimumRetryDelayMilliseconds: 5_000 }),
+    runtimeRemote(),
+    () => true,
+    () => cancel,
+  );
+  await vi.waitFor(() => expect(cancel).not.toHaveBeenCalled());
+  await vi.waitFor(() =>
+    expect(fixture.database.encryptedWalletBackupRetrySchedulers.count()).resolves.toBe(1),
+  );
+  driver.stop();
+  expect(cancel).toHaveBeenCalledOnce();
 });
 
-it("classifies only recoverable background failures for retry", () => {
-  expect(
-    retryMinimumDelayMilliseconds(new EncryptedWalletBackupRemoteBackoffError("rate-limited", 37)),
-  ).toBe(37_000);
-  expect(
-    retryMinimumDelayMilliseconds(new EncryptedWalletBackupRemoteBackoffError("quota-exceeded")),
-  ).toBeNull();
-  expect(
-    retryMinimumDelayMilliseconds(
-      new EncryptedWalletBackupHttpTransportError("transport-failure", "uncertain"),
-    ),
-  ).toBe(5_000);
-  expect(
-    retryMinimumDelayMilliseconds(
-      new EncryptedWalletBackupHttpTransportError("invalid-request", "not-dispatched"),
-    ),
-  ).toBeNull();
-  expect(retryMinimumDelayMilliseconds(new EncryptedWalletBackupDeadlineError())).toBe(5_000);
-  expect(retryMinimumDelayMilliseconds(new Error("terminal"))).toBeNull();
-});
-
-function openDatabase(): BitcasterDB {
+async function enrollmentFixture() {
+  const seed = new Uint8Array(64).fill(8);
+  const scopeId = deriveDurableCustodyScopeId({
+    scopeKind: "wallet",
+    walletId: deriveDurableCustodyWalletId(seed),
+  });
   const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
   databases.push(database);
-  return database;
+  await database.open();
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed,
+    realm: configuration.realm,
+    runtime: { subtle: crypto.subtle },
+  });
+  return { seed, scopeId, database, keyHandle };
 }
 
-async function seedEnrollment(
-  database: BitcasterDB,
-  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
-): Promise<void> {
-  const enrollment = new EncryptedWalletBackupEnrollmentDexieStore({
-    database,
-    scopeId,
-    realm,
+async function runtimeFixture() {
+  const fixture = await enrollmentFixture();
+  await addDesired(fixture.database, fixture.scopeId, "https://mint.one.example");
+  return fixture;
+}
+
+function resolveEpoch(
+  fixture: Awaited<ReturnType<typeof enrollmentFixture>>,
+  remote: object,
+  authorizationPort?: object,
+) {
+  return resolveEncryptedWalletBackupV2EnrollmentEpoch({
+    configuration,
+    ...fixture,
+    remote: remote as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    nowUnixSeconds: () => 1_000,
+    authorizationPort: authorizationPort as never,
+  });
+}
+
+function createRuntime(
+  fixture: Awaited<ReturnType<typeof runtimeFixture>>,
+  worker: ReturnType<typeof vi.fn>,
+  remote = runtimeRemote(),
+  isCurrentProfile = () => true,
+  scheduleRetry?: (task: () => void, delayMilliseconds: number) => () => void,
+  leadership: {
+    hold: (name: string, signal: AbortSignal, task: () => Promise<void>) => Promise<void>;
+  } = immediateLeadership,
+) {
+  return createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    remote,
+    runWorkerCycle: worker as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile,
+    scheduleRetry,
+    leadership,
+  });
+}
+
+function runtimeRemote(
+  discovery: Promise<{ status: "active"; enrollmentEpoch: number }> = Promise.resolve({
+    status: "active",
+    enrollmentEpoch: 1,
+  }),
+) {
+  return {
+    discoverEnrollmentEpoch: vi.fn().mockReturnValue(discovery),
+    executeAccountOperation: vi.fn(),
+    readDescriptorPage: vi.fn(),
+    mutateHeadOnce: vi.fn(),
+    readObject: vi.fn(),
+  } as unknown as EncryptedWalletBackupV2RemotePort & { executeAccountOperation: () => never };
+}
+
+async function addDesired(database: BitcasterDB, scopeId: string, mintUrl: string) {
+  await database.encryptedWalletBackupV2DesiredAssets.put(
+    createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId,
+      asset: createEncryptedWalletBackupV2AssetIdentity({
+        mintUrl,
+        unit: "sat",
+        asset: { kind: "ordinary" },
+      }),
+      custodyRevision: 1n,
+      activeProofCount: 1,
+    }),
+  );
+}
+
+async function changeDesiredToRemoval(database: BitcasterDB, scopeId: string) {
+  const row = await database.encryptedWalletBackupV2DesiredAssets
+    .where("scopeId")
+    .equals(scopeId)
+    .first();
+  if (row === undefined) throw new Error("missing desired asset");
+  await database.encryptedWalletBackupV2DesiredAssets.put({
+    ...row,
+    custodyRevision: "2",
+    activeProofCount: 0,
+    desiredAction: "remove",
+  });
+}
+
+function enrollmentRecord(
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupV2KeyHandle>>,
+  epoch: number,
+) {
+  return {
+    schemaVersion: 1 as const,
+    operationId: "11".repeat(16),
+    intentDigest: "22".repeat(32),
+    action: "enroll" as const,
+    realm: configuration.realm,
     vaultId: keyHandle.vaultId,
     requestAuthPublicKey: keyHandle.requestAuthPublicKey,
+    expectedEnrollmentEpoch: 0,
+    observedEnrollmentEpoch: epoch,
+    lifecycle: "active" as const,
+    result: "committed" as const,
+  };
+}
+
+const immediateLeadership = {
+  async hold(_name: string, signal: AbortSignal, task: () => Promise<void>) {
+    if (!signal.aborted) await task();
+  },
+};
+
+function queuedLeadership() {
+  let active = false;
+  const waiters: (() => void)[] = [];
+  return {
+    async hold(_name: string, signal: AbortSignal, task: () => Promise<void>) {
+      while (active && !signal.aborted) await waitForTurn(waiters, signal);
+      if (signal.aborted) return;
+      active = true;
+      try {
+        await task();
+      } finally {
+        active = false;
+        waiters.shift()?.();
+      }
+    },
+  };
+}
+
+function waitForTurn(waiters: (() => void)[], signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    waiters.push(done);
+    signal.addEventListener("abort", done, { once: true });
   });
-  await enrollment.commitAccountOperationResult(
-    {
-      schemaVersion: 1,
-      operationId: "11".repeat(16),
-      intentDigest: "22".repeat(32),
-      action: "enroll",
-      realm,
-      vaultId: keyHandle.vaultId,
-      requestAuthPublicKey: keyHandle.requestAuthPublicKey,
-      expectedEnrollmentEpoch: 0,
-      observedEnrollmentEpoch: 1,
-      lifecycle: "active",
-      result: "committed",
-    },
-    () => undefined,
-  );
 }
-
-async function targetFixture(
-  options: Readonly<{
-    snapshotNonce?: string;
-    snapshotId?: string;
-    objectOffset?: number;
-  }> = {},
-) {
-  const keyHandle = await createEncryptedWalletBackupKeyHandle({ seed, realm });
-  const snapshotNonce = options.snapshotNonce ?? "33".repeat(16);
-  const snapshotId = options.snapshotId ?? "driver-test";
-  const objectOffset = options.objectOffset ?? 0;
-  const control = issueEncryptedWalletBackupFrozenSnapshotControl(
-    {},
-    {
-      realm,
-      vaultId: keyHandle.vaultId,
-      enrollmentEpoch: 1,
-      parentGeneration: null,
-      parentManifestDigest: null,
-      parentReferenceSetDigest: ENCRYPTED_WALLET_BACKUP_EMPTY_REFERENCE_SET_DIGEST,
-      generation: 1,
-      snapshotNonce,
-      snapshotId,
-      snapshotRevision: 1,
-    },
-  );
-  const parentEvidence = await readAuthenticatedEncryptedWalletBackupHead({
-    keyHandle,
-    enrollmentEpoch: 1,
-    requestProof: await prepareEncryptedWalletBackupRequestProof({
-      keyHandle,
-      enrollmentEpoch: 1,
-      method: "GET",
-      url: `${signedOrigin}/v1/encrypted-wallet-backup/realms/${realm}/vaults/${keyHandle.vaultId}/head`,
-      issuedAtUnixSeconds: 1_700_000_000,
-      expiresAtUnixSeconds: 1_700_000_060,
-      payload: new Uint8Array(),
-      signal: AbortSignal.timeout(60_000),
-    }),
-    remote: {
-      async readCurrentHead() {
-        return { status: "not-found" as const };
-      },
-    },
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
   });
-  const page = manifestPageObject(keyHandle, objectId(objectOffset), snapshotId);
-  const chunks = [1, 2, 3].map((index) => chunkObject(keyHandle, objectId(objectOffset + index)));
-  const objects = [page, ...chunks];
-  const target = prepareBoundedEncryptedWalletBackupManifestTarget({
-    keyHandle,
-    capability: issueBoundedManifestTargetCapabilityForTest({
-      keyHandle,
-      control,
-      parentEvidence,
-      pages: [objectReference(page)],
-      chunkReferences: chunks.map(objectReference),
-      proofCount: chunks.length,
-    }),
-  });
-  return {
-    keyHandle,
-    target,
-    objects,
-    source: {
-      async readManifestPageObject(input: Readonly<{ objectId: string }>) {
-        if (input.objectId !== page.objectId) throw new Error("manifest page object is absent");
-        return page;
-      },
-      async readProofChunkObject(input: Readonly<{ objectId: string }>) {
-        const object = chunks.find((candidate) => candidate.objectId === input.objectId);
-        if (object === undefined) throw new Error("proof chunk object is absent");
-        return object;
-      },
-    },
-  };
-}
-
-function chunkObject(
-  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
-  objectId: string,
-) {
-  const aad = encodeCanonicalBackupCbor([
-    1,
-    1,
-    realm,
-    hexToBytes(keyHandle.vaultId),
-    hexToBytes(objectId),
-    1,
-    262_144,
-  ]);
-  const body = new Uint8Array(262_172);
-  return {
-    formatVersion: 1 as const,
-    kindCode: 1 as const,
-    realm,
-    vaultId: keyHandle.vaultId,
-    objectId,
-    generation: 1,
-    paddedLength: 262_144 as const,
-    digest: bytesToHex(encryptedWalletBackupObjectDigest(aad, body)),
-    aad,
-    body,
-  };
-}
-
-function manifestPageObject(
-  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
-  objectId: string,
-  snapshotId = "driver-test",
-) {
-  const aad = encodeCanonicalBackupCbor([
-    1,
-    "encrypted-wallet-backup-manifest-page-aad",
-    2,
-    realm,
-    hexToBytes(keyHandle.vaultId),
-    hexToBytes(objectId),
-    1,
-    65_536,
-    snapshotId,
-    1,
-    new Uint8Array(32).fill(0x16),
-    new Uint8Array(32).fill(0x17),
-    0,
-    1,
-    new Uint8Array(32).fill(0x18),
-  ]);
-  const body = new Uint8Array(65_564);
-  return {
-    formatVersion: 1 as const,
-    kindCode: 2 as const,
-    realm,
-    vaultId: keyHandle.vaultId,
-    objectId,
-    generation: 1,
-    paddedLength: 65_536 as const,
-    digest: bytesToHex(encryptedWalletBackupObjectDigest(aad, body)),
-    aad,
-    body,
-  };
-}
-
-function objectReference(object: {
-  readonly formatVersion: 1;
-  readonly kindCode: 1 | 2;
-  readonly realm: string;
-  readonly vaultId: string;
-  readonly objectId: string;
-  readonly generation: number;
-  readonly paddedLength: 65_536 | 262_144;
-  readonly digest: string;
-}) {
-  return {
-    formatVersion: object.formatVersion,
-    kindCode: object.kindCode,
-    realm: object.realm,
-    vaultId: object.vaultId,
-    objectId: object.objectId,
-    generation: object.generation,
-    paddedLength: object.paddedLength,
-    digest: object.digest,
-  };
-}
-
-function objectId(index: number): string {
-  return index.toString(16).padStart(32, "0");
-}
-
-function digestFromAuthorization(init: RequestInit | undefined): string {
-  const authorization = new Headers(init?.headers).get("authorization");
-  if (authorization === null || !authorization.startsWith("BackupV1 ")) {
-    throw new Error("backup request authorization is absent");
-  }
-  const canonicalProof = fromBase64Url(authorization.slice("BackupV1 ".length));
-  return encryptedWalletBackupRequestDigest(
-    canonicalProof as unknown as EncryptedWalletBackupRequestProof,
-  );
-}
-
-function fromBase64Url(value: string): Uint8Array {
-  const padded = value
-    .replaceAll("-", "+")
-    .replaceAll("_", "/")
-    .padEnd(Math.ceil(value.length / 4) * 4, "=");
-  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
-}
-
-function cborResponse(url: string, body: Uint8Array): Response {
-  return {
-    status: 200,
-    url,
-    redirected: false,
-    headers: new Headers({
-      "content-type": "application/cbor",
-      "cache-control": "private, no-store",
-    }),
-    body: new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(body);
-        controller.close();
-      },
-    }),
-  } as Response;
+  return { promise, resolve, reject };
 }

@@ -82,6 +82,7 @@ describe("browser V2 backup worker", () => {
 
     await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
       kind: "retry-pending",
+      minimumRetryDelayMilliseconds: 5_000,
     });
     const persisted = await fixture.store.readPreparedMutation();
     expect(persisted).not.toBeNull();
@@ -94,6 +95,15 @@ describe("browser V2 backup worker", () => {
       fixture.remote.mutations[1]?.replayNonce,
     );
     expect(await fixture.store.readPreparedMutation()).toBeNull();
+  });
+
+  it("returns the server Retry-After delay for a retryable mutation failure", async () => {
+    const fixture = await workerFixture(1);
+    fixture.remote.failures.push(new EncryptedWalletBackupV2HttpTransportError("rate-limited", 60));
+    await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
+      kind: "retry-pending",
+      minimumRetryDelayMilliseconds: 60_000,
+    });
   });
 
   it("retries the exact prepared upload after the IndexedDB handle reopens", async () => {
@@ -213,6 +223,7 @@ describe("browser V2 backup worker", () => {
 
     await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
       kind: "retry-pending",
+      minimumRetryDelayMilliseconds: 5_000,
     });
     expect(await fixture.store.readPreparedMutation()).not.toBeNull();
     await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
@@ -621,7 +632,9 @@ async function acceptRemoteHead(fixture: Awaited<ReturnType<typeof workerFixture
 }
 
 class FakeRemote implements EncryptedWalletBackupV2RemotePort {
-  readonly failures: Array<"transport-failure" | "quota-exceeded" | "conflict"> = [];
+  readonly failures: Array<
+    "transport-failure" | "quota-exceeded" | "conflict" | EncryptedWalletBackupV2HttpTransportError
+  > = [];
   readonly mutations: Array<{ bytes: Uint8Array; replayNonce: string }> = [];
   afterCommit: (() => void | Promise<void>) | null = null;
   failAfterCommit = false;
@@ -694,6 +707,7 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
       });
       throw new EncryptedWalletBackupV2HttpTransportError("conflict");
     }
+    if (failure instanceof EncryptedWalletBackupV2HttpTransportError) throw failure;
     if (failure) throw new EncryptedWalletBackupV2HttpTransportError(failure);
     const group = decodeEncryptedWalletBackupV2UploadGroup({
       bytes: input.canonicalUploadGroup,

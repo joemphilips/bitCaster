@@ -1,384 +1,540 @@
+import Dexie, { liveQuery, type Subscription } from "dexie";
 import { NDKEvent } from "@nostr-dev-kit/ndk";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
-  EncryptedWalletBackupDeadlineError,
   EncryptedWalletBackupRemoteBackoffError,
-  synchronizeEncryptedWalletBackupManifestHead,
-  type EncryptedWalletBackupClock,
-  type EncryptedWalletBackupKeyHandle,
-} from "@bitcaster/client-sdk/encryptedWalletBackup";
-import {
+  EncryptedWalletBackupV2HttpAdapter,
+  EncryptedWalletBackupV2HttpTransportError,
+  createEncryptedWalletBackupNip98AccountAuthorizationPort,
+  createEncryptedWalletBackupV2KeyHandle,
   executeEncryptedWalletBackupAccountOperation,
   prepareEncryptedWalletBackupAccountOperation,
+  prepareEncryptedWalletBackupV2EnrollmentEpochDiscoveryProof,
+  type EncryptedWalletBackupV2BundleRuntime,
+  type EncryptedWalletBackupV2KeyHandle,
+  type EncryptedWalletBackupAccountAuthorizationPort,
   type EncryptedWalletBackupAccountOperationRemotePort,
-} from "@bitcaster/client-sdk/encryptedWalletBackupEnrollment";
-import {
-  EncryptedWalletBackupHttpAdapter,
-  EncryptedWalletBackupHttpTransportError,
-} from "@bitcaster/client-sdk/encryptedWalletBackupHttpAdapter";
-import { createEncryptedWalletBackupNip98AccountAuthorizationPort } from "@bitcaster/client-sdk/encryptedWalletBackupNip98AccountAuthorization";
-import {
-  cleanUpRejectedEncryptedWalletBackupFork,
-  runBoundedEncryptedWalletBackupUploadCycle,
-  type EncryptedWalletBackupUploadAttemptClaim,
-  type EncryptedWalletBackupBoundedUploadObjectSource,
-  type EncryptedWalletBackupObjectRemotePort,
-} from "@bitcaster/client-sdk/encryptedWalletBackupSync";
-import { browserWalletDatabaseName } from "./browserWalletProfile";
+  type EncryptedWalletBackupV2RemotePort,
+} from "@bitcaster/client-sdk";
+import { runBrowserEncryptedWalletBackupV2WorkerCycle } from "./browserEncryptedWalletBackupV2Worker";
 import {
   createEncryptedWalletBackupTransportFetch,
   type EncryptedWalletBackupConfiguration,
 } from "./encryptedWalletBackupConfig";
 import { getNdk } from "./nostr";
 import { EncryptedWalletBackupEnrollmentDexieStore } from "../stores/encrypted-wallet-backup-enrollment-db";
-import { EncryptedWalletBackupSnapshotManifestDexieStore } from "../stores/encrypted-wallet-backup-snapshot-manifest-db";
-import { runEncryptedWalletBackupSnapshotCleanupPage } from "../stores/encrypted-wallet-backup-snapshot-cleanup-db";
 import {
   clearEncryptedWalletBackupRetryScheduler,
-  createEncryptedWalletBackupUploadCoordinatorDexieStore,
-  findEncryptedWalletBackupUploadAttemptId,
   readEncryptedWalletBackupRetryScheduler,
-  readEncryptedWalletBackupUploadAttemptSummary,
   scheduleEncryptedWalletBackupRetry,
 } from "../stores/encrypted-wallet-backup-upload-coordinator-db";
 import type { BitcasterDB } from "../stores/proof-db";
 
-const LEASE_MILLISECONDS = 60_000;
+export const ENCRYPTED_WALLET_BACKUP_BACKGROUND_CYCLE_DEADLINE_MILLISECONDS = 300_000;
+export const ENCRYPTED_WALLET_BACKUP_RETRY_DELAY_MILLISECONDS = 5_000;
+export const ENCRYPTED_WALLET_BACKUP_SERVICE_QUOTA_RECHECK_MILLISECONDS = 3_600_000;
 
-type BackupRemote = EncryptedWalletBackupAccountOperationRemotePort &
-  EncryptedWalletBackupObjectRemotePort & {
-    compareAndSwapCurrentHead: EncryptedWalletBackupHttpAdapter["compareAndSwapCurrentHead"];
-    readCurrentHead: EncryptedWalletBackupHttpAdapter["readCurrentHead"];
-    abortUploadAttempt: EncryptedWalletBackupHttpAdapter["abortUploadAttempt"];
-  };
+export interface BrowserEncryptedWalletBackupV2RuntimeDriver {
+  stop(): void;
+}
 
-export type EncryptedWalletBackupDriverCycleResult =
-  | Readonly<{ state: "idle-needs-snapshot" }>
-  | Readonly<{ state: "cleanup-pending" }>
-  | Readonly<{ state: "lease-pending"; wakeAtUnixMilliseconds: number }>
-  | Readonly<{ state: "upload-pending"; attemptId: string; vaultId: string }>
-  | Readonly<{
-      state: "cas-pending";
-      attemptId: string;
-      vaultId: string;
-      retryStreak: number;
-      retryNotBeforeUnixMilliseconds: number | null;
-    }>
-  | Readonly<{
-      state: "retry-pending";
-      attemptId: string;
-      vaultId: string;
-      retryNotBeforeUnixMilliseconds: number;
-    }>
-  | Readonly<{ state: "committed"; attemptId: string; vaultId: string }>;
-
-export interface EncryptedWalletBackupDriverInput {
+export interface BrowserEncryptedWalletBackupV2RuntimeDriverInput {
   readonly configuration: EncryptedWalletBackupConfiguration;
   readonly database: BitcasterDB;
   readonly scopeId: string;
-  readonly keyHandle: EncryptedWalletBackupKeyHandle;
+  readonly seed: Uint8Array;
   readonly signal: AbortSignal;
-  readonly ownerId: string;
-  readonly fetch?: typeof fetch;
-  readonly clock?: EncryptedWalletBackupClock;
+  readonly isCurrentProfile: () => boolean;
   readonly remote?: BackupRemote;
-  /** Test seam. Production calls use the active Dexie-backed source. */
-  readonly source?: EncryptedWalletBackupBoundedUploadObjectSource;
-  /** Test seam. Production uses the browser wallet-profile lock. */
-  readonly lockManager?: Pick<LockManager, "request">;
+  readonly runtime?: EncryptedWalletBackupV2BundleRuntime;
+  readonly runWorkerCycle?: typeof runBrowserEncryptedWalletBackupV2WorkerCycle;
+  readonly authorizationPort?: EncryptedWalletBackupAccountAuthorizationPort;
+  /** Test seam. Production holds a vault-scoped Web Lock until cleanup. */
+  readonly leadership?: BrowserEncryptedWalletBackupLeadership;
+  /** Test seam. Production uses one cancellable browser timer. */
+  readonly scheduleRetry?: (task: () => void, delayMilliseconds: number) => () => void;
+  /** Test seam. Production persists one retry schedule for the vault. */
+  readonly scheduleDurableRetry?: typeof scheduleEncryptedWalletBackupRetry;
+  /** Test seam. Production reports terminal background failures to the console. */
+  readonly reportError?: (error: unknown) => void;
 }
 
-/**
- * Runs one bounded background cycle. It resumes only durable coordinator work.
- * D4b2 supplies first-snapshot construction before this seam receives new work.
- */
-export async function runEncryptedWalletBackupDriverCycle(
-  input: EncryptedWalletBackupDriverInput,
-): Promise<EncryptedWalletBackupDriverCycleResult> {
-  requireInput(input);
-  const keyHandle = input.keyHandle;
-  const attemptId = await findEncryptedWalletBackupUploadAttemptId(input.database, {
-    realm: keyHandle.realm,
-    vaultId: keyHandle.vaultId,
-  });
-  if (attemptId === null) {
-    const cleanup = await runEncryptedWalletBackupSnapshotCleanupPage({
-      database: input.database,
-      scopeId: input.scopeId,
-      realm: keyHandle.realm,
-      vaultId: keyHandle.vaultId,
-      lockManager: input.lockManager,
-    });
-    return cleanup.state === "progress" && cleanup.job !== null
-      ? Object.freeze({ state: "cleanup-pending" })
-      : Object.freeze({ state: "idle-needs-snapshot" });
+type BackupRemote = EncryptedWalletBackupV2RemotePort &
+  EncryptedWalletBackupAccountOperationRemotePort;
+
+export interface BrowserEncryptedWalletBackupLeadership {
+  hold(lockName: string, signal: AbortSignal, onLeader: () => Promise<void>): Promise<void>;
+}
+
+export function createEncryptedWalletBackupBackgroundCycleSignal(
+  cleanupSignal: AbortSignal,
+  timeoutMilliseconds = ENCRYPTED_WALLET_BACKUP_BACKGROUND_CYCLE_DEADLINE_MILLISECONDS,
+): AbortSignal {
+  return AbortSignal.any([cleanupSignal, AbortSignal.timeout(timeoutMilliseconds)]);
+}
+
+/** Runs V2-only background backup work for one captured browser wallet profile. */
+export function createBrowserEncryptedWalletBackupV2RuntimeDriver(
+  input: BrowserEncryptedWalletBackupV2RuntimeDriverInput,
+): BrowserEncryptedWalletBackupV2RuntimeDriver {
+  return new BrowserEncryptedWalletBackupV2RuntimeDriverImpl(input).start();
+}
+
+class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncryptedWalletBackupV2RuntimeDriver {
+  readonly #input: BrowserEncryptedWalletBackupV2RuntimeDriverInput;
+  readonly #runtime: EncryptedWalletBackupV2BundleRuntime;
+  readonly #remote: BackupRemote;
+  readonly #runWorkerCycle: typeof runBrowserEncryptedWalletBackupV2WorkerCycle;
+  readonly #lifetimeSignal: AbortSignal;
+  #subscription: Subscription | undefined;
+  readonly #cleanup = new AbortController();
+  #keyHandle: EncryptedWalletBackupV2KeyHandle | undefined;
+  #enrollmentEpoch: number | undefined;
+  #pendingDesiredAssetCount = 0;
+  #pendingDesiredAssetFingerprint = "";
+  #serviceQuotaPendingFingerprint: string | null = null;
+  #initialized = false;
+  #leader = false;
+  #terminal = false;
+  #running = false;
+  #cycleQueued = false;
+  #cancelTimer: (() => void) | undefined;
+  #timerKind: "retry" | "quota" | undefined;
+  #timerScheduling = false;
+
+  constructor(input: BrowserEncryptedWalletBackupV2RuntimeDriverInput) {
+    this.#input = input;
+    this.#runtime = input.runtime ?? browserRuntime();
+    this.#remote = input.remote ?? createRemote(input.configuration);
+    this.#runWorkerCycle = input.runWorkerCycle ?? runBrowserEncryptedWalletBackupV2WorkerCycle;
+    this.#lifetimeSignal = AbortSignal.any([input.signal, this.#cleanup.signal]);
   }
-  const attempt = await readEncryptedWalletBackupUploadAttemptSummary(input.database, {
-    realm: keyHandle.realm,
-    vaultId: keyHandle.vaultId,
-    attemptId,
-  });
-  const now = Date.now();
-  const wakeAtUnixMilliseconds = Math.max(
-    attempt.ownerId === input.ownerId ? 0 : attempt.leaseExpiresAtUnixMilliseconds,
-    attempt.executionLeaseExpiresAtUnixMilliseconds ?? 0,
-  );
-  if (wakeAtUnixMilliseconds > now) {
-    return Object.freeze({
-      state: "lease-pending",
-      wakeAtUnixMilliseconds,
-    });
+
+  start(): this {
+    void this.#acquireLeadership();
+    return this;
   }
-  const retryScheduler = await readEncryptedWalletBackupRetryScheduler(input.database, {
-    scopeId: input.scopeId,
-    realm: keyHandle.realm,
-    vaultId: keyHandle.vaultId,
-  });
-  if (retryScheduler !== null && retryScheduler.attemptId !== attemptId) {
-    await clearEncryptedWalletBackupRetryScheduler(input.database, {
-      scopeId: input.scopeId,
-      realm: keyHandle.realm,
-      vaultId: keyHandle.vaultId,
-      attemptId: retryScheduler.attemptId,
-    });
+
+  stop(): void {
+    this.#cleanup.abort();
+    this.#stopLeader();
   }
-  if (
-    retryScheduler?.attemptId === attemptId &&
-    now < retryScheduler.retryNotBeforeUnixMilliseconds
-  ) {
-    return Object.freeze({
-      state: "retry-pending",
-      attemptId,
-      vaultId: keyHandle.vaultId,
-      retryNotBeforeUnixMilliseconds: retryScheduler.retryNotBeforeUnixMilliseconds,
+
+  async #acquireLeadership(): Promise<void> {
+    try {
+      this.#keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+        seed: this.#input.seed,
+        realm: this.#input.configuration.realm,
+        runtime: this.#runtime,
+      });
+      if (!this.#isActive()) return;
+      await (this.#input.leadership ?? browserLeadership()).hold(
+        vaultLockName(requireKeyHandle(this.#keyHandle)),
+        this.#lifetimeSignal,
+        async () => {
+          if (!this.#isActive()) return;
+          this.#leader = true;
+          this.#startLeader();
+          await this.#resumeOrInitialize();
+          await waitForAbort(this.#lifetimeSignal);
+        },
+      );
+    } catch (error) {
+      if (this.#isActive()) this.#reportError(error);
+    } finally {
+      this.#stopLeader();
+    }
+  }
+
+  #startLeader(): void {
+    this.#subscription = liveQuery(() => this.#pendingDesiredAssetCountQuery()).subscribe({
+      next: (rows) => this.#onPendingDesiredAssets(rows),
+      error: (error) => this.#fail(error),
     });
   }
 
-  try {
-    const remote = input.remote ?? createRemote(input.configuration, input.fetch);
-    const clock = input.clock ?? systemClock();
-    const enrollment = new EncryptedWalletBackupEnrollmentDexieStore({
-      database: input.database,
-      scopeId: input.scopeId,
+  #stopLeader(): void {
+    this.#leader = false;
+    this.#initialized = false;
+    this.#subscription?.unsubscribe();
+    this.#subscription = undefined;
+    this.#cancelTimer?.();
+    this.#cancelTimer = undefined;
+    this.#timerKind = undefined;
+  }
+
+  async #resumeOrInitialize(): Promise<void> {
+    const keyHandle = requireKeyHandle(this.#keyHandle);
+    const schedule = await readEncryptedWalletBackupRetryScheduler(this.#input.database, {
+      scopeId: this.#input.scopeId,
       realm: keyHandle.realm,
       vaultId: keyHandle.vaultId,
-      requestAuthPublicKey: keyHandle.requestAuthPublicKey,
     });
-    const enrollmentEpoch = await ensureEnrollment({
-      keyHandle,
-      enrollment,
-      remote,
-      configuration: input.configuration,
-      signal: input.signal,
-    });
-    const coordinator = createEncryptedWalletBackupUploadCoordinatorDexieStore(input.database);
-    const source =
-      input.source ??
-      new EncryptedWalletBackupSnapshotManifestDexieStore({
-        database: input.database,
-        scopeId: input.scopeId,
+    if (!this.#isLeaderActive()) return;
+    if (schedule !== null && schedule.retryNotBeforeUnixMilliseconds > Date.now()) {
+      this.#armTimer(
+        () => void this.#initialize(),
+        schedule.retryNotBeforeUnixMilliseconds - Date.now(),
+        "retry",
+      );
+      return;
+    }
+    void this.#initialize();
+  }
+
+  async #pendingDesiredAssetCountQuery(): Promise<readonly PendingDesiredAssetWake[]> {
+    const rows = await this.#input.database.encryptedWalletBackupV2DesiredAssets
+      .where("[scopeId+syncState+localAssetKey]")
+      .between(
+        [this.#input.scopeId, "pending", Dexie.minKey],
+        [this.#input.scopeId, "pending", Dexie.maxKey],
+      )
+      .limit(257)
+      .toArray();
+    if (rows.length > 256)
+      throw new Error("encrypted wallet backup pending assets exceed the limit");
+    return rows
+      .map(({ localAssetKey, custodyRevision, desiredAction }) => ({
+        localAssetKey,
+        custodyRevision,
+        desiredAction,
+      }))
+      .sort((left, right) => left.localAssetKey.localeCompare(right.localAssetKey));
+  }
+
+  #onPendingDesiredAssets(rows: readonly PendingDesiredAssetWake[]): void {
+    const fingerprint = JSON.stringify(rows);
+    const changed = fingerprint !== this.#pendingDesiredAssetFingerprint;
+    this.#pendingDesiredAssetCount = rows.length;
+    this.#pendingDesiredAssetFingerprint = fingerprint;
+    if (this.#serviceQuotaPendingFingerprint !== null) {
+      if (!changed) return;
+      this.#serviceQuotaPendingFingerprint = null;
+      if (this.#timerKind === "quota") this.#clearTimer();
+    }
+    if (rows.length > 0 && (changed || !this.#initialized)) this.#requestCycle();
+  }
+
+  #requestCycle(): void {
+    if (!this.#initialized || !this.#isLeaderActive()) return;
+    this.#cycleQueued = true;
+    if (!this.#running && !this.#timerScheduling && this.#cancelTimer === undefined)
+      void this.#runCycles();
+  }
+
+  async #initialize(): Promise<void> {
+    try {
+      if (!this.#isLeaderActive()) return;
+      this.#enrollmentEpoch = await resolveEncryptedWalletBackupV2EnrollmentEpoch({
+        configuration: this.#input.configuration,
+        database: this.#input.database,
+        scopeId: this.#input.scopeId,
+        keyHandle: requireKeyHandle(this.#keyHandle),
+        remote: this.#remote,
+        runtime: this.#runtime,
+        signal: this.#lifetimeSignal,
+        authorizationPort: this.#input.authorizationPort,
+        isCurrentProfile: () => this.#isLeaderActive(),
+      });
+      if (!this.#isLeaderActive()) return;
+      this.#initialized = true;
+      await this.#clearRetrySchedule();
+      if (this.#pendingDesiredAssetCount > 0) this.#requestCycle();
+    } catch (error) {
+      if (!this.#isLeaderActive()) return;
+      if (isRetryable(error))
+        await this.#scheduleRetrySafely(() => void this.#initialize(), retryDelay(error));
+      else this.#fail(error);
+    }
+  }
+
+  async #runCycles(): Promise<void> {
+    if (this.#running || !this.#isLeaderActive()) return;
+    this.#running = true;
+    try {
+      while (
+        this.#cycleQueued &&
+        !this.#timerScheduling &&
+        this.#cancelTimer === undefined &&
+        this.#isLeaderActive()
+      ) {
+        this.#cycleQueued = false;
+        await this.#runOneCycle();
+      }
+    } catch (error) {
+      if (!this.#isLeaderActive()) return;
+      if (isRetryable(error)) await this.#scheduleRetrySafely(undefined, retryDelay(error));
+      else this.#fail(error);
+    } finally {
+      this.#running = false;
+      if (
+        this.#cycleQueued &&
+        !this.#timerScheduling &&
+        this.#cancelTimer === undefined &&
+        this.#isLeaderActive()
+      )
+        void this.#runCycles();
+    }
+  }
+
+  async #runOneCycle(): Promise<void> {
+    const signal = createEncryptedWalletBackupBackgroundCycleSignal(this.#lifetimeSignal);
+    try {
+      const result = await this.#runWorkerCycle({
+        database: this.#input.database,
+        scopeId: this.#input.scopeId,
+        seed: this.#input.seed,
+        keyHandle: requireKeyHandle(this.#keyHandle),
+        enrollmentEpoch: requireEnrollmentEpoch(this.#enrollmentEpoch),
+        pinnedReceiptKeys: this.#input.configuration.pinnedReceiptKeys,
+        remote: this.#remote,
+        requestUrl: (kind, afterBundleId) =>
+          requestUrl(
+            this.#input.configuration,
+            requireKeyHandle(this.#keyHandle),
+            kind,
+            afterBundleId,
+          ),
+        nowUnixSeconds: () => Math.floor(Date.now() / 1_000),
+        runtime: this.#runtime,
+        signal,
+        isCurrentProfile: () => this.#isLeaderActive(),
+      });
+      if (result.kind === "retry-pending") {
+        await this.#scheduleRetry(undefined, result.minimumRetryDelayMilliseconds);
+        return;
+      }
+      if (result.kind === "service-quota-pending") {
+        this.#serviceQuotaPendingFingerprint = this.#pendingDesiredAssetFingerprint;
+        this.#armTimer(
+          () => this.#requestCycle(),
+          ENCRYPTED_WALLET_BACKUP_SERVICE_QUOTA_RECHECK_MILLISECONDS,
+          "quota",
+        );
+        return;
+      }
+      if (
+        result.kind === "head-accepted" ||
+        result.kind === "committed" ||
+        result.kind === "conflict-recovered"
+      ) {
+        await this.#clearRetrySchedule();
+        this.#cycleQueued = true;
+      } else if (result.kind === "idle") {
+        await this.#clearRetrySchedule();
+      }
+    } catch (error) {
+      if (signal.aborted && !this.#lifetimeSignal.aborted) {
+        throw new EncryptedWalletBackupV2HttpTransportError("deadline-exceeded");
+      }
+      throw error;
+    }
+  }
+
+  async #scheduleRetry(
+    task: (() => void) | undefined,
+    minimumDelayMilliseconds = ENCRYPTED_WALLET_BACKUP_RETRY_DELAY_MILLISECONDS,
+  ): Promise<void> {
+    if (this.#timerScheduling || this.#cancelTimer !== undefined || !this.#isLeaderActive()) return;
+    this.#timerScheduling = true;
+    try {
+      const keyHandle = requireKeyHandle(this.#keyHandle);
+      const persist = this.#input.scheduleDurableRetry ?? scheduleEncryptedWalletBackupRetry;
+      const schedule = await persist(this.#input.database, {
+        scopeId: this.#input.scopeId,
         realm: keyHandle.realm,
         vaultId: keyHandle.vaultId,
+        attemptId: retryAttemptId(keyHandle),
+        minimumDelayMilliseconds,
       });
-    const cycle = await runBoundedEncryptedWalletBackupUploadCycle({
-      initialAttempt: null,
-      ownerId: input.ownerId,
-      leaseDurationMilliseconds: LEASE_MILLISECONDS,
-      keyHandle,
-      store: coordinator,
-      source,
-      enrollmentEpoch,
-      clock,
-      objectUrl: (objectId) => objectUrl(input.configuration, keyHandle.vaultId, objectId),
-      remote,
-      signal: input.signal,
-    });
-    if (cycle.state === "fork-cleanup-pending") {
-      return await cleanUpRejectedFork({
-        input,
-        keyHandle,
-        coordinator,
-        remote,
-        clock,
-        enrollmentEpoch,
-        claim: cycle.claim,
-      });
+      if (!this.#isLeaderActive()) return;
+      this.#armTimer(
+        task ?? (() => this.#requestCycle()),
+        Math.max(0, schedule.retryNotBeforeUnixMilliseconds - Date.now()),
+        "retry",
+      );
+    } finally {
+      this.#timerScheduling = false;
     }
-    if (cycle.state === "upload-pending") {
-      return Object.freeze({ state: "upload-pending", attemptId, vaultId: keyHandle.vaultId });
+  }
+
+  async #scheduleRetrySafely(
+    task: (() => void) | undefined,
+    minimumDelayMilliseconds: number,
+  ): Promise<void> {
+    try {
+      await this.#scheduleRetry(task, minimumDelayMilliseconds);
+    } catch (error) {
+      if (this.#isLeaderActive()) this.#fail(error);
     }
-    const synchronized = await synchronizeEncryptedWalletBackupManifestHead({
-      attempt: cycle.attempt,
-      keyHandle,
-      enrollmentEpoch,
-      casUrl: vaultUrl(input.configuration, keyHandle.vaultId, "head:compare-and-swap"),
-      headUrl: vaultUrl(input.configuration, keyHandle.vaultId, "head"),
-      clock,
-      remote,
-      signal: input.signal,
-    });
-    switch (synchronized.record.state) {
-      case "fork-rejected":
-        return await cleanUpRejectedFork({
-          input,
-          keyHandle,
-          coordinator,
-          remote,
-          clock,
-          enrollmentEpoch,
-          claim: cycle.claim,
-        });
-      case "acknowledged":
-        await clearRetryScheduler(input, attemptId);
-        await runEncryptedWalletBackupSnapshotCleanupPage({
-          database: input.database,
-          scopeId: input.scopeId,
-          realm: keyHandle.realm,
-          vaultId: keyHandle.vaultId,
-          acknowledgedAttempt: synchronized,
-          lockManager: input.lockManager,
-        });
-        return Object.freeze({ state: "committed", attemptId, vaultId: keyHandle.vaultId });
-      case "sealed":
-      case "cas-uncertain":
-      case "retry-cas":
-      case "retry-exhausted":
-      case "reconcile-before-retry":
-        await clearRetryScheduler(input, attemptId);
-        return Object.freeze({
-          state: "cas-pending",
-          attemptId,
-          vaultId: keyHandle.vaultId,
-          retryStreak: synchronized.record.retryStreak,
-          retryNotBeforeUnixMilliseconds: synchronized.record.retryNotBeforeUnixMilliseconds,
-        });
-      default:
-        return assertNeverSyncState(synchronized.record.state);
-    }
-  } catch (error) {
-    const minimumDelayMilliseconds = retryMinimumDelayMilliseconds(error);
-    if (minimumDelayMilliseconds === null) throw error;
-    const scheduled = await scheduleEncryptedWalletBackupRetry(input.database, {
-      scopeId: input.scopeId,
+  }
+
+  #armTimer(task: () => void, delayMilliseconds: number, kind: "retry" | "quota"): void {
+    if (this.#cancelTimer !== undefined || !this.#isLeaderActive()) return;
+    const schedule = this.#input.scheduleRetry ?? scheduleBrowserRetry;
+    this.#timerKind = kind;
+    this.#cancelTimer = schedule(() => {
+      this.#cancelTimer = undefined;
+      this.#timerKind = undefined;
+      if (this.#isLeaderActive()) task();
+    }, delayMilliseconds);
+  }
+
+  #clearTimer(): void {
+    this.#cancelTimer?.();
+    this.#cancelTimer = undefined;
+    this.#timerKind = undefined;
+  }
+
+  async #clearRetrySchedule(): Promise<void> {
+    const keyHandle = this.#keyHandle;
+    if (keyHandle === undefined || !this.#isLeaderActive()) return;
+    await clearEncryptedWalletBackupRetryScheduler(this.#input.database, {
+      scopeId: this.#input.scopeId,
       realm: keyHandle.realm,
       vaultId: keyHandle.vaultId,
-      attemptId,
-      minimumDelayMilliseconds,
+      attemptId: retryAttemptId(keyHandle),
     });
-    return Object.freeze({
-      state: "retry-pending",
-      attemptId,
-      vaultId: keyHandle.vaultId,
-      retryNotBeforeUnixMilliseconds: scheduled.retryNotBeforeUnixMilliseconds,
-    });
+  }
+
+  #isActive(): boolean {
+    return !this.#lifetimeSignal.aborted && this.#input.isCurrentProfile();
+  }
+
+  #isLeaderActive(): boolean {
+    return this.#leader && !this.#terminal && this.#isActive();
+  }
+
+  #fail(error: unknown): void {
+    if (this.#terminal) return;
+    this.#terminal = true;
+    this.#initialized = false;
+    this.#cycleQueued = false;
+    this.#subscription?.unsubscribe();
+    this.#subscription = undefined;
+    this.#clearTimer();
+    this.#reportError(error);
+  }
+
+  #reportError(error: unknown): void {
+    (this.#input.reportError ?? reportBrowserBackupError)(error);
   }
 }
 
-async function clearRetryScheduler(
-  input: EncryptedWalletBackupDriverInput,
-  attemptId: string,
-): Promise<void> {
-  await clearEncryptedWalletBackupRetryScheduler(input.database, {
+type PendingDesiredAssetWake = Readonly<{
+  localAssetKey: string;
+  custodyRevision: string;
+  desiredAction: "replace" | "remove";
+}>;
+
+type ResolveEncryptedWalletBackupV2EnrollmentInput = {
+  readonly configuration: EncryptedWalletBackupConfiguration;
+  readonly database: BitcasterDB;
+  readonly scopeId: string;
+  readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
+  readonly remote: Pick<
+    EncryptedWalletBackupV2HttpAdapter,
+    "discoverEnrollmentEpoch" | "executeAccountOperation"
+  >;
+  readonly runtime: EncryptedWalletBackupV2BundleRuntime;
+  readonly signal: AbortSignal;
+  readonly nowUnixSeconds?: () => number;
+  readonly authorizationPort?: EncryptedWalletBackupAccountAuthorizationPort;
+  readonly isCurrentProfile?: () => boolean;
+};
+
+export async function resolveEncryptedWalletBackupV2EnrollmentEpoch(
+  input: ResolveEncryptedWalletBackupV2EnrollmentInput,
+): Promise<number> {
+  const enrollment = new EncryptedWalletBackupEnrollmentDexieStore({
+    database: input.database,
     scopeId: input.scopeId,
     realm: input.keyHandle.realm,
     vaultId: input.keyHandle.vaultId,
-    attemptId,
+    requestAuthPublicKey: input.keyHandle.requestAuthPublicKey,
+    beforeCommit: () => requireCurrentProfile(input),
   });
-}
-
-function assertNeverSyncState(value: never): never {
-  throw new Error(`unsupported encrypted backup sync state: ${String(value)}`);
-}
-
-export function retryMinimumDelayMilliseconds(error: unknown): number | null {
-  if (error instanceof EncryptedWalletBackupRemoteBackoffError) {
-    return error.status === "quota-exceeded" ? null : error.delayMilliseconds();
-  }
-  if (error instanceof EncryptedWalletBackupDeadlineError) return 5_000;
-  if (
-    error instanceof EncryptedWalletBackupHttpTransportError &&
-    (error.code === "transport-failure" ||
-      error.code === "deadline-exceeded" ||
-      error.code === "concurrency-exhausted")
-  ) {
-    return 5_000;
-  }
-  return null;
-}
-
-function createRemote(
-  configuration: EncryptedWalletBackupConfiguration,
-  fetchPort: typeof fetch | undefined,
-): EncryptedWalletBackupHttpAdapter {
-  return new EncryptedWalletBackupHttpAdapter({
-    origin: configuration.signedOrigin,
-    fetch: createEncryptedWalletBackupTransportFetch({
-      signedOrigin: configuration.signedOrigin,
-      transportOrigin: configuration.transportOrigin,
-      fetch: fetchPort,
-    }),
-  });
-}
-
-async function cleanUpRejectedFork(input: {
-  readonly input: EncryptedWalletBackupDriverInput;
-  readonly keyHandle: EncryptedWalletBackupKeyHandle;
-  readonly coordinator: ReturnType<typeof createEncryptedWalletBackupUploadCoordinatorDexieStore>;
-  readonly remote: BackupRemote;
-  readonly clock: EncryptedWalletBackupClock;
-  readonly enrollmentEpoch: number;
-  readonly claim: EncryptedWalletBackupUploadAttemptClaim;
-}): Promise<EncryptedWalletBackupDriverCycleResult> {
-  await cleanUpRejectedEncryptedWalletBackupFork({
-    claim: input.claim,
-    store: input.coordinator,
+  requireCurrentProfile(input);
+  const issuedAtUnixSeconds = (input.nowUnixSeconds ?? nowUnixSeconds)();
+  const discovery = await prepareEncryptedWalletBackupV2EnrollmentEpochDiscoveryProof({
     keyHandle: input.keyHandle,
-    enrollmentEpoch: input.enrollmentEpoch,
-    url: uploadAttemptUrl(
-      input.input.configuration,
-      input.keyHandle.vaultId,
-      input.claim.record.attemptId,
-    ),
-    clock: input.clock,
-    remote: input.remote,
-    signal: input.input.signal,
+    url: enrollmentEpochUrl(input.configuration, input.keyHandle.vaultId),
+    issuedAtUnixSeconds,
+    expiresAtUnixSeconds: issuedAtUnixSeconds + 60,
+    signal: input.signal,
+    runtime: input.runtime,
   });
-  await clearEncryptedWalletBackupRetryScheduler(input.input.database, {
-    scopeId: input.input.scopeId,
-    realm: input.keyHandle.realm,
-    vaultId: input.keyHandle.vaultId,
-    attemptId: input.claim.record.attemptId,
+  requireCurrentProfile(input);
+  const discovered = await input.remote.discoverEnrollmentEpoch({
+    requestProof: discovery,
+    signal: input.signal,
   });
-  return Object.freeze({ state: "idle-needs-snapshot" });
+  requireCurrentProfile(input);
+  if (discovered.status === "active") return discovered.enrollmentEpoch;
+  return enrollAbsentWalletBackupV2(input, enrollment);
 }
 
-async function ensureEnrollment(input: {
-  readonly keyHandle: EncryptedWalletBackupKeyHandle;
-  readonly enrollment: EncryptedWalletBackupEnrollmentDexieStore;
-  readonly remote: BackupRemote;
-  readonly configuration: EncryptedWalletBackupConfiguration;
-  readonly signal: AbortSignal;
-}): Promise<number> {
-  const persisted = await input.enrollment.read();
-  if (persisted !== null) return persisted.observedEnrollmentEpoch;
+async function enrollAbsentWalletBackupV2(
+  input: ResolveEncryptedWalletBackupV2EnrollmentInput,
+  enrollment: EncryptedWalletBackupEnrollmentDexieStore,
+): Promise<number> {
+  requireCurrentProfile(input);
   const operation = await prepareEncryptedWalletBackupAccountOperation({
     keyHandle: input.keyHandle,
     action: "enroll",
     url: accountUrl(input.configuration),
-    operationId: randomOperationId(),
+    operationId: randomOperationId(input.runtime),
     expectedEnrollmentEpoch: 0,
-    authorizationPort: createEncryptedWalletBackupNip98AccountAuthorizationPort({
-      signer: currentNostrSigner(),
-    }),
+    authorizationPort:
+      input.authorizationPort ??
+      createEncryptedWalletBackupNip98AccountAuthorizationPort({ signer: currentNostrSigner() }),
     signal: input.signal,
   });
-  const committed = await executeEncryptedWalletBackupAccountOperation({
+  requireCurrentProfile(input);
+  const enrolled = await executeEncryptedWalletBackupAccountOperation({
     operation,
-    remote: input.remote,
-    store: input.enrollment,
+    remote: {
+      executeAccountOperation: (request) => {
+        requireCurrentProfile(input);
+        return input.remote.executeAccountOperation(request);
+      },
+    },
+    store: enrollment,
   });
-  if (committed.record.lifecycle !== "active") throw new Error("backup enrollment is not active");
-  return committed.record.observedEnrollmentEpoch;
+  if (enrolled.record.lifecycle !== "active") throw new Error("backup enrollment is not active");
+  return enrolled.record.observedEnrollmentEpoch;
+}
+
+function requestUrl(
+  configuration: EncryptedWalletBackupConfiguration,
+  keyHandle: EncryptedWalletBackupV2KeyHandle,
+  kind: "head" | "mutation",
+  afterBundleId: string | null,
+): string {
+  const base = `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/vaults/${keyHandle.vaultId}`;
+  if (kind === "mutation") return `${base}/head:compare-and-swap`;
+  return afterBundleId === null ? `${base}/head` : `${base}/head/after/${afterBundleId}`;
+}
+
+function enrollmentEpochUrl(
+  configuration: EncryptedWalletBackupConfiguration,
+  vaultId: string,
+): string {
+  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/vaults/${vaultId}/enrollment-epoch`;
+}
+
+function accountUrl(configuration: EncryptedWalletBackupConfiguration): string {
+  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/vaults:enroll`;
+}
+
+function createRemote(configuration: EncryptedWalletBackupConfiguration): BackupRemote {
+  return new EncryptedWalletBackupV2HttpAdapter({
+    origin: configuration.signedOrigin,
+    fetch: createEncryptedWalletBackupTransportFetch({
+      signedOrigin: configuration.signedOrigin,
+      transportOrigin: configuration.transportOrigin,
+    }),
+  });
 }
 
 function currentNostrSigner() {
@@ -399,73 +555,132 @@ function currentNostrSigner() {
       await event.sign();
       const raw = event.rawEvent();
       return {
-        id: requireText(raw.id, "Nostr event id"),
-        pubkey: requireText(raw.pubkey, "Nostr event pubkey"),
-        createdAtUnixSeconds: requireInteger(raw.created_at, "Nostr event time"),
-        kind: requireInteger(raw.kind, "Nostr event kind"),
+        id: requireText(raw.id),
+        pubkey: requireText(raw.pubkey),
+        createdAtUnixSeconds: requireInteger(raw.created_at),
+        kind: requireInteger(raw.kind),
         tags: raw.tags.map((tag) => [...tag]),
         content: raw.content,
-        signature: requireText(raw.sig, "Nostr event signature"),
+        signature: requireText(raw.sig),
       };
     },
   };
 }
 
-function accountUrl(configuration: EncryptedWalletBackupConfiguration): string {
-  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/vaults:enroll`;
+function browserRuntime(): EncryptedWalletBackupV2BundleRuntime {
+  const runtime = globalThis.crypto;
+  if (runtime === undefined || typeof runtime.getRandomValues !== "function") {
+    throw new Error("encrypted wallet backup browser runtime is unavailable");
+  }
+  return {
+    subtle: runtime.subtle,
+    getRandomValues: (target) => runtime.getRandomValues(target) as Uint8Array,
+  };
 }
 
-function vaultUrl(
-  configuration: EncryptedWalletBackupConfiguration,
-  vaultId: string,
-  endpoint: "head" | "head:compare-and-swap",
+function randomOperationId(
+  runtime: Pick<EncryptedWalletBackupV2BundleRuntime, "getRandomValues">,
 ): string {
-  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/vaults/${vaultId}/${endpoint}`;
-}
-
-function objectUrl(
-  configuration: EncryptedWalletBackupConfiguration,
-  vaultId: string,
-  objectId: string,
-): string {
-  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/vaults/${vaultId}/objects/${objectId}`;
-}
-
-function uploadAttemptUrl(
-  configuration: EncryptedWalletBackupConfiguration,
-  vaultId: string,
-  attemptId: string,
-): string {
-  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/vaults/${vaultId}/upload-attempts/${attemptId}`;
-}
-
-function systemClock(): EncryptedWalletBackupClock {
-  return Object.freeze({ nowUnixSeconds: () => Math.floor(Date.now() / 1_000) });
-}
-
-function randomOperationId(): string {
   const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
+  runtime.getRandomValues(bytes);
   return bytesToHex(bytes);
 }
 
-function requireInput(input: EncryptedWalletBackupDriverInput): void {
-  if (
-    typeof input.keyHandle !== "object" ||
-    input.keyHandle === null ||
-    input.database.name !== browserWalletDatabaseName(input.scopeId) ||
-    !/^[^\s]{1,128}$/.test(input.ownerId)
-  ) {
-    throw new Error("encrypted wallet backup driver input is invalid");
-  }
+function isRetryable(error: unknown): boolean {
+  if (error instanceof EncryptedWalletBackupRemoteBackoffError) return true;
+  return (
+    error instanceof EncryptedWalletBackupV2HttpTransportError &&
+    (error.code === "concurrency-exhausted" ||
+      error.code === "deadline-exceeded" ||
+      error.code === "transport-failure" ||
+      error.code === "rate-limited" ||
+      error.code === "overloaded" ||
+      error.code === "unavailable")
+  );
 }
 
-function requireText(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.length < 1) throw new Error(`${label} is invalid`);
+function retryDelay(error: unknown): number {
+  if (error instanceof EncryptedWalletBackupRemoteBackoffError)
+    return error.delayMilliseconds(ENCRYPTED_WALLET_BACKUP_RETRY_DELAY_MILLISECONDS);
+  if (error instanceof EncryptedWalletBackupV2HttpTransportError) {
+    return Math.max(
+      ENCRYPTED_WALLET_BACKUP_RETRY_DELAY_MILLISECONDS,
+      (error.retryAfterSeconds ?? 0) * 1_000,
+    );
+  }
+  return ENCRYPTED_WALLET_BACKUP_RETRY_DELAY_MILLISECONDS;
+}
+
+function requireCurrentProfile(input: {
+  readonly signal: AbortSignal;
+  readonly isCurrentProfile?: () => boolean;
+}): void {
+  if (input.signal.aborted || input.isCurrentProfile?.() === false)
+    throw new Error("encrypted wallet backup profile is stale");
+}
+
+function requireKeyHandle(
+  value: EncryptedWalletBackupV2KeyHandle | undefined,
+): EncryptedWalletBackupV2KeyHandle {
+  if (value === undefined) throw new Error("encrypted wallet backup key handle is unavailable");
   return value;
 }
 
-function requireInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error(`${label} is invalid`);
+function requireEnrollmentEpoch(value: number | undefined): number {
+  if (!Number.isSafeInteger(value) || value === undefined || value < 1) {
+    throw new Error("encrypted wallet backup enrollment epoch is unavailable");
+  }
+  return value;
+}
+
+function nowUnixSeconds(): number {
+  return Math.floor(Date.now() / 1_000);
+}
+
+function scheduleBrowserRetry(task: () => void, delayMilliseconds: number): () => void {
+  const timer = setTimeout(task, delayMilliseconds);
+  return () => clearTimeout(timer);
+}
+
+function browserLeadership(): BrowserEncryptedWalletBackupLeadership {
+  const locks = globalThis.navigator?.locks;
+  if (locks === undefined || typeof locks.request !== "function")
+    throw new Error("encrypted wallet backup Web Locks are unavailable");
+  return {
+    async hold(lockName, signal, onLeader) {
+      await locks.request(lockName, { mode: "exclusive", signal }, async () => {
+        if (signal.aborted) return;
+        await onLeader();
+      });
+    },
+  };
+}
+
+function vaultLockName(keyHandle: EncryptedWalletBackupV2KeyHandle): string {
+  return `bitcaster/encrypted-wallet-backup/v2/${keyHandle.realm}/${keyHandle.vaultId}`;
+}
+
+function retryAttemptId(keyHandle: EncryptedWalletBackupV2KeyHandle): string {
+  return keyHandle.vaultId.slice(0, 32);
+}
+
+function waitForAbort(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) =>
+    signal.addEventListener("abort", () => resolve(), { once: true }),
+  );
+}
+
+function reportBrowserBackupError(error: unknown): void {
+  console.error("Encrypted wallet backup stopped.", error);
+}
+
+function requireText(value: unknown): string {
+  if (typeof value !== "string") throw new Error("encrypted backup Nostr event is invalid");
+  return value;
+}
+
+function requireInteger(value: unknown): number {
+  if (!Number.isSafeInteger(value)) throw new Error("encrypted backup Nostr event is invalid");
   return value as number;
 }

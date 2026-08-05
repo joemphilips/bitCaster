@@ -67,6 +67,27 @@ describe("encrypted wallet backup enrollment Dexie store", () => {
     ).toEqual(receipt(3, "22"));
     expect(await resumed.read()).toEqual(receipt(3, "22"));
   });
+
+  it("rolls back when the profile becomes stale before the transaction commits", async () => {
+    const database = openDatabase();
+    let checks = 0;
+    const store = new EncryptedWalletBackupEnrollmentDexieStore({
+      database,
+      scopeId,
+      realm,
+      vaultId,
+      requestAuthPublicKey,
+      beforeCommit: () => {
+        checks += 1;
+        if (checks === 2) throw new Error("profile is stale");
+      },
+    });
+
+    await expect(store.commitAccountOperationResult(receipt(2, "11"), (x) => x)).rejects.toThrow(
+      /profile is stale/,
+    );
+    expect(await database.encryptedWalletBackupEnrollmentResults.count()).toBe(0);
+  });
 });
 
 function openDatabase(): BitcasterDB {

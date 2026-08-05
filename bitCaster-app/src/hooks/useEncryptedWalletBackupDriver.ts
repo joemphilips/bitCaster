@@ -1,29 +1,19 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo } from "react";
 import {
-  createEncryptedWalletBackupKeyHandle,
-  type EncryptedWalletBackupKeyHandle,
-} from "@bitcaster/client-sdk/encryptedWalletBackup";
-import { browserWalletScopeIdFromSeed } from "@/lib/browserWalletProfile";
+  activeBrowserWalletScopeId,
+  browserWalletDatabaseName,
+  browserWalletScopeIdFromSeed,
+} from "@/lib/browserWalletProfile";
 import { resolveEncryptedWalletBackupConfiguration } from "@/lib/encryptedWalletBackupConfig";
-import { runEncryptedWalletBackupDriverCycle } from "@/lib/encryptedWalletBackupDriver";
+import { createBrowserEncryptedWalletBackupV2RuntimeDriver } from "@/lib/encryptedWalletBackupDriver";
 import { toSeed } from "@/lib/bip39";
 import { db } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 
-export const ENCRYPTED_WALLET_BACKUP_BACKGROUND_CYCLE_DEADLINE_MILLISECONDS = 120_000;
-
-export function createEncryptedWalletBackupBackgroundCycleSignal(
-  cleanupSignal: AbortSignal,
-  timeoutMilliseconds = ENCRYPTED_WALLET_BACKUP_BACKGROUND_CYCLE_DEADLINE_MILLISECONDS,
-): AbortSignal {
-  return AbortSignal.any([cleanupSignal, AbortSignal.timeout(timeoutMilliseconds)]);
-}
-
-/** Starts the default-on bounded backup resumer for the one active wallet. */
+/** Mounts V2-only backup work after the signer and wallet mnemonic are ready. */
 export function useEncryptedWalletBackupDriver(nostrSignerReady: boolean): void {
   const mnemonic = useWalletStore((state) => state.mnemonic);
   const configuration = useMemo(() => resolveEncryptedWalletBackupConfiguration(), []);
-  const ownerId = useRef(`gui-${crypto.randomUUID()}`);
 
   useEffect(() => {
     if (!nostrSignerReady || !mnemonic || configuration === null) return;
@@ -31,76 +21,24 @@ export function useEncryptedWalletBackupDriver(nostrSignerReady: boolean): void 
     if (words.length === 0) return;
     const seed = toSeed(words);
     const scopeId = browserWalletScopeIdFromSeed(seed);
+    const database = db;
+    if (database.name !== browserWalletDatabaseName(scopeId)) return;
     const controller = new AbortController();
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let keyHandle: EncryptedWalletBackupKeyHandle | undefined;
-    let run: () => Promise<void>;
-    run = async (): Promise<void> => {
-      try {
-        const result = await runEncryptedWalletBackupDriverCycle({
-          configuration,
-          database: db,
-          scopeId,
-          keyHandle: requireKeyHandle(keyHandle),
-          signal: createEncryptedWalletBackupBackgroundCycleSignal(controller.signal),
-          ownerId: ownerId.current,
-        });
-        if (controller.signal.aborted) return;
-        switch (result.state) {
-          case "idle-needs-snapshot":
-            return;
-          case "cleanup-pending":
-            retry = setTimeout(() => void run(), 0);
-            return;
-          case "lease-pending":
-            retry = setTimeout(
-              () => void run(),
-              Math.max(1, result.wakeAtUnixMilliseconds - Date.now()),
-            );
-            return;
-          case "upload-pending":
-            retry = setTimeout(() => void run(), 0);
-            return;
-          case "retry-pending":
-            retry = setTimeout(
-              () => void run(),
-              Math.max(1, result.retryNotBeforeUnixMilliseconds - Date.now()),
-            );
-            return;
-          case "cas-pending":
-            if (result.retryNotBeforeUnixMilliseconds === null) return;
-            retry = setTimeout(
-              () => void run(),
-              Math.max(1, result.retryNotBeforeUnixMilliseconds - Date.now()),
-            );
-            return;
-          case "committed":
-            retry = setTimeout(() => void run(), 0);
-            return;
-        }
-      } catch {
-        // Terminal and unknown errors require explicit user action or a later app restart.
-      }
-    };
-    void initializeAndRun();
-    async function initializeAndRun(): Promise<void> {
-      if (configuration === null) return;
-      keyHandle = await createEncryptedWalletBackupKeyHandle({
-        seed,
-        realm: configuration.realm,
-      });
-      if (!controller.signal.aborted) await run();
-    }
+    const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+      configuration,
+      database,
+      scopeId,
+      seed,
+      signal: controller.signal,
+      isCurrentProfile: () =>
+        useWalletStore.getState().mnemonic === mnemonic &&
+        activeBrowserWalletScopeId() === scopeId &&
+        db === database &&
+        database.name === browserWalletDatabaseName(scopeId),
+    });
     return () => {
       controller.abort();
-      if (retry !== undefined) clearTimeout(retry);
+      driver.stop();
     };
   }, [configuration, mnemonic, nostrSignerReady]);
-}
-
-function requireKeyHandle(
-  value: EncryptedWalletBackupKeyHandle | undefined,
-): EncryptedWalletBackupKeyHandle {
-  if (value === undefined) throw new Error("encrypted wallet backup key handle is unavailable");
-  return value;
 }

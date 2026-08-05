@@ -36,6 +36,15 @@ import {
   requireLowerHex,
   requireRealm,
 } from './encryptedWalletBackupServerValidation.ts'
+import {
+  EncryptedWalletBackupHttpAdapter,
+  EncryptedWalletBackupHttpTransportError,
+  type EncryptedWalletBackupHttpDispatchState,
+} from './encryptedWalletBackupHttpAdapter.ts'
+import type {
+  EncryptedWalletBackupAccountOperationRemotePort,
+  PreparedEncryptedWalletBackupAccountOperation,
+} from './encryptedWalletBackupEnrollment.ts'
 
 const MEDIA_TYPE = 'application/cbor'
 const AUTHORIZATION_PREFIX = 'BackupV1 '
@@ -47,6 +56,7 @@ type FetchPort = (input: string, init: RequestInit) => Promise<Response>
 
 export class EncryptedWalletBackupV2HttpTransportError extends Error {
   readonly retryAfterSeconds: number | null
+  readonly dispatchState: EncryptedWalletBackupHttpDispatchState | null
   readonly code:
     | 'concurrency-exhausted'
     | 'deadline-exceeded'
@@ -78,11 +88,13 @@ export class EncryptedWalletBackupV2HttpTransportError extends Error {
       | 'overloaded'
       | 'unavailable',
     retryAfterSeconds: number | null = null,
+    dispatchState: EncryptedWalletBackupHttpDispatchState | null = null,
   ) {
     super(`encrypted backup v2 transport failed: ${code}`)
     this.name = 'EncryptedWalletBackupV2HttpTransportError'
     this.code = code
     this.retryAfterSeconds = retryAfterSeconds
+    this.dispatchState = dispatchState
   }
 }
 
@@ -112,9 +124,12 @@ export interface EncryptedWalletBackupV2RemotePort {
 }
 
 /** Bounded V2 client port. It performs one request per immutable V2 operation. */
-export class EncryptedWalletBackupV2HttpAdapter implements EncryptedWalletBackupV2RemotePort {
+export class EncryptedWalletBackupV2HttpAdapter
+  implements EncryptedWalletBackupV2RemotePort, EncryptedWalletBackupAccountOperationRemotePort
+{
   readonly #origin: string
   readonly #fetch: FetchPort
+  readonly #accountOperations: EncryptedWalletBackupAccountOperationRemotePort
   #inFlight = 0
 
   constructor(input: { readonly origin: string; readonly fetch?: FetchPort }) {
@@ -122,6 +137,23 @@ export class EncryptedWalletBackupV2HttpAdapter implements EncryptedWalletBackup
     const fetch = input.fetch ?? globalThis.fetch
     if (typeof fetch !== 'function') throw error('invalid-request')
     this.#fetch = fetch.bind(globalThis) as FetchPort
+    this.#accountOperations = new EncryptedWalletBackupHttpAdapter({
+      origin: this.#origin,
+      fetch: this.#fetch,
+    })
+  }
+
+  /** Uses only the scheme-neutral account endpoint. It does not enable V1 object or head calls. */
+  async executeAccountOperation(input: {
+    readonly operation: PreparedEncryptedWalletBackupAccountOperation
+    readonly canonicalRequest: Uint8Array
+    readonly signal: AbortSignal
+  }): ReturnType<EncryptedWalletBackupAccountOperationRemotePort['executeAccountOperation']> {
+    try {
+      return await this.#accountOperations.executeAccountOperation(input)
+    } catch (cause) {
+      throw mapAccountOperationTransportError(cause)
+    }
   }
 
   async discoverEnrollmentEpoch(input: {
@@ -506,6 +538,14 @@ function error(
   retryAfterSeconds: number | null = null,
 ): EncryptedWalletBackupV2HttpTransportError {
   return new EncryptedWalletBackupV2HttpTransportError(code, retryAfterSeconds)
+}
+
+function mapAccountOperationTransportError(
+  cause: unknown,
+): EncryptedWalletBackupV2HttpTransportError {
+  if (!(cause instanceof EncryptedWalletBackupHttpTransportError)) throw cause
+  const code = cause.code === 'remote-rejected' ? 'invalid-response' : cause.code
+  return new EncryptedWalletBackupV2HttpTransportError(code, null, cause.dispatchState)
 }
 
 function errorOperation(

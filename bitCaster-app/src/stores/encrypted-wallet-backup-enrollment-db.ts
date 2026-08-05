@@ -12,6 +12,8 @@ export interface EncryptedWalletBackupEnrollmentDatabaseProfile {
   readonly realm: string;
   readonly vaultId: string;
   readonly requestAuthPublicKey: string;
+  /** Runs in the write transaction before an enrollment result is stored. */
+  readonly beforeCommit?: () => void;
 }
 
 /** Stores the one latest server-authenticated enrollment lifecycle receipt. */
@@ -20,6 +22,7 @@ export class EncryptedWalletBackupEnrollmentDexieStore implements EncryptedWalle
   readonly #realm: string;
   readonly #vaultId: string;
   readonly #requestAuthPublicKey: string;
+  readonly #beforeCommit: (() => void) | undefined;
 
   constructor(profile: EncryptedWalletBackupEnrollmentDatabaseProfile) {
     requireProfile(profile);
@@ -27,6 +30,7 @@ export class EncryptedWalletBackupEnrollmentDexieStore implements EncryptedWalle
     this.#realm = profile.realm;
     this.#vaultId = profile.vaultId;
     this.#requestAuthPublicKey = profile.requestAuthPublicKey;
+    this.#beforeCommit = profile.beforeCommit;
   }
 
   async read(): Promise<EncryptedWalletBackupAccountOperationResultRecord | null> {
@@ -58,12 +62,14 @@ export class EncryptedWalletBackupEnrollmentDexieStore implements EncryptedWalle
             decodeRow(current, this.#realm, this.#vaultId, this.#requestAuthPublicKey),
             record,
           );
+        this.#beforeCommit?.();
         const row: EncryptedWalletBackupDexieEnrollmentResultRow = {
           realm: this.#realm,
           vaultId: this.#vaultId,
           record: structuredClone(record),
         };
         await this.#database.encryptedWalletBackupEnrollmentResults.put(row);
+        this.#beforeCommit?.();
         return commit(structuredClone(record));
       },
     );
@@ -111,6 +117,7 @@ function requireProfile(profile: EncryptedWalletBackupEnrollmentDatabaseProfile)
     !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(profile.realm) ||
     !/^[0-9a-f]{64}$/.test(profile.vaultId) ||
     !isHex(profile.requestAuthPublicKey, 32) ||
+    (profile.beforeCommit !== undefined && typeof profile.beforeCommit !== "function") ||
     profile.database.name !== browserWalletDatabaseName(profile.scopeId)
   ) {
     throw new Error("encrypted wallet backup enrollment profile is invalid");
