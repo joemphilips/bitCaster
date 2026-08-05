@@ -3,6 +3,7 @@ import v2BundleVector from '../../../test-vectors/encrypted-wallet-backup-v2-bun
 import v2ProofSetVector from '../../../test-vectors/encrypted-wallet-backup-v2-proof-set.json'
 import v2HeadVector from '../../../test-vectors/encrypted-wallet-backup-v2-head.json'
 import v2MutationVector from '../../../test-vectors/encrypted-wallet-backup-v2-mutation.json'
+import v2ReceiptVector from '../../../test-vectors/encrypted-wallet-backup-v2-receipt.json'
 import * as Cashu from '@cashu/cashu-ts'
 import {
   createEncryptedWalletBackupKeyHandle,
@@ -44,6 +45,11 @@ import {
   prepareEncryptedWalletBackupV2BundleSupersessionMutation,
   verifyEncryptedWalletBackupV2BundleSupersessionMutation,
 } from '../../src/encryptedWalletBackupV2Mutation.ts'
+import {
+  digestEncryptedWalletBackupV2BundleSupersessionReceipt,
+  issueEncryptedWalletBackupV2BackupReachabilityEvidence,
+  verifyEncryptedWalletBackupV2BundleSupersessionReceipt,
+} from '../../src/encryptedWalletBackupV2Receipt.ts'
 import { encodeCanonicalBackupCbor } from '../../src/encryptedWalletBackupCbor.ts'
 import { encodeDurableWalletProofDerivationLocatorCbor } from '../../src/durableWalletProofDerivationLocator.ts'
 import {
@@ -178,6 +184,7 @@ async function run(): Promise<{
   await exerciseV2ProofSetVector()
   exerciseV2HeadVector()
   await exerciseV2MutationVector()
+  exerciseV2ReceiptVector()
   await exerciseManifestVector(seed, keyHandle)
   await exerciseBlsAndCtf(seed, keyHandle)
   await exerciseFailureCases(seed, keyHandle, prepared, wire)
@@ -280,6 +287,43 @@ async function exerciseV2MutationVector(): Promise<void> {
     }).envelope.requestDigest,
     expected.requestDigest,
     'v2 mutation verification',
+  )
+}
+
+function exerciseV2ReceiptVector(): void {
+  const input = v2ReceiptVector.inputs
+  const expected = v2ReceiptVector.expected
+  equal(
+    digestEncryptedWalletBackupV2BundleSupersessionReceipt(expected.receipt),
+    expected.receiptDigest,
+    'v2 receipt digest',
+  )
+  const mutationEvidence = verifyEncryptedWalletBackupV2BundleSupersessionMutation({
+    envelope: expected.signedMutation,
+    expectedRequestAuthPublicKey: expected.signedMutation.requestAuthPublicKey,
+    expectedContext: {
+      realm: input.mutation.initialHead.realm,
+      vaultId: input.mutation.initialHead.vaultId,
+      enrollmentEpoch: input.mutation.initialHead.enrollmentEpoch,
+    },
+  })
+  const receiptEvidence = verifyEncryptedWalletBackupV2BundleSupersessionReceipt({
+    receipt: expected.receipt,
+    mutationEvidence,
+    pinnedSigningKeys: [
+      { keyId: input.receiptSigner.keyId, publicKey: input.receiptSigner.publicKey },
+    ],
+  })
+  const collectedHeadEvidence = collectEncryptedWalletBackupV2DescriptorPages(
+    input.reachability.pages,
+  )
+  equal(
+    issueEncryptedWalletBackupV2BackupReachabilityEvidence({
+      receiptEvidence,
+      collectedHeadEvidence,
+    }).bundle.bundleId,
+    input.mutation.addedBundle.bundleId,
+    'v2 receipt reachability',
   )
 }
 

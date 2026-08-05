@@ -1,0 +1,167 @@
+{
+  "inputs": {
+    "mutation": {
+      "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "mutationIdHex": "01010101010101010101010101010101",
+      "auxiliaryRandomnessHex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "initialHead": {
+        "formatVersion": 2,
+        "realm": "backup.production",
+        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "enrollmentEpoch": 7,
+        "headVersion": 3,
+        "activeBundleCount": 1,
+        "activeObjectCount": 1,
+        "activeSetDigest": "ee83b684497f08aa777da3701e70a3b6ef82899fb7e65b04923c5123c8ee0861"
+      },
+      "existingBundle": {
+        "formatVersion": 2,
+        "realm": "backup.production",
+        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "bundleId": "00000000000000000000000000000001",
+        "operationLocator": "0000000000000000000000000000000000000000000000000000000000000011",
+        "assetLocators": ["2121212121212121212121212121212121212121212121212121212121212121"],
+        "payloadCommitment": "0000000000000000000000000000000000000000000000000000000000000021",
+        "objects": [
+          {
+            "objectId": "00000000000000000000000000000031",
+            "digest": "0000000000000000000000000000000000000000000000000000000000000041"
+          }
+        ]
+      },
+      "addedBundle": {
+        "formatVersion": 2,
+        "realm": "backup.production",
+        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "bundleId": "00000000000000000000000000000002",
+        "operationLocator": "0000000000000000000000000000000000000000000000000000000000000012",
+        "assetLocators": ["2121212121212121212121212121212121212121212121212121212121212121"],
+        "payloadCommitment": "0000000000000000000000000000000000000000000000000000000000000022",
+        "objects": [
+          {
+            "objectId": "00000000000000000000000000000032",
+            "digest": "0000000000000000000000000000000000000000000000000000000000000042"
+          }
+        ]
+      }
+    },
+    "receiptSigner": {
+      "privateKeyHex": "0303030303030303030303030303030303030303030303030303030303030303",
+      "auxiliaryRandomnessHex": "0404040404040404040404040404040404040404040404040404040404040404",
+      "keyId": "44444444444444444444444444444444",
+      "publicKey": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337"
+    },
+    "reachability": {
+      "head": {
+        "formatVersion": 2,
+        "realm": "backup.production",
+        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "enrollmentEpoch": 7,
+        "headVersion": 4,
+        "activeBundleCount": 1,
+        "activeObjectCount": 1,
+        "activeSetDigest": "135daad9720173e18d5dd219060c4c58aa7aeb6e73848495e549200dfeebeaf1"
+      },
+      "pages": [
+        {
+          "head": {
+            "formatVersion": 2,
+            "realm": "backup.production",
+            "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+            "enrollmentEpoch": 7,
+            "headVersion": 4,
+            "activeBundleCount": 1,
+            "activeObjectCount": 1,
+            "activeSetDigest": "135daad9720173e18d5dd219060c4c58aa7aeb6e73848495e549200dfeebeaf1"
+          },
+          "afterBundleId": null,
+          "bundles": [
+            {
+              "formatVersion": 2,
+              "realm": "backup.production",
+              "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+              "bundleId": "00000000000000000000000000000002",
+              "operationLocator": "0000000000000000000000000000000000000000000000000000000000000012",
+              "assetLocators": ["2121212121212121212121212121212121212121212121212121212121212121"],
+              "payloadCommitment": "0000000000000000000000000000000000000000000000000000000000000022",
+              "objects": [
+                {
+                  "objectId": "00000000000000000000000000000032",
+                  "digest": "0000000000000000000000000000000000000000000000000000000000000042"
+                }
+              ]
+            }
+          ],
+          "nextAfterBundleId": null
+        }
+      ]
+    }
+  },
+  "expected": {
+    "signedMutation": {
+      "mutation": {
+        "formatVersion": 2,
+        "kind": "bundle-supersession",
+        "realm": "backup.production",
+        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "enrollmentEpoch": 7,
+        "mutationId": "01010101010101010101010101010101",
+        "expectedHeadVersion": 3,
+        "expectedActiveSetDigest": "ee83b684497f08aa777da3701e70a3b6ef82899fb7e65b04923c5123c8ee0861",
+        "addedBundle": {
+          "formatVersion": 2,
+          "realm": "backup.production",
+          "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+          "bundleId": "00000000000000000000000000000002",
+          "operationLocator": "0000000000000000000000000000000000000000000000000000000000000012",
+          "assetLocators": ["2121212121212121212121212121212121212121212121212121212121212121"],
+          "payloadCommitment": "0000000000000000000000000000000000000000000000000000000000000022",
+          "objects": [
+            {
+              "objectId": "00000000000000000000000000000032",
+              "digest": "0000000000000000000000000000000000000000000000000000000000000042"
+            }
+          ]
+        },
+        "supersededBundleIds": ["00000000000000000000000000000001"]
+      },
+      "requestAuthPublicKey": "8941fb08484ecf59ea6d3e331eb7a38736f80ddf5c27cd009b5326c9950baa94",
+      "requestDigest": "a3452a456f40b3c6407bbc32a9b5beb2f58288718c64d601cf5519e61b4da29f",
+      "signature": "687460bc154d0806c7d13152b18d5e534c4d8da1d95a14769be01f17e8bea33708eef027217f70be7239ddd077ab22116fb1c03076d03a05f5bb9fd14fb24f8d"
+    },
+    "receiptDigest": "05f5a4ac958030edc201c15d80522aec9388e6327566ea940ab8e36dbfc4672c",
+    "receipt": {
+      "formatVersion": 2,
+      "kind": "bundle-supersession-receipt",
+      "realm": "backup.production",
+      "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+      "enrollmentEpoch": 7,
+      "requestAuthPublicKey": "8941fb08484ecf59ea6d3e331eb7a38736f80ddf5c27cd009b5326c9950baa94",
+      "mutationId": "01010101010101010101010101010101",
+      "requestDigest": "a3452a456f40b3c6407bbc32a9b5beb2f58288718c64d601cf5519e61b4da29f",
+      "previousHeadVersion": 3,
+      "previousActiveSetDigest": "ee83b684497f08aa777da3701e70a3b6ef82899fb7e65b04923c5123c8ee0861",
+      "resultHead": {
+        "formatVersion": 2,
+        "realm": "backup.production",
+        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "enrollmentEpoch": 7,
+        "headVersion": 4,
+        "activeBundleCount": 1,
+        "activeObjectCount": 1,
+        "activeSetDigest": "135daad9720173e18d5dd219060c4c58aa7aeb6e73848495e549200dfeebeaf1"
+      },
+      "bundleId": "00000000000000000000000000000002",
+      "bundleDescriptorDigest": "b65701c55d69be3e1f80930d526550a98a0eaba9df51940328f734b9d0784e85",
+      "finalizedObjects": [
+        {
+          "objectId": "00000000000000000000000000000032",
+          "digest": "0000000000000000000000000000000000000000000000000000000000000042"
+        }
+      ],
+      "supersededBundleIds": ["00000000000000000000000000000001"],
+      "signingKeyId": "44444444444444444444444444444444",
+      "signature": "cd7d6a8401bd73f0c1827311fc71f69c6f96caa1838ade70f4d5b17f259fd8c852e492a61124341118c2f61595c8896b85305e522debe7e186e3725e83ca6c46"
+    }
+  }
+}

@@ -85,7 +85,7 @@ export function enumerateEncryptedWalletBackupV2DescriptorPages(input: {
   readonly head: EncryptedWalletBackupV2CurrentHead
   readonly bundles: readonly EncryptedWalletBackupV2BundleDescriptor[]
 }): readonly EncryptedWalletBackupV2DescriptorPage[] {
-  const head = decodeHead(input.head)
+  const head = decodeEncryptedWalletBackupV2CurrentHead(input.head)
   const bundles = decodeBundleSet(input.bundles, head)
   assertHeadMatches(head, bundles)
   if (bundles.length === 0)
@@ -130,12 +130,15 @@ export function collectEncryptedWalletBackupV2DescriptorPages(
     throw new Error('encrypted backup v2 descriptor pages are invalid')
   const pages = value.map(decodePage)
   const head = pages[0]!.head
-  const headBytes = encodeHead(head)
+  const headBytes = encodeEncryptedWalletBackupV2CurrentHead(head)
   const bundles: EncryptedWalletBackupV2BundleDescriptor[] = []
   let cursor: string | null = null
   for (let index = 0; index < pages.length; index += 1) {
     const page = pages[index]!
-    if (!equalBytes(headBytes, encodeHead(page.head)) || page.afterBundleId !== cursor)
+    if (
+      !equalBytes(headBytes, encodeEncryptedWalletBackupV2CurrentHead(page.head)) ||
+      page.afterBundleId !== cursor
+    )
       throw new Error('encrypted backup v2 descriptor page head or cursor is invalid')
     if (head.activeBundleCount === 0) {
       if (pages.length !== 1 || page.bundles.length !== 0 || page.nextAfterBundleId !== null)
@@ -184,7 +187,7 @@ export function digestEncryptedWalletBackupV2ActiveSet(input: {
 
 function decodePage(value: unknown): EncryptedWalletBackupV2DescriptorPage {
   const record = exactRecord(value, ['head', 'afterBundleId', 'bundles', 'nextAfterBundleId'])
-  const head = decodeHead(record.head)
+  const head = decodeEncryptedWalletBackupV2CurrentHead(record.head)
   const afterBundleId = cursor(record.afterBundleId)
   const nextAfterBundleId = cursor(record.nextAfterBundleId)
   const bundleValues = record.bundles
@@ -196,7 +199,9 @@ function decodePage(value: unknown): EncryptedWalletBackupV2DescriptorPage {
   return Object.freeze({ head, afterBundleId, bundles: Object.freeze(bundles), nextAfterBundleId })
 }
 
-function decodeHead(value: unknown): EncryptedWalletBackupV2CurrentHead {
+export function decodeEncryptedWalletBackupV2CurrentHead(
+  value: unknown,
+): EncryptedWalletBackupV2CurrentHead {
   const record = exactRecord(value, [
     'formatVersion',
     'realm',
@@ -313,7 +318,9 @@ function activeSetDigest(
 function objectCount(bundles: readonly EncryptedWalletBackupV2BundleDescriptor[]): number {
   return bundles.reduce((count, bundle) => count + bundle.objects.length, 0)
 }
-function encodeHead(head: EncryptedWalletBackupV2CurrentHead): Uint8Array {
+export function encodeEncryptedWalletBackupV2CurrentHead(
+  head: EncryptedWalletBackupV2CurrentHead,
+): Uint8Array {
   return encodeCanonicalBackupCbor([
     head.formatVersion,
     head.realm,

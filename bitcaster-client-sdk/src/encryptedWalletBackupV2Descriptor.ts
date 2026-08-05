@@ -11,6 +11,11 @@ export const ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_OBJECT_REFERENCE_MAX = 256 as con
 export const ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX = 15 as const
 export const ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_ASSET_MAX = 64 as const
 
+export interface EncryptedWalletBackupV2ObjectReference {
+  readonly objectId: string
+  readonly digest: string
+}
+
 export interface EncryptedWalletBackupV2BundleDescriptor {
   readonly formatVersion: 2
   readonly realm: string
@@ -19,7 +24,7 @@ export interface EncryptedWalletBackupV2BundleDescriptor {
   readonly operationLocator: string
   readonly assetLocators: readonly string[]
   readonly payloadCommitment: string
-  readonly objects: readonly Readonly<{ objectId: string; digest: string }>[]
+  readonly objects: readonly EncryptedWalletBackupV2ObjectReference[]
 }
 
 const DESCRIPTOR_DIGEST_DOMAIN = 'bitcaster/encrypted-wallet-backup-v2-descriptor/v1\0'
