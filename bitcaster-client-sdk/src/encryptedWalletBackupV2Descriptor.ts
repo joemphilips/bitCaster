@@ -1,7 +1,11 @@
 import { sha256 } from '@noble/hashes/sha2.js'
+import { decode } from 'cborg'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
+import { preflightEncryptedWalletBackupV2CborTuple } from './encryptedWalletBackupV2Cbor.ts'
 import {
+  equalBytes,
   hexToBytesStrict,
+  requireBytes,
   requireLowerHex,
   requireRealm,
 } from './encryptedWalletBackupServerValidation.ts'
@@ -28,6 +32,24 @@ export interface EncryptedWalletBackupV2BundleDescriptor {
 }
 
 const DESCRIPTOR_DIGEST_DOMAIN = 'bitcaster/encrypted-wallet-backup-v2-descriptor/v1\0'
+const DESCRIPTOR_MAX_BYTES = 65_536
+const DESCRIPTOR_PREFLIGHT = {
+  maximumBytes: DESCRIPTOR_MAX_BYTES,
+  maximumDepth: 3,
+  maximumTokens: 128,
+  maximumArrayLength: 64,
+  maximumItemLength: DESCRIPTOR_MAX_BYTES,
+  fields: [
+    { major: 0, exact: 2 },
+    { major: 3, minimum: 1, maximum: 64 },
+    { major: 2, minimum: 32, maximum: 32 },
+    { major: 2, minimum: 16, maximum: 16 },
+    { major: 2, minimum: 32, maximum: 32 },
+    { major: 4, minimum: 1, maximum: ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_ASSET_MAX },
+    { major: 2, minimum: 32, maximum: 32 },
+    { major: 4, minimum: 1, maximum: ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX },
+  ],
+} as const
 
 export function decodeEncryptedWalletBackupV2BundleDescriptor(
   value: unknown,
@@ -103,6 +125,35 @@ export function encodeEncryptedWalletBackupV2BundleDescriptor(value: unknown): U
   ])
 }
 
+/** Decodes the exact canonical descriptor wire stored by a backup service. */
+export function decodeEncryptedWalletBackupV2BundleDescriptorWire(
+  bytes: Uint8Array,
+  expected?: { readonly realm: string; readonly vaultId: string },
+): EncryptedWalletBackupV2BundleDescriptor {
+  preflightEncryptedWalletBackupV2CborTuple(bytes, DESCRIPTOR_PREFLIGHT)
+  let decoded: unknown
+  try {
+    decoded = decode(bytes)
+  } catch {
+    throw new Error('encrypted backup v2 descriptor wire is invalid')
+  }
+  if (!equalBytes(bytes, encodeCanonicalBackupCbor(decoded)) || !Array.isArray(decoded))
+    throw new Error('encrypted backup v2 descriptor wire is noncanonical')
+  return decodeEncryptedWalletBackupV2BundleDescriptor(
+    {
+      formatVersion: decoded[0],
+      realm: decoded[1],
+      vaultId: toHex(requireBytes(decoded[2], 32, 32, 'vault id')),
+      bundleId: toHex(requireBytes(decoded[3], 16, 16, 'bundle id')),
+      operationLocator: toHex(requireBytes(decoded[4], 32, 32, 'operation locator')),
+      assetLocators: decodeFixedHexArray(decoded[5], 32, 'asset locator'),
+      payloadCommitment: toHex(requireBytes(decoded[6], 32, 32, 'payload commitment')),
+      objects: decodeObjectReferences(decoded[7]),
+    },
+    expected,
+  )
+}
+
 export function digestEncryptedWalletBackupV2BundleDescriptor(value: unknown): string {
   return toHex(
     sha256
@@ -129,6 +180,23 @@ function exactRecord(value: unknown, fields: readonly string[]): Record<string, 
   )
     throw new Error('encrypted backup v2 descriptor is invalid')
   return record
+}
+
+function decodeFixedHexArray(value: unknown, bytes: number, name: string): readonly string[] {
+  if (!Array.isArray(value)) throw new Error(`encrypted backup v2 ${name} list is invalid`)
+  return value.map((item) => toHex(requireBytes(item, bytes, bytes, name)))
+}
+
+function decodeObjectReferences(value: unknown): readonly EncryptedWalletBackupV2ObjectReference[] {
+  if (!Array.isArray(value)) throw new Error('encrypted backup v2 descriptor objects are invalid')
+  return value.map((item) => {
+    if (!Array.isArray(item) || item.length !== 2)
+      throw new Error('encrypted backup v2 descriptor object is invalid')
+    return {
+      objectId: toHex(requireBytes(item[0], 16, 16, 'object id')),
+      digest: toHex(requireBytes(item[1], 32, 32, 'object digest')),
+    }
+  })
 }
 
 function toHex(value: Uint8Array): string {

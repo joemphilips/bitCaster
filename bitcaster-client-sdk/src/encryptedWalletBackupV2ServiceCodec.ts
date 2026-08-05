@@ -11,6 +11,7 @@ import {
 } from './encryptedWalletBackupV2Bundle.ts'
 import {
   decodeEncryptedWalletBackupV2BundleDescriptor,
+  decodeEncryptedWalletBackupV2BundleDescriptorWire,
   encodeEncryptedWalletBackupV2BundleDescriptor,
   type EncryptedWalletBackupV2BundleDescriptor,
   ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX,
@@ -77,16 +78,6 @@ const SIGNED_MUTATION_PREFLIGHT = tuplePreflight(PAGE_MAX_BYTES, 3, 300, 256, PA
   bytes(32),
   bytes(32),
   bytes(64),
-])
-const DESCRIPTOR_PREFLIGHT = tuplePreflight(PAGE_MAX_BYTES, 3, 128, 64, PAGE_MAX_BYTES, [
-  uint(2),
-  textLength(1, 64),
-  bytes(32),
-  bytes(16),
-  bytes(32),
-  array(1, 64),
-  bytes(32),
-  array(1, 15),
 ])
 const HEAD_PREFLIGHT = tuplePreflight(PAGE_MAX_BYTES, 1, 9, 8, PAGE_MAX_BYTES, [
   uint(2),
@@ -415,20 +406,7 @@ function decodeDescriptor(
   bytes: Uint8Array,
   context: { readonly realm: string; readonly vaultId: string },
 ): EncryptedWalletBackupV2BundleDescriptor {
-  const tuple = decodeTuple(bytes, DESCRIPTOR_PREFLIGHT, 'bundle descriptor')
-  return decodeEncryptedWalletBackupV2BundleDescriptor(
-    {
-      formatVersion: tuple[0],
-      realm: tuple[1],
-      vaultId: toHex(requireBytes(tuple[2], 32, 32, 'vault id')),
-      bundleId: toHex(requireBytes(tuple[3], 16, 16, 'bundle id')),
-      operationLocator: toHex(requireBytes(tuple[4], 32, 32, 'operation locator')),
-      assetLocators: decodeDigests(tuple[5], 32, 'asset locator'),
-      payloadCommitment: toHex(requireBytes(tuple[6], 32, 32, 'payload commitment')),
-      objects: decodeObjectReferences(tuple[7]),
-    },
-    context,
-  )
+  return decodeEncryptedWalletBackupV2BundleDescriptorWire(bytes, context)
 }
 
 function encodeHead(value: EncryptedWalletBackupV2CurrentHead): Uint8Array {
@@ -544,11 +522,6 @@ function decodeObjectReferences(
 function decodeBundleIds(value: unknown): readonly string[] {
   if (!Array.isArray(value)) throw new Error('encrypted backup v2 superseded bundles are invalid')
   return value.map((item) => toHex(requireBytes(item, 16, 16, 'superseded bundle id')))
-}
-
-function decodeDigests(value: unknown, bytes: number, name: string): readonly string[] {
-  if (!Array.isArray(value)) throw new Error(`encrypted backup v2 ${name} is invalid`)
-  return value.map((item) => toHex(requireBytes(item, bytes, bytes, name)))
 }
 
 function exactRecord(

@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import {
   decodeEncryptedWalletBackupV2BundleDescriptor,
+  decodeEncryptedWalletBackupV2BundleDescriptorWire,
   digestEncryptedWalletBackupV2BundleDescriptor,
+  encodeEncryptedWalletBackupV2BundleDescriptor,
 } from '../src/encryptedWalletBackupV2Descriptor.ts'
 import {
   collectEncryptedWalletBackupV2DescriptorPages,
@@ -61,6 +63,26 @@ test('v2 descriptor codec is canonical and tamper-sensitive', () => {
     { ...descriptor(1), objects: [descriptor(1).objects[0]!, descriptor(1).objects[0]!] },
   ])
     assert.throws(() => decodeEncryptedWalletBackupV2BundleDescriptor(invalid))
+})
+
+test('v2 descriptor wire decoder accepts canonical wire and rejects tampering', () => {
+  const value = descriptor(1)
+  const wire = encodeEncryptedWalletBackupV2BundleDescriptor(value)
+  assert.deepEqual(
+    decodeEncryptedWalletBackupV2BundleDescriptorWire(wire, {
+      realm: REALM,
+      vaultId: VAULT,
+    }),
+    decodeEncryptedWalletBackupV2BundleDescriptor(value),
+  )
+
+  const trailingByte = new Uint8Array(wire.byteLength + 1)
+  trailingByte.set(wire)
+  assert.throws(() => decodeEncryptedWalletBackupV2BundleDescriptorWire(trailingByte))
+
+  const tampered = new Uint8Array(wire)
+  tampered[0] = 0x87
+  assert.throws(() => decodeEncryptedWalletBackupV2BundleDescriptorWire(tampered))
 })
 
 test('v2 descriptor and page decoders snapshot accessor-backed collections once', () => {
