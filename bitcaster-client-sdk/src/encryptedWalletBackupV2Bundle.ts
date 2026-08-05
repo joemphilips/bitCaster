@@ -6,6 +6,13 @@ import {
   requireEncryptedWalletBackupV2KeyAuthority,
 } from './encryptedWalletBackupV2KeyAuthority.ts'
 import {
+  decodeEncryptedWalletBackupV2BundleDescriptor,
+  ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_ASSET_MAX,
+  ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX,
+} from './encryptedWalletBackupV2Descriptor.ts'
+export type { EncryptedWalletBackupV2BundleDescriptor } from './encryptedWalletBackupV2Descriptor.ts'
+import type { EncryptedWalletBackupV2BundleDescriptor } from './encryptedWalletBackupV2Descriptor.ts'
+import {
   deriveEncryptedWalletBackupV2AssetLocator,
   deriveEncryptedWalletBackupV2OperationLocator,
   ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
@@ -21,8 +28,10 @@ import {
 } from './encryptedWalletBackupServerValidation.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_BODY_BYTES = 262_144 as const
-export const ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_OBJECT_MAX = 15 as const
-export const ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_ASSET_MAX = 64 as const
+export const ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_OBJECT_MAX =
+  ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX
+export const ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_ASSET_MAX =
+  ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_ASSET_MAX
 
 const GCM_TAG_BYTES = 16
 const GCM_NONCE_BYTES = 12
@@ -50,17 +59,6 @@ export interface EncryptedWalletBackupV2AssetIdentity {
   readonly mintUrl: string
   readonly unit: string
   readonly assetIdentity: string
-}
-
-export interface EncryptedWalletBackupV2BundleDescriptor {
-  readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION
-  readonly realm: string
-  readonly vaultId: string
-  readonly bundleId: string
-  readonly operationLocator: string
-  readonly assetLocators: readonly string[]
-  readonly payloadCommitment: string
-  readonly objects: readonly Readonly<{ objectId: string; digest: string }>[]
 }
 
 export interface EncryptedWalletBackupV2BundleObjectWire {
@@ -461,67 +459,7 @@ function decodeDescriptor(
   value: unknown,
   keyHandle: EncryptedWalletBackupV2KeyHandle,
 ): DecodedDescriptor {
-  const record = requireExactRecord(
-    value,
-    [
-      'formatVersion',
-      'realm',
-      'vaultId',
-      'bundleId',
-      'operationLocator',
-      'assetLocators',
-      'payloadCommitment',
-      'objects',
-    ],
-    'bundle descriptor',
-  )
-  if (record.formatVersion !== ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION) throw new Error('version')
-  if (record.realm !== keyHandle.realm || record.vaultId !== keyHandle.vaultId)
-    throw new Error('foreign bundle')
-  const objects = decodeDescriptorObjects(record.objects)
-  return {
-    realm: keyHandle.realm,
-    vaultId: keyHandle.vaultId,
-    bundleId: requireLowerHex(record.bundleId, BUNDLE_ID_BYTES, 'bundle id'),
-    operationLocator: requireLowerHex(record.operationLocator, 32, 'operation locator'),
-    assetLocators: decodeAssetLocators(record.assetLocators),
-    payloadCommitment: requireLowerHex(record.payloadCommitment, 32, 'payload commitment'),
-    objects,
-  }
-}
-
-function decodeDescriptorObjects(value: unknown): readonly DescriptorObject[] {
-  if (
-    !Array.isArray(value) ||
-    value.length < 1 ||
-    value.length > ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_OBJECT_MAX
-  ) {
-    throw new Error('bundle descriptor objects are invalid')
-  }
-  return Object.freeze(
-    value.map((entry) => {
-      const record = requireExactRecord(entry, ['objectId', 'digest'], 'bundle descriptor object')
-      return Object.freeze({
-        objectId: requireLowerHex(record.objectId, OBJECT_ID_BYTES, 'object id'),
-        digest: requireLowerHex(record.digest, 32, 'object digest'),
-      })
-    }),
-  )
-}
-
-function decodeAssetLocators(value: unknown): readonly string[] {
-  if (
-    !Array.isArray(value) ||
-    value.length < 1 ||
-    value.length > ENCRYPTED_WALLET_BACKUP_V2_BUNDLE_ASSET_MAX
-  ) {
-    throw new Error('bundle asset locators are invalid')
-  }
-  const locators = value.map((locator) => requireLowerHex(locator, 32, 'asset locator'))
-  if (locators.some((locator, index) => index > 0 && locator <= locators[index - 1]!)) {
-    throw new Error('bundle asset locators are invalid')
-  }
-  return Object.freeze(locators)
+  return decodeEncryptedWalletBackupV2BundleDescriptor(value, keyHandle)
 }
 
 function decodeObjects(value: unknown, descriptor: DecodedDescriptor): readonly DecodedObject[] {

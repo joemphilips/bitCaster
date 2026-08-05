@@ -1,6 +1,7 @@
 import vector from '../../../test-vectors/encrypted-wallet-backup-v1.json'
 import v2BundleVector from '../../../test-vectors/encrypted-wallet-backup-v2-bundle.json'
 import v2ProofSetVector from '../../../test-vectors/encrypted-wallet-backup-v2-proof-set.json'
+import v2HeadVector from '../../../test-vectors/encrypted-wallet-backup-v2-head.json'
 import * as Cashu from '@cashu/cashu-ts'
 import {
   createEncryptedWalletBackupKeyHandle,
@@ -28,6 +29,13 @@ import {
   decryptEncryptedWalletBackupV2ProofSetBundle,
   prepareEncryptedWalletBackupV2ProofSetBundle,
 } from '../../src/encryptedWalletBackupV2ProofSet.ts'
+import { digestEncryptedWalletBackupV2BundleDescriptor } from '../../src/encryptedWalletBackupV2Descriptor.ts'
+import {
+  collectEncryptedWalletBackupV2DescriptorPages,
+  createEncryptedWalletBackupV2CurrentHead,
+  digestEncryptedWalletBackupV2ActiveSet,
+  enumerateEncryptedWalletBackupV2DescriptorPages,
+} from '../../src/encryptedWalletBackupV2Head.ts'
 import { encodeCanonicalBackupCbor } from '../../src/encryptedWalletBackupCbor.ts'
 import { encodeDurableWalletProofDerivationLocatorCbor } from '../../src/durableWalletProofDerivationLocator.ts'
 import {
@@ -160,10 +168,66 @@ async function run(): Promise<{
   await exerciseV2KeyVector()
   await exerciseV2BundleVector()
   await exerciseV2ProofSetVector()
+  exerciseV2HeadVector()
   await exerciseManifestVector(seed, keyHandle)
   await exerciseBlsAndCtf(seed, keyHandle)
   await exerciseFailureCases(seed, keyHandle, prepared, wire)
   return exerciseMaxLegacyRestoreScheduling(seed, keyHandle)
+}
+
+function exerciseV2HeadVector(): void {
+  const input = v2HeadVector.inputs
+  const expected = v2HeadVector.expected
+  const bundles = Array.from({ length: input.descriptorCount }, (_, index) =>
+    headVectorDescriptor(index + 1),
+  )
+  const head = createEncryptedWalletBackupV2CurrentHead({ ...input, bundles })
+  const pages = enumerateEncryptedWalletBackupV2DescriptorPages({ head, bundles })
+  equal(
+    digestEncryptedWalletBackupV2BundleDescriptor(bundles[0]!),
+    expected.firstDescriptorDigest,
+    'v2 head descriptor digest',
+  )
+  equal(
+    digestEncryptedWalletBackupV2ActiveSet({ ...input, bundles: [] }),
+    expected.emptyActiveSetDigest,
+    'v2 head empty digest',
+  )
+  equal(head.activeSetDigest, expected.activeSetDigest, 'v2 head active digest')
+  equal(JSON.stringify(head), JSON.stringify(expected.head), 'v2 head record')
+  equal(
+    pages.map((page) => page.bundles.length).join(','),
+    expected.pageBundleCounts.join(','),
+    'v2 head pages',
+  )
+  equal(
+    pages.map((page) => page.nextAfterBundleId).join(','),
+    expected.pageCursors.join(','),
+    'v2 head cursors',
+  )
+  equal(
+    collectEncryptedWalletBackupV2DescriptorPages(pages).bundles.length,
+    input.descriptorCount,
+    'v2 head collection',
+  )
+}
+
+function headVectorDescriptor(index: number) {
+  return {
+    formatVersion: 2 as const,
+    realm: v2HeadVector.inputs.realm,
+    vaultId: v2HeadVector.inputs.vaultId,
+    bundleId: index.toString(16).padStart(32, '0'),
+    operationLocator: (index + 16).toString(16).padStart(64, '0'),
+    assetLocators: ['21'.repeat(32)],
+    payloadCommitment: (index + 32).toString(16).padStart(64, '0'),
+    objects: [
+      {
+        objectId: (index * 16 + 48).toString(16).padStart(32, '0'),
+        digest: (index * 16 + 64).toString(16).padStart(64, '0'),
+      },
+    ],
+  }
 }
 
 async function exerciseV2ProofSetVector(): Promise<void> {

@@ -1,0 +1,26 @@
+{
+  "inputs": {
+    "realm": "backup.production",
+    "vaultId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "enrollmentEpoch": 7,
+    "headVersion": 3,
+    "descriptorCount": 16
+  },
+  "expected": {
+    "firstDescriptorDigest": "f84c2e4213b0c4224ec137a8fe85ac2a0344370681054735d2f89130c3dbe9b5",
+    "emptyActiveSetDigest": "82b918fdcfbea1444d6fb39ddbd1747b53a02eea96a813f28692002d77c4539d",
+    "activeSetDigest": "6c555f1aeae522bbe9ccca0c0f7c0d5e91ed9534e8b79f70ced8170fc2a8cd5a",
+    "head": {
+      "formatVersion": 2,
+      "realm": "backup.production",
+      "vaultId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "enrollmentEpoch": 7,
+      "headVersion": 3,
+      "activeBundleCount": 16,
+      "activeObjectCount": 16,
+      "activeSetDigest": "6c555f1aeae522bbe9ccca0c0f7c0d5e91ed9534e8b79f70ced8170fc2a8cd5a"
+    },
+    "pageBundleCounts": [15, 1],
+    "pageCursors": ["0000000000000000000000000000000f", null]
+  }
+}

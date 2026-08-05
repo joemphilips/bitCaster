@@ -51,6 +51,14 @@
       "types": "./dist/encryptedWalletBackupV2Bundle.d.ts",
       "import": "./dist/encryptedWalletBackupV2Bundle.js"
     },
+    "./encryptedWalletBackupV2Descriptor": {
+      "types": "./dist/encryptedWalletBackupV2Descriptor.d.ts",
+      "import": "./dist/encryptedWalletBackupV2Descriptor.js"
+    },
+    "./encryptedWalletBackupV2Head": {
+      "types": "./dist/encryptedWalletBackupV2Head.d.ts",
+      "import": "./dist/encryptedWalletBackupV2Head.js"
+    },
     "./encryptedWalletBackupV2ProofSet": {
       "types": "./dist/encryptedWalletBackupV2ProofSet.d.ts",
       "import": "./dist/encryptedWalletBackupV2ProofSet.js"
