@@ -1,4 +1,5 @@
 import vector from '../../../test-vectors/encrypted-wallet-backup-v1.json'
+import v2BundleVector from '../../../test-vectors/encrypted-wallet-backup-v2-bundle.json'
 import * as Cashu from '@cashu/cashu-ts'
 import {
   createEncryptedWalletBackupKeyHandle,
@@ -18,6 +19,10 @@ import {
   deriveEncryptedWalletBackupV2AssetLocator,
   deriveEncryptedWalletBackupV2OperationLocator,
 } from '../../src/encryptedWalletBackupV2Keys.ts'
+import {
+  decryptEncryptedWalletBackupV2TransportBundle,
+  prepareEncryptedWalletBackupV2TransportBundle,
+} from '../../src/encryptedWalletBackupV2Bundle.ts'
 import { encodeCanonicalBackupCbor } from '../../src/encryptedWalletBackupCbor.ts'
 import { encodeDurableWalletProofDerivationLocatorCbor } from '../../src/durableWalletProofDerivationLocator.ts'
 import {
@@ -148,10 +153,64 @@ async function run(): Promise<{
   equal(JSON.stringify(restored).includes(expected.derivedSecretHex), false, 'decoded opacity')
 
   await exerciseV2KeyVector()
+  await exerciseV2BundleVector()
   await exerciseManifestVector(seed, keyHandle)
   await exerciseBlsAndCtf(seed, keyHandle)
   await exerciseFailureCases(seed, keyHandle, prepared, wire)
   return exerciseMaxLegacyRestoreScheduling(seed, keyHandle)
+}
+
+async function exerciseV2BundleVector(): Promise<void> {
+  const input = v2BundleVector.inputs
+  const expected = v2BundleVector.expected
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed: fromHex(input.seedHex),
+    realm: input.realm,
+  })
+  const runtime = deterministicRuntime([fromHex(input.bundleIdHex), fromHex(input.nonceHex)])
+  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    operationId: input.operationId,
+    assets: input.assets,
+    canonicalPayload: fromHex(input.payloadHex),
+    runtime,
+  })
+  const object = prepared.objects[0]!
+  equal(prepared.descriptor.vaultId, expected.vaultId, 'v2 bundle vault id')
+  equal(prepared.descriptor.bundleId, expected.bundleId, 'v2 bundle id')
+  equal(
+    prepared.descriptor.operationLocator,
+    expected.operationLocator,
+    'v2 bundle operation locator',
+  )
+  equal(prepared.descriptor.assetLocators.join(','), expected.assetLocators.join(','), 'v2 assets')
+  equal(prepared.descriptor.payloadCommitment, expected.payloadCommitment, 'v2 payload commitment')
+  equal(object.objectId, expected.objectId, 'v2 object id')
+  equal(object.digest, expected.objectDigest, 'v2 object digest')
+  equal(toHex(object.aad), expected.aadHex, 'v2 object AAD')
+  equal(
+    toHex(await decryptEncryptedWalletBackupV2TransportBundle({ keyHandle, runtime, ...prepared })),
+    input.payloadHex,
+    'v2 payload',
+  )
+  const nativePrepared = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    operationId: input.operationId,
+    assets: input.assets,
+    canonicalPayload: Uint8Array.of(7),
+    runtime: crypto,
+  })
+  equal(
+    toHex(
+      await decryptEncryptedWalletBackupV2TransportBundle({
+        keyHandle,
+        runtime: crypto,
+        ...nativePrepared,
+      }),
+    ),
+    '07',
+    'v2 native Crypto receiver',
+  )
 }
 
 async function exerciseV2KeyVector(): Promise<void> {

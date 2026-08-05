@@ -1,12 +1,16 @@
 import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
-import { exactEncryptedWalletBackupArrayBuffer } from './encryptedWalletBackupBytes.ts'
+import {
+  deriveEncryptedWalletBackupV2Hkdf,
+  registerEncryptedWalletBackupV2KeyHandle,
+  requireEncryptedWalletBackupV2KeyAuthority,
+  type EncryptedWalletBackupV2KeyAuthority,
+} from './encryptedWalletBackupV2KeyAuthority.ts'
 import { requireRealm, requireUtf8Text } from './encryptedWalletBackupServerValidation.ts'
 import { canonicalizeMintIdentityUrl } from './tokenImportValidation.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION = 2 as const
 
-const ROOT_SALT = new TextEncoder().encode('bitcaster/encrypted-wallet-backup/hkdf-salt/v2')
 const SECP256K1_ORDER = secp256k1.Point.Fn.ORDER
 const SCALAR_ATTEMPTS = 256
 const MINT_URL_MAX_BYTES = 2_048
@@ -25,17 +29,6 @@ export interface EncryptedWalletBackupV2KeyHandle {
   readonly requestAuthPublicKey: string
   readonly portfolioReportingPublicKey: string
 }
-
-interface KeyAuthority {
-  readonly vaultIdRoot: Uint8Array
-  readonly requestAuthRoot: Uint8Array
-  readonly portfolioReportingRoot: Uint8Array
-  readonly assetLocatorRoot: Uint8Array
-  readonly operationLocatorRoot: Uint8Array
-  readonly runtime: EncryptedWalletBackupV2Runtime
-}
-
-const KEY_AUTHORITIES = new WeakMap<object, KeyAuthority>()
 
 export async function createEncryptedWalletBackupV2KeyHandle(input: {
   seed: Uint8Array
@@ -69,7 +62,7 @@ export async function createEncryptedWalletBackupV2KeyHandle(input: {
     requestAuthPublicKey,
     portfolioReportingPublicKey,
   })
-  KEY_AUTHORITIES.set(handle, authority)
+  registerEncryptedWalletBackupV2KeyHandle(handle, authority)
   return handle
 }
 
@@ -79,7 +72,7 @@ export async function deriveEncryptedWalletBackupV2AssetLocator(input: {
   unit: string
   assetIdentity: string
 }): Promise<string> {
-  const authority = requireKeyAuthority(input.keyHandle)
+  const authority = requireEncryptedWalletBackupV2KeyAuthority(input.keyHandle)
   const mintUrl = canonicalizeMintIdentity(input.mintUrl)
   const unit = requireUtf8Text(input.unit, UNIT_MAX_BYTES, 'encrypted backup unit')
   const assetIdentity = requireUtf8Text(
@@ -88,7 +81,7 @@ export async function deriveEncryptedWalletBackupV2AssetLocator(input: {
     'encrypted backup asset identity',
   )
   return toLowerHex(
-    await hkdf(
+    await deriveEncryptedWalletBackupV2Hkdf(
       authority.runtime,
       authority.assetLocatorRoot,
       locatorInfo('asset-locator', input.keyHandle.realm, mintUrl, unit, assetIdentity),
@@ -100,14 +93,14 @@ export async function deriveEncryptedWalletBackupV2OperationLocator(input: {
   keyHandle: EncryptedWalletBackupV2KeyHandle
   operationId: string
 }): Promise<string> {
-  const authority = requireKeyAuthority(input.keyHandle)
+  const authority = requireEncryptedWalletBackupV2KeyAuthority(input.keyHandle)
   const operationId = requireUtf8Text(
     input.operationId,
     OPERATION_ID_MAX_BYTES,
     'encrypted backup operation id',
   )
   return toLowerHex(
-    await hkdf(
+    await deriveEncryptedWalletBackupV2Hkdf(
       authority.runtime,
       authority.operationLocatorRoot,
       locatorInfo('operation-locator', input.keyHandle.realm, operationId),
@@ -119,14 +112,16 @@ async function deriveKeyAuthority(
   seed: Uint8Array,
   realm: string,
   runtime: EncryptedWalletBackupV2Runtime,
-): Promise<KeyAuthority> {
+): Promise<EncryptedWalletBackupV2KeyAuthority> {
   const [
+    encryptionRoot,
     vaultIdRoot,
     requestAuthRoot,
     portfolioReportingRoot,
     assetLocatorRoot,
     operationLocatorRoot,
   ] = await Promise.all([
+    deriveRoot(seed, realm, 'encryption-root', runtime),
     deriveRoot(seed, realm, 'vault-id-root', runtime),
     deriveRoot(seed, realm, 'request-auth-root', runtime),
     deriveRoot(seed, realm, 'portfolio-reporting-root', runtime),
@@ -134,6 +129,7 @@ async function deriveKeyAuthority(
     deriveRoot(seed, realm, 'operation-locator-root', runtime),
   ])
   return Object.freeze({
+    encryptionRoot,
     vaultIdRoot,
     requestAuthRoot,
     portfolioReportingRoot,
@@ -149,11 +145,18 @@ function deriveRoot(
   domain: string,
   runtime: EncryptedWalletBackupV2Runtime,
 ): Promise<Uint8Array> {
-  return hkdf(runtime, seed, rootInfo(domain, realm))
+  return deriveEncryptedWalletBackupV2Hkdf(runtime, seed, rootInfo(domain, realm))
 }
 
-function deriveVaultId(authority: KeyAuthority, realm: string): Promise<Uint8Array> {
-  return hkdf(authority.runtime, authority.vaultIdRoot, rootInfo('vault-id', realm))
+function deriveVaultId(
+  authority: EncryptedWalletBackupV2KeyAuthority,
+  realm: string,
+): Promise<Uint8Array> {
+  return deriveEncryptedWalletBackupV2Hkdf(
+    authority.runtime,
+    authority.vaultIdRoot,
+    rootInfo('vault-id', realm),
+  )
 }
 
 async function deriveScalar(
@@ -163,39 +166,15 @@ async function deriveScalar(
   runtime: EncryptedWalletBackupV2Runtime,
 ): Promise<Uint8Array> {
   for (let counter = 0; counter < SCALAR_ATTEMPTS; counter += 1) {
-    const candidate = await hkdf(runtime, root, scalarInfo(domain, realm, counter))
+    const candidate = await deriveEncryptedWalletBackupV2Hkdf(
+      runtime,
+      root,
+      scalarInfo(domain, realm, counter),
+    )
     const scalar = bytesToBigInt(candidate)
     if (scalar > 0n && scalar < SECP256K1_ORDER) return candidate
   }
   throw new Error('encrypted backup scalar derivation exhausted')
-}
-
-async function hkdf(
-  runtime: EncryptedWalletBackupV2Runtime,
-  ikm: Uint8Array,
-  info: Uint8Array,
-): Promise<Uint8Array> {
-  const key = await runtime.subtle.importKey(
-    'raw',
-    exactEncryptedWalletBackupArrayBuffer(ikm),
-    'HKDF',
-    false,
-    ['deriveBits'],
-  )
-  const output = await runtime.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: exactEncryptedWalletBackupArrayBuffer(ROOT_SALT),
-      info: exactEncryptedWalletBackupArrayBuffer(info),
-    },
-    key,
-    256,
-  )
-  if (!(output instanceof ArrayBuffer) || output.byteLength !== 32) {
-    throw new Error('encrypted backup runtime returned invalid HKDF output')
-  }
-  return new Uint8Array(output)
 }
 
 function rootInfo(domain: string, realm: string): Uint8Array {
@@ -218,14 +197,6 @@ function locatorInfo(domain: string, realm: string, ...identity: string[]): Uint
     realm,
     ...identity,
   ])
-}
-
-function requireKeyAuthority(value: unknown): KeyAuthority {
-  if (typeof value !== 'object' || value === null)
-    throw new Error('encrypted backup key handle is invalid')
-  const authority = KEY_AUTHORITIES.get(value)
-  if (authority === undefined) throw new Error('encrypted backup key handle is invalid')
-  return authority
 }
 
 function requireSeed(value: unknown): Uint8Array {
