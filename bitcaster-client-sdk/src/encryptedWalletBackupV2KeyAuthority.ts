@@ -1,4 +1,6 @@
 import { exactEncryptedWalletBackupArrayBuffer } from './encryptedWalletBackupBytes.ts'
+import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
+import { equalBytes } from './encryptedWalletBackupServerValidation.ts'
 import type {
   EncryptedWalletBackupV2KeyHandle,
   EncryptedWalletBackupV2Runtime,
@@ -64,4 +66,24 @@ export async function deriveEncryptedWalletBackupV2Hkdf(
     throw new Error('encrypted backup runtime returned invalid HKDF output')
   }
   return new Uint8Array(output)
+}
+
+/** Confirms private seed authority without exposing the seed or a seed digest. */
+export async function requireEncryptedWalletBackupV2SeedHandleMatch(input: {
+  readonly keyHandle: EncryptedWalletBackupV2KeyHandle
+  readonly seed: Uint8Array
+}): Promise<Uint8Array> {
+  if (!(input.seed instanceof Uint8Array) || input.seed.byteLength !== 64) {
+    throw new Error('encrypted backup seed is invalid')
+  }
+  const authority = requireEncryptedWalletBackupV2KeyAuthority(input.keyHandle)
+  const expected = await deriveEncryptedWalletBackupV2Hkdf(
+    authority.runtime,
+    input.seed,
+    encodeCanonicalBackupCbor([2, 'encryption-root', input.keyHandle.realm]),
+  )
+  if (!equalBytes(expected, authority.encryptionRoot)) {
+    throw new Error('encrypted backup seed does not match the key handle')
+  }
+  return new Uint8Array(input.seed)
 }

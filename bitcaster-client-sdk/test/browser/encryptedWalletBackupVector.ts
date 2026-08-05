@@ -1,5 +1,6 @@
 import vector from '../../../test-vectors/encrypted-wallet-backup-v1.json'
 import v2BundleVector from '../../../test-vectors/encrypted-wallet-backup-v2-bundle.json'
+import v2ProofSetVector from '../../../test-vectors/encrypted-wallet-backup-v2-proof-set.json'
 import * as Cashu from '@cashu/cashu-ts'
 import {
   createEncryptedWalletBackupKeyHandle,
@@ -23,6 +24,10 @@ import {
   decryptEncryptedWalletBackupV2TransportBundle,
   prepareEncryptedWalletBackupV2TransportBundle,
 } from '../../src/encryptedWalletBackupV2Bundle.ts'
+import {
+  decryptEncryptedWalletBackupV2ProofSetBundle,
+  prepareEncryptedWalletBackupV2ProofSetBundle,
+} from '../../src/encryptedWalletBackupV2ProofSet.ts'
 import { encodeCanonicalBackupCbor } from '../../src/encryptedWalletBackupCbor.ts'
 import { encodeDurableWalletProofDerivationLocatorCbor } from '../../src/durableWalletProofDerivationLocator.ts'
 import {
@@ -154,10 +159,53 @@ async function run(): Promise<{
 
   await exerciseV2KeyVector()
   await exerciseV2BundleVector()
+  await exerciseV2ProofSetVector()
   await exerciseManifestVector(seed, keyHandle)
   await exerciseBlsAndCtf(seed, keyHandle)
   await exerciseFailureCases(seed, keyHandle, prepared, wire)
   return exerciseMaxLegacyRestoreScheduling(seed, keyHandle)
+}
+
+async function exerciseV2ProofSetVector(): Promise<void> {
+  const input = v2ProofSetVector.inputs
+  const expected = v2ProofSetVector.expected
+  const seed = fromHex(input.seedHex)
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({ seed, realm: input.realm })
+  const runtime = deterministicRuntime([fromHex(input.bundleIdHex), fromHex(input.nonceHex)])
+  const prepared = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed,
+    operationId: input.operationId,
+    proofs: input.proofs,
+    counterHighWaterMarks: input.counterHighWaterMarks,
+    runtime,
+  })
+  const object = prepared.objects[0]!
+  equal(prepared.descriptor.vaultId, expected.vaultId, 'v2 proof set vault id')
+  equal(prepared.descriptor.bundleId, expected.bundleId, 'v2 proof set bundle id')
+  equal(prepared.descriptor.operationLocator, expected.operationLocator, 'v2 proof set operation')
+  equal(
+    prepared.descriptor.assetLocators.join(','),
+    expected.assetLocators.join(','),
+    'v2 proof set assets',
+  )
+  equal(
+    prepared.descriptor.payloadCommitment,
+    expected.payloadCommitment,
+    'v2 proof set commitment',
+  )
+  equal(object.objectId, expected.objectId, 'v2 proof set object id')
+  equal(object.digest, expected.objectDigest, 'v2 proof set object digest')
+  equal(toHex(object.aad), expected.aadHex, 'v2 proof set AAD')
+  const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed,
+    operationId: input.operationId,
+    runtime,
+    ...prepared,
+  })
+  equal(restored.proofs.length, 1, 'v2 proof set proof count')
+  equal(restored.proofs[0]!.proof.secret, input.proofs[0]!.proof.secret, 'v2 proof set secret')
 }
 
 async function exerciseV2BundleVector(): Promise<void> {

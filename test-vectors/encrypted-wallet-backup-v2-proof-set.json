@@ -1,0 +1,46 @@
+{
+  "inputs": {
+    "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "realm": "backup.production",
+    "operationId": "backup:proof-set",
+    "bundleIdHex": "101112131415161718191a1b1c1d1e1f",
+    "nonceHex": "202122232425262728292a2b",
+    "proofs": [
+      {
+        "mintUrl": "https://mint.example",
+        "unit": "sat",
+        "asset": { "kind": "ordinary" },
+        "proof": {
+          "id": "012d3df3fbcb5c4ff6a1cf1521113576135799e946228863271ad6a5be4f589539",
+          "amount": "1",
+          "secret": "611cbede5f007aaa9b95a5d52b8e2cc45b3a717a4a1ae84e3d7dd7447850dd53",
+          "C": "021111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "locator": {
+          "schemaVersion": 1,
+          "kind": "nut13",
+          "keysetId": "012d3df3fbcb5c4ff6a1cf1521113576135799e946228863271ad6a5be4f589539",
+          "counter": 0
+        }
+      }
+    ],
+    "counterHighWaterMarks": [
+      {
+        "mintUrl": "https://mint.example",
+        "unit": "sat",
+        "keysetId": "012d3df3fbcb5c4ff6a1cf1521113576135799e946228863271ad6a5be4f589539",
+        "nextCounter": 1
+      }
+    ]
+  },
+  "expected": {
+    "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+    "bundleId": "101112131415161718191a1b1c1d1e1f",
+    "operationLocator": "586e8faf6ff7e326189656211140ba1f25b09ccefc57b5445a98c92e5919a37e",
+    "assetLocators": ["5a6062acc1b4d00b8f861c769e5877fb5400daae5468d97e6b72bd2df22a69af"],
+    "payloadCommitment": "9a6c7899d047540072c41b068e8d039c6f19f7cc468ef7e888fc53ddfff7332d",
+    "objectId": "1d1fcb1d939e11704f9412679226cd89",
+    "objectDigest": "013c67739172cbfe0695e743223325b629ebbf804edceb1c68123df007261405",
+    "aadHex": "8b027828656e637279707465642d77616c6c65742d6261636b75702d76322d62756e646c652d6f626a656374716261636b75702e70726f64756374696f6e58205ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e50101112131415161718191a1b1c1d1e1f5820586e8faf6ff7e326189656211140ba1f25b09ccefc57b5445a98c92e5919a37e8158205a6062acc1b4d00b8f861c769e5877fb5400daae5468d97e6b72bd2df22a69af58209a6c7899d047540072c41b068e8d039c6f19f7cc468ef7e888fc53ddfff7332d501d1fcb1d939e11704f9412679226cd890001"
+  }
+}
