@@ -918,6 +918,39 @@ paths:
         '503':
           description: Mint validation or durable capability authority is unavailable.
 
+  /api/v1/asset-monitoring/reports:
+    post:
+      operationId: submitAssetMonitoringReport
+      summary: Submit one complete display-only asset holdings report
+      security:
+        - nip98: []
+      description: >
+        Accepts one complete best-effort holdings snapshot for the authenticated
+        account and canonical wallet id. The engine does not verify proof
+        ownership and does not accept a seed signature or backup state. An
+        exact retry of the latest report returns no content. Reusing the latest
+        report id with different content, or using an invalid interval or wallet
+        lifecycle, returns a conflict.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetMonitoringReportRequest'
+      responses:
+        '204':
+          description: Report accepted or exact latest-report retry accepted.
+        '400':
+          description: Malformed, noncanonical, or out-of-bound report field.
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: Latest-report idempotency or wallet interval lifecycle conflict.
+        '413':
+          description: Request exceeds the 1 MiB report limit.
+        '429':
+          description: Authenticated-subject report rate limit exceeded.
+
   /api/v1/settlement-capabilities/policy:
     get:
       operationId: getSettlementCapabilityAdmissionPolicy
@@ -1115,6 +1148,161 @@ components:
       type: string
       pattern: '^[0-9a-f]{64}$'
       description: Canonical lowercase SHA-256 digest.
+
+    AssetMonitoringUnit:
+      type: string
+      enum: [sat, msat]
+      description: >
+        Canonical Cashu unit for a monitored asset or its display base asset.
+
+    AssetMonitoringAssetKind:
+      type: string
+      enum: [collateral, conditional]
+      description: Canonical monitored-asset identity kind.
+
+    AssetMonitoringAssetReference:
+      type: object
+      oneOf:
+        - $ref: '#/components/schemas/AssetMonitoringCollateralAssetReference'
+        - $ref: '#/components/schemas/AssetMonitoringConditionalAssetReference'
+
+    AssetMonitoringCollateralAssetReference:
+      type: object
+      additionalProperties: false
+      required:
+        - canonicalMintUrl
+        - kind
+        - cashuUnit
+        - displayBaseAsset
+      properties:
+        canonicalMintUrl:
+          type: string
+          format: uri
+          maxLength: 512
+          description: Canonical mint URL. It has no trailing slash.
+        kind:
+          type: string
+          enum: [collateral]
+        cashuUnit:
+          $ref: '#/components/schemas/AssetMonitoringUnit'
+        displayBaseAsset:
+          $ref: '#/components/schemas/AssetMonitoringUnit'
+
+    AssetMonitoringConditionalAssetReference:
+      type: object
+      additionalProperties: false
+      required:
+        - canonicalMintUrl
+        - kind
+        - cashuUnit
+        - displayBaseAsset
+        - conditionId
+        - parentConditionId
+        - outcomeUniverseDigest
+        - internalOutcomeSetId
+      properties:
+        canonicalMintUrl:
+          type: string
+          format: uri
+          maxLength: 512
+          description: Canonical mint URL. It has no trailing slash.
+        kind:
+          type: string
+          enum: [conditional]
+        cashuUnit:
+          $ref: '#/components/schemas/AssetMonitoringUnit'
+        displayBaseAsset:
+          $ref: '#/components/schemas/AssetMonitoringUnit'
+        conditionId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[0-9A-Fa-f]+$'
+        parentConditionId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[0-9A-Fa-f]+$'
+        outcomeUniverseDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+        internalOutcomeSetId:
+          type: string
+          minLength: 1
+          maxLength: 1024
+
+    AssetMonitoringRecoveryCounterInterval:
+      type: object
+      additionalProperties: false
+      required: [start, count]
+      properties:
+        start:
+          type: integer
+          format: int32
+          minimum: 0
+        count:
+          type: integer
+          format: int32
+          minimum: 1
+
+    AssetMonitoringRecoveryHint:
+      type: object
+      additionalProperties: false
+      required: [keysetIds, counterIntervals]
+      properties:
+        keysetIds:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^(00[0-9a-f]{14}|0[12][0-9a-f]{64})$'
+        counterIntervals:
+          type: array
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/AssetMonitoringRecoveryCounterInterval'
+
+    AssetMonitoringReportedHolding:
+      type: object
+      additionalProperties: false
+      required: [asset, availableSubunits, pendingOutgoingSubunits]
+      properties:
+        asset:
+          $ref: '#/components/schemas/AssetMonitoringAssetReference'
+        availableSubunits:
+          type: integer
+          format: int64
+          minimum: 0
+        pendingOutgoingSubunits:
+          type: integer
+          format: int64
+          minimum: 0
+        recoveryHint:
+          oneOf:
+            - $ref: '#/components/schemas/AssetMonitoringRecoveryHint'
+            - type: 'null'
+
+    AssetMonitoringReportRequest:
+      type: object
+      additionalProperties: false
+      required: [walletId, reportId, startsNewInterval, holdings]
+      properties:
+        walletId:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Canonical local durable wallet identifier.
+        reportId:
+          type: string
+          format: uuid
+          description: Client-generated report identifier for exact retry handling.
+        startsNewInterval:
+          type: boolean
+          description: True for the first report and for a wallet switch.
+        holdings:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/AssetMonitoringReportedHolding'
 
     SettlementCapabilityReference:
       type: object

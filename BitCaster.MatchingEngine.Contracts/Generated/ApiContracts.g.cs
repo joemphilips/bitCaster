@@ -26,6 +26,134 @@ namespace BitCaster.MatchingEngine.Contracts
 
     
 
+    /// <summary>
+    /// Canonical Cashu unit for a monitored asset or its display base asset.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum AssetMonitoringUnit
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"sat")]
+        Sat = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"msat")]
+        Msat = 1,
+
+    }
+
+    /// <summary>
+    /// Canonical monitored-asset identity kind.
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum AssetMonitoringAssetKind
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"collateral")]
+        Collateral = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"conditional")]
+        Conditional = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AssetMonitoringRecoveryCounterInterval
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AssetMonitoringRecoveryCounterInterval(int @count, int @start)
+        {
+            this.Start = @start;
+            this.Count = @count;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("start")]
+        public int Start { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("count")]
+        public int Count { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AssetMonitoringRecoveryHint
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AssetMonitoringRecoveryHint(System.Collections.Generic.List<AssetMonitoringRecoveryCounterInterval> @counterIntervals, System.Collections.Generic.List<string> @keysetIds)
+        {
+            this.KeysetIds = @keysetIds;
+            this.CounterIntervals = @counterIntervals;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("keysetIds")]
+        public System.Collections.Generic.List<string> KeysetIds { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("counterIntervals")]
+        public System.Collections.Generic.List<AssetMonitoringRecoveryCounterInterval> CounterIntervals { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AssetMonitoringReportedHolding
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AssetMonitoringReportedHolding(Asset @asset, long @availableSubunits, long @pendingOutgoingSubunits, AssetMonitoringRecoveryHint @recoveryHint)
+        {
+            this.Asset = @asset;
+            this.AvailableSubunits = @availableSubunits;
+            this.PendingOutgoingSubunits = @pendingOutgoingSubunits;
+            this.RecoveryHint = @recoveryHint;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("asset")]
+        public Asset Asset { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("availableSubunits")]
+        public long AvailableSubunits { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("pendingOutgoingSubunits")]
+        public long PendingOutgoingSubunits { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("recoveryHint")]
+        public AssetMonitoringRecoveryHint RecoveryHint { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AssetMonitoringReportRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AssetMonitoringReportRequest(System.Collections.Generic.List<AssetMonitoringReportedHolding> @holdings, System.Guid @reportId, bool @startsNewInterval, string @walletId)
+        {
+            this.WalletId = @walletId;
+            this.ReportId = @reportId;
+            this.StartsNewInterval = @startsNewInterval;
+            this.Holdings = @holdings;
+        }
+
+        /// <summary>
+        /// Canonical local durable wallet identifier.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("walletId")]
+        public string WalletId { get; }
+
+        /// <summary>
+        /// Client-generated report identifier for exact retry handling.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("reportId")]
+        public System.Guid ReportId { get; }
+
+        /// <summary>
+        /// True for the first report and for a wallet switch.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("startsNewInterval")]
+        public bool StartsNewInterval { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("holdings")]
+        public System.Collections.Generic.List<AssetMonitoringReportedHolding> Holdings { get; }
+
+    }
+
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class SettlementCapabilityReference
     {
@@ -3434,6 +3562,24 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"New")]
         New = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum AssetMonitoringAssetReferenceKind
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"collateral")]
+        Collateral = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum AssetMonitoringConditionalAssetReferenceKind
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"conditional")]
+        Conditional = 0,
 
     }
 

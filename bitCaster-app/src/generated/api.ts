@@ -462,6 +462,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/asset-monitoring/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit one complete display-only asset holdings report
+         * @description Accepts one complete best-effort holdings snapshot for the authenticated account and canonical wallet id. The engine does not verify proof ownership and does not accept a seed signature or backup state. An exact retry of the latest report returns no content. Reusing the latest report id with different content, or using an invalid interval or wallet lifecycle, returns a conflict.
+         */
+        post: operations["submitAssetMonitoringReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settlement-capabilities/policy": {
         parameters: {
             query?: never;
@@ -562,6 +582,73 @@ export interface components {
     schemas: {
         /** @description Canonical lowercase SHA-256 digest. */
         Sha256Digest: string;
+        /**
+         * @description Canonical Cashu unit for a monitored asset or its display base asset.
+         * @enum {string}
+         */
+        AssetMonitoringUnit: "sat" | "msat";
+        /**
+         * @description Canonical monitored-asset identity kind.
+         * @enum {string}
+         */
+        AssetMonitoringAssetKind: "collateral" | "conditional";
+        AssetMonitoringAssetReference: components["schemas"]["AssetMonitoringCollateralAssetReference"] | components["schemas"]["AssetMonitoringConditionalAssetReference"];
+        AssetMonitoringCollateralAssetReference: {
+            /**
+             * Format: uri
+             * @description Canonical mint URL. It has no trailing slash.
+             */
+            canonicalMintUrl: string;
+            /** @enum {string} */
+            kind: "collateral";
+            cashuUnit: components["schemas"]["AssetMonitoringUnit"];
+            displayBaseAsset: components["schemas"]["AssetMonitoringUnit"];
+        };
+        AssetMonitoringConditionalAssetReference: {
+            /**
+             * Format: uri
+             * @description Canonical mint URL. It has no trailing slash.
+             */
+            canonicalMintUrl: string;
+            /** @enum {string} */
+            kind: "conditional";
+            cashuUnit: components["schemas"]["AssetMonitoringUnit"];
+            displayBaseAsset: components["schemas"]["AssetMonitoringUnit"];
+            conditionId: string;
+            parentConditionId: string;
+            outcomeUniverseDigest: components["schemas"]["Sha256Digest"];
+            internalOutcomeSetId: string;
+        };
+        AssetMonitoringRecoveryCounterInterval: {
+            /** Format: int32 */
+            start: number;
+            /** Format: int32 */
+            count: number;
+        };
+        AssetMonitoringRecoveryHint: {
+            keysetIds: string[];
+            counterIntervals: components["schemas"]["AssetMonitoringRecoveryCounterInterval"][];
+        };
+        AssetMonitoringReportedHolding: {
+            asset: components["schemas"]["AssetMonitoringAssetReference"];
+            /** Format: int64 */
+            availableSubunits: number;
+            /** Format: int64 */
+            pendingOutgoingSubunits: number;
+            recoveryHint?: components["schemas"]["AssetMonitoringRecoveryHint"] | null;
+        };
+        AssetMonitoringReportRequest: {
+            /** @description Canonical local durable wallet identifier. */
+            walletId: string;
+            /**
+             * Format: uuid
+             * @description Client-generated report identifier for exact retry handling.
+             */
+            reportId: string;
+            /** @description True for the first report and for a wallet switch. */
+            startsNewInterval: boolean;
+            holdings: components["schemas"]["AssetMonitoringReportedHolding"][];
+        };
         SettlementCapabilityReference: {
             /** Format: uuid */
             artifactId: string;
@@ -2631,6 +2718,63 @@ export interface operations {
             };
             /** @description Mint validation or durable capability authority is unavailable. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitAssetMonitoringReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssetMonitoringReportRequest"];
+            };
+        };
+        responses: {
+            /** @description Report accepted or exact latest-report retry accepted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed, noncanonical, or out-of-bound report field. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Latest-report idempotency or wallet interval lifecycle conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request exceeds the 1 MiB report limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated-subject report rate limit exceeded. */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
