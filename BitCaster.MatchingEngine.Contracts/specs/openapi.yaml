@@ -649,92 +649,6 @@ paths:
         '404':
           description: No deposit with this id for this condition
 
-  /api/v1/asset-monitoring/realms/{realm}/vaults/{vaultId}/enrollments/{enrollmentEpoch}:
-    put:
-      operationId: enrollAssetMonitoringVault
-      summary: Enroll an asset-monitoring vault epoch for the authenticated account
-      security:
-        - nip98: []
-      parameters:
-        - name: realm
-          in: path
-          required: true
-          schema:
-            type: string
-            minLength: 1
-            maxLength: 64
-            pattern: '^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$'
-        - name: vaultId
-          in: path
-          required: true
-          schema:
-            type: string
-            pattern: '^[0-9a-f]{64}$'
-        - name: enrollmentEpoch
-          in: path
-          required: true
-          schema:
-            type: integer
-            format: int64
-            minimum: 1
-            maximum: 9007199254740991
-      responses:
-        '204':
-          description: Enrollment recorded or the exact enrollment retry was accepted.
-        '400':
-          description: The realm, vaultId, or enrollmentEpoch is malformed.
-        '401':
-          description: Missing or invalid NIP-98 authentication.
-        '409':
-          description: The enrollment lifecycle or epoch conflicts with durable state.
-        '429':
-          description: Account request rate limit exceeded.
-        '500':
-          description: Internal server error.
-    delete:
-      operationId: disableAssetMonitoringVault
-      summary: Disable an asset-monitoring vault enrollment for the authenticated account
-      security:
-        - nip98: []
-      parameters:
-        - name: realm
-          in: path
-          required: true
-          schema:
-            type: string
-            minLength: 1
-            maxLength: 64
-            pattern: '^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$'
-        - name: vaultId
-          in: path
-          required: true
-          schema:
-            type: string
-            pattern: '^[0-9a-f]{64}$'
-        - name: enrollmentEpoch
-          in: path
-          required: true
-          schema:
-            type: integer
-            format: int64
-            minimum: 1
-            maximum: 9007199254740991
-      responses:
-        '204':
-          description: Disable recorded or the exact disable retry was accepted.
-        '400':
-          description: The realm, vaultId, or enrollmentEpoch is malformed.
-        '401':
-          description: Missing or invalid NIP-98 authentication.
-        '404':
-          description: No enrollment exists for the authenticated account and vault.
-        '409':
-          description: The enrollment lifecycle or epoch conflicts with durable state.
-        '429':
-          description: Account request rate limit exceeded.
-        '500':
-          description: Internal server error.
-
   /api/v1/participation-score:
     get:
       operationId: getParticipationScore
@@ -1996,37 +1910,6 @@ components:
             comment once this order produces a fill. The event pubkey must
             match the NIP-98 submitter and include an `r` tag for the market
             detail URL.
-        assetMonitoringAttribution:
-          $ref: '#/components/schemas/AssetMonitoringAttribution'
-          description: >
-            Optional display-only asset-monitoring vault reference. Invalid
-            values are ignored and do not affect order admission.
-
-    AssetMonitoringAttribution:
-      type: object
-      additionalProperties: false
-      required:
-        - realm
-        - vaultId
-        - enrollmentEpoch
-      description: >
-        Complete display-only asset-monitoring vault reference. The server
-        does not authenticate this reference during order admission.
-      properties:
-        realm:
-          type: string
-          minLength: 1
-          maxLength: 64
-          pattern: '^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$'
-        vaultId:
-          type: string
-          pattern: '^[0-9a-f]{64}$'
-        enrollmentEpoch:
-          type: integer
-          format: int64
-          minimum: 1
-          maximum: 9007199254740991
-
     NostrKind1Event:
       type: object
       required:
@@ -2434,12 +2317,6 @@ components:
       properties:
         settlementCapability:
           $ref: '#/components/schemas/SettlementCapabilityReference'
-        assetMonitoringAttribution:
-          $ref: '#/components/schemas/AssetMonitoringAttribution'
-          description: >
-            Optional display-only asset-monitoring vault reference. Invalid
-            values are ignored and do not affect order admission.
-
     BatchSubmitOrdersResponse:
       type: object
       additionalProperties: false

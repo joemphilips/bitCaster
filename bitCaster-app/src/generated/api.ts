@@ -360,24 +360,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/asset-monitoring/realms/{realm}/vaults/{vaultId}/enrollments/{enrollmentEpoch}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Enroll an asset-monitoring vault epoch for the authenticated account */
-        put: operations["enrollAssetMonitoringVault"];
-        post?: never;
-        /** Disable an asset-monitoring vault enrollment for the authenticated account */
-        delete: operations["disableAssetMonitoringVault"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/participation-score": {
         parameters: {
             query?: never;
@@ -898,15 +880,6 @@ export interface components {
             settlementCapability: components["schemas"]["SettlementCapabilityReference"];
             /** @description Optional signed Nostr kind-1 event to index as a verified trade comment once this order produces a fill. The event pubkey must match the NIP-98 submitter and include an `r` tag for the market detail URL. */
             comment: components["schemas"]["NostrKind1Event"] | null;
-            /** @description Optional display-only asset-monitoring vault reference. Invalid values are ignored and do not affect order admission. */
-            assetMonitoringAttribution?: components["schemas"]["AssetMonitoringAttribution"];
-        };
-        /** @description Complete display-only asset-monitoring vault reference. The server does not authenticate this reference during order admission. */
-        AssetMonitoringAttribution: {
-            realm: string;
-            vaultId: string;
-            /** Format: int64 */
-            enrollmentEpoch: number;
         };
         NostrKind1Event: {
             id: string;
@@ -1084,8 +1057,6 @@ export interface components {
         /** @description Reference-only batch item. The server loads every immutable order fact from the current durable DCB binding. Possession of the reference is not bearer authority; ownership, route condition, and current authorization are verified. */
         BatchSubmitOrderRequestItem: {
             settlementCapability: components["schemas"]["SettlementCapabilityReference"];
-            /** @description Optional display-only asset-monitoring vault reference. Invalid values are ignored and do not affect order admission. */
-            assetMonitoringAttribution?: components["schemas"]["AssetMonitoringAttribution"];
         };
         /** @description Every request item appears exactly once in either `accepted` or `rejected`. Consumers may reconstruct request order by sorting both arrays by `requestIndex`. */
         BatchSubmitOrdersResponse: {
@@ -2428,127 +2399,6 @@ export interface operations {
             };
             /** @description No deposit with this id for this condition */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    enrollAssetMonitoringVault: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                realm: string;
-                vaultId: string;
-                enrollmentEpoch: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Enrollment recorded or the exact enrollment retry was accepted. */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The realm, vaultId, or enrollmentEpoch is malformed. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid NIP-98 authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The enrollment lifecycle or epoch conflicts with durable state. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Account request rate limit exceeded. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Internal server error. */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    disableAssetMonitoringVault: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                realm: string;
-                vaultId: string;
-                enrollmentEpoch: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Disable recorded or the exact disable retry was accepted. */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The realm, vaultId, or enrollmentEpoch is malformed. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid NIP-98 authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No enrollment exists for the authenticated account and vault. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The enrollment lifecycle or epoch conflicts with durable state. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Account request rate limit exceeded. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Internal server error. */
-            500: {
                 headers: {
                     [name: string]: unknown;
                 };
