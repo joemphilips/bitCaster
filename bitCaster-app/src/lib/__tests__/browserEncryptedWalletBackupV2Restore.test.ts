@@ -172,7 +172,7 @@ it("rejects a foreign current head", async () => {
   const pages = enumerateEncryptedWalletBackupV2DescriptorPages({
     head: createEncryptedWalletBackupV2CurrentHead({
       realm: fixture.input.keyHandle.realm,
-      vaultId: fixture.input.keyHandle.vaultId,
+      walletId: fixture.input.keyHandle.walletId,
       enrollmentEpoch: 1,
       headVersion: 1,
       bundles: [fixture.bundle.descriptor],
@@ -194,7 +194,7 @@ it("rejects a descriptor whose custody revision does not authenticate its object
   const descriptor = { ...fixture.bundle.descriptor, custodyRevision: 2n };
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: fixture.input.keyHandle.realm,
-    vaultId: fixture.input.keyHandle.vaultId,
+    walletId: fixture.input.keyHandle.walletId,
     enrollmentEpoch: 1,
     headVersion: 2,
     bundles: [descriptor],
@@ -352,7 +352,7 @@ async function backupFixture() {
   });
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: keyHandle.realm,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 1,
     headVersion: 1,
     bundles: [bundle.descriptor],

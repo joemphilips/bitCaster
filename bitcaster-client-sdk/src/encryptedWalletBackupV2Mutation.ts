@@ -33,7 +33,7 @@ export interface EncryptedWalletBackupV2BundleSupersessionMutation {
   readonly formatVersion: 2
   readonly kind: 'bundle-supersession'
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
   readonly mutationId: string
   readonly expectedHeadVersion: number
@@ -74,7 +74,7 @@ export async function prepareEncryptedWalletBackupV2BundleSupersessionMutation(i
       formatVersion: ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
       kind: 'bundle-supersession',
       realm: prepared.context.realm,
-      vaultId: prepared.context.vaultId,
+      walletId: prepared.context.walletId,
       enrollmentEpoch: prepared.context.enrollmentEpoch,
       mutationId: toHex(randomBytes(prepared.runtime, 16)),
       expectedHeadVersion: prepared.context.expectedHeadVersion,
@@ -99,7 +99,7 @@ export function verifyEncryptedWalletBackupV2BundleSupersessionMutation(input: {
   readonly expectedRequestAuthPublicKey: string
   readonly expectedContext: {
     readonly realm: string
-    readonly vaultId: string
+    readonly walletId: string
     readonly enrollmentEpoch: number
   }
 }): EncryptedWalletBackupV2VerifiedBundleSupersessionMutation {
@@ -146,7 +146,7 @@ export function decodeEncryptedWalletBackupV2SignedBundleSupersessionMutation(
   value: unknown,
   expectedContext?: {
     readonly realm: string
-    readonly vaultId: string
+    readonly walletId: string
     readonly enrollmentEpoch: number
   },
 ): EncryptedWalletBackupV2SignedBundleSupersessionMutation {
@@ -180,7 +180,7 @@ function snapshotPreparationInput(input: {
   const runtime = requireMutationRuntime(input.runtime)
   const key = decodeKeyHandle(keyHandle)
   const context = decodeExpectedHead(expectedHead)
-  if (context.realm !== key.realm || context.vaultId !== key.vaultId)
+  if (context.realm !== key.realm || context.walletId !== key.walletId)
     throw new Error('encrypted backup mutation context is invalid')
   const decodedAddedBundle =
     addedBundle === null
@@ -285,7 +285,7 @@ function snapshotMutationRecord(value: unknown): Record<string, unknown> {
     'formatVersion',
     'kind',
     'realm',
-    'vaultId',
+    'walletId',
     'enrollmentEpoch',
     'mutationId',
     'expectedHeadVersion',
@@ -297,7 +297,7 @@ function snapshotMutationRecord(value: unknown): Record<string, unknown> {
     formatVersion: record.formatVersion,
     kind: record.kind,
     realm: record.realm,
-    vaultId: record.vaultId,
+    walletId: record.walletId,
     enrollmentEpoch: record.enrollmentEpoch,
     mutationId: record.mutationId,
     expectedHeadVersion: record.expectedHeadVersion,
@@ -312,7 +312,7 @@ function decodeMutationContext(value: Record<string, unknown>): MutationContext 
     formatVersion: ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
     kind: 'bundle-supersession' as const,
     realm: requireRealm(value.realm),
-    vaultId: requireLowerHex(value.vaultId, 32, 'vault id'),
+    walletId: requireLowerHex(value.walletId, 32, 'wallet id'),
     enrollmentEpoch: positive(value.enrollmentEpoch, 'enrollment epoch'),
     mutationId: requireLowerHex(value.mutationId, 16, 'mutation id'),
     expectedHeadVersion: bounded(
@@ -379,7 +379,7 @@ function encodeMutationPreimage(
     mutation.formatVersion,
     mutation.kind,
     mutation.realm,
-    hexToBytesStrict(mutation.vaultId, 32, 'vault id'),
+    hexToBytesStrict(mutation.walletId, 32, 'wallet id'),
     mutation.enrollmentEpoch,
     hexToBytesStrict(mutation.mutationId, 16, 'mutation id'),
     mutation.expectedHeadVersion,
@@ -397,7 +397,7 @@ function decodeExpectedHead(value: unknown): ExpectedHeadContext {
   const record = exactRecord(value, [
     'formatVersion',
     'realm',
-    'vaultId',
+    'walletId',
     'enrollmentEpoch',
     'headVersion',
     'activeBundleCount',
@@ -406,7 +406,7 @@ function decodeExpectedHead(value: unknown): ExpectedHeadContext {
   ])
   const formatVersion = record.formatVersion
   const realm = record.realm
-  const vaultId = record.vaultId
+  const walletId = record.walletId
   const enrollmentEpoch = record.enrollmentEpoch
   const headVersion = record.headVersion
   const activeBundleCount = record.activeBundleCount
@@ -423,7 +423,7 @@ function decodeExpectedHead(value: unknown): ExpectedHeadContext {
   )
   return Object.freeze({
     realm: requireRealm(realm),
-    vaultId: requireLowerHex(vaultId, 32, 'vault id'),
+    walletId: requireLowerHex(walletId, 32, 'wallet id'),
     enrollmentEpoch: positive(enrollmentEpoch, 'enrollment epoch'),
     expectedHeadVersion: bounded(headVersion, 0, Number.MAX_SAFE_INTEGER, 'head version'),
     expectedActiveSetDigest: requireLowerHex(activeSetDigest, 32, 'active set digest'),
@@ -431,10 +431,10 @@ function decodeExpectedHead(value: unknown): ExpectedHeadContext {
 }
 
 function decodeVerificationContext(value: unknown): MutationScope {
-  const record = exactRecord(value, ['realm', 'vaultId', 'enrollmentEpoch'])
+  const record = exactRecord(value, ['realm', 'walletId', 'enrollmentEpoch'])
   return Object.freeze({
     realm: requireRealm(record.realm),
-    vaultId: requireLowerHex(record.vaultId, 32, 'vault id'),
+    walletId: requireLowerHex(record.walletId, 32, 'wallet id'),
     enrollmentEpoch: positive(record.enrollmentEpoch, 'enrollment epoch'),
   })
 }
@@ -442,13 +442,13 @@ function decodeVerificationContext(value: unknown): MutationScope {
 function decodeKeyHandle(value: EncryptedWalletBackupV2KeyHandle): KeyContext {
   const formatVersion = value.formatVersion
   const realm = value.realm
-  const vaultId = value.vaultId
+  const walletId = value.walletId
   const requestAuthPublicKey = value.requestAuthPublicKey
   if (formatVersion !== ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION)
     throw new Error('encrypted backup v2 key handle is invalid')
   return Object.freeze({
     realm: requireRealm(realm),
-    vaultId: requireLowerHex(vaultId, 32, 'vault id'),
+    walletId: requireLowerHex(walletId, 32, 'wallet id'),
     requestAuthPublicKey: requirePublicKey(requestAuthPublicKey),
   })
 }
@@ -487,7 +487,7 @@ function cloneMutation(
 function sameScope(left: MutationScope, right: MutationScope): boolean {
   return (
     left.realm === right.realm &&
-    left.vaultId === right.vaultId &&
+    left.walletId === right.walletId &&
     left.enrollmentEpoch === right.enrollmentEpoch
   )
 }
@@ -529,7 +529,7 @@ function toHex(value: Uint8Array): string {
 
 interface MutationScope {
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
 }
 
@@ -546,6 +546,6 @@ interface MutationContext extends ExpectedHeadContext {
 
 interface KeyContext {
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly requestAuthPublicKey: string
 }

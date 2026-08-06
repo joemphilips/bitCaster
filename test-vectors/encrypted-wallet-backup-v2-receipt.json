@@ -7,7 +7,7 @@
       "initialHead": {
         "formatVersion": 2,
         "realm": "backup.production",
-        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
         "enrollmentEpoch": 7,
         "headVersion": 3,
         "activeBundleCount": 1,
@@ -17,7 +17,7 @@
       "existingBundle": {
         "formatVersion": 2,
         "realm": "backup.production",
-        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
         "bundleId": "00000000000000000000000000000001",
         "assetLocator": "2121212121212121212121212121212121212121212121212121212121212121",
         "declaredAmount": 1,
@@ -33,7 +33,7 @@
       "addedBundle": {
         "formatVersion": 2,
         "realm": "backup.production",
-        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
         "bundleId": "00000000000000000000000000000002",
         "assetLocator": "2121212121212121212121212121212121212121212121212121212121212121",
         "declaredAmount": 1,
@@ -57,7 +57,7 @@
       "head": {
         "formatVersion": 2,
         "realm": "backup.production",
-        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
         "enrollmentEpoch": 7,
         "headVersion": 4,
         "activeBundleCount": 1,
@@ -69,7 +69,7 @@
           "head": {
             "formatVersion": 2,
             "realm": "backup.production",
-            "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+            "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
             "enrollmentEpoch": 7,
             "headVersion": 4,
             "activeBundleCount": 1,
@@ -81,7 +81,7 @@
             {
               "formatVersion": 2,
               "realm": "backup.production",
-              "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+              "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
               "bundleId": "00000000000000000000000000000002",
               "assetLocator": "2121212121212121212121212121212121212121212121212121212121212121",
               "declaredAmount": 1,
@@ -106,7 +106,7 @@
         "formatVersion": 2,
         "kind": "bundle-supersession",
         "realm": "backup.production",
-        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
         "enrollmentEpoch": 7,
         "mutationId": "01010101010101010101010101010101",
         "expectedHeadVersion": 3,
@@ -114,7 +114,7 @@
         "addedBundle": {
           "formatVersion": 2,
           "realm": "backup.production",
-          "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+          "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
           "bundleId": "00000000000000000000000000000002",
           "assetLocator": "2121212121212121212121212121212121212121212121212121212121212121",
           "declaredAmount": 1,
@@ -138,7 +138,7 @@
       "formatVersion": 2,
       "kind": "bundle-supersession-receipt",
       "realm": "backup.production",
-      "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+      "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
       "enrollmentEpoch": 7,
       "requestAuthPublicKey": "8941fb08484ecf59ea6d3e331eb7a38736f80ddf5c27cd009b5326c9950baa94",
       "mutationId": "01010101010101010101010101010101",
@@ -148,7 +148,7 @@
       "resultHead": {
         "formatVersion": 2,
         "realm": "backup.production",
-        "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
         "enrollmentEpoch": 7,
         "headVersion": 4,
         "activeBundleCount": 1,

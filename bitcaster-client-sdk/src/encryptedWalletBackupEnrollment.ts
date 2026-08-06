@@ -1,10 +1,6 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
-import {
-  EncryptedWalletBackupRemoteBackoffError,
-  type EncryptedWalletBackupKeyHandle,
-} from './encryptedWalletBackup.ts'
-import { requireIssuedEncryptedWalletBackupKeyHandle } from './encryptedWalletBackupKeyAuthority.ts'
+import { EncryptedWalletBackupRemoteBackoffError } from './encryptedWalletBackup.ts'
 import { requireEncryptedWalletBackupV2KeyAuthority } from './encryptedWalletBackupV2KeyAuthority.ts'
 import type { EncryptedWalletBackupV2KeyHandle } from './encryptedWalletBackupV2Keys.ts'
 import {
@@ -20,7 +16,7 @@ import {
 
 export const ENCRYPTED_WALLET_BACKUP_ACCOUNT_AUTHORIZATION_MAX_BYTES = 16 * 1_024
 
-/** Terminal, redacted refusal for a new lifetime-distinct vault identity. */
+/** Terminal, redacted refusal for a new lifetime-distinct wallet identity. */
 export class EncryptedWalletBackupAccountQuotaExceededError extends Error {
   readonly status = 'quota-exceeded' as const
   readonly retryable = false as const
@@ -57,7 +53,7 @@ export interface PreparedEncryptedWalletBackupAccountOperation {
   readonly url: string
   readonly operationId: string
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly requestAuthPublicKey: string
   readonly expectedEnrollmentEpoch: number
   readonly intentDigest: string
@@ -72,23 +68,21 @@ interface AccountOperationAuthority {
   readonly intentDigest: string
   readonly expectedEnrollmentEpoch: number
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly requestAuthPublicKey: string
   readonly cycleSignal: AbortSignal
 }
-
-type AccountOperationKeyHandle = EncryptedWalletBackupKeyHandle | EncryptedWalletBackupV2KeyHandle
 
 const ACCOUNT_OPERATION_AUTHORITIES = new WeakMap<object, AccountOperationAuthority>()
 
 /**
  * Creates a scheme-neutral owner-authorized lifecycle request. The adapter's
  * credential is opaque and bounded; Nostr is not part of the SDK domain type.
- * An expected epoch of zero means "create if absent". Reopening an active vault
+ * An expected epoch of zero means "create if absent". Reopening an active wallet
  * uses delegated epoch discovery and does not mutate the enrollment.
  */
 export async function prepareEncryptedWalletBackupAccountOperation(input: {
-  keyHandle: AccountOperationKeyHandle
+  keyHandle: EncryptedWalletBackupV2KeyHandle
   action: EncryptedWalletBackupAccountOperationAction
   url: string
   operationId: string
@@ -123,7 +117,7 @@ export async function prepareEncryptedWalletBackupAccountOperation(input: {
     method,
     url,
     keyHandle.realm,
-    hexToBytes(keyHandle.vaultId),
+    hexToBytes(keyHandle.walletId),
     hexToBytes(keyHandle.requestAuthPublicKey),
     expectedEnrollmentEpoch,
     hexToBytes(operationId),
@@ -167,7 +161,7 @@ export async function prepareEncryptedWalletBackupAccountOperation(input: {
     url,
     operationId,
     realm: keyHandle.realm,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     requestAuthPublicKey: keyHandle.requestAuthPublicKey,
     expectedEnrollmentEpoch,
     intentDigest,
@@ -181,7 +175,7 @@ export async function prepareEncryptedWalletBackupAccountOperation(input: {
     intentDigest,
     expectedEnrollmentEpoch,
     realm: keyHandle.realm,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     requestAuthPublicKey: keyHandle.requestAuthPublicKey,
     cycleSignal,
   })
@@ -207,7 +201,7 @@ export interface EncryptedWalletBackupAccountOperationResultRecord {
   readonly intentDigest: string
   readonly action: EncryptedWalletBackupAccountOperationAction
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly requestAuthPublicKey: string
   readonly expectedEnrollmentEpoch: number
   readonly observedEnrollmentEpoch: number
@@ -352,7 +346,7 @@ export async function executeEncryptedWalletBackupAccountOperation(input: {
     intentDigest: responseIntentDigest,
     action: authority.action,
     realm: authority.realm,
-    vaultId: authority.vaultId,
+    walletId: authority.walletId,
     requestAuthPublicKey: authority.requestAuthPublicKey,
     expectedEnrollmentEpoch: authority.expectedEnrollmentEpoch,
     observedEnrollmentEpoch,
@@ -398,7 +392,7 @@ function decodeAccountOperationResult(
     'intentDigest',
     'action',
     'realm',
-    'vaultId',
+    'walletId',
     'requestAuthPublicKey',
     'expectedEnrollmentEpoch',
     'observedEnrollmentEpoch',
@@ -414,7 +408,7 @@ function decodeAccountOperationResult(
     intentDigest: requireLowerHex(raw.intentDigest, 32, 'backup account intent digest'),
     action: requireAction(raw.action),
     realm: requireRealm(raw.realm),
-    vaultId: requireLowerHex(raw.vaultId, 32, 'backup vault id'),
+    walletId: requireLowerHex(raw.walletId, 32, 'backup wallet id'),
     requestAuthPublicKey: requireLowerHex(raw.requestAuthPublicKey, 32, 'backup public key'),
     expectedEnrollmentEpoch: requireInteger(
       raw.expectedEnrollmentEpoch,
@@ -438,15 +432,15 @@ function decodeAccountOperationResult(
   })
 }
 
-function requireKeyHandle(value: unknown): AccountOperationKeyHandle {
+function requireKeyHandle(value: unknown): EncryptedWalletBackupV2KeyHandle {
   if (typeof value !== 'object' || value === null) {
     throw new Error('backup key handle is invalid')
   }
-  if ((value as { readonly formatVersion?: unknown }).formatVersion === 2) {
-    requireEncryptedWalletBackupV2KeyAuthority(value)
-    return value as EncryptedWalletBackupV2KeyHandle
+  if ((value as { readonly formatVersion?: unknown }).formatVersion !== 2) {
+    throw new Error('backup v2 key handle is invalid')
   }
-  return requireIssuedEncryptedWalletBackupKeyHandle(value)
+  requireEncryptedWalletBackupV2KeyAuthority(value)
+  return value as EncryptedWalletBackupV2KeyHandle
 }
 
 function requireAction(value: unknown): EncryptedWalletBackupAccountOperationAction {

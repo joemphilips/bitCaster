@@ -29,7 +29,7 @@ import {
   type DurableCustodyTransition,
 } from "@bitcaster/client-sdk/durableCustody";
 import { createDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
-import { verifyEncryptedWalletBackupConditionalKeyset } from "@bitcaster/client-sdk/encryptedWalletBackup";
+import { verifyDurableWalletConditionalKeyset } from "@bitcaster/client-sdk/recoverableWalletStorage";
 import { db, type BitcasterDB } from "./proof-db";
 import {
   advanceBrowserProofBackupAuthorityRow,
@@ -1051,7 +1051,7 @@ function matchesConditionalKeysetKey(
 function verifyBrowserConditionalKeysetAuthority(
   keyset: BrowserCustodyConditionalKeysetAuthority,
 ): void {
-  verifyEncryptedWalletBackupConditionalKeyset({
+  verifyDurableWalletConditionalKeyset({
     mint: keyset.normalizedMint,
     unit: keyset.unit,
     outcomeLabel: keyset.outcomeCollection,

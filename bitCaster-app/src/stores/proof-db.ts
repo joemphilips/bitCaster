@@ -6,7 +6,7 @@ import {
   encryptedWalletBackupV2LocalAssetKey,
   type EncryptedWalletBackupV2ProofSetAsset,
 } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
-import { verifyEncryptedWalletBackupConditionalKeyset } from "@bitcaster/client-sdk/encryptedWalletBackup";
+import { verifyDurableWalletConditionalKeyset } from "@bitcaster/client-sdk/recoverableWalletStorage";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   COLLATERAL_UNIT_REGISTRY,
@@ -43,18 +43,18 @@ import {
   decodeBrowserCustodyProofRow,
 } from "./durable-custody-types";
 
-/** The latest authenticated enrollment lifecycle receipt for one vault. */
+/** The latest authenticated enrollment lifecycle receipt for one wallet. */
 export interface EncryptedWalletBackupDexieEnrollmentResultRow {
   realm: string;
-  vaultId: string;
+  walletId: string;
   record: EncryptedWalletBackupAccountOperationResultRecord;
 }
 
-/** One durable retry schedule for one wallet scope and encrypted-backup vault. */
+/** One durable retry schedule for one wallet scope and encrypted-backup wallet. */
 export interface EncryptedWalletBackupDexieRetrySchedulerRow {
   scopeId: string;
   realm: string;
-  vaultId: string;
+  walletId: string;
   attemptId: string;
   retryStreak: number;
   retryNotBeforeUnixMilliseconds: number;
@@ -76,11 +76,11 @@ export interface BrowserWalletCounterAssociationRow {
   recoveryComplete: boolean;
 }
 
-/** One immutable prepared V2 mutation for one scoped vault authority. */
+/** One immutable prepared V2 mutation for one scoped wallet authority. */
 export interface EncryptedWalletBackupV2PreparedMutationRow {
   scopeId: string;
   realm: string;
-  vaultId: string;
+  walletId: string;
   enrollmentEpoch: number;
   mutationId: string;
   requestDigest: string;
@@ -93,11 +93,11 @@ export interface EncryptedWalletBackupV2PreparedMutationRow {
   activeProofCount: number;
 }
 
-/** One accepted V2 current head for one scoped vault authority. */
+/** One accepted V2 current head for one scoped wallet authority. */
 export interface EncryptedWalletBackupV2AcceptedHeadRow {
   scopeId: string;
   realm: string;
-  vaultId: string;
+  walletId: string;
   enrollmentEpoch: number;
   headVersion: number;
   activeBundleCount: number;
@@ -110,7 +110,7 @@ export interface EncryptedWalletBackupV2AcceptedHeadRow {
 export interface EncryptedWalletBackupV2AssetReceiptRow {
   scopeId: string;
   realm: string;
-  vaultId: string;
+  walletId: string;
   enrollmentEpoch: number;
   localAssetKey: string;
   assetLocator: string;
@@ -121,11 +121,11 @@ export interface EncryptedWalletBackupV2AssetReceiptRow {
   canonicalSignedReceipt: Uint8Array;
 }
 
-/** One active V2 bundle descriptor for one scoped vault authority. */
+/** One active V2 bundle descriptor for one scoped wallet authority. */
 export interface EncryptedWalletBackupV2ActiveDescriptorRow {
   scopeId: string;
   realm: string;
-  vaultId: string;
+  walletId: string;
   enrollmentEpoch: number;
   bundleId: string;
   assetLocator: string;
@@ -673,6 +673,40 @@ export class BitcasterDB extends Dexie {
       custodyProofs:
         "&[scopeId+proofId], [scopeId+selectability], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]",
     });
+    this.version(23).stores({
+      encryptedWalletBackupEnrollmentResults: null,
+      encryptedWalletBackupRetrySchedulers: null,
+      encryptedWalletBackupV2PreparedMutations: null,
+      encryptedWalletBackupV2AcceptedHeads: null,
+      encryptedWalletBackupV2AssetReceipts: null,
+      encryptedWalletBackupV2ActiveDescriptors: null,
+      encryptedWalletBackupWalletEnrollmentResults: "&[realm+walletId]",
+      encryptedWalletBackupWalletRetrySchedulers: "&[scopeId+realm+walletId]",
+      encryptedWalletBackupV2WalletPreparedMutations: "&[scopeId+realm+walletId+enrollmentEpoch]",
+      encryptedWalletBackupV2WalletAcceptedHeads: "&[scopeId+realm+walletId+enrollmentEpoch]",
+      encryptedWalletBackupV2WalletAssetReceipts:
+        "&[scopeId+realm+walletId+enrollmentEpoch+localAssetKey], [scopeId+realm+walletId+enrollmentEpoch]",
+      encryptedWalletBackupV2WalletActiveDescriptors:
+        "&[scopeId+realm+walletId+enrollmentEpoch+bundleId], [scopeId+realm+walletId+enrollmentEpoch]",
+    });
+    this.encryptedWalletBackupEnrollmentResults = this.table(
+      "encryptedWalletBackupWalletEnrollmentResults",
+    );
+    this.encryptedWalletBackupRetrySchedulers = this.table(
+      "encryptedWalletBackupWalletRetrySchedulers",
+    );
+    this.encryptedWalletBackupV2PreparedMutations = this.table(
+      "encryptedWalletBackupV2WalletPreparedMutations",
+    );
+    this.encryptedWalletBackupV2AcceptedHeads = this.table(
+      "encryptedWalletBackupV2WalletAcceptedHeads",
+    );
+    this.encryptedWalletBackupV2AssetReceipts = this.table(
+      "encryptedWalletBackupV2WalletAssetReceipts",
+    );
+    this.encryptedWalletBackupV2ActiveDescriptors = this.table(
+      "encryptedWalletBackupV2WalletActiveDescriptors",
+    );
   }
 }
 
@@ -742,7 +776,7 @@ async function migrationAssetIdentity(
   ) {
     throw new Error("browser V2 desired asset migration conditional authority is foreign");
   }
-  verifyEncryptedWalletBackupConditionalKeyset({
+  verifyDurableWalletConditionalKeyset({
     mint: keyset.normalizedMint,
     unit: keyset.unit,
     outcomeLabel: keyset.outcomeCollection,

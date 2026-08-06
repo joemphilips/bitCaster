@@ -195,7 +195,7 @@ export class EncryptedWalletBackupV2HttpAdapter
     if (
       page.afterBundleId !== input.afterBundleId ||
       page.head.realm !== input.requestProof.realm ||
-      page.head.vaultId !== input.requestProof.vaultId ||
+      page.head.walletId !== input.requestProof.walletId ||
       page.head.enrollmentEpoch !== input.requestProof.enrollmentEpoch
     )
       throw error('invalid-response')
@@ -227,7 +227,7 @@ export class EncryptedWalletBackupV2HttpAdapter
     const receipt = decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire(body)
     if (
       receipt.realm !== input.requestProof.realm ||
-      receipt.vaultId !== input.requestProof.vaultId ||
+      receipt.walletId !== input.requestProof.walletId ||
       receipt.enrollmentEpoch !== input.requestProof.enrollmentEpoch ||
       receipt.requestAuthPublicKey !== input.requestProof.requestAuthPublicKey
     )
@@ -271,7 +271,7 @@ export class EncryptedWalletBackupV2HttpAdapter
           ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES,
         ),
         realm: proof.realm,
-        vaultId: proof.vaultId,
+        walletId: proof.walletId,
         enrollmentEpoch: proof.enrollmentEpoch,
       })
       if (scoped.kind === 'error') {
@@ -292,7 +292,7 @@ export class EncryptedWalletBackupV2HttpAdapter
           ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES,
         ),
         realm: proof.realm,
-        vaultId: proof.vaultId,
+        walletId: proof.walletId,
         enrollmentEpoch: proof.enrollmentEpoch,
       })
     }, signal)
@@ -321,12 +321,12 @@ export class EncryptedWalletBackupV2HttpAdapter
 
 function requestScope(proof: EncryptedWalletBackupRequestProof): {
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
 } {
   return {
     realm: proof.realm,
-    vaultId: proof.vaultId,
+    walletId: proof.walletId,
     enrollmentEpoch: proof.enrollmentEpoch,
   }
 }
@@ -369,7 +369,7 @@ function requireEndpoint(
   kind: Exclude<EncryptedWalletBackupV2HttpResponseKind, 'error'>,
 ): string {
   const url = new URL(proof.url)
-  const base = `/v1/encrypted-wallet-backup/realms/${requireRealm(proof.realm)}/vaults/${requireLowerHex(proof.vaultId, 32, 'vault id')}`
+  const base = `/v1/encrypted-wallet-backup/realms/${requireRealm(proof.realm)}/wallets/${requireLowerHex(proof.walletId, 32, 'wallet id')}`
   if (
     url.origin !== origin ||
     url.search !== '' ||
@@ -389,7 +389,7 @@ function requireDescriptorCursorRoute(
   afterBundleId: string | null,
 ): void {
   const url = new URL(proof.url)
-  const base = `/v1/encrypted-wallet-backup/realms/${requireRealm(proof.realm)}/vaults/${requireLowerHex(proof.vaultId, 32, 'vault id')}`
+  const base = `/v1/encrypted-wallet-backup/realms/${requireRealm(proof.realm)}/wallets/${requireLowerHex(proof.walletId, 32, 'wallet id')}`
   const expected =
     afterBundleId === null
       ? `${base}/head`
@@ -404,7 +404,7 @@ function requireObjectRoute(
   objectId: string,
 ): void {
   const url = new URL(proof.url)
-  const expected = `/v1/encrypted-wallet-backup/realms/${requireRealm(proof.realm)}/vaults/${requireLowerHex(proof.vaultId, 32, 'vault id')}/objects/${objectId}`
+  const expected = `/v1/encrypted-wallet-backup/realms/${requireRealm(proof.realm)}/wallets/${requireLowerHex(proof.walletId, 32, 'wallet id')}/objects/${objectId}`
   if (url.origin !== origin || url.pathname !== expected || url.search !== '' || url.hash !== '')
     throw error('invalid-request')
 }

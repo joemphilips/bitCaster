@@ -2,7 +2,7 @@ import {
   createEncryptedWalletBackupV2AssetIdentity,
   deserializeDurableCustodyProofArtifact,
   prepareEncryptedWalletBackupV2ProofSetBundle,
-  verifyEncryptedWalletBackupConditionalKeyset,
+  verifyDurableWalletConditionalKeyset,
   type EncryptedWalletBackupV2AssetIdentity,
   type EncryptedWalletBackupV2CounterHighWaterMark,
   type EncryptedWalletBackupV2KeyHandle,
@@ -296,7 +296,7 @@ function requireCtfKeyset(
 function verifyCtfKeyset(
   keyset: ReturnType<typeof decodeBrowserCustodyConditionalKeysetRow>,
 ): void {
-  verifyEncryptedWalletBackupConditionalKeyset({
+  verifyDurableWalletConditionalKeyset({
     mint: keyset.normalizedMint,
     unit: keyset.unit,
     outcomeLabel: keyset.outcomeCollection,

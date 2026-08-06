@@ -54,7 +54,7 @@ test('v2 receipt rejects mismatched result metadata and active predecessors', as
   })
   const mismatchedHead = createEncryptedWalletBackupV2CurrentHead({
     realm: fixture.resultHead.realm,
-    vaultId: fixture.resultHead.vaultId,
+    walletId: fixture.resultHead.walletId,
     enrollmentEpoch: fixture.resultHead.enrollmentEpoch,
     headVersion: fixture.resultHead.headVersion,
     bundles: [fixture.existing],
@@ -238,10 +238,10 @@ async function mutationFixture(input: { mode: 'add' | 'replace' | 'remove' }) {
     realm: 'backup.production',
     runtime: webcrypto,
   })
-  const existing = descriptor(keyHandle.vaultId, 1, 1n, 1n)
+  const existing = descriptor(keyHandle.walletId, 1, 1n, 1n)
   const initialHead = createEncryptedWalletBackupV2CurrentHead({
     realm: keyHandle.realm,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 1,
     headVersion: 1,
     bundles: [existing],
@@ -250,7 +250,7 @@ async function mutationFixture(input: { mode: 'add' | 'replace' | 'remove' }) {
     input.mode === 'remove'
       ? null
       : descriptor(
-          keyHandle.vaultId,
+          keyHandle.walletId,
           2,
           17n,
           2n,
@@ -268,12 +268,12 @@ async function mutationFixture(input: { mode: 'add' | 'replace' | 'remove' }) {
   const mutationEvidence = verifyEncryptedWalletBackupV2BundleSupersessionMutation({
     envelope,
     expectedRequestAuthPublicKey: keyHandle.requestAuthPublicKey,
-    expectedContext: { realm: keyHandle.realm, vaultId: keyHandle.vaultId, enrollmentEpoch: 1 },
+    expectedContext: { realm: keyHandle.realm, walletId: keyHandle.walletId, enrollmentEpoch: 1 },
   })
   const resultBundles = input.mode === 'add' ? [existing, added!] : added === null ? [] : [added]
   const resultHead = createEncryptedWalletBackupV2CurrentHead({
     realm: keyHandle.realm,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 1,
     headVersion: 2,
     bundles: resultBundles,
@@ -307,7 +307,7 @@ function verifiedReceipt(
 }
 
 function descriptor(
-  vaultId: string,
+  walletId: string,
   index: number,
   declaredAmount: bigint,
   custodyRevision: bigint,
@@ -316,7 +316,7 @@ function descriptor(
   return {
     formatVersion: 2 as const,
     realm: 'backup.production',
-    vaultId,
+    walletId,
     bundleId: index.toString(16).padStart(32, '0'),
     assetLocator,
     declaredAmount,
@@ -349,8 +349,8 @@ function signer(privateKeyHex: string, keyId: string) {
   return { privateKey, pin: { keyId, publicKey: toHex(schnorr.getPublicKey(privateKey)) } }
 }
 
-function scope(head: { realm: string; vaultId: string; enrollmentEpoch: number }) {
-  return { realm: head.realm, vaultId: head.vaultId, enrollmentEpoch: head.enrollmentEpoch }
+function scope(head: { realm: string; walletId: string; enrollmentEpoch: number }) {
+  return { realm: head.realm, walletId: head.walletId, enrollmentEpoch: head.enrollmentEpoch }
 }
 
 function random(values: readonly string[]) {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { webcrypto } from 'node:crypto'
 import { test } from 'node:test'
+import { deriveDurableCustodyWalletId } from '../src/durableCustody.ts'
 import {
   createEncryptedWalletBackupV2KeyHandle,
   deriveEncryptedWalletBackupV2AssetLocator,
@@ -25,13 +26,13 @@ test('v2 key hierarchy has stable golden outputs and separates roots', async () 
 
   assert.deepEqual(first, second)
   assert.equal(first.formatVersion, ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION)
-  assert.equal(first.vaultId, '5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e')
+  assert.equal(first.walletId, 'd1f0754b1f442fe1f4ce12b9105d7cf8f69570085df964831ef79c728ecafe6c')
   assert.equal(
     first.requestAuthPublicKey,
     '8941fb08484ecf59ea6d3e331eb7a38736f80ddf5c27cd009b5326c9950baa94',
   )
   assert.equal(asset, 'd5856ca354c4d4af47116443462f2d1cb9aca458be1149815956a64ab6a6755c')
-  assert.notEqual(first.vaultId, first.requestAuthPublicKey)
+  assert.notEqual(first.walletId, first.requestAuthPublicKey)
 })
 
 test('v2 key hierarchy separates seed and realm', async () => {
@@ -42,9 +43,9 @@ test('v2 key hierarchy separates seed and realm', async () => {
     realm: 'backup.staging',
   })
 
-  assert.notEqual(baseline.vaultId, otherSeed.vaultId)
+  assert.notEqual(baseline.walletId, otherSeed.walletId)
   assert.notEqual(baseline.requestAuthPublicKey, otherSeed.requestAuthPublicKey)
-  assert.notEqual(baseline.vaultId, otherRealm.vaultId)
+  assert.equal(baseline.walletId, otherRealm.walletId)
   assert.notEqual(baseline.requestAuthPublicKey, otherRealm.requestAuthPublicKey)
   const baselineAsset = await deriveEncryptedWalletBackupV2AssetLocator({
     keyHandle: baseline,
@@ -67,6 +68,20 @@ test('v2 key hierarchy separates seed and realm', async () => {
 
   assert.notEqual(baselineAsset, otherSeedAsset)
   assert.notEqual(baselineAsset, otherRealmAsset)
+})
+
+test('v2 key handle uses the canonical wallet id across realms', async () => {
+  const production = await createEncryptedWalletBackupV2KeyHandle({ seed: SEED, realm: REALM })
+  const staging = await createEncryptedWalletBackupV2KeyHandle({
+    seed: SEED,
+    realm: 'backup.staging',
+  })
+  const otherSeed = await createEncryptedWalletBackupV2KeyHandle({ seed: OTHER_SEED, realm: REALM })
+
+  assert.equal(production.walletId, deriveDurableCustodyWalletId(SEED))
+  assert.equal(staging.walletId, deriveDurableCustodyWalletId(SEED))
+  assert.equal(production.walletId, staging.walletId)
+  assert.notEqual(production.walletId, otherSeed.walletId)
 })
 
 test('v2 locators are opaque and bind their exact input tuple', async () => {

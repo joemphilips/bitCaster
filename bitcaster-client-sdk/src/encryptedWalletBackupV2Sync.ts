@@ -90,7 +90,7 @@ export function applyEncryptedWalletBackupV2VerifiedReceipt(input: {
   bundles.sort((left, right) => left.bundleId.localeCompare(right.bundleId))
   const resultHead = createEncryptedWalletBackupV2CurrentHead({
     realm: head.head.realm,
-    vaultId: head.head.vaultId,
+    walletId: head.head.walletId,
     enrollmentEpoch: head.head.enrollmentEpoch,
     headVersion: head.head.headVersion + 1,
     bundles,

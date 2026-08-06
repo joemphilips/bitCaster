@@ -1,13 +1,13 @@
 import { sha256 } from '@noble/hashes/sha2.js'
-import { ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX } from './encryptedWalletBackupCasState.ts'
 
-export { ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX } from './encryptedWalletBackupCasState.ts'
+/** V2 scheduler limit. It is independent from the removed V1 CAS state. */
+export const ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX = 32 as const
 
 export const ENCRYPTED_WALLET_BACKUP_RETRY_BASE_MILLISECONDS = 5_000 as const
 export const ENCRYPTED_WALLET_BACKUP_RETRY_MAX_MILLISECONDS = 3_600_000 as const
 export function planEncryptedWalletBackupRetry(input: {
   realm: string
-  vaultId: string
+  walletId: string
   attemptId: string
   currentStreak: number
   minimumDelayMilliseconds: number
@@ -17,7 +17,7 @@ export function planEncryptedWalletBackupRetry(input: {
     !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(input.realm)
   )
     throw new Error('backup retry realm is invalid')
-  if (!/^[0-9a-f]{64}$/.test(input.vaultId) || !/^[0-9a-f]{32}$/.test(input.attemptId))
+  if (!/^[0-9a-f]{64}$/.test(input.walletId) || !/^[0-9a-f]{32}$/.test(input.attemptId))
     throw new Error('backup retry identity is invalid')
   if (
     !Number.isSafeInteger(input.currentStreak) ||
@@ -44,7 +44,7 @@ export function planEncryptedWalletBackupRetry(input: {
   )
   const digest = sha256(
     new TextEncoder().encode(
-      `bitcaster/encrypted-wallet-backup-retry/v1\0${input.realm}\0${input.vaultId}\0${input.attemptId}\0${streak}`,
+      `bitcaster/encrypted-wallet-backup-retry/v1\0${input.realm}\0${input.walletId}\0${input.attemptId}\0${streak}`,
     ),
   )
   const sample =

@@ -12,11 +12,12 @@ import {
   requireEncryptedWalletBackupV2VerifiedBundleSupersessionMutation,
   verifyEncryptedWalletBackupV2BundleSupersessionMutation,
 } from '../src/encryptedWalletBackupV2Mutation.ts'
+import { deriveDurableCustodyWalletId } from '../src/durableCustody.ts'
 import { createEncryptedWalletBackupV2KeyHandle } from '../src/encryptedWalletBackupV2Keys.ts'
 
 const REALM = 'backup.production'
-const VAULT = '5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e'
 const SEED = Uint8Array.from({ length: 64 }, (_value, index) => index)
+const WALLET_ID = deriveDurableCustodyWalletId(SEED)
 
 test('v2 bundle supersession supports add, replace, removal, and verified evidence', async () => {
   const fixture = await createFixture()
@@ -56,7 +57,7 @@ test('v2 bundle supersession validates exact current asset predecessors before s
   const unrelated = descriptor(4)
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: VAULT,
+    walletId: WALLET_ID,
     enrollmentEpoch: 7,
     headVersion: 3,
     bundles: [fixture.existing, unrelated],
@@ -132,7 +133,7 @@ test('v2 bundle supersession rejects invalid mutation fields and modes', async (
       supersededBundleIds: Array.from({ length: 257 }, () => fixture.existing.bundleId),
     },
     { ...mutation, addedBundle: { ...fixture.added, realm: 'backup.staging' } },
-    { ...mutation, addedBundle: { ...fixture.added, vaultId: '22'.repeat(32) } },
+    { ...mutation, addedBundle: { ...fixture.added, walletId: '22'.repeat(32) } },
     { ...mutation, supersededBundleIds: [fixture.added.bundleId] },
     { ...mutation, mutationId: 'AA'.repeat(16) },
     { ...mutation, unexpected: true },
@@ -172,7 +173,7 @@ test('v2 bundle supersession rejects wrong key, context, signature, digest, and 
   const cases: readonly [
     unknown,
     string,
-    { realm: string; vaultId: string; enrollmentEpoch: number },
+    { realm: string; walletId: string; enrollmentEpoch: number },
   ][] = [
     [envelope, wrongKey.requestAuthPublicKey, context(fixture.head)],
     [
@@ -299,7 +300,7 @@ async function createFixture() {
   const addition = descriptor(3)
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: VAULT,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 7,
     headVersion: 3,
     bundles: [existing],
@@ -334,14 +335,14 @@ function verify(fixture: Awaited<ReturnType<typeof createFixture>>, envelope: un
 }
 
 function context(head: ReturnType<typeof createEncryptedWalletBackupV2CurrentHead>) {
-  return { realm: head.realm, vaultId: head.vaultId, enrollmentEpoch: head.enrollmentEpoch }
+  return { realm: head.realm, walletId: head.walletId, enrollmentEpoch: head.enrollmentEpoch }
 }
 
-function descriptor(index: number, realm = REALM, vaultId = VAULT) {
+function descriptor(index: number, realm = REALM, walletId = WALLET_ID) {
   return {
     formatVersion: 2 as const,
     realm,
-    vaultId,
+    walletId,
     bundleId: index.toString(16).padStart(32, '0'),
     assetLocator: (index + 16).toString(16).padStart(64, '0'),
     declaredAmount: BigInt(index),

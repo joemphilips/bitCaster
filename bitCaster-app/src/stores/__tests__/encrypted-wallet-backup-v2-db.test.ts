@@ -163,7 +163,7 @@ describe("encrypted wallet backup V2 Dexie authority", () => {
     await fixture.store.commitVerifiedAssetReceipt(await receiptFixture(fixture));
     const competingHead = createEncryptedWalletBackupV2CurrentHead({
       realm: REALM,
-      vaultId: fixture.keyHandle.vaultId,
+      walletId: fixture.keyHandle.walletId,
       enrollmentEpoch: 1,
       headVersion: 2,
       bundles: [],
@@ -206,7 +206,7 @@ async function preparedFixture() {
     database,
     scopeId,
     realm: REALM,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 1,
     requestAuthPublicKey: keyHandle.requestAuthPublicKey,
   });
@@ -224,7 +224,7 @@ async function preparedFixture() {
   await database.encryptedWalletBackupV2DesiredAssets.put(desired);
   const emptyHead = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 1,
     headVersion: 0,
     bundles: [],
@@ -257,7 +257,7 @@ async function preparedFixture() {
   });
   const resultHead = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 1,
     headVersion: 1,
     bundles: [bundle.descriptor],
@@ -300,7 +300,7 @@ async function receiptFixture(fixture: Awaited<ReturnType<typeof preparedFixture
     expectedRequestAuthPublicKey: fixture.keyHandle.requestAuthPublicKey,
     expectedContext: {
       realm: REALM,
-      vaultId: fixture.keyHandle.vaultId,
+      walletId: fixture.keyHandle.walletId,
       enrollmentEpoch: 1,
     },
   }).mutationEvidence;

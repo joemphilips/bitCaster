@@ -49,11 +49,11 @@ export interface BrowserEncryptedWalletBackupV2RuntimeDriverInput {
   readonly runtime?: EncryptedWalletBackupV2BundleRuntime;
   readonly runWorkerCycle?: typeof runBrowserEncryptedWalletBackupV2WorkerCycle;
   readonly authorizationPort?: EncryptedWalletBackupAccountAuthorizationPort;
-  /** Test seam. Production holds a vault-scoped Web Lock until cleanup. */
+  /** Test seam. Production holds a wallet-scoped Web Lock until cleanup. */
   readonly leadership?: BrowserEncryptedWalletBackupLeadership;
   /** Test seam. Production uses one cancellable browser timer. */
   readonly scheduleRetry?: (task: () => void, delayMilliseconds: number) => () => void;
-  /** Test seam. Production persists one retry schedule for the vault. */
+  /** Test seam. Production persists one retry schedule for the wallet. */
   readonly scheduleDurableRetry?: typeof scheduleEncryptedWalletBackupRetry;
   /** Test seam. Production reports terminal background failures to the console. */
   readonly reportError?: (error: unknown) => void;
@@ -129,7 +129,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       });
       if (!this.#isActive()) return;
       await (this.#input.leadership ?? browserLeadership()).hold(
-        encryptedWalletBackupV2VaultLockName(requireKeyHandle(this.#keyHandle)),
+        encryptedWalletBackupV2WalletLockName(requireKeyHandle(this.#keyHandle)),
         this.#lifetimeSignal,
         async () => {
           if (!this.#isActive()) return;
@@ -168,7 +168,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     const schedule = await readEncryptedWalletBackupRetryScheduler(this.#input.database, {
       scopeId: this.#input.scopeId,
       realm: keyHandle.realm,
-      vaultId: keyHandle.vaultId,
+      walletId: keyHandle.walletId,
     });
     if (!this.#isLeaderActive()) return;
     if (schedule !== null && schedule.retryNotBeforeUnixMilliseconds > Date.now()) {
@@ -344,7 +344,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       const schedule = await persist(this.#input.database, {
         scopeId: this.#input.scopeId,
         realm: keyHandle.realm,
-        vaultId: keyHandle.vaultId,
+        walletId: keyHandle.walletId,
         attemptId: retryAttemptId(keyHandle),
         minimumDelayMilliseconds,
       });
@@ -393,7 +393,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     await clearEncryptedWalletBackupRetryScheduler(this.#input.database, {
       scopeId: this.#input.scopeId,
       realm: keyHandle.realm,
-      vaultId: keyHandle.vaultId,
+      walletId: keyHandle.walletId,
       attemptId: retryAttemptId(keyHandle),
     });
   }
@@ -451,7 +451,7 @@ export async function resolveEncryptedWalletBackupV2EnrollmentEpoch(
     database: input.database,
     scopeId: input.scopeId,
     realm: input.keyHandle.realm,
-    vaultId: input.keyHandle.vaultId,
+    walletId: input.keyHandle.walletId,
     requestAuthPublicKey: input.keyHandle.requestAuthPublicKey,
     beforeCommit: () => requireCurrentProfile(input),
   });
@@ -459,7 +459,7 @@ export async function resolveEncryptedWalletBackupV2EnrollmentEpoch(
   const issuedAtUnixSeconds = (input.nowUnixSeconds ?? nowUnixSeconds)();
   const discovery = await prepareEncryptedWalletBackupV2EnrollmentEpochDiscoveryProof({
     keyHandle: input.keyHandle,
-    url: enrollmentEpochUrl(input.configuration, input.keyHandle.vaultId),
+    url: enrollmentEpochUrl(input.configuration, input.keyHandle.walletId),
     issuedAtUnixSeconds,
     expiresAtUnixSeconds: issuedAtUnixSeconds + 60,
     signal: input.signal,
@@ -512,20 +512,20 @@ function requestUrl(
   kind: "head" | "mutation",
   afterBundleId: string | null,
 ): string {
-  const base = `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/vaults/${keyHandle.vaultId}`;
+  const base = `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/wallets/${keyHandle.walletId}`;
   if (kind === "mutation") return `${base}/head:compare-and-swap`;
   return afterBundleId === null ? `${base}/head` : `${base}/head/after/${afterBundleId}`;
 }
 
 function enrollmentEpochUrl(
   configuration: EncryptedWalletBackupConfiguration,
-  vaultId: string,
+  walletId: string,
 ): string {
-  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/vaults/${vaultId}/enrollment-epoch`;
+  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/wallets/${walletId}/enrollment-epoch`;
 }
 
 function accountUrl(configuration: EncryptedWalletBackupConfiguration): string {
-  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/vaults:enroll`;
+  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/wallets:enroll`;
 }
 
 function createRemote(configuration: EncryptedWalletBackupConfiguration): BackupRemote {
@@ -657,16 +657,16 @@ function browserLeadership(): BrowserEncryptedWalletBackupLeadership {
   };
 }
 
-/** Returns the canonical Web Lock name for one encrypted-backup vault. */
-export function encryptedWalletBackupV2VaultLockName(input: {
+/** Returns the canonical Web Lock name for one encrypted-backup wallet. */
+export function encryptedWalletBackupV2WalletLockName(input: {
   readonly realm: string;
-  readonly vaultId: string;
+  readonly walletId: string;
 }): string {
-  return `bitcaster/encrypted-wallet-backup/v2/${input.realm}/${input.vaultId}`;
+  return `bitcaster/encrypted-wallet-backup/v2/${input.realm}/${input.walletId}`;
 }
 
 function retryAttemptId(keyHandle: EncryptedWalletBackupV2KeyHandle): string {
-  return keyHandle.vaultId.slice(0, 32);
+  return keyHandle.walletId.slice(0, 32);
 }
 
 function waitForAbort(signal: AbortSignal): Promise<void> {

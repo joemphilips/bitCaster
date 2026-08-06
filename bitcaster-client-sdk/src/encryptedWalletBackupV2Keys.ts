@@ -1,4 +1,5 @@
 import { schnorr } from '@noble/curves/secp256k1.js'
+import { deriveDurableCustodyWalletId, type WalletId } from './durableCustody.ts'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
 import {
   deriveEncryptedWalletBackupV2Hkdf,
@@ -23,7 +24,7 @@ export interface EncryptedWalletBackupV2Runtime {
 export interface EncryptedWalletBackupV2KeyHandle {
   readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: WalletId
   readonly requestAuthPublicKey: string
 }
 
@@ -36,14 +37,14 @@ export async function createEncryptedWalletBackupV2KeyHandle(input: {
   const realm = requireRealm(input.realm)
   const runtime = requireRuntime(input.runtime)
   const authority = await deriveKeyAuthority(seed, realm, runtime)
-  const vaultId = toLowerHex(await deriveVaultId(authority, realm))
+  const walletId = deriveDurableCustodyWalletId(seed)
   const requestAuthPublicKey = toLowerHex(
     schnorr.getPublicKey(await deriveEncryptedWalletBackupV2RequestAuthScalar(authority, realm)),
   )
   const handle = Object.freeze({
     formatVersion: ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
     realm,
-    vaultId,
+    walletId,
     requestAuthPublicKey,
   })
   registerEncryptedWalletBackupV2KeyHandle(handle, authority)
@@ -78,15 +79,13 @@ async function deriveKeyAuthority(
   realm: string,
   runtime: EncryptedWalletBackupV2Runtime,
 ): Promise<EncryptedWalletBackupV2KeyAuthority> {
-  const [encryptionRoot, vaultIdRoot, requestAuthRoot, assetLocatorRoot] = await Promise.all([
+  const [encryptionRoot, requestAuthRoot, assetLocatorRoot] = await Promise.all([
     deriveRoot(seed, realm, 'encryption-root', runtime),
-    deriveRoot(seed, realm, 'vault-id-root', runtime),
     deriveRoot(seed, realm, 'request-auth-root', runtime),
     deriveRoot(seed, realm, 'asset-locator-root', runtime),
   ])
   return Object.freeze({
     encryptionRoot,
-    vaultIdRoot,
     requestAuthRoot,
     assetLocatorRoot,
     runtime,
@@ -100,17 +99,6 @@ function deriveRoot(
   runtime: EncryptedWalletBackupV2Runtime,
 ): Promise<Uint8Array> {
   return deriveEncryptedWalletBackupV2Hkdf(runtime, seed, rootInfo(domain, realm))
-}
-
-function deriveVaultId(
-  authority: EncryptedWalletBackupV2KeyAuthority,
-  realm: string,
-): Promise<Uint8Array> {
-  return deriveEncryptedWalletBackupV2Hkdf(
-    authority.runtime,
-    authority.vaultIdRoot,
-    rootInfo('vault-id', realm),
-  )
 }
 
 function rootInfo(domain: string, realm: string): Uint8Array {

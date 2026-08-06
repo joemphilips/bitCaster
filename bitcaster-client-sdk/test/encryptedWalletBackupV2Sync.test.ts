@@ -80,15 +80,15 @@ test('rejects incomplete, cyclic, malformed, and over-limit page sequences', asy
 test('prepares exact add, replacement, and removal mutations only for one asset', async () => {
   const initial = await makeFixture(1)
   const old = initial.bundles[0]!
-  const added = descriptor(initial.keyHandle.vaultId, 2, old.assetLocator, 2n)
-  const other = descriptor(initial.keyHandle.vaultId, 3, 'bb'.repeat(32), 1n)
+  const added = descriptor(initial.keyHandle.walletId, 2, old.assetLocator, 2n)
+  const other = descriptor(initial.keyHandle.walletId, 3, 'bb'.repeat(32), 1n)
   const head = evidence(initial.keyHandle, [old, other])
   const add = await prepare(
     initial.keyHandle,
     evidence(initial.keyHandle, [old]),
     'cc'.repeat(32),
     'replace',
-    descriptor(initial.keyHandle.vaultId, 4, 'cc'.repeat(32), 1n),
+    descriptor(initial.keyHandle.walletId, 4, 'cc'.repeat(32), 1n),
     1,
   )
   const replace = await prepare(initial.keyHandle, head, old.assetLocator, 'replace', added, 2)
@@ -107,7 +107,7 @@ test('derives the verified receipt result head locally and rejects mismatches', 
   const initial = await makeFixture(1)
   const old = initial.bundles[0]!
   const prior = evidence(initial.keyHandle, [old])
-  const added = descriptor(initial.keyHandle.vaultId, 2, old.assetLocator, 2n)
+  const added = descriptor(initial.keyHandle.walletId, 2, old.assetLocator, 2n)
   const envelope = await prepare(initial.keyHandle, prior, old.assetLocator, 'replace', added, 7)
   const mutationEvidence = verifyEncryptedWalletBackupV2BundleSupersessionMutation({
     envelope,
@@ -165,7 +165,7 @@ test('derives the verified receipt result head locally and rejects mismatches', 
   )
   assert.throws(() =>
     applyEncryptedWalletBackupV2VerifiedReceipt({
-      expectedHeadEvidence: evidence(initial.keyHandle, [otherBundle(initial.keyHandle.vaultId)]),
+      expectedHeadEvidence: evidence(initial.keyHandle, [otherBundle(initial.keyHandle.walletId)]),
       mutationEvidence,
       receiptEvidence,
     }),
@@ -208,7 +208,7 @@ async function makeFixture(count: number) {
     runtime: webcrypto,
   })
   const bundles = Array.from({ length: count }, (_value, index) =>
-    descriptor(keyHandle.vaultId, index + 1, (index + 16).toString(16).padStart(64, '0'), 1n),
+    descriptor(keyHandle.walletId, index + 1, (index + 16).toString(16).padStart(64, '0'), 1n),
   )
   return {
     keyHandle,
@@ -234,11 +234,16 @@ function evidence(
     enumerateEncryptedWalletBackupV2DescriptorPages({ head, bundles }),
   )
 }
-function descriptor(vaultId: string, index: number, assetLocator: string, custodyRevision: bigint) {
+function descriptor(
+  walletId: string,
+  index: number,
+  assetLocator: string,
+  custodyRevision: bigint,
+) {
   return {
     formatVersion: 2 as const,
     realm: 'backup.example',
-    vaultId,
+    walletId,
     bundleId: index.toString(16).padStart(32, '0'),
     assetLocator,
     declaredAmount: 1n,
@@ -252,11 +257,11 @@ function descriptor(vaultId: string, index: number, assetLocator: string, custod
     ],
   }
 }
-function otherBundle(vaultId: string) {
-  return descriptor(vaultId, 9, 'dd'.repeat(32), 1n)
+function otherBundle(walletId: string) {
+  return descriptor(walletId, 9, 'dd'.repeat(32), 1n)
 }
 function scope(keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupV2KeyHandle>>) {
-  return { realm: keyHandle.realm, vaultId: keyHandle.vaultId, enrollmentEpoch: 1 }
+  return { realm: keyHandle.realm, walletId: keyHandle.walletId, enrollmentEpoch: 1 }
 }
 async function requestProof(
   keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupV2KeyHandle>>,

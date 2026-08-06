@@ -20,7 +20,7 @@ export const ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_PAGE_COUNT_MAX = 18 as const
 export interface EncryptedWalletBackupV2CurrentHead {
   readonly formatVersion: 2
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
   readonly headVersion: number
   readonly activeBundleCount: number
@@ -54,30 +54,30 @@ const ACTIVE_SET_DOMAIN = 'bitcaster/encrypted-wallet-backup-v2-active-set/v1\0'
 
 export function createEncryptedWalletBackupV2CurrentHead(input: {
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
   readonly headVersion: number
   readonly bundles: readonly EncryptedWalletBackupV2BundleDescriptor[]
 }): EncryptedWalletBackupV2CurrentHead {
   const realmValue = input.realm
-  const vaultIdValue = input.vaultId
+  const walletIdValue = input.walletId
   const enrollmentEpochValue = input.enrollmentEpoch
   const headVersionValue = input.headVersion
   const bundleValues = input.bundles
   const realm = requireRealm(realmValue)
-  const vaultId = requireLowerHex(vaultIdValue, 32, 'vault id')
+  const walletId = requireLowerHex(walletIdValue, 32, 'wallet id')
   const enrollmentEpoch = positive(enrollmentEpochValue, 'enrollment epoch')
   const headVersion = bounded(headVersionValue, 0, Number.MAX_SAFE_INTEGER, 'head version')
-  const bundles = decodeBundleSet(bundleValues, { realm, vaultId })
+  const bundles = decodeBundleSet(bundleValues, { realm, walletId })
   return Object.freeze({
     formatVersion: 2,
     realm,
-    vaultId,
+    walletId,
     enrollmentEpoch,
     headVersion,
     activeBundleCount: bundles.length,
     activeObjectCount: objectCount(bundles),
-    activeSetDigest: activeSetDigest(realm, vaultId, enrollmentEpoch, bundles),
+    activeSetDigest: activeSetDigest(realm, walletId, enrollmentEpoch, bundles),
   })
 }
 
@@ -175,14 +175,19 @@ export function collectEncryptedWalletBackupV2DescriptorPages(
 
 export function digestEncryptedWalletBackupV2ActiveSet(input: {
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
   readonly bundles: readonly EncryptedWalletBackupV2BundleDescriptor[]
 }): string {
   const realm = requireRealm(input.realm)
-  const vaultId = requireLowerHex(input.vaultId, 32, 'vault id')
+  const walletId = requireLowerHex(input.walletId, 32, 'wallet id')
   const epoch = positive(input.enrollmentEpoch, 'enrollment epoch')
-  return activeSetDigest(realm, vaultId, epoch, decodeBundleSet(input.bundles, { realm, vaultId }))
+  return activeSetDigest(
+    realm,
+    walletId,
+    epoch,
+    decodeBundleSet(input.bundles, { realm, walletId }),
+  )
 }
 
 function decodePage(value: unknown): EncryptedWalletBackupV2DescriptorPage {
@@ -205,7 +210,7 @@ export function decodeEncryptedWalletBackupV2CurrentHead(
   const record = exactRecord(value, [
     'formatVersion',
     'realm',
-    'vaultId',
+    'walletId',
     'enrollmentEpoch',
     'headVersion',
     'activeBundleCount',
@@ -216,7 +221,7 @@ export function decodeEncryptedWalletBackupV2CurrentHead(
   return Object.freeze({
     formatVersion: 2,
     realm: requireRealm(record.realm),
-    vaultId: requireLowerHex(record.vaultId, 32, 'vault id'),
+    walletId: requireLowerHex(record.walletId, 32, 'wallet id'),
     enrollmentEpoch: positive(record.enrollmentEpoch, 'enrollment epoch'),
     headVersion: bounded(record.headVersion, 0, Number.MAX_SAFE_INTEGER, 'head version'),
     activeBundleCount: bounded(
@@ -237,7 +242,7 @@ export function decodeEncryptedWalletBackupV2CurrentHead(
 
 function decodeBundleSet(
   value: readonly EncryptedWalletBackupV2BundleDescriptor[],
-  context: { readonly realm: string; readonly vaultId: string },
+  context: { readonly realm: string; readonly walletId: string },
 ): readonly EncryptedWalletBackupV2BundleDescriptor[] {
   if (!Array.isArray(value) || value.length > ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX)
     throw new Error('encrypted backup v2 active bundles are invalid')
@@ -272,7 +277,7 @@ function assertHeadMatches(
     head.activeBundleCount !== bundles.length ||
     head.activeObjectCount !== objectCount(bundles) ||
     head.activeSetDigest !==
-      activeSetDigest(head.realm, head.vaultId, head.enrollmentEpoch, bundles)
+      activeSetDigest(head.realm, head.walletId, head.enrollmentEpoch, bundles)
   )
     throw new Error('encrypted backup v2 head authority is invalid')
 }
@@ -289,7 +294,7 @@ function issueCollectedEvidence(
 }
 function activeSetDigest(
   realm: string,
-  vaultId: string,
+  walletId: string,
   epoch: number,
   bundles: readonly EncryptedWalletBackupV2BundleDescriptor[],
 ): string {
@@ -300,7 +305,7 @@ function activeSetDigest(
       .update(
         encodeCanonicalBackupCbor([
           realm,
-          hexToBytesStrict(vaultId, 32, 'vault id'),
+          hexToBytesStrict(walletId, 32, 'wallet id'),
           epoch,
           bundles.map((bundle) => [
             hexToBytesStrict(bundle.bundleId, 16, 'bundle id'),
@@ -324,7 +329,7 @@ export function encodeEncryptedWalletBackupV2CurrentHead(
   return encodeCanonicalBackupCbor([
     head.formatVersion,
     head.realm,
-    hexToBytesStrict(head.vaultId, 32, 'vault id'),
+    hexToBytesStrict(head.walletId, 32, 'wallet id'),
     head.enrollmentEpoch,
     head.headVersion,
     head.activeBundleCount,

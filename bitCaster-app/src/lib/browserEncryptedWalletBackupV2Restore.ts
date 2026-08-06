@@ -87,7 +87,7 @@ export async function restoreBrowserEncryptedWalletBackupV2TargetedAsset(
   requireCurrent(input);
   if (
     head.head.realm !== input.keyHandle.realm ||
-    head.head.vaultId !== input.keyHandle.vaultId ||
+    head.head.walletId !== input.keyHandle.walletId ||
     head.head.enrollmentEpoch !== input.enrollmentEpoch
   ) {
     throw new Error("encrypted backup V2 current head is foreign");

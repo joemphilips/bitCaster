@@ -12,7 +12,7 @@ const databases: BitcasterDB[] = [];
 const identity = {
   scopeId: "wallet-scope",
   realm: "backup.example.test",
-  vaultId: "11".repeat(32),
+  walletId: "11".repeat(32),
 };
 
 afterEach(async () => {
@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 describe("encrypted wallet backup retry database", () => {
-  it("keeps one strict durable retry schedule for each wallet vault", async () => {
+  it("keeps one strict durable retry schedule for each wallet wallet", async () => {
     const database = databaseFor();
     await scheduleEncryptedWalletBackupRetry(database, {
       ...identity,

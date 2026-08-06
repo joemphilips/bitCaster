@@ -123,7 +123,7 @@ function createUnsignedProof(
   return Object.freeze({
     formatVersion: 1,
     realm: input.keyHandle.realm,
-    vaultId: input.keyHandle.vaultId,
+    walletId: input.keyHandle.walletId,
     requestAuthPublicKey: input.keyHandle.requestAuthPublicKey,
     enrollmentEpoch,
     method: input.method,

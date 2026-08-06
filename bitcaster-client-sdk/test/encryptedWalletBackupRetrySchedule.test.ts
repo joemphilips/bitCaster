@@ -6,17 +6,17 @@ import {
   planEncryptedWalletBackupRetry,
 } from '../src/encryptedWalletBackupRetrySchedule.ts'
 
-const VAULT_ID = '00'.repeat(32)
+const WALLET_ID = '00'.repeat(32)
 const ATTEMPT_ID = '11'.repeat(16)
 
 function plan(input: {
   currentStreak: number
   minimumDelayMilliseconds: number
-  vaultId?: string
+  walletId?: string
 }) {
   return planEncryptedWalletBackupRetry({
     realm: 'production',
-    vaultId: input.vaultId ?? VAULT_ID,
+    walletId: input.walletId ?? WALLET_ID,
     attemptId: ATTEMPT_ID,
     currentStreak: input.currentStreak,
     minimumDelayMilliseconds: input.minimumDelayMilliseconds,
@@ -88,7 +88,7 @@ test('server backoff is never shortened and deterministic jitter stays within tw
   }
 })
 
-test('many vaults deterministically spread retry wakeups without mutable randomness', () => {
+test('many wallets deterministically spread retry wakeups without mutable randomness', () => {
   for (const currentStreak of [0, 4, 8]) {
     const nextStreak = currentStreak + 1
     const exponential = Math.min(
@@ -99,16 +99,16 @@ test('many vaults deterministically spread retry wakeups without mutable randomn
     const buckets = new Uint32Array(20)
     const delays = new Set<number>()
     for (let index = 0; index < 4_096; index += 1) {
-      const vaultId = index.toString(16).padStart(64, '0')
+      const walletId = index.toString(16).padStart(64, '0')
       const first = plan({
         currentStreak,
         minimumDelayMilliseconds: 5_000,
-        vaultId,
+        walletId,
       })
       const replayed = plan({
         currentStreak,
         minimumDelayMilliseconds: 5_000,
-        vaultId,
+        walletId,
       })
       assert.deepEqual(replayed, first)
       delays.add(first.delayMilliseconds)
@@ -129,7 +129,7 @@ test('invalid retry identities and persisted bounds fail closed', () => {
   assert.throws(() =>
     planEncryptedWalletBackupRetry({
       realm: '',
-      vaultId: VAULT_ID,
+      walletId: WALLET_ID,
       attemptId: ATTEMPT_ID,
       currentStreak: 0,
       minimumDelayMilliseconds: 5_000,
@@ -140,7 +140,7 @@ test('invalid retry identities and persisted bounds fail closed', () => {
   assert.throws(() =>
     planEncryptedWalletBackupRetry({
       realm: 'Production',
-      vaultId: VAULT_ID,
+      walletId: WALLET_ID,
       attemptId: ATTEMPT_ID,
       currentStreak: 0,
       minimumDelayMilliseconds: 5_000,

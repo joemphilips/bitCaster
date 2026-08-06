@@ -423,7 +423,7 @@ describe("browser V2 backup worker", () => {
       expectedRequestAuthPublicKey: fixture.input.keyHandle.requestAuthPublicKey,
       expectedContext: {
         realm: REALM,
-        vaultId: fixture.input.keyHandle.vaultId,
+        walletId: fixture.input.keyHandle.walletId,
         enrollmentEpoch: 1,
       },
     }).mutationEvidence.envelope.mutation;
@@ -468,7 +468,7 @@ describe("browser V2 backup worker", () => {
       expectedRequestAuthPublicKey: fixture.input.keyHandle.requestAuthPublicKey,
       expectedContext: {
         realm: REALM,
-        vaultId: fixture.input.keyHandle.vaultId,
+        walletId: fixture.input.keyHandle.walletId,
         enrollmentEpoch: 1,
       },
     }).mutationEvidence.envelope.mutation;
@@ -495,11 +495,11 @@ async function workerFixture(assetCount: number) {
     database,
     scopeId,
     realm: REALM,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 1,
     requestAuthPublicKey: keyHandle.requestAuthPublicKey,
   });
-  const remote = new FakeRemote(keyHandle.vaultId, keyHandle.requestAuthPublicKey);
+  const remote = new FakeRemote(keyHandle.walletId, keyHandle.requestAuthPublicKey);
   await store.acceptCompetingHead({
     collectedHeadEvidence: remote.evidence(),
     stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
@@ -645,11 +645,11 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
   readonly #receipts = new Map<string, EncryptedWalletBackupV2BundleSupersessionReceipt>();
   readonly #requestAuthPublicKey: string;
 
-  constructor(vaultId: string, requestAuthPublicKey: string) {
+  constructor(walletId: string, requestAuthPublicKey: string) {
     this.#requestAuthPublicKey = requestAuthPublicKey;
     this.#head = createEncryptedWalletBackupV2CurrentHead({
       realm: REALM,
-      vaultId,
+      walletId,
       enrollmentEpoch: 1,
       headVersion: 0,
       bundles: [],
@@ -669,7 +669,7 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
     this.#bundles = [...bundles].sort((left, right) => left.bundleId.localeCompare(right.bundleId));
     this.#head = createEncryptedWalletBackupV2CurrentHead({
       realm: REALM,
-      vaultId: this.#head.vaultId,
+      walletId: this.#head.walletId,
       enrollmentEpoch: 1,
       headVersion: this.#head.headVersion + 1,
       bundles: this.#bundles,
@@ -700,7 +700,7 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
     if (failure === "conflict") {
       this.#head = createEncryptedWalletBackupV2CurrentHead({
         realm: REALM,
-        vaultId: this.#head.vaultId,
+        walletId: this.#head.walletId,
         enrollmentEpoch: 1,
         headVersion: this.#head.headVersion + 1,
         bundles: this.#bundles,
@@ -712,7 +712,7 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
     const group = decodeEncryptedWalletBackupV2UploadGroup({
       bytes: input.canonicalUploadGroup,
       expectedRequestAuthPublicKey: this.#requestAuthPublicKey,
-      expectedContext: { realm: REALM, vaultId: this.#head.vaultId, enrollmentEpoch: 1 },
+      expectedContext: { realm: REALM, walletId: this.#head.walletId, enrollmentEpoch: 1 },
     });
     const digest = group.mutationEvidence.envelope.requestDigest;
     const replay = this.#receipts.get(digest);
@@ -724,7 +724,7 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
     this.#bundles.sort((left, right) => left.bundleId.localeCompare(right.bundleId));
     this.#head = createEncryptedWalletBackupV2CurrentHead({
       realm: REALM,
-      vaultId: this.#head.vaultId,
+      walletId: this.#head.walletId,
       enrollmentEpoch: 1,
       headVersion: this.#head.headVersion + 1,
       bundles: this.#bundles,

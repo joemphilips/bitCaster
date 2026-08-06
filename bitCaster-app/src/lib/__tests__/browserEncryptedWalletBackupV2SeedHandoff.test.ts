@@ -184,7 +184,7 @@ it("keeps a signed receipt eligible when a later head retains its descriptor", a
   const first = await covered.database.encryptedWalletBackupV2ActiveDescriptors.toArray();
   const firstDescriptor = decodeEncryptedWalletBackupV2BundleDescriptorWire(
     first[0]!.canonicalDescriptor,
-    { realm: REALM, vaultId: covered.keyHandle.vaultId },
+    { realm: REALM, walletId: covered.keyHandle.walletId },
   );
   const secondAsset = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: "https://other-mint.example",
@@ -201,7 +201,7 @@ it("keeps a signed receipt eligible when a later head retains its descriptor", a
   });
   const laterHead = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: covered.keyHandle.vaultId,
+    walletId: covered.keyHandle.walletId,
     enrollmentEpoch: 1,
     headVersion: 2,
     bundles: [firstDescriptor, second.descriptor],
@@ -218,7 +218,7 @@ it("keeps a signed receipt eligible when a later head retains its descriptor", a
   await covered.database.encryptedWalletBackupV2ActiveDescriptors.put({
     scopeId: covered.scopeId,
     realm: REALM,
-    vaultId: covered.keyHandle.vaultId,
+    walletId: covered.keyHandle.walletId,
     enrollmentEpoch: 1,
     bundleId: second.descriptor.bundleId,
     assetLocator: second.descriptor.assetLocator,
@@ -273,7 +273,7 @@ it("blocks seed handoff for each active local work category", async () => {
   await mutation.database.encryptedWalletBackupV2PreparedMutations.put({
     scopeId: mutation.scopeId,
     realm: REALM,
-    vaultId: "11".repeat(32),
+    walletId: "11".repeat(32),
     enrollmentEpoch: 1,
     mutationId: "22".repeat(16),
     requestDigest: "33".repeat(32),
@@ -324,7 +324,7 @@ it("deletes the captured database before activating the new profile", async () =
   expect(events.at(-1)).toBe("activate");
 });
 
-it("rechecks custody after the vault lock admits a competing update", async () => {
+it("rechecks custody after the wallet lock admits a competing update", async () => {
   const covered = await coveredFixture();
   const locks: string[] = [];
   let competingUpdate = false;
@@ -506,13 +506,13 @@ async function coveredFixture() {
     database,
     scopeId,
     realm: REALM,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 1,
     requestAuthPublicKey: keyHandle.requestAuthPublicKey,
   });
   const emptyHead = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 1,
     headVersion: 0,
     bundles: [],
@@ -539,7 +539,7 @@ async function coveredFixture() {
   const group = encodeEncryptedWalletBackupV2UploadGroup({ envelope, objects: bundle.objects });
   const resultHead = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 1,
     headVersion: 1,
     bundles: [bundle.descriptor],
@@ -562,7 +562,7 @@ async function coveredFixture() {
   const mutationEvidence = decodeEncryptedWalletBackupV2UploadGroup({
     bytes: group,
     expectedRequestAuthPublicKey: keyHandle.requestAuthPublicKey,
-    expectedContext: { realm: REALM, vaultId: keyHandle.vaultId, enrollmentEpoch: 1 },
+    expectedContext: { realm: REALM, walletId: keyHandle.walletId, enrollmentEpoch: 1 },
   }).mutationEvidence;
   const receipt = await issueEncryptedWalletBackupV2BundleSupersessionReceipt({
     mutationEvidence,

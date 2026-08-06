@@ -29,7 +29,7 @@ export interface EncryptedWalletBackupV2DexieAuthorityProfile {
   readonly database: BitcasterDB;
   readonly scopeId: string;
   readonly realm: string;
-  readonly vaultId: string;
+  readonly walletId: string;
   readonly enrollmentEpoch: number;
   readonly requestAuthPublicKey: string;
 }
@@ -69,7 +69,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
   readonly #database: BitcasterDB;
   readonly #scopeId: string;
   readonly #realm: string;
-  readonly #vaultId: string;
+  readonly #walletId: string;
   readonly #enrollmentEpoch: number;
   readonly #requestAuthPublicKey: string;
 
@@ -78,7 +78,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     this.#database = profile.database;
     this.#scopeId = profile.scopeId;
     this.#realm = profile.realm;
-    this.#vaultId = profile.vaultId;
+    this.#walletId = profile.walletId;
     this.#enrollmentEpoch = profile.enrollmentEpoch;
     this.#requestAuthPublicKey = profile.requestAuthPublicKey;
   }
@@ -296,7 +296,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
 
   async listActiveDescriptors(): Promise<readonly EncryptedWalletBackupV2ActiveDescriptorRow[]> {
     const rows = await this.#database.encryptedWalletBackupV2ActiveDescriptors
-      .where("[scopeId+realm+vaultId+enrollmentEpoch]")
+      .where("[scopeId+realm+walletId+enrollmentEpoch]")
       .equals(this.#authorityKey())
       .toArray();
     if (rows.length > ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX) {
@@ -312,7 +312,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
   }
 
   #authorityKey(): [string, string, string, number] {
-    return [this.#scopeId, this.#realm, this.#vaultId, this.#enrollmentEpoch];
+    return [this.#scopeId, this.#realm, this.#walletId, this.#enrollmentEpoch];
   }
 
   #requireDatabaseBinding(): void {
@@ -474,7 +474,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     const decoded = this.#headRow({
       formatVersion: 2,
       realm: row.realm,
-      vaultId: row.vaultId,
+      walletId: row.walletId,
       enrollmentEpoch: row.enrollmentEpoch,
       headVersion: row.headVersion,
       activeBundleCount: row.activeBundleCount,
@@ -645,7 +645,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     rows: readonly EncryptedWalletBackupV2ActiveDescriptorRow[],
   ): Promise<void> {
     const current = await this.#database.encryptedWalletBackupV2ActiveDescriptors
-      .where("[scopeId+realm+vaultId+enrollmentEpoch]")
+      .where("[scopeId+realm+walletId+enrollmentEpoch]")
       .equals(this.#authorityKey())
       .primaryKeys();
     await this.#database.encryptedWalletBackupV2ActiveDescriptors.bulkDelete(current);
@@ -679,7 +679,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
     readonly EncryptedWalletBackupV2ActiveDescriptorRow[]
   > {
     const rows = await this.#database.encryptedWalletBackupV2ActiveDescriptors
-      .where("[scopeId+realm+vaultId+enrollmentEpoch]")
+      .where("[scopeId+realm+walletId+enrollmentEpoch]")
       .equals(this.#authorityKey())
       .toArray();
     return rows.map((row) => this.#decodeDescriptorRow(row));
@@ -706,34 +706,34 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
 
   #identity(): Pick<
     EncryptedWalletBackupV2PreparedMutationRow,
-    "scopeId" | "realm" | "vaultId" | "enrollmentEpoch"
+    "scopeId" | "realm" | "walletId" | "enrollmentEpoch"
   > {
     return {
       scopeId: this.#scopeId,
       realm: this.#realm,
-      vaultId: this.#vaultId,
+      walletId: this.#walletId,
       enrollmentEpoch: this.#enrollmentEpoch,
     };
   }
 
   #context(): {
     readonly realm: string;
-    readonly vaultId: string;
+    readonly walletId: string;
     readonly enrollmentEpoch: number;
   } {
-    return { realm: this.#realm, vaultId: this.#vaultId, enrollmentEpoch: this.#enrollmentEpoch };
+    return { realm: this.#realm, walletId: this.#walletId, enrollmentEpoch: this.#enrollmentEpoch };
   }
 
   #requireIdentity(value: {
     readonly scopeId: string;
     readonly realm: string;
-    readonly vaultId: string;
+    readonly walletId: string;
     readonly enrollmentEpoch: number;
   }): void {
     if (
       value.scopeId !== this.#scopeId ||
       value.realm !== this.#realm ||
-      value.vaultId !== this.#vaultId ||
+      value.walletId !== this.#walletId ||
       value.enrollmentEpoch !== this.#enrollmentEpoch
     ) {
       throw new Error("encrypted wallet backup v2 authority row is foreign");
@@ -742,12 +742,12 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
 
   #requireContext(value: {
     readonly realm: string;
-    readonly vaultId: string;
+    readonly walletId: string;
     readonly enrollmentEpoch: number;
   }): void {
     if (
       value.realm !== this.#realm ||
-      value.vaultId !== this.#vaultId ||
+      value.walletId !== this.#walletId ||
       value.enrollmentEpoch !== this.#enrollmentEpoch
     ) {
       throw new Error("encrypted wallet backup v2 authority artifact is foreign");
@@ -758,7 +758,7 @@ export class EncryptedWalletBackupV2DexieAuthorityStore {
 const preparedFields = [
   "scopeId",
   "realm",
-  "vaultId",
+  "walletId",
   "enrollmentEpoch",
   "mutationId",
   "requestDigest",
@@ -773,7 +773,7 @@ const preparedFields = [
 const headFields = [
   "scopeId",
   "realm",
-  "vaultId",
+  "walletId",
   "enrollmentEpoch",
   "headVersion",
   "activeBundleCount",
@@ -784,7 +784,7 @@ const headFields = [
 const descriptorFields = [
   "scopeId",
   "realm",
-  "vaultId",
+  "walletId",
   "enrollmentEpoch",
   "bundleId",
   "assetLocator",
@@ -797,7 +797,7 @@ const descriptorFields = [
 const assetReceiptFields = [
   "scopeId",
   "realm",
-  "vaultId",
+  "walletId",
   "enrollmentEpoch",
   "localAssetKey",
   "assetLocator",
@@ -816,7 +816,7 @@ function requireProfile(profile: EncryptedWalletBackupV2DexieAuthorityProfile): 
     !isSafeScopeId(profile.scopeId) ||
     profile.database.name !== browserWalletDatabaseName(profile.scopeId) ||
     !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(profile.realm) ||
-    !isHex(profile.vaultId, 32) ||
+    !isHex(profile.walletId, 32) ||
     !Number.isSafeInteger(profile.enrollmentEpoch) ||
     profile.enrollmentEpoch < 1 ||
     !isHex(profile.requestAuthPublicKey, 32)
@@ -828,7 +828,7 @@ function requireProfile(profile: EncryptedWalletBackupV2DexieAuthorityProfile): 
 function descriptorRow(
   identity: Pick<
     EncryptedWalletBackupV2ActiveDescriptorRow,
-    "scopeId" | "realm" | "vaultId" | "enrollmentEpoch"
+    "scopeId" | "realm" | "walletId" | "enrollmentEpoch"
   >,
   descriptor: EncryptedWalletBackupV2BundleDescriptor,
   canonicalDescriptor: Uint8Array,

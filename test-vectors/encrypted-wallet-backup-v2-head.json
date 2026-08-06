@@ -1,7 +1,7 @@
 {
   "inputs": {
     "realm": "backup.production",
-    "vaultId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "walletId": "1111111111111111111111111111111111111111111111111111111111111111",
     "enrollmentEpoch": 7,
     "headVersion": 3,
     "descriptorCount": 16
@@ -13,7 +13,7 @@
     "head": {
       "formatVersion": 2,
       "realm": "backup.production",
-      "vaultId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "walletId": "1111111111111111111111111111111111111111111111111111111111111111",
       "enrollmentEpoch": 7,
       "headVersion": 3,
       "activeBundleCount": 16,

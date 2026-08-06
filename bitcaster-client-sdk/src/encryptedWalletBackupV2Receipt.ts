@@ -31,7 +31,7 @@ export interface EncryptedWalletBackupV2BundleSupersessionReceipt {
   readonly formatVersion: 2
   readonly kind: 'bundle-supersession-receipt'
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
   readonly requestAuthPublicKey: string
   readonly mutationId: string
@@ -195,7 +195,7 @@ function unsignedReceipt(
     formatVersion: 2,
     kind: 'bundle-supersession-receipt',
     realm: envelope.mutation.realm,
-    vaultId: envelope.mutation.vaultId,
+    walletId: envelope.mutation.walletId,
     enrollmentEpoch: envelope.mutation.enrollmentEpoch,
     requestAuthPublicKey: envelope.requestAuthPublicKey,
     mutationId: envelope.mutation.mutationId,
@@ -246,7 +246,7 @@ function decodeReceipt(value: unknown): EncryptedWalletBackupV2BundleSupersessio
     formatVersion: 2,
     kind: 'bundle-supersession-receipt',
     realm: requireRealm(raw.realm),
-    vaultId: requireLowerHex(raw.vaultId, 32, 'vault id'),
+    walletId: requireLowerHex(raw.walletId, 32, 'wallet id'),
     enrollmentEpoch: positive(raw.enrollmentEpoch, 'enrollment epoch'),
     requestAuthPublicKey: requirePublicKey(raw.requestAuthPublicKey),
     mutationId: requireLowerHex(raw.mutationId, 16, 'mutation id'),
@@ -270,7 +270,7 @@ function bindReceipt(
   const mutation = envelope.mutation
   if (
     receipt.realm !== mutation.realm ||
-    receipt.vaultId !== mutation.vaultId ||
+    receipt.walletId !== mutation.walletId ||
     receipt.enrollmentEpoch !== mutation.enrollmentEpoch ||
     receipt.requestAuthPublicKey !== envelope.requestAuthPublicKey ||
     receipt.mutationId !== mutation.mutationId ||
@@ -282,7 +282,7 @@ function bindReceipt(
     throw new Error('encrypted backup receipt mutation binding is invalid')
   if (
     receipt.resultHead.realm !== receipt.realm ||
-    receipt.resultHead.vaultId !== receipt.vaultId ||
+    receipt.resultHead.walletId !== receipt.walletId ||
     receipt.resultHead.enrollmentEpoch !== receipt.enrollmentEpoch ||
     receipt.resultHead.headVersion !== receipt.previousHeadVersion + 1
   )
@@ -315,7 +315,7 @@ function receiptDigest(receipt: EncryptedWalletBackupV2BundleSupersessionReceipt
           2,
           'bundle-supersession-receipt',
           receipt.realm,
-          hexToBytesStrict(receipt.vaultId, 32, 'vault id'),
+          hexToBytesStrict(receipt.walletId, 32, 'wallet id'),
           receipt.enrollmentEpoch,
           hexToBytesStrict(receipt.requestAuthPublicKey, 32, 'request public key'),
           hexToBytesStrict(receipt.mutationId, 16, 'mutation id'),
@@ -433,7 +433,7 @@ const receiptFields = [
   'formatVersion',
   'kind',
   'realm',
-  'vaultId',
+  'walletId',
   'enrollmentEpoch',
   'requestAuthPublicKey',
   'mutationId',

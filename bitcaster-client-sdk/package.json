@@ -123,34 +123,6 @@
       "types": "./dist/encryptedWalletBackupDelegatedServerCodec.d.ts",
       "import": "./dist/encryptedWalletBackupDelegatedServerCodec.js"
     },
-    "./encryptedWalletBackupSync": {
-      "types": "./dist/encryptedWalletBackupSync.d.ts",
-      "import": "./dist/encryptedWalletBackupSync.js"
-    },
-    "./encryptedWalletBackupPreparedRecordPersistence": {
-      "types": "./dist/encryptedWalletBackupPreparedRecordPersistence.d.ts",
-      "import": "./dist/encryptedWalletBackupPreparedRecordPersistence.js"
-    },
-    "./encryptedWalletBackupPackPersistence": {
-      "types": "./dist/encryptedWalletBackupPackPersistence.d.ts",
-      "import": "./dist/encryptedWalletBackupPackPersistence.js"
-    },
-    "./encryptedWalletBackupSnapshotPersistence": {
-      "types": "./dist/encryptedWalletBackupSnapshotPersistence.d.ts",
-      "import": "./dist/encryptedWalletBackupSnapshotPersistence.js"
-    },
-    "./encryptedWalletBackupSnapshotCleanup": {
-      "types": "./dist/encryptedWalletBackupSnapshotCleanup.d.ts",
-      "import": "./dist/encryptedWalletBackupSnapshotCleanup.js"
-    },
-    "./encryptedWalletBackupManifestPagePersistence": {
-      "types": "./dist/encryptedWalletBackupManifestPagePersistence.d.ts",
-      "import": "./dist/encryptedWalletBackupManifestPagePersistence.js"
-    },
-    "./encryptedWalletBackupUploadPlanningPersistence": {
-      "types": "./dist/encryptedWalletBackupUploadPlanningPersistence.d.ts",
-      "import": "./dist/encryptedWalletBackupUploadPlanningPersistence.js"
-    },
     "./managedConditionInventory": {
       "types": "./dist/managedConditionInventory.d.ts",
       "import": "./dist/managedConditionInventory.js"

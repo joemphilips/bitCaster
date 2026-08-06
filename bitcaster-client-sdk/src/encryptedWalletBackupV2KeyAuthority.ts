@@ -13,7 +13,6 @@ export const ENCRYPTED_WALLET_BACKUP_V2_ROOT_SALT = new TextEncoder().encode(
 
 export interface EncryptedWalletBackupV2KeyAuthority {
   readonly encryptionRoot: Uint8Array
-  readonly vaultIdRoot: Uint8Array
   readonly requestAuthRoot: Uint8Array
   readonly assetLocatorRoot: Uint8Array
   readonly runtime: EncryptedWalletBackupV2Runtime

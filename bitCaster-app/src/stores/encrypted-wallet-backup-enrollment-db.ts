@@ -10,7 +10,7 @@ export interface EncryptedWalletBackupEnrollmentDatabaseProfile {
   readonly database: BitcasterDB;
   readonly scopeId: string;
   readonly realm: string;
-  readonly vaultId: string;
+  readonly walletId: string;
   readonly requestAuthPublicKey: string;
   /** Runs in the write transaction before an enrollment result is stored. */
   readonly beforeCommit?: () => void;
@@ -20,7 +20,7 @@ export interface EncryptedWalletBackupEnrollmentDatabaseProfile {
 export class EncryptedWalletBackupEnrollmentDexieStore implements EncryptedWalletBackupAccountOperationResultStore {
   readonly #database: BitcasterDB;
   readonly #realm: string;
-  readonly #vaultId: string;
+  readonly #walletId: string;
   readonly #requestAuthPublicKey: string;
   readonly #beforeCommit: (() => void) | undefined;
 
@@ -28,7 +28,7 @@ export class EncryptedWalletBackupEnrollmentDexieStore implements EncryptedWalle
     requireProfile(profile);
     this.#database = profile.database;
     this.#realm = profile.realm;
-    this.#vaultId = profile.vaultId;
+    this.#walletId = profile.walletId;
     this.#requestAuthPublicKey = profile.requestAuthPublicKey;
     this.#beforeCommit = profile.beforeCommit;
   }
@@ -36,18 +36,18 @@ export class EncryptedWalletBackupEnrollmentDexieStore implements EncryptedWalle
   async read(): Promise<EncryptedWalletBackupAccountOperationResultRecord | null> {
     const row = await this.#database.encryptedWalletBackupEnrollmentResults.get([
       this.#realm,
-      this.#vaultId,
+      this.#walletId,
     ]);
     return row === undefined
       ? null
-      : decodeRow(row, this.#realm, this.#vaultId, this.#requestAuthPublicKey);
+      : decodeRow(row, this.#realm, this.#walletId, this.#requestAuthPublicKey);
   }
 
   async commitAccountOperationResult<T>(
     result: EncryptedWalletBackupAccountOperationResultRecord,
     commit: (stored: EncryptedWalletBackupAccountOperationResultRecord) => T,
   ): Promise<T> {
-    const record = requireRecord(result, this.#realm, this.#vaultId, this.#requestAuthPublicKey);
+    const record = requireRecord(result, this.#realm, this.#walletId, this.#requestAuthPublicKey);
     if (typeof commit !== "function") throw new Error("backup enrollment callback is invalid");
     return this.#database.transaction(
       "rw",
@@ -55,17 +55,17 @@ export class EncryptedWalletBackupEnrollmentDexieStore implements EncryptedWalle
       async () => {
         const current = await this.#database.encryptedWalletBackupEnrollmentResults.get([
           this.#realm,
-          this.#vaultId,
+          this.#walletId,
         ]);
         if (current !== undefined)
           requireReplacement(
-            decodeRow(current, this.#realm, this.#vaultId, this.#requestAuthPublicKey),
+            decodeRow(current, this.#realm, this.#walletId, this.#requestAuthPublicKey),
             record,
           );
         this.#beforeCommit?.();
         const row: EncryptedWalletBackupDexieEnrollmentResultRow = {
           realm: this.#realm,
-          vaultId: this.#vaultId,
+          walletId: this.#walletId,
           record: structuredClone(record),
         };
         await this.#database.encryptedWalletBackupEnrollmentResults.put(row);
@@ -100,7 +100,7 @@ function sameRecord(
     left.intentDigest === right.intentDigest &&
     left.action === right.action &&
     left.realm === right.realm &&
-    left.vaultId === right.vaultId &&
+    left.walletId === right.walletId &&
     left.requestAuthPublicKey === right.requestAuthPublicKey &&
     left.expectedEnrollmentEpoch === right.expectedEnrollmentEpoch &&
     left.observedEnrollmentEpoch === right.observedEnrollmentEpoch &&
@@ -115,7 +115,7 @@ function requireProfile(profile: EncryptedWalletBackupEnrollmentDatabaseProfile)
     profile === null ||
     !(profile.database instanceof Dexie) ||
     !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(profile.realm) ||
-    !/^[0-9a-f]{64}$/.test(profile.vaultId) ||
+    !/^[0-9a-f]{64}$/.test(profile.walletId) ||
     !isHex(profile.requestAuthPublicKey, 32) ||
     (profile.beforeCommit !== undefined && typeof profile.beforeCommit !== "function") ||
     profile.database.name !== browserWalletDatabaseName(profile.scopeId)
@@ -127,7 +127,7 @@ function requireProfile(profile: EncryptedWalletBackupEnrollmentDatabaseProfile)
 function decodeRow(
   row: EncryptedWalletBackupDexieEnrollmentResultRow,
   realm: string,
-  vaultId: string,
+  walletId: string,
   requestAuthPublicKey: string,
 ): EncryptedWalletBackupAccountOperationResultRecord {
   if (
@@ -135,17 +135,17 @@ function decodeRow(
     row === null ||
     Object.keys(row).length !== 3 ||
     row.realm !== realm ||
-    row.vaultId !== vaultId
+    row.walletId !== walletId
   ) {
     throw new Error("encrypted wallet backup enrollment row is invalid");
   }
-  return requireRecord(row.record, realm, vaultId, requestAuthPublicKey);
+  return requireRecord(row.record, realm, walletId, requestAuthPublicKey);
 }
 
 function requireRecord(
   value: unknown,
   realm: string,
-  vaultId: string,
+  walletId: string,
   requestAuthPublicKey: string,
 ): EncryptedWalletBackupAccountOperationResultRecord {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -158,7 +158,7 @@ function requireRecord(
     "intentDigest",
     "action",
     "realm",
-    "vaultId",
+    "walletId",
     "requestAuthPublicKey",
     "expectedEnrollmentEpoch",
     "observedEnrollmentEpoch",
@@ -171,7 +171,7 @@ function requireRecord(
   if (
     row.schemaVersion !== 1 ||
     row.realm !== realm ||
-    row.vaultId !== vaultId ||
+    row.walletId !== walletId ||
     !isHex(row.operationId, 16) ||
     !isHex(row.intentDigest, 32) ||
     row.requestAuthPublicKey !== requestAuthPublicKey ||
@@ -189,7 +189,7 @@ function requireRecord(
     intentDigest: row.intentDigest,
     action: "enroll",
     realm,
-    vaultId,
+    walletId,
     requestAuthPublicKey,
     expectedEnrollmentEpoch: row.expectedEnrollmentEpoch,
     observedEnrollmentEpoch: row.observedEnrollmentEpoch,

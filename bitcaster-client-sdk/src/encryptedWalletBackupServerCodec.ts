@@ -29,7 +29,7 @@ export interface DecodedEncryptedWalletBackupAccountIntent {
   readonly method: 'POST' | 'DELETE'
   readonly url: string
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly requestAuthPublicKey: string
   readonly expectedEnrollmentEpoch: number
   readonly operationId: string
@@ -118,7 +118,7 @@ export function decodeEncryptedWalletBackupAccountIntent(
     method,
     url: requireExactHttpsUrl(decoded[4]),
     realm: requireRealm(decoded[5]),
-    vaultId: bytesToHex(requireBytes(decoded[6], 32, 32, 'account vault id')),
+    walletId: bytesToHex(requireBytes(decoded[6], 32, 32, 'account wallet id')),
     requestAuthPublicKey: bytesToHex(
       requireValidXOnlyPublicKey(decoded[7], 'account request public key'),
     ),

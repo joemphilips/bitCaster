@@ -36,7 +36,7 @@ export interface EncryptedWalletBackupV2HttpResponseEnvelope {
   readonly kind: EncryptedWalletBackupV2HttpResponseKind
   readonly requestDigest: string
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
   readonly body: Uint8Array
 }
@@ -100,7 +100,7 @@ const ERROR_PREFLIGHT: EncryptedWalletBackupV2CborTuplePreflight = {
   ],
 }
 
-/** Encodes a response that is bound to one V2 request and one V2 vault scope. */
+/** Encodes a response that is bound to one V2 request and one V2 wallet scope. */
 export function encodeEncryptedWalletBackupV2HttpResponse(
   value: EncryptedWalletBackupV2HttpResponseEnvelope,
 ): Uint8Array {
@@ -111,7 +111,7 @@ export function encodeEncryptedWalletBackupV2HttpResponse(
     response.kind,
     hexToBytesStrict(response.requestDigest, 32, 'request digest'),
     response.realm,
-    hexToBytesStrict(response.vaultId, 32, 'vault id'),
+    hexToBytesStrict(response.walletId, 32, 'wallet id'),
     response.enrollmentEpoch,
     response.body,
   ])
@@ -142,7 +142,7 @@ export function decodeEncryptedWalletBackupV2HttpResponse(
     kind,
     requestDigest: bytesToHex(requireBytes(decoded[3], 32, 32, 'request digest')),
     realm: requireRealm(decoded[4]),
-    vaultId: bytesToHex(requireBytes(decoded[5], 32, 32, 'vault id')),
+    walletId: bytesToHex(requireBytes(decoded[5], 32, 32, 'wallet id')),
     enrollmentEpoch,
     body: requireBytes(
       decoded[7],
@@ -159,7 +159,7 @@ export function requireEncryptedWalletBackupV2HttpResponseBinding(input: {
   readonly kind: EncryptedWalletBackupV2HttpResponseKind
   readonly requestDigest: string
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
 }): Uint8Array {
   const response = requireEncryptedWalletBackupV2HttpResponseScope(input)
@@ -173,14 +173,14 @@ export function requireEncryptedWalletBackupV2HttpResponseScope(input: {
   readonly response: EncryptedWalletBackupV2HttpResponseEnvelope
   readonly requestDigest: string
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
 }): EncryptedWalletBackupV2HttpResponseEnvelope {
   const response = decodeEnvelopeRecord(input.response)
   if (
     response.requestDigest !== requireLowerHex(input.requestDigest, 32, 'request digest') ||
     response.realm !== requireRealm(input.realm) ||
-    response.vaultId !== requireLowerHex(input.vaultId, 32, 'vault id') ||
+    response.walletId !== requireLowerHex(input.walletId, 32, 'wallet id') ||
     response.enrollmentEpoch !== requireEpoch(input.enrollmentEpoch)
   )
     throw new Error('encrypted backup v2 HTTP response binding is invalid')
@@ -270,7 +270,7 @@ function decodeEnvelopeRecord(value: unknown): EncryptedWalletBackupV2HttpRespon
   if (typeof value !== 'object' || value === null || Array.isArray(value))
     throw new Error('encrypted backup v2 HTTP response is invalid')
   const record = value as Record<string, unknown>
-  const fields = ['kind', 'requestDigest', 'realm', 'vaultId', 'enrollmentEpoch', 'body']
+  const fields = ['kind', 'requestDigest', 'realm', 'walletId', 'enrollmentEpoch', 'body']
   if (
     Object.keys(record).length !== fields.length ||
     fields.some((field) => !Object.hasOwn(record, field))
@@ -280,7 +280,7 @@ function decodeEnvelopeRecord(value: unknown): EncryptedWalletBackupV2HttpRespon
     kind: requireResponseKind(record.kind),
     requestDigest: requireLowerHex(record.requestDigest, 32, 'request digest'),
     realm: requireRealm(record.realm),
-    vaultId: requireLowerHex(record.vaultId, 32, 'vault id'),
+    walletId: requireLowerHex(record.walletId, 32, 'wallet id'),
     enrollmentEpoch: requireEpoch(record.enrollmentEpoch),
     body: requireBytes(
       record.body,

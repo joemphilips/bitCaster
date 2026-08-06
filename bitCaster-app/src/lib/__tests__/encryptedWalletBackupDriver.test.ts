@@ -45,7 +45,7 @@ it("discovers the delegated epoch even when a local enrollment receipt exists", 
   const fixture = await enrollmentFixture();
   await fixture.database.encryptedWalletBackupEnrollmentResults.put({
     realm: configuration.realm,
-    vaultId: fixture.keyHandle.vaultId,
+    walletId: fixture.keyHandle.walletId,
     record: enrollmentRecord(fixture.keyHandle, 7),
   });
   const remote = {
@@ -56,7 +56,7 @@ it("discovers the delegated epoch even when a local enrollment receipt exists", 
   expect(remote.discoverEnrollmentEpoch).toHaveBeenCalledOnce();
 });
 
-it("uses an epoch-zero V2 discovery proof without an enrollment mutation when the vault is active", async () => {
+it("uses an epoch-zero V2 discovery proof without an enrollment mutation when the wallet is active", async () => {
   const fixture = await enrollmentFixture();
   const remote = {
     discoverEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "active", enrollmentEpoch: 4 }),
@@ -69,7 +69,7 @@ it("uses an epoch-zero V2 discovery proof without an enrollment mutation when th
   expect(remote.executeAccountOperation).not.toHaveBeenCalled();
 });
 
-it("enrolls once after V2 discovery reports an absent vault", async () => {
+it("enrolls once after V2 discovery reports an absent wallet", async () => {
   const fixture = await enrollmentFixture();
   const remote = {
     discoverEnrollmentEpoch: vi.fn().mockResolvedValue({ status: "not-enrolled" }),
@@ -183,7 +183,7 @@ it("does not run another cycle while durable retry persistence is pending", asyn
   const persisted = deferred<{
     scopeId: string;
     realm: string;
-    vaultId: string;
+    walletId: string;
     attemptId: string;
     retryStreak: number;
     retryNotBeforeUnixMilliseconds: number;
@@ -215,8 +215,8 @@ it("does not run another cycle while durable retry persistence is pending", asyn
   persisted.resolve({
     scopeId: fixture.scopeId,
     realm: configuration.realm,
-    vaultId: fixture.keyHandle.vaultId,
-    attemptId: fixture.keyHandle.vaultId.slice(0, 32),
+    walletId: fixture.keyHandle.walletId,
+    attemptId: fixture.keyHandle.walletId.slice(0, 32),
     retryStreak: 1,
     retryNotBeforeUnixMilliseconds: Date.now() + 5_000,
   });
@@ -496,7 +496,7 @@ function enrollmentRecord(
     intentDigest: "22".repeat(32),
     action: "enroll" as const,
     realm: configuration.realm,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     requestAuthPublicKey: keyHandle.requestAuthPublicKey,
     expectedEnrollmentEpoch: 0,
     observedEnrollmentEpoch: epoch,

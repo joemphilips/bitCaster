@@ -27,18 +27,18 @@ import {
 import { ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES } from './encryptedWalletBackupV2Limits.ts'
 
 export type EncryptedWalletBackupV2ServerRoute =
-  | Readonly<{ operation: 'enrollment-epoch'; routeRealm: string; routeVaultId: string }>
+  | Readonly<{ operation: 'enrollment-epoch'; routeRealm: string; routeWalletId: string }>
   | Readonly<{
       operation: 'descriptor-page'
       routeRealm: string
-      routeVaultId: string
+      routeWalletId: string
       routeAfterBundleId: string | null
     }>
-  | Readonly<{ operation: 'bundle-supersession'; routeRealm: string; routeVaultId: string }>
+  | Readonly<{ operation: 'bundle-supersession'; routeRealm: string; routeWalletId: string }>
   | Readonly<{
       operation: 'object-get'
       routeRealm: string
-      routeVaultId: string
+      routeWalletId: string
       routeObjectId: string
     }>
 
@@ -75,7 +75,7 @@ export class EncryptedWalletBackupV2DelegatedServerRejection extends Error {
   readonly operation: EncryptedWalletBackupV2ServerRoute['operation']
   readonly requestDigest: string
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
 
   constructor(input: {
@@ -91,7 +91,7 @@ export class EncryptedWalletBackupV2DelegatedServerRejection extends Error {
       ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES,
     )
     this.realm = input.authority.claims.realm
-    this.vaultId = input.authority.claims.vaultId
+    this.walletId = input.authority.claims.walletId
     this.enrollmentEpoch = input.authority.claims.enrollmentEpoch
   }
 }
@@ -107,7 +107,7 @@ interface VerifiedAuthority {
 interface ValidatedRoute {
   readonly operation: EncryptedWalletBackupV2ServerRoute['operation']
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly method: EncryptedWalletBackupRequestMethod
   readonly rawTarget: string
 }
@@ -210,31 +210,31 @@ function validateRoute(value: EncryptedWalletBackupV2ServerRoute): ValidatedRout
   if (typeof value !== 'object' || value === null)
     throw new Error('encrypted backup v2 route is invalid')
   const realm = requireRealm(value.routeRealm)
-  const vaultId = requireLowerHex(value.routeVaultId, 32, 'route vault id')
-  const base = `/v1/encrypted-wallet-backup/realms/${realm}/vaults/${vaultId}`
+  const walletId = requireLowerHex(value.routeWalletId, 32, 'route wallet id')
+  const base = `/v1/encrypted-wallet-backup/realms/${realm}/wallets/${walletId}`
   switch (value.operation) {
     case 'enrollment-epoch':
-      return route(value.operation, realm, vaultId, 'GET', `${base}/enrollment-epoch`)
+      return route(value.operation, realm, walletId, 'GET', `${base}/enrollment-epoch`)
     case 'descriptor-page': {
       const after = value.routeAfterBundleId
       if (after !== null && after !== undefined) {
         return route(
           value.operation,
           realm,
-          vaultId,
+          walletId,
           'GET',
           `${base}/head/after/${requireLowerHex(after, 16, 'bundle cursor')}`,
         )
       }
-      return route(value.operation, realm, vaultId, 'GET', `${base}/head`)
+      return route(value.operation, realm, walletId, 'GET', `${base}/head`)
     }
     case 'bundle-supersession':
-      return route(value.operation, realm, vaultId, 'POST', `${base}/head:compare-and-swap`)
+      return route(value.operation, realm, walletId, 'POST', `${base}/head:compare-and-swap`)
     case 'object-get':
       return route(
         value.operation,
         realm,
-        vaultId,
+        walletId,
         'GET',
         `${base}/objects/${requireLowerHex(value.routeObjectId, 16, 'route object id')}`,
       )
@@ -256,7 +256,7 @@ function requireClaimsForRoute(
   claims: EncryptedWalletBackupRequestProof,
   route: ValidatedRoute,
 ): void {
-  if (claims.realm !== route.realm || claims.vaultId !== route.vaultId)
+  if (claims.realm !== route.realm || claims.walletId !== route.walletId)
     throw new Error('encrypted backup v2 request scope is invalid')
   if (route.operation === 'enrollment-epoch') {
     if (claims.enrollmentEpoch !== 0)
@@ -277,7 +277,7 @@ function decodeUploadGroup(
     expectedRequestAuthPublicKey: claims.requestAuthPublicKey,
     expectedContext: {
       realm: claims.realm,
-      vaultId: claims.vaultId,
+      walletId: claims.walletId,
       enrollmentEpoch: claims.enrollmentEpoch,
     },
   })
@@ -293,7 +293,7 @@ function enrollmentDiscovery(
     const matches =
       enrollment.status === 'active' &&
       requireRealm(enrollment.realm) === claims.realm &&
-      requireLowerHex(enrollment.vaultId, 32, 'enrolled vault id') === claims.vaultId &&
+      requireLowerHex(enrollment.walletId, 32, 'enrolled wallet id') === claims.walletId &&
       bytesToHex(
         requireValidXOnlyPublicKey(
           hexToBytesStrict(enrollment.requestAuthPublicKey, 32, 'request public key'),
@@ -312,11 +312,11 @@ function enrollmentDiscovery(
 function route(
   operation: EncryptedWalletBackupV2ServerRoute['operation'],
   realm: string,
-  vaultId: string,
+  walletId: string,
   method: EncryptedWalletBackupRequestMethod,
   rawTarget: string,
 ): ValidatedRoute {
-  return { operation, realm, vaultId, method, rawTarget }
+  return { operation, realm, walletId, method, rawTarget }
 }
 
 function requireOrigin(value: string): string {
@@ -342,7 +342,7 @@ export type EncryptedWalletBackupV2ServerEnrollment =
       status: 'active'
       protocolVersion: 2
       realm: string
-      vaultId: string
+      walletId: string
       requestAuthPublicKey: string
       enrollmentEpoch: number
     }>

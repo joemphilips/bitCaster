@@ -516,14 +516,24 @@ export interface DurableCustodyRecoveryPage {
 
 const WALLET_ID_DOMAIN = new TextEncoder().encode('bitcaster/durable-custody-wallet-id/v1\0')
 
-export function deriveDurableCustodyWalletId(seed: Uint8Array): string {
+declare const walletIdBrand: unique symbol
+export type WalletId = string & { readonly [walletIdBrand]: 'WalletId' }
+
+export function decodeDurableCustodyWalletId(value: unknown): WalletId {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error('custody wallet id is invalid')
+  }
+  return value as WalletId
+}
+
+export function deriveDurableCustodyWalletId(seed: Uint8Array): WalletId {
   if (!(seed instanceof Uint8Array) || (seed.length !== 32 && seed.length !== 64)) {
     throw new Error('custody wallet seed root must be 32 or 64 bytes')
   }
   const bytes = new Uint8Array(WALLET_ID_DOMAIN.length + seed.length)
   bytes.set(WALLET_ID_DOMAIN)
   bytes.set(seed, WALLET_ID_DOMAIN.length)
-  return bytesToHex(sha256(bytes))
+  return decodeDurableCustodyWalletId(bytesToHex(sha256(bytes)))
 }
 
 export function deriveDurableCustodyScopeId(scope: DurableCustodyScopeInput): string {
@@ -2621,9 +2631,7 @@ function validateScope(value: unknown): asserts value is DurableCustodyScope {
 
 function validateScopeInput(value: DurableCustodyScopeInput): void {
   if (value.scopeKind === 'wallet') {
-    if (!/^[0-9a-f]{64}$/.test(value.walletId)) {
-      throw new Error('custody wallet id is invalid')
-    }
+    decodeDurableCustodyWalletId(value.walletId)
   } else if (value.scopeKind === 'condition-inventory') {
     requireText(value.conditionId, 'condition id')
     requireText(value.inventoryAccountId, 'inventory account id')

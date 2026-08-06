@@ -10,7 +10,7 @@ import { EncryptedWalletBackupEnrollmentDexieStore } from "../encrypted-wallet-b
 import { BitcasterDB } from "../proof-db";
 
 const realm = "backup-test";
-const vaultId = "11".repeat(32);
+const walletId = "11".repeat(32);
 const requestAuthPublicKey = "33".repeat(32);
 const scopeId = deriveDurableCustodyScopeId({
   scopeKind: "wallet",
@@ -32,7 +32,7 @@ describe("encrypted wallet backup enrollment Dexie store", () => {
       database,
       scopeId,
       realm,
-      vaultId,
+      walletId,
       requestAuthPublicKey,
     });
     const initial = receipt(2, "11");
@@ -58,7 +58,7 @@ describe("encrypted wallet backup enrollment Dexie store", () => {
       database: restarted,
       scopeId,
       realm,
-      vaultId,
+      walletId,
       requestAuthPublicKey,
     });
     expect(await resumed.read()).toEqual(initial);
@@ -75,7 +75,7 @@ describe("encrypted wallet backup enrollment Dexie store", () => {
       database,
       scopeId,
       realm,
-      vaultId,
+      walletId,
       requestAuthPublicKey,
       beforeCommit: () => {
         checks += 1;
@@ -103,7 +103,7 @@ function receipt(epoch: number, byte: string) {
     intentDigest: byte.repeat(32),
     action: "enroll" as const,
     realm,
-    vaultId,
+    walletId,
     requestAuthPublicKey,
     expectedEnrollmentEpoch: 0,
     observedEnrollmentEpoch: epoch,

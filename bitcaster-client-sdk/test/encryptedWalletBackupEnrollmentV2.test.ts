@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createEncryptedWalletBackupKeyHandle } from '../src/encryptedWalletBackup.ts'
 import { prepareEncryptedWalletBackupAccountOperation } from '../src/encryptedWalletBackupEnrollment.ts'
 import { decodeEncryptedWalletBackupAccountRequest } from '../src/encryptedWalletBackupServerCodec.ts'
 import { createEncryptedWalletBackupV2KeyHandle } from '../src/encryptedWalletBackupV2Keys.ts'
@@ -20,7 +19,7 @@ test('v2 key handles prepare exact account lifecycle requests', async () => {
     ['revoke', 1],
     ['delete', 1],
   ] as const) {
-    const url = accountUrl(action, keyHandle.vaultId)
+    const url = accountUrl(action, keyHandle.walletId)
     const operation = await prepareEncryptedWalletBackupAccountOperation({
       keyHandle,
       action,
@@ -34,12 +33,12 @@ test('v2 key handles prepare exact account lifecycle requests', async () => {
 
     assert.equal(operation.formatVersion, 1)
     assert.equal(operation.realm, REALM)
-    assert.equal(operation.vaultId, keyHandle.vaultId)
+    assert.equal(operation.walletId, keyHandle.walletId)
     assert.equal(operation.requestAuthPublicKey, keyHandle.requestAuthPublicKey)
     assert.equal(request.intent.action, action)
     assert.equal(request.intent.url, url)
     assert.equal(request.intent.realm, REALM)
-    assert.equal(request.intent.vaultId, keyHandle.vaultId)
+    assert.equal(request.intent.walletId, keyHandle.walletId)
     assert.equal(request.intent.requestAuthPublicKey, keyHandle.requestAuthPublicKey)
     assert.equal(request.intent.expectedEnrollmentEpoch, expectedEnrollmentEpoch)
   }
@@ -53,7 +52,7 @@ test('account lifecycle rejects forged v2 key handles', async () => {
   const forged = {
     formatVersion: 2 as const,
     realm: issued.realm,
-    vaultId: issued.vaultId,
+    walletId: issued.walletId,
     requestAuthPublicKey: issued.requestAuthPublicKey,
   }
 
@@ -62,7 +61,7 @@ test('account lifecycle rejects forged v2 key handles', async () => {
       prepareEncryptedWalletBackupAccountOperation({
         keyHandle: forged,
         action: 'enroll',
-        url: accountUrl('enroll', issued.vaultId),
+        url: accountUrl('enroll', issued.walletId),
         operationId: operationId('enroll'),
         expectedEnrollmentEpoch: 0,
         authorizationPort: authorizationPort(),
@@ -72,30 +71,12 @@ test('account lifecycle rejects forged v2 key handles', async () => {
   )
 })
 
-test('v1 key handles still prepare account lifecycle requests', async () => {
-  const keyHandle = await createEncryptedWalletBackupKeyHandle({
-    seed: new Uint8Array(64).fill(9),
-    realm: REALM,
-  })
-  const operation = await prepareEncryptedWalletBackupAccountOperation({
-    keyHandle,
-    action: 'enroll',
-    url: accountUrl('enroll', keyHandle.vaultId),
-    operationId: operationId('enroll'),
-    expectedEnrollmentEpoch: 0,
-    authorizationPort: authorizationPort(),
-    signal: AbortSignal.timeout(60_000),
-  })
-  const request = decodeEncryptedWalletBackupAccountRequest(operation.canonicalRequest)
-
-  assert.equal(operation.vaultId, keyHandle.vaultId)
-  assert.equal(request.intent.requestAuthPublicKey, keyHandle.requestAuthPublicKey)
-})
-
-function accountUrl(action: 'enroll' | 'revoke' | 'delete', vaultId: string): string {
+function accountUrl(action: 'enroll' | 'revoke' | 'delete', walletId: string): string {
   return action === 'enroll'
-    ? `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults:enroll`
-    : `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${vaultId}:${action}`
+    ? `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets:enroll`
+    : action === 'revoke'
+      ? `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${walletId}:revoke`
+      : `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${walletId}`
 }
 
 function operationId(action: 'enroll' | 'revoke' | 'delete'): string {

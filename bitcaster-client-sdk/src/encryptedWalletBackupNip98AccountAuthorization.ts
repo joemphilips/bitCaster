@@ -98,7 +98,7 @@ export function authenticateEncryptedWalletBackupNip98AccountRequest(input: {
   canonicalRequest: Uint8Array
   expectedAction: DecodedEncryptedWalletBackupAccountAction
   expectedRealm: string
-  expectedRouteVaultId: string | null
+  expectedRouteWalletId: string | null
   actualUrl: string
   actualMethod: 'POST' | 'DELETE'
   serverNowUnixSeconds: number
@@ -111,11 +111,11 @@ export function authenticateEncryptedWalletBackupNip98AccountRequest(input: {
       request.intent.realm !== input.expectedRealm ||
       request.intent.url !== requireExactHttpsUrl(input.actualUrl) ||
       request.intent.method !== requireMethod(input.actualMethod) ||
-      (request.intent.action === 'enroll') !== (input.expectedRouteVaultId === null) ||
-      (input.expectedRouteVaultId === null
+      (request.intent.action === 'enroll') !== (input.expectedRouteWalletId === null) ||
+      (input.expectedRouteWalletId === null
         ? false
-        : request.intent.vaultId !==
-          requireLowerHex(input.expectedRouteVaultId, 32, 'route vault id'))
+        : request.intent.walletId !==
+          requireLowerHex(input.expectedRouteWalletId, 32, 'route wallet id'))
     ) {
       throw new Error()
     }

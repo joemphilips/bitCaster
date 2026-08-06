@@ -12,7 +12,7 @@ import {
   type EncryptedWalletBackupV2BundleDescriptor,
 } from "@bitcaster/client-sdk";
 import { browserWalletDatabaseName } from "./browserWalletProfile";
-import { encryptedWalletBackupV2VaultLockName } from "./encryptedWalletBackupDriver";
+import { encryptedWalletBackupV2WalletLockName } from "./encryptedWalletBackupDriver";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { readBrowserEncryptedWalletBackupV2ExactLocalProofRows } from "../stores/browser-encrypted-wallet-backup-v2-asset-source";
 import { pageActiveCtfRangePreparations } from "../stores/ctf-range-order-db";
@@ -114,9 +114,9 @@ export async function handoffBrowserEncryptedWalletBackupV2Seed(input: {
     input.scopeId,
     async () => {
       requireCapturedDatabase(input);
-      const vaultLocks = await readVaultLocks(input.database, input.scopeId);
-      // The profile lock always precedes sorted vault locks. The backup driver never takes a profile lock.
-      await withVaultLocks(vaultLocks, input.lockManager, async () => {
+      const walletLocks = await readWalletLocks(input.database, input.scopeId);
+      // The profile lock always precedes sorted wallet locks. The backup driver never takes a profile lock.
+      await withWalletLocks(walletLocks, input.lockManager, async () => {
         requireCapturedDatabase(input);
         await requireWholeWalletSeedHandoffEligibility(input);
         requireCapturedDatabase(input);
@@ -135,26 +135,28 @@ export async function handoffBrowserEncryptedWalletBackupV2Seed(input: {
   );
 }
 
-async function readVaultLocks(database: BitcasterDB, scopeId: string): Promise<readonly string[]> {
+async function readWalletLocks(database: BitcasterDB, scopeId: string): Promise<readonly string[]> {
   const heads = await database.encryptedWalletBackupV2AcceptedHeads
-    .where("[scopeId+realm+vaultId+enrollmentEpoch]")
+    .where("[scopeId+realm+walletId+enrollmentEpoch]")
     .between(
       [scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, 0],
       [scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, NUMBER_KEY_MAX],
     )
     .limit(DESIRED_ASSET_MAX + 1)
     .toArray();
-  if (heads.length > DESIRED_ASSET_MAX) throw new Error("browser V2 vault lock limit exceeded");
+  if (heads.length > DESIRED_ASSET_MAX) throw new Error("browser V2 wallet lock limit exceeded");
   return Object.freeze(
     [
       ...new Set(
-        heads.map(({ realm, vaultId }) => encryptedWalletBackupV2VaultLockName({ realm, vaultId })),
+        heads.map(({ realm, walletId }) =>
+          encryptedWalletBackupV2WalletLockName({ realm, walletId }),
+        ),
       ),
     ].sort((left, right) => left.localeCompare(right)),
   );
 }
 
-async function withVaultLocks<T>(
+async function withWalletLocks<T>(
   lockNames: readonly string[],
   lockManager: Pick<LockManager, "request"> | undefined,
   action: () => Promise<T>,
@@ -163,7 +165,7 @@ async function withVaultLocks<T>(
   if (!lockManager) throw new Error("This browser cannot safely lock the wallet profile");
   const [lockName, ...remaining] = lockNames;
   return lockManager.request(lockName!, { mode: "exclusive" }, () =>
-    withVaultLocks(remaining, lockManager, action),
+    withWalletLocks(remaining, lockManager, action),
   );
 }
 
@@ -177,7 +179,7 @@ async function requireNoActiveLocalWork(database: BitcasterDB, scopeId: string):
     database.proofOperations.where("state").equals("prepared").limit(1).first(),
     pageActiveCtfRangePreparations({ scopeId, limit: 1 }, database),
     database.encryptedWalletBackupV2PreparedMutations
-      .where("[scopeId+realm+vaultId+enrollmentEpoch]")
+      .where("[scopeId+realm+walletId+enrollmentEpoch]")
       .between(
         [scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, 0],
         [scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, NUMBER_KEY_MAX],
@@ -228,7 +230,7 @@ async function requireBackupCoverage(
   readonly descriptor: EncryptedWalletBackupV2BundleDescriptor;
 }> {
   const receipts = await database.encryptedWalletBackupV2AssetReceipts
-    .where("[scopeId+realm+vaultId+enrollmentEpoch]")
+    .where("[scopeId+realm+walletId+enrollmentEpoch]")
     .between(
       [desired.scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, 0],
       [desired.scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, NUMBER_KEY_MAX],
@@ -264,14 +266,14 @@ async function requireBackupCoverage(
   }
   if (
     mutation.realm !== receipt.realm ||
-    mutation.vaultId !== receipt.vaultId ||
+    mutation.walletId !== receipt.walletId ||
     mutation.enrollmentEpoch !== receipt.enrollmentEpoch ||
     mutation.addedBundle === null ||
     mutation.addedBundle.bundleId !== receipt.bundleId ||
     mutation.addedBundle.assetLocator !== receipt.assetLocator ||
     mutation.addedBundle.custodyRevision.toString() !== receipt.custodyRevision ||
     signedReceipt.realm !== receipt.realm ||
-    signedReceipt.vaultId !== receipt.vaultId ||
+    signedReceipt.walletId !== receipt.walletId ||
     signedReceipt.enrollmentEpoch !== receipt.enrollmentEpoch ||
     signedReceipt.mutationId !== mutation.mutationId ||
     signedReceipt.requestDigest !== signedMutation.requestDigest ||
@@ -293,14 +295,14 @@ async function requireBackupCoverage(
   const head = await database.encryptedWalletBackupV2AcceptedHeads.get([
     desired.scopeId,
     receipt.realm,
-    receipt.vaultId,
+    receipt.walletId,
     receipt.enrollmentEpoch,
   ]);
   if (head === undefined) throw new Error("browser V2 accepted head is absent");
   if (
     head.scopeId !== desired.scopeId ||
     head.realm !== receipt.realm ||
-    head.vaultId !== receipt.vaultId ||
+    head.walletId !== receipt.walletId ||
     head.enrollmentEpoch !== receipt.enrollmentEpoch
   ) {
     throw new Error("browser V2 accepted head is foreign");
@@ -308,7 +310,7 @@ async function requireBackupCoverage(
   const decodedHead = decodeEncryptedWalletBackupV2CurrentHead({
     formatVersion: 2,
     realm: head.realm,
-    vaultId: head.vaultId,
+    walletId: head.walletId,
     enrollmentEpoch: head.enrollmentEpoch,
     headVersion: head.headVersion,
     activeBundleCount: head.activeBundleCount,
@@ -322,7 +324,7 @@ async function requireBackupCoverage(
   }
   if (
     signedReceipt.resultHead.realm !== receipt.realm ||
-    signedReceipt.resultHead.vaultId !== receipt.vaultId ||
+    signedReceipt.resultHead.walletId !== receipt.walletId ||
     signedReceipt.resultHead.enrollmentEpoch !== receipt.enrollmentEpoch
   ) {
     throw new Error("browser V2 receipt result head is foreign");
@@ -338,8 +340,8 @@ async function requireCurrentDescriptorAuthority(
   receiptDescriptor: EncryptedWalletBackupV2BundleDescriptor,
 ): Promise<void> {
   const rows = await database.encryptedWalletBackupV2ActiveDescriptors
-    .where("[scopeId+realm+vaultId+enrollmentEpoch]")
-    .equals([desired.scopeId, head.realm, head.vaultId, head.enrollmentEpoch])
+    .where("[scopeId+realm+walletId+enrollmentEpoch]")
+    .equals([desired.scopeId, head.realm, head.walletId, head.enrollmentEpoch])
     .limit(DESIRED_ASSET_MAX + 1)
     .toArray();
   if (rows.length !== head.activeBundleCount || rows.length > DESIRED_ASSET_MAX) {
@@ -348,7 +350,7 @@ async function requireCurrentDescriptorAuthority(
   const descriptors = rows.map((row) => {
     const descriptor = decodeEncryptedWalletBackupV2BundleDescriptorWire(row.canonicalDescriptor, {
       realm: head.realm,
-      vaultId: head.vaultId,
+      walletId: head.walletId,
     });
     if (
       row.scopeId !== desired.scopeId ||
@@ -372,7 +374,7 @@ async function requireCurrentDescriptorAuthority(
       encodeEncryptedWalletBackupV2CurrentHead(
         createEncryptedWalletBackupV2CurrentHead({
           realm: head.realm,
-          vaultId: head.vaultId,
+          walletId: head.walletId,
           enrollmentEpoch: head.enrollmentEpoch,
           headVersion: head.headVersion,
           bundles: descriptors,

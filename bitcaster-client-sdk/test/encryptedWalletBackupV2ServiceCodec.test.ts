@@ -227,12 +227,12 @@ async function createFixture(objectCount = 1) {
   })
   const initialHead = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 1,
     headVersion: 0,
     bundles: [],
   })
-  const scope = { realm: REALM, vaultId: keyHandle.vaultId, enrollmentEpoch: 1 }
+  const scope = { realm: REALM, walletId: keyHandle.walletId, enrollmentEpoch: 1 }
   const envelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
     keyHandle,
     expectedHeadEvidence: collectEncryptedWalletBackupV2DescriptorPages(

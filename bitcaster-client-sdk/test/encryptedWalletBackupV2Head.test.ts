@@ -16,7 +16,7 @@ import {
 } from '../src/encryptedWalletBackupV2Head.ts'
 
 const REALM = 'backup.production'
-const VAULT = '11'.repeat(32)
+const WALLET_ID = '11'.repeat(32)
 const vector = JSON.parse(
   await readFile(
     new URL('../../test-vectors/encrypted-wallet-backup-v2-head.json', import.meta.url),
@@ -25,7 +25,7 @@ const vector = JSON.parse(
 ) as {
   readonly inputs: {
     readonly realm: string
-    readonly vaultId: string
+    readonly walletId: string
     readonly enrollmentEpoch: number
     readonly headVersion: number
     readonly descriptorCount: number
@@ -45,7 +45,7 @@ test('v2 descriptor codec is canonical and tamper-sensitive', () => {
   const originalAssetLocator = value.assetLocator
   const decoded = decodeEncryptedWalletBackupV2BundleDescriptor(value, {
     realm: REALM,
-    vaultId: VAULT,
+    walletId: WALLET_ID,
   })
   assert.equal(
     digestEncryptedWalletBackupV2BundleDescriptor(decoded),
@@ -60,7 +60,7 @@ test('v2 descriptor codec is canonical and tamper-sensitive', () => {
   for (const invalid of [
     { ...descriptor(1), unexpected: true },
     { ...descriptor(1), realm: 'INVALID REALM' },
-    { ...descriptor(1), vaultId: 'aa' },
+    { ...descriptor(1), walletId: 'aa' },
     { ...descriptor(1), objects: [descriptor(1).objects[0]!, descriptor(1).objects[0]!] },
   ])
     assert.throws(() => decodeEncryptedWalletBackupV2BundleDescriptor(invalid))
@@ -85,7 +85,7 @@ test('v2 descriptor wire decoder accepts canonical wire and rejects tampering', 
   assert.deepEqual(
     decodeEncryptedWalletBackupV2BundleDescriptorWire(wire, {
       realm: REALM,
-      vaultId: VAULT,
+      walletId: WALLET_ID,
     }),
     decodeEncryptedWalletBackupV2BundleDescriptor(value),
   )
@@ -129,7 +129,7 @@ test('v2 descriptor and page decoders snapshot accessor-backed collections once'
   const bundle = descriptor(3)
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: VAULT,
+    walletId: WALLET_ID,
     enrollmentEpoch: 1,
     headVersion: 1,
     bundles: [bundle],
@@ -153,7 +153,7 @@ test('v2 descriptor and page decoders snapshot accessor-backed collections once'
 test('v2 current head snapshots input accessors before deriving its digest', () => {
   const bundles = [descriptor(1)]
   let realmReads = 0
-  let vaultReads = 0
+  let walletReads = 0
   let epochReads = 0
   let versionReads = 0
   let bundleReads = 0
@@ -162,9 +162,9 @@ test('v2 current head snapshots input accessors before deriving its digest', () 
       realmReads += 1
       return realmReads === 1 ? REALM : 'other.realm'
     },
-    get vaultId(): string {
-      vaultReads += 1
-      return vaultReads === 1 ? VAULT : '22'.repeat(32)
+    get walletId(): string {
+      walletReads += 1
+      return walletReads === 1 ? WALLET_ID : '22'.repeat(32)
     },
     get enrollmentEpoch(): number {
       epochReads += 1
@@ -181,20 +181,20 @@ test('v2 current head snapshots input accessors before deriving its digest', () 
   }
   const head = createEncryptedWalletBackupV2CurrentHead(input)
   assert.equal(head.realm, REALM)
-  assert.equal(head.vaultId, VAULT)
+  assert.equal(head.walletId, WALLET_ID)
   assert.equal(head.enrollmentEpoch, 1)
   assert.equal(head.headVersion, 1)
   assert.equal(
     head.activeSetDigest,
     digestEncryptedWalletBackupV2ActiveSet({
       realm: REALM,
-      vaultId: VAULT,
+      walletId: WALLET_ID,
       enrollmentEpoch: 1,
       bundles,
     }),
   )
   assert.equal(realmReads, 1)
-  assert.equal(vaultReads, 1)
+  assert.equal(walletReads, 1)
   assert.equal(epochReads, 1)
   assert.equal(versionReads, 1)
   assert.equal(bundleReads, 1)
@@ -203,7 +203,7 @@ test('v2 current head snapshots input accessors before deriving its digest', () 
 test('v2 head pages enumerate and collect empty, page limits, and 256 bundles', () => {
   const empty = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: VAULT,
+    walletId: WALLET_ID,
     enrollmentEpoch: 1,
     headVersion: 0,
     bundles: [],
@@ -230,7 +230,7 @@ test('v2 head pages enumerate and collect empty, page limits, and 256 bundles', 
   const bundles = Array.from({ length: 256 }, (_, index) => descriptor(index + 1))
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: VAULT,
+    walletId: WALLET_ID,
     enrollmentEpoch: 1,
     headVersion: 1,
     bundles,
@@ -251,7 +251,7 @@ test('v2 head rejects duplicate assets or objects and page cursor tampering', ()
     () =>
       createEncryptedWalletBackupV2CurrentHead({
         realm: REALM,
-        vaultId: VAULT,
+        walletId: WALLET_ID,
         enrollmentEpoch: 1,
         headVersion: 1,
         bundles: [first, duplicateAsset],
@@ -262,7 +262,7 @@ test('v2 head rejects duplicate assets or objects and page cursor tampering', ()
     () =>
       createEncryptedWalletBackupV2CurrentHead({
         realm: REALM,
-        vaultId: VAULT,
+        walletId: WALLET_ID,
         enrollmentEpoch: 1,
         headVersion: 1,
         bundles: [first, { ...descriptor(2), bundleId: first.bundleId }],
@@ -273,7 +273,7 @@ test('v2 head rejects duplicate assets or objects and page cursor tampering', ()
     () =>
       createEncryptedWalletBackupV2CurrentHead({
         realm: REALM,
-        vaultId: VAULT,
+        walletId: WALLET_ID,
         enrollmentEpoch: 1,
         headVersion: 1,
         bundles: [first, { ...descriptor(2), assetLocator: first.assetLocator }],
@@ -282,7 +282,7 @@ test('v2 head rejects duplicate assets or objects and page cursor tampering', ()
   )
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: VAULT,
+    walletId: WALLET_ID,
     enrollmentEpoch: 1,
     headVersion: 1,
     bundles: [first],
@@ -299,7 +299,7 @@ test('v2 head rejects duplicate assets or objects and page cursor tampering', ()
     () =>
       createEncryptedWalletBackupV2CurrentHead({
         realm: REALM,
-        vaultId: VAULT,
+        walletId: WALLET_ID,
         enrollmentEpoch: 1,
         headVersion: 1,
         bundles: [first, { ...descriptor(2), objects: first.objects }],
@@ -313,7 +313,7 @@ test('v2 head enforces bundle, object, and page boundaries', () => {
     const bundles = Array.from({ length: count }, (_, index) => descriptor(index + 1))
     const head = createEncryptedWalletBackupV2CurrentHead({
       realm: REALM,
-      vaultId: VAULT,
+      walletId: WALLET_ID,
       enrollmentEpoch: 1,
       headVersion: 1,
       bundles,
@@ -328,7 +328,7 @@ test('v2 head enforces bundle, object, and page boundaries', () => {
     () =>
       createEncryptedWalletBackupV2CurrentHead({
         realm: REALM,
-        vaultId: VAULT,
+        walletId: WALLET_ID,
         enrollmentEpoch: 1,
         headVersion: 1,
         bundles: [...maximum, descriptor(257)],
@@ -342,7 +342,7 @@ test('v2 head enforces bundle, object, and page boundaries', () => {
   assert.equal(
     createEncryptedWalletBackupV2CurrentHead({
       realm: REALM,
-      vaultId: VAULT,
+      walletId: WALLET_ID,
       enrollmentEpoch: 1,
       headVersion: 1,
       bundles: objects,
@@ -353,7 +353,7 @@ test('v2 head enforces bundle, object, and page boundaries', () => {
     () =>
       createEncryptedWalletBackupV2CurrentHead({
         realm: REALM,
-        vaultId: VAULT,
+        walletId: WALLET_ID,
         enrollmentEpoch: 1,
         headVersion: 1,
         bundles: [...objects, descriptor(999)],
@@ -362,7 +362,7 @@ test('v2 head enforces bundle, object, and page boundaries', () => {
   )
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: VAULT,
+    walletId: WALLET_ID,
     enrollmentEpoch: 1,
     headVersion: 1,
     bundles: maximum,
@@ -375,7 +375,7 @@ test('v2 head collector fails closed for compact page corruption cases', () => {
   const bundles = Array.from({ length: 16 }, (_, index) => descriptor(index + 1))
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: VAULT,
+    walletId: WALLET_ID,
     enrollmentEpoch: 1,
     headVersion: 1,
     bundles,
@@ -401,7 +401,7 @@ test('v2 head commits sorted bundle and descriptor digest pairs', () => {
   const bundles = Array.from({ length: 16 }, (_, index) => descriptor(index + 1))
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: VAULT,
+    walletId: WALLET_ID,
     enrollmentEpoch: 1,
     headVersion: 1,
     bundles,
@@ -411,7 +411,7 @@ test('v2 head commits sorted bundle and descriptor digest pairs', () => {
     head.activeSetDigest,
     digestEncryptedWalletBackupV2ActiveSet({
       realm: REALM,
-      vaultId: VAULT,
+      walletId: WALLET_ID,
       enrollmentEpoch: 1,
       bundles,
     }),
@@ -454,7 +454,7 @@ function descriptor(index: number, objectCount = 1) {
   return {
     formatVersion: 2 as const,
     realm: REALM,
-    vaultId: VAULT,
+    walletId: WALLET_ID,
     bundleId,
     assetLocator: (index + 16).toString(16).padStart(64, '0'),
     declaredAmount: BigInt(index),

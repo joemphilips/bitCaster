@@ -37,23 +37,23 @@ afterEach(async () => {
 });
 
 describe("browser wallet databases", () => {
-  it("installs version 21 without V1 tables and keeps V2, enrollment, retry, and custody authorities", async () => {
+  it("installs version 23 without V1 tables and keeps V2, enrollment, retry, and custody authorities", async () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(21);
+    expect(db.verno).toBe(23);
     expect(db.tables.map(({ name }) => name)).not.toEqual(
       expect.arrayContaining([...v1TableNames]),
     );
     expect(db.custodyProofBackupAuthorities.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.encryptedWalletBackupEnrollmentResults.schema.primKey.keyPath).toEqual([
       "realm",
-      "vaultId",
+      "walletId",
     ]);
     expect(db.encryptedWalletBackupRetrySchedulers.schema.primKey.keyPath).toEqual([
       "scopeId",
       "realm",
-      "vaultId",
+      "walletId",
     ]);
     expect(db.encryptedWalletBackupV2DesiredAssets.schema.primKey.keyPath).toEqual([
       "scopeId",
@@ -62,32 +62,32 @@ describe("browser wallet databases", () => {
     expect(db.encryptedWalletBackupV2PreparedMutations.schema.primKey.keyPath).toEqual([
       "scopeId",
       "realm",
-      "vaultId",
+      "walletId",
       "enrollmentEpoch",
     ]);
     expect(db.encryptedWalletBackupV2AcceptedHeads.schema.primKey.keyPath).toEqual([
       "scopeId",
       "realm",
-      "vaultId",
+      "walletId",
       "enrollmentEpoch",
     ]);
     expect(db.encryptedWalletBackupV2AssetReceipts.schema.primKey.keyPath).toEqual([
       "scopeId",
       "realm",
-      "vaultId",
+      "walletId",
       "enrollmentEpoch",
       "localAssetKey",
     ]);
     expect(db.encryptedWalletBackupV2ActiveDescriptors.schema.primKey.keyPath).toEqual([
       "scopeId",
       "realm",
-      "vaultId",
+      "walletId",
       "enrollmentEpoch",
       "bundleId",
     ]);
   });
 
-  it("deletes V1 tables from a version-20 database and retains V2, enrollment, retry, and custody data", async () => {
+  it("drops legacy backup authority rows from a version-20 database", async () => {
     const name = `bitcaster-wallet-v20-upgrade-${crypto.randomUUID()}`;
     const legacy = new Dexie(name);
     legacy.version(20).stores(version20Stores());
@@ -142,13 +142,13 @@ describe("browser wallet databases", () => {
       );
       await Promise.all([
         expect(upgraded.custodyProofBackupAuthorities.count()).resolves.toBe(1),
-        expect(upgraded.encryptedWalletBackupEnrollmentResults.count()).resolves.toBe(1),
-        expect(upgraded.encryptedWalletBackupRetrySchedulers.count()).resolves.toBe(1),
+        expect(upgraded.encryptedWalletBackupEnrollmentResults.count()).resolves.toBe(0),
+        expect(upgraded.encryptedWalletBackupRetrySchedulers.count()).resolves.toBe(0),
         expect(upgraded.encryptedWalletBackupV2DesiredAssets.count()).resolves.toBe(1),
-        expect(upgraded.encryptedWalletBackupV2PreparedMutations.count()).resolves.toBe(1),
-        expect(upgraded.encryptedWalletBackupV2AcceptedHeads.count()).resolves.toBe(1),
-        expect(upgraded.encryptedWalletBackupV2AssetReceipts.count()).resolves.toBe(1),
-        expect(upgraded.encryptedWalletBackupV2ActiveDescriptors.count()).resolves.toBe(1),
+        expect(upgraded.encryptedWalletBackupV2PreparedMutations.count()).resolves.toBe(0),
+        expect(upgraded.encryptedWalletBackupV2AcceptedHeads.count()).resolves.toBe(0),
+        expect(upgraded.encryptedWalletBackupV2AssetReceipts.count()).resolves.toBe(0),
+        expect(upgraded.encryptedWalletBackupV2ActiveDescriptors.count()).resolves.toBe(0),
       ]);
     } finally {
       upgraded.close();
@@ -300,10 +300,10 @@ describe("browser wallet databases", () => {
       legacy.table("encryptedWalletBackupSnapshotControls").put({ scopeKey: "scope" }),
       legacy
         .table("encryptedWalletBackupEnrollmentResults")
-        .put({ realm: "realm", vaultId: "vault" }),
+        .put({ realm: "realm", vaultId: "wallet" }),
       legacy
         .table("encryptedWalletBackupRetrySchedulers")
-        .put({ scopeId: "scope", realm: "realm", vaultId: "vault" }),
+        .put({ scopeId: "scope", realm: "realm", vaultId: "wallet" }),
     ]);
     legacy.close();
 
@@ -442,8 +442,6 @@ const clearedVersion12RetainedTableNames = [
   "custodyActiveWork",
   "custodyProofBackupAuthorities",
   "custodyConditionalKeysets",
-  "encryptedWalletBackupEnrollmentResults",
-  "encryptedWalletBackupRetrySchedulers",
 ] as const;
 
 function version12Stores(): Record<string, string> {

@@ -22,7 +22,7 @@ export interface EncryptedWalletBackupV2ObjectReference {
 export interface EncryptedWalletBackupV2BundleDescriptor {
   readonly formatVersion: 2
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly bundleId: string
   readonly assetLocator: string
   readonly declaredAmount: bigint
@@ -54,12 +54,12 @@ const DESCRIPTOR_PREFLIGHT = {
 
 export function decodeEncryptedWalletBackupV2BundleDescriptor(
   value: unknown,
-  expected?: { readonly realm: string; readonly vaultId: string },
+  expected?: { readonly realm: string; readonly walletId: string },
 ): EncryptedWalletBackupV2BundleDescriptor {
   const record = exactRecord(value, [
     'formatVersion',
     'realm',
-    'vaultId',
+    'walletId',
     'bundleId',
     'assetLocator',
     'declaredAmount',
@@ -69,8 +69,8 @@ export function decodeEncryptedWalletBackupV2BundleDescriptor(
   ])
   if (record.formatVersion !== 2) throw new Error('encrypted backup v2 descriptor is invalid')
   const realm = requireRealm(record.realm)
-  const vaultId = requireLowerHex(record.vaultId, 32, 'vault id')
-  if (expected !== undefined && (realm !== expected.realm || vaultId !== expected.vaultId))
+  const walletId = requireLowerHex(record.walletId, 32, 'wallet id')
+  if (expected !== undefined && (realm !== expected.realm || walletId !== expected.walletId))
     throw new Error('encrypted backup v2 descriptor is foreign')
   const objectValues = record.objects
   if (
@@ -91,7 +91,7 @@ export function decodeEncryptedWalletBackupV2BundleDescriptor(
   return Object.freeze({
     formatVersion: 2,
     realm,
-    vaultId,
+    walletId,
     bundleId: requireLowerHex(record.bundleId, 16, 'bundle id'),
     assetLocator: requireLowerHex(record.assetLocator, 32, 'asset locator'),
     declaredAmount: requireUint64(record.declaredAmount, 'declared amount'),
@@ -106,7 +106,7 @@ export function encodeEncryptedWalletBackupV2BundleDescriptor(value: unknown): U
   return encodeCanonicalBackupCbor([
     descriptor.formatVersion,
     descriptor.realm,
-    hexToBytesStrict(descriptor.vaultId, 32, 'vault id'),
+    hexToBytesStrict(descriptor.walletId, 32, 'wallet id'),
     hexToBytesStrict(descriptor.bundleId, 16, 'bundle id'),
     hexToBytesStrict(descriptor.assetLocator, 32, 'asset locator'),
     descriptor.declaredAmount,
@@ -122,7 +122,7 @@ export function encodeEncryptedWalletBackupV2BundleDescriptor(value: unknown): U
 /** Decodes the exact canonical descriptor wire stored by a backup service. */
 export function decodeEncryptedWalletBackupV2BundleDescriptorWire(
   bytes: Uint8Array,
-  expected?: { readonly realm: string; readonly vaultId: string },
+  expected?: { readonly realm: string; readonly walletId: string },
 ): EncryptedWalletBackupV2BundleDescriptor {
   preflightDescriptorWire(bytes)
   let decoded: unknown
@@ -137,7 +137,7 @@ export function decodeEncryptedWalletBackupV2BundleDescriptorWire(
     {
       formatVersion: decoded[0],
       realm: decoded[1],
-      vaultId: toHex(requireBytes(decoded[2], 32, 32, 'vault id')),
+      walletId: toHex(requireBytes(decoded[2], 32, 32, 'wallet id')),
       bundleId: toHex(requireBytes(decoded[3], 16, 16, 'bundle id')),
       assetLocator: toHex(requireBytes(decoded[4], 32, 32, 'asset locator')),
       declaredAmount: requireUint64(decoded[5], 'declared amount'),

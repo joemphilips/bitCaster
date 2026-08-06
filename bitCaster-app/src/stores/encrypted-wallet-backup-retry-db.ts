@@ -6,12 +6,12 @@ import type { BitcasterDB, EncryptedWalletBackupDexieRetrySchedulerRow } from ".
 
 export async function readEncryptedWalletBackupRetryScheduler(
   database: BitcasterDB,
-  input: Readonly<{ scopeId: string; realm: string; vaultId: string }>,
+  input: Readonly<{ scopeId: string; realm: string; walletId: string }>,
 ): Promise<EncryptedWalletBackupDexieRetrySchedulerRow | null> {
   const row = await database.encryptedWalletBackupRetrySchedulers.get([
     input.scopeId,
     input.realm,
-    input.vaultId,
+    input.walletId,
   ]);
   if (row === undefined) return null;
   return validateRetrySchedulerRow(row, input);
@@ -19,20 +19,20 @@ export async function readEncryptedWalletBackupRetryScheduler(
 
 export async function clearEncryptedWalletBackupRetryScheduler(
   database: BitcasterDB,
-  input: Readonly<{ scopeId: string; realm: string; vaultId: string; attemptId: string }>,
+  input: Readonly<{ scopeId: string; realm: string; walletId: string; attemptId: string }>,
 ): Promise<void> {
   validateRetrySchedulerIdentity(input);
   await database.transaction("rw", database.encryptedWalletBackupRetrySchedulers, async () => {
     const current = await database.encryptedWalletBackupRetrySchedulers.get([
       input.scopeId,
       input.realm,
-      input.vaultId,
+      input.walletId,
     ]);
     if (current?.attemptId === input.attemptId) {
       await database.encryptedWalletBackupRetrySchedulers.delete([
         input.scopeId,
         input.realm,
-        input.vaultId,
+        input.walletId,
       ]);
     }
   });
@@ -43,7 +43,7 @@ export async function scheduleEncryptedWalletBackupRetry(
   input: Readonly<{
     scopeId: string;
     realm: string;
-    vaultId: string;
+    walletId: string;
     attemptId: string;
     minimumDelayMilliseconds: number;
   }>,
@@ -56,7 +56,7 @@ export async function scheduleEncryptedWalletBackupRetry(
     const current = await database.encryptedWalletBackupRetrySchedulers.get([
       input.scopeId,
       input.realm,
-      input.vaultId,
+      input.walletId,
     ]);
     const now = Date.now();
     const prior =
@@ -64,7 +64,7 @@ export async function scheduleEncryptedWalletBackupRetry(
     if (prior !== null && prior.retryNotBeforeUnixMilliseconds > now) return prior;
     const schedule = planEncryptedWalletBackupRetry({
       realm: input.realm,
-      vaultId: input.vaultId,
+      walletId: input.walletId,
       attemptId: input.attemptId,
       currentStreak: prior?.retryStreak ?? 0,
       minimumDelayMilliseconds: Math.max(
@@ -76,7 +76,7 @@ export async function scheduleEncryptedWalletBackupRetry(
       {
         scopeId: input.scopeId,
         realm: input.realm,
-        vaultId: input.vaultId,
+        walletId: input.walletId,
         attemptId: input.attemptId,
         retryStreak: schedule.streak,
         retryNotBeforeUnixMilliseconds: Math.max(
@@ -93,7 +93,7 @@ export async function scheduleEncryptedWalletBackupRetry(
 
 function validateRetrySchedulerRow(
   row: EncryptedWalletBackupDexieRetrySchedulerRow,
-  identity: Readonly<{ scopeId: string; realm: string; vaultId: string }>,
+  identity: Readonly<{ scopeId: string; realm: string; walletId: string }>,
 ): EncryptedWalletBackupDexieRetrySchedulerRow {
   if (
     typeof row !== "object" ||
@@ -103,7 +103,7 @@ function validateRetrySchedulerRow(
       (key) =>
         key !== "scopeId" &&
         key !== "realm" &&
-        key !== "vaultId" &&
+        key !== "walletId" &&
         key !== "attemptId" &&
         key !== "retryStreak" &&
         key !== "retryNotBeforeUnixMilliseconds",
@@ -115,7 +115,7 @@ function validateRetrySchedulerRow(
   if (
     row.scopeId !== identity.scopeId ||
     row.realm !== identity.realm ||
-    row.vaultId !== identity.vaultId ||
+    row.walletId !== identity.walletId ||
     !/^[0-9a-f]{32}$/.test(row.attemptId) ||
     !Number.isSafeInteger(row.retryStreak) ||
     row.retryStreak < 0 ||
@@ -132,13 +132,13 @@ function validateRetrySchedulerIdentity(
   input: Readonly<{
     scopeId: string;
     realm: string;
-    vaultId: string;
+    walletId: string;
   }>,
 ): void {
   if (
     !/^[^\s]{1,128}$/.test(input.scopeId) ||
     !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(input.realm) ||
-    !/^[0-9a-f]{64}$/.test(input.vaultId)
+    !/^[0-9a-f]{64}$/.test(input.walletId)
   ) {
     throw new Error("encrypted wallet backup retry scheduler identity is invalid");
   }

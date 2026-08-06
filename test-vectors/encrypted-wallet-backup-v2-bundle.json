@@ -12,7 +12,7 @@
     "nonceHex": "f0f1f2f3f4f5f6f7f8f9fafb"
   },
   "expected": {
-    "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+    "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
     "bundleId": "00112233445566778899aabbccddeeff",
     "assetLocator": "d5856ca354c4d4af47116443462f2d1cb9aca458be1149815956a64ab6a6755c",
     "declaredAmount": 1,

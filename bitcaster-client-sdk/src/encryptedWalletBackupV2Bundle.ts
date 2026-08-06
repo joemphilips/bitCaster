@@ -174,7 +174,7 @@ export async function prepareEncryptedWalletBackupV2TransportBundle(input: {
   )
   const descriptorBase = {
     realm: input.keyHandle.realm,
-    vaultId: input.keyHandle.vaultId,
+    walletId: input.keyHandle.walletId,
     bundleId: toHex(bundleId),
     assetLocator,
     declaredAmount,
@@ -377,7 +377,7 @@ function encodeObjectAad(input: {
     ENCRYPTED_WALLET_BACKUP_V2_FORMAT_VERSION,
     'encrypted-wallet-backup-v2-bundle-object',
     input.descriptorBase.realm,
-    fromHex(input.descriptorBase.vaultId, 32),
+    fromHex(input.descriptorBase.walletId, 32),
     input.bundleId,
     fromHex(input.descriptorBase.assetLocator, 32),
     input.descriptorBase.declaredAmount,
@@ -746,7 +746,7 @@ function toHex(value: Uint8Array): string {
 
 interface DescriptorBase {
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly bundleId: string
   readonly assetLocator: string
   readonly declaredAmount: bigint

@@ -145,7 +145,7 @@ export function decodeEncryptedWalletBackupV2UploadGroup(input: {
   readonly expectedRequestAuthPublicKey: string
   readonly expectedContext: {
     readonly realm: string
-    readonly vaultId: string
+    readonly walletId: string
     readonly enrollmentEpoch: number
   }
 }): DecodedEncryptedWalletBackupV2UploadGroup {
@@ -210,7 +210,7 @@ export function decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire(
     formatVersion: tuple[2],
     kind: tuple[3],
     realm: tuple[4],
-    vaultId: toHex(requireBytes(tuple[5], 32, 32, 'vault id')),
+    walletId: toHex(requireBytes(tuple[5], 32, 32, 'wallet id')),
     enrollmentEpoch: tuple[6],
     requestAuthPublicKey: toHex(requireBytes(tuple[7], 32, 32, 'request public key')),
     mutationId: toHex(requireBytes(tuple[8], 16, 16, 'mutation id')),
@@ -305,7 +305,7 @@ function encodeSignedMutation(
     mutation.formatVersion,
     mutation.kind,
     mutation.realm,
-    hexToBytesStrict(mutation.vaultId, 32, 'vault id'),
+    hexToBytesStrict(mutation.walletId, 32, 'wallet id'),
     mutation.enrollmentEpoch,
     hexToBytesStrict(mutation.mutationId, 16, 'mutation id'),
     mutation.expectedHeadVersion,
@@ -344,15 +344,15 @@ function decodeSignedMutation(
   if (tuple[0] !== 2 || tuple[1] !== 'bundle-supersession-mutation')
     throw new Error('encrypted backup v2 signed mutation is invalid')
   const realm = tuple[4]
-  const vaultId = toHex(requireBytes(tuple[5], 32, 32, 'vault id'))
-  const context = { realm: typeof realm === 'string' ? realm : '', vaultId }
+  const walletId = toHex(requireBytes(tuple[5], 32, 32, 'wallet id'))
+  const context = { realm: typeof realm === 'string' ? realm : '', walletId }
   return decodeEncryptedWalletBackupV2SignedBundleSupersessionMutation(
     {
       mutation: {
         formatVersion: tuple[2],
         kind: tuple[3],
         realm,
-        vaultId,
+        walletId,
         enrollmentEpoch: tuple[6],
         mutationId: toHex(requireBytes(tuple[7], 16, 16, 'mutation id')),
         expectedHeadVersion: tuple[8],
@@ -408,7 +408,7 @@ function validatePageOrder(
 
 function decodeDescriptorArray(
   value: unknown,
-  context: { readonly realm: string; readonly vaultId: string },
+  context: { readonly realm: string; readonly walletId: string },
 ): EncryptedWalletBackupV2BundleDescriptor[] {
   if (!Array.isArray(value) || value.length > ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_PAGE_MAX)
     throw new Error('encrypted backup v2 descriptor page is invalid')
@@ -421,7 +421,7 @@ function decodeDescriptorArray(
 
 function decodeDescriptor(
   bytes: Uint8Array,
-  context: { readonly realm: string; readonly vaultId: string },
+  context: { readonly realm: string; readonly walletId: string },
 ): EncryptedWalletBackupV2BundleDescriptor {
   return decodeEncryptedWalletBackupV2BundleDescriptorWire(bytes, context)
 }
@@ -430,7 +430,7 @@ function encodeHead(value: EncryptedWalletBackupV2CurrentHead): Uint8Array {
   return encodeCanonicalBackupCbor([
     value.formatVersion,
     value.realm,
-    hexToBytesStrict(value.vaultId, 32, 'vault id'),
+    hexToBytesStrict(value.walletId, 32, 'wallet id'),
     value.enrollmentEpoch,
     value.headVersion,
     value.activeBundleCount,
@@ -444,7 +444,7 @@ function decodeHead(bytes: Uint8Array): EncryptedWalletBackupV2CurrentHead {
   return decodeEncryptedWalletBackupV2CurrentHead({
     formatVersion: tuple[0],
     realm: tuple[1],
-    vaultId: toHex(requireBytes(tuple[2], 32, 32, 'vault id')),
+    walletId: toHex(requireBytes(tuple[2], 32, 32, 'wallet id')),
     enrollmentEpoch: tuple[3],
     headVersion: tuple[4],
     activeBundleCount: tuple[5],
@@ -462,7 +462,7 @@ function receiptTuple(
     receipt.formatVersion,
     receipt.kind,
     receipt.realm,
-    hexToBytesStrict(receipt.vaultId, 32, 'vault id'),
+    hexToBytesStrict(receipt.walletId, 32, 'wallet id'),
     receipt.enrollmentEpoch,
     hexToBytesStrict(receipt.requestAuthPublicKey, 32, 'request public key'),
     hexToBytesStrict(receipt.mutationId, 16, 'mutation id'),
@@ -563,12 +563,12 @@ function toHex(value: Uint8Array): string {
 
 function mutationScope(value: EncryptedWalletBackupV2SignedBundleSupersessionMutation): {
   readonly realm: string
-  readonly vaultId: string
+  readonly walletId: string
   readonly enrollmentEpoch: number
 } {
   return {
     realm: value.mutation.realm,
-    vaultId: value.mutation.vaultId,
+    walletId: value.mutation.walletId,
     enrollmentEpoch: value.mutation.enrollmentEpoch,
   }
 }

@@ -4,10 +4,8 @@ import test from 'node:test'
 import { schnorr } from '@noble/curves/secp256k1.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import {
-  createEncryptedWalletBackupKeyHandle,
   encryptedWalletBackupRequestDigest,
   encodeEncryptedWalletBackupRequestProof,
-  prepareEncryptedWalletBackupRequestProof,
   type EncryptedWalletBackupRequestProof,
 } from '../src/encryptedWalletBackup.ts'
 import { prepareEncryptedWalletBackupAccountOperation } from '../src/encryptedWalletBackupEnrollment.ts'
@@ -62,7 +60,7 @@ test('V2 adapter forwards only the scheme-neutral enrollment lifecycle endpoint'
     realm: REALM,
     runtime: webcrypto,
   })
-  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults:enroll`
+  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets:enroll`
   const operation = await prepareEncryptedWalletBackupAccountOperation({
     keyHandle,
     action: 'enroll',
@@ -121,7 +119,7 @@ test('V2 adapter maps a redacted account transport failure and preserves dispatc
   const operation = await prepareEncryptedWalletBackupAccountOperation({
     keyHandle,
     action: 'enroll',
-    url: `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults:enroll`,
+    url: `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets:enroll`,
     operationId: '12'.repeat(16),
     expectedEnrollmentEpoch: 0,
     authorizationPort: {
@@ -157,11 +155,11 @@ test('V2 descriptor routes bind the cursor, method, body, request digest, and V2
     realm: REALM,
     runtime: webcrypto,
   })
-  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${keyHandle.vaultId}/head`
+  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${keyHandle.walletId}/head`
   const proof = await prepareProof(keyHandle, 3, 'GET', url, new Uint8Array())
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     enrollmentEpoch: 3,
     headVersion: 0,
     bundles: [],
@@ -180,7 +178,7 @@ test('V2 descriptor routes bind the cursor, method, body, request digest, and V2
           kind: 'descriptor-page',
           requestDigest: requestDigest(proof),
           realm: REALM,
-          vaultId: keyHandle.vaultId,
+          walletId: keyHandle.walletId,
           enrollmentEpoch: 3,
           body: encodeEncryptedWalletBackupV2DescriptorPage(page),
         }),
@@ -206,12 +204,12 @@ test('V2 server content verification does not consume replay, but discovery does
     realm: REALM,
     runtime: webcrypto,
   })
-  const base = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${keyHandle.vaultId}`
+  const base = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${keyHandle.walletId}`
   const enrollment = {
     status: 'active' as const,
     protocolVersion: 2 as const,
     realm: REALM,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     requestAuthPublicKey: keyHandle.requestAuthPublicKey,
     enrollmentEpoch: 3,
   }
@@ -221,12 +219,12 @@ test('V2 server content verification does not consume replay, but discovery does
       `BackupV1 ${base64Url(encodeEncryptedWalletBackupRequestProof(contentProof))}`,
     ],
     configuredOrigin: ORIGIN,
-    rawTarget: `/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${keyHandle.vaultId}/head`,
+    rawTarget: `/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${keyHandle.walletId}/head`,
     method: 'GET',
     route: {
       operation: 'descriptor-page',
       routeRealm: REALM,
-      routeVaultId: keyHandle.vaultId,
+      routeWalletId: keyHandle.walletId,
       routeAfterBundleId: null,
     },
     payload: new Uint8Array(),
@@ -252,9 +250,9 @@ test('V2 server content verification does not consume replay, but discovery does
       `BackupV1 ${base64Url(encodeEncryptedWalletBackupRequestProof(discoveryProof))}`,
     ],
     configuredOrigin: ORIGIN,
-    rawTarget: `/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${keyHandle.vaultId}/enrollment-epoch`,
+    rawTarget: `/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${keyHandle.walletId}/enrollment-epoch`,
     method: 'GET',
-    route: { operation: 'enrollment-epoch', routeRealm: REALM, routeVaultId: keyHandle.vaultId },
+    route: { operation: 'enrollment-epoch', routeRealm: REALM, routeWalletId: keyHandle.walletId },
     payload: new Uint8Array(),
     serverNowUnixSeconds: 1_000,
   })
@@ -272,65 +270,25 @@ test('V2 server content verification does not consume replay, but discovery does
   assert.deepEqual(authorized.discovery, { status: 'active', enrollmentEpoch: 3 })
 })
 
-test('V2 adapter rejects a legacy request proof capability', async () => {
-  const keyHandle = await createEncryptedWalletBackupKeyHandle({
-    seed: new Uint8Array(64).fill(19),
-    realm: REALM,
-  })
-  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${keyHandle.vaultId}/head`
-  const proof = await prepareEncryptedWalletBackupRequestProof({
-    keyHandle,
-    enrollmentEpoch: 2,
-    method: 'GET',
-    url,
-    issuedAtUnixSeconds: 990,
-    expiresAtUnixSeconds: 1_020,
-    payload: new Uint8Array(),
-    signal: AbortSignal.timeout(60_000),
-    runtime: {
-      subtle: webcrypto.subtle,
-      getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto),
-    },
-  })
-  let fetched = false
-  const adapter = new EncryptedWalletBackupV2HttpAdapter({
-    origin: ORIGIN,
-    fetch: async () => {
-      fetched = true
-      throw new Error('unexpected fetch')
-    },
-  })
-  await assert.rejects(
-    adapter.readDescriptorPage({
-      requestProof: proof as unknown as EncryptedWalletBackupV2RequestProof,
-      afterBundleId: null,
-    }),
-    (error) =>
-      error instanceof EncryptedWalletBackupV2HttpTransportError &&
-      error.code === 'invalid-request',
-  )
-  assert.equal(fetched, false)
-})
-
 test('V2 server rejects a legacy enrollment at runtime', async () => {
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
     seed: new Uint8Array(64).fill(18),
     realm: REALM,
     runtime: webcrypto,
   })
-  const base = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${keyHandle.vaultId}`
+  const base = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${keyHandle.walletId}`
   const proof = await prepareProof(keyHandle, 2, 'GET', `${base}/head`, new Uint8Array())
   const verified = verifyAndDecodeEncryptedWalletBackupV2DelegatedServerRequest({
     rawAuthorizationHeaderValues: [
       `BackupV1 ${base64Url(encodeEncryptedWalletBackupRequestProof(proof))}`,
     ],
     configuredOrigin: ORIGIN,
-    rawTarget: `/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${keyHandle.vaultId}/head`,
+    rawTarget: `/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${keyHandle.walletId}/head`,
     method: 'GET',
     route: {
       operation: 'descriptor-page',
       routeRealm: REALM,
-      routeVaultId: keyHandle.vaultId,
+      routeWalletId: keyHandle.walletId,
       routeAfterBundleId: null,
     },
     payload: new Uint8Array(),
@@ -339,7 +297,7 @@ test('V2 server rejects a legacy enrollment at runtime', async () => {
   const legacyEnrollment = {
     status: 'active',
     realm: REALM,
-    vaultId: keyHandle.vaultId,
+    walletId: keyHandle.walletId,
     requestAuthPublicKey: keyHandle.requestAuthPublicKey,
     enrollmentEpoch: 2,
   } as unknown as EncryptedWalletBackupV2ServerEnrollment
@@ -362,7 +320,7 @@ test('V2 discovery binds response epoch zero and returns the active enrollment e
     realm: REALM,
     runtime: webcrypto,
   })
-  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${keyHandle.vaultId}/enrollment-epoch`
+  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${keyHandle.walletId}/enrollment-epoch`
   const proof = await prepareEncryptedWalletBackupV2EnrollmentEpochDiscoveryProof({
     keyHandle,
     url,
@@ -380,7 +338,7 @@ test('V2 discovery binds response epoch zero and returns the active enrollment e
           kind: 'enrollment-epoch',
           requestDigest: requestDigest(proof),
           realm: REALM,
-          vaultId: keyHandle.vaultId,
+          walletId: keyHandle.walletId,
           enrollmentEpoch: 0,
           body: encodeEncryptedWalletBackupV2EnrollmentEpochResult({
             result: 'active',
@@ -401,7 +359,7 @@ test('V2 rejects malformed and oversized response bodies before a caller receive
     realm: REALM,
     runtime: webcrypto,
   })
-  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${keyHandle.vaultId}/head`
+  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${keyHandle.walletId}/head`
   const proof = await prepareProof(keyHandle, 3, 'GET', url, new Uint8Array())
   const adapter = new EncryptedWalletBackupV2HttpAdapter({
     origin: ORIGIN,
@@ -424,7 +382,7 @@ test('V2 maps only request-bound canonical service failures', async () => {
     realm: REALM,
     runtime: webcrypto,
   })
-  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${keyHandle.vaultId}/head`
+  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${keyHandle.walletId}/head`
   const proof = await prepareProof(keyHandle, 3, 'GET', url, new Uint8Array())
   for (const code of [
     'unauthorized',
@@ -445,7 +403,7 @@ test('V2 maps only request-bound canonical service failures', async () => {
             kind: 'error',
             requestDigest: requestDigest(proof),
             realm: REALM,
-            vaultId: keyHandle.vaultId,
+            walletId: keyHandle.walletId,
             enrollmentEpoch: 3,
             body: encodeEncryptedWalletBackupV2HttpError({
               operation: 'descriptor-page',
@@ -487,7 +445,7 @@ test('V2 maps only request-bound canonical service failures', async () => {
           kind: 'error',
           requestDigest: requestDigest(proof),
           realm: REALM,
-          vaultId: keyHandle.vaultId,
+          walletId: keyHandle.walletId,
           enrollmentEpoch: 3,
           body: encodeEncryptedWalletBackupV2HttpError({
             operation: 'descriptor-page',
@@ -520,7 +478,7 @@ test('V2 adapter sends one atomic upload and reads one immutable descriptor-boun
             kind: 'bundle-supersession-receipt',
             requestDigest: requestDigest(post),
             realm: REALM,
-            vaultId: key.vaultId,
+            walletId: key.walletId,
             enrollmentEpoch: 1,
             body: encodeEncryptedWalletBackupV2BundleSupersessionReceipt(receipt),
           }),
@@ -533,7 +491,7 @@ test('V2 adapter sends one atomic upload and reads one immutable descriptor-boun
           kind: 'object',
           requestDigest: requestDigest(objectProof),
           realm: REALM,
-          vaultId: key.vaultId,
+          walletId: key.walletId,
           enrollmentEpoch: 1,
           body: encodeEncryptedWalletBackupV2BundleObjectWire(object, prepared.descriptor),
         }),
@@ -597,7 +555,7 @@ test('V2 request authentication accepts one maximum fifteen-object upload group'
   })
   const head = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: key.vaultId,
+    walletId: key.walletId,
     enrollmentEpoch: 1,
     headVersion: 0,
     bundles: [],
@@ -617,7 +575,7 @@ test('V2 request authentication accepts one maximum fifteen-object upload group'
   })
   assert.equal(group.byteLength > 272 * 1_024, true)
   assert.equal(group.byteLength <= ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES, true)
-  const base = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${key.vaultId}`
+  const base = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${key.walletId}`
   const proof = await prepareV2Proof(key, 'POST', `${base}/head:compare-and-swap`, group, [
     '33'.repeat(16),
     '34'.repeat(32),
@@ -638,7 +596,7 @@ async function createV2HttpOperationFixture() {
   })
   const initial = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: key.vaultId,
+    walletId: key.walletId,
     enrollmentEpoch: 1,
     headVersion: 0,
     bundles: [],
@@ -665,14 +623,14 @@ async function createV2HttpOperationFixture() {
     envelope: mutation,
     objects: prepared.objects,
   })
-  const base = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${key.vaultId}`
+  const base = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${key.walletId}`
   const post = await prepareV2Proof(key, 'POST', `${base}/head:compare-and-swap`, group, [
     '05'.repeat(16),
     '06'.repeat(32),
   ])
   const result = createEncryptedWalletBackupV2CurrentHead({
     realm: REALM,
-    vaultId: key.vaultId,
+    walletId: key.walletId,
     enrollmentEpoch: 1,
     headVersion: 1,
     bundles: [prepared.descriptor],
@@ -680,7 +638,7 @@ async function createV2HttpOperationFixture() {
   const evidence = decodeEncryptedWalletBackupV2UploadGroup({
     bytes: group,
     expectedRequestAuthPublicKey: key.requestAuthPublicKey,
-    expectedContext: { realm: REALM, vaultId: key.vaultId, enrollmentEpoch: 1 },
+    expectedContext: { realm: REALM, walletId: key.walletId, enrollmentEpoch: 1 },
   }).mutationEvidence
   const privateKey = Uint8Array.from({ length: 32 }, () => 5)
   const receipt = await issueEncryptedWalletBackupV2BundleSupersessionReceipt({
@@ -708,7 +666,7 @@ function verifyV2Post(
   payload: Uint8Array,
   expectedMutationDigest: string,
 ): void {
-  const route = `/v1/encrypted-wallet-backup/realms/${REALM}/vaults/${key.vaultId}/head:compare-and-swap`
+  const route = `/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${key.walletId}/head:compare-and-swap`
   const verified = verifyAndDecodeEncryptedWalletBackupV2DelegatedServerRequest({
     rawAuthorizationHeaderValues: [
       `BackupV1 ${base64Url(
@@ -721,7 +679,7 @@ function verifyV2Post(
     configuredOrigin: ORIGIN,
     rawTarget: route,
     method: 'POST',
-    route: { operation: 'bundle-supersession', routeRealm: REALM, routeVaultId: key.vaultId },
+    route: { operation: 'bundle-supersession', routeRealm: REALM, routeWalletId: key.walletId },
     payload,
     serverNowUnixSeconds: 1_000,
   })
@@ -731,7 +689,7 @@ function verifyV2Post(
       status: 'active',
       protocolVersion: 2,
       realm: REALM,
-      vaultId: key.vaultId,
+      walletId: key.walletId,
       requestAuthPublicKey: key.requestAuthPublicKey,
       enrollmentEpoch: 1,
     },
@@ -758,7 +716,7 @@ function operationErrorAdapter(
           kind: 'error',
           requestDigest: v2RequestDigest(proof),
           realm: REALM,
-          vaultId: key.vaultId,
+          walletId: key.walletId,
           enrollmentEpoch: 1,
           body: encodeEncryptedWalletBackupV2HttpError({
             operation,

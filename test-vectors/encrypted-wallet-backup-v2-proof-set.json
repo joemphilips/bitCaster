@@ -33,7 +33,7 @@
     ]
   },
   "expected": {
-    "vaultId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+    "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
     "bundleId": "101112131415161718191a1b1c1d1e1f",
     "assetLocator": "5a6062acc1b4d00b8f861c769e5877fb5400daae5468d97e6b72bd2df22a69af",
     "declaredAmount": 1,

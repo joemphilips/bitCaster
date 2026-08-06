@@ -193,7 +193,7 @@ async function sendPrepared(
     expectedRequestAuthPublicKey: input.keyHandle.requestAuthPublicKey,
     expectedContext: {
       realm: input.keyHandle.realm,
-      vaultId: input.keyHandle.vaultId,
+      walletId: input.keyHandle.walletId,
       enrollmentEpoch: input.enrollmentEpoch,
     },
   });
@@ -332,7 +332,7 @@ async function collectedHead(store: EncryptedWalletBackupV2DexieAuthorityStore) 
       head: {
         formatVersion: 2,
         realm: head.realm,
-        vaultId: head.vaultId,
+        walletId: head.walletId,
         enrollmentEpoch: head.enrollmentEpoch,
         headVersion: head.headVersion,
         activeBundleCount: head.activeBundleCount,
@@ -350,7 +350,7 @@ function authority(input: BrowserEncryptedWalletBackupV2WorkerInput) {
     database: input.database,
     scopeId: input.scopeId,
     realm: input.keyHandle.realm,
-    vaultId: input.keyHandle.vaultId,
+    walletId: input.keyHandle.walletId,
     enrollmentEpoch: input.enrollmentEpoch,
     requestAuthPublicKey: input.keyHandle.requestAuthPublicKey,
   });
