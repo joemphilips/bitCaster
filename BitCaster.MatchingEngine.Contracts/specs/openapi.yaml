@@ -1910,6 +1910,10 @@ components:
             comment once this order produces a fill. The event pubkey must
             match the NIP-98 submitter and include an `r` tag for the market
             detail URL.
+        walletId:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Display-only wallet attribution. It does not authorize custody or settlement.
     NostrKind1Event:
       type: object
       required:
@@ -2317,6 +2321,10 @@ components:
       properties:
         settlementCapability:
           $ref: '#/components/schemas/SettlementCapabilityReference'
+        walletId:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Display-only wallet attribution. It does not authorize custody or settlement.
     BatchSubmitOrdersResponse:
       type: object
       additionalProperties: false

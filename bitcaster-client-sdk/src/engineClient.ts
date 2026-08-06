@@ -9,6 +9,7 @@ import {
   readAllocationBoundedJsonResponse,
   readAllocationBoundedTextResponse,
 } from './boundedJsonResponse.ts'
+import type { WalletId } from './durableCustody.ts'
 
 export type EngineFetch = typeof fetch
 export const SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX = 384 * 1_024
@@ -154,6 +155,7 @@ export interface AcknowledgeSettlementCapabilityResultRequest {
 export interface SubmitOrderRequest {
   settlementCapability: SettlementCapabilityReference
   comment: NostrKind1Event | null
+  walletId?: WalletId
 }
 
 export interface NostrKind1Event {
@@ -231,6 +233,7 @@ export interface BatchSubmitOrdersRequest {
 
 export interface BatchSubmitOrderRequestItem {
   settlementCapability: SettlementCapabilityReference
+  walletId?: WalletId
 }
 
 export interface BatchSubmitOrdersResponse {

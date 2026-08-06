@@ -94,6 +94,7 @@ import type {
   SubmitOrderResponse,
 } from "@bitcaster/client-sdk/engineClient";
 import { decodeSubmitOrderResponse } from "@bitcaster/client-sdk/engineClient";
+import type { WalletId } from "@bitcaster/client-sdk/durableCustody";
 import type { CtfRangeOrderPreparationPageCursor } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { withWalletProfileLock } from "./walletProfileLock";
@@ -336,7 +337,7 @@ export class BrowserCtfRangeOrderCoordinator {
             owner,
           );
           return this.#createCapabilityAndSubmit(
-            scope.scopeId,
+            scope,
             input.preparation,
             completed.operation,
             completed.capabilityRequest,
@@ -1519,12 +1520,13 @@ export class BrowserCtfRangeOrderCoordinator {
   }
 
   async #createCapabilityAndSubmit(
-    scopeId: string,
+    scope: Extract<DurableCustodyScope, { scopeKind: "wallet" }>,
     preparation: PersistedCtfRangeOrderPreparation,
     operation: DurableCtfRangeOperation,
     request: CreateSettlementCapabilityRequest,
     comment: NostrKind1Event | null,
   ): Promise<SubmitOrderResponse> {
+    const scopeId = scope.scopeId;
     let requested: Awaited<ReturnType<typeof transitionCtfRangePreparation>>;
     try {
       requested = await transitionCtfRangePreparation(
@@ -1552,7 +1554,7 @@ export class BrowserCtfRangeOrderCoordinator {
       },
       this.#database,
     );
-    return this.#submitBoundCapability(preparation, capability, bound, comment);
+    return this.#submitBoundCapability(scope, preparation, capability, bound, comment);
   }
 
   async #recoverRequestedCapability(
@@ -1627,6 +1629,7 @@ export class BrowserCtfRangeOrderCoordinator {
   }
 
   async #submitBoundCapability(
+    scope: Extract<DurableCustodyScope, { scopeKind: "wallet" }>,
     preparation: PersistedCtfRangeOrderPreparation,
     capability: ReturnType<typeof validateAndProjectCtfRangeSettlementCapabilityResponse>,
     bound: Awaited<ReturnType<typeof bindCtfRangePreparationCapability>>,
@@ -1640,6 +1643,7 @@ export class BrowserCtfRangeOrderCoordinator {
           bindingDigest: capability.bindingDigest,
         },
         comment,
+        walletId: scope.walletId as WalletId,
       });
     } catch (error) {
       if (!this.#isDefinitiveOrderRejection(error)) {

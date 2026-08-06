@@ -12,7 +12,10 @@ import {
   submitEphemeralPubkey,
   type EngineAuthorizationRequest,
 } from '../src/engineClient.ts'
+import { decodeDurableCustodyWalletId } from '../src/durableCustody.ts'
 import { isKind89NostrEvent } from '../src/marketLifecycle.ts'
+
+const DISPLAY_WALLET_ID = decodeDurableCustodyWalletId('c'.repeat(64))
 
 test('BitcasterEngineClient.getMarket reads one catalogue row through query ids', async () => {
   const requests: string[] = []
@@ -417,7 +420,7 @@ test('BitcasterEngineClient default fetch keeps the browser fetch receiver', asy
   }
 })
 
-test('BitcasterEngineClient.submitOrder sends only the capability reference and nullable comment', async () => {
+test('BitcasterEngineClient.submitOrder sends display-only wallet attribution with the capability reference', async () => {
   const comment = {
     id: '1'.repeat(64),
     pubkey: '2'.repeat(64),
@@ -433,6 +436,7 @@ test('BitcasterEngineClient.submitOrder sends only the capability reference and 
       bindingDigest: 'a'.repeat(64),
     },
     comment,
+    walletId: DISPLAY_WALLET_ID,
   })
   const requests: Array<{ url: string; body?: string; authorization?: string }> = []
   const client = new BitcasterEngineClient({
@@ -476,6 +480,7 @@ test('BitcasterEngineClient.submitOrder sends only the capability reference and 
       bindingDigest: 'a'.repeat(64),
     },
     comment,
+    walletId: DISPLAY_WALLET_ID,
   })
 
   assert.equal(response.status, 'resting')
@@ -606,6 +611,7 @@ test('BitcasterEngineClient.batchSubmitOrders preserves accepted and rejected re
           artifactId: '11111111-1111-4111-8111-111111111111',
           bindingDigest: 'a'.repeat(64),
         },
+        walletId: DISPLAY_WALLET_ID,
       },
       {
         settlementCapability: {
@@ -651,6 +657,7 @@ test('BitcasterEngineClient.batchSubmitOrders preserves accepted and rejected re
           artifactId: '11111111-1111-4111-8111-111111111111',
           bindingDigest: 'a'.repeat(64),
         },
+        walletId: DISPLAY_WALLET_ID,
       },
       {
         settlementCapability: {

@@ -16,6 +16,7 @@ import {
   submitEphemeralPubkey as sdkSubmitEphemeralPubkey,
   submitOracleAttestationViaEngine,
 } from "@bitcaster/client-sdk";
+import type { WalletId } from "@bitcaster/client-sdk/durableCustody";
 import {
   marketUnitLabel,
   normalizeMarketBaseAsset,
@@ -31,7 +32,9 @@ export { requiredMarketCreationOutcomeCollections } from "@bitcaster/client-sdk/
 
 // Types from generated OpenAPI spec
 
-export type SubmitOrderRequest = components["schemas"]["SubmitOrderRequest"];
+export type SubmitOrderRequest = Omit<components["schemas"]["SubmitOrderRequest"], "walletId"> & {
+  walletId?: WalletId;
+};
 export type SubmitOrderResponse = components["schemas"]["SubmitOrderResponse"];
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
 export type LevelDto = components["schemas"]["LevelDto"];

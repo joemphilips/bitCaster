@@ -308,8 +308,9 @@ describe("browser CTF range order coordinator", () => {
           await custody.readOperation(walletScope(), custodyOperationId(preparation.operationId)),
         ).not.toBeNull();
       },
-      onSubmit: async () => {
+      onSubmit: async (request) => {
         calls.push("submit");
+        expect(request.walletId).toBe(walletScope().walletId);
       },
     });
     const contexts: [string, string, string][] = [];

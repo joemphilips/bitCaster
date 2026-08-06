@@ -1080,10 +1080,11 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(NostrKind1Event @comment, SettlementCapabilityReference @settlementCapability)
+        public SubmitOrderRequest(NostrKind1Event @comment, SettlementCapabilityReference @settlementCapability, string @walletId)
         {
             this.SettlementCapability = @settlementCapability;
             this.Comment = @comment;
+            this.WalletId = @walletId;
         }
 
         /// <summary>
@@ -1099,6 +1100,12 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("comment")]
         public NostrKind1Event Comment { get; }
+
+        /// <summary>
+        /// Display-only wallet attribution. It does not authorize custody or settlement.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("walletId")]
+        public string WalletId { get; }
 
     }
 
@@ -1693,13 +1700,20 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class BatchSubmitOrderRequestItem
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrderRequestItem(SettlementCapabilityReference @settlementCapability)
+        public BatchSubmitOrderRequestItem(SettlementCapabilityReference @settlementCapability, string @walletId)
         {
             this.SettlementCapability = @settlementCapability;
+            this.WalletId = @walletId;
         }
 
         [System.Text.Json.Serialization.JsonPropertyName("settlementCapability")]
         public SettlementCapabilityReference SettlementCapability { get; }
+
+        /// <summary>
+        /// Display-only wallet attribution. It does not authorize custody or settlement.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("walletId")]
+        public string WalletId { get; }
 
     }
 
