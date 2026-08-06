@@ -360,6 +360,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/asset-monitoring/realms/{realm}/vaults/{vaultId}/enrollments/{enrollmentEpoch}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Enroll an asset-monitoring vault epoch for the authenticated account */
+        put: operations["enrollAssetMonitoringVault"];
+        post?: never;
+        /** Disable an asset-monitoring vault enrollment for the authenticated account */
+        delete: operations["disableAssetMonitoringVault"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/participation-score": {
         parameters: {
             query?: never;
@@ -2410,6 +2428,127 @@ export interface operations {
             };
             /** @description No deposit with this id for this condition */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    enrollAssetMonitoringVault: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                realm: string;
+                vaultId: string;
+                enrollmentEpoch: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enrollment recorded or the exact enrollment retry was accepted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The realm, vaultId, or enrollmentEpoch is malformed. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid NIP-98 authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The enrollment lifecycle or epoch conflicts with durable state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Account request rate limit exceeded. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Internal server error. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    disableAssetMonitoringVault: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                realm: string;
+                vaultId: string;
+                enrollmentEpoch: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Disable recorded or the exact disable retry was accepted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The realm, vaultId, or enrollmentEpoch is malformed. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid NIP-98 authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No enrollment exists for the authenticated account and vault. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The enrollment lifecycle or epoch conflicts with durable state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Account request rate limit exceeded. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Internal server error. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
