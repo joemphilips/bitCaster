@@ -1080,10 +1080,11 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(NostrKind1Event @comment, SettlementCapabilityReference @settlementCapability)
+        public SubmitOrderRequest(AssetMonitoringAttribution @assetMonitoringAttribution, NostrKind1Event @comment, SettlementCapabilityReference @settlementCapability)
         {
             this.SettlementCapability = @settlementCapability;
             this.Comment = @comment;
+            this.AssetMonitoringAttribution = @assetMonitoringAttribution;
         }
 
         /// <summary>
@@ -1099,6 +1100,39 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("comment")]
         public NostrKind1Event Comment { get; }
+
+        /// <summary>
+        /// Optional display-only asset-monitoring vault reference. Invalid values are ignored and do not affect order admission.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("assetMonitoringAttribution")]
+        public AssetMonitoringAttribution AssetMonitoringAttribution { get; }
+
+    }
+
+    /// <summary>
+    /// Complete display-only asset-monitoring vault reference. The server does not authenticate this reference during order admission.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AssetMonitoringAttribution
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AssetMonitoringAttribution(long @enrollmentEpoch, string @realm, string @vaultId)
+        {
+            this.Realm = @realm;
+            this.VaultId = @vaultId;
+            this.EnrollmentEpoch = @enrollmentEpoch;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("realm")]
+        public string Realm { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("vaultId")]
+        public string VaultId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("enrollmentEpoch")]
+        public long EnrollmentEpoch { get; }
 
     }
 
@@ -1693,13 +1727,21 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class BatchSubmitOrderRequestItem
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrderRequestItem(SettlementCapabilityReference @settlementCapability)
+        public BatchSubmitOrderRequestItem(AssetMonitoringAttribution @assetMonitoringAttribution, SettlementCapabilityReference @settlementCapability)
         {
             this.SettlementCapability = @settlementCapability;
+            this.AssetMonitoringAttribution = @assetMonitoringAttribution;
         }
 
         [System.Text.Json.Serialization.JsonPropertyName("settlementCapability")]
         public SettlementCapabilityReference SettlementCapability { get; }
+
+        /// <summary>
+        /// Optional display-only asset-monitoring vault reference. Invalid values are ignored and do not affect order admission.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("assetMonitoringAttribution")]
+        public AssetMonitoringAttribution AssetMonitoringAttribution { get; }
 
     }
 

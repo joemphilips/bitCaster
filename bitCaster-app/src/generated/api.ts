@@ -880,6 +880,15 @@ export interface components {
             settlementCapability: components["schemas"]["SettlementCapabilityReference"];
             /** @description Optional signed Nostr kind-1 event to index as a verified trade comment once this order produces a fill. The event pubkey must match the NIP-98 submitter and include an `r` tag for the market detail URL. */
             comment: components["schemas"]["NostrKind1Event"] | null;
+            /** @description Optional display-only asset-monitoring vault reference. Invalid values are ignored and do not affect order admission. */
+            assetMonitoringAttribution?: components["schemas"]["AssetMonitoringAttribution"];
+        };
+        /** @description Complete display-only asset-monitoring vault reference. The server does not authenticate this reference during order admission. */
+        AssetMonitoringAttribution: {
+            realm: string;
+            vaultId: string;
+            /** Format: int64 */
+            enrollmentEpoch: number;
         };
         NostrKind1Event: {
             id: string;
@@ -1057,6 +1066,8 @@ export interface components {
         /** @description Reference-only batch item. The server loads every immutable order fact from the current durable DCB binding. Possession of the reference is not bearer authority; ownership, route condition, and current authorization are verified. */
         BatchSubmitOrderRequestItem: {
             settlementCapability: components["schemas"]["SettlementCapabilityReference"];
+            /** @description Optional display-only asset-monitoring vault reference. Invalid values are ignored and do not affect order admission. */
+            assetMonitoringAttribution?: components["schemas"]["AssetMonitoringAttribution"];
         };
         /** @description Every request item appears exactly once in either `accepted` or `rejected`. Consumers may reconstruct request order by sorting both arrays by `requestIndex`. */
         BatchSubmitOrdersResponse: {
