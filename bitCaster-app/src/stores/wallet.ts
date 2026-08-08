@@ -408,8 +408,8 @@ export async function getWalletForMnemonicUnit(
 }
 
 export function useBalance(
-  mintUrl?: string,
-  options: { baseAsset?: MarketBaseAsset | string | null } = {},
+  mintUrl: string | undefined,
+  options: { readonly baseAsset: MarketBaseAsset | string },
 ): number {
   const normalized = mintUrl ? normalizeUrl(mintUrl) : undefined;
   const baseAsset = normalizeMarketBaseAsset(options.baseAsset);

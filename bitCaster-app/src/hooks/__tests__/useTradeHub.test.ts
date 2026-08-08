@@ -166,4 +166,48 @@ describe("useTradeHub", () => {
       tokenSide: "Complement",
     });
   });
+
+  it("decodes owner settlement-group updates through the SDK contract", async () => {
+    const connection = makeConnection();
+    connections.push(connection);
+    const onSettlementGroupStateChanged = vi.fn();
+
+    renderHook(() => useTradeHub(true, { onSettlementGroupStateChanged }));
+
+    await waitFor(() =>
+      expect(connection.on).toHaveBeenCalledWith(
+        "SettlementGroupStateChanged",
+        expect.any(Function),
+      ),
+    );
+    const handler = connection.on.mock.calls.find(
+      ([event]) => event === "SettlementGroupStateChanged",
+    )?.[1] as ((value: unknown) => void) | undefined;
+    expect(handler).toBeTypeOf("function");
+    if (!handler) throw new Error("SettlementGroupStateChanged handler was not registered");
+
+    handler({
+      orderId: "11111111-1111-4111-8111-111111111111",
+      marketId: "condition-YES",
+      settlementGroup: {
+        groupId: "22222222-2222-4222-8222-222222222222",
+        status: "Confirmed",
+        revision: 3,
+        coalescingDeadline: "2026-08-08T00:00:00.000Z",
+        frozenAt: "2026-08-08T00:00:01.000Z",
+      },
+    });
+
+    expect(onSettlementGroupStateChanged).toHaveBeenCalledWith({
+      orderId: "11111111-1111-4111-8111-111111111111",
+      marketId: "condition-YES",
+      settlementGroup: {
+        groupId: "22222222-2222-4222-8222-222222222222",
+        status: "Confirmed",
+        revision: 3,
+        coalescingDeadline: "2026-08-08T00:00:00.000Z",
+        frozenAt: "2026-08-08T00:00:01.000Z",
+      },
+    });
+  });
 });

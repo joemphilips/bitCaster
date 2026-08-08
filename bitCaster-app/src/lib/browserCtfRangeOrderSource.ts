@@ -579,8 +579,7 @@ function browserConditionalKeysetAuthority(input: {
     input.conditionId === null ||
     input.outcomeCollection === null ||
     input.outcomeCollectionId === null ||
-    input.registeredAtUnixSeconds === null ||
-    input.finalExpiryUnixSeconds === null
+    input.registeredAtUnixSeconds === null
   ) {
     throw new Error("browser conditional keyset authority is incomplete");
   }

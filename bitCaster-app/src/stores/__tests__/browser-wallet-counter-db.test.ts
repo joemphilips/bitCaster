@@ -10,6 +10,7 @@ import {
   BROWSER_WALLET_COUNTER_ASSOCIATION_MAX,
   BROWSER_WALLET_COUNTER_SNAPSHOT_MAX,
 } from "../browser-wallet-counter-db";
+import { createBrowserProofBackupAuthorityRow } from "../browser-proof-backup-authority";
 import { createBrowserCustodyProofRow } from "../durable-custody-db";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../browser-encrypted-wallet-backup-v2-desired-asset";
 import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
@@ -141,20 +142,27 @@ describe("browser wallet counter authority", () => {
   it("advances only the active asset intent when a relevant counter moves", async () => {
     const counters = createStore();
     const database = databases.at(-1)!;
-    await database.custodyProofs.add(
-      createBrowserCustodyProofRow({
-        scopeId,
-        normalizedMint: "https://mint.example",
-        unit: "sat",
-        proof: {
-          id: keysetId,
-          amount: 1 as never,
-          secret: "counter-active-proof",
-          C: `02${"22".repeat(32)}`,
-        },
-        asset: { kind: "regular" },
-        receivedAtMs: 1,
-      }),
+    const proof = createBrowserCustodyProofRow({
+      scopeId,
+      normalizedMint: "https://mint.example",
+      unit: "sat",
+      proof: {
+        id: keysetId,
+        amount: 1 as never,
+        secret: "counter-active-proof",
+        C: `02${"22".repeat(32)}`,
+      },
+      asset: { kind: "regular" },
+      receivedAtMs: 1,
+    });
+    await database.custodyProofs.add(proof);
+    await database.custodyProofBackupAuthorities.add(
+      createBrowserProofBackupAuthorityRow(
+        proof,
+        2,
+        { schemaVersion: 1, kind: "nut13", keysetId, counter: 0 },
+        "receive:counter",
+      ),
     );
     await database.encryptedWalletBackupV2DesiredAssets.add(
       createEncryptedWalletBackupV2DesiredAssetRow({

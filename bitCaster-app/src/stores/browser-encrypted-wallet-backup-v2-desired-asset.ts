@@ -9,6 +9,10 @@ import {
   decodeCanonicalMintOrigin,
   decodeDurableCustodyScopeId,
 } from "@bitcaster/client-sdk/durableCustody";
+import {
+  requireBrowserProofBackupAuthorityForProof,
+  type BrowserProofDerivationLocatorAuthority,
+} from "./browser-proof-backup-authority";
 import { decodeBrowserCustodyConditionalKeysetRow } from "./durable-custody-types";
 import { decodeBrowserCustodyProofRow } from "./durable-custody-types";
 import type { BrowserCustodyProofRow, BrowserCustodyProofUnit } from "./durable-custody-types";
@@ -147,7 +151,9 @@ function exactKeys(value: Record<string, unknown>, fields: readonly string[]): b
 
 export interface BrowserV2DesiredAssetProofChange {
   readonly beforeProof: BrowserCustodyProofRow | null;
+  readonly beforeLocator: BrowserProofDerivationLocatorAuthority;
   readonly afterProof: BrowserCustodyProofRow;
+  readonly afterLocator: BrowserProofDerivationLocatorAuthority;
   readonly payloadChanged: boolean;
 }
 
@@ -163,14 +169,14 @@ export async function advanceBrowserV2DesiredAssetsForProofChanges(
   for (const change of changes) {
     if (!change.payloadChanged) continue;
     const before = change.beforeProof;
-    if (before && isActive(before)) {
+    if (before && isBackupEligible(before, change.beforeLocator)) {
       addDesiredAssetUpdate(
         updates,
         await assetForProof(database, before, conditionalKeysetForProof),
         -1,
       );
     }
-    if (isActive(change.afterProof)) {
+    if (isBackupEligible(change.afterProof, change.afterLocator)) {
       addDesiredAssetUpdate(
         updates,
         await assetForProof(database, change.afterProof, conditionalKeysetForProof),
@@ -211,11 +217,19 @@ async function firstActiveProof(
   },
 ): Promise<BrowserCustodyProofRow | null> {
   for (const state of ["selectable", "locked"] as const) {
-    const raw = await database.custodyProofs
+    const rows = await database.custodyProofs
       .where("[scopeId+normalizedMint+unit+keysetId+selectability]")
       .equals([expected.scopeId, expected.normalizedMint, expected.unit, expected.keysetId, state])
-      .first();
-    if (raw !== undefined) return decodeActiveProofReference(raw, expected);
+      .limit(513)
+      .toArray();
+    const proofs = rows.map((row) => decodeActiveProofReference(row, expected));
+    const authorities = await database.custodyProofBackupAuthorities.bulkGet(
+      proofs.map((proof) => [proof.scopeId, proof.proofId]),
+    );
+    for (const [index, proof] of proofs.entries()) {
+      const authority = requireBrowserProofBackupAuthorityForProof(authorities[index], proof);
+      if (isBackupEligible(proof, authority.derivationLocator)) return proof;
+    }
   }
   return null;
 }
@@ -271,6 +285,13 @@ async function persistDesiredAssetUpdates(
 
 function isActive(proof: BrowserCustodyProofRow): boolean {
   return proof.selectability === "selectable" || proof.selectability === "locked";
+}
+
+function isBackupEligible(
+  proof: BrowserCustodyProofRow,
+  derivationLocator: BrowserProofDerivationLocatorAuthority,
+): boolean {
+  return isActive(proof) && derivationLocator !== null;
 }
 
 async function assetForProof(

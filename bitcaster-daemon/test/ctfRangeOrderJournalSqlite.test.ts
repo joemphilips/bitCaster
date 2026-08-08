@@ -400,14 +400,15 @@ test('capability binding and lifecycle transitions use revision CAS', (t) => {
   t.after(() => database.close())
   const input = preparationInput('range-transition', 'source-transition', 'client-transition', 5)
   insertRangePreparation(database, input)
-  transitionRangePreparation(database, {
+  const requested = transitionRangePreparation(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: input.rangeOperationId,
     expectedRevision: 0,
     from: 'prepared',
     to: 'capability-requested',
-    updatedAtMs: 5,
+    updatedAtMs: 4,
   })
+  assert.equal(requested.updatedAtMs, input.createdAtMs)
 
   const bound = bindRangePreparationCapability(database, {
     scopeId: SCOPE_ID,

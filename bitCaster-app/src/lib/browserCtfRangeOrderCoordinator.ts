@@ -301,7 +301,7 @@ export class BrowserCtfRangeOrderCoordinator {
     this.#custody = new BrowserDurableCustodyAdapter(this.#database);
     this.#lockManager = input.lockManager;
     this.#now = input.now ?? Date.now;
-    this.#randomId = input.randomId ?? crypto.randomUUID;
+    this.#randomId = input.randomId ?? (() => crypto.randomUUID());
     this.#allowInsecureLoopbackHttp = input.allowInsecureLoopbackHttp === true;
     this.#isDefinitiveOrderRejection = input.isDefinitiveOrderRejection ?? (() => false);
     const restoreOutputs = input.restoreOutputs;
@@ -321,7 +321,6 @@ export class BrowserCtfRangeOrderCoordinator {
     readonly comment?: NostrKind1Event | null;
   }): Promise<SubmitOrderResponse> {
     requireImmediateOrder(input.preparation);
-    requireBackupCompatibleConditionalKeysets(input.preparation);
     const scope = browserWalletScope(input.seed);
     return withWalletProfileLock(
       scope.scopeId,
@@ -1514,8 +1513,9 @@ export class BrowserCtfRangeOrderCoordinator {
           input.authorization.observedAtMs,
         );
       });
-    } catch {
-      throw rangeError("custody-commit-failed");
+    } catch (error) {
+      console.error("Browser range-order custody commit failed.", error);
+      throw rangeError("custody-commit-failed", error);
     }
   }
 
@@ -2205,19 +2205,6 @@ export class BrowserCtfRangeOrderCoordinator {
       this.#database.custodyReservations,
       this.#database.custodyActiveWork,
     ] as const;
-  }
-}
-
-function requireBackupCompatibleConditionalKeysets(
-  preparation: PersistedCtfRangeOrderPreparation,
-): void {
-  for (const keyset of [preparation.offerKeyset, preparation.receiveKeyset]) {
-    if ("conditionId" in keyset && keyset.finalExpiry === null) {
-      throw rangeError(
-        "source-preparation-failed",
-        new Error("browser conditional keyset requires a final expiry"),
-      );
-    }
   }
 }
 

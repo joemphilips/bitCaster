@@ -24,6 +24,10 @@ import { resolveHubServerUrl } from "@/lib/hubUrl";
 import { tradeHubUrl } from "@/lib/nip98";
 import { generateNip98Header } from "@/lib/markets";
 import type { TradeMessageType } from "@/lib/tradeMessageTypes";
+import {
+  decodeSettlementGroupStateChangedDelta,
+  type SettlementGroupStateChangedDelta,
+} from "@bitcaster/client-sdk/engineClient";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,6 +62,7 @@ export interface TradeHubCallbacks {
   onSwapMessageReceived?: (msg: SwapMessage) => void;
   onTradeStateChanged?: (tradeId: string, newState: string) => void;
   onTradeCreated?: (payload: TradeCreatedPayload) => void;
+  onSettlementGroupStateChanged?: (delta: SettlementGroupStateChangedDelta) => void;
   onError?: (err: Error) => void;
 }
 
@@ -193,6 +198,16 @@ export function useTradeHub(enabled: boolean, callbacks: TradeHubCallbacks): Tra
         });
       },
     );
+
+    connection.on("SettlementGroupStateChanged", (delta: unknown) => {
+      try {
+        callbacksRef.current.onSettlementGroupStateChanged?.(
+          decodeSettlementGroupStateChangedDelta(delta),
+        );
+      } catch {
+        callbacksRef.current.onError?.(new Error("Settlement-group update is invalid."));
+      }
+    });
 
     connection.onclose((err) => {
       if (err) callbacksRef.current.onError?.(err instanceof Error ? err : new Error(String(err)));

@@ -144,9 +144,7 @@ export function advanceBrowserProofBackupAuthorityRow(
     }
     return authority;
   }
-  if (proof.revision !== authority.proofRevision + 1 || time < authority.updatedAtMs) {
-    throw new Error("browser proof backup authority revision is stale");
-  }
+  requireNextProofAuthorityRevision(authority, proof, time);
   return requireBrowserProofBackupAuthorityRow({
     ...authority,
     proofRevision: proof.revision,
@@ -178,9 +176,7 @@ export function advanceBrowserRemoteProofBackupAuthorityRow(
     }
     return authority;
   }
-  if (proof.revision !== authority.proofRevision + 1 || time < authority.updatedAtMs) {
-    throw new Error("browser proof backup authority revision is stale");
-  }
+  requireNextProofAuthorityRevision(authority, proof, time);
   return requireBrowserProofBackupAuthorityRow({
     ...authority,
     proofRevision: proof.revision,
@@ -215,6 +211,22 @@ export function bindBrowserProofBackupAuthorityTerminalOperation(
     recordUpdatedAtUnixSeconds,
     updatedAtMs: time,
   });
+}
+
+function requireNextProofAuthorityRevision(
+  authority: BrowserProofBackupAuthorityRow,
+  proof: BrowserCustodyProofRow,
+  observedAtMs: number,
+): void {
+  const expectedRevision = authority.proofRevision + 1;
+  if (proof.revision !== expectedRevision) {
+    throw new Error(
+      `browser proof backup authority revision is stale: expected ${expectedRevision}, received ${proof.revision}`,
+    );
+  }
+  if (observedAtMs < authority.updatedAtMs) {
+    throw new Error("browser proof backup authority time is stale");
+  }
 }
 
 export function requireBrowserProofBackupAuthorityRow(

@@ -15,6 +15,7 @@ import {
   type SerializedBlindedSignature,
 } from '@cashu/cashu-ts'
 import {
+  createCtfRangeCapabilityParentPreparationContext,
   mapCtfRangeCapabilityParentResponseToUnverifiedResult,
   createCtfRangeCapabilityParentRequestMeasurer,
   prepareCtfRangeCapabilityParentOperation,
@@ -63,6 +64,10 @@ const NO_KEYSET_ID = conditionalKeysetId(NO_COLLECTION_ID)
 
 test('prepares and replays one exact mixed collateral parent', async () => {
   const preparations = [preparation('buy', 'Buy'), preparation('sell', 'Sell')]
+  const preparationContext = createCtfRangeCapabilityParentPreparationContext({
+    seed: new Uint8Array(64).fill(7),
+    preparations,
+  })
   const plan = batchPlan(preparations, [proof(REGULAR_KEYSET_ID, 16_384)], [])
   assert.equal(plan.parents.length, 1)
   const parent = plan.parents[0]!
@@ -75,7 +80,9 @@ test('prepares and replays one exact mixed collateral parent', async () => {
     preparations,
     seed: new Uint8Array(64).fill(7),
     counterSource: counterSource(reservations),
+    preparationContext,
   })
+  assert.equal(preparationContext.materializedChildCount, preparations.length)
   const replay = readCtfRangeCapabilityParentReplay(prepared)
   assert.equal(replay.path, '/v1/ctf/convert')
   assert.equal(replay.body.length, parent.requestBytes)
@@ -139,12 +146,40 @@ test('prepares and replays one exact mixed collateral parent', async () => {
         Object.entries(request.outputs).map(([group, outputs]) => [group, outputs.map(signOutput)]),
       ),
     },
+    preparationContext,
   })
+  assert.equal(preparationContext.materializedChildCount, preparations.length)
+  for (const preparation of preparations) {
+    assert.equal(
+      preparationContext.materialize(preparation),
+      preparationContext.materialize(preparation),
+    )
+  }
+  assert.equal(preparationContext.materializedChildCount, preparations.length)
   assert.equal(completed.result.successors.length, parent.outputs.length)
   assert.deepEqual(
     completed.allocations.map(({ outputIndex }) => outputIndex),
     parent.outputs.map(({ outputIndex }) => outputIndex),
   )
+
+  const recoveryContext = createCtfRangeCapabilityParentPreparationContext({
+    seed: new Uint8Array(64).fill(7),
+    preparations,
+  })
+  const recovered = mapCtfRangeCapabilityParentResponseToUnverifiedResult({
+    prepared: restored,
+    preparations,
+    seed: new Uint8Array(64).fill(7),
+    response: {
+      signatures: Object.fromEntries(
+        Object.entries(request.outputs).map(([group, outputs]) => [group, outputs.map(signOutput)]),
+      ),
+    },
+    preparationContext: recoveryContext,
+  })
+  assert.equal(recovered.result.successors.length, parent.outputs.length)
+  for (const preparation of preparations) recoveryContext.materialize(preparation)
+  assert.equal(recoveryContext.materializedChildCount, preparations.length)
 })
 
 test('reuses two conditional children in one exact same-keyset parent', async () => {
@@ -356,7 +391,13 @@ function batchPlan(
         : preparations[0]!.receiveKeyset,
     collateralProofs,
     conditionalProofs,
-    limits: { maxInputs: 64, maxOutputs: 256, maxRequestBytes: 1_048_576, maxPoolEntries: 128 },
+    limits: {
+      maxInputs: 64,
+      maxChildren: 32,
+      maxOutputs: 256,
+      maxRequestBytes: 1_048_576,
+      maxPoolEntries: 128,
+    },
     measureExactParentRequestBytes: createCtfRangeCapabilityParentRequestMeasurer({ preparations }),
   })
 }

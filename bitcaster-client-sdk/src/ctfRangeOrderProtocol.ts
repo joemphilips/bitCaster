@@ -25,7 +25,10 @@ import type {
   DurableCtfRangeOperation,
 } from './durableCtfRangeOperation.ts'
 import type { ActiveCtfRangeMintKeyset } from './ctfRangeOrderPreparation.ts'
-import { planCtfRangeOrderAuthorization } from './ctfRangeOrderAuthorization.ts'
+import {
+  planCtfRangeOrderAuthorization,
+  type CtfRangeOrderAuthorizationPlan,
+} from './ctfRangeOrderAuthorization.ts'
 import type { TokenImportKeysetLookup } from './tokenImportValidation.ts'
 import {
   decodeSettlementOrderContinuationReference,
@@ -170,6 +173,22 @@ export interface PersistedCtfRangeOrderPreparation {
   readonly maxPoolEntries: number
   readonly maxInputs: number
   readonly request: CtfRangeOrderRequest
+}
+
+/** Derives the deterministic authorization plan from persisted mint authority. */
+export function planPersistedCtfRangeOrderAuthorization(
+  preparation: PersistedCtfRangeOrderPreparation,
+): CtfRangeOrderAuthorizationPlan {
+  return planCtfRangeOrderAuthorization({
+    side: preparation.side,
+    priceNumerator: preparation.priceNumerator,
+    amountSubunits: preparation.amountSubunits,
+    divisibility: preparation.divisibility,
+    inputFeePpk: preparation.offerKeyset.inputFeePpk,
+    offerKeysetKeys: preparation.offerKeyset.keys,
+    maxPoolEntries: preparation.maxPoolEntries,
+    maxInputs: preparation.maxInputs,
+  })
 }
 
 export function buildPersistedCtfRangeOrderPreparation(input: {
@@ -545,7 +564,7 @@ function derivePreparationExpiry(
   }
   const ceiling = observation.conditionalKeysets.reduce((current, keyset) => {
     const finalExpiry = keyset.finalExpiry
-    return finalExpiry === undefined
+    return finalExpiry === undefined || finalExpiry === null
       ? current
       : Math.min(current, requirePositiveSafeInteger(finalExpiry, 'condition keyset final expiry'))
   }, fallback)
@@ -749,11 +768,12 @@ function decodeObservedConditionalKeyset(
   conditionId: string,
 ): DurableCtfRangeExpiryObservation['conditionalKeysets'][number] {
   const candidate = requireRecord(value, 'range preparation observed conditional keyset')
+  const hasFinalExpiry = candidate.finalExpiry !== undefined
   const keyset = exactRecord(
     value,
-    candidate.finalExpiry === undefined
-      ? OBSERVED_CONDITIONAL_KEYSET_FIELDS
-      : [...OBSERVED_CONDITIONAL_KEYSET_FIELDS, 'finalExpiry'],
+    hasFinalExpiry
+      ? [...OBSERVED_CONDITIONAL_KEYSET_FIELDS, 'finalExpiry']
+      : OBSERVED_CONDITIONAL_KEYSET_FIELDS,
     'range preparation observed conditional keyset',
   )
   const observedConditionId = requireText(
@@ -764,7 +784,7 @@ function decodeObservedConditionalKeyset(
     throw new Error('range preparation expiry observation is invalid')
   }
   const finalExpiry =
-    keyset.finalExpiry === undefined
+    keyset.finalExpiry === undefined || keyset.finalExpiry === null
       ? undefined
       : requirePositiveSafeInteger(keyset.finalExpiry, 'range preparation observed final expiry')
   return {
@@ -862,16 +882,7 @@ function assertOperationMatchesPreparation(
   preparation: PersistedCtfRangeOrderPreparation,
 ): void {
   const request = preparation.request
-  const expectedPolicy = planCtfRangeOrderAuthorization({
-    side: preparation.side,
-    priceNumerator: preparation.priceNumerator,
-    amountSubunits: preparation.amountSubunits,
-    divisibility: preparation.divisibility,
-    inputFeePpk: preparation.offerKeyset.inputFeePpk,
-    offerKeysetKeys: preparation.offerKeyset.keys,
-    maxPoolEntries: preparation.maxPoolEntries,
-    maxInputs: preparation.maxInputs,
-  }).policy
+  const expectedPolicy = planPersistedCtfRangeOrderAuthorization(preparation).policy
   if (
     operation.operationId !== preparation.operationId ||
     operation.sourceOperationId !== preparation.sourceOperationId ||

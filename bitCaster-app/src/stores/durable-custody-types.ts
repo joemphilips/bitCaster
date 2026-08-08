@@ -186,7 +186,7 @@ export interface BrowserCustodyConditionalKeysetAuthority {
   readonly outcomeCollection: string;
   readonly outcomeCollectionId: string;
   readonly registeredAtUnixSeconds: number;
-  readonly finalExpiryUnixSeconds: number;
+  readonly finalExpiryUnixSeconds: number | null;
   readonly curve: "secp256k1";
 }
 
@@ -280,8 +280,12 @@ export function decodeBrowserCustodyConditionalKeysetAuthority(
     denominationPublicKeys[amount] = key;
   }
   const registeredAtUnixSeconds = integer("registeredAtUnixSeconds");
-  const finalExpiryUnixSeconds = integer("finalExpiryUnixSeconds");
-  if (finalExpiryUnixSeconds <= registeredAtUnixSeconds || integer("inputFeePpk") > 2_147_483_647)
+  const finalExpiryUnixSeconds =
+    row.finalExpiryUnixSeconds === null ? null : positiveInteger(row.finalExpiryUnixSeconds);
+  if (
+    (finalExpiryUnixSeconds !== null && finalExpiryUnixSeconds <= registeredAtUnixSeconds) ||
+    integer("inputFeePpk") > 2_147_483_647
+  )
     throw new Error("browser conditional keyset authority is invalid");
   return {
     schemaVersion: 1,

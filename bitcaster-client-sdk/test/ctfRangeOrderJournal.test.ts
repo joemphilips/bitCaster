@@ -263,6 +263,15 @@ test('capability and lifecycle validation reject partial or illegal authority', 
     updatedAtMs: identity.createdAtMs + 2,
   })
   assert.equal(bound.lifecycleState, 'capability-bound')
+  const clockMovedBackward = bindCtfRangeOrderPreparationCapability({
+    current: requested,
+    expectedRevision: 1,
+    capability: CAPABILITY,
+    updatedAtMs: identity.createdAtMs,
+  })
+  assert.equal(clockMovedBackward.lifecycleState, 'capability-bound')
+  assert.equal(clockMovedBackward.revision, 2)
+  assert.equal(clockMovedBackward.updatedAtMs, requested.updatedAtMs)
   assert.deepEqual(
     bindCtfRangeOrderPreparationCapability({
       current: bound,

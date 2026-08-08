@@ -29,9 +29,12 @@ import {
 import {
   prepareCtfRangeOrderAuthorization,
   type ActiveCtfRangeMintKeyset,
+  type CtfRangeOrderPreparation,
 } from './ctfRangeOrderPreparation.ts'
-import { planCtfRangeOrderAuthorization } from './ctfRangeOrderAuthorization.ts'
-import type { PersistedCtfRangeOrderPreparation } from './ctfRangeOrderProtocol.ts'
+import {
+  planPersistedCtfRangeOrderAuthorization,
+  type PersistedCtfRangeOrderPreparation,
+} from './ctfRangeOrderProtocol.ts'
 import type {
   CtfRangeCapabilityBatchParent,
   CtfRangeCapabilityParentMeasureInput,
@@ -94,6 +97,59 @@ export interface UnverifiedCtfRangeCapabilityParentResult {
   readonly allocations: readonly CtfRangeCapabilityParentAllocation[]
 }
 
+/**
+ * Holds derived child material for one batch-parent execution only.
+ *
+ * This context is not durable authority. The persisted preparation and seed
+ * remain the authority for every value in the cache.
+ */
+export class CtfRangeCapabilityParentPreparationContext {
+  readonly #seed: Uint8Array
+  readonly #preparations: ReadonlyMap<string, PersistedCtfRangeOrderPreparation>
+  readonly #materialized = new Map<string, CtfRangeOrderPreparation>()
+
+  constructor(input: {
+    readonly seed: Uint8Array
+    readonly preparations: readonly PersistedCtfRangeOrderPreparation[]
+  }) {
+    this.#seed = new Uint8Array(input.seed)
+    const preparations = new Map<string, PersistedCtfRangeOrderPreparation>()
+    for (const preparation of input.preparations) {
+      if (preparations.has(preparation.operationId)) {
+        throw new Error('CTF range parent preparation is duplicated')
+      }
+      preparations.set(preparation.operationId, preparation)
+    }
+    this.#preparations = preparations
+  }
+
+  get materializedChildCount(): number {
+    return this.#materialized.size
+  }
+
+  materialize(preparation: PersistedCtfRangeOrderPreparation): CtfRangeOrderPreparation {
+    const operationId = preparation.operationId
+    if (this.#preparations.get(operationId) !== preparation) {
+      throw new Error('CTF range parent preparation context is foreign')
+    }
+    const cached = this.#materialized.get(operationId)
+    if (cached !== undefined) return cached
+    const materialized = prepareCtfRangeOrderAuthorization({
+      seed: this.#seed,
+      ...withoutRequest(preparation),
+    })
+    this.#materialized.set(operationId, materialized)
+    return materialized
+  }
+}
+
+export function createCtfRangeCapabilityParentPreparationContext(input: {
+  readonly seed: Uint8Array
+  readonly preparations: readonly PersistedCtfRangeOrderPreparation[]
+}): CtfRangeCapabilityParentPreparationContext {
+  return new CtfRangeCapabilityParentPreparationContext(input)
+}
+
 export function createCtfRangeCapabilityParentRequestMeasurer(input: {
   readonly preparations: readonly PersistedCtfRangeOrderPreparation[]
 }): (candidate: CtfRangeCapabilityParentMeasureInput) => number {
@@ -117,15 +173,23 @@ export async function prepareCtfRangeCapabilityParentOperation(input: {
   readonly preparations: readonly PersistedCtfRangeOrderPreparation[]
   readonly seed: Uint8Array
   readonly counterSource: CounterSource
+  readonly preparationContext?: CtfRangeCapabilityParentPreparationContext
 }): Promise<PreparedCtfRangeCapabilityParentOperation> {
   const parentOperationId = requiredText(input.parentOperationId, 'parent operation id')
   const preparations = preparationMap(input.preparations)
   const context = validateParentContext(input.parent, preparations)
+  const preparationContext =
+    input.preparationContext ??
+    createCtfRangeCapabilityParentPreparationContext({
+      seed: input.seed,
+      preparations: input.preparations,
+    })
   const materialized = await materializeOutputs(
     input.parent,
     context,
     input.seed,
     input.counterSource,
+    preparationContext,
   )
   const provisional = wireAllocations(parentOperationId, input.parent, context, '0'.repeat(64))
   const request = wireRequest(input.parent, provisional, materialized.outputs, context.conditionId)
@@ -328,9 +392,21 @@ export function mapCtfRangeCapabilityParentResponseToUnverifiedResult(input: {
   readonly preparations: readonly PersistedCtfRangeOrderPreparation[]
   readonly seed: Uint8Array
   readonly response: SwapResponse | CtfConvertResponse
+  readonly preparationContext?: CtfRangeCapabilityParentPreparationContext
 }): UnverifiedCtfRangeCapabilityParentResult {
   const prepared = validateCtfRangeCapabilityParentOperation(input.prepared, input.preparations)
-  const outputs = reconstructParentOutputs(prepared, input.preparations, input.seed)
+  const preparationContext =
+    input.preparationContext ??
+    createCtfRangeCapabilityParentPreparationContext({
+      seed: input.seed,
+      preparations: input.preparations,
+    })
+  const outputs = reconstructParentOutputs(
+    prepared,
+    input.preparations,
+    input.seed,
+    preparationContext,
+  )
   const signatures = responseSignatures(prepared, input.response)
   const keysets = exactKeysets(input.preparations)
   const proofs = outputs.map((output, outputIndex) => {
@@ -611,11 +687,12 @@ async function materializeOutputs(
   context: ParentContext,
   seed: Uint8Array,
   counterSource: CounterSource,
+  preparationContext: CtfRangeCapabilityParentPreparationContext,
 ): Promise<{
   readonly outputs: readonly OutputData[]
   readonly outputPlans: Readonly<Record<string, DurableSeedDerivedOutputPlan>>
 }> {
-  const authorization = authorizationOutputGroups(parent, context, seed)
+  const authorization = authorizationOutputGroups(parent, context, preparationContext)
   const deterministic = await deterministicOutputGroups(
     parent.outputs,
     context,
@@ -711,12 +788,13 @@ function reconstructParentOutputs(
   prepared: PreparedCtfRangeCapabilityParentOperation,
   preparations: readonly PersistedCtfRangeOrderPreparation[],
   seed: Uint8Array,
+  preparationContext: CtfRangeCapabilityParentPreparationContext,
 ): readonly OutputData[] {
   const context = validateParentContext(prepared.parent, preparationMap(preparations))
   const persisted = prepared.operation.outputs.successors!.map(deserializeDurableCustodyOutput)
   const metadata = parentMetadata(prepared.operation)
   assertParentOutputPlans(prepared.parent.outputs, persisted, metadata.outputPlans, context)
-  const authorization = authorizationOutputGroups(prepared.parent, context, seed)
+  const authorization = authorizationOutputGroups(prepared.parent, context, preparationContext)
   const deterministic = new Map<string, readonly OutputData[]>()
   for (const [label, rows] of deterministicAllocationGroups(prepared.parent.outputs)) {
     const keyset = keysetForAllocation(rows[0]!, context)
@@ -759,15 +837,13 @@ function orderParentProofs(
 function authorizationOutputGroups(
   parent: CtfRangeCapabilityBatchParent,
   context: ParentContext,
-  seed: Uint8Array,
+  preparationContext: CtfRangeCapabilityParentPreparationContext,
 ): ReadonlyMap<string, readonly OutputData[]> {
   return new Map(
     parent.children.map((child) => [
       child.clientOrderId,
-      prepareCtfRangeOrderAuthorization({
-        seed,
-        ...withoutRequest(context.preparations.get(child.clientOrderId)!),
-      }).authorizationOutputs,
+      preparationContext.materialize(context.preparations.get(child.clientOrderId)!)
+        .authorizationOutputs,
     ]),
   )
 }
@@ -1119,16 +1195,7 @@ function preparationMap(values: readonly PersistedCtfRangeOrderPreparation[]) {
 function authorizationAmounts(preparation: PersistedCtfRangeOrderPreparation): string[] {
   const cached = authorizationAmountCache.get(preparation)
   if (cached !== undefined) return cached
-  const amounts = planCtfRangeOrderAuthorization({
-    side: preparation.side,
-    priceNumerator: preparation.priceNumerator,
-    amountSubunits: preparation.amountSubunits,
-    divisibility: preparation.divisibility,
-    inputFeePpk: preparation.offerKeyset.inputFeePpk,
-    offerKeysetKeys: preparation.offerKeyset.keys,
-    maxPoolEntries: preparation.maxPoolEntries,
-    maxInputs: preparation.maxInputs,
-  }).authorizationAmounts
+  const amounts = planPersistedCtfRangeOrderAuthorization(preparation).authorizationAmounts
   authorizationAmountCache.set(preparation, amounts)
   return amounts
 }

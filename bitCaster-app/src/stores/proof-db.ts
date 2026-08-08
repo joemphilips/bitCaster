@@ -786,7 +786,9 @@ async function migrationAssetIdentity(
       unit: keyset.unit,
       keys: keyset.denominationPublicKeys,
       input_fee_ppk: keyset.inputFeePpk,
-      final_expiry: keyset.finalExpiryUnixSeconds,
+      ...(keyset.finalExpiryUnixSeconds === null
+        ? {}
+        : { final_expiry: keyset.finalExpiryUnixSeconds }),
       conditional: {
         conditionId: keyset.conditionId,
         outcomeCollection: keyset.outcomeCollection,

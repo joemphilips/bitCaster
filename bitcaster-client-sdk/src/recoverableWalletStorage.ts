@@ -91,13 +91,12 @@ export function verifyDurableWalletConditionalKeyset(input: {
   )
   const keysetId = requireConditionalKeysetId(keys.id)
   if (keys.unit !== unit) throw new Error('conditional mint keys are invalid')
-  const finalExpiry = requireInteger(
-    keys.final_expiry,
-    0,
-    Number.MAX_SAFE_INTEGER,
-    'conditional final expiry',
-  )
-  if (finalExpiry <= registeredAt) throw new Error('conditional final expiry is invalid')
+  const finalExpiry =
+    keys.final_expiry === undefined
+      ? null
+      : requireInteger(keys.final_expiry, 1, Number.MAX_SAFE_INTEGER, 'conditional final expiry')
+  if (finalExpiry !== null && finalExpiry <= registeredAt)
+    throw new Error('conditional final expiry is invalid')
   const metadata = requireRecord(input.conditionalMetadata, 'conditional keyset metadata')
   requireFields(metadata, [
     'conditionId',
@@ -176,7 +175,7 @@ export function verifyDurableWalletConditionalKeyset(input: {
         unit,
         ...(keys.active === undefined ? {} : { active: keys.active }),
         ...(keys.input_fee_ppk === undefined ? {} : { input_fee_ppk: keys.input_fee_ppk }),
-        final_expiry: finalExpiry,
+        ...(finalExpiry === null ? {} : { final_expiry: finalExpiry }),
         keys: denominations,
         conditional: { conditionId, outcomeCollection, outcomeCollectionId, registeredAt },
       },

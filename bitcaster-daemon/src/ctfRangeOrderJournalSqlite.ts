@@ -364,9 +364,7 @@ export function transitionRangePreparation(
   requireRevision(input.expectedRevision)
   requireTimestamp(input.updatedAtMs, 'updated time')
   const current = requirePreparation(database, input.scopeId, input.rangeOperationId)
-  if (input.updatedAtMs < current.updatedAtMs) {
-    throw new Error('daemon CTF range preparation update time moved backward')
-  }
+  const updatedAtMs = Math.max(input.updatedAtMs, current.updatedAtMs)
   const result = database
     .prepare(
       `UPDATE daemon_ctf_range_preparations
@@ -376,7 +374,7 @@ export function transitionRangePreparation(
     )
     .run(
       input.to,
-      input.updatedAtMs,
+      updatedAtMs,
       input.scopeId,
       input.rangeOperationId,
       input.from,

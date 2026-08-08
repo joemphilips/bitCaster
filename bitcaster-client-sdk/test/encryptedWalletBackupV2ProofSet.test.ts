@@ -59,6 +59,37 @@ test('v2 proof-set asset identity keeps mint, unit, and verified CTF collection 
   )
 })
 
+test('v2 proof-set preserves an explicit missing CTF final expiry', async () => {
+  const entry = proof(0, { ...ctfAsset(), finalExpiry: null }, true)
+  const result = await restored([entry])
+
+  assert.equal(result.unverified.proofs[0]!.asset.kind, 'ctf')
+  if (result.unverified.proofs[0]!.asset.kind === 'ctf')
+    assert.equal(result.unverified.proofs[0]!.asset.finalExpiry, null)
+})
+
+test('v2 proof-set rejects a non-positive or pre-registration CTF final expiry', () => {
+  const asset = ctfAsset()
+  assert.throws(
+    () =>
+      createEncryptedWalletBackupV2AssetIdentity({
+        mintUrl: MINT,
+        unit: 'sat',
+        asset: { ...asset, finalExpiry: 0 },
+      }),
+    /encrypted backup time is invalid/,
+  )
+  assert.throws(
+    () =>
+      createEncryptedWalletBackupV2AssetIdentity({
+        mintUrl: MINT,
+        unit: 'sat',
+        asset: { ...asset, finalExpiry: asset.registeredAt },
+      }),
+    /proof set asset is invalid/,
+  )
+})
+
 test('v2 proof set restores one asset proof material', async () => {
   const keyHandle = await handle()
   const proofs = [proof(0, { kind: 'ordinary' }), proof(1, { kind: 'ordinary' })]

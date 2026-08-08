@@ -17,6 +17,7 @@ import {
 import type { CtfRangeCapabilitySourceKeyset } from './ctfRangeCapabilitySourcePlan.ts'
 
 export const CTF_RANGE_BATCH_INPUT_LIMIT_MAX = 64
+export const CTF_RANGE_BATCH_CHILD_LIMIT_MAX = 32
 export const CTF_RANGE_BATCH_POOL_ENTRY_LIMIT_MAX = 128
 
 interface CtfRangeCapabilityBatchChildBase {
@@ -45,6 +46,7 @@ export type CtfRangeCapabilityBatchChild = CtfRangeCapabilityBatchChildBase &
 
 export interface CtfRangeCapabilityBatchLimits {
   readonly maxInputs: number
+  readonly maxChildren: number
   readonly maxOutputs: number
   readonly maxRequestBytes: number
   readonly maxPoolEntries: number
@@ -138,6 +140,7 @@ type ParentCandidate = CtfRangeCapabilityParentMeasureInput & { readonly request
 export type CtfRangeCapabilityBatchOmissionReason =
   | 'source inventory'
   | 'input limit'
+  | 'child limit'
   | 'output limit'
   | 'request byte limit'
   | 'pool entry limit'
@@ -309,6 +312,9 @@ function probeParent(
   limits: CtfRangeCapabilityBatchLimits,
   measure: CtfRangeCapabilityBatchPlanInput['measureExactParentRequestBytes'],
 ): ParentProbe {
+  if (children.length > limits.maxChildren) {
+    return { kind: 'rejected', reason: 'child limit' }
+  }
   const target = sumChildAuthorizationAmounts(children)
   const inputs = takeProofsForLock(candidates, target, { [keyset.id]: keyset.inputFeePpk })
   if (inputs === null) return { kind: 'rejected', reason: 'source inventory' }
@@ -512,6 +518,7 @@ function keysetAuthority(keyset: CtfRangeCapabilitySourceKeyset): string {
 function validateLimits(value: CtfRangeCapabilityBatchLimits): CtfRangeCapabilityBatchLimits {
   return {
     maxInputs: boundedLimit(value.maxInputs, CTF_RANGE_BATCH_INPUT_LIMIT_MAX, 'input'),
+    maxChildren: boundedLimit(value.maxChildren, CTF_RANGE_BATCH_CHILD_LIMIT_MAX, 'child'),
     maxOutputs: Math.min(
       positiveLimit(value.maxOutputs, 'output'),
       DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,

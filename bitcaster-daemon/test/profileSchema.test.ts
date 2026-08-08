@@ -437,26 +437,7 @@ test('refuses a dev/inode/realpath identity replacement during inspection', asyn
     },
   )
   await waitForChildReady(child)
-  const slowManifest: ProfileSchemaManifest = {
-    ...fixtureManifest,
-    markers: [
-      ...fixtureManifest.markers,
-      {
-        name: 'identity-race-delay',
-        selectSql: `
-          SELECT (
-            WITH RECURSIVE counter(value) AS (
-              VALUES (0)
-              UNION ALL
-              SELECT value + 1 FROM counter WHERE value < 2000000
-            )
-            SELECT sum(value) FROM counter
-          ) AS checksum
-        `,
-        expectedRows: [{ checksum: 2_000_001_000_000 }],
-      },
-    ],
-  }
+  const slowManifest = manifestWithInspectionDelay()
 
   await assert.rejects(
     () => validateDaemonProfileSchema(directory, slowManifest),
@@ -465,6 +446,67 @@ test('refuses a dev/inode/realpath identity replacement during inspection', asyn
   )
   if (child.exitCode === null) {
     await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+  }
+})
+
+test('allows a live daemon SQLite WAL commit during immutable profile inspection', async (t) => {
+  const directory = await temporaryProfile(t)
+  await createFixtureDatabase(directory)
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      `
+        import { DatabaseSync } from 'node:sqlite'
+        process.umask(0o077)
+        const database = new DatabaseSync(process.env.DAEMON_TEST_DATABASE)
+        database.exec(
+          'PRAGMA journal_mode = WAL;' +
+          'PRAGMA synchronous = FULL;' +
+          'PRAGMA foreign_keys = ON;'
+        )
+        database.prepare(
+          'INSERT INTO wallet_scope ' +
+          '(row_id, scope_digest, marker_singleton, epoch) VALUES (1, ?, 1, 0)'
+        ).run('0'.repeat(64))
+        const update = database.prepare(
+          'UPDATE wallet_scope SET epoch = epoch + 1 WHERE row_id = 1'
+        )
+        process.stdout.write('ready\\n')
+        let remainingWrites = 40
+        const timer = setInterval(() => {
+          update.run()
+          if (remainingWrites === 40) process.stdout.write('mutated\\n')
+          remainingWrites -= 1
+          if (remainingWrites !== 0) return
+          clearInterval(timer)
+          database.close()
+        }, 1)
+      `,
+    ],
+    {
+      env: {
+        ...process.env,
+        DAEMON_TEST_DATABASE: join(directory, DAEMON_PROFILE_DATABASE),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  )
+  let observedConcurrentCommit = false
+  child.stdout?.on('data', (chunk: Buffer) => {
+    if (chunk.toString('utf8').includes('mutated\n')) observedConcurrentCommit = true
+  })
+  await waitForChildReady(child)
+  try {
+    const result = await validateDaemonProfileSchema(directory, manifestWithInspectionDelay())
+    assert.equal(result.applicationId, APPLICATION_ID)
+    assert.equal(observedConcurrentCommit, true)
+  } finally {
+    if (child.exitCode === null) {
+      child.kill('SIGKILL')
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    }
   }
 })
 
@@ -887,6 +929,29 @@ async function createWalCrashFixture(
   assert.ok(artifacts.includes(`${DAEMON_PROFILE_DATABASE}-shm`))
   for (const artifact of [DAEMON_PROFILE_DATABASE, ...DAEMON_PROFILE_SIDECARS]) {
     await chmod(join(directory, artifact), 0o600)
+  }
+}
+
+function manifestWithInspectionDelay(): ProfileSchemaManifest {
+  return {
+    ...fixtureManifest,
+    markers: [
+      ...fixtureManifest.markers,
+      {
+        name: 'identity-race-delay',
+        selectSql: `
+          SELECT (
+            WITH RECURSIVE counter(value) AS (
+              VALUES (0)
+              UNION ALL
+              SELECT value + 1 FROM counter WHERE value < 2000000
+            )
+            SELECT sum(value) FROM counter
+          ) AS checksum
+        `,
+        expectedRows: [{ checksum: 2_000_001_000_000 }],
+      },
+    ],
   }
 }
 

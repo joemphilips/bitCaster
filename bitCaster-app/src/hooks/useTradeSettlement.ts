@@ -34,9 +34,10 @@
  * the wallet — only the fresh proofs returned by the mint.
  */
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { Proof } from "@cashu/cashu-ts";
 import { useTradeHub, type TradeCreatedPayload, type SwapMessage } from "@/hooks/useTradeHub";
+import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
 import {
   useActiveSwapsStore,
   type ActiveSwap,
@@ -272,7 +273,15 @@ const MAX_ORDER_STATUS_RECOVERY_ATTEMPTS = 45;
  *   order submission; swap ECDH still uses the per-order ephemeral key stored
  *   with each pending trade.
  */
-export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
+export interface TradeSettlementRecoveryInput {
+  readonly mnemonic: string | null;
+  readonly mintUrls: readonly string[];
+}
+
+export function useTradeSettlement(
+  canAuthenticateTradeHub: boolean,
+  recoveryInput?: TradeSettlementRecoveryInput,
+): void {
   const swapsByTradeId = useActiveSwapsStore((s) => s.byTradeId);
   const pendingTradesByOrderId = usePendingTradesStore((s) => s.byOrderId);
   const joinedOrderKeysRef = useRef<Set<string>>(new Set());
@@ -284,6 +293,10 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
   const orderStatusRecoveryAttemptsRef = useRef<Map<string, number>>(new Map());
   const tradeJoinRetryTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const tradeJoinAttemptsRef = useRef<Map<string, number>>(new Map());
+  const recoveryInputRef = useRef(recoveryInput);
+  const rangeRecoveryInFlightRef = useRef(false);
+  const rangeRecoveryRerunRequestedRef = useRef(false);
+  recoveryInputRef.current = recoveryInput;
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const hasActiveSwapWork = Object.values(swapsByTradeId).some(
     (swap) => swap.step !== "completed" && swap.step !== "Failed",
@@ -292,12 +305,50 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
   const tradeHubEnabled =
     canAuthenticateTradeHub && (hasActiveSwapWork || pendingTrades.length > 0);
 
+  const recoverCurrentSettlementGroup = useCallback(() => {
+    const current = recoveryInputRef.current;
+    const mnemonic = current?.mnemonic;
+    const mintUrls = current?.mintUrls;
+    if (!mnemonic || !mintUrls || mintUrls.length === 0) return;
+    if (rangeRecoveryInFlightRef.current) {
+      rangeRecoveryRerunRequestedRef.current = true;
+      return;
+    }
+
+    rangeRecoveryInFlightRef.current = true;
+    void (async () => {
+      try {
+        await recoverBrowserCtfRangeOrders({
+          mnemonic,
+          mintUrls,
+        });
+        if (rangeRecoveryRerunRequestedRef.current) {
+          rangeRecoveryRerunRequestedRef.current = false;
+          const latest = recoveryInputRef.current;
+          if (latest?.mnemonic && latest.mintUrls.length > 0) {
+            await recoverBrowserCtfRangeOrders({
+              mnemonic: latest.mnemonic,
+              mintUrls: latest.mintUrls,
+            });
+          }
+        }
+      } catch {
+        // Startup recovery retains its retry loop. This event bridge only
+        // accelerates recovery after a durable settlement-state change.
+      } finally {
+        rangeRecoveryInFlightRef.current = false;
+        rangeRecoveryRerunRequestedRef.current = false;
+      }
+    })();
+  }, []);
+
   const { joinOrder, joinTrade, sendSwapMessage } = useTradeHub(tradeHubEnabled, {
     onTradeCreated: (payload) =>
       void handleTradeCreated(payload, joinTrade, sendSwapMessage, activeMintUrl),
     onSwapMessageReceived: (msg) => handleSwapMessage(msg, sendSwapMessage, activeMintUrl),
     onTradeStateChanged: (tradeId, newState) =>
       handleTradeStateChanged(tradeId, newState, sendSwapMessage),
+    onSettlementGroupStateChanged: () => recoverCurrentSettlementGroup(),
   });
 
   useEffect(() => {
@@ -401,6 +452,9 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
         })()
           .then(async (status) => {
             if (!status) return;
+            if (status.activeSettlementGroup !== null) {
+              recoverCurrentSettlementGroup();
+            }
             const pendingTradeId = typeof status.tradeId === "string" ? status.tradeId : null;
             const pendingDeadline = typeof status.deadline === "string" ? status.deadline : null;
             if (pendingTradeId && pendingDeadline) {
@@ -491,7 +545,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     for (const trade of pendingTrades) {
       attemptJoinOrder(trade);
     }
-  }, [pendingTrades, tradeHubEnabled, joinOrder, joinTrade]);
+  }, [pendingTrades, tradeHubEnabled, joinOrder, joinTrade, recoverCurrentSettlementGroup]);
 
   useEffect(() => {
     if (tradeHubEnabled) return;

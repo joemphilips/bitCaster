@@ -385,7 +385,7 @@ function wallet(asset: EncryptedWalletBackupV2ProofSetAsset, unit: "sat" | "msat
     unit,
     true,
     0,
-    asset.kind === "ctf" ? asset.finalExpiry : undefined,
+    asset.kind === "ctf" && asset.finalExpiry !== null ? asset.finalExpiry : undefined,
     conditional,
   );
   keyset.keys = { 1: PUBLIC_KEY };

@@ -203,7 +203,7 @@ function inputFeePpk(lookup: TokenImportKeysetLookup, keysetId: string): number 
 }
 
 function optionalPositiveSafeInteger(value: unknown, label: string): number | undefined {
-  if (value === undefined) return undefined
+  if (value === undefined || value === null) return undefined
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${label} is invalid`)
   }

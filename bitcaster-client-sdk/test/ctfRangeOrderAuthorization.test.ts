@@ -34,7 +34,11 @@ test('buy authorization reserves its per-proof fee and preserves the whole-share
     minReceive: '10000',
     maxDebit: '8401',
   })
-  assert.deepEqual(plan.manifest, { maxReceive: '20000', maxChange: '8401' })
+  assert.deepEqual(plan.manifest, {
+    maxReceive: '20000',
+    maxChange: '8401',
+    entryCount: 29,
+  })
 })
 
 test('sell authorization charges the fee from collateral receive at the minimum fill', () => {

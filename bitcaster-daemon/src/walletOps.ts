@@ -1004,7 +1004,10 @@ class DaemonCounterSource implements CounterSource {
   ) {
     this.#mutation = mutation
     this.#binding = {
-      normalizedMint: canonicalizeTokenImportMintUrl(binding.normalizedMint),
+      normalizedMint: canonicalizeTokenImportMintUrl(
+        binding.normalizedMint,
+        isLoopbackHttpUrl(binding.normalizedMint),
+      ),
       unit: binding.unit,
     }
   }

@@ -25,6 +25,7 @@ export interface CtfRangeMintMetadataClient {
   }>
   getCtfCondition(conditionId: string): Promise<{
     condition_id: string
+    registered_at?: number
     keysets: Record<string, string>
   }>
   getKeys(keysetId?: string): Promise<{ keysets: MintKeys[] }>
@@ -76,9 +77,17 @@ export async function loadCtfRangeMintMetadata(input: {
   if (condition.condition_id !== input.conditionId) {
     throw new Error('mint returned a foreign CTF condition')
   }
+  const conditionRegisteredAt = nonNegativeSafeInteger(
+    condition.registered_at,
+    'mint CTF condition registration time',
+  )
   const conditionKeysetIds = [...new Set(Object.values(condition.keysets))].sort()
   assertCandidateCount(conditionKeysetIds, 'mint CTF condition keyset')
-  const conditionEntries = await loadConditionKeysets(input.mint, conditionKeysetIds)
+  const conditionEntries = await loadConditionKeysets(
+    input.mint,
+    conditionKeysetIds,
+    conditionRegisteredAt,
+  )
   const keyIds = [
     ...new Set([
       ...regularResponse.keysets
@@ -125,15 +134,16 @@ export async function loadCtfRangeMintKeys(
 async function loadConditionKeysets(
   mint: CtfRangeMintMetadataClient,
   conditionKeysetIds: readonly string[],
+  conditionRegisteredAt: number,
 ): Promise<CtfRangeConditionalKeysetMetadata[]> {
   const targets = new Set(conditionKeysetIds)
   const found = new Map<string, CtfRangeConditionalKeysetMetadata>()
-  let since: number | undefined
+  let since = conditionRegisteredAt
   let priorPage = ''
   for (let pageNumber = 0; pageNumber < 16; pageNumber += 1) {
     const response = await mint.getConditionalKeysets({
       limit: MINT_KEYSET_CANDIDATE_LIMIT,
-      ...(since === undefined ? {} : { since }),
+      since,
     })
     if (response.keysets.length > MINT_KEYSET_CANDIDATE_LIMIT) {
       throw new Error('mint exceeded the conditional keyset page limit')
@@ -144,13 +154,13 @@ async function loadConditionKeysets(
     if (found.size === targets.size) {
       return [...found.values()].sort((left, right) => left.id.localeCompare(right.id))
     }
-    if (response.keysets.length < MINT_KEYSET_CANDIDATE_LIMIT) break
+    if (response.keysets.length === 0) break
     const page = response.keysets.map(({ id }) => id).join('\0')
     const registeredAt = response.keysets.at(-1)?.registered_at
     if (
       page === priorPage ||
       !Number.isSafeInteger(registeredAt) ||
-      (since !== undefined && (registeredAt as number) < since)
+      (registeredAt as number) < since
     ) {
       throw new Error('mint conditional keyset pagination did not advance')
     }
@@ -158,6 +168,13 @@ async function loadConditionKeysets(
     since = registeredAt as number
   }
   throw new Error('mint CTF condition keyset authority is incomplete')
+}
+
+function nonNegativeSafeInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`${label} is invalid`)
+  }
+  return value as number
 }
 
 function buildLoadedMintMetadata(input: {

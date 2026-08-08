@@ -12,7 +12,10 @@ import {
   type EncryptedWalletBackupV2BundleRuntime,
 } from "@bitcaster/client-sdk";
 import { decodeDurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
-import { requireBrowserProofBackupAuthorityRow } from "./browser-proof-backup-authority";
+import {
+  requireBrowserProofBackupAuthorityForProof,
+  requireBrowserProofBackupAuthorityRow,
+} from "./browser-proof-backup-authority";
 import {
   createEncryptedWalletBackupV2DesiredAssetRow,
   decodeEncryptedWalletBackupV2DesiredAssetRow,
@@ -86,10 +89,20 @@ async function readRawAssetSnapshot(input: BrowserEncryptedWalletBackupV2AssetSo
       const context = desired.assetIdentity.startsWith("ctf:")
         ? await ctfContext(input.database, desired)
         : null;
-      const proofRows = await activeRows(input.database, desired, context?.first ?? null);
-      const authorities = await input.database.custodyProofBackupAuthorities.bulkGet(
-        proofRows.map((row) => [row.scopeId, row.proofId]),
+      const activeProofRows = await activeRows(input.database, desired, context?.first ?? null);
+      const rawAuthorities = await input.database.custodyProofBackupAuthorities.bulkGet(
+        activeProofRows.map((row) => [row.scopeId, row.proofId]),
       );
+      const eligibleProofs = activeProofRows.flatMap((proof, index) => {
+        const rawAuthority = rawAuthorities[index];
+        if (rawAuthority === undefined)
+          throw new Error("browser V2 proof backup authority is missing");
+        const authority = requireBrowserProofBackupAuthorityRow(rawAuthority);
+        if (authority.derivationLocator === null) return [];
+        return [{ proof, authority: requireBrowserProofBackupAuthorityForProof(authority, proof) }];
+      });
+      const proofRows = eligibleProofs.map(({ proof }) => proof);
+      const authorities = eligibleProofs.map(({ authority }) => authority);
       const keysetIds = [...new Set(proofRows.map(({ keysetId }) => keysetId))];
       const unit = backupUnit(desired.unit);
       const associations = await input.database.walletCounterAssociations.bulkGet(
@@ -306,7 +319,9 @@ function verifyCtfKeyset(
       unit: keyset.unit,
       keys: keyset.denominationPublicKeys,
       input_fee_ppk: keyset.inputFeePpk,
-      final_expiry: keyset.finalExpiryUnixSeconds,
+      ...(keyset.finalExpiryUnixSeconds === null
+        ? {}
+        : { final_expiry: keyset.finalExpiryUnixSeconds }),
       conditional: {
         conditionId: keyset.conditionId,
         outcomeCollection: keyset.outcomeCollection,

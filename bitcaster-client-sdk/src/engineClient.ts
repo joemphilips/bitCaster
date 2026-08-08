@@ -1055,7 +1055,9 @@ function decodeFill(value: unknown): Fill {
   }
   requireNonnegativeSafeInteger(fill.quotePaymentSubunits, 'fill quote payment')
   requirePositiveSafeInteger(fill.outcomeFaceAmountSubunits, 'fill outcome amount')
-  if (fill.tradeId !== undefined) requireUuid(fill.tradeId, 'fill trade id')
+  if (fill.tradeId !== undefined && fill.tradeId !== null) {
+    requireUuid(fill.tradeId, 'fill trade id')
+  }
   return {
     id: fill.id as string,
     makerOrderId: fill.makerOrderId as string,
@@ -1066,7 +1068,7 @@ function decodeFill(value: unknown): Fill {
     status: fill.status,
     filledAt: fill.filledAt as string,
     settlementGroup: decodeSettlementGroup(fill.settlementGroup),
-    ...(fill.tradeId === undefined ? {} : { tradeId: fill.tradeId as string }),
+    ...(fill.tradeId === undefined || fill.tradeId === null ? {} : { tradeId: fill.tradeId as string }),
     baseAsset: 'sat',
     divisibility,
     tokenSide: fill.tokenSide,

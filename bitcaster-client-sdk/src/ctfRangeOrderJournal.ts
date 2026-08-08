@@ -237,8 +237,7 @@ export function bindCtfRangeOrderPreparationCapability(input: {
   const updatedAtMs = requireNonnegativeSafeInteger(input.updatedAtMs, 'updated time')
   if (
     current.lifecycleState !== 'capability-requested' ||
-    current.revision !== expectedRevision ||
-    updatedAtMs < current.updatedAtMs
+    current.revision !== expectedRevision
   ) {
     if (
       current.capability !== null &&
@@ -256,7 +255,7 @@ export function bindCtfRangeOrderPreparationCapability(input: {
     lifecycleState: 'capability-bound',
     revision: current.revision + 1,
     capability,
-    updatedAtMs,
+    updatedAtMs: Math.max(updatedAtMs, current.updatedAtMs),
   }
 }
 

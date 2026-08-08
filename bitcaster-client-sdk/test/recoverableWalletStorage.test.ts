@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { deriveConditionalKeysetId } from '@cashu/cashu-ts'
+import { deriveRootCtfOutcomeCollectionId } from '../src/durableCtfRangeOperation.ts'
 import { test } from 'node:test'
 import {
   isDurableCustodySafeAbortEligible,
@@ -77,5 +79,47 @@ test('conditional keyset verification rejects malformed or foreign recovery meta
         mintKeys: { ...input.mintKeys, id: `01${'00'.repeat(32)}` },
       }),
     /does not match context/,
+  )
+})
+
+test('conditional keyset verification accepts a missing final expiry', () => {
+  const keys = { '1': `02${'11'.repeat(32)}` }
+  const conditionId = '11'.repeat(32)
+  const outcomeCollectionId = deriveRootCtfOutcomeCollectionId({
+    conditionId,
+    outcomeCollection: 'yes',
+  })
+  const keysetId = deriveConditionalKeysetId({
+    keys,
+    unit: 'sat',
+    conditionId,
+    outcomeCollectionId,
+  })
+
+  assert.deepEqual(
+    verifyDurableWalletConditionalKeyset({
+      mint: 'https://mint.example',
+      unit: 'sat',
+      outcomeLabel: 'yes',
+      registeredAtUnixSeconds: 1,
+      mintKeys: {
+        id: keysetId,
+        unit: 'sat',
+        keys,
+        conditional: {
+          conditionId,
+          outcomeCollection: 'yes',
+          outcomeCollectionId,
+          registeredAt: 1,
+        },
+      },
+      conditionalMetadata: {
+        conditionId,
+        outcomeCollection: 'yes',
+        outcomeCollectionId,
+        registeredAt: 1,
+      },
+    }),
+    { keysetId },
   )
 })

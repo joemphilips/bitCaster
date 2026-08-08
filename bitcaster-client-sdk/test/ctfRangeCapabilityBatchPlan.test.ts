@@ -102,7 +102,13 @@ test('does not split one preferred keyset group across multiple NUT-03 parents',
   const plan = planCtfRangeCapabilityBatches({
     ...baseInput(children, [proof(COLLATERAL.id, 256)]),
     conditionalProofs: [proof(CONDITIONAL_A.id, 64, 'one'), proof(CONDITIONAL_A.id, 64, 'two')],
-    limits: { maxInputs: 1, maxOutputs: 256, maxRequestBytes: 1_048_576, maxPoolEntries: 128 },
+    limits: {
+      maxInputs: 1,
+      maxChildren: 32,
+      maxOutputs: 256,
+      maxRequestBytes: 1_048_576,
+      maxPoolEntries: 128,
+    },
   })
   assert.deepEqual(
     plan.parents.map(({ kind }) => kind),
@@ -122,7 +128,13 @@ test('preserves actionable preferred-source fragmentation when collateral is una
       proof(CONDITIONAL_A.id, 4, '2'),
       proof(CONDITIONAL_A.id, 4, '3'),
     ],
-    limits: { maxInputs: 2, maxOutputs: 256, maxRequestBytes: 1_048_576, maxPoolEntries: 128 },
+    limits: {
+      maxInputs: 2,
+      maxChildren: 32,
+      maxOutputs: 256,
+      maxRequestBytes: 1_048_576,
+      maxPoolEntries: 128,
+    },
   })
   assert.deepEqual(plan.omissions, [
     {
@@ -146,6 +158,75 @@ test('uses one collateral parent for an ordinary fitting ladder', () => {
   assert.equal(plan.parents.length, 1)
   assert.equal(plan.mintMutationCount, 1)
   assert.equal(plan.parents[0]?.children.length, children.length)
+})
+
+test('separates child and output limits before parent materialization', () => {
+  const children = [
+    child('one', 'route-a', 'Buy', 1, 1, COLLATERAL),
+    child('two', 'route-b', 'Buy', 2, 1, COLLATERAL),
+  ]
+  const collateralProofs = [proof(COLLATERAL.id, 4, 'first'), proof(COLLATERAL.id, 4, 'second')]
+  const measuredChildCounts: number[] = []
+  const childLimited = planCtfRangeCapabilityBatches({
+    ...baseInput(children, collateralProofs),
+    limits: {
+      maxInputs: 64,
+      maxChildren: 1,
+      maxOutputs: 256,
+      maxRequestBytes: 1_048_576,
+      maxPoolEntries: 128,
+    },
+    measureExactParentRequestBytes: ({ children: rows }) => {
+      measuredChildCounts.push(rows.length)
+      return 256
+    },
+  })
+  const outputLimited = planCtfRangeCapabilityBatches({
+    ...baseInput(children, collateralProofs),
+    limits: {
+      maxInputs: 64,
+      maxChildren: 32,
+      maxOutputs: 2,
+      maxRequestBytes: 1_048_576,
+      maxPoolEntries: 128,
+    },
+    measureExactParentRequestBytes: () => 256,
+  })
+
+  assert.deepEqual(
+    childLimited.parents.map(({ children: rows }) => rows.length),
+    [1, 1],
+  )
+  assert.ok(measuredChildCounts.every((count) => count <= 1))
+  assert.ok(childLimited.parents.every(({ outputs }) => outputs.length <= 256))
+  assert.deepEqual(
+    outputLimited.parents.map(({ children: rows }) => rows.length),
+    [1, 1],
+  )
+  assert.ok(outputLimited.parents.every(({ children: rows }) => rows.length < 32))
+  assert.ok(outputLimited.parents.every(({ outputs }) => outputs.length <= 2))
+})
+
+test('keeps a 30-child categorical quote pass in one parent when outputs exceed 32', () => {
+  const children = Array.from({ length: 30 }, (_, index) =>
+    child(`level-${index}`, `route-${index}`, 'Sell', index + 1, 10, CONDITIONAL_A),
+  )
+  const plan = planCtfRangeCapabilityBatches({
+    ...baseInput(children, [proof(COLLATERAL.id, 512)]),
+    limits: {
+      maxInputs: 64,
+      maxChildren: 32,
+      maxOutputs: 256,
+      maxRequestBytes: 1_048_576,
+      maxPoolEntries: 128,
+    },
+  })
+
+  assert.equal(plan.parents.length, 1)
+  assert.equal(plan.parents[0]?.children.length, 30)
+  assert.equal(plan.parents[0]?.outputs.length, 125)
+  assert.ok(plan.parents.every(({ children: rows }) => rows.length <= 32))
+  assert.ok(plan.parents.every(({ outputs }) => outputs.length <= 256))
 })
 
 test('clamps durable outputs at 256 and splits a 257-output ladder', () => {
@@ -179,7 +260,13 @@ test('clamps durable outputs at 256 and splits a 257-output ladder', () => {
       proof(COLLATERAL.id, 1, '1-c'),
     ],
     conditionalProofs: [],
-    limits: { maxInputs: 64, maxOutputs: 257, maxRequestBytes: 1_048_576, maxPoolEntries: 128 },
+    limits: {
+      maxInputs: 64,
+      maxChildren: 32,
+      maxOutputs: 257,
+      maxRequestBytes: 1_048_576,
+      maxPoolEntries: 128,
+    },
     measureExactParentRequestBytes: () => 1_024,
   })
   assert.deepEqual(
@@ -204,6 +291,7 @@ test('clamps measured request bytes to the durable artifact authority bound', ()
     ),
     limits: {
       maxInputs: 64,
+      maxChildren: 32,
       maxOutputs: 256,
       maxRequestBytes: DURABLE_ARTIFACT_BYTES_LIMIT_MAX + 1,
       maxPoolEntries: 128,
@@ -226,7 +314,13 @@ test('accepts exact limits and rejects or splits at limit plus one', () => {
     candidate.children.length * 100
   const exact = planCtfRangeCapabilityBatches({
     ...baseInput([one], [proof(COLLATERAL.id, 8), proof(COLLATERAL.id, 4)]),
-    limits: { maxInputs: 2, maxOutputs: 4, maxRequestBytes: 100, maxPoolEntries: 4 },
+    limits: {
+      maxInputs: 2,
+      maxChildren: 1,
+      maxOutputs: 4,
+      maxRequestBytes: 100,
+      maxPoolEntries: 4,
+    },
     measureExactParentRequestBytes: measured,
   })
   assert.equal(exact.parents[0]?.inputs.length, 2)
@@ -237,7 +331,13 @@ test('accepts exact limits and rejects or splits at limit plus one', () => {
   const rejected = { ...one, route: 'route-a' }
   const cases = [
     {
-      limits: { maxInputs: 1, maxOutputs: 8, maxRequestBytes: 100, maxPoolEntries: 4 },
+      limits: {
+        maxInputs: 1,
+        maxChildren: 32,
+        maxOutputs: 8,
+        maxRequestBytes: 100,
+        maxPoolEntries: 4,
+      },
       child: rejected,
       collateralProofs: [
         proof(COLLATERAL.id, 8, '8'),
@@ -247,19 +347,37 @@ test('accepts exact limits and rejects or splits at limit plus one', () => {
       reason: 'input limit',
     },
     {
-      limits: { maxInputs: 2, maxOutputs: 3, maxRequestBytes: 100, maxPoolEntries: 4 },
+      limits: {
+        maxInputs: 2,
+        maxChildren: 32,
+        maxOutputs: 3,
+        maxRequestBytes: 100,
+        maxPoolEntries: 4,
+      },
       child: { ...child('one', 'route-a', 'Sell', 10, 3, CONDITIONAL_A), poolEntryCount: 4 },
       collateralProofs: [proof(COLLATERAL.id, 4, '4')],
       reason: 'output limit',
     },
     {
-      limits: { maxInputs: 2, maxOutputs: 8, maxRequestBytes: 99, maxPoolEntries: 4 },
+      limits: {
+        maxInputs: 2,
+        maxChildren: 32,
+        maxOutputs: 8,
+        maxRequestBytes: 99,
+        maxPoolEntries: 4,
+      },
       child: rejected,
       collateralProofs: [proof(COLLATERAL.id, 16, '16')],
       reason: 'request byte limit',
     },
     {
-      limits: { maxInputs: 2, maxOutputs: 8, maxRequestBytes: 100, maxPoolEntries: 4 },
+      limits: {
+        maxInputs: 2,
+        maxChildren: 32,
+        maxOutputs: 8,
+        maxRequestBytes: 100,
+        maxPoolEntries: 4,
+      },
       child: { ...rejected, poolEntryCount: 5 },
       collateralProofs: [proof(COLLATERAL.id, 16, '16')],
       reason: 'pool entry limit',
@@ -299,7 +417,13 @@ test('packs whole canonical prefixes without a global bin-packing search', () =>
       proof(COLLATERAL.id, 4, '3'),
       proof(COLLATERAL.id, 4, '4'),
     ]),
-    limits: { maxInputs: 64, maxOutputs: 64, maxRequestBytes: 10, maxPoolEntries: 8 },
+    limits: {
+      maxInputs: 64,
+      maxChildren: 32,
+      maxOutputs: 64,
+      maxRequestBytes: 10,
+      maxPoolEntries: 8,
+    },
     measureExactParentRequestBytes: ({ children: rows }) =>
       rows.reduce((total, row) => total + sizes.get(row.clientOrderId)!, 0),
   })
@@ -321,7 +445,13 @@ test('measures each growing prefix once and reuses the last fitting probe', () =
       proof(COLLATERAL.id, 8, 'two'),
       proof(COLLATERAL.id, 8, 'three'),
     ]),
-    limits: { maxInputs: 64, maxOutputs: 256, maxRequestBytes: 3, maxPoolEntries: 128 },
+    limits: {
+      maxInputs: 64,
+      maxChildren: 32,
+      maxOutputs: 256,
+      maxRequestBytes: 3,
+      maxPoolEntries: 128,
+    },
     measureExactParentRequestBytes: ({ children: rows }) => {
       measurements += 1
       return rows.length
@@ -546,7 +676,13 @@ test('keeps mixed-source multi-parent partitions invariant with simultaneous omi
   ): CtfRangeCapabilityBatchPlanInput => ({
     ...baseInput(childRows, collateralProofs),
     conditionalProofs,
-    limits: { maxInputs: 64, maxOutputs: 256, maxRequestBytes: 100, maxPoolEntries: 2 },
+    limits: {
+      maxInputs: 64,
+      maxChildren: 32,
+      maxOutputs: 256,
+      maxRequestBytes: 100,
+      maxPoolEntries: 2,
+    },
     measureExactParentRequestBytes: ({ kind, children: rows }) =>
       rows.some(({ clientOrderId }) => clientOrderId === 'request')
         ? 101
@@ -617,6 +753,7 @@ function baseInput(
     conditionalProofs: [],
     limits: {
       maxInputs: 64,
+      maxChildren: 32,
       maxOutputs: 256,
       maxRequestBytes: 1_048_576,
       maxPoolEntries: 128,

@@ -1850,6 +1850,7 @@ function fakeMint(
           active: true,
           input_fee_ppk: INPUT_FEE_PPK,
           final_expiry: FINAL_EXPIRY,
+          registered_at: 0,
           condition_id: CONDITION_ID,
           outcome_collection: 'YES',
           outcome_collection_id: OUTCOME_COLLECTION_ID,
@@ -1860,6 +1861,7 @@ function fakeMint(
           active: true,
           input_fee_ppk: INPUT_FEE_PPK,
           final_expiry: FINAL_EXPIRY,
+          registered_at: 0,
           condition_id: CONDITION_ID,
           outcome_collection: 'NO',
           outcome_collection_id: COMPLEMENT_COLLECTION_ID,
@@ -1868,6 +1870,7 @@ function fakeMint(
     }),
     getCtfCondition: async () => ({
       condition_id: CONDITION_ID,
+      registered_at: 0,
       keysets: { NO: COMPLEMENT_KEYSET_ID, YES: RECEIVE_KEYSET_ID },
     }),
     getKeys: async (keysetId?: string) => ({

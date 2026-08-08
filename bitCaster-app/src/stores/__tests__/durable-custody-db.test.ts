@@ -51,7 +51,7 @@ describe("browser durable custody adapter", () => {
     await expect(adapter.ensureScope(reordered, 2)).resolves.toBeUndefined();
   });
 
-  it("does not advance the desired asset for a transaction without proof changes", async () => {
+  it("does not create a backup target for a local-only predecessor", async () => {
     const database = createDatabase();
     const adapter = new BrowserDurableCustodyAdapter(database);
     const scope = walletScope();
@@ -82,17 +82,7 @@ describe("browser durable custody adapter", () => {
       () => undefined,
     );
 
-    expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
-      {
-        scopeId: scope.scopeId,
-        mintUrl: MINT,
-        unit: "msat",
-        assetIdentity: "cashu:ordinary",
-        custodyRevision: "1",
-        activeProofCount: 1,
-        desiredAction: "replace",
-      },
-    ]);
+    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
   });
 
   it("atomically inserts an exact operation and locks its selected proof", async () => {
@@ -239,7 +229,7 @@ describe("browser durable custody adapter", () => {
     expect(await database.custodyProofBackupAuthorities.count()).toBe(1);
   });
 
-  it("advances the desired asset once for the specialized refund admission", async () => {
+  it("does not back up a specialized refund without a deterministic locator", async () => {
     const database = createDatabase();
     const adapter = new BrowserDurableCustodyAdapter(database);
     const scope = walletScope();
@@ -289,15 +279,7 @@ describe("browser durable custody adapter", () => {
       observedAtMs: 28,
     });
 
-    expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
-      {
-        scopeId: scope.scopeId,
-        assetIdentity: "cashu:ordinary",
-        custodyRevision: "2",
-        activeProofCount: 1,
-        desiredAction: "replace",
-      },
-    ]);
+    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
   });
 
   it("rejects foreign and oversized proof option collections before mutation", async () => {

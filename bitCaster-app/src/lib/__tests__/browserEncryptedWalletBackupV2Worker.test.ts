@@ -17,11 +17,14 @@ import {
   type EncryptedWalletBackupV2RequestProof,
 } from "@bitcaster/client-sdk";
 import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
+import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
 import { EncryptedWalletBackupV2HttpTransportError } from "@bitcaster/client-sdk/encryptedWalletBackupV2HttpAdapter";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../../stores/encrypted-wallet-backup-v2-db";
+import { createBrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
+import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import { BitcasterDB } from "../../stores/proof-db";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import {
@@ -33,6 +36,8 @@ const REALM = "backup.example";
 const SIGNING_KEY_ID = "55".repeat(16);
 const SIGNING_PRIVATE_KEY = fromHex("03".repeat(32));
 const SIGNING_PUBLIC_KEY = toHex(schnorr.getPublicKey(SIGNING_PRIVATE_KEY));
+const REGULAR_KEYSET = `01${"33".repeat(32)}`;
+const PUBLIC_KEY = `02${"22".repeat(32)}`;
 const openDatabases: BitcasterDB[] = [];
 let sequence = 0;
 
@@ -45,6 +50,80 @@ afterEach(async () => {
 });
 
 describe("browser V2 backup worker", () => {
+  it("backs up an eligible proof when a transient locked proof has no locator", async () => {
+    const fixture = await workerFixture(0);
+    const locator = {
+      schemaVersion: 1 as const,
+      kind: "nut13" as const,
+      keysetId: REGULAR_KEYSET,
+      counter: 1,
+    };
+    const selectable = createBrowserCustodyProofRow({
+      scopeId: fixture.scopeId,
+      normalizedMint: "https://mint.example",
+      unit: "msat",
+      proof: {
+        id: REGULAR_KEYSET,
+        amount: 1 as never,
+        secret: deriveDurableWalletProofSecret({
+          seed: fixture.input.seed,
+          locator,
+          proofKeysetId: REGULAR_KEYSET,
+          proofAmount: 1,
+        }),
+        C: PUBLIC_KEY,
+      },
+      asset: { kind: "regular" },
+      receivedAtMs: 1,
+    });
+    const transient = {
+      ...createBrowserCustodyProofRow({
+        scopeId: fixture.scopeId,
+        normalizedMint: "https://mint.example",
+        unit: "msat",
+        proof: { id: REGULAR_KEYSET, amount: 1 as never, secret: "11".repeat(32), C: PUBLIC_KEY },
+        asset: { kind: "regular" },
+        receivedAtMs: 1,
+      }),
+      selectability: "locked" as const,
+      reservationOperationId: "order:preparation",
+    };
+    const asset = createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: "https://mint.example",
+      unit: "msat",
+      asset: { kind: "ordinary" },
+    });
+    const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: fixture.scopeId,
+      asset,
+      custodyRevision: 1n,
+      activeProofCount: 1,
+    });
+    await fixture.database.custodyProofs.bulkPut([selectable, transient]);
+    await fixture.database.custodyProofBackupAuthorities.bulkPut([
+      createBrowserProofBackupAuthorityRow(selectable, 2, locator, "receive:1"),
+      createBrowserProofBackupAuthorityRow(transient, 2, null, "order:preparation"),
+    ]);
+    await fixture.database.walletCounterAssociations.put({
+      scopeId: fixture.scopeId,
+      normalizedMint: "https://mint.example",
+      unit: "msat",
+      keysetId: REGULAR_KEYSET,
+      recoveryComplete: true,
+    });
+    await fixture.database.walletCounterCursors.put({
+      scopeId: fixture.scopeId,
+      keysetId: REGULAR_KEYSET,
+      next: 2,
+    });
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put(desired);
+
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({ ...fixture.input, assetSource: undefined }),
+    ).resolves.toEqual({ kind: "committed" });
+    expect(fixture.remote.mutations).toHaveLength(1);
+  });
+
   it("skips an acknowledged first asset and processes later assets one per cycle", async () => {
     const fixture = await workerFixture(2);
 

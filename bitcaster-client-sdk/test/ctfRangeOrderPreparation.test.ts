@@ -28,6 +28,7 @@ import {
   decodeCtfRangeOrderPreparationFromRecord,
   decodePersistedCtfRangeOrderPreparationBytes,
   encodePersistedCtfRangeOrderPreparation,
+  planPersistedCtfRangeOrderAuthorization,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
   type CtfRangeOrderRequest,
 } from '../src/ctfRangeOrderProtocol.ts'
@@ -340,6 +341,18 @@ test('builds, canonically persists, and verifies one exact range preparation rec
       }),
     /exact engine order route/,
   )
+})
+
+test('derives the exact authorization plan from persisted Buy and Sell preparations', () => {
+  for (const side of ['Buy', 'Sell'] as const) {
+    const persisted = persistedPreparation(`pure-plan-${side.toLowerCase()}`, side)
+    const exact = prepareCtfRangeOrderAuthorization({
+      seed: new Uint8Array(64).fill(7),
+      ...withoutPersistedRequest(persisted),
+    })
+
+    assert.deepEqual(planPersistedCtfRangeOrderAuthorization(persisted), exact.plan)
+  }
 })
 
 test('GTD preparation preserves the original order expiry and rejects an expired horizon', () => {

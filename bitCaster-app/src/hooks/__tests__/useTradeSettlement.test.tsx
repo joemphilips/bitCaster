@@ -18,6 +18,10 @@ const { mockFetchOrderStatus } = vi.hoisted(() => ({
   mockFetchOrderStatus: vi.fn(),
 }));
 
+const { mockRecoverBrowserCtfRangeOrders } = vi.hoisted(() => ({
+  mockRecoverBrowserCtfRangeOrders: vi.fn(),
+}));
+
 const {
   mockAddProofs,
   mockGetUnitProofs,
@@ -81,6 +85,10 @@ vi.mock("@/lib/orderStatus", async (importOriginal) => {
     fetchOrderStatus: mockFetchOrderStatus,
   };
 });
+
+vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
+  recoverBrowserCtfRangeOrders: mockRecoverBrowserCtfRangeOrders,
+}));
 
 vi.mock("@bitcaster/swap-protocol/atomicSwap", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@bitcaster/swap-protocol/atomicSwap")>();
@@ -215,7 +223,9 @@ beforeEach(() => {
     remainingAmountSubunits: 100,
     filledAmountSubunits: 0,
     fills: [],
+    activeSettlementGroup: null,
   });
+  mockRecoverBrowserCtfRangeOrders.mockResolvedValue({ recovered: 0, pending: [] });
   mockUseTradeHub.mockImplementation((_enabled, callbacks) => {
     const onTradeCreated = callbacks?.onTradeCreated;
     if (onTradeCreated) {
@@ -322,6 +332,84 @@ describe("useTradeSettlement", () => {
     renderHook(() => useTradeSettlement(true));
 
     await waitFor(() => expect(mockJoinOrder).toHaveBeenCalledWith("cond-YES", "order-pending"));
+  });
+
+  it("runs exact range recovery when the order group replays settlement state", async () => {
+    addPendingTrade({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      clientOrderId: "client-order-pending",
+      submittedAt: Date.now(),
+    });
+    renderHook(() =>
+      useTradeSettlement(true, {
+        mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      }),
+    );
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as
+      | { onSettlementGroupStateChanged?: (delta: unknown) => void }
+      | undefined;
+    expect(callbacks?.onSettlementGroupStateChanged).toBeTypeOf("function");
+    callbacks?.onSettlementGroupStateChanged?.({
+      orderId: "11111111-1111-4111-8111-111111111111",
+      marketId: "cond-YES",
+      settlementGroup: {
+        groupId: "22222222-2222-4222-8222-222222222222",
+        status: "Confirmed",
+        revision: 3,
+        coalescingDeadline: "2026-08-08T00:00:00.000Z",
+        frozenAt: "2026-08-08T00:00:01.000Z",
+      },
+    });
+
+    await waitFor(() =>
+      expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledWith({
+        mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      }),
+    );
+  });
+
+  it("runs exact range recovery when REST status exposes an active settlement group", async () => {
+    vi.useFakeTimers();
+    mockFetchOrderStatus.mockResolvedValue({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      status: "matched",
+      remainingAmountSubunits: 0,
+      filledAmountSubunits: 100,
+      fills: [],
+      activeSettlementGroup: {
+        groupId: "22222222-2222-4222-8222-222222222222",
+        status: "Confirmed",
+        revision: 3,
+        coalescingDeadline: "2026-08-08T00:00:00.000Z",
+        frozenAt: "2026-08-08T00:00:01.000Z",
+      },
+    });
+    addPendingTrade({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      clientOrderId: "client-order-pending",
+      submittedAt: Date.now(),
+    });
+    renderHook(() =>
+      useTradeSettlement(true, {
+        mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      }),
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledWith({
+      mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      mintUrls: ["https://mint.example"],
+    });
   });
 
   it("replays pending order joins during status recovery", async () => {

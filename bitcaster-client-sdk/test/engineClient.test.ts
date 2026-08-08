@@ -527,6 +527,57 @@ test('decodeSubmitOrderResponse rejects foreign fields and malformed nested auth
   )
 })
 
+test('decodeSubmitOrderResponse omits a null legacy trade id from a range-settlement fill', () => {
+  const settlementGroup = {
+    groupId: '44444444-4444-4444-8444-444444444444',
+    status: 'Prepared',
+    revision: 1,
+    coalescingDeadline: '2026-07-29T00:00:10Z',
+    frozenAt: null,
+  }
+  const fill = {
+    id: '55555555-5555-4555-8555-555555555555',
+    makerOrderId: '66666666-6666-4666-8666-666666666666',
+    takerOrderId: '77777777-7777-4777-8777-777777777777',
+    amountSubunits: 10_000,
+    executionPrice: 100,
+    path: 'Mint',
+    status: 'Matched',
+    filledAt: '2026-07-29T00:00:00Z',
+    settlementGroup,
+    tradeId: null,
+    baseAsset: 'sat',
+    divisibility: 10_000,
+    tokenSide: 'Outcome',
+    quotePaymentSubunits: 100,
+    outcomeFaceAmountSubunits: 10_000,
+  }
+  const response = {
+    orderId: '22222222-2222-4222-8222-222222222222',
+    status: 'filled',
+    remainingAmountSubunits: 0,
+    fills: [fill],
+    pendingPubkeySubmissions: [],
+    baseAsset: 'sat',
+    divisibility: 10_000,
+    activeSettlementGroup: settlementGroup,
+  }
+
+  const decoded = decodeSubmitOrderResponse(response)
+  const { tradeId: _legacyTradeId, ...fillWithoutTradeId } = fill
+
+  assert.deepEqual(decoded.fills[0], fillWithoutTradeId)
+  assert.equal('tradeId' in (decoded.fills[0] ?? {}), false)
+  assert.throws(
+    () =>
+      decodeSubmitOrderResponse({
+        ...response,
+        fills: [{ ...fill, tradeId: 'not-a-uuid' }],
+      }),
+    /fill trade id is invalid/,
+  )
+})
+
 test('BitcasterEngineClient.submitOrder rejects an oversized response before decoding', async () => {
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',

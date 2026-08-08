@@ -357,11 +357,7 @@ function conditionalKeysetAuthority(
 ): BrowserCustodyConditionalKeysetAuthority | undefined {
   const conditional = keyset.conditional;
   if (!conditional) return undefined;
-  if (
-    keyset.expiry === undefined ||
-    conditional.registeredAt === undefined ||
-    keyset.id.startsWith("02")
-  ) {
+  if (conditional.registeredAt === undefined || keyset.id.startsWith("02")) {
     throw new Error("Browser conditional keyset authority is incomplete");
   }
   return {
@@ -375,7 +371,7 @@ function conditionalKeysetAuthority(
     outcomeCollection: conditional.outcomeCollection,
     outcomeCollectionId: conditional.outcomeCollectionId,
     registeredAtUnixSeconds: conditional.registeredAt,
-    finalExpiryUnixSeconds: keyset.expiry,
+    finalExpiryUnixSeconds: keyset.expiry === undefined ? null : keyset.expiry,
     curve: "secp256k1",
   };
 }

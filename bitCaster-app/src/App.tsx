@@ -34,6 +34,7 @@ import { installE2EDiagnostics } from "@/lib/e2eDiagnostics";
 import { reconcileAcceptedLocalWalletPayments } from "@/lib/pendingLocalWalletPayments";
 import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
 import { useEncryptedWalletBackupDriver } from "@/hooks/useEncryptedWalletBackupDriver";
+import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
 
 installE2EDiagnostics();
 
@@ -66,7 +67,7 @@ function ShellRoutes() {
   const location = useLocation();
   const { t } = useTranslation();
   const nostrProfile = useSettingsStore((s) => s.nostrProfile);
-  const totalBalance = useBalance();
+  const totalBalance = useBalance(undefined, { baseAsset: DEFAULT_MARKET_BASE_ASSET });
 
   const navigationItems = [
     {
@@ -138,7 +139,10 @@ function AppRoutes() {
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const walletMintUrls = useWalletStore((s) => s.mints.map(({ url }) => url).join("\n"));
   const [nostrSignerReady, setNostrSignerReady] = useState(false);
-  useTradeSettlement(nostrSignerReady && nostrSignerMode !== "none");
+  useTradeSettlement(nostrSignerReady && nostrSignerMode !== "none", {
+    mnemonic: walletMnemonic,
+    mintUrls: walletMintUrls.split("\n").filter(Boolean),
+  });
   useEncryptedWalletBackupDriver(nostrSignerReady && nostrSignerMode !== "none");
 
   useEffect(() => {

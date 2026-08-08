@@ -918,8 +918,57 @@ async function assertProfileIdentityUnchanged(
   } catch {
     throw new ProfileSchemaRefusalError('profile-identity-changed')
   }
-  if (!recordsEqual(before, after)) {
+  assertAdmissibleInventory(after)
+  if (!recordsEqual(profileAuthority(before), profileAuthority(after))) {
     throw new ProfileSchemaRefusalError('profile-identity-changed')
+  }
+}
+
+/**
+ * SQLite commits change file sizes and timestamps. They are not profile
+ * authority. The directory and main database path identities are stable
+ * authority because a replacement changes their device or inode.
+ */
+function profileAuthority(inventory: DaemonProfileInventory): {
+  readonly directory: StableProfilePathIdentity | undefined
+  readonly database: {
+    readonly name: string
+    readonly kind: ProfileArtifactKind
+    readonly identity: StableProfilePathIdentity
+  }
+} {
+  const database = inventory.sqliteDatabase
+  if (database === undefined) {
+    throw new ProfileSchemaRefusalError('profile-identity-changed')
+  }
+  return {
+    directory:
+      inventory.directoryIdentity === undefined
+        ? undefined
+        : stablePathIdentity(inventory.directoryIdentity),
+    database: {
+      name: database.name,
+      kind: database.kind,
+      identity: stablePathIdentity(database.identity),
+    },
+  }
+}
+
+interface StableProfilePathIdentity {
+  readonly device: bigint
+  readonly inode: bigint
+  readonly ownerId: bigint
+  readonly mode: number
+  readonly realPath?: string
+}
+
+function stablePathIdentity(identity: ProfilePathIdentity): StableProfilePathIdentity {
+  return {
+    device: identity.device,
+    inode: identity.inode,
+    ownerId: identity.ownerId,
+    mode: identity.mode,
+    ...(identity.realPath === undefined ? {} : { realPath: identity.realPath }),
   }
 }
 

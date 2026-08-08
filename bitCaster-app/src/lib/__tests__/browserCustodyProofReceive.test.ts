@@ -1,6 +1,7 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
-import { OutputData, type Wallet as CashuWallet } from "@cashu/cashu-ts";
+import { deriveConditionalKeysetId, OutputData, type Wallet as CashuWallet } from "@cashu/cashu-ts";
+import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from "@bitcaster/client-sdk/durableCustodyProofImport";
 import { afterEach, describe, expect, it } from "vitest";
 import { BitcasterDB, type StoredProof } from "../../stores/proof-db";
@@ -10,6 +11,19 @@ const KEYSET_ID = `00${"11".repeat(7)}`;
 const PUBLIC_KEY = `02${"22".repeat(32)}`;
 const MODERN_KEYSET_ID = `01${"33".repeat(32)}`;
 const MODERN_SEED = Uint8Array.from({ length: 64 }, (_, index) => index + 1);
+const CONDITION_ID = "aa".repeat(32);
+const OUTCOME_COLLECTION = "YES";
+const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
+  conditionId: CONDITION_ID,
+  outcomeCollection: OUTCOME_COLLECTION,
+});
+const CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY = deriveConditionalKeysetId({
+  keys: { "1": PUBLIC_KEY },
+  unit: "msat",
+  input_fee_ppk: 100,
+  conditionId: CONDITION_ID,
+  outcomeCollectionId: OUTCOME_COLLECTION_ID,
+});
 
 describe("browser custody proof receive", () => {
   let database: BitcasterDB | null = null;
@@ -171,6 +185,27 @@ describe("browser custody proof receive", () => {
     ).rejects.toThrow(/metadata conflicts/);
     expect(await database.custodyProofs.count()).toBe(0);
   });
+
+  it("admits a conditional keyset with an explicit missing final expiry", async () => {
+    database = new BitcasterDB(`proof-receive-conditional-${crypto.randomUUID()}`);
+    await admitBrowserReceivedProofs({
+      seed: new Uint8Array(32).fill(7),
+      sourceOperationId: "receive:conditional",
+      mintUrl: "https://mint.example",
+      unit: "msat",
+      wallet: conditionalWalletWithoutFinalExpiry(),
+      proofs: [conditionalProof()],
+      derivationAuthority: null,
+      database,
+      lockManager: immediateLockManager(),
+      now: () => 10,
+    });
+
+    expect((await database.custodyConditionalKeysets.toArray())[0]).toMatchObject({
+      keysetId: CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+      finalExpiryUnixSeconds: null,
+    });
+  });
 });
 
 function proof(index: number): StoredProof {
@@ -204,6 +239,15 @@ function legacyProof(counter: number): StoredProof {
   };
 }
 
+function conditionalProof(): StoredProof {
+  return {
+    ...proof(0),
+    id: CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+    conditionId: CONDITION_ID,
+    outcomeCollection: OUTCOME_COLLECTION,
+  };
+}
+
 function wallet(keysetId = KEYSET_ID): CashuWallet {
   return {
     getKeyset: () => ({
@@ -211,6 +255,25 @@ function wallet(keysetId = KEYSET_ID): CashuWallet {
       unit: "sat",
       keys: { 1: PUBLIC_KEY },
       expiry: undefined,
+      verify: () => true,
+    }),
+  } as unknown as CashuWallet;
+}
+
+function conditionalWalletWithoutFinalExpiry(): CashuWallet {
+  return {
+    getKeyset: () => ({
+      id: CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+      unit: "msat",
+      keys: { 1: PUBLIC_KEY },
+      fee: 100,
+      expiry: undefined,
+      conditional: {
+        conditionId: CONDITION_ID,
+        outcomeCollection: OUTCOME_COLLECTION,
+        outcomeCollectionId: OUTCOME_COLLECTION_ID,
+        registeredAt: 1,
+      },
       verify: () => true,
     }),
   } as unknown as CashuWallet;

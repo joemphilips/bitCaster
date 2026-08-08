@@ -70,6 +70,19 @@ test('complete-set conversion binds its deterministic counters to the live custo
       await readDaemonKeysetCounters({ normalizedMint: 'https://mint.example', unit: 'msat' }),
       { [`01${'a'.repeat(64)}`]: 3 },
     )
+    const loopbackMode = createDaemonCompleteSetOutputMode({
+      walletSeedHex: '11'.repeat(64),
+      deps: { getCustodyFence: () => fence },
+      mintUrl: 'http://localhost:8086',
+    })
+    assert.deepEqual(await loopbackMode.counterSource.reserve(`01${'b'.repeat(64)}`, 2), {
+      start: 0,
+      count: 2,
+    })
+    assert.deepEqual(
+      await readDaemonKeysetCounters({ normalizedMint: 'http://localhost:8086', unit: 'msat' }),
+      { [`01${'b'.repeat(64)}`]: 2 },
+    )
     assert.throws(
       () =>
         createDaemonCompleteSetOutputMode({

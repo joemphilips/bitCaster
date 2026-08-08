@@ -100,14 +100,6 @@ const REGULAR_KEYSET_ID = deriveKeysetId(KEYS, {
   expiry: FINAL_EXPIRY,
   versionByte: 1,
 });
-const OUTCOME_KEYSET_ID = deriveConditionalKeysetId({
-  keys: KEYS,
-  unit: "msat",
-  input_fee_ppk: INPUT_FEE_PPK,
-  final_expiry: FINAL_EXPIRY,
-  conditionId: CONDITION_ID,
-  outcomeCollectionId: OUTCOME_COLLECTION_ID,
-});
 const COMPLEMENT_KEYSET_ID = deriveConditionalKeysetId({
   keys: KEYS,
   unit: "msat",
@@ -127,15 +119,17 @@ afterEach(async () => {
 });
 
 describe("browser CTF range order coordinator", () => {
-  it("rejects a conditional keyset without final expiry before mint dispatch", async () => {
-    const preparation = persistedPreparation("range-missing-final-expiry");
-    const unsupported = {
-      ...preparation,
-      receiveKeyset: { ...preparation.receiveKeyset, finalExpiry: null },
-    } as PersistedCtfRangeOrderPreparation;
+  it("accepts a conditional keyset without final expiry", async () => {
+    const preparation = persistedPreparation(
+      "range-missing-final-expiry",
+      "FAK",
+      {},
+      reviewedMintFacts(null),
+    );
+    expect(preparation.expiry).toBe(720);
     let mintCalls = 0;
     const engine = engineMock();
-    const database = createDatabase([storedSourceProof(sourceProof(unsupported.offerKeyset.id))]);
+    const database = createDatabase([storedSourceProof(sourceProof(preparation.offerKeyset.id))]);
     const coordinator = createCoordinator(
       database,
       sourceWallet({
@@ -149,14 +143,14 @@ describe("browser CTF range order coordinator", () => {
     await expect(
       coordinator.prepareAndSubmit({
         seed: SEED,
-        preparation: unsupported,
-        candidates: [sourceProof(unsupported.offerKeyset.id)],
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
       }),
-    ).rejects.toMatchObject({ code: "source-preparation-failed" });
+    ).resolves.toEqual(submitResponse());
 
-    expect(mintCalls).toBe(0);
-    expect(engine.createCalls).toBe(0);
-    expect(await database.proofOperations.count()).toBe(0);
+    expect(mintCalls).toBe(1);
+    expect(engine.createCalls).toBe(1);
+    expect(await database.custodyOperations.count()).toBeGreaterThan(0);
   });
 
   it("durably consolidates one exact fragmented proof page", async () => {
@@ -1815,11 +1809,12 @@ function persistedPreparation(
   operationId: string,
   timeInForce: "FAK" | "FOK" | "GTC" = "FAK",
   order: Partial<Pick<CtfRangeOrderRequest, "side" | "tokenSide">> = {},
+  mintFacts = reviewedMintFacts(),
 ) {
   return buildPersistedCtfRangeOrderPreparation({
     request: { ...rangeRequest(timeInForce), ...order },
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
-    mintFacts: reviewedMintFacts(),
+    mintFacts,
     market: {
       outcomes: [
         { id: "yes-id", label: "YES" },
@@ -1851,7 +1846,18 @@ function rangeRequest(timeInForce: "FAK" | "FOK" | "GTC"): CtfRangeOrderRequest 
   };
 }
 
-function reviewedMintFacts() {
+function reviewedMintFacts(conditionalFinalExpiry: number | null = FINAL_EXPIRY) {
+  const conditionalKeysetId = (outcomeCollectionId: string) =>
+    deriveConditionalKeysetId({
+      keys: KEYS,
+      unit: "msat",
+      input_fee_ppk: INPUT_FEE_PPK,
+      ...(conditionalFinalExpiry === null ? {} : { final_expiry: conditionalFinalExpiry }),
+      conditionId: CONDITION_ID,
+      outcomeCollectionId,
+    });
+  const outcomeKeysetId = conditionalKeysetId(OUTCOME_COLLECTION_ID);
+  const complementKeysetId = conditionalKeysetId(COMPLEMENT_COLLECTION_ID);
   return {
     regular: [
       {
@@ -1867,12 +1873,12 @@ function reviewedMintFacts() {
     conditional: [
       {
         canonicalMintUrl: MINT_URL,
-        id: OUTCOME_KEYSET_ID,
+        id: outcomeKeysetId,
         unit: "msat" as const,
         active: true as const,
         keys: KEYS,
         inputFeePpk: INPUT_FEE_PPK,
-        finalExpiry: FINAL_EXPIRY,
+        finalExpiry: conditionalFinalExpiry,
         conditionId: CONDITION_ID,
         outcomeCollection: OUTCOME_COLLECTION,
         outcomeCollectionId: OUTCOME_COLLECTION_ID,
@@ -1880,12 +1886,12 @@ function reviewedMintFacts() {
       },
       {
         canonicalMintUrl: MINT_URL,
-        id: COMPLEMENT_KEYSET_ID,
+        id: complementKeysetId,
         unit: "msat" as const,
         active: true as const,
         keys: KEYS,
         inputFeePpk: INPUT_FEE_PPK,
-        finalExpiry: FINAL_EXPIRY,
+        finalExpiry: conditionalFinalExpiry,
         conditionId: CONDITION_ID,
         outcomeCollection: COMPLEMENT_COLLECTION,
         outcomeCollectionId: COMPLEMENT_COLLECTION_ID,
@@ -1899,25 +1905,25 @@ function reviewedMintFacts() {
       freshness: "fresh" as const,
       observedAt: 20,
       maxExpirySeconds: FINAL_EXPIRY,
-      conditionKeysetIds: [OUTCOME_KEYSET_ID, COMPLEMENT_KEYSET_ID],
+      conditionKeysetIds: [outcomeKeysetId, complementKeysetId],
       conditionalKeysets: [
         {
-          keysetId: OUTCOME_KEYSET_ID,
+          keysetId: outcomeKeysetId,
           conditionId: CONDITION_ID,
           unit: "msat",
           inputFeePpk: INPUT_FEE_PPK,
-          finalExpiry: FINAL_EXPIRY,
+          finalExpiry: conditionalFinalExpiry,
           outcomeCollectionId: OUTCOME_COLLECTION_ID,
           outcomeCollection: OUTCOME_COLLECTION,
           registeredAt: 10,
           keys: KEYS,
         },
         {
-          keysetId: COMPLEMENT_KEYSET_ID,
+          keysetId: complementKeysetId,
           conditionId: CONDITION_ID,
           unit: "msat",
           inputFeePpk: INPUT_FEE_PPK,
-          finalExpiry: FINAL_EXPIRY,
+          finalExpiry: conditionalFinalExpiry,
           outcomeCollectionId: COMPLEMENT_COLLECTION_ID,
           outcomeCollection: COMPLEMENT_COLLECTION,
           registeredAt: 10,

@@ -66,6 +66,7 @@ test('rejects foreign conditions and missing exact key responses', async () => {
   const foreign = mint()
   foreign.getCtfCondition = async () => ({
     condition_id: 'foreign',
+    registered_at: 0,
     keysets: { YES: CONDITIONAL_KEYSET_ID },
   })
   await assert.rejects(
@@ -83,6 +84,55 @@ test('rejects foreign conditions and missing exact key responses', async () => {
     loadCtfRangeMintKeys({ getKeys: async () => ({ keysets: [] }) }, [REGULAR_KEYSET_ID]),
     /omitted keys/,
   )
+})
+
+test('starts conditional keyset discovery at the condition registration time', async () => {
+  const client = mint()
+  const queries: Array<{ since?: number; limit?: number; active?: boolean }> = []
+  const older = Array.from({ length: 100 }, (_, index) => ({
+    id: index.toString(16).padStart(16, '0'),
+    unit: 'msat',
+    active: true,
+    input_fee_ppk: 100,
+    registered_at: index,
+    condition_id: `older-condition-${index}`,
+    outcome_collection: 'YES',
+    outcome_collection_id: `older-collection-${index}`,
+  }))
+  const target = {
+    id: CONDITIONAL_KEYSET_ID,
+    unit: 'msat',
+    active: true,
+    input_fee_ppk: 100,
+    registered_at: 100,
+    condition_id: CONDITION_ID,
+    outcome_collection: 'YES',
+    outcome_collection_id: 'collection-yes',
+  }
+  client.getCtfCondition = async () => ({
+    condition_id: CONDITION_ID,
+    registered_at: 100,
+    keysets: { YES: CONDITIONAL_KEYSET_ID },
+  })
+  client.getConditionalKeysets = async (query = {}) => {
+    queries.push(query)
+    return {
+      keysets: [...older, target]
+        .filter(({ registered_at }) => registered_at >= (query.since ?? 0))
+        .slice(0, 100),
+    }
+  }
+
+  const metadata = await loadCtfRangeMintMetadata({
+    mint: client,
+    mintUrl: MINT_URL,
+    conditionId: CONDITION_ID,
+    observedAt: 1_000,
+    allowInsecureLoopbackHttp: false,
+  })
+
+  assert.deepEqual(queries, [{ since: 100, limit: 256 }])
+  assert.equal(metadata.conditional[0]?.id, CONDITIONAL_KEYSET_ID)
 })
 
 test('rejects missing or unsafe authenticated settlement limits', async () => {
@@ -187,6 +237,7 @@ function mint(): CtfRangeMintMetadataClient {
     }),
     getCtfCondition: async () => ({
       condition_id: CONDITION_ID,
+      registered_at: 0,
       keysets: { YES: CONDITIONAL_KEYSET_ID },
     }),
     getKeys: async (keysetId?: string) => ({

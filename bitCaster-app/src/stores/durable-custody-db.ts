@@ -1061,7 +1061,9 @@ function verifyBrowserConditionalKeysetAuthority(
       unit: keyset.unit,
       keys: keyset.denominationPublicKeys,
       input_fee_ppk: keyset.inputFeePpk,
-      final_expiry: keyset.finalExpiryUnixSeconds,
+      ...(keyset.finalExpiryUnixSeconds === null
+        ? {}
+        : { final_expiry: keyset.finalExpiryUnixSeconds }),
       conditional: {
         conditionId: keyset.conditionId,
         outcomeCollection: keyset.outcomeCollection,
@@ -1980,7 +1982,9 @@ function desiredAssetProofChange(
 ): import("./browser-encrypted-wallet-backup-v2-desired-asset").BrowserV2DesiredAssetProofChange {
   return {
     beforeProof: change.beforeProof,
+    beforeLocator: change.beforeLocator,
     afterProof: change.afterProof,
+    afterLocator: change.afterLocator,
     payloadChanged: proofPayloadChanged(change),
   };
 }

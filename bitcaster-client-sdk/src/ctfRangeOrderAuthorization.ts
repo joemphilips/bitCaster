@@ -21,6 +21,7 @@ export interface CtfRangeOrderAuthorizationPlan {
   manifest: {
     maxReceive: string
     maxChange: string
+    entryCount: number
   }
   policy: {
     rateN: string
@@ -72,7 +73,11 @@ export function planCtfRangeOrderAuthorization(input: {
     authorizationAmounts: prepared.amounts,
     participantFeeAllocationUpperBound: prepared.feeUpperBound.toString(),
     reservedFeeHeadroom: prepared.reservedHeadroom.toString(),
-    manifest: { maxReceive: faceAmount.toString(), maxChange: prepared.inputAmount.toString() },
+    manifest: {
+      maxReceive: faceAmount.toString(),
+      maxChange: prepared.inputAmount.toString(),
+      entryCount: binaryRangeEntryCount(faceAmount) + binaryRangeEntryCount(prepared.inputAmount),
+    },
     policy,
   }
 }

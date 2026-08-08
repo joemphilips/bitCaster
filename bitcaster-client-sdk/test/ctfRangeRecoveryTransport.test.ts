@@ -123,6 +123,30 @@ test('engine result-by-operation decodes bounded canonical base64 and verifies i
   assert.equal(decoded?.settlementGroupRevision, response.settlementGroup.revision)
 })
 
+test('engine result accepts a deterministic UUIDv8 settlement group id', () => {
+  const operation = createRangeOperation()
+  const requestDigest = 'ef'.repeat(32)
+  const envelopeBytes = new TextEncoder().encode(
+    JSON.stringify({
+      schemaVersion: 1,
+      operationId: operation.operationId,
+      authorizationId: operation.authorizationId,
+      requestDigest,
+      selection: '01',
+      signatures: [],
+    }),
+  )
+  const response = engineResult(operation.operationId, requestDigest, envelopeBytes)
+  const groupId = '20932a51-5e22-8b80-9d49-1b04cd9b1596'
+
+  const decoded = decodeCtfRangeEngineResult(
+    { ...response, settlementGroup: { ...response.settlementGroup, groupId } },
+    { operation, reference: response.reference },
+  )
+
+  assert.equal(decoded.settlementGroupId, groupId)
+})
+
 test('engine result acknowledgement validates the exact versioned response', async () => {
   const operation = createRangeOperation()
   const requestDigest = 'ef'.repeat(32)
@@ -1034,7 +1058,9 @@ function expiryObservation() {
         unit: 'msat',
         inputFeePpk: INPUT_FEE_PPK,
         finalExpiry: FINAL_EXPIRY,
+        outcomeCollection: OUTCOME_COLLECTION,
         outcomeCollectionId: OUTCOME_COLLECTION_ID,
+        registeredAt: 10,
         keys: MINT_KEYS,
       },
     ],

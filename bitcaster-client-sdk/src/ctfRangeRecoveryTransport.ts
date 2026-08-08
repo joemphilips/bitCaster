@@ -68,7 +68,7 @@ const CASHU_REQUEST_TIMEOUT_MS = 10_000
 const CTF_RANGE_MINT_CHECK_RESPONSE_BYTES_MAX = 384 * 1_024
 const CTF_RANGE_MINT_KEYS_RESPONSE_BYTES_MAX = 128 * 1_024
 export const CTF_RANGE_MINT_RESTORE_RESPONSE_BYTES_MAX = 384 * 1_024
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/
 
 export interface CtfRangeEngineResult {
@@ -373,8 +373,9 @@ export function decodeCtfRangeEngineResult(
       settlementGroupId: settlementGroup.groupId,
       settlementGroupRevision: settlementGroup.revision,
     }
-  } catch {
-    throw new Error('CTF range engine result is invalid')
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'unknown validation error'
+    throw new Error(`CTF range engine result is invalid: ${detail}`, { cause: error })
   }
 }
 

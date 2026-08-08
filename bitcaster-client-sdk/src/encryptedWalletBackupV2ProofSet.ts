@@ -55,7 +55,7 @@ export type EncryptedWalletBackupV2ProofSetAsset =
       readonly outcomeLabel: string
       readonly outcomeCollectionId: string
       readonly registeredAt: number
-      readonly finalExpiry: number
+      readonly finalExpiry: number | null
     }
 
 export interface EncryptedWalletBackupV2ProofSetProof {
@@ -461,6 +461,10 @@ function decodeAsset(value: unknown): EncryptedWalletBackupV2ProofSetAsset {
         ])
       )
         break
+      const registeredAt = requireUnixTime(value.registeredAt)
+      const finalExpiry = requireOptionalPositiveUnixTime(value.finalExpiry)
+      if (finalExpiry !== null && finalExpiry <= registeredAt)
+        throw new Error('encrypted backup proof set asset is invalid')
       return Object.freeze({
         kind: 'ctf',
         conditionId: requireLowerHex(value.conditionId, 32, 'condition id'),
@@ -470,8 +474,8 @@ function decodeAsset(value: unknown): EncryptedWalletBackupV2ProofSetAsset {
           32,
           'outcome collection id',
         ),
-        registeredAt: requireUnixTime(value.registeredAt),
-        finalExpiry: requireUnixTime(value.finalExpiry),
+        registeredAt,
+        finalExpiry,
       })
   }
   throw new Error('encrypted backup proof set asset is invalid')
@@ -615,6 +619,13 @@ function requireUnixTime(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
     throw new Error('encrypted backup time is invalid')
   return value
+}
+
+function requireOptionalPositiveUnixTime(value: unknown): number | null {
+  if (value === null) return null
+  const timestamp = requireUnixTime(value)
+  if (timestamp < 1) throw new Error('encrypted backup time is invalid')
+  return timestamp
 }
 
 function counterTuple(value: { mintUrl: string; unit: string; keysetId: string }): string {
