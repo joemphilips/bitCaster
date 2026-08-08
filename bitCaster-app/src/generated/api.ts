@@ -482,6 +482,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/asset-monitoring/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the active wallet asset-monitoring summary */
+        get: operations["getAssetMonitoringSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/asset-monitoring/assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one page of active wallet monitored assets */
+        get: operations["getAssetMonitoringAssets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/asset-monitoring/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read bounded estimated active wallet value history */
+        get: operations["getAssetMonitoringHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settlement-capabilities/policy": {
         parameters: {
             query?: never;
@@ -648,6 +699,81 @@ export interface components {
             /** @description True for the first report and for a wallet switch. */
             startsNewInterval: boolean;
             holdings: components["schemas"]["AssetMonitoringReportedHolding"][];
+        };
+        /** @enum {string} */
+        AssetMonitoringValuationStatus: "valued" | "unvalued";
+        AssetMonitoringAssetResponse: {
+            asset: components["schemas"]["AssetMonitoringAssetReference"];
+            /** Format: int64 */
+            availableSubunits: number;
+            /** Format: int64 */
+            pendingOutgoingSubunits: number;
+            /** Format: int64 */
+            availableValueMsat?: number | null;
+            /** Format: int64 */
+            pendingOutgoingValueMsat?: number | null;
+            /** Format: int64 */
+            estimatedValueMsat?: number | null;
+            valuationStatus: components["schemas"]["AssetMonitoringValuationStatus"];
+            recoveryHint: components["schemas"]["AssetMonitoringRecoveryHint"] | null;
+        };
+        AssetMonitoringSummaryResponse: {
+            /** @enum {string} */
+            collateralUnit: "msat";
+            /** Format: int64 */
+            availableValueMsat: number | null;
+            /** Format: int64 */
+            pendingOutgoingValueMsat: number | null;
+            /** Format: int64 */
+            estimatedTotalValueMsat: number | null;
+            /** Format: int32 */
+            unvaluedAssetCount: number;
+            /** Format: int64 */
+            unvaluedAvailableSubunits: number | null;
+            /** Format: int64 */
+            unvaluedPendingOutgoingSubunits: number | null;
+            /** Format: date-time */
+            asOf?: string | null;
+            /** Format: int64 */
+            intervalRevision?: number | null;
+            coverageBoundary?: string | null;
+            valuationRevision: string;
+            stale: boolean;
+            incomplete: boolean;
+            building: boolean;
+        };
+        AssetMonitoringAssetsResponse: {
+            assets: components["schemas"]["AssetMonitoringAssetResponse"][];
+            nextCursor?: string | null;
+            /** Format: date-time */
+            asOf?: string | null;
+            /** Format: int64 */
+            intervalRevision?: number | null;
+            coverageBoundary?: string | null;
+            valuationRevision: string;
+            stale: boolean;
+            incomplete: boolean;
+            building: boolean;
+        };
+        AssetMonitoringHistoryPointResponse: {
+            /** Format: date-time */
+            asOf: string;
+            /** Format: int64 */
+            estimatedTotalValueMsat: number | null;
+        };
+        AssetMonitoringHistoryResponse: {
+            /** @enum {string} */
+            timeframe: "1D" | "1W" | "1M" | "ALL";
+            points: components["schemas"]["AssetMonitoringHistoryPointResponse"][];
+            /** Format: date-time */
+            asOf?: string | null;
+            /** Format: int64 */
+            intervalRevision?: number | null;
+            coverageBoundary?: string | null;
+            valuationRevision: string;
+            stale: boolean;
+            incomplete: boolean;
+            building: boolean;
         };
         SettlementCapabilityReference: {
             /** Format: uuid */
@@ -1660,9 +1786,14 @@ export interface components {
         MarketId: string;
         /** @description The condition identifier (hex string derived from the oracle announcement). */
         ConditionId: string;
+        /** @description Canonical local durable wallet identifier. */
+        AssetMonitoringWalletId: string;
     };
     requestBodies: never;
-    headers: never;
+    headers: {
+        /** @description The authenticated private response must not be stored. */
+        AssetMonitoringNoStore: "no-store";
+    };
     pathItems: never;
 }
 export type $defs = Record<string, never>;
@@ -2779,6 +2910,186 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getAssetMonitoringSummary: {
+        parameters: {
+            query: {
+                /** @description Canonical local durable wallet identifier. */
+                walletId: components["parameters"]["AssetMonitoringWalletId"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded active-wallet monitoring summary. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetMonitoringSummaryResponse"];
+                };
+            };
+            /** @description Malformed wallet id. */
+            400: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wallet is not active for the authenticated account. */
+            409: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The active event-store provider has no bounded monitoring reader. */
+            503: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    getAssetMonitoringAssets: {
+        parameters: {
+            query: {
+                /** @description Canonical local durable wallet identifier. */
+                walletId: components["parameters"]["AssetMonitoringWalletId"];
+                pageSize?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonically ordered bounded active-wallet asset page. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetMonitoringAssetsResponse"];
+                };
+            };
+            /** @description Malformed wallet id, page size, or cursor. */
+            400: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wallet is not active for the authenticated account. */
+            409: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The active event-store provider has no bounded monitoring reader. */
+            503: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    getAssetMonitoringHistory: {
+        parameters: {
+            query: {
+                /** @description Canonical local durable wallet identifier. */
+                walletId: components["parameters"]["AssetMonitoringWalletId"];
+                timeframe?: "1D" | "1W" | "1M" | "ALL";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description At most 300 deterministic value points from compact active-interval facts. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetMonitoringHistoryResponse"];
+                };
+            };
+            /** @description Malformed wallet id or timeframe. */
+            400: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wallet is not active for the authenticated account. */
+            409: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The active event-store provider has no bounded monitoring reader. */
+            503: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };

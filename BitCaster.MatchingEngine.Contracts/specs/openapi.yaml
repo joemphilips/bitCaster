@@ -951,6 +951,126 @@ paths:
         '429':
           description: Authenticated-subject report rate limit exceeded.
 
+  /api/v1/asset-monitoring/summary:
+    get:
+      operationId: getAssetMonitoringSummary
+      summary: Read the active wallet asset-monitoring summary
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/AssetMonitoringWalletId'
+      responses:
+        '200':
+          description: Bounded active-wallet monitoring summary.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AssetMonitoringNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetMonitoringSummaryResponse'
+        '400':
+          description: Malformed wallet id.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: Wallet is not active for the authenticated account.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+        '503':
+          description: The active event-store provider has no bounded monitoring reader.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+
+  /api/v1/asset-monitoring/assets:
+    get:
+      operationId: getAssetMonitoringAssets
+      summary: Read one page of active wallet monitored assets
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/AssetMonitoringWalletId'
+        - name: pageSize
+          in: query
+          schema: { type: integer, format: int32, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 4096 }
+      responses:
+        '200':
+          description: Canonically ordered bounded active-wallet asset page.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AssetMonitoringNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetMonitoringAssetsResponse'
+        '400':
+          description: Malformed wallet id, page size, or cursor.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: Wallet is not active for the authenticated account.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+        '503':
+          description: The active event-store provider has no bounded monitoring reader.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+
+  /api/v1/asset-monitoring/history:
+    get:
+      operationId: getAssetMonitoringHistory
+      summary: Read bounded estimated active wallet value history
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/AssetMonitoringWalletId'
+        - name: timeframe
+          in: query
+          schema:
+            type: string
+            enum: [1D, 1W, 1M, ALL]
+            default: 1D
+      responses:
+        '200':
+          description: At most 300 deterministic value points from compact active-interval facts.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AssetMonitoringNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetMonitoringHistoryResponse'
+        '400':
+          description: Malformed wallet id or timeframe.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: Wallet is not active for the authenticated account.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+        '503':
+          description: The active event-store provider has no bounded monitoring reader.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+
   /api/v1/settlement-capabilities/policy:
     get:
       operationId: getSettlementCapabilityAdmissionPolicy
@@ -1117,6 +1237,13 @@ components:
         BIP-340 Schnorr signature and extracts the signer's pubkey as the
         authenticated identity. See https://github.com/nostr-protocol/nips/blob/master/98.md
 
+  headers:
+    AssetMonitoringNoStore:
+      description: The authenticated private response must not be stored.
+      schema:
+        type: string
+        enum: [no-store]
+
   parameters:
     MarketId:
       name: marketId
@@ -1142,6 +1269,15 @@ components:
         type: string
       description: >
         The condition identifier (hex string derived from the oracle announcement).
+
+    AssetMonitoringWalletId:
+      name: walletId
+      in: query
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
+      description: Canonical local durable wallet identifier.
 
   schemas:
     Sha256Digest:
@@ -1303,6 +1439,91 @@ components:
           maxItems: 200
           items:
             $ref: '#/components/schemas/AssetMonitoringReportedHolding'
+
+    AssetMonitoringValuationStatus:
+      type: string
+      enum: [valued, unvalued]
+
+    AssetMonitoringAssetResponse:
+      type: object
+      additionalProperties: false
+      required: [asset, availableSubunits, pendingOutgoingSubunits, valuationStatus, recoveryHint]
+      properties:
+        asset: { $ref: '#/components/schemas/AssetMonitoringAssetReference' }
+        availableSubunits: { type: integer, format: int64, minimum: 0 }
+        pendingOutgoingSubunits: { type: integer, format: int64, minimum: 0 }
+        availableValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
+        pendingOutgoingValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
+        estimatedValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
+        valuationStatus: { $ref: '#/components/schemas/AssetMonitoringValuationStatus' }
+        recoveryHint:
+          oneOf:
+            - $ref: '#/components/schemas/AssetMonitoringRecoveryHint'
+            - type: 'null'
+
+    AssetMonitoringSummaryResponse:
+      type: object
+      additionalProperties: false
+      required: [collateralUnit, availableValueMsat, pendingOutgoingValueMsat, estimatedTotalValueMsat, unvaluedAssetCount, unvaluedAvailableSubunits, unvaluedPendingOutgoingSubunits, valuationRevision, stale, incomplete, building]
+      properties:
+        collateralUnit: { type: string, enum: [msat] }
+        availableValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
+        pendingOutgoingValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
+        estimatedTotalValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
+        unvaluedAssetCount: { type: integer, format: int32, minimum: 0 }
+        unvaluedAvailableSubunits: { type: [integer, 'null'], format: int64, minimum: 0 }
+        unvaluedPendingOutgoingSubunits: { type: [integer, 'null'], format: int64, minimum: 0 }
+        asOf: { type: [string, 'null'], format: date-time }
+        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1 }
+        coverageBoundary: { type: [string, 'null'] }
+        valuationRevision: { type: string, minLength: 1 }
+        stale: { type: boolean }
+        incomplete: { type: boolean }
+        building: { type: boolean }
+
+    AssetMonitoringAssetsResponse:
+      type: object
+      additionalProperties: false
+      required: [assets, valuationRevision, stale, incomplete, building]
+      properties:
+        assets:
+          type: array
+          maxItems: 200
+          items: { $ref: '#/components/schemas/AssetMonitoringAssetResponse' }
+        nextCursor: { type: [string, 'null'] }
+        asOf: { type: [string, 'null'], format: date-time }
+        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1 }
+        coverageBoundary: { type: [string, 'null'] }
+        valuationRevision: { type: string, minLength: 1 }
+        stale: { type: boolean }
+        incomplete: { type: boolean }
+        building: { type: boolean }
+
+    AssetMonitoringHistoryPointResponse:
+      type: object
+      additionalProperties: false
+      required: [asOf, estimatedTotalValueMsat]
+      properties:
+        asOf: { type: string, format: date-time }
+        estimatedTotalValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
+
+    AssetMonitoringHistoryResponse:
+      type: object
+      additionalProperties: false
+      required: [timeframe, points, valuationRevision, stale, incomplete, building]
+      properties:
+        timeframe: { type: string, enum: [1D, 1W, 1M, ALL] }
+        points:
+          type: array
+          maxItems: 300
+          items: { $ref: '#/components/schemas/AssetMonitoringHistoryPointResponse' }
+        asOf: { type: [string, 'null'], format: date-time }
+        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1 }
+        coverageBoundary: { type: [string, 'null'] }
+        valuationRevision: { type: string, minLength: 1 }
+        stale: { type: boolean }
+        incomplete: { type: boolean }
+        building: { type: boolean }
 
     SettlementCapabilityReference:
       type: object

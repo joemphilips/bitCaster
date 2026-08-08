@@ -155,6 +155,239 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum AssetMonitoringValuationStatus
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"valued")]
+        Valued = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"unvalued")]
+        Unvalued = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AssetMonitoringAssetResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AssetMonitoringAssetResponse(Asset @asset, long @availableSubunits, long? @availableValueMsat, long? @estimatedValueMsat, long @pendingOutgoingSubunits, long? @pendingOutgoingValueMsat, AssetMonitoringRecoveryHint @recoveryHint, AssetMonitoringValuationStatus @valuationStatus)
+        {
+            this.Asset = @asset;
+            this.AvailableSubunits = @availableSubunits;
+            this.PendingOutgoingSubunits = @pendingOutgoingSubunits;
+            this.AvailableValueMsat = @availableValueMsat;
+            this.PendingOutgoingValueMsat = @pendingOutgoingValueMsat;
+            this.EstimatedValueMsat = @estimatedValueMsat;
+            this.ValuationStatus = @valuationStatus;
+            this.RecoveryHint = @recoveryHint;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("asset")]
+        public Asset Asset { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("availableSubunits")]
+        public long AvailableSubunits { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("pendingOutgoingSubunits")]
+        public long PendingOutgoingSubunits { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("availableValueMsat")]
+        public long? AvailableValueMsat { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("pendingOutgoingValueMsat")]
+        public long? PendingOutgoingValueMsat { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("estimatedValueMsat")]
+        public long? EstimatedValueMsat { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("valuationStatus")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<AssetMonitoringValuationStatus>))]
+        public AssetMonitoringValuationStatus ValuationStatus { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("recoveryHint")]
+        public AssetMonitoringRecoveryHint RecoveryHint { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AssetMonitoringSummaryResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AssetMonitoringSummaryResponse(System.DateTimeOffset? @asOf, long? @availableValueMsat, bool @building, AssetMonitoringSummaryResponseCollateralUnit @collateralUnit, string @coverageBoundary, long? @estimatedTotalValueMsat, bool @incomplete, long? @intervalRevision, long? @pendingOutgoingValueMsat, bool @stale, int @unvaluedAssetCount, long? @unvaluedAvailableSubunits, long? @unvaluedPendingOutgoingSubunits, string @valuationRevision)
+        {
+            this.CollateralUnit = @collateralUnit;
+            this.AvailableValueMsat = @availableValueMsat;
+            this.PendingOutgoingValueMsat = @pendingOutgoingValueMsat;
+            this.EstimatedTotalValueMsat = @estimatedTotalValueMsat;
+            this.UnvaluedAssetCount = @unvaluedAssetCount;
+            this.UnvaluedAvailableSubunits = @unvaluedAvailableSubunits;
+            this.UnvaluedPendingOutgoingSubunits = @unvaluedPendingOutgoingSubunits;
+            this.AsOf = @asOf;
+            this.IntervalRevision = @intervalRevision;
+            this.CoverageBoundary = @coverageBoundary;
+            this.ValuationRevision = @valuationRevision;
+            this.Stale = @stale;
+            this.Incomplete = @incomplete;
+            this.Building = @building;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("collateralUnit")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<AssetMonitoringSummaryResponseCollateralUnit>))]
+        public AssetMonitoringSummaryResponseCollateralUnit CollateralUnit { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("availableValueMsat")]
+        public long? AvailableValueMsat { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("pendingOutgoingValueMsat")]
+        public long? PendingOutgoingValueMsat { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("estimatedTotalValueMsat")]
+        public long? EstimatedTotalValueMsat { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("unvaluedAssetCount")]
+        public int UnvaluedAssetCount { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("unvaluedAvailableSubunits")]
+        public long? UnvaluedAvailableSubunits { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("unvaluedPendingOutgoingSubunits")]
+        public long? UnvaluedPendingOutgoingSubunits { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("asOf")]
+        public System.DateTimeOffset? AsOf { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("intervalRevision")]
+        public long? IntervalRevision { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("coverageBoundary")]
+        public string CoverageBoundary { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("valuationRevision")]
+        public string ValuationRevision { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("stale")]
+        public bool Stale { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("incomplete")]
+        public bool Incomplete { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("building")]
+        public bool Building { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AssetMonitoringAssetsResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AssetMonitoringAssetsResponse(System.DateTimeOffset? @asOf, System.Collections.Generic.List<AssetMonitoringAssetResponse> @assets, bool @building, string @coverageBoundary, bool @incomplete, long? @intervalRevision, string @nextCursor, bool @stale, string @valuationRevision)
+        {
+            this.Assets = @assets;
+            this.NextCursor = @nextCursor;
+            this.AsOf = @asOf;
+            this.IntervalRevision = @intervalRevision;
+            this.CoverageBoundary = @coverageBoundary;
+            this.ValuationRevision = @valuationRevision;
+            this.Stale = @stale;
+            this.Incomplete = @incomplete;
+            this.Building = @building;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("assets")]
+        public System.Collections.Generic.List<AssetMonitoringAssetResponse> Assets { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("nextCursor")]
+        public string NextCursor { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("asOf")]
+        public System.DateTimeOffset? AsOf { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("intervalRevision")]
+        public long? IntervalRevision { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("coverageBoundary")]
+        public string CoverageBoundary { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("valuationRevision")]
+        public string ValuationRevision { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("stale")]
+        public bool Stale { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("incomplete")]
+        public bool Incomplete { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("building")]
+        public bool Building { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AssetMonitoringHistoryPointResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AssetMonitoringHistoryPointResponse(System.DateTimeOffset @asOf, long? @estimatedTotalValueMsat)
+        {
+            this.AsOf = @asOf;
+            this.EstimatedTotalValueMsat = @estimatedTotalValueMsat;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("asOf")]
+        public System.DateTimeOffset AsOf { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("estimatedTotalValueMsat")]
+        public long? EstimatedTotalValueMsat { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AssetMonitoringHistoryResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AssetMonitoringHistoryResponse(System.DateTimeOffset? @asOf, bool @building, string @coverageBoundary, bool @incomplete, long? @intervalRevision, System.Collections.Generic.List<AssetMonitoringHistoryPointResponse> @points, bool @stale, AssetMonitoringHistoryResponseTimeframe @timeframe, string @valuationRevision)
+        {
+            this.Timeframe = @timeframe;
+            this.Points = @points;
+            this.AsOf = @asOf;
+            this.IntervalRevision = @intervalRevision;
+            this.CoverageBoundary = @coverageBoundary;
+            this.ValuationRevision = @valuationRevision;
+            this.Stale = @stale;
+            this.Incomplete = @incomplete;
+            this.Building = @building;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("timeframe")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<AssetMonitoringHistoryResponseTimeframe>))]
+        public AssetMonitoringHistoryResponseTimeframe Timeframe { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("points")]
+        public System.Collections.Generic.List<AssetMonitoringHistoryPointResponse> Points { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("asOf")]
+        public System.DateTimeOffset? AsOf { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("intervalRevision")]
+        public long? IntervalRevision { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("coverageBoundary")]
+        public string CoverageBoundary { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("valuationRevision")]
+        public string ValuationRevision { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("stale")]
+        public bool Stale { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("incomplete")]
+        public bool Incomplete { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("building")]
+        public bool Building { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class SettlementCapabilityReference
     {
         [System.Text.Json.Serialization.JsonConstructor]
@@ -3566,6 +3799,24 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum Timeframe2
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"1D")]
+        _1D = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"1W")]
+        _1W = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"1M")]
+        _1M = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ALL")]
+        ALL = 3,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum AssetMonitoringAssetReferenceKind
     {
 
@@ -3580,6 +3831,33 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"conditional")]
         Conditional = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum AssetMonitoringSummaryResponseCollateralUnit
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"msat")]
+        Msat = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum AssetMonitoringHistoryResponseTimeframe
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"1D")]
+        _1D = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"1W")]
+        _1W = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"1M")]
+        _1M = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ALL")]
+        ALL = 3,
 
     }
 
