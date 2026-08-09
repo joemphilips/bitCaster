@@ -15,6 +15,7 @@ import {
 } from '../src/emergencySeedRecovery.ts'
 import {
   SeedRecoverySqliteStore,
+  type SeedRecoveryJobFinalization,
   type SeedRecoveryObservedProof,
 } from '../src/seedRecoverySqlite.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
@@ -172,7 +173,7 @@ test('recovery continues beyond four pages across explicit invocations', async (
   }
 })
 
-test('recovery rejects a resumed job with a changed mint, unit, or keyset', async () => {
+test('recovery rejects a resumed job with a changed mint or unit', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-binding-'))
   try {
     const fixture = await createRecoveryFixture({
@@ -195,16 +196,290 @@ test('recovery rejects a resumed job with a changed mint, unit, or keyset', asyn
       runRecoveryWithContext(fixture, 'recovery-binding', 'https://mint.example', 'msat'),
       /binding/,
     )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('one recovery job isolates two keyset cursors and aggregates both batches', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-multikeyset-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: '16'.repeat(64),
+      nostrSecretKeyHex: '27'.repeat(32),
+      incarnationId: 'recovery-multikeyset',
+      invocationId: 'recovery-multikeyset',
+    })
+    await runRecovery(fixture, {
+      recoveryId: 'recovery-multikeyset',
+      disclosureAcknowledged: true,
+      batches: [
+        {
+          observation: oneProofObservation(),
+          proofs: [observed(fixture.profile.walletScopeId, 'one', 'UNSPENT', 'selectable')],
+        },
+      ],
+    })
+    const second = await runExplicitEmergencySeedRecovery({
+      recoveryId: 'recovery-multikeyset',
+      walletScopeId: fixture.profile.walletScopeId,
+      mintUrl: 'https://mint.example',
+      unit: 'sat',
+      keysetId: 'keyset-2',
+      disclosureAcknowledged: true,
+      authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
+      store: fixture.store,
+      batches: [
+        {
+          observation: oneProofObservation(),
+          proofs: [
+            observed(fixture.profile.walletScopeId, 'two', 'UNSPENT', 'selectable', 'keyset-2'),
+          ],
+        },
+      ],
+    })
+    assert.deepEqual(
+      { nextCounter: second.nextCounter, revision: second.revision },
+      { nextCounter: 1, revision: 1 },
+    )
+    await withRecoveryDatabase(directory, (database) => {
+      assert.deepEqual(readRecoveryJob(database, 'recovery-multikeyset'), {
+        importedProofs: 2,
+        ignoredSpentProofs: 0,
+        revision: 2,
+        state: 'active',
+      })
+      const cursors = database
+        .prepare(
+          `SELECT keyset_id AS keysetId, next_counter AS nextCounter, revision
+           FROM seed_recovery_keysets WHERE recovery_id = ? ORDER BY keyset_id`,
+        )
+        .all('recovery-multikeyset')
+      assert.deepEqual(
+        cursors.map((cursor) => ({ ...cursor })),
+        [
+          { keysetId: 'keyset-1', nextCounter: 1, revision: 1 },
+          { keysetId: 'keyset-2', nextCounter: 1, revision: 1 },
+        ],
+      )
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('completed children remain extensible until the orchestrator finalizes discovery', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-discovery-finalize-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: '1a'.repeat(64),
+      nostrSecretKeyHex: '2b'.repeat(32),
+      incarnationId: 'recovery-discovery-finalize',
+      invocationId: 'recovery-discovery-finalize',
+    })
+    const binding = {
+      recoveryId: 'recovery-discovery-finalize',
+      walletScopeId: fixture.profile.walletScopeId,
+      mintUrl: 'https://mint.example',
+      unit: 'sat' as const,
+    }
+    await runRecovery(fixture, {
+      recoveryId: binding.recoveryId,
+      disclosureAcknowledged: true,
+      batches: [emptyBatch(0)],
+    })
+    const secondStart = await fixture.store.readRecoveryStart({
+      ...binding,
+      keysetId: 'keyset-2',
+    })
+    assert.equal(secondStart.cursor.state, 'active')
+    await runExplicitEmergencySeedRecovery({
+      ...binding,
+      keysetId: 'keyset-2',
+      disclosureAcknowledged: true,
+      authority: recoveryAuthority(binding.walletScopeId, fixture.fence),
+      store: fixture.store,
+      batches: [emptyBatch(0)],
+    })
+    await fixture.store.finalizeRecoveryJob(finalization(binding, fixture.fence, true))
+    await withRecoveryDatabase(directory, (database) => {
+      assert.deepEqual(readRecoveryJob(database, binding.recoveryId), {
+        importedProofs: 0,
+        ignoredSpentProofs: 0,
+        revision: 3,
+        state: 'completed',
+      })
+      assert.equal(readRowCount(database, 'seed_recovery_keysets'), 2)
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('recovery child access rejects foreign bindings and completed job acquisition', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-child-binding-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: '17'.repeat(64),
+      nostrSecretKeyHex: '28'.repeat(32),
+      incarnationId: 'recovery-child-binding',
+      invocationId: 'recovery-child-binding',
+    })
+    const input = {
+      recoveryId: 'recovery-child-binding',
+      walletScopeId: fixture.profile.walletScopeId,
+      mintUrl: 'https://mint.example',
+      unit: 'sat' as const,
+      keysetId: 'keyset-1',
+    }
+    await fixture.store.readRecoveryStart(input)
     await assert.rejects(
-      runRecoveryWithContext(
-        fixture,
-        'recovery-binding',
-        'https://mint.example',
-        'sat',
-        'keyset-other',
-      ),
+      () => fixture.store.readRecoveryStart({ ...input, walletScopeId: foreignWalletScopeId() }),
+      /foreign/,
+    )
+    await runRecovery(fixture, {
+      recoveryId: input.recoveryId,
+      disclosureAcknowledged: true,
+      batches: [emptyBatch(0)],
+    })
+    await fixture.store.finalizeRecoveryJob(finalization(input, fixture.fence, true))
+    const completed = await fixture.store.readRecoveryStart(input)
+    assert.equal(completed.cursor.state, 'completed')
+    await assert.rejects(
+      () => fixture.store.readRecoveryStart({ ...input, keysetId: 'keyset-2' }),
+      /cannot acquire/,
+    )
+    await assert.rejects(
+      () => fixture.store.readRecoveryStart({ ...input, mintUrl: 'https://other.example' }),
       /binding/,
     )
+    await assert.rejects(
+      () => fixture.store.readRecoveryStart({ ...input, unit: 'msat' }),
+      /binding/,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('fenced finalization requires completed children and explicit empty discovery', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-finalization-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: '18'.repeat(64),
+      nostrSecretKeyHex: '29'.repeat(32),
+      incarnationId: 'recovery-finalization',
+      invocationId: 'recovery-finalization',
+    })
+    const binding = {
+      recoveryId: 'recovery-finalization',
+      walletScopeId: fixture.profile.walletScopeId,
+      mintUrl: 'https://mint.example',
+      unit: 'sat' as const,
+    }
+    await runRecovery(fixture, {
+      recoveryId: binding.recoveryId,
+      disclosureAcknowledged: true,
+      batches: [signedBatch(0)],
+    })
+    await assert.rejects(
+      () => fixture.store.finalizeRecoveryJob(finalization(binding, fixture.fence, true)),
+      /active keysets/,
+    )
+    await runRecovery(fixture, {
+      recoveryId: binding.recoveryId,
+      disclosureAcknowledged: true,
+      batches: [emptyBatch(1)],
+    })
+    await assert.rejects(
+      () =>
+        fixture.store.finalizeRecoveryJob({
+          ...finalization(binding, fixture.fence, true),
+          discoveryCompleted: false,
+        } as unknown as SeedRecoveryJobFinalization),
+      /finalization input is invalid/,
+    )
+    await fixture.store.finalizeRecoveryJob(finalization(binding, fixture.fence, true))
+    await fixture.store.finalizeRecoveryJob(finalization(binding, fixture.fence, true))
+    await assert.rejects(
+      () =>
+        fixture.store.finalizeRecoveryJob({
+          ...finalization(binding, fixture.fence, true),
+          authority: {
+            ...recoveryAuthority(binding.walletScopeId, fixture.fence),
+            incarnationId: 'foreign-finalizer',
+          },
+        }),
+      /authority is foreign/,
+    )
+    await withRecoveryDatabase(directory, (database) => {
+      assert.deepEqual(readRecoveryJob(database, binding.recoveryId), {
+        importedProofs: 0,
+        ignoredSpentProofs: 0,
+        revision: 3,
+        state: 'completed',
+      })
+    })
+    const empty = { ...binding, recoveryId: 'recovery-empty' }
+    await assert.rejects(
+      () =>
+        fixture.store.finalizeRecoveryJob({
+          ...finalization(empty, fixture.fence, true),
+          discoveryCompleted: false,
+        } as unknown as SeedRecoveryJobFinalization),
+      /finalization input is invalid/,
+    )
+    const emptyStore = new SeedRecoverySqliteStore({
+      directory,
+      fence: fixture.fence,
+      invocationId: 'recovery-empty',
+      observedAtMs: 3,
+    })
+    await emptyStore.finalizeRecoveryJob(finalization(empty, fixture.fence, true))
+    await assert.rejects(
+      () =>
+        emptyStore.finalizeRecoveryJob(
+          finalization({ ...empty, mintUrl: 'https://other.example' }, fixture.fence, true),
+        ),
+      /binding/,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('recovery schema rejects an orphan child keyset while foreign keys are enabled', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-schema-fk-'))
+  try {
+    await createRecoveryFixture({
+      directory,
+      walletSeedHex: '19'.repeat(64),
+      nostrSecretKeyHex: '2a'.repeat(32),
+      incarnationId: 'recovery-schema-fk',
+      invocationId: 'recovery-schema-fk',
+    })
+    await withRecoveryDatabase(directory, (database) => {
+      assert.equal(
+        (database.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys,
+        1,
+      )
+      assert.throws(
+        () =>
+          database
+            .prepare(
+              `INSERT INTO seed_recovery_keysets (
+                 recovery_id, keyset_id, next_counter,
+                 trailing_empty_counters, revision, state
+               ) VALUES ('orphan', 'keyset-1', 0, 0, 0, 'active')`,
+            )
+            .run(),
+        /FOREIGN KEY constraint failed/,
+      )
+    })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -500,6 +775,67 @@ test('recovery failures before and after commit preserve atomic recovery semanti
       assert.equal(readRowCount(database, 'custody_proofs'), 1)
       assert.equal(readRowCount(database, 'target_keyset_counters'), 1)
       assert.equal(readRowCount(database, 'seed_recovery_jobs'), 1)
+    })
+    const failedUpdate = new SeedRecoverySqliteStore({
+      directory,
+      fence: fixture.fence,
+      invocationId: 'recovery-failed-update',
+      observedAtMs: 3,
+      injectFault: (phase) => {
+        if (phase === 'before-commit') throw new Error('injected update failure')
+      },
+    })
+    await assert.rejects(
+      () =>
+        runExplicitEmergencySeedRecovery({
+          recoveryId: 'recovery-after-commit',
+          walletScopeId: fixture.profile.walletScopeId,
+          mintUrl: 'https://mint.example',
+          unit: 'sat',
+          keysetId: 'keyset-1',
+          disclosureAcknowledged: true,
+          authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
+          store: failedUpdate,
+          batches: [
+            {
+              observation: {
+                expectedRevision: 1,
+                startCounter: 1,
+                requestedCount: 1,
+                lastCounterWithSignature: 1,
+                scanThroughCounter: 2,
+              },
+              proofs: [
+                observed(fixture.profile.walletScopeId, 'failed-update', 'UNSPENT', 'selectable'),
+              ],
+            },
+          ],
+        }),
+      /update failure/,
+    )
+    await withRecoveryDatabase(directory, (database) => {
+      assert.deepEqual(readRecoveryJob(database, 'recovery-after-commit'), {
+        importedProofs: 1,
+        ignoredSpentProofs: 0,
+        revision: 1,
+        state: 'active',
+      })
+      const cursor = database
+        .prepare(
+          `SELECT next_counter AS nextCounter, revision
+           FROM seed_recovery_keysets WHERE recovery_id = ? AND keyset_id = ?`,
+        )
+        .get('recovery-after-commit', 'keyset-1') as { nextCounter: number; revision: number }
+      assert.equal(cursor.nextCounter, 1)
+      assert.equal(cursor.revision, 1)
+      assert.equal(readRowCount(database, 'custody_proofs'), 1)
+      const counter = database
+        .prepare(
+          `SELECT next_counter AS nextCounter FROM target_keyset_counters
+           WHERE scope_id = ? AND keyset_id = ?`,
+        )
+        .get(fixture.profile.walletScopeId, 'keyset-1') as { nextCounter: number }
+      assert.equal(counter.nextCounter, 1)
     })
     await runExplicitEmergencySeedRecovery({
       recoveryId: 'recovery-after-commit',
@@ -930,6 +1266,7 @@ function observed(
   id: string,
   mintState: unknown,
   selectability: CustodyProofSqliteRow['selectability'],
+  keysetId = 'keyset-1',
 ): SeedRecoveryObservedProof {
   const nut07State =
     mintState === 'UNSPENT' ? 'UNSPENT' : mintState === 'SPENT' ? 'SPENT' : 'PENDING'
@@ -941,7 +1278,7 @@ function observed(
       normalizedMint: 'https://mint.example',
       unit: 'sat',
       proof: {
-        id: 'keyset-1',
+        id: keysetId,
         amount: '1',
         secret: `secret-${id}`,
         C: `signature-${id}`,
@@ -1012,6 +1349,27 @@ function recoveryAuthority(
     observedAtMs: 3,
     leaseExpiresAtMs: fence.leaseExpiresAtMs,
     effectiveClockHighWaterMarkMs: 2,
+  }
+}
+
+function finalization(
+  binding: {
+    readonly recoveryId: string
+    readonly walletScopeId: string
+    readonly mintUrl: string
+    readonly unit: 'sat' | 'msat'
+  },
+  fence: Awaited<ReturnType<typeof claimCustodyScopeLease>>,
+  discoveryCompleted: true,
+) {
+  return {
+    recoveryId: binding.recoveryId,
+    walletScopeId: binding.walletScopeId,
+    mintUrl: binding.mintUrl,
+    unit: binding.unit,
+    disclosureAcknowledged: true as const,
+    discoveryCompleted,
+    authority: recoveryAuthority(binding.walletScopeId, fence),
   }
 }
 

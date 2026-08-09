@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'af1179d4f015c407b66960936e77d674023a2b1163ba6aae9462aaad60d8c66b'
+  '7fbbbd5834904993d65e3c88a74685cab1289c63923b2b2cf862efd69f946128'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -1238,7 +1238,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE TABLE seed_recovery_jobs (
     recovery_id TEXT PRIMARY KEY NOT NULL CHECK (length(recovery_id) BETWEEN 1 AND 1024),
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
-    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
     invocation_id TEXT NOT NULL UNIQUE CHECK (length(invocation_id) BETWEEN 1 AND 1024),
     disclosure_acknowledged INTEGER NOT NULL CHECK (disclosure_acknowledged = 1),
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
@@ -1248,10 +1247,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     imported_proofs INTEGER NOT NULL CHECK (imported_proofs >= 0),
     ignored_spent_proofs INTEGER NOT NULL CHECK (ignored_spent_proofs >= 0),
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
-    UNIQUE (recovery_id, scope_id),
-    UNIQUE (recovery_id, keyset_id),
-    UNIQUE (recovery_id, scope_id, keyset_id)
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms)
   ) STRICT`,
   `CREATE TABLE seed_recovery_keysets (
     recovery_id TEXT NOT NULL,
@@ -1263,8 +1259,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     revision INTEGER NOT NULL CHECK (revision >= 0),
     state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
     PRIMARY KEY (recovery_id, keyset_id),
-    FOREIGN KEY (recovery_id, keyset_id)
-      REFERENCES seed_recovery_jobs(recovery_id, keyset_id) ON DELETE RESTRICT,
+    FOREIGN KEY (recovery_id)
+      REFERENCES seed_recovery_jobs(recovery_id) ON DELETE RESTRICT,
     CHECK (
       state = 'active'
       OR (state = 'completed' AND trailing_empty_counters >= 300)
@@ -1367,6 +1363,17 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     BEFORE DELETE ON target_keyset_counters
     BEGIN
       SELECT RAISE(ABORT, 'keyset counter cannot be deleted');
+    END`,
+  `CREATE TRIGGER seed_recovery_jobs_no_rebind
+    BEFORE UPDATE OF recovery_id, scope_id, invocation_id, disclosure_acknowledged,
+      normalized_mint, unit ON seed_recovery_jobs
+    BEGIN
+      SELECT RAISE(ABORT, 'seed recovery job identity is immutable');
+    END`,
+  `CREATE TRIGGER seed_recovery_keysets_no_rekey
+    BEFORE UPDATE OF recovery_id, keyset_id ON seed_recovery_keysets
+    BEGIN
+      SELECT RAISE(ABORT, 'seed recovery keyset identity is immutable');
     END`,
 ] as const
 

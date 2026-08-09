@@ -11,7 +11,12 @@ import {
   type EmergencySeedRecoveryCasStore,
   type EmergencySeedRecoveryCoCommit,
   type EmergencySeedRecoveryCursor,
+  type EmergencySeedRecoveryLeaseAuthority,
 } from '@bitcaster-market/client-sdk/emergencySeedRecovery'
+import {
+  decodeCanonicalMintOrigin,
+  decodeDurableCustodyScopeId,
+} from '@bitcaster-market/client-sdk/durableCustody'
 import {
   DurableCustodySqliteStore,
   type CustodyProofSqliteRow,
@@ -36,6 +41,16 @@ export interface SeedRecoveryObservedProof {
   readonly proofY: string
   readonly mintState: unknown
   readonly proof: CustodyProofSqliteRow
+}
+
+export interface SeedRecoveryJobFinalization {
+  readonly recoveryId: string
+  readonly walletScopeId: string
+  readonly mintUrl: string
+  readonly unit: 'sat' | 'msat'
+  readonly disclosureAcknowledged: true
+  readonly discoveryCompleted: true
+  readonly authority: EmergencySeedRecoveryLeaseAuthority
 }
 
 export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
@@ -84,6 +99,17 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     this.#observedAtMs = observedAtMs
   }
 
+  async finalizeRecoveryJob(raw: SeedRecoveryJobFinalization): Promise<void> {
+    const input = validateRecoveryJobFinalization(raw)
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      this.#fence,
+      this.#observedAtMs,
+      (database) => this.#finalizeRecoveryJobInTransaction(database, input),
+      { injectFault: this.#injectFault },
+    )
+  }
+
   async readRecoveryStart(input: {
     recoveryId: string
     walletScopeId: string
@@ -116,6 +142,7 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
         if (row !== undefined && job === undefined) {
           throw new Error('seed recovery cursor has no job binding')
         }
+        assertRecoveryChildAccess(job, row)
         const cursor =
           row === undefined
             ? createEmergencySeedRecoveryCursor(input)
@@ -187,6 +214,29 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
       observedAtMs: this.#observedAtMs,
     })
   }
+
+  #finalizeRecoveryJobInTransaction(
+    database: DatabaseSync,
+    input: SeedRecoveryJobFinalization,
+  ): void {
+    assertRecoveryAuthority(input, this.#fence, this.#observedAtMs)
+    assertNoRecoveryOwnerBlocker(database, input.walletScopeId)
+    const job = readRecoveryJob(database, input.recoveryId)
+    assertRecoveryJobBinding(job, input)
+    if (job === undefined) {
+      insertEmptyCompletedRecoveryJob(database, input, this.#invocationId, this.#observedAtMs)
+      return
+    }
+    assertRecoveryJobCanFinalize(database, job, input)
+    if (job.state === 'completed') return
+    const result = database
+      .prepare(
+        `UPDATE seed_recovery_jobs SET state = 'completed', revision = revision + 1,
+           updated_at_ms = ? WHERE recovery_id = ? AND state = 'active' AND revision = ?`,
+      )
+      .run(this.#observedAtMs, input.recoveryId, job.revision)
+    if (result.changes !== 1) throw new Error('seed recovery job finalization CAS lost')
+  }
 }
 
 function recoveryUnit(unit: string): 'sat' | 'msat' {
@@ -203,7 +253,8 @@ type RecoveryJobRow = {
   readonly scopeId: string
   readonly mintUrl: string
   readonly unit: string
-  readonly keysetId: string
+  readonly disclosureAcknowledged: number
+  readonly state: string
   readonly revision: number
 }
 
@@ -238,7 +289,7 @@ function classifyStagedProofs(
 }
 
 function assertRecoveryAuthority(
-  input: EmergencySeedRecoveryCoCommit,
+  input: { readonly authority: EmergencySeedRecoveryLeaseAuthority },
   fence: CustodyScopeFence,
   observedAtMs: number,
 ): void {
@@ -263,7 +314,6 @@ function readRecoveryRows(
     walletScopeId: input.walletScopeId,
     mintUrl: input.expectedCursor.mintUrl,
     unit: input.expectedCursor.unit,
-    keysetId: input.expectedCursor.keysetId,
   })
   const cursor = database
     .prepare(
@@ -274,14 +324,20 @@ function readRecoveryRows(
        WHERE recovery_id = ? AND keyset_id = ?`,
     )
     .get(input.recoveryJobId, input.expectedCursor.keysetId) as RecoveryCursorRow | undefined
+  if (cursor !== undefined && job === undefined) {
+    throw new Error('seed recovery cursor has no job binding')
+  }
+  if (job?.state === 'completed') {
+    throw new Error('seed recovery job is already completed')
+  }
   return { job, cursor }
 }
 
 function readRecoveryJob(database: DatabaseSync, recoveryId: string): RecoveryJobRow | undefined {
   return database
     .prepare(
-      `SELECT scope_id AS scopeId, normalized_mint AS mintUrl, unit, keyset_id AS keysetId,
-          revision
+      `SELECT scope_id AS scopeId, normalized_mint AS mintUrl, unit,
+          disclosure_acknowledged AS disclosureAcknowledged, state, revision
        FROM seed_recovery_jobs WHERE recovery_id = ?`,
     )
     .get(recoveryId) as RecoveryJobRow | undefined
@@ -356,7 +412,6 @@ function assertRecoveryJobBinding(
     readonly walletScopeId: string
     readonly mintUrl: string
     readonly unit: string
-    readonly keysetId: string
   },
 ): void {
   if (
@@ -364,10 +419,122 @@ function assertRecoveryJobBinding(
     (job.scopeId !== input.walletScopeId ||
       job.mintUrl !== input.mintUrl ||
       job.unit !== input.unit ||
-      job.keysetId !== input.keysetId)
+      job.disclosureAcknowledged !== 1)
   ) {
     throw new Error('seed recovery job binding is foreign')
   }
+}
+
+function assertRecoveryChildAccess(
+  job: RecoveryJobRow | undefined,
+  cursor: RecoveryCursorRow | undefined,
+): void {
+  if (job?.state !== 'completed') return
+  if (cursor?.state === 'completed') return
+  throw new Error('completed seed recovery job cannot acquire a keyset')
+}
+
+function validateRecoveryJobFinalization(
+  input: SeedRecoveryJobFinalization,
+): SeedRecoveryJobFinalization {
+  const value = input as unknown as Record<string, unknown>
+  const fields = [
+    'recoveryId',
+    'walletScopeId',
+    'mintUrl',
+    'unit',
+    'disclosureAcknowledged',
+    'discoveryCompleted',
+    'authority',
+  ]
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype ||
+    Object.keys(value).length !== fields.length ||
+    Object.keys(value).some((key) => !fields.includes(key)) ||
+    typeof input.recoveryId !== 'string' ||
+    input.recoveryId.length === 0 ||
+    input.recoveryId.length > 1024 ||
+    input.disclosureAcknowledged !== true ||
+    input.discoveryCompleted !== true ||
+    (input.unit !== 'sat' && input.unit !== 'msat')
+  ) {
+    throw new Error('seed recovery finalization input is invalid')
+  }
+  const authority = input.authority as unknown as Record<string, unknown>
+  const authorityFields = [
+    'walletScopeId',
+    'incarnationId',
+    'fencingEpoch',
+    'observedAtMs',
+    'leaseExpiresAtMs',
+    'effectiveClockHighWaterMarkMs',
+  ]
+  if (
+    typeof authority !== 'object' ||
+    authority === null ||
+    Array.isArray(authority) ||
+    Object.getPrototypeOf(authority) !== Object.prototype ||
+    Object.keys(authority).length !== authorityFields.length ||
+    Object.keys(authority).some((key) => !authorityFields.includes(key))
+  ) {
+    throw new Error('seed recovery finalization authority is invalid')
+  }
+  decodeDurableCustodyScopeId(input.walletScopeId)
+  decodeCanonicalMintOrigin(input.mintUrl)
+  return Object.freeze({
+    recoveryId: input.recoveryId,
+    walletScopeId: input.walletScopeId,
+    mintUrl: input.mintUrl,
+    unit: input.unit,
+    disclosureAcknowledged: true,
+    discoveryCompleted: true,
+    authority: Object.freeze({ ...input.authority }),
+  })
+}
+
+function assertRecoveryJobCanFinalize(
+  database: DatabaseSync,
+  job: RecoveryJobRow,
+  input: SeedRecoveryJobFinalization,
+): void {
+  const active = database
+    .prepare(
+      `SELECT 1 FROM seed_recovery_keysets
+       WHERE recovery_id = ? AND state = 'active' LIMIT 1`,
+    )
+    .get(input.recoveryId)
+  if (active !== undefined) throw new Error('seed recovery job has active keysets')
+  if (job.disclosureAcknowledged !== 1) {
+    throw new Error('seed recovery disclosure acknowledgement is foreign')
+  }
+}
+
+function insertEmptyCompletedRecoveryJob(
+  database: DatabaseSync,
+  input: SeedRecoveryJobFinalization,
+  invocationId: string,
+  observedAtMs: number,
+): void {
+  database
+    .prepare(
+      `INSERT INTO seed_recovery_jobs (
+         recovery_id, scope_id, invocation_id, disclosure_acknowledged,
+         normalized_mint, unit, state, revision, imported_proofs,
+         ignored_spent_proofs, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, 1, ?, ?, 'completed', 1, 0, 0, ?, ?)`,
+    )
+    .run(
+      input.recoveryId,
+      input.walletScopeId,
+      invocationId,
+      input.mintUrl,
+      input.unit,
+      observedAtMs,
+      observedAtMs,
+    )
 }
 
 function assertRecoveryCursorCas(
@@ -516,20 +683,17 @@ function insertRecoveryProgress(
   database
     .prepare(
       `INSERT INTO seed_recovery_jobs (
-         recovery_id, scope_id, keyset_id, invocation_id, disclosure_acknowledged,
+         recovery_id, scope_id, invocation_id, disclosure_acknowledged,
          normalized_mint, unit, state, revision, imported_proofs,
          ignored_spent_proofs, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, 1, ?, ?, 'active', 1, ?, ?, ?, ?)`,
     )
     .run(
       input.recoveryJobId,
       input.walletScopeId,
-      input.expectedCursor.keysetId,
       context.invocationId,
       input.expectedCursor.mintUrl,
       input.expectedCursor.unit,
-      input.nextCursor.state,
-      input.nextCursor.revision,
       imported,
       ignored,
       context.observedAtMs,
@@ -567,8 +731,8 @@ function updateRecoveryProgress(
          updated_at_ms = ? WHERE recovery_id = ? AND scope_id = ? AND revision = ?`,
     )
     .run(
-      input.nextCursor.state,
-      input.nextCursor.revision,
+      'active',
+      existing.job.revision + 1,
       imported,
       ignored,
       context.observedAtMs,

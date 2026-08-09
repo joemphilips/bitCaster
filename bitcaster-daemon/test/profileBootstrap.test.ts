@@ -234,6 +234,19 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     admissionProofs.foreignKeys.some((foreignKey) => foreignKey.table === 'custody_proofs'),
     true,
   )
+  const recoveryJobs = manifest.tables.find((table) => table.name === 'seed_recovery_jobs')!
+  const recoveryKeysets = manifest.tables.find((table) => table.name === 'seed_recovery_keysets')!
+  assert.equal(recoveryJobs.strict, true)
+  assert.equal(recoveryKeysets.strict, true)
+  assert.ok(
+    recoveryKeysets.foreignKeys.some(
+      (foreignKey) =>
+        foreignKey.table === 'seed_recovery_jobs' &&
+        foreignKey.from === 'recovery_id' &&
+        foreignKey.to === 'recovery_id' &&
+        foreignKey.onDelete === 'RESTRICT',
+    ),
+  )
   for (const forbidden of [
     'daemon_trade_sessions',
     'daemon_trade_ciphers',
