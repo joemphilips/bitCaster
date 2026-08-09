@@ -1,12 +1,5 @@
-import Dexie, { type Table, type Transaction } from "dexie";
+import Dexie, { type Table } from "dexie";
 import { Amount, type Proof } from "@cashu/cashu-ts";
-import { decodeDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
-import {
-  createEncryptedWalletBackupV2AssetIdentity,
-  encryptedWalletBackupV2LocalAssetKey,
-  type EncryptedWalletBackupV2ProofSetAsset,
-} from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
-import { verifyDurableWalletConditionalKeyset } from "@bitcaster/client-sdk/recoverableWalletStorage";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   COLLATERAL_UNIT_REGISTRY,
@@ -41,11 +34,6 @@ import type {
   TargetedAssetRecoveryAttemptKey,
   TargetedAssetRecoveryCompletedOutcome,
 } from "@bitcaster/client-sdk/targetedAssetRecovery";
-import { createEncryptedWalletBackupV2DesiredAssetRow } from "./browser-encrypted-wallet-backup-v2-desired-asset";
-import {
-  decodeBrowserCustodyConditionalKeysetRow,
-  decodeBrowserCustodyProofRow,
-} from "./durable-custody-types";
 
 /** The latest authenticated enrollment lifecycle receipt for one wallet. */
 export interface EncryptedWalletBackupDexieEnrollmentResultRow {
@@ -416,284 +404,17 @@ export class BitcasterDB extends Dexie {
         );
       });
     this.version(9).stores({
-      encryptedWalletBackupBuildCursors: "&buildId",
-      encryptedWalletBackupPackControls: "&[buildId+packId]",
-      encryptedWalletBackupPreparedRecords: "&[buildId+recordId]",
-      encryptedWalletBackupPackBindings: "&[buildId+packId+recordId], &[buildId+packId+ordinal]",
-      encryptedWalletBackupStagedObjects: "&[buildId+packId]",
-    });
-    this.version(10).stores({
-      encryptedWalletBackupPreparedRecords: "&[buildId+recordId], recordId",
-      encryptedWalletBackupPackBindings:
-        "&[buildId+packId+recordId], &[buildId+packId+ordinal], [realm+vaultId+snapshotId+snapshotRevision+recordId]",
-      encryptedWalletBackupStagedObjects:
-        "&[buildId+packId], [realm+vaultId+generation+objectId+digest]",
-      encryptedWalletBackupSnapshotControls:
-        "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision]",
-      encryptedWalletBackupPreparedSources:
-        "&[realm+vaultId+recordKindCode+recordId+revision+bodyReference], &[realm+vaultId+recordKindCode+commitment+revision+bodyReference], [realm+vaultId+recordKindCode+recordId]",
-      encryptedWalletBackupSnapshotPins:
-        "&[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+recordId], &[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+commitment], [realm+vaultId+snapshotId+snapshotRevision+recordKindCode+recordId+commitment]",
-      encryptedWalletBackupManifestPassAResults:
-        "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision]",
-      encryptedWalletBackupManifestCursors:
-        "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision]",
-      encryptedWalletBackupManifestPages:
-        "&[realm+vaultId+snapshotId+snapshotRevision+pageIndex], &[realm+vaultId+generation+objectId+digest], [realm+vaultId+snapshotId+snapshotRevision+pageIndex+objectId]",
-      encryptedWalletBackupUploadAttempts: "&attemptId, &[realm+vaultId]",
-      encryptedWalletBackupUploadCursors: "&attemptId",
-      encryptedWalletBackupUploadBatches: "&batchId, attemptId",
-      encryptedWalletBackupUploadCasAttempts: "&attemptId, &uploadAttemptId",
-    });
-    this.version(11).stores({
-      encryptedWalletBackupEnrollmentResults: "&[realm+vaultId]",
-    });
-    this.version(12).stores({
-      encryptedWalletBackupRetrySchedulers: "&[scopeId+realm+vaultId]",
-    });
-    this.version(13)
-      .stores({
-        custodyProofBackupAuthorities:
-          "&[scopeId+proofId], [scopeId+backupState+proofId], [scopeId+proofState+proofId], &backupRecordId, [scopeId+admissionOperationId]",
-        custodyConditionalKeysets: "&[scopeId+normalizedMint+unit+keysetId]",
-      })
-      .upgrade(async (transaction) => {
-        await Promise.all(
-          [
-            "proofs",
-            "proofOperations",
-            "ctfRangePreparations",
-            "ctfRangePreparationSources",
-            "ctfRangePreparationConsolidations",
-            "ctfRangeMessages",
-            "custodyScopes",
-            "custodyOperations",
-            "custodyArtifacts",
-            "custodyProofs",
-            "custodyReservations",
-            "custodyActiveWork",
-            "custodyProofBackupAuthorities",
-            "custodyConditionalKeysets",
-            "encryptedWalletBackupBuildCursors",
-            "encryptedWalletBackupPackControls",
-            "encryptedWalletBackupPreparedRecords",
-            "encryptedWalletBackupPackBindings",
-            "encryptedWalletBackupStagedObjects",
-            "encryptedWalletBackupSnapshotControls",
-            "encryptedWalletBackupPreparedSources",
-            "encryptedWalletBackupSnapshotPins",
-            "encryptedWalletBackupManifestPassAResults",
-            "encryptedWalletBackupManifestCursors",
-            "encryptedWalletBackupManifestPages",
-            "encryptedWalletBackupUploadAttempts",
-            "encryptedWalletBackupUploadCursors",
-            "encryptedWalletBackupUploadBatches",
-            "encryptedWalletBackupUploadCasAttempts",
-            "encryptedWalletBackupEnrollmentResults",
-            "encryptedWalletBackupRetrySchedulers",
-          ].map((tableName) => transaction.table(tableName).clear()),
-        );
-      });
-    this.version(14)
-      .stores({
-        custodyProofBackupAuthorities:
-          "&[scopeId+proofId], [scopeId+backupState+proofId], [scopeId+proofState+proofId], &backupRecordId, [scopeId+admissionOperationId]",
-      })
-      .upgrade(async (transaction) => {
-        await Promise.all(
-          [
-            "custodyScopes",
-            "custodyOperations",
-            "custodyArtifacts",
-            "custodyProofs",
-            "custodyReservations",
-            "custodyActiveWork",
-            "custodyProofBackupAuthorities",
-            "custodyConditionalKeysets",
-            "encryptedWalletBackupBuildCursors",
-            "encryptedWalletBackupPackControls",
-            "encryptedWalletBackupPreparedRecords",
-            "encryptedWalletBackupPackBindings",
-            "encryptedWalletBackupStagedObjects",
-            "encryptedWalletBackupSnapshotControls",
-            "encryptedWalletBackupPreparedSources",
-            "encryptedWalletBackupSnapshotPins",
-            "encryptedWalletBackupManifestPassAResults",
-            "encryptedWalletBackupManifestCursors",
-            "encryptedWalletBackupManifestPages",
-            "encryptedWalletBackupUploadAttempts",
-            "encryptedWalletBackupUploadCursors",
-            "encryptedWalletBackupUploadBatches",
-            "encryptedWalletBackupUploadCasAttempts",
-            "encryptedWalletBackupEnrollmentResults",
-            "encryptedWalletBackupRetrySchedulers",
-          ].map((tableName) => transaction.table(tableName).clear()),
-        );
-      });
-    this.version(15)
-      .stores({
-        encryptedWalletBackupSnapshotControls:
-          "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision], [realm+vaultId+generation+snapshotId+snapshotRevision]",
-        encryptedWalletBackupSnapshotPins:
-          "&[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+recordId], &[realm+vaultId+snapshotId+snapshotRevision+recordKindCode+commitment], [realm+vaultId+snapshotId+snapshotRevision+recordKindCode+recordId+commitment], [realm+vaultId+generation+snapshotId+snapshotRevision+recordKindCode+recordId+commitment], [realm+vaultId+recordKindCode+recordId+sourceRevision+sourceBodyReference]",
-        encryptedWalletBackupPreparedSources:
-          "&[realm+vaultId+recordKindCode+recordId+revision+bodyReference], &[realm+vaultId+recordKindCode+commitment+revision+bodyReference], [realm+vaultId+recordKindCode+recordId], [realm+vaultId+generation+snapshotId+snapshotRevision+recordKindCode+recordId+revision+bodyReference]",
-        encryptedWalletBackupManifestPassAResults:
-          "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision], [realm+vaultId+generation+snapshotId+snapshotRevision]",
-        encryptedWalletBackupManifestCursors:
-          "&scopeKey, [realm+vaultId+snapshotId+snapshotRevision], [realm+vaultId+generation+snapshotId+snapshotRevision]",
-        encryptedWalletBackupManifestPages:
-          "&[realm+vaultId+snapshotId+snapshotRevision+pageIndex], &[realm+vaultId+generation+objectId+digest], [realm+vaultId+snapshotId+snapshotRevision+pageIndex+objectId], [realm+vaultId+generation+snapshotId+snapshotRevision+pageIndex]",
-        encryptedWalletBackupSnapshotCleanupJobs: "&[realm+vaultId]",
-      })
-      .upgrade(async (transaction) => {
-        await Promise.all(
-          [
-            "encryptedWalletBackupBuildCursors",
-            "encryptedWalletBackupPackControls",
-            "encryptedWalletBackupPreparedRecords",
-            "encryptedWalletBackupPackBindings",
-            "encryptedWalletBackupStagedObjects",
-            "encryptedWalletBackupSnapshotControls",
-            "encryptedWalletBackupPreparedSources",
-            "encryptedWalletBackupSnapshotPins",
-            "encryptedWalletBackupManifestPassAResults",
-            "encryptedWalletBackupManifestCursors",
-            "encryptedWalletBackupManifestPages",
-            "encryptedWalletBackupUploadAttempts",
-            "encryptedWalletBackupUploadCursors",
-            "encryptedWalletBackupUploadBatches",
-            "encryptedWalletBackupUploadCasAttempts",
-            "encryptedWalletBackupEnrollmentResults",
-            "encryptedWalletBackupRetrySchedulers",
-            "encryptedWalletBackupSnapshotCleanupJobs",
-          ].map((tableName) => transaction.table(tableName).clear()),
-        );
-      });
-    this.version(16)
-      .stores({
-        encryptedWalletBackupRestoreProofs: "&[scopeId+proofId]",
-      })
-      .upgrade(async (transaction) => {
-        await Promise.all(
-          [
-            "proofs",
-            "proofOperations",
-            "ctfRangePreparations",
-            "ctfRangePreparationSources",
-            "ctfRangePreparationConsolidations",
-            "ctfRangeMessages",
-            "custodyScopes",
-            "custodyOperations",
-            "custodyArtifacts",
-            "custodyProofs",
-            "custodyReservations",
-            "custodyActiveWork",
-            "custodyProofBackupAuthorities",
-            "custodyConditionalKeysets",
-            "encryptedWalletBackupBuildCursors",
-            "encryptedWalletBackupPackControls",
-            "encryptedWalletBackupPreparedRecords",
-            "encryptedWalletBackupPackBindings",
-            "encryptedWalletBackupStagedObjects",
-            "encryptedWalletBackupSnapshotControls",
-            "encryptedWalletBackupPreparedSources",
-            "encryptedWalletBackupSnapshotPins",
-            "encryptedWalletBackupManifestPassAResults",
-            "encryptedWalletBackupManifestCursors",
-            "encryptedWalletBackupManifestPages",
-            "encryptedWalletBackupUploadAttempts",
-            "encryptedWalletBackupUploadCursors",
-            "encryptedWalletBackupUploadBatches",
-            "encryptedWalletBackupUploadCasAttempts",
-            "encryptedWalletBackupEnrollmentResults",
-            "encryptedWalletBackupRetrySchedulers",
-            "encryptedWalletBackupSnapshotCleanupJobs",
-            "encryptedWalletBackupRestoreProofs",
-          ].map((tableName) => transaction.table(tableName).clear()),
-        );
-      });
-    this.version(17).stores({
-      encryptedWalletBackupV2DirtyRevisions: "&scopeId",
-      encryptedWalletBackupV2PreparedMutations: "&[scopeId+realm+vaultId+enrollmentEpoch]",
-      encryptedWalletBackupV2AcceptedHeads: "&[scopeId+realm+vaultId+enrollmentEpoch]",
-      encryptedWalletBackupV2ActiveDescriptors:
-        "&[scopeId+realm+vaultId+enrollmentEpoch+bundleId], [scopeId+realm+vaultId+enrollmentEpoch]",
-    });
-    this.version(18).stores({
+      custodyProofs:
+        "&[scopeId+proofId], [scopeId+selectability], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]",
+      custodyProofBackupAuthorities:
+        "&[scopeId+proofId], [scopeId+backupState+proofId], [scopeId+proofState+proofId], &backupRecordId, [scopeId+admissionOperationId]",
+      custodyConditionalKeysets:
+        "&[scopeId+normalizedMint+unit+keysetId], [scopeId+normalizedMint+unit+conditionId+outcomeCollectionId]",
       walletCounterCursors: "&[scopeId+keysetId], scopeId",
       walletCounterAssociations:
         "&[scopeId+normalizedMint+unit+keysetId], scopeId, [scopeId+keysetId], [scopeId+normalizedMint+unit]",
-    });
-    this.version(19)
-      .stores({
-        encryptedWalletBackupV2DirtyRevisions: null,
-        custodyProofs:
-          "&[scopeId+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability]",
-        encryptedWalletBackupV2DesiredAssets:
-          "&[scopeId+localAssetKey], [scopeId+mintUrl+unit+assetIdentity], [scopeId+localAssetKey], [scopeId+syncState+localAssetKey]",
-      })
-      .upgrade(async (transaction) => {
-        await seedEncryptedWalletBackupV2DesiredAssets(transaction);
-      });
-    this.version(20)
-      .stores({
-        custodyProofs:
-          "&[scopeId+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]",
-        custodyConditionalKeysets:
-          "&[scopeId+normalizedMint+unit+keysetId], [scopeId+normalizedMint+unit+conditionId+outcomeCollectionId]",
-        encryptedWalletBackupV2PreparedMutations: "&[scopeId+realm+vaultId+enrollmentEpoch]",
-        encryptedWalletBackupV2DesiredAssets:
-          "&[scopeId+localAssetKey], [scopeId+mintUrl+unit+assetIdentity], [scopeId+localAssetKey], [scopeId+syncState+localAssetKey]",
-        encryptedWalletBackupV2AcceptedHeads: "&[scopeId+realm+vaultId+enrollmentEpoch]",
-        encryptedWalletBackupV2AssetReceipts:
-          "&[scopeId+realm+vaultId+enrollmentEpoch+localAssetKey], [scopeId+realm+vaultId+enrollmentEpoch]",
-        encryptedWalletBackupV2Receipts: null,
-        encryptedWalletBackupV2ActiveDescriptors:
-          "&[scopeId+realm+vaultId+enrollmentEpoch+bundleId], [scopeId+realm+vaultId+enrollmentEpoch]",
-      })
-      .upgrade(async (transaction) => {
-        for (const name of [
-          "encryptedWalletBackupV2DesiredAssets",
-          "encryptedWalletBackupV2PreparedMutations",
-          "encryptedWalletBackupV2AcceptedHeads",
-          "encryptedWalletBackupV2AssetReceipts",
-          "encryptedWalletBackupV2ActiveDescriptors",
-        ]) {
-          await transaction.table(name).clear();
-        }
-        await seedEncryptedWalletBackupV2DesiredAssets(transaction);
-      });
-    this.version(21).stores({
-      encryptedWalletBackupBuildCursors: null,
-      encryptedWalletBackupPackControls: null,
-      encryptedWalletBackupPreparedRecords: null,
-      encryptedWalletBackupPackBindings: null,
-      encryptedWalletBackupStagedObjects: null,
-      encryptedWalletBackupSnapshotControls: null,
-      encryptedWalletBackupPreparedSources: null,
-      encryptedWalletBackupSnapshotPins: null,
-      encryptedWalletBackupManifestPassAResults: null,
-      encryptedWalletBackupManifestCursors: null,
-      encryptedWalletBackupManifestPages: null,
-      encryptedWalletBackupUploadAttempts: null,
-      encryptedWalletBackupUploadCursors: null,
-      encryptedWalletBackupUploadBatches: null,
-      encryptedWalletBackupUploadCasAttempts: null,
-      encryptedWalletBackupSnapshotCleanupJobs: null,
-      encryptedWalletBackupRestoreProofs: null,
-    });
-    this.version(22).stores({
-      custodyProofs:
-        "&[scopeId+proofId], [scopeId+selectability], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]",
-    });
-    this.version(23).stores({
-      encryptedWalletBackupEnrollmentResults: null,
-      encryptedWalletBackupRetrySchedulers: null,
-      encryptedWalletBackupV2PreparedMutations: null,
-      encryptedWalletBackupV2AcceptedHeads: null,
-      encryptedWalletBackupV2AssetReceipts: null,
-      encryptedWalletBackupV2ActiveDescriptors: null,
+      encryptedWalletBackupV2DesiredAssets:
+        "&[scopeId+localAssetKey], [scopeId+mintUrl+unit+assetIdentity], [scopeId+localAssetKey], [scopeId+syncState+localAssetKey]",
       encryptedWalletBackupWalletEnrollmentResults: "&[realm+walletId]",
       encryptedWalletBackupWalletRetrySchedulers: "&[scopeId+realm+walletId]",
       encryptedWalletBackupV2WalletPreparedMutations: "&[scopeId+realm+walletId+enrollmentEpoch]",
@@ -702,8 +423,6 @@ export class BitcasterDB extends Dexie {
         "&[scopeId+realm+walletId+enrollmentEpoch+localAssetKey], [scopeId+realm+walletId+enrollmentEpoch]",
       encryptedWalletBackupV2WalletActiveDescriptors:
         "&[scopeId+realm+walletId+enrollmentEpoch+bundleId], [scopeId+realm+walletId+enrollmentEpoch]",
-    });
-    this.version(24).stores({
       targetedAssetRecoveryAttempts:
         "&[scopeId+assetLocator+backupHeadVersion+monitoringFactVersion], scopeId, [scopeId+completedAtUnixMilliseconds+assetLocator+backupHeadVersion+monitoringFactVersion]",
     });
@@ -727,114 +446,6 @@ export class BitcasterDB extends Dexie {
     );
     this.targetedAssetRecoveryAttempts = this.table("targetedAssetRecoveryAttempts");
   }
-}
-
-async function seedEncryptedWalletBackupV2DesiredAssets(transaction: Transaction): Promise<void> {
-  const rawProofs = await transaction.table("custodyProofs").toArray();
-  const rows = new Map<string, EncryptedWalletBackupV2DesiredAssetRow>();
-  for (const rawProof of rawProofs) {
-    const proof = decodeBrowserCustodyProofRow(rawProof);
-    if (proof.selectability === "spent") continue;
-    const asset = await migrationAssetIdentity(transaction, proof);
-    const existing = rows.get(
-      JSON.stringify([proof.scopeId, encryptedWalletBackupV2LocalAssetKey(asset)]),
-    );
-    const row = createEncryptedWalletBackupV2DesiredAssetRow({
-      scopeId: proof.scopeId,
-      asset,
-      custodyRevision: 1n,
-      activeProofCount: (existing?.activeProofCount ?? 0) + 1,
-    });
-    rows.set(JSON.stringify([row.scopeId, row.localAssetKey]), row);
-  }
-  if (rows.size > 0) {
-    await transaction.table("encryptedWalletBackupV2DesiredAssets").bulkPut([...rows.values()]);
-  }
-}
-
-async function migrationAssetIdentity(
-  transaction: Transaction,
-  proof: import("./durable-custody-types").BrowserCustodyProofRow,
-) {
-  const scopeId = decodeDurableCustodyScopeId(proof.scopeId);
-  if (typeof proof.normalizedMint !== "string" || typeof proof.unit !== "string") {
-    throw new Error("browser V2 desired asset migration proof is invalid");
-  }
-  if (proof.assetKind === "regular") {
-    if (proof.conditionId !== null || proof.outcomeCollection !== null) {
-      throw new Error("browser V2 desired asset migration ordinary proof is invalid");
-    }
-    return createEncryptedWalletBackupV2AssetIdentity({
-      mintUrl: proof.normalizedMint,
-      unit: proof.unit,
-      asset: { kind: "ordinary" },
-    });
-  }
-  if (
-    proof.assetKind !== "conditional" ||
-    typeof proof.keysetId !== "string" ||
-    typeof proof.conditionId !== "string" ||
-    typeof proof.outcomeCollection !== "string"
-  ) {
-    throw new Error("browser V2 desired asset migration proof is invalid");
-  }
-  const rawKeyset = await transaction
-    .table("custodyConditionalKeysets")
-    .get([scopeId, proof.normalizedMint, proof.unit, proof.keysetId]);
-  if (rawKeyset === undefined) {
-    throw new Error("browser V2 desired asset migration conditional authority is missing");
-  }
-  const keyset = decodeBrowserCustodyConditionalKeysetRow(rawKeyset);
-  if (
-    keyset.scopeId !== scopeId ||
-    keyset.normalizedMint !== proof.normalizedMint ||
-    keyset.unit !== proof.unit ||
-    keyset.keysetId !== proof.keysetId ||
-    keyset.conditionId !== proof.conditionId ||
-    keyset.outcomeCollection !== proof.outcomeCollection
-  ) {
-    throw new Error("browser V2 desired asset migration conditional authority is foreign");
-  }
-  verifyDurableWalletConditionalKeyset({
-    mint: keyset.normalizedMint,
-    unit: keyset.unit,
-    outcomeLabel: keyset.outcomeCollection,
-    registeredAtUnixSeconds: keyset.registeredAtUnixSeconds,
-    mintKeys: {
-      id: keyset.keysetId,
-      unit: keyset.unit,
-      keys: keyset.denominationPublicKeys,
-      input_fee_ppk: keyset.inputFeePpk,
-      ...(keyset.finalExpiryUnixSeconds === null
-        ? {}
-        : { final_expiry: keyset.finalExpiryUnixSeconds }),
-      conditional: {
-        conditionId: keyset.conditionId,
-        outcomeCollection: keyset.outcomeCollection,
-        outcomeCollectionId: keyset.outcomeCollectionId,
-        registeredAt: keyset.registeredAtUnixSeconds,
-      },
-    },
-    conditionalMetadata: {
-      conditionId: keyset.conditionId,
-      outcomeCollection: keyset.outcomeCollection,
-      outcomeCollectionId: keyset.outcomeCollectionId,
-      registeredAt: keyset.registeredAtUnixSeconds,
-    },
-  });
-  const asset: EncryptedWalletBackupV2ProofSetAsset = {
-    kind: "ctf",
-    conditionId: keyset.conditionId,
-    outcomeLabel: keyset.outcomeCollection,
-    outcomeCollectionId: keyset.outcomeCollectionId,
-    registeredAt: keyset.registeredAtUnixSeconds,
-    finalExpiry: keyset.finalExpiryUnixSeconds,
-  };
-  return createEncryptedWalletBackupV2AssetIdentity({
-    mintUrl: keyset.normalizedMint,
-    unit: keyset.unit,
-    asset,
-  });
 }
 
 export let db = new BitcasterDB("bitcaster-wallet-uninitialized");
