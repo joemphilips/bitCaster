@@ -6,7 +6,7 @@ export interface Toast {
   id: string;
   message: string;
   type: ToastType;
-  /** Auto-dismiss delay in ms. Defaults to 4000 for success/info, 6000 for error. */
+  /** Auto-dismiss delay in ms. Defaults to 4000 for success and info. Errors ignore this value. */
   duration?: number;
 }
 
@@ -19,12 +19,30 @@ interface ToastState {
 const MAX_TOASTS = 10;
 let nextId = 0;
 
+function isTransient(toast: Toast): boolean {
+  return toast.type !== "error";
+}
+
+function removeOverflowingTransientToasts(toasts: Toast[], addedType: ToastType): Toast[] {
+  const maxExistingTransients = addedType === "error" ? MAX_TOASTS : MAX_TOASTS - 1;
+  const excessCount = toasts.filter(isTransient).length - maxExistingTransients;
+  if (excessCount <= 0) return toasts;
+
+  const removedIds = new Set(
+    toasts
+      .filter(isTransient)
+      .slice(0, excessCount)
+      .map((toast) => toast.id),
+  );
+  return toasts.filter((toast) => !removedIds.has(toast.id));
+}
+
 export const useToastStore = create<ToastState>()((set) => ({
   toasts: [],
   addToast: (toast) => {
     const id = `toast-${Date.now()}-${nextId++}`;
     set((s) => ({
-      toasts: [...s.toasts, { ...toast, id }].slice(-MAX_TOASTS),
+      toasts: [...removeOverflowingTransientToasts(s.toasts, toast.type), { ...toast, id }],
     }));
   },
   removeToast: (id) => {

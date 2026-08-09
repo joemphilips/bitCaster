@@ -2,10 +2,9 @@ import { useEffect, useState } from "react";
 import { Check, AlertCircle, Info, X } from "lucide-react";
 import { useToastStore, type Toast, type ToastType } from "@/stores/toast";
 
-const DEFAULT_DURATION: Record<ToastType, number> = {
+const DEFAULT_DURATION: Record<Exclude<ToastType, "error">, number> = {
   success: 4000,
   info: 4000,
-  error: 6000,
 };
 
 const TYPE_STYLES: Record<ToastType, { border: string; icon: string; bg: string }> = {
@@ -42,6 +41,8 @@ function ToastItem({ toast }: { toast: Toast }) {
   }, []);
 
   useEffect(() => {
+    if (toast.type === "error") return;
+
     const duration = toast.duration ?? DEFAULT_DURATION[toast.type];
     const timer = setTimeout(() => removeToast(toast.id), duration);
     return () => clearTimeout(timer);
@@ -89,7 +90,7 @@ export function ToastContainer() {
       role="status"
       aria-live="polite"
       aria-label="Notifications"
-      className="fixed z-50 pointer-events-auto flex flex-col gap-2 top-16 left-3 right-3 sm:top-auto sm:left-auto sm:bottom-4 sm:right-4 sm:w-80"
+      className="fixed z-50 pointer-events-auto flex max-h-[calc(100dvh-5rem)] flex-col gap-2 overflow-y-auto top-16 left-3 right-3 sm:top-auto sm:left-auto sm:bottom-4 sm:right-4 sm:w-80"
     >
       {toasts.map((t) => (
         <ToastItem key={t.id} toast={t} />
