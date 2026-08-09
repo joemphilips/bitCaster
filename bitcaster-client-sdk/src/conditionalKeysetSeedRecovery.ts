@@ -12,7 +12,7 @@ export const CONDITIONAL_KEYSET_DISCOVERY_PREFIX_COUNTERS = 300 as const
 export const CONDITIONAL_KEYSET_DISCOVERY_KEYSET_LIMIT = 1_024 as const
 export const CONDITIONAL_KEYSET_DISCOVERY_OUTPUT_LIMIT = 4_096 as const
 
-export interface ConditionalKeysetSeedRecoveryAuthority {
+export interface ConditionalKeysetSeedRecoveryDescriptor {
   readonly id: string
   readonly unit: string
   readonly active: boolean
@@ -22,6 +22,9 @@ export interface ConditionalKeysetSeedRecoveryAuthority {
   readonly outcomeCollection: string
   readonly outcomeCollectionId: string
   readonly registeredAt: number
+}
+
+export interface ConditionalKeysetSeedRecoveryAuthority extends ConditionalKeysetSeedRecoveryDescriptor {
   readonly keys: Readonly<Record<string, string>>
 }
 
@@ -35,8 +38,7 @@ export interface ConditionalKeysetSeedRecoveryCandidate {
   readonly counter: number
   readonly blindedOutput: SerializedBlindedMessage
   readonly outputData: OutputData
-  readonly keyset: Pick<ConditionalKeysetSeedRecoveryAuthority, 'id' | 'unit' | 'keys'>
-  readonly asset: Omit<ConditionalKeysetSeedRecoveryAuthority, 'id' | 'keys'> & {
+  readonly asset: Omit<ConditionalKeysetSeedRecoveryDescriptor, 'id'> & {
     readonly kind: 'conditional'
   }
 }
@@ -57,11 +59,35 @@ export interface ConditionalKeysetSeedRecoveryResponseBinding {
   readonly discoveredKeysetIds: ReadonlySet<string>
 }
 
-/** Validate one conditional keyset before it becomes recovery authority. */
+/** Validate advertised keyset metadata before discovery output planning. */
+export function validateConditionalKeysetSeedRecoveryDescriptor(
+  value: unknown,
+): ConditionalKeysetSeedRecoveryDescriptor {
+  const record = exactRecord(value, 'conditional keyset discovery descriptor')
+  exactKeys(
+    record,
+    [
+      'id',
+      'unit',
+      'active',
+      'condition_id',
+      'outcome_collection',
+      'outcome_collection_id',
+      'registered_at',
+    ],
+    ['input_fee_ppk', 'final_expiry'],
+    'conditional keyset discovery descriptor',
+  )
+  const descriptor = decodeDescriptor(record)
+  assertDescriptorIdentity(descriptor)
+  return Object.freeze(descriptor)
+}
+
+/** Validate fetched denomination keys before selected-keyset recovery. */
 export function validateConditionalKeysetSeedRecoveryAuthority(
   value: unknown,
 ): ConditionalKeysetSeedRecoveryAuthority {
-  const record = exactRecord(value, 'conditional keyset authority')
+  const record = exactRecord(value, 'conditional keyset recovery authority')
   exactKeys(
     record,
     [
@@ -75,17 +101,20 @@ export function validateConditionalKeysetSeedRecoveryAuthority(
       'keys',
     ],
     ['input_fee_ppk', 'final_expiry'],
-    'conditional keyset authority',
+    'conditional keyset recovery authority',
   )
-  const authority = decodeAuthority(record)
+  const authority = Object.freeze({
+    ...decodeDescriptor(record),
+    keys: decodeDenominationKeys(record.keys),
+  })
   assertAuthorityIdentity(authority)
-  return Object.freeze(authority)
+  return authority
 }
 
-/** Plan one bounded NUT-13 prefix page from validated keyset authority. */
+/** Plan one bounded NUT-13 prefix page from validated discovery descriptors. */
 export function planConditionalKeysetSeedRecoveryPage(input: {
   readonly seed: Uint8Array
-  readonly keysets: readonly ConditionalKeysetSeedRecoveryAuthority[]
+  readonly keysets: readonly ConditionalKeysetSeedRecoveryDescriptor[]
   readonly maxOutputs: number
   readonly cursor?: ConditionalKeysetSeedRecoveryCursor | null
 }): ConditionalKeysetSeedRecoveryPage {
@@ -125,7 +154,7 @@ export function bindConditionalKeysetSeedRecoveryResponse(input: {
   }
 }
 
-function decodeAuthority(value: Record<string, unknown>): ConditionalKeysetSeedRecoveryAuthority {
+function decodeDescriptor(value: Record<string, unknown>): ConditionalKeysetSeedRecoveryDescriptor {
   const registeredAt = requireBoundedInteger(
     value.registered_at,
     0,
@@ -158,17 +187,11 @@ function decodeAuthority(value: Record<string, unknown>): ConditionalKeysetSeedR
       'conditional keyset outcome collection id',
     ),
     registeredAt,
-    keys: decodeDenominationKeys(value.keys),
   }
 }
 
 function assertAuthorityIdentity(authority: ConditionalKeysetSeedRecoveryAuthority): void {
-  const outcomeCollectionId = deriveRootCtfOutcomeCollectionId({
-    conditionId: authority.conditionId,
-    outcomeCollection: authority.outcomeCollection,
-  })
-  if (outcomeCollectionId !== authority.outcomeCollectionId)
-    throw new Error('conditional keyset outcome collection is inconsistent')
+  assertDescriptorIdentity(authority)
   const id = deriveConditionalKeysetId({
     keys: authority.keys,
     unit: authority.unit,
@@ -180,9 +203,18 @@ function assertAuthorityIdentity(authority: ConditionalKeysetSeedRecoveryAuthori
   if (id !== authority.id) throw new Error('conditional keyset identity is inconsistent')
 }
 
+function assertDescriptorIdentity(descriptor: ConditionalKeysetSeedRecoveryDescriptor): void {
+  const outcomeCollectionId = deriveRootCtfOutcomeCollectionId({
+    conditionId: descriptor.conditionId,
+    outcomeCollection: descriptor.outcomeCollection,
+  })
+  if (outcomeCollectionId !== descriptor.outcomeCollectionId)
+    throw new Error('conditional keyset outcome collection is inconsistent')
+}
+
 function orderKeysets(
-  value: readonly ConditionalKeysetSeedRecoveryAuthority[],
-): readonly ConditionalKeysetSeedRecoveryAuthority[] {
+  value: readonly ConditionalKeysetSeedRecoveryDescriptor[],
+): readonly ConditionalKeysetSeedRecoveryDescriptor[] {
   if (value.length === 0 || value.length > CONDITIONAL_KEYSET_DISCOVERY_KEYSET_LIMIT) {
     throw new Error('conditional keyset discovery keysets are invalid')
   }
@@ -217,7 +249,7 @@ function validateCursor(
 
 function createPage(
   seed: Uint8Array,
-  keysets: readonly ConditionalKeysetSeedRecoveryAuthority[],
+  keysets: readonly ConditionalKeysetSeedRecoveryDescriptor[],
   cursor: ConditionalKeysetSeedRecoveryCursor,
   maxOutputs: number,
 ): ConditionalKeysetSeedRecoveryPage {
@@ -242,7 +274,7 @@ function createPage(
 
 function createCandidate(
   seed: Uint8Array,
-  authority: ConditionalKeysetSeedRecoveryAuthority,
+  authority: ConditionalKeysetSeedRecoveryDescriptor,
   counter: number,
 ): ConditionalKeysetSeedRecoveryCandidate {
   try {
@@ -252,7 +284,6 @@ function createCandidate(
       counter,
       blindedOutput: Object.freeze({ ...outputData.blindedMessage }),
       outputData,
-      keyset: Object.freeze({ id: authority.id, unit: authority.unit, keys: authority.keys }),
       asset: Object.freeze({
         kind: 'conditional',
         unit: authority.unit,
@@ -318,7 +349,7 @@ function matchesCandidate(
     output.B_ === candidate.blindedOutput.B_ &&
     equalAmounts(output.amount, candidate.blindedOutput.amount) &&
     signature.id === candidate.keysetId &&
-    hasCandidateDenomination(candidate, signature.amount)
+    isPositiveAmount(signature.amount)
   )
 }
 
@@ -446,13 +477,9 @@ function equalAmounts(left: unknown, right: unknown): boolean {
   }
 }
 
-function hasCandidateDenomination(
-  candidate: ConditionalKeysetSeedRecoveryCandidate,
-  amount: unknown,
-): boolean {
+function isPositiveAmount(amount: unknown): boolean {
   try {
-    const denomination = Amount.from(amount as never)
-    return !denomination.isZero() && Object.hasOwn(candidate.keyset.keys, denomination.toString())
+    return !Amount.from(amount as never).isZero()
   } catch {
     return false
   }

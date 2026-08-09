@@ -5,6 +5,7 @@ import {
   CONDITIONAL_KEYSET_DISCOVERY_PREFIX_COUNTERS,
   bindConditionalKeysetSeedRecoveryResponse,
   planConditionalKeysetSeedRecoveryPage,
+  validateConditionalKeysetSeedRecoveryDescriptor,
   validateConditionalKeysetSeedRecoveryAuthority,
   type ConditionalKeysetSeedRecoveryCandidate,
 } from '../src/conditionalKeysetSeedRecovery.ts'
@@ -15,16 +16,18 @@ const PUBLIC_KEY = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16
 const CONDITION_ID = 'ab'.repeat(32)
 const KEYS = { '1': PUBLIC_KEY, '2': PUBLIC_KEY }
 
-test('validates conditional keyset authority from clean product syntax and key material', () => {
-  const value = authority()
-  assert.equal(validateConditionalKeysetSeedRecoveryAuthority(value).id, value.id)
+test('validates discovery descriptors from clean product syntax', () => {
+  const value = descriptor()
+  const validated = validateConditionalKeysetSeedRecoveryDescriptor(value)
+  assert.equal(validated.id, value.id)
+  assert.equal(Object.hasOwn(validated, 'keys'), false)
   assert.throws(
-    () => validateConditionalKeysetSeedRecoveryAuthority({ ...value, keys: { '1': PUBLIC_KEY } }),
-    /identity is inconsistent/,
+    () => validateConditionalKeysetSeedRecoveryDescriptor({ ...value, keys: KEYS }),
+    /foreign or missing fields/,
   )
   assert.throws(
     () =>
-      validateConditionalKeysetSeedRecoveryAuthority({
+      validateConditionalKeysetSeedRecoveryDescriptor({
         ...value,
         outcome_collection_id: 'cd'.repeat(32),
       }),
@@ -32,31 +35,53 @@ test('validates conditional keyset authority from clean product syntax and key m
   )
 })
 
-test('requires bounded outcome syntax and NUT-02 V2 authority', () => {
-  const value = authority()
+test('requires bounded outcome syntax and NUT-02 V2 descriptors', () => {
+  const value = descriptor()
   assert.throws(
     () =>
-      validateConditionalKeysetSeedRecoveryAuthority({ ...value, outcome_collection: 'NO| NO' }),
-    /outcome collection syntax/,
-  )
-  assert.throws(
-    () => validateConditionalKeysetSeedRecoveryAuthority({ ...value, outcome_collection: 'NO|NO' }),
+      validateConditionalKeysetSeedRecoveryDescriptor({ ...value, outcome_collection: 'NO| NO' }),
     /outcome collection syntax/,
   )
   assert.throws(
     () =>
-      validateConditionalKeysetSeedRecoveryAuthority({ ...value, id: `02${value.id.slice(2)}` }),
+      validateConditionalKeysetSeedRecoveryDescriptor({ ...value, outcome_collection: 'NO|NO' }),
+    /outcome collection syntax/,
+  )
+  assert.throws(
+    () =>
+      validateConditionalKeysetSeedRecoveryDescriptor({ ...value, id: `02${value.id.slice(2)}` }),
     /keyset id is invalid/,
   )
   assert.throws(
     () =>
-      validateConditionalKeysetSeedRecoveryAuthority({ ...value, id: `00${value.id.slice(2)}` }),
+      validateConditionalKeysetSeedRecoveryDescriptor({ ...value, id: `00${value.id.slice(2)}` }),
     /keyset id is invalid/,
   )
 })
 
-test('accepts null optional fees and returns detached immutable authority', () => {
-  const raw = authorityWithoutOptionalFees()
+test('validates selected full authority and rejects foreign fetched keys', () => {
+  const value = authority()
+  assert.equal(validateConditionalKeysetSeedRecoveryAuthority(value).id, value.id)
+  assert.throws(
+    () => validateConditionalKeysetSeedRecoveryAuthority({ ...value, keys: { '1': PUBLIC_KEY } }),
+    /identity is inconsistent/,
+  )
+  assert.throws(
+    () => validateConditionalKeysetSeedRecoveryAuthority({ ...value, unit: 'sat' }),
+    /identity is inconsistent/,
+  )
+  assert.throws(
+    () =>
+      validateConditionalKeysetSeedRecoveryAuthority({
+        ...value,
+        id: `01${'0'.repeat(64)}`,
+      }),
+    /identity is inconsistent/,
+  )
+})
+
+test('accepts null optional fees and returns detached immutable full authority', () => {
+  const raw = fullAuthorityWithoutOptionalFees()
   const omitted = validateConditionalKeysetSeedRecoveryAuthority(raw)
   const validated = validateConditionalKeysetSeedRecoveryAuthority({
     ...raw,
@@ -79,13 +104,11 @@ test('accepts null optional fees and returns detached immutable authority', () =
 
   const candidate = planConditionalKeysetSeedRecoveryPage({
     seed: SEED,
-    keysets: [validated],
+    keysets: [validateConditionalKeysetSeedRecoveryDescriptor(authorityWithoutOptionalFees())],
     maxOutputs: 1,
   }).candidates[0]!
   assert.equal(Object.isFrozen(candidate), true)
-  assert.equal(Object.isFrozen(candidate.keyset), true)
   assert.equal(Object.isFrozen(candidate.asset), true)
-  assert.equal(candidate.keyset.keys['2'], PUBLIC_KEY)
   assert.equal(
     bindConditionalKeysetSeedRecoveryResponse({
       candidates: [candidate],
@@ -93,6 +116,22 @@ test('accepts null optional fees and returns detached immutable authority', () =
     }).matches.length,
     1,
   )
+})
+
+test('plans descriptors without fetched keys and skips unmatched full validation', () => {
+  const first = validateConditionalKeysetSeedRecoveryDescriptor(descriptor())
+  const second = validateConditionalKeysetSeedRecoveryDescriptor(
+    descriptor({ conditionId: 'cd'.repeat(32) }),
+  )
+  const page = planConditionalKeysetSeedRecoveryPage({
+    seed: SEED,
+    keysets: [first, second],
+    maxOutputs: 1,
+  })
+  assert.equal(page.candidates.length, 1)
+  assert.equal(Object.hasOwn(page.candidates[0]!, 'keyset'), false)
+  assert.equal(Object.hasOwn(page.candidates[0]!.asset, 'keys'), false)
+  assert.doesNotThrow(() => page.candidates[0]!.outputData)
 })
 
 test('pages the exact 300-counter prefix across sorted conditional keysets', () => {
@@ -213,7 +252,7 @@ test('rejects unknown, duplicate, and mismatched NUT-09 response rows', () => {
         candidates,
         response: {
           outputs: [restoreOutput(first)],
-          signatures: [{ ...signatureFor(first), amount: Amount.from(4) }],
+          signatures: [{ ...signatureFor(first), amount: Amount.from(0) }],
         },
       }),
     /does not match/,
@@ -252,6 +291,10 @@ test('has deterministic page material and bounded page properties', () => {
 })
 
 function authority(input: { conditionId?: string; outcomeCollection?: string } = {}) {
+  return { ...descriptor(input), keys: KEYS }
+}
+
+function descriptor(input: { conditionId?: string; outcomeCollection?: string } = {}) {
   const conditionId = input.conditionId ?? CONDITION_ID
   const outcomeCollection = input.outcomeCollection ?? 'NO|YES'
   const outcomeCollectionId = deriveRootCtfOutcomeCollectionId({ conditionId, outcomeCollection })
@@ -272,7 +315,6 @@ function authority(input: { conditionId?: string; outcomeCollection?: string } =
     outcome_collection: outcomeCollection,
     outcome_collection_id: outcomeCollectionId,
     registered_at: 1,
-    keys: KEYS,
   }
 }
 
@@ -295,8 +337,11 @@ function authorityWithoutOptionalFees() {
     outcome_collection: outcomeCollection,
     outcome_collection_id: outcomeCollectionId,
     registered_at: 1,
-    keys: { ...KEYS },
   }
+}
+
+function fullAuthorityWithoutOptionalFees() {
+  return { ...authorityWithoutOptionalFees(), keys: { ...KEYS } }
 }
 
 function plan(input: {
@@ -306,7 +351,10 @@ function plan(input: {
 }) {
   return planConditionalKeysetSeedRecoveryPage({
     seed: SEED,
-    keysets: (input.keysets ?? [authority()]).map(validateConditionalKeysetSeedRecoveryAuthority),
+    keysets: (input.keysets ?? [authority()]).map((value) => {
+      const { keys: _, ...descriptorValue } = value
+      return validateConditionalKeysetSeedRecoveryDescriptor(descriptorValue)
+    }),
     maxOutputs: input.maxOutputs,
     ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
   })
