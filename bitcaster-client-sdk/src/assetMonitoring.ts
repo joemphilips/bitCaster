@@ -5,6 +5,9 @@
  * 300 history points. It remains bounded well below the generic 16 MiB reader
  * limit.
  */
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex, concatBytes, utf8ToBytes } from '@noble/hashes/utils.js'
+
 export const ASSET_MONITORING_RESPONSE_BYTES_MAX = 2 * 1024 * 1024
 export const ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX = 64 * 1024
 export const ASSET_MONITORING_ASSETS_MAX = 200
@@ -60,6 +63,15 @@ export interface AssetMonitoringReportRequest {
   reportId: string
   startsNewInterval: boolean
   holdings: AssetMonitoringReportedHolding[]
+}
+
+export interface AssetMonitoringProofFact {
+  proofIdentity: string
+  asset: AssetMonitoringAssetReference
+  keysetId: string
+  amount: number
+  state: 'available' | 'pending'
+  recoveryCounter?: number
 }
 
 export interface AssetMonitoringAssetResponse {
@@ -164,6 +176,43 @@ export function canonicalizeAssetMonitoringReportRequest(
   request: AssetMonitoringReportRequest,
 ): AssetMonitoringReportRequest {
   return decodeAssetMonitoringReportRequest(request)
+}
+
+export function computeAssetMonitoringOutcomeUniverseDigest(outcomes: readonly string[]): string {
+  validateOutcomeUniverse(outcomes)
+  return bytesToHex(
+    sha256(
+      concatBytes(
+        outcomeDigestText('bitcaster.outcome-universe.v1'),
+        outcomeDigestCount(outcomes.length),
+        ...outcomes.map(outcomeDigestText),
+      ),
+    ),
+  )
+}
+
+export function buildAssetMonitoringHoldingsFromProofFacts(
+  facts: readonly AssetMonitoringProofFact[],
+): AssetMonitoringReportedHolding[] {
+  const proofIdentities = new Set<string>()
+  const holdings = new Map<string, AssetMonitoringHoldingAccumulator>()
+  for (const input of facts) {
+    const fact = decodeAssetMonitoringProofFact(input)
+    if (proofIdentities.has(fact.proofIdentity)) {
+      throw new Error('asset-monitoring proof identities are duplicated')
+    }
+    proofIdentities.add(fact.proofIdentity)
+    accumulateProofFact(holdings, fact)
+  }
+  return canonicalizeAssetMonitoringHoldings(
+    [...holdings.values()].map(assetMonitoringHoldingFromAccumulator),
+  )
+}
+
+export function canonicalizeAssetMonitoringHoldings(
+  holdings: readonly AssetMonitoringReportedHolding[],
+): AssetMonitoringReportedHolding[] {
+  return canonicalizeHoldings(holdings.map(decodeAssetMonitoringReportedHolding))
 }
 
 export function decodeAssetMonitoringSummaryResponse(
@@ -320,6 +369,194 @@ export function decodeAssetMonitoringReportedHolding(
     pendingOutgoingSubunits: holding.pendingOutgoingSubunits,
     ...(recoveryHint.present ? { recoveryHint: recoveryHint.value } : {}),
   }
+}
+
+interface AssetMonitoringHoldingAccumulator {
+  asset: AssetMonitoringAssetReference
+  availableSubunits: number
+  pendingOutgoingSubunits: number
+  keysetIds: Set<string>
+  recoveryCounters: Set<number>
+  recoveryHintOmitted: boolean
+}
+
+interface DecodedAssetMonitoringProofFact extends AssetMonitoringProofFact {
+  asset: AssetMonitoringAssetReference
+}
+
+function decodeAssetMonitoringProofFact(value: unknown): DecodedAssetMonitoringProofFact {
+  const fact = exactRecord(
+    value,
+    ['proofIdentity', 'asset', 'keysetId', 'amount', 'state'],
+    ['recoveryCounter'],
+  )
+  requireText(fact.proofIdentity, 'asset-monitoring proof identity', 1, 4096)
+  requirePositiveSafeInteger(fact.amount, 'asset-monitoring proof amount')
+  if (fact.state !== 'available' && fact.state !== 'pending') {
+    throw new Error('asset-monitoring proof state is invalid')
+  }
+  const asset = decodeAssetMonitoringAssetReference(fact.asset)
+  const recoveryHint = decodeAssetMonitoringRecoveryHint({
+    keysetIds: [fact.keysetId],
+    counterIntervals:
+      fact.recoveryCounter === undefined ? [] : [{ start: fact.recoveryCounter, count: 1 }],
+  })
+  const recoveryCounter = recoveryHint.counterIntervals[0]?.start
+  return {
+    proofIdentity: fact.proofIdentity,
+    asset,
+    keysetId: recoveryHint.keysetIds[0]!,
+    amount: fact.amount,
+    state: fact.state,
+    ...(recoveryCounter === undefined ? {} : { recoveryCounter }),
+  }
+}
+
+function accumulateProofFact(
+  holdings: Map<string, AssetMonitoringHoldingAccumulator>,
+  fact: DecodedAssetMonitoringProofFact,
+): void {
+  const key = assetMonitoringIdentity(fact.asset)
+  let holding = holdings.get(key)
+  if (holding === undefined) {
+    if (holdings.size >= ASSET_MONITORING_ASSETS_MAX) {
+      throw new Error('asset-monitoring report holdings are invalid')
+    }
+    holding = createHoldingAccumulator(fact.asset)
+    holdings.set(key, holding)
+  }
+  if (fact.state === 'available') {
+    holding.availableSubunits = checkedAdd(holding.availableSubunits, fact.amount)
+  } else {
+    holding.pendingOutgoingSubunits = checkedAdd(holding.pendingOutgoingSubunits, fact.amount)
+  }
+  addRecoveryHintFact(holding, fact)
+}
+
+function addRecoveryHintFact(
+  holding: AssetMonitoringHoldingAccumulator,
+  fact: DecodedAssetMonitoringProofFact,
+): void {
+  if (holding.recoveryHintOmitted) return
+  holding.keysetIds.add(fact.keysetId)
+  if (fact.recoveryCounter !== undefined) holding.recoveryCounters.add(fact.recoveryCounter)
+  if (
+    holding.keysetIds.size > ASSET_MONITORING_RECOVERY_HINT_ITEMS_MAX ||
+    holding.recoveryCounters.size > ASSET_MONITORING_RECOVERY_COUNTERS_MAX
+  ) {
+    holding.recoveryHintOmitted = true
+    holding.keysetIds.clear()
+    holding.recoveryCounters.clear()
+  }
+}
+
+function createHoldingAccumulator(
+  asset: AssetMonitoringAssetReference,
+): AssetMonitoringHoldingAccumulator {
+  return {
+    asset,
+    availableSubunits: 0,
+    pendingOutgoingSubunits: 0,
+    keysetIds: new Set(),
+    recoveryCounters: new Set(),
+    recoveryHintOmitted: false,
+  }
+}
+
+function assetMonitoringHoldingFromAccumulator(
+  holding: AssetMonitoringHoldingAccumulator,
+): AssetMonitoringReportedHolding {
+  const recoveryHint = holding.recoveryHintOmitted
+    ? undefined
+    : assetMonitoringRecoveryHint(holding.keysetIds, holding.recoveryCounters)
+  return {
+    asset: holding.asset,
+    availableSubunits: holding.availableSubunits,
+    pendingOutgoingSubunits: holding.pendingOutgoingSubunits,
+    ...(recoveryHint === undefined ? {} : { recoveryHint }),
+  }
+}
+
+function assetMonitoringRecoveryHint(
+  keysetIds: Set<string>,
+  recoveryCounters: Set<number>,
+): AssetMonitoringRecoveryHint | undefined {
+  const counterIntervals = compactRecoveryCounters(recoveryCounters)
+  if (counterIntervals === undefined) return undefined
+  try {
+    return canonicalizeRecoveryHint(
+      decodeAssetMonitoringRecoveryHint({
+        keysetIds: [...keysetIds],
+        counterIntervals,
+      }),
+    )
+  } catch {
+    return undefined
+  }
+}
+
+function compactRecoveryCounters(
+  recoveryCounters: Set<number>,
+): AssetMonitoringRecoveryCounterInterval[] | undefined {
+  const sortedCounters = [...recoveryCounters].sort((left, right) => left - right)
+  if (sortedCounters.length === 0) return []
+  const intervals: AssetMonitoringRecoveryCounterInterval[] = [
+    { start: sortedCounters[0]!, count: 1 },
+  ]
+  for (let index = 1; index < sortedCounters.length; index += 1) {
+    const counter = sortedCounters[index]!
+    const previous = intervals.at(-1)!
+    if (previous.start + previous.count === counter) {
+      previous.count += 1
+      continue
+    }
+    if (intervals.length >= ASSET_MONITORING_RECOVERY_HINT_ITEMS_MAX) return undefined
+    intervals.push({ start: counter, count: 1 })
+  }
+  return intervals
+}
+
+function assetMonitoringIdentity(asset: AssetMonitoringAssetReference): string {
+  return JSON.stringify(asset)
+}
+
+function checkedAdd(left: number, right: number): number {
+  const total = left + right
+  if (!Number.isSafeInteger(total)) throw new Error('asset-monitoring proof amount exceeds range')
+  return total
+}
+
+function validateOutcomeUniverse(outcomes: readonly string[]): void {
+  if (!Array.isArray(outcomes) || outcomes.length < 2 || outcomes.length > 8) {
+    throw new Error('asset-monitoring outcome universe is invalid')
+  }
+  for (let index = 0; index < outcomes.length; index += 1) {
+    const outcome = outcomes[index]
+    if (
+      typeof outcome !== 'string' ||
+      outcome.length < 1 ||
+      outcome.length > 191 ||
+      !/^[A-Za-z0-9]+$/.test(outcome)
+    ) {
+      throw new Error('asset-monitoring outcome universe is invalid')
+    }
+    if (index > 0 && outcomes[index - 1]! >= outcome) {
+      throw new Error('asset-monitoring outcome universe is invalid')
+    }
+  }
+}
+
+function outcomeDigestText(value: string): Uint8Array {
+  const bytes = utf8ToBytes(value)
+  const length = new Uint8Array(4)
+  new DataView(length.buffer).setInt32(0, bytes.length, false)
+  return concatBytes(length, bytes)
+}
+
+function outcomeDigestCount(value: number): Uint8Array {
+  const bytes = new Uint8Array(8)
+  new DataView(bytes.buffer).setBigInt64(0, BigInt(value), false)
+  return bytes
 }
 
 function decodeAssetMonitoringAssetResponse(value: unknown): AssetMonitoringAssetResponse {

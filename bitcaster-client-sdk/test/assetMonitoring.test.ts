@@ -6,7 +6,9 @@ import {
   ASSET_MONITORING_RECOVERY_COUNTERS_MAX,
   ASSET_MONITORING_RECOVERY_HINT_ITEMS_MAX,
   ASSET_MONITORING_RESPONSE_BYTES_MAX,
+  buildAssetMonitoringHoldingsFromProofFacts,
   canonicalizeAssetMonitoringReportRequest,
+  computeAssetMonitoringOutcomeUniverseDigest,
   decodeAssetMonitoringAssetsQuery,
   decodeAssetMonitoringAssetsResponse,
   decodeAssetMonitoringHistoryResponse,
@@ -14,6 +16,7 @@ import {
   decodeAssetMonitoringReportRequest,
   decodeAssetMonitoringSummaryResponse,
   type AssetMonitoringAssetReference,
+  type AssetMonitoringProofFact,
   type AssetMonitoringReportRequest,
 } from '../src/assetMonitoring.ts'
 import { BitcasterEngineClient, type EngineAuthorizationRequest } from '../src/engineClient.ts'
@@ -53,6 +56,171 @@ function validReport(): AssetMonitoringReportRequest {
     ],
   }
 }
+
+function proofFact(overrides: Partial<AssetMonitoringProofFact> = {}): AssetMonitoringProofFact {
+  return {
+    proofIdentity: 'proof-1',
+    asset: collateralAsset(),
+    keysetId: '00' + 'a'.repeat(14),
+    amount: 1,
+    state: 'available',
+    ...overrides,
+  }
+}
+
+test('asset-monitoring outcome-universe digest matches cross-language vectors', () => {
+  assert.equal(
+    computeAssetMonitoringOutcomeUniverseDigest(['NO', 'YES']),
+    'f30d9f4421bc97143c664606c2a661483787106856c91bcdc403246ddb30a363',
+  )
+  assert.equal(
+    computeAssetMonitoringOutcomeUniverseDigest(['MAYBE', 'NO', 'YES']),
+    '070759808adcb7c1031d41014173ef55a094fc5614e18b2cb66306b77199f918',
+  )
+})
+
+test('asset-monitoring outcome-universe digest rejects noncanonical outcomes', () => {
+  for (const outcomes of [
+    ['YES', 'NO'],
+    ['NO', 'NO'],
+    ['NO', 'not-valid'],
+    ['YES'],
+    ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'],
+  ]) {
+    assert.throws(() => computeAssetMonitoringOutcomeUniverseDigest(outcomes))
+  }
+})
+
+test('asset-monitoring proof facts group available and pending amounts by complete asset', () => {
+  const first = collateralAsset('https://a-mint.example')
+  const second = { ...first, cashuUnit: 'sat' as const }
+  const holdings = buildAssetMonitoringHoldingsFromProofFacts([
+    proofFact({ asset: first, amount: 3 }),
+    proofFact({ proofIdentity: 'proof-2', asset: first, amount: 5, state: 'pending' }),
+    proofFact({ proofIdentity: 'proof-3', asset: second, amount: 7 }),
+  ])
+
+  assert.deepEqual(
+    holdings.map((holding) => [
+      holding.asset.canonicalMintUrl,
+      holding.asset.cashuUnit,
+      holding.availableSubunits,
+      holding.pendingOutgoingSubunits,
+    ]),
+    [
+      ['https://a-mint.example', 'sat', 7, 0],
+      ['https://a-mint.example', 'msat', 3, 5],
+    ],
+  )
+})
+
+test('asset-monitoring proof facts reject duplicate identities and overflow', () => {
+  assert.throws(() => buildAssetMonitoringHoldingsFromProofFacts([proofFact(), proofFact()]))
+  assert.throws(() =>
+    buildAssetMonitoringHoldingsFromProofFacts([
+      proofFact({ amount: Number.MAX_SAFE_INTEGER }),
+      proofFact({ proofIdentity: 'proof-2', amount: 1 }),
+    ]),
+  )
+})
+
+test('asset-monitoring proof facts reject more than 200 distinct holdings', () => {
+  const facts = Array.from({ length: 201 }, (_, index) =>
+    proofFact({
+      proofIdentity: `proof-${index}`,
+      asset: collateralAsset(`https://mint-${index}.example`),
+    }),
+  )
+
+  assert.throws(() => buildAssetMonitoringHoldingsFromProofFacts(facts))
+})
+
+test('asset-monitoring proof facts sort holdings and canonicalize recovery hints', () => {
+  const holdings = buildAssetMonitoringHoldingsFromProofFacts([
+    proofFact({
+      proofIdentity: 'proof-3',
+      asset: collateralAsset('https://z-mint.example'),
+      keysetId: '00' + 'c'.repeat(14),
+      recoveryCounter: 3,
+    }),
+    proofFact({
+      proofIdentity: 'proof-2',
+      asset: collateralAsset('https://z-mint.example'),
+      keysetId: '00' + 'a'.repeat(14),
+      recoveryCounter: 1,
+    }),
+    proofFact({
+      proofIdentity: 'proof-1',
+      asset: collateralAsset('https://z-mint.example'),
+      keysetId: '00' + 'a'.repeat(14),
+      recoveryCounter: 2,
+    }),
+    proofFact({ proofIdentity: 'proof-0', asset: collateralAsset('https://a-mint.example') }),
+  ])
+
+  assert.deepEqual(
+    holdings.map((holding) => holding.asset.canonicalMintUrl),
+    ['https://a-mint.example', 'https://z-mint.example'],
+  )
+  assert.deepEqual(holdings[1]?.recoveryHint, {
+    keysetIds: ['00' + 'a'.repeat(14), '00' + 'c'.repeat(14)],
+    counterIntervals: [{ start: 1, count: 3 }],
+  })
+})
+
+test('asset-monitoring proof facts omit over-bound recovery hints', () => {
+  const facts = Array.from({ length: ASSET_MONITORING_RECOVERY_HINT_ITEMS_MAX + 1 }, (_, index) =>
+    proofFact({
+      proofIdentity: `proof-${index}`,
+      keysetId: `00${index.toString(16).padStart(14, '0')}`,
+    }),
+  )
+
+  const [holding] = buildAssetMonitoringHoldingsFromProofFacts(facts)
+
+  assert.equal(holding?.recoveryHint, undefined)
+})
+
+test('asset-monitoring proof facts compact contiguous recovery counters before hint bounds', () => {
+  for (const count of [17, ASSET_MONITORING_RECOVERY_COUNTERS_MAX]) {
+    const facts = Array.from({ length: count }, (_, index) =>
+      proofFact({ proofIdentity: `proof-${index}`, recoveryCounter: index }),
+    )
+
+    const [holding] = buildAssetMonitoringHoldingsFromProofFacts(facts)
+
+    assert.deepEqual(holding?.recoveryHint?.counterIntervals, [{ start: 0, count }])
+  }
+})
+
+test('asset-monitoring proof facts omit recovery hints with more than 16 disjoint intervals', () => {
+  const facts = Array.from({ length: ASSET_MONITORING_RECOVERY_HINT_ITEMS_MAX + 1 }, (_, index) =>
+    proofFact({ proofIdentity: `proof-${index}`, recoveryCounter: index * 2 }),
+  )
+
+  const [holding] = buildAssetMonitoringHoldingsFromProofFacts(facts)
+
+  assert.equal(holding?.recoveryHint, undefined)
+})
+
+test('asset-monitoring proof facts support more than 10,000 facts across 200 holdings', () => {
+  const assetCount = ASSET_MONITORING_ASSETS_MAX
+  const factsPerAsset = 51
+  const facts = Array.from({ length: assetCount * factsPerAsset }, (_, index) =>
+    proofFact({
+      proofIdentity: `proof-${index}`,
+      asset: collateralAsset(`https://mint-${index % assetCount}.example`),
+    }),
+  )
+
+  const holdings = buildAssetMonitoringHoldingsFromProofFacts(facts)
+
+  assert.equal(holdings.length, assetCount)
+  assert.equal(
+    holdings.every((holding) => holding.availableSubunits === factsPerAsset),
+    true,
+  )
+})
 
 function summaryResponse() {
   return {
