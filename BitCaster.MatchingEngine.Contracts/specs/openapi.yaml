@@ -1455,10 +1455,12 @@ components:
           type: integer
           format: int64
           minimum: 0
+          maximum: 9007199254740991
         pendingOutgoingSubunits:
           type: integer
           format: int64
           minimum: 0
+          maximum: 9007199254740991
         recoveryHint:
           oneOf:
             - $ref: '#/components/schemas/AssetMonitoringRecoveryHint'
@@ -1496,11 +1498,11 @@ components:
       required: [asset, availableSubunits, pendingOutgoingSubunits, valuationStatus, recoveryHint]
       properties:
         asset: { $ref: '#/components/schemas/AssetMonitoringAssetReference' }
-        availableSubunits: { type: integer, format: int64, minimum: 0 }
-        pendingOutgoingSubunits: { type: integer, format: int64, minimum: 0 }
-        availableValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
-        pendingOutgoingValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
-        estimatedValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
+        availableSubunits: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
+        pendingOutgoingSubunits: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
+        availableValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        pendingOutgoingValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        estimatedValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
         valuationStatus: { $ref: '#/components/schemas/AssetMonitoringValuationStatus' }
         recoveryHint:
           oneOf:
@@ -1513,14 +1515,14 @@ components:
       required: [collateralUnit, availableValueMsat, pendingOutgoingValueMsat, estimatedTotalValueMsat, unvaluedAssetCount, unvaluedAvailableSubunits, unvaluedPendingOutgoingSubunits, valuationRevision, stale, incomplete, building]
       properties:
         collateralUnit: { type: string, enum: [msat] }
-        availableValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
-        pendingOutgoingValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
-        estimatedTotalValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
+        availableValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        pendingOutgoingValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        estimatedTotalValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
         unvaluedAssetCount: { type: integer, format: int32, minimum: 0 }
-        unvaluedAvailableSubunits: { type: [integer, 'null'], format: int64, minimum: 0 }
-        unvaluedPendingOutgoingSubunits: { type: [integer, 'null'], format: int64, minimum: 0 }
+        unvaluedAvailableSubunits: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        unvaluedPendingOutgoingSubunits: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
         asOf: { type: [string, 'null'], format: date-time }
-        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1 }
+        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
         coverageBoundary: { type: [string, 'null'] }
         valuationRevision: { type: string, minLength: 1 }
         stale: { type: boolean }
@@ -1538,7 +1540,7 @@ components:
           items: { $ref: '#/components/schemas/AssetMonitoringAssetResponse' }
         nextCursor: { type: [string, 'null'] }
         asOf: { type: [string, 'null'], format: date-time }
-        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1 }
+        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
         coverageBoundary: { type: [string, 'null'] }
         valuationRevision: { type: string, minLength: 1 }
         stale: { type: boolean }
@@ -1551,7 +1553,7 @@ components:
       required: [asOf, estimatedTotalValueMsat]
       properties:
         asOf: { type: string, format: date-time }
-        estimatedTotalValueMsat: { type: [integer, 'null'], format: int64, minimum: 0 }
+        estimatedTotalValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
 
     AssetMonitoringHistoryResponse:
       type: object
@@ -1564,7 +1566,7 @@ components:
           maxItems: 300
           items: { $ref: '#/components/schemas/AssetMonitoringHistoryPointResponse' }
         asOf: { type: [string, 'null'], format: date-time }
-        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1 }
+        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
         coverageBoundary: { type: [string, 'null'] }
         valuationRevision: { type: string, minLength: 1 }
         stale: { type: boolean }

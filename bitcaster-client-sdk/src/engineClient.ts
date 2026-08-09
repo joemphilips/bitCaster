@@ -9,6 +9,27 @@ import {
   readAllocationBoundedJsonResponse,
   readAllocationBoundedTextResponse,
 } from './boundedJsonResponse.ts'
+import {
+  ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX,
+  ASSET_MONITORING_RESPONSE_BYTES_MAX,
+  canonicalizeAssetMonitoringReportRequest,
+  decodeAssetMonitoringAssetsQuery,
+  decodeAssetMonitoringAssetsResponse,
+  decodeAssetMonitoringHistoryQuery,
+  decodeAssetMonitoringHistoryResponse,
+  decodeAssetMonitoringPortfolioQuery,
+  decodeAssetMonitoringPortfolioResponse,
+  decodeAssetMonitoringSummaryResponse,
+  decodeAssetMonitoringWalletId,
+  type AssetMonitoringAssetsQuery,
+  type AssetMonitoringAssetsResponse,
+  type AssetMonitoringHistoryQuery,
+  type AssetMonitoringHistoryResponse,
+  type AssetMonitoringPortfolioQuery,
+  type AssetMonitoringPortfolioResponse,
+  type AssetMonitoringReportRequest,
+  type AssetMonitoringSummaryResponse,
+} from './assetMonitoring.ts'
 import type { WalletId } from './durableCustody.ts'
 
 export type EngineFetch = typeof fetch
@@ -463,6 +484,85 @@ export class BitcasterEngineClient {
     }
   }
 
+  async submitAssetMonitoringReport(request: AssetMonitoringReportRequest): Promise<void> {
+    const bodyText = JSON.stringify(canonicalizeAssetMonitoringReportRequest(request))
+    await this.request(
+      '/api/v1/asset-monitoring/reports',
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+      },
+      bodyText,
+      false,
+      ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX,
+    )
+  }
+
+  async getAssetMonitoringSummary(walletId: string): Promise<AssetMonitoringSummaryResponse> {
+    const query = new URLSearchParams({ walletId: decodeAssetMonitoringWalletId(walletId) })
+    const response = await this.request(
+      `/api/v1/asset-monitoring/summary?${query}`,
+      {},
+      undefined,
+      false,
+      ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX,
+    )
+    return decodeAssetMonitoringSummaryResponse(
+      await readAllocationBoundedJsonResponse(response, ASSET_MONITORING_RESPONSE_BYTES_MAX),
+    )
+  }
+
+  async getAssetMonitoringAssets(
+    queryInput: AssetMonitoringAssetsQuery,
+  ): Promise<AssetMonitoringAssetsResponse> {
+    const query = assetMonitoringAssetsQueryString(decodeAssetMonitoringAssetsQuery(queryInput))
+    const response = await this.request(
+      `/api/v1/asset-monitoring/assets?${query}`,
+      {},
+      undefined,
+      false,
+      ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX,
+    )
+    return decodeAssetMonitoringAssetsResponse(
+      await readAllocationBoundedJsonResponse(response, ASSET_MONITORING_RESPONSE_BYTES_MAX),
+    )
+  }
+
+  async getAssetMonitoringHistory(
+    queryInput: AssetMonitoringHistoryQuery,
+  ): Promise<AssetMonitoringHistoryResponse> {
+    const query = assetMonitoringHistoryQueryString(decodeAssetMonitoringHistoryQuery(queryInput))
+    const response = await this.request(
+      `/api/v1/asset-monitoring/history?${query}`,
+      {},
+      undefined,
+      false,
+      ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX,
+    )
+    return decodeAssetMonitoringHistoryResponse(
+      await readAllocationBoundedJsonResponse(response, ASSET_MONITORING_RESPONSE_BYTES_MAX),
+    )
+  }
+
+  async getPortfolio(
+    queryInput: AssetMonitoringPortfolioQuery,
+  ): Promise<AssetMonitoringPortfolioResponse> {
+    const query = assetMonitoringPortfolioQueryString(
+      decodeAssetMonitoringPortfolioQuery(queryInput),
+    )
+    const response = await this.request(
+      `/api/v1/portfolio?${query}`,
+      {},
+      undefined,
+      false,
+      ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX,
+    )
+    return decodeAssetMonitoringPortfolioResponse(
+      await readAllocationBoundedJsonResponse(response, ASSET_MONITORING_RESPONSE_BYTES_MAX),
+    )
+  }
+
   async createSettlementCapability(
     request: CreateSettlementCapabilityRequest,
   ): Promise<SettlementCapabilityResponse> {
@@ -751,12 +851,16 @@ export class BitcasterEngineClient {
     init: RequestInit = {},
     bodyText?: string,
     allowNotFound = false,
+    errorResponseBytesMax?: number,
   ): Promise<Response> {
     const url = `${this.baseUrl}${path}`
     const headers = await this.authorizedHeaders(url, init, bodyText)
     const response = await this.fetchImpl(url, { ...init, headers })
     if (!response.ok && !(allowNotFound && response.status === 404)) {
-      const detail = await response.text().catch(() => '')
+      const detail =
+        errorResponseBytesMax === undefined
+          ? await response.text().catch(() => '')
+          : await readAllocationBoundedTextResponse(response, errorResponseBytesMax).catch(() => '')
       const problem = parseEngineProblem(detail)
       throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)
     }
@@ -833,6 +937,26 @@ async function readSettlementCapabilityResultResponse(
     response,
     SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX,
   )) as SettlementCapabilityResultResponse
+}
+
+function assetMonitoringAssetsQueryString(queryInput: AssetMonitoringAssetsQuery): string {
+  const query = new URLSearchParams({ walletId: queryInput.walletId })
+  if (queryInput.pageSize !== undefined) query.set('pageSize', String(queryInput.pageSize))
+  if (queryInput.cursor !== undefined) query.set('cursor', queryInput.cursor)
+  return query.toString()
+}
+
+function assetMonitoringHistoryQueryString(queryInput: AssetMonitoringHistoryQuery): string {
+  const query = new URLSearchParams({ walletId: queryInput.walletId })
+  if (queryInput.timeframe !== undefined) query.set('timeframe', queryInput.timeframe)
+  return query.toString()
+}
+
+function assetMonitoringPortfolioQueryString(queryInput: AssetMonitoringPortfolioQuery): string {
+  const query = new URLSearchParams({ walletId: queryInput.walletId })
+  if (queryInput.timeframe !== undefined) query.set('timeframe', queryInput.timeframe)
+  if (queryInput.pageSize !== undefined) query.set('pageSize', String(queryInput.pageSize))
+  return query.toString()
 }
 
 export function decodeSubmitOrderResponse(value: unknown): SubmitOrderResponse {
@@ -1068,7 +1192,9 @@ function decodeFill(value: unknown): Fill {
     status: fill.status,
     filledAt: fill.filledAt as string,
     settlementGroup: decodeSettlementGroup(fill.settlementGroup),
-    ...(fill.tradeId === undefined || fill.tradeId === null ? {} : { tradeId: fill.tradeId as string }),
+    ...(fill.tradeId === undefined || fill.tradeId === null
+      ? {}
+      : { tradeId: fill.tradeId as string }),
     baseAsset: 'sat',
     divisibility,
     tokenSide: fill.tokenSide,
