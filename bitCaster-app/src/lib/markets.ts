@@ -13,7 +13,6 @@ import type { components } from "@/generated/api";
 import {
   BitcasterEngineClient,
   createMarketViaEngine,
-  submitEphemeralPubkey as sdkSubmitEphemeralPubkey,
   submitOracleAttestationViaEngine,
 } from "@bitcaster/client-sdk";
 import type { WalletId } from "@bitcaster/client-sdk/durableCustody";
@@ -736,27 +735,6 @@ export async function submitOrder(
     marketId,
     params,
   )) as unknown as SubmitOrderResponse;
-}
-
-export async function submitEphemeralPubkey(
-  tradeId: string,
-  pubkey: string,
-  conditionId?: string,
-): Promise<void> {
-  await sdkSubmitEphemeralPubkey(
-    window.location.origin,
-    tradeId,
-    pubkey,
-    null,
-    fetch,
-    async ({ url, method, bodyText, payloadHash }) =>
-      generateNip98Header(
-        resolveApiSigningUrl(url),
-        method,
-        await resolveAuthorizationPayloadHash(bodyText, payloadHash),
-      ),
-    conditionId,
-  );
 }
 
 export async function signTradeComment(

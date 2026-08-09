@@ -24,12 +24,10 @@ import {
   mapSnapshotToOrderBook,
   priceNumeratorToPercent,
   signTradeComment,
-  submitEphemeralPubkey,
   windowPriceHistory,
   type MarketPriceHistoryResponse,
   type MarketCommentsResponse,
 } from "@/lib/markets";
-import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import {
   computeTradeCost,
@@ -37,7 +35,6 @@ import {
   displaySharesToFaceSubunits,
 } from "@/lib/tradeCostPreview";
 import { assertNever } from "@/lib/enumDiscipline";
-import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
 import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
 import { ensureParticipationScoreForNextMatch } from "@/lib/participationScorePayment";
 import {
@@ -51,22 +48,18 @@ import { defaultLimitPriceForDivisibility, useMarketPrice } from "@/hooks/useMar
 import {
   joinMarket,
   leaveMarket,
-  onMatched,
   onMarketRejoined,
   onOrderCancelled,
   onOrderBookUpdated,
   onTradeExecuted,
-  type Matched,
   type MarketStatusChanged,
 } from "@/lib/marketHub";
 import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
 import { debounce } from "@/lib/debounce";
 import { refreshOrderBook } from "@/lib/orderBookRefresh";
-import { onTradeTerminal } from "@/lib/tradeTerminalEvents";
 import { getBalance, useActiveMintInputFeePpk, useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
-import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
 import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import { canBackOrder } from "@bitcaster/client-sdk/tradingClient";
@@ -1082,16 +1075,6 @@ export function MarketDetailPage() {
         }),
       );
       cleanups.push(
-        onMatched(liveMarketId, (match) => {
-          if (cancelled) return;
-          refreshLiveOrderBook();
-          reconcileOwnOrders();
-          void submitMakerEphemeralPubkeyFromMatch(liveMarketId, match).catch((err) => {
-            console.warn("[MarketDetailPage] maker pubkey submission failed:", err);
-          });
-        }),
-      );
-      cleanups.push(
         onOrderCancelled(liveMarketId, () => {
           if (cancelled) return;
           refreshLiveOrderBook();
@@ -1122,13 +1105,6 @@ export function MarketDetailPage() {
         console.warn("[MarketDetailPage] joinMarket failed:", err);
       });
     }
-
-    cleanups.push(
-      onTradeTerminal((detail) => {
-        if (cancelled) return;
-        refreshers.get(detail.marketId)?.();
-      }),
-    );
 
     return () => {
       cancelled = true;
@@ -1702,25 +1678,6 @@ export function MarketDetailPage() {
           amountSubunits: ticket.request.amountSubunits,
           submittedAt: Date.now(),
         });
-        for (const pending of response.pendingPubkeySubmissions ?? []) {
-          await submitPendingEphemeralPubkey({
-            tradeId: pending.tradeId,
-            orderId: response.orderId,
-            marketId: ticket.marketId,
-            deadline: pending.deadline,
-          });
-        }
-        promoteFillsToActiveSwaps(response.fills ?? [], {
-          orderId: response.orderId,
-          clientOrderId,
-          marketId: ticket.marketId,
-          baseAsset: acceptedBaseAsset,
-          divisibility: acceptedDivisibility,
-          side: ticket.request.side,
-          tokenSide: ticket.request.tokenSide,
-          priceSubunits: ticket.request.price,
-          amountSubunits: ticket.request.amountSubunits,
-        });
         addOrderSubmitNotifications({
           add: useNotificationsStore.getState().add,
           orderId: response.orderId,
@@ -2223,54 +2180,4 @@ export function MarketDetailPage() {
       )}
     </>
   );
-}
-
-async function submitMakerEphemeralPubkeyFromMatch(
-  marketId: string,
-  match: Matched,
-): Promise<void> {
-  const pendingState = usePendingPubkeySubmissionsStore.getState();
-  if (pendingState.byTradeId[match.tradeId]) return;
-
-  const restingMaker = usePendingTradesStore.getState().byOrderId[match.makerOrderId];
-  if (!restingMaker) return;
-
-  await submitPendingEphemeralPubkey({
-    tradeId: match.tradeId,
-    orderId: match.makerOrderId,
-    marketId,
-    deadline: match.deadline,
-  });
-}
-
-async function submitPendingEphemeralPubkey(input: {
-  tradeId: string;
-  orderId: string;
-  marketId: string;
-  deadline: string;
-}): Promise<void> {
-  const store = usePendingPubkeySubmissionsStore.getState();
-  let entry = store.byTradeId[input.tradeId];
-  if (!entry) {
-    const key = generateEphemeralKeyPair();
-    entry = {
-      tradeId: input.tradeId,
-      orderId: input.orderId,
-      marketId: input.marketId,
-      pubkey: key.pubkey,
-      privkey: key.privkey,
-      deadline: input.deadline,
-      submitted: false,
-    };
-    store.addPendingPubkey(entry);
-  }
-  if (entry.submitted) return;
-
-  await submitEphemeralPubkey(input.tradeId, entry.pubkey, conditionIdFromMarketId(input.marketId));
-  usePendingPubkeySubmissionsStore.getState().markSubmitted(input.tradeId);
-}
-
-function conditionIdFromMarketId(marketId: string): string {
-  const index = marketId.lastIndexOf("-");
-  return index > 0 ? marketId.substring(0, index) : marketId;
 }

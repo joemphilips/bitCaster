@@ -22,12 +22,7 @@ import {
   submitBrowserCtfRangeOrder,
 } from "@/lib/browserCtfRangeOrderSubmission";
 import { onOrderBookUpdated, onTradeExecuted } from "@/lib/marketHub";
-import type {
-  MarketStatusChanged,
-  Matched,
-  OrderBookSnapshot,
-  TradeExecuted,
-} from "@/lib/marketHub";
+import type { MarketStatusChanged, OrderBookSnapshot, TradeExecuted } from "@/lib/marketHub";
 import type {
   CategoricalMarketDetail,
   Comment,
@@ -55,7 +50,6 @@ const mocks = vi.hoisted(() => ({
   },
   liveStatusHandlers: [] as Array<(status: MarketStatusChanged) => void>,
   orderBookHandlers: new Map<string, (snapshot: OrderBookSnapshot) => void>(),
-  matchedHandlers: new Map<string, (match: Matched) => void>(),
   tradeExecutedHandlers: new Map<string, (trade: TradeExecuted) => void>(),
   windowPriceHistory: vi.fn((history: { timeframe: string; data: Array<unknown> }) => ({
     ...history,
@@ -104,10 +98,6 @@ vi.mock("@/lib/marketHub", () => ({
     mocks.orderBookHandlers.set(marketId, handler);
     return () => mocks.orderBookHandlers.delete(marketId);
   }),
-  onMatched: vi.fn((marketId: string, handler: (match: Matched) => void) => {
-    mocks.matchedHandlers.set(marketId, handler);
-    return () => mocks.matchedHandlers.delete(marketId);
-  }),
   onOrderCancelled: vi.fn(() => () => {}),
   onTradeExecuted: vi.fn((marketId: string, handler: (trade: TradeExecuted) => void) => {
     mocks.tradeExecutedHandlers.set(marketId, handler);
@@ -142,7 +132,6 @@ vi.mock("@/lib/markets", () => ({
   }),
   priceNumeratorToPercent: (price: number, divisibility = 100) => (price / divisibility) * 100,
   signTradeComment: vi.fn(),
-  submitEphemeralPubkey: vi.fn(),
   windowPriceHistory: mocks.windowPriceHistory,
 }));
 

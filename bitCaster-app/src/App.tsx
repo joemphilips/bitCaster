@@ -14,7 +14,7 @@ import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
 import { useActivityLogSync } from "@/stores/useActivityLogSync";
 import { usePendingTradesPoller } from "@/lib/orderStatus";
-import { useTradeSettlement } from "@/hooks/useTradeSettlement";
+import { useOrderSettlementLifecycle } from "@/hooks/useOrderSettlementLifecycle";
 import { useLikedMarketCloseReconcile } from "@/hooks/useLikedMarketCloseReconcile";
 import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
@@ -29,15 +29,11 @@ import { startNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import { refreshMintInfoWithoutActivating, userAddAndSelectMint } from "@/lib/walletOps";
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
-import { sweepElapsedPartialLockFailures } from "@/lib/partialLockRecovery";
-import { installE2EDiagnostics } from "@/lib/e2eDiagnostics";
 import { reconcileAcceptedLocalWalletPayments } from "@/lib/pendingLocalWalletPayments";
 import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
 import { useEncryptedWalletBackupDriver } from "@/hooks/useEncryptedWalletBackupDriver";
 import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
-
-installE2EDiagnostics();
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
 
@@ -140,7 +136,7 @@ function AppRoutes() {
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const walletMintUrls = useWalletStore((s) => s.mints.map(({ url }) => url).join("\n"));
   const [nostrSignerReady, setNostrSignerReady] = useState(false);
-  useTradeSettlement(nostrSignerReady && nostrSignerMode !== "none", {
+  useOrderSettlementLifecycle(nostrSignerReady && nostrSignerMode !== "none", {
     mnemonic: walletMnemonic,
     mintUrls: walletMintUrls.split("\n").filter(Boolean),
   });
@@ -265,23 +261,6 @@ function AppRoutes() {
       window.removeEventListener("online", onOnline);
     };
   }, [nostrSignerReady, walletMnemonic, walletMintUrls]);
-
-  const partialLockSweepAttempted = useRef(false);
-  useEffect(() => {
-    if (partialLockSweepAttempted.current) return;
-    const runSweep = () => {
-      if (partialLockSweepAttempted.current) return;
-      partialLockSweepAttempted.current = true;
-      sweepElapsedPartialLockFailures().catch(() => {});
-    };
-    if (useWalletStore.persist.hasHydrated()) runSweep();
-    else {
-      const unsub = useWalletStore.persist.onFinishHydration(() => {
-        runSweep();
-        unsub();
-      });
-    }
-  }, []);
 
   const pendingWalletPaymentReconcileAttempted = useRef(false);
   useEffect(() => {

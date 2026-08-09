@@ -44,14 +44,7 @@ vi.mock("@microsoft/signalr", () => ({
   },
 }));
 
-import {
-  disconnect,
-  joinMarket,
-  onMatched,
-  onTradeExecuted,
-  parseMatched,
-  parseTradeExecuted,
-} from "../marketHub";
+import { disconnect, joinMarket, onTradeExecuted, parseTradeExecuted } from "../marketHub";
 
 beforeEach(async () => {
   await disconnect();
@@ -101,65 +94,6 @@ describe("parseTradeExecuted", () => {
   });
 });
 
-describe("parseMatched", () => {
-  it("accepts canonical matched payloads from the engine", () => {
-    expect(
-      parseMatched({
-        MarketId: "cond-YES",
-        TradeId: "trade-1",
-        MakerOrderId: "maker-1",
-        TakerOrderId: "taker-1",
-        ExecutionPrice: 420,
-        AmountSubunits: 5_000,
-        Path: "Complementary",
-        MatchedAt: "2026-06-01T00:00:00Z",
-        Deadline: "2026-06-01T00:00:10Z",
-        CollateralUnit: "msat",
-        BaseAsset: "sat",
-        Divisibility: 10_000,
-        QuotePaymentSubunits: 2_100,
-        OutcomeFaceAmountSubunits: 5_000,
-        TokenSide: "Outcome",
-      }),
-    ).toEqual({
-      marketId: "cond-YES",
-      match: {
-        tradeId: "trade-1",
-        makerOrderId: "maker-1",
-        takerOrderId: "taker-1",
-        executionPrice: 420,
-        amountSubunits: 5_000,
-        deadline: "2026-06-01T00:00:10Z",
-        collateralUnit: "msat",
-        path: "Complementary",
-        matchedAt: "2026-06-01T00:00:00Z",
-      },
-    });
-  });
-
-  it("rejects missing or non-msat collateral units before dispatch", () => {
-    const payload = {
-      MarketId: "cond-YES",
-      TradeId: "trade-1",
-      MakerOrderId: "maker-1",
-      TakerOrderId: "taker-1",
-      ExecutionPrice: 420,
-      AmountSubunits: 5_000,
-      Path: "Complementary",
-      MatchedAt: "2026-06-01T00:00:00Z",
-      Deadline: "2026-06-01T00:00:10Z",
-      BaseAsset: "sat",
-      Divisibility: 10_000,
-      QuotePaymentSubunits: 2_100,
-      OutcomeFaceAmountSubunits: 5_000,
-      TokenSide: "Outcome",
-    };
-
-    expect(parseMatched(payload)).toBeNull();
-    expect(parseMatched({ ...payload, CollateralUnit: "sat" })).toBeNull();
-  });
-});
-
 describe("joinMarket reconnect recovery", () => {
   it("tracks desired joins before invoking so failed reconnecting joins are retried after reconnect", async () => {
     await joinMarket("cond-YES");
@@ -179,32 +113,13 @@ describe("joinMarket reconnect recovery", () => {
   });
 });
 
-describe("market trade lifecycle dispatch", () => {
-  it("keeps Matched and TradeExecuted separate but de-dupes duplicate settlement pushes by tradeId", async () => {
-    const matched = vi.fn();
+describe("market execution dispatch", () => {
+  it("de-dupes duplicate execution pushes by tradeId", async () => {
     const executed = vi.fn();
 
-    onMatched("cond-YES", matched);
     onTradeExecuted("cond-YES", executed);
     await joinMarket("cond-YES");
 
-    signalrMock.registeredHandlers.get("Matched")?.({
-      MarketId: "cond-YES",
-      TradeId: "trade-1",
-      MakerOrderId: "maker-1",
-      TakerOrderId: "taker-1",
-      ExecutionPrice: 420,
-      AmountSubunits: 5_000,
-      Path: "Complementary",
-      MatchedAt: "2026-06-01T00:00:00Z",
-      Deadline: "2026-06-01T00:00:10Z",
-      CollateralUnit: "msat",
-      BaseAsset: "sat",
-      Divisibility: 10_000,
-      QuotePaymentSubunits: 2_100,
-      OutcomeFaceAmountSubunits: 5_000,
-      TokenSide: "Outcome",
-    });
     signalrMock.registeredHandlers.get("TradeExecuted")?.({
       MarketId: "cond-YES",
       TradeId: "trade-1",
@@ -222,7 +137,6 @@ describe("market trade lifecycle dispatch", () => {
       Timestamp: "2026-06-01T00:00:10Z",
     });
 
-    expect(matched).toHaveBeenCalledTimes(1);
     expect(executed).toHaveBeenCalledTimes(1);
     expect(executed).toHaveBeenCalledWith({
       tradeId: "trade-1",

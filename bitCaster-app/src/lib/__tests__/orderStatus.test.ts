@@ -1,4 +1,7 @@
+import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useNotificationsStore } from "@/stores/notifications";
+import { usePendingTradesStore } from "@/stores/pendingTrades";
 
 const { mockGenerateNip98Header } = vi.hoisted(() => ({
   mockGenerateNip98Header: vi.fn(),
@@ -11,12 +14,10 @@ vi.mock("../markets", () => ({
 import {
   buildOrderStatusNotifications,
   fetchOrderStatus,
-  promoteNewFillsToActiveSwaps,
   splitMarketId,
+  usePendingTradesPoller,
   type OrderStatusResponse,
 } from "../orderStatus";
-import { useActiveSwapsStore } from "@/stores/activeSwaps";
-import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
 
 describe("fetchOrderStatus", () => {
   beforeEach(() => {
@@ -26,6 +27,7 @@ describe("fetchOrderStatus", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("signs the private order-status poll with NIP-98", async () => {
@@ -85,31 +87,6 @@ describe("splitMarketId", () => {
     expect(splitMarketId("-leadingDash")).toBeNull();
     expect(splitMarketId("trailingDash-")).toBeNull();
     expect(splitMarketId("")).toBeNull();
-  });
-});
-
-describe("promoteNewFillsToActiveSwaps", () => {
-  beforeEach(() => {
-    useActiveSwapsStore.setState({ byTradeId: {} });
-    usePendingPubkeySubmissionsStore.setState({ byTradeId: {} });
-  });
-
-  it("skips an unchanged fill snapshot", () => {
-    const status = orderStatusWithTradeFills("trade-a", "trade-b");
-    const promoted = promoteNewFillsToActiveSwaps(status, pendingTrade(), 2);
-
-    expect(promoted).toBe(0);
-    expect(useActiveSwapsStore.getState().byTradeId).toEqual({});
-  });
-
-  it("promotes only fills that appeared after the last observed count", () => {
-    const status = orderStatusWithTradeFills("trade-a", "trade-b", "trade-c");
-    seedPendingPubkey("trade-b");
-    seedPendingPubkey("trade-c");
-    const promoted = promoteNewFillsToActiveSwaps(status, pendingTrade(), 1);
-
-    expect(promoted).toBe(2);
-    expect(Object.keys(useActiveSwapsStore.getState().byTradeId)).toEqual(["trade-b", "trade-c"]);
   });
 });
 
@@ -241,6 +218,94 @@ describe("buildOrderStatusNotifications", () => {
   });
 });
 
+describe("usePendingTradesPoller", () => {
+  beforeEach(() => {
+    mockGenerateNip98Header.mockReset();
+    mockGenerateNip98Header.mockResolvedValue("Nostr token");
+    useNotificationsStore.setState({ items: [] });
+    usePendingTradesStore.setState({ byOrderId: {} });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("retains a terminal order with fills until settlement recovery completes", async () => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const orderId = "11111111-1111-4111-8111-111111111111";
+    const settlementGroup = {
+      groupId: "44444444-4444-4444-8444-444444444444",
+      status: "Confirmed" as const,
+      revision: 1,
+      coalescingDeadline: "2026-08-10T00:00:00.000Z",
+      frozenAt: "2026-08-10T00:00:01.000Z",
+    };
+    const status: OrderStatusResponse = {
+      orderId,
+      marketId: "condition-YES",
+      status: "filled",
+      remainingAmountSubunits: 0,
+      filledAmountSubunits: 10,
+      fills: [
+        {
+          id: "55555555-5555-4555-8555-555555555555",
+          makerOrderId: orderId,
+          takerOrderId: "22222222-2222-4222-8222-222222222222",
+          amountSubunits: 10,
+          executionPrice: 5_000,
+          path: "Complementary",
+          status: "Filled",
+          filledAt: "2026-08-10T00:00:02.000Z",
+          settlementGroup,
+          baseAsset: "sat",
+          divisibility: 10_000,
+          tokenSide: "Outcome",
+          quotePaymentSubunits: 5,
+          outcomeFaceAmountSubunits: 10,
+        },
+      ],
+      amountSubunits: 10,
+      outcomeId: "YES",
+      side: "Buy",
+      price: 5_000,
+      placedAt: "2026-08-10T00:00:00.000Z",
+      timeInForce: "FAK",
+      tokenSide: "Outcome",
+      baseAsset: "sat",
+      divisibility: 10_000,
+      activeSettlementGroup: settlementGroup,
+      continuation: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Promise.resolve(
+          new Response(JSON.stringify(status), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      ),
+    );
+    usePendingTradesStore.getState().add({
+      ...pendingTrade(),
+      orderId,
+      marketId: "condition-YES",
+      submittedAt: Date.now(),
+    });
+    const { unmount } = renderHook(() => usePendingTradesPoller());
+
+    await waitFor(() =>
+      expect(
+        useNotificationsStore.getState().items.some((item) => item.id === `${orderId}-filled`),
+      ).toBe(true),
+    );
+    expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeDefined();
+    unmount();
+  });
+});
+
 function pendingTrade() {
   return {
     orderId: "order-1",
@@ -249,18 +314,6 @@ function pendingTrade() {
     baseAsset: "sat" as const,
     divisibility: 10_000 as const,
   };
-}
-
-function seedPendingPubkey(tradeId: string) {
-  usePendingPubkeySubmissionsStore.getState().addPendingPubkey({
-    tradeId,
-    orderId: "order-1",
-    marketId: "market-1",
-    pubkey: "02".padEnd(66, "0"),
-    privkey: "01".padEnd(64, "0"),
-    deadline: new Date(Date.now() + 60_000).toISOString(),
-    submitted: true,
-  });
 }
 
 function orderStatusWithTradeFills(...tradeIds: string[]): OrderStatusResponse {

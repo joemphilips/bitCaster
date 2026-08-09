@@ -9,8 +9,7 @@ import type { ProductMarketDivisibility } from "@/types/market";
 const PENDING_TRADE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
- * Per-order metadata retained after submission. Ephemeral keypairs are now
- * generated per trade at match time and live in pendingPubkeySubmissions.
+ * Per-order metadata retained after submission for order lifecycle recovery.
  */
 export interface PendingTrade {
   orderId: string;

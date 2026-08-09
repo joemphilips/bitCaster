@@ -3,8 +3,8 @@
  *
  * Scope: live order-book updates per market group (`JoinMarket` /
  * `LeaveMarket`). Per-user position pushes are deliberately not part of
- * this client — see P08 (no server-side per-user bookkeeping). Trade
- * settlement runs on TradeHub via `useTradeHub`.
+ * this client. Order-owner settlement lifecycle runs on the authenticated
+ * order hub.
  *
  * Lifecycle: a single lazy HubConnection is shared across the whole app.
  * React components subscribe via `onOrderBookUpdated` and are returned an
@@ -18,7 +18,6 @@ import type { components } from "@/generated/api";
 import { debounce, type DebouncedFunction } from "@/lib/debounce";
 import { resolveHubServerUrl } from "@/lib/hubUrl";
 import { refreshOrderBook } from "@/lib/orderBookRefresh";
-import { parseMatchedDelta } from "@bitcaster/client-sdk/tradeIgnition";
 
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
 export type MarketStatusChanged = components["schemas"]["MarketStatusChanged"];
@@ -28,18 +27,6 @@ export interface TradeExecuted {
   amountSubunits: number;
   side: string;
   timestamp: string;
-}
-
-export interface Matched {
-  tradeId: string;
-  makerOrderId: string;
-  takerOrderId: string;
-  executionPrice: number;
-  amountSubunits: number;
-  path: string;
-  matchedAt: string;
-  deadline: string;
-  collateralUnit: "msat";
 }
 
 export interface OrderCancelled {
@@ -117,29 +104,9 @@ export function parseTradeExecuted(
   };
 }
 
-export function parseMatched(payload: unknown): { marketId: string; match: Matched } | null {
-  const parsed = parseMatchedDelta(payload);
-  if (!parsed) return null;
-  return {
-    marketId: parsed.marketId,
-    match: {
-      tradeId: parsed.tradeId,
-      makerOrderId: parsed.makerOrderId,
-      takerOrderId: parsed.takerOrderId,
-      executionPrice: parsed.executionPrice,
-      amountSubunits: parsed.amountSubunits,
-      path: parsed.path,
-      matchedAt: parsed.matchedAt,
-      deadline: parsed.deadline,
-      collateralUnit: parsed.collateralUnit,
-    },
-  };
-}
-
 type OrderBookHandler = (snapshot: OrderBookSnapshot) => void;
 type MarketStatusHandler = (status: MarketStatusChanged) => void;
 type TradeExecutedHandler = (trade: TradeExecuted) => void;
-type MatchedHandler = (match: Matched) => void;
 type OrderCancelledHandler = (cancelled: OrderCancelled) => void;
 type MarketRejoinedHandler = () => void;
 
@@ -176,7 +143,6 @@ let _startPromise: Promise<void> | null = null;
 // can cleanly leave the server group.
 const _orderBookHandlers = new Map<string, Set<OrderBookHandler>>();
 const _tradeExecutedHandlers = new Map<string, Set<TradeExecutedHandler>>();
-const _matchedHandlers = new Map<string, Set<MatchedHandler>>();
 const _orderCancelledHandlers = new Map<string, Set<OrderCancelledHandler>>();
 const _seenTradeExecutedIdsByMarket = new Map<string, Set<string>>();
 const _marketJoinCounts = new Map<string, number>();
@@ -227,21 +193,6 @@ function buildConnection(): HubConnection {
         handler(parsed.trade);
       } catch (err) {
         console.warn("[marketHub] TradeExecuted handler threw:", err);
-      }
-    }
-  });
-
-  conn.on("Matched", (payload: unknown) => {
-    const parsed = parseMatched(payload);
-    if (!parsed) return;
-
-    const handlers = _matchedHandlers.get(parsed.marketId);
-    if (!handlers) return;
-    for (const handler of handlers) {
-      try {
-        handler(parsed.match);
-      } catch (err) {
-        console.warn("[marketHub] Matched handler threw:", err);
       }
     }
   });
@@ -437,21 +388,6 @@ export function onTradeExecuted(marketId: string, handler: TradeExecutedHandler)
   };
 }
 
-export function onMatched(marketId: string, handler: MatchedHandler): () => void {
-  let set = _matchedHandlers.get(marketId);
-  if (!set) {
-    set = new Set();
-    _matchedHandlers.set(marketId, set);
-  }
-  set.add(handler);
-  return () => {
-    const s = _matchedHandlers.get(marketId);
-    if (!s) return;
-    s.delete(handler);
-    if (s.size === 0) _matchedHandlers.delete(marketId);
-  };
-}
-
 export function onOrderCancelled(marketId: string, handler: OrderCancelledHandler): () => void {
   let set = _orderCancelledHandlers.get(marketId);
   if (!set) {
@@ -492,7 +428,6 @@ export async function disconnect(): Promise<void> {
   _startPromise = null;
   _orderBookHandlers.clear();
   _tradeExecutedHandlers.clear();
-  _matchedHandlers.clear();
   _seenTradeExecutedIdsByMarket.clear();
   _marketStatusHandlers.clear();
   _marketRejoinedHandlers.clear();

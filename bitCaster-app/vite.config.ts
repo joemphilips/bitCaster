@@ -71,10 +71,6 @@ export default defineConfig({
         replacement: path.resolve(__dirname, "../bitcaster-client-sdk/src/index.ts"),
       },
       {
-        find: /^@bitcaster\/swap-protocol\/(.+)$/,
-        replacement: path.resolve(__dirname, "../bitCaster-swap-protocol/src/$1"),
-      },
-      {
         find: /^@cashu\/cashu-ts$/,
         replacement: path.resolve(__dirname, "../cashu-ts/lib/cashu-ts.es.js"),
       },

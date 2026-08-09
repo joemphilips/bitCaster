@@ -6,8 +6,6 @@ import {
   type NotificationKind,
   useNotificationsStore,
 } from "@/stores/notifications";
-import { useActiveSwapsStore } from "@/stores/activeSwaps";
-import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
 import { useToastStore } from "@/stores/toast";
 import { generateNip98Header } from "@/lib/markets";
 import { resolveApiSigningUrl } from "@/lib/hubUrl";
@@ -93,10 +91,6 @@ type PendingTradeForPromotion = {
   amountSubunits?: number | null;
 };
 
-type FillLike = {
-  tradeId?: string;
-};
-
 const TERMINAL_STATUSES: ReadonlySet<OrderStatus> = new Set([
   "filled",
   "cancelled",
@@ -117,59 +111,6 @@ export async function fetchOrderStatus(
 }
 
 const POLL_INTERVAL_MS = 5_000;
-
-/**
- * Promote any fill carrying a `tradeId` to the in-progress swap
- * store. Complementary matches (Buy vs Sell) surface the `tradeId` on produced
- * fills once the engine creates the Trade aggregate; mint matches (Buy vs Buy
- * splitter) surface a fill-shaped settlement handle before final fill commit
- * so clients can join TradeHub even if they missed the one-shot `TradeCreated`
- * push. Legacy bootstrap fills with no `tradeId` are ignored here.
- * Idempotent — `promote()` is a no-op for tradeIds already present in
- * `activeSwaps`.
- *
- * Captures the per-trade ephemeral keypair from `pendingPubkeySubmissions`.
- */
-export function promoteNewFillsToActiveSwaps(
-  status: OrderStatusResponse,
-  trade: PendingTradeForPromotion,
-  lastFillCount: number,
-): number {
-  return promoteFillsToActiveSwaps(status.fills, trade, lastFillCount);
-}
-
-export function promoteFillsToActiveSwaps(
-  fills: readonly FillLike[],
-  trade: PendingTradeForPromotion,
-  lastFillCount = 0,
-): number {
-  if (fills.length <= lastFillCount) return 0;
-
-  const promote = useActiveSwapsStore.getState().promote;
-  let promoted = 0;
-  for (const fill of fills.slice(lastFillCount)) {
-    const tradeId = fill.tradeId;
-    if (!tradeId) continue;
-    const pendingKey = usePendingPubkeySubmissionsStore.getState().byTradeId[tradeId];
-    if (!pendingKey) continue;
-    promote({
-      tradeId,
-      orderId: trade.orderId,
-      clientOrderId: trade.clientOrderId,
-      marketId: trade.marketId,
-      ephemeralPrivkeyHex: pendingKey.privkey,
-      ephemeralPubkeyHex: pendingKey.pubkey,
-      baseAsset: trade.baseAsset,
-      divisibility: trade.divisibility,
-      side: trade.side,
-      tokenSide: trade.tokenSide,
-      priceSubunits: trade.priceSubunits,
-      amountSubunits: trade.amountSubunits,
-    });
-    promoted += 1;
-  }
-  return promoted;
-}
 
 export function buildOrderStatusNotifications(
   status: OrderStatusResponse,
@@ -254,6 +195,7 @@ function shortOrderId(orderId: string): string {
  */
 export function usePendingTradesPoller(): void {
   const lastFillCountRef = useRef<Map<string, number>>(new Map());
+  const terminalNotificationOrderIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -279,6 +221,11 @@ export function usePendingTradesPoller(): void {
       inFlight = true;
       try {
         const trades = Object.values(usePendingTradesStore.getState().byOrderId);
+        const currentOrderIds = new Set(trades.map((trade) => trade.orderId));
+        for (const orderId of terminalNotificationOrderIdsRef.current) {
+          if (!currentOrderIds.has(orderId))
+            terminalNotificationOrderIdsRef.current.delete(orderId);
+        }
         if (trades.length === 0) {
           scheduleNext();
           return;
@@ -304,17 +251,16 @@ export function usePendingTradesPoller(): void {
             const fillCount = status.fills.length;
             const lastFillCount = lastFillCountRef.current.get(trade.orderId) ?? 0;
 
-            // Hand any fresh complementary-match fills (Buy vs Sell) or
-            // mint-match settlement handles (Buy vs Buy splitter) to
-            // useTradeSettlement so the atomic-swap driver can pick them up.
-            // Legacy bootstrap fills without a tradeId are skipped here.
             const hasNewFills = fillCount > lastFillCount;
-            promoteNewFillsToActiveSwaps(status, trade, lastFillCount);
+            const terminalAlreadyNotified =
+              isTerminal && terminalNotificationOrderIdsRef.current.has(trade.orderId);
 
             // Terminal status short-circuits partial-fill: a "Filled" that
             // also has new fills shouldn't generate two separate bell entries
             // for the same settlement.
-            const notifications = buildOrderStatusNotifications(status, trade, lastFillCount);
+            const notifications = terminalAlreadyNotified
+              ? []
+              : buildOrderStatusNotifications(status, trade, lastFillCount);
             for (const notification of notifications) {
               addNotification(notification);
             }
@@ -324,21 +270,23 @@ export function usePendingTradesPoller(): void {
             }
 
             if (isTerminal) {
-              if (current === "filled") {
+              if (!terminalAlreadyNotified && current === "filled") {
                 useToastStore.getState().addToast({
                   type: "success",
                   message: `All your amount for order ${shortOrderId(trade.orderId)} has been filled. 0 sats remaining.`,
                 });
               }
-              removePendingTrade(trade.orderId);
-              lastFillCountRef.current.delete(trade.orderId);
+              terminalNotificationOrderIdsRef.current.add(trade.orderId);
 
-              // Per P08, the server is not the source of truth for user
-              // positions — the wallet (Cashu proofs in IndexedDB) is.
-              // Wallet balance is driven by a Dexie `useLiveQuery` over
-              // the proof-db, which auto-updates when new Cashu proofs
-              // land, so no explicit refresh is needed here on terminal
-              // status.
+              if (fillCount === 0) {
+                removePendingTrade(trade.orderId);
+                lastFillCountRef.current.delete(trade.orderId);
+                terminalNotificationOrderIdsRef.current.delete(trade.orderId);
+              }
+
+              // Keep an order with fills until exact settlement recovery
+              // completes. This preserves its authenticated JoinOrder replay
+              // key when HTTP observes a terminal state before SignalR does.
             }
           }),
         );
