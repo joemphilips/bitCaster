@@ -41,10 +41,22 @@ export interface UserProfile {
 export interface PortfolioStats {
   positionsValueSats: number;
   totalValueSats: number;
+  positionsValueKnown?: boolean;
+  totalValueKnown?: boolean;
   positionsValueByUnit?: Array<{ unit: "sat"; amount: number }>;
   totalValueByUnit?: Array<{ unit: "sat"; amount: number }>;
   biggestWinSats: number;
   predictionsCount: number;
+}
+
+export interface PortfolioMonitoringState {
+  stale: boolean;
+  incomplete: boolean;
+  building: boolean;
+  unvaluedAssetCount: number;
+  hasPendingOutgoing: boolean;
+  pendingOutgoingValueMsat: number | null;
+  error: "unavailable" | null;
 }
 
 // =============================================================================
@@ -64,12 +76,17 @@ export interface Position {
   outcomeLabel?: string;
   canClaimPayout?: boolean;
   canDiscard?: boolean;
+  /** False for server monitoring rows. Local proofs authorize all wallet actions. */
+  canSell?: boolean;
   baseAsset: "sat";
   divisibility: import("./market").ProductMarketDivisibility;
-  shares: number;
+  /** Exact share count when the client knows the market divisibility. */
+  shares?: number;
   avgBuyPrice: number;
   currentPrice: number;
   currentValueSats: number;
+  /** False when the display-only monitor cannot value this asset. */
+  valueKnown?: boolean;
   profitLossSats: number;
   profitLossPercent: number;
   status: PositionStatus;
@@ -263,6 +280,12 @@ export interface PortfolioProps {
 
   /** Called when user opens Settings */
   onOpenSettings?: () => void;
+
+  /** Display-only status from the authenticated portfolio monitor. */
+  monitoring?: PortfolioMonitoringState;
+
+  /** Called when the user dismisses a monitoring error. */
+  onDismissMonitoringError?: () => void;
 
   /**
    * Show the "Connect Nostr" CTA just beneath ProfileCard. Set by the

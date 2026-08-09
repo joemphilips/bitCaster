@@ -15,7 +15,12 @@ function StatCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function formatTotals(totals: AmountByUnit[] | undefined, fallbackSats: number): string {
+function formatTotals(
+  totals: AmountByUnit[] | undefined,
+  fallbackSats: number,
+  known: boolean | undefined,
+): string {
+  if (known === false) return "—";
   const values = totals?.filter((entry) => entry.amount !== 0) ?? [];
   if (values.length === 0) return formatAmount(fallbackSats, "sat");
   return values.map((entry) => formatAmount(entry.amount, entry.unit)).join(" / ");
@@ -27,11 +32,15 @@ export function StatsRow({ stats }: StatsRowProps) {
     <div className="flex items-stretch divide-x divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
       <StatCard
         label={t("portfolio.totalValue")}
-        value={formatTotals(stats.totalValueByUnit, stats.totalValueSats)}
+        value={formatTotals(stats.totalValueByUnit, stats.totalValueSats, stats.totalValueKnown)}
       />
       <StatCard
         label={t("portfolio.positionsValue")}
-        value={formatTotals(stats.positionsValueByUnit, stats.positionsValueSats)}
+        value={formatTotals(
+          stats.positionsValueByUnit,
+          stats.positionsValueSats,
+          stats.positionsValueKnown,
+        )}
       />
       <StatCard label={t("portfolio.predictions")} value={stats.predictionsCount.toString()} />
     </div>

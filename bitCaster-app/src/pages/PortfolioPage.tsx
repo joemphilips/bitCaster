@@ -20,8 +20,7 @@ export function toPortfolioMarketDetailId(marketId: string, outcomeId?: string |
   if (suffix && marketId.endsWith(suffix)) {
     return marketId.slice(0, -suffix.length);
   }
-  const separator = marketId.lastIndexOf("-");
-  return separator > 0 ? marketId.slice(0, separator) : marketId;
+  return marketId;
 }
 
 export function PortfolioPage() {
@@ -128,13 +127,18 @@ export function PortfolioPage() {
     async (positionId: string) => {
       if (claimingPositionId) return;
       const position = state.positions.find((p) => p.id === positionId);
-      if (!position || position.status !== "closed" || position.currentValueSats <= 0) {
+      if (
+        !position ||
+        position.status !== "closed" ||
+        !position.isWinner ||
+        position.canClaimPayout !== true
+      ) {
         return;
       }
 
       setClaimingPositionId(positionId);
       try {
-        const conditionId = toPortfolioMarketDetailId(position.marketId);
+        const conditionId = toPortfolioMarketDetailId(position.marketId, position.outcomeId);
         const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
         // Gather ALL of the condition's CTF proofs (every keyset leg),
         // independent of how each leg was labelled when persisted. A composite
@@ -185,7 +189,7 @@ export function PortfolioPage() {
       if (!position || !position.isLoser || position.isWinner || position.isPending) return;
       if (!window.confirm(t("portfolio.discardLostPositionConfirm"))) return;
       try {
-        const conditionId = toPortfolioMarketDetailId(position.marketId);
+        const conditionId = toPortfolioMarketDetailId(position.marketId, position.outcomeId);
         const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
         // Delete only this lost position's proofs (its outcome-collection
         // leg(s)), not the whole condition — a condition can hold several
@@ -254,6 +258,7 @@ export function PortfolioPage() {
         activity={state.activity}
         createdMarkets={state.createdMarkets}
         positionsTab={state.positionsTab}
+        monitoring={state.monitoring}
         onGetStarted={handleGetStarted}
         onAvatarUpload={handleAvatarUpload}
         onTimeRangeChange={handleTimeRangeChange}
@@ -266,6 +271,7 @@ export function PortfolioPage() {
         onDiscardLostPosition={handleDiscardLostPosition}
         onPositionsTabChange={handlePositionsTabChange}
         onOpenSettings={handleOpenSettings}
+        onDismissMonitoringError={state.dismissMonitoringError}
         showConnectNostrCta={showConnectNostrCta}
         onConnectNostr={handleConnectNostr}
       />

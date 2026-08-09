@@ -8,9 +8,14 @@ import { toSeed } from "./bip39";
 let activeScopeId: string | null = null;
 
 export function browserWalletScopeIdFromMnemonic(mnemonic: string): string | null {
+  const walletId = browserWalletIdFromMnemonic(mnemonic);
+  return walletId === null ? null : deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId });
+}
+
+export function browserWalletIdFromMnemonic(mnemonic: string): string | null {
   const words = mnemonic.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return null;
-  return browserWalletScopeIdFromSeed(toSeed(words));
+  return deriveDurableCustodyWalletId(toSeed(words));
 }
 
 export function browserWalletScopeIdFromSeed(seed: Uint8Array): string {

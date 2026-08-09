@@ -11,8 +11,53 @@ import { FundsList } from "./FundsList";
 import { ActivityFeed } from "./ActivityFeed";
 import { MyMarkets } from "./MyMarkets";
 import { LikedMarkets } from "./LikedMarkets";
+import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
 
 type MainTab = "positions" | "funds" | "activity";
+
+function MonitoringStatus({
+  monitoring,
+  onDismissError,
+}: {
+  monitoring: PortfolioProps["monitoring"];
+  onDismissError?: () => void;
+}) {
+  const { t } = useTranslation();
+  if (!monitoring) return null;
+  const states = [
+    monitoring.stale && t("portfolio.monitoringStale"),
+    monitoring.incomplete && t("portfolio.monitoringIncomplete"),
+    monitoring.building && t("portfolio.monitoringBuilding"),
+    monitoring.unvaluedAssetCount > 0 &&
+      t("portfolio.monitoringUnvalued", { count: monitoring.unvaluedAssetCount }),
+    monitoring.hasPendingOutgoing &&
+      (monitoring.pendingOutgoingValueMsat === null
+        ? t("portfolio.monitoringPendingUnvalued")
+        : t("portfolio.monitoringPending", {
+            amount: formatMarketSubunits(monitoring.pendingOutgoingValueMsat, "sat"),
+          })),
+  ].filter(Boolean);
+  if (!monitoring.error && states.length === 0) return null;
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+      <span className="flex-1">
+        {monitoring.error
+          ? t("portfolio.monitoringUnavailable")
+          : `${t("portfolio.monitoringLabel")}: ${states.join(", ")}`}
+      </span>
+      {monitoring.error && onDismissError && (
+        <button
+          type="button"
+          onClick={onDismissError}
+          aria-label={t("portfolio.dismissMonitoringError")}
+          className="rounded px-1 font-medium underline"
+        >
+          {t("common.close")}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function Portfolio(props: PortfolioProps) {
   const { t } = useTranslation();
@@ -55,6 +100,11 @@ export function Portfolio(props: PortfolioProps) {
         </button>
       </div>
 
+      <MonitoringStatus
+        monitoring={props.monitoring}
+        onDismissError={props.onDismissMonitoringError}
+      />
+
       {/* Profile + Chart Section */}
       <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-5">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -76,6 +126,7 @@ export function Portfolio(props: PortfolioProps) {
             chartData={props.plChartData}
             selectedTimeRange={props.selectedTimeRange}
             totalValueSats={props.stats.totalValueSats}
+            totalValueKnown={props.stats.totalValueKnown}
             onTimeRangeChange={props.onTimeRangeChange}
           />
         </div>

@@ -109,26 +109,38 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
               {positionLabel}
             </span>
           )}
-          <span className="text-xs text-slate-400 dark:text-slate-500">
-            {position.shares.toLocaleString()} shares
-          </span>
+          {position.shares !== undefined && (
+            <span className="text-xs text-slate-400 dark:text-slate-500">
+              {position.shares.toLocaleString()} shares
+            </span>
+          )}
         </div>
       </div>
 
       {/* Value & P/L */}
       <div className="text-right shrink-0">
-        <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
-          {formatMarketSubunits(position.currentValueSats, baseAsset)}
-        </div>
-        <div className={`text-xs font-mono ${isPositive ? "text-emerald-500" : "text-rose-500"}`}>
-          {isPositive ? "+" : ""}
-          {formatMarketSubunits(position.profitLossSats, baseAsset)} ({isPositive ? "+" : ""}
-          {position.profitLossPercent.toFixed(1)}%)
-        </div>
+        {position.valueKnown === false ? (
+          <div className="text-sm font-medium text-amber-600 dark:text-amber-300">
+            {t("portfolio.unvalued")}
+          </div>
+        ) : (
+          <>
+            <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
+              {formatMarketSubunits(position.currentValueSats, baseAsset)}
+            </div>
+            <div
+              className={`text-xs font-mono ${isPositive ? "text-emerald-500" : "text-rose-500"}`}
+            >
+              {isPositive ? "+" : ""}
+              {formatMarketSubunits(position.profitLossSats, baseAsset)} ({isPositive ? "+" : ""}
+              {position.profitLossPercent.toFixed(1)}%)
+            </div>
+          </>
+        )}
       </div>
 
       {/* Action Button */}
-      {position.status === "active" && onSell && (
+      {position.canSell !== false && position.status === "active" && onSell && (
         <button
           onClick={(e) => {
             e.stopPropagation();

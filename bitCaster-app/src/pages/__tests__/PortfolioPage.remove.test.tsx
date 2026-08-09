@@ -8,6 +8,7 @@ import type { Position } from "@/types/portfolio";
 const getOutcomeProofs = vi.fn();
 const getConditionCtfProofs = vi.fn().mockResolvedValue([]);
 const removeProofs = vi.fn().mockResolvedValue(undefined);
+const cashuMocks = vi.hoisted(() => ({ settleCtfPosition: vi.fn() }));
 
 vi.mock("@/stores/proof-db", () => ({
   getOutcomeProofs: (...args: unknown[]) => getOutcomeProofs(...args),
@@ -16,7 +17,7 @@ vi.mock("@/stores/proof-db", () => ({
 }));
 
 vi.mock("@/lib/cashu", () => ({
-  settleCtfPosition: vi.fn().mockResolvedValue([]),
+  settleCtfPosition: cashuMocks.settleCtfPosition,
 }));
 
 vi.mock("react-router", () => ({
@@ -96,8 +97,39 @@ function closedPosition(overrides: Partial<Position>): Position {
 describe("PortfolioPage — Remove lost position (P22 F2)", () => {
   beforeEach(() => {
     getOutcomeProofs.mockReset();
+    getConditionCtfProofs.mockReset();
+    getConditionCtfProofs.mockResolvedValue([]);
+    cashuMocks.settleCtfPosition.mockReset();
+    cashuMocks.settleCtfPosition.mockResolvedValue([]);
     removeProofs.mockReset();
     removeProofs.mockResolvedValue(undefined);
+  });
+
+  it("claims a local winner even when monitoring cannot value it", async () => {
+    getConditionCtfProofs.mockResolvedValue([{ secret: "s-win", amount: 100 }]);
+    mockPositions = [
+      closedPosition({
+        id: "cond1-A",
+        marketId: "cond1-A",
+        marketTitle: "Unvalued winner",
+        outcomeId: "A",
+        outcomeLabel: "A",
+        isWinner: true,
+        isLoser: false,
+        canClaimPayout: true,
+        currentValueSats: 0,
+        valueKnown: false,
+      }),
+    ];
+
+    render(<PortfolioPage />);
+    await userEvent.click(screen.getByLabelText(/claim.*unvalued winner/i));
+
+    const { settleCtfPosition } = await import("@/lib/cashu");
+    expect(getConditionCtfProofs).toHaveBeenCalledWith("https://mint.example", "cond1", {
+      baseAsset: "sat",
+    });
+    expect(settleCtfPosition).toHaveBeenCalledOnce();
   });
 
   it("deletes the lost position proofs without a mint redeem and clears the row", async () => {

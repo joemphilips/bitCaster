@@ -7,6 +7,7 @@ interface PLChartProps {
   chartData: PLChartData;
   selectedTimeRange: PLTimeSelector;
   totalValueSats?: number;
+  totalValueKnown?: boolean;
   onTimeRangeChange?: (range: PLTimeSelector) => void;
 }
 
@@ -14,6 +15,7 @@ export function PLChart({
   chartData,
   selectedTimeRange,
   totalValueSats,
+  totalValueKnown,
   onTimeRangeChange,
 }: PLChartProps) {
   const data = chartData[selectedTimeRange];
@@ -48,7 +50,9 @@ export function PLChart({
     <div>
       {/* Total Value / P/L Amount */}
       <div className="mb-3">
-        {totalValueSats != null && totalValueSats > 0 ? (
+        {totalValueKnown === false ? (
+          <div className="text-2xl font-bold text-amber-600 dark:text-amber-300">—</div>
+        ) : totalValueSats != null ? (
           <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
             {formatMarketSubunits(totalValueSats, "sat")}
           </div>

@@ -1,12 +1,16 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { getProofs, isCtfProof } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { safeHostname } from "@/lib/url";
-import type { MarketCatalogueEntry, MarketCatalogueResponse } from "@/lib/markets";
-import { outcomeSetDisplayLabel } from "@/lib/outcomeSets";
+import {
+  createAuthenticatedBrowserEngineClient,
+  type MarketCatalogueEntry,
+  type MarketCatalogueResponse,
+} from "@/lib/markets";
+import { browserWalletIdFromMnemonic } from "@/lib/browserWalletProfile";
 import {
   cashuAmountToMarketSubunits,
   normalizeMarketBaseAsset,
@@ -27,9 +31,14 @@ import type {
   Fund,
   ActivityItem,
   CreatedMarket,
+  PortfolioMonitoringState,
 } from "@/types/portfolio";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { deriveWinner } from "@/lib/positionWinner";
+import type {
+  AssetMonitoringAssetResponse,
+  AssetMonitoringPortfolioResponse,
+} from "@bitcaster/client-sdk/assetMonitoring";
 
 interface PortfolioState {
   walletState: WalletState;
@@ -43,6 +52,7 @@ interface PortfolioState {
   activity: ActivityItem[];
   createdMarkets: CreatedMarket[];
   positionsTab: "active" | "closed";
+  monitoring: PortfolioMonitoringState;
 }
 
 const TIME_RANGE_MS: Record<PLTimeSelector, number> = {
@@ -141,16 +151,21 @@ function positionSide(outcomeCollection: string): Position["side"] {
   return "Outcome";
 }
 
+function conditionLabel(conditionId: string): string {
+  return `Condition ${conditionId.slice(0, 12)}`;
+}
+
 async function loadMarketCatalogue(
   conditionIds: string[],
 ): Promise<Map<string, MarketCatalogueEntry>> {
   if (conditionIds.length === 0) return new Map();
   try {
-    const search = new URLSearchParams();
-    search.set("ids", conditionIds.join(","));
-    search.set("state", "All");
-    search.set("page_size", String(Math.min(Math.max(conditionIds.length, 1), 50)));
-    const response = await fetch(`/api/v1/markets/query?${search.toString()}`, {
+    const search = new URLSearchParams({
+      ids: conditionIds.join(","),
+      state: "All",
+      page_size: String(Math.min(Math.max(conditionIds.length, 1), 50)),
+    });
+    const response = await fetch(`/api/v1/markets/query?${search}`, {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) return new Map();
@@ -161,15 +176,165 @@ async function loadMarketCatalogue(
   }
 }
 
+function monitoringAssetValue(asset: AssetMonitoringAssetResponse): number {
+  return asset.estimatedValueMsat ?? 0;
+}
+
+function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | null {
+  if (asset.asset.kind !== "conditional") return null;
+  const value = monitoringAssetValue(asset);
+  const conditionId = asset.asset.conditionId;
+  return {
+    id: `monitoring:${asset.asset.canonicalMintUrl}:${asset.asset.conditionId}:${asset.asset.internalOutcomeSetId}`,
+    marketId: conditionId,
+    marketTitle: conditionLabel(conditionId),
+    marketImageUrl: "",
+    side: "Outcome",
+    outcomeId: asset.asset.internalOutcomeSetId,
+    outcomeLabel: asset.asset.internalOutcomeSetId,
+    canSell: false,
+    canClaimPayout: false,
+    canDiscard: false,
+    baseAsset: "sat",
+    divisibility: 10_000,
+    avgBuyPrice: 0,
+    currentPrice: 0,
+    currentValueSats: value,
+    valueKnown: asset.valuationStatus === "valued" && asset.estimatedValueMsat != null,
+    profitLossSats: 0,
+    profitLossPercent: 0,
+    status: "active",
+    isWinner: false,
+    isLoser: false,
+    isPending: false,
+    acquiredDate: "",
+    mintUrl: asset.asset.canonicalMintUrl,
+  };
+}
+
+function positionConditionId(position: Position): string {
+  const suffix = position.outcomeId ? `-${position.outcomeId}` : "";
+  return suffix && position.marketId.endsWith(suffix)
+    ? position.marketId.slice(0, -suffix.length)
+    : position.marketId;
+}
+
+function positionAssetKey(position: Position): string {
+  return JSON.stringify([
+    position.mintUrl,
+    positionConditionId(position),
+    position.outcomeId ?? "",
+  ]);
+}
+
+export function mergeMonitoringPositions(
+  monitoringPositions: Position[],
+  localPositions: Position[],
+): Position[] {
+  const localByAsset = new Map(
+    localPositions.map((position) => [positionAssetKey(position), position] as const),
+  );
+  const merged = monitoringPositions.map((monitoringPosition) => {
+    const key = positionAssetKey(monitoringPosition);
+    const local = localByAsset.get(key);
+    if (!local) return monitoringPosition;
+    localByAsset.delete(key);
+    return {
+      ...local,
+      currentValueSats: monitoringPosition.currentValueSats,
+      valueKnown: monitoringPosition.valueKnown,
+    };
+  });
+  return [...merged, ...localByAsset.values()];
+}
+
+export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioResponse): {
+  stats: PortfolioStats;
+  positions: Position[];
+  funds: Fund[];
+  chart: PLChartDataPoint[];
+  monitoring: Omit<PortfolioMonitoringState, "error">;
+} {
+  const positions = response.assets.assets
+    .map(monitoringPosition)
+    .filter((position): position is Position => position !== null);
+  const funds = response.assets.assets
+    .filter((asset) => asset.asset.kind === "collateral")
+    .map(
+      (asset): Fund => ({
+        id: `monitoring:${asset.asset.canonicalMintUrl}`,
+        unit: "sats",
+        amount:
+          asset.availableValueMsat ??
+          cashuAmountToMarketSubunits(asset.availableSubunits, asset.asset.cashuUnit),
+        mintUrl: asset.asset.canonicalMintUrl,
+      }),
+    );
+  const positionsValueKnown =
+    response.assets.nextCursor == null &&
+    positions.every((position) => position.valueKnown !== false);
+  const positionsValueSats = positions.reduce(
+    (total, position) => total + position.currentValueSats,
+    0,
+  );
+  const totalValueKnown = response.summary.estimatedTotalValueMsat !== null;
+  return {
+    stats: {
+      positionsValueSats,
+      totalValueSats: response.summary.estimatedTotalValueMsat ?? 0,
+      positionsValueKnown,
+      totalValueKnown,
+      positionsValueByUnit: positionsValueKnown
+        ? [{ unit: "sat", amount: positionsValueSats }]
+        : undefined,
+      totalValueByUnit: totalValueKnown
+        ? [{ unit: "sat", amount: response.summary.estimatedTotalValueMsat! }]
+        : undefined,
+      biggestWinSats: 0,
+      predictionsCount: positions.length,
+    },
+    positions,
+    funds,
+    chart: response.history.points
+      .filter((point) => point.estimatedTotalValueMsat !== null)
+      .map((point) => ({
+        timestamp: point.asOf,
+        cumulativePL: point.estimatedTotalValueMsat!,
+      })),
+    monitoring: {
+      stale: response.summary.stale || response.assets.stale || response.history.stale,
+      incomplete:
+        response.summary.incomplete ||
+        response.assets.incomplete ||
+        response.assets.nextCursor != null ||
+        response.history.incomplete,
+      building: response.summary.building || response.assets.building || response.history.building,
+      unvaluedAssetCount: response.summary.unvaluedAssetCount,
+      hasPendingOutgoing: response.assets.assets.some((asset) => asset.pendingOutgoingSubunits > 0),
+      pendingOutgoingValueMsat: response.summary.pendingOutgoingValueMsat,
+    },
+  };
+}
+
 export function usePortfolioState(): PortfolioState & {
   setSelectedTimeRange: (range: PLTimeSelector) => void;
   setPositionsTab: (tab: "active" | "closed") => void;
   saveProfile: (profile: UserProfile) => void;
+  dismissMonitoringError: () => void;
 } {
   const walletSetupComplete = useWalletStore((s) => s.setupComplete);
   const walletState: WalletState = walletSetupComplete ? "ready" : "none";
   const [baseCurrency] = useState<BaseCurrency>("BTC");
   const [selectedTimeRange, setSelectedTimeRange] = useState<PLTimeSelector>("ALL");
+  const [monitoringResponse, setMonitoringResponse] = useState<{
+    key: string;
+    value: AssetMonitoringPortfolioResponse;
+  } | null>(null);
+  const [monitoringError, setMonitoringError] = useState<"unavailable" | null>(null);
+  const [monitoringUnavailable, setMonitoringUnavailable] = useState(false);
+  const requestedMonitoringKey = useRef<string | null>(null);
+  const activeMonitoringKey = useRef<string | null>(null);
+  const activeMonitoringRequest = useRef(0);
   const [localProfile, setLocalProfile] = useState<UserProfile>(loadProfile);
   const [positionsTab, setPositionsTab] = useState<"active" | "closed">("active");
 
@@ -186,12 +351,47 @@ export function usePortfolioState(): PortfolioState & {
 
   const activity = useActivityLogStore((s) => s.items);
   const [createdMarkets] = useState<CreatedMarket[]>([]);
-  const plChartData = useMemo(() => buildPLChartData(activity), [activity]);
-
   // Positions and funds are both wallet-local. CTF proofs are market
   // positions; base proofs are spendable ecash funds.
   const storeMints = useWalletStore((s) => s.mints);
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
+  const walletId = useMemo(() => browserWalletIdFromMnemonic(walletMnemonic), [walletMnemonic]);
+  const monitoringKey =
+    walletState === "ready" && walletId !== null ? `${walletId}:${selectedTimeRange}` : null;
+  const monitoringReady = monitoringResponse?.key === monitoringKey;
+
+  useEffect(() => {
+    activeMonitoringKey.current = monitoringKey;
+    if (monitoringKey === null || walletId === null) {
+      requestedMonitoringKey.current = null;
+      return;
+    }
+    if (requestedMonitoringKey.current === monitoringKey) return;
+    requestedMonitoringKey.current = monitoringKey;
+    const requestId = ++activeMonitoringRequest.current;
+    setMonitoringUnavailable(false);
+    void createAuthenticatedBrowserEngineClient()
+      .getPortfolio({ walletId, timeframe: selectedTimeRange, pageSize: 200 })
+      .then((value) => {
+        if (
+          activeMonitoringKey.current !== monitoringKey ||
+          activeMonitoringRequest.current !== requestId
+        )
+          return;
+        setMonitoringResponse({ key: monitoringKey, value });
+        setMonitoringError(null);
+      })
+      .catch(() => {
+        if (
+          activeMonitoringKey.current !== monitoringKey ||
+          activeMonitoringRequest.current !== requestId
+        )
+          return;
+        setMonitoringUnavailable(true);
+        setMonitoringError("unavailable");
+      });
+  }, [monitoringKey, selectedTimeRange, walletId]);
+
   const positionsFromDb = useLiveQuery(
     async () => {
       const proofs = await getProofs();
@@ -232,16 +432,15 @@ export function usePortfolioState(): PortfolioState & {
         });
       }
       const entries = Array.from(byOutcome.values());
-      const catalogue = await loadMarketCatalogue([
-        ...new Set(entries.map((entry) => entry.conditionId)),
-      ]);
+      const catalogue =
+        monitoringUnavailable || monitoringReady
+          ? await loadMarketCatalogue([...new Set(entries.map((entry) => entry.conditionId))])
+          : new Map<string, MarketCatalogueEntry>();
       return entries.map((entry): Position => {
         const market = catalogue.get(entry.conditionId);
-        const baseAsset = normalizeMarketBaseAsset(market?.baseAsset ?? entry.baseAsset);
-        const divisibility = normalizeMarketDivisibility(market?.divisibility, baseAsset);
-        const outcomeLabel = outcomeSetDisplayLabel(
-          market?.outcomes ?? [],
-          entry.outcomeCollection,
+        const divisibility = normalizeMarketDivisibility(
+          market?.divisibility ?? 10_000,
+          entry.baseAsset,
         );
         const finalOutcome = market?.finalOutcome?.trim();
         const isClosed = String(market?.state ?? "").toLowerCase() === "closed";
@@ -279,14 +478,14 @@ export function usePortfolioState(): PortfolioState & {
         return {
           id: `${entry.conditionId}-${entry.outcomeCollection}`,
           marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
-          marketTitle: market?.title ?? `Market ${entry.conditionId.slice(0, 8)}`,
+          marketTitle: market?.title ?? conditionLabel(entry.conditionId),
           marketImageUrl: market?.thumbnailUrl ?? "",
           side: positionSide(entry.outcomeCollection),
           outcomeId: entry.outcomeCollection,
-          outcomeLabel,
+          outcomeLabel: entry.outcomeCollection,
           canClaimPayout: isWinner,
           canDiscard: isLoser,
-          baseAsset,
+          baseAsset: entry.baseAsset,
           divisibility,
           shares: entry.amount / divisibility,
           avgBuyPrice: 0,
@@ -306,7 +505,7 @@ export function usePortfolioState(): PortfolioState & {
         };
       });
     },
-    [walletMnemonic],
+    [monitoringReady, monitoringUnavailable, walletMnemonic],
     [] as Position[],
   );
   const positions: Position[] = positionsFromDb ?? [];
@@ -345,8 +544,33 @@ export function usePortfolioState(): PortfolioState & {
     [storeMints, walletMnemonic],
     [] as (Fund & { mintName: string })[],
   );
-  const funds: Fund[] = fundsFromDb;
-  const stats = useMemo(() => computeStats(positions, funds), [positions, funds]);
+  const localFunds: Fund[] = fundsFromDb;
+  const localStats = useMemo(() => computeStats(positions, localFunds), [positions, localFunds]);
+  const visibleMonitoring =
+    monitoringResponse?.key === monitoringKey
+      ? mapMonitoringPortfolio(monitoringResponse.value)
+      : null;
+  const funds = visibleMonitoring?.funds ?? localFunds;
+  const stats = visibleMonitoring?.stats ?? localStats;
+  const visiblePositions = visibleMonitoring
+    ? mergeMonitoringPositions(visibleMonitoring.positions, positions)
+    : positions;
+  const plChartData = useMemo(() => {
+    if (!visibleMonitoring) return buildPLChartData(activity);
+    return { ...buildPLChartData(activity), [selectedTimeRange]: visibleMonitoring.chart };
+  }, [activity, selectedTimeRange, visibleMonitoring]);
+  const monitoring: PortfolioMonitoringState = {
+    stale: visibleMonitoring?.monitoring.stale ?? false,
+    incomplete: visibleMonitoring?.monitoring.incomplete ?? false,
+    building: visibleMonitoring?.monitoring.building ?? false,
+    unvaluedAssetCount: visibleMonitoring?.monitoring.unvaluedAssetCount ?? 0,
+    hasPendingOutgoing: visibleMonitoring?.monitoring.hasPendingOutgoing ?? false,
+    pendingOutgoingValueMsat: visibleMonitoring?.monitoring.pendingOutgoingValueMsat ?? null,
+    error: monitoringError,
+  };
+  const selectTimeRange = useCallback((range: PLTimeSelector) => {
+    setSelectedTimeRange(range);
+  }, []);
 
   const saveProfile = useCallback((updated: UserProfile) => {
     setLocalProfile(updated);
@@ -360,13 +584,15 @@ export function usePortfolioState(): PortfolioState & {
     profile,
     plChartData,
     stats,
-    positions,
+    positions: visiblePositions,
     funds,
     activity,
     createdMarkets,
     positionsTab,
-    setSelectedTimeRange,
+    monitoring,
+    setSelectedTimeRange: selectTimeRange,
     setPositionsTab,
     saveProfile,
+    dismissMonitoringError: () => setMonitoringError(null),
   };
 }
