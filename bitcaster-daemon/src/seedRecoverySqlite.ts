@@ -32,7 +32,7 @@ import {
   type StateSqliteFaultPhase,
 } from './stateSqlite.ts'
 import {
-  admitRecoveredRegularWalletProofFromDatabase,
+  admitRecoveredWalletProofFromDatabase,
   advanceDaemonKeysetCounterFromDatabase,
   readExactBoundCounter,
 } from './state.ts'
@@ -51,6 +51,21 @@ export interface SeedRecoveryJobFinalization {
   readonly disclosureAcknowledged: true
   readonly discoveryCompleted: true
   readonly authority: EmergencySeedRecoveryLeaseAuthority
+}
+
+export interface SeedRecoveryRosterInitialization {
+  readonly recoveryId: string
+  readonly walletScopeId: string
+  readonly mintUrl: string
+  readonly unit: 'sat' | 'msat'
+  readonly disclosureAcknowledged: true
+  readonly keysetIds: readonly string[]
+  readonly authority: EmergencySeedRecoveryLeaseAuthority
+}
+
+export interface SeedRecoveryRoster {
+  readonly keysetIds: readonly string[]
+  readonly state: 'absent' | 'active' | 'completed'
 }
 
 export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
@@ -97,6 +112,55 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
   setAuthority(fence: CustodyScopeFence, observedAtMs: number): void {
     this.#fence = fence
     this.#observedAtMs = observedAtMs
+  }
+
+  async readRecoveryRoster(input: {
+    readonly recoveryId: string
+    readonly walletScopeId: string
+    readonly mintUrl: string
+    readonly unit: 'sat' | 'msat'
+  }): Promise<SeedRecoveryRoster> {
+    const binding = { ...input }
+    if (binding.walletScopeId !== this.#fence.scopeId) {
+      throw new Error('seed recovery roster scope is foreign')
+    }
+    return withDurableCustodyFencedRead(
+      this.#storage,
+      this.#fence,
+      this.#observedAtMs,
+      (database) => {
+        assertNoRecoveryOwnerBlocker(database, binding.walletScopeId)
+        const job = readRecoveryJob(database, binding.recoveryId)
+        assertRecoveryJobBinding(job, binding)
+        return {
+          keysetIds: readRecoveryKeysetIds(database, binding.recoveryId),
+          state: job === undefined ? 'absent' : job.state === 'completed' ? 'completed' : 'active',
+        }
+      },
+    )
+  }
+
+  async initializeRecoveryRoster(raw: SeedRecoveryRosterInitialization): Promise<void> {
+    const input = validateRecoveryRosterInitialization(raw)
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      this.#fence,
+      this.#observedAtMs,
+      (database) => this.#initializeRecoveryRosterInTransaction(database, input),
+      { injectFault: this.#injectFault },
+    )
+  }
+
+  async claimRecoveryScanStart(raw: SeedRecoveryRosterInitialization): Promise<number> {
+    const input = validateRecoveryRosterInitialization(raw)
+    if (input.keysetIds.length === 0) return 0
+    return withDurableCustodyUnitOfWork(
+      this.#storage,
+      this.#fence,
+      this.#observedAtMs,
+      (database) => this.#claimRecoveryScanStartInTransaction(database, input),
+      { injectFault: this.#injectFault },
+    )
   }
 
   async finalizeRecoveryJob(raw: SeedRecoveryJobFinalization): Promise<void> {
@@ -167,6 +231,45 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     )
   }
 
+  async readRecoveryCounterHighWaterMarks(input: {
+    readonly walletScopeId: string
+    readonly mintUrl: string
+    readonly unit: 'sat' | 'msat'
+  }): Promise<ReadonlyMap<string, number>> {
+    const { walletScopeId, mintUrl, unit } = input
+    if (walletScopeId !== this.#fence.scopeId) {
+      throw new Error('seed recovery counter scope is foreign')
+    }
+    return withDurableCustodyFencedRead(
+      this.#storage,
+      this.#fence,
+      this.#observedAtMs,
+      (database) => {
+        assertNoRecoveryOwnerBlocker(database, walletScopeId)
+        const rows = database
+          .prepare(
+            `SELECT keyset_id AS keysetId FROM target_keyset_counters
+             WHERE scope_id = ? AND normalized_mint = ? AND unit = ?
+             UNION
+             SELECT keyset_id AS keysetId FROM custody_keyset_counters
+             WHERE scope_id = ? AND normalized_mint = ? AND unit = ?`,
+          )
+          .all(walletScopeId, mintUrl, unit, walletScopeId, mintUrl, unit) as Array<{
+          keysetId: string
+        }>
+        return new Map(
+          rows.map(({ keysetId }) => [
+            keysetId,
+            readExactBoundCounter(database, walletScopeId, keysetId, {
+              normalizedMint: mintUrl,
+              unit,
+            }),
+          ]),
+        )
+      },
+    )
+  }
+
   async commitRecoveryBatch(raw: EmergencySeedRecoveryCoCommit): Promise<void> {
     const input = validateEmergencySeedRecoveryCoCommit(raw)
     const staged = this.#staged.get(batchKey(input.recoveryJobId, input.expectedCursor.keysetId))
@@ -215,6 +318,66 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     })
   }
 
+  #initializeRecoveryRosterInTransaction(
+    database: DatabaseSync,
+    input: SeedRecoveryRosterInitialization,
+  ): void {
+    assertRecoveryAuthority(input, this.#fence, this.#observedAtMs)
+    assertNoRecoveryOwnerBlocker(database, input.walletScopeId)
+    const existing = readRecoveryJob(database, input.recoveryId)
+    assertRecoveryJobBinding(existing, input)
+    if (existing?.state === 'completed') {
+      assertExactRecoveryRoster(database, input)
+      return
+    }
+    if (existing === undefined) insertActiveRecoveryJob(database, input, this.#invocationId)
+    let inserted = 0
+    for (const keysetId of input.keysetIds) {
+      inserted += Number(
+        database
+          .prepare(
+            `INSERT OR IGNORE INTO seed_recovery_keysets (
+               recovery_id, keyset_id, next_counter,
+               trailing_empty_counters, revision, state
+             ) VALUES (?, ?, 0, 0, 0, 'active')`,
+          )
+          .run(input.recoveryId, keysetId).changes,
+      )
+    }
+    if (existing !== undefined && inserted > 0) {
+      database
+        .prepare(
+          `UPDATE seed_recovery_jobs SET revision = revision + 1, updated_at_ms = ?
+           WHERE recovery_id = ? AND state = 'active'`,
+        )
+        .run(this.#observedAtMs, input.recoveryId)
+    }
+    assertExactRecoveryRoster(database, input)
+  }
+
+  #claimRecoveryScanStartInTransaction(
+    database: DatabaseSync,
+    input: SeedRecoveryRosterInitialization,
+  ): number {
+    assertRecoveryAuthority(input, this.#fence, this.#observedAtMs)
+    assertNoRecoveryOwnerBlocker(database, input.walletScopeId)
+    const job = readRecoveryJob(database, input.recoveryId)
+    assertRecoveryJobBinding(job, input)
+    if (job === undefined) throw new Error('seed recovery roster is absent')
+    assertExactRecoveryRoster(database, input)
+    const start = job.scanOffset % input.keysetIds.length
+    if (job.state === 'completed') return start
+    const next = (start + 4) % input.keysetIds.length
+    const result = database
+      .prepare(
+        `UPDATE seed_recovery_jobs SET scan_offset = ?, revision = revision + 1,
+           updated_at_ms = ? WHERE recovery_id = ? AND state = 'active' AND revision = ?`,
+      )
+      .run(next, this.#observedAtMs, input.recoveryId, job.revision)
+    if (result.changes !== 1) throw new Error('seed recovery scan claim CAS lost')
+    return start
+  }
+
   #finalizeRecoveryJobInTransaction(
     database: DatabaseSync,
     input: SeedRecoveryJobFinalization,
@@ -255,6 +418,7 @@ type RecoveryJobRow = {
   readonly unit: string
   readonly disclosureAcknowledged: number
   readonly state: string
+  readonly scanOffset: number
   readonly revision: number
 }
 
@@ -337,10 +501,32 @@ function readRecoveryJob(database: DatabaseSync, recoveryId: string): RecoveryJo
   return database
     .prepare(
       `SELECT scope_id AS scopeId, normalized_mint AS mintUrl, unit,
-          disclosure_acknowledged AS disclosureAcknowledged, state, revision
+          disclosure_acknowledged AS disclosureAcknowledged, state,
+          scan_offset AS scanOffset, revision
        FROM seed_recovery_jobs WHERE recovery_id = ?`,
     )
     .get(recoveryId) as RecoveryJobRow | undefined
+}
+
+function readRecoveryKeysetIds(database: DatabaseSync, recoveryId: string): readonly string[] {
+  return (
+    database
+      .prepare(
+        `SELECT keyset_id AS keysetId FROM seed_recovery_keysets
+         WHERE recovery_id = ? ORDER BY keyset_id`,
+      )
+      .all(recoveryId) as Array<{ keysetId: string }>
+  ).map(({ keysetId }) => keysetId)
+}
+
+function assertExactRecoveryRoster(
+  database: DatabaseSync,
+  input: SeedRecoveryRosterInitialization,
+): void {
+  const actual = readRecoveryKeysetIds(database, input.recoveryId)
+  if (!isDeepStrictEqual(actual, input.keysetIds)) {
+    throw new Error('seed recovery roster is inconsistent')
+  }
 }
 
 const RECOVERY_OWNER_BLOCKERS = [
@@ -495,6 +681,58 @@ function validateRecoveryJobFinalization(
   })
 }
 
+function validateRecoveryRosterInitialization(
+  input: SeedRecoveryRosterInitialization,
+): SeedRecoveryRosterInitialization {
+  const value = input as unknown as Record<string, unknown>
+  const fields = [
+    'recoveryId',
+    'walletScopeId',
+    'mintUrl',
+    'unit',
+    'disclosureAcknowledged',
+    'keysetIds',
+    'authority',
+  ]
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype ||
+    Object.keys(value).length !== fields.length ||
+    Object.keys(value).some((key) => !fields.includes(key)) ||
+    !Array.isArray(input.keysetIds) ||
+    input.keysetIds.length > 2_048
+  ) {
+    throw new Error('seed recovery roster input is invalid')
+  }
+  const keysetIds = [...input.keysetIds].sort()
+  if (
+    new Set(keysetIds).size !== keysetIds.length ||
+    keysetIds.some((keysetId) => !/^01[0-9a-f]{64}$/.test(keysetId))
+  ) {
+    throw new Error('seed recovery roster keysets are invalid')
+  }
+  const base = validateRecoveryJobFinalization({
+    recoveryId: input.recoveryId,
+    walletScopeId: input.walletScopeId,
+    mintUrl: input.mintUrl,
+    unit: input.unit,
+    disclosureAcknowledged: input.disclosureAcknowledged,
+    discoveryCompleted: true,
+    authority: input.authority,
+  })
+  return Object.freeze({
+    recoveryId: base.recoveryId,
+    walletScopeId: base.walletScopeId,
+    mintUrl: base.mintUrl,
+    unit: base.unit,
+    disclosureAcknowledged: true,
+    keysetIds: Object.freeze(keysetIds),
+    authority: base.authority,
+  })
+}
+
 function assertRecoveryJobCanFinalize(
   database: DatabaseSync,
   job: RecoveryJobRow,
@@ -522,9 +760,9 @@ function insertEmptyCompletedRecoveryJob(
     .prepare(
       `INSERT INTO seed_recovery_jobs (
          recovery_id, scope_id, invocation_id, disclosure_acknowledged,
-         normalized_mint, unit, state, revision, imported_proofs,
+         normalized_mint, unit, state, scan_offset, revision, imported_proofs,
          ignored_spent_proofs, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, 1, ?, ?, 'completed', 1, 0, 0, ?, ?)`,
+       ) VALUES (?, ?, ?, 1, ?, ?, 'completed', 0, 1, 0, 0, ?, ?)`,
     )
     .run(
       input.recoveryId,
@@ -534,6 +772,30 @@ function insertEmptyCompletedRecoveryJob(
       input.unit,
       observedAtMs,
       observedAtMs,
+    )
+}
+
+function insertActiveRecoveryJob(
+  database: DatabaseSync,
+  input: SeedRecoveryRosterInitialization,
+  invocationId: string,
+): void {
+  database
+    .prepare(
+      `INSERT INTO seed_recovery_jobs (
+         recovery_id, scope_id, invocation_id, disclosure_acknowledged,
+         normalized_mint, unit, state, scan_offset, revision, imported_proofs,
+         ignored_spent_proofs, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, 1, ?, ?, 'active', 0, 0, 0, 0, ?, ?)`,
+    )
+    .run(
+      input.recoveryId,
+      input.walletScopeId,
+      invocationId,
+      input.mintUrl,
+      input.unit,
+      input.authority.observedAtMs,
+      input.authority.observedAtMs,
     )
 }
 
@@ -570,7 +832,7 @@ function importSelectableProofs(
     } else if (!sameRecoveredProofAuthority(existing, observed.proof)) {
       throw new Error('seed recovery proof authority mismatch')
     }
-    admitRecoveredRegularProofWhenTargetIsMissing(
+    admitRecoveredProofWhenTargetIsMissing(
       database,
       existing ?? observed.proof,
       input.expectedCursor.mintUrl,
@@ -580,15 +842,13 @@ function importSelectableProofs(
   return imported
 }
 
-function admitRecoveredRegularProofWhenTargetIsMissing(
+function admitRecoveredProofWhenTargetIsMissing(
   database: DatabaseSync,
   proof: CustodyProofSqliteRow,
   mintUrl: string,
   input: EmergencySeedRecoveryCoCommit,
 ): void {
   if (
-    proof.conditionId !== null ||
-    proof.outcomeSetId !== null ||
     proof.productBinding !== null ||
     proof.nut07State !== 'UNSPENT' ||
     proof.selectability !== 'selectable'
@@ -596,12 +856,28 @@ function admitRecoveredRegularProofWhenTargetIsMissing(
     return
   }
   const decoded = decodeCustodyProofSqliteRow(proof).proof
-  admitRecoveredRegularWalletProofFromDatabase(database, {
+  admitRecoveredWalletProofFromDatabase(database, {
     mintUrl,
     proof: decoded,
-    asset: { kind: 'sats', baseAsset: 'sat', unit: proof.unit },
+    asset: recoveredStoredProofAsset(proof),
     nowMs: input.authority.observedAtMs,
   })
+}
+
+function recoveredStoredProofAsset(proof: CustodyProofSqliteRow) {
+  if (proof.conditionId === null && proof.outcomeSetId === null) {
+    return { kind: 'sats' as const, baseAsset: 'sat' as const, unit: proof.unit }
+  }
+  if (proof.conditionId === null || proof.outcomeSetId === null || proof.unit !== 'msat') {
+    throw new Error('seed recovery conditional proof metadata is invalid')
+  }
+  return {
+    kind: 'Outcome' as const,
+    conditionId: proof.conditionId,
+    outcomeSetId: proof.outcomeSetId,
+    baseAsset: 'sat' as const,
+    unit: 'msat' as const,
+  }
 }
 
 function sameRecoveredProofAuthority(
@@ -684,9 +960,9 @@ function insertRecoveryProgress(
     .prepare(
       `INSERT INTO seed_recovery_jobs (
          recovery_id, scope_id, invocation_id, disclosure_acknowledged,
-         normalized_mint, unit, state, revision, imported_proofs,
+         normalized_mint, unit, state, scan_offset, revision, imported_proofs,
          ignored_spent_proofs, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, 1, ?, ?, 'active', 1, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, 1, ?, ?, 'active', 0, 1, ?, ?, ?, ?)`,
     )
     .run(
       input.recoveryJobId,

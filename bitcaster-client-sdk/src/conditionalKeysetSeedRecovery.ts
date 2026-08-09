@@ -11,6 +11,25 @@ import { deriveRootCtfOutcomeCollectionId } from './durableCtfRangeOperation.ts'
 export const CONDITIONAL_KEYSET_DISCOVERY_PREFIX_COUNTERS = 300 as const
 export const CONDITIONAL_KEYSET_DISCOVERY_KEYSET_LIMIT = 1_024 as const
 export const CONDITIONAL_KEYSET_DISCOVERY_OUTPUT_LIMIT = 4_096 as const
+export const EXACT_SEED_RECOVERY_BATCH_LIMIT = 300 as const
+
+export interface ExactSeedRecoveryCandidate {
+  readonly keysetId: string
+  readonly counter: number
+  readonly blindedOutput: SerializedBlindedMessage
+  readonly outputData: OutputData
+}
+
+export interface ExactSeedRecoveryMatch<T extends ExactSeedRecoveryCandidate> {
+  readonly candidate: T
+  readonly output: SerializedBlindedMessage
+  readonly signature: SerializedBlindedSignature
+}
+
+export interface ExactSeedRecoveryResponseBinding<T extends ExactSeedRecoveryCandidate> {
+  readonly matches: readonly ExactSeedRecoveryMatch<T>[]
+  readonly lastCounterWithSignature: number | null
+}
 
 export interface ConditionalKeysetSeedRecoveryDescriptor {
   readonly id: string
@@ -33,11 +52,7 @@ export interface ConditionalKeysetSeedRecoveryCursor {
   readonly nextCounter: number
 }
 
-export interface ConditionalKeysetSeedRecoveryCandidate {
-  readonly keysetId: string
-  readonly counter: number
-  readonly blindedOutput: SerializedBlindedMessage
-  readonly outputData: OutputData
+export interface ConditionalKeysetSeedRecoveryCandidate extends ExactSeedRecoveryCandidate {
   readonly asset: Omit<ConditionalKeysetSeedRecoveryDescriptor, 'id'> & {
     readonly kind: 'conditional'
   }
@@ -52,6 +67,63 @@ export interface ConditionalKeysetSeedRecoveryMatch {
   readonly candidate: ConditionalKeysetSeedRecoveryCandidate
   readonly output: SerializedBlindedMessage
   readonly signature: SerializedBlindedSignature
+}
+
+/** Plan one exact deterministic NUT-09 batch for a selected V2 keyset. */
+export function planExactSeedRecoveryBatch(input: {
+  readonly seed: Uint8Array
+  readonly keysetId: string
+  readonly startCounter: number
+  readonly count: number
+}): readonly ExactSeedRecoveryCandidate[] {
+  const seed = requireSeed(input.seed)
+  const keysetId = requireV2KeysetId(input.keysetId)
+  const startCounter = requireBoundedInteger(
+    input.startCounter,
+    0,
+    Number.MAX_SAFE_INTEGER,
+    'seed recovery start counter',
+  )
+  const count = requireBoundedInteger(
+    input.count,
+    1,
+    EXACT_SEED_RECOVERY_BATCH_LIMIT,
+    'seed recovery batch count',
+  )
+  if (startCounter > Number.MAX_SAFE_INTEGER - count) {
+    throw new Error('seed recovery counter range is invalid')
+  }
+  return Object.freeze(
+    Array.from({ length: count }, (_, offset) =>
+      createExactCandidate(seed, keysetId, startCounter + offset),
+    ),
+  )
+}
+
+/** Bind a raw NUT-09 subset to exact deterministic candidates. */
+export function bindExactSeedRecoveryResponse<T extends ExactSeedRecoveryCandidate>(input: {
+  readonly candidates: readonly T[]
+  readonly response: unknown
+}): ExactSeedRecoveryResponseBinding<T> {
+  const candidates = indexCandidates(input.candidates)
+  const response = decodeRestoreResponse(input.response, candidates.size)
+  const seen = new Set<string>()
+  const matches = response.outputs.map((output, index) => {
+    const candidate = candidates.get(output.B_)
+    const signature = response.signatures[index]!
+    if (candidate === undefined) throw new Error('seed recovery NUT-09 output is foreign')
+    if (seen.has(output.B_)) throw new Error('seed recovery NUT-09 output is duplicated')
+    seen.add(output.B_)
+    if (!matchesCandidate(candidate, output, signature)) {
+      throw new Error('seed recovery NUT-09 signature does not match its output')
+    }
+    return { candidate, output, signature }
+  })
+  return {
+    matches,
+    lastCounterWithSignature:
+      matches.length === 0 ? null : Math.max(...matches.map(({ candidate }) => candidate.counter)),
+  }
 }
 
 export interface ConditionalKeysetSeedRecoveryResponseBinding {
@@ -135,22 +207,28 @@ export function bindConditionalKeysetSeedRecoveryResponse(input: {
   readonly candidates: readonly ConditionalKeysetSeedRecoveryCandidate[]
   readonly response: unknown
 }): ConditionalKeysetSeedRecoveryResponseBinding {
-  const candidates = indexCandidates(input.candidates)
-  const response = decodeRestoreResponse(input.response, candidates.size)
-  const seen = new Set<string>()
-  const matches = response.outputs.map((output, index) => {
-    const candidate = candidates.get(output.B_)
-    const signature = response.signatures[index]!
-    if (candidate === undefined) throw new Error('conditional keyset NUT-09 output is foreign')
-    if (seen.has(output.B_)) throw new Error('conditional keyset NUT-09 output is duplicated')
-    seen.add(output.B_)
-    if (!matchesCandidate(candidate, output, signature))
-      throw new Error('conditional keyset NUT-09 signature does not match its output')
-    return { candidate, output, signature }
-  })
+  const { matches } = bindExactSeedRecoveryResponse(input)
   return {
     matches,
     discoveredKeysetIds: new Set(matches.map(({ candidate }) => candidate.keysetId)),
+  }
+}
+
+function createExactCandidate(
+  seed: Uint8Array,
+  keysetId: string,
+  counter: number,
+): ExactSeedRecoveryCandidate {
+  try {
+    const outputData = OutputData.createSingleDeterministicData(0, seed, counter, keysetId)
+    return Object.freeze({
+      keysetId,
+      counter,
+      blindedOutput: Object.freeze({ ...outputData.blindedMessage }),
+      outputData,
+    })
+  } catch {
+    throw new Error('seed recovery output derivation failed')
   }
 }
 
@@ -277,37 +355,30 @@ function createCandidate(
   authority: ConditionalKeysetSeedRecoveryDescriptor,
   counter: number,
 ): ConditionalKeysetSeedRecoveryCandidate {
-  try {
-    const outputData = OutputData.createSingleDeterministicData(0, seed, counter, authority.id)
-    return Object.freeze({
-      keysetId: authority.id,
-      counter,
-      blindedOutput: Object.freeze({ ...outputData.blindedMessage }),
-      outputData,
-      asset: Object.freeze({
-        kind: 'conditional',
-        unit: authority.unit,
-        active: authority.active,
-        inputFeePpk: authority.inputFeePpk,
-        finalExpiry: authority.finalExpiry,
-        conditionId: authority.conditionId,
-        outcomeCollection: authority.outcomeCollection,
-        outcomeCollectionId: authority.outcomeCollectionId,
-        registeredAt: authority.registeredAt,
-      }),
-    })
-  } catch {
-    throw new Error('conditional keyset discovery output derivation failed')
-  }
+  const candidate = createExactCandidate(seed, authority.id, counter)
+  return Object.freeze({
+    ...candidate,
+    asset: Object.freeze({
+      kind: 'conditional',
+      unit: authority.unit,
+      active: authority.active,
+      inputFeePpk: authority.inputFeePpk,
+      finalExpiry: authority.finalExpiry,
+      conditionId: authority.conditionId,
+      outcomeCollection: authority.outcomeCollection,
+      outcomeCollectionId: authority.outcomeCollectionId,
+      registeredAt: authority.registeredAt,
+    }),
+  })
 }
 
-function indexCandidates(
-  candidates: readonly ConditionalKeysetSeedRecoveryCandidate[],
-): ReadonlyMap<string, ConditionalKeysetSeedRecoveryCandidate> {
+function indexCandidates<T extends ExactSeedRecoveryCandidate>(
+  candidates: readonly T[],
+): ReadonlyMap<string, T> {
   if (candidates.length === 0 || candidates.length > CONDITIONAL_KEYSET_DISCOVERY_OUTPUT_LIMIT) {
     throw new Error('conditional keyset discovery candidates are invalid')
   }
-  const indexed = new Map<string, ConditionalKeysetSeedRecoveryCandidate>()
+  const indexed = new Map<string, T>()
   for (const candidate of candidates) {
     if (indexed.has(candidate.blindedOutput.B_))
       throw new Error('conditional keyset discovery candidates are duplicated')
@@ -340,7 +411,7 @@ function decodeRestoreResponse(
 }
 
 function matchesCandidate(
-  candidate: ConditionalKeysetSeedRecoveryCandidate,
+  candidate: ExactSeedRecoveryCandidate,
   output: SerializedBlindedMessage,
   signature: SerializedBlindedSignature,
 ): boolean {

@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '7fbbbd5834904993d65e3c88a74685cab1289c63923b2b2cf862efd69f946128'
+  '8cb270e80d49b2052226b438f0e4a6f3217ab2cae6f015260e8a57a8e7cbcdc3'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -1243,6 +1243,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
     unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
     state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
+    scan_offset INTEGER NOT NULL CHECK (scan_offset BETWEEN 0 AND 2047),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     imported_proofs INTEGER NOT NULL CHECK (imported_proofs >= 0),
     ignored_spent_proofs INTEGER NOT NULL CHECK (ignored_spent_proofs >= 0),

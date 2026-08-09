@@ -3,11 +3,14 @@ import test from 'node:test'
 import { Amount, deriveConditionalKeysetId } from '@cashu/cashu-ts'
 import {
   CONDITIONAL_KEYSET_DISCOVERY_PREFIX_COUNTERS,
+  bindExactSeedRecoveryResponse,
   bindConditionalKeysetSeedRecoveryResponse,
+  planExactSeedRecoveryBatch,
   planConditionalKeysetSeedRecoveryPage,
   validateConditionalKeysetSeedRecoveryDescriptor,
   validateConditionalKeysetSeedRecoveryAuthority,
   type ConditionalKeysetSeedRecoveryCandidate,
+  type ExactSeedRecoveryCandidate,
 } from '../src/conditionalKeysetSeedRecovery.ts'
 import { deriveRootCtfOutcomeCollectionId } from '../src/durableCtfRangeOperation.ts'
 
@@ -189,6 +192,38 @@ test('binds a reordered NUT-09 subset by exact blinded output identity', () => {
   assert.deepEqual([...response.discoveredKeysetIds], [late.keysetId])
 })
 
+test('plans and binds an exact selected-keyset recovery batch', () => {
+  const candidates = planExactSeedRecoveryBatch({
+    seed: SEED,
+    keysetId: authority().id,
+    startCounter: 600,
+    count: 3,
+  })
+  const binding = bindExactSeedRecoveryResponse({
+    candidates,
+    response: {
+      outputs: [restoreOutput(candidates[2]!), restoreOutput(candidates[0]!)],
+      signatures: [signatureFor(candidates[2]!), signatureFor(candidates[0]!)],
+    },
+  })
+  assert.deepEqual(
+    binding.matches.map(({ candidate }) => candidate.counter),
+    [602, 600],
+  )
+  assert.equal(binding.lastCounterWithSignature, 602)
+  assert.throws(
+    () =>
+      bindExactSeedRecoveryResponse({
+        candidates,
+        response: {
+          outputs: [restoreOutput(candidates[0]!), restoreOutput(candidates[0]!)],
+          signatures: [signatureFor(candidates[0]!), signatureFor(candidates[0]!)],
+        },
+      }),
+    /duplicated/,
+  )
+})
+
 test('rejects unknown, duplicate, and mismatched NUT-09 response rows', () => {
   const candidates = plan({ maxOutputs: 3 }).candidates
   const first = candidates[0]!
@@ -360,11 +395,11 @@ function plan(input: {
   })
 }
 
-function restoreOutput(candidate: ConditionalKeysetSeedRecoveryCandidate) {
+function restoreOutput(candidate: ExactSeedRecoveryCandidate) {
   return { ...candidate.blindedOutput, amount: Amount.from(0) }
 }
 
-function signatureFor(candidate: ConditionalKeysetSeedRecoveryCandidate) {
+function signatureFor(candidate: ExactSeedRecoveryCandidate) {
   return { id: candidate.keysetId, amount: Amount.from(2), C_: PUBLIC_KEY }
 }
 

@@ -1096,10 +1096,10 @@ export function admitExactAvailableWalletProofsFromDatabase(
 }
 
 /**
- * Admit a recovered regular proof without weakening an existing target state.
+ * Admit a recovered proof without weakening an existing target state.
  * A matching row in any target state is already the local projection authority.
  */
-export function admitRecoveredRegularWalletProofFromDatabase(
+export function admitRecoveredWalletProofFromDatabase(
   database: DatabaseSync,
   input: {
     readonly mintUrl: string

@@ -25,13 +25,12 @@ test('offline seed recovery refuses an active daemon run lock before mint setup'
               recoveryId: 'locked-recovery',
               mintUrl: 'https://mint.example',
               unit: 'sat',
-              keysetId: 'keyset-1',
               walletSeedHexFile: seedPath,
               disclosureAcknowledged: true,
-              createWallet: () => {
+              transport: guardedTransport(() => {
                 walletCreated = true
                 throw new Error('mint setup must not run')
-              },
+              }),
             }),
           /already running/,
         )
@@ -62,13 +61,12 @@ test('offline seed recovery refuses prepared proof operations before mint setup'
             recoveryId: 'prepared-recovery',
             mintUrl: 'https://mint.example',
             unit: 'sat',
-            keysetId: 'keyset-1',
             walletSeedHexFile: seedPath,
             disclosureAcknowledged: true,
-            createWallet: () => {
+            transport: guardedTransport(() => {
               walletCreated = true
               throw new Error('mint setup must not run')
-            },
+            }),
           }),
         /target-proof-operation-prepared/,
       )
@@ -97,13 +95,12 @@ test('offline seed recovery refuses target-first reserved and locked proofs befo
               recoveryId: `${state}-recovery`,
               mintUrl: 'https://mint.example',
               unit: 'sat',
-              keysetId: 'keyset-1',
               walletSeedHexFile: seedPath,
               disclosureAcknowledged: true,
-              createWallet: () => {
+              transport: guardedTransport(() => {
                 walletCreated = true
                 throw new Error('mint setup must not run')
-              },
+              }),
             }),
           /target-wallet-proof-reserved/,
         )
@@ -145,13 +142,12 @@ test('offline seed recovery refuses nonterminal swaps before mint setup', async 
             recoveryId: 'swap-recovery',
             mintUrl: 'https://mint.example',
             unit: 'sat',
-            keysetId: 'keyset-1',
             walletSeedHexFile: seedPath,
             disclosureAcknowledged: true,
-            createWallet: () => {
+            transport: guardedTransport(() => {
               walletCreated = true
               throw new Error('mint setup must not run')
-            },
+            }),
           }),
         /daemon-swap-nonterminal/,
       )
@@ -173,16 +169,17 @@ test('offline seed recovery scans and commits a clean profile', async () => {
         recoveryId: 'clean-recovery',
         mintUrl: 'https://mint.example',
         unit: 'sat',
-        keysetId: 'keyset-1',
         walletSeedHexFile: seedPath,
         disclosureAcknowledged: true,
-        createWallet: () => fakeWallet('keyset-1'),
+        transport: emptyTransport(`01${'a'.repeat(64)}`),
       })
       assert.deepEqual(result, {
         recoveryId: 'clean-recovery',
         state: 'completed',
-        nextCounter: 300,
+        selectedKeysetCount: 1,
+        completedChildCount: 1,
         batchesProcessed: 1,
+        gapLimit: 300,
       })
     })
   } finally {
@@ -284,17 +281,43 @@ function readCount(
     .count
 }
 
-function fakeWallet(keysetId: string) {
+function emptyTransport(keysetId: string) {
   return {
-    async loadMint() {},
-    keyChain: { getKeysets: () => [{ id: keysetId }] },
-    getKeyset: () => ({ id: keysetId, unit: 'sat', keys: {} }),
-    async restore() {
-      return { proofs: [] }
+    wallet: {
+      async loadMint() {},
+      keyChain: {
+        getKeysets: () => [{ id: keysetId }],
+        getKeyset: () => ({ id: keysetId, unit: 'sat', keys: {} }),
+        async ensureKeysetKeys() {
+          return { id: keysetId, unit: 'sat', keys: {} }
+        },
+      },
+      getKeyset: () => ({ id: keysetId, unit: 'sat', keys: {} }),
+      async checkProofsStates() {
+        throw new Error('empty recovery batch must not call NUT-07')
+      },
     },
-    async checkProofsStates() {
-      throw new Error('empty recovery batch must not call NUT-07')
+    async listRegularKeysets() {
+      return { keysets: [{ id: keysetId, unit: 'sat' }] }
     },
+    async listConditionalKeysets() {
+      return { keysets: [] }
+    },
+    async getConditionalKeyset() {
+      throw new Error('empty recovery must not fetch conditional keys')
+    },
+    async restoreCandidates() {
+      return { outputs: [], signatures: [] }
+    },
+  }
+}
+
+function guardedTransport(onUse: () => never) {
+  const transport = emptyTransport(`01${'a'.repeat(64)}`)
+  return {
+    ...transport,
+    listRegularKeysets: async () => onUse(),
+    listConditionalKeysets: async () => onUse(),
   }
 }
 

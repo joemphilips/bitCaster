@@ -9,7 +9,7 @@ import { createEmergencySeedRecoveryCoCommit } from '@bitcaster-market/client-sd
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease, renewCustodyScopeLease } from '../src/profileFencing.ts'
 import {
-  recoverDaemonWalletFromSeed,
+  recoverAllDaemonWalletFromSeed,
   runExplicitEmergencySeedRecovery,
   type ExplicitSeedRecoveryBatch,
 } from '../src/emergencySeedRecovery.ts'
@@ -1163,12 +1163,11 @@ async function assertRecoveryFenceChange(
       incarnationId: `recovery-${label}`,
       observedAtMs: 2,
     })
-    await recoverDaemonWalletFromSeed(
+    await recoverAllDaemonWalletFromSeed(
       {
         recoveryId: `recovery-${label}`,
         mintUrl: 'https://mint.example',
         unit: 'sat',
-        keysetId: 'keyset-1',
         walletSeedHex,
         disclosureAcknowledged: true,
       },
@@ -1195,18 +1194,33 @@ function recoveryDependencies(
     getFence,
     nowMs: () => 3,
     invocationId: () => 'recovery-fence-change',
-    createWallet: () => ({
-      async loadMint() {},
-      keyChain: { getKeysets: () => [{ id: 'keyset-1' }] },
-      getKeyset: () => ({ id: 'keyset-1', unit: 'sat', keys: {} }),
-      async restore() {
+    transport: {
+      wallet: {
+        async loadMint() {},
+        keyChain: {
+          getKeyset: () => ({ id: `01${'a'.repeat(64)}`, unit: 'sat', keys: {} }),
+          async ensureKeysetKeys() {
+            return { id: `01${'a'.repeat(64)}`, unit: 'sat', keys: {} }
+          },
+        },
+        async checkProofsStates() {
+          throw new Error('empty recovery batch must not call NUT-07')
+        },
+      },
+      async listRegularKeysets() {
+        return { keysets: [{ id: `01${'a'.repeat(64)}`, unit: 'sat' }] }
+      },
+      async listConditionalKeysets() {
+        return { keysets: [] }
+      },
+      async getConditionalKeyset() {
+        throw new Error('empty recovery must not fetch conditional keys')
+      },
+      async restoreCandidates() {
         await onRestore()
-        return { proofs: [] }
+        return { outputs: [], signatures: [] }
       },
-      async checkProofsStates() {
-        throw new Error('empty recovery batch must not call NUT-07')
-      },
-    }),
+    },
   }
 }
 
