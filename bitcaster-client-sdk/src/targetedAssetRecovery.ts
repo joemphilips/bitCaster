@@ -12,7 +12,8 @@ import type { EncryptedWalletBackupV2AssetIdentity } from './encryptedWalletBack
 export const TARGETED_ASSET_RECOVERY_KEYSETS_MAX = 16 as const
 export const TARGETED_ASSET_RECOVERY_INTERVALS_MAX = 16 as const
 export const TARGETED_ASSET_RECOVERY_CANDIDATES_MAX = 4096 as const
-export const TARGETED_ASSET_RECOVERY_MINT_REQUESTS_MAX = 64 as const
+export const TARGETED_ASSET_RECOVERY_TOTAL_MINT_HTTP_REQUESTS_MAX = 64 as const
+export const TARGETED_ASSET_RECOVERY_NUT07_BATCH_PROOF_MAX = 100 as const
 const activeAttempts = new Map<string, Promise<TargetedAssetRecoveryOutcome>>()
 export interface TargetedAssetRecoveryAttemptKey {
   readonly scopeId: string
@@ -84,6 +85,7 @@ export interface TargetedAssetRecoveryPorts<TBackupEntry> {
   ): void | Promise<void>
   recoverFromMint(input: {
     readonly recovery: TargetedAssetRecoveryInput
+    readonly attemptKey: TargetedAssetRecoveryAttemptKey
     readonly fact: TargetedAssetRecoveryMonitoringFact
     readonly requests: readonly TargetedAssetRecoveryMintRequest[]
   }): 'restored' | 'unavailable' | Promise<'restored' | 'unavailable'>
@@ -175,7 +177,9 @@ async function recoverMintAttempt<TBackupEntry>(
   }
   let completedOutcome: TargetedAssetRecoveryCompletedOutcome
   try {
-    completedOutcome = mintOutcome(await ports.recoverFromMint({ recovery, fact, requests }))
+    completedOutcome = mintOutcome(
+      await ports.recoverFromMint({ recovery, attemptKey: key, fact, requests }),
+    )
   } catch {
     completedOutcome = 'persistent-error'
   }
@@ -282,10 +286,18 @@ export function buildTargetedAssetRecoveryMintRequests(
           counterCount: interval.count,
         }),
       )
-      if (requests.length > TARGETED_ASSET_RECOVERY_MINT_REQUESTS_MAX) {
+      if (requests.length > TARGETED_ASSET_RECOVERY_TOTAL_MINT_HTTP_REQUESTS_MAX) {
         throw new Error('targeted asset recovery requests exceed the limit')
       }
     }
+  }
+  const nut07Requests = Math.ceil(candidateCount / TARGETED_ASSET_RECOVERY_NUT07_BATCH_PROOF_MAX)
+  const keysetRequests = hint.keysetIds.length
+  if (
+    requests.length + nut07Requests + keysetRequests >
+    TARGETED_ASSET_RECOVERY_TOTAL_MINT_HTTP_REQUESTS_MAX
+  ) {
+    throw new Error('targeted asset recovery total mint requests exceed the limit')
   }
   return Object.freeze(requests)
 }

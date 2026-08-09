@@ -7,6 +7,8 @@ import {
   buildTargetedAssetRecoveryMintRequests,
   createTargetedAssetRecoveryAttemptKey,
   recoverTargetedAsset,
+  TARGETED_ASSET_RECOVERY_NUT07_BATCH_PROOF_MAX,
+  TARGETED_ASSET_RECOVERY_TOTAL_MINT_HTTP_REQUESTS_MAX,
   type TargetedAssetRecoveryCompletedOutcome,
   type TargetedAssetRecoveryInput,
   type TargetedAssetRecoveryPorts,
@@ -292,24 +294,47 @@ test('targeted recovery coalesces concurrent calls for one exact tuple', async (
   assert.equal(fake.calls.record, 1)
 })
 
-test('targeted recovery bounds 4096 candidates into 64 mint requests', () => {
+test('targeted recovery bounds candidates and total mint HTTP requests', () => {
   assert.throws(() =>
     buildTargetedAssetRecoveryMintRequests({ keysetIds: [], counterIntervals: [] }),
   )
   const requests = buildTargetedAssetRecoveryMintRequests({
-    keysetIds: Array.from(
-      { length: 16 },
-      (_, index) => `00${index.toString(16).padStart(14, '0')}`,
-    ),
+    keysetIds: Array.from({ length: 8 }, (_, index) => `00${index.toString(16).padStart(14, '0')}`),
     counterIntervals: Array.from({ length: 4 }, (_, index) => ({
       start: index * 64,
       count: 64,
     })),
   })
-  assert.equal(requests.length, 64)
+  assert.equal(requests.length, 32)
+  const maximumShapeRequestCount =
+    requests.length + Math.ceil((8 * 4 * 64) / TARGETED_ASSET_RECOVERY_NUT07_BATCH_PROOF_MAX) + 8
+  assert.equal(maximumShapeRequestCount, 61)
+  assert.equal(
+    maximumShapeRequestCount <= TARGETED_ASSET_RECOVERY_TOTAL_MINT_HTTP_REQUESTS_MAX,
+    true,
+  )
   assert.equal(
     requests.every((request) => request.counterCount === 64),
     true,
+  )
+  assert.equal(
+    buildTargetedAssetRecoveryMintRequests({
+      keysetIds: ['0011223344556677'],
+      counterIntervals: [{ start: 0, count: 4096 }],
+    }).length,
+    1,
+  )
+  assert.throws(() =>
+    buildTargetedAssetRecoveryMintRequests({
+      keysetIds: Array.from(
+        { length: 16 },
+        (_, index) => `00${index.toString(16).padStart(14, '0')}`,
+      ),
+      counterIntervals: Array.from({ length: 2 }, (_, index) => ({
+        start: index * 64,
+        count: 64,
+      })),
+    }),
   )
   assert.throws(() =>
     buildTargetedAssetRecoveryMintRequests({

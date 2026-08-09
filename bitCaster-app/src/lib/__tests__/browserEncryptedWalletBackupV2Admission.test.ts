@@ -208,6 +208,73 @@ describe("browser encrypted wallet backup V2 admission", () => {
     );
   });
 
+  it("merges only missing proofs from a verified newer backup revision", async () => {
+    const fixture = await createFixture(1);
+    database = fixture.database;
+    await admitBrowserEncryptedWalletBackupV2Asset({
+      ...fixture.input,
+      custodyRevision: 6n,
+    });
+    const expanded = await createVerified(2);
+
+    await admitBrowserEncryptedWalletBackupV2Asset({
+      ...fixture.input,
+      verified: expanded,
+      custodyRevision: 7n,
+      sourceOperationId: "backup-v2-restore:newer-bundle",
+    });
+
+    expect(await database.custodyProofs.count()).toBe(2);
+    expect(await database.custodyOperations.count()).toBe(2);
+    await expectDesired(database, fixture, 2);
+  });
+
+  it("rejects a newer backup that does not contain current local custody", async () => {
+    const fixture = await createFixture(1);
+    database = fixture.database;
+    await admitBrowserEncryptedWalletBackupV2Asset({
+      ...fixture.input,
+      custodyRevision: 6n,
+    });
+    const foreign = await createVerified(2, { counterOffset: 10 });
+
+    await expect(
+      admitBrowserEncryptedWalletBackupV2Asset({
+        ...fixture.input,
+        verified: foreign,
+        custodyRevision: 7n,
+        sourceOperationId: "backup-v2-restore:foreign-bundle",
+      }),
+    ).rejects.toThrow(/desired authority conflicts/);
+
+    expect(await database.custodyProofs.count()).toBe(1);
+  });
+
+  it("rejects foreign mint and BLS counter authority at direct admission", async () => {
+    const fixture = await createFixture(1);
+    database = fixture.database;
+    await expect(
+      admitBrowserEncryptedWalletBackupV2Asset({
+        ...fixture.input,
+        wallet: {
+          ...fixture.input.wallet,
+          mint: { mintUrl: "https://other-mint.example" },
+        } as CashuWallet,
+      }),
+    ).rejects.toThrow(/restore mint is foreign/);
+
+    const withBlsCounter = await createVerified(1, {
+      extraCounterKeysetId: `02${"33".repeat(32)}`,
+    });
+    await expect(
+      admitBrowserEncryptedWalletBackupV2Asset({
+        ...fixture.input,
+        verified: withBlsCounter,
+      }),
+    ).rejects.toThrow(/BLS keyset is unsupported/);
+    expect(await database.custodyProofs.count()).toBe(0);
+  });
+
   it("restores an evicted maximum-size acknowledged asset without count overflow", async () => {
     const fixture = await createFixture(512);
     database = fixture.database;
@@ -292,6 +359,7 @@ async function createVerified(
   options: {
     readonly asset?: EncryptedWalletBackupV2ProofSetAsset;
     readonly counterOffset?: number;
+    readonly extraCounterKeysetId?: string;
   } = {},
 ): Promise<EncryptedWalletBackupV2VerifiedProofSet> {
   const asset = options.asset ?? { kind: "ordinary" };
@@ -328,10 +396,21 @@ async function createVerified(
   });
   const unverified = {
     proofs,
-    counterHighWaterMarks:
-      asset.kind === "ordinary"
+    counterHighWaterMarks: [
+      ...(asset.kind === "ordinary"
         ? [{ mintUrl: MINT, unit, keysetId: KEYSET_ID, nextCounter: count + counterOffset }]
-        : [],
+        : []),
+      ...(options.extraCounterKeysetId === undefined
+        ? []
+        : [
+            {
+              mintUrl: MINT,
+              unit,
+              keysetId: options.extraCounterKeysetId,
+              nextCounter: 1,
+            },
+          ]),
+    ],
   };
   return verifyEncryptedWalletBackupV2RestoredProofSet({
     seed: SEED,
@@ -390,6 +469,7 @@ function wallet(asset: EncryptedWalletBackupV2ProofSetAsset, unit: "sat" | "msat
   );
   keyset.keys = { 1: PUBLIC_KEY };
   return {
+    mint: { mintUrl: MINT },
     getKeyset: () => keyset,
   } as unknown as CashuWallet;
 }

@@ -116,7 +116,7 @@ it("uses complete current local custody without backup network I/O", async () =>
   await expect(
     restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
       ...fixture.input,
-      wallet: {} as CashuWallet,
+      wallet: { mint: { mintUrl: fixture.input.asset.mintUrl } } as CashuWallet,
       lockManager: immediateLockManager(),
     }),
   ).resolves.toEqual({ kind: "local-custody" });
@@ -153,6 +153,21 @@ it("falls through from an acknowledged evicted cache to its current bundle", asy
   ).resolves.toMatchObject({
     kind: "backup",
   });
+});
+
+it("rejects a foreign wallet mint before backup or mint I/O", async () => {
+  const fixture = await backupFixture();
+
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...fixture.input,
+      wallet: { mint: { mintUrl: "https://other-mint.example" } } as CashuWallet,
+      lockManager: immediateLockManager(),
+    }),
+  ).rejects.toThrow(/restore mint is foreign/);
+
+  expect(fixture.remote.readDescriptorPage).not.toHaveBeenCalled();
+  expect(fixture.remote.readObject).not.toHaveBeenCalled();
 });
 
 it("rejects a corrupt object before returning material", async () => {
@@ -276,6 +291,7 @@ it("does not admit a decrypted bundle before mint proof verification", async () 
   const fixture = await backupFixture();
   const checkProofsStates = vi.fn();
   const wallet = {
+    mint: { mintUrl: fixture.input.asset.mintUrl },
     getKeyset: () => ({
       id: KEYSET,
       unit: "sat",

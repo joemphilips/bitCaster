@@ -15,7 +15,6 @@ import {
 } from "@bitcaster/client-sdk";
 import {
   hashToCurve,
-  hashToCurveBls,
   isBlsKeyset,
   verifyProofsForReceive,
   type ProofState,
@@ -31,6 +30,7 @@ import { decodeDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/d
 import { admitBrowserEncryptedWalletBackupV2Asset } from "./browserEncryptedWalletBackupV2Admission";
 import { retryBrowserEncryptedWalletBackupV2QuotaWrite } from "./browserEncryptedWalletBackupV2QuotaCleanup";
 import { withWalletProfileLock } from "./walletProfileLock";
+import { normalizeUrl } from "./url";
 
 export type BrowserEncryptedWalletBackupV2TargetedRestoreResult =
   | { readonly kind: "local-custody" }
@@ -56,6 +56,7 @@ export interface BrowserEncryptedWalletBackupV2TargetedRestoreInput {
   readonly runtime: EncryptedWalletBackupV2BundleRuntime;
   readonly signal: AbortSignal;
   readonly isCurrentProfile: () => boolean;
+  readonly minimumAvailableAmount?: bigint;
 }
 
 export interface BrowserEncryptedWalletBackupV2RestoreAndAdmitInput extends BrowserEncryptedWalletBackupV2TargetedRestoreInput {
@@ -72,7 +73,15 @@ export async function restoreBrowserEncryptedWalletBackupV2TargetedAsset(
   input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
 ): Promise<BrowserEncryptedWalletBackupV2TargetedRestoreResult> {
   requireCurrent(input);
-  if (await hasLocalCustody(input)) return { kind: "local-custody" };
+  if (input.minimumAvailableAmount !== undefined && input.minimumAvailableAmount < 0n) {
+    throw new Error("browser V2 targeted restore minimum amount is invalid");
+  }
+  const localAmount = await readBrowserEncryptedWalletBackupV2LocalAvailableAmount(input);
+  if (
+    localAmount !== null &&
+    (input.minimumAvailableAmount === undefined || localAmount >= input.minimumAvailableAmount)
+  )
+    return { kind: "local-custody" };
   const assetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
     keyHandle: input.keyHandle,
     ...input.asset,
@@ -132,6 +141,9 @@ export async function restoreBrowserEncryptedWalletBackupV2TargetedAsset(
 export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset(
   input: BrowserEncryptedWalletBackupV2RestoreAndAdmitInput,
 ): Promise<BrowserEncryptedWalletBackupV2RestoreAndAdmitResult> {
+  if (normalizeUrl(input.wallet.mint.mintUrl) !== normalizeUrl(input.asset.mintUrl)) {
+    throw new Error("browser V2 restore mint is foreign");
+  }
   const restored = await restoreBrowserEncryptedWalletBackupV2TargetedAsset(input);
   requireCurrent(input);
   if (restored.kind === "local-custody") {
@@ -178,6 +190,7 @@ function restoreVerificationPort(
   return {
     async resolveKeyset({ mintUrl, unit, keysetId }) {
       requireCurrent(input);
+      if (isBlsKeyset(keysetId)) throw new Error("browser V2 restore BLS keyset is unsupported");
       const keyset = input.wallet.getKeyset(keysetId);
       return {
         mintUrl,
@@ -224,10 +237,9 @@ function expectedProofIdsByY(
 ): ReadonlyMap<string, string> {
   const expected = new Map<string, string>();
   for (const proof of proofs) {
+    if (isBlsKeyset(proof.id)) throw new Error("browser V2 restore BLS keyset is unsupported");
     const secret = new TextEncoder().encode(proof.secret);
-    const Y = isBlsKeyset(proof.id)
-      ? hashToCurveBls(secret).toHex(true)
-      : hashToCurve(secret).toHex(true);
+    const Y = hashToCurve(secret).toHex(true);
     if (expected.has(Y)) throw new Error("browser V2 restore proof-state authority is duplicated");
     expected.set(Y, proof.proofId);
   }
@@ -281,9 +293,10 @@ async function repairLegacyProofCache(
   requireCurrent(input);
 }
 
-async function hasLocalCustody(
+/** Returns one complete local asset's exact currently available amount. */
+export async function readBrowserEncryptedWalletBackupV2LocalAvailableAmount(
   input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
-): Promise<boolean> {
+): Promise<bigint | null> {
   const row = await input.database.encryptedWalletBackupV2DesiredAssets.get([
     input.scopeId,
     encryptedWalletBackupV2LocalAssetKey(input.asset),
@@ -292,14 +305,20 @@ async function hasLocalCustody(
   if (row === undefined) {
     if ((await exactLocalProofCount(input)) !== 0)
       throw new Error("browser V2 local custody asset authority is missing");
-    return false;
+    return null;
   }
-  const localProofCount = await exactLocalProofCount(input);
+  const localProofs = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+    database: input.database,
+    scopeId: input.scopeId,
+    asset: input.asset,
+  });
+  requireCurrent(input);
+  const localProofCount = localProofs.length;
   if (row.desiredAction === "remove")
     throw new Error("browser V2 local custody asset is marked for removal");
   if (localProofCount === 0 && row.syncState === "acknowledged") {
     if (row.desiredAction !== "replace") throw new Error("browser V2 desired asset is invalid");
-    return false;
+    return null;
   }
   if (localProofCount !== row.activeProofCount)
     throw new Error("browser V2 local custody asset is partial");
@@ -309,7 +328,11 @@ async function hasLocalCustody(
     localAssetKey: row.localAssetKey,
   });
   requireCurrent(input);
-  return snapshot.proofs.length > 0;
+  if (snapshot.proofs.length === 0) return null;
+  return localProofs.reduce(
+    (total, proof) => (proof.selectability === "selectable" ? total + BigInt(proof.amount) : total),
+    0n,
+  );
 }
 
 async function exactLocalProofCount(
