@@ -220,6 +220,7 @@ export interface BrowserCtfRangeRecoveryPage {
 export const BROWSER_CTF_RANGE_ORDER_ERROR_CODES = [
   "invalid-order-type",
   "insufficient-funds",
+  "asset-recovery-failed",
   "source-preparation-failed",
   "mint-source-uncertain",
   "custody-commit-failed",
@@ -2292,6 +2293,7 @@ export function browserCtfRangeOrderErrorMessage(code: BrowserCtfRangeOrderError
   const messages: Record<BrowserCtfRangeOrderErrorCode, string> = {
     "invalid-order-type": "The browser supports only immediate FAK or FOK range orders.",
     "insufficient-funds": "The wallet has insufficient selectable funds for this order.",
+    "asset-recovery-failed": "The wallet could not recover the exact funds for this order.",
     "source-preparation-failed": "The wallet could not prepare the range authorization.",
     "mint-source-uncertain": "The mint result is uncertain. Funds recovery is pending.",
     "custody-commit-failed": "The wallet could not commit the durable range operation.",

@@ -11,12 +11,15 @@ import {
 } from "@bitcaster/client-sdk/ctfRangeMintMetadata";
 import type { TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
 import { planCtfRangeSourceConsolidation } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
+import { planCtfRangeOrderAuthorization } from "@bitcaster/client-sdk/ctfRangeOrderAuthorization";
+import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import { toSeed } from "@/lib/bip39";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import type { MarketDetail } from "@/types/market-detail";
 import {
   getProofAmountInventoryForKeyset,
   getSelectableUnitProofsForAmounts,
+  db,
 } from "@/stores/proof-db";
 import { getWalletForMnemonicUnit } from "@/stores/wallet";
 import {
@@ -28,6 +31,8 @@ import {
 import { createAuthenticatedBrowserEngineClient } from "./markets";
 import { readCtfRangePreparation } from "@/stores/ctf-range-order-db";
 import { recordBrowserCtfRangeMessage } from "@/stores/ctf-range-order-messages";
+import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
+import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 
 const MINT_METADATA_CACHE_TTL_MS = 30_000;
 const MINT_METADATA_CACHE_LIMIT = 64;
@@ -105,6 +110,8 @@ export async function submitBrowserCtfRangeOrder(
       coordinator,
       seed,
       preparation,
+      mnemonic: input.mnemonic,
+      scopeId,
       expectedConsolidationFeeSubunits: input.expectedConsolidationFeeSubunits,
     });
     return await coordinator.prepareAndSubmit({
@@ -116,11 +123,11 @@ export async function submitBrowserCtfRangeOrder(
   } catch (error) {
     if (error instanceof BrowserCtfRangeOrderError) {
       const record = await readCtfRangePreparation(scopeId, preparation.operationId);
-      if (record !== null) {
+      if (record !== null || error.code === "asset-recovery-failed") {
         await persistRangeMessages({
           scopeId,
           operationId: preparation.operationId,
-          revision: record.revision,
+          revision: record?.revision ?? 0,
           code: error.code,
           observedAtMs: Date.now(),
         });
@@ -134,14 +141,11 @@ async function consolidateBrowserRangeSource(input: {
   coordinator: BrowserCtfRangeOrderCoordinator;
   seed: Uint8Array;
   preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+  mnemonic: string;
+  scopeId: string;
   expectedConsolidationFeeSubunits: number;
 }) {
-  const conditional = input.preparation.side === "Sell";
-  const plan = await loadBrowserRangeConsolidationPlan(input.preparation);
-  if (plan.kind !== "ready") {
-    const code = plan.kind === "insufficient" ? "insufficient-funds" : "source-preparation-failed";
-    throw new BrowserCtfRangeOrderError(code, consolidationPlanMessage(plan.kind));
-  }
+  const plan = await recoverRangeSourcePlan(input);
   const consolidationFee = safeFeeSubunits(plan.consolidationFee);
   if (input.expectedConsolidationFeeSubunits !== consolidationFee) {
     throw new BrowserCtfRangeOrderError(
@@ -149,13 +153,90 @@ async function consolidateBrowserRangeSource(input: {
       "Wallet proof fees changed. Review the updated trade cost and try again.",
     );
   }
+  await executeConsolidationRounds(input, plan);
+  return selectedRangeSourceProofs(input, plan.selectedInputs);
+}
+
+async function recoverRangeSourcePlan(input: {
+  seed: Uint8Array;
+  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+  mnemonic: string;
+  scopeId: string;
+}): Promise<ReadyRangeSourcePlan> {
+  const recovery = await recoverBrowserFundedAsset({
+    database: db,
+    scopeId: input.scopeId,
+    seed: input.seed,
+    mnemonic: input.mnemonic,
+    asset: rangeSourceAsset(input.preparation),
+    requiredAmount: rangeSourceRequiredAmount(input.preparation),
+    loadPlan: () => loadBrowserRangeConsolidationPlan(input.preparation),
+    isCurrentProfile: () => activeBrowserWalletScopeId() === input.scopeId,
+  });
+  switch (recovery.kind) {
+    case "ready":
+      return readyRangeSourcePlan(recovery.plan);
+    case "recovered":
+      return postRecoveryRangeSourcePlan(
+        await loadBrowserRangeConsolidationPlan(input.preparation),
+      );
+    case "persistent-error":
+      throw assetRecoveryFailed();
+    case "unavailable":
+      throw rangeSourcePlanError("insufficient");
+    case "not-recoverable":
+      throw rangeSourcePlanError(
+        recovery.plan.kind === "ready" ? "insufficient" : recovery.plan.kind,
+      );
+    default:
+      throw new Error("browser range recovery outcome is invalid");
+  }
+}
+
+function postRecoveryRangeSourcePlan(
+  plan: Awaited<ReturnType<typeof loadBrowserRangeConsolidationPlan>>,
+): ReadyRangeSourcePlan {
+  if (plan.kind === "ready") return plan;
+  if (plan.kind === "insufficient") throw assetRecoveryFailed();
+  throw rangeSourcePlanError(plan.kind);
+}
+
+type ReadyRangeSourcePlan = Extract<
+  Awaited<ReturnType<typeof loadBrowserRangeConsolidationPlan>>,
+  { kind: "ready" }
+>;
+
+function readyRangeSourcePlan(
+  plan: Awaited<ReturnType<typeof loadBrowserRangeConsolidationPlan>>,
+): ReadyRangeSourcePlan {
+  if (plan.kind === "ready") return plan;
+  throw rangeSourcePlanError(plan.kind);
+}
+
+function rangeSourcePlanError(kind: "insufficient" | "not-reducible" | "round-limit") {
+  return new BrowserCtfRangeOrderError(
+    kind === "insufficient" ? "insufficient-funds" : "source-preparation-failed",
+    consolidationPlanMessage(kind),
+  );
+}
+
+function assetRecoveryFailed() {
+  return new BrowserCtfRangeOrderError(
+    "asset-recovery-failed",
+    "The wallet could not recover the exact funds for this order.",
+  );
+}
+
+async function executeConsolidationRounds(
+  input: {
+    coordinator: BrowserCtfRangeOrderCoordinator;
+    seed: Uint8Array;
+    preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+  },
+  plan: Extract<Awaited<ReturnType<typeof loadBrowserRangeConsolidationPlan>>, { kind: "ready" }>,
+) {
   for (const [round, plannedRound] of plan.consolidationRounds.entries()) {
-    const proofs = await getSelectableUnitProofsForAmounts(input.preparation.mintUrl, {
-      unit: "msat",
-      keysetId: input.preparation.offerKeyset.id,
-      conditional,
-      amounts: plannedRound.inputs,
-    });
+    const proofs = await selectedRangeSourceProofs(input, plannedRound.inputs);
     await input.coordinator.consolidateRound({
       seed: input.seed,
       preparation: input.preparation,
@@ -164,12 +245,63 @@ async function consolidateBrowserRangeSource(input: {
       plannedRound,
     });
   }
+}
+
+function selectedRangeSourceProofs(
+  input: { preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation> },
+  amounts: readonly string[],
+) {
   return getSelectableUnitProofsForAmounts(input.preparation.mintUrl, {
     unit: "msat",
     keysetId: input.preparation.offerKeyset.id,
-    conditional,
-    amounts: plan.selectedInputs,
+    conditional: input.preparation.side === "Sell",
+    amounts,
   });
+}
+
+function rangeSourceAsset(preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>) {
+  if (preparation.side === "Buy") {
+    return createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: preparation.mintUrl,
+      unit: "msat",
+      asset: { kind: "ordinary" },
+    });
+  }
+  const offer = preparation.offerKeyset as typeof preparation.offerKeyset & {
+    readonly conditionId: string;
+    readonly outcomeCollection: string;
+    readonly outcomeCollectionId: string;
+    readonly registeredAt: number;
+  };
+  return createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: preparation.mintUrl,
+    unit: "msat",
+    asset: {
+      kind: "ctf",
+      conditionId: offer.conditionId,
+      outcomeLabel: offer.outcomeCollection,
+      outcomeCollectionId: offer.outcomeCollectionId,
+      registeredAt: offer.registeredAt,
+      finalExpiry: offer.finalExpiry,
+    },
+  });
+}
+
+function rangeSourceRequiredAmount(
+  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+): bigint {
+  return BigInt(
+    planCtfRangeOrderAuthorization({
+      side: preparation.side,
+      priceNumerator: preparation.priceNumerator,
+      amountSubunits: preparation.amountSubunits,
+      divisibility: preparation.divisibility,
+      inputFeePpk: preparation.offerKeyset.inputFeePpk,
+      offerKeysetKeys: preparation.offerKeyset.keys,
+      maxPoolEntries: preparation.maxPoolEntries,
+      maxInputs: preparation.maxInputs,
+    }).inputAmount,
+  );
 }
 
 async function loadBrowserRangePreparation(input: {

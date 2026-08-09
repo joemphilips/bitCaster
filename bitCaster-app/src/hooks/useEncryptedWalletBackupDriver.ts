@@ -5,7 +5,10 @@ import {
   browserWalletScopeIdFromSeed,
 } from "@/lib/browserWalletProfile";
 import { resolveEncryptedWalletBackupConfiguration } from "@/lib/encryptedWalletBackupConfig";
-import { createBrowserEncryptedWalletBackupV2RuntimeDriver } from "@/lib/encryptedWalletBackupDriver";
+import {
+  createBrowserEncryptedWalletBackupV2RuntimeDriver,
+  registerBrowserEncryptedWalletBackupV2RuntimeDriver,
+} from "@/lib/encryptedWalletBackupDriver";
 import { toSeed } from "@/lib/bip39";
 import { db } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
@@ -36,7 +39,9 @@ export function useEncryptedWalletBackupDriver(nostrSignerReady: boolean): void 
         db === database &&
         database.name === browserWalletDatabaseName(scopeId),
     });
+    const unregister = registerBrowserEncryptedWalletBackupV2RuntimeDriver(scopeId, driver);
     return () => {
+      unregister();
       controller.abort();
       driver.stop();
     };

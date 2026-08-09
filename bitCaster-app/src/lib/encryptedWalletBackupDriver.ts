@@ -29,6 +29,13 @@ import {
   scheduleEncryptedWalletBackupRetry,
 } from "../stores/encrypted-wallet-backup-retry-db";
 import type { BitcasterDB } from "../stores/proof-db";
+import { recoverBrowserTargetedAsset } from "./browserTargetedAssetRecovery";
+import type {
+  AssetMonitoringAssetResponse,
+  EncryptedWalletBackupV2AssetIdentity,
+  TargetedAssetRecoveryOutcome,
+} from "@bitcaster/client-sdk";
+import type { Wallet as CashuWallet } from "@cashu/cashu-ts";
 
 export const ENCRYPTED_WALLET_BACKUP_BACKGROUND_CYCLE_DEADLINE_MILLISECONDS = 300_000;
 export const ENCRYPTED_WALLET_BACKUP_RETRY_DELAY_MILLISECONDS = 5_000;
@@ -36,6 +43,31 @@ export const ENCRYPTED_WALLET_BACKUP_SERVICE_QUOTA_RECHECK_MILLISECONDS = 3_600_
 
 export interface BrowserEncryptedWalletBackupV2RuntimeDriver {
   stop(): void;
+  recoverTargetedAsset(input: {
+    readonly asset: EncryptedWalletBackupV2AssetIdentity;
+    readonly monitoringFact: AssetMonitoringAssetResponse;
+    readonly wallet: CashuWallet;
+    readonly lockManager?: Pick<LockManager, "request">;
+  }): Promise<TargetedAssetRecoveryOutcome>;
+}
+
+const targetedDrivers = new Map<string, BrowserEncryptedWalletBackupV2RuntimeDriver>();
+
+/** Registers the exact live driver for one browser wallet profile. */
+export function registerBrowserEncryptedWalletBackupV2RuntimeDriver(
+  scopeId: string,
+  driver: BrowserEncryptedWalletBackupV2RuntimeDriver,
+): () => void {
+  targetedDrivers.set(scopeId, driver);
+  return () => {
+    if (targetedDrivers.get(scopeId) === driver) targetedDrivers.delete(scopeId);
+  };
+}
+
+export function activeBrowserEncryptedWalletBackupV2RuntimeDriver(
+  scopeId: string,
+): BrowserEncryptedWalletBackupV2RuntimeDriver | null {
+  return targetedDrivers.get(scopeId) ?? null;
 }
 
 export interface BrowserEncryptedWalletBackupV2RuntimeDriverInput {
@@ -89,7 +121,9 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   #subscription: Subscription | undefined;
   readonly #cleanup = new AbortController();
   #keyHandle: EncryptedWalletBackupV2KeyHandle | undefined;
+  readonly #keyHandlePromise: Promise<EncryptedWalletBackupV2KeyHandle>;
   #enrollmentEpoch: number | undefined;
+  #enrollmentEpochPromise: Promise<number> | undefined;
   #pendingDesiredAssetCount = 0;
   #pendingDesiredAssetFingerprint = "";
   #serviceQuotaPendingFingerprint: string | null = null;
@@ -108,6 +142,11 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     this.#remote = input.remote ?? createRemote(input.configuration);
     this.#runWorkerCycle = input.runWorkerCycle ?? runBrowserEncryptedWalletBackupV2WorkerCycle;
     this.#lifetimeSignal = AbortSignal.any([input.signal, this.#cleanup.signal]);
+    this.#keyHandlePromise = createEncryptedWalletBackupV2KeyHandle({
+      seed: input.seed,
+      realm: input.configuration.realm,
+      runtime: this.#runtime,
+    });
   }
 
   start(): this {
@@ -120,13 +159,48 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     this.#stopLeader();
   }
 
+  async recoverTargetedAsset(input: {
+    readonly asset: EncryptedWalletBackupV2AssetIdentity;
+    readonly monitoringFact: AssetMonitoringAssetResponse;
+    readonly wallet: CashuWallet;
+    readonly lockManager?: Pick<LockManager, "request">;
+  }): Promise<TargetedAssetRecoveryOutcome> {
+    try {
+      if (!this.#isActive()) return { kind: "persistent-error" };
+      const keyHandle = await this.#keyHandlePromise;
+      if (!this.#isActive()) return { kind: "persistent-error" };
+      const enrollmentEpoch = await this.#resolveEnrollmentEpoch(keyHandle);
+      if (!this.#isActive()) return { kind: "persistent-error" };
+      return await recoverBrowserTargetedAsset({
+        database: this.#input.database,
+        scopeId: this.#input.scopeId,
+        seed: this.#input.seed,
+        keyHandle,
+        enrollmentEpoch,
+        asset: input.asset,
+        monitoringFact: input.monitoringFact,
+        wallet: input.wallet,
+        remote: this.#remote,
+        requestUrl: (kind, value) =>
+          kind === "head"
+            ? requestUrl(this.#input.configuration, keyHandle, "head", value)
+            : objectUrl(this.#input.configuration, keyHandle, requireObjectId(value)),
+        currentInventoryUrl: currentInventoryUrl(this.#input.configuration, keyHandle),
+        nowUnixSeconds,
+        completedAtUnixMilliseconds: Date.now,
+        runtime: this.#runtime,
+        signal: this.#lifetimeSignal,
+        isCurrentProfile: () => this.#isActive(),
+        lockManager: input.lockManager,
+      });
+    } catch {
+      return { kind: "persistent-error" };
+    }
+  }
+
   async #acquireLeadership(): Promise<void> {
     try {
-      this.#keyHandle = await createEncryptedWalletBackupV2KeyHandle({
-        seed: this.#input.seed,
-        realm: this.#input.configuration.realm,
-        runtime: this.#runtime,
-      });
+      this.#keyHandle = await this.#keyHandlePromise;
       if (!this.#isActive()) return;
       await (this.#input.leadership ?? browserLeadership()).hold(
         encryptedWalletBackupV2WalletLockName(requireKeyHandle(this.#keyHandle)),
@@ -225,17 +299,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   async #initialize(): Promise<void> {
     try {
       if (!this.#isLeaderActive()) return;
-      this.#enrollmentEpoch = await resolveEncryptedWalletBackupV2EnrollmentEpoch({
-        configuration: this.#input.configuration,
-        database: this.#input.database,
-        scopeId: this.#input.scopeId,
-        keyHandle: requireKeyHandle(this.#keyHandle),
-        remote: this.#remote,
-        runtime: this.#runtime,
-        signal: this.#lifetimeSignal,
-        authorizationPort: this.#input.authorizationPort,
-        isCurrentProfile: () => this.#isLeaderActive(),
-      });
+      this.#enrollmentEpoch = await this.#resolveEnrollmentEpoch(requireKeyHandle(this.#keyHandle));
       if (!this.#isLeaderActive()) return;
       await this.#clearRetrySchedule();
       if (!this.#isLeaderActive()) return;
@@ -246,6 +310,33 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       if (isRetryable(error))
         await this.#scheduleRetrySafely(() => void this.#initialize(), retryDelay(error));
       else this.#fail(error);
+    }
+  }
+
+  async #resolveEnrollmentEpoch(keyHandle: EncryptedWalletBackupV2KeyHandle): Promise<number> {
+    if (this.#enrollmentEpoch !== undefined) return this.#enrollmentEpoch;
+    if (this.#enrollmentEpochPromise !== undefined) return this.#enrollmentEpochPromise;
+    const resolving = resolveEncryptedWalletBackupV2EnrollmentEpoch({
+      configuration: this.#input.configuration,
+      database: this.#input.database,
+      scopeId: this.#input.scopeId,
+      keyHandle,
+      remote: this.#remote,
+      runtime: this.#runtime,
+      signal: this.#lifetimeSignal,
+      authorizationPort: this.#input.authorizationPort,
+      isCurrentProfile: () => this.#isActive(),
+    }).then((epoch) => {
+      if (!this.#isActive()) throw new Error("encrypted backup profile is stale");
+      this.#enrollmentEpoch = epoch;
+      return epoch;
+    });
+    this.#enrollmentEpochPromise = resolving;
+    try {
+      return await resolving;
+    } catch (error) {
+      if (this.#enrollmentEpochPromise === resolving) this.#enrollmentEpochPromise = undefined;
+      throw error;
     }
   }
 
@@ -526,6 +617,28 @@ function enrollmentEpochUrl(
 
 function accountUrl(configuration: EncryptedWalletBackupConfiguration): string {
   return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/wallets:enroll`;
+}
+
+function currentInventoryUrl(
+  configuration: EncryptedWalletBackupConfiguration,
+  keyHandle: EncryptedWalletBackupV2KeyHandle,
+): string {
+  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/wallets/${keyHandle.walletId}/inventory`;
+}
+
+function objectUrl(
+  configuration: EncryptedWalletBackupConfiguration,
+  keyHandle: EncryptedWalletBackupV2KeyHandle,
+  objectId: string,
+): string {
+  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/wallets/${keyHandle.walletId}/objects/${objectId}`;
+}
+
+function requireObjectId(value: string | null): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{32}$/.test(value)) {
+    throw new Error("encrypted backup object id is invalid");
+  }
+  return value;
 }
 
 function createRemote(configuration: EncryptedWalletBackupConfiguration): BackupRemote {

@@ -704,6 +704,7 @@
     "errors": {
       "invalid-order-type": "このブラウザーは即時 FAK または FOK 注文のみをサポートします。",
       "insufficient-funds": "使用できるウォレット残高が不足しています。",
+      "asset-recovery-failed": "ウォレットはこの注文に必要な正確な資金を復旧できませんでした。",
       "source-preparation-failed": "ウォレットは認可を準備できませんでした。",
       "mint-source-uncertain": "ミントの結果を確認できません。資金の復旧を続けています。",
       "custody-commit-failed": "ウォレットは永続操作を保存できませんでした。",

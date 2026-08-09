@@ -8,6 +8,13 @@ import {
   submitBrowserCtfRangeOrder,
 } from "../browserCtfRangeOrderSubmission";
 
+const KEYSET_KEYS = Object.fromEntries(
+  [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384].map((amount) => [
+    String(amount),
+    `02${"11".repeat(32)}`,
+  ]),
+);
+
 const mocks = vi.hoisted(() => ({
   buildPreparation: vi.fn(),
   candidates: [{ id: "keyset", amount: 10_000n, secret: "secret", C: "02" }],
@@ -24,13 +31,16 @@ const mocks = vi.hoisted(() => ({
   planConsolidation: vi.fn(),
   recoverPage: vi.fn(),
   recoverClientOrder: vi.fn(),
+  recoverFundedAsset: vi.fn(),
   recordMessage: vi.fn(),
+  database: {},
   wallet: {},
 }));
 
-vi.mock("@cashu/cashu-ts", () => ({
-  Mint: vi.fn(),
-}));
+vi.mock("@cashu/cashu-ts", async () => {
+  const actual = await vi.importActual<object>("@cashu/cashu-ts");
+  return { ...actual, Mint: vi.fn() };
+});
 
 vi.mock("@bitcaster/client-sdk/ctfRangeMintMetadata", () => ({
   loadCtfRangeMintMetadata: mocks.loadMintMetadata,
@@ -45,6 +55,7 @@ vi.mock("@/lib/browserWalletProfile", () => ({
 }));
 
 vi.mock("@/stores/proof-db", () => ({
+  db: mocks.database,
   getProofAmountInventoryForKeyset: mocks.getProofAmountInventoryForKeyset,
   getSelectableUnitProofsForAmounts: mocks.getSelectableUnitProofsForAmounts,
 }));
@@ -87,15 +98,46 @@ vi.mock("../browserCtfRangeOrderCoordinator", () => ({
   },
 }));
 
+vi.mock("../browserFundedAssetRecovery", () => ({
+  recoverBrowserFundedAsset: mocks.recoverFundedAsset,
+}));
+
 describe("submitBrowserCtfRangeOrder", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.buildPreparation.mockImplementation(({ request }) => ({
       operationId: "range-operation",
       mintUrl: "https://mint.example",
-      offerKeyset: { id: request.side === "Sell" ? "conditional-keyset" : "regular-keyset" },
+      offerKeyset:
+        request.side === "Sell"
+          ? {
+              id: "conditional-keyset",
+              canonicalMintUrl: "https://mint.example",
+              unit: "msat",
+              active: true,
+              inputFeePpk: 1,
+              finalExpiry: null,
+              keys: KEYSET_KEYS,
+              conditionId: "11".repeat(32),
+              outcomeCollection: "YES",
+              outcomeCollectionId: "22".repeat(32),
+              registeredAt: 1,
+            }
+          : {
+              id: "regular-keyset",
+              canonicalMintUrl: "https://mint.example",
+              unit: "msat",
+              active: true,
+              inputFeePpk: 1,
+              finalExpiry: null,
+              keys: KEYSET_KEYS,
+            },
       side: request.side,
       maxInputs: 64,
+      maxPoolEntries: 64,
+      priceNumerator: request.price,
+      amountSubunits: request.amountSubunits,
+      divisibility: request.divisibility,
     }));
     mocks.engine.getSettlementCapabilityAdmissionPolicy.mockResolvedValue({
       coordinatorPubkey: "11".repeat(32),
@@ -116,6 +158,100 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.recoverPage.mockReset();
     mocks.recoverClientOrder.mockReset();
     mocks.recordMessage.mockResolvedValue(undefined);
+    mocks.recoverFundedAsset.mockImplementation(async ({ loadPlan }) => ({
+      kind: "ready",
+      plan: await loadPlan(),
+    }));
+  });
+
+  it("recovers an insufficient explicit submission before returning insufficient funds", async () => {
+    mocks.planConsolidation.mockReturnValue({ kind: "insufficient" });
+    mocks.recoverFundedAsset.mockResolvedValue({ kind: "unavailable" });
+
+    await expect(
+      submitBrowserCtfRangeOrder({
+        market: market(),
+        ticket: {
+          marketId: "condition-1-YES",
+          request: {
+            outcomeId: "YES",
+            tokenSide: "Outcome",
+            side: "Buy",
+            price: 4_000,
+            amountSubunits: 10_000,
+            timeInForce: "FAK",
+          },
+        },
+        clientOrderId: "client-recover",
+        mintUrl: "https://mint.example",
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        expectedConsolidationFeeSubunits: 0,
+      }),
+    ).rejects.toMatchObject({ code: "insufficient-funds" });
+
+    expect(mocks.recoverFundedAsset).toHaveBeenCalledOnce();
+  });
+
+  it("records a revision-zero durable funds error when exact recovery fails", async () => {
+    mocks.planConsolidation.mockReturnValue({ kind: "insufficient" });
+    mocks.recoverFundedAsset.mockResolvedValue({ kind: "persistent-error" });
+
+    await expect(
+      submitBrowserCtfRangeOrder({
+        market: market(),
+        ticket: {
+          marketId: "condition-1-YES",
+          request: {
+            outcomeId: "YES",
+            tokenSide: "Outcome",
+            side: "Buy",
+            price: 4_000,
+            amountSubunits: 10_000,
+            timeInForce: "FAK",
+          },
+        },
+        clientOrderId: "client-recovery-error",
+        mintUrl: "https://mint.example",
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        expectedConsolidationFeeSubunits: 0,
+      }),
+    ).rejects.toMatchObject({ code: "asset-recovery-failed" });
+
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-operation",
+        revision: 0,
+        code: "asset-recovery-failed",
+        kind: "funds",
+      }),
+    );
+  });
+
+  it("fails durably when the single post-recovery replan remains insufficient", async () => {
+    mocks.recoverFundedAsset.mockResolvedValue({ kind: "recovered" });
+    mocks.planConsolidation.mockReturnValue({ kind: "insufficient" });
+
+    await expect(submitRangeOrder("client-recovery-replan")).rejects.toMatchObject({
+      code: "asset-recovery-failed",
+    });
+
+    expect(mocks.planConsolidation).toHaveBeenCalledOnce();
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ revision: 0, code: "asset-recovery-failed", kind: "funds" }),
+    );
+  });
+
+  it("uses the one post-recovery replan when it becomes ready", async () => {
+    mocks.recoverFundedAsset.mockResolvedValue({ kind: "recovered" });
+
+    await expect(submitRangeOrder("client-recovery-ready")).resolves.toEqual({
+      orderId: "order-1",
+    });
+
+    expect(mocks.planConsolidation).toHaveBeenCalledOnce();
+    expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -449,4 +585,26 @@ function market(): MarketDetail {
       { id: "no-id", label: "NO", odds: 50 },
     ],
   } as MarketDetail;
+}
+
+function submitRangeOrder(clientOrderId: string) {
+  return submitBrowserCtfRangeOrder({
+    market: market(),
+    ticket: {
+      marketId: "condition-1-YES",
+      request: {
+        outcomeId: "YES",
+        tokenSide: "Outcome",
+        side: "Buy",
+        price: 4_000,
+        amountSubunits: 10_000,
+        timeInForce: "FAK",
+      },
+    },
+    clientOrderId,
+    mintUrl: "https://mint.example",
+    mnemonic:
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    expectedConsolidationFeeSubunits: 0,
+  });
 }

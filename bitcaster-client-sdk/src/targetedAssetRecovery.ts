@@ -222,7 +222,7 @@ export function decodeTargetedAssetRecoveryInput(value: unknown): TargetedAssetR
   }
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(value.asset)
   const monitoringAsset = decodeAssetMonitoringAssetReference(value.monitoringAsset)
-  requireSameAsset(asset, monitoringAsset)
+  assertEncryptedWalletBackupV2AssetMatchesMonitoringAsset(asset, monitoringAsset)
   return Object.freeze({
     scopeId: decodeDurableCustodyScopeId(value.scopeId),
     assetLocator: requireAssetLocator(value.assetLocator),
@@ -367,7 +367,8 @@ function requireAssetLocator(value: unknown): string {
   return value
 }
 
-function requireSameAsset(
+/** Strictly verifies that backup and monitoring identities name one exact asset. */
+export function assertEncryptedWalletBackupV2AssetMatchesMonitoringAsset(
   asset: EncryptedWalletBackupV2AssetIdentity,
   monitoring: AssetMonitoringAssetReference,
 ): void {
@@ -391,6 +392,22 @@ function requireSameAsset(
     }) !== outcomeCollectionId
   ) {
     throw new Error('targeted asset recovery authorities identify different assets')
+  }
+}
+
+/** Returns false for malformed or non-identical backup and monitoring asset identities. */
+export function encryptedWalletBackupV2AssetMatchesMonitoringAsset(
+  asset: unknown,
+  monitoring: unknown,
+): boolean {
+  try {
+    assertEncryptedWalletBackupV2AssetMatchesMonitoringAsset(
+      decodeEncryptedWalletBackupV2AssetIdentity(asset),
+      decodeAssetMonitoringAssetReference(monitoring),
+    )
+    return true
+  } catch {
+    return false
   }
 }
 

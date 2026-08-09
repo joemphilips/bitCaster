@@ -6,6 +6,7 @@ import { createEncryptedWalletBackupV2AssetIdentity } from '../src/encryptedWall
 import {
   buildTargetedAssetRecoveryMintRequests,
   createTargetedAssetRecoveryAttemptKey,
+  encryptedWalletBackupV2AssetMatchesMonitoringAsset,
   recoverTargetedAsset,
   TARGETED_ASSET_RECOVERY_NUT07_BATCH_PROOF_MAX,
   TARGETED_ASSET_RECOVERY_TOTAL_MINT_HTTP_REQUESTS_MAX,
@@ -21,6 +22,20 @@ const monitoringAsset = {
   cashuUnit: 'sat' as const,
   displayBaseAsset: 'sat' as const,
 }
+
+test('strictly matches the same backup and monitoring asset identity', () => {
+  assert.equal(
+    encryptedWalletBackupV2AssetMatchesMonitoringAsset(input().asset, monitoringAsset),
+    true,
+  )
+  assert.equal(
+    encryptedWalletBackupV2AssetMatchesMonitoringAsset(input().asset, {
+      ...monitoringAsset,
+      kind: 'conditional',
+    }),
+    false,
+  )
+})
 
 function input(overrides: Partial<TargetedAssetRecoveryInput> = {}): TargetedAssetRecoveryInput {
   return {
