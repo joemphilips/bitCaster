@@ -377,7 +377,7 @@ function registerWalletCommand(program: Command): void {
 
   wallet
     .command('recover-seed')
-    .description('Run one explicitly acknowledged ordinary seed-recovery invocation.')
+    .description('Recover deterministic regular and selected CTF proofs from the wallet seed.')
     .requiredOption(
       '--wallet-seed-hex-file <path>',
       'Owner-only file containing the 64-byte wallet seed as lowercase hex',
@@ -388,7 +388,6 @@ function registerWalletCommand(program: Command): void {
     )
     .requiredOption('--mint <url>', 'Canonical mint origin')
     .requiredOption('--unit <unit>', 'Mint unit: sat or msat')
-    .requiredOption('--keyset-id <id>', 'Mint keyset id')
     .option(
       '--acknowledge-seed-disclosure',
       'Acknowledge that recovery discloses deterministic proof candidates to the mint',
@@ -401,7 +400,6 @@ function registerWalletCommand(program: Command): void {
         recoveryId: string
         mint: string
         unit: string
-        keysetId: string
         acknowledgeSeedDisclosure?: boolean
         dryRun?: boolean
       }) => {
@@ -416,7 +414,6 @@ function registerWalletCommand(program: Command): void {
             recoveryId: options.recoveryId,
             mintUrl: options.mint,
             unit: options.unit,
-            keysetId: options.keysetId,
             walletSeedHex: await readPrivateWalletSeedFile(options.walletSeedHexFile),
             disclosureAcknowledged: true,
           })
@@ -432,8 +429,6 @@ function registerWalletCommand(program: Command): void {
           options.mint,
           '--unit',
           options.unit,
-          '--keyset-id',
-          options.keysetId,
           '--acknowledge-seed-disclosure',
         ])
       },

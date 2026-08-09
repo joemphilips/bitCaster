@@ -38,8 +38,6 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
       'https://mint.example',
       '--unit',
       'sat',
-      '--keyset-id',
-      'keyset-1',
       '--acknowledge-seed-disclosure',
     ])
     assert.equal(result.code, 0)
@@ -64,8 +62,6 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
       'https://mint.example',
       '--unit',
       'sat',
-      '--keyset-id',
-      'keyset-1',
     ])
     assert.notEqual(noAcknowledgement.code, 0)
     assert.match(noAcknowledgement.stderr, /acknowledge-seed-disclosure/)
@@ -93,8 +89,6 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
       'https://mint.example',
       '--unit',
       'sat',
-      '--keyset-id',
-      'keyset-1',
       '--acknowledge-seed-disclosure',
       '--wallet-seed-hex',
       seed,
@@ -115,6 +109,7 @@ test('recover-seed help requires a stable recovery job id across invocations', a
     assert.equal(result.code, 0)
     assert.match(result.stdout, /Stable recovery job id/)
     assert.match(result.stdout, /Reuse it for later\s+invocations until recovery completes/)
+    assert.doesNotMatch(result.stdout, /keyset-id/)
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -133,8 +128,6 @@ async function recoveryCli(home: string, seedPath: string, dryRun = true) {
     'https://mint.example',
     '--unit',
     'sat',
-    '--keyset-id',
-    'keyset-1',
     '--acknowledge-seed-disclosure',
   ])
 }

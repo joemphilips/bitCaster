@@ -502,7 +502,7 @@ switch (command) {
                          [--nostr-secret-key-hex-file <path>]
   bitcaster-daemon [--datadir <path>] recover-seed --wallet-seed-hex-file <path>
                          --recovery-id <id> --mint <url> --unit <sat|msat>
-                         --keyset-id <id> --acknowledge-seed-disclosure
+                         --acknowledge-seed-disclosure
   bitcaster-daemon [--datadir <path>] run
 `)
     process.exitCode = 1
@@ -512,14 +512,12 @@ function parseRecoverSeedOptions(args: readonly string[]): {
   recoveryId: string
   mintUrl: string
   unit: 'sat' | 'msat'
-  keysetId: string
   walletSeedHexFile: string
   disclosureAcknowledged: true
 } {
   let recoveryId: string | undefined
   let mintUrl: string | undefined
   let unit: 'sat' | 'msat' | undefined
-  let keysetId: string | undefined
   let walletSeedHexFile: string | undefined
   let disclosureAcknowledged = false
   for (let index = 0; index < args.length; index += 1) {
@@ -532,7 +530,6 @@ function parseRecoverSeedOptions(args: readonly string[]): {
     if (option === '--recovery-id') recoveryId = value
     else if (option === '--mint') mintUrl = value
     else if (option === '--unit' && (value === 'sat' || value === 'msat')) unit = value
-    else if (option === '--keyset-id') keysetId = value
     else if (option === '--wallet-seed-hex-file') walletSeedHexFile = value
     else throw new Error(`Unknown recover-seed option: ${option}`)
   }
@@ -544,7 +541,6 @@ function parseRecoverSeedOptions(args: readonly string[]): {
     recoveryId: requiredArg(recoveryId, '--recovery-id'),
     mintUrl: requiredArg(mintUrl, '--mint'),
     unit,
-    keysetId: requiredArg(keysetId, '--keyset-id'),
     walletSeedHexFile: requiredArg(walletSeedHexFile, '--wallet-seed-hex-file'),
     disclosureAcknowledged: true,
   }

@@ -29,7 +29,9 @@ use the command-line wallet in complete-local mode with encrypted backup
 disabled. That mode keeps its complete operational wallet state in its local
 SQLite database. The command-line recovery tools also provide the emergency
 NUT-13/NUT-09 seed-recovery path if the backup service is unavailable or has
-lost its data.
+lost its data. This command scans all regular keysets. It uses a counter-zero
+discovery probe to select non-expired CTF keysets before it scans them fully.
+Each keyset uses the standard 300-counter gap limit.
 
 ## Multiple wallets
 
@@ -62,8 +64,9 @@ unavailable, refuse an upload when its storage allowance is full, or lose its
 data. A failed upload leaves the affected proofs in local storage; the web app
 must not discard them as backed up.
 
-The backup contains ordinary recoverable wallet data. Temporary secrets and
-conditional proofs used by an active P2PK/HTLC swap remain local while the swap
-is in progress. Closing a browser wallet in the middle of such a swap can
-therefore prevent seamless trade continuation even when the ordinary balance
-can later be recovered.
+Seed recovery reconstructs deterministic regular proofs and selected CTF
+proofs. It does not reconstruct transient operation records, range locators, or
+refund locators from the seed. Keep the local durable store until every active
+operation is terminal. Loss of those records can prevent seamless operation
+continuation even when the underlying deterministic proofs can later be
+recovered.
