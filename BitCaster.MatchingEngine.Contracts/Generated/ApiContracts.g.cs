@@ -388,6 +388,28 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class AssetMonitoringPortfolioResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public AssetMonitoringPortfolioResponse(AssetMonitoringAssetsResponse @assets, AssetMonitoringHistoryResponse @history, AssetMonitoringSummaryResponse @summary)
+        {
+            this.Summary = @summary;
+            this.Assets = @assets;
+            this.History = @history;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("summary")]
+        public AssetMonitoringSummaryResponse Summary { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("assets")]
+        public AssetMonitoringAssetsResponse Assets { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("history")]
+        public AssetMonitoringHistoryResponse History { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class SettlementCapabilityReference
     {
         [System.Text.Json.Serialization.JsonConstructor]
@@ -3800,6 +3822,24 @@ namespace BitCaster.MatchingEngine.Contracts
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum Timeframe2
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"1D")]
+        _1D = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"1W")]
+        _1W = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"1M")]
+        _1M = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ALL")]
+        ALL = 3,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum Timeframe3
     {
 
         [System.Runtime.Serialization.EnumMember(Value = @"1D")]

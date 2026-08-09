@@ -533,6 +533,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/portfolio": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the bounded active wallet portfolio first-paint data */
+        get: operations["getPortfolio"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settlement-capabilities/policy": {
         parameters: {
             query?: never;
@@ -774,6 +791,11 @@ export interface components {
             stale: boolean;
             incomplete: boolean;
             building: boolean;
+        };
+        AssetMonitoringPortfolioResponse: {
+            summary: components["schemas"]["AssetMonitoringSummaryResponse"];
+            assets: components["schemas"]["AssetMonitoringAssetsResponse"];
+            history: components["schemas"]["AssetMonitoringHistoryResponse"];
         };
         SettlementCapabilityReference: {
             /** Format: uuid */
@@ -3077,6 +3099,74 @@ export interface operations {
             409: {
                 headers: {
                     "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The active event-store provider has no bounded monitoring reader. */
+            503: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    getPortfolio: {
+        parameters: {
+            query: {
+                /** @description Canonical local durable wallet identifier. */
+                walletId: components["parameters"]["AssetMonitoringWalletId"];
+                timeframe?: "1D" | "1W" | "1M" | "ALL";
+                pageSize?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded active-wallet monitoring summary, asset page, and value history. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetMonitoringPortfolioResponse"];
+                };
+            };
+            /** @description Malformed wallet id, timeframe, or page size. */
+            400: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wallet is not active for the authenticated account. */
+            409: {
+                headers: {
+                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated history-read rate limit exceeded. */
+            429: {
+                headers: {
                     [name: string]: unknown;
                 };
                 content?: never;

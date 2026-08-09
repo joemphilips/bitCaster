@@ -1071,6 +1071,52 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/ProblemDetails' }
 
+  /api/v1/portfolio:
+    get:
+      operationId: getPortfolio
+      summary: Read the bounded active wallet portfolio first-paint data
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/AssetMonitoringWalletId'
+        - name: timeframe
+          in: query
+          schema:
+            type: string
+            enum: [1D, 1W, 1M, ALL]
+            default: ALL
+        - name: pageSize
+          in: query
+          schema: { type: integer, format: int32, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Bounded active-wallet monitoring summary, asset page, and value history.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AssetMonitoringNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetMonitoringPortfolioResponse'
+        '400':
+          description: Malformed wallet id, timeframe, or page size.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: Wallet is not active for the authenticated account.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+        '429':
+          description: Authenticated history-read rate limit exceeded.
+        '503':
+          description: The active event-store provider has no bounded monitoring reader.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
   /api/v1/settlement-capabilities/policy:
     get:
       operationId: getSettlementCapabilityAdmissionPolicy
@@ -1524,6 +1570,15 @@ components:
         stale: { type: boolean }
         incomplete: { type: boolean }
         building: { type: boolean }
+
+    AssetMonitoringPortfolioResponse:
+      type: object
+      additionalProperties: false
+      required: [summary, assets, history]
+      properties:
+        summary: { $ref: '#/components/schemas/AssetMonitoringSummaryResponse' }
+        assets: { $ref: '#/components/schemas/AssetMonitoringAssetsResponse' }
+        history: { $ref: '#/components/schemas/AssetMonitoringHistoryResponse' }
 
     SettlementCapabilityReference:
       type: object
