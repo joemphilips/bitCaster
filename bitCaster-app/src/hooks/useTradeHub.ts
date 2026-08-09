@@ -25,9 +25,7 @@ import { tradeHubUrl } from "@/lib/nip98";
 import { generateNip98Header } from "@/lib/markets";
 import type { TradeMessageType } from "@/lib/tradeMessageTypes";
 import {
-  decodePortfolioInvalidatedDelta,
   decodeSettlementGroupStateChangedDelta,
-  type PortfolioInvalidatedDelta,
   type SettlementGroupStateChangedDelta,
 } from "@bitcaster/client-sdk/engineClient";
 
@@ -65,7 +63,6 @@ export interface TradeHubCallbacks {
   onTradeStateChanged?: (tradeId: string, newState: string) => void;
   onTradeCreated?: (payload: TradeCreatedPayload) => void;
   onSettlementGroupStateChanged?: (delta: SettlementGroupStateChangedDelta) => void;
-  onPortfolioInvalidated?: (delta: PortfolioInvalidatedDelta) => void;
   onError?: (err: Error) => void;
 }
 
@@ -208,14 +205,6 @@ export function useTradeHub(enabled: boolean, callbacks: TradeHubCallbacks): Tra
         );
       } catch {
         callbacksRef.current.onError?.(new Error("Settlement-group update is invalid."));
-      }
-    });
-
-    connection.on("PortfolioInvalidated", (delta: unknown) => {
-      try {
-        callbacksRef.current.onPortfolioInvalidated?.(decodePortfolioInvalidatedDelta(delta));
-      } catch {
-        callbacksRef.current.onError?.(new Error("Portfolio invalidation is invalid."));
       }
     });
 

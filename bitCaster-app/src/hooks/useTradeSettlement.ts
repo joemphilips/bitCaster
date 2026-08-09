@@ -86,6 +86,7 @@ import {
 } from "@/lib/ctfSplit";
 import { useToastStore } from "@/stores/toast";
 import { publishPortfolioInvalidation } from "@/lib/portfolioInvalidation";
+import { browserWalletIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
 import type { OutcomeMetadata, PartialLockHeldRecord } from "@bitcaster/client-sdk/swapFailure";
 import { TRADE_MESSAGE_TYPES, type TradeMessageType } from "@/lib/tradeMessageTypes";
@@ -321,23 +322,21 @@ export function useTradeSettlement(
     rangeRecoveryInFlightRef.current = true;
     void (async () => {
       try {
-        await recoverBrowserCtfRangeOrders({
-          mnemonic,
-          mintUrls,
-        });
-        if (rangeRecoveryRerunRequestedRef.current) {
+        do {
           rangeRecoveryRerunRequestedRef.current = false;
           const latest = recoveryInputRef.current;
           if (latest?.mnemonic && latest.mintUrls.length > 0) {
-            await recoverBrowserCtfRangeOrders({
-              mnemonic: latest.mnemonic,
-              mintUrls: latest.mintUrls,
-            });
+            try {
+              await recoverBrowserCtfRangeOrders({
+                mnemonic: latest.mnemonic,
+                mintUrls: latest.mintUrls,
+              });
+            } catch {
+              // Startup recovery retains its retry loop. This event bridge only
+              // accelerates recovery after a durable settlement-state change.
+            }
           }
-        }
-      } catch {
-        // Startup recovery retains its retry loop. This event bridge only
-        // accelerates recovery after a durable settlement-state change.
+        } while (rangeRecoveryRerunRequestedRef.current);
       } finally {
         rangeRecoveryInFlightRef.current = false;
         rangeRecoveryRerunRequestedRef.current = false;
@@ -351,8 +350,23 @@ export function useTradeSettlement(
     onSwapMessageReceived: (msg) => handleSwapMessage(msg, sendSwapMessage, activeMintUrl),
     onTradeStateChanged: (tradeId, newState) =>
       handleTradeStateChanged(tradeId, newState, sendSwapMessage),
-    onSettlementGroupStateChanged: () => recoverCurrentSettlementGroup(),
-    onPortfolioInvalidated: (invalidation) => publishPortfolioInvalidation(invalidation),
+    onSettlementGroupStateChanged: (delta) => {
+      recoverCurrentSettlementGroup();
+      switch (delta.settlementGroup.status) {
+        case "Prepared":
+        case "SubmissionPending":
+        case "Reconciling":
+        case "DefinitivelyRejected":
+        case "Refundable":
+        case "ExpiredBeforeSubmission":
+          return;
+        case "Confirmed":
+          break;
+      }
+      const mnemonic = recoveryInputRef.current?.mnemonic;
+      const walletId = mnemonic ? browserWalletIdFromMnemonic(mnemonic) : null;
+      if (walletId !== null) publishPortfolioInvalidation({ walletId });
+    },
   });
 
   useEffect(() => {

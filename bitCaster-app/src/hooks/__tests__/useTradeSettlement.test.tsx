@@ -8,6 +8,8 @@ import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
 import { useToastStore } from "@/stores/toast";
 import { listenForPortfolioInvalidation } from "@/lib/portfolioInvalidation";
 
+const activeWalletId = "a".repeat(64);
+
 const { mockUseTradeHub, mockJoinOrder, mockJoinTrade, mockSendSwapMessage } = vi.hoisted(() => ({
   mockUseTradeHub: vi.fn(),
   mockJoinOrder: vi.fn(),
@@ -89,6 +91,10 @@ vi.mock("@/lib/orderStatus", async (importOriginal) => {
 
 vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
   recoverBrowserCtfRangeOrders: mockRecoverBrowserCtfRangeOrders,
+}));
+
+vi.mock("@/lib/browserWalletProfile", () => ({
+  browserWalletIdFromMnemonic: () => activeWalletId,
 }));
 
 vi.mock("@bitcaster/swap-protocol/atomicSwap", async (importOriginal) => {
@@ -282,7 +288,7 @@ describe("useTradeSettlement", () => {
     expect(mockJoinTrade).not.toHaveBeenCalled();
   });
 
-  it("bridges the captured TradeHub portfolio invalidation to portfolio refresh consumers", () => {
+  it("bridges a confirmed settlement group to portfolio refresh consumers", () => {
     const refreshPortfolio = vi.fn();
     const stopListening = listenForPortfolioInvalidation(refreshPortfolio);
     try {
@@ -294,12 +300,14 @@ describe("useTradeSettlement", () => {
         }),
       );
       const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as
-        | { onPortfolioInvalidated?: (invalidation: { walletId: string }) => void }
+        | { onSettlementGroupStateChanged?: (delta: { settlementGroup: { status: string } }) => void }
         | undefined;
 
-      act(() => callbacks?.onPortfolioInvalidated?.({ walletId: "a".repeat(64) }));
+      act(() =>
+        callbacks?.onSettlementGroupStateChanged?.({ settlementGroup: { status: "Confirmed" } }),
+      );
 
-      expect(refreshPortfolio).toHaveBeenCalledExactlyOnceWith({ walletId: "a".repeat(64) });
+      expect(refreshPortfolio).toHaveBeenCalledExactlyOnceWith({ walletId: activeWalletId });
     } finally {
       stopListening();
     }
@@ -372,7 +380,7 @@ describe("useTradeSettlement", () => {
     await waitFor(() => expect(mockJoinOrder).toHaveBeenCalledWith("cond-YES", "order-pending"));
   });
 
-  it("runs exact range recovery when the order group replays settlement state", async () => {
+  it("runs exact range recovery for every settlement lifecycle update", async () => {
     addPendingTrade({
       orderId: "order-pending",
       marketId: "cond-YES",
@@ -396,7 +404,7 @@ describe("useTradeSettlement", () => {
       marketId: "cond-YES",
       settlementGroup: {
         groupId: "22222222-2222-4222-8222-222222222222",
-        status: "Confirmed",
+        status: "Prepared",
         revision: 3,
         coalescingDeadline: "2026-08-08T00:00:00.000Z",
         frozenAt: "2026-08-08T00:00:01.000Z",
@@ -410,6 +418,47 @@ describe("useTradeSettlement", () => {
         mintUrls: ["https://mint.example"],
       }),
     );
+  });
+
+  it("does not drop a settlement update during a coalesced recovery rerun", async () => {
+    const completions: Array<() => void> = [];
+    mockRecoverBrowserCtfRangeOrders.mockImplementation(
+      () => new Promise<void>((resolve) => completions.push(resolve)),
+    );
+    renderHook(() =>
+      useTradeSettlement(true, {
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      }),
+    );
+    const callback = (
+      mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+        onSettlementGroupStateChanged?: (delta: unknown) => void;
+      }
+    ).onSettlementGroupStateChanged;
+    const delta = {
+      orderId: "11111111-1111-4111-8111-111111111111",
+      marketId: "cond-YES",
+      settlementGroup: {
+        groupId: "22222222-2222-4222-8222-222222222222",
+        status: "Prepared",
+        revision: 3,
+        coalescingDeadline: "2026-08-08T00:00:00.000Z",
+        frozenAt: "2026-08-08T00:00:01.000Z",
+      },
+    };
+
+    callback?.(delta);
+    callback?.(delta);
+    expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(1);
+
+    completions.shift()?.();
+    await waitFor(() => expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2));
+    callback?.(delta);
+    completions.shift()?.();
+    await waitFor(() => expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(3));
+    completions.shift()?.();
   });
 
   it("runs exact range recovery when REST status exposes an active settlement group", async () => {

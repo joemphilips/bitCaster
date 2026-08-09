@@ -12,4 +12,4 @@ The authenticated `GET /api/v1/portfolio` endpoint returns display-only data for
 
 Use the returned asset cursor with `GET /api/v1/asset-monitoring/assets` to read later pages. Do not call the portfolio endpoint for continuation pages. Private responses use `Cache-Control: no-store`. The API returns `400` for an invalid query, `409` for an inactive wallet, `429` when the history-read limit is full, and `503` when the active storage provider has no bounded monitoring reader.
 
-After a confirmed settlement, the authenticated `TradeHub` sends `PortfolioInvalidated` with the affected wallet ID. The GUI ignores notifications for other wallets and fetches `GET /api/v1/portfolio` one time. This notification is best effort and display-only. It does not prove custody or authorize spending.
+After a confirmed settlement, the authenticated `TradeHub` sends an owner-filtered `SettlementGroupStateChanged` update. The GUI uses the confirmed lifecycle update to refresh the active portfolio one time. This best-effort, display-only update does not prove custody or authorize spending.

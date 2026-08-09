@@ -17,11 +17,6 @@ public interface ITradeHubClient
     /// </summary>
     Task SettlementGroupStateChanged(SettlementGroupStateChangedDelta delta);
 
-    /// <summary>
-    /// Owner-filtered display-only portfolio refresh hint for one wallet.
-    /// </summary>
-    Task PortfolioInvalidated(PortfolioInvalidatedDelta delta);
-
     /// <summary>Relayed to the counterparty when a swap message arrives.</summary>
     Task SwapMessageReceived(Guid tradeId, string messageType, string ciphertext);
 
@@ -67,5 +62,3 @@ public sealed record SettlementGroupStateChangedDelta(
     Guid OrderId,
     string MarketId,
     SettlementGroupSummary SettlementGroup);
-
-public sealed record PortfolioInvalidatedDelta(string WalletId);
