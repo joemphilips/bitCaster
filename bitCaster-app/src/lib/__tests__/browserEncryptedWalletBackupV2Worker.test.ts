@@ -833,6 +833,10 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
     throw new Error("not used");
   }
 
+  async readCurrentInventory(): Promise<never> {
+    throw new Error("not used");
+  }
+
   async readObject(): Promise<never> {
     throw new Error("not used");
   }

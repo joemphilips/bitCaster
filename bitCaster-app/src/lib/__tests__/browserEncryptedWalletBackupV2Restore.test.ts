@@ -365,6 +365,9 @@ async function backupFixture() {
   const remote = {
     discoverEnrollmentEpoch: vi.fn(),
     mutateHeadOnce: vi.fn(),
+    readCurrentInventory: vi.fn(async (): Promise<never> => {
+      throw new Error("current inventory is not used by this fixture");
+    }),
     readDescriptorPage: vi.fn(async ({ afterBundleId }) => {
       const page = pages.find((candidate) => candidate.afterBundleId === afterBundleId);
       if (!page) throw new Error("test head page is absent");
