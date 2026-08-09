@@ -318,6 +318,38 @@ export async function recoverBrowserCtfRangeOrders(input: {
   return { recovered, pending };
 }
 
+export async function recoverBrowserCtfRangeOrder(input: {
+  readonly mnemonic: string;
+  readonly mintUrls: readonly string[];
+  readonly clientOrderId: string;
+}): Promise<{
+  readonly recovered: number;
+  readonly pending: readonly {
+    operationId: string;
+    revision: number;
+    code: BrowserCtfRangeOrderErrorCode;
+  }[];
+}> {
+  const words = input.mnemonic.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return { recovered: 0, pending: [] };
+  const seed = toSeed(words);
+  const scopeId = browserWalletScopeIdFromMnemonic(input.mnemonic);
+  if (scopeId === null) return { recovered: 0, pending: [] };
+  const coordinator = createBrowserCtfRangeCoordinator(
+    createAuthenticatedBrowserEngineClient(),
+    input.mnemonic,
+    input.mintUrls.some(isLoopbackMint),
+  );
+  const recovery = await coordinator.recoverClientOrder({
+    seed,
+    clientOrderId: input.clientOrderId,
+  });
+  for (const message of recovery.pending) {
+    await persistRangeMessages({ scopeId, ...message, observedAtMs: Date.now() });
+  }
+  return { recovered: recovery.recoveredOperationIds.length, pending: recovery.pending };
+}
+
 async function persistRangeMessages(input: {
   scopeId: string;
   operationId: string;

@@ -37,7 +37,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { Proof } from "@cashu/cashu-ts";
 import { useTradeHub, type TradeCreatedPayload, type SwapMessage } from "@/hooks/useTradeHub";
-import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
+import { recoverBrowserCtfRangeOrder } from "@/lib/browserCtfRangeOrderSubmission";
 import {
   useActiveSwapsStore,
   type ActiveSwap,
@@ -104,6 +104,7 @@ import {
   type MarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
+import type { SettlementGroupStatus } from "@bitcaster/client-sdk/engineClient";
 import {
   resolveConditionalProofMetadata,
   storedConditionalProofsFromMintMetadata,
@@ -280,6 +281,20 @@ export interface TradeSettlementRecoveryInput {
   readonly mintUrls: readonly string[];
 }
 
+function isConfirmedSettlementGroup(status: SettlementGroupStatus): boolean {
+  switch (status) {
+    case "Prepared":
+    case "SubmissionPending":
+    case "Reconciling":
+    case "DefinitivelyRejected":
+    case "Refundable":
+    case "ExpiredBeforeSubmission":
+      return false;
+    case "Confirmed":
+      return true;
+  }
+}
+
 export function useTradeSettlement(
   canAuthenticateTradeHub: boolean,
   recoveryInput?: TradeSettlementRecoveryInput,
@@ -296,8 +311,7 @@ export function useTradeSettlement(
   const tradeJoinRetryTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const tradeJoinAttemptsRef = useRef<Map<string, number>>(new Map());
   const recoveryInputRef = useRef(recoveryInput);
-  const rangeRecoveryInFlightRef = useRef(false);
-  const rangeRecoveryRerunRequestedRef = useRef(false);
+  const rangeRecoveryOrderIdsRef = useRef<Set<string>>(new Set());
   recoveryInputRef.current = recoveryInput;
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const hasActiveSwapWork = Object.values(swapsByTradeId).some(
@@ -309,37 +323,35 @@ export function useTradeSettlement(
     canAuthenticateTradeHub &&
     (hasAssetMonitoringSession || hasActiveSwapWork || pendingTrades.length > 0);
 
-  const recoverCurrentSettlementGroup = useCallback(() => {
+  const recoverSettlementGroup = useCallback((orderId: string) => {
+    const pendingTrade = usePendingTradesStore.getState().byOrderId[orderId];
+    if (!pendingTrade) return;
+    const clientOrderId = pendingTrade.clientOrderId;
+    if (typeof clientOrderId !== "string" || clientOrderId.length === 0) return;
     const current = recoveryInputRef.current;
     const mnemonic = current?.mnemonic;
     const mintUrls = current?.mintUrls;
     if (!mnemonic || !mintUrls || mintUrls.length === 0) return;
-    if (rangeRecoveryInFlightRef.current) {
-      rangeRecoveryRerunRequestedRef.current = true;
-      return;
-    }
+    if (rangeRecoveryOrderIdsRef.current.has(orderId)) return;
 
-    rangeRecoveryInFlightRef.current = true;
+    rangeRecoveryOrderIdsRef.current.add(orderId);
     void (async () => {
       try {
-        do {
-          rangeRecoveryRerunRequestedRef.current = false;
-          const latest = recoveryInputRef.current;
-          if (latest?.mnemonic && latest.mintUrls.length > 0) {
-            try {
-              await recoverBrowserCtfRangeOrders({
-                mnemonic: latest.mnemonic,
-                mintUrls: latest.mintUrls,
-              });
-            } catch {
-              // Startup recovery retains its retry loop. This event bridge only
-              // accelerates recovery after a durable settlement-state change.
-            }
+        const latest = recoveryInputRef.current;
+        if (latest?.mnemonic && latest.mintUrls.length > 0) {
+          try {
+            await recoverBrowserCtfRangeOrder({
+              mnemonic: latest.mnemonic,
+              mintUrls: latest.mintUrls,
+              clientOrderId,
+            });
+          } catch {
+            // This event bridge only accelerates recovery after a durable
+            // settlement-state change.
           }
-        } while (rangeRecoveryRerunRequestedRef.current);
+        }
       } finally {
-        rangeRecoveryInFlightRef.current = false;
-        rangeRecoveryRerunRequestedRef.current = false;
+        rangeRecoveryOrderIdsRef.current.delete(orderId);
       }
     })();
   }, []);
@@ -351,18 +363,8 @@ export function useTradeSettlement(
     onTradeStateChanged: (tradeId, newState) =>
       handleTradeStateChanged(tradeId, newState, sendSwapMessage),
     onSettlementGroupStateChanged: (delta) => {
-      recoverCurrentSettlementGroup();
-      switch (delta.settlementGroup.status) {
-        case "Prepared":
-        case "SubmissionPending":
-        case "Reconciling":
-        case "DefinitivelyRejected":
-        case "Refundable":
-        case "ExpiredBeforeSubmission":
-          return;
-        case "Confirmed":
-          break;
-      }
+      if (!isConfirmedSettlementGroup(delta.settlementGroup.status)) return;
+      recoverSettlementGroup(delta.orderId);
       const mnemonic = recoveryInputRef.current?.mnemonic;
       const walletId = mnemonic ? browserWalletIdFromMnemonic(mnemonic) : null;
       if (walletId !== null) publishPortfolioInvalidation({ walletId });
@@ -470,8 +472,9 @@ export function useTradeSettlement(
         })()
           .then(async (status) => {
             if (!status) return;
-            if (status.activeSettlementGroup !== null) {
-              recoverCurrentSettlementGroup();
+            const activeSettlementGroup = status.activeSettlementGroup;
+            if (activeSettlementGroup && isConfirmedSettlementGroup(activeSettlementGroup.status)) {
+              recoverSettlementGroup(latest.orderId);
             }
             const pendingTradeId = typeof status.tradeId === "string" ? status.tradeId : null;
             const pendingDeadline = typeof status.deadline === "string" ? status.deadline : null;
@@ -563,7 +566,7 @@ export function useTradeSettlement(
     for (const trade of pendingTrades) {
       attemptJoinOrder(trade);
     }
-  }, [pendingTrades, tradeHubEnabled, joinOrder, joinTrade, recoverCurrentSettlementGroup]);
+  }, [pendingTrades, tradeHubEnabled, joinOrder, joinTrade, recoverSettlementGroup]);
 
   useEffect(() => {
     if (tradeHubEnabled) return;

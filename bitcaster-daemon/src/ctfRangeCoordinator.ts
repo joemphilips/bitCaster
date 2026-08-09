@@ -10,7 +10,6 @@ import {
   prepareDurableCtfRangeRecoveredResult,
   prepareDurableCtfRangeVerifiedResult,
   recoverDurableCtfRangeVerifiedResultArtifact,
-  type DurableCtfRangeAllManifestRecovery,
   type DurableCtfRangeCustodyBinding,
   type DurableCtfRangeKeysetResolver,
   type DurableCtfRangeOperation,
@@ -187,7 +186,6 @@ export class DaemonCtfRangeCoordinator {
       readonly custodyOperationId: string
       readonly operation: DurableCtfRangeOperation
       readonly envelope: DurableCtfRangeResultEnvelope
-      readonly allManifestRecovery: DurableCtfRangeAllManifestRecovery
       readonly resolveKeyset: DurableCtfRangeKeysetResolver
     },
   ): Promise<DurableCtfRangeRecoveryDecision> {
@@ -196,7 +194,6 @@ export class DaemonCtfRangeCoordinator {
       record: loaded.record,
       operation: input.operation,
       envelope: input.envelope,
-      allManifestRecovery: input.allManifestRecovery,
       resolveKeyset: input.resolveKeyset,
     })
     return this.#stagePrepared(loaded, prepared, input)

@@ -21,8 +21,8 @@ const { mockFetchOrderStatus } = vi.hoisted(() => ({
   mockFetchOrderStatus: vi.fn(),
 }));
 
-const { mockRecoverBrowserCtfRangeOrders } = vi.hoisted(() => ({
-  mockRecoverBrowserCtfRangeOrders: vi.fn(),
+const { mockRecoverBrowserCtfRangeOrder } = vi.hoisted(() => ({
+  mockRecoverBrowserCtfRangeOrder: vi.fn(),
 }));
 
 const {
@@ -90,7 +90,7 @@ vi.mock("@/lib/orderStatus", async (importOriginal) => {
 });
 
 vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
-  recoverBrowserCtfRangeOrders: mockRecoverBrowserCtfRangeOrders,
+  recoverBrowserCtfRangeOrder: mockRecoverBrowserCtfRangeOrder,
 }));
 
 vi.mock("@/lib/browserWalletProfile", () => ({
@@ -232,7 +232,7 @@ beforeEach(() => {
     fills: [],
     activeSettlementGroup: null,
   });
-  mockRecoverBrowserCtfRangeOrders.mockResolvedValue({ recovered: 0, pending: [] });
+  mockRecoverBrowserCtfRangeOrder.mockResolvedValue({ recovered: 0, pending: [] });
   mockUseTradeHub.mockImplementation((_enabled, callbacks) => {
     const onTradeCreated = callbacks?.onTradeCreated;
     if (onTradeCreated) {
@@ -300,17 +300,62 @@ describe("useTradeSettlement", () => {
         }),
       );
       const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as
-        | { onSettlementGroupStateChanged?: (delta: { settlementGroup: { status: string } }) => void }
+        | {
+            onSettlementGroupStateChanged?: (delta: {
+              orderId: string;
+              settlementGroup: { status: string };
+            }) => void;
+          }
         | undefined;
 
       act(() =>
-        callbacks?.onSettlementGroupStateChanged?.({ settlementGroup: { status: "Confirmed" } }),
+        callbacks?.onSettlementGroupStateChanged?.({
+          orderId: "11111111-1111-4111-8111-111111111111",
+          settlementGroup: { status: "Confirmed" },
+        }),
       );
 
       expect(refreshPortfolio).toHaveBeenCalledExactlyOnceWith({ walletId: activeWalletId });
+      expect(mockRecoverBrowserCtfRangeOrder).not.toHaveBeenCalled();
     } finally {
       stopListening();
     }
+  });
+
+  it("leaves a legacy pending order without a client order ID to startup recovery", async () => {
+    const orderId = "11111111-1111-4111-8111-111111111111";
+    addPendingTrade({
+      orderId,
+      marketId: "cond-YES",
+      submittedAt: Date.now(),
+    });
+    renderHook(() =>
+      useTradeSettlement(true, {
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      }),
+    );
+    const callback = (
+      mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+        onSettlementGroupStateChanged?: (delta: unknown) => void;
+      }
+    ).onSettlementGroupStateChanged;
+
+    callback?.({
+      orderId,
+      marketId: "cond-YES",
+      settlementGroup: {
+        groupId: "22222222-2222-4222-8222-222222222222",
+        status: "Confirmed",
+        revision: 3,
+        coalescingDeadline: "2026-08-08T00:00:00.000Z",
+        frozenAt: "2026-08-08T00:00:01.000Z",
+      },
+    });
+
+    await Promise.resolve();
+    expect(mockRecoverBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 
   it("connects and joins only after an active swap is promoted", async () => {
@@ -380,11 +425,11 @@ describe("useTradeSettlement", () => {
     await waitFor(() => expect(mockJoinOrder).toHaveBeenCalledWith("cond-YES", "order-pending"));
   });
 
-  it("runs exact range recovery for every settlement lifecycle update", async () => {
+  it("runs exact range recovery only for a confirmed settlement lifecycle update", async () => {
     addPendingTrade({
-      orderId: "order-pending",
+      orderId: "11111111-1111-4111-8111-111111111111",
       marketId: "cond-YES",
-      clientOrderId: "client-order-pending",
+      clientOrderId: "client-target",
       submittedAt: Date.now(),
     });
     renderHook(() =>
@@ -411,20 +456,42 @@ describe("useTradeSettlement", () => {
       },
     });
 
+    await Promise.resolve();
+    expect(mockRecoverBrowserCtfRangeOrder).not.toHaveBeenCalled();
+
+    callbacks?.onSettlementGroupStateChanged?.({
+      orderId: "11111111-1111-4111-8111-111111111111",
+      marketId: "cond-YES",
+      settlementGroup: {
+        groupId: "22222222-2222-4222-8222-222222222222",
+        status: "Confirmed",
+        revision: 3,
+        coalescingDeadline: "2026-08-08T00:00:00.000Z",
+        frozenAt: "2026-08-08T00:00:01.000Z",
+      },
+    });
+
     await waitFor(() =>
-      expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledWith({
+      expect(mockRecoverBrowserCtfRangeOrder).toHaveBeenCalledWith({
         mnemonic:
           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         mintUrls: ["https://mint.example"],
+        clientOrderId: "client-target",
       }),
     );
   });
 
-  it("does not drop a settlement update during a coalesced recovery rerun", async () => {
+  it("coalesces duplicate settlement updates while exact recovery is active", async () => {
     const completions: Array<() => void> = [];
-    mockRecoverBrowserCtfRangeOrders.mockImplementation(
+    mockRecoverBrowserCtfRangeOrder.mockImplementation(
       () => new Promise<void>((resolve) => completions.push(resolve)),
     );
+    addPendingTrade({
+      orderId: "11111111-1111-4111-8111-111111111111",
+      marketId: "cond-YES",
+      clientOrderId: "client-target",
+      submittedAt: Date.now(),
+    });
     renderHook(() =>
       useTradeSettlement(true, {
         mnemonic:
@@ -442,7 +509,7 @@ describe("useTradeSettlement", () => {
       marketId: "cond-YES",
       settlementGroup: {
         groupId: "22222222-2222-4222-8222-222222222222",
-        status: "Prepared",
+        status: "Confirmed",
         revision: 3,
         coalescingDeadline: "2026-08-08T00:00:00.000Z",
         frozenAt: "2026-08-08T00:00:01.000Z",
@@ -451,14 +518,74 @@ describe("useTradeSettlement", () => {
 
     callback?.(delta);
     callback?.(delta);
-    expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(1);
+    expect(mockRecoverBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
 
-    completions.shift()?.();
-    await waitFor(() => expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      completions.shift()?.();
+      await Promise.resolve();
+    });
+    expect(mockRecoverBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+
     callback?.(delta);
-    completions.shift()?.();
-    await waitFor(() => expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(3));
-    completions.shift()?.();
+    await waitFor(() => expect(mockRecoverBrowserCtfRangeOrder).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      completions.shift()?.();
+      await Promise.resolve();
+    });
+  });
+
+  it("starts independent targeted recoveries for distinct engine orders", async () => {
+    const completions: Array<() => void> = [];
+    mockRecoverBrowserCtfRangeOrder.mockImplementation(
+      () => new Promise<void>((resolve) => completions.push(resolve)),
+    );
+    addPendingTrade({
+      orderId: "11111111-1111-4111-8111-111111111111",
+      marketId: "cond-YES",
+      clientOrderId: "client-first",
+      submittedAt: Date.now(),
+    });
+    addPendingTrade({
+      orderId: "33333333-3333-4333-8333-333333333333",
+      marketId: "cond-YES",
+      clientOrderId: "client-second",
+      submittedAt: Date.now(),
+    });
+    renderHook(() =>
+      useTradeSettlement(true, {
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      }),
+    );
+    const callback = (
+      mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+        onSettlementGroupStateChanged?: (delta: unknown) => void;
+      }
+    ).onSettlementGroupStateChanged;
+    const lifecycle = (orderId: string) => ({
+      orderId,
+      marketId: "cond-YES",
+      settlementGroup: {
+        groupId: "22222222-2222-4222-8222-222222222222",
+        status: "Confirmed",
+        revision: 3,
+        coalescingDeadline: "2026-08-08T00:00:00.000Z",
+        frozenAt: "2026-08-08T00:00:01.000Z",
+      },
+    });
+
+    callback?.(lifecycle("11111111-1111-4111-8111-111111111111"));
+    callback?.(lifecycle("33333333-3333-4333-8333-333333333333"));
+
+    await waitFor(() => expect(mockRecoverBrowserCtfRangeOrder).toHaveBeenCalledTimes(2));
+    expect(mockRecoverBrowserCtfRangeOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ clientOrderId: "client-first" }),
+    );
+    expect(mockRecoverBrowserCtfRangeOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ clientOrderId: "client-second" }),
+    );
+    completions.forEach((complete) => complete());
   });
 
   it("runs exact range recovery when REST status exposes an active settlement group", async () => {
@@ -496,10 +623,11 @@ describe("useTradeSettlement", () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
 
-    expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledWith({
+    expect(mockRecoverBrowserCtfRangeOrder).toHaveBeenCalledWith({
       mnemonic:
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
       mintUrls: ["https://mint.example"],
+      clientOrderId: "client-order-pending",
     });
   });
 

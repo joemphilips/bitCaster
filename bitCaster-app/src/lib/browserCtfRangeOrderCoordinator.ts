@@ -130,6 +130,7 @@ import {
   appendCtfRangePreparationConsolidation,
   insertCtfRangePreparation,
   pageActiveCtfRangePreparations,
+  readActiveCtfRangePreparationByClientOrderId,
   readCtfRangePreparation,
   readCtfRangePreparationConsolidations,
   transitionCtfRangePreparation,
@@ -165,7 +166,7 @@ type BrowserCtfRangeWallet = Omit<CtfRangeSourceWallet, "prepareSwapToSend"> & {
 };
 type BrowserCtfRangeMintRecovery = Pick<
   CtfRangeMintRecoveryAdapter,
-  "loadExactVerificationContext" | "loadUncertainRecoveryObservation"
+  "loadUncertainRecoveryObservation"
 >;
 
 export interface BrowserCtfRangeEngine {
@@ -388,38 +389,73 @@ export class BrowserCtfRangeOrderCoordinator {
             },
             this.#database,
           );
-          const recoveredOperationIds: string[] = [];
-          const pending: Array<{
-            operationId: string;
-            revision: number;
-            code: BrowserCtfRangeOrderErrorCode;
-          }> = [];
-          for (const record of page.preparations) {
-            try {
-              const recovered = await this.#recoverRecord(record, input.seed, scope, owner);
-              if (recovered) recoveredOperationIds.push(record.rangeOperationId);
-              else {
-                const current = await this.#currentPreparation(record);
-                pending.push({
-                  operationId: record.rangeOperationId,
-                  revision: current.revision,
-                  code: "recovery-pending",
-                });
-              }
-            } catch (error) {
-              if (!(error instanceof BrowserCtfRangeOrderError)) throw error;
-              const current = await this.#currentPreparation(record);
-              pending.push({
-                operationId: record.rangeOperationId,
-                revision: current.revision,
-                code: error.code,
-              });
-            }
-          }
-          return { recoveredOperationIds, pending, nextCursor: page.nextCursor };
+          return {
+            ...(await this.#recoverRecords(page.preparations, input.seed, scope, owner)),
+            nextCursor: page.nextCursor,
+          };
         }),
       this.#lockManager,
     );
+  }
+
+  async recoverClientOrder(input: {
+    readonly seed: Uint8Array;
+    readonly clientOrderId: string;
+  }): Promise<Pick<BrowserCtfRangeRecoveryPage, "recoveredOperationIds" | "pending">> {
+    const scope = browserWalletScope(input.seed);
+    return withWalletProfileLock(
+      scope.scopeId,
+      () =>
+        this.#withScopeOwner(scope, async (owner) => {
+          const record = await readActiveCtfRangePreparationByClientOrderId(
+            scope.scopeId,
+            input.clientOrderId,
+            this.#database,
+          );
+          if (record === null) return { recoveredOperationIds: [], pending: [] };
+          return this.#recoverRecords([record], input.seed, scope, owner);
+        }),
+      this.#lockManager,
+    );
+  }
+
+  async #recoverRecords(
+    records: readonly Awaited<
+      ReturnType<typeof pageActiveCtfRangePreparations>
+    >["preparations"][number][],
+    seed: Uint8Array,
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+  ): Promise<Pick<BrowserCtfRangeRecoveryPage, "recoveredOperationIds" | "pending">> {
+    const recoveredOperationIds: string[] = [];
+    const pending: Array<{
+      operationId: string;
+      revision: number;
+      code: BrowserCtfRangeOrderErrorCode;
+    }> = [];
+    for (const record of records) {
+      try {
+        const recovered = await this.#recoverRecord(record, seed, scope, owner);
+        if (recovered) recoveredOperationIds.push(record.rangeOperationId);
+        else {
+          const current = await this.#currentPreparation(record);
+          pending.push({
+            operationId: record.rangeOperationId,
+            revision: current.revision,
+            code: "recovery-pending",
+          });
+        }
+      } catch (error) {
+        if (!(error instanceof BrowserCtfRangeOrderError)) throw error;
+        const current = await this.#currentPreparation(record);
+        pending.push({
+          operationId: record.rangeOperationId,
+          revision: current.revision,
+          code: error.code,
+        });
+      }
+    }
+    return { recoveredOperationIds, pending };
   }
 
   async #currentPreparation(
@@ -527,16 +563,32 @@ export class BrowserCtfRangeOrderCoordinator {
         capability === null
           ? null
           : await this.#engine.getSettlementCapabilityResultByOperation(operation.operationId);
-    } catch (error) {
-      if (Math.floor(this.#now() / 1_000) < operation.expiry) {
-        throw rangeError("recovery-pending", error);
-      }
+    } catch {
       response = null;
     }
     let prepared: DurableCtfRangeVerifiedResultPreparation | null = null;
-    let resolveKeyset: DurableCtfRangeKeysetResolver;
+    let resolveKeyset: DurableCtfRangeKeysetResolver = createCtfRangeOrderPreparationKeysetResolver(
+      decodeCtfRangeOrderPreparationFromRecord(journalRecord),
+    );
     let engineResult: ReturnType<typeof decodeCtfRangeEngineResult> | null = null;
-    if (response === null) {
+    if (response !== null) {
+      try {
+        engineResult = decodeCtfRangeEngineResult(response, {
+          operation,
+          reference: requireCapabilityReference(journalRecord),
+        });
+        prepared = prepareDurableCtfRangeVerifiedResult({
+          record: snapshot.record,
+          operation,
+          envelope: engineResult.envelope,
+          resolveKeyset,
+        });
+        if (prepared.kind !== "confirmed") engineResult = null;
+      } catch {
+        engineResult = null;
+      }
+    }
+    if (engineResult === null) {
       const observed = await this.#pendingOnRecoveryTransport(() =>
         recovery.loadUncertainRecoveryObservation({
           record: snapshot.record,
@@ -575,61 +627,6 @@ export class BrowserCtfRangeOrderCoordinator {
           return true;
         default:
           return assertNever(decision);
-      }
-    } else {
-      const verification = await this.#pendingOnRecoveryTransport(() =>
-        recovery.loadExactVerificationContext(snapshot.record),
-      );
-      resolveKeyset = verification.resolveKeyset;
-      try {
-        engineResult = decodeCtfRangeEngineResult(response, {
-          operation,
-          reference: requireCapabilityReference(journalRecord),
-        });
-      } catch (error) {
-        if (Math.floor(this.#now() / 1_000) < operation.expiry) throw error;
-        const observed = await this.#pendingOnRecoveryTransport(() =>
-          recovery.loadUncertainRecoveryObservation({
-            record: snapshot.record,
-            selection: null,
-            now: Math.floor(this.#now() / 1_000),
-          }),
-        );
-        prepared = prepareDurableCtfRangeRecoveredResult({
-          record: snapshot.record,
-          operation,
-          observation: observed.observation,
-          resolveKeyset: observed.resolveKeyset,
-        });
-        resolveKeyset = observed.resolveKeyset;
-        const decision = classifyDurableCtfRangeRecovery({
-          record: snapshot.record,
-          operation,
-          observation: observed.observation,
-          resolveKeyset: observed.resolveKeyset,
-        });
-        if (decision.kind === "refundable") {
-          await this.#startOuterRefund(
-            journalRecord,
-            seed,
-            scope,
-            owner,
-            snapshot.record,
-            operation,
-          );
-          return true;
-        }
-        if (decision.kind !== "confirmed") throw rangeError("recovery-pending");
-        engineResult = null;
-      }
-      if (engineResult !== null) {
-        prepared = prepareDurableCtfRangeVerifiedResult({
-          record: snapshot.record,
-          operation,
-          envelope: engineResult.envelope,
-          allManifestRecovery: verification.allManifestRecovery,
-          resolveKeyset: verification.resolveKeyset,
-        });
       }
     }
     if (prepared === null || prepared.kind !== "confirmed") throw rangeError("recovery-pending");

@@ -698,6 +698,7 @@ test('daemon terminates a partially filled FAK result after acknowledgement reco
           .map(({ B_ }) => B_),
       )
       result = engineResult(prepared, loaded.operation, selection.selection)
+      const mintCallsAfterPreparation = { ...mint.calls }
 
       const interrupted = await coordinator.recover(WALLET_SEED_HEX, client)
       assert.deepEqual(interrupted.recovered, [])
@@ -709,6 +710,13 @@ test('daemon terminates a partially filled FAK result after acknowledgement reco
         'applied',
       )
 
+      result = null
+      const unavailable = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.deepEqual(unavailable.recovered, [])
+      assert.equal(unavailable.pending.length, 1)
+      assert.deepEqual(mint.calls, mintCallsAfterPreparation)
+
+      result = engineResult(prepared, loaded.operation, selection.selection)
       assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
         recovered: ['range-operation-result:source'],
         pending: [],
@@ -718,11 +726,12 @@ test('daemon terminates a partially filled FAK result after acknowledgement reco
         recovered: [],
         pending: [],
       })
+      assert.deepEqual(mint.calls, mintCallsAfterPreparation)
     },
   )
 })
 
-test('daemon applies exact NUT-09 recovery when the engine result envelope is unavailable', async () => {
+test('daemon applies exact mint recovery for an unavailable or cryptographically invalid engine envelope', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
@@ -734,6 +743,9 @@ test('daemon applies exact NUT-09 recovery when the engine result envelope is un
     async ({ directory, fence }) => {
       let selectedOutputs = new Set<string>()
       let mintCommitted = false
+      let engineTransportFails = true
+      let engineResponse: SettlementCapabilityResultResponse | null = null
+      let nowMs = 10_000
       const mint = {
         ...fakeMint(64, 1_000, () => selectedOutputs),
         check: async ({ Ys }: { Ys: string[] }) => ({
@@ -746,7 +758,13 @@ test('daemon applies exact NUT-09 recovery when the engine result envelope is un
       }
       const client: EngineClientLike = {
         ...fakeEngineClient(boundCapability),
-        getOrderStatus: async () => filledOrderStatus(),
+        getSettlementCapabilityResultByOperation: async () => {
+          if (engineTransportFails) throw new Error('engine result unavailable')
+          return engineResponse
+        },
+        getOrderStatus: async () => {
+          throw new Error('full settlement must not require engine order status')
+        },
         acknowledgeSettlementCapabilityResult: async () => {
           throw new Error('mint-only recovery must not acknowledge an absent engine result')
         },
@@ -755,7 +773,7 @@ test('daemon applies exact NUT-09 recovery when the engine result envelope is un
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         createWallet: () => new FakeWallet([sourceProof]),
-        now: () => 10_000,
+        now: () => nowMs,
         randomId: () => ids.shift()!,
       })
       const request = orderRequest()
@@ -773,7 +791,6 @@ test('daemon applies exact NUT-09 recovery when the engine result envelope is un
         request.divisibility,
       )
       await prepared.markSubmitted()
-      mintCommitted = true
 
       const database = await openDaemonStateSqlite(directory)
       const custody = database.prepare('SELECT operation_id FROM custody_operations').get() as {
@@ -785,11 +802,32 @@ test('daemon applies exact NUT-09 recovery when the engine result envelope is un
       )
       assert.ok(loaded)
       const selection = validTerminalSelection(loaded.operation)
+      const unavailable = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.deepEqual(unavailable.recovered, [])
+      assert.equal(unavailable.pending.length, 1)
+
+      engineTransportFails = false
+      mintCommitted = true
+      nowMs = (loaded.operation.expiry + 1) * 1_000
       selectedOutputs = new Set(
         loaded.operation.manifest.entries
           .filter((_, index) => selection.selectedIndices.includes(index))
           .map(({ B_ }) => B_),
       )
+      const valid = engineResult(prepared, loaded.operation, selection.selection)
+      const envelope = JSON.parse(Buffer.from(valid.envelope, 'base64').toString('utf8')) as {
+        signatures: Array<{ dleq: { e: string; s: string } | null }>
+      }
+      if (envelope.signatures[0]?.dleq === null || envelope.signatures[0]?.dleq === undefined) {
+        throw new Error('invalid engine envelope fixture has no DLEQ')
+      }
+      envelope.signatures[0]!.dleq = { ...envelope.signatures[0]!.dleq!, e: '00'.repeat(32) }
+      const envelopeBytes = Buffer.from(JSON.stringify(envelope))
+      engineResponse = {
+        ...valid,
+        envelope: envelopeBytes.toString('base64'),
+        envelopeDigest: createHash('sha256').update(envelopeBytes).digest('hex'),
+      }
 
       assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
         recovered: ['range-operation-mint-recovery:source'],
@@ -1792,9 +1830,20 @@ function fakeMint(
   restoredOutputs?: () => ReadonlySet<string>,
   includeRotatedRegularKeyset: () => boolean = () => false,
 ) {
+  const calls = {
+    getInfo: 0,
+    getKeySets: 0,
+    getConditionalKeysets: 0,
+    getCtfCondition: 0,
+    getKeys: 0,
+    restore: 0,
+    check: 0,
+  }
   return {
-    getInfo: async () =>
-      ({
+    calls,
+    getInfo: async () => {
+      calls.getInfo += 1
+      return {
         name: 'test',
         pubkey: MINT_PUBLIC_KEY,
         version: 'test',
@@ -1812,77 +1861,91 @@ function fakeMint(
             max_expiry_seconds: maxExpirySeconds,
           },
         },
-      }) as never,
-    getKeySets: async () => ({
-      keysets: [
-        {
-          id: OFFER_KEYSET_ID,
-          unit: 'msat',
-          active: true,
-          input_fee_ppk: INPUT_FEE_PPK,
-          final_expiry: FINAL_EXPIRY,
-        },
-        ...(includeRotatedRegularKeyset()
-          ? [
-              {
-                id: ROTATED_OFFER_KEYSET_ID,
-                unit: 'msat',
-                active: true,
-                input_fee_ppk: INPUT_FEE_PPK,
-                final_expiry: FINAL_EXPIRY,
-              },
-            ]
-          : []),
-        {
-          id: '00deadbeef000000',
-          unit: 'msat',
-          active: false,
-          input_fee_ppk: INPUT_FEE_PPK,
-          final_expiry: FINAL_EXPIRY,
-        },
-      ],
-    }),
-    getConditionalKeysets: async () => ({
-      keysets: [
-        {
-          id: RECEIVE_KEYSET_ID,
-          unit: 'msat',
-          active: true,
-          input_fee_ppk: INPUT_FEE_PPK,
-          final_expiry: FINAL_EXPIRY,
-          registered_at: 0,
-          condition_id: CONDITION_ID,
-          outcome_collection: 'YES',
-          outcome_collection_id: OUTCOME_COLLECTION_ID,
-        },
-        {
-          id: COMPLEMENT_KEYSET_ID,
-          unit: 'msat',
-          active: true,
-          input_fee_ppk: INPUT_FEE_PPK,
-          final_expiry: FINAL_EXPIRY,
-          registered_at: 0,
-          condition_id: CONDITION_ID,
-          outcome_collection: 'NO',
-          outcome_collection_id: COMPLEMENT_COLLECTION_ID,
-        },
-      ],
-    }),
-    getCtfCondition: async () => ({
-      condition_id: CONDITION_ID,
-      registered_at: 0,
-      keysets: { NO: COMPLEMENT_KEYSET_ID, YES: RECEIVE_KEYSET_ID },
-    }),
-    getKeys: async (keysetId?: string) => ({
-      keysets: [
-        keysetId === ROTATED_OFFER_KEYSET_ID
-          ? rotatedMintKeys()
-          : keysetId === RECEIVE_KEYSET_ID || keysetId === COMPLEMENT_KEYSET_ID
-            ? conditionalMintKeys(keysetId)
-            : mintKeys(),
-      ],
-    }),
+      } as never
+    },
+    getKeySets: async () => {
+      calls.getKeySets += 1
+      return {
+        keysets: [
+          {
+            id: OFFER_KEYSET_ID,
+            unit: 'msat',
+            active: true,
+            input_fee_ppk: INPUT_FEE_PPK,
+            final_expiry: FINAL_EXPIRY,
+          },
+          ...(includeRotatedRegularKeyset()
+            ? [
+                {
+                  id: ROTATED_OFFER_KEYSET_ID,
+                  unit: 'msat',
+                  active: true,
+                  input_fee_ppk: INPUT_FEE_PPK,
+                  final_expiry: FINAL_EXPIRY,
+                },
+              ]
+            : []),
+          {
+            id: '00deadbeef000000',
+            unit: 'msat',
+            active: false,
+            input_fee_ppk: INPUT_FEE_PPK,
+            final_expiry: FINAL_EXPIRY,
+          },
+        ],
+      }
+    },
+    getConditionalKeysets: async () => {
+      calls.getConditionalKeysets += 1
+      return {
+        keysets: [
+          {
+            id: RECEIVE_KEYSET_ID,
+            unit: 'msat',
+            active: true,
+            input_fee_ppk: INPUT_FEE_PPK,
+            final_expiry: FINAL_EXPIRY,
+            registered_at: 0,
+            condition_id: CONDITION_ID,
+            outcome_collection: 'YES',
+            outcome_collection_id: OUTCOME_COLLECTION_ID,
+          },
+          {
+            id: COMPLEMENT_KEYSET_ID,
+            unit: 'msat',
+            active: true,
+            input_fee_ppk: INPUT_FEE_PPK,
+            final_expiry: FINAL_EXPIRY,
+            registered_at: 0,
+            condition_id: CONDITION_ID,
+            outcome_collection: 'NO',
+            outcome_collection_id: COMPLEMENT_COLLECTION_ID,
+          },
+        ],
+      }
+    },
+    getCtfCondition: async () => {
+      calls.getCtfCondition += 1
+      return {
+        condition_id: CONDITION_ID,
+        registered_at: 0,
+        keysets: { NO: COMPLEMENT_KEYSET_ID, YES: RECEIVE_KEYSET_ID },
+      }
+    },
+    getKeys: async (keysetId?: string) => {
+      calls.getKeys += 1
+      return {
+        keysets: [
+          keysetId === ROTATED_OFFER_KEYSET_ID
+            ? rotatedMintKeys()
+            : keysetId === RECEIVE_KEYSET_ID || keysetId === COMPLEMENT_KEYSET_ID
+              ? conditionalMintKeys(keysetId)
+              : mintKeys(),
+        ],
+      }
+    },
     restore: async ({ outputs }: { outputs: SerializedBlindedMessage[] }) => {
+      calls.restore += 1
       const selected = restoredOutputs?.() ?? new Set<string>()
       const restored = outputs.filter(({ B_ }) => selected.has(B_))
       return {
@@ -1890,9 +1953,12 @@ function fakeMint(
         signatures: restored.map(signBlindedOutput),
       }
     },
-    check: async ({ Ys }: { Ys: string[] }) => ({
-      states: Ys.map((Y) => ({ Y, state: 'UNSPENT' as const, witness: null })),
-    }),
+    check: async ({ Ys }: { Ys: string[] }) => {
+      calls.check += 1
+      return {
+        states: Ys.map((Y) => ({ Y, state: 'UNSPENT' as const, witness: null })),
+      }
+    },
   }
 }
 

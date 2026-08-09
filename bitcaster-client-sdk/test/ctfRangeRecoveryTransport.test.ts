@@ -232,7 +232,6 @@ test('engine result replay matches the exact persisted transport envelope', () =
   const exactResult = prepareDurableCustodyExactArtifact({
     schemaVersion: 1,
     envelope: result.envelope,
-    allManifestRecovery: {},
     proofs: { receive: [], change: [] },
   })
   const reference = createDurableCustodyArtifactReference('exact-result', exactResult)
@@ -435,7 +434,7 @@ test('uncertain recovery queries the exact full manifest and delegates classific
   assert.deepEqual(new Set(keyCalls), new Set([OFFER_KEYSET_ID, RECEIVE_KEYSET_ID]))
 })
 
-test('confirmed result verification exposes exact manifest recovery and bound keysets', async () => {
+test('uncertain recovery exposes the exact manifest and bound keysets', async () => {
   const operation = createRangeOperation()
   const binding = await createRangeBinding(operation)
   const keyCalls: string[] = []
@@ -450,7 +449,11 @@ test('confirmed result verification exposes exact manifest recovery and bound ke
     },
   })
 
-  const context = await adapter.loadExactVerificationContext(binding.record)
+  const context = await adapter.loadUncertainRecoveryObservation({
+    record: binding.record,
+    selection: null,
+    now: operation.expiry - 1,
+  })
 
   assert.equal(context.allManifestRecovery.queryCompleted, true)
   assert.equal(context.allManifestRecovery.queriedOutputs.length, operation.manifest.entries.length)
@@ -497,8 +500,17 @@ test('mint recovery rejects foreign restore rows and keysets without exposing pr
       }
     },
   }
+  const malformedRestore: CtfRangeMintClient = {
+    async restore(payload): Promise<PostRestoreResponse> {
+      return { outputs: [payload.outputs[0]!], signatures: [] }
+    },
+    check: unspentStates,
+    async getKeys(keysetId): Promise<GetKeysResponse> {
+      return { keysets: [mintKeyset(operation, keysetId ?? '')] }
+    },
+  }
 
-  for (const mint of [foreignRestore, leakingCheck, foreignKeyset]) {
+  for (const mint of [foreignRestore, leakingCheck, foreignKeyset, malformedRestore]) {
     const adapter = new CtfRangeMintRecoveryAdapter(operation, mint)
     await assert.rejects(
       () =>
@@ -509,7 +521,9 @@ test('mint recovery rejects foreign restore rows and keysets without exposing pr
         }),
       (error: unknown) =>
         error instanceof Error &&
-        /CTF range mint recovery (failed|response is invalid)/.test(error.message) &&
+        /CTF range mint recovery (failed|response is invalid)|range restore authority|bound range keyset/.test(
+          error.message,
+        ) &&
         !error.message.includes(secret),
     )
   }

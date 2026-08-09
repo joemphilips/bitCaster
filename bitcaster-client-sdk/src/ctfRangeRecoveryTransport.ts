@@ -135,12 +135,9 @@ export interface CtfRangeMintClient extends CtfRangeProofStateClient {
   getKeys(keysetId?: string): Promise<GetKeysResponse>
 }
 
-export interface CtfRangeMintVerificationContext {
+export interface CtfRangeMintRecoveryObservationContext {
   readonly allManifestRecovery: DurableCtfRangeAllManifestRecovery
   readonly resolveKeyset: DurableCtfRangeKeysetResolver
-}
-
-export interface CtfRangeMintRecoveryObservationContext extends CtfRangeMintVerificationContext {
   readonly observation: DurableCtfRangeRecoveryObservation
 }
 
@@ -553,16 +550,18 @@ export class CtfRangeMintRecoveryAdapter {
   }): Promise<CtfRangeMintRecoveryObservationContext> {
     assertDurableCtfRangeCustodyAuthority(input.record, this.#operation)
     try {
-      const [verification, inputStates] = await Promise.all([
-        this.loadExactVerificationContext(input.record),
+      const [allManifestRecovery, resolveKeyset, inputStates] = await Promise.all([
+        this.#restoreExactAllManifest(),
+        this.#loadBoundKeysets(input.record),
         checkCtfRangeInputProofStates(this.#mint, this.#operation.inputs, input.signal),
       ])
       return {
-        ...verification,
+        allManifestRecovery,
+        resolveKeyset,
         observation: {
           selection: input.selection,
           inputStates,
-          ...verification.allManifestRecovery,
+          ...allManifestRecovery,
           now: input.now,
         },
       }
@@ -579,29 +578,8 @@ export class CtfRangeMintRecoveryAdapter {
           error,
         )
       }
-      throw error
-    }
-  }
-
-  async loadExactVerificationContext(
-    record: DurableCustodyRecord,
-  ): Promise<CtfRangeMintVerificationContext> {
-    assertDurableCtfRangeCustodyAuthority(record, this.#operation)
-    try {
-      const [allManifestRecovery, resolveKeyset] = await Promise.all([
-        this.#restoreExactAllManifest(),
-        this.#loadBoundKeysets(record),
-      ])
-      return { allManifestRecovery, resolveKeyset }
-    } catch (error) {
-      if (error instanceof CtfRangeRecoveryTransportError) {
-        throw new CtfRangeRecoveryTransportError(
-          'CTF range mint verification context failed',
-          error,
-        )
-      }
       throw new CtfRangeRecoveryResponseError(
-        'CTF range mint verification response is invalid',
+        'CTF range mint recovery observation response is invalid',
         error,
       )
     }

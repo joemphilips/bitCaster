@@ -21,6 +21,7 @@ import {
 import {
   assertDurableCtfRangeCustodyAuthority,
   buildDurableCtfRangeRecoveryQuery,
+  classifyDurableCtfRangeVerifiedResultArtifact,
   classifyDurableCtfRangeRecovery,
   createDeterministicDurableCtfRangeRefundOutputs,
   createDeterministicDurableCtfRangeRefundOutputsWithLocators,
@@ -848,11 +849,11 @@ async function stagedSharedRangeResult() {
       selection,
       signatures: signaturesFor(operation, selection),
     }),
-    allManifestRecovery: recoveryFor(operation, selection),
     resolveKeyset,
   })
   assert.equal(decision.kind, 'confirmed')
   if (decision.kind !== 'confirmed') throw new Error('range result fixture is not confirmed')
+  assert.equal(classifyDurableCtfRangeVerifiedResultArtifact(decision.exactResult), 'engine')
   const authority = createDurableCtfRangeStagedResultAuthority({
     record: binding.record,
     exactResult: decision.exactResult,
@@ -1235,24 +1236,12 @@ test('selected range result unblinds only the exact persisted subset', async () 
     selection,
     signatures: signaturesFor(operation, selection),
   })
-  const result = recoverDurableCtfRangeResult(
-    operation,
-    envelope,
-    recoveryFor(operation, selection),
-    record,
-    resolveKeyset,
-  )
+  const result = recoverDurableCtfRangeResult(operation, envelope, record, resolveKeyset)
   assert.equal(result.receive.length, 1)
   assert.equal(result.change.length, 1)
   assert.equal(result.receive[0]?.amount.toString(), '2')
   assert.equal(result.change[0]?.amount.toString(), '2')
-  const reversed = recoverDurableCtfRangeResult(
-    operation,
-    envelope,
-    recoveryFor(operation, selection, true),
-    record,
-    resolveKeyset,
-  )
+  const reversed = recoverDurableCtfRangeResult(operation, envelope, record, resolveKeyset)
   assert.equal(reversed.receive[0]?.amount.toString(), '2')
   assert.equal(reversed.change[0]?.amount.toString(), '2')
   assert.throws(
@@ -1260,7 +1249,6 @@ test('selected range result unblinds only the exact persisted subset', async () 
       recoverDurableCtfRangeResult(
         operation,
         { ...envelope, authorizationId: 'foreign' },
-        recoveryFor(operation, selection),
         record,
         resolveKeyset,
       ),
@@ -1270,11 +1258,10 @@ test('selected range result unblinds only the exact persisted subset', async () 
     () =>
       recoverDurableCtfRangeResult(
         operation,
-        envelope,
         {
-          ...recoveryFor(operation, selection),
-          signatures: recoveryFor(operation, selection).signatures.map((signature, index) =>
-            index === 0 ? { ...signature, dleq: undefined } : signature,
+          ...envelope,
+          signatures: envelope.signatures.map((signature, index) =>
+            index === 0 ? { ...signature, dleq: null } : signature,
           ),
         },
         record,
@@ -1287,31 +1274,12 @@ test('selected range result unblinds only the exact persisted subset', async () 
   )
   assert.throws(
     () =>
-      recoverDurableCtfRangeResult(
-        operation,
-        envelope,
-        recoveryFor(operation, selection),
-        record,
-        (_canonicalMintUrl, id) =>
-          id === OFFER_KEYSET || id === RECEIVE_KEYSET
-            ? { id, keys: { '1': otherMintKey, '2': otherMintKey, '4': otherMintKey } }
-            : undefined,
+      recoverDurableCtfRangeResult(operation, envelope, record, (_canonicalMintUrl, id) =>
+        id === OFFER_KEYSET || id === RECEIVE_KEYSET
+          ? { id, keys: { '1': otherMintKey, '2': otherMintKey, '4': otherMintKey } }
+          : undefined,
       ),
     /mint keyset metadata is foreign/,
-  )
-  assert.throws(
-    () =>
-      recoverDurableCtfRangeResult(
-        operation,
-        envelope,
-        {
-          ...recoveryFor(operation, selection),
-          queriedOutputs: buildDurableCtfRangeRecoveryQuery(operation, selection).outputs,
-        },
-        record,
-        resolveKeyset,
-      ),
-    /full manifest/,
   )
 })
 
@@ -1426,6 +1394,7 @@ test('mint-verified recovery stages the exact durable result without an engine e
   })
   assert.equal(prepared.kind, 'confirmed')
   if (prepared.kind !== 'confirmed') throw new Error('mint recovery fixture is not confirmed')
+  assert.equal(classifyDurableCtfRangeVerifiedResultArtifact(prepared.exactResult), 'mint-recovery')
   assert.deepEqual(
     {
       schemaVersion: (prepared.exactResult.artifact as { schemaVersion: unknown }).schemaVersion,
@@ -1504,7 +1473,6 @@ test('refund preserves offered class and residual reauthorization links exact ch
       selection,
       signatures: signaturesFor(operation, selection),
     }),
-    recoveryFor(operation, selection),
     record,
     resolveKeyset,
   )
@@ -1766,7 +1734,6 @@ test('direct preparation link and selected result commit atomically across resta
             selection,
             signatures: signaturesFor(foreignOperation, selection),
           }),
-          allManifestRecovery: recoveryFor(foreignOperation, selection),
           authorization,
           resolveKeyset,
         }),
@@ -1785,7 +1752,6 @@ test('direct preparation link and selected result commit atomically across resta
         selection: truncatedSelection,
         signatures: signaturesFor(operation, truncatedSelection),
       }),
-      allManifestRecovery: recoveryFor(operation, selection),
       authorization,
       resolveKeyset,
     }),
@@ -1801,7 +1767,6 @@ test('direct preparation link and selected result commit atomically across resta
             record: restarted.readOperation()!,
             operation,
             envelope,
-            allManifestRecovery: recoveryFor(operation, selection),
             authorization,
             resolveKeyset,
           }),
@@ -1815,7 +1780,6 @@ test('direct preparation link and selected result commit atomically across resta
     record: restarted.readOperation()!,
     operation,
     envelope,
-    allManifestRecovery: recoveryFor(operation, selection),
     resolveKeyset,
   })
   assert.equal(prepared.kind, 'confirmed')
@@ -1831,7 +1795,6 @@ test('direct preparation link and selected result commit atomically across resta
       record: restarted.readOperation()!,
       operation,
       envelope,
-      allManifestRecovery: recoveryFor(operation, selection),
       authorization,
       resolveKeyset,
     }),
@@ -1854,13 +1817,7 @@ test('direct preparation link and selected result commit atomically across resta
         exactResult: stagedArtifact.artifact,
         resolveKeyset,
       }),
-      recoverDurableCtfRangeResult(
-        operation,
-        envelope,
-        recoveryFor(operation, selection),
-        staged,
-        resolveKeyset,
-      ),
+      recoverDurableCtfRangeResult(operation, envelope, staged, resolveKeyset),
     ),
     true,
     'staged range recovery must equal the expected proof result',
@@ -1900,13 +1857,7 @@ test('direct preparation link and selected result commit atomically across resta
         exactResult: stagedArtifact.artifact,
         resolveKeyset,
       }),
-      recoverDurableCtfRangeResult(
-        operation,
-        envelope,
-        recoveryFor(operation, selection),
-        recovered.readOperation()!,
-        resolveKeyset,
-      ),
+      recoverDurableCtfRangeResult(operation, envelope, recovered.readOperation()!, resolveKeyset),
     ),
     true,
     'applied range recovery must equal the expected proof result',

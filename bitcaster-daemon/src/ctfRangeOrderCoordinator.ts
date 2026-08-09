@@ -18,6 +18,7 @@ import {
   deriveDurableCustodyOperationId,
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
+  type DurableCustodyRecord,
   type DurableCustodyProofOperationInput,
   type DurableCustodyScope,
 } from '@bitcaster-market/client-sdk'
@@ -28,7 +29,9 @@ import {
   type CtfRangeOrderPreparation,
 } from '@bitcaster-market/client-sdk/ctfRangeOrderPreparation'
 import {
+  classifyDurableCtfRangeVerifiedResultArtifact,
   createDurableCtfRangeCustodyBinding,
+  deriveDurableCtfRangeSettledFaceAmount,
   createDurableCtfRangeRefundOperation,
   createDeterministicDurableCtfRangeRefundOutputs,
   deriveDurableCtfRangeFeeBounds,
@@ -38,6 +41,7 @@ import {
   toDurableCtfRangeProofOperationInput,
   type DurableCtfRangeExpiryObservation,
   type DurableCtfRangeMintKeyset,
+  type DurableCtfRangeKeysetResolver,
   type DurableCtfRangeOperation,
   type DurableCtfRangeProof,
   type DurableCtfRangeRecoveryDecision,
@@ -91,6 +95,7 @@ import {
 import type {
   CreateSettlementCapabilityRequest,
   OrderStatusResponse,
+  SettlementCapabilityResultResponse,
   SettlementCapabilityResponse,
   SettlementOrderContinuationReference,
 } from '@bitcaster-market/client-sdk/engineClient'
@@ -136,6 +141,7 @@ import {
   withDurableCustodyFencedRead,
   withDurableCustodyUnitOfWork,
 } from './durableCustodyUnitOfWork.ts'
+import { DurableCustodySqliteStore } from './durableCustodySqliteStore.ts'
 import { createDaemonStateSqliteSession, type DaemonStateSqliteSession } from './stateSqlite.ts'
 import {
   createDaemonCounterSource,
@@ -636,14 +642,11 @@ export class DaemonCtfRangeOrderCoordinator {
       await this.#markTerminal(input.operationId)
       return
     }
-    const recovery = new CtfRangeMintRecoveryAdapter(loaded.operation, mint)
-    const verification = await recovery.loadExactVerificationContext(loaded.record)
     const decision = await this.#classifyMintRecovery(
       coordinator,
       custodyOperationId,
-      loaded.operation,
-      verification,
-      mint,
+      loaded.record,
+      new CtfRangeMintRecoveryAdapter(loaded.operation, mint),
     )
     switch (decision.kind) {
       case 'confirmed':
@@ -995,46 +998,127 @@ export class DaemonCtfRangeOrderCoordinator {
   ): Promise<void> {
     const capability = preparation.capability
     if (capability === null) throw new Error('submitted range capability authority is missing')
-    const getResult = client.getSettlementCapabilityResultByOperation
-    if (getResult === undefined) {
-      throw new Error('engine client does not support settlement result recovery')
-    }
     const reference = {
       artifactId: capability.artifactId,
       bindingDigest: capability.bindingDigest,
     }
-    const response = await getResult.call(client, input.operationId)
     const coordinator = new DaemonCtfRangeCoordinator(this.#directory, this.#getFence())
     const custodyOperationId = rangeCustodyOperationId(walletSeedHex, input.operationId)
     const loaded = await coordinator.load(custodyOperationId)
     if (loaded === null) throw new Error('daemon CTF range custody authority is missing')
-    const status = await client.getOrderStatus(input.request.marketId, capability.orderId)
-    if (status === null && preparation.lifecycleState !== 'submission-rejected') {
-      throw new Error('submitted range order status is unavailable')
-    }
-    const engineResult =
-      response === null
-        ? null
-        : decodeCtfRangeEngineResult(response, {
-            operation: loaded.operation,
-            reference,
+    const preparationResolver = createCtfRangeOrderPreparationKeysetResolver(
+      preparationFromJournal(preparation),
+    )
+    if (loaded.record.operation.result.state !== 'none') {
+      if ((await this.#persistedResultSource(loaded.record)) === 'mint-recovery') {
+        if (loaded.record.operation.result.state === 'verified-staged') {
+          await coordinator.applyStaged({
+            custodyOperationId,
+            resolveKeyset: preparationResolver,
+            observedAtMs: this.#nowMs(),
           })
-    if (status?.status === 'awaiting_authorization') {
-      requirePendingContinuation(status, preparation, loaded.operation, engineResult)
-    }
-    if (status !== null) {
-      await recordOrderStatus(
-        input.request.marketId,
-        capability.orderId,
-        status,
-        input.request.baseAsset,
-        input.request.divisibility,
+        }
+        const recovered = await coordinator.readAppliedResult({
+          custodyOperationId,
+          resolveKeyset: preparationResolver,
+        })
+        const status = await this.#loadPartialResultStatus(
+          input,
+          capability,
+          client,
+          loaded.operation,
+          recovered,
+        )
+        await this.#completeSubmittedLifecycle(
+          preparation,
+          input,
+          walletSeedHex,
+          client,
+          loaded.operation,
+          recovered,
+          status,
+          null,
+        )
+        return
+      }
+      const response = await this.#getEngineResult(client, input.operationId)
+      if (response === null) {
+        throw new RangeRecoveryDeferredError(
+          'persisted engine range result acknowledgement is pending',
+          this.#nowMs() + 1_000,
+        )
+      }
+      let persistedEngineResult: CtfRangeEngineResult
+      try {
+        persistedEngineResult = decodeCtfRangeEngineResult(response, {
+          operation: loaded.operation,
+          reference,
+        })
+      } catch {
+        throw new RangeRecoveryDeferredError(
+          'persisted engine range result is unavailable',
+          this.#nowMs() + 1_000,
+        )
+      }
+      const decision = await this.#applyEngineResult(
+        coordinator,
+        custodyOperationId,
+        loaded.operation,
+        persistedEngineResult,
+        reference,
+        client,
+        preparationResolver,
       )
+      if (decision.kind !== 'confirmed') {
+        throw new RangeRecoveryDeferredError(
+          'persisted engine range result remains unverified',
+          this.#nowMs() + 1_000,
+        )
+      }
+      const persistedStatus = await this.#loadPartialResultStatus(
+        input,
+        capability,
+        client,
+        loaded.operation,
+        decision.result,
+      )
+      if (persistedStatus?.status === 'awaiting_authorization') {
+        requirePendingContinuation(
+          persistedStatus,
+          preparation,
+          loaded.operation,
+          persistedEngineResult,
+        )
+      }
+      await this.#completeSubmittedLifecycle(
+        preparation,
+        input,
+        walletSeedHex,
+        client,
+        loaded.operation,
+        decision.result,
+        persistedStatus,
+        persistedEngineResult,
+      )
+      return
+    }
+    const response = await this.#getEngineResult(client, input.operationId)
+    let engineResult: CtfRangeEngineResult | null = null
+    if (response !== null) {
+      try {
+        engineResult = decodeCtfRangeEngineResult(response, {
+          operation: loaded.operation,
+          reference,
+        })
+      } catch {
+        engineResult = null
+      }
     }
     const mint = this.#createMint(input.mintUrl) as CtfRangeMintLike & CtfRangeMintClient
     const refundOperationId = deriveDurableCtfRangeRefundOperationId(input.operationId)
-    const existingRefund = response === null ? await getProofOperation(refundOperationId) : null
+    const existingRefund = engineResult === null ? await getProofOperation(refundOperationId) : null
     if (existingRefund !== null) {
+      const status = await this.#loadOrderStatus(input, capability, client)
       await this.#cancelRestingOrderBeforeRefund(input, capability, status, client)
       await this.#resumeOrCreateRefund(
         coordinator,
@@ -1048,27 +1132,39 @@ export class DaemonCtfRangeOrderCoordinator {
       return
     }
     const recovery = new CtfRangeMintRecoveryAdapter(loaded.operation, mint)
-    const verification = await recovery.loadExactVerificationContext(loaded.record)
-    const decision =
-      response === null
-        ? await this.#classifyMintRecovery(
-            coordinator,
-            custodyOperationId,
-            loaded.operation,
-            verification,
-            mint,
-          )
+    let decision =
+      engineResult === null
+        ? await this.#classifyMintRecovery(coordinator, custodyOperationId, loaded.record, recovery)
         : await this.#applyEngineResult(
             coordinator,
             custodyOperationId,
             loaded.operation,
-            verification,
             engineResult!,
             reference,
             client,
+            preparationResolver,
           )
+    if (decision.kind === 'reconciling' && engineResult !== null) {
+      engineResult = null
+      decision = await this.#classifyMintRecovery(
+        coordinator,
+        custodyOperationId,
+        loaded.record,
+        recovery,
+      )
+    }
     switch (decision.kind) {
-      case 'confirmed':
+      case 'confirmed': {
+        const status = await this.#loadPartialResultStatus(
+          input,
+          capability,
+          client,
+          loaded.operation,
+          decision.result,
+        )
+        if (status?.status === 'awaiting_authorization') {
+          requirePendingContinuation(status, preparation, loaded.operation, engineResult)
+        }
         await this.#completeSubmittedLifecycle(
           preparation,
           input,
@@ -1080,13 +1176,15 @@ export class DaemonCtfRangeOrderCoordinator {
           engineResult,
         )
         return
+      }
       case 'waiting':
         throw new RangeRecoveryDeferredError(
           'submitted range authorization remains unspent before expiry',
           loaded.operation.expiry * 1_000 + 1_000,
         )
-      case 'refundable':
-        await this.#cancelRestingOrderBeforeRefund(input, capability, status, client)
+      case 'refundable': {
+        const refundableStatus = await this.#loadOrderStatus(input, capability, client)
+        await this.#cancelRestingOrderBeforeRefund(input, capability, refundableStatus, client)
         await this.#resumeOrCreateRefund(
           coordinator,
           custodyOperationId,
@@ -1097,6 +1195,7 @@ export class DaemonCtfRangeOrderCoordinator {
         )
         await this.#markTerminal(input.operationId)
         return
+      }
       case 'reconciling':
         throw new Error('submitted range result remains reconciling')
       default:
@@ -1107,35 +1206,95 @@ export class DaemonCtfRangeOrderCoordinator {
   async #classifyMintRecovery(
     coordinator: DaemonCtfRangeCoordinator,
     custodyOperationId: string,
-    operation: DurableCtfRangeOperation,
-    verification: Awaited<ReturnType<CtfRangeMintRecoveryAdapter['loadExactVerificationContext']>>,
-    mint: CtfRangeMintLike & CtfRangeMintClient,
+    record: DurableCustodyRecord,
+    recovery: CtfRangeMintRecoveryAdapter,
   ): Promise<DurableCtfRangeRecoveryDecision> {
-    const observation = {
+    const recoveryObservation = await recovery.loadUncertainRecoveryObservation({
+      record,
       selection: null,
-      inputStates: await checkCtfRangeInputProofStates(mint, operation.inputs),
-      ...verification.allManifestRecovery,
       now: Math.floor(this.#nowMs() / 1_000),
-    }
+    })
+    const observation = recoveryObservation.observation
     const decision = await coordinator.classifyRecovery({
       custodyOperationId,
       observation,
-      resolveKeyset: verification.resolveKeyset,
+      resolveKeyset: recoveryObservation.resolveKeyset,
     })
     if (decision.kind !== 'confirmed') return decision
     const staged = await coordinator.stageRecovered({
       custodyOperationId,
       observation,
-      resolveKeyset: verification.resolveKeyset,
+      resolveKeyset: recoveryObservation.resolveKeyset,
       observedAtMs: this.#nowMs(),
     })
     if (staged.kind !== 'confirmed') return staged
     await coordinator.applyStaged({
       custodyOperationId,
-      resolveKeyset: verification.resolveKeyset,
+      resolveKeyset: recoveryObservation.resolveKeyset,
       observedAtMs: this.#nowMs(),
     })
     return staged
+  }
+
+  async #getEngineResult(
+    client: EngineClientLike,
+    operationId: string,
+  ): Promise<SettlementCapabilityResultResponse | null> {
+    const getResult = client.getSettlementCapabilityResultByOperation
+    if (getResult === undefined) return null
+    try {
+      return await getResult.call(client, operationId)
+    } catch {
+      return null
+    }
+  }
+
+  async #loadOrderStatus(
+    input: PersistedPreparationInput,
+    capability: RangePreparationCapability,
+    client: EngineClientLike,
+  ): Promise<OrderStatusResponse | null> {
+    const status = await client.getOrderStatus(input.request.marketId, capability.orderId)
+    if (status !== null) {
+      await recordOrderStatus(
+        input.request.marketId,
+        capability.orderId,
+        status,
+        input.request.baseAsset,
+        input.request.divisibility,
+      )
+    }
+    return status
+  }
+
+  async #loadPartialResultStatus(
+    input: PersistedPreparationInput,
+    capability: RangePreparationCapability,
+    client: EngineClientLike,
+    operation: DurableCtfRangeOperation,
+    result: Extract<DurableCtfRangeRecoveryDecision, { kind: 'confirmed' }>['result'],
+  ): Promise<OrderStatusResponse | null> {
+    const settledAmount = deriveDurableCtfRangeSettledFaceAmount(operation, result)
+    if (settledAmount > input.request.amountSubunits) {
+      throw new Error('settled range amount exceeds the submitted order')
+    }
+    if (settledAmount === input.request.amountSubunits) return null
+    return this.#loadOrderStatus(input, capability, client)
+  }
+
+  async #persistedResultSource(record: DurableCustodyRecord): Promise<'engine' | 'mint-recovery'> {
+    const reference = record.operation.result.exactResult
+    if (reference === null) throw new Error('persisted range result artifact is absent')
+    const exactResult = await this.#storage.read((database) =>
+      new DurableCustodySqliteStore(database).getArtifact({
+        scopeId: record.scope.scopeId,
+        operationId: record.operation.operationId,
+        expectedOperationRevision: record.revision,
+        reference,
+      }),
+    )
+    if (exactResult === null) throw new Error('persisted range result artifact is absent')
+    return classifyDurableCtfRangeVerifiedResultArtifact(exactResult.artifact)
   }
 
   async #resumeOrCreateRefund(
@@ -1277,23 +1436,22 @@ export class DaemonCtfRangeOrderCoordinator {
     coordinator: DaemonCtfRangeCoordinator,
     custodyOperationId: string,
     operation: DurableCtfRangeOperation,
-    verification: Awaited<ReturnType<CtfRangeMintRecoveryAdapter['loadExactVerificationContext']>>,
     engineResult: CtfRangeEngineResult,
     reference: { readonly artifactId: string; readonly bindingDigest: string },
     client: EngineClientLike,
+    resolveKeyset: DurableCtfRangeKeysetResolver,
   ): Promise<DurableCtfRangeRecoveryDecision> {
     const decision = await coordinator.stageVerified({
       custodyOperationId,
       operation,
       envelope: engineResult.envelope,
-      allManifestRecovery: verification.allManifestRecovery,
-      resolveKeyset: verification.resolveKeyset,
+      resolveKeyset,
       observedAtMs: this.#nowMs(),
     })
     if (decision.kind !== 'confirmed') return decision
     await coordinator.applyStaged({
       custodyOperationId,
-      resolveKeyset: verification.resolveKeyset,
+      resolveKeyset,
       observedAtMs: this.#nowMs(),
     })
     await this.#acknowledgeResult(client, operation, reference, engineResult)

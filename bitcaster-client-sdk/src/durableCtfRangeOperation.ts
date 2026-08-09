@@ -245,6 +245,28 @@ export interface DurableCtfRangeRecoveredResult {
   change: Proof[]
 }
 
+export type DurableCtfRangeVerifiedResultSource = 'engine' | 'mint-recovery'
+
+export function classifyDurableCtfRangeVerifiedResultArtifact(
+  exactResult: DurableCustodyExactArtifact,
+): DurableCtfRangeVerifiedResultSource {
+  const value = exactResult.artifact
+  if (!isRecord(value)) throw new Error('CTF range verified result artifact is invalid')
+  switch (value.schemaVersion) {
+    case 1:
+      exactKeys(value, ['schemaVersion', 'envelope', 'proofs'])
+      return 'engine'
+    case 2:
+      exactKeys(value, ['schemaVersion', 'source', 'selection', 'allManifestRecovery', 'proofs'])
+      if (value.source !== 'mint-recovery') {
+        throw new Error('CTF range verified result recovery source is invalid')
+      }
+      return 'mint-recovery'
+    default:
+      throw new Error('CTF range verified result artifact schema is invalid')
+  }
+}
+
 export function deriveDurableCtfRangeSettledFaceAmount(
   operationInput: DurableCtfRangeOperation,
   result: DurableCtfRangeRecoveredResult,
@@ -564,44 +586,34 @@ export function decodeDurableCtfRangeResultEnvelopeBytes(
 export function recoverDurableCtfRangeResult(
   operationValue: DurableCtfRangeOperation,
   envelopeValue: DurableCtfRangeResultEnvelope,
-  recoveryValue: DurableCtfRangeAllManifestRecovery,
   record: DurableCustodyRecord,
   resolveKeyset: DurableCtfRangeKeysetResolver,
 ): DurableCtfRangeRecoveredResult {
   const operation = decodeDurableCtfRangeOperation(operationValue)
   const envelope = decodeDurableCtfRangeResultEnvelope(envelopeValue)
   assertDurableCtfRangeCustodyAuthority(record, operation)
-  return recoverCompleteRangeResult(operation, envelope, recoveryValue, record, resolveKeyset)
+  return recoverEngineVerifiedRangeResult(operation, envelope, record, resolveKeyset)
 }
 
-function recoverCompleteRangeResult(
+function recoverEngineVerifiedRangeResult(
   operation: DurableCtfRangeOperation,
   envelope: DurableCtfRangeResultEnvelope,
-  recoveryValue: DurableCtfRangeAllManifestRecovery,
   record: DurableCustodyRecord,
   resolveKeyset: DurableCtfRangeKeysetResolver,
 ): DurableCtfRangeRecoveredResult {
   requireEnvelopeIdentity(operation, envelope)
-  const recovery = normalizeAllManifestRecovery(recoveryValue)
+  const material = manifestMaterial(operation)
   const selectedOutputs = selectCtfManifestOutputs(
     serializedManifest(operation),
     envelope.selection,
   )
   const envelopeSignatures = envelope.signatures.map(deserializeSignature)
   requireRangeSignatureAuthority(record, selectedOutputs, envelopeSignatures)
-  assertSameBlindSignatureAuthority(
-    selectedOutputs,
-    envelopeSignatures,
-    recovery.restoredOutputs,
-    recovery.signatures,
-  )
-  return recoverMintVerifiedRangeResult(
-    operation,
-    envelope.selection,
-    recovery,
-    record,
-    resolveKeyset,
-  )
+  const boundResolver = createBoundRangeKeysetResolver(record, operation, resolveKeyset)
+  const proofs = recoverCtfRangeProofs(material, selectedOutputs, envelopeSignatures, boundResolver)
+  const result = groupRecoveredProofs(operation, envelope.selection, selectedOutputs, proofs)
+  assertRangeOwnerPolicy(operation, envelope.selection)
+  return result
 }
 
 function recoverMintVerifiedRangeResult(
@@ -637,7 +649,6 @@ export function stageDurableCtfRangeVerifiedResult(input: {
   record: DurableCustodyRecord
   operation: DurableCtfRangeOperation
   envelope: DurableCtfRangeResultEnvelope
-  allManifestRecovery: DurableCtfRangeAllManifestRecovery
   authorization: DurableCustodyOwnerAuthorization
   resolveKeyset: DurableCtfRangeKeysetResolver
 }): DurableCtfRangeRecoveryDecision {
@@ -660,7 +671,6 @@ export function prepareDurableCtfRangeVerifiedResult(input: {
   record: DurableCustodyRecord
   operation: DurableCtfRangeOperation
   envelope: DurableCtfRangeResultEnvelope
-  allManifestRecovery: DurableCtfRangeAllManifestRecovery
   resolveKeyset: DurableCtfRangeKeysetResolver
 }): DurableCtfRangeVerifiedResultPreparation {
   const operation = decodeDurableCtfRangeOperation(input.operation)
@@ -668,17 +678,15 @@ export function prepareDurableCtfRangeVerifiedResult(input: {
   assertDurableCtfRangeCustodyAuthority(input.record, operation)
   try {
     const envelope = decodeDurableCtfRangeResultEnvelope(input.envelope)
-    const result = recoverCompleteRangeResult(
+    const result = recoverEngineVerifiedRangeResult(
       operation,
       envelope,
-      input.allManifestRecovery,
       input.record,
       input.resolveKeyset,
     )
     const exactResult = exactArtifact({
       schemaVersion: 1,
       envelope,
-      allManifestRecovery: serializeAllManifestRecovery(input.allManifestRecovery),
       proofs: {
         receive: result.receive.map(serializeProof),
         change: result.change.map(serializeProof),
@@ -769,24 +777,16 @@ export function recoverDurableCtfRangeVerifiedResultArtifact(input: {
   value.proofs.receive.forEach(decodeProof)
   value.proofs.change.forEach(decodeProof)
   let recovered: DurableCtfRangeRecoveredResult
-  switch (value.schemaVersion) {
-    case 1:
-      exactKeys(value, ['schemaVersion', 'envelope', 'allManifestRecovery', 'proofs'])
-      recovered = recoverCompleteRangeResult(
+  switch (classifyDurableCtfRangeVerifiedResultArtifact(input.exactResult)) {
+    case 'engine':
+      recovered = recoverEngineVerifiedRangeResult(
         operation,
         decodeDurableCtfRangeResultEnvelope(value.envelope),
-        normalizeAllManifestRecovery(
-          value.allManifestRecovery as DurableCtfRangeAllManifestRecovery,
-        ),
         record,
         input.resolveKeyset,
       )
       break
-    case 2:
-      exactKeys(value, ['schemaVersion', 'source', 'selection', 'allManifestRecovery', 'proofs'])
-      if (value.source !== 'mint-recovery') {
-        throw new Error('CTF range verified result recovery source is invalid')
-      }
+    case 'mint-recovery':
       recovered = recoverMintVerifiedRangeResult(
         operation,
         requireBoundedText(value.selection, 'verified recovery selection'),
@@ -797,8 +797,6 @@ export function recoverDurableCtfRangeVerifiedResultArtifact(input: {
         input.resolveKeyset,
       )
       break
-    default:
-      throw new Error('CTF range verified result artifact schema is invalid')
   }
   if (
     canonicalJson({
@@ -2636,39 +2634,6 @@ function assertRangeOwnerPolicy(operation: DurableCtfRangeOperation, selection: 
     receiveTotal * BigInt(operation.policy.rateD) < debitTotal * BigInt(operation.policy.rateN)
   ) {
     throw new Error('CTF range result violates owner policy')
-  }
-}
-
-function assertSameBlindSignatureAuthority(
-  envelopeOutputs: SerializedBlindedMessage[],
-  envelopeSignatures: SerializedBlindedSignature[],
-  recoveryOutputs: SerializedBlindedMessage[],
-  recoverySignatures: SerializedBlindedSignature[],
-): void {
-  if (
-    envelopeOutputs.length !== envelopeSignatures.length ||
-    recoveryOutputs.length !== recoverySignatures.length
-  ) {
-    throw new Error('CTF range result signature authority is incomplete')
-  }
-  const recovered = new Map(
-    recoveryOutputs.map((output, index) => [output.B_, recoverySignatures[index]!]),
-  )
-  if (
-    recovered.size !== recoveryOutputs.length ||
-    envelopeOutputs.length !== recoveryOutputs.length ||
-    envelopeOutputs.some((output, index) => {
-      const envelopeSignature = envelopeSignatures[index]!
-      const recoverySignature = recovered.get(output.B_)
-      return (
-        recoverySignature === undefined ||
-        envelopeSignature.id !== recoverySignature.id ||
-        !envelopeSignature.amount.equals(recoverySignature.amount) ||
-        envelopeSignature.C_ !== recoverySignature.C_
-      )
-    })
-  ) {
-    throw new Error('CTF range engine result differs from mint recovery authority')
   }
 }
 

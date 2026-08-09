@@ -3,6 +3,7 @@ import type { TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
 import type { MarketDetail } from "@/types/market-detail";
 import {
   previewBrowserCtfRangeOrderFees,
+  recoverBrowserCtfRangeOrder,
   recoverBrowserCtfRangeOrders,
   submitBrowserCtfRangeOrder,
 } from "../browserCtfRangeOrderSubmission";
@@ -22,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   prepareAndSubmit: vi.fn(),
   planConsolidation: vi.fn(),
   recoverPage: vi.fn(),
+  recoverClientOrder: vi.fn(),
   recordMessage: vi.fn(),
   wallet: {},
 }));
@@ -81,6 +83,7 @@ vi.mock("../browserCtfRangeOrderCoordinator", () => ({
     consolidateRound = mocks.consolidateRound;
     prepareAndSubmit = mocks.prepareAndSubmit;
     recoverPage = mocks.recoverPage;
+    recoverClientOrder = mocks.recoverClientOrder;
   },
 }));
 
@@ -111,6 +114,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.getWalletForMnemonicUnit.mockResolvedValue(mocks.wallet);
     mocks.prepareAndSubmit.mockResolvedValue({ orderId: "order-1" });
     mocks.recoverPage.mockReset();
+    mocks.recoverClientOrder.mockReset();
     mocks.recordMessage.mockResolvedValue(undefined);
   });
 
@@ -399,6 +403,36 @@ describe("submitBrowserCtfRangeOrder", () => {
       expect.objectContaining({
         limit: 64,
         after: { createdAtMs: 10, rangeOperationId: "range-2" },
+      }),
+    );
+  });
+
+  it("recovers only the active preparation for one engine order", async () => {
+    mocks.recoverClientOrder.mockResolvedValue({
+      recoveredOperationIds: ["range-target"],
+      pending: [{ operationId: "range-target", revision: 2, code: "recovery-pending" }],
+    });
+
+    await expect(
+      recoverBrowserCtfRangeOrder({
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+        clientOrderId: "client-target",
+      }),
+    ).resolves.toEqual({
+      recovered: 1,
+      pending: [{ operationId: "range-target", revision: 2, code: "recovery-pending" }],
+    });
+    expect(mocks.recoverClientOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ clientOrderId: "client-target" }),
+    );
+    expect(mocks.recoverPage).not.toHaveBeenCalled();
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-target",
+        revision: 2,
+        code: "recovery-pending",
       }),
     );
   });

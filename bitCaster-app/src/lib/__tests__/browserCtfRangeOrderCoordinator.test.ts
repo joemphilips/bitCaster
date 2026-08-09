@@ -66,11 +66,18 @@ import {
   type BrowserCtfRangeEngine,
   type BrowserCtfRangeOrderCoordinatorDependencies,
 } from "../browserCtfRangeOrderCoordinator";
-import { decodeBrowserPersistedSourceResult } from "../browserCtfRangeOrderSource";
+import {
+  browserRangeJournalIdentity,
+  browserWalletScope,
+  decodeBrowserPersistedSourceResult,
+} from "../browserCtfRangeOrderSource";
 import { BrowserDurableCustodyAdapter } from "../../stores/durable-custody-db";
 import {
+  bindCtfRangePreparationCapability,
+  insertCtfRangePreparation,
   readCtfRangePreparation,
   readCtfRangePreparationConsolidations,
+  transitionCtfRangePreparation,
 } from "../../stores/ctf-range-order-db";
 import { BitcasterDB, getProofOperation, type StoredProof } from "../../stores/proof-db";
 
@@ -801,9 +808,6 @@ describe("browser CTF range order coordinator", () => {
         if (preparation === undefined) throw new Error("unexpected range operation");
         const resolveKeyset = createCtfRangeOrderPreparationKeysetResolver(preparation);
         return {
-          async loadExactVerificationContext() {
-            throw new Error("unexpected exact result recovery");
-          },
           async loadUncertainRecoveryObservation(input) {
             if (operation.operationId === first.operationId) {
               throw new CtfRangeRecoveryTransportError(
@@ -1077,6 +1081,47 @@ describe("browser CTF range order coordinator", () => {
     await expect(coordinator.recoverPage({ seed: SEED, limit: 0 })).rejects.toThrow();
   });
 
+  it("recovers only the preparation bound to the notified engine order", async () => {
+    const database = createDatabase();
+    const engine = engineMock();
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
+    const target = persistedPreparation("range-targeted-recovery");
+    const other = {
+      ...persistedPreparation("range-other-recovery"),
+      request: {
+        ...persistedPreparation("range-other-recovery").request,
+        clientOrderId: "client-other-recovery",
+      },
+    };
+    await bindJournalCapability(database, target, "44444444-4444-4444-8444-444444444444");
+    await bindJournalCapability(database, other, "55555555-5555-4555-8555-555555555555");
+
+    await expect(
+      coordinator.recoverClientOrder({
+        seed: SEED,
+        clientOrderId: target.request.clientOrderId,
+      }),
+    ).resolves.toMatchObject({
+      recoveredOperationIds: [],
+      pending: [{ operationId: target.operationId, code: "recovery-pending" }],
+    });
+    expect(engine.statusCalls).toBe(1);
+    expect(
+      await readCtfRangePreparation(walletScopeId(), other.operationId, database),
+    ).toMatchObject({ lifecycleState: "capability-bound" });
+  });
+
+  it("does nothing when no active preparation has the pending client order ID", async () => {
+    const database = createDatabase();
+    const engine = engineMock();
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
+
+    await expect(
+      coordinator.recoverClientOrder({ seed: SEED, clientOrderId: "client-missing" }),
+    ).resolves.toEqual({ recoveredOperationIds: [], pending: [] });
+    expect(engine.statusCalls).toBe(0);
+  });
+
   it("rejects an aggregate source result above 512 proofs before decoding", () => {
     const proof = { id: "invalid", amount: 1, secret: "s", C: "c" };
     expect(() =>
@@ -1274,6 +1319,7 @@ describe("browser CTF range order coordinator", () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-confirmed-result");
     let confirmed: ReturnType<typeof confirmedRangeRecovery> | undefined;
+    let mintRecoveryCalls = 0;
     const engine = engineMock({
       acknowledgeFailureOnce: true,
       result: () => {
@@ -1289,14 +1335,8 @@ describe("browser CTF range order coordinator", () => {
       createMintRecovery: (operation) => {
         confirmed = confirmedRangeRecovery(operation, preparation);
         return {
-          async loadExactVerificationContext() {
-            if (confirmed === undefined) throw new Error("confirmed fixture is missing");
-            return {
-              allManifestRecovery: confirmed.allManifestRecovery,
-              resolveKeyset: confirmed.resolveKeyset,
-            };
-          },
           async loadUncertainRecoveryObservation() {
+            mintRecoveryCalls += 1;
             throw new Error("unexpected uncertain recovery");
           },
         };
@@ -1333,6 +1373,7 @@ describe("browser CTF range order coordinator", () => {
     expect(recovery.recoveredOperationIds).toEqual([preparation.operationId]);
     expect(recovery.pending).toEqual([]);
     expect(engine.acknowledgeCalls).toBe(2);
+    expect(mintRecoveryCalls).toBe(0);
     const outer = await new BrowserDurableCustodyAdapter(database).readOperation(
       walletScope(),
       custodyOperationId(preparation.operationId),
@@ -1406,31 +1447,61 @@ function createCoordinator(
     createMintRecovery:
       options.createMintRecovery ??
       (() => ({
-        async loadExactVerificationContext() {
-          return {
-            allManifestRecovery: {
-              queriedOutputs: [],
-              restoredOutputs: [],
-              signatures: [],
-              queryCompleted: false,
-            },
-            resolveKeyset: () => undefined,
-          };
-        },
         async loadUncertainRecoveryObservation(input) {
-          const verification = await this.loadExactVerificationContext(input.record);
+          const allManifestRecovery = {
+            queriedOutputs: [],
+            restoredOutputs: [],
+            signatures: [],
+            queryCompleted: false,
+          };
           return {
-            ...verification,
+            allManifestRecovery,
+            resolveKeyset: () => undefined,
             observation: {
               selection: input.selection,
               inputStates: [],
-              ...verification.allManifestRecovery,
+              ...allManifestRecovery,
               now: input.now,
             },
           };
         },
       })),
   });
+}
+
+async function bindJournalCapability(
+  database: BitcasterDB,
+  preparation: PersistedCtfRangeOrderPreparation,
+  orderId: string,
+): Promise<void> {
+  const identity = browserRangeJournalIdentity(browserWalletScope(SEED), preparation, 1);
+  await insertCtfRangePreparation(identity, database);
+  await transitionCtfRangePreparation(
+    {
+      scopeId: identity.scopeId,
+      rangeOperationId: identity.rangeOperationId,
+      expectedRevision: 0,
+      from: "prepared",
+      to: "capability-requested",
+      updatedAtMs: 2,
+    },
+    database,
+  );
+  await bindCtfRangePreparationCapability(
+    {
+      scopeId: identity.scopeId,
+      rangeOperationId: identity.rangeOperationId,
+      expectedRevision: 1,
+      capability: {
+        artifactId: "11111111-1111-4111-8111-111111111111",
+        bindingDigest: "22".repeat(32),
+        artifactDigest: "33".repeat(32),
+        orderId,
+      },
+      updatedAtMs: 3,
+    },
+    database,
+  );
 }
 
 function inMemoryCounterSource(onReserve: () => void = () => {}): CounterSource {
@@ -1558,9 +1629,6 @@ function refundableRecovery(preparation: PersistedCtfRangeOrderPreparation) {
       queryCompleted: true,
     };
     return {
-      async loadExactVerificationContext() {
-        return { allManifestRecovery, resolveKeyset };
-      },
       async loadUncertainRecoveryObservation(input: { selection: string | null; now: number }) {
         return {
           allManifestRecovery,
