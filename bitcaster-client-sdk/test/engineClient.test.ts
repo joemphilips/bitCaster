@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   BitcasterEngineClient,
+  decodePortfolioInvalidatedDelta,
   decodeSettlementGroupStateChangedDelta,
   decodeSubmitOrderResponse,
   EngineClientError,
@@ -133,6 +134,20 @@ test('decodeSettlementGroupStateChangedDelta enforces the exact owner notificati
         settlementGroup: { ...value.settlementGroup, status: 'Bogus' },
       }),
     /status is invalid/,
+  )
+})
+
+test('decodePortfolioInvalidatedDelta requires one canonical wallet id', () => {
+  assert.deepEqual(decodePortfolioInvalidatedDelta({ walletId: DISPLAY_WALLET_ID }), {
+    walletId: DISPLAY_WALLET_ID,
+  })
+  assert.throws(
+    () => decodePortfolioInvalidatedDelta({ walletId: 'A'.repeat(64) }),
+    /wallet id is invalid/,
+  )
+  assert.throws(
+    () => decodePortfolioInvalidatedDelta({ walletId: DISPLAY_WALLET_ID, orderId: 'leak' }),
+    /fields are invalid/,
   )
 })
 

@@ -85,6 +85,7 @@ import {
   type CtfProofOperationStore,
 } from "@/lib/ctfSplit";
 import { useToastStore } from "@/stores/toast";
+import { publishPortfolioInvalidation } from "@/lib/portfolioInvalidation";
 import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
 import type { OutcomeMetadata, PartialLockHeldRecord } from "@bitcaster/client-sdk/swapFailure";
 import { TRADE_MESSAGE_TYPES, type TradeMessageType } from "@/lib/tradeMessageTypes";
@@ -302,8 +303,10 @@ export function useTradeSettlement(
     (swap) => swap.step !== "completed" && swap.step !== "Failed",
   );
   const pendingTrades = Object.values(pendingTradesByOrderId);
+  const hasAssetMonitoringSession = Boolean(recoveryInput?.mnemonic?.trim());
   const tradeHubEnabled =
-    canAuthenticateTradeHub && (hasActiveSwapWork || pendingTrades.length > 0);
+    canAuthenticateTradeHub &&
+    (hasAssetMonitoringSession || hasActiveSwapWork || pendingTrades.length > 0);
 
   const recoverCurrentSettlementGroup = useCallback(() => {
     const current = recoveryInputRef.current;
@@ -349,6 +352,7 @@ export function useTradeSettlement(
     onTradeStateChanged: (tradeId, newState) =>
       handleTradeStateChanged(tradeId, newState, sendSwapMessage),
     onSettlementGroupStateChanged: () => recoverCurrentSettlementGroup(),
+    onPortfolioInvalidated: (invalidation) => publishPortfolioInvalidation(invalidation),
   });
 
   useEffect(() => {

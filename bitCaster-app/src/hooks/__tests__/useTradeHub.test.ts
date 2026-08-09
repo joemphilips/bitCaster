@@ -210,4 +210,28 @@ describe("useTradeHub", () => {
       },
     });
   });
+
+  it("decodes only canonical portfolio invalidations", async () => {
+    const connection = makeConnection();
+    connections.push(connection);
+    const onPortfolioInvalidated = vi.fn();
+    const onError = vi.fn();
+
+    renderHook(() => useTradeHub(true, { onPortfolioInvalidated, onError }));
+
+    await waitFor(() =>
+      expect(connection.on).toHaveBeenCalledWith("PortfolioInvalidated", expect.any(Function)),
+    );
+    const handler = connection.on.mock.calls.find(
+      ([event]) => event === "PortfolioInvalidated",
+    )?.[1] as ((value: unknown) => void) | undefined;
+    expect(handler).toBeTypeOf("function");
+    if (!handler) throw new Error("PortfolioInvalidated handler was not registered");
+
+    handler({ walletId: "a".repeat(64) });
+    handler({ walletId: "A".repeat(64) });
+
+    expect(onPortfolioInvalidated).toHaveBeenCalledExactlyOnceWith({ walletId: "a".repeat(64) });
+    expect(onError).toHaveBeenCalledWith(new Error("Portfolio invalidation is invalid."));
+  });
 });

@@ -89,6 +89,15 @@ channels:
       affected order. No capability artifact or bearer proof material is
       included.
 
+  portfolioInvalidated:
+    address: PortfolioInvalidated
+    messages:
+      portfolioInvalidatedMessage:
+        $ref: '#/components/messages/PortfolioInvalidatedMessage'
+    description: >
+      Server pushes an owner-filtered display-only portfolio refresh hint for
+      one wallet after a confirmed settlement.
+
   tradeCreated:
     address: TradeCreated
     messages:
@@ -198,6 +207,14 @@ operations:
     messages:
       - $ref: '#/channels/settlementGroupStateChanged/messages/settlementGroupStateChangedMessage'
 
+  portfolioInvalidated:
+    action: receive
+    channel:
+      $ref: '#/channels/portfolioInvalidated'
+    summary: Receive an owned portfolio refresh hint
+    messages:
+      - $ref: '#/channels/portfolioInvalidated/messages/portfolioInvalidatedMessage'
+
   tradeCreated:
     action: receive
     channel:
@@ -276,6 +293,10 @@ components:
     SettlementGroupStateChangedMessage:
       payload:
         $ref: '#/components/schemas/SettlementGroupStateChangedDelta'
+
+    PortfolioInvalidatedMessage:
+      payload:
+        $ref: '#/components/schemas/PortfolioInvalidatedDelta'
 
     TradeCreatedMessage:
       payload:
@@ -647,6 +668,19 @@ components:
           type: string
         settlementGroup:
           $ref: '#/components/schemas/SettlementGroupSummary'
+
+    PortfolioInvalidatedDelta:
+      type: object
+      additionalProperties: false
+      required:
+        - walletId
+      properties:
+        walletId:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: >
+            Canonical wallet ID attributed to the settlement. A client must
+            ignore the notification when this wallet is not active.
 
     TradeCreatedArguments:
       type: array

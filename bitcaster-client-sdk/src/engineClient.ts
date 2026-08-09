@@ -230,6 +230,10 @@ export interface SettlementGroupStateChangedDelta {
   readonly settlementGroup: SettlementGroupSummary
 }
 
+export interface PortfolioInvalidatedDelta {
+  readonly walletId: string
+}
+
 export interface SubmitOrderResponse {
   orderId: string
   status: OrderLifecycleStatus
@@ -1264,6 +1268,11 @@ export function decodeSettlementGroupStateChangedDelta(
     marketId: delta.marketId,
     settlementGroup: decodeSettlementGroup(delta.settlementGroup),
   }
+}
+
+export function decodePortfolioInvalidatedDelta(value: unknown): PortfolioInvalidatedDelta {
+  const delta = exactEngineRecord(value, ['walletId'])
+  return { walletId: decodeAssetMonitoringWalletId(delta.walletId) }
 }
 
 function requireOrderStatus(value: unknown): asserts value is OrderLifecycleStatus {

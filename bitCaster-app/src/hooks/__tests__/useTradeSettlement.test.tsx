@@ -6,6 +6,7 @@ import type { PendingTrade } from "@/stores/pendingTrades";
 import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
 import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
 import { useToastStore } from "@/stores/toast";
+import { listenForPortfolioInvalidation } from "@/lib/portfolioInvalidation";
 
 const { mockUseTradeHub, mockJoinOrder, mockJoinTrade, mockSendSwapMessage } = vi.hoisted(() => ({
   mockUseTradeHub: vi.fn(),
@@ -267,6 +268,43 @@ describe("useTradeSettlement", () => {
     expect(mockJoinTrade).not.toHaveBeenCalled();
   });
 
+  it("keeps TradeHub connected for an authenticated asset-monitoring wallet", () => {
+    renderHook(() =>
+      useTradeSettlement(true, {
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      }),
+    );
+
+    expect(mockUseTradeHub).toHaveBeenCalledWith(true, expect.any(Object));
+    expect(mockJoinOrder).not.toHaveBeenCalled();
+    expect(mockJoinTrade).not.toHaveBeenCalled();
+  });
+
+  it("bridges the captured TradeHub portfolio invalidation to portfolio refresh consumers", () => {
+    const refreshPortfolio = vi.fn();
+    const stopListening = listenForPortfolioInvalidation(refreshPortfolio);
+    try {
+      renderHook(() =>
+        useTradeSettlement(true, {
+          mnemonic:
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+          mintUrls: ["https://mint.example"],
+        }),
+      );
+      const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as
+        | { onPortfolioInvalidated?: (invalidation: { walletId: string }) => void }
+        | undefined;
+
+      act(() => callbacks?.onPortfolioInvalidated?.({ walletId: "a".repeat(64) }));
+
+      expect(refreshPortfolio).toHaveBeenCalledExactlyOnceWith({ walletId: "a".repeat(64) });
+    } finally {
+      stopListening();
+    }
+  });
+
   it("connects and joins only after an active swap is promoted", async () => {
     renderHook(() => useTradeSettlement(true));
 
@@ -343,7 +381,8 @@ describe("useTradeSettlement", () => {
     });
     renderHook(() =>
       useTradeSettlement(true, {
-        mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         mintUrls: ["https://mint.example"],
       }),
     );
@@ -366,7 +405,8 @@ describe("useTradeSettlement", () => {
 
     await waitFor(() =>
       expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledWith({
-        mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         mintUrls: ["https://mint.example"],
       }),
     );
@@ -397,7 +437,8 @@ describe("useTradeSettlement", () => {
     });
     renderHook(() =>
       useTradeSettlement(true, {
-        mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         mintUrls: ["https://mint.example"],
       }),
     );
@@ -407,7 +448,8 @@ describe("useTradeSettlement", () => {
     });
 
     expect(mockRecoverBrowserCtfRangeOrders).toHaveBeenCalledWith({
-      mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      mnemonic:
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
       mintUrls: ["https://mint.example"],
     });
   });

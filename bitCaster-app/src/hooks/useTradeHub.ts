@@ -25,7 +25,9 @@ import { tradeHubUrl } from "@/lib/nip98";
 import { generateNip98Header } from "@/lib/markets";
 import type { TradeMessageType } from "@/lib/tradeMessageTypes";
 import {
+  decodePortfolioInvalidatedDelta,
   decodeSettlementGroupStateChangedDelta,
+  type PortfolioInvalidatedDelta,
   type SettlementGroupStateChangedDelta,
 } from "@bitcaster/client-sdk/engineClient";
 
@@ -63,6 +65,7 @@ export interface TradeHubCallbacks {
   onTradeStateChanged?: (tradeId: string, newState: string) => void;
   onTradeCreated?: (payload: TradeCreatedPayload) => void;
   onSettlementGroupStateChanged?: (delta: SettlementGroupStateChangedDelta) => void;
+  onPortfolioInvalidated?: (delta: PortfolioInvalidatedDelta) => void;
   onError?: (err: Error) => void;
 }
 
@@ -116,10 +119,9 @@ export async function generateTradeHubAccessToken(hubUrl: string): Promise<strin
 /**
  * Connect to the TradeHub and register event handlers.
  *
- * @param enabled - Pass false to defer connection until a Nostr signer is
- *   configured and there is pending swap work. Authentication uses the same
- *   configured signer path as REST order submission, so NIP-07 users can
- *   settle trades without exposing a raw nsec to the page.
+ * @param enabled - Pass true for an authenticated TradeHub session.
+ *   Authentication uses the same configured signer path as REST order
+ *   submission, so NIP-07 users can settle trades without exposing a raw nsec.
  * @param callbacks - event handlers wired to the SignalR hub events
  * @returns { joinOrder, joinTrade, sendSwapMessage, connectionState }
  */
@@ -209,6 +211,14 @@ export function useTradeHub(enabled: boolean, callbacks: TradeHubCallbacks): Tra
       }
     });
 
+    connection.on("PortfolioInvalidated", (delta: unknown) => {
+      try {
+        callbacksRef.current.onPortfolioInvalidated?.(decodePortfolioInvalidatedDelta(delta));
+      } catch {
+        callbacksRef.current.onError?.(new Error("Portfolio invalidation is invalid."));
+      }
+    });
+
     connection.onclose((err) => {
       if (err) callbacksRef.current.onError?.(err instanceof Error ? err : new Error(String(err)));
     });
@@ -232,7 +242,7 @@ export function useTradeHub(enabled: boolean, callbacks: TradeHubCallbacks): Tra
       });
       connectionRef.current = null;
     };
-  }, [enabled]); // connect only while swap work exists and a signer is configured
+  }, [enabled]);
 
   /**
    * Wait up to ~60 s for the SignalR connection to reach

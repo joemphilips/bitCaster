@@ -41,6 +41,11 @@ import type {
   AssetMonitoringConditionalAssetReference,
   AssetMonitoringPortfolioResponse,
 } from "@bitcaster/client-sdk/assetMonitoring";
+import { decodeAssetMonitoringWalletId } from "@bitcaster/client-sdk/assetMonitoring";
+import {
+  listenForPortfolioInvalidation,
+  type PortfolioInvalidation,
+} from "@/lib/portfolioInvalidation";
 
 interface PortfolioState {
   walletState: WalletState;
@@ -433,11 +438,17 @@ export function usePortfolioState(): PortfolioState & {
   } | null>(null);
   const [loadingMoreAssets, setLoadingMoreAssets] = useState(false);
   const [monitoringUnavailable, setMonitoringUnavailable] = useState(false);
+  const [portfolioRefreshEpoch, setPortfolioRefreshEpoch] = useState(0);
   const requestedMonitoringKey = useRef<string | null>(null);
   const activeMonitoringKey = useRef<string | null>(null);
   const activeMonitoringRequest = useRef(0);
   const activeAssetPageRequest = useRef(0);
   const assetPageInFlight = useRef(false);
+  const activePortfolioRead = useRef<{
+    monitoringKey: string;
+    requestId: number;
+  } | null>(null);
+  const portfolioRefreshScheduled = useRef(false);
   const [localProfile, setLocalProfile] = useState<UserProfile>(loadProfile);
   const [positionsTab, setPositionsTab] = useState<"active" | "closed">("active");
 
@@ -463,15 +474,47 @@ export function usePortfolioState(): PortfolioState & {
     walletState === "ready" && walletId !== null ? `${walletId}:${selectedTimeRange}` : null;
   const monitoringReady = monitoringResponse?.key === monitoringKey;
 
+  const invalidatePortfolio = useCallback(
+    (invalidation: PortfolioInvalidation) => {
+      if (monitoringKey === null || walletId === null) return;
+      try {
+        if (decodeAssetMonitoringWalletId(invalidation.walletId) !== walletId) return;
+      } catch {
+        return;
+      }
+      activeMonitoringRequest.current += 1;
+      activeAssetPageRequest.current += 1;
+      assetPageInFlight.current = false;
+      if (
+        activePortfolioRead.current?.monitoringKey === monitoringKey ||
+        portfolioRefreshScheduled.current
+      ) {
+        portfolioRefreshScheduled.current = true;
+        return;
+      }
+      portfolioRefreshScheduled.current = true;
+      setPortfolioRefreshEpoch((current) => current + 1);
+    },
+    [monitoringKey, walletId],
+  );
+
+  useEffect(() => {
+    return listenForPortfolioInvalidation(invalidatePortfolio);
+  }, [invalidatePortfolio]);
+
   useEffect(() => {
     activeMonitoringKey.current = monitoringKey;
     if (monitoringKey === null || walletId === null) {
       requestedMonitoringKey.current = null;
       return;
     }
-    if (requestedMonitoringKey.current === monitoringKey) return;
-    requestedMonitoringKey.current = monitoringKey;
+    const requestKey = `${monitoringKey}:${portfolioRefreshEpoch}`;
+    if (requestedMonitoringKey.current === requestKey) return;
+    requestedMonitoringKey.current = requestKey;
     const requestId = ++activeMonitoringRequest.current;
+    portfolioRefreshScheduled.current = false;
+    activePortfolioRead.current = { monitoringKey, requestId };
+    activeAssetPageRequest.current += 1;
     assetPageInFlight.current = false;
     setMonitoringUnavailable(false);
     void createAuthenticatedBrowserEngineClient()
@@ -506,8 +549,19 @@ export function usePortfolioState(): PortfolioState & {
           return;
         setMonitoringUnavailable(true);
         setMonitoringError("unavailable");
+      })
+      .finally(() => {
+        const activeRead = activePortfolioRead.current;
+        if (activeRead?.monitoringKey !== monitoringKey || activeRead.requestId !== requestId) {
+          return;
+        }
+
+        activePortfolioRead.current = null;
+        if (!portfolioRefreshScheduled.current) return;
+        portfolioRefreshScheduled.current = false;
+        setPortfolioRefreshEpoch((current) => current + 1);
       });
-  }, [monitoringKey, selectedTimeRange, walletId]);
+  }, [monitoringKey, portfolioRefreshEpoch, selectedTimeRange, walletId]);
 
   const visibleAssets =
     monitoringAssets?.key === monitoringKey &&

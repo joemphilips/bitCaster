@@ -5,6 +5,10 @@ import type {
   AssetMonitoringAssetsResponse,
   AssetMonitoringPortfolioResponse,
 } from "@bitcaster/client-sdk/assetMonitoring";
+import {
+  portfolioInvalidatedEvent,
+  publishPortfolioInvalidation,
+} from "@/lib/portfolioInvalidation";
 import type { Fund, Position } from "@/types/portfolio";
 
 const mocks = vi.hoisted(() => ({
@@ -15,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 
 const monitoredConditionId = "b".repeat(64);
 const rootParentConditionId = "0".repeat(64);
+const activeWalletId = "a".repeat(64);
 
 const localPosition: Position = {
   id: "local-position",
@@ -64,7 +69,7 @@ vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (state: object) => unknown) => selector({ items: [] }),
 }));
 vi.mock("@/lib/browserWalletProfile", () => ({
-  browserWalletIdFromMnemonic: (mnemonic: string) => `wallet-${mnemonic}`,
+  browserWalletIdFromMnemonic: () => activeWalletId,
 }));
 vi.mock("@/lib/markets", () => ({
   createAuthenticatedBrowserEngineClient: () => ({
@@ -211,7 +216,7 @@ describe("usePortfolioState monitoring facade", () => {
 
     await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
     expect(mocks.getPortfolio).toHaveBeenCalledWith({
-      walletId: "wallet-test mnemonic",
+      walletId: activeWalletId,
       timeframe: "ALL",
       pageSize: 200,
     });
@@ -227,6 +232,117 @@ describe("usePortfolioState monitoring facade", () => {
 
     await waitFor(() => expect(result.current.stats.totalValueSats).toBe(12_000));
     expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores invalid and inactive-wallet portfolio invalidations", async () => {
+    mocks.getPortfolio.mockResolvedValue(portfolioResponse());
+    renderHook(() => usePortfolioState());
+
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(portfolioInvalidatedEvent, { detail: { walletId: "b".repeat(64) } }),
+      );
+      window.dispatchEvent(
+        new CustomEvent(portfolioInvalidatedEvent, { detail: { walletId: "A".repeat(64) } }),
+      );
+    });
+
+    await act(async () => {});
+    expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes coalesced refreshes and rejects the invalidated response", async () => {
+    const initial = deferred<AssetMonitoringPortfolioResponse>();
+    const refresh = deferred<AssetMonitoringPortfolioResponse>();
+    mocks.getPortfolio.mockReturnValueOnce(initial.promise).mockReturnValueOnce(refresh.promise);
+    const { result } = renderHook(() => usePortfolioState());
+
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
+    act(() => {
+      publishPortfolioInvalidation({ walletId: activeWalletId });
+      publishPortfolioInvalidation({ walletId: activeWalletId });
+    });
+    await act(async () =>
+      initial.resolve({
+        ...portfolioResponse(),
+        summary: { ...portfolioResponse().summary, estimatedTotalValueMsat: 1 },
+      }),
+    );
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(2));
+    await act(async () => refresh.resolve(portfolioResponse()));
+
+    await waitFor(() => expect(result.current.stats.totalValueSats).toBe(12_000));
+    expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes the active generation without waiting for an obsolete request", async () => {
+    const obsolete = deferred<AssetMonitoringPortfolioResponse>();
+    mocks.getPortfolio
+      .mockReturnValueOnce(obsolete.promise)
+      .mockResolvedValueOnce(portfolioResponse("1D"))
+      .mockResolvedValueOnce(portfolioResponse("1D"));
+    const { result } = renderHook(() => usePortfolioState());
+
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
+    act(() => result.current.setSelectedTimeRange("1D"));
+    await waitFor(() => expect(result.current.stats.totalValueSats).toBe(12_000));
+    act(() => {
+      publishPortfolioInvalidation({ walletId: activeWalletId });
+    });
+
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(3));
+    expect(mocks.getPortfolio.mock.calls.map(([input]) => input.timeframe)).toEqual([
+      "ALL",
+      "1D",
+      "1D",
+    ]);
+    await act(async () =>
+      obsolete.resolve({
+        ...portfolioResponse(),
+        summary: { ...portfolioResponse().summary, estimatedTotalValueMsat: 1 },
+      }),
+    );
+
+    expect(result.current.selectedTimeRange).toBe("1D");
+    expect(result.current.stats.totalValueSats).toBe(12_000);
+  });
+
+  it("resets appended pagination for a portfolio invalidation", async () => {
+    mocks.getPortfolio
+      .mockResolvedValueOnce(firstPage())
+      .mockResolvedValueOnce(portfolioResponse());
+    mocks.getAssetMonitoringAssets.mockResolvedValue(nextPage(conditionalAsset("NO")));
+    const { result } = renderHook(() => usePortfolioState());
+
+    await waitFor(() => expect(result.current.monitoring.hasMoreAssets).toBe(true));
+    act(() => result.current.loadMoreAssets());
+    await waitFor(() =>
+      expect(result.current.positions.some((item) => item.outcomeId === "NO")).toBe(true),
+    );
+    act(() => {
+      publishPortfolioInvalidation({ walletId: activeWalletId });
+    });
+
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.monitoring.hasMoreAssets).toBe(false));
+    expect(result.current.positions.some((item) => item.outcomeId === "NO")).toBe(false);
+  });
+
+  it("does not retry a failed portfolio invalidation refresh", async () => {
+    mocks.getPortfolio
+      .mockResolvedValueOnce(portfolioResponse())
+      .mockRejectedValueOnce(new Error("down"));
+    const { result } = renderHook(() => usePortfolioState());
+
+    await waitFor(() => expect(result.current.stats.totalValueSats).toBe(12_000));
+    act(() => {
+      publishPortfolioInvalidation({ walletId: activeWalletId });
+    });
+
+    await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
+    await act(async () => {});
+    expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
   });
 
   it("uses server summary, history, and first asset page as display-only rows", () => {
@@ -434,7 +550,7 @@ describe("usePortfolioState monitoring facade", () => {
     });
     await waitFor(() => expect(mocks.getAssetMonitoringAssets).toHaveBeenCalledTimes(1));
     expect(mocks.getAssetMonitoringAssets).toHaveBeenCalledWith({
-      walletId: "wallet-test mnemonic",
+      walletId: activeWalletId,
       cursor: "cursor-1",
       pageSize: 200,
     });
