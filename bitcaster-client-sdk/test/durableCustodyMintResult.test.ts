@@ -5,6 +5,7 @@ import { bls12_381 } from '@noble/curves/bls12-381.js'
 import { bytesToHex } from '@noble/curves/utils.js'
 import {
   OutputData,
+  MintOperationError,
   createBlindSignature,
   createBlindSignatureBls,
   createDLEQProof,
@@ -503,7 +504,7 @@ async function captureTerminalRedeemEvidence(
     wallet: {
       loadMint: async () => undefined,
       redeemOutcomeProofs: async () => {
-        throw { code: 13015 }
+        throw new MintOperationError(13015, 'oracle not attested')
       },
     },
     proofOperationStore: store,

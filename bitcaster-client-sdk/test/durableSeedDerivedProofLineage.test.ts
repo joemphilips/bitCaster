@@ -15,9 +15,9 @@ test('maps exact counter range proofs without proof-order assumptions', () => {
   const reordered = inputForCounters(7, [9, 7, 8])
 
   const expected = [
-    { keysetId: KEYSET_ID, counter: 7, secret: secretAt(7) },
-    { keysetId: KEYSET_ID, counter: 8, secret: secretAt(8) },
-    { keysetId: KEYSET_ID, counter: 9, secret: secretAt(9) },
+    { schemaVersion: 1, kind: 'nut13', keysetId: KEYSET_ID, counter: 7, secret: secretAt(7) },
+    { schemaVersion: 1, kind: 'nut13', keysetId: KEYSET_ID, counter: 8, secret: secretAt(8) },
+    { schemaVersion: 1, kind: 'nut13', keysetId: KEYSET_ID, counter: 9, secret: secretAt(9) },
   ]
   assert.deepEqual(locateSeedDerivedProofLineage(ordered), expected)
   assert.deepEqual(locateSeedDerivedProofLineage(reordered), expected)
