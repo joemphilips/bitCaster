@@ -269,7 +269,10 @@ async function verifiedProof() {
 function restoreWallet(): CashuWallet {
   const keyset = new Keyset(KEYSET_ID, "sat", true, 0);
   keyset.keys = { 1: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" };
-  return { getKeyset: () => keyset } as unknown as CashuWallet;
+  return {
+    mint: { mintUrl: "https://mint.example" },
+    getKeyset: () => keyset,
+  } as unknown as CashuWallet;
 }
 
 async function candidate(
