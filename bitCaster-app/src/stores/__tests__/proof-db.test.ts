@@ -98,6 +98,10 @@ vi.mock("dexie", () => {
 
   class FakeDexie {
     constructor(_name: string) {}
+    table(name: string): FakeTable {
+      const self = this as unknown as Record<string, FakeTable>;
+      return (self[name] ??= new FakeTable());
+    }
     // Real Dexie assigns tables onto the instance as a side-effect of
     // `.stores()`, which runs AFTER the subclass's field initializers
     // have zeroed the slots with `!:` declarations. Mirror that lazy
