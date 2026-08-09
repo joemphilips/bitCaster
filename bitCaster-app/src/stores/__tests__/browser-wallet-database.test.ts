@@ -37,11 +37,11 @@ afterEach(async () => {
 });
 
 describe("browser wallet databases", () => {
-  it("installs version 23 without V1 tables and keeps V2, enrollment, retry, and custody authorities", async () => {
+  it("installs version 24 without V1 tables and keeps current wallet authorities", async () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(23);
+    expect(db.verno).toBe(24);
     expect(db.tables.map(({ name }) => name)).not.toEqual(
       expect.arrayContaining([...v1TableNames]),
     );
@@ -84,6 +84,12 @@ describe("browser wallet databases", () => {
       "walletId",
       "enrollmentEpoch",
       "bundleId",
+    ]);
+    expect(db.targetedAssetRecoveryAttempts.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "assetLocator",
+      "backupHeadVersion",
+      "monitoringFactVersion",
     ]);
   });
 

@@ -37,6 +37,10 @@ import {
   type BrowserWalletCounterAdvanceResult,
 } from "./browser-wallet-counter-db";
 import type { EncryptedWalletBackupV2DesiredAssetRow } from "./browser-encrypted-wallet-backup-v2-desired-asset";
+import type {
+  TargetedAssetRecoveryAttemptKey,
+  TargetedAssetRecoveryCompletedOutcome,
+} from "@bitcaster/client-sdk/targetedAssetRecovery";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "./browser-encrypted-wallet-backup-v2-desired-asset";
 import {
   decodeBrowserCustodyConditionalKeysetRow,
@@ -134,6 +138,12 @@ export interface EncryptedWalletBackupV2ActiveDescriptorRow {
   payloadCommitment: string;
   objectCount: number;
   canonicalDescriptor: Uint8Array;
+}
+
+/** One completed automatic recovery attempt for one exact authority tuple. */
+export interface BrowserTargetedAssetRecoveryAttemptRow extends TargetedAssetRecoveryAttemptKey {
+  outcome: TargetedAssetRecoveryCompletedOutcome;
+  completedAtUnixMilliseconds: number;
 }
 
 interface StoredProofMetadata {
@@ -310,6 +320,10 @@ export class BitcasterDB extends Dexie {
   encryptedWalletBackupV2ActiveDescriptors!: Table<
     EncryptedWalletBackupV2ActiveDescriptorRow,
     [string, string, string, number, string]
+  >;
+  targetedAssetRecoveryAttempts!: Table<
+    BrowserTargetedAssetRecoveryAttemptRow,
+    [string, string, number, string]
   >;
 
   constructor(databaseName = "bitcaster") {
@@ -689,6 +703,10 @@ export class BitcasterDB extends Dexie {
       encryptedWalletBackupV2WalletActiveDescriptors:
         "&[scopeId+realm+walletId+enrollmentEpoch+bundleId], [scopeId+realm+walletId+enrollmentEpoch]",
     });
+    this.version(24).stores({
+      targetedAssetRecoveryAttempts:
+        "&[scopeId+assetLocator+backupHeadVersion+monitoringFactVersion], scopeId, [scopeId+completedAtUnixMilliseconds+assetLocator+backupHeadVersion+monitoringFactVersion]",
+    });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -707,6 +725,7 @@ export class BitcasterDB extends Dexie {
     this.encryptedWalletBackupV2ActiveDescriptors = this.table(
       "encryptedWalletBackupV2WalletActiveDescriptors",
     );
+    this.targetedAssetRecoveryAttempts = this.table("targetedAssetRecoveryAttempts");
   }
 }
 

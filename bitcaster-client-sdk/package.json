@@ -292,6 +292,10 @@
       "types": "./dist/assetMonitoringReporter.d.ts",
       "import": "./dist/assetMonitoringReporter.js"
     },
+    "./targetedAssetRecovery": {
+      "types": "./dist/targetedAssetRecovery.d.ts",
+      "import": "./dist/targetedAssetRecovery.js"
+    },
     "./participationScore": {
       "types": "./dist/participationScore.d.ts",
       "import": "./dist/participationScore.js"
