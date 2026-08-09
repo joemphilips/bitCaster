@@ -27,6 +27,7 @@ import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { RECOVERY_COUNTER_BINDING, withDaemonHome } from './seedRecoveryTestSupport.ts'
 import {
   advanceDaemonKeysetCounter,
+  readDaemonStateFromDatabase,
   readAvailableWalletProofsFenced,
   reserveDaemonKeysetCounter,
 } from '../src/state.ts'
@@ -71,6 +72,7 @@ test('explicit ordinary recovery co-commits selectable and spent proofs with cur
       })
       assert.equal(readRowCount(database, 'custody_proofs'), 1)
       assert.equal(readRowCount(database, 'target_wallet_proofs'), 1)
+      assert.equal(readDaemonStateFromDatabase(database)?.wallet.proofs.length, 1)
     })
     await withDaemonHome(directory, async () => {
       const available = await readAvailableWalletProofsFenced({

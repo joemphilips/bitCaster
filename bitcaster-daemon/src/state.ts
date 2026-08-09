@@ -1109,6 +1109,12 @@ export function admitRecoveredWalletProofFromDatabase(
   },
 ): void {
   const scopeId = readScopeId(database)
+  database
+    .prepare(
+      `INSERT INTO target_state_metadata (scope_id, schema_version) VALUES (?, 1)
+       ON CONFLICT(scope_id) DO NOTHING`,
+    )
+    .run(scopeId)
   const expectedProof = normalizeCashuProofRecord(input.proof)
   const expectedAsset = normalizeProofAsset(input.asset)
   const raw = database
