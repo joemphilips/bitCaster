@@ -212,6 +212,10 @@
       "types": "./dist/conditionalKeysets.d.ts",
       "import": "./dist/conditionalKeysets.js"
     },
+    "./conditionalKeysetSeedRecovery": {
+      "types": "./dist/conditionalKeysetSeedRecovery.d.ts",
+      "import": "./dist/conditionalKeysetSeedRecovery.js"
+    },
     "./engineClient": {
       "types": "./dist/engineClient.d.ts",
       "import": "./dist/engineClient.js"
