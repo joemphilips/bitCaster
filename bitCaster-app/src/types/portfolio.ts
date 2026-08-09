@@ -57,6 +57,9 @@ export interface PortfolioMonitoringState {
   hasPendingOutgoing: boolean;
   pendingOutgoingValueMsat: number | null;
   error: "unavailable" | null;
+  assetPageError: "unavailable" | null;
+  hasMoreAssets: boolean;
+  loadingMoreAssets: boolean;
 }
 
 // =============================================================================
@@ -78,6 +81,8 @@ export interface Position {
   canDiscard?: boolean;
   /** False for server monitoring rows. Local proofs authorize all wallet actions. */
   canSell?: boolean;
+  /** Complete canonical monitor identity when local custody can prove it. */
+  monitoringAssetIdentity?: string;
   baseAsset: "sat";
   divisibility: import("./market").ProductMarketDivisibility;
   /** Exact share count when the client knows the market divisibility. */
@@ -132,6 +137,8 @@ export interface Fund {
   unit: "sats";
   amount: number;
   mintUrl: string;
+  /** Complete canonical monitor identity for display-row stability. */
+  monitoringAssetIdentity?: string;
 }
 
 // =============================================================================
@@ -286,6 +293,15 @@ export interface PortfolioProps {
 
   /** Called when the user dismisses a monitoring error. */
   onDismissMonitoringError?: () => void;
+
+  /** Called when the user requests the next asset-monitoring page. */
+  onLoadMoreAssets?: () => void;
+
+  /** Called when the user retries a failed asset-monitoring page. */
+  onRetryLoadMoreAssets?: () => void;
+
+  /** Called when the user dismisses an asset-monitoring page error. */
+  onDismissAssetPageError?: () => void;
 
   /**
    * Show the "Connect Nostr" CTA just beneath ProfileCard. Set by the

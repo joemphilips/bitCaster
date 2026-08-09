@@ -1,11 +1,15 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { StrictMode, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AssetMonitoringPortfolioResponse } from "@bitcaster/client-sdk/assetMonitoring";
+import type {
+  AssetMonitoringAssetsResponse,
+  AssetMonitoringPortfolioResponse,
+} from "@bitcaster/client-sdk/assetMonitoring";
 import type { Fund, Position } from "@/types/portfolio";
 
 const mocks = vi.hoisted(() => ({
   getPortfolio: vi.fn(),
+  getAssetMonitoringAssets: vi.fn(),
   liveQueryCalls: 0,
 }));
 
@@ -63,10 +67,15 @@ vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletIdFromMnemonic: (mnemonic: string) => `wallet-${mnemonic}`,
 }));
 vi.mock("@/lib/markets", () => ({
-  createAuthenticatedBrowserEngineClient: () => ({ getPortfolio: mocks.getPortfolio }),
+  createAuthenticatedBrowserEngineClient: () => ({
+    getPortfolio: mocks.getPortfolio,
+    getAssetMonitoringAssets: mocks.getAssetMonitoringAssets,
+  }),
 }));
 
 import {
+  appendMonitoringAssets,
+  canonicalMonitoringAssetIdentity,
   mapMonitoringPortfolio,
   mergeMonitoringPositions,
   usePortfolioState,
@@ -148,9 +157,49 @@ function deferred<T>() {
   return { promise, resolve: resolve! };
 }
 
+function firstPage(cursor = "cursor-1"): AssetMonitoringPortfolioResponse {
+  const response = portfolioResponse();
+  return { ...response, assets: { ...response.assets, nextCursor: cursor } };
+}
+
+function nextPage(
+  asset: AssetMonitoringAssetsResponse["assets"][number],
+  nextCursor: string | null = null,
+): AssetMonitoringAssetsResponse {
+  return {
+    assets: [asset],
+    nextCursor,
+    valuationRevision: "revision-1",
+    stale: false,
+    incomplete: false,
+    building: false,
+  };
+}
+
+function conditionalAsset(outcome: string): AssetMonitoringAssetsResponse["assets"][number] {
+  return {
+    asset: {
+      kind: "conditional",
+      canonicalMintUrl: "https://mint.example",
+      cashuUnit: "msat",
+      displayBaseAsset: "msat",
+      conditionId: `${outcome[0] ?? "x"}`.repeat(64),
+      parentConditionId: rootParentConditionId,
+      outcomeUniverseDigest: "a".repeat(64),
+      internalOutcomeSetId: outcome,
+    },
+    availableSubunits: 2_000,
+    pendingOutgoingSubunits: 0,
+    estimatedValueMsat: 2_000,
+    valuationStatus: "valued",
+    recoveryHint: null,
+  };
+}
+
 describe("usePortfolioState monitoring facade", () => {
   afterEach(() => {
     mocks.getPortfolio.mockReset();
+    mocks.getAssetMonitoringAssets.mockReset();
     mocks.liveQueryCalls = 0;
   });
 
@@ -206,7 +255,7 @@ describe("usePortfolioState monitoring facade", () => {
     });
   });
 
-  it("retains local lifecycle and action authority while using monitored value", () => {
+  it("retains local lifecycle and action authority for a page-loaded position", () => {
     const localWinner: Position = {
       ...localPosition,
       marketId: `${monitoredConditionId}-YES`,
@@ -216,7 +265,15 @@ describe("usePortfolioState monitoring facade", () => {
       canClaimPayout: true,
       currentValueSats: 1,
     };
-    const monitored = mapMonitoringPortfolio(portfolioResponse()).positions;
+    const response = portfolioResponse();
+    const loadedAsset = response.assets.assets[1]!;
+    const firstAssets = [response.assets.assets[0]!];
+    const appended = appendMonitoringAssets(firstAssets, [loadedAsset]);
+    localWinner.monitoringAssetIdentity = canonicalMonitoringAssetIdentity(loadedAsset.asset);
+    const monitored = mapMonitoringPortfolio({
+      ...response,
+      assets: { ...response.assets, assets: appended.assets, nextCursor: null },
+    }).positions;
 
     expect(mergeMonitoringPositions(monitored, [localWinner])[0]).toMatchObject({
       id: "local-position",
@@ -256,6 +313,64 @@ describe("usePortfolioState monitoring facade", () => {
     await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
     expect(result.current.positions).toEqual([localPosition]);
     expect(result.current.funds).toEqual([localFund]);
+  });
+
+  it.each([
+    ["byte-identical", (response: AssetMonitoringPortfolioResponse) => response.assets.assets[0]!],
+    [
+      "conflicting",
+      (response: AssetMonitoringPortfolioResponse) => ({
+        ...response.assets.assets[0]!,
+        availableSubunits: response.assets.assets[0]!.availableSubunits + 1,
+      }),
+    ],
+  ])("rejects an initial %s duplicate page and keeps local rows", async (_kind, duplicate) => {
+    const response = portfolioResponse();
+    response.assets.assets = [response.assets.assets[0]!, duplicate(response)];
+    mocks.getPortfolio.mockResolvedValue(response);
+    const { result } = renderHook(() => usePortfolioState());
+
+    await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
+
+    expect(result.current.positions).toEqual([localPosition]);
+    expect(result.current.funds).toEqual([localFund]);
+  });
+
+  it("keeps distinct canonical rows and prevents cross-asset local authority", () => {
+    const response = portfolioResponse();
+    const firstConditional = response.assets.assets[1]!;
+    const secondConditional = {
+      ...firstConditional,
+      asset: { ...firstConditional.asset, canonicalMintUrl: "https://other-mint.example" },
+    };
+    const secondCollateral = {
+      ...response.assets.assets[0]!,
+      asset: {
+        ...response.assets.assets[0]!.asset,
+        cashuUnit: "sat" as const,
+        displayBaseAsset: "sat" as const,
+      },
+    };
+    response.assets.assets = [
+      response.assets.assets[0]!,
+      secondCollateral,
+      firstConditional,
+      secondConditional,
+    ];
+    const mapped = mapMonitoringPortfolio(response);
+    const localWinner: Position = {
+      ...localPosition,
+      monitoringAssetIdentity: canonicalMonitoringAssetIdentity(firstConditional.asset),
+      status: "closed",
+      isWinner: true,
+      canClaimPayout: true,
+    };
+    const merged = mergeMonitoringPositions(mapped.positions, [localWinner]);
+
+    expect(new Set(mapped.positions.map((position) => position.id)).size).toBe(2);
+    expect(new Set(mapped.funds.map((fund) => fund.id)).size).toBe(2);
+    expect(merged[0]).toMatchObject({ id: "local-position", canClaimPayout: true });
+    expect(merged[1]).toMatchObject({ canClaimPayout: false, isWinner: false });
   });
 
   it("ignores an older timeframe response", async () => {
@@ -305,5 +420,82 @@ describe("usePortfolioState monitoring facade", () => {
     );
 
     expect(result.current.stats.totalValueSats).toBe(12_000);
+  });
+
+  it("requests one exact page per click and appends its rows in page order", async () => {
+    mocks.getPortfolio.mockResolvedValue(firstPage());
+    mocks.getAssetMonitoringAssets.mockResolvedValue(nextPage(conditionalAsset("NO")));
+    const { result } = renderHook(() => usePortfolioState());
+
+    await waitFor(() => expect(result.current.monitoring.hasMoreAssets).toBe(true));
+    act(() => {
+      result.current.loadMoreAssets();
+      result.current.loadMoreAssets();
+    });
+    await waitFor(() => expect(mocks.getAssetMonitoringAssets).toHaveBeenCalledTimes(1));
+    expect(mocks.getAssetMonitoringAssets).toHaveBeenCalledWith({
+      walletId: "wallet-test mnemonic",
+      cursor: "cursor-1",
+      pageSize: 200,
+    });
+    await waitFor(() => expect(result.current.monitoring.hasMoreAssets).toBe(false));
+    expect(result.current.positions.map((position) => position.outcomeId)).toEqual([
+      "YES",
+      "NO",
+      undefined,
+    ]);
+  });
+
+  it("rejects duplicate and conflicting asset pages without double-counting", () => {
+    const first = portfolioResponse().assets.assets[1]!;
+    const duplicate = appendMonitoringAssets([first], [first]);
+    const conflict = appendMonitoringAssets(
+      [first],
+      [{ ...first, availableSubunits: first.availableSubunits + 1 }],
+    );
+
+    expect(duplicate.kind).toBe("duplicate");
+    expect(conflict.kind).toBe("conflict");
+    expect(duplicate.assets).toEqual([first]);
+    expect(conflict.assets).toEqual([first]);
+  });
+
+  it("keeps rows and permits an explicit retry after a page failure", async () => {
+    mocks.getPortfolio.mockResolvedValue(firstPage());
+    mocks.getAssetMonitoringAssets
+      .mockRejectedValueOnce(new Error("unavailable"))
+      .mockResolvedValueOnce(nextPage(conditionalAsset("NO")));
+    const { result } = renderHook(() => usePortfolioState());
+
+    await waitFor(() => expect(result.current.monitoring.hasMoreAssets).toBe(true));
+    act(() => result.current.loadMoreAssets());
+    await waitFor(() => expect(result.current.monitoring.assetPageError).toBe("unavailable"));
+    expect(result.current.positions).toHaveLength(2);
+    act(() => result.current.loadMoreAssets());
+    await waitFor(() => expect(mocks.getAssetMonitoringAssets).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.monitoring.assetPageError).toBeNull());
+    expect(result.current.positions).toHaveLength(3);
+  });
+
+  it("ignores a stale page after an A-to-B-to-A generation change", async () => {
+    const oldPage = deferred<AssetMonitoringAssetsResponse>();
+    mocks.getPortfolio
+      .mockResolvedValueOnce(firstPage("cursor-a"))
+      .mockResolvedValueOnce(portfolioResponse("1D"))
+      .mockResolvedValueOnce(firstPage("cursor-a-again"));
+    mocks.getAssetMonitoringAssets.mockReturnValueOnce(oldPage.promise);
+    const { result } = renderHook(() => usePortfolioState());
+
+    await waitFor(() => expect(result.current.monitoring.hasMoreAssets).toBe(true));
+    act(() => result.current.loadMoreAssets());
+    await waitFor(() => expect(mocks.getAssetMonitoringAssets).toHaveBeenCalledTimes(1));
+    act(() => result.current.setSelectedTimeRange("1D"));
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(2));
+    act(() => result.current.setSelectedTimeRange("ALL"));
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(3));
+    await act(async () => oldPage.resolve(nextPage(conditionalAsset("STALE"))));
+
+    expect(result.current.selectedTimeRange).toBe("ALL");
+    expect(result.current.positions.some((position) => position.outcomeId === "STALE")).toBe(false);
   });
 });

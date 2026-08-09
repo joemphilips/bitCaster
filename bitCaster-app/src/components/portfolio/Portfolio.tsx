@@ -18,12 +18,17 @@ type MainTab = "positions" | "funds" | "activity";
 function MonitoringStatus({
   monitoring,
   onDismissError,
+  onRetryAssets,
+  onDismissAssetError,
 }: {
   monitoring: PortfolioProps["monitoring"];
   onDismissError?: () => void;
+  onRetryAssets?: () => void;
+  onDismissAssetError?: () => void;
 }) {
   const { t } = useTranslation();
   if (!monitoring) return null;
+  const error = monitoring.error ?? monitoring.assetPageError;
   const states = [
     monitoring.stale && t("portfolio.monitoringStale"),
     monitoring.incomplete && t("portfolio.monitoringIncomplete"),
@@ -37,14 +42,25 @@ function MonitoringStatus({
             amount: formatMarketSubunits(monitoring.pendingOutgoingValueMsat, "sat"),
           })),
   ].filter(Boolean);
-  if (!monitoring.error && states.length === 0) return null;
+  if (!error && states.length === 0) return null;
   return (
     <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
       <span className="flex-1">
-        {monitoring.error
-          ? t("portfolio.monitoringUnavailable")
+        {error
+          ? monitoring.error
+            ? t("portfolio.monitoringUnavailable")
+            : t("portfolio.assetPageUnavailable")
           : `${t("portfolio.monitoringLabel")}: ${states.join(", ")}`}
       </span>
+      {monitoring.assetPageError && onRetryAssets && (
+        <button
+          type="button"
+          onClick={onRetryAssets}
+          className="rounded px-1 font-medium underline"
+        >
+          {t("common.retry")}
+        </button>
+      )}
       {monitoring.error && onDismissError && (
         <button
           type="button"
@@ -55,6 +71,41 @@ function MonitoringStatus({
           {t("common.close")}
         </button>
       )}
+      {monitoring.assetPageError && onDismissAssetError && (
+        <button
+          type="button"
+          onClick={onDismissAssetError}
+          aria-label={t("portfolio.dismissAssetPageError")}
+          className="rounded px-1 font-medium underline"
+        >
+          {t("common.close")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function LoadMoreAssets({
+  monitoring,
+  onLoadMore,
+}: {
+  monitoring: PortfolioProps["monitoring"];
+  onLoadMore?: () => void;
+}) {
+  const { t } = useTranslation();
+  if (!monitoring?.hasMoreAssets || !onLoadMore) return null;
+  return (
+    <div className="pt-3 text-center">
+      <button
+        type="button"
+        onClick={onLoadMore}
+        disabled={monitoring.loadingMoreAssets}
+        className="rounded-lg px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-wait disabled:opacity-60 dark:text-blue-300 dark:hover:bg-blue-950/30"
+      >
+        {monitoring.loadingMoreAssets
+          ? t("portfolio.loadingMoreAssets")
+          : t("portfolio.loadMoreAssets")}
+      </button>
     </div>
   );
 }
@@ -103,6 +154,8 @@ export function Portfolio(props: PortfolioProps) {
       <MonitoringStatus
         monitoring={props.monitoring}
         onDismissError={props.onDismissMonitoringError}
+        onRetryAssets={props.onRetryLoadMoreAssets}
+        onDismissAssetError={props.onDismissAssetPageError}
       />
 
       {/* Profile + Chart Section */}
@@ -176,17 +229,25 @@ export function Portfolio(props: PortfolioProps) {
 
         <div className="p-4" role="tabpanel">
           {mainTab === "positions" && (
-            <PositionsList
-              positions={props.positions}
-              positionsTab={props.positionsTab}
-              onPositionsTabChange={props.onPositionsTabChange}
-              onSellPosition={props.onSellPosition}
-              onClaimPayout={props.onClaimPayout}
-              onDiscardLostPosition={props.onDiscardLostPosition}
-              onViewPosition={props.onViewPosition}
-            />
+            <>
+              <PositionsList
+                positions={props.positions}
+                positionsTab={props.positionsTab}
+                onPositionsTabChange={props.onPositionsTabChange}
+                onSellPosition={props.onSellPosition}
+                onClaimPayout={props.onClaimPayout}
+                onDiscardLostPosition={props.onDiscardLostPosition}
+                onViewPosition={props.onViewPosition}
+              />
+              <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />
+            </>
           )}
-          {mainTab === "funds" && <FundsList funds={props.funds} onViewFund={props.onViewFund} />}
+          {mainTab === "funds" && (
+            <>
+              <FundsList funds={props.funds} onViewFund={props.onViewFund} />
+              <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />
+            </>
+          )}
           {mainTab === "activity" && (
             <ActivityFeed activity={props.activity} onViewActivity={props.onViewActivity} />
           )}

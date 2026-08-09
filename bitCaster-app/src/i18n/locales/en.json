@@ -41,7 +41,8 @@
     "connect": "Connect",
     "share": "Share",
     "price": "Price",
-    "success": "Success!"
+    "success": "Success!",
+    "retry": "Retry"
   },
   "nav": {
     "markets": "Markets",
@@ -312,6 +313,10 @@
     "unvalued": "Unvalued",
     "monitoringPending": "pending outgoing: {{amount}}",
     "monitoringPendingUnvalued": "unvalued pending outgoing assets",
+    "loadMoreAssets": "Load more",
+    "loadingMoreAssets": "Loading…",
+    "assetPageUnavailable": "More portfolio assets are unavailable. Current rows are shown.",
+    "dismissAssetPageError": "Dismiss asset page error",
     "monitoringUnavailable": "Portfolio monitoring is unavailable. Local wallet data is shown.",
     "dismissMonitoringError": "Dismiss portfolio monitoring error",
     "myMarkets": "My Markets ({{count}})",

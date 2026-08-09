@@ -563,6 +563,29 @@ describe("Portfolio", () => {
   });
 
   describe("Callbacks", () => {
+    it("shows one shared asset-page control and calls it", async () => {
+      const onLoadMoreAssets = vi.fn();
+      renderPortfolio({
+        monitoring: {
+          stale: false,
+          incomplete: true,
+          building: false,
+          unvaluedAssetCount: 0,
+          hasPendingOutgoing: false,
+          pendingOutgoingValueMsat: null,
+          error: null,
+          assetPageError: null,
+          hasMoreAssets: true,
+          loadingMoreAssets: false,
+        },
+        onLoadMoreAssets,
+      });
+
+      await userEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+      expect(onLoadMoreAssets).toHaveBeenCalledOnce();
+    });
+
     it("calls onDeposit when Deposit is clicked", async () => {
       const onDeposit = vi.fn();
       renderPortfolio({ onDeposit });

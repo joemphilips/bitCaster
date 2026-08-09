@@ -272,6 +272,9 @@ export function PortfolioPage() {
         onPositionsTabChange={handlePositionsTabChange}
         onOpenSettings={handleOpenSettings}
         onDismissMonitoringError={state.dismissMonitoringError}
+        onLoadMoreAssets={state.loadMoreAssets}
+        onRetryLoadMoreAssets={state.loadMoreAssets}
+        onDismissAssetPageError={state.dismissAssetPageError}
         showConnectNostrCta={showConnectNostrCta}
         onConnectNostr={handleConnectNostr}
       />

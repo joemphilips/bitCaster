@@ -4,7 +4,7 @@ import { getProofs, isCtfProof } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
-import { safeHostname } from "@/lib/url";
+import { normalizeUrl, safeHostname } from "@/lib/url";
 import {
   createAuthenticatedBrowserEngineClient,
   type MarketCatalogueEntry,
@@ -36,7 +36,9 @@ import type {
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { deriveWinner } from "@/lib/positionWinner";
 import type {
+  AssetMonitoringAssetReference,
   AssetMonitoringAssetResponse,
+  AssetMonitoringConditionalAssetReference,
   AssetMonitoringPortfolioResponse,
 } from "@bitcaster/client-sdk/assetMonitoring";
 
@@ -180,12 +182,103 @@ function monitoringAssetValue(asset: AssetMonitoringAssetResponse): number {
   return asset.estimatedValueMsat ?? 0;
 }
 
+export function canonicalMonitoringAssetIdentity(asset: AssetMonitoringAssetReference): string {
+  return JSON.stringify(asset);
+}
+
+function sameMonitoringAsset(
+  left: AssetMonitoringAssetResponse,
+  right: AssetMonitoringAssetResponse,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export type MonitoringAssetAppendResult =
+  | { kind: "appended"; assets: AssetMonitoringAssetResponse[] }
+  | { kind: "duplicate" | "conflict"; assets: AssetMonitoringAssetResponse[] };
+
+export function appendMonitoringAssets(
+  existing: AssetMonitoringAssetResponse[],
+  incoming: AssetMonitoringAssetResponse[],
+): MonitoringAssetAppendResult {
+  const known = new Map(
+    existing.map((asset) => [canonicalMonitoringAssetIdentity(asset.asset), asset]),
+  );
+  for (const asset of incoming) {
+    const identity = canonicalMonitoringAssetIdentity(asset.asset);
+    const current = known.get(identity);
+    if (!current) {
+      known.set(identity, asset);
+      continue;
+    }
+    return {
+      kind: sameMonitoringAsset(current, asset) ? "duplicate" : "conflict",
+      assets: existing,
+    };
+  }
+  return { kind: "appended", assets: [...existing, ...incoming] };
+}
+
+function localMonitoringAssetIdentity(
+  proof: object,
+  conditionId: string,
+  outcomeCollection: string,
+): string | null {
+  const metadata = proof as Record<string, unknown>;
+  const mintUrl = metadata.canonicalMintUrl ?? metadata.mintUrl;
+  if (typeof mintUrl !== "string") return null;
+  let canonicalMintUrl: string;
+  try {
+    canonicalMintUrl = normalizeUrl(mintUrl);
+  } catch {
+    return null;
+  }
+  const asset = {
+    canonicalMintUrl,
+    kind: "conditional" as const,
+    cashuUnit: metadata.cashuUnit ?? metadata.unit,
+    displayBaseAsset: metadata.displayBaseAsset ?? metadata.baseAsset,
+    conditionId,
+    parentConditionId: metadata.parentConditionId,
+    outcomeUniverseDigest: metadata.outcomeUniverseDigest,
+    internalOutcomeSetId: metadata.internalOutcomeSetId ?? outcomeCollection,
+  };
+  if (
+    (asset.cashuUnit !== "sat" && asset.cashuUnit !== "msat") ||
+    (asset.displayBaseAsset !== "sat" && asset.displayBaseAsset !== "msat") ||
+    typeof asset.parentConditionId !== "string" ||
+    typeof asset.outcomeUniverseDigest !== "string" ||
+    asset.internalOutcomeSetId !== outcomeCollection
+  )
+    return null;
+  const completeAsset: AssetMonitoringConditionalAssetReference = {
+    canonicalMintUrl: asset.canonicalMintUrl,
+    kind: "conditional",
+    cashuUnit: asset.cashuUnit,
+    displayBaseAsset: asset.displayBaseAsset,
+    conditionId: asset.conditionId,
+    parentConditionId: asset.parentConditionId,
+    outcomeUniverseDigest: asset.outcomeUniverseDigest,
+    internalOutcomeSetId: asset.internalOutcomeSetId,
+  };
+  return canonicalMonitoringAssetIdentity(completeAsset);
+}
+
+function mergeLocalMonitoringIdentity(
+  current: string | null | undefined,
+  candidate: string | null,
+): string | null {
+  if (current === undefined) return candidate;
+  return current === candidate ? current : null;
+}
+
 function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | null {
   if (asset.asset.kind !== "conditional") return null;
   const value = monitoringAssetValue(asset);
   const conditionId = asset.asset.conditionId;
+  const identity = canonicalMonitoringAssetIdentity(asset.asset);
   return {
-    id: `monitoring:${asset.asset.canonicalMintUrl}:${asset.asset.conditionId}:${asset.asset.internalOutcomeSetId}`,
+    id: `monitoring:${identity}`,
     marketId: conditionId,
     marketTitle: conditionLabel(conditionId),
     marketImageUrl: "",
@@ -195,6 +288,7 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
     canSell: false,
     canClaimPayout: false,
     canDiscard: false,
+    monitoringAssetIdentity: identity,
     baseAsset: "sat",
     divisibility: 10_000,
     avgBuyPrice: 0,
@@ -212,40 +306,30 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
   };
 }
 
-function positionConditionId(position: Position): string {
-  const suffix = position.outcomeId ? `-${position.outcomeId}` : "";
-  return suffix && position.marketId.endsWith(suffix)
-    ? position.marketId.slice(0, -suffix.length)
-    : position.marketId;
-}
-
-function positionAssetKey(position: Position): string {
-  return JSON.stringify([
-    position.mintUrl,
-    positionConditionId(position),
-    position.outcomeId ?? "",
-  ]);
-}
-
 export function mergeMonitoringPositions(
   monitoringPositions: Position[],
   localPositions: Position[],
 ): Position[] {
+  const unmatchedLocal = new Set(localPositions);
   const localByAsset = new Map(
-    localPositions.map((position) => [positionAssetKey(position), position] as const),
+    localPositions
+      .filter((position) => position.monitoringAssetIdentity !== undefined)
+      .map((position) => [position.monitoringAssetIdentity!, position] as const),
   );
   const merged = monitoringPositions.map((monitoringPosition) => {
-    const key = positionAssetKey(monitoringPosition);
+    const key = monitoringPosition.monitoringAssetIdentity;
+    if (!key) return monitoringPosition;
     const local = localByAsset.get(key);
     if (!local) return monitoringPosition;
     localByAsset.delete(key);
+    unmatchedLocal.delete(local);
     return {
       ...local,
       currentValueSats: monitoringPosition.currentValueSats,
       valueKnown: monitoringPosition.valueKnown,
     };
   });
-  return [...merged, ...localByAsset.values()];
+  return [...merged, ...unmatchedLocal];
 }
 
 export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioResponse): {
@@ -253,7 +337,10 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
   positions: Position[];
   funds: Fund[];
   chart: PLChartDataPoint[];
-  monitoring: Omit<PortfolioMonitoringState, "error">;
+  monitoring: Omit<
+    PortfolioMonitoringState,
+    "error" | "assetPageError" | "hasMoreAssets" | "loadingMoreAssets"
+  >;
 } {
   const positions = response.assets.assets
     .map(monitoringPosition)
@@ -262,12 +349,13 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
     .filter((asset) => asset.asset.kind === "collateral")
     .map(
       (asset): Fund => ({
-        id: `monitoring:${asset.asset.canonicalMintUrl}`,
+        id: `monitoring:${canonicalMonitoringAssetIdentity(asset.asset)}`,
         unit: "sats",
         amount:
           asset.availableValueMsat ??
           cashuAmountToMarketSubunits(asset.availableSubunits, asset.asset.cashuUnit),
         mintUrl: asset.asset.canonicalMintUrl,
+        monitoringAssetIdentity: canonicalMonitoringAssetIdentity(asset.asset),
       }),
     );
   const positionsValueKnown =
@@ -321,6 +409,8 @@ export function usePortfolioState(): PortfolioState & {
   setPositionsTab: (tab: "active" | "closed") => void;
   saveProfile: (profile: UserProfile) => void;
   dismissMonitoringError: () => void;
+  loadMoreAssets: () => void;
+  dismissAssetPageError: () => void;
 } {
   const walletSetupComplete = useWalletStore((s) => s.setupComplete);
   const walletState: WalletState = walletSetupComplete ? "ready" : "none";
@@ -331,10 +421,23 @@ export function usePortfolioState(): PortfolioState & {
     value: AssetMonitoringPortfolioResponse;
   } | null>(null);
   const [monitoringError, setMonitoringError] = useState<"unavailable" | null>(null);
+  const [monitoringAssets, setMonitoringAssets] = useState<{
+    key: string;
+    generation: number;
+    assets: AssetMonitoringAssetResponse[];
+    nextCursor: string | null;
+  } | null>(null);
+  const [assetPageError, setAssetPageError] = useState<{
+    key: string;
+    generation: number;
+  } | null>(null);
+  const [loadingMoreAssets, setLoadingMoreAssets] = useState(false);
   const [monitoringUnavailable, setMonitoringUnavailable] = useState(false);
   const requestedMonitoringKey = useRef<string | null>(null);
   const activeMonitoringKey = useRef<string | null>(null);
   const activeMonitoringRequest = useRef(0);
+  const activeAssetPageRequest = useRef(0);
+  const assetPageInFlight = useRef(false);
   const [localProfile, setLocalProfile] = useState<UserProfile>(loadProfile);
   const [positionsTab, setPositionsTab] = useState<"active" | "closed">("active");
 
@@ -369,6 +472,7 @@ export function usePortfolioState(): PortfolioState & {
     if (requestedMonitoringKey.current === monitoringKey) return;
     requestedMonitoringKey.current = monitoringKey;
     const requestId = ++activeMonitoringRequest.current;
+    assetPageInFlight.current = false;
     setMonitoringUnavailable(false);
     void createAuthenticatedBrowserEngineClient()
       .getPortfolio({ walletId, timeframe: selectedTimeRange, pageSize: 200 })
@@ -378,7 +482,20 @@ export function usePortfolioState(): PortfolioState & {
           activeMonitoringRequest.current !== requestId
         )
           return;
+        const initialAssets = appendMonitoringAssets([], value.assets.assets);
+        if (initialAssets.kind !== "appended") {
+          setMonitoringUnavailable(true);
+          setMonitoringError("unavailable");
+          return;
+        }
         setMonitoringResponse({ key: monitoringKey, value });
+        setMonitoringAssets({
+          key: monitoringKey,
+          generation: requestId,
+          assets: initialAssets.assets,
+          nextCursor: value.assets.nextCursor ?? null,
+        });
+        setLoadingMoreAssets(false);
         setMonitoringError(null);
       })
       .catch(() => {
@@ -392,6 +509,67 @@ export function usePortfolioState(): PortfolioState & {
       });
   }, [monitoringKey, selectedTimeRange, walletId]);
 
+  const visibleAssets =
+    monitoringAssets?.key === monitoringKey &&
+    monitoringAssets.generation === activeMonitoringRequest.current
+      ? monitoringAssets
+      : null;
+  const visibleAssetPageError =
+    assetPageError?.key === monitoringKey &&
+    assetPageError.generation === activeMonitoringRequest.current;
+
+  const loadMoreAssets = useCallback(() => {
+    if (!visibleAssets || walletId === null || loadingMoreAssets || assetPageInFlight.current)
+      return;
+    const cursor = visibleAssets.nextCursor;
+    if (cursor === null) return;
+    const requestId = ++activeAssetPageRequest.current;
+    const { generation, key } = visibleAssets;
+    assetPageInFlight.current = true;
+    setLoadingMoreAssets(true);
+    void createAuthenticatedBrowserEngineClient()
+      .getAssetMonitoringAssets({ walletId, cursor, pageSize: 200 })
+      .then((page) => {
+        if (
+          activeMonitoringKey.current !== key ||
+          activeMonitoringRequest.current !== generation ||
+          activeAssetPageRequest.current !== requestId
+        )
+          return;
+        const appended = appendMonitoringAssets(visibleAssets.assets, page.assets);
+        if (appended.kind !== "appended") {
+          setAssetPageError({ key, generation });
+          return;
+        }
+        setMonitoringAssets({
+          key,
+          generation,
+          assets: appended.assets,
+          nextCursor: page.nextCursor ?? null,
+        });
+        setAssetPageError(null);
+      })
+      .catch(() => {
+        if (
+          activeMonitoringKey.current !== key ||
+          activeMonitoringRequest.current !== generation ||
+          activeAssetPageRequest.current !== requestId
+        )
+          return;
+        setAssetPageError({ key, generation });
+      })
+      .finally(() => {
+        if (
+          activeMonitoringKey.current !== key ||
+          activeMonitoringRequest.current !== generation ||
+          activeAssetPageRequest.current !== requestId
+        )
+          return;
+        assetPageInFlight.current = false;
+        setLoadingMoreAssets(false);
+      });
+  }, [loadingMoreAssets, visibleAssets, walletId]);
+
   const positionsFromDb = useLiveQuery(
     async () => {
       const proofs = await getProofs();
@@ -404,6 +582,7 @@ export function usePortfolioState(): PortfolioState & {
           amount: number;
           mintUrl: string;
           firstReceivedAt: number;
+          monitoringAssetIdentity: string | null;
         }
       >();
       for (const proof of proofs.filter(isCtfProof)) {
@@ -417,6 +596,11 @@ export function usePortfolioState(): PortfolioState & {
         const outcomeCollection = candidate.outcomeCollection ?? candidate.outcome_collection;
         if (!conditionId || !outcomeCollection) continue;
         const baseAsset = normalizeMarketBaseAsset(proof.baseAsset);
+        const proofMonitoringIdentity = localMonitoringAssetIdentity(
+          proof,
+          conditionId,
+          outcomeCollection,
+        );
         const key = `${conditionId}:${outcomeCollection}:${baseAsset}`;
         const current = byOutcome.get(key);
         byOutcome.set(key, {
@@ -425,6 +609,10 @@ export function usePortfolioState(): PortfolioState & {
           baseAsset,
           amount: (current?.amount ?? 0) + amountToNumber(proof.amount),
           mintUrl: current?.mintUrl ?? proof.mintUrl,
+          monitoringAssetIdentity: mergeLocalMonitoringIdentity(
+            current?.monitoringAssetIdentity,
+            proofMonitoringIdentity,
+          ),
           firstReceivedAt: Math.min(
             current?.firstReceivedAt ?? Number.POSITIVE_INFINITY,
             proof.receivedAt ?? Date.now(),
@@ -485,6 +673,7 @@ export function usePortfolioState(): PortfolioState & {
           outcomeLabel: entry.outcomeCollection,
           canClaimPayout: isWinner,
           canDiscard: isLoser,
+          monitoringAssetIdentity: entry.monitoringAssetIdentity ?? undefined,
           baseAsset: entry.baseAsset,
           divisibility,
           shares: entry.amount / divisibility,
@@ -547,8 +736,15 @@ export function usePortfolioState(): PortfolioState & {
   const localFunds: Fund[] = fundsFromDb;
   const localStats = useMemo(() => computeStats(positions, localFunds), [positions, localFunds]);
   const visibleMonitoring =
-    monitoringResponse?.key === monitoringKey
-      ? mapMonitoringPortfolio(monitoringResponse.value)
+    monitoringResponse?.key === monitoringKey && visibleAssets
+      ? mapMonitoringPortfolio({
+          ...monitoringResponse.value,
+          assets: {
+            ...monitoringResponse.value.assets,
+            assets: visibleAssets.assets,
+            nextCursor: visibleAssets.nextCursor,
+          },
+        })
       : null;
   const funds = visibleMonitoring?.funds ?? localFunds;
   const stats = visibleMonitoring?.stats ?? localStats;
@@ -567,6 +763,9 @@ export function usePortfolioState(): PortfolioState & {
     hasPendingOutgoing: visibleMonitoring?.monitoring.hasPendingOutgoing ?? false,
     pendingOutgoingValueMsat: visibleMonitoring?.monitoring.pendingOutgoingValueMsat ?? null,
     error: monitoringError,
+    assetPageError: visibleAssetPageError ? "unavailable" : null,
+    hasMoreAssets: visibleAssets?.nextCursor != null,
+    loadingMoreAssets: visibleAssets !== null && loadingMoreAssets,
   };
   const selectTimeRange = useCallback((range: PLTimeSelector) => {
     setSelectedTimeRange(range);
@@ -594,5 +793,7 @@ export function usePortfolioState(): PortfolioState & {
     setPositionsTab,
     saveProfile,
     dismissMonitoringError: () => setMonitoringError(null),
+    loadMoreAssets,
+    dismissAssetPageError: () => setAssetPageError(null),
   };
 }
