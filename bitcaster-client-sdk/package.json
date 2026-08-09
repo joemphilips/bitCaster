@@ -288,6 +288,10 @@
       "types": "./dist/boundedJsonResponse.d.ts",
       "import": "./dist/boundedJsonResponse.js"
     },
+    "./assetMonitoringReporter": {
+      "types": "./dist/assetMonitoringReporter.d.ts",
+      "import": "./dist/assetMonitoringReporter.js"
+    },
     "./participationScore": {
       "types": "./dist/participationScore.d.ts",
       "import": "./dist/participationScore.js"

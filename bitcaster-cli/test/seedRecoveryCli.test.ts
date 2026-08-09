@@ -12,11 +12,12 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
     await writeFile(
       join(home, 'config.json'),
       `${JSON.stringify({
-        version: 1,
+        version: 2,
         daemon: {
           engineUrl: 'http://localhost:5000',
           mintUrl: 'http://localhost:8085',
           autoRetireResolvedConditionInventory: false,
+          assetMonitoringEnabled: false,
         },
         cli: { trustedEngineUrls: [] },
       })}\n`,

@@ -110,6 +110,8 @@ switch (command) {
     }
     let renewal: LeaseRenewal | undefined
     let rangeRecoveryLoop: CtfRangeRecoveryLoop | undefined
+    let assetMonitoring: { start(): void; stop(): void } | undefined
+    let assetMonitoringStarting = false
     let retirementRetryTimer: NodeJS.Timeout | undefined
     let leaseFailure: Error | undefined
     let shutdown: ((reason: string, exitCode?: number) => Promise<void>) | undefined
@@ -123,6 +125,7 @@ switch (command) {
       resourcesReleased = true
       renewal?.stop()
       rangeRecoveryLoop?.stop()
+      assetMonitoring?.stop()
       if (retirementRetryTimer !== undefined) clearTimeout(retirementRetryTimer)
       try {
         await releaseCustodyScopeLease(profileDir(), fence, Date.now())
@@ -354,6 +357,29 @@ switch (command) {
         nonRetirementPending: nonRetirementRecovery.pending.length > 0,
         retirementPending: pendingRetirements.length > 0,
       })
+      const startAssetMonitoringWhenReady = async () => {
+        if (
+          !nativeConfig.daemon.assetMonitoringEnabled ||
+          !readiness.isReady() ||
+          assetMonitoring ||
+          assetMonitoringStarting
+        )
+          return
+        assetMonitoringStarting = true
+        try {
+          const { createDaemonAssetMonitoring } = await import('./assetMonitoring.ts')
+          assetMonitoring = createDaemonAssetMonitoring({
+            directory: profileDir(),
+            scopeId,
+            walletId,
+            engineBaseUrl: profile.engineBaseUrl,
+            remote: retirementEngine,
+          })
+          assetMonitoring.start()
+        } finally {
+          assetMonitoringStarting = false
+        }
+      }
       if (!readiness.isReady()) {
         const pendingSample = pendingWalletOperations
           .slice(0, 64)
@@ -377,6 +403,10 @@ switch (command) {
         await executor?.resumeActiveSwaps(state)
       }
       const markCustodyReady = () => {
+        void startAssetMonitoringWhenReady().catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err)
+          process.stderr.write(`asset-monitoring startup failed: ${message}\n`)
+        })
         void startRuntimeWhenReady().catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err)
           process.stderr.write(`bitcaster-daemon trade runtime start failed: ${message}\n`)
@@ -458,6 +488,7 @@ switch (command) {
           `bitcaster-daemon trade runtime start failed; RPC will remain available: ${message}\n`,
         )
       })
+      if (readiness.isReady()) markCustodyReady()
     } catch (err) {
       await releaseResources().catch(() => undefined)
       throw err

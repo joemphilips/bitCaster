@@ -44,12 +44,23 @@ test('strict native config rejects malformed, duplicate, missing, and unknown fi
   }
   assert.throws(() => parseNativeConfig('{'), /valid JSON/)
   assert.throws(
-    () => parseNativeConfig(valid.replace('"version":1', '"version":1,"version":1')),
+    () => parseNativeConfig(valid.replace('"version":2', '"version":2,"version":2')),
     /duplicate key/,
   )
-  assert.throws(() => parseNativeConfig('{"version":1}'), /missing or unknown keys/)
   assert.throws(
-    () => parseNativeConfig(valid.replace('"version":1', '"version":1,"secret":"x"')),
+    () => parseNativeConfig(valid.replace('"version":2', '"version":1')),
+    /version is not supported/,
+  )
+  assert.throws(
+    () =>
+      parseNativeConfig(
+        valid.replace('"assetMonitoringEnabled":false', '"assetMonitoringEnabled":"false"'),
+      ),
+    /assetMonitoringEnabled must be boolean/,
+  )
+  assert.throws(() => parseNativeConfig('{"version":2}'), /missing or unknown keys/)
+  assert.throws(
+    () => parseNativeConfig(valid.replace('"version":2', '"version":2,"secret":"x"')),
     /missing or unknown keys/,
   )
   assert.throws(
@@ -70,7 +81,7 @@ test('native config uses owner-only atomic updates and one writer lock', async (
       daemon: { ...current.daemon, engineUrl: 'https://engine.example/' },
     }))
     assert.equal(updated.config.daemon.engineUrl, 'https://engine.example')
-    assert.equal(JSON.parse(await readFile(join(directory, 'config.json'), 'utf8')).version, 1)
+    assert.equal(JSON.parse(await readFile(join(directory, 'config.json'), 'utf8')).version, 2)
 
     await writeFile(join(directory, '.config.lock'), '', { mode: 0o600 })
     assert.throws(() => updateNativeConfig((current) => current), /EEXIST/)

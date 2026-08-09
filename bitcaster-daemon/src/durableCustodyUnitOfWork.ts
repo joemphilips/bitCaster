@@ -38,27 +38,30 @@ export async function withDurableCustodyUnitOfWork<T>(
           action: (database: DatabaseSync) => T,
           transactionOptions: StateSqliteTransactionOptions,
         ) => storage.transaction(action, transactionOptions)
-  return transaction((database) => {
-    const row = requireAuthorizedScopeState(database, fence, observedAtMs)
-    const highWaterMarkMs = Math.max(observedAtMs, row.highWaterMarkMs)
-    const updated = database
-      .prepare(
-        `UPDATE custody_scope_state SET high_water_mark_ms = ?
+  return transaction(
+    (database) => {
+      const row = requireAuthorizedScopeState(database, fence, observedAtMs)
+      const highWaterMarkMs = Math.max(observedAtMs, row.highWaterMarkMs)
+      const updated = database
+        .prepare(
+          `UPDATE custody_scope_state SET high_water_mark_ms = ?
            WHERE scope_id = ? AND owner_incarnation_id = ?
              AND fencing_epoch = ? AND high_water_mark_ms = ?`,
-      )
-      .run(
-        highWaterMarkMs,
-        fence.scopeId,
-        fence.incarnationId,
-        fence.fencingEpoch,
-        row.highWaterMarkMs,
-      )
-    if (updated.changes !== 1) {
-      throw new DurableCustodyFenceError('custody unit of work fence CAS failed')
-    }
-    return action(database)
-  }, options)
+        )
+        .run(
+          highWaterMarkMs,
+          fence.scopeId,
+          fence.incarnationId,
+          fence.fencingEpoch,
+          row.highWaterMarkMs,
+        )
+      if (updated.changes !== 1) {
+        throw new DurableCustodyFenceError('custody unit of work fence CAS failed')
+      }
+      return action(database)
+    },
+    { ...options, notifyWalletHoldingsCommit: true },
+  )
 }
 
 export async function withDurableCustodyFencedRead<T>(

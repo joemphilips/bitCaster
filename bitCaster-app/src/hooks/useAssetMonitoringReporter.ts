@@ -53,7 +53,10 @@ export function useAssetMonitoringReporter(nostrSignerReady: boolean): void {
           .filter((proof) => proof.terminalOperationId === undefined);
         const conditionIds = conditionalProofConditionIds(proofs);
         if (conditionIds === null) return null;
-        const catalogue = await fetchAssetMonitoringCatalogue(conditionIds);
+        const catalogue = await fetchAssetMonitoringCatalogue(conditionIds, {
+          engineBaseUrl: window.location.origin,
+          fetchImpl: fetch,
+        });
         return buildAssetMonitoringHoldings({ proofs, catalogue });
       },
       hasPendingSubmittedOrder: () => hasSubmittedCtfRangeOrder(scopeId, database),

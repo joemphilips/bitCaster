@@ -422,9 +422,13 @@ export async function ensureState(): Promise<DaemonState> {
     const latest = await readState()
     if (latest) return latest
     const fresh = emptyDaemonState()
-    await withDaemonStateSqliteTransaction(profileDir(), (database) => {
-      writeDaemonStateToDatabase(database, fresh)
-    })
+    await withDaemonStateSqliteTransaction(
+      profileDir(),
+      (database) => {
+        writeDaemonStateToDatabase(database, fresh)
+      },
+      { notifyWalletHoldingsCommit: true },
+    )
     return fresh
   })
 }
@@ -442,20 +446,28 @@ export async function readState(): Promise<DaemonState | null> {
 
 export async function writeState(state: DaemonState): Promise<void> {
   await withStateUpdateLock(async () => {
-    await withDaemonStateSqliteTransaction(profileDir(), (database) => {
-      writeDaemonStateToDatabase(database, normalizeState(state))
-    })
+    await withDaemonStateSqliteTransaction(
+      profileDir(),
+      (database) => {
+        writeDaemonStateToDatabase(database, normalizeState(state))
+      },
+      { notifyWalletHoldingsCommit: true },
+    )
   })
 }
 
 export async function updateState<T>(update: (state: DaemonState, now: string) => T): Promise<T> {
   return withStateUpdateLock(async () => {
-    return withDaemonStateSqliteTransaction(profileDir(), (database) => {
-      const state = readDaemonStateFromDatabase(database) ?? emptyDaemonState()
-      const result = update(state, new Date().toISOString())
-      writeDaemonStateToDatabase(database, normalizeState(state))
-      return result
-    })
+    return withDaemonStateSqliteTransaction(
+      profileDir(),
+      (database) => {
+        const state = readDaemonStateFromDatabase(database) ?? emptyDaemonState()
+        const result = update(state, new Date().toISOString())
+        writeDaemonStateToDatabase(database, normalizeState(state))
+        return result
+      },
+      { notifyWalletHoldingsCommit: true },
+    )
   })
 }
 
@@ -1624,8 +1636,10 @@ export async function markProofOperationCompleted(
   operationId: string,
   completion: Record<string, CashuProofRecord[]> | CtfProofOperationCompletion,
 ): Promise<ProofOperationRecord> {
-  return withDaemonStateSqliteTransaction(profileDir(), (database) =>
-    completeProofOperation(database, operationId, completion),
+  return withDaemonStateSqliteTransaction(
+    profileDir(),
+    (database) => completeProofOperation(database, operationId, completion),
+    { notifyWalletHoldingsCommit: true },
   )
 }
 

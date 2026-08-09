@@ -1367,6 +1367,41 @@ test('bitcaster-cli config set writes config without auto-starting an unreachabl
   }
 })
 
+test('bitcaster-cli config set accepts both asset-monitoring privacy values and rejects others', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-config-monitoring-'))
+  try {
+    const env = {
+      ...process.env,
+      BITCASTER_DAEMON_HOME: home,
+      BITCASTER_TEST_DAEMON_URL: 'http://127.0.0.1:1',
+    }
+    await runCliWithEnv(['config', 'set', '--asset-monitoring', 'enabled'], env)
+    assert.equal(
+      (
+        JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
+          daemon: { assetMonitoringEnabled: boolean }
+        }
+      ).daemon.assetMonitoringEnabled,
+      true,
+    )
+    await runCliWithEnv(['config', 'set', '--asset-monitoring', 'disabled'], env)
+    assert.equal(
+      (
+        JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
+          daemon: { assetMonitoringEnabled: boolean }
+        }
+      ).daemon.assetMonitoringEnabled,
+      false,
+    )
+    await assert.rejects(
+      () => runCliWithEnv(['config', 'set', '--asset-monitoring', 'maybe'], env),
+      /enabled or disabled/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('bitcaster-cli config set does not auto-start the daemon when autostart is otherwise enabled', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-config-set-autostart-enabled-'))
   const configPath = join(home, 'config.json')
@@ -1515,6 +1550,7 @@ test('bitcaster-cli config list does not rewrite already sanitized config', asyn
     assert.deepEqual(JSON.parse(result.stdout), {
       engineUrl: 'https://engine.example',
       mintUrl: 'https://mint.example',
+      assetMonitoringEnabled: false,
       trustedEngineUrls: ['https://trusted-engine.example'],
     })
     const after = await stat(configPath)
@@ -2725,11 +2761,12 @@ function nativeConfigFixture(
   trustedEngineUrls: string[] = [],
 ): object {
   return {
-    version: 1,
+    version: 2,
     daemon: {
       engineUrl,
       mintUrl,
       autoRetireResolvedConditionInventory: false,
+      assetMonitoringEnabled: false,
     },
     cli: { trustedEngineUrls },
   }

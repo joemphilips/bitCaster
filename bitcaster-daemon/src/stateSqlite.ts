@@ -8,6 +8,8 @@ export type StateSqliteFaultPhase = 'transaction-opened' | 'before-commit' | 'af
 
 export interface StateSqliteTransactionOptions {
   readonly injectFault?: (phase: StateSqliteFaultPhase) => void
+  /** Notify observers only when the transaction can change wallet holdings. */
+  readonly notifyWalletHoldingsCommit?: boolean
 }
 
 export interface DaemonStateSqliteSession {
@@ -16,6 +18,23 @@ export interface DaemonStateSqliteSession {
     action: (database: DatabaseSync) => T,
     options?: StateSqliteTransactionOptions,
   ): Promise<T>
+}
+
+const walletHoldingsListenersByDatabase = new Map<string, Set<() => void>>()
+
+/** Observes successful wallet-holdings commits for one profile database. */
+export function subscribeToDaemonWalletHoldingsCommits(
+  directory: string,
+  callback: () => void,
+): () => void {
+  const databasePath = daemonDatabasePath(directory)
+  const listeners = walletHoldingsListenersByDatabase.get(databasePath) ?? new Set<() => void>()
+  listeners.add(callback)
+  walletHoldingsListenersByDatabase.set(databasePath, listeners)
+  return () => {
+    listeners.delete(callback)
+    if (listeners.size === 0) walletHoldingsListenersByDatabase.delete(databasePath)
+  }
 }
 
 export async function openDaemonStateSqlite(directory: string): Promise<DatabaseSync> {
@@ -68,7 +87,7 @@ export function configureDaemonStateSqlite(database: DatabaseSync): void {
 }
 
 function openConfiguredDatabase(directory: string): DatabaseSync {
-  const database = new DatabaseSync(join(directory, DAEMON_PROFILE_DATABASE))
+  const database = new DatabaseSync(daemonDatabasePath(directory))
   configureDaemonStateSqlite(database)
   return database
 }
@@ -99,6 +118,17 @@ function withConfiguredTransaction<T>(
       options.injectFault?.('before-commit')
       database.exec('COMMIT')
       committed = true
+      if (options.notifyWalletHoldingsCommit) {
+        for (const listener of walletHoldingsListenersByDatabase.get(
+          daemonDatabasePath(directory),
+        ) ?? []) {
+          try {
+            listener()
+          } catch {
+            // Monitoring observers must never affect durable custody commits.
+          }
+        }
+      }
       options.injectFault?.('after-commit')
       return result
     } catch (error) {
@@ -112,4 +142,8 @@ function withConfiguredTransaction<T>(
       throw error
     }
   })
+}
+
+function daemonDatabasePath(directory: string): string {
+  return join(directory, DAEMON_PROFILE_DATABASE)
 }

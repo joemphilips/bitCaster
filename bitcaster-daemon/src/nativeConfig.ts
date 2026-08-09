@@ -19,18 +19,19 @@ import { dirname, join } from 'node:path'
 import { dataDir } from './dataDir.ts'
 import { normalizeEndpointUrl } from './endpoint.ts'
 
-export const NATIVE_CONFIG_VERSION = 1
+export const NATIVE_CONFIG_VERSION = 2
 export const DEFAULT_ENGINE_URL = 'http://localhost:5000'
 export const DEFAULT_MINT_URL = 'http://localhost:8085'
 const MAX_CONFIG_BYTES = 64 * 1_024
 let startupConfig: NativeConfigSnapshot | undefined
 
 export interface NativeConfig {
-  readonly version: 1
+  readonly version: 2
   readonly daemon: {
     readonly engineUrl: string
     readonly mintUrl: string
     readonly autoRetireResolvedConditionInventory: boolean
+    readonly assetMonitoringEnabled: boolean
   }
   readonly cli: {
     readonly trustedEngineUrls: readonly string[]
@@ -62,6 +63,7 @@ export function defaultNativeConfig(): NativeConfig {
       engineUrl: DEFAULT_ENGINE_URL,
       mintUrl: DEFAULT_MINT_URL,
       autoRetireResolvedConditionInventory: false,
+      assetMonitoringEnabled: false,
     },
     cli: { trustedEngineUrls: [] },
   }
@@ -146,12 +148,15 @@ export function parseNativeConfig(raw: string): NativeConfig {
   }
   const daemon = strictObject(
     root.daemon,
-    ['engineUrl', 'mintUrl', 'autoRetireResolvedConditionInventory'],
+    ['engineUrl', 'mintUrl', 'autoRetireResolvedConditionInventory', 'assetMonitoringEnabled'],
     'config.daemon',
   )
   const cli = strictObject(root.cli, ['trustedEngineUrls'], 'config.cli')
   if (typeof daemon.autoRetireResolvedConditionInventory !== 'boolean') {
     throw new Error('config.daemon.autoRetireResolvedConditionInventory must be boolean')
+  }
+  if (typeof daemon.assetMonitoringEnabled !== 'boolean') {
+    throw new Error('config.daemon.assetMonitoringEnabled must be boolean')
   }
   if (!Array.isArray(cli.trustedEngineUrls)) {
     throw new Error('config.cli.trustedEngineUrls must be an array')
@@ -174,6 +179,7 @@ export function parseNativeConfig(raw: string): NativeConfig {
       engineUrl: normalizeEndpointUrl(daemon.engineUrl, 'engine URL'),
       mintUrl: normalizeEndpointUrl(daemon.mintUrl, 'mint URL'),
       autoRetireResolvedConditionInventory: daemon.autoRetireResolvedConditionInventory,
+      assetMonitoringEnabled: daemon.assetMonitoringEnabled,
     },
     cli: { trustedEngineUrls },
   }

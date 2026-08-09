@@ -8,6 +8,7 @@ import {
 export interface CliConfig {
   engineUrl?: string
   mintUrl?: string
+  assetMonitoringEnabled: boolean
   trustedEngineUrls: string[]
 }
 
@@ -33,6 +34,7 @@ function toNativeConfig(current: NativeConfig, update: CliConfig): NativeConfig 
       ...current.daemon,
       ...(update.engineUrl === undefined ? {} : { engineUrl: update.engineUrl }),
       ...(update.mintUrl === undefined ? {} : { mintUrl: update.mintUrl }),
+      assetMonitoringEnabled: update.assetMonitoringEnabled,
     },
     cli: { trustedEngineUrls: update.trustedEngineUrls },
   }
@@ -42,6 +44,7 @@ function toCliConfig(config: NativeConfig): CliConfig {
   return {
     engineUrl: config.daemon.engineUrl,
     mintUrl: config.daemon.mintUrl,
+    assetMonitoringEnabled: config.daemon.assetMonitoringEnabled,
     trustedEngineUrls: [...config.cli.trustedEngineUrls],
   }
 }

@@ -156,7 +156,10 @@ describe("useAssetMonitoringReporter", () => {
 
     await expect(mocks.state.reporters[0]!.input.buildHoldings()).resolves.toEqual([]);
     expect(proofs(mocks.state.database).toArray).toHaveBeenCalledOnce();
-    expect(mocks.fetchAssetMonitoringCatalogue).toHaveBeenCalledWith([]);
+    expect(mocks.fetchAssetMonitoringCatalogue).toHaveBeenCalledWith(
+      [],
+      expect.objectContaining({ engineBaseUrl: window.location.origin, fetchImpl: fetch }),
+    );
   });
 
   it("requests once for each committed proof transaction and coalesces its writes", () => {

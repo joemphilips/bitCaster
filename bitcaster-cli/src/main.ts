@@ -973,7 +973,8 @@ function registerConfigCommand(program: Command): void {
       `
 Examples:
   bitcaster-cli config set --engine-url <url>
-  bitcaster-cli config set --mint-url <url>`,
+  bitcaster-cli config set --mint-url <url>
+  bitcaster-cli config set --asset-monitoring disabled`,
     )
 
   config
@@ -989,8 +990,9 @@ Examples:
     .description('Set CLI config values and write through to the daemon when reachable.')
     .option('--engine-url <url>', 'Engine URL')
     .option('--mint-url <url>', 'Mint URL')
+    .option('--asset-monitoring <enabled|disabled>', 'Asset monitoring. Disabled is privacy mode.')
     .addHelpText('after', '\nExample:\n  bitcaster-cli config set --engine-url <url>')
-    .action(async (options: { engineUrl?: string; mintUrl?: string }) => {
+    .action(async (options: { engineUrl?: string; mintUrl?: string; assetMonitoring?: string }) => {
       await setCliConfig(options)
     })
 
@@ -1011,7 +1013,11 @@ Examples:
     })
 }
 
-function daemonConfigParams(options: { engineUrl?: string; mintUrl?: string }): {
+function daemonConfigParams(options: {
+  engineUrl?: string
+  mintUrl?: string
+  assetMonitoring?: string
+}): {
   engineUrl?: string
   mintUrl?: string
 } {
@@ -1020,7 +1026,7 @@ function daemonConfigParams(options: { engineUrl?: string; mintUrl?: string }): 
   const mintUrl = options.mintUrl
   if (engineUrl !== undefined) params.engineUrl = engineUrl
   if (mintUrl !== undefined) params.mintUrl = mintUrl
-  if (!params.engineUrl && !params.mintUrl) {
+  if (!params.engineUrl && !params.mintUrl && options.assetMonitoring === undefined) {
     throwUsage('Usage: bitcaster-cli daemon config [--engine-url <url>] [--mint-url <url>]')
   }
   return params
@@ -1032,19 +1038,25 @@ function printConfigValue(key?: string): void {
     process.stdout.write(`${JSON.stringify(config, null, 2)}\n`)
     return
   }
-  if (key !== 'engineUrl' && key !== 'mintUrl') {
+  if (key !== 'engineUrl' && key !== 'mintUrl' && key !== 'assetMonitoringEnabled') {
     throwUsage(`Unknown config key: ${key}`)
   }
   const value = config[key]
   process.stdout.write(value === undefined ? 'null\n' : `${JSON.stringify(value)}\n`)
 }
 
-async function setCliConfig(options: { engineUrl?: string; mintUrl?: string }): Promise<void> {
+async function setCliConfig(options: {
+  engineUrl?: string
+  mintUrl?: string
+  assetMonitoring?: string
+}): Promise<void> {
   const params = daemonConfigParams(options)
+  const assetMonitoringEnabled = parseAssetMonitoringOption(options.assetMonitoring)
   const config = updateConfig((current) => ({
     ...current,
     ...(params.engineUrl === undefined ? {} : { engineUrl: params.engineUrl }),
     ...(params.mintUrl === undefined ? {} : { mintUrl: params.mintUrl }),
+    ...(assetMonitoringEnabled === undefined ? {} : { assetMonitoringEnabled }),
   }))
   if (await isCliSpawnedDaemonRunning()) {
     await restartDaemon()
@@ -1053,6 +1065,13 @@ async function setCliConfig(options: { engineUrl?: string; mintUrl?: string }): 
     process.stderr.write('config.json updated; restart bitcaster-daemon to apply changes\n')
   }
   process.stdout.write(`${JSON.stringify({ ok: true, result: { config } }, null, 2)}\n`)
+}
+
+function parseAssetMonitoringOption(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined
+  if (value === 'enabled') return true
+  if (value === 'disabled') return false
+  throwUsage('asset monitoring must be enabled or disabled')
 }
 
 interface ConsolidateArgs {

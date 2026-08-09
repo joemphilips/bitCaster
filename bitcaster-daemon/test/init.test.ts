@@ -326,11 +326,12 @@ async function runDaemonInit(
         join(home, 'config.json'),
         `${JSON.stringify(
           {
-            version: 1,
+            version: 2,
             daemon: {
               engineUrl: secrets.engineUrl ?? 'http://localhost:5000',
               mintUrl: secrets.mintUrl ?? 'http://localhost:8085',
               autoRetireResolvedConditionInventory: false,
+              assetMonitoringEnabled: false,
             },
             cli: { trustedEngineUrls: [] },
           },

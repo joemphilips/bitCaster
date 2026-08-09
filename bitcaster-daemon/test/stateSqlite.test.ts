@@ -9,8 +9,12 @@ import {
 } from '@bitcaster-market/client-sdk'
 import { createCtfProofOperationCompletion } from '@bitcaster-market/client-sdk/ctfSplit'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
-import { claimCustodyScopeLease } from '../src/profileFencing.ts'
-import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
+import { claimCustodyScopeLease, renewCustodyScopeLease } from '../src/profileFencing.ts'
+import {
+  openDaemonStateSqlite,
+  subscribeToDaemonWalletHoldingsCommits,
+  withDaemonStateSqliteTransaction,
+} from '../src/stateSqlite.ts'
 import { getOrCreateOrderEphemeralKeypair, readSecrets } from '../src/secrets.ts'
 import {
   advanceDaemonKeysetCounter,
@@ -190,6 +194,36 @@ test('ensureState initializes once without queue deadlock and survives restart',
     assert.equal(initialized.version, 1)
     assert.equal((await ensureState()).version, 1)
     assert.equal((await readState())?.version, 1)
+  })
+})
+
+test('monitoring observers ignore lease commits and receive holdings commits', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'monitoring-observer')
+    let notifications = 0
+    const unsubscribe = subscribeToDaemonWalletHoldingsCommits(home, () => {
+      notifications += 1
+    })
+    try {
+      await renewCustodyScopeLease(home, mutation.fence, mutation.observedAtMs + 1)
+      assert.equal(notifications, 0)
+      await assert.rejects(
+        () =>
+          withDaemonStateSqliteTransaction(
+            home,
+            () => {
+              throw new Error('rollback')
+            },
+            { notifyWalletHoldingsCommit: true },
+          ),
+        /rollback/,
+      )
+      assert.equal(notifications, 0)
+      await writeState(walletStateWithProofs([proof('monitoring-proof', 1)]))
+      assert.equal(notifications, 1)
+    } finally {
+      unsubscribe()
+    }
   })
 })
 

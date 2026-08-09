@@ -86,9 +86,12 @@ describe("asset monitoring snapshot", () => {
       }),
     );
 
-    await expect(fetchAssetMonitoringCatalogue([conditionId], fetchImpl)).resolves.toEqual([
-      { conditionId, outcomes: ["NO", "YES"] },
-    ]);
+    await expect(
+      fetchAssetMonitoringCatalogue([conditionId], {
+        engineBaseUrl: "https://engine.example",
+        fetchImpl,
+      }),
+    ).resolves.toEqual([{ conditionId, outcomes: ["NO", "YES"] }]);
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(String(fetchImpl.mock.calls[0]?.[0])).toContain("page_size=1");
   });
@@ -101,7 +104,12 @@ describe("asset monitoring snapshot", () => {
       async (_url: RequestInfo | URL) => new Response(JSON.stringify({ markets: [] })),
     );
 
-    await expect(fetchAssetMonitoringCatalogue(conditionIds, fetchImpl)).resolves.toEqual([]);
+    await expect(
+      fetchAssetMonitoringCatalogue(conditionIds, {
+        engineBaseUrl: "https://engine.example",
+        fetchImpl,
+      }),
+    ).resolves.toEqual([]);
 
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     for (const [url] of fetchImpl.mock.calls) {
@@ -115,21 +123,27 @@ describe("asset monitoring snapshot", () => {
     const fetchImpl = vi.fn();
 
     await expect(
-      fetchAssetMonitoringCatalogue([`${conditionId},${"c".repeat(64)}`], fetchImpl),
+      fetchAssetMonitoringCatalogue([`${conditionId},${"c".repeat(64)}`], {
+        engineBaseUrl: "https://engine.example",
+        fetchImpl,
+      }),
     ).rejects.toThrow();
-    await expect(fetchAssetMonitoringCatalogue(["a".repeat(129)], fetchImpl)).rejects.toThrow();
+    await expect(
+      fetchAssetMonitoringCatalogue(["a".repeat(129)], {
+        engineBaseUrl: "https://engine.example",
+        fetchImpl,
+      }),
+    ).rejects.toThrow();
 
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("rejects oversized and overfull catalogue responses", async () => {
-    const oversized = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ markets: [] }), {
-          headers: { "content-length": String(513 * 1024) },
-        }),
-      );
+    const oversized = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ markets: [] }), {
+        headers: { "content-length": String(513 * 1024) },
+      }),
+    );
     const overfull = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -141,8 +155,18 @@ describe("asset monitoring snapshot", () => {
       ),
     );
 
-    await expect(fetchAssetMonitoringCatalogue([conditionId], oversized)).rejects.toThrow();
-    await expect(fetchAssetMonitoringCatalogue([conditionId], overfull)).rejects.toThrow();
+    await expect(
+      fetchAssetMonitoringCatalogue([conditionId], {
+        engineBaseUrl: "https://engine.example",
+        fetchImpl: oversized,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      fetchAssetMonitoringCatalogue([conditionId], {
+        engineBaseUrl: "https://engine.example",
+        fetchImpl: overfull,
+      }),
+    ).rejects.toThrow();
   });
 });
 
@@ -151,7 +175,7 @@ describe("asset monitoring reporter", () => {
     const remote = reporterRemote();
     const reporter = new AssetMonitoringReporter({
       walletId,
-      buildHoldings: vi.fn().mockResolvedValue(holdings(1)),
+      buildHoldings: vi.fn().mockResolvedValueOnce(holdings(1)).mockResolvedValueOnce(holdings(2)),
       remote,
       hasPendingSubmittedOrder: vi.fn(),
       isCurrent: () => true,
@@ -254,9 +278,11 @@ describe("asset monitoring reporter", () => {
     expect(requestAt(remote, 1).holdings).toEqual(requestAt(remote, 0).holdings);
   });
 
-  it("does not loop a non-409 failure", async () => {
+  it("retries a transient non-409 failure without another wallet change", async () => {
     const remote = reporterRemote();
-    remote.submitAssetMonitoringReport.mockRejectedValue(new EngineClientError(500, "unavailable"));
+    remote.submitAssetMonitoringReport
+      .mockRejectedValueOnce(new EngineClientError(500, "unavailable"))
+      .mockResolvedValueOnce(undefined);
     const reporter = new AssetMonitoringReporter({
       walletId,
       buildHoldings: vi.fn().mockResolvedValue(holdings(1)),
@@ -264,13 +290,13 @@ describe("asset monitoring reporter", () => {
       hasPendingSubmittedOrder: vi.fn(),
       isCurrent: () => true,
       createReportId: ids(),
+      retryDelayMs: () => 1,
     });
 
     reporter.request();
-    await vi.waitFor(() => expect(remote.submitAssetMonitoringReport).toHaveBeenCalledOnce());
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => expect(remote.submitAssetMonitoringReport).toHaveBeenCalledTimes(2));
 
-    expect(remote.submitAssetMonitoringReport).toHaveBeenCalledOnce();
+    reporter.stop();
   });
 
   it("does not submit stale work after a wallet or signer switch", async () => {
