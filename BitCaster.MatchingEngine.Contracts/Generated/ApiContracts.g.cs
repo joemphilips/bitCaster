@@ -2529,7 +2529,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string Description { get; }
 
         /// <summary>
-        /// The outcomes for the market (at least 2).
+        /// The outcomes for the market (2 through 8).
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
         public System.Collections.Generic.List<CreateMarketOutcome> Outcomes { get; }

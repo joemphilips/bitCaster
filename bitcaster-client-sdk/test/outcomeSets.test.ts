@@ -50,7 +50,8 @@ test('parseMarketOutcomes rejects malformed or ambiguous engine authority', () =
   for (const market of [
     {},
     { outcomes: [] },
-    { outcomes: Array.from({ length: 65 }, (_, index) => `outcome-${index}`) },
+    { outcomes: ['Only'] },
+    { outcomes: Array.from({ length: 9 }, (_, index) => `outcome-${index}`) },
     { outcomes: ['Yes', ''] },
     { outcomes: [{ id: 'yes' }] },
     { outcomes: ['Yes', { id: 'other', label: 'Yes' }] },

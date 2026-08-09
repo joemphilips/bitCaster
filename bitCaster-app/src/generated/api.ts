@@ -1375,7 +1375,7 @@ export interface components {
             title: string;
             /** @description Detailed market description. */
             description: string;
-            /** @description The outcomes for the market (at least 2). */
+            /** @description The outcomes for the market (2 through 8). */
             outcomes: components["schemas"]["CreateMarketOutcome"][];
             /**
              * @description Market outcome type. Numeric creation is disabled until finite-bin metadata is supported end-to-end.

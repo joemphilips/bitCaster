@@ -13,7 +13,7 @@ export const MANAGED_CONDITION_INVENTORY_SCHEMA_VERSION = 1 as const
 const EVIDENCE_BYTES_MAX = 64 * 1_024
 const TEXT_BYTES_MAX = 16 * 1_024
 const ORACLE_COUNT_MAX = 16
-const OUTCOME_COUNT_MAX = 255
+const OUTCOME_COUNT_MAX = 8
 const verifiedResolutionBrand: unique symbol = Symbol('VerifiedConditionResolution')
 
 export interface ManagedConditionInventoryBinding {
@@ -235,7 +235,8 @@ export function deriveDlcConditionId(input: {
 }): string {
   const eventId = canonicalText(input.eventId, 'oracle event id')
   const outcomeCount = positiveCount(input.outcomeCount, 'outcome count')
-  if (outcomeCount > OUTCOME_COUNT_MAX) throw new Error('outcome count is invalid')
+  if (outcomeCount < 2 || outcomeCount > OUTCOME_COUNT_MAX)
+    throw new Error('outcome count is invalid')
   if (input.oraclePublicKeys.length === 0 || input.oraclePublicKeys.length > ORACLE_COUNT_MAX)
     throw new Error('condition oracle set is invalid')
   const pubkeys = input.oraclePublicKeys

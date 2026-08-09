@@ -12,7 +12,7 @@ export function parseMarketOutcomes(market: unknown): SdkMarketOutcome[] {
     !isRecord(market) ||
     !Array.isArray(market.outcomes) ||
     market.outcomes.length < 2 ||
-    market.outcomes.length > 64
+    market.outcomes.length > 8
   ) {
     throw new Error('engine market outcomes are invalid')
   }

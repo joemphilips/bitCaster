@@ -3016,7 +3016,8 @@ components:
           items:
             $ref: '#/components/schemas/CreateMarketOutcome'
           minItems: 2
-          description: The outcomes for the market (at least 2).
+          maxItems: 8
+          description: The outcomes for the market (2 through 8).
         outcomeType:
           type: string
           enum: [yesno, categorical, numeric]

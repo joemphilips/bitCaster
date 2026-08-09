@@ -50,6 +50,20 @@ const BINDING: ManagedConditionInventoryBinding = {
   conditionId: CONDITION_ID,
   canonicalParentCollectionId: null,
 }
+
+test('SDK rejects condition outcome counts outside the global two-to-eight bound', () => {
+  for (const outcomeCount of [1, 9]) {
+    assert.throws(
+      () =>
+        deriveDlcConditionId({
+          eventId: EVENT_ID,
+          outcomeCount,
+          oraclePublicKeys: [ORACLE_PUBLIC_KEY],
+        }),
+      /outcome count is invalid/,
+    )
+  }
+})
 const QUIESCENT: ManagedConditionInventoryQuiescence = {
   earlierWorkCount: 0,
   unknownWorkCount: 0,
