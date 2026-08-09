@@ -15,9 +15,12 @@ import {
   encodeEncryptedWalletBackupV2BundleDescriptor,
   type EncryptedWalletBackupV2BundleDescriptor,
   ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_OBJECT_MAX,
+  ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX,
+  ENCRYPTED_WALLET_BACKUP_V2_UINT64_MAX,
 } from './encryptedWalletBackupV2Descriptor.ts'
 import {
   decodeEncryptedWalletBackupV2CurrentHead,
+  digestEncryptedWalletBackupV2ActiveSetPairs,
   type EncryptedWalletBackupV2CurrentHead,
   type EncryptedWalletBackupV2DescriptorPage,
   ENCRYPTED_WALLET_BACKUP_V2_DESCRIPTOR_PAGE_MAX,
@@ -37,6 +40,7 @@ import {
   hexToBytesStrict,
   requireBytes,
   requireLowerHex,
+  requireRealm,
 } from './encryptedWalletBackupServerValidation.ts'
 import { ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES } from './encryptedWalletBackupV2Limits.ts'
 
@@ -45,6 +49,7 @@ export const ENCRYPTED_WALLET_BACKUP_V2_UPLOAD_GROUP_MAX_BYTES =
 const PAGE_MAX_BYTES = 65_536
 const RECEIPT_MAX_BYTES = 65_536
 const OBJECT_WIRE_MAX_BYTES = 300_000
+export const ENCRYPTED_WALLET_BACKUP_V2_CURRENT_INVENTORY_MAX_BYTES = 60_000 as const
 
 const UPLOAD_GROUP_PREFLIGHT = tuplePreflight(
   ENCRYPTED_WALLET_BACKUP_V2_UPLOAD_GROUP_MAX_BYTES,
@@ -62,6 +67,14 @@ const DESCRIPTOR_PAGE_PREFLIGHT = tuplePreflight(PAGE_MAX_BYTES, 2, 22, 15, PAGE
   array(0, 15),
   nullableBytes(16),
 ])
+const CURRENT_INVENTORY_PREFLIGHT = tuplePreflight(
+  ENCRYPTED_WALLET_BACKUP_V2_CURRENT_INVENTORY_MAX_BYTES,
+  3,
+  1_600,
+  ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX,
+  ENCRYPTED_WALLET_BACKUP_V2_CURRENT_INVENTORY_MAX_BYTES,
+  [uint(2), text('current-inventory'), uint(), bytes(32), array(0, 256)],
+)
 const SIGNED_MUTATION_PREFLIGHT = tuplePreflight(PAGE_MAX_BYTES, 3, 300, 256, PAGE_MAX_BYTES, [
   uint(2),
   text('bundle-supersession-mutation'),
@@ -114,6 +127,20 @@ const RECEIPT_PREFLIGHT = tuplePreflight(RECEIPT_MAX_BYTES, 3, 340, 256, PAGE_MA
 export interface DecodedEncryptedWalletBackupV2UploadGroup {
   readonly mutationEvidence: EncryptedWalletBackupV2VerifiedBundleSupersessionMutation
   readonly objects: readonly EncryptedWalletBackupV2BundleObjectWire[]
+}
+
+export interface EncryptedWalletBackupV2CurrentInventoryEntry {
+  readonly assetLocator: string
+  readonly declaredAmount: bigint
+  readonly custodyRevision: bigint
+  readonly bundleId: string
+  readonly descriptorDigest: string
+}
+
+export interface EncryptedWalletBackupV2CurrentInventory {
+  readonly headVersion: number
+  readonly activeSetDigest: string
+  readonly entries: readonly EncryptedWalletBackupV2CurrentInventoryEntry[]
 }
 
 /** Encodes one signed mutation and its immutable object wires as a canonical upload group. */
@@ -190,6 +217,84 @@ export function decodeEncryptedWalletBackupV2DescriptorPage(
       decodeHead(requireBytes(tuple[2], 1, PAGE_MAX_BYTES, 'current head')),
     ),
     nextAfterBundleId: decodeNullableId(tuple[5], 'bundle cursor'),
+  })
+}
+
+/** Encodes one bounded current inventory response for the V2 backup HTTP boundary. */
+export function encodeEncryptedWalletBackupV2CurrentInventory(value: unknown): Uint8Array {
+  const inventory = decodeCurrentInventory(value)
+  const bytes = encodeCanonicalBackupCbor([
+    2,
+    'current-inventory',
+    inventory.headVersion,
+    hexToBytesStrict(inventory.activeSetDigest, 32, 'active set digest'),
+    inventory.entries.map((entry) => [
+      hexToBytesStrict(entry.assetLocator, 32, 'asset locator'),
+      entry.declaredAmount,
+      entry.custodyRevision,
+      hexToBytesStrict(entry.bundleId, 16, 'bundle id'),
+      hexToBytesStrict(entry.descriptorDigest, 32, 'descriptor digest'),
+    ]),
+  ])
+  if (bytes.byteLength > ENCRYPTED_WALLET_BACKUP_V2_CURRENT_INVENTORY_MAX_BYTES)
+    throw new Error('encrypted backup v2 current inventory is too large')
+  return bytes
+}
+
+/** Decodes one canonical bounded current inventory response. */
+export function decodeEncryptedWalletBackupV2CurrentInventory(
+  bytes: Uint8Array,
+): EncryptedWalletBackupV2CurrentInventory {
+  const tuple = decodeTuple(bytes, CURRENT_INVENTORY_PREFLIGHT, 'current inventory')
+  if (tuple[0] !== 2 || tuple[1] !== 'current-inventory')
+    throw new Error('encrypted backup v2 current inventory is invalid')
+  return decodeCurrentInventory({
+    headVersion: tuple[2],
+    activeSetDigest: toHex(requireBytes(tuple[3], 32, 32, 'active set digest')),
+    entries: decodeCurrentInventoryEntries(tuple[4]),
+  })
+}
+
+/** Validates the active bundle identity set for one exact V2 wallet scope. */
+export function requireEncryptedWalletBackupV2CurrentInventoryScope(input: {
+  readonly inventory: EncryptedWalletBackupV2CurrentInventory
+  readonly realm: string
+  readonly walletId: string
+  readonly enrollmentEpoch: number
+}): EncryptedWalletBackupV2CurrentInventory {
+  const inventory = decodeCurrentInventory(input.inventory)
+  if (
+    inventory.activeSetDigest !==
+    digestEncryptedWalletBackupV2CurrentInventoryActiveSet({
+      realm: input.realm,
+      walletId: input.walletId,
+      enrollmentEpoch: input.enrollmentEpoch,
+      entries: inventory.entries,
+    })
+  )
+    throw new Error('encrypted backup v2 current inventory digest is invalid')
+  return inventory
+}
+
+export function digestEncryptedWalletBackupV2CurrentInventoryActiveSet(input: {
+  readonly realm: string
+  readonly walletId: string
+  readonly enrollmentEpoch: number
+  readonly entries: readonly EncryptedWalletBackupV2CurrentInventoryEntry[]
+}): string {
+  const realm = requireRealm(input.realm)
+  const walletId = requireLowerHex(input.walletId, 32, 'wallet id')
+  const enrollmentEpoch = requireSafeUint(input.enrollmentEpoch, 'enrollment epoch')
+  if (enrollmentEpoch < 1) throw new Error('encrypted backup v2 enrollment epoch is invalid')
+  const entries = decodeCurrentInventoryEntries(input.entries)
+  return digestEncryptedWalletBackupV2ActiveSetPairs({
+    realm,
+    walletId,
+    enrollmentEpoch,
+    pairs: entries.map((entry) => ({
+      bundleId: entry.bundleId,
+      descriptorDigest: entry.descriptorDigest,
+    })),
   })
 }
 
@@ -386,6 +491,81 @@ function decodeDescriptorPage(value: unknown): EncryptedWalletBackupV2Descriptor
   const bundles = decodeDescriptorArray(record.bundles, head)
   validatePageOrder(afterBundleId, bundles, nextAfterBundleId)
   return Object.freeze({ head, afterBundleId, bundles: Object.freeze(bundles), nextAfterBundleId })
+}
+
+function decodeCurrentInventory(value: unknown): EncryptedWalletBackupV2CurrentInventory {
+  const record = exactRecord(
+    value,
+    ['headVersion', 'activeSetDigest', 'entries'],
+    'current inventory',
+  )
+  const entries = decodeCurrentInventoryEntries(record.entries)
+  return Object.freeze({
+    headVersion: requireSafeUint(record.headVersion, 'head version'),
+    activeSetDigest: requireLowerHex(record.activeSetDigest, 32, 'active set digest'),
+    entries: Object.freeze(entries),
+  })
+}
+
+function decodeCurrentInventoryEntries(
+  value: unknown,
+): EncryptedWalletBackupV2CurrentInventoryEntry[] {
+  if (!Array.isArray(value) || value.length > ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX)
+    throw new Error('encrypted backup v2 current inventory is invalid')
+  const entries = value.map((item) => {
+    if (Array.isArray(item)) {
+      if (item.length !== 5)
+        throw new Error('encrypted backup v2 current inventory entry is invalid')
+      return currentInventoryEntry({
+        assetLocator: toHex(requireBytes(item[0], 32, 32, 'asset locator')),
+        declaredAmount: item[1],
+        custodyRevision: item[2],
+        bundleId: toHex(requireBytes(item[3], 16, 16, 'bundle id')),
+        descriptorDigest: toHex(requireBytes(item[4], 32, 32, 'descriptor digest')),
+      })
+    }
+    return currentInventoryEntry(item)
+  })
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!
+    if (index > 0 && entry.bundleId <= entries[index - 1]!.bundleId)
+      throw new Error('encrypted backup v2 current inventory entries are unordered or duplicated')
+    if (
+      entries.some(
+        (other, otherIndex) => otherIndex < index && other.assetLocator === entry.assetLocator,
+      )
+    )
+      throw new Error('encrypted backup v2 current inventory asset locator is duplicated')
+  }
+  return entries
+}
+
+function currentInventoryEntry(value: unknown): EncryptedWalletBackupV2CurrentInventoryEntry {
+  const record = exactRecord(
+    value,
+    ['assetLocator', 'declaredAmount', 'custodyRevision', 'bundleId', 'descriptorDigest'],
+    'current inventory entry',
+  )
+  return Object.freeze({
+    assetLocator: requireLowerHex(record.assetLocator, 32, 'asset locator'),
+    declaredAmount: requireUint64(record.declaredAmount, 'declared amount'),
+    custodyRevision: requireUint64(record.custodyRevision, 'custody revision'),
+    bundleId: requireLowerHex(record.bundleId, 16, 'bundle id'),
+    descriptorDigest: requireLowerHex(record.descriptorDigest, 32, 'descriptor digest'),
+  })
+}
+
+function requireSafeUint(value: unknown, name: string): number {
+  if (!Number.isSafeInteger(value) || typeof value !== 'number' || value < 0)
+    throw new Error(`encrypted backup v2 ${name} is invalid`)
+  return value
+}
+
+function requireUint64(value: unknown, name: string): bigint {
+  if (typeof value === 'bigint' && value >= 0n && value <= ENCRYPTED_WALLET_BACKUP_V2_UINT64_MAX)
+    return value
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value)
+  throw new Error(`encrypted backup v2 ${name} is invalid`)
 }
 
 function validatePageOrder(

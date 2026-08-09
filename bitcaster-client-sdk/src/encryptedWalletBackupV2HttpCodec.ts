@@ -14,9 +14,11 @@ import {
 } from './encryptedWalletBackupV2Cbor.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_V2_HTTP_RESPONSE_MAX_BYTES = 300_256 as const
+export const ENCRYPTED_WALLET_BACKUP_V2_CURRENT_INVENTORY_HTTP_RESPONSE_MAX_BYTES = 65_536 as const
 
 export type EncryptedWalletBackupV2HttpResponseKind =
   | 'enrollment-epoch'
+  | 'current-inventory'
   | 'descriptor-page'
   | 'bundle-supersession-receipt'
   | 'object'
@@ -105,7 +107,7 @@ export function encodeEncryptedWalletBackupV2HttpResponse(
   value: EncryptedWalletBackupV2HttpResponseEnvelope,
 ): Uint8Array {
   const response = decodeEnvelopeRecord(value)
-  return encodeCanonicalBackupCbor([
+  const bytes = encodeCanonicalBackupCbor([
     2,
     'encrypted-wallet-backup-v2-http-response',
     response.kind,
@@ -115,6 +117,9 @@ export function encodeEncryptedWalletBackupV2HttpResponse(
     response.enrollmentEpoch,
     response.body,
   ])
+  if (bytes.byteLength > responseMaximumBytes(response.kind))
+    throw new Error('encrypted backup v2 HTTP response is too large')
+  return bytes
 }
 
 /** Decodes one bounded canonical V2 response envelope before service I/O consumers use it. */
@@ -138,7 +143,7 @@ export function decodeEncryptedWalletBackupV2HttpResponse(
     throw new Error('encrypted backup v2 HTTP response is invalid')
   const kind = requireResponseKind(decoded[2])
   const enrollmentEpoch = requireEpoch(decoded[6])
-  return Object.freeze({
+  const response = Object.freeze({
     kind,
     requestDigest: bytesToHex(requireBytes(decoded[3], 32, 32, 'request digest')),
     realm: requireRealm(decoded[4]),
@@ -151,6 +156,22 @@ export function decodeEncryptedWalletBackupV2HttpResponse(
       'response body',
     ).slice(),
   })
+  if (bytes.byteLength > responseMaximumBytes(response.kind))
+    throw new Error('encrypted backup v2 HTTP response is invalid')
+  return response
+}
+
+/** Decodes one response for an expected operation with its operation-specific byte bound. */
+export function decodeEncryptedWalletBackupV2HttpResponseForKind(
+  bytes: Uint8Array,
+  expectedKind: Exclude<EncryptedWalletBackupV2HttpResponseKind, 'error'>,
+): EncryptedWalletBackupV2HttpResponseEnvelope {
+  if (bytes.byteLength > responseMaximumBytes(expectedKind))
+    throw new Error('encrypted backup v2 HTTP response is invalid')
+  const response = decodeEncryptedWalletBackupV2HttpResponse(bytes)
+  if (response.kind !== expectedKind && response.kind !== 'error')
+    throw new Error('encrypted backup v2 HTTP response kind is invalid')
+  return response
 }
 
 /** Fails closed when an envelope is not for the exact V2 request and scope. */
@@ -188,7 +209,12 @@ export function requireEncryptedWalletBackupV2HttpResponseScope(input: {
 }
 
 export function encodeEncryptedWalletBackupV2HttpError(input: {
-  readonly operation: 'enrollment-epoch' | 'descriptor-page' | 'bundle-supersession' | 'object-get'
+  readonly operation:
+    | 'enrollment-epoch'
+    | 'current-inventory'
+    | 'descriptor-page'
+    | 'bundle-supersession'
+    | 'object-get'
   readonly code: EncryptedWalletBackupV2HttpErrorCode
   readonly retryAfterSeconds: number | null
 }): Uint8Array {
@@ -204,7 +230,12 @@ export function encodeEncryptedWalletBackupV2HttpError(input: {
 }
 
 export function decodeEncryptedWalletBackupV2HttpError(bytes: Uint8Array): {
-  readonly operation: 'enrollment-epoch' | 'descriptor-page' | 'bundle-supersession' | 'object-get'
+  readonly operation:
+    | 'enrollment-epoch'
+    | 'current-inventory'
+    | 'descriptor-page'
+    | 'bundle-supersession'
+    | 'object-get'
   readonly code: EncryptedWalletBackupV2HttpErrorCode
   readonly retryAfterSeconds: number | null
 } {
@@ -294,6 +325,7 @@ function decodeEnvelopeRecord(value: unknown): EncryptedWalletBackupV2HttpRespon
 function requireResponseKind(value: unknown): EncryptedWalletBackupV2HttpResponseKind {
   switch (value) {
     case 'enrollment-epoch':
+    case 'current-inventory':
     case 'descriptor-page':
     case 'bundle-supersession-receipt':
     case 'object':
@@ -313,6 +345,7 @@ function requireEpoch(value: unknown): number {
 function responseKinds() {
   return [
     { major: 3 as const, exact: 'enrollment-epoch' },
+    { major: 3 as const, exact: 'current-inventory' },
     { major: 3 as const, exact: 'descriptor-page' },
     { major: 3 as const, exact: 'bundle-supersession-receipt' },
     { major: 3 as const, exact: 'object' },
@@ -322,9 +355,15 @@ function responseKinds() {
 
 function requireErrorOperation(
   value: unknown,
-): 'enrollment-epoch' | 'descriptor-page' | 'bundle-supersession' | 'object-get' {
+):
+  | 'enrollment-epoch'
+  | 'current-inventory'
+  | 'descriptor-page'
+  | 'bundle-supersession'
+  | 'object-get' {
   switch (value) {
     case 'enrollment-epoch':
+    case 'current-inventory':
     case 'descriptor-page':
     case 'bundle-supersession':
     case 'object-get':
@@ -332,6 +371,18 @@ function requireErrorOperation(
     default:
       throw new Error('encrypted backup v2 error operation is invalid')
   }
+}
+
+export function encryptedWalletBackupV2HttpResponseMaximumBytes(
+  kind: EncryptedWalletBackupV2HttpResponseKind,
+): number {
+  return responseMaximumBytes(kind)
+}
+
+function responseMaximumBytes(kind: EncryptedWalletBackupV2HttpResponseKind): number {
+  return kind === 'current-inventory'
+    ? ENCRYPTED_WALLET_BACKUP_V2_CURRENT_INVENTORY_HTTP_RESPONSE_MAX_BYTES
+    : ENCRYPTED_WALLET_BACKUP_V2_HTTP_RESPONSE_MAX_BYTES
 }
 
 function requireErrorCode(value: unknown): EncryptedWalletBackupV2HttpErrorCode {

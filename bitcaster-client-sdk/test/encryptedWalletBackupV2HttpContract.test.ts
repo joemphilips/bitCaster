@@ -23,6 +23,7 @@ import {
 } from '../src/encryptedWalletBackupV2HttpAdapter.ts'
 import {
   encodeEncryptedWalletBackupV2HttpResponse,
+  decodeEncryptedWalletBackupV2HttpResponseForKind,
   encodeEncryptedWalletBackupV2HttpError,
   encodeEncryptedWalletBackupV2EnrollmentEpochResult,
 } from '../src/encryptedWalletBackupV2HttpCodec.ts'
@@ -31,7 +32,11 @@ import {
   createEncryptedWalletBackupV2CurrentHead,
   enumerateEncryptedWalletBackupV2DescriptorPages,
 } from '../src/encryptedWalletBackupV2Head.ts'
-import { encodeEncryptedWalletBackupV2DescriptorPage } from '../src/encryptedWalletBackupV2ServiceCodec.ts'
+import {
+  digestEncryptedWalletBackupV2CurrentInventoryActiveSet,
+  encodeEncryptedWalletBackupV2CurrentInventory,
+  encodeEncryptedWalletBackupV2DescriptorPage,
+} from '../src/encryptedWalletBackupV2ServiceCodec.ts'
 import { createEncryptedWalletBackupV2KeyHandle } from '../src/encryptedWalletBackupV2Keys.ts'
 import {
   prepareEncryptedWalletBackupV2TransportBundle,
@@ -195,6 +200,192 @@ test('V2 descriptor routes bind the cursor, method, body, request digest, and V2
     (error) =>
       error instanceof EncryptedWalletBackupV2HttpTransportError &&
       error.code === 'invalid-request',
+  )
+})
+
+test('V2 current inventory binds its exact GET target and rejects tampered envelopes', async () => {
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed: new Uint8Array(64).fill(17),
+    realm: REALM,
+    runtime: webcrypto,
+  })
+  const url = `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${keyHandle.walletId}/current-inventory`
+  const proof = await prepareProof(keyHandle, 3, 'GET', url, new Uint8Array())
+  const values = [2n ** 53n, 2n ** 53n + 1n, 2n ** 64n - 1n]
+  const entries = values.map((value, index) => ({
+    assetLocator: (index + 1).toString(16).padStart(64, '0'),
+    declaredAmount: value,
+    custodyRevision: value,
+    bundleId: index.toString(16).padStart(32, '0'),
+    descriptorDigest: (index + 4).toString(16).padStart(64, '0'),
+  }))
+  const body = encodeEncryptedWalletBackupV2CurrentInventory({
+    headVersion: 4,
+    activeSetDigest: digestEncryptedWalletBackupV2CurrentInventoryActiveSet({
+      realm: REALM,
+      walletId: keyHandle.walletId,
+      enrollmentEpoch: 3,
+      entries,
+    }),
+    entries,
+  })
+  const adapter = new EncryptedWalletBackupV2HttpAdapter({
+    origin: ORIGIN,
+    fetch: async (input, init) => {
+      assert.equal(input, url)
+      assert.equal(init.method, 'GET')
+      return response(
+        url,
+        encodeEncryptedWalletBackupV2HttpResponse({
+          kind: 'current-inventory',
+          requestDigest: requestDigest(proof),
+          realm: REALM,
+          walletId: keyHandle.walletId,
+          enrollmentEpoch: 3,
+          body,
+        }),
+      )
+    },
+  })
+  const inventory = await adapter.readCurrentInventory({ requestProof: proof })
+  assert.equal(inventory.headVersion, 4)
+  assert.deepEqual(
+    inventory.entries.map((entry) => [entry.declaredAmount, entry.custodyRevision]),
+    values.map((value) => [value, value]),
+  )
+  const wrongTarget = await prepareProof(
+    keyHandle,
+    3,
+    'GET',
+    `${ORIGIN}/v1/encrypted-wallet-backup/realms/${REALM}/wallets/${keyHandle.walletId}/head`,
+    new Uint8Array(),
+  )
+  await assert.rejects(
+    adapter.readCurrentInventory({ requestProof: wrongTarget }),
+    hasTransportCode('invalid-request'),
+  )
+  const wrongMethod = await prepareV2Proof(keyHandle, 'POST', url, new Uint8Array(), [
+    '11'.repeat(16),
+    '12'.repeat(32),
+  ])
+  await assert.rejects(
+    adapter.readCurrentInventory({ requestProof: wrongMethod }),
+    hasTransportCode('invalid-request'),
+  )
+  const tampered = new EncryptedWalletBackupV2HttpAdapter({
+    origin: ORIGIN,
+    fetch: async () =>
+      response(
+        url,
+        encodeEncryptedWalletBackupV2HttpResponse({
+          kind: 'current-inventory',
+          requestDigest: requestDigest(proof),
+          realm: REALM,
+          walletId: keyHandle.walletId,
+          enrollmentEpoch: 3,
+          body: encodeEncryptedWalletBackupV2CurrentInventory({
+            headVersion: 4,
+            activeSetDigest: digestEncryptedWalletBackupV2CurrentInventoryActiveSet({
+              realm: REALM,
+              walletId: keyHandle.walletId,
+              enrollmentEpoch: 3,
+              entries: [],
+            }),
+            entries: [
+              {
+                assetLocator: '11'.repeat(32),
+                declaredAmount: 1n,
+                custodyRevision: 1n,
+                bundleId: '22'.repeat(16),
+                descriptorDigest: '33'.repeat(32),
+              },
+            ],
+          }),
+        }),
+      ),
+  })
+  await assert.rejects(
+    tampered.readCurrentInventory({ requestProof: proof }),
+    /encrypted backup v2 current inventory digest is invalid/,
+  )
+  const oversized = new EncryptedWalletBackupV2HttpAdapter({
+    origin: ORIGIN,
+    fetch: async () => response(url, new Uint8Array(65_537)),
+  })
+  await assert.rejects(
+    oversized.readCurrentInventory({ requestProof: proof }),
+    hasTransportCode('invalid-response'),
+  )
+  const genericSized = encodeEncryptedWalletBackupV2HttpResponse({
+    kind: 'object',
+    requestDigest: requestDigest(proof),
+    realm: REALM,
+    walletId: keyHandle.walletId,
+    enrollmentEpoch: 3,
+    body: new Uint8Array(65_537),
+  })
+  assert.throws(() =>
+    decodeEncryptedWalletBackupV2HttpResponseForKind(genericSized, 'current-inventory'),
+  )
+  const verified = verifyAndDecodeEncryptedWalletBackupV2DelegatedServerRequest({
+    rawAuthorizationHeaderValues: [
+      `BackupV1 ${base64Url(encodeEncryptedWalletBackupRequestProof(proof))}`,
+    ],
+    configuredOrigin: ORIGIN,
+    rawTarget: new URL(url).pathname,
+    method: 'GET',
+    route: {
+      operation: 'current-inventory',
+      routeRealm: REALM,
+      routeWalletId: keyHandle.walletId,
+    },
+    payload: new Uint8Array(),
+    serverNowUnixSeconds: 1_000,
+  })
+  assert.equal(
+    authorizeVerifiedEncryptedWalletBackupV2DelegatedServerRequest({
+      verifiedRequest: verified,
+      enrollment: {
+        status: 'active',
+        protocolVersion: 2,
+        realm: REALM,
+        walletId: keyHandle.walletId,
+        requestAuthPublicKey: keyHandle.requestAuthPublicKey,
+        enrollmentEpoch: 3,
+      },
+    }).operation,
+    'current-inventory',
+  )
+  const staleProof = await prepareProof(keyHandle, 2, 'GET', url, new Uint8Array())
+  const stale = verifyAndDecodeEncryptedWalletBackupV2DelegatedServerRequest({
+    rawAuthorizationHeaderValues: [
+      `BackupV1 ${base64Url(encodeEncryptedWalletBackupRequestProof(staleProof))}`,
+    ],
+    configuredOrigin: ORIGIN,
+    rawTarget: new URL(url).pathname,
+    method: 'GET',
+    route: {
+      operation: 'current-inventory',
+      routeRealm: REALM,
+      routeWalletId: keyHandle.walletId,
+    },
+    payload: new Uint8Array(),
+    serverNowUnixSeconds: 1_000,
+  })
+  assert.throws(
+    () =>
+      authorizeVerifiedEncryptedWalletBackupV2DelegatedServerRequest({
+        verifiedRequest: stale,
+        enrollment: {
+          status: 'active',
+          protocolVersion: 2,
+          realm: REALM,
+          walletId: keyHandle.walletId,
+          requestAuthPublicKey: keyHandle.requestAuthPublicKey,
+          enrollmentEpoch: 3,
+        },
+      }),
+    EncryptedWalletBackupV2DelegatedServerRejection,
   )
 })
 
@@ -729,7 +920,7 @@ function operationErrorAdapter(
   })
 }
 
-function hasTransportCode(code: 'conflict' | 'not-found') {
+function hasTransportCode(code: 'conflict' | 'not-found' | 'invalid-request' | 'invalid-response') {
   return (error: unknown): boolean =>
     error instanceof EncryptedWalletBackupV2HttpTransportError && error.code === code
 }

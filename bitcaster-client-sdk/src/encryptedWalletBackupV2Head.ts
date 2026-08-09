@@ -298,6 +298,38 @@ function activeSetDigest(
   epoch: number,
   bundles: readonly EncryptedWalletBackupV2BundleDescriptor[],
 ): string {
+  return digestEncryptedWalletBackupV2ActiveSetPairs({
+    realm,
+    walletId,
+    enrollmentEpoch: epoch,
+    pairs: bundles.map((bundle) => ({
+      bundleId: bundle.bundleId,
+      descriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(bundle),
+    })),
+  })
+}
+
+/** Computes the canonical active-set digest from ordered bundle descriptor digests. */
+export function digestEncryptedWalletBackupV2ActiveSetPairs(input: {
+  readonly realm: string
+  readonly walletId: string
+  readonly enrollmentEpoch: number
+  readonly pairs: readonly { readonly bundleId: string; readonly descriptorDigest: string }[]
+}): string {
+  const realm = requireRealm(input.realm)
+  const walletId = requireLowerHex(input.walletId, 32, 'wallet id')
+  const enrollmentEpoch = positive(input.enrollmentEpoch, 'enrollment epoch')
+  if (
+    !Array.isArray(input.pairs) ||
+    input.pairs.length > ENCRYPTED_WALLET_BACKUP_V2_ACTIVE_BUNDLE_MAX
+  )
+    throw new Error('encrypted backup v2 active-set pairs are invalid')
+  const pairs = input.pairs.map((pair) => ({
+    bundleId: requireLowerHex(pair.bundleId, 16, 'bundle id'),
+    descriptorDigest: requireLowerHex(pair.descriptorDigest, 32, 'descriptor digest'),
+  }))
+  if (pairs.some((pair, index) => index > 0 && pair.bundleId <= pairs[index - 1]!.bundleId))
+    throw new Error('encrypted backup v2 active-set pairs are unordered or duplicated')
   return toHex(
     sha256
       .create()
@@ -306,14 +338,10 @@ function activeSetDigest(
         encodeCanonicalBackupCbor([
           realm,
           hexToBytesStrict(walletId, 32, 'wallet id'),
-          epoch,
-          bundles.map((bundle) => [
-            hexToBytesStrict(bundle.bundleId, 16, 'bundle id'),
-            hexToBytesStrict(
-              digestEncryptedWalletBackupV2BundleDescriptor(bundle),
-              32,
-              'descriptor digest',
-            ),
+          enrollmentEpoch,
+          pairs.map((pair) => [
+            hexToBytesStrict(pair.bundleId, 16, 'bundle id'),
+            hexToBytesStrict(pair.descriptorDigest, 32, 'descriptor digest'),
           ]),
         ]),
       )

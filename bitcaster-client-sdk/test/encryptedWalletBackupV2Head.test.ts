@@ -13,6 +13,7 @@ import {
   enumerateEncryptedWalletBackupV2DescriptorPages,
   requireEncryptedWalletBackupV2CollectedHeadEvidence,
   digestEncryptedWalletBackupV2ActiveSet,
+  digestEncryptedWalletBackupV2ActiveSetPairs,
 } from '../src/encryptedWalletBackupV2Head.ts'
 
 const REALM = 'backup.production'
@@ -438,6 +439,18 @@ test('v2 head golden vector fixes descriptor, active-set, and cursor values', ()
     vector.expected.emptyActiveSetDigest,
   )
   assert.equal(head.activeSetDigest, vector.expected.activeSetDigest)
+  assert.equal(
+    digestEncryptedWalletBackupV2ActiveSetPairs({
+      realm: vector.inputs.realm,
+      walletId: vector.inputs.walletId,
+      enrollmentEpoch: vector.inputs.enrollmentEpoch,
+      pairs: bundles.map((bundle) => ({
+        bundleId: bundle.bundleId,
+        descriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(bundle),
+      })),
+    }),
+    vector.expected.activeSetDigest,
+  )
   assert.deepEqual(head, vector.expected.head)
   assert.deepEqual(
     pages.map((page) => page.bundles.length),

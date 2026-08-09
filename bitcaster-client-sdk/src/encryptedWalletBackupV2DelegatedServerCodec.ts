@@ -28,6 +28,7 @@ import { ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES } from './encrypte
 
 export type EncryptedWalletBackupV2ServerRoute =
   | Readonly<{ operation: 'enrollment-epoch'; routeRealm: string; routeWalletId: string }>
+  | Readonly<{ operation: 'current-inventory'; routeRealm: string; routeWalletId: string }>
   | Readonly<{
       operation: 'descriptor-page'
       routeRealm: string
@@ -215,6 +216,8 @@ function validateRoute(value: EncryptedWalletBackupV2ServerRoute): ValidatedRout
   switch (value.operation) {
     case 'enrollment-epoch':
       return route(value.operation, realm, walletId, 'GET', `${base}/enrollment-epoch`)
+    case 'current-inventory':
+      return route(value.operation, realm, walletId, 'GET', `${base}/current-inventory`)
     case 'descriptor-page': {
       const after = value.routeAfterBundleId
       if (after !== null && after !== undefined) {

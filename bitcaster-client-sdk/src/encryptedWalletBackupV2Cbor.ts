@@ -29,7 +29,11 @@ export function preflightEncryptedWalletBackupV2CborTuple(
   }
   const state = { offset: 0, tokens: 0 }
   const root = readItem(bytes, state, specification)
-  if (root.major !== 4 || root.value !== specification.fields.length)
+  if (
+    root.major !== 4 ||
+    typeof root.value !== 'number' ||
+    root.value !== specification.fields.length
+  )
     throw new Error('encrypted backup v2 CBOR tuple is invalid')
   const stack = [root.value]
   let depth = 1
@@ -49,6 +53,8 @@ export function preflightEncryptedWalletBackupV2CborTuple(
       depth += 1
       if (depth > specification.maximumDepth)
         throw new Error('encrypted backup v2 CBOR depth is invalid')
+      if (typeof item.value !== 'number')
+        throw new Error('encrypted backup v2 CBOR array is invalid')
       stack.push(item.value)
     }
   }
@@ -77,10 +83,12 @@ function readItem(
   const value = readArgument(bytes, state, additional)
   if (major === 0) return { major, value, text: undefined }
   if (major === 4) {
+    if (typeof value !== 'number') throw new Error('encrypted backup v2 CBOR array is invalid')
     if (value > specification.maximumArrayLength)
       throw new Error('encrypted backup v2 CBOR array limit is invalid')
     return { major, value, text: undefined }
   }
+  if (typeof value !== 'number') throw new Error('encrypted backup v2 CBOR item is invalid')
   if (value > specification.maximumItemLength || state.offset + value > bytes.byteLength)
     throw new Error('encrypted backup v2 CBOR item limit is invalid')
   const content = bytes.subarray(state.offset, state.offset + value)
@@ -95,7 +103,11 @@ function readItem(
   return { major, value, text }
 }
 
-function readArgument(bytes: Uint8Array, state: { offset: number }, additional: number): number {
+function readArgument(
+  bytes: Uint8Array,
+  state: { offset: number },
+  additional: number,
+): number | bigint {
   if (additional < 24) return additional
   const widths: Record<number, number> = { 24: 1, 25: 2, 26: 4, 27: 8 }
   const width = widths[additional]
@@ -104,18 +116,15 @@ function readArgument(bytes: Uint8Array, state: { offset: number }, additional: 
   let value = 0n
   for (let index = 0; index < width; index += 1)
     value = (value << 8n) | BigInt(bytes[state.offset++]!)
-  if (value > BigInt(Number.MAX_SAFE_INTEGER))
-    throw new Error('encrypted backup v2 CBOR integer is invalid')
-  const numeric = Number(value)
   if (
-    (width === 1 && numeric < 24) ||
-    (width === 2 && numeric <= 0xff) ||
-    (width === 4 && numeric <= 0xffff) ||
-    (width === 8 && numeric <= 0xffff_ffff)
+    (width === 1 && value < 24n) ||
+    (width === 2 && value <= 0xffn) ||
+    (width === 4 && value <= 0xffffn) ||
+    (width === 8 && value <= 0xffff_ffffn)
   ) {
     throw new Error('encrypted backup v2 CBOR noncanonical integer is invalid')
   }
-  return numeric
+  return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value
 }
 
 function assertField(item: CborItem, field: EncryptedWalletBackupV2CborField | undefined): void {
@@ -135,13 +144,13 @@ function matchesField(item: CborItem, field: EncryptedWalletBackupV2CborField): 
   }
   if (typeof field.exact === 'number') return item.value === field.exact
   return !(
-    (field.minimum !== undefined && item.value < field.minimum) ||
-    (field.maximum !== undefined && item.value > field.maximum)
+    (field.minimum !== undefined && item.value < BigInt(field.minimum)) ||
+    (field.maximum !== undefined && item.value > BigInt(field.maximum))
   )
 }
 
 interface CborItem {
   readonly major: 0 | 2 | 3 | 4 | 7
-  readonly value: number
+  readonly value: number | bigint
   readonly text: string | undefined
 }

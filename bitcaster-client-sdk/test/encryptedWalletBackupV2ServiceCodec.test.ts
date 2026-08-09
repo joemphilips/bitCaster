@@ -23,9 +23,11 @@ import {
 } from '../src/encryptedWalletBackupV2Receipt.ts'
 import {
   decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire,
+  decodeEncryptedWalletBackupV2CurrentInventory,
   decodeEncryptedWalletBackupV2DescriptorPage,
   decodeEncryptedWalletBackupV2UploadGroup,
   encodeEncryptedWalletBackupV2BundleSupersessionReceipt,
+  encodeEncryptedWalletBackupV2CurrentInventory,
   encodeEncryptedWalletBackupV2DescriptorPage,
   encodeEncryptedWalletBackupV2UploadGroup,
   ENCRYPTED_WALLET_BACKUP_V2_UPLOAD_GROUP_MAX_BYTES,
@@ -191,6 +193,51 @@ test('v2 upload-group maximum has room for fifteen exact object wires', async ()
       envelope: fixture.envelope,
       objects: [...fixture.prepared.objects].reverse(),
     }),
+  )
+})
+
+test('v2 current inventory has a canonical 256-entry maximum and rejects duplicate entries', () => {
+  const entries = Array.from({ length: 256 }, (_item, index) => ({
+    assetLocator: (index + 1).toString(16).padStart(64, '0'),
+    declaredAmount: BigInt(index),
+    custodyRevision: BigInt(index),
+    bundleId: index.toString(16).padStart(32, '0'),
+    descriptorDigest: (index + 2).toString(16).padStart(64, '0'),
+  }))
+  const input = { headVersion: 17, activeSetDigest: 'ab'.repeat(32), entries }
+  const bytes = encodeEncryptedWalletBackupV2CurrentInventory(input)
+  assert.equal(bytes.byteLength <= 60_000, true)
+  assert.equal(decodeEncryptedWalletBackupV2CurrentInventory(bytes).entries.length, 256)
+  assert.throws(() =>
+    encodeEncryptedWalletBackupV2CurrentInventory({ ...input, entries: [...entries, entries[0]!] }),
+  )
+  assert.throws(() =>
+    encodeEncryptedWalletBackupV2CurrentInventory({
+      ...input,
+      entries: [entries[1]!, entries[0]!],
+    }),
+  )
+})
+
+test('v2 current inventory retains canonical unsigned 64-bit values through CBOR preflight', () => {
+  const values = [2n ** 53n, 2n ** 53n + 1n, 2n ** 64n - 1n]
+  const entries = values.map((value, index) => ({
+    assetLocator: (index + 1).toString(16).padStart(64, '0'),
+    declaredAmount: value,
+    custodyRevision: value,
+    bundleId: index.toString(16).padStart(32, '0'),
+    descriptorDigest: (index + 4).toString(16).padStart(64, '0'),
+  }))
+  const decoded = decodeEncryptedWalletBackupV2CurrentInventory(
+    encodeEncryptedWalletBackupV2CurrentInventory({
+      headVersion: 1,
+      activeSetDigest: 'ab'.repeat(32),
+      entries,
+    }),
+  )
+  assert.deepEqual(
+    decoded.entries.map((entry) => [entry.declaredAmount, entry.custodyRevision]),
+    values.map((value) => [value, value]),
   )
 })
 

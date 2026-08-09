@@ -15,20 +15,23 @@ import {
 } from './encryptedWalletBackupV2Bundle.ts'
 import type { EncryptedWalletBackupV2BundleDescriptor } from './encryptedWalletBackupV2Descriptor.ts'
 import {
-  decodeEncryptedWalletBackupV2HttpResponse,
+  decodeEncryptedWalletBackupV2HttpResponseForKind,
   decodeEncryptedWalletBackupV2HttpError,
   decodeEncryptedWalletBackupV2EnrollmentEpochResult,
-  ENCRYPTED_WALLET_BACKUP_V2_HTTP_RESPONSE_MAX_BYTES,
+  encryptedWalletBackupV2HttpResponseMaximumBytes,
   requireEncryptedWalletBackupV2HttpResponseBinding,
   requireEncryptedWalletBackupV2HttpResponseScope,
   type EncryptedWalletBackupV2HttpResponseKind,
 } from './encryptedWalletBackupV2HttpCodec.ts'
 import {
   decodeEncryptedWalletBackupV2DescriptorPage,
+  decodeEncryptedWalletBackupV2CurrentInventory,
+  requireEncryptedWalletBackupV2CurrentInventoryScope,
   decodeEncryptedWalletBackupV2BundleSupersessionReceiptWire,
   decodeEncryptedWalletBackupV2UploadGroup,
 } from './encryptedWalletBackupV2ServiceCodec.ts'
 import type { EncryptedWalletBackupV2DescriptorPage } from './encryptedWalletBackupV2Head.ts'
+import type { EncryptedWalletBackupV2CurrentInventory } from './encryptedWalletBackupV2ServiceCodec.ts'
 import type { EncryptedWalletBackupV2BundleSupersessionReceipt } from './encryptedWalletBackupV2Receipt.ts'
 import { ENCRYPTED_WALLET_BACKUP_V2_REQUEST_PAYLOAD_MAX_BYTES } from './encryptedWalletBackupV2Limits.ts'
 import {
@@ -110,6 +113,10 @@ export interface EncryptedWalletBackupV2RemotePort {
     readonly afterBundleId: string | null
     readonly signal?: AbortSignal
   }): Promise<EncryptedWalletBackupV2DescriptorPage>
+  readCurrentInventory(input: {
+    readonly requestProof: EncryptedWalletBackupV2RequestProof
+    readonly signal?: AbortSignal
+  }): Promise<EncryptedWalletBackupV2CurrentInventory>
   mutateHeadOnce(input: {
     readonly requestProof: EncryptedWalletBackupV2RequestProof
     readonly canonicalUploadGroup: Uint8Array
@@ -202,6 +209,22 @@ export class EncryptedWalletBackupV2HttpAdapter
     return page
   }
 
+  async readCurrentInventory(input: {
+    readonly requestProof: EncryptedWalletBackupV2RequestProof
+    readonly signal?: AbortSignal
+  }): Promise<EncryptedWalletBackupV2CurrentInventory> {
+    const body = await this.#call(
+      input.requestProof,
+      'current-inventory',
+      new Uint8Array(),
+      input.signal,
+    )
+    return requireEncryptedWalletBackupV2CurrentInventoryScope({
+      inventory: decodeEncryptedWalletBackupV2CurrentInventory(body),
+      ...requestScope(input.requestProof),
+    })
+  }
+
   async mutateHeadOnce(input: {
     readonly requestProof: EncryptedWalletBackupV2RequestProof
     readonly canonicalUploadGroup: Uint8Array
@@ -262,8 +285,13 @@ export class EncryptedWalletBackupV2HttpAdapter
         throw error('invalid-request')
       }
       const request = requireRequest(proof, this.#origin, kind, body)
-      const response = await dispatch(this.#fetch, request, deadline)
-      const envelope = decodeEncryptedWalletBackupV2HttpResponse(response.body)
+      const response = await dispatch(
+        this.#fetch,
+        request,
+        deadline,
+        encryptedWalletBackupV2HttpResponseMaximumBytes(kind),
+      )
+      const envelope = decodeEncryptedWalletBackupV2HttpResponseForKind(response.body, kind)
       const scoped = requireEncryptedWalletBackupV2HttpResponseScope({
         response: envelope,
         requestDigest: encryptedWalletBackupRequestDigest(
@@ -417,6 +445,8 @@ function endpointPath(
   switch (kind) {
     case 'enrollment-epoch':
       return `${base}/enrollment-epoch`
+    case 'current-inventory':
+      return `${base}/current-inventory`
     case 'descriptor-page':
       return actual === `${base}/head` ||
         new RegExp(`^${escapeRegExp(base)}/head/after/[0-9a-f]{32}$`).test(actual)
@@ -442,6 +472,7 @@ async function dispatch(
     readonly authorization: string
   },
   signal: AbortSignal,
+  maximumResponseBytes: number,
 ): Promise<{ readonly status: number; readonly body: Uint8Array }> {
   let response: Response
   try {
@@ -466,14 +497,21 @@ async function dispatch(
   if (!isSupportedStatus(response.status) || response.url !== request.url)
     throw error('invalid-response')
   try {
-    return { status: response.status, body: await readBounded(response, signal) }
+    return {
+      status: response.status,
+      body: await readBounded(response, signal, maximumResponseBytes),
+    }
   } catch (cause) {
     if (cause instanceof EncryptedWalletBackupV2HttpTransportError) throw cause
     throw error('invalid-response')
   }
 }
 
-async function readBounded(response: Response, signal: AbortSignal): Promise<Uint8Array> {
+async function readBounded(
+  response: Response,
+  signal: AbortSignal,
+  maximumResponseBytes: number,
+): Promise<Uint8Array> {
   const stream = response.body
   if (stream === null) throw error('invalid-response')
   const reader = stream.getReader()
@@ -492,15 +530,9 @@ async function readBounded(response: Response, signal: AbortSignal): Promise<Uin
         }
         return result
       }
-      const chunk = requireBytes(
-        item.value,
-        1,
-        ENCRYPTED_WALLET_BACKUP_V2_HTTP_RESPONSE_MAX_BYTES,
-        'response chunk',
-      ).slice()
+      const chunk = requireBytes(item.value, 1, maximumResponseBytes, 'response chunk').slice()
       length += chunk.byteLength
-      if (length > ENCRYPTED_WALLET_BACKUP_V2_HTTP_RESPONSE_MAX_BYTES)
-        throw error('invalid-response')
+      if (length > maximumResponseBytes) throw error('invalid-response')
       chunks.push(chunk)
     }
     throw error('invalid-response')
@@ -550,10 +582,17 @@ function mapAccountOperationTransportError(
 
 function errorOperation(
   kind: Exclude<EncryptedWalletBackupV2HttpResponseKind, 'error'>,
-): 'enrollment-epoch' | 'descriptor-page' | 'bundle-supersession' | 'object-get' {
+):
+  | 'enrollment-epoch'
+  | 'current-inventory'
+  | 'descriptor-page'
+  | 'bundle-supersession'
+  | 'object-get' {
   switch (kind) {
     case 'enrollment-epoch':
       return 'enrollment-epoch'
+    case 'current-inventory':
+      return 'current-inventory'
     case 'descriptor-page':
       return 'descriptor-page'
     case 'bundle-supersession-receipt':
