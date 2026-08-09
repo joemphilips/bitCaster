@@ -12,6 +12,7 @@ import {
 import {
   appendCtfRangePreparationConsolidation,
   bindCtfRangePreparationCapability,
+  hasSubmittedCtfRangeOrder,
   insertCtfRangePreparation,
   pageActiveCtfRangePreparations,
   readActiveCtfRangePreparationByClientOrderId,
@@ -109,6 +110,28 @@ describe("browser CTF range order journal", () => {
     );
     expect(submitted.lifecycleState).toBe("order-submitted");
     expect(submitted.revision).toBe(3);
+  });
+
+  it("finds a submitted order without being hidden by other states or scopes", async () => {
+    const database = createDatabase();
+    const target = identity("range-target", "client-target", 20);
+    const earlier = identity("range-earlier", "client-earlier", 10);
+    const otherScope = {
+      ...identity("range-other", "client-other", 5),
+      scopeId: deriveDurableCustodyScopeId({
+        scopeKind: "wallet",
+        walletId: deriveDurableCustodyWalletId(new Uint8Array(32).fill(8)),
+      }),
+    };
+    await insertCtfRangePreparation(earlier, database);
+    await insertCtfRangePreparation(target, database);
+    await insertCtfRangePreparation(otherScope, database);
+
+    await transitionToSubmitted(otherScope, database);
+    expect(await hasSubmittedCtfRangeOrder(target.scopeId, database)).toBe(false);
+
+    await transitionToSubmitted(target, database);
+    expect(await hasSubmittedCtfRangeOrder(target.scopeId, database)).toBe(true);
   });
 
   it("pages active records by scope and excludes terminal records", async () => {
@@ -222,4 +245,47 @@ function identity(
     preparationBytes: encodeCtfRangeOrderPreparationArtifact({ version: 1 }),
     createdAtMs,
   };
+}
+
+async function transitionToSubmitted(
+  input: CtfRangeOrderPreparationIdentity,
+  database: BitcasterDB,
+): Promise<void> {
+  await transitionCtfRangePreparation(
+    {
+      scopeId: input.scopeId,
+      rangeOperationId: input.rangeOperationId,
+      expectedRevision: 0,
+      from: "prepared",
+      to: "capability-requested",
+      updatedAtMs: input.createdAtMs + 1,
+    },
+    database,
+  );
+  await bindCtfRangePreparationCapability(
+    {
+      scopeId: input.scopeId,
+      rangeOperationId: input.rangeOperationId,
+      expectedRevision: 1,
+      capability: {
+        artifactId: "11111111-1111-4111-8111-111111111111",
+        bindingDigest: "22".repeat(32),
+        artifactDigest: "33".repeat(32),
+        orderId: "44444444-4444-4444-8444-444444444444",
+      },
+      updatedAtMs: input.createdAtMs + 2,
+    },
+    database,
+  );
+  await transitionCtfRangePreparation(
+    {
+      scopeId: input.scopeId,
+      rangeOperationId: input.rangeOperationId,
+      expectedRevision: 2,
+      from: "capability-bound",
+      to: "order-submitted",
+      updatedAtMs: input.createdAtMs + 3,
+    },
+    database,
+  );
 }

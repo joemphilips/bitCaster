@@ -34,6 +34,7 @@ import { installE2EDiagnostics } from "@/lib/e2eDiagnostics";
 import { reconcileAcceptedLocalWalletPayments } from "@/lib/pendingLocalWalletPayments";
 import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
 import { useEncryptedWalletBackupDriver } from "@/hooks/useEncryptedWalletBackupDriver";
+import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
 
 installE2EDiagnostics();
@@ -144,6 +145,7 @@ function AppRoutes() {
     mintUrls: walletMintUrls.split("\n").filter(Boolean),
   });
   useEncryptedWalletBackupDriver(nostrSignerReady && nostrSignerMode !== "none");
+  useAssetMonitoringReporter(nostrSignerReady && nostrSignerMode !== "none");
 
   useEffect(() => {
     document.title = titleForPath(location.pathname);

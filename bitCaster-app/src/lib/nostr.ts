@@ -35,11 +35,30 @@ let _ndk: NDK | null = null;
 // the snapshot lets us skip the pool walk when the user hasn't added or
 // removed a relay since the previous call.
 let _lastReconciledRelaysKey = "";
+let _signerRevision = 0;
+const _signerRevisionSubscribers = new Set<() => void>();
 
 type TeardownCapableSigner = NDKSigner & {
   destroy?: () => void | Promise<void>;
   stop?: () => void | Promise<void>;
 };
+
+/** Returns the session-only revision of application-installed Nostr signers. */
+export function getNostrSignerRevision(): number {
+  return _signerRevision;
+}
+
+/** Subscribes to application-installed Nostr signer replacements. */
+export function subscribeToNostrSignerRevision(listener: () => void): () => void {
+  _signerRevisionSubscribers.add(listener);
+  return () => _signerRevisionSubscribers.delete(listener);
+}
+
+function installNostrSigner(ndk: NDK, signer: NDKSigner): void {
+  ndk.signer = signer;
+  _signerRevision += 1;
+  for (const listener of _signerRevisionSubscribers) listener();
+}
 
 export function createExplicitRelayNdk(opts: NDKConstructorParams = {}): NDK {
   return new NDK({
@@ -158,7 +177,7 @@ export async function loginWithExtension(): Promise<NDKSigner> {
   const signer = new NDKNip07Signer();
   const ndk = getNdk();
   await teardownCurrentSigner(ndk);
-  ndk.signer = signer;
+  installNostrSigner(ndk, signer);
   // Don't block login on relay connectivity — connect in background
   ndk.connect();
   // NIP-07 keeps the secret key inside the extension, so kormir (which needs
@@ -183,7 +202,7 @@ export async function loginWithNsec(nsec: string): Promise<NDKSigner> {
   const signer = new NDKPrivateKeySigner(nsec);
   const ndk = getNdk();
   await teardownCurrentSigner(ndk);
-  ndk.signer = signer;
+  installNostrSigner(ndk, signer);
   // Don't block login on relay connectivity — connect in background
   ndk.connect();
   setPendingKormirNsec(nsec);

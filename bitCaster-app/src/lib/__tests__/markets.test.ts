@@ -14,16 +14,21 @@ import {
   windowPriceHistory,
   applyMarketPriceHistory,
   priceNumeratorToPercent,
+  createAuthenticatedBrowserEngineClient,
+  generateNip98Header,
 } from "../markets";
 import type { MarketCatalogueEntry } from "../markets";
 import type { FilterState, Market } from "@/types/market";
 import type { MarketDetail } from "@/types/market-detail";
 
+const mocks = vi.hoisted(() => ({
+  eventSign: vi.fn(),
+  globalSigner: { sign: vi.fn() },
+}));
+
 vi.mock("@/lib/nostr", () => ({
   getNdk: () => ({
-    signer: {
-      sign: vi.fn(),
-    },
+    signer: mocks.globalSigner,
   }),
 }));
 
@@ -36,8 +41,8 @@ vi.mock("@nostr-dev-kit/ndk", async (importOriginal) => {
       created_at = 0;
       content = "";
       tags: string[][] = [];
-      async sign() {
-        // no-op
+      async sign(signer?: unknown) {
+        mocks.eventSign(signer);
       }
       rawEvent() {
         return {
@@ -1083,5 +1088,53 @@ describe("price history normalization", () => {
     });
 
     expect(updated.priceHistory.data[0].price).toBe(50);
+  });
+});
+
+describe("NIP-98 signer binding", () => {
+  it("keeps an explicit signer while payload hashing observes a global signer replacement", async () => {
+    const explicitSigner = { sign: vi.fn() };
+    const replacementSigner = { sign: vi.fn() };
+    const digest = vi.spyOn(globalThis.crypto.subtle, "digest").mockImplementation(async () => {
+      mocks.globalSigner = replacementSigner;
+      return new Uint8Array(32).buffer;
+    });
+    mocks.eventSign.mockClear();
+    try {
+      const client = createAuthenticatedBrowserEngineClient(explicitSigner as never);
+      const authorization = (
+        client as unknown as {
+          authorization: (request: {
+            url: string;
+            method: string;
+            bodyText: string;
+          }) => Promise<string>;
+        }
+      ).authorization;
+
+      await authorization({
+        url: "https://engine.example/api/v1/asset-monitoring/reports",
+        method: "POST",
+        bodyText: "{}",
+      });
+
+      expect(mocks.eventSign).toHaveBeenCalledWith(explicitSigner);
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it("passes an explicit signer directly to NDK event signing", async () => {
+    const explicitSigner = { sign: vi.fn() };
+    mocks.eventSign.mockClear();
+
+    await generateNip98Header(
+      "https://engine.example/api",
+      "GET",
+      undefined,
+      explicitSigner as never,
+    );
+
+    expect(mocks.eventSign).toHaveBeenCalledWith(explicitSigner);
   });
 });

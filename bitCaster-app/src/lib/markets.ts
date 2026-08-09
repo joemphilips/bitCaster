@@ -24,7 +24,7 @@ import {
 } from "@bitcaster/client-sdk/marketUnits";
 import { getNdk } from "@/lib/nostr";
 import { resolveApiSigningUrl } from "@/lib/hubUrl";
-import { NDKEvent } from "@nostr-dev-kit/ndk";
+import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk";
 import { bytesToHex } from "nostr-tools/utils";
 import { toWireAmountBearing } from "@bitcaster/client-sdk/ctfRegistration";
 
@@ -783,7 +783,7 @@ export async function signTradeComment(
   };
 }
 
-export function createAuthenticatedBrowserEngineClient(): BitcasterEngineClient {
+export function createAuthenticatedBrowserEngineClient(signer?: NDKSigner): BitcasterEngineClient {
   return new BitcasterEngineClient({
     baseUrl: window.location.origin,
     authorization: async ({ url, method, bodyText, payloadHash }) =>
@@ -791,6 +791,7 @@ export function createAuthenticatedBrowserEngineClient(): BitcasterEngineClient 
         resolveApiSigningUrl(url),
         method,
         await resolveAuthorizationPayloadHash(bodyText, payloadHash),
+        signer,
       ),
   });
 }
@@ -893,9 +894,11 @@ export async function generateNip98Header(
   url: string,
   method: string,
   payloadHash?: string,
+  signer?: NDKSigner,
 ): Promise<string> {
   const ndk = getNdk();
-  if (!ndk.signer) throw new Error("No Nostr signer configured — connect in Settings first");
+  const signingSigner = signer ?? ndk.signer;
+  if (!signingSigner) throw new Error("No Nostr signer configured — connect in Settings first");
   const event = new NDKEvent(ndk);
   event.kind = 27235;
   event.created_at = Math.floor(Date.now() / 1000);
@@ -907,7 +910,7 @@ export async function generateNip98Header(
   if (payloadHash) {
     event.tags.push(["payload", payloadHash]);
   }
-  await event.sign();
+  await event.sign(signingSigner);
   const token = btoa(JSON.stringify(event.rawEvent()));
   return `Nostr ${token}`;
 }

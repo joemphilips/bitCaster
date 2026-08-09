@@ -81,6 +81,7 @@ vi.mock("@/stores/useCreatorSync", () => ({ useCreatorSync: vi.fn() }));
 vi.mock("@/stores/useActivityLogSync", () => ({ useActivityLogSync: vi.fn() }));
 vi.mock("@/lib/orderStatus", () => ({ usePendingTradesPoller: vi.fn() }));
 vi.mock("@/hooks/useTradeSettlement", () => ({ useTradeSettlement: vi.fn() }));
+vi.mock("@/hooks/useAssetMonitoringReporter", () => ({ useAssetMonitoringReporter: vi.fn() }));
 
 vi.mock("@/stores/settings", () => ({
   useSettingsStore: Object.assign(

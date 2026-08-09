@@ -75,6 +75,18 @@ export async function readActiveCtfRangePreparationByClientOrderId(
   return rows[0] ? decodeCtfRangeOrderPreparationRecord(rows[0]) : null;
 }
 
+/** Returns whether this wallet scope has any durably submitted range order. */
+export async function hasSubmittedCtfRangeOrder(
+  scopeId: string,
+  database: BitcasterDB = db,
+): Promise<boolean> {
+  const row = await database.ctfRangePreparations
+    .where("[scopeId+lifecycleState+createdAtMs+rangeOperationId]")
+    .between([scopeId, "order-submitted"], [scopeId, "order-submitted", []], true, true)
+    .first();
+  return row?.scopeId === scopeId && row.lifecycleState === "order-submitted";
+}
+
 export async function appendCtfRangePreparationConsolidation(
   input: CtfRangePreparationConsolidationLinkRow,
   database: BitcasterDB = db,

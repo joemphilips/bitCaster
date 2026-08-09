@@ -145,6 +145,28 @@ describe("rehydrateNostrSigner", () => {
   });
 });
 
+describe("Nostr signer revision", () => {
+  it("increments, notifies, and unsubscribes for both login paths", async () => {
+    vi.resetModules();
+    const nostrModule = await import("../nostr");
+    const listener = vi.fn();
+    const unsubscribe = nostrModule.subscribeToNostrSignerRevision(listener);
+
+    await nostrModule.loginWithExtension();
+    expect(nostrModule.getNostrSignerRevision()).toBe(1);
+    expect(listener).toHaveBeenCalledOnce();
+
+    await nostrModule.loginWithNsec("nsec1replacement");
+    expect(nostrModule.getNostrSignerRevision()).toBe(2);
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
+    await nostrModule.loginWithExtension();
+    expect(nostrModule.getNostrSignerRevision()).toBe(3);
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("fetchAndStoreNostrProfile", () => {
   let nostrModule: typeof import("../nostr");
 
