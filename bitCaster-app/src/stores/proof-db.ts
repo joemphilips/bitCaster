@@ -1,5 +1,6 @@
 import Dexie, { type Table } from "dexie";
 import type { DurableBolt11MintQuote } from "@bitcaster/client-sdk/durableBolt11MintQuote";
+import type { DurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import { Amount, type Proof } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
@@ -269,6 +270,29 @@ export interface BrowserMintQuoteRow {
   quote: DurableBolt11MintQuote;
 }
 
+/** Local-only bearer authority. This table is deliberately not part of proof backup. */
+export interface BrowserOutgoingCashuTransferRow {
+  scopeId: string;
+  mintUrl: string;
+  /** Derived from transfer state. Only `pending` rows require mint recovery. */
+  mintRecoveryState: "pending" | "complete";
+  /** Derived from transfer state. Nonterminal authority blocks seed handoff. */
+  localAuthorityState: "nonterminal" | "terminal";
+  dueAtMs: number;
+  transferId: string;
+  /** Reserved records have a matching local-only physical admission row. */
+  admissionState: "reserved" | "consumed";
+  transfer: DurableOutgoingCashuTransfer;
+}
+
+/** Local-only physical storage reservation. This row must never enter proof backup. */
+export interface BrowserOutgoingCashuTransferAdmissionRow {
+  scopeId: string;
+  transferId: string;
+  reservedBytes: number;
+  padding: Uint8Array;
+}
+
 export const DURABLE_BOLT11_MINT_QUOTE_OPERATION_METADATA_KEY = "durableBolt11MintQuoteRecordId";
 
 export class BitcasterDB extends Dexie {
@@ -330,6 +354,11 @@ export class BitcasterDB extends Dexie {
     [string, string, number, string]
   >;
   mintQuotes!: Table<BrowserMintQuoteRow, [string, "bolt11", string]>;
+  outgoingCashuTransfers!: Table<BrowserOutgoingCashuTransferRow, [string, string]>;
+  outgoingCashuTransferAdmissions!: Table<
+    BrowserOutgoingCashuTransferAdmissionRow,
+    [string, string]
+  >;
 
   constructor(databaseName = "bitcaster") {
     super(databaseName);
@@ -451,6 +480,11 @@ export class BitcasterDB extends Dexie {
       mintQuotes:
         "&[scopeId+paymentMethod+quoteRecordId], [scopeId+paymentMethod+observedState+quoteRecordId], [scopeId+paymentMethod+recoveryState+lastRecoveryAttemptAtMs+quoteRecordId]",
     });
+    this.version(12).stores({
+      outgoingCashuTransfers:
+        "&[scopeId+transferId], [scopeId+mintUrl+mintRecoveryState+dueAtMs+transferId], [scopeId+mintRecoveryState+dueAtMs+mintUrl+transferId], [scopeId+localAuthorityState+transferId]",
+      outgoingCashuTransferAdmissions: "&[scopeId+transferId]",
+    });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -471,6 +505,8 @@ export class BitcasterDB extends Dexie {
     );
     this.targetedAssetRecoveryAttempts = this.table("targetedAssetRecoveryAttempts");
     this.mintQuotes = this.table("mintQuotes");
+    this.outgoingCashuTransfers = this.table("outgoingCashuTransfers");
+    this.outgoingCashuTransferAdmissions = this.table("outgoingCashuTransferAdmissions");
   }
 }
 

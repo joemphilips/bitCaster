@@ -22,6 +22,7 @@ import { ToastContainer } from "@/components/ui/Toast";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import {
   recoverKeysetCountersForMint,
+  recoverBrowserDurableOutgoingCashuTransfersInPass,
   recoverPendingTokenReceives,
   recoverPendingWalletMints,
 } from "@/lib/cashu";
@@ -235,6 +236,15 @@ function AppRoutes() {
             mintUrls,
           });
           retryRequired ||= result.pending.length > 0;
+        } catch {
+          retryRequired = true;
+        }
+        try {
+          const result = await recoverBrowserDurableOutgoingCashuTransfersInPass({
+            mintUrls,
+            passCutoffMs: Date.now(),
+          });
+          retryRequired ||= result.pending > 0 || result.hasMore;
         } catch {
           retryRequired = true;
         }

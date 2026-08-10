@@ -89,6 +89,10 @@ import {
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
 import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import type { TokenImportContext } from "@bitcaster/client-sdk/tokenImportValidation";
+import {
+  listBrowserDurableOutgoingCashuDueMints,
+  recoverBrowserDurableOutgoingCashuDuePage,
+} from "@/lib/browserDurableOutgoingCashuTransfer";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -549,6 +553,67 @@ export async function recoverPendingWalletMints(): Promise<{ pending: number }> 
     }
   }
   return { pending };
+}
+
+/** Recover one bounded outgoing-transfer page per configured or due scoped mint. */
+export async function recoverBrowserDurableOutgoingCashuTransfersInPass(input: {
+  readonly mintUrls: readonly string[];
+  readonly passCutoffMs: number;
+}): Promise<{ pending: number; hasMore: boolean }> {
+  let context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+  try {
+    context = captureBrowserMintPersistenceContext();
+  } catch {
+    return { pending: 0, hasMore: false };
+  }
+  const dueMintPage = await listBrowserDurableOutgoingCashuDueMints({
+    scopeId: context.scopeId,
+    dueBeforeMs: input.passCutoffMs,
+    database: context.database,
+  });
+  const mints = new Set([...input.mintUrls.map(normalizeUrl), ...dueMintPage.mints]);
+  const wallets = new Map<string, CashuWallet>();
+  let pending = 0;
+  let hasMore = dueMintPage.hasMore;
+  for (const mintUrl of mints) {
+    context.requireCapturedProfile();
+    const walletForMint = async (url: string, unit: string): Promise<CashuWallet> => {
+      const proofUnit = requireCashuProofUnit(unit);
+      const key = `${url}\u0000${proofUnit}`;
+      let wallet = wallets.get(key);
+      if (wallet === undefined) {
+        wallet = await getWalletForMnemonicUnit(url, proofUnit, context.mnemonic);
+        wallets.set(key, wallet);
+      }
+      return wallet;
+    };
+    const page = await recoverBrowserDurableOutgoingCashuDuePage({
+      mintUrl,
+      dueBeforeMs: input.passCutoffMs,
+      cursor: null,
+      walletForMint,
+      restoreExactOutputs: async ({ mintUrl: restoreMintUrl, unit, outputs }) => {
+        const wallet = await walletForMint(restoreMintUrl, unit);
+        const combined = [...outputs.keep, ...outputs.send];
+        const restored = await restoreExactMintOutputs(wallet, {
+          mintUrl: restoreMintUrl,
+          unit,
+          outputs: combined,
+        });
+        if (restored.length !== combined.length) {
+          throw new Error("outgoing Cashu restore result is incomplete");
+        }
+        return {
+          keep: restored.slice(0, outputs.keep.length),
+          send: restored.slice(outputs.keep.length),
+        };
+      },
+      context,
+    });
+    pending += page.failed;
+    hasMore ||= page.nextCursor !== null;
+  }
+  return { pending, hasMore };
 }
 
 function hasValidBolt11MintQuoteOwnership(metadata: Record<string, unknown>): boolean {

@@ -5,6 +5,7 @@ import {
   claimDurableCustodyScope,
   createDurableCustodyArtifactReference,
   decodeCanonicalMintOrigin,
+  deriveDurableCustodyArtifactFingerprint,
   decodeDurableCustodyRecord,
   decodeDurableCustodyScopeId,
   decodeDurableCustodyScopeState,
@@ -29,8 +30,14 @@ import {
   type DurableCustodyTransition,
 } from "@bitcaster/client-sdk/durableCustody";
 import { createDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import { decodeDurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import { verifyDurableWalletConditionalKeyset } from "@bitcaster/client-sdk/recoverableWalletStorage";
-import { db, type BitcasterDB } from "./proof-db";
+import {
+  db,
+  type BitcasterDB,
+  type BrowserOutgoingCashuTransferAdmissionRow,
+  type BrowserOutgoingCashuTransferRow,
+} from "./proof-db";
 import {
   advanceBrowserProofBackupAuthorityRow,
   advanceBrowserRemoteProofBackupAuthorityRow,
@@ -130,6 +137,10 @@ export interface BrowserCustodyTransactionOptions {
   readonly successorProofs?: Readonly<Record<string, readonly StagedBrowserCustodyProof[]>>;
   readonly conditionalKeysets?: Readonly<Record<string, BrowserCustodyConditionalKeysetAuthority>>;
   readonly injectFault?: "before-commit" | "after-commit";
+  /** An outgoing token record shares the custody commit but never enters proof backup. */
+  readonly outgoingTransfer?: BrowserOutgoingCashuTransferRow;
+  /** A physical pre-mint reservation. Null consumes an existing reservation. */
+  readonly outgoingAdmission?: BrowserOutgoingCashuTransferAdmissionRow | null;
 }
 
 type ApplyVerifiedResultInput = Parameters<DurableCustodyTransaction["applyVerifiedResult"]>[0];
@@ -228,6 +239,30 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     apply: (transaction: DurableCustodyTransaction) => T,
     options: BrowserCustodyTransactionOptions = {},
   ): Promise<T> {
+    return this.#transact(selection, apply, options, false);
+  }
+
+  /** Use only when one physical commit requires two ordered custody transitions. */
+  async transactAtomic<T>(
+    selection: DurableCustodyTransactionSelection,
+    apply: (transaction: DurableCustodyTransaction) => T,
+    options: BrowserCustodyTransactionOptions = {},
+  ): Promise<T> {
+    return this.#transact(selection, apply, options, true);
+  }
+
+  async #transact<T>(
+    selection: DurableCustodyTransactionSelection,
+    apply: (transaction: DurableCustodyTransaction) => T,
+    options: BrowserCustodyTransactionOptions,
+    atomic: boolean,
+  ): Promise<T> {
+    if (
+      !atomic &&
+      (options.outgoingTransfer !== undefined || options.outgoingAdmission !== undefined)
+    ) {
+      throw new Error("browser outgoing transfer requires atomic custody transaction");
+    }
     const tables = [
       this.#database.custodyScopes,
       this.#database.custodyOperations,
@@ -238,19 +273,18 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       this.#database.custodyProofBackupAuthorities,
       this.#database.custodyConditionalKeysets,
       this.#database.encryptedWalletBackupV2DesiredAssets,
+      ...(atomic
+        ? [this.#database.outgoingCashuTransfers, this.#database.outgoingCashuTransferAdmissions]
+        : []),
     ];
     const result = await this.#database.transaction("rw", tables, async () => {
       const scope = (await this.#requiredScope(selection.scope.scopeId)).state;
-      const operationRows = await this.#loadSelectedOperations(selection);
-      const artifacts = await this.#loadArtifacts(selection.scope.scopeId, operationRows);
-      const proofState = await this.#loadProofState(
-        selection.scope.scopeId,
-        operationRows,
-        options,
-      );
+      const operations = await this.#loadSelectedOperations(selection);
+      const artifacts = await this.#loadArtifacts(selection.scope.scopeId, operations);
+      const proofState = await this.#loadProofState(selection.scope.scopeId, operations, options);
       const transaction = new StagedBrowserCustodyTransaction({
         scopeState: scope,
-        operations: operationRows,
+        operations,
         artifacts,
         proofs: proofState.proofs,
         reservations: proofState.reservations,
@@ -260,8 +294,21 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         predecessorFallbackOperationIds: stagedPredecessorFallbackOperationIds(options),
         conditionalKeysets: stagedConditionalKeysets(options),
       });
-      const output = applyDurableCustodyTransaction(transaction, selection, apply);
+      const output = atomic
+        ? (applyDurableCustodyTransaction(transaction, selection, () => undefined),
+          apply(transaction))
+        : applyDurableCustodyTransaction(transaction, selection, apply);
       await this.#persistTransaction(selection, transaction);
+      if (atomic && options.outgoingTransfer !== undefined) {
+        await this.#persistOutgoingTransfer(selection.scope.scopeId, options.outgoingTransfer);
+        await this.#persistOutgoingAdmission(
+          selection.scope.scopeId,
+          options.outgoingTransfer,
+          options.outgoingAdmission,
+        );
+      } else if (atomic && options.outgoingAdmission !== undefined) {
+        throw new Error("browser outgoing admission requires an outgoing transfer");
+      }
       if (options.injectFault === "before-commit") {
         throw new Error("injected browser custody fault before commit");
       }
@@ -650,6 +697,79 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     await this.#persistReservations(selection.scope.scopeId, transaction);
     await this.#rebuildActiveWork(selection, transaction);
     await this.#persistEffectiveClock(selection, transaction.scopeState);
+  }
+
+  async #persistOutgoingTransfer(
+    scopeId: string,
+    row: BrowserOutgoingCashuTransferRow,
+  ): Promise<void> {
+    const transfer = decodeDurableOutgoingCashuTransfer(row.transfer);
+    if (
+      row.scopeId !== scopeId ||
+      row.transferId !== transfer.transferId ||
+      row.mintUrl !== transfer.mintUrl ||
+      row.mintRecoveryState !== mintRecoveryState(transfer) ||
+      row.localAuthorityState !== localAuthorityState(transfer) ||
+      row.dueAtMs !== transfer.recovery.dueAtMs ||
+      (row.admissionState !== "reserved" && row.admissionState !== "consumed") ||
+      transfer.walletScopeId !== scopeId
+    ) {
+      throw new Error("browser outgoing transfer row is foreign");
+    }
+    const existing = await this.#database.outgoingCashuTransfers.get([
+      scopeId,
+      transfer.transferId,
+    ]);
+    if (existing !== undefined) {
+      const current = decodeDurableOutgoingCashuTransfer(existing.transfer);
+      if (current.revision > transfer.revision) {
+        throw new Error("browser outgoing transfer revision is stale");
+      }
+      if (
+        current.revision === transfer.revision &&
+        deriveDurableCustodyArtifactFingerprint(current) !==
+          deriveDurableCustodyArtifactFingerprint(transfer)
+      ) {
+        throw new Error("browser outgoing transfer revision conflicts");
+      }
+    }
+    await this.#database.outgoingCashuTransfers.put({
+      scopeId,
+      mintUrl: transfer.mintUrl,
+      mintRecoveryState: mintRecoveryState(transfer),
+      localAuthorityState: localAuthorityState(transfer),
+      dueAtMs: transfer.recovery.dueAtMs,
+      transferId: transfer.transferId,
+      admissionState: row.admissionState,
+      transfer,
+    });
+  }
+
+  async #persistOutgoingAdmission(
+    scopeId: string,
+    transferRow: BrowserOutgoingCashuTransferRow,
+    admission: BrowserOutgoingCashuTransferAdmissionRow | null | undefined,
+  ): Promise<void> {
+    const key: [string, string] = [scopeId, transferRow.transferId];
+    if (transferRow.admissionState === "consumed") {
+      if (admission !== null) {
+        throw new Error("browser outgoing transfer admission consumption is invalid");
+      }
+      await this.#database.outgoingCashuTransferAdmissions.delete(key);
+      return;
+    }
+    if (
+      admission === undefined ||
+      admission === null ||
+      admission.scopeId !== scopeId ||
+      admission.transferId !== transferRow.transferId ||
+      !Number.isSafeInteger(admission.reservedBytes) ||
+      admission.reservedBytes < 1 ||
+      admission.padding.byteLength !== admission.reservedBytes
+    ) {
+      throw new Error("browser outgoing transfer admission is invalid");
+    }
+    await this.#database.outgoingCashuTransferAdmissions.put(admission);
   }
 
   async #persistChangedOperations(transaction: StagedBrowserCustodyTransaction): Promise<void> {
@@ -2119,6 +2239,38 @@ function nonnegativeSafeInteger(value: unknown, label: string): number {
     throw new Error(`browser custody ${label} is invalid`);
   }
   return value;
+}
+
+function mintRecoveryState(
+  transfer: ReturnType<typeof decodeDurableOutgoingCashuTransfer>,
+): "pending" | "complete" {
+  switch (transfer.deliveryState) {
+    case "prepared":
+      return "pending";
+    case "delivery-pending":
+    case "recipient-acknowledged":
+    case "bearer-spent":
+    case "bearer-partial":
+    case "reclaim-prepared":
+    case "reclaimed":
+      return "complete";
+  }
+}
+
+function localAuthorityState(
+  transfer: ReturnType<typeof decodeDurableOutgoingCashuTransfer>,
+): "nonterminal" | "terminal" {
+  switch (transfer.deliveryState) {
+    case "prepared":
+    case "delivery-pending":
+    case "bearer-partial":
+    case "reclaim-prepared":
+      return "nonterminal";
+    case "recipient-acknowledged":
+    case "bearer-spent":
+    case "reclaimed":
+      return "terminal";
+  }
 }
 
 function assertNever(value: never): never {

@@ -4,6 +4,7 @@ import { getEncodedTokenV4, type Proof } from '@cashu/cashu-ts'
 import {
   decodeCanonicalMintOrigin,
   deriveDurableCustodyArtifactFingerprint,
+  DURABLE_CUSTODY_RECORD_BYTES_MAX,
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
   DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX,
 } from './durableCustody.ts'
@@ -26,6 +27,10 @@ import {
   verifyDurableWalletReceiveResult,
   verifyDurableWalletSendResult,
 } from './durableWalletOperation.ts'
+import {
+  decodeDurableWalletProofDerivationLocator,
+  type DurableWalletProofDerivationLocator,
+} from './durableWalletProofDerivationLocator.ts'
 
 export const DURABLE_OUTGOING_CASHU_TRANSFER_SCHEMA_VERSION = 1 as const
 export const DURABLE_OUTGOING_CASHU_RECOVERY_PAGE_LIMIT_MAX = 128
@@ -37,6 +42,12 @@ export const DURABLE_OUTGOING_CASHU_PROOF_STATE_PROOFS_PER_CALL_MAX = 128
 export const DURABLE_OUTGOING_CASHU_RETRY_BACKOFF_INITIAL_MS = 5_000
 export const DURABLE_OUTGOING_CASHU_RETRY_BACKOFF_MAX_MS = 60 * 60 * 1_000
 export const DURABLE_OUTGOING_CASHU_RECOVERY_BYTES_MAX = 4 * 1_024 * 1_024
+/**
+ * This is the maximum local reservation for one outgoing transfer.
+ * It includes the exact prepared transfer, the token, and three bounded copies of
+ * the token proof/result representation. Each output also has bounded index state.
+ */
+export const DURABLE_OUTGOING_CASHU_STORAGE_RESERVATION_BYTES_MAX = 20 * 1_024 * 1_024
 
 export type DurableOutgoingCashuDeliveryIntent =
   | {
@@ -122,6 +133,8 @@ export interface DurableOutgoingCashuTransfer {
   readonly requestedAmount: string
   readonly walletSendOperation: DurableWalletSendOperation
   readonly walletSendOperationAuthority: DurableWalletOperationAuthority
+  /** One exact locator per seed-derived keep output. Null means not seed-derived. */
+  readonly keepProofDerivationLocators: readonly (DurableWalletProofDerivationLocator | null)[]
   readonly deliveryIntent: DurableOutgoingCashuDeliveryIntent
   readonly deliveryState: DurableOutgoingCashuDeliveryState
   readonly token: DurableOutgoingCashuTokenAuthority | null
@@ -129,6 +142,33 @@ export interface DurableOutgoingCashuTransfer {
   readonly reclaim: DurableOutgoingCashuReclaimAuthority | null
   readonly recovery: { readonly dueAtMs: number; readonly attemptCount: number }
   readonly revision: number
+}
+
+/**
+ * Calculate a conservative local storage reservation before mint I/O.
+ * The browser uses this value for physical IndexedDB admission.
+ */
+export function durableOutgoingCashuStorageReservationBytes(
+  value: DurableOutgoingCashuTransfer,
+): number {
+  const transfer = decodeDurableOutgoingCashuTransfer(value)
+  const outputCount =
+    transfer.walletSendOperation.preview.keepOutputs.length +
+    transfer.walletSendOperation.preview.sendOutputs.length
+  const transferBytes = new TextEncoder().encode(JSON.stringify(transfer)).byteLength
+  const bytes =
+    transferBytes +
+    transfer.deliveryIntent.tokenBytesLimit * 4 +
+    outputCount * 512 +
+    2 * DURABLE_CUSTODY_RECORD_BYTES_MAX
+  if (
+    !Number.isSafeInteger(bytes) ||
+    bytes < 1 ||
+    bytes > DURABLE_OUTGOING_CASHU_STORAGE_RESERVATION_BYTES_MAX
+  ) {
+    throw new Error('durable outgoing Cashu storage reservation exceeds its admitted envelope')
+  }
+  return bytes
 }
 
 /** Physical transaction before mint I/O. It selects and locks exactly one operation and admits storage. */
@@ -250,6 +290,7 @@ export function createDurableOutgoingCashuTransfer(input: {
   readonly walletScopeId: string
   readonly requestedAmount: string
   readonly walletSendOperation: DurableWalletSendOperation
+  readonly keepProofDerivationLocators?: readonly (DurableWalletProofDerivationLocator | null)[]
   readonly deliveryIntent: DurableOutgoingCashuDeliveryIntent
   readonly dueAtMs?: number
 }): DurableOutgoingCashuTransfer {
@@ -268,6 +309,10 @@ export function createDurableOutgoingCashuTransfer(input: {
     requestedAmount: input.requestedAmount,
     walletSendOperation: operation,
     walletSendOperationAuthority: deriveDurableWalletOperationAuthority(operation),
+    keepProofDerivationLocators: decodeKeepProofDerivationLocators(
+      input.keepProofDerivationLocators ?? [],
+      operation,
+    ),
     deliveryIntent: intent,
     deliveryState: 'prepared',
     token: null,
@@ -462,6 +507,7 @@ export function decodeDurableOutgoingCashuTransfer(value: unknown): DurableOutgo
     'requestedAmount',
     'walletSendOperation',
     'walletSendOperationAuthority',
+    'keepProofDerivationLocators',
     'deliveryIntent',
     'deliveryState',
     'token',
@@ -490,6 +536,10 @@ export function decodeDurableOutgoingCashuTransfer(value: unknown): DurableOutgo
   if (!sameAuthority(authority, deriveDurableWalletOperationAuthority(operation))) {
     throw new Error('durable outgoing Cashu transfer wallet send authority conflicts')
   }
+  const keepProofDerivationLocators = decodeKeepProofDerivationLocators(
+    value.keepProofDerivationLocators,
+    operation,
+  )
   const deliveryIntent = decodeDeliveryIntent(value.deliveryIntent)
   const token = decodeToken(value.token, {
     mintUrl,
@@ -523,6 +573,7 @@ export function decodeDurableOutgoingCashuTransfer(value: unknown): DurableOutgo
     requestedAmount: value.requestedAmount,
     walletSendOperation: operation,
     walletSendOperationAuthority: authority,
+    keepProofDerivationLocators,
     deliveryIntent,
     deliveryState: value.deliveryState,
     token,
@@ -1137,6 +1188,9 @@ function decodeToken(
         walletSendOperationAuthority: deriveDurableWalletOperationAuthority(
           transfer.walletSendOperation,
         ),
+        keepProofDerivationLocators: transfer.walletSendOperation.preview.keepOutputs.map(
+          () => null,
+        ),
         deliveryState: 'prepared',
         token: null,
         recipientReceipt: null,
@@ -1394,6 +1448,34 @@ function decodeWalletAuthority(value: unknown): DurableWalletOperationAuthority 
     requestFingerprint: value.requestFingerprint,
     outputPlanFingerprint: value.outputPlanFingerprint,
   }
+}
+
+function decodeKeepProofDerivationLocators(
+  value: unknown,
+  operation: DurableWalletSendOperation,
+): (DurableWalletProofDerivationLocator | null)[] {
+  if (!Array.isArray(value) || value.length !== operation.preview.keepOutputs.length) {
+    throw new Error('durable outgoing Cashu keep proof derivation locators are invalid')
+  }
+  const seen = new Set<string>()
+  return value.map((locator, index) => {
+    if (locator === null) return null
+    const decoded = decodeDurableWalletProofDerivationLocator(locator)
+    const output = operation.preview.keepOutputs[index]
+    if (
+      output === undefined ||
+      decoded.kind !== 'nut13' ||
+      decoded.keysetId !== output.blindedMessage.id
+    ) {
+      throw new Error('durable outgoing Cashu keep proof derivation locator is foreign')
+    }
+    const fingerprint = deriveDurableCustodyArtifactFingerprint(decoded)
+    if (seen.has(fingerprint)) {
+      throw new Error('durable outgoing Cashu keep proof derivation locators conflict')
+    }
+    seen.add(fingerprint)
+    return decoded
+  })
 }
 
 function decodeCustodyRevisions(value: unknown): { proofIdentity: string; revision: number }[] {

@@ -288,6 +288,24 @@ it("blocks seed handoff for each active local work category", async () => {
   await expect(handoff(mutation)).rejects.toThrow(/prepared backup mutation/);
 });
 
+it("blocks seed handoff for nonterminal outgoing Cashu authority without deleting the old database", async () => {
+  const current = fixture();
+  await current.database.outgoingCashuTransfers.put({
+    scopeId: current.scopeId,
+    mintUrl: "https://mint.example",
+    mintRecoveryState: "complete",
+    localAuthorityState: "nonterminal",
+    dueAtMs: 1,
+    transferId: "outgoing-nonterminal",
+    admissionState: "consumed",
+    transfer: {} as never,
+  });
+  const remove = vi.spyOn(current.database, "delete");
+
+  await expect(handoff(current)).rejects.toThrow(/nonterminal outgoing Cashu authority/);
+  expect(remove).not.toHaveBeenCalled();
+});
+
 it("does not block seed handoff for more than 256 terminal CTF preparations", async () => {
   const current = fixture();
   await current.database.ctfRangePreparations.bulkPut(

@@ -170,23 +170,29 @@ async function withWalletLocks<T>(
 }
 
 async function requireNoActiveLocalWork(database: BitcasterDB, scopeId: string): Promise<void> {
-  const [activeWork, preparedOperation, activeRanges, preparedMutation] = await Promise.all([
-    database.custodyActiveWork
-      .where("[scopeId+operationId]")
-      .between([scopeId, TEXT_KEY_MIN], [scopeId, TEXT_KEY_MAX])
-      .limit(1)
-      .first(),
-    database.proofOperations.where("state").equals("prepared").limit(1).first(),
-    pageActiveCtfRangePreparations({ scopeId, limit: 1 }, database),
-    database.encryptedWalletBackupV2PreparedMutations
-      .where("[scopeId+realm+walletId+enrollmentEpoch]")
-      .between(
-        [scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, 0],
-        [scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, NUMBER_KEY_MAX],
-      )
-      .limit(1)
-      .first(),
-  ]);
+  const [activeWork, preparedOperation, activeRanges, preparedMutation, outgoingAuthority] =
+    await Promise.all([
+      database.custodyActiveWork
+        .where("[scopeId+operationId]")
+        .between([scopeId, TEXT_KEY_MIN], [scopeId, TEXT_KEY_MAX])
+        .limit(1)
+        .first(),
+      database.proofOperations.where("state").equals("prepared").limit(1).first(),
+      pageActiveCtfRangePreparations({ scopeId, limit: 1 }, database),
+      database.encryptedWalletBackupV2PreparedMutations
+        .where("[scopeId+realm+walletId+enrollmentEpoch]")
+        .between(
+          [scopeId, TEXT_KEY_MIN, TEXT_KEY_MIN, 0],
+          [scopeId, TEXT_KEY_MAX, TEXT_KEY_MAX, NUMBER_KEY_MAX],
+        )
+        .limit(1)
+        .first(),
+      database.outgoingCashuTransfers
+        .where("[scopeId+localAuthorityState+transferId]")
+        .between([scopeId, "nonterminal", TEXT_KEY_MIN], [scopeId, "nonterminal", TEXT_KEY_MAX])
+        .limit(1)
+        .first(),
+    ]);
   if (activeWork !== undefined) throw new Error("browser V2 seed handoff has active custody work");
   if (preparedOperation !== undefined)
     throw new Error("browser V2 seed handoff has a prepared proof operation");
@@ -195,6 +201,9 @@ async function requireNoActiveLocalWork(database: BitcasterDB, scopeId: string):
   }
   if (preparedMutation !== undefined)
     throw new Error("browser V2 seed handoff has a prepared backup mutation");
+  if (outgoingAuthority !== undefined) {
+    throw new Error("browser V2 seed handoff has nonterminal outgoing Cashu authority");
+  }
 }
 
 async function requireWholeWalletSeedHandoffEligibility(

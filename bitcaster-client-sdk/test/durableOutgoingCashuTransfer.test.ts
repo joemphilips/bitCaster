@@ -8,6 +8,7 @@ import {
   classifyDurableOutgoingBearerProofStates,
   createDurableOutgoingCashuTransfer,
   decodeDurableOutgoingCashuTransfer,
+  durableOutgoingCashuStorageReservationBytes,
   completeDurableOutgoingCashuReclaim,
   planDurableOutgoingCashuProofStateChunks,
   planDurableOutgoingCashuRecoveryPage,
@@ -41,6 +42,74 @@ test('strictly creates and decodes one exact outgoing bearer transfer', () => {
   assert.throws(
     () => decodeDurableOutgoingCashuTransfer({ ...transfer, requestedAmount: '3' }),
     /foreign/,
+  )
+})
+
+test('persists one exact keep derivation locator and reserves a bounded envelope', () => {
+  const operation = keepWalletSendOperation()
+  const locator = {
+    schemaVersion: 1 as const,
+    kind: 'nut13' as const,
+    keysetId: KEYSET_ID,
+    counter: 2,
+  }
+  const transfer = createDurableOutgoingCashuTransfer({
+    transferId: 'keep-locator-1',
+    walletScopeId: 'wallet-1',
+    requestedAmount: '1',
+    walletSendOperation: operation,
+    keepProofDerivationLocators: [locator],
+    deliveryIntent: {
+      policy: 'bearer-spend-classification',
+      tokenBytesLimit: 1024,
+      tokenProofLimit: 1,
+    },
+  })
+
+  assert.deepEqual(transfer.keepProofDerivationLocators, [locator])
+  assert.ok(durableOutgoingCashuStorageReservationBytes(transfer) > 1024)
+  assert.throws(
+    () =>
+      createDurableOutgoingCashuTransfer({
+        transferId: 'keep-locator-invalid',
+        walletScopeId: 'wallet-1',
+        requestedAmount: '1',
+        walletSendOperation: operation,
+        keepProofDerivationLocators: [],
+        deliveryIntent: transfer.deliveryIntent,
+      }),
+    /derivation locators are invalid/,
+  )
+  assert.throws(
+    () =>
+      createDurableOutgoingCashuTransfer({
+        transferId: 'keep-locator-wrong-keyset',
+        walletScopeId: 'wallet-1',
+        requestedAmount: '1',
+        walletSendOperation: operation,
+        keepProofDerivationLocators: [{ ...locator, keysetId: `01${'2'.repeat(64)}` }],
+        deliveryIntent: transfer.deliveryIntent,
+      }),
+    /locator is foreign/,
+  )
+  assert.throws(
+    () =>
+      createDurableOutgoingCashuTransfer({
+        transferId: 'keep-locator-wrong-kind',
+        walletScopeId: 'wallet-1',
+        requestedAmount: '1',
+        walletSendOperation: operation,
+        keepProofDerivationLocators: [
+          {
+            schemaVersion: 1,
+            kind: 'ctf-range-manifest',
+            rangeOperationId: 'range-1',
+            manifestIndex: 0,
+          },
+        ],
+        deliveryIntent: transfer.deliveryIntent,
+      }),
+    /locator is foreign/,
   )
 })
 
@@ -742,6 +811,32 @@ function coordinatorWalletSendOperation() {
       ],
       sendOutputs: [OutputData.createSingleData('2', KEYSET_ID, 'send-secret', 5n)],
       keepOutputs: [],
+    },
+  })
+}
+
+function keepWalletSendOperation(): DurableWalletSendOperation {
+  return serializeDurableWalletSendOperation({
+    operationId: 'wallet-send-keep',
+    mintUrl: 'https://mint.example',
+    unit: 'sat',
+    preview: {
+      amount: Amount.from(2),
+      fees: Amount.zero(),
+      keysetId: KEYSET_ID,
+      inputs: [
+        hydrateDurableWalletProof({
+          id: KEYSET_ID,
+          amount: '2',
+          secret: 'input-keep',
+          C: TOKEN_C,
+          dleq: null,
+          p2pkE: null,
+          witness: null,
+        }),
+      ],
+      sendOutputs: [OutputData.createSingleData('1', KEYSET_ID, 'send-keep', 6n)],
+      keepOutputs: [OutputData.createSingleData('1', KEYSET_ID, 'keep-secret', 7n)],
     },
   })
 }
