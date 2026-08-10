@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { createECDH, createHash } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -37,11 +37,7 @@ import {
   getFinalProfileSchemaManifest,
 } from '../src/profileSchemaManifest.ts'
 import { createNativeConfig, defaultNativeConfig } from '../src/nativeConfig.ts'
-import {
-  ProfileSecretProtectionError,
-  protectTargetEphemeralPrivateKey,
-  unlockTargetEphemeralPrivateKey,
-} from '../src/profileSecretProtection.ts'
+import { ProfileSecretProtectionError } from '../src/profileSecretProtection.ts'
 
 const roots: string[] = []
 after(async () => {
@@ -184,9 +180,6 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     'custody_active_work',
     'daemon_orders',
     'order_collateral_pins',
-    'daemon_swaps',
-    'swap_operation_links',
-    'target_ephemeral_keys',
     'seed_recovery_jobs',
     'seed_recovery_keysets',
   ]) {
@@ -254,6 +247,10 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     'trade_cipher_recovery',
     'adaptor_recovery',
     'presignature_recovery',
+    'daemon_order_trades',
+    'daemon_swaps',
+    'swap_operation_links',
+    'target_ephemeral_keys',
   ]) {
     assert.ok(!names.has(forbidden), forbidden)
   }
@@ -392,33 +389,6 @@ test('passphrase encryption fails closed without exposing seed or Nostr secret',
   assert.equal(
     (await readBootstrappedProfileSecrets(directory, 'correct horse')).nostrPublicKeyHex,
     result.nostrPublicKeyHex,
-  )
-})
-
-test('target-v1 ephemeral private keys are passphrase protected and binding exact', () => {
-  const privateKeyHex = '33'.repeat(32)
-  const ecdh = createECDH('secp256k1')
-  ecdh.setPrivateKey(Buffer.from(privateKeyHex, 'hex'))
-  const binding = {
-    walletScopeId: '44'.repeat(32),
-    orderId: 'order-1',
-    tradeId: 'trade-1',
-    marketId: 'condition-yes',
-    publicKeyHex: ecdh.getPublicKey('hex', 'compressed'),
-  }
-  const protectedBody = protectTargetEphemeralPrivateKey(privateKeyHex, binding, 'key passphrase')
-  assert.equal(
-    unlockTargetEphemeralPrivateKey(protectedBody, binding, 'key passphrase'),
-    privateKeyHex,
-  )
-  assert.throws(
-    () =>
-      unlockTargetEphemeralPrivateKey(
-        protectedBody,
-        { ...binding, orderId: 'other-order' },
-        'key passphrase',
-      ),
-    secretError('unlock-failed'),
   )
 })
 

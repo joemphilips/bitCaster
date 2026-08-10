@@ -1,13 +1,5 @@
 import { createRequire } from 'node:module'
-import { submitEphemeralPubkey as submitEphemeralPubkeyRequest } from '@bitcaster-market/client-sdk/engineClient'
-import {
-  conditionIdFromMarketId,
-  parseMatchedDelta,
-  type MatchedDelta,
-} from '@bitcaster-market/client-sdk/tradeIgnition'
-import { generateOrderEphemeralKeypair, type OrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
-import { readSecrets, updateSecrets } from './secrets.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -28,8 +20,6 @@ interface HubConnectionLike {
   invoke(methodName: string, ...args: unknown[]): Promise<unknown>
   onreconnected?(callback: () => void): void
 }
-
-export type MarketMatchedDelta = MatchedDelta
 
 export interface SignalRMarketHubConnectionOptions {
   engineBaseUrl: string
@@ -53,9 +43,7 @@ export class SignalRMarketHubConnection {
   private readonly callbacks: SignalRMarketHubConnectionOptions
   private connection: HubConnectionLike | null = null
   private callbackChain: Promise<void> = Promise.resolve()
-  private readonly knownOrderIds = new Set<string>()
   private readonly joinedMarkets = new Set<string>()
-  private readonly processedTradeIds = new Set<string>()
 
   constructor(options: SignalRMarketHubConnectionOptions) {
     this.engineBaseUrl = options.engineBaseUrl.replace(/\/+$/, '')
@@ -97,45 +85,12 @@ export class SignalRMarketHubConnection {
     await connection?.stop()
   }
 
-  async trackOrder(marketId: string, orderId: string): Promise<void> {
-    this.knownOrderIds.add(orderId)
-    this.joinedMarkets.add(marketId)
-    await this.connection?.invoke('JoinMarket', marketId)
-  }
-
   async trackMarket(marketId: string): Promise<void> {
     this.joinedMarkets.add(marketId)
     await this.connection?.invoke('JoinMarket', marketId)
   }
 
   private registerHandlers(connection: HubConnectionLike): void {
-    connection.on('Matched', (delta: unknown) => {
-      void this.invokeCallback(async () => {
-        await handleMatchedForMaker({
-          delta,
-          processedTradeIds: this.processedTradeIds,
-          knownOrderIds: this.knownOrderIds,
-          getOrCreateEphemeralKeypair: (tradeId, orderId, marketId) =>
-            getOrCreateStoredEphemeralKeypair({
-              tradeId,
-              orderId,
-              marketId,
-            }),
-          submitEphemeralPubkey: async (tradeId, pubkey, conditionId) => {
-            await submitEphemeralPubkeyRequest(
-              this.engineBaseUrl,
-              tradeId,
-              pubkey,
-              null,
-              fetch,
-              async ({ url, method, bodyText }) =>
-                signNip98({ privateKeyHex: this.nostrSecretKeyHex }, url, method, bodyText),
-              conditionId,
-            )
-          },
-        })
-      })
-    })
     connection.on('MarketStatusChanged', (value: unknown) => {
       void this.invokeCallback(async () => {
         await this.callbacks.onMarketStatusChanged?.(parseMarketStatusChanged(value))
@@ -187,60 +142,4 @@ function optionalString(value: unknown, label: string): string | null {
   if (value === null || value === undefined) return null
   if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} is invalid`)
   return value
-}
-
-export async function handleMatchedForMaker(input: {
-  delta: unknown
-  processedTradeIds: Set<string>
-  knownOrderIds: Set<string>
-  getOrCreateEphemeralKeypair: (
-    tradeId: string,
-    orderId: string,
-    marketId: string,
-  ) => Promise<OrderEphemeralKeypair>
-  submitEphemeralPubkey: (tradeId: string, pubkey: string, conditionId?: string) => Promise<void>
-}): Promise<void> {
-  const matched = parseMatchedDelta(input.delta)
-  if (!matched) throw new Error('Matched payload had unexpected shape or product facts')
-  if (input.processedTradeIds.has(matched.tradeId)) return
-  if (!input.knownOrderIds.has(matched.makerOrderId)) return
-
-  input.processedTradeIds.add(matched.tradeId)
-  const key = await input.getOrCreateEphemeralKeypair(
-    matched.tradeId,
-    matched.makerOrderId,
-    matched.marketId,
-  )
-  await input.submitEphemeralPubkey(
-    matched.tradeId,
-    key.publicKeyHex,
-    conditionIdFromMarketId(matched.marketId),
-  )
-}
-
-async function getOrCreateStoredEphemeralKeypair(input: {
-  tradeId: string
-  orderId: string
-  marketId: string
-}): Promise<OrderEphemeralKeypair> {
-  const existing = (await readSecrets())?.orderEphemeralKeys[input.tradeId]
-  if (existing) {
-    return {
-      privateKeyHex: existing.privateKeyHex,
-      publicKeyHex: existing.publicKeyHex,
-    }
-  }
-
-  const created = generateOrderEphemeralKeypair()
-  await updateSecrets((current, now) => {
-    current.orderEphemeralKeys[input.tradeId] = {
-      orderId: input.orderId,
-      tradeId: input.tradeId,
-      marketId: input.marketId,
-      privateKeyHex: created.privateKeyHex,
-      publicKeyHex: created.publicKeyHex,
-      createdAt: now,
-    }
-  })
-  return created
 }

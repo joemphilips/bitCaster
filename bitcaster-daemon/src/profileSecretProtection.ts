@@ -104,51 +104,6 @@ export function unlockInitialProfileSecrets(
   return secrets
 }
 
-export function protectTargetEphemeralPrivateKey(
-  privateKeyHex: string,
-  binding: {
-    readonly walletScopeId: string
-    readonly orderId: string
-    readonly tradeId: string | null
-    readonly marketId: string
-    readonly publicKeyHex: string
-  },
-  passphrase: string | undefined,
-): ProtectedSecretBody {
-  return protectBody(
-    Buffer.from(exactPrivateHex(privateKeyHex), 'utf8'),
-    targetEphemeralBinding(binding),
-    passphrase,
-  )
-}
-
-export function unlockTargetEphemeralPrivateKey(
-  protectedBody: ProtectedSecretBody,
-  binding: {
-    readonly walletScopeId: string
-    readonly orderId: string
-    readonly tradeId: string | null
-    readonly marketId: string
-    readonly publicKeyHex: string
-  },
-  passphrase: string | undefined,
-): string {
-  const privateKeyHex = Buffer.from(
-    unlockBody(protectedBody, targetEphemeralBinding(binding), passphrase),
-  ).toString('utf8')
-  const normalized = exactPrivateHex(privateKeyHex)
-  const ecdh = createECDH('secp256k1')
-  try {
-    ecdh.setPrivateKey(Buffer.from(normalized, 'hex'))
-  } catch {
-    throw new ProfileSecretProtectionError('secret-body-invalid')
-  }
-  if (ecdh.getPublicKey('hex', 'compressed') !== binding.publicKeyHex) {
-    throw new ProfileSecretProtectionError('secret-binding-mismatch')
-  }
-  return normalized
-}
-
 function protectBody(
   plaintext: Uint8Array,
   binding: Uint8Array,
@@ -223,26 +178,6 @@ function unlockBody(
 function profileSecretBinding(walletScopeId: string, nostrPublicKeyHex: string): Uint8Array {
   return Buffer.from(
     `bitcaster-daemon/profile-secrets/v1\0${walletScopeId}\0${nostrPublicKeyHex}`,
-    'utf8',
-  )
-}
-
-function targetEphemeralBinding(binding: {
-  readonly walletScopeId: string
-  readonly orderId: string
-  readonly tradeId: string | null
-  readonly marketId: string
-  readonly publicKeyHex: string
-}): Uint8Array {
-  return Buffer.from(
-    [
-      'bitcaster-daemon/target-ephemeral/v1',
-      binding.walletScopeId,
-      binding.orderId,
-      binding.tradeId ?? '',
-      binding.marketId,
-      binding.publicKeyHex,
-    ].join('\0'),
     'utf8',
   )
 }

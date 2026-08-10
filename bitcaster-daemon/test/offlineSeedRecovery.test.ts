@@ -118,46 +118,6 @@ test('offline seed recovery refuses target-first reserved and locked proofs befo
   }
 })
 
-test('offline seed recovery refuses nonterminal swaps before mint setup', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-offline-recovery-swap-'))
-  try {
-    const walletSeedHex = '03'.repeat(64)
-    const profile = await bootstrap(directory, walletSeedHex)
-    const seedPath = await writeSeedFile(directory, walletSeedHex)
-    await withDatabase(directory, (database) => {
-      database
-        .prepare(
-          `INSERT INTO daemon_swaps (
-             trade_id, scope_id, base_asset, divisibility, step, revision,
-             created_at_ms, updated_at_ms
-           ) VALUES ('swap-1', ?, 'sat', 10000, 'settling', 0, 0, 0)`,
-        )
-        .run(profile.walletScopeId)
-    })
-    await withDaemonHome(directory, async () => {
-      let walletCreated = false
-      await assert.rejects(
-        () =>
-          runOfflineDaemonSeedRecovery({
-            recoveryId: 'swap-recovery',
-            mintUrl: 'https://mint.example',
-            unit: 'sat',
-            walletSeedHexFile: seedPath,
-            disclosureAcknowledged: true,
-            transport: guardedTransport(() => {
-              walletCreated = true
-              throw new Error('mint setup must not run')
-            }),
-          }),
-        /daemon-swap-nonterminal/,
-      )
-      assert.equal(walletCreated, false)
-    })
-  } finally {
-    await removeRecoveryTemp(directory)
-  }
-})
-
 test('offline seed recovery scans and commits a clean profile', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-offline-recovery-clean-'))
   try {

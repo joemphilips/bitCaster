@@ -24,9 +24,6 @@ export type DaemonCommand =
   | { method: 'order.list'; params?: { marketId?: string; status?: string } }
   | { method: 'order.cancel'; params: { marketId: string; orderId: string } }
   | { method: 'order.book'; params: { marketId: string } }
-  | { method: 'trade.list'; params?: { marketId?: string; orderId?: string; step?: string } }
-  | { method: 'trade.recover'; params?: undefined }
-  | { method: 'trade.watch'; params: { tradeId: string } }
 
 export interface SubmitOrderParams {
   marketId: string

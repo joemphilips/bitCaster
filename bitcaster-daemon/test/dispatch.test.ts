@@ -48,17 +48,10 @@ async function writeState(state: DaemonState): Promise<void> {
     order.baseAsset ??= 'sat'
     order.divisibility ??= 10_000
   }
-  for (const swap of Object.values(state.swaps)) {
-    swap.baseAsset ??= 'sat'
-    swap.divisibility ??= 10_000
-  }
-  await withDaemonStateSqliteTransaction(profileDir(), (database) => {
-    database.prepare('DELETE FROM target_ephemeral_keys').run()
-  })
   await persistState(state)
 }
 
-test('daemon dispatch persists wallet, order, and swap state', async (t) => {
+test('daemon dispatch persists wallet and order state', async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-test-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -232,16 +225,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         orderId: 'order-status',
         marketId: 'cond-YES',
         status: 'resting',
-        tradeIds: ['trade-status'],
-        createdAt: '2026-05-21T00:00:00.000Z',
-        updatedAt: '2026-05-21T00:00:00.000Z',
-      }
-      state.swaps['trade-status'] = {
-        tradeId: 'trade-status',
-        marketId: 'cond-YES',
-        orderId: 'order-status',
-        messages: {},
-        step: 'seller-opened',
         createdAt: '2026-05-21T00:00:00.000Z',
         updatedAt: '2026-05-21T00:00:00.000Z',
       }
@@ -256,7 +239,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           proofs: 1,
           proofOperations: 1,
           orders: 1,
-          swaps: 1,
         },
         wallet: {
           totalAvailableSats: 10,
@@ -1231,8 +1213,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           state?.orders['order-1']?.clientOrderId,
           (capturedPreparation as unknown as { clientOrderId: string }).clientOrderId,
         )
-        assert.deepEqual(state?.swaps, {})
-        assert.deepEqual((await readSecrets())?.orderEphemeralKeys, {})
       },
     )
 
@@ -1466,84 +1446,72 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       assert.equal((await readState())?.orders['order-backed']?.orderId, 'order-backed')
     })
 
-    await t.test(
-      'order.submit binds complement intent and starts its lifecycle runtime',
-      async () => {
-        const priorState = await readState()
-        await writeState(backedDaemonState())
-        try {
-          const engine: EngineClientLike = {
-            ...scoreDisabledEngineMethods,
-            async submitOrder(_marketId, request) {
-              return {
-                orderId: 'order-complement',
-                status: 'resting',
-                remainingAmountSubunits: 10_000,
-                fills: [],
-                pendingPubkeySubmissions: [],
-                baseAsset: 'sat',
-                divisibility: 10_000,
-                activeSettlementGroup: null,
-              }
-            },
-            async getOrderStatus() {
-              throw new Error('getOrderStatus unused')
-            },
-            async cancelOrder() {
-              throw new Error('cancelOrder unused')
-            },
-            async getOrderBook() {
-              throw new Error('getOrderBook unused')
-            },
-            async queryMarkets() {
-              throw new Error('queryMarkets unused')
-            },
-          }
-          let preparedTokenSide: 'Outcome' | 'Complement' | undefined
-          let runtimeStarted = false
-
-          const response = await dispatch(
-            {
-              method: 'order.submit',
-              params: {
-                marketId: 'cond-YES',
-                outcomeId: 'YES',
-                tokenSide: 'Complement',
-                side: 'Buy',
-                price: 9_900,
-                amountSubunits: 10_000,
-                timeInForce: 'GTC',
-              },
-            },
-            {
-              createEngineClient() {
-                return engine
-              },
-              prepareSettlementCapability: prepareSettlementCapability(
-                'order-complement',
-                (input) => {
-                  preparedTokenSide = input.tokenSide
-                },
-              ),
-              tradeRuntime: {
-                async start() {
-                  runtimeStarted = true
-                  return { orders: [], trades: [] }
-                },
-                async stop() {},
-              },
-            },
-          )
-
-          assert.equal(response.ok, true, response.error)
-          assert.equal(preparedTokenSide, 'Complement')
-          assert.equal(runtimeStarted, true)
-          assert.equal((await readState())?.orders['order-complement']?.tokenSide, 'Complement')
-        } finally {
-          if (priorState) await writeState(priorState)
+    await t.test('order.submit binds complement intent and tracks its lifecycle', async () => {
+      const priorState = await readState()
+      await writeState(backedDaemonState())
+      try {
+        const engine: EngineClientLike = {
+          ...scoreDisabledEngineMethods,
+          async submitOrder(_marketId, request) {
+            return {
+              orderId: 'order-complement',
+              status: 'resting',
+              remainingAmountSubunits: 10_000,
+              fills: [],
+              pendingPubkeySubmissions: [],
+              baseAsset: 'sat',
+              divisibility: 10_000,
+              activeSettlementGroup: null,
+            }
+          },
+          async getOrderStatus() {
+            throw new Error('getOrderStatus unused')
+          },
+          async cancelOrder() {
+            throw new Error('cancelOrder unused')
+          },
+          async getOrderBook() {
+            throw new Error('getOrderBook unused')
+          },
+          async queryMarkets() {
+            throw new Error('queryMarkets unused')
+          },
         }
-      },
-    )
+        let preparedTokenSide: 'Outcome' | 'Complement' | undefined
+
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              tokenSide: 'Complement',
+              side: 'Buy',
+              price: 9_900,
+              amountSubunits: 10_000,
+              timeInForce: 'GTC',
+            },
+          },
+          {
+            createEngineClient() {
+              return engine
+            },
+            prepareSettlementCapability: prepareSettlementCapability(
+              'order-complement',
+              (input) => {
+                preparedTokenSide = input.tokenSide
+              },
+            ),
+          },
+        )
+
+        assert.equal(response.ok, true, response.error)
+        assert.equal(preparedTokenSide, 'Complement')
+        assert.equal((await readState())?.orders['order-complement']?.tokenSide, 'Complement')
+      } finally {
+        if (priorState) await writeState(priorState)
+      }
+    })
 
     await t.test('order.submit propagates engine machine-code rejections', async () => {
       const priorState = await readState()
@@ -1986,7 +1954,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           ]) {
             let prepareCalls = 0
             let submitCalls = 0
-            let startedRuntime = false
 
             const response = await dispatch(
               {
@@ -2018,13 +1985,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 prepareSettlementCapability: prepareSettlementCapability('unused', () => {
                   prepareCalls += 1
                 }),
-                tradeRuntime: {
-                  async start() {
-                    startedRuntime = true
-                    return { orders: [], trades: [] }
-                  },
-                  async stop() {},
-                },
               },
             )
 
@@ -2032,7 +1992,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             assert.match(response.error ?? '', /Order rejected:/)
             assert.equal(prepareCalls, 0)
             assert.equal(submitCalls, 0)
-            assert.equal(startedRuntime, false)
             assert.deepEqual((await readState())?.orders, {})
           }
         } finally {
@@ -2041,126 +2000,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       },
     )
 
-    await t.test('trade.watch reads persisted swap state', async () => {
-      const state = emptyDaemonState()
-      state.swaps['trade-1'] = {
-        tradeId: 'trade-1',
-        marketId: 'cond-YES',
-        orderId: 'order-1',
-        fillAmountSubunits: 100,
-        outcomeFaceAmountSubunits: 100,
-        quotePaymentSubunits: 42,
-        messages: {},
-        step: 'awaiting-trade-created',
-        createdAt: '2026-05-21T00:00:00.000Z',
-        updatedAt: '2026-05-21T00:00:00.000Z',
-      }
-      await writeState(state)
-
-      const response = await dispatch({
-        method: 'trade.watch',
-        params: { tradeId: 'trade-1' },
-      })
-
-      assert.equal(response.ok, true)
-      assert.equal((response.result as { tradeId?: string } | null)?.tradeId, 'trade-1')
-    })
-
-    await t.test('trade.list reads filtered local daemon swap state', async () => {
-      const state = emptyDaemonState()
-      state.swaps['trade-a'] = {
-        tradeId: 'trade-a',
-        marketId: 'cond-YES',
-        orderId: 'order-a',
-        messages: {},
-        step: 'seller-opened',
-        createdAt: '2026-05-21T00:00:00.000Z',
-        updatedAt: '2026-05-21T00:00:00.000Z',
-      }
-      state.swaps['trade-b'] = {
-        tradeId: 'trade-b',
-        marketId: 'cond-NO',
-        orderId: 'order-b',
-        messages: {},
-        step: 'confirmed',
-        createdAt: '2026-05-21T00:00:01.000Z',
-        updatedAt: '2026-05-21T00:00:02.000Z',
-      }
-      state.swaps['trade-c'] = {
-        tradeId: 'trade-c',
-        marketId: 'cond-YES',
-        orderId: 'order-c',
-        messages: {},
-        step: 'buyer-responded',
-        createdAt: '2026-05-21T00:00:03.000Z',
-        updatedAt: '2026-05-21T00:00:03.000Z',
-      }
-      await writeState(state)
-
-      const all = await dispatch({ method: 'trade.list', params: {} })
-      assert.equal(all.ok, true)
-      assert.deepEqual(
-        (all.result as Array<{ tradeId: string }>).map((swap) => swap.tradeId),
-        ['trade-c', 'trade-b', 'trade-a'],
-      )
-
-      const filtered = await dispatch({
-        method: 'trade.list',
-        params: { marketId: 'cond-YES', step: 'seller-opened' },
-      })
-      assert.equal(filtered.ok, true)
-      assert.deepEqual(filtered.result, [state.swaps['trade-a']])
-    })
-
-    await t.test('trade.recover delegates active swap recovery to daemon executor', async () => {
-      const state = emptyDaemonState()
-      state.swaps['trade-recover'] = {
-        tradeId: 'trade-recover',
-        marketId: 'cond-YES',
-        orderId: 'order-recover',
-        messages: {},
-        step: 'settling',
-        createdAt: '2026-05-21T00:00:00.000Z',
-        updatedAt: '2026-05-21T00:00:00.000Z',
-      }
-      await writeState(state)
-      let runtimeStartSawTrade = false
-      let executorSawTrade = false
-
-      const response = await dispatch(
-        { method: 'trade.recover' },
-        {
-          tradeRuntime: {
-            async start(runtimeState) {
-              runtimeStartSawTrade = !!runtimeState.swaps['trade-recover']
-              return { orders: [], trades: [] }
-            },
-            async stop() {},
-          },
-          swapExecutor: {
-            async resumeActiveSwaps(runtimeState) {
-              executorSawTrade = !!runtimeState.swaps['trade-recover']
-              return { activeSwaps: 1 }
-            },
-          },
-        },
-      )
-
-      assert.deepEqual(response, {
-        ok: true,
-        result: { activeSwaps: 1 },
-      })
-      assert.equal(runtimeStartSawTrade, true)
-      assert.equal(executorSawTrade, true)
-    })
-
     await t.test('order.list reads filtered local daemon order state', async () => {
       const state = emptyDaemonState()
       state.orders['order-a'] = {
         orderId: 'order-a',
         marketId: 'cond-YES',
         status: 'resting',
-        tradeIds: [],
         createdAt: '2026-05-21T00:00:00.000Z',
         updatedAt: '2026-05-21T00:00:00.000Z',
       }
@@ -2168,7 +2013,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         orderId: 'order-b',
         marketId: 'cond-NO',
         status: 'matched',
-        tradeIds: ['trade-b'],
         createdAt: '2026-05-21T00:00:01.000Z',
         updatedAt: '2026-05-21T00:00:02.000Z',
       }
@@ -2176,7 +2020,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         orderId: 'order-c',
         marketId: 'cond-YES',
         status: 'cancelled',
-        tradeIds: [],
         createdAt: '2026-05-21T00:00:03.000Z',
         updatedAt: '2026-05-21T00:00:03.000Z',
       }
@@ -2249,7 +2092,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           status: 'cancelled',
           baseAsset: 'sat',
           divisibility: 10_000,
-          tradeIds: [],
           engineStatus: {
             orderId: 'order-cancel',
             marketId: 'cond-YES',
@@ -2308,9 +2150,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
     })
 
-    await t.test('order.submit starts the order lifecycle runtime after persistence', async () => {
+    await t.test('order.submit tracks the order lifecycle after persistence', async () => {
       await writeState(backedDaemonState())
-      let runtimeStarted = false
+      let tracked: { marketId: string; orderId: string } | null = null
       const engine: EngineClientLike = {
         ...scoreDisabledEngineMethods,
         async submitOrder(_marketId, request) {
@@ -2356,12 +2198,10 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             return engine
           },
           prepareSettlementCapability: prepareSettlementCapability('order-runtime-fail'),
-          tradeRuntime: {
-            async start() {
-              runtimeStarted = true
-              return { orders: [], trades: [] }
-            },
-            async stop() {},
+          async trackOwnedOrder(marketId, orderId) {
+            assert.equal((await readState())?.orders[orderId]?.status, 'resting')
+            tracked = { marketId, orderId }
+            throw new Error('SignalR is unavailable')
           },
         },
       )
@@ -2369,9 +2209,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       assert.equal(response.ok, true)
       const state = await readState()
       assert.equal(state?.orders['order-runtime-fail']?.status, 'resting')
-      assert.equal(runtimeStarted, true)
-      const updatedSecrets = await readSecrets()
-      assert.equal(updatedSecrets?.orderEphemeralKeys['order-runtime-fail'], undefined)
+      assert.deepEqual(tracked, { marketId: 'cond-YES', orderId: 'order-runtime-fail' })
     })
 
     await t.test(
@@ -2446,7 +2284,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           'Sell',
         )
         assert.equal((await readState())?.orders['order-direct-sell']?.status, 'resting')
-        assert.equal((await readSecrets())?.orderEphemeralKeys['order-direct-sell'], undefined)
       },
     )
 

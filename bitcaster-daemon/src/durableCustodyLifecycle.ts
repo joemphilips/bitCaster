@@ -162,7 +162,6 @@ export function purgeCustodyOperationP09(
     .get(input.scopeId, input.operationId)
   if (dependentPin !== undefined) return 'retained'
   for (const table of [
-    'swap_operation_links',
     'custody_proof_reservations',
     'custody_operation_pins',
     'custody_successor_admission_proofs',

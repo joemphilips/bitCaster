@@ -10,16 +10,14 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '8cb270e80d49b2052226b438f0e4a6f3217ab2cae6f015260e8a57a8e7cbcdc3'
+  '8701a98e8d025591bf873a056fc3b1dbdcf5d788869f9a08114b03da670af111'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
 
 /**
- * The one clean-start production schema. It deliberately contains target-v1
- * swap authority and no source-era trade session/cipher/recovery tables.
- * This custody schema is not deployed yet, so v1 revisions replace an empty
- * store instead of migrating previously initialized profiles.
+ * The clean-start production schema has no bilateral swap authority.
+ * This custody schema is not deployed, so v1 revisions replace an empty store.
  */
 export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE TABLE profile_schema_marker (
@@ -212,8 +210,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE TABLE target_proof_operations (
     operation_id TEXT PRIMARY KEY NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 16384),
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
-    kind TEXT NOT NULL CHECK (kind IN (
-      'swap-lock', 'swap-claim', 'conditional-keyset-swap',
+    kind TEXT NOT NULL CHECK (kind IN ('conditional-keyset-swap',
       'ctf-split', 'ctf-merge', 'ctf-consolidation', 'proof-consolidation', 'ctf-redeem',
       'regular-split', 'wallet-send', 'proof-split', 'swap-refund'
     )),
@@ -697,9 +694,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
       'exact-request', 'output-plan', 'private-material', 'exact-result',
-      'delivery-payload', 'locked-proofs', 'relay-ciphertext',
-      'adaptor-secret', 'adaptor-point', 'buyer-pre-signatures',
-      'seller-pre-signatures', 'failure'
+      'delivery-payload'
     )),
     encoding TEXT NOT NULL CHECK (encoding IN ('canonical-json', 'utf8', 'binary')),
     body BLOB NOT NULL CHECK (length(body) BETWEEN 1 AND ${artifactBytesMax}),
@@ -717,8 +712,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     schema_version INTEGER NOT NULL CHECK (schema_version = 1),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     retained_operation_key TEXT NOT NULL CHECK (length(retained_operation_key) BETWEEN 1 AND 1024),
-    semantic_kind TEXT NOT NULL CHECK (semantic_kind IN (
-      'swap-lock', 'swap-claim', 'swap-refund', 'conditional-keyset-swap',
+    semantic_kind TEXT NOT NULL CHECK (semantic_kind IN ('swap-refund', 'conditional-keyset-swap',
       'generic-receive', 'generic-send', 'wallet-send',
       'ctf-split', 'ctf-merge', 'proof-consolidation', 'ctf-redeem'
     )),
@@ -875,11 +869,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE TABLE custody_operation_artifact_links (
     scope_id TEXT NOT NULL,
     operation_id TEXT NOT NULL,
-    link_kind TEXT NOT NULL CHECK (link_kind IN (
-      'request', 'output', 'private', 'result', 'locked-proof',
-      'relay-ciphertext', 'adaptor-secret', 'adaptor-point',
-      'buyer-pre-signature', 'seller-pre-signature', 'failure'
-    )),
+    link_kind TEXT NOT NULL CHECK (link_kind IN ('request', 'output', 'private', 'result')),
     position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 511),
     artifact_id TEXT NOT NULL,
     PRIMARY KEY (scope_id, operation_id, link_kind, position),
@@ -1051,13 +1041,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     amount_subunits INTEGER CHECK (amount_subunits >= 0),
     status TEXT NOT NULL CHECK (length(status) BETWEEN 1 AND 256),
     revision INTEGER NOT NULL CHECK (revision >= 0),
-    ephemeral_pubkey TEXT CHECK (
-      ephemeral_pubkey IS NULL OR (
-        length(ephemeral_pubkey) = 66
-        AND substr(ephemeral_pubkey, 1, 2) IN ('02', '03')
-        AND ephemeral_pubkey NOT GLOB '*[^0-9a-f]*'
-      )
-    ),
     client_order_id TEXT,
     preflight_reservation_id TEXT,
     preflight_condition_id TEXT,
@@ -1092,16 +1075,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       OR (engine_status_present = 1 AND engine_status_body IS NOT NULL)
     )
   ) STRICT`,
-  `CREATE TABLE daemon_order_trades (
-    scope_id TEXT NOT NULL,
-    order_id TEXT NOT NULL,
-    position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 511),
-    trade_id TEXT NOT NULL CHECK (length(trade_id) BETWEEN 1 AND 1024),
-    PRIMARY KEY (scope_id, order_id, position),
-    UNIQUE (scope_id, order_id, trade_id),
-    FOREIGN KEY (scope_id, order_id)
-      REFERENCES daemon_orders(scope_id, order_id) ON DELETE RESTRICT
-  ) STRICT`,
   `CREATE TABLE order_collateral_pins (
     scope_id TEXT NOT NULL,
     pin_id TEXT NOT NULL CHECK (length(pin_id) BETWEEN 1 AND 1024),
@@ -1128,112 +1101,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       REFERENCES order_collateral_pins(scope_id, pin_id) ON DELETE RESTRICT,
     FOREIGN KEY (scope_id, proof_id)
       REFERENCES custody_proofs(scope_id, proof_id) ON DELETE RESTRICT
-  ) STRICT`,
-  `CREATE TABLE daemon_swaps (
-    trade_id TEXT PRIMARY KEY NOT NULL CHECK (length(trade_id) BETWEEN 1 AND 1024),
-    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
-    order_id TEXT,
-    market_id TEXT CHECK (market_id IS NULL OR length(market_id) BETWEEN 1 AND 1024),
-    role TEXT CHECK (role IS NULL OR role IN ('seller', 'buyer')),
-    counterparty_pubkey TEXT CHECK (
-      counterparty_pubkey IS NULL OR length(counterparty_pubkey) BETWEEN 1 AND 256
-    ),
-    seller_locktime INTEGER CHECK (seller_locktime >= 0),
-    buyer_locktime INTEGER CHECK (buyer_locktime >= 0),
-    fill_amount_sats INTEGER CHECK (fill_amount_sats >= 0),
-    fill_amount_subunits INTEGER CHECK (fill_amount_subunits >= 0),
-    outcome_face_amount_sats INTEGER CHECK (outcome_face_amount_sats >= 0),
-    outcome_face_amount_subunits INTEGER CHECK (outcome_face_amount_subunits >= 0),
-    quote_payment_sats INTEGER CHECK (quote_payment_sats >= 0),
-    quote_payment_subunits INTEGER CHECK (quote_payment_subunits >= 0),
-    base_asset TEXT NOT NULL CHECK (base_asset = 'sat'),
-    divisibility INTEGER NOT NULL CHECK (divisibility IN (10000, 1000000)),
-    settlement_kind TEXT CHECK (
-      settlement_kind IS NULL OR length(settlement_kind) BETWEEN 1 AND 128
-    ),
-    seller_keep_outcome_set_id TEXT,
-    seller_lock_outcome_set_id TEXT,
-    step TEXT NOT NULL CHECK (step IN (
-      'awaiting-trade-created', 'opened', 'seller-opened', 'buyer-responded',
-      'settling', 'awaiting-confirmation', 'confirmed', 'refunded', 'failed'
-    )),
-    revision INTEGER NOT NULL CHECK (revision >= 0),
-    engine_state TEXT,
-    adaptor_point_cipher_artifact_id TEXT,
-    locked_seller_cipher_artifact_id TEXT,
-    locked_buyer_cipher_artifact_id TEXT,
-    buyer_locked_proofs_artifact_id TEXT,
-    seller_adaptor_secret_artifact_id TEXT,
-    seller_adaptor_point_artifact_id TEXT,
-    buyer_pre_sigs_artifact_id TEXT,
-    seller_pre_sigs_artifact_id TEXT,
-    failure_artifact_id TEXT,
-    error TEXT CHECK (error IS NULL OR length(error) <= 4096),
-    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
-    UNIQUE (scope_id, trade_id),
-    FOREIGN KEY (scope_id, adaptor_point_cipher_artifact_id)
-      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT,
-    FOREIGN KEY (scope_id, locked_seller_cipher_artifact_id)
-      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT,
-    FOREIGN KEY (scope_id, locked_buyer_cipher_artifact_id)
-      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT,
-    FOREIGN KEY (scope_id, buyer_locked_proofs_artifact_id)
-      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT,
-    FOREIGN KEY (scope_id, seller_adaptor_secret_artifact_id)
-      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT,
-    FOREIGN KEY (scope_id, seller_adaptor_point_artifact_id)
-      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT,
-    FOREIGN KEY (scope_id, buyer_pre_sigs_artifact_id)
-      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT,
-    FOREIGN KEY (scope_id, seller_pre_sigs_artifact_id)
-      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT,
-    FOREIGN KEY (scope_id, failure_artifact_id)
-      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT
-  ) STRICT`,
-  `CREATE TABLE swap_operation_links (
-    scope_id TEXT NOT NULL,
-    trade_id TEXT NOT NULL,
-    order_id TEXT NOT NULL,
-    operation_id TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('seller', 'buyer')),
-    stage TEXT NOT NULL CHECK (stage IN ('lock', 'claim', 'refund')),
-    revision INTEGER NOT NULL CHECK (revision >= 0),
-    PRIMARY KEY (scope_id, trade_id, operation_id),
-    UNIQUE (scope_id, trade_id, role, stage),
-    FOREIGN KEY (scope_id, trade_id)
-      REFERENCES daemon_swaps(scope_id, trade_id) ON DELETE RESTRICT,
-    FOREIGN KEY (scope_id, order_id)
-      REFERENCES daemon_orders(scope_id, order_id) ON DELETE RESTRICT,
-    FOREIGN KEY (scope_id, operation_id)
-      REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
-  ) STRICT`,
-  `CREATE TABLE target_ephemeral_keys (
-    key_id TEXT PRIMARY KEY NOT NULL CHECK (length(key_id) BETWEEN 1 AND 1024),
-    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
-    order_id TEXT NOT NULL,
-    trade_id TEXT,
-    market_id TEXT NOT NULL CHECK (length(market_id) BETWEEN 1 AND 1024),
-    public_key_hex TEXT NOT NULL CHECK (
-      length(public_key_hex) = 66
-      AND substr(public_key_hex, 1, 2) IN ('02', '03')
-      AND public_key_hex NOT GLOB '*[^0-9a-f]*'
-    ),
-    protection TEXT NOT NULL CHECK (protection IN ('owner-only-plaintext', 'scrypt-aes-256-gcm')),
-    kdf TEXT CHECK (kdf IS NULL OR kdf = 'scrypt-v1'),
-    salt BLOB CHECK (salt IS NULL OR length(salt) = 16),
-    iv BLOB CHECK (iv IS NULL OR length(iv) = 12),
-    auth_tag BLOB CHECK (auth_tag IS NULL OR length(auth_tag) = 16),
-    private_key_body BLOB NOT NULL CHECK (length(private_key_body) BETWEEN 1 AND 512),
-    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-    CHECK (
-      (protection = 'owner-only-plaintext'
-        AND kdf IS NULL AND salt IS NULL AND iv IS NULL AND auth_tag IS NULL)
-      OR
-      (protection = 'scrypt-aes-256-gcm'
-        AND kdf = 'scrypt-v1'
-        AND salt IS NOT NULL AND iv IS NOT NULL AND auth_tag IS NOT NULL)
-    )
   ) STRICT`,
   `CREATE TABLE seed_recovery_jobs (
     recovery_id TEXT PRIMARY KEY NOT NULL CHECK (length(recovery_id) BETWEEN 1 AND 1024),
@@ -1318,17 +1185,6 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ON daemon_orders (scope_id, market_id, status, updated_at_ms DESC, order_id)`,
   `CREATE INDEX order_collateral_pins_active_idx
     ON order_collateral_pins (scope_id, pin_state, order_id, pin_id)`,
-  `CREATE INDEX daemon_swaps_listing_idx
-    ON daemon_swaps (scope_id, market_id, step, updated_at_ms DESC, trade_id)`,
-  `CREATE INDEX daemon_swaps_nonterminal_recovery_idx
-    ON daemon_swaps (scope_id, trade_id)
-    WHERE step NOT IN ('confirmed', 'refunded', 'failed')`,
-  `CREATE INDEX daemon_swaps_order_idx
-    ON daemon_swaps (scope_id, order_id, updated_at_ms DESC, trade_id)`,
-  `CREATE INDEX swap_operation_links_operation_idx
-    ON swap_operation_links (scope_id, operation_id, trade_id)`,
-  `CREATE INDEX target_ephemeral_keys_trade_idx
-    ON target_ephemeral_keys (scope_id, trade_id, order_id)`,
   `CREATE INDEX seed_recovery_jobs_active_idx
     ON seed_recovery_jobs (scope_id, state, updated_at_ms, recovery_id)`,
   `CREATE TRIGGER profile_schema_marker_no_update
@@ -1424,7 +1280,11 @@ export const FINAL_PROFILE_SCHEMA_MARKERS: readonly ProfileSchemaMarker[] = [
         'trade_cipher_recovery',
         'adaptor_recovery',
         'presignature_recovery',
-        'locktime_recovery'
+        'locktime_recovery',
+        'daemon_order_trades',
+        'daemon_swaps',
+        'swap_operation_links',
+        'target_ephemeral_keys'
       )`,
     expectedRows: [{ forbiddenCount: 0 }],
   },

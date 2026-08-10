@@ -58,12 +58,8 @@ switch (command) {
     await assertDaemonProfileStorageComplete()
     const { acquireDaemonRunLock } = await import('./runLock.ts')
     const { startDaemonServer } = await import('./server.ts')
-    const { CompositeTradeRuntimeConnection, DaemonTradeRuntime } =
-      await import('./tradeRuntime.ts')
-    const { SignalRTradeHubConnection } = await import('./tradeHubConnection.ts')
+    const { SignalROrderLifecycleConnection } = await import('./orderHubConnection.ts')
     const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
-    const { DaemonSwapExecutor } = await import('./swapExecutor.ts')
-    const { createRealDaemonSwapOps } = await import('./swapProtocolAdapter.ts')
     const { readProfile } = await import('./profile.ts')
     const { readSecrets } = await import('./secrets.ts')
     const { recoverPreparedWalletSends } = await import('./walletOps.ts')
@@ -77,8 +73,7 @@ switch (command) {
       await import('./managedConditionRetirement.ts')
     const { BitcasterEngineClient } = await import('@bitcaster-market/client-sdk/engineClient')
     const { signNip98 } = await import('./nostrAuth.ts')
-    const { ensureState, recordSwapMessage, recordTradeCreated, recordTradeStateChanged } =
-      await import('./state.ts')
+    const { ensureState } = await import('./state.ts')
     const runLock = await acquireDaemonRunLock()
     const profile = await readProfile()
     const secrets = await readSecrets()
@@ -144,8 +139,6 @@ switch (command) {
         if (shutdown !== undefined) void shutdown('custody lease loss', 1)
       },
     })
-    let executor: InstanceType<typeof DaemonSwapExecutor> | undefined
-    let runtime: InstanceType<typeof DaemonTradeRuntime> | undefined
     const retirementEngine = new BitcasterEngineClient({
       baseUrl: profile.engineBaseUrl,
       authorization: ({ url, method, bodyText, payloadHash }) =>
@@ -171,114 +164,41 @@ switch (command) {
     let wakeManagedConditionRetirements = async () => {
       await runAutomaticRetirementScan()
     }
-    const tradeHub =
-      profile && secrets
-        ? new SignalRTradeHubConnection({
-            engineBaseUrl: profile.engineBaseUrl,
-            nostrSecretKeyHex: secrets.nostrSecretKeyHex,
-            onTradeCreated: async (payload) => {
-              const swap = await recordTradeCreated(payload)
-              if (swap) {
-                await runtime?.start(await ensureState())
-              }
-              await executor?.onTradeCreated(swap)
-            },
-            onSwapMessageReceived: async (tradeId, messageType, ciphertext) => {
-              await executor?.onSwapMessage(
-                await recordSwapMessage(tradeId, messageType, ciphertext),
-              )
-            },
-            onTradeStateChanged: async (tradeId, newState) => {
-              await executor?.onTradeStateChanged(await recordTradeStateChanged(tradeId, newState))
-            },
-            onPendingPubkeyRequired: async (tradeId, _orderId, _role, marketId, _deadline) => {
-              const { signNip98 } = await import('./nostrAuth.ts')
-              const { conditionIdFromMarketId } =
-                await import('@bitcaster-market/client-sdk/tradeIgnition')
-              const { generateOrderEphemeralKeypair } = await import('./ephemeralKey.ts')
-              const { submitEphemeralPubkey: submitPubkey } =
-                await import('@bitcaster-market/client-sdk/engineClient')
-              const keypair = generateOrderEphemeralKeypair()
-              type AuthorizationRequest = {
-                url: string
-                method: string
-                bodyText?: string
-                payloadHash?: string
-              }
-              await submitPubkey(
-                profile.engineBaseUrl,
-                tradeId,
-                keypair.publicKeyHex,
-                null,
-                fetch,
-                async ({ url, method, bodyText, payloadHash }: AuthorizationRequest) =>
-                  signNip98(
-                    { privateKeyHex: secrets.nostrSecretKeyHex },
-                    url,
-                    method,
-                    bodyText,
-                    payloadHash,
-                  ),
-                conditionIdFromMarketId(marketId),
-              )
-            },
-            onRangeSettlementChanged: () => {
-              rangeRecoveryLoop?.trigger()
-            },
-            onReconnected: () => {
-              rangeRecoveryLoop?.trigger()
-            },
-            onError: (err: Error) => {
-              process.stderr.write(`TradeHub event error: ${err.message}\n`)
-            },
-          })
-        : undefined
-    const marketHub =
-      profile && secrets
-        ? new SignalRMarketHubConnection({
-            engineBaseUrl: profile.engineBaseUrl,
-            nostrSecretKeyHex: secrets.nostrSecretKeyHex,
-            onMarketStatusChanged: async (status) => {
-              if (
-                status.state !== 'closed' ||
-                !nativeConfig.daemon.autoRetireResolvedConditionInventory
-              ) {
-                return
-              }
-              await wakeManagedConditionRetirements()
-            },
-            onReconnected: async () => {
-              await wakeManagedConditionRetirements()
-            },
-            onError: (err: Error) => {
-              process.stderr.write(`MarketHub event error: ${err.message}\n`)
-            },
-          })
-        : undefined
-    const runtimeConnection = tradeHub
-      ? new CompositeTradeRuntimeConnection(tradeHub, marketHub)
-      : undefined
-    executor = tradeHub
-      ? new DaemonSwapExecutor({
-          connection: tradeHub,
-          ops: createRealDaemonSwapOps(),
-          walletOpsDeps: { getCustodyFence: currentFence },
-        })
-      : undefined
-    runtime = runtimeConnection
-      ? new DaemonTradeRuntime(runtimeConnection, {
-          scheduleResumeActiveSwaps: (delayMs) => {
-            setTimeout(() => {
-              void (async () => {
-                await executor?.resumeActiveSwaps(await ensureState())
-              })().catch((err: unknown) => {
-                const message = err instanceof Error ? err.message : String(err)
-                process.stderr.write(`Swap recovery sweep failed: ${message}\n`)
-              })
-            }, delayMs)
-          },
-        })
-      : undefined
+    const orderHub = new SignalROrderLifecycleConnection({
+      engineBaseUrl: profile.engineBaseUrl,
+      nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      onOrderLifecycleChanged: () => {
+        rangeRecoveryLoop?.trigger()
+      },
+      onSettlementGroupStateChanged: () => {
+        rangeRecoveryLoop?.trigger()
+      },
+      onReconnected: () => {
+        rangeRecoveryLoop?.trigger()
+      },
+      onError: (err: Error) => {
+        process.stderr.write(`Order lifecycle event error: ${err.message}\n`)
+      },
+    })
+    const marketHub = new SignalRMarketHubConnection({
+      engineBaseUrl: profile.engineBaseUrl,
+      nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      onMarketStatusChanged: async (status) => {
+        if (
+          status.state !== 'closed' ||
+          !nativeConfig.daemon.autoRetireResolvedConditionInventory
+        ) {
+          return
+        }
+        await wakeManagedConditionRetirements()
+      },
+      onReconnected: async () => {
+        await wakeManagedConditionRetirements()
+      },
+      onError: (err: Error) => {
+        process.stderr.write(`MarketHub event error: ${err.message}\n`)
+      },
+    })
     try {
       const rangeOrderCoordinator = new DaemonCtfRangeOrderCoordinator(profileDir(), currentFence, {
         allowInsecureLoopbackHttp: isLoopbackHttpUrl(profile.mintUrl),
@@ -391,25 +311,33 @@ switch (command) {
           `Recovered ${startupRecovery.recoveredCount} wallet operations: ${startupRecovery.recovered.join(', ')}\n`,
         )
       }
-      let runtimeStarted = false
-      const startRuntimeWhenReady = async () => {
-        if (!readiness.isReady() || runtimeStarted || !runtime) return
-        runtimeStarted = true
-        const state = await ensureState()
-        if (nativeConfig.daemon.autoRetireResolvedConditionInventory && marketHub) {
-          await trackManagedConditionMarkets(marketHub, state)
+      let orderHubStarted = false
+      const startOrderHubWhenReady = async () => {
+        if (!readiness.isReady() || orderHubStarted) return
+        orderHubStarted = true
+        try {
+          const state = await ensureState()
+          for (const order of Object.values(state.orders)) {
+            await orderHub.trackOrder(order.marketId, order.orderId)
+          }
+          await orderHub.start()
+          if (nativeConfig.daemon.autoRetireResolvedConditionInventory && marketHub) {
+            await trackManagedConditionMarkets(marketHub, state)
+            await marketHub.start()
+          }
+        } catch (error) {
+          orderHubStarted = false
+          throw error
         }
-        await runtime.start(state)
-        await executor?.resumeActiveSwaps(state)
       }
       const markCustodyReady = () => {
         void startAssetMonitoringWhenReady().catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err)
           process.stderr.write(`asset-monitoring startup failed: ${message}\n`)
         })
-        void startRuntimeWhenReady().catch((err: unknown) => {
+        void startOrderHubWhenReady().catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err)
-          process.stderr.write(`bitcaster-daemon trade runtime start failed: ${message}\n`)
+          process.stderr.write(`bitcaster-daemon order lifecycle start failed: ${message}\n`)
         })
       }
       const scheduleRetirementRetry = () => {
@@ -451,9 +379,10 @@ switch (command) {
       if (pendingRetirements.length > 0) scheduleRetirementRetry()
       currentFence()
       const server = await startDaemonServer({
-        tradeRuntime: runtime,
-        startTradeRuntime: false,
-        swapExecutor: executor,
+        trackOwnedOrder: async (marketId, orderId) => {
+          await orderHub.trackOrder(marketId, orderId)
+          await startOrderHubWhenReady()
+        },
         prepareSettlementCapability: (input, client) =>
           rangeOrderCoordinator.prepare(input, client),
         triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
@@ -477,15 +406,23 @@ switch (command) {
       })
       try {
         currentFence()
-        shutdown = installShutdownHandlers(server, runtime, releaseResources)
+        shutdown = installShutdownHandlers(
+          server,
+          {
+            stop: async () => {
+              await Promise.all([orderHub.stop(), marketHub.stop()])
+            },
+          },
+          releaseResources,
+        )
       } catch (error) {
         await closeServer(server)
         throw error
       }
-      void startRuntimeWhenReady().catch((err: unknown) => {
+      void startOrderHubWhenReady().catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
         process.stderr.write(
-          `bitcaster-daemon trade runtime start failed; RPC will remain available: ${message}\n`,
+          `bitcaster-daemon order lifecycle start failed; RPC will remain available: ${message}\n`,
         )
       })
       if (readiness.isReady()) markCustodyReady()

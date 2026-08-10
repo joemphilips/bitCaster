@@ -15,7 +15,6 @@ import {
   subscribeToDaemonWalletHoldingsCommits,
   withDaemonStateSqliteTransaction,
 } from '../src/stateSqlite.ts'
-import { getOrCreateOrderEphemeralKeypair, readSecrets } from '../src/secrets.ts'
 import {
   advanceDaemonKeysetCounter,
   assertPreparedProofOperationDispatchFenced,
@@ -46,8 +45,8 @@ const walletSeedHex = '11'.repeat(64)
 const nostrSecretKeyHex = '22'.repeat(32)
 const COUNTER_BINDING = { normalizedMint: 'http://localhost:8086', unit: 'msat' as const }
 
-test('target-v1 state round-trips through typed SQLite rows and artifacts', async () => {
-  await withProfile(async () => {
+test('target-v1 state round-trips through retained typed SQLite rows and artifacts', async () => {
+  await withProfile(async (home) => {
     const state = emptyDaemonState()
     state.wallet.proofs.push({
       proof: { id: 'keyset-1', amount: 7, secret: 'proof-secret', C: 'proof-signature' },
@@ -95,7 +94,6 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
       priceSubunits: 4_200,
       amountSubunits: 100,
       status: 'resting',
-      ephemeralPubkey: `02${'44'.repeat(32)}`,
       clientOrderId: 'client-order-1',
       preflightSplit: {
         reservationId: 'reservation-1',
@@ -106,64 +104,6 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
       },
       baseAsset: 'sat',
       divisibility: 10_000,
-      tradeIds: ['trade-placeholder', 'trade-full'],
-      engineStatus: { status: 'resting', fills: [{ tradeId: 'trade-full' }] },
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:01.000Z',
-    }
-    state.swaps['trade-placeholder'] = {
-      tradeId: 'trade-placeholder',
-      marketId: 'condition-1-YES',
-      orderId: 'order-1',
-      baseAsset: 'sat',
-      divisibility: 10_000,
-      messages: {},
-      step: 'awaiting-trade-created',
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:01.000Z',
-    }
-    state.swaps['trade-recovery'] = {
-      tradeId: 'trade-recovery',
-      marketId: 'condition-2-NO',
-      orderId: 'engine-order-without-local-row',
-      baseAsset: 'sat',
-      divisibility: 10_000,
-      messages: {},
-      step: 'awaiting-trade-created',
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:01.000Z',
-    }
-    state.swaps['trade-full'] = {
-      tradeId: 'trade-full',
-      marketId: 'condition-1-YES',
-      orderId: 'order-1',
-      role: 'seller',
-      counterpartyPubkey: `03${'33'.repeat(32)}`,
-      sellerLocktime: 120,
-      buyerLocktime: 60,
-      fillAmountSats: 1,
-      fillAmountSubunits: 100,
-      outcomeFaceAmountSats: 2,
-      outcomeFaceAmountSubunits: 200,
-      quotePaymentSats: 1,
-      quotePaymentSubunits: 42,
-      baseAsset: 'sat',
-      divisibility: 10_000,
-      settlementKind: 'DirectSwap',
-      messages: {
-        adaptorPoint: 'cipher-a',
-        lockedProofsSeller: 'cipher-b',
-        lockedProofsBuyer: 'cipher-c',
-      },
-      sellerAdaptorSecretHex: 'aa',
-      sellerAdaptorPointHex: 'bb',
-      buyerPreSigsHex: ['cc'],
-      buyerLockedProofs: [{ amount: 2, secret: 'locked', C: 'locked-signature' }],
-      sellerPreSigsHex: ['dd'],
-      engineState: 'Settling',
-      step: 'settling',
-      error: 'retrying',
-      failure: { kind: 'partial-lock-held', reason: 'test' },
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:01.000Z',
     }
@@ -174,12 +114,20 @@ test('target-v1 state round-trips through typed SQLite rows and artifacts', asyn
     assert.deepEqual(restored?.wallet.keysetCounters, {})
     assert.equal(restored?.proofOperations['operation-1'].kind, 'ctf-consolidation')
     assert.equal(restored?.orders['order-1'].preflightSplit?.lockOutcomeSetId, 'YES')
-    assert.equal(restored?.orders['order-1'].ephemeralPubkey, `02${'44'.repeat(32)}`)
-    assert.equal(restored?.swaps['trade-placeholder'].role, undefined)
-    assert.equal(restored?.swaps['trade-recovery'].orderId, 'engine-order-without-local-row')
-    assert.equal(restored?.swaps['trade-full'].fillAmountSats, 1)
-    assert.equal(restored?.swaps['trade-full'].fillAmountSubunits, 100)
-    assert.equal(restored?.swaps['trade-full'].messages.lockedProofsBuyer, 'cipher-c')
+
+    const database = await openDaemonStateSqlite(home)
+    try {
+      const row = database
+        .prepare(
+          `SELECT COUNT(*) AS forbiddenCount FROM sqlite_master
+           WHERE name IN ('daemon_order_trades', 'daemon_swaps', 'swap_operation_links',
+                          'target_ephemeral_keys')`,
+        )
+        .get() as { forbiddenCount: number }
+      assert.equal(row.forbiddenCount, 0)
+    } finally {
+      database.close()
+    }
   })
 })
 
@@ -323,42 +271,6 @@ test('keyset counters bind the mint and unit and fail closed on a split authorit
       () => reserveDaemonKeysetCounter('shared-keyset', 1, mutation, sat),
       /one-sided or mismatched/,
     )
-  })
-})
-
-test('nonterminal swap recovery lookup uses its partial index', async () => {
-  await withProfile(async (home) => {
-    const database = await openDaemonStateSqlite(home)
-    try {
-      const scopeId = (
-        database.prepare('SELECT scope_id AS scopeId FROM custody_scopes').get() as {
-          scopeId: string
-        }
-      ).scopeId
-      const insertSwap = database.prepare(
-        `INSERT INTO daemon_swaps (
-           trade_id, scope_id, base_asset, divisibility, step, revision,
-           created_at_ms, updated_at_ms
-         ) VALUES (?, ?, 'sat', 10000, ?, 0, 0, 0)`,
-      )
-      for (let index = 0; index < 32; index += 1) {
-        insertSwap.run(`terminal-${index}`, scopeId, 'confirmed')
-      }
-      insertSwap.run('active-swap', scopeId, 'settling')
-      database.exec('ANALYZE daemon_swaps')
-      const plan = database
-        .prepare(
-          `EXPLAIN QUERY PLAN SELECT 1 FROM daemon_swaps
-           WHERE scope_id = ? AND step NOT IN ('confirmed', 'refunded', 'failed') LIMIT 1`,
-        )
-        .all(scopeId) as Array<{ detail: string }>
-      assert.ok(
-        plan.some(({ detail }) => detail.includes('daemon_swaps_nonterminal_recovery_idx')),
-        JSON.stringify(plan),
-      )
-    } finally {
-      database.close()
-    }
   })
 })
 
@@ -1094,16 +1006,6 @@ test('state persistence clamps wall-clock regressions at creation time', async (
       baseAsset: 'sat',
       divisibility: 10_000,
       status: 'resting',
-      tradeIds: [],
-      createdAt: '2026-01-01T00:00:01.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-    }
-    state.swaps['trade-1'] = {
-      tradeId: 'trade-1',
-      baseAsset: 'sat',
-      divisibility: 10_000,
-      messages: {},
-      step: 'awaiting-trade-created',
       createdAt: '2026-01-01T00:00:01.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     }
@@ -1111,8 +1013,6 @@ test('state persistence clamps wall-clock regressions at creation time', async (
     await writeState(state)
     state.orders['order-1'].createdAt = '2025-01-01T00:00:01.000Z'
     state.orders['order-1'].updatedAt = '2025-01-01T00:00:01.000Z'
-    state.swaps['trade-1'].createdAt = '2025-01-01T00:00:01.000Z'
-    state.swaps['trade-1'].updatedAt = '2025-01-01T00:00:01.000Z'
     await writeState(state)
     const restored = await readState()
 
@@ -1122,53 +1022,6 @@ test('state persistence clamps wall-clock regressions at creation time', async (
       restored?.proofOperations['operation-1'].createdAt,
     )
     assert.equal(restored?.orders['order-1'].updatedAt, restored?.orders['order-1'].createdAt)
-    assert.equal(restored?.swaps['trade-1'].updatedAt, restored?.swaps['trade-1'].createdAt)
-  })
-})
-
-test('order upsert preserves its immutable ephemeral key binding', async () => {
-  await withProfile(async () => {
-    const state = emptyDaemonState()
-    state.orders['order-1'] = {
-      orderId: 'order-1',
-      marketId: 'condition-1-YES',
-      baseAsset: 'sat',
-      divisibility: 10_000,
-      status: 'resting',
-      tradeIds: [],
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-    }
-    await writeState(state)
-    await getOrCreateOrderEphemeralKeypair({
-      keyId: 'trade-1',
-      orderId: 'order-1',
-      tradeId: 'trade-1',
-      marketId: 'condition-1-YES',
-    })
-    await updateState((current, now) => {
-      current.orders['order-1'].status = 'partially-filled'
-      current.orders['order-1'].updatedAt = now
-    })
-    await writeState((await readState())!)
-
-    assert.equal((await readState())?.orders['order-1'].status, 'partially-filled')
-    assert.ok((await readSecrets())?.orderEphemeralKeys['trade-1'])
-  })
-})
-
-test('recovery key retains its exact order binding without a local order row', async () => {
-  await withProfile(async () => {
-    await getOrCreateOrderEphemeralKeypair({
-      keyId: 'trade-orphan-key',
-      orderId: 'engine-order-without-local-row',
-      tradeId: 'trade-orphan-key',
-      marketId: 'condition-2-NO',
-    })
-
-    const key = (await readSecrets())?.orderEphemeralKeys['trade-orphan-key']
-    assert.equal(key?.orderId, 'engine-order-without-local-row')
-    assert.equal(key?.tradeId, 'trade-orphan-key')
   })
 })
 

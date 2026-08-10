@@ -209,12 +209,6 @@ test('RPC fails closed without a fence and delegates with current custody author
       code: 'custody-recovery-pending',
       error: 'wallet recovery must complete before this command can use funds',
     })
-    assert.deepEqual(await dispatch({ method: 'trade.recover' }, degradedDependencies), {
-      ok: false,
-      code: 'custody-recovery-pending',
-      error: 'wallet recovery must complete before this command can use funds',
-    })
-    let runtimeStarts = 0
     const diagnosticEngine: EngineClientLike = {
       async submitOrder() {
         throw new Error('submit unused')
@@ -258,17 +252,9 @@ test('RPC fails closed without a fence and delegates with current custody author
       {
         ...degradedDependencies,
         createEngineClient: () => diagnosticEngine,
-        tradeRuntime: {
-          async start() {
-            runtimeStarts += 1
-            return { orders: [], trades: [] }
-          },
-          async stop() {},
-        },
       },
     )
     assert.equal(diagnosticStatus.ok, true)
-    assert.equal(runtimeStarts, 0)
     const recovered = await dispatch({ method: 'wallet.recover' }, degradedDependencies)
     assert.equal(recovered.ok, true)
     assert.equal(custodyReady, true)

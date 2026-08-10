@@ -573,11 +573,6 @@ const RECOVERY_OWNER_BLOCKERS = [
           WHERE scope_id = ? AND state = 'retiring' LIMIT 1`,
   },
   {
-    className: 'daemon-swap-nonterminal',
-    sql: `SELECT 1 FROM daemon_swaps
-          WHERE scope_id = ? AND step NOT IN ('confirmed', 'refunded', 'failed') LIMIT 1`,
-  },
-  {
     className: 'custody-delivery-pending',
     sql: `SELECT 1 FROM custody_deliveries
           WHERE scope_id = ? AND state = 'pending' LIMIT 1`,

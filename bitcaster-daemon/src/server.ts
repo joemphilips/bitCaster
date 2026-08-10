@@ -66,12 +66,9 @@ import {
   ensureState,
   listProofOperations,
   listLocalOrders,
-  listLocalSwaps,
-  readState,
   recordSubmittedOrder,
   recordOrderStatus,
 } from './state.ts'
-import type { TradeRuntime } from './tradeRuntime.ts'
 import {
   recoverPreparedWalletSends,
   receiveWalletToken,
@@ -98,8 +95,7 @@ export interface DaemonServerOptions {
   host?: string
   port?: number
   socketPath?: string
-  tradeRuntime?: TradeRuntime
-  swapExecutor?: SwapRecoveryExecutor
+  trackOwnedOrder?: (marketId: string, orderId: string) => Promise<void>
   prepareSettlementCapability?: PrepareSettlementCapability
   triggerSettlementRecovery?: () => void
   getCustodyFence?: () => CustodyScopeFence
@@ -107,13 +103,6 @@ export interface DaemonServerOptions {
   markCustodyReady?: () => void
   onManualCustodyRecoveryStatus?: (status: ManualCustodyRecoveryStatus) => void
   onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
-  startTradeRuntime?: boolean
-}
-
-export interface SwapRecoveryExecutor {
-  resumeActiveSwaps(
-    state: Awaited<ReturnType<typeof ensureState>>,
-  ): Promise<{ activeSwaps: number }>
 }
 
 export interface EngineClientLike {
@@ -200,8 +189,7 @@ const SCORE_PAYMENT_ATTEMPTS = 3
 export interface DispatchDependencies extends WalletOpsDependencies {
   createEngineClient?: (options: { baseUrl: string; nostrSecretKeyHex: string }) => EngineClientLike
   prepareSettlementCapability?: PrepareSettlementCapability
-  tradeRuntime?: TradeRuntime
-  swapExecutor?: SwapRecoveryExecutor
+  trackOwnedOrder?: (marketId: string, orderId: string) => Promise<void>
   triggerSettlementRecovery?: () => void
   getCustodyFence?: () => CustodyScopeFence
   isCustodyReady?: () => boolean
@@ -211,9 +199,6 @@ export interface DispatchDependencies extends WalletOpsDependencies {
 }
 
 export async function startDaemonServer(options: DaemonServerOptions = {}): Promise<Server> {
-  if (options.startTradeRuntime !== false && options.tradeRuntime && (await readProfile())) {
-    await startTradeRuntimeBestEffort(options.tradeRuntime)
-  }
   const socketPath =
     options.socketPath ?? (options.host || options.port ? undefined : defaultRpcSocketPath())
   const host = options.host ?? '127.0.0.1'
@@ -226,8 +211,7 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
   const expectedToken = await readRpcToken()
   const server = createServer((req, res) => {
     void handleRequest(req, res, expectedToken, {
-      tradeRuntime: options.tradeRuntime,
-      swapExecutor: options.swapExecutor,
+      trackOwnedOrder: options.trackOwnedOrder,
       prepareSettlementCapability: options.prepareSettlementCapability,
       triggerSettlementRecovery: options.triggerSettlementRecovery,
       getCustodyFence: options.getCustodyFence,
@@ -359,7 +343,6 @@ export async function dispatch(
             proofs: state.wallet.proofs.length,
             proofOperations: Object.keys(state.proofOperations).length,
             orders: Object.keys(state.orders).length,
-            swaps: Object.keys(state.swaps).length,
           },
           wallet: await readDaemonWalletBalance(profileDir()),
         },
@@ -907,7 +890,7 @@ export async function dispatch(
         marketUnit.divisibility,
       )
       await prepared.markSubmitted()
-      await startTradeRuntimeBestEffort(deps.tradeRuntime)
+      await trackOwnedOrderBestEffort(deps.trackOwnedOrder, local.marketId, local.orderId)
       return {
         ok: true,
         result: {
@@ -918,41 +901,6 @@ export async function dispatch(
           operationId: prepared.operationId,
           consolidation: prepared.consolidation,
         },
-      }
-    }
-    case 'trade.watch': {
-      const profile = await readProfile()
-      if (!profile) {
-        return { ok: false, error: 'daemon profile is not initialized' }
-      }
-      const state = await readState()
-      return {
-        ok: true,
-        result: state?.swaps[command.params.tradeId] ?? null,
-      }
-    }
-    case 'trade.list': {
-      const profile = await readProfile()
-      if (!profile) {
-        return { ok: false, error: 'daemon profile is not initialized' }
-      }
-      return {
-        ok: true,
-        result: await listLocalSwaps(command.params ?? {}),
-      }
-    }
-    case 'trade.recover': {
-      const profile = await readProfile()
-      if (!profile) {
-        return { ok: false, error: 'daemon profile is not initialized' }
-      }
-      if (!deps.swapExecutor) {
-        return { ok: false, error: 'daemon swap executor is not available' }
-      }
-      await startTradeRuntimeBestEffort(deps.tradeRuntime)
-      return {
-        ok: true,
-        result: await deps.swapExecutor.resumeActiveSwaps(await ensureState()),
       }
     }
     case 'order.status': {
@@ -982,7 +930,7 @@ export async function dispatch(
           )
         : null
       if (local && deps.isCustodyReady?.() !== false) {
-        await startTradeRuntimeBestEffort(deps.tradeRuntime)
+        await trackOwnedOrderBestEffort(deps.trackOwnedOrder, local.marketId, local.orderId)
       }
       return {
         ok: true,
@@ -1064,8 +1012,7 @@ function requiresReadyCustody(method: DaemonCommand['method']): boolean {
     method === 'wallet.consolidateMarket' ||
     method === 'wallet.consolidateProofs' ||
     method === 'wallet.retireCondition' ||
-    method === 'order.submit' ||
-    method === 'trade.recover'
+    method === 'order.submit'
   )
 }
 
@@ -1409,15 +1356,17 @@ function requiredBuyCollateral(input: {
       Math.ceil((input.amountSubunits * input.price) / input.divisibility)
 }
 
-async function startTradeRuntimeBestEffort(tradeRuntime: TradeRuntime | undefined): Promise<void> {
-  if (!tradeRuntime) return
+async function trackOwnedOrderBestEffort(
+  trackOwnedOrder: DispatchDependencies['trackOwnedOrder'],
+  marketId: string,
+  orderId: string,
+): Promise<void> {
+  if (!trackOwnedOrder) return
   try {
-    await tradeRuntime.start(await ensureState())
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    process.stderr.write(
-      `bitcaster-daemon trade runtime start failed; RPC will remain available: ${message}\n`,
-    )
+    await trackOwnedOrder(marketId, orderId)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`order lifecycle subscription failed for ${orderId}: ${message}\n`)
   }
 }
 
