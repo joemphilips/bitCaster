@@ -1,64 +1,56 @@
 ---
 title: "Ecash"
-description: "What ecash is, why bitCaster chose Cashu, and why a blockchain is unnecessary for prediction markets."
+description: "What Cashu ecash is and how bitCaster uses sat-denominated conditional tokens."
 sidebar:
   order: 0
 ---
 
 # Ecash
 
-What bitCaster positions actually are is simply **ecash tokens**. This page explains what that means, why it matters, and why it's a better fit for prediction markets than a blockchain.
+bitCaster positions use Cashu ecash. The current product asset is sat.
 
 ## What is ecash?
 
-Ecash is a form of digital money based on **Chaumian blind signatures**, invented by David Chaum in the 1980s. The core idea is simple:
+Ecash uses Chaumian blind signatures. A mint issues signed bearer tokens.
+Whoever controls a token can spend it. The mint verifies a token, but blind
+signatures help prevent it from linking issuance to later spending.
 
-- A **mint** issues digital tokens, similar to how a bank issues banknotes. The mint signs each token to prove it's genuine.
-- **Blind signatures** mean the mint signs tokens *without seeing what it's signing*. It can later verify that a token is real, but it cannot link that token back to who originally received it.
-- Ecash is a **bearer instrument** — whoever holds the token owns it, just like physical cash. There is no account, no login, no identity attached to a token.
-- **Privacy is built into the protocol**, not bolted on after the fact. The mint itself cannot track who is spending what.
+In bitCaster, a wallet uses ordinary sat ecash and conditional tokens for
+market positions. The mint converts these positions during settlement. A
+confirmed conversion returns exact result entries to the wallet.
 
-In bitCaster, the mint issues ordinary ecash denominated in bitcoin (sats).
-Generic Cashu mints may advertise other units, but bitCaster wallet surfaces
-accept only sat funding and msat conditional proofs. You can top up over
-Lightning or paste an existing sat Cashu token into the top-up overlay without
-creating a new invoice. When you place a bet, you exchange that ecash for
-**conditional tokens** locked to a specific outcome. If you win, those
-conditional tokens become redeemable for regular ecash, which you can withdraw
-back to Lightning at any time.
+The wallet keeps its seed, output blinding factors, refund keys, and general
+proof inventory. For an order, it sends the engine only the exact
+`PAY_TO_UNLOCK` proofs that authorize that order. The engine sees those proof
+secrets, but it cannot redirect their value or extend their expiry.
 
-## Ecash paste top-ups
+## Funding and withdrawal
 
-The trade ticket's top-up overlay lets you choose between **Lightning invoice** and **Ecash paste**. Use Lightning when you want the app to generate a new invoice. Use Ecash paste when you already have a Cashu token from another wallet or device and want to move it into the bitCaster wallet for trading.
+You can fund a sat wallet through Lightning or by importing a sat Cashu token.
+The trading flow manages conditional market proofs. You can withdraw ordinary
+sat ecash through a supported wallet flow.
 
-The top-up button names the wallet unit required by the trade: **Top up sats wallet**.
-Paste a sat token when moving ordinary ecash into the wallet. Conditional market
-proofs use msat and are managed by the trading flow rather than this top-up path.
+## Trust model
+
+Ecash is a bearer system. You must protect wallet data and recovery material.
+The mint holds the Bitcoin reserves behind its issued tokens. You therefore
+trust the mint operator to honor its ecash obligations.
+
+The matching engine temporarily holds the bounded capability for an order. It
+cannot spend other wallet proofs. If it withholds settlement, the authorized
+proofs remain unavailable until their refund becomes valid.
 
 ## Why Cashu?
 
-bitCaster uses [**Cashu**](https://cashu.space/) as its ecash protocol for the following reasons:
-
-- **Open specification** — Cashu is defined by a set of public specs called [NUTs](https://github.com/cashubtc/nuts) (Notation, Usage, and Terminology). Anyone can implement a mint or wallet, and the protocol evolves through community review.
-- **Simple protocol** — the cryptographic protocol (blind signatures over secp256k1) is straightforward to understand, audit, and extend. bitCaster's conditional token extension (NUT-CTF) builds directly on this foundation.
-- **Native Bitcoin/Lightning integration** — Cashu mints hold reserves in bitcoin and accept deposits/withdrawals over Lightning. No bridging, wrapped tokens, or separate chain management needed.
-- **Community-driven development** — multiple independent teams build Cashu wallets, mints, and libraries, reducing single points of failure in the ecosystem.
-
-## Why not a blockchain?
-
-A common question: why not run the exchange on a blockchain, like Polymarket does on Polygon?
-
-The key insight is that **a prediction market exchange is already centralized**. Someone has to run the order book and match trades. Putting that activity on-chain doesn't remove the centralization — it just adds overhead:
-
-- **Privacy degrades.** On a public blockchain, every trade is visible to everyone. Polymarket participants' positions, timing, and trading patterns are all on-chain for anyone to analyze. Ecash gives you the opposite — the mint itself doesn't even know who holds which tokens, let alone outside observers.
-- **Scalability suffers.** On-chain settlement means gas fees, block confirmation times, and throughput limits. During high-activity events, these costs spike. Ecash settlement is instant and costs next to nothing.
-- **Friction increases.** Polymarket requires USDC on Polygon, which means bridging assets from other chains, managing gas tokens, and dealing with blockchain-specific UX (wallet approvals, transaction signing, failed transactions). With ecash over Lightning, you deposit sats and start trading.
-
-Blockchains excel at **censorship resistance** and **public verifiability** — properties that matter for decentralized finance. But a prediction market exchange doesn't need public verifiability of every trade, and censorship resistance at the matching layer is impossible anyway (the matching engine can always refuse orders). What users actually want is **privacy**, **speed**, and **low fees** — exactly what ecash provides.
+Cashu provides private bearer tokens with Bitcoin and Lightning support. It
+also provides the NUT framework that bitCaster uses for conditional tokens and
+`PAY_TO_UNLOCK` authorization.
 
 ## Further reading
 
-- [Atomic Swaps](/user-guide/core-concepts/atomic-swap/) — how trades settle without trusting a custodian
-- [Resolution](/user-guide/core-concepts/resolution/) — how markets resolve and winning tokens are redeemed
-- [Conditional Token Framework](/user-guide/core-concepts/conditional-tokens/) — bitCaster's three-layer asset model and how prediction-market positions are encoded as ecash
-- [Bitcoin Design — Ecash Introduction](https://bitcoin.design/guide/how-it-works/ecash/introduction/) — an external primer on ecash trust models
+- [Atomic settlement](/user-guide/core-concepts/atomic-swap/) explains the
+  mint conversion flow.
+- [Conditional Token Framework](/user-guide/core-concepts/conditional-tokens/)
+  explains conditional market positions.
+- [Bitcoin Design — Ecash Introduction](https://bitcoin.design/guide/how-it-works/ecash/introduction/)
+  gives an external introduction to ecash trust models.

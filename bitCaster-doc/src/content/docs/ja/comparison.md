@@ -2,31 +2,22 @@
 title: 類似プラットフォームとの比較
 ---
 
-## bitCasterとPredyxの比較
+# 類似プラットフォームとの比較
 
-[Predyx](https://beta.predyx.com/)は、ビットコインネイティブの予測市場サービスですが、DEX というわけではなく従来の**サーバーサイドカストディ**モデルを使用する予測市場です。資金はPredyxのプラットフォーム上に置かれ、中央集権型取引所のような仕組みです。価格設定には**AMM（自動マーケットメーカー）**を使用しており、専任のマーケットメーカーなしで流動性を確保できますが、特にアウトカムが多い市場ではスプレッドが広くなる傾向があります。
+## Predyx
 
-bitCasterは根本的に異なるアプローチを取っています：
+[Predyx](https://beta.predyx.com/) はサーバー側カストディモデルと AMM を使用します。bitCaster は CLOB と Cashu bearer token を使用します。
 
-- **ecashによるベアラートークン** — ポジションはブラウザに保持される[Cashu条件付きトークン（CTF）](./user-guide/core-concepts/conditional-tokens/)のベアラートークンです。ミントは残高の確認、トランザクションの追跡、個別アカウントの凍結ができません。ただし、ecashは依然として[カストディアルモデル](https://bitcoin.design/guide/how-it-works/ecash/introduction/)です。ミントが基盤となるBitcoin準備金を保持するため、ミント運営者が資金を持ち逃げしたりトークン供給を水増ししたりしないことを信頼する必要があります。Predyxとの主な違いは、ecashカストディには強力なプライバシー（ブラインド署名によりミントがユーザーを追跡できない）がある点です。個人情報の流出や、特定個人のみ資金を凍結されるといったリスクがありません。
-- **CLOBマッチング** — bitCasterは中央指値注文板を使用しており、マーケットメーカーがアクティブな場合、より狭いスプレッドを提供します。
-- **プライバシー** — ecashトークンとLightningは公開のトランザクション痕跡を残しません。Predyxはサーバーサイドプラットフォームとして、ユーザーの活動を完全に把握しています。
-- **オラクルの外注** — Predyx ではオラクルはマーケット作成者です。bitCaster ではオラクルはDLCのオラクルです。したがってその仕組みを利用する形で誰でもマーケットを作成でき、その際にオラクルを外部の主体に任せることができます。
-- **オープンな仕様** — bitCasterはオープンプロトコル（[コンディショナルトークンフレームワーク](./user-guide/core-concepts/conditional-tokens/)、Nostr kind 88、DLC）上に構築されています。Predyxは独自システムを使用しています。
+bitCaster のウォレットは通常の proof inventory を制御します。注文では、ウォレットは正確な `PAY_TO_UNLOCK` capability だけをエンジンに渡します。エンジンはその値を別の場所に移動できません。有効期限を延長できません。他の wallet proof を使用できません。ミントは発行済み ecash の裏付け Bitcoin 準備金を保持するため、ユーザーは mint operator を信頼する必要があります。
 
-トレードオフ: Predyxは完全なカストディアルシステムで、bitCasterはDEXの一種です。したがって、すべてのDEXに特有のUX面での課題があります。
-例えば、Atomic Swap のオーバーヘッドがあるため、bitCasterでは理論上Predyxに比べて取引には数秒のラグが生じます。
+## Polymarket
 
-## bitCasterとPolymarketの比較
+[Polymarket](https://polymarket.com) は Polygon で CTF 取引を決済します。bitCaster は sat 建て Cashu ecash と、各アトミック決済グループに対するミント conversion を使用します。
 
-[Polymarket](https://polymarket.com)は取引量で最大の予測市場です。[ハイブリッドCLOB](https://docs.polymarket.com/developers/CLOB/introduction)を使用して**Polygon上でオンチェーン決済**を行っています。注文はオフチェーンでマッチングされますが、スマートコントラクトを通じてオンチェーンで決済されます。
+両方のシステムは complementary conversion と mint conversion の概念を使用します。Polymarket は merge conversion もサポートします。bitCaster はこのリリースで merge conversion を提供しません。bitCaster は 1 件以上の fill をグループ化し、1 件の複数当事者 mint conversion を送信します。ミントはグループを確定すると、正確な result entry を返します。
 
-bitCasterはいくつかの重要な点で異なります：
+bitCaster は公開ブロックチェーントランザクション、gas token、bridge を必要としません。ecash モデルはトランザクションのプライバシーを改善しますが、オンチェーントランザクションの公開監査記録は提供しません。
 
-- **ブロックチェーン非依存** — bitCasterはBitcoin/LightningとCashu ecashを使用します。ガス代、L1からのブリッジ、Polygon上のUSDC保有は不要です。
-- **プライバシー** — Polymarketのすべての取引は公開のPolygonトランザクションです。bitCasterのecashモデルでは、取引はデフォルトでプライベートです。
-- **即時決済** — ecashトークンスワップはミント内で即座に決済されます。Polymarketの決済はPolygonのブロック時間に依存し、ブリッジ遅延が発生する場合があります。
-- **オープンなマーケット作成** — Polymarketのマーケットはプラットフォームがキュレーションしています。bitCasterではNostrとDLCオラクル仕様を通じて誰でもマーケットを作成できます。
-- **Bitcoinネイティブ** — bitCasterはsats建てで、[NWC（Nostr Wallet Connect）](https://nwc.dev/)を通じてLightningネットワークに接続します。PolymarketにはPolygon上のUSDCが必要です。
+## まとめ
 
-トレードオフ：Polymarketのオンチェーン決済は、すべての取引の完全な公開監査可能性を提供します。bitCasterのecashモデルは、その監査可能性と引き換えに、強力なプライバシー、ゼロガスコスト、即時決済を実現します。ecashは[カストディアルモデル](https://bitcoin.design/guide/how-it-works/ecash/introduction/)であることに注意してください。ユーザーはミント運営者がトークンを実際のBitcoinで裏付けていることを信頼しますが、Polymarketのオンチェーン透明性や従来の取引所のアカウントシステムとは異なり、ミントはユーザーを特定したり個別の残高を追跡したりすることができません。
+bitCaster は Cashu bearer token、CLOB、ミント調整型 NUT-CTF range settlement を使用します。2 者間 peer swap は使用しません。現在のプロダクト資産は sat です。
