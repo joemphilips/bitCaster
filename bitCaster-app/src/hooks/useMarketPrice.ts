@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { computeSpreadMidpoint } from "@/components/market-detail/orderBookViewModel";
-import { onTradeExecuted } from "@/lib/marketHub";
 import type { MarketDetail, OrderBook, PriceHistory } from "@/types/market-detail";
 import {
   DEFAULT_SAT_MARKET_DIVISIBILITY,
@@ -31,7 +30,6 @@ export function clampOrderPrice(price: number, divisibility: number): number {
 
 export function useMarketPrice({
   market,
-  marketId,
   outcomeSetId,
   orderBook,
 }: UseMarketPriceInput): MarketPriceState {
@@ -42,20 +40,7 @@ export function useMarketPrice({
     () => deriveInitialCurrentPrice(market, outcomeSetId, divisibility),
     [market, outcomeSetId, divisibility],
   );
-  const [livePrice, setLivePrice] = useState<number | null>(null);
-
-  useEffect(() => {
-    setLivePrice(null);
-  }, [market?.id, outcomeSetId]);
-
-  useEffect(() => {
-    if (!marketId) return;
-    return onTradeExecuted(marketId, (trade) => {
-      setLivePrice(clampOrderPrice(trade.executionPrice, divisibility));
-    });
-  }, [marketId, divisibility]);
-
-  const currentPrice = livePrice ?? initialPrice;
+  const currentPrice = initialPrice;
   const defaultOrderPrice = useMemo(() => {
     const midpoint = computeSpreadMidpoint(orderBook);
     if (midpoint == null) return currentPrice;

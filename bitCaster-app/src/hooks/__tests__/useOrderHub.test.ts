@@ -66,7 +66,7 @@ beforeEach(() => {
 });
 
 describe("useOrderHub", () => {
-  it("uses the temporary trade hub route and joins an owned order", async () => {
+  it("uses the order hub route and joins an owned order", async () => {
     const connection = makeConnection();
     connections.push(connection);
     const { result } = renderHook(() => useOrderHub(true, {}));
@@ -108,22 +108,26 @@ describe("useOrderHub", () => {
     await waitFor(() => expect(onReconnected).toHaveBeenCalledOnce());
   });
 
-  it("accepts only settlement-group notifications", async () => {
+  it("registers only retained order hub callbacks", async () => {
     const connection = makeConnection();
     connections.push(connection);
     renderHook(() => useOrderHub(true, {}));
 
     await waitFor(() => expect(connection.start).toHaveBeenCalledOnce());
+    expect(connection.on).toHaveBeenCalledWith("OrderLifecycleChanged", expect.any(Function));
     expect(connection.on).toHaveBeenCalledWith("SettlementGroupStateChanged", expect.any(Function));
+    expect(connection.on).not.toHaveBeenCalledWith("JoinTrade", expect.any(Function));
+    expect(connection.on).not.toHaveBeenCalledWith("SendSwapMessage", expect.any(Function));
     expect(connection.on).not.toHaveBeenCalledWith("TradeCreated", expect.any(Function));
     expect(connection.on).not.toHaveBeenCalledWith("SwapMessageReceived", expect.any(Function));
     expect(connection.on).not.toHaveBeenCalledWith("TradeStateChanged", expect.any(Function));
+    expect(connection.on).not.toHaveBeenCalledWith("PendingPubkeyRequired", expect.any(Function));
   });
 
   it("returns the raw NIP-98 token for the SignalR transport", async () => {
-    await expect(generateOrderHubAccessToken("https://example.com/hubs/trade")).resolves.toBe(
+    await expect(generateOrderHubAccessToken("https://example.com/hubs/order")).resolves.toBe(
       "signed-token",
     );
-    expect(mockGenerateNip98Header).toHaveBeenCalledWith("https://example.com/hubs/trade", "GET");
+    expect(mockGenerateNip98Header).toHaveBeenCalledWith("https://example.com/hubs/order", "GET");
   });
 });

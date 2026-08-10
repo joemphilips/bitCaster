@@ -44,7 +44,7 @@ vi.mock("@microsoft/signalr", () => ({
   },
 }));
 
-import { disconnect, joinMarket, onTradeExecuted, parseTradeExecuted } from "../marketHub";
+import { disconnect, joinMarket } from "../marketHub";
 
 beforeEach(async () => {
   await disconnect();
@@ -58,43 +58,13 @@ beforeEach(async () => {
   signalrMock.registeredHandlers.clear();
 });
 
-describe("parseTradeExecuted", () => {
-  it("accepts canonical AmountSubunits payloads from the engine", () => {
-    expect(
-      parseTradeExecuted({
-        TradeId: "trade-1",
-        MarketId: "cond-YES",
-        ExecutionPrice: 420,
-        AmountSubunits: 5_000,
-        Side: "Buy",
-        Timestamp: "2026-06-01T00:00:00Z",
-      }),
-    ).toEqual({
-      marketId: "cond-YES",
-      trade: {
-        tradeId: "trade-1",
-        executionPrice: 420,
-        amountSubunits: 5_000,
-        side: "Buy",
-        timestamp: "2026-06-01T00:00:00Z",
-      },
-    });
-  });
-
-  it("rejects match-time payloads that lack a confirmed tradeId", () => {
-    expect(
-      parseTradeExecuted({
-        MarketId: "cond-YES",
-        ExecutionPrice: 420,
-        AmountSubunits: 5_000,
-        Side: "Buy",
-        Timestamp: "2026-06-01T00:00:00Z",
-      }),
-    ).toBeNull();
-  });
-});
-
 describe("joinMarket reconnect recovery", () => {
+  it("does not treat reservation-time Matched as a confirmed trade", async () => {
+    await joinMarket("cond-YES");
+
+    expect(signalrMock.registeredHandlers.has("Matched")).toBe(false);
+  });
+
   it("tracks desired joins before invoking so failed reconnecting joins are retried after reconnect", async () => {
     await joinMarket("cond-YES");
     signalrMock.connection.invoke.mockClear();
@@ -110,40 +80,5 @@ describe("joinMarket reconnect recovery", () => {
 
     expect(signalrMock.connection.invoke).toHaveBeenCalledWith("JoinMarket", "cond-YES");
     expect(signalrMock.connection.invoke).toHaveBeenCalledWith("JoinMarket", "cond-NO");
-  });
-});
-
-describe("market execution dispatch", () => {
-  it("de-dupes duplicate execution pushes by tradeId", async () => {
-    const executed = vi.fn();
-
-    onTradeExecuted("cond-YES", executed);
-    await joinMarket("cond-YES");
-
-    signalrMock.registeredHandlers.get("TradeExecuted")?.({
-      MarketId: "cond-YES",
-      TradeId: "trade-1",
-      ExecutionPrice: 420,
-      AmountSubunits: 5_000,
-      Side: "Buy",
-      Timestamp: "2026-06-01T00:00:10Z",
-    });
-    signalrMock.registeredHandlers.get("TradeExecuted")?.({
-      MarketId: "cond-YES",
-      TradeId: "trade-1",
-      ExecutionPrice: 420,
-      AmountSubunits: 5_000,
-      Side: "Buy",
-      Timestamp: "2026-06-01T00:00:10Z",
-    });
-
-    expect(executed).toHaveBeenCalledTimes(1);
-    expect(executed).toHaveBeenCalledWith({
-      tradeId: "trade-1",
-      executionPrice: 420,
-      amountSubunits: 5_000,
-      side: "Buy",
-      timestamp: "2026-06-01T00:00:10Z",
-    });
   });
 });

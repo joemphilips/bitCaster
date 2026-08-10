@@ -265,17 +265,7 @@
     "topUpStillInsufficient": "Top-up completed, but the wallet balance is still below the order requirement.",
     "recentTrades": "Recent Trades",
     "noTrades": "No trades yet",
-    "loadMoreTrades": "Load more trades",
-    "preparing": "Preparing swap…",
-    "exchanging": "Exchanging proofs…",
-    "complete": "Swap complete!",
-    "retrying": "Connection lost, retrying…",
-    "locktimeFallback": "the refund locktime",
-    "failed": "Some outcome proofs are locked until {{locktime}}. Your wallet will refund them the next time it runs after that time.",
-    "tradeId": "Trade {{id}}",
-    "settlingStep0": "Locking proofs",
-    "settlingStep1": "Exchanging signatures",
-    "settlingStep2": "Claiming tokens"
+    "loadMoreTrades": "Load more trades"
   },
   "comment": {
     "title": "Comments",

@@ -2020,7 +2020,6 @@ function submittedOrder(
     status: 'resting',
     remainingAmountSubunits,
     fills: [],
-    pendingPubkeySubmissions: [],
     baseAsset: 'sat',
     divisibility: 10_000,
     activeSettlementGroup: null,

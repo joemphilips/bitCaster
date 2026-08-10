@@ -6,14 +6,17 @@ import {
   type HubConnection,
 } from "@microsoft/signalr";
 import {
+  decodeOrderLifecycleChangedDelta,
   decodeSettlementGroupStateChangedDelta,
+  type OrderLifecycleChangedDelta,
   type SettlementGroupStateChangedDelta,
 } from "@bitcaster/client-sdk/engineClient";
 import { resolveHubServerUrl } from "@/lib/hubUrl";
-import { tradeHubUrl } from "@/lib/nip98";
+import { orderHubUrl } from "@/lib/nip98";
 import { generateNip98Header } from "@/lib/markets";
 
 export interface OrderHubCallbacks {
+  onOrderLifecycleChanged?: (delta: OrderLifecycleChangedDelta) => void;
   onSettlementGroupStateChanged?: (delta: SettlementGroupStateChangedDelta) => void;
   onReconnected?: () => void;
   onError?: (error: Error) => void;
@@ -73,7 +76,7 @@ export function useOrderHub(enabled: boolean, callbacks: OrderHubCallbacks): Ord
   useEffect(() => {
     if (!enabled) return;
 
-    const hubUrl = tradeHubUrl(SERVER_URL);
+    const hubUrl = orderHubUrl(SERVER_URL);
     let stopped = false;
     const connection = new HubConnectionBuilder()
       .withUrl(hubUrl, {
@@ -90,6 +93,13 @@ export function useOrderHub(enabled: boolean, callbacks: OrderHubCallbacks): Ord
         );
       } catch {
         callbacksRef.current.onError?.(new Error("Settlement-group update is invalid."));
+      }
+    });
+    connection.on("OrderLifecycleChanged", (delta: unknown) => {
+      try {
+        callbacksRef.current.onOrderLifecycleChanged?.(decodeOrderLifecycleChangedDelta(delta));
+      } catch {
+        callbacksRef.current.onError?.(new Error("Order lifecycle update is invalid."));
       }
     });
     connection.onreconnected(() => callbacksRef.current.onReconnected?.());

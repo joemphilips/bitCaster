@@ -1844,7 +1844,6 @@ function submitResponse(): SubmitOrderResponse {
     status: "filled",
     remainingAmountSubunits: 0,
     fills: [],
-    pendingPubkeySubmissions: [],
     baseAsset: "sat",
     divisibility: 10_000,
     activeSettlementGroup: null,

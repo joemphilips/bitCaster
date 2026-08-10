@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   BitcasterEngineClient,
+  decodeMatchedDelta,
+  decodeOrderLifecycleChangedDelta,
   decodeSettlementGroupStateChangedDelta,
   decodeSubmitOrderResponse,
   EngineClientError,
@@ -9,7 +11,6 @@ import {
   SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX,
   SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX,
   SUBMIT_ORDER_RESPONSE_BYTES_MAX,
-  submitEphemeralPubkey,
   type EngineAuthorizationRequest,
 } from '../src/engineClient.ts'
 import { decodeDurableCustodyWalletId } from '../src/durableCustody.ts'
@@ -136,65 +137,46 @@ test('decodeSettlementGroupStateChangedDelta enforces the exact owner notificati
   )
 })
 
-test('submitEphemeralPubkey includes conditionId in the request URL and auth input', async () => {
-  const requests: string[] = []
-  const authUrls: string[] = []
+test('decodeMatchedDelta enforces the exact public match contract', () => {
+  const value = {
+    marketId: 'condition-yes',
+    fillId: '11111111-1111-4111-8111-111111111111',
+    makerOrderId: '22222222-2222-4222-8222-222222222222',
+    takerOrderId: '33333333-3333-4333-8333-333333333333',
+    executionPrice: 4_000,
+    amountSubunits: 10_000,
+    path: 'Complementary',
+    matchedAt: '2026-08-01T00:00:00.000Z',
+    baseAsset: 'sat',
+    collateralUnit: 'msat',
+    divisibility: 10_000,
+    quotePaymentSubunits: 4_000,
+    outcomeFaceAmountSubunits: 10_000,
+    tokenSide: 'Outcome',
+  } as const
 
-  await submitEphemeralPubkey(
-    'https://engine.example/',
-    '11111111-1111-4111-8111-111111111111',
-    '02'.padEnd(66, '1'),
-    null,
-    async (input) => {
-      requests.push(String(input))
-      return new Response(
-        JSON.stringify({
-          tradeId: '11111111-1111-4111-8111-111111111111',
-          role: 'maker',
-          bothReceived: true,
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      )
-    },
-    async ({ url }) => {
-      authUrls.push(url)
-      return 'Nostr token'
-    },
-    'abcdef',
-  )
-
-  assert.deepEqual(requests, [
-    'https://engine.example/api/v1/trades/11111111-1111-4111-8111-111111111111/ephemeral-pubkey?conditionId=abcdef',
-  ])
-  assert.deepEqual(authUrls, requests)
+  assert.deepEqual(decodeMatchedDelta(value), value)
+  assert.throws(() => decodeMatchedDelta({ ...value, FillId: value.fillId }), /fields are invalid/)
+  assert.throws(() => decodeMatchedDelta({ ...value, fillId: 'not-a-uuid' }), /fill id is invalid/)
 })
 
-test('BitcasterEngineClient.submitEphemeralPubkey passes conditionId to the helper request', async () => {
-  const requests: string[] = []
-  const client = new BitcasterEngineClient({
-    baseUrl: 'https://engine.example/',
-    fetchImpl: async (input) => {
-      requests.push(String(input))
-      return new Response(
-        JSON.stringify({
-          tradeId: '22222222-2222-4222-8222-222222222222',
-          role: 'maker',
-          bothReceived: true,
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      )
-    },
-  })
+test('decodeOrderLifecycleChangedDelta enforces the retained owner notification contract', () => {
+  const value = {
+    orderId: '44444444-4444-4444-8444-444444444444',
+    marketId: 'condition-yes',
+    status: 'partially_filled',
+    remainingAmountSubunits: 10_000,
+    baseAsset: 'sat',
+    collateralUnit: 'msat',
+    divisibility: 10_000,
+    activeSettlementGroup: null,
+  }
 
-  await client.submitEphemeralPubkey(
-    '22222222-2222-4222-8222-222222222222',
-    '02'.padEnd(66, '2'),
-    'cond-1',
+  assert.deepEqual(decodeOrderLifecycleChangedDelta(value), value)
+  assert.throws(
+    () => decodeOrderLifecycleChangedDelta({ ...value, tradeId: 'obsolete' }),
+    /fields are invalid/,
   )
-
-  assert.deepEqual(requests, [
-    'https://engine.example/api/v1/trades/22222222-2222-4222-8222-222222222222/ephemeral-pubkey?conditionId=cond-1',
-  ])
 })
 
 test('BitcasterEngineClient.getMarket returns null for an empty catalogue result', async () => {
@@ -457,14 +439,6 @@ test('BitcasterEngineClient.submitOrder sends display-only wallet attribution wi
           status: 'resting',
           remainingAmountSubunits: 10_000,
           fills: [],
-          pendingPubkeySubmissions: [
-            {
-              tradeId: '33333333-3333-4333-8333-333333333333',
-              role: 'maker',
-              fillAmount: 10_000,
-              deadline: '2026-07-29T00:00:10Z',
-            },
-          ],
           baseAsset: 'sat',
           divisibility: 10_000,
           activeSettlementGroup: null,
@@ -484,7 +458,6 @@ test('BitcasterEngineClient.submitOrder sends display-only wallet attribution wi
   })
 
   assert.equal(response.status, 'resting')
-  assert.equal(response.pendingPubkeySubmissions[0]?.fillAmount, 10_000)
   assert.deepEqual(requests, [
     {
       url: 'https://engine.example/api/v1/condition-1-YES/orders',
@@ -500,7 +473,6 @@ test('decodeSubmitOrderResponse rejects foreign fields and malformed nested auth
     status: 'filled',
     remainingAmountSubunits: 0,
     fills: [],
-    pendingPubkeySubmissions: [],
     baseAsset: 'sat',
     divisibility: 10_000,
     activeSettlementGroup: null,
@@ -511,23 +483,12 @@ test('decodeSubmitOrderResponse rejects foreign fields and malformed nested auth
     /response fields are invalid/,
   )
   assert.throws(
-    () =>
-      decodeSubmitOrderResponse({
-        ...response,
-        pendingPubkeySubmissions: [
-          {
-            tradeId: 'not-a-uuid',
-            role: 'maker',
-            fillAmount: 1,
-            deadline: '2026-07-29T00:00:10Z',
-          },
-        ],
-      }),
-    /pending trade id is invalid/,
+    () => decodeSubmitOrderResponse({ ...response, pendingPubkeySubmissions: [] }),
+    /response fields are invalid/,
   )
 })
 
-test('decodeSubmitOrderResponse omits a null legacy trade id from a range-settlement fill', () => {
+test('decodeSubmitOrderResponse rejects removed fill trade identity', () => {
   const settlementGroup = {
     groupId: '44444444-4444-4444-8444-444444444444',
     status: 'Prepared',
@@ -545,7 +506,6 @@ test('decodeSubmitOrderResponse omits a null legacy trade id from a range-settle
     status: 'Matched',
     filledAt: '2026-07-29T00:00:00Z',
     settlementGroup,
-    tradeId: null,
     baseAsset: 'sat',
     divisibility: 10_000,
     tokenSide: 'Outcome',
@@ -557,24 +517,21 @@ test('decodeSubmitOrderResponse omits a null legacy trade id from a range-settle
     status: 'filled',
     remainingAmountSubunits: 0,
     fills: [fill],
-    pendingPubkeySubmissions: [],
     baseAsset: 'sat',
     divisibility: 10_000,
     activeSettlementGroup: settlementGroup,
   }
 
   const decoded = decodeSubmitOrderResponse(response)
-  const { tradeId: _legacyTradeId, ...fillWithoutTradeId } = fill
 
-  assert.deepEqual(decoded.fills[0], fillWithoutTradeId)
-  assert.equal('tradeId' in (decoded.fills[0] ?? {}), false)
+  assert.deepEqual(decoded.fills[0], fill)
   assert.throws(
     () =>
       decodeSubmitOrderResponse({
         ...response,
         fills: [{ ...fill, tradeId: 'not-a-uuid' }],
       }),
-    /fill trade id is invalid/,
+    /fields are invalid/,
   )
 })
 
@@ -633,9 +590,6 @@ test('BitcasterEngineClient.listMyOrders preserves strict unit and lifecycle fie
               status: 'partially_filled',
               placedAt: '2026-07-29T00:00:00Z',
               filledAt: null,
-              tradeId: null,
-              deadline: null,
-              pubkeySubmitted: null,
               clientOrderId: 'client-order-1',
               activeSettlementGroup: settlementGroup,
             },
@@ -688,7 +642,6 @@ test('BitcasterEngineClient.batchSubmitOrders preserves accepted and rejected re
               status: 'resting',
               remainingAmountSubunits: 10_000,
               fills: [],
-              pendingPubkeySubmissions: [],
               baseAsset: 'sat',
               divisibility: 10_000,
               activeSettlementGroup: null,
@@ -881,8 +834,6 @@ test('BitcasterEngineClient reads and declines one exact order continuation revi
           tokenSide: 'Outcome',
           baseAsset: 'sat',
           divisibility: 10_000,
-          tradeId: null,
-          deadline: null,
           activeSettlementGroup: null,
           continuation: {
             settlementGroupId,
@@ -911,8 +862,6 @@ test('BitcasterEngineClient reads and declines one exact order continuation revi
     placedAt: '2026-07-29T00:00:00.000Z',
     timeInForce: 'GTC',
     expiresAt: null,
-    tradeId: null,
-    deadline: null,
     tokenSide: 'Outcome',
     baseAsset: 'sat',
     divisibility: 10_000,

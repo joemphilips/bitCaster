@@ -265,17 +265,7 @@
     "topUpStillInsufficient": "チャージは完了しましたが、ウォレット残高が注文に必要な金額にまだ不足しています。",
     "recentTrades": "最近の取引",
     "noTrades": "まだ取引がありません",
-    "loadMoreTrades": "さらに取引を表示",
-    "preparing": "スワップを準備中…",
-    "exchanging": "プルーフを交換中…",
-    "complete": "スワップ完了！",
-    "retrying": "接続が切断されました。再接続中…",
-    "locktimeFallback": "返還ロックタイム",
-    "failed": "一部のアウトカムプルーフは {{locktime}} までロックされています。その時刻を過ぎて次にウォレットが起動したときに返還されます。",
-    "tradeId": "取引 {{id}}",
-    "settlingStep0": "プルーフをロック中",
-    "settlingStep1": "署名を交換中",
-    "settlingStep2": "トークンを受け取り中"
+    "loadMoreTrades": "さらに取引を表示"
   },
   "comment": {
     "title": "コメント",

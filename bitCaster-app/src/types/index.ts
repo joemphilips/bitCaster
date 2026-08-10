@@ -1,4 +1,3 @@
-export * from "./events";
 export * from "./market";
 export * from "./market-detail";
 export * from "./portfolio";

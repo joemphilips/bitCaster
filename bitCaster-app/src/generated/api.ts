@@ -188,26 +188,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/trades/{tradeId}/ephemeral-pubkey": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Submit match-time ephemeral pubkey for a pending trade
-         * @description Submits the caller's compressed secp256k1 ephemeral pubkey for a pending matched trade. The conditionId query parameter identifies the condition-local order book that currently owns the pending match.
-         */
-        post: operations["submitTradeEphemeralPubkey"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/{marketId}/orders/{orderId}": {
         parameters: {
             query?: never;
@@ -1103,11 +1083,6 @@ export interface components {
             filledAt: string;
             /** @description Atomic settlement group that durably owns this fill reservation. */
             settlementGroup: components["schemas"]["SettlementGroupSummary"];
-            /**
-             * Format: uuid
-             * @description Atomic-swap trade session identifier for this fill. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
-             */
-            tradeId?: string;
         };
         /** @description Reference-only order submission. The server loads all immutable order identity and economic terms from the current durable DCB binding. The authenticated owner and route market must exactly match that prebound intent. This reference is not bearer authority. */
         SubmitOrderRequest: {
@@ -1157,16 +1132,6 @@ export interface components {
             timeInForce: components["schemas"]["TimeInForce"];
             /** Format: date-time */
             expiresAt?: string | null;
-            /**
-             * Format: uuid
-             * @description Legacy HTLC trade identifier retained until Phase 12 removes the superseded protocol surface.
-             */
-            tradeId?: string | null;
-            /**
-             * Format: date-time
-             * @description Deadline for pending ephemeral pubkey submission.
-             */
-            deadline?: string | null;
             /** @description Current nonterminal settlement group for this order, or null when no group currently owns an unconfirmed fill. */
             activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
             /** @description Current durable residual-continuation state. It is non-null only after a confirmed partial resting-order settlement. */
@@ -1234,11 +1199,6 @@ export interface components {
             placedAt: string;
             /** Format: date-time */
             filledAt?: string | null;
-            /** Format: uuid */
-            tradeId?: string | null;
-            /** Format: date-time */
-            deadline?: string | null;
-            pubkeySubmitted?: boolean | null;
             clientOrderId?: string | null;
             /** @description Current nonterminal settlement group for this order, or null. */
             activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
@@ -1257,7 +1217,6 @@ export interface components {
             remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
             /** @description List of fills produced by this order. Empty if no matches. */
             fills: components["schemas"]["Fill"][];
-            pendingPubkeySubmissions: components["schemas"]["PendingPubkeySubmission"][];
             /** @description Base asset context for amount and price fields. */
             baseAsset: components["schemas"]["BaseAsset"];
             /**
@@ -1270,26 +1229,6 @@ export interface components {
         };
         BatchSubmitOrdersRequest: {
             orders: components["schemas"]["BatchSubmitOrderRequestItem"][];
-        };
-        PendingPubkeySubmission: {
-            /** Format: uuid */
-            tradeId: string;
-            /** @enum {string} */
-            role: "maker" | "taker";
-            fillAmount: components["schemas"]["CollateralSubunits"];
-            /** Format: date-time */
-            deadline: string;
-        };
-        SubmitEphemeralPubkeyRequest: {
-            /** @description 33-byte compressed secp256k1 public key as lowercase hex. */
-            ephemeralPubkey: string;
-        };
-        SubmitEphemeralPubkeyResponse: {
-            /** Format: uuid */
-            tradeId: string;
-            /** @enum {string} */
-            role: "maker" | "taker";
-            bothReceived: boolean;
         };
         /** @description Reference-only batch item. The server loads every immutable order fact from the current durable DCB binding. Possession of the reference is not bearer authority; ownership, route condition, and current authorization are verified. */
         BatchSubmitOrderRequestItem: {
@@ -1313,7 +1252,6 @@ export interface components {
             status: components["schemas"]["OrderLifecycleStatus"];
             remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
             fills: components["schemas"]["Fill"][];
-            pendingPubkeySubmissions: components["schemas"]["PendingPubkeySubmission"][];
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
@@ -2269,64 +2207,6 @@ export interface operations {
             };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    submitTradeEphemeralPubkey: {
-        parameters: {
-            query: {
-                conditionId: string;
-            };
-            header?: never;
-            path: {
-                tradeId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SubmitEphemeralPubkeyRequest"];
-            };
-        };
-        responses: {
-            /** @description Ephemeral pubkey accepted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SubmitEphemeralPubkeyResponse"];
-                };
-            };
-            /** @description Validation error */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Trade not found or caller is not a party */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Pubkey already differs or submission deadline expired */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };

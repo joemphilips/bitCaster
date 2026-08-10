@@ -9,7 +9,6 @@ import {
   decideTradeCollateralGate,
   defaultLimitPriceForDivisibility,
   fetchMarketDetailWithBooks,
-  liveTradeChartUpdate,
   marketDetailDataReducer,
   pendingTopUpOrderIntentMatches,
   resolveTradeOrderBooks,
@@ -21,8 +20,7 @@ import {
   previewBrowserCtfRangeOrderFees,
   submitBrowserCtfRangeOrder,
 } from "@/lib/browserCtfRangeOrderSubmission";
-import { onOrderBookUpdated, onTradeExecuted } from "@/lib/marketHub";
-import type { MarketStatusChanged, OrderBookSnapshot, TradeExecuted } from "@/lib/marketHub";
+import type { MarketStatusChanged, OrderBookSnapshot } from "@/lib/marketHub";
 import type {
   CategoricalMarketDetail,
   Comment,
@@ -50,7 +48,6 @@ const mocks = vi.hoisted(() => ({
   },
   liveStatusHandlers: [] as Array<(status: MarketStatusChanged) => void>,
   orderBookHandlers: new Map<string, (snapshot: OrderBookSnapshot) => void>(),
-  tradeExecutedHandlers: new Map<string, (trade: TradeExecuted) => void>(),
   windowPriceHistory: vi.fn((history: { timeframe: string; data: Array<unknown> }) => ({
     ...history,
     data: history.data.slice(-1000),
@@ -99,17 +96,9 @@ vi.mock("@/lib/marketHub", () => ({
     return () => mocks.orderBookHandlers.delete(marketId);
   }),
   onOrderCancelled: vi.fn(() => () => {}),
-  onTradeExecuted: vi.fn((marketId: string, handler: (trade: TradeExecuted) => void) => {
-    mocks.tradeExecutedHandlers.set(marketId, handler);
-    return () => mocks.tradeExecutedHandlers.delete(marketId);
-  }),
 }));
 
 vi.mock("@/lib/markets", () => ({
-  appendLivePricePoint: (history: { timeframe: string; data: Array<unknown> }, point: unknown) => ({
-    ...history,
-    data: [...history.data, point],
-  }),
   fetchMarketDetail: vi.fn(),
   fetchMarketComments: vi.fn().mockResolvedValue({ comments: [] }),
   fetchMarketPriceHistory: vi.fn().mockResolvedValue({ data: [], timeframe: "7d" }),
@@ -262,7 +251,6 @@ function mockAcceptedOrder() {
     status: "filled",
     remainingAmountSubunits: 0,
     fills: [],
-    pendingPubkeySubmissions: [],
     baseAsset: "sat",
     divisibility: 10_000,
     activeSettlementGroup: null,
@@ -360,7 +348,6 @@ describe("MarketDetailPage live market status", () => {
     mocks.getBalance.mockReset();
     mocks.liveStatusHandlers.length = 0;
     mocks.orderBookHandlers.clear();
-    mocks.tradeExecutedHandlers.clear();
     mocks.routeParams.id = "condition-yesno";
     mocks.navigate.mockReset();
     mocks.walletState.setupComplete = false;
@@ -416,48 +403,6 @@ describe("MarketDetailPage live market status", () => {
     expect(() => assertMarketAcceptsOrders(yesNoMarket({ state: "closed" }))).toThrow(
       "This market is closed and no longer accepts orders.",
     );
-  });
-
-  it("cancels the TradeExecuted REST fallback when OrderBookUpdated arrives first", async () => {
-    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket());
-    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
-
-    render(<MarketDetailPage />);
-
-    await screen.findByRole("heading", { name: "Will it happen?" });
-    await waitFor(() => {
-      expect(onTradeExecuted).toHaveBeenCalledWith("condition-yesno-Yes", expect.any(Function));
-      expect(onOrderBookUpdated).toHaveBeenCalledWith("condition-yesno-Yes", expect.any(Function));
-    });
-    vi.mocked(fetchOrderBook).mockClear();
-
-    act(() => {
-      mocks.tradeExecutedHandlers.get("condition-yesno-Yes")?.({
-        tradeId: "trade-test-1",
-        executionPrice: 501,
-        amountSubunits: 10,
-        side: "Buy",
-        timestamp: "2026-06-01T00:00:00Z",
-      });
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 250));
-
-    expect(fetchOrderBook).not.toHaveBeenCalled();
-
-    act(() => {
-      mocks.orderBookHandlers.get("condition-yesno-Yes")?.({
-        marketId: "condition-yesno-Yes",
-        bids: [{ price: 777, amount: 42 }],
-        asks: [],
-        spread: 0,
-        depthLimit: 5,
-      });
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 550));
-
-    expect(fetchOrderBook).not.toHaveBeenCalled();
   });
 
   it("requires top-up when a priced buy covers quote cost but not face value", async () => {
@@ -886,113 +831,6 @@ describe("marketDetailDataReducer", () => {
     const view = composeMarketDetail(stateAfterRest, "7d");
 
     expect(view?.orderBook).toBe(liveBook);
-  });
-
-  it("merges late REST history without dropping live chart points", () => {
-    const initial = yesNoMarket({
-      priceHistory: {
-        timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 1 }],
-      },
-    });
-    const stateWithLive = marketDetailDataReducer(createMarketDetailDataState(initial), {
-      type: "tradeExecuted",
-      marketId: initial.id,
-      outcomeSetId: "Yes",
-      timeframe: "7d",
-      point: { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-    });
-
-    const stateAfterRest = marketDetailDataReducer(stateWithLive, {
-      type: "historyLoaded",
-      marketId: initial.id,
-      timeframe: "7d",
-      historiesByOutcomeSetId: {
-        Yes: {
-          timeframe: "7d",
-          data: [
-            { timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 1 },
-            { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
-          ],
-        },
-      },
-    });
-    const view = composeMarketDetail(stateAfterRest, "7d");
-
-    expect(view?.priceHistory.data).toEqual([
-      { timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 1 },
-      { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
-      { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-    ]);
-    expect(mocks.windowPriceHistory).toHaveBeenCalledWith({
-      timeframe: "7d",
-      data: [
-        { timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 1 },
-        { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
-        { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-      ],
-    });
-  });
-
-  it("merges order-submit refresh history with existing initial and live chart points", () => {
-    const initial = yesNoMarket({
-      priceHistory: {
-        timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 49, source: "initial" }],
-      },
-      outcomeOrderBooks: { Yes: book(50), No: book(50) },
-    });
-    const stateWithLive = marketDetailDataReducer(createMarketDetailDataState(initial), {
-      type: "tradeExecuted",
-      marketId: initial.id,
-      outcomeSetId: "Yes",
-      timeframe: "7d",
-      point: { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-    });
-
-    const refresh = yesNoMarket({
-      ...initial,
-      priceHistory: {
-        timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
-          { timestamp: "2026-01-03T00:00:00Z", price: 54, volume: 1 },
-        ],
-      },
-      outcomeOrderBooks: { Yes: book(52), No: book(48) },
-    });
-
-    const stateAfterRefresh = marketDetailDataReducer(stateWithLive, {
-      type: "marketSubmitRefreshLoaded",
-      detail: refresh,
-      booksByOutcomeSetId: { Yes: book(52), No: book(48) },
-      replaceOutcomeSetIds: ["Yes", "No"],
-    });
-
-    const view = composeMarketDetail(stateAfterRefresh, "7d");
-
-    expect(view?.priceHistory.data).toEqual([
-      { timestamp: "2026-01-01T00:00:00Z", price: 49, source: "initial" },
-      { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
-      { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-    ]);
-  });
-
-  it("projects live No trades into the visible Yes chart for yes/no markets", () => {
-    const update = liveTradeChartUpdate(yesNoMarket({ divisibility: 10_000 }), "No", {
-      timestamp: "2026-01-03T00:00:00Z",
-      executionPrice: 2_000,
-      amountSubunits: 1_000_000,
-    });
-
-    expect(update).toEqual({
-      outcomeSetId: "Yes",
-      point: {
-        timestamp: "2026-01-03T00:00:00Z",
-        price: 80,
-        volume: 1_000_000,
-      },
-    });
   });
 });
 

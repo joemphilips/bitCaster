@@ -219,7 +219,6 @@ test('RPC fails closed without a fence and delegates with current custody author
           status: 'resting',
           remainingAmountSubunits: 1_000_000,
           fills: [],
-          pendingPubkeySubmissions: [],
           baseAsset: 'sat',
           divisibility: 1_000_000,
           activeSettlementGroup: null,

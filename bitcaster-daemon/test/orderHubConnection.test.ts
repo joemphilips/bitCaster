@@ -2,18 +2,41 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import {
-  parseOrderLifecycleDelta,
+  parseOrderLifecycleChanged,
+  parseSettlementGroupStateChanged,
   SignalROrderLifecycleConnection,
 } from '../src/orderHubConnection.ts'
 
 const require = createRequire(import.meta.url)
 
 test('order lifecycle callbacks require an owned order identity', () => {
-  assert.deepEqual(parseOrderLifecycleDelta({ orderId: 'order-1', marketId: 'condition-YES' }), {
-    orderId: 'order-1',
+  const identity = {
+    orderId: '11111111-1111-4111-8111-111111111111',
     marketId: 'condition-YES',
-  })
-  assert.throws(() => parseOrderLifecycleDelta({ orderId: '', marketId: 'condition-YES' }))
+  }
+  const lifecycle = {
+    ...identity,
+    status: 'resting',
+    remainingAmountSubunits: 10_000,
+    baseAsset: 'sat',
+    collateralUnit: 'msat',
+    divisibility: 10_000,
+    activeSettlementGroup: null,
+  }
+  const settlement = {
+    ...identity,
+    settlementGroup: {
+      groupId: '22222222-2222-4222-8222-222222222222',
+      status: 'Prepared',
+      revision: 1,
+      coalescingDeadline: '2026-08-01T00:00:00.000Z',
+      frozenAt: null,
+    },
+  }
+
+  assert.deepEqual(parseOrderLifecycleChanged(lifecycle), identity)
+  assert.deepEqual(parseSettlementGroupStateChanged(settlement), identity)
+  assert.throws(() => parseOrderLifecycleChanged({ ...lifecycle, tradeId: 'obsolete' }))
 })
 
 test('order lifecycle connection rejoins tracked orders after reconnect', async () => {
@@ -22,10 +45,12 @@ test('order lifecycle connection rejoins tracked orders after reconnect', async 
   assert.ok(originalBuilder)
 
   const fake = new FakeHubConnection()
+  const hubUrls: string[] = []
   Object.defineProperty(signalR, 'HubConnectionBuilder', {
     configurable: true,
     value: class {
-      withUrl(): this {
+      withUrl(url: string): this {
+        hubUrls.push(url)
         return this
       }
 
@@ -53,6 +78,11 @@ test('order lifecycle connection rejoins tracked orders after reconnect', async 
     await connection.trackOrder('condition-YES', 'order-1')
     await connection.trackOrder('condition-NO', 'order-2')
     await connection.start()
+    assert.deepEqual(hubUrls, ['https://engine.example/hubs/order'])
+    assert.equal(
+      hubUrls.some((url) => url.includes('/hubs/trade')),
+      false,
+    )
     assert.deepEqual(fake.invocations, [
       ['JoinOrder', 'condition-YES', 'order-1'],
       ['JoinOrder', 'condition-NO', 'order-2'],

@@ -1,18 +1,6 @@
-import { renderHook, act } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { TradeExecuted } from "@/lib/marketHub";
+import { renderHook } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 import type { MarketDetail, OrderBook } from "@/types/market-detail";
-
-const { tradeHandlers } = vi.hoisted(() => ({
-  tradeHandlers: new Map<string, (trade: TradeExecuted) => void>(),
-}));
-
-vi.mock("@/lib/marketHub", () => ({
-  onTradeExecuted: (marketId: string, handler: (trade: TradeExecuted) => void) => {
-    tradeHandlers.set(marketId, handler);
-    return () => tradeHandlers.delete(marketId);
-  },
-}));
 
 import { useMarketPrice } from "../useMarketPrice";
 
@@ -58,11 +46,6 @@ function makeMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
   } as MarketDetail;
 }
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  tradeHandlers.clear();
-});
-
 describe("useMarketPrice", () => {
   it("falls back to the midpoint default when no trades exist", () => {
     const { result } = renderHook(() =>
@@ -93,30 +76,6 @@ describe("useMarketPrice", () => {
 
     expect(result.current.currentPrice).toBe(7_000);
     expect(result.current.defaultOrderPrice).toBe(7_000);
-  });
-
-  it("updates current price from the latest trade event", () => {
-    const { result } = renderHook(() =>
-      useMarketPrice({
-        market: makeMarket(),
-        marketId: "condition-1-Yes",
-        outcomeSetId: "Yes",
-        orderBook: emptyBook,
-      }),
-    );
-
-    act(() => {
-      tradeHandlers.get("condition-1-Yes")?.({
-        tradeId: "trade-1",
-        executionPrice: 6_300,
-        amountSubunits: 10,
-        side: "Buy",
-        timestamp: "2026-01-01T00:01:00Z",
-      });
-    });
-
-    expect(result.current.currentPrice).toBe(6_300);
-    expect(result.current.defaultOrderPrice).toBe(6_300);
   });
 
   it("uses the spread midpoint as the order entry default when both sides exist", () => {

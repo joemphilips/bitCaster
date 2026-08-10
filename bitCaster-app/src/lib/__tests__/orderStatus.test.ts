@@ -93,7 +93,7 @@ describe("splitMarketId", () => {
 describe("buildOrderStatusNotifications", () => {
   it("notifies on a mint match-shaped settlement handle", () => {
     const status = {
-      ...orderStatusWithTradeFills("trade-a"),
+      ...orderStatusWithFillIds("fill-a"),
       status: "matched",
       remainingAmountSubunits: 100,
       filledAmountSubunits: 100,
@@ -113,7 +113,7 @@ describe("buildOrderStatusNotifications", () => {
 
   it("does not notify again for the same fill snapshot", () => {
     const status = {
-      ...orderStatusWithTradeFills("trade-a"),
+      ...orderStatusWithFillIds("fill-a"),
       filledAmountSubunits: 100,
     } as OrderStatusResponse;
 
@@ -124,7 +124,7 @@ describe("buildOrderStatusNotifications", () => {
 
   it("notifies when an order is cancelled by market close", () => {
     const status = {
-      ...orderStatusWithTradeFills(),
+      ...orderStatusWithFillIds(),
       status: "cancelled",
       remainingAmountSubunits: 100,
       filledAmountSubunits: 0,
@@ -143,7 +143,7 @@ describe("buildOrderStatusNotifications", () => {
 
   it("notifies when an order settlement fails terminally", () => {
     const status = {
-      ...orderStatusWithTradeFills("trade-a"),
+      ...orderStatusWithFillIds("fill-a"),
       status: "failed",
       remainingAmountSubunits: 0,
       filledAmountSubunits: 0,
@@ -163,7 +163,7 @@ describe("buildOrderStatusNotifications", () => {
 
   it("preserves a capacity rejection as a distinct terminal reason", () => {
     const status = {
-      ...orderStatusWithTradeFills(),
+      ...orderStatusWithFillIds(),
       status: "rejected_capacity",
       remainingAmountSubunits: 100,
       filledAmountSubunits: 0,
@@ -182,7 +182,7 @@ describe("buildOrderStatusNotifications", () => {
 
   it("carries the sat product unit onto the notification", () => {
     const status = {
-      ...orderStatusWithTradeFills("trade-a"),
+      ...orderStatusWithFillIds("fill-a"),
       status: "filled",
       filledAmountSubunits: 50,
       remainingAmountSubunits: 0,
@@ -199,7 +199,7 @@ describe("buildOrderStatusNotifications", () => {
 
   it("treats lower-case filled status from the wire contract as terminal", () => {
     const status = {
-      ...orderStatusWithTradeFills("trade-a"),
+      ...orderStatusWithFillIds("fill-a"),
       status: "filled",
       filledAmountSubunits: 100,
       remainingAmountSubunits: 0,
@@ -316,13 +316,13 @@ function pendingTrade() {
   };
 }
 
-function orderStatusWithTradeFills(...tradeIds: string[]): OrderStatusResponse {
+function orderStatusWithFillIds(...fillIds: string[]): OrderStatusResponse {
   return {
     orderId: "order-1",
     marketId: "market-1",
     status: "partially_filled",
     remainingAmountSubunits: 100,
-    filledAmountSubunits: tradeIds.length * 10,
-    fills: tradeIds.map((tradeId) => ({ tradeId })),
+    filledAmountSubunits: fillIds.length * 10,
+    fills: fillIds.map((id) => ({ id })),
   } as unknown as OrderStatusResponse;
 }

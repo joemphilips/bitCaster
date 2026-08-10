@@ -21,14 +21,6 @@ import { refreshOrderBook } from "@/lib/orderBookRefresh";
 
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
 export type MarketStatusChanged = components["schemas"]["MarketStatusChanged"];
-export interface TradeExecuted {
-  tradeId: string;
-  executionPrice: number;
-  amountSubunits: number;
-  side: string;
-  timestamp: string;
-}
-
 export interface OrderCancelled {
   marketId: string;
   orderId: string;
@@ -51,62 +43,8 @@ export function parseOrderCancelled(payload: unknown): OrderCancelled | null {
   return marketId && orderId ? { marketId, orderId } : null;
 }
 
-export function parseTradeExecuted(
-  payload: unknown,
-): { marketId: string; trade: TradeExecuted } | null {
-  const raw = payload as Record<string, unknown>;
-  const marketId =
-    typeof raw.marketId === "string"
-      ? raw.marketId
-      : typeof raw.MarketId === "string"
-        ? raw.MarketId
-        : null;
-  const executionPrice =
-    typeof raw.executionPrice === "number"
-      ? raw.executionPrice
-      : typeof raw.ExecutionPrice === "number"
-        ? raw.ExecutionPrice
-        : null;
-  const amountSubunits =
-    typeof raw.amountSubunits === "number"
-      ? raw.amountSubunits
-      : typeof raw.AmountSubunits === "number"
-        ? raw.AmountSubunits
-        : typeof raw.faceAmountSubunits === "number"
-          ? raw.faceAmountSubunits
-          : typeof raw.FaceAmountSubunits === "number"
-            ? raw.FaceAmountSubunits
-            : null;
-  const tradeId =
-    typeof raw.tradeId === "string"
-      ? raw.tradeId
-      : typeof raw.TradeId === "string"
-        ? raw.TradeId
-        : undefined;
-  const side =
-    typeof raw.side === "string" ? raw.side : typeof raw.Side === "string" ? raw.Side : "";
-  const timestamp =
-    typeof raw.timestamp === "string"
-      ? raw.timestamp
-      : typeof raw.Timestamp === "string"
-        ? raw.Timestamp
-        : typeof raw.matchedAt === "string"
-          ? raw.matchedAt
-          : typeof raw.MatchedAt === "string"
-            ? raw.MatchedAt
-            : new Date().toISOString();
-
-  if (!marketId || !tradeId || executionPrice == null || amountSubunits == null) return null;
-  const trade = { tradeId, executionPrice, amountSubunits, side, timestamp };
-  return {
-    marketId,
-    trade,
-  };
-}
-
 type OrderBookHandler = (snapshot: OrderBookSnapshot) => void;
 type MarketStatusHandler = (status: MarketStatusChanged) => void;
-type TradeExecutedHandler = (trade: TradeExecuted) => void;
 type OrderCancelledHandler = (cancelled: OrderCancelled) => void;
 type MarketRejoinedHandler = () => void;
 
@@ -142,9 +80,7 @@ let _startPromise: Promise<void> | null = null;
 // market don't stomp on each other's subscriptions, and so the last unsubscribe
 // can cleanly leave the server group.
 const _orderBookHandlers = new Map<string, Set<OrderBookHandler>>();
-const _tradeExecutedHandlers = new Map<string, Set<TradeExecutedHandler>>();
 const _orderCancelledHandlers = new Map<string, Set<OrderCancelledHandler>>();
-const _seenTradeExecutedIdsByMarket = new Map<string, Set<string>>();
 const _marketJoinCounts = new Map<string, number>();
 const _desiredMarketJoins = new Set<string>();
 const _marketRejoinedHandlers = new Map<string, Set<MarketRejoinedHandler>>();
@@ -170,29 +106,6 @@ function buildConnection(): HubConnection {
         handler(snapshot);
       } catch (err) {
         console.warn("[marketHub] OrderBookUpdated handler threw:", err);
-      }
-    }
-  });
-
-  conn.on("TradeExecuted", (payload: unknown) => {
-    const parsed = parseTradeExecuted(payload);
-    if (!parsed) return;
-
-    let seenTradeIds = _seenTradeExecutedIdsByMarket.get(parsed.marketId);
-    if (!seenTradeIds) {
-      seenTradeIds = new Set();
-      _seenTradeExecutedIdsByMarket.set(parsed.marketId, seenTradeIds);
-    }
-    if (seenTradeIds.has(parsed.trade.tradeId)) return;
-    seenTradeIds.add(parsed.trade.tradeId);
-
-    const handlers = _tradeExecutedHandlers.get(parsed.marketId);
-    if (!handlers) return;
-    for (const handler of handlers) {
-      try {
-        handler(parsed.trade);
-      } catch (err) {
-        console.warn("[marketHub] TradeExecuted handler threw:", err);
       }
     }
   });
@@ -373,21 +286,6 @@ export function onMarketStatusChanged(
   };
 }
 
-export function onTradeExecuted(marketId: string, handler: TradeExecutedHandler): () => void {
-  let set = _tradeExecutedHandlers.get(marketId);
-  if (!set) {
-    set = new Set();
-    _tradeExecutedHandlers.set(marketId, set);
-  }
-  set.add(handler);
-  return () => {
-    const s = _tradeExecutedHandlers.get(marketId);
-    if (!s) return;
-    s.delete(handler);
-    if (s.size === 0) _tradeExecutedHandlers.delete(marketId);
-  };
-}
-
 export function onOrderCancelled(marketId: string, handler: OrderCancelledHandler): () => void {
   let set = _orderCancelledHandlers.get(marketId);
   if (!set) {
@@ -427,8 +325,6 @@ export async function disconnect(): Promise<void> {
   _connection = null;
   _startPromise = null;
   _orderBookHandlers.clear();
-  _tradeExecutedHandlers.clear();
-  _seenTradeExecutedIdsByMarket.clear();
   _marketStatusHandlers.clear();
   _marketRejoinedHandlers.clear();
   for (const refresh of _rejoinRefreshers.values()) refresh.cancel();

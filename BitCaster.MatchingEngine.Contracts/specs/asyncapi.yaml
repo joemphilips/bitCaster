@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: BitCaster SignalR Hubs
-  description: SignalR hubs for real-time market and trade updates.
+  description: SignalR hubs for real-time market and order updates.
   version: 0.1.0
   license:
     name: MIT
@@ -12,11 +12,11 @@ servers:
     pathname: /hubs/market
     protocol: signalr
     description: Local development MarketHub SignalR hub
-  developmentTrade:
+  developmentOrder:
     host: localhost:5000
-    pathname: /hubs/trade
+    pathname: /hubs/order
     protocol: signalr
-    description: Local development TradeHub SignalR hub
+    description: Local development OrderHub SignalR hub
 
 channels:
   joinMarket:
@@ -70,6 +70,13 @@ channels:
       Server pushes a lifecycle-change notification (e.g. open -> closed) to
       every per-outcome market group of a condition.
 
+  joinOrder:
+    address: JoinOrder
+    messages:
+      joinOrderRequest:
+        $ref: '#/components/messages/JoinOrderRequest'
+    description: Client joins authenticated updates for one owned order.
+
   orderLifecycleChanged:
     address: OrderLifecycleChanged
     messages:
@@ -77,7 +84,7 @@ channels:
         $ref: '#/components/messages/OrderLifecycleChangedMessage'
     description: >
       Server pushes an owner-filtered, capability-secret-free order lifecycle
-      update over the authenticated trade hub.
+      update over the authenticated order hub.
 
   settlementGroupStateChanged:
     address: SettlementGroupStateChanged
@@ -88,29 +95,6 @@ channels:
       Server pushes an owner-filtered settlement-group transition for one
       affected order. No capability artifact or bearer proof material is
       included.
-
-  tradeCreated:
-    address: TradeCreated
-    messages:
-      tradeCreatedMessage:
-        $ref: '#/components/messages/TradeCreatedMessage'
-    description: >
-      Server pushes the initial atomic-swap trade payload to both parties.
-      SignalR JSON clients receive this as an ordered argument list.
-
-  swapMessageReceived:
-    address: SwapMessageReceived
-    messages:
-      swapMessageReceivedMessage:
-        $ref: '#/components/messages/SwapMessageReceivedMessage'
-    description: Server relays an opaque encrypted swap-protocol message.
-
-  tradeStateChanged:
-    address: TradeStateChanged
-    messages:
-      tradeStateChangedMessage:
-        $ref: '#/components/messages/TradeStateChangedMessage'
-    description: Server pushes an atomic-swap trade state transition.
 
 operations:
   joinMarket:
@@ -182,6 +166,17 @@ operations:
     messages:
       - $ref: '#/channels/marketStatusChanged/messages/marketStatusChangedMessage'
 
+  joinOrder:
+    action: send
+    channel:
+      $ref: '#/channels/joinOrder'
+    summary: Join authenticated order updates
+    description: >
+      Client invokes JoinOrder with a marketId and an owned orderId. The
+      server adds the connection to the order's authenticated group.
+    messages:
+      - $ref: '#/channels/joinOrder/messages/joinOrderRequest'
+
   orderLifecycleChanged:
     action: receive
     channel:
@@ -197,33 +192,6 @@ operations:
     summary: Receive an owned settlement-group lifecycle update
     messages:
       - $ref: '#/channels/settlementGroupStateChanged/messages/settlementGroupStateChangedMessage'
-
-  tradeCreated:
-    action: receive
-    channel:
-      $ref: '#/channels/tradeCreated'
-    summary: Receive trade creation payload
-    description: >
-      Server pushes the positional TradeCreated payload after an order fill
-      creates an atomic-swap trade.
-    messages:
-      - $ref: '#/channels/tradeCreated/messages/tradeCreatedMessage'
-
-  swapMessageReceived:
-    action: receive
-    channel:
-      $ref: '#/channels/swapMessageReceived'
-    summary: Receive encrypted swap message
-    messages:
-      - $ref: '#/channels/swapMessageReceived/messages/swapMessageReceivedMessage'
-
-  tradeStateChanged:
-    action: receive
-    channel:
-      $ref: '#/channels/tradeStateChanged'
-    summary: Receive trade state change
-    messages:
-      - $ref: '#/channels/tradeStateChanged/messages/tradeStateChangedMessage'
 
 components:
   messages:
@@ -269,6 +237,18 @@ components:
       payload:
         $ref: '#/components/schemas/MarketStatusChanged'
 
+    JoinOrderRequest:
+      payload:
+        type: array
+        minItems: 2
+        maxItems: 2
+        prefixItems:
+          - type: string
+            description: The market identifier that owns the order.
+          - type: string
+            format: uuid
+            description: The owned order identifier.
+
     OrderLifecycleChangedMessage:
       payload:
         $ref: '#/components/schemas/OrderLifecycleChangedDelta'
@@ -276,18 +256,6 @@ components:
     SettlementGroupStateChangedMessage:
       payload:
         $ref: '#/components/schemas/SettlementGroupStateChangedDelta'
-
-    TradeCreatedMessage:
-      payload:
-        $ref: '#/components/schemas/TradeCreatedArguments'
-
-    SwapMessageReceivedMessage:
-      payload:
-        $ref: '#/components/schemas/SwapMessageReceivedArguments'
-
-    TradeStateChangedMessage:
-      payload:
-        $ref: '#/components/schemas/TradeStateChangedArguments'
 
   schemas:
     Sats:
@@ -440,14 +408,13 @@ components:
         `collateralUnit`, `divisibility`, and `tokenSide`.
       required:
         - marketId
-        - tradeId
+        - fillId
         - makerOrderId
         - takerOrderId
         - executionPrice
         - amountSubunits
         - path
         - matchedAt
-        - deadline
         - baseAsset
         - collateralUnit
         - divisibility
@@ -457,7 +424,7 @@ components:
       properties:
         marketId:
           type: string
-        tradeId:
+        fillId:
           type: string
           format: uuid
         makerOrderId:
@@ -475,10 +442,6 @@ components:
         matchedAt:
           type: string
           format: date-time
-        deadline:
-          type: string
-          format: date-time
-          description: Deadline for both parties to submit ephemeral pubkeys.
         baseAsset:
           $ref: '#/components/schemas/BaseAsset'
           description: Required product base asset for the canonical settlement amount.
@@ -647,85 +610,3 @@ components:
           type: string
         settlementGroup:
           $ref: '#/components/schemas/SettlementGroupSummary'
-
-    TradeCreatedArguments:
-      type: array
-      description: >
-        Positional SignalR arguments for ITradeHubClient.TradeCreated. The
-        authoritative canonical settlement amount is `quotePaymentSubunits +
-        baseAsset + collateralUnit + divisibility`.
-      minItems: 16
-      maxItems: 16
-      prefixItems:
-        - type: string
-          format: uuid
-          description: tradeId
-        - type: string
-          description: sellerPubkey
-        - type: string
-          description: buyerPubkey
-        - type: string
-          format: date-time
-          description: sellerLocktime
-        - type: string
-          format: date-time
-          description: buyerLocktime
-        - type: string
-          description: marketId
-        - type: integer
-          format: int64
-          description: fillAmountSubunits
-        - type: integer
-          format: int64
-          description: outcomeFaceAmountSubunits
-        - type: integer
-          format: int64
-          description: quotePaymentSubunits
-        - type:
-            - string
-            - 'null'
-          description: settlementKind
-        - type:
-            - string
-            - 'null'
-          description: sellerKeepOutcomeSetId
-        - type:
-            - string
-            - 'null'
-          description: sellerLockOutcomeSetId
-        - $ref: '#/components/schemas/BaseAsset'
-          description: baseAsset
-        - type: string
-          const: msat
-          description: collateralUnit
-        - type: integer
-          format: int32
-          enum: [10000, 1000000]
-          description: >
-            Immutable price denominator `D`, server-determined.
-        - $ref: '#/components/schemas/TokenSide'
-          description: tokenSide
-
-    SwapMessageReceivedArguments:
-      type: array
-      minItems: 3
-      maxItems: 3
-      prefixItems:
-        - type: string
-          format: uuid
-          description: tradeId
-        - type: string
-          description: messageType
-        - type: string
-          description: ciphertext
-
-    TradeStateChangedArguments:
-      type: array
-      minItems: 2
-      maxItems: 2
-      prefixItems:
-        - type: string
-          format: uuid
-          description: tradeId
-        - type: string
-          description: newState

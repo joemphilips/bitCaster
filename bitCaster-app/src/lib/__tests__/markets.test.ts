@@ -476,7 +476,6 @@ describe("submitOrder", () => {
             status: "resting",
             remainingAmountSubunits: 10_000,
             fills: [],
-            pendingPubkeySubmissions: [],
             baseAsset: "sat",
             divisibility: 10_000,
             activeSettlementGroup: null,

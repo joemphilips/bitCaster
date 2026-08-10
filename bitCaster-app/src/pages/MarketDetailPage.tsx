@@ -14,7 +14,6 @@ import { useShareMarket } from "@/components/market-detail/useShareMarket";
 import {
   applyMarketComments,
   applyMarketPriceHistory,
-  appendLivePricePoint,
   fetchMarketDetail,
   fetchMarketComments,
   fetchMarketPriceHistory,
@@ -22,7 +21,6 @@ import {
   generateNip98Header,
   getParticipationScore,
   mapSnapshotToOrderBook,
-  priceNumeratorToPercent,
   signTradeComment,
   windowPriceHistory,
   type MarketPriceHistoryResponse,
@@ -51,7 +49,6 @@ import {
   onMarketRejoined,
   onOrderCancelled,
   onOrderBookUpdated,
-  onTradeExecuted,
   type MarketStatusChanged,
 } from "@/lib/marketHub";
 import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
@@ -131,7 +128,7 @@ type MarketOrderBooksLoad = {
   fetchedOutcomeSetIds: string[];
 };
 
-const TRADE_EXECUTED_ORDER_BOOK_FALLBACK_MS = 500;
+const ORDER_BOOK_REFRESH_DEBOUNCE_MS = 500;
 
 function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
   if (state == null) return false;
@@ -372,13 +369,6 @@ export type MarketDetailDataAction =
       timeframe: ChartTimeframe;
       historiesByOutcomeSetId: Record<string, PriceHistory>;
     }
-  | {
-      type: "tradeExecuted";
-      marketId: string;
-      outcomeSetId: string;
-      timeframe: ChartTimeframe;
-      point: PricePoint;
-    }
   | { type: "marketStatusChanged"; status: MarketStatusChanged }
   | { type: "commentsLoaded"; marketId: string; comments: Comment[] };
 
@@ -506,29 +496,6 @@ function applyLatestHistoryOdds(
   }
 
   return market;
-}
-
-export function liveTradeChartUpdate(
-  market: MarketDetailType,
-  outcomeSetId: string,
-  trade: { timestamp: string; executionPrice: number; amountSubunits: number },
-): { outcomeSetId: string; point: PricePoint } {
-  const divisibility = normalizeMarketDivisibility(market.divisibility, market.baseAsset);
-  const pricePercent = priceNumeratorToPercent(trade.executionPrice, divisibility);
-  const primary = primaryOutcomeSetId(market);
-  const chartOutcomeSetId = market.type === "yesno" && primary ? primary : outcomeSetId;
-  const chartPrice =
-    market.type === "yesno" && primary && outcomeSetId !== primary
-      ? Math.max(0, Math.min(100, 100 - pricePercent))
-      : pricePercent;
-  return {
-    outcomeSetId: chartOutcomeSetId,
-    point: {
-      timestamp: trade.timestamp,
-      price: chartPrice,
-      volume: trade.amountSubunits,
-    },
-  };
 }
 
 function sourceMapFor<T>(
@@ -778,38 +745,6 @@ export function marketDetailDataReducer(
         },
       };
     }
-    case "tradeExecuted": {
-      if (state.marketId !== action.marketId) return state;
-      const historiesForMarket = state.historiesByMarketId[action.marketId] ?? {};
-      const historiesForTimeframe = historiesForMarket[action.timeframe] ?? {};
-      const sourcesForMarket = state.historySourcesByMarketId[action.marketId] ?? {};
-      const sourcesForTimeframe = sourcesForMarket[action.timeframe] ?? {};
-      const currentHistory =
-        historiesForTimeframe[action.outcomeSetId] ?? emptyPriceHistory(action.timeframe);
-      return {
-        ...state,
-        historiesByMarketId: {
-          ...state.historiesByMarketId,
-          [action.marketId]: {
-            ...historiesForMarket,
-            [action.timeframe]: {
-              ...historiesForTimeframe,
-              [action.outcomeSetId]: appendLivePricePoint(currentHistory, action.point),
-            },
-          },
-        },
-        historySourcesByMarketId: {
-          ...state.historySourcesByMarketId,
-          [action.marketId]: {
-            ...sourcesForMarket,
-            [action.timeframe]: {
-              ...sourcesForTimeframe,
-              [action.outcomeSetId]: "live",
-            },
-          },
-        },
-      };
-    }
     case "marketStatusChanged": {
       const core = state.core;
       if (!core || core.id !== action.status.conditionId) return state;
@@ -1027,7 +962,6 @@ export function MarketDetailPage() {
 
     let cancelled = false;
     const cleanups: Array<() => void> = [];
-    const refreshers = new Map<string, () => void>();
 
     const reconcileOwnOrders = debounce(() => {
       void new BitcasterEngineClient({
@@ -1058,8 +992,7 @@ export function MarketDetailPage() {
           .catch((err) => {
             console.warn("[MarketDetailPage] order-book refresh failed:", err);
           });
-      }, TRADE_EXECUTED_ORDER_BOOK_FALLBACK_MS);
-      refreshers.set(liveMarketId, refreshLiveOrderBook);
+      }, ORDER_BOOK_REFRESH_DEBOUNCE_MS);
       cleanups.push(refreshLiveOrderBook.cancel);
       cleanups.push(
         onOrderBookUpdated(liveMarketId, (snapshot) => {
@@ -1082,20 +1015,6 @@ export function MarketDetailPage() {
         }),
       );
       cleanups.push(
-        onTradeExecuted(liveMarketId, (trade) => {
-          if (cancelled) return;
-          const chartUpdate = liveTradeChartUpdate(market, outcomeSetId, trade);
-          dispatchMarketData({
-            type: "tradeExecuted",
-            marketId: id,
-            outcomeSetId: chartUpdate.outcomeSetId,
-            timeframe: chartTimeframe,
-            point: chartUpdate.point,
-          });
-          refreshLiveOrderBook();
-        }),
-      );
-      cleanups.push(
         onMarketRejoined(liveMarketId, () => {
           refreshLiveOrderBook();
           reconcileOwnOrders();
@@ -1113,7 +1032,7 @@ export function MarketDetailPage() {
         void leaveMarket(outcomeSetMarketId(id, outcomeSetId));
       }
     };
-  }, [id, market?.id, chartTimeframe]);
+  }, [id, market?.id]);
 
   useEffect(() => {
     loadMarket();

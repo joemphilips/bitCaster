@@ -389,54 +389,6 @@ paths:
         '401':
           description: Missing or invalid NIP-98 authentication
 
-  /api/v1/trades/{tradeId}/ephemeral-pubkey:
-    post:
-      operationId: submitTradeEphemeralPubkey
-      summary: Submit match-time ephemeral pubkey for a pending trade
-      security:
-        - nip98: []
-      description: >
-        Submits the caller's compressed secp256k1 ephemeral pubkey for a
-        pending matched trade. The conditionId query parameter identifies the
-        condition-local order book that currently owns the pending match.
-      parameters:
-        - name: tradeId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: conditionId
-          in: query
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SubmitEphemeralPubkeyRequest'
-      responses:
-        '200':
-          description: Ephemeral pubkey accepted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SubmitEphemeralPubkeyResponse'
-        '400':
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                type: string
-        '401':
-          description: Missing or invalid NIP-98 authentication
-        '404':
-          description: Trade not found or caller is not a party
-        '409':
-          description: Pubkey already differs or submission deadline expired
-
   /api/v1/{marketId}/orders/{orderId}:
     get:
       operationId: getOrderStatus
@@ -1499,10 +1451,14 @@ components:
       properties:
         asset: { $ref: '#/components/schemas/AssetMonitoringAssetReference' }
         availableSubunits: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
-        pendingOutgoingSubunits: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
-        availableValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
-        pendingOutgoingValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
-        estimatedValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        pendingOutgoingSubunits:
+          { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
+        availableValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        pendingOutgoingValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        estimatedValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
         valuationStatus: { $ref: '#/components/schemas/AssetMonitoringValuationStatus' }
         recoveryHint:
           oneOf:
@@ -1512,17 +1468,36 @@ components:
     AssetMonitoringSummaryResponse:
       type: object
       additionalProperties: false
-      required: [collateralUnit, availableValueMsat, pendingOutgoingValueMsat, estimatedTotalValueMsat, unvaluedAssetCount, unvaluedAvailableSubunits, unvaluedPendingOutgoingSubunits, valuationRevision, stale, incomplete, building]
+      required:
+        [
+          collateralUnit,
+          availableValueMsat,
+          pendingOutgoingValueMsat,
+          estimatedTotalValueMsat,
+          unvaluedAssetCount,
+          unvaluedAvailableSubunits,
+          unvaluedPendingOutgoingSubunits,
+          valuationRevision,
+          stale,
+          incomplete,
+          building,
+        ]
       properties:
         collateralUnit: { type: string, enum: [msat] }
-        availableValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
-        pendingOutgoingValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
-        estimatedTotalValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        availableValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        pendingOutgoingValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        estimatedTotalValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
         unvaluedAssetCount: { type: integer, format: int32, minimum: 0 }
-        unvaluedAvailableSubunits: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
-        unvaluedPendingOutgoingSubunits: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        unvaluedAvailableSubunits:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        unvaluedPendingOutgoingSubunits:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
         asOf: { type: [string, 'null'], format: date-time }
-        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
+        intervalRevision:
+          { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
         coverageBoundary: { type: [string, 'null'] }
         valuationRevision: { type: string, minLength: 1 }
         stale: { type: boolean }
@@ -1540,7 +1515,8 @@ components:
           items: { $ref: '#/components/schemas/AssetMonitoringAssetResponse' }
         nextCursor: { type: [string, 'null'] }
         asOf: { type: [string, 'null'], format: date-time }
-        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
+        intervalRevision:
+          { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
         coverageBoundary: { type: [string, 'null'] }
         valuationRevision: { type: string, minLength: 1 }
         stale: { type: boolean }
@@ -1553,7 +1529,8 @@ components:
       required: [asOf, estimatedTotalValueMsat]
       properties:
         asOf: { type: string, format: date-time }
-        estimatedTotalValueMsat: { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        estimatedTotalValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
 
     AssetMonitoringHistoryResponse:
       type: object
@@ -1566,7 +1543,8 @@ components:
           maxItems: 300
           items: { $ref: '#/components/schemas/AssetMonitoringHistoryPointResponse' }
         asOf: { type: [string, 'null'], format: date-time }
-        intervalRevision: { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
+        intervalRevision:
+          { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
         coverageBoundary: { type: [string, 'null'] }
         valuationRevision: { type: string, minLength: 1 }
         stale: { type: boolean }
@@ -2298,8 +2276,8 @@ components:
           allOf:
             - $ref: '#/components/schemas/CollateralSubunits'
           description: >
-             Conditional-token face amount matched for settlement in market
-             collateral subunits (msat).
+            Conditional-token face amount matched for settlement in market
+            collateral subunits (msat).
         executionPrice:
           $ref: '#/components/schemas/Probability'
         path:
@@ -2341,14 +2319,6 @@ components:
           $ref: '#/components/schemas/SettlementGroupSummary'
           description: >
             Atomic settlement group that durably owns this fill reservation.
-        tradeId:
-          type: string
-          format: uuid
-          description: >
-            Atomic-swap trade session identifier for this fill. Present when
-            the client must join TradeHub to settle; omitted only for legacy
-            fills that do not have a corresponding TradeHub session.
-
     SubmitOrderRequest:
       type: object
       additionalProperties: false
@@ -2483,18 +2453,6 @@ components:
           type: string
           format: date-time
           nullable: true
-        tradeId:
-          type: string
-          format: uuid
-          nullable: true
-          description: >
-            Legacy HTLC trade identifier retained until Phase 12 removes the
-            superseded protocol surface.
-        deadline:
-          type: string
-          format: date-time
-          nullable: true
-          description: Deadline for pending ephemeral pubkey submission.
         activeSettlementGroup:
           oneOf:
             - $ref: '#/components/schemas/SettlementGroupSummary'
@@ -2636,17 +2594,6 @@ components:
           type: string
           format: date-time
           nullable: true
-        tradeId:
-          type: string
-          format: uuid
-          nullable: true
-        deadline:
-          type: string
-          format: date-time
-          nullable: true
-        pubkeySubmitted:
-          type: boolean
-          nullable: true
         clientOrderId:
           type: string
           nullable: true
@@ -2679,7 +2626,6 @@ components:
         - status
         - remainingAmountSubunits
         - fills
-        - pendingPubkeySubmissions
         - baseAsset
         - divisibility
         - activeSettlementGroup
@@ -2697,10 +2643,6 @@ components:
           items:
             $ref: '#/components/schemas/Fill'
           description: List of fills produced by this order. Empty if no matches.
-        pendingPubkeySubmissions:
-          type: array
-          items:
-            $ref: '#/components/schemas/PendingPubkeySubmission'
         baseAsset:
           $ref: '#/components/schemas/BaseAsset'
           description: Base asset context for amount and price fields.
@@ -2727,52 +2669,6 @@ components:
           maxItems: 100
           items:
             $ref: '#/components/schemas/BatchSubmitOrderRequestItem'
-
-    PendingPubkeySubmission:
-      type: object
-      required:
-        - tradeId
-        - role
-        - fillAmount
-        - deadline
-      properties:
-        tradeId:
-          type: string
-          format: uuid
-        role:
-          type: string
-          enum: [maker, taker]
-        fillAmount:
-          $ref: '#/components/schemas/CollateralSubunits'
-        deadline:
-          type: string
-          format: date-time
-
-    SubmitEphemeralPubkeyRequest:
-      type: object
-      required:
-        - ephemeralPubkey
-      properties:
-        ephemeralPubkey:
-          type: string
-          description: 33-byte compressed secp256k1 public key as lowercase hex.
-          pattern: '^(02|03)[0-9a-fA-F]{64}$'
-
-    SubmitEphemeralPubkeyResponse:
-      type: object
-      required:
-        - tradeId
-        - role
-        - bothReceived
-      properties:
-        tradeId:
-          type: string
-          format: uuid
-        role:
-          type: string
-          enum: [maker, taker]
-        bothReceived:
-          type: boolean
 
     BatchSubmitOrderRequestItem:
       type: object
@@ -2824,7 +2720,6 @@ components:
         - status
         - remainingAmountSubunits
         - fills
-        - pendingPubkeySubmissions
         - baseAsset
         - divisibility
         - activeSettlementGroup
@@ -2848,10 +2743,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Fill'
-        pendingPubkeySubmissions:
-          type: array
-          items:
-            $ref: '#/components/schemas/PendingPubkeySubmission'
         baseAsset:
           $ref: '#/components/schemas/BaseAsset'
         divisibility:

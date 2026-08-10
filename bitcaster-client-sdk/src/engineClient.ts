@@ -199,7 +199,6 @@ export interface Fill {
   status: 'Matched' | 'Filled' | 'Failed'
   filledAt: string
   settlementGroup: SettlementGroupSummary
-  tradeId?: string
   baseAsset: MarketBaseAsset
   divisibility: MarketDivisibility
   tokenSide: 'Outcome' | 'Complement'
@@ -230,22 +229,42 @@ export interface SettlementGroupStateChangedDelta {
   readonly settlementGroup: SettlementGroupSummary
 }
 
+export interface MatchedDelta {
+  readonly marketId: string
+  readonly fillId: string
+  readonly makerOrderId: string
+  readonly takerOrderId: string
+  readonly executionPrice: number
+  readonly amountSubunits: number
+  readonly path: 'Complementary' | 'Mint'
+  readonly matchedAt: string
+  readonly baseAsset: MarketBaseAsset
+  readonly collateralUnit: 'msat'
+  readonly divisibility: MarketDivisibility
+  readonly quotePaymentSubunits: number
+  readonly outcomeFaceAmountSubunits: number
+  readonly tokenSide: 'Outcome' | 'Complement'
+}
+
+export interface OrderLifecycleChangedDelta {
+  readonly orderId: string
+  readonly marketId: string
+  readonly status: OrderLifecycleStatus
+  readonly remainingAmountSubunits: number
+  readonly baseAsset: MarketBaseAsset
+  readonly collateralUnit: 'msat'
+  readonly divisibility: MarketDivisibility
+  readonly activeSettlementGroup: SettlementGroupSummary | null
+}
+
 export interface SubmitOrderResponse {
   orderId: string
   status: OrderLifecycleStatus
   remainingAmountSubunits: number
   fills: Fill[]
-  pendingPubkeySubmissions: PendingPubkeySubmission[]
   baseAsset: MarketBaseAsset
   divisibility: MarketDivisibility
   activeSettlementGroup: SettlementGroupSummary | null
-}
-
-export interface PendingPubkeySubmission {
-  tradeId: string
-  role: 'maker' | 'taker'
-  fillAmount: number
-  deadline: string
 }
 
 export interface BatchSubmitOrdersRequest {
@@ -270,7 +289,6 @@ export interface BatchSubmitOrderSuccess {
   status: OrderLifecycleStatus
   remainingAmountSubunits: number
   fills: Fill[]
-  pendingPubkeySubmissions: PendingPubkeySubmission[]
   baseAsset: MarketBaseAsset
   divisibility: MarketDivisibility
   activeSettlementGroup: SettlementGroupSummary | null
@@ -289,16 +307,6 @@ export type BatchSubmitOrderErrorCode =
   | 'participationScoreRequired'
   | 'marketClosed'
   | 'bookRejected'
-
-export interface SubmitEphemeralPubkeyRequest {
-  ephemeralPubkey: string
-}
-
-export interface SubmitEphemeralPubkeyResponse {
-  tradeId: string
-  role: string
-  bothReceived: boolean
-}
 
 export interface BatchCancelOrdersRequest {
   orderIds: string[]
@@ -339,8 +347,6 @@ export interface OrderStatusResponse {
   placedAt: string
   timeInForce: OrderTimeInForce
   expiresAt?: string | null
-  tradeId?: string | null
-  deadline?: string | null
   tokenSide: 'Outcome' | 'Complement'
   baseAsset: MarketBaseAsset
   divisibility: MarketDivisibility
@@ -369,9 +375,6 @@ export interface OrderEntry {
   status: OrderLifecycleStatus
   placedAt: string
   filledAt?: string | null
-  tradeId?: string | null
-  deadline?: string | null
-  pubkeySubmitted?: boolean | null
   clientOrderId?: string | null
   activeSettlementGroup: SettlementGroupSummary | null
 }
@@ -722,27 +725,6 @@ export class BitcasterEngineClient {
     return (await response.json()) as BatchCancelOrdersResponse
   }
 
-  async submitEphemeralPubkey(
-    tradeId: string,
-    pubkey: string,
-    conditionIdOrNostrEvent?: string | NostrKind1Event | null,
-    nostrEvent?: NostrKind1Event | null,
-  ): Promise<SubmitEphemeralPubkeyResponse> {
-    const conditionId =
-      typeof conditionIdOrNostrEvent === 'string' ? conditionIdOrNostrEvent : undefined
-    const comment =
-      typeof conditionIdOrNostrEvent === 'string' ? nostrEvent : conditionIdOrNostrEvent
-    return submitEphemeralPubkey(
-      this.baseUrl,
-      tradeId,
-      pubkey,
-      comment,
-      this.fetchImpl,
-      this.authorization,
-      conditionId,
-    )
-  }
-
   async cancelOrder(marketId: string, orderId: string): Promise<boolean> {
     const response = await this.request(
       `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
@@ -965,7 +947,6 @@ export function decodeSubmitOrderResponse(value: unknown): SubmitOrderResponse {
     'status',
     'remainingAmountSubunits',
     'fills',
-    'pendingPubkeySubmissions',
     'baseAsset',
     'divisibility',
     'activeSettlementGroup',
@@ -974,11 +955,6 @@ export function decodeSubmitOrderResponse(value: unknown): SubmitOrderResponse {
   requireOrderStatus(response.status)
   requireNonnegativeSafeInteger(response.remainingAmountSubunits, 'remaining order amount')
   const fills = boundedEngineArray(response.fills, 512, 'order fills').map(decodeFill)
-  const pendingPubkeySubmissions = boundedEngineArray(
-    response.pendingPubkeySubmissions,
-    512,
-    'pending public-key submissions',
-  ).map(decodePendingPubkeySubmission)
   if (response.baseAsset !== 'sat') throw new Error('order response base asset is invalid')
   const divisibility = parseMarketDivisibility(response.divisibility)
   if (divisibility === null) throw new Error('order response divisibility is invalid')
@@ -991,7 +967,6 @@ export function decodeSubmitOrderResponse(value: unknown): SubmitOrderResponse {
     status: response.status as OrderLifecycleStatus,
     remainingAmountSubunits: response.remainingAmountSubunits as number,
     fills,
-    pendingPubkeySubmissions,
     baseAsset: 'sat',
     divisibility,
     activeSettlementGroup,
@@ -1020,7 +995,7 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
       'activeSettlementGroup',
       'continuation',
     ],
-    ['expiresAt', 'tradeId', 'deadline'],
+    ['expiresAt'],
   )
   requireUuid(response.orderId, 'order id')
   if (typeof response.marketId !== 'string' || response.marketId.length < 1) {
@@ -1064,15 +1039,7 @@ function decodeOrderStatusFields(
   divisibility: MarketDivisibility,
 ): Pick<
   OrderStatusResponse,
-  | 'amountSubunits'
-  | 'outcomeId'
-  | 'side'
-  | 'price'
-  | 'placedAt'
-  | 'timeInForce'
-  | 'expiresAt'
-  | 'tradeId'
-  | 'deadline'
+  'amountSubunits' | 'outcomeId' | 'side' | 'price' | 'placedAt' | 'timeInForce' | 'expiresAt'
 > {
   requirePositiveSafeInteger(response.amountSubunits, 'order amount')
   if (typeof response.outcomeId !== 'string' || response.outcomeId.length === 0) {
@@ -1093,10 +1060,6 @@ function decodeOrderStatusFields(
     throw new Error('order time in force is invalid')
   }
   requireOptionalIsoEngineTime(response.expiresAt, 'order expiry')
-  if (response.tradeId !== undefined && response.tradeId !== null) {
-    requireUuid(response.tradeId, 'order trade id')
-  }
-  requireOptionalIsoEngineTime(response.deadline, 'order deadline')
   return {
     amountSubunits: response.amountSubunits,
     outcomeId: response.outcomeId,
@@ -1105,8 +1068,6 @@ function decodeOrderStatusFields(
     placedAt: response.placedAt as string,
     timeInForce: response.timeInForce,
     ...(response.expiresAt === undefined ? {} : { expiresAt: response.expiresAt as string | null }),
-    ...(response.tradeId === undefined ? {} : { tradeId: response.tradeId as string | null }),
-    ...(response.deadline === undefined ? {} : { deadline: response.deadline as string | null }),
   }
 }
 
@@ -1136,26 +1097,22 @@ function decodeOrderContinuationState(value: unknown): OrderContinuationState {
 }
 
 function decodeFill(value: unknown): Fill {
-  const fill = exactEngineRecord(
-    value,
-    [
-      'id',
-      'makerOrderId',
-      'takerOrderId',
-      'amountSubunits',
-      'executionPrice',
-      'path',
-      'status',
-      'filledAt',
-      'settlementGroup',
-      'baseAsset',
-      'divisibility',
-      'tokenSide',
-      'quotePaymentSubunits',
-      'outcomeFaceAmountSubunits',
-    ],
-    ['tradeId'],
-  )
+  const fill = exactEngineRecord(value, [
+    'id',
+    'makerOrderId',
+    'takerOrderId',
+    'amountSubunits',
+    'executionPrice',
+    'path',
+    'status',
+    'filledAt',
+    'settlementGroup',
+    'baseAsset',
+    'divisibility',
+    'tokenSide',
+    'quotePaymentSubunits',
+    'outcomeFaceAmountSubunits',
+  ])
   requireUuid(fill.id, 'fill id')
   requireUuid(fill.makerOrderId, 'maker order id')
   requireUuid(fill.takerOrderId, 'taker order id')
@@ -1179,9 +1136,6 @@ function decodeFill(value: unknown): Fill {
   }
   requireNonnegativeSafeInteger(fill.quotePaymentSubunits, 'fill quote payment')
   requirePositiveSafeInteger(fill.outcomeFaceAmountSubunits, 'fill outcome amount')
-  if (fill.tradeId !== undefined && fill.tradeId !== null) {
-    requireUuid(fill.tradeId, 'fill trade id')
-  }
   return {
     id: fill.id as string,
     makerOrderId: fill.makerOrderId as string,
@@ -1192,30 +1146,11 @@ function decodeFill(value: unknown): Fill {
     status: fill.status,
     filledAt: fill.filledAt as string,
     settlementGroup: decodeSettlementGroup(fill.settlementGroup),
-    ...(fill.tradeId === undefined || fill.tradeId === null
-      ? {}
-      : { tradeId: fill.tradeId as string }),
     baseAsset: 'sat',
     divisibility,
     tokenSide: fill.tokenSide,
     quotePaymentSubunits: fill.quotePaymentSubunits as number,
     outcomeFaceAmountSubunits: fill.outcomeFaceAmountSubunits as number,
-  }
-}
-
-function decodePendingPubkeySubmission(value: unknown): PendingPubkeySubmission {
-  const pending = exactEngineRecord(value, ['tradeId', 'role', 'fillAmount', 'deadline'])
-  requireUuid(pending.tradeId, 'pending trade id')
-  if (pending.role !== 'maker' && pending.role !== 'taker') {
-    throw new Error('pending public-key role is invalid')
-  }
-  requirePositiveSafeInteger(pending.fillAmount, 'pending fill amount')
-  requireIsoEngineTime(pending.deadline, 'pending public-key deadline')
-  return {
-    tradeId: pending.tradeId as string,
-    role: pending.role,
-    fillAmount: pending.fillAmount as number,
-    deadline: pending.deadline as string,
   }
 }
 
@@ -1263,6 +1198,100 @@ export function decodeSettlementGroupStateChangedDelta(
     orderId: delta.orderId,
     marketId: delta.marketId,
     settlementGroup: decodeSettlementGroup(delta.settlementGroup),
+  }
+}
+
+export function decodeMatchedDelta(value: unknown): MatchedDelta {
+  const delta = exactEngineRecord(value, [
+    'marketId',
+    'fillId',
+    'makerOrderId',
+    'takerOrderId',
+    'executionPrice',
+    'amountSubunits',
+    'path',
+    'matchedAt',
+    'baseAsset',
+    'collateralUnit',
+    'divisibility',
+    'quotePaymentSubunits',
+    'outcomeFaceAmountSubunits',
+    'tokenSide',
+  ])
+  if (typeof delta.marketId !== 'string' || delta.marketId.length === 0) {
+    throw new Error('matched market id is invalid')
+  }
+  requireUuid(delta.fillId, 'matched fill id')
+  requireUuid(delta.makerOrderId, 'matched maker order id')
+  requireUuid(delta.takerOrderId, 'matched taker order id')
+  requirePositiveSafeInteger(delta.executionPrice, 'matched execution price')
+  requirePositiveSafeInteger(delta.amountSubunits, 'matched amount')
+  if (delta.path !== 'Complementary' && delta.path !== 'Mint') {
+    throw new Error('matched path is invalid')
+  }
+  requireIsoEngineTime(delta.matchedAt, 'matched time')
+  if (delta.baseAsset !== 'sat') throw new Error('matched base asset is invalid')
+  if (delta.collateralUnit !== 'msat') throw new Error('matched collateral unit is invalid')
+  const divisibility = parseMarketDivisibility(delta.divisibility)
+  if (divisibility === null || (delta.executionPrice as number) >= divisibility) {
+    throw new Error('matched divisibility is invalid')
+  }
+  requirePositiveSafeInteger(delta.quotePaymentSubunits, 'matched quote payment')
+  requirePositiveSafeInteger(delta.outcomeFaceAmountSubunits, 'matched outcome amount')
+  if (delta.tokenSide !== 'Outcome' && delta.tokenSide !== 'Complement') {
+    throw new Error('matched token side is invalid')
+  }
+  return {
+    marketId: delta.marketId,
+    fillId: delta.fillId,
+    makerOrderId: delta.makerOrderId,
+    takerOrderId: delta.takerOrderId,
+    executionPrice: delta.executionPrice,
+    amountSubunits: delta.amountSubunits,
+    path: delta.path,
+    matchedAt: delta.matchedAt,
+    baseAsset: 'sat',
+    collateralUnit: 'msat',
+    divisibility,
+    quotePaymentSubunits: delta.quotePaymentSubunits,
+    outcomeFaceAmountSubunits: delta.outcomeFaceAmountSubunits,
+    tokenSide: delta.tokenSide,
+  }
+}
+
+export function decodeOrderLifecycleChangedDelta(value: unknown): OrderLifecycleChangedDelta {
+  const delta = exactEngineRecord(value, [
+    'orderId',
+    'marketId',
+    'status',
+    'remainingAmountSubunits',
+    'baseAsset',
+    'collateralUnit',
+    'divisibility',
+    'activeSettlementGroup',
+  ])
+  requireUuid(delta.orderId, 'order lifecycle order id')
+  if (typeof delta.marketId !== 'string' || delta.marketId.length === 0) {
+    throw new Error('order lifecycle market id is invalid')
+  }
+  requireOrderStatus(delta.status)
+  requireNonnegativeSafeInteger(delta.remainingAmountSubunits, 'order lifecycle remaining amount')
+  if (delta.baseAsset !== 'sat') throw new Error('order lifecycle base asset is invalid')
+  if (delta.collateralUnit !== 'msat') throw new Error('order lifecycle collateral unit is invalid')
+  const divisibility = parseMarketDivisibility(delta.divisibility)
+  if (divisibility === null) throw new Error('order lifecycle divisibility is invalid')
+  return {
+    orderId: delta.orderId as string,
+    marketId: delta.marketId,
+    status: delta.status,
+    remainingAmountSubunits: delta.remainingAmountSubunits as number,
+    baseAsset: 'sat',
+    collateralUnit: 'msat',
+    divisibility,
+    activeSettlementGroup:
+      delta.activeSettlementGroup === null
+        ? null
+        : decodeSettlementGroup(delta.activeSettlementGroup),
   }
 }
 
@@ -1394,46 +1423,6 @@ function decodeSettlementCapabilityAdmissionPolicy(
     throw new Error('settlement coordinator public key is invalid', { cause: error })
   }
   return { coordinatorPubkey }
-}
-
-export async function submitEphemeralPubkey(
-  baseUrl: string,
-  tradeId: string,
-  pubkey: string,
-  nostrEvent?: NostrKind1Event | null,
-  fetchImpl: EngineFetch = fetch,
-  authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>,
-  conditionId?: string,
-): Promise<SubmitEphemeralPubkeyResponse> {
-  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
-  const path = `/api/v1/trades/${encodePathSegment(tradeId)}/ephemeral-pubkey`
-  const body: SubmitEphemeralPubkeyRequest & { comment?: NostrKind1Event | null } = {
-    ephemeralPubkey: pubkey,
-    ...(nostrEvent ? { comment: nostrEvent } : {}),
-  }
-  const bodyText = JSON.stringify(body)
-  const query = conditionId ? `?conditionId=${encodeURIComponent(conditionId)}` : ''
-  const url = `${normalizedBaseUrl}${path}${query}`
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
-  if (authorization) {
-    headers.Authorization = await authorization({ url, method: 'POST', bodyText })
-  }
-  const response = await fetchImpl(url, {
-    method: 'POST',
-    body: bodyText,
-    headers,
-  })
-  if (!response.ok) {
-    const detail = await response.text().catch(() => '')
-    const problem = parseEngineProblem(detail)
-    throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)
-  }
-  if (response.status === 204) {
-    return { tradeId, role: '', bothReceived: false }
-  }
-  const text = await response.text()
-  if (!text.trim()) return { tradeId, role: '', bothReceived: false }
-  return JSON.parse(text) as SubmitEphemeralPubkeyResponse
 }
 
 export async function listMyOrders(

@@ -1342,7 +1342,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class Fill
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public Fill(long @amountSubunits, BaseAsset @baseAsset, FillDivisibility @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, System.Guid @makerOrderId, long @outcomeFaceAmountSubunits, MatchPath @path, long @quotePaymentSubunits, SettlementGroupSummary @settlementGroup, FillStatus @status, System.Guid @takerOrderId, TokenSide @tokenSide, System.Guid? @tradeId)
+        public Fill(long @amountSubunits, BaseAsset @baseAsset, FillDivisibility @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, System.Guid @makerOrderId, long @outcomeFaceAmountSubunits, MatchPath @path, long @quotePaymentSubunits, SettlementGroupSummary @settlementGroup, FillStatus @status, System.Guid @takerOrderId, TokenSide @tokenSide)
         {
             this.Id = @id;
             this.TakerOrderId = @takerOrderId;
@@ -1358,7 +1358,6 @@ namespace BitCaster.MatchingEngine.Contracts
             this.TokenSide = @tokenSide;
             this.FilledAt = @filledAt;
             this.SettlementGroup = @settlementGroup;
-            this.TradeId = @tradeId;
         }
 
         /// <summary>
@@ -1445,13 +1444,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("settlementGroup")]
         public SettlementGroupSummary SettlementGroup { get; }
-
-        /// <summary>
-        /// Atomic-swap trade session identifier for this fill. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("tradeId")]
-        public System.Guid? TradeId { get; }
 
     }
 
@@ -1546,7 +1538,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderStatusResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderStatusResponse(SettlementGroupSummary @activeSettlementGroup, long @amountSubunits, BaseAsset @baseAsset, OrderContinuationState @continuation, System.DateTimeOffset? @deadline, OrderStatusResponseDivisibility @divisibility, System.DateTimeOffset? @expiresAt, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, OrderLifecycleStatus @status, TimeInForce @timeInForce, TokenSide @tokenSide, System.Guid? @tradeId)
+        public OrderStatusResponse(SettlementGroupSummary @activeSettlementGroup, long @amountSubunits, BaseAsset @baseAsset, OrderContinuationState @continuation, OrderStatusResponseDivisibility @divisibility, System.DateTimeOffset? @expiresAt, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, OrderLifecycleStatus @status, TimeInForce @timeInForce, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -1561,8 +1553,6 @@ namespace BitCaster.MatchingEngine.Contracts
             this.PlacedAt = @placedAt;
             this.TimeInForce = @timeInForce;
             this.ExpiresAt = @expiresAt;
-            this.TradeId = @tradeId;
-            this.Deadline = @deadline;
             this.ActiveSettlementGroup = @activeSettlementGroup;
             this.Continuation = @continuation;
             this.TokenSide = @tokenSide;
@@ -1631,19 +1621,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
         public System.DateTimeOffset? ExpiresAt { get; }
-
-        /// <summary>
-        /// Legacy HTLC trade identifier retained until Phase 12 removes the superseded protocol surface.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("tradeId")]
-        public System.Guid? TradeId { get; }
-
-        /// <summary>
-        /// Deadline for pending ephemeral pubkey submission.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("deadline")]
-        public System.DateTimeOffset? Deadline { get; }
 
         /// <summary>
         /// Current nonterminal settlement group for this order, or null when no group currently owns an unconfirmed fill.
@@ -1797,7 +1774,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderEntry(SettlementGroupSummary @activeSettlementGroup, long @amountSubunits, BaseAsset @baseAsset, string @clientOrderId, string @conditionId, System.DateTimeOffset? @deadline, OrderEntryDivisibility @divisibility, System.DateTimeOffset? @filledAt, string @marketId, System.Guid @orderId, System.DateTimeOffset @placedAt, int @price, bool? @pubkeySubmitted, long @remainingAmountSubunits, OrderSide @side, OrderLifecycleStatus @status, TokenSide @tokenSide, System.Guid? @tradeId)
+        public OrderEntry(SettlementGroupSummary @activeSettlementGroup, long @amountSubunits, BaseAsset @baseAsset, string @clientOrderId, string @conditionId, OrderEntryDivisibility @divisibility, System.DateTimeOffset? @filledAt, string @marketId, System.Guid @orderId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, OrderLifecycleStatus @status, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -1812,9 +1789,6 @@ namespace BitCaster.MatchingEngine.Contracts
             this.Status = @status;
             this.PlacedAt = @placedAt;
             this.FilledAt = @filledAt;
-            this.TradeId = @tradeId;
-            this.Deadline = @deadline;
-            this.PubkeySubmitted = @pubkeySubmitted;
             this.ClientOrderId = @clientOrderId;
             this.ActiveSettlementGroup = @activeSettlementGroup;
         }
@@ -1862,15 +1836,6 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("filledAt")]
         public System.DateTimeOffset? FilledAt { get; }
 
-        [System.Text.Json.Serialization.JsonPropertyName("tradeId")]
-        public System.Guid? TradeId { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("deadline")]
-        public System.DateTimeOffset? Deadline { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("pubkeySubmitted")]
-        public bool? PubkeySubmitted { get; }
-
         [System.Text.Json.Serialization.JsonPropertyName("clientOrderId")]
         public string ClientOrderId { get; }
 
@@ -1914,13 +1879,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderResponse(SettlementGroupSummary @activeSettlementGroup, BaseAsset @baseAsset, SubmitOrderResponseDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, System.Collections.Generic.List<PendingPubkeySubmission> @pendingPubkeySubmissions, long @remainingAmountSubunits, OrderLifecycleStatus @status)
+        public SubmitOrderResponse(SettlementGroupSummary @activeSettlementGroup, BaseAsset @baseAsset, SubmitOrderResponseDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, long @remainingAmountSubunits, OrderLifecycleStatus @status)
         {
             this.OrderId = @orderId;
             this.Status = @status;
             this.RemainingAmountSubunits = @remainingAmountSubunits;
             this.Fills = @fills;
-            this.PendingPubkeySubmissions = @pendingPubkeySubmissions;
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
             this.ActiveSettlementGroup = @activeSettlementGroup;
@@ -1944,9 +1908,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("fills")]
         public System.Collections.Generic.List<Fill> Fills { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("pendingPubkeySubmissions")]
-        public System.Collections.Generic.List<PendingPubkeySubmission> PendingPubkeySubmissions { get; }
 
         /// <summary>
         /// Base asset context for amount and price fields.
@@ -1978,100 +1939,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Text.Json.Serialization.JsonPropertyName("orders")]
         public System.Collections.Generic.List<BatchSubmitOrderRequestItem> Orders { get; }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class PendingPubkeySubmission
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public PendingPubkeySubmission(System.DateTimeOffset @deadline, long @fillAmount, PendingPubkeySubmissionRole @role, System.Guid @tradeId)
-        {
-            this.TradeId = @tradeId;
-            this.Role = @role;
-            this.FillAmount = @fillAmount;
-            this.Deadline = @deadline;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("tradeId")]
-        public System.Guid TradeId { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("role")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<PendingPubkeySubmissionRole>))]
-        public PendingPubkeySubmissionRole Role { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("fillAmount")]
-        public long FillAmount { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("deadline")]
-        public System.DateTimeOffset Deadline { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class SubmitEphemeralPubkeyRequest
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitEphemeralPubkeyRequest(string @ephemeralPubkey)
-        {
-            this.EphemeralPubkey = @ephemeralPubkey;
-        }
-
-        /// <summary>
-        /// 33-byte compressed secp256k1 public key as lowercase hex.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("ephemeralPubkey")]
-        public string EphemeralPubkey { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class SubmitEphemeralPubkeyResponse
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitEphemeralPubkeyResponse(bool @bothReceived, SubmitEphemeralPubkeyResponseRole @role, System.Guid @tradeId)
-        {
-            this.TradeId = @tradeId;
-            this.Role = @role;
-            this.BothReceived = @bothReceived;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("tradeId")]
-        public System.Guid TradeId { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("role")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<SubmitEphemeralPubkeyResponseRole>))]
-        public SubmitEphemeralPubkeyResponseRole Role { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("bothReceived")]
-        public bool BothReceived { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
 
     }
 
@@ -2130,7 +1997,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class BatchSubmitOrderSuccess
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrderSuccess(SettlementGroupSummary @activeSettlementGroup, BaseAsset @baseAsset, string @clientOrderId, BatchSubmitOrderSuccessDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, System.Collections.Generic.List<PendingPubkeySubmission> @pendingPubkeySubmissions, long @remainingAmountSubunits, int @requestIndex, OrderLifecycleStatus @status)
+        public BatchSubmitOrderSuccess(SettlementGroupSummary @activeSettlementGroup, BaseAsset @baseAsset, string @clientOrderId, BatchSubmitOrderSuccessDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, int @requestIndex, OrderLifecycleStatus @status)
         {
             this.RequestIndex = @requestIndex;
             this.ClientOrderId = @clientOrderId;
@@ -2139,7 +2006,6 @@ namespace BitCaster.MatchingEngine.Contracts
             this.Status = @status;
             this.RemainingAmountSubunits = @remainingAmountSubunits;
             this.Fills = @fills;
-            this.PendingPubkeySubmissions = @pendingPubkeySubmissions;
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
             this.ActiveSettlementGroup = @activeSettlementGroup;
@@ -2166,9 +2032,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Text.Json.Serialization.JsonPropertyName("fills")]
         public System.Collections.Generic.List<Fill> Fills { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("pendingPubkeySubmissions")]
-        public System.Collections.Generic.List<PendingPubkeySubmission> PendingPubkeySubmissions { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
@@ -4021,30 +3884,6 @@ namespace BitCaster.MatchingEngine.Contracts
         _10000 = 10000,
 
         _1000000 = 1000000,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum PendingPubkeySubmissionRole
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"maker")]
-        Maker = 0,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"taker")]
-        Taker = 1,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum SubmitEphemeralPubkeyResponseRole
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"maker")]
-        Maker = 0,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"taker")]
-        Taker = 1,
 
     }
 
