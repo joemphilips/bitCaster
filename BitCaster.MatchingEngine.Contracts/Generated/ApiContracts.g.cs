@@ -4,6 +4,8 @@
 // </auto-generated>
 //----------------------
 
+#nullable enable
+
 #pragma warning disable 108 // Disable "CS0108 '{derivedDto}.ToJson()' hides inherited member '{dtoBase}.ToJson()'. Use the new keyword if hiding was intended."
 #pragma warning disable 114 // Disable "CS0114 '{derivedDto}.RaisePropertyChanged(String)' hides inherited member 'dtoBase.RaisePropertyChanged(String)'. To make the current member override that implementation, add the override keyword. Otherwise add the new keyword."
 #pragma warning disable 472 // Disable "CS0472 The result of the expression is always 'false' since a value of type 'Int32' is never equal to 'null' of type 'Int32?'
@@ -25,6 +27,322 @@ namespace BitCaster.MatchingEngine.Contracts
     using System = global::System;
 
     
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum DurableCashuRecipientKind
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"matching-engine")]
+        MatchingEngine = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum DurableCashuDeliveryPurpose
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"market-funding")]
+        MarketFunding = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"participation-score")]
+        ParticipationScore = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum DurableCashuCreditPolicy
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"exact-amount")]
+        ExactAmount = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"net-of-receive-fee")]
+        NetOfReceiveFee = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum DurableCashuDeliveryState
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"pending")]
+        Pending = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"received")]
+        Received = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"credited")]
+        Credited = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum DurableCashuCreditVerification
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"exact-amount")]
+        ExactAmount = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"net-of-receive-fee")]
+        NetOfReceiveFee = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class DurableCashuDeliverySubmission
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public DurableCashuDeliverySubmission(string @accountSubject, DurableCashuCreditPolicy @creditPolicy, System.Guid @deliveryId, string @destinationId, System.Uri @mintUrl, string @productBindingSha256, DurableCashuDeliveryPurpose @purpose, DurableCashuRecipientKind @recipientKind, string @requestedAmount, DurableCashuDeliverySubmissionSchemaVersion @schemaVersion, string @token, int @tokenEncodedLength, string @tokenSha256, DurableCashuDeliverySubmissionUnit @unit)
+        {
+            this.SchemaVersion = @schemaVersion;
+            this.DeliveryId = @deliveryId;
+            this.AccountSubject = @accountSubject;
+            this.RecipientKind = @recipientKind;
+            this.Purpose = @purpose;
+            this.DestinationId = @destinationId;
+            this.ProductBindingSha256 = @productBindingSha256;
+            this.MintUrl = @mintUrl;
+            this.Unit = @unit;
+            this.RequestedAmount = @requestedAmount;
+            this.CreditPolicy = @creditPolicy;
+            this.TokenSha256 = @tokenSha256;
+            this.TokenEncodedLength = @tokenEncodedLength;
+            this.Token = @token;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("schemaVersion")]
+        public DurableCashuDeliverySubmissionSchemaVersion SchemaVersion { get; }
+
+        /// <summary>
+        /// Lowercase canonical UUID delivery identifier.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("deliveryId")]
+        public System.Guid DeliveryId { get; }
+
+        /// <summary>
+        /// Bounded ASCII subject identifier. NUL is invalid.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("accountSubject")]
+        public string AccountSubject { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("recipientKind")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DurableCashuRecipientKind>))]
+        public DurableCashuRecipientKind RecipientKind { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("purpose")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DurableCashuDeliveryPurpose>))]
+        public DurableCashuDeliveryPurpose Purpose { get; }
+
+        /// <summary>
+        /// Bounded ASCII destination identifier. NUL is invalid.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("destinationId")]
+        public string DestinationId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("productBindingSha256")]
+        public string ProductBindingSha256 { get; }
+
+        /// <summary>
+        /// Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("mintUrl")]
+        public System.Uri MintUrl { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("unit")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DurableCashuDeliverySubmissionUnit>))]
+        public DurableCashuDeliverySubmissionUnit Unit { get; }
+
+        /// <summary>
+        /// Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("requestedAmount")]
+        public string RequestedAmount { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("creditPolicy")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DurableCashuCreditPolicy>))]
+        public DurableCashuCreditPolicy CreditPolicy { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSha256")]
+        public string TokenSha256 { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenEncodedLength")]
+        public int TokenEncodedLength { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("token")]
+        public string Token { get; }
+
+    }
+
+    /// <summary>
+    /// Tuple fingerprint input order is schemaVersion, deliveryId, accountSubject, recipientKind, purpose, destinationId, productBindingSha256, mintUrl, unit, requestedAmount, creditPolicy, tokenSha256, tokenEncodedLength. SHA-256 uses UTF-8 fields joined by NUL after the domain string "bitcaster/durable-cashu-delivery/v1".
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class DurableCashuDeliveryImmutableTuple
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public DurableCashuDeliveryImmutableTuple(string @accountSubject, DurableCashuCreditPolicy @creditPolicy, System.Guid @deliveryId, string @destinationId, System.Uri @mintUrl, string @productBindingSha256, DurableCashuDeliveryPurpose @purpose, DurableCashuRecipientKind @recipientKind, string @requestedAmount, DurableCashuDeliveryImmutableTupleSchemaVersion @schemaVersion, int @tokenEncodedLength, string @tokenSha256, DurableCashuDeliveryImmutableTupleUnit @unit)
+        {
+            this.SchemaVersion = @schemaVersion;
+            this.DeliveryId = @deliveryId;
+            this.AccountSubject = @accountSubject;
+            this.RecipientKind = @recipientKind;
+            this.Purpose = @purpose;
+            this.DestinationId = @destinationId;
+            this.ProductBindingSha256 = @productBindingSha256;
+            this.MintUrl = @mintUrl;
+            this.Unit = @unit;
+            this.RequestedAmount = @requestedAmount;
+            this.CreditPolicy = @creditPolicy;
+            this.TokenSha256 = @tokenSha256;
+            this.TokenEncodedLength = @tokenEncodedLength;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("schemaVersion")]
+        public DurableCashuDeliveryImmutableTupleSchemaVersion SchemaVersion { get; }
+
+        /// <summary>
+        /// Lowercase canonical UUID delivery identifier.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("deliveryId")]
+        public System.Guid DeliveryId { get; }
+
+        /// <summary>
+        /// Bounded ASCII subject identifier. NUL is invalid.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("accountSubject")]
+        public string AccountSubject { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("recipientKind")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DurableCashuRecipientKind>))]
+        public DurableCashuRecipientKind RecipientKind { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("purpose")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DurableCashuDeliveryPurpose>))]
+        public DurableCashuDeliveryPurpose Purpose { get; }
+
+        /// <summary>
+        /// Bounded ASCII destination identifier. NUL is invalid.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("destinationId")]
+        public string DestinationId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("productBindingSha256")]
+        public string ProductBindingSha256 { get; }
+
+        /// <summary>
+        /// Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("mintUrl")]
+        public System.Uri MintUrl { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("unit")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DurableCashuDeliveryImmutableTupleUnit>))]
+        public DurableCashuDeliveryImmutableTupleUnit Unit { get; }
+
+        /// <summary>
+        /// Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("requestedAmount")]
+        public string RequestedAmount { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("creditPolicy")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DurableCashuCreditPolicy>))]
+        public DurableCashuCreditPolicy CreditPolicy { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSha256")]
+        public string TokenSha256 { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenEncodedLength")]
+        public int TokenEncodedLength { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class DurableCashuDeliveryResult
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public DurableCashuDeliveryResult(System.DateTimeOffset? @businessEventAt, string? @businessEventId, string @creditedAmount, DurableCashuCreditVerification @creditVerification, System.DateTimeOffset @receivedAt, string @receiveFee, string @receiveOperationId)
+        {
+            this.CreditedAmount = @creditedAmount;
+            this.ReceiveFee = @receiveFee;
+            this.CreditVerification = @creditVerification;
+            this.ReceiveOperationId = @receiveOperationId;
+            this.ReceivedAt = @receivedAt;
+            this.BusinessEventId = @businessEventId;
+            this.BusinessEventAt = @businessEventAt;
+        }
+
+        /// <summary>
+        /// Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("creditedAmount")]
+        public string CreditedAmount { get; }
+
+        /// <summary>
+        /// Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("receiveFee")]
+        public string ReceiveFee { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("creditVerification")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DurableCashuCreditVerification>))]
+        public DurableCashuCreditVerification CreditVerification { get; }
+
+        /// <summary>
+        /// Bounded ASCII receive operation identifier. NUL is invalid.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("receiveOperationId")]
+        public string ReceiveOperationId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("receivedAt")]
+        public System.DateTimeOffset ReceivedAt { get; }
+
+        /// <summary>
+        /// Bounded ASCII business event identifier. NUL is invalid. This field requires businessEventAt and is valid only for a credited state.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("businessEventId")]
+        public string? BusinessEventId { get; }
+
+        /// <summary>
+        /// Business event time. This field requires businessEventId and is valid only for a credited state.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("businessEventAt")]
+        public System.DateTimeOffset? BusinessEventAt { get; }
+
+    }
+
+    /// <summary>
+    /// Delivery state. A pending state has a null result. A received state has a receive result and no business event. A credited state has a receive result and both business event fields. SDK decoders enforce these paired fields.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class DurableCashuDeliveryStatus : object
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public DurableCashuDeliveryStatus(DurableCashuDeliveryImmutableTuple @delivery, DurableCashuDeliveryResult? @result, DurableCashuDeliveryState @state, string @tupleFingerprint)
+            : base()
+        {
+            this.Delivery = @delivery;
+            this.TupleFingerprint = @tupleFingerprint;
+            this.State = @state;
+            this.Result = @result;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("delivery")]
+        public DurableCashuDeliveryImmutableTuple Delivery { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tupleFingerprint")]
+        public string TupleFingerprint { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("state")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DurableCashuDeliveryState>))]
+        public DurableCashuDeliveryState State { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("result")]
+        public DurableCashuDeliveryResult? Result { get; }
+
+    }
 
     /// <summary>
     /// Canonical Cashu unit for a monitored asset or its display base asset.
@@ -97,7 +415,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class AssetMonitoringReportedHolding
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public AssetMonitoringReportedHolding(Asset @asset, long @availableSubunits, long @pendingOutgoingSubunits, AssetMonitoringRecoveryHint @recoveryHint)
+        public AssetMonitoringReportedHolding(Asset @asset, long @availableSubunits, long @pendingOutgoingSubunits, AssetMonitoringRecoveryHint? @recoveryHint)
         {
             this.Asset = @asset;
             this.AvailableSubunits = @availableSubunits;
@@ -115,7 +433,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long PendingOutgoingSubunits { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("recoveryHint")]
-        public AssetMonitoringRecoveryHint RecoveryHint { get; }
+        public AssetMonitoringRecoveryHint? RecoveryHint { get; }
 
     }
 
@@ -170,7 +488,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class AssetMonitoringAssetResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public AssetMonitoringAssetResponse(Asset @asset, long @availableSubunits, long? @availableValueMsat, long? @estimatedValueMsat, long @pendingOutgoingSubunits, long? @pendingOutgoingValueMsat, AssetMonitoringRecoveryHint @recoveryHint, AssetMonitoringValuationStatus @valuationStatus)
+        public AssetMonitoringAssetResponse(Asset @asset, long @availableSubunits, long? @availableValueMsat, long? @estimatedValueMsat, long @pendingOutgoingSubunits, long? @pendingOutgoingValueMsat, AssetMonitoringRecoveryHint? @recoveryHint, AssetMonitoringValuationStatus @valuationStatus)
         {
             this.Asset = @asset;
             this.AvailableSubunits = @availableSubunits;
@@ -205,7 +523,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public AssetMonitoringValuationStatus ValuationStatus { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("recoveryHint")]
-        public AssetMonitoringRecoveryHint RecoveryHint { get; }
+        public AssetMonitoringRecoveryHint? RecoveryHint { get; }
 
     }
 
@@ -213,7 +531,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class AssetMonitoringSummaryResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public AssetMonitoringSummaryResponse(System.DateTimeOffset? @asOf, long? @availableValueMsat, bool @building, AssetMonitoringSummaryResponseCollateralUnit @collateralUnit, string @coverageBoundary, long? @estimatedTotalValueMsat, bool @incomplete, long? @intervalRevision, long? @pendingOutgoingValueMsat, bool @stale, int @unvaluedAssetCount, long? @unvaluedAvailableSubunits, long? @unvaluedPendingOutgoingSubunits, string @valuationRevision)
+        public AssetMonitoringSummaryResponse(System.DateTimeOffset? @asOf, long? @availableValueMsat, bool @building, AssetMonitoringSummaryResponseCollateralUnit @collateralUnit, string? @coverageBoundary, long? @estimatedTotalValueMsat, bool @incomplete, long? @intervalRevision, long? @pendingOutgoingValueMsat, bool @stale, int @unvaluedAssetCount, long? @unvaluedAvailableSubunits, long? @unvaluedPendingOutgoingSubunits, string @valuationRevision)
         {
             this.CollateralUnit = @collateralUnit;
             this.AvailableValueMsat = @availableValueMsat;
@@ -260,7 +578,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long? IntervalRevision { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("coverageBoundary")]
-        public string CoverageBoundary { get; }
+        public string? CoverageBoundary { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("valuationRevision")]
         public string ValuationRevision { get; }
@@ -280,7 +598,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class AssetMonitoringAssetsResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public AssetMonitoringAssetsResponse(System.DateTimeOffset? @asOf, System.Collections.Generic.List<AssetMonitoringAssetResponse> @assets, bool @building, string @coverageBoundary, bool @incomplete, long? @intervalRevision, string @nextCursor, bool @stale, string @valuationRevision)
+        public AssetMonitoringAssetsResponse(System.DateTimeOffset? @asOf, System.Collections.Generic.List<AssetMonitoringAssetResponse> @assets, bool @building, string? @coverageBoundary, bool @incomplete, long? @intervalRevision, string? @nextCursor, bool @stale, string @valuationRevision)
         {
             this.Assets = @assets;
             this.NextCursor = @nextCursor;
@@ -297,7 +615,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Collections.Generic.List<AssetMonitoringAssetResponse> Assets { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("nextCursor")]
-        public string NextCursor { get; }
+        public string? NextCursor { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("asOf")]
         public System.DateTimeOffset? AsOf { get; }
@@ -306,7 +624,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long? IntervalRevision { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("coverageBoundary")]
-        public string CoverageBoundary { get; }
+        public string? CoverageBoundary { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("valuationRevision")]
         public string ValuationRevision { get; }
@@ -344,7 +662,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class AssetMonitoringHistoryResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public AssetMonitoringHistoryResponse(System.DateTimeOffset? @asOf, bool @building, string @coverageBoundary, bool @incomplete, long? @intervalRevision, System.Collections.Generic.List<AssetMonitoringHistoryPointResponse> @points, bool @stale, AssetMonitoringHistoryResponseTimeframe @timeframe, string @valuationRevision)
+        public AssetMonitoringHistoryResponse(System.DateTimeOffset? @asOf, bool @building, string? @coverageBoundary, bool @incomplete, long? @intervalRevision, System.Collections.Generic.List<AssetMonitoringHistoryPointResponse> @points, bool @stale, AssetMonitoringHistoryResponseTimeframe @timeframe, string @valuationRevision)
         {
             this.Timeframe = @timeframe;
             this.Points = @points;
@@ -371,7 +689,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long? IntervalRevision { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("coverageBoundary")]
-        public string CoverageBoundary { get; }
+        public string? CoverageBoundary { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("valuationRevision")]
         public string ValuationRevision { get; }
@@ -612,7 +930,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateSettlementCapabilityRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateSettlementCapabilityRequest(byte[] @artifact, string @clientOrderId, SettlementOrderContinuationReference @continuation, string @marketId, SettlementOrderIntent @orderIntent, string @stageIdempotencyKey)
+        public CreateSettlementCapabilityRequest(byte[] @artifact, string @clientOrderId, SettlementOrderContinuationReference? @continuation, string @marketId, SettlementOrderIntent @orderIntent, string @stageIdempotencyKey)
         {
             this.StageIdempotencyKey = @stageIdempotencyKey;
             this.ClientOrderId = @clientOrderId;
@@ -654,7 +972,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("continuation")]
-        public SettlementOrderContinuationReference Continuation { get; }
+        public SettlementOrderContinuationReference? Continuation { get; }
 
         /// <summary>
         /// Base64 encoding of at most 262144 canonical JSON bytes produced by the shared SDK settlement-capability artifact encoder.
@@ -669,7 +987,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SettlementCapabilityResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SettlementCapabilityResponse(string @artifactDigest, System.DateTimeOffset @authorizationExpiresAt, string @clientOrderId, string @marketId, System.Guid @orderId, SettlementCapabilityReference @reference, SettlementGroupSummary @settlementGroup, System.DateTimeOffset @stageExpiresAt, SettlementCapabilityState @state, long @version)
+        public SettlementCapabilityResponse(string @artifactDigest, System.DateTimeOffset @authorizationExpiresAt, string @clientOrderId, string @marketId, System.Guid @orderId, SettlementCapabilityReference @reference, SettlementGroupSummary? @settlementGroup, System.DateTimeOffset @stageExpiresAt, SettlementCapabilityState @state, long @version)
         {
             this.Reference = @reference;
             this.OrderId = @orderId;
@@ -716,7 +1034,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("settlementGroup")]
-        public SettlementGroupSummary SettlementGroup { get; }
+        public SettlementGroupSummary? SettlementGroup { get; }
 
     }
 
@@ -1102,7 +1420,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("sig")]
         public string Sig { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1129,7 +1447,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OracleAttestationResponseResult>))]
         public OracleAttestationResponseResult Result { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1170,7 +1488,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("registeredAuthority")]
         public RegisteredConditionAuthority RegisteredAuthority { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1205,7 +1523,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("oracles")]
         public System.Collections.Generic.List<RegisteredConditionOracle> Oracles { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1236,7 +1554,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("announcementIdentity")]
         public string AnnouncementIdentity { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1260,7 +1578,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<ConditionAttestationProblemResult>))]
         public ConditionAttestationProblemResult Result { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1283,7 +1601,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("oracle_sigs")]
         public System.Collections.Generic.List<OracleWitnessSig> Oracle_sigs { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1323,7 +1641,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("outcome")]
         public string Outcome { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1455,7 +1773,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(NostrKind1Event @comment, SettlementCapabilityReference @settlementCapability, string @walletId)
+        public SubmitOrderRequest(NostrKind1Event? @comment, SettlementCapabilityReference @settlementCapability, string? @walletId)
         {
             this.SettlementCapability = @settlementCapability;
             this.Comment = @comment;
@@ -1474,13 +1792,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("comment")]
-        public NostrKind1Event Comment { get; }
+        public NostrKind1Event? Comment { get; }
 
         /// <summary>
         /// Display-only wallet attribution. It does not authorize custody or settlement.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("walletId")]
-        public string WalletId { get; }
+        public string? WalletId { get; }
 
     }
 
@@ -1523,7 +1841,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("sig")]
         public string Sig { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1538,7 +1856,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderStatusResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderStatusResponse(SettlementGroupSummary @activeSettlementGroup, long @amountSubunits, BaseAsset @baseAsset, OrderContinuationState @continuation, OrderStatusResponseDivisibility @divisibility, System.DateTimeOffset? @expiresAt, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, OrderLifecycleStatus @status, TimeInForce @timeInForce, TokenSide @tokenSide)
+        public OrderStatusResponse(SettlementGroupSummary? @activeSettlementGroup, long @amountSubunits, BaseAsset @baseAsset, OrderContinuationState? @continuation, OrderStatusResponseDivisibility @divisibility, System.DateTimeOffset? @expiresAt, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, OrderLifecycleStatus @status, TimeInForce @timeInForce, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -1627,14 +1945,14 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("activeSettlementGroup")]
-        public SettlementGroupSummary ActiveSettlementGroup { get; }
+        public SettlementGroupSummary? ActiveSettlementGroup { get; }
 
         /// <summary>
         /// Current durable residual-continuation state. It is non-null only after a confirmed partial resting-order settlement.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("continuation")]
-        public OrderContinuationState Continuation { get; }
+        public OrderContinuationState? Continuation { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
@@ -1736,7 +2054,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
         public RestingOrderResponseDivisibility Divisibility { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1759,7 +2077,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("orders")]
         public System.Collections.Generic.List<RestingOrderResponse> Orders { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1774,7 +2092,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderEntry(SettlementGroupSummary @activeSettlementGroup, long @amountSubunits, BaseAsset @baseAsset, string @clientOrderId, string @conditionId, OrderEntryDivisibility @divisibility, System.DateTimeOffset? @filledAt, string @marketId, System.Guid @orderId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, OrderLifecycleStatus @status, TokenSide @tokenSide)
+        public OrderEntry(SettlementGroupSummary? @activeSettlementGroup, long @amountSubunits, BaseAsset @baseAsset, string? @clientOrderId, string @conditionId, OrderEntryDivisibility @divisibility, System.DateTimeOffset? @filledAt, string @marketId, System.Guid @orderId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, OrderLifecycleStatus @status, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -1837,14 +2155,14 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset? FilledAt { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("clientOrderId")]
-        public string ClientOrderId { get; }
+        public string? ClientOrderId { get; }
 
         /// <summary>
         /// Current nonterminal settlement group for this order, or null.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("activeSettlementGroup")]
-        public SettlementGroupSummary ActiveSettlementGroup { get; }
+        public SettlementGroupSummary? ActiveSettlementGroup { get; }
 
     }
 
@@ -1852,7 +2170,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class ListMyOrdersResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public ListMyOrdersResponse(string @nextCursor, System.Collections.Generic.List<OrderEntry> @orders)
+        public ListMyOrdersResponse(string? @nextCursor, System.Collections.Generic.List<OrderEntry> @orders)
         {
             this.Orders = @orders;
             this.NextCursor = @nextCursor;
@@ -1862,9 +2180,9 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Collections.Generic.List<OrderEntry> Orders { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("nextCursor")]
-        public string NextCursor { get; }
+        public string? NextCursor { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -1879,7 +2197,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderResponse(SettlementGroupSummary @activeSettlementGroup, BaseAsset @baseAsset, SubmitOrderResponseDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, long @remainingAmountSubunits, OrderLifecycleStatus @status)
+        public SubmitOrderResponse(SettlementGroupSummary? @activeSettlementGroup, BaseAsset @baseAsset, SubmitOrderResponseDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, long @remainingAmountSubunits, OrderLifecycleStatus @status)
         {
             this.OrderId = @orderId;
             this.Status = @status;
@@ -1924,7 +2242,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("activeSettlementGroup")]
-        public SettlementGroupSummary ActiveSettlementGroup { get; }
+        public SettlementGroupSummary? ActiveSettlementGroup { get; }
 
     }
 
@@ -1950,7 +2268,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class BatchSubmitOrderRequestItem
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrderRequestItem(SettlementCapabilityReference @settlementCapability, string @walletId)
+        public BatchSubmitOrderRequestItem(SettlementCapabilityReference @settlementCapability, string? @walletId)
         {
             this.SettlementCapability = @settlementCapability;
             this.WalletId = @walletId;
@@ -1963,7 +2281,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// Display-only wallet attribution. It does not authorize custody or settlement.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("walletId")]
-        public string WalletId { get; }
+        public string? WalletId { get; }
 
     }
 
@@ -1997,7 +2315,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class BatchSubmitOrderSuccess
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrderSuccess(SettlementGroupSummary @activeSettlementGroup, BaseAsset @baseAsset, string @clientOrderId, BatchSubmitOrderSuccessDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, int @requestIndex, OrderLifecycleStatus @status)
+        public BatchSubmitOrderSuccess(SettlementGroupSummary? @activeSettlementGroup, BaseAsset @baseAsset, string @clientOrderId, BatchSubmitOrderSuccessDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, int @requestIndex, OrderLifecycleStatus @status)
         {
             this.RequestIndex = @requestIndex;
             this.ClientOrderId = @clientOrderId;
@@ -2049,7 +2367,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("activeSettlementGroup")]
-        public SettlementGroupSummary ActiveSettlementGroup { get; }
+        public SettlementGroupSummary? ActiveSettlementGroup { get; }
 
     }
 
@@ -2119,7 +2437,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("orderIds")]
         public System.Collections.Generic.List<System.Guid> OrderIds { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2146,7 +2464,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("notCanceled")]
         public System.Collections.Generic.Dictionary<string, BatchCancelOrderFailure> NotCanceled { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2174,7 +2492,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("errorMessage")]
         public string ErrorMessage { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2222,7 +2540,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("amount")]
         public long Amount { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2282,7 +2600,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("depthLimit")]
         public int? DepthLimit { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2301,7 +2619,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketStatusChanged
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketStatusChanged(System.DateTimeOffset? @closedAt, string @conditionId, string @finalOutcome, MarketStatusChangedState @state)
+        public MarketStatusChanged(System.DateTimeOffset? @closedAt, string @conditionId, string? @finalOutcome, MarketStatusChangedState @state)
         {
             this.ConditionId = @conditionId;
             this.State = @state;
@@ -2335,9 +2653,9 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("finalOutcome")]
-        public string FinalOutcome { get; }
+        public string? FinalOutcome { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2370,7 +2688,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("probability")]
         public int Probability { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2389,7 +2707,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
+        public CreateMarketRequest(BaseAsset @baseAsset, System.Collections.Generic.List<string>? @categoryTags, string @description, long? @liquiditySats, string? @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
         {
             this.Title = @title;
             this.Description = @description;
@@ -2446,16 +2764,16 @@ namespace BitCaster.MatchingEngine.Contracts
         /// Optional category tags for the market.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("categoryTags")]
-        public System.Collections.Generic.List<string> CategoryTags { get; }
+        public System.Collections.Generic.List<string>? CategoryTags { get; }
 
         /// <summary>
         /// Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("oracleAnnouncementHex")]
-        public string OracleAnnouncementHex { get; }
+        public string? OracleAnnouncementHex { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2470,7 +2788,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketResponse(BaseAsset @baseAsset, string @conditionId, CreateMarketResponseDivisibility @divisibility, System.Collections.Generic.List<string> @marketsCreated, string @thumbnailUrl)
+        public CreateMarketResponse(BaseAsset @baseAsset, string @conditionId, CreateMarketResponseDivisibility @divisibility, System.Collections.Generic.List<string> @marketsCreated, string? @thumbnailUrl)
         {
             this.ConditionId = @conditionId;
             this.MarketsCreated = @marketsCreated;
@@ -2503,7 +2821,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// URL to the uploaded thumbnail, or null if none was provided.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("thumbnailUrl")]
-        public string ThumbnailUrl { get; }
+        public string? ThumbnailUrl { get; }
 
         /// <summary>
         /// Immutable price denominator `D`, server-determined.
@@ -2512,7 +2830,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
         public CreateMarketResponseDivisibility Divisibility { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2560,7 +2878,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<MarketPriceHistoryPointSource>))]
         public MarketPriceHistoryPointSource Source { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2590,7 +2908,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("data")]
         public System.Collections.Generic.List<MarketPriceHistoryPoint> Data { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2622,7 +2940,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
         public System.Collections.Generic.List<MarketOutcomePriceHistory> Outcomes { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2666,7 +2984,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("authorPubkey")]
         public string AuthorPubkey { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2693,7 +3011,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("comments")]
         public System.Collections.Generic.List<MarketComment> Comments { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2769,7 +3087,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("activeOrders")]
         public int ActiveOrders { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2816,7 +3134,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySubunits")]
         public long TotalLiquiditySubunits { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2866,7 +3184,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<CreatorMarketEntryState>))]
         public CreatorMarketEntryState State { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2900,7 +3218,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("markets")]
         public System.Collections.Generic.List<CreatorMarketEntry> Markets { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -2952,7 +3270,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RequestEcashDepositRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RequestEcashDepositRequest(long @amountSubunits, string @creatorPubkey, RequestEcashDepositRequestDivisibility @divisibility, bool? @fundAmm, string @proofsToken, RequestEcashDepositRequestUnit @unit)
+        public RequestEcashDepositRequest(long @amountSubunits, string? @creatorPubkey, RequestEcashDepositRequestDivisibility @divisibility, bool? @fundAmm, string @proofsToken, RequestEcashDepositRequestUnit @unit)
         {
             this.AmountSubunits = @amountSubunits;
             this.Unit = @unit;
@@ -2993,7 +3311,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// Nostr public key (hex) of the market creator
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
-        public string CreatorPubkey { get; }
+        public string? CreatorPubkey { get; }
 
         /// <summary>
         /// Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
@@ -3001,7 +3319,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("fundAmm")]
         public bool? FundAmm { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -3032,7 +3350,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DepositState>))]
         public DepositState State { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -3093,7 +3411,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("enabled")]
         public bool Enabled { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -3133,7 +3451,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("paymentId")]
         public System.Guid? PaymentId { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -3188,7 +3506,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("creditedAt")]
         public System.DateTimeOffset CreditedAt { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -3203,7 +3521,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class GetDepositResponseDto
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public GetDepositResponseDto(long @amountSubunits, string @conditionId, System.Guid @depositId, System.DateTimeOffset? @expiresAt, string @failureReason, DepositMethod @method, System.DateTimeOffset @requestedAt, DepositState @state, System.DateTimeOffset @updatedAt)
+        public GetDepositResponseDto(long @amountSubunits, string @conditionId, System.Guid @depositId, System.DateTimeOffset? @expiresAt, string? @failureReason, DepositMethod @method, System.DateTimeOffset @requestedAt, DepositState @state, System.DateTimeOffset @updatedAt)
         {
             this.DepositId = @depositId;
             this.ConditionId = @conditionId;
@@ -3255,9 +3573,9 @@ namespace BitCaster.MatchingEngine.Contracts
         /// Populated only when `state == Failed`.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("failureReason")]
-        public string FailureReason { get; }
+        public string? FailureReason { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -3272,7 +3590,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(long @ammBotBudgetSubunits, BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, MarketCatalogueEntryDivisibility @divisibility, string @finalOutcome, System.Collections.Generic.Dictionary<string, int> @initialProbabilities, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
+        public MarketCatalogueEntry(long @ammBotBudgetSubunits, BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string? @creatorPubkey, System.DateTimeOffset? @deadline, string? @description, MarketCatalogueEntryDivisibility @divisibility, string? @finalOutcome, System.Collections.Generic.Dictionary<string, int> @initialProbabilities, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string? @thumbnailUrl, string? @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
@@ -3317,28 +3635,28 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("title")]
-        public string Title { get; }
+        public string? Title { get; }
 
         /// <summary>
         /// Detailed market description supplied by the creator at registration time. Market detail pages render this as the resolution criteria text.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("description")]
-        public string Description { get; }
+        public string? Description { get; }
 
         /// <summary>
         /// Optional thumbnail URL. Null when no thumbnail was uploaded.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("thumbnailUrl")]
-        public string ThumbnailUrl { get; }
+        public string? ThumbnailUrl { get; }
 
         /// <summary>
         /// Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate creator tracking.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
-        public string CreatorPubkey { get; }
+        public string? CreatorPubkey { get; }
 
         /// <summary>
         /// Oracle attestation deadline carried from the mintd condition snapshot. The market auto-closes at this instant when the kind-89 attestation has not yet been observed.
@@ -3359,7 +3677,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("finalOutcome")]
-        public string FinalOutcome { get; }
+        public string? FinalOutcome { get; }
 
         /// <summary>
         /// Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the matching engine's lifecycle state, NOT mintd's attestation status.
@@ -3450,7 +3768,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("lastSuccessfulRefreshAt")]
         public System.DateTimeOffset LastSuccessfulRefreshAt { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -3465,7 +3783,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueResponse(System.DateTimeOffset @lastSuccessfulRefreshAt, System.Collections.Generic.List<MarketCatalogueEntry> @markets, string @nextCursor)
+        public MarketCatalogueResponse(System.DateTimeOffset @lastSuccessfulRefreshAt, System.Collections.Generic.List<MarketCatalogueEntry> @markets, string? @nextCursor)
         {
             this.Markets = @markets;
             this.NextCursor = @nextCursor;
@@ -3484,7 +3802,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("nextCursor")]
-        public string NextCursor { get; }
+        public string? NextCursor { get; }
 
         /// <summary>
         /// Top-level mirror of the mintd-mirror's most recent successful refresh time. Useful for rendering a single staleness banner covering the whole catalogue when the mintd poller has been failing.
@@ -3493,7 +3811,7 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("lastSuccessfulRefreshAt")]
         public System.DateTimeOffset LastSuccessfulRefreshAt { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -3512,7 +3830,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class ProblemDetails
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public ProblemDetails(string @detail, string @instance, int? @status, string @title, string @type)
+        public ProblemDetails(string? @detail, string? @instance, int? @status, string? @title, string? @type)
         {
             this.Type = @type;
             this.Title = @title;
@@ -3525,13 +3843,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// A URI reference identifying the problem type.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("type")]
-        public string Type { get; }
+        public string? Type { get; }
 
         /// <summary>
         /// A short, human-readable summary of the problem.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("title")]
-        public string Title { get; }
+        public string? Title { get; }
 
         /// <summary>
         /// The HTTP status code generated for this occurrence.
@@ -3543,15 +3861,15 @@ namespace BitCaster.MatchingEngine.Contracts
         /// A human-readable explanation specific to this occurrence.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("detail")]
-        public string Detail { get; }
+        public string? Detail { get; }
 
         /// <summary>
         /// A URI reference identifying the specific occurrence.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("instance")]
-        public string Instance { get; }
+        public string? Instance { get; }
 
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
         public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
@@ -3646,6 +3964,46 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"ALL")]
         ALL = 3,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum DurableCashuDeliverySubmissionSchemaVersion
+    {
+
+        _1 = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum DurableCashuDeliverySubmissionUnit
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"sat")]
+        Sat = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"msat")]
+        Msat = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum DurableCashuDeliveryImmutableTupleSchemaVersion
+    {
+
+        _1 = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum DurableCashuDeliveryImmutableTupleUnit
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"sat")]
+        Sat = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"msat")]
+        Msat = 1,
 
     }
 
@@ -3977,12 +4335,12 @@ namespace BitCaster.MatchingEngine.Contracts
         {
         }
 
-        public FileParameter(System.IO.Stream data, string fileName)
+        public FileParameter(System.IO.Stream data, string? fileName)
             : this (data, fileName, null)
         {
         }
 
-        public FileParameter(System.IO.Stream data, string fileName, string contentType)
+        public FileParameter(System.IO.Stream data, string? fileName, string? contentType)
         {
             Data = data;
             FileName = fileName;
@@ -3991,16 +4349,16 @@ namespace BitCaster.MatchingEngine.Contracts
 
         public System.IO.Stream Data { get; private set; }
 
-        public string FileName { get; private set; }
+        public string? FileName { get; private set; }
 
-        public string ContentType { get; private set; }
+        public string? ContentType { get; private set; }
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NSwag", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class FileResponse : System.IDisposable
     {
-        private System.IDisposable _client;
-        private System.IDisposable _response;
+        private System.IDisposable? _client;
+        private System.IDisposable? _response;
 
         public int StatusCode { get; private set; }
 
@@ -4013,7 +4371,7 @@ namespace BitCaster.MatchingEngine.Contracts
             get { return StatusCode == 206; }
         }
 
-        public FileResponse(int statusCode, System.Collections.Generic.IReadOnlyDictionary<string, System.Collections.Generic.IEnumerable<string>> headers, System.IO.Stream stream, System.IDisposable client, System.IDisposable response)
+        public FileResponse(int statusCode, System.Collections.Generic.IReadOnlyDictionary<string, System.Collections.Generic.IEnumerable<string>> headers, System.IO.Stream stream, System.IDisposable? client, System.IDisposable? response)
         {
             StatusCode = statusCode;
             Headers = headers;
@@ -4038,11 +4396,11 @@ namespace BitCaster.MatchingEngine.Contracts
     {
         public int StatusCode { get; private set; }
 
-        public string Response { get; private set; }
+        public string? Response { get; private set; }
 
         public System.Collections.Generic.IReadOnlyDictionary<string, System.Collections.Generic.IEnumerable<string>> Headers { get; private set; }
 
-        public ApiException(string message, int statusCode, string response, System.Collections.Generic.IReadOnlyDictionary<string, System.Collections.Generic.IEnumerable<string>> headers, System.Exception innerException)
+        public ApiException(string message, int statusCode, string? response, System.Collections.Generic.IReadOnlyDictionary<string, System.Collections.Generic.IEnumerable<string>> headers, System.Exception? innerException)
             : base(message + "\n\nStatus: " + statusCode + "\nResponse: \n" + ((response == null) ? "(null)" : response.Substring(0, response.Length >= 512 ? 512 : response.Length)), innerException)
         {
             StatusCode = statusCode;
@@ -4061,7 +4419,7 @@ namespace BitCaster.MatchingEngine.Contracts
     {
         public TResult Result { get; private set; }
 
-        public ApiException(string message, int statusCode, string response, System.Collections.Generic.IReadOnlyDictionary<string, System.Collections.Generic.IEnumerable<string>> headers, TResult result, System.Exception innerException)
+        public ApiException(string message, int statusCode, string? response, System.Collections.Generic.IReadOnlyDictionary<string, System.Collections.Generic.IEnumerable<string>> headers, TResult result, System.Exception? innerException)
             : base(message, statusCode, response, headers, innerException)
         {
             Result = result;

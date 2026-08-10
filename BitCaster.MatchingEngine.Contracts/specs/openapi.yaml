@@ -654,6 +654,64 @@ paths:
         '502':
           description: Wallet-service payment error
 
+  /api/v1/cashu-deliveries/{deliveryId}:
+    post:
+      operationId: submitDurableCashuDelivery
+      summary: Submit one authenticated durable Cashu delivery
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/DurableCashuDeliveryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DurableCashuDeliverySubmission'
+      responses:
+        '200':
+          description: The immutable delivery request was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DurableCashuDeliveryStatus'
+        '400':
+          description: The delivery request is invalid.
+        '401':
+          description: Missing or invalid authentication.
+        '403':
+          description: The authenticated subject differs from accountSubject.
+        '409':
+          description: deliveryId is already bound to a different immutable tuple.
+        '429':
+          description: Delivery submission rate limit exceeded.
+        '502':
+          description: The durable recipient is unavailable.
+    get:
+      operationId: getDurableCashuDeliveryStatus
+      summary: Read one authenticated durable Cashu delivery status
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/DurableCashuDeliveryId'
+      responses:
+        '200':
+          description: Delivery status. The bearer token is never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DurableCashuDeliveryStatus'
+        '401':
+          description: Missing or invalid authentication.
+        '403':
+          description: The delivery belongs to a different subject.
+        '404':
+          description: No delivery exists for deliveryId.
+        '429':
+          description: Delivery status rate limit exceeded.
+        '502':
+          description: The durable recipient is unavailable.
+
   /api/v1/creators/{pubkey}/markets:
     get:
       operationId: listCreatorMarkets
@@ -1277,11 +1335,246 @@ components:
         pattern: '^[0-9a-f]{64}$'
       description: Canonical local durable wallet identifier.
 
+    DurableCashuDeliveryId:
+      name: deliveryId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      description: Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId.
+
   schemas:
     Sha256Digest:
       type: string
       pattern: '^[0-9a-f]{64}$'
       description: Canonical lowercase SHA-256 digest.
+
+    DurableCashuRecipientKind:
+      type: string
+      enum: [matching-engine]
+
+    DurableCashuDeliveryPurpose:
+      type: string
+      enum: [market-funding, participation-score]
+
+    DurableCashuCreditPolicy:
+      type: string
+      enum: [exact-amount, net-of-receive-fee]
+
+    DurableCashuDeliveryState:
+      type: string
+      enum: [pending, received, credited]
+
+    DurableCashuCreditVerification:
+      type: string
+      enum: [exact-amount, net-of-receive-fee]
+
+    DurableCashuDeliverySubmission:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, deliveryId, accountSubject, recipientKind, purpose, destinationId, productBindingSha256, mintUrl, unit, requestedAmount, creditPolicy, tokenSha256, tokenEncodedLength, token]
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+        deliveryId:
+          type: string
+          format: uuid
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$'
+          description: Lowercase canonical UUID delivery identifier.
+        accountSubject:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII subject identifier. NUL is invalid.
+        recipientKind:
+          $ref: '#/components/schemas/DurableCashuRecipientKind'
+        purpose:
+          $ref: '#/components/schemas/DurableCashuDeliveryPurpose'
+        destinationId:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII destination identifier. NUL is invalid.
+        productBindingSha256:
+          $ref: '#/components/schemas/Sha256Digest'
+        mintUrl:
+          type: string
+          format: uri
+          maxLength: 512
+          pattern: '^https?://[^/?#:@]+(:[0-9]+)?$'
+          description: Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
+        unit:
+          type: string
+          enum: [sat, msat]
+        requestedAmount:
+          type: string
+          pattern: '^[1-9][0-9]{0,18}$'
+          description: Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        creditPolicy:
+          $ref: '#/components/schemas/DurableCashuCreditPolicy'
+        tokenSha256:
+          $ref: '#/components/schemas/Sha256Digest'
+        tokenEncodedLength:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 61440
+        token:
+          type: string
+          minLength: 1
+          maxLength: 61440
+          pattern: '^cashuB[A-Za-z0-9_-]+$'
+          writeOnly: true
+
+    DurableCashuDeliveryImmutableTuple:
+      type: object
+      additionalProperties: false
+      description: >
+        Tuple fingerprint input order is schemaVersion, deliveryId, accountSubject,
+        recipientKind, purpose, destinationId, productBindingSha256, mintUrl, unit,
+        requestedAmount, creditPolicy, tokenSha256, tokenEncodedLength. SHA-256 uses
+        UTF-8 fields joined by NUL after the domain string
+        "bitcaster/durable-cashu-delivery/v1".
+      required: [schemaVersion, deliveryId, accountSubject, recipientKind, purpose, destinationId, productBindingSha256, mintUrl, unit, requestedAmount, creditPolicy, tokenSha256, tokenEncodedLength]
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+        deliveryId:
+          type: string
+          format: uuid
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          description: Lowercase canonical UUID delivery identifier.
+        accountSubject:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII subject identifier. NUL is invalid.
+        recipientKind:
+          $ref: '#/components/schemas/DurableCashuRecipientKind'
+        purpose:
+          $ref: '#/components/schemas/DurableCashuDeliveryPurpose'
+        destinationId:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII destination identifier. NUL is invalid.
+        productBindingSha256:
+          $ref: '#/components/schemas/Sha256Digest'
+        mintUrl:
+          type: string
+          format: uri
+          maxLength: 512
+          pattern: '^https?://[^/?#:@]+(:[0-9]+)?$'
+          description: Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
+        unit:
+          type: string
+          enum: [sat, msat]
+        requestedAmount:
+          type: string
+          pattern: '^[1-9][0-9]{0,18}$'
+          description: Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        creditPolicy:
+          $ref: '#/components/schemas/DurableCashuCreditPolicy'
+        tokenSha256:
+          $ref: '#/components/schemas/Sha256Digest'
+        tokenEncodedLength:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 61440
+
+    DurableCashuDeliveryResult:
+      type: object
+      additionalProperties: false
+      required: [creditedAmount, receiveFee, creditVerification, receiveOperationId, receivedAt]
+      dependentRequired:
+        businessEventId: [businessEventAt]
+        businessEventAt: [businessEventId]
+      properties:
+        creditedAmount:
+          type: string
+          pattern: '^[0-9]{1,19}$'
+          description: Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        receiveFee:
+          type: string
+          pattern: '^[0-9]{1,19}$'
+          description: Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        creditVerification:
+          $ref: '#/components/schemas/DurableCashuCreditVerification'
+        receiveOperationId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII receive operation identifier. NUL is invalid.
+        receivedAt:
+          type: string
+          format: date-time
+        businessEventId:
+          type: string
+          x-nullable: true
+          minLength: 1
+          maxLength: 256
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII business event identifier. NUL is invalid. This field requires businessEventAt and is valid only for a credited state.
+        businessEventAt:
+          type: string
+          format: date-time
+          x-nullable: true
+          description: Business event time. This field requires businessEventId and is valid only for a credited state.
+
+    DurableCashuDeliveryStatus:
+      type: object
+      additionalProperties: false
+      description: >
+        Delivery state. A pending state has a null result. A received state has a
+        receive result and no business event. A credited state has a receive result
+        and both business event fields. SDK decoders enforce these paired fields.
+      required: [delivery, tupleFingerprint, state, result]
+      properties:
+        delivery:
+          $ref: '#/components/schemas/DurableCashuDeliveryImmutableTuple'
+        tupleFingerprint:
+          $ref: '#/components/schemas/Sha256Digest'
+        state:
+          $ref: '#/components/schemas/DurableCashuDeliveryState'
+        result:
+          x-nullable: true
+          oneOf:
+            - $ref: '#/components/schemas/DurableCashuDeliveryResult'
+            - type: 'null'
+      allOf:
+        - if:
+            properties: { state: { const: pending } }
+          then:
+            properties: { result: { type: 'null' } }
+        - if:
+            properties: { state: { const: received } }
+          then:
+            properties:
+              result:
+                allOf:
+                  - $ref: '#/components/schemas/DurableCashuDeliveryResult'
+                  - not:
+                      anyOf:
+                        - required: [businessEventId]
+                        - required: [businessEventAt]
+        - if:
+            properties: { state: { const: credited } }
+          then:
+            properties:
+              result:
+                allOf:
+                  - $ref: '#/components/schemas/DurableCashuDeliveryResult'
+                  - required: [businessEventId, businessEventAt]
 
     AssetMonitoringUnit:
       type: string

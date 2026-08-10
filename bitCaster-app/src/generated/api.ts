@@ -380,6 +380,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cashu-deliveries/{deliveryId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one authenticated durable Cashu delivery status */
+        get: operations["getDurableCashuDeliveryStatus"];
+        put?: never;
+        /** Submit one authenticated durable Cashu delivery */
+        post: operations["submitDurableCashuDelivery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/creators/{pubkey}/markets": {
         parameters: {
             query?: never;
@@ -630,6 +648,101 @@ export interface components {
     schemas: {
         /** @description Canonical lowercase SHA-256 digest. */
         Sha256Digest: string;
+        /** @enum {string} */
+        DurableCashuRecipientKind: "matching-engine";
+        /** @enum {string} */
+        DurableCashuDeliveryPurpose: "market-funding" | "participation-score";
+        /** @enum {string} */
+        DurableCashuCreditPolicy: "exact-amount" | "net-of-receive-fee";
+        /** @enum {string} */
+        DurableCashuDeliveryState: "pending" | "received" | "credited";
+        /** @enum {string} */
+        DurableCashuCreditVerification: "exact-amount" | "net-of-receive-fee";
+        DurableCashuDeliverySubmission: {
+            /** @enum {integer} */
+            schemaVersion: 1;
+            /**
+             * Format: uuid
+             * @description Lowercase canonical UUID delivery identifier.
+             */
+            deliveryId: string;
+            /** @description Bounded ASCII subject identifier. NUL is invalid. */
+            accountSubject: string;
+            recipientKind: components["schemas"]["DurableCashuRecipientKind"];
+            purpose: components["schemas"]["DurableCashuDeliveryPurpose"];
+            /** @description Bounded ASCII destination identifier. NUL is invalid. */
+            destinationId: string;
+            productBindingSha256: components["schemas"]["Sha256Digest"];
+            /**
+             * Format: uri
+             * @description Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
+             */
+            mintUrl: string;
+            /** @enum {string} */
+            unit: "sat" | "msat";
+            /** @description Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
+            requestedAmount: string;
+            creditPolicy: components["schemas"]["DurableCashuCreditPolicy"];
+            tokenSha256: components["schemas"]["Sha256Digest"];
+            /** Format: int32 */
+            tokenEncodedLength: number;
+            token: string;
+        };
+        /** @description Tuple fingerprint input order is schemaVersion, deliveryId, accountSubject, recipientKind, purpose, destinationId, productBindingSha256, mintUrl, unit, requestedAmount, creditPolicy, tokenSha256, tokenEncodedLength. SHA-256 uses UTF-8 fields joined by NUL after the domain string "bitcaster/durable-cashu-delivery/v1". */
+        DurableCashuDeliveryImmutableTuple: {
+            /** @enum {integer} */
+            schemaVersion: 1;
+            /**
+             * Format: uuid
+             * @description Lowercase canonical UUID delivery identifier.
+             */
+            deliveryId: string;
+            /** @description Bounded ASCII subject identifier. NUL is invalid. */
+            accountSubject: string;
+            recipientKind: components["schemas"]["DurableCashuRecipientKind"];
+            purpose: components["schemas"]["DurableCashuDeliveryPurpose"];
+            /** @description Bounded ASCII destination identifier. NUL is invalid. */
+            destinationId: string;
+            productBindingSha256: components["schemas"]["Sha256Digest"];
+            /**
+             * Format: uri
+             * @description Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
+             */
+            mintUrl: string;
+            /** @enum {string} */
+            unit: "sat" | "msat";
+            /** @description Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
+            requestedAmount: string;
+            creditPolicy: components["schemas"]["DurableCashuCreditPolicy"];
+            tokenSha256: components["schemas"]["Sha256Digest"];
+            /** Format: int32 */
+            tokenEncodedLength: number;
+        };
+        DurableCashuDeliveryResult: {
+            /** @description Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
+            creditedAmount: string;
+            /** @description Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
+            receiveFee: string;
+            creditVerification: components["schemas"]["DurableCashuCreditVerification"];
+            /** @description Bounded ASCII receive operation identifier. NUL is invalid. */
+            receiveOperationId: string;
+            /** Format: date-time */
+            receivedAt: string;
+            /** @description Bounded ASCII business event identifier. NUL is invalid. This field requires businessEventAt and is valid only for a credited state. */
+            businessEventId?: string;
+            /**
+             * Format: date-time
+             * @description Business event time. This field requires businessEventId and is valid only for a credited state.
+             */
+            businessEventAt?: string;
+        };
+        /** @description Delivery state. A pending state has a null result. A received state has a receive result and no business event. A credited state has a receive result and both business event fields. SDK decoders enforce these paired fields. */
+        DurableCashuDeliveryStatus: {
+            delivery: components["schemas"]["DurableCashuDeliveryImmutableTuple"];
+            tupleFingerprint: components["schemas"]["Sha256Digest"];
+            state: components["schemas"]["DurableCashuDeliveryState"];
+            result: components["schemas"]["DurableCashuDeliveryResult"] | null;
+        } & (unknown & unknown & unknown);
         /**
          * @description Canonical Cashu unit for a monitored asset or its display base asset.
          * @enum {string}
@@ -1729,6 +1842,8 @@ export interface components {
         ConditionId: string;
         /** @description Canonical local durable wallet identifier. */
         AssetMonitoringWalletId: string;
+        /** @description Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId. */
+        DurableCashuDeliveryId: string;
     };
     requestBodies: never;
     headers: {
@@ -2582,6 +2697,133 @@ export interface operations {
                 content?: never;
             };
             /** @description Wallet-service payment error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getDurableCashuDeliveryStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId. */
+                deliveryId: components["parameters"]["DurableCashuDeliveryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Delivery status. The bearer token is never returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DurableCashuDeliveryStatus"];
+                };
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The delivery belongs to a different subject. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No delivery exists for deliveryId. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery status rate limit exceeded. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The durable recipient is unavailable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitDurableCashuDelivery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId. */
+                deliveryId: components["parameters"]["DurableCashuDeliveryId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DurableCashuDeliverySubmission"];
+            };
+        };
+        responses: {
+            /** @description The immutable delivery request was accepted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DurableCashuDeliveryStatus"];
+                };
+            };
+            /** @description The delivery request is invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid authentication. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated subject differs from accountSubject. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description deliveryId is already bound to a different immutable tuple. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery submission rate limit exceeded. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The durable recipient is unavailable. */
             502: {
                 headers: {
                     [name: string]: unknown;

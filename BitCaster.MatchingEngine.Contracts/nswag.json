@@ -15,6 +15,7 @@
       "generateDefaultValues": true,
       "generateDataAnnotations": false,
       "generateOptionalPropertiesAsNullable": true,
+      "generateNullableReferenceTypes": true,
       "namespace": "BitCaster.MatchingEngine.Contracts",
       "classStyle": "Record",
       "jsonLibrary": "SystemTextJson",

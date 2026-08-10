@@ -195,6 +195,10 @@
       "types": "./dist/durableOutgoingCashuTransfer.d.ts",
       "import": "./dist/durableOutgoingCashuTransfer.js"
     },
+    "./durableRecipientDelivery": {
+      "types": "./dist/durableRecipientDelivery.d.ts",
+      "import": "./dist/durableRecipientDelivery.js"
+    },
     "./durableBolt11MintQuote": {
       "types": "./dist/durableBolt11MintQuote.d.ts",
       "import": "./dist/durableBolt11MintQuote.js"
