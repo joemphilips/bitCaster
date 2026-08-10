@@ -32,6 +32,10 @@ import {
 } from '../src/durableCustodyMintResult.ts'
 import { serializeDurableCustodyOutput } from '../src/durableCustodyProofOperation.ts'
 import {
+  addDurableWalletProofTransitionMetadata,
+  createDurableWalletProofTransition,
+} from '../src/durableWalletProofTransition.ts'
+import {
   redeemOutcomeLegWithOperation,
   type AuthenticatedCtfRedeemTerminalEvidence,
 } from '../src/ctfRedeem.ts'
@@ -343,7 +347,18 @@ test('rejects foreign terminal mint rejections and leaves unknown failures activ
 
 test('accepts and verifies an exact wallet receive operation', () => {
   const send = preparedSend('receive:1')
-  const operation = { ...send.operation, kind: 'wallet-receive' as const }
+  const operation = {
+    ...send.operation,
+    kind: 'wallet-receive' as const,
+    metadata: addDurableWalletProofTransitionMetadata(
+      { unit: 'sat' },
+      createDurableWalletProofTransition({
+        inputSource: 'wallet',
+        plannedOutputLabels: ['keep'],
+        resultGroups: { keep: { kind: 'wallet', asset: 'regular', reservedBy: null } },
+      }),
+    ),
+  }
   const authority = prepareDurableCustodyMintOperationAuthority({
     operation,
     keysets: send.authority.keysets,

@@ -18,14 +18,19 @@ import {
   requireDurableWalletOperationFromCustody,
   runDurableWalletMintOperation,
   runDurableWalletReceiveOperation,
+  runDurableWalletSendOperation,
   hydrateDurableWalletMintPreview,
+  hydrateDurableWalletSendPreview,
   serializeDurableWalletMintOperation,
   serializeDurableWalletReceiveOperation,
+  serializeDurableWalletSendOperation,
   toDurableCustodyProofOperationInput,
   type DurableWalletMintOperationSnapshot,
   type DurableWalletMintOperationStore,
   type DurableWalletReceiveOperationSnapshot,
   type DurableWalletReceiveOperationStore,
+  type DurableWalletSendOperationSnapshot,
+  type DurableWalletSendOperationStore,
 } from '../src/durableWalletOperation.ts'
 
 test('wallet mint preview roundtrips exact request and private output authority', () => {
@@ -74,6 +79,72 @@ test('wallet mint preview roundtrips exact request and private output authority'
       }),
     /conflicts/,
   )
+})
+
+test('wallet send runner executes only the persisted input and output authority', async () => {
+  const input: Proof = {
+    id: 'keyset-1',
+    amount: Amount.from('2'),
+    secret: 'send-input',
+    C: 'input-C',
+  }
+  const sendOutput = OutputData.createSingleData('2', 'keyset-1', 'send-output', 2n)
+  const operation = serializeDurableWalletSendOperation({
+    operationId: 'wallet-send-runner',
+    mintUrl: 'https://mint.example',
+    unit: 'sat',
+    preview: {
+      amount: Amount.from('2'),
+      fees: Amount.from('0'),
+      keysetId: 'keyset-1',
+      inputs: [input],
+      sendOutputs: [sendOutput],
+      keepOutputs: [],
+      unselectedProofs: [],
+    },
+  })
+  const sent: Proof = {
+    id: 'keyset-1',
+    amount: Amount.from('2'),
+    secret: 'send-output',
+    C: 'send-C',
+  }
+  let suppliedPreview: SwapPreview | null = null
+  const snapshot: DurableWalletSendOperationSnapshot = {
+    operation,
+    state: 'prepared',
+    result: null,
+  }
+  const store: DurableWalletSendOperationStore = {
+    async loadOperation() {
+      return snapshot
+    },
+    async persistCompletedResult(input) {
+      assert.deepEqual(input.result.send, [sent])
+      return 'completed'
+    },
+  }
+
+  const result = await runDurableWalletSendOperation({
+    mode: 'execute',
+    operationId: operation.operationId,
+    store,
+    wallet: {
+      async checkProofsStates() {
+        throw new Error('execute must not classify inputs first')
+      },
+      async completeSwap(preview) {
+        suppliedPreview = preview
+        return { keep: [], send: [sent] }
+      },
+    },
+    async restoreExactOutputs() {
+      throw new Error('execute must not restore outputs')
+    },
+  })
+
+  assert.equal(result.state, 'completed')
+  assert.deepEqual(suppliedPreview, hydrateDurableWalletSendPreview(operation))
 })
 
 test('wallet mint restart replays only the persisted preview', async () => {
@@ -405,7 +476,7 @@ test('wallet receive binds its exact deterministic derivation range', () => {
   )
 })
 
-test('wallet receive rejects 129 proofs or outputs before durable or mint effects', async () => {
+test('wallet receive rejects 513 proofs or outputs before durable or mint effects', async () => {
   const base = receivePreview(1)
   const proof = base.inputs[0]!
   const output = base.keepOutputs![0]!
@@ -414,44 +485,44 @@ test('wallet receive rejects 129 proofs or outputs before durable or mint effect
   assert.throws(
     () =>
       serializeDurableWalletReceiveOperation({
-        operationId: 'wallet-receive-129-inputs',
+        operationId: 'wallet-receive-513-inputs',
         mintUrl: 'https://mint.example',
         unit: 'sat',
         preview: {
           ...base,
-          inputs: Array.from({ length: 129 }, (_, index) => ({
+          inputs: Array.from({ length: 513 }, (_, index) => ({
             ...proof,
             secret: `input-${index}`,
           })),
         },
       }),
-    /128|limit/,
+    /512|limit/,
   )
   assert.throws(
     () =>
       serializeDurableWalletReceiveOperation({
-        operationId: 'wallet-receive-129-outputs',
+        operationId: 'wallet-receive-513-outputs',
         mintUrl: 'https://mint.example',
         unit: 'sat',
         preview: {
           ...base,
-          keepOutputs: Array.from({ length: 129 }, () => output),
+          keepOutputs: Array.from({ length: 513 }, () => output),
         },
       }),
-    /128|limit/,
+    /512|limit/,
   )
   assert.deepEqual(effects, effectCounters())
 })
 
-test('wallet receive accepts exactly 128 inputs and successor proofs', async () => {
-  const operation = receiveOperation('128', 128, 128)
+test('wallet receive accepts exactly 512 inputs and successor proofs', async () => {
+  const operation = receiveOperation('512', 512, 512)
   const result = receiveResult(operation)
   const harness = receiveHarness({ operation, swap: result })
 
   const settled = await runReceive(operation, harness, 'execute')
 
-  assert.equal(operation.preview.inputs.length, 128)
-  assert.equal(settled.proofs.length, 128)
+  assert.equal(operation.preview.inputs.length, 512)
+  assert.equal(settled.proofs.length, 512)
   assert.deepEqual(harness.calls, { loads: 1, persists: 1, checks: 0, swaps: 1, restores: 0 })
 })
 
@@ -544,9 +615,9 @@ test('wallet receive rejects invalid mint results before persistence', async () 
       error: /exact/,
     },
     {
-      name: '129 proofs',
+      name: '513 proofs',
       operation: single,
-      keep: Array.from({ length: 129 }, (_, index) => ({ ...proof!, secret: `foreign-${index}` })),
+      keep: Array.from({ length: 513 }, (_, index) => ({ ...proof!, secret: `foreign-${index}` })),
       error: /limit/,
     },
   ]

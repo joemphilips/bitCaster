@@ -191,6 +191,10 @@
       "types": "./dist/durableWalletOperation.d.ts",
       "import": "./dist/durableWalletOperation.js"
     },
+    "./durableOutgoingCashuTransfer": {
+      "types": "./dist/durableOutgoingCashuTransfer.d.ts",
+      "import": "./dist/durableOutgoingCashuTransfer.js"
+    },
     "./durableBolt11MintQuote": {
       "types": "./dist/durableBolt11MintQuote.d.ts",
       "import": "./dist/durableBolt11MintQuote.js"
