@@ -1,5 +1,6 @@
 import { isBlsKeyset, type Proof, type ProofState, type SwapPreview } from "@cashu/cashu-ts";
 import {
+  acknowledgeDurableOutgoingCashuRecipient,
   admitDurableOutgoingCashuToken,
   createDurableOutgoingCashuTransfer,
   decodeDurableOutgoingCashuTransfer,
@@ -12,6 +13,7 @@ import {
   type DurableOutgoingCashuDuePage,
   type DurableOutgoingCashuRecoveryCursor,
   type DurableOutgoingCashuTransfer,
+  type DurableOutgoingCashuRecipientAcknowledgement,
 } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import {
   createDurableCustodyProofOperation,
@@ -84,6 +86,8 @@ export interface BrowserDurableOutgoingCashuContext {
 
 export interface ExecuteBrowserDurableOutgoingCashuTransferInput {
   readonly transfer: Omit<DurableOutgoingCashuCoordinatorInput["transfer"], "walletScopeId">;
+  /** Reuse one exact durable-recipient product while the wallet lock is held. */
+  readonly reuseRecipientBinding?: boolean;
   /** This callback may select a plan once. Recovery never calls it. */
   readonly prepareWalletSendOperation: () => Promise<DurableWalletSendOperation>;
   /** Exact locators align with `preview.keepOutputs`; recovery never recalculates them. */
@@ -101,6 +105,18 @@ export async function executeBrowserDurableOutgoingCashuTransfer(
   const adapter = new BrowserDurableCustodyAdapter(input.context.database ?? db);
   return withBrowserOutgoingScope(input.context, scope.scopeId, async (owner) => {
     input.context.requireCapturedProfile();
+    const existing = await findReusableRecipientTransfer(input, scope.scopeId);
+    if (existing !== null) {
+      return runBrowserOutgoingCoordinator({
+        context: input.context,
+        adapter,
+        owner,
+        wallet: input.wallet,
+        restoreExactOutputs: input.restoreExactOutputs,
+        transfer: existing,
+        mode: "recover",
+      });
+    }
     const operation = await input.prepareWalletSendOperation();
     const transfer = await prepareBrowserOutgoingTransfer({ input, adapter, owner, operation });
     input.context.requireCapturedProfile();
@@ -116,6 +132,28 @@ export async function executeBrowserDurableOutgoingCashuTransfer(
     input.context.requireCapturedProfile();
     return persisted;
   });
+}
+
+async function findReusableRecipientTransfer(
+  input: ExecuteBrowserDurableOutgoingCashuTransferInput,
+  scopeId: string,
+): Promise<DurableOutgoingCashuTransfer | null> {
+  if (!input.reuseRecipientBinding) return null;
+  if (input.transfer.deliveryIntent.policy !== "durable-recipient-ack") {
+    throw new Error("browser outgoing recipient reuse requires a durable-recipient intent");
+  }
+  const rows = await (input.context.database ?? db).outgoingCashuTransfers
+    .where("[scopeId+recipientBinding+transferId]")
+    .between(
+      [scopeId, input.transfer.deliveryIntent.opaqueProductBinding, ""],
+      [scopeId, input.transfer.deliveryIntent.opaqueProductBinding, CURSOR_HIGH],
+      true,
+      true,
+    )
+    .limit(2)
+    .toArray();
+  if (rows.length > 1) throw new Error("browser outgoing recipient binding is ambiguous");
+  return rows.length === 0 ? null : decodeOutgoingRow(scopeId, rows[0]!);
 }
 
 /** Recover one exact durable transfer. This function never selects proofs or presents a token. */
@@ -146,6 +184,74 @@ export async function recoverBrowserDurableOutgoingCashuTransfer(input: {
   });
   input.context.requireCapturedProfile();
   return recovered;
+}
+
+/** Find at most one durable-recipient transfer for one exact product binding. */
+export async function findBrowserDurableOutgoingCashuTransferByRecipientBinding(input: {
+  readonly productBindingSha256: string;
+  readonly context: BrowserDurableOutgoingCashuContext;
+}): Promise<DurableOutgoingCashuTransfer | null> {
+  if (!/^[0-9a-f]{64}$/.test(input.productBindingSha256)) {
+    throw new Error("browser outgoing recipient binding is invalid");
+  }
+  const scope = browserWalletScope(input.context.seed);
+  input.context.requireCapturedProfile();
+  const rows = await (input.context.database ?? db).outgoingCashuTransfers
+    .where("[scopeId+recipientBinding+transferId]")
+    .between(
+      [scope.scopeId, input.productBindingSha256, ""],
+      [scope.scopeId, input.productBindingSha256, CURSOR_HIGH],
+      true,
+      true,
+    )
+    .limit(2)
+    .toArray();
+  if (rows.length > 1) {
+    throw new Error("browser outgoing recipient binding is ambiguous");
+  }
+  return rows.length === 0 ? null : decodeOutgoingRow(scope.scopeId, rows[0]!);
+}
+
+/** Persist one verified recipient receipt with profile fencing and revision CAS. */
+export async function acknowledgeBrowserDurableOutgoingCashuRecipient(input: {
+  readonly transfer: DurableOutgoingCashuTransfer;
+  readonly receipt: DurableOutgoingCashuRecipientAcknowledgement;
+  readonly context: BrowserDurableOutgoingCashuContext;
+}): Promise<DurableOutgoingCashuTransfer> {
+  const scope = browserWalletScope(input.context.seed);
+  const database = input.context.database ?? db;
+  return withWalletProfileLock(
+    scope.scopeId,
+    () =>
+      database.transaction("rw", database.outgoingCashuTransfers, async () => {
+        input.context.requireCapturedProfile();
+        const row = await database.outgoingCashuTransfers.get([
+          scope.scopeId,
+          input.transfer.transferId,
+        ]);
+        if (!row) throw new Error("browser outgoing recipient transfer is missing");
+        const current = decodeOutgoingRow(scope.scopeId, row);
+        assertOutgoingRevision(current, input.transfer);
+        const acknowledged = await acknowledgeDurableOutgoingCashuRecipient({
+          transfer: current,
+          receiptAdapter: {
+            readAndPersistReceipt: async ({ transfer }) =>
+              decodeDurableOutgoingCashuTransfer({
+                ...transfer,
+                deliveryState: "recipient-acknowledged",
+                recipientReceipt: input.receipt,
+                revision: transfer.revision + 1,
+              }),
+          },
+        });
+        input.context.requireCapturedProfile();
+        await database.outgoingCashuTransfers.put(
+          outgoingRow(scope.scopeId, acknowledged, row.admissionState),
+        );
+        return acknowledged;
+      }),
+    input.context.lockManager,
+  );
 }
 
 /** Read one stable local-only due page. There is no global pending-transfer count. */
@@ -762,6 +868,7 @@ function outgoingRow(
     localAuthorityState: localAuthorityState(transfer),
     dueAtMs: transfer.recovery.dueAtMs,
     transferId: transfer.transferId,
+    recipientBinding: recipientBinding(transfer),
     admissionState,
     transfer,
   };
@@ -804,12 +911,34 @@ function decodeOutgoingRow(
     row.mintRecoveryState !== mintRecoveryState(transfer) ||
     row.localAuthorityState !== localAuthorityState(transfer) ||
     row.dueAtMs !== transfer.recovery.dueAtMs ||
+    row.recipientBinding !== recipientBinding(transfer) ||
     (row.admissionState !== "reserved" && row.admissionState !== "consumed") ||
     transfer.walletScopeId !== scopeId
   ) {
     throw new Error("browser outgoing transfer row is foreign");
   }
   return transfer;
+}
+
+function recipientBinding(transfer: DurableOutgoingCashuTransfer): string | null {
+  return transfer.deliveryIntent.policy === "durable-recipient-ack"
+    ? transfer.deliveryIntent.opaqueProductBinding
+    : null;
+}
+
+function assertOutgoingRevision(
+  current: DurableOutgoingCashuTransfer,
+  expected: DurableOutgoingCashuTransfer,
+): void {
+  if (current.revision !== expected.revision) {
+    throw new Error("browser outgoing recipient transfer revision is stale");
+  }
+  if (
+    deriveDurableCustodyArtifactFingerprint(current) !==
+    deriveDurableCustodyArtifactFingerprint(expected)
+  ) {
+    throw new Error("browser outgoing recipient transfer revision conflicts");
+  }
 }
 
 function duePage(

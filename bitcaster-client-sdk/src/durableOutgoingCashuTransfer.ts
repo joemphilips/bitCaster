@@ -274,7 +274,7 @@ export interface DurableOutgoingCashuRecipientAcknowledgement {
   readonly requestedAmount: string
   readonly tokenSha256: string
   readonly tokenLength: number
-  readonly durableReceiveAuthority: DurableWalletOperationAuthority
+  readonly receiveOperationId: string
   readonly durableResultFingerprint: string
 }
 
@@ -993,7 +993,7 @@ export function planDurableOutgoingCashuProofStateChunks(input: {
     const remainingProofCapacity =
       reusableProofCapacity + (input.maximumCalls - chunks.length) * input.maximumProofsPerCall
     if (remainingProofCapacity < transfer.token.proofs.length) break
-    for (let proofOffset = 0; proofOffset < transfer.token.proofs.length; ) {
+    for (let proofOffset = 0; proofOffset < transfer.token.proofs.length;) {
       const previous = chunks.at(-1)
       const canAppend = previous !== undefined && previous.mintUrl === transfer.mintUrl
       const available = canAppend ? input.maximumProofsPerCall - previous.proofs.length : 0
@@ -1386,7 +1386,7 @@ function decodeRecipientReceipt(
     'requestedAmount',
     'tokenSha256',
     'tokenLength',
-    'durableReceiveAuthority',
+    'receiveOperationId',
     'durableResultFingerprint',
   ])
   requireText(value.transferId, 'transfer id')
@@ -1399,6 +1399,7 @@ function decodeRecipientReceipt(
     throw new Error('durable outgoing Cashu recipient receipt is invalid')
   }
   requireLimit(value.tokenLength, 1, DURABLE_OUTGOING_CASHU_RECOVERY_BYTES_MAX, 'token byte')
+  requireText(value.receiveOperationId, 'receive operation id')
   return {
     transferId: value.transferId,
     expectedSubject: value.expectedSubject,
@@ -1408,7 +1409,7 @@ function decodeRecipientReceipt(
     requestedAmount: value.requestedAmount,
     tokenSha256: value.tokenSha256,
     tokenLength: value.tokenLength,
-    durableReceiveAuthority: decodeWalletAuthority(value.durableReceiveAuthority),
+    receiveOperationId: value.receiveOperationId,
     durableResultFingerprint: value.durableResultFingerprint,
   }
 }

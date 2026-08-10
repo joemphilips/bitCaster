@@ -297,6 +297,7 @@ it("blocks seed handoff for nonterminal outgoing Cashu authority without deletin
     localAuthorityState: "nonterminal",
     dueAtMs: 1,
     transferId: "outgoing-nonterminal",
+    recipientBinding: null,
     admissionState: "consumed",
     transfer: {} as never,
   });

@@ -188,6 +188,34 @@ export function assertDurableRecipientDeliveryStatusAuthority(input: {
   }
 }
 
+/** Fingerprint the complete public result that authorizes one payer acknowledgement. */
+export function deriveDurableRecipientDeliveryResultFingerprint(
+  value: DurableRecipientDeliveryStatus,
+): string {
+  const status = decodeDurableRecipientDeliveryStatus(value)
+  if (status.result === null) {
+    throw new Error('durable recipient delivery result is pending')
+  }
+  return bytesToHex(
+    sha256(
+      new TextEncoder().encode(
+        [
+          'bitcaster/durable-cashu-delivery-result/v1',
+          status.tupleFingerprint,
+          status.state,
+          status.result.creditedAmount,
+          status.result.receiveFee,
+          status.result.creditVerification,
+          status.result.receiveOperationId,
+          status.result.receivedAt,
+          status.result.businessEventId ?? '',
+          status.result.businessEventAt ?? '',
+        ].join('\0'),
+      ),
+    ),
+  )
+}
+
 /** Safe diagnostics. Bearer token material is excluded. */
 export function redactedDurableRecipientDeliveryMetadata(
   input: DurableRecipientDeliverySubmission,

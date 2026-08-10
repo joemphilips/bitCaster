@@ -199,7 +199,7 @@ test('does not expose a token in redacted metadata and requires a persisted reci
             requestedAmount: admitted.requestedAmount,
             tokenSha256: admitted.token!.sha256,
             tokenLength: admitted.token!.encodedLength,
-            durableReceiveAuthority: admitted.walletSendOperationAuthority,
+            receiveOperationId: 'wallet-service-receive-1',
             durableResultFingerprint: admitted.token!.sha256,
           },
           revision: transfer.revision + 1,

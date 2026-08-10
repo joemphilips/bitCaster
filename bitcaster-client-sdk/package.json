@@ -199,6 +199,10 @@
       "types": "./dist/durableRecipientDelivery.d.ts",
       "import": "./dist/durableRecipientDelivery.js"
     },
+    "./marketFundingDelivery": {
+      "types": "./dist/marketFundingDelivery.d.ts",
+      "import": "./dist/marketFundingDelivery.js"
+    },
     "./durableBolt11MintQuote": {
       "types": "./dist/durableBolt11MintQuote.d.ts",
       "import": "./dist/durableBolt11MintQuote.js"

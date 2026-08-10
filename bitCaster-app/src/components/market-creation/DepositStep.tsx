@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { AlertTriangle, Check, Info } from "lucide-react";
+import { AlertTriangle, Check, Info, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { LocalWalletPayButton } from "@/components/shared/LocalWalletPayButton";
+import {
+  BrowserMarketFundingInsufficientBalanceError,
+  executeBrowserMarketFundingDelivery,
+  type MarketFundingDeliveryProgress,
+} from "@/lib/browserMarketFundingDelivery";
+import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
+import { TopUpOverlay } from "@/components/market-detail/TopUpOverlay";
 import { resolveCreatorPubkey } from "@/lib/identityOps";
 import {
   BINARY_AMM_FUNDING_TIERS,
@@ -10,36 +16,15 @@ import {
   fundingTierBudget,
   type AmmFundingTierId,
 } from "@/lib/marketMakerFunding";
-import { getDepositStatus, requestEcashDeposit, type DepositState } from "@/lib/markets";
 import { useSettingsStore } from "@/stores/settings";
+import { useBalance, useWalletStore } from "@/stores/wallet";
 import type { MarketBaseAsset } from "@/types/market-creation";
 import { estimateDepthPreview } from "@bitcaster/client-sdk/lmsrDomain";
 import {
   DEFAULT_SAT_MARKET_DIVISIBILITY,
   defaultCollateralUnit,
+  formatMarketSubunits,
 } from "@bitcaster/client-sdk/marketUnits";
-
-function isFundingDepositComplete(state: DepositState | null | undefined): boolean {
-  if (state == null) return false;
-  switch (state) {
-    case "requested":
-    case "failed":
-      return false;
-    case "paid":
-    case "credited":
-      return true;
-    default:
-      return assertNeverDepositState(state);
-  }
-}
-
-function isFundingDepositPending(state: DepositState | null | undefined): boolean {
-  return state === "requested";
-}
-
-function assertNeverDepositState(state: never): never {
-  throw new Error(`Unhandled deposit state: ${String(state)}`);
-}
 
 function customBudgetInputToSubunits(customBudgetInput: number): number {
   return Math.max(0, Math.floor(customBudgetInput * 1_000));
@@ -66,10 +51,15 @@ export function DepositStep({
   const [selectedTier, setSelectedTier] = useState<AmmFundingTierId>("standard");
   const [customBudgetInput, setCustomBudgetInput] = useState(0);
   const [stage, setStage] = useState<"created" | "funding">("created");
-  const [depositState, setDepositState] = useState<DepositState | null>(null);
-  const [activeDepositId, setActiveDepositId] = useState<string | null>(null);
+  const [deliveryProgress, setDeliveryProgress] = useState<MarketFundingDeliveryProgress | null>(
+    null,
+  );
+  const [fundingBusy, setFundingBusy] = useState(false);
+  const [topUpStage, setTopUpStage] = useState<"closed" | "modal" | "overlay">("closed");
   const [error, setError] = useState<string | null>(null);
   const cashuUnit = defaultCollateralUnit(baseAsset);
+  const activeMintUrl = useWalletStore((state) => state.activeMintUrl);
+  const balance = useBalance(activeMintUrl, { baseAsset });
   const divisibility = DEFAULT_SAT_MARKET_DIVISIBILITY;
   const customBudgetSubunits = customBudgetInputToSubunits(customBudgetInput);
 
@@ -101,79 +91,58 @@ export function DepositStep({
   }, [conditionId, navigate]);
 
   useEffect(() => {
-    if (!isFundingDepositComplete(depositState)) return undefined;
+    if (deliveryProgress !== "credited") return undefined;
     const timer = window.setTimeout(continueToMarket, 5_000);
     return () => window.clearTimeout(timer);
-  }, [continueToMarket, depositState]);
+  }, [continueToMarket, deliveryProgress]);
 
-  useEffect(() => {
-    if (!activeDepositId || !isFundingDepositPending(depositState)) return undefined;
-    let cancelled = false;
-    let timer: number | undefined;
-    const schedulePoll = () => {
-      timer = window.setTimeout(poll, 2_000);
-    };
-    const poll = async () => {
-      try {
-        const status = await getDepositStatus(conditionId, activeDepositId);
-        if (cancelled) return;
-        if (status == null) {
-          schedulePoll();
-          return;
-        }
-        setDepositState(status.state);
-        if (isFundingDepositPending(status.state)) {
-          schedulePoll();
-        } else {
-          setActiveDepositId(null);
-        }
-      } catch {
-        if (!cancelled) {
-          setError(t("marketCreation.statusPollError"));
-          schedulePoll();
-        }
+  const submitMarketFunding = useCallback(async () => {
+    if (budgetSats < 1 || fundingBusy || deliveryProgress === "credited") return;
+    setError(null);
+    setFundingBusy(true);
+    try {
+      const settings = useSettingsStore.getState();
+      const accountSubject = resolveCreatorPubkey({
+        nostrSignerMode: settings.nostrSignerMode,
+        nsecSecret: settings.nsecSecret,
+        nostrProfilePubkey: settings.nostrProfile?.pubkey,
+      });
+      if (!accountSubject) throw new Error("The active wallet identity is unavailable.");
+      const result = await executeBrowserMarketFundingDelivery({
+        accountSubject,
+        conditionId,
+        mintUrl: activeMintUrl,
+        unit: cashuUnit,
+        divisibility,
+        requestedAmount: String(budgetSats),
+        availableAmount: balance,
+      });
+      const persistedAmount = Number(result.transfer.requestedAmount);
+      if (persistedAmount !== budgetSats) {
+        setSelectedTier("custom");
+        setCustomBudgetInput(persistedAmount / 1_000);
       }
-    };
-    schedulePoll();
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [activeDepositId, conditionId, depositState, t]);
-
-  const onSubmitLocalWalletToken = useCallback(
-    async (token: string) => {
-      if (budgetSats < 1) return { accepted: false } as const;
-      setError(null);
-      setDepositState(null);
-      setActiveDepositId(null);
-      try {
-        const settings = useSettingsStore.getState();
-        const creatorPubkey = resolveCreatorPubkey({
-          nostrSignerMode: settings.nostrSignerMode,
-          nsecSecret: settings.nsecSecret,
-          nostrProfilePubkey: settings.nostrProfile?.pubkey,
-        });
-        const result = await requestEcashDeposit(conditionId, budgetSats, token, {
-          creatorPubkey,
-          fundAmm: true,
-          unit: cashuUnit,
-          divisibility,
-        });
-        setDepositState(result.state);
-        if (isFundingDepositPending(result.state)) {
-          setActiveDepositId(result.depositId);
-        }
-        return result.state === "failed"
-          ? ({ accepted: false } as const)
-          : ({ accepted: true } as const);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : t("marketCreation.ecashSubmitError"));
-        throw err;
+      setDeliveryProgress(result.progress);
+    } catch (err) {
+      if (err instanceof BrowserMarketFundingInsufficientBalanceError) {
+        setTopUpStage("modal");
+        return;
       }
-    },
-    [budgetSats, cashuUnit, conditionId, divisibility, t],
-  );
+      setError(err instanceof Error ? err.message : t("marketCreation.ecashSubmitError"));
+    } finally {
+      setFundingBusy(false);
+    }
+  }, [
+    activeMintUrl,
+    balance,
+    budgetSats,
+    cashuUnit,
+    conditionId,
+    deliveryProgress,
+    divisibility,
+    fundingBusy,
+    t,
+  ]);
 
   if (stage === "created") {
     return (
@@ -285,19 +254,13 @@ export function DepositStep({
         <p>{t("marketCreation.ammFundingDisclosure")}</p>
       </div>
 
-      {depositState &&
-        (depositState === "failed" ? (
-          <div className="mb-4 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
-            <p className="font-semibold">{t("marketCreation.depositFailed")}</p>
-            <p className="mt-1">{t("marketCreation.depositFailedHint")}</p>
-          </div>
-        ) : (
-          <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
-            {isFundingDepositComplete(depositState)
-              ? t("marketCreation.statusPaymentReceived")
-              : t("marketCreation.statusAwaitingPayment")}
-          </p>
-        ))}
+      {deliveryProgress && (
+        <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+          {deliveryProgress === "credited"
+            ? t("marketCreation.statusPaymentReceived")
+            : t("marketCreation.statusAwaitingPayment")}
+        </p>
+      )}
 
       {selectedTier === "none" ? (
         <button
@@ -309,23 +272,60 @@ export function DepositStep({
           {t("marketCreation.continueToMarket")}
         </button>
       ) : (
-        <LocalWalletPayButton
-          testId="confirm-amm-funding"
-          amountSubunits={budgetSats}
-          baseAsset={baseAsset}
-          unit={cashuUnit}
-          reservationPurpose="market-funding"
-          pending={isFundingDepositPending(depositState)}
-          failed={depositState === "failed"}
-          disabled={budgetSats < 1 || isFundingDepositComplete(depositState)}
-          onTokenPayment={onSubmitLocalWalletToken}
-        />
+        <button
+          data-testid="confirm-amm-funding"
+          type="button"
+          onClick={() => void submitMarketFunding()}
+          disabled={budgetSats < 1 || fundingBusy || deliveryProgress === "credited"}
+          className="w-full rounded-lg bg-blue-600 px-4 py-3 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+        >
+          {fundingBusy ? (
+            <span className="inline-flex items-center justify-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t("marketCreation.payingFromWallet")}
+            </span>
+          ) : deliveryProgress === "pending" || deliveryProgress === "received" ? (
+            t("marketCreation.retryWalletPayment")
+          ) : (
+            t("marketCreation.payWalletFunding", {
+              amount: formatFundingBudget(budgetSats, baseAsset),
+            })
+          )}
+        </button>
       )}
 
       {error && (
         <p className="mt-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
           {error}
         </p>
+      )}
+
+      {topUpStage === "modal" && (
+        <InsufficientBalanceModal
+          balance={balance}
+          required={budgetSats}
+          title={t("marketCreation.depositWalletTopUpTitle")}
+          requiredDescription={t("marketCreation.depositWalletTopUpRequiredDescription")}
+          formatAmount={(amount) => formatMarketSubunits(amount, baseAsset)}
+          onCancel={() => setTopUpStage("closed")}
+          onTopUp={() => setTopUpStage("overlay")}
+        />
+      )}
+
+      {topUpStage === "overlay" && (
+        <TopUpOverlay
+          deficit={Math.max(budgetSats - balance, 0)}
+          baseAsset={baseAsset}
+          proofUnit={cashuUnit}
+          minimumDescription={t("marketCreation.depositWalletTopUpMinimumDescription", {
+            amount: formatMarketSubunits(Math.max(budgetSats - balance, 0), baseAsset),
+          })}
+          minimumErrorDescription={t("marketCreation.depositWalletTopUpMinimumError", {
+            amount: formatMarketSubunits(Math.max(budgetSats - balance, 0), baseAsset),
+          })}
+          onSuccess={() => setTopUpStage("closed")}
+          onCancel={() => setTopUpStage("closed")}
+        />
       )}
     </div>
   );

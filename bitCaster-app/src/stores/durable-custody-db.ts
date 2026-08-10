@@ -711,6 +711,10 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       row.mintRecoveryState !== mintRecoveryState(transfer) ||
       row.localAuthorityState !== localAuthorityState(transfer) ||
       row.dueAtMs !== transfer.recovery.dueAtMs ||
+      row.recipientBinding !==
+        (transfer.deliveryIntent.policy === "durable-recipient-ack"
+          ? transfer.deliveryIntent.opaqueProductBinding
+          : null) ||
       (row.admissionState !== "reserved" && row.admissionState !== "consumed") ||
       transfer.walletScopeId !== scopeId
     ) {
@@ -740,6 +744,10 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       localAuthorityState: localAuthorityState(transfer),
       dueAtMs: transfer.recovery.dueAtMs,
       transferId: transfer.transferId,
+      recipientBinding:
+        transfer.deliveryIntent.policy === "durable-recipient-ack"
+          ? transfer.deliveryIntent.opaqueProductBinding
+          : null,
       admissionState: row.admissionState,
       transfer,
     });

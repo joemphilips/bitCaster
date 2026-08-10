@@ -10,6 +10,7 @@ import {
   decodeDurableRecipientDeliveryStatus,
   decodeDurableRecipientDeliverySubmission,
   deriveDurableRecipientTokenAllowance,
+  deriveDurableRecipientDeliveryResultFingerprint,
   deriveDurableRecipientTupleFingerprint,
   redactedDurableRecipientDeliveryMetadata,
 } from '../src/durableRecipientDelivery.ts'
@@ -49,6 +50,35 @@ test('roundtrips a strict immutable tuple and stable fingerprint', () => {
     /path/,
   )
   assert.equal(deriveDurableRecipientTupleFingerprint({ ...exact, token: 'foreign' }), fingerprint)
+})
+
+test('fingerprints all decoded public receive and credit evidence', () => {
+  const exact = decodeDurableRecipientDeliverySubmission(submission())
+  const received = decodeDurableRecipientDeliveryStatus({
+    delivery: omitToken(exact),
+    tupleFingerprint: deriveDurableRecipientTupleFingerprint(exact),
+    state: 'received',
+    result: {
+      creditedAmount: '21',
+      receiveFee: '0',
+      creditVerification: 'exact-amount',
+      receiveOperationId: 'receive-1',
+      receivedAt: '2026-08-11T00:00:00.000Z',
+    },
+  })
+  const credited = decodeDurableRecipientDeliveryStatus({
+    ...received,
+    state: 'credited',
+    result: {
+      ...received.result!,
+      businessEventId: 'event-1',
+      businessEventAt: '2026-08-11T00:01:00.000Z',
+    },
+  })
+  assert.notEqual(
+    deriveDurableRecipientDeliveryResultFingerprint(received),
+    deriveDurableRecipientDeliveryResultFingerprint(credited),
+  )
 })
 
 test('rejects conflicting tuple authority and unknown submission fields', () => {

@@ -27,14 +27,21 @@ import {
   serializeDurableWalletSendOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   listBrowserDurableOutgoingCashuDue,
   listBrowserDurableOutgoingCashuDueMints,
   executeBrowserDurableOutgoingCashuTransfer,
+  findBrowserDurableOutgoingCashuTransferByRecipientBinding,
   recoverBrowserDurableOutgoingCashuTransfer,
   recoverBrowserDurableOutgoingCashuDuePage,
 } from "../browserDurableOutgoingCashuTransfer";
-import { BitcasterDB, type BrowserOutgoingCashuTransferRow } from "../../stores/proof-db";
+import {
+  BitcasterDB,
+  getBoundedMarketFundingProofs,
+  MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX,
+  type BrowserOutgoingCashuTransferRow,
+} from "../../stores/proof-db";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import { createBrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
@@ -54,6 +61,52 @@ afterEach(async () => {
 });
 
 describe("browser durable outgoing Cashu store", () => {
+  it("finds one exact recipient binding without scanning other transfers", async () => {
+    const database = createDatabase();
+    const seed = new Uint8Array(64).fill(3);
+    const scope = browserWalletScope(seed);
+    const binding = "a".repeat(64);
+    await database.outgoingCashuTransfers.bulkPut([
+      row(recipientTransfer("recipient", binding, scope.scopeId)),
+      row(transferForScope("other", 0, scope.scopeId)),
+    ]);
+
+    await expect(
+      findBrowserDurableOutgoingCashuTransferByRecipientBinding({
+        productBindingSha256: binding,
+        context: recoveryContext(seed, database),
+      }),
+    ).resolves.toMatchObject({ transferId: "recipient" });
+  });
+
+  it(
+    "bounds largest-first market-funding candidates in a 10,000-proof wallet",
+    async () => {
+      const database = createDatabase();
+      const rows = Array.from({ length: 10_000 }, (_, index) => ({
+        secret: `funding-${index.toString().padStart(5, "0")}`,
+        amount: index + 1,
+        id: KEYSET_ID,
+        C: `C-${index}`,
+        mintUrl: MINT,
+        baseAsset: "sat",
+        unit: "msat" as const,
+      }));
+      await database.proofs.bulkPut(rows);
+
+      const selected = await getBoundedMarketFundingProofs(
+        MINT,
+        { unit: "msat", keysetId: KEYSET_ID },
+        database,
+      );
+
+      expect(selected).toHaveLength(MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX);
+      expect(amountToNumber(selected[0]!.amount)).toBe(10_000);
+      expect(amountToNumber(selected.at(-1)!.amount)).toBe(9_489);
+    },
+    15_000,
+  );
+
   it("orders one mint due page by due time then transfer ID", async () => {
     const database = createDatabase();
     await database.outgoingCashuTransfers.bulkPut([
@@ -435,6 +488,41 @@ describe("browser durable outgoing Cashu store", () => {
     expect(await fixture.database.outgoingCashuTransferAdmissions.count()).toBe(0);
   });
 
+  it("serializes two-tab recipient reuse before proof selection and mint I/O", async () => {
+    const fixture = await executionFixture();
+    const productBinding = "a".repeat(64);
+    const context = { ...fixture.context, lockManager: serialLockManager() };
+    const common = {
+      ...fixture.input,
+      reuseRecipientBinding: true,
+      context,
+      transfer: {
+        ...fixture.input.transfer,
+        deliveryIntent: {
+          policy: "durable-recipient-ack" as const,
+          expectedSubject: "subject-1",
+          opaqueProductBinding: productBinding,
+          tokenBytesLimit: 4 * 1024,
+          tokenProofLimit: 1,
+        },
+      },
+    };
+
+    const [first, second] = await Promise.all([
+      executeBrowserDurableOutgoingCashuTransfer(common),
+      executeBrowserDurableOutgoingCashuTransfer({
+        ...common,
+        transfer: { ...common.transfer, transferId: "execute-2" },
+      }),
+    ]);
+
+    expect(first.transferId).toBe("execute");
+    expect(second.transferId).toBe("execute");
+    expect(fixture.prepareWalletSendOperation).toHaveBeenCalledOnce();
+    expect(fixture.wallet.completeSwap).toHaveBeenCalledOnce();
+    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(1);
+  });
+
   it("rolls back post-mint custody admission and token authority before commit", async () => {
     const fixture = await executionFixture("before-commit");
 
@@ -660,6 +748,28 @@ function transferForScope(
   });
 }
 
+function recipientTransfer(
+  transferId: string,
+  productBindingSha256: string,
+  scopeId: string,
+): DurableOutgoingCashuTransfer {
+  const prepared = transferForScope(transferId, 0, scopeId);
+  return createDurableOutgoingCashuTransfer({
+    transferId,
+    walletScopeId: scopeId,
+    requestedAmount: prepared.requestedAmount,
+    walletSendOperation: prepared.walletSendOperation,
+    deliveryIntent: {
+      policy: "durable-recipient-ack",
+      expectedSubject: "subject-1",
+      opaqueProductBinding: productBindingSha256,
+      tokenBytesLimit: 1024,
+      tokenProofLimit: 1,
+    },
+    dueAtMs: 0,
+  });
+}
+
 function admittedTransfer(transferId: string, scopeId: string): DurableOutgoingCashuTransfer {
   const prepared = transferForScope(transferId, 0, scopeId);
   const output = prepared.walletSendOperation.preview.sendOutputs[0]!;
@@ -697,6 +807,10 @@ function row(transfer: DurableOutgoingCashuTransfer): BrowserOutgoingCashuTransf
         : "nonterminal",
     dueAtMs: transfer.recovery.dueAtMs,
     transferId: transfer.transferId,
+    recipientBinding:
+      transfer.deliveryIntent.policy === "durable-recipient-ack"
+        ? transfer.deliveryIntent.opaqueProductBinding
+        : null,
     admissionState: "consumed",
     transfer,
   };
@@ -716,6 +830,25 @@ function recoveryContext(
     requireCapturedProfile: vi.fn(),
     lockManager,
   };
+}
+
+function serialLockManager(): Pick<LockManager, "request"> {
+  let tail = Promise.resolve();
+  return {
+    request: async (_name, _options, action) => {
+      const prior = tail;
+      let release: () => void = () => {};
+      tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await prior;
+      try {
+        return await action(null as never);
+      } finally {
+        release();
+      }
+    },
+  } as Pick<LockManager, "request">;
 }
 
 async function executionFixture(

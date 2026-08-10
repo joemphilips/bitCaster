@@ -280,6 +280,8 @@ export interface BrowserOutgoingCashuTransferRow {
   localAuthorityState: "nonterminal" | "terminal";
   dueAtMs: number;
   transferId: string;
+  /** A durable-recipient product binding enables one bounded product resume lookup. */
+  recipientBinding: string | null;
   /** Reserved records have a matching local-only physical admission row. */
   admissionState: "reserved" | "consumed";
   transfer: DurableOutgoingCashuTransfer;
@@ -481,8 +483,10 @@ export class BitcasterDB extends Dexie {
         "&[scopeId+paymentMethod+quoteRecordId], [scopeId+paymentMethod+observedState+quoteRecordId], [scopeId+paymentMethod+recoveryState+lastRecoveryAttemptAtMs+quoteRecordId]",
     });
     this.version(12).stores({
+      proofs:
+        "&secret, mintUrl, marketId, conditionId, outcomeCollection, reservedBy, terminalOperationId, [mintUrl+unit+id], [mintUrl+unit+id+amount+secret]",
       outgoingCashuTransfers:
-        "&[scopeId+transferId], [scopeId+mintUrl+mintRecoveryState+dueAtMs+transferId], [scopeId+mintRecoveryState+dueAtMs+mintUrl+transferId], [scopeId+localAuthorityState+transferId]",
+        "&[scopeId+transferId], [scopeId+mintUrl+mintRecoveryState+dueAtMs+transferId], [scopeId+mintRecoveryState+dueAtMs+mintUrl+transferId], [scopeId+localAuthorityState+transferId], [scopeId+recipientBinding+transferId]",
       outgoingCashuTransferAdmissions: "&[scopeId+transferId]",
     });
     this.encryptedWalletBackupEnrollmentResults = this.table(
@@ -563,6 +567,39 @@ export async function getUnitProofs(
     includeReserved: options.includeReserved,
   });
   return proofs.filter((p) => !isCtfProof(p) && normalizeStoredProofUnit(p) === unit);
+}
+
+export const MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX = 512;
+
+/** Read one bounded largest-first candidate set for initial AMM funding. */
+export async function getBoundedMarketFundingProofs(
+  mintUrl: string,
+  options: { unit: CashuProofUnit | string; keysetId: string },
+  database: BitcasterDB = db,
+): Promise<StoredProof[]> {
+  const unit = parseCashuProofUnit(options.unit);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
+  const normalizedMint = normalizeUrl(mintUrl);
+  const rows = await database.proofs
+    .where("[mintUrl+unit+id+amount+secret]")
+    .between(
+      [normalizedMint, unit, options.keysetId, 0, ""],
+      [normalizedMint, unit, options.keysetId, Number.MAX_SAFE_INTEGER, "\uffff"],
+      true,
+      true,
+    )
+    .reverse()
+    .limit(MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX * 2)
+    .toArray();
+  return rows
+    .map(normalizeStoredProof)
+    .filter((proof) => isSpendableStoredProof(proof) && !isCtfProof(proof))
+    .sort(
+      (left, right) =>
+        amountToNumber(right.amount) - amountToNumber(left.amount) ||
+        left.secret.localeCompare(right.secret),
+    )
+    .slice(0, MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX);
 }
 
 export async function getSelectableUnitProofsForKeyset(
