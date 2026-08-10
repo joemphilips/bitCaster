@@ -2705,69 +2705,6 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum SwapFailureKind
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"PartialLockHeld")]
-        PartialLockHeld = 0,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"InsufficientInventory")]
-        InsufficientInventory = 1,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"MintError")]
-        MintError = 2,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"EngineRejected")]
-        EngineRejected = 3,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class SwapFailure
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public SwapFailure(System.Collections.Generic.List<string> @affectedKeysets, string @detail, SwapFailureKind @kind, long? @refundLocktime)
-        {
-            this.Kind = @kind;
-            this.RefundLocktime = @refundLocktime;
-            this.AffectedKeysets = @affectedKeysets;
-            this.Detail = @detail;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("kind")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<SwapFailureKind>))]
-        public SwapFailureKind Kind { get; }
-
-        /// <summary>
-        /// Unix seconds; present when kind is PartialLockHeld.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("refundLocktime")]
-        public long? RefundLocktime { get; }
-
-        /// <summary>
-        /// Primitive outcome/keyset legs affected by a partial lock.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("affectedKeysets")]
-        public System.Collections.Generic.List<string> AffectedKeysets { get; }
-
-        /// <summary>
-        /// Local diagnostic detail; redact from telemetry.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("detail")]
-        public string Detail { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class LiquidityStateResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
@@ -3110,13 +3047,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class ParticipationScoreResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public ParticipationScoreResponse(long @balance, long @consumedTotal, bool @enabled, long @matchDebitScore, long @penaltyTotal, string @pubkey, long @purchasedTotal)
+        public ParticipationScoreResponse(long @balance, long @consumedTotal, bool @enabled, long @matchDebitScore, string @pubkey, long @purchasedTotal)
         {
             this.Pubkey = @pubkey;
             this.Balance = @balance;
             this.PurchasedTotal = @purchasedTotal;
             this.ConsumedTotal = @consumedTotal;
-            this.PenaltyTotal = @penaltyTotal;
             this.MatchDebitScore = @matchDebitScore;
             this.Enabled = @enabled;
         }
@@ -3128,7 +3064,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string Pubkey { get; }
 
         /// <summary>
-        /// Current participation Score balance. May be negative after soft match/penalty debits.
+        /// Current Participation Score balance. May be negative after a durable fill debit.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("balance")]
         public long Balance { get; }
@@ -3140,25 +3076,19 @@ namespace BitCaster.MatchingEngine.Contracts
         public long PurchasedTotal { get; }
 
         /// <summary>
-        /// Total Score consumed by successful match debits.
+        /// Total Score consumed by durable fill debits.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("consumedTotal")]
         public long ConsumedTotal { get; }
 
         /// <summary>
-        /// Total Score consumed by settlement-negligence penalties.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("penaltyTotal")]
-        public long PenaltyTotal { get; }
-
-        /// <summary>
-        /// Configured Score debit charged to the taker when a match lands.
+        /// Configured Score debit charged to each non-exempt participant when a fill is durably reserved. The approved operator service is exempt.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("matchDebitScore")]
         public long MatchDebitScore { get; }
 
         /// <summary>
-        /// Whether match-time Score debit is enabled by the engine.
+        /// Whether durable fill Score debit is enabled by the engine.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("enabled")]
         public bool Enabled { get; }

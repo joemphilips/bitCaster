@@ -52,7 +52,6 @@ const baseScore = {
   balance: 0,
   purchasedTotal: 0,
   consumedTotal: 0,
-  penaltyTotal: 0,
   matchDebitScore: 1,
   enabled: true,
 };

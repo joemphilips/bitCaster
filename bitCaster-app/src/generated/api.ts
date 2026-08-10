@@ -1417,20 +1417,6 @@ export interface components {
             conditionId: string;
             comments: components["schemas"]["MarketComment"][];
         };
-        /** @enum {string} */
-        SwapFailureKind: "PartialLockHeld" | "InsufficientInventory" | "MintError" | "EngineRejected";
-        SwapFailure: {
-            kind: components["schemas"]["SwapFailureKind"];
-            /**
-             * Format: int64
-             * @description Unix seconds; present when kind is PartialLockHeld.
-             */
-            refundLocktime?: number;
-            /** @description Primitive outcome/keyset legs affected by a partial lock. */
-            affectedKeysets?: string[];
-            /** @description Local diagnostic detail; redact from telemetry. */
-            detail: string;
-        };
         LiquidityStateResponse: {
             marketId: string;
             /** Format: int64 */
@@ -1550,7 +1536,7 @@ export interface components {
             pubkey: string;
             /**
              * Format: int64
-             * @description Current participation Score balance. May be negative after soft match/penalty debits.
+             * @description Current Participation Score balance. May be negative after a durable fill debit.
              */
             balance: number;
             /**
@@ -1560,20 +1546,15 @@ export interface components {
             purchasedTotal: number;
             /**
              * Format: int64
-             * @description Total Score consumed by successful match debits.
+             * @description Total Score consumed by durable fill debits.
              */
             consumedTotal: number;
             /**
              * Format: int64
-             * @description Total Score consumed by settlement-negligence penalties.
-             */
-            penaltyTotal: number;
-            /**
-             * Format: int64
-             * @description Configured Score debit charged to the taker when a match lands.
+             * @description Configured Score debit charged to each non-exempt participant when a fill is durably reserved. The approved operator service is exempt.
              */
             matchDebitScore: number;
-            /** @description Whether match-time Score debit is enabled by the engine. */
+            /** @description Whether durable fill Score debit is enabled by the engine. */
             enabled: boolean;
         };
         PayParticipationScoreEcashRequest: {

@@ -3139,35 +3139,6 @@ components:
           items:
             $ref: '#/components/schemas/MarketComment'
 
-    SwapFailureKind:
-      type: string
-      enum:
-        - PartialLockHeld
-        - InsufficientInventory
-        - MintError
-        - EngineRejected
-
-    SwapFailure:
-      type: object
-      required:
-        - kind
-        - detail
-      properties:
-        kind:
-          $ref: '#/components/schemas/SwapFailureKind'
-        refundLocktime:
-          type: integer
-          format: int64
-          description: Unix seconds; present when kind is PartialLockHeld.
-        affectedKeysets:
-          type: array
-          items:
-            type: string
-          description: Primitive outcome/keyset legs affected by a partial lock.
-        detail:
-          type: string
-          description: Local diagnostic detail; redact from telemetry.
-
     LiquidityStateResponse:
       type: object
       required:
@@ -3367,7 +3338,6 @@ components:
         - balance
         - purchasedTotal
         - consumedTotal
-        - penaltyTotal
         - matchDebitScore
         - enabled
       properties:
@@ -3378,7 +3348,7 @@ components:
         balance:
           type: integer
           format: int64
-          description: Current participation Score balance. May be negative after soft match/penalty debits.
+          description: Current Participation Score balance. May be negative after a durable fill debit.
         purchasedTotal:
           type: integer
           format: int64
@@ -3388,20 +3358,15 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Total Score consumed by successful match debits.
-        penaltyTotal:
-          type: integer
-          format: int64
-          minimum: 0
-          description: Total Score consumed by settlement-negligence penalties.
+          description: Total Score consumed by durable fill debits.
         matchDebitScore:
           type: integer
           format: int64
           minimum: 1
-          description: Configured Score debit charged to the taker when a match lands.
+          description: Configured Score debit charged to each non-exempt participant when a fill is durably reserved. The approved operator service is exempt.
         enabled:
           type: boolean
-          description: Whether match-time Score debit is enabled by the engine.
+          description: Whether durable fill Score debit is enabled by the engine.
 
     PayParticipationScoreEcashRequest:
       type: object
