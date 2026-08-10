@@ -2,8 +2,8 @@
   "name": "bitcaster-monorepo",
   "private": true,
   "scripts": {
-    "format": "prettier --write \"{bitCaster-app,bitCaster-doc,bitCaster-swap-protocol,bitcaster-cli,bitcaster-client-sdk,bitcaster-daemon,scripts,test-vectors,tools}/**/*.{js,mjs,cjs,ts,tsx,css,json}\" \"*.{js,mjs,cjs,ts,tsx,json}\"",
-    "format:check": "prettier --check \"{bitCaster-app,bitCaster-doc,bitCaster-swap-protocol,bitcaster-cli,bitcaster-client-sdk,bitcaster-daemon,scripts,test-vectors,tools}/**/*.{js,mjs,cjs,ts,tsx,css,json}\" \"*.{js,mjs,cjs,ts,tsx,json}\"",
+    "format": "prettier --write \"{bitCaster-app,bitCaster-doc,bitcaster-cli,bitcaster-client-sdk,bitcaster-daemon,scripts,test-vectors,tools}/**/*.{js,mjs,cjs,ts,tsx,css,json}\" \"*.{js,mjs,cjs,ts,tsx,json}\"",
+    "format:check": "prettier --check \"{bitCaster-app,bitCaster-doc,bitcaster-cli,bitcaster-client-sdk,bitcaster-daemon,scripts,test-vectors,tools}/**/*.{js,mjs,cjs,ts,tsx,css,json}\" \"*.{js,mjs,cjs,ts,tsx,json}\"",
     "vectors:nut-ctf-range:generate": "node scripts/generate-nut-ctf-range-v1.mjs --write",
     "vectors:nut-ctf-range:check": "node scripts/generate-nut-ctf-range-v1.mjs --check",
     "postinstall": "node scripts/postinstall-build-cli.mjs"
@@ -13,7 +13,6 @@
     "bitcaster-client-sdk",
     "bitcaster-daemon",
     "bitcaster-cli",
-    "bitCaster-swap-protocol",
     "cashu-ts"
   ],
   "devDependencies": {

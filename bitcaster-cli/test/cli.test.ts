@@ -53,7 +53,17 @@ test('bitcaster-cli bin entrypoint is directly executable', async () => {
   assert.match(result.stdout, /bitcaster-cli/)
   assert.match(result.stdout, /Commands:/)
   assert.match(result.stdout, /wallet\s+Manage wallet balance/)
-  assert.doesNotMatch(result.stdout, /bitcaster-cli trade recover/)
+  assert.doesNotMatch(result.stdout, /^\s+trade\s/m)
+  await assert.rejects(
+    () =>
+      execFileAsync(join(import.meta.dirname, '..', 'src', 'main.ts'), ['trade', 'list'], {
+        env: process.env,
+      }),
+    (error: unknown) => {
+      assert.match((error as { stdout?: string }).stdout ?? '', /unknown command 'trade'/)
+      return true
+    },
+  )
 })
 
 test('bitcaster-cli command help includes usage and subcommand summaries', async () => {
@@ -221,18 +231,6 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
     await runCli(daemonUrl, ['order', 'list', '--market', 'cond-YES', '--status', 'resting'])
     await runCli(daemonUrl, ['order', 'cancel', 'cond-YES', 'order-1'])
     await runCli(daemonUrl, ['order', 'book', 'cond-YES'])
-    await runCli(daemonUrl, [
-      'trade',
-      'list',
-      '--market',
-      'cond-YES',
-      '--order',
-      'order-1',
-      '--step',
-      'seller-opened',
-    ])
-    await runCli(daemonUrl, ['trade', 'recover'])
-    await runCli(daemonUrl, ['trade', 'watch', 'trade-1'])
 
     assert.deepEqual(received, [
       { method: 'health' },
@@ -344,19 +342,6 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       {
         method: 'order.book',
         params: { marketId: 'cond-YES' },
-      },
-      {
-        method: 'trade.list',
-        params: {
-          marketId: 'cond-YES',
-          orderId: 'order-1',
-          step: 'seller-opened',
-        },
-      },
-      { method: 'trade.recover' },
-      {
-        method: 'trade.watch',
-        params: { tradeId: 'trade-1' },
       },
     ])
     assert.deepEqual(
@@ -705,117 +690,6 @@ test('bitcaster-cli uses default Unix socket RPC when no URL override is set', a
   } finally {
     server.close()
     await once(server, 'close')
-    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
-    else process.env.BITCASTER_DAEMON_HOME = previousHome
-    await rm(home, { recursive: true, force: true })
-  }
-})
-
-test('bitcaster-cli trade watch --wait streams changed states until terminal', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-watch-'))
-  const previousHome = process.env.BITCASTER_DAEMON_HOME
-  process.env.BITCASTER_DAEMON_HOME = home
-  const token = await ensureRpcToken()
-  const states = ['opened', 'opened', 'confirmed']
-  const authorizationHeaders: Array<string | undefined> = []
-  const server = createServer(async (req, res) => {
-    authorizationHeaders.push(req.headers.authorization)
-    const command = JSON.parse(await readBody(req)) as {
-      method: string
-      params?: { tradeId?: string }
-    }
-    assert.equal(command.method, 'trade.watch')
-    assert.equal(command.params?.tradeId, 'trade-1')
-    const step = states.shift() ?? 'confirmed'
-    writeJson(res, 200, {
-      ok: true,
-      result: {
-        tradeId: 'trade-1',
-        step,
-      },
-    })
-  })
-  server.listen(0, '127.0.0.1')
-  await once(server, 'listening')
-  const address = server.address()
-  assert.equal(typeof address, 'object')
-  assert.ok(address)
-
-  try {
-    const result = await runCliWithOutput(`http://127.0.0.1:${address.port}`, [
-      'trade',
-      'watch',
-      'trade-1',
-      '--wait',
-      '--interval-ms',
-      '1',
-      '--timeout-ms',
-      '250',
-    ])
-    const lines = result.stdout
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    assert.deepEqual(lines, [
-      { ok: true, result: { tradeId: 'trade-1', step: 'opened' } },
-      { ok: true, result: { tradeId: 'trade-1', step: 'confirmed' } },
-    ])
-    assert.deepEqual(
-      authorizationHeaders,
-      Array.from({ length: 3 }, () => `Bearer ${token}`),
-    )
-  } finally {
-    server.close()
-    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
-    else process.env.BITCASTER_DAEMON_HOME = previousHome
-    await rm(home, { recursive: true, force: true })
-  }
-})
-
-test('bitcaster-cli trade watch --wait exits non-zero on timeout', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-watch-timeout-'))
-  const previousHome = process.env.BITCASTER_DAEMON_HOME
-  process.env.BITCASTER_DAEMON_HOME = home
-  await ensureRpcToken()
-  const server = createServer(async (_req, res) => {
-    writeJson(res, 200, {
-      ok: true,
-      result: {
-        tradeId: 'trade-1',
-        step: 'opened',
-      },
-    })
-  })
-  server.listen(0, '127.0.0.1')
-  await once(server, 'listening')
-  const address = server.address()
-  assert.equal(typeof address, 'object')
-  assert.ok(address)
-
-  try {
-    await assert.rejects(
-      () =>
-        runCliWithOutput(`http://127.0.0.1:${address.port}`, [
-          'trade',
-          'watch',
-          'trade-1',
-          '--wait',
-          '--interval-ms',
-          '1',
-          '--timeout-ms',
-          '20',
-        ]),
-      (err: unknown) => {
-        assert.equal((err as { code?: unknown }).code, 1)
-        assert.match(
-          (err as { stderr?: string }).stderr ?? '',
-          /Timed out waiting for trade trade-1/,
-        )
-        return true
-      },
-    )
-  } finally {
-    server.close()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })

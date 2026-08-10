@@ -13,6 +13,17 @@ export function parseOrderRouteId(value: unknown): OrderRouteIdentity | null {
   }
 }
 
+/**
+ * Return the condition id portion of `{conditionId}-{outcomeName}`.
+ * Outcome names must not contain `-`; split on the final dash to tolerate
+ * condition ids that contain dashes.
+ */
+export function conditionIdFromMarketId(marketId: string): string {
+  const route = parseOrderRouteId(marketId)
+  if (route === null) throw new Error('market id is not an exact order route')
+  return route.conditionId
+}
+
 export function assertOrderRouteBelongsToCondition(
   orderRouteId: unknown,
   conditionId: unknown,

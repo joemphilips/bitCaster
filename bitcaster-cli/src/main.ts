@@ -68,10 +68,7 @@ async function main(): Promise<void> {
     .option('--datadir <path>', 'Use one directory for config, wallet state, and daemon files')
     .option('--dry-run', 'Validate and print the intended operation without executing it')
     .option('--json', 'Print JSON output (currently the default)')
-    .addHelpText(
-      'after',
-      '\nLong-running wallet and swap operations are delegated to bitcaster-daemon.',
-    )
+    .addHelpText('after', '\nLong-running wallet operations are delegated to bitcaster-daemon.')
     .exitOverride()
     .configureOutput({
       writeOut: (str) => process.stdout.write(str),
@@ -146,7 +143,6 @@ function registerCommands(program: Command): void {
   registerMarketCommand(program)
   registerWalletCommand(program)
   registerOrderCommand(program)
-  registerTradeCommand(program)
   registerDaemonCommand(program)
   registerConfigCommand(program)
 
@@ -810,73 +806,6 @@ function requiredParsedOption<T>(value: T | undefined, name: string): T {
   throwUsage(`Missing ${name}`)
 }
 
-function registerTradeCommand(program: Command): void {
-  const trade = program
-    .command('trade')
-    .description('Recover, list, and watch atomic swap trades.')
-    .addHelpText(
-      'after',
-      '\nExamples:\n  bitcaster-cli trade list --market <market-id>\n  bitcaster-cli trade watch <trade-id> --wait',
-    )
-
-  trade
-    .command('recover')
-    .description('Resume or repair incomplete atomic swap trades.')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli trade recover')
-    .action(async () => {
-      await printDaemonResult(callDaemon({ method: 'trade.recover' }))
-    })
-
-  trade
-    .command('list')
-    .description('List trades, optionally filtered by market, order, or protocol step.')
-    .option('--market <market-id>', 'Market id')
-    .option('--order <order-id>', 'Order id')
-    .option('--step <step>', 'Protocol step')
-    .addHelpText(
-      'after',
-      '\nExample:\n  bitcaster-cli trade list --market <market-id> --order <order-id>',
-    )
-    .action(async (options: { market?: string; order?: string; step?: string }) => {
-      const params: { marketId?: string; orderId?: string; step?: string } = {}
-      if (options.market !== undefined) params.marketId = options.market
-      if (options.order !== undefined) params.orderId = options.order
-      if (options.step !== undefined) params.step = options.step
-      await printDaemonResult(callDaemon({ method: 'trade.list', params }))
-    })
-
-  trade
-    .command('watch <tradeId>')
-    .description('Show one trade, or wait until it reaches a terminal state.')
-    .option('--wait', 'Poll until the trade reaches a terminal state')
-    .option(
-      '--interval-ms <n>',
-      'Polling interval in milliseconds',
-      parseIntegerOption('interval ms'),
-      1_000,
-    )
-    .option(
-      '--timeout-ms <n>',
-      'Timeout in milliseconds; 0 disables timeout',
-      parseNonNegativeIntegerOption('timeout ms'),
-      0,
-    )
-    .addHelpText(
-      'after',
-      '\nExamples:\n  bitcaster-cli trade watch <trade-id>\n  bitcaster-cli trade watch <trade-id> --wait --timeout-ms 60000',
-    )
-    .action(async (tradeId: string, options: TradeWatchOptions) => {
-      if (!options.wait && (options.intervalMs !== 1_000 || options.timeoutMs !== 0)) {
-        throwUsage('trade watch polling options require --wait')
-      }
-      if (options.wait) {
-        await watchTradeUntilTerminal(tradeId, options)
-        return
-      }
-      await printDaemonResult(callDaemon({ method: 'trade.watch', params: { tradeId } }))
-    })
-}
-
 function registerDaemonCommand(program: Command): void {
   const daemon = program
     .command('daemon')
@@ -1132,44 +1061,6 @@ function uniqueMarketIdsFromWalletBalance(balance: WalletBalanceResult | undefin
     marketIds.add(`${position.conditionId}-${position.outcomeSetId}`)
   }
   return [...marketIds].sort()
-}
-
-interface TradeWatchOptions {
-  wait: boolean
-  intervalMs: number
-  timeoutMs: number
-}
-
-async function watchTradeUntilTerminal(tradeId: string, options: TradeWatchOptions): Promise<void> {
-  const startedAt = Date.now()
-  let lastSnapshot = ''
-  while (true) {
-    const response = await callDaemon({ method: 'trade.watch', params: { tradeId } })
-    const snapshot = JSON.stringify(response)
-    if (snapshot !== lastSnapshot) {
-      process.stdout.write(`${snapshot}\n`)
-      lastSnapshot = snapshot
-    }
-    if (isDaemonFailure(response)) {
-      process.exitCode = 1
-      return
-    }
-    if (isTerminalTradeResult(response)) return
-    if (options.timeoutMs > 0 && Date.now() - startedAt >= options.timeoutMs) {
-      process.stderr.write(`Timed out waiting for trade ${tradeId}\n`)
-      process.exitCode = 1
-      return
-    }
-    await sleep(options.intervalMs)
-  }
-}
-
-function isTerminalTradeResult(response: unknown): boolean {
-  if (!response || typeof response !== 'object') return false
-  const result = (response as { result?: unknown }).result
-  if (!result || typeof result !== 'object') return false
-  const step = (result as { step?: unknown }).step
-  return step === 'confirmed' || step === 'refunded' || step === 'Failed'
 }
 
 async function printDirectEngineResultOrDaemon<T>(
@@ -1606,8 +1497,4 @@ async function runDaemonCommand(args: string[]): Promise<void> {
   )
   process.stdout.write(result.stdout)
   process.stderr.write(result.stderr)
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
