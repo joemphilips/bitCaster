@@ -1,20 +1,29 @@
 import { renderHook, act } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Amount } from "@cashu/cashu-ts";
 import { useDepositWithdrawState } from "../useDepositWithdrawState";
 import { useWalletStore } from "@/stores/wallet";
 import { useActivityLogStore } from "@/stores/activity-log";
 
 // Mock cashu.ts — we don't want real mint calls
 vi.mock("@/lib/cashu", () => ({
-  createMintQuote: vi.fn(),
-  mintProofs: vi.fn(),
   encodeToken: vi.fn().mockReturnValue("cashuAtoken123"),
   sendProofs: vi.fn().mockResolvedValue({ keep: [], send: [{ secret: "s1", amount: 100 }] }),
   createMeltQuote: vi.fn(),
   meltProofs: vi.fn(),
   spendRegularSatsAsToken: vi.fn().mockResolvedValue("cashuAtoken123"),
-  waitForMintQuotePaid: vi.fn(),
+}));
+
+const createBrowserDurableBolt11MintQuote = vi.fn();
+const subscribeActiveBrowserDurableBolt11MintQuote = vi.fn();
+const hideBrowserDurableBolt11MintQuote = vi.fn();
+
+vi.mock("@/lib/browserDurableBolt11MintQuote", () => ({
+  createBrowserDurableBolt11MintQuote: (...args: unknown[]) =>
+    createBrowserDurableBolt11MintQuote(...args),
+  subscribeActiveBrowserDurableBolt11MintQuote: (...args: unknown[]) =>
+    subscribeActiveBrowserDurableBolt11MintQuote(...args),
+  hideBrowserDurableBolt11MintQuote: (...args: unknown[]) =>
+    hideBrowserDurableBolt11MintQuote(...args),
 }));
 
 vi.mock("@/lib/walletOps", () => ({
@@ -75,6 +84,12 @@ vi.mock("@/lib/nip17", () => ({
 }));
 
 beforeEach(() => {
+  createBrowserDurableBolt11MintQuote.mockReset();
+  createBrowserDurableBolt11MintQuote.mockResolvedValue(durableQuote());
+  subscribeActiveBrowserDurableBolt11MintQuote.mockReset();
+  subscribeActiveBrowserDurableBolt11MintQuote.mockResolvedValue(() => undefined);
+  hideBrowserDurableBolt11MintQuote.mockReset();
+  hideBrowserDurableBolt11MintQuote.mockResolvedValue(undefined);
   useActivityLogStore.getState().clear();
   useWalletStore.setState({
     mnemonic:
@@ -219,10 +234,11 @@ describe("useDepositWithdrawState", () => {
   });
 
   describe("onClose", () => {
-    it("calls onDismiss", () => {
+    it("calls onDismiss", async () => {
       const dismiss = vi.fn();
       const { result } = renderHook(() => useDepositWithdrawState("deposit", dismiss));
       act(() => result.current.onClose());
+      await act(async () => Promise.resolve());
       expect(dismiss).toHaveBeenCalledOnce();
     });
   });
@@ -285,125 +301,80 @@ describe("useDepositWithdrawState", () => {
     });
   });
 
-  describe("onCreateInvoice — re-mount idempotency", () => {
-    // Regression for the P8 "Invoice already paid or pending" snackbar:
-    // calling onCreateInvoice twice within a single open MUST reuse the cached
-    // mint quote and only call the mint's createMintQuote once. A double-fire
-    // is the signature of the bug — duplicate quotes against the same mint
-    // state make LNBits return the literal "Invoice already paid or pending".
-    it("issues exactly one mint quote across rapid double-fires", async () => {
-      const cashu = await import("@/lib/cashu");
-      vi.mocked(cashu.createMintQuote).mockClear();
-      vi.mocked(cashu.waitForMintQuotePaid).mockClear();
-      const quote = {
-        quote: "q1",
-        request: "lnbc1...",
-        amount: 1000,
-        state: "UNPAID",
-        expiry: Math.floor(Date.now() / 1000) + 3600,
-      };
-      vi.mocked(cashu.createMintQuote).mockResolvedValue(quote as never);
-      vi.mocked(cashu.waitForMintQuotePaid).mockResolvedValue(() => {});
-
+  describe("onCreateInvoice — durable BOLT11 authority", () => {
+    it("sets an invoice only after the coordinator commits it and suppresses rapid double-fire", async () => {
+      let resolveQuote: (value: ReturnType<typeof durableQuote>) => void;
+      createBrowserDurableBolt11MintQuote.mockImplementationOnce(
+        () => new Promise((resolve) => (resolveQuote = resolve)),
+      );
       const { result } = renderHook(() => useDepositWithdrawState("deposit", vi.fn()));
       act(() => result.current.onSelectMethod("lightning"));
-      act(() => result.current.onNumpadPress("1"));
-      act(() => result.current.onNumpadPress("0"));
-      act(() => result.current.onNumpadPress("0"));
-      act(() => result.current.onNumpadPress("0"));
+      for (const key of ["1", "0", "0", "0"]) act(() => result.current.onNumpadPress(key));
 
-      // Fire twice as quickly as a user could double-click.
-      await act(async () => {
+      act(() => {
         result.current.onCreateInvoice();
         result.current.onCreateInvoice();
       });
+      await act(async () => Promise.resolve());
+      expect(result.current.bolt11).toBeNull();
+      expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledOnce();
+      expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledWith({
+        amount: 1_000_000,
+        mintUrl: "http://localhost:8085",
+        unit: "msat",
+      });
 
-      expect(cashu.createMintQuote).toHaveBeenCalledTimes(1);
-      expect(cashu.createMintQuote).toHaveBeenCalledWith(1000, "http://localhost:8085", "sat");
-      expect(cashu.waitForMintQuotePaid).toHaveBeenCalledWith(
-        quote,
-        expect.any(Function),
-        expect.any(Object),
-        "http://localhost:8085",
-        "sat",
-      );
-      expect(result.current.invoiceExpiresAtSec).toBe(quote.expiry);
+      await act(async () => resolveQuote!(durableQuote()));
+      expect(result.current.bolt11).toBe("lnbc1durable");
+      expect(subscribeActiveBrowserDurableBolt11MintQuote).toHaveBeenCalledOnce();
     });
 
-    it("stores paid sat deposits in activity-log subunits while the input label remains sats", async () => {
-      const cashu = await import("@/lib/cashu");
-      vi.mocked(cashu.createMintQuote).mockClear();
-      vi.mocked(cashu.waitForMintQuotePaid).mockClear();
-      vi.mocked(cashu.mintProofs).mockResolvedValueOnce([]);
-      const quote = {
-        quote: "q-sat",
-        request: "lnbc1000n1example",
-        amount: Amount.from(10_000),
-        unit: "sat",
-        state: "UNPAID",
-        expiry: Math.floor(Date.now() / 1000) + 90,
-      };
-      vi.mocked(cashu.createMintQuote).mockResolvedValue(quote as never);
-      vi.mocked(cashu.waitForMintQuotePaid).mockResolvedValue(() => {});
-
+    it("shows deposit success and activity only after the coordinator reports admitted PAID", async () => {
       const { result } = renderHook(() => useDepositWithdrawState("deposit", vi.fn()));
       act(() => result.current.onSelectMethod("lightning"));
       act(() => result.current.onNumpadPress("1"));
       act(() => result.current.onNumpadPress("0"));
+      await act(async () => result.current.onCreateInvoice());
+      const onResult = subscribeActiveBrowserDurableBolt11MintQuote.mock.calls[0][0].onResult;
 
-      expect(result.current.amountLabel).toBe("₿10");
-      await act(async () => {
-        await result.current.onCreateInvoice();
+      expect(useActivityLogStore.getState().items).toHaveLength(0);
+      act(() => onResult({ status: "PAID" }));
+      expect(result.current.currentView).toBe("success");
+      expect(useActivityLogStore.getState().items[0]).toMatchObject({
+        type: "deposit",
+        amountSats: 10_000,
       });
-      const paidCallback = vi.mocked(cashu.waitForMintQuotePaid).mock.calls[0][1];
-      await act(async () => {
-        paidCallback({ status: "PAID", quote: { ...quote, state: "PAID" } });
-      });
-
-      expect(useActivityLogStore.getState().items[0]).toEqual(
-        expect.objectContaining({
-          type: "deposit",
-          baseAsset: "sat",
-          amountSats: 10_000,
-          status: "completed",
-        }),
-      );
-      expect(result.current.successAmount).toBe(10_000);
     });
 
-    it("regenerate discards the cached quote and one-click requests a fresh one", async () => {
-      const cashu = await import("@/lib/cashu");
-      vi.mocked(cashu.createMintQuote).mockClear();
-      vi.mocked(cashu.waitForMintQuotePaid).mockClear();
-      const quote = {
-        quote: "q1",
-        request: "lnbc1...",
-        amount: 1000,
-        state: "UNPAID",
-        expiry: Math.floor(Date.now() / 1000) + 3600,
-      };
-      vi.mocked(cashu.createMintQuote).mockResolvedValue(quote as never);
-      vi.mocked(cashu.waitForMintQuotePaid).mockResolvedValue(() => {});
-
+    it("hides the prior durable quote before one-click re-quote", async () => {
       const { result } = renderHook(() => useDepositWithdrawState("deposit", vi.fn()));
       act(() => result.current.onSelectMethod("lightning"));
       act(() => result.current.onNumpadPress("1"));
-      act(() => result.current.onNumpadPress("0"));
-      act(() => result.current.onNumpadPress("0"));
-      act(() => result.current.onNumpadPress("0"));
+      await act(async () => result.current.onCreateInvoice());
+      await act(async () => result.current.onRegenerateInvoice());
 
-      await act(async () => {
-        await result.current.onCreateInvoice();
-      });
-      expect(cashu.createMintQuote).toHaveBeenCalledTimes(1);
+      expect(hideBrowserDurableBolt11MintQuote).toHaveBeenCalledWith("a".repeat(64));
+      expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledTimes(2);
+    });
 
-      // One-click re-quote: regenerate discards the cached quote and
-      // immediately requests a fresh one — no extra Create Invoice click.
-      await act(async () => {
-        result.current.onRegenerateInvoice();
+    it("hides a quote that resolves after the user closes the deposit view", async () => {
+      let resolveQuote: (value: ReturnType<typeof durableQuote>) => void;
+      createBrowserDurableBolt11MintQuote.mockImplementationOnce(
+        () => new Promise((resolve) => (resolveQuote = resolve)),
+      );
+      const { result } = renderHook(() => useDepositWithdrawState("deposit", vi.fn()));
+      act(() => result.current.onSelectMethod("lightning"));
+      act(() => result.current.onNumpadPress("1"));
+      act(() => {
+        void result.current.onCreateInvoice();
       });
-      expect(cashu.createMintQuote).toHaveBeenCalledTimes(2);
-      expect(result.current.currentView).toBe("invoice-display");
+      await act(async () => Promise.resolve());
+      act(() => result.current.onClose());
+
+      await act(async () => resolveQuote!(durableQuote()));
+      expect(hideBrowserDurableBolt11MintQuote).toHaveBeenCalledWith("a".repeat(64));
+      expect(subscribeActiveBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+      expect(result.current.bolt11).toBeNull();
     });
   });
 
@@ -589,3 +560,13 @@ describe("useDepositWithdrawState", () => {
     });
   });
 });
+
+function durableQuote() {
+  return {
+    invoiceRequest: "lnbc1durable",
+    quote: {
+      quoteRecordId: "a".repeat(64),
+      expiryUnixSeconds: 123,
+    },
+  };
+}

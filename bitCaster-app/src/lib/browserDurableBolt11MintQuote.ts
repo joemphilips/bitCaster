@@ -36,6 +36,9 @@ import {
   browserDurableWalletMintStore,
   captureBrowserMintPersistenceContext,
   restoreExactMintOutputs,
+  waitForMintQuotePaidForUnit,
+  type MintQuoteWaitResult,
+  type WaitForMintQuoteOptions,
   type BrowserMintPersistenceContext,
 } from "@/lib/cashu";
 
@@ -50,6 +53,12 @@ export interface CreateBrowserDurableBolt11MintQuoteInput {
 export interface BrowserDurableBolt11MintQuoteResult {
   readonly quote: DurableBolt11MintQuote;
   readonly invoiceRequest: string;
+}
+
+export interface ActiveBrowserDurableBolt11MintQuoteSubscription {
+  readonly quote: DurableBolt11MintQuote;
+  readonly onResult: (result: MintQuoteWaitResult) => void;
+  readonly options?: WaitForMintQuoteOptions;
 }
 
 interface CoordinatorContext extends BrowserMintPersistenceContext {
@@ -89,6 +98,50 @@ export async function hideBrowserDurableBolt11MintQuote(quoteRecordId: string): 
       toQuoteRow(context.scopeId, quote, row.recoveryState, row.lastRecoveryAttemptAtMs),
     );
   });
+  context.requireCapturedProfile();
+}
+
+/** Subscribe one visible quote. PAID is reported only after exact admission. */
+export async function subscribeActiveBrowserDurableBolt11MintQuote(
+  input: ActiveBrowserDurableBolt11MintQuoteSubscription,
+): Promise<() => void> {
+  const quote = decodeDurableBolt11MintQuote(input.quote);
+  return waitForMintQuotePaidForUnit(
+    toMintQuoteResponse(quote),
+    (result) => forwardActiveQuoteResult(input, result),
+    input.options,
+    quote.mintUrl,
+    requireUnit(quote.unit),
+  );
+}
+
+async function forwardActiveQuoteResult(
+  input: ActiveBrowserDurableBolt11MintQuoteSubscription,
+  result: MintQuoteWaitResult,
+): Promise<void> {
+  if (result.status !== "PAID") {
+    input.onResult(result);
+    return;
+  }
+  try {
+    await recoverBrowserDurableBolt11MintQuotePaid(input.quote.quoteRecordId);
+    input.onResult(result);
+  } catch (error) {
+    input.onResult({ status: "ERROR", error: asError(error), quote: result.quote });
+  }
+}
+
+/** Recover the bound operation after authoritative PAID waiter evidence. */
+export async function recoverBrowserDurableBolt11MintQuotePaid(
+  quoteRecordId: string,
+): Promise<void> {
+  const context = captureBrowserMintPersistenceContext();
+  const row = await context.database.mintQuotes.get([context.scopeId, "bolt11", quoteRecordId]);
+  context.requireCapturedProfile();
+  if (!row) throw new Error("BOLT11 mint quote is absent");
+  const quote = readQuoteRow(context.scopeId, row);
+  const observed = await markQuoteRecoveryAttempt(context, quote.quoteRecordId, Date.now(), "PAID");
+  await recoverExactBoundQuote(context, observed);
   context.requireCapturedProfile();
 }
 
@@ -272,25 +325,33 @@ async function recoverQuoteRow(
       observed,
     );
     if (observed === null || observed === "UNPAID") return false;
-    const operation = await exactBoundOperation(context.database, current);
-    const baseAsset = normalizeMarketBaseAsset(COLLATERAL_UNIT_REGISTRY[unit].baseAsset);
-    context.requireCapturedProfile();
-    const result = await runDurableWalletMintOperation({
-      mode: "recover",
-      operationId: operation.operationId,
-      wallet,
-      store: browserDurableWalletMintStore({ baseAsset, context, unit, wallet }),
-      restoreExactOutputs: (restore) => restoreExactMintOutputs(wallet, restore),
-    });
-    context.requireCapturedProfile();
-    if (result.state === "nonterminal") return false;
-    await markQuoteRecoveryCompleted(context, current.quoteRecordId);
-    context.requireCapturedProfile();
+    await recoverExactBoundQuote(context, current);
     return true;
   } catch {
     await markQuoteRecoveryAttempt(context, row.quoteRecordId, passCutoffMs, null).catch(() => {});
     return false;
   }
+}
+
+async function recoverExactBoundQuote(
+  context: CoordinatorContext,
+  quote: DurableBolt11MintQuote,
+): Promise<void> {
+  const unit = requireUnit(quote.unit);
+  const wallet = await getWalletForMnemonicUnit(quote.mintUrl, unit, context.mnemonic);
+  context.requireCapturedProfile();
+  const operation = await exactBoundOperation(context.database, quote);
+  const baseAsset = normalizeMarketBaseAsset(COLLATERAL_UNIT_REGISTRY[unit].baseAsset);
+  const result = await runDurableWalletMintOperation({
+    mode: "recover",
+    operationId: operation.operationId,
+    wallet,
+    store: browserDurableWalletMintStore({ baseAsset, context, unit, wallet }),
+    restoreExactOutputs: (restore) => restoreExactMintOutputs(wallet, restore),
+  });
+  context.requireCapturedProfile();
+  if (result.state === "nonterminal") throw new Error("BOLT11 mint quote remains pending");
+  await markQuoteRecoveryCompleted(context, quote.quoteRecordId);
 }
 
 async function markQuoteRecoveryAttempt(
@@ -447,4 +508,16 @@ function requireAmount(amount: number): number {
 
 function requirePassCutoff(value: number): void {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error("BOLT11 recovery pass is invalid");
+}
+
+function toMintQuoteResponse(quote: DurableBolt11MintQuote): MintQuoteResponse {
+  return {
+    quote: quote.quoteId,
+    request: quote.invoiceRequest,
+    expiry: quote.expiryUnixSeconds ?? undefined,
+  } as MintQuoteResponse;
+}
+
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
 }

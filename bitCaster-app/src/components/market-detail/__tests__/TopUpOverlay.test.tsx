@@ -1,15 +1,12 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { TopUpOverlay } from "../TopUpOverlay";
 
-const createMintQuote = vi.fn();
-const createMintQuoteForUnit = vi.fn();
-const waitForMintQuotePaid = vi.fn();
-const waitForMintQuotePaidForUnit = vi.fn();
-const mintProofs = vi.fn();
-const mintProofsForUnit = vi.fn();
+const createBrowserDurableBolt11MintQuote = vi.fn();
+const subscribeActiveBrowserDurableBolt11MintQuote = vi.fn();
+const hideBrowserDurableBolt11MintQuote = vi.fn();
 const decodeWalletIngressToken = vi.fn();
 const ingressReceiveCashuToken = vi.fn();
 const ensureImplicitWallet = vi.fn();
@@ -20,14 +17,13 @@ vi.mock("react-router", () => ({
   useNavigate: () => navigate,
 }));
 
-vi.mock("@/lib/cashu", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/cashu")>()),
-  createMintQuote: (...args: unknown[]) => createMintQuote(...args),
-  createMintQuoteForUnit: (...args: unknown[]) => createMintQuoteForUnit(...args),
-  waitForMintQuotePaid: (...args: unknown[]) => waitForMintQuotePaid(...args),
-  waitForMintQuotePaidForUnit: (...args: unknown[]) => waitForMintQuotePaidForUnit(...args),
-  mintProofs: (...args: unknown[]) => mintProofs(...args),
-  mintProofsForUnit: (...args: unknown[]) => mintProofsForUnit(...args),
+vi.mock("@/lib/browserDurableBolt11MintQuote", () => ({
+  createBrowserDurableBolt11MintQuote: (...args: unknown[]) =>
+    createBrowserDurableBolt11MintQuote(...args),
+  subscribeActiveBrowserDurableBolt11MintQuote: (...args: unknown[]) =>
+    subscribeActiveBrowserDurableBolt11MintQuote(...args),
+  hideBrowserDurableBolt11MintQuote: (...args: unknown[]) =>
+    hideBrowserDurableBolt11MintQuote(...args),
 }));
 
 vi.mock("@/lib/walletOps", () => ({
@@ -58,16 +54,12 @@ vi.mock("@/stores/wallet", () => ({
 describe("TopUpOverlay", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en");
-    createMintQuote.mockReset();
-    createMintQuote.mockResolvedValue({ request: "lnbc1example", expiry: 123 });
-    createMintQuoteForUnit.mockReset();
-    createMintQuoteForUnit.mockResolvedValue({ request: "lnbc1score", expiry: 123 });
-    waitForMintQuotePaid.mockReset();
-    waitForMintQuotePaid.mockResolvedValue(() => undefined);
-    waitForMintQuotePaidForUnit.mockReset();
-    waitForMintQuotePaidForUnit.mockResolvedValue(() => undefined);
-    mintProofs.mockReset();
-    mintProofsForUnit.mockReset();
+    createBrowserDurableBolt11MintQuote.mockReset();
+    createBrowserDurableBolt11MintQuote.mockResolvedValue(durableQuote());
+    subscribeActiveBrowserDurableBolt11MintQuote.mockReset();
+    subscribeActiveBrowserDurableBolt11MintQuote.mockResolvedValue(() => undefined);
+    hideBrowserDurableBolt11MintQuote.mockReset();
+    hideBrowserDurableBolt11MintQuote.mockResolvedValue(undefined);
     decodeWalletIngressToken.mockReset();
     decodeWalletIngressToken.mockResolvedValue({
       mint: "https://mint.example",
@@ -145,8 +137,30 @@ describe("TopUpOverlay", () => {
     await user.click(screen.getByTestId("top-up-continue"));
 
     await waitFor(() => {
-      expect(createMintQuote).toHaveBeenCalledWith(20, "https://mint.example", "sat");
+      expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledWith({
+        amount: 20_000,
+        mintUrl: "https://mint.example",
+        unit: "msat",
+      });
     });
+  });
+
+  it("shows the invoice only after durable creation resolves and suppresses rapid double-fire", async () => {
+    let resolveQuote: (value: ReturnType<typeof durableQuote>) => void;
+    createBrowserDurableBolt11MintQuote.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveQuote = resolve)),
+    );
+    render(
+      <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
+    );
+
+    await userEvent.click(screen.getByTestId("top-up-continue"));
+    await userEvent.click(screen.getByTestId("top-up-continue"));
+    await waitFor(() => expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledOnce());
+    expect(screen.queryByTestId("bolt11-display")).not.toBeInTheDocument();
+
+    await act(async () => resolveQuote!(durableQuote()));
+    expect(await screen.findByTestId("bolt11-display")).toHaveTextContent("lnbc1example");
   });
 
   it("can mint regular sat proofs for Engine Score top-ups", async () => {
@@ -169,9 +183,12 @@ describe("TopUpOverlay", () => {
     await user.click(screen.getByTestId("top-up-continue"));
 
     await waitFor(() => {
-      expect(createMintQuoteForUnit).toHaveBeenCalledWith(600, "https://mint.example", "sat");
+      expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledWith({
+        amount: 600,
+        mintUrl: "https://mint.example",
+        unit: "sat",
+      });
     });
-    expect(createMintQuote).not.toHaveBeenCalled();
   });
 
   it("accepts a same-mint same-unit ecash token and closes after storing received proofs", async () => {
@@ -196,4 +213,68 @@ describe("TopUpOverlay", () => {
       expect(onSuccess).toHaveBeenCalledTimes(1);
     });
   });
+
+  it("hides a cancelled quote and ignores its later UI callback", async () => {
+    const onSuccess = vi.fn();
+    const onCancel = vi.fn();
+    render(
+      <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={onCancel} onSuccess={onSuccess} />,
+    );
+    await userEvent.click(screen.getByTestId("top-up-continue"));
+    await screen.findByTestId("bolt11-display");
+    const onResult = subscribeActiveBrowserDurableBolt11MintQuote.mock.calls[0][0].onResult;
+
+    await userEvent.click(screen.getAllByRole("button")[0]!);
+    await waitFor(() =>
+      expect(hideBrowserDurableBolt11MintQuote).toHaveBeenCalledWith("a".repeat(64)),
+    );
+    onResult({ status: "PAID" });
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("hides a durable quote that resolves after cancellation before invoice presentation", async () => {
+    let resolveQuote: (value: ReturnType<typeof durableQuote>) => void;
+    createBrowserDurableBolt11MintQuote.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveQuote = resolve)),
+    );
+    render(
+      <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
+    );
+
+    await userEvent.click(screen.getByTestId("top-up-continue"));
+    await waitFor(() => expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledOnce());
+    await userEvent.click(screen.getByTestId("top-up-close"));
+    await act(async () => resolveQuote!(durableQuote()));
+
+    await waitFor(() =>
+      expect(hideBrowserDurableBolt11MintQuote).toHaveBeenCalledWith("a".repeat(64)),
+    );
+    expect(subscribeActiveBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("bolt11-display")).not.toBeInTheDocument();
+  });
+
+  it("hides an active durable quote when its parent unmounts the overlay", async () => {
+    const { unmount } = render(
+      <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />,
+    );
+
+    await userEvent.click(screen.getByTestId("top-up-continue"));
+    await screen.findByTestId("bolt11-display");
+    unmount();
+
+    await waitFor(() =>
+      expect(hideBrowserDurableBolt11MintQuote).toHaveBeenCalledWith("a".repeat(64)),
+    );
+  });
 });
+
+function durableQuote() {
+  return {
+    invoiceRequest: "lnbc1example",
+    quote: {
+      quoteRecordId: "a".repeat(64),
+      expiryUnixSeconds: 123,
+    },
+  };
+}

@@ -5,19 +5,17 @@ import type {
   MethodType,
   MintInfo,
 } from "@/types/deposit-withdraw";
-import type { MeltQuoteResponse, MintQuoteResponse } from "@cashu/cashu-ts";
+import type { MeltQuoteResponse } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { useLiveQuery } from "dexie-react-hooks";
+import { createMeltQuote, meltProofs, spendRegularSatsAsToken } from "@/lib/cashu";
 import {
-  createMintQuote,
-  mintProofs,
-  createMeltQuote,
-  meltProofs,
-  spendRegularSatsAsToken,
-  waitForMintQuotePaid,
-  type MintQuoteWaitResult,
-} from "@/lib/cashu";
+  createBrowserDurableBolt11MintQuote,
+  hideBrowserDurableBolt11MintQuote,
+  subscribeActiveBrowserDurableBolt11MintQuote,
+} from "@/lib/browserDurableBolt11MintQuote";
+import type { DurableBolt11MintQuote } from "@bitcaster/client-sdk/durableBolt11MintQuote";
 import {
   ingressReceiveCashuToken,
   userCreatePaymentRequest,
@@ -43,7 +41,6 @@ import {
   type CashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
-import { diagnoseProofStates } from "@/lib/proofDiagnostics";
 import { formatBtc } from "@/lib/format";
 
 export type ExtendedView =
@@ -56,10 +53,6 @@ export type ExtendedView =
   | "success";
 
 export type InvoiceStatus = "pending" | "paid" | "expired" | "error";
-
-function assertNeverWaitResult(r: never): never {
-  throw new Error(`unhandled MintQuoteWaitResult: ${JSON.stringify(r)}`);
-}
 
 function depositInputAmountToActivitySubunits(amount: number, baseAsset: MarketBaseAsset): number {
   const unit = defaultCollateralUnit(baseAsset);
@@ -198,16 +191,14 @@ export function useDepositWithdrawState(
   // Track which view opened the scanner so we can process results correctly
   const scanReturnViewRef = useRef<ExtendedView>("deposit-ecash");
 
-  // The full active quote (request, quote-id, expiry). Persisted across renders
-  // so that re-clicking "Continue" — or a parent re-render in dev StrictMode —
-  // does NOT issue a second mint quote against the same mint state, which is
-  // what produces the LNBits "Invoice already paid or pending" passthrough.
-  const mintQuoteRef = useRef<MintQuoteResponse | null>(null);
+  const mintQuoteRef = useRef<DurableBolt11MintQuote | null>(null);
   // Synchronous double-click guard. `setIsLoading(true)` is one render late;
   // a rapid second click would otherwise create a second quote & leak the
   // first's polling subscription.
   const inflightRef = useRef(false);
   const unsubRef = useRef<(() => void) | null>(null);
+  const mintQuotePresentationGenerationRef = useRef(0);
+  const mintQuoteDisposedRef = useRef(false);
   const userSelectedMintRef = useRef(false);
 
   // PaymentRequest id of the request currently displayed in the
@@ -222,8 +213,15 @@ export function useDepositWithdrawState(
   // Cleanup WebSocket/polling on unmount. The NIP-17 listener is
   // global (see App.tsx::startNip17Listener) so we do NOT stop it here.
   useEffect(() => {
+    mintQuoteDisposedRef.current = false;
     return () => {
+      mintQuoteDisposedRef.current = true;
+      mintQuotePresentationGenerationRef.current += 1;
       unsubRef.current?.();
+      unsubRef.current = null;
+      const quote = mintQuoteRef.current;
+      mintQuoteRef.current = null;
+      if (quote) void hideBrowserDurableBolt11MintQuote(quote.quoteRecordId);
     };
   }, []);
 
@@ -288,67 +286,59 @@ export function useDepositWithdrawState(
     setShowFiatPrimary((prev) => !prev);
   }, []);
 
+  const stopActiveMintQuote = useCallback(async () => {
+    mintQuotePresentationGenerationRef.current += 1;
+    unsubRef.current?.();
+    unsubRef.current = null;
+    const quote = mintQuoteRef.current;
+    mintQuoteRef.current = null;
+    if (quote) await hideBrowserDurableBolt11MintQuote(quote.quoteRecordId);
+  }, []);
+
   const handlePaidInvoice = useCallback(
-    async (
-      quote: MintQuoteResponse,
-      mintUrl: string,
-      requested: number,
-      baseAsset: MarketBaseAsset,
-    ) => {
-      try {
-        const proofs = await mintProofs(requested, quote, mintUrl, baseAsset);
-        await diagnoseProofStates({
-          label: "top-up:minted-proofs",
-          mintUrl,
-          proofs,
-          unit: defaultCollateralUnit(baseAsset),
-          extra: { requested, baseAsset },
-        });
-        setInvoiceStatus("paid");
-        const requestedSubunits = depositInputAmountToActivitySubunits(requested, baseAsset);
-        useActivityLogStore.getState().addActivity({
-          type: "deposit",
-          baseAsset,
-          amountSats: requestedSubunits,
-          status: "completed",
-          lightningInvoice: quote.request,
-        });
-        setSuccessAmount(requestedSubunits);
-        setSuccessUnit(baseAsset);
-        setCurrentView("success");
-      } catch (e) {
-        setInvoiceStatus("error");
-        setError((e as Error).message);
-      }
+    (quote: DurableBolt11MintQuote, requested: number, baseAsset: MarketBaseAsset) => {
+      setInvoiceStatus("paid");
+      const requestedSubunits = depositInputAmountToActivitySubunits(requested, baseAsset);
+      useActivityLogStore.getState().addActivity({
+        type: "deposit",
+        baseAsset,
+        amountSats: requestedSubunits,
+        status: "completed",
+        lightningInvoice: quote.invoiceRequest,
+      });
+      setSuccessAmount(requestedSubunits);
+      setSuccessUnit(baseAsset);
+      setCurrentView("success");
     },
     [],
   );
 
   const handleInvoiceWaitResult = useCallback(
     (
-      r: MintQuoteWaitResult,
-      quote: MintQuoteResponse,
-      mintUrl: string,
+      r: { status: string; error?: Error },
+      quote: DurableBolt11MintQuote,
       requested: number,
       baseAsset: MarketBaseAsset,
     ) => {
+      if (mintQuoteRef.current?.quoteRecordId !== quote.quoteRecordId) return;
       switch (r.status) {
         case "PAID":
-          handlePaidInvoice(quote, mintUrl, requested, baseAsset);
+          handlePaidInvoice(quote, requested, baseAsset);
           return;
         case "EXPIRED":
           setInvoiceStatus("expired");
           setError("The Lightning invoice expired before payment arrived.");
+          void stopActiveMintQuote();
           return;
         case "ERROR":
           setInvoiceStatus("error");
-          setError(r.error.message);
+          setError(r.error?.message ?? "Mint quote recovery failed.");
           return;
         default:
-          return assertNeverWaitResult(r);
+          throw new Error("Unhandled BOLT11 mint quote result");
       }
     },
-    [handlePaidInvoice],
+    [handlePaidInvoice, stopActiveMintQuote],
   );
 
   const onCreateInvoice = useCallback(async () => {
@@ -361,46 +351,84 @@ export function useDepositWithdrawState(
     const requested = amountSats;
     const mintUrl = selectedMintId;
     const baseAsset = "sat" as const;
+    const quoteAmount = depositInputAmountToActivitySubunits(requested, baseAsset);
+    const presentationGeneration = mintQuotePresentationGenerationRef.current;
     try {
       await useWalletStore.getState().ensureImplicitWallet();
-      // Re-mount idempotency: reuse the active quote if one exists, otherwise
-      // request a fresh one. Prevents the duplicate-quote LNBits snackbar.
-      const quote = mintQuoteRef.current ?? (await createMintQuote(requested, mintUrl, baseAsset));
-      mintQuoteRef.current = quote;
-      setBolt11(quote.request);
-      setInvoiceExpiresAtSec(quote.expiry ?? undefined);
-      setCurrentView("invoice-display");
-
-      const unsub = await waitForMintQuotePaid(
-        quote,
-        (r) => handleInvoiceWaitResult(r, quote, mintUrl, requested, baseAsset),
-        { onTransientError: (e) => setError(e.message) },
+      if (
+        mintQuoteDisposedRef.current ||
+        presentationGeneration !== mintQuotePresentationGenerationRef.current
+      ) {
+        return;
+      }
+      const created = await createBrowserDurableBolt11MintQuote({
+        amount: quoteAmount,
         mintUrl,
-        baseAsset,
-      );
+        unit: defaultCollateralUnit(baseAsset),
+      });
+      if (
+        mintQuoteDisposedRef.current ||
+        presentationGeneration !== mintQuotePresentationGenerationRef.current
+      ) {
+        await hideBrowserDurableBolt11MintQuote(created.quote.quoteRecordId);
+        return;
+      }
+      mintQuoteRef.current = created.quote;
+      setBolt11(created.invoiceRequest);
+      setInvoiceExpiresAtSec(created.quote.expiryUnixSeconds ?? undefined);
+      setCurrentView("invoice-display");
+      const unsub = await subscribeActiveBrowserDurableBolt11MintQuote({
+        quote: created.quote,
+        onResult: (result) => handleInvoiceWaitResult(result, created.quote, requested, baseAsset),
+        options: {
+          onTransientError: (error) => {
+            if (
+              !mintQuoteDisposedRef.current &&
+              mintQuoteRef.current?.quoteRecordId === created.quote.quoteRecordId
+            ) {
+              setError(error.message);
+            }
+          },
+        },
+      });
+      if (
+        mintQuoteDisposedRef.current ||
+        presentationGeneration !== mintQuotePresentationGenerationRef.current
+      ) {
+        unsub();
+        await hideBrowserDurableBolt11MintQuote(created.quote.quoteRecordId);
+        return;
+      }
       unsubRef.current = unsub;
     } catch (e) {
-      setInvoiceStatus("error");
-      setError((e as Error).message);
+      if (
+        !mintQuoteDisposedRef.current &&
+        presentationGeneration === mintQuotePresentationGenerationRef.current
+      ) {
+        setInvoiceStatus("error");
+        setError((e as Error).message);
+      }
       inflightRef.current = false;
     } finally {
-      setIsLoading(false);
+      if (
+        !mintQuoteDisposedRef.current &&
+        presentationGeneration === mintQuotePresentationGenerationRef.current
+      ) {
+        setIsLoading(false);
+      }
     }
   }, [amountSats, selectedMintId, handleInvoiceWaitResult]);
 
   const onRegenerateInvoice = useCallback(() => {
-    unsubRef.current?.();
-    unsubRef.current = null;
-    mintQuoteRef.current = null;
-    inflightRef.current = false;
-    setBolt11(null);
-    setInvoiceExpiresAtSec(undefined);
-    setInvoiceStatus("pending");
-    setError(null);
-    // One-click re-quote: the amount and mint are unchanged, so request a
-    // fresh quote immediately instead of bouncing through the entry view.
-    void onCreateInvoice();
-  }, [onCreateInvoice]);
+    void stopActiveMintQuote().finally(() => {
+      inflightRef.current = false;
+      setBolt11(null);
+      setInvoiceExpiresAtSec(undefined);
+      setInvoiceStatus("pending");
+      setError(null);
+      void onCreateInvoice();
+    });
+  }, [onCreateInvoice, stopActiveMintQuote]);
 
   const onPaste = useCallback(async () => {
     setError(null);
@@ -618,10 +646,9 @@ export function useDepositWithdrawState(
   }, [currentView]);
 
   const onClose = useCallback(() => {
-    unsubRef.current?.();
     setPendingRequestId(null);
-    onDismiss();
-  }, [onDismiss]);
+    void stopActiveMintQuote().finally(onDismiss);
+  }, [onDismiss, stopActiveMintQuote]);
 
   return {
     mode,

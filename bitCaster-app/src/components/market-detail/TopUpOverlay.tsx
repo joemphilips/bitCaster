@@ -4,17 +4,13 @@ import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import { InvoiceDisplay } from "@/components/deposit-withdraw/InvoiceDisplay";
 import {
-  createMintQuote,
-  createMintQuoteForUnit,
-  mintProofs,
-  mintProofsForUnit,
-  waitForMintQuotePaid,
-  waitForMintQuotePaidForUnit,
-  type MintQuoteWaitResult,
-} from "@/lib/cashu";
+  createBrowserDurableBolt11MintQuote,
+  hideBrowserDurableBolt11MintQuote,
+  subscribeActiveBrowserDurableBolt11MintQuote,
+} from "@/lib/browserDurableBolt11MintQuote";
 import { decodeWalletIngressToken, ingressReceiveCashuToken } from "@/lib/walletOps";
 import { useWalletStore } from "@/stores/wallet";
-import type { MintQuoteResponse } from "@cashu/cashu-ts";
+import type { DurableBolt11MintQuote } from "@bitcaster/client-sdk/durableBolt11MintQuote";
 import {
   formatAmount,
   bufferSubunits,
@@ -52,15 +48,6 @@ function inputAmountToSubunits(
   return proofUnit === "sat" ? Math.round(displayAmount) : Math.round(displayAmount * 1000);
 }
 
-function topUpRequestAmount(
-  amountSubunits: number,
-  baseAsset: "sat",
-  proofUnit: CashuProofUnit,
-): number {
-  if (baseAsset !== "sat") throw new Error(`unsupported base asset: ${String(baseAsset)}`);
-  return proofUnit === "sat" ? amountSubunits : Math.ceil(amountSubunits / 1000);
-}
-
 function topUpAmountLabel(baseAsset: "sat", t: (key: string) => string): string {
   if (baseAsset !== "sat") throw new Error(`unsupported base asset: ${String(baseAsset)}`);
   return t("topUp.amountSats");
@@ -78,10 +65,6 @@ function formatTopUpAmount(amount: number, baseAsset: "sat", proofUnit: CashuPro
     return `${amount.toLocaleString()} sats`;
   }
   return formatAmount(amount, baseAsset);
-}
-
-function assertNeverWaitResult(r: never): never {
-  throw new Error(`unhandled MintQuoteWaitResult: ${JSON.stringify(r)}`);
 }
 
 function topUpPasteValidationErrorMessage(
@@ -169,11 +152,8 @@ export function TopUpOverlay({
   const showBackupWarning = walletBackupState === "needs_backup" && !backupWarningDismissed;
 
   const unsubRef = useRef<(() => void) | null>(null);
-  // The active mint quote for this overlay-open. Persisted across re-renders
-  // (and StrictMode dev re-effects) so a re-render does NOT create a second
-  // quote against the mint — that's what produced the LNBits "Invoice already
-  // paid or pending" snackbar in P8.
-  const activeQuoteRef = useRef<MintQuoteResponse | null>(null);
+  const activeQuoteRef = useRef<DurableBolt11MintQuote | null>(null);
+  const quotePresentationGenerationRef = useRef(0);
   // Synchronous guard against double-submits — React's `loading` state is set
   // one render later, so a rapid second click would otherwise start a second
   // quote and leak the first's polling subscription.
@@ -196,53 +176,50 @@ export function TopUpOverlay({
     cancelledRef.current = false;
     return () => {
       cancelledRef.current = true;
+      quotePresentationGenerationRef.current += 1;
       unsubRef.current?.();
       unsubRef.current = null;
+      const quote = activeQuoteRef.current;
+      activeQuoteRef.current = null;
+      if (quote) void hideBrowserDurableBolt11MintQuote(quote.quoteRecordId);
     };
   }, []);
 
-  const handlePaidQuote = useCallback(
-    async (quote: MintQuoteResponse, requested: number) => {
-      try {
-        await (proofUnitInput
-          ? mintProofsForUnit(requested, quote, activeMintUrl, proofUnit)
-          : mintProofs(requested, quote, activeMintUrl, baseAsset));
-        if (cancelledRef.current) return;
-        setStatus("paid");
-        // Small delay so the user sees "Payment received!" before the overlay vanishes.
-        setTimeout(() => {
-          if (!cancelledRef.current) onSuccessRef.current();
-        }, 800);
-      } catch (e) {
-        if (!cancelledRef.current) {
-          setStatus("error");
-          setError((e as Error).message);
-        }
-      }
-    },
-    [activeMintUrl, baseAsset, proofUnit, proofUnitInput],
-  );
+  const stopActiveQuote = useCallback(async () => {
+    quotePresentationGenerationRef.current += 1;
+    unsubRef.current?.();
+    unsubRef.current = null;
+    const quote = activeQuoteRef.current;
+    activeQuoteRef.current = null;
+    if (quote) await hideBrowserDurableBolt11MintQuote(quote.quoteRecordId);
+  }, []);
 
   const handleWaitResult = useCallback(
-    (result: MintQuoteWaitResult, quote: MintQuoteResponse, requested: number) => {
-      if (cancelledRef.current) return;
+    (quoteRecordId: string, result: { status: string; error?: Error }) => {
+      if (cancelledRef.current || activeQuoteRef.current?.quoteRecordId !== quoteRecordId) return;
       switch (result.status) {
         case "PAID":
-          handlePaidQuote(quote, requested);
+          setStatus("paid");
+          setTimeout(() => {
+            if (!cancelledRef.current && activeQuoteRef.current?.quoteRecordId === quoteRecordId) {
+              onSuccessRef.current();
+            }
+          }, 800);
           return;
         case "EXPIRED":
           setStatus("expired");
           setError("The Lightning invoice expired before payment arrived.");
+          void stopActiveQuote();
           return;
         case "ERROR":
           setStatus("error");
-          setError(result.error.message);
+          setError(result.error?.message ?? "Mint quote recovery failed.");
           return;
         default:
-          return assertNeverWaitResult(result);
+          throw new Error("Unhandled BOLT11 mint quote result");
       }
     },
-    [handlePaidQuote],
+    [stopActiveQuote],
   );
 
   const startInvoice = useCallback(async () => {
@@ -254,47 +231,58 @@ export function TopUpOverlay({
       );
       return;
     }
-    const requested = topUpRequestAmount(amount, baseAsset, proofUnit);
+    const presentationGeneration = quotePresentationGenerationRef.current;
     inflightRef.current = true;
     setError(null);
     setStatus("pending");
     setLoading(true);
     try {
       await useWalletStore.getState().ensureImplicitWallet();
-      // Re-mount idempotency: reuse a quote already issued during this open.
-      // Otherwise StrictMode (or a parent re-render) would issue a second quote
-      // against the same mint state — LNBits then returns "Invoice already paid
-      // or pending" verbatim, which the user sees as the P8 snackbar.
-      const quote =
-        activeQuoteRef.current ??
-        (proofUnitInput
-          ? await createMintQuoteForUnit(requested, activeMintUrl, proofUnit)
-          : await createMintQuote(requested, activeMintUrl, baseAsset));
-      activeQuoteRef.current = quote;
-      setBolt11(quote.request);
-      setExpiresAtSec(quote.expiry ?? undefined);
+      if (
+        cancelledRef.current ||
+        presentationGeneration !== quotePresentationGenerationRef.current
+      ) {
+        return;
+      }
+      const created = await createBrowserDurableBolt11MintQuote({
+        amount,
+        mintUrl: activeMintUrl,
+        unit: proofUnit,
+      });
+      if (
+        cancelledRef.current ||
+        presentationGeneration !== quotePresentationGenerationRef.current
+      ) {
+        await hideBrowserDurableBolt11MintQuote(created.quote.quoteRecordId);
+        return;
+      }
+      activeQuoteRef.current = created.quote;
+      setBolt11(created.invoiceRequest);
+      setExpiresAtSec(created.quote.expiryUnixSeconds ?? undefined);
       setView("invoice");
-
-      const onTransientError = (e: Error) => {
-        if (!cancelledRef.current) setError(e.message);
-      };
-      const unsub = proofUnitInput
-        ? await waitForMintQuotePaidForUnit(
-            quote,
-            (r) => handleWaitResult(r, quote, requested),
-            { onTransientError },
-            activeMintUrl,
-            proofUnit,
-          )
-        : await waitForMintQuotePaid(
-            quote,
-            (r) => handleWaitResult(r, quote, requested),
-            { onTransientError },
-            activeMintUrl,
-            baseAsset,
-          );
-      if (cancelledRef.current) unsub();
-      else unsubRef.current = unsub;
+      const unsub = await subscribeActiveBrowserDurableBolt11MintQuote({
+        quote: created.quote,
+        onResult: (result) => handleWaitResult(created.quote.quoteRecordId, result),
+        options: {
+          onTransientError: (error) => {
+            if (
+              !cancelledRef.current &&
+              activeQuoteRef.current?.quoteRecordId === created.quote.quoteRecordId
+            ) {
+              setError(error.message);
+            }
+          },
+        },
+      });
+      if (
+        cancelledRef.current ||
+        presentationGeneration !== quotePresentationGenerationRef.current
+      ) {
+        unsub();
+        await hideBrowserDurableBolt11MintQuote(created.quote.quoteRecordId);
+      } else {
+        unsubRef.current = unsub;
+      }
     } catch (e) {
       if (!cancelledRef.current) {
         setStatus("error");
@@ -312,7 +300,6 @@ export function TopUpOverlay({
     handleWaitResult,
     minimumErrorDescription,
     proofUnit,
-    proofUnitInput,
   ]);
 
   const submitEcashToken = useCallback(async () => {
@@ -352,16 +339,17 @@ export function TopUpOverlay({
   }, [activeMintUrl, baseAsset, deficit, ecashToken, proofUnitInput, t]);
 
   const regenerateInvoice = useCallback(() => {
-    // Tear down the prior wait and clear the cached quote so the next
-    // startInvoice() requests a fresh one.
-    unsubRef.current?.();
-    unsubRef.current = null;
-    activeQuoteRef.current = null;
-    inflightRef.current = false;
-    setError(null);
-    setStatus("pending");
-    setView("amount");
-  }, []);
+    void stopActiveQuote().finally(() => {
+      inflightRef.current = false;
+      setError(null);
+      setStatus("pending");
+      setView("amount");
+    });
+  }, [stopActiveQuote]);
+
+  const cancelTopUp = useCallback(() => {
+    void stopActiveQuote().finally(onCancel);
+  }, [onCancel, stopActiveQuote]);
 
   if (view === "invoice") {
     return (
@@ -372,7 +360,7 @@ export function TopUpOverlay({
         status={status}
         expiresAtSec={expiresAtSec}
         errorMessage={error}
-        onClose={onCancel}
+        onClose={cancelTopUp}
         onRegenerate={regenerateInvoice}
       />
     );
@@ -380,14 +368,14 @@ export function TopUpOverlay({
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60" onClick={onCancel} />
+      <div className="absolute inset-0 bg-black/60" onClick={cancelTopUp} />
 
       <div className="relative bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 max-w-sm w-full mx-4">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold text-slate-900 dark:text-white">{t("topUp.title")}</h2>
           <button
             data-testid="top-up-close"
-            onClick={onCancel}
+            onClick={cancelTopUp}
             className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white"
           >
             <X className="w-5 h-5" />

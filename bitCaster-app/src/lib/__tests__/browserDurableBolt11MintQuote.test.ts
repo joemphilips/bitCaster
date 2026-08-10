@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
   };
   let context: any;
   const restoreExactMintOutputs = vi.fn();
+  const waitForMintQuotePaidForUnit = vi.fn();
   const browserDurableWalletMintStore = vi.fn((input: any) => ({
     loadOperation: async (operationId: string) => {
       const record = await input.context.database.proofOperations.get(operationId);
@@ -43,6 +44,7 @@ const mocks = vi.hoisted(() => {
       context = value;
     },
     restoreExactMintOutputs,
+    waitForMintQuotePaidForUnit,
     browserDurableWalletMintStore,
   };
 });
@@ -55,6 +57,7 @@ vi.mock("@/lib/cashu", () => ({
   captureBrowserMintPersistenceContext: () => mocks.context(),
   browserDurableWalletMintStore: mocks.browserDurableWalletMintStore,
   restoreExactMintOutputs: mocks.restoreExactMintOutputs,
+  waitForMintQuotePaidForUnit: mocks.waitForMintQuotePaidForUnit,
 }));
 
 import {
@@ -63,6 +66,7 @@ import {
   hideBrowserDurableBolt11MintQuote,
   recoverBrowserDurableBolt11MintQuotes,
   recoverBrowserDurableBolt11MintQuotesInPass,
+  subscribeActiveBrowserDurableBolt11MintQuote,
 } from "../browserDurableBolt11MintQuote";
 
 const SCOPE = "scope-browser-bolt11";
@@ -77,6 +81,8 @@ beforeEach(() => {
   mocks.wallet.checkMintQuote.mockReset();
   mocks.wallet.completeMint.mockReset();
   mocks.restoreExactMintOutputs.mockReset();
+  mocks.waitForMintQuotePaidForUnit.mockReset();
+  mocks.waitForMintQuotePaidForUnit.mockResolvedValue(() => undefined);
   mocks.browserDurableWalletMintStore.mockClear();
   mocks.wallet.createMintQuote.mockResolvedValue({
     quote: "quote-1",
@@ -221,6 +227,27 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
       (await getProofOperation(created.quote.walletMintOperationId, mocks.context().database))
         ?.state,
     ).toBe("completed");
+  });
+
+  it("uses PAID waiter evidence to admit the bound operation without another NUT-04 check", async () => {
+    const created = await createBrowserDurableBolt11MintQuote({
+      amount: 100,
+      mintUrl: MINT_URL,
+      unit: UNIT,
+    });
+    const onResult = vi.fn();
+    await subscribeActiveBrowserDurableBolt11MintQuote({ quote: created.quote, onResult });
+    const paid = mocks.waitForMintQuotePaidForUnit.mock.calls[0]?.[1];
+
+    await paid({ status: "PAID", quote: { state: "PAID" } });
+
+    const row = await mocks
+      .context()
+      .database.mintQuotes.get([SCOPE, "bolt11", created.quote.quoteRecordId]);
+    expect(mocks.wallet.checkMintQuote).not.toHaveBeenCalled();
+    expect(row?.quote.observedState).toBe("PAID");
+    expect(row?.recoveryState).toBe("completed");
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "PAID" }));
   });
 
   it("retains UNPAID quotes after recording the current recovery pass", async () => {
