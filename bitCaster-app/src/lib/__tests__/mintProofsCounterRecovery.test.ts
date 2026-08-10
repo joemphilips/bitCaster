@@ -143,6 +143,7 @@ vi.mock("@/stores/browser-wallet-counter-db", () => ({
 
 vi.mock("@/stores/proof-db", () => ({
   db: {},
+  DURABLE_BOLT11_MINT_QUOTE_OPERATION_METADATA_KEY: "durableBolt11MintQuoteRecordId",
   addProofs: mocks.addProofs,
   addProofsIfMissing: mocks.addProofs,
   restoreProofsAndAdvanceCounter: mocks.restoreProofsAndAdvanceCounter,
@@ -678,6 +679,17 @@ describe("recoverPendingWalletMints — exact restart recovery", () => {
     expect(mocks.admitBrowserReceivedProofs).not.toHaveBeenCalled();
     expect(mocks.addProofs).not.toHaveBeenCalled();
     expect(mocks.markProofOperationCompleted).not.toHaveBeenCalled();
+  });
+
+  it("leaves a valid quote-owned mint operation for quote recovery only", async () => {
+    const record = preparedMintRecord("wallet-mint:quote-owned");
+    Object.assign(record.metadata, { durableBolt11MintQuoteRecordId: "a".repeat(64) });
+    mocks.proofOperations.set(record.operationId, record);
+    mocks.getProofOperations.mockResolvedValueOnce([record] as never);
+
+    expect(await cashu.recoverPendingWalletMints()).toEqual({ pending: 0 });
+    expect(mocks.wallet.completeMint).not.toHaveBeenCalled();
+    expect(mocks.admitBrowserReceivedProofs).not.toHaveBeenCalled();
   });
 });
 

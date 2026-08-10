@@ -25,6 +25,7 @@ import {
   recoverPendingTokenReceives,
   recoverPendingWalletMints,
 } from "@/lib/cashu";
+import { recoverBrowserDurableBolt11MintQuotesInPass } from "@/lib/browserDurableBolt11MintQuote";
 import { startNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import { refreshMintInfoWithoutActivating, userAddAndSelectMint } from "@/lib/walletOps";
@@ -268,6 +269,46 @@ function AppRoutes() {
       window.removeEventListener("online", onOnline);
     };
   }, [nostrSignerReady, walletMnemonic, walletMintUrls]);
+
+  // BOLT11 quote recovery is independent from CTF range recovery. One pass
+  // checks each pending quote at most once. An online event starts a new pass.
+  useEffect(() => {
+    if (!walletMnemonic || !nostrSignerReady) return;
+    let cancelled = false;
+    let running = false;
+    let rerunRequested = false;
+    const runPass = async () => {
+      if (running) {
+        rerunRequested = true;
+        return;
+      }
+      running = true;
+      try {
+        do {
+          rerunRequested = false;
+          const passCutoffMs = Date.now();
+          let hasMore: boolean;
+          try {
+            do {
+              const result = await recoverBrowserDurableBolt11MintQuotesInPass({ passCutoffMs });
+              hasMore = result.hasMore;
+            } while (!cancelled && hasMore);
+          } catch {
+            // A later online event can request one fresh bounded pass.
+          }
+        } while (!cancelled && rerunRequested);
+      } finally {
+        running = false;
+      }
+    };
+    const onOnline = () => void runPass();
+    window.addEventListener("online", onOnline);
+    void runPass();
+    return () => {
+      cancelled = true;
+      window.removeEventListener("online", onOnline);
+    };
+  }, [nostrSignerReady, walletMnemonic]);
 
   const pendingWalletPaymentReconcileAttempted = useRef(false);
   useEffect(() => {

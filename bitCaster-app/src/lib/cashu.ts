@@ -32,6 +32,7 @@ import { normalizeUrl } from "@/lib/url";
 import {
   addProofs,
   addProofsIfMissing,
+  DURABLE_BOLT11_MINT_QUOTE_OPERATION_METADATA_KEY,
   getUnitProofs,
   getProofOperation,
   getProofOperations,
@@ -229,7 +230,7 @@ interface MintAndStoreProofsInput {
   readonly unit: CashuProofUnit;
 }
 
-interface BrowserMintPersistenceContext {
+export interface BrowserMintPersistenceContext {
   readonly activeMintUrl: string;
   readonly database: BitcasterDB;
   readonly seed: Uint8Array;
@@ -338,7 +339,7 @@ async function mintAndStoreProofs(input: MintAndStoreProofsInput): Promise<Proof
   }
 }
 
-function captureBrowserMintPersistenceContext(): BrowserMintPersistenceContext & {
+export function captureBrowserMintPersistenceContext(): BrowserMintPersistenceContext & {
   readonly mnemonic: string;
 } {
   const state = useWalletStore.getState();
@@ -376,7 +377,7 @@ export async function mintProofsForUnit(
   });
 }
 
-function browserDurableWalletMintStore(input: {
+export function browserDurableWalletMintStore(input: {
   readonly baseAsset: MarketBaseAsset;
   readonly context: BrowserMintPersistenceContext;
   readonly unit: CashuProofUnit;
@@ -440,7 +441,7 @@ function mintSnapshotFromRecord(
   }
 }
 
-async function restoreExactMintOutputs(
+export async function restoreExactMintOutputs(
   wallet: CashuWallet,
   input: {
     readonly mintUrl: string;
@@ -512,6 +513,7 @@ export async function recoverPendingWalletMints(): Promise<{ pending: number }> 
   context.requireCapturedProfile();
   let pending = 0;
   for (const record of records) {
+    if (hasValidBolt11MintQuoteOwnership(record.metadata)) continue;
     try {
       context.requireCapturedProfile();
       const operation = requireDurableWalletMintJournal({
@@ -547,6 +549,11 @@ export async function recoverPendingWalletMints(): Promise<{ pending: number }> 
     }
   }
   return { pending };
+}
+
+function hasValidBolt11MintQuoteOwnership(metadata: Record<string, unknown>): boolean {
+  const quoteRecordId = metadata[DURABLE_BOLT11_MINT_QUOTE_OPERATION_METADATA_KEY];
+  return typeof quoteRecordId === "string" && /^[0-9a-f]{64}$/.test(quoteRecordId);
 }
 
 async function persistBrowserMintProofs(input: {

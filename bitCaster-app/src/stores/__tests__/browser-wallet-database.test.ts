@@ -34,6 +34,7 @@ const currentTableNames = [
   "encryptedWalletBackupV2WalletAcceptedHeads",
   "encryptedWalletBackupV2WalletAssetReceipts",
   "encryptedWalletBackupV2WalletActiveDescriptors",
+  "mintQuotes",
   "targetedAssetRecoveryAttempts",
 ].sort();
 
@@ -43,11 +44,11 @@ afterEach(async () => {
 });
 
 describe("browser wallet databases", () => {
-  it("installs the current V2 schema immediately after version 8", async () => {
+  it("installs the current scoped schema", async () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(10);
+    expect(db.verno).toBe(11);
     expect(db.tables.map(({ name }) => name).sort()).toEqual(currentTableNames);
     expect(db.custodyProofs.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofs.schema.idxByName["[scopeId+selectability+proofId]"]).toBeDefined();
@@ -110,6 +111,19 @@ describe("browser wallet databases", () => {
       "backupHeadVersion",
       "monitoringFactVersion",
     ]);
+    expect(db.mintQuotes.schema.primKey.keyPath).toEqual([
+      "scopeId",
+      "paymentMethod",
+      "quoteRecordId",
+    ]);
+    expect(
+      db.mintQuotes.schema.idxByName["[scopeId+paymentMethod+observedState+quoteRecordId]"],
+    ).toBeDefined();
+    expect(
+      db.mintQuotes.schema.idxByName[
+        "[scopeId+paymentMethod+recoveryState+lastRecoveryAttemptAtMs+quoteRecordId]"
+      ],
+    ).toBeDefined();
   });
 
   it("keeps the version-8 reset for undeployed version-7 wallet data", async () => {

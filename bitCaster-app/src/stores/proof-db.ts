@@ -1,4 +1,5 @@
 import Dexie, { type Table } from "dexie";
+import type { DurableBolt11MintQuote } from "@bitcaster/client-sdk/durableBolt11MintQuote";
 import { Amount, type Proof } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
@@ -254,6 +255,22 @@ export interface BrowserCtfRangeMessageRow {
   acknowledgedAtMs: number | null;
 }
 
+/**
+ * One browser-local mint quote authority. `quote` is the SDK-owned record.
+ * The indexed fields duplicate only its identity and current recovery state.
+ */
+export interface BrowserMintQuoteRow {
+  scopeId: string;
+  paymentMethod: "bolt11";
+  quoteRecordId: string;
+  observedState: "UNPAID" | "PAID" | "ISSUED";
+  recoveryState: "pending" | "completed";
+  lastRecoveryAttemptAtMs: number;
+  quote: DurableBolt11MintQuote;
+}
+
+export const DURABLE_BOLT11_MINT_QUOTE_OPERATION_METADATA_KEY = "durableBolt11MintQuoteRecordId";
+
 export class BitcasterDB extends Dexie {
   proofs!: Table<StoredProofRow>;
   proofOperations!: Table<ProofOperationRecord>;
@@ -312,6 +329,7 @@ export class BitcasterDB extends Dexie {
     BrowserTargetedAssetRecoveryAttemptRow,
     [string, string, number, string]
   >;
+  mintQuotes!: Table<BrowserMintQuoteRow, [string, "bolt11", string]>;
 
   constructor(databaseName = "bitcaster") {
     super(databaseName);
@@ -429,6 +447,10 @@ export class BitcasterDB extends Dexie {
       custodyProofs:
         "&[scopeId+proofId], [scopeId+selectability], [scopeId+selectability+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]",
     });
+    this.version(11).stores({
+      mintQuotes:
+        "&[scopeId+paymentMethod+quoteRecordId], [scopeId+paymentMethod+observedState+quoteRecordId], [scopeId+paymentMethod+recoveryState+lastRecoveryAttemptAtMs+quoteRecordId]",
+    });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -448,6 +470,7 @@ export class BitcasterDB extends Dexie {
       "encryptedWalletBackupV2WalletActiveDescriptors",
     );
     this.targetedAssetRecoveryAttempts = this.table("targetedAssetRecoveryAttempts");
+    this.mintQuotes = this.table("mintQuotes");
   }
 }
 
