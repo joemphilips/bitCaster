@@ -17,6 +17,7 @@ import {
 } from '../src/stateSqlite.ts'
 import {
   advanceDaemonKeysetCounter,
+  AVAILABLE_WALLET_PROOF_AMOUNT_SAMPLES_FOR_RECEIVE_SQL,
   assertPreparedProofOperationDispatchFenced,
   completeCompleteSetCtfProofOperationFenced,
   completeRegularSplitWithCompleteSetHandoffFenced,
@@ -28,6 +29,7 @@ import {
   prepareCompleteSetRegularProofOperationFenced,
   prepareProofOperationWithExactReservation,
   readAvailableWalletProofsFenced,
+  readAvailableWalletProofAmountSamplesForReceive,
   readRecoverableCompleteSetProofOperationPage,
   readAvailableWalletProofGroupPage,
   readAvailableWalletProofPage,
@@ -125,6 +127,81 @@ test('target-v1 state round-trips through retained typed SQLite rows and artifac
         )
         .get() as { forbiddenCount: number }
       assert.equal(row.forbiddenCount, 0)
+    } finally {
+      database.close()
+    }
+  })
+})
+
+test('receive denomination samples are bounded, scoped, and index-backed', async () => {
+  await withProfile(async (home) => {
+    const state = emptyDaemonState()
+    for (let exponent = 0; exponent <= 52; exponent += 1) {
+      for (let sample = 0; sample < 4; sample += 1) {
+        state.wallet.proofs.push({
+          proof: proof(`receive-${exponent}-${sample}`, 2 ** exponent),
+          mintUrl: 'http://localhost:8086',
+          state: 'available',
+          asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        })
+      }
+    }
+    state.wallet.proofs.push(
+      {
+        proof: proof('receive-reserved', 1),
+        mintUrl: 'http://localhost:8086',
+        state: 'reserved',
+        reservedBy: 'other',
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        proof: proof('receive-other-mint', 1),
+        mintUrl: 'https://other.example',
+        state: 'available',
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        proof: proof('receive-other-unit', 1),
+        mintUrl: 'http://localhost:8086',
+        state: 'available',
+        asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    )
+    await writeState(state)
+    const mutation = await claimMutation(home, 'receive-amount-samples')
+    const samples = await readAvailableWalletProofAmountSamplesForReceive({
+      mintUrl: 'http://localhost:8086',
+      unit: 'msat',
+      mutation,
+    })
+    assert.equal(samples.length, 159)
+    assert.ok(samples.length <= 192)
+    for (const amount of new Set(samples.map(({ amount }) => amount))) {
+      assert.equal(samples.filter((sample) => sample.amount === amount).length, 3)
+    }
+    const database = await openDaemonStateSqlite(home)
+    try {
+      const plan = database
+        .prepare(`EXPLAIN QUERY PLAN ${AVAILABLE_WALLET_PROOF_AMOUNT_SAMPLES_FOR_RECEIVE_SQL}`)
+        .all(
+          mutation.fence.scopeId,
+          'http://localhost:8086',
+          'msat',
+          mutation.fence.scopeId,
+          'http://localhost:8086',
+          'msat',
+        ) as Array<{ detail: string }>
+      assert.ok(
+        plan.some(({ detail }) => detail.includes('target_wallet_proofs_receive_amount_idx')),
+      )
     } finally {
       database.close()
     }

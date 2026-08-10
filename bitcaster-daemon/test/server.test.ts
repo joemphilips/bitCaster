@@ -185,6 +185,19 @@ test('manual recovery cannot clear automatic retirement pending custody', () => 
   assert.equal(readiness.isReady(), false)
 })
 
+test('receive recovery paging remains not ready without sampled pending rows', () => {
+  for (const receive of [
+    { pendingCount: 1, hasMore: false },
+    { pendingCount: 0, hasMore: true },
+  ]) {
+    const readiness = createCustodyReadinessTracker({
+      nonRetirementPending: receive.pendingCount > 0 || receive.hasMore,
+      retirementPending: false,
+    })
+    assert.equal(readiness.isReady(), false)
+  }
+})
+
 test('latest automatic retirement scan can clear custody readiness', () => {
   const readiness = createCustodyReadinessTracker({
     nonRetirementPending: false,

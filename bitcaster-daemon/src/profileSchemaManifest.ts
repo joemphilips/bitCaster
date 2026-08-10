@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '8701a98e8d025591bf873a056fc3b1dbdcf5d788869f9a08114b03da670af111'
+  'ceb147d92ccc757eb620f7fe8fea5754adf015825444741428d6573a25d33586'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -1031,6 +1031,19 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     FOREIGN KEY (scope_id, operation_id)
       REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
   ) STRICT`,
+  `CREATE TABLE custody_wallet_receive_active_work (
+    scope_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    next_attempt_at_ms INTEGER NOT NULL CHECK (next_attempt_at_ms >= 0),
+    estimated_bytes INTEGER NOT NULL CHECK (estimated_bytes BETWEEN 1 AND 4194304),
+    PRIMARY KEY (scope_id, operation_id),
+    FOREIGN KEY (scope_id, operation_id)
+      REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
+  ) STRICT`,
+  `CREATE TABLE custody_wallet_receive_recovery_cursors (
+    scope_id TEXT PRIMARY KEY NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE CASCADE,
+    cursor TEXT CHECK (cursor IS NULL OR length(cursor) BETWEEN 1 AND 4096)
+  ) STRICT`,
   `CREATE TABLE daemon_orders (
     order_id TEXT PRIMARY KEY NOT NULL CHECK (length(order_id) BETWEEN 1 AND 1024),
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
@@ -1153,6 +1166,11 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     )`,
   `CREATE INDEX target_wallet_proofs_reservation_idx
     ON target_wallet_proofs (scope_id, normalized_mint, reserved_by, state, proof_id)`,
+  `CREATE INDEX target_wallet_proofs_receive_amount_idx
+    ON target_wallet_proofs (
+      scope_id, normalized_mint, unit, asset_kind, base_asset, state, amount, proof_id
+    )
+    WHERE condition_id IS NULL AND outcome_set_id IS NULL`,
   `CREATE INDEX target_proof_operations_recovery_idx
     ON target_proof_operations (
       scope_id, purpose, state, updated_at_ms, operation_id
@@ -1179,6 +1197,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ON custody_proof_reservations (scope_id, proof_id)`,
   `CREATE INDEX custody_active_work_page_idx
     ON custody_active_work (scope_id, next_attempt_at_ms, operation_id)`,
+  `CREATE INDEX custody_wallet_receive_active_work_page_idx
+    ON custody_wallet_receive_active_work (scope_id, next_attempt_at_ms, operation_id)`,
   `CREATE INDEX custody_deliveries_pending_idx
     ON custody_deliveries (scope_id, state, expires_at_ms, delivery_id)`,
   `CREATE INDEX daemon_orders_listing_idx

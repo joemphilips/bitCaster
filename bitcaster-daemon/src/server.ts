@@ -71,6 +71,7 @@ import {
 } from './state.ts'
 import {
   recoverPreparedWalletSends,
+  recoverDurableWalletReceives,
   receiveWalletToken,
   sendWalletToken,
   executeCtfConsolidationPlan,
@@ -575,6 +576,7 @@ export async function dispatch(
       const wallet = await recoverPreparedWalletSends(secrets, deps)
       if (!deps.getCustodyFence) return { ok: true, result: wallet }
       const getCustodyFence = deps.getCustodyFence
+      const receives = await recoverDurableWalletReceives(secrets, deps)
       const consolidation = await recoverWalletProofConsolidations({
         secrets,
         mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
@@ -592,6 +594,7 @@ export async function dispatch(
         .map((entry) => entry.conditionId)
       const result = composeStartupCustodyRecovery([
         wallet,
+        receives,
         consolidation,
         completeSets,
         { recovered: retired, pending: retirementPending(retirements) },
@@ -599,11 +602,19 @@ export async function dispatch(
       deps.onManualCustodyRecoveryStatus?.({
         nonRetirementPending:
           wallet.pending.length > 0 ||
+          receives.pending.length > 0 ||
+          receives.pendingCount > 0 ||
+          receives.hasMore ||
           consolidation.pending.length > 0 ||
           completeSets.pending.length > 0,
         retirementPending: retirements.some((entry) => entry.error !== null),
       })
-      if (!deps.onManualCustodyRecoveryStatus && result.pending.length === 0) {
+      if (
+        !deps.onManualCustodyRecoveryStatus &&
+        result.pending.length === 0 &&
+        receives.pendingCount === 0 &&
+        !receives.hasMore
+      ) {
         deps.markCustodyReady?.()
       }
       return {

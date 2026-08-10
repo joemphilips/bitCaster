@@ -469,6 +469,93 @@ test('active work pages enforce exact 256-record and 4 MiB boundaries', async ()
   }
 })
 
+test('wallet receive active pages isolate receive work and persist a fair cursor', async () => {
+  const fixture = await profile()
+  try {
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      for (let index = 0; index < 257; index += 1) {
+        const operationId = `custody-operation:receive-page-${index}`
+        const ids = seedMinimalArtifacts(database, fixture.walletScopeId, operationId)
+        insertMinimalOperation(database, {
+          scopeId: fixture.walletScopeId,
+          operationId,
+          requestId: ids.requestId,
+          outputId: ids.outputId,
+          privateId: ids.privateId,
+        })
+        database
+          .prepare(
+            `INSERT INTO custody_wallet_receive_active_work (
+               scope_id, operation_id, next_attempt_at_ms, estimated_bytes
+             ) VALUES (?, ?, ?, 1)`,
+          )
+          .run(fixture.walletScopeId, operationId, index)
+      }
+      const genericIds = seedMinimalArtifacts(
+        database,
+        fixture.walletScopeId,
+        'custody-operation:generic-only',
+      )
+      insertMinimalOperation(database, {
+        scopeId: fixture.walletScopeId,
+        operationId: 'custody-operation:generic-only',
+        requestId: genericIds.requestId,
+        outputId: genericIds.outputId,
+        privateId: genericIds.privateId,
+      })
+      database
+        .prepare(
+          `INSERT INTO custody_active_work (
+             scope_id, operation_id, next_attempt_at_ms, estimated_bytes
+           ) VALUES (?, ?, 0, 1)`,
+        )
+        .run(fixture.walletScopeId, 'custody-operation:generic-only')
+      const store = new DurableCustodySqliteStore(database)
+      const first = store.listWalletReceiveActiveWorkPage(fixture.walletScopeId)
+      assert.equal(first.rows.length, 256)
+      assert.notEqual(first.nextCursor, null)
+      assert.equal(
+        first.rows.some(({ operationId }) => operationId === 'custody-operation:generic-only'),
+        false,
+      )
+      store.setWalletReceiveRecoveryCursor(fixture.walletScopeId, first.nextCursor)
+      const second = store.listWalletReceiveActiveWorkPage(
+        fixture.walletScopeId,
+        store.getWalletReceiveRecoveryCursor(fixture.walletScopeId),
+      )
+      assert.equal(second.rows.length, 1)
+      assert.equal(second.rows[0]?.operationId, 'custody-operation:receive-page-256')
+      store.setWalletReceiveRecoveryCursor(fixture.walletScopeId, null)
+      assert.equal(store.getWalletReceiveRecoveryCursor(fixture.walletScopeId), null)
+      assert.equal(store.countWalletReceiveActiveWork(fixture.walletScopeId), 257)
+
+      database.prepare('DELETE FROM custody_wallet_receive_active_work').run()
+      database
+        .prepare(
+          `INSERT INTO custody_wallet_receive_active_work (
+             scope_id, operation_id, next_attempt_at_ms, estimated_bytes
+           ) VALUES (?, ?, 0, ?), (?, ?, 1, 1)`,
+        )
+        .run(
+          fixture.walletScopeId,
+          'custody-operation:receive-page-0',
+          4 * 1_024 * 1_024,
+          fixture.walletScopeId,
+          'custody-operation:receive-page-1',
+        )
+      const byteBounded = store.listWalletReceiveActiveWorkPage(fixture.walletScopeId)
+      assert.equal(byteBounded.rows.length, 1)
+      assert.equal(byteBounded.estimatedBytes, 4 * 1_024 * 1_024)
+      assert.notEqual(byteBounded.nextCursor, null)
+    } finally {
+      database.close()
+    }
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
 test('operation and artifacts round-trip exactly with deferred FK ordering', async () => {
   const fixture = await profile()
   try {

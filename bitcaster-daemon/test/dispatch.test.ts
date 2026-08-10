@@ -3,8 +3,12 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { getEncodedToken, type Proof } from '@cashu/cashu-ts'
+import { Amount, OutputData, deriveKeysetId, getEncodedToken, type Proof } from '@cashu/cashu-ts'
 import { completedProofAuthorityDigest } from '@bitcaster-market/client-sdk/ctfSplit'
+import {
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from '@bitcaster-market/client-sdk'
 import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
 import {
   dispatch,
@@ -25,6 +29,11 @@ import {
   splitAvailableSatProofsForCtfCollateral,
 } from '../src/walletOps.ts'
 import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
+import { claimCustodyScopeLease } from '../src/profileFencing.ts'
+import { reserveDaemonKeysetCounter } from '../src/state.ts'
+
+const V2_KEYSET_ID = `01${'a'.repeat(64)}`
+const V1_KEYSET_ID = `00${'a'.repeat(14)}`
 
 async function writeState(state: DaemonState): Promise<void> {
   for (const record of state.wallet.proofs) {
@@ -300,52 +309,146 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       },
     )
 
-    await t.test('wallet.receive redeems token proofs into daemon state', async () => {
+    await t.test('wallet.receive binds exact durable authority before completeSwap', async () => {
       await writeState(emptyDaemonState())
+      const keysetId = deriveKeysetId(
+        { '1': `02${'11'.repeat(32)}` },
+        { unit: 'sat', versionByte: 1 },
+      )
       const token = getEncodedToken({
         mint: 'https://mint-a.example',
         unit: 'sat',
-        proofs: [cashuProof(7, 'token-secret')],
+        proofs: [{ ...cashuProof(7, 'token-secret'), id: keysetId }],
       })
-      const response = await dispatch(
-        { method: 'wallet.receive', params: { token } },
-        {
-          resolveTokenImportKeysets: tokenImportKeysetResolver('regular', 'sat'),
-          createCashuWallet(mintUrl) {
-            assert.equal(mintUrl, 'https://mint-a.example')
-            return {
-              async loadMint() {},
-              async receive(receivedToken, config) {
-                assert.equal(receivedToken, token)
-                assert.deepEqual(config?.proofsWeHave, [])
-                return [cashuProof(7, 'fresh-secret')]
-              },
-              async send() {
-                throw new Error('send unused')
-              },
-            }
-          },
-        },
+      const fence = await claimCustodyScopeLease(profileDir(), {
+        scopeId: deriveDurableCustodyScopeId({
+          scopeKind: 'wallet',
+          walletId: deriveDurableCustodyWalletId(Buffer.from(secrets.walletSeedHex, 'hex')),
+        }),
+        incarnationId: 'wallet-receive-bind-test',
+        observedAtMs: Date.now(),
+      })
+      await reserveDaemonKeysetCounter(
+        keysetId,
+        1,
+        { fence, observedAtMs: Date.now() },
+        { normalizedMint: 'https://mint-a.example', unit: 'sat' },
       )
-
-      assert.equal(response.ok, true)
-      assert.deepEqual(response.result, {
-        mintUrl: 'https://mint-a.example',
-        amountSats: 7,
-        proofCount: 1,
-        asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
-        unit: 'sat',
-        hasInactiveProofs: false,
-      })
-      const state = await readState()
-      assert.equal(state?.wallet.proofs[0]?.proof.secret, 'fresh-secret')
-      assert.equal(state?.wallet.proofs[0]?.state, 'available')
-      assert.deepEqual(state?.wallet.proofs[0]?.asset, {
-        kind: 'sats',
-        baseAsset: 'sat',
-        unit: 'sat',
-      })
+      let completeCalled = false
+      await assert.rejects(
+        () =>
+          dispatch(
+            { method: 'wallet.receive', params: { token } },
+            {
+              getCustodyFence: () => fence,
+              resolveMintKeysetIds: async () => [keysetId],
+              resolveTokenImportKeysets: async () => ({
+                freshness: 'fresh' as const,
+                regularKeysets: [{ keysetId, unit: 'sat', active: true }],
+                conditionalKeysets: [],
+              }),
+              createCashuWallet(mintUrl) {
+                assert.equal(mintUrl, 'https://mint-a.example')
+                const output = OutputData.createSingleData(
+                  Amount.from(7),
+                  keysetId,
+                  'fresh-secret',
+                  1n,
+                )
+                return {
+                  async loadMint() {},
+                  async receive() {
+                    throw new Error('legacy receive must not be called')
+                  },
+                  async prepareSwapToReceive(receivedToken, config) {
+                    assert.equal(receivedToken, token)
+                    assert.deepEqual(config?.proofsWeHave, [])
+                    config?.onCountersReserved?.({ keysetId, start: 0, count: 1 })
+                    return {
+                      amount: Amount.from(7),
+                      fees: Amount.zero(),
+                      keysetId,
+                      inputs: [{ ...cashuProof(7, 'token-secret'), id: keysetId }],
+                      keepOutputs: [output],
+                    }
+                  },
+                  async completeSwap() {
+                    completeCalled = true
+                    const custodyRows = await withDaemonStateSqliteTransaction(
+                      profileDir(),
+                      (database) =>
+                        database.prepare('SELECT operation_id FROM custody_operations').all(),
+                    )
+                    assert.equal(custodyRows.length, 1)
+                    return { keep: [{ ...cashuProof(7, 'fresh-secret'), id: keysetId }], send: [] }
+                  },
+                  async checkProofsStates() {
+                    return []
+                  },
+                  getKeyset() {
+                    return {
+                      id: keysetId,
+                      unit: 'sat',
+                      keys: { '1': `02${'11'.repeat(32)}` },
+                      fee: 0,
+                      verify: () => true,
+                    }
+                  },
+                  async send() {
+                    throw new Error('send unused')
+                  },
+                }
+              },
+            },
+          ),
+        /custody mint proof differs|Invalid point|proof/i,
+      )
+      assert.equal(completeCalled, true)
     })
+
+    await t.test(
+      'wallet.receive rejects resolved V1 ordinary proofs before wallet or counter work',
+      async () => {
+        await writeState(emptyDaemonState())
+        const legacyKeysetId = `00${'b'.repeat(14)}`
+        const token = getEncodedToken({
+          mint: 'https://mint-a.example',
+          unit: 'sat',
+          proofs: [{ ...cashuProof(7, 'legacy-ordinary-secret'), id: legacyKeysetId }],
+        })
+        let walletCreated = false
+        await assert.rejects(
+          () =>
+            dispatch(
+              { method: 'wallet.receive', params: { token } },
+              {
+                resolveTokenImportKeysets: async () => ({
+                  freshness: 'fresh' as const,
+                  regularKeysets: [{ keysetId: legacyKeysetId, unit: 'sat', active: true }],
+                  conditionalKeysets: [],
+                }),
+                createCashuWallet() {
+                  walletCreated = true
+                  throw new Error('wallet must not be created')
+                },
+              },
+            ),
+          /daemon wallet receive supports only V2 keysets/,
+        )
+        assert.equal(walletCreated, false)
+        const counterRows = await withDaemonStateSqliteTransaction(
+          profileDir(),
+          (database) =>
+            database
+              .prepare(
+                `SELECT COUNT(*) AS count FROM target_keyset_counters
+                 WHERE normalized_mint = ? AND unit = ? AND keyset_id = ?`,
+              )
+              .get('https://mint-a.example', 'sat', legacyKeysetId) as { count: number },
+        )
+        assert.equal(counterRows.count, 0)
+      },
+    )
 
     await t.test('wallet.receive can classify imported proofs as outcome tokens', async () => {
       await writeState(emptyDaemonState())
@@ -365,10 +468,11 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         },
         {
           resolveTokenImportKeysets: tokenImportKeysetResolver('conditional', 'msat'),
+          resolveMintKeysetIds: async () => [V2_KEYSET_ID],
           async resolveConditionKeysetIds(mintUrl, conditionId) {
             assert.equal(mintUrl, 'https://mint-a.example')
             assert.equal(conditionId, 'cond')
-            return ['009a1f293253e41e']
+            return [V2_KEYSET_ID]
           },
           createCashuWallet() {
             return {
@@ -380,9 +484,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                 throw new Error('send unused')
               },
               async checkProofsStates(proofs) {
-                assert.deepEqual(proofs, [
-                  { id: '009a1f293253e41e', secret: 'outcome-token-secret' },
-                ])
+                assert.deepEqual(proofs, [{ id: V2_KEYSET_ID, secret: 'outcome-token-secret' }])
                 return [
                   {
                     Y: 'proof-y',
@@ -423,6 +525,40 @@ test('daemon dispatch persists wallet and order state', async (t) => {
     })
 
     await t.test(
+      'wallet.receive rejects non-V2 outcome proof keysets before wallet I/O',
+      async () => {
+        const token = getEncodedToken({
+          mint: 'https://mint-a.example',
+          unit: 'msat',
+          proofs: [{ ...cashuProof(11, 'legacy-outcome-secret'), id: V1_KEYSET_ID }],
+        })
+        let walletCreated = false
+        await assert.rejects(
+          () =>
+            dispatch(
+              {
+                method: 'wallet.receive',
+                params: { token, conditionId: 'cond', outcomeSetId: 'YES' },
+              },
+              {
+                resolveTokenImportKeysets: async () => ({
+                  freshness: 'fresh' as const,
+                  regularKeysets: [],
+                  conditionalKeysets: [{ keysetId: V1_KEYSET_ID, unit: 'msat', active: true }],
+                }),
+                createCashuWallet() {
+                  walletCreated = true
+                  throw new Error('wallet must not be created')
+                },
+              },
+            ),
+          /daemon wallet receive supports only V2 keysets/,
+        )
+        assert.equal(walletCreated, false)
+      },
+    )
+
+    await t.test(
       'wallet.receive rejects spent outcome-token proofs before persistence',
       async () => {
         await writeState(emptyDaemonState())
@@ -445,8 +581,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               },
               {
                 resolveTokenImportKeysets: tokenImportKeysetResolver('conditional', 'msat'),
+                resolveMintKeysetIds: async () => [V2_KEYSET_ID],
                 async resolveConditionKeysetIds() {
-                  return ['009a1f293253e41e']
+                  return [V2_KEYSET_ID]
                 },
                 createCashuWallet() {
                   return {
@@ -2555,7 +2692,7 @@ function scoreResponse(
 
 function cashuProof(amount: number, secret: string): Proof {
   return {
-    id: '009a1f293253e41e',
+    id: V2_KEYSET_ID,
     amount,
     secret,
     C: `02${'11'.repeat(32)}`,
@@ -2565,10 +2702,9 @@ function cashuProof(amount: number, secret: string): Proof {
 function tokenImportKeysetResolver(registry: 'regular' | 'conditional', unit: 'sat' | 'msat') {
   return async () => ({
     freshness: 'fresh' as const,
-    regularKeysets:
-      registry === 'regular' ? [{ keysetId: '009a1f293253e41e', unit, active: true }] : [],
+    regularKeysets: registry === 'regular' ? [{ keysetId: V2_KEYSET_ID, unit, active: true }] : [],
     conditionalKeysets:
-      registry === 'conditional' ? [{ keysetId: '009a1f293253e41e', unit, active: true }] : [],
+      registry === 'conditional' ? [{ keysetId: V2_KEYSET_ID, unit, active: true }] : [],
   })
 }
 

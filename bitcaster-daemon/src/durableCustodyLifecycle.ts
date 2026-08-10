@@ -168,6 +168,7 @@ export function purgeCustodyOperationP09(
     'custody_successor_admissions',
     'custody_selected_successors',
     'custody_proof_lineage',
+    'custody_wallet_receive_active_work',
     'custody_active_work',
     'custody_deliveries',
     'custody_operation_tombstones',

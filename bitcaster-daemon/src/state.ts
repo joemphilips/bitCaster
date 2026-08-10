@@ -120,6 +120,32 @@ export interface FencedStateMutation {
   readonly observedAtMs: number
 }
 
+export const AVAILABLE_WALLET_PROOF_AMOUNT_SAMPLES_FOR_RECEIVE_SQL = `
+  WITH RECURSIVE denominations(amount, ordinal) AS (
+    SELECT 1, 0
+    UNION ALL
+    SELECT amount * 2, ordinal + 1 FROM denominations WHERE ordinal < 62
+  )
+  SELECT proof.amount
+  FROM denominations
+  JOIN target_wallet_proofs AS proof
+    ON proof.amount = denominations.amount
+   AND proof.scope_id = ? AND proof.normalized_mint = ? AND proof.unit = ?
+   AND proof.asset_kind = 'sats' AND proof.base_asset = 'sat'
+   AND proof.condition_id IS NULL AND proof.outcome_set_id IS NULL
+   AND proof.state = 'available'
+  WHERE proof.proof_id IN (
+    SELECT sample.proof_id
+    FROM target_wallet_proofs AS sample
+    WHERE sample.scope_id = ? AND sample.normalized_mint = ? AND sample.unit = ?
+      AND sample.asset_kind = 'sats' AND sample.base_asset = 'sat'
+      AND sample.condition_id IS NULL AND sample.outcome_set_id IS NULL
+      AND sample.state = 'available' AND sample.amount = denominations.amount
+    ORDER BY sample.proof_id
+    LIMIT 3
+  )
+  LIMIT 192`
+
 export interface ExactProofOperationAuthority {
   readonly purpose: string
   readonly reservationId: string
@@ -767,6 +793,30 @@ export async function readAvailableWalletProofsFenced(input: {
     input.mutation.fence,
     input.mutation.observedAtMs,
     (database) => readAvailableWalletProofsFromDatabase(database, input.mintUrl, asset),
+  )
+}
+
+/** Return bounded sats denomination samples for Cashu receive planning. */
+export async function readAvailableWalletProofAmountSamplesForReceive(input: {
+  readonly mintUrl: string
+  readonly unit: 'sat' | 'msat'
+  readonly mutation: FencedStateMutation
+}): Promise<Array<{ amount: number }>> {
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    input.mutation.fence,
+    input.mutation.observedAtMs,
+    (database) =>
+      database
+        .prepare(AVAILABLE_WALLET_PROOF_AMOUNT_SAMPLES_FOR_RECEIVE_SQL)
+        .all(
+          readScopeId(database),
+          input.mintUrl,
+          input.unit,
+          readScopeId(database),
+          input.mintUrl,
+          input.unit,
+        ) as Array<{ amount: number }>,
   )
 }
 

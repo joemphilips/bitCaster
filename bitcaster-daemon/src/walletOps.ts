@@ -17,6 +17,7 @@ import {
   type SerializedBlindedMessage,
   type SerializedBlindedSignature,
   type ConditionalSwapPreview,
+  type OperationCounters,
   type SwapPreview,
 } from '@cashu/cashu-ts'
 import { createHash, randomUUID } from 'node:crypto'
@@ -48,6 +49,7 @@ import {
   type ResolveTokenImportKeysets,
   type TokenImportUnit,
 } from '@bitcaster-market/client-sdk/tokenImportValidation'
+import { serializeDurableWalletReceiveOperation } from '@bitcaster-market/client-sdk/durableWalletOperation'
 import {
   addAvailableProofs,
   advanceDaemonKeysetCounter,
@@ -57,6 +59,7 @@ import {
   markProofOperationCompleted,
   prepareProofOperation,
   readDaemonKeysetCounters,
+  readAvailableWalletProofAmountSamplesForReceive,
   releaseProofReservation,
   reserveDaemonKeysetCounter,
   reserveAvailableSatProofsForSend,
@@ -66,14 +69,23 @@ import {
   type StoredOutputData,
   type StoredProofAsset,
 } from './state.ts'
-import type { DaemonProfile } from './profile.ts'
+import { profileDir, type DaemonProfile } from './profile.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import type { WalletConsolidationProofSummary, WalletConsolidationResult } from './protocol.ts'
 import { createDaemonTokenImportKeysetResolver } from './tokenImportKeysetResolver.ts'
+import { DaemonDurableWalletReceiveCoordinator } from './durableWalletReceiveCoordinator.ts'
 
 export interface CashuWalletLike {
   loadMint(): Promise<void>
-  receive(token: string, config?: { proofsWeHave?: Proof[] }): Promise<Proof[]>
+  receive(token: string, config?: { proofsWeHave?: Array<Pick<Proof, 'amount'>> }): Promise<Proof[]>
+  prepareSwapToReceive?(
+    token: string,
+    config?: {
+      proofsWeHave?: Array<Pick<Proof, 'amount'>>
+      onCountersReserved?: (range: OperationCounters) => void
+    },
+    outputConfig?: unknown,
+  ): Promise<SwapPreview>
   send(amount: number, proofs: Proof[]): Promise<{ keep: Proof[]; send: Proof[] }>
   prepareSwapToSend?(
     amount: number,
@@ -174,6 +186,14 @@ export interface WalletSendRecoveryResult {
   pending: Array<{ operationId: string; error: string }>
 }
 
+export interface WalletReceiveRecoveryResult {
+  recovered: string[]
+  recoveredCount: number
+  pending: Array<{ operationId: string; error: string }>
+  pendingCount: number
+  hasMore: boolean
+}
+
 export interface PreparedCtfCollateralResult {
   inputs: Proof[]
   spent: Proof[]
@@ -232,6 +252,9 @@ export async function receiveWalletToken(
       maxResolverCandidates: 512,
     },
   })
+  if (!validated.proofs.every(({ resolvedKeysetId }) => isV2KeysetId(resolvedKeysetId))) {
+    throw new Error('daemon wallet receive supports only V2 keysets')
+  }
   if (validated.canonicalMintUrls.length !== 1) {
     throw new Error('daemon wallet receive supports exactly one mint per token')
   }
@@ -257,22 +280,76 @@ export async function receiveWalletToken(
     )
   }
 
+  if (!deps.getCustodyFence) {
+    throw new Error('daemon wallet receive requires custody authority')
+  }
   const wallet = createWallet(mintUrl, secrets, deps, 'sat', validated.unit)
   await wallet.loadMint()
-  const state = await ensureState()
-  const proofsWeHave = state.wallet.proofs
-    .filter((record) => record.mintUrl === mintUrl)
-    .map((record) => record.proof as Proof)
-  const received = await wallet.receive(validated.encodedToken, { proofsWeHave })
-  await addAvailableProofs(mintUrl, received, asset)
+  const receiveMutation = { fence: deps.getCustodyFence(), observedAtMs: Date.now() }
+  const proofsWeHave = (
+    await readAvailableWalletProofAmountSamplesForReceive({
+      mintUrl,
+      unit: validated.unit,
+      mutation: receiveMutation,
+    })
+  ).map(({ amount }) => ({ amount: Amount.from(amount) }))
+  if (!wallet.prepareSwapToReceive) {
+    throw new Error('cashu wallet does not support durable receive preparation')
+  }
+  let reserved: OperationCounters | undefined
+  const preview = await wallet.prepareSwapToReceive(
+    validated.encodedToken,
+    {
+      proofsWeHave,
+      onCountersReserved: (range) => {
+        reserved = range
+      },
+    },
+    { type: 'deterministic', counter: 0 },
+  )
+  if (reserved === undefined) {
+    throw new Error('daemon wallet receive did not reserve a deterministic output range')
+  }
+  const operation = serializeDurableWalletReceiveOperation({
+    operationId: `wallet-receive:${randomUUID()}`,
+    mintUrl,
+    unit: validated.unit,
+    preview,
+    derivationRange: {
+      keysetId: reserved.keysetId,
+      counterStart: reserved.start,
+      counterCount: reserved.count,
+    },
+  })
+  const received = await new DaemonDurableWalletReceiveCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    deps.restoreOutputGroups ?? restoreOutputGroups,
+  ).execute({ prepared: { operation }, wallet })
   return {
     mintUrl,
-    amountSats: sumProofs(received),
-    proofCount: received.length,
+    amountSats: sumProofs([...received.proofs]),
+    proofCount: received.proofs.length,
     asset,
     unit: validated.unit,
     hasInactiveProofs: validated.hasInactiveProofs,
   }
+}
+
+/** Recover bounded active ordinary receives without creating a new output plan. */
+export async function recoverDurableWalletReceives(
+  secrets: WalletOpsSecrets,
+  deps: WalletOpsDependencies = {},
+): Promise<WalletReceiveRecoveryResult> {
+  if (!deps.getCustodyFence)
+    return { recovered: [], recoveredCount: 0, pending: [], pendingCount: 0, hasMore: false }
+  return new DaemonDurableWalletReceiveCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    deps.restoreOutputGroups ?? restoreOutputGroups,
+  ).recover({
+    walletFor: async (mintUrl, unit) => createWallet(mintUrl, secrets, deps, 'sat', unit),
+  })
 }
 
 async function decodeTokenForProfile(
@@ -1296,6 +1373,11 @@ async function receiveOutcomeToken(
   hasInactiveProofs: boolean,
 ): Promise<WalletReceiveResult> {
   if (!proofs.length) throw new Error('cashu token did not include proofs')
+  for (const proof of proofs) {
+    if (!isV2KeysetId(proof.id)) {
+      throw new Error('cashu outcome receive supports only V2 keysets')
+    }
+  }
   const wallet = createWallet(mintUrl, secrets, deps, asset.baseAsset, asset.unit)
   await wallet.loadMint()
   if (!wallet.checkProofsStates) {
@@ -1317,6 +1399,10 @@ async function receiveOutcomeToken(
     unit: asset.unit,
     hasInactiveProofs,
   }
+}
+
+function isV2KeysetId(id: unknown): id is string {
+  return typeof id === 'string' && /^01[0-9a-f]{64}$/.test(id)
 }
 
 function resolveReceiveAsset(

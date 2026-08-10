@@ -802,6 +802,84 @@ export class DurableCustodySqliteStore {
     }
   }
 
+  listWalletReceiveActiveWorkPage(
+    scopeId: string,
+    cursor: string | null = null,
+  ): CustodyActiveWorkPage {
+    const [cursorTime, cursorId] = decodeActiveCursor(cursor)
+    const rows = this.#database
+      .prepare(
+        `SELECT scope_id AS scopeId, operation_id AS operationId,
+           next_attempt_at_ms AS nextAttemptAtMs,
+           estimated_bytes AS estimatedBytes
+         FROM custody_wallet_receive_active_work
+         WHERE scope_id = ?
+           AND (? IS NULL OR next_attempt_at_ms > ?
+             OR (next_attempt_at_ms = ? AND operation_id > ?))
+         ORDER BY next_attempt_at_ms, operation_id
+         LIMIT ?`,
+      )
+      .all(
+        scopeId,
+        cursorTime,
+        cursorTime,
+        cursorTime,
+        cursorId,
+        CUSTODY_ACTIVE_PAGE_LIMIT + 1,
+      ) as unknown as CustodyActiveWorkRow[]
+    const selected: CustodyActiveWorkRow[] = []
+    let estimatedBytes = 0
+    for (const row of rows) {
+      if (
+        selected.length === CUSTODY_ACTIVE_PAGE_LIMIT ||
+        estimatedBytes + row.estimatedBytes > CUSTODY_ACTIVE_PAGE_BYTES_MAX
+      ) {
+        break
+      }
+      selected.push(row)
+      estimatedBytes += row.estimatedBytes
+    }
+    const hasMore = selected.length < rows.length
+    const last = selected.at(-1)
+    return {
+      rows: selected,
+      estimatedBytes,
+      nextCursor:
+        hasMore && last !== undefined
+          ? `${last.nextAttemptAtMs}:${encodeURIComponent(last.operationId)}`
+          : null,
+    }
+  }
+
+  getWalletReceiveRecoveryCursor(scopeId: string): string | null {
+    const row = this.#database
+      .prepare(`SELECT cursor FROM custody_wallet_receive_recovery_cursors WHERE scope_id = ?`)
+      .get(scopeId) as { cursor: string | null } | undefined
+    return row?.cursor ?? null
+  }
+
+  setWalletReceiveRecoveryCursor(scopeId: string, cursor: string | null): void {
+    this.#database
+      .prepare(
+        `INSERT INTO custody_wallet_receive_recovery_cursors (scope_id, cursor)
+         VALUES (?, ?)
+         ON CONFLICT(scope_id) DO UPDATE SET cursor = excluded.cursor`,
+      )
+      .run(scopeId, cursor)
+  }
+
+  countWalletReceiveActiveWork(scopeId: string): number {
+    return (
+      this.#database
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM custody_wallet_receive_active_work
+           WHERE scope_id = ?`,
+        )
+        .get(scopeId) as { count: number }
+    ).count
+  }
+
   #artifactReference(scopeId: string, artifactId: string): DurableCustodyArtifactReference {
     const row = this.#database
       .prepare(

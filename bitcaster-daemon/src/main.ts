@@ -62,7 +62,8 @@ switch (command) {
     const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
     const { readProfile } = await import('./profile.ts')
     const { readSecrets } = await import('./secrets.ts')
-    const { recoverPreparedWalletSends } = await import('./walletOps.ts')
+    const { recoverPreparedWalletSends, recoverDurableWalletReceives } =
+      await import('./walletOps.ts')
     const { recoverWalletProofConsolidations } = await import('./walletProofConsolidation.ts')
     const { recoverCompleteSetSplits } = await import('./completeSetConversion.ts')
     const { composeStartupCustodyRecovery, createCustodyReadinessTracker } =
@@ -252,6 +253,9 @@ switch (command) {
       const walletRecovery = await recoverPreparedWalletSends(secrets, {
         getCustodyFence: currentFence,
       })
+      const receiveRecovery = await recoverDurableWalletReceives(secrets, {
+        getCustodyFence: currentFence,
+      })
       const completeSetRecovery = await recoverCompleteSetSplits({
         secrets,
         deps: { getCustodyFence: currentFence },
@@ -259,6 +263,7 @@ switch (command) {
       const nonRetirementRecovery = composeStartupCustodyRecovery([
         consolidationRecovery,
         walletRecovery,
+        receiveRecovery,
         completeSetRecovery,
       ])
       const retirementRecovery = await runAutomaticRetirementScan()
@@ -274,7 +279,10 @@ switch (command) {
       ])
       const pendingWalletOperations = startupRecovery.pending
       const readiness = createCustodyReadinessTracker({
-        nonRetirementPending: nonRetirementRecovery.pending.length > 0,
+        nonRetirementPending:
+          nonRetirementRecovery.pending.length > 0 ||
+          receiveRecovery.pendingCount > 0 ||
+          receiveRecovery.hasMore,
         retirementPending: pendingRetirements.length > 0,
       })
       const startAssetMonitoringWhenReady = async () => {

@@ -390,6 +390,12 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
            WHERE scope_id = ? AND operation_id = ?`,
         )
         .run(this.#scopeId, row.operationId)
+      this.#database
+        .prepare(
+          `DELETE FROM custody_wallet_receive_active_work
+           WHERE scope_id = ? AND operation_id = ?`,
+        )
+        .run(this.#scopeId, row.operationId)
       const operation = this.getOperation(row.operationId)
       if (operation === null || operation.revision !== row.expectedRevision) continue
       if (operation.operation.state === 'reconciled' || operation.operation.state === 'aborted') {
@@ -408,6 +414,23 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
           operation.operation.retry.nextAttemptAtMs ?? this.#nowMs,
           estimatedBytes,
         )
+      if (
+        operation.operation.semanticKind === 'generic-receive' &&
+        operation.operation.retainedOperationKey.startsWith('wallet-receive:')
+      ) {
+        this.#database
+          .prepare(
+            `INSERT INTO custody_wallet_receive_active_work (
+               scope_id, operation_id, next_attempt_at_ms, estimated_bytes
+             ) VALUES (?, ?, ?, ?)`,
+          )
+          .run(
+            this.#scopeId,
+            row.operationId,
+            operation.operation.retry.nextAttemptAtMs ?? this.#nowMs,
+            estimatedBytes,
+          )
+      }
     }
   }
 
