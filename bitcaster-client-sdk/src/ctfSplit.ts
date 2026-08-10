@@ -1075,11 +1075,7 @@ async function executeFreshCtfSplitOperation(
     params.amountSubunits,
   )
   const keysets = createReplayKeysetCache(params.transport)
-  await validateInputBalance(
-    preparation.normalizedInputs,
-    params.amountSubunits,
-    keysets.getKeys,
-  )
+  await validateInputBalance(preparation.normalizedInputs, params.amountSubunits, keysets.getKeys)
   const outputPreparation = await prepareFreshCtfSplitOutputs(
     params,
     policy,
@@ -1403,7 +1399,10 @@ async function resumeCtfMergeToRegular(
   )
   let completed: Proof[]
   if (allStates(states, CheckStateEnum.SPENT)) {
-    const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(mintUrl, entry.outputs)
+    const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(
+      mintUrl,
+      entry.outputs,
+    )
     completed = (restored['*'] ?? restored.regular ?? []).map(normalizeProof)
   } else if (allStates(states, CheckStateEnum.UNSPENT)) {
     const metadata = entry.metadata as {
@@ -2414,11 +2413,7 @@ function assertDeterministicSplitPreparationFits(
 function assertDeterministicMergePreparationFits(
   params: Pick<
     Parameters<typeof mergeCompleteSetToRegularWithOperation>[0],
-    | 'operationId'
-    | 'mintUrl'
-    | 'conditionId'
-    | 'outputAmountSubunits'
-    | 'regularKeyset'
+    'operationId' | 'mintUrl' | 'conditionId' | 'outputAmountSubunits' | 'regularKeyset'
   >,
   policy: ProductCtfPolicy,
   inputsByCollection: Record<string, Proof[]>,

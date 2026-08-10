@@ -235,10 +235,7 @@ export function bindCtfRangeOrderPreparationCapability(input: {
   const capability = decodeCtfRangeOrderPreparationCapability(input.capability)
   const expectedRevision = requireNonnegativeSafeInteger(input.expectedRevision, 'revision')
   const updatedAtMs = requireNonnegativeSafeInteger(input.updatedAtMs, 'updated time')
-  if (
-    current.lifecycleState !== 'capability-requested' ||
-    current.revision !== expectedRevision
-  ) {
+  if (current.lifecycleState !== 'capability-requested' || current.revision !== expectedRevision) {
     if (
       current.capability !== null &&
       sameCtfRangeOrderPreparationCapability(current.capability, capability)

@@ -537,10 +537,7 @@ const RECOVERY_BOUNDARIES = new Map<string, ManagedConditionRecoveryOperationKin
   ['conditional-keyset-swap\0send\0POST\0/internal/settlement-capabilities', 'range-settlement'],
   ['swap-refund\0refund\0POST\0/v1/swap', 'range-refund'],
   ['ctf-merge\0ctf-merge\0POST\0/v1/ctf/convert', 'condition-linked-consolidation'],
-  [
-    'proof-consolidation\0proof-consolidation\0POST\0/v1/swap',
-    'condition-linked-consolidation',
-  ],
+  ['proof-consolidation\0proof-consolidation\0POST\0/v1/swap', 'condition-linked-consolidation'],
   ['ctf-redeem\0ctf-redeem\0POST\0/v1/redeem_outcome', 'inventory-retirement'],
 ])
 const INDEX_KEYS = [

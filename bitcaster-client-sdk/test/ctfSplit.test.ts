@@ -1500,9 +1500,13 @@ test('merge dispatch guard runs after preparation on fresh execution and UNSPENT
   const transport = new FakeSplitTransport()
   const request = {
     ...mergeReplayRequest('merge-dispatch-guard', store, transport),
-    makeRegularOutputs: ({ amountSubunits, keyset }: { amountSubunits: number; keyset: MintKeys }) => [
-      canonicalOutput('*', amountSubunits, keyset.id),
-    ],
+    makeRegularOutputs: ({
+      amountSubunits,
+      keyset,
+    }: {
+      amountSubunits: number
+      keyset: MintKeys
+    }) => [canonicalOutput('*', amountSubunits, keyset.id)],
   }
   const guardStates: Array<string | undefined> = []
   const rejectDispatch = async () => {
@@ -1511,7 +1515,8 @@ test('merge dispatch guard runs after preparation on fresh execution and UNSPENT
   }
 
   await assert.rejects(
-    () => mergeCompleteSetToRegularWithOperation({ ...request, beforeMintMutation: rejectDispatch }),
+    () =>
+      mergeCompleteSetToRegularWithOperation({ ...request, beforeMintMutation: rejectDispatch }),
     /dispatch blocked/,
   )
   await assert.rejects(
@@ -1569,7 +1574,9 @@ test('merge dispatch guard skips terminal, spent restore, and pending replay pat
     proofStateChecker: {
       checkProofsStates: async () => [{ Y: 'Y-alpha', state: CheckStateEnum.SPENT }],
     },
-    restoreOutputGroups: async () => ({ regular: [completedProof('regular-keyset', 9, 'restored')] }),
+    restoreOutputGroups: async () => ({
+      regular: [completedProof('regular-keyset', 9, 'restored')],
+    }),
   })
 
   const pendingStore = new MemoryProofOperationStore()
@@ -2151,8 +2158,20 @@ test('regular split dispatch guard runs after preparation on fresh execution and
       fees: 0,
       keysetId: 'regular-keyset',
       inputs: [proof('regular-keyset', 210, 'input-210')],
-      sendOutputs: [new OutputData({ amount: 100, id: 'regular-keyset', B_: 'B-send' }, 1n, new Uint8Array([1]))],
-      keepOutputs: [new OutputData({ amount: 110, id: 'regular-keyset', B_: 'B-keep' }, 2n, new Uint8Array([2]))],
+      sendOutputs: [
+        new OutputData(
+          { amount: 100, id: 'regular-keyset', B_: 'B-send' },
+          1n,
+          new Uint8Array([1]),
+        ),
+      ],
+      keepOutputs: [
+        new OutputData(
+          { amount: 110, id: 'regular-keyset', B_: 'B-keep' },
+          2n,
+          new Uint8Array([2]),
+        ),
+      ],
       unselectedProofs: [],
     },
     result: {
