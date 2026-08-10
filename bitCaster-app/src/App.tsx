@@ -184,6 +184,8 @@ function AppRoutes() {
     let running = false;
     let rerunRequested = false;
     let receivesRecovered = false;
+    let receiveCacheRepaired = false;
+    let receiveRecoveryAfterOperationId: string | null = null;
     let mintsRecovered = false;
     let countersRecovered = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -205,7 +207,12 @@ function AppRoutes() {
       try {
         if (!receivesRecovered) {
           try {
-            const result = await recoverPendingTokenReceives();
+            const result = await recoverPendingTokenReceives({
+              repairCurrentInventory: !receiveCacheRepaired,
+              afterOperationId: receiveRecoveryAfterOperationId,
+            });
+            receiveCacheRepaired = true;
+            receiveRecoveryAfterOperationId = result.lastAttemptedOperationId;
             receivesRecovered = result.pending === 0;
             retryRequired ||= !receivesRecovered;
           } catch {

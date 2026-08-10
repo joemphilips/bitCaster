@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import {
   Mint as CashuMint,
   Wallet as CashuWallet,
+  setGlobalRequestOptions,
   type MintKeys,
   type MintKeyset,
   type CounterSource,
@@ -36,6 +37,9 @@ import {
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import type { SecretBackupState } from "@/types/settings";
+
+const BROWSER_MINT_REQUEST_TIMEOUT_MS = 60_000;
+setGlobalRequestOptions({ requestTimeout: BROWSER_MINT_REQUEST_TIMEOUT_MS });
 
 export interface StoredMint {
   url: string;

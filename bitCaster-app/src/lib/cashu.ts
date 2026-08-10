@@ -13,6 +13,7 @@ import {
   Wallet as CashuWallet,
   getEncodedTokenV4,
   getDecodedToken,
+  isBlsKeyset,
   type MintKeys,
   type Proof,
   type MintQuoteResponse,
@@ -30,6 +31,7 @@ import {
 import { normalizeUrl } from "@/lib/url";
 import {
   addProofs,
+  addProofsIfMissing,
   getUnitProofs,
   getProofOperation,
   getProofOperations,
@@ -68,7 +70,6 @@ import {
   type CashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
-import { proofsWithOptionalConditionalMetadata } from "@/lib/conditionalKeysetMetadata";
 import { admitBrowserReceivedProofs } from "@/lib/browserCustodyProofReceive";
 import { toSeed } from "@/lib/bip39";
 import {
@@ -79,6 +80,14 @@ import {
   serializeDurableWalletMintOperation,
   toDurableCustodyProofOperationInput,
 } from "@bitcaster/client-sdk/durableWalletOperation";
+import {
+  readBrowserCurrentCustodyProofPage,
+  receiveBrowserDurableWalletToken,
+  recoverBrowserDurableWalletReceives,
+} from "@/lib/browserDurableWalletReceive";
+import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import type { TokenImportContext } from "@bitcaster/client-sdk/tokenImportValidation";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -604,6 +613,16 @@ async function persistedDerivationAuthority(operationId: string, database: Bitca
   };
 }
 
+function requiredReceiveMetadataString(value: unknown, field: string): string {
+  if (typeof value === "string" && value.length > 0) return value;
+  throw new Error(`wallet operation is missing ${field}`);
+}
+
+function requiredReceiveMetadataInteger(value: unknown, field: string, minimum: number): number {
+  if (Number.isSafeInteger(value) && (value as number) >= minimum) return value as number;
+  throw new Error(`wallet operation has invalid ${field}`);
+}
+
 function collateralSubunitsFromBaseAmount(
   amountSats: number,
   baseAsset?: MarketBaseAsset | string | null,
@@ -902,185 +921,196 @@ function skipValue(b: Uint8Array, i: number): number {
   throw new Error("CBOR major " + major);
 }
 
-/**
- * Receive an external bearer token with an exact write-ahead recovery record.
- *
- * cashu-ts reserves the deterministic counter range while preparing the swap.
- * We persist that range before the mint call. If the process stops after the
- * mint commits but before IndexedDB stores the successor proofs, startup can
- * restore precisely this range through NUT-09 and classify it through NUT-07.
- */
+/** Receive one validated bearer token through its matching durable path. */
 export async function receiveAndStoreTokenRecoverably(
   tokenStr: string,
   mintUrl: string,
   baseAsset: MarketBaseAsset | string | null,
   unitValue: CashuProofUnit | string,
+  importContext: TokenImportContext,
 ): Promise<StoredProof[]> {
   const unit = requireCashuProofUnit(unitValue);
   const normalizedMintUrl = normalizeUrl(mintUrl);
-  const normalizedBaseAsset = normalizeMarketBaseAsset(baseAsset);
-  const wallet = await getWalletForUnit(normalizedMintUrl, unit);
-  let counters: OperationCounters | undefined;
-  const preview = await wallet.prepareSwapToReceive(
-    tokenStr,
-    {
-      onCountersReserved: (reserved) => {
-        counters = reserved;
-      },
-    },
-    { type: "deterministic", counter: 0 },
-  );
-  if (!counters || counters.count <= 0) {
-    throw new Error("Cashu receive did not reserve a deterministic recovery range");
+  normalizeMarketBaseAsset(baseAsset);
+  if (importContext === "ctf-position-msat") {
+    return importConditionalTokenDirectly(tokenStr, normalizedMintUrl, unit);
   }
-
-  const operationId = `token-receive:${crypto.randomUUID()}`;
-  await prepareProofOperation({
-    operationId,
-    kind: "token-receive",
-    mintUrl: normalizedMintUrl,
-    inputs: preview.inputs,
-    outputs: {},
-    metadata: {
-      baseAsset: normalizedBaseAsset,
-      unit,
-      keysetId: counters.keysetId,
-      counterStart: counters.start,
-      counterCount: counters.count,
-    },
-  });
-
-  const { keep } = await wallet.completeSwap(preview);
-  const enrichedProofs = await proofsWithOptionalConditionalMetadata({
-    mintUrl: normalizedMintUrl,
-    proofs: keep,
-  });
-  const stored = enrichedProofs.map((proof) => ({
-    ...proof,
-    mintUrl: normalizedMintUrl,
-    baseAsset: normalizedBaseAsset,
+  if (
+    (importContext === "ordinary-sat" && unit !== "sat") ||
+    (importContext === "ctf-collateral-msat" && unit !== "msat")
+  ) {
+    throw new Error("Cashu token import context does not match its unit");
+  }
+  const context = captureBrowserMintPersistenceContext();
+  const wallet = (await getWalletForMnemonicUnit(
+    normalizedMintUrl,
     unit,
-  }));
-  const mnemonic = useWalletStore.getState().mnemonic;
-  if (!mnemonic) throw new Error("The wallet profile is unavailable");
-  const derivationAuthority = await persistedDerivationAuthority(operationId, db);
-  await admitBrowserReceivedProofs({
-    seed: toSeed(mnemonic.split(" ")),
-    sourceOperationId: operationId,
+    context.mnemonic,
+  )) as import("@/lib/browserDurableWalletReceive").BrowserDurableWalletReceiveWallet;
+  const proofs = await receiveBrowserDurableWalletToken({
+    token: tokenStr,
     mintUrl: normalizedMintUrl,
     unit,
     wallet,
-    proofs: stored,
-    derivationAuthority,
+    context,
   });
-  await addProofs(stored);
-  await markProofOperationCompleted(operationId, { receive: keep });
+  context.requireCapturedProfile();
+  const stored = proofs.map((proof) => ({
+    ...proof,
+    mintUrl: normalizedMintUrl,
+    baseAsset: "sat" as const,
+    unit,
+  }));
+  await addProofsIfMissing(stored, context.database);
+  context.requireCapturedProfile();
   return stored;
 }
 
-/** Recover every nonterminal external-token receive from its exact counter range. */
-export async function recoverPendingTokenReceives(): Promise<{ pending: number }> {
-  const mnemonic = useWalletStore.getState().mnemonic;
-  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
-  if (scopeId === null) return { pending: 0 };
-  const requireCapturedProfile = () => {
-    if (activeBrowserWalletScopeId() !== scopeId) {
-      throw new Error("The wallet profile changed during token recovery.");
-    }
-  };
-  const operations = await getProofOperations({
-    states: ["prepared"],
-    kinds: ["token-receive"],
+async function importConditionalTokenDirectly(
+  token: string,
+  mintUrl: string,
+  unit: CashuProofUnit,
+): Promise<StoredProof[]> {
+  if (unit !== "msat") throw new Error("Conditional Cashu token must use msat");
+  const context = captureBrowserMintPersistenceContext();
+  const decoded = await decodeToken(token);
+  if (
+    normalizeUrl(decoded.mint) !== mintUrl ||
+    decoded.unit !== unit ||
+    decoded.proofs.length === 0
+  ) {
+    throw new Error("Conditional Cashu token authority does not match the validated import");
+  }
+  if (decoded.proofs.some(({ id }) => isBlsKeyset(id))) {
+    throw new Error("Conditional Cashu token supports only V2 keysets");
+  }
+  const wallet = await getWalletForMnemonicUnit(mintUrl, unit, context.mnemonic);
+  verifyProofsForReceive(decoded.proofs, (keysetId) => wallet.getKeyset(keysetId), {
+    requireDleq: true,
   });
-  let pending = 0;
-  for (const operation of operations) {
-    try {
-      requireCapturedProfile();
-      const unit = requireCashuProofUnit(
-        requiredReceiveMetadataString(operation.metadata.unit, "unit"),
-      );
-      const baseAsset = normalizeMarketBaseAsset(
-        requiredReceiveMetadataString(operation.metadata.baseAsset, "baseAsset"),
-      );
-      const keysetId = requiredReceiveMetadataString(operation.metadata.keysetId, "keysetId");
-      const counterStart = requiredReceiveMetadataInteger(
-        operation.metadata.counterStart,
-        "counterStart",
-        0,
-      );
-      const counterCount = requiredReceiveMetadataInteger(
-        operation.metadata.counterCount,
-        "counterCount",
-        1,
-      );
-      const wallet = await getWalletForMnemonicUnit(operation.mintUrl, unit, mnemonic);
-      const restored = await wallet.restore(counterStart, counterCount, {
-        keysetId,
-      });
-      requireCapturedProfile();
-      if (restored.proofs.length > 0) {
-        const states = await wallet.groupProofsByState(restored.proofs);
-        requireCapturedProfile();
-        if (states.unspent.length > 0) {
-          const enrichedProofs = await proofsWithOptionalConditionalMetadata({
-            mintUrl: operation.mintUrl,
-            proofs: states.unspent,
-          });
-          const stored = enrichedProofs.map((proof) => ({
-            ...proof,
-            mintUrl: operation.mintUrl,
-            baseAsset,
-            unit,
-          }));
-          await admitBrowserReceivedProofs({
-            seed: toSeed(mnemonic.split(" ")),
-            sourceOperationId: operation.operationId,
-            mintUrl: operation.mintUrl,
-            unit,
-            wallet,
-            proofs: stored,
-            derivationRangeProofs: restored.proofs,
-            derivationAuthority: { keysetId, counterStart, counterCount },
-          });
-          await addProofs(stored);
-          requireCapturedProfile();
-        }
-        if (states.pending.length === 0) {
-          await markProofOperationCompleted(operation.operationId, {
-            receive: restored.proofs,
-          });
-        } else {
-          pending += 1;
-        }
-        continue;
-      }
+  const states = await wallet.groupProofsByState(decoded.proofs);
+  context.requireCapturedProfile();
+  if (
+    states.unspent.length !== decoded.proofs.length ||
+    states.pending.length !== 0 ||
+    states.spent.length !== 0 ||
+    !sameProofSecrets(states.unspent, decoded.proofs)
+  ) {
+    throw new Error("Conditional Cashu token is not fully unspent");
+  }
+  const stored = decoded.proofs.map((proof) => conditionalStoredProof(wallet, proof, mintUrl));
+  await admitBrowserReceivedProofs({
+    seed: context.seed,
+    sourceOperationId: conditionalImportOperationId(mintUrl, unit, decoded.proofs),
+    mintUrl,
+    unit,
+    wallet,
+    proofs: stored,
+    derivationAuthority: null,
+    database: context.database,
+  });
+  context.requireCapturedProfile();
+  await addProofsIfMissing(stored, context.database);
+  context.requireCapturedProfile();
+  return stored;
+}
 
-      // No signed outputs can race a swap request that survived page teardown.
-      // Query NUT-07 for observability, but never terminalize from a transient
-      // UNSPENT answer: the mint may commit immediately afterward. The small
-      // prepared record remains retryable until NUT-09 yields successors.
-      await wallet.groupProofsByState(operation.inputs);
-      pending += 1;
-    } catch {
-      // Keep the prepared journal. Startup will retry; custody recovery must
-      // never become terminal merely because the mint or IndexedDB is
-      // temporarily unavailable.
-      pending += 1;
+function conditionalStoredProof(wallet: CashuWallet, proof: Proof, mintUrl: string): StoredProof {
+  if (isBlsKeyset(proof.id)) throw new Error("Conditional Cashu token supports only V2 keysets");
+  const conditional = wallet.getKeyset(proof.id).conditional;
+  if (!conditional) throw new Error("Conditional Cashu token keyset is not conditional");
+  return {
+    ...proof,
+    mintUrl,
+    baseAsset: "sat",
+    unit: "msat",
+    conditionId: conditional.conditionId,
+    outcomeCollection: conditional.outcomeCollection,
+    marketId: `${conditional.conditionId}-${conditional.outcomeCollection}`,
+  };
+}
+
+function conditionalImportOperationId(
+  mintUrl: string,
+  unit: CashuProofUnit,
+  proofs: readonly Proof[],
+): string {
+  const fingerprint = deriveDurableCustodyArtifactFingerprint({
+    schemaVersion: 1,
+    kind: "conditional-token-import",
+    mintUrl,
+    unit,
+    proofs: proofs.map(serializeDurableCustodyProofArtifact),
+  });
+  return `conditional-token-import:${fingerprint}`;
+}
+
+function sameProofSecrets(left: readonly Proof[], right: readonly Proof[]): boolean {
+  const expected = new Set(right.map(({ secret }) => secret));
+  return expected.size === right.length && left.every(({ secret }) => expected.delete(secret));
+}
+
+/** Recover persisted ordinary receives and repair the non-authoritative GUI cache. */
+export async function recoverPendingTokenReceives(input: {
+  readonly repairCurrentInventory: boolean;
+  readonly afterOperationId: string | null;
+}): Promise<{ pending: number; lastAttemptedOperationId: string | null }> {
+  let context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+  try {
+    context = captureBrowserMintPersistenceContext();
+  } catch {
+    return { pending: 0, lastAttemptedOperationId: null };
+  }
+  const recovered = await recoverBrowserDurableWalletReceives({
+    context,
+    afterOperationId: input.afterOperationId,
+    walletForMint: async (mintUrl, unit) =>
+      (await getWalletForMnemonicUnit(
+        mintUrl,
+        unit,
+        context.mnemonic,
+      )) as import("@/lib/browserDurableWalletReceive").BrowserDurableWalletReceiveWallet,
+  });
+  context.requireCapturedProfile();
+  await repairMissingLegacyProofs(
+    recovered.repaired,
+    context.database,
+    context.requireCapturedProfile,
+  );
+  if (input.repairCurrentInventory) {
+    for (const selectability of ["selectable", "locked"] as const) {
+      let cursor: string | null = null;
+      do {
+        const page = await readBrowserCurrentCustodyProofPage({
+          context,
+          selectability,
+          cursor,
+        });
+        await repairMissingLegacyProofs(
+          page.proofs,
+          context.database,
+          context.requireCapturedProfile,
+        );
+        cursor = page.nextCursor;
+      } while (cursor !== null);
     }
   }
-  return { pending };
+  context.requireCapturedProfile();
+  return {
+    pending: recovered.pending,
+    lastAttemptedOperationId: recovered.lastAttemptedOperationId,
+  };
 }
 
-function requiredReceiveMetadataString(value: unknown, field: string): string {
-  if (typeof value === "string" && value.length > 0) return value;
-  throw new Error(`token receive journal is missing ${field}`);
-}
-
-function requiredReceiveMetadataInteger(value: unknown, field: string, minimum: number): number {
-  if (Number.isSafeInteger(value) && (value as number) >= minimum) {
-    return value as number;
-  }
-  throw new Error(`token receive journal has invalid ${field}`);
+async function repairMissingLegacyProofs(
+  proofs: readonly StoredProof[],
+  database: BitcasterDB,
+  requireCurrentProfile: () => void,
+): Promise<void> {
+  if (proofs.length === 0) return;
+  requireCurrentProfile();
+  await addProofsIfMissing(proofs, database);
+  requireCurrentProfile();
 }
 
 /**

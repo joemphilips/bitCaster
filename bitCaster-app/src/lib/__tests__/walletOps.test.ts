@@ -63,6 +63,7 @@ describe("walletOps facade", () => {
       { secret: "s1", amount: 21, id: "kid", C: "C1" },
       { secret: "s2", amount: 34, id: "kid", C: "C2" },
     ] as never);
+    mockResolveTokenImportKeysets.mockReset();
     mockResolveTokenImportKeysets.mockResolvedValue({
       freshness: "fresh",
       regularKeysets: [{ keysetId: VALID_KEYSET_ID, unit: "sat", active: true }],
@@ -131,6 +132,7 @@ describe("walletOps facade", () => {
       "https://unknown.mint",
       "sat",
       "sat",
+      "ordinary-sat",
     );
     expect(addMintWithoutActivating).toHaveBeenCalledWith("https://unknown.mint");
     expect(result).toMatchObject({
@@ -198,6 +200,14 @@ describe("walletOps facade", () => {
 
     const result = await ingressReceiveCashuToken("cashuB-conditional-token", "paste");
 
+    expect(cashu.receiveAndStoreTokenRecoverably).toHaveBeenCalledWith(
+      "cashuB-conditional-token",
+      "https://conditional.mint",
+      "sat",
+      "msat",
+      "ctf-position-msat",
+    );
+
     expect(result.proofs).toEqual([
       expect.objectContaining({
         secret: "s1",
@@ -234,6 +244,7 @@ describe("walletOps facade", () => {
       "https://active.mint",
       "sat",
       "sat",
+      "ordinary-sat",
     );
   });
 
@@ -247,6 +258,26 @@ describe("walletOps facade", () => {
     await expect(ingressReceiveCashuToken("token", "paste")).rejects.toThrow(
       /missing or unsupported unit metadata/,
     );
+    expect(cashu.receiveAndStoreTokenRecoverably).not.toHaveBeenCalled();
+  });
+
+  it("rejects more than 128 proofs before mint keyset resolution", async () => {
+    vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+      mint: "https://active.mint/",
+      unit: "sat",
+      proofs: Array.from({ length: 129 }, (_, index) => ({
+        id: VALID_KEYSET_ID,
+        amount: 1,
+        secret: `proof-${index}`,
+        C: `C-${index}`,
+      })),
+    } as never);
+
+    await expect(ingressReceiveCashuToken("token", "paste")).rejects.toThrow(
+      "decoded token exceeds 128 proofs",
+    );
+
+    expect(mockResolveTokenImportKeysets).not.toHaveBeenCalled();
     expect(cashu.receiveAndStoreTokenRecoverably).not.toHaveBeenCalled();
   });
 

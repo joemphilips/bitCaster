@@ -184,8 +184,7 @@ export type ProofOperationKind =
   | "wallet-send"
   | "regular-split"
   | "proof-split"
-  | "wallet-mint"
-  | "token-receive";
+  | "wallet-mint";
 export type ProofOperationState = "prepared" | "completed" | "Failed";
 
 export interface ProofOperationRecord {
@@ -425,6 +424,10 @@ export class BitcasterDB extends Dexie {
         "&[scopeId+realm+walletId+enrollmentEpoch+bundleId], [scopeId+realm+walletId+enrollmentEpoch]",
       targetedAssetRecoveryAttempts:
         "&[scopeId+assetLocator+backupHeadVersion+monitoringFactVersion], scopeId, [scopeId+completedAtUnixMilliseconds+assetLocator+backupHeadVersion+monitoringFactVersion]",
+    });
+    this.version(10).stores({
+      custodyProofs:
+        "&[scopeId+proofId], [scopeId+selectability], [scopeId+selectability+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability]",
     });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
@@ -747,6 +750,20 @@ export async function addProofs(proofs: StoredProof[], database: BitcasterDB = d
   const incomingRows = normalizedStoredProofRows(proofs);
   await database.transaction("rw", database.proofs, async () => {
     await putNormalizedStoredProofRows(database, incomingRows);
+  });
+}
+
+/** Add compatibility-cache rows without replacing reservations or terminal bindings. */
+export async function addProofsIfMissing(
+  proofs: readonly StoredProof[],
+  database: BitcasterDB = db,
+): Promise<void> {
+  const incomingRows = normalizedStoredProofRows([...proofs]);
+  if (incomingRows.length === 0) return;
+  await database.transaction("rw", database.proofs, async () => {
+    const current = await database.proofs.bulkGet(incomingRows.map(({ secret }) => secret));
+    const missing = incomingRows.filter((_, index) => current[index] === undefined);
+    if (missing.length > 0) await database.proofs.bulkAdd(missing);
   });
 }
 

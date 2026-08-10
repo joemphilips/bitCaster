@@ -2,10 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { OutputData } from '@cashu/cashu-ts'
 import {
+  bindDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
   deriveDurableCustodyProofOperationFingerprints,
   deriveDurableCustodyProofResultFingerprint,
 } from '../src/durableCustodyProofOperationRecord.ts'
+import {
+  addDurableWalletProofTransitionMetadata,
+  createDurableWalletProofTransition,
+} from '../src/durableWalletProofTransition.ts'
+import { FaultInjectingDurableCustodyAdapter } from './support/faultInjectingDurableCustodyAdapter.ts'
 import {
   durableCustodyProofOperationSemanticKind,
   decodeDurableCustodyProofOperationInput,
@@ -19,6 +25,7 @@ import {
   assertDurableCustodyImmutableAuthorityMatches,
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyScopeId,
+  prepareDurableCustodyExactArtifact,
   type DurableCustodyScope,
 } from '../src/durableCustody.ts'
 
@@ -261,6 +268,79 @@ test('canonical proof-operation record binds exact request and result authority'
       ),
     /immutable authority/,
   )
+})
+
+test('external wallet receive retains exact inputs without local reservation lineage', async () => {
+  const external = {
+    ...operation('wallet-receive'),
+    metadata: addDurableWalletProofTransitionMetadata(
+      { unit: 'sat' },
+      createDurableWalletProofTransition({
+        inputSource: 'external',
+        plannedOutputLabels: ['keep'],
+        resultGroups: { keep: { kind: 'wallet', asset: 'regular', reservedBy: null } },
+      }),
+    ),
+  }
+  const facts = await resolveDurableCustodyProofOperationFacts({
+    operation: external,
+    resolveMintKeys: async () =>
+      new Map([[KEYSET, { id: KEYSET, unit: 'sat', keys: { '1': PUBLIC_KEY } }]]),
+    requireDleq: false,
+  })
+  const requestBody = prepareDurableCustodyExactArtifact(external)
+  const boundary = { ...exactBoundary(), requestBody }
+  const record = createDurableCustodyProofOperation({
+    scope: walletScope(),
+    operation: external,
+    facts,
+    inventoryAccountId: null,
+    exactBoundary: boundary,
+  })
+  assert.deepEqual(
+    (boundary.requestBody.artifact as DurableCustodyProofOperationInput).inputs,
+    external.inputs,
+  )
+  assert.equal(external.inputs.length, 1)
+  assert.deepEqual(record.operation.reservation.inputs, [])
+  assert.deepEqual(record.operation.exactRequest.inputProofIds, [])
+  assert.deepEqual(record.operation.proofStorage.lineage.predecessorProofIds, [])
+  const adapter = new FaultInjectingDurableCustodyAdapter({
+    schemaVersion: 1,
+    scope: walletScope(),
+    fencingEpoch: 0,
+    owner: null,
+    effectiveClock: { highWaterMarkMs: 0 },
+  })
+  assert.doesNotThrow(() =>
+    adapter.run((transaction) =>
+      bindDurableCustodyProofOperation(transaction, record, {
+        requestBody: boundary.requestBody,
+        output: boundary.output,
+        privateMaterial: boundary.privateMaterial,
+      }),
+    ),
+  )
+})
+
+test('wallet-input proof operations retain their reservation lineage', async () => {
+  const exact = operation()
+  const facts = await resolveDurableCustodyProofOperationFacts({
+    operation: exact,
+    resolveMintKeys: async () =>
+      new Map([[KEYSET, { id: KEYSET, unit: 'sat', keys: { '1': PUBLIC_KEY } }]]),
+    requireDleq: false,
+  })
+  const record = createDurableCustodyProofOperation({
+    scope: walletScope(),
+    operation: exact,
+    facts,
+    inventoryAccountId: null,
+    exactBoundary: exactBoundary(),
+  })
+  assert.equal(record.operation.reservation.inputs.length, 1)
+  assert.equal(record.operation.exactRequest.inputProofIds.length, 1)
+  assert.equal(record.operation.proofStorage.lineage.predecessorProofIds.length, 1)
 })
 
 test('custody output serialization preserves final proof identity and exact private material', () => {

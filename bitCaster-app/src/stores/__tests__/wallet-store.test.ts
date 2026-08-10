@@ -60,7 +60,7 @@ vi.mock("@cashu/cashu-ts", () => {
     return wallet;
   });
 
-  return { Mint: MockMint, Wallet: MockWallet };
+  return { Mint: MockMint, Wallet: MockWallet, setGlobalRequestOptions: vi.fn() };
 });
 
 const initialAddMint = useWalletStore.getState()._addMint;

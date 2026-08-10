@@ -380,6 +380,31 @@ test('wallet receive preview roundtrips exact Amount, proof, and OutputData auth
   assert.equal(hydrated.inputs[0]?.amount instanceof Amount, true)
 })
 
+test('wallet receive binds its exact deterministic derivation range', () => {
+  const preview = receivePreview(2)
+  const operation = serializeDurableWalletReceiveOperation({
+    operationId: 'wallet-receive-range',
+    mintUrl: 'https://mint.example',
+    unit: 'sat',
+    preview,
+    derivationRange: { keysetId: preview.keysetId, counterStart: 7, counterCount: 1 },
+  })
+
+  assert.deepEqual(operation.derivationRange, {
+    keysetId: preview.keysetId,
+    counterStart: 7,
+    counterCount: 1,
+  })
+  assert.throws(
+    () =>
+      decodeDurableWalletOperation({
+        ...operation,
+        derivationRange: { ...operation.derivationRange!, counterCount: 2 },
+      }),
+    /derivation range/,
+  )
+})
+
 test('wallet receive rejects 129 proofs or outputs before durable or mint effects', async () => {
   const base = receivePreview(1)
   const proof = base.inputs[0]!

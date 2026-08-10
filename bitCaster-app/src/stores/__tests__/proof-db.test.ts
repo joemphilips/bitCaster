@@ -31,6 +31,13 @@ vi.mock("@/lib/browserWalletProfile", () => ({
 
 vi.mock("dexie", () => {
   class FakeTable {
+    async bulkAdd(rows: AnyProof[]): Promise<void> {
+      for (const row of rows) {
+        const key = row.secret ?? row.operationId ?? "";
+        if (store.has(key)) throw new Error("duplicate key");
+        store.set(key, row);
+      }
+    }
     async bulkPut(rows: AnyProof[]): Promise<void> {
       for (const r of rows) store.set(r.secret ?? r.operationId ?? "", r);
     }
@@ -131,6 +138,7 @@ vi.mock("dexie", () => {
 // Import after mock so the module picks up the fake.
 import {
   addProofs,
+  addProofsIfMissing,
   getBaseProofs,
   getConditionCtfProofs,
   getOutcomeProofs,
@@ -803,6 +811,23 @@ describe("proof-db normalization", () => {
     expect(store.get(proof.secret)?.terminalOperationId).toBe("ctf-redeem:terminal");
   });
 
+  it("does not overwrite a live reservation during compatibility-cache repair", async () => {
+    const proof = {
+      secret: "locked",
+      amount: Amount.from(100),
+      id: "id-locked",
+      C: "C-locked",
+      mintUrl: "http://m",
+      baseAsset: "sat",
+      unit: "msat" as const,
+    };
+    await addProofs([{ ...proof, reservedBy: "order-1" }]);
+
+    await addProofsIfMissing([proof]);
+
+    expect(store.get(proof.secret)?.reservedBy).toBe("order-1");
+  });
+
   it("fails atomic unit proof selection when the selected proofs cannot satisfy the requested amount", async () => {
     await addProofs([
       {
@@ -862,23 +887,6 @@ describe("proof-db normalization", () => {
         resultProofsDigest: suppliedDigest,
       }),
     ).rejects.toThrow("does not match completion");
-  });
-
-  it("does not attach a CTF authority digest to ordinary proof operations", async () => {
-    await prepareProofOperation({
-      operationId: "token-receive:1",
-      kind: "token-receive",
-      mintUrl: "https://mint.example",
-      inputs: [],
-      outputs: {},
-      metadata: { unit: "sat" },
-    });
-
-    const completed = await markProofOperationCompleted("token-receive:1", {
-      receive: [{ secret: "received", amount: Amount.from(1), id: "keyset", C: "02cc" }],
-    });
-
-    expect(completed.resultProofsDigest).toBeUndefined();
   });
 
   it("rejects generic terminal classification for a CTF redeem", async () => {

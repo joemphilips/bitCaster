@@ -16,6 +16,7 @@ import {
   durableCustodyProofOperationSemanticKind,
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
+import { requireDurableWalletProofTransition } from './durableWalletProofTransition.ts'
 import { amountToNumber } from './proofSelection.ts'
 
 export function createDurableCustodyProofOperation(input: {
@@ -42,7 +43,12 @@ export function createDurableCustodyProofOperation(input: {
     requestFingerprint: input.exactBoundary.requestBody.fingerprint,
     outputPlanFingerprint: input.exactBoundary.output.fingerprint,
   }
-  const inputProofs = operation.inputs.map((proof) => {
+  const inputSource =
+    operation.kind === 'wallet-receive'
+      ? requireDurableWalletProofTransition(operation.metadata ?? {}, Object.keys(operation.outputs))
+          .inputSource
+      : 'wallet'
+  const inputProofs = (inputSource === 'external' ? [] : operation.inputs).map((proof) => {
     if (!proof.id) throw new Error('custody input proof has no keyset id')
     const keyset = input.facts.verification.inputKeysets.find(
       (candidate) => candidate.keysetId === proof.id,

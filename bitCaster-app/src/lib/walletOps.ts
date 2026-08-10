@@ -22,6 +22,8 @@ import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
 
 export type WalletIngressSource = "paste" | "scan" | "nip17";
 
+const BROWSER_TOKEN_IMPORT_MAX_PROOFS = 128;
+
 export interface IngressMintRegistrationResult {
   added: boolean;
   mintUrl: string;
@@ -137,6 +139,7 @@ export async function ingressReceiveCashuToken(
     encodedToken: token,
     decode: decodeToken,
     resolveKeysets: resolveTokenImportKeysets,
+    bounds: { maxProofs: BROWSER_TOKEN_IMPORT_MAX_PROOFS },
     allowInsecureLoopbackHttp: isLocalDevelopmentOrigin(),
   });
   if (validated.canonicalMintUrls.length !== 1) {
@@ -154,6 +157,7 @@ export async function ingressReceiveCashuToken(
     mintUrl,
     baseAsset,
     unit,
+    validated.context,
   );
   return {
     ...registration,

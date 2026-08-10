@@ -95,6 +95,11 @@ export type DurableWalletMintOperation = DurableWalletCommon & {
 export type DurableWalletReceiveOperation = DurableWalletCommon & {
   kind: 'wallet-receive'
   preview: DurableWalletSwapPreview
+  derivationRange: {
+    keysetId: string
+    counterStart: number
+    counterCount: number
+  } | null
 }
 export type DurableWalletSendOperation = DurableWalletCommon & {
   kind: 'wallet-send'
@@ -207,38 +212,51 @@ export type DurableWalletMintExecutionResult =
 
 export function decodeDurableWalletOperation(value: unknown): DurableWalletOperation {
   if (!isRecord(value)) throw new Error('durable wallet operation is invalid')
-  exactKeys(value, ['schemaVersion', 'operationId', 'kind', 'mintUrl', 'unit', 'preview'])
-  if (value.schemaVersion !== DURABLE_WALLET_OPERATION_SCHEMA_VERSION) {
+  const operation =
+    value.kind === 'wallet-receive' && !Object.hasOwn(value, 'derivationRange')
+      ? { ...value, derivationRange: null }
+      : value
+  exactKeys(operation, [
+    'schemaVersion',
+    'operationId',
+    'kind',
+    'mintUrl',
+    'unit',
+    'preview',
+    ...(operation.kind === 'wallet-receive' ? ['derivationRange'] : []),
+  ])
+  if (operation.schemaVersion !== DURABLE_WALLET_OPERATION_SCHEMA_VERSION) {
     throw new Error('durable wallet operation schema is unsupported')
   }
-  requireText(value.operationId, 'operation id')
+  requireText(operation.operationId, 'operation id')
   try {
-    decodeCanonicalMintOrigin(value.mintUrl)
+    decodeCanonicalMintOrigin(operation.mintUrl)
   } catch {
     throw new Error('durable wallet mint URL is not normalized')
   }
-  requireText(value.unit, 'unit')
-  if (!isRecord(value.preview)) {
+  requireText(operation.unit, 'unit')
+  if (!isRecord(operation.preview)) {
     throw new Error('durable wallet operation preview is invalid')
   }
-  switch (value.kind) {
+  switch (operation.kind) {
     case 'wallet-send':
-      decodeSwapPreview(value.preview)
+      decodeSwapPreview(operation.preview)
       break
     case 'wallet-receive':
-      decodeSwapPreview(value.preview, DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX)
-      requireReceivePreview(value.preview)
+      decodeSwapPreview(operation.preview, DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX)
+      requireReceivePreview(operation.preview)
+      decodeReceiveDerivationRange(operation.derivationRange, operation.preview)
       break
     case 'wallet-mint':
-      decodeMintPreview(value.preview)
+      decodeMintPreview(operation.preview)
       break
     case 'wallet-melt':
-      decodeMeltPreview(value.preview)
+      decodeMeltPreview(operation.preview)
       break
     default:
       throw new Error('durable wallet operation kind is invalid')
   }
-  return structuredClone(value) as unknown as DurableWalletOperation
+  return structuredClone(operation) as unknown as DurableWalletOperation
 }
 
 export function toDurableCustodyProofOperationInput(
@@ -396,6 +414,11 @@ export function serializeDurableWalletReceiveOperation(input: {
   readonly mintUrl: string
   readonly unit: string
   readonly preview: SwapPreview
+  readonly derivationRange?: {
+    readonly keysetId: string
+    readonly counterStart: number
+    readonly counterCount: number
+  } | null
 }): DurableWalletReceiveOperation {
   return requireReceiveOperation(
     decodeDurableWalletOperation({
@@ -405,6 +428,7 @@ export function serializeDurableWalletReceiveOperation(input: {
       mintUrl: input.mintUrl,
       unit: input.unit,
       preview: serializeReceivePreview(input.preview),
+      derivationRange: input.derivationRange ?? null,
     }),
   )
 }
@@ -874,6 +898,23 @@ function requireReceivePreview(value: Record<string, unknown>): void {
     )
   ) {
     throw new Error('durable wallet receive blinding factor is invalid')
+  }
+}
+
+function decodeReceiveDerivationRange(value: unknown, preview: Record<string, unknown>): void {
+  if (value === null) return
+  if (!isRecord(value)) throw new Error('durable wallet receive derivation range is invalid')
+  exactKeys(value, ['keysetId', 'counterStart', 'counterCount'])
+  requireText(value.keysetId, 'receive derivation keyset id')
+  if (
+    value.keysetId !== preview.keysetId ||
+    !Number.isSafeInteger(value.counterStart) ||
+    (value.counterStart as number) < 0 ||
+    !Number.isSafeInteger(value.counterCount) ||
+    (value.counterCount as number) <= 0 ||
+    value.counterCount !== (preview.keepOutputs as unknown[]).length
+  ) {
+    throw new Error('durable wallet receive derivation range does not match its output plan')
   }
 }
 

@@ -18,7 +18,7 @@
  *    are not swallowed by the recovery path.
  */
 
-import { OutputData } from "@cashu/cashu-ts";
+import { Amount, OutputData, getEncodedTokenV4 } from "@cashu/cashu-ts";
 import {
   serializeDurableWalletMintOperation,
   toDurableCustodyProofOperationInput,
@@ -144,6 +144,7 @@ vi.mock("@/stores/browser-wallet-counter-db", () => ({
 vi.mock("@/stores/proof-db", () => ({
   db: {},
   addProofs: mocks.addProofs,
+  addProofsIfMissing: mocks.addProofs,
   restoreProofsAndAdvanceCounter: mocks.restoreProofsAndAdvanceCounter,
   isWalletCounterRecoveryComplete: mocks.isWalletCounterRecoveryComplete,
   getProofOperations: mocks.getProofOperations,
@@ -265,252 +266,118 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("recoverable external-token receive journal", () => {
-  it("persists mint-authenticated conditional metadata in the durable receive path", async () => {
-    const mintUrl = "https://conditional-receive.mint";
-    const successors = [
-      {
-        id: "conditional-keyset",
-        amount: 7,
-        secret: "conditional-output",
-        C: "Cout",
-      },
+describe("conditional bearer-token import", () => {
+  it("admits the exact unspent proofs directly with a deterministic operation id", async () => {
+    const proof = {
+      id: MODERN_KEYSET_ID,
+      amount: Amount.from(21),
+      secret: "conditional-secret",
+      C: `02${"11".repeat(32)}`,
+    };
+    const token = getEncodedTokenV4({
+      mint: "https://mint.test",
+      unit: "msat",
+      proofs: [proof],
+    });
+    mocks.store.mints = [
+      { url: "https://mint.test", keysets: [{ id: MODERN_KEYSET_ID, unit: "msat" }] },
     ];
-    mocks.wallet.prepareSwapToReceive.mockImplementationOnce(
-      async (_token: string, config: { onCountersReserved?: (value: unknown) => void }) => {
-        config.onCountersReserved?.({
-          keysetId: "conditional-keyset",
-          start: 3,
-          count: 1,
-          next: 4,
-        });
-        return {
-          inputs: [{ id: "input", amount: 8, secret: "in", C: "Cin" }],
-          keysetId: "conditional-keyset",
-          keepOutputs: [],
-        };
-      },
-    );
-    mocks.wallet.completeSwap.mockResolvedValueOnce({ keep: successors, send: [] });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          keysets: [
-            {
-              id: "conditional-keyset",
-              condition_id: "condition-1",
-              outcome_collection: "B",
-              outcome_collection_id: "B",
-            },
-          ],
-        }),
-      }),
-    );
-
-    await cashu.receiveAndStoreTokenRecoverably("cashuB-token", mintUrl, "sat", "sat");
-
-    expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mintUrl,
-        sourceOperationId: expect.stringMatching(/^token-receive:/),
-        unit: "sat",
-        proofs: [expect.objectContaining({ secret: "conditional-output" })],
-      }),
-    );
-    expect(mocks.addProofs).toHaveBeenCalledWith([
-      expect.objectContaining({
-        secret: "conditional-output",
-        mintUrl,
-        conditionId: "condition-1",
+    mocks.wallet.getKeyset.mockReturnValue({
+      id: MODERN_KEYSET_ID,
+      unit: "msat",
+      verify: () => true,
+      keys: {},
+      conditional: {
+        conditionId: "aa".repeat(32),
         outcomeCollection: "B",
-        marketId: "condition-1-B",
+        outcomeCollectionId: "collection-B",
+        registeredAt: 1,
+      },
+    });
+
+    const first = await cashu.receiveAndStoreTokenRecoverably(
+      token,
+      "https://mint.test",
+      "sat",
+      "msat",
+      "ctf-position-msat",
+    );
+    const second = await cashu.receiveAndStoreTokenRecoverably(
+      token,
+      "https://mint.test",
+      "sat",
+      "msat",
+      "ctf-position-msat",
+    );
+
+    expect(first).toEqual([
+      expect.objectContaining({
+        secret: "conditional-secret",
+        conditionId: "aa".repeat(32),
+        outcomeCollection: "B",
       }),
     ]);
-  });
-
-  it.each([
-    ["sat", "sat"],
-    ["sat", "msat"],
-  ] as const)(
-    "restores exact %s/%s successors after post-swap proof persistence fails",
-    async (baseAsset, unit) => {
-      const inputs = [{ id: `input-${unit}`, amount: 8, secret: `in-${unit}`, C: "Cin" }];
-      const successors = [
-        { id: MODERN_KEYSET_ID, amount: 7, secret: `out-${unit}-0`, C: "Cout0" },
-        { id: MODERN_KEYSET_ID, amount: 7, secret: `out-${unit}-1`, C: "Cout1" },
-      ];
-      mocks.wallet.prepareSwapToReceive.mockImplementationOnce(
-        async (_token: string, config: { onCountersReserved?: (value: unknown) => void }) => {
-          config.onCountersReserved?.({
-            keysetId: MODERN_KEYSET_ID,
-            start: 7,
-            count: 2,
-            next: 9,
-          });
-          return { inputs, keysetId: MODERN_KEYSET_ID, keepOutputs: [] };
-        },
-      );
-      mocks.wallet.completeSwap.mockResolvedValueOnce({ keep: successors, send: [] });
-      mocks.addProofs.mockRejectedValueOnce(new Error("IndexedDB quota exceeded"));
-
-      await expect(
-        cashu.receiveAndStoreTokenRecoverably("cashuB-token", "https://mint.test", baseAsset, unit),
-      ).rejects.toThrow("IndexedDB quota exceeded");
-
-      const prepared = mocks.prepareProofOperation.mock.calls[0][0] as {
-        operationId: string;
-        metadata: Record<string, unknown>;
-      };
-      expect(prepared.metadata).toMatchObject({
-        baseAsset,
-        unit,
-        keysetId: MODERN_KEYSET_ID,
-        counterStart: 7,
-        counterCount: 2,
-      });
-      expect(mocks.prepareProofOperation.mock.invocationCallOrder[0]).toBeLessThan(
-        mocks.wallet.completeSwap.mock.invocationCallOrder[0],
-      );
-      expect(mocks.admitBrowserReceivedProofs.mock.invocationCallOrder[0]).toBeLessThan(
-        mocks.addProofs.mock.invocationCallOrder[0],
-      );
-
-      mocks.getProofOperations.mockResolvedValueOnce([
-        {
-          ...prepared,
-          kind: "token-receive",
-          state: "prepared",
-          mintUrl: "https://mint.test",
-          inputs,
-          outputs: {},
-          createdAt: 1,
-          updatedAt: 1,
-        },
-      ] as never);
-      mocks.wallet.restore.mockResolvedValueOnce({ proofs: successors });
-      mocks.wallet.groupProofsByState.mockResolvedValueOnce({
-        unspent: successors,
-        pending: [],
-        spent: [],
-      });
-      mocks.addProofs.mockResolvedValueOnce(undefined);
-
-      await cashu.recoverPendingTokenReceives();
-
-      expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledTimes(2);
-      expect(mocks.wallet.restore).toHaveBeenCalledWith(7, 2, {
-        keysetId: MODERN_KEYSET_ID,
-      });
-      expect(mocks.admitBrowserReceivedProofs).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          proofs: expect.arrayContaining([
-            expect.objectContaining({ secret: `out-${unit}-0` }),
-            expect.objectContaining({ secret: `out-${unit}-1` }),
-          ]),
-          derivationRangeProofs: successors,
-          derivationAuthority: {
-            keysetId: MODERN_KEYSET_ID,
-            counterStart: 7,
-            counterCount: 2,
-          },
-        }),
-      );
-      expect(mocks.addProofs).toHaveBeenLastCalledWith(
-        expect.arrayContaining([
-          expect.objectContaining({
-            secret: `out-${unit}-0`,
-            mintUrl: "https://mint.test",
-            baseAsset,
-            unit,
-          }),
-        ]),
-      );
-      expect(mocks.markProofOperationCompleted).toHaveBeenCalledWith(prepared.operationId, {
-        receive: successors,
-      });
-    },
-  );
-
-  it("admits only unspent modern range proofs while retaining the exact restored range", async () => {
-    const restored = [
-      { id: MODERN_KEYSET_ID, amount: 7, secret: "spent", C: "Cspent" },
-      { id: MODERN_KEYSET_ID, amount: 7, secret: "pending", C: "Cpending" },
-      { id: MODERN_KEYSET_ID, amount: 7, secret: "unspent", C: "Cunspent" },
-    ];
-    const operation = {
-      operationId: "token-receive:mixed-states",
-      kind: "token-receive",
-      state: "prepared",
-      mintUrl: "https://mint.test",
-      inputs: [],
-      outputs: {},
-      metadata: {
-        baseAsset: "sat",
-        unit: "sat",
-        keysetId: MODERN_KEYSET_ID,
-        counterStart: 41,
-        counterCount: 3,
-      },
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    mocks.getProofOperations.mockResolvedValueOnce([operation] as never);
-    mocks.wallet.restore.mockResolvedValueOnce({ proofs: restored });
-    mocks.wallet.groupProofsByState.mockResolvedValueOnce({
-      spent: [restored[0]],
-      pending: [restored[1]],
-      unspent: [restored[2]],
-    });
-
-    await expect(cashu.recoverPendingTokenReceives()).resolves.toEqual({ pending: 1 });
-
-    expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledWith(
-      expect.objectContaining({
-        proofs: [expect.objectContaining({ secret: "unspent" })],
-        derivationRangeProofs: restored,
-        derivationAuthority: {
-          keysetId: MODERN_KEYSET_ID,
-          counterStart: 41,
-          counterCount: 3,
-        },
-      }),
+    expect(second).toEqual(first);
+    expect(mocks.wallet.prepareSwapToReceive).not.toHaveBeenCalled();
+    expect(mocks.wallet.completeSwap).not.toHaveBeenCalled();
+    expect(mocks.verifyProofsForReceive).toHaveBeenCalledTimes(2);
+    expect(mocks.verifyProofsForReceive).toHaveBeenNthCalledWith(
+      1,
+      [expect.objectContaining({ secret: "conditional-secret" })],
+      expect.any(Function),
+      { requireDleq: true },
     );
-    expect(mocks.addProofs).toHaveBeenCalledWith([expect.objectContaining({ secret: "unspent" })]);
-    expect(mocks.markProofOperationCompleted).not.toHaveBeenCalled();
+    expect(mocks.wallet.groupProofsByState).toHaveBeenCalledTimes(2);
+    expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledTimes(2);
+    const calls = mocks.admitBrowserReceivedProofs.mock.calls as unknown as Array<
+      [{ sourceOperationId: string }]
+    >;
+    const firstOperationId = calls[0]?.[0].sourceOperationId;
+    const secondOperationId = calls[1]?.[0].sourceOperationId;
+    expect(firstOperationId).toMatch(/^conditional-token-import:[0-9a-f]{64}$/);
+    expect(secondOperationId).toBe(firstOperationId);
   });
 
-  it("keeps an unsigned journal retryable instead of racing a late mint commit", async () => {
-    const operation = {
-      operationId: "token-receive:pending",
-      kind: "token-receive",
-      state: "prepared",
-      mintUrl: "https://mint.test",
-      inputs: [{ id: "input-msat", amount: 8, secret: "in", C: "Cin" }],
-      outputs: {},
-      metadata: {
-        baseAsset: "sat",
-        unit: "msat",
-        keysetId: "keyset-msat",
-        counterStart: 7,
-        counterCount: 2,
-      },
-      createdAt: 1,
-      updatedAt: 1,
+  it("rejects a V3 conditional proof before canonical admission", async () => {
+    const proof = {
+      id: `02${"11".repeat(32)}`,
+      amount: Amount.from(21),
+      secret: "v3-conditional-secret",
+      C: "11".repeat(48),
     };
-    mocks.getProofOperations.mockResolvedValueOnce([operation] as never);
-    mocks.wallet.restore.mockResolvedValueOnce({ proofs: [] });
-    mocks.wallet.groupProofsByState.mockResolvedValueOnce({
-      unspent: operation.inputs,
-      pending: [],
-      spent: [],
+    const token = getEncodedTokenV4({
+      mint: "https://mint.test",
+      unit: "msat",
+      proofs: [proof],
+    });
+    mocks.store.mints = [{ url: "https://mint.test", keysets: [{ id: proof.id, unit: "msat" }] }];
+    mocks.wallet.getKeyset.mockReturnValue({
+      id: proof.id,
+      unit: "msat",
+      verify: () => true,
+      keys: {},
+      conditional: {
+        conditionId: "aa".repeat(32),
+        outcomeCollection: "B",
+        outcomeCollectionId: "collection-B",
+        registeredAt: 1,
+      },
     });
 
-    await cashu.recoverPendingTokenReceives();
+    await expect(
+      cashu.receiveAndStoreTokenRecoverably(
+        token,
+        "https://mint.test",
+        "sat",
+        "msat",
+        "ctf-position-msat",
+      ),
+    ).rejects.toThrow("Conditional Cashu token supports only V2 keysets");
 
-    expect(mocks.markProofOperationCompleted).not.toHaveBeenCalled();
-    expect(mocks.markProofOperationFailed).not.toHaveBeenCalled();
+    expect(mocks.verifyProofsForReceive).not.toHaveBeenCalled();
+    expect(mocks.wallet.groupProofsByState).not.toHaveBeenCalled();
+    expect(mocks.admitBrowserReceivedProofs).not.toHaveBeenCalled();
+    expect(mocks.addProofs).not.toHaveBeenCalled();
   });
 });
 
