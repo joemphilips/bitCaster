@@ -157,11 +157,9 @@ describe("browser Participation Score delivery", () => {
     const result = await executeBrowserParticipationScoreDelivery(input);
 
     expect(result.progress).toBe("credited");
-    expect(getBoundedCanonicalSatProofs).toHaveBeenCalledWith(input.mintUrl, {
-      keysetIds: [ACTIVE_KEYSET_ID, OLD_KEYSET_ID],
-    });
     expect(executeBrowserDurableOutgoingCashuTransfer).toHaveBeenCalledWith(
       expect.objectContaining({
+        preflightFundedAsset: expect.any(Function),
         transfer: expect.objectContaining({
           transferId: input.deliveryId,
           unit: "sat",

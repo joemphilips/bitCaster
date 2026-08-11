@@ -96,6 +96,8 @@ export interface ExecuteBrowserDurableOutgoingCashuTransferInput {
   readonly reuseTransferId?: boolean;
   /** This callback may select a plan once. Recovery never calls it. */
   readonly prepareWalletSendOperation: () => Promise<DurableWalletSendOperation>;
+  /** Makes only the exact funded asset available before the final outgoing lock. */
+  readonly preflightFundedAsset: () => Promise<void>;
   /** Exact locators align with `preview.keepOutputs`; recovery never recalculates them. */
   readonly keepProofDerivationLocators: readonly (DurableWalletProofDerivationLocator | null)[];
   readonly wallet: BrowserDurableOutgoingCashuWallet;
@@ -109,6 +111,14 @@ export async function executeBrowserDurableOutgoingCashuTransfer(
 ): Promise<DurableOutgoingCashuTransfer> {
   const scope = browserWalletScope(input.context.seed);
   const adapter = new BrowserDurableCustodyAdapter(input.context.database ?? db);
+  input.context.requireCapturedProfile();
+  const preliminary = await findReusableRecipientTransfer(input, scope.scopeId);
+  input.context.requireCapturedProfile();
+  if (preliminary === null) {
+    // Targeted recovery acquires the wallet-profile lock. Do not nest that lock.
+    await input.preflightFundedAsset();
+    input.context.requireCapturedProfile();
+  }
   return withBrowserOutgoingScope(input.context, scope.scopeId, async (owner) => {
     input.context.requireCapturedProfile();
     const existing = await findReusableRecipientTransfer(input, scope.scopeId);

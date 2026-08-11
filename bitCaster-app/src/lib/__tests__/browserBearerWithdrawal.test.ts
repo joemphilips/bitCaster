@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   prepareReclaim: vi.fn(),
   completeReclaim: vi.fn(),
   capture: vi.fn(),
+  execute: vi.fn(),
   wallet: { checkProofsStates: vi.fn(), getKeyset: vi.fn() },
 }));
 
@@ -26,7 +27,7 @@ vi.mock("@/lib/cashu", () => ({
 vi.mock("@/lib/browserDurableOutgoingCashuTransfer", () => ({
   classifyBrowserDurableOutgoingBearerTransfer: mocks.classify,
   browserOutgoingCashuTransferRow: vi.fn((scopeId, transfer) => ({ scopeId, transfer })),
-  executeBrowserDurableOutgoingCashuTransfer: vi.fn(),
+  executeBrowserDurableOutgoingCashuTransfer: mocks.execute,
   findBrowserDurableOutgoingBearerTransfer: vi.fn(),
   readBrowserDurableOutgoingCashuTransfer: mocks.read,
 }));
@@ -39,14 +40,20 @@ vi.mock("@/lib/browserDurableWalletReceive", () => ({
 vi.mock("@/stores/proof-db", () => ({ getBoundedCanonicalSatProofs: vi.fn() }));
 vi.mock("@/stores/wallet", () => ({ useWalletStore: { getState: () => ({ mints: [] }) } }));
 
-import { reclaimBrowserBearerWithdrawal } from "../browserBearerWithdrawal";
+import {
+  executeBrowserBearerWithdrawal,
+  reclaimBrowserBearerWithdrawal,
+} from "../browserBearerWithdrawal";
 
 describe("browser bearer withdrawal reclaim", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.capture.mockReturnValue({
       scopeId: "scope",
+      mnemonic: "test mnemonic",
+      database: {} as never,
       seed: new Uint8Array(32),
+      activeMintUrl: "https://mint.example",
       requireCapturedProfile: vi.fn(),
     });
     mocks.wallet.getKeyset.mockReturnValue({ id: `01${"11".repeat(32)}` });
@@ -75,6 +82,16 @@ describe("browser bearer withdrawal reclaim", () => {
     });
     expect(mocks.prepareReceive).not.toHaveBeenCalled();
     expect(mocks.receive).not.toHaveBeenCalled();
+  });
+
+  it("passes bearer withdrawal through the required funded preflight seam", async () => {
+    mocks.execute.mockResolvedValue({ transferId: "withdrawal" });
+
+    await executeBrowserBearerWithdrawal({ amount: 1, mintUrl: "https://mint.example" });
+
+    expect(mocks.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ preflightFundedAsset: expect.any(Function) }),
+    );
   });
 
   it.each(["PENDING", "UNKNOWN", "MALFORMED"])(

@@ -7,6 +7,7 @@ import {
 } from "@bitcaster/client-sdk/durableRecipientDelivery";
 import { createMarketFundingDeliveryMetadata } from "@bitcaster/client-sdk/marketFundingDelivery";
 import {
+  BrowserMarketFundingConsolidationRequiredError,
   BrowserMarketFundingInsufficientBalanceError,
   executeBrowserMarketFundingDelivery,
   reconcileBrowserMarketFundingDelivery,
@@ -22,6 +23,7 @@ const restoreExactMintOutputs = vi.fn();
 const getBoundedMarketFundingProofs = vi.fn();
 const getDurableCashuDeliveryStatus = vi.fn();
 const submitDurableCashuDelivery = vi.fn();
+const recoverBrowserFundedAsset = vi.fn();
 
 vi.mock("@/lib/browserDurableOutgoingCashuTransfer", () => ({
   acknowledgeBrowserDurableOutgoingCashuRecipient: (...args: unknown[]) =>
@@ -48,6 +50,10 @@ vi.mock("@/stores/proof-db", () => ({
 vi.mock("@/lib/markets", () => ({
   getDurableCashuDeliveryStatus: (...args: unknown[]) => getDurableCashuDeliveryStatus(...args),
   submitDurableCashuDelivery: (...args: unknown[]) => submitDurableCashuDelivery(...args),
+}));
+
+vi.mock("@/lib/browserFundedAssetRecovery", () => ({
+  recoverBrowserFundedAsset: (...args: unknown[]) => recoverBrowserFundedAsset(...args),
 }));
 
 const input = {
@@ -77,6 +83,7 @@ describe("browser market funding delivery", () => {
     getBoundedMarketFundingProofs.mockReset();
     getDurableCashuDeliveryStatus.mockReset();
     submitDurableCashuDelivery.mockReset();
+    recoverBrowserFundedAsset.mockReset();
   });
 
   it("recovers a lost POST response from status without a new token plan", async () => {
@@ -158,7 +165,6 @@ describe("browser market funding delivery", () => {
       unit: input.unit,
       requestedAmount: input.requestedAmount,
       divisibility: input.divisibility,
-      availableAmount: 0,
     });
 
     expect(result.progress).toBe("received");
@@ -169,13 +175,17 @@ describe("browser market funding delivery", () => {
     expect(getBoundedMarketFundingProofs).not.toHaveBeenCalled();
   });
 
-  it("rejects insufficient balance only when no persisted transfer can resume", async () => {
+  it("does not reject from cached available balance when no persisted transfer can resume", async () => {
     captureBrowserMintPersistenceContext.mockReturnValue({
       activeMintUrl: input.mintUrl,
       seed: new Uint8Array(64),
       requireCapturedProfile: vi.fn(),
     });
     findBrowserDurableOutgoingCashuTransferByRecipientBinding.mockResolvedValue(null);
+
+    getWalletForUnit.mockResolvedValue({ getKeyset: () => ({ id: `01${"11".repeat(32)}` }) });
+    executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
+    getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
 
     await expect(
       executeBrowserMarketFundingDelivery({
@@ -187,10 +197,9 @@ describe("browser market funding delivery", () => {
         divisibility: input.divisibility,
         availableAmount: 0,
       }),
-    ).rejects.toBeInstanceOf(BrowserMarketFundingInsufficientBalanceError);
+    ).resolves.toMatchObject({ progress: "received" });
 
-    expect(getWalletForUnit).not.toHaveBeenCalled();
-    expect(getBoundedMarketFundingProofs).not.toHaveBeenCalled();
+    expect(executeBrowserDurableOutgoingCashuTransfer).toHaveBeenCalledOnce();
   });
 
   it("reconciles an under-lock reused transfer with its persisted delivery id", async () => {
@@ -212,14 +221,118 @@ describe("browser market funding delivery", () => {
       unit: input.unit,
       requestedAmount: input.requestedAmount,
       divisibility: input.divisibility,
-      availableAmount: Number(input.requestedAmount),
     });
 
     expect(result.progress).toBe("received");
     expect(getDurableCashuDeliveryStatus).toHaveBeenCalledWith(input.deliveryId);
     expect(executeBrowserDurableOutgoingCashuTransfer).toHaveBeenCalledWith(
-      expect.objectContaining({ reuseRecipientBinding: true }),
+      expect.objectContaining({
+        reuseRecipientBinding: true,
+        preflightFundedAsset: expect.any(Function),
+      }),
     );
+  });
+
+  it("passes the exact ordinary asset through the shared funded preflight", async () => {
+    const wallet = { getKeyset: () => ({ id: `01${"11".repeat(32)}` }) };
+    captureBrowserMintPersistenceContext.mockReturnValue({
+      activeMintUrl: input.mintUrl,
+      database: {} as never,
+      scopeId: "scope",
+      mnemonic: "test mnemonic",
+      seed: new Uint8Array(64),
+      requireCapturedProfile: vi.fn(),
+    });
+    findBrowserDurableOutgoingCashuTransferByRecipientBinding.mockResolvedValue(null);
+    getWalletForUnit.mockResolvedValue(wallet);
+    getBoundedMarketFundingProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
+    executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
+    getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
+    recoverBrowserFundedAsset.mockResolvedValue({ kind: "ready", plan: { kind: "ready" } });
+
+    await executeBrowserMarketFundingDelivery({ ...input });
+    const outgoingInput = executeBrowserDurableOutgoingCashuTransfer.mock.calls[0]?.[0] as {
+      preflightFundedAsset: () => Promise<void>;
+    };
+    await outgoingInput.preflightFundedAsset();
+
+    expect(recoverBrowserFundedAsset).toHaveBeenCalledWith(
+      expect.objectContaining({
+        asset: expect.objectContaining({ mintUrl: input.mintUrl, unit: input.unit }),
+        requiredAmount: BigInt(input.requestedAmount),
+      }),
+    );
+  });
+
+  it("maps a final locked candidate shortfall to insufficient balance", async () => {
+    const wallet = { getKeyset: () => ({ id: `01${"11".repeat(32)}` }) };
+    captureBrowserMintPersistenceContext.mockReturnValue({
+      activeMintUrl: input.mintUrl,
+      seed: new Uint8Array(64),
+      requireCapturedProfile: vi.fn(),
+    });
+    findBrowserDurableOutgoingCashuTransferByRecipientBinding.mockResolvedValue(null);
+    getWalletForUnit.mockResolvedValue(wallet);
+    executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
+    getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
+    getBoundedMarketFundingProofs.mockResolvedValue([{ amount: "1" }]);
+
+    await executeBrowserMarketFundingDelivery({ ...input });
+    const outgoingInput = executeBrowserDurableOutgoingCashuTransfer.mock.calls[0]?.[0] as {
+      prepareWalletSendOperation: () => Promise<unknown>;
+    };
+    await expect(outgoingInput.prepareWalletSendOperation()).rejects.toBeInstanceOf(
+      BrowserMarketFundingInsufficientBalanceError,
+    );
+  });
+
+  it("uses cached balance only to classify a final locked candidate shortfall", async () => {
+    const wallet = { getKeyset: () => ({ id: `01${"11".repeat(32)}` }) };
+    captureBrowserMintPersistenceContext.mockReturnValue({
+      activeMintUrl: input.mintUrl,
+      seed: new Uint8Array(64),
+      requireCapturedProfile: vi.fn(),
+    });
+    findBrowserDurableOutgoingCashuTransferByRecipientBinding.mockResolvedValue(null);
+    getWalletForUnit.mockResolvedValue(wallet);
+    executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
+    getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
+    getBoundedMarketFundingProofs.mockResolvedValue([{ amount: "1" }]);
+
+    await executeBrowserMarketFundingDelivery({
+      ...input,
+      availableAmount: Number(input.requestedAmount),
+    });
+    const outgoingInput = executeBrowserDurableOutgoingCashuTransfer.mock.calls[0]?.[0] as {
+      prepareWalletSendOperation: () => Promise<unknown>;
+    };
+    await expect(outgoingInput.prepareWalletSendOperation()).rejects.toBeInstanceOf(
+      BrowserMarketFundingConsolidationRequiredError,
+    );
+  });
+
+  it("preserves a final preparation error without relabeling it", async () => {
+    const preparationError = new Error("counter reservation failed");
+    const wallet = {
+      getKeyset: () => ({ id: `01${"11".repeat(32)}` }),
+      prepareSwapToSend: vi.fn().mockRejectedValue(preparationError),
+    };
+    captureBrowserMintPersistenceContext.mockReturnValue({
+      activeMintUrl: input.mintUrl,
+      seed: new Uint8Array(64),
+      requireCapturedProfile: vi.fn(),
+    });
+    findBrowserDurableOutgoingCashuTransferByRecipientBinding.mockResolvedValue(null);
+    getWalletForUnit.mockResolvedValue(wallet);
+    executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
+    getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
+    getBoundedMarketFundingProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
+
+    await executeBrowserMarketFundingDelivery({ ...input });
+    const outgoingInput = executeBrowserDurableOutgoingCashuTransfer.mock.calls[0]?.[0] as {
+      prepareWalletSendOperation: () => Promise<unknown>;
+    };
+    await expect(outgoingInput.prepareWalletSendOperation()).rejects.toBe(preparationError);
   });
 });
 

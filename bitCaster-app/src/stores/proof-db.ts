@@ -1,6 +1,10 @@
 import Dexie, { type Table } from "dexie";
 import type { DurableBolt11MintQuote } from "@bitcaster/client-sdk/durableBolt11MintQuote";
 import type { DurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import {
+  decodeDurableCustodyProofMaterialRecord,
+  deserializeDurableCustodyProofArtifact,
+} from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { Amount, type Proof } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
@@ -25,6 +29,7 @@ import type {
   BrowserCustodyReservationRow,
   BrowserCustodyScopeRow,
 } from "./durable-custody-types";
+import { decodeBrowserCustodyProofRow } from "./durable-custody-types";
 import type { BrowserProofBackupAuthorityRow } from "./browser-proof-backup-authority";
 import type { EncryptedWalletBackupAccountOperationResultRecord } from "@bitcaster/client-sdk/encryptedWalletBackupEnrollment";
 import {
@@ -524,6 +529,12 @@ export class BitcasterDB extends Dexie {
                 : null;
           });
       });
+    this.version(15).stores({
+      proofs:
+        "&secret, mintUrl, marketId, conditionId, outcomeCollection, reservedBy, terminalOperationId, [mintUrl+unit+id], [mintUrl+unit+id+amount+secret]",
+      custodyProofs:
+        "&[scopeId+proofId], [scopeId+selectability], [scopeId+selectability+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+assetKind+selectability+curve+amount+proofId]",
+    });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -608,77 +619,95 @@ export async function getUnitProofs(
 export const MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX = 512;
 export const PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX = 512;
 
-/** Read one bounded largest-first candidate set for initial AMM funding. */
+/** Read one bounded largest-first regular candidate set across canonical V2 keysets. */
 export async function getBoundedMarketFundingProofs(
   mintUrl: string,
-  options: { unit: CashuProofUnit | string; keysetId: string },
+  options: { scopeId: string; unit: CashuProofUnit | string },
   database: BitcasterDB = db,
 ): Promise<StoredProof[]> {
-  const unit = parseCashuProofUnit(options.unit);
-  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
-  const normalizedMint = normalizeUrl(mintUrl);
-  const rows = await database.proofs
-    .where("[mintUrl+unit+id+amount+secret]")
-    .between(
-      [normalizedMint, unit, options.keysetId, 0, ""],
-      [normalizedMint, unit, options.keysetId, Number.MAX_SAFE_INTEGER, "\uffff"],
-      true,
-      true,
-    )
-    .reverse()
-    .limit(MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX * 2)
-    .toArray();
-  return rows
-    .map(normalizeStoredProof)
-    .filter((proof) => isSpendableStoredProof(proof) && !isCtfProof(proof))
-    .sort(
-      (left, right) =>
-        amountToNumber(right.amount) - amountToNumber(left.amount) ||
-        left.secret.localeCompare(right.secret),
-    )
-    .slice(0, MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX);
+  return getBoundedCanonicalV2Proofs(
+    mintUrl,
+    options.unit,
+    options.scopeId,
+    MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX,
+    database,
+  );
 }
 
 /** Read one bounded largest-first regular sat candidate set across canonical V2 keysets. */
 export async function getBoundedCanonicalSatProofs(
   mintUrl: string,
-  options: { keysetIds: readonly string[] },
+  options: { scopeId: string },
   database: BitcasterDB = db,
 ): Promise<StoredProof[]> {
-  const normalizedMint = normalizeUrl(mintUrl);
-  const keysetIds = [...new Set(options.keysetIds)];
-  if (
-    keysetIds.length < 1 ||
-    keysetIds.length > 129 ||
-    keysetIds.some((keysetId) => !/^01[0-9a-f]{64}$/.test(keysetId))
-  ) {
-    throw new Error("canonical sat keyset authority is invalid");
-  }
-  const pages = await Promise.all(
-    keysetIds.map((keysetId) =>
-      database.proofs
-        .where("[mintUrl+unit+id+amount+secret]")
-        .between(
-          [normalizedMint, "sat", keysetId, 0, ""],
-          [normalizedMint, "sat", keysetId, Number.MAX_SAFE_INTEGER, "\uffff"],
-          true,
-          true,
-        )
-        .reverse()
-        .limit(PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX)
-        .toArray(),
-    ),
+  return getBoundedCanonicalV2Proofs(
+    mintUrl,
+    "sat",
+    options.scopeId,
+    PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX,
+    database,
   );
-  const rows = pages.flat();
+}
+
+async function getBoundedCanonicalV2Proofs(
+  mintUrl: string,
+  requestedUnit: CashuProofUnit | string,
+  scopeId: string,
+  limit: number,
+  database: BitcasterDB,
+): Promise<StoredProof[]> {
+  const unit = parseCashuProofUnit(requestedUnit);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${requestedUnit}'`);
+  const normalizedMint = normalizeUrl(mintUrl);
+  const rows = await database.custodyProofs
+    .where("[scopeId+normalizedMint+unit+assetKind+selectability+curve+amount+proofId]")
+    .between(
+      [scopeId, normalizedMint, unit, "regular", "selectable", "secp256k1", 0, ""],
+      [
+        scopeId,
+        normalizedMint,
+        unit,
+        "regular",
+        "selectable",
+        "secp256k1",
+        Number.MAX_SAFE_INTEGER,
+        "\uffff",
+      ],
+      true,
+      true,
+    )
+    .reverse()
+    .limit(limit)
+    .toArray();
   return rows
-    .map(normalizeStoredProof)
-    .filter((proof) => isSpendableStoredProof(proof) && !isCtfProof(proof))
+    .map(decodeBrowserCustodyProofRow)
+    .map((row) => {
+      if (
+        row.scopeId !== scopeId ||
+        row.normalizedMint !== normalizedMint ||
+        row.unit !== unit ||
+        row.assetKind !== "regular" ||
+        row.selectability !== "selectable" ||
+        row.curve !== "secp256k1"
+      ) {
+        throw new Error("canonical custody proof selector row is invalid");
+      }
+      if (!/^01[0-9a-f]{64}$/.test(row.keysetId)) {
+        throw new Error("canonical custody selector requires a V2 keyset");
+      }
+      const { proof: material } = decodeDurableCustodyProofMaterialRecord(row);
+      return {
+        ...deserializeDurableCustodyProofArtifact({ schemaVersion: 1, ...material }),
+        mintUrl: row.normalizedMint,
+        baseAsset: row.baseAsset,
+        unit: row.unit,
+      } satisfies StoredProof;
+    })
     .sort(
       (left, right) =>
         amountToNumber(right.amount) - amountToNumber(left.amount) ||
         left.secret.localeCompare(right.secret),
-    )
-    .slice(0, PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX);
+    );
 }
 
 export async function getSelectableUnitProofsForKeyset(

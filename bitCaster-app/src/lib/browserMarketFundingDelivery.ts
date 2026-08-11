@@ -13,6 +13,10 @@ import {
   type MarketFundingDeliveryInput,
 } from "@bitcaster/client-sdk/marketFundingDelivery";
 import { deriveDurableRecipientTokenAllowance } from "@bitcaster/client-sdk/durableRecipientDelivery";
+import {
+  createEncryptedWalletBackupV2AssetIdentity,
+  type EncryptedWalletBackupV2AssetIdentity,
+} from "@bitcaster/client-sdk";
 import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
 import { serializeDurableWalletSendOperation } from "@bitcaster/client-sdk/durableWalletOperation";
 import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
@@ -34,6 +38,7 @@ import {
   getWalletForUnit,
   restoreExactMintOutputs,
 } from "@/lib/cashu";
+import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
 import { getBoundedMarketFundingProofs, type StoredProof } from "@/stores/proof-db";
 import { getDurableCashuDeliveryStatus, submitDurableCashuDelivery } from "@/lib/markets";
 
@@ -62,6 +67,7 @@ export class BrowserMarketFundingConsolidationRequiredError extends Error {
 export async function executeBrowserMarketFundingDelivery(
   input: Omit<MarketFundingDeliveryInput, "deliveryId"> & {
     readonly deliveryId?: string;
+    /** Classifies only a final locked shortfall. It never bypasses recovery or selection. */
     readonly availableAmount?: number;
   },
 ): Promise<BrowserMarketFundingDeliveryResult> {
@@ -94,24 +100,13 @@ export async function executeBrowserMarketFundingDelivery(
       context,
     });
   }
-  if (
-    input.availableAmount !== undefined &&
-    (!Number.isSafeInteger(input.availableAmount) ||
-      input.availableAmount < Number(input.requestedAmount))
-  ) {
-    throw new BrowserMarketFundingInsufficientBalanceError();
-  }
   const deliveryId = input.deliveryId ?? crypto.randomUUID();
   const metadata: MarketFundingDeliveryInput = { ...input, deliveryId };
   const durableMetadata = createMarketFundingDeliveryMetadata(metadata);
   const wallet = await getWalletForUnit(context.activeMintUrl, input.unit);
   context.requireCapturedProfile();
-  const proofs = await getBoundedMarketFundingProofs(context.activeMintUrl, {
-    unit: input.unit,
-    keysetId: wallet.getKeyset().id,
-  });
-  context.requireCapturedProfile();
   const keepLocators: Array<DurableWalletProofDerivationLocator | null> = [];
+  const asset = ordinaryFundingAsset(durableMetadata.mintUrl, durableMetadata.unit);
   const transfer = await executeBrowserDurableOutgoingCashuTransfer({
     reuseRecipientBinding: true,
     transfer: {
@@ -125,13 +120,30 @@ export async function executeBrowserMarketFundingDelivery(
         tokenBytesLimit: deriveDurableRecipientTokenAllowance(durableMetadata),
       }),
     },
+    preflightFundedAsset: () =>
+      preflightMarketFundingAsset({
+        context,
+        asset,
+        requiredAmount: durableMetadata.requestedAmount,
+        mintUrl: durableMetadata.mintUrl,
+        unit: durableMetadata.unit,
+      }),
     prepareWalletSendOperation: async () => {
-      if (
-        input.availableAmount !== undefined &&
-        proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0) <
-          Number(input.requestedAmount)
-      ) {
-        throw new BrowserMarketFundingConsolidationRequiredError();
+      context.requireCapturedProfile();
+      const proofs = await readMarketFundingCandidates({
+        mintUrl: durableMetadata.mintUrl,
+        unit: durableMetadata.unit,
+        scopeId: context.scopeId,
+      });
+      context.requireCapturedProfile();
+      if (sumProofs(proofs) < Number(durableMetadata.requestedAmount)) {
+        if (
+          input.availableAmount !== undefined &&
+          input.availableAmount >= Number(input.requestedAmount)
+        ) {
+          throw new BrowserMarketFundingConsolidationRequiredError();
+        }
+        throw new BrowserMarketFundingInsufficientBalanceError();
       }
       return prepareMarketFundingWalletSend({
         deliveryId,
@@ -156,6 +168,67 @@ export async function executeBrowserMarketFundingDelivery(
     submit: submitDurableCashuDelivery,
     context,
   });
+}
+
+function ordinaryFundingAsset(
+  mintUrl: string,
+  unit: "sat" | "msat",
+): EncryptedWalletBackupV2AssetIdentity {
+  return createEncryptedWalletBackupV2AssetIdentity({ mintUrl, unit, asset: { kind: "ordinary" } });
+}
+
+async function preflightMarketFundingAsset(input: {
+  readonly context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+  readonly asset: EncryptedWalletBackupV2AssetIdentity;
+  readonly requiredAmount: string;
+  readonly mintUrl: string;
+  readonly unit: "sat" | "msat";
+}): Promise<void> {
+  const recovery = await recoverBrowserFundedAsset({
+    database: input.context.database,
+    scopeId: input.context.scopeId,
+    seed: input.context.seed,
+    mnemonic: input.context.mnemonic,
+    asset: input.asset,
+    requiredAmount: BigInt(input.requiredAmount),
+    loadPlan: async () =>
+      sumProofs(await readMarketFundingCandidates({ ...input, scopeId: input.context.scopeId })) >=
+      Number(input.requiredAmount)
+        ? { kind: "ready" as const }
+        : { kind: "insufficient" as const },
+    isCurrentProfile: () => {
+      input.context.requireCapturedProfile();
+      return true;
+    },
+  });
+  switch (recovery.kind) {
+    case "ready":
+    case "recovered":
+      return;
+    case "unavailable":
+      throw new BrowserMarketFundingInsufficientBalanceError();
+    case "persistent-error":
+      throw new Error("Market funding asset recovery is unavailable");
+    case "not-recoverable":
+      throw new BrowserMarketFundingConsolidationRequiredError();
+    default:
+      throw new Error("market funding recovery outcome is invalid");
+  }
+}
+
+async function readMarketFundingCandidates(input: {
+  readonly mintUrl: string;
+  readonly unit: "sat" | "msat";
+  readonly scopeId: string;
+}): Promise<StoredProof[]> {
+  return getBoundedMarketFundingProofs(input.mintUrl, {
+    unit: input.unit,
+    scopeId: input.scopeId,
+  });
+}
+
+function sumProofs(proofs: readonly StoredProof[]): number {
+  return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
 }
 
 function persistedMarketFundingMetadata(

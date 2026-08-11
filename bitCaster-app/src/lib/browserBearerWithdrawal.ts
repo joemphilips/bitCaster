@@ -7,6 +7,10 @@ import {
   type SwapPreview,
 } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import {
+  createEncryptedWalletBackupV2AssetIdentity,
+  type EncryptedWalletBackupV2AssetIdentity,
+} from "@bitcaster/client-sdk";
 import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
 import {
   deriveDurableWalletOperationAuthority,
@@ -41,8 +45,7 @@ import {
   receiveBrowserDurableWalletToken,
 } from "@/lib/browserDurableWalletReceive";
 import { getBoundedCanonicalSatProofs, type StoredProof } from "@/stores/proof-db";
-import { useWalletStore } from "@/stores/wallet";
-import { normalizeUrl } from "@/lib/url";
+import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
 
 export const BEARER_TOKEN_BYTES_LIMIT = 61_440;
 export const BEARER_TOKEN_PROOF_LIMIT = 512;
@@ -62,13 +65,6 @@ export async function executeBrowserBearerWithdrawal(input: {
   if (!/^01[0-9a-f]{64}$/.test(keysetId)) {
     throw new Error("Withdrawal requires a canonical V2 sat keyset");
   }
-  const candidates = await getBoundedCanonicalSatProofs(input.mintUrl, {
-    keysetIds: withdrawalV2KeysetIds(input.mintUrl, keysetId),
-  });
-  context.requireCapturedProfile();
-  if (candidates.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0) < input.amount) {
-    throw new Error("Withdrawal balance is insufficient in the active V2 sat keyset");
-  }
   const transferId = `bearer-withdrawal:${crypto.randomUUID()}`;
   const keepLocators: Array<DurableWalletProofDerivationLocator | null> = [];
   return executeBrowserDurableOutgoingCashuTransfer({
@@ -84,16 +80,29 @@ export async function executeBrowserBearerWithdrawal(input: {
         tokenProofLimit: BEARER_TOKEN_PROOF_LIMIT,
       },
     },
-    prepareWalletSendOperation: () =>
-      prepareBearerWalletSend({
+    preflightFundedAsset: () =>
+      preflightBearerAsset({
+        context,
+        mintUrl: input.mintUrl,
+        requiredAmount: input.amount,
+      }),
+    prepareWalletSendOperation: async () => {
+      context.requireCapturedProfile();
+      const proofs = await readBearerCandidates(input.mintUrl, context.scopeId);
+      context.requireCapturedProfile();
+      if (sumProofs(proofs) < input.amount) {
+        throw new Error("Withdrawal balance is insufficient in the active V2 sat keyset");
+      }
+      return prepareBearerWalletSend({
         transferId,
         wallet,
-        proofs: candidates,
+        proofs,
         amount: input.amount,
         mintUrl: input.mintUrl,
         seed: context.seed,
         keepLocators,
-      }),
+      });
+    },
     keepProofDerivationLocators: keepLocators,
     wallet,
     restoreExactOutputs: (restore) => restoreBearerExactOutputs(wallet, restore),
@@ -101,17 +110,54 @@ export async function executeBrowserBearerWithdrawal(input: {
   });
 }
 
-function withdrawalV2KeysetIds(mintUrl: string, activeKeysetId: string): string[] {
-  const mint = useWalletStore
-    .getState()
-    .mints.find((candidate) => normalizeUrl(candidate.url) === normalizeUrl(mintUrl));
-  const ids = new Set(
-    mint?.keysets
-      ?.filter((keyset) => keyset.unit === "sat" && /^01[0-9a-f]{64}$/.test(keyset.id))
-      .map((keyset) => keyset.id) ?? [],
-  );
-  ids.add(activeKeysetId);
-  return [...ids];
+async function preflightBearerAsset(input: {
+  readonly context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+  readonly mintUrl: string;
+  readonly requiredAmount: number;
+}): Promise<void> {
+  const asset: EncryptedWalletBackupV2AssetIdentity = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: input.mintUrl,
+    unit: "sat",
+    asset: { kind: "ordinary" },
+  });
+  const recovery = await recoverBrowserFundedAsset({
+    database: input.context.database,
+    scopeId: input.context.scopeId,
+    seed: input.context.seed,
+    mnemonic: input.context.mnemonic,
+    asset,
+    requiredAmount: BigInt(input.requiredAmount),
+    loadPlan: async () =>
+      sumProofs(await readBearerCandidates(input.mintUrl, input.context.scopeId)) >=
+      input.requiredAmount
+        ? { kind: "ready" as const }
+        : { kind: "insufficient" as const },
+    isCurrentProfile: () => {
+      input.context.requireCapturedProfile();
+      return true;
+    },
+  });
+  switch (recovery.kind) {
+    case "ready":
+    case "recovered":
+      return;
+    case "unavailable":
+      throw new Error("Withdrawal balance is insufficient in the active V2 sat keyset");
+    case "persistent-error":
+      throw new Error("Withdrawal asset recovery is unavailable");
+    case "not-recoverable":
+      throw new Error("Withdrawal proofs require consolidation");
+    default:
+      throw new Error("Withdrawal recovery outcome is invalid");
+  }
+}
+
+async function readBearerCandidates(mintUrl: string, scopeId: string): Promise<StoredProof[]> {
+  return getBoundedCanonicalSatProofs(mintUrl, { scopeId });
+}
+
+function sumProofs(proofs: readonly StoredProof[]): number {
+  return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
 }
 
 /** Read one persisted bearer token only after the user opens the Ecash withdrawal surface. */

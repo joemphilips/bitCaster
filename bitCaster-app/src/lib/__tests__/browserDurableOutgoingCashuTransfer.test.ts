@@ -60,6 +60,7 @@ const KEYS = { "1": bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) };
 const KEYSET_ID = deriveKeysetId(KEYS);
 const FEE_KEYSET_ID = deriveKeysetId(KEYS, { input_fee_ppk: 500 });
 const OLD_V2_KEYSET_ID = `01${"22".repeat(32)}`;
+const SELECTOR_SCOPE_ID = browserWalletScope(new Uint8Array(64).fill(8)).scopeId;
 const databases: BitcasterDB[] = [];
 
 afterEach(async () => {
@@ -120,20 +121,18 @@ describe("browser durable outgoing Cashu store", () => {
 
   it("bounds largest-first market-funding candidates in a 10,000-proof wallet", async () => {
     const database = createDatabase();
-    const rows = Array.from({ length: 10_000 }, (_, index) => ({
-      secret: `funding-${index.toString().padStart(5, "0")}`,
-      amount: index + 1,
-      id: KEYSET_ID,
-      C: `C-${index}`,
-      mintUrl: MINT,
-      baseAsset: "sat",
-      unit: "msat" as const,
-    }));
-    await database.proofs.bulkPut(rows);
+    const rows = Array.from({ length: 10_000 }, (_, index) =>
+      custodyProof(SELECTOR_SCOPE_ID, "msat", {
+        secret: `funding-${index.toString().padStart(5, "0")}`,
+        amount: index + 1,
+        id: KEYSET_ID,
+      }),
+    );
+    await database.custodyProofs.bulkPut(rows);
 
     const selected = await getBoundedMarketFundingProofs(
       MINT,
-      { unit: "msat", keysetId: KEYSET_ID },
+      { scopeId: SELECTOR_SCOPE_ID, unit: "msat" },
       database,
     );
 
@@ -142,45 +141,126 @@ describe("browser durable outgoing Cashu store", () => {
     expect(amountToNumber(selected.at(-1)!.amount)).toBe(9_489);
   }, 15_000);
 
-  it("selects bounded Participation Score proofs across authenticated V2 keysets", async () => {
+  it("includes an exact recovered canonical V2 market-funding keyset", async () => {
     const database = createDatabase();
-    await database.proofs.bulkPut([
-      {
+    await database.custodyProofs.bulkPut([
+      custodyProof(SELECTOR_SCOPE_ID, "msat", {
+        secret: "active-market-proof",
+        amount: 1,
+        id: KEYSET_ID,
+      }),
+      custodyProof(SELECTOR_SCOPE_ID, "msat", {
+        secret: "recovered-v2-market-proof",
+        amount: 8,
+        id: OLD_V2_KEYSET_ID,
+      }),
+    ]);
+
+    const selected = await getBoundedMarketFundingProofs(
+      MINT,
+      { scopeId: SELECTOR_SCOPE_ID, unit: "msat" },
+      database,
+    );
+
+    expect(selected.map(({ secret }) => secret)).toEqual([
+      "recovered-v2-market-proof",
+      "active-market-proof",
+    ]);
+  });
+
+  it("reads one bounded custody page without scanning higher-sorted legacy history", async () => {
+    const database = createDatabase();
+    await database.proofs.bulkPut(
+      Array.from({ length: 10_000 }, (_, index) => ({
+        secret: `legacy-history-${index}`,
+        amount: 20_000 + index,
+        id: KEYSET_ID,
+        C: `C-legacy-history-${index}`,
+        mintUrl: MINT,
+        baseAsset: "sat",
+        unit: "msat" as const,
+      })),
+    );
+    await database.custodyProofs.bulkPut([
+      custodyProof(SELECTOR_SCOPE_ID, "msat", {
+        secret: "custody-small",
+        amount: 1,
+        id: KEYSET_ID,
+      }),
+      custodyProof(SELECTOR_SCOPE_ID, "msat", {
+        secret: "custody-large",
+        amount: 2,
+        id: OLD_V2_KEYSET_ID,
+      }),
+    ]);
+    const legacyRead = vi.spyOn(database.proofs, "toArray");
+    const custodyQuery = vi.spyOn(database.custodyProofs, "where");
+
+    const selected = await getBoundedMarketFundingProofs(
+      MINT,
+      { scopeId: SELECTOR_SCOPE_ID, unit: "msat" },
+      database,
+    );
+
+    expect(selected.map(({ secret }) => secret)).toEqual(["custody-large", "custody-small"]);
+    expect(legacyRead).not.toHaveBeenCalled();
+    expect(custodyQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("selects bounded Participation Score proofs across canonical V2 keysets", async () => {
+    const database = createDatabase();
+    await database.custodyProofs.bulkPut([
+      custodyProof(SELECTOR_SCOPE_ID, "sat", {
         secret: "active",
         amount: 1,
         id: KEYSET_ID,
-        C: "C-1",
-        mintUrl: MINT,
-        baseAsset: "sat",
-        unit: "sat",
-      },
-      {
+      }),
+      custodyProof(SELECTOR_SCOPE_ID, "sat", {
         secret: "old",
         amount: 8,
         id: OLD_V2_KEYSET_ID,
-        C: "C-2",
-        mintUrl: MINT,
-        baseAsset: "sat",
-        unit: "sat",
-      },
-      {
-        secret: "legacy",
-        amount: 16,
-        id: "00legacy",
-        C: "C-3",
-        mintUrl: MINT,
-        baseAsset: "sat",
-        unit: "sat",
-      },
+      }),
     ]);
 
     const selected = await getBoundedCanonicalSatProofs(
       MINT,
-      { keysetIds: [KEYSET_ID, OLD_V2_KEYSET_ID] },
+      { scopeId: SELECTOR_SCOPE_ID },
       database,
     );
 
     expect(selected.map(({ secret }) => secret)).toEqual(["old", "active"]);
+  });
+
+  it("fails closed when canonical custody contains a non-V2 selectable proof", async () => {
+    const database = createDatabase();
+    await database.custodyProofs.put(
+      custodyProof(SELECTOR_SCOPE_ID, "sat", {
+        secret: "legacy",
+        amount: 16,
+        id: "00legacy",
+      }),
+    );
+
+    await expect(
+      getBoundedCanonicalSatProofs(MINT, { scopeId: SELECTOR_SCOPE_ID }, database),
+    ).rejects.toThrow(/V2 keyset/);
+  });
+
+  it("does not depend on advertised historical keyset lists", async () => {
+    const database = createDatabase();
+    await database.custodyProofs.bulkPut(
+      Array.from({ length: 130 }, (_, index) =>
+        custodyProof(SELECTOR_SCOPE_ID, "sat", {
+          secret: `historical-${index}`,
+          amount: index + 1,
+          id: `01${index.toString(16).padStart(64, "0")}`,
+        }),
+      ),
+    );
+
+    await expect(
+      getBoundedCanonicalSatProofs(MINT, { scopeId: SELECTOR_SCOPE_ID }, database),
+    ).resolves.toHaveLength(130);
   });
 
   it("orders one mint due page by due time then transfer ID", async () => {
@@ -562,6 +642,87 @@ describe("browser durable outgoing Cashu store", () => {
         ?.transfer.deliveryState,
     ).toBe("delivery-pending");
     expect(await fixture.database.outgoingCashuTransferAdmissions.count()).toBe(0);
+  });
+
+  it("runs the required funded preflight before the final outgoing lock", async () => {
+    const fixture = await executionFixture();
+    let outgoingLockHeld = false;
+    const preflight = vi.fn(async () => {
+      expect(outgoingLockHeld).toBe(false);
+    });
+    const context = {
+      ...fixture.context,
+      lockManager: {
+        request: async (_name: string, _options: LockOptions, action: () => Promise<unknown>) => {
+          outgoingLockHeld = true;
+          try {
+            return await action();
+          } finally {
+            outgoingLockHeld = false;
+          }
+        },
+      } as Pick<LockManager, "request">,
+    };
+
+    await executeBrowserDurableOutgoingCashuTransfer({
+      ...fixture.input,
+      context,
+      preflightFundedAsset: preflight,
+    } as never);
+
+    expect(preflight).toHaveBeenCalledOnce();
+  });
+
+  it("skips fresh funded recovery when the preliminary read finds a reusable transfer", async () => {
+    const fixture = await executionFixture();
+    await executeBrowserDurableOutgoingCashuTransfer(fixture.input);
+    const preflight = vi.fn(async () => undefined);
+
+    const reused = await executeBrowserDurableOutgoingCashuTransfer({
+      ...fixture.input,
+      reuseTransferId: true,
+      preflightFundedAsset: preflight,
+    });
+
+    expect(reused.transferId).toBe("execute");
+    expect(preflight).not.toHaveBeenCalled();
+    expect(fixture.prepareWalletSendOperation).toHaveBeenCalledOnce();
+  });
+
+  it("reuses a transfer created after preflight without fresh preparation", async () => {
+    const fixture = await executionFixture();
+    const outerPrepare = vi.fn(async () => fixture.operation);
+
+    const transfer = await executeBrowserDurableOutgoingCashuTransfer({
+      ...fixture.input,
+      reuseTransferId: true,
+      prepareWalletSendOperation: outerPrepare,
+      preflightFundedAsset: async () => {
+        await executeBrowserDurableOutgoingCashuTransfer({
+          ...fixture.input,
+          reuseTransferId: true,
+          preflightFundedAsset: async () => undefined,
+        });
+      },
+    });
+
+    expect(transfer.transferId).toBe("execute");
+    expect(outerPrepare).not.toHaveBeenCalled();
+    expect(fixture.prepareWalletSendOperation).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a final wallet preparation error", async () => {
+    const fixture = await executionFixture();
+    const preparationError = new Error("counter reservation failed");
+
+    await expect(
+      executeBrowserDurableOutgoingCashuTransfer({
+        ...fixture.input,
+        prepareWalletSendOperation: vi.fn().mockRejectedValue(preparationError),
+      }),
+    ).rejects.toBe(preparationError);
+
+    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(0);
   });
 
   it("retains one unselected fee-aware candidate without rewriting its custody row", async () => {
@@ -1034,6 +1195,7 @@ async function executionFixture(
   if (keepOutputs.length !== keepCount) throw new Error("keep fixture outputs are invalid");
   const wallet = walletFor(sendProof, keepOutputs.map(proofForOutput));
   const prepareWalletSendOperation = vi.fn(async () => operation);
+  const preflightFundedAsset = vi.fn(async () => undefined);
   const restoreExactOutputs = vi.fn();
   const context = {
     seed,
@@ -1055,6 +1217,7 @@ async function executionFixture(
     sendProof,
     wallet,
     prepareWalletSendOperation,
+    preflightFundedAsset,
     restoreExactOutputs,
     context,
     input: {
@@ -1070,6 +1233,7 @@ async function executionFixture(
         },
       },
       prepareWalletSendOperation,
+      preflightFundedAsset,
       keepProofDerivationLocators: Array.from({ length: keepCount }, (_, index) => ({
         schemaVersion: 1 as const,
         kind: "nut13" as const,
@@ -1155,6 +1319,7 @@ async function feeAwarePassthroughFixture() {
   const mintedKeepProofs = preview.keepOutputs!.map((output) => feeProofForOutput(output));
   const wallet = walletFor(sendProofs, [...mintedKeepProofs, passthroughProof], 500, FEE_KEYSET_ID);
   const prepareWalletSendOperation = vi.fn(async () => operation);
+  const preflightFundedAsset = vi.fn(async () => undefined);
   const restoreExactOutputs = vi.fn();
   const context = {
     seed,
@@ -1171,6 +1336,7 @@ async function feeAwarePassthroughFixture() {
     database,
     scope,
     wallet,
+    preflightFundedAsset,
     passthroughProofId,
     passthroughProofFingerprint: originalPassthrough.proofFingerprint,
     passthroughProofIdentity: deriveDurableCustodyArtifactFingerprint({
@@ -1191,6 +1357,7 @@ async function feeAwarePassthroughFixture() {
         },
       },
       prepareWalletSendOperation,
+      preflightFundedAsset,
       keepProofDerivationLocators: [
         {
           schemaVersion: 1 as const,
@@ -1236,6 +1403,26 @@ function executionOperation(keepCount: number, seed: Uint8Array) {
       ),
       unselectedProofs: [],
     },
+  });
+}
+
+function custodyProof(
+  scopeId: string,
+  unit: "sat" | "msat",
+  input: { readonly secret: string; readonly amount: number; readonly id: string },
+) {
+  return createBrowserCustodyProofRow({
+    scopeId,
+    normalizedMint: MINT,
+    unit,
+    proof: {
+      id: input.id,
+      amount: Amount.from(input.amount),
+      secret: input.secret,
+      C: `02${"1".repeat(64)}`,
+    },
+    asset: { kind: "regular" },
+    receivedAtMs: 0,
   });
 }
 

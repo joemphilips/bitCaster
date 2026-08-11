@@ -17,6 +17,10 @@ import { serializeDurableWalletSendOperation } from "@bitcaster/client-sdk/durab
 import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import type { OperationCounters, OutputData, Proof, SwapPreview } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import {
+  createEncryptedWalletBackupV2AssetIdentity,
+  type EncryptedWalletBackupV2AssetIdentity,
+} from "@bitcaster/client-sdk";
 import type {
   DurableOutgoingCashuCoordinatorInput,
   DurableOutgoingCashuTransfer,
@@ -33,10 +37,9 @@ import {
   getWalletForUnit,
   restoreExactMintOutputs,
 } from "@/lib/cashu";
+import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
 import { getDurableCashuDeliveryStatus, submitDurableCashuDelivery } from "@/lib/markets";
-import { normalizeUrl } from "@/lib/url";
 import { getBoundedCanonicalSatProofs, type StoredProof } from "@/stores/proof-db";
-import { useWalletStore } from "@/stores/wallet";
 
 export type ParticipationScoreDeliveryProgress = "pending" | "received" | "credited";
 
@@ -80,6 +83,7 @@ export async function executeBrowserParticipationScoreDelivery(
     });
   }
   const wallet = await getWalletForUnit(metadata.mintUrl, "sat");
+  context.requireCapturedProfile();
   if (existing !== null) {
     const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
       transferId: metadata.deliveryId,
@@ -98,14 +102,6 @@ export async function executeBrowserParticipationScoreDelivery(
     });
   }
 
-  context.requireCapturedProfile();
-  const proofs = await getBoundedCanonicalSatProofs(metadata.mintUrl, {
-    keysetIds: participationScoreKeysetIds(metadata.mintUrl, wallet.getKeyset().id),
-  });
-  context.requireCapturedProfile();
-  if (sumProofs(proofs) < Number(metadata.requestedAmount)) {
-    throw new BrowserParticipationScoreInsufficientBalanceError(sumProofs(proofs));
-  }
   const keepLocators: Array<DurableWalletProofDerivationLocator | null> = [];
   const transfer = await executeBrowserDurableOutgoingCashuTransfer({
     reuseTransferId: true,
@@ -120,8 +116,22 @@ export async function executeBrowserParticipationScoreDelivery(
         tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
       }),
     },
-    prepareWalletSendOperation: async () =>
-      prepareParticipationScoreWalletSend({
+    preflightFundedAsset: () =>
+      preflightParticipationScoreAsset({
+        context,
+        asset: ordinaryScoreAsset(metadata.mintUrl),
+        requiredAmount: metadata.requestedAmount,
+        mintUrl: metadata.mintUrl,
+      }),
+    prepareWalletSendOperation: async () => {
+      context.requireCapturedProfile();
+      const proofs = await readParticipationScoreCandidates(metadata.mintUrl, context.scopeId);
+      context.requireCapturedProfile();
+      const balanceSats = sumProofs(proofs);
+      if (balanceSats < Number(metadata.requestedAmount)) {
+        throw new BrowserParticipationScoreInsufficientBalanceError(balanceSats);
+      }
+      return prepareParticipationScoreWalletSend({
         deliveryId: metadata.deliveryId,
         wallet,
         proofs,
@@ -129,7 +139,8 @@ export async function executeBrowserParticipationScoreDelivery(
         mintUrl: metadata.mintUrl,
         seed: context.seed,
         keepLocators,
-      }),
+      });
+    },
     keepProofDerivationLocators: keepLocators,
     wallet,
     restoreExactOutputs: (restore) => restoreParticipationScoreExactOutputs(wallet, restore),
@@ -142,6 +153,59 @@ export async function executeBrowserParticipationScoreDelivery(
     submit: submitDurableCashuDelivery,
     context,
   });
+}
+
+function ordinaryScoreAsset(mintUrl: string): EncryptedWalletBackupV2AssetIdentity {
+  return createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl,
+    unit: "sat",
+    asset: { kind: "ordinary" },
+  });
+}
+
+async function preflightParticipationScoreAsset(input: {
+  readonly context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+  readonly asset: EncryptedWalletBackupV2AssetIdentity;
+  readonly requiredAmount: string;
+  readonly mintUrl: string;
+}): Promise<void> {
+  const recovery = await recoverBrowserFundedAsset({
+    database: input.context.database,
+    scopeId: input.context.scopeId,
+    seed: input.context.seed,
+    mnemonic: input.context.mnemonic,
+    asset: input.asset,
+    requiredAmount: BigInt(input.requiredAmount),
+    loadPlan: async () =>
+      sumProofs(await readParticipationScoreCandidates(input.mintUrl, input.context.scopeId)) >=
+      Number(input.requiredAmount)
+        ? { kind: "ready" as const }
+        : { kind: "insufficient" as const },
+    isCurrentProfile: () => {
+      input.context.requireCapturedProfile();
+      return true;
+    },
+  });
+  switch (recovery.kind) {
+    case "ready":
+    case "recovered":
+      return;
+    case "unavailable":
+      throw new BrowserParticipationScoreInsufficientBalanceError(0);
+    case "persistent-error":
+      throw new Error("Participation Score asset recovery is unavailable");
+    case "not-recoverable":
+      throw new BrowserParticipationScoreConsolidationRequiredError();
+    default:
+      throw new Error("Participation Score recovery outcome is invalid");
+  }
+}
+
+async function readParticipationScoreCandidates(
+  mintUrl: string,
+  scopeId: string,
+): Promise<StoredProof[]> {
+  return getBoundedCanonicalSatProofs(mintUrl, { scopeId });
 }
 
 /** Reconcile one exact existing delivery. This function never selects fresh proofs. */
@@ -386,21 +450,6 @@ async function prepareParticipationScoreWalletSend(input: {
 
 function sumProofs(proofs: readonly StoredProof[]): number {
   return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
-}
-
-function participationScoreKeysetIds(mintUrl: string, activeKeysetId: string): string[] {
-  const mint = useWalletStore
-    .getState()
-    .mints.find((candidate) => normalizeUrl(candidate.url) === normalizeUrl(mintUrl));
-  const ids = new Set(
-    mint?.keysets
-      ?.filter((keyset) => keyset.unit === "sat" && /^01[0-9a-f]{64}$/.test(keyset.id))
-      .map((keyset) => keyset.id) ?? [],
-  );
-  if (/^01[0-9a-f]{64}$/.test(activeKeysetId)) ids.add(activeKeysetId);
-  return [activeKeysetId, ...ids].filter(
-    (keysetId, index, all) => /^01[0-9a-f]{64}$/.test(keysetId) && all.indexOf(keysetId) === index,
-  );
 }
 
 function outputProofLineage(output: OutputData): { readonly id: string; readonly secret: string } {
