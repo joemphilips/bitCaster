@@ -289,6 +289,20 @@ describe("useDepositWithdrawState", () => {
       });
       expect(result.current.error).toMatch(/unrecognized/i);
     });
+
+    it("routes the exact scanned Cashu token through durable ingress", async () => {
+      const walletOps = await import("@/lib/walletOps");
+      const ingress = vi.mocked(walletOps.ingressReceiveCashuToken);
+      ingress.mockClear();
+      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+
+      await act(async () => {
+        await result.current.onScanResult("cashuB-animated-token");
+      });
+
+      expect(ingress).toHaveBeenCalledOnce();
+      expect(ingress).toHaveBeenCalledWith("cashuB-animated-token", "scan");
+    });
   });
 
   describe("request feature", () => {

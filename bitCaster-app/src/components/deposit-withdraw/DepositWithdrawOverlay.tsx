@@ -126,7 +126,7 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
     );
   }
 
-  if (state.currentView === "token-display" && state.ecashToken) {
+  if (state.currentView === "token-display" && state.ecashToken && state.bearerWithdrawal?.token) {
     return (
       <>
         {backupWarningBanner}
@@ -134,6 +134,7 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         <TokenDisplay
           token={state.ecashToken}
           amountSats={state.amountSats}
+          proofCount={state.bearerWithdrawal.token.proofs.length}
           onClose={state.onClose}
           onReclaim={state.onReclaimEcash}
         />

@@ -107,23 +107,23 @@ describe("TokenDisplay", () => {
   const token = "cashuAeyJ0b2tlbiI6W3sicH...";
 
   it("displays the amount", () => {
-    render(<TokenDisplay token={token} amountSats={500} />);
+    render(<TokenDisplay token={token} amountSats={500} proofCount={1} />);
     expect(screen.getByText(/500/)).toBeInTheDocument();
   });
 
   it("shows the token string", () => {
-    render(<TokenDisplay token={token} amountSats={500} />);
+    render(<TokenDisplay token={token} amountSats={500} proofCount={1} />);
     expect(screen.getByText(token)).toBeInTheDocument();
   });
 
   it("shows the sharing instruction", () => {
-    render(<TokenDisplay token={token} amountSats={500} />);
+    render(<TokenDisplay token={token} amountSats={500} proofCount={1} />);
     expect(screen.getByText(/share this token/i)).toBeInTheDocument();
   });
 
   it("calls onClose when X is clicked", async () => {
     const onClose = vi.fn();
-    render(<TokenDisplay token={token} amountSats={500} onClose={onClose} />);
+    render(<TokenDisplay token={token} amountSats={500} proofCount={1} onClose={onClose} />);
     const buttons = screen.getAllByRole("button");
     await userEvent.click(buttons[0]);
     expect(onClose).toHaveBeenCalledOnce();
@@ -133,7 +133,7 @@ describe("TokenDisplay", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
 
-    render(<TokenDisplay token={token} amountSats={500} />);
+    render(<TokenDisplay token={token} amountSats={500} proofCount={1} />);
     const buttons = screen.getAllByRole("button");
     const copyButton = buttons[buttons.length - 1];
     await userEvent.click(copyButton);

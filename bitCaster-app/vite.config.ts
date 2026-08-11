@@ -2,6 +2,7 @@ import path from "path";
 import { createRequire } from "node:module";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
 
 const require = createRequire(import.meta.url);
@@ -9,6 +10,15 @@ const require = createRequire(import.meta.url);
 export default defineConfig({
   plugins: [
     react(),
+    nodePolyfills({
+      include: ["buffer", "process"],
+      globals: {
+        Buffer: true,
+        global: false,
+        process: true,
+      },
+      protocolImports: false,
+    }),
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["favicon.svg", "apple-touch-icon.png", "masked-icon.svg"],

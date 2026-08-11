@@ -1,18 +1,57 @@
 import { X, Copy, Check } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Nut16AnimatedQrEncoder, selectNut16QrPresentation } from "@bitcaster/client-sdk/nut16Qr";
 
 interface TokenDisplayProps {
   token: string;
   amountSats: number;
+  proofCount: number;
   onClose?: () => void;
   onReclaim?: () => void;
 }
 
-export function TokenDisplay({ token, amountSats, onClose, onReclaim }: TokenDisplayProps) {
+export function TokenDisplay({
+  token,
+  amountSats,
+  proofCount,
+  onClose,
+  onReclaim,
+}: TokenDisplayProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
+  const presentation = useMemo(
+    () => selectNut16QrPresentation({ token, proofCount }),
+    [proofCount, token],
+  );
+  const animated = useMemo(() => {
+    if (presentation.kind === "static") return null;
+    const encoder = new Nut16AnimatedQrEncoder(token, proofCount);
+    return { encoder, firstFrame: encoder.nextFrame() };
+  }, [presentation.kind, proofCount, token]);
+  const [animatedFrame, setAnimatedFrame] = useState<{
+    readonly token: string;
+    readonly value: string;
+  } | null>(null);
+  const frame =
+    animated === null
+      ? token
+      : animatedFrame?.token === token
+        ? animatedFrame.value
+        : animated.firstFrame;
+
+  useEffect(() => {
+    if (animated === null) return;
+    setAnimatedFrame({ token, value: animated.firstFrame });
+    const timer = window.setInterval(
+      () => setAnimatedFrame({ token, value: animated.encoder.nextFrame() }),
+      250,
+    );
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [animated, token]);
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(token);
@@ -43,7 +82,7 @@ export function TokenDisplay({ token, amountSats, onClose, onReclaim }: TokenDis
 
         {/* QR Code */}
         <div className="bg-white p-4 rounded-2xl">
-          <QRCodeSVG value={token} size={256} level="L" />
+          <QRCodeSVG value={frame} size={256} level="L" />
         </div>
 
         {/* Amount */}

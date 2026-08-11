@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import path from "path";
 import { createRequire } from "node:module";
 
@@ -9,6 +9,7 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
     globals: true,
+    exclude: [...configDefaults.exclude, "**/*.browser.test.ts"],
     server: {
       deps: {
         // Force ndk-wallet and cashu-ts through Vite's transform pipeline so

@@ -333,6 +333,10 @@
       "import": "./dist/tradeTicket.js"
     },
     "./tradingClient": "./src/tradingClient.ts",
+    "./nut16Qr": {
+      "types": "./dist/nut16Qr.d.ts",
+      "import": "./dist/nut16Qr.js"
+    },
     "./types": {
       "types": "./dist/types.d.ts",
       "import": "./dist/types.js"
@@ -355,9 +359,10 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
+    "@cashu/cashu-ts": "file:../cashu-ts",
+    "@ngraveio/bc-ur": "1.1.13",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
-    "@cashu/cashu-ts": "file:../cashu-ts",
     "cborg": "5.1.7"
   },
   "devDependencies": {
