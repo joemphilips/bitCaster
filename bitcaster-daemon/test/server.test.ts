@@ -178,10 +178,15 @@ test('complete-set pending reports custody unavailable and later clear recovery 
 test('manual recovery cannot clear automatic retirement pending custody', () => {
   const readiness = createCustodyReadinessTracker({
     nonRetirementPending: true,
+    retryPending: true,
     retirementPending: true,
   })
 
-  readiness.updateManualRecovery({ nonRetirementPending: false, retirementPending: false })
+  readiness.updateManualRecovery({
+    nonRetirementPending: false,
+    retryPending: false,
+    retirementPending: false,
+  })
   assert.equal(readiness.isReady(), false)
 })
 
@@ -192,6 +197,7 @@ test('receive recovery paging remains not ready without sampled pending rows', (
   ]) {
     const readiness = createCustodyReadinessTracker({
       nonRetirementPending: receive.pendingCount > 0 || receive.hasMore,
+      retryPending: receive.pendingCount > 0 || receive.hasMore,
       retirementPending: false,
     })
     assert.equal(readiness.isReady(), false)
@@ -201,6 +207,7 @@ test('receive recovery paging remains not ready without sampled pending rows', (
 test('latest automatic retirement scan can clear custody readiness', () => {
   const readiness = createCustodyReadinessTracker({
     nonRetirementPending: false,
+    retryPending: false,
     retirementPending: true,
   })
 
@@ -212,16 +219,22 @@ test('latest automatic retirement scan can clear custody readiness', () => {
 test('manual recovery can report newly pending persisted retirement work', () => {
   const readiness = createCustodyReadinessTracker({
     nonRetirementPending: false,
+    retryPending: false,
     retirementPending: false,
   })
 
-  readiness.updateManualRecovery({ nonRetirementPending: false, retirementPending: true })
+  readiness.updateManualRecovery({
+    nonRetirementPending: false,
+    retryPending: false,
+    retirementPending: true,
+  })
   assert.equal(readiness.isReady(), false)
 })
 
 test('older automatic retirement scan result cannot overwrite newer generation', () => {
   const readiness = createCustodyReadinessTracker({
     nonRetirementPending: false,
+    retryPending: false,
     retirementPending: true,
   })
 
@@ -250,7 +263,9 @@ test('manual recovery status callback owns production ready transition', async (
       observedAtMs: 1,
     })
     let markedReady = false
-    let status: { nonRetirementPending: boolean; retirementPending: boolean } | undefined
+    let status:
+      | { nonRetirementPending: boolean; retryPending: boolean; retirementPending: boolean }
+      | undefined
 
     const response = await dispatch(
       { method: 'wallet.recover' },
@@ -266,8 +281,50 @@ test('manual recovery status callback owns production ready transition', async (
     )
 
     assert.equal(response.ok, true)
-    assert.deepEqual(status, { nonRetirementPending: false, retirementPending: false })
+    assert.deepEqual(status, {
+      nonRetirementPending: false,
+      retryPending: false,
+      retirementPending: false,
+    })
     assert.equal(markedReady, false)
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('wallet send and reclaim wake bounded custody recovery after a durable attempt', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-custody-recovery-wake-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = directory
+  try {
+    await bootstrapTestProfile(directory)
+    let wakes = 0
+    const dependencies = {
+      triggerCustodyRecovery: () => {
+        wakes += 1
+      },
+    }
+
+    await assert.rejects(
+      () =>
+        dispatch(
+          {
+            method: 'wallet.send',
+            params: { amountSats: 1, mintUrl: 'https://mint.example' },
+          },
+          dependencies,
+        ),
+      /requires custody authority/,
+    )
+    await assert.rejects(
+      () =>
+        dispatch({ method: 'wallet.reclaim', params: { transferId: 'transfer-1' } }, dependencies),
+      /requires custody authority/,
+    )
+
+    assert.equal(wakes, 2)
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome

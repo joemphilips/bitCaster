@@ -13,6 +13,7 @@ import { assertDaemonProfileStorageComplete, profileDir } from './profile.ts'
 import { createDaemonSecrets, createDaemonSecretsFromImport } from './secrets.ts'
 import { bootstrapFreshDaemonProfile } from './profileBootstrap.ts'
 import type { CtfRangeRecoveryLoop } from './ctfRangeRecoveryLoop.ts'
+import type { NonRetirementCustodyRecoveryLoop } from './startupRecovery.ts'
 import { configureDataDir } from './dataDir.ts'
 import { freezeNativeConfigAtStartup, readNativeConfig } from './nativeConfig.ts'
 
@@ -62,12 +63,19 @@ switch (command) {
     const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
     const { readProfile } = await import('./profile.ts')
     const { readSecrets } = await import('./secrets.ts')
-    const { recoverPreparedWalletSends, recoverDurableWalletReceives } =
-      await import('./walletOps.ts')
+    const {
+      recoverPreparedWalletSends,
+      recoverDurableWalletReceives,
+      recoverDurableOutgoingCashuTransfers,
+    } = await import('./walletOps.ts')
     const { recoverWalletProofConsolidations } = await import('./walletProofConsolidation.ts')
     const { recoverCompleteSetSplits } = await import('./completeSetConversion.ts')
-    const { composeStartupCustodyRecovery, createCustodyReadinessTracker } =
-      await import('./startupRecovery.ts')
+    const {
+      composeStartupCustodyRecovery,
+      createCustodyReadinessTracker,
+      createNonRetirementCustodyRecoveryLoop,
+      outgoingCashuRecoveryStatus,
+    } = await import('./startupRecovery.ts')
     const { DaemonCtfRangeOrderCoordinator } = await import('./ctfRangeOrderCoordinator.ts')
     const { createCtfRangeRecoveryLoop } = await import('./ctfRangeRecoveryLoop.ts')
     const { resumeDaemonConditionRetirements, retireResolvedDaemonConditions } =
@@ -106,6 +114,7 @@ switch (command) {
     }
     let renewal: LeaseRenewal | undefined
     let rangeRecoveryLoop: CtfRangeRecoveryLoop | undefined
+    let nonRetirementRecoveryLoop: NonRetirementCustodyRecoveryLoop | undefined
     let assetMonitoring: { start(): void; stop(): void } | undefined
     let assetMonitoringStarting = false
     let retirementRetryTimer: NodeJS.Timeout | undefined
@@ -121,6 +130,7 @@ switch (command) {
       resourcesReleased = true
       renewal?.stop()
       rangeRecoveryLoop?.stop()
+      nonRetirementRecoveryLoop?.stop()
       assetMonitoring?.stop()
       if (retirementRetryTimer !== undefined) clearTimeout(retirementRetryTimer)
       try {
@@ -246,26 +256,57 @@ switch (command) {
         },
       })
       rangeRecoveryLoop.accept(initialRangeRecovery)
-      const consolidationRecovery = await recoverWalletProofConsolidations({
-        secrets,
-        mutation: () => ({ fence: currentFence(), observedAtMs: Date.now() }),
-      })
-      const walletRecovery = await recoverPreparedWalletSends(secrets, {
-        getCustodyFence: currentFence,
-      })
-      const receiveRecovery = await recoverDurableWalletReceives(secrets, {
-        getCustodyFence: currentFence,
-      })
-      const completeSetRecovery = await recoverCompleteSetSplits({
-        secrets,
-        deps: { getCustodyFence: currentFence },
-      })
-      const nonRetirementRecovery = composeStartupCustodyRecovery([
-        consolidationRecovery,
-        walletRecovery,
-        receiveRecovery,
-        completeSetRecovery,
-      ])
+      const recoverNonRetirementCustody = async () => {
+        const consolidationRecovery = await recoverWalletProofConsolidations({
+          secrets,
+          mutation: () => ({ fence: currentFence(), observedAtMs: Date.now() }),
+        })
+        const walletRecovery = await recoverPreparedWalletSends(secrets, {
+          getCustodyFence: currentFence,
+        })
+        const receiveRecovery = await recoverDurableWalletReceives(secrets, {
+          getCustodyFence: currentFence,
+        })
+        const outgoingRecovery = await recoverDurableOutgoingCashuTransfers(secrets, {
+          getCustodyFence: currentFence,
+        })
+        const completeSetRecovery = await recoverCompleteSetSplits({
+          secrets,
+          deps: { getCustodyFence: currentFence },
+        })
+        const recovery = composeStartupCustodyRecovery([
+          consolidationRecovery,
+          walletRecovery,
+          receiveRecovery,
+          outgoingRecovery,
+          completeSetRecovery,
+        ])
+        const outgoingStatus = outgoingCashuRecoveryStatus(outgoingRecovery)
+        const hasMore = receiveRecovery.hasMore || outgoingRecovery.hasMore
+        const blockingPending =
+          consolidationRecovery.pending.length > 0 ||
+          walletRecovery.pending.length > 0 ||
+          receiveRecovery.pending.length > 0 ||
+          receiveRecovery.pendingCount > 0 ||
+          receiveRecovery.hasMore ||
+          completeSetRecovery.pending.length > 0 ||
+          outgoingStatus.blockingPending
+        return {
+          recovery,
+          hasMore,
+          pending:
+            consolidationRecovery.pending.length > 0 ||
+            walletRecovery.pending.length > 0 ||
+            receiveRecovery.pending.length > 0 ||
+            receiveRecovery.pendingCount > 0 ||
+            receiveRecovery.hasMore ||
+            completeSetRecovery.pending.length > 0 ||
+            outgoingStatus.retryPending,
+          blockingPending,
+        }
+      }
+      const initialNonRetirementRecovery = await recoverNonRetirementCustody()
+      const nonRetirementRecovery = initialNonRetirementRecovery.recovery
       const retirementRecovery = await runAutomaticRetirementScan()
       const pendingRetirements = retirementRecovery
         .filter((entry) => entry.error !== null)
@@ -277,12 +318,9 @@ switch (command) {
         nonRetirementRecovery,
         { recovered: [], pending: pendingRetirements },
       ])
-      const pendingWalletOperations = startupRecovery.pending
       const readiness = createCustodyReadinessTracker({
-        nonRetirementPending:
-          nonRetirementRecovery.pending.length > 0 ||
-          receiveRecovery.pendingCount > 0 ||
-          receiveRecovery.hasMore,
+        nonRetirementPending: initialNonRetirementRecovery.blockingPending,
+        retryPending: initialNonRetirementRecovery.pending,
         retirementPending: pendingRetirements.length > 0,
       })
       const startAssetMonitoringWhenReady = async () => {
@@ -308,17 +346,13 @@ switch (command) {
           assetMonitoringStarting = false
         }
       }
-      if (!readiness.isReady()) {
-        const pendingSample = pendingWalletOperations
-          .slice(0, 64)
-          .map(({ operationId }) => operationId)
-        process.stderr.write(`Wallet recovery remains pending for ${pendingSample.join(', ')}\n`)
-      }
-      if (startupRecovery.recoveredCount > 0) {
-        process.stderr.write(
-          `Recovered ${startupRecovery.recoveredCount} wallet operations: ${startupRecovery.recovered.join(', ')}\n`,
-        )
-      }
+      process.stderr.write(
+        `Startup custody recovery: recovered=${startupRecovery.recoveredCount} ` +
+          `blockingPending=${initialNonRetirementRecovery.blockingPending} ` +
+          `retryPending=${initialNonRetirementRecovery.pending} ` +
+          `hasMore=${initialNonRetirementRecovery.hasMore} ` +
+          `retirementPending=${pendingRetirements.length > 0}\n`,
+      )
       let orderHubStarted = false
       const startOrderHubWhenReady = async () => {
         if (!readiness.isReady() || orderHubStarted) return
@@ -348,6 +382,45 @@ switch (command) {
           process.stderr.write(`bitcaster-daemon order lifecycle start failed: ${message}\n`)
         })
       }
+      const runAutomaticNonRetirementRecovery = async () => {
+        const generation = readiness.beginAutomaticNonRetirementScan()
+        try {
+          const result = await recoverNonRetirementCustody()
+          if (
+            !readiness.completeAutomaticNonRetirementScan(
+              generation,
+              result.blockingPending,
+              result.pending,
+            )
+          ) {
+            return { pending: readiness.isRetryPending() }
+          }
+          process.stderr.write(
+            `Automatic non-retirement custody recovery: recovered=${result.recovery.recoveredCount} ` +
+              `blockingPending=${result.blockingPending} retryPending=${result.pending} ` +
+              `hasMore=${result.hasMore}\n`,
+          )
+          if (readiness.isReady()) markCustodyReady()
+          return { pending: result.pending }
+        } catch (error) {
+          const applied = readiness.completeAutomaticNonRetirementScan(generation, true, true)
+          if (applied) {
+            process.stderr.write('Automatic non-retirement custody recovery remains pending\n')
+          }
+          throw error
+        }
+      }
+      nonRetirementRecoveryLoop = createNonRetirementCustodyRecoveryLoop({
+        recover: runAutomaticNonRetirementRecovery,
+        onResult: () => undefined,
+        onError: (error: Error) => {
+          process.stderr.write(
+            `Automatic non-retirement custody recovery failed: ${error.message}\n`,
+          )
+        },
+        retryAfterError: () => readiness.isRetryPending(),
+      })
+      nonRetirementRecoveryLoop.accept({ pending: initialNonRetirementRecovery.pending })
       const scheduleRetirementRetry = () => {
         if (retirementRetryTimer !== undefined) return
         retirementRetryTimer = setTimeout(() => {
@@ -394,11 +467,13 @@ switch (command) {
         prepareSettlementCapability: (input, client) =>
           rangeOrderCoordinator.prepare(input, client),
         triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
+        triggerCustodyRecovery: () => nonRetirementRecoveryLoop?.trigger(),
         getCustodyFence: currentFence,
         isCustodyReady: () => readiness.isReady(),
         markCustodyReady,
         onManualCustodyRecoveryStatus: (status) => {
           readiness.updateManualRecovery(status)
+          nonRetirementRecoveryLoop?.accept({ pending: status.retryPending })
           if (readiness.isReady()) markCustodyReady()
         },
         onOutcomeProofsReceived: async (conditionId, outcomeSetId) => {

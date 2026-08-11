@@ -461,6 +461,20 @@ function registerWalletCommand(program: Command): void {
       },
     )
 
+  wallet
+    .command('reclaim <transferId>')
+    .description('Reclaim one exact outgoing bearer transfer after a fresh proof-state check.')
+    .option('--dry-run', 'Validate and print the wallet.reclaim request without calling the daemon')
+    .addHelpText('after', '\nExample:\n  bitcaster-cli wallet reclaim <transfer-id>')
+    .action(async (transferId: string, options: { dryRun?: boolean }) => {
+      const params = { transferId }
+      if (isDryRun(options)) {
+        printDryRun(params)
+        return
+      }
+      await printDaemonResult(callDaemon({ method: 'wallet.reclaim', params }))
+    })
+
   registerWalletSplitCommand(wallet, 'split')
   wallet
     .command('consolidate-proofs')

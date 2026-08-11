@@ -6,7 +6,7 @@ import { after, test } from 'node:test'
 import { schnorr } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, utf8ToBytes } from '@noble/hashes/utils.js'
-import { CheckStateEnum, type MintKeys, type Proof } from '@cashu/cashu-ts'
+import { CheckStateEnum, MintOperationError, type MintKeys, type Proof } from '@cashu/cashu-ts'
 import { ORACLE_NOT_ATTESTED_OUTCOME_CODE } from '@bitcaster-market/client-sdk/ctfRedeem'
 import { deriveDlcConditionId } from '@bitcaster-market/client-sdk/managedConditionInventory'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
@@ -161,7 +161,9 @@ test('daemon previews then atomically retires one verified condition inventory',
     baseAsset: 'sat',
     unit: 'msat',
   })
-  const losingWallet = new FakeRetirementWallet({ code: ORACLE_NOT_ATTESTED_OUTCOME_CODE })
+  const losingWallet = new FakeRetirementWallet(
+    new MintOperationError(ORACLE_NOT_ATTESTED_OUTCOME_CODE, 'oracle not attested'),
+  )
   await retireDaemonConditionInventory({
     ...common,
     conditionId: losingConditionId,

@@ -47,7 +47,10 @@ import {
 } from "../../stores/proof-db";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
-import { createBrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
+import {
+  advanceBrowserProofBackupAuthorityRow,
+  createBrowserProofBackupAuthorityRow,
+} from "../../stores/browser-proof-backup-authority";
 import { claimBrowserParticipationScoreDeliveryPointer } from "../browserParticipationScoreDeliveryPointer";
 
 const MINT = "https://mint.example";
@@ -55,6 +58,7 @@ const SCOPE = "wallet-scope";
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7]);
 const KEYS = { "1": bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) };
 const KEYSET_ID = deriveKeysetId(KEYS);
+const FEE_KEYSET_ID = deriveKeysetId(KEYS, { input_fee_ppk: 500 });
 const OLD_V2_KEYSET_ID = `01${"22".repeat(32)}`;
 const databases: BitcasterDB[] = [];
 
@@ -560,6 +564,37 @@ describe("browser durable outgoing Cashu store", () => {
     expect(await fixture.database.outgoingCashuTransferAdmissions.count()).toBe(0);
   });
 
+  it("retains one unselected fee-aware candidate without rewriting its custody row", async () => {
+    const fixture = await feeAwarePassthroughFixture();
+
+    const result = await executeBrowserDurableOutgoingCashuTransfer(fixture.input);
+
+    const passthrough = await fixture.database.custodyProofs.get([
+      fixture.scope.scopeId,
+      fixture.passthroughProofId,
+    ]);
+    expect(passthrough?.selectability).toBe("selectable");
+    expect(passthrough?.reservationOperationId).toBeNull();
+    expect(passthrough?.revision).toBe(1);
+    expect(passthrough?.proofFingerprint).toBe(fixture.passthroughProofFingerprint);
+    expect(
+      result.token?.custodyRevisions.find(
+        ({ proofIdentity }) => proofIdentity === fixture.passthroughProofIdentity,
+      )?.revision,
+    ).toBe(1);
+    expect(
+      (await fixture.database.custodyProofs.toArray()).filter(
+        ({ proofId }) => proofId === fixture.passthroughProofId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      (await fixture.database.custodyProofs.toArray()).filter(
+        ({ selectability }) => selectability === "selectable",
+      ),
+    ).toHaveLength(3);
+    expect(fixture.wallet.completeSwap).toHaveBeenCalledOnce();
+  });
+
   it("serializes two-tab recipient reuse before proof selection and mint I/O", async () => {
     const fixture = await executionFixture();
     const productBinding = "a".repeat(64);
@@ -1048,6 +1083,135 @@ async function executionFixture(
   };
 }
 
+async function feeAwarePassthroughFixture() {
+  const database = createDatabase();
+  const seed = new Uint8Array(64).fill(6);
+  const scope = browserWalletScope(seed);
+  const selectedInputs = [
+    {
+      id: FEE_KEYSET_ID,
+      amount: Amount.from(999),
+      secret: "fee-aware-input-one",
+      C: "02" + "1".repeat(64),
+    },
+    {
+      id: FEE_KEYSET_ID,
+      amount: Amount.from(1_000),
+      secret: "fee-aware-input-two",
+      C: "02" + "2".repeat(64),
+    },
+  ];
+  const passthroughProof = {
+    id: FEE_KEYSET_ID,
+    amount: Amount.from(64),
+    secret: "fee-aware-unselected",
+    C: "02" + "3".repeat(64),
+  };
+  const sendOutputs = [
+    OutputData.createSingleDeterministicData(1, seed, 40, FEE_KEYSET_ID),
+    OutputData.createSingleDeterministicData(1, seed, 41, FEE_KEYSET_ID),
+  ];
+  const keepOutputs = [
+    OutputData.createSingleDeterministicData(1, seed, 42, FEE_KEYSET_ID),
+    OutputData.createSingleDeterministicData(1, seed, 43, FEE_KEYSET_ID),
+  ];
+  const operation = serializeDurableWalletSendOperation({
+    operationId: "wallet-send:fee-aware",
+    mintUrl: MINT,
+    unit: "sat",
+    preview: {
+      amount: Amount.from(2),
+      fees: Amount.from(1),
+      keysetId: FEE_KEYSET_ID,
+      inputs: selectedInputs,
+      sendOutputs,
+      keepOutputs,
+      unselectedProofs: [passthroughProof],
+    },
+  });
+  await Promise.all(selectedInputs.map((proof) => addInputProof(database, scope.scopeId, proof)));
+  const passthroughProofId = await addInputProof(database, scope.scopeId, passthroughProof);
+  const originalPassthrough = await database.custodyProofs.get([scope.scopeId, passthroughProofId]);
+  if (!originalPassthrough) throw new Error("fee-aware passthrough fixture is missing");
+  const revisedPassthrough = { ...originalPassthrough, revision: 1 };
+  const originalAuthority = await database.custodyProofBackupAuthorities.get([
+    scope.scopeId,
+    passthroughProofId,
+  ]);
+  if (!originalAuthority) throw new Error("fee-aware passthrough authority is missing");
+  await database.custodyProofs.put(revisedPassthrough);
+  await database.custodyProofBackupAuthorities.put(
+    advanceBrowserProofBackupAuthorityRow(
+      originalAuthority,
+      revisedPassthrough,
+      1,
+      null,
+      "initial-admission",
+    ),
+  );
+
+  const preview = hydrateDurableWalletSendPreview(operation);
+  const sendProofs = preview.sendOutputs!.map((output) => feeProofForOutput(output));
+  const mintedKeepProofs = preview.keepOutputs!.map((output) => feeProofForOutput(output));
+  const wallet = walletFor(sendProofs, [...mintedKeepProofs, passthroughProof], 500, FEE_KEYSET_ID);
+  const prepareWalletSendOperation = vi.fn(async () => operation);
+  const restoreExactOutputs = vi.fn();
+  const context = {
+    seed,
+    database,
+    now: () => 1_000,
+    randomId: () => "fee-aware-test",
+    requireCapturedProfile: vi.fn(),
+    lockManager: { request: async (_name, _options, action) => action(null as never) } as Pick<
+      LockManager,
+      "request"
+    >,
+  };
+  return {
+    database,
+    scope,
+    wallet,
+    passthroughProofId,
+    passthroughProofFingerprint: originalPassthrough.proofFingerprint,
+    passthroughProofIdentity: deriveDurableCustodyArtifactFingerprint({
+      id: passthroughProof.id,
+      secret: passthroughProof.secret,
+      C: passthroughProof.C,
+    }),
+    input: {
+      transfer: {
+        transferId: "fee-aware",
+        mintUrl: MINT,
+        unit: "sat",
+        requestedAmount: "2",
+        deliveryIntent: {
+          policy: "bearer-spend-classification" as const,
+          tokenBytesLimit: 4 * 1024,
+          tokenProofLimit: 2,
+        },
+      },
+      prepareWalletSendOperation,
+      keepProofDerivationLocators: [
+        {
+          schemaVersion: 1 as const,
+          kind: "nut13" as const,
+          keysetId: FEE_KEYSET_ID,
+          counter: 42,
+        },
+        {
+          schemaVersion: 1 as const,
+          kind: "nut13" as const,
+          keysetId: FEE_KEYSET_ID,
+          counter: 43,
+        },
+      ],
+      wallet,
+      restoreExactOutputs,
+      context,
+    },
+  };
+}
+
 function executionOperation(keepCount: number, seed: Uint8Array) {
   const sendOutput = OutputData.createSingleDeterministicData(1, seed, 1, KEYSET_ID);
   return serializeDurableWalletSendOperation({
@@ -1078,13 +1242,18 @@ function executionOperation(keepCount: number, seed: Uint8Array) {
 async function addInputProof(
   database: BitcasterDB,
   scopeId: string,
-  proof: { id: string; amount: string; secret: string; C: string },
+  proof: { id: string; amount: string | Amount; secret: string; C: string },
 ): Promise<string> {
   const row = createBrowserCustodyProofRow({
     scopeId,
     normalizedMint: MINT,
     unit: "sat",
-    proof: { id: proof.id, amount: Amount.from(proof.amount), secret: proof.secret, C: proof.C },
+    proof: {
+      id: proof.id,
+      amount: Amount.from(proof.amount.toString()),
+      secret: proof.secret,
+      C: proof.C,
+    },
     asset: { kind: "regular" },
     receivedAtMs: 0,
   });
@@ -1095,18 +1264,24 @@ async function addInputProof(
   return row.proofId;
 }
 
-function walletFor(sendProof: Proof, keepProofs: Proof[] = []) {
+function walletFor(
+  sendProof: Proof | Proof[],
+  keepProofs: Proof[] = [],
+  fee = 0,
+  keysetId = KEYSET_ID,
+  keys = KEYS,
+) {
   return {
     completeSwap: vi.fn(async () => ({
       keep: keepProofs,
-      send: [sendProof],
+      send: Array.isArray(sendProof) ? sendProof : [sendProof],
     })),
     checkProofsStates: vi.fn(),
     getKeyset: vi.fn(() => ({
-      id: KEYSET_ID,
+      id: keysetId,
       unit: "sat",
-      keys: KEYS,
-      fee: 0,
+      keys,
+      fee,
       verify: () => true,
     })),
   };
@@ -1129,4 +1304,22 @@ function signatureForOutput(output: OutputData) {
 
 function proofForOutput(output: OutputData): Proof {
   return output.toProof(signatureForOutput(output), { id: KEYSET_ID, keys: KEYS });
+}
+
+function feeProofForOutput(output: OutputData): Proof {
+  const signature = createBlindSignature(
+    pointFromHex(output.blindedMessage.B_),
+    PRIVATE_KEY,
+    FEE_KEYSET_ID,
+  );
+  const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), PRIVATE_KEY);
+  return output.toProof(
+    {
+      id: FEE_KEYSET_ID,
+      amount: output.blindedMessage.amount,
+      C_: signature.C_.toHex(true),
+      dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
+    },
+    { id: FEE_KEYSET_ID, keys: KEYS },
+  );
 }

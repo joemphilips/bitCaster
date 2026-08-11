@@ -980,12 +980,16 @@ export function planDurableOutgoingCashuRecoveryPage(input: {
   if (input.page.nextCursor !== null) {
     decodeCursor(input.page.nextCursor)
     const last = transfers.at(-1)
-    const floor =
-      last === undefined
-        ? (input.cursor ?? null)
-        : { dueAtMs: last.recovery.dueAtMs, transferId: last.transferId }
-    if (floor !== null && compareCursor(input.page.nextCursor, floor) <= 0) {
-      throw new Error('durable outgoing Cashu recovery cursor does not advance')
+    if (last === undefined) {
+      throw new Error('durable outgoing Cashu recovery cursor requires a returned row')
+    }
+    if (
+      compareCursor(input.page.nextCursor, {
+        dueAtMs: last.recovery.dueAtMs,
+        transferId: last.transferId,
+      }) !== 0
+    ) {
+      throw new Error('durable outgoing Cashu recovery cursor must equal the last returned row')
     }
   }
   return new Map([...groups].sort(([left], [right]) => left.localeCompare(right)))
@@ -1099,8 +1103,11 @@ export function redactedTransferMetadata(input: DurableOutgoingCashuTransfer): {
   deliveryState: DurableOutgoingCashuDeliveryState
   tokenDigest: string | null
   tokenLength: number | null
+  returnedAmount: string | null
+  receiveFee: string | null
 } {
   const transfer = decodeDurableOutgoingCashuTransfer(input)
+  const reclaimPreview = transfer.reclaim?.walletReceiveOperation.preview ?? null
   return {
     transferId: transfer.transferId,
     mintUrl: transfer.mintUrl,
@@ -1108,6 +1115,8 @@ export function redactedTransferMetadata(input: DurableOutgoingCashuTransfer): {
     deliveryState: transfer.deliveryState,
     tokenDigest: transfer.token?.sha256 ?? null,
     tokenLength: transfer.token?.encodedLength ?? null,
+    returnedAmount: reclaimPreview?.amount ?? null,
+    receiveFee: reclaimPreview?.fees ?? null,
   }
 }
 

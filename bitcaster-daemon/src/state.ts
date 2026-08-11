@@ -1625,6 +1625,63 @@ export async function markProofOperationCompletedFenced(
   )
 }
 
+/**
+ * Complete one ordinary send inside the caller's custody transaction.
+ * The caller must admit the matching custody successors in the same transaction.
+ */
+export function completeDurableOutgoingWalletSendFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly operationId: string
+    readonly reservationId: string
+    readonly keepProofs: readonly CashuProofRecord[]
+    readonly sendProofs: readonly CashuProofRecord[]
+    readonly nowMs: number
+  },
+): ProofOperationRecord {
+  const operation = readDaemonProofOperationFromDatabase(database, input.operationId)
+  if (
+    operation === null ||
+    operation.kind !== 'wallet-send' ||
+    operation.state !== 'prepared' ||
+    operation.metadata.reservationId !== input.reservationId
+  ) {
+    throw new Error('durable outgoing wallet send proof operation is missing or foreign')
+  }
+  assertExactReservedProofRows(
+    readDaemonReservedWalletProofsFromDatabase(database, operation.mintUrl, input.reservationId),
+    {
+      operationId: operation.operationId,
+      kind: operation.kind,
+      mintUrl: operation.mintUrl,
+      inputs: operation.inputs,
+      outputs: operation.outputs,
+      metadata: operation.metadata,
+      reservationId: input.reservationId,
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+    },
+  )
+  const completed = completeProofOperation(
+    database,
+    operation.operationId,
+    { keep: [...input.keepProofs], send: [...input.sendProofs] },
+    input.nowMs,
+  )
+  removeExactReservedPredecessors(database, completed, {
+    purpose: 'durable-outgoing-cashu',
+    reservationId: input.reservationId,
+    inputAsset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+    successorAssets: { keep: { kind: 'sats', baseAsset: 'sat', unit: 'sat' } },
+  })
+  admitExactAvailableWalletProofsFromDatabase(database, {
+    mintUrl: completed.mintUrl,
+    proofs: input.keepProofs,
+    asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+    nowMs: input.nowMs,
+  })
+  return completed
+}
+
 export async function completeManagedConditionRedeemFenced(
   operationId: string,
   completion: CtfProofOperationCompletion,

@@ -540,6 +540,22 @@ export class DurableCustodySqliteStore {
     return decodeDurableCustodyRecord(record)
   }
 
+  getOperationByRetainedOperationKey(
+    scopeId: string,
+    retainedOperationKey: string,
+  ): DurableCustodyRecord | null {
+    const row = this.#database
+      .prepare(
+        `SELECT operation_id AS operationId FROM custody_operations
+         WHERE scope_id = ? AND retained_operation_key = ?
+           AND semantic_kind = 'generic-receive' AND wallet_stage = 'receive'
+         LIMIT 2`,
+      )
+      .all(scopeId, retainedOperationKey) as { operationId: string }[]
+    if (row.length > 1) throw new Error('custody retained operation key is ambiguous')
+    return row.length === 0 ? null : this.getOperation(row[0]!.operationId)
+  }
+
   getArtifact(input: {
     scopeId: string
     operationId: string

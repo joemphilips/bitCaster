@@ -13,6 +13,7 @@ export type DaemonCommand =
       method: 'wallet.send'
       params: { amountSats: number; mintUrl?: string; operationId?: string }
     }
+  | { method: 'wallet.reclaim'; params: { transferId: string } }
   | { method: 'wallet.splitCompleteSet'; params: WalletSplitCompleteSetParams }
   | { method: 'wallet.consolidateMarket'; params: WalletConsolidateMarketParams }
   | { method: 'wallet.consolidateProofs'; params?: undefined }

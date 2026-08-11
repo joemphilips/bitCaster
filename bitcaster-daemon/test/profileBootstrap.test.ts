@@ -33,6 +33,7 @@ import {
 } from '../src/profileSchema.ts'
 import {
   FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST,
+  FINAL_PROFILE_SCHEMA_SQL,
   finalProfileSchemaManifestDigest,
   getFinalProfileSchemaManifest,
 } from '../src/profileSchemaManifest.ts'
@@ -185,6 +186,13 @@ test('production schema manifest is pinned and excludes source-only recovery aut
   ]) {
     assert.ok(names.has(required), required)
   }
+  for (const required of [
+    'custody_operations_retained_operation_key_typed_idx',
+    'daemon_outgoing_cashu_transfers_due_idx',
+    'daemon_outgoing_cashu_transfers_all_mints_due_idx',
+  ]) {
+    assert.ok(names.has(required), required)
+  }
   const operationColumns = new Set(
     manifest.tables
       .find((table) => table.name === 'custody_operations')!
@@ -253,6 +261,64 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     'target_ephemeral_keys',
   ]) {
     assert.ok(!names.has(forbidden), forbidden)
+  }
+})
+
+test('outgoing transfer schema keeps requested amounts within the JavaScript safe integer range', () => {
+  const database = new DatabaseSync(':memory:')
+  try {
+    const statement = FINAL_PROFILE_SCHEMA_SQL.find((sql) =>
+      sql.startsWith('CREATE TABLE daemon_outgoing_cashu_transfers'),
+    )
+    assert.ok(statement)
+    database.exec(`
+      CREATE TABLE custody_scopes (scope_id TEXT PRIMARY KEY);
+      CREATE TABLE custody_operations (
+        scope_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        PRIMARY KEY (scope_id, operation_id)
+      );
+      CREATE TABLE custody_artifacts (
+        scope_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        PRIMARY KEY (scope_id, artifact_id)
+      );
+      INSERT INTO custody_scopes VALUES ('scope');
+      INSERT INTO custody_operations VALUES ('scope', 'operation-safe');
+      INSERT INTO custody_operations VALUES ('scope', 'operation-unsafe');
+      INSERT INTO custody_artifacts VALUES ('scope', '${'a'.repeat(64)}');
+      INSERT INTO custody_artifacts VALUES ('scope', '${'c'.repeat(64)}');
+    `)
+    database.exec(statement)
+    const insert = database.prepare(
+      `INSERT INTO daemon_outgoing_cashu_transfers (
+         scope_id, transfer_id, custody_operation_id, normalized_mint, unit,
+         requested_amount, delivery_state, due_at_ms, attempt_count, revision,
+         transfer_artifact_id, transfer_fingerprint, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, 'https://mint.example', 'sat', ?, 'prepared', 0, 0, 0, ?, ?, 0, 0)`,
+    )
+    insert.run(
+      'scope',
+      'safe',
+      'operation-safe',
+      '9007199254740991',
+      'a'.repeat(64),
+      'b'.repeat(64),
+    )
+    assert.throws(
+      () =>
+        insert.run(
+          'scope',
+          'unsafe',
+          'operation-unsafe',
+          '9007199254740992',
+          'c'.repeat(64),
+          'd'.repeat(64),
+        ),
+      /constraint failed/i,
+    )
+  } finally {
+    database.close()
   }
 })
 

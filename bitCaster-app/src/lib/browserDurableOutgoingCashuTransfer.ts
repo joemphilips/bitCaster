@@ -33,11 +33,14 @@ import {
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyRecord,
 } from "@bitcaster/client-sdk/durableCustody";
+import { createDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import {
   hydrateDurableWalletProof,
   requireDurableWalletOperationFromCustody,
+  serializeDurableWalletProof,
   toDurableCustodyProofOperationInput,
   type DurableWalletSendOperation,
+  verifyDurableWalletSendResult,
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import {
   deriveDurableWalletProofSecret,
@@ -629,8 +632,15 @@ async function persistBrowserOutgoingMintResult(
   const snapshot = await runtime.adapter.readOperationSnapshot(scope, custodyOperationId);
   if (!snapshot) throw new Error("browser outgoing custody operation is missing");
   const exact = exactOutgoingOperation(snapshot.record, snapshot.artifacts);
-  const keep = verifyOutgoingKeepProofs(runtime.context.seed, minted.transfer, minted.keepProofs);
-  const send = minted.sendProofs.map(hydrateOutgoingProof);
+  const fullResult = verifyDurableWalletSendResult(minted.transfer.walletSendOperation, {
+    keep: minted.keepProofs.map(hydrateOutgoingProof),
+    send: minted.sendProofs.map(hydrateOutgoingProof),
+  });
+  const mintedKeepCount = minted.transfer.walletSendOperation.preview.keepOutputs.length;
+  const keep = fullResult.keep.slice(0, mintedKeepCount);
+  const passthrough = fullResult.keep.slice(mintedKeepCount);
+  verifyOutgoingMintedKeepProofs(runtime.context.seed, minted.transfer, keep);
+  const send = fullResult.send;
   const prepared = prepareDurableCustodyVerifiedMintResult({
     record: snapshot.record,
     exactAuthority: exact,
@@ -647,12 +657,13 @@ async function persistBrowserOutgoingMintResult(
     scope,
     minted.transfer,
     keep,
+    passthrough,
     send,
   );
   const admitted = admitDurableOutgoingCashuToken({
     transfer: minted.transfer,
-    keepProofs: minted.keepProofs,
-    sendProofs: minted.sendProofs,
+    keepProofs: fullResult.keep.map(serializeDurableWalletProof),
+    sendProofs: fullResult.send.map(serializeDurableWalletProof),
     encodedToken: minted.encodedToken,
     custodyRevisions: revisions,
     dueAtMs: minted.transfer.recovery.dueAtMs,
@@ -695,12 +706,11 @@ async function commitOutgoingMintAdmission(input: {
   return input.admitted;
 }
 
-function verifyOutgoingKeepProofs(
+function verifyOutgoingMintedKeepProofs(
   seed: Uint8Array,
   transfer: DurableOutgoingCashuTransfer,
-  values: readonly unknown[],
-): Proof[] {
-  const keep = values.map(hydrateOutgoingProof);
+  keep: readonly Proof[],
+): void {
   for (const [index, proof] of keep.entries()) {
     const locator = transfer.keepProofDerivationLocators[index];
     if (locator === null) continue;
@@ -715,7 +725,6 @@ function verifyOutgoingKeepProofs(
       throw new Error("browser outgoing keep proof locator conflicts with minted proof");
     }
   }
-  return keep;
 }
 
 function verifyOutgoingKeepOutputLocators(
@@ -871,6 +880,7 @@ async function outgoingCustodyRevisions(
   scope: ReturnType<typeof browserWalletScope>,
   transfer: DurableOutgoingCashuTransfer,
   keep: readonly Proof[],
+  passthrough: readonly Proof[],
   send: readonly Proof[],
 ) {
   const input = await Promise.all(
@@ -894,9 +904,44 @@ async function outgoingCustodyRevisions(
       return { proofIdentity: proofIdentity(proof), revision: row.revision + 1 };
     }),
   );
-  return [...input, ...keep, ...send].map((entry) =>
-    "proofIdentity" in entry ? entry : { proofIdentity: proofIdentity(entry), revision: 0 },
+  const passthroughRevisions = await Promise.all(
+    passthrough.map(async (proof) => {
+      const material = createDurableCustodyProofMaterialRecord({
+        scopeId: scope.scopeId,
+        normalizedMint: transfer.mintUrl,
+        unit: transfer.unit as "sat" | "msat",
+        proof: {
+          id: proof.id,
+          amount: proof.amount,
+          secret: proof.secret,
+          C: proof.C,
+          dleq: proof.dleq ?? null,
+          p2pkE: proof.p2pk_e ?? null,
+          witness: proof.witness ?? null,
+        },
+      });
+      const row = await adapter.readProof(scope.scopeId, material.proofId);
+      if (
+        row === null ||
+        row.scopeId !== scope.scopeId ||
+        row.normalizedMint !== transfer.mintUrl ||
+        row.unit !== transfer.unit ||
+        row.selectability !== "selectable" ||
+        row.reservationOperationId !== null ||
+        row.proofId !== material.proofId ||
+        row.proofFingerprint !== material.proofFingerprint
+      ) {
+        throw new Error("browser outgoing passthrough custody revision is foreign");
+      }
+      return { proofIdentity: proofIdentity(proof), revision: row.revision };
+    }),
   );
+  return [
+    ...input,
+    ...keep.map((proof) => ({ proofIdentity: proofIdentity(proof), revision: 0 })),
+    ...passthroughRevisions,
+    ...send.map((proof) => ({ proofIdentity: proofIdentity(proof), revision: 0 })),
+  ];
 }
 
 async function loadExactOutgoingTransfer(

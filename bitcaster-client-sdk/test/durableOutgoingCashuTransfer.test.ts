@@ -184,6 +184,8 @@ test('does not expose a token in redacted metadata and requires a persisted reci
   const metadata = redactedTransferMetadata(admitted)
 
   assert.equal(JSON.stringify(metadata).includes(encodedToken([sendProof()])), false)
+  assert.equal(metadata.returnedAmount, null)
+  assert.equal(metadata.receiveFee, null)
   const acknowledged = await acknowledgeDurableOutgoingCashuRecipient({
     transfer: admitted,
     receiptAdapter: {
@@ -208,6 +210,15 @@ test('does not expose a token in redacted metadata and requires a persisted reci
     },
   })
   assert.equal(acknowledged.deliveryState, 'recipient-acknowledged')
+})
+
+test('redacted reclaim metadata shows the returned amount and receive fee without proofs', () => {
+  const reclaim = preparedReclaim('reclaim-fee-disclosure')
+  const metadata = redactedTransferMetadata(reclaim)
+
+  assert.equal(metadata.returnedAmount, reclaim.reclaim!.walletReceiveOperation.preview.amount)
+  assert.equal(metadata.receiveFee, reclaim.reclaim!.walletReceiveOperation.preview.fees)
+  assert.equal(JSON.stringify(metadata).includes(reclaim.token!.proofs[0]!.secret), false)
 })
 
 test('mixed bearer classification retains only the exact unspent subset for reclaim', () => {
@@ -273,7 +284,7 @@ test('recovery pages require a stable starvation-safe due order', () => {
   const page = {
     storedBytes: 1024,
     transfers: [first, second],
-    nextCursor: { dueAtMs: 2, transferId: 'transfer-3' },
+    nextCursor: { dueAtMs: second.recovery.dueAtMs, transferId: second.transferId },
   }
   const planned = planDurableOutgoingCashuRecoveryPage({ page, limit: 2, maximumBytes: 4096 })
 
@@ -443,6 +454,19 @@ test('recovery bounds stored bytes, cursor advancement, proof chunks, and capped
   assert.throws(
     () =>
       planDurableOutgoingCashuRecoveryPage({
+        page: {
+          storedBytes: 0,
+          transfers: [],
+          nextCursor: { dueAtMs: transfer.recovery.dueAtMs, transferId: transfer.transferId },
+        },
+        limit: 1,
+        maximumBytes: 4096,
+      }),
+    /cursor requires a returned row/,
+  )
+  assert.throws(
+    () =>
+      planDurableOutgoingCashuRecoveryPage({
         page: { storedBytes: 4097, transfers: [transfer], nextCursor: null },
         limit: 1,
         maximumBytes: 4096,
@@ -455,12 +479,12 @@ test('recovery bounds stored bytes, cursor advancement, proof chunks, and capped
         page: {
           storedBytes: 1,
           transfers: [transfer],
-          nextCursor: { dueAtMs: transfer.recovery.dueAtMs, transferId: transfer.transferId },
+          nextCursor: { dueAtMs: transfer.recovery.dueAtMs + 1, transferId: transfer.transferId },
         },
         limit: 1,
         maximumBytes: 4096,
       }),
-    /does not advance/,
+    /must equal the last returned row/,
   )
   assert.throws(
     () =>

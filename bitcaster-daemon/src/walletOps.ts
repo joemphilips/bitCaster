@@ -5,7 +5,6 @@ import {
   CheckStateEnum,
   OutputData,
   getDecodedToken,
-  getEncodedToken,
   type CounterRange,
   type CounterSource,
   type CtfConvertRequest,
@@ -50,19 +49,17 @@ import {
   type TokenImportUnit,
 } from '@bitcaster-market/client-sdk/tokenImportValidation'
 import { serializeDurableWalletReceiveOperation } from '@bitcaster-market/client-sdk/durableWalletOperation'
+import { redactedTransferMetadata } from '@bitcaster-market/client-sdk/durableOutgoingCashuTransfer'
 import {
   addAvailableProofs,
   advanceDaemonKeysetCounter,
-  completeReservedSatSend,
   ensureState,
   getProofOperation,
   markProofOperationCompleted,
   prepareProofOperation,
   readDaemonKeysetCounters,
   readAvailableWalletProofAmountSamplesForReceive,
-  releaseProofReservation,
   reserveDaemonKeysetCounter,
-  reserveAvailableSatProofsForSend,
   updateState,
   type FencedStateMutation,
   type ProofOperationRecord,
@@ -74,6 +71,7 @@ import type { CustodyScopeFence } from './profileFencing.ts'
 import type { WalletConsolidationProofSummary, WalletConsolidationResult } from './protocol.ts'
 import { createDaemonTokenImportKeysetResolver } from './tokenImportKeysetResolver.ts'
 import { DaemonDurableWalletReceiveCoordinator } from './durableWalletReceiveCoordinator.ts'
+import { DaemonDurableOutgoingCashuCoordinator } from './durableOutgoingCashuCoordinator.ts'
 
 export interface CashuWalletLike {
   loadMint(): Promise<void>
@@ -184,6 +182,25 @@ export interface WalletSendResult {
 export interface WalletSendRecoveryResult {
   recovered: string[]
   pending: Array<{ operationId: string; error: string }>
+}
+
+export interface DurableOutgoingCashuRecoveryResult {
+  readonly recovered: string[]
+  readonly pending: Array<{ operationId: string; error: string }>
+  readonly hasMore: boolean
+  readonly hasPending: boolean
+  readonly hasBlockingPending: boolean
+}
+
+export interface DurableOutgoingCashuReclaimResult {
+  readonly transferId: string
+  readonly mintUrl: string
+  readonly unit: string
+  readonly deliveryState: string
+  readonly tokenDigest: string | null
+  readonly tokenLength: number | null
+  readonly returnedAmount: string | null
+  readonly receiveFee: string | null
 }
 
 export interface WalletReceiveRecoveryResult {
@@ -380,18 +397,89 @@ export async function sendWalletToken(
   mintUrl = profile.mintUrl,
   operationId?: string,
 ): Promise<WalletSendResult> {
-  if (!Number.isInteger(amountSats) || amountSats <= 0) {
-    throw new Error('amountSats must be a positive integer')
+  if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
+    throw new Error('amountSats must be a positive safe integer')
   }
   if (!mintUrl) throw new Error('mint URL is required')
+  if (!deps.getCustodyFence) throw new Error('daemon wallet send requires custody authority')
 
-  return sendWalletTokenWithOperation(
-    amountSats,
-    mintUrl,
-    operationId ?? `wallet-send-${randomUUID()}`,
-    secrets,
+  const transferId = operationId ?? `wallet-send-${randomUUID()}`
+  const coordinator = new DaemonDurableOutgoingCashuCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
     deps,
   )
+  const existing = await coordinator.loadTransfer(transferId)
+  const wallet = createWallet(mintUrl, secrets, deps, 'sat', 'sat')
+  await wallet.loadMint()
+  const transfer =
+    existing === null
+      ? await coordinator.execute({ transferId, amountSats, mintUrl, wallet })
+      : await coordinator.recover({ transfer: existing, amountSats, mintUrl, wallet })
+  if (transfer.token === null) throw new Error('durable outgoing Cashu token admission is absent')
+  return {
+    operationId: transfer.walletSendOperation.operationId,
+    mintUrl: transfer.mintUrl,
+    amountSats,
+    proofCount: transfer.token.proofs.length,
+    token: transfer.token.encodedToken,
+  }
+}
+
+/** Recover one bounded page of due outgoing bearer transfers without token delivery. */
+export async function recoverDurableOutgoingCashuTransfers(
+  secrets: WalletOpsSecrets,
+  deps: WalletOpsDependencies = {},
+): Promise<DurableOutgoingCashuRecoveryResult> {
+  if (!deps.getCustodyFence) {
+    return {
+      recovered: [],
+      pending: [],
+      hasMore: false,
+      hasPending: false,
+      hasBlockingPending: false,
+    }
+  }
+  const result = await new DaemonDurableOutgoingCashuCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    deps,
+  ).recoverDue({
+    walletFor: async (mintUrl, unit) => createWallet(mintUrl, secrets, deps, 'sat', unit),
+  })
+  return {
+    recovered: result.recovered,
+    pending: result.pending.map(({ transferId, error }) => ({ operationId: transferId, error })),
+    hasMore: result.hasMore,
+    hasPending: result.hasPending,
+    hasBlockingPending: result.hasBlockingPending,
+  }
+}
+
+/** Reclaim one exact persisted bearer transfer after a fresh complete classification. */
+export async function reclaimDurableOutgoingCashuTransfer(
+  transferId: string,
+  secrets: WalletOpsSecrets,
+  deps: WalletOpsDependencies = {},
+): Promise<DurableOutgoingCashuReclaimResult> {
+  if (!deps.getCustodyFence)
+    throw new Error('durable outgoing Cashu reclaim requires custody authority')
+  const coordinator = new DaemonDurableOutgoingCashuCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    deps,
+  )
+  const transfer = await coordinator.loadTransfer(transferId)
+  if (transfer === null) throw new Error('durable outgoing Cashu transfer is missing')
+  const wallet = createWallet(
+    transfer.mintUrl,
+    secrets,
+    deps,
+    'sat',
+    transfer.unit as TokenImportUnit,
+  )
+  await wallet.loadMint()
+  return redactedTransferMetadata(await coordinator.reclaim({ transferId, wallet }))
 }
 
 export async function splitAvailableSatProofsForCtfCollateral(
@@ -806,103 +894,21 @@ async function listMintAndConditionalKeysets(mintUrl: string): Promise<
   return [...regular, ...conditional]
 }
 
-async function sendWalletTokenWithOperation(
-  amountSats: number,
-  mintUrl: string,
-  operationId: string,
-  secrets: WalletOpsSecrets,
-  deps: WalletOpsDependencies,
-): Promise<WalletSendResult> {
-  const existing = await getProofOperation(operationId)
-  const wallet = createWallet(mintUrl, secrets, deps, 'sat', 'sat')
-  await wallet.loadMint()
-  if (existing) {
-    const split = await resumeWalletSendOperation(wallet, existing, mintUrl, deps, amountSats)
-    return walletSendResult(operationId, mintUrl, amountSats, split.send)
-  }
-
-  const reservationId = `wallet-send:${operationId}`
-  const selected = await reserveAvailableSatProofsForSend({
-    mintUrl,
-    amountSats,
-    reservedBy: reservationId,
-  })
-  const selectedProofs = selected as Proof[]
-  if (!wallet.prepareSwapToSend || !wallet.completeSwap) {
-    await releaseProofReservation(reservationId)
-    throw new Error('cashu wallet does not support resumable send preparation')
-  }
-
-  let preview: SwapPreview
-  try {
-    preview = await wallet.prepareSwapToSend(amountSats, selectedProofs, undefined, {
-      send: { type: 'random' },
-      keep: { type: 'random' },
-    })
-  } catch (err) {
-    await releaseProofReservation(reservationId)
-    throw err
-  }
-
-  await prepareProofOperation({
-    operationId,
-    kind: 'wallet-send',
-    mintUrl,
-    inputs: preview.inputs,
-    outputs: {
-      send: serializeOutputDataArray(preview.sendOutputs ?? []),
-      keep: serializeOutputDataArray(preview.keepOutputs ?? []),
-    },
-    metadata: {
-      amount: amountToNumber(preview.amount),
-      fees: amountToNumber(preview.fees),
-      keysetId: preview.keysetId,
-      unselectedProofs: preview.unselectedProofs ?? [],
-      reservationId,
-      unit: 'sat',
-    },
-  })
-
-  const split = await wallet.completeSwap(preview)
-  await markProofOperationCompleted(operationId, {
-    send: split.send,
-    keep: split.keep,
-  })
-  await completeReservedSatSend({
-    mintUrl,
-    reservedBy: reservationId,
-    keepProofs: split.keep,
-  })
-  return walletSendResult(operationId, mintUrl, amountSats, split.send)
-}
-
 export async function recoverPreparedWalletSends(
-  secrets: WalletOpsSecrets,
+  _secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies = {},
 ): Promise<WalletSendRecoveryResult> {
   const state = await ensureState()
   const recoverable = Object.values(state.proofOperations).filter(
     (entry) =>
-      (entry.kind === 'wallet-send' &&
-        entry.state === 'prepared' &&
-        entry.metadata.purpose !== 'ctf-range-authorization-source' &&
-        entry.metadata.purpose !== 'ctf-range-authorization-consolidation' &&
-        entry.metadata.purpose !== 'wallet-proof-consolidation') ||
-      (entry.kind === 'ctf-consolidation' &&
-        (entry.state === 'prepared' ||
-          (entry.state === 'completed' &&
-            !isCtfConsolidationFinalized(entry, state.wallet.proofs)))),
+      entry.kind === 'ctf-consolidation' &&
+      (entry.state === 'prepared' ||
+        (entry.state === 'completed' && !isCtfConsolidationFinalized(entry, state.wallet.proofs))),
   )
   const result: WalletSendRecoveryResult = { recovered: [], pending: [] }
   for (const entry of recoverable) {
     try {
-      if (entry.kind === 'ctf-consolidation') {
-        await resumeCtfConsolidationOperation(entry, deps)
-      } else {
-        const wallet = createWallet(entry.mintUrl, secrets, deps, 'sat', 'sat')
-        await wallet.loadMint()
-        await resumeWalletSendOperation(wallet, entry, entry.mintUrl, deps)
-      }
+      await resumeCtfConsolidationOperation(entry, deps)
       result.recovered.push(entry.operationId)
     } catch (err) {
       result.pending.push({
@@ -964,83 +970,6 @@ async function resumeCtfConsolidationOperation(
     resultProofs,
   })
   return resultProofs
-}
-
-async function resumeWalletSendOperation(
-  wallet: CashuWalletLike,
-  entry: ProofOperationRecord,
-  mintUrl: string,
-  deps: WalletOpsDependencies,
-  requestedAmountSats?: number,
-): Promise<{ send: Proof[]; keep: Proof[] }> {
-  assertWalletSendOperation(entry, mintUrl, requestedAmountSats)
-  const reservationId = readStringMetadata(entry, 'reservationId')
-  if (entry.state === 'completed') {
-    const split = {
-      send: (entry.resultProofs?.send ?? []) as Proof[],
-      keep: (entry.resultProofs?.keep ?? []) as Proof[],
-    }
-    await completeReservedSatSend({
-      mintUrl,
-      reservedBy: reservationId,
-      keepProofs: split.keep,
-    })
-    return split
-  }
-  if (entry.state === 'Failed') {
-    throw new Error(
-      `Proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`,
-    )
-  }
-  if (!wallet.checkProofsStates) {
-    throw new Error('cashu wallet does not support proof-state recovery checks')
-  }
-
-  const states = await wallet.checkProofsStates(
-    entry.inputs.map(({ id, secret }) => ({ id: id ?? '', secret })),
-  )
-  let split: { send: Proof[]; keep: Proof[] }
-  if (allStates(states, CheckStateEnum.SPENT)) {
-    const restored = deps.restoreOutputGroups
-      ? await deps.restoreOutputGroups(entry.mintUrl, entry.outputs)
-      : await restoreOutputGroups(entry.mintUrl, entry.outputs)
-    split = {
-      send: restored.send ?? [],
-      keep: [...(restored.keep ?? []), ...readUnselectedProofs(entry)],
-    }
-  } else if (allStates(states, CheckStateEnum.UNSPENT)) {
-    if (!wallet.completeSwap) {
-      throw new Error('cashu wallet does not support prepared send completion')
-    }
-    const result = await wallet.completeSwap(entryToSwapPreview(entry))
-    split = { send: result.send, keep: result.keep }
-  } else {
-    throw new Error(`Proof operation ${entry.operationId} is still pending at the mint`)
-  }
-
-  await markProofOperationCompleted(entry.operationId, split)
-  await completeReservedSatSend({
-    mintUrl,
-    reservedBy: reservationId,
-    keepProofs: split.keep,
-  })
-  return split
-}
-
-function walletSendResult(
-  operationId: string,
-  mintUrl: string,
-  amountSats: number,
-  sendProofs: Proof[],
-): WalletSendResult {
-  const unit = 'sat'
-  return {
-    operationId,
-    mintUrl,
-    amountSats,
-    proofCount: sendProofs.length,
-    token: getEncodedToken({ mint: mintUrl, unit, proofs: sendProofs }),
-  }
 }
 
 export function createWallet(
@@ -1111,21 +1040,6 @@ function mutationFromRuntimeFence(
 
 function sumProofs(proofs: Proof[]): number {
   return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0)
-}
-
-function assertWalletSendOperation(
-  entry: ProofOperationRecord,
-  mintUrl: string,
-  requestedAmountSats?: number,
-): void {
-  if (
-    entry.kind !== 'wallet-send' ||
-    entry.mintUrl !== mintUrl ||
-    entry.metadata.unit !== 'sat' ||
-    (requestedAmountSats !== undefined && entry.metadata.amount !== requestedAmountSats)
-  ) {
-    throw new Error(`Proof operation ${entry.operationId} does not match this wallet send`)
-  }
 }
 
 function assertCtfConsolidationOperation(entry: ProofOperationRecord): void {
@@ -1310,41 +1224,12 @@ export async function restoreOutputGroups(
   return restored
 }
 
-function entryToSwapPreview(entry: ProofOperationRecord): SwapPreview {
-  return {
-    amount: Amount.from(readNumberMetadata(entry, 'amount')),
-    fees: Amount.from(readNumberMetadata(entry, 'fees')),
-    keysetId: readStringMetadata(entry, 'keysetId'),
-    inputs: entry.inputs as Proof[],
-    sendOutputs: deserializeOutputGroups({ send: entry.outputs.send ?? [] }).send ?? [],
-    keepOutputs: deserializeOutputGroups({ keep: entry.outputs.keep ?? [] }).keep ?? [],
-    unselectedProofs: readUnselectedProofs(entry),
-  }
-}
-
-function readUnselectedProofs(entry: ProofOperationRecord): Proof[] {
-  const value = entry.metadata.unselectedProofs
-  return Array.isArray(value) ? (structuredClone(value) as Proof[]) : []
-}
-
-function readNumberMetadata(entry: ProofOperationRecord, key: string): number {
-  const value = entry.metadata[key]
-  if (typeof value !== 'number') {
-    throw new Error(`Proof operation ${entry.operationId} is missing numeric metadata ${key}`)
-  }
-  return value
-}
-
 function readStringMetadata(entry: ProofOperationRecord, key: string): string {
   const value = entry.metadata[key]
   if (typeof value !== 'string') {
     throw new Error(`Proof operation ${entry.operationId} is missing string metadata ${key}`)
   }
   return value
-}
-
-function allStates(states: ProofState[], expected: string): boolean {
-  return states.length > 0 && states.every((state) => state.state === expected)
 }
 
 function bytesToHex(bytes: Uint8Array): string {

@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'ceb147d92ccc757eb620f7fe8fea5754adf015825444741428d6573a25d33586'
+  'da6f70ea3390da650415159b7feddf3dad689c7ecd009b403360133bcc8c0230'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -694,7 +694,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
       'exact-request', 'output-plan', 'private-material', 'exact-result',
-      'delivery-payload'
+      'delivery-payload', 'outgoing-transfer'
     )),
     encoding TEXT NOT NULL CHECK (encoding IN ('canonical-json', 'utf8', 'binary')),
     body BLOB NOT NULL CHECK (length(body) BETWEEN 1 AND ${artifactBytesMax}),
@@ -1147,6 +1147,52 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       OR (state = 'completed' AND trailing_empty_counters >= 300)
     )
   ) STRICT`,
+  `CREATE TABLE daemon_outgoing_cashu_transfers (
+    scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    transfer_id TEXT NOT NULL CHECK (length(transfer_id) BETWEEN 1 AND 16384),
+    custody_operation_id TEXT NOT NULL CHECK (length(custody_operation_id) BETWEEN 1 AND 16384),
+    normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
+    unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
+    requested_amount TEXT NOT NULL CHECK (
+      length(requested_amount) BETWEEN 1 AND 16
+      AND requested_amount NOT GLOB '*[^0-9]*'
+      AND requested_amount <> '0'
+      AND substr(requested_amount, 1, 1) <> '0'
+      AND (
+        length(requested_amount) < 16
+        OR requested_amount <= '9007199254740991'
+      )
+    ),
+    delivery_state TEXT NOT NULL CHECK (delivery_state IN (
+      'prepared', 'delivery-pending', 'recipient-acknowledged', 'bearer-spent',
+      'bearer-partial', 'reclaim-prepared', 'reclaimed'
+    )),
+    due_at_ms INTEGER NOT NULL CHECK (due_at_ms BETWEEN 0 AND 9007199254740991),
+    attempt_count INTEGER NOT NULL CHECK (attempt_count BETWEEN 0 AND 9007199254740991),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 0 AND 9007199254740991),
+    transfer_artifact_id TEXT NOT NULL CHECK (
+      length(transfer_artifact_id) = 64
+      AND transfer_artifact_id NOT GLOB '*[^0-9a-f]*'
+    ),
+    transfer_fingerprint TEXT NOT NULL CHECK (
+      length(transfer_fingerprint) = 64 AND transfer_fingerprint NOT GLOB '*[^0-9a-f]*'
+    ),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
+    PRIMARY KEY (scope_id, transfer_id),
+    UNIQUE (scope_id, custody_operation_id),
+    FOREIGN KEY (scope_id, custody_operation_id)
+      REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
+      DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (scope_id, transfer_artifact_id)
+      REFERENCES custody_artifacts(scope_id, artifact_id) ON DELETE RESTRICT
+      DEFERRABLE INITIALLY DEFERRED,
+    CHECK (
+      (delivery_state IN ('prepared', 'delivery-pending', 'bearer-partial', 'reclaim-prepared')
+        AND due_at_ms >= 0)
+      OR delivery_state IN ('recipient-acknowledged', 'bearer-spent', 'reclaimed')
+    )
+  ) STRICT`,
   `CREATE INDEX custody_proofs_selection_idx
     ON custody_proofs (
       scope_id, normalized_mint, unit, selectability,
@@ -1193,6 +1239,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ON custody_operations (scope_id, updated_at_ms DESC, operation_id DESC)`,
   `CREATE INDEX custody_operations_retry_idx
     ON custody_operations (scope_id, operation_state, next_attempt_at_ms, operation_id)`,
+  `CREATE INDEX custody_operations_retained_operation_key_typed_idx
+    ON custody_operations (scope_id, retained_operation_key, semantic_kind, wallet_stage)`,
   `CREATE INDEX custody_proof_reservations_scope_idx
     ON custody_proof_reservations (scope_id, proof_id)`,
   `CREATE INDEX custody_active_work_page_idx
@@ -1207,6 +1255,14 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ON order_collateral_pins (scope_id, pin_state, order_id, pin_id)`,
   `CREATE INDEX seed_recovery_jobs_active_idx
     ON seed_recovery_jobs (scope_id, state, updated_at_ms, recovery_id)`,
+  `CREATE INDEX daemon_outgoing_cashu_transfers_due_idx
+    ON daemon_outgoing_cashu_transfers (
+      scope_id, normalized_mint, due_at_ms, transfer_id
+    )
+    WHERE delivery_state IN ('prepared', 'delivery-pending', 'bearer-partial', 'reclaim-prepared')`,
+  `CREATE INDEX daemon_outgoing_cashu_transfers_all_mints_due_idx
+    ON daemon_outgoing_cashu_transfers (scope_id, due_at_ms, transfer_id)
+    WHERE delivery_state IN ('prepared', 'delivery-pending', 'bearer-partial', 'reclaim-prepared')`,
   `CREATE TRIGGER profile_schema_marker_no_update
     BEFORE UPDATE ON profile_schema_marker
     BEGIN

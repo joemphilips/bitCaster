@@ -56,7 +56,7 @@ import {
 import { canBackOrder, type TokenHoldings } from '@bitcaster-market/client-sdk/tradingClient'
 import { signNip98 } from './nostrAuth.ts'
 import { recoverCompleteSetSplits, splitWalletCompleteSet } from './completeSetConversion.ts'
-import { composeStartupCustodyRecovery } from './startupRecovery.ts'
+import { composeStartupCustodyRecovery, outgoingCashuRecoveryStatus } from './startupRecovery.ts'
 import type { ManualCustodyRecoveryStatus } from './startupRecovery.ts'
 import type { DaemonCommand, DaemonHealth, DaemonResponse } from './protocol.ts'
 import { profileDir, readProfile } from './profile.ts'
@@ -72,6 +72,8 @@ import {
 import {
   recoverPreparedWalletSends,
   recoverDurableWalletReceives,
+  recoverDurableOutgoingCashuTransfers,
+  reclaimDurableOutgoingCashuTransfer,
   receiveWalletToken,
   sendWalletToken,
   executeCtfConsolidationPlan,
@@ -99,6 +101,7 @@ export interface DaemonServerOptions {
   trackOwnedOrder?: (marketId: string, orderId: string) => Promise<void>
   prepareSettlementCapability?: PrepareSettlementCapability
   triggerSettlementRecovery?: () => void
+  triggerCustodyRecovery?: () => void
   getCustodyFence?: () => CustodyScopeFence
   isCustodyReady?: () => boolean
   markCustodyReady?: () => void
@@ -192,6 +195,7 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   prepareSettlementCapability?: PrepareSettlementCapability
   trackOwnedOrder?: (marketId: string, orderId: string) => Promise<void>
   triggerSettlementRecovery?: () => void
+  triggerCustodyRecovery?: () => void
   getCustodyFence?: () => CustodyScopeFence
   isCustodyReady?: () => boolean
   markCustodyReady?: () => void
@@ -215,6 +219,7 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
       trackOwnedOrder: options.trackOwnedOrder,
       prepareSettlementCapability: options.prepareSettlementCapability,
       triggerSettlementRecovery: options.triggerSettlementRecovery,
+      triggerCustodyRecovery: options.triggerCustodyRecovery,
       getCustodyFence: options.getCustodyFence,
       isCustodyReady: options.isCustodyReady,
       markCustodyReady: options.markCustodyReady,
@@ -456,16 +461,38 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      return {
-        ok: true,
-        result: await sendWalletToken(
-          command.params.amountSats,
-          profile,
-          secrets,
-          deps,
-          command.params.mintUrl,
-          command.params.operationId,
-        ),
+      try {
+        return {
+          ok: true,
+          result: await sendWalletToken(
+            command.params.amountSats,
+            profile,
+            secrets,
+            deps,
+            command.params.mintUrl,
+            command.params.operationId,
+          ),
+        }
+      } finally {
+        deps.triggerCustodyRecovery?.()
+      }
+    }
+    case 'wallet.reclaim': {
+      const profile = await readProfile()
+      if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
+      const secrets = await readSecrets()
+      if (!secrets) return { ok: false, error: 'daemon secrets are not initialized' }
+      try {
+        return {
+          ok: true,
+          result: await reclaimDurableOutgoingCashuTransfer(
+            command.params.transferId,
+            secrets,
+            deps,
+          ),
+        }
+      } finally {
+        deps.triggerCustodyRecovery?.()
       }
     }
     case 'wallet.splitCompleteSet': {
@@ -577,6 +604,8 @@ export async function dispatch(
       if (!deps.getCustodyFence) return { ok: true, result: wallet }
       const getCustodyFence = deps.getCustodyFence
       const receives = await recoverDurableWalletReceives(secrets, deps)
+      const outgoing = await recoverDurableOutgoingCashuTransfers(secrets, deps)
+      const outgoingStatus = outgoingCashuRecoveryStatus(outgoing)
       const consolidation = await recoverWalletProofConsolidations({
         secrets,
         mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
@@ -595,6 +624,7 @@ export async function dispatch(
       const result = composeStartupCustodyRecovery([
         wallet,
         receives,
+        outgoing,
         consolidation,
         completeSets,
         { recovered: retired, pending: retirementPending(retirements) },
@@ -605,6 +635,15 @@ export async function dispatch(
           receives.pending.length > 0 ||
           receives.pendingCount > 0 ||
           receives.hasMore ||
+          outgoingStatus.blockingPending ||
+          consolidation.pending.length > 0 ||
+          completeSets.pending.length > 0,
+        retryPending:
+          wallet.pending.length > 0 ||
+          receives.pending.length > 0 ||
+          receives.pendingCount > 0 ||
+          receives.hasMore ||
+          outgoingStatus.retryPending ||
           consolidation.pending.length > 0 ||
           completeSets.pending.length > 0,
         retirementPending: retirements.some((entry) => entry.error !== null),
@@ -613,7 +652,8 @@ export async function dispatch(
         !deps.onManualCustodyRecoveryStatus &&
         result.pending.length === 0 &&
         receives.pendingCount === 0 &&
-        !receives.hasMore
+        !receives.hasMore &&
+        !outgoingStatus.blockingPending
       ) {
         deps.markCustodyReady?.()
       }
@@ -1041,21 +1081,25 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
 
   const paymentId = randomUUID()
   const operationId = `engine-score:${paymentId}`
-  const token = await sendWalletToken(
-    plan.deficitScore,
-    input.profile,
-    input.secrets,
-    input.deps,
-    input.profile.mintUrl,
-    operationId,
-  )
-  const payment = await payParticipationScoreEcashWithRetry(
-    input.client,
-    plan.deficitScore,
-    token.token,
-    paymentId,
-  )
-  return { kind: 'paid', score, payment, paymentId, operationId }
+  try {
+    const token = await sendWalletToken(
+      plan.deficitScore,
+      input.profile,
+      input.secrets,
+      input.deps,
+      input.profile.mintUrl,
+      operationId,
+    )
+    const payment = await payParticipationScoreEcashWithRetry(
+      input.client,
+      plan.deficitScore,
+      token.token,
+      paymentId,
+    )
+    return { kind: 'paid', score, payment, paymentId, operationId }
+  } finally {
+    input.deps.triggerCustodyRecovery?.()
+  }
 }
 
 async function payParticipationScoreEcashWithRetry(
