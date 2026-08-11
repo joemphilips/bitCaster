@@ -88,6 +88,8 @@ export interface ExecuteBrowserDurableOutgoingCashuTransferInput {
   readonly transfer: Omit<DurableOutgoingCashuCoordinatorInput["transfer"], "walletScopeId">;
   /** Reuse one exact durable-recipient product while the wallet lock is held. */
   readonly reuseRecipientBinding?: boolean;
+  /** Reuse one exact transfer id while the wallet lock is held. */
+  readonly reuseTransferId?: boolean;
   /** This callback may select a plan once. Recovery never calls it. */
   readonly prepareWalletSendOperation: () => Promise<DurableWalletSendOperation>;
   /** Exact locators align with `preview.keepOutputs`; recovery never recalculates them. */
@@ -106,7 +108,9 @@ export async function executeBrowserDurableOutgoingCashuTransfer(
   return withBrowserOutgoingScope(input.context, scope.scopeId, async (owner) => {
     input.context.requireCapturedProfile();
     const existing = await findReusableRecipientTransfer(input, scope.scopeId);
+    input.context.requireCapturedProfile();
     if (existing !== null) {
+      if (existing.token !== null) return existing;
       return runBrowserOutgoingCoordinator({
         context: input.context,
         adapter,
@@ -138,6 +142,24 @@ async function findReusableRecipientTransfer(
   input: ExecuteBrowserDurableOutgoingCashuTransferInput,
   scopeId: string,
 ): Promise<DurableOutgoingCashuTransfer | null> {
+  if (input.reuseTransferId) {
+    const row = await (input.context.database ?? db).outgoingCashuTransfers.get([
+      scopeId,
+      input.transfer.transferId,
+    ]);
+    if (!row) return null;
+    const existing = decodeOutgoingRow(scopeId, row);
+    if (
+      existing.mintUrl !== input.transfer.mintUrl ||
+      existing.unit !== input.transfer.unit ||
+      existing.requestedAmount !== input.transfer.requestedAmount ||
+      deriveDurableCustodyArtifactFingerprint(existing.deliveryIntent) !==
+        deriveDurableCustodyArtifactFingerprint(input.transfer.deliveryIntent)
+    ) {
+      throw new Error("browser outgoing exact transfer conflicts");
+    }
+    return existing;
+  }
   if (!input.reuseRecipientBinding) return null;
   if (input.transfer.deliveryIntent.policy !== "durable-recipient-ack") {
     throw new Error("browser outgoing recipient reuse requires a durable-recipient intent");
@@ -154,6 +176,21 @@ async function findReusableRecipientTransfer(
     .toArray();
   if (rows.length > 1) throw new Error("browser outgoing recipient binding is ambiguous");
   return rows.length === 0 ? null : decodeOutgoingRow(scopeId, rows[0]!);
+}
+
+/** Read one exact transfer without mint recovery, proof selection, or token presentation. */
+export async function readBrowserDurableOutgoingCashuTransfer(input: {
+  readonly transferId: string;
+  readonly context: BrowserDurableOutgoingCashuContext;
+}): Promise<DurableOutgoingCashuTransfer | null> {
+  const scope = browserWalletScope(input.context.seed);
+  input.context.requireCapturedProfile();
+  const row = await (input.context.database ?? db).outgoingCashuTransfers.get([
+    scope.scopeId,
+    input.transferId,
+  ]);
+  input.context.requireCapturedProfile();
+  return row === undefined ? null : decodeOutgoingRow(scope.scopeId, row);
 }
 
 /** Recover one exact durable transfer. This function never selects proofs or presents a token. */
@@ -707,7 +744,7 @@ function outgoingKeysets(
     ),
   ]);
   return [...ids].map((id) => {
-    if (!id || isBlsKeyset(id))
+    if (!id || isBlsKeyset(id) || !/^01[0-9a-f]{64}$/.test(id))
       throw new Error("browser outgoing transfer supports only V2 keysets");
     const keyset = wallet.getKeyset(id);
     if (

@@ -203,6 +203,10 @@
       "types": "./dist/marketFundingDelivery.d.ts",
       "import": "./dist/marketFundingDelivery.js"
     },
+    "./participationScoreDelivery": {
+      "types": "./dist/participationScoreDelivery.d.ts",
+      "import": "./dist/participationScoreDelivery.js"
+    },
     "./durableBolt11MintQuote": {
       "types": "./dist/durableBolt11MintQuote.d.ts",
       "import": "./dist/durableBolt11MintQuote.js"

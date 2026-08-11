@@ -295,6 +295,16 @@ export interface BrowserOutgoingCashuTransferAdmissionRow {
   padding: Uint8Array;
 }
 
+/** One local coordination pointer for the current unresolved Participation Score delivery. */
+export interface BrowserParticipationScoreDeliveryPointerRow {
+  scopeId: string;
+  mintUrl: string;
+  accountSubject: string;
+  deliveryId: string;
+  purchaseEpoch: number;
+  revision: number;
+}
+
 export const DURABLE_BOLT11_MINT_QUOTE_OPERATION_METADATA_KEY = "durableBolt11MintQuoteRecordId";
 
 export class BitcasterDB extends Dexie {
@@ -360,6 +370,10 @@ export class BitcasterDB extends Dexie {
   outgoingCashuTransferAdmissions!: Table<
     BrowserOutgoingCashuTransferAdmissionRow,
     [string, string]
+  >;
+  participationScoreDeliveryPointers!: Table<
+    BrowserParticipationScoreDeliveryPointerRow,
+    [string, string, string]
   >;
 
   constructor(databaseName = "bitcaster") {
@@ -489,6 +503,9 @@ export class BitcasterDB extends Dexie {
         "&[scopeId+transferId], [scopeId+mintUrl+mintRecoveryState+dueAtMs+transferId], [scopeId+mintRecoveryState+dueAtMs+mintUrl+transferId], [scopeId+localAuthorityState+transferId], [scopeId+recipientBinding+transferId]",
       outgoingCashuTransferAdmissions: "&[scopeId+transferId]",
     });
+    this.version(13).stores({
+      participationScoreDeliveryPointers: "&[scopeId+mintUrl+accountSubject], [scopeId+deliveryId]",
+    });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -511,6 +528,7 @@ export class BitcasterDB extends Dexie {
     this.mintQuotes = this.table("mintQuotes");
     this.outgoingCashuTransfers = this.table("outgoingCashuTransfers");
     this.outgoingCashuTransferAdmissions = this.table("outgoingCashuTransferAdmissions");
+    this.participationScoreDeliveryPointers = this.table("participationScoreDeliveryPointers");
   }
 }
 
@@ -570,6 +588,7 @@ export async function getUnitProofs(
 }
 
 export const MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX = 512;
+export const PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX = 512;
 
 /** Read one bounded largest-first candidate set for initial AMM funding. */
 export async function getBoundedMarketFundingProofs(
@@ -600,6 +619,48 @@ export async function getBoundedMarketFundingProofs(
         left.secret.localeCompare(right.secret),
     )
     .slice(0, MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX);
+}
+
+/** Read one bounded largest-first sat candidate set for Participation Score delivery. */
+export async function getBoundedParticipationScoreProofs(
+  mintUrl: string,
+  options: { keysetIds: readonly string[] },
+  database: BitcasterDB = db,
+): Promise<StoredProof[]> {
+  const normalizedMint = normalizeUrl(mintUrl);
+  const keysetIds = [...new Set(options.keysetIds)];
+  if (
+    keysetIds.length < 1 ||
+    keysetIds.length > 129 ||
+    keysetIds.some((keysetId) => !/^01[0-9a-f]{64}$/.test(keysetId))
+  ) {
+    throw new Error("Participation Score keyset authority is invalid");
+  }
+  const pages = await Promise.all(
+    keysetIds.map((keysetId) =>
+      database.proofs
+        .where("[mintUrl+unit+id+amount+secret]")
+        .between(
+          [normalizedMint, "sat", keysetId, 0, ""],
+          [normalizedMint, "sat", keysetId, Number.MAX_SAFE_INTEGER, "\uffff"],
+          true,
+          true,
+        )
+        .reverse()
+        .limit(PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX)
+        .toArray(),
+    ),
+  );
+  const rows = pages.flat();
+  return rows
+    .map(normalizeStoredProof)
+    .filter((proof) => isSpendableStoredProof(proof) && !isCtfProof(proof))
+    .sort(
+      (left, right) =>
+        amountToNumber(right.amount) - amountToNumber(left.amount) ||
+        left.secret.localeCompare(right.secret),
+    )
+    .slice(0, PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX);
 }
 
 export async function getSelectableUnitProofsForKeyset(

@@ -38,6 +38,7 @@ import {
 } from "../browserDurableOutgoingCashuTransfer";
 import {
   BitcasterDB,
+  getBoundedParticipationScoreProofs,
   getBoundedMarketFundingProofs,
   MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX,
   type BrowserOutgoingCashuTransferRow,
@@ -45,12 +46,14 @@ import {
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import { createBrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
+import { claimBrowserParticipationScoreDeliveryPointer } from "../browserParticipationScoreDeliveryPointer";
 
 const MINT = "https://mint.example";
 const SCOPE = "wallet-scope";
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7]);
 const KEYS = { "1": bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) };
 const KEYSET_ID = deriveKeysetId(KEYS);
+const OLD_V2_KEYSET_ID = `01${"22".repeat(32)}`;
 const databases: BitcasterDB[] = [];
 
 afterEach(async () => {
@@ -79,33 +82,70 @@ describe("browser durable outgoing Cashu store", () => {
     ).resolves.toMatchObject({ transferId: "recipient" });
   });
 
-  it(
-    "bounds largest-first market-funding candidates in a 10,000-proof wallet",
-    async () => {
-      const database = createDatabase();
-      const rows = Array.from({ length: 10_000 }, (_, index) => ({
-        secret: `funding-${index.toString().padStart(5, "0")}`,
-        amount: index + 1,
+  it("bounds largest-first market-funding candidates in a 10,000-proof wallet", async () => {
+    const database = createDatabase();
+    const rows = Array.from({ length: 10_000 }, (_, index) => ({
+      secret: `funding-${index.toString().padStart(5, "0")}`,
+      amount: index + 1,
+      id: KEYSET_ID,
+      C: `C-${index}`,
+      mintUrl: MINT,
+      baseAsset: "sat",
+      unit: "msat" as const,
+    }));
+    await database.proofs.bulkPut(rows);
+
+    const selected = await getBoundedMarketFundingProofs(
+      MINT,
+      { unit: "msat", keysetId: KEYSET_ID },
+      database,
+    );
+
+    expect(selected).toHaveLength(MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX);
+    expect(amountToNumber(selected[0]!.amount)).toBe(10_000);
+    expect(amountToNumber(selected.at(-1)!.amount)).toBe(9_489);
+  }, 15_000);
+
+  it("selects bounded Participation Score proofs across authenticated V2 keysets", async () => {
+    const database = createDatabase();
+    await database.proofs.bulkPut([
+      {
+        secret: "active",
+        amount: 1,
         id: KEYSET_ID,
-        C: `C-${index}`,
+        C: "C-1",
         mintUrl: MINT,
         baseAsset: "sat",
-        unit: "msat" as const,
-      }));
-      await database.proofs.bulkPut(rows);
+        unit: "sat",
+      },
+      {
+        secret: "old",
+        amount: 8,
+        id: OLD_V2_KEYSET_ID,
+        C: "C-2",
+        mintUrl: MINT,
+        baseAsset: "sat",
+        unit: "sat",
+      },
+      {
+        secret: "legacy",
+        amount: 16,
+        id: "00legacy",
+        C: "C-3",
+        mintUrl: MINT,
+        baseAsset: "sat",
+        unit: "sat",
+      },
+    ]);
 
-      const selected = await getBoundedMarketFundingProofs(
-        MINT,
-        { unit: "msat", keysetId: KEYSET_ID },
-        database,
-      );
+    const selected = await getBoundedParticipationScoreProofs(
+      MINT,
+      { keysetIds: [KEYSET_ID, OLD_V2_KEYSET_ID] },
+      database,
+    );
 
-      expect(selected).toHaveLength(MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX);
-      expect(amountToNumber(selected[0]!.amount)).toBe(10_000);
-      expect(amountToNumber(selected.at(-1)!.amount)).toBe(9_489);
-    },
-    15_000,
-  );
+    expect(selected.map(({ secret }) => secret)).toEqual(["old", "active"]);
+  });
 
   it("orders one mint due page by due time then transfer ID", async () => {
     const database = createDatabase();
@@ -520,6 +560,63 @@ describe("browser durable outgoing Cashu store", () => {
     expect(second.transferId).toBe("execute");
     expect(fixture.prepareWalletSendOperation).toHaveBeenCalledOnce();
     expect(fixture.wallet.completeSwap).toHaveBeenCalledOnce();
+    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(1);
+  });
+
+  it("serializes two-tab exact-transfer reuse before proof selection and mint I/O", async () => {
+    const fixture = await executionFixture();
+    const context = { ...fixture.context, lockManager: serialLockManager() };
+    const common = { ...fixture.input, reuseTransferId: true, context };
+
+    const [first, second] = await Promise.all([
+      executeBrowserDurableOutgoingCashuTransfer(common),
+      executeBrowserDurableOutgoingCashuTransfer(common),
+    ]);
+
+    expect(first.transferId).toBe("execute");
+    expect(second.transferId).toBe("execute");
+    expect(fixture.prepareWalletSendOperation).toHaveBeenCalledOnce();
+    expect(fixture.wallet.completeSwap).toHaveBeenCalledOnce();
+    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(1);
+  });
+
+  it("hands one concurrent Score pointer claim to one exact durable transfer", async () => {
+    const fixture = await executionFixture();
+    const context = { ...fixture.context, lockManager: serialLockManager() };
+    const pointerInput = {
+      accountSubject: "subject-1",
+      mintUrl: MINT,
+      purchaseEpoch: 0,
+      context,
+    };
+    const [firstPointer, secondPointer] = await Promise.all([
+      claimBrowserParticipationScoreDeliveryPointer({
+        ...pointerInput,
+        deliveryId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
+      }),
+      claimBrowserParticipationScoreDeliveryPointer({
+        ...pointerInput,
+        deliveryId: "4ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
+      }),
+    ]);
+    expect(firstPointer.deliveryId).toBe(secondPointer.deliveryId);
+    const input = {
+      ...fixture.input,
+      reuseTransferId: true,
+      context,
+      transfer: { ...fixture.input.transfer, transferId: firstPointer.deliveryId },
+    };
+
+    const [first, second] = await Promise.all([
+      executeBrowserDurableOutgoingCashuTransfer(input),
+      executeBrowserDurableOutgoingCashuTransfer(input),
+    ]);
+
+    expect(first.transferId).toBe(firstPointer.deliveryId);
+    expect(second.transferId).toBe(firstPointer.deliveryId);
+    expect(fixture.prepareWalletSendOperation).toHaveBeenCalledOnce();
+    expect(fixture.wallet.completeSwap).toHaveBeenCalledOnce();
+    expect(await fixture.database.participationScoreDeliveryPointers.count()).toBe(1);
     expect(await fixture.database.outgoingCashuTransfers.count()).toBe(1);
   });
 

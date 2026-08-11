@@ -1121,18 +1121,6 @@ export async function getParticipationScore(): Promise<ParticipationScoreRespons
   return createAuthenticatedBrowserEngineClient().getParticipationScore();
 }
 
-export async function payParticipationScoreEcash(
-  amountSats: number,
-  proofsToken: string,
-  paymentId?: string,
-): Promise<PayParticipationScoreEcashResponse> {
-  return createAuthenticatedBrowserEngineClient().payParticipationScoreEcash(
-    amountSats,
-    proofsToken,
-    paymentId,
-  );
-}
-
 /**
  * Fetch the list of markets the matching engine has indexed under a given
  * creator pubkey. The engine returns volume/created-at for markets it knows
